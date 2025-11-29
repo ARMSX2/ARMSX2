@@ -130,6 +130,7 @@ Open it later from Settings → Open ARMSX2 directory.</string>
     <string name="drawer_error_import_unknown">Import failed but no reason was provided.</string>
     <string name="settings_fxaa">FXAA</string>
     <string name="settings_graphics_advanced_heading">Advanced Rendering</string>
+    <string name="settings_graphics_renderer">Renderer</string>
     <string name="settings_texture_preloading">Texture Preloading</string>
     <string name="settings_acc_blending">Blending Accuracy</string>
     <string name="settings_anisotropic_filtering">Anisotropic Filtering</string>
@@ -193,7 +194,6 @@ Open it later from Settings → Open ARMSX2 directory.</string>
     <string name="cover_prefetch_no_connection">Connect to the internet to download covers.</string>
     <string name="action_save">Save</string>
     <string name="per_game_settings_enable_custom">Enable per-game settings</string>
-    <string name="per_game_settings_renderer">Renderer</string>
     <string name="per_game_settings_aspect_ratio">Aspect ratio</string>
     <string name="per_game_settings_widescreen">Apply widescreen patch</string>
     <string name="per_game_settings_enable_cheats">Enable cheats</string>

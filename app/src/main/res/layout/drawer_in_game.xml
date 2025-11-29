@@ -190,7 +190,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingBottom="4dp"
-            android:text="Renderer"
+            android:text="@string/settings_graphics_renderer"
             android:textColor="?attr/colorPrimary"
             android:textStyle="bold" />
 
@@ -332,7 +332,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingBottom="4dp"
-            android:text="Aspect Ratio"
+            android:text="@string/per_game_settings_aspect_ratio"
             android:textColor="?attr/colorPrimary"
             android:textStyle="bold" />
 
@@ -360,7 +360,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingBottom="4dp"
-            android:text="Blending Accuracy"
+            android:text="@string/settings_acc_blending"
             android:textColor="?attr/colorPrimary"
             android:textStyle="bold" />
 
@@ -407,7 +407,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="4dp"
-            android:text="Load Textures"
+            android:text="@string/per_game_settings_load_textures"
             android:textColor="?attr/colorOnSurface" />
 
         <com.google.android.material.materialswitch.MaterialSwitch
@@ -415,7 +415,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="4dp"
-            android:text="Async Textures"
+            android:text="@string/per_game_settings_async_textures"
             android:textColor="?attr/colorOnSurface" />
 
         <com.google.android.material.materialswitch.MaterialSwitch
@@ -423,7 +423,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="16dp"
-            android:text="Precache Texture Replacements"
+            android:text="@string/per_game_settings_precache_textures"
             android:textColor="?attr/colorOnSurface" />
 
         <TextView
@@ -446,7 +446,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingBottom="8dp"
-            android:text="Controller"
+            android:text="@string/settings_section_controller"
             android:textColor="?attr/colorPrimary"
             android:textStyle="bold" />
 

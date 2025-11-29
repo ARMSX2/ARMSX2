@@ -130,6 +130,7 @@
     <string name="drawer_error_import_unknown">导入失败但未提供原因。</string>
     <string name="settings_fxaa">FXAA</string>
     <string name="settings_graphics_advanced_heading">高级渲染</string>
+    <string name="settings_graphics_renderer">渲染器</string>
     <string name="settings_texture_preloading">纹理预加载</string>
     <string name="settings_acc_blending">混合精度</string>
     <string name="settings_anisotropic_filtering">各向异性过滤</string>
@@ -193,7 +194,6 @@
     <string name="cover_prefetch_no_connection">连接到互联网以下载封面。</string>
     <string name="action_save">保存</string>
     <string name="per_game_settings_enable_custom">启用单游戏设置</string>
-    <string name="per_game_settings_renderer">渲染器</string>
     <string name="per_game_settings_aspect_ratio">长宽比</string>
     <string name="per_game_settings_widescreen">应用宽屏补丁</string>
     <string name="per_game_settings_enable_cheats">启用金手指</string>
