@@ -64,17 +64,17 @@ void WriteToJIT(void* addr, const void* data, size_t size)
 
 ### Advantages
 
-✅ **Battle-tested**: Used by thousands of iOS users
-✅ **Fast**: Minimal overhead for JIT toggling
-✅ **Simple**: Clean API, easy to understand
-✅ **Stable**: Works across iOS 14-17+
-✅ **W^X Compliant**: Follows Apple's security model
+**Battle-tested**: Used by thousands of iOS users
+**Fast**: Minimal overhead for JIT toggling
+**Simple**: Clean API, easy to understand
+**Stable**: Works across iOS 14-17+
+**W^X Compliant**: Follows Apple's security model
 
 ### Limitations
 
-⚠️ **Requires iOS 14+**: MAP_JIT not available on older iOS
-⚠️ **Thread-bound**: JIT state is per-thread
-⚠️ **No fine-grained control**: All-or-nothing protection toggle
+**Requires iOS 14+**: MAP_JIT not available on older iOS
+**Thread-bound**: JIT state is per-thread
+**No fine-grained control**: All-or-nothing protection toggle
 
 ---
 
@@ -173,19 +173,19 @@ Our implementation builds on DolphinOS's approach but adds iOS 26+ specific opti
 
 ### Advantages
 
-✅ **iOS 26 Optimized**: Uses new APIs when available
-✅ **Backward Compatible**: Falls back to iOS 14+ methods
-✅ **Better Tracking**: Monitors memory usage and allocation
-✅ **Status Reporting**: Provides detailed diagnostic information
-✅ **Future-proof**: Ready for iOS 27+ enhancements
-✅ **Memory Safety**: Automatic leak detection
+**iOS 26 Optimized**: Uses new APIs when available
+**Backward Compatible**: Falls back to iOS 14+ methods
+**Better Tracking**: Monitors memory usage and allocation
+**Status Reporting**: Provides detailed diagnostic information
+**Future-proof**: Ready for iOS 27+ enhancements
+**Memory Safety**: Automatic leak detection
 
 ### Differences from DolphinOS
 
-🔄 **More Verbose**: Additional logging and status tracking
-🔄 **iOS 26 Focused**: Optimized for newer iOS features
-🔄 **Obj-C Only**: Pure Objective-C++ (DolphinOS is C++)
-🔄 **Centralized Management**: Single manager instance
+**More Verbose**: Additional logging and status tracking
+**iOS 26 Focused**: Optimized for newer iOS features
+**Obj-C Only**: Pure Objective-C++ (DolphinOS is C++)
+**Centralized Management**: Single manager instance
 
 ---
 
@@ -193,17 +193,17 @@ Our implementation builds on DolphinOS's approach but adds iOS 26+ specific opti
 
 | Feature | DolphinOS | ARMSX2 | Winner |
 |---------|-----------|---------|--------|
-| **MAP_JIT Support** | ✅ Yes | ✅ Yes | Tie |
-| **pthread_jit_write_protect_np** | ✅ Yes | ✅ Yes | Tie |
-| **vm_protect_jit (iOS 26)** | ❌ No | ✅ Yes | ARMSX2 |
-| **Instruction Cache Flush** | ✅ Yes | ✅ Yes | Tie |
-| **Memory Tracking** | ⚠️ Manual | ✅ Automatic | ARMSX2 |
-| **Status Reporting** | ⚠️ Basic | ✅ Detailed | ARMSX2 |
-| **Backward Compatibility** | ✅ iOS 14+ | ✅ iOS 14+ (fallback) | Tie |
-| **Performance Overhead** | ⚠️ Low | ⚠️ Slightly Higher | DolphinOS |
-| **Code Size** | ⚠️ Compact | ⚠️ Verbose | DolphinOS |
-| **Battle-tested** | ✅ Yes | ❌ New | DolphinOS |
-| **Future-ready** | ⚠️ Stable | ✅ Optimized | ARMSX2 |
+| **MAP_JIT Support** | Yes | Yes | Tie |
+| **pthread_jit_write_protect_np** | Yes | Yes | Tie |
+| **vm_protect_jit (iOS 26)** | No | Yes | ARMSX2 |
+| **Instruction Cache Flush** | Yes | Yes | Tie |
+| **Memory Tracking** | Manual | Automatic | ARMSX2 |
+| **Status Reporting** | Basic | Detailed | ARMSX2 |
+| **Backward Compatibility** | iOS 14+ | iOS 14+ (fallback) | Tie |
+| **Performance Overhead** | Low | Slightly Higher | DolphinOS |
+| **Code Size** | Compact | Verbose | DolphinOS |
+| **Battle-tested** | Yes | New | DolphinOS |
+| **Future-ready** | Stable | Optimized | ARMSX2 |
 
 ---
 
@@ -403,18 +403,18 @@ void FreeMemory(void* ptr, size_t size) {
 
 ### When to Use DolphinOS Approach
 
-✅ **Production apps** needing proven stability
-✅ **Performance-critical** code paths
-✅ **Minimal logging** requirements
-✅ **iOS 14-17** primary targets
+**Production apps** needing proven stability
+**Performance-critical** code paths
+**Minimal logging** requirements
+**iOS 14-17** primary targets
 
 ### When to Use ARMSX2 Approach
 
-✅ **iOS 26+** primary target
-✅ **Development/debugging** phases
-✅ **Memory leak detection** needed
-✅ **Diagnostic information** valuable
-✅ **Future iOS versions** expected
+**iOS 26+** primary target
+**Development/debugging** phases
+**Memory leak detection** needed
+**Diagnostic information** valuable
+**Future iOS versions** expected
 
 ---
 
@@ -445,16 +445,16 @@ For optimal results, we could combine both approaches:
 ## Conclusion
 
 ### DolphinOS Strengths
-- ✅ Battle-tested across thousands of devices
-- ✅ Minimal overhead, maximum performance
-- ✅ Simple, easy to understand
-- ✅ Proven stable on iOS 14-17
+- Battle-tested across thousands of devices
+- Minimal overhead, maximum performance
+- Simple, easy to understand
+- Proven stable on iOS 14-17
 
 ### ARMSX2 Strengths
-- ✅ iOS 26+ specific optimizations
-- ✅ Better diagnostics and debugging
-- ✅ Memory tracking and leak detection
-- ✅ Future-ready for iOS 27+
+- iOS 26+ specific optimizations
+- Better diagnostics and debugging
+- Memory tracking and leak detection
+- Future-ready for iOS 27+
 
 ### Final Verdict
 

@@ -329,6 +329,6 @@ Created for ARMSX2 iOS port with iOS 26 JIT support.
 
 ---
 
-**Status**: ✅ Complete - Ready for integration and testing
+**Status**: Complete - Ready for integration and testing
 **Branch**: `claude/ios-jit-implementation-7DBgZ`
 **Date**: 2026-01-18

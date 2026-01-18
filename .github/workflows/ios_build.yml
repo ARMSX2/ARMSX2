@@ -192,11 +192,11 @@ jobs:
             4. Enable JIT in AltStore settings
 
             ### Features
-            - ✅ iOS 26 JIT compilation support
-            - ✅ Metal rendering
-            - ✅ MFi controller support
-            - ✅ Save states
-            - ✅ On-screen controls
+            - iOS 26 JIT compilation support
+            - Metal rendering
+            - MFi controller support
+            - Save states
+            - On-screen controls
 
             **See attached IPA for installation.**
           draft: false
@@ -227,7 +227,7 @@ jobs:
       # - KEYCHAIN_PASSWORD
 
       - name: Import certificates
-        if: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+        if: secrets.APPLE_CERTIFICATE_BASE64 != ''
         run: |
           # Create keychain
           security create-keychain -p "${{ secrets.KEYCHAIN_PASSWORD }}" build.keychain
@@ -245,7 +245,7 @@ jobs:
           cp profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
 
       - name: Build Signed IPA
-        if: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+        if: secrets.APPLE_CERTIFICATE_BASE64 != ''
         run: |
           cd ios
           xcodebuild clean archive \
@@ -263,7 +263,7 @@ jobs:
             -exportOptionsPlist ExportOptions.plist
 
       - name: Upload Signed IPA
-        if: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+        if: secrets.APPLE_CERTIFICATE_BASE64 != ''
         uses: actions/upload-artifact@v5
         with:
           name: ARMSX2-iOS-signed

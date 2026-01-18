@@ -356,20 +356,20 @@ Fix: Each thread must call enable/disable independently
     // Cleanup
     [jit freeJITMemory:code size:4096];
 
-    NSLog(@"✅ JIT test passed!");
+    NSLog(@"JIT test passed!");
 }
 ```
 
 ## Best Practices
 
-1. ✅ **Use fast path in hot loops** (compiling individual instructions)
-2. ✅ **Use managed path for allocation** (setup/teardown)
-3. ✅ **Always flush cache** after writing code
-4. ✅ **Keep write protection disabled minimal time** (security)
-5. ✅ **One enable/disable per compile block** (don't toggle per instruction)
-6. ❌ **Don't mix threads** (each thread manages its own state)
-7. ❌ **Don't keep write enabled** (violates W^X)
-8. ❌ **Don't skip cache flush** (undefined behavior)
+1. **Use fast path in hot loops** (compiling individual instructions)
+2. **Use managed path for allocation** (setup/teardown)
+3. **Always flush cache** after writing code
+4. **Keep write protection disabled minimal time** (security)
+5. **One enable/disable per compile block** (don't toggle per instruction)
+6. **Don't mix threads** (each thread manages its own state)
+7. **Don't keep write enabled** (violates W^X)
+8. **Don't skip cache flush** (undefined behavior)
 
 ## Integration Checklist
 
