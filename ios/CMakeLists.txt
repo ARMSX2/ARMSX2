@@ -44,8 +44,11 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/../app/src/main/cpp/pcsx2
     ${CMAKE_SOURCE_DIR}/../app/src/main/cpp/common
     ${CMAKE_SOURCE_DIR}/../app/src/main/cpp/3rdparty
+    ${CMAKE_SOURCE_DIR}/../app/src/main/cpp/3rdparty/fmt/include
+    ${CMAKE_SOURCE_DIR}/../app/src/main/cpp/3rdparty/rapidyaml/rapidyaml/ext/c4core/src
     ${CMAKE_SOURCE_DIR}/ARMSX2/JIT
     ${CMAKE_SOURCE_DIR}/ARMSX2/Bridge
+    ${CMAKE_SOURCE_DIR}/ARMSX2/Platform
 )
 
 # Add subdirectories for the PCSX2 core
@@ -67,11 +70,18 @@ endif()
 set(IOS_SOURCES
     ${CMAKE_SOURCE_DIR}/ARMSX2/JIT/JITManager.mm
     ${CMAKE_SOURCE_DIR}/ARMSX2/Bridge/EmulatorBridge.mm
+    ${CMAKE_SOURCE_DIR}/ARMSX2/Platform/HostIOS.mm
+    ${CMAKE_SOURCE_DIR}/ARMSX2/Platform/AudioIOS.mm
+    ${CMAKE_SOURCE_DIR}/ARMSX2/Platform/InputIOS.mm
+    ${CMAKE_SOURCE_DIR}/ARMSX2/Platform/PCSX2Wrapper.mm
 )
 
 set(IOS_HEADERS
     ${CMAKE_SOURCE_DIR}/ARMSX2/JIT/JITManager.h
     ${CMAKE_SOURCE_DIR}/ARMSX2/Bridge/EmulatorBridge.h
+    ${CMAKE_SOURCE_DIR}/ARMSX2/Platform/AudioIOS.h
+    ${CMAKE_SOURCE_DIR}/ARMSX2/Platform/InputIOS.h
+    ${CMAKE_SOURCE_DIR}/ARMSX2/Platform/PCSX2Wrapper.h
 )
 
 # Create iOS library
@@ -91,7 +101,19 @@ target_link_libraries(ARMSX2_iOS_Core
     "-framework AVFoundation"
     "-framework AudioToolbox"
     "-framework GameController"
+    "-framework CoreHaptics"
 )
+
+# Link PCSX2 common library if available
+if(TARGET common)
+    target_link_libraries(ARMSX2_iOS_Core common)
+endif()
+
+# Link fmt library
+if(EXISTS ${PCSX2_SOURCE_DIR}/3rdparty/fmt)
+    add_subdirectory(${PCSX2_SOURCE_DIR}/3rdparty/fmt ${CMAKE_BINARY_DIR}/fmt EXCLUDE_FROM_ALL)
+    target_link_libraries(ARMSX2_iOS_Core fmt::fmt)
+endif()
 
 # Set target properties
 set_target_properties(ARMSX2_iOS_Core PROPERTIES

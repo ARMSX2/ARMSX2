@@ -7,24 +7,11 @@
 
 #import "EmulatorBridge.h"
 #import "JITManager.h"
+#import "../Platform/PCSX2Wrapper.h"
+#import "../Platform/AudioIOS.h"
+#import "../Platform/InputIOS.h"
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
-
-// Forward declarations for PCSX2 C++ code
-// These will link to the actual PCSX2 implementation
-extern "C" {
-    // These are placeholder declarations - actual implementation will link from PCSX2 core
-    void PCSX2_Init(const char* biosPath);
-    bool PCSX2_LoadGame(const char* gamePath);
-    void PCSX2_Start();
-    void PCSX2_Pause();
-    void PCSX2_Stop();
-    void PCSX2_Reset();
-    bool PCSX2_SaveState(int slot);
-    bool PCSX2_LoadState(int slot);
-    void PCSX2_UpdateFrame();
-    double PCSX2_GetFPS();
-}
 
 @interface EmulatorBridge ()
 @property (readwrite, nonatomic) EmulatorState state;
@@ -92,14 +79,23 @@ extern "C" {
     // Initialize PCSX2 core
     dispatch_sync(self.emulatorQueue, ^{
         @try {
-            const char *biosPathCStr = [biosPath UTF8String];
-            NSLog(@"[ARMSX2-Bridge] Calling PCSX2_Init...");
+            NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+            NSString *dataPath = [documentsPath stringByAppendingPathComponent:@"ARMSX2"];
 
-            // In a real implementation, this would call the actual PCSX2 init
-            // PCSX2_Init(biosPathCStr);
+            // Create data directory if needed
+            [[NSFileManager defaultManager] createDirectoryAtPath:dataPath
+                                        withIntermediateDirectories:YES
+                                        attributes:nil
+                                        error:nil];
 
-            self.isInitialized = YES;
-            NSLog(@"[ARMSX2-Bridge] Emulator core initialized successfully");
+            NSLog(@"[ARMSX2-Bridge] Initializing PCSX2 wrapper...");
+            self.isInitialized = PCSX2Wrapper::Initialize([biosPath UTF8String], [dataPath UTF8String]);
+
+            if (self.isInitialized) {
+                NSLog(@"[ARMSX2-Bridge] PCSX2 initialized successfully");
+            } else {
+                NSLog(@"[ARMSX2-Bridge] PCSX2 initialization failed");
+            }
         } @catch (NSException *exception) {
             NSLog(@"[ARMSX2-Bridge] Exception during initialization: %@", exception);
             self.isInitialized = NO;
@@ -139,11 +135,7 @@ extern "C" {
     __block BOOL success = NO;
     dispatch_sync(self.emulatorQueue, ^{
         @try {
-            const char *gamePathCStr = [gamePath UTF8String];
-
-            // In a real implementation, this would call the actual PCSX2 load
-            // success = PCSX2_LoadGame(gamePathCStr);
-            success = YES;
+            success = PCSX2Wrapper::LoadGame([gamePath UTF8String]);
 
             if (success) {
                 self.state = EmulatorStatePaused;
@@ -182,7 +174,7 @@ extern "C" {
     self.state = EmulatorStateRunning;
 
     dispatch_async(self.emulatorQueue, ^{
-        // PCSX2_Start();
+        PCSX2Wrapper::Start();
 
         // Start frame update timer
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -208,7 +200,7 @@ extern "C" {
     self.state = EmulatorStatePaused;
 
     dispatch_async(self.emulatorQueue, ^{
-        // PCSX2_Pause();
+        PCSX2Wrapper::Pause();
 
         // Stop frame timer
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -231,7 +223,7 @@ extern "C" {
     self.state = EmulatorStateStopped;
 
     dispatch_async(self.emulatorQueue, ^{
-        // PCSX2_Stop();
+        PCSX2Wrapper::Stop();
     });
 
     if (self.delegate) {
@@ -243,7 +235,7 @@ extern "C" {
     NSLog(@"[ARMSX2-Bridge] Resetting emulation");
 
     dispatch_async(self.emulatorQueue, ^{
-        // PCSX2_Reset();
+        PCSX2Wrapper::Reset();
     });
 }
 
@@ -252,8 +244,7 @@ extern "C" {
 
     __block BOOL success = NO;
     dispatch_sync(self.emulatorQueue, ^{
-        // success = PCSX2_SaveState((int)slot);
-        success = YES;
+        success = PCSX2Wrapper::SaveState((int)slot);
     });
 
     return success;
@@ -264,8 +255,7 @@ extern "C" {
 
     __block BOOL success = NO;
     dispatch_sync(self.emulatorQueue, ^{
-        // success = PCSX2_LoadState((int)slot);
-        success = YES;
+        success = PCSX2Wrapper::LoadState((int)slot);
     });
 
     return success;
@@ -273,11 +263,11 @@ extern "C" {
 
 - (void)updateFrame {
     dispatch_async(self.emulatorQueue, ^{
-        // PCSX2_UpdateFrame();
+        // Run one frame
+        PCSX2Wrapper::RunFrame();
 
         // Update FPS
-        // self.currentFPS = PCSX2_GetFPS();
-        self.currentFPS = 60.0; // Placeholder
+        self.currentFPS = PCSX2Wrapper::GetFPS();
 
         if (self.delegate) {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -333,16 +323,85 @@ extern "C" {
 
 - (void)pressButton:(NSString *)button {
     NSLog(@"[ARMSX2-Bridge] Button pressed: %@", button);
-    // Send button press to PCSX2 input system
+
+    // Map button name to PS2Button enum
+    PS2Button ps2Button = PS2Button_Cross; // Default
+
+    if ([button isEqualToString:@"cross"] || [button isEqualToString:@"X"]) {
+        ps2Button = PS2Button_Cross;
+    } else if ([button isEqualToString:@"circle"] || [button isEqualToString:@"O"]) {
+        ps2Button = PS2Button_Circle;
+    } else if ([button isEqualToString:@"square"]) {
+        ps2Button = PS2Button_Square;
+    } else if ([button isEqualToString:@"triangle"]) {
+        ps2Button = PS2Button_Triangle;
+    } else if ([button isEqualToString:@"up"]) {
+        ps2Button = PS2Button_DPad_Up;
+    } else if ([button isEqualToString:@"down"]) {
+        ps2Button = PS2Button_DPad_Down;
+    } else if ([button isEqualToString:@"left"]) {
+        ps2Button = PS2Button_DPad_Left;
+    } else if ([button isEqualToString:@"right"]) {
+        ps2Button = PS2Button_DPad_Right;
+    } else if ([button isEqualToString:@"L1"]) {
+        ps2Button = PS2Button_L1;
+    } else if ([button isEqualToString:@"R1"]) {
+        ps2Button = PS2Button_R1;
+    } else if ([button isEqualToString:@"L2"]) {
+        ps2Button = PS2Button_L2;
+    } else if ([button isEqualToString:@"R2"]) {
+        ps2Button = PS2Button_R2;
+    } else if ([button isEqualToString:@"start"]) {
+        ps2Button = PS2Button_Start;
+    } else if ([button isEqualToString:@"select"]) {
+        ps2Button = PS2Button_Select;
+    }
+
+    iOS_Input_SetButton(0, ps2Button, true);
 }
 
 - (void)releaseButton:(NSString *)button {
     NSLog(@"[ARMSX2-Bridge] Button released: %@", button);
-    // Send button release to PCSX2 input system
+
+    // Map button name to PS2Button enum (same logic as press)
+    PS2Button ps2Button = PS2Button_Cross;
+
+    if ([button isEqualToString:@"cross"] || [button isEqualToString:@"X"]) {
+        ps2Button = PS2Button_Cross;
+    } else if ([button isEqualToString:@"circle"] || [button isEqualToString:@"O"]) {
+        ps2Button = PS2Button_Circle;
+    } else if ([button isEqualToString:@"square"]) {
+        ps2Button = PS2Button_Square;
+    } else if ([button isEqualToString:@"triangle"]) {
+        ps2Button = PS2Button_Triangle;
+    } else if ([button isEqualToString:@"up"]) {
+        ps2Button = PS2Button_DPad_Up;
+    } else if ([button isEqualToString:@"down"]) {
+        ps2Button = PS2Button_DPad_Down;
+    } else if ([button isEqualToString:@"left"]) {
+        ps2Button = PS2Button_DPad_Left;
+    } else if ([button isEqualToString:@"right"]) {
+        ps2Button = PS2Button_DPad_Right;
+    } else if ([button isEqualToString:@"L1"]) {
+        ps2Button = PS2Button_L1;
+    } else if ([button isEqualToString:@"R1"]) {
+        ps2Button = PS2Button_R1;
+    } else if ([button isEqualToString:@"L2"]) {
+        ps2Button = PS2Button_L2;
+    } else if ([button isEqualToString:@"R2"]) {
+        ps2Button = PS2Button_R2;
+    } else if ([button isEqualToString:@"start"]) {
+        ps2Button = PS2Button_Start;
+    } else if ([button isEqualToString:@"select"]) {
+        ps2Button = PS2Button_Select;
+    }
+
+    iOS_Input_SetButton(0, ps2Button, false);
 }
 
 - (void)dealloc {
     [self stop];
+    PCSX2Wrapper::Shutdown();
 }
 
 @end
