@@ -1,0 +1,270 @@
+name: iOS Build
+
+on:
+  push:
+    branches:
+      - master
+      - 'claude/ios-*'
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios_build.yml'
+    paths-ignore:
+      - '**/*.md'
+
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'ios/**'
+    paths-ignore:
+      - '**/*.md'
+
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14  # macOS 14 with Xcode 16+
+
+    outputs:
+      bundle_id: ${{ steps.app_info.outputs.BUNDLE_ID }}
+      version: ${{ steps.app_info.outputs.VERSION }}
+      build_number: ${{ steps.app_info.outputs.BUILD_NUMBER }}
+      release_tag: ${{ steps.release_vars.outputs.RELEASE_TAG }}
+      release_title: ${{ steps.release_vars.outputs.RELEASE_TITLE }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.0'
+
+      - name: Check iOS SDK
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Get App Info
+        id: app_info
+        run: |
+          cd ios
+          BUNDLE_ID=$(grep -A1 'CFBundleIdentifier' ARMSX2/Info.plist | grep string | sed 's/.*<string>\(.*\)<\/string>.*/\1/')
+          VERSION=$(grep -A1 'CFBundleShortVersionString' ARMSX2/Info.plist | grep string | sed 's/.*<string>\(.*\)<\/string>.*/\1/')
+          BUILD_NUMBER=$(grep -A1 'CFBundleVersion' ARMSX2/Info.plist | grep string | sed 's/.*<string>\(.*\)<\/string>.*/\1/')
+
+          echo "BUNDLE_ID=$BUNDLE_ID" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+
+          echo "Bundle ID: $BUNDLE_ID"
+          echo "Version: $VERSION"
+          echo "Build: $BUILD_NUMBER"
+
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/build
+            ~/Library/Caches/CMake
+          key: ${{ runner.os }}-ios-cmake-${{ hashFiles('ios/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-ios-cmake-
+
+      - name: Build iOS App (Debug)
+        run: |
+          cd ios
+          xcodebuild clean build \
+            -project ARMSX2.xcodeproj \
+            -scheme ARMSX2 \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            | xcpretty && exit ${PIPESTATUS[0]}
+
+      - name: Build iOS Simulator App
+        run: |
+          cd ios
+          xcodebuild clean build \
+            -project ARMSX2.xcodeproj \
+            -scheme ARMSX2 \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty && exit ${PIPESTATUS[0]}
+
+      - name: Create IPA (unsigned)
+        run: |
+          cd ios
+          BUILD_DIR="build/Debug-iphoneos"
+
+          # Create Payload directory
+          mkdir -p Payload
+          cp -r "$BUILD_DIR/ARMSX2.app" Payload/
+
+          # Zip as IPA
+          zip -r ARMSX2-unsigned.ipa Payload
+
+          echo "IPA_PATH=ios/ARMSX2-unsigned.ipa" >> $GITHUB_ENV
+
+      - name: Define Release Tag and Title
+        id: release_vars
+        run: |
+          DATE_TIME=$(date +%Y%m%d-%H%M)
+          FULL_TAG="net.armsx2.ios-nightly-${{ steps.app_info.outputs.VERSION }}-${DATE_TIME}"
+          TITLE="iOS Nightly Build (DEBUG - ${{ steps.app_info.outputs.VERSION }}) - ${DATE_TIME}"
+
+          echo "RELEASE_TAG=$FULL_TAG" >> $GITHUB_OUTPUT
+          echo "RELEASE_TITLE=$TITLE" >> $GITHUB_OUTPUT
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: ARMSX2-iOS-unsigned
+          path: ios/ARMSX2-unsigned.ipa
+
+      - name: Upload dSYM for debugging
+        uses: actions/upload-artifact@v5
+        with:
+          name: ARMSX2-iOS-dSYM
+          path: ios/build/Debug-iphoneos/ARMSX2.app.dSYM
+        if: always()
+
+  release:
+    permissions:
+      contents: write
+
+    needs: [ build ]
+
+    if: >
+      github.repository == 'ARMSX2/ARMSX2' &&
+      (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/claude/ios-'))
+
+    runs-on: ubuntu-latest
+
+    concurrency:
+      group: release-ios
+      cancel-in-progress: false
+
+    steps:
+      - name: Download IPA artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: ARMSX2-iOS-unsigned
+          path: artifact
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.release_tag }}
+          name: ${{ needs.build.outputs.release_title }}
+          body: |
+            ## iOS Nightly Build (DEBUG - UNSIGNED)
+
+            Automated iOS build for testing. This is an **unsigned** IPA for development/testing.
+
+            * **Version:** ${{ needs.build.outputs.version }}
+            * **Build:** ${{ needs.build.outputs.build_number }}
+            * **Bundle ID:** ${{ needs.build.outputs.bundle_id }}
+            * **Branch:** ${{ github.ref_name }}
+            * **Commit:** ${{ github.sha }}
+
+            ### Requirements
+            - iOS 26.0 or later
+            - JIT support enabled
+            - Device must be jailbroken or use AltStore/Sideloadly
+
+            ### Installation
+            1. Download the IPA
+            2. Install with AltStore, Sideloadly, or similar
+            3. Trust the developer certificate in Settings
+            4. Enable JIT in AltStore settings
+
+            ### Features
+            - ✅ iOS 26 JIT compilation support
+            - ✅ Metal rendering
+            - ✅ MFi controller support
+            - ✅ Save states
+            - ✅ On-screen controls
+
+            **See attached IPA for installation.**
+          draft: false
+          prerelease: true
+          files: artifact/*.ipa
+
+  # Optional: Build for TestFlight/App Store (requires signing)
+  build-signed:
+    runs-on: macos-14
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.0'
+
+      # Note: Signing requires certificates and provisioning profiles
+      # Set up in repository secrets:
+      # - APPLE_CERTIFICATE_BASE64
+      # - APPLE_CERTIFICATE_PASSWORD
+      # - PROVISIONING_PROFILE_BASE64
+      # - KEYCHAIN_PASSWORD
+
+      - name: Import certificates
+        if: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+        run: |
+          # Create keychain
+          security create-keychain -p "${{ secrets.KEYCHAIN_PASSWORD }}" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "${{ secrets.KEYCHAIN_PASSWORD }}" build.keychain
+
+          # Import certificate
+          echo "${{ secrets.APPLE_CERTIFICATE_BASE64 }}" | base64 --decode > certificate.p12
+          security import certificate.p12 -k build.keychain -P "${{ secrets.APPLE_CERTIFICATE_PASSWORD }}" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${{ secrets.KEYCHAIN_PASSWORD }}" build.keychain
+
+          # Import provisioning profile
+          echo "${{ secrets.PROVISIONING_PROFILE_BASE64 }}" | base64 --decode > profile.mobileprovision
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
+
+      - name: Build Signed IPA
+        if: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+        run: |
+          cd ios
+          xcodebuild clean archive \
+            -project ARMSX2.xcodeproj \
+            -scheme ARMSX2 \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/ARMSX2.xcarchive \
+            CODE_SIGN_IDENTITY="iPhone Distribution" \
+            | xcpretty && exit ${PIPESTATUS[0]}
+
+          xcodebuild -exportArchive \
+            -archivePath build/ARMSX2.xcarchive \
+            -exportPath build \
+            -exportOptionsPlist ExportOptions.plist
+
+      - name: Upload Signed IPA
+        if: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: ARMSX2-iOS-signed
+          path: ios/build/*.ipa

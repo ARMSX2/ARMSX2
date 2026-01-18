@@ -139,7 +139,9 @@ extern "C" {
 }
 
 - (void *)allocateJITMemory:(size_t)size {
+#ifdef DEBUG
     NSLog(@"[ARMSX2-JIT] Allocating %zu bytes of JIT memory", size);
+#endif
 
     // Align to page size
     size_t pageSize = getpagesize();
@@ -156,7 +158,8 @@ extern "C" {
         return NULL;
     }
 
-    // Track allocation
+#ifdef DEBUG
+    // Track allocation (debug builds only for leak detection)
     dispatch_sync(self.jitQueue, ^{
         self.allocations[[NSValue valueWithPointer:memory]] = @(alignedSize);
         self.totalJITMemory += alignedSize;
@@ -164,6 +167,7 @@ extern "C" {
 
     NSLog(@"[ARMSX2-JIT] Allocated %zu bytes at %p (total: %zu bytes)",
           alignedSize, memory, self.totalJITMemory);
+#endif
 
     return memory;
 }
@@ -171,7 +175,9 @@ extern "C" {
 - (void)freeJITMemory:(void *)pointer size:(size_t)size {
     if (pointer == NULL) return;
 
+#ifdef DEBUG
     NSLog(@"[ARMSX2-JIT] Freeing JIT memory at %p", pointer);
+#endif
 
     // Align to page size
     size_t pageSize = getpagesize();
@@ -179,7 +185,8 @@ extern "C" {
 
     munmap(pointer, alignedSize);
 
-    // Update tracking
+#ifdef DEBUG
+    // Update tracking (debug builds only)
     dispatch_sync(self.jitQueue, ^{
         NSValue *key = [NSValue valueWithPointer:pointer];
         NSNumber *allocSize = self.allocations[key];
@@ -190,6 +197,7 @@ extern "C" {
     });
 
     NSLog(@"[ARMSX2-JIT] Freed memory (remaining: %zu bytes)", self.totalJITMemory);
+#endif
 }
 
 - (BOOL)makeMemoryExecutable:(void *)pointer size:(size_t)size {
@@ -250,12 +258,12 @@ extern "C" {
 
 - (void)flushInstructionCache:(void *)pointer size:(size_t)size {
     // Flush the instruction cache for the modified code
+    // Note: sys_icache_invalidate is sufficient; __builtin___clear_cache is redundant
     sys_icache_invalidate(pointer, size);
 
-    // Also use __builtin___clear_cache if available
-    __builtin___clear_cache((char *)pointer, (char *)pointer + size);
-
+#ifdef DEBUG
     NSLog(@"[ARMSX2-JIT] Flushed instruction cache for %zu bytes at %p", size, pointer);
+#endif
 }
 
 - (NSString *)statusDescription {
