@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- JIT Compilation Entitlement for iOS 26 -->
+	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
+	<true/>
+
+	<!-- Dynamic Code Generation - Required for JIT -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+
+	<!-- Allow dynamic code signing for JIT-compiled code -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+
+	<!-- Disable library validation for dynamic code -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+
+	<!-- Extended memory permissions for emulator -->
+	<key>com.apple.developer.memory.extended-permissions</key>
+	<array>
+		<string>jit-compilation</string>
+		<string>dynamic-code-generation</string>
+	</array>
+
+	<!-- File access for BIOS and game files -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+
+	<!-- Network for potential future features -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+
+	<!-- Audio playback -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>
