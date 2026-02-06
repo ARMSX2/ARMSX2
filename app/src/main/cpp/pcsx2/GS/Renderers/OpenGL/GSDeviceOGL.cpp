@@ -800,7 +800,8 @@ bool GSDeviceOGL::CheckFeatures(bool& buggy_pbo)
 		Console.WriteLn(Color_Yellow, "GL: Applying Mali-specific optimizations for tile-based rendering.");
 		// Enable early-Z and avoid unnecessary discard operations
 		m_features.prefer_new_textures = true;
-		// Mali benefits from reduced texture barrier usage due to tile memory
+        m_features.framebuffer_fetch = GLAD_GL_EXT_shader_pixel_local_storage | GLAD_GL_ARM_shader_framebuffer_fetch | GLAD_GL_EXT_shader_framebuffer_fetch;
+        // Mali benefits from reduced texture barrier usage due to tile memory
 		if (GSConfig.OverrideTextureBarriers == -1) // If not explicitly set
 		{
 			m_features.texture_barrier = m_features.framebuffer_fetch;

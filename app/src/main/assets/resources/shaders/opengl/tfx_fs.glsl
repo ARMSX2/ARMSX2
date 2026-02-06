@@ -79,7 +79,7 @@ in SHADER
 	// Basically the only scenario where this'll happen is RGBA masked and DATE is active.
 	#undef PS_NO_COLOR
 	#define PS_NO_COLOR 0
-	#if defined(GL_EXT_shader_framebuffer_fetch)
+	#if defined(GLAD_GL_EXT_shader_pixel_local_storage)
 		#undef TARGET_0_QUALIFIER
 		#define TARGET_0_QUALIFIER inout
 		#define LAST_FRAG_COLOR SV_Target0

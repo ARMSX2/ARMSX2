@@ -5518,6 +5518,10 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, const boo
 	const bool alpha_eq_one = alpha_c0_eq_one || alpha_c2_eq_one;
 	const bool alpha_high_one = alpha_c0_high_min_one || alpha_c2_high_one;
 	const bool alpha_eq_less_one = alpha_c0_eq_less_max_one || alpha_c2_eq_less_one;
+    const bool alpha_mali_custom_set = alpha_eq_less_one || alpha_c0_high_max_one;
+    const bool alpha_mali_custom_set_c0 = alpha_c0_eq_zero || alpha_c0_eq_one || alpha_c0_high_min_one || alpha_c0_high_max_one || alpha_c0_eq_less_max_one;
+    const bool alpha_mali_custom_set_c1 = alpha_c1_high_min_one || alpha_c1_high_max_one || alpha_c1_eq_less_max_one || alpha_c1_high_no_rta_correct;
+    const bool alpha_mali_custom_set_c2 = alpha_c2_eq_zero || alpha_c2_eq_one || alpha_c2_eq_less_one || alpha_c2_high_one;
 
 	// Optimize blending equations, must be done before index calculation
 	if ((m_conf.ps.blend_a == m_conf.ps.blend_b) || ((m_conf.ps.blend_b == m_conf.ps.blend_d) && alpha_eq_one))
@@ -5679,7 +5683,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, const boo
 				// Enable sw blending for barriers.
 				sw_blending |= blend_requires_barrier;
 				// Enable sw blending for free blending.
-				sw_blending |= free_blend;
+				sw_blending |= free_blend | alpha_mali_custom_set;
 				// Do not run BLEND MIX if sw blending is already present, it's less accurate.
 				blend_mix &= !sw_blending;
 				sw_blending |= blend_mix;
@@ -5720,7 +5724,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, const boo
 				// Enable sw blending for reading fb.
 				sw_blending |= prefer_sw_blend;
 				// Enable sw blending for free blending.
-				sw_blending |= free_blend;
+				sw_blending |= free_blend | alpha_mali_custom_set;
 				// Do not run BLEND MIX if sw blending is already present, it's less accurate.
 				blend_mix &= !sw_blending;
 				sw_blending |= blend_mix;

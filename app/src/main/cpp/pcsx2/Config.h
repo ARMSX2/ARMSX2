@@ -321,7 +321,7 @@ enum class BiFiltering : u8
 
 enum class TriFiltering : s8
 {
-	Automatic = -1,
+	Automatic,
 	Off,
 	PS2,
 	Forced,

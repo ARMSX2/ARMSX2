@@ -731,7 +731,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	OsdShowFPS = true;
 	OsdShowVPS = true;
 	OsdShowCPU = true;
-	OsdShowGPU = true;
+	OsdShowGPU = false;
 	OsdShowResolution = true;
 	OsdShowGSStats = false;
 	OsdShowIndicators = true;
