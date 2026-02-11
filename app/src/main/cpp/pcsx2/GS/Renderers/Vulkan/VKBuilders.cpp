@@ -716,6 +716,19 @@ void Vulkan::DescriptorSetUpdateBuilder::Update(VkDevice device, bool clear /*= 
 		Clear();
 }
 
+void Vulkan::DescriptorSetUpdateBuilder::UpdateToDescriptorSet(VkDevice device, VkDescriptorSet dst_set, bool clear /*= true*/)
+{
+    pxAssert(m_num_writes > 0);
+
+    for (u32 i = 0; i < m_num_writes; ++i)
+        m_writes[i].dstSet = dst_set;
+
+    vkUpdateDescriptorSets(device, m_num_writes, (m_num_writes > 0) ? m_writes.data() : nullptr, 0, nullptr);
+
+    if (clear)
+        Clear();
+}
+
 void Vulkan::DescriptorSetUpdateBuilder::PushUpdate(
 	VkCommandBuffer cmdbuf, VkPipelineBindPoint bind_point, VkPipelineLayout layout, u32 set, bool clear /*= true*/)
 {

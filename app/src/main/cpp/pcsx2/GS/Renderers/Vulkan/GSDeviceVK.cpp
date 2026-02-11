@@ -83,7 +83,6 @@ static std::mutex s_instance_mutex;
 
 // Device extensions that are required for PCSX2.
 static constexpr const char* s_required_device_extensions[] = {
-	VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
 	VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME,
 };
 
@@ -424,6 +423,7 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME, false);
 	m_optional_extensions.vk_ext_line_rasterization = SupportsExtension(VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME,
 		require_line_rasterization);
+	m_optional_extensions.vk_khr_push_descriptor = SupportsExtension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, false);
 	m_optional_extensions.vk_khr_driver_properties = SupportsExtension(VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME, false);
 
 	// glslang generates debug info instructions before phi nodes at the beginning of blocks when non-semantic debug info
@@ -754,19 +754,27 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		Vulkan::AddPointerToChain(&properties2, &m_device_driver_properties);
 	}
 
-	VkPhysicalDevicePushDescriptorPropertiesKHR push_descriptor_properties = {
-		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
-	Vulkan::AddPointerToChain(&properties2, &push_descriptor_properties);
-
-	// query
-	vkGetPhysicalDeviceProperties2(m_physical_device, &properties2);
-
-	// confirm we actually support it
-	if (push_descriptor_properties.maxPushDescriptors < NUM_TFX_TEXTURES)
+	if (m_optional_extensions.vk_khr_push_descriptor)
 	{
-		Console.Error("VK: maxPushDescriptors (%u) is below required (%u)", push_descriptor_properties.maxPushDescriptors,
-			NUM_TFX_TEXTURES);
-		return false;
+		VkPhysicalDevicePushDescriptorPropertiesKHR push_descriptor_properties = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
+		Vulkan::AddPointerToChain(&properties2, &push_descriptor_properties);
+
+		// query
+		vkGetPhysicalDeviceProperties2(m_physical_device, &properties2);
+
+		// If the device advertises fewer push descriptors than required, disable push-descriptor
+		// usage and continue with a fallback.
+		if (push_descriptor_properties.maxPushDescriptors < NUM_TFX_TEXTURES)
+		{
+			Console.Warning("VK: push descriptors available but maxPushDescriptors (%u) < required (%u). Disabling push descriptors.",
+				push_descriptor_properties.maxPushDescriptors, NUM_TFX_TEXTURES);
+			m_optional_extensions.vk_khr_push_descriptor = false;
+		}
+	}
+	else
+	{
+		vkGetPhysicalDeviceProperties2(m_physical_device, &properties2);
 	}
 
 	if (!line_rasterization_feature.bresenhamLines)
@@ -953,13 +961,18 @@ bool GSDeviceVK::CreateCommandBuffers()
 bool GSDeviceVK::CreateGlobalDescriptorPool()
 {
 	static constexpr const VkDescriptorPoolSize pool_sizes[] = {
-		{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 2},
-		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_COMBINED_IMAGE_SAMPLER_DESCRIPTORS_PER_FRAME },
+            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          MAX_SAMPLED_IMAGE_DESCRIPTORS_PER_FRAME },
+            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          MAX_STORAGE_IMAGE_DESCRIPTORS_PER_FRAME },
+            { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       MAX_INPUT_ATTACHMENT_IMAGE_DESCRIPTORS_PER_FRAME },
+            { VK_DESCRIPTOR_TYPE_SAMPLER,                MAX_COMBINED_IMAGE_SAMPLER_DESCRIPTORS_PER_FRAME },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, MAX_DESCRIPTOR_SETS_PER_FRAME },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         MAX_DESCRIPTOR_SETS_PER_FRAME }
 	};
 
 	VkDescriptorPoolCreateInfo pool_create_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr,
 		VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-		1024, // TODO: tweak this
+		MAX_DESCRIPTOR_SETS_PER_FRAME, // TODO: tweak this
 		static_cast<u32>(std::size(pool_sizes)), pool_sizes};
 
 	VkResult res = vkCreateDescriptorPool(m_device, &pool_create_info, nullptr, &m_global_descriptor_pool);
@@ -3782,7 +3795,8 @@ bool GSDeviceVK::CreatePipelineLayouts()
 	// Convert Pipeline Layout
 	//////////////////////////////////////////////////////////////////////////
 
-	dslb.SetPushFlag();
+	if (m_optional_extensions.vk_khr_push_descriptor)
+		dslb.SetPushFlag();
 	dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, NUM_UTILITY_SAMPLERS, VK_SHADER_STAGE_FRAGMENT_BIT);
 	if ((m_utility_ds_layout = dslb.Create(dev)) == VK_NULL_HANDLE)
 		return false;
@@ -3806,7 +3820,8 @@ bool GSDeviceVK::CreatePipelineLayouts()
 		return false;
 	Vulkan::SetObjectName(dev, m_tfx_ubo_ds_layout, "TFX UBO descriptor layout");
 
-	dslb.SetPushFlag();
+	if (m_optional_extensions.vk_khr_push_descriptor)
+		dslb.SetPushFlag();
 	dslb.AddBinding(TFX_TEXTURE_TEXTURE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 	dslb.AddBinding(TFX_TEXTURE_PALETTE, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 	dslb.AddBinding(TFX_TEXTURE_RT,
@@ -4365,7 +4380,8 @@ bool GSDeviceVK::CompileCASPipelines()
 	Vulkan::DescriptorSetLayoutBuilder dslb;
 	Vulkan::PipelineLayoutBuilder plb;
 
-	dslb.SetPushFlag();
+	if (m_optional_extensions.vk_khr_push_descriptor)
+		dslb.SetPushFlag();
 	dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
 	dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
 	if ((m_cas_ds_layout = dslb.Create(dev)) == VK_NULL_HANDLE)
@@ -4572,7 +4588,25 @@ bool GSDeviceVK::DoCAS(
 	Vulkan::DescriptorSetUpdateBuilder dsub;
 	dsub.AddImageDescriptorWrite(VK_NULL_HANDLE, 0, sTexVK->GetView(), sTexVK->GetVkLayout());
 	dsub.AddStorageImageDescriptorWrite(VK_NULL_HANDLE, 1, dTexVK->GetView(), dTexVK->GetVkLayout());
-	dsub.PushUpdate(cmdbuf, VK_PIPELINE_BIND_POINT_COMPUTE, m_cas_pipeline_layout, 0, false);
+	if (m_optional_extensions.vk_khr_push_descriptor)
+	{
+		dsub.PushUpdate(cmdbuf, VK_PIPELINE_BIND_POINT_COMPUTE, m_cas_pipeline_layout, 0, false);
+	}
+	else
+	{
+		VkDescriptorSet tmp = AllocatePersistentDescriptorSet(m_cas_ds_layout);
+		if (tmp != VK_NULL_HANDLE)
+		{
+			dsub.UpdateToDescriptorSet(m_device, tmp, true);
+			vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_COMPUTE, m_cas_pipeline_layout, 0, 1, &tmp, 0, nullptr);
+			FrameResources& fres = m_frame_resources[m_current_frame];
+			fres.cleanup_resources.push_back([this, tmp]() { vkFreeDescriptorSets(m_device, m_global_descriptor_pool, 1, &tmp); });
+		}
+		else
+		{
+			Console.Error("VK: Failed to allocate fallback descriptor set for CAS push-descriptor emulation.");
+		}
+	}
 
 	// the actual meat and potatoes! only four commands.
 	static const int threadGroupWorkRegionDim = 16;
@@ -5456,7 +5490,26 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 				m_tfx_textures[TFX_TEXTURE_PRIMID]->GetView(), m_tfx_textures[TFX_TEXTURE_PRIMID]->GetVkLayout());
 		}
 
-		dsub.PushUpdate(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout, TFX_DESCRIPTOR_SET_TEXTURES);
+		if (m_optional_extensions.vk_khr_push_descriptor)
+		{
+			dsub.PushUpdate(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout, TFX_DESCRIPTOR_SET_TEXTURES);
+		}
+		else
+		{
+			VkDescriptorSet tmp = AllocatePersistentDescriptorSet(m_tfx_texture_ds_layout);
+			if (tmp != VK_NULL_HANDLE)
+			{
+				dsub.UpdateToDescriptorSet(m_device, tmp, true);
+				vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout,
+					TFX_DESCRIPTOR_SET_TEXTURES, 1, &tmp, 0, nullptr);
+				FrameResources& fres = m_frame_resources[m_current_frame];
+				fres.cleanup_resources.push_back([this, tmp]() { vkFreeDescriptorSets(m_device, m_global_descriptor_pool, 1, &tmp); });
+			}
+			else
+			{
+				Console.Error("VK: Failed to allocate fallback descriptor set for TFX push-descriptor emulation.");
+			}
+		}
 	}
 
 	ApplyBaseState(flags, cmdbuf);
@@ -5479,7 +5532,25 @@ bool GSDeviceVK::ApplyUtilityState(bool already_execed)
 		Vulkan::DescriptorSetUpdateBuilder dsub;
 		dsub.AddCombinedImageSamplerDescriptorWrite(
 			VK_NULL_HANDLE, 0, m_utility_texture->GetView(), m_utility_sampler, m_utility_texture->GetVkLayout());
-		dsub.PushUpdate(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_utility_pipeline_layout, 0, false);
+		if (m_optional_extensions.vk_khr_push_descriptor)
+		{
+			dsub.PushUpdate(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_utility_pipeline_layout, 0, false);
+		}
+		else
+		{
+			VkDescriptorSet tmp = AllocatePersistentDescriptorSet(m_utility_ds_layout);
+			if (tmp != VK_NULL_HANDLE)
+			{
+				dsub.UpdateToDescriptorSet(m_device, tmp, true);
+				vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_utility_pipeline_layout, 0, 1, &tmp, 0, nullptr);
+				FrameResources& fres = m_frame_resources[m_current_frame];
+				fres.cleanup_resources.push_back([this, tmp]() { vkFreeDescriptorSets(m_device, m_global_descriptor_pool, 1, &tmp); });
+			}
+			else
+			{
+				Console.Error("VK: Failed to allocate fallback descriptor set for utility push-descriptor emulation.");
+			}
+		}
 	}
 
 

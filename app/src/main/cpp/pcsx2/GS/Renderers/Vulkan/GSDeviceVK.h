@@ -35,6 +35,7 @@ public:
 
 	struct OptionalExtensions
 	{
+		bool vk_khr_push_descriptor : 1;
 		bool vk_ext_provoking_vertex : 1;
 		bool vk_ext_memory_budget : 1;
 		bool vk_ext_calibrated_timestamps : 1;
@@ -208,6 +209,7 @@ private:
 	{
 		// [0] - Init (upload) command buffer, [1] - draw command buffer
 		VkCommandPool command_pool = VK_NULL_HANDLE;
+        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
 		std::array<VkCommandBuffer, 2> command_buffers{VK_NULL_HANDLE, VK_NULL_HANDLE};
 		VkFence fence = VK_NULL_HANDLE;
 		u64 fence_counter = 0;
