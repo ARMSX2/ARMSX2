@@ -63,6 +63,7 @@ namespace
 		{"UserHacks_CPUSpriteRenderLevel", GSHWFixId::CPUSpriteRenderLevel, GSUserHackOverride::CPUSpriteRenderLevel},
 		{"UserHacks_CPUCLUTRender", GSHWFixId::CPUCLUTRender, GSUserHackOverride::CPUCLUTRender},
 		{"UserHacks_GPUTargetCLUTMode", GSHWFixId::GPUTargetCLUT, GSUserHackOverride::GPUTargetCLUT},
+		{"UserHacks_RewriteLargeST", GSHWFixId::RewriteLargeST, GSUserHackOverride::RewriteLargeST},
 
 		// Settings the database contends that were never part of the user-hack
 		// vocabulary. They have no hack bit because MaskUserHacks() does not strip

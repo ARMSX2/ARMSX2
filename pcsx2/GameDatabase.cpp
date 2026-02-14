@@ -418,6 +418,7 @@ static const char* s_gs_hw_fix_names[] = {
 	"nativePaletteDraw",
 	"estimateTextureRegion",
 	"drawBuffering",
+	"rewriteLargeST",
 	"PCRTCOffsets",
 	"PCRTCOverscan",
 	"coalesceRenderPasses",
@@ -534,6 +535,8 @@ static std::optional<GSUserHackOverride> UserHackOverrideForHWFix(GameDatabaseSc
 			return GSUserHackOverride::CPUCLUTRender;
 		case GameDatabaseSchema::GSHWFixId::GPUTargetCLUT:
 			return GSUserHackOverride::GPUTargetCLUT;
+		case GameDatabaseSchema::GSHWFixId::RewriteLargeST:
+			return GSUserHackOverride::RewriteLargeST;
 		default:
 			return std::nullopt;
 	}
@@ -758,6 +761,9 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 
 		case GSHWFixId::DrawBuffering:
 			return (static_cast<int>(config.UserHacks_DrawBuffering) == value);
+		
+		case GSHWFixId::RewriteLargeST:
+			return (static_cast<int>(config.UserHacks_RewriteLargeST) == value);
 
 		case GSHWFixId::PCRTCOffsets:
 			return (static_cast<int>(config.PCRTCOffsets) == value);
@@ -970,6 +976,10 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 
 			case GSHWFixId::DrawBuffering:
 				config.UserHacks_DrawBuffering = (value > 0);
+				break;
+
+			case GSHWFixId::RewriteLargeST:
+				config.UserHacks_RewriteLargeST = (value > 0);
 				break;
 
 			case GSHWFixId::PCRTCOffsets:

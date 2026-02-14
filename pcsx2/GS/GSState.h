@@ -905,6 +905,9 @@ public:
 	bool SpriteUnionCoversDrawRect();
 	void CalculatePrimitiveCoversWithoutGaps();
 	GIFRegTEX0 GetTex0Layer(u32 lod);
+	template <u32 primclass>
+	void RewriteVerticesIfLargeSTImpl(const GSVector4& large_val, bool check_clamp_mode);
+	void RewriteVerticesIfLargeST(const GSVector4& large_val, bool check_clamp_mode);
 
 	// Side table for the two-pass kernel: the window position and the cull
 	// metadata of every vertex in a chunk, as two parallel arrays (see
