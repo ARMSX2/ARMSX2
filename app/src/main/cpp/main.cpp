@@ -1166,10 +1166,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     // fast_boot : (false: bios->game, true: direct-to-game)
     VMBootParameters boot_params;
     boot_params.filename = _szPath;
-    if (!_szPath.empty())
-        boot_params.fast_boot = true;
-    else
-        boot_params.fast_boot = false;
 
     if (!VMManager::Internal::CPUThreadInitialize()) {
         VMManager::Internal::CPUThreadShutdown();

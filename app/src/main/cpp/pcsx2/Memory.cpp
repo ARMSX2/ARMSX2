@@ -461,8 +461,8 @@ void memMapVUmicro()
 	// Note: In order for the below conditional to work correctly
 	// support needs to be coded to reset the memMappings when MTVU is
 	// turned off/on. For now we just always use the vu data handlers...
-	if (1||THREAD_VU1) vtlb_MapHandler(vu1_data_mem,0x1100c000,0x00004000);
-	else               vtlb_MapBlock  (VU1.Mem,     0x1100c000,0x00004000);
+	if (THREAD_VU1) vtlb_MapHandler(vu1_data_mem,0x1100c000,0x00004000);
+	else            vtlb_MapBlock  (VU1.Mem,     0x1100c000,0x00004000);
 }
 
 void memMapPhy()
