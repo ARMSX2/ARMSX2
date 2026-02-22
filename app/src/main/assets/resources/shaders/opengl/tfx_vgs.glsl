@@ -77,10 +77,9 @@ void vs_main()
 #if HAS_CLIP_CONTROL
     gl_Position.z = float(z) * exp_min32;
 #else
-    // GLES doesn't support ARB_clip_control, so remap it to -1..1.
-    //exp2(-31.0f) to fix transparency issues on close objects
-    float depth = clamp(float(z) * exp2(-31.0f), 0.0f, 1.0f);
-    gl_Position.z = depth * 2.0f - 1.0f;
+    // GLES doesn't support ARB_clip_control, so remap it to -1..1. This isn't lossless, but
+    // gets rid of really bad Z-fighting.
+    gl_Position.z = min(float(z) * exp2(-23.0f), 2.0f) - 1.0f;
 #endif
 
 	texture_coord();
