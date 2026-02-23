@@ -415,15 +415,12 @@ mVUop(mVU_EEXP)
 // sumXYZ(): PQ.x = x ^ 2 + y ^ 2 + z ^ 2
 static __fi void mVU_sumXYZ(mV, const xmm& PQ, const xmm& Fs)
 {
-    // [x^2, y^2, z^2, w^2]
+//	xDP.PS(Fs, Fs, 0x71);
+//	xMOVSS(PQ, Fs);
+
     armAsm->Fmul(PQ.V4S(), Fs.V4S(), Fs.V4S());
-
-    // X + Y
-    armAsm->Faddp(PQ.V2S(), PQ.V2S(), PQ.V2S()); // PQ.S[0] = x^2 + y^2
-
-    // Move Z^2 (PQ.S[2])
-    armAsm->Dup(RQSCRATCH.V4S(), PQ.V4S(), 2);   // RQSCRATCH.S[0] = z^2
-    armAsm->Fadd(PQ.S(), PQ.S(), RQSCRATCH.S()); // PQ.S[0] = x^2 + y^2 + z^2
+    armAsm->Faddp(PQ.V4S(), PQ.V4S(), PQ.V4S());
+    armAsm->Faddp(PQ.S(), PQ.V2S());
 }
 
 mVUop(mVU_ELENG)
