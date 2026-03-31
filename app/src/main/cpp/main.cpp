@@ -1232,7 +1232,9 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_shutdown(JNIEnv *env, jclass clazz) {
     std::thread([] {
-        VMManager::SetState(VMState::Stopping);
+        const VMState state = VMManager::GetState();
+        if (state != VMState::Shutdown && state != VMState::Stopping)
+            VMManager::SetState(VMState::Stopping);
     }).detach();
 }
 
