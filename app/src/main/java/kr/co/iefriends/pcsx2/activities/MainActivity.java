@@ -164,16 +164,11 @@ public class MainActivity extends AppCompatActivity {
     Uri gamesFolderUri;
     CoverManager mCoverManager;
     private boolean storagePromptShown = false;
-    private String pendingChdCachePath;
-    private String pendingChdDisplayName;
-    private Uri pendingChdSourceUri;
-    private String pendingChdSourceSerial;
-    private String pendingChdSourceTitle;
+    // CHD pending state lives in ChdConversionManager
     private AlertDialog dataDirProgressDialog;
     static final String PREFS = "armsx2";
     static final String PREF_GAMES_URI = "games_folder_uri";
-    private static final String PREF_CHD_SERIAL_PREFIX = "chd_serial:";
-    private static final String PREF_CHD_TITLE_PREFIX = "chd_title:";
+    // CHD prefix constants live in ChdConversionManager
     private static final String PREF_ONBOARDING_COMPLETE = "onboarding_complete";
     private static final String PREF_ONSCREEN_UI_STYLE = "on_screen_ui_style";
     private static final String PREF_UI_SCALE_MULTIPLIER = "onscreen_ui_scale_multiplier";
@@ -193,6 +188,7 @@ public class MainActivity extends AppCompatActivity {
     PerGameSettingsManager mPerGameSettingsManager;
     ContentImportHelper mContentImportHelper;
     ControllerManager mControllerManager;
+    ChdConversionManager mChdConversionManager;
 
     // Auto-hide state
     private enum InputSource { TOUCH, CONTROLLER }
@@ -264,70 +260,12 @@ public class MainActivity extends AppCompatActivity {
 
 
     @Nullable
-    private static String stripFileExtension(@Nullable String name) {
-        if (TextUtils.isEmpty(name)) {
-            return name;
-        }
-        int dot = name.lastIndexOf('.');
-        return dot > 0 ? name.substring(0, dot) : name;
-    }
-
-    private static String makeChdMetadataKey(@NonNull String prefix, @NonNull Uri uri) {
-        return prefix + uri.toString();
-    }
-
-    private void persistChdMetadata(@Nullable Uri uri, @Nullable String serial, @Nullable String title) {
-        if (uri == null) {
-            return;
-        }
-        android.content.SharedPreferences.Editor editor = getSharedPreferences(PREFS, MODE_PRIVATE).edit();
-        String serialValue = TextUtils.isEmpty(serial) ? null : serial.trim();
-        String titleValue = TextUtils.isEmpty(title) ? null : title.trim();
-        String serialKey = makeChdMetadataKey(PREF_CHD_SERIAL_PREFIX, uri);
-        String titleKey = makeChdMetadataKey(PREF_CHD_TITLE_PREFIX, uri);
-        if (TextUtils.isEmpty(serialValue)) {
-            editor.remove(serialKey);
-        } else {
-            editor.putString(serialKey, serialValue);
-        }
-        if (TextUtils.isEmpty(titleValue)) {
-            editor.remove(titleKey);
-        } else {
-            editor.putString(titleKey, titleValue);
-        }
-        editor.apply();
-    }
-
-    @Nullable
-    static Pair<String, String> getPersistedChdMetadata(@Nullable Context ctx, @Nullable Uri uri) {
-        if (ctx == null || uri == null) {
-            return null;
-        }
-        Context appCtx = ctx.getApplicationContext() != null ? ctx.getApplicationContext() : ctx;
-        android.content.SharedPreferences prefs = appCtx.getSharedPreferences(PREFS, MODE_PRIVATE);
-        String serial = prefs.getString(makeChdMetadataKey(PREF_CHD_SERIAL_PREFIX, uri), null);
-        String title = prefs.getString(makeChdMetadataKey(PREF_CHD_TITLE_PREFIX, uri), null);
-        if (TextUtils.isEmpty(serial) && TextUtils.isEmpty(title)) {
-            return null;
-        }
-        return new Pair<>(serial, title);
-    }
-
-    static boolean isChdEntry(@Nullable Uri uri, @Nullable String title) {
-        String lowerTitle = title != null ? title.toLowerCase(Locale.US) : "";
-        if (lowerTitle.endsWith(".chd")) {
-            return true;
-        }
-        if (uri == null) {
-            return false;
-        }
-        String last = uri.getLastPathSegment();
-        if (last != null && last.toLowerCase(Locale.US).endsWith(".chd")) {
-            return true;
-        }
-        String uriString = uri.toString().toLowerCase(Locale.US);
-        return uriString.endsWith(".chd") || uriString.contains(".chd?");
-    }
+    // region CHD metadata — delegated to ChdConversionManager
+    private static String stripFileExtension(@Nullable String name) { return ChdConversionManager.stripFileExtension(name); }
+    @Nullable static Pair<String, String> getPersistedChdMetadata(@Nullable Context ctx, @Nullable Uri uri) { return ChdConversionManager.getPersistedChdMetadata(ctx, uri); }
+    static boolean isChdEntry(@Nullable Uri uri, @Nullable String title) { return ChdConversionManager.isChdEntry(uri, title); }
+    private void persistChdMetadata(@Nullable Uri uri, @Nullable String serial, @Nullable String title) { mChdConversionManager.persistChdMetadata(uri, serial, title); }
+    // endregion CHD metadata
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -338,6 +276,7 @@ public class MainActivity extends AppCompatActivity {
         mPerGameSettingsManager = new PerGameSettingsManager(this);
         mContentImportHelper = new ContentImportHelper(this);
         mControllerManager = new ControllerManager(this);
+        mChdConversionManager = new ChdConversionManager(this);
         NetworkAdapterCollector.collectAdapters();
         DiscordBridge.updateEngineActivity(this);
         ControllerManager.setInstance(this);
@@ -740,56 +679,10 @@ public class MainActivity extends AppCompatActivity {
             });
 
     private final ActivityResultLauncher<Intent> startActivityResultSaveChd = registerForActivityResult(
-            new ActivityResultContracts.StartActivityForResult(), result -> {
-                if (pendingChdCachePath == null) {
-                    android.util.Log.w("ARMSX2_CHD", "Save handler invoked with no pending CHD path");
-                    return;
-                }
+            new ActivityResultContracts.StartActivityForResult(), result ->
+                    mChdConversionManager.handleSaveChdResult(result.getResultCode(), result.getData()));
 
-                File chdFile = new File(pendingChdCachePath);
-                String cachePath = pendingChdCachePath;
-                pendingChdCachePath = null;
-                String displayName = pendingChdDisplayName;
-                pendingChdDisplayName = null;
-                Uri sourceUri = pendingChdSourceUri;
-                pendingChdSourceUri = null;
-                String sourceSerial = pendingChdSourceSerial;
-                pendingChdSourceSerial = null;
-                String sourceTitle = pendingChdSourceTitle;
-                pendingChdSourceTitle = null;
-
-                if (!chdFile.exists()) {
-                    android.util.Log.e("ARMSX2_CHD", "Pending CHD file missing from cache: " + cachePath);
-                    showConversionResult(false, "Could not locate the converted CHD file. Please try converting again.");
-                    return;
-                }
-
-                if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null && result.getData().getData() != null) {
-                    Uri destinationUri = result.getData().getData();
-                    android.util.Log.d("ARMSX2_CHD", "User selected destination URI: " + destinationUri);
-                    boolean saved = saveChdToUri(chdFile, destinationUri);
-                    if (saved) {
-                        String destinationDisplayName = queryOpenableDisplayName(destinationUri);
-                        String persistedTitle = !TextUtils.isEmpty(sourceTitle) ? sourceTitle : stripFileExtension(destinationDisplayName);
-                        persistChdMetadata(destinationUri, sourceSerial, persistedTitle);
-                        carryCoverAssociationAfterChdSave(
-                                sourceUri, destinationUri, displayName, destinationDisplayName, sourceSerial, persistedTitle);
-                        if (!chdFile.delete()) {
-                            android.util.Log.w("ARMSX2_CHD", "Failed to delete cached CHD after saving: " + cachePath);
-                        } else {
-                            android.util.Log.d("ARMSX2_CHD", "Deleted cached CHD after successful save");
-                        }
-                        showConversionResult(true, "CHD saved to the selected location.");
-                    } else {
-                        showConversionResult(false, "Failed to save CHD. The converted file is still available in the app cache:\n" + cachePath);
-                    }
-                } else {
-                    android.util.Log.i("ARMSX2_CHD", "User cancelled CHD save dialog");
-                    showConversionResult(false, "Save cancelled. The converted CHD remains in the app cache:\n" + cachePath);
-                }
-            });
-
-    private void carryCoverAssociationAfterChdSave(@Nullable Uri sourceUri,
+    void carryCoverAssociationAfterChdSave(@Nullable Uri sourceUri,
                                                    @Nullable Uri destinationUri,
                                                    @Nullable String sourceDisplayName,
                                                    @Nullable String destinationDisplayName,
@@ -2703,16 +2596,6 @@ public class MainActivity extends AppCompatActivity {
         restartEmuThread();
     }
 
-    private String queryOpenableDisplayName(@NonNull Uri uri) {
-        try (android.database.Cursor c = getContentResolver().query(uri, new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
-            if (c != null && c.moveToFirst()) {
-                int idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
-                if (idx >= 0) return c.getString(idx);
-            }
-        } catch (Exception ignored) {}
-        return null;
-    }
-
     private String copyToCache(@NonNull Uri uri, @NonNull String fileName) {
         java.io.InputStream in = null;
         java.io.FileOutputStream out = null;
@@ -2987,285 +2870,25 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private final ActivityResultLauncher<Intent> startActivityResultPickIso = registerForActivityResult(
-            new ActivityResultContracts.StartActivityForResult(), result -> {
-                if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null && result.getData().getData() != null) {
-                    Uri uri = result.getData().getData();
-                    String name = queryOpenableDisplayName(uri);
-                    String low = name != null ? name.toLowerCase() : uri.toString().toLowerCase();
-                    if (!low.endsWith(".iso")) {
-                        try { new MaterialAlertDialogBuilder(this).setTitle("Not an ISO").setMessage("Please select a .iso file.").setPositiveButton("OK", (d,w)-> d.dismiss()).show(); } catch (Throwable ignored) {}
-                        return;
-                    }
-                    performIsoToChd(uri, name);
-                }
-            });
+            new ActivityResultContracts.StartActivityForResult(), result ->
+                    mChdConversionManager.handlePickIsoResult(result.getResultCode(), result.getData()));
 
-    private void startPickIsoForChd() {
-        try {
-            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            i.addCategory(Intent.CATEGORY_OPENABLE);
-            // ENSURE we find this shit
-            i.setType("*/*");
-            String[] mimeTypes = {
-                "application/octet-stream",
-                "application/x-iso9660-image", 
-                "application/x-cd-image",
-                "application/x-raw-disk-image"
-            };
-            i.putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes);
-            startActivityResultPickIso.launch(i);
-        } catch (Throwable t) {
-            try { Toast.makeText(this, R.string.home_unable_open_file_picker, Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
-        }
-    }
+    // region CHD conversion — delegated to ChdConversionManager
+    private void startPickIsoForChd() { mChdConversionManager.startPickIsoForChd(); }
+    void launchIsoPickerIntent(Intent i) { startActivityResultPickIso.launch(i); }
+    void launchSaveChdIntent(Intent i) { startActivityResultSaveChd.launch(i); }
+    private String queryOpenableDisplayName(Uri uri) { return mChdConversionManager.queryOpenableDisplayName(uri); }
 
     private void performIsoToChd(Uri isoUri, String isoDisplayName) {
-        if (!NativeApp.hasNativeTools) {
-            String errorMsg = "ARMSX2 Native Tools library could not be called, it was probably not bundled with the app please rebuild the app with the library in place.";
-            android.util.Log.e("ARMSX2_CHD", "Library not available: " + errorMsg);
-            try {
-                new MaterialAlertDialogBuilder(this)
-                        .setTitle("Library Not Available")
-                        .setMessage(errorMsg)
-                        .setPositiveButton("OK", (d, w) -> d.dismiss())
-                        .show();
-            } catch (Throwable ignored) {}
-            return;
-        }
-
-        new Thread(() -> {
-            String inputPath = null;
-            String outputPath = null;
-            String resultMessage = null;
-            boolean success = false;
-            String sourceTitle = stripFileExtension(isoDisplayName);
-            if (TextUtils.isEmpty(sourceTitle) && isoUri != null) {
-                sourceTitle = stripFileExtension(isoUri.getLastPathSegment());
-            }
-            String sourceSerial = GameScanner.parseSerialFromString(sourceTitle);
-
-            try {
-                if (TextUtils.isEmpty(sourceSerial)) {
-                    try {
-                        sourceSerial = GameScanner.tryExtractIsoSerial(getContentResolver(), isoUri);
-                    } catch (Throwable ignored) {}
-                }
-
-                // Get real file path from URI
-                android.util.Log.i("ARMSX2_CHD", "Starting ISO to CHD conversion for: " + isoDisplayName);
-                android.util.Log.i("ARMSX2_CHD", "Input URI: " + isoUri.toString());
-                
-                inputPath = getFilePathFromUri(isoUri);
-                if (inputPath == null) {
-                    resultMessage = "Could not access the selected ISO file. Please ensure the file is accessible.";
-                    android.util.Log.e("ARMSX2_CHD", "Failed to get file path from URI: " + isoUri.toString());
-                    return;
-                }
-                android.util.Log.i("ARMSX2_CHD", "Input path resolved to: " + inputPath);
-
-                // Generate output CHD path to match what Rust will create 
-                outputPath = inputPath.replaceAll("\\.iso$", ".chd");
-                android.util.Log.i("ARMSX2_CHD", "Expected output path: " + outputPath);
-
-                // Call native conversion 
-                android.util.Log.i("ARMSX2_CHD", "Calling native conversion...");
-                try {
-                    android.util.Log.d("ARMSX2_CHD", "Input path bytes: " + java.util.Arrays.toString(inputPath.getBytes("UTF-8")));
-                    android.util.Log.d("ARMSX2_CHD", "Input path length: " + inputPath.length());
-                    android.util.Log.d("ARMSX2_CHD", "Input path string: '" + inputPath + "'");
-                } catch (java.io.UnsupportedEncodingException e) {
-                    android.util.Log.e("ARMSX2_CHD", "Failed to encode path as UTF-8: " + e.getMessage());
-                }
-                int result = NativeApp.convertIsoToChd(inputPath);
-                android.util.Log.i("ARMSX2_CHD", "Native conversion returned code: " + result);
-                
-                success = handleConversionResult(result, inputPath, outputPath);
-                
-                if (success) {
-                    final String chdCachePath = outputPath;
-                    final String chdDisplayName = isoDisplayName;
-                    final String finalSourceSerial = sourceSerial;
-                    final String finalSourceTitle = sourceTitle;
-                    android.util.Log.i("ARMSX2_CHD", "Conversion succeeded. Prompting user to choose CHD save location.");
-                    runOnUiThread(() -> promptForChdSave(
-                            chdCachePath, chdDisplayName, isoUri, finalSourceSerial, finalSourceTitle));
-                    resultMessage = null;
-                } else {
-                    resultMessage = getErrorMessage(result) + "\n\nInput: " + inputPath + "\nOutput: " + outputPath;
-                    android.util.Log.e("ARMSX2_CHD", "Conversion failed with code " + result + ": " + getErrorMessage(result));
-                    android.util.Log.e("ARMSX2_CHD", "Input: " + inputPath);
-                    android.util.Log.e("ARMSX2_CHD", "Output: " + outputPath);
-                }
-
-            } catch (Throwable e) {
-                resultMessage = "Conversion failed with exception: " + e.getMessage() + 
-                              "\n\nInput: " + inputPath + "\nOutput: " + outputPath;
-                android.util.Log.e("ARMSX2_CHD", "Conversion exception: " + e.getClass().getSimpleName() + ": " + e.getMessage(), e);
-                android.util.Log.e("ARMSX2_CHD", "Input: " + inputPath);
-                android.util.Log.e("ARMSX2_CHD", "Output: " + outputPath);
-            } finally {
-                if (inputPath != null) {
-                    File tempFile = new File(inputPath);
-                    if (tempFile.exists() && tempFile.getParent().equals(getCacheDir().getAbsolutePath())) {
-                        if (tempFile.delete()) {
-                            android.util.Log.d("ARMSX2_CHD", "Cleaned up temporary file: " + inputPath);
-                        } else {
-                            android.util.Log.w("ARMSX2_CHD", "Failed to clean up temporary file: " + inputPath);
-                        }
-                    }
-                }
-                
-                final String finalMessage = resultMessage;
-                final boolean finalSuccess = success;
-                runOnUiThread(() -> {
-                    if (finalMessage != null) {
-                        showConversionResult(finalSuccess, finalMessage);
-                    }
-                });
-            }
-        }, "IsoToChdConverter").start();
+        // Note: performIsoToChd stays in ChdConversionManager; this stub kept for 
+        // the inline lambda in startActivityResultPickIso which calls it via handlePickIsoResult.
+        // This method is not called directly anymore.
     }
-
-    private String getFilePathFromUri(Uri uri) {
-        android.util.Log.d("ARMSX2_CHD", "getFilePathFromUri called with: " + uri.toString());
-        try {
-            // Get display name from content resolver
-            android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null);
-            if (cursor != null) {
-                try {
-                    if (cursor.moveToFirst()) {
-                        int displayNameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
-                        if (displayNameIndex >= 0) {
-                            String displayName = cursor.getString(displayNameIndex);
-                            
-                            File cacheDir = getCacheDir();
-                            File tempFile = new File(cacheDir, displayName);
-                            android.util.Log.d("ARMSX2_CHD", "Creating temporary file: " + tempFile.getAbsolutePath());
-                            
-                            try (java.io.InputStream input = getContentResolver().openInputStream(uri);
-                                 java.io.FileOutputStream output = new java.io.FileOutputStream(tempFile)) {
-                                
-                                if (input != null) {
-                                    byte[] buffer = new byte[8192];
-                                    int bytesRead;
-                                    long totalBytes = 0;
-                                    while ((bytesRead = input.read(buffer)) != -1) {
-                                        output.write(buffer, 0, bytesRead);
-                                        totalBytes += bytesRead;
-                                    }
-                                    android.util.Log.d("ARMSX2_CHD", "Copied " + totalBytes + " bytes to cache");
-                                    return tempFile.getAbsolutePath();
-                                }
-                            }
-                        }
-                    }
-                } finally {
-                    cursor.close();
-                }
-            }
-        } catch (Throwable e) {
-            android.util.Log.e("ARMSX2_CHD", "Exception in getFilePathFromUri: " + e.getMessage(), e);
-        }
-        android.util.Log.w("ARMSX2_CHD", "getFilePathFromUri returning null - failed to resolve path");
-        return null;
+    private void promptForChdSave(String chdCachePath, String displayName, @Nullable Uri sourceUri, @Nullable String sourceSerial, @Nullable String sourceTitle) {
+        mChdConversionManager.promptForChdSave(chdCachePath, displayName, sourceUri, sourceSerial, sourceTitle);
     }
-
-    private void promptForChdSave(String chdCachePath,
-                                  String displayName,
-                                  @Nullable Uri sourceUri,
-                                  @Nullable String sourceSerial,
-                                  @Nullable String sourceTitle) {
-        File chdFile = new File(chdCachePath);
-        if (!chdFile.exists()) {
-            android.util.Log.e("ARMSX2_CHD", "CHD file missing in cache, cannot prompt for save: " + chdCachePath);
-            showConversionResult(false, "Converted file could not be found. Please try converting again.");
-            return;
-        }
-
-        pendingChdCachePath = chdCachePath;
-        pendingChdDisplayName = displayName;
-        pendingChdSourceUri = sourceUri;
-        pendingChdSourceSerial = sourceSerial;
-        pendingChdSourceTitle = sourceTitle;
-
-        String baseName = displayName;
-        if (baseName == null || baseName.trim().isEmpty()) {
-            baseName = chdFile.getName();
-        }
-        String lower = baseName.toLowerCase(Locale.US);
-        if (lower.endsWith(".iso")) {
-            baseName = baseName.substring(0, baseName.length() - 4);
-            lower = baseName.toLowerCase(Locale.US);
-        }
-        if (!lower.endsWith(".chd")) {
-            baseName = baseName + ".chd";
-        }
-
-        android.util.Log.d("ARMSX2_CHD", "Prompting user to save CHD as: " + baseName);
-
-        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("application/octet-stream");
-        intent.putExtra(Intent.EXTRA_TITLE, baseName);
-
-        startActivityResultSaveChd.launch(intent);
-    }
-
-    private boolean saveChdToUri(File chdFile, Uri destinationUri) {
-        android.util.Log.d("ARMSX2_CHD", "Saving CHD from cache to destination: " + destinationUri);
-        try (java.io.FileInputStream input = new java.io.FileInputStream(chdFile);
-             java.io.OutputStream output = getContentResolver().openOutputStream(destinationUri, "w")) {
-
-            if (output == null) {
-                android.util.Log.e("ARMSX2_CHD", "Content resolver returned null output stream for destination");
-                return false;
-            }
-
-            byte[] buffer = new byte[8192];
-            int bytesRead;
-            long totalBytes = 0;
-            while ((bytesRead = input.read(buffer)) != -1) {
-                output.write(buffer, 0, bytesRead);
-                totalBytes += bytesRead;
-            }
-            output.flush();
-            android.util.Log.d("ARMSX2_CHD", "Wrote " + totalBytes + " bytes to destination URI");
-            return true;
-        } catch (Throwable e) {
-            android.util.Log.e("ARMSX2_CHD", "Failed to copy CHD to destination: " + e.getMessage(), e);
-            return false;
-        }
-    }
-
-    private boolean handleConversionResult(int result, String inputPath, String outputPath) {
-        return result == 0; // All good!
-    }
-
-    private String getErrorMessage(int errorCode) {
-        switch (errorCode) {
-            case -1: return "Error: Null pointer provided to conversion function";
-            case -2: return "Error: Invalid UTF-8 encoding in file paths";
-            case -3: return "Error: Input ISO file not found";
-            case -4: return "Error: Input path is not a regular file";
-            case -5: return "Error: Failed to create output CHD file";
-            case -6: return "Error: I/O error during conversion";
-            case -7: return "Error: Too many hunks for CHD format";
-            case -8: return "Error: Numeric overflow during conversion";
-            case -9: return "Error: Unexpected end of ISO data";
-            case -100: return "Error: Internal conversion error";
-            default: return "Error: Unknown conversion error (code: " + errorCode + ")";
-        }
-    }
-
-    private void showConversionResult(boolean success, String message) {
-        try {
-            new MaterialAlertDialogBuilder(this)
-                    .setTitle(success ? "Conversion Successful" : "Conversion Failed")
-                    .setMessage(message)
-                    .setPositiveButton("OK", (d, w) -> d.dismiss())
-                    .show();
-        } catch (Throwable ignored) {}
-    }
+    private boolean saveChdToUri(File chdFile, Uri destinationUri) { return mChdConversionManager.saveChdToUri(chdFile, destinationUri); }
+    private void showConversionResult(boolean success, String message) { }
 
     private void loadHideTimeoutFromPrefs() {
         try {
