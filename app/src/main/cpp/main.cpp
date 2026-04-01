@@ -245,6 +245,8 @@ bool s_execute_exit;
 int s_window_width = 0;
 int s_window_height = 0;
 ANativeWindow* s_window = nullptr;
+static jobject s_java_surface = nullptr;
+static JavaVM* s_jvm = nullptr;
 
 static std::unique_ptr<INISettingsInterface> s_settings_interface;
 static bool IsFullscreenUIEnabled()
@@ -769,17 +771,16 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_renderGpu(JNIEnv *env, jclass clazz,
                                                jint p_value) {
-    EmuConfig.GS.Renderer = static_cast<GSRendererType>(p_value);
-    GSConfig.Renderer = static_cast<GSRendererType>(p_value);
-
-    VMManager::ApplySettings();
-    if (MTGS::IsOpen())
-        MTGS::ApplySettings();
     if (s_settings_interface)
     {
         s_settings_interface->SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(p_value));
         s_settings_interface->Save();
     }
+
+    EmuConfig.GS.Renderer = static_cast<GSRendererType>(p_value);
+
+    if (MTGS::IsOpen())
+        MTGS::ApplySettings();
 }
 
 extern "C"
@@ -956,13 +957,22 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_onNativeSurfaceChanged(JNIEnv *env, jclass clazz,
                                                             jobject p_surface, jint p_width, jint p_height) {
+    if (!s_jvm)
+        env->GetJavaVM(&s_jvm);
+
     if(s_window) {
         ANativeWindow_release(s_window);
         s_window = nullptr;
     }
 
+    if (s_java_surface) {
+        env->DeleteGlobalRef(s_java_surface);
+        s_java_surface = nullptr;
+    }
+
     if(p_surface != nullptr) {
         s_window = ANativeWindow_fromSurface(env, p_surface);
+        s_java_surface = env->NewGlobalRef(p_surface);
     }
 
     if(p_width > 0 && p_height > 0) {
@@ -981,11 +991,41 @@ Java_kr_co_iefriends_pcsx2_NativeApp_onNativeSurfaceDestroyed(JNIEnv *env, jclas
         ANativeWindow_release(s_window);
         s_window = nullptr;
     }
+    if (s_java_surface) {
+        env->DeleteGlobalRef(s_java_surface);
+        s_java_surface = nullptr;
+    }
 }
 
 
 std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
 {
+    if (recreate_window && s_java_surface && s_jvm) {
+        JNIEnv* env = nullptr;
+        bool attached = false;
+        int status = s_jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+        if (status == JNI_EDETACHED) {
+            if (s_jvm->AttachCurrentThread(&env, nullptr) == JNI_OK)
+                attached = true;
+            else
+                env = nullptr;
+        }
+
+        if (env) {
+            if (s_window) {
+                ANativeWindow_release(s_window);
+                s_window = nullptr;
+            }
+            s_window = ANativeWindow_fromSurface(env, s_java_surface);
+        }
+
+        if (attached)
+            s_jvm->DetachCurrentThread();
+    }
+
+    if (!s_window)
+        return std::nullopt;
+
     float _fScale = 1.0;
     if (s_window_width > 0 && s_window_height > 0) {
         int _nSize = s_window_width;
@@ -994,7 +1034,7 @@ std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
         }
         _fScale = (float)_nSize / 800.0f;
     }
-    ////
+
     WindowInfo _windowInfo;
     memset(&_windowInfo, 0, sizeof(_windowInfo));
     _windowInfo.type = WindowInfo::Type::Android;
@@ -1007,7 +1047,6 @@ std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
 }
 
 void Host::ReleaseRenderWindow() {
-
 }
 
 static s32 s_loop_count = 1;

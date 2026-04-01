@@ -135,15 +135,12 @@ public class MainActivity extends AppCompatActivity {
     private FloatingActionButton drawerToggle;
     private FloatingActionButton drawerPauseButton;
     private FloatingActionButton drawerFastForwardButton;
-    // drawerWidescreenSwitch lives in DrawerSettingsManager
     BiosManager mBiosManager;
     RetroAchievementsManager mRetroAchievementsManager;
     boolean isVmPaused = false;
     private final Runnable hideDrawerToggleRunnable = () -> hideDrawerToggle();
     private boolean isFastForwardEnabled = false;
-    // drawerWidescreenListener lives in DrawerSettingsManager
 
-    // Rumble/vibration state lives in ControllerManager
 
     // Home UI
     private DrawerLayout drawerLayout;
@@ -159,18 +156,11 @@ public class MainActivity extends AppCompatActivity {
     private boolean listMode = false;
     Uri gamesFolderUri;
     CoverManager mCoverManager;
-    // storagePromptShown lives in DataDirectorySetupManager
-    // CHD pending state lives in ChdConversionManager
-    // dataDirProgressDialog lives in DataDirectorySetupManager
     static final String PREFS = "armsx2";
     static final String PREF_GAMES_URI = "games_folder_uri";
-    // CHD prefix constants live in ChdConversionManager
-    // On-screen UI style/scale constants live in OnScreenUiStyleManager
     // Preflight
     private Uri pendingGameUri = null;
     private int pendingLaunchRetries = 0;
-    // onboardingLaunched / postOnboardingChecksRun live in DataDirectorySetupManager
-    // currentOnScreenUiStyle / onScreenUiScaleMultiplier live in OnScreenUiStyleManager
     float faceButtonsBaseScale = 1.0f;
 
     PerGameSettingsManager mPerGameSettingsManager;
@@ -191,8 +181,6 @@ public class MainActivity extends AppCompatActivity {
     private long hideDelayMs = 2500L;
     private static final String PREF_HIDE_CONTROLS_SECONDS = "onscreen_timeout_seconds";
 
-    // ANALOG_DEADZONE / TRIGGER_DEADZONE live in ControllerManager
-    // analogStates / hat state live in ControllerManager
     private boolean disableTouchControls;
 
     public static final String EXTRA_SETTINGS_LAYOUT_CHANGED = "SET_LAYOUT_CHANGED";
@@ -252,12 +240,10 @@ public class MainActivity extends AppCompatActivity {
 
 
     @Nullable
-    // region CHD metadata — delegated to ChdConversionManager
     private static String stripFileExtension(@Nullable String name) { return ChdConversionManager.stripFileExtension(name); }
     @Nullable static Pair<String, String> getPersistedChdMetadata(@Nullable Context ctx, @Nullable Uri uri) { return ChdConversionManager.getPersistedChdMetadata(ctx, uri); }
     static boolean isChdEntry(@Nullable Uri uri, @Nullable String title) { return ChdConversionManager.isChdEntry(uri, title); }
     private void persistChdMetadata(@Nullable Uri uri, @Nullable String serial, @Nullable String title) { mChdConversionManager.persistChdMetadata(uri, serial, title); }
-    // endregion CHD metadata
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -312,7 +298,6 @@ public class MainActivity extends AppCompatActivity {
     loadHideTimeoutFromPrefs();
 
     mOnScreenUiStyleManager.loadScalePreference();
-    // style already resolved in constructor
         if (!disableTouchControls) {
             makeButtonTouch();
         }
@@ -636,16 +621,13 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // region Covers — delegated to CoverManager
     String getCoversUrlTemplate() { return mCoverManager.getCoversUrlTemplate(); }
     void setCoversUrlTemplate(String s) { mCoverManager.setCoversUrlTemplate(s); }
     String getManualCoverUri(String gameKey) { return mCoverManager.getManualCoverUri(gameKey); }
     void setManualCoverUri(String gameKey, String uri) { mCoverManager.setManualCoverUri(gameKey, uri); }
     void removeManualCoverUri(String gameKey) { mCoverManager.removeManualCoverUri(gameKey); }
     void promptForCoversUrl() { mCoverManager.promptForCoversUrl(); }
-    // endregion Covers
 
-    // region Manual cover selection
     static String gameKeyFromEntry(GameEntry e) {
         if (e == null) return "";
         String key = (e.uri != null ? e.uri.toString() : ("file://" + e.title));
@@ -791,7 +773,6 @@ public class MainActivity extends AppCompatActivity {
     private void applyPerGameSettingsForKey(@Nullable String gameKey) { mPerGameSettingsManager.applyForKey(gameKey); }
     private void restorePerGameOverrides() { mPerGameSettingsManager.restoreOverrides(); }
 
-    // endregion Manual cover selection
 
     
 
@@ -1245,12 +1226,10 @@ public class MainActivity extends AppCompatActivity {
     private void setupRetroAchievementsDrawerSection() { mRetroAchievementsManager.setupDrawerSection(); }
     private void handleRetroAchievementsStateChanged(RetroAchievementsBridge.State state) { mRetroAchievementsManager.handleStateChanged(state); }
 
-    // region Drawer settings — delegated to DrawerSettingsManager
 
     private void updateWidescreenToggleVisibility() { mDrawerSettingsManager.updateWidescreenToggleVisibility(); }
     private void applyControllerMode(int mode) { mDrawerSettingsManager.applyControllerMode(mode); }
     private void applyRendererSelection(int rendererValue) { mDrawerSettingsManager.applyRendererSelection(rendererValue); }
-    // endregion Drawer settings
 
     boolean readBoolSetting(String section, String key, boolean defaultValue) {
         try {
@@ -1264,18 +1243,14 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // region Dialogs — delegated to DialogHelper
     private void showGameStateDialog() { mDialogHelper.showGameStateDialog(); }
     private void showAboutDialog() { mDialogHelper.showAboutDialog(); }
-    // endregion Dialogs
 
-    // region On-screen UI style/scale — delegated to OnScreenUiStyleManager
     private void refreshOnScreenUiStyleIfNeeded() { mOnScreenUiStyleManager.refreshStyleIfNeeded(); }
     private void refreshOnScreenUiScaleIfNeeded() { mOnScreenUiStyleManager.refreshScaleIfNeeded(); }
     void applyJoystickStyle(JoystickView joystick) { mOnScreenUiStyleManager.applyJoystickStyle(joystick); }
     void applyDpadStyle(DPadView dpadView) { mOnScreenUiStyleManager.applyDpadStyle(dpadView); }
     void applyUserUiScale() { mOnScreenUiStyleManager.applyUserUiScale(); }
-    // endregion On-screen UI style/scale
 
     void makeButtonTouch() {
         boolean isNether = OnScreenUiStyleManager.STYLE_NETHER.equals(mOnScreenUiStyleManager.currentStyle);
@@ -1451,7 +1426,6 @@ public class MainActivity extends AppCompatActivity {
         applyUserUiScale();
     }
 
-    // region Content Import — delegated to ContentImportHelper
     private boolean importMemcardToSlot1(Uri uri) { return mContentImportHelper.importMemcardToSlot1(uri); }
     private void importCheatFile(Uri uri) { mContentImportHelper.importCheatFile(uri); }
     private void importTextureArchive(Uri uri) { mContentImportHelper.importTextureArchive(uri); }
@@ -1460,7 +1434,6 @@ public class MainActivity extends AppCompatActivity {
     private boolean isFileInsideBase(File base, File target) { return mContentImportHelper.isFileInsideBase(base, target); }
     private void persistUriPermission(Uri uri) { mContentImportHelper.persistUriPermission(uri); }
     private void showDrawerImportFailureDialog(@StringRes int titleRes, String details) { mContentImportHelper.showDrawerImportFailureDialog(titleRes, details); }
-    // endregion Content Import
 
     private void showSettingsDialog() { mDialogHelper.showSettingsDialog(); }
 
@@ -1645,7 +1618,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // region Data directory & onboarding — delegated to DataDirectorySetupManager
     private boolean isOnboardingComplete() { return mDataDirectorySetupManager.isOnboardingComplete(); }
     private void setOnboardingComplete() { mDataDirectorySetupManager.setOnboardingComplete(); }
     private void maybeStartOnboardingFlow() { mDataDirectorySetupManager.maybeStartOnboardingFlow(); }
@@ -1653,7 +1625,6 @@ public class MainActivity extends AppCompatActivity {
     private void maybeShowDataDirectoryPrompt() { mDataDirectorySetupManager.maybeShowDataDirectoryPrompt(); }
     void launchOnboardingIntent(Intent i) { startActivityResultOnboarding.launch(i); }
     void launchDataDirPickerIntent(Intent i) { startActivityResultPickDataDir.launch(i); }
-    // endregion Data directory & onboarding
 
     private void setSurfaceView(Object p_value) {
         FrameLayout fl_board = findViewById(R.id.fl_board);
@@ -2040,7 +2011,6 @@ public class MainActivity extends AppCompatActivity {
             new ActivityResultContracts.StartActivityForResult(), result ->
                     mChdConversionManager.handlePickIsoResult(result.getResultCode(), result.getData()));
 
-    // region CHD conversion — delegated to ChdConversionManager
     private void startPickIsoForChd() { mChdConversionManager.startPickIsoForChd(); }
     void launchIsoPickerIntent(Intent i) { startActivityResultPickIso.launch(i); }
     void launchSaveChdIntent(Intent i) { startActivityResultSaveChd.launch(i); }
@@ -2067,14 +2037,12 @@ public class MainActivity extends AppCompatActivity {
         } catch (Throwable ignored) { hideDelayMs = 2500L; }
     }
 
-    // region Controller input — delegated to ControllerManager
     private void forwardKeyToPad(boolean down, int keycode) { mControllerManager.forwardKeyToPad(down, keycode); }
     private void handleGamepadMotion(MotionEvent e) { mControllerManager.handleGamepadMotion(e); }
     private void sendAnalog(int keyCode, float normalized) { mControllerManager.sendAnalog(keyCode, normalized); }
     private void refreshVibrationPreference() { mControllerManager.refreshVibrationPreference(); }
     public static void requestControllerRumble(float large, float small) { ControllerManager.requestControllerRumble(large, small); }
     public static void setVibrationPreference(boolean enabled) { ControllerManager.setVibrationPreference(enabled); }
-    // endregion Controller input
 
     private final ActivityResultLauncher<Intent> startActivityResultPickDataDir = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(), result -> {
@@ -2373,7 +2341,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // region Background image picker
     private static final String PREF_BG_L = "bg_landscape";
     private static final String PREF_BG_P = "bg_portrait";
     private void pickBackgroundImage(boolean portrait) {
@@ -2429,7 +2396,6 @@ public class MainActivity extends AppCompatActivity {
         if (bgImage != null) { bgImage.setImageDrawable(null); bgImage.setVisibility(View.GONE); }
         try { Toast.makeText(this, R.string.home_background_cleared, Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
     }
-    // endregion Background image picker
 
     private void onGameSelected(GameEntry entry) {
         launchGameWithPreflight(entry.uri);
