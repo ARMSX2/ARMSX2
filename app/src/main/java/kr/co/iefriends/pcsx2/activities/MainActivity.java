@@ -36,7 +36,6 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
-import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.ProgressBar;
 import android.widget.Spinner;
@@ -69,7 +68,6 @@ import com.google.android.material.button.MaterialButton;
 import com.google.android.material.button.MaterialButtonToggleGroup;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
-import com.google.android.material.materialswitch.MaterialSwitch;
 import com.google.android.material.navigation.NavigationView;
 import com.google.android.material.slider.Slider;
 import com.google.android.material.textfield.TextInputEditText;
@@ -131,8 +129,8 @@ public class MainActivity extends AppCompatActivity {
     private Thread mEmulationThread = null;
 
     // UI groups for on-screen controls
-    private View llPadSelectStart;
-    private View llPadRight;
+    View llPadSelectStart;
+    View llPadRight;
     private DrawerLayout inGameDrawer;
     private FloatingActionButton drawerToggle;
     private FloatingActionButton drawerPauseButton;
@@ -167,19 +165,12 @@ public class MainActivity extends AppCompatActivity {
     static final String PREFS = "armsx2";
     static final String PREF_GAMES_URI = "games_folder_uri";
     // CHD prefix constants live in ChdConversionManager
-    private static final String PREF_ONBOARDING_COMPLETE = "onboarding_complete";
-    private static final String PREF_ONSCREEN_UI_STYLE = "on_screen_ui_style";
-    private static final String PREF_UI_SCALE_MULTIPLIER = "onscreen_ui_scale_multiplier";
-    private static final String STYLE_DEFAULT = "default";
-    private static final String STYLE_NETHER = "nether";
-    private static final float ONSCREEN_UI_SCALE_MIN = 0.2f;
-    private static final float ONSCREEN_UI_SCALE_MAX = 4.0f;
+    // On-screen UI style/scale constants live in OnScreenUiStyleManager
     // Preflight
     private Uri pendingGameUri = null;
     private int pendingLaunchRetries = 0;
     // onboardingLaunched / postOnboardingChecksRun live in DataDirectorySetupManager
-    private String currentOnScreenUiStyle = STYLE_DEFAULT;
-    private float onScreenUiScaleMultiplier = 1.0f;
+    // currentOnScreenUiStyle / onScreenUiScaleMultiplier live in OnScreenUiStyleManager
     float faceButtonsBaseScale = 1.0f;
 
     PerGameSettingsManager mPerGameSettingsManager;
@@ -189,6 +180,7 @@ public class MainActivity extends AppCompatActivity {
     DataDirectorySetupManager mDataDirectorySetupManager;
     DialogHelper mDialogHelper;
     DrawerSettingsManager mDrawerSettingsManager;
+    OnScreenUiStyleManager mOnScreenUiStyleManager;
 
     // Auto-hide state
     private enum InputSource { TOUCH, CONTROLLER }
@@ -280,6 +272,7 @@ public class MainActivity extends AppCompatActivity {
         mDataDirectorySetupManager = new DataDirectorySetupManager(this);
         mDialogHelper = new DialogHelper(this);
         mDrawerSettingsManager = new DrawerSettingsManager(this);
+        mOnScreenUiStyleManager = new OnScreenUiStyleManager(this);
         NetworkAdapterCollector.collectAdapters();
         DiscordBridge.updateEngineActivity(this);
         ControllerManager.setInstance(this);
@@ -318,8 +311,8 @@ public class MainActivity extends AppCompatActivity {
     // Load on-screen controls hide timeout
     loadHideTimeoutFromPrefs();
 
-    loadOnScreenUiScalePreference();
-    currentOnScreenUiStyle = resolveOnScreenUiStylePreference();
+    mOnScreenUiStyleManager.loadScalePreference();
+    // style already resolved in constructor
         if (!disableTouchControls) {
             makeButtonTouch();
         }
@@ -1116,22 +1109,22 @@ public class MainActivity extends AppCompatActivity {
         Slider uiScaleSlider = findViewById(R.id.drawer_slider_ui_scale);
         TextView uiScaleValue = findViewById(R.id.drawer_ui_scale_value);
         if (uiScaleSlider != null) {
-            uiScaleSlider.setValue(onScreenUiScaleMultiplier);
-            updateOnScreenUiScaleLabel(uiScaleValue);
+            uiScaleSlider.setValue(mOnScreenUiStyleManager.scaleMultiplier);
+            mOnScreenUiStyleManager.updateScaleLabel(uiScaleValue);
             uiScaleSlider.addOnChangeListener((slider, value, fromUser) -> {
-                float clamped = Math.max(ONSCREEN_UI_SCALE_MIN, Math.min(ONSCREEN_UI_SCALE_MAX, value));
+                float clamped = Math.max(OnScreenUiStyleManager.ONSCREEN_UI_SCALE_MIN, Math.min(OnScreenUiStyleManager.ONSCREEN_UI_SCALE_MAX, value));
                 if (Math.abs(clamped - value) > 0.001f) {
                     slider.setValue(clamped);
                 }
-                if (Math.abs(onScreenUiScaleMultiplier - clamped) > 0.001f) {
-                    onScreenUiScaleMultiplier = clamped;
-                    saveOnScreenUiScalePreference(clamped);
-                    updateOnScreenUiScaleLabel(uiScaleValue);
+                if (Math.abs(mOnScreenUiStyleManager.scaleMultiplier - clamped) > 0.001f) {
+                    mOnScreenUiStyleManager.scaleMultiplier = clamped;
+                    mOnScreenUiStyleManager.saveScalePreference(clamped);
+                    mOnScreenUiStyleManager.updateScaleLabel(uiScaleValue);
                     applyUserUiScale();
                 }
             });
         } else {
-            updateOnScreenUiScaleLabel(uiScaleValue);
+            mOnScreenUiStyleManager.updateScaleLabel(uiScaleValue);
         }
         updatePauseButtonIcon();
     }
@@ -1276,181 +1269,19 @@ public class MainActivity extends AppCompatActivity {
     private void showAboutDialog() { mDialogHelper.showAboutDialog(); }
     // endregion Dialogs
 
-    private String resolveOnScreenUiStylePreference() {
-        String value = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_ONSCREEN_UI_STYLE, STYLE_DEFAULT);
-        if (STYLE_NETHER.equalsIgnoreCase(value)) {
-            return STYLE_NETHER;
-        }
-        return STYLE_DEFAULT;
-    }
+    // region On-screen UI style/scale — delegated to OnScreenUiStyleManager
+    private void refreshOnScreenUiStyleIfNeeded() { mOnScreenUiStyleManager.refreshStyleIfNeeded(); }
+    private void refreshOnScreenUiScaleIfNeeded() { mOnScreenUiStyleManager.refreshScaleIfNeeded(); }
+    void applyJoystickStyle(JoystickView joystick) { mOnScreenUiStyleManager.applyJoystickStyle(joystick); }
+    void applyDpadStyle(DPadView dpadView) { mOnScreenUiStyleManager.applyDpadStyle(dpadView); }
+    void applyUserUiScale() { mOnScreenUiStyleManager.applyUserUiScale(); }
+    // endregion On-screen UI style/scale
 
-    private void refreshOnScreenUiStyleIfNeeded() {
-        String pref = resolveOnScreenUiStylePreference();
-        if (!pref.equals(currentOnScreenUiStyle)) {
-            currentOnScreenUiStyle = pref;
-            makeButtonTouch();
-        }
-    }
-
-    private Drawable loadNetherDrawable(String assetName) {
-        try (InputStream is = getAssets().open("app_icons/controller_icons_nether/" + assetName)) {
-            Drawable drawable = Drawable.createFromStream(is, assetName);
-            if (drawable != null) {
-                drawable = drawable.mutate();
-            }
-            return drawable;
-        } catch (IOException e) {
-            try { DebugLog.e("OnScreenUI", "Failed to load Nether icon " + assetName + ": " + e.getMessage()); } catch (Throwable ignored) {}
-            return null;
-        }
-    }
-
-    private void applyButtonIcon(PSButtonView view, @DrawableRes int defaultResId, String netherAssetName) {
-        if (view == null) {
-            return;
-        }
-        if (STYLE_NETHER.equals(currentOnScreenUiStyle)) {
-            Drawable drawable = loadNetherDrawable(netherAssetName);
-            if (drawable != null) {
-                view.setIconDrawable(drawable);
-                return;
-            }
-        }
-        view.setIconResource(defaultResId);
-    }
-
-    private void applyShoulderIcon(PSShoulderButtonView view, @DrawableRes int defaultResId, String netherAssetName) {
-        if (view == null) {
-            return;
-        }
-        if (STYLE_NETHER.equals(currentOnScreenUiStyle)) {
-            Drawable drawable = loadNetherDrawable(netherAssetName);
-            if (drawable != null) {
-                view.setIconDrawable(drawable);
-                return;
-            }
-        }
-        view.setIconResource(defaultResId);
-    }
-
-    void applyJoystickStyle(JoystickView joystick) {
-        if (joystick == null) {
-            return;
-        }
-        if (STYLE_NETHER.equals(currentOnScreenUiStyle)) {
-            Drawable base = loadNetherDrawable("ic_controller_analog_base.png");
-            Drawable knob = loadNetherDrawable("ic_controller_analog_stick.png");
-            if (base != null && knob != null) {
-                joystick.setDrawables(base, knob);
-                joystick.setKnobScaleFactor(1.2f);
-                return;
-            }
-        }
-        joystick.setDrawables(null, null);
-        joystick.setKnobScaleFactor(1.0f);
-    }
-
-    void applyDpadStyle(DPadView dpadView) {
-        if (dpadView == null) {
-            return;
-        }
-        if (STYLE_NETHER.equals(currentOnScreenUiStyle)) {
-            Drawable up = loadNetherDrawable("ic_controller_up_button.png");
-            Drawable down = loadNetherDrawable("ic_controller_down_button.png");
-            Drawable left = loadNetherDrawable("ic_controller_left_button.png");
-            Drawable right = loadNetherDrawable("ic_controller_right_button.png");
-            dpadView.setDrawables(null, null);
-            dpadView.setDirectionalDrawables(up, down, left, right);
-        } else {
-            dpadView.setDrawables(null, null);
-            dpadView.setDirectionalDrawables(null, null, null, null);
-        }
-    }
-
-    private void loadOnScreenUiScalePreference() {
-        float value = 1.0f;
-        try {
-            value = getSharedPreferences(PREFS, MODE_PRIVATE).getFloat(PREF_UI_SCALE_MULTIPLIER, 1.0f);
-        } catch (Exception ignored) {}
-        if (value < ONSCREEN_UI_SCALE_MIN) value = ONSCREEN_UI_SCALE_MIN;
-        if (value > ONSCREEN_UI_SCALE_MAX) value = ONSCREEN_UI_SCALE_MAX;
-        onScreenUiScaleMultiplier = value;
-    }
-
-    private void saveOnScreenUiScalePreference(float value) {
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putFloat(PREF_UI_SCALE_MULTIPLIER, value).apply();
-    }
-
-    void applyUserUiScale() {
-        float multiplier = Math.max(ONSCREEN_UI_SCALE_MIN, Math.min(ONSCREEN_UI_SCALE_MAX, onScreenUiScaleMultiplier));
-        onScreenUiScaleMultiplier = multiplier;
-        applyScaleWithPivot(llPadSelectStart, multiplier, multiplier, 0.5f, 1f);
-        View padRight = llPadRight != null ? llPadRight : findViewById(R.id.ll_pad_right);
-        float faceScale = faceButtonsBaseScale * multiplier;
-        applyScaleWithPivot(padRight, faceScale, faceScale, 1f, 1f);
-        View leftShoulders = findViewById(R.id.ll_pad_shoulders_left);
-        applyScaleWithPivot(leftShoulders, multiplier, multiplier, 0f, 0f);
-        View rightShoulders = findViewById(R.id.ll_pad_shoulders_right);
-        applyScaleWithPivot(rightShoulders, multiplier, multiplier, 1f, 0f);
-        JoystickView joystickLeft = findViewById(R.id.joystick_left);
-        applyScaleWithPivot(joystickLeft, multiplier, multiplier, 0f, 1f);
-        JoystickView joystickRight = findViewById(R.id.joystick_right);
-        applyScaleWithPivot(joystickRight, multiplier, multiplier, 1f, 1f);
-        DPadView dpadView = findViewById(R.id.dpad_view);
-        applyScaleWithPivot(dpadView, multiplier, multiplier, 0f, 1f);
-    }
-
-    private void applyScaleWithPivot(View view, float scaleX, float scaleY, float pivotXF, float pivotYF) {
-        if (view == null) {
-            return;
-        }
-        Runnable apply = () -> {
-            float pivotX = view.getWidth() * pivotXF;
-            float pivotY = view.getHeight() * pivotYF;
-            view.setPivotX(pivotX);
-            view.setPivotY(pivotY);
-            view.setScaleX(scaleX);
-            view.setScaleY(scaleY);
-        };
-        if (view.getWidth() == 0 || view.getHeight() == 0) {
-            view.post(apply);
-        } else {
-            apply.run();
-        }
-    }
-
-    // pauseVmForStateOperation / resumeVmAfterStateOperation live in DialogHelper
-
-    private void updateOnScreenUiScaleLabel(TextView label) {
-        if (label != null) {
-            label.setText(getString(R.string.drawer_ui_scale_value, onScreenUiScaleMultiplier));
-        }
-    }
-
-    private void refreshOnScreenUiScaleIfNeeded() {
-        float stored = 1.0f;
-        try {
-            stored = getSharedPreferences(PREFS, MODE_PRIVATE).getFloat(PREF_UI_SCALE_MULTIPLIER, 1.0f);
-        } catch (Exception ignored) {}
-        if (stored < ONSCREEN_UI_SCALE_MIN) stored = ONSCREEN_UI_SCALE_MIN;
-        if (stored > ONSCREEN_UI_SCALE_MAX) stored = ONSCREEN_UI_SCALE_MAX;
-        if (Math.abs(stored - onScreenUiScaleMultiplier) > 0.001f) {
-            onScreenUiScaleMultiplier = stored;
-            applyUserUiScale();
-            Slider slider = findViewById(R.id.drawer_slider_ui_scale);
-            if (slider != null && Math.abs(slider.getValue() - stored) > 0.001f) {
-                slider.setValue(stored);
-            }
-            TextView label = findViewById(R.id.drawer_ui_scale_value);
-            updateOnScreenUiScaleLabel(label);
-        }
-    }
-
-    private void makeButtonTouch() {
-        boolean isNether = STYLE_NETHER.equals(currentOnScreenUiStyle);
+    void makeButtonTouch() {
+        boolean isNether = OnScreenUiStyleManager.STYLE_NETHER.equals(mOnScreenUiStyleManager.currentStyle);
         PSButtonView btn_pad_select = findViewById(R.id.btn_pad_select);
         if (btn_pad_select != null) {
-            applyButtonIcon(btn_pad_select, R.drawable.playstation3_button_select, "ic_controller_select_button.png");
+            mOnScreenUiStyleManager.applyButtonIcon(btn_pad_select, R.drawable.playstation3_button_select, "ic_controller_select_button.png");
             btn_pad_select.setRectangular(true);
             float selectScale = isNether ? 0.75f : 1.0f;
             btn_pad_select.setScaleX(selectScale);
@@ -1460,7 +1291,7 @@ public class MainActivity extends AppCompatActivity {
 
         PSButtonView btn_pad_start = findViewById(R.id.btn_pad_start);
         if (btn_pad_start != null) {
-            applyButtonIcon(btn_pad_start, R.drawable.playstation3_button_start, "ic_controller_start_button.png");
+            mOnScreenUiStyleManager.applyButtonIcon(btn_pad_start, R.drawable.playstation3_button_start, "ic_controller_start_button.png");
             float selectScale = isNether ? 0.75f : 1.0f;
             btn_pad_start.setScaleX(selectScale);
             btn_pad_start.setScaleY(selectScale);
@@ -1471,7 +1302,7 @@ public class MainActivity extends AppCompatActivity {
 
         PSButtonView btn_pad_a = findViewById(R.id.btn_pad_a);
         if (btn_pad_a != null) {
-            applyButtonIcon(btn_pad_a, R.drawable.playstation_button_color_cross_outline, "ic_controller_cross_button.png");
+            mOnScreenUiStyleManager.applyButtonIcon(btn_pad_a, R.drawable.playstation_button_color_cross_outline, "ic_controller_cross_button.png");
             btn_pad_a.setScaleX(faceScale);
             btn_pad_a.setScaleY(faceScale);
             btn_pad_a.setOnPSButtonListener(pressed -> {
@@ -1482,7 +1313,7 @@ public class MainActivity extends AppCompatActivity {
 
         PSButtonView btn_pad_b = findViewById(R.id.btn_pad_b);
         if (btn_pad_b != null) {
-            applyButtonIcon(btn_pad_b, R.drawable.playstation_button_color_circle_outline, "ic_controller_circle_button.png");
+            mOnScreenUiStyleManager.applyButtonIcon(btn_pad_b, R.drawable.playstation_button_color_circle_outline, "ic_controller_circle_button.png");
             btn_pad_b.setScaleX(faceScale);
             btn_pad_b.setScaleY(faceScale);
             btn_pad_b.setOnPSButtonListener(pressed -> {
@@ -1493,7 +1324,7 @@ public class MainActivity extends AppCompatActivity {
 
         PSButtonView btn_pad_x = findViewById(R.id.btn_pad_x);
         if (btn_pad_x != null) {
-            applyButtonIcon(btn_pad_x, R.drawable.playstation_button_color_square_outline, "ic_controller_square_button.png");
+            mOnScreenUiStyleManager.applyButtonIcon(btn_pad_x, R.drawable.playstation_button_color_square_outline, "ic_controller_square_button.png");
             btn_pad_x.setScaleX(faceScale);
             btn_pad_x.setScaleY(faceScale);
             btn_pad_x.setOnPSButtonListener(pressed -> {
@@ -1504,7 +1335,7 @@ public class MainActivity extends AppCompatActivity {
 
         PSButtonView btn_pad_y = findViewById(R.id.btn_pad_y);
         if (btn_pad_y != null) {
-            applyButtonIcon(btn_pad_y, R.drawable.playstation_button_color_triangle_outline, "ic_controller_triangle_button.png");
+            mOnScreenUiStyleManager.applyButtonIcon(btn_pad_y, R.drawable.playstation_button_color_triangle_outline, "ic_controller_triangle_button.png");
             btn_pad_y.setScaleX(faceScale);
             btn_pad_y.setScaleY(faceScale);
             btn_pad_y.setOnPSButtonListener(pressed -> {
@@ -1515,7 +1346,7 @@ public class MainActivity extends AppCompatActivity {
 
         PSShoulderButtonView btn_pad_l1 = findViewById(R.id.btn_pad_l1);
         if (btn_pad_l1 != null) {
-            applyShoulderIcon(btn_pad_l1, R.drawable.playstation_trigger_l1_alternative_outline, "ic_controller_l1_button.png");
+            mOnScreenUiStyleManager.applyShoulderIcon(btn_pad_l1, R.drawable.playstation_trigger_l1_alternative_outline, "ic_controller_l1_button.png");
             btn_pad_l1.setScaleX(1.0f);
             btn_pad_l1.setScaleY(isNether ? 0.6f : 1.0f);
             btn_pad_l1.setOnPSShoulderButtonListener(pressed -> NativeApp.setPadButton(KeyEvent.KEYCODE_BUTTON_L1, 0, pressed));
@@ -1523,7 +1354,7 @@ public class MainActivity extends AppCompatActivity {
 
         PSShoulderButtonView btn_pad_r1 = findViewById(R.id.btn_pad_r1);
         if (btn_pad_r1 != null) {
-            applyShoulderIcon(btn_pad_r1, R.drawable.playstation_trigger_r1_alternative_outline, "ic_controller_r1_button.png");
+            mOnScreenUiStyleManager.applyShoulderIcon(btn_pad_r1, R.drawable.playstation_trigger_r1_alternative_outline, "ic_controller_r1_button.png");
             btn_pad_r1.setScaleX(1.0f);
             btn_pad_r1.setScaleY(isNether ? 0.6f : 1.0f);
             btn_pad_r1.setOnPSShoulderButtonListener(pressed -> NativeApp.setPadButton(KeyEvent.KEYCODE_BUTTON_R1, 0, pressed));
@@ -1531,7 +1362,7 @@ public class MainActivity extends AppCompatActivity {
 
         PSShoulderButtonView btn_pad_l2 = findViewById(R.id.btn_pad_l2);
         if (btn_pad_l2 != null) {
-            applyShoulderIcon(btn_pad_l2, R.drawable.playstation_trigger_l2_alternative_outline, "ic_controller_l2_button.png");
+            mOnScreenUiStyleManager.applyShoulderIcon(btn_pad_l2, R.drawable.playstation_trigger_l2_alternative_outline, "ic_controller_l2_button.png");
             btn_pad_l2.setScaleX(1.0f);
             btn_pad_l2.setScaleY(isNether ? 0.6f : 1.0f);
             btn_pad_l2.setOnPSShoulderButtonListener(pressed -> NativeApp.setPadButton(KeyEvent.KEYCODE_BUTTON_L2, 0, pressed));
@@ -1539,7 +1370,7 @@ public class MainActivity extends AppCompatActivity {
 
         PSShoulderButtonView btn_pad_r2 = findViewById(R.id.btn_pad_r2);
         if (btn_pad_r2 != null) {
-            applyShoulderIcon(btn_pad_r2, R.drawable.playstation_trigger_r2_alternative_outline, "ic_controller_r2_button.png");
+            mOnScreenUiStyleManager.applyShoulderIcon(btn_pad_r2, R.drawable.playstation_trigger_r2_alternative_outline, "ic_controller_r2_button.png");
             btn_pad_r2.setScaleX(1.0f);
             btn_pad_r2.setScaleY(isNether ? 0.6f : 1.0f);
             btn_pad_r2.setOnPSShoulderButtonListener(pressed -> NativeApp.setPadButton(KeyEvent.KEYCODE_BUTTON_R2, 0, pressed));
@@ -1547,13 +1378,13 @@ public class MainActivity extends AppCompatActivity {
 
         PSButtonView btn_pad_l3 = findViewById(R.id.btn_pad_l3);
         if (btn_pad_l3 != null) {
-            applyButtonIcon(btn_pad_l3, R.drawable.playstation_button_l3_outline, "ic_controller_l3_button.png");
+            mOnScreenUiStyleManager.applyButtonIcon(btn_pad_l3, R.drawable.playstation_button_l3_outline, "ic_controller_l3_button.png");
             btn_pad_l3.setOnPSButtonListener(pressed -> NativeApp.setPadButton(KeyEvent.KEYCODE_BUTTON_THUMBL, 0, pressed));
         }
 
         PSButtonView btn_pad_r3 = findViewById(R.id.btn_pad_r3);
         if (btn_pad_r3 != null) {
-            applyButtonIcon(btn_pad_r3, R.drawable.playstation_button_r3_outline, "ic_controller_r3_button.png");
+            mOnScreenUiStyleManager.applyButtonIcon(btn_pad_r3, R.drawable.playstation_button_r3_outline, "ic_controller_r3_button.png");
             btn_pad_r3.setOnPSButtonListener(pressed -> NativeApp.setPadButton(KeyEvent.KEYCODE_BUTTON_THUMBR, 0, pressed));
         }
 
