@@ -137,15 +137,13 @@ public class MainActivity extends AppCompatActivity {
     private FloatingActionButton drawerToggle;
     private FloatingActionButton drawerPauseButton;
     private FloatingActionButton drawerFastForwardButton;
-    private MaterialSwitch drawerWidescreenSwitch;
+    // drawerWidescreenSwitch lives in DrawerSettingsManager
     BiosManager mBiosManager;
     RetroAchievementsManager mRetroAchievementsManager;
-    private boolean isVmPaused = false;
+    boolean isVmPaused = false;
     private final Runnable hideDrawerToggleRunnable = () -> hideDrawerToggle();
     private boolean isFastForwardEnabled = false;
-    private final CompoundButton.OnCheckedChangeListener drawerWidescreenListener =
-            (buttonView, isChecked) ->
-                    NativeApp.setSetting("EmuCore", "EnableWideScreenPatches", "bool", isChecked ? "true" : "false");
+    // drawerWidescreenListener lives in DrawerSettingsManager
 
     // Rumble/vibration state lives in ControllerManager
 
@@ -163,9 +161,9 @@ public class MainActivity extends AppCompatActivity {
     private boolean listMode = false;
     Uri gamesFolderUri;
     CoverManager mCoverManager;
-    private boolean storagePromptShown = false;
+    // storagePromptShown lives in DataDirectorySetupManager
     // CHD pending state lives in ChdConversionManager
-    private AlertDialog dataDirProgressDialog;
+    // dataDirProgressDialog lives in DataDirectorySetupManager
     static final String PREFS = "armsx2";
     static final String PREF_GAMES_URI = "games_folder_uri";
     // CHD prefix constants live in ChdConversionManager
@@ -179,16 +177,18 @@ public class MainActivity extends AppCompatActivity {
     // Preflight
     private Uri pendingGameUri = null;
     private int pendingLaunchRetries = 0;
-    private boolean onboardingLaunched = false;
-    private boolean postOnboardingChecksRun = false;
+    // onboardingLaunched / postOnboardingChecksRun live in DataDirectorySetupManager
     private String currentOnScreenUiStyle = STYLE_DEFAULT;
     private float onScreenUiScaleMultiplier = 1.0f;
-    private float faceButtonsBaseScale = 1.0f;
+    float faceButtonsBaseScale = 1.0f;
 
     PerGameSettingsManager mPerGameSettingsManager;
     ContentImportHelper mContentImportHelper;
     ControllerManager mControllerManager;
     ChdConversionManager mChdConversionManager;
+    DataDirectorySetupManager mDataDirectorySetupManager;
+    DialogHelper mDialogHelper;
+    DrawerSettingsManager mDrawerSettingsManager;
 
     // Auto-hide state
     private enum InputSource { TOUCH, CONTROLLER }
@@ -207,7 +207,7 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_SETTINGS_GPU_PROFILE_OVERRIDE = "SET_GPU_PROFILE_OVERRIDE";
     public static final String EXTRA_SETTINGS_GPU_PROFILE_PERSISTED = "SET_GPU_PROFILE_PERSISTED";
     
-    private int currentControllerMode = 0; // 0=2 Sticks, 1=1 Stick+Face, 2=D-Pad Only
+    int currentControllerMode = 0; // 0=2 Sticks, 1=1 Stick+Face, 2=D-Pad Only
 
     private final OnBackPressedCallback onBackPressCallback =
         new OnBackPressedCallback(false) {
@@ -277,6 +277,9 @@ public class MainActivity extends AppCompatActivity {
         mContentImportHelper = new ContentImportHelper(this);
         mControllerManager = new ControllerManager(this);
         mChdConversionManager = new ChdConversionManager(this);
+        mDataDirectorySetupManager = new DataDirectorySetupManager(this);
+        mDialogHelper = new DialogHelper(this);
+        mDrawerSettingsManager = new DrawerSettingsManager(this);
         NetworkAdapterCollector.collectAdapters();
         DiscordBridge.updateEngineActivity(this);
         ControllerManager.setInstance(this);
@@ -937,7 +940,7 @@ public class MainActivity extends AppCompatActivity {
     public void onSurfaceReady() {
     }
 
-    private void ensureBiosPresent() { mBiosManager.ensureBiosPresent(); }
+    void ensureBiosPresent() { mBiosManager.ensureBiosPresent(); }
     void openBiosPicker() {
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -1106,10 +1109,10 @@ public class MainActivity extends AppCompatActivity {
         }
 
         setupRetroAchievementsDrawerSection();
-        setupRendererToggleGroup();
-        setupDrawerSpinners();
-        setupControllerModeSpinner();
-        setupDrawerSwitches();
+        mDrawerSettingsManager.setupRendererToggleGroup();
+        mDrawerSettingsManager.setupDrawerSpinners();
+        mDrawerSettingsManager.setupControllerModeSpinner();
+        mDrawerSettingsManager.setupDrawerSwitches();
         Slider uiScaleSlider = findViewById(R.id.drawer_slider_ui_scale);
         TextView uiScaleValue = findViewById(R.id.drawer_ui_scale_value);
         if (uiScaleSlider != null) {
@@ -1200,7 +1203,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void updatePauseButtonIcon() {
+    void updatePauseButtonIcon() {
         if (drawerPauseButton == null) {
             return;
         }
@@ -1249,337 +1252,12 @@ public class MainActivity extends AppCompatActivity {
     private void setupRetroAchievementsDrawerSection() { mRetroAchievementsManager.setupDrawerSection(); }
     private void handleRetroAchievementsStateChanged(RetroAchievementsBridge.State state) { mRetroAchievementsManager.handleStateChanged(state); }
 
-    private void setupRendererToggleGroup() {
-        MaterialButtonToggleGroup rendererGroup = findViewById(R.id.drawer_tg_renderer);
-        if (rendererGroup == null) {
-            return;
-        }
+    // region Drawer settings — delegated to DrawerSettingsManager
 
-        int initialValue = -1;
-        try {
-            String renderer = NativeApp.getSetting("EmuCore/GS", "Renderer", "int");
-            if (renderer != null && !renderer.isEmpty()) {
-                initialValue = Integer.parseInt(renderer);
-            }
-        } catch (Exception ignored) {}
-
-        int initialButton = rendererButtonForValue(initialValue);
-        rendererGroup.check(initialButton);
-        rendererGroup.addOnButtonCheckedListener((group, checkedId, isChecked) -> {
-            if (!isChecked) {
-                return;
-            }
-            int value = rendererValueForButton(checkedId);
-            NativeApp.renderGpu(value);
-        });
-    }
-
-    private void setupDrawerSpinners() {
-		Spinner aspectSpinner = findViewById(R.id.drawer_sp_aspect_ratio);
-		if (aspectSpinner != null) {
-			ArrayAdapter<CharSequence> aspectAdapter = ArrayAdapter.createFromResource(this, R.array.aspect_ratios, android.R.layout.simple_spinner_item);
-			aspectAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-			aspectSpinner.setAdapter(aspectAdapter);
-			final String[] aspectChoices = getResources().getStringArray(R.array.aspect_ratios);
-			int current = 0;
-			try {
-				String aspect = NativeApp.getSetting("EmuCore/GS", "AspectRatio", "string");
-				if (aspect != null && !aspect.isEmpty()) {
-					for (int i = 0; i < aspectChoices.length; i++) {
-						if (aspect.equalsIgnoreCase(aspectChoices[i])) {
-							current = i;
-							break;
-						}
-					}
-				}
-			} catch (Exception ignored) {}
-			if (current < 0 || current >= aspectAdapter.getCount()) current = 0;
-			aspectSpinner.setSelection(current, false);
-			aspectSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-				@Override
-				public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-					if (position < 0 || position >= aspectChoices.length)
-						return;
-					String value = aspectChoices[position];
-					NativeApp.setSetting("EmuCore/GS", "AspectRatio", "string", value);
-					NativeApp.setAspectRatio(position);
-				}
-
-				@Override
-				public void onNothingSelected(AdapterView<?> parent) {
-				}
-            });
-        }
-
-        Spinner scaleSpinner = findViewById(R.id.drawer_sp_scale);
-        if (scaleSpinner != null) {
-            ArrayAdapter<CharSequence> scaleAdapter = ArrayAdapter.createFromResource(this, R.array.resolution_scales, android.R.layout.simple_spinner_item);
-            scaleAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-            scaleSpinner.setAdapter(scaleAdapter);
-            int current = 0;
-            try {
-                String value = NativeApp.getSetting("EmuCore/GS", "upscale_multiplier", "float");
-                if (value != null && !value.isEmpty()) {
-                    float parsed = Float.parseFloat(value);
-                    current = Math.max(1, Math.min(scaleAdapter.getCount(), Math.round(parsed))) - 1;
-                }
-            } catch (Exception ignored) {}
-            if (current < 0 || current >= scaleAdapter.getCount()) current = 0;
-            scaleSpinner.setSelection(current, false);
-            scaleSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-                @Override
-                public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                    NativeApp.setSetting("EmuCore/GS", "upscale_multiplier", "float", String.valueOf(position + 1));
-                }
-
-                @Override
-                public void onNothingSelected(AdapterView<?> parent) {
-                }
-            });
-        }
-
-        Spinner blendSpinner = findViewById(R.id.drawer_sp_blending_accuracy);
-        if (blendSpinner != null) {
-            ArrayAdapter<CharSequence> blendAdapter = ArrayAdapter.createFromResource(this, R.array.acc_blending, android.R.layout.simple_spinner_item);
-            blendAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-            blendSpinner.setAdapter(blendAdapter);
-            int current = 0;
-            try {
-                String value = NativeApp.getSetting("EmuCore/GS", "accurate_blending_unit", "int");
-                if (value != null && !value.isEmpty()) {
-                    current = Integer.parseInt(value);
-                }
-            } catch (Exception ignored) {}
-            if (current < 0 || current >= blendAdapter.getCount()) current = 0;
-            blendSpinner.setSelection(current, false);
-            blendSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-                @Override
-                public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                    NativeApp.setSetting("EmuCore/GS", "accurate_blending_unit", "int", Integer.toString(position));
-                }
-
-                @Override
-                public void onNothingSelected(AdapterView<?> parent) {
-                }
-            });
-        }
-    }
-
-    private void setupControllerModeSpinner() {
-        Spinner modeSpinner = findViewById(R.id.drawer_sp_controller_mode);
-        if (modeSpinner != null) {
-            String[] modes = new String[]{"2 Sticks", "1 Stick + Face Buttons", "D-Pad Only"};
-            ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, modes);
-            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-            modeSpinner.setAdapter(adapter);
-            
-            // Load saved mode (default is 0 = 2 Sticks)
-            int savedMode = getSharedPreferences(PREFS, MODE_PRIVATE).getInt("controller_mode", 0);
-            modeSpinner.setSelection(savedMode, false);
-            
-            modeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-                @Override
-                public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putInt("controller_mode", position).apply();
-                    applyControllerMode(position);
-                }
-
-                @Override
-                public void onNothingSelected(AdapterView<?> parent) {
-                }
-            });
-            
-            applyControllerMode(savedMode);
-        }
-    }
-
-    private void applyControllerMode(int mode) {
-        currentControllerMode = mode;
-        
-        JoystickView joystickLeft = findViewById(R.id.joystick_left);
-        JoystickView joystickRight = findViewById(R.id.joystick_right);
-        DPadView dpadView = findViewById(R.id.dpad_view);
-        View llPadRight = findViewById(R.id.ll_pad_right);
-        
-        if (joystickLeft == null || joystickRight == null || dpadView == null || llPadRight == null) {
-            return;
-        }
-        
-        switch (mode) {
-            case 0: // 2 Sticks 
-                joystickLeft.setVisibility(View.VISIBLE);
-                joystickRight.setVisibility(View.VISIBLE);
-                dpadView.setVisibility(View.VISIBLE);
-                llPadRight.setVisibility(View.VISIBLE);
-                
-                ViewGroup.LayoutParams leftParams = joystickLeft.getLayoutParams();
-                leftParams.width = dpToPx(140);
-                leftParams.height = dpToPx(140);
-                joystickLeft.setLayoutParams(leftParams);
-                
-                ViewGroup.LayoutParams rightParams = joystickRight.getLayoutParams();
-                rightParams.width = dpToPx(140);
-                rightParams.height = dpToPx(140);
-                joystickRight.setLayoutParams(rightParams);
-                
-                ViewGroup.LayoutParams dpadParams = dpadView.getLayoutParams();
-                dpadParams.width = dpToPx(105);
-                dpadParams.height = dpToPx(105);
-                dpadView.setLayoutParams(dpadParams);
-                
-                llPadRight.setScaleX(1.0f);
-                llPadRight.setScaleY(1.0f);
-                if (llPadRight.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
-                    ViewGroup.MarginLayoutParams faceParams = (ViewGroup.MarginLayoutParams) llPadRight.getLayoutParams();
-                    faceParams.bottomMargin = dpToPx(1); 
-                    llPadRight.setLayoutParams(faceParams);
-                }
-                faceButtonsBaseScale = 1.0f;
-                break;
-                
-            case 1: // 1 Stick + Face Buttons 
-                joystickLeft.setVisibility(View.VISIBLE);
-                joystickRight.setVisibility(View.GONE); 
-                dpadView.setVisibility(View.GONE); 
-                llPadRight.setVisibility(View.VISIBLE);
-                
-                ViewGroup.LayoutParams leftParams1 = joystickLeft.getLayoutParams();
-                leftParams1.width = dpToPx(140);
-                leftParams1.height = dpToPx(140);
-                joystickLeft.setLayoutParams(leftParams1);
-                
-                ViewGroup.LayoutParams dpadParams1 = dpadView.getLayoutParams();
-                dpadParams1.width = dpToPx(105);
-                dpadParams1.height = dpToPx(105);
-                dpadView.setLayoutParams(dpadParams1);
-                
-                llPadRight.setScaleX(1.4f);
-                llPadRight.setScaleY(1.4f);
-                
-                if (llPadRight.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
-                    ViewGroup.MarginLayoutParams faceParams1 = (ViewGroup.MarginLayoutParams) llPadRight.getLayoutParams();
-                    faceParams1.bottomMargin = dpToPx(6) + dpToPx(11); 
-                    llPadRight.setLayoutParams(faceParams1);
-                }
-                faceButtonsBaseScale = 1.4f;
-                break;
-                
-            case 2: // D-Pad Only 
-                joystickLeft.setVisibility(View.GONE);
-                joystickRight.setVisibility(View.GONE);
-                dpadView.setVisibility(View.VISIBLE);
-                llPadRight.setVisibility(View.VISIBLE);
-                
-                ViewGroup.LayoutParams dpadParams2 = dpadView.getLayoutParams();
-                dpadParams2.width = dpToPx(140);
-                dpadParams2.height = dpToPx(140);
-                dpadView.setLayoutParams(dpadParams2);
-                
-                ViewGroup.LayoutParams rightParams2 = joystickRight.getLayoutParams();
-                rightParams2.width = dpToPx(140);
-                rightParams2.height = dpToPx(140);
-                joystickRight.setLayoutParams(rightParams2);
-                
-                llPadRight.setScaleX(1.4f);
-                llPadRight.setScaleY(1.4f);
-                
-                if (llPadRight.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
-                    ViewGroup.MarginLayoutParams faceParams2 = (ViewGroup.MarginLayoutParams) llPadRight.getLayoutParams();
-                    faceParams2.bottomMargin = dpToPx(6) + dpToPx(11); 
-                    llPadRight.setLayoutParams(faceParams2);
-                }
-                faceButtonsBaseScale = 1.4f;
-                break;
-        }
-        applyJoystickStyle(joystickLeft);
-        applyJoystickStyle(joystickRight);
-        applyDpadStyle(dpadView);
-        applyUserUiScale();
-    }
-
-    private void setupDrawerSwitches() {
-        MaterialSwitch swEnableCheats = findViewById(R.id.drawer_sw_enable_cheats);
-        if (swEnableCheats != null) {
-            swEnableCheats.setChecked(readBoolSetting("EmuCore", "EnableCheats", false));
-            swEnableCheats.setOnCheckedChangeListener((buttonView, isChecked) ->
-            {
-                    NativeApp.setEnableCheats(isChecked);
-                    try {
-                        DebugLog.d("Cheats", "EnableCheats=" + isChecked);
-                    } catch (Throwable ignored) {}
-            });
-        }
-
-        drawerWidescreenSwitch = findViewById(R.id.drawer_sw_widescreen);
-        updateWidescreenToggleVisibility();
-
-        MaterialSwitch swNoInterlacing = findViewById(R.id.drawer_sw_no_interlacing);
-        if (swNoInterlacing != null) {
-            swNoInterlacing.setChecked(readBoolSetting("EmuCore", "EnableNoInterlacingPatches", false));
-            swNoInterlacing.setOnCheckedChangeListener((buttonView, isChecked) ->
-                    NativeApp.setSetting("EmuCore", "EnableNoInterlacingPatches", "bool", isChecked ? "true" : "false"));
-        }
-
-        MaterialSwitch swLoadTextures = findViewById(R.id.drawer_sw_load_textures);
-        if (swLoadTextures != null) {
-            swLoadTextures.setChecked(readBoolSetting("EmuCore/GS", "LoadTextureReplacements", false));
-            swLoadTextures.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                NativeApp.setSetting("EmuCore/GS", "LoadTextureReplacements", "bool", isChecked ? "true" : "false");
-                try {
-                    DebugLog.d("Textures", "LoadTextureReplacements=" + isChecked);
-                } catch (Throwable ignored) {}
-            });
-        }
-
-        MaterialSwitch swAsyncTextures = findViewById(R.id.drawer_sw_async_textures);
-        if (swAsyncTextures != null) {
-            swAsyncTextures.setChecked(readBoolSetting("EmuCore/GS", "LoadTextureReplacementsAsync", false));
-            swAsyncTextures.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                NativeApp.setSetting("EmuCore/GS", "LoadTextureReplacementsAsync", "bool", isChecked ? "true" : "false");
-                try {
-                    DebugLog.d("Textures", "LoadTextureReplacementsAsync=" + isChecked);
-                } catch (Throwable ignored) {}
-            });
-        }
-
-        MaterialSwitch swPrecacheTextures = findViewById(R.id.drawer_sw_precache_textures);
-        if (swPrecacheTextures != null) {
-            swPrecacheTextures.setChecked(readBoolSetting("EmuCore/GS", "PrecacheTextureReplacements", false));
-            swPrecacheTextures.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                NativeApp.setSetting("EmuCore/GS", "PrecacheTextureReplacements", "bool", isChecked ? "true" : "false");
-                try {
-                    DebugLog.d("Textures", "PrecacheTextureReplacements=" + isChecked);
-                } catch (Throwable ignored) {}
-            });
-        }
-
-        MaterialSwitch swDevHud = findViewById(R.id.drawer_sw_dev_hud);
-        if (swDevHud != null) {
-            swDevHud.setChecked(readBoolSetting("EmuCore/GS", "OsdShowFPS", false));
-            swDevHud.setOnCheckedChangeListener((buttonView, isChecked) ->
-                    NativeApp.setSetting("EmuCore/GS", "OsdShowFPS", "bool", isChecked ? "true" : "false"));
-        }
-    }
-
-    private void updateWidescreenToggleVisibility() {
-        if (drawerWidescreenSwitch == null) {
-            return;
-        }
-        boolean hasPatch = false;
-        try {
-            hasPatch = NativeApp.hasWidescreenPatch();
-        } catch (Throwable ignored) {}
-        if (!hasPatch) {
-            drawerWidescreenSwitch.setVisibility(View.GONE);
-            drawerWidescreenSwitch.setOnCheckedChangeListener(null);
-            return;
-        }
-        drawerWidescreenSwitch.setVisibility(View.VISIBLE);
-        drawerWidescreenSwitch.setText(R.string.drawer_apply_widescreen_patch);
-        drawerWidescreenSwitch.setOnCheckedChangeListener(null);
-        drawerWidescreenSwitch.setChecked(readBoolSetting("EmuCore", "EnableWideScreenPatches", false));
-        drawerWidescreenSwitch.setOnCheckedChangeListener(drawerWidescreenListener);
-    }
+    private void updateWidescreenToggleVisibility() { mDrawerSettingsManager.updateWidescreenToggleVisibility(); }
+    private void applyControllerMode(int mode) { mDrawerSettingsManager.applyControllerMode(mode); }
+    private void applyRendererSelection(int rendererValue) { mDrawerSettingsManager.applyRendererSelection(rendererValue); }
+    // endregion Drawer settings
 
     boolean readBoolSetting(String section, String key, boolean defaultValue) {
         try {
@@ -1593,93 +1271,10 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private @IdRes int rendererButtonForValue(int value) {
-        switch (value) {
-            case 12:
-                return R.id.drawer_tb_gl;
-            case 13:
-                return R.id.drawer_tb_sw;
-            case 14:
-                return R.id.drawer_tb_vk;
-            default:
-                return R.id.drawer_tb_at;
-        }
-    }
-
-    private int rendererValueForButton(@IdRes int buttonId) {
-        if (buttonId == R.id.drawer_tb_gl) return 12;
-        if (buttonId == R.id.drawer_tb_sw) return 13;
-        if (buttonId == R.id.drawer_tb_vk) return 14;
-        return -1;
-    }
-
-    private void applyRendererSelection(int rendererValue) {
-        MaterialButtonToggleGroup rendererGroup = findViewById(R.id.drawer_tg_renderer);
-        if (rendererGroup != null) {
-            rendererGroup.check(rendererButtonForValue(rendererValue));
-        } else {
-            NativeApp.renderGpu(rendererValue);
-        }
-    }
-
-    private void showGameStateDialog() {
-        CharSequence[] items = new CharSequence[]{
-                getString(R.string.home_game_state_save_slot_1),
-                getString(R.string.home_game_state_load_slot_1)
-        };
-    new MaterialAlertDialogBuilder(this)
-        .setTitle(R.string.home_game_state_title)
-                .setItems(items, (dialog, which) -> {
-                    if (which == 0) {
-                        pauseVmForStateOperation();
-                        boolean ok = NativeApp.saveStateToSlot(1);
-                        try {
-                            Toast.makeText(this, ok ? R.string.home_game_state_saved : R.string.home_game_state_save_failed, Toast.LENGTH_SHORT).show();
-                        } catch (Throwable ignored) {}
-                        resumeVmAfterStateOperation();
-                    } else if (which == 1) {
-                        pauseVmForStateOperation();
-                        boolean ok = NativeApp.loadStateFromSlot(1);
-                        try {
-                            Toast.makeText(this, ok ? R.string.home_game_state_loaded : R.string.home_game_state_load_failed, Toast.LENGTH_SHORT).show();
-                        } catch (Throwable ignored) {}
-                        if (!ok) {
-                            resumeVmAfterStateOperation();
-                            return;
-                        }
-                        resumeVmAfterStateOperation();
-                    }
-                })
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
-    }
-
-    private void showAboutDialog() {
-        String versionName = "";
-        try {
-            versionName = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-        } catch (Exception ignored) {}
-    String message = "ARMSX2 (" + versionName + ")\n" +
-        "by ARMSX2 team\n\n" +
-        "Core contributors:\n" +
-        "- MoonPower — App developer\n" +
-        "- jpolo — Management\n" +
-        "- Medievalshell — Web developer\n" +
-        "- set l — Web developer\n" +
-        "- Alex — QA tester\n" +
-        "- Yua — QA tester\n\n" +
-        "Thanks to:\n" +
-        "- pontos2024 (emulator base)\n" +
-        "- PCSX2 v2.3.430 (core emulator)\n" +
-        "- SDL (SDL3)\n" +
-        "- Fffathur (icon design)\n" +
-        "- vivimagic0 (icon design)";
-    new MaterialAlertDialogBuilder(this)
-        .setTitle("About")
-        .setMessage(message)
-        .setPositiveButton(android.R.string.ok, (d, w) -> d.dismiss())
-        .show();
-    }
+    // region Dialogs — delegated to DialogHelper
+    private void showGameStateDialog() { mDialogHelper.showGameStateDialog(); }
+    private void showAboutDialog() { mDialogHelper.showAboutDialog(); }
+    // endregion Dialogs
 
     private String resolveOnScreenUiStylePreference() {
         String value = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_ONSCREEN_UI_STYLE, STYLE_DEFAULT);
@@ -1738,7 +1333,7 @@ public class MainActivity extends AppCompatActivity {
         view.setIconResource(defaultResId);
     }
 
-    private void applyJoystickStyle(JoystickView joystick) {
+    void applyJoystickStyle(JoystickView joystick) {
         if (joystick == null) {
             return;
         }
@@ -1755,7 +1350,7 @@ public class MainActivity extends AppCompatActivity {
         joystick.setKnobScaleFactor(1.0f);
     }
 
-    private void applyDpadStyle(DPadView dpadView) {
+    void applyDpadStyle(DPadView dpadView) {
         if (dpadView == null) {
             return;
         }
@@ -1786,7 +1381,7 @@ public class MainActivity extends AppCompatActivity {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putFloat(PREF_UI_SCALE_MULTIPLIER, value).apply();
     }
 
-    private void applyUserUiScale() {
+    void applyUserUiScale() {
         float multiplier = Math.max(ONSCREEN_UI_SCALE_MIN, Math.min(ONSCREEN_UI_SCALE_MAX, onScreenUiScaleMultiplier));
         onScreenUiScaleMultiplier = multiplier;
         applyScaleWithPivot(llPadSelectStart, multiplier, multiplier, 0.5f, 1f);
@@ -1824,22 +1419,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void pauseVmForStateOperation() {
-        try {
-            NativeApp.pause();
-            SystemClock.sleep(50);
-            NativeApp.resetKeyStatus();
-        } catch (Throwable ignored) {}
-    }
-
-    private void resumeVmAfterStateOperation() {
-        try {
-            SystemClock.sleep(30);
-            NativeApp.resume();
-            isVmPaused = false;
-            updatePauseButtonIcon();
-        } catch (Throwable ignored) {}
-    }
+    // pauseVmForStateOperation / resumeVmAfterStateOperation live in DialogHelper
 
     private void updateOnScreenUiScaleLabel(TextView label) {
         if (label != null) {
@@ -2051,89 +1631,7 @@ public class MainActivity extends AppCompatActivity {
     private void showDrawerImportFailureDialog(@StringRes int titleRes, String details) { mContentImportHelper.showDrawerImportFailureDialog(titleRes, details); }
     // endregion Content Import
 
-    private void showSettingsDialog() {
-        View view = getLayoutInflater().inflate(R.layout.dialog_settings, null);
-        AlertDialog dialog = new MaterialAlertDialogBuilder(this)
-                .setView(view)
-                .create();
-
-        View btnClose = view.findViewById(R.id.btn_close);
-        if (btnClose != null) btnClose.setOnClickListener(v -> dialog.dismiss());
-
-        // Aspect ratio options
-        View rg = view.findViewById(R.id.rg_aspect);
-        if (rg instanceof android.widget.RadioGroup) {
-            ((android.widget.RadioGroup) rg).setOnCheckedChangeListener((group, checkedId) -> {
-                int type = 1; // default to Auto
-                if (checkedId == R.id.rb_ar_4_3) type = 2;
-                else if (checkedId == R.id.rb_ar_16_9) type = 3;
-                else type = 1;
-                NativeApp.setAspectRatio(type);
-            });
-        }
-
-        // OSD toggles
-        View swFps = view.findViewById(R.id.switch_osd_fps);
-        if (swFps instanceof android.widget.Switch) {
-            ((android.widget.Switch) swFps).setChecked(false);
-            ((android.widget.Switch) swFps).setOnCheckedChangeListener((buttonView, isChecked) ->
-                    NativeApp.setSetting("EmuCore/GS", "OsdShowFPS", "bool", isChecked ? "true" : "false"));
-        }
-        View swRes = view.findViewById(R.id.switch_osd_res);
-        if (swRes != null) swRes.setVisibility(View.GONE);
-        View swStats = view.findViewById(R.id.switch_osd_stats);
-        if (swStats != null) swStats.setVisibility(View.GONE);
-
-        View swHw = view.findViewById(R.id.switch_hw_readbacks);
-        if (swHw instanceof android.widget.Switch) {
-            ((android.widget.Switch) swHw).setChecked(true);
-            ((android.widget.Switch) swHw).setOnCheckedChangeListener((buttonView, isChecked) ->
-                    NativeApp.setSetting("EmuCore/GS", "HardwareReadbacks", "bool", isChecked ? "true" : "false"));
-        }
-
-        View btnImportMc = view.findViewById(R.id.btn_import_memcard);
-        if (btnImportMc != null) {
-            btnImportMc.setOnClickListener(v -> {
-                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-                i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false);
-                i.setType("application/octet-stream");
-                String[] types = new String[]{"application/octet-stream", "application/x-binary"};
-                i.putExtra(Intent.EXTRA_MIME_TYPES, types);
-                startActivityForResult(Intent.createChooser(i, "Select memory card"), 9911);
-            });
-        }
-
-    View btnAbout = view.findViewById(R.id.btn_about);
-    if (btnAbout != null) {
-        btnAbout.setOnClickListener(v -> {
-        String versionName = "";
-        try { versionName = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception ignored) {}
-        String message = "ARMSX2 (" + versionName + ")\n" +
-            "by ARMSX2 team\n\n" +
-            "Core contributors:\n" +
-            "- MoonPower — App developer\n" +
-            "- jpolo — Management\n" +
-            "- Medievalshell — Web developer\n" +
-            "- set l — Web developer\n" +
-            "- Alex — QA tester\n" +
-            "- Yua — QA tester\n\n" +
-            "Thanks to:\n" +
-            "- pontos2024 (emulator base)\n" +
-            "- PCSX2 v2.3.430 (core emulator)\n" +
-            "- SDL (SDL3)\n" +
-            "- Fffathur (icon design)\n" +
-            "- vivimagic0 (icon design)";
-        new MaterialAlertDialogBuilder(this)
-            .setTitle("About")
-            .setMessage(message)
-            .setPositiveButton("OK", (d, w) -> d.dismiss())
-            .show();
-        });
-    }
-
-        dialog.show();
-    }
+    private void showSettingsDialog() { mDialogHelper.showSettingsDialog(); }
 
     public final ActivityResultLauncher<Intent> startActivityResultLocalFilePlay = registerForActivityResult(
             new ActivityResultContracts.StartActivityForResult(),
@@ -2218,15 +1716,8 @@ public class MainActivity extends AppCompatActivity {
                 }
             });
     private final ActivityResultLauncher<Intent> startActivityResultOnboarding =
-            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
-                onboardingLaunched = false;
-                if (result.getResultCode() == Activity.RESULT_OK) {
-                    setOnboardingComplete();
-                    runPostOnboardingPrompts();
-                } else if (!isOnboardingComplete()) {
-                    maybeStartOnboardingFlow();
-                }
-            });
+            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result ->
+                    mDataDirectorySetupManager.handleOnboardingResult(result.getResultCode()));
 
     @Override
     public void onConfigurationChanged(@NonNull Configuration p_newConfig) {
@@ -2323,170 +1814,15 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private boolean isOnboardingComplete() {
-        return getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_ONBOARDING_COMPLETE, false);
-    }
-
-    private void setOnboardingComplete() {
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(PREF_ONBOARDING_COMPLETE, true).apply();
-    }
-
-    private void maybeStartOnboardingFlow() {
-        if (postOnboardingChecksRun) {
-            return;
-        }
-        if (isOnboardingComplete()) {
-            runPostOnboardingPrompts();
-            return;
-        }
-        if (onboardingLaunched) {
-            return;
-        }
-        try {
-            Intent onboardingIntent = new Intent(this, OnboardingActivity.class);
-            startActivityResultOnboarding.launch(onboardingIntent);
-            onboardingLaunched = true;
-        } catch (Throwable t) {
-            setOnboardingComplete();
-            runPostOnboardingPrompts();
-        }
-    }
-
-    private void runPostOnboardingPrompts() {
-        if (postOnboardingChecksRun) {
-            return;
-        }
-        postOnboardingChecksRun = true;
-        ensureBiosPresent();
-        maybeShowDataDirectoryPrompt();
-    }
-
-    private void maybeShowDataDirectoryPrompt() {
-        if (storagePromptShown) {
-            return;
-        }
-        if (DataDirectoryManager.isPromptDone(this)) {
-            return;
-        }
-        storagePromptShown = true;
-        new MaterialAlertDialogBuilder(this)
-                .setTitle("Storage location")
-                .setMessage("Do you wish to change where the emulator stores its data?")
-                .setNegativeButton("Cancel", (dialog, which) -> {
-                    DataDirectoryManager.markPromptDone(this);
-                    dialog.dismiss();
-                })
-                .setPositiveButton("Choose", (dialog, which) -> {
-                    dialog.dismiss();
-                    launchDataDirectoryPicker();
-                })
-                .setOnDismissListener(dialog -> storagePromptShown = true)
-                .show();
-    }
-
-    private void launchDataDirectoryPicker() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        startActivityResultPickDataDir.launch(intent);
-    }
-
-    private void handleDataDirectorySelection(@NonNull Uri tree) {
-        String resolvedPath = DataDirectoryManager.resolveTreeUriToPath(this, tree);
-        if (resolvedPath == null || resolvedPath.trim().isEmpty()) {
-            try {
-                Toast.makeText(this, R.string.onboarding_storage_unusable, Toast.LENGTH_LONG).show();
-            } catch (Throwable ignored) {}
-            storagePromptShown = false;
-            maybeShowDataDirectoryPrompt();
-            return;
-        }
-        File targetDir = new File(resolvedPath);
-        if (!targetDir.exists() && !targetDir.mkdirs()) {
-            try {
-                Toast.makeText(this, R.string.onboarding_storage_create_failed, Toast.LENGTH_LONG).show();
-            } catch (Throwable ignored) {}
-            storagePromptShown = false;
-            maybeShowDataDirectoryPrompt();
-            return;
-        }
-        if (!DataDirectoryManager.canUseDirectFileAccess(targetDir)) {
-            showStorageAccessError(targetDir);
-            storagePromptShown = false;
-            maybeShowDataDirectoryPrompt();
-            return;
-        }
-        File currentDir = DataDirectoryManager.getDataRoot(getApplicationContext());
-        if (currentDir != null && currentDir.getAbsolutePath().equals(targetDir.getAbsolutePath())) {
-            DataDirectoryManager.storeCustomDataRoot(getApplicationContext(), targetDir.getAbsolutePath(), tree.toString());
-            NativeApp.setDataRootOverride(targetDir.getAbsolutePath());
-            DataDirectoryManager.markPromptDone(this);
-            storagePromptShown = true;
-            try {
-                Toast.makeText(this, R.string.onboarding_storage_already_using, Toast.LENGTH_SHORT).show();
-            } catch (Throwable ignored) {}
-            return;
-        }
-        beginDataDirectoryMigration(currentDir, targetDir, tree.toString());
-    }
-
-    private void beginDataDirectoryMigration(@NonNull File currentDir, @NonNull File targetDir, @NonNull String uriString) {
-        showDataDirProgressDialog();
-        NativeApp.pause();
-        NativeApp.shutdown();
-        new Thread(() -> {
-            boolean success = DataDirectoryManager.migrateData(currentDir, targetDir);
-			if (success) {
-				DataDirectoryManager.storeCustomDataRoot(getApplicationContext(), targetDir.getAbsolutePath(), uriString);
-				NativeApp.setDataRootOverride(targetDir.getAbsolutePath());
-				NativeApp.reinitializeDataRoot(targetDir.getAbsolutePath());
-				LogcatRecorder.handleDataRootChanged();
-				DataDirectoryManager.copyAssetAll(getApplicationContext(), "resources");
-			}
-			runOnUiThread(() -> {
-                dismissDataDirProgressDialog();
-                if (success) {
-                    DataDirectoryManager.markPromptDone(this);
-                    storagePromptShown = true;
-                    try {
-                        Toast.makeText(this, R.string.onboarding_storage_moved, Toast.LENGTH_LONG).show();
-                    } catch (Throwable ignored) {}
-                } else {
-                    try {
-                        Toast.makeText(this, R.string.onboarding_storage_move_failed, Toast.LENGTH_LONG).show();
-                    } catch (Throwable ignored) {}
-                    storagePromptShown = false;
-                    maybeShowDataDirectoryPrompt();
-                }
-            });
-        }, "DataDirMigration").start();
-    }
-
-    private void showDataDirProgressDialog() {
-        runOnUiThread(() -> {
-            if (dataDirProgressDialog != null && dataDirProgressDialog.isShowing()) {
-                return;
-            }
-            ProgressBar progressBar = new ProgressBar(this);
-            int padding = dpToPx(24);
-            progressBar.setPadding(padding, padding, padding, padding);
-            dataDirProgressDialog = new MaterialAlertDialogBuilder(this)
-                    .setTitle("Moving data")
-                    .setMessage("Moving emulator data to the selected folder…")
-                    .setView(progressBar)
-                    .setCancelable(false)
-                    .create();
-            dataDirProgressDialog.show();
-        });
-    }
-
-    private void dismissDataDirProgressDialog() {
-        runOnUiThread(() -> {
-            if (dataDirProgressDialog != null) {
-                dataDirProgressDialog.dismiss();
-                dataDirProgressDialog = null;
-            }
-        });
-    }
+    // region Data directory & onboarding — delegated to DataDirectorySetupManager
+    private boolean isOnboardingComplete() { return mDataDirectorySetupManager.isOnboardingComplete(); }
+    private void setOnboardingComplete() { mDataDirectorySetupManager.setOnboardingComplete(); }
+    private void maybeStartOnboardingFlow() { mDataDirectorySetupManager.maybeStartOnboardingFlow(); }
+    private void runPostOnboardingPrompts() { mDataDirectorySetupManager.runPostOnboardingPrompts(); }
+    private void maybeShowDataDirectoryPrompt() { mDataDirectorySetupManager.maybeShowDataDirectoryPrompt(); }
+    void launchOnboardingIntent(Intent i) { startActivityResultOnboarding.launch(i); }
+    void launchDataDirPickerIntent(Intent i) { startActivityResultPickDataDir.launch(i); }
+    // endregion Data directory & onboarding
 
     private void setSurfaceView(Object p_value) {
         FrameLayout fl_board = findViewById(R.id.fl_board);
@@ -2835,9 +2171,9 @@ public class MainActivity extends AppCompatActivity {
         return getResources().getInteger(R.integer.game_selector_span_count);
     }
 
-    private int dpToPx(int dp) { return Math.round(dp * getResources().getDisplayMetrics().density); }
+    int dpToPx(int dp) { return Math.round(dp * getResources().getDisplayMetrics().density); }
 
-    private void showStorageAccessError(File targetDir) {
+    void showStorageAccessError(File targetDir) {
         boolean canGrant = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !DataDirectoryManager.hasAllFilesAccess();
         String message = "Android denied direct file access for:\n" + targetDir.getAbsolutePath() +
                 "\n\nGrant 'Allow access to all files' in system settings or choose a folder inside ARMSX2's storage.";
@@ -2919,12 +2255,11 @@ public class MainActivity extends AppCompatActivity {
                         try {
                             getContentResolver().takePersistableUriPermission(tree, takeFlags);
                         } catch (SecurityException ignored) {}
-                        handleDataDirectorySelection(tree);
+                        mDataDirectorySetupManager.handleDataDirectorySelection(tree);
                         return;
                     }
                 }
-                storagePromptShown = false;
-                maybeShowDataDirectoryPrompt();
+                mDataDirectorySetupManager.maybeShowDataDirectoryPrompt();
             });
 
     //////////////////////////////////////////////////////////////////////////////////////////////
