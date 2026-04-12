@@ -46,11 +46,11 @@ def discordCallbackScheme = discordSchemeFromEnv ? discordSchemeFromEnv : (disco
 def isDiscordSdkAvailable = file("${project.projectDir}/libs/discord_partner_sdk.aar").exists()
 
 android {
-    namespace 'kr.co.iefriends.pcsx2'
+    namespace = 'kr.co.iefriends.pcsx2'
     compileSdk 36
-    ndkVersion '29.0.14206865'
+    ndkVersion = '29.0.14206865'
 
-    flavorDimensions "distribution"
+    flavorDimensions = ["distribution"]
 
     defaultConfig {
     applicationId "come.nanodata.armsx2"
@@ -59,9 +59,7 @@ android {
         versionCode 22
         versionName "1.0.8"
 
-        // APK
-        def baseName = 'ARMSX2'
-        setProperty('archivesBaseName', "${baseName}_${versionCode}_${new Date().format('yyyyMMddHHmm')}${isSwitchBuild ? '-switch' : ''}")
+        // APK name is set via base.archivesName below
 
         externalNativeBuild {
             cmake {
@@ -120,7 +118,7 @@ android {
     buildTypes {
         debug {
             ndk {
-                debugSymbolLevel 'FULL'
+                debugSymbolLevel = 'FULL'
             }
             debuggable true
             minifyEnabled false
@@ -129,11 +127,11 @@ android {
         }
         release {
             ndk {
-                debugSymbolLevel 'SYMBOL_TABLE'
+                debugSymbolLevel = 'SYMBOL_TABLE'
             }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.release
+            signingConfig = signingConfigs.release
             buildConfigField "boolean", "LOGS_ENABLED", "true"
         }
         releaseNoLog {
@@ -148,8 +146,8 @@ android {
     }
     externalNativeBuild {
         cmake {
-            version '3.22.1'
-            path file('src/main/cpp/CMakeLists.txt')
+            version = '3.22.1'
+            path = file('src/main/cpp/CMakeLists.txt')
         }
     }
     packagingOptions {
@@ -162,8 +160,8 @@ android {
     }
 
     buildFeatures {
-        buildConfig true
-        prefab true
+        buildConfig = true
+        prefab = true
     }
 
     sourceSets {
@@ -175,6 +173,11 @@ android {
             }
         }
     }
+}
+
+base {
+    def vc = android.defaultConfig.versionCode
+    archivesName = "ARMSX2_${vc}_${new Date().format('yyyyMMddHHmm')}${isSwitchBuild ? '-switch' : ''}"
 }
 
 repositories {

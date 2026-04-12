@@ -9,6 +9,7 @@ local.properties
 node_modules/
 bun.lockb
 package-lock.json
+.claude
 
 # OS junk & editor/files
 .DS_Store
