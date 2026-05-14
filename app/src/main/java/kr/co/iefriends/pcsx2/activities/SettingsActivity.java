@@ -1315,6 +1315,26 @@ public class SettingsActivity extends AppCompatActivity {
 			NativeApp.setSetting("Pad1", "Vibration", "bool", isChecked ? "true" : "false");
 			MainActivity.setVibrationPreference(isChecked);
 		});
+
+		Slider sliderPressureModifier = findViewById(R.id.slider_pressure_modifier);
+		TextView tvPressureValue = findViewById(R.id.tv_pressure_modifier_value);
+		if (sliderPressureModifier != null) {
+			float pct = 50f;
+			try {
+				String val = NativeApp.getSetting("Pad1", "PressureModifier", "float");
+				if (val != null && !val.isEmpty()) {
+					float parsed = Float.parseFloat(val) * 100f;
+					pct = Math.max(1f, Math.min(100f, Math.round(parsed)));
+				}
+			} catch (Exception ignored) {}
+			sliderPressureModifier.setValue(pct);
+			if (tvPressureValue != null) tvPressureValue.setText((int) pct + "%");
+			sliderPressureModifier.addOnChangeListener((slider, value, fromUser) -> {
+				if (tvPressureValue != null) tvPressureValue.setText((int) value + "%");
+				NativeApp.setSetting("Pad1", "PressureModifier", "float",
+						String.valueOf(value / 100f));
+			});
+		}
 	}
 
     private void initializePerformanceSettings() {

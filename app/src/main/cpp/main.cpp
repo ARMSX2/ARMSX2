@@ -609,6 +609,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setPadButton(JNIEnv *env, jclass clazz,
         case 121: _key = PadDualshock2::Inputs::PAD_R_RIGHT; break;
         case 122: _key = PadDualshock2::Inputs::PAD_R_DOWN; break;
         case 123: _key = PadDualshock2::Inputs::PAD_R_LEFT; break;
+        case 200: _key = PadDualshock2::Inputs::PAD_PRESSURE; break;
         default: _key = PadDualshock2::Inputs::PAD_CROSS ; break;
     }
     float value = 0.0f;

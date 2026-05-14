@@ -163,7 +163,11 @@ public final class ControllerMappingManager {
         L3(R.string.controller_action_l3, KeyEvent.KEYCODE_BUTTON_THUMBL),
         R3(R.string.controller_action_r3, KeyEvent.KEYCODE_BUTTON_THUMBR),
         SELECT(R.string.controller_action_select, KeyEvent.KEYCODE_BUTTON_SELECT),
-        START(R.string.controller_action_start, KeyEvent.KEYCODE_BUTTON_START);
+        START(R.string.controller_action_start, KeyEvent.KEYCODE_BUTTON_START),
+        PRESSURE_MODIFIER(R.string.controller_action_pressure_modifier, NO_MAPPING) {
+            @Override
+            public int getPadCode() { return 200; }
+        };
 
         private final @StringRes int labelRes;
         private final int defaultKeyCode;

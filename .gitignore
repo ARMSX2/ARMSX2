@@ -20,6 +20,8 @@ app/src/main/.DS_Store
 app/.cxx/
 app/src/main/jniLibs/
 app/src/main/cpp/bin
+# .o files from standalone host test builds leaking into source tree
+app/src/main/cpp/**/*.o
 
 # Sensitive or key material
 armsx2_release.jks
@@ -28,6 +30,9 @@ app/src/main/assets/discord_creds.env
 
 # Temporary/log/output files
 log.txt
+
+# Local Claude Code context pointer (vault lives at ~/vault/)
+CLAUDE.md
 
 # Third-party (vendored) native or generated sources
 app/src/main/cpp/3rdparty/rcheevos/.build

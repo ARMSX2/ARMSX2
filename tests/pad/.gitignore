@@ -1,0 +1,3 @@
+# Build artifacts
+pad_tests
+*.o
