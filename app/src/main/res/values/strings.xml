@@ -28,7 +28,7 @@
     <string name="controller_action_start">Start</string>
     <string name="controller_action_pressure_modifier">Pressure Modifier</string>
     <string name="settings_pressure_modifier_label">Modifier Pressure Amount</string>
-    <string name="settings_pressure_modifier_description">Button pressure when Pressure Modifier is held</string>
+    <string name="settings_pressure_modifier_description">Pressure level applied to face/shoulder buttons while the Pressure Modifier button is held. Bind the button in Edit Controller Mapping.</string>
     <string name="settings_aspect_ratio">Aspect Ratio</string>
     <string name="settings_record_logs">Record Logs</string>
     <string name="settings_record_logs_summary">Capture full Android logcat (emulator output, crashes, ADB) to ANDROID_LOG.txt in your data directory. May reduce performance.</string>

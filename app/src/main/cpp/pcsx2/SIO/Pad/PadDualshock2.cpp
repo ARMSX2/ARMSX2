@@ -656,7 +656,7 @@ void PadDualshock2::Set(u32 index, float value)
 	else
 	{
 		// Don't affect L2/R2, since they are analog on most pads.
-		const float pMod = ((this->buttons & (1u << Inputs::PAD_PRESSURE)) == 0 && !IsTriggerKey(index)) ? this->pressureModifier : 1.0f;
+		const float pMod = ((this->buttons & (1u << bitmaskMapping[Inputs::PAD_PRESSURE])) == 0 && !IsTriggerKey(index)) ? this->pressureModifier : 1.0f;
 		const float dzValue = (value < this->buttonDeadzone) ? 0.0f : value;
 		this->rawInputs[index] = static_cast<u8>(std::clamp(dzValue * pMod * 255.0f, 0.0f, 255.0f));
 
@@ -672,7 +672,7 @@ void PadDualshock2::Set(u32 index, float value)
 		// Adjust pressure of all other face buttons which are active when pressure modifier is pressed..
 		if (index == Inputs::PAD_PRESSURE)
 		{
-			const float adjustPMod = ((this->buttons & (1u << Inputs::PAD_PRESSURE)) == 0) ? this->pressureModifier : (1.0f / this->pressureModifier);
+			const float adjustPMod = ((this->buttons & (1u << bitmaskMapping[Inputs::PAD_PRESSURE])) == 0) ? this->pressureModifier : (1.0f / this->pressureModifier);
 
 			for (u32 i = 0; i < Inputs::LENGTH; i++)
 			{
