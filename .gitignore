@@ -20,9 +20,6 @@ app/src/main/.DS_Store
 app/.cxx/
 app/src/main/jniLibs/
 app/src/main/cpp/bin
-# .o files from standalone host test builds leaking into source tree
-app/src/main/cpp/**/*.o
-
 # Sensitive or key material
 armsx2_release.jks
 armsx2_keystore.properties
