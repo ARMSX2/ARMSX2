@@ -211,7 +211,7 @@ struct GameScreenView: View {
                 get: { settings.osdPreset != .off },
                 set: { newValue in
                     if newValue {
-                        settings.osdPreset = .simple
+                        settings.osdPreset = settings.lastActiveOsdPreset
                         ARMSX2Bridge.setPerformanceOverlayVisible(true)
                     } else {
                         settings.osdPreset = .off

@@ -24,12 +24,23 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
             name: AppState.systemChromeNeedsUpdateNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(systemChromeNeedsUpdate),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
     }
 
     deinit {
         NotificationCenter.default.removeObserver(
             self,
             name: AppState.systemChromeNeedsUpdateNotification,
+            object: nil
+        )
+        NotificationCenter.default.removeObserver(
+            self,
+            name: UIApplication.didBecomeActiveNotification,
             object: nil
         )
     }
