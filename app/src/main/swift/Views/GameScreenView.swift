@@ -27,6 +27,8 @@ let compatibilityPresets: [CompatibilityPreset] = [
 ]
 
 struct GameScreenView: View {
+    // MARK: - State & Constants
+
     @State private var appState = AppState.shared
     @State private var settings = SettingsStore.shared
     @State private var fileImporter = FileImportHandler.shared
@@ -48,34 +50,33 @@ struct GameScreenView: View {
     @State private var compatibilityPresetKey = "off"
     @State private var compatibilityIdentity = ""
     @State private var compatibilityAutoPresets = true
-    @State private var saveStateStatus: String? = nil
-    @State private var saveStateStatusGeneration = 0
+    @State private var statusMessage: String? = nil
+    @State private var statusMessageGeneration = 0
+    @State private var statusMessageDismissTask: Task<Void, Never>?
     @State private var runtimeOverlayPauseActive = false
     @State private var previousHideHomeIndicator = false
 
     private static let briefStatusDisplayDuration: TimeInterval = 2.2
     private static let importantStatusDisplayDuration: TimeInterval = 6.0
 
+    // MARK: - Body
+
     var body: some View {
         GeometryReader { geo in
             let isLandscape = geo.size.width > geo.size.height
 
             if isLandscape {
-                // Landscape: always use full screen area for Metal + pad
-                // so that pad coordinates match the layout editor exactly.
+                // Landscape: full-screen layout so pad coordinates match the layout editor.
                 ZStack {
                     MetalGameView()
                     if effectiveVirtualPadVisible {
                         VirtualControllerView(isLandscape: true)
                     }
-                    menuOverlay(isLandscape: true)
+                    menuButtonOverlay(isLandscape: true)
                 }
-                .ignoresSafeArea()  // Always fullscreen layout in landscape
+                .ignoresSafeArea()
             } else {
-                // Portrait: Metal top half, pad bottom half. Full-phone Manic
-                // skins are intentionally not drawn here until their info.json
-                // viewport metadata is parsed, otherwise they crop/stretch over
-                // gameplay and make the touch zones look wrong.
+                // Portrait: split layout. Full-phone skins are skipped until viewport metadata is parsed.
                 ZStack {
                     VStack(spacing: 0) {
                         MetalGameView()
@@ -88,7 +89,7 @@ struct GameScreenView: View {
                         }
                     }
                     .overlay(alignment: .topTrailing) {
-                        menuOverlay(isLandscape: false)
+                        menuButtonOverlay(isLandscape: false)
                     }
                 }
             }
@@ -98,7 +99,7 @@ struct GameScreenView: View {
         }
         .sheet(isPresented: $showSaveStates) {
             SaveStatesPanel { message, isImportant in
-                presentSaveStateStatus(
+                presentStatusMessage(
                     message,
                     displayDuration: isImportant ? Self.importantStatusDisplayDuration : Self.briefStatusDisplayDuration
                 )
@@ -133,7 +134,7 @@ struct GameScreenView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            saveStateToast
+            statusToastOverlay
         }
         .sheet(isPresented: $showPerGameSettings) {
             runtimePerGameSettingsContent
@@ -157,6 +158,7 @@ struct GameScreenView: View {
             refreshRuntimeMenuState()
         }
         .onDisappear {
+            statusMessageDismissTask?.cancel()
             leaveGameplaySystemChromeMode()
         }
         .simultaneousGesture(
@@ -170,6 +172,7 @@ struct GameScreenView: View {
         .onChange(of: showPerGameSettings) { _, _ in updateRuntimeOverlayPause() }
         .onChange(of: showPNACHImporter) { _, _ in updateRuntimeOverlayPause() }
         .onChange(of: showPadLayoutEditor) { _, _ in updateRuntimeOverlayPause() }
+        .onChange(of: showResetConfirmation) { _, _ in updateRuntimeOverlayPause() }
         .onReceive(NotificationCenter.default.publisher(for: runtimeMenuStateChangedNotification)) { _ in
             refreshRuntimeMenuState()
         }
@@ -185,22 +188,15 @@ struct GameScreenView: View {
         .persistentSystemOverlays(.hidden)
     }
 
-    private func enterGameplaySystemChromeMode() {
-        previousHideHomeIndicator = appState.hideHomeIndicator
-        appState.hideHomeIndicator = true
-    }
-
-    private func leaveGameplaySystemChromeMode() {
-        appState.hideHomeIndicator = previousHideHomeIndicator
-    }
+    // MARK: - Layout Views
 
     @ViewBuilder
-    private func menuOverlay(isLandscape: Bool) -> some View {
+    private func menuButtonOverlay(isLandscape: Bool) -> some View {
         if !menuButtonHidden {
             VStack {
                 HStack {
                     Spacer()
-                    menuButton(isLandscape: isLandscape)
+                    menuButton()
                 }
                 .padding(.top, isLandscape ? 8 : 4)
                 .padding(.trailing, isLandscape ? 8 : 4)
@@ -209,7 +205,7 @@ struct GameScreenView: View {
         }
     }
 
-    private func menuButton(isLandscape: Bool) -> some View {
+    private func menuButton() -> some View {
         Menu {
             Toggle(isOn: Binding(
                 get: { settings.osdPreset != .off },
@@ -240,7 +236,7 @@ struct GameScreenView: View {
                     settings.hideMenuButton = newValue
                     menuButtonHidden = newValue
                     if newValue {
-                        presentSaveStateStatus(settings.localized("Double-tap empty gameplay space to show the menu button again."))
+                        presentStatusMessage(settings.localized("Double-tap empty gameplay space to show the menu button again."))
                     }
                 }
             )) {
@@ -304,44 +300,7 @@ struct GameScreenView: View {
             }
 
             if vmMenuAvailable {
-                Menu {
-                    Button {
-                        ejectDisc()
-                    } label: {
-                        Label(settings.localized("Eject Disc"), systemImage: "eject")
-                    }
-
-                    let discs = availableDiscSwapNames
-                    if discs.isEmpty {
-                        Text(settings.localized("No disc images found"))
-                    } else {
-                        Menu {
-                            ForEach(discs, id: \.self) { discName in
-                                Button {
-                                    changeDisc(to: discName)
-                                } label: {
-                                    Label(discName, systemImage: "opticaldisc")
-                                }
-                            }
-                        } label: {
-                            Label(settings.localized("Insert Disc (No Reboot)"), systemImage: "tray.and.arrow.down")
-                        }
-
-                        Menu {
-                            ForEach(discs, id: \.self) { discName in
-                                Button {
-                                    restartWithDisc(discName)
-                                } label: {
-                                    Label(discName, systemImage: "arrow.clockwise.circle")
-                                }
-                            }
-                        } label: {
-                            Label(settings.localized("Restart With Disc"), systemImage: "arrow.clockwise.circle")
-                        }
-                    }
-                } label: {
-                    Label(settings.localized("Change Disc"), systemImage: "opticaldisc")
-                }
+                discSwapMenu
             }
 
             if gameMenuAvailable {
@@ -382,34 +341,186 @@ struct GameScreenView: View {
         }
     }
 
-    private func applyGameScreenPreferences() {
-        menuButtonHidden = settings.hideMenuButton
-        if settings.autoFullscreen {
-            fullScreen = true
-            ARMSX2Bridge.setFullScreen(true)
+    private var discSwapMenu: some View {
+        Menu {
+            Button {
+                ejectDisc()
+            } label: {
+                Label(settings.localized("Eject Disc"), systemImage: "eject")
+            }
+
+            let discs = availableDiscSwapNames
+            if discs.isEmpty {
+                Text(settings.localized("No disc images found"))
+            } else {
+                Menu {
+                    ForEach(discs, id: \.self) { discName in
+                        Button {
+                            changeDisc(to: discName)
+                        } label: {
+                            Label(discName, systemImage: "opticaldisc")
+                        }
+                    }
+                } label: {
+                    Label(settings.localized("Insert Disc (No Reboot)"), systemImage: "tray.and.arrow.down")
+                }
+
+                Menu {
+                    ForEach(discs, id: \.self) { discName in
+                        Button {
+                            restartWithDisc(discName)
+                        } label: {
+                            Label(discName, systemImage: "arrow.clockwise.circle")
+                        }
+                    }
+                } label: {
+                    Label(settings.localized("Restart With Disc"), systemImage: "arrow.clockwise.circle")
+                }
+            }
+        } label: {
+            Label(settings.localized("Change Disc"), systemImage: "opticaldisc")
         }
     }
 
-    private func restoreMenuButtonIfHidden() {
-        guard menuButtonHidden else { return }
+    // MARK: - Runtime Panels
 
-        menuButtonHidden = false
-        settings.hideMenuButton = false
-        presentSaveStateStatus(settings.localized("Menu button shown"))
+    private var compatibilityLabPanel: some View {
+        NavigationStack {
+            Form {
+                compatibilityStatusSection
+                compatibilityResetSection
+                compatibilityFlagsSection
+                if !compatibilityIdentity.isEmpty {
+                    compatibilityForgetSection
+                }
+            }
+            .navigationTitle(settings.localized("Compatibility Lab"))
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(settings.localized("Done")) {
+                        showCompatibilityLab = false
+                    }
+                }
+            }
+            .onAppear(perform: refreshCompatibilityState)
+        }
     }
 
-    private var effectiveVirtualPadVisible: Bool {
-        userVirtualPadVisible && (!settings.autoHideVirtualPadWhenControllerConnected || !externalControllerConnected)
+    private var compatibilityStatusSection: some View {
+        let currentPreset = compatibilityPreset(for: compatibilityPresetKey)
+        return Section {
+            Toggle(isOn: Binding(
+                get: { compatibilityAutoPresets },
+                set: { newValue in
+                    compatibilityAutoPresets = newValue
+                    ARMSX2Bridge.setCompatibilityAutoGamePresetsEnabled(newValue)
+                    refreshCompatibilityState()
+                }
+            )) {
+                Label(settings.localized("Auto Game Presets"), systemImage: "sparkles")
+            }
+
+            LabeledContent(settings.localized("Current Mode")) {
+                Text(settings.localized(currentPreset.title))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+            }
+
+            if !compatibilityIdentity.isEmpty {
+                LabeledContent(settings.localized("Current Game")) {
+                    Text(compatibilityIdentity)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text(settings.localized("Start a game to remember presets per title."))
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text(settings.localized("Status"))
+        } footer: {
+            Text(settings.localized("Auto Game Presets applies known safe defaults. Manual flags below are remembered for the current game when a game is running."))
+        }
     }
 
-    private var virtualPadHiddenByController: Bool {
-        userVirtualPadVisible && settings.autoHideVirtualPadWhenControllerConnected && externalControllerConnected
+    private var compatibilityResetSection: some View {
+        Section {
+            Button {
+                applyCompatibilityPreset(compatibilityPreset(for: "off"))
+            } label: {
+                Label(settings.localized("Use Default / Clear Flags"), systemImage: "power")
+            }
+            .foregroundStyle(.primary)
+        } header: {
+            Text(settings.localized("Reset"))
+        } footer: {
+            Text(settings.localized("Use this when testing is done or a game behaves worse with compatibility flags enabled."))
+        }
     }
 
-    private func refreshExternalControllerConnectionState() {
-        let connected = !GCController.controllers().isEmpty
-        if externalControllerConnected != connected {
-            externalControllerConnected = connected
+    private var compatibilityFlagsSection: some View {
+        Section {
+            compatibilityLabToggle(
+                "COP1EverythingOnly",
+                title: "COP1 Everything Only",
+                systemImage: "function"
+            )
+            compatibilityLabToggle(
+                "COP1EverythingPlusLoadStore",
+                title: "COP1 Everything + EE Load/Store",
+                systemImage: "arrow.left.arrow.right"
+            )
+            compatibilityLabToggle(
+                "COP1EverythingPlusMMI",
+                title: "COP1 Everything + EE MMI",
+                systemImage: "rectangle.3.group"
+            )
+            compatibilityLabToggle(
+                "COP1EverythingPlusCOP2VU",
+                title: "COP1 Everything + EE COP2/VU Macro",
+                systemImage: "cube.transparent"
+            )
+            compatibilityLabToggle(
+                "COP1EverythingPlusMultDiv",
+                title: "COP1 Everything + EE Mult/Div",
+                systemImage: "multiply"
+            )
+            compatibilityLabToggle(
+                "COP1EverythingPlusShifts",
+                title: "COP1 Everything + EE Shifts",
+                systemImage: "arrow.left.and.right"
+            )
+            compatibilityLabToggle(
+                "COP1EverythingPlusMoves",
+                title: "COP1 Everything + EE Moves/HI-LO",
+                systemImage: "arrow.triangle.swap"
+            )
+            compatibilityLabToggle(
+                "COP1EverythingPlusIntegerALU",
+                title: "COP1 Everything + EE Integer ALU",
+                systemImage: "plus.forwardslash.minus"
+            )
+            compatibilityLabToggle(
+                "COP1EverythingPlusBranches",
+                title: "COP1 Everything + EE Branches/Jumps",
+                systemImage: "arrow.triangle.branch"
+            )
+        } header: {
+            Text(settings.localized("Manual Compatibility Flags"))
+        } footer: {
+            Text(settings.localized("Toggle one or more flags when a game needs compatibility help. Changing any flag switches this game to Custom Advanced Flags."))
+        }
+    }
+
+    private var compatibilityForgetSection: some View {
+        Section {
+            Button(role: .destructive) {
+                let identity = compatibilityIdentity
+                ARMSX2Bridge.forgetCompatibilityPresetForCurrentGame()
+                refreshCompatibilityState()
+                presentStatusMessage("\(settings.localized("Compatibility preset reset for")) \(identity)")
+            } label: {
+                Label(settings.localized("Forget This Game's Override"), systemImage: "trash")
+            }
         }
     }
 
@@ -438,6 +549,43 @@ struct GameScreenView: View {
         }
     }
 
+    // MARK: - Lifecycle & Events
+
+    private func enterGameplaySystemChromeMode() {
+        previousHideHomeIndicator = appState.hideHomeIndicator
+        appState.hideHomeIndicator = true
+    }
+
+    private func leaveGameplaySystemChromeMode() {
+        appState.hideHomeIndicator = previousHideHomeIndicator
+    }
+
+    private func applyGameScreenPreferences() {
+        menuButtonHidden = settings.hideMenuButton
+        if settings.autoFullscreen {
+            fullScreen = true
+            ARMSX2Bridge.setFullScreen(true)
+        }
+    }
+
+    private func restoreMenuButtonIfHidden() {
+        guard menuButtonHidden else { return }
+
+        menuButtonHidden = false
+        settings.hideMenuButton = false
+        presentStatusMessage(settings.localized("Menu button shown"))
+    }
+
+    private func updateRuntimeOverlayPause() {
+        let shouldPause = showSaveStates || showSpeedControl || showCompatibilityLab || showPerGameSettings || showPNACHImporter || showPadLayoutEditor || showResetConfirmation
+        guard runtimeOverlayPauseActive != shouldPause else { return }
+
+        runtimeOverlayPauseActive = shouldPause
+        if ARMSX2Bridge.isVMRunning() {
+            ARMSX2Bridge.setVMPaused(shouldPause)
+        }
+    }
+
     private func refreshRuntimeMenuState() {
         let vmRunning = ARMSX2Bridge.isVMRunning()
         let gameReady = ARMSX2Bridge.hasValidSaveStateGame()
@@ -450,56 +598,14 @@ struct GameScreenView: View {
         refreshCompatibilityState()
     }
 
-    private func openPerGameSettingsForCurrentGame() {
-        // Load the running game's settings through the VM-safe bridge path (no disc-image
-        // scan) and build a lightweight entry from data the VM already holds, so opening
-        // the panel does not disturb audio/loading on the active game.
-        guard let gameName = currentRuntimeGameName(),
-              let info = ARMSX2Bridge.gameSettingsForCurrentGame() else {
-            runtimePerGameSettingsEntry = nil
-            runtimePerGameSettings = nil
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
-                showPerGameSettings = true
-            }
-            presentImportantSaveStateStatus(settings.localized("Per-game settings need a running game."))
-            return
-        }
-
-        let serial = (info["serial"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        runtimePerGameSettingsEntry = ISOEntry(
-            name: gameName,
-            fileURL: nil,
-            bootPath: nil,
-            coverURL: nil,
-            coverSignature: nil,
-            metadata: serial.isEmpty ? [:] : ["serial": serial],
-            size: 0,
-            isFavorite: false
-        )
-        runtimePerGameSettings = info
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
-            showPerGameSettings = true
+    private func refreshExternalControllerConnectionState() {
+        let connected = !GCController.controllers().isEmpty
+        if externalControllerConnected != connected {
+            externalControllerConnected = connected
         }
     }
 
-    private func closePerGameSettingsOverlay() {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            showPerGameSettings = false
-        }
-        runtimePerGameSettingsEntry = nil
-        runtimePerGameSettings = nil
-        refreshRuntimeMenuState()
-    }
-
-    private func updateRuntimeOverlayPause() {
-        let shouldPause = showSaveStates || showSpeedControl || showCompatibilityLab || showPerGameSettings || showPNACHImporter || showPadLayoutEditor
-        guard runtimeOverlayPauseActive != shouldPause else { return }
-
-        runtimeOverlayPauseActive = shouldPause
-        if ARMSX2Bridge.isVMRunning() {
-            ARMSX2Bridge.setVMPaused(shouldPause)
-        }
-    }
+    // MARK: - Game Identity Helpers
 
     private func currentRuntimeGameName() -> String? {
         if let gameName = normalizedRuntimeGameName(appState.runningGameName) {
@@ -569,148 +675,7 @@ struct GameScreenView: View {
             .uppercased()
     }
 
-    private var compatibilityLabPanel: some View {
-        NavigationStack {
-            Form {
-                let currentPreset = compatibilityPreset(for: compatibilityPresetKey)
-
-                Section {
-                    Toggle(isOn: Binding(
-                        get: { compatibilityAutoPresets },
-                        set: { newValue in
-                            compatibilityAutoPresets = newValue
-                            ARMSX2Bridge.setCompatibilityAutoGamePresetsEnabled(newValue)
-                            refreshCompatibilityState()
-                        }
-                    )) {
-                        Label(settings.localized("Auto Game Presets"), systemImage: "sparkles")
-                    }
-
-                    LabeledContent(settings.localized("Current Mode")) {
-                        Text(settings.localized(currentPreset.title))
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.trailing)
-                    }
-
-                    if !compatibilityIdentity.isEmpty {
-                        LabeledContent(settings.localized("Current Game")) {
-                            Text(compatibilityIdentity)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Text(settings.localized("Start a game to remember presets per title."))
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text(settings.localized("Status"))
-                } footer: {
-                    Text(settings.localized("Auto Game Presets applies known safe defaults. Manual flags below are remembered for the current game when a game is running."))
-                }
-
-                Section {
-                    Button {
-                        applyCompatibilityPreset(compatibilityPreset(for: "off"))
-                    } label: {
-                        Label(settings.localized("Use Default / Clear Flags"), systemImage: "power")
-                    }
-                    .foregroundStyle(.primary)
-                } header: {
-                    Text(settings.localized("Reset"))
-                } footer: {
-                    Text(settings.localized("Use this when testing is done or a game behaves worse with compatibility flags enabled."))
-                }
-
-                Section {
-                    compatibilityLabToggle(
-                        "COP1EverythingOnly",
-                        title: "COP1 Everything Only",
-                        systemImage: "function"
-                    )
-                    compatibilityLabToggle(
-                        "COP1EverythingPlusLoadStore",
-                        title: "COP1 Everything + EE Load/Store",
-                        systemImage: "arrow.left.arrow.right"
-                    )
-                    compatibilityLabToggle(
-                        "COP1EverythingPlusMMI",
-                        title: "COP1 Everything + EE MMI",
-                        systemImage: "rectangle.3.group"
-                    )
-                    compatibilityLabToggle(
-                        "COP1EverythingPlusCOP2VU",
-                        title: "COP1 Everything + EE COP2/VU Macro",
-                        systemImage: "cube.transparent"
-                    )
-                    compatibilityLabToggle(
-                        "COP1EverythingPlusMultDiv",
-                        title: "COP1 Everything + EE Mult/Div",
-                        systemImage: "multiply"
-                    )
-                    compatibilityLabToggle(
-                        "COP1EverythingPlusShifts",
-                        title: "COP1 Everything + EE Shifts",
-                        systemImage: "arrow.left.and.right"
-                    )
-                    compatibilityLabToggle(
-                        "COP1EverythingPlusMoves",
-                        title: "COP1 Everything + EE Moves/HI-LO",
-                        systemImage: "arrow.triangle.swap"
-                    )
-                    compatibilityLabToggle(
-                        "COP1EverythingPlusIntegerALU",
-                        title: "COP1 Everything + EE Integer ALU",
-                        systemImage: "plus.forwardslash.minus"
-                    )
-                    compatibilityLabToggle(
-                        "COP1EverythingPlusBranches",
-                        title: "COP1 Everything + EE Branches/Jumps",
-                        systemImage: "arrow.triangle.branch"
-                    )
-                } header: {
-                    Text(settings.localized("Manual Compatibility Flags"))
-                } footer: {
-                    Text(settings.localized("Toggle one or more flags when a game needs compatibility help. Changing any flag switches this game to Custom Advanced Flags."))
-                }
-
-                if !compatibilityIdentity.isEmpty {
-                    Section {
-                        Button(role: .destructive) {
-                            let identity = compatibilityIdentity
-                            ARMSX2Bridge.forgetCompatibilityPresetForCurrentGame()
-                            refreshCompatibilityState()
-                            presentSaveStateStatus("\(settings.localized("Compatibility preset reset for")) \(identity)")
-                        } label: {
-                            Label(settings.localized("Forget This Game's Override"), systemImage: "trash")
-                        }
-                    }
-                }
-            }
-            .navigationTitle(settings.localized("Compatibility Lab"))
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(settings.localized("Done")) {
-                        showCompatibilityLab = false
-                    }
-                }
-            }
-            .onAppear(perform: refreshCompatibilityState)
-        }
-    }
-
-    private func compatibilityLabToggle(_ key: String, title: String, systemImage: String) -> some View {
-        Toggle(isOn: Binding(
-            get: { ARMSX2Bridge.getJITBisectFlag(key, defaultValue: false) },
-            set: {
-                ARMSX2Bridge.setJITBisectFlag(key, value: $0)
-                compatibilityPresetKey = "custom"
-                if !compatibilityIdentity.isEmpty {
-                    presentSaveStateStatus("\(settings.localized("Custom compatibility flags saved for")) \(compatibilityIdentity)")
-                }
-            }
-        )) {
-            Label(settings.localized(title), systemImage: systemImage)
-        }
-    }
+    // MARK: - Compatibility Helpers
 
     private func refreshCompatibilityState() {
         let preset = ARMSX2Bridge.compatibilityPresetForCurrentGame()
@@ -742,31 +707,120 @@ struct GameScreenView: View {
         refreshCompatibilityState()
 
         if rememberForCurrentGame {
-            presentSaveStateStatus("\(settings.localized(preset.title)) \(settings.localized("saved for")) \(compatibilityIdentity)")
+            presentStatusMessage("\(settings.localized(preset.title)) \(settings.localized("saved for")) \(compatibilityIdentity)")
         } else {
-            presentSaveStateStatus("\(settings.localized("Compatibility preset set to")) \(settings.localized(preset.title))")
+            presentStatusMessage("\(settings.localized("Compatibility preset set to")) \(settings.localized(preset.title))")
         }
+    }
+
+    private func compatibilityLabToggle(_ key: String, title: String, systemImage: String) -> some View {
+        Toggle(isOn: Binding(
+            get: { ARMSX2Bridge.getJITBisectFlag(key, defaultValue: false) },
+            set: {
+                ARMSX2Bridge.setJITBisectFlag(key, value: $0)
+                compatibilityPresetKey = "custom"
+                if !compatibilityIdentity.isEmpty {
+                    presentStatusMessage("\(settings.localized("Custom compatibility flags saved for")) \(compatibilityIdentity)")
+                }
+            }
+        )) {
+            Label(settings.localized(title), systemImage: systemImage)
+        }
+    }
+
+    // MARK: - Actions
+
+    private func openPerGameSettingsForCurrentGame() {
+        // Use the VM-safe bridge path to avoid a disc-image scan while the game is running.
+        guard let gameName = currentRuntimeGameName(),
+              let info = ARMSX2Bridge.gameSettingsForCurrentGame() else {
+            runtimePerGameSettingsEntry = nil
+            runtimePerGameSettings = nil
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                showPerGameSettings = true
+            }
+            presentImportantStatusMessage(settings.localized("Per-game settings need a running game."))
+            return
+        }
+
+        let serial = (info["serial"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        runtimePerGameSettingsEntry = ISOEntry(
+            name: gameName,
+            fileURL: nil,
+            bootPath: nil,
+            coverURL: nil,
+            coverSignature: nil,
+            metadata: serial.isEmpty ? [:] : ["serial": serial],
+            size: 0,
+            isFavorite: false
+        )
+        runtimePerGameSettings = info
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+            showPerGameSettings = true
+        }
+    }
+
+    private func closePerGameSettingsOverlay() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showPerGameSettings = false
+        }
+        runtimePerGameSettingsEntry = nil
+        runtimePerGameSettings = nil
+        refreshRuntimeMenuState()
     }
 
     private func resetCurrentROM() {
         appState.resetCurrentVM()
-        presentSaveStateStatus(settings.localized("Restarting ROM..."))
+        presentStatusMessage(settings.localized("Restarting ROM..."))
     }
 
     private func clearCurrentGameCache() {
         guard let gameName = currentRuntimeGameName() else {
-            presentImportantSaveStateStatus(settings.localized("Cache clear needs a running game."))
+            presentImportantStatusMessage(settings.localized("Cache clear needs a running game."))
             return
         }
 
         let message = ARMSX2Bridge.clearCache(forISO: gameName)
-        presentSaveStateStatus(message)
+        presentStatusMessage(message)
     }
 
+    private func changeDisc(to discName: String) {
+        presentStatusMessage("Changing disc...")
+        ARMSX2Bridge.changeDisc(toISO: discName) { success in
+            Task { @MainActor in
+                if success {
+                    presentStatusMessage("\(discName) inserted. Use the game's disc-swap prompt if needed.")
+                } else {
+                    presentImportantStatusMessage("Could not change discs. Open the game's disc-swap prompt first, or restart with the target disc.")
+                }
+            }
+        }
+    }
+
+    private func restartWithDisc(_ discName: String) {
+        presentStatusMessage("Restarting with \(discName)...")
+        appState.shutdownAndBoot(isoName: discName)
+    }
+
+    private func ejectDisc() {
+        presentStatusMessage("Ejecting disc...")
+        ARMSX2Bridge.ejectDisc { success in
+            Task { @MainActor in
+                if success {
+                    presentStatusMessage("Disc ejected")
+                } else {
+                    presentImportantStatusMessage("Could not eject the disc. Try again after the game has finished loading.")
+                }
+            }
+        }
+    }
+
+    // MARK: - Toast & Feedback
+
     @ViewBuilder
-    private var saveStateToast: some View {
-        if let saveStateStatus {
-            Text(saveStateStatus)
+    private var statusToastOverlay: some View {
+        if let statusMessage {
+            Text(statusMessage)
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 14)
@@ -777,30 +831,33 @@ struct GameScreenView: View {
         }
     }
 
-    private func presentSaveStateStatus(
+    private func presentStatusMessage(
         _ message: String,
         displayDuration: TimeInterval = Self.briefStatusDisplayDuration
     ) {
-        saveStateStatusGeneration += 1
-        let currentGeneration = saveStateStatusGeneration
+        statusMessageDismissTask?.cancel()
+        statusMessageGeneration += 1
+        let currentGeneration = statusMessageGeneration
         withAnimation(.easeOut(duration: 0.18)) {
-            saveStateStatus = message
+            statusMessage = message
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + displayDuration) {
-            guard saveStateStatusGeneration == currentGeneration else { return }
+        statusMessageDismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(displayDuration))
+            guard !Task.isCancelled else { return }
+            guard statusMessageGeneration == currentGeneration else { return }
             withAnimation(.easeIn(duration: 0.18)) {
-                saveStateStatus = nil
+                statusMessage = nil
             }
         }
     }
 
-    private func presentImportantSaveStateStatus(_ message: String) {
-        presentSaveStateStatus(message, displayDuration: Self.importantStatusDisplayDuration)
+    private func presentImportantStatusMessage(_ message: String) {
+        presentStatusMessage(message, displayDuration: Self.importantStatusDisplayDuration)
     }
 
     private func presentPNACHImportResult(_ message: String) {
         if Self.isPNACHImportSuccessMessage(message) {
-            presentSaveStateStatus(message)
+            presentStatusMessage(message)
         } else {
             fileImporter.presentImportResult(message)
         }
@@ -814,41 +871,24 @@ struct GameScreenView: View {
         return !lines.isEmpty && lines.allSatisfy { $0.hasPrefix("PNACH imported") }
     }
 
+    // MARK: - Virtual Pad
+
+    private var effectiveVirtualPadVisible: Bool {
+        userVirtualPadVisible && (!settings.autoHideVirtualPadWhenControllerConnected || !externalControllerConnected)
+    }
+
+    private var virtualPadHiddenByController: Bool {
+        userVirtualPadVisible && settings.autoHideVirtualPadWhenControllerConnected && externalControllerConnected
+    }
+
+    // MARK: - Disc Helpers
+
     private var availableDiscSwapNames: [String] {
         ARMSX2Bridge.availableISOs().filter { !$0.lowercased().hasSuffix(".elf") }
     }
-
-    private func changeDisc(to discName: String) {
-        presentSaveStateStatus("Changing disc...")
-        ARMSX2Bridge.changeDisc(toISO: discName) { success in
-            Task { @MainActor in
-                if success {
-                    presentSaveStateStatus("\(discName) inserted. Use the game's disc-swap prompt if needed.")
-                } else {
-                    presentImportantSaveStateStatus("Could not change discs. Open the game's disc-swap prompt first, or restart with the target disc.")
-                }
-            }
-        }
-    }
-
-    private func restartWithDisc(_ discName: String) {
-        presentSaveStateStatus("Restarting with \(discName)...")
-        appState.shutdownAndBoot(isoName: discName)
-    }
-
-    private func ejectDisc() {
-        presentSaveStateStatus("Ejecting disc...")
-        ARMSX2Bridge.ejectDisc { success in
-            Task { @MainActor in
-                if success {
-                    presentSaveStateStatus("Disc ejected")
-                } else {
-                    presentImportantSaveStateStatus("Could not eject the disc. Try again after the game has finished loading.")
-                }
-            }
-        }
-    }
 }
+
+// MARK: - Save States Panel
 
 private struct SaveStatesPanel: View {
     @Environment(\.dismiss) private var dismiss
@@ -884,7 +924,8 @@ private struct SaveStatesPanel: View {
                                 isBusy: busySlot == slot.slot,
                                 onSave: { save(slot) },
                                 onLoad: { load(slot) },
-                                onOverwrite: { pendingOverwrite = slot }
+                                onOverwrite: { pendingOverwrite = slot },
+                                settings: settings
                             )
                         }
                     }
@@ -975,6 +1016,8 @@ private struct SaveStatesPanel: View {
     }
 }
 
+// MARK: - Speed Control Panel
+
 private struct SpeedControlPanel: View {
     @Bindable var settings: SettingsStore
     @Environment(\.dismiss) private var dismiss
@@ -1063,12 +1106,15 @@ private struct SpeedControlPanel: View {
     }
 }
 
+// MARK: - Save State Slot Row
+
 private struct SaveStateSlotRow: View {
     let info: ARMSX2SaveStateSlotInfo
     let isBusy: Bool
     let onSave: () -> Void
     let onLoad: () -> Void
     let onOverwrite: () -> Void
+    let settings: SettingsStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1077,7 +1123,7 @@ private struct SaveStateSlotRow: View {
                     .frame(width: 96, height: 72)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Slot \(info.slot)")
+                    Text("\(settings.localized("Slot")) \(info.slot)")
                         .font(.headline)
 
                     if info.occupied {
@@ -1091,7 +1137,7 @@ private struct SaveStateSlotRow: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     } else {
-                        Text("Empty")
+                        Text(settings.localized("Empty"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1104,7 +1150,7 @@ private struct SaveStateSlotRow: View {
                         .frame(width: 88)
                 } else if !info.occupied {
                     Button(action: onSave) {
-                        Label("Save", systemImage: "square.and.arrow.down")
+                        Label(settings.localized("Save"), systemImage: "square.and.arrow.down")
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -1113,13 +1159,13 @@ private struct SaveStateSlotRow: View {
             if info.occupied && !isBusy {
                 HStack(spacing: 8) {
                     Button(action: onLoad) {
-                        Label("Load", systemImage: "arrow.down.circle")
+                        Label(settings.localized("Load"), systemImage: "arrow.down.circle")
                     }
                     .buttonStyle(.borderedProminent)
                     .frame(maxWidth: .infinity)
 
                     Button(action: onOverwrite) {
-                        Label("Overwrite", systemImage: "arrow.triangle.2.circlepath")
+                        Label(settings.localized("Overwrite"), systemImage: "arrow.triangle.2.circlepath")
                     }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
@@ -1137,6 +1183,8 @@ private struct SaveStateSlotRow: View {
         return formatter
     }()
 }
+
+// MARK: - Save State Preview
 
 private struct SaveStatePreview: View {
     let data: Data?

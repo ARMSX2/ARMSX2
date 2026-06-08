@@ -303,7 +303,16 @@ final class FileImportHandler: @unchecked Sendable {
                 return .failure(Self.unreadablePNACHImportMessage(for: fileName))
             }
 
-            let normalized = Self.normalizedPNACHText(text)
+            let patchLines = Self.normalizedPNACHPatchLines(from: text)
+            guard patchLines.contains(where: { $0.hasPrefix("patch=") }) else {
+                return .failure(Self.failedPNACHImportMessage(for: fileName, errorDescription: "No valid patch lines found."))
+            }
+
+            var normalized = patchLines.joined(separator: "\n")
+            if !normalized.hasSuffix("\n") {
+                normalized.append("\n")
+            }
+
             try FileManager.default.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             if FileManager.default.fileExists(atPath: destinationURL.path) {
                 try FileManager.default.removeItem(at: destinationURL)
@@ -384,15 +393,21 @@ final class FileImportHandler: @unchecked Sendable {
         return "\(formats.dropLast().joined(separator: ", ")), or \(last)"
     }
 
-    private static func normalizedPNACHText(_ text: String) -> String {
-        var normalized = text
+    private static func normalizedPNACHPatchLines(from text: String) -> [String] {
+        let normalized = text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
 
-        if !normalized.hasSuffix("\n") {
-            normalized.append("\n")
+        return normalized.components(separatedBy: "\n").compactMap { rawLine in
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            // Skip empty lines
+            guard !line.isEmpty else { return nil }
+            // Skip bracketed section headers like [Cheat Name]
+            if line.count > 2, line.first == "[", line.last == "]" {
+                return nil
+            }
+            // Preserve everything else (patch= lines, comments, gametitle, etc.)
+            return line
         }
-
-        return normalized
     }
 }
