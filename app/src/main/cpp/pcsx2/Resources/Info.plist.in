@@ -89,6 +89,8 @@
 	<string>${PCSX2_MICROPHONE_USAGE_DESCRIPTION}</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.games</string>
+	<key>LSSupportsGameMode</key>
+	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>UTImportedTypeDeclarations</key>
