@@ -26,6 +26,13 @@ let compatibilityPresets: [CompatibilityPreset] = [
     CompatibilityPreset(id: "branches", title: "COP1 + EE Branches/Jumps", systemImage: "arrow.triangle.branch"),
 ]
 
+private struct GameScreenSizePreferenceKey: PreferenceKey {
+    static let defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
+    }
+}
+
 struct GameScreenView: View {
     // MARK: - State & Constants
 
@@ -56,6 +63,8 @@ struct GameScreenView: View {
     @State private var runtimeOverlayPauseActive = false
     @State private var previousHideHomeIndicator = false
 
+    @Environment(\.scenePhase) private var scenePhase
+
     private static let briefStatusDisplayDuration: TimeInterval = 2.2
     private static let importantStatusDisplayDuration: TimeInterval = 6.0
 
@@ -65,37 +74,40 @@ struct GameScreenView: View {
         GeometryReader { geo in
             let isLandscape = geo.size.width > geo.size.height
 
-            if isLandscape {
-                // Landscape: full-screen layout so pad coordinates match the layout editor.
-                ZStack {
-                    MetalGameView()
-                    if effectiveVirtualPadVisible {
-                        VirtualControllerView(isLandscape: true)
-                    }
-                    menuButtonOverlay(isLandscape: true)
-                }
-                .ignoresSafeArea()
-            } else {
-                // Portrait: split layout. Full-phone skins are skipped until viewport metadata is parsed.
-                ZStack {
-                    VStack(spacing: 0) {
+            Group {
+                if isLandscape {
+                    // Landscape: full-screen layout so pad coordinates match the layout editor.
+                    ZStack {
                         MetalGameView()
-                            .frame(height: geo.size.height / 2)
                         if effectiveVirtualPadVisible {
-                            VirtualControllerView()
-                                .frame(height: geo.size.height / 2)
-                        } else {
-                            Spacer()
+                            VirtualControllerView(isLandscape: true)
                         }
+                        menuButtonOverlay(isLandscape: true)
                     }
-                    .overlay(alignment: .topTrailing) {
-                        menuButtonOverlay(isLandscape: false)
+                    .ignoresSafeArea()
+                } else {
+                    // Portrait: split layout. Full-phone skins are skipped until viewport metadata is parsed.
+                    ZStack {
+                        VStack(spacing: 0) {
+                            MetalGameView()
+                                .frame(height: geo.size.height / 2)
+                            if effectiveVirtualPadVisible {
+                                VirtualControllerView()
+                                    .frame(height: geo.size.height / 2)
+                            } else {
+                                Spacer()
+                            }
+                        }
+                        .overlay(alignment: .topTrailing) {
+                            menuButtonOverlay(isLandscape: false)
+                        }
                     }
                 }
             }
+            .preference(key: GameScreenSizePreferenceKey.self, value: geo.size)
         }
-        .onChange(of: fullScreen) { _, newValue in
-            ARMSX2Bridge.setFullScreen(newValue)
+        .onPreferenceChange(GameScreenSizePreferenceKey.self) { _ in
+            syncFullscreenStateFromWindow()
         }
         .sheet(isPresented: $showSaveStates) {
             SaveStatesPanel { message, isImportant in
@@ -153,7 +165,8 @@ struct GameScreenView: View {
         }
         .onAppear {
             enterGameplaySystemChromeMode()
-            applyGameScreenPreferences()
+            syncFullscreenStateFromWindow()
+            applyInitialFullscreenPreference()
             refreshExternalControllerConnectionState()
             refreshRuntimeMenuState()
         }
@@ -173,6 +186,11 @@ struct GameScreenView: View {
         .onChange(of: showPNACHImporter) { _, _ in updateRuntimeOverlayPause() }
         .onChange(of: showPadLayoutEditor) { _, _ in updateRuntimeOverlayPause() }
         .onChange(of: showResetConfirmation) { _, _ in updateRuntimeOverlayPause() }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                syncFullscreenStateFromWindow()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: runtimeMenuStateChangedNotification)) { _ in
             refreshRuntimeMenuState()
         }
@@ -227,7 +245,13 @@ struct GameScreenView: View {
             if virtualPadHiddenByController {
                 Text(settings.localized("Hidden while controller is connected"))
             }
-            Toggle(isOn: $fullScreen) {
+            Toggle(isOn: Binding(
+                get: { fullScreen },
+                set: { newValue in
+                    fullScreen = newValue
+                    ARMSX2Bridge.setFullScreen(newValue)
+                }
+            )) {
                 Label(settings.localized("Full Screen"), systemImage: "arrow.up.left.and.arrow.down.right")
             }
             Toggle(isOn: Binding(
@@ -560,11 +584,18 @@ struct GameScreenView: View {
         appState.hideHomeIndicator = previousHideHomeIndicator
     }
 
-    private func applyGameScreenPreferences() {
+    private func applyInitialFullscreenPreference() {
         menuButtonHidden = settings.hideMenuButton
-        if settings.autoFullscreen {
+        if settings.autoFullscreen && !ARMSX2Bridge.isSDLFullscreen() {
             fullScreen = true
             ARMSX2Bridge.setFullScreen(true)
+        }
+    }
+
+    private func syncFullscreenStateFromWindow() {
+        let sdlFullscreen = ARMSX2Bridge.isSDLFullscreen()
+        if fullScreen != sdlFullscreen {
+            fullScreen = sdlFullscreen
         }
     }
 

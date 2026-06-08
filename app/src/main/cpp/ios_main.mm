@@ -2578,6 +2578,12 @@ extern "C" void ARMSX2_SetSDLFullscreen(bool enabled) {
         SDL_SetWindowFullscreen(Host::g_sdl_window, enabled);
 }
 
+extern "C" bool ARMSX2_IsSDLFullscreen() {
+    if (!Host::g_sdl_window)
+        return false;
+    return (SDL_GetWindowFlags(Host::g_sdl_window) & SDL_WINDOW_FULLSCREEN) != 0;
+}
+
 static void ARMSX2EnsureGameRenderViewOnMain(const char* reason) {
     if (g_gameRenderView)
         return;

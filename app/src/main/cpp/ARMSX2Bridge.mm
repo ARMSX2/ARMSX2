@@ -6,6 +6,7 @@
 #include <SDL3/SDL.h>
 
 extern "C" void ARMSX2_SetSDLFullscreen(bool enabled);
+extern "C" bool ARMSX2_IsSDLFullscreen();
 #include "Common.h"
 #include "CDVD/CDVD.h"
 #include "CDVD/CDVDcommon.h"
@@ -1760,6 +1761,10 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
 
 + (void)setFullScreen:(BOOL)enabled {
     ARMSX2_SetSDLFullscreen(enabled ? true : false);
+}
+
++ (BOOL)isSDLFullscreen {
+    return ARMSX2_IsSDLFullscreen() ? YES : NO;
 }
 
 + (nonnull NSString *)buildVersion {

@@ -86,6 +86,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)requestVMStop;
 + (void)setVMPaused:(BOOL)paused;
 + (void)setFullScreen:(BOOL)enabled;
++ (BOOL)isSDLFullscreen;
 
 // Info
 + (nonnull NSString *)biosName;
