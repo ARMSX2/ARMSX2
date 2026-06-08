@@ -10,6 +10,7 @@ extern "C" void ARMSX2_SetSDLFullscreen(bool enabled);
 #include "CDVD/CDVD.h"
 #include "CDVD/CDVDcommon.h"
 #include "VMManager.h"
+#include "pcsx2/MTGS.h"
 #include "Patch.h"
 #include "Achievements.h"
 #include "SIO/Pad/Pad.h"
@@ -1249,6 +1250,12 @@ static void ARMSX2ApplyLiveGSIntSetting(const char* section, const char* key, in
         const int clamped = std::clamp(value, 0, static_cast<int>(TexturePreloadingLevel::Full));
         EmuConfig.GS.TexturePreloading = static_cast<TexturePreloadingLevel>(clamped);
         GSConfig.TexturePreloading = static_cast<TexturePreloadingLevel>(clamped);
+    } else if (std::strcmp(key, "UserHacks_SkipDraw_Start") == 0) {
+        EmuConfig.GS.SkipDrawStart = value;
+        GSConfig.SkipDrawStart = value;
+    } else if (std::strcmp(key, "UserHacks_SkipDraw_End") == 0) {
+        EmuConfig.GS.SkipDrawEnd = std::max(EmuConfig.GS.SkipDrawStart, value);
+        GSConfig.SkipDrawEnd = EmuConfig.GS.SkipDrawEnd;
     }
 }
 
@@ -2183,6 +2190,12 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
                                         textureOffsetYOverride, textureOffsetY, skipDrawStartOverride,
                                         skipDrawStart, skipDrawEndOverride, skipDrawEnd, eeCoreType, mtvu,
                                         enableCheats, enablePatches, enableGameFixes, enableGameDBHardwareFixes);
+
+    if (VMManager::HasValidVM()) {
+        VMManager::ReloadGameSettings();
+        if (MTGS::IsOpen())
+            MTGS::ApplySettings();
+    }
 }
 
 + (nonnull NSString *)clearCacheForISO:(nonnull NSString *)isoName {
