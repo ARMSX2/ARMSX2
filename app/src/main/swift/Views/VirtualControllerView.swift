@@ -578,6 +578,10 @@ struct VirtualControllerView: View {
         layout.position(for: id, landscape: landscape)
     }
 
+    private func perButtonPos(_ id: String, landscape: Bool, w: CGFloat, h: CGFloat) -> PadGroupPosition {
+        layout.perButtonPosition(for: id, landscape: landscape, areaW: w, areaH: h)
+    }
+
     // MARK: - Landscape: overlay on game screen
     @ViewBuilder
     func landscapeLayout(w: CGFloat, h: CGFloat) -> some View {
@@ -594,36 +598,86 @@ struct VirtualControllerView: View {
                     .allowsHitTesting(false)
             }
 
-            DPadView(size: 110)
-                .scaleEffect(pos("dpad", landscape: true).scale)
-                .position(x: pos("dpad", landscape: true).x * w, y: pos("dpad", landscape: true).y * h)
-            ActionButtonsView(size: 42)
-                .scaleEffect(pos("action", landscape: true).scale)
-                .position(x: pos("action", landscape: true).x * w, y: pos("action", landscape: true).y * h)
-            PadBtn(label: "L2", w: 130, h: 44, btn: .L2)
-                .scaleEffect(pos("l2", landscape: true).scale)
-                .position(x: pos("l2", landscape: true).x * w, y: pos("l2", landscape: true).y * h)
-            PadBtn(label: "L1", w: 120, h: 32, btn: .L1)
-                .scaleEffect(pos("l1", landscape: true).scale)
-                .position(x: pos("l1", landscape: true).x * w, y: pos("l1", landscape: true).y * h)
-            PadBtn(label: "R2", w: 130, h: 44, btn: .R2)
-                .scaleEffect(pos("r2", landscape: true).scale)
-                .position(x: pos("r2", landscape: true).x * w, y: pos("r2", landscape: true).y * h)
-            PadBtn(label: "R1", w: 120, h: 32, btn: .R1)
-                .scaleEffect(pos("r1", landscape: true).scale)
-                .position(x: pos("r1", landscape: true).x * w, y: pos("r1", landscape: true).y * h)
-            PadBtn(label: "SEL", w: 40, h: 22, btn: .select)
-                .scaleEffect(pos("select", landscape: true).scale)
-                .position(x: pos("select", landscape: true).x * w, y: pos("select", landscape: true).y * h)
-            PadBtn(label: "START", w: 48, h: 22, btn: .start)
-                .scaleEffect(pos("start", landscape: true).scale)
-                .position(x: pos("start", landscape: true).x * w, y: pos("start", landscape: true).y * h)
-            StickView(isLeft: true, sizeScale: analogStickScale)
-                .scaleEffect(pos("lstick", landscape: true).scale)
-                .position(x: pos("lstick", landscape: true).x * w, y: pos("lstick", landscape: true).y * h)
-            StickView(isLeft: false, sizeScale: analogStickScale)
-                .scaleEffect(pos("rstick", landscape: true).scale)
-                .position(x: pos("rstick", landscape: true).x * w, y: pos("rstick", landscape: true).y * h)
+            // D-pad buttons (individual placement)
+            if layout.isControlVisible("dpad") {
+                let dpadW = VirtualPadButtonOffset.dpadButtonWidth(isLandscape: true)
+                PadBtn(label: "▲", w: dpadW, h: dpadW, btn: .up)
+                    .scaleEffect(perButtonPos("up", landscape: true, w: w, h: h).scale)
+                    .position(x: perButtonPos("up", landscape: true, w: w, h: h).x * w, y: perButtonPos("up", landscape: true, w: w, h: h).y * h)
+                PadBtn(label: "▼", w: dpadW, h: dpadW, btn: .down)
+                    .scaleEffect(perButtonPos("down", landscape: true, w: w, h: h).scale)
+                    .position(x: perButtonPos("down", landscape: true, w: w, h: h).x * w, y: perButtonPos("down", landscape: true, w: w, h: h).y * h)
+                PadBtn(label: "◀", w: dpadW, h: dpadW, btn: .left)
+                    .scaleEffect(perButtonPos("left", landscape: true, w: w, h: h).scale)
+                    .position(x: perButtonPos("left", landscape: true, w: w, h: h).x * w, y: perButtonPos("left", landscape: true, w: w, h: h).y * h)
+                PadBtn(label: "▶", w: dpadW, h: dpadW, btn: .right)
+                    .scaleEffect(perButtonPos("right", landscape: true, w: w, h: h).scale)
+                    .position(x: perButtonPos("right", landscape: true, w: w, h: h).x * w, y: perButtonPos("right", landscape: true, w: w, h: h).y * h)
+            }
+
+            // Action buttons (individual placement)
+            let actionSz = VirtualPadButtonOffset.actionButtonSize
+            if layout.isControlVisible("triangle") {
+                PSBtn(sym: "△", clr: .green, sz: actionSz, btn: .triangle)
+                    .scaleEffect(perButtonPos("triangle", landscape: true, w: w, h: h).scale)
+                    .position(x: perButtonPos("triangle", landscape: true, w: w, h: h).x * w, y: perButtonPos("triangle", landscape: true, w: w, h: h).y * h)
+            }
+            if layout.isControlVisible("cross") {
+                PSBtn(sym: "✕", clr: .blue, sz: actionSz, btn: .cross)
+                    .scaleEffect(perButtonPos("cross", landscape: true, w: w, h: h).scale)
+                    .position(x: perButtonPos("cross", landscape: true, w: w, h: h).x * w, y: perButtonPos("cross", landscape: true, w: w, h: h).y * h)
+            }
+            if layout.isControlVisible("square") {
+                PSBtn(sym: "□", clr: .pink, sz: actionSz, btn: .square)
+                    .scaleEffect(perButtonPos("square", landscape: true, w: w, h: h).scale)
+                    .position(x: perButtonPos("square", landscape: true, w: w, h: h).x * w, y: perButtonPos("square", landscape: true, w: w, h: h).y * h)
+            }
+            if layout.isControlVisible("circle") {
+                PSBtn(sym: "○", clr: .red, sz: actionSz, btn: .circle)
+                    .scaleEffect(perButtonPos("circle", landscape: true, w: w, h: h).scale)
+                    .position(x: perButtonPos("circle", landscape: true, w: w, h: h).x * w, y: perButtonPos("circle", landscape: true, w: w, h: h).y * h)
+            }
+
+            if layout.isControlVisible("l2") {
+                PadBtn(label: "L2", w: 130, h: 44, btn: .L2)
+                    .scaleEffect(pos("l2", landscape: true).scale)
+                    .position(x: pos("l2", landscape: true).x * w, y: pos("l2", landscape: true).y * h)
+            }
+            if layout.isControlVisible("l1") {
+                PadBtn(label: "L1", w: 120, h: 32, btn: .L1)
+                    .scaleEffect(pos("l1", landscape: true).scale)
+                    .position(x: pos("l1", landscape: true).x * w, y: pos("l1", landscape: true).y * h)
+            }
+            if layout.isControlVisible("r2") {
+                PadBtn(label: "R2", w: 130, h: 44, btn: .R2)
+                    .scaleEffect(pos("r2", landscape: true).scale)
+                    .position(x: pos("r2", landscape: true).x * w, y: pos("r2", landscape: true).y * h)
+            }
+            if layout.isControlVisible("r1") {
+                PadBtn(label: "R1", w: 120, h: 32, btn: .R1)
+                    .scaleEffect(pos("r1", landscape: true).scale)
+                    .position(x: pos("r1", landscape: true).x * w, y: pos("r1", landscape: true).y * h)
+            }
+            if layout.isControlVisible("select") {
+                PadBtn(label: "SEL", w: 40, h: 22, btn: .select)
+                    .scaleEffect(pos("select", landscape: true).scale)
+                    .position(x: pos("select", landscape: true).x * w, y: pos("select", landscape: true).y * h)
+            }
+            if layout.isControlVisible("start") {
+                PadBtn(label: "START", w: 48, h: 22, btn: .start)
+                    .scaleEffect(pos("start", landscape: true).scale)
+                    .position(x: pos("start", landscape: true).x * w, y: pos("start", landscape: true).y * h)
+            }
+            if layout.isControlVisible("lstick") {
+                StickView(isLeft: true, sizeScale: analogStickScale)
+                    .scaleEffect(pos("lstick", landscape: true).scale)
+                    .position(x: pos("lstick", landscape: true).x * w, y: pos("lstick", landscape: true).y * h)
+            }
+            if layout.isControlVisible("rstick") {
+                StickView(isLeft: false, sizeScale: analogStickScale)
+                    .scaleEffect(pos("rstick", landscape: true).scale)
+                    .position(x: pos("rstick", landscape: true).x * w, y: pos("rstick", landscape: true).y * h)
+            }
         }
     }
 
@@ -641,44 +695,93 @@ struct VirtualControllerView: View {
                     .frame(width: w, height: h)
                     .clipped()
                     .allowsHitTesting(false)
-            } else {
-                Color(white: 0.10).opacity(Double(settings.padOpacity))  // A002: apply opacity to background too
             }
 
             GeometryReader { cGeo in
                 let cW = cGeo.size.width
                 let cH = cGeo.size.height
 
-                PadBtn(label: "L2", w: 110, h: 40, btn: .L2)
-                    .scaleEffect(pos("l2", landscape: false).scale)
-                    .position(x: pos("l2", landscape: false).x * cW, y: pos("l2", landscape: false).y * cH)
-                PadBtn(label: "L1", w: 100, h: 30, btn: .L1)
-                    .scaleEffect(pos("l1", landscape: false).scale)
-                    .position(x: pos("l1", landscape: false).x * cW, y: pos("l1", landscape: false).y * cH)
-                PadBtn(label: "R2", w: 110, h: 40, btn: .R2)
-                    .scaleEffect(pos("r2", landscape: false).scale)
-                    .position(x: pos("r2", landscape: false).x * cW, y: pos("r2", landscape: false).y * cH)
-                PadBtn(label: "R1", w: 100, h: 30, btn: .R1)
-                    .scaleEffect(pos("r1", landscape: false).scale)
-                    .position(x: pos("r1", landscape: false).x * cW, y: pos("r1", landscape: false).y * cH)
-                PadBtn(label: "SEL", w: 42, h: 22, btn: .select)
-                    .scaleEffect(pos("select", landscape: false).scale)
-                    .position(x: pos("select", landscape: false).x * cW, y: pos("select", landscape: false).y * cH)
-                PadBtn(label: "START", w: 48, h: 22, btn: .start)
-                    .scaleEffect(pos("start", landscape: false).scale)
-                    .position(x: pos("start", landscape: false).x * cW, y: pos("start", landscape: false).y * cH)
-                DPadView(size: 100)
-                    .scaleEffect(pos("dpad", landscape: false).scale)
-                    .position(x: pos("dpad", landscape: false).x * cW, y: pos("dpad", landscape: false).y * cH)
-                ActionButtonsView(size: 42)
-                    .scaleEffect(pos("action", landscape: false).scale)
-                    .position(x: pos("action", landscape: false).x * cW, y: pos("action", landscape: false).y * cH)
-                StickView(isLeft: true, sizeScale: analogStickScale)
-                    .scaleEffect(pos("lstick", landscape: false).scale)
-                    .position(x: pos("lstick", landscape: false).x * cW, y: pos("lstick", landscape: false).y * cH)
-                StickView(isLeft: false, sizeScale: analogStickScale)
-                    .scaleEffect(pos("rstick", landscape: false).scale)
-                    .position(x: pos("rstick", landscape: false).x * cW, y: pos("rstick", landscape: false).y * cH)
+                if layout.isControlVisible("l2") {
+                    PadBtn(label: "L2", w: 110, h: 40, btn: .L2)
+                        .scaleEffect(pos("l2", landscape: false).scale)
+                        .position(x: pos("l2", landscape: false).x * cW, y: pos("l2", landscape: false).y * cH)
+                }
+                if layout.isControlVisible("l1") {
+                    PadBtn(label: "L1", w: 100, h: 30, btn: .L1)
+                        .scaleEffect(pos("l1", landscape: false).scale)
+                        .position(x: pos("l1", landscape: false).x * cW, y: pos("l1", landscape: false).y * cH)
+                }
+                if layout.isControlVisible("r2") {
+                    PadBtn(label: "R2", w: 110, h: 40, btn: .R2)
+                        .scaleEffect(pos("r2", landscape: false).scale)
+                        .position(x: pos("r2", landscape: false).x * cW, y: pos("r2", landscape: false).y * cH)
+                }
+                if layout.isControlVisible("r1") {
+                    PadBtn(label: "R1", w: 100, h: 30, btn: .R1)
+                        .scaleEffect(pos("r1", landscape: false).scale)
+                        .position(x: pos("r1", landscape: false).x * cW, y: pos("r1", landscape: false).y * cH)
+                }
+                if layout.isControlVisible("select") {
+                    PadBtn(label: "SEL", w: 42, h: 22, btn: .select)
+                        .scaleEffect(pos("select", landscape: false).scale)
+                        .position(x: pos("select", landscape: false).x * cW, y: pos("select", landscape: false).y * cH)
+                }
+                if layout.isControlVisible("start") {
+                    PadBtn(label: "START", w: 48, h: 22, btn: .start)
+                        .scaleEffect(pos("start", landscape: false).scale)
+                        .position(x: pos("start", landscape: false).x * cW, y: pos("start", landscape: false).y * cH)
+                }
+
+                // D-pad buttons (individual placement)
+                if layout.isControlVisible("dpad") {
+                    let dpadW = VirtualPadButtonOffset.dpadButtonWidth(isLandscape: false)
+                    PadBtn(label: "▲", w: dpadW, h: dpadW, btn: .up)
+                        .scaleEffect(perButtonPos("up", landscape: false, w: cW, h: cH).scale)
+                        .position(x: perButtonPos("up", landscape: false, w: cW, h: cH).x * cW, y: perButtonPos("up", landscape: false, w: cW, h: cH).y * cH)
+                    PadBtn(label: "▼", w: dpadW, h: dpadW, btn: .down)
+                        .scaleEffect(perButtonPos("down", landscape: false, w: cW, h: cH).scale)
+                        .position(x: perButtonPos("down", landscape: false, w: cW, h: cH).x * cW, y: perButtonPos("down", landscape: false, w: cW, h: cH).y * cH)
+                    PadBtn(label: "◀", w: dpadW, h: dpadW, btn: .left)
+                        .scaleEffect(perButtonPos("left", landscape: false, w: cW, h: cH).scale)
+                        .position(x: perButtonPos("left", landscape: false, w: cW, h: cH).x * cW, y: perButtonPos("left", landscape: false, w: cW, h: cH).y * cH)
+                    PadBtn(label: "▶", w: dpadW, h: dpadW, btn: .right)
+                        .scaleEffect(perButtonPos("right", landscape: false, w: cW, h: cH).scale)
+                        .position(x: perButtonPos("right", landscape: false, w: cW, h: cH).x * cW, y: perButtonPos("right", landscape: false, w: cW, h: cH).y * cH)
+                }
+
+                // Action buttons (individual placement)
+                let actionSz = VirtualPadButtonOffset.actionButtonSize
+                if layout.isControlVisible("triangle") {
+                    PSBtn(sym: "△", clr: .green, sz: actionSz, btn: .triangle)
+                        .scaleEffect(perButtonPos("triangle", landscape: false, w: cW, h: cH).scale)
+                        .position(x: perButtonPos("triangle", landscape: false, w: cW, h: cH).x * cW, y: perButtonPos("triangle", landscape: false, w: cW, h: cH).y * cH)
+                }
+                if layout.isControlVisible("cross") {
+                    PSBtn(sym: "✕", clr: .blue, sz: actionSz, btn: .cross)
+                        .scaleEffect(perButtonPos("cross", landscape: false, w: cW, h: cH).scale)
+                        .position(x: perButtonPos("cross", landscape: false, w: cW, h: cH).x * cW, y: perButtonPos("cross", landscape: false, w: cW, h: cH).y * cH)
+                }
+                if layout.isControlVisible("square") {
+                    PSBtn(sym: "□", clr: .pink, sz: actionSz, btn: .square)
+                        .scaleEffect(perButtonPos("square", landscape: false, w: cW, h: cH).scale)
+                        .position(x: perButtonPos("square", landscape: false, w: cW, h: cH).x * cW, y: perButtonPos("square", landscape: false, w: cW, h: cH).y * cH)
+                }
+                if layout.isControlVisible("circle") {
+                    PSBtn(sym: "○", clr: .red, sz: actionSz, btn: .circle)
+                        .scaleEffect(perButtonPos("circle", landscape: false, w: cW, h: cH).scale)
+                        .position(x: perButtonPos("circle", landscape: false, w: cW, h: cH).x * cW, y: perButtonPos("circle", landscape: false, w: cW, h: cH).y * cH)
+                }
+
+                if layout.isControlVisible("lstick") {
+                    StickView(isLeft: true, sizeScale: analogStickScale)
+                        .scaleEffect(pos("lstick", landscape: false).scale)
+                        .position(x: pos("lstick", landscape: false).x * cW, y: pos("lstick", landscape: false).y * cH)
+                }
+                if layout.isControlVisible("rstick") {
+                    StickView(isLeft: false, sizeScale: analogStickScale)
+                        .scaleEffect(pos("rstick", landscape: false).scale)
+                        .position(x: pos("rstick", landscape: false).x * cW, y: pos("rstick", landscape: false).y * cH)
+                }
             }
         }
     }
@@ -826,23 +929,33 @@ struct PSBtn: View {
     @Environment(\.padSkin) private var padSkin
     @Environment(\.padUsesFullSkin) private var padUsesFullSkin
 
+    private var touchTarget: CGFloat { max(sz, 55) }
+
     var body: some View {
-        Group {
-            if ARMSX2UsesUIKitPadPressSurface() {
+        if ARMSX2UsesUIKitPadPressSurface() {
+            ZStack {
                 UIKitPadPressSurface(onPress: updatePressed) {
                     buttonFace
+                        .frame(width: sz, height: sz)
                 }
-            } else {
-                buttonFace
-                    .contentShape(Circle())
-                    .simultaneousGesture(DragGesture(minimumDistance: 0)
-                        .onChanged { _ in updatePressed(true) }
-                        .onEnded { _ in updatePressed(false) })
+                .frame(width: touchTarget, height: touchTarget)
             }
+            .frame(width: touchTarget, height: touchTarget)
+            .opacity(padUsesFullSkin ? 1.0 : padOpacity)
+            .animation(.easeOut(duration: 0.06), value: on)
+        } else {
+            ZStack {
+                buttonFace
+                    .frame(width: sz, height: sz)
+            }
+            .frame(width: touchTarget, height: touchTarget)
+            .contentShape(Rectangle())
+            .opacity(padUsesFullSkin ? 1.0 : padOpacity)
+            .animation(.easeOut(duration: 0.06), value: on)
+            .simultaneousGesture(DragGesture(minimumDistance: 0)
+                .onChanged { _ in updatePressed(true) }
+                .onEnded { _ in updatePressed(false) })
         }
-        .frame(width: sz, height: sz)
-        .opacity(padUsesFullSkin ? 1.0 : padOpacity)
-        .animation(.easeOut(duration: 0.06), value: on)
     }
 
     private var buttonFace: some View {
@@ -890,23 +1003,34 @@ struct PadBtn: View {
     @Environment(\.padSkin) private var padSkin
     @Environment(\.padUsesFullSkin) private var padUsesFullSkin
 
+    private var touchW: CGFloat { max(w, 55) }
+    private var touchH: CGFloat { max(h, 55) }
+
     var body: some View {
-        Group {
-            if ARMSX2UsesUIKitPadPressSurface() {
+        if ARMSX2UsesUIKitPadPressSurface() {
+            ZStack {
                 UIKitPadPressSurface(onPress: updatePressed) {
                     buttonFace
+                        .frame(width: w, height: h)
                 }
-            } else {
-                buttonFace
-                    .contentShape(Rectangle())
-                    .simultaneousGesture(DragGesture(minimumDistance: 0)
-                        .onChanged { _ in updatePressed(true) }
-                        .onEnded { _ in updatePressed(false) })
+                .frame(width: touchW, height: touchH)
             }
+            .frame(width: touchW, height: touchH)
+            .opacity(padUsesFullSkin ? 1.0 : padOpacity)
+            .animation(.easeOut(duration: 0.06), value: on)
+        } else {
+            ZStack {
+                buttonFace
+                    .frame(width: w, height: h)
+            }
+            .frame(width: touchW, height: touchH)
+            .contentShape(Rectangle())
+            .opacity(padUsesFullSkin ? 1.0 : padOpacity)
+            .animation(.easeOut(duration: 0.06), value: on)
+            .simultaneousGesture(DragGesture(minimumDistance: 0)
+                .onChanged { _ in updatePressed(true) }
+                .onEnded { _ in updatePressed(false) })
         }
-        .frame(width: w, height: h)
-        .opacity(padUsesFullSkin ? 1.0 : padOpacity)
-        .animation(.easeOut(duration: 0.06), value: on)
     }
 
     private var buttonFace: some View {
