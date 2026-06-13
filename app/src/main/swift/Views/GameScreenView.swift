@@ -135,12 +135,13 @@ struct GameScreenView: View {
             compatibilityLabPanel
                 .presentationDetents([.medium, .large])
         }
-        .fullScreenCover(isPresented: $showPadLayoutEditor, onDismiss: {
-            NSLog("@@PAD_LAYOUT@@ dismiss")
-            showPadLayoutEditor = false
-            updateRuntimeOverlayPause()
-        }) {
-            PadLayoutEditView()
+        .overlay {
+            if showPadLayoutEditor {
+                PadLayoutEditView(onDismiss: {
+                    showPadLayoutEditor = false
+                    updateRuntimeOverlayPause()
+                })
+            }
         }
         .sheet(isPresented: $showPNACHImporter) {
             ImportDocumentPicker(
@@ -940,7 +941,7 @@ struct GameScreenView: View {
     // MARK: - Virtual Pad
 
     private var effectiveVirtualPadVisible: Bool {
-        userVirtualPadVisible && (!settings.autoHideVirtualPadWhenControllerConnected || !externalControllerConnected)
+        userVirtualPadVisible && (!settings.autoHideVirtualPadWhenControllerConnected || !externalControllerConnected) && !showPadLayoutEditor
     }
 
     private var virtualPadHiddenByController: Bool {

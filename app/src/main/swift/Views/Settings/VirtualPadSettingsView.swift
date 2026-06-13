@@ -120,7 +120,7 @@ struct VirtualPadSettingsView: View {
             Text(skinImportMessage)
         }
         .fullScreenCover(isPresented: $showLayoutEditor) {
-            PadLayoutEditView()
+            PadLayoutEditView(onDismiss: { showLayoutEditor = false })
         }
     }
 
