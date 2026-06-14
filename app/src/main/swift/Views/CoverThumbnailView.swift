@@ -47,6 +47,7 @@ struct CoverThumbnailView: View {
         .task(id: cacheID) {
             await loadThumbnail()
         }
+        .accessibilityHidden(true)
     }
 
     @MainActor

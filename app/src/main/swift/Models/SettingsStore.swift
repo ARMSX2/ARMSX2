@@ -513,6 +513,29 @@ final class SettingsStore: @unchecked Sendable {
         }
     }
 
+    // ── Library Background ──
+    var libraryBackgroundPath: String {
+        didSet {
+            UserDefaults.standard.set(libraryBackgroundPath, forKey: "ARMSX2iOSLibraryBackgroundPath")
+        }
+    }
+    var libraryLandscapeBackgroundPath: String {
+        didSet {
+            UserDefaults.standard.set(libraryLandscapeBackgroundPath, forKey: "ARMSX2iOSLibraryLandscapeBackgroundPath")
+        }
+    }
+    var libraryBackgroundRevision = 0
+    var libraryBackgroundDim: Double {
+        didSet {
+            let clamped = Self.clampedLibraryBackgroundDim(libraryBackgroundDim)
+            guard libraryBackgroundDim == clamped else {
+                libraryBackgroundDim = clamped
+                return
+            }
+            UserDefaults.standard.set(libraryBackgroundDim, forKey: "ARMSX2iOSLibraryBackgroundDim")
+        }
+    }
+
     private static func aspectRatioName(for value: Int) -> String {
         switch value {
         case 0: return "Stretch"
@@ -677,6 +700,10 @@ final class SettingsStore: @unchecked Sendable {
         dev9InterceptDHCP = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "InterceptDHCP", defaultValue: false)
         dev9EthLogDHCP = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "EthLogDHCP", defaultValue: false)
         dev9EthLogDNS = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "EthLogDNS", defaultValue: false)
+        libraryBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryBackgroundPath") ?? ""
+        libraryLandscapeBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryLandscapeBackgroundPath") ?? ""
+        let savedDim = UserDefaults.standard.object(forKey: "ARMSX2iOSLibraryBackgroundDim") as? Double
+        libraryBackgroundDim = Self.clampedLibraryBackgroundDim(savedDim ?? 0.35)
         normalizeDEV9Settings()
         ARMSX2Bridge.setINIString("EmuCore/GS", key: "AspectRatio", value: Self.aspectRatioName(for: aspectRatio))
         // Apply OSD preset
@@ -797,6 +824,10 @@ final class SettingsStore: @unchecked Sendable {
         dev9InterceptDHCP = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "InterceptDHCP", defaultValue: false)
         dev9EthLogDHCP = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "EthLogDHCP", defaultValue: false)
         dev9EthLogDNS = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "EthLogDNS", defaultValue: false)
+        libraryBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryBackgroundPath") ?? ""
+        libraryLandscapeBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryLandscapeBackgroundPath") ?? ""
+        let savedDimReload = UserDefaults.standard.object(forKey: "ARMSX2iOSLibraryBackgroundDim") as? Double
+        libraryBackgroundDim = Self.clampedLibraryBackgroundDim(savedDimReload ?? 0.35)
         normalizeDEV9Settings()
     }
 
@@ -823,6 +854,11 @@ final class SettingsStore: @unchecked Sendable {
     private static func clampedAnalogStickScale(_ scale: Float) -> Float {
         guard scale.isFinite else { return 1.0 }
         return min(max(scale, 0.8), 1.6)
+    }
+
+    private static func clampedLibraryBackgroundDim(_ value: Double) -> Double {
+        guard value.isFinite else { return 0.35 }
+        return min(max(value, 0.0), 0.8)
     }
 
     private static func clampedTextureOffset(_ offset: Int) -> Int {

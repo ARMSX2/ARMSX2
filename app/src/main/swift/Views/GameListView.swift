@@ -87,25 +87,103 @@ struct GameListView: View {
     @State private var gameActionMessage: String?
     @AppStorage("ARMSX2iOSGameLibraryLayout") private var libraryLayout = "grid"
     @AppStorage("ARMSX2iOSLandscapeCoverFlowEnabled") private var landscapeCoverFlowEnabled = true
+    @State private var backgroundImage: UIImage?
+    @State private var landscapeBackgroundImage: UIImage?
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    private var hasCustomBackground: Bool {
+        backgroundImage != nil || landscapeBackgroundImage != nil
+    }
+
+    private var effectiveDim: Double {
+        let dim = settings.libraryBackgroundDim
+        if reduceTransparency || colorSchemeContrast == .increased {
+            return max(dim, 0.55)
+        }
+        return dim
+    }
+
+    private struct CoverFlowMetrics {
+        let isCompact: Bool
+        let coverWidth: CGFloat
+        let coverHeight: CGFloat
+        let textWidth: CGFloat
+        let cardSpacing: CGFloat
+        let cardPadding: CGFloat
+        let cornerRadius: CGFloat
+        let favoritePadding: CGFloat
+        let favoriteInset: CGFloat
+        let itemSpacing: CGFloat
+        let horizontalPadding: CGFloat
+        let verticalPadding: CGFloat
+        let statusWidth: CGFloat
+        let statusHeight: CGFloat
+        let statusIconSize: CGFloat
+
+        init(containerSize: CGSize) {
+            isCompact = containerSize.height < 360
+            coverWidth = isCompact ? 104 : 150
+            coverHeight = isCompact ? 156 : 225
+            textWidth = isCompact ? 134 : 164
+            cardSpacing = isCompact ? 8 : 12
+            cardPadding = isCompact ? 8 : 12
+            cornerRadius = isCompact ? 18 : 24
+            favoritePadding = isCompact ? 6 : 8
+            favoriteInset = isCompact ? 5 : 8
+            itemSpacing = isCompact ? 14 : 20
+            horizontalPadding = isCompact ? 20 : 32
+            verticalPadding = isCompact ? 10 : 18
+            statusWidth = isCompact ? 138 : 166
+            statusHeight = isCompact ? 190 : 276
+            statusIconSize = isCompact ? 36 : 48
+        }
+    }
+
+    @ViewBuilder
+    private var libraryBackgroundLayer: some View {
+        GeometryReader { geometry in
+            if let image = libraryBackgroundImage(for: geometry.size) {
+                ZStack {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+
+                    Color.black.opacity(effectiveDim)
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height)
+            }
+        }
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
+    }
 
     var body: some View {
         NavigationStack {
-            GeometryReader { geo in
-                Group {
-                    if games.isEmpty && appState.runningGameName == nil {
-                        emptyState
-                    } else if libraryLayout == "grid" && geo.size.width > geo.size.height && landscapeCoverFlowEnabled {
-                        coverFlowLibrary
-                    } else if libraryLayout == "grid" {
-                        gridLibrary
-                    } else {
-                        listLibrary
-#if targetEnvironment(macCatalyst)
-                        .listStyle(.inset)
-#endif
-                    }
+            ZStack {
+                if hasCustomBackground {
+                    libraryBackgroundLayer
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                GeometryReader { geo in
+                    Group {
+                        if games.isEmpty && appState.runningGameName == nil {
+                            emptyState
+                        } else if libraryLayout == "grid" && geo.size.width > geo.size.height && landscapeCoverFlowEnabled {
+                            coverFlowLibrary(containerSize: geo.size)
+                        } else if libraryLayout == "grid" {
+                            gridLibrary
+                        } else {
+                            listLibrary
+#if targetEnvironment(macCatalyst)
+                            .listStyle(.inset)
+#endif
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
 			.navigationTitle(settings.localized("Games"))
 				.toolbar {
@@ -184,6 +262,7 @@ struct GameListView: View {
                         Image(systemName: "arrow.clockwise")
                     }
                     .disabled(isLoadingGames)
+                    .accessibilityLabel(settings.localized("Refresh"))
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     if ARMSX2Bridge.hasBIOS() {
@@ -394,6 +473,16 @@ struct GameListView: View {
 			externalLibrary.reload()
 			restoreCachedGamesIfNeeded()
 			loadGames(autoDownloadExternalCovers: true)
+			reloadLibraryBackground()
+		}
+		.onChange(of: settings.libraryBackgroundPath) { _, _ in
+			reloadLibraryBackground()
+		}
+		.onChange(of: settings.libraryLandscapeBackgroundPath) { _, _ in
+			reloadLibraryBackground()
+		}
+		.onChange(of: settings.libraryBackgroundRevision) { _, _ in
+			reloadLibraryBackground()
 		}
 		.onReceive(NotificationCenter.default.publisher(for: ExternalGameLibrary.didChangeNotification)) { _ in
 			loadGames(autoDownloadExternalCovers: true)
@@ -411,8 +500,10 @@ struct GameListView: View {
             }
             ForEach(games) { game in
                 gameRow(game)
+                    .libraryBackgroundListRow(hasCustomBackground)
             }
         }
+        .scrollContentBackground(hasCustomBackground ? .hidden : .automatic)
     }
 
     private var gridLibrary: some View {
@@ -433,32 +524,45 @@ struct GameListView: View {
             }
             .padding(.top, 12)
         }
-        .background(Color(.systemGroupedBackground))
+        .background(hasCustomBackground ? Color.clear : Color(.systemGroupedBackground))
         .transaction { transaction in
             transaction.animation = nil
         }
     }
 
-    private var coverFlowLibrary: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(alignment: .center, spacing: 20) {
+    private func coverFlowLibrary(containerSize: CGSize) -> some View {
+        let metrics = CoverFlowMetrics(containerSize: containerSize)
+
+        return ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .center, spacing: metrics.itemSpacing) {
                 if let gameName = appState.runningGameName {
-                    vmStatusCoverCard(gameName: gameName)
+                    vmStatusCoverCard(gameName: gameName, metrics: metrics)
                 }
 
                 ForEach(games) { game in
-                    coverFlowCard(game)
+                    coverFlowCard(game, metrics: metrics)
                 }
             }
-            .padding(.horizontal, 32)
-            .padding(.vertical, 18)
+            .frame(
+                minWidth: max(0, containerSize.width - (metrics.horizontalPadding * 2)),
+                minHeight: max(0, containerSize.height - (metrics.verticalPadding * 2)),
+                alignment: .center
+            )
+            .padding(.horizontal, metrics.horizontalPadding)
+            .padding(.vertical, metrics.verticalPadding)
         }
         .background(
-            LinearGradient(
-                colors: [Color(.systemGroupedBackground), Color(.secondarySystemGroupedBackground)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+            Group {
+                if hasCustomBackground {
+                    Color.clear
+                } else {
+                    LinearGradient(
+                        colors: [Color(.systemGroupedBackground), Color(.secondarySystemGroupedBackground)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+            }
         )
         .transaction { transaction in
             transaction.animation = nil
@@ -494,6 +598,7 @@ struct GameListView: View {
                 .padding(.vertical, 6)
             }
             .tint(.primary)
+            .libraryBackgroundListRow(hasCustomBackground)
 
             // Stop button — separate row with confirmation alert
             Button(role: .destructive) {
@@ -506,6 +611,7 @@ struct GameListView: View {
                     Spacer()
                 }
             }
+            .libraryBackgroundListRow(hasCustomBackground)
         }
         .alert(settings.localized("Stop Emulation?"), isPresented: $showStopAlert) {
             Button(settings.localized("Cancel"), role: .cancel) { }
@@ -535,6 +641,7 @@ struct GameListView: View {
 							Image(systemName: "circle.fill")
 								.font(.system(size: 8))
 								.foregroundStyle(.green)
+								.accessibilityLabel(settings.localized("Running"))
 						}
                     }
                     HStack(spacing: 8) {
@@ -555,10 +662,12 @@ struct GameListView: View {
 						.foregroundStyle(game.isFavorite ? .yellow : .gray)
 				}
 				.buttonStyle(.plain)
+				.accessibilityLabel(game.isFavorite ? settings.localized("Remove from favorites") : settings.localized("Add to favorites"))
 
 				Image(systemName: isRunning(game) ? "play.fill" : "chevron.right")
 					.foregroundStyle(isRunning(game) ? .green : .secondary)
 					.font(.caption)
+					.accessibilityHidden(true)
 			}
 		}
         .foregroundStyle(.primary)
@@ -587,6 +696,7 @@ struct GameListView: View {
                     }
                     .buttonStyle(.plain)
                     .padding(6)
+                    .accessibilityLabel(game.isFavorite ? settings.localized("Remove from favorites") : settings.localized("Add to favorites"))
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -600,6 +710,7 @@ struct GameListView: View {
 							Image(systemName: "circle.fill")
                                 .font(.system(size: 7))
                                 .foregroundStyle(.green)
+                                .accessibilityLabel(settings.localized("Running"))
                         }
                     }
                     HStack(spacing: 6) {
@@ -607,6 +718,7 @@ struct GameListView: View {
 						Text(formatSize(game.size))
 						if game.isExternal {
 							Image(systemName: "externaldrive")
+								.accessibilityLabel(settings.localized("External"))
 						}
 					}
                     .font(.caption2)
@@ -628,43 +740,44 @@ struct GameListView: View {
         }
     }
 
-    private func coverFlowCard(_ game: ISOEntry) -> some View {
+    private func coverFlowCard(_ game: ISOEntry, metrics: CoverFlowMetrics) -> some View {
         Button {
             open(game)
         } label: {
-            VStack(spacing: 12) {
+            VStack(spacing: metrics.cardSpacing) {
                 ZStack(alignment: .topTrailing) {
-                    coverThumbnail(for: game, width: 150, height: 225)
+                    coverThumbnail(for: game, width: metrics.coverWidth, height: metrics.coverHeight)
                         .shadow(color: .black.opacity(0.28), radius: 18, y: 10)
 
 					Button {
 						toggleFavorite(game)
 					} label: {
                         Image(systemName: game.isFavorite ? "star.fill" : "star")
-                            .font(.headline.weight(.semibold))
+                            .font((metrics.isCompact ? Font.subheadline : Font.headline).weight(.semibold))
                             .foregroundStyle(game.isFavorite ? .yellow : .white.opacity(0.88))
-                            .padding(8)
+                            .padding(metrics.favoritePadding)
                             .background(.black.opacity(0.48), in: Circle())
                     }
                     .buttonStyle(.plain)
-                    .padding(8)
+                    .padding(metrics.favoriteInset)
+                    .accessibilityLabel(game.isFavorite ? settings.localized("Remove from favorites") : settings.localized("Add to favorites"))
                 }
 
                 VStack(spacing: 4) {
                     Text(coverStore.displayName(forGameName: game.name))
-                        .font(.headline.weight(.semibold))
+                        .font((metrics.isCompact ? Font.subheadline : Font.headline).weight(.semibold))
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
-				Text(game.isExternal ? "\(game.name.pathExtensionLabel)  \(formatSize(game.size))  External" : "\(game.name.pathExtensionLabel)  \(formatSize(game.size))")
-					.font(.caption)
+				Text(game.isExternal ? "\(game.name.pathExtensionLabel)  \(formatSize(game.size))  \(settings.localized("External"))" : "\(game.name.pathExtensionLabel)  \(formatSize(game.size))")
+					.font(metrics.isCompact ? .caption2 : .caption)
 					.foregroundStyle(.secondary)
                 }
-                .frame(width: 164)
+                .frame(width: metrics.textWidth)
             }
-            .padding(12)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .padding(metrics.cardPadding)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous))
 			.overlay {
-				RoundedRectangle(cornerRadius: 24, style: .continuous)
+				RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
 					.strokeBorder(isRunning(game) ? .green.opacity(0.7) : .white.opacity(0.12), lineWidth: 1)
 			}
         }
@@ -722,16 +835,16 @@ struct GameListView: View {
         }
     }
 
-    private func vmStatusCoverCard(gameName: String) -> some View {
-        VStack(spacing: 14) {
+    private func vmStatusCoverCard(gameName: String, metrics: CoverFlowMetrics) -> some View {
+        VStack(spacing: metrics.isCompact ? 9 : 14) {
             Image(systemName: "play.circle.fill")
-                .font(.system(size: 48))
+                .font(.system(size: metrics.statusIconSize))
                 .foregroundStyle(.green)
             Text(settings.localized("Now Running"))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             Text(gameName == "BIOS" ? settings.localized("BIOS Only") : gameName)
-                .font(.headline.weight(.semibold))
+                .font((metrics.isCompact ? Font.subheadline : Font.headline).weight(.semibold))
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
             HStack(spacing: 8) {
@@ -746,10 +859,11 @@ struct GameListView: View {
                 }
                 .buttonStyle(.bordered)
             }
+            .controlSize(metrics.isCompact ? .small : .regular)
         }
-        .frame(width: 166, height: 276)
-        .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .frame(width: metrics.statusWidth, height: metrics.statusHeight)
+        .padding(metrics.cardPadding)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous))
         .alert(settings.localized("Stop Emulation?"), isPresented: $showStopAlert) {
             Button(settings.localized("Cancel"), role: .cancel) { }
             Button(settings.localized("Stop"), role: .destructive) {
@@ -904,6 +1018,7 @@ struct GameListView: View {
             Image(systemName: "opticaldisc")
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
             Text(settings.localized("No Games Found"))
                 .font(.title2)
                 .fontWeight(.semibold)
@@ -920,6 +1035,10 @@ struct GameListView: View {
 			Label(settings.localized("External Games are in Settings > Storage"), systemImage: "externaldrive")
 				.font(.caption)
 				.foregroundStyle(.secondary)
+			Text("\(settings.localized("Supported Formats")): ISO, CHD, BIN, CSO, ZSO, GZ, ELF")
+				.font(.caption)
+				.foregroundStyle(.secondary)
+				.multilineTextAlignment(.center)
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1154,6 +1273,48 @@ struct GameListView: View {
         }
         let mb = Double(bytes) / 1_048_576
         return String(format: "%.0f MB", mb)
+    }
+
+    private func libraryBackgroundImage(for size: CGSize) -> UIImage? {
+        if size.width > size.height, let landscapeBackgroundImage {
+            return landscapeBackgroundImage
+        }
+        return backgroundImage ?? landscapeBackgroundImage
+    }
+
+    private func reloadLibraryBackground() {
+        backgroundImage = loadLibraryBackground(at: settings.libraryBackgroundPath)
+        landscapeBackgroundImage = loadLibraryBackground(at: settings.libraryLandscapeBackgroundPath)
+    }
+
+    private func loadLibraryBackground(at path: String) -> UIImage? {
+        guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return nil }
+        return UIImage(contentsOfFile: path)
+    }
+}
+
+private struct LibraryBackgroundListRowModifier: ViewModifier {
+    let isEnabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func libraryBackgroundListRow(_ isEnabled: Bool) -> some View {
+        modifier(LibraryBackgroundListRowModifier(isEnabled: isEnabled))
     }
 }
 

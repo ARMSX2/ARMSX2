@@ -8,6 +8,7 @@ import UIKit
 
 private enum SettingsPane: String, CaseIterable, Identifiable {
     case language
+    case appearance
     case emulator
     case graphics
     case network
@@ -27,6 +28,8 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .language:
             return "Language"
+        case .appearance:
+            return "Appearance"
         case .emulator:
             return "Emulator"
         case .graphics:
@@ -58,6 +61,8 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .language:
             return "globe"
+        case .appearance:
+            return "paintpalette"
         case .emulator:
             return "cpu"
         case .graphics:
@@ -140,6 +145,11 @@ struct SettingsRootView: View {
                     LanguageSettingsView()
                 } label: {
                     Label(settings.localized("Language"), systemImage: "globe")
+                }
+                NavigationLink {
+                    AppearanceSettingsView()
+                } label: {
+                    Label(settings.localized("Appearance"), systemImage: "paintpalette")
                 }
                 NavigationLink {
                     EmulatorSettingsView()
@@ -305,6 +315,8 @@ struct SettingsRootView: View {
         switch pane {
         case .language:
             LanguageSettingsView()
+        case .appearance:
+            AppearanceSettingsView()
         case .emulator:
             EmulatorSettingsView()
         case .graphics:

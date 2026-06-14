@@ -147,6 +147,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		${CMAKE_SOURCE_DIR}/../swift/Views/VirtualControllerView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/LicenseView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/SettingsRootView.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/AppearanceSettingsView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/EmulatorSettingsView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/GraphicsSettingsView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/MemoryCardSettingsView.swift
