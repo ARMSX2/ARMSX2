@@ -3949,10 +3949,11 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
                         boot_params.elf_override = isoPath;
                         boot_params.source_type = CDVD_SourceType::NoDisc;
                         boot_params.fast_boot = true;
-                        std::fprintf(stderr, "@@ISO_BOOT@@ path=%s fast_boot=1 mode=ELF INI=\"%s\"\n",
-                            isoPath.c_str(), isoFilename.c_str());
-                        std::fflush(stderr);
-                        Console.WriteLn("@@ISO_BOOT@@ path=%s fast_boot=1 mode=ELF (INI: %s)", isoPath.c_str(), isoFilename.c_str());
+                        std::string discPath = VMManager::GetDiscOverrideFromGameSettings(isoPath);
+                        if (!discPath.empty() && FileSystem::FileExists(discPath.c_str())) {
+                            boot_params.filename = discPath;
+                            boot_params.source_type = CDVD_SourceType::Iso;
+                        }
                     } else {
                         boot_params.filename = isoPath;
                         boot_params.source_type = CDVD_SourceType::Iso;

@@ -32,6 +32,8 @@
 #include <io.h>
 #else
 #include <unistd.h>
+#include <dirent.h>
+#include <strings.h>
 #endif
 
 #if !defined(S_ISREG) && defined(S_IFMT) && defined(S_IFREG)
@@ -616,6 +618,50 @@ namespace R3000A
 			return (path.compare(0, 4, "host") == 0 && path[not_number_pos] == ':');
 		}
 
+#ifndef _WIN32
+		static std::string resolve_case_insensitive(const std::string& root, const std::string& full_path)
+		{
+			if (full_path.empty() || FileSystem::FileExists(full_path.c_str()) || FileSystem::DirectoryExists(full_path.c_str()))
+				return full_path;
+			if (full_path.size() < root.size() || full_path.compare(0, root.size(), root) != 0)
+				return full_path;
+
+			std::string resolved = root;
+			size_t pos = root.size();
+			while (pos < full_path.size())
+			{
+				while (pos < full_path.size() && full_path[pos] == '/')
+					pos++;
+				size_t next = full_path.find('/', pos);
+				if (next == std::string::npos)
+					next = full_path.size();
+				const std::string comp = full_path.substr(pos, next - pos);
+				pos = next;
+				if (comp.empty())
+					continue;
+
+				std::string candidate = resolved + "/" + comp;
+				if (FileSystem::FileExists(candidate.c_str()) || FileSystem::DirectoryExists(candidate.c_str()))
+				{
+					resolved = std::move(candidate);
+					continue;
+				}
+
+				std::string match;
+				if (DIR* dir = opendir(resolved.c_str()))
+				{
+					while (struct dirent* ent = readdir(dir))
+						if (strcasecmp(ent->d_name, comp.c_str()) == 0) { match = ent->d_name; break; }
+					closedir(dir);
+				}
+				if (match.empty())
+					return full_path;
+				resolved += "/" + match;
+			}
+			return resolved;
+		}
+#endif
+
 		std::string host_path(const std::string_view path, bool allow_open_host_root)
 		{
 			// We are NOT allowing to use the root of the host unit.
@@ -657,6 +703,11 @@ namespace R3000A
 					new_path.clear();
 				}
 			}
+
+#ifndef _WIN32
+			if (!new_path.empty())
+				new_path = resolve_case_insensitive(hostRoot, new_path);
+#endif
 
 			return new_path;
 		}
