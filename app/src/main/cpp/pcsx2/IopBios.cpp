@@ -32,8 +32,15 @@
 #include <io.h>
 #else
 #include <unistd.h>
+#endif
+
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IOS
+#define ARMSX2_HOSTFS_CASE_INSENSITIVE 1
 #include <dirent.h>
 #include <strings.h>
+#endif
 #endif
 
 #if !defined(S_ISREG) && defined(S_IFMT) && defined(S_IFREG)
@@ -618,7 +625,7 @@ namespace R3000A
 			return (path.compare(0, 4, "host") == 0 && path[not_number_pos] == ':');
 		}
 
-#ifndef _WIN32
+#ifdef ARMSX2_HOSTFS_CASE_INSENSITIVE
 		static std::string resolve_case_insensitive(const std::string& root, const std::string& full_path)
 		{
 			if (full_path.empty() || FileSystem::FileExists(full_path.c_str()) || FileSystem::DirectoryExists(full_path.c_str()))
@@ -704,7 +711,7 @@ namespace R3000A
 				}
 			}
 
-#ifndef _WIN32
+#ifdef ARMSX2_HOSTFS_CASE_INSENSITIVE
 			if (!new_path.empty())
 				new_path = resolve_case_insensitive(hostRoot, new_path);
 #endif

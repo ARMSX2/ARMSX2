@@ -2396,7 +2396,7 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
     si.Load();
     NSString* trimmed = [discPath stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (trimmed.length > 0)
-        si.SetStringValue("EmuCore", "DiscPath", (ARMSX2ResolveISOPath(trimmed) ?: trimmed).UTF8String);
+        si.SetStringValue("EmuCore", "DiscPath", trimmed.UTF8String);
     else
         si.DeleteValue("EmuCore", "DiscPath");
     si.Save();
