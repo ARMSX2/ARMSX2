@@ -397,6 +397,11 @@ private struct SettingsAboutView: View {
 
 private struct NetworkSettingsView: View {
     @State private var settings = SettingsStore.shared
+    @State private var hosts: [DNSHost] = []
+
+    private var ethUsesSockets: Bool {
+        ARMSX2Bridge.getINIString("DEV9/Eth", key: "EthApi", defaultValue: "Sockets") == "Sockets"
+    }
 
     var body: some View {
         Form {
@@ -423,27 +428,76 @@ private struct NetworkSettingsView: View {
             Section(settings.localized("Online / Ethernet")) {
                 Toggle(settings.localized("Enable DEV9 Ethernet"), isOn: $settings.dev9EthernetEnabled)
 
-                HStack {
-                    Text(settings.localized("Mode"))
-                    Spacer()
-                    Text(settings.localized("Sockets"))
-                        .foregroundStyle(.secondary)
-                }
-
-                Picker(settings.localized("Adapter"), selection: $settings.dev9EthDevice) {
-                    ForEach(ARMSX2Bridge.dev9NetworkAdapters(), id: \.self) { adapter in
-                        Text(adapter).tag(adapter)
+                Group {
+                    HStack {
+                        Text(settings.localized("Mode"))
+                        Spacer()
+                        Text(settings.localized("Sockets"))
+                            .foregroundStyle(.secondary)
                     }
-                }
 
-                Toggle(settings.localized("Intercept DHCP"), isOn: $settings.dev9InterceptDHCP)
-                Toggle(settings.localized("Log DHCP"), isOn: $settings.dev9EthLogDHCP)
-                Toggle(settings.localized("Log DNS"), isOn: $settings.dev9EthLogDNS)
+                    Picker(settings.localized("Adapter"), selection: $settings.dev9EthDevice) {
+                        ForEach(ARMSX2Bridge.dev9NetworkAdapters(), id: \.self) { adapter in
+                            Text(adapter).tag(adapter)
+                        }
+                    }
+
+                    Toggle(settings.localized("Log DHCP"), isOn: $settings.dev9EthLogDHCP)
+                    Toggle(settings.localized("Log DNS"), isOn: $settings.dev9EthLogDNS)
+                }
+                .disabled(!settings.dev9EthernetEnabled)
 
                 Text(settings.localized("Sockets is the iOS-safe DEV9 Ethernet mode exposed here. PCAP bridged/switched modes are compiled out of this iOS build, so they are intentionally not selectable until a real iOS backend exists."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section(settings.localized("Intercept DHCP")) {
+                Toggle(settings.localized("Intercept DHCP"), isOn: $settings.dev9InterceptDHCP)
+                ipRow(settings.localized("PS2 Address"), $settings.dev9PS2IP)
+                Toggle(settings.localized("Auto Subnet Mask"), isOn: $settings.dev9AutoMask)
+                ipRow(settings.localized("Subnet Mask"), $settings.dev9Mask)
+                Toggle(settings.localized("Auto Gateway"), isOn: $settings.dev9AutoGateway)
+                ipRow(settings.localized("Gateway Address"), $settings.dev9Gateway)
+            }
+            .disabled(!settings.dev9EthernetEnabled || ethUsesSockets)
+
+            Section(settings.localized("DNS")) {
+                dnsRow("DNS1", mode: $settings.dev9DNS1Mode, address: $settings.dev9DNS1)
+                dnsRow("DNS2", mode: $settings.dev9DNS2Mode, address: $settings.dev9DNS2)
+            }
+            .disabled(!settings.dev9EthernetEnabled)
+
+            Section(settings.localized("Internal DNS")) {
+                ForEach($hosts) { $host in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            TextField(settings.localized("Hostname"), text: $host.url)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            Toggle("", isOn: $host.enabled).labelsHidden()
+                        }
+                        TextField("0.0.0.0", text: $host.address)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.numbersAndPunctuation)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .onDelete { hosts.remove(atOffsets: $0) }
+
+                Button {
+                    hosts.append(DNSHost(url: "", desc: "", address: "0.0.0.0", enabled: true))
+                } label: {
+                    Label(settings.localized("Add Host"), systemImage: "plus")
+                }
+
+                Text(settings.localized("Maps a hostname to an IP. Set a DNS mode to Internal to use these entries."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .disabled(!settings.dev9EthernetEnabled)
 
             Section(settings.localized("Tester Notes")) {
                 Text(settings.localized("Games still need their in-game PS2 network setup. After changing DEV9 settings, use Reset ROM or restart the VM before testing."))
@@ -452,5 +506,74 @@ private struct NetworkSettingsView: View {
             }
         }
         .navigationTitle(settings.localized("Network"))
+        .onAppear { loadHosts() }
+        .onChange(of: hosts) { _, _ in saveHosts() }
     }
+
+    @ViewBuilder
+    private func ipRow(_ label: String, _ value: Binding<String>) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            TextField("0.0.0.0", text: value)
+                .multilineTextAlignment(.trailing)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.numbersAndPunctuation)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func dnsRow(_ label: String, mode: Binding<String>, address: Binding<String>) -> some View {
+        Picker(label, selection: mode) {
+            Text(settings.localized("Auto")).tag("Auto")
+            Text(settings.localized("Manual")).tag("Manual")
+            Text(settings.localized("Internal")).tag("Internal")
+        }
+        ipRow(label + " " + settings.localized("Address"), address)
+            .disabled(mode.wrappedValue != "Manual")
+    }
+
+    private func loadHosts() {
+        let count = Int(ARMSX2Bridge.getINIInt("DEV9/Eth/Hosts", key: "Count", defaultValue: 0))
+        var loaded: [DNSHost] = []
+        var i = 0
+        while i < count {
+            let sec = "DEV9/Eth/Hosts/Host\(i)"
+            loaded.append(DNSHost(
+                url: ARMSX2Bridge.getINIString(sec, key: "Url", defaultValue: ""),
+                desc: ARMSX2Bridge.getINIString(sec, key: "Desc", defaultValue: ""),
+                address: ARMSX2Bridge.getINIString(sec, key: "Address", defaultValue: "0.0.0.0"),
+                enabled: ARMSX2Bridge.getINIBool(sec, key: "Enabled", defaultValue: true)
+            ))
+            i += 1
+        }
+        hosts = loaded
+    }
+
+    private func saveHosts() {
+        let oldCount = Int(ARMSX2Bridge.getINIInt("DEV9/Eth/Hosts", key: "Count", defaultValue: 0))
+        var i = 0
+        while i < max(oldCount, hosts.count) {
+            ARMSX2Bridge.clearINISection("DEV9/Eth/Hosts/Host\(i)")
+            i += 1
+        }
+        ARMSX2Bridge.setINIInt("DEV9/Eth/Hosts", key: "Count", value: Int32(hosts.count))
+        for (idx, host) in hosts.enumerated() {
+            let sec = "DEV9/Eth/Hosts/Host\(idx)"
+            ARMSX2Bridge.setINIString(sec, key: "Url", value: host.url)
+            ARMSX2Bridge.setINIString(sec, key: "Desc", value: host.desc.isEmpty ? host.url : host.desc)
+            ARMSX2Bridge.setINIString(sec, key: "Address", value: host.address)
+            ARMSX2Bridge.setINIBool(sec, key: "Enabled", value: host.enabled)
+        }
+    }
+}
+
+private struct DNSHost: Identifiable, Equatable {
+    let id = UUID()
+    var url: String
+    var desc: String
+    var address: String
+    var enabled: Bool
 }

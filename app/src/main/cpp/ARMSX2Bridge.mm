@@ -2814,6 +2814,12 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
     g_p44_settings_interface->Save();
 }
 
++ (void)clearINISection:(nonnull NSString *)section {
+    if (!g_p44_settings_interface) return;
+    g_p44_settings_interface->ClearSection(section.UTF8String);
+    g_p44_settings_interface->Save();
+}
+
 + (int)limiterMode
 {
     if (!VMManager::HasValidVM())

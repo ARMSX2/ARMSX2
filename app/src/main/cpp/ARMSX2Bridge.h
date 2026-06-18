@@ -214,6 +214,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)setINIBool:(nonnull NSString *)section key:(nonnull NSString *)key value:(BOOL)value;
 + (void)setINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key value:(float)value;
 + (void)setINIString:(nonnull NSString *)section key:(nonnull NSString *)key value:(nonnull NSString *)value;
++ (void)clearINISection:(nonnull NSString *)section;
 
 // Runtime speed control
 + (int)limiterMode;

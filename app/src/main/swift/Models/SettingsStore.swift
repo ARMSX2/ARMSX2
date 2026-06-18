@@ -524,6 +524,60 @@ final class SettingsStore: @unchecked Sendable {
             ARMSX2Bridge.setINIBool("DEV9/Eth", key: "EthLogDNS", value: dev9EthLogDNS)
         }
     }
+    var dev9PS2IP: String {
+        didSet {
+            guard !suppressINIWrites else { return }
+            ARMSX2Bridge.setINIString("DEV9/Eth", key: "PS2IP", value: dev9PS2IP)
+        }
+    }
+    var dev9AutoMask: Bool {
+        didSet {
+            guard !suppressINIWrites else { return }
+            ARMSX2Bridge.setINIBool("DEV9/Eth", key: "AutoMask", value: dev9AutoMask)
+        }
+    }
+    var dev9Mask: String {
+        didSet {
+            guard !suppressINIWrites else { return }
+            ARMSX2Bridge.setINIString("DEV9/Eth", key: "Mask", value: dev9Mask)
+        }
+    }
+    var dev9AutoGateway: Bool {
+        didSet {
+            guard !suppressINIWrites else { return }
+            ARMSX2Bridge.setINIBool("DEV9/Eth", key: "AutoGateway", value: dev9AutoGateway)
+        }
+    }
+    var dev9Gateway: String {
+        didSet {
+            guard !suppressINIWrites else { return }
+            ARMSX2Bridge.setINIString("DEV9/Eth", key: "Gateway", value: dev9Gateway)
+        }
+    }
+    var dev9DNS1Mode: String {
+        didSet {
+            guard !suppressINIWrites else { return }
+            ARMSX2Bridge.setINIString("DEV9/Eth", key: "ModeDNS1", value: dev9DNS1Mode)
+        }
+    }
+    var dev9DNS1: String {
+        didSet {
+            guard !suppressINIWrites else { return }
+            ARMSX2Bridge.setINIString("DEV9/Eth", key: "DNS1", value: dev9DNS1)
+        }
+    }
+    var dev9DNS2Mode: String {
+        didSet {
+            guard !suppressINIWrites else { return }
+            ARMSX2Bridge.setINIString("DEV9/Eth", key: "ModeDNS2", value: dev9DNS2Mode)
+        }
+    }
+    var dev9DNS2: String {
+        didSet {
+            guard !suppressINIWrites else { return }
+            ARMSX2Bridge.setINIString("DEV9/Eth", key: "DNS2", value: dev9DNS2)
+        }
+    }
 
     // ── Library Background ──
     var libraryBackgroundPath: String {
@@ -713,6 +767,15 @@ final class SettingsStore: @unchecked Sendable {
         dev9InterceptDHCP = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "InterceptDHCP", defaultValue: false)
         dev9EthLogDHCP = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "EthLogDHCP", defaultValue: false)
         dev9EthLogDNS = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "EthLogDNS", defaultValue: false)
+        dev9PS2IP = ARMSX2Bridge.getINIString("DEV9/Eth", key: "PS2IP", defaultValue: "0.0.0.0")
+        dev9AutoMask = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "AutoMask", defaultValue: true)
+        dev9Mask = ARMSX2Bridge.getINIString("DEV9/Eth", key: "Mask", defaultValue: "0.0.0.0")
+        dev9AutoGateway = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "AutoGateway", defaultValue: true)
+        dev9Gateway = ARMSX2Bridge.getINIString("DEV9/Eth", key: "Gateway", defaultValue: "0.0.0.0")
+        dev9DNS1Mode = ARMSX2Bridge.getINIString("DEV9/Eth", key: "ModeDNS1", defaultValue: "Auto")
+        dev9DNS1 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS1", defaultValue: "0.0.0.0")
+        dev9DNS2Mode = ARMSX2Bridge.getINIString("DEV9/Eth", key: "ModeDNS2", defaultValue: "Auto")
+        dev9DNS2 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS2", defaultValue: "0.0.0.0")
         libraryBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryBackgroundPath") ?? ""
         libraryLandscapeBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryLandscapeBackgroundPath") ?? ""
         let savedDim = UserDefaults.standard.object(forKey: "ARMSX2iOSLibraryBackgroundDim") as? Double
@@ -838,6 +901,15 @@ final class SettingsStore: @unchecked Sendable {
         dev9InterceptDHCP = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "InterceptDHCP", defaultValue: false)
         dev9EthLogDHCP = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "EthLogDHCP", defaultValue: false)
         dev9EthLogDNS = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "EthLogDNS", defaultValue: false)
+        dev9PS2IP = ARMSX2Bridge.getINIString("DEV9/Eth", key: "PS2IP", defaultValue: "0.0.0.0")
+        dev9AutoMask = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "AutoMask", defaultValue: true)
+        dev9Mask = ARMSX2Bridge.getINIString("DEV9/Eth", key: "Mask", defaultValue: "0.0.0.0")
+        dev9AutoGateway = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "AutoGateway", defaultValue: true)
+        dev9Gateway = ARMSX2Bridge.getINIString("DEV9/Eth", key: "Gateway", defaultValue: "0.0.0.0")
+        dev9DNS1Mode = ARMSX2Bridge.getINIString("DEV9/Eth", key: "ModeDNS1", defaultValue: "Auto")
+        dev9DNS1 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS1", defaultValue: "0.0.0.0")
+        dev9DNS2Mode = ARMSX2Bridge.getINIString("DEV9/Eth", key: "ModeDNS2", defaultValue: "Auto")
+        dev9DNS2 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS2", defaultValue: "0.0.0.0")
         libraryBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryBackgroundPath") ?? ""
         libraryLandscapeBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryLandscapeBackgroundPath") ?? ""
         let savedDimReload = UserDefaults.standard.object(forKey: "ARMSX2iOSLibraryBackgroundDim") as? Double
