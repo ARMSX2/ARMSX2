@@ -40,6 +40,9 @@
 #define ARMSX2_HOSTFS_CASE_INSENSITIVE 1
 #include <dirent.h>
 #include <strings.h>
+#include <unordered_map>
+#include <mutex>
+#include <vector>
 #endif
 #endif
 
@@ -93,16 +96,31 @@ typedef struct
 
 static std::string hostRoot;
 
+#ifdef ARMSX2_HOSTFS_CASE_INSENSITIVE
+static std::mutex s_hostfsCaseCacheMutex;
+static std::unordered_map<std::string, std::string> s_hostfsCaseCache;
+static void hostfs_invalidate_case_cache()
+{
+	std::lock_guard<std::mutex> lock(s_hostfsCaseCacheMutex);
+	s_hostfsCaseCache.clear();
+}
+#endif
 
 void Hle_SetHostRoot(const char* bootFilename)
 {
 	hostRoot = Path::ToNativePath(Path::GetDirectory(bootFilename));
+#ifdef ARMSX2_HOSTFS_CASE_INSENSITIVE
+	hostfs_invalidate_case_cache();
+#endif
 	Console.WriteLn("HLE Host: Set 'host:' root path to: %s\n", hostRoot.c_str());
 }
 
 void Hle_ClearHostRoot()
 {
 	hostRoot = {};
+#ifdef ARMSX2_HOSTFS_CASE_INSENSITIVE
+	hostfs_invalidate_case_cache();
+#endif
 }
 
 // [TEMP_DIAG] IOP reboot counter — defined in R3000AInterpreter.cpp
@@ -310,6 +328,11 @@ namespace R3000A
 			const int hostfd = FileSystem::OpenFDFile(file_path.c_str(), native_flags, native_mode);
 			if (hostfd < 0)
 				return translate_error(hostfd);
+
+#ifdef ARMSX2_HOSTFS_CASE_INSENSITIVE
+			if (flags & IOP_O_CREAT)
+				hostfs_invalidate_case_cache();
+#endif
 
 			*file = new HostFile(hostfd);
 			if (!*file)
@@ -633,19 +656,27 @@ namespace R3000A
 			if (full_path.size() < root.size() || full_path.compare(0, root.size(), root) != 0)
 				return full_path;
 
+			{
+				std::lock_guard<std::mutex> lock(s_hostfsCaseCacheMutex);
+				const auto it = s_hostfsCaseCache.find(full_path);
+				if (it != s_hostfsCaseCache.end())
+					return it->second;
+			}
+
 			std::string resolved = root;
 			size_t pos = root.size();
 			while (pos < full_path.size())
 			{
 				while (pos < full_path.size() && full_path[pos] == '/')
 					pos++;
+				if (pos >= full_path.size())
+					break;
+				const size_t comp_start = pos;
 				size_t next = full_path.find('/', pos);
 				if (next == std::string::npos)
 					next = full_path.size();
 				const std::string comp = full_path.substr(pos, next - pos);
 				pos = next;
-				if (comp.empty())
-					continue;
 
 				std::string candidate = resolved + "/" + comp;
 				if (FileSystem::FileExists(candidate.c_str()) || FileSystem::DirectoryExists(candidate.c_str()))
@@ -654,17 +685,31 @@ namespace R3000A
 					continue;
 				}
 
-				std::string match;
+				std::vector<std::string> folded;
 				if (DIR* dir = opendir(resolved.c_str()))
 				{
 					while (struct dirent* ent = readdir(dir))
-						if (strcasecmp(ent->d_name, comp.c_str()) == 0) { match = ent->d_name; break; }
+						if (strcasecmp(ent->d_name, comp.c_str()) == 0)
+							folded.emplace_back(ent->d_name);
 					closedir(dir);
 				}
-				if (match.empty())
-					return full_path;
-				resolved += "/" + match;
+
+				if (folded.empty())
+				{
+					resolved += "/" + full_path.substr(comp_start);
+					break;
+				}
+				if (folded.size() > 1)
+				{
+					std::sort(folded.begin(), folded.end());
+					Console.Warning(fmt::format("IopHLE: host: ambiguous case-insensitive match for '{}' in '{}' ({} candidates), using '{}'",
+						comp, resolved, folded.size(), folded.front()));
+				}
+				resolved += "/" + folded.front();
 			}
+
+			std::lock_guard<std::mutex> lock(s_hostfsCaseCacheMutex);
+			s_hostfsCaseCache.emplace(full_path, resolved);
 			return resolved;
 		}
 #endif
@@ -981,6 +1026,9 @@ namespace R3000A
 				const std::string path = full_path.substr(full_path.find(':') + 1);
 				const std::string file_path(host_path(path, false));
 				const bool succeeded = FileSystem::DeleteFilePath(file_path.c_str());
+#ifdef ARMSX2_HOSTFS_CASE_INSENSITIVE
+				hostfs_invalidate_case_cache();
+#endif
 				if (!succeeded)
 					Console.Warning("IOPHLE remove_HLE failed for '%s'", file_path.c_str());
 				v0 = succeeded ? 0 : -IOP_EIO;
@@ -998,6 +1046,9 @@ namespace R3000A
 				const std::string path = full_path.substr(full_path.find(':') + 1);
 				const std::string folder_path(host_path(path, false)); // NOTE: Don't allow creating the ELF directory.
 				const bool succeeded = FileSystem::CreateDirectoryPath(folder_path.c_str(), false);
+#ifdef ARMSX2_HOSTFS_CASE_INSENSITIVE
+				hostfs_invalidate_case_cache();
+#endif
 				if (!succeeded)
 					Console.Warning("IOPHLE mkdir_HLE failed for '%s'", folder_path.c_str());
 				v0 = succeeded ? 0 : -IOP_EIO;
@@ -1047,6 +1098,9 @@ namespace R3000A
 				const std::string path = full_path.substr(full_path.find(':') + 1);
 				const std::string folder_path(host_path(path, false)); // NOTE: Don't allow removing the elf directory itself.
 				const bool succeeded = FileSystem::DeleteDirectory(folder_path.c_str());
+#ifdef ARMSX2_HOSTFS_CASE_INSENSITIVE
+				hostfs_invalidate_case_cache();
+#endif
 				if (!succeeded)
 					Console.Warning("IOPHLE rmdir_HLE failed for '%s'", folder_path.c_str());
 				v0 = succeeded ? 0 : -IOP_EIO;

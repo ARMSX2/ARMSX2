@@ -3950,9 +3950,14 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
                         boot_params.source_type = CDVD_SourceType::NoDisc;
                         boot_params.fast_boot = true;
                         std::string discPath = VMManager::GetDiscOverrideFromGameSettings(isoPath);
-                        if (!discPath.empty() && FileSystem::FileExists(discPath.c_str())) {
-                            boot_params.filename = discPath;
-                            boot_params.source_type = CDVD_SourceType::Iso;
+                        if (!discPath.empty()) {
+                            if (FileSystem::FileExists(discPath.c_str())) {
+                                boot_params.filename = discPath;
+                                boot_params.source_type = CDVD_SourceType::Iso;
+                            } else {
+                                Host::ReportErrorAsync("Linked disc not found",
+                                    "This ELF has a linked disc, but the disc file is missing. Booting without it. Re-link it in the game's Disc Path menu.");
+                            }
                         }
                     } else {
                         boot_params.filename = isoPath;
