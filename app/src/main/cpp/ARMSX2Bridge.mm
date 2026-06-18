@@ -769,6 +769,28 @@ static BOOL ARMSX2IsSupportedGameImageAtPath(NSString* path)
 	return NO;
 }
 
+static void ARMSX2EnumerateLocalGameImages(NSString* root, void (^block)(NSString* absolutePath, NSString* relativeName))
+{
+	NSFileManager* fm = [NSFileManager defaultManager];
+	BOOL isDir = NO;
+	if (root.length == 0 || block == nil || ![fm fileExistsAtPath:root isDirectory:&isDir] || !isDir)
+		return;
+	NSString* prefix = [root.stringByStandardizingPath stringByAppendingString:@"/"];
+	for (NSURL* url in [fm enumeratorAtURL:[NSURL fileURLWithPath:root isDirectory:YES]
+	               includingPropertiesForKeys:nil
+	                                  options:NSDirectoryEnumerationSkipsHiddenFiles
+	                             errorHandler:nil]) {
+		NSString* path = url.path;
+		if (!ARMSX2IsSupportedGameImageAtPath(path))
+			continue;
+		NSString* full = path.stringByStandardizingPath;
+		NSString* rel = [full hasPrefix:prefix] ? [full substringFromIndex:prefix.length] : full.lastPathComponent;
+		if ([rel containsString:@"/"] && ![rel.pathExtension.lowercaseString isEqualToString:@"elf"])
+			continue;
+		block(path, rel);
+	}
+}
+
 static NSString* ARMSX2ResolveISOPath(NSString* isoName)
 {
 	if (isoName.length == 0)
@@ -2063,8 +2085,11 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         }
     };
 
-    // Scan Documents/iso/ first, then Documents/ root
-    scanDir([self isoDirectory]);
+    ARMSX2EnumerateLocalGameImages([self isoDirectory], ^(NSString* absolutePath, NSString* relativeName) {
+        if ([seen containsObject:relativeName]) return;
+        [isos addObject:relativeName];
+        [seen addObject:relativeName];
+    });
     NSString *docsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     scanDir(docsPath);
 
@@ -2106,7 +2131,9 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
 		}
 	};
 
-	scanLocalDir([self isoDirectory], @"On My iPhone");
+	ARMSX2EnumerateLocalGameImages([self isoDirectory], ^(NSString* absolutePath, NSString* relativeName) {
+		addPathWithName(absolutePath, relativeName, NO, @"On My iPhone", YES);
+	});
 	scanLocalDir([self documentsDirectory], @"On My iPhone");
 
 	for (NSDictionary* record in ARMSX2ExternalGameDirectoryRecords()) {
@@ -2218,7 +2245,8 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         return result;
     }
 
-    ARMSX2ApplyPerGameSettingsOverrides(result, entry.serial, entry.crc);
+    const std::string settingsSerial = (entry.type == GameList::EntryType::ELF) ? std::string() : entry.serial;
+    ARMSX2ApplyPerGameSettingsOverrides(result, settingsSerial, entry.crc);
     return result;
 }
 
@@ -2230,7 +2258,7 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         return nil;
 
     NSMutableDictionary<NSString*, id>* result = ARMSX2BuildGlobalGameSettingsResult();
-    const std::string serial = VMManager::GetDiscSerial();
+    const std::string serial = VMManager::GetSerialForGameSettings();
     const u32 crc = VMManager::GetDiscCRC();
     if (serial.empty() && crc == 0)
         return result;
@@ -2279,7 +2307,8 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         return;
     }
 
-    ARMSX2WriteGameSettingsForIdentity(entry.serial, entry.crc, enabled, upscaleMultiplier, aspectRatio,
+    const std::string settingsSerial = (entry.type == GameList::EntryType::ELF) ? std::string() : entry.serial;
+    ARMSX2WriteGameSettingsForIdentity(settingsSerial, entry.crc, enabled, upscaleMultiplier, aspectRatio,
                                         textureFiltering, hardwareMipmapping, blendingAccuracy, interlaceMode,
                                         trilinearFiltering, halfPixelOffset, roundSprite, alignSpriteOverride,
                                         alignSprite, mergeSpriteOverride, mergeSprite, wildArmsOffsetOverride,
@@ -2327,7 +2356,7 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         return;
     }
 
-    const std::string serial = VMManager::GetDiscSerial();
+    const std::string serial = VMManager::GetSerialForGameSettings();
     const u32 crc = VMManager::GetDiscCRC();
     if (crc == 0) {
         NSLog(@"[ARMSX2Bridge] Current game settings save rejected serial=%@ crc=%08X",
@@ -2350,6 +2379,34 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         if (MTGS::IsOpen())
             MTGS::ApplySettings();
     }
+}
+
++ (nullable NSString *)linkedDiscPathForELF:(nonnull NSString *)elfName {
+    NSString* resolvedPath = ARMSX2ResolveISOPath(elfName);
+    if (resolvedPath.length == 0)
+        return nil;
+    const std::string discPath = VMManager::GetDiscOverrideFromGameSettings(resolvedPath.UTF8String);
+    return discPath.empty() ? nil : ARMSX2NSStringFromStdString(discPath);
+}
+
++ (void)setLinkedDiscPath:(nullable NSString *)discPath forELF:(nonnull NSString *)elfName {
+    GameList::Entry entry;
+    if (!ARMSX2PopulateGameListEntryForISO(elfName, &entry, nil) || entry.crc == 0)
+        return;
+    FileSystem::CreateDirectoryPath(EmuFolders::GameSettings.c_str(), false);
+    INISettingsInterface si(VMManager::GetGameSettingsPath(std::string_view(), entry.crc));
+    si.Load();
+    NSString* trimmed = [discPath stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length > 0)
+    {
+        NSString* root = [ARMSX2NSStringFromStdString(EmuFolders::DataRoot).stringByStandardizingPath stringByAppendingString:@"/"];
+        NSString* full = trimmed.stringByStandardizingPath;
+        NSString* rel = [full hasPrefix:root] ? [full substringFromIndex:root.length] : trimmed;
+        si.SetStringValue("EmuCore", "DiscPath", rel.UTF8String);
+    }
+    else
+        si.DeleteValue("EmuCore", "DiscPath");
+    si.Save();
 }
 
 + (nonnull NSString *)clearCacheForISO:(nonnull NSString *)isoName {

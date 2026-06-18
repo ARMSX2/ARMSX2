@@ -973,6 +973,14 @@ std::string VMManager::GetDiscOverrideFromGameSettings(const std::string& elf_pa
 		if (si.Load())
 		{
 			iso_path = si.GetStringValue("EmuCore", "DiscPath");
+			if (!iso_path.empty() && !Path::IsAbsolute(iso_path))
+			{
+				std::string resolved(Path::Combine(EmuFolders::DataRoot, iso_path));
+				if (!FileSystem::FileExists(resolved.c_str()))
+					resolved = Path::Combine(EmuFolders::DataRoot, "iso/" + iso_path);
+				if (FileSystem::FileExists(resolved.c_str()))
+					iso_path = std::move(resolved);
+			}
 			if (!iso_path.empty())
 				Console.WriteLn(fmt::format("Disc override for ELF at '{}' is '{}'", elf_path, iso_path));
 		}

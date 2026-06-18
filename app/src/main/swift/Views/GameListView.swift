@@ -23,6 +23,10 @@ struct ISOEntry: Identifiable {
 		isExternal ? (bootPath ?? fileURL?.path ?? name) : name
 	}
 
+	var isELF: Bool {
+		(bootPath ?? fileURL?.path ?? name).lowercased().hasSuffix(".elf")
+	}
+
 	var coverInfo: CoverGameInfo {
 		CoverGameInfo(name: name, fileURL: fileURL, metadata: metadata, hasCover: coverURL != nil)
 	}
@@ -81,6 +85,7 @@ struct GameListView: View {
     @State private var gameInfoTarget: ISOEntry?
     @State private var gameSettingsTarget: ISOEntry?
     @State private var gameCompatibilityTarget: ISOEntry?
+    @State private var discLinkTarget: ISOEntry?
     @State private var pendingDeleteGame: ISOEntry?
     @State private var pendingDeleteDataGame: ISOEntry?
     @State private var gameActionTitle = ""
@@ -467,6 +472,13 @@ struct GameListView: View {
             .sheet(item: $gameCompatibilityTarget) { game in
                 GameCompatibilityPanel(game: game)
                     .presentationDetents([.medium, .large])
+            }
+            .sheet(item: $discLinkTarget) { game in
+                DiscLinkPicker(discs: games.filter { !$0.isELF && $0.id != game.id }) { selected in
+                    ARMSX2Bridge.setLinkedDiscPath(selected?.fileURL?.path ?? selected?.bootName, forELF: game.bootName)
+                    loadGames()
+                }
+                .presentationDetents([.medium, .large])
             }
         }
 	        .onAppear {
@@ -893,6 +905,10 @@ struct GameListView: View {
             Label(settings.localized("Per-Game Settings"), systemImage: "slider.horizontal.3")
         }
 
+        if game.isELF {
+            discPathMenu(for: game)
+        }
+
         Button {
             presentMenuPanel("compatibility_lab") {
                 gameCompatibilityTarget = game
@@ -983,6 +999,28 @@ struct GameListView: View {
 		NSLog("[ARMSX2 iOS GameListMenu] present \(name)")
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
 			action()
+		}
+	}
+
+	@ViewBuilder
+	private func discPathMenu(for game: ISOEntry) -> some View {
+		let linkedDisc = ARMSX2Bridge.linkedDiscPath(forELF: game.bootName)
+		Menu {
+			Button {
+				discLinkTarget = game
+			} label: {
+				Label(settings.localized(linkedDisc?.isEmpty == false ? "Change Disc Image" : "Link Disc Image"), systemImage: "link")
+			}
+			if let linkedDisc, !linkedDisc.isEmpty {
+				Button(role: .destructive) {
+					ARMSX2Bridge.setLinkedDiscPath(nil, forELF: game.bootName)
+					loadGames()
+				} label: {
+					Label(settings.localized("Remove Disc Link"), systemImage: "xmark.circle")
+				}
+			}
+		} label: {
+			Label(settings.localized("Disc Path"), systemImage: "opticaldisc")
 		}
 	}
 
@@ -2200,6 +2238,42 @@ struct PerGameSettingsPanel: View {
             return clampedEnd
         }
         return SettingsStore.normalizedSkipDrawEnd(start: start, end: clampedEnd)
+    }
+}
+
+private struct DiscLinkPicker: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var settings = SettingsStore.shared
+
+    let discs: [ISOEntry]
+    let onSelect: (ISOEntry?) -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if discs.isEmpty {
+                    Text(settings.localized("No disc images found. Import an ISO first, then link it here."))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(discs) { disc in
+                        Button {
+                            onSelect(disc)
+                            dismiss()
+                        } label: {
+                            Text(disc.name).lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .navigationTitle(settings.localized("Disc Path"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(settings.localized("Cancel")) { dismiss() }
+                }
+            }
+        }
     }
 }
 
