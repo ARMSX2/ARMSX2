@@ -2245,7 +2245,8 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         return result;
     }
 
-    ARMSX2ApplyPerGameSettingsOverrides(result, entry.serial, entry.crc);
+    const std::string settingsSerial = (entry.type == GameList::EntryType::ELF) ? std::string() : entry.serial;
+    ARMSX2ApplyPerGameSettingsOverrides(result, settingsSerial, entry.crc);
     return result;
 }
 
@@ -2257,7 +2258,7 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         return nil;
 
     NSMutableDictionary<NSString*, id>* result = ARMSX2BuildGlobalGameSettingsResult();
-    const std::string serial = VMManager::GetDiscSerial();
+    const std::string serial = VMManager::GetSerialForGameSettings();
     const u32 crc = VMManager::GetDiscCRC();
     if (serial.empty() && crc == 0)
         return result;
@@ -2306,7 +2307,8 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         return;
     }
 
-    ARMSX2WriteGameSettingsForIdentity(entry.serial, entry.crc, enabled, upscaleMultiplier, aspectRatio,
+    const std::string settingsSerial = (entry.type == GameList::EntryType::ELF) ? std::string() : entry.serial;
+    ARMSX2WriteGameSettingsForIdentity(settingsSerial, entry.crc, enabled, upscaleMultiplier, aspectRatio,
                                         textureFiltering, hardwareMipmapping, blendingAccuracy, interlaceMode,
                                         trilinearFiltering, halfPixelOffset, roundSprite, alignSpriteOverride,
                                         alignSprite, mergeSpriteOverride, mergeSprite, wildArmsOffsetOverride,
@@ -2354,7 +2356,7 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         return;
     }
 
-    const std::string serial = VMManager::GetDiscSerial();
+    const std::string serial = VMManager::GetSerialForGameSettings();
     const u32 crc = VMManager::GetDiscCRC();
     if (crc == 0) {
         NSLog(@"[ARMSX2Bridge] Current game settings save rejected serial=%@ crc=%08X",
@@ -2396,7 +2398,12 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
     si.Load();
     NSString* trimmed = [discPath stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (trimmed.length > 0)
-        si.SetStringValue("EmuCore", "DiscPath", trimmed.UTF8String);
+    {
+        NSString* root = [ARMSX2NSStringFromStdString(EmuFolders::DataRoot).stringByStandardizingPath stringByAppendingString:@"/"];
+        NSString* full = trimmed.stringByStandardizingPath;
+        NSString* rel = [full hasPrefix:root] ? [full substringFromIndex:root.length] : trimmed;
+        si.SetStringValue("EmuCore", "DiscPath", rel.UTF8String);
+    }
     else
         si.DeleteValue("EmuCore", "DiscPath");
     si.Save();

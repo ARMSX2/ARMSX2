@@ -3949,18 +3949,10 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
                         boot_params.elf_override = isoPath;
                         boot_params.source_type = CDVD_SourceType::NoDisc;
                         boot_params.fast_boot = true;
-                        std::string discName = VMManager::GetDiscOverrideFromGameSettings(isoPath);
-                        if (!discName.empty()) {
-                            std::string discPath = (discName.front() == '/') ? discName : (isoDir + "/" + discName);
-                            if (discName.front() != '/' && !FileSystem::FileExists(discPath.c_str())) {
-                                std::string rootDisc = EmuFolders::DataRoot + "/" + discName;
-                                if (FileSystem::FileExists(rootDisc.c_str()))
-                                    discPath = rootDisc;
-                            }
-                            if (FileSystem::FileExists(discPath.c_str())) {
-                                boot_params.filename = discPath;
-                                boot_params.source_type = CDVD_SourceType::Iso;
-                            }
+                        std::string discPath = VMManager::GetDiscOverrideFromGameSettings(isoPath);
+                        if (!discPath.empty() && FileSystem::FileExists(discPath.c_str())) {
+                            boot_params.filename = discPath;
+                            boot_params.source_type = CDVD_SourceType::Iso;
                         }
                     } else {
                         boot_params.filename = isoPath;

@@ -475,7 +475,7 @@ struct GameListView: View {
             }
             .sheet(item: $discLinkTarget) { game in
                 DiscLinkPicker(discs: games.filter { !$0.isELF && $0.id != game.id }) { selected in
-                    ARMSX2Bridge.setLinkedDiscPath(selected?.bootName, forELF: game.bootName)
+                    ARMSX2Bridge.setLinkedDiscPath(selected?.fileURL?.path ?? selected?.bootName, forELF: game.bootName)
                     loadGames()
                 }
                 .presentationDetents([.medium, .large])
