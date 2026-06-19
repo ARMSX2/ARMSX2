@@ -780,6 +780,18 @@ static void ARMSX2MigrateJITScriptProtocolForIOS(SettingsInterface* si, const ch
     const std::string currentProtocol = ARMSX2NormalizeJITScriptProtocol(
         si->GetStringValue("ARMSX2iOS/JIT", "ScriptProtocol", defaultProtocol));
 
+    const bool legacyIos26Migrated = si->GetBoolValue("ARMSX2iOS/Migrations", "JITScriptProtocolLegacyIOS26V1", false);
+    if (iosMajor >= 26 && currentProtocol == "universal" && !legacyIos26Migrated) {
+        si->SetStringValue("ARMSX2iOS/JIT", "ScriptProtocol", defaultProtocol);
+        si->SetBoolValue("ARMSX2iOS/Migrations", "JITScriptProtocolLegacyIOS26V1", true);
+        si->Save();
+        std::fprintf(stderr,
+            "@@JIT_PROTOCOL_MIGRATE@@ reason=%s ios_major=%d had=%d from=universal to=%s\n",
+            reason ? reason : "ios26-legacy-default", iosMajor, hadProtocol ? 1 : 0, defaultProtocol);
+        std::fflush(stderr);
+        return;
+    }
+
     if (!hadProtocol || (!migrated && iosMajor > 0 && iosMajor < 26 && currentProtocol == "universal")) {
         si->SetStringValue("ARMSX2iOS/JIT", "ScriptProtocol", defaultProtocol);
         si->SetBoolValue("ARMSX2iOS/Migrations", "JITScriptProtocolByOSV1", true);
@@ -805,8 +817,7 @@ static std::string ARMSX2ResolveJITScriptProtocol()
         jitProtocol = ARMSX2NormalizeJITScriptProtocol(
             s_settings_interface->GetStringValue("ARMSX2iOS/JIT", "ScriptProtocol", ARMSX2DefaultJITScriptProtocol()));
         if (jitProtocol != "legacy" && jitProtocol != "universal")
-            jitProtocol = s_settings_interface->GetBoolValue(
-                "ARMSX2iOS/JIT", "UseUniversalJITScript", ARMSX2GetIOSMajorVersion() >= 26) ? "universal" : "legacy";
+            jitProtocol = ARMSX2DefaultJITScriptProtocol();
     }
     return jitProtocol;
 }
