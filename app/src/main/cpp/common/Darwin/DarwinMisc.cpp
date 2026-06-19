@@ -20,9 +20,6 @@
 #include <dlfcn.h>
 #include <setjmp.h>
 #include <cerrno>
-#include <chrono>
-#include <future>
-#include <memory>
 #include <optional>
 #include <sys/mman.h>
 #include <sys/sysctl.h>
@@ -775,7 +772,6 @@ enum class TxmRegisterResultKind
 {
 	Ok,
 	Sigtrap,
-	Timeout,
 	Error,
 };
 
@@ -783,7 +779,6 @@ struct TxmRegisterAttempt
 {
 	TxmRegisterResultKind kind = TxmRegisterResultKind::Error;
 	int errno_or_kr = 0;
-	uint64_t duration_ms = 0;
 	const char* phase = "";
 };
 
@@ -808,36 +803,16 @@ static void SetTxmRegisterFailure(const char* protocol, const char* mode, const 
 	std::snprintf(s_last_txm_failure.reason, sizeof(s_last_txm_failure.reason), "%s", reason ? reason : "");
 }
 
-static uint64_t GetMonotonicMs()
-{
-	mach_timebase_info_data_t tb = {};
-	mach_timebase_info(&tb);
-	const uint64_t t = mach_absolute_time();
-	return (t * tb.numer / tb.denom) / 1000000ULL;
-}
-
-static int GetTxmRegisterTimeoutMs()
-{
-	const char* env = std::getenv("ARMSX2_TXM_REGISTER_TIMEOUT_MS");
-	if (env && env[0])
-	{
-		const int v = std::atoi(env);
-		if (v > 0)
-			return v;
-	}
-	return 8000;
-}
-
-static bool AllowNoTxmRegistration()
-{
-	const char* env = std::getenv("ARMSX2_ALLOW_NO_TXM");
-	return env && std::atoi(env) != 0;
-}
-
 static bool UseLegacyJitProtocol()
 {
 	const char* proto = std::getenv("ARMSX2_JIT_PROTOCOL");
 	return proto && std::strcmp(proto, "legacy") == 0;
+}
+
+static bool ShouldTryUniversalTxmPrepare()
+{
+	const char* env = std::getenv("ARMSX2_ENABLE_UNIVERSAL_PREPARE");
+	return env && std::atoi(env) != 0;
 }
 
 static const char* TxmRegisterResultName(TxmRegisterResultKind kind)
@@ -848,8 +823,6 @@ static const char* TxmRegisterResultName(TxmRegisterResultKind kind)
 			return "ok";
 		case TxmRegisterResultKind::Sigtrap:
 			return "sigtrap";
-		case TxmRegisterResultKind::Timeout:
-			return "timeout";
 		case TxmRegisterResultKind::Error:
 		default:
 			return "error";
@@ -860,7 +833,6 @@ static TxmRegisterAttempt TryLegacyTxmRegister(void* rx_ptr, size_t size)
 {
 	TxmRegisterAttempt result;
 	result.phase = "legacy";
-	const uint64_t t0 = GetMonotonicMs();
 
 	static thread_local sigjmp_buf s_brk_jmp;
 	struct sigaction sa_brk = {};
@@ -892,11 +864,10 @@ static TxmRegisterAttempt TryLegacyTxmRegister(void* rx_ptr, size_t size)
 	}
 
 	sigaction(SIGTRAP, &sa_old, nullptr);
-	result.duration_ms = GetMonotonicMs() - t0;
 	return result;
 }
 
-static TxmRegisterAttempt TryUniversalTxmPrepareOnCurrentThread(void* rx_ptr, size_t size)
+static TxmRegisterAttempt TryUniversalTxmPrepare(void* rx_ptr, size_t size)
 {
 	TxmRegisterAttempt result;
 	result.phase = "universal";
@@ -943,65 +914,6 @@ static TxmRegisterAttempt TryUniversalTxmPrepareOnCurrentThread(void* rx_ptr, si
 	return result;
 }
 
-static void LogUniversalTxmEnd(const TxmRegisterAttempt& result)
-{
-	std::fprintf(stderr, "@@JIT_ALLOC@@ txm_register_universal_end result=%s errno=%d duration_ms=%llu\n",
-		TxmRegisterResultName(result.kind), result.errno_or_kr,
-		static_cast<unsigned long long>(result.duration_ms));
-	std::fflush(stderr);
-
-	if (result.kind != TxmRegisterResultKind::Ok)
-	{
-		std::fprintf(stderr, "@@JIT_ALLOC@@ txm_register_universal_fail errno=%d reason=%s\n",
-			result.errno_or_kr, TxmRegisterResultName(result.kind));
-		std::fflush(stderr);
-	}
-}
-
-static TxmRegisterAttempt TryUniversalTxmPrepareWithTimeout(void* rx_ptr, size_t size)
-{
-	const uint64_t t0 = GetMonotonicMs();
-	std::fprintf(stderr, "@@JIT_ALLOC@@ txm_register_universal_begin rx=%p size=0x%zx\n", rx_ptr, size);
-	std::fflush(stderr);
-
-	auto promise_ptr = std::make_shared<std::promise<TxmRegisterAttempt>>();
-	std::future<TxmRegisterAttempt> future = promise_ptr->get_future();
-	std::thread worker([rx_ptr, size, promise_ptr]() {
-		try
-		{
-			promise_ptr->set_value(TryUniversalTxmPrepareOnCurrentThread(rx_ptr, size));
-		}
-		catch (...)
-		{
-			TxmRegisterAttempt failed;
-			failed.kind = TxmRegisterResultKind::Error;
-			failed.phase = "universal";
-			promise_ptr->set_value(failed);
-		}
-	});
-
-	const int timeout_ms = GetTxmRegisterTimeoutMs();
-	TxmRegisterAttempt result;
-	if (future.wait_for(std::chrono::milliseconds(timeout_ms)) == std::future_status::ready)
-	{
-		result = future.get();
-		worker.join();
-	}
-	else
-	{
-		result.kind = TxmRegisterResultKind::Timeout;
-		result.phase = "universal";
-		result.errno_or_kr = ETIMEDOUT;
-		std::fprintf(stderr, "@@JIT_ALLOC@@ txm_register_universal_timeout timeout_ms=%d\n", timeout_ms);
-		std::fflush(stderr);
-		worker.detach();
-	}
-
-	result.duration_ms = GetMonotonicMs() - t0;
-	LogUniversalTxmEnd(result);
-	return result;
-}
-
 static bool RegisterLuckTxmRegion(void* rx_ptr, size_t size, JitMode mode)
 {
 	DarwinMisc::ClearTxmRegisterFailure();
@@ -1024,12 +936,32 @@ static bool RegisterLuckTxmRegion(void* rx_ptr, size_t size, JitMode mode)
 	}
 	else
 	{
-		const TxmRegisterAttempt universal = TryUniversalTxmPrepareWithTimeout(rx_ptr, size);
-		if (universal.kind == TxmRegisterResultKind::Ok)
+		if (ShouldTryUniversalTxmPrepare())
 		{
-			brk_ok = true;
+			std::fprintf(stderr, "@@JIT_ALLOC@@ txm_register_universal_begin rx=%p size=0x%zx\n", rx_ptr, size);
+			std::fflush(stderr);
+			const TxmRegisterAttempt universal = TryUniversalTxmPrepare(rx_ptr, size);
+			std::fprintf(stderr, "@@JIT_ALLOC@@ txm_register_universal_end result=%s errno=%d\n",
+				TxmRegisterResultName(universal.kind), universal.errno_or_kr);
+			std::fflush(stderr);
+			if (universal.kind == TxmRegisterResultKind::Ok)
+			{
+				brk_ok = true;
+			}
+			else
+			{
+				std::fprintf(stderr, "@@JIT_ALLOC@@ txm_register_universal_fail errno=%d reason=%s\n",
+					universal.errno_or_kr, TxmRegisterResultName(universal.kind));
+				std::fflush(stderr);
+			}
 		}
 		else
+		{
+			std::fprintf(stderr, "@@JIT_ALLOC@@ txm_register_universal_skip reason=disabled_to_avoid_hang\n");
+			std::fflush(stderr);
+		}
+
+		if (!brk_ok)
 		{
 			std::fprintf(stderr, "@@JIT_ALLOC@@ txm_fallback_begin protocol=legacy\n");
 			std::fflush(stderr);
@@ -1047,14 +979,6 @@ static bool RegisterLuckTxmRegion(void* rx_ptr, size_t size, JitMode mode)
 				SetTxmRegisterFailure(protocol_name, JitModeName(mode), "universal_and_legacy_failed", legacy.errno_or_kr);
 			}
 		}
-	}
-
-	if (!brk_ok && AllowNoTxmRegistration())
-	{
-		std::fprintf(stderr, "@@JIT_ALLOC@@ txm_skip_ok reason=ARMSX2_ALLOW_NO_TXM\n");
-		std::fflush(stderr);
-		DarwinMisc::ClearTxmRegisterFailure();
-		return true;
 	}
 
 	return brk_ok;

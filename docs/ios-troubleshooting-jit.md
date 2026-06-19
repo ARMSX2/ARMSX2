@@ -45,9 +45,8 @@ Code memory registration runs **once** when the VM thread is first created. Afte
 ### Diagnostic environment variables (advanced)
 
 - `ARMSX2_JIT_PROTOCOL=legacy` or `universal` — Force JIT script protocol
-- `ARMSX2_TXM_REGISTER_TIMEOUT_MS=8000` — Timeout for Universal registration before fallback
+- `ARMSX2_ENABLE_UNIVERSAL_PREPARE=1` — Diagnostic: try the Universal prepare path explicitly
 - `ARMSX2_VM_INIT_TIMEOUT_MS=15000` — VM init watchdog (shows error instead of silent black screen)
-- `ARMSX2_ALLOW_NO_TXM=1` — Diagnostic: skip TXM registration (not for normal use)
 
 ### If Legacy still fails
 

@@ -1113,8 +1113,6 @@ static void ARMSX2SurfaceVMInitFailure(const char* reason, const char* message)
     std::fprintf(stderr, "@@BOOT_FAIL@@ reason=%s stage=cpu_thread_initialize\n", reason ? reason : "unknown");
     std::fflush(stderr);
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (s_rootVC)
-            s_rootVC.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
         [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSReturnToMenu" object:nil];
     });
     Host::ReportErrorAsync("Startup Error", message ? message :
@@ -3934,6 +3932,7 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
             std::fprintf(stderr, "@@BOOT_THREAD_INIT@@ ok=0\n");
             std::fflush(stderr);
             Console.Error("VM Thread: CPUThreadInitialize failed.");
+            s_vmThreadInitComplete.store(true, std::memory_order_release);
             ARMSX2SurfaceVMInitFailure("cpu_thread_initialize_failed",
                 "VM initialization failed during memory setup. Try JIT Script: Legacy (UTM-Dolphin) in Settings, or restart ARMSX2 via StikDebug.");
             std::lock_guard<std::mutex> lk(s_vmMutex);
