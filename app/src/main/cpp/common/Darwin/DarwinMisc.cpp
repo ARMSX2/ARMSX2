@@ -19,7 +19,7 @@
 #include <cstdlib>
 #include <dlfcn.h>
 #include <setjmp.h>
-#include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <future>
 #include <memory>

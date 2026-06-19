@@ -28,7 +28,7 @@ Switch the JIT script inside ARMSX2:
 - iPhone 15 Plus — iOS 26.5
 - iPhone 17 — iOS 26.5
 
-With **Legacy**, BIOS and games boot normally. With **Universal** (the v2.2.2 default on iOS 26+), TXM registration can hang on large code regions under LuckTXM.
+With **Legacy**, BIOS and games boot normally. With **Universal** (the v2.2.2 default on iOS 26+), TXM registration can hang on large code regions under LuckTXM. Fixed builds default to Legacy and one-time migrate saved Universal settings on iOS 26+.
 
 ### Why Legacy vs Universal?
 
