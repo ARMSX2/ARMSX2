@@ -39,14 +39,15 @@ enum JITScriptProtocol: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .universal:
-            return "Uses brk #0xf00d prepare + detach."
+            return "Uses brk #0xf00d prepare + detach. If boot stays black on iOS 26, try Legacy."
         case .legacy:
-            return "Uses the iOS 17/18 scriptless/legacy JIT path."
+            return "Recommended on iOS 26 if Universal shows a black screen. Uses brk #0x69."
         }
     }
 
     static var defaultValue: JITScriptProtocol {
-        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 ? .universal : .legacy
+        // Keep legacy as the safe default on iOS 26+ until universal TXM registration is stable.
+        .legacy
     }
 
     static func normalized(_ rawValue: String) -> JITScriptProtocol {

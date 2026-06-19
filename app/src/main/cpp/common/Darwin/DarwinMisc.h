@@ -125,6 +125,18 @@ struct CPUClass {
     extern uintptr_t g_code_rw_base; // RW region start (0 if no dual-mapping)
     extern size_t    g_code_rw_size; // RW region size
 
+    struct TxmRegisterFailureInfo
+    {
+        bool active = false;
+        int errno_or_kr = 0;
+        char protocol[16] = {};
+        char mode[16] = {};
+        char reason[64] = {};
+    };
+
+    void ClearTxmRegisterFailure();
+    const TxmRegisterFailureInfo* GetTxmRegisterFailure();
+
     // Allocate executable memory with dual-mapping support
     // Returns RX pointer. For writing, use (rx_ptr + g_code_rw_offset).
     void* MmapCodeDualMap(size_t size);

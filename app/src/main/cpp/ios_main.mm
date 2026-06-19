@@ -753,7 +753,9 @@ static int ARMSX2GetIOSMajorVersion()
 
 static const char* ARMSX2DefaultJITScriptProtocol()
 {
-    return ARMSX2GetIOSMajorVersion() >= 26 ? "universal" : "legacy";
+    // iOS 26+ previously defaulted to universal, but StikDebug's brk #0xf00d prepare path
+    // can hang on large code regions. Keep legacy as the safe default until universal is stable.
+    return "legacy";
 }
 
 static std::string ARMSX2NormalizeJITScriptProtocol(std::string jitProtocol)
@@ -1093,6 +1095,44 @@ static std::atomic<bool> s_requestVMBoot{false};     // signal VM thread to boot
 static std::mutex s_vmMutex;
 static std::condition_variable s_vmCV;
 static bool s_vmThreadCreated = false;               // guarded by s_vmMutex
+static std::atomic<bool> s_vmThreadInitComplete{false};
+
+static void ARMSX2SurfaceVMInitFailure(const char* reason, const char* message)
+{
+    std::fprintf(stderr, "@@BOOT_FAIL@@ reason=%s stage=cpu_thread_initialize\n", reason ? reason : "unknown");
+    std::fflush(stderr);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (s_rootVC)
+            s_rootVC.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSReturnToMenu" object:nil];
+    });
+    Host::ReportErrorAsync("Startup Error", message ? message :
+        "VM initialization failed. Try JIT Script: Legacy (UTM-Dolphin) in Settings, or restart ARMSX2 via StikDebug.");
+}
+
+static void ARMSX2ScheduleVMInitWatchdog()
+{
+    const int timeout_ms = []() {
+        const char* env = std::getenv("ARMSX2_VM_INIT_TIMEOUT_MS");
+        if (env && env[0]) {
+            const int v = std::atoi(env);
+            if (v > 0)
+                return v;
+        }
+        return 15000;
+    }();
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(timeout_ms) * NSEC_PER_MSEC),
+        dispatch_get_main_queue(), ^{
+            if (s_vmThreadInitComplete.load(std::memory_order_acquire))
+                return;
+
+            std::fprintf(stderr, "@@BOOT_FAIL@@ reason=vm_thread_init_timeout timeout_ms=%d\n", timeout_ms);
+            std::fflush(stderr);
+            ARMSX2SurfaceVMInitFailure("vm_thread_init_timeout",
+                "VM initialization timed out during iOS JIT memory setup. Try JIT Script: Legacy (UTM-Dolphin) in Settings, or restart ARMSX2 via StikDebug.");
+        });
+}
 
 struct CPUThreadTask
 {
@@ -3869,6 +3909,8 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
     std::fprintf(stderr, "@@BOOT_START_THREAD@@ active=0 created=0 action=create\n");
     std::fflush(stderr);
     Console.WriteLn("[VM] Creating persistent VM thread...");
+    s_vmThreadInitComplete.store(false, std::memory_order_release);
+    ARMSX2ScheduleVMInitWatchdog();
 
     std::thread vmThread([]() {
         // === ONE-TIME INIT (runs once per app lifetime) ===
@@ -3881,10 +3923,13 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
             std::fprintf(stderr, "@@BOOT_THREAD_INIT@@ ok=0\n");
             std::fflush(stderr);
             Console.Error("VM Thread: CPUThreadInitialize failed.");
+            ARMSX2SurfaceVMInitFailure("cpu_thread_initialize_failed",
+                "VM initialization failed during memory setup. Try JIT Script: Legacy (UTM-Dolphin) in Settings, or restart ARMSX2 via StikDebug.");
             std::lock_guard<std::mutex> lk(s_vmMutex);
             s_vmThreadCreated = false;
             return;
         }
+        s_vmThreadInitComplete.store(true, std::memory_order_release);
         std::fprintf(stderr, "@@BOOT_THREAD_INIT@@ ok=1\n");
         std::fflush(stderr);
 

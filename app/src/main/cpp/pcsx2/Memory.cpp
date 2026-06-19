@@ -161,9 +161,26 @@ bool SysMemory::AllocateMemoryMap()
 	std::fflush(stderr);
 	if ((s_code_memory = static_cast<u8*>(DarwinMisc::MmapCodeDualMap(HostMemoryMap::CodeSize))) == nullptr)
 	{
-		std::fprintf(stderr, "@@MEMMAP_STAGE@@ code_dualmap_fail\n");
+		const DarwinMisc::TxmRegisterFailureInfo* txm_failure = DarwinMisc::GetTxmRegisterFailure();
+		if (txm_failure && txm_failure->active)
+		{
+			std::fprintf(stderr,
+				"@@MEMMAP_STAGE@@ code_dualmap_fail reason=ios_txm_register_failed protocol=%s mode=%s detail=%s errno=%d\n",
+				txm_failure->protocol, txm_failure->mode, txm_failure->reason, txm_failure->errno_or_kr);
+			std::fprintf(stderr,
+				"@@BOOT_FAIL@@ reason=ios_txm_register_failed protocol=%s mode=%s errno=%d\n",
+				txm_failure->protocol, txm_failure->mode, txm_failure->errno_or_kr);
+		}
+		else
+		{
+			std::fprintf(stderr, "@@MEMMAP_STAGE@@ code_dualmap_fail reason=ios_code_alloc_failed\n");
+			std::fprintf(stderr, "@@BOOT_FAIL@@ reason=ios_code_alloc_failed stage=code_dualmap\n");
+		}
 		std::fflush(stderr);
-		Host::ReportErrorAsync("Error", "Failed to allocate iOS executable code memory.");
+		Host::ReportErrorAsync("Error",
+			txm_failure && txm_failure->active ?
+				"iOS JIT memory registration failed. Try JIT Script: Legacy (UTM-Dolphin) in Settings, or restart ARMSX2 via StikDebug." :
+				"Failed to allocate iOS executable code memory.");
 		ReleaseMemoryMap();
 		return false;
 	}

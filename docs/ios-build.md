@@ -87,3 +87,7 @@ iOS device.
 - Do not rename low-level iOS JIT/runtime symbols unless you are intentionally
   changing that code path. Some internal names are compatibility plumbing and are
   not user-facing branding.
+
+## Troubleshooting
+
+See [ios-troubleshooting-jit.md](ios-troubleshooting-jit.md) for JIT-related boot issues (e.g. black screen on iOS 26.x with Universal JIT).
