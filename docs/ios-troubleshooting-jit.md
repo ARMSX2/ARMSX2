@@ -1,4 +1,4 @@
-# ARMSX2 iOS — JIT troubleshooting
+# ARMSX2 iOS JIT troubleshooting
 
 ## Black screen on boot (v2.2.2, iOS 26.x)
 
@@ -25,28 +25,28 @@ Switch the JIT script inside ARMSX2:
 
 **Tested working:**
 
-- iPhone 15 Plus — iOS 26.5
-- iPhone 17 — iOS 26.5
+- iPhone 15 Plus, iOS 26.5
+- iPhone 17, iOS 26.5
 
 With **Legacy**, BIOS and games boot normally. With **Universal** (the v2.2.2 default on iOS 26+), TXM registration can hang on large code regions under LuckTXM. Fixed builds default to Legacy and one-time migrate saved Universal settings on iOS 26+.
 
 ### Why Legacy vs Universal?
 
-- **Universal** — StikDebug `brk #0xf00d` prepare + detach. Default on iOS 26+ in v2.2.2; can hang during ~161 MB code registration.
-- **Legacy** — `brk #0x69` TXM registration. Reliable workaround on tested iOS 26.5 devices (iPhone 15 Plus, iPhone 17).
+- **Universal.** StikDebug `brk #0xf00d` prepare + detach. Default on iOS 26+ in v2.2.2. It can hang during ~161 MB code registration.
+- **Legacy.** `brk #0x69` TXM registration. Reliable workaround on tested iOS 26.5 devices (iPhone 15 Plus, iPhone 17).
 
 Code memory registration runs **once** when the VM thread is first created. After changing JIT Script, a **full app restart** is required.
 
 ### Version context
 
-- **v1.3.2** — Different JIT/memory path; some titles (e.g. Kingdom Hearts II) did not run well.
-- **v2.2.2 + Legacy JIT** — Improved compatibility; KH2 and other titles run well on tested hardware when Legacy is selected.
+- **v1.3.2.** Different JIT/memory path. Some titles, including Kingdom Hearts II, did not run well.
+- **v2.2.2 + Legacy JIT.** Improved compatibility. KH2 and other titles run well on tested hardware when Legacy is selected.
 
 ### Diagnostic environment variables (advanced)
 
-- `ARMSX2_JIT_PROTOCOL=legacy` or `universal` — Force JIT script protocol
-- `ARMSX2_ENABLE_UNIVERSAL_PREPARE=1` — Diagnostic: try the Universal prepare path explicitly
-- `ARMSX2_VM_INIT_TIMEOUT_MS=15000` — VM init watchdog (shows error instead of silent black screen)
+- `ARMSX2_JIT_PROTOCOL=legacy` or `universal`. Force JIT script protocol.
+- `ARMSX2_ENABLE_UNIVERSAL_PREPARE=1`. Diagnostic only. Tries the Universal prepare path explicitly.
+- `ARMSX2_VM_INIT_TIMEOUT_MS=15000`. VM init watchdog. Shows an error instead of a silent black screen.
 
 ### If Legacy still fails
 
