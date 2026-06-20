@@ -49,7 +49,7 @@ public class NativeApp {
 
 	protected static WeakReference<Context> mContext;
 	public static Context getContext() {
-		return mContext.get();
+		return mContext != null ? mContext.get() : null;
 	}
 
 	public static void initializeOnce(Context context) {
@@ -82,6 +82,10 @@ public class NativeApp {
 		}
 
 		initialize(dataPath, biosFolder, android.os.Build.VERSION.SDK_INT);
+
+		// Replay a host override that arrived via broadcast while the native
+		// library was not yet loaded.
+		com.armsx2.RetroAchievementsHostOverrideReceiver.applyPending(context);
 	}
 
 	public static native void initialize(String path, String biosFolder, int apiVer);
@@ -173,6 +177,16 @@ public class NativeApp {
 	/** True iff the rcheevos hardcore flag is currently set. The Kotlin
 	 *  achievements panel polls this for the badge / button colour. */
 	public static native boolean isHardcoreMode();
+
+	/** Repoint the RetroAchievements client at a loopback proxy. Persists
+	 *  the [Achievements] Host setting (read by CreateClient), forces
+	 *  hardcore off while active — saving the prior choice — and rebuilds
+	 *  the client so a running session picks up the new host. */
+	public static native void setAchievementsHostOverride(String host);
+
+	/** Drop the host override set by {@link #setAchievementsHostOverride},
+	 *  restoring the saved hardcore choice and rebuilding the client. */
+	public static native void clearAchievementsHostOverride();
 
 	/** True iff the GS is currently in a HW renderer (OGL/VK), false for
 	 *  SW. Mirrors GSIsHardwareRenderer() from the GS thread. Polled by

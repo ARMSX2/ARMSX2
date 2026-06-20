@@ -478,6 +478,65 @@ Java_kr_co_iefriends_pcsx2_NativeApp_isHardcoreMode(JNIEnv *env, jclass clazz) {
     return Achievements::IsHardcoreModeActive() ? JNI_TRUE : JNI_FALSE;
 }
 
+// Rebuild the rc_client so CreateClient re-reads the [Achievements] Host
+// setting. UpdateSettings' diff path never re-creates the client on a Host
+// change, so a live host switch needs an explicit teardown/reinit. No-op
+// unless achievements are enabled and active — otherwise the next
+// Initialize() picks the host up on its own.
+static void RestartAchievementsForHostChange() {
+    if (!EmuConfig.Achievements.Enabled || !Achievements::IsActive())
+        return;
+    Achievements::Shutdown(false);
+    Achievements::Initialize();
+}
+
+static void PersistAndApplyAchievementsSettings() {
+    if (s_settings_interface && s_settings_interface->IsDirty())
+        s_settings_interface->Save();
+    if (VMManager::HasValidVM())
+        VMManager::ApplySettings();
+}
+
+// Point the RetroAchievements client at a loopback proxy. Drives the same
+// [Achievements] Host setting CreateClient reads, so the override survives a
+// cold start. A loopback proxy is not the canonical RA server, so hardcore
+// is forced off while an override is active and the prior choice is saved
+// under HostOverrideSavedHardcore for clearAchievementsHostOverride to
+// restore. An empty host is ignored (use the clear path instead).
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsHostOverride(JNIEnv *env, jclass clazz, jstring p_host) {
+    const std::string host = GetJavaString(env, p_host);
+    if (host.empty())
+        return;
+
+    const bool had_override = !Host::GetBaseStringSettingValue("Achievements", "Host", "").empty();
+    if (!had_override)
+        Host::SetBaseBoolSettingValue("Achievements", "HostOverrideSavedHardcore",
+                                      Host::GetBaseBoolSettingValue("Achievements", "HardcoreMode", false));
+
+    Host::SetBaseStringSettingValue("Achievements", "Host", host.c_str());
+    Host::SetBaseBoolSettingValue("Achievements", "HardcoreMode", false);
+
+    PersistAndApplyAchievementsSettings();
+    RestartAchievementsForHostChange();
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_clearAchievementsHostOverride(JNIEnv *env, jclass clazz) {
+    Host::RemoveBaseSettingValue("Achievements", "Host");
+
+    if (Host::ContainsBaseSettingValue("Achievements", "HostOverrideSavedHardcore")) {
+        const bool restore = Host::GetBaseBoolSettingValue("Achievements", "HostOverrideSavedHardcore", false);
+        Host::RemoveBaseSettingValue("Achievements", "HostOverrideSavedHardcore");
+        Host::SetBaseBoolSettingValue("Achievements", "HardcoreMode", restore);
+    }
+
+    PersistAndApplyAchievementsSettings();
+    RestartAchievementsForHostChange();
+}
+
 // Live HW/SW state from the GS thread's POV. The in-game overlay's renderer
 // pill mirrors this on every poll so an emucore-driven swap (e.g. SoftwareRendererFMVHack
 // flipping to SW during an FMV) doesn't desync the UI from the actual state.
