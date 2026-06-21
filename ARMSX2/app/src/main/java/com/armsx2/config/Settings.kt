@@ -824,6 +824,9 @@ data class Settings(
             return Settings(
                 eeCycleRate = json.optInt("eeCycleRate", def.eeCycleRate),
                 eeCycleSkip = json.optInt("eeCycleSkip", def.eeCycleSkip),
+                fpsCustomEnable = json.optBoolean("fpsCustomEnable", false),
+                framerateNTSC = json.optInt("framerateNTSC", 60),
+                frameratePAL = json.optInt("frameratePAL", 50),
                 eeClampMode = json.optInt("eeClampMode", def.eeClampMode),
                 vuClampMode = json.optInt("vuClampMode", def.vuClampMode),
                 mtvu = json.optBoolean("mtvu", def.mtvu),
