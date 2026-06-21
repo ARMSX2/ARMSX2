@@ -18,6 +18,7 @@
 #include "pcsx2/GS.h"
 #include "pcsx2/VMManager.h"
 #include "pcsx2/CDVD/CDVDcommon.h"
+#include "SIO/Memcard/MemoryCardFile.h"
 #include "pcsx2/Patch.h"
 #include "pcsx2/R5900.h"
 #include "PerformanceMetrics.h"
@@ -478,6 +479,65 @@ Java_kr_co_iefriends_pcsx2_NativeApp_isHardcoreMode(JNIEnv *env, jclass clazz) {
     return Achievements::IsHardcoreModeActive() ? JNI_TRUE : JNI_FALSE;
 }
 
+// Rebuild the rc_client so CreateClient re-reads the [Achievements] Host
+// setting. UpdateSettings' diff path never re-creates the client on a Host
+// change, so a live host switch needs an explicit teardown/reinit. No-op
+// unless achievements are enabled and active — otherwise the next
+// Initialize() picks the host up on its own.
+static void RestartAchievementsForHostChange() {
+    if (!EmuConfig.Achievements.Enabled || !Achievements::IsActive())
+        return;
+    Achievements::Shutdown(false);
+    Achievements::Initialize();
+}
+
+static void PersistAndApplyAchievementsSettings() {
+    if (s_settings_interface && s_settings_interface->IsDirty())
+        s_settings_interface->Save();
+    if (VMManager::HasValidVM())
+        VMManager::ApplySettings();
+}
+
+// Point the RetroAchievements client at a loopback proxy. Drives the same
+// [Achievements] Host setting CreateClient reads, so the override survives a
+// cold start. A loopback proxy is not the canonical RA server, so hardcore
+// is forced off while an override is active and the prior choice is saved
+// under HostOverrideSavedHardcore for clearAchievementsHostOverride to
+// restore. An empty host is ignored (use the clear path instead).
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsHostOverride(JNIEnv *env, jclass clazz, jstring p_host) {
+    const std::string host = GetJavaString(env, p_host);
+    if (host.empty())
+        return;
+
+    const bool had_override = !Host::GetBaseStringSettingValue("Achievements", "Host", "").empty();
+    if (!had_override)
+        Host::SetBaseBoolSettingValue("Achievements", "HostOverrideSavedHardcore",
+                                      Host::GetBaseBoolSettingValue("Achievements", "HardcoreMode", false));
+
+    Host::SetBaseStringSettingValue("Achievements", "Host", host.c_str());
+    Host::SetBaseBoolSettingValue("Achievements", "HardcoreMode", false);
+
+    PersistAndApplyAchievementsSettings();
+    RestartAchievementsForHostChange();
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_clearAchievementsHostOverride(JNIEnv *env, jclass clazz) {
+    Host::RemoveBaseSettingValue("Achievements", "Host");
+
+    if (Host::ContainsBaseSettingValue("Achievements", "HostOverrideSavedHardcore")) {
+        const bool restore = Host::GetBaseBoolSettingValue("Achievements", "HostOverrideSavedHardcore", false);
+        Host::RemoveBaseSettingValue("Achievements", "HostOverrideSavedHardcore");
+        Host::SetBaseBoolSettingValue("Achievements", "HardcoreMode", restore);
+    }
+
+    PersistAndApplyAchievementsSettings();
+    RestartAchievementsForHostChange();
+}
+
 // Live HW/SW state from the GS thread's POV. The in-game overlay's renderer
 // pill mirrors this on every poll so an emucore-driven swap (e.g. SoftwareRendererFMVHack
 // flipping to SW during an FMV) doesn't desync the UI from the actual state.
@@ -620,6 +680,43 @@ Java_kr_co_iefriends_pcsx2_NativeApp_speedhackLimitermode(JNIEnv *env, jclass cl
         default: return;
     }
     VMManager::SetLimiterMode(mode);
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_toggleTextureDumping(JNIEnv *env, jclass clazz) {
+    // Runtime toggle of texture dumping — mirrors PCSX2's built-in
+    // "ToggleTextureDumping" hotkey (GS.cpp). Lets users flip dumping off during
+    // FMVs so prerendered cutscenes don't spew thousands of dumped frames.
+    // Runtime-only (not persisted), matching the upstream hotkey. Returns the
+    // new state so the UI can show ON/OFF.
+    if (!VMManager::HasValidVM())
+        return JNI_FALSE;
+    const bool newval = !EmuConfig.GS.DumpReplaceableTextures;
+    EmuConfig.GS.DumpReplaceableTextures = newval;
+    if (MTGS::IsOpen())
+        MTGS::ApplySettings();
+    return newval ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_createMemoryCard(JNIEnv *env, jclass clazz,
+                                                      jstring p_name, jint p_type, jint p_fileType) {
+    // Create a new PS2 memory card in EmuFolders::MemoryCards. type:
+    //   1 = File (.ps2), 2 = Folder. fileType (File only):
+    //   1 = 8MB, 2 = 16MB, 3 = 32MB, 4 = 64MB. Returns success.
+    const char* name_c = env->GetStringUTFChars(p_name, nullptr);
+    if (!name_c)
+        return JNI_FALSE;
+    std::string name(name_c);
+    env->ReleaseStringUTFChars(p_name, name_c);
+    if (name.empty())
+        return JNI_FALSE;
+    const bool ok = FileMcd_CreateNewCard(name,
+        static_cast<MemoryCardType>(p_type),
+        static_cast<MemoryCardFileType>(p_fileType));
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C"

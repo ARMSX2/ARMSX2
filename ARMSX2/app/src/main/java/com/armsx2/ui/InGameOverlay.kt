@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -50,6 +51,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.draw.clipToBounds
@@ -83,6 +90,7 @@ import com.armsx2.config.Settings
 import com.armsx2.config.SettingsScope
 import com.armsx2.ui.settings.AudioTab
 import com.armsx2.ui.settings.FixesTab
+import com.armsx2.ui.settings.HotkeysTab
 import com.armsx2.ui.settings.NetworkTab
 import com.armsx2.ui.settings.OverlayTab
 import com.armsx2.ui.settings.PadTab
@@ -90,6 +98,7 @@ import com.armsx2.ui.settings.PatchesTab
 import com.armsx2.ui.settings.PerformanceTab
 import com.armsx2.ui.settings.RecompilerTab
 import com.armsx2.ui.settings.RendererTab
+import com.armsx2.ui.settings.SettingsControllerNav
 import kr.co.iefriends.pcsx2.NativeApp
 
 /**
@@ -126,12 +135,16 @@ object InGameOverlay {
         data object ExitConfirm : State()
         data object ResetConfirm : State()
         data object AchievementsLogin : State()
+        data object Achievements : State()
         data object HardcoreEnableConfirm : State()
         data object HardcoreSaveStateBlocked : State()
     }
 
     private val state = mutableStateOf<State>(State.Root)
     private val settingsOnly = mutableStateOf(false)
+    private val playSelection = mutableStateOf(0)
+    private val modalSelection = mutableStateOf(0)
+    private var settingsAdjustHeldDir = 0
 
     // Tab selection inside the Root state. Tabs are config groups —
     // PlayingNow holds the existing pause-menu options (Resume / Save
@@ -147,6 +160,7 @@ object InGameOverlay {
         Network("Network"),
         Overlay("Overlay"),
         Pad("Pad"),
+        Hotkeys("Hotkeys"),
         Recompiler("JIT"),
     }
     private val currentTab = mutableStateOf(Tab.PlayingNow)
@@ -182,6 +196,11 @@ object InGameOverlay {
     // colour. Updates on every overlay open and every AchievementsPanel
     // poll (which already runs every 4s) — see Render() below.
     val hardcoreOn = mutableStateOf(false)
+
+    // Controller scroll signal for the signed-in achievement list (a lazy list,
+    // so it's scrolled rather than item-nav'd). Each ±1 = one step up/down; the
+    // AchievementsPanel observes the delta and scrolls its LazyColumn.
+    val achievementsScroll = mutableStateOf(0)
 
     // Locally tracked frame-limit toggle. 0 = Nominal (60fps cap),
     // 3 = Unlimited. Matches LimiterModeType / SpeedhackButton wiring.
@@ -436,6 +455,287 @@ object InGameOverlay {
         else open()
     }
 
+    /** Open the dedicated achievements view. Bound to the "Open Achievements"
+     *  hotkey and the header trophy button. */
+    fun openAchievements() {
+        if (!WindowImpl.overlayVisible.value) open()
+        SettingsControllerNav.clearSelection()
+        state.value = State.Achievements
+    }
+
+    fun handleControllerMove(dx: Int, dy: Int): Boolean {
+        if (!WindowImpl.overlayVisible.value) return false
+        when (state.value) {
+            is State.Root -> {
+                if (currentTab.value == Tab.PlayingNow && !settingsOnly.value) {
+                    val row = playSelection.value / 4
+                    val col = playSelection.value % 4
+                    val nextRow = (row + dy).coerceIn(0, 2)
+                    val nextCol = (col + dx).coerceIn(0, 3)
+                    playSelection.value = nextRow * 4 + nextCol
+                    return true
+                }
+                if (settingsTabActive()) {
+                    if (dy != 0) {
+                        settingsAdjustHeldDir = 0
+                        return SettingsControllerNav.move(dy)
+                    }
+                    if (dx != 0) {
+                        // D-pad only (the stick no longer drives adjust). Each
+                        // key press is a discrete move and the auto-repeat is
+                        // ignored upstream, so adjust directly — no held-dir
+                        // gate that could get stuck and block the next option.
+                        return SettingsControllerNav.adjust(dx) || SettingsControllerNav.hasItems()
+                    }
+                    return SettingsControllerNav.hasItems()
+                }
+            }
+            is State.ExitConfirm -> {
+                if (dy != 0) modalSelection.value = (modalSelection.value + dy).coerceIn(0, 2)
+                return true
+            }
+            is State.ResetConfirm, is State.HardcoreEnableConfirm -> {
+                val delta = if (dy != 0) dy else dx
+                if (delta != 0) modalSelection.value = (modalSelection.value + delta).coerceIn(0, 1)
+                return true
+            }
+            is State.AchievementsLogin -> {
+                // Manual model (touch mode blocks Compose focus). Any direction
+                // steps the flat control list (login fields / cancel / sign in).
+                val delta = if (dy != 0) dy else dx
+                if (delta != 0) return SettingsControllerNav.move(delta)
+                return SettingsControllerNav.hasItems()
+            }
+            is State.Achievements -> {
+                val delta = if (dy != 0) dy else dx
+                if (delta == 0) return true
+                // Not signed in → the sign-in card is a nav item. Signed in →
+                // no nav items, so scroll the (lazy) achievement list instead.
+                if (SettingsControllerNav.hasItems()) return SettingsControllerNav.move(delta)
+                achievementsScroll.value += delta
+                return true
+            }
+            else -> return false
+        }
+        return false
+    }
+
+    fun handleControllerConfirm(): Boolean {
+        if (!WindowImpl.overlayVisible.value) return false
+        when (state.value) {
+            is State.Root -> {
+                if (currentTab.value == Tab.PlayingNow && !settingsOnly.value) {
+                    activatePlaySelection(playSelection.value)
+                    return true
+                }
+                if (settingsTabActive())
+                    return SettingsControllerNav.confirm()
+            }
+            is State.ExitConfirm -> {
+                when (modalSelection.value.coerceIn(0, 2)) {
+                    0 -> exitSaveStateAndExit()
+                    1 -> exitWithoutSaving()
+                    else -> enterState(State.Root)
+                }
+                return true
+            }
+            is State.ResetConfirm -> {
+                if (modalSelection.value.coerceIn(0, 1) == 0) resetSystem()
+                else enterState(State.Root)
+                return true
+            }
+            is State.HardcoreSaveStateBlocked -> {
+                enterState(State.Root)
+                return true
+            }
+            is State.HardcoreEnableConfirm -> {
+                if (modalSelection.value.coerceIn(0, 1) == 0) {
+                    enterState(State.Root)
+                } else {
+                    enableHardcoreMode()
+                }
+                return true
+            }
+            is State.Achievements, is State.AchievementsLogin ->
+                return SettingsControllerNav.confirm()
+            else -> return false
+        }
+        return false
+    }
+
+    fun handleControllerBack(): Boolean {
+        if (!WindowImpl.overlayVisible.value) return false
+        when (state.value) {
+            is State.Root -> closeAndResume()
+            else -> enterState(State.Root)
+        }
+        return true
+    }
+
+    private fun settingsTabActive(): Boolean =
+        state.value is State.Root &&
+            (settingsOnly.value || currentTab.value != Tab.PlayingNow)
+
+    fun handleControllerHorizontalRelease() {
+        settingsAdjustHeldDir = 0
+        SettingsControllerNav.resetAdjustmentGate()
+    }
+
+    private fun resetSettingsAdjustGate() {
+        settingsAdjustHeldDir = 0
+        SettingsControllerNav.resetAdjustmentGate()
+    }
+
+    fun handleControllerTab(delta: Int): Boolean {
+        if (!WindowImpl.overlayVisible.value || state.value !is State.Root || delta == 0) return false
+        cycleTab(delta)
+        return true
+    }
+
+    fun handleControllerScroll(velocity: Float): Boolean {
+        if (!WindowImpl.overlayVisible.value || !settingsTabActive()) {
+            SettingsControllerNav.setScrollVelocity(0f)
+            return false
+        }
+        return SettingsControllerNav.setScrollVelocity(velocity)
+    }
+
+    private fun enterState(next: State) {
+        state.value = next
+        modalSelection.value = 0
+    }
+
+    private fun cycleTab(delta: Int) {
+        val tabs = if (settingsOnly.value) {
+            listOf(Tab.Performance, Tab.Renderer, Tab.Fixes, Tab.Audio, Tab.Patches, Tab.Network, Tab.Overlay, Tab.Pad, Tab.Hotkeys, Tab.Recompiler)
+        } else {
+            Tab.values().toList()
+        }
+        val index = tabs.indexOf(currentTab.value).takeIf { it >= 0 } ?: 0
+        currentTab.value = tabs[(index + delta).floorMod(tabs.size)]
+        SettingsControllerNav.clearSelection()
+        resetSettingsAdjustGate()
+    }
+
+    private fun Int.floorMod(modulus: Int): Int =
+        ((this % modulus) + modulus) % modulus
+
+    private fun activatePlaySelection(index: Int) {
+        when (index.coerceIn(0, 11)) {
+            0 -> closeAndResume()
+            1 -> openSaveStates()
+            2 -> openLoadStates()
+            3 -> swapDisc()
+            4 -> bootDisc()
+            5 -> openLibrary()
+            6 -> cycleRendererMode()
+            7 -> toggleFrameLimit()
+            8 -> editTouchLayout()
+            9 -> toggleOsd()
+            10 -> enterState(State.ResetConfirm)
+            11 -> closeGame()
+        }
+    }
+
+    private fun openSaveStates() {
+        enterState(if (hardcoreOn.value) State.HardcoreSaveStateBlocked else State.SaveStateSlots)
+    }
+
+    private fun openLoadStates() {
+        enterState(if (hardcoreOn.value) State.HardcoreSaveStateBlocked else State.LoadStateSlots)
+    }
+
+    private fun swapDisc() {
+        val intent = Intent(Intent.ACTION_GET_CONTENT)
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
+        intent.setType("*/*")
+        Main.instance?.swapDiscAction?.launch(intent)
+        closeKeepingState()
+    }
+
+    private fun bootDisc() {
+        val intent = Intent(Intent.ACTION_GET_CONTENT)
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
+        intent.setType("*/*")
+        Main.instance?.bootDiscAction?.launch(intent)
+        closeKeepingState()
+    }
+
+    private fun openLibrary() {
+        if (Main.eState.value == EmuState.PAUSED) Main.resume()
+        WindowImpl.showLibrary.value = true
+        closeKeepingState()
+    }
+
+    private fun cycleRendererMode() {
+        val backendHw: () -> Unit = {
+            if (Main.renderer.value == "vulkan")
+                Main.renderVulkan() else Main.renderOpenGL()
+        }
+        rendererMode.value = when (rendererMode.value) {
+            RendererMode.Auto -> {
+                backendHw()
+                RendererMode.Hardware
+            }
+            RendererMode.Hardware -> {
+                Main.renderSoftware()
+                RendererMode.Software
+            }
+            RendererMode.Software -> {
+                backendHw()
+                RendererMode.Auto
+            }
+        }
+    }
+
+    private fun toggleFrameLimit() {
+        saveSettings(settingsState.value.copy(frameLimitEnable = !frameLimitOn.value))
+    }
+
+    private fun editTouchLayout() {
+        com.armsx2.ui.touch.TouchControls.ensureLoaded()
+        com.armsx2.ui.touch.TouchControls.editMode.value = true
+        closeKeepingState()
+    }
+
+    private fun toggleOsd() {
+        val enabled = !osdShown.value
+        saveSettings(withAllOsdElements(settingsState.value, enabled))
+        NativeApp.osdShowAll(enabled)
+    }
+
+    private fun closeGame() {
+        if (Main.prefs.getBoolean("autoSaveOnExit", false)) {
+            Main.stop(saveAutosave = true)
+            closeKeepingState()
+        } else {
+            enterState(State.ExitConfirm)
+        }
+    }
+
+    private fun exitSaveStateAndExit() {
+        Main.stop(saveAutosave = true)
+        closeKeepingState()
+    }
+
+    private fun exitWithoutSaving() {
+        Main.stop()
+        closeKeepingState()
+    }
+
+    private fun resetSystem() {
+        Main.restart()
+        closeKeepingState()
+    }
+
+    private fun enableHardcoreMode() {
+        NativeApp.setHardcoreMode(true)
+        hardcoreOn.value = true
+        enterState(State.Root)
+    }
+
     /** Open the overlay. Pauses the VM. Safe to call when already open. */
     fun open() {
         if (WindowImpl.overlayVisible.value) return
@@ -453,7 +753,11 @@ object InGameOverlay {
         // points enforce VM quiescence themselves (ScopedVMPause).
         if (Main.eState.value != EmuState.STOPPED) Main.pauseForOverlay()
         state.value = State.Root
+        playSelection.value = 0
+        modalSelection.value = 0
         currentTab.value = Tab.PlayingNow
+        SettingsControllerNav.clearSelection()
+        resetSettingsAdjustGate()
         // Resolve the current game's serial first; scope and settings
         // hydration both depend on it. Mirrors GameInfoHeader's chain —
         // cached GameInfo (carries through file picker paths that lack a
@@ -491,7 +795,11 @@ object InGameOverlay {
         previewGame.value = null
         pausedByOverlay = false
         state.value = State.Root
+        playSelection.value = 0
+        modalSelection.value = 0
         currentTab.value = Tab.Performance
+        SettingsControllerNav.clearSelection()
+        resetSettingsAdjustGate()
         currentSerial.value = null
         settingsScope.value = SettingsScope.Global
         settingsState.value = ConfigStore.loadGlobal()
@@ -506,7 +814,11 @@ object InGameOverlay {
         previewGame.value = game
         pausedByOverlay = false
         state.value = State.Root
+        playSelection.value = 0
+        modalSelection.value = 0
         currentTab.value = Tab.Performance
+        SettingsControllerNav.clearSelection()
+        resetSettingsAdjustGate()
         currentSerial.value = game.serial?.takeIf { it.isNotEmpty() }
         settingsScope.value =
             if (currentSerial.value != null) SettingsScope.Game else SettingsScope.Global
@@ -518,8 +830,12 @@ object InGameOverlay {
     private fun closeAndResume() {
         WindowImpl.overlayVisible.value = false
         state.value = State.Root
+        playSelection.value = 0
+        modalSelection.value = 0
         settingsOnly.value = false
         previewGame.value = null
+        SettingsControllerNav.clearSelection()
+        resetSettingsAdjustGate()
         // Always resume if the VM is paused — close-paths that should
         // preserve a paused VM (Swap Disc picker, library, edit mode)
         // go through closeKeepingState instead. The earlier
@@ -534,8 +850,12 @@ object InGameOverlay {
     private fun closeKeepingState() {
         WindowImpl.overlayVisible.value = false
         state.value = State.Root
+        playSelection.value = 0
+        modalSelection.value = 0
         settingsOnly.value = false
         previewGame.value = null
+        SettingsControllerNav.clearSelection()
+        resetSettingsAdjustGate()
         pausedByOverlay = false
     }
 
@@ -556,26 +876,61 @@ object InGameOverlay {
         // INNER content box gets displayCutoutPadding so headers / menu
         // rows aren't obscured by punch-hole or notch hardware.
         val backdropInteraction = remember { MutableInteractionSource() }
+        // Controller navigation: pull Compose focus into the overlay when it
+        // opens so the D-pad can traverse its buttons (focusGroup makes the
+        // first focusable child take focus). Gamepad A is translated to
+        // DPAD_CENTER in Main.dispatchKeyEvent so clickable items activate;
+        // B / Back drills up via the BackHandler above. Main re-grabs the game
+        // surface's focus when the overlay closes so controller input returns
+        // to the game.
+        val navFocus = remember { FocusRequester() }
+        val navFocusManager = androidx.compose.ui.platform.LocalFocusManager.current
+        LaunchedEffect(Unit) {
+            // Let the game SurfaceView relinquish focus first (it's gated
+            // non-focusable while the overlay is up), then forcibly pull focus
+            // off it and into the overlay's focus group so the D-pad can
+            // traverse the buttons and A (-> DPAD_CENTER) can activate them.
+            runCatching { navFocusManager.clearFocus(force = true) }
+            // Retry until the focus group is placed and accepts focus — the game
+            // surface / library can briefly hold focus as the overlay opens, so a
+            // single request may land before the container is ready.
+            repeat(15) {
+                if (runCatching { navFocus.requestFocus() }.isSuccess) return@LaunchedEffect
+                kotlinx.coroutines.delay(20)
+            }
+        }
         Box(
             Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.68f))
+                // Backdrop taps are swallowed (no close) so an accidental tap on
+                // empty space can't drop you out of the overlay. Exit is the ✕
+                // button (touch) or B (controller).
                 .clickable(
                     indication = null,
                     interactionSource = backdropInteraction,
-                    onClick = { if (state.value is State.Root) closeAndResume() }
+                    onClick = { }
                 ),
         ) {
             // Inner safe-area container — content laid out against this
             // box's edges automatically gets cutout-aware insets. Tap on
             // the dim band outside still falls through to the backdrop's
             // close-on-tap handler because this inner Box is non-clickable.
-            Box(Modifier.fillMaxSize().displayCutoutPadding()) {
+            Box(Modifier.fillMaxSize().displayCutoutPadding().focusRequester(navFocus).focusable()) {
+            // Settings tabs use (nearly) the full width so long rows / the tab
+            // strip aren't cut off. The Play tab stays compact — its 4-column
+            // action grid is laid out for the narrow column (full width spread it
+            // out and broke the layout).
+            val wideContent = state.value is State.Root &&
+                (settingsOnly.value || currentTab.value != Tab.PlayingNow)
+            // Headless poll keeps hardcore / renderer / rich-presence state in
+            // sync even though the inline achievements panel is gone.
+            AchievementsSync()
             Box(
                 Modifier
                     .align(Alignment.TopStart)
                     .fillMaxHeight()
-                    .width(560.dp)
+                    .then(if (wideContent) Modifier.fillMaxWidth(0.94f) else Modifier.width(560.dp))
                     .background(
                         Brush.horizontalGradient(
                             listOf(
@@ -612,12 +967,21 @@ object InGameOverlay {
                     .align(Alignment.TopStart)
                     .fillMaxHeight()
                     .padding(20.dp)
-                    .width(520.dp),
+                    .then(if (wideContent) Modifier.fillMaxWidth(0.90f) else Modifier.width(520.dp)),
             ) {
                 GameInfoHeader()
                 if (state.value is State.Root) {
                     Spacer(Modifier.height(12.dp))
                     TabStrip()
+                    Text(
+                        "Press L and R to navigate between sections, on controller\n" +
+                            "For touch, swipe to see all sections",
+                        color = Color.White.copy(alpha = 0.45f),
+                        fontSize = 10.sp,
+                        lineHeight = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(top = 3.dp),
+                    )
                     // The scope toggle only matters for settings tabs.
                     // PlayingNow's actions (Resume / Save State / etc.)
                     // are session controls, not persisted settings — no
@@ -632,47 +996,66 @@ object InGameOverlay {
                     // so it actually scrolls instead of expanding off-screen.
                     Box(modifier = Modifier.weight(1f)) {
                         RootTabs()
+                        if (settingsTabActive()) {
+                            SettingsScrollHint(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(end = 4.dp, bottom = 4.dp),
+                            )
+                        }
                     }
                 }
             }
 
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.End,
+            ) {
+                // Dedicated close button so touch users don't have to tap the
+                // dim backdrop (easy to hit by accident) to leave the overlay.
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Color.White.copy(alpha = 0.12f))
+                        .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(20.dp))
+                        .clickable { closeAndResume() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("✕", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Press B to exit on controller",
+                    color = Color.White.copy(alpha = 0.45f),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.End,
+                )
+                Text(
+                    "Press Y to open RetroAchievements on controller",
+                    color = Color.White.copy(alpha = 0.45f),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.End,
+                )
+            }
+
+            // Brand sits in the top-right-of-centre band: right of long game
+            // titles (which start top-left) but left of the close button, so it
+            // stops clashing with both. Anchored to the end edge for a stable
+            // gap from the ✕ across screen sizes.
             BrandHeader(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(20.dp)
+                    .padding(top = 20.dp, end = 135.dp)
             )
 
-            // Bottom-right: achievements only on the Play tab, where the right
-            // half of the screen is free. On settings tabs the 520dp options
-            // column would overlap it, so it's hidden there. Compact + bottom-
-            // anchored so a short "not signed in" card sits in the corner
-            // instead of floating up into the action grid.
-            if (state.value is State.Root && currentTab.value == Tab.PlayingNow) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 20.dp, bottom = 28.dp)
-                        .width(260.dp)
-                        .fillMaxHeight(0.55f),
-                    contentAlignment = Alignment.BottomEnd,
-                ) {
-                    AchievementsPanel(
-                        modifier = Modifier.fillMaxWidth(),
-                        onSignInClick = { state.value = State.AchievementsLogin },
-                        onHardcoreToggle = {
-                            if (hardcoreOn.value) {
-                                // Turn-off is safe (no VM reset) — apply
-                                // immediately. Native will fold the change
-                                // through Achievements::DisableHardcoreMode.
-                                NativeApp.setHardcoreMode(false)
-                                hardcoreOn.value = false
-                            } else {
-                                state.value = State.HardcoreEnableConfirm
-                            }
-                        },
-                    )
-                }
-            }
+            // (The inline bottom-right achievements panel was removed — it's now
+            // the header trophy button → dedicated achievements view, so the Play
+            // tab can use the full width like every other tab.)
 
             // Bottom-left: confirm dialogs and slot pickers only. Root
             // content lives in the top-left column above with its tab
@@ -686,7 +1069,11 @@ object InGameOverlay {
                 // 75% of the screen isn't quite enough — content clips and
                 // verticalScroll only barely engages. Give the login state
                 // a taller box.
-                val maxFrac = if (state.value is State.AchievementsLogin) 0.92f else 0.75f
+                val maxFrac = when {
+                    state.value is State.AchievementsLogin -> 0.92f
+                    state.value is State.Achievements -> 0.88f
+                    else -> 0.75f
+                }
                 // Slot pickers (Save/Load) span the full screen width so
                 // the 2-row horizontal grid actually reaches across. Other
                 // states (confirms, login) stay at the 360dp left column.
@@ -714,7 +1101,25 @@ object InGameOverlay {
                         is State.ExitConfirm -> ExitConfirm()
                         is State.ResetConfirm -> ResetConfirm()
                         is State.AchievementsLogin -> AchievementsLoginPanel(
-                            onClose = { state.value = State.Root },
+                            onClose = {
+                                SettingsControllerNav.clearSelection()
+                                state.value = State.Root
+                            },
+                        )
+                        is State.Achievements -> AchievementsPanel(
+                            modifier = Modifier.fillMaxWidth(),
+                            onSignInClick = {
+                                SettingsControllerNav.clearSelection()
+                                state.value = State.AchievementsLogin
+                            },
+                            onHardcoreToggle = {
+                                if (hardcoreOn.value) {
+                                    NativeApp.setHardcoreMode(false)
+                                    hardcoreOn.value = false
+                                } else {
+                                    state.value = State.HardcoreEnableConfirm
+                                }
+                            },
                         )
                         is State.HardcoreSaveStateBlocked -> HardcoreBlockedBubble()
                         is State.HardcoreEnableConfirm -> Unit // rendered fullscreen below
@@ -797,8 +1202,19 @@ object InGameOverlay {
             }
             Spacer(Modifier.width(12.dp))
 
-            Column {
-                Text(title, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            // weight(fill = false) keeps the title from squeezing the trailing
+            // RetroAchievements button off-screen on the narrow Play tab; the
+            // widthIn cap keeps the button at a CONSISTENT position so it doesn't
+            // drift toward the brand on the wider settings tabs.
+            Column(modifier = Modifier.weight(1f, fill = false).widthIn(max = 240.dp)) {
+                Text(
+                    title,
+                    color = Color.White,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -828,6 +1244,28 @@ object InGameOverlay {
                     Spacer(Modifier.height(3.dp))
                     MarqueeRichPresence(rp)
                 }
+            }
+            // RetroAchievements entry — sits just after the title (or next to
+            // "General Settings" in the global view). Opens the dedicated
+            // achievements view; controller users can also use the Open
+            // Achievements hotkey / B to exit it.
+            Spacer(Modifier.width(16.dp))
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFFB7892B).copy(alpha = 0.20f))
+                    .border(1.dp, Color(0xFFE0A93A).copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                    .clickable { state.value = State.Achievements }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "🏆 RetroAchievements",
+                    color = Color(0xFFFFD98A),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                )
             }
         }
     }
@@ -1000,12 +1438,33 @@ object InGameOverlay {
         }
     }
 
+    @Composable
+    private fun SettingsScrollHint(modifier: Modifier = Modifier) {
+        Text(
+            "Scroll up/down and left/right to navigate",
+            color = Color.White.copy(alpha = 0.58f),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            modifier = modifier
+                .background(Color.Black.copy(alpha = 0.28f))
+                .padding(horizontal = 6.dp, vertical = 2.dp),
+        )
+    }
+
     /** Active tab body. Rendered in the top-left column directly under
      *  TabStrip, so the strip and its entries stay visually attached.
      *  Width and horizontal padding come from the parent column. */
     @Composable
     private fun RootTabs() {
-        when (currentTab.value) {
+        val tab = currentTab.value
+        if (tab == Tab.PlayingNow && !settingsOnly.value) {
+            PlayingNowTab()
+            return
+        }
+
+        SettingsControllerNav.begin(tab.name)
+        when (tab) {
             Tab.PlayingNow -> PlayingNowTab()
             Tab.Performance -> PerformanceTab(settingsState)
             Tab.Renderer -> RendererTab(settingsState)
@@ -1015,8 +1474,10 @@ object InGameOverlay {
             Tab.Network -> NetworkTab(settingsState)
             Tab.Overlay -> OverlayTab(settingsState)
             Tab.Pad -> PadTab(settingsState)
+            Tab.Hotkeys -> HotkeysTab(settingsState)
             Tab.Recompiler -> RecompilerTab(settingsState)
         }
+        SettingsControllerNav.end()
     }
 
     /** Horizontal tab chip strip. Active tab gets PS2-blue underline +
@@ -1032,14 +1493,14 @@ object InGameOverlay {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             val tabs = if (settingsOnly.value) {
-                listOf(Tab.Performance, Tab.Renderer, Tab.Fixes, Tab.Audio, Tab.Patches, Tab.Network, Tab.Overlay, Tab.Pad, Tab.Recompiler)
+                listOf(Tab.Performance, Tab.Renderer, Tab.Fixes, Tab.Audio, Tab.Patches, Tab.Network, Tab.Overlay, Tab.Pad, Tab.Hotkeys, Tab.Recompiler)
             } else {
                 Tab.values().toList()
             }
             tabs.forEach { tab ->
                 val active = currentTab.value == tab
                 val chipWidth = when (tab) {
-                    Tab.Patches, Tab.Network, Tab.Overlay -> 72.dp
+                    Tab.Patches, Tab.Network, Tab.Overlay, Tab.Hotkeys -> 72.dp
                     Tab.Pad -> 52.dp
                     Tab.PlayingNow -> 52.dp
                     else -> 64.dp
@@ -1047,7 +1508,11 @@ object InGameOverlay {
                 Column(
                     modifier = Modifier
                         .width(chipWidth)
-                        .clickable { currentTab.value = tab }
+                        .clickable {
+                            currentTab.value = tab
+                            SettingsControllerNav.clearSelection()
+                            resetSettingsAdjustGate()
+                        }
                         .padding(vertical = 4.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
@@ -1155,168 +1620,103 @@ object InGameOverlay {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             // Row 1: primary + save/load + swap disc.
-            BubbleRow {
-                BubbleButton(
-                    "Resume",
-                    LineAwesomeIcons.PlaySolid,
-                    accent = BubbleAccent.Primary,
-                    modifier = Modifier.weight(1f),
-                ) { closeAndResume() }
-                BubbleButton(
-                    "Save State",
-                    LineAwesomeIcons.SaveSolid,
-                    dim = hardcoreOn.value,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    state.value = if (hardcoreOn.value)
-                        State.HardcoreSaveStateBlocked else State.SaveStateSlots
-                }
-                BubbleButton(
-                    "Load State",
-                    LineAwesomeIcons.FolderOpenSolid,
-                    dim = hardcoreOn.value,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    state.value = if (hardcoreOn.value)
-                        State.HardcoreSaveStateBlocked else State.LoadStateSlots
-                }
-                BubbleButton(
-                    "Swap Disc",
-                    LineAwesomeIcons.CompactDiscSolid,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    val intent = Intent(Intent.ACTION_GET_CONTENT)
-                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
-                    intent.setType("*/*")
-                    Main.instance?.swapDiscAction?.launch(intent)
-                    closeKeepingState()
-                }
-            }
+	            BubbleRow {
+	                BubbleButton(
+	                    "Resume",
+	                    LineAwesomeIcons.PlaySolid,
+	                    accent = BubbleAccent.Primary,
+	                    selected = playSelection.value == 0,
+	                    modifier = Modifier.weight(1f),
+	                ) { activatePlaySelection(0) }
+	                BubbleButton(
+	                    "Save State",
+	                    LineAwesomeIcons.SaveSolid,
+	                    dim = hardcoreOn.value,
+	                    selected = playSelection.value == 1,
+	                    modifier = Modifier.weight(1f),
+	                ) { activatePlaySelection(1) }
+	                BubbleButton(
+	                    "Load State",
+	                    LineAwesomeIcons.FolderOpenSolid,
+	                    dim = hardcoreOn.value,
+	                    selected = playSelection.value == 2,
+	                    modifier = Modifier.weight(1f),
+	                ) { activatePlaySelection(2) }
+	                BubbleButton(
+	                    "Swap Disc",
+	                    LineAwesomeIcons.CompactDiscSolid,
+	                    selected = playSelection.value == 3,
+	                    modifier = Modifier.weight(1f),
+	                ) { activatePlaySelection(3) }
+	            }
             // Row 2: boot disc + library + renderer + frame limit.
             BubbleRow {
-                BubbleButton(
-                    "Boot Disc",
-                    LineAwesomeIcons.CompactDiscSolid,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    val intent = Intent(Intent.ACTION_GET_CONTENT)
-                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
-                    intent.setType("*/*")
-                    Main.instance?.bootDiscAction?.launch(intent)
-                    closeKeepingState()
-                }
-                BubbleButton(
-                    "Library",
-                    LineAwesomeIcons.ThLargeSolid,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    if (Main.eState.value == EmuState.PAUSED) Main.resume()
-                    WindowImpl.showLibrary.value = true
-                    closeKeepingState()
-                }
-                BubbleButton(
-                    "Renderer",
-                    LineAwesomeIcons.CubeSolid,
+	                BubbleButton(
+	                    "Boot Disc",
+	                    LineAwesomeIcons.CompactDiscSolid,
+	                    selected = playSelection.value == 4,
+	                    modifier = Modifier.weight(1f),
+	                ) { activatePlaySelection(4) }
+	                BubbleButton(
+	                    "Library",
+	                    LineAwesomeIcons.ThLargeSolid,
+	                    selected = playSelection.value == 5,
+	                    modifier = Modifier.weight(1f),
+	                ) { activatePlaySelection(5) }
+	                BubbleButton(
+	                    "Renderer",
+	                    LineAwesomeIcons.CubeSolid,
                     stateLine = when (rendererMode.value) {
                         RendererMode.Auto -> "Auto"
                         RendererMode.Hardware -> "Hardware"
                         RendererMode.Software -> "Software"
-                    },
-                    accent = BubbleAccent.Active,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    val backendHw: () -> Unit = {
-                        if (Main.renderer.value == "vulkan")
-                            Main.renderVulkan() else Main.renderOpenGL()
-                    }
-                    rendererMode.value = when (rendererMode.value) {
-                        // Auto → Hardware: pin HW on the picked backend.
-                        // No JNI needed if we're already in HW (poll-sync
-                        // means the native side is already there); call
-                        // the HW JNI anyway to handle the case where the
-                        // engine had auto-swapped to SW (e.g. FMV) but the
-                        // user wants to lock back to HW.
-                        RendererMode.Auto -> {
-                            backendHw()
-                            RendererMode.Hardware
-                        }
-                        RendererMode.Hardware -> {
-                            Main.renderSoftware()
-                            RendererMode.Software
-                        }
-                        // Software → Auto: bring the renderer back to the
-                        // backend's HW default. Same JNI as Hardware; the
-                        // pill label differs and the sync leaves us alone.
-                        RendererMode.Software -> {
-                            backendHw()
-                            RendererMode.Auto
-                        }
-                    }
-                }
-                BubbleButton(
-                    "Frame Limit",
-                    LineAwesomeIcons.TachometerAltSolid,
+	                    },
+	                    accent = BubbleAccent.Active,
+	                    selected = playSelection.value == 6,
+	                    modifier = Modifier.weight(1f),
+	                ) { activatePlaySelection(6) }
+	                BubbleButton(
+	                    "Frame Limit",
+	                    LineAwesomeIcons.TachometerAltSolid,
                     stateLine = if (frameLimitOn.value) "On" else "Off",
-                    accent = if (frameLimitOn.value)
-                        BubbleAccent.Active else BubbleAccent.Normal,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    val enabled = !frameLimitOn.value
-                    saveSettings(settingsState.value.copy(frameLimitEnable = enabled))
-                }
-            }
+	                    accent = if (frameLimitOn.value)
+	                        BubbleAccent.Active else BubbleAccent.Normal,
+	                    selected = playSelection.value == 7,
+	                    modifier = Modifier.weight(1f),
+	                ) { activatePlaySelection(7) }
+	            }
             // Row 3: touch layout, OSD master toggle, reset, close.
             BubbleRow {
-                BubbleButton(
-                    "Touch Layout",
-                    LineAwesomeIcons.ThLargeSolid,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    com.armsx2.ui.touch.TouchControls.ensureLoaded()
-                    com.armsx2.ui.touch.TouchControls.editMode.value = true
-                    // Close the pause overlay so the editor owns the
-                    // screen. closeKeepingState leaves the VM paused — the
-                    // user can resume from the Save / Discard chips in
-                    // the editor.
-                    closeKeepingState()
-                }
-                BubbleButton(
-                    "OSD",
-                    if (osdShown.value) LineAwesomeIcons.EyeSolid
+	                BubbleButton(
+	                    "Touch Layout",
+	                    LineAwesomeIcons.ThLargeSolid,
+	                    selected = playSelection.value == 8,
+	                    modifier = Modifier.weight(1f),
+	                ) { activatePlaySelection(8) }
+	                BubbleButton(
+	                    "OSD",
+	                    if (osdShown.value) LineAwesomeIcons.EyeSolid
                     else LineAwesomeIcons.EyeSlashSolid,
                     stateLine = if (osdShown.value) "On" else "Off",
-                    accent = if (osdShown.value)
-                        BubbleAccent.Active else BubbleAccent.Normal,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    val enabled = !osdShown.value
-                    saveSettings(withAllOsdElements(settingsState.value, enabled))
-                    NativeApp.osdShowAll(enabled)
-                }
-                BubbleButton(
-                    "Reset",
-                    LineAwesomeIcons.RedoAltSolid,
-                    modifier = Modifier.weight(1f),
-                ) { state.value = State.ResetConfirm }
-                BubbleButton(
-                    "Close Game",
-                    LineAwesomeIcons.PowerOffSolid,
-                    accent = BubbleAccent.Danger,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    // Auto-save on exit (Save Manager toggle): close straight
-                    // to the autosave slot, no prompt. Otherwise show the
-                    // Save-and-Exit / Exit-without-saving confirm.
-                    if (Main.prefs.getBoolean("autoSaveOnExit", false)) {
-                        Main.stop(saveAutosave = true)
-                        closeKeepingState()
-                    } else {
-                        state.value = State.ExitConfirm
-                    }
-                }
-            }
+	                    accent = if (osdShown.value)
+	                        BubbleAccent.Active else BubbleAccent.Normal,
+	                    selected = playSelection.value == 9,
+	                    modifier = Modifier.weight(1f),
+	                ) { activatePlaySelection(9) }
+	                BubbleButton(
+	                    "Reset",
+	                    LineAwesomeIcons.RedoAltSolid,
+	                    selected = playSelection.value == 10,
+	                    modifier = Modifier.weight(1f),
+	                ) { activatePlaySelection(10) }
+	                BubbleButton(
+	                    "Close Game",
+	                    LineAwesomeIcons.PowerOffSolid,
+	                    accent = BubbleAccent.Danger,
+	                    selected = playSelection.value == 11,
+	                    modifier = Modifier.weight(1f),
+	                ) { activatePlaySelection(11) }
+	            }
         }
     }
 
@@ -1341,15 +1741,16 @@ object InGameOverlay {
      *  state line under the label (e.g. "On" / "Software") so toggleable
      *  bubbles communicate their current value without separate text. */
     @Composable
-    private fun BubbleButton(
-        label: String,
-        icon: ImageVector,
-        modifier: Modifier = Modifier,
-        stateLine: String? = null,
-        accent: BubbleAccent = BubbleAccent.Normal,
-        dim: Boolean = false,
-        onClick: () -> Unit,
-    ) {
+	    private fun BubbleButton(
+	        label: String,
+	        icon: ImageVector,
+	        modifier: Modifier = Modifier,
+	        stateLine: String? = null,
+	        accent: BubbleAccent = BubbleAccent.Normal,
+	        dim: Boolean = false,
+	        selected: Boolean = false,
+	        onClick: () -> Unit,
+	    ) {
         // Per-variant palette. Dim wins over any accent so a Hardcore-mode
         // Save State row still reads "blocked".
         val bg: Color
@@ -1383,12 +1784,23 @@ object InGameOverlay {
             }
         }
 
-        Column(
-            modifier = modifier
-                .aspectRatio(1.35f)
-                .clip(RoundedCornerShape(10.dp))
-                .background(bg)
-                .border(1.dp, border, RoundedCornerShape(10.dp))
+	        var focused by remember { mutableStateOf(false) }
+	        val highlighted = focused || selected
+	        val glowBlue = Color(0xFF3DA5FF)
+	        Column(
+	            modifier = modifier
+	                .aspectRatio(1.35f)
+	                .onFocusChanged { focused = it.isFocused }
+                // Controller selection highlight: blue glow + outline when this
+	                // bubble has D-pad focus.
+	                .then(
+	                    if (highlighted)
+	                        Modifier.shadow(10.dp, RoundedCornerShape(10.dp), ambientColor = glowBlue, spotColor = glowBlue)
+	                    else Modifier
+	                )
+	                .clip(RoundedCornerShape(10.dp))
+	                .background(bg)
+	                .border(if (highlighted) 2.dp else 1.dp, if (highlighted) glowBlue else border, RoundedCornerShape(10.dp))
                 .clickable(enabled = !dim, onClick = onClick)
                 .padding(horizontal = 4.dp, vertical = 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -1463,18 +1875,13 @@ object InGameOverlay {
                 fontSize = 14.sp,
                 modifier = Modifier.padding(bottom = 6.dp),
             )
-            MenuRow("Save State And Exit") {
-                // Dedicated autosave slot — keeps numbered slots 0-9
-                // user-controlled. SaveStatePicker (Load mode) surfaces
-                // this state via the Autosave tile when present.
-                Main.stop(saveAutosave = true)
-                closeKeepingState()
-            }
-            MenuRow("Exit Without Saving", danger = true) {
-                Main.stop()
-                closeKeepingState()
-            }
-            MenuRow("Back") { state.value = State.Root }
+	            MenuRow("Save State And Exit", selected = modalSelection.value == 0) {
+	                exitSaveStateAndExit()
+	            }
+	            MenuRow("Exit Without Saving", danger = true, selected = modalSelection.value == 1) {
+	                exitWithoutSaving()
+	            }
+	            MenuRow("Back", selected = modalSelection.value == 2) { enterState(State.Root) }
         }
     }
 
@@ -1487,11 +1894,10 @@ object InGameOverlay {
                 fontSize = 14.sp,
                 modifier = Modifier.padding(bottom = 6.dp),
             )
-            MenuRow("Yes, Reset", danger = true) {
-                Main.restart()
-                closeKeepingState()
-            }
-            MenuRow("Back") { state.value = State.Root }
+	            MenuRow("Yes, Reset", danger = true, selected = modalSelection.value == 0) {
+	                resetSystem()
+	            }
+	            MenuRow("Back", selected = modalSelection.value == 1) { enterState(State.Root) }
         }
     }
 
@@ -1595,40 +2001,39 @@ object InGameOverlay {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    BiosLikeButton(
-                        label = "CANCEL",
-                        primary = false,
-                        modifier = Modifier.weight(1f),
-                    ) { state.value = State.Root }
-                    BiosLikeButton(
-                        label = "ENABLE",
-                        primary = true,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        NativeApp.setHardcoreMode(true)
-                        hardcoreOn.value = true
-                        state.value = State.Root
-                    }
+	                    BiosLikeButton(
+	                        label = "CANCEL",
+	                        primary = false,
+	                        selected = modalSelection.value == 0,
+	                        modifier = Modifier.weight(1f),
+	                    ) { enterState(State.Root) }
+	                    BiosLikeButton(
+	                        label = "ENABLE",
+	                        primary = true,
+	                        selected = modalSelection.value == 1,
+	                        modifier = Modifier.weight(1f),
+	                    ) { enableHardcoreMode() }
                 }
             }
         }
     }
 
     @Composable
-    private fun BiosLikeButton(
-        label: String,
-        primary: Boolean,
-        modifier: Modifier = Modifier,
-        onClick: () -> Unit,
-    ) {
+	    private fun BiosLikeButton(
+	        label: String,
+	        primary: Boolean,
+	        selected: Boolean = false,
+	        modifier: Modifier = Modifier,
+	        onClick: () -> Unit,
+	    ) {
         val bg = if (primary) Color(0xFF5A1A1A) else Color(0xFF1A1A2A)
         val border = if (primary) Color(0xFFFF6B6B) else Color(0xFF8888AA)
         val fg = if (primary) Color(0xFFFFCCCC) else Color(0xFFDDDDEE)
         Box(
             modifier = modifier
-                .clip(RoundedCornerShape(2.dp))
-                .background(bg)
-                .border(1.dp, border, RoundedCornerShape(2.dp))
+	                .clip(RoundedCornerShape(2.dp))
+	                .background(bg)
+	                .border(if (selected) 2.dp else 1.dp, if (selected) Color(0xFF3DA5FF) else border, RoundedCornerShape(2.dp))
                 .clickable(onClick = onClick)
                 .padding(vertical = 12.dp),
             contentAlignment = Alignment.Center,
@@ -1652,13 +2057,14 @@ object InGameOverlay {
      *  text — mirrors PCSX2 ImGui FullscreenUI's leading-icon menu
      *  rows in DrawPauseMenu. */
     @Composable
-    private fun MenuRow(
-        label: String,
-        icon: ImageVector? = null,
-        danger: Boolean = false,
-        dim: Boolean = false,
-        onClick: () -> Unit,
-    ) {
+	    private fun MenuRow(
+	        label: String,
+	        icon: ImageVector? = null,
+	        danger: Boolean = false,
+	        dim: Boolean = false,
+	        selected: Boolean = false,
+	        onClick: () -> Unit,
+	    ) {
         val textColor = when {
             dim -> Color(0xFF666666)
             danger -> Color(0xFFFF6B6B)
@@ -1670,19 +2076,24 @@ object InGameOverlay {
             else -> Color.White.copy(alpha = 0.06f)
         }
         Box(
-            Modifier
-                .fillMaxWidth()
-                .height(24.dp)
-                .background(
+	            Modifier
+	                .fillMaxWidth()
+	                .height(24.dp)
+	                .background(
                     Brush.horizontalGradient(
                         listOf(
                             auraStart,
                             Color.Transparent,
                         )
                     )
-                )
-                .clickable(onClick = onClick)
-                .padding(horizontal = 6.dp),
+	                )
+	                .border(
+	                    if (selected) 1.dp else 0.dp,
+	                    if (selected) Color(0xFF3DA5FF) else Color.Transparent,
+	                    RoundedCornerShape(3.dp)
+	                )
+	                .clickable(onClick = onClick)
+	                .padding(horizontal = 6.dp),
             contentAlignment = Alignment.CenterStart,
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {

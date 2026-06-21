@@ -46,6 +46,7 @@ import java.net.NetworkInterface
 fun NetworkTab(state: MutableState<Settings>) {
     val s = state.value
     val scroll = remember { ScrollState(0) }
+    ControllerAutoScroll(scroll)
     val adapters = remember { enumerateAdapters() }
     val apiValues = listOf("Unset", "PCAP Bridged", "PCAP Switched", "TAP", "Sockets")
     val apiLabels = listOf("Unset", "PCAP Br.", "PCAP Sw.", "TAP", "Sockets")

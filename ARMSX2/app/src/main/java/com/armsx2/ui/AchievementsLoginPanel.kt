@@ -26,7 +26,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.foundation.layout.Box
+import com.armsx2.ui.settings.controllerFocusable
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -63,6 +68,9 @@ fun AchievementsLoginPanel(onClose: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
+    val userFocus = remember { FocusRequester() }
+    val passFocus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
 
     // The bottom-left modal box that hosts this panel is sized with
     // .fillMaxHeight(0.75f) — fine for confirms / slot pickers but the
@@ -110,28 +118,38 @@ fun AchievementsLoginPanel(onClose: () -> Unit) {
             cursorColor = Colors.pasx2_blue,
         )
 
-        OutlinedTextField(
-            value = user,
-            onValueChange = { if (!inFlight) user = it.trim() },
-            label = { Text("Username") },
-            singleLine = true,
-            enabled = !inFlight,
-            colors = tfColors,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-            modifier = Modifier.fillMaxWidth(),
-        )
+        Box(Modifier.controllerFocusable("ach:user", onConfirm = {
+            runCatching { userFocus.requestFocus() }
+            keyboard?.show()
+        })) {
+            OutlinedTextField(
+                value = user,
+                onValueChange = { if (!inFlight) user = it.trim() },
+                label = { Text("Username (A to type)") },
+                singleLine = true,
+                enabled = !inFlight,
+                colors = tfColors,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                modifier = Modifier.fillMaxWidth().focusRequester(userFocus),
+            )
+        }
         Spacer(Modifier.height(6.dp))
-        OutlinedTextField(
-            value = pass,
-            onValueChange = { if (!inFlight) pass = it },
-            label = { Text("Password") },
-            singleLine = true,
-            enabled = !inFlight,
-            visualTransformation = PasswordVisualTransformation(),
-            colors = tfColors,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            modifier = Modifier.fillMaxWidth(),
-        )
+        Box(Modifier.controllerFocusable("ach:pass", onConfirm = {
+            runCatching { passFocus.requestFocus() }
+            keyboard?.show()
+        })) {
+            OutlinedTextField(
+                value = pass,
+                onValueChange = { if (!inFlight) pass = it },
+                label = { Text("Password (A to type)") },
+                singleLine = true,
+                enabled = !inFlight,
+                visualTransformation = PasswordVisualTransformation(),
+                colors = tfColors,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth().focusRequester(passFocus),
+            )
+        }
 
         val err = error
         if (err != null) {
@@ -158,6 +176,7 @@ fun AchievementsLoginPanel(onClose: () -> Unit) {
                 enabled = !inFlight,
                 onClick = onClose,
                 modifier = Modifier.weight(1f),
+                controllerId = "ach:cancel",
             )
             Spacer(Modifier.width(8.dp))
             ActionButton(
@@ -185,6 +204,7 @@ fun AchievementsLoginPanel(onClose: () -> Unit) {
                     }
                 },
                 modifier = Modifier.weight(1f),
+                controllerId = "ach:login-submit",
             )
         }
     }
@@ -197,6 +217,7 @@ private fun ActionButton(
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    controllerId: String? = null,
 ) {
     val bg = when {
         !enabled -> Color(0xFF333333)
@@ -210,6 +231,11 @@ private fun ActionButton(
             .clip(RoundedCornerShape(6.dp))
             .background(bg)
             .border(1.dp, border, RoundedCornerShape(6.dp))
+            .then(
+                if (enabled && controllerId != null)
+                    Modifier.controllerFocusable(controllerId, onConfirm = onClick)
+                else Modifier,
+            )
             .let { if (enabled) it.clickable(onClick = onClick) else it }
             .padding(vertical = 10.dp),
         horizontalArrangement = androidx.compose.foundation.layout.Arrangement.Center,

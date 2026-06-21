@@ -39,6 +39,7 @@ import com.armsx2.ui.touch.TouchControls
 @Composable
 fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
     val scroll = remember { ScrollState(0) }
+    ControllerAutoScroll(scroll)
     val capture = remember { mutableStateOf<ControllerMappings.Action?>(null) }
     val refreshToken = remember { mutableStateOf(0) }
     val focusRequester = remember { FocusRequester() }
@@ -98,63 +99,23 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                     capture.value = null
                     refreshToken.value++
                 }
+                .controllerFocusable(
+                    controllerId = "pad-reset",
+                    onConfirm = {
+                        ControllerMappings.reset()
+                        capture.value = null
+                        refreshToken.value++
+                    },
+                )
                 .padding(horizontal = 6.dp),
             contentAlignment = Alignment.CenterStart,
         ) {
             Text("Reset Controller Mappings", color = Colors.pasx2_blue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
 
-        // ---- Controller hotkeys (menu / quick save / quick load) ----
+        // Controller hotkeys now live in their own dedicated "Hotkeys" tab
+        // (see HotkeysTab) so they're easier to find than buried under Pad.
         SettingsDivider()
-        Text(
-            "Controller hotkeys",
-            color = Color.White,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp),
-        )
-        HelpText("Bind physical buttons (back paddles work too) to open the menu and quick save/load state — handy with a controller, no on-screen cog needed. Quick save/load use slot 0.")
-        ControllerMappings.SysHotkey.values().forEach { hk ->
-            @Suppress("UNUSED_EXPRESSION") refreshToken.value
-            @Suppress("UNUSED_EXPRESSION") ControllerMappings.hotkeyBindTick.value
-            val capturing = ControllerMappings.captureHotkey.value == hk
-            val code = ControllerMappings.hotkeyCode(hk)
-            val unset = code == android.view.KeyEvent.KEYCODE_UNKNOWN
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(30.dp)
-                    .background(rowAura())
-                    .clickable { ControllerMappings.captureHotkey.value = hk }
-                    .padding(horizontal = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(hk.label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.weight(1f))
-                if (!unset && !capturing) {
-                    Text(
-                        "Clear",
-                        color = Color(0xFFFF6B6B),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier
-                            .clickable { ControllerMappings.clearHotkey(hk); ControllerMappings.hotkeyBindTick.value++ }
-                            .padding(end = 10.dp),
-                    )
-                }
-                Text(
-                    when {
-                        capturing -> "Press any button (incl. back)…"
-                        unset -> "Not set"
-                        else -> ControllerMappings.labelForKey(code)
-                    },
-                    color = if (capturing) Color(0xFFFFD33A) else Color(0xFFCCCCCC),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-            SettingsDivider()
-        }
         IntSliderRow(
             label = "On-screen controls",
             value = TouchControls.visibilityMode.value,
@@ -180,6 +141,10 @@ private fun PadBindingRow(
             .height(30.dp)
             .background(rowAura())
             .clickable(onClick = onClick)
+            .controllerFocusable(
+                controllerId = "pad:${action.id}",
+                onConfirm = onClick,
+            )
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

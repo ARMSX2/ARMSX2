@@ -141,6 +141,48 @@ data class Settings(
     /** EmuCore/CPU/FPU.Roundmode — EE FPU rounding: 0 Nearest / 1 Negative / 2 Positive
      *  / 3 Chop. PS2 EE FPU default is Chop (toward zero). */
     val eeFpuRoundMode: Int = 3,
+    /** EmuCore/CPU/VU0.Roundmode — VU0 rounding: 0 Nearest / 1 Neg / 2 Pos / 3 Chop. Default Chop. */
+    val vu0RoundMode: Int = 3,
+    /** EmuCore/CPU/VU1.Roundmode — VU1 rounding: 0 Nearest / 1 Neg / 2 Pos / 3 Chop. Default Chop. */
+    val vu1RoundMode: Int = 3,
+
+    // ---- EmuCore/GS — display / PCRTC fixes ----
+    /** EmuCore/GS/pcrtc_offsets — apply PCRTC screen offsets. PCSX2 default off. */
+    val screenOffsets: Boolean = false,
+    /** EmuCore/GS/pcrtc_overscan — show overscan area. PCSX2 default off. */
+    val showOverscan: Boolean = false,
+    /** EmuCore/GS/pcrtc_antiblur — anti-blur. PCSX2 default ON. */
+    val antiBlur: Boolean = true,
+    /** EmuCore/GS/disable_interlace_offset — disable interlace offset. Default off. */
+    val disableInterlaceOffset: Boolean = false,
+    /** EmuCore/GS/SyncToHostRefreshRate — pace emulation to the host refresh. Default off. */
+    val syncToHostRefresh: Boolean = false,
+    /** EmuCore/GS/DisableFramebufferFetch — disable the framebuffer-fetch path. Default off. */
+    val disableFramebufferFetch: Boolean = false,
+    /** EmuCore/GS/OverrideTextureBarriers — -1 Auto / 0 Off / 1 On. */
+    val overrideTextureBarriers: Int = -1,
+
+    // ---- EmuCore/GS — hardware / software renderer fixes ----
+    /** EmuCore/GS/UserHacks_SkipDraw_Start — first draw to skip. 0 = off. */
+    val skipDrawStart: Int = 0,
+    /** EmuCore/GS/UserHacks_SkipDraw_End — last draw to skip. 0 = off. */
+    val skipDrawEnd: Int = 0,
+    /** EmuCore/GS/HWSpinGPUForReadbacks — busy-wait the GPU on readbacks. Default off. */
+    val spinGpuReadbacks: Boolean = false,
+    /** EmuCore/GS/HWSpinCPUForReadbacks — busy-wait the CPU on readbacks. Default off. */
+    val spinCpuReadbacks: Boolean = false,
+    /** EmuCore/GS/IntegerScaling — integer pixel scaling for the presented image. Default off. */
+    val integerScaling: Boolean = false,
+    /** EmuCore/GS/dithering_ps2 — 0 Off / 1 Scaled / 2 Unscaled. PCSX2 default Unscaled. */
+    val dithering: Int = 2,
+    /** EmuCore/GS/VsyncQueueSize — frames the GS thread may queue (0-3). PCSX2 default 2. */
+    val vsyncQueueSize: Int = 2,
+    /** EmuCore/GS/autoflush_sw — software-renderer auto-flush. PCSX2 default on. */
+    val autoFlushSw: Boolean = true,
+    /** EmuCore/GS/mipmap — software-renderer mipmapping. PCSX2 default on. */
+    val mipmapSw: Boolean = true,
+    /** EmuCore/GS/extrathreads — extra software-renderer threads (0-10). PCSX2 default 4. */
+    val swThreads: Int = 4,
 
     /** EmuCore/GS/AspectRatio:
      *  0 Stretch · 1 Auto 4:3/3:2 · 2 4:3 · 3 16:9 · 4 10:7. */
@@ -437,6 +479,8 @@ data class Settings(
         NativeApp.setSetting("EmuCore/Gamefixes", "XgKickHack", "bool", gamefixXgkick.toString())
         NativeApp.setSetting("EmuCore/GS", "SkipDuplicateFrames", "bool", skipDuplicateFrames.toString())
         NativeApp.setSetting("EmuCore/CPU", "FPU.Roundmode", "int", eeFpuRoundMode.coerceIn(0, 3).toString())
+        NativeApp.setSetting("EmuCore/CPU", "VU0.Roundmode", "int", vu0RoundMode.coerceIn(0, 3).toString())
+        NativeApp.setSetting("EmuCore/CPU", "VU1.Roundmode", "int", vu1RoundMode.coerceIn(0, 3).toString())
         // Display + GS renderer + hardware/upscaling-fix keys are all written
         // together in writeGsToNative() below (shared with applyGsLive()).
         // DEV9. Networking/HDD are initialized with the VM, so changes
@@ -544,6 +588,25 @@ data class Settings(
         NativeApp.setSetting("EmuCore/GS", "OsdShowResolution", "bool", osdShowResolution.toString())
         NativeApp.setSetting("EmuCore/GS", "OsdShowGSStats", "bool", osdShowGsStats.toString())
         NativeApp.setSetting("EmuCore/GS", "OsdShowFrameTimes", "bool", osdShowFrameTimes.toString())
+        // Display / PCRTC fixes (not gated by the UserHacks master).
+        NativeApp.setSetting("EmuCore/GS", "pcrtc_offsets", "bool", screenOffsets.toString())
+        NativeApp.setSetting("EmuCore/GS", "pcrtc_overscan", "bool", showOverscan.toString())
+        NativeApp.setSetting("EmuCore/GS", "pcrtc_antiblur", "bool", antiBlur.toString())
+        NativeApp.setSetting("EmuCore/GS", "disable_interlace_offset", "bool", disableInterlaceOffset.toString())
+        NativeApp.setSetting("EmuCore/GS", "SyncToHostRefreshRate", "bool", syncToHostRefresh.toString())
+        NativeApp.setSetting("EmuCore/GS", "DisableFramebufferFetch", "bool", disableFramebufferFetch.toString())
+        NativeApp.setSetting("EmuCore/GS", "OverrideTextureBarriers", "int", overrideTextureBarriers.coerceIn(-1, 1).toString())
+        NativeApp.setSetting("EmuCore/GS", "HWSpinGPUForReadbacks", "bool", spinGpuReadbacks.toString())
+        NativeApp.setSetting("EmuCore/GS", "HWSpinCPUForReadbacks", "bool", spinCpuReadbacks.toString())
+        NativeApp.setSetting("EmuCore/GS", "IntegerScaling", "bool", integerScaling.toString())
+        NativeApp.setSetting("EmuCore/GS", "dithering_ps2", "int", dithering.coerceIn(0, 2).toString())
+        NativeApp.setSetting("EmuCore/GS", "VsyncQueueSize", "int", vsyncQueueSize.coerceIn(0, 3).toString())
+        NativeApp.setSetting("EmuCore/GS", "autoflush_sw", "bool", autoFlushSw.toString())
+        NativeApp.setSetting("EmuCore/GS", "mipmap", "bool", mipmapSw.toString())
+        NativeApp.setSetting("EmuCore/GS", "extrathreads", "int", swThreads.coerceIn(0, 10).toString())
+        // Skip-draw is a UserHack (gated by the master toggle below).
+        NativeApp.setSetting("EmuCore/GS", "UserHacks_SkipDraw_Start", "int", skipDrawStart.coerceAtLeast(0).toString())
+        NativeApp.setSetting("EmuCore/GS", "UserHacks_SkipDraw_End", "int", skipDrawEnd.coerceAtLeast(0).toString())
         // Master hardware-fixes toggle. Auto-enables when ANY individual hack is
         // non-default so the user doesn't have to flip it; PCSX2 masks every
         // UserHacks_* key when this is off (GSOptions::MaskUserHacks).
@@ -599,7 +662,8 @@ data class Settings(
             alignSprite || mergeSprite || forceEvenSpritePosition || unscaledPaletteDraw ||
             gpuPaletteConversion || cpuFramebufferConversion || readTargetsWhenClosing ||
             disableDepthEmulation || disablePartialInvalidation || disableSafeFeatures ||
-            disableRenderFixes || preloadFrameData || estimateTextureRegion
+            disableRenderFixes || preloadFrameData || estimateTextureRegion ||
+            skipDrawStart != 0 || skipDrawEnd != 0
 
     /** Live GS-only apply for a running VM: persist all EmuCore/GS keys, then
      *  reconfigure the GS thread without the heavy CPU/JIT rebuild commitSettings()
@@ -705,6 +769,25 @@ data class Settings(
         put("gamefixXgkick", gamefixXgkick)
         put("skipDuplicateFrames", skipDuplicateFrames)
         put("eeFpuRoundMode", eeFpuRoundMode)
+        put("vu0RoundMode", vu0RoundMode)
+        put("vu1RoundMode", vu1RoundMode)
+        put("screenOffsets", screenOffsets)
+        put("showOverscan", showOverscan)
+        put("antiBlur", antiBlur)
+        put("disableInterlaceOffset", disableInterlaceOffset)
+        put("syncToHostRefresh", syncToHostRefresh)
+        put("disableFramebufferFetch", disableFramebufferFetch)
+        put("overrideTextureBarriers", overrideTextureBarriers)
+        put("skipDrawStart", skipDrawStart)
+        put("skipDrawEnd", skipDrawEnd)
+        put("spinGpuReadbacks", spinGpuReadbacks)
+        put("spinCpuReadbacks", spinCpuReadbacks)
+        put("integerScaling", integerScaling)
+        put("dithering", dithering)
+        put("vsyncQueueSize", vsyncQueueSize)
+        put("autoFlushSw", autoFlushSw)
+        put("mipmapSw", mipmapSw)
+        put("swThreads", swThreads)
         put("aspectRatio", aspectRatio)
         put("deinterlaceMode", deinterlaceMode)
         put("dev9EthEnable", dev9EthEnable)
@@ -846,6 +929,25 @@ data class Settings(
                 gamefixXgkick = json.optBoolean("gamefixXgkick", def.gamefixXgkick),
                 skipDuplicateFrames = json.optBoolean("skipDuplicateFrames", def.skipDuplicateFrames),
                 eeFpuRoundMode = json.optInt("eeFpuRoundMode", def.eeFpuRoundMode),
+                vu0RoundMode = json.optInt("vu0RoundMode", def.vu0RoundMode),
+                vu1RoundMode = json.optInt("vu1RoundMode", def.vu1RoundMode),
+                screenOffsets = json.optBoolean("screenOffsets", def.screenOffsets),
+                showOverscan = json.optBoolean("showOverscan", def.showOverscan),
+                antiBlur = json.optBoolean("antiBlur", def.antiBlur),
+                disableInterlaceOffset = json.optBoolean("disableInterlaceOffset", def.disableInterlaceOffset),
+                syncToHostRefresh = json.optBoolean("syncToHostRefresh", def.syncToHostRefresh),
+                disableFramebufferFetch = json.optBoolean("disableFramebufferFetch", def.disableFramebufferFetch),
+                overrideTextureBarriers = json.optInt("overrideTextureBarriers", def.overrideTextureBarriers),
+                skipDrawStart = json.optInt("skipDrawStart", def.skipDrawStart),
+                skipDrawEnd = json.optInt("skipDrawEnd", def.skipDrawEnd),
+                spinGpuReadbacks = json.optBoolean("spinGpuReadbacks", def.spinGpuReadbacks),
+                spinCpuReadbacks = json.optBoolean("spinCpuReadbacks", def.spinCpuReadbacks),
+                integerScaling = json.optBoolean("integerScaling", def.integerScaling),
+                dithering = json.optInt("dithering", def.dithering),
+                vsyncQueueSize = json.optInt("vsyncQueueSize", def.vsyncQueueSize),
+                autoFlushSw = json.optBoolean("autoFlushSw", def.autoFlushSw),
+                mipmapSw = json.optBoolean("mipmapSw", def.mipmapSw),
+                swThreads = json.optInt("swThreads", def.swThreads),
                 aspectRatio = json.optInt("aspectRatio", def.aspectRatio),
                 deinterlaceMode = json.optInt("deinterlaceMode", def.deinterlaceMode),
                 dev9EthEnable = json.optBoolean("dev9EthEnable", def.dev9EthEnable),
@@ -997,6 +1099,25 @@ data class Settings(
             if (current.gamefixXgkick        != base.gamefixXgkick)        j.put("gamefixXgkick", current.gamefixXgkick)
             if (current.skipDuplicateFrames  != base.skipDuplicateFrames)  j.put("skipDuplicateFrames", current.skipDuplicateFrames)
             if (current.eeFpuRoundMode       != base.eeFpuRoundMode)       j.put("eeFpuRoundMode", current.eeFpuRoundMode)
+            if (current.vu0RoundMode         != base.vu0RoundMode)         j.put("vu0RoundMode", current.vu0RoundMode)
+            if (current.vu1RoundMode         != base.vu1RoundMode)         j.put("vu1RoundMode", current.vu1RoundMode)
+            if (current.screenOffsets        != base.screenOffsets)        j.put("screenOffsets", current.screenOffsets)
+            if (current.showOverscan         != base.showOverscan)         j.put("showOverscan", current.showOverscan)
+            if (current.antiBlur             != base.antiBlur)             j.put("antiBlur", current.antiBlur)
+            if (current.disableInterlaceOffset != base.disableInterlaceOffset) j.put("disableInterlaceOffset", current.disableInterlaceOffset)
+            if (current.syncToHostRefresh    != base.syncToHostRefresh)    j.put("syncToHostRefresh", current.syncToHostRefresh)
+            if (current.disableFramebufferFetch != base.disableFramebufferFetch) j.put("disableFramebufferFetch", current.disableFramebufferFetch)
+            if (current.overrideTextureBarriers != base.overrideTextureBarriers) j.put("overrideTextureBarriers", current.overrideTextureBarriers)
+            if (current.skipDrawStart        != base.skipDrawStart)        j.put("skipDrawStart", current.skipDrawStart)
+            if (current.skipDrawEnd          != base.skipDrawEnd)          j.put("skipDrawEnd", current.skipDrawEnd)
+            if (current.spinGpuReadbacks     != base.spinGpuReadbacks)     j.put("spinGpuReadbacks", current.spinGpuReadbacks)
+            if (current.spinCpuReadbacks     != base.spinCpuReadbacks)     j.put("spinCpuReadbacks", current.spinCpuReadbacks)
+            if (current.integerScaling       != base.integerScaling)       j.put("integerScaling", current.integerScaling)
+            if (current.dithering            != base.dithering)            j.put("dithering", current.dithering)
+            if (current.vsyncQueueSize       != base.vsyncQueueSize)       j.put("vsyncQueueSize", current.vsyncQueueSize)
+            if (current.autoFlushSw          != base.autoFlushSw)          j.put("autoFlushSw", current.autoFlushSw)
+            if (current.mipmapSw             != base.mipmapSw)             j.put("mipmapSw", current.mipmapSw)
+            if (current.swThreads            != base.swThreads)            j.put("swThreads", current.swThreads)
             if (current.aspectRatio         != base.aspectRatio)         j.put("aspectRatio", current.aspectRatio)
             if (current.deinterlaceMode     != base.deinterlaceMode)     j.put("deinterlaceMode", current.deinterlaceMode)
             if (current.dev9EthEnable       != base.dev9EthEnable)       j.put("dev9EthEnable", current.dev9EthEnable)
@@ -1134,6 +1255,25 @@ data class Settings(
             gamefixXgkick = if (overrides.has("gamefixXgkick")) overrides.getBoolean("gamefixXgkick") else base.gamefixXgkick,
             skipDuplicateFrames = if (overrides.has("skipDuplicateFrames")) overrides.getBoolean("skipDuplicateFrames") else base.skipDuplicateFrames,
             eeFpuRoundMode = if (overrides.has("eeFpuRoundMode")) overrides.getInt("eeFpuRoundMode") else base.eeFpuRoundMode,
+            vu0RoundMode = if (overrides.has("vu0RoundMode")) overrides.getInt("vu0RoundMode") else base.vu0RoundMode,
+            vu1RoundMode = if (overrides.has("vu1RoundMode")) overrides.getInt("vu1RoundMode") else base.vu1RoundMode,
+            screenOffsets = if (overrides.has("screenOffsets")) overrides.getBoolean("screenOffsets") else base.screenOffsets,
+            showOverscan = if (overrides.has("showOverscan")) overrides.getBoolean("showOverscan") else base.showOverscan,
+            antiBlur = if (overrides.has("antiBlur")) overrides.getBoolean("antiBlur") else base.antiBlur,
+            disableInterlaceOffset = if (overrides.has("disableInterlaceOffset")) overrides.getBoolean("disableInterlaceOffset") else base.disableInterlaceOffset,
+            syncToHostRefresh = if (overrides.has("syncToHostRefresh")) overrides.getBoolean("syncToHostRefresh") else base.syncToHostRefresh,
+            disableFramebufferFetch = if (overrides.has("disableFramebufferFetch")) overrides.getBoolean("disableFramebufferFetch") else base.disableFramebufferFetch,
+            overrideTextureBarriers = if (overrides.has("overrideTextureBarriers")) overrides.getInt("overrideTextureBarriers") else base.overrideTextureBarriers,
+            skipDrawStart = if (overrides.has("skipDrawStart")) overrides.getInt("skipDrawStart") else base.skipDrawStart,
+            skipDrawEnd = if (overrides.has("skipDrawEnd")) overrides.getInt("skipDrawEnd") else base.skipDrawEnd,
+            spinGpuReadbacks = if (overrides.has("spinGpuReadbacks")) overrides.getBoolean("spinGpuReadbacks") else base.spinGpuReadbacks,
+            spinCpuReadbacks = if (overrides.has("spinCpuReadbacks")) overrides.getBoolean("spinCpuReadbacks") else base.spinCpuReadbacks,
+            integerScaling = if (overrides.has("integerScaling")) overrides.getBoolean("integerScaling") else base.integerScaling,
+            dithering = if (overrides.has("dithering")) overrides.getInt("dithering") else base.dithering,
+            vsyncQueueSize = if (overrides.has("vsyncQueueSize")) overrides.getInt("vsyncQueueSize") else base.vsyncQueueSize,
+            autoFlushSw = if (overrides.has("autoFlushSw")) overrides.getBoolean("autoFlushSw") else base.autoFlushSw,
+            mipmapSw = if (overrides.has("mipmapSw")) overrides.getBoolean("mipmapSw") else base.mipmapSw,
+            swThreads = if (overrides.has("swThreads")) overrides.getInt("swThreads") else base.swThreads,
             aspectRatio = if (overrides.has("aspectRatio")) overrides.getInt("aspectRatio") else base.aspectRatio,
             deinterlaceMode = if (overrides.has("deinterlaceMode")) overrides.getInt("deinterlaceMode") else base.deinterlaceMode,
             dev9EthEnable = if (overrides.has("dev9EthEnable")) overrides.getBoolean("dev9EthEnable") else base.dev9EthEnable,

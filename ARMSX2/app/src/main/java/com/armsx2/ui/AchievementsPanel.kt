@@ -16,8 +16,10 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -37,6 +39,7 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -44,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
+import com.armsx2.ui.settings.controllerFocusable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -227,6 +231,40 @@ private fun parseSnapshot(json: String): AchievementSnapshot {
     }
 }
 
+/**
+ * Headless poller. Keeps the overlay's shared achievement-derived state
+ * (hardcore flag → save/load dimming, renderer pill, rich-presence subtitle)
+ * in sync every 4s while the overlay is open, regardless of which tab is shown
+ * or whether the achievements panel itself is on screen. Render it once in the
+ * overlay root so removing the inline Play-tab panel doesn't stall these.
+ */
+@Composable
+fun AchievementsSync() {
+    LaunchedEffect(Unit) {
+        while (true) {
+            val json = withContext(Dispatchers.IO) {
+                runCatching { NativeApp.getAchievementsJSON() }.getOrNull() ?: ""
+            }
+            val s = parseSnapshot(json)
+            InGameOverlay.hardcoreOn.value = s.hardcore
+            if (InGameOverlay.rendererMode.value != InGameOverlay.RendererMode.Auto) {
+                runCatching {
+                    InGameOverlay.rendererMode.value =
+                        if (NativeApp.isHardwareRenderer())
+                            InGameOverlay.RendererMode.Hardware
+                        else InGameOverlay.RendererMode.Software
+                }
+            }
+            InGameOverlay.richPresence.value = if (s.active) {
+                runCatching {
+                    withContext(Dispatchers.IO) { NativeApp.getRichPresence() }
+                }.getOrNull() ?: ""
+            } else ""
+            delay(4000)
+        }
+    }
+}
+
 @Composable
 fun AchievementsPanel(
     modifier: Modifier = Modifier,
@@ -287,7 +325,7 @@ fun AchievementsPanel(
     val showsList = snapshot.loggedIn && snapshot.active && snapshot.items.isNotEmpty()
     Column(modifier.then(if (showsList) Modifier.fillMaxHeight() else Modifier)) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -329,7 +367,8 @@ fun AchievementsPanel(
         when {
             !snapshot.loggedIn -> StatusCard(
                 title = "Not signed in",
-                body = "Tap to sign in to RetroAchievements and track unlocks for the games you play.",
+                body = "Tap (or press A) to sign in to RetroAchievements and track unlocks for the games you play.",
+                controllerId = "ach:signin",
                 onClick = onSignInClick,
             )
             !snapshot.active -> StatusCard(
@@ -386,8 +425,23 @@ fun AchievementsPanel(
                 // mask — the header stays fully opaque (it's drawn AFTER
                 // the LazyColumn in the Box), giving a "frosted" header
                 // look without us having to paint a backdrop.
+                // Controller scrolling: the overlay bumps achievementsScroll by
+                // ±1 per D-pad/stick step (no Compose focus — touch mode blocks
+                // it), and we translate the delta into a list scroll here.
+                val listState = rememberLazyListState()
+                val density = LocalDensity.current
+                var lastScroll by remember { mutableStateOf(InGameOverlay.achievementsScroll.value) }
+                LaunchedEffect(InGameOverlay.achievementsScroll.value) {
+                    val cur = InGameOverlay.achievementsScroll.value
+                    val diff = cur - lastScroll
+                    lastScroll = cur
+                    if (diff != 0) runCatching {
+                        listState.animateScrollBy(diff * with(density) { 96.dp.toPx() })
+                    }
+                }
                 Box(modifier = Modifier.fillMaxWidth()) {
                     LazyColumn(
+                        state = listState,
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                         contentPadding = PaddingValues(top = 16.dp),
                         modifier = Modifier
@@ -411,15 +465,22 @@ fun AchievementsPanel(
 }
 
 @Composable
-private fun StatusCard(title: String, body: String, onClick: (() -> Unit)? = null) {
+private fun StatusCard(
+    title: String,
+    body: String,
+    controllerId: String? = null,
+    onClick: (() -> Unit)? = null,
+) {
     // Matches the Playing-Now bubble surface (0xFF1F2123 + 10%-white
     // hairline border) so the right-column achievements panel reads as
     // the same material as the left-column action grid.
-    val base = Modifier
+    var base = Modifier
         .fillMaxWidth()
         .clip(RoundedCornerShape(8.dp))
         .background(Color(0xFF1F2123))
         .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(8.dp))
+    if (onClick != null && controllerId != null)
+        base = base.controllerFocusable(controllerId, onConfirm = onClick)
     val withClick = if (onClick != null) base.clickable(onClick = onClick) else base
     Column(modifier = withClick.padding(12.dp)) {
         Text(title, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)

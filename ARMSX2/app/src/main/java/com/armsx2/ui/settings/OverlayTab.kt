@@ -31,6 +31,7 @@ import com.armsx2.ui.InGameOverlay
 fun OverlayTab(state: MutableState<Settings>) {
     val s = state.value
     val scroll = remember { ScrollState(0) }
+    ControllerAutoScroll(scroll)
 
     fun apply(updated: Settings) = InGameOverlay.saveSettings(updated)
 

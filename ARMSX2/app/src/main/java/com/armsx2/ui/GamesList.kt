@@ -12,10 +12,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -29,17 +32,23 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items as lazyRowItems
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.itemsIndexed as lazyItemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -55,6 +64,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -66,6 +76,7 @@ import androidx.documentfile.provider.DocumentFile
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.armsx2.R
+import com.armsx2.EmuState
 import com.armsx2.FilenameParser
 import com.armsx2.CoverArtStyle
 import com.armsx2.GameInfo
@@ -80,6 +91,7 @@ import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -107,6 +119,141 @@ object GamesList {
     private val recentLoaded = mutableStateOf(false)
     private val customBackgroundPath = mutableStateOf<String?>(null)
     private val customBackgroundLoaded = mutableStateOf(false)
+    private val controllerSelectedUri = mutableStateOf<String?>(null)
+    private data class ControllerGameRow(
+        val rowId: Int,
+        val games: List<GameInfo>,
+        val listItemIndex: Int,
+    )
+    private data class ControllerGamePosition(
+        val rowIndex: Int,
+        val columnIndex: Int,
+        val game: GameInfo,
+    )
+    private var controllerRows: List<ControllerGameRow> = emptyList()
+    private var controllerRowIndex = 0
+    private var controllerColumnIndex = 0
+    private val controllerScrollVelocity = mutableStateOf(0f)
+
+    // Controller focus zones: the top toolbar chips, the game grid, and the
+    // bottom-left gear (global settings). The grid is the manual game model;
+    // TOOLBAR/RAIL are the non-game buttons wired in here so the controller can
+    // reach them. UP from the top grid row enters TOOLBAR; DOWN from the last
+    // row enters RAIL.
+    private enum class Zone { TOOLBAR, GRID, RAIL }
+    private val controllerZone = mutableStateOf(Zone.GRID)
+    private val controllerToolbarIndex = mutableStateOf(0)
+    // Toolbar actions, published from HeaderRow composition so they capture the
+    // live ActivityResult launchers / context. Label + click action, in order.
+    private var controllerToolbarActions: List<Pair<String, () -> Unit>> = emptyList()
+
+    fun controllerActive(): Boolean =
+        WindowImpl.showLibrary.value || Main.eState.value == EmuState.STOPPED
+
+    /** Reset focus to the game grid (call when the library (re)appears). */
+    fun resetControllerZone() {
+        controllerZone.value = Zone.GRID
+        controllerToolbarIndex.value = 0
+    }
+
+    fun handleControllerMove(dx: Int, dy: Int): Boolean {
+        if (!controllerActive()) return false
+
+        when (controllerZone.value) {
+            Zone.TOOLBAR -> {
+                if (dy > 0) {
+                    controllerZone.value = Zone.GRID
+                } else if (dx != 0) {
+                    val last = (controllerToolbarActions.size - 1).coerceAtLeast(0)
+                    controllerToolbarIndex.value =
+                        (controllerToolbarIndex.value + dx).coerceIn(0, last)
+                }
+                return true
+            }
+            Zone.RAIL -> {
+                // Gear sits on the left rail — right returns to the grid.
+                if (dx > 0) controllerZone.value = Zone.GRID
+                return true
+            }
+            Zone.GRID -> { /* handled below */ }
+        }
+
+        val rows = controllerRows.filter { it.games.isNotEmpty() }
+        if (rows.isEmpty()) {
+            // No games yet — up reaches the toolbar, left reaches the gear, so
+            // the controller can scan / open setup on a fresh install.
+            if (dy < 0) controllerZone.value = Zone.TOOLBAR
+            else if (dx < 0) controllerZone.value = Zone.RAIL
+            return true
+        }
+
+        val current = controllerSelectedPosition(rows)
+        if (dy != 0) {
+            if (dy < 0 && current.rowIndex == 0) {
+                controllerZone.value = Zone.TOOLBAR
+                return true
+            }
+            val rowIndex = (current.rowIndex + dy).coerceIn(0, rows.lastIndex)
+            val columnIndex = current.columnIndex.coerceIn(0, rows[rowIndex].games.lastIndex)
+            selectControllerPosition(rows, rowIndex, columnIndex)
+        } else if (dx != 0) {
+            if (dx < 0 && current.columnIndex == 0) {
+                // Left off the first cover of any shelf → the gear on the rail.
+                controllerZone.value = Zone.RAIL
+                return true
+            }
+            val row = rows[current.rowIndex]
+            val columnIndex = (current.columnIndex + dx).coerceIn(0, row.games.lastIndex)
+            selectControllerPosition(rows, current.rowIndex, columnIndex)
+        }
+        return true
+    }
+
+    fun handleControllerConfirm(): Boolean {
+        if (!controllerActive()) return false
+        when (controllerZone.value) {
+            Zone.TOOLBAR ->
+                controllerToolbarActions.getOrNull(controllerToolbarIndex.value)?.second?.invoke()
+            Zone.RAIL -> InGameOverlay.openGlobalSettings()
+            Zone.GRID -> {
+                val rows = controllerRows.filter { it.games.isNotEmpty() }
+                if (rows.isNotEmpty()) launchGame(controllerSelectedPosition(rows).game)
+            }
+        }
+        return true
+    }
+
+    /** Open per-game settings for the currently-highlighted cover (controller
+     *  equivalent of long-pressing a game). Used by the Menu hotkey / Y button
+     *  while browsing the library. */
+    fun openSelectedGameSettings(): Boolean {
+        if (!controllerActive() || controllerZone.value != Zone.GRID) return false
+        val rows = controllerRows.filter { it.games.isNotEmpty() }
+        if (rows.isEmpty()) return false
+        InGameOverlay.openGameSettings(controllerSelectedPosition(rows).game)
+        return true
+    }
+
+    fun handleControllerBack(): Boolean {
+        if (!controllerActive()) return false
+        // From the toolbar/gear, back returns to the game grid first.
+        if (controllerZone.value != Zone.GRID) {
+            controllerZone.value = Zone.GRID
+            return true
+        }
+        if (WindowImpl.showLibrary.value)
+            WindowImpl.showLibrary.value = false
+        return true
+    }
+
+    fun handleControllerScroll(velocity: Float): Boolean {
+        if (!controllerActive()) {
+            controllerScrollVelocity.value = 0f
+            return false
+        }
+        controllerScrollVelocity.value = if (abs(velocity) > 0.08f) velocity.coerceIn(-1f, 1f) else 0f
+        return true
+    }
 
     @Composable
     fun GamesRow() {
@@ -249,6 +396,64 @@ object GamesList {
             .take(5)
             .ifEmpty { games.take(if (landscape) 8 else 6) }
         val libraryRows = games.chunked(if (landscape) 8 else 5)
+        val controllerLayoutRows = buildList {
+            if (currentShelfGames.isNotEmpty()) add(currentShelfGames)
+            addAll(libraryRows)
+        }
+        val firstLibraryRowItem = if (currentShelfGames.isNotEmpty()) 3 else 2
+        val controllerRowsForUi = buildList {
+            if (currentShelfGames.isNotEmpty()) add(ControllerGameRow(0, currentShelfGames, 1))
+            libraryRows.forEachIndexed { index, row ->
+                add(ControllerGameRow(index + 1, row, firstLibraryRowItem + index))
+            }
+        }
+        val controllerVisibleKey = controllerLayoutRows
+            .joinToString("||") { row -> row.joinToString("|") { it.uri.toString() } }
+        val listState = rememberLazyListState()
+        val density = LocalDensity.current
+
+        LaunchedEffect(controllerVisibleKey, landscape) {
+            updateControllerLayout(controllerRowsForUi)
+        }
+
+        LaunchedEffect(controllerSelectedUri.value, controllerVisibleKey) {
+            controllerSelectedListItemIndex()?.let { index ->
+                val visible = listState.layoutInfo.visibleItemsInfo
+                val first = visible.firstOrNull()?.index
+                val last = visible.lastOrNull()?.index
+                when {
+                    first == null || last == null -> listState.scrollToItem(index)
+                    index < first -> listState.scrollToItem(index)
+                    index > last -> {
+                        val visibleSpan = (last - first).coerceAtLeast(0)
+                        listState.scrollToItem((index - visibleSpan).coerceAtLeast(0))
+                    }
+                }
+            }
+        }
+
+        // Bring the toolbar into view when the controller moves up into it; the
+        // gear rail is always on-screen so it needs no scroll.
+        LaunchedEffect(controllerZone.value) {
+            if (controllerZone.value == Zone.TOOLBAR) listState.scrollToItem(0)
+        }
+        // Start library browsing on the game grid each time it's explicitly shown.
+        LaunchedEffect(WindowImpl.showLibrary.value) {
+            if (WindowImpl.showLibrary.value) resetControllerZone()
+        }
+        LaunchedEffect(listState) {
+            var lastFrame = withFrameNanos { it }
+            while (true) {
+                val frame = withFrameNanos { it }
+                val dt = ((frame - lastFrame).coerceAtMost(50_000_000L)).toFloat() / 1_000_000_000f
+                lastFrame = frame
+                val velocity = controllerScrollVelocity.value
+                if (abs(velocity) > 0.08f) {
+                    val pxPerSecond = with(density) { 1700.dp.toPx() }
+                    listState.scrollBy(velocity * pxPerSecond * dt)
+                }
+            }
+        }
 
         Box(modifier = modifier.fillMaxSize()) {
             val customBackground = customBackgroundPath.value
@@ -319,6 +524,7 @@ object GamesList {
                 )
             }
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(
@@ -338,13 +544,15 @@ object GamesList {
                     )
                 }
                 item(key = "__current_shelf__") {
-                    GameShelf(
-                        games = currentShelfGames,
-                        label = null,
-                        coverWidth = if (landscape) 92.dp else 98.dp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(if (landscape) 220.dp else 194.dp),
+                        GameShelf(
+                            games = currentShelfGames,
+                            label = null,
+                            rowId = 0,
+                            listItemIndex = 1,
+                            coverWidth = if (landscape) 92.dp else 98.dp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(if (landscape) 220.dp else 194.dp),
                     )
                 }
             } else {
@@ -362,13 +570,15 @@ object GamesList {
                 item(key = "__library_title__") {
                     SectionHeader("Library")
                 }
-                items(libraryRows, key = { row ->
+                lazyItemsIndexed(libraryRows, key = { _, row ->
                     row.joinToString("|") { it.uri.toString() }
-                }) { row ->
+                }) { rowIndex, row ->
                     val label = shelfLabelFor(row)
                     GameShelf(
                         games = row,
                         label = label,
+                        rowId = rowIndex + 1,
+                        listItemIndex = firstLibraryRowItem + rowIndex,
                         coverWidth = if (landscape) 86.dp else 98.dp,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -418,16 +628,12 @@ object GamesList {
                 importCustomBackground(context, uri)
         }
 
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            SectionHeader(
-                text = "$title⌄",
-                modifier = Modifier.weight(1f),
-            )
-            ActionChip("Scan") {
+        // Single source of truth for the toolbar so the rendered chips, the
+        // controller highlight and the confirm action all stay in sync. Built
+        // here in composition so the closures capture the live launchers/context;
+        // published to the nav model via SideEffect.
+        val toolbarActions: List<Pair<String, () -> Unit>> = buildList {
+            add("Scan" to {
                 when {
                     romsDirs.isEmpty() ->
                         Toast.makeText(context, "Choose a game folder first", Toast.LENGTH_SHORT).show()
@@ -439,43 +645,62 @@ object GamesList {
                         scanRoms(context, romsDirs, romsKey)
                     }
                 }
-            }
-            ActionChip("BIOS") {
+            })
+            add("BIOS" to {
                 WindowImpl.showLibrary.value = false
                 Main.startBios()
-            }
-            ActionChip("ELF") {
-                bootElfLauncher.launch(arrayOf("*/*"))
-            }
-            ActionChip("Wall") {
-                wallLauncher.launch(arrayOf("image/*"))
-            }
-            ActionChip(if (CoverArtStyle.use3d.value) "Art: 3D" else "Art: 2D") {
+            })
+            add("ELF" to { bootElfLauncher.launch(arrayOf("*/*")) })
+            add("Wall" to { wallLauncher.launch(arrayOf("image/*")) })
+            add((if (CoverArtStyle.use3d.value) "Art: 3D" else "Art: 2D") to {
                 CoverArtStyle.set(!CoverArtStyle.use3d.value)
-            }
+            })
             if (customBackgroundPath.value != null) {
-                ActionChip("Reset") {
-                    resetCustomBackground(context)
-                }
+                add("Reset" to { resetCustomBackground(context) })
             }
-            ActionChip("Cards") {
-                MemoryCardManager.visible.value = true
-            }
-            ActionChip("Setup") {
+            add("Cards" to { MemoryCardManager.visible.value = true })
+            add("Setup" to {
                 SetupImpl.resetForReentry()
                 Main.reopenSetup()
+            })
+        }
+        SideEffect { controllerToolbarActions = toolbarActions }
+        val toolbarFocusIndex =
+            if (controllerZone.value == Zone.TOOLBAR) controllerToolbarIndex.value else -1
+
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            SectionHeader(
+                text = title,
+                modifier = Modifier.weight(1f),
+            )
+            toolbarActions.forEachIndexed { idx, (label, action) ->
+                ActionChip(label = label, highlighted = idx == toolbarFocusIndex, onClick = action)
             }
         }
     }
 
     @Composable
-    private fun ActionChip(label: String, onClick: () -> Unit) {
+    private fun ActionChip(label: String, highlighted: Boolean = false, onClick: () -> Unit) {
+        val glow = Color(0xFF3DA5FF)
         Box(
             Modifier
                 .height(34.dp)
+                .then(
+                    if (highlighted)
+                        Modifier.shadow(10.dp, RoundedCornerShape(17.dp), ambientColor = glow, spotColor = glow)
+                    else Modifier
+                )
                 .clip(RoundedCornerShape(17.dp))
-                .background(Color.White.copy(alpha = 0.10f))
-                .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(17.dp))
+                .background(Color.White.copy(alpha = if (highlighted) 0.20f else 0.10f))
+                .border(
+                    1.dp,
+                    if (highlighted) glow else Color.White.copy(alpha = 0.18f),
+                    RoundedCornerShape(17.dp),
+                )
                 .clickable(onClick = onClick)
                 .padding(horizontal = 12.dp),
             contentAlignment = Alignment.Center,
@@ -507,7 +732,22 @@ object GamesList {
                 verticalArrangement = Arrangement.SpaceBetween,
             ) {
                 NavButton(NavKind.Library, "LIBRARY", active = true) {}
-                NavButton(NavKind.Settings, null, active = false) { InGameOverlay.openGlobalSettings() }
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.offset(y = 10.dp),
+                ) {
+                    ShelfScrollHint()
+                    ControllerHint()
+                }
+                Box(Modifier.offset(y = 12.dp)) {
+                    NavButton(
+                        NavKind.Settings,
+                        null,
+                        active = false,
+                        highlighted = controllerZone.value == Zone.RAIL,
+                    ) { InGameOverlay.openGlobalSettings() }
+                }
             }
         } else {
             Row(
@@ -524,13 +764,26 @@ object GamesList {
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 NavButton(NavKind.Library, "LIBRARY", active = true) {}
-                NavButton(NavKind.Settings, null, active = false) { InGameOverlay.openGlobalSettings() }
+                ShelfScrollHint()
+                NavButton(
+                    NavKind.Settings,
+                    null,
+                    active = false,
+                    highlighted = controllerZone.value == Zone.RAIL,
+                ) { InGameOverlay.openGlobalSettings() }
             }
         }
     }
 
     @Composable
-    private fun NavButton(kind: NavKind, label: String?, active: Boolean, onClick: () -> Unit) {
+    private fun NavButton(
+        kind: NavKind,
+        label: String?,
+        active: Boolean,
+        highlighted: Boolean = false,
+        onClick: () -> Unit,
+    ) {
+        val glow = Color(0xFF3DA5FF)
         Column(
             Modifier
                 .width(70.dp)
@@ -542,8 +795,22 @@ object GamesList {
             Box(
                 Modifier
                     .size(42.dp)
+                    .then(
+                        if (highlighted)
+                            Modifier.shadow(10.dp, CircleShape, ambientColor = glow, spotColor = glow)
+                        else Modifier
+                    )
                     .clip(if (active) RoundedCornerShape(12.dp) else CircleShape)
-                    .background(if (active) Color.White.copy(alpha = 0.10f) else Color.Transparent),
+                    .background(
+                        when {
+                            highlighted -> glow.copy(alpha = 0.30f)
+                            active -> Color.White.copy(alpha = 0.10f)
+                            else -> Color.Transparent
+                        }
+                    )
+                    .then(
+                        if (highlighted) Modifier.border(1.dp, glow, CircleShape) else Modifier
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 NavGlyph(kind, active)
@@ -561,6 +828,58 @@ object GamesList {
     }
 
     private enum class NavKind { Library, Settings }
+
+    @Composable
+    private fun ShelfScrollHint() {
+        Text(
+            "Scroll up and down to navigate shelves, scroll left and right to reveal more games per shelf",
+            color = Color.White.copy(alpha = 0.58f),
+            fontSize = 9.sp,
+            lineHeight = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.width(80.dp),
+        )
+    }
+
+    /** Controller + touch help shown on the library rail. */
+    @Composable
+    private fun ControllerHint() {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                "On controller, press the X button to open per-game settings",
+                color = Color.White.copy(alpha = 0.52f),
+                fontSize = 8.sp,
+                lineHeight = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.width(80.dp),
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "On mobile, long press a game cover to open per-game settings",
+                color = Color.White.copy(alpha = 0.52f),
+                fontSize = 8.sp,
+                lineHeight = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.width(80.dp),
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "When in game, you can click the top right of the screen to make " +
+                    "the gear icon pop up, clicking it will open the in-game pause " +
+                    "overlay. On controller, you can set hotkeys for the menu and " +
+                    "many other toggles.",
+                color = Color.White.copy(alpha = 0.52f),
+                fontSize = 8.sp,
+                lineHeight = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.width(80.dp),
+            )
+        }
+    }
 
     @Composable
     private fun NavGlyph(kind: NavKind, active: Boolean) {
@@ -628,9 +947,42 @@ object GamesList {
     private fun GameShelf(
         games: List<GameInfo>,
         label: String?,
+        rowId: Int,
+        listItemIndex: Int,
         coverWidth: Dp,
         modifier: Modifier = Modifier,
     ) {
+        val rowState = rememberLazyListState()
+        val selectedUri = controllerSelectedUri.value
+        val density = LocalDensity.current
+
+        LaunchedEffect(selectedUri, games) {
+            val index = controllerSelectedColumnIndex(rowId) ?: return@LaunchedEffect
+            val info = rowState.layoutInfo
+            val itemInfo = info.visibleItemsInfo.firstOrNull { it.index == index }
+            if (itemInfo == null) {
+                // The cover isn't rendered at all — bring it to the leading edge.
+                rowState.animateScrollToItem(index)
+                return@LaunchedEffect
+            }
+            // Visible but possibly clipped at an edge. Nudge by exactly the
+            // overflow (plus a small margin for the selection glow) so the whole
+            // cover lands inside the viewport. The old code only scrolled when the
+            // cover was fully past the last visible item, so the rightmost covers
+            // — which sit half-visible as the trailing item — never slid in.
+            val margin = with(density) { 18.dp.toPx() }
+            val itemStart = itemInfo.offset.toFloat()
+            val itemEnd = (itemInfo.offset + itemInfo.size).toFloat()
+            val delta = when {
+                itemStart - margin < info.viewportStartOffset ->
+                    itemStart - margin - info.viewportStartOffset
+                itemEnd + margin > info.viewportEndOffset ->
+                    itemEnd + margin - info.viewportEndOffset
+                else -> 0f
+            }
+            if (delta != 0f) rowState.animateScrollBy(delta)
+        }
+
         Box(modifier) {
             ShelfGlass(
                 label = label,
@@ -640,14 +992,17 @@ object GamesList {
                     .height(76.dp),
             )
             LazyRow(
+                state = rowState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 26.dp),
                 horizontalArrangement = Arrangement.spacedBy(28.dp),
                 verticalAlignment = Alignment.Bottom,
             ) {
-                lazyRowItems(games, key = { "shelf_${label}_${it.uri}" }) { game ->
+                lazyItemsIndexed(games, key = { index, game -> "shelf_${listItemIndex}_${index}_${game.uri}" }) { columnIndex, game ->
                     ShelfGameCard(
                         game = game,
+                        rowId = rowId,
+                        columnIndex = columnIndex,
                         width = coverWidth,
                         modifier = Modifier.padding(bottom = 22.dp),
                     )
@@ -712,10 +1067,31 @@ object GamesList {
 
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
-    private fun ShelfGameCard(game: GameInfo, width: Dp, modifier: Modifier = Modifier) {
+    private fun ShelfGameCard(
+        game: GameInfo,
+        rowId: Int,
+        columnIndex: Int,
+        width: Dp,
+        modifier: Modifier = Modifier,
+    ) {
+        var cardFocused by remember { mutableStateOf(false) }
+        val glowBlue = Color(0xFF3DA5FF)
+        // Read the selection STATE (controllerSelectedUri) here so the card
+        // recomposes when the controller moves the selection. The row/col
+        // indices behind controllerCellSelected are plain vars, so without a
+        // state read the glow stays frozen even though the model updates.
+        val selectedUri = controllerSelectedUri.value
+        val gridFocused = controllerZone.value == Zone.GRID
+        val highlighted = cardFocused ||
+            (gridFocused && selectedUri == game.uri.toString() &&
+                controllerCellSelected(rowId, columnIndex))
         Column(
             modifier = modifier
                 .width(width)
+                .onFocusChanged {
+                    cardFocused = it.isFocused
+                    if (it.isFocused) selectControllerCell(rowId, columnIndex, game.uri.toString())
+                }
                 .combinedClickable(
                     onClick = { launchGame(game) },
                     onLongClick = { InGameOverlay.openGameSettings(game) },
@@ -727,7 +1103,19 @@ object GamesList {
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(0.7f)
-                    .clip(RoundedCornerShape(5.dp)),
+                    // Controller selection highlight: blue glow + outline on
+                    // the cover when this card has D-pad focus.
+                    .then(
+                        if (highlighted)
+                            Modifier.shadow(14.dp, RoundedCornerShape(6.dp), ambientColor = glowBlue, spotColor = glowBlue)
+                        else Modifier
+                    )
+                    .clip(RoundedCornerShape(5.dp))
+                    .then(
+                        if (highlighted)
+                            Modifier.border(3.dp, glowBlue, RoundedCornerShape(5.dp))
+                        else Modifier
+                    ),
             )
             Box(
                 Modifier
@@ -785,9 +1173,84 @@ object GamesList {
     }
 
     private fun launchGame(game: GameInfo) {
+        controllerSelectedUri.value = game.uri.toString()
         WindowImpl.showLibrary.value = false
         markRecentlyPlayed(game)
         Main.launchGame(game.uri.toString(), game)
+    }
+
+    private fun updateControllerLayout(controllerRowsForUi: List<ControllerGameRow>) {
+        controllerRows = controllerRowsForUi.filter { it.games.isNotEmpty() }
+        if (controllerRows.isEmpty()) {
+            controllerRowIndex = 0
+            controllerColumnIndex = 0
+            controllerSelectedUri.value = null
+            return
+        }
+
+        val selected = controllerSelectedUri.value
+        val rowIndex = controllerRowIndex.coerceIn(0, controllerRows.lastIndex)
+        val columnIndex = controllerColumnIndex.coerceIn(0, controllerRows[rowIndex].games.lastIndex)
+        if (selected != null && controllerRows[rowIndex].games[columnIndex].uri.toString() == selected) {
+            selectControllerPosition(controllerRows, rowIndex, columnIndex)
+            return
+        }
+
+        val found = selected?.let { findControllerPosition(it) }
+        if (found != null)
+            selectControllerPosition(controllerRows, found.rowIndex, found.columnIndex)
+        else
+            selectControllerPosition(controllerRows, 0, 0)
+    }
+
+    private fun controllerSelectedPosition(rows: List<ControllerGameRow> = controllerRows): ControllerGamePosition {
+        val rowIndex = controllerRowIndex.coerceIn(0, rows.lastIndex)
+        val columnIndex = controllerColumnIndex.coerceIn(0, rows[rowIndex].games.lastIndex)
+        return ControllerGamePosition(rowIndex, columnIndex, rows[rowIndex].games[columnIndex])
+    }
+
+    private fun selectControllerPosition(rows: List<ControllerGameRow>, rowIndex: Int, columnIndex: Int) {
+        controllerRowIndex = rowIndex.coerceIn(0, rows.lastIndex)
+        controllerColumnIndex = columnIndex.coerceIn(0, rows[controllerRowIndex].games.lastIndex)
+        controllerSelectedUri.value = rows[controllerRowIndex].games[controllerColumnIndex].uri.toString()
+    }
+
+    private fun findControllerPosition(uri: String): ControllerGamePosition? {
+        controllerRows.forEachIndexed { rowIndex, row ->
+            val columnIndex = row.games.indexOfFirst { it.uri.toString() == uri }
+            if (columnIndex >= 0)
+                return ControllerGamePosition(rowIndex, columnIndex, row.games[columnIndex])
+        }
+        return null
+    }
+
+    private fun selectControllerCell(rowId: Int, columnIndex: Int, uri: String) {
+        val rowIndex = controllerRows.indexOfFirst { it.rowId == rowId }
+        if (rowIndex >= 0)
+            selectControllerPosition(controllerRows, rowIndex, columnIndex)
+        else
+            controllerSelectedUri.value = uri
+    }
+
+    private fun controllerCellSelected(rowId: Int, columnIndex: Int): Boolean {
+        if (controllerRows.isEmpty()) return false
+        val selected = controllerSelectedPosition()
+        return controllerRows[selected.rowIndex].rowId == rowId &&
+            selected.columnIndex == columnIndex
+    }
+
+    private fun controllerSelectedListItemIndex(): Int? {
+        if (controllerRows.isEmpty()) return null
+        return controllerRows[controllerSelectedPosition().rowIndex].listItemIndex
+    }
+
+    private fun controllerSelectedColumnIndex(rowId: Int): Int? {
+        if (controllerRows.isEmpty()) return null
+        val selected = controllerSelectedPosition()
+        return if (controllerRows[selected.rowIndex].rowId == rowId)
+            selected.columnIndex
+        else
+            null
     }
 
     private fun loadCustomBackground(context: Context) {
@@ -991,9 +1454,16 @@ object GamesList {
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
     private fun GameCard(game: GameInfo) {
+        val selected = controllerSelectedUri.value == game.uri.toString()
+        val glowBlue = Color(0xFF3DA5FF)
         Column(
             Modifier
                 .fillMaxWidth()
+                .then(
+                    if (selected)
+                        Modifier.shadow(14.dp, RoundedCornerShape(8.dp), ambientColor = glowBlue, spotColor = glowBlue)
+                    else Modifier
+                )
                 .clip(RoundedCornerShape(8.dp))
                 // Card chrome (background + border) is partial-alpha so the
                 // live game surface shows through when the library is
@@ -1002,15 +1472,19 @@ object GamesList {
                 // because they're separate paint layers — alpha here only
                 // affects the chrome, not the children.
                 .background(Color(0xFF272525).copy(alpha = 0.3f))
-                .border(1.dp, Color(0xFF3A3A3A).copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                .border(
+                    if (selected) 2.dp else 1.dp,
+                    if (selected) glowBlue else Color(0xFF3A3A3A).copy(alpha = 0.3f),
+                    RoundedCornerShape(8.dp),
+                )
                 .combinedClickable(
                     onClick = {
-                    // Clear the library overlay (set by LoadGameButton while
-                    // a game was running) so the surface for the new game
-                    // comes up uncovered. No-op when starting from idle.
-                    // Pass GameInfo so the in-game overlay has cover art /
-                    // extension badge / pre-resolved compat stars ready.
-                    launchGame(game)
+                        // Clear the library overlay (set by LoadGameButton while
+                        // a game was running) so the surface for the new game
+                        // comes up uncovered. No-op when starting from idle.
+                        // Pass GameInfo so the in-game overlay has cover art /
+                        // extension badge / pre-resolved compat stars ready.
+                        launchGame(game)
                     },
                     onLongClick = { InGameOverlay.openGameSettings(game) },
                 ),

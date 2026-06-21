@@ -33,6 +33,7 @@ import com.armsx2.ui.InGameOverlay
 fun PerformanceTab(state: MutableState<Settings>) {
     val s = state.value
     val scroll = remember { ScrollState(0) }
+    ControllerAutoScroll(scroll)
 
     fun apply(updated: Settings) = InGameOverlay.saveSettings(updated)
 
@@ -114,6 +115,22 @@ fun PerformanceTab(state: MutableState<Settings>) {
             selectedIndex = s.eeFpuRoundMode.coerceIn(0, 3),
             description = "EE FPU float rounding. Chop (toward zero) is the PS2 default — change only if a game needs it. Restart the game to apply.",
             onChange = { apply(s.copy(eeFpuRoundMode = it)) },
+        )
+        SettingsDivider()
+        SegmentedRow(
+            label = "VU0 Round Mode",
+            options = listOf("Nearest", "Negative", "Positive", "Chop"),
+            selectedIndex = s.vu0RoundMode.coerceIn(0, 3),
+            description = "VU0 float rounding. Chop is the PS2 default. Restart the game to apply.",
+            onChange = { apply(s.copy(vu0RoundMode = it)) },
+        )
+        SettingsDivider()
+        SegmentedRow(
+            label = "VU1 Round Mode",
+            options = listOf("Nearest", "Negative", "Positive", "Chop"),
+            selectedIndex = s.vu1RoundMode.coerceIn(0, 3),
+            description = "VU1 float rounding. Chop is the PS2 default. Restart the game to apply.",
+            onChange = { apply(s.copy(vu1RoundMode = it)) },
         )
         SettingsDivider()
         // Speed Limit / Custom FPS — caps emulation speed as a % of native
@@ -247,9 +264,8 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 ToggleBubble("Wait Loop", s.waitLoop, modifier = Modifier.weight(1f)) {
                     apply(s.copy(waitLoop = it))
                 }
-                ToggleBubble("Frame Limiter", s.frameLimitEnable, modifier = Modifier.weight(1f)) {
-                    apply(s.copy(frameLimitEnable = it))
-                }
+                // Frame Limiter lives on the Play tab's quick toggles — no need
+                // to duplicate it here.
                 // ARMSX2 perf-knob: A/B disable for the arm64 VU1 JIT
                 // NEON peephole fusions. Default on; flip off to confirm
                 // whether a per-game regression traces back to our

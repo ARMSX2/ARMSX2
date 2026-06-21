@@ -34,6 +34,7 @@ import com.armsx2.ui.InGameOverlay
 fun FixesTab(state: MutableState<Settings>) {
     val s = state.value
     val scroll = remember { ScrollState(0) }
+    ControllerAutoScroll(scroll)
 
     fun apply(updated: Settings) = InGameOverlay.saveSettings(updated)
 
@@ -42,6 +43,80 @@ fun FixesTab(state: MutableState<Settings>) {
             .fillMaxWidth()
             .verticalScroll(scroll),
     ) {
+        SectionHeader("Display Fixes")
+        HelpText(
+            "PCRTC / presentation fixes for the displayed image. Anti-Blur is on by " +
+                "default; the rest are off unless a game needs them.",
+            modifier = Modifier.padding(horizontal = 6.dp),
+        )
+        SettingsDivider()
+        ToggleRow(
+            "Anti-Blur",
+            s.antiBlur,
+            description = "Reduces the blur PCSX2 adds to mimic the PS2's blend. On by default.",
+        ) { apply(s.copy(antiBlur = it)) }
+        SettingsDivider()
+        ToggleRow(
+            "Screen Offsets",
+            s.screenOffsets,
+            description = "Applies the PCRTC screen offsets (centres the image like real hardware).",
+        ) { apply(s.copy(screenOffsets = it)) }
+        SettingsDivider()
+        ToggleRow(
+            "Show Overscan",
+            s.showOverscan,
+            description = "Shows the overscan border area some games render into.",
+        ) { apply(s.copy(showOverscan = it)) }
+        SettingsDivider()
+        ToggleRow(
+            "Disable Interlace Offset",
+            s.disableInterlaceOffset,
+            description = "Removes the interlace field offset; can stop shimmer but may add combing.",
+        ) { apply(s.copy(disableInterlaceOffset = it)) }
+        SettingsDivider()
+        ToggleRow(
+            "Sync To Host Refresh",
+            s.syncToHostRefresh,
+            description = "Paces emulation to your screen's refresh rate for smoother scrolling.",
+        ) { apply(s.copy(syncToHostRefresh = it)) }
+        SettingsDivider()
+        ToggleRow(
+            "Disable Framebuffer Fetch",
+            s.disableFramebufferFetch,
+            description = "Disables the framebuffer-fetch blending path. Diagnostic / compatibility.",
+        ) { apply(s.copy(disableFramebufferFetch = it)) }
+        SettingsDivider()
+        SegmentedRow(
+            label = "Override Texture Barriers",
+            options = listOf("Auto", "Off", "On"),
+            selectedIndex = (s.overrideTextureBarriers + 1).coerceIn(0, 2),
+            description = "Forces the renderer's texture-barrier support on/off. Auto is recommended.",
+            onChange = { apply(s.copy(overrideTextureBarriers = it - 1)) },
+        )
+        SettingsDivider()
+        ToggleRow(
+            "Integer Scaling",
+            s.integerScaling,
+            description = "Scales the image by whole-number factors for crisp, even pixels.",
+        ) { apply(s.copy(integerScaling = it)) }
+        SettingsDivider()
+        SegmentedRow(
+            label = "Dithering",
+            options = listOf("Off", "Scaled", "Unscaled"),
+            selectedIndex = s.dithering.coerceIn(0, 2),
+            description = "Reduces colour banding. Unscaled matches the PS2 most closely.",
+            onChange = { apply(s.copy(dithering = it)) },
+        )
+        SettingsDivider()
+        IntSliderRow(
+            label = "Vsync Queue Size",
+            value = s.vsyncQueueSize.coerceIn(0, 3),
+            min = 0,
+            max = 3,
+            description = "Frames the GS thread may queue ahead. Higher can smooth pacing; adds latency.",
+            onChange = { apply(s.copy(vsyncQueueSize = it)) },
+        )
+
         SectionHeader("Upscaling Fixes")
         HelpText(
             "Only active when upscaling above Native. They reduce alignment/seam " +
@@ -246,6 +321,63 @@ fun FixesTab(state: MutableState<Settings>) {
             s.disableRenderFixes,
             description = "Disables automatic render fixes. Advanced/diagnostic only.",
         ) { apply(s.copy(disableRenderFixes = it)) }
+        SettingsDivider()
+        IntSliderRow(
+            label = "Skip Draw Start",
+            value = s.skipDrawStart.coerceIn(0, 5000),
+            min = 0,
+            max = 5000,
+            description = "First draw call to skip (UserHacks_SkipDraw). 0 = off. Advanced.",
+            onChange = { apply(s.copy(skipDrawStart = it)) },
+        )
+        SettingsDivider()
+        IntSliderRow(
+            label = "Skip Draw End",
+            value = s.skipDrawEnd.coerceIn(0, 5000),
+            min = 0,
+            max = 5000,
+            description = "Last draw call to skip. 0 = off. Advanced.",
+            onChange = { apply(s.copy(skipDrawEnd = it)) },
+        )
+        SettingsDivider()
+        ToggleRow(
+            "Spin GPU For Readbacks",
+            s.spinGpuReadbacks,
+            description = "Busy-waits the GPU on readbacks to reduce stalls. Can raise power use.",
+        ) { apply(s.copy(spinGpuReadbacks = it)) }
+        SettingsDivider()
+        ToggleRow(
+            "Spin CPU For Readbacks",
+            s.spinCpuReadbacks,
+            description = "Busy-waits the CPU on readbacks to reduce stalls. Can raise power use.",
+        ) { apply(s.copy(spinCpuReadbacks = it)) }
+
+        SectionHeader("Software Renderer")
+        HelpText(
+            "Apply when the Software renderer is selected.",
+            modifier = Modifier.padding(horizontal = 6.dp),
+        )
+        SettingsDivider()
+        ToggleRow(
+            "Auto-Flush (SW)",
+            s.autoFlushSw,
+            description = "Software-renderer auto-flush. On by default for correctness.",
+        ) { apply(s.copy(autoFlushSw = it)) }
+        SettingsDivider()
+        ToggleRow(
+            "Mipmapping (SW)",
+            s.mipmapSw,
+            description = "Software-renderer mipmapping. On by default.",
+        ) { apply(s.copy(mipmapSw = it)) }
+        SettingsDivider()
+        IntSliderRow(
+            label = "SW Rendering Threads",
+            value = s.swThreads.coerceIn(0, 10),
+            min = 0,
+            max = 10,
+            description = "Extra worker threads for the software renderer. 0 = single-threaded.",
+            onChange = { apply(s.copy(swThreads = it)) },
+        )
         Spacer(Modifier.height(8.dp))
     }
 }

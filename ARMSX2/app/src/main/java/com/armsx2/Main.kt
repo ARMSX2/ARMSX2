@@ -9,8 +9,11 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Process
+import android.os.SystemClock
 import android.provider.Settings
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.KeyCharacterMap
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -54,6 +57,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.armsx2.input.ControllerMappings
 import com.armsx2.events.TestResult
 import com.armsx2.ui.Colors
+import com.armsx2.ui.GamesList
+import com.armsx2.ui.InGameOverlay
 import com.armsx2.ui.SetupImpl
 import com.armsx2.ui.WindowImpl
 import compose.icons.LineAwesomeIcons
@@ -61,6 +66,7 @@ import compose.icons.lineawesomeicons.Android
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
+import androidx.lifecycle.lifecycleScope
 import org.libsdl.app.HIDDeviceManager
 import kr.co.iefriends.pcsx2.MainActivity
 import kr.co.iefriends.pcsx2.NativeApp
@@ -68,6 +74,7 @@ import org.libsdl.app.SDLControllerManager
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.Executors
+import kotlin.math.abs
 import kotlin.math.min
 
 class SurfaceCallbacks(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
@@ -102,6 +109,16 @@ class SurfaceCallbacks(context: Context) : SurfaceView(context), SurfaceHolder.C
 }
 
 private const val STICK_DEAD = 0.15f
+private const val UI_NAV_DEAD = 0.20f
+private const val UI_NAV_RELEASE_DEAD = 0.06f
+private const val UI_HAT_DEAD = 0.50f
+private const val UI_NAV_DOMINANCE = 1.35f
+private const val UI_OVERLAY_RELEASE_MS = 80L
+private const val UI_KEY_AXIS_SUPPRESS_MS = 220L
+// Hold-to-repeat cadence for controller menu navigation: first auto-repeat
+// after the initial hold, then steady repeats while the stick/dpad is held.
+private const val NAV_REPEAT_INITIAL_MS = 340L
+private const val NAV_REPEAT_INTERVAL_MS = 110L
 
 val codeGenTests = mutableStateOf("")
 val patchTests = mutableStateOf("")
@@ -180,6 +197,15 @@ fun AllFilesAccessScreen(onGrant: () -> Unit, onUseAppPrivate: () -> Unit) {
 }
 
 class Main: ComponentActivity() {
+    private var lastUiNavCode = 0
+    private var lastUiNavAt = 0L
+    private var lastUiNavWasAxis = false
+    private var overlayAxisX = 0
+    private var overlayAxisY = 0
+    private var overlayHorizontalReleaseAt = 0L
+    private var libraryAxisX = 0
+    private var libraryAxisY = 0
+
     companion object {
         var instance : Main? = null
         lateinit var prefs: SharedPreferences
@@ -373,6 +399,11 @@ class Main: ComponentActivity() {
 
         @JvmField
         val eState = mutableStateOf(EmuState.STOPPED)
+
+        // Active quick save/load slot (0-9), cycled by the "Cycle Save Slot"
+        // hotkey. Quick Save/Load State hotkeys read this so users aren't pinned
+        // to slot 0.
+        val currentSaveSlot = mutableStateOf(0)
 
         // Cached metadata for the currently-running game. Populated when
         // GamesList taps a card (so we have title, serial, compatibility,
@@ -1145,8 +1176,32 @@ class Main: ComponentActivity() {
                         androidx.compose.runtime.LaunchedEffect(surface.value) {
                             focusRequester.requestFocus()
                         }
+                        // Controller menu nav: the embedded game SurfaceView holds
+                        // Android-level focus, and while an embedded View has focus
+                        // the D-pad bypasses Compose's focus system entirely (so the
+                        // pause overlay can never receive it). When the overlay opens,
+                        // drop the SurfaceView's View-level focusability + clear its
+                        // focus so Android focus moves into the Compose tree and the
+                        // overlay's requestFocus can take it. Restore it (and re-grab
+                        // game input) when the overlay closes.
+                        androidx.compose.runtime.LaunchedEffect(WindowImpl.overlayVisible.value) {
+                            val sv = surface.value
+                            if (WindowImpl.overlayVisible.value) {
+                                sv?.isFocusableInTouchMode = false
+                                sv?.isFocusable = false
+                                sv?.clearFocus()
+                            } else {
+                                sv?.isFocusable = true
+                                sv?.isFocusableInTouchMode = true
+                                if (eState.value == EmuState.RUNNING)
+                                    runCatching { focusRequester.requestFocus() }
+                            }
+                        }
                         AndroidView(factory = { surface.value!! }, modifier = Modifier
-                            .focusable()
+                            // Drop the surface from the focus system while the
+                            // pause overlay is open so it can't hold/steal focus
+                            // away from the overlay's controller navigation.
+                            .focusable(!WindowImpl.overlayVisible.value)
                             .focusRequester(focusRequester)
                             .fillMaxSize()
                             .pointerInput(Unit) {
@@ -1242,22 +1297,272 @@ class Main: ComponentActivity() {
             }
             return true // swallow down + up while capturing
         }
-        // Runtime: bound system hotkeys (menu / quick save / quick load). Caught
-        // here so back-button bindings work (and aren't eaten by the back handler).
-        if (eState.value == EmuState.RUNNING) {
+        // Memory-card dialog (opened from the library). Touch mode blocks Compose
+        // D-pad focus, so it's driven by the manual nav model (same as the
+        // settings tabs). Any direction steps the control list; A activates; B closes.
+        if (com.armsx2.ui.MemoryCardManager.visible.value) {
+            val nav = com.armsx2.ui.settings.SettingsControllerNav
+            when (kc) {
+                KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BACK -> {
+                    if (event.action == KeyEvent.ACTION_DOWN)
+                        com.armsx2.ui.MemoryCardManager.visible.value = false
+                    return true
+                }
+                KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
+                        nav.confirm()
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
+                        nav.move(-1)
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
+                        nav.move(1)
+                    return true
+                }
+                else -> return super.dispatchKeyEvent(event)
+            }
+        }
+        if (WindowImpl.overlayVisible.value) {
+            val handled = when (kc) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> when (event.action) {
+                    KeyEvent.ACTION_UP -> {
+                        InGameOverlay.handleControllerHorizontalRelease()
+                        true
+                    }
+                    KeyEvent.ACTION_DOWN -> {
+                        if (event.repeatCount != 0) {
+                            true
+                        } else {
+                            val now = SystemClock.uptimeMillis()
+                            if (!shouldSuppressUiNav(kc, fromAxis = false, now)) {
+                                recordUiNav(kc, fromAxis = false)
+                                if (!InGameOverlay.handleControllerMove(-1, 0))
+                                    dispatchSyntheticUiKey(kc)
+                            }
+                            true
+                        }
+                    }
+                    else -> true
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> when (event.action) {
+                    KeyEvent.ACTION_UP -> {
+                        InGameOverlay.handleControllerHorizontalRelease()
+                        true
+                    }
+                    KeyEvent.ACTION_DOWN -> {
+                        if (event.repeatCount != 0) {
+                            true
+                        } else {
+                            val now = SystemClock.uptimeMillis()
+                            if (!shouldSuppressUiNav(kc, fromAxis = false, now)) {
+                                recordUiNav(kc, fromAxis = false)
+                                if (!InGameOverlay.handleControllerMove(1, 0))
+                                    dispatchSyntheticUiKey(kc)
+                            }
+                            true
+                        }
+                    }
+                    else -> true
+                }
+                KeyEvent.KEYCODE_DPAD_UP -> event.action != KeyEvent.ACTION_DOWN || run {
+                    if (event.repeatCount != 0) return@run true
+                    val now = SystemClock.uptimeMillis()
+                    if (shouldSuppressUiNav(kc, fromAxis = false, now)) return@run true
+                    recordUiNav(kc, fromAxis = false)
+                    if (!InGameOverlay.handleControllerMove(0, -1)) dispatchSyntheticUiKey(kc)
+                    true
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN -> event.action != KeyEvent.ACTION_DOWN || run {
+                    if (event.repeatCount != 0) return@run true
+                    val now = SystemClock.uptimeMillis()
+                    if (shouldSuppressUiNav(kc, fromAxis = false, now)) return@run true
+                    recordUiNav(kc, fromAxis = false)
+                    if (!InGameOverlay.handleControllerMove(0, 1)) dispatchSyntheticUiKey(kc)
+                    true
+                }
+                KeyEvent.KEYCODE_BUTTON_L1 -> event.action != KeyEvent.ACTION_DOWN ||
+                    InGameOverlay.handleControllerTab(-1)
+                KeyEvent.KEYCODE_BUTTON_R1 -> event.action != KeyEvent.ACTION_DOWN ||
+                    InGameOverlay.handleControllerTab(1)
+                KeyEvent.KEYCODE_BUTTON_Y -> event.action != KeyEvent.ACTION_DOWN || run {
+                    InGameOverlay.openAchievements()
+                    true
+                }
+                KeyEvent.KEYCODE_BUTTON_A,
+                KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER,
+                KeyEvent.KEYCODE_NUMPAD_ENTER -> event.action != KeyEvent.ACTION_DOWN || run {
+                    if (!InGameOverlay.handleControllerConfirm())
+                        dispatchSyntheticUiKey(KeyEvent.KEYCODE_DPAD_CENTER)
+                    true
+                }
+                KeyEvent.KEYCODE_BUTTON_B,
+                KeyEvent.KEYCODE_BACK -> event.action != KeyEvent.ACTION_DOWN ||
+                    InGameOverlay.handleControllerBack()
+                else -> false
+            }
+            if (handled) return true
+        }
+        if (controllerDrivesFrontend()) {
+            if (!WindowImpl.overlayVisible.value && GamesList.controllerActive()) {
+                // Square button (or the Menu hotkey) opens settings for the
+                // highlighted cover — the controller equivalent of long-press.
+                if (ControllerMappings.hotkeyFor(kc) == ControllerMappings.SysHotkey.MENU ||
+                    kc == KeyEvent.KEYCODE_BUTTON_X
+                ) {
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
+                        GamesList.openSelectedGameSettings()
+                    return true
+                }
+                val handled = when (kc) {
+                    KeyEvent.KEYCODE_DPAD_LEFT -> event.action != KeyEvent.ACTION_DOWN || run {
+                        if (event.repeatCount == 0) {
+                            val now = SystemClock.uptimeMillis()
+                            if (!shouldSuppressUiNav(kc, fromAxis = false, now)) {
+                                recordUiNav(kc, fromAxis = false)
+                                GamesList.handleControllerMove(-1, 0)
+                            }
+                        }
+                        true
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> event.action != KeyEvent.ACTION_DOWN || run {
+                        if (event.repeatCount == 0) {
+                            val now = SystemClock.uptimeMillis()
+                            if (!shouldSuppressUiNav(kc, fromAxis = false, now)) {
+                                recordUiNav(kc, fromAxis = false)
+                                GamesList.handleControllerMove(1, 0)
+                            }
+                        }
+                        true
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP -> event.action != KeyEvent.ACTION_DOWN || run {
+                        if (event.repeatCount == 0) {
+                            val now = SystemClock.uptimeMillis()
+                            if (!shouldSuppressUiNav(kc, fromAxis = false, now)) {
+                                recordUiNav(kc, fromAxis = false)
+                                GamesList.handleControllerMove(0, -1)
+                            }
+                        }
+                        true
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> event.action != KeyEvent.ACTION_DOWN || run {
+                        if (event.repeatCount == 0) {
+                            val now = SystemClock.uptimeMillis()
+                            if (!shouldSuppressUiNav(kc, fromAxis = false, now)) {
+                                recordUiNav(kc, fromAxis = false)
+                                GamesList.handleControllerMove(0, 1)
+                            }
+                        }
+                        true
+                    }
+                    KeyEvent.KEYCODE_BUTTON_A,
+                    KeyEvent.KEYCODE_DPAD_CENTER,
+                    KeyEvent.KEYCODE_ENTER,
+                    KeyEvent.KEYCODE_NUMPAD_ENTER -> event.action != KeyEvent.ACTION_DOWN ||
+                        GamesList.handleControllerConfirm()
+                    KeyEvent.KEYCODE_BUTTON_B,
+                    KeyEvent.KEYCODE_BACK -> event.action != KeyEvent.ACTION_DOWN ||
+                        GamesList.handleControllerBack()
+                    else -> false
+                }
+                if (handled) return true
+            }
+            if (kc == KeyEvent.KEYCODE_BACK && WindowImpl.showLibrary.value) {
+                if (event.action == KeyEvent.ACTION_DOWN) WindowImpl.showLibrary.value = false
+                return true
+            }
+            if (kc == KeyEvent.KEYCODE_DPAD_LEFT ||
+                kc == KeyEvent.KEYCODE_DPAD_RIGHT ||
+                kc == KeyEvent.KEYCODE_DPAD_UP ||
+                kc == KeyEvent.KEYCODE_DPAD_DOWN
+            ) {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                    dispatchSyntheticUiKey(kc)
+                }
+                return true
+            }
+            if (kc == KeyEvent.KEYCODE_BUTTON_A) {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                    dispatchSyntheticUiKey(KeyEvent.KEYCODE_DPAD_CENTER)
+                }
+                return true
+            }
+            if (kc == KeyEvent.KEYCODE_BUTTON_B) {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                    if (WindowImpl.showLibrary.value) {
+                        WindowImpl.showLibrary.value = false
+                    } else {
+                        dispatchSyntheticUiKey(KeyEvent.KEYCODE_BACK)
+                    }
+                }
+                return true
+            }
+        }
+        // Runtime: bound system hotkeys. Caught here so back-button bindings work
+        // (and aren't eaten by the back handler).
+        if (eState.value == EmuState.RUNNING && !controllerDrivesFrontend()) {
+            val down = event.action == KeyEvent.ACTION_DOWN
             when (ControllerMappings.hotkeyFor(kc)) {
                 ControllerMappings.SysHotkey.MENU -> {
-                    if (event.action == KeyEvent.ACTION_DOWN) com.armsx2.ui.InGameOverlay.toggle()
+                    if (down) com.armsx2.ui.InGameOverlay.toggle()
                     return true
                 }
                 ControllerMappings.SysHotkey.SAVE_STATE -> {
-                    if (event.action == KeyEvent.ACTION_DOWN)
-                        kotlin.concurrent.thread { runCatching { NativeApp.saveStateToSlot(0) } }
+                    if (down) {
+                        val slot = Main.currentSaveSlot.value
+                        kotlin.concurrent.thread { runCatching { NativeApp.saveStateToSlot(slot) } }
+                    }
                     return true
                 }
                 ControllerMappings.SysHotkey.LOAD_STATE -> {
-                    if (event.action == KeyEvent.ACTION_DOWN)
-                        kotlin.concurrent.thread { runCatching { NativeApp.loadStateFromSlot(0) } }
+                    if (down) {
+                        val slot = Main.currentSaveSlot.value
+                        kotlin.concurrent.thread { runCatching { NativeApp.loadStateFromSlot(slot) } }
+                    }
+                    return true
+                }
+                ControllerMappings.SysHotkey.CYCLE_SLOT -> {
+                    if (down) cycleSaveSlot()
+                    return true
+                }
+                ControllerMappings.SysHotkey.TEXTURE_DUMP -> {
+                    if (down) {
+                        val on = runCatching { NativeApp.toggleTextureDumping() }.getOrDefault(false)
+                        android.widget.Toast.makeText(
+                            this,
+                            if (on) "Texture dumping ON" else "Texture dumping OFF",
+                            android.widget.Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    return true
+                }
+                ControllerMappings.SysHotkey.FAST_FORWARD -> {
+                    // Hold to fast-forward (Turbo), release to return to normal.
+                    if (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP) {
+                        if (event.repeatCount == 0)
+                            runCatching { NativeApp.speedhackLimitermode(if (down) 1 else 0) }
+                    }
+                    return true
+                }
+                ControllerMappings.SysHotkey.RES_UP -> {
+                    if (down) stepResolution(1)
+                    return true
+                }
+                ControllerMappings.SysHotkey.RES_DOWN -> {
+                    if (down) stepResolution(-1)
+                    return true
+                }
+                ControllerMappings.SysHotkey.ACHIEVEMENTS -> {
+                    if (down) com.armsx2.ui.InGameOverlay.openAchievements()
+                    return true
+                }
+                ControllerMappings.SysHotkey.CLOSE_GAME -> {
+                    if (down) Main.stop()
                     return true
                 }
                 null -> {}
@@ -1266,7 +1571,31 @@ class Main: ComponentActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    /** Cycle the active quick save/load slot 0→9→0 with a brief on-screen note. */
+    private fun cycleSaveSlot() {
+        val next = (Main.currentSaveSlot.value + 1) % 10
+        Main.currentSaveSlot.value = next
+        android.widget.Toast.makeText(this, "Save slot $next", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /** Step the internal resolution multiplier up/down (1x..5x), apply live. */
+    private fun stepResolution(dir: Int) {
+        val next = (Main.upscale.value.toInt() + dir).coerceIn(1, 5)
+        val nf = next.toFloat()
+        Main.upscale.value = nf
+        runCatching { NativeApp.renderUpscalemultiplier(nf) }
+        runCatching { Main.prefs.edit().putFloat("upscaleFloat", nf).apply() }
+        android.widget.Toast.makeText(this, "Resolution ${next}x", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
     override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
+        if (com.armsx2.ui.MemoryCardManager.visible.value) {
+            handleMemcardControllerMotion(ev)
+            return true
+        }
+        if (controllerDrivesFrontend() && handleControllerUiMotion(ev)) {
+            return true
+        }
         if (eState.value == EmuState.RUNNING) {
             // SOURCE_TOUCHSCREEN motion events go through dispatchTouchEvent,
             // not here — generic motion is gamepad / mouse / stylus. So any
@@ -1293,6 +1622,245 @@ class Main: ComponentActivity() {
             return true
         }
         return super.dispatchGenericMotionEvent(ev)
+    }
+
+    private fun controllerDrivesFrontend(): Boolean =
+        WindowImpl.overlayVisible.value ||
+            GamesList.controllerActive()
+
+    // --- Controller menu nav hold-to-repeat ---------------------------------
+    // The per-frame stick handlers below are edge-triggered (one move per push),
+    // which makes holding a direction feel dead/clunky. While a direction is
+    // held we run a repeat loop so the selection keeps travelling, matching
+    // normal D-pad-menu behaviour.
+    private var navRepeatJob: kotlinx.coroutines.Job? = null
+    private var navRepeatDx = 0
+    private var navRepeatDy = 0
+
+    private fun directionKeyCode(dx: Int, dy: Int): Int = when {
+        dx < 0 -> KeyEvent.KEYCODE_DPAD_LEFT
+        dx > 0 -> KeyEvent.KEYCODE_DPAD_RIGHT
+        dy < 0 -> KeyEvent.KEYCODE_DPAD_UP
+        dy > 0 -> KeyEvent.KEYCODE_DPAD_DOWN
+        else -> 0
+    }
+
+    private fun fireNavMove(dx: Int, dy: Int) {
+        if (WindowImpl.overlayVisible.value) {
+            // Fall back to synthetic D-pad (Compose focus) for overlay screens
+            // the manual model doesn't handle (e.g. the save-state slot grid).
+            if (!InGameOverlay.handleControllerMove(dx, dy)) {
+                val kc = directionKeyCode(dx, dy)
+                if (kc != 0) dispatchSyntheticUiKey(kc)
+            }
+        } else if (GamesList.controllerActive()) {
+            GamesList.handleControllerMove(dx, dy)
+        } else {
+            // Menu closed while a direction was held — stop repeating.
+            stopNavRepeat()
+        }
+    }
+
+    private fun startNavRepeat(dx: Int, dy: Int) {
+        if (dx == 0 && dy == 0) {
+            stopNavRepeat()
+            return
+        }
+        if (navRepeatJob?.isActive == true && navRepeatDx == dx && navRepeatDy == dy) return
+        stopNavRepeat()
+        navRepeatDx = dx
+        navRepeatDy = dy
+        fireNavMove(dx, dy)
+        navRepeatJob = lifecycleScope.launch {
+            kotlinx.coroutines.delay(NAV_REPEAT_INITIAL_MS)
+            while (true) {
+                fireNavMove(navRepeatDx, navRepeatDy)
+                kotlinx.coroutines.delay(NAV_REPEAT_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun stopNavRepeat() {
+        navRepeatJob?.cancel()
+        navRepeatJob = null
+        navRepeatDx = 0
+        navRepeatDy = 0
+    }
+
+    private fun handleControllerUiMotion(ev: MotionEvent): Boolean {
+        if (!ev.isFromSource(InputDevice.SOURCE_JOYSTICK) &&
+            !ev.isFromSource(InputDevice.SOURCE_GAMEPAD)
+        ) {
+            return false
+        }
+
+        com.armsx2.ui.touch.TouchControls.onControllerInputDetected()
+        return if (WindowImpl.overlayVisible.value) {
+            handleOverlayControllerMotion(ev)
+        } else {
+            handleLibraryControllerMotion(ev)
+        }
+    }
+
+    private fun handleLibraryControllerMotion(ev: MotionEvent): Boolean {
+        val scrollY = uiScrollValue(ev.getAxisValue(MotionEvent.AXIS_RZ))
+        handleControllerUiScroll(scrollY)
+
+        // Accept BOTH the left stick and the D-pad (HAT axis on this hardware) so
+        // handhelds with or without a stick can browse the library.
+        val (stickDx, stickDy) = uiDominantStickDirection(
+            ev.getAxisValue(MotionEvent.AXIS_X),
+            ev.getAxisValue(MotionEvent.AXIS_Y),
+        )
+        val dx = uiHatDirection(ev.getAxisValue(MotionEvent.AXIS_HAT_X))
+            .let { if (it != 0) it else stickDx }
+        val dy = uiHatDirection(ev.getAxisValue(MotionEvent.AXIS_HAT_Y))
+            .let { if (it != 0) it else stickDy }
+        if (dx == 0 && dy == 0) {
+            if (libraryAxisX != 0 || libraryAxisY != 0) stopNavRepeat()
+            libraryAxisX = 0
+            libraryAxisY = 0
+            return true
+        }
+
+        if (dx != libraryAxisX || dy != libraryAxisY) {
+            libraryAxisX = dx
+            libraryAxisY = dy
+            startNavRepeat(dx, dy)
+        }
+        return true
+    }
+
+    private fun handleOverlayControllerMotion(ev: MotionEvent): Boolean {
+        // The overlay accepts BOTH the D-pad and the left analog stick, so
+        // handhelds with or without a stick work. On this hardware the D-pad is a
+        // HAT axis (not KEYCODE_DPAD_*); the stick is AXIS_X/Y. The adjust
+        // skip/stuck bug was in the settings registry (now fixed), not the input
+        // layer, so the stick is safe to use again. Right stick scrolls lists.
+        handleControllerUiScroll(uiScrollValue(ev.getAxisValue(MotionEvent.AXIS_RZ)))
+
+        val (stickDx, stickDy) = uiDominantStickDirection(
+            ev.getAxisValue(MotionEvent.AXIS_X),
+            ev.getAxisValue(MotionEvent.AXIS_Y),
+        )
+        val dirX = uiHatDirection(ev.getAxisValue(MotionEvent.AXIS_HAT_X))
+            .let { if (it != 0) it else stickDx }
+        val dirY = uiHatDirection(ev.getAxisValue(MotionEvent.AXIS_HAT_Y))
+            .let { if (it != 0) it else stickDy }
+
+        // Up/down: move between settings, with hold-to-repeat for long lists.
+        if (dirY == 0) {
+            if (overlayAxisY != 0) stopNavRepeat()
+            overlayAxisY = 0
+        } else if (dirY != overlayAxisY) {
+            overlayAxisY = dirY
+            startNavRepeat(0, dirY)
+        }
+
+        // Left/right: adjust the focused setting, one step per press (edge-
+        // triggered; re-armed when the input returns to centre).
+        if (dirX == 0) {
+            overlayAxisX = 0
+        } else if (dirX != overlayAxisX) {
+            overlayAxisX = dirX
+            InGameOverlay.handleControllerMove(dirX, 0)
+        }
+        return true
+    }
+
+    private var memcardAxisX = 0
+    private var memcardAxisY = 0
+
+    /** Routes the controller stick / D-pad (HAT) to the memory-card dialog's
+     *  manual nav (SettingsControllerNav). Touch mode kills Compose D-pad focus,
+     *  so the dialog uses the same state-driven model as the settings tabs. Any
+     *  direction steps the flat control list; edge-triggered (one move per push). */
+    private fun handleMemcardControllerMotion(ev: MotionEvent) {
+        val (stickDx, stickDy) = uiDominantStickDirection(
+            ev.getAxisValue(MotionEvent.AXIS_X),
+            ev.getAxisValue(MotionEvent.AXIS_Y),
+        )
+        val dirX = uiHatDirection(ev.getAxisValue(MotionEvent.AXIS_HAT_X))
+            .let { if (it != 0) it else stickDx }
+        val dirY = uiHatDirection(ev.getAxisValue(MotionEvent.AXIS_HAT_Y))
+            .let { if (it != 0) it else stickDy }
+        if (dirY != memcardAxisY) {
+            memcardAxisY = dirY
+            if (dirY != 0) com.armsx2.ui.settings.SettingsControllerNav.move(dirY)
+        }
+        if (dirX != memcardAxisX) {
+            memcardAxisX = dirX
+            if (dirX != 0) com.armsx2.ui.settings.SettingsControllerNav.move(dirX)
+        }
+    }
+
+    private fun handleControllerUiScroll(velocityY: Float) {
+        if (WindowImpl.overlayVisible.value) {
+            InGameOverlay.handleControllerScroll(velocityY)
+        } else if (GamesList.controllerActive()) {
+            GamesList.handleControllerScroll(velocityY)
+        }
+    }
+
+    private fun uiHatDirection(value: Float): Int = when {
+        value > UI_HAT_DEAD -> 1
+        value < -UI_HAT_DEAD -> -1
+        else -> 0
+    }
+
+    private fun uiDominantStickDirection(x: Float, y: Float): Pair<Int, Int> {
+        val absX = abs(x)
+        val absY = abs(y)
+        if (absX < UI_NAV_DEAD && absY < UI_NAV_DEAD)
+            return 0 to 0
+        return if (absX >= absY)
+            (if (x > 0f) 1 else -1) to 0
+        else
+            0 to (if (y > 0f) 1 else -1)
+    }
+
+    private fun uiAxisDirection(value: Float): Int = when {
+        value > UI_NAV_DEAD -> 1
+        value < -UI_NAV_DEAD -> -1
+        else -> 0
+    }
+
+    private fun uiScrollValue(value: Float): Float {
+        val dead = 0.18f
+        return when {
+            value > dead -> ((value - dead) / (1f - dead)).coerceIn(0f, 1f)
+            value < -dead -> ((value + dead) / (1f - dead)).coerceIn(-1f, 0f)
+            else -> 0f
+        }
+    }
+
+    private fun recordUiNav(keyCode: Int, fromAxis: Boolean) {
+        lastUiNavCode = keyCode
+        lastUiNavAt = SystemClock.uptimeMillis()
+        lastUiNavWasAxis = fromAxis
+    }
+
+    private fun shouldSuppressUiNav(keyCode: Int, fromAxis: Boolean, now: Long): Boolean {
+        if (lastUiNavCode != keyCode) return false
+        val age = now - lastUiNavAt
+        return lastUiNavWasAxis != fromAxis && age <= UI_KEY_AXIS_SUPPRESS_MS
+    }
+
+    private fun dispatchSyntheticUiKey(keyCode: Int): Boolean {
+        val now = SystemClock.uptimeMillis()
+        val flags = KeyEvent.FLAG_FROM_SYSTEM or KeyEvent.FLAG_VIRTUAL_HARD_KEY
+        val source = InputDevice.SOURCE_KEYBOARD or InputDevice.SOURCE_DPAD
+        val down = KeyEvent(
+            now, now, KeyEvent.ACTION_DOWN, keyCode, 0, 0,
+            KeyCharacterMap.VIRTUAL_KEYBOARD, 0, flags, source
+        )
+        val up = KeyEvent(
+            now, now, KeyEvent.ACTION_UP, keyCode, 0, 0,
+            KeyCharacterMap.VIRTUAL_KEYBOARD, 0, flags, source
+        )
+        val downHandled = super.dispatchKeyEvent(down)
+        val upHandled = super.dispatchKeyEvent(up)
+        return downHandled || upHandled
     }
 
     private fun sendAxis(event: MotionEvent, axis: Int, posCode: Int, negCode: Int) {

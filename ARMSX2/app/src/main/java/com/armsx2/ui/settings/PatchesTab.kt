@@ -169,6 +169,7 @@ fun PatchesTab(state: MutableState<Settings>) {
     val s = state.value
     val context = LocalContext.current
     val scroll = remember { ScrollState(0) }
+    ControllerAutoScroll(scroll)
     val activeGameId = activePnachGameId()
 
     val cheatsDir = remember { File(Main.assetCopyRoot(context), "cheats").apply { mkdirs() } }
@@ -510,6 +511,10 @@ fun PatchesTab(state: MutableState<Settings>) {
                 .fillMaxWidth()
                 .height(36.dp)
                 .background(rowAura())
+                .controllerFocusable(
+                    controllerId = "patch:browse",
+                    onConfirm = { if (!downloading) onDownloadClick() },
+                )
                 .clickable(enabled = !downloading) { onDownloadClick() }
                 .padding(horizontal = 8.dp),
             contentAlignment = Alignment.CenterStart,
@@ -531,6 +536,10 @@ fun PatchesTab(state: MutableState<Settings>) {
                     .weight(1f)
                     .height(36.dp)
                     .background(rowAura())
+                    .controllerFocusable(
+                        controllerId = "patch:import",
+                        onConfirm = { importLauncher.launch(arrayOf("*/*")) },
+                    )
                     .clickable { importLauncher.launch(arrayOf("*/*")) }
                     .padding(horizontal = 8.dp),
                 contentAlignment = Alignment.CenterStart,
@@ -542,6 +551,10 @@ fun PatchesTab(state: MutableState<Settings>) {
                     .weight(1f)
                     .height(36.dp)
                     .background(rowAura())
+                    .controllerFocusable(
+                        controllerId = "patch:enter",
+                        onConfirm = { showManualDialog = true },
+                    )
                     .clickable { showManualDialog = true }
                     .padding(horizontal = 8.dp),
                 contentAlignment = Alignment.CenterStart,

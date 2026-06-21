@@ -49,7 +49,7 @@ public class NativeApp {
 
 	protected static WeakReference<Context> mContext;
 	public static Context getContext() {
-		return mContext.get();
+		return mContext != null ? mContext.get() : null;
 	}
 
 	public static void initializeOnce(Context context) {
@@ -82,6 +82,10 @@ public class NativeApp {
 		}
 
 		initialize(dataPath, biosFolder, android.os.Build.VERSION.SDK_INT);
+
+		// Replay a host override that arrived via broadcast while the native
+		// library was not yet loaded.
+		com.armsx2.RetroAchievementsHostOverrideReceiver.applyPending(context);
 	}
 
 	public static native void initialize(String path, String biosFolder, int apiVer);
@@ -174,6 +178,16 @@ public class NativeApp {
 	 *  achievements panel polls this for the badge / button colour. */
 	public static native boolean isHardcoreMode();
 
+	/** Repoint the RetroAchievements client at a loopback proxy. Persists
+	 *  the [Achievements] Host setting (read by CreateClient), forces
+	 *  hardcore off while active — saving the prior choice — and rebuilds
+	 *  the client so a running session picks up the new host. */
+	public static native void setAchievementsHostOverride(String host);
+
+	/** Drop the host override set by {@link #setAchievementsHostOverride},
+	 *  restoring the saved hardcore choice and rebuilding the client. */
+	public static native void clearAchievementsHostOverride();
+
 	/** True iff the GS is currently in a HW renderer (OGL/VK), false for
 	 *  SW. Mirrors GSIsHardwareRenderer() from the GS thread. Polled by
 	 *  the in-game overlay's renderer pill so emucore-driven swaps
@@ -245,6 +259,14 @@ public class NativeApp {
 	public static native void renderVulkan();
 	public static native void renderAuto();
 	public static native void renderPreloading(int value);
+
+	/** Flip texture dumping on/off live (PCSX2's ToggleTextureDumping hotkey).
+	 *  Returns the new state. Runtime-only; no-op (returns false) with no VM. */
+	public static native boolean toggleTextureDumping();
+
+	/** Create a memory card in the memcards folder. type: 1=File, 2=Folder.
+	 *  fileType (File only): 1=8MB, 2=16MB, 3=32MB, 4=64MB. Returns success. */
+	public static native boolean createMemoryCard(String name, int type, int fileType);
 
 	public static native void onNativeSurfaceCreated();
 	public static native void onNativeSurfaceChanged(Surface surface, int w, int h);

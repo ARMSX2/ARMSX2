@@ -302,6 +302,11 @@ private fun DriverRow(
             .background(bg)
             .border(1.dp, border, RoundedCornerShape(8.dp))
             .clickable(enabled = !busy, onClick = onSelect)
+            .controllerFocusable(
+                controllerId = "driver:$name",
+                shape = RoundedCornerShape(8.dp),
+                onConfirm = { if (!busy) onSelect() },
+            )
             .padding(horizontal = 10.dp, vertical = 6.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -375,6 +380,11 @@ private fun PillButton(text: String, accent: Boolean, onClick: () -> Unit) {
             .clip(RoundedCornerShape(6.dp))
             .background(bg)
             .clickable(onClick = onClick)
+            .controllerFocusable(
+                controllerId = "button:$text",
+                shape = RoundedCornerShape(6.dp),
+                onConfirm = onClick,
+            )
             .padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
         Text(text, color = fg, fontSize = 11.sp, fontWeight = FontWeight.Bold)
