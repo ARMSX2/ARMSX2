@@ -406,6 +406,19 @@ data class Settings(
         // Speedhacks
         NativeApp.setSetting("EmuCore/Speedhacks", "EECycleRate", "int", eeCycleRate.toString())
         NativeApp.setSetting("EmuCore/Speedhacks", "EECycleSkip", "int", eeCycleSkip.toString())
+        // --- FPS Custom Mode ---
+    val effectiveSpeedPercent = if (fpsCustomEnable) {
+        // Detect game region (NTSC/PAL) - adjust with region detection implementation in ARMSX2
+        val isPal = NativeApp.isPalGame() // Example: region detection function
+        val targetFps = if (isPal) frameratePAL else framerateNTSC
+        // Convert target FPS to percentage (100% = 60fps NTSC / 50fps PAL)
+        val baseFps = if (isPal) 50 else 60
+        (targetFps.toFloat() / baseFps * 100).toInt().coerceIn(10, 1000)
+    } else {
+        nominalSpeedPercent
+    }
+    // Write to emulator (replacing the original nominalSpeedPercent value)
+    NativeApp.setSetting("Framerate", "NominalScalar", "float", (effectiveSpeedPercent / 100f).toString())
         // EE/FPU + VU clamping (recompiler accuracy). Each mode unpacks to the
         // PCSX2 bit flags below; both VUs get the same mode. Needs a recompiler
         // reset (commitSettings / game restart) to take effect.
@@ -725,6 +738,9 @@ data class Settings(
     fun toJson(): JSONObject = JSONObject().apply {
         put("eeCycleRate", eeCycleRate)
         put("eeCycleSkip", eeCycleSkip)
+        put("fpsCustomEnable", fpsCustomEnable)
+        put("framerateNTSC", framerateNTSC)
+        put("frameratePAL", frameratePAL)
         put("eeClampMode", eeClampMode)
         put("vuClampMode", vuClampMode)
         put("mtvu", mtvu)
@@ -885,6 +901,9 @@ data class Settings(
             return Settings(
                 eeCycleRate = json.optInt("eeCycleRate", def.eeCycleRate),
                 eeCycleSkip = json.optInt("eeCycleSkip", def.eeCycleSkip),
+                fpsCustomEnable = json.optBoolean("fpsCustomEnable", false),
+                framerateNTSC = json.optInt("framerateNTSC", 60),
+                frameratePAL = json.optInt("frameratePAL", 50),
                 eeClampMode = json.optInt("eeClampMode", def.eeClampMode),
                 vuClampMode = json.optInt("vuClampMode", def.vuClampMode),
                 mtvu = json.optBoolean("mtvu", def.mtvu),
