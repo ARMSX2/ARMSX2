@@ -74,12 +74,6 @@ data class Settings(
     /** Deprecated Android-only FPS cap. Kept for JSON compatibility with test
      *  builds, but no longer applied because it skipped GS rendering. */
     val fpsLimit: Int = 0,
-    /** Enable FPS Custom Mode. */
-    val fpsCustomEnable: Boolean = false,
-    /** Target FPS for game NTSC (default 60) */
-    val framerateNTSC: Int = 60,
-    /** Target FPS for game PAL (default 50) */
-    val frameratePAL: Int = 50,
     /** Deprecated Android-only frame skip. Kept for JSON compatibility only. */
     val frameSkip: Int = 0,
 
