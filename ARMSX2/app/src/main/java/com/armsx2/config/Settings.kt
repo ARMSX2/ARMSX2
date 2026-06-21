@@ -680,6 +680,9 @@ data class Settings(
     fun toJson(): JSONObject = JSONObject().apply {
         put("eeCycleRate", eeCycleRate)
         put("eeCycleSkip", eeCycleSkip)
+        put("fpsCustomEnable", fpsCustomEnable)
+        put("framerateNTSC", framerateNTSC)
+        put("frameratePAL", frameratePAL)
         put("eeClampMode", eeClampMode)
         put("vuClampMode", vuClampMode)
         put("mtvu", mtvu)
