@@ -577,12 +577,13 @@ final class SettingsStore: @unchecked Sendable {
     }
 
     private static func loadedJITScriptProtocol() -> JITScriptProtocol {
+        let iosMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
         let protocolValue = JITScriptProtocol.normalized(
             ARMSX2Bridge.getINIString("ARMSX2iOS/JIT", key: "ScriptProtocol", defaultValue: JITScriptProtocol.defaultValue.rawValue)
         )
         let migrated = ARMSX2Bridge.getINIBool("ARMSX2iOS/Migrations", key: "JITScriptProtocolByOSV1", defaultValue: false)
         let legacyIos26Migrated = ARMSX2Bridge.getINIBool("ARMSX2iOS/Migrations", key: "JITScriptProtocolLegacyIOS26V1", defaultValue: false)
-        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26,
+        if iosMajor >= 26,
            protocolValue == .universal,
            !legacyIos26Migrated {
             ARMSX2Bridge.setINIString("ARMSX2iOS/JIT", key: "ScriptProtocol", value: JITScriptProtocol.legacy.rawValue)
@@ -590,7 +591,7 @@ final class SettingsStore: @unchecked Sendable {
             NSLog("[ARMSX2 iOS Settings] Migrated JIT script protocol from universal to legacy on iOS 26+")
             return .legacy
         }
-        if !migrated && JITScriptProtocol.defaultValue == .legacy && protocolValue == .universal {
+        if !migrated && iosMajor > 0 && iosMajor < 26 && JITScriptProtocol.defaultValue == .legacy && protocolValue == .universal {
             ARMSX2Bridge.setINIString("ARMSX2iOS/JIT", key: "ScriptProtocol", value: JITScriptProtocol.legacy.rawValue)
             ARMSX2Bridge.setINIBool("ARMSX2iOS/Migrations", key: "JITScriptProtocolByOSV1", value: true)
             NSLog("[ARMSX2 iOS Settings] Migrated JIT script protocol to legacy for this iOS version")
