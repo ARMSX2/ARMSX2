@@ -150,6 +150,39 @@ fun PerformanceTab(state: MutableState<Settings>) {
             )
         }
         SettingsDivider()
+        // Toggle to enable Custom FPS
+           ToggleRow(
+                label = "FPS Custom Mode",
+                checked = s.fpsCustomEnable,
+                onCheckedChange = { apply(s.copy(fpsCustomEnable = it)) }
+            )
+        HelpText("Enable to manually set the target FPS for NTSC and PAL games.")
+
+        // Slider for NTSC Framerate (only active if fpsCustomEnable = true)
+           IntSliderRow(
+                label = "NTSC Framerate",
+                value = s.framerateNTSC,
+                min = 10,
+                max = 120,
+                enabled = s.fpsCustomEnable,
+                description = "Target FPS for NTSC games (default 60).",
+                valueFormatter = { "$it FPS" },
+                onChange = { apply(s.copy(framerateNTSC = it)) }
+            )
+
+        // Slider for PAL Framerate (only active if fpsCustomEnable = true)
+           IntSliderRow(
+                label = "PAL Framerate",
+                value = s.frameratePAL,
+                min = 10,
+                max = 120,
+                enabled = s.fpsCustomEnable,
+                description = "Target FPS for PAL games (default 50).",
+                valueFormatter = { "$it FPS" },
+                onChange = { apply(s.copy(frameratePAL = it)) }
+            )
+        }
+        SettingsDivider()
         IntSliderRow(
             label = "Frame Skip",
             value = s.frameSkip,
