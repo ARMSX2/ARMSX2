@@ -249,7 +249,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 			XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "@executable_path/Frameworks /usr/lib/swift"
 			XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS "$(inherited) $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) /usr/lib/swift"
 			XCODE_ATTRIBUTE_OTHER_SWIFT_FLAGS ""
-			XCODE_ATTRIBUTE_MTL_HEADER_SEARCH_PATHS "${CMAKE_SOURCE_DIR}/pcsx2/GS/Renderers/Metal ${CMAKE_SOURCE_DIR}/3rdparty/include ${CMAKE_SOURCE_DIR}/../assets ${CMAKE_SOURCE_DIR}/../assets/resources"
+			XCODE_ATTRIBUTE_MTL_HEADER_SEARCH_PATHS "\"${CMAKE_SOURCE_DIR}/pcsx2/GS/Renderers/Metal\" \"${CMAKE_SOURCE_DIR}/3rdparty/include\" \"${CMAKE_SOURCE_DIR}/../assets\" \"${CMAKE_SOURCE_DIR}/../assets/resources\""
 			XCODE_ATTRIBUTE_MTL_ENABLE_DEBUG_INFO "$<IF:$<CONFIG:Debug>,INCLUDE_SOURCE,>"
 		)
 
