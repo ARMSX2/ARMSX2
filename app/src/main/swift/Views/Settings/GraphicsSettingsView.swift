@@ -158,6 +158,22 @@ struct GraphicsSettingsView: View {
                     Text(settings.localized("Unscaled")).tag(1)
                     Text(settings.localized("Scaled (Default)")).tag(2)
                 }
+
+                Picker(settings.localized("Hardware Download Mode"), selection: $settings.hwDownloadMode) {
+                    Text(settings.localized("Accurate (Recommended)")).tag(0)
+                    Text(settings.localized("Accurate Force Full")).tag(1)
+                    Text(settings.localized("Disable Readbacks")).tag(2)
+                    Text(settings.localized("Unsynchronized")).tag(3)
+                    Text(settings.localized("Disabled (Ignore Transfers)")).tag(4)
+                }
+                Text(settings.localized("Controls GS readback synchronization. Accurate is safest; faster modes can break effects that read back the screen. Applies after restart."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if settings.hwDownloadMode != 0 {
+                    Text(settings.localized("Non-accurate download modes may break rendering in some games."))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
 
             Section(settings.localized("Advanced Upscaling Hacks")) {

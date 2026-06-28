@@ -1500,6 +1500,7 @@ static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult()
     const bool globalHardwareMipmapping = g_p44_settings_interface ? g_p44_settings_interface->GetBoolValue("EmuCore/GS", "hw_mipmap", true) : true;
     const int globalBlendingAccuracy = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "accurate_blending_unit", 1) : 1;
     const int globalInterlaceMode = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "deinterlace_mode", 7) : 7;
+    const int globalHwDownloadMode = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "HWDownloadMode", 0) : 0;
     const int globalTrilinearFiltering = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "TriFilter", -1) : -1;
     const int globalHalfPixelOffset = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "UserHacks_HalfPixelOffset", 0) : 0;
     const int globalRoundSprite = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "UserHacks_round_sprite_offset", 0) : 0;
@@ -1539,6 +1540,8 @@ static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult()
         @"hardwareMipmapping": @(globalHardwareMipmapping),
         @"blendingAccuracy": @(globalBlendingAccuracy),
         @"interlaceMode": @(globalInterlaceMode),
+        @"hwDownloadMode": @(globalHwDownloadMode),
+        @"hasHwDownloadModeOverride": @NO,
         @"trilinearFiltering": @(globalTrilinearFiltering),
         @"hasTrilinearFilteringOverride": @NO,
         @"halfPixelOffset": @(globalHalfPixelOffset),
@@ -1613,6 +1616,7 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
         si.ContainsValue("EmuCore/GS", "hw_mipmap") ||
         si.ContainsValue("EmuCore/GS", "accurate_blending_unit") ||
         si.ContainsValue("EmuCore/GS", "deinterlace_mode") ||
+        si.ContainsValue("EmuCore/GS", "HWDownloadMode") ||
         si.ContainsValue("EmuCore/GS", "TriFilter") ||
         si.ContainsValue("EmuCore/GS", "UserHacks_HalfPixelOffset") ||
         si.ContainsValue("EmuCore/GS", "UserHacks_round_sprite_offset") ||
@@ -1652,6 +1656,8 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
     result[@"hardwareMipmapping"] = @(si.GetBoolValue("EmuCore/GS", "hw_mipmap", [result[@"hardwareMipmapping"] boolValue]));
     result[@"blendingAccuracy"] = @(si.GetIntValue("EmuCore/GS", "accurate_blending_unit", [result[@"blendingAccuracy"] intValue]));
     result[@"interlaceMode"] = @(si.GetIntValue("EmuCore/GS", "deinterlace_mode", [result[@"interlaceMode"] intValue]));
+    result[@"hasHwDownloadModeOverride"] = @(si.ContainsValue("EmuCore/GS", "HWDownloadMode"));
+    result[@"hwDownloadMode"] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "HWDownloadMode", [result[@"hwDownloadMode"] intValue]), 0, 4));
     result[@"hasTrilinearFilteringOverride"] = @(si.ContainsValue("EmuCore/GS", "TriFilter"));
     result[@"trilinearFiltering"] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "TriFilter", [result[@"trilinearFiltering"] intValue]), -1, 2));
     result[@"hasHalfPixelOffsetOverride"] = @(si.ContainsValue("EmuCore/GS", "UserHacks_HalfPixelOffset"));
@@ -1693,6 +1699,7 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
                                                 BOOL hardwareMipmapping,
                                                 int blendingAccuracy,
                                                 int interlaceMode,
+                                                int hwDownloadMode,
                                                 int trilinearFiltering,
                                                 int halfPixelOffset,
                                                 int roundSprite,
@@ -1741,6 +1748,10 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         si.SetBoolValue("EmuCore/GS", "hw_mipmap", hardwareMipmapping);
         si.SetIntValue("EmuCore/GS", "accurate_blending_unit", blendingAccuracy);
         si.SetIntValue("EmuCore/GS", "deinterlace_mode", interlaceMode);
+        if (hwDownloadMode == ARMSX2UseGlobalIntSentinel)
+            si.DeleteValue("EmuCore/GS", "HWDownloadMode");
+        else
+            si.SetIntValue("EmuCore/GS", "HWDownloadMode", ARMSX2ClampInt(hwDownloadMode, 0, 4));
         if (trilinearFiltering == ARMSX2TriFilterUseGlobalSentinel)
             si.DeleteValue("EmuCore/GS", "TriFilter");
         else
@@ -2449,6 +2460,7 @@ static void ARMSX2SetPatchEnableListForIdentity(NSArray<NSString*>* values, cons
             hardwareMipmapping:(BOOL)hardwareMipmapping
               blendingAccuracy:(int)blendingAccuracy
                interlaceMode:(int)interlaceMode
+              hwDownloadMode:(int)hwDownloadMode
         trilinearFiltering:(int)trilinearFiltering
           halfPixelOffset:(int)halfPixelOffset
               roundSprite:(int)roundSprite
@@ -2488,7 +2500,7 @@ static void ARMSX2SetPatchEnableListForIdentity(NSArray<NSString*>* values, cons
     const std::string settingsSerial = (entry.type == GameList::EntryType::ELF) ? std::string() : entry.serial;
     ARMSX2WriteGameSettingsForIdentity(settingsSerial, entry.crc, enabled, upscaleMultiplier, aspectRatio,
                                         textureFiltering, hardwareMipmapping, blendingAccuracy, interlaceMode,
-                                        trilinearFiltering, halfPixelOffset, roundSprite, alignSpriteOverride,
+                                        hwDownloadMode, trilinearFiltering, halfPixelOffset, roundSprite, alignSpriteOverride,
                                         alignSprite, mergeSpriteOverride, mergeSprite, wildArmsOffsetOverride,
                                         wildArmsOffset, textureOffsetXOverride, textureOffsetX,
                                         textureOffsetYOverride, textureOffsetY, skipDrawStartOverride,
@@ -2505,6 +2517,7 @@ static void ARMSX2SetPatchEnableListForIdentity(NSArray<NSString*>* values, cons
                               hardwareMipmapping:(BOOL)hardwareMipmapping
                                 blendingAccuracy:(int)blendingAccuracy
                                    interlaceMode:(int)interlaceMode
+                                  hwDownloadMode:(int)hwDownloadMode
                               trilinearFiltering:(int)trilinearFiltering
                                  halfPixelOffset:(int)halfPixelOffset
                                      roundSprite:(int)roundSprite
@@ -2549,7 +2562,7 @@ static void ARMSX2SetPatchEnableListForIdentity(NSArray<NSString*>* values, cons
 
     ARMSX2WriteGameSettingsForIdentity(serial, crc, enabled, upscaleMultiplier, aspectRatio,
                                         textureFiltering, hardwareMipmapping, blendingAccuracy, interlaceMode,
-                                        trilinearFiltering, halfPixelOffset, roundSprite, alignSpriteOverride,
+                                        hwDownloadMode, trilinearFiltering, halfPixelOffset, roundSprite, alignSpriteOverride,
                                         alignSprite, mergeSpriteOverride, mergeSprite, wildArmsOffsetOverride,
                                         wildArmsOffset, textureOffsetXOverride, textureOffsetX,
                                         textureOffsetYOverride, textureOffsetY, skipDrawStartOverride,
