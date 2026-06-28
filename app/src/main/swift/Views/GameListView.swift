@@ -1520,6 +1520,14 @@ struct PerGameSettingsPanel: View {
         PickerOption(id: 1, title: "Half"),
         PickerOption(id: 2, title: "Full")
     ]
+    private static let hwDownloadModeOptions = [
+        PickerOption(id: useGlobalSentinel, title: "Use Global"),
+        PickerOption(id: 0, title: "Accurate (Recommended)"),
+        PickerOption(id: 1, title: "Accurate Force Full"),
+        PickerOption(id: 2, title: "Disable Readbacks"),
+        PickerOption(id: 3, title: "Unsynchronized"),
+        PickerOption(id: 4, title: "Disabled (Ignore Transfers)")
+    ]
 
     let game: ISOEntry
     let onDone: (() -> Void)?
@@ -1532,6 +1540,7 @@ struct PerGameSettingsPanel: View {
     @State private var hardwareMipmapping: Bool
     @State private var blendingAccuracy: Int
     @State private var interlaceMode: Int
+    @State private var hwDownloadMode: Int
     @State private var trilinearFiltering: Int
     @State private var halfPixelOffset: Int
     @State private var roundSprite: Int
@@ -1597,6 +1606,7 @@ struct PerGameSettingsPanel: View {
         _hardwareMipmapping = State(initialValue: Self.boolValue(info["hardwareMipmapping"], defaultValue: true))
         _blendingAccuracy = State(initialValue: Self.intValue(info["blendingAccuracy"], defaultValue: 1))
         _interlaceMode = State(initialValue: Self.intValue(info["interlaceMode"], defaultValue: 7))
+        _hwDownloadMode = State(initialValue: Self.boolValue(info["hasHwDownloadModeOverride"], defaultValue: false) ? Self.intValue(info["hwDownloadMode"], defaultValue: 0) : Self.useGlobalSentinel)
         _trilinearFiltering = State(initialValue: Self.boolValue(info["hasTrilinearFilteringOverride"], defaultValue: false) ? Self.intValue(info["trilinearFiltering"], defaultValue: -1) : Self.trilinearUseGlobalSentinel)
         _halfPixelOffset = State(initialValue: Self.boolValue(info["hasHalfPixelOffsetOverride"], defaultValue: false) ? Self.intValue(info["halfPixelOffset"], defaultValue: 0) : Self.useGlobalSentinel)
         _roundSprite = State(initialValue: Self.boolValue(info["hasRoundSpriteOverride"], defaultValue: false) ? Self.intValue(info["roundSprite"], defaultValue: 0) : Self.useGlobalSentinel)
@@ -1938,6 +1948,19 @@ struct PerGameSettingsPanel: View {
                         }
                     }
                     .disabled(!enabled)
+
+                    Picker(settings.localized("Hardware Download Mode"), selection: $hwDownloadMode) {
+                        ForEach(Self.hwDownloadModeOptions) { option in
+                            Text(settings.localized(option.title)).tag(option.id)
+                        }
+                    }
+                    .disabled(!enabled)
+
+                    if hwDownloadMode != Self.useGlobalSentinel && hwDownloadMode != 0 {
+                        Text(settings.localized("Non-accurate download modes may break rendering in some games."))
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
 
                 Section(settings.localized("Advanced Upscaling Hacks")) {
@@ -2165,6 +2188,7 @@ struct PerGameSettingsPanel: View {
                 hardwareMipmapping: hardwareMipmapping,
                 blendingAccuracy: Int32(blendingAccuracy),
                 interlaceMode: Int32(interlaceMode),
+                hwDownloadMode: Int32(hwDownloadMode),
                 trilinearFiltering: Int32(trilinearFiltering),
                 halfPixelOffset: Int32(halfPixelOffset),
                 roundSprite: Int32(roundSprite),
@@ -2205,6 +2229,7 @@ struct PerGameSettingsPanel: View {
                 hardwareMipmapping: hardwareMipmapping,
                 blendingAccuracy: Int32(blendingAccuracy),
                 interlaceMode: Int32(interlaceMode),
+                hwDownloadMode: Int32(hwDownloadMode),
                 trilinearFiltering: Int32(trilinearFiltering),
                 halfPixelOffset: Int32(halfPixelOffset),
                 roundSprite: Int32(roundSprite),

@@ -263,6 +263,9 @@ final class SettingsStore: @unchecked Sendable {
     var blendingAccuracy: Int {
         didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "accurate_blending_unit", value: Int32(blendingAccuracy)) }
     }
+    var hwDownloadMode: Int {
+        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "HWDownloadMode", value: Int32(hwDownloadMode)) }
+    }
     var dithering: Int {
         didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "dithering_ps2", value: Int32(dithering)) }
     }
@@ -674,6 +677,7 @@ final class SettingsStore: @unchecked Sendable {
         interlaceMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "deinterlace_mode", defaultValue: 7))
         aspectRatio = Self.aspectRatioValue(from: ARMSX2Bridge.getINIString("EmuCore/GS", key: "AspectRatio", defaultValue: "Auto 4:3/3:2"))
         blendingAccuracy = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "accurate_blending_unit", defaultValue: 1))
+        hwDownloadMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "HWDownloadMode", defaultValue: 0))
         dithering = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "dithering_ps2", defaultValue: 2))
         trilinearFiltering = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "TriFilter", defaultValue: -1))
         halfPixelOffset = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_HalfPixelOffset", defaultValue: 0))
@@ -809,6 +813,7 @@ final class SettingsStore: @unchecked Sendable {
         interlaceMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "deinterlace_mode", defaultValue: 7))
         aspectRatio = Self.aspectRatioValue(from: ARMSX2Bridge.getINIString("EmuCore/GS", key: "AspectRatio", defaultValue: "Auto 4:3/3:2"))
         blendingAccuracy = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "accurate_blending_unit", defaultValue: 1))
+        hwDownloadMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "HWDownloadMode", defaultValue: 0))
         dithering = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "dithering_ps2", defaultValue: 2))
         trilinearFiltering = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "TriFilter", defaultValue: -1))
         halfPixelOffset = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_HalfPixelOffset", defaultValue: 0))
@@ -1113,6 +1118,7 @@ final class SettingsStore: @unchecked Sendable {
         interlaceMode = 7       // Adaptive
         aspectRatio = 1         // Auto 4:3/3:2
         blendingAccuracy = 1    // Basic
+        hwDownloadMode = 0      // Accurate (Recommended)
         dithering = 2           // Scaled
         trilinearFiltering = -1 // Automatic
         halfPixelOffset = 0
