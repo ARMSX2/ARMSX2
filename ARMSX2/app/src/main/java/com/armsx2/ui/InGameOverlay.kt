@@ -76,6 +76,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
@@ -1059,7 +1060,10 @@ object InGameOverlay {
         state.value = State.Root
         playSelection.value = 0
         modalSelection.value = 0
-        currentTab.value = Tab.PlayingNow
+        // Reopen on the tab you were last on instead of snapping back to Play —
+        // currentTab persists on the overlay singleton, so just leave it. Less tedious
+        // when tuning a game and stepping in/out of the menu. First open = Play (the
+        // field's default). Quick-resume users can still tap Play / press B.
         SettingsControllerNav.clearSelection()
         resetSettingsAdjustGate()
         // Resolve the current game's serial first; scope and settings
@@ -1101,7 +1105,10 @@ object InGameOverlay {
         state.value = State.Root
         playSelection.value = 0
         modalSelection.value = 0
-        currentTab.value = Tab.Performance
+        // Remember the last settings tab across opens instead of snapping back to
+        // the first one. PlayingNow isn't shown in settings-only mode, so only fall
+        // back to the first real tab when we're sitting on it (e.g. first open).
+        if (currentTab.value == Tab.PlayingNow) currentTab.value = Tab.Performance
         SettingsControllerNav.clearSelection()
         resetSettingsAdjustGate()
         currentSerial.value = null
@@ -1120,7 +1127,8 @@ object InGameOverlay {
         state.value = State.Root
         playSelection.value = 0
         modalSelection.value = 0
-        currentTab.value = Tab.Performance
+        // Remember the last settings tab across opens (see openGlobalSettings).
+        if (currentTab.value == Tab.PlayingNow) currentTab.value = Tab.Performance
         SettingsControllerNav.clearSelection()
         resetSettingsAdjustGate()
         currentSerial.value = game.serial?.takeIf { it.isNotEmpty() }
@@ -1230,6 +1238,13 @@ object InGameOverlay {
             // (RP6) still get the exact same 520/560dp, small screens scale down.
             val wideContent = state.value is State.Root &&
                 (settingsOnly.value || currentTab.value != Tab.PlayingNow)
+            // Portrait (the new Emulation Screen Orientation setting): this header is
+            // a landscape-first absolute layout — the top-left title column and the
+            // top-right brand/close cluster overlap on a narrow screen. In portrait
+            // we drop the decorative brand wordmark and tighten the content width so
+            // the title / RetroAchievements / ✕ stop colliding. Landscape unchanged.
+            val isPortrait = LocalConfiguration.current.orientation ==
+                android.content.res.Configuration.ORIENTATION_PORTRAIT
             // Headless poll keeps hardcore / renderer / rich-presence state in
             // sync even though the inline achievements panel is gone.
             AchievementsSync()
@@ -1276,7 +1291,9 @@ object InGameOverlay {
                     .padding(20.dp)
                     .then(if (wideContent) Modifier.fillMaxWidth(0.90f) else Modifier.widthIn(max = 520.dp).fillMaxWidth()),
             ) {
-                GameInfoHeader()
+                // In portrait reserve room on the right so the title / trophy
+                // button clear the ✕ (which floats at the top-right corner).
+                GameInfoHeader(modifier = if (isPortrait) Modifier.padding(end = 56.dp) else Modifier)
                 if (state.value is State.Root) {
                     Spacer(Modifier.height(12.dp))
                     TabStrip()
@@ -1307,13 +1324,6 @@ object InGameOverlay {
                     // so it actually scrolls instead of expanding off-screen.
                     Box(modifier = Modifier.weight(1f)) {
                         RootTabs()
-                        if (settingsTabActive()) {
-                            SettingsScrollHint(
-                                modifier = Modifier
-                                    .align(Alignment.BottomEnd)
-                                    .padding(end = 4.dp, bottom = 4.dp),
-                            )
-                        }
                     }
                 }
                 else if (state.value is State.Achievements) {
@@ -1426,12 +1436,15 @@ object InGameOverlay {
             // Brand sits in the top-right-of-centre band: right of long game
             // titles (which start top-left) but left of the close button, so it
             // stops clashing with both. Anchored to the end edge for a stable
-            // gap from the ✕ across screen sizes.
-            BrandHeader(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 20.dp, end = 135.dp)
-            )
+            // gap from the ✕ across screen sizes. Hidden in portrait, where the
+            // narrow width makes its fixed 135dp inset overlap the title.
+            if (!isPortrait) {
+                BrandHeader(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 20.dp, end = 135.dp)
+                )
+            }
 
             // (The inline bottom-right achievements panel was removed — it's now
             // the header trophy button → dedicated achievements view, so the Play
@@ -1811,20 +1824,6 @@ object InGameOverlay {
                 modifier = Modifier.size(32.dp),
             )
         }
-    }
-
-    @Composable
-    private fun SettingsScrollHint(modifier: Modifier = Modifier) {
-        Text(
-            "Scroll up/down and left/right to navigate",
-            color = Color.White.copy(alpha = 0.58f),
-            fontSize = 10.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            modifier = modifier
-                .background(Color.Black.copy(alpha = 0.28f))
-                .padding(horizontal = 6.dp, vertical = 2.dp),
-        )
     }
 
     /** Active tab body. Rendered in the top-left column directly under

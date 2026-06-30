@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.ActivityInfo
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -1121,6 +1122,18 @@ class Main: ComponentActivity() {
         }
     }
 
+    /** Apply the user's Emulation Screen Orientation choice (global, prefs "ui.orientation").
+     *  0=Use Device Setting, 1=Landscape, 2=Portrait, 3=Auto-Rotate. SENSOR_* variants let
+     *  the device still flip 180° within the locked axis. Called on launch + on change. */
+    fun applyEmulationOrientation() {
+        requestedOrientation = when (prefs.getInt("ui.orientation", 0)) {
+            1 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            2 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            3 -> ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+            else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Local co-op: PS2 port 2 is enabled at GAME BOOT (applyRendererPrefs) when a
@@ -1139,6 +1152,7 @@ class Main: ComponentActivity() {
             // intentionally empty — pure stay-alive sentinel
         }
         prefs = applicationContext.getSharedPreferences("ARMSX2", MODE_PRIVATE)
+        applyEmulationOrientation()
         com.armsx2.CoverArtStyle.load()
         com.armsx2.LibraryTitles.load()
         com.armsx2.LibraryView.load()

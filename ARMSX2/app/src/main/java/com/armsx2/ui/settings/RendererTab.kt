@@ -119,6 +119,21 @@ fun RendererTab(state: MutableState<Settings>) {
                 onChange = { apply(s.copy(aspectRatio = it)) },
             )
             SettingsDivider()
+            // Emulation Screen Orientation — global (Android activity orientation), stored
+            // in prefs and applied via Main; not an emucore/per-game setting.
+            val orientation = remember { mutableStateOf(com.armsx2.Main.prefs.getInt("ui.orientation", 0)) }
+            SegmentedRow(
+                label = "Emulation Screen Orientation",
+                options = listOf("Device", "Landscape", "Portrait", "Auto-Rotate"),
+                selectedIndex = orientation.value.coerceIn(0, 3),
+                description = "Locks the app's screen orientation. \"Device\" follows your system auto-rotate setting.",
+                onChange = {
+                    orientation.value = it
+                    com.armsx2.Main.prefs.edit().putInt("ui.orientation", it).apply()
+                    com.armsx2.Main.instance?.applyEmulationOrientation()
+                },
+            )
+            SettingsDivider()
             SegmentedGridRow(
                 label = "Deinterlacing",
                 options = listOf(

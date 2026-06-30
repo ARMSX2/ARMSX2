@@ -418,13 +418,23 @@ fun CollapsibleSection(
     initiallyExpanded: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(initiallyExpanded) }
+    // Persist the collapse/expand choice per section so it survives reopening the
+    // settings — when tuning a game you shouldn't have to re-unroll the same section
+    // every time. [initiallyExpanded] is only the first-time default.
+    val prefKey = "ui.section.$title"
+    var expanded by remember(title) {
+        mutableStateOf(com.armsx2.Main.prefs.getBoolean(prefKey, initiallyExpanded))
+    }
+    fun toggle() {
+        expanded = !expanded
+        com.armsx2.Main.prefs.edit().putBoolean(prefKey, expanded).apply()
+    }
     Spacer(Modifier.height(8.dp))
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .controllerFocusable(controllerId = "sect:$title", onConfirm = { expanded = !expanded })
-            .clickable { expanded = !expanded }
+            .controllerFocusable(controllerId = "sect:$title", onConfirm = { toggle() })
+            .clickable { toggle() }
             .padding(horizontal = 6.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
