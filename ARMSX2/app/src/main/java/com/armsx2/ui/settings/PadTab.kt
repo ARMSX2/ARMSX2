@@ -51,6 +51,21 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
     val capture = remember { mutableStateOf<ControllerMappings.Action?>(null) }
     // Local co-op: which player's mapping this tab is editing (0 = P1, 1 = P2).
     val editPlayer = remember { mutableStateOf(0) }
+    // Per-game controller settings (issue #246): the input-mapping layer (button
+    // binds, stick modes, custom stick codes) follows the SAME Global/Game scope
+    // the other tabs use — the ScopeToggle shown above this tab drives it. In Game
+    // scope with a known serial, edits write per-game overrides; otherwise global.
+    val padScope = com.armsx2.ui.InGameOverlay.settingsScope.value
+    val padSerial = com.armsx2.ui.InGameOverlay.currentSerial.value?.takeIf { it.isNotEmpty() }
+    val editSerial: String? = if (padScope == com.armsx2.config.SettingsScope.Game) padSerial else null
+    // Bindings are CAPTURED asynchronously (arm, then press a button), so the write
+    // tier is re-derived LIVE at capture time rather than from the composition-time
+    // editSerial — guarantees a scope flip between arming and pressing still lands on
+    // the tier shown. (Display rows use editSerial, which is correct at composition.)
+    val liveEditSerial: () -> String? = {
+        if (com.armsx2.ui.InGameOverlay.settingsScope.value == com.armsx2.config.SettingsScope.Game)
+            com.armsx2.ui.InGameOverlay.currentSerial.value?.takeIf { it.isNotEmpty() } else null
+    }
     val ctx = LocalContext.current
     val refreshToken = remember { mutableStateOf(0) }
     val focusRequester = remember { FocusRequester() }
@@ -118,7 +133,7 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                     val target = if (hk != null) ControllerMappings.stickCodeForHotkey(hk)
                         else ControllerMappings.stickCodeForPhysical(ncode, editPlayer.value)
                     if (target != null) {
-                        ControllerMappings.setCustomStickCode(sc.first, sc.second, target, editPlayer.value)
+                        ControllerMappings.setCustomStickCode(sc.first, sc.second, target, editPlayer.value, liveEditSerial())
                         ControllerMappings.endStickCapture()
                         refreshToken.value++
                     }
@@ -134,7 +149,7 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 val nativeKeyCode = event.key.nativeKeyCode
                 if (nativeKeyCode == android.view.KeyEvent.KEYCODE_UNKNOWN)
                     return@onPreviewKeyEvent true
-                ControllerMappings.bind(action, nativeKeyCode, editPlayer.value)
+                ControllerMappings.bind(action, nativeKeyCode, editPlayer.value, liveEditSerial())
                 capture.value = null
                 refreshToken.value++
                 true
@@ -146,6 +161,20 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             color = Color(0xFFBBBBBB),
             fontSize = 12.sp,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+        )
+        // Per-game scope hint (#246): the buttons / sticks below follow the
+        // Global/Game toggle at the top of the menu. Spell out the current tier
+        // here since this tab scrolls far from that toggle.
+        Text(
+            when {
+                editSerial != null -> "● Editing controls for THIS GAME ($editSerial) — switch to Global up top to change all games."
+                padSerial != null -> "○ Editing GLOBAL controls (all games). Switch to Game up top for a per-game map."
+                else -> "○ Editing GLOBAL controls (all games)."
+            },
+            color = if (editSerial != null) Colors.pasx2_blue else Color(0xFF9A9A9A),
+            fontSize = 11.sp,
+            fontWeight = if (editSerial != null) FontWeight.Bold else FontWeight.Normal,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
         )
         SettingsDivider()
         // Open the on-screen touch-layout editor straight from here (no need to be
@@ -327,17 +356,17 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 SegmentedRow(
                     label = "Left Stick",
                     options = stickOpts,
-                    selectedIndex = ControllerMappings.leftStickMode(editPlayer.value).ordinal,
+                    selectedIndex = ControllerMappings.leftStickModeScope(editPlayer.value, editSerial).ordinal,
                     description = "What the left analog stick sends: Analog (default), Face, or Custom (bind each direction below).",
                     onChange = {
-                        ControllerMappings.setLeftStickMode(ControllerMappings.StickMode.values()[it], editPlayer.value)
+                        ControllerMappings.setLeftStickMode(ControllerMappings.StickMode.values()[it], editPlayer.value, editSerial)
                         refreshToken.value++
                     },
                 )
                 SettingsDivider()
-                if (ControllerMappings.leftStickMode(editPlayer.value) == ControllerMappings.StickMode.CUSTOM) {
+                if (ControllerMappings.leftStickModeScope(editPlayer.value, editSerial) == ControllerMappings.StickMode.CUSTOM) {
                     ControllerMappings.StickDir.values().forEach { dir ->
-                        StickDirPickerRow(leftStick = true, dir = dir, player = editPlayer.value, onChanged = { refreshToken.value++ })
+                        StickDirPickerRow(leftStick = true, dir = dir, player = editPlayer.value, serial = editSerial, onChanged = { refreshToken.value++ })
                         SettingsDivider()
                     }
                 }
@@ -360,17 +389,17 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 SegmentedRow(
                     label = "Right Stick",
                     options = stickOpts,
-                    selectedIndex = ControllerMappings.rightStickMode(editPlayer.value).ordinal,
+                    selectedIndex = ControllerMappings.rightStickModeScope(editPlayer.value, editSerial).ordinal,
                     description = "What the right analog stick sends: Analog (default), Face, or Custom (bind each direction below).",
                     onChange = {
-                        ControllerMappings.setRightStickMode(ControllerMappings.StickMode.values()[it], editPlayer.value)
+                        ControllerMappings.setRightStickMode(ControllerMappings.StickMode.values()[it], editPlayer.value, editSerial)
                         refreshToken.value++
                     },
                 )
                 SettingsDivider()
-                if (ControllerMappings.rightStickMode(editPlayer.value) == ControllerMappings.StickMode.CUSTOM) {
+                if (ControllerMappings.rightStickModeScope(editPlayer.value, editSerial) == ControllerMappings.StickMode.CUSTOM) {
                     ControllerMappings.StickDir.values().forEach { dir ->
-                        StickDirPickerRow(leftStick = false, dir = dir, player = editPlayer.value, onChanged = { refreshToken.value++ })
+                        StickDirPickerRow(leftStick = false, dir = dir, player = editPlayer.value, serial = editSerial, onChanged = { refreshToken.value++ })
                         SettingsDivider()
                     }
                 }
@@ -453,43 +482,46 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
         }
         CollapsibleSection("Button Mapping", initiallyExpanded = false) {
             ControllerMappings.actions.forEach { action ->
-                val physical = ControllerMappings.physicalFor(action, editPlayer.value)
+                val physical = ControllerMappings.physicalForScope(action, editPlayer.value, editSerial)
                 PadBindingRow(
                     action = action,
                     physical = physical,
                     capturing = capture.value == action,
                     onClick = { capture.value = action },
                     onClear = {
-                        ControllerMappings.clearAction(action, editPlayer.value)
+                        ControllerMappings.clearAction(action, editPlayer.value, editSerial)
                         if (capture.value == action) capture.value = null
                         refreshToken.value++
                     },
                 )
                 SettingsDivider()
             }
+            // Reset clears this scope's binds: Global wipes the global map; Game
+            // removes this game's per-game overrides (button binds AND stick maps),
+            // reverting it to the global map.
+            val resetMappings: () -> Unit = {
+                if (editSerial != null) ControllerMappings.clearGameOverrides(editSerial, editPlayer.value)
+                else ControllerMappings.reset(editPlayer.value)
+                capture.value = null
+                refreshToken.value++
+            }
             Box(
                 Modifier
                     .fillMaxWidth()
                     .height(30.dp)
                     .background(rowAura())
-                    .clickable {
-                        ControllerMappings.reset(editPlayer.value)
-                        capture.value = null
-                        refreshToken.value++
-                    }
+                    .clickable { resetMappings() }
                     .controllerFocusable(
                         controllerId = "pad-reset",
-                        onConfirm = {
-                            ControllerMappings.reset(editPlayer.value)
-                            capture.value = null
-                            refreshToken.value++
-                        },
+                        onConfirm = resetMappings,
                     )
                     .padding(horizontal = 6.dp),
                 contentAlignment = Alignment.CenterStart,
             ) {
+                val who = if (editPlayer.value == 0) "Player 1" else "Player 2"
                 Text(
-                    if (editPlayer.value == 0) "Reset Player 1 Mappings" else "Reset Player 2 Mappings",
+                    if (editSerial != null) "Reset $who Mappings for This Game"
+                    else "Reset $who Mappings",
                     color = Colors.pasx2_blue, fontSize = 13.sp, fontWeight = FontWeight.Bold,
                 )
             }
@@ -507,32 +539,39 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 valueFormatter = { when (it) { 0 -> "Never"; 11 -> "Auto"; else -> "${it}s" } },
                 onChange = { TouchControls.setVisibilityMode(it) },
             )
+            SettingsDivider()
+            // Touch Haptics (#247): vibrate on on-screen button presses.
+            ToggleRow(
+                "Touch Haptics",
+                TouchControls.touchHaptics.value,
+                description = "Vibrate briefly when you press an on-screen button (like PPSSPP / Azahar). Separate from controller rumble.",
+            ) { TouchControls.setTouchHaptics(it) }
         }
     }
 }
 
-/** One CUSTOM-mode picker row: a stick direction on the left, its bound PS2
- *  button on the right. Tap (or A) arms capture — the row shows yellow
- *  "Press a button..." and the next physical controller button pressed is bound
- *  to this direction (same capture UX as every other binding). D-pad-left clears
- *  the binding back to its analog default. Shown only when the stick is CUSTOM. */
+/** One CUSTOM-mode row: a stick direction on the left, its bound target on the
+ *  right. Tap (or A) opens a PICKER to choose what the direction sends — a PS2
+ *  button (incl. the D-pad), an ARMSX2 hotkey, or Analog (default). A direct
+ *  picker (not "press a physical button") means you can assign a target even
+ *  after you've UNBOUND that button elsewhere — the old capture resolved the
+ *  pressed button through its live mapping, so an unbound D-pad couldn't be
+ *  picked. "Clear" (or D-pad-left on a controller) resets to the analog default.
+ *  Shown only when the stick is CUSTOM. */
 @Composable
 private fun StickDirPickerRow(
     leftStick: Boolean,
     dir: ControllerMappings.StickDir,
     player: Int,
+    serial: String?,
     onChanged: () -> Unit,
 ) {
     @Suppress("UNUSED_EXPRESSION")
     ControllerMappings.stickBindTick.value // recompose after a bind/reset
-    val capturing = ControllerMappings.captureStickDir.value == (leftStick to dir)
-    val code = ControllerMappings.customStickCode(leftStick, dir, player)
-    fun arm() {
-        ControllerMappings.beginStickCapture(leftStick, dir)
-        onChanged()
-    }
+    val code = ControllerMappings.customStickCodeScope(leftStick, dir, player, serial)
+    val showPicker = remember { mutableStateOf(false) }
     fun clear() {
-        ControllerMappings.resetStickCode(leftStick, dir, player)
+        ControllerMappings.resetStickCode(leftStick, dir, player, serial)
         onChanged()
     }
     Row(
@@ -540,10 +579,10 @@ private fun StickDirPickerRow(
             .fillMaxWidth()
             .height(30.dp)
             .background(rowAura())
-            .clickable { arm() }
+            .clickable { showPicker.value = true }
             .controllerFocusable(
                 controllerId = "stickdir:${if (leftStick) "l" else "r"}:${dir.id}",
-                onConfirm = { arm() },
+                onConfirm = { showPicker.value = true },
                 onLeft = { clear() },
             )
             .padding(horizontal = 6.dp),
@@ -557,10 +596,100 @@ private fun StickDirPickerRow(
         )
         Spacer(Modifier.weight(1f))
         Text(
-            if (capturing) "Press a button (or a hotkey button)..." else ControllerMappings.stickTargetLabel(code),
-            color = if (capturing) Color(0xFFFFD33A) else Color(0xFFCCCCCC),
+            "Clear",
+            color = Color(0xFFE57373),
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
+            modifier = Modifier
+                .clickable { clear() }
+                .padding(horizontal = 8.dp, vertical = 2.dp),
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            ControllerMappings.stickTargetLabel(code),
+            color = Color(0xFFCCCCCC),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+    if (showPicker.value) {
+        StickTargetPickerDialog(
+            title = "${if (leftStick) "Left" else "Right"} Stick — ${dir.id.replaceFirstChar { it.uppercase() }}",
+            current = code,
+            onPick = { picked ->
+                if (picked == null) ControllerMappings.resetStickCode(leftStick, dir, player, serial)
+                else ControllerMappings.setCustomStickCode(leftStick, dir, picked, player, serial)
+                showPicker.value = false
+                onChanged()
+            },
+            onDismiss = { showPicker.value = false },
+        )
+    }
+}
+
+/** Direct target picker for a CUSTOM stick direction: PS2 buttons, ARMSX2
+ *  hotkeys, or Analog (default). [onPick] receives the chosen setPadButton code,
+ *  or null for Analog (default → clears the override). */
+@Composable
+private fun StickTargetPickerDialog(
+    title: String,
+    current: Int,
+    onPick: (Int?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Colors.surfaceColor,
+        titleContentColor = Color.White,
+        textContentColor = Color.White,
+        title = { Text(title, color = Color.White, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(Modifier.verticalScroll(remember { ScrollState(0) })) {
+                Text(
+                    "Choose what this stick direction sends. Works regardless of which physical buttons are bound.",
+                    color = Color(0xFFBBBBBB), fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(8.dp))
+                StickPickItem("Analog (default)", current in 110..123) { onPick(null) }
+                Spacer(Modifier.height(6.dp))
+                Text("PS2 Buttons", color = Colors.pasx2_blue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                ControllerMappings.stickTargets.forEach { t ->
+                    StickPickItem(t.label, current == t.code) { onPick(t.code) }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text("Hotkeys", color = Colors.pasx2_blue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                ControllerMappings.SysHotkey.values().forEach { h ->
+                    val hc = ControllerMappings.stickCodeForHotkey(h)
+                    StickPickItem("Hotkey: ${h.label}", current == hc) { onPick(hc) }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = Colors.pasx2_blue) }
+        },
+    )
+}
+
+@Composable
+private fun StickPickItem(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(vertical = 8.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            if (selected) "●  " else "○  ",
+            color = if (selected) Colors.pasx2_blue else Color(0xFF777777),
+            fontSize = 13.sp,
+        )
+        Text(
+            label,
+            color = Color.White,
+            fontSize = 13.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
         )
     }
 }

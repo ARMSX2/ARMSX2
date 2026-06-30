@@ -59,23 +59,73 @@ object ControllerMappings {
     const val P2 = 1
     private fun playerPrefix(player: Int) = if (player == 0) "" else "p${player + 1}."
 
+    // ---- Per-game scope (issue #246) --------------------------------------
+    // The INPUT-MAPPING layer — button binds, stick modes, custom stick codes —
+    // may be overridden PER GAME, mirroring how renderer/touch already go
+    // per-serial. Global keys stay the baseline (single-player users unchanged);
+    // a per-game override lives under "game.<serial>." and shadows the global
+    // value for that serial ONLY. Controller FEEL (deadzone/sensitivity/accel/
+    // invert/rumble/dpad-as-lstick) stays GLOBAL — it describes the physical pad.
+    private fun gameKey(serial: String, baseKey: String) = "game.$serial.$baseKey"
+    private fun scopedKey(baseKey: String, serial: String?) =
+        if (serial.isNullOrEmpty()) baseKey else gameKey(serial, baseKey)
+
+    /** Serial of the running game whose overrides apply at RUNTIME (input
+     *  dispatch), or null in menus so use falls back to global. */
+    private fun runtimeSerial(): String? = Main.currentGame.value?.serial?.takeIf { it.isNotEmpty() }
+
+    /** Read an int pref: per-game override (for the active game) first, else global. */
+    private fun resolveInt(baseKey: String, default: Int): Int {
+        val s = runtimeSerial()
+        if (s != null) {
+            val gk = gameKey(s, baseKey)
+            if (Main.prefs.contains(gk)) return Main.prefs.getInt(gk, default)
+        }
+        return Main.prefs.getInt(baseKey, default)
+    }
+
+    /** Read a string pref: per-game override first, else global. */
+    private fun resolveString(baseKey: String, default: String): String {
+        val s = runtimeSerial()
+        if (s != null) Main.prefs.getString(gameKey(s, baseKey), null)?.let { return it }
+        return Main.prefs.getString(baseKey, default) ?: default
+    }
+
+    /** Scope-explicit int read for the Pad UI: the override at [serial]'s tier if
+     *  present, else the global baseline (so a fresh per-game row shows the
+     *  inherited value instead of blank). serial=null reads the global tier. */
+    private fun scopedInt(baseKey: String, serial: String?, default: Int): Int {
+        val key = scopedKey(baseKey, serial)
+        if (Main.prefs.contains(key)) return Main.prefs.getInt(key, default)
+        return Main.prefs.getInt(baseKey, default)
+    }
+
     private const val KEY_LSTICK = "pad.lstick.mode"
     private const val KEY_RSTICK = "pad.rstick.mode"
 
-    private fun stickModeFor(key: String): StickMode {
-        val id = Main.prefs.getString(key, StickMode.ANALOG.id)
-        return StickMode.values().firstOrNull { it.id == id } ?: StickMode.ANALOG
-    }
+    private fun stickModeFromId(id: String?): StickMode =
+        StickMode.values().firstOrNull { it.id == id } ?: StickMode.ANALOG
 
-    fun leftStickMode(player: Int = 0): StickMode = stickModeFor(playerPrefix(player) + KEY_LSTICK)
-    fun rightStickMode(player: Int = 0): StickMode = stickModeFor(playerPrefix(player) + KEY_RSTICK)
-    fun setLeftStickMode(m: StickMode, player: Int = 0) =
-        Main.prefs.edit().putString(playerPrefix(player) + KEY_LSTICK, m.id).apply()
-    fun setRightStickMode(m: StickMode, player: Int = 0) =
-        Main.prefs.edit().putString(playerPrefix(player) + KEY_RSTICK, m.id).apply()
+    // Runtime (per-game aware): used by the input dispatcher.
+    fun leftStickMode(player: Int = 0): StickMode =
+        stickModeFromId(resolveString(playerPrefix(player) + KEY_LSTICK, StickMode.ANALOG.id))
+    fun rightStickMode(player: Int = 0): StickMode =
+        stickModeFromId(resolveString(playerPrefix(player) + KEY_RSTICK, StickMode.ANALOG.id))
     /** Mode for the left (true) or right (false) stick — used by the dispatcher. */
     fun stickModeFor(left: Boolean, player: Int = 0): StickMode =
         if (left) leftStickMode(player) else rightStickMode(player)
+
+    // Scope-explicit (Pad UI): read/edit the global tier (serial=null) or a per-game tier.
+    fun leftStickModeScope(player: Int, serial: String?): StickMode =
+        stickModeFromId(Main.prefs.getString(scopedKey(playerPrefix(player) + KEY_LSTICK, serial), null)
+            ?: Main.prefs.getString(playerPrefix(player) + KEY_LSTICK, StickMode.ANALOG.id))
+    fun rightStickModeScope(player: Int, serial: String?): StickMode =
+        stickModeFromId(Main.prefs.getString(scopedKey(playerPrefix(player) + KEY_RSTICK, serial), null)
+            ?: Main.prefs.getString(playerPrefix(player) + KEY_RSTICK, StickMode.ANALOG.id))
+    fun setLeftStickMode(m: StickMode, player: Int = 0, serial: String? = null) =
+        Main.prefs.edit().putString(scopedKey(playerPrefix(player) + KEY_LSTICK, serial), m.id).apply()
+    fun setRightStickMode(m: StickMode, player: Int = 0, serial: String? = null) =
+        Main.prefs.edit().putString(scopedKey(playerPrefix(player) + KEY_RSTICK, serial), m.id).apply()
 
     // ---- Per-stick axis correction (invert / swap) ------------------------
     // Fixes pads whose stick reads rotated or mirrored — e.g. a right stick where
@@ -231,7 +281,8 @@ object ControllerMappings {
     )
     fun stickTargetLabel(code: Int): String =
         hotkeyForStickCode(code)?.let { "Hotkey: ${it.label}" }
-            ?: stickTargets.firstOrNull { it.code == code }?.label ?: "Code $code"
+            ?: if (code in 110..123) "Analog (default)"
+            else stickTargets.firstOrNull { it.code == code }?.label ?: "Code $code"
 
     // Default per-direction code = the stick's native analog code, so a fresh
     // CUSTOM stick behaves exactly like ANALOG until the user rebinds a direction.
@@ -247,10 +298,14 @@ object ControllerMappings {
     }
     private fun customKey(left: Boolean, dir: StickDir, player: Int = 0) =
         playerPrefix(player) + "pad.${if (left) "lstick" else "rstick"}.${dir.id}.code"
+    // Runtime (per-game aware): used by the stick dispatcher.
     fun customStickCode(left: Boolean, dir: StickDir, player: Int = 0): Int =
-        Main.prefs.getInt(customKey(left, dir, player), defaultCustomCode(left, dir))
-    fun setCustomStickCode(left: Boolean, dir: StickDir, code: Int, player: Int = 0) =
-        Main.prefs.edit().putInt(customKey(left, dir, player), code).apply()
+        resolveInt(customKey(left, dir, player), defaultCustomCode(left, dir))
+    fun setCustomStickCode(left: Boolean, dir: StickDir, code: Int, player: Int = 0, serial: String? = null) =
+        Main.prefs.edit().putInt(scopedKey(customKey(left, dir, player), serial), code).apply()
+    /** Scope-explicit read for the Pad UI (per-game tier else global baseline). */
+    fun customStickCodeScope(left: Boolean, dir: StickDir, player: Int, serial: String?): Int =
+        scopedInt(customKey(left, dir, player), serial, defaultCustomCode(left, dir))
 
     // A CUSTOM stick direction can fire an ARMSX2 hotkey (Quick Save/Load State, etc.)
     // instead of a PS2 button — so a freed-up stick direction (e.g. when the left stick
@@ -287,15 +342,22 @@ object ControllerMappings {
     fun beginStickCapture(left: Boolean, dir: StickDir) { captureStickDir.value = left to dir }
     fun endStickCapture() { captureStickDir.value = null; stickBindTick.value++ }
 
-    /** Clear a direction back to its analog default (the Reset affordance). */
-    fun resetStickCode(left: Boolean, dir: StickDir, player: Int = 0) {
-        Main.prefs.edit().remove(customKey(left, dir, player)).apply(); stickBindTick.value++
+    /** Clear a direction back to its analog default (the Reset affordance). With a
+     *  [serial], clears only that game's per-game override for the direction. */
+    fun resetStickCode(left: Boolean, dir: StickDir, player: Int = 0, serial: String? = null) {
+        Main.prefs.edit().remove(scopedKey(customKey(left, dir, player), serial)).apply(); stickBindTick.value++
     }
 
     private const val KEY_PREFIX = "pad.map."
 
+    // Runtime (per-game aware): used by targetForPhysical on the input path.
     fun physicalFor(action: Action, player: Int = 0): Int =
-        Main.prefs.getInt(playerPrefix(player) + KEY_PREFIX + action.id, action.defaultPhysicalKeyCode)
+        resolveInt(playerPrefix(player) + KEY_PREFIX + action.id, action.defaultPhysicalKeyCode)
+
+    /** Scope-explicit read for the Pad UI: the binding at [serial]'s tier, else
+     *  the global baseline. serial=null reads/edits the global tier. */
+    fun physicalForScope(action: Action, player: Int, serial: String?): Int =
+        scopedInt(playerPrefix(player) + KEY_PREFIX + action.id, serial, action.defaultPhysicalKeyCode)
 
     // Reserved keycodes for binding an ANALOG STICK DIRECTION to a SysHotkey from the
     // Hotkeys tab (the d-pad already binds via its HAT->key translation; analog sticks
@@ -330,22 +392,54 @@ object ControllerMappings {
         else -> KeyEvent.keyCodeToString(keyCode).removePrefix("KEYCODE_")
     }
 
-    fun bind(action: Action, physicalKeyCode: Int, player: Int = 0) {
-        Main.prefs.edit().putInt(playerPrefix(player) + KEY_PREFIX + action.id, physicalKeyCode).apply()
+    fun bind(action: Action, physicalKeyCode: Int, player: Int = 0, serial: String? = null) {
+        Main.prefs.edit().putInt(scopedKey(playerPrefix(player) + KEY_PREFIX + action.id, serial), physicalKeyCode).apply()
     }
 
     /** Unbind a pad button: store KEYCODE_UNKNOWN — the same "unbound" sentinel the
      *  analog-toggle action already uses by default. physicalFor() then returns UNKNOWN
      *  (never matches a real key in targetForPhysical), labelForKey shows "Not set", and
-     *  the freed physical button can instead be assigned as an ARMSX2 hotkey. */
-    fun clearAction(action: Action, player: Int = 0) {
-        Main.prefs.edit().putInt(playerPrefix(player) + KEY_PREFIX + action.id, KeyEvent.KEYCODE_UNKNOWN).apply()
+     *  the freed physical button can instead be assigned as an ARMSX2 hotkey. With a
+     *  [serial], unbinds the button for that game only (per-game override). */
+    fun clearAction(action: Action, player: Int = 0, serial: String? = null) {
+        Main.prefs.edit().putInt(scopedKey(playerPrefix(player) + KEY_PREFIX + action.id, serial), KeyEvent.KEYCODE_UNKNOWN).apply()
     }
 
-    fun reset(player: Int = 0) {
+    /** Reset button binds for [player]. serial=null clears the GLOBAL binds; a
+     *  serial removes that game's per-game button overrides (reverting to global). */
+    fun reset(player: Int = 0, serial: String? = null) {
         val edit = Main.prefs.edit()
-        actions.forEach { edit.remove(playerPrefix(player) + KEY_PREFIX + it.id) }
+        actions.forEach { edit.remove(scopedKey(playerPrefix(player) + KEY_PREFIX + it.id, serial)) }
         edit.apply()
+    }
+
+    /** Clear ALL per-game controller overrides for [serial] / [player] — button
+     *  binds, stick modes AND custom stick codes — reverting that game fully to
+     *  global. Used by the Pad-tab Reset when editing in Game scope. */
+    fun clearGameOverrides(serial: String, player: Int) {
+        if (serial.isEmpty()) return
+        val edit = Main.prefs.edit()
+        actions.forEach { edit.remove(gameKey(serial, playerPrefix(player) + KEY_PREFIX + it.id)) }
+        edit.remove(gameKey(serial, playerPrefix(player) + KEY_LSTICK))
+            .remove(gameKey(serial, playerPrefix(player) + KEY_RSTICK))
+        for (left in booleanArrayOf(true, false))
+            for (dir in StickDir.values())
+                edit.remove(gameKey(serial, customKey(left, dir, player)))
+        edit.apply()
+        stickBindTick.value++
+    }
+
+    /** True if [serial] has ANY per-game controller override for [player]. Drives
+     *  the Pad-tab "Game" scope badge so the user knows a game-specific map exists. */
+    fun hasGameOverrides(serial: String?, player: Int): Boolean {
+        if (serial.isNullOrEmpty()) return false
+        if (actions.any { Main.prefs.contains(gameKey(serial, playerPrefix(player) + KEY_PREFIX + it.id)) }) return true
+        if (Main.prefs.contains(gameKey(serial, playerPrefix(player) + KEY_LSTICK))) return true
+        if (Main.prefs.contains(gameKey(serial, playerPrefix(player) + KEY_RSTICK))) return true
+        for (left in booleanArrayOf(true, false))
+            for (dir in StickDir.values())
+                if (Main.prefs.contains(gameKey(serial, customKey(left, dir, player)))) return true
+        return false
     }
 
     /** Reset the pad TUNABLES to defaults for the global "Reset to defaults" — stick
