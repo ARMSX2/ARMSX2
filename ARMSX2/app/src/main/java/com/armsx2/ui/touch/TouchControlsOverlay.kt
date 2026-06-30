@@ -270,20 +270,29 @@ fun TouchControlsOverlay() {
 	                },
 	                widthPx = widthPx,
 	                heightPx = heightPx,
-	                onPressedChange = { facePressed = it },
+	                glide = TouchControls.touchGliding.value,
+                onPressedChange = { facePressed = it },
 	            )
 	        }
 
         if (faceMulti) {
             // Shoulder triggers: one multi-touch hit-test layer per side so L1+L2
-            // (or L2+R2, or a trigger + face button) all register at once. Split by
-            // side to keep each bounding box tight (no overlap with the d-pad/sticks).
+            // (or L2+R2) register at once and you can slide between them. Split by
+            // side (xFrac < / >= 0.5) so neither box reaches the top-CENTER
+            // settings-cog tap zone. padDp stays at the default 18dp: a LARGER box
+            // (tried 100dp for slide-onto-L1/R1 from afar) sits ON TOP and, by
+            // Compose's overlapping-sibling rule, STEALS fresh DOWNs from the
+            // buttons it overlaps — it killed taps on the up-D-pad arm and Triangle
+            // (the buttons nearest the shoulders). Sliding ACROSS from a far button
+            // needs the single-layer rework, not a bigger box.
             FaceMultiTouchLayer(
                 buttons = layout.buttons.filter {
                     it.enabled && it.id.kind == TouchButtonId.Kind.SHOULDER && it.xFrac < 0.5f && !it.tapToHold
                 },
                 widthPx = widthPx,
                 heightPx = heightPx,
+                padDp = 18f,
+                glide = TouchControls.touchGliding.value,
                 onPressedChange = { lShoulderPressed = it },
             )
             FaceMultiTouchLayer(
@@ -292,6 +301,8 @@ fun TouchControlsOverlay() {
                 },
                 widthPx = widthPx,
                 heightPx = heightPx,
+                padDp = 18f,
+                glide = TouchControls.touchGliding.value,
                 onPressedChange = { rShoulderPressed = it },
             )
         }
@@ -505,6 +516,8 @@ private fun FaceMultiTouchLayer(
     buttons: List<TouchButtonCfg>,
     widthPx: Float,
     heightPx: Float,
+    padDp: Float = 18f,
+    glide: Boolean = false,
     onPressedChange: (Set<TouchButtonId>) -> Unit,
 ) {
     if (buttons.isEmpty() || widthPx <= 0f || heightPx <= 0f) return
@@ -524,7 +537,7 @@ private fun FaceMultiTouchLayer(
             bottom = cy + sizePx / 2f,
         )
     }
-    val padPx = with(density) { 18.dp.toPx() }
+    val padPx = with(density) { padDp.dp.toPx() }
     val leftPx = buttonRects.minOf { it.left } - padPx
     val topPx = buttonRects.minOf { it.top } - padPx
     val rightPx = buttonRects.maxOf { it.right } + padPx
@@ -542,7 +555,7 @@ private fun FaceMultiTouchLayer(
                 width = with(density) { layerWidth.toDp() },
                 height = with(density) { layerHeight.toDp() },
             )
-            .pointerInput(buttonRects, leftPx, topPx) {
+            .pointerInput(buttonRects, leftPx, topPx, glide) {
                 var pressed = emptySet<TouchButtonId>()
                 fun updatePressed(next: Set<TouchButtonId>) {
                     if (pressed == next) return
@@ -566,13 +579,25 @@ private fun FaceMultiTouchLayer(
 	                    updatePressed(emptySet())
 	                }
                 awaitPointerEventScope {
+                    // Touch Gliding: latch every button a finger crosses (held until
+                    // that finger lifts). Without it, only the button(s) currently
+                    // under a finger are pressed (the previous one releases as you slide).
+                    val latched = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, MutableSet<TouchButtonId>>()
                     try {
                         while (true) {
                             val ev = awaitPointerEvent()
-                            val next = ev.changes
-                                .filter { it.pressed }
-                                .flatMap { hits(it.position) }
-                                .toSet()
+                            val next = if (glide) {
+                                ev.changes.forEach { ch ->
+                                    if (ch.pressed) latched.getOrPut(ch.id) { mutableSetOf() }.addAll(hits(ch.position))
+                                    else latched.remove(ch.id)
+                                }
+                                latched.values.flatten().toSet()
+                            } else {
+                                ev.changes
+                                    .filter { it.pressed }
+                                    .flatMap { hits(it.position) }
+                                    .toSet()
+                            }
 	                            (pressed - next).forEach { sendDigital(it.keycode, false) }
 	                            (next - pressed).forEach { sendDigital(it.keycode, true) }
 	                            if (next.isNotEmpty() || pressed.isNotEmpty())
@@ -1128,6 +1153,9 @@ private fun sendDigital(keycode: Int, pressed: Boolean) {
     // setPadButton turns the range into a 0..1 pressure value.
     val range = if (pressed) TouchControls.pressureRangeFor(keycode) else 0
     NativeApp.setPadButton(keycode, range, pressed)
+    // Touch haptics (#247): a short vibration tick when a button goes DOWN. Press-only
+    // (release stays silent); gated by the Touch Haptics setting (default on).
+    if (pressed && TouchControls.touchHaptics.value) NativeApp.touchHaptic()
 }
 
 /** Buttons covered by the multi-touch hit-test layers: face diamond + shoulders. */
@@ -1308,6 +1336,10 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
             ToolbarChip("Profiles") { TouchControls.profileDialogOpen.value = true }
             ToolbarChip(if (TouchControls.faceMultiTouch.value) "Multi-Touch On" else "Multi-Touch Off") {
                 TouchControls.setFaceMultiTouch(!TouchControls.faceMultiTouch.value)
+            }
+            // Touch Gliding: drag a finger to hold every button it crosses (NetherSX2-style).
+            ToolbarChip(if (TouchControls.touchGliding.value) "Gliding On" else "Gliding Off") {
+                TouchControls.setTouchGliding(!TouchControls.touchGliding.value)
             }
             ToolbarChip(if (TouchControls.floatingStick.value) "Floating Stick On" else "Floating Stick Off") {
                 TouchControls.setFloatingStick(!TouchControls.floatingStick.value)

@@ -28,6 +28,8 @@ object TouchControls {
     private const val KEY_ACTIVE = "touch.active"
     private const val KEY_OPACITY = "touch.opacity"
     private const val KEY_FACE_MULTI = "touch.faceMulti"
+    private const val KEY_TOUCH_GLIDING = "touch.gliding"
+    private const val KEY_TOUCH_HAPTICS = "touch.haptics"
     private const val KEY_FLOATING_STICK = "touch.floatingStick"
     private const val KEY_VIS_MODE = "touch.visibilityMode"
     // One-shot 2.4.7 defaults migration for EXISTING users (saved prefs/layouts
@@ -95,6 +97,17 @@ object TouchControls {
     // several at once / roll between them, and press them while the stick is
     // held). Persisted under KEY_FACE_MULTI. Default ON.
     val faceMultiTouch = mutableStateOf(true)
+
+    // Touch Gliding (NetherSX2-style): while ON, dragging a finger LATCHES every
+    // button it crosses (held until the finger lifts) instead of only the one it's
+    // currently over — so you can hold several face/shoulder buttons with one drag.
+    // Requires the multi-touch layer (faceMultiTouch). Default OFF. Under KEY_TOUCH_GLIDING.
+    val touchGliding = mutableStateOf(false)
+
+    // Touch Haptics (issue #247, PPSSPP/Azahar-style): a short vibration tick on every
+    // on-screen button press (via NativeApp.touchHaptic). Independent of game rumble.
+    // Default ON. Under KEY_TOUCH_HAPTICS.
+    val touchHaptics = mutableStateOf(true)
 
     // Floating on-screen stick: the first touch-down inside a stick's zone becomes
     // its origin (the ring re-centers under your finger) instead of a fixed center —
@@ -233,6 +246,8 @@ object TouchControls {
         activeLayout.value = match.layout.copy()
         opacity.value = Main.prefs.getFloat(KEY_OPACITY, 0.55f).coerceIn(0.20f, 1.0f)
         faceMultiTouch.value = Main.prefs.getBoolean(KEY_FACE_MULTI, true)
+        touchGliding.value = Main.prefs.getBoolean(KEY_TOUCH_GLIDING, false)
+        touchHaptics.value = Main.prefs.getBoolean(KEY_TOUCH_HAPTICS, true)
         floatingStick.value = Main.prefs.getBoolean(KEY_FLOATING_STICK, false)
         visibilityMode.value = Main.prefs.getInt(KEY_VIS_MODE, 11).coerceIn(0, 11)
         if (visibilityMode.value == 0) visible.value = false
@@ -263,6 +278,8 @@ object TouchControls {
             .putString(KEY_ACTIVE, activeProfileName.value)
             .putFloat(KEY_OPACITY, opacity.value)
             .putBoolean(KEY_FACE_MULTI, faceMultiTouch.value)
+            .putBoolean(KEY_TOUCH_GLIDING, touchGliding.value)
+            .putBoolean(KEY_TOUCH_HAPTICS, touchHaptics.value)
             .putBoolean(KEY_FLOATING_STICK, floatingStick.value)
             .putInt(KEY_VIS_MODE, visibilityMode.value)
             .apply()
@@ -572,6 +589,16 @@ object TouchControls {
 
     fun setFaceMultiTouch(enabled: Boolean) {
         faceMultiTouch.value = enabled
+        persist()
+    }
+
+    fun setTouchGliding(enabled: Boolean) {
+        touchGliding.value = enabled
+        persist()
+    }
+
+    fun setTouchHaptics(enabled: Boolean) {
+        touchHaptics.value = enabled
         persist()
     }
 
