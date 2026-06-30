@@ -2499,7 +2499,11 @@ bool FileSystem::DirectoryIsEmpty(const char* path)
 	return true;
 }
 
-bool FileSystem::CreateDirectoryPath(const char* path, bool recursive, Error* error)
+// POSIX directory creation. On Android this is the fast path; raw mkdir() can
+// be denied on FUSE-emulated external storage (user-picked custom data folders)
+// even with all-files access, so CreateDirectoryPath() below falls back to the
+// Java File API when this returns false.
+static bool CreateDirectoryPathPosix(const char* path, bool recursive, Error* error)
 {
 	// has a path
 	const size_t pathLength = std::strlen(path);
@@ -2575,6 +2579,26 @@ bool FileSystem::CreateDirectoryPath(const char* path, bool recursive, Error* er
 		Error::SetErrno(error, "mkdir() failed: ", lastError);
 		return false;
 	}
+}
+
+bool FileSystem::CreateDirectoryPath(const char* path, bool recursive, Error* error)
+{
+	if (CreateDirectoryPathPosix(path, recursive, error))
+		return true;
+
+#if defined(__ANDROID__)
+	// Last resort: libc mkdir() was denied — typical on user-picked external
+	// data folders under FUSE / scoped storage, where the kernel blocks raw
+	// mkdir() even with all-files access — but the Java File API can still
+	// create the directory. No-op on app-private storage, where the POSIX path
+	// already succeeded. This is what makes FOLDER memory cards (which mirror
+	// the PS2 filesystem as real host directories) work on a custom data
+	// folder; file cards never needed it because they do no mkdir.
+	if (FileSystem::CreateDirectoryViaJava(path))
+		return true;
+#endif
+
+	return false;
 }
 
 bool FileSystem::DeleteFilePath(const char* path, Error* error)

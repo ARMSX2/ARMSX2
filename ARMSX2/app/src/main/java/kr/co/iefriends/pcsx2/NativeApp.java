@@ -373,6 +373,20 @@ public class NativeApp {
 		return v;
 	}
 
+	// Short crisp haptic "tick" for on-screen touch button presses (issue #247),
+	// PPSSPP/Azahar-style. Driven by the device's own vibrator and INDEPENDENT of
+	// game rumble. The UI gates it via the Touch Haptics setting, so this is only
+	// invoked when enabled. Coalesced: simultaneous multi-touch presses (d-pad +
+	// face land in the same frame) collapse to ONE tick, and fast mashing is rate-
+	// limited, so the vibrator queue can't be saturated on low-end devices.
+	private static volatile long sLastTouchHapticMs = 0L;
+	public static void touchHaptic() {
+		long now = android.os.SystemClock.uptimeMillis();
+		if (now - sLastTouchHapticMs < 24L) return;
+		sLastTouchHapticMs = now;
+		try { rumbleOne(systemVibrator(), 0.6f, 12); } catch (Throwable ignored) {}
+	}
+
 	/** Index (0-based) of the [index]th connected physical gamepad, or -1. Used as a
 	 *  fallback so the rumble test works even before a port has been claimed in-game. */
 	private static int nthGamepadDeviceId(int index) {
@@ -596,5 +610,23 @@ public class NativeApp {
 			} catch (Exception ignored) {}
 		}
 		return -1;
+	}
+
+	// Fallback directory creation for native FileSystem::CreateDirectoryPath.
+	// On Android 11+ FUSE-emulated external storage a raw libc mkdir() can be
+	// denied (EACCES/EPERM) for MANAGE_EXTERNAL_STORAGE apps even though the
+	// Java File API succeeds — which is why FOLDER memory cards failed to
+	// format ("Format failed!") on a custom data folder while file cards
+	// worked. Returns true if the directory exists after the call.
+	public static boolean createDirectoryPath(String path) {
+		if (path == null || path.isEmpty()) return false;
+		try {
+			java.io.File dir = new java.io.File(path);
+			if (dir.isDirectory()) return true;
+			dir.mkdirs();
+			return dir.isDirectory();
+		} catch (Throwable t) {
+			return false;
+		}
 	}
 }

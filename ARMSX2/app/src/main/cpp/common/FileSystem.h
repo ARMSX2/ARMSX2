@@ -124,6 +124,11 @@ namespace FileSystem
 	int OpenFDFile(const char* filename, int flags, int mode, Error* error = nullptr);
 #if defined(__ANDROID__)
 	int OpenFDFileContent(const char* filename);
+	/// Create a directory tree via the Java File API (NativeApp.createDirectoryPath).
+	/// Fallback for when libc mkdir() is denied on FUSE-emulated external storage
+	/// (user-picked custom data folders) despite all-files access. Returns true if
+	/// the directory exists afterwards.
+	bool CreateDirectoryViaJava(const char* path);
 #endif
 
 	/// Sharing modes for OpenSharedCFile().

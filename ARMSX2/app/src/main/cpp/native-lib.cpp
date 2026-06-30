@@ -1688,6 +1688,46 @@ int FileSystem::OpenFDFileContent(const char* filename)
     return fd;
 }
 
+bool FileSystem::CreateDirectoryViaJava(const char* path)
+{
+    // Bridges to NativeApp.createDirectoryPath (java.io.File.mkdirs). Used as a
+    // fallback when libc mkdir() is denied on FUSE-emulated external storage,
+    // which is what makes folder memory cards work on a custom data folder.
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    if (env == nullptr)
+        return false;
+    jclass NativeApp = env->FindClass("kr/co/iefriends/pcsx2/NativeApp");
+    if (NativeApp == nullptr)
+    {
+        env->ExceptionClear();
+        return false;
+    }
+    jmethodID mid = env->GetStaticMethodID(NativeApp, "createDirectoryPath", "(Ljava/lang/String;)Z");
+    if (mid == nullptr)
+    {
+        env->ExceptionClear();
+        env->DeleteLocalRef(NativeApp);
+        return false;
+    }
+    // Called many times during folder-card use, so free every local ref and clear
+    // any pending JNI exception on all paths — the Java side swallows its own, but
+    // a JNI-layer throw must not leak a local ref or an exception onto the next call.
+    bool ok = false;
+    jstring j_path = env->NewStringUTF(path);
+    if (j_path != nullptr)
+    {
+        ok = (env->CallStaticBooleanMethod(NativeApp, mid, j_path) == JNI_TRUE);
+        if (env->ExceptionCheck())
+        {
+            env->ExceptionClear();
+            ok = false;
+        }
+        env->DeleteLocalRef(j_path);
+    }
+    env->DeleteLocalRef(NativeApp);
+    return ok;
+}
+
 void ReportTestResults(const char* label, int passed, int total)
 {
     auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());

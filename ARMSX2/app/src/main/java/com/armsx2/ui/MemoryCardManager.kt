@@ -587,14 +587,38 @@ object MemoryCardManager {
         // Case-insensitive, to match the active-card display + the lowercase
         // default filenames — otherwise the slot isn't cleared and the BIOS
         // recreates the deleted card from the stale slot assignment.
-        if (g.memoryCardSlot1Filename.equals(file.name, ignoreCase = true)) clearSlot(1)
-        if (g.memoryCardSlot2Filename.equals(file.name, ignoreCase = true)) clearSlot(2)
+        val emptiedSlots = mutableListOf<Int>()
+        if (g.memoryCardSlot1Filename.equals(file.name, ignoreCase = true)) { clearSlot(1); emptiedSlots.add(1) }
+        if (g.memoryCardSlot2Filename.equals(file.name, ignoreCase = true)) { clearSlot(2); emptiedSlots.add(2) }
         val ok = runCatching {
             if (file.isDirectory) file.deleteRecursively() else file.delete()
         }.getOrDefault(false)
+        // A slot the deleted card occupied is restored to its fresh DEFAULT card
+        // (Mcd00N.ps2) instead of being left empty — the user shouldn't have to hit
+        // "Use Default Slots" after a delete (matches NetherSX2). Reassigned AFTER the
+        // delete so the core regenerates a clean card; the deleted card's own name is
+        // gone from every slot, so the BIOS-recreates-the-deleted-card bug stays fixed.
+        if (ok && emptiedSlots.isNotEmpty()) {
+            emptiedSlots.forEach { restoreDefaultSlot(it) }
+            if (Main.nativeReady.value) readSlotState()
+        }
         status.value = if (ok) "Deleted ${file.name}." else "Could not delete ${file.name}."
         Toast.makeText(context, status.value, Toast.LENGTH_SHORT).show()
         refresh(context)
+    }
+
+    /** Reassign one slot to its fresh default card (Mcd00N.ps2). The core recreates
+     *  the file when the slot is enabled, so a slot is never left card-less. */
+    private fun restoreDefaultSlot(slot: Int) {
+        if (!Main.nativeReady.value) return
+        val name = if (slot == 2) "Mcd002.ps2" else "Mcd001.ps2"
+        runCatching {
+            NativeApp.setSetting("MemoryCards", "Slot${slot}_Enable", "bool", "false")
+            NativeApp.setSetting("MemoryCards", "Slot${slot}_Filename", "string", name)
+            NativeApp.setSetting("MemoryCards", "Slot${slot}_Enable", "bool", "true")
+            NativeApp.commitSettings()
+        }
+        persistSlot(slot, name)
     }
 
     /** Disable a slot and clear its filename, in both the native config and the
