@@ -93,6 +93,10 @@ u8* armEndBlock();
 void armDisassembleAndDumpCode(const void* ptr, size_t size);
 void armEmitJmp(const void* ptr, bool force_inline = false);
 void armEmitCall(const void* ptr, bool force_inline = false);
+// In-place patch: overwrite the 4-byte B at `code_address` with a branch to
+// `target`. Used by EE block chaining to rewrite a link site (not tied to the
+// current emit cursor). `code_address` must already hold a single B instruction.
+void armEmitJmpPtr(void* code_address, const void* target, bool flush_icache = true);
 void armEmitCbnz(const vixl::aarch64::Register& reg, const void* ptr);
 void armEmitCondBranch(vixl::aarch64::Condition cond, const void* ptr);
 void armMoveAddressToReg(const vixl::aarch64::Register& reg, const void* addr);

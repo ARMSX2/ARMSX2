@@ -33,6 +33,9 @@
 //
 #define RESTATEPTR vixl::aarch64::x19
 #define REVTLBPTR vixl::aarch64::x21
+// x28 = host-MMU fastmem base (vtlbdata.fastmem_base). Pinned in recGenDispatchers when
+// CHECK_FASTMEM; dropped from the EE guest-GPR cache to free it. @@MAC_FASTMEM_BACKPATCH@@
+#define RFASTMEMBASE vixl::aarch64::x28
 
 // --------------------------------------------------------------------------------------
 //  Slow-path EE memory access codegen (Phase 2)
@@ -58,6 +61,14 @@ void armEmitVtlbRead(u32 bits, bool sign, const vixl::aarch64::Register& dst, co
 void armEmitVtlbWrite(u32 bits, const vixl::aarch64::Register& addr, const vixl::aarch64::Register& data);
 void armEmitVtlbReadQuad(const vixl::aarch64::VRegister& dst, const vixl::aarch64::Register& addr);
 void armEmitVtlbWriteQuad(const vixl::aarch64::Register& addr, const vixl::aarch64::VRegister& data);
+
+// Fastmem backpatch thunk carving (@@MAC_FASTMEM_BACKPATCH@@): allocate a scratch code
+// region from the EE code buffer (no const pool) for the SIGSEGV backpatch thunk.
+u8* recBeginThunk();
+u8* recEndThunk();
+// LWC1/SWC1 (aR5900FPU.cpp, separate TU): single-instruction backpatch fastmem 32-bit access.
+// vaddr in RXARG1, `data` = value reg. Returns true if fastmem emitted. @@MAC_FASTMEM_BACKPATCH@@
+bool armTryEmitFastmemScalar32(u32 pc, bool is_load, const vixl::aarch64::Register& data);
 
 // --------------------------------------------------------------------------------------
 //  EE GPR load/store opcode generators (Phase 2.3)
@@ -140,8 +151,8 @@ void armEmitCTC1(u32 fs, u32 rt);
 void armEmitMOV_S(u32 fd, u32 fs);
 void armEmitABS_S(u32 fd, u32 fs);
 void armEmitNEG_S(u32 fd, u32 fs);
-void armEmitLWC1(u32 ft, u32 rs, s32 imm);
-void armEmitSWC1(u32 ft, u32 rs, s32 imm);
+void armEmitLWC1(u32 ft, u32 rs, s32 imm, u32 pc);
+void armEmitSWC1(u32 ft, u32 rs, s32 imm, u32 pc);
 
 // --------------------------------------------------------------------------------------
 //  FPU (COP1) float arithmetic opcode generators (Phase 5.2b)

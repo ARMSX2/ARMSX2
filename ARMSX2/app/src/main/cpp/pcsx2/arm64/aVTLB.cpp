@@ -17,6 +17,13 @@
 
 using namespace R5900;
 
+// @@MAC_FASTMEM_BACKPATCH@@ Disabled on this Android fork: only the mac EE recompiler runs
+// (pcsx2_macrec::recCpu), so a fastmem fault must be serviced by the MAC thunk in
+// arm64/mac/RecStubs.cpp — which carves from the mac code buffer and uses the mac register
+// model. This stock backpatch would carve from the WRONG (stock) buffer and clobber a live
+// mac GPR-cache reg (x20) via its RCYCLE flush/reload. The global vtlb_DynBackpatchLoadStore
+// symbol is provided by RecStubs.cpp (forwarding to the mac thunk) instead.
+#if 0
 void vtlb_DynBackpatchLoadStore(uptr code_address, u32 code_size, u32 guest_pc,
 	u32 guest_addr, u32 gpr_bitmask, u32 fpr_bitmask, u8 address_register,
 	u8 data_register, u8 size_in_bits, bool is_signed, bool is_load, bool is_fpr)
@@ -133,3 +140,4 @@ void vtlb_DynBackpatchLoadStore(uptr code_address, u32 code_size, u32 guest_pc,
 	// Replace the faulting fastmem instruction with a branch to the thunk
 	armEmitJmpPtr(reinterpret_cast<void*>(code_address), thunk, true);
 }
+#endif // @@MAC_FASTMEM_BACKPATCH@@ stock backpatch disabled — see arm64/mac/RecStubs.cpp

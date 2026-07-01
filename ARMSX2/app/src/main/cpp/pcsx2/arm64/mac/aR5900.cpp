@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstring>
 #include <setjmp.h>
+#include <unordered_map>
 #include <vector>
 
 extern void _vu0WaitMicro();
@@ -160,6 +161,208 @@ static const void* EnterRecompiledCode = nullptr;  // C entry: pin RESTATEPTR, t
 static const void* UnmappedRecLUTPage = nullptr;   // jumped to on an unmapped guest PC
 static const void* DispatchBlockDiscard = nullptr; // manual block failed its checksum -> clear + recompile
 static const void* DispatchPageReset = nullptr;    // counted manual block -> retry write-protection
+
+// ============================================================================
+//  EE block chaining — direct-B tail links   @@MAC_EE_BLOCKLINK@@
+// ----------------------------------------------------------------------------
+// Ported from the stock arm64 EE recompiler (arm64/aR5900.cpp:145-1355). On a
+// statically-known block exit, recEmitEventTestAndDispatch normally emits a
+// LUT-indirect tail dispatch (recEmitDispatchToKnownPc: adrp+add+ldr+br). This
+// replaces that — on the same path, AFTER the untouched "B.pl DispatcherEvent"
+// cycle guard — with a single patchable direct B to the successor block's
+// entry, removing an indirect branch + LUT memory load per block exit on the
+// hot (no-event-due) path.
+//
+// Safety invariants:
+//  * Event timing is byte-identical: the direct B is reached ONLY when no event
+//    is due (it sits after the B.pl guard); a pending event still diverts to
+//    DispatcherEvent first. cpuRegs.pc == dispatch_pc is already guaranteed at
+//    this tail (recEmitWritePc / branch codegen), so the unlinked form
+//    (B -> DispatcherReg, which dispatches from cpuRegs.pc) is exactly the old
+//    behavior, and the linked form jumps straight to that same block.
+//  * No stale jumps: eeInvalidateLinks (from recClear, which every SMC path
+//    funnels through) rewrites any inbound B back to DispatcherReg BEFORE the
+//    target's host code is recycled; recResetRaw drops every record when the
+//    whole cache is thrown away.
+//  * A not-yet-compiled target leaves the site at DispatcherReg (correct
+//    fallback); eePatchWaitingPredecessors wires it when the target compiles.
+//
+// Flip s_eeBlockLinkEnabled to false to fall back to pure LUT dispatch.
+static bool s_eeBlockLinkEnabled = true;
+
+struct EEBlockLinkExit
+{
+	u32 target_pc;      // statically-known successor PC (== cpuRegs.pc at the tail)
+	u8* patch_site;     // address of the unconditional B to rewrite
+	u8* fallthrough;    // unlinked target (DispatcherReg) — used by unpatch
+	u8* current_target; // where patch_site currently points
+};
+
+struct EEBlockLinks
+{
+	u8*             entry;      // block's compiled entry — linked callers jump here
+	EEBlockLinkExit exits[2];   // mac emits at most one; keep the stock shape for safety
+	u32             num_exits;  // 0 or 1
+};
+
+// hwaddr(startpc) -> link record. recHWAddr folds RAM/BIOS mirrors so mirrored
+// PCs collapse to one entry, matching the recLUT.
+static std::unordered_map<u32, EEBlockLinks> s_eeBlockLinks;
+// target_hw -> predecessor hwaddrs waiting for that target to compile.
+static std::unordered_map<u32, std::vector<u32>> s_eeWaitingForHw;
+
+// Exit staged by recEmitEventTestAndDispatch, consumed by the registration in
+// recRecompile's tail. Reset at the top of each recRecompile.
+static bool s_eeLinkStaged = false;
+static u32  s_eeLinkTargetPc = 0;
+static u8*  s_eeLinkPatchSite = nullptr;
+
+static void eePatchLinkSite(EEBlockLinkExit& exit, u8* target)
+{
+	if (!exit.patch_site || exit.current_target == target)
+		return;
+	armEmitJmpPtr(exit.patch_site, target, true);
+	exit.current_target = target;
+}
+
+static void eeUnpatchLinkSite(EEBlockLinkExit& exit)
+{
+	eePatchLinkSite(exit, exit.fallthrough); // back to DispatcherReg
+}
+
+static u8* eeFindBlockEntry(u32 target_pc)
+{
+	auto it = s_eeBlockLinks.find(recHWAddr(target_pc));
+	return (it == s_eeBlockLinks.end()) ? nullptr : it->second.entry;
+}
+
+// Wire this block's exits to any targets already compiled.
+static void eeTryForwardLink(EEBlockLinks& block)
+{
+	for (u32 e = 0; e < block.num_exits; e++)
+	{
+		if (u8* target_entry = eeFindBlockEntry(block.exits[e].target_pc))
+			eePatchLinkSite(block.exits[e], target_entry);
+	}
+}
+
+// Add this block to the reverse index for each unique exit target.
+static void eeIndexBlockExits(u32 my_pc, const EEBlockLinks& bl)
+{
+	const u32 my_hw = recHWAddr(my_pc);
+	for (u32 e = 0; e < bl.num_exits; e++)
+	{
+		const u32 target_hw = recHWAddr(bl.exits[e].target_pc);
+		bool dup = false;
+		for (u32 j = 0; j < e; j++)
+			dup |= (recHWAddr(bl.exits[j].target_pc) == target_hw);
+		if (!dup)
+			s_eeWaitingForHw[target_hw].push_back(my_hw);
+	}
+}
+
+// After a block compiles at my_pc/my_entry, patch any predecessor exits that
+// were waiting for this target to jump straight here.
+static void eePatchWaitingPredecessors(u32 my_pc, u8* my_entry)
+{
+	if (!my_entry)
+		return;
+	const u32 my_hw = recHWAddr(my_pc);
+	auto wit = s_eeWaitingForHw.find(my_hw);
+	if (wit == s_eeWaitingForHw.end())
+		return;
+	for (u32 pred_hw : wit->second)
+	{
+		auto bit = s_eeBlockLinks.find(pred_hw);
+		if (bit == s_eeBlockLinks.end())
+			continue; // stale — pred was invalidated
+		EEBlockLinks& pred = bit->second;
+		for (u32 e = 0; e < pred.num_exits; e++)
+		{
+			EEBlockLinkExit& exit = pred.exits[e];
+			if (recHWAddr(exit.target_pc) == my_hw && exit.current_target != my_entry)
+				eePatchLinkSite(exit, my_entry);
+		}
+	}
+}
+
+// Unpatch every inbound link whose target is in [start_hw, end_hw), then drop
+// records for blocks whose own start is in that range. Called from recClear.
+static void eeInvalidateLinks(u32 start_hw, u32 end_hw)
+{
+	for (auto& kv : s_eeBlockLinks)
+	{
+		EEBlockLinks& pred = kv.second;
+		for (u32 e = 0; e < pred.num_exits; e++)
+		{
+			const u32 t = recHWAddr(pred.exits[e].target_pc);
+			if (t >= start_hw && t < end_hw)
+				eeUnpatchLinkSite(pred.exits[e]);
+		}
+	}
+	for (auto it = s_eeBlockLinks.begin(); it != s_eeBlockLinks.end();)
+	{
+		if (it->first >= start_hw && it->first < end_hw)
+			it = s_eeBlockLinks.erase(it);
+		else
+			++it;
+	}
+}
+
+// Drop all link state (full cache reset — every block is thrown away).
+static void eeResetBlockLinks()
+{
+	s_eeBlockLinks.clear();
+	s_eeWaitingForHw.clear();
+	s_eeLinkStaged = false;
+}
+
+// Emit a single patchable B for a statically-known block exit (initially ->
+// DispatcherReg) and stage it for registration. Exactly one 4-byte B so the
+// site is stably patchable. Reached only when no event is due, with
+// cpuRegs.pc == pc — so the unlinked DispatcherReg dispatch hits the same block.
+static void recEmitLinkableExitToKnownPc(u32 pc)
+{
+	u8* patch_site;
+	{
+		// Capture the site INSIDE the scope: its ctor flushes any pending pool first,
+		// so patch_site points exactly at the single B (never at a flushed pool).
+		a64::SingleEmissionCheckScope guard(armAsm);
+		patch_site = armGetCurrentCodePointer();
+		const s64 disp = static_cast<s64>(
+			reinterpret_cast<intptr_t>(DispatcherReg) - reinterpret_cast<intptr_t>(patch_site));
+		pxAssert((disp & 3) == 0 && vixl::IsInt26(disp >> 2));
+		armAsm->b(static_cast<int>(disp >> 2));
+	}
+	s_eeLinkStaged = true;
+	s_eeLinkTargetPc = pc;
+	s_eeLinkPatchSite = patch_site;
+}
+
+// Register a freshly-compiled block (entry + any staged exit) and resolve
+// forward/backward links. Called from recRecompile after the block installs.
+static void recRegisterBlockLinks(u32 startpc, u8* block_entry)
+{
+	EEBlockLinks bl{};
+	bl.entry = block_entry;
+	bl.num_exits = 0;
+	if (s_eeLinkStaged)
+	{
+		EEBlockLinkExit& e = bl.exits[0];
+		e.target_pc = s_eeLinkTargetPc;
+		e.patch_site = s_eeLinkPatchSite;
+		e.fallthrough = const_cast<u8*>(static_cast<const u8*>(DispatcherReg));
+		e.current_target = const_cast<u8*>(static_cast<const u8*>(DispatcherReg));
+		bl.num_exits = 1;
+	}
+	// Insert first, then index / forward-link / back-patch (mirrors stock order
+	// so a self-loop resolves against the just-inserted record).
+	EEBlockLinks& slot = (s_eeBlockLinks[recHWAddr(startpc)] = bl);
+	if (slot.num_exits)
+		eeIndexBlockExits(startpc, slot);
+	eeTryForwardLink(slot);
+	eePatchWaitingPredecessors(startpc, block_entry);
+}
 
 // Self-modifying-code (SMC) manual protection, mirroring x86 iR5900.cpp. Both arrays are
 // indexed by host RAM page (the protection granularity, __pageshift — 16 KB on Apple
@@ -303,6 +506,15 @@ static void recResetRaw()
 	recClearLUT();
 	eeRecExitSignal = 0;
 
+	// Drop every block-chaining link — all host code is being discarded, so all
+	// patch sites vanish with it and every record must go.
+	eeResetBlockLinks();
+
+	// Same for the fastmem backpatch registry: it is keyed by HOST code address, and the
+	// rewound buffer reuses those addresses, so a stale LoadstoreBackpatchInfo would
+	// mis-backpatch a fresh access (wrong guest_pc/registers/size). @@MAC_FASTMEM_BACKPATCH@@
+	vtlb_ClearLoadStoreInfo();
+
 	// Drop all SMC manual-protection state — every block is being thrown away, so the
 	// per-page counters/weights must start fresh (mirrors x86 lpReset in recResetRaw).
 	std::memset(manual_page, 0, sizeof(manual_page));
@@ -363,7 +575,7 @@ enum : u32
 // Defined below (block-compile helpers) — used by recTranslateOp's COP2 inline path.
 static void recEmitInterpInline(u32 op);
 static void recEmitWritePc(u32 pc);
-static bool recTranslateOp(u32 op);
+static bool recTranslateOp(u32 op, u32 pc);
 
 // Macro-mode native COP2 transfer ops (defined after the M2 sync helpers) — used by
 // recTranslateOp's COP2 dispatch.
@@ -702,7 +914,7 @@ static bool recTranslateOpWithConst(u32 op, RecGprConstState& state)
 	if (recTryTranslateConstOp(op, state))
 		return true;
 
-	if (!recTranslateOp(op))
+	if (!recTranslateOp(op, /*pc*/ 0)) // dead path (recTranslateOpWithConst has no callers)
 	{
 		recConstKillAll(state);
 		return false;
@@ -893,18 +1105,22 @@ struct RecGprCacheEntry
 
 struct RecGprCacheState
 {
-	RecGprCacheEntry entries[8];
+	RecGprCacheEntry entries[7];
 	u32 age = 1;
 };
 
 // AAPCS64 callee-saved registers dedicated to the guest-GPR cache. x19/x21 hold
-// &cpuRegs / the vtlb vmap base; x20 was reserved for a fastmem base that never got
-// wired up (the vmap path is the fast path), so it serves as the 8th cache slot. All
-// of these survive the C helper calls a block makes (vtlb slow path, inline
-// interpreter ops): the VU rec saves x19-x28 in its prologue, the IOP rec only
-// touches x19 (saved), and the EE rec itself exits via longjmp which restores the
-// full caller context.
-static constexpr int REC_GPR_CACHE_REGS[8] = {20, 22, 23, 24, 25, 26, 27, 28};
+// &cpuRegs / the vtlb vmap base; x28 is now pinned as RFASTMEMBASE (the host-MMU
+// fastmem base — see recGenDispatchers, @@MAC_FASTMEM_BACKPATCH@@), so it was dropped
+// from the cache, leaving 7 slots. NOTE: x23-x26 double as microVU flag regs mVU_F0-F3
+// (safe because the cache is killed before any COP2/VU0-macro emit); x27/x28 are outside
+// the VU allocator's tracked range, which is why x28 is safe to pin. All of these survive
+// the C helper calls a block makes (vtlb slow path, inline interpreter ops): the VU rec
+// saves x19-x28 in its prologue, the IOP rec only touches x19 (saved), and the EE rec
+// itself exits via longjmp which restores the full caller context.
+static constexpr int REC_GPR_CACHE_REGS[7] = {20, 22, 23, 24, 25, 26, 27};
+static_assert(std::size(RecGprCacheState{}.entries) == std::size(REC_GPR_CACHE_REGS),
+	"guest-GPR cache entry count must match the register list");
 
 static const a64::Register& recCacheReg(size_t index)
 {
@@ -1137,8 +1353,50 @@ static void recEmitCachedDirectStore(u32 bits, const a64::Register& src, const a
 	}
 }
 
+// Host-MMU fastmem backpatch toggle (@@MAC_FASTMEM_BACKPATCH@@). When on, EE integer
+// load/store emit a single Ldr/Str through RFASTMEMBASE (x28); a fault backpatches to the
+// slow path via vtlb_DynBackpatchLoadStore (RecStubs.cpp). Flip off = inline-vmap fallback.
+static bool s_eeFastmemBackpatch = true;
+
+static bool recUseBackpatchFastmem(u32 pc)
+{
+	// Skip PCs that already faulted once (settled MMIO): re-emit the vmap path so we don't
+	// re-backpatch the same instruction on every recompile.
+	return s_eeFastmemBackpatch && CHECK_FASTMEM && !vtlb_IsFaultingPC(pc);
+}
+
+// Record a single fastmem Ldr/Str for SIGSEGV backpatch. code_start must point at exactly
+// one 4-byte access instruction (the whole premise of host-MMU backpatch).
+static void recRecordFastmem(const u8* code_start, u32 pc, u8 addr_reg, u8 data_reg,
+	u32 bits, bool is_signed, bool is_load)
+{
+	const u32 code_size = static_cast<u32>(armGetCurrentCodePointer() - code_start);
+	pxAssert(code_size == 4);
+	vtlb_AddLoadStoreInfo(reinterpret_cast<uptr>(code_start), code_size, pc,
+		/*gpr_bitmask*/ 0, /*fpr_bitmask*/ 0, addr_reg, data_reg,
+		static_cast<u8>(bits), is_signed, is_load, /*is_fpr*/ false);
+}
+
+// Exposed for aR5900FPU.cpp (LWC1/SWC1 live in a separate translation unit): emit a single-
+// instruction backpatch fastmem 32-bit access when eligible. The 32-bit vaddr must already be
+// in RXARG1 (x0, zero-extended). `data` is the value register (load: destination; store:
+// source). Returns true if fastmem was emitted, so the caller then skips the vmap path.
+// @@MAC_FASTMEM_BACKPATCH@@
+bool armTryEmitFastmemScalar32(u32 pc, bool is_load, const a64::Register& data)
+{
+	if (!recUseBackpatchFastmem(pc))
+		return false;
+	const u8* code_start = armGetCurrentCodePointer();
+	if (is_load)
+		armAsm->Ldr(data.W(), a64::MemOperand(RFASTMEMBASE, RXARG1));
+	else
+		armAsm->Str(data.W(), a64::MemOperand(RFASTMEMBASE, RXARG1));
+	recRecordFastmem(code_start, pc, RXARG1.GetCode(), data.GetCode(), 32, /*sign*/ false, is_load);
+	return true;
+}
+
 static bool recTryTranslateCachedLoad(u32 bits, bool sign, u32 rt, u32 rs, s32 imm,
-	RecGprCacheState& cache, const RecGprConstState& const_state)
+	RecGprCacheState& cache, const RecGprConstState& const_state, u32 pc)
 {
 	static const a64::Register RADDR = a64::x9;
 	static const a64::Register RHOST = a64::x10;
@@ -1148,6 +1406,27 @@ static bool recTryTranslateCachedLoad(u32 bits, bool sign, u32 rt, u32 rs, s32 i
 	const RecGprCacheState pre_load_cache = cache;
 
 	const a64::Register& dst = (rt == 0) ? RTEMP : recCacheDest(cache, rt, rs);
+
+	if (recUseBackpatchFastmem(pc))
+	{
+		// Single register-offset load through the pinned fastmem base. A handler/MMIO/unmapped
+		// page faults -> HandlePageFault -> vtlb_BackpatchLoadStore -> the thunk. No slow branch,
+		// no cache flush: the fast path is the common one. dst/RADDR high bits are already clean
+		// (RADDR = zero-extended 32-bit vaddr), so [x28 + vaddr] lands inside the 4 GB window.
+		const u8* code_start = armGetCurrentCodePointer();
+		switch (bits)
+		{
+			case 8:  sign ? armAsm->Ldrsb(dst.X(), a64::MemOperand(RFASTMEMBASE, RADDR))
+			              : armAsm->Ldrb(dst.W(), a64::MemOperand(RFASTMEMBASE, RADDR)); break;
+			case 16: sign ? armAsm->Ldrsh(dst.X(), a64::MemOperand(RFASTMEMBASE, RADDR))
+			              : armAsm->Ldrh(dst.W(), a64::MemOperand(RFASTMEMBASE, RADDR)); break;
+			case 32: sign ? armAsm->Ldrsw(dst.X(), a64::MemOperand(RFASTMEMBASE, RADDR))
+			              : armAsm->Ldr(dst.W(), a64::MemOperand(RFASTMEMBASE, RADDR)); break;
+			case 64: armAsm->Ldr(dst.X(), a64::MemOperand(RFASTMEMBASE, RADDR)); break;
+		}
+		recRecordFastmem(code_start, pc, RADDR.GetCode(), dst.GetCode(), bits, sign, /*is_load*/ true);
+		return true;
+	}
 
 	a64::Label slow_path;
 	a64::Label done;
@@ -1166,7 +1445,7 @@ static bool recTryTranslateCachedLoad(u32 bits, bool sign, u32 rt, u32 rs, s32 i
 }
 
 static bool recTryTranslateCachedStore(u32 bits, u32 rt, u32 rs, s32 imm,
-	RecGprCacheState& cache, const RecGprConstState& const_state)
+	RecGprCacheState& cache, const RecGprConstState& const_state, u32 pc)
 {
 	static const a64::Register RADDR = a64::x9;
 	static const a64::Register RHOST = a64::x10;
@@ -1174,6 +1453,23 @@ static bool recTryTranslateCachedStore(u32 bits, u32 rt, u32 rs, s32 imm,
 	recEmitCachedEffectiveAddr(cache, const_state, rs, imm, RADDR);
 	const a64::Register& src = recCacheLoad(cache, rt);
 	const RecGprCacheState pre_store_cache = cache;
+
+	if (recUseBackpatchFastmem(pc))
+	{
+		// Single register-offset store through the pinned fastmem base. A store into a
+		// write-protected code page faults through HandlePageFault's ProtMode_Write branch
+		// (mmap_ClearCpuBlock + retry), NOT the backpatch path — SMC stays correct.
+		const u8* code_start = armGetCurrentCodePointer();
+		switch (bits)
+		{
+			case 8:  armAsm->Strb(src.W(), a64::MemOperand(RFASTMEMBASE, RADDR)); break;
+			case 16: armAsm->Strh(src.W(), a64::MemOperand(RFASTMEMBASE, RADDR)); break;
+			case 32: armAsm->Str(src.W(), a64::MemOperand(RFASTMEMBASE, RADDR)); break;
+			case 64: armAsm->Str(src.X(), a64::MemOperand(RFASTMEMBASE, RADDR)); break;
+		}
+		recRecordFastmem(code_start, pc, RADDR.GetCode(), src.GetCode(), bits, /*is_signed*/ false, /*is_load*/ false);
+		return true;
+	}
 
 	a64::Label slow_path;
 	a64::Label done;
@@ -1190,7 +1486,7 @@ static bool recTryTranslateCachedStore(u32 bits, u32 rt, u32 rs, s32 imm,
 }
 
 static bool recTryTranslateCachedLoadQuad(u32 rt, u32 rs, s32 imm,
-	RecGprCacheState& cache, const RecGprConstState& const_state)
+	RecGprCacheState& cache, const RecGprConstState& const_state, u32 pc)
 {
 	static const a64::Register RADDR = a64::x9;
 	static const a64::Register RHOST = a64::x10;
@@ -1212,6 +1508,22 @@ static bool recTryTranslateCachedLoadQuad(u32 rt, u32 rs, s32 imm,
 	// computation so rt==rs still uses the pre-load value above.
 	recCacheDiscardGuest(cache, rt);
 
+	if (recUseBackpatchFastmem(pc))
+	{
+		// Single 128-bit register-offset load through the fastmem base; a fault backpatches to
+		// the thunk (size 128 -> vtlb_memRead128). Perform the read even when rt==0 (MMIO side
+		// effects). RADDR is the 16-byte-aligned zero-extended vaddr -> stays in the 4 GB window.
+		const u8* code_start = armGetCurrentCodePointer();
+		armAsm->Ldr(RQSCRATCH, a64::MemOperand(RFASTMEMBASE, RADDR));
+		vtlb_AddLoadStoreInfo(reinterpret_cast<uptr>(code_start),
+			static_cast<u32>(armGetCurrentCodePointer() - code_start), pc,
+			/*gpr*/ 0, /*fpr*/ 0, RADDR.GetCode(), RQSCRATCH.GetCode(),
+			/*size*/ 128, /*sign*/ false, /*is_load*/ true, /*is_fpr*/ false);
+		if (rt != 0)
+			armAsm->Str(RQSCRATCH, a64::MemOperand(RESTATEPTR, EE_GPR_OFFSET(rt)));
+		return true;
+	}
+
 	a64::Label slow_path;
 	a64::Label done;
 	recEmitVmapHostPointer(RHOST, RADDR, &slow_path);
@@ -1232,7 +1544,7 @@ static bool recTryTranslateCachedLoadQuad(u32 rt, u32 rs, s32 imm,
 }
 
 static bool recTryTranslateCachedStoreQuad(u32 rt, u32 rs, s32 imm,
-	RecGprCacheState& cache, const RecGprConstState& const_state)
+	RecGprCacheState& cache, const RecGprConstState& const_state, u32 pc)
 {
 	static const a64::Register RADDR = a64::x9;
 	static const a64::Register RHOST = a64::x10;
@@ -1246,6 +1558,20 @@ static bool recTryTranslateCachedStoreQuad(u32 rt, u32 rs, s32 imm,
 	recCacheFlushGuest(cache, rt);
 	armAsm->Ldr(RQSCRATCH, a64::MemOperand(RESTATEPTR, EE_GPR_OFFSET(rt)));
 	const RecGprCacheState pre_store_cache = cache;
+
+	if (recUseBackpatchFastmem(pc))
+	{
+		// Single 128-bit store through the fastmem base. A store into a write-protected code
+		// page faults through HandlePageFault's ProtMode_Write branch (clear + retry), NOT the
+		// backpatch decoder — SMC stays correct (same as the scalar/vmap quad store).
+		const u8* code_start = armGetCurrentCodePointer();
+		armAsm->Str(RQSCRATCH, a64::MemOperand(RFASTMEMBASE, RADDR));
+		vtlb_AddLoadStoreInfo(reinterpret_cast<uptr>(code_start),
+			static_cast<u32>(armGetCurrentCodePointer() - code_start), pc,
+			/*gpr*/ 0, /*fpr*/ 0, RADDR.GetCode(), RQSCRATCH.GetCode(),
+			/*size*/ 128, /*sign*/ false, /*is_load*/ false, /*is_fpr*/ false);
+		return true;
+	}
 
 	a64::Label slow_path;
 	a64::Label done;
@@ -1449,7 +1775,7 @@ static bool recTryTranslateCachedConstOp(u32 op, RecGprConstState& const_state, 
 	}
 }
 
-static bool recTryTranslateCachedOp(u32 op, RecGprCacheState& cache, const RecGprConstState& const_state)
+static bool recTryTranslateCachedOp(u32 op, RecGprCacheState& cache, const RecGprConstState& const_state, u32 pc)
 {
 	const u32 opcode = op >> 26;
 	const u32 rs = (op >> 21) & 0x1f;
@@ -1562,20 +1888,20 @@ static bool recTryTranslateCachedOp(u32 op, RecGprCacheState& cache, const RecGp
 				return true;
 			}
 
-		case OP_LB:  return recTryTranslateCachedLoad(8,  true,  rt, rs, imm, cache, const_state);
-		case OP_LBU: return recTryTranslateCachedLoad(8,  false, rt, rs, imm, cache, const_state);
-		case OP_LH:  return recTryTranslateCachedLoad(16, true,  rt, rs, imm, cache, const_state);
-		case OP_LHU: return recTryTranslateCachedLoad(16, false, rt, rs, imm, cache, const_state);
-		case OP_LW:  return recTryTranslateCachedLoad(32, true,  rt, rs, imm, cache, const_state);
-		case OP_LWU: return recTryTranslateCachedLoad(32, false, rt, rs, imm, cache, const_state);
-		case OP_LD:  return recTryTranslateCachedLoad(64, false, rt, rs, imm, cache, const_state);
-		case OP_LQ:  return recTryTranslateCachedLoadQuad(rt, rs, imm, cache, const_state);
+		case OP_LB:  return recTryTranslateCachedLoad(8,  true,  rt, rs, imm, cache, const_state, pc);
+		case OP_LBU: return recTryTranslateCachedLoad(8,  false, rt, rs, imm, cache, const_state, pc);
+		case OP_LH:  return recTryTranslateCachedLoad(16, true,  rt, rs, imm, cache, const_state, pc);
+		case OP_LHU: return recTryTranslateCachedLoad(16, false, rt, rs, imm, cache, const_state, pc);
+		case OP_LW:  return recTryTranslateCachedLoad(32, true,  rt, rs, imm, cache, const_state, pc);
+		case OP_LWU: return recTryTranslateCachedLoad(32, false, rt, rs, imm, cache, const_state, pc);
+		case OP_LD:  return recTryTranslateCachedLoad(64, false, rt, rs, imm, cache, const_state, pc);
+		case OP_LQ:  return recTryTranslateCachedLoadQuad(rt, rs, imm, cache, const_state, pc);
 
-		case OP_SB: return recTryTranslateCachedStore(8,  rt, rs, imm, cache, const_state);
-		case OP_SH: return recTryTranslateCachedStore(16, rt, rs, imm, cache, const_state);
-		case OP_SW: return recTryTranslateCachedStore(32, rt, rs, imm, cache, const_state);
-		case OP_SD: return recTryTranslateCachedStore(64, rt, rs, imm, cache, const_state);
-		case OP_SQ: return recTryTranslateCachedStoreQuad(rt, rs, imm, cache, const_state);
+		case OP_SB: return recTryTranslateCachedStore(8,  rt, rs, imm, cache, const_state, pc);
+		case OP_SH: return recTryTranslateCachedStore(16, rt, rs, imm, cache, const_state, pc);
+		case OP_SW: return recTryTranslateCachedStore(32, rt, rs, imm, cache, const_state, pc);
+		case OP_SD: return recTryTranslateCachedStore(64, rt, rs, imm, cache, const_state, pc);
+		case OP_SQ: return recTryTranslateCachedStoreQuad(rt, rs, imm, cache, const_state, pc);
 
 		case 0x00:
 			break;
@@ -1609,6 +1935,82 @@ static bool recTryTranslateCachedOp(u32 op, RecGprCacheState& cache, const RecGp
 
 			const a64::Register& dst = recCacheDest(cache, rd);
 			armAsm->Ldr(dst, a64::MemOperand(RESTATEPTR, funct == 0x10 ? EE_HI_SCALAR_OFFSET : EE_LO_SCALAR_OFFSET));
+			return true;
+		}
+
+		// --- Fast-tier cache coverage (@@MAC_FASTTIER@@): keep the guest-GPR cache LIVE across
+		// the hot integer-math slow-tier ops instead of recCacheFlushAll'ing all 7 regs. HI/LO
+		// live in memory (not cache regs), so the already-cached MFHI/MFLO read these stores.
+		// Codegen is bit-identical to emitMult/emitDivS/emitDivU (aR5900MultDiv.cpp), minus the
+		// reference's redundant memory reloads of rs/rt (we source them from cache regs). ---
+		case 0x11: // MTHI
+		case 0x13: // MTLO
+		{
+			const a64::Register& src = recCacheLoad(cache, rs);
+			armAsm->Str(src, a64::MemOperand(RESTATEPTR, funct == 0x11 ? EE_HI_SCALAR_OFFSET : EE_LO_SCALAR_OFFSET));
+			return true;
+		}
+
+		case 0x18: // MULT
+		case 0x19: // MULTU
+		{
+			// 32x32->64. LO = sxt32(prod low), HI = sxt32(prod high) (sign-extended even for
+			// MULTU); if rd != 0, GPR[rd] = LO (R5900 3-operand form). Keep the product in x17
+			// (RSCRATCHADDR) — it survives the recCacheDest below (which may run cache macros).
+			const bool mult_sign = (funct == 0x18);
+			const a64::Register& lhs = recCacheLoad(cache, rs);
+			const a64::Register& rhs = recCacheLoad(cache, rt);
+			if (mult_sign)
+				armAsm->Smull(RSCRATCHADDR, lhs.W(), rhs.W());
+			else
+				armAsm->Umull(RSCRATCHADDR, lhs.W(), rhs.W());
+			armAsm->Sxtw(RXVIXLSCRATCH, RSCRATCHADDR.W());                 // LO = sxt32(low)
+			armAsm->Str(RXVIXLSCRATCH, a64::MemOperand(RESTATEPTR, EE_LO_SCALAR_OFFSET));
+			if (rd != 0)
+			{
+				const a64::Register& dst = recCacheDest(cache, rd, rs, rt); // pin rs/rt (sources)
+				armAsm->Sxtw(dst, RSCRATCHADDR.W());                       // recompute LO from x17
+			}
+			armAsm->Asr(RSCRATCHADDR, RSCRATCHADDR, 32);                   // HI = sxt32(high)
+			armAsm->Str(RSCRATCHADDR, a64::MemOperand(RESTATEPTR, EE_HI_SCALAR_OFFSET));
+			return true;
+		}
+
+		case 0x1A: // DIV
+		case 0x1B: // DIVU
+		{
+			// LO = rs/rt, HI = rs%rt (both sxt32). ARM S/UDIV reproduce the EE INT_MIN/-1 and
+			// div-by-zero quotient for free; only the div-by-zero LO needs a fixup. Writes no
+			// GPR cache reg (HI/LO memory only), so no recCacheDest / cache-effect needed.
+			const bool div_sign = (funct == 0x1A);
+			a64::Label div_done;
+			const a64::Register& num = recCacheLoad(cache, rs); // dividend
+			const a64::Register& den = recCacheLoad(cache, rt); // divisor
+			if (div_sign)
+				armAsm->Sdiv(RSCRATCHADDR.W(), num.W(), den.W());
+			else
+				armAsm->Udiv(RSCRATCHADDR.W(), num.W(), den.W());
+			armAsm->Mul(RXVIXLSCRATCH.W(), RSCRATCHADDR.W(), den.W());     // x16 = quotient*divisor
+			armAsm->Sxtw(RSCRATCHADDR, RSCRATCHADDR.W());                  // LO = sxt(quotient)
+			armAsm->Str(RSCRATCHADDR, a64::MemOperand(RESTATEPTR, EE_LO_SCALAR_OFFSET));
+			armAsm->Sub(RXVIXLSCRATCH.W(), num.W(), RXVIXLSCRATCH.W());    // remainder = num - q*den
+			armAsm->Sxtw(RXVIXLSCRATCH, RXVIXLSCRATCH.W());                // HI = sxt(remainder)
+			armAsm->Str(RXVIXLSCRATCH, a64::MemOperand(RESTATEPTR, EE_HI_SCALAR_OFFSET));
+			armAsm->Cmp(den.W(), 0);                                       // div-by-zero LO fixup
+			armAsm->B(a64::ne, &div_done);
+			if (div_sign)
+			{
+				armAsm->Cmp(num.W(), 0);
+				armAsm->Mov(RXVIXLSCRATCH.W(), 1);
+				armAsm->Csneg(RXVIXLSCRATCH.W(), RXVIXLSCRATCH.W(), RXVIXLSCRATCH.W(), a64::lt); // (num<0)?1:-1
+				armAsm->Sxtw(RXVIXLSCRATCH, RXVIXLSCRATCH.W());
+			}
+			else
+			{
+				armAsm->Mov(RXVIXLSCRATCH, 0xFFFFFFFFFFFFFFFFull);         // LO = -1
+			}
+			armAsm->Str(RXVIXLSCRATCH, a64::MemOperand(RESTATEPTR, EE_LO_SCALAR_OFFSET));
+			armAsm->Bind(&div_done);
 			return true;
 		}
 
@@ -1870,7 +2272,7 @@ static void recCacheApplyNativeEffects(u32 op, RecGprCacheState& cache)
 	}
 }
 
-static bool recTranslateOpOptimized(u32 op, RecGprConstState& const_state, RecGprCacheState& cache)
+static bool recTranslateOpOptimized(u32 op, RecGprConstState& const_state, RecGprCacheState& cache, u32 pc)
 {
 	// Fold ops with fully const-known sources first: emits one immediate Mov into the
 	// destination's cache register and updates the const state itself, so neither the
@@ -1878,7 +2280,7 @@ static bool recTranslateOpOptimized(u32 op, RecGprConstState& const_state, RecGp
 	if (recTryTranslateCachedConstOp(op, const_state, cache))
 		return true;
 
-	if (recTryTranslateCachedOp(op, cache, const_state))
+	if (recTryTranslateCachedOp(op, cache, const_state, pc))
 	{
 		if (!recConstApplyCachedEffects(op, const_state))
 			recConstApplyNativeEffects(op, const_state);
@@ -1899,7 +2301,7 @@ static bool recTranslateOpOptimized(u32 op, RecGprConstState& const_state, RecGp
 		return true;
 	}
 
-	if (!recTranslateOp(op))
+	if (!recTranslateOp(op, pc))
 	{
 		// Caller falls back to the inline interpreter, which can write any GPR.
 		recCacheKillAll(cache);
@@ -2032,7 +2434,7 @@ static bool recTranslateMMI3(u32 sa, u32 rd, u32 rs, u32 rt)
 	}
 }
 
-static bool recTranslateOp(u32 op)
+static bool recTranslateOp(u32 op, u32 pc)
 {
 	const u32 opcode = op >> 26;
 	const u32 rs = (op >> 21) & 0x1f;
@@ -2247,8 +2649,8 @@ static bool recTranslateOp(u32 op)
 		case OP_SQ: armEmitStoreQuad(rt, rs, imm); return true;
 
 		// FPU load/store (Phase 5.2a) — 32-bit transfer between memory and FPR[rt].
-		case OP_LWC1: armEmitLWC1(rt, rs, imm); return true;
-		case OP_SWC1: armEmitSWC1(rt, rs, imm); return true;
+		case OP_LWC1: armEmitLWC1(rt, rs, imm, pc); return true;
+		case OP_SWC1: armEmitSWC1(rt, rs, imm, pc); return true;
 
 		// COP0 (Phase 5.1) — same inline-interpreter strategy as COP2: keep straight-line
 		// COP0 ops in the block instead of breaking it + single-stepping. COP0 is not a
@@ -2936,7 +3338,7 @@ static void recEmitCop0DI()
 // collapse (a pre-commit, as the old unconditional pre-flush did, would be lost there).
 static u32 s_cop2RawCycles = 0;
 
-static void recEmitOp(u32 op, RecGprConstState& const_state, RecGprCacheState& cache_state)
+static void recEmitOp(u32 op, RecGprConstState& const_state, RecGprCacheState& cache_state, u32 pc)
 {
 	// Used only for branch delay slots, which the main emit loop's COP2 cycle stash does not
 	// reach. A COP2/LQC2/SQC2 op here would otherwise read a stale s_cop2RawCycles; zero it so
@@ -2944,7 +3346,7 @@ static void recEmitOp(u32 op, RecGprConstState& const_state, RecGprCacheState& c
 	// tail commits the accumulated cycles for accounting). The VU catch-up still reads the
 	// current cpuRegs.cycle. Harmless for non-COP2 ops (they ignore it).
 	s_cop2RawCycles = 0;
-	if (!recTranslateOpOptimized(op, const_state, cache_state))
+	if (!recTranslateOpOptimized(op, const_state, cache_state, pc))
 		recEmitInterpInline(op);
 }
 
@@ -2955,14 +3357,13 @@ static void recEmitWritePc(u32 pc)
 	armAsm->Str(RSCRATCHADDR.W(), a64::MemOperand(RESTATEPTR, EE_PC_OFFSET));
 }
 
-// Tail-dispatch to a compile-time-known next PC. This deliberately stays an
-// *indirect* jump through the block's recLUT slot rather than a direct B to the
-// target block: the slot is the single point recClear/dyna_block_discard rewrite on
-// SMC invalidation, so a stale block can never be entered through here. Emitting a
-// direct block->block branch would require backpatching every inbound link on
-// invalidation (x86-style linked-list per block) — do NOT change this to a direct
-// jump without implementing that. The cost is only adrp+add+ldr+br, and the slot
-// load is a same-cacheline hit in steady state.
+// Tail-dispatch to a compile-time-known next PC via the block's recLUT slot
+// (adrp+add+ldr+br). This is now the FALLBACK path: when s_eeBlockLinkEnabled is
+// set (default), recEmitEventTestAndDispatch instead emits a patchable direct B
+// (recEmitLinkableExitToKnownPc) and the inbound-link backpatching this comment
+// once warned was missing is implemented in eeInvalidateLinks (@@MAC_EE_BLOCKLINK@@).
+// The LUT slot remains the single SMC-invalidation rewrite point, so this fallback
+// can never enter a stale block; the slot load is a same-cacheline hit in steady state.
 static void recEmitDispatchToKnownPc(u32 pc)
 {
 	armMoveAddressToReg(RXARG3, recPtrToBlock(pc));
@@ -3731,6 +4132,8 @@ static void recGenDispatchers()
 	armAsm->Bind(&dispatcher_reg);
 	armMoveAddressToReg(RESTATEPTR, &cpuRegs);
 	armLoadPtr(REVTLBPTR, &vtlb_private::vtlbdata.vmap);
+	if (CHECK_FASTMEM)
+		armLoadPtr(RFASTMEMBASE, &vtlb_private::vtlbdata.fastmem_base); // x28 = host-MMU fastmem base
 	armAsm->Ldr(RWARG1, a64::MemOperand(RESTATEPTR, EE_PC_OFFSET));    // x0 = pc (zero-extended)
 	armAsm->Lsr(RXARG2, RXARG1, 16);                                  // x1 = pc >> 16
 	armMoveAddressToReg(RXARG3, recLUT);                              // x2 = &recLUT[0]
@@ -3759,6 +4162,8 @@ static void recGenDispatchers()
 	EnterRecompiledCode = armGetCurrentCodePointer();
 	armMoveAddressToReg(RESTATEPTR, &cpuRegs);
 	armLoadPtr(REVTLBPTR, &vtlb_private::vtlbdata.vmap);
+	if (CHECK_FASTMEM)
+		armLoadPtr(RFASTMEMBASE, &vtlb_private::vtlbdata.fastmem_base); // x28 = host-MMU fastmem base
 	armAsm->B(&dispatcher_reg);
 
 	// UnmappedRecLUTPage: target for every word of an unmapped guest page.
@@ -3827,7 +4232,10 @@ static void recEmitEventTestAndDispatch(u32 scaled_cycles, bool add_cycles, bool
 	if (known_dispatch_pc)
 	{
 		armEmitCondBranch(a64::pl, DispatcherEvent); // event due => service before continuing
-		recEmitDispatchToKnownPc(dispatch_pc);
+		if (s_eeBlockLinkEnabled)
+			recEmitLinkableExitToKnownPc(dispatch_pc); // patchable direct B, staged for linking
+		else
+			recEmitDispatchToKnownPc(dispatch_pc); // LUT-indirect fallback
 		return;
 	}
 
@@ -3943,6 +4351,27 @@ static bool recTrySkipMpeg(u32 startpc)
 //     it through the interpreter (intExecuteOneInst handles its own PC/delay/cycles);
 //   - otherwise ends at the next un-compilable op (or the length cap), writing cpuRegs.pc
 //     so the next dispatch resumes there.
+// Thunk carving for fastmem backpatch (@@MAC_FASTMEM_BACKPATCH@@) — ported from the stock
+// arm64 backend (arm64/aR5900.cpp). Carves a scratch code region from the EE code buffer
+// with NO const pool, so armEmitJmp/armEmitCall inside the thunk inline the target through
+// x16 rather than routing via a trampoline (x16 is scratch, clobbered by the call anyway).
+u8* recBeginThunk()
+{
+	if (recPtr >= recPtrEnd)
+		eeRecNeedsReset = true;
+	armSetAsmPtr(recPtr, recPtrEnd - recPtr, nullptr);
+	recPtr = armStartBlock();
+	return recPtr;
+}
+
+u8* recEndThunk()
+{
+	u8* block_end = armEndBlock();
+	pxAssert(block_end < recPtrEnd);
+	recPtr = block_end;
+	return block_end;
+}
+
 static void recRecompile(u32 startpc)
 {
 	const u32 hw_startpc = recHWAddr(startpc);
@@ -3961,6 +4390,9 @@ static void recRecompile(u32 startpc)
 
 	if (eeRecNeedsReset)
 		recResetRaw();
+
+	// Each block starts with no staged link exit; only the known-target tail sets one.
+	s_eeLinkStaged = false;
 
 	armSetAsmPtr(recPtr, recPtrEnd - recPtr, &s_const_pool);
 	u8* const entry = armStartBlock();
@@ -4128,7 +4560,7 @@ static void recRecompile(u32 startpc)
 						nidx = EE_INST_CACHE_SIZE - 1;
 					g_pCurInstInfo = &s_instCache[nidx];
 				}
-				recEmitOp(next_op, const_state, cache_state);
+				recEmitOp(next_op, const_state, cache_state, pc + 4);
 				recEmitCop0DI();
 				raw_cycles += eeOpCycles(next_op);
 
@@ -4200,7 +4632,7 @@ static void recRecompile(u32 startpc)
 
 			const u32 delay_op = memRead32(pc + 4);
 			raw_cycles += eeOpCycles(delay_op);
-			recEmitOp(delay_op, const_state, cache_state); // delay slot — must not write cpuRegs.pc
+			recEmitOp(delay_op, const_state, cache_state, pc + 4); // delay slot — must not write cpuRegs.pc
 			endpc = pc + 8;
 
 			// Wait-loop detection: does this branch loop back to the block start with a
@@ -4246,7 +4678,7 @@ static void recRecompile(u32 startpc)
 
 			const u32 delay_op = memRead32(pc + 4);
 			raw_cycles += eeOpCycles(delay_op);
-			recEmitOp(delay_op, const_state, cache_state);
+			recEmitOp(delay_op, const_state, cache_state, pc + 4);
 			recCacheFlushAll(cache_state);
 			recCacheKillAll(cache_state);
 			recConstKillAll(const_state);
@@ -4346,7 +4778,7 @@ static void recRecompile(u32 startpc)
 
 		// Straight-line op we can codegen? (Generators decode from `op` directly;
 		// they never read cpuRegs.code, so nothing to set here at compile time.)
-		if (recTranslateOpOptimized(op, const_state, cache_state))
+		if (recTranslateOpOptimized(op, const_state, cache_state, pc))
 		{
 			// Record the body for wait-loop analysis (only short blocks qualify).
 			if (waitloop_num_ops < REC_WAITLOOP_MAX_OPS)
@@ -4418,6 +4850,11 @@ static void recRecompile(u32 startpc)
 	// Install the block so subsequent dispatches to startpc (and its address mirrors)
 	// branch straight into it instead of recompiling.
 	*recPtrToBlock(startpc) = reinterpret_cast<uptr>(block_entry);
+
+	// Register for direct-B block chaining: resolve forward links (target already
+	// compiled) and back-patch any predecessors that were waiting on this block.
+	if (s_eeBlockLinkEnabled)
+		recRegisterBlockLinks(startpc, block_entry);
 }
 
 static void recEventTest()
@@ -4540,6 +4977,21 @@ static void recClear(u32 addr, u32 size)
 		// UnmappedRecLUTPage; don't turn an unmapped word into a compile-on-jump word.
 		if (*slot != reinterpret_cast<uptr>(UnmappedRecLUTPage))
 			*slot = reinterpret_cast<uptr>(JITCompile);
+	}
+
+	// Unpatch any direct-B links whose target is in the cleared range BEFORE that
+	// host code is recycled, so no predecessor can branch into a stale block.
+	// recHWAddr is linear over the (small, intra-mirror) cleared range.
+	if (s_eeBlockLinkEnabled)
+	{
+		const u32 start_pc = addr & ~3u;
+		const u32 span = (addr + size) - start_pc;
+		const u32 start_hw = recHWAddr(start_pc);
+		// Tripwire: the flat [start_hw, start_hw+span) range assumes recHWAddr is
+		// linear across the cleared span (no RAM/BIOS mirror-fold crossing) — true for
+		// every current caller (page-aligned RAM, 0x400 TLB spans). Catch a future one.
+		pxAssert(span < 4 || recHWAddr(start_pc) + span == recHWAddr(start_pc + span - 4) + 4);
+		eeInvalidateLinks(start_hw, start_hw + span);
 	}
 }
 
