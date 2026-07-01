@@ -2721,7 +2721,7 @@ object InGameOverlay {
                 )
                 Spacer(Modifier.height(14.dp))
                 Text(
-                    "This drops you to Softcore for the rest of this session. Achievements you unlock will no longer count as hardcore on RetroAchievements, and save states and cheats become available again.",
+                    "This drops you to Casual for the rest of this session. Achievements you unlock will no longer count as hardcore on RetroAchievements, and save states and cheats become available again.",
                     color = Color(0xFFDDDDEE),
                     fontSize = 13.sp,
                 )
