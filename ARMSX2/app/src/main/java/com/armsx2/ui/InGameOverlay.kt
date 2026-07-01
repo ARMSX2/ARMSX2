@@ -460,6 +460,7 @@ object InGameOverlay {
                 dev9HddFile = base.dev9HddFile, dev9InterceptDhcp = base.dev9InterceptDhcp,
                 dev9Mask = base.dev9Mask, dev9ModeDns1 = base.dev9ModeDns1,
                 dev9ModeDns2 = base.dev9ModeDns2, dev9Ps2Ip = base.dev9Ps2Ip,
+                dev9EthHosts = base.dev9EthHosts,
             )
             Tab.Recompiler -> cur.copy(
                 enableFastmem = base.enableFastmem, recEE = base.recEE, recIOP = base.recIOP,

@@ -2,6 +2,7 @@ package com.armsx2.config
 
 import kr.co.iefriends.pcsx2.NativeApp
 import org.json.JSONObject
+import org.json.JSONArray
 
 /**
  * Resolved emulator config used to drive a VM launch / live-apply.
@@ -19,6 +20,14 @@ import org.json.JSONObject
  *   3. Add the JSON mapping in toJson + fromJson + merge,
  *   4. Surface a widget in the appropriate Settings tab.
  */
+/** One DEV9 internal-DNS host override: [url] resolves to [ip] when DNS mode = Internal.
+ *  Used for private/fan servers (e.g. obsrv for RE Outbreak) that redirect specific hostnames. */
+data class Dev9HostMapping(
+    val url: String = "",
+    val ip: String = "0.0.0.0",
+    val enabled: Boolean = true,
+)
+
 data class Settings(
     // ---- EmuCore/Speedhacks ----
     /** EmuCore/Speedhacks/EECycleRate — −3..+3 (50%..300%). 0 = nominal. */
@@ -271,6 +280,9 @@ data class Settings(
     val dev9AutoGateway: Boolean = true,
     val dev9ModeDns1: String = "Auto",
     val dev9ModeDns2: String = "Auto",
+    /** DEV9/Eth/Hosts — hostname->IP overrides consulted by the INTERNAL DNS server
+     *  (DNS mode = Internal). For private/fan servers that redirect specific hostnames. */
+    val dev9EthHosts: List<Dev9HostMapping> = emptyList(),
     /** DEV9/Hdd/HddEnable — virtual PS2 HDD. */
     val dev9HddEnable: Boolean = false,
     /** DEV9/Hdd/HddFile — path/name of the virtual HDD image. */
@@ -585,6 +597,14 @@ data class Settings(
         put("DEV9/Eth", "AutoGateway", "bool", dev9AutoGateway.toString())
         put("DEV9/Eth", "ModeDNS1", "string", dev9ModeDns1.ifEmpty { "Auto" })
         put("DEV9/Eth", "ModeDNS2", "string", dev9ModeDns2.ifEmpty { "Auto" })
+        // Internal-DNS host overrides. Count gates how many Host{i} sections the core reads.
+        put("DEV9/Eth/Hosts", "Count", "int", dev9EthHosts.size.toString())
+        dev9EthHosts.forEachIndexed { i, h ->
+            put("DEV9/Eth/Hosts/Host$i", "Url", "string", h.url)
+            put("DEV9/Eth/Hosts/Host$i", "Desc", "string", "ARMSX2")
+            put("DEV9/Eth/Hosts/Host$i", "Address", "string", h.ip.ifEmpty { "0.0.0.0" })
+            put("DEV9/Eth/Hosts/Host$i", "Enabled", "bool", h.enabled.toString())
+        }
         put("DEV9/Hdd", "HddEnable", "bool", dev9HddEnable.toString())
         put("DEV9/Hdd", "HddFile", "string", dev9HddFile.ifEmpty { "DEV9hdd.raw" })
         put("MemoryCards", "Slot1_Enable", "bool", memoryCardSlot1Enabled.toString())
@@ -968,6 +988,15 @@ data class Settings(
         put("dev9AutoGateway", dev9AutoGateway)
         put("dev9ModeDns1", dev9ModeDns1)
         put("dev9ModeDns2", dev9ModeDns2)
+        put("dev9EthHosts", JSONArray().apply {
+            dev9EthHosts.forEach { h ->
+                put(JSONObject().apply {
+                    put("url", h.url)
+                    put("ip", h.ip)
+                    put("enabled", h.enabled)
+                })
+            }
+        })
         put("dev9HddEnable", dev9HddEnable)
         put("dev9HddFile", dev9HddFile)
         put("memoryCardSlot1Enabled", memoryCardSlot1Enabled)
@@ -1155,6 +1184,17 @@ data class Settings(
                 dev9AutoGateway = json.optBoolean("dev9AutoGateway", def.dev9AutoGateway),
                 dev9ModeDns1 = json.optString("dev9ModeDns1", def.dev9ModeDns1).ifEmpty { def.dev9ModeDns1 },
                 dev9ModeDns2 = json.optString("dev9ModeDns2", def.dev9ModeDns2).ifEmpty { def.dev9ModeDns2 },
+                dev9EthHosts = json.optJSONArray("dev9EthHosts")?.let { arr ->
+                    (0 until arr.length()).mapNotNull { idx ->
+                        arr.optJSONObject(idx)?.let { o ->
+                            Dev9HostMapping(
+                                url = o.optString("url", ""),
+                                ip = o.optString("ip", "0.0.0.0").ifEmpty { "0.0.0.0" },
+                                enabled = o.optBoolean("enabled", true),
+                            )
+                        }
+                    }.filter { it.url.isNotBlank() }
+                } ?: def.dev9EthHosts,
                 dev9HddEnable = json.optBoolean("dev9HddEnable", def.dev9HddEnable),
                 dev9HddFile = json.optString("dev9HddFile", def.dev9HddFile).ifEmpty { def.dev9HddFile },
                 memoryCardSlot1Enabled = json.optBoolean("memoryCardSlot1Enabled", def.memoryCardSlot1Enabled),

@@ -29,6 +29,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.config.Settings
+import com.armsx2.config.Dev9HostMapping
 import com.armsx2.ui.Colors
 import com.armsx2.ui.InGameOverlay
 import java.net.NetworkInterface
@@ -140,6 +141,38 @@ fun NetworkTab(state: MutableState<Settings>) {
             apply(s.copy(dev9Dns2 = it.ifEmpty { "0.0.0.0" }))
         }
         SettingsDivider()
+        HelpText(
+            "DNS Host Mappings redirect a hostname to a fixed IP via the INTERNAL DNS resolver — " +
+                "set Primary DNS to \"Internal\" for these to take effect. Used for private/fan servers " +
+                "(e.g. obsrv for RE Outbreak: map www01.kddi-mmbb.jp → 208.72.237.15, plus any others the " +
+                "server lists). Type a hostname to add a row; clear it to remove. Applies on game reboot."
+        )
+        run {
+            val hosts = s.dev9EthHosts
+            for (i in 0..hosts.size) {
+                val entry = hosts.getOrNull(i)
+                EditableTextRow(if (entry == null) "Add host" else "Host ${i + 1}", entry?.url ?: "") { newUrl ->
+                    val list = hosts.toMutableList()
+                    if (i >= list.size) {
+                        if (newUrl.isNotBlank())
+                            list.add(Dev9HostMapping(url = newUrl.trim(), ip = "0.0.0.0", enabled = true))
+                    } else if (newUrl.isBlank()) {
+                        list.removeAt(i)
+                    } else {
+                        list[i] = list[i].copy(url = newUrl.trim())
+                    }
+                    apply(s.copy(dev9EthHosts = list))
+                }
+                if (entry != null) {
+                    EditableTextRow("   ↳ maps to IP", entry.ip) { newIp ->
+                        val list = hosts.toMutableList()
+                        list[i] = list[i].copy(ip = newIp.trim().ifEmpty { "0.0.0.0" })
+                        apply(s.copy(dev9EthHosts = list))
+                    }
+                }
+                SettingsDivider()
+            }
+        }
         ToggleRow("Log DHCP", s.dev9EthLogDhcp) {
             apply(s.copy(dev9EthLogDhcp = it))
         }
