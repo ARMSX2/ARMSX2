@@ -413,7 +413,37 @@ object MemoryCardManager {
             ?.filter { it.isFile || it.isDirectory }
             ?.sortedWith(compareBy<File> { !it.name.endsWith(".ps2", ignoreCase = true) }.thenBy { it.name.lowercase() })
             ?.let { files.addAll(it) }
+        reconcileOrphanedSlots()
         readSlotState()
+    }
+
+    /** Self-heal slot assignments after an OUT-OF-BAND card deletion — i.e. deleting the .ps2 with
+     *  a file manager instead of the in-app Delete button (which already runs clearSlot +
+     *  restoreDefaultSlot). If an enabled slot still names a card that is no longer on disk, run
+     *  that same cleanup here. Otherwise the stale SlotN_Filename lingers, the BIOS recreates the
+     *  deleted card empty at boot, and the active-slot marker (which matches by filename) lands on
+     *  the wrong card — the "the next card got renamed to the deleted one" report (issue #-memcard).
+     *  This makes the external-delete path converge to the same clean state as the in-app Delete. */
+    private fun reconcileOrphanedSlots() {
+        if (!Main.nativeReady.value) return
+        val onDisk = files.map { it.name.lowercase() }.toSet()
+        val g = ConfigStore.loadGlobal()
+        // Only reconcile a genuinely-orphaned CUSTOM card. A missing DEFAULT card (Mcd00N.ps2) needs
+        // no cleanup: the core recreates it at boot and the slot already names it, so the active-slot
+        // marker still matches — there is no wrong-card problem to fix. Skipping defaults also avoids
+        // redundant config writes before the first boot, when Mcd00N.ps2 don't exist on disk yet.
+        fun isDefault(slot: Int, name: String) =
+            name.equals(if (slot == 2) "Mcd002.ps2" else "Mcd001.ps2", ignoreCase = true)
+        if (g.memoryCardSlot1Enabled && g.memoryCardSlot1Filename.isNotEmpty() &&
+            !isDefault(1, g.memoryCardSlot1Filename) &&
+            g.memoryCardSlot1Filename.lowercase() !in onDisk) {
+            clearSlot(1); restoreDefaultSlot(1)
+        }
+        if (g.memoryCardSlot2Enabled && g.memoryCardSlot2Filename.isNotEmpty() &&
+            !isDefault(2, g.memoryCardSlot2Filename) &&
+            g.memoryCardSlot2Filename.lowercase() !in onDisk) {
+            clearSlot(2); restoreDefaultSlot(2)
+        }
     }
 
     /** Refresh the cached per-slot bindings shown as the "active" markers. */
