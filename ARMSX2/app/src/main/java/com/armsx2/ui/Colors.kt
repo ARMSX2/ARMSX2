@@ -4,7 +4,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.Color
 
 object Colors {
-    val pasx2_blue = Color(0xFF0033CC)
+    // Lightened from 0xFF0033CC (issue #250): the old dark royal-blue had ~1.9:1 contrast on the
+    // black UI background — unreadable as text. This lighter blue is ~6.4:1 on black while staying
+    // in the PCSX2-blue family and still reading fine as an accent/highlight fill.
+    val pasx2_blue = Color(0xFF4C8DFF)
 
     val bg900 = Color(0x263238)
     val surfaceColor = Color(0xFF272525)
