@@ -240,7 +240,17 @@ bool AdapterUtils::GetAdapterAuto(Adapter* adapter, AdapterBuffer* buffer)
 			if (GetGateways(pAdapter).size() > 0)
 				hasGateway = true;
 
+			// @@ARMSX2_DEV9_ANDROID@@ On Android, /proc/net/route is SELinux-restricted so
+			// GetGateways() usually returns nothing -> the stock `hasIPv4 && hasGateway` gate
+			// fails, GetAdapterAuto returns false, the socket adapter never initializes and
+			// DEV9 Ethernet is force-disabled for the whole session. The socket backend
+			// overrides the gateway to a virtual IP anyway (sockets.cpp), so a host gateway is
+			// not actually needed — require only a usable IPv4 interface here.
+#if defined(__ANDROID__)
+			if (hasIPv4)
+#else
 			if (hasIPv4 && hasGateway)
+#endif
 			{
 				*adapter = *pAdapter;
 				buffer->swap(adapterInfo);
@@ -567,8 +577,20 @@ std::vector<IP_Address> AdapterUtils::GetDNS(const Adapter* adapter)
 	if (servers.fail())
 	{
 		servers.close();
+#if defined(__ANDROID__)
+		// @@ARMSX2_DEV9_ANDROID@@ Android has no /etc/resolv.conf (DNS is served by netd; the
+		// old net.dnsN system properties were removed in Android 8+). Without this the DHCP
+		// server hands the emulated PS2 an empty DNS list and every hostname lookup fails ->
+		// online games show "An error has occurred". Fall back to public resolvers so name
+		// resolution works out of the box (users can still override via the Network tab).
+		Console.WriteLn("DEV9: no /etc/resolv.conf on Android; using public DNS fallback 1.1.1.1 / 8.8.8.8");
+		collection.push_back(IP_Address{{{1, 1, 1, 1}}});
+		collection.push_back(IP_Address{{{8, 8, 8, 8}}});
+		return collection;
+#else
 		Console.Error("DEV9: Failed to open /etc/resolv.conf");
 		return collection;
+#endif
 	}
 
 	std::string line;
