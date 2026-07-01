@@ -616,9 +616,17 @@ bool VKShaderCache::FlushPipelineCache()
 	if (!FileSystem::StatFile(m_pipeline_cache_filename.c_str(), &sd) || sd.Size != static_cast<s64>(data_size))
 	{
 		Console.WriteLn("Writing %zu bytes to '%s'", data_size, m_pipeline_cache_filename.c_str());
-		if (!FileSystem::WriteBinaryFile(m_pipeline_cache_filename.c_str(), data.data(), data.size()))
+		// @@ARMSX2_VKCACHE_ATOMIC@@ Stage to a temp file then rename over the real one. A swipe-kill
+		// or crash mid-write otherwise leaves a half-written pipeline cache that some drivers (Adreno)
+		// still accept past the header check and then render garbage from — the "corrupt VK cache"
+		// bug that manifested as dark/purple textures until the cache was manually cleared. rename()
+		// is atomic on POSIX, so the previous valid cache survives a failed/interrupted write.
+		const std::string tmp_filename = m_pipeline_cache_filename + ".tmp";
+		if (!FileSystem::WriteBinaryFile(tmp_filename.c_str(), data.data(), data.size()) ||
+			!FileSystem::RenamePath(tmp_filename.c_str(), m_pipeline_cache_filename.c_str()))
 		{
 			Console.Error("Failed to write pipeline cache to '%s'", m_pipeline_cache_filename.c_str());
+			FileSystem::DeleteFilePath(tmp_filename.c_str());
 			return false;
 		}
 	}
