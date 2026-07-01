@@ -286,10 +286,26 @@ endif()
 
 if (USE_PGO_GENERATE)
 	add_compile_options(-fprofile-generate)
+	# Link the compiler-rt profile runtime into the final .so (needed for the
+	# instrumentation + __llvm_profile_write_file to exist).
+	add_link_options(-fprofile-generate)
+	# Gate the runtime profile-path setup in native-lib.cpp (redirect the
+	# .profraw output to an on-device writable dir, since the baked -fprofile-dir
+	# is the build machine's path).
+	add_compile_definitions(ARMSX2_PGO_GENERATE=1)
 endif()
 
 if(USE_PGO_OPTIMIZE)
-	add_compile_options(-fprofile-use)
+	# Consume the merged profile at the explicit path passed from gradle
+	# (-DARMSX2_PGO_PROFILE). Tolerate profile/source drift — the profile is
+	# from the LTO-off instrument build and the same 4k profile is reused for the
+	# 16k core, so some functions won't match perfectly; warn, do not error.
+	if(NOT ARMSX2_PGO_PROFILE)
+		set(ARMSX2_PGO_PROFILE "${CMAKE_SOURCE_DIR}/profile/armsx2.profdata")
+	endif()
+	add_compile_options("-fprofile-use=${ARMSX2_PGO_PROFILE}")
+	add_link_options("-fprofile-use=${ARMSX2_PGO_PROFILE}")
+	add_compile_options(-Wno-error=profile-instr-out-of-date -Wno-error=profile-instr-unprofiled)
 endif()
 
 list(APPEND PCSX2_DEFS

@@ -156,6 +156,24 @@ std::string GetJavaString(JNIEnv *env, jstring jstr) {
     return cpp_string;
 }
 
+#ifdef ARMSX2_PGO_GENERATE
+// compiler-rt profile runtime — present only in the -fprofile-generate build.
+extern "C" void __llvm_profile_set_filename(const char*);
+extern "C" int __llvm_profile_write_file(void);
+#endif
+
+// PGO instrument build: flush collected profile counters to the .profraw file
+// (path set via __llvm_profile_set_filename in initialize()). Called from Kotlin
+// onPause so a profiling run survives an Android process kill. No-op in normal
+// builds (the profile runtime isn't linked).
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_dumpPgoProfile(JNIEnv*, jclass) {
+#ifdef ARMSX2_PGO_GENERATE
+    __llvm_profile_write_file();
+#endif
+}
+
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
@@ -176,6 +194,20 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
     EmuFolders::AppRoot = _szPath;
     EmuFolders::DataRoot = _szPath;
     EmuFolders::SetResourcesDirectory();
+
+#ifdef ARMSX2_PGO_GENERATE
+    // PGO instrument build: redirect the .profraw output to an on-device writable
+    // dir — the baked -fprofile-dir is the build machine's path. set_filename
+    // overrides the env reliably (the runtime may have read LLVM_PROFILE_FILE at
+    // load already). %p=pid, %m=binary signature so the 4k/16k cores stay separate
+    // and mergeable. NativeApp.dumpPgoProfile() flushes it (called on app pause).
+    {
+        const std::string pgo_dir = Path::Combine(EmuFolders::DataRoot, "pgo");
+        FileSystem::CreateDirectoryPath(pgo_dir.c_str(), true);
+        const std::string pgo_pat = Path::Combine(pgo_dir, "armsx2-%p-%m.profraw");
+        __llvm_profile_set_filename(pgo_pat.c_str());
+    }
+#endif
 
     Log::SetConsoleOutputLevel(LOGLEVEL_DEBUG);
     // Font loading is handled by ImGuiManager::LoadFontData() using s_font_path fallback

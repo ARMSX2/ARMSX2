@@ -7,6 +7,8 @@ plugins {
 }
 
 val armsx2NativeLibName = providers.gradleProperty("armsx2.nativeLibName").orElse("emucore_4k")
+val armsx2Pgo = providers.gradleProperty("armsx2.pgo").orElse("none") // none | generate | optimize
+val armsx2PgoProfile = providers.gradleProperty("armsx2.pgoProfile").orElse("") // abs path to merged .profdata (optimize)
 val armsx2HostPageSize = providers.gradleProperty("armsx2.hostPageSize").orElse("0x1000")
 val armsx2ApplicationId = providers.gradleProperty("armsx2.applicationId").orElse("com.armsx2")
 val armsx2VersionCode = providers.gradleProperty("armsx2.versionCode").map { it.toInt() }.orElse(17)
@@ -76,11 +78,23 @@ android {
                     arguments += "-DANDROID=true"
                     arguments += "-DANDROID_STL=c++_static"
                     arguments += "-DCMAKE_BUILD_TYPE=Release"
-                    arguments += "-DLTO_PCSX2_CORE=ON"
+                    // PGO (profile-guided optimization), opt-in via -Parmsx2.pgo:
+                    //   generate -> instrumented build (writes .profraw on-device); LTO OFF
+                    //              for a faster/cleaner instrument pass.
+                    //   optimize -> consume the merged profile (-fprofile-use); LTO ON.
+                    //   <unset>  -> normal release, LTO ON (unchanged).
+                    val pgo = armsx2Pgo.get()
+                    arguments += if (pgo == "generate") "-DLTO_PCSX2_CORE=OFF" else "-DLTO_PCSX2_CORE=ON"
                     arguments += "-DARMSX2_EMUCORE_LIBRARY_NAME=${armsx2NativeLibName.get()}"
                     arguments += "-DARMSX2_ANDROID_HOST_PAGE_SIZE=${armsx2HostPageSize.get()}"
                     arguments += "-DCMAKE_C_FLAGS=-O3 -g"
                     arguments += "-DCMAKE_CXX_FLAGS=-O3 -g"
+                    if (pgo == "generate") arguments += "-DUSE_PGO_GENERATE=ON"
+                    if (pgo == "optimize") {
+                        arguments += "-DUSE_PGO_OPTIMIZE=ON"
+                        val prof = armsx2PgoProfile.get()
+                        if (prof.isNotBlank()) arguments += "-DARMSX2_PGO_PROFILE=$prof"
+                    }
                 }
             }
         }

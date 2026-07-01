@@ -1208,6 +1208,16 @@ class Main: ComponentActivity() {
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
+        // Sustained Performance Mode (API 24+): holds a steady, thermally-
+        // sustainable clock instead of boost-then-throttle. GOOD for long sessions
+        // on thermally-limited devices, but it CAPS the peak clock — which hurts
+        // peak-hungry games (e.g. GoW2's VU1) that need max MHz in the moment. So
+        // it's OPT-IN, default OFF (pref "ui.sustainedPerf"); most users want peak.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N &&
+            prefs.getBoolean("ui.sustainedPerf", false)) {
+            runCatching { window.setSustainedPerformanceMode(true) }
+        }
+
         // Defer asset copy + emucore init until setup is complete. On the
         // first-ever run, `systemDir` isn't picked yet at onCreate time —
         // so initializeOnce would resolve to the app-private fallback and
@@ -2665,6 +2675,9 @@ class Main: ComponentActivity() {
         // / OOM-kill skip that path — every cold launch would otherwise
         // re-compile every TFX pipeline from scratch. No-op on OpenGL.
         NativeApp.flushShaderCache()
+        // PGO instrument build: flush profile counters so a profiling run survives
+        // an Android process kill. No-op in normal builds.
+        runCatching { NativeApp.dumpPgoProfile() }
         super.onPause()
     }
 

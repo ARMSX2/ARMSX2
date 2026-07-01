@@ -100,6 +100,10 @@ public class NativeApp {
 
 	public static native void initialize(String path, String biosFolder, int apiVer);
 
+	// PGO instrument build only: flush collected profile counters to disk.
+	// No-op in normal builds (the native impl is empty without -fprofile-generate).
+	public static native void dumpPgoProfile();
+
 	/**
 	 * Push one EmuCore setting into the base settings layer. Mirrors
 	 * pcsx2-qt's Settings save flow — Host::SetBase*SettingValue sticks
