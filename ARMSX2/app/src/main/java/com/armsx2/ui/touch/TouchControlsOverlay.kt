@@ -46,6 +46,7 @@ import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.draw.alpha
@@ -123,9 +124,12 @@ fun TouchControlsOverlay() {
             OverlayDims.last = OverlayDims.Dims(widthPx, heightPx)
         }
         val layout = TouchControls.activeLayout.value
-        var facePressed by remember { mutableStateOf<Set<TouchButtonId>>(emptySet()) }
-        var lShoulderPressed by remember { mutableStateOf<Set<TouchButtonId>>(emptySet()) }
-        var rShoulderPressed by remember { mutableStateOf<Set<TouchButtonId>>(emptySet()) }
+        // Buttons the single UnifiedTouchLayer currently holds down (face + shoulder +
+        // menu digital buttons). The covered widgets read this to paint their pressed
+        // visual — they're render-only when multi-touch is on (inputEnabled=false).
+        // Generalizes the old per-region facePressed / lShoulderPressed / rShoulderPressed
+        // trio into one published set.
+        var unifiedPressed by remember { mutableStateOf<Set<TouchButtonId>>(emptySet()) }
 
         // Tap-to-reveal settings cog (top-center). Moved off the top-right corner
         // so it no longer sits under the R1/R2 on-screen cluster (the "behind R2"
@@ -144,7 +148,12 @@ fun TouchControlsOverlay() {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .size(74.dp)
+                    // Above the full-screen UnifiedTouchLayer (glide/multi-touch), which is
+                    // composed later and would otherwise sit z-ON-TOP of this tap zone and
+                    // swallow the top-center tap. The old per-region touch layers never covered
+                    // the top-center, so the cog was always reachable; zIndex restores that.
+                    .zIndex(1f)
+                    .size(CogTapZoneDp)
                     .clickable(
                         indication = null,
                         interactionSource = remember { MutableInteractionSource() },
@@ -154,6 +163,7 @@ fun TouchControlsOverlay() {
                 InGameSettingsButton(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
+                        .zIndex(1f)
                         .padding(14.dp),
                     onClick = {
                         showSettingsCog = false
@@ -221,12 +231,28 @@ fun TouchControlsOverlay() {
 
         val faceMulti = !edit && TouchControls.faceMultiTouch.value
         if (!faceMulti) {
-            if (facePressed.isNotEmpty()) facePressed = emptySet()
-            if (lShoulderPressed.isNotEmpty()) lShoulderPressed = emptySet()
-            if (rShoulderPressed.isNotEmpty()) rShoulderPressed = emptySet()
+            if (unifiedPressed.isNotEmpty()) unifiedPressed = emptySet()
         }
-        // Buttons currently held via any of the multi-touch hit-test layers.
-        val multiPressed = facePressed + lShoulderPressed + rShoulderPressed
+        // Buttons currently held via the unified multi-touch hit-test layer.
+        val multiPressed = unifiedPressed
+
+        // ONE full-screen hit-test layer for every glide-eligible digital control
+        // (FACE + SHOULDER + MENU, enabled && !tapToHold). Placed FIRST in
+        // composition so it sits z-BELOW the visual widgets: the d-pad, sticks and
+        // tap/long-press widgets (rendered by the loop below) are composed ABOVE it
+        // and claim their own DOWN first, so a finger that starts on them never
+        // becomes ours (see UnifiedTouchLayer's foreign-DOWN guard). Owning the
+        // whole screen is what lets a finger glide ACROSS widget boundaries (e.g.
+        // Cross -> empty space -> L1), which the old per-region layers couldn't do.
+        if (faceMulti) {
+            UnifiedTouchLayer(
+                layout = layout,
+                widthPx = widthPx,
+                heightPx = heightPx,
+                glide = TouchControls.touchGliding.value,
+                onPressedChange = { unifiedPressed = it },
+            )
+        }
         for (cfg in layout.buttons) {
             if (!cfg.enabled && !edit) continue
             val size = cfg.sizeDp.dp
@@ -261,50 +287,6 @@ fun TouchControlsOverlay() {
                 }
                 if (edit && !cfg.enabled) DisabledMarker()
             }
-        }
-
-        if (faceMulti) {
-            FaceMultiTouchLayer(
-	                buttons = layout.buttons.filter {
-	                    it.enabled && it.id.kind == TouchButtonId.Kind.FACE && !it.tapToHold
-	                },
-	                widthPx = widthPx,
-	                heightPx = heightPx,
-	                glide = TouchControls.touchGliding.value,
-                onPressedChange = { facePressed = it },
-	            )
-	        }
-
-        if (faceMulti) {
-            // Shoulder triggers: one multi-touch hit-test layer per side so L1+L2
-            // (or L2+R2) register at once and you can slide between them. Split by
-            // side (xFrac < / >= 0.5) so neither box reaches the top-CENTER
-            // settings-cog tap zone. padDp stays at the default 18dp: a LARGER box
-            // (tried 100dp for slide-onto-L1/R1 from afar) sits ON TOP and, by
-            // Compose's overlapping-sibling rule, STEALS fresh DOWNs from the
-            // buttons it overlaps — it killed taps on the up-D-pad arm and Triangle
-            // (the buttons nearest the shoulders). Sliding ACROSS from a far button
-            // needs the single-layer rework, not a bigger box.
-            FaceMultiTouchLayer(
-                buttons = layout.buttons.filter {
-                    it.enabled && it.id.kind == TouchButtonId.Kind.SHOULDER && it.xFrac < 0.5f && !it.tapToHold
-                },
-                widthPx = widthPx,
-                heightPx = heightPx,
-                padDp = 18f,
-                glide = TouchControls.touchGliding.value,
-                onPressedChange = { lShoulderPressed = it },
-            )
-            FaceMultiTouchLayer(
-                buttons = layout.buttons.filter {
-                    it.enabled && it.id.kind == TouchButtonId.Kind.SHOULDER && it.xFrac >= 0.5f && !it.tapToHold
-                },
-                widthPx = widthPx,
-                heightPx = heightPx,
-                padDp = 18f,
-                glide = TouchControls.touchGliding.value,
-                onPressedChange = { rShoulderPressed = it },
-            )
         }
 
         if (edit) {
@@ -511,99 +493,161 @@ private fun PressureButtonWidget(cfg: TouchButtonCfg, edit: Boolean) {
     }
 }
 
+/** Size of the invisible top-center tap zone that reveals the settings cog (see
+ *  TouchControlsOverlay). Shared so UnifiedTouchLayer can carve the exact same rect out
+ *  of its hit region, guaranteeing a top-center tap reaches the cog, not the glide layer. */
+private val CogTapZoneDp = 74.dp
+
 @Composable
-private fun FaceMultiTouchLayer(
-    buttons: List<TouchButtonCfg>,
+private fun UnifiedTouchLayer(
+    layout: TouchLayout,
     widthPx: Float,
     heightPx: Float,
-    padDp: Float = 18f,
     glide: Boolean = false,
     onPressedChange: (Set<TouchButtonId>) -> Unit,
 ) {
-    if (buttons.isEmpty() || widthPx <= 0f || heightPx <= 0f) return
+    if (widthPx <= 0f || heightPx <= 0f) return
+
+    // Glide-eligible digital controls: FACE + SHOULDER + MENU, enabled and NOT
+    // tap-to-hold (latched buttons keep their own pressGestures handler so the
+    // latch logic runs — the shared layer has no latch). Same rect+circle hit math
+    // as the old per-region FaceMultiTouchLayer: center + radius = sizePx * 0.62.
+    val hitButtons = layout.buttons.filter {
+        it.enabled && isMultiTouchKind(it.id.kind) && !it.tapToHold
+    }
+    // Foreign regions: DPAD / STICK / tap+long-press kinds (PAUSE / FASTFORWARD /
+    // MACRO / STATEACTION / PRESSURE) and any tap-to-hold digital button. Those
+    // widgets are composed ABOVE this layer and consume their own DOWN, so a finger
+    // that starts on them normally never reaches us — but we ALSO reject a fresh
+    // DOWN whose position lands inside one of these rects (defensive, in case the
+    // above-layer consume ever races), so a tap on the stick / Pause can't leak
+    // into a face button.
+    val foreignRects = layout.buttons.filter { cfg ->
+        cfg.enabled && (!isMultiTouchKind(cfg.id.kind) || cfg.tapToHold)
+    }
+
     val density = LocalDensity.current
-    val buttonRects = buttons.map { cfg ->
+    val buttonRects = hitButtons.map { cfg ->
         val sizePx = with(density) { cfg.sizeDp.dp.toPx() }
         val cx = widthPx * cfg.xFrac
         val cy = heightPx * cfg.yFrac
-        FaceHit(
-            id = cfg.id,
-            cx = cx,
-            cy = cy,
-            radius = sizePx * 0.62f,
+        UnifiedHit(id = cfg.id, cx = cx, cy = cy, radius = sizePx * 0.62f)
+    }
+    val cogPx = with(density) { CogTapZoneDp.toPx() }
+    val foreignBounds = foreignRects.map { cfg ->
+        val sizePx = with(density) { cfg.sizeDp.dp.toPx() }
+        val cx = widthPx * cfg.xFrac
+        val cy = heightPx * cfg.yFrac
+        UnifiedRect(
             left = cx - sizePx / 2f,
             top = cy - sizePx / 2f,
             right = cx + sizePx / 2f,
             bottom = cy + sizePx / 2f,
         )
-    }
-    val padPx = with(density) { padDp.dp.toPx() }
-    val leftPx = buttonRects.minOf { it.left } - padPx
-    val topPx = buttonRects.minOf { it.top } - padPx
-    val rightPx = buttonRects.maxOf { it.right } + padPx
-    val bottomPx = buttonRects.maxOf { it.bottom } + padPx
-    val layerWidth = max(1f, rightPx - leftPx)
-    val layerHeight = max(1f, bottomPx - topPx)
+    } + UnifiedRect(
+        // Carve out the top-center settings-cog tap zone (align(TopCenter).size(CogTapZoneDp) in
+        // TouchControlsOverlay) so a DOWN there is treated as foreign — the glide layer never owns
+        // or consumes it, so it reaches the cog's clickable. This is the load-bearing guard:
+        // Compose hit-tests overlapping siblings exclusively (they don't share a pointer by
+        // default), so zIndex on the cog only reorders WHICH sibling wins; this geometric carve-out
+        // makes the glide layer stand down regardless of z-order. No glide button sits at
+        // dead-top-center, so it costs nothing.
+        left = widthPx / 2f - cogPx / 2f,
+        top = 0f,
+        right = widthPx / 2f + cogPx / 2f,
+        bottom = cogPx,
+    )
+    val dims = widthPx to heightPx
 
     Box(
         modifier = Modifier
-            .offset(
-                x = with(density) { leftPx.toDp() },
-                y = with(density) { topPx.toDp() },
-            )
-            .size(
-                width = with(density) { layerWidth.toDp() },
-                height = with(density) { layerHeight.toDp() },
-            )
-            .pointerInput(buttonRects, leftPx, topPx, glide) {
+            .fillMaxSize()
+            .pointerInput(buttonRects, foreignBounds, dims, glide) {
                 var pressed = emptySet<TouchButtonId>()
                 fun updatePressed(next: Set<TouchButtonId>) {
                     if (pressed == next) return
                     pressed = next
                     onPressedChange(next)
                 }
-                fun hits(local: Offset): Set<TouchButtonId> {
-                    val gx = leftPx + local.x
-                    val gy = topPx + local.y
-                    return buttonRects
+                // Full-screen: positions are already in global (layer) coordinates.
+                fun hits(pos: Offset): Set<TouchButtonId> =
+                    buttonRects
                         .filter { hit ->
-                            val dx = gx - hit.cx
-                            val dy = gy - hit.cy
+                            val dx = pos.x - hit.cx
+                            val dy = pos.y - hit.cy
                             dx * dx + dy * dy <= hit.radius * hit.radius
                         }
                         .map { it.id }
                         .toSet()
+                fun inForeignRegion(pos: Offset): Boolean =
+                    foreignBounds.any {
+                        pos.x >= it.left && pos.x <= it.right &&
+                        pos.y >= it.top && pos.y <= it.bottom
+                    }
+                fun releaseAll() {
+                    pressed.forEach { sendDigital(it.keycode, false) }
+                    updatePressed(emptySet())
                 }
-	                fun releaseAll() {
-	                    pressed.forEach { sendDigital(it.keycode, false) }
-	                    updatePressed(emptySet())
-	                }
                 awaitPointerEventScope {
-                    // Touch Gliding: latch every button a finger crosses (held until
-                    // that finger lifts). Without it, only the button(s) currently
-                    // under a finger are pressed (the previous one releases as you slide).
+                    // Per-finger state:
+                    //   latched  — every button this finger has crossed since DOWN
+                    //              (glide mode; held until lift).
+                    //   current  — the button(s) directly under this finger right now
+                    //              (non-glide mode; released on leave).
+                    //   foreign  — fingers whose DOWN was consumed by a widget above
+                    //              us or landed inside a d-pad/stick/tap-hold region;
+                    //              never contribute to the aggregate.
                     val latched = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, MutableSet<TouchButtonId>>()
+                    val current = mutableMapOf<androidx.compose.ui.input.pointer.PointerId, Set<TouchButtonId>>()
+                    val foreign = mutableSetOf<androidx.compose.ui.input.pointer.PointerId>()
                     try {
                         while (true) {
                             val ev = awaitPointerEvent()
-                            val next = if (glide) {
-                                ev.changes.forEach { ch ->
-                                    if (ch.pressed) latched.getOrPut(ch.id) { mutableSetOf() }.addAll(hits(ch.position))
-                                    else latched.remove(ch.id)
+                            for (ch in ev.changes) {
+                                // A fresh DOWN decides ownership of this finger once.
+                                if (ch.changedToDown()) {
+                                    if (ch.isConsumed || inForeignRegion(ch.position)) {
+                                        foreign.add(ch.id)
+                                    } else {
+                                        foreign.remove(ch.id)
+                                    }
                                 }
+                                if (!ch.pressed) {
+                                    // Lift / cancel: drop this finger's state entirely.
+                                    latched.remove(ch.id)
+                                    current.remove(ch.id)
+                                    foreign.remove(ch.id)
+                                    continue
+                                }
+                                if (ch.id in foreign) continue
+                                val h = hits(ch.position)
+                                if (glide) {
+                                    latched.getOrPut(ch.id) { mutableSetOf() }.addAll(h)
+                                } else {
+                                    current[ch.id] = h
+                                }
+                            }
+                            val agg = if (glide) {
                                 latched.values.flatten().toSet()
                             } else {
-                                ev.changes
-                                    .filter { it.pressed }
-                                    .flatMap { hits(it.position) }
-                                    .toSet()
+                                current.values.flatten().toSet()
                             }
-	                            (pressed - next).forEach { sendDigital(it.keycode, false) }
-	                            (next - pressed).forEach { sendDigital(it.keycode, true) }
-	                            if (next.isNotEmpty() || pressed.isNotEmpty())
-	                                ev.changes.forEach { it.consume() }
-	                            updatePressed(next)
-	                        }
+                            (pressed - agg).forEach { sendDigital(it.keycode, false) }
+                            (agg - pressed).forEach { sendDigital(it.keycode, true) }
+                            // Per-finger consume: only claim changes for fingers WE own
+                            // (mapped to >=1 control). Never blanket-consume the whole
+                            // event — that would starve co-occurring gestures like the
+                            // Pause long-press on a finger we don't own.
+                            for (ch in ev.changes) {
+                                if (ch.id in foreign) continue
+                                val owns = if (glide)
+                                    !latched[ch.id].isNullOrEmpty()
+                                else
+                                    !current[ch.id].isNullOrEmpty()
+                                if (owns) ch.consume()
+                            }
+                            updatePressed(agg)
+                        }
                     } finally {
                         releaseAll()
                     }
@@ -612,11 +656,14 @@ private fun FaceMultiTouchLayer(
     )
 }
 
-private data class FaceHit(
+private data class UnifiedHit(
     val id: TouchButtonId,
     val cx: Float,
     val cy: Float,
     val radius: Float,
+)
+
+private data class UnifiedRect(
     val left: Float,
     val top: Float,
     val right: Float,
@@ -1158,9 +1205,15 @@ private fun sendDigital(keycode: Int, pressed: Boolean) {
     if (pressed && TouchControls.touchHaptics.value) NativeApp.touchHaptic()
 }
 
-/** Buttons covered by the multi-touch hit-test layers: face diamond + shoulders. */
+/** Buttons covered by the unified multi-touch hit-test layer: face diamond +
+ *  shoulders + menu digital buttons (Start / Select / L3 / R3). These are the
+ *  glide-eligible digital kinds the single UnifiedTouchLayer owns; when it's on,
+ *  the visual widgets for these go render-only and read their pressed state from
+ *  the layer's published unifiedPressed set. */
 private fun isMultiTouchKind(kind: TouchButtonId.Kind): Boolean =
-    kind == TouchButtonId.Kind.FACE || kind == TouchButtonId.Kind.SHOULDER
+    kind == TouchButtonId.Kind.FACE ||
+    kind == TouchButtonId.Kind.SHOULDER ||
+    kind == TouchButtonId.Kind.MENU
 
 /** Press/release pointerInput for a single digital button. Emits the
  *  keycode on down, releases on up or pointer cancel.
