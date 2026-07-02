@@ -293,4 +293,84 @@ object PatchRepo {
         flush()
         return gametitle to entries
     }
+
+    // ---- Installed-file editing (per-cheat on/off) ----
+
+    /** A cheat/patch parsed from an on-disk `.pnach`, preserving its current
+     *  enabled state so the installed-file editor can round-trip individual
+     *  toggles. [enabled] is true when at least one of the block's `patch=`
+     *  lines is active (not `//`-commented). [body] is the verbatim block as
+     *  found on disk (header + patch lines) so it can be rewritten faithfully. */
+    data class LocalCheat(
+        val name: String,
+        val description: String,
+        val enabled: Boolean,
+        val body: String,
+    )
+
+    private val PATCH_LINE_RE = Regex("^\\s*//?\\s*patch\\s*=", RegexOption.IGNORE_CASE)
+    private val META_COMMENT_RE = Regex("^[A-Z]{4}-\\d{5}\\s+[0-9A-Fa-f]{8}$")
+
+    /** True if [line] is a `patch=` command (whether active or `//`-commented). */
+    fun isPatchCommand(line: String): Boolean = PATCH_LINE_RE.containsMatchIn(line)
+
+    /**
+     * Parse an installed `.pnach` into individual cheats for the per-cheat editor.
+     * Handles BOTH conventions that show up on disk:
+     *   • PCSX2 database `[Section]` blocks, and
+     *   • community / ARMSX2-flattened `//Comment` headers followed by `patch=` lines.
+     * A cheat starts at a `[Section]` line, or at a plain `//comment` line that
+     * follows a completed block. A cheat is [LocalCheat.enabled] when any of its
+     * `patch=` lines is active. Blocks with no `patch=` lines (bare headers,
+     * gametitle) are dropped. This is the inverse of the editor's rebuild.
+     */
+    fun parseInstalled(pnach: String, source: String): Pair<String, List<LocalCheat>> {
+        val gametitle = GAMETITLE_RE.find(pnach)?.groupValues?.get(1)?.trim().orEmpty()
+        val cheats = mutableListOf<LocalCheat>()
+        var name: String? = null
+        var desc = ""
+        val body = StringBuilder()
+        var hasPatch = false
+        var hasActive = false
+        fun flush() {
+            val n = name
+            if (n != null && hasPatch) cheats.add(LocalCheat(n, desc, hasActive, body.toString().trimEnd()))
+            name = null; desc = ""; body.setLength(0); hasPatch = false; hasActive = false
+        }
+        for (raw in pnach.lines()) {
+            val line = raw.trimEnd()
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) { if (name != null) body.append('\n'); continue }
+            // Skip file-level metadata (gametitle + ARMSX2 import markers).
+            if (trimmed.startsWith("gametitle", ignoreCase = true)) continue
+            val label = SECTION_RE.find(line)?.groupValues?.get(1)?.trim()
+            val isPatch = isPatchCommand(trimmed)
+            val commented = trimmed.startsWith("//")
+            when {
+                label != null -> { flush(); name = label; body.append(line).append('\n') }
+                isPatch -> {
+                    if (name == null) name = "Unlabelled"
+                    hasPatch = true
+                    if (!commented) hasActive = true
+                    body.append(line).append('\n')
+                }
+                commented -> {
+                    val text = trimmed.trimStart('/').trim()
+                    if (text.equals("ARMSX2 manual PNACH", ignoreCase = true) || META_COMMENT_RE.matches(text))
+                        continue // our own import markers — not a cheat header
+                    // A comment after a completed block starts the next cheat.
+                    if (hasPatch) flush()
+                    if (name == null) {
+                        if (text.isNotEmpty()) { name = text; body.append(line).append('\n') }
+                    } else {
+                        if (desc.isEmpty()) desc = text
+                        body.append(line).append('\n')
+                    }
+                }
+                else -> { if (name != null) body.append(line).append('\n') } // author=, description=, …
+            }
+        }
+        flush()
+        return gametitle to cheats
+    }
 }

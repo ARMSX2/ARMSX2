@@ -69,6 +69,7 @@ set(pcsx2Sources
 	Dmac.cpp
 	GameDatabase.cpp
 	Elfheader.cpp
+	EEDiffVerify.cpp
 	FW.cpp
 	FiFo.cpp
 	FPU.cpp
@@ -158,6 +159,7 @@ set(pcsx2Headers
 	Dmac.h
 	GameDatabase.h
 	Elfheader.h
+	EEDiffVerify.h
 	FW.h
 	GameList.h
 	Gif.h

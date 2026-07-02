@@ -94,6 +94,9 @@ data class Settings(
     val audioVolume: Int = 100,
     /** SPU2/Output/OutputMuted — mute audio output. */
     val audioMuted: Boolean = false,
+    /** SPU2/Output/SwapChannels — swap final stereo output L<->R (flipped-speaker
+     *  devices forced into reverse-landscape, e.g. the Clamp gamepad). */
+    val audioSwapChannels: Boolean = false,
     /** SPU2/Output/SyncMode — TimeStretch keeps pitch stable under load; off
      *  (Disabled) is lower CPU but drifts pitch when frame-time varies. */
     val audioTimeStretch: Boolean = true,
@@ -294,6 +297,14 @@ data class Settings(
     val memoryCardSlot2Enabled: Boolean = true,
     val memoryCardSlot2Filename: String = "mcd002.ps2",
 
+    // ---- USB ----
+    /** USB1/Type = hidkbd — attach an emulated USB HID keyboard on USB port 1.
+     *  Needed by games that require a real USB keyboard (EverQuest Online
+     *  Adventures, Konami-keyboard titles). A physical/Bluetooth keyboard's key
+     *  events are forwarded to it (see Main.dispatchKeyEvent → NativeApp.usbKeyboardKey).
+     *  Default off. */
+    val usbKeyboard: Boolean = false,
+
     // ---- EmuCore/CPU/Recompiler — recompiler enables ----
     /** EmuCore/CPU/Recompiler/EnableEE — EE (R5900) recompiler. */
     val recEE: Boolean = true,
@@ -404,6 +415,14 @@ data class Settings(
     val osdShowFrameTimes: Boolean = true,
     /** EmuCore/GS/OsdShowHardwareInfo — the CPU/GPU model info line. */
     val osdShowHardwareInfo: Boolean = true,
+    /** EmuCore/GS/OsdMessagesPos — transient OSD notifications (shader-compile
+     *  popups, "settings applied", save-state, etc.). true = shown (TopLeft),
+     *  false = hidden (None). Achievement popups are separate & unaffected. */
+    val osdShowMessages: Boolean = true,
+    /** EmuCore/GS/OsdShowGPUStats — GPU pipeline stats (VSI/PSI). Vulkan-only
+     *  (GLES has no pipeline_statistics_query); default off since it's a niche
+     *  diagnostic that adds per-frame query overhead. */
+    val osdShowGpuStats: Boolean = false,
     /** EmuCore/GS/OsdShowVersion — the emulator version line. */
     val osdShowVersion: Boolean = true,
     /** EmuCore/GS/UserHacks_AutoFlushLevel — GSHWAutoFlushLevel:
@@ -540,6 +559,7 @@ data class Settings(
         // to the base layer and applied on commit (SPU2 stream reconfigure).
         if (emitSink == null) NativeApp.setAudioVolume(audioVolume.coerceIn(0, 200))
         if (emitSink == null) NativeApp.setAudioMuted(audioMuted)
+        if (emitSink == null) NativeApp.setAudioSwapChannels(audioSwapChannels)
         put("SPU2/Output", "SyncMode", "string", if (audioTimeStretch) "TimeStretch" else "Disabled")
         put("SPU2/Output", "BufferMS", "int", audioBufferMs.coerceIn(10, 200).toString())
         put("SPU2/Output", "OutputLatencyMS", "int", audioOutputLatencyMs.coerceIn(5, 200).toString())
@@ -611,6 +631,12 @@ data class Settings(
         put("MemoryCards", "Slot1_Filename", "string", memoryCardSlot1Filename.ifEmpty { "mcd001.ps2" })
         put("MemoryCards", "Slot2_Enable", "bool", memoryCardSlot2Enabled.toString())
         put("MemoryCards", "Slot2_Filename", "string", memoryCardSlot2Filename.ifEmpty { "mcd002.ps2" })
+        // USB keyboard (#254). Persist [USB1] Type so USBOptions::LoadSave attaches
+        // the emulated HID keyboard on the next boot (or ApplySettings). The live
+        // attach/detach on a running VM is done via NativeApp.usbSetKeyboardEnabled
+        // below (CheckForConfigChanges recreates the device), since a plain
+        // setSetting write doesn't reattach USB devices on its own.
+        put("USB1", "Type", "string", if (usbKeyboard) "hidkbd" else "None")
         // Recompiler enables. Picked up by VMManager::ApplySettings →
         // SysCpuProviderPack rebind. Toggling these on a running VM swaps
         // the dispatch pointer; existing JIT block caches are flushed by
@@ -655,7 +681,14 @@ data class Settings(
         NativeApp.osdShowGSStats(osdShowGsStats)
         NativeApp.osdShowFrameTimes(osdShowFrameTimes)
         NativeApp.osdShowHardwareInfo(osdShowHardwareInfo)
+        NativeApp.osdShowMessages(osdShowMessages)
+        NativeApp.osdShowGpuStats(osdShowGpuStats)
         NativeApp.osdShowVersion(osdShowVersion)
+        // USB keyboard (#254): live attach/detach on the running VM. A plain
+        // setSetting("USB1","Type",...) write is persisted but doesn't reattach
+        // USB devices, so drive the device (re)creation explicitly. No-op before
+        // the VM exists — the persisted Type above handles the cold boot.
+        NativeApp.usbSetKeyboardEnabled(0, usbKeyboard)
         NativeApp.commitSettings()
     }
 
@@ -735,6 +768,8 @@ data class Settings(
         put("EmuCore/GS", "OsdShowGSStats", "bool", osdShowGsStats.toString())
         put("EmuCore/GS", "OsdShowFrameTimes", "bool", osdShowFrameTimes.toString())
         put("EmuCore/GS", "OsdShowHardwareInfo", "bool", osdShowHardwareInfo.toString())
+        put("EmuCore/GS", "OsdMessagesPos", "int", if (osdShowMessages) "1" else "0")
+        put("EmuCore/GS", "OsdShowGPUStats", "bool", osdShowGpuStats.toString())
         put("EmuCore/GS", "OsdShowVersion", "bool", osdShowVersion.toString())
         // Display / PCRTC fixes (not gated by the UserHacks master).
         put("EmuCore/GS", "pcrtc_offsets", "bool", screenOffsets.toString())
@@ -908,6 +943,7 @@ data class Settings(
         put("frameSkip", frameSkip)
         put("audioVolume", audioVolume)
         put("audioMuted", audioMuted)
+        put("audioSwapChannels", audioSwapChannels)
         put("audioTimeStretch", audioTimeStretch)
         put("audioBufferMs", audioBufferMs)
         put("audioOutputLatencyMs", audioOutputLatencyMs)
@@ -1003,6 +1039,7 @@ data class Settings(
         put("memoryCardSlot1Filename", memoryCardSlot1Filename)
         put("memoryCardSlot2Enabled", memoryCardSlot2Enabled)
         put("memoryCardSlot2Filename", memoryCardSlot2Filename)
+        put("usbKeyboard", usbKeyboard)
         put("recEE", recEE)
         put("recIOP", recIOP)
         put("recVU0", recVU0)
@@ -1038,6 +1075,8 @@ data class Settings(
         put("osdShowGsStats", osdShowGsStats)
         put("osdShowFrameTimes", osdShowFrameTimes)
         put("osdShowHardwareInfo", osdShowHardwareInfo)
+        put("osdShowMessages", osdShowMessages)
+        put("osdShowGpuStats", osdShowGpuStats)
         put("osdShowVersion", osdShowVersion)
         put("autoFlush", autoFlush)
         put("halfPixelOffset", halfPixelOffset)
@@ -1104,6 +1143,7 @@ data class Settings(
                 frameSkip = json.optInt("frameSkip", def.frameSkip),
                 audioVolume = json.optInt("audioVolume", def.audioVolume),
                 audioMuted = json.optBoolean("audioMuted", def.audioMuted),
+                audioSwapChannels = json.optBoolean("audioSwapChannels", def.audioSwapChannels),
                 audioTimeStretch = json.optBoolean("audioTimeStretch", def.audioTimeStretch),
                 audioBufferMs = json.optInt("audioBufferMs", def.audioBufferMs),
                 audioOutputLatencyMs = json.optInt("audioOutputLatencyMs", def.audioOutputLatencyMs),
@@ -1201,6 +1241,7 @@ data class Settings(
                 memoryCardSlot1Filename = json.optString("memoryCardSlot1Filename", def.memoryCardSlot1Filename).ifEmpty { def.memoryCardSlot1Filename },
                 memoryCardSlot2Enabled = json.optBoolean("memoryCardSlot2Enabled", def.memoryCardSlot2Enabled),
                 memoryCardSlot2Filename = json.optString("memoryCardSlot2Filename", def.memoryCardSlot2Filename).ifEmpty { def.memoryCardSlot2Filename },
+                usbKeyboard = json.optBoolean("usbKeyboard", def.usbKeyboard),
                 recEE = json.optBoolean("recEE", def.recEE),
                 recIOP = json.optBoolean("recIOP", def.recIOP),
                 recVU0 = json.optBoolean("recVU0", def.recVU0),
@@ -1240,6 +1281,8 @@ data class Settings(
                 osdShowGsStats = json.optBoolean("osdShowGsStats", def.osdShowGsStats),
                 osdShowFrameTimes = json.optBoolean("osdShowFrameTimes", def.osdShowFrameTimes),
                 osdShowHardwareInfo = json.optBoolean("osdShowHardwareInfo", def.osdShowHardwareInfo),
+                osdShowMessages = json.optBoolean("osdShowMessages", def.osdShowMessages),
+                osdShowGpuStats = json.optBoolean("osdShowGpuStats", def.osdShowGpuStats),
                 osdShowVersion = json.optBoolean("osdShowVersion", def.osdShowVersion),
                 autoFlush = json.optInt("autoFlush", def.autoFlush),
                 halfPixelOffset = json.optInt("halfPixelOffset", def.halfPixelOffset),
@@ -1305,6 +1348,7 @@ data class Settings(
             if (current.frameSkip != base.frameSkip) j.put("frameSkip", current.frameSkip)
             if (current.audioVolume != base.audioVolume) j.put("audioVolume", current.audioVolume)
             if (current.audioMuted != base.audioMuted) j.put("audioMuted", current.audioMuted)
+            if (current.audioSwapChannels != base.audioSwapChannels) j.put("audioSwapChannels", current.audioSwapChannels)
             if (current.audioTimeStretch != base.audioTimeStretch) j.put("audioTimeStretch", current.audioTimeStretch)
             if (current.audioBufferMs != base.audioBufferMs) j.put("audioBufferMs", current.audioBufferMs)
             if (current.audioOutputLatencyMs != base.audioOutputLatencyMs) j.put("audioOutputLatencyMs", current.audioOutputLatencyMs)
@@ -1391,6 +1435,7 @@ data class Settings(
             if (current.memoryCardSlot1Filename != base.memoryCardSlot1Filename) j.put("memoryCardSlot1Filename", current.memoryCardSlot1Filename)
             if (current.memoryCardSlot2Enabled != base.memoryCardSlot2Enabled) j.put("memoryCardSlot2Enabled", current.memoryCardSlot2Enabled)
             if (current.memoryCardSlot2Filename != base.memoryCardSlot2Filename) j.put("memoryCardSlot2Filename", current.memoryCardSlot2Filename)
+            if (current.usbKeyboard         != base.usbKeyboard)         j.put("usbKeyboard", current.usbKeyboard)
             if (current.recEE               != base.recEE)               j.put("recEE", current.recEE)
             if (current.recIOP              != base.recIOP)              j.put("recIOP", current.recIOP)
             if (current.recVU0              != base.recVU0)              j.put("recVU0", current.recVU0)
@@ -1426,6 +1471,8 @@ data class Settings(
             if (current.osdShowGsStats != base.osdShowGsStats) j.put("osdShowGsStats", current.osdShowGsStats)
             if (current.osdShowFrameTimes != base.osdShowFrameTimes) j.put("osdShowFrameTimes", current.osdShowFrameTimes)
             if (current.osdShowHardwareInfo != base.osdShowHardwareInfo) j.put("osdShowHardwareInfo", current.osdShowHardwareInfo)
+            if (current.osdShowMessages != base.osdShowMessages) j.put("osdShowMessages", current.osdShowMessages)
+            if (current.osdShowGpuStats != base.osdShowGpuStats) j.put("osdShowGpuStats", current.osdShowGpuStats)
             if (current.osdShowVersion != base.osdShowVersion) j.put("osdShowVersion", current.osdShowVersion)
             if (current.autoFlush           != base.autoFlush)           j.put("autoFlush", current.autoFlush)
             if (current.halfPixelOffset     != base.halfPixelOffset)     j.put("halfPixelOffset", current.halfPixelOffset)
@@ -1481,6 +1528,7 @@ data class Settings(
             frameSkip = if (overrides.has("frameSkip")) overrides.getInt("frameSkip") else base.frameSkip,
             audioVolume = if (overrides.has("audioVolume")) overrides.getInt("audioVolume") else base.audioVolume,
             audioMuted = if (overrides.has("audioMuted")) overrides.getBoolean("audioMuted") else base.audioMuted,
+            audioSwapChannels = if (overrides.has("audioSwapChannels")) overrides.getBoolean("audioSwapChannels") else base.audioSwapChannels,
             audioTimeStretch = if (overrides.has("audioTimeStretch")) overrides.getBoolean("audioTimeStretch") else base.audioTimeStretch,
             audioBufferMs = if (overrides.has("audioBufferMs")) overrides.getInt("audioBufferMs") else base.audioBufferMs,
             audioOutputLatencyMs = if (overrides.has("audioOutputLatencyMs")) overrides.getInt("audioOutputLatencyMs") else base.audioOutputLatencyMs,
@@ -1567,6 +1615,7 @@ data class Settings(
             memoryCardSlot1Filename = if (overrides.has("memoryCardSlot1Filename")) overrides.getString("memoryCardSlot1Filename").ifEmpty { base.memoryCardSlot1Filename } else base.memoryCardSlot1Filename,
             memoryCardSlot2Enabled = if (overrides.has("memoryCardSlot2Enabled")) overrides.getBoolean("memoryCardSlot2Enabled") else base.memoryCardSlot2Enabled,
             memoryCardSlot2Filename = if (overrides.has("memoryCardSlot2Filename")) overrides.getString("memoryCardSlot2Filename").ifEmpty { base.memoryCardSlot2Filename } else base.memoryCardSlot2Filename,
+            usbKeyboard = if (overrides.has("usbKeyboard")) overrides.getBoolean("usbKeyboard") else base.usbKeyboard,
             recEE = if (overrides.has("recEE")) overrides.getBoolean("recEE") else base.recEE,
             recIOP = if (overrides.has("recIOP")) overrides.getBoolean("recIOP") else base.recIOP,
             recVU0 = if (overrides.has("recVU0")) overrides.getBoolean("recVU0") else base.recVU0,
@@ -1606,6 +1655,8 @@ data class Settings(
             osdShowGsStats = if (overrides.has("osdShowGsStats")) overrides.getBoolean("osdShowGsStats") else base.osdShowGsStats,
             osdShowFrameTimes = if (overrides.has("osdShowFrameTimes")) overrides.getBoolean("osdShowFrameTimes") else base.osdShowFrameTimes,
             osdShowHardwareInfo = if (overrides.has("osdShowHardwareInfo")) overrides.getBoolean("osdShowHardwareInfo") else base.osdShowHardwareInfo,
+            osdShowMessages = if (overrides.has("osdShowMessages")) overrides.getBoolean("osdShowMessages") else base.osdShowMessages,
+            osdShowGpuStats = if (overrides.has("osdShowGpuStats")) overrides.getBoolean("osdShowGpuStats") else base.osdShowGpuStats,
             osdShowVersion = if (overrides.has("osdShowVersion")) overrides.getBoolean("osdShowVersion") else base.osdShowVersion,
             autoFlush = if (overrides.has("autoFlush")) overrides.getInt("autoFlush") else base.autoFlush,
             halfPixelOffset = if (overrides.has("halfPixelOffset")) overrides.getInt("halfPixelOffset") else base.halfPixelOffset,

@@ -42,6 +42,13 @@ bool SetOutputMuted(const bool muted);
 /// Returns true if the output is muted (distinct from 0%).
 bool IsOutputMuted();
 
+/// Swaps the final stereo output channels (L<->R). Used on devices whose Type-C
+/// port forces reverse-landscape, flipping the physical speakers (e.g. Clamp pad).
+void SetSwapChannels(bool swap);
+
+/// Returns true if the final stereo output is L<->R swapped.
+bool IsSwapChannels();
+
 /// Updates the current volume based on running state.
 void UpdateOutputVolume();
 

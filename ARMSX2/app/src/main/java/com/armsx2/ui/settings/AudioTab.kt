@@ -88,6 +88,12 @@ fun AudioTab(state: MutableState<Settings>) {
         )
         SettingsDivider()
         ToggleRow(
+            "Swap Left/Right Channels",
+            s.audioSwapChannels,
+            description = "Swaps the stereo output (L↔R). Useful when a device's Type-C port forces reverse-landscape and flips the physical speakers (e.g. the Clamp gamepad), which otherwise reverses the stereo image in racing games. Applies instantly.",
+        ) { apply(s.copy(audioSwapChannels = it)) }
+        SettingsDivider()
+        ToggleRow(
             "SPU2 SIMD audio (experimental)",
             s.spu2NeonReverb,
             description = "NEON fast path for reverb audio processing — frees up CPU, which can help performance on CPU-limited devices. Off (default) uses the standard path with unchanged audio. Reboot the game to switch.",

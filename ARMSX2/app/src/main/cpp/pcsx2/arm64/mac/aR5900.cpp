@@ -24,6 +24,7 @@
 #include "VUmicro.h"
 #include "vtlb.h"
 #include "AndroidEEOpHist.h"
+#include "EEDiffVerify.h" // @@EEDIFF@@ recompiler-vs-interpreter differential verifier
 
 #include "common/Assertions.h"
 #include "common/Console.h"
@@ -3297,6 +3298,56 @@ static void recEmitInterpInline(u32 op)
 #endif
 }
 
+// @@EEDIFF@@ ---------------------------------------------------------------------------
+// Differential verifier: wrap ONE straight-line op with a pre-op register snapshot and a
+// post-op interpreter re-run + compare. Only emitted when g_ee_diff_verify was set at
+// block-compile time (the toggle clears the EE block cache, so blocks recompile with the
+// hooks). The caller must have flushed+killed the GPR/const cache first so cpuRegs in
+// memory is authoritative at op entry (the recTranslateOp generators read/write cpuRegs
+// directly through RESTATEPTR, so after the op runs cpuRegs == REC-post). RESTATEPTR(x19)
+// is callee-saved across both C calls; the op itself sits between them unchanged.
+//
+// Returns true if a native generator handled the op (verify emitted), false if the op
+// has no native generator — the caller then falls back to recEmitInterpInline WITHOUT a
+// verify (an interp-fallback op can't diverge from itself; the bug is in *rec* codegen).
+static bool recEmitDiffVerifyOp(u32 op, u32 pc)
+{
+	const u32 primary = op >> 26;
+
+	// EXCLUDE coprocessor ops from the verify wrapper. recTranslateOp handles some COP0
+	// (MFC0/MTC0/TLB) and COP2 (QMFC2/CFC2/QMTC2/CTC2/LQC2/SQC2/VU0 macro) ops by
+	// emitting an inline interpreter call and/or touching VU0/COP0 state — NOT plain
+	// GPRs. Re-running those on the interpreter would (a) compare interp-against-interp
+	// (a tautology) and (b) DANGEROUSLY re-execute VU0 finish/launch side effects (only
+	// memory writes are captured; VU state changes are not). The True Crime texture bug
+	// is pure EE data-gen (ALU/shift/MMI/load-store), so restrict the verifier to those.
+	// Returning false makes the caller single-step these on the interpreter, un-verified.
+	//   0x10 COP0, 0x11 COP1(FPU), 0x12 COP2, 0x31 LWC1, 0x36 LQC2, 0x39 SWC1, 0x3e SQC2.
+	// The COP1 family (COP1 + LWC1/SWC1) is excluded too: the snapshot/compare covers
+	// GPR/HI/LO only, not fpr[]/ACC/FCR31, so an FPU re-run would (a) never be checked and
+	// (b) leave the interpreter's fpr value in memory (restoreFrom only rewinds
+	// GPR/HI/LO/PC/sa). The texture bug is integer, so this is a safe, deliberate scope
+	// limit — extend the snapshot to the FPU file if an FP miscompile is ever suspected.
+	if (primary == 0x10 || primary == 0x11 || primary == 0x12 || primary == 0x31 ||
+		primary == 0x36 || primary == 0x39 || primary == 0x3e)
+		return false;
+
+	// Pre-op snapshot of cpuRegs -> g_diff_pre (no args).
+	armEmitCall(reinterpret_cast<const void*>(&eeDiffSnapshotPre));
+
+	// The real recompiled op — the UN-cached, memory-committed generator path (same one
+	// recTranslateOpOptimized falls through to). Reads/writes guest state via RESTATEPTR.
+	if (!recTranslateOp(op, pc))
+		return false;
+
+	// Post-op verify: eeDiffVerify(pc, op). Args in x0/x1 (RXARG1/RXARG2).
+	armAsm->Mov(RXARG1.W(), pc);
+	armAsm->Mov(RXARG2.W(), op);
+	armEmitCall(reinterpret_cast<const void*>(&eeDiffVerify));
+	return true;
+}
+// @@EEDIFF@@ ---------------------------------------------------------------------------
+
 // COP0 DI — clear Status.EIE (disable interrupts) under the same condition as
 // Interpreter::COP0::DI and the x86 recDI (iCOP0.cpp): only when the CPU is in a
 // privileged context, i.e. (Status & (EXL|ERL|EDI)) != 0  ||  Status.KSU == 0.
@@ -4450,6 +4501,13 @@ static void recRecompile(u32 startpc)
 	RecGprConstState const_state;
 	RecGprCacheState cache_state;
 
+	// @@EEDIFF@@ Snapshot the diff-verify enable ONCE per block. When set, every op is
+	// wrapped with a pre/post interpreter compare and the GPR/const cache is forced off
+	// (memory stays authoritative between ops so the snapshot/compare is exact). The
+	// toggle clears the whole EE block cache, so all blocks compiled while it is on carry
+	// the hooks and all compiled while off are hook-free (zero overhead).
+	const bool ee_diff = g_ee_diff_verify;
+
 	// Macro mode (M2): reset the per-block "contains an interlocked COP2 op" flag. Set by
 	// COP2_Interlock during emit, baked into the VU0 ExecuteBlockJIT `interlocked` arg.
 	s_nBlockInterlocked = false;
@@ -4530,6 +4588,18 @@ static void recRecompile(u32 startpc)
 			if (idx >= EE_INST_CACHE_SIZE)
 				idx = EE_INST_CACHE_SIZE - 1;
 			g_pCurInstInfo = &s_instCache[idx];
+		}
+
+		// @@EEDIFF@@ Force the guest state committed to memory before EVERY op so the
+		// diff verifier's snapshot/compare (and the interpreter re-run, which reads
+		// cpuRegs) sees authoritative state. Writes back dirty cached GPRs, drops the
+		// cache, and clears const tracking so no op's inputs live only in a host reg or
+		// the compiler's const map. Cheap: only when the diagnostic is on.
+		if (ee_diff)
+		{
+			recCacheFlushAll(cache_state);
+			recCacheKillAll(cache_state);
+			recConstKillAll(const_state);
 		}
 
 		// COP0 DI — the interrupt-disable must take effect one instruction LATE, exactly as
@@ -4776,9 +4846,36 @@ static void recRecompile(u32 startpc)
 			break;
 		}
 
+		// @@EEDIFF@@ Diagnostic path: wrap the op with snapshot + interpreter re-run +
+		// compare. Uses the raw recTranslateOp (memory-committed generators) because the
+		// cache/const were just killed for this op. Wait-loop detection is disabled here
+		// (waitloop_possible is forced false below) so the extra hook calls never sit in a
+		// "pure" body. Falls through to the normal un-compilable handling if there is no
+		// native generator (an interp-fallback op can't diverge from itself).
+		if (ee_diff)
+		{
+			if (recEmitDiffVerifyOp(op, pc))
+			{
+				waitloop_possible = false; // verified block is never a wait-loop
+				if (!needs_cycle_flush)
+					raw_cycles += eeOpCycles(op);
+				pc += 4;
+				endpc = pc;
+				if (++compiled >= MAX_BLOCK_INSTS)
+				{
+					recEmitWritePc(pc);
+					known_dispatch_pc = true;
+					dispatch_pc = pc;
+					break;
+				}
+				continue;
+			}
+			// else: no native generator — fall through to the shared un-compilable path,
+			// which single-steps the op on the interpreter (no verify needed).
+		}
 		// Straight-line op we can codegen? (Generators decode from `op` directly;
 		// they never read cpuRegs.code, so nothing to set here at compile time.)
-		if (recTranslateOpOptimized(op, const_state, cache_state, pc))
+		else if (recTranslateOpOptimized(op, const_state, cache_state, pc))
 		{
 			// Record the body for wait-loop analysis (only short blocks qualify).
 			if (waitloop_num_ops < REC_WAITLOOP_MAX_OPS)

@@ -23,6 +23,7 @@
 #include "IopMem.h"
 #include "Host.h"
 #include "VMManager.h"
+#include "EEDiffVerify.h" // @@EEDIFF@@ store-capture mode for the diff verifier
 
 #include "common/BitUtils.h"
 #include "common/Error.h"
@@ -248,6 +249,15 @@ void vtlb_memWrite(u32 addr, DataType data)
 {
 	static const uint DataSize = sizeof(DataType) * 8;
 
+	// @@EEDIFF@@ Differential-verify store capture: record {addr,size,value} and return
+	// WITHOUT touching real memory (the recompiler already wrote the authoritative bytes;
+	// letting the interpreter re-run store here would double-write / corrupt them).
+	if (g_ee_diff_capture_stores) [[unlikely]]
+	{
+		eeDiffCaptureStore(addr, DataSize, static_cast<u64>(data), 0);
+		return;
+	}
+
 	auto vmv = vtlbdata.vmap[addr >> VTLB_PAGE_BITS];
 
 	if (!vmv.isHandler(addr))
@@ -287,6 +297,14 @@ void vtlb_memWrite(u32 addr, DataType data)
 
 void TAKES_R128 vtlb_memWrite128(u32 mem, r128 value)
 {
+	// @@EEDIFF@@ Differential-verify store capture (128-bit) — see vtlb_memWrite above.
+	if (g_ee_diff_capture_stores) [[unlikely]]
+	{
+		alignas(16) u128 r = r128_to_u128(value);
+		eeDiffCaptureStore(mem, 128, r.lo, r.hi);
+		return;
+	}
+
 	auto vmv = vtlbdata.vmap[mem >> VTLB_PAGE_BITS];
 
 	if (!vmv.isHandler(mem))

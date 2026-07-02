@@ -34,6 +34,7 @@ u64 lClocks = 0;
 static bool s_audio_capture_active = false;
 static bool s_psxmode = false;
 static bool s_output_muted = false;
+static bool s_swap_channels = false;
 
 static std::unique_ptr<AudioStream> s_output_stream;
 static std::array<AudioStream::SampleType, AudioStream::CHUNK_SIZE * 2> s_current_chunk;
@@ -208,6 +209,16 @@ bool SPU2::IsOutputMuted()
 	return s_output_muted;
 }
 
+void SPU2::SetSwapChannels(bool swap)
+{
+	s_swap_channels = swap;
+}
+
+bool SPU2::IsSwapChannels()
+{
+	return s_swap_channels;
+}
+
 void SPU2::UpdateOutputVolume()
 {
 	s_output_stream->SetOutputVolume(s_output_muted ?
@@ -273,6 +284,10 @@ void SPU2::InternalReset(bool psxmode)
 		Console.WriteLn("SPU2: NEON reverb SIMD backend enabled");
 	}
 #endif
+
+	// Stereo L<->R output swap (opt-in, default off). Read fresh on every reset so
+	// toggling the setting live also survives a game reboot / cold start.
+	s_swap_channels = Host::GetBaseBoolSettingValue("SPU2/Output", "SwapChannels", false);
 
 	s_current_chunk_pos = 0;
 	s_psxmode = psxmode;

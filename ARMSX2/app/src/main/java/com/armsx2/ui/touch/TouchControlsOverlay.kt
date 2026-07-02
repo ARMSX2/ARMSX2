@@ -311,7 +311,7 @@ fun TouchControlsOverlay() {
 private fun InGameSettingsButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
     Box(
         modifier = modifier
-            .size(38.dp)
+            .size(52.dp)
             .clip(CircleShape)
             .background(Color(0xFF111111).copy(alpha = 0.55f))
             .border(1.dp, Color.White.copy(alpha = 0.20f), CircleShape)
@@ -322,7 +322,7 @@ private fun InGameSettingsButton(modifier: Modifier = Modifier, onClick: () -> U
             imageVector = LineAwesomeIcons.CogSolid,
             contentDescription = "Open in-game settings",
             tint = Color.White.copy(alpha = 0.92f),
-            modifier = Modifier.size(23.dp),
+            modifier = Modifier.size(32.dp),
         )
     }
 }

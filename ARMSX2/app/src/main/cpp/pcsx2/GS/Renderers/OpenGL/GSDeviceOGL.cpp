@@ -700,6 +700,10 @@ bool GSDeviceOGL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	if (!CreateImGuiProgram())
 		return false;
 
+	// GLES has no pipeline-statistics queries; this extension is desktop-GL only,
+	// so on Android this stays false and the OSD line shows 0 / degrades gracefully.
+	m_gpu_pipeline_statistics_supported = (GLAD_GL_ARB_pipeline_statistics_query != 0);
+
 	// Basic to ensure structures are correctly packed
 	static_assert(sizeof(VSSelector) == 1, "Wrong VSSelector size");
 	static_assert(sizeof(PSSelector) == 16, "Wrong PSSelector size");
@@ -718,6 +722,7 @@ void GSDeviceOGL::Destroy()
 	if (m_gl_context)
 	{
 		DestroyTimestampQueries();
+		DestroyPipelineStatisticsQueries();
 		DestroyResources();
 
 		m_gl_context->DoneCurrent();
@@ -1256,6 +1261,10 @@ GSDevice::PresentResult GSDeviceOGL::BeginPresent(bool frame_skip)
 	if (frame_skip || m_window_info.type == WindowInfo::Type::Surfaceless)
 		return PresentResult::FrameSkipped;
 
+	// Get the pipeline statistics for this frame before postprocessing.
+	if (m_gpu_pipeline_statistics_enabled)
+		PopPipelineStatisticsQuery();
+
 	OMSetFBO(0);
 	OMSetColorMaskState();
 
@@ -1303,6 +1312,9 @@ void GSDeviceOGL::EndPresent()
 
 	if (m_gpu_timing_enabled)
 		KickTimestampQuery();
+
+	if (m_gpu_pipeline_statistics_enabled)
+		KickPipelineStatisticsQuery();
 }
 
 void GSDeviceOGL::CreateTimestampQueries()
@@ -1403,6 +1415,114 @@ float GSDeviceOGL::GetAndResetAccumulatedGPUTime()
 	const float value = m_accumulated_gpu_time;
 	m_accumulated_gpu_time = 0.0f;
 	return value;
+}
+
+// NOTE: These GL pipeline-statistics queries are desktop-GL only. GLES (Android)
+// has neither GL_ARB_pipeline_statistics_query nor the glGetQueryObjectiv /
+// glGetQueryObjectui64v result readers (see PopTimestampQuery for the same
+// GLES gap), so the whole path is compiled out under __ANDROID__. On Android
+// m_gpu_pipeline_statistics_supported stays false and these are never invoked;
+// the OSD line just shows 0 / degrades to n/a. Real stats come from Vulkan.
+void GSDeviceOGL::PopPipelineStatisticsQuery()
+{
+#if !defined(__ANDROID__)
+	while (m_waiting_pipeline_statistics_queries > 0)
+	{
+		GLint available[2] = {};
+		glGetQueryObjectiv(m_pipeline_statistics_queries[m_read_pipeline_statistics_query][0], GL_QUERY_RESULT_AVAILABLE, &available[0]);
+		glGetQueryObjectiv(m_pipeline_statistics_queries[m_read_pipeline_statistics_query][1], GL_QUERY_RESULT_AVAILABLE, &available[1]);
+
+		if (!(available[0] && available[1]))
+			break;
+
+		GPUPipelineStatistics stats = {};
+		glGetQueryObjectui64v(m_pipeline_statistics_queries[m_read_pipeline_statistics_query][0], GL_QUERY_RESULT, &stats.vs_invocations);
+		glGetQueryObjectui64v(m_pipeline_statistics_queries[m_read_pipeline_statistics_query][1], GL_QUERY_RESULT, &stats.ps_invocations);
+		m_accumulated_gpu_pipeline_statistics.vs_invocations += stats.vs_invocations;
+		m_accumulated_gpu_pipeline_statistics.ps_invocations += stats.ps_invocations;
+		m_read_pipeline_statistics_query = (m_read_pipeline_statistics_query + 1) % NUM_PIPELINE_STATISTICS_QUERIES;
+		m_waiting_pipeline_statistics_queries--;
+	}
+
+	if (m_pipeline_statistics_query_started)
+	{
+		glEndQuery(GL_VERTEX_SHADER_INVOCATIONS_ARB);
+		glEndQuery(GL_FRAGMENT_SHADER_INVOCATIONS_ARB);
+
+		m_write_pipeline_statistics_query = (m_write_pipeline_statistics_query + 1) % NUM_PIPELINE_STATISTICS_QUERIES;
+		m_pipeline_statistics_query_started = false;
+		m_waiting_pipeline_statistics_queries++;
+	}
+#endif
+}
+
+void GSDeviceOGL::KickPipelineStatisticsQuery()
+{
+#if !defined(__ANDROID__)
+	if (m_pipeline_statistics_query_started || m_waiting_pipeline_statistics_queries == NUM_PIPELINE_STATISTICS_QUERIES)
+		return;
+
+	glBeginQuery(GL_VERTEX_SHADER_INVOCATIONS_ARB, m_pipeline_statistics_queries[m_write_pipeline_statistics_query][0]);
+	glBeginQuery(GL_FRAGMENT_SHADER_INVOCATIONS_ARB, m_pipeline_statistics_queries[m_write_pipeline_statistics_query][1]);
+	m_pipeline_statistics_query_started = true;
+#endif
+}
+
+void GSDeviceOGL::CreatePipelineStatisticsQueries()
+{
+#if !defined(__ANDROID__)
+	for (int i = 0; i < NUM_PIPELINE_STATISTICS_QUERIES; i++)
+	{
+		glGenQueries(2, m_pipeline_statistics_queries[i].data());
+	}
+	KickPipelineStatisticsQuery();
+#endif
+}
+
+void GSDeviceOGL::DestroyPipelineStatisticsQueries()
+{
+#if !defined(__ANDROID__)
+	if (m_pipeline_statistics_queries[0][0] == 0)
+		return;
+
+	if (m_pipeline_statistics_query_started)
+	{
+		glEndQuery(GL_VERTEX_SHADER_INVOCATIONS_ARB);
+		glEndQuery(GL_FRAGMENT_SHADER_INVOCATIONS_ARB);
+	}
+
+	for (size_t i = 0; i < m_pipeline_statistics_queries.size(); i++)
+	{
+		glDeleteQueries(2, m_pipeline_statistics_queries[i].data());
+		m_pipeline_statistics_queries[i].fill(0);
+	}
+	m_read_pipeline_statistics_query = 0;
+	m_write_pipeline_statistics_query = 0;
+	m_waiting_pipeline_statistics_queries = 0;
+	m_pipeline_statistics_query_started = false;
+#endif
+}
+
+GPUPipelineStatistics GSDeviceOGL::GetAndResetAccumulatedGPUPipelineStatistics()
+{
+	GPUPipelineStatistics stats = m_accumulated_gpu_pipeline_statistics;
+	m_accumulated_gpu_pipeline_statistics = {};
+	return stats;
+}
+
+bool GSDeviceOGL::SetGPUPipelineStatisticsEnabled(bool enabled)
+{
+	if (m_gpu_pipeline_statistics_enabled == enabled)
+		return true;
+
+	m_gpu_pipeline_statistics_enabled = enabled && m_gpu_pipeline_statistics_supported;
+
+	if (m_gpu_pipeline_statistics_enabled)
+		CreatePipelineStatisticsQueries();
+	else
+		DestroyPipelineStatisticsQueries();
+
+	return true;
 }
 
 void GSDeviceOGL::DrawPrimitive()

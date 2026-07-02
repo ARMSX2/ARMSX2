@@ -3450,6 +3450,8 @@ void FullscreenUI::DrawOSDSettingsPage()
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_BUG, "Show GPU Debug Info"),
 		FSUI_CSTR("Shows debug information about the renderer."), "EmuCore/GS", "OsdShowGPUDebug", false);
 #endif
+	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_IMAGE, "Show GPU Pipeline Statistics"),
+		FSUI_CSTR("Shows GPU vertex shader and pixel shader invocations (Vulkan only)."), "EmuCore/GS", "OsdShowGPUStats", false);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_PF_HEARTBEAT_ALT, "Show Frame Times"),
 		FSUI_CSTR("Shows a visual history of frame times."), "EmuCore/GS", "OsdShowFrameTimes", false);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_SLIDERS, "Show Settings"),

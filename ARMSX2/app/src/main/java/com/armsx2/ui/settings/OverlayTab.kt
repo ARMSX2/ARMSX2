@@ -8,6 +8,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -69,7 +70,20 @@ fun OverlayTab(state: MutableState<Settings>) {
         SettingsDivider()
         ToggleRow("Hardware info (CPU/GPU model)", s.osdShowHardwareInfo) { apply(s.copy(osdShowHardwareInfo = it)) }
         SettingsDivider()
+        ToggleRow("GPU pipeline stats (VSI/PSI, Vulkan only)", s.osdShowGpuStats) { apply(s.copy(osdShowGpuStats = it)) }
+        SettingsDivider()
         ToggleRow("Emulator version", s.osdShowVersion) { apply(s.copy(osdShowVersion = it)) }
+        SettingsDivider()
+        ToggleRow("On-screen notifications (shader compile, saves, etc.)", s.osdShowMessages) { apply(s.copy(osdShowMessages = it)) }
+        SettingsDivider()
+        // Android hotkey pop-ups (Fast-Forward on/off, etc.) — separate from the emulator
+        // OSD, pref-backed. Cancel-previous already stops them stacking; this switches
+        // them off entirely for heavy fast-forward users.
+        val ffToasts = remember { mutableStateOf(com.armsx2.Main.prefs.getBoolean("ui.hotkeyToasts", true)) }
+        ToggleRow("Fast-Forward pop-ups", ffToasts.value) {
+            ffToasts.value = it
+            com.armsx2.Main.prefs.edit().putBoolean("ui.hotkeyToasts", it).apply()
+        }
         SettingsDivider()
 
         // Interface scaling (global, not per-game): resize the library / menu chrome

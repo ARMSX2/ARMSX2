@@ -200,6 +200,8 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
 
 	if (!g_gs_device->SetGPUTimingEnabled(true))
 		GSConfig.OsdShowGPU = false;
+	if (!g_gs_device->SetGPUPipelineStatisticsEnabled(GSConfig.OsdShowGPUStats))
+		GSConfig.OsdShowGPUStats = false;
 
 	Console.WriteLn(Color_StrongGreen, "%s Graphics Driver Info:", GSDevice::RenderAPIToString(new_api));
 	Console.WriteLn(g_gs_device->GetDriverInfo());
@@ -977,6 +979,16 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 		// (timestamp queries + per-frame readback have real overhead) — that
 		// is the actual perf win of disabling this overlay element on Android.
 		g_gs_device->SetGPUTimingEnabled(false);
+	}
+
+	if (GSConfig.OsdShowGPUStats != old_config.OsdShowGPUStats)
+	{
+		// GPU pipeline-statistics queries (VS/PS invocations) are only real on
+		// Vulkan here (GLES has no pipeline_statistics_query). Enabling toggles
+		// the per-frame query on the device; if the backend can't do it we fall
+		// back to leaving the overlay line off rather than showing garbage.
+		if (!g_gs_device->SetGPUPipelineStatisticsEnabled(GSConfig.OsdShowGPUStats))
+			GSConfig.OsdShowGPUStats = false;
 	}
 }
 

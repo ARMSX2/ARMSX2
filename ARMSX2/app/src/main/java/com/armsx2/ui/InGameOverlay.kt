@@ -443,7 +443,7 @@ object InGameOverlay {
                 audioBufferMs = base.audioBufferMs, audioFastForwardVolume = base.audioFastForwardVolume,
                 audioMuted = base.audioMuted, audioOutputLatencyMs = base.audioOutputLatencyMs,
                 audioTimeStretch = base.audioTimeStretch, audioVolume = base.audioVolume,
-                spu2NeonReverb = base.spu2NeonReverb,
+                audioSwapChannels = base.audioSwapChannels, spu2NeonReverb = base.spu2NeonReverb,
             )
             Tab.Patches -> cur.copy(
                 enableCheats = base.enableCheats,
@@ -472,6 +472,7 @@ object InGameOverlay {
                     osdShowCpu = base.osdShowCpu, osdShowFps = base.osdShowFps,
                     osdShowFrameTimes = base.osdShowFrameTimes, osdShowGpu = base.osdShowGpu,
                     osdShowGsStats = base.osdShowGsStats, osdShowHardwareInfo = base.osdShowHardwareInfo,
+                    osdShowGpuStats = base.osdShowGpuStats,
                     osdShowResolution = base.osdShowResolution, osdShowSpeed = base.osdShowSpeed,
                     osdShowVersion = base.osdShowVersion, osdShowVps = base.osdShowVps,
                 )
@@ -609,6 +610,17 @@ object InGameOverlay {
             NativeApp.setAspectRatio(ratio)
         }
 
+        // USB keyboard (#254) — attach/detach the emulated HID keyboard live and
+        // flip the input-routing flag so physical-keyboard keys start/stop being
+        // forwarded immediately. Persist [USB1] Type too so it survives a restart
+        // (ConfigStore.save already stored the field; this keeps the emucore base
+        // layer in sync for the next boot's USBOptions::LoadSave).
+        if (previous.usbKeyboard != updated.usbKeyboard) {
+            NativeApp.setSetting("USB1", "Type", "string", if (updated.usbKeyboard) "hidkbd" else "None")
+            NativeApp.usbSetKeyboardEnabled(0, updated.usbKeyboard)
+            Main.usbKeyboardActive = updated.usbKeyboard
+        }
+
         // Internal resolution (upscale) applies live to the GS via the queue — no
         // VM park. The renderer BACKEND (OpenGL/Vulkan/Software) is restart-only,
         // applied by Main.applyRendererPrefs on the next launch, so nothing live
@@ -668,6 +680,10 @@ object InGameOverlay {
         if (previous.osdShowHardwareInfo != updated.osdShowHardwareInfo) {
             NativeApp.setSetting("EmuCore/GS", "OsdShowHardwareInfo", "bool", updated.osdShowHardwareInfo.toString())
             NativeApp.osdShowHardwareInfo(updated.osdShowHardwareInfo)
+        }
+        if (previous.osdShowGpuStats != updated.osdShowGpuStats) {
+            NativeApp.setSetting("EmuCore/GS", "OsdShowGPUStats", "bool", updated.osdShowGpuStats.toString())
+            NativeApp.osdShowGpuStats(updated.osdShowGpuStats)
         }
         if (previous.osdShowVersion != updated.osdShowVersion) {
             NativeApp.setSetting("EmuCore/GS", "OsdShowVersion", "bool", updated.osdShowVersion.toString())

@@ -71,6 +71,10 @@ static float s_average_gpu_time = 0.0f;
 static float s_accumulated_gpu_time = 0.0f;
 static float s_gpu_usage = 0.0f;
 static u32 s_presents_since_last_update = 0;
+static double s_average_gpu_vs_invocations = 0.0;
+static double s_average_gpu_ps_invocations = 0.0;
+static u64 s_accumulated_gpu_vs_invocations = 0;
+static u64 s_accumulated_gpu_ps_invocations = 0;
 
 void PerformanceMetrics::Clear()
 {
@@ -160,8 +164,12 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 	// Max-FPS cap / frameskip). Lets the OSD show what's really on screen.
 	s_present_fps = static_cast<float>(s_presents_since_last_update) / time;
 	s_average_gpu_time = s_accumulated_gpu_time / static_cast<float>(s_unskipped_frames_since_last_update);
+	s_average_gpu_vs_invocations = static_cast<double>(s_accumulated_gpu_vs_invocations) / static_cast<double>(s_unskipped_frames_since_last_update);
+	s_average_gpu_ps_invocations = static_cast<double>(s_accumulated_gpu_ps_invocations) / static_cast<double>(s_unskipped_frames_since_last_update);
 	s_gpu_usage = s_accumulated_gpu_time / (time * 10.0f);
 	s_accumulated_gpu_time = 0.0f;
+	s_accumulated_gpu_vs_invocations = 0;
+	s_accumulated_gpu_ps_invocations = 0;
 
 	// prefer privileged register write based framerate detection, it's less likely to have false positives
 	if (s_gs_privileged_register_writes_since_last_update > 0 && !EmuConfig.Gamefixes.BlitInternalFPSHack)
@@ -232,9 +240,11 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 	Host::OnPerformanceMetricsUpdated();
 }
 
-void PerformanceMetrics::OnGPUPresent(float gpu_time)
+void PerformanceMetrics::OnGPUPresent(float gpu_time, u64 vs_invocations, u64 ps_invocations)
 {
 	s_accumulated_gpu_time += gpu_time;
+	s_accumulated_gpu_vs_invocations += vs_invocations;
+	s_accumulated_gpu_ps_invocations += ps_invocations;
 	s_presents_since_last_update++;
 }
 
@@ -369,6 +379,16 @@ float PerformanceMetrics::GetGPUUsage()
 float PerformanceMetrics::GetGPUAverageTime()
 {
 	return s_average_gpu_time;
+}
+
+double PerformanceMetrics::GetGPUAverageVSInvocations()
+{
+	return s_average_gpu_vs_invocations;
+}
+
+double PerformanceMetrics::GetGPUAveragePSInvocations()
+{
+	return s_average_gpu_ps_invocations;
 }
 
 const PerformanceMetrics::FrameTimeHistory& PerformanceMetrics::GetFrameTimeHistory()

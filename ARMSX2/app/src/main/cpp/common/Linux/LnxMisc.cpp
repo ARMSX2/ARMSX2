@@ -355,6 +355,9 @@ void Common::DetachMousePositionCb()
 
 #endif // !__ANDROID__
 
+#ifndef __ANDROID__
+// On Android this is implemented in native-lib.cpp (bridges to a Java SoundPool);
+// the aplay/gstreamer approach below is desktop-Linux only.
 bool Common::PlaySoundAsync(const char* path)
 {
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -391,6 +394,7 @@ bool Common::PlaySoundAsync(const char* path)
 	return false;
 #endif
 }
+#endif // !__ANDROID__
 
 void Threading::Sleep(int ms)
 {

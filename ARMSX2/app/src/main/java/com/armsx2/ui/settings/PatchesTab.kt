@@ -59,6 +59,13 @@ private data class PnachGameId(val serial: String, val crc: String) {
     val prefix: String get() = "${serial}_${crc}"
 }
 
+/** An open per-cheat editing session for an already-installed `.pnach`. */
+private data class EditSession(
+    val file: File,
+    val gametitle: String,
+    val cheats: List<PatchRepo.LocalCheat>,
+)
+
 private val activeGameIdRegex = Regex("""([A-Za-z]{4}-\d{5})\s*\(([0-9A-Fa-f]{8})\)""")
 private val serialRegex = Regex("""([A-Za-z]{4})[\s_-]?(\d{3})\.?(\d{2})""")
 private val crcRegex = Regex("""(?<![0-9A-Fa-f])([0-9A-Fa-f]{8})(?![0-9A-Fa-f])""")
@@ -157,6 +164,33 @@ private fun manualPnachContents(title: String, body: String, gameId: PnachGameId
     return "$header\n$normalizedBody\n"
 }
 
+// Rebuild an installed .pnach from the per-cheat editor. Each cheat's patch=
+// lines are activated (checked) or //-commented (unchecked); any [Section]
+// label is flattened to a //comment so enabled patches auto-run as unlabelled
+// PNACH (the [Enable] list doesn't persist on Android). Keeps ALL cheats in the
+// file — deselected ones are commented out, not dropped — so it round-trips.
+private fun rebuildInstalledPnach(
+    gametitle: String,
+    cheats: List<Pair<PatchRepo.LocalCheat, Boolean>>,
+): String = buildString {
+    if (gametitle.isNotEmpty()) append("gametitle=").append(gametitle).append("\n\n")
+    cheats.forEach { (cheat, enabled) ->
+        cheat.body.lines().forEach { raw ->
+            val t = raw.trim()
+            val out = when {
+                t.length > 2 && t.first() == '[' && t.last() == ']' -> "// $t"
+                PatchRepo.isPatchCommand(t) -> {
+                    val bare = t.replaceFirst(Regex("^//\\s*"), "")
+                    if (enabled) bare else "// $bare"
+                }
+                else -> raw
+            }
+            append(out).append('\n')
+        }
+        append('\n')
+    }
+}
+
 /**
  * Patch / cheat toggles + a PNACH importer.
  *
@@ -198,6 +232,9 @@ fun PatchesTab(state: MutableState<Settings>) {
     // picked before launch). Drives the saved file name so emucore loads it.
     var browseGameId by remember { mutableStateOf<PnachGameId?>(null) }
     val selected = remember { mutableStateMapOf<Int, Boolean>() } // entry index -> checked
+    // Per-cheat editor for an already-installed .pnach (index -> checked).
+    var editSession by remember { mutableStateOf<EditSession?>(null) }
+    val editSelected = remember { mutableStateMapOf<Int, Boolean>() }
     val scope = rememberCoroutineScope()
     // Game whose settings were opened from the library via long-press (null
     // when a game is actually running). Lets us browse before booting.
@@ -324,6 +361,49 @@ fun PatchesTab(state: MutableState<Settings>) {
                 "Saved ${chosen.size} item${if (chosen.size == 1) "" else "s"} for ${gid?.serial ?: "this game"}. Start the game to load them."
             else ->
                 "Enabled ${chosen.size} item${if (chosen.size == 1) "" else "s"} ($active live). Restart the game to (re)load boot-time patches."
+        }
+        refresh()
+    }
+
+    // Open the per-cheat editor for an installed file: parse it into individual
+    // cheats (both [Section] and //comment conventions), pre-checking those whose
+    // patch= lines are currently active.
+    fun openEditor(file: File) {
+        val text = runCatching { file.readText() }.getOrNull()
+        if (text == null) { pnachStatus = "Couldn't read ${file.name}."; return }
+        val source = if (file.parentFile?.name == "cheats") "cheats" else "patches"
+        val (gt, cheats) = PatchRepo.parseInstalled(text, source)
+        if (cheats.isEmpty()) {
+            pnachStatus = "${file.name} has no individual cheats to toggle."
+            return
+        }
+        editSelected.clear()
+        cheats.forEachIndexed { i, c -> editSelected[i] = c.enabled }
+        editSession = EditSession(file, gt, cheats)
+    }
+
+    // Rewrite the file with the new per-cheat on/off states, then reload PNACH.
+    fun applyEdit() {
+        val sess = editSession ?: return
+        editSession = null
+        val paired = sess.cheats.mapIndexed { i, c -> c to (editSelected[i] ?: c.enabled) }
+        val saved = runCatching { sess.file.writeText(rebuildInstalledPnach(sess.gametitle, paired)) }
+        if (saved.isFailure) {
+            pnachStatus = "Save failed: ${saved.exceptionOrNull()?.message ?: "unknown error"}"
+            return
+        }
+        val isCheat = sess.file.parentFile?.name == "cheats"
+        if (!state.value.enablePatches) apply(state.value.copy(enablePatches = true))
+        NativeApp.setSetting("EmuCore", "EnablePatches", "bool", "true")
+        val active = if (isCheat) activateCheatsAndReload() else {
+            NativeApp.commitSettings(); NativeApp.reloadPatches()
+        }
+        val onCount = paired.count { it.second }
+        pnachStatus = when {
+            Main.eState.value == EmuState.STOPPED ->
+                "Saved ${sess.file.name}: $onCount cheat${if (onCount == 1) "" else "s"} on. Start the game to load."
+            else ->
+                "Saved ${sess.file.name}: $onCount on ($active live). Restart to (re)load boot-time patches."
         }
         refresh()
     }
@@ -464,6 +544,62 @@ fun PatchesTab(state: MutableState<Settings>) {
             },
             confirmButton = { TextButton(onClick = { applySelected() }) { Text("APPLY") } },
             dismissButton = { TextButton(onClick = { browseResult = null }) { Text("CANCEL") } },
+        )
+    }
+
+    editSession?.let { sess ->
+        AlertDialog(
+            onDismissRequest = { editSession = null },
+            containerColor = Colors.surfaceColor,
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
+            title = {
+                Text(
+                    "Edit cheats — ${sess.file.name}",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        "Tick the cheats to keep on. Unticked ones are commented out (kept in the file).",
+                        fontSize = 10.sp,
+                        color = Color(0xFF9A9A9A),
+                        modifier = Modifier.padding(bottom = 4.dp),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = { sess.cheats.indices.forEach { editSelected[it] = true } }) { Text("All on") }
+                        TextButton(onClick = { sess.cheats.indices.forEach { editSelected[it] = false } }) { Text("All off") }
+                    }
+                    sess.cheats.forEachIndexed { i, c ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { editSelected[i] = !(editSelected[i] ?: c.enabled) }
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(checked = editSelected[i] ?: c.enabled, onCheckedChange = { editSelected[i] = it })
+                            Column(modifier = Modifier.weight(1f).padding(start = 4.dp)) {
+                                Text(c.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                                if (c.description.isNotEmpty())
+                                    Text(
+                                        c.description,
+                                        fontSize = 10.sp,
+                                        color = Color(0xFF9A9A9A),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { applyEdit() }) { Text("SAVE") } },
+            dismissButton = { TextButton(onClick = { editSession = null }) { Text("CANCEL") } },
         )
     }
 
@@ -624,6 +760,15 @@ fun PatchesTab(state: MutableState<Settings>) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "Edit",
+                        color = Colors.pasx2_blue,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .clickable { openEditor(file) }
+                            .padding(start = 8.dp),
                     )
                     Text(
                         "Delete",

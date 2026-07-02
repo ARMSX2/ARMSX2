@@ -22,6 +22,7 @@
 #include "SIO/Memcard/MemoryCardFile.h"
 #include "pcsx2/Patch.h"
 #include "pcsx2/R5900.h"
+#include "pcsx2/EEDiffVerify.h" // @@EEDIFF@@ diff-verifier toggle
 #include "PerformanceMetrics.h"
 #include "GameList.h"
 #include "GameDatabase.h"
@@ -35,6 +36,9 @@
 #include "pcsx2/INISettingsInterface.h"
 #include "SIO/Pad/Pad.h"
 #include "Input/InputManager.h"
+#include "USB/USB.h"
+#include "USB/deviceproxy.h"
+#include "USB/qemu-usb/hid.h"
 #include "ImGui/ImGuiFullscreen.h"
 #include "Achievements.h"
 #include "common/Error.h"
@@ -144,6 +148,7 @@ static JavaVM*    s_jvm              = nullptr;
 static jclass     s_NativeApp_class  = nullptr;  // GlobalRef
 static jmethodID  s_vmSetPaused_mid  = nullptr;
 static jmethodID  s_onPadRumble_mid  = nullptr;
+static jmethodID  s_playSound_mid    = nullptr;
 
 ////
 std::string GetJavaString(JNIEnv *env, jstring jstr) {
@@ -172,6 +177,32 @@ Java_kr_co_iefriends_pcsx2_NativeApp_dumpPgoProfile(JNIEnv*, jclass) {
 #ifdef ARMSX2_PGO_GENERATE
     __llvm_profile_write_file();
 #endif
+}
+
+// Save a GS dump (.gs) to EmuFolders::Snapshots — a replayable capture of the
+// GPU command stream, for diagnosing rendering bugs (replay in desktop PCSX2).
+// Mirrors the GSDumpSingleFrame/MultiFrame hotkeys (GS.cpp).
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_captureGsDump(JNIEnv*, jclass, jint frames) {
+    const u32 n = (frames > 0) ? static_cast<u32>(frames) : 1u;
+    MTGS::RunOnGSThread([n]() { GSQueueSnapshot(std::string(), n); });
+}
+
+// @@EEDIFF@@ Toggle the EE recompiler-vs-interpreter differential verifier (throwaway
+// diagnostic — see EEDiffVerify.h). Sets the enable flag AND clears the EE block cache so
+// blocks recompile WITH (enabled) or WITHOUT (disabled) the per-op verify hooks. With it
+// on, load True Crime NYC and watch logcat for "@@EEDIFF@@ ... DIVERGE ..." — the first
+// line names the exact guest instruction that miscompiles.
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setEeDiffVerify(JNIEnv*, jclass, jboolean enabled) {
+    eeDiffSetEnabled(enabled == JNI_TRUE);
+    // Reset the EE recompiler so every block recompiles with the new hook state. Cpu is
+    // the active R5900 provider (the mac ARM64 rec on Android); Reset -> recResetEE, which
+    // defers safely to the dispatcher if a block is currently executing.
+    if (Cpu)
+        Cpu->Reset();
 }
 
 extern "C"
@@ -358,6 +389,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
         env->DeleteLocalRef(local);
         s_vmSetPaused_mid = env->GetStaticMethodID(s_NativeApp_class, "vmSetPaused", "(Z)V");
         s_onPadRumble_mid = env->GetStaticMethodID(s_NativeApp_class, "onPadRumble", "(III)V");
+        s_playSound_mid   = env->GetStaticMethodID(s_NativeApp_class, "playSound", "(Ljava/lang/String;)V");
     }
 
     // Bind the JNI-backed HTTP downloader's class + method IDs while we
@@ -923,6 +955,17 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAudioMuted(JNIEnv *env, jclass clazz,
     EmuConfig.SPU2.OutputMuted = muted;
     Host::SetBaseBoolSettingValue("SPU2/Output", "OutputMuted", muted);
     SPU2::SetOutputMuted(muted);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setAudioSwapChannels(JNIEnv *env, jclass clazz,
+                                                          jboolean p_swap) {
+    // Swap the final stereo output channels (L<->R). Persist to the base layer so it
+    // survives cold starts, and push live to the running mixer (applied next sample).
+    const bool swap = (p_swap == JNI_TRUE);
+    Host::SetBaseBoolSettingValue("SPU2/Output", "SwapChannels", swap);
+    SPU2::SetSwapChannels(swap);
 }
 
 extern "C"
@@ -2501,19 +2544,284 @@ void Host::OpenHostFileSelectorAsync(std::string_view title, bool select_directo
     callback(std::string());
 }
 
+// -------------------------------------------------------------------------
+// USB keyboard (#254) — host-keyboard code conversion.
+//
+// PCSX2's usb-hid HIDKbdDevice builds its host-key -> QKeyCode map by asking
+// InputManager::ConvertHostKeyboardStringToCode(name) for every QKeyCode name
+// (usb-hid.cpp: s_qkeycode_names). On desktop the "host code" is an SDL
+// scancode; on Android we have no SDL keyboard, so we define the host code to
+// BE the QKeyCode enum value. That makes the round-trip identity:
+//   ConvertHostKeyboardStringToCode("A") == Q_KEY_CODE_A
+// and lets usb-hid populate keycode_mapping[Q_KEY_CODE_A] = Q_KEY_CODE_A.
+// The USB-keyboard JNI below then feeds Android KeyEvent codes through the
+// Android-keycode -> QKeyCode table and calls USB::SetDeviceBindValue(port,
+// qcode, value) — SetBindingValue looks qcode up in keycode_mapping and queues
+// the emulated key.
+//
+// The name<->QKeyCode pairs MUST match the strings in usb-hid.cpp's
+// s_qkeycode_names, otherwise the map entry for that key is never created.
+namespace
+{
+    struct QKeyName
+    {
+        QKeyCode qcode;
+        const char* name;
+    };
+
+    // Mirror of usb-hid.cpp s_qkeycode_names (host-string -> QKeyCode). Kept in
+    // sync by hand — both derive from the fixed QKeyCode enum in qemu-usb/hid.h.
+    constexpr QKeyName s_qkey_names[] = {
+        {Q_KEY_CODE_0, "0"}, {Q_KEY_CODE_1, "1"}, {Q_KEY_CODE_2, "2"}, {Q_KEY_CODE_3, "3"},
+        {Q_KEY_CODE_4, "4"}, {Q_KEY_CODE_5, "5"}, {Q_KEY_CODE_6, "6"}, {Q_KEY_CODE_7, "7"},
+        {Q_KEY_CODE_8, "8"}, {Q_KEY_CODE_9, "9"},
+        {Q_KEY_CODE_A, "A"}, {Q_KEY_CODE_B, "B"}, {Q_KEY_CODE_C, "C"}, {Q_KEY_CODE_D, "D"},
+        {Q_KEY_CODE_E, "E"}, {Q_KEY_CODE_F, "F"}, {Q_KEY_CODE_G, "G"}, {Q_KEY_CODE_H, "H"},
+        {Q_KEY_CODE_I, "I"}, {Q_KEY_CODE_J, "J"}, {Q_KEY_CODE_K, "K"}, {Q_KEY_CODE_L, "L"},
+        {Q_KEY_CODE_M, "M"}, {Q_KEY_CODE_N, "N"}, {Q_KEY_CODE_O, "O"}, {Q_KEY_CODE_P, "P"},
+        {Q_KEY_CODE_Q, "Q"}, {Q_KEY_CODE_R, "R"}, {Q_KEY_CODE_S, "S"}, {Q_KEY_CODE_T, "T"},
+        {Q_KEY_CODE_U, "U"}, {Q_KEY_CODE_V, "V"}, {Q_KEY_CODE_W, "W"}, {Q_KEY_CODE_X, "X"},
+        {Q_KEY_CODE_Y, "Y"}, {Q_KEY_CODE_Z, "Z"},
+        {Q_KEY_CODE_MINUS, "Minus"}, {Q_KEY_CODE_EQUAL, "Equal"},
+        {Q_KEY_CODE_BACKSPACE, "Backspace"}, {Q_KEY_CODE_TAB, "Tab"},
+        {Q_KEY_CODE_BRACKET_LEFT, "BracketLeft"}, {Q_KEY_CODE_BRACKET_RIGHT, "BracketRight"},
+        {Q_KEY_CODE_RET, "Return"}, {Q_KEY_CODE_SEMICOLON, "Semicolon"},
+        {Q_KEY_CODE_APOSTROPHE, "Apostrophe"}, {Q_KEY_CODE_GRAVE_ACCENT, "Agrave"},
+        {Q_KEY_CODE_BACKSLASH, "Backslash"}, {Q_KEY_CODE_COMMA, "Comma"},
+        {Q_KEY_CODE_DOT, "Period"}, {Q_KEY_CODE_SLASH, "Slash"},
+        {Q_KEY_CODE_ASTERISK, "Asterisk"}, {Q_KEY_CODE_SPC, "Space"},
+        {Q_KEY_CODE_CAPS_LOCK, "Caps_lock"}, {Q_KEY_CODE_ESC, "Escape"},
+        {Q_KEY_CODE_SHIFT, "Shift"}, {Q_KEY_CODE_SHIFT_R, "Shift_r"},
+        {Q_KEY_CODE_CTRL, "Control"}, {Q_KEY_CODE_CTRL_R, "Control_r"},
+        {Q_KEY_CODE_ALT, "Alt"}, {Q_KEY_CODE_ALT_R, "Alt_r"},
+        {Q_KEY_CODE_META_L, "Meta"}, {Q_KEY_CODE_MENU, "Menu"},
+        {Q_KEY_CODE_F1, "F1"}, {Q_KEY_CODE_F2, "F2"}, {Q_KEY_CODE_F3, "F3"},
+        {Q_KEY_CODE_F4, "F4"}, {Q_KEY_CODE_F5, "F5"}, {Q_KEY_CODE_F6, "F6"},
+        {Q_KEY_CODE_F7, "F7"}, {Q_KEY_CODE_F8, "F8"}, {Q_KEY_CODE_F9, "F9"},
+        {Q_KEY_CODE_F10, "F10"}, {Q_KEY_CODE_F11, "F11"}, {Q_KEY_CODE_F12, "F12"},
+        {Q_KEY_CODE_NUM_LOCK, "Num_lock"}, {Q_KEY_CODE_SCROLL_LOCK, "Scroll_lock"},
+        {Q_KEY_CODE_KP_DIVIDE, "NumpadSlash"}, {Q_KEY_CODE_KP_MULTIPLY, "NumpadAsterisk"},
+        {Q_KEY_CODE_KP_SUBTRACT, "NumpadMinus"}, {Q_KEY_CODE_KP_ADD, "NumpadPlus"},
+        {Q_KEY_CODE_KP_ENTER, "NumpadReturn"}, {Q_KEY_CODE_KP_DECIMAL, "NumpadPeriod"},
+        {Q_KEY_CODE_KP_0, "Numpad0"}, {Q_KEY_CODE_KP_1, "Numpad1"}, {Q_KEY_CODE_KP_2, "Numpad2"},
+        {Q_KEY_CODE_KP_3, "Numpad3"}, {Q_KEY_CODE_KP_4, "Numpad4"}, {Q_KEY_CODE_KP_5, "Numpad5"},
+        {Q_KEY_CODE_KP_6, "Numpad6"}, {Q_KEY_CODE_KP_7, "Numpad7"}, {Q_KEY_CODE_KP_8, "Numpad8"},
+        {Q_KEY_CODE_KP_9, "Numpad9"}, {Q_KEY_CODE_KP_COMMA, "NumpadComma"},
+        {Q_KEY_CODE_KP_EQUALS, "NumpadEqual"},
+        {Q_KEY_CODE_HOME, "Home"}, {Q_KEY_CODE_PGUP, "PageUp"}, {Q_KEY_CODE_PGDN, "PageDown"},
+        {Q_KEY_CODE_END, "End"}, {Q_KEY_CODE_LEFT, "Left"}, {Q_KEY_CODE_UP, "Up"},
+        {Q_KEY_CODE_DOWN, "Down"}, {Q_KEY_CODE_RIGHT, "Right"},
+        {Q_KEY_CODE_INSERT, "Insert"}, {Q_KEY_CODE_DELETE, "Delete"},
+        {Q_KEY_CODE_PRINT, "Print"}, {Q_KEY_CODE_PAUSE, "Pause"}, {Q_KEY_CODE_SYSRQ, "Sysrq"},
+        {Q_KEY_CODE_LESS, "Less"},
+    };
+}
+
 std::optional<u32> InputManager::ConvertHostKeyboardStringToCode(const std::string_view str)
 {
+    for (const QKeyName& kn : s_qkey_names)
+    {
+        if (str == kn.name)
+            return static_cast<u32>(kn.qcode);
+    }
     return std::nullopt;
 }
 
 std::optional<std::string> InputManager::ConvertHostKeyboardCodeToString(u32 code)
 {
+    for (const QKeyName& kn : s_qkey_names)
+    {
+        if (static_cast<u32>(kn.qcode) == code)
+            return std::string(kn.name);
+    }
     return std::nullopt;
 }
 
 const char* InputManager::ConvertHostKeyboardCodeToIcon(u32 code)
 {
     return nullptr;
+}
+
+// -------------------------------------------------------------------------
+// Android KeyEvent keyCode -> QKeyCode. Android AKEYCODE_* values are the same
+// integers Java's android.view.KeyEvent.KEYCODE_* constants use; the Kotlin
+// side forwards event.keyCode straight through. Only the subset a PS2 game
+// (EQOA, Konami keyboard titles) actually reads is mapped — printable keys,
+// modifiers, editing/navigation, function and numpad keys. Unmapped codes
+// return Q_KEY_CODE_UNMAPPED and are dropped.
+static QKeyCode AndroidKeyCodeToQKeyCode(int kc)
+{
+    // AKEYCODE letters A..Z = 29..54 (alphabetical). QKeyCode letters are NOT
+    // alphabetical (keyboard-row order: A=36, S=37, D=38, ...), so map each
+    // explicitly rather than by arithmetic offset.
+    if (kc >= 29 && kc <= 54)
+    {
+        static constexpr QKeyCode kLetters[26] = {
+            Q_KEY_CODE_A, Q_KEY_CODE_B, Q_KEY_CODE_C, Q_KEY_CODE_D, Q_KEY_CODE_E,
+            Q_KEY_CODE_F, Q_KEY_CODE_G, Q_KEY_CODE_H, Q_KEY_CODE_I, Q_KEY_CODE_J,
+            Q_KEY_CODE_K, Q_KEY_CODE_L, Q_KEY_CODE_M, Q_KEY_CODE_N, Q_KEY_CODE_O,
+            Q_KEY_CODE_P, Q_KEY_CODE_Q, Q_KEY_CODE_R, Q_KEY_CODE_S, Q_KEY_CODE_T,
+            Q_KEY_CODE_U, Q_KEY_CODE_V, Q_KEY_CODE_W, Q_KEY_CODE_X, Q_KEY_CODE_Y,
+            Q_KEY_CODE_Z,
+        };
+        return kLetters[kc - 29];
+    }
+    if (kc >= 7 && kc <= 16)
+    {
+        // Android orders 0 first (7), then 1..9 (8..16). QKeyCode digits are
+        // 1..9 (=9..17) then 0 (=18), so 0 is special-cased and 1..9 are
+        // contiguous in QKeyCode too.
+        if (kc == 7)
+            return Q_KEY_CODE_0;
+        return static_cast<QKeyCode>(Q_KEY_CODE_1 + (kc - 8));
+    }
+    switch (kc)
+    {
+        // Whitespace / editing
+        case 62: return Q_KEY_CODE_SPC;         // SPACE
+        case 66: return Q_KEY_CODE_RET;         // ENTER
+        case 67: return Q_KEY_CODE_BACKSPACE;   // DEL (backspace)
+        case 61: return Q_KEY_CODE_TAB;         // TAB
+        case 111: return Q_KEY_CODE_ESC;        // ESCAPE
+        case 112: return Q_KEY_CODE_DELETE;     // FORWARD_DEL
+        // Punctuation
+        case 69: return Q_KEY_CODE_MINUS;       // MINUS
+        case 70: return Q_KEY_CODE_EQUAL;       // EQUALS
+        case 71: return Q_KEY_CODE_BRACKET_LEFT;  // LEFT_BRACKET
+        case 72: return Q_KEY_CODE_BRACKET_RIGHT; // RIGHT_BRACKET
+        case 73: return Q_KEY_CODE_BACKSLASH;   // BACKSLASH
+        case 74: return Q_KEY_CODE_SEMICOLON;   // SEMICOLON
+        case 75: return Q_KEY_CODE_APOSTROPHE;  // APOSTROPHE
+        case 68: return Q_KEY_CODE_GRAVE_ACCENT;// GRAVE
+        case 76: return Q_KEY_CODE_SLASH;       // SLASH
+        case 55: return Q_KEY_CODE_COMMA;       // COMMA
+        case 56: return Q_KEY_CODE_DOT;         // PERIOD
+        // Modifiers
+        case 59: return Q_KEY_CODE_SHIFT;       // SHIFT_LEFT
+        case 60: return Q_KEY_CODE_SHIFT_R;     // SHIFT_RIGHT
+        case 113: return Q_KEY_CODE_CTRL;       // CTRL_LEFT
+        case 114: return Q_KEY_CODE_CTRL_R;     // CTRL_RIGHT
+        case 57: return Q_KEY_CODE_ALT;         // ALT_LEFT
+        case 58: return Q_KEY_CODE_ALT_R;       // ALT_RIGHT
+        // Both Meta keys collapse to META_L: usb-hid's keycode_mapping is keyed
+        // by ConvertHostKeyboardStringToCode("Meta"), which resolves to META_L
+        // (the first "Meta" entry), so META_R has no map entry to hit.
+        case 117: return Q_KEY_CODE_META_L;     // META_LEFT
+        case 118: return Q_KEY_CODE_META_L;     // META_RIGHT
+        case 115: return Q_KEY_CODE_CAPS_LOCK;  // CAPS_LOCK
+        case 116: return Q_KEY_CODE_SCROLL_LOCK;// SCROLL_LOCK
+        case 143: return Q_KEY_CODE_NUM_LOCK;   // NUM_LOCK
+        // Navigation
+        case 122: return Q_KEY_CODE_HOME;       // MOVE_HOME
+        case 123: return Q_KEY_CODE_END;        // MOVE_END
+        case 92: return Q_KEY_CODE_PGUP;        // PAGE_UP
+        case 93: return Q_KEY_CODE_PGDN;        // PAGE_DOWN
+        case 124: return Q_KEY_CODE_INSERT;     // INSERT
+        case 21: return Q_KEY_CODE_LEFT;        // DPAD_LEFT
+        case 22: return Q_KEY_CODE_RIGHT;       // DPAD_RIGHT
+        case 19: return Q_KEY_CODE_UP;          // DPAD_UP
+        case 20: return Q_KEY_CODE_DOWN;        // DPAD_DOWN
+        // System keys occasionally on keyboards
+        case 120: return Q_KEY_CODE_SYSRQ;      // SYSRQ (PrintScreen)
+        case 121: return Q_KEY_CODE_PAUSE;      // BREAK
+        // Function keys F1..F12 = 131..142
+        case 131: return Q_KEY_CODE_F1;
+        case 132: return Q_KEY_CODE_F2;
+        case 133: return Q_KEY_CODE_F3;
+        case 134: return Q_KEY_CODE_F4;
+        case 135: return Q_KEY_CODE_F5;
+        case 136: return Q_KEY_CODE_F6;
+        case 137: return Q_KEY_CODE_F7;
+        case 138: return Q_KEY_CODE_F8;
+        case 139: return Q_KEY_CODE_F9;
+        case 140: return Q_KEY_CODE_F10;
+        case 141: return Q_KEY_CODE_F11;
+        case 142: return Q_KEY_CODE_F12;
+        // Numpad: NUMPAD_0..9 = 144..153
+        case 144: return Q_KEY_CODE_KP_0;
+        case 145: return Q_KEY_CODE_KP_1;
+        case 146: return Q_KEY_CODE_KP_2;
+        case 147: return Q_KEY_CODE_KP_3;
+        case 148: return Q_KEY_CODE_KP_4;
+        case 149: return Q_KEY_CODE_KP_5;
+        case 150: return Q_KEY_CODE_KP_6;
+        case 151: return Q_KEY_CODE_KP_7;
+        case 152: return Q_KEY_CODE_KP_8;
+        case 153: return Q_KEY_CODE_KP_9;
+        case 154: return Q_KEY_CODE_KP_DIVIDE;   // NUMPAD_DIVIDE
+        case 155: return Q_KEY_CODE_KP_MULTIPLY; // NUMPAD_MULTIPLY
+        case 156: return Q_KEY_CODE_KP_SUBTRACT; // NUMPAD_SUBTRACT
+        case 157: return Q_KEY_CODE_KP_ADD;      // NUMPAD_ADD
+        case 158: return Q_KEY_CODE_KP_DECIMAL;  // NUMPAD_DOT
+        case 159: return Q_KEY_CODE_KP_COMMA;    // NUMPAD_COMMA
+        case 160: return Q_KEY_CODE_KP_ENTER;    // NUMPAD_ENTER
+        case 161: return Q_KEY_CODE_KP_EQUALS;   // NUMPAD_EQUALS
+        default: return Q_KEY_CODE_UNMAPPED;
+    }
+}
+
+// Attach/detach the emulated USB HID keyboard on a USB port (0 or 1) LIVE on a
+// running VM. Persistence of [USB{port+1}] Type is handled Kotlin-side via
+// setSetting (Settings.applyTo), so this only drives the live device
+// (re)creation: it sets the live EmuConfig and calls USB::CheckForConfigChanges,
+// which DestroyDevice/CreateDevice the USB port so the running game sees the
+// (dis)connect immediately. Mirrors enablePad2's threading discipline —
+// ScopedVMPause parks the EE/MTVU/MTGS pipeline (which the USB/OHCI poll runs
+// on) while the device list is rebuilt. No-op before the VM exists: the
+// persisted Type is picked up by USBOptions::LoadSave on the next boot.
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_usbSetKeyboardEnabled(JNIEnv*, jclass, jint p_port, jboolean p_enabled) {
+    if (p_port < 0 || static_cast<u32>(p_port) >= USB::NUM_PORTS)
+        return;
+    if (!VMManager::HasValidVM())
+        return;
+
+    const u32 port = static_cast<u32>(p_port);
+    const s32 new_type = p_enabled ? DEVTYPE_HIDKEYBOARD : DEVTYPE_NONE;
+    if (EmuConfig.USB.Ports[port].DeviceType == new_type)
+        return; // already in the requested state
+
+    ScopedVMPause vm_pause(/*pause_audio=*/false);
+    if (!vm_pause.parked())
+        return;
+
+    const Pcsx2Config old_config(EmuConfig);
+    EmuConfig.USB.Ports[port].DeviceType = new_type;
+    EmuConfig.USB.Ports[port].DeviceSubtype = 0;
+    // Serialize the device-list swap against the Android input thread's
+    // usbKeyboardKey / applyPadButton calls (both touch the same emulated
+    // device state) — same reasoning as enablePad2's s_pad_mutex.
+    {
+        std::lock_guard<std::mutex> lk(s_pad_mutex);
+        USB::CheckForConfigChanges(old_config);
+    }
+    Console.WriteLnFmt("@@ANDROID_USBKBD@@ port={} type={}", port, p_enabled ? "hidkbd" : "None");
+}
+
+// Forward one Android hardware KeyEvent to the emulated USB keyboard on [port].
+// [androidKeyCode] is android.view.KeyEvent.keyCode; [pressed] is down/up.
+// Maps to a QKeyCode and drives USB::SetDeviceBindValue, which (via
+// HIDKbdDevice::SetBindingValue) queues the HID key report. No-op when no USB
+// keyboard is attached to that port or the key isn't mappable. Called on the
+// Android input thread — SetDeviceBindValue mutates the HID event queue that
+// the USB/OHCI poll (CPU thread) reads, so serialize with s_pad_mutex (shared
+// with pad input; the emulated USB keyboard is a low-rate event source).
+extern "C" JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_usbKeyboardKey(JNIEnv*, jclass, jint p_port, jint p_androidKeyCode, jboolean p_pressed) {
+    if (p_port < 0 || static_cast<u32>(p_port) >= USB::NUM_PORTS)
+        return JNI_FALSE;
+    if (!VMManager::HasValidVM())
+        return JNI_FALSE;
+    if (EmuConfig.USB.Ports[static_cast<u32>(p_port)].DeviceType != DEVTYPE_HIDKEYBOARD)
+        return JNI_FALSE;
+
+    const QKeyCode qcode = AndroidKeyCodeToQKeyCode(static_cast<int>(p_androidKeyCode));
+    if (qcode == Q_KEY_CODE_UNMAPPED)
+        return JNI_FALSE;
+
+    std::lock_guard<std::mutex> lk(s_pad_mutex);
+    USB::SetDeviceBindValue(static_cast<u32>(p_port), static_cast<u32>(qcode), p_pressed ? 1.0f : 0.0f);
+    return JNI_TRUE;
 }
 
 s32 Host::Internal::GetTranslatedStringImpl(
@@ -2631,6 +2939,25 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdShowHardwareInfo(JNIEnv*, jclass, jboole
     applyOsdSetting();
 }
 
+// Transient OSD notification messages (shader-compile popups, "settings applied",
+// save-state, etc.). PCSX2 gates the whole message queue on OsdMessagesPos != None
+// (ImGuiManager::DrawOSDMessages), so hiding = None, showing = the default TopLeft.
+// Achievement popups use a separate NotificationPosition and are unaffected.
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_osdShowMessages(JNIEnv*, jclass, jboolean enabled) {
+    EmuConfig.GS.OsdMessagesPos = enabled ? OsdOverlayPos::TopLeft : OsdOverlayPos::None;
+    applyOsdSetting();
+}
+
+// GPU pipeline-statistics OSD line (VSI/PSI). applyOsdSetting() routes through
+// MTGS::ApplySettings → GSUpdateConfig, which flips the actual pipeline-stats
+// query on the device (real on Vulkan; a no-op that degrades to n/a on GLES).
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_osdShowGpuStats(JNIEnv*, jclass, jboolean enabled) {
+    EmuConfig.GS.OsdShowGPUStats = enabled;
+    applyOsdSetting();
+}
+
 // Master OSD toggle — flips every OSD bit we enable at first init in
 // initialize() so the in-game overlay's OSD pill is a single switch.
 // Writes BASE too so the state survives the next ApplySettings reload
@@ -2685,7 +3012,12 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_gameIniBeginWrite(JNIEnv*, jclass) {
     if (!VMManager::HasValidVM())
         return JNI_FALSE;
-    const u32 crc = VMManager::GetDiscCRC();
+    // Disc games key per-game settings on the disc CRC; standalone ELF boots (no
+    // disc) have no disc CRC, so fall back to the ELF's own CRC — matches the
+    // load side in UpdateGameSettingsLayer so ELF overrides round-trip (#253).
+    u32 crc = VMManager::GetDiscCRC();
+    if (crc == 0)
+        crc = VMManager::GetCurrentCRC();
     if (crc == 0)
         return JNI_FALSE;
     // Fresh interface (no Load) so the export is a clean regeneration of the
@@ -3239,4 +3571,31 @@ void Native::onPadRumble(int pad, int largeMotor, int smallMotor) {
                               static_cast<jint>(smallMotor));
 
     if (attached) s_jvm->DetachCurrentThread();
+}
+
+// Android implementation of the cross-platform sound helper. Used by the
+// RetroAchievements code to play unlock / info / leaderboard-submit .wav files
+// (LnxMisc.cpp's aplay/gstreamer path is a no-op on Android). Bridges to
+// NativeApp.playSound(String), which plays via a SoundPool. Fire-and-forget.
+bool Common::PlaySoundAsync(const char* path)
+{
+    if (!s_jvm || !s_NativeApp_class || !s_playSound_mid || !path)
+        return false;
+
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    const int status = s_jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    if (status == JNI_EDETACHED) {
+        if (s_jvm->AttachCurrentThread(&env, nullptr) != JNI_OK) return false;
+        attached = true;
+    } else if (status != JNI_OK) {
+        return false;
+    }
+
+    jstring jpath = env->NewStringUTF(path);
+    env->CallStaticVoidMethod(s_NativeApp_class, s_playSound_mid, jpath);
+    if (jpath) env->DeleteLocalRef(jpath);
+
+    if (attached) s_jvm->DetachCurrentThread();
+    return true;
 }

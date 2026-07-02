@@ -323,6 +323,9 @@ public:
 	bool SetGPUTimingEnabled(bool enabled) override;
 	float GetAndResetAccumulatedGPUTime() override;
 
+	bool SetGPUPipelineStatisticsEnabled(bool enabled) override { return false; }
+	GPUPipelineStatistics GetAndResetAccumulatedGPUPipelineStatistics() override { return {}; }
+
 	// Helpers and utility draws.
 	void DrawPrimitive();
 	void DrawIndexedPrimitive();

@@ -104,6 +104,16 @@ public class NativeApp {
 	// No-op in normal builds (the native impl is empty without -fprofile-generate).
 	public static native void dumpPgoProfile();
 
+	// Save a GS dump (.gs of GPU commands) to the snaps folder for diagnosing
+	// rendering bugs. frames <= 0 captures a single frame.
+	public static native void captureGsDump(int frames);
+
+	// @@EEDIFF@@ Toggle the EE recompiler-vs-interpreter differential verifier (throwaway
+	// diagnostic). Enabling clears the EE block cache so blocks recompile with per-op
+	// verify hooks; the first miscompiling guest instruction logs "@@EEDIFF@@ ... DIVERGE".
+	// Off by default = zero overhead / normal speed. Debug tool only — heavy slowdown when on.
+	public static native void setEeDiffVerify(boolean enabled);
+
 	/**
 	 * Push one EmuCore setting into the base settings layer. Mirrors
 	 * pcsx2-qt's Settings save flow — Host::SetBase*SettingValue sticks
@@ -232,6 +242,8 @@ public class NativeApp {
 	public static native void osdShowGSStats(boolean enabled);
 	public static native void osdShowFrameTimes(boolean enabled);
 	public static native void osdShowHardwareInfo(boolean enabled);
+	public static native void osdShowMessages(boolean enabled);
+	public static native void osdShowGpuStats(boolean enabled);
 	public static native void osdShowVersion(boolean enabled);
 
 	/** Per-game settings export — writes only the keys that differ from global
@@ -266,6 +278,21 @@ public class NativeApp {
 	public static native void enablePad2();
 	public static native void resetKeyStatus();
 
+	// ---- USB keyboard (#254: EQOA / Konami-keyboard games) ----
+	/** Attach ({@code true}) or detach ({@code false}) an emulated USB HID
+	 *  keyboard on USB port {@code port} (0 = USB1, 1 = USB2). Persists
+	 *  [USB{port+1}] Type = hidkbd/None and, when a VM is running, recreates the
+	 *  device live so the game sees the (dis)connect. Call off the UI thread — a
+	 *  live change briefly parks the emulation pipeline. */
+	public static native void usbSetKeyboardEnabled(int port, boolean enabled);
+	/** Feed one Android hardware {@link android.view.KeyEvent} to the emulated USB
+	 *  keyboard on {@code port}. {@code androidKeyCode} is {@code KeyEvent.keyCode};
+	 *  {@code pressed} is the down/up state. Returns {@code true} iff a USB keyboard
+	 *  is attached to that port AND the key mapped to a HID usage — i.e. the event
+	 *  was consumed by the emulated keyboard and should NOT also drive the pad /
+	 *  frontend. No-op (returns {@code false}) otherwise. */
+	public static native boolean usbKeyboardKey(int port, int androidKeyCode, boolean pressed);
+
 	// ---- Controller rumble (BT/USB gamepads via Android InputDevice) ----
 	// Device id of the most-recently-used gamepad, set from Main.dispatchKeyEvent.
 	public static volatile int sRumbleDeviceId = -1;
@@ -290,6 +317,49 @@ public class NativeApp {
 		float low = Math.max(0f, Math.min(1f, largeMotor / 255f));   // low-frequency / large
 		float high = Math.max(0f, Math.min(1f, smallMotor / 255f));  // high-frequency / small
 		vibrateDevice(devId, low, high, RUMBLE_MS, pad == 0);
+	}
+
+	// ---- Achievement / notification sound playback ----
+	// Called from native Common::PlaySoundAsync (RetroAchievements unlock/info/
+	// leaderboard-submit .wav). Fire-and-forget; must never throw back to JNI.
+	private static android.media.SoundPool sSoundPool;
+	private static final java.util.HashMap<String, Integer> sSoundIds = new java.util.HashMap<>();
+	private static final java.util.HashSet<Integer> sSoundPending = new java.util.HashSet<>();
+
+	public static void playSound(String path) {
+		if (path == null || path.isEmpty()) return;
+		try {
+			synchronized (sSoundIds) {
+				if (sSoundPool == null) {
+					android.media.AudioAttributes attrs = new android.media.AudioAttributes.Builder()
+							.setUsage(android.media.AudioAttributes.USAGE_GAME)
+							.setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+							.build();
+					sSoundPool = new android.media.SoundPool.Builder()
+							.setMaxStreams(4)
+							.setAudioAttributes(attrs)
+							.build();
+					// load() is async; play each sound once its first load completes,
+					// then reuse the cached sample id for instant replays.
+					sSoundPool.setOnLoadCompleteListener((sp, sampleId, status) -> {
+						synchronized (sSoundIds) {
+							if (status == 0 && sSoundPending.remove(sampleId))
+								sp.play(sampleId, 1f, 1f, 1, 0, 1f);
+						}
+					});
+				}
+				Integer id = sSoundIds.get(path);
+				if (id != null) {
+					sSoundPool.play(id, 1f, 1f, 1, 0, 1f);
+				} else {
+					int sid = sSoundPool.load(path, 1);
+					sSoundIds.put(path, sid);
+					sSoundPending.add(sid);
+				}
+			}
+		} catch (Throwable t) {
+			android.util.Log.e("ARMSX2", "playSound failed: " + path, t);
+		}
 	}
 
 	/** Drive [devId]'s vibrator(s) with the PS2 large/high motor intensities for [ms].
@@ -465,6 +535,8 @@ public class NativeApp {
 	public static native void setAudioVolume(int volume);
 	/** Mute/unmute SPU2 output. Applies live + persists. */
 	public static native void setAudioMuted(boolean muted);
+	/** Swap final stereo output channels L&lt;-&gt;R (flipped-speaker devices). Applies live + persists. */
+	public static native void setAudioSwapChannels(boolean swap);
 	public static native void speedhackEecyclerate(int value);
 	public static native void speedhackEecycleskip(int value);
 	public static native void setInstantVU1(boolean enabled);

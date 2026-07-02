@@ -270,6 +270,8 @@ fun RendererTab(state: MutableState<Settings>) {
             SettingsDivider()
             TexturePackImportRow()
             SettingsDivider()
+            GsDumpCaptureRow()
+            SettingsDivider()
             ToggleRow(
                 "Dump Replaceable Textures",
                 s.dumpReplaceableTextures,
@@ -431,6 +433,42 @@ private fun TexturePackImportRow() {
                     activeTextureSerial()?.let { "Copies into textures/$it/replacements" }
                         ?: "Boot a game first so ARMSX2 knows the serial."
                 },
+                color = Colors.pasx2_blue,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    }
+}
+
+@Composable
+private fun GsDumpCaptureRow() {
+    val context = LocalContext.current
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .background(rowAura())
+            .clickable {
+                if (Main.eState.value == com.armsx2.EmuState.STOPPED) {
+                    Toast.makeText(context, "Start a game first, then capture while the glitch is on screen.", Toast.LENGTH_LONG).show()
+                } else {
+                    runCatching { NativeApp.captureGsDump(1) }
+                    Toast.makeText(context, "GS dump queued — close this menu so it captures the frame. Saved to the snaps folder.", Toast.LENGTH_LONG).show()
+                }
+            }
+            .padding(horizontal = 6.dp, vertical = 5.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Column {
+            Text(
+                "Capture GS Dump (bug report)",
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "Saves one frame of GPU commands (.gs) to the snaps folder — replayable in desktop PCSX2 to diagnose rendering bugs.",
                 color = Colors.pasx2_blue,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,

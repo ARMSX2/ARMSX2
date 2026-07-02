@@ -193,6 +193,33 @@ object MemoryCardManager {
                     }
                 }
 
+                Spacer(Modifier.height(12.dp))
+                // Per-game memory cards (NetherSX2-style): when on, each game boots
+                // with its own Slot 1 card named after its serial (auto-created by
+                // the core). Games given an explicit Slot 1 card keep it.
+                var perGameCards by remember { mutableStateOf(Main.prefs.getBoolean("memcard.perGame", false)) }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Per-Game Memory Cards", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Boot each game with its own Slot 1 card (named after its serial, auto-created). Restart the game to apply.",
+                            color = Color(0xFFAAAAAA),
+                            fontSize = 10.sp,
+                        )
+                    }
+                    SelectChip(
+                        label = if (perGameCards) "On" else "Off",
+                        selected = perGameCards,
+                        id = "mc:pergame",
+                    ) {
+                        perGameCards = !perGameCards
+                        Main.prefs.edit().putBoolean("memcard.perGame", perGameCards).apply()
+                    }
+                }
+
                 status.value?.let {
                     Spacer(Modifier.height(10.dp))
                     Text(it, color = Color(0xFFBFD7FF), fontSize = 12.sp)

@@ -9,7 +9,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -17,6 +20,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Text
 import com.armsx2.config.Settings
 import com.armsx2.ui.InGameOverlay
+import kr.co.iefriends.pcsx2.NativeApp
 
 /**
  * Recompiler section of the in-game settings overlay.
@@ -73,6 +77,33 @@ fun RecompilerTab(state: MutableState<Settings>) {
                 Spacer(Modifier.weight(1f))
                 Spacer(Modifier.weight(1f))
             }
+            // @@EEDIFF@@ Throwaway diagnostic: EE recompiler-vs-interpreter differential
+            // verifier. Not a persisted Setting — a live native toggle that clears the EE
+            // block cache so blocks recompile with per-op verify hooks. On True Crime's
+            // load, the first miscompiling instruction logs "@@EEDIFF@@ ... DIVERGE ..." to
+            // logcat. Off by default (zero overhead); expect a heavy slowdown when on.
+            var eeDiff by remember { mutableStateOf(false) }
+            Text(
+                "Diagnostics",
+                color = Color(0xFF8090A0),
+                fontSize = 10.sp,
+                modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
+            )
+            BubbleGridRow {
+                ToggleBubble("EE Diff Verify (diag)", eeDiff, modifier = Modifier.weight(2f)) {
+                    eeDiff = it
+                    runCatching { NativeApp.setEeDiffVerify(it) }
+                }
+                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.weight(1f))
+            }
+            Text(
+                "Logs the first EE instruction whose recompiled result differs from the " +
+                    "interpreter (\"@@EEDIFF@@ ... DIVERGE\" in logcat). Very slow — turn off after capturing.",
+                color = Color(0xFFB0B0B0),
+                fontSize = 10.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
         }
     }
 }
