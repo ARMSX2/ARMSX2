@@ -435,7 +435,10 @@ fun CollapsibleSection(
             .fillMaxWidth()
             .controllerFocusable(controllerId = "sect:$title", onConfirm = { toggle() })
             .clickable { toggle() }
-            .padding(horizontal = 6.dp, vertical = 4.dp),
+            // Taller tap target (~48dp) so adjacent section headers aren't
+            // easy to mis-tap; the whole row toggles, so the padding IS the
+            // hit-area for the arrow too.
+            .padding(horizontal = 6.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -445,7 +448,8 @@ fun CollapsibleSection(
             fontWeight = FontWeight.Bold,
             modifier = Modifier.weight(1f),
         )
-        Text(if (expanded) "▾" else "▸", color = Colors.pasx2_blue, fontSize = 12.sp)
+        // Bigger, easier-to-hit collapse chevron (was 12sp).
+        Text(if (expanded) "▾" else "▸", color = Colors.pasx2_blue, fontSize = 18.sp)
     }
     if (expanded) content()
 }

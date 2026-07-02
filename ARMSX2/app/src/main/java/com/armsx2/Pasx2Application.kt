@@ -2,8 +2,11 @@
 package com.armsx2
 
 import android.app.Application
+import android.os.Build
 import coil.ImageLoader
 import coil.ImageLoaderFactory
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
@@ -30,6 +33,16 @@ class Pasx2Application : Application(), ImageLoaderFactory {
 		val coverCacheDir = File(filesDir, "cover_cache").apply { mkdirs() }
 
 		return ImageLoader.Builder(this)
+			.components {
+				// Animated library background support: decode animated GIF /
+				// WebP / APNG. Android's ImageDecoder (API 28+) covers all
+				// three; GifDecoder is the fallback for API 26-27. Static
+				// images (JPEG/PNG covers) are unaffected.
+				if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+					add(ImageDecoderDecoder.Factory())
+				else
+					add(GifDecoder.Factory())
+			}
 			.diskCache {
 				DiskCache.Builder()
 					.directory(coverCacheDir)

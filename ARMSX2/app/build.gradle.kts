@@ -200,6 +200,7 @@ dependencies {
     implementation(libs.androidx.compose.foundation)
     implementation(libs.androidx.documentfile)
     implementation(libs.coil.compose)
+    implementation(libs.coil.gif) // animated GIF / WebP / APNG (library background)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

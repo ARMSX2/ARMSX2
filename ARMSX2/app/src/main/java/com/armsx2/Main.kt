@@ -332,6 +332,14 @@ class Main: ComponentActivity() {
         // momentary). Reset to false whenever a game starts.
         @Volatile var fastForwardToggleActive = false
 
+        // #254: whether the emulated USB keyboard is attached for the running
+        // game (resolved Settings.usbKeyboard, cached at launch in
+        // applyRendererPrefs). Read hot in dispatchKeyEvent to decide whether a
+        // physical keyboard's key events should be forwarded to the USB device
+        // instead of driving the pad / frontend. Cheap flag so the per-event
+        // path doesn't touch ConfigStore.
+        @Volatile var usbKeyboardActive = false
+
         // Cached metadata for the currently-running game. Populated when
         // GamesList taps a card (so we have title, serial, compatibility,
         // extension and the cover URL ready), cleared when the user
@@ -466,7 +474,22 @@ class Main: ComponentActivity() {
             // Resolve per-game (∘ global) settings up front so the renderer backend
             // and internal resolution come from THIS title's tier, not a stale
             // global value. Sync the session state the Renderer UI reads, too.
-            val resolved = com.armsx2.config.ConfigStore.resolveForGame(currentGame.value?.serial)
+            var resolved = com.armsx2.config.ConfigStore.resolveForGame(currentGame.value?.serial)
+            // Per-game memory cards (NetherSX2-style): when the global toggle is
+            // on, point Slot 1 at a serial-named card (the core auto-creates +
+            // formats it at boot) — unless this game already has an explicit
+            // per-game Slot 1 override, which wins.
+            currentGame.value?.serial?.takeIf { it.isNotBlank() }?.let { serial ->
+                if (prefs.getBoolean("memcard.perGame", false)) {
+                    val globalSlot1 = com.armsx2.config.ConfigStore.loadGlobal().memoryCardSlot1Filename
+                    if (resolved.memoryCardSlot1Filename == globalSlot1) {
+                        resolved = resolved.copy(
+                            memoryCardSlot1Filename = "$serial.ps2",
+                            memoryCardSlot1Enabled = true,
+                        )
+                    }
+                }
+            }
             upscale.value = resolved.upscaleFloat
             renderer.value = resolved.renderer
             NativeApp.renderUpscalemultiplier(upscale.value)
@@ -487,6 +510,10 @@ class Main: ComponentActivity() {
                 else -> NativeApp.renderAuto()
             }
             resolved.applyTo()
+            // #254: cache whether this title runs with the emulated USB keyboard so
+            // dispatchKeyEvent can forward physical-keyboard keys to it. applyTo()
+            // already pushed [USB1] Type + the live attach (usbSetKeyboardEnabled).
+            usbKeyboardActive = resolved.usbKeyboard
 
             // Neutralize the NATIVE pad analog deadzone before the VM loads [Pad1].
             // A stale [Pad1]/Deadzone in an existing config (from the old, non-saving
@@ -1490,6 +1517,17 @@ class Main: ComponentActivity() {
             event.isFromSource(InputDevice.SOURCE_JOYSTICK)) {
             NativeApp.sRumbleDeviceId = event.deviceId
         }
+        // #254 Emulated USB keyboard. When a game runs with the USB HID keyboard
+        // attached (Settings.usbKeyboard, e.g. EQOA / Konami-keyboard titles),
+        // forward physical/Bluetooth keyboard key events to it. Gated so it only
+        // fires for real keyboard-source keys while the game is front-and-centre —
+        // NOT while (re)binding, and NOT while any menu/overlay is up (those need
+        // normal D-pad/confirm nav). Only a mappable keyboard key is consumed;
+        // everything else (and all gamepad buttons) falls through to the pad /
+        // hotkey / nav handling below unchanged.
+        if (forwardKeyToUsbKeyboard(event, kc)) {
+            return true
+        }
         // System-hotkey capture (from the Hotkeys tab). Handled here, not in
         // Compose, so it can capture KEYCODE_BACK and back-paddle keys (the back
         // dispatcher swallows those before they'd reach onPreviewKeyEvent).
@@ -1868,6 +1906,42 @@ class Main: ComponentActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    /** #254: forward a hardware keyboard KeyEvent to the emulated USB keyboard.
+     *  Returns true (event consumed) only when the game runs with the USB
+     *  keyboard attached, the event comes from a real keyboard, no menu/overlay
+     *  or binding capture is active, and the native side accepted the key (i.e.
+     *  it mapped to a HID usage). Otherwise returns false so the event keeps
+     *  flowing to the normal pad / hotkey / nav handling. */
+    private fun forwardKeyToUsbKeyboard(event: KeyEvent, kc: Int): Boolean {
+        if (!Main.usbKeyboardActive) return false
+        if (eState.value != EmuState.RUNNING) return false
+        // Don't steal keys the frontend/menus need for navigation, or while
+        // (re)binding a pad button / hotkey.
+        if (controllerDrivesFrontend()) return false
+        if (com.armsx2.ui.MemoryCardManager.visible.value) return false
+        if (ControllerMappings.padCapturing.value ||
+            ControllerMappings.captureHotkey.value != null) return false
+        // Must be a real keyboard key. SOURCE_KEYBOARD is set for hardware/BT
+        // keyboards; gamepad buttons (SOURCE_GAMEPAD) share some keyCodes (the
+        // D-pad arrows) so require the keyboard source and reject anything that
+        // also claims to be a gamepad/joystick, keeping pad input on its own path.
+        if (!event.isFromSource(InputDevice.SOURCE_KEYBOARD)) return false
+        if (event.isFromSource(InputDevice.SOURCE_GAMEPAD) ||
+            event.isFromSource(InputDevice.SOURCE_JOYSTICK)) return false
+        if (kc == KeyEvent.KEYCODE_UNKNOWN) return false
+        // Never divert the system Back/Home keys into the emulated keyboard —
+        // the user still needs Back to open the overlay / leave the game.
+        if (kc == KeyEvent.KEYCODE_BACK || kc == KeyEvent.KEYCODE_HOME) return false
+        val pressed = when (event.action) {
+            KeyEvent.ACTION_DOWN -> true
+            KeyEvent.ACTION_UP -> false
+            else -> return false // MULTIPLE etc. — ignore
+        }
+        return runCatching {
+            NativeApp.usbKeyboardKey(0, kc, pressed)
+        }.getOrDefault(false)
+    }
+
     /** Cycle the active quick save/load slot 0→9→0 with a brief on-screen note. */
     /** The limiter mode that fast-forward should fall back to when it ends:
      *  Nominal (0) when the frame limiter is on, Unlimited (3) when the user has
@@ -1883,11 +1957,19 @@ class Main: ComponentActivity() {
         Main.fastForwardToggleActive = !Main.fastForwardToggleActive
         val on = Main.fastForwardToggleActive
         runCatching { NativeApp.speedhackLimitermode(if (on) 1 else baseLimiterMode()) }
-        android.widget.Toast.makeText(
-            this,
-            if (on) "Fast Forward ON" else "Fast Forward OFF",
-            android.widget.Toast.LENGTH_SHORT,
-        ).show()
+        hotkeyToast(if (on) "Fast Forward ON" else "Fast Forward OFF")
+    }
+
+    // Hotkey pop-up toasts (Fast-Forward, etc.). Android Toasts QUEUE, so toggling a
+    // hotkey rapidly stacks a long backlog that blocks the screen — cancel the previous
+    // one before showing the next so only the latest shows. Honors "ui.hotkeyToasts"
+    // (default on) so they can be silenced entirely.
+    private var lastHotkeyToast: android.widget.Toast? = null
+    private fun hotkeyToast(text: String) {
+        if (!Main.prefs.getBoolean("ui.hotkeyToasts", true)) return
+        lastHotkeyToast?.cancel()
+        lastHotkeyToast = android.widget.Toast.makeText(this, text, android.widget.Toast.LENGTH_SHORT)
+            .also { it.show() }
     }
 
     /** Quick save / load to the active slot — shared by the SAVE_STATE/LOAD_STATE
@@ -2485,9 +2567,7 @@ class Main: ComponentActivity() {
                 Main.fastForwardToggleActive = !Main.fastForwardToggleActive
                 val on = Main.fastForwardToggleActive
                 runCatching { NativeApp.speedhackLimitermode(if (on) 1 else baseLimiterMode()) }
-                android.widget.Toast.makeText(this,
-                    if (on) "Fast Forward ON" else "Fast Forward OFF",
-                    android.widget.Toast.LENGTH_SHORT).show()
+                hotkeyToast(if (on) "Fast Forward ON" else "Fast Forward OFF")
             }
             ControllerMappings.SysHotkey.RES_UP -> stepResolution(1)
             ControllerMappings.SysHotkey.RES_DOWN -> stepResolution(-1)

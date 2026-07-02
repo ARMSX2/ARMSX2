@@ -661,12 +661,13 @@ object GamesList {
                             rowId = 0,
                             listItemIndex = 1,
                             coverWidth = recentCoverW,
+                            nowPlaying = true, // vivi's Now Playing shelf here only
                             modifier = Modifier
                                 .fillMaxWidth()
                                 // Grow the shelf when titles are on so the 2-line
                                 // label + version tag below the cover isn't clipped.
                                 .height(recentShelfH),
-                    )
+                        )
                 }
             } else {
                 item(key = "__empty_actions__") {
@@ -927,6 +928,17 @@ object GamesList {
         const val TOOL = "M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5"
         const val LAYOUT_COLUMNS = "M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1 -1 1h-14a1 1 0 0 1 -1 -1v-14a1 1 0 0 1 1 -1 M12 4v16"
         const val LAYOUT_ROWS = "M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1 -1 1h-14a1 1 0 0 1 -1 -1v-14a1 1 0 0 1 1 -1 M4 12h16"
+
+        // vivi's settings cog — NOTE a 95x95 viewBox (unlike the 24x24 Tabler glyphs
+        // above), so NavGlyph scales it by /95. Two subpaths (center-hole outline +
+        // outer gear outline); stroked to read as an outline glyph like the rest of the rail.
+        const val SETTINGS_COG = "M71.1113 47.5C71.1113 34.4607 60.5393 23.8887 47.5 23.8887C34.4607 23.8887 23.8887 34.4607 23.8887 47.5C23.8887 60.5393 34.4607 71.1113 47.5 71.1113C60.5393 71.1113 71.1113 60.5393 71.1113 47.5ZM14.1494 42.0859C15.3082 42.0859 16.315 41.2896 16.582 40.1621C17.3742 36.815 18.6925 33.6806 20.4512 30.8359C21.0228 29.9113 20.928 28.7315 20.2383 27.9121L20.0918 27.7539L13.8154 21.4766C12.7313 20.391 12.7331 18.6292 13.8145 17.5479L17.5459 13.8174C18.6314 12.7319 20.3944 12.7332 21.4756 13.8145L27.7539 20.0918C28.5734 20.9113 29.8488 21.061 30.835 20.4521C33.6814 18.6949 36.8157 17.3739 40.1592 16.582C41.2162 16.3317 41.9826 15.4316 42.0742 14.3652L42.083 14.1494L42.083 5.27735C42.0832 3.74492 43.3289 2.5 44.8613 2.5L50.1387 2.5C51.6712 2.5 52.9168 3.74493 52.917 5.27735L52.917 14.1494C52.917 15.3082 53.7133 16.315 54.8408 16.582C58.1853 17.3742 61.3196 18.6926 64.165 20.4492C65.1511 21.058 66.4266 20.9091 67.2461 20.0898L73.5244 13.8115C74.6092 12.7294 76.3706 12.7291 77.4551 13.8135L81.1856 17.5479L81.1865 17.5498C82.269 18.631 82.2708 20.3903 81.1856 21.4756L81.1865 21.4756L74.9082 27.75C74.0884 28.5695 73.939 29.8457 74.5479 30.832C76.3051 33.6784 77.6261 36.8131 78.418 40.1592C78.6849 41.2868 79.6917 42.083 80.8506 42.083L89.7227 42.083C91.2551 42.0832 92.5 43.3289 92.5 44.8613L92.5 50.1387C92.5 51.6712 91.2551 52.9168 89.7227 52.917L80.8506 52.917C79.6917 52.917 78.6849 53.7132 78.418 54.8408C77.6259 58.1874 76.3082 61.3199 74.5508 64.1689C73.9426 65.155 74.0911 66.4297 74.9102 67.249L81.1885 73.5273C82.2729 74.612 82.2729 76.3695 81.1885 77.4541L77.457 81.1856C76.3724 82.2702 74.612 82.2702 73.5273 81.1856L67.249 74.9082C66.4295 74.0887 65.1541 73.9391 64.168 74.5479C61.3216 76.3051 58.1869 77.6261 54.8408 78.418C53.7132 78.6849 52.917 79.6917 52.917 80.8506L52.917 89.7227C52.9168 91.2559 51.6706 92.5 50.1416 92.5L44.8633 92.5C43.331 92.4997 42.0862 91.2549 42.0859 89.7227L42.0859 80.8506C42.0859 79.764 41.386 78.8103 40.3691 78.4756L40.1621 78.418C36.815 77.6258 33.6806 76.3075 30.8359 74.5488C29.8496 73.9391 28.5738 74.0883 27.7539 74.9082L21.4756 81.1855C20.3909 82.2702 18.6306 82.2702 17.5459 81.1855L13.8145 77.4541C12.7298 76.3695 12.7299 74.612 13.8145 73.5273L20.0918 67.249C20.9113 66.4295 21.0609 65.1541 20.4521 64.168C18.6948 61.3215 17.3739 58.1864 16.582 54.8428C16.3148 53.7154 15.308 52.9189 14.1494 52.9189L5.27735 52.9189C3.74495 52.9187 2.50004 51.6741 2.5 50.1416L2.5 44.8633C2.50026 43.331 3.74508 42.0862 5.27735 42.0859L14.1494 42.0859Z"
+
+        // vivi's "Now Playing" shelf — two layered translucent trapezoids
+        // (2850x159 viewBox, blue #4B83D7 @ 0.2), drawn behind the Recently
+        // Played covers as a ledge they sit on. NowPlayingShelf scales the viewBox.
+        const val SHELF_LOWER = "M180.283 23.2378C180.574 23.0817 180.899 23 181.229 23H2643.85C2644.15 23 2644.44 23.0656 2644.71 23.1921L2788.97 91.4408C2803.44 98.2858 2798.56 120 2782.56 120H59.6655C44.0712 120 38.8316 99.1581 52.5719 91.7834L180.283 23.2378Z"
+        const val SHELF_UPPER = "M180.283 11.2378C180.574 11.0817 180.899 11 181.229 11H2643.85C2644.15 11 2644.44 11.0656 2644.71 11.1921L2788.97 79.4408C2803.44 86.2858 2798.56 108 2782.56 108H59.6655C44.0712 108 38.8316 87.1581 52.5719 79.7834L180.283 11.2378Z"
     }
 
     @Composable
@@ -1300,6 +1312,7 @@ object GamesList {
     @Composable
     private fun NavGlyph(kind: NavKind, active: Boolean) {
         val color = Color.White.copy(alpha = if (active) 1f else 0.78f)
+        val cogPath = remember { PathParser().parsePathString(LibIcons.SETTINGS_COG).toPath() }
         Canvas(Modifier.size(36.dp)) {
             val min = size.minDimension
             val stroke = Stroke(width = min * 0.075f, cap = StrokeCap.Round)
@@ -1323,24 +1336,21 @@ object GamesList {
                     }
                 }
                 NavKind.Settings -> {
-                    val center = Offset(size.width / 2f, size.height / 2f)
-                    val base = min * 0.28f
-                    val toothInner = min * 0.36f
-                    val toothOuter = min * 0.46f
-                    repeat(8) { index ->
-                        val angle = (index * 45.0 - 90.0) * PI / 180.0
-                        val dx = cos(angle).toFloat()
-                        val dy = sin(angle).toFloat()
-                        drawLine(
+                    // vivi's cog outline, scaled from its 95x95 SVG viewBox to the glyph
+                    // box. Stroke width 5 is in path space, so it scales down with the path
+                    // to the SVG's original 5-on-95 weight and reads at rail density.
+                    val unit = min / 95f
+                    scale(unit, unit, pivot = Offset.Zero) {
+                        drawPath(
+                            cogPath,
                             color = color,
-                            start = Offset(center.x + dx * toothInner, center.y + dy * toothInner),
-                            end = Offset(center.x + dx * toothOuter, center.y + dy * toothOuter),
-                            strokeWidth = min * 0.075f,
-                            cap = StrokeCap.Round,
+                            style = Stroke(
+                                width = 5f,
+                                cap = StrokeCap.Round,
+                                join = StrokeJoin.Round,
+                            ),
                         )
                     }
-                    drawCircle(color = color, radius = base, center = center, style = stroke)
-                    drawCircle(color = color, radius = min * 0.095f, center = center, style = stroke)
                 }
             }
         }
@@ -1367,6 +1377,7 @@ object GamesList {
         listItemIndex: Int,
         coverWidth: Dp,
         modifier: Modifier = Modifier,
+        nowPlaying: Boolean = false,
     ) {
         val rowState = rememberLazyListState()
         val selectedUri = controllerSelectedUri.value
@@ -1402,6 +1413,7 @@ object GamesList {
         Box(modifier) {
             ShelfGlass(
                 label = label,
+                nowPlaying = nowPlaying,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
@@ -1428,47 +1440,55 @@ object GamesList {
     }
 
     @Composable
-    private fun ShelfGlass(label: String?, modifier: Modifier = Modifier) {
-        Canvas(modifier) {
-            val w = size.width
-            val h = size.height
-            val stroke = Stroke(width = 1.dp.toPx())
-            val top = Path().apply {
-                moveTo(w * 0.10f, h * 0.04f)
-                lineTo(w * 0.92f, h * 0.04f)
-                lineTo(w * 0.995f, h * 0.46f)
-                lineTo(w * 0.005f, h * 0.46f)
-                close()
+    private fun ShelfGlass(label: String?, nowPlaying: Boolean = false, modifier: Modifier = Modifier) {
+        if (nowPlaying) {
+            // vivi's "Now Playing" shelf — ONLY the Recently Played row. Her 2850x159
+            // SVG shape, but filled solid (dark front lip + brighter top surface) so it
+            // reads as a clean glossy ledge instead of a faint translucent wash.
+            val lower = remember { PathParser().parsePathString(LibIcons.SHELF_LOWER).toPath() }
+            val upper = remember { PathParser().parsePathString(LibIcons.SHELF_UPPER).toPath() }
+            Canvas(modifier) {
+                if (size.width <= 0f || size.height <= 0f) return@Canvas
+                scale(size.width / 2850f, size.height / 159f, pivot = Offset.Zero) {
+                    drawPath(lower, color = Color(0xE0142B4E)) // front face — dark navy
+                    drawPath(upper, color = Color(0xC84069AE)) // top surface — brighter blue
+                }
             }
-            val face = Path().apply {
-                moveTo(w * 0.005f, h * 0.46f)
-                lineTo(w * 0.995f, h * 0.46f)
-                lineTo(w * 0.975f, h * 0.82f)
-                lineTo(w * 0.025f, h * 0.82f)
-                close()
+        } else {
+            // Original frosted-glass shelf (cyan), kept for every Library row.
+            Canvas(modifier) {
+                val w = size.width
+                val h = size.height
+                val stroke = Stroke(width = 1.dp.toPx())
+                val top = Path().apply {
+                    moveTo(w * 0.10f, h * 0.04f)
+                    lineTo(w * 0.92f, h * 0.04f)
+                    lineTo(w * 0.995f, h * 0.46f)
+                    lineTo(w * 0.005f, h * 0.46f)
+                    close()
+                }
+                val face = Path().apply {
+                    moveTo(w * 0.005f, h * 0.46f)
+                    lineTo(w * 0.995f, h * 0.46f)
+                    lineTo(w * 0.975f, h * 0.82f)
+                    lineTo(w * 0.025f, h * 0.82f)
+                    close()
+                }
+                drawPath(
+                    top,
+                    brush = Brush.linearGradient(
+                        colors = listOf(Color(0x88D8F5FF), Color(0x442A76B4), Color(0x77E9FBFF)),
+                    ),
+                )
+                drawPath(
+                    face,
+                    brush = Brush.verticalGradient(
+                        colors = listOf(Color(0x55C9F4FF), Color(0x303E607D), Color(0x1AFFFFFF)),
+                    ),
+                )
+                drawPath(top, Color.White.copy(alpha = 0.18f), style = stroke)
+                drawPath(face, Color.White.copy(alpha = 0.14f), style = stroke)
             }
-            drawPath(
-                top,
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color(0x88D8F5FF),
-                        Color(0x442A76B4),
-                        Color(0x77E9FBFF),
-                    ),
-                ),
-            )
-            drawPath(
-                face,
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0x55C9F4FF),
-                        Color(0x303E607D),
-                        Color(0x1AFFFFFF),
-                    ),
-                ),
-            )
-            drawPath(top, Color.White.copy(alpha = 0.18f), style = stroke)
-            drawPath(face, Color.White.copy(alpha = 0.14f), style = stroke)
         }
         if (label != null) {
             Text(
@@ -1617,52 +1637,62 @@ object GamesList {
                             ),
                         ),
                 )
-            }
-            // Cover art already carries the title, so the only label is the
-            // region flag — lets users tell regional versions apart without the
-            // redundant (and cramped) text title under every card.
-            game.regionFlag?.let { flag ->
-                Text(
-                    flag,
-                    fontSize = 15.sp,
-                    maxLines = 1,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 6.dp),
-                )
+                // Region flag merged INTO the reflection (vivi's request): it sits
+                // over the mirrored cover instead of as its own row underneath, so
+                // the vertical space is reclaimed and the flag reads as part of the
+                // cover. Users still tell regional versions apart at a glance.
+                game.regionFlag?.let { flag ->
+                    Text(
+                        flag,
+                        fontSize = 15.sp,
+                        maxLines = 1,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
             }
             // Optional game title under the cover, toggled from the left rail.
+            // Fixed-height title area: 1-line vs 2-line titles (and the optional
+            // version tag) must NOT change the card height, or the bottom-aligned
+            // shelf row renders the covers at uneven heights. Reserve a constant
+            // block (matches the shelf's titlesExtra allowance) and top-align it.
             if (LibraryTitles.show.value) {
-                Text(
-                    game.title,
-                    color = Color.White.copy(alpha = 0.9f),
-                    fontFamily = TitleFont,
-                    fontSize = 12.sp,
-                    lineHeight = 13.sp,
-                    maxLines = 2,
-                    textAlign = TextAlign.Center,
-                    overflow = TextOverflow.Ellipsis,
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 2.dp, end = 2.dp, top = 3.dp),
-                )
-                // Version/edition tag (disc version from the filename, else serial)
-                // so two copies of the same game are distinguishable.
-                game.versionTag?.let { tag ->
+                        .height(44.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                     Text(
-                        tag,
-                        color = Color.White.copy(alpha = 0.45f),
+                        game.title,
+                        color = Color.White.copy(alpha = 0.9f),
                         fontFamily = TitleFont,
-                        fontSize = 10.sp,
-                        lineHeight = 11.sp,
-                        maxLines = 1,
+                        fontSize = 12.sp,
+                        lineHeight = 13.sp,
+                        maxLines = 2,
                         textAlign = TextAlign.Center,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 2.dp, end = 2.dp),
+                            .padding(start = 2.dp, end = 2.dp, top = 3.dp),
                     )
+                    // Version/edition tag (disc version from the filename, else serial)
+                    // so two copies of the same game are distinguishable.
+                    game.versionTag?.let { tag ->
+                        Text(
+                            tag,
+                            color = Color.White.copy(alpha = 0.45f),
+                            fontFamily = TitleFont,
+                            fontSize = 10.sp,
+                            lineHeight = 11.sp,
+                            maxLines = 1,
+                            textAlign = TextAlign.Center,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 2.dp, end = 2.dp),
+                        )
+                    }
                 }
             }
         }
@@ -1770,9 +1800,11 @@ object GamesList {
 
     private fun importCustomBackground(context: Context, uri: Uri) {
         val name = DocumentFile.fromSingleUri(context, uri)?.name.orEmpty()
+        // gif/webp/png(APNG) allowed so animated backgrounds keep their real
+        // extension; Coil (with the GIF decoder) animates them. Others fall to jpg.
         val ext = name.substringAfterLast('.', missingDelimiterValue = "jpg")
             .lowercase()
-            .takeIf { it in setOf("jpg", "jpeg", "png", "webp") }
+            .takeIf { it in setOf("jpg", "jpeg", "png", "webp", "gif") }
             ?: "jpg"
         val outDir = File(Main.assetCopyRoot(context), "backgrounds").apply { mkdirs() }
         val outFile = File(outDir, "library_background.$ext")

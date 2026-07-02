@@ -272,7 +272,19 @@ fun PerformanceTab(state: MutableState<Settings>) {
                     "FMV Software - switches FMVs to software rendering.\n" +
                     "EE Timing - adjusts CPU timing for sensitive games.\n" +
                     "Instant DMA - completes DMA transfers immediately.\n" +
-                    "Blit FPS - uses PCSX2's internal FPS blit workaround."
+                    "Blit FPS - uses PCSX2's internal FPS blit workaround.\n" +
+                    "FPU Multiply - fixes FPU multiply accuracy (Tales of Destiny).\n" +
+                    "OPH Flag - VU OPH flag hack (Bleach Blade Battlers, Growlanser II).\n" +
+                    "GIF FIFO - accurately emulates the GIF FIFO (fixes some hangs).\n" +
+                    "DMA Busy - handles the DMA busy flag (Mana Khemia, Metal Saga).\n" +
+                    "VIF1 Stall - emulates VIF1 FIFO stalls (SOCOM 2 HUD, Spy Hunter).\n" +
+                    "I-Bit - VU I-bit branch-delay fix (Scarface, Crash Tag Team Racing).\n" +
+                    "Full VU0 Sync - fully synchronizes VU0 with the EE.\n" +
+                    "VU Add-Sub - VU add/sub accuracy hack (Tri-Ace: Star Ocean 3, VP2, RadiataStories).\n" +
+                    "VU Overflow - clamps VU overflow (Superman Returns).\n" +
+                    "Extra XGKICK - extra VU XGKICK sync (Erementar Gerad).\n" +
+                    "Goemon TLB - preloads TLB map for Goemon.\n" +
+                    "VU Sync - runs VU behind the EE for tight sync (Gitaroo Man, Simple 2000 games)."
             )
         }
         SettingsDivider()
@@ -346,6 +358,18 @@ fun PerformanceTab(state: MutableState<Settings>) {
                     Spacer(Modifier.weight(1f))
                 }
             }
+            HelpText(
+                "MTVU - runs VU1 on its own thread (faster on multi-core); can break games needing tight EE/VU1 sync.\n" +
+                    "Instant VU1 - runs VU1 microprograms in one shot instead of time-sliced. Faster, safe for most.\n" +
+                    "VU Flag Hack - skips redundant VU status-flag updates. Safe for most games.\n" +
+                    "Fast CDVD - shortens disc read timing to speed up loads. Can break timing-sensitive games.\n" +
+                    "INTC Stat - fast-forwards INTC-status wait loops. Safe for most.\n" +
+                    "Wait Loop - detects and skips EE idle loops. Safe for most.\n" +
+                    "VU NEON Fusions - ARMSX2's VU1 JIT NEON optimizations (on by default). Turn off to test whether a per-game VU glitch traces back to them.\n" +
+                    "Skip VU Stall Sim - drops VU pipeline-stall timing for a big speed win. Breaks games needing accurate VU timing (glitched models, missing geometry, audio crackle).\n" +
+                    "Defer VU Writes - caches VU register writes in NEON registers (faster transforms). Can break games with cross-pair coherence (e.g. Silent Hill 2).\n" +
+                    "Skip Dupe Frames - skips presenting identical frames to save GPU."
+            )
         }
     }
 }
