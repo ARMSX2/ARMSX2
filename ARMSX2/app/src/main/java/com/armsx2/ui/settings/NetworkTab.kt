@@ -190,7 +190,20 @@ fun NetworkTab(state: MutableState<Settings>) {
             onChange = { apply(s.copy(dev9HddFile = it.ifEmpty { "DEV9hdd.raw" })) },
             onReset = { apply(s.copy(dev9HddFile = "DEV9hdd.raw")) },
         )
-        HelpText("A bare name (e.g. DEV9hdd.raw) lives in the data folder and is auto-created (8 GiB sparse) on first boot. Enter a full path to point at an existing image. This is saved here, so it won't reset on reboot.")
+        HelpText("A bare name (e.g. DEV9hdd.raw) is kept on internal storage (an \"hdd\" folder next to the BIOS) and auto-created (8 GiB, sparse) the first time you boot a game with the HDD on. It's on internal — not the SD card — because a large image can't be sparse on SD and would fill the card. To use a pre-made image anywhere (including the SD card), enter a full path instead. Saved here, so it won't reset on reboot.")
+
+        Spacer(Modifier.height(16.dp))
+        Text(
+            "USB",
+            color = Colors.pasx2_blue,
+            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        ToggleRow("Emulate USB Keyboard", s.usbKeyboard) {
+            apply(s.copy(usbKeyboard = it))
+        }
+        HelpText("Attaches an emulated USB keyboard on USB port 1. Turn on for games that require a real USB keyboard (EverQuest Online Adventures, typing/Konami-keyboard titles), then connect a physical or Bluetooth keyboard — its keystrokes are sent to the game. Applies live on a running game; leave off for normal play. Per-game setting.")
     }
 }
 

@@ -91,7 +91,24 @@ std::string GetHDDPath()
 		EmuConfig.DEV9.HddEnable = false;
 
 	if (!Path::IsAbsolute(hddPath))
-		hddPath = Path::Combine(EmuFolders::Settings, hddPath);
+	{
+		// Android: resolve a bare HddFile name under an "hdd" folder on the
+		// app-private INTERNAL volume — the same place BIOS lives, deliberately
+		// NOT the user's DataRoot. DataRoot can be an SD card (exFAT/FUSE) where
+		// files aren't sparse, so auto-creating a multi-GiB HDD image there fills
+		// and bricks the card (see the HddCreate.cpp SAFETY guard). Internal
+		// (ext4) makes the image genuinely sparse: it creates instantly and the
+		// emulated HDD works regardless of where the game data root points.
+		// EmuFolders::Bios is the internal bios folder; its parent is the
+		// app-private files dir. Falls back to DataRoot/Settings if unset (the
+		// HddCreate sparse guard still prevents any harm on non-sparse storage).
+		// A user who wants a custom pre-made image on the SD card can still pass
+		// an ABSOLUTE HddFile path (handled above, unchanged).
+		std::string hddRoot(Path::GetDirectory(EmuFolders::Bios));
+		if (hddRoot.empty())
+			hddRoot = EmuFolders::DataRoot.empty() ? EmuFolders::Settings : EmuFolders::DataRoot;
+		hddPath = Path::Combine(Path::Combine(hddRoot, "hdd"), hddPath);
+	}
 
 	return hddPath;
 }
@@ -1187,11 +1204,17 @@ void DEV9CheckChanges(const Pcsx2Config& old_config)
 			if (EmuConfig.DEV9.HddFile != old_config.DEV9.HddFile)
 			{
 				dev9.ata->Close();
-				if (dev9.ata->Open(hddPath) != 0)
+				// Auto-create the new image if the user pointed HddFile at a
+				// bare name that doesn't exist yet, then reopen.
+				if (!EnsureHDDImageExists(hddPath) || dev9.ata->Open(hddPath) != 0)
 					EmuConfig.DEV9.HddEnable = false;
 			}
 		}
-		else if (dev9.ata->Open(hddPath) != 0)
+		// Live enable (HDD toggled on for a running VM via the in-game
+		// overlay). Auto-create the image first so the very first live enable
+		// on a fresh install attaches instead of silently disabling — matches
+		// the boot-time DEV9open() path (issue #255).
+		else if (!EnsureHDDImageExists(hddPath) || dev9.ata->Open(hddPath) != 0)
 			EmuConfig.DEV9.HddEnable = false;
 	}
 	else if (old_config.DEV9.HddEnable)

@@ -166,6 +166,31 @@ void HddCreate::WriteImage(const std::string& hddPath, u64 fileBytes, u64 zeroSi
 	}
 #endif
 
+#if defined(__ANDROID__)
+	// SAFETY (issue #255 regression): the write loop below zero-fills the ENTIRE
+	// image when the target filesystem lacks sparse support. On Android that is
+	// catastrophic — on SD / exFAT / FUSE storage it writes a full multi-GiB image
+	// synchronously on the VM boot thread, filling the card and ANR-ing the app, and
+	// because HddEnable is persisted it re-hangs on every subsequent launch (only an
+	// uninstall recovers). Refuse instead: the caller (EnsureHDDImageExists ->
+	// DEV9open / DEV9CheckChanges) then disables the HDD and boots normally.
+	// Sparse-capable storage (internal ext4) is unaffected: the ftruncate above
+	// already produced a valid zero-backed image and only the trailing ~1 MiB writes.
+	if (!sparseSupported)
+	{
+		Console.Error("DEV9: HddCreate: '%s' is on storage without sparse-file support; "
+			"refusing to allocate a full %llu-byte image (would fill the card / hang the "
+			"app). HDD left disabled — put the image on internal storage or supply a "
+			"pre-made .raw.", hddPath.c_str(), static_cast<unsigned long long>(fileBytes));
+		[[maybe_unused]] int truncRes = ftruncate(nativeFile, 0);
+		newImage.reset();
+		FileSystem::DeleteFilePath(hddPath.c_str());
+		errored.store(true);
+		SetError();
+		return;
+	}
+#endif
+
 	lastUpdate = std::chrono::steady_clock::now();
 
 	// Round up.
