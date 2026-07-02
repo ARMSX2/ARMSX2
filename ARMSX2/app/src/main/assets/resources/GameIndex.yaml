@@ -4000,6 +4000,9 @@ SCED-52818:
 SCED-52841:
   name: "Jackie Chan Adventures [Demo]"
   region: "PAL-M7"
+  clampModes:
+    eeClampMode: 3 # Full — fixes collision failure (Jackie falls through the floor) after door transitions.
+    vuClampMode: 2 # Extra — fixes collision failure (Jackie falls through the floor) after door transitions.
   speedHacks:
     mtvu: 0 # Fixes SPS when entering Spain in Jackie's and Jade's character models.
     instantVU1: 0 # Fixes SPS when entering Spain in Jackie's and Jade's character models.
@@ -5812,6 +5815,9 @@ SCES-52411:
 SCES-52412:
   name: "Jackie Chan Adventures"
   region: "PAL-M7"
+  clampModes:
+    eeClampMode: 3 # Full — fixes collision failure (Jackie falls through the floor) after door transitions.
+    vuClampMode: 2 # Extra — fixes collision failure (Jackie falls through the floor) after door transitions.
   speedHacks:
     mtvu: 0 # Fixes SPS when entering Spain in Jackie's and Jade's character models.
     instantVU1: 0 # Fixes SPS when entering Spain in Jackie's and Jade's character models.
@@ -71221,6 +71227,9 @@ SLUS-21246:
 SLUS-21247:
   name: "Jackie Chan Adventures"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Full — fixes collision failure (Jackie falls through the floor) after door transitions.
+    vuClampMode: 2 # Extra — fixes collision failure (Jackie falls through the floor) after door transitions.
   gsHWFixes:
     textureInsideRT: 1 # Fixes half right.
 SLUS-21248:
