@@ -365,6 +365,142 @@ layout(set = 1, binding = 3) uniform texture2D PrimMinTexture;
 
 #if NEEDS_TEX
 
+// Software anisotropic filter (PCSX2 PR #14465 — early isotropic fallback, cheaper
+// math). Enabled when PS_ANISOTROPIC_FILTERING > 1; the renderer sets that from
+// GSConfig.MaxAnisotropy for triangles (see GSRendererHW), and hardware sampler
+// anisotropy is disabled, so this is the active AF path. AF always forces
+// automatic_lod, so the PS_MANUAL_LOD branch below is never compiled when AF is on.
+#if PS_ANISOTROPIC_FILTERING > 1
+vec4 sample_c_af(vec2 uv, float uv_w)
+{
+	// HW sampler will reject bad UVs, match that here.
+	uv = (any(isnan(uv)) || any(isinf(uv))) ? vec2(0.0f, 0.0f) : uv;
+
+	// Large floating point values risk NaN/Inf values.
+	// Above this value floats lose decimal precision, so seems a resonable limit for UVs.
+	uv = clamp(uv, -8388608.0f, 8388608.0f);
+
+	// Below taken from https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#7.18.11%20LOD%20Calculations
+	// And https://registry.khronos.org/OpenGL/extensions/EXT/EXT_texture_filter_anisotropic.txt
+	// With guidance from https://pema.dev/2025/05/09/mipmaps-too-much-detail/
+	vec2 sz = textureSize(Texture, 0);
+	vec2 dX = dFdx(uv) * sz;
+	vec2 dY = dFdy(uv) * sz;
+
+	float length_x = length(dX);
+	float length_y = length(dY);
+
+	// Calculate Ellipse Transform
+	bool d_zero = length_x < 0.001f || length_y < 0.001f;
+	float f = (dX.x * dY.y - dX.y * dX.x);
+	bool d_par = f < 0.001f;
+	bool d_per = dot(dX, dY) < 0.001f;
+	bool d_inf_nan = any(isinf(dX)) || any(isinf(dY)) || any(isnan(dX)) || any(isnan(dY));
+
+	if (!(d_zero || d_par || d_per || d_inf_nan))
+	{
+		float A = dX.y * dX.y + dY.y * dY.y;
+		float B = -2 * (dX.x * dX.y + dY.x * dY.y);
+		float C = dX.x * dX.x + dY.x * dY.x;
+		float f = (dX.x * dY.y - dY.x * dX.y);
+		float F = f * f;
+
+		float p = A - C;
+		float q = A + C;
+		float t = sqrt(p * p + B * B);
+
+		float signB = sign(B);
+		float denom_plus  = t * (q + t);
+		float denom_minus = t * (q - t);
+
+		float sqrtA = sqrt(F * (t + p));
+		float sqrtB = sqrt(F * (t - p));
+
+		float inv_sqrt_denom_plus  = inversesqrt(denom_plus);
+		float inv_sqrt_denom_minus = inversesqrt(denom_minus);
+
+		vec2 new_dX = vec2(
+			sqrtA * inv_sqrt_denom_plus,
+			sqrtB * inv_sqrt_denom_plus * signB
+		);
+
+		vec2 new_dY = vec2(
+			sqrtB * inv_sqrt_denom_minus * -signB,
+			sqrtA * inv_sqrt_denom_minus
+		);
+
+		d_inf_nan = any(isinf(new_dX)) || any(isinf(new_dY)) || any(isnan(new_dX)) || any(isnan(new_dY));
+		if (!d_inf_nan)
+		{
+			dX = new_dX;
+			dY = new_dY;
+			length_x = length(dX);
+			length_y = length(dY);
+		}
+	}
+
+	// Compute AF values
+	bool is_major_x = length_x > length_y;
+	float length_major = is_major_x ? length_x : length_y;
+	float length_minor = is_major_x ? length_y : length_x;
+
+	float aniso_ratio;
+	float length_lod;
+	vec2 aniso_line;
+	if (length_major <= 1.0f)
+	{
+		// A zero length_major would result in NaN Lod and break sampling.
+		// A small length_major would result in aniso_ratio getting clamped to 1.
+		// Perform isotropic filtering instead.
+		aniso_ratio = 1.0f;
+		length_lod = length_major;
+		aniso_line = vec2(0.0f, 0.0f);
+	}
+	else
+	{
+		vec2 aniso_line_dir = is_major_x ? dX : dY;
+
+		aniso_ratio = min(length_major / length_minor, PS_ANISOTROPIC_FILTERING);
+		length_lod = length_major / aniso_ratio;
+
+		// clamp to top Lod
+		if (length_lod < 1.0f)
+			aniso_ratio = max(1.0f, aniso_ratio * length_lod);
+
+		aniso_ratio = round(aniso_ratio);
+
+		aniso_line = aniso_line_dir * 0.5f * (1.0f / sz);
+	}
+
+#if PS_AUTOMATIC_LOD == 1
+	float lod = log2(length_lod);
+#elif PS_MANUAL_LOD == 1
+	float lod = manual_lod(uv_w);
+#else
+	float lod = 0.0f; // No Lod
+#endif
+
+	vec4 colour;
+	if (aniso_ratio == 1.0f)
+		colour = textureLod(Texture, uv, lod);
+	else
+	{
+		vec4 num = vec4(0.0f, 0.0f, 0.0f, 0.0f);
+		vec2 segment = (2.0f * aniso_line) / aniso_ratio;
+		for (int i = 0; i < aniso_ratio; i++)
+		{
+			vec2 d = -aniso_line + (0.5f + i) * segment;
+			vec2 uv_sample = uv + d;
+			vec4 sample_colour = textureLod(Texture, uv_sample, lod);
+			num += sample_colour;
+		}
+
+		colour = num / aniso_ratio;
+	}
+	return colour;
+}
+#endif
+
 vec4 sample_c(vec2 uv)
 {
 #if PS_TEX_IS_FB
@@ -388,7 +524,9 @@ vec4 sample_c(vec2 uv)
 	#endif
 #endif
 
-#if PS_AUTOMATIC_LOD == 1
+#if PS_ANISOTROPIC_FILTERING > 1
+	return sample_c_af(uv, vsIn.t.w);
+#elif PS_AUTOMATIC_LOD == 1
 	return texture(Texture, uv);
 #elif PS_MANUAL_LOD == 1
 	// FIXME add LOD: K - ( LOG2(Q) * (1 << L))

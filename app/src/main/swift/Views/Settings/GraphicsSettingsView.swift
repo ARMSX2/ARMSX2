@@ -70,7 +70,7 @@ struct GraphicsSettingsView: View {
                     Text("6x (3072x2688)").tag(Float(6.0))
                     Text("8x (4096x3584)").tag(Float(8.0))
                 }
-                Text(settings.localized("Lower values can help performance on heavy games. Higher values improve visual quality but reduce performance significantly. Requires restart."))
+                Text(settings.localized("Lower values can help performance on heavy games. Higher values improve visual quality but reduce performance significantly. Applies immediately; the renderer may briefly stutter while it reinits."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if settings.upscaleMultiplier >= 4.0 {
@@ -108,7 +108,9 @@ struct GraphicsSettingsView: View {
                         Slider(value: Binding(
                             get: { Float(settings.casSharpness) / 100.0 },
                             set: { settings.casSharpness = Int($0 * 100) }
-                        ), in: 0...1)
+                        ), in: 0...1, onEditingChanged: { editing in
+                            if editing { settings.beginVisualSliderEdit() } else { settings.endVisualSliderEdit() }
+                        })
                         Text("\(settings.casSharpness)%")
                             .font(.caption)
                             .frame(width: 40)
@@ -140,6 +142,20 @@ struct GraphicsSettingsView: View {
                 }
             }
 
+            Section {
+                Toggle(settings.localized("Screen Offsets"), isOn: $settings.pcrtcOffsets)
+                Toggle(settings.localized("Show Overscan"), isOn: $settings.pcrtcOverscan)
+                Toggle(settings.localized("Anti-Blur"), isOn: $settings.pcrtcAntiBlur)
+                Toggle(settings.localized("Disable Interlace Offset"), isOn: $settings.disableInterlaceOffset)
+                Toggle(settings.localized("Skip Duplicate Frames"), isOn: $settings.skipDuplicateFrames)
+                Toggle(settings.localized("Sync to Host Refresh"), isOn: $settings.syncToHostRefresh)
+                Toggle(settings.localized("Integer Scaling"), isOn: $settings.integerScaling)
+            } header: {
+                Text(settings.localized("Screen / PCRTC"))
+            } footer: {
+                Text(settings.localized("Display output options. Most apply immediately. Sync to Host Refresh needs a restart to take effect."))
+            }
+
             Section(settings.localized("Quality")) {
                 Picker(settings.localized("Blending Accuracy"), selection: $settings.blendingAccuracy) {
                     Text(settings.localized("Minimum (Fast)")).tag(0)
@@ -158,6 +174,20 @@ struct GraphicsSettingsView: View {
                     Text(settings.localized("Unscaled")).tag(1)
                     Text(settings.localized("Scaled (Default)")).tag(2)
                 }
+            }
+
+            Section {
+                Toggle(settings.localized("Shade Boost"), isOn: $settings.shadeBoost)
+                if settings.shadeBoost {
+                    percentSlider("Brightness", value: $settings.shadeBoostBrightness)
+                    percentSlider("Contrast", value: $settings.shadeBoostContrast)
+                    percentSlider("Saturation", value: $settings.shadeBoostSaturation)
+                    percentSlider("Gamma", value: $settings.shadeBoostGamma)
+                }
+            } header: {
+                Text(settings.localized("Shade Boost"))
+            } footer: {
+                Text(settings.localized("Adjusts brightness, contrast, saturation, and gamma of the output image. Applies immediately."))
             }
 
             Section(settings.localized("Advanced Upscaling Hacks")) {
@@ -216,6 +246,54 @@ struct GraphicsSettingsView: View {
                 Text(settings.localized("For Skipdraw 1, use Start 1 and End 1. Changes apply after reset/relaunch."))
                     .font(.caption)
                     .foregroundStyle(.orange)
+            }
+
+            Section {
+                Toggle(settings.localized("Accurate Alpha Test"), isOn: $settings.hwAccurateAlphaTest)
+                Text(settings.localized("Improves alpha-test accuracy for shadows and decals. Some titles look better with this on."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                intPicker("Texture Inside RT", selection: $settings.textureInsideRt, options: [
+                    ("Off", 0), ("Inside Targets", 1), ("Merge Targets", 2)
+                ])
+                intPicker("Limit 24-Bit Depth", selection: $settings.limit24BitDepth, options: [
+                    ("Off", 0), ("Prioritise Upper Bits", 1), ("Prioritise Lower Bits", 2)
+                ])
+                intPicker("Native Scaling", selection: $settings.nativeScaling, options: [
+                    ("Off", 0), ("Normal", 1), ("Aggressive", 2), ("Normal (Maintain Upscale)", 3), ("Aggressive (Maintain Upscale)", 4)
+                ])
+                intPicker("CPU CLUT Render", selection: $settings.cpuClutRender, options: [
+                    ("Disabled", 0), ("Normal", 1), ("Aggressive", 2)
+                ])
+                intPicker("GPU Target CLUT", selection: $settings.gpuTargetClut, options: [
+                    ("Off", 0), ("Enabled (Exact Match)", 1), ("Enabled (Inside Target)", 2)
+                ])
+                intPicker("Bilinear Upscale", selection: $settings.bilinearUpscaleHack, options: [
+                    ("Automatic", 0), ("Force Bilinear", 1), ("Force Nearest", 2)
+                ])
+                ClampedIntField(title: settings.localized("CPU Sprite Render BW"), value: $settings.cpuSpriteRenderBw, range: 0...10)
+                ClampedIntField(title: settings.localized("CPU Sprite Render Level"), value: $settings.cpuSpriteRenderLevel, range: 0...2)
+                intPicker("Max Anisotropy", selection: $settings.maxAnisotropy, options: [
+                    ("Off", 0), ("2x", 2), ("4x", 4), ("8x", 8), ("16x", 16)
+                ])
+                intPicker("Hardware Download Mode", selection: $settings.hardwareDownloadMode, options: [
+                    ("Enabled", 0), ("Force Full", 1), ("No Readbacks", 2), ("Unsynchronized", 3), ("Disabled", 4)
+                ])
+                intPicker("TV/CRT Shader", selection: $settings.tvShader, options: [
+                    ("Off", 0), ("Scanline", 1), ("Diagonal", 2), ("Tri", 3), ("Wave", 4), ("Lottes", 5), ("4xRGSS", 6), ("NxAGSS", 7)
+                ])
+
+                ForEach(SettingsStore.gsBoolHackOptions) { option in
+                    Toggle(settings.localized(option.label), isOn: Binding(
+                        get: { settings.gsBoolHackEnabled(option.key) },
+                        set: { settings.setGSBoolHack(option.key, $0) }
+                    ))
+                }
+            } header: {
+                Text(settings.localized("Hardware Fixes"))
+            } footer: {
+                Text(settings.localized("These hardware fixes are for compatibility. Most games should use Automatic or Default values."))
             }
 
             Section(settings.localized("Texture Replacement")) {
@@ -293,6 +371,34 @@ struct GraphicsSettingsView: View {
         }
         .navigationTitle(settings.localized("Graphics"))
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// Labeled picker over an explicit (label, value) option list, used for the GS
+    /// hardware-fix enums whose values may be non-contiguous (e.g. anisotropy).
+    @ViewBuilder
+    private func intPicker(_ title: String, selection: Binding<Int>, options: [(String, Int)]) -> some View {
+        Picker(settings.localized(title), selection: selection) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, option in
+                Text(settings.localized(option.0)).tag(option.1)
+            }
+        }
+    }
+
+    /// Labeled 1–100 percent slider used by Shade Boost.
+    @ViewBuilder
+    private func percentSlider(_ title: String, value: Binding<Int>) -> some View {
+        HStack {
+            Text(settings.localized(title))
+            Slider(value: Binding(
+                get: { Double(value.wrappedValue) },
+                set: { value.wrappedValue = Int($0.rounded()) }
+            ), in: 1...100, onEditingChanged: { editing in
+                if editing { settings.beginVisualSliderEdit() } else { settings.endVisualSliderEdit() }
+            })
+            Text("\(value.wrappedValue)%")
+                .font(.caption.monospacedDigit())
+                .frame(width: 44, alignment: .trailing)
+        }
     }
 }
 

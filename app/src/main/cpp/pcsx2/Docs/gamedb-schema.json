@@ -309,6 +309,16 @@
               "minimum": 0,
               "maximum": 5
             },
+            "recommendedAccurateAlphaTest": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "recommendedHWAA1": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1
+            },
             "getSkipCount": {
               "type": "string"
             },

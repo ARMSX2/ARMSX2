@@ -648,8 +648,17 @@ std::vector<IP_Address> AdapterUtils::GetDNS(const Adapter* adapter)
 	if (servers.fail())
 	{
 		servers.close();
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		// iOS app sandbox has no /etc/resolv.conf; fall back to public resolvers so the
+		// emulated PS2 gets a working DNS list. Overrideable via Network settings.
+		Console.WriteLn("DEV9: no /etc/resolv.conf on iOS; using public DNS fallback 1.1.1.1 / 8.8.8.8");
+		collection.push_back(IP_Address{{{1, 1, 1, 1}}});
+		collection.push_back(IP_Address{{{8, 8, 8, 8}}});
+		return collection;
+#else
 		Console.Error("DEV9: Failed to open /etc/resolv.conf");
 		return collection;
+#endif
 	}
 
 	std::string line;

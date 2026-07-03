@@ -137,7 +137,8 @@ bool ImGuiManager::Initialize()
 		return false;
 	}
 
-	s_global_scale = std::max(0.5f, g_gs_device->GetWindowScale() * (GSConfig.OsdScale / 100.0f));
+	// Cap at 2x so high-resolution screens don't balloon the OSD; floor stays 0.5.
+	s_global_scale = std::min(2.0f, std::max(0.5f, g_gs_device->GetWindowScale() * (GSConfig.OsdScale / 100.0f)));
 	s_scale_changed = false;
 
 	ImGuiContext& g = *ImGui::CreateContext();
@@ -251,6 +252,9 @@ void ImGuiManager::WindowResized()
 
 	// Scale might have changed as a result of window resize.
 	RequestScaleUpdate();
+
+	if (GImGui->NavWindow != nullptr)
+		ImGui::NavInitWindow(GImGui->NavWindow, true);
 }
 
 void ImGuiManager::RequestScaleUpdate()
@@ -284,7 +288,8 @@ void ImGuiManager::ReloadFonts()
 void ImGuiManager::UpdateScale()
 {
 	const float window_scale = g_gs_device ? g_gs_device->GetWindowScale() : 1.0f;
-	const float scale = std::max(window_scale * (EmuConfig.GS.OsdScale / 100.0f), 0.5f);
+	// Cap at 2x — see the init path; keeps the OSD compact on high-resolution screens.
+	const float scale = std::min(2.0f, std::max(window_scale * (EmuConfig.GS.OsdScale / 100.0f), 0.5f));
 
 	if ((!ImGuiFullscreen::UpdateLayoutScale()) && scale == s_global_scale)
 		return;

@@ -130,8 +130,14 @@ public:
 		VSSelector vs;
 		u8 pad[3];
 
-		__fi bool operator==(const ProgramSelector& p) const { return BitEqual(*this, p); }
-		__fi bool operator!=(const ProgramSelector& p) const { return !BitEqual(*this, p); }
+		// Compare only the hashed key fields ({vs.key, ps.key_hi, ps.key_lo} per
+		// ProgramSelectorHash). BitEqual() memcmp'd trailing padding, so identical
+		// selectors collided in the same bucket yet failed == and recompiled every frame.
+		__fi bool operator==(const ProgramSelector& p) const
+		{
+			return vs.key == p.vs.key && ps.key_hi == p.ps.key_hi && ps.key_lo == p.ps.key_lo;
+		}
+		__fi bool operator!=(const ProgramSelector& p) const { return !(*this == p); }
 	};
 	static_assert(sizeof(ProgramSelector) == 32, "Program selector is 32 bytes");
 

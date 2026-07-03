@@ -10,6 +10,7 @@
 
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 
+#include <algorithm>
 #include <csetjmp>
 #include <limits>
 #if !TARGET_OS_IPHONE
@@ -670,7 +671,13 @@ bool DDSLoader(const std::string& filename, GSTextureReplacements::ReplacementTe
 	// Read in any remaining mip levels in the file.
 	if (!only_base_image)
 	{
-		for (u32 level = 1; level <= info.mip_count; level++)
+		// dwMipMapCount includes the base image (level 0); over-declared counts or
+		// trailing padding made the old bound load a phantom level and trip the
+		// CreateTexture mip assert. Cap at what the dimensions support.
+		const u32 max_levels = static_cast<u32>(
+			GSDevice::GetMipmapLevelsForSize(static_cast<int>(info.width), static_cast<int>(info.height)));
+		const u32 mip_levels = std::min(info.mip_count, max_levels);
+		for (u32 level = 1; level < mip_levels; level++)
 		{
 			GSTextureReplacements::ReplacementTexture::MipData md;
 			u32 mip_size;
