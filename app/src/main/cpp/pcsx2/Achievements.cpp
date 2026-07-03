@@ -2160,7 +2160,7 @@ void Achievements::ShowLoginSuccess(const rc_client_t* client)
 
 		//: Summary for login notification.
 		std::string title = user->display_name;
-		std::string summary = fmt::format(TRANSLATE_FS("Achievements", "Score: {0} pts (softcore: {1} pts)\nUnread messages: {2}"), user->score,
+		std::string summary = fmt::format(TRANSLATE_FS("Achievements", "Score: {0} pts (casual: {1} pts)\nUnread messages: {2}"), user->score,
 			user->score_softcore, user->num_unread_messages);
 		PostIOSNotification(title, summary, badge_path);
 

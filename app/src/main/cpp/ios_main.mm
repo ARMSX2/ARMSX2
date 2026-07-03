@@ -3209,8 +3209,72 @@ extern "C" void ARMSX2_PrepareGameRenderViewForCurrentRenderer(const char* reaso
     }
 }
 
+// RetroAchievements / achievement sound playback. Plays short WAV chimes
+// (unlock/message/lbsubmit) off a dedicated background queue so the main
+// thread and the SPU2/cubeb stream are never touched. AVAudioPlayer.delegate
+// is weak and the player is not otherwise retained by the system, so each
+// delegate strongly owns its player for the duration of playback and is itself
+// held in a static set until playback finishes. Missing files and decode
+// failures fail silently (the core already gates calls behind the Achievements
+// SoundEffects settings).
+@interface ARMSX2AchievementSoundDelegate : NSObject <AVAudioPlayerDelegate>
+@property(nonatomic, strong) AVAudioPlayer* player;
+@end
+
+static NSMutableSet<ARMSX2AchievementSoundDelegate*>* ARMSX2ActiveAchievementSoundDelegates() {
+    static NSMutableSet* set;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ set = [[NSMutableSet alloc] init]; });
+    return set;
+}
+
+static dispatch_queue_t ARMSX2AchievementSoundQueue() {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("armsx2.achievement.sound", DISPATCH_QUEUE_SERIAL);
+    });
+    return queue;
+}
+
+@implementation ARMSX2AchievementSoundDelegate
+- (void)audioPlayerDidFinishPlaying:(AVAudioPlayer*)player successfully:(BOOL)flag {
+    self.player = nil;
+    @synchronized(ARMSX2ActiveAchievementSoundDelegates()) {
+        [ARMSX2ActiveAchievementSoundDelegates() removeObject:player.delegate];
+    }
+}
+@end
+
 namespace Common {
-    bool PlaySoundAsync(const char*) { return false; }
+bool PlaySoundAsync(const char* path) {
+    if (!path || path[0] == '\0')
+        return false;
+
+    NSString* nspath = [[NSString alloc] initWithUTF8String:path];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:nspath])
+        return false;
+
+    NSURL* url = [NSURL fileURLWithPath:nspath];
+    dispatch_async(ARMSX2AchievementSoundQueue(), ^{
+        NSError* error = nil;
+        AVAudioPlayer* player = [[AVAudioPlayer alloc] initWithContentsOfURL:url error:&error];
+        if (!player || error) {
+            return;
+        }
+        ARMSX2AchievementSoundDelegate* delegate = [[ARMSX2AchievementSoundDelegate alloc] init];
+        player.delegate = delegate;
+        // The delegate strongly retains the player for the lifetime of playback;
+        // the set strongly retains the delegate. Both release on finish.
+        delegate.player = player;
+        @synchronized(ARMSX2ActiveAchievementSoundDelegates()) {
+            [ARMSX2ActiveAchievementSoundDelegates() addObject:delegate];
+        }
+        [player prepareToPlay];
+        [player play];
+    });
+    return true;
+}
 }
 
 // IOCtlSrc Stubs
