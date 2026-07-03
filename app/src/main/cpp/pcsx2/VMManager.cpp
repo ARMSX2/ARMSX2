@@ -719,6 +719,12 @@ bool VMManager::HasAnyBindingsForPad(const SettingsInterface& si, u32 port)
 
 void VMManager::WarnAboutUnconfiguredController()
 {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	// iOS uses the on-screen virtual pad (or connected MFi controllers, which
+	// self-bind) as its input source, so an absent desktop-style binding list for
+	// pad 1 is expected and not a useful warning.
+	return;
+#else
 	std::unique_lock<std::mutex> lock = Host::GetSettingsLock();
 	SettingsInterface* si = Host::GetSettingsInterface();
 	if (!si || HasAnyBindingsForPad(*si, 0))
@@ -726,6 +732,7 @@ void VMManager::WarnAboutUnconfiguredController()
 
 	Host::AddIconOSDMessage("ControllerNotConfigured", ICON_FA_GAMEPAD,
 		TRANSLATE_STR("VMManager", "Controller 1 has no input bindings configured."), Host::OSD_WARNING_DURATION);
+#endif
 }
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE
@@ -3584,6 +3591,9 @@ void VMManager::WarnAboutUnsafeSettings()
 			append(ICON_FA_TV,
 				TRANSLATE_SV("VMManager", "Integer scaling is enabled. This may shrink the image."));
 		}
+#if !(defined(__APPLE__) && TARGET_OS_IPHONE)
+		// iOS always renders with Metal; "Automatic" is not a meaningful choice
+		// there, so this desktop-only warning is a false positive and is omitted.
 		static bool render_change_warn = false;
 		if (EmuConfig.GS.Renderer != GSRendererType::Auto && EmuConfig.GS.Renderer != GSRendererType::SW && !render_change_warn)
 		{
@@ -3593,6 +3603,7 @@ void VMManager::WarnAboutUnsafeSettings()
 			append(ICON_FA_CIRCLE_EXCLAMATION,
 				TRANSLATE_SV("VMManager", "Graphics API is not set to Automatic. This may cause performance problems and graphical issues."));
 		}
+#endif
 	}
 	if (EmuConfig.GS.DumpGSData)
 	{

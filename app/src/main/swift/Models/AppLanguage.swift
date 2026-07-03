@@ -941,12 +941,6 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "StikDebug": "StikDebug",
             "Auto-open StikDebug": "自动打开 StikDebug",
             "Access is available. Confirm EE:JIT / IOP:JIT / VU:JIT in the in-game OSD.": "JIT 访问权限可用。请在游戏内 OSD 中确认 EE:JIT / IOP:JIT / VU:JIT。",
-            "Open StikDebug manually, then run the UTM-Dolphin script and relaunch ARMSX2.": "请手动打开 StikDebug，然后运行 UTM-Dolphin 脚本并重新启动 ARMSX2。",
-            "No-JIT fallback is active. Use StikDebug/UTM-Dolphin for dynarec.": "无 JIT 回退已启用。请使用 StikDebug/UTM-Dolphin 启用 dynarec。",
-            "Launch with StikDebug/UTM-Dolphin to enable JIT.": "通过 StikDebug/UTM-Dolphin 启动以启用 JIT。",
-            "ARMSX2 can open StikDebug, but iOS still requires the correct StikDebug/UTM-Dolphin script to attach or relaunch with JIT.": "ARMSX2 可以打开 StikDebug，但 iOS 仍需要正确的 StikDebug/UTM-Dolphin 脚本来附加或用 JIT 重新启动。",
-            "JIT Access means iOS currently allows executable memory. Confirm the real runtime state in-game: the OSD should show EE:JIT, IOP:JIT, and VU:JIT. If StikDebug reports a socket failure, reopen StikDebug and relaunch with the UTM-Dolphin script.": "JIT 访问权限表示 iOS 当前允许可执行内存。请在游戏内确认真实运行状态：OSD 应显示 EE:JIT、IOP:JIT 和 VU:JIT。如果 StikDebug 报告 socket 失败，请重新打开 StikDebug 并用 UTM-Dolphin 脚本重新启动。",
-            "Opens StikDebug automatically when JIT is missing. If the status stays red, launch ARMSX2 from the StikDebug/UTM-Dolphin script.": "JIT 缺失时自动打开 StikDebug。如果状态仍为红色，请从 StikDebug/UTM-Dolphin 脚本启动 ARMSX2。"
         ],
         .spanish: [
             "OSD": "OSD",
@@ -1056,12 +1050,6 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "StikDebug": "StikDebug",
             "Auto-open StikDebug": "Abrir StikDebug automáticamente",
             "Access is available. Confirm EE:JIT / IOP:JIT / VU:JIT in the in-game OSD.": "El acceso está disponible. Confirma EE:JIT / IOP:JIT / VU:JIT en el OSD del juego.",
-            "Open StikDebug manually, then run the UTM-Dolphin script and relaunch ARMSX2.": "Abre StikDebug manualmente, ejecuta el script UTM-Dolphin y vuelve a iniciar ARMSX2.",
-            "No-JIT fallback is active. Use StikDebug/UTM-Dolphin for dynarec.": "El modo sin JIT está activo. Usa StikDebug/UTM-Dolphin para dynarec.",
-            "Launch with StikDebug/UTM-Dolphin to enable JIT.": "Inicia con StikDebug/UTM-Dolphin para activar JIT.",
-            "ARMSX2 can open StikDebug, but iOS still requires the correct StikDebug/UTM-Dolphin script to attach or relaunch with JIT.": "ARMSX2 puede abrir StikDebug, pero iOS aún requiere el script correcto de StikDebug/UTM-Dolphin para adjuntar o relanzar con JIT.",
-            "JIT Access means iOS currently allows executable memory. Confirm the real runtime state in-game: the OSD should show EE:JIT, IOP:JIT, and VU:JIT. If StikDebug reports a socket failure, reopen StikDebug and relaunch with the UTM-Dolphin script.": "Acceso JIT significa que iOS permite memoria ejecutable en este momento. Confirma el estado real en el juego: el OSD debe mostrar EE:JIT, IOP:JIT y VU:JIT. Si StikDebug informa un fallo de socket, vuelve a abrir StikDebug y relanza con el script UTM-Dolphin.",
-            "Opens StikDebug automatically when JIT is missing. If the status stays red, launch ARMSX2 from the StikDebug/UTM-Dolphin script.": "Abre StikDebug automáticamente cuando falta JIT. Si el estado sigue rojo, inicia ARMSX2 desde el script StikDebug/UTM-Dolphin."
         ],
         .german: [
             "OSD": "OSD",
@@ -1172,12 +1160,6 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "StikDebug": "StikDebug",
             "Auto-open StikDebug": "StikDebug automatisch öffnen",
             "Access is available. Confirm EE:JIT / IOP:JIT / VU:JIT in the in-game OSD.": "Zugriff ist verfügbar. Bestätige EE:JIT / IOP:JIT / VU:JIT im OSD im Spiel.",
-            "Open StikDebug manually, then run the UTM-Dolphin script and relaunch ARMSX2.": "Öffne StikDebug manuell, führe dann das UTM-Dolphin-Skript aus und starte ARMSX2 neu.",
-            "No-JIT fallback is active. Use StikDebug/UTM-Dolphin for dynarec.": "No-JIT-Fallback ist aktiv. Verwende StikDebug/UTM-Dolphin für Dynarec.",
-            "Launch with StikDebug/UTM-Dolphin to enable JIT.": "Mit StikDebug/UTM-Dolphin starten, um JIT zu aktivieren.",
-            "ARMSX2 can open StikDebug, but iOS still requires the correct StikDebug/UTM-Dolphin script to attach or relaunch with JIT.": "ARMSX2 kann StikDebug öffnen, aber iOS benötigt weiterhin das korrekte StikDebug/UTM-Dolphin-Skript, um mit JIT anzuhängen oder neu zu starten.",
-            "JIT Access means iOS currently allows executable memory. Confirm the real runtime state in-game: the OSD should show EE:JIT, IOP:JIT, and VU:JIT. If StikDebug reports a socket failure, reopen StikDebug and relaunch with the UTM-Dolphin script.": "JIT-Zugriff bedeutet, dass iOS derzeit ausführbaren Speicher erlaubt. Prüfe den echten Laufzeitstatus im Spiel: Das OSD sollte EE:JIT, IOP:JIT und VU:JIT anzeigen. Wenn StikDebug einen Socket-Fehler meldet, öffne StikDebug erneut und starte mit dem UTM-Dolphin-Skript neu.",
-            "Opens StikDebug automatically when JIT is missing. If the status stays red, launch ARMSX2 from the StikDebug/UTM-Dolphin script.": "Öffnet StikDebug automatisch, wenn JIT fehlt. Wenn der Status rot bleibt, starte ARMSX2 über das StikDebug/UTM-Dolphin-Skript."
         ],
         .italian: [
             "OSD": "OSD",
@@ -1288,12 +1270,6 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "StikDebug": "StikDebug",
             "Auto-open StikDebug": "Apri automaticamente StikDebug",
             "Access is available. Confirm EE:JIT / IOP:JIT / VU:JIT in the in-game OSD.": "L'accesso è disponibile. Conferma EE:JIT / IOP:JIT / VU:JIT nell'OSD in gioco.",
-            "Open StikDebug manually, then run the UTM-Dolphin script and relaunch ARMSX2.": "Apri StikDebug manualmente, poi esegui lo script UTM-Dolphin e riavvia ARMSX2.",
-            "No-JIT fallback is active. Use StikDebug/UTM-Dolphin for dynarec.": "Il fallback No-JIT è attivo. Usa StikDebug/UTM-Dolphin per il dynarec.",
-            "Launch with StikDebug/UTM-Dolphin to enable JIT.": "Avvia con StikDebug/UTM-Dolphin per abilitare il JIT.",
-            "ARMSX2 can open StikDebug, but iOS still requires the correct StikDebug/UTM-Dolphin script to attach or relaunch with JIT.": "ARMSX2 può aprire StikDebug, ma iOS richiede comunque lo script StikDebug/UTM-Dolphin corretto per collegarsi o riavviare con JIT.",
-            "JIT Access means iOS currently allows executable memory. Confirm the real runtime state in-game: the OSD should show EE:JIT, IOP:JIT, and VU:JIT. If StikDebug reports a socket failure, reopen StikDebug and relaunch with the UTM-Dolphin script.": "Accesso JIT significa che iOS attualmente consente memoria eseguibile. Conferma lo stato reale in gioco: l'OSD dovrebbe mostrare EE:JIT, IOP:JIT e VU:JIT. Se StikDebug segnala un errore socket, riapri StikDebug e riavvia con lo script UTM-Dolphin.",
-            "Opens StikDebug automatically when JIT is missing. If the status stays red, launch ARMSX2 from the StikDebug/UTM-Dolphin script.": "Apre automaticamente StikDebug quando manca il JIT. Se lo stato resta rosso, avvia ARMSX2 dallo script StikDebug/UTM-Dolphin."
         ],
         .portuguese: [
             "OSD": "OSD",
@@ -1403,12 +1379,6 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "StikDebug": "StikDebug",
             "Auto-open StikDebug": "Abrir StikDebug automaticamente",
             "Access is available. Confirm EE:JIT / IOP:JIT / VU:JIT in the in-game OSD.": "O acesso está disponível. Confirme EE:JIT / IOP:JIT / VU:JIT no OSD dentro do jogo.",
-            "Open StikDebug manually, then run the UTM-Dolphin script and relaunch ARMSX2.": "Abra o StikDebug manualmente, execute o script UTM-Dolphin e reinicie o ARMSX2.",
-            "No-JIT fallback is active. Use StikDebug/UTM-Dolphin for dynarec.": "O modo sem JIT está ativo. Use StikDebug/UTM-Dolphin para dynarec.",
-            "Launch with StikDebug/UTM-Dolphin to enable JIT.": "Inicie com StikDebug/UTM-Dolphin para ativar o JIT.",
-            "ARMSX2 can open StikDebug, but iOS still requires the correct StikDebug/UTM-Dolphin script to attach or relaunch with JIT.": "O ARMSX2 pode abrir o StikDebug, mas o iOS ainda exige o script correto do StikDebug/UTM-Dolphin para anexar ou reiniciar com JIT.",
-            "JIT Access means iOS currently allows executable memory. Confirm the real runtime state in-game: the OSD should show EE:JIT, IOP:JIT, and VU:JIT. If StikDebug reports a socket failure, reopen StikDebug and relaunch with the UTM-Dolphin script.": "Acesso JIT significa que o iOS permite memória executável no momento. Confirme o estado real no jogo: o OSD deve mostrar EE:JIT, IOP:JIT e VU:JIT. Se o StikDebug informar falha de socket, reabra o StikDebug e reinicie com o script UTM-Dolphin.",
-            "Opens StikDebug automatically when JIT is missing. If the status stays red, launch ARMSX2 from the StikDebug/UTM-Dolphin script.": "Abre o StikDebug automaticamente quando o JIT está ausente. Se o estado continuar vermelho, inicie o ARMSX2 pelo script StikDebug/UTM-Dolphin."
         ]
     ]
 

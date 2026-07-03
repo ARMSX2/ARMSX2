@@ -184,7 +184,7 @@ final class PatchStore: @unchecked Sendable {
             switch PnachParser.parse(text) {
             case .invalid:
                 entries.append(unparseableEntry(path: path, fileName: fileName, isCheat: isCheat, origin: origin))
-            case .valid(let parsed, _):
+            case .valid(let parsed):
                 let enabledNames = isCheat ? enabledCheats : enabledPatches
                 for parsedEntry in parsed {
                     let enabled = parsedEntry.isLegacy
@@ -246,7 +246,7 @@ final class PatchStore: @unchecked Sendable {
     func toggle(_ entry: PatchEntry) {
         guard canManageInstalledFiles, !entry.isLegacy, !entry.name.isEmpty else {
             if entry.isLegacy {
-                notify("Legacy patches are managed by removing or reinstalling the file.")
+                applyFeedback("Legacy patches are managed by removing or reinstalling the file.")
             }
             return
         }
@@ -256,7 +256,7 @@ final class PatchStore: @unchecked Sendable {
             names.remove(at: index)
         } else {
             if Self.hardcoreBlocksPnachContent() {
-                notify(InstallOutcome.blockedByHardcore.message, kind: .error)
+                applyFeedback(InstallOutcome.blockedByHardcore.message, kind: .error)
                 return
             }
             names.append(entry.name)
@@ -307,14 +307,14 @@ final class PatchStore: @unchecked Sendable {
         do {
             try fileManager.removeItem(atPath: path)
         } catch {
-            notify("Could not remove the patch file: \(error.localizedDescription)", kind: .error)
+            applyFeedback("Could not remove the patch file: \(error.localizedDescription)", kind: .error)
             return
         }
         setEnableList([], forISO: isoName, isCheat: asCheat)
         clearSidecar(forISO: isoName, fileName: fileName)
         ARMSX2Bridge.reloadPatches()
         loadInstalled(forISO: isoName, launchContext: launchContext)
-        notify("Installed file removed.", kind: .success)
+        applyFeedback("Installed file removed.", kind: .success)
     }
 
     func removeAllInstalled() {
@@ -330,7 +330,7 @@ final class PatchStore: @unchecked Sendable {
         setEnableList([], forISO: isoName, isCheat: false)
         ARMSX2Bridge.reloadPatches()
         loadInstalled(forISO: isoName, launchContext: launchContext)
-        notify("All installed patches removed.", kind: .success)
+        applyFeedback("All installed patches removed.", kind: .success)
     }
 
     /// Removes a single named entry's lines from its .pnach file, preserving every other entry.
@@ -338,7 +338,7 @@ final class PatchStore: @unchecked Sendable {
     func removeEntry(_ entry: PatchEntry) {
         guard canManageInstalledFiles, !entry.isLegacy, !entry.name.isEmpty else {
             if entry.isLegacy {
-                notify("Legacy patches are managed by removing or reinstalling the file.")
+                applyFeedback("Legacy patches are managed by removing or reinstalling the file.")
             }
             return
         }
@@ -346,21 +346,21 @@ final class PatchStore: @unchecked Sendable {
               !path.isEmpty,
               fileManager.fileExists(atPath: path),
               let text = try? String(contentsOfFile: path, encoding: .utf8) else {
-            notify("Could not read the patch file to remove this entry.", kind: .error)
+            applyFeedback("Could not read the patch file to remove this entry.", kind: .error)
             return
         }
         guard let draftIndex = Self.draftIndex(forEntryID: entry.id) else {
-            notify("This entry could not be located for removal.", kind: .error)
+            applyFeedback("This entry could not be located for removal.", kind: .error)
             return
         }
         guard let rewritten = PnachParser.removingDraftBlock(text, draftIndex: draftIndex) else {
-            notify("This entry could not be found in the file.", kind: .error)
+            applyFeedback("This entry could not be found in the file.", kind: .error)
             return
         }
         do {
             try writeManaged(text: rewritten, to: path)
         } catch {
-            notify("Could not save the updated patch file: \(error.localizedDescription)", kind: .error)
+            applyFeedback("Could not save the updated patch file: \(error.localizedDescription)", kind: .error)
             return
         }
 
@@ -370,7 +370,7 @@ final class PatchStore: @unchecked Sendable {
 
         ARMSX2Bridge.reloadPatches()
         loadInstalled(forISO: isoName, launchContext: launchContext)
-        notify("Entry removed from the \(entry.isCheat ? "cheat" : "patch") file.", kind: .success)
+        applyFeedback("Entry removed from the \(entry.isCheat ? "cheat" : "patch") file.", kind: .success)
     }
 
     /// Extracts the draft index from a `PatchEntry.id` of the form "<path>|entry-N" or
@@ -389,7 +389,7 @@ final class PatchStore: @unchecked Sendable {
         let parsed: [ParsedPatchEntry]
         switch PnachParser.parse(text) {
         case .invalid(let reason): return .invalid(reason)
-        case .valid(let entries, _): parsed = entries
+        case .valid(let entries): parsed = entries
         }
 
         guard let path = managedPath(forISO: iso, asCheat: asCheat), !path.isEmpty else {
@@ -455,7 +455,7 @@ final class PatchStore: @unchecked Sendable {
     @discardableResult
     func importURLs(_ urls: [URL], forISO iso: String, asCheat: Bool) -> String {
         guard hasUsableManagedPath(forISO: iso) else {
-            notify(InstallOutcome.noIdentity.message, kind: .error)
+            applyFeedback(InstallOutcome.noIdentity.message, kind: .error)
             return InstallOutcome.noIdentity.message
         }
 
@@ -486,7 +486,7 @@ final class PatchStore: @unchecked Sendable {
             loadInstalled(forISO: iso, launchContext: launchContext)
         }
         let result = messages.isEmpty ? "No patches imported." : messages.joined(separator: "\n")
-        notify(
+        applyFeedback(
             anySuccess ? "Import complete.\n\(result)\nSome changes apply after restarting the game." : result,
             kind: anySuccess ? .success : .error
         )
@@ -513,21 +513,21 @@ final class PatchStore: @unchecked Sendable {
     func downloadFromDatabase(forISO iso: String, asCheat: Bool) async {
         let crc = iso == isoName ? currentCRC : Self.formattedCRC(ARMSX2Bridge.gameSettings(forISO: iso)["crc"] as? String)
         guard !crc.isEmpty else {
-            notify(identityState.guidance ?? "Database matching is unavailable for this game.", kind: .information)
+            applyFeedback(identityState.guidance ?? "Database matching is unavailable for this game.", kind: .information)
             return
         }
 
         let template = asCheat ? cheatDatabaseURLTemplate : patchDatabaseURLTemplate
         guard Self.isConfiguredDatabaseTemplate(template) else {
             let kind = asCheat ? "cheat" : "patch"
-            notify("No \(kind) database source is configured. Add a trusted URL in Advanced.", kind: .information)
+            applyFeedback("No \(kind) database source is configured. Add a trusted URL in Advanced.", kind: .information)
             return
         }
 
         let serial = iso == isoName ? currentSerial : PadLayoutGameIdentity.normalizedSerial(ARMSX2Bridge.gameSettings(forISO: iso)["serial"] as? String)
         let title = iso == isoName ? currentTitle : (ARMSX2Bridge.gameMetadata(forISO: iso)["title"] ?? iso)
         guard let url = resolvedDatabaseURL(template: template, serial: serial, crc: crc, title: title) else {
-            notify("The database URL could not be created for this game. Check its placeholders in Advanced.", kind: .error)
+            applyFeedback("The database URL could not be created for this game. Check its placeholders in Advanced.", kind: .error)
             return
         }
 
@@ -540,27 +540,27 @@ final class PatchStore: @unchecked Sendable {
             request.cachePolicy = .reloadIgnoringLocalCacheData
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
-                notify("Could not download from the database. Please try again.", kind: .error)
+                applyFeedback("Could not download from the database. Please try again.", kind: .error)
                 return
             }
             if http.statusCode == 404 {
-                notify(asCheat ? "No cheat found for this game." : "No patch found for this game.", kind: .information)
+                applyFeedback(asCheat ? "No cheat found for this game." : "No patch found for this game.", kind: .information)
                 return
             }
             guard http.statusCode == 200 else {
-                notify("Could not download from the database. The server returned status \(http.statusCode).", kind: .error)
+                applyFeedback("Could not download from the database. The server returned status \(http.statusCode).", kind: .error)
                 return
             }
             guard data.count <= Self.maxPatchDownloadBytes else {
-                notify("The downloaded patch is too large to be a valid patch file.", kind: .error)
+                applyFeedback("The downloaded patch is too large to be a valid patch file.", kind: .error)
                 return
             }
             guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else {
-                notify("The downloaded file was not a valid patch file.", kind: .error)
+                applyFeedback("The downloaded file was not a valid patch file.", kind: .error)
                 return
             }
             guard case .valid = PnachParser.parse(text) else {
-                notify("The downloaded file was not a valid patch file.", kind: .error)
+                applyFeedback("The downloaded file was not a valid patch file.", kind: .error)
                 return
             }
             let outcome = writePatch(text: text, forISO: iso, asCheat: asCheat, autoEnable: false, source: .database)
@@ -568,12 +568,12 @@ final class PatchStore: @unchecked Sendable {
                 // Refresh the installed list now so the new entries appear without
                 // closing and reopening the manager.
                 loadInstalled(forISO: iso, launchContext: launchContext)
-                notify("\(asCheat ? "Cheat" : "Patch") downloaded and installed. Enable the entries you want.", kind: .success)
+                applyFeedback("\(asCheat ? "Cheat" : "Patch") downloaded and installed. Enable the entries you want.", kind: .success)
             } else {
-                notify("The downloaded file could not be installed: \(outcome.message)", kind: .error)
+                applyFeedback("The downloaded file could not be installed: \(outcome.message)", kind: .error)
             }
         } catch {
-            notify("Could not reach the database. Check your connection or URL and try again.", kind: .error)
+            applyFeedback("Could not reach the database. Check your connection or URL and try again.", kind: .error)
         }
     }
 
@@ -772,12 +772,6 @@ final class PatchStore: @unchecked Sendable {
     }
 
     func applyFeedback(_ message: String, kind: PatchFeedbackKind = .information) {
-        lastMessage = message
-        lastMessageKind = kind
-        showMessage = true
-    }
-
-    private func notify(_ message: String, kind: PatchFeedbackKind = .information) {
         lastMessage = message
         lastMessageKind = kind
         showMessage = true

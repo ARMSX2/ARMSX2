@@ -97,14 +97,12 @@ enum PatchCategory: String, Codable, CaseIterable, Identifiable {
 enum PatchSource: String, Codable {
     case local
     case database
-    case legacy
     case installed
 
     var displayName: String {
         switch self {
         case .local: return "Imported"
         case .database: return "Database"
-        case .legacy: return "Installed"
         case .installed: return "Installed"
         }
     }
