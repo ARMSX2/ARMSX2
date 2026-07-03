@@ -4,6 +4,7 @@
 import SwiftUI
 import PhotosUI
 import UIKit
+import ImageIO
 
 struct AppearanceSettingsView: View {
     @State private var settings = SettingsStore.shared
@@ -22,8 +23,15 @@ struct AppearanceSettingsView: View {
 
     var body: some View {
         Form {
+            Section(settings.localized("App Icon")) {
+                NavigationLink {
+                    AppIconSettingsView()
+                } label: {
+                    Label(settings.localized("App Icon"), systemImage: "app.badge")
+                }
+            }
             Section(settings.localized("Library Background")) {
-                Text(settings.localized("Use a custom image behind your game library."))
+                Text(settings.localized("Use a custom image behind your game library. Animated GIF and APNG are supported; large or still images fall back to a single frame."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -108,7 +116,16 @@ struct AppearanceSettingsView: View {
                 showLoadError = true
                 return
             }
-            let savedPath = try LibraryBackgroundHelper.save(image, for: role)
+            // Preserve animated images (GIF/APNG/animated WebP) as their
+            // original bytes so playback works; re-encoding to JPEG would
+            // collapse them to a single frame. Static images still go through
+            // the resized JPEG path.
+            let savedPath: String
+            if AnimatedBackgroundImport.shouldKeepAsAnimated(data) {
+                savedPath = try LibraryBackgroundHelper.saveAnimated(data, for: role)
+            } else {
+                savedPath = try LibraryBackgroundHelper.save(image, for: role)
+            }
             switch role {
             case .main:
                 settings.libraryBackgroundPath = savedPath
@@ -194,6 +211,67 @@ private enum LibraryBackgroundHelper {
         let renderer = UIGraphicsImageRenderer(size: newSize)
         return renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: newSize))
+        }
+    }
+
+    /// Writes the original animated bytes verbatim so playback stays intact.
+    /// Caps the file size; anything larger should have gone through the static
+    /// path (callers check `AnimatedBackgroundImport.shouldKeepAsAnimated`).
+    static func saveAnimated(_ data: Data, for role: LibraryBackgroundRole) throws -> String {
+        let ext = AnimatedBackgroundImport.fileExtension(for: data)
+        let fileName: String
+        switch role {
+        case .main: fileName = "library_background.\(ext)"
+        case .landscape: fileName = "library_background_landscape.\(ext)"
+        }
+        // Remove any prior background of any extension for this role so we do
+        // not accumulate stale files (e.g. an old .jpg left beside a new .gif).
+        for stale in ["jpg", "gif", "apng", "webp"] {
+            let staleURL = storageDirectory.appendingPathComponent(
+                role == .main ? "library_background.\(stale)" : "library_background_landscape.\(stale)")
+            try? FileManager.default.removeItem(at: staleURL)
+        }
+        let url = storageDirectory.appendingPathComponent(fileName)
+        try data.write(to: url, options: .atomic)
+        return url.path
+    }
+}
+
+/// Decides whether an imported background should be kept as an animated file
+/// (preserving its bytes) or re-encoded to a static JPEG.
+enum AnimatedBackgroundImport {
+    /// Upper bound on the raw animated payload we are willing to keep on disk
+    /// and decode per frame. Larger files fall back to a static JPEG.
+    static let maxAnimatedBytes = 12 * 1024 * 1024
+
+    static func shouldKeepAsAnimated(_ data: Data) -> Bool {
+        guard data.count <= maxAnimatedBytes else { return false }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return false }
+        let count = CGImageSourceGetCount(source)
+        guard count > 1, count <= AnimatedBackgroundLoader.maxFrames else { return false }
+        // Reject upfront if any frame is too large to decode safely.
+        for i in 0..<count {
+            guard let cg = CGImageSourceCreateImageAtIndex(source, i, nil) else { return false }
+            if CGFloat(cg.width) > AnimatedBackgroundLoader.maxFrameDimension ||
+               CGFloat(cg.height) > AnimatedBackgroundLoader.maxFrameDimension {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Picks a file extension from the image type so ImageIO can reopen it.
+    static func fileExtension(for data: Data) -> String {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let type = CGImageSourceGetType(source) as String? else {
+            return "gif"
+        }
+        switch type {
+        case "com.compuserve.gif": return "gif"
+        case "org.apng": return "apng"
+        case "public.png": return "apng"
+        case "org.webmproject.webp": return "webp"
+        default: return "gif"
         }
     }
 }
