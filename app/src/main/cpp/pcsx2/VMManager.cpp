@@ -1119,13 +1119,18 @@ std::string VMManager::GetSerialForGameSettings()
 bool VMManager::UpdateGameSettingsLayer()
 {
 	std::unique_ptr<INISettingsInterface> new_interface;
-	if (s_disc_crc != 0)
+
+	// Disc games key on the disc CRC. Standalone ELF boots (homebrew, mods,
+	// HostFS) have no disc, so s_disc_crc is 0 while the ELF CRC is available
+	// in s_current_crc; fall back to it so per-game settings apply for ELFs.
+	const u32 game_settings_crc = (s_disc_crc != 0) ? s_disc_crc : s_current_crc;
+	if (game_settings_crc != 0)
 	{
-		std::string filename(GetGameSettingsPath(GetSerialForGameSettings(), s_disc_crc));
+		std::string filename(GetGameSettingsPath(GetSerialForGameSettings(), game_settings_crc));
 		if (!FileSystem::FileExists(filename.c_str()))
 		{
 			// try the legacy format (crc.ini)
-			filename = GetGameSettingsPath({}, s_disc_crc);
+			filename = GetGameSettingsPath({}, game_settings_crc);
 		}
 
 		if (FileSystem::FileExists(filename.c_str()))

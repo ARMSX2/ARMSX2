@@ -458,6 +458,7 @@ int main(int argc, char* argv[]) {
 #include "common/FileSystem.h"
 #include "common/Path.h"
 #include "pcsx2/VMManager.h"
+#include "pcsx2/GameList.h"
 #include "pcsx2/ImGui/ImGuiManager.h"
 #include "pcsx2/Config.h"
 #include "pcsx2/CDVD/CDVD.h"
@@ -493,6 +494,7 @@ struct rc_client_t;
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
 #import <CoreHaptics/CoreHaptics.h>
+#import <AVFoundation/AVFoundation.h>
 #include <mach/mach.h>
 #include <mach-o/dyld.h>
 #include "common/Darwin/DarwinMisc.h"
@@ -745,6 +747,31 @@ static bool ARMSX2GetConfiguredFastBoot()
     return s_settings_interface->GetBoolValue(
         "GameISO", "FastBoot",
         s_settings_interface->GetBoolValue("EmuCore", "EnableFastBoot", false));
+}
+
+// Resolves fast boot for an ISO that is about to boot. A per-game override
+// (EmuCore/EnableFastBoot in the game's settings INI) takes precedence;
+// otherwise the configured global value is used. Global settings are never
+// mutated, so a per-game override cannot leak into the global configuration.
+static bool ARMSX2ResolveFastBootForISO(const std::string& isoPath)
+{
+    const bool globalFastBoot = ARMSX2GetConfiguredFastBoot();
+    if (isoPath.empty())
+        return globalFastBoot;
+
+    GameList::Entry entry;
+    if (!GameList::PopulateEntryFromPath(isoPath, &entry) || entry.crc == 0)
+        return globalFastBoot;
+
+    const std::string serial = (entry.type == GameList::EntryType::ELF) ? std::string() : entry.serial;
+    INISettingsInterface si(VMManager::GetGameSettingsPath(serial, entry.crc));
+    if (!si.Load())
+        return globalFastBoot;
+
+    if (si.ContainsValue("EmuCore", "EnableFastBoot"))
+        return si.GetBoolValue("EmuCore", "EnableFastBoot", globalFastBoot);
+
+    return globalFastBoot;
 }
 
 static int ARMSX2GetIOSMajorVersion()
@@ -4163,13 +4190,8 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
                 std::string isoDir = EmuFolders::DataRoot + "/iso";
                 std::string defaultISO = "";
                 std::string isoFilename = s_settings_interface->GetStringValue("GameISO", "BootISO", defaultISO.c_str());
-                bool fastBoot = ARMSX2GetConfiguredFastBoot();
                 s_settings_interface->SetStringValue("GameISO", "BootISO", isoFilename.c_str());
-                s_settings_interface->SetBoolValue("GameISO", "FastBoot", fastBoot);
-                s_settings_interface->SetBoolValue("EmuCore", "EnableFastBoot", fastBoot);
                 s_settings_interface->Save();
-                std::fprintf(stderr, "@@BOOT_FASTBOOT_READ@@ selected=%d\n", fastBoot ? 1 : 0);
-                std::fflush(stderr);
                 std::string isoPath = (!isoFilename.empty() && isoFilename.front() == '/') ? isoFilename : (isoDir + "/" + isoFilename);
                 // Fallback: check Documents/ root if not found in iso/.
                 if (!isoFilename.empty() && isoFilename.front() != '/' && !FileSystem::FileExists(isoPath.c_str())) {
@@ -4179,6 +4201,11 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
                         Console.WriteLn("ISO found in Documents/ root: %s", isoPath.c_str());
                     }
                 }
+                // Resolve fast boot from the per-game override if present, otherwise the
+                // configured global value. Global settings are not mutated here.
+                const bool fastBoot = ARMSX2ResolveFastBootForISO(isoPath);
+                std::fprintf(stderr, "@@BOOT_FASTBOOT_READ@@ selected=%d\n", fastBoot ? 1 : 0);
+                std::fflush(stderr);
                 const bool isoExists = !isoFilename.empty() && FileSystem::FileExists(isoPath.c_str());
                 std::fprintf(stderr, "@@BOOT_PARAMS@@ ini_iso=\"%s\" resolved=\"%s\" exists=%d fast_boot=%d\n",
                     isoFilename.c_str(), isoPath.c_str(), isoExists ? 1 : 0, fastBoot ? 1 : 0);
@@ -4510,7 +4537,7 @@ static void SetupIOSDirectories(const std::string& dataRoot)
 #endif
     fprintf(stderr, "@@BUILD_ID@@ ARMSX2_iOS v%s %s %s %s\n",
         ARMSX2_VERSION_STR, ARMSX2_GIT_HASH, __DATE__, __TIME__);
-    fprintf(stderr, "@@TEST_MARKER@@ armsx2_ios_43_v231_metadata_v1\n");
+    fprintf(stderr, "@@TEST_MARKER@@ armsx2_ios_43_v232_metadata_v1\n");
     fprintf(stderr, "@@FF_FIX@@ offspeed_present_skip=1 present_cap60=1 adaptive_backoff=1 drawable_wait_probe=1 vm_pace_probe=1 turbo_only_toggle=1\n");
     fprintf(stderr, "@@DIAG_MODE@@ ee_hotpath=%d\n", ARMSX2_ENABLE_EE_HOTPATH_DIAGNOSTICS);
     
