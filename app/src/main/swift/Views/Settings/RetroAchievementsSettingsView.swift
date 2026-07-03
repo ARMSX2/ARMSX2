@@ -20,6 +20,24 @@ struct RetroAchievementsSettingsView: View {
     @State private var messageTitle = ""
     @State private var messageBody = ""
     @State private var showingMessage = false
+    @State private var showingHardcoreDisableConfirm = false
+
+    private func applyHardcoreChange(_ enabled: Bool) {
+        hardcoreEnabled = enabled
+        ARMSX2Bridge.setRetroAchievementsHardcore(enabled)
+        if enabled && bool("hasActiveGame") && !bool("hardcoreActive") {
+            showMessage(
+                title: "Hardcore Mode",
+                body: settings.localized("Hardcore mode will apply after a full reset of the current game.")
+            )
+        } else if enabled && !bool("hasActiveGame") {
+            showMessage(
+                title: "Hardcore Mode",
+                body: settings.localized("Hardcore mode is ready and will apply when you boot a game.")
+            )
+        }
+        refreshSoon()
+    }
 
     var body: some View {
         Form {
@@ -87,23 +105,26 @@ struct RetroAchievementsSettingsView: View {
                         Toggle(settings.localized("Hardcore Mode"), isOn: Binding(
                             get: { hardcoreEnabled },
                             set: { newValue in
-                                hardcoreEnabled = newValue
-                                ARMSX2Bridge.setRetroAchievementsHardcore(newValue)
-                                if newValue && bool("hasActiveGame") && !bool("hardcoreActive") {
-                                    showMessage(
-                                        title: "Hardcore Mode",
-                                        body: settings.localized("Hardcore mode will apply after a full reset of the current game.")
-                                    )
-                                } else if newValue && !bool("hasActiveGame") {
-                                    showMessage(
-                                        title: "Hardcore Mode",
-                                        body: settings.localized("Hardcore mode is ready and will apply when you boot a game.")
-                                    )
+                                if newValue {
+                                    applyHardcoreChange(true)
+                                } else {
+                                    showingHardcoreDisableConfirm = true
                                 }
-                                refreshSoon()
                             }
                         ))
                         .disabled(!achievementsEnabled)
+                        .confirmationDialog(
+                            settings.localized("Turn off Hardcore Mode?"),
+                            isPresented: $showingHardcoreDisableConfirm,
+                            titleVisibility: .visible
+                        ) {
+                            Button(settings.localized("Turn Off Hardcore"), role: .destructive) {
+                                applyHardcoreChange(false)
+                            }
+                            Button(settings.localized("Cancel"), role: .cancel) {}
+                        } message: {
+                            Text(settings.localized("Disabling Hardcore drops you to Casual mode for the rest of this session. Re-enable it after resetting the game."))
+                        }
 
                         statusRow("Hardcore Status", value: hardcoreStatus)
                     }

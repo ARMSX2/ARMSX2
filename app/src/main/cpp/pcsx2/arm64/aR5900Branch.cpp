@@ -25,6 +25,9 @@
 
 #include "R5900.h"
 #include "VU.h" // VU0 / REG_VPU_STAT for the COP2 (BC2) branch condition
+#include "Memory.h" // eeHw — the backing store the DMAC registers alias into
+#include "Hw.h" // D0_CHCR.. HW-register address enum (Dmac.h prerequisite)
+#include "Dmac.h" // dmacRegs / DMACregisters for the COP0 (BC0) CPCOND0 condition
 
 #include "common/Assertions.h"
 
@@ -213,6 +216,44 @@ void armEmitBC2T(u32 target, u32 fallthrough)
 }
 
 // ------------------------------------------------------------------------
+// COP0 conditional branches BC0F/BC0T (opcode 0x10, rs==0x08 (BC), rt 0x00/0x01).
+// Branch on CPCOND0, the DMA-ready flag the EE polls while waiting for DMA to finish:
+//   CPCOND0 = (((dmacRegs.stat.CIS | ~dmacRegs.pcr.CPC) & 0x3FF) == 0x3FF)  (COP0.cpp)
+// i.e. true once every PCR-enabled DMA channel has its STAT interrupt bit set. The OR
+// form is emitted verbatim from CPCOND0() so the polarity is self-evident; CIS/CPC are
+// bits[9:0] of stat/pcr, so masking the 32-bit loads with 0x3FF is exact. dmacRegs is
+// global HW state (a reference into eeHw[0xE000]); materialize its base once and load
+// stat+pcr by offset — the second Ldr's destination (w17) reuses the base register, so
+// it must come last (the base is consumed for address-gen before being overwritten).
+// BC0T branches when CPCOND0==1, BC0F when ==0, matching the interpreter (COP0.cpp
+// BC0F/BC0T) and x86 iCOP0.cpp. No cycle commit / VU sync — a plain HW-register-test
+// branch like BC1/BC2. The likely forms BC0FL/BC0TL (rt 0x02/0x03) are in
+// armEmitBranchLikelyTest below; once compiled, the rec's existing wait-loop fast-forward
+// can idle-skip a DMA spin that polls CPCOND0.
+static void emitCpcond0Test()
+{
+	armMoveAddressToReg(RSCRATCHADDR, &dmacRegs);                                                 // x17 = &dmacRegs
+	armAsm->Ldr(RXVIXLSCRATCH.W(), a64::MemOperand(RSCRATCHADDR, offsetof(DMACregisters, pcr)));  // w16 = PCR (CPC)
+	armAsm->Ldr(RSCRATCHW, a64::MemOperand(RSCRATCHADDR, offsetof(DMACregisters, stat)));         // w17 = STAT (CIS); clobbers base last
+	armAsm->Mvn(RXVIXLSCRATCH.W(), RXVIXLSCRATCH.W());                // ~CPC
+	armAsm->Orr(RXVIXLSCRATCH.W(), RXVIXLSCRATCH.W(), RSCRATCHW);     // CIS | ~CPC
+	armAsm->And(RXVIXLSCRATCH.W(), RXVIXLSCRATCH.W(), 0x3FF);         // & 0x3FF (bits[9:0])
+	armAsm->Cmp(RXVIXLSCRATCH.W(), 0x3FF);                            // eq <=> CPCOND0 == 1
+}
+
+void armEmitBC0F(u32 target, u32 fallthrough)
+{
+	emitCpcond0Test();
+	emitSelectPc(target, fallthrough, a64::ne); // CPCOND0 == 0 -> branch
+}
+
+void armEmitBC0T(u32 target, u32 fallthrough)
+{
+	emitCpcond0Test();
+	emitSelectPc(target, fallthrough, a64::eq); // CPCOND0 == 1 -> branch
+}
+
+// ------------------------------------------------------------------------
 // Branch-likely forms. Evaluate the condition, write
 // cpuRegs.pc = taken ? target : fallthrough, and return the "taken" condition
 // with the flags still live (the Mov/Csel/Str of the PC select don't touch
@@ -266,6 +307,12 @@ vixl::aarch64::Condition armEmitBranchLikelyTest(u32 op, u32 target, u32 fallthr
 			armAsm->Ldr(RSCRATCHW, a64::MemOperand(RSCRATCHADDR));
 			armAsm->Tst(RSCRATCHW, VU0_VBS0);
 			taken = (rt == 0x02) ? a64::eq : a64::ne; // FL: bit clear; TL: bit set
+			break;
+
+		case 0x10: // COP0: BC0FL (rt 0x02) / BC0TL (rt 0x03)
+			pxAssert(rs == 0x08 && (rt == 0x02 || rt == 0x03));
+			emitCpcond0Test();                        // Cmp sets eq <=> CPCOND0 == 1
+			taken = (rt == 0x03) ? a64::eq : a64::ne; // TL: CPCOND0==1; FL: CPCOND0==0
 			break;
 
 		default:

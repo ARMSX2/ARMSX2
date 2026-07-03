@@ -254,6 +254,10 @@ set(pcsx2SPU2Sources
 	SPU2/spu2freeze.cpp
 	SPU2/spu2sys.cpp
 	SPU2/Wavedump_wav.cpp
+	# Optional ARM64 NEON reverb FIR backend (self-guards with #if __aarch64__;
+	# produces no object code on other targets). Opt-in via the NeonReverbSIMD
+	# setting; overrides ReverbDownsample/ReverbUpsample at runtime.
+	SPU2/spu2_neon.cpp
 )
 
 set(pcsx2SPU2SourcesUnshared
@@ -270,6 +274,13 @@ set(pcsx2SPU2Headers
 	SPU2/spu2.h
 	SPU2/regs.h
 	SPU2/spdif.h
+	SPU2/spu2_neon.h
+	SPU2/spu2_neon_mixer.h
+	SPU2/spu2_neon_dcfilter.h
+	SPU2/spu2_neon_reverb_ex.h
+	SPU2/spu2_sve2_fir.h
+	SPU2/spu2_mt6899_tuning.h
+	SPU2/spu2_optimize.h
 )
 
 # DEV9 sources

@@ -557,9 +557,15 @@ bool VKShaderCache::FlushPipelineCache()
 	if (!FileSystem::StatFile(m_pipeline_cache_filename.c_str(), &sd) || sd.Size != static_cast<s64>(data_size))
 	{
 		Console.WriteLn("Writing %zu bytes to '%s'", data_size, m_pipeline_cache_filename.c_str());
-		if (!FileSystem::WriteBinaryFile(m_pipeline_cache_filename.c_str(), data.data(), data.size()))
+		// Stage to a temp file then rename, so a swipe-kill or crash mid-write cannot
+		// leave a half-written cache that some drivers accept and then render garbage
+		// from. rename() is atomic on POSIX.
+		const std::string tmp_filename = m_pipeline_cache_filename + ".tmp";
+		if (!FileSystem::WriteBinaryFile(tmp_filename.c_str(), data.data(), data.size()) ||
+			!FileSystem::RenamePath(tmp_filename.c_str(), m_pipeline_cache_filename.c_str()))
 		{
 			Console.Error("Failed to write pipeline cache to '%s'", m_pipeline_cache_filename.c_str());
+			FileSystem::DeleteFilePath(tmp_filename.c_str());
 			return false;
 		}
 	}

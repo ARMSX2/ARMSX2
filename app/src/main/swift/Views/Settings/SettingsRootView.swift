@@ -11,6 +11,7 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
     case appearance
     case emulator
     case graphics
+    case audio
     case network
     case memoryCards
     case storage
@@ -34,6 +35,8 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
             return "Emulator"
         case .graphics:
             return "Graphics"
+        case .audio:
+            return "Audio"
         case .network:
             return "Network"
         case .memoryCards:
@@ -67,6 +70,8 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
             return "cpu"
         case .graphics:
             return "paintbrush"
+        case .audio:
+            return "speaker.wave.2"
         case .network:
             return "network"
         case .memoryCards:
@@ -160,6 +165,11 @@ struct SettingsRootView: View {
                     GraphicsSettingsView()
                 } label: {
                     Label(settings.localized("Graphics"), systemImage: "paintbrush")
+                }
+                NavigationLink {
+                    AudioSettingsView()
+                } label: {
+                    Label(settings.localized("Audio"), systemImage: "speaker.wave.2")
                 }
                 NavigationLink {
                     NetworkSettingsView()
@@ -321,6 +331,8 @@ struct SettingsRootView: View {
             EmulatorSettingsView()
         case .graphics:
             GraphicsSettingsView()
+        case .audio:
+            AudioSettingsView()
         case .network:
             NetworkSettingsView()
         case .memoryCards:
@@ -416,7 +428,7 @@ private struct NetworkSettingsView: View {
                     settings.dev9HddFile = "DEV9hdd.raw"
                 }
 
-                Text(settings.localized("Matches ARMSX2 Android's DEV9 HDD option. Requires a VM restart."))
+                Text(settings.localized("If a compatible HDD image is present in app storage, games that expect an internal hard drive can use it. Requires a VM restart. The image is kept out of iCloud backups."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

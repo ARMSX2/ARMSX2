@@ -4,7 +4,7 @@
 import Foundation
 
 enum PnachParseResult {
-    case valid(entries: [ParsedPatchEntry], hasNamedGroups: Bool)
+    case valid(entries: [ParsedPatchEntry])
     case invalid(reason: String)
 }
 
@@ -92,8 +92,7 @@ enum PnachParser {
             ))
         }
 
-        let hasNamed = entries.contains(where: { !$0.name.isEmpty })
-        return .valid(entries: entries, hasNamedGroups: hasNamed)
+        return .valid(entries: entries)
     }
 
     private static func summary(for draft: Draft) -> String {

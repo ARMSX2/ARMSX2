@@ -42,7 +42,7 @@ extension EnvironmentValues {
     }
 }
 
-// U005: Singleton haptic generator — prepared once, reused for all button presses
+// Singleton haptic generator — prepared once, reused for all button presses
 @MainActor
 enum HapticManager {
     static let medium: UIImpactFeedbackGenerator = {
@@ -97,10 +97,6 @@ enum ControllerAsset {
         return exists(sideFileName) ? sideFileName : analogBaseCommonFileName
     }
 
-    static func analogBaseFileName(isLeft: Bool, skin: VirtualPadSkin) -> String {
-        analogBaseFileName(isLeft: isLeft) { image(named: $0, skin: skin) != nil }
-    }
-
     static func analogBaseFileName(
         isLeft: Bool,
         descriptor: VPadSkinDescriptor,
@@ -125,10 +121,6 @@ enum ControllerAsset {
             return legacyAnalogStickFileName
         }
         return analogStickCurrentFileName
-    }
-
-    static func analogStickFileName(isLeft: Bool, skin: VirtualPadSkin) -> String {
-        analogStickFileName(isLeft: isLeft) { skinContainsExactAsset(named: $0, skin: skin) }
     }
 
     static func analogStickFileName(
@@ -202,20 +194,6 @@ enum ControllerAsset {
         return UIImage(contentsOfFile: path)
     }
 
-    private static func skinContainsExactAsset(named fileName: String, skin: VirtualPadSkin) -> Bool {
-        let baseName = (fileName as NSString).deletingPathExtension
-        if skin == .custom,
-           let directory = VirtualPadSkin.customSkinDirectory() {
-            return FileManager.default.fileExists(atPath: directory.appendingPathComponent(fileName).path)
-        }
-
-        if let directoryName = skin.bundledDirectoryName {
-            return Bundle.main.url(forResource: baseName, withExtension: "png", subdirectory: "controller_skins/\(directoryName)") != nil
-        }
-
-        return UIImage(named: baseName) != nil || UIImage(named: fileName) != nil || Bundle.main.path(forResource: baseName, ofType: "png") != nil
-    }
-
     private static func skinContainsExactAsset(
         named fileName: String,
         descriptor: VPadSkinDescriptor,
@@ -247,25 +225,6 @@ enum ControllerAsset {
         }
 
         return UIImage(contentsOfFile: url.path)
-    }
-
-    static func fullSkinImage(skin: VirtualPadSkin, isLandscape: Bool) -> UIImage? {
-        guard skin == .custom, let directory = VirtualPadSkin.customSkinDirectory() else {
-            return nil
-        }
-
-        let orientationCandidates = isLandscape
-            ? ["controller_edgetoedge_landscape", "iphone_edgetoedge_landscape", "controller_landscape", "iphone_landscape", "skin_landscape", "background_landscape", "gamepad_landscape", "landscape"]
-            : ["controller_edgetoedge_portrait", "iphone_edgetoedge_portrait", "controller_portrait", "iphone_portrait", "skin_portrait", "background_portrait", "gamepad_portrait", "portrait"]
-        let sharedCandidates = ["controller", "skin", "background", "gamepad", "full", "layout"]
-
-        for baseName in orientationCandidates + sharedCandidates {
-            if let image = customImage(named: "\(baseName).png", baseName: baseName, directory: directory) {
-                return image
-            }
-        }
-
-        return nil
     }
 
     static func fullSkinImage(
@@ -385,14 +344,6 @@ enum ControllerAsset {
 
     private static func isLegacyCustomDescriptor(_ descriptor: VPadSkinDescriptor) -> Bool {
         descriptor.source != .imported && descriptor.id == VirtualPadSkin.custom.descriptorID
-    }
-
-    static func edgeToEdgePortraitSkinImage(skin: VirtualPadSkin) -> UIImage? {
-        guard let image = fullSkinImage(skin: skin, isLandscape: false) else {
-            return nil
-        }
-
-        return looksLikeEdgeToEdgePortrait(image) ? image : nil
     }
 
     private static func looksLikeEdgeToEdgePortrait(_ image: UIImage) -> Bool {
@@ -774,7 +725,6 @@ struct VirtualControllerView: View {
     @State private var skinLibrary = VPadSkinLibraryStore.shared
     @State private var layout = PadLayoutStore.shared
     var isLandscape: Bool = false
-    var drawFullSkinBackground: Bool = true
     var layoutSnapshot: PadLayoutSnapshot? = nil
     var skinDescriptor: VPadSkinDescriptor? = nil
 
@@ -784,13 +734,6 @@ struct VirtualControllerView: View {
 
     private var effectiveSkinDescriptor: VPadSkinDescriptor {
         skinDescriptor ?? skinLibrary.selectedDescriptor
-    }
-
-    // A004: Scale buttons based on screen width (baseline: iPhone 15 = 393pt width)
-    private func deviceScale(_ geo: GeometryProxy) -> CGFloat {
-        let baseWidth: CGFloat = 393
-        let w = isLandscape ? max(geo.size.width, geo.size.height) : min(geo.size.width, geo.size.height)
-        return max(0.7, min(1.4, w / baseWidth))
     }
 
     var body: some View {
@@ -813,7 +756,6 @@ struct VirtualControllerView: View {
                     .environment(\.padUsesFullSkin, usesFullSkin)
             }
         }
-        // ARMSX2_MASK_PREWARM_V4
         // Prepare mask images before gameplay input so the first press cannot decode/scan on the hot path.
         .onAppear {
             ARMSX2VirtualPadMaskImageCache.prewarm(descriptor: effectiveSkinDescriptor)
@@ -984,8 +926,7 @@ struct VirtualControllerView: View {
     @ViewBuilder
     func landscapeLayout(w: CGFloat, h: CGFloat) -> some View {
         ZStack {
-            if drawFullSkinBackground,
-               let fullSkin = ControllerAsset.gameplayFullSkinImage(descriptor: effectiveSkinDescriptor, isLandscape: true) {
+            if let fullSkin = ControllerAsset.gameplayFullSkinImage(descriptor: effectiveSkinDescriptor, isLandscape: true) {
                 Image(uiImage: fullSkin)
                     .resizable()
                     .interpolation(.high)
@@ -1061,8 +1002,7 @@ struct VirtualControllerView: View {
     @ViewBuilder
     func portraitLayout(w: CGFloat, h: CGFloat) -> some View {
         ZStack {
-            if drawFullSkinBackground,
-               let fullSkin = ControllerAsset.gameplayFullSkinImage(descriptor: effectiveSkinDescriptor, isLandscape: false) {
+            if let fullSkin = ControllerAsset.gameplayFullSkinImage(descriptor: effectiveSkinDescriptor, isLandscape: false) {
                 Image(uiImage: fullSkin)
                     .resizable()
                     .interpolation(.high)
@@ -1346,6 +1286,18 @@ private struct UIKitPadPressSurface<Content: View>: UIViewRepresentable {
         context.coordinator.hostingController.rootView = content
     }
 
+    // Release the button's target/action pairs and detach the hosted view when SwiftUI
+    // removes this representable (e.g. a control hidden through a visibility edit). Without
+    // this, the retained UIHostingController and stale UIControl targets survive the view
+    // removal and can corrupt touch dispatch after the pad is rebuilt.
+    static func dismantleView(_ uiView: UIButton, coordinator: Coordinator) {
+        uiView.removeTarget(coordinator, action: nil, for: .allEvents)
+        coordinator.hostingController.willMove(toParent: nil)
+        coordinator.hostingController.view?.removeFromSuperview()
+        coordinator.hostingController.removeFromParent()
+        coordinator.releasePress()
+    }
+
     @MainActor
     final class Coordinator: NSObject {
         let hostingController: UIHostingController<Content>
@@ -1367,6 +1319,10 @@ private struct UIKitPadPressSurface<Content: View>: UIViewRepresentable {
         }
 
         @objc func touchUp() {
+            releasePress()
+        }
+
+        func releasePress() {
             guard isPressed else {
                 return
             }
@@ -1637,68 +1593,59 @@ private struct CompositeDPadFaceInfo {
     let hitScaleY: CGFloat
 }
 
-// Maps a touch offset (relative to a diamond cluster's center) to a set of 0, 1, or 2
-// of its four cardinal members. A center deadzone keeps resting touches neutral;
-// cardinal sectors resolve to a single member; diagonal sectors resolve to the two
-// adjacent neighbours so slides roll smoothly through the shared edges. Shared by the
-// composite D-pad (up/down/left/right) and the composite face cluster
-// (triangle/cross/square/circle).
-private func compositeDiamondResolve(
+// Resolves a composite D-pad touch from the four arrows' actual geometry instead of
+// a fixed angle→button mapping about the centroid. The previous angle resolver assumed
+// the arrows sat exactly on the cardinal rays, which is only true for the symmetric
+// default layout; moving/resizing a single arrow in a custom layout broke direction
+// mapping even though the visual arrow was drawn at its real position.
+//
+// This mirrors `compositeFaceResolve`: each arrow hit-tests against its own resolved
+// center and hitScale-aware hitbox. A touch inside one arrow resolves to that
+// direction; a touch in the overlap of two neighbouring arrows resolves to both (an
+// intentional diagonal); the central deadzone stays neutral. Unlike the face cluster,
+// a touch that lands in the gap between arrows (but outside the deadzone) resolves to
+// the nearest arrow by center distance, so quarter-circle slides still roll smoothly.
+private func compositeDPadResolve(
     offset: CGPoint,
+    centroid: CGPoint,
     deadzone: CGFloat,
-    up: ARMSX2PadButton,
-    down: ARMSX2PadButton,
-    left: ARMSX2PadButton,
-    right: ARMSX2PadButton
+    faces: [CompositeDPadFaceInfo]
 ) -> Set<ARMSX2PadButton> {
     let distance = hypot(offset.x, offset.y)
     if distance < deadzone {
         return []
     }
 
-    let diagonalHalfAngle: CGFloat = 22.0 * .pi / 180.0
-    var angle = atan2(offset.y, offset.x)
-    if angle < 0 {
-        angle += 2 * .pi
-    }
+    let point = CGPoint(x: centroid.x + offset.x, y: centroid.y + offset.y)
 
-    // +y points down on screen, so each diagonal axis pairs two adjacent cardinals.
-    let diagonalAxes: [(axis: CGFloat, first: ARMSX2PadButton, second: ARMSX2PadButton)] = [
-        (.pi / 4, down, right),
-        (3 * .pi / 4, down, left),
-        (5 * .pi / 4, up, left),
-        (7 * .pi / 4, up, right)
-    ]
-    for candidate in diagonalAxes {
-        if compositeDiamondAngularDistance(angle, candidate.axis) <= diagonalHalfAngle {
-            return [candidate.first, candidate.second]
+    var hits: [(face: CompositeDPadFaceInfo, distance: CGFloat)] = []
+    for face in faces {
+        let halfW = PadLayoutMetrics.touchLength(baseLength: face.baseSize, hitScale: face.hitScaleX) / 2
+        let halfH = PadLayoutMetrics.touchLength(baseLength: face.baseSize, hitScale: face.hitScaleY) / 2
+        let dx = abs(point.x - face.center.x)
+        let dy = abs(point.y - face.center.y)
+        if dx <= halfW && dy <= halfH {
+            hits.append((face, hypot(dx, dy)))
         }
     }
 
-    let cardinalAxes: [(axis: CGFloat, button: ARMSX2PadButton)] = [
-        (0, right),
-        (.pi / 2, down),
-        (.pi, left),
-        (3 * .pi / 2, up)
-    ]
-    var nearest = cardinalAxes[0]
-    var nearestDelta = compositeDiamondAngularDistance(angle, cardinalAxes[0].axis)
-    for candidate in cardinalAxes.dropFirst() {
-        let delta = compositeDiamondAngularDistance(angle, candidate.axis)
-        if delta < nearestDelta {
-            nearestDelta = delta
-            nearest = candidate
-        }
+    if hits.isEmpty {
+        // Gap between arrows: resolve to the nearest arrow by center distance so a D-pad
+        // press always registers a direction once past the deadzone, keeping slides fluid.
+        guard let nearest = faces.min(by: {
+            hypot($0.center.x - point.x, $0.center.y - point.y) <
+            hypot($1.center.x - point.x, $1.center.y - point.y)
+        }) else { return [] }
+        return [nearest.button]
     }
-    return [nearest.button]
-}
+    if hits.count == 1 {
+        return [hits[0].face.button]
+    }
 
-private func compositeDiamondAngularDistance(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
-    var delta = abs(a - b)
-    if delta > .pi {
-        delta = 2 * .pi - delta
-    }
-    return delta
+    // Two or more hitboxes overlap here: press the two nearest neighbours (a diagonal),
+    // never a broad chord.
+    hits.sort { $0.distance < $1.distance }
+    return Set(hits.prefix(2).map(\.face.button))
 }
 
 // Resolves a face-button touch against each button's actual resolved hit region —
@@ -1866,7 +1813,7 @@ private struct CompositeDPadView: View {
                     }
                 },
                 onLocation: { offset in
-                    apply(compositeDiamondResolve(offset: offset, deadzone: deadzone, up: .up, down: .down, left: .left, right: .right))
+                    apply(compositeDPadResolve(offset: offset, centroid: centroid, deadzone: deadzone, faces: faces))
                 },
                 onEnded: {
                     releaseAll()

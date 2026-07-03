@@ -57,6 +57,18 @@ struct EmulatorSettingsView: View {
                 Text(settings.localized("CPU Recompiler"))
             }
 
+            Section {
+                modePicker("EE FPU Round Mode", selection: $settings.eeFpuRoundMode, labels: SettingsStore.roundModeLabels)
+                modePicker("VU0 Round Mode", selection: $settings.vu0RoundMode, labels: SettingsStore.roundModeLabels)
+                modePicker("VU1 Round Mode", selection: $settings.vu1RoundMode, labels: SettingsStore.roundModeLabels)
+                modePicker("EE Clamp Mode", selection: $settings.eeClampMode, labels: SettingsStore.eeClampModeLabels)
+                modePicker("VU Clamp Mode", selection: $settings.vuClampMode, labels: SettingsStore.vuClampModeLabels)
+            } header: {
+                Text(settings.localized("Advanced CPU"))
+            } footer: {
+                Text(settings.localized("Rounding and clamping can improve compatibility for specific games, but may break others. Changes take effect on the next game boot."))
+            }
+
             Section(settings.localized("StikDebug")) {
                 Toggle(settings.localized("Auto-open StikDebug"), isOn: $settings.autoOpenStikDebug)
 
@@ -111,47 +123,6 @@ struct EmulatorSettingsView: View {
             Section(settings.localized("Memory")) {
                 Toggle(settings.localized("Fastmem"), isOn: $settings.fastmem)
                 Text(settings.localized("Direct memory mapping for EE. Disable if 3D graphics are broken. Requires restart."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section(settings.localized("Audio")) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(settings.localized("Emulator Volume"))
-                        Spacer()
-                        Text(Self.formatPercent(settings.emulatorVolumePercent))
-                            .foregroundStyle(.secondary)
-                            .font(.callout.monospacedDigit())
-                    }
-
-                    Slider(
-                        value: Binding(
-                            get: { Double(settings.emulatorVolumePercent) },
-                            set: { settings.emulatorVolumePercent = Int($0.rounded()) }
-                        ),
-                        in: 0...100,
-                        step: 1
-                    )
-                    .accessibilityLabel(settings.localized("Emulator Volume"))
-                    .accessibilityValue(Self.formatPercent(settings.emulatorVolumePercent))
-                    .accessibilityHint(settings.localized("Adjusts emulator game audio without changing iOS system volume or other apps."))
-
-                    HStack {
-                        Text("0%")
-                        Spacer()
-                        Button(settings.localized("Reset")) {
-                            settings.emulatorVolumePercent = SettingsStore.defaultEmulatorVolumePercent
-                        }
-                        .buttonStyle(.borderless)
-                        Spacer()
-                        Text("100%")
-                    }
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                }
-
-                Text(settings.localized("Controls emulator and game audio only. iOS system volume and other apps stay separate."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -260,7 +231,25 @@ struct EmulatorSettingsView: View {
             }
 
             Section {
-                Stepper("\(settings.localized("EE Cycle Rate")): \(settings.eeCycleRate)", value: $settings.eeCycleRate, in: -3...3)
+                ForEach(SettingsStore.gameFixOptions) { option in
+                    Toggle(settings.localized(option.label), isOn: Binding(
+                        get: { settings.gameFixEnabled(option.key) },
+                        set: { settings.setGameFix(option.key, $0) }
+                    ))
+                }
+                .disabled(!settings.enableGameFixes)
+            } header: {
+                Text(settings.localized("Game Fixes"))
+            } footer: {
+                Text(settings.localized("Manual game fixes override normal compatibility behavior. Use them only for games that need them. They apply while GameDB Core Fixes is on. Changes take effect on the next game boot."))
+            }
+
+            Section {
+                Picker(settings.localized("EE Cycle Rate"), selection: $settings.eeCycleRate) {
+                    ForEach(-3...3, id: \.self) { value in
+                        Text(value > 0 ? "+\(value)" : "\(value)").tag(value)
+                    }
+                }
                 Text(settings.localized("0 = Default. Negative = underclock (stable). Positive = overclock (fast but risky)."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -270,8 +259,18 @@ struct EmulatorSettingsView: View {
                 Toggle("MTVU", isOn: $settings.mtvu)
                 Toggle(settings.localized("Wait Loop Detection"), isOn: $settings.waitLoop)
                 Toggle(settings.localized("INTC Stat Hack"), isOn: $settings.intcStat)
+                Picker(settings.localized("EE Cycle Skip"), selection: $settings.eeCycleSkip) {
+                    ForEach(0...3, id: \.self) { value in
+                        Text("\(value)").tag(value)
+                    }
+                }
+                Toggle(settings.localized("VU Flag Hack"), isOn: $settings.vuFlagHack)
 
                 Text(settings.localized("VU1 Instant and MTVU are independent now. MTVU can help some games, but keep it off unless a game specifically benefits on iOS."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text(settings.localized("Fast CDVD speeds up disc reads and can fix games that stall loading; it rarely causes issues. EE Cycle Skip and VU Flag Hack trade accuracy for speed and can break timing-sensitive games. Wait Loop Detection and INTC Stat Hack are safe, small idle-time savings. Enable speedhacks one at a time per game and relaunch to check."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {
@@ -289,13 +288,20 @@ struct EmulatorSettingsView: View {
         }
         .navigationTitle(settings.localized("Emulator"))
         .navigationBarTitleDisplayMode(.inline)
+        .dynamicTypeSize(...DynamicTypeSize.accessibility3)
     }
 
     private static func formatFPS(_ value: Float) -> String {
         String(format: "%.2f FPS", value)
     }
 
-    private static func formatPercent(_ value: Int) -> String {
-        "\(SettingsStore.clampedEmulatorVolumePercent(value))%"
+    /// Compact labeled picker over a fixed ordered option list (round/clamp modes).
+    @ViewBuilder
+    private func modePicker(_ title: String, selection: Binding<Int>, labels: [String]) -> some View {
+        Picker(settings.localized(title), selection: selection) {
+            ForEach(Array(labels.enumerated()), id: \.offset) { index, label in
+                Text(settings.localized(label)).tag(index)
+            }
+        }
     }
 }

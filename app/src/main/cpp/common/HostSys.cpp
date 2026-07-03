@@ -104,10 +104,16 @@ static u32 GetSpinTime()
 	{
 		return 1000 * atoi(req);
 	}
-	else
-	{
-		return 50 * 1000; // 50µs
-	}
+
+	// Mobile producer (EE->MTGS) arrival is bimodal — sub-microsecond or many
+	// milliseconds — so the 50us spin default burns a large share of host CPU in
+	// ShortSpin. Drop to 2us on mobile arm64 (matches the Android tuning; the same
+	// AArch64 + mobile thermal envelope applies to Apple silicon).
+#if defined(__ANDROID__) || (defined(__APPLE__) && defined(__aarch64__))
+	return 2 * 1000; // 2µs
+#else
+	return 50 * 1000; // 50µs
+#endif
 }
 
 const u32 SPIN_TIME_NS = GetSpinTime();

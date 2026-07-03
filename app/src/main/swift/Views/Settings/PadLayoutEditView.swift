@@ -333,7 +333,7 @@ struct PadLayoutEditView: View {
                 Image(systemName: editorIsModified ? "rectangle.and.pencil.and.ellipsis" : "rectangle.stack")
                     .font(.body)
                     .foregroundStyle(.white)
-                Text("Layout")
+                Text(layoutPresets.preset(id: activePresetID)?.displayName ?? "Layout")
                     .font(.system(size: 7, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.9))
                     .lineLimit(1)
@@ -1020,7 +1020,7 @@ private struct DraggableGroup: View {
             Text(id.uppercased())
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle((isOverlapping ? Color.red : Color.blue).opacity(isSelected ? 1.0 : 0.75))
-                .offset(y: -(max(hitSize.height, visibleSize.height) / 2 + 12))
+                .offset(y: -(visibleSize.height / 2 + 12))
         }
         .frame(width: hitSize.width, height: hitSize.height)
         .contentShape(Rectangle())
@@ -1187,7 +1187,7 @@ private struct DraggableButton: View {
             Text(buttonLabel.uppercased())
                 .font(.system(size: 8, weight: .bold))
                 .foregroundStyle((isOverlapping ? Color.red : Color.blue).opacity(isSelected ? 1.0 : 0.75))
-                .offset(y: -(max(hitSize.height, visibleSize.height) / 2 + 10))
+                .offset(y: -(visibleSize.height / 2 + 10))
         }
         .frame(width: hitSize.width, height: hitSize.height)
         .contentShape(Rectangle())

@@ -523,6 +523,8 @@ struct CheatsPatchesManagerView: View {
                     .fixedSize(horizontal: false, vertical: true)
             } label: {
                 Label("Source URLs", systemImage: "link")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }
         } header: {
             Text("Advanced")

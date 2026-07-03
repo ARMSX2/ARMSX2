@@ -151,6 +151,8 @@ struct HelpView: View {
                             } label: {
                                 Text(settings.localized(item.question))
                                     .font(.body)
+                                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                    .contentShape(Rectangle())
                             }
                         }
                     } header: {
