@@ -625,27 +625,47 @@ object SetupImpl {
         recAntiBlur.value = g.antiBlur
         recWidescreen.value = g.enableWideScreenPatches
         recDeinterlaceOff.value = g.deinterlaceMode == 1 // 0 = Auto, 1 = Off
-        recPerfFast.value = g.eeCycleSkip >= 2 || g.fastCDVD
+        // Default the Performance choice from any prior config, but on a fresh
+        // low-end device pre-RECOMMEND Fast (never forced — the user can flip it
+        // back to Optimal on the same screen). The probe is best-effort; a bad
+        // read reports "not low-end" and leaves the prior/Optimal choice.
+        val ctx = Main.instance
+        val lowEnd = ctx != null && runCatching { com.armsx2.DeviceTier.isLowEnd(ctx) }.getOrDefault(false)
+        recPerfFast.value = g.eeCycleSkip >= 2 || g.fastCDVD || lowEnd
     }
 
     /** Write the Recommended Settings choices to the GLOBAL config tier. */
     private fun finishRecommendedStep() {
         runCatching {
             val g = com.armsx2.config.ConfigStore.loadGlobal()
-            com.armsx2.config.ConfigStore.saveGlobal(
-                g.copy(
-                    aspectRatio = recAspect.value.coerceIn(0, 4),
-                    upscaleFloat = recUpscale.value.coerceIn(1, 8).toFloat(),
-                    antiBlur = recAntiBlur.value,
-                    enableWideScreenPatches = recWidescreen.value,
-                    deinterlaceMode = if (recDeinterlaceOff.value) 1 else 0,
-                    // Performance preset: Optimal (safe) vs Fast (aggressive) — mirrors
-                    // the in-game PerformanceTab Optimal/Fast snapshots.
-                    eeCycleRate = 0,
-                    eeCycleSkip = if (recPerfFast.value) 2 else 0,
-                    fastCDVD = recPerfFast.value,
-                )
+            // First-run only: seed MTVU from the CPU rather than the persisted
+            // Settings default (which we can't change without bleeding into
+            // existing users' saved configs). Multi-threaded VU1 is a net win
+            // only when there are spare cores (>= 6); on budget SoCs it costs
+            // more than it saves.
+            val mtvuDefault = com.armsx2.DeviceTier.mtvuDefault()
+            val base = g.copy(
+                aspectRatio = recAspect.value.coerceIn(0, 4),
+                upscaleFloat = recUpscale.value.coerceIn(1, 8).toFloat(),
+                antiBlur = recAntiBlur.value,
+                enableWideScreenPatches = recWidescreen.value,
+                deinterlaceMode = if (recDeinterlaceOff.value) 1 else 0,
+                mtvu = mtvuDefault,
             )
+            // Performance preset: Optimal (safe) vs Fast (aggressive). Fast mirrors
+            // the in-game PerformanceTab Fast snapshot (EE cycle skip + fast CDVD +
+            // native resolution + Basic blending), keeping the device-aware MTVU.
+            val resolved = if (recPerfFast.value)
+                base.copy(
+                    eeCycleRate = 0,
+                    eeCycleSkip = 2,
+                    fastCDVD = true,
+                    upscaleFloat = 1.0f,
+                    accurateBlendingUnit = 1,
+                )
+            else
+                base.copy(eeCycleRate = 0, eeCycleSkip = 0, fastCDVD = false)
+            com.armsx2.config.ConfigStore.saveGlobal(resolved)
         }
     }
 

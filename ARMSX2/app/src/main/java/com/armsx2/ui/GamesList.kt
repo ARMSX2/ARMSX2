@@ -114,7 +114,11 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 private val GAME_EXTENSIONS = setOf(
-    "iso", "chd", "cso", "zso", "gz", "bin", "mdf", "img", "nrg", "dump"
+    "iso", "chd", "cso", "zso", "gz", "bin", "mdf", "img", "nrg", "dump",
+    // ELF/homebrew: scanned serial-less (the disc probe skips .elf), so they show
+    // in the main library with long-press per-game settings + custom covers. A
+    // scanned content:// ELF is copied to a real .elf file at launch (#253).
+    "elf",
 )
 
 /** Max subdirectory depth the ROM scan descends. Deep enough for any sane
@@ -410,7 +414,7 @@ object GamesList {
     // SAF cache (content:// URIs), so toggling All-Files Access can't make the
     // launch path use a URI from the wrong mode.
     private fun cacheKeyForDirs(dirs: List<String>): String =
-        dirs.toSet().sorted().joinToString("|") + "|v3" + if (allFilesRomMode()) "|raw" else ""
+        dirs.toSet().sorted().joinToString("|") + "|v4" + if (allFilesRomMode()) "|raw" else ""
 
     @Composable
     private fun LibraryScreen(context: Context, romsDirs: List<String>, romsKey: String) {
@@ -749,7 +753,17 @@ object GamesList {
             }.getOrDefault(false)
             if (copied && outFile.length() > 0L) {
                 WindowImpl.showLibrary.value = false
-                Main.launchGame(outFile.absolutePath, null)
+                // Carry a GameInfo (serial-less, keyed by the ELF filename stem)
+                // so the ELF's per-game settings resolve at boot instead of
+                // falling back to global (issue #253). Without this, currentGame
+                // is null and the boot path reads only the global tier.
+                val elfInfo = com.armsx2.GameInfo(
+                    uri = android.net.Uri.fromFile(outFile),
+                    title = outName.substringBeforeLast('.'),
+                    serial = null,
+                    extension = "ELF",
+                )
+                Main.launchGame(outFile.absolutePath, elfInfo)
             }
         }
         val wallLauncher = rememberLauncherForActivityResult(
@@ -764,6 +778,7 @@ object GamesList {
         // here in composition so the closures capture the live launchers/context;
         // published to the nav model via SideEffect.
         val toolbarExpanded = remember { mutableStateOf(false) }
+        val showExitConfirm = remember { mutableStateOf(false) }
 
         // (icon, caption, action). The first four are always visible; the rest fold
         // behind the "⋮ More" toggle. Each caption renders UNDER its icon. Controller
@@ -815,6 +830,7 @@ object GamesList {
                     SetupImpl.resetForReentry()
                     Main.reopenSetup()
                 })
+                add(Triple(LibIcons.POWER, "Exit") { showExitConfirm.value = true })
             }
         }
         SideEffect { controllerToolbarActions = toolbarActions.map { it.second to it.third } }
@@ -838,6 +854,25 @@ object GamesList {
                     onClick = action,
                 )
             }
+        }
+        if (showExitConfirm.value) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showExitConfirm.value = false },
+                containerColor = Color(0xFF1B1A1A),
+                title = { Text("Exit ARMSX2?", color = Color.White) },
+                text = { Text("Are you sure you want to close the app?", color = Color(0xFFCCCCCC)) },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        showExitConfirm.value = false
+                        Main.exitApp()
+                    }) { Text("Yes", color = Color(0xFFFF6B6B)) }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { showExitConfirm.value = false }) {
+                        Text("No", color = Color(0xFFAACCFF))
+                    }
+                },
+            )
         }
     }
 
@@ -926,6 +961,8 @@ object GamesList {
         const val FILE_CODE = "M14 3v4a1 1 0 0 0 1 1h4 M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2 M10 13l-1 2l1 2 M14 13l1 2l-1 2"
         const val REFRESH = "M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4 M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"
         const val TOOL = "M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5"
+        // Tabler "power" — reads as quit/close-the-app.
+        const val POWER = "M7 6a7.75 7.75 0 1 0 10 0 M12 4l0 8"
         const val LAYOUT_COLUMNS = "M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1 -1 1h-14a1 1 0 0 1 -1 -1v-14a1 1 0 0 1 1 -1 M12 4v16"
         const val LAYOUT_ROWS = "M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1 -1 1h-14a1 1 0 0 1 -1 -1v-14a1 1 0 0 1 1 -1 M4 12h16"
 
@@ -1711,6 +1748,32 @@ object GamesList {
         controllerSelectedUri.value = game.uri.toString()
         WindowImpl.showLibrary.value = false
         markRecentlyPlayed(game)
+        // ELF/homebrew from the library: emucore's AutoDetectSource keys off a real
+        // ".elf" file path (s_elf_override / NoDisc). A file:// ELF boots in place
+        // (handled by the normal path below); a content:// ELF (SAF-scanned) is
+        // copied to a real .elf file first, mirroring the toolbar ELF picker. The
+        // ORIGINAL GameInfo is kept so settingsKey (filename stem) and covers stay
+        // stable (#253).
+        if (game.extension == "ELF" && game.uri.scheme != "file") {
+            val ctx = Main.instance?.applicationContext
+            if (ctx != null) {
+                val base = game.uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
+                    ?.takeIf { it.isNotEmpty() } ?: "${game.title}.elf"
+                val outName = if (base.endsWith(".elf", ignoreCase = true)) base else "$base.elf"
+                val outFile = File(File(Main.assetCopyRoot(ctx), "elf").apply { mkdirs() }, outName)
+                val copied = runCatching {
+                    ctx.contentResolver.openInputStream(game.uri)?.use { ins ->
+                        outFile.outputStream().use { outs -> ins.copyTo(outs) }
+                    } != null
+                }.getOrDefault(false)
+                if (copied && outFile.length() > 0L) {
+                    Main.launchGame(outFile.absolutePath, game)
+                    return
+                }
+                Toast.makeText(ctx, "Couldn't load ELF", Toast.LENGTH_SHORT).show()
+                return
+            }
+        }
         // Raw-mode games (all-files build) carry a file:// URI — hand the core the
         // bare /storage path so CDVD opens it directly, not via the SAF FD bridge.
         val launchArg = if (game.uri.scheme == "file") (game.uri.path ?: game.uri.toString())

@@ -253,6 +253,7 @@ object SaveStatePicker {
         onRestoreRequest: () -> Unit,
     ) {
         var autoSave by remember { mutableStateOf(Main.prefs.getBoolean("autoSaveOnExit", false)) }
+        var autoLoad by remember { mutableStateOf(Main.prefs.getBoolean("autoLoadOnBoot", false)) }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Auto-save on exit", color = Color.White, fontSize = 12.sp)
             Spacer(Modifier.width(6.dp))
@@ -278,6 +279,20 @@ object SaveStatePicker {
             }
             Spacer(Modifier.width(6.dp))
             PillButton("Restore", onRestoreRequest)
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Auto-load last state on boot", color = Color.White, fontSize = 12.sp)
+            Spacer(Modifier.width(6.dp))
+            Switch(
+                checked = autoLoad,
+                onCheckedChange = {
+                    autoLoad = it
+                    Main.prefs.edit().putBoolean("autoLoadOnBoot", it).apply()
+                },
+            )
         }
     }
 

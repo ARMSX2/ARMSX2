@@ -1089,7 +1089,11 @@ object InGameOverlay {
         // native serial), then NativeApp.getPauseGameSerial. Empty
         // string from native means "no disc loaded" → fall back to
         // global scope/settings.
-        val serial = Main.currentGame.value?.serial
+        // Use settingsKey (serial for discs, filename stem for serial-less
+        // ELF/homebrew) so the key the overlay SAVES to matches the key the boot
+        // path READS — otherwise ELF per-game edits saved here were invisible at
+        // the next boot (issue #253).
+        val serial = Main.currentGame.value?.settingsKey
             ?: runCatching { NativeApp.getPauseGameSerial() }.getOrNull()
                 ?.takeIf { it.isNotEmpty() }
         currentSerial.value = serial
@@ -1148,7 +1152,7 @@ object InGameOverlay {
         if (currentTab.value == Tab.PlayingNow) currentTab.value = Tab.Performance
         SettingsControllerNav.clearSelection()
         resetSettingsAdjustGate()
-        currentSerial.value = game.serial?.takeIf { it.isNotEmpty() }
+        currentSerial.value = game.settingsKey?.takeIf { it.isNotEmpty() }
         settingsScope.value =
             if (currentSerial.value != null) SettingsScope.Game else SettingsScope.Global
         settingsState.value = ConfigStore.resolveForGame(currentSerial.value)

@@ -1119,6 +1119,30 @@ data class Settings(
         @JvmStatic
         internal var emitSink: ((String, String, String, String) -> Unit)? = null
 
+        /** One-tap "Low-End" performance snapshot applied on top of [base].
+         *  Only cheap, safe-for-most levers that already exist as fields:
+         *    - accurate_blending_unit = Minimum (0)   — cheapest blend path
+         *    - internal resolution   = 1x (native)     — biggest GPU win
+         *    - hw mipmap off, GPU palette conversion off — drop optional GPU work
+         *    - texture preloading    = Partial (1)      — lower upload stalls
+         *    - HW ROV off                                — never a win on tilers
+         *    - EE cycle skip         = 1                 — mild CPU headroom
+         *    - MTVU                   = device-aware      — only when >= 6 cores
+         *  [mtvu] is passed in (from [com.armsx2.DeviceTier.mtvuDefault]) rather
+         *  than read here so config/ stays free of Android context deps.
+         *  NOTE: intentionally does NOT touch CAS — there is no CAS Settings
+         *  field wired in this build. */
+        fun lowEndPreset(base: Settings, mtvu: Boolean): Settings = base.copy(
+            accurateBlendingUnit = 0,   // Minimum
+            upscaleFloat = 1.0f,        // native resolution
+            hwMipmap = false,           // mipmap off
+            gpuPaletteConversion = false,
+            texturePreloading = 1,      // Partial
+            hwRov = false,              // ROV off
+            eeCycleSkip = 1,
+            mtvu = mtvu,
+        )
+
         /** Lenient parse — missing keys fall back to defaults so old saved
          *  blobs survive when new fields are added. */
         fun fromJson(json: JSONObject): Settings {

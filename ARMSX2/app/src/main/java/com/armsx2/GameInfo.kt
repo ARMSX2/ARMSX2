@@ -149,6 +149,18 @@ data class GameInfo(
         val name = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
         return name?.let { FilenameParser.versionTokenOf(it) } ?: serial
     }
+
+    /** Stable per-game identity used to key per-game SETTINGS (config.game.<key>).
+     *  Disc games use their serial (byte-identical to before). Serial-less
+     *  ELF/homebrew fall back to a normalized filename stem so their per-game
+     *  settings persist across a reboot — a serial-keyed store silently dropped
+     *  them to global at boot, which is issue #253. Derived purely from the ROM
+     *  path so the boot path and the in-game overlay resolve the SAME key (the
+     *  bug was the overlay saving under one key while boot read another). Stem
+     *  keys can collide if two ELFs share a filename; acceptable for homebrew. */
+    val settingsKey: String? get() = serial?.takeIf { it.isNotBlank() }
+        ?: uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
+            ?.substringBeforeLast('.')?.trim()?.takeIf { it.isNotEmpty() }
 }
 
 /**

@@ -190,7 +190,7 @@ fun NetworkTab(state: MutableState<Settings>) {
             onChange = { apply(s.copy(dev9HddFile = it.ifEmpty { "DEV9hdd.raw" })) },
             onReset = { apply(s.copy(dev9HddFile = "DEV9hdd.raw")) },
         )
-        HelpText("A bare name (e.g. DEV9hdd.raw) is kept on internal storage (an \"hdd\" folder next to the BIOS) and auto-created (8 GiB, sparse) the first time you boot a game with the HDD on. It's on internal — not the SD card — because a large image can't be sparse on SD and would fill the card. To use a pre-made image anywhere (including the SD card), enter a full path instead. Saved here, so it won't reset on reboot.")
+        HelpText("A bare name (e.g. DEV9hdd.raw) is kept on internal storage (an \"hdd\" folder next to the BIOS) and auto-created (8 GiB, sparse) the first time you boot a game with the HDD on — it's on internal, not SD, because a large image can't be sparse on SD and would fill the card. To use a pre-made image anywhere (including the SD card), enter a full path with folders (e.g. /storage/XXXX-XXXX/ARMSX2/DEV9hdd.raw) — it's opened in place, never copied, and must already exist (a custom path is not auto-created). Saved here, so it won't reset on reboot.")
 
         Spacer(Modifier.height(16.dp))
         Text(

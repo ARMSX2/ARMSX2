@@ -807,24 +807,47 @@ void Patch::UpdateActivePatches(bool reload_enabled_list, bool verbose, bool ver
 	if (EmuConfig.EnableCheats && !Achievements::IsHardcoreModeActive())
 	{
 #if defined(__ANDROID__)
-		// Android's current PNACH UI imports/executes whole files, but does
-		// not yet expose PCSX2's per-labelled-cheat picker. Treat labelled
-		// cheat groups as enabled so imports like "[60 FPS]" actually run.
-		std::vector<std::string> android_enabled_cheats = s_enabled_cheats;
-		u32 auto_enabled_groups = 0;
+		// Per-cheat toggle (pnach-2.0): the in-app picker writes the selected cheat
+		// NAMES to [Cheats] Enable= (setEnabledPatches JNI). If the persisted list
+		// already enables at least one of THIS game's labelled cheat groups, the user
+		// has made a selection — honor it EXACTLY (proper per-cheat on/off). Otherwise
+		// fall back to the legacy "import = all labelled cheats run" UX so users who
+		// never opened the picker keep their imported cheats working.
+		// (RA hardcore stays compliant: this whole block is gated on
+		//  !IsHardcoreModeActive above, which also empties s_enabled_cheats.)
+		bool has_cheat_selection = false;
 		for (const PatchGroup& group : s_cheat_patches)
 		{
-			if (group.name.empty())
-				continue;
-
-			if (std::find(android_enabled_cheats.begin(), android_enabled_cheats.end(), group.name) == android_enabled_cheats.end())
+			if (!group.name.empty() &&
+				std::find(s_enabled_cheats.begin(), s_enabled_cheats.end(), group.name) != s_enabled_cheats.end())
 			{
-				android_enabled_cheats.emplace_back(group.name);
-				auto_enabled_groups++;
+				has_cheat_selection = true;
+				break;
 			}
 		}
-		if (auto_enabled_groups > 0)
-			Console.WriteLnFmt("@@ANDROID_PNACH@@ auto_enabled_cheat_groups={}", auto_enabled_groups);
+
+		std::vector<std::string> android_enabled_cheats = s_enabled_cheats;
+		if (!has_cheat_selection)
+		{
+			u32 auto_enabled_groups = 0;
+			for (const PatchGroup& group : s_cheat_patches)
+			{
+				if (group.name.empty())
+					continue;
+
+				if (std::find(android_enabled_cheats.begin(), android_enabled_cheats.end(), group.name) == android_enabled_cheats.end())
+				{
+					android_enabled_cheats.emplace_back(group.name);
+					auto_enabled_groups++;
+				}
+			}
+			if (auto_enabled_groups > 0)
+				Console.WriteLnFmt("@@ANDROID_PNACH@@ auto_enabled_cheat_groups={} (no per-cheat selection yet)", auto_enabled_groups);
+		}
+		else
+		{
+			Console.WriteLnFmt("@@ANDROID_PNACH@@ honoring per-cheat selection ({} enabled)", s_enabled_cheats.size());
+		}
 
 		c_count = EnablePatches(&s_cheat_patches, android_enabled_cheats, nullptr);
 #else

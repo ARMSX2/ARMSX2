@@ -394,6 +394,22 @@ class Main: ComponentActivity() {
             }
         }
 
+        /** Fully exit the app (the library Exit button and hold-back gesture route
+         *  here). VM-safe: if a game is running, flush it first (quitAfterStop +
+         *  async stop(), which finishes once the VM unwinds via the STOPPED branch);
+         *  if already stopped, finish immediately. Never finish inline on a running
+         *  VM — stop() is async and inline finish would skip the memcard/savestate
+         *  flush (the same reason QUIT_APP uses the latch). */
+        @JvmStatic
+        fun exitApp() {
+            if (eState.value == EmuState.STOPPED && !vmStopInProgress && !vmRunLoopActive) {
+                instance?.runOnUiThread { instance?.finishAndRemoveTask() }
+            } else {
+                quitAfterStop = true
+                stop()
+            }
+        }
+
         @JvmStatic
         fun isVmStopInProgress(): Boolean = vmStopInProgress
 
@@ -474,7 +490,10 @@ class Main: ComponentActivity() {
             // Resolve per-game (∘ global) settings up front so the renderer backend
             // and internal resolution come from THIS title's tier, not a stale
             // global value. Sync the session state the Renderer UI reads, too.
-            var resolved = com.armsx2.config.ConfigStore.resolveForGame(currentGame.value?.serial)
+            // Resolve via settingsKey (serial for discs, filename stem for
+            // serial-less ELF/homebrew) so ELF per-game settings survive a reboot
+            // instead of falling back to global (issue #253).
+            var resolved = com.armsx2.config.ConfigStore.resolveForGame(currentGame.value?.settingsKey)
             // Per-game memory cards (NetherSX2-style): when the global toggle is
             // on, point Slot 1 at a serial-named card (the core auto-creates +
             // formats it at boot) — unless this game already has an explicit
@@ -577,6 +596,10 @@ class Main: ComponentActivity() {
             )
             currentGame.value = info
             launchedExternally = external
+            // Arm a one-shot auto-load of the autosave state for this boot (fired by
+            // onVmRunning once the game's CRC is set). Set here — not in start() — so
+            // a manual Reset Game (which re-enters start() directly) doesn't re-load.
+            pendingAutoLoadOnBoot = prefs.getBoolean("autoLoadOnBoot", false)
             m_szGamefile = uri
             synchronized(vmLifecycleLock) {
                 if (eState.value != EmuState.STOPPED || vmStopInProgress || vmRunLoopActive) {
@@ -746,6 +769,33 @@ class Main: ComponentActivity() {
                 start()
             else
                 stop(restartAfterStop = true)
+        }
+
+        // Armed per-launch in launchGame when "Auto-load last state on boot" is on;
+        // consumed once by onVmRunning. Set in launchGame (NOT start) so a manual
+        // Reset Game — which re-enters start() directly — never re-loads the state.
+        @Volatile
+        var pendingAutoLoadOnBoot = false
+
+        /** Fired when the VM reaches RUNNING (from NativeApp.vmSetPaused). If the
+         *  user enabled auto-load-on-boot, restore the autosave state once. Retries
+         *  briefly because loadAutosaveState() safely no-ops until the game's CRC is
+         *  set a moment into boot; stops on first success or after ~4s. */
+        @JvmStatic
+        fun onVmRunning() {
+            if (!pendingAutoLoadOnBoot) return
+            pendingAutoLoadOnBoot = false
+            val handler = android.os.Handler(android.os.Looper.getMainLooper())
+            val tryLoad = object : Runnable {
+                var attempts = 0
+                override fun run() {
+                    if (vmStopInProgress || eState.value == EmuState.STOPPED) return
+                    val loaded = runCatching { NativeApp.loadAutosaveState() }.getOrDefault(false)
+                    if (!loaded && ++attempts < 8)
+                        handler.postDelayed(this, 500)
+                }
+            }
+            handler.postDelayed(tryLoad, 500)
         }
 
         fun finishSetup() {
@@ -1504,6 +1554,12 @@ class Main: ComponentActivity() {
     // combo's modifier can be checked the instant its main key is pressed.
     private val heldKeys = HashSet<Int>()
 
+    // Hold-BACK-to-exit (Dolphin-style) timer. Instance-scoped because
+    // dispatchKeyEvent is an Activity method; the posted runnable is cancelled on
+    // BACK release so it only fires on a genuine hold.
+    private val backHoldHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var backHoldRunnable: Runnable? = null
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val kc = event.keyCode
         if (kc != KeyEvent.KEYCODE_UNKNOWN) {
@@ -1570,6 +1626,44 @@ class Main: ComponentActivity() {
         // the binder. Normal nav resumes the moment capture ends.
         if (ControllerMappings.padCapturing.value) {
             return super.dispatchKeyEvent(event)
+        }
+        // Hold the hardware/software BACK button to exit the app (Dolphin-style).
+        // Scoped to IN-GAME with no overlay/menu up — where a short BACK press does
+        // nothing today (it's swallowed) — so it can't disturb library/menu back
+        // navigation. Behind a default-on pref. Handles BACK from ANY source
+        // (handheld back buttons are often gamepad-sourced). Diagnostic log so a
+        // device where it "does nothing" reveals whether BACK even arrives + the gate.
+        if (kc == KeyEvent.KEYCODE_BACK) {
+            val inGame = Main.eState.value == EmuState.RUNNING &&
+                !WindowImpl.overlayVisible.value && !WindowImpl.showLibrary.value
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
+                println("@@ANDROID_HOLDBACK@@ back_down source=0x${Integer.toHexString(event.source)} inGame=$inGame pref=${Main.prefs.getBoolean("ui.holdBackToExit", true)}")
+            if (inGame && Main.prefs.getBoolean("ui.holdBackToExit", true)) {
+                when (event.action) {
+                    KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) {
+                        backHoldRunnable?.let { backHoldHandler.removeCallbacks(it) }
+                        val r = Runnable {
+                            // Re-check state at fire time — the game may have been
+                            // paused or an overlay opened during the hold.
+                            if (Main.eState.value == EmuState.RUNNING &&
+                                !WindowImpl.overlayVisible.value &&
+                                !WindowImpl.showLibrary.value
+                            ) {
+                                println("@@ANDROID_HOLDBACK@@ firing exitApp")
+                                Main.exitApp()
+                            }
+                            backHoldRunnable = null
+                        }
+                        backHoldRunnable = r
+                        backHoldHandler.postDelayed(r, 700)
+                    }
+                    KeyEvent.ACTION_UP -> {
+                        backHoldRunnable?.let { backHoldHandler.removeCallbacks(it) }
+                        backHoldRunnable = null
+                    }
+                }
+                return true
+            }
         }
         // Pressure modifier (hold): while the bound button is down, pressure-capable
         // PS2 buttons report a soft press (see sendKeyAction / TouchControls). Consume
@@ -1898,6 +1992,22 @@ class Main: ComponentActivity() {
                     // Stop the VM (flushes memcards/savestate), then finish the app once
                     // the VM has fully unwound — never finish inline (stop() is async).
                     if (down) { Main.quitAfterStop = true; Main.stop() }
+                    return true
+                }
+                ControllerMappings.SysHotkey.SAVE_AND_EXIT -> {
+                    // Write an autosave state, THEN close the game — the frontend
+                    // "exit" case (Cocoon/ES-DE) that returns to the launcher without
+                    // losing progress. Mirrors CLOSE_GAME's exit-to-launcher handling.
+                    if (down) {
+                        if (Main.launchedExternally &&
+                            Main.prefs.getBoolean("ui.exitToLauncherExternal", true))
+                            Main.quitAfterStop = true
+                        Main.stop(saveAutosave = true)
+                    }
+                    return true
+                }
+                ControllerMappings.SysHotkey.RESET_GAME -> {
+                    if (down) Main.restart()
                     return true
                 }
                 null -> {}
@@ -2579,6 +2689,13 @@ class Main: ComponentActivity() {
                 Main.stop()
             }
             ControllerMappings.SysHotkey.QUIT_APP -> { Main.quitAfterStop = true; Main.stop() }
+            ControllerMappings.SysHotkey.SAVE_AND_EXIT -> {
+                if (Main.launchedExternally &&
+                    Main.prefs.getBoolean("ui.exitToLauncherExternal", true))
+                    Main.quitAfterStop = true
+                Main.stop(saveAutosave = true)
+            }
+            ControllerMappings.SysHotkey.RESET_GAME -> Main.restart()
             // Hold-type hotkeys have no one-shot stick-edge meaning.
             ControllerMappings.SysHotkey.FAST_FORWARD,
             ControllerMappings.SysHotkey.PRESSURE_MOD -> {}

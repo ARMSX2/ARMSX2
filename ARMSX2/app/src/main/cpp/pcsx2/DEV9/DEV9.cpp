@@ -82,6 +82,18 @@ int mapping;
 
 bool isRunning = false;
 
+// A bare HddFile name (no path separator) is app-managed: it resolves under the
+// internal "hdd" folder and may be auto-created. A value that contains a path
+// separator is the user pointing at a REAL location (e.g. a pre-made image on the
+// SD card) — that path is used in place and is NEVER auto-created (issue #259).
+static bool HddFileIsBareName()
+{
+	const std::string& f = EmuConfig.DEV9.HddFile;
+	return !f.empty() &&
+		f.find('/') == std::string::npos &&
+		f.find('\\') == std::string::npos;
+}
+
 std::string GetHDDPath()
 {
 	//GHC uses UTF8 on all platforms
@@ -90,7 +102,7 @@ std::string GetHDDPath()
 	if (hddPath.empty())
 		EmuConfig.DEV9.HddEnable = false;
 
-	if (!Path::IsAbsolute(hddPath))
+	if (HddFileIsBareName())
 	{
 		// Android: resolve a bare HddFile name under an "hdd" folder on the
 		// app-private INTERNAL volume — the same place BIOS lives, deliberately
@@ -102,21 +114,38 @@ std::string GetHDDPath()
 		// EmuFolders::Bios is the internal bios folder; its parent is the
 		// app-private files dir. Falls back to DataRoot/Settings if unset (the
 		// HddCreate sparse guard still prevents any harm on non-sparse storage).
-		// A user who wants a custom pre-made image on the SD card can still pass
-		// an ABSOLUTE HddFile path (handled above, unchanged).
 		std::string hddRoot(Path::GetDirectory(EmuFolders::Bios));
 		if (hddRoot.empty())
 			hddRoot = EmuFolders::DataRoot.empty() ? EmuFolders::Settings : EmuFolders::DataRoot;
 		hddPath = Path::Combine(Path::Combine(hddRoot, "hdd"), hddPath);
 	}
+	else if (!Path::IsAbsolute(hddPath) && hddPath.rfind("storage/", 0) == 0)
+	{
+		// The user pasted a slash-less Android path ("storage/XXXX-XXXX/ARMSX2/..."),
+		// as a file manager's "copy path" action commonly produces. Normalize it to
+		// a real absolute POSIX path so the pre-made image is opened in place —
+		// otherwise Path::IsAbsolute() misreads it as relative (issue #259).
+		hddPath.insert(hddPath.begin(), '/');
+	}
 
 	return hddPath;
 }
 
-static bool EnsureHDDImageExists(const std::string& hddPath)
+// allowCreate is true only for the app-managed bare-name case. A user-supplied
+// custom path is opened in place and, if missing, reported rather than fabricated
+// (no stray multi-GiB image at a possibly-wrong location — issue #259).
+static bool EnsureHDDImageExists(const std::string& hddPath, bool allowCreate)
 {
 	if (FileSystem::FileExists(hddPath.c_str()))
 		return true;
+
+	if (!allowCreate)
+	{
+		Console.Error("DEV9: HDD image '%s' not found; not auto-creating a custom "
+			"path. Check the path, or use a bare name to create one on internal storage.",
+			hddPath.c_str());
+		return false;
+	}
 
 	const std::string directory(Path::GetDirectory(hddPath));
 	if (!directory.empty() && !FileSystem::CreateDirectoryPath(directory.c_str(), true))
@@ -239,7 +268,7 @@ s32 DEV9open()
 
 	if (EmuConfig.DEV9.HddEnable)
 	{
-		if (!EnsureHDDImageExists(hddPath))
+		if (!EnsureHDDImageExists(hddPath, HddFileIsBareName()))
 			EmuConfig.DEV9.HddEnable = false;
 
 		if (dev9.ata->Open(hddPath) != 0)
@@ -1206,7 +1235,7 @@ void DEV9CheckChanges(const Pcsx2Config& old_config)
 				dev9.ata->Close();
 				// Auto-create the new image if the user pointed HddFile at a
 				// bare name that doesn't exist yet, then reopen.
-				if (!EnsureHDDImageExists(hddPath) || dev9.ata->Open(hddPath) != 0)
+				if (!EnsureHDDImageExists(hddPath, HddFileIsBareName()) || dev9.ata->Open(hddPath) != 0)
 					EmuConfig.DEV9.HddEnable = false;
 			}
 		}
@@ -1214,7 +1243,7 @@ void DEV9CheckChanges(const Pcsx2Config& old_config)
 		// overlay). Auto-create the image first so the very first live enable
 		// on a fresh install attaches instead of silently disabling — matches
 		// the boot-time DEV9open() path (issue #255).
-		else if (!EnsureHDDImageExists(hddPath) || dev9.ata->Open(hddPath) != 0)
+		else if (!EnsureHDDImageExists(hddPath, HddFileIsBareName()) || dev9.ata->Open(hddPath) != 0)
 			EmuConfig.DEV9.HddEnable = false;
 	}
 	else if (old_config.DEV9.HddEnable)

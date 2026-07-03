@@ -154,6 +154,17 @@ private fun executablePnachBody(body: String): String =
         .joinToString("\n")
         .trim()
 
+// Cheat body with [labels] PRESERVED and patch= lines active (uncommented). Unlike
+// executablePnachBody (which flattens labels so patches auto-run unlabelled), this
+// is the proper pnach-2.0 form: PCSX2 sees a labelled group and gates it by the
+// [Cheats] Enable= list (written via NativeApp.setEnabledPatches), so per-cheat
+// on/off state lives in PCSX2-Android.ini and survives reset. Used for cheats only.
+private fun labelledCheatBody(body: String): String =
+    body.trim().lines().joinToString("\n") { raw ->
+        val t = raw.trim()
+        if (PatchRepo.isPatchCommand(t)) t.replaceFirst(Regex("^//\\s*"), "") else raw.trimEnd()
+    }.trim()
+
 private fun manualPnachContents(title: String, body: String, gameId: PnachGameId?): String {
     val header = buildList {
         add("// ARMSX2 manual PNACH")
@@ -172,13 +183,18 @@ private fun manualPnachContents(title: String, body: String, gameId: PnachGameId
 private fun rebuildInstalledPnach(
     gametitle: String,
     cheats: List<Pair<PatchRepo.LocalCheat, Boolean>>,
+    keepLabels: Boolean = false,
 ): String = buildString {
     if (gametitle.isNotEmpty()) append("gametitle=").append(gametitle).append("\n\n")
     cheats.forEach { (cheat, enabled) ->
         cheat.body.lines().forEach { raw ->
             val t = raw.trim()
             val out = when {
-                t.length > 2 && t.first() == '[' && t.last() == ']' -> "// $t"
+                // Cheats (keepLabels): preserve [Section] so PCSX2 gates the group
+                // by the [Cheats] Enable list. Patches (default): flatten to a
+                // //comment so patch= lines auto-run unlabelled (legacy path).
+                t.length > 2 && t.first() == '[' && t.last() == ']' ->
+                    if (keepLabels) raw.trimEnd() else "// $t"
                 PatchRepo.isPatchCommand(t) -> {
                     val bare = t.replaceFirst(Regex("^//\\s*"), "")
                     if (enabled) bare else "// $bare"
@@ -334,15 +350,35 @@ fun PatchesTab(state: MutableState<Settings>) {
                 val picked = chosen.filter { it.source == source }
                 val dir = if (source == "cheats") cheatsDir else patchesDir
                 val file = File(dir, "$base.pnach")
+                val isCheat = source == "cheats"
                 if (picked.isEmpty()) {
                     file.delete() // nothing selected here -> turn it off
+                    // Clear this game's cheat Enable list so no stale names linger.
+                    if (isCheat)
+                        NativeApp.setEnabledPatches(true,
+                            res.entries.filter { it.source == "cheats" }.map { it.name }.toTypedArray(),
+                            emptyArray())
                     return@forEach
                 }
-                if (source == "cheats") anyCheatChosen = true
-                file.writeText(buildString {
-                    if (res.gametitle.isNotEmpty()) append("gametitle=").append(res.gametitle).append("\n\n")
-                    picked.forEach { append(executablePnachBody(it.body)).append("\n\n") }
-                })
+                if (isCheat) {
+                    anyCheatChosen = true
+                    // Proper pnach-2.0: write the picked cheats with [labels] INTACT
+                    // (a stable catalog) and enable them BY NAME via the [Cheats]
+                    // Enable list, so per-cheat on/off persists in PCSX2-Android.ini.
+                    file.writeText(buildString {
+                        if (res.gametitle.isNotEmpty()) append("gametitle=").append(res.gametitle).append("\n\n")
+                        picked.forEach { append(labelledCheatBody(it.body)).append("\n\n") }
+                    })
+                    NativeApp.setEnabledPatches(true,
+                        res.entries.filter { it.source == "cheats" }.map { it.name }.toTypedArray(),
+                        picked.map { it.name }.toTypedArray())
+                } else {
+                    // Patches keep the proven flatten-to-unlabelled activation.
+                    file.writeText(buildString {
+                        if (res.gametitle.isNotEmpty()) append("gametitle=").append(res.gametitle).append("\n\n")
+                        picked.forEach { append(executablePnachBody(it.body)).append("\n\n") }
+                    })
+                }
             }
         }
         if (saved.isFailure) {
@@ -386,15 +422,23 @@ fun PatchesTab(state: MutableState<Settings>) {
     fun applyEdit() {
         val sess = editSession ?: return
         editSession = null
+        val isCheat = sess.file.parentFile?.name == "cheats"
         val paired = sess.cheats.mapIndexed { i, c -> c to (editSelected[i] ?: c.enabled) }
-        val saved = runCatching { sess.file.writeText(rebuildInstalledPnach(sess.gametitle, paired)) }
+        // Cheats keep [labels] (gated by the [Cheats] Enable list); patches flatten (legacy).
+        val saved = runCatching { sess.file.writeText(rebuildInstalledPnach(sess.gametitle, paired, keepLabels = isCheat)) }
         if (saved.isFailure) {
             pnachStatus = "Save failed: ${saved.exceptionOrNull()?.message ?: "unknown error"}"
             return
         }
-        val isCheat = sess.file.parentFile?.name == "cheats"
         if (!state.value.enablePatches) apply(state.value.copy(enablePatches = true))
         NativeApp.setSetting("EmuCore", "EnablePatches", "bool", "true")
+        if (isCheat) {
+            // Persist per-cheat on/off BY NAME to the [Cheats] Enable list so it
+            // survives reset (proper pnach-2.0); native gates activation on hardcore.
+            NativeApp.setEnabledPatches(true,
+                sess.cheats.map { it.name }.toTypedArray(),
+                paired.filter { it.second }.map { it.first.name }.toTypedArray())
+        }
         val active = if (isCheat) activateCheatsAndReload() else {
             NativeApp.commitSettings(); NativeApp.reloadPatches()
         }

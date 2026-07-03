@@ -490,6 +490,8 @@ object ControllerMappings {
         ACHIEVEMENTS("pad.achievements.keycode", "Open Achievements"),
         CLOSE_GAME("pad.closegame.keycode", "Close Game"),
         QUIT_APP("pad.quitapp.keycode", "Close Game & Quit"),
+        SAVE_AND_EXIT("pad.saveandexit.keycode", "Save State & Exit"),
+        RESET_GAME("pad.resetgame.keycode", "Reset Game"),
         // Hold-type binding: while the bound button is held, pressure-capable PS2
         // buttons report a soft (~50%) press. Handled as a HOLD in
         // Main.dispatchKeyEvent (sets TouchControls.pressureModifierHeld), not as a

@@ -666,10 +666,14 @@ public class NativeApp {
 				return;
 			if (!paused && Main.eState.getValue() == EmuState.STOPPED)
 				return;
-			if (paused)
+			if (paused) {
 				Main.eState.setValue(EmuState.PAUSED);
-			else
+			} else {
 				Main.eState.setValue(EmuState.RUNNING);
+				// One-shot auto-load of the autosave state, if the user enabled
+				// "Auto-load last state on boot" (no-op otherwise).
+				Main.onVmRunning();
+			}
 		});
 	}
 

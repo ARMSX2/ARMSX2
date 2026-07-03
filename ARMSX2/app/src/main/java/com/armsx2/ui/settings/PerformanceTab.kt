@@ -46,19 +46,34 @@ fun PerformanceTab(state: MutableState<Settings>) {
         // segment auto-reflects "Custom" once the user tweaks any speedhack below.
         run {
             val safe = s.copy(eeCycleRate = 0, eeCycleSkip = 0, mtvu = true, vu1Instant = true,
-                vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = false)
+                vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = false,
+                // Restore the GPU-quality levers the Fast/Low-End presets lower, so
+                // Optimal is a COMPLETE reset to recommended defaults — not just the
+                // speedhacks (e.g. Texture Preloading back to Full, blending to Basic).
+                // Resolution is left as-is so upscalers aren't dropped to native.
+                accurateBlendingUnit = 1, hwMipmap = true, texturePreloading = 2, hwRov = false)
+            // Fast = speed-first: EE cycle skip + fast CDVD, plus render-side wins
+            // that are safe for most games (native resolution + Basic blending).
             val fast = s.copy(eeCycleRate = 0, eeCycleSkip = 2, mtvu = true, vu1Instant = true,
-                vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true)
-            // -1 = neither preset matches (custom): no segment highlighted.
-            val idx = when (s) { safe -> 0; fast -> 1; else -> -1 }
+                vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true,
+                upscaleFloat = 1.0f, accurateBlendingUnit = 1)
+            // Low-End = every cheap GPU/CPU lever, MTVU gated on core count. Built
+            // from the shared Settings.lowEndPreset so it matches the setup wizard.
+            val lowEnd = com.armsx2.config.Settings.lowEndPreset(
+                s.copy(eeCycleRate = 0, mtvu = true, vu1Instant = true,
+                    vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true),
+                mtvu = com.armsx2.DeviceTier.mtvuDefault(),
+            )
+            // -1 = no preset matches (custom): no segment highlighted.
+            val idx = when (s) { safe -> 0; fast -> 1; lowEnd -> 2; else -> -1 }
             SegmentedRow(
                 label = "Speedhack Profile",
-                options = listOf("Optimal", "Fast"),
+                options = listOf("Optimal", "Fast", "Low-End"),
                 selectedIndex = idx,
-                onChange = { when (it) { 0 -> apply(safe); 1 -> apply(fast) } },
+                onChange = { when (it) { 0 -> apply(safe); 1 -> apply(fast); 2 -> apply(lowEnd) } },
             )
         }
-        HelpText("Tap a preset. Optimal = safe for most games. Fast = aggressive (EE cycle skip + fast CDVD) for low-end devices; may glitch some. Tweaking any speedhack below un-highlights both (custom).")
+        HelpText("Tap a preset. Optimal = safe for most games. Fast = aggressive speedhacks + native resolution for low-end devices; may glitch some. Low-End = Fast plus every cheap GPU lever (native res, min blending, no mipmaps/palette-conv, partial texture preload) with MTVU auto-set from your CPU. Tweaking any setting un-highlights the presets (custom).")
         SettingsDivider()
         CollapsibleSection("Speedhacks", initiallyExpanded = false) {
             IntSliderRow(
