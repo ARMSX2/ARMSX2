@@ -12,7 +12,12 @@
 #include "R3000A.h"
 #include "VMManager.h"
 
+#include "common/Console.h"
 #include "common/Error.h"
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include "SPU2/spu2_neon.h"
+#endif
 
 #include <cstdio>
 
@@ -119,6 +124,14 @@ void SPU2::CreateOutputStream()
 	else if (!s_output_muted)
 		SPU2::SaveOutputVolume();
 
+	// Carry the old stream's paused state across the recreate. The live VM state can
+	// read Paused during a transient ScopedVMPause (save-state load / applying fixes),
+	// which created the new stream paused before it ever started — a never-started,
+	// immediately-paused stream doesn't reliably resume, so audio stayed muted once the
+	// menu closed. No prior stream -> fall back to VM state (first-boot behaviour).
+	const bool was_paused = s_output_stream ? s_output_stream->IsPaused()
+	                                        : (VMManager::GetState() == VMState::Paused);
+
 	const u32 sample_rate = GetConsoleSampleRate();
 	s_output_stream.reset();
 
@@ -136,7 +149,7 @@ void SPU2::CreateOutputStream()
 
 	SPU2::UpdateOutputVolume();
 	s_output_stream->SetNominalRate(GetNominalRate());
-	s_output_stream->SetPaused(VMManager::GetState() == VMState::Paused);
+	s_output_stream->SetPaused(was_paused);
 }
 
 void SPU2::UpdateSampleRate()
@@ -236,6 +249,18 @@ void SPU2::InternalReset(bool psxmode)
 	spu2Mix = MULTI_ISA_SELECT(spu2Mix);
 	ReverbDownsample = MULTI_ISA_SELECT(ReverbDownsample);
 	ReverbUpsample = MULTI_ISA_SELECT(ReverbUpsample);
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+	// Optional NEON reverb FIR (opt-in, default off). Overrides the Multi-ISA
+	// scalar reverb resamplers assigned just above. Read fresh on every reset so
+	// toggling the "SPU2 SIMD audio" setting and rebooting the game switches
+	// backends. When off, the scalar reference (current default) is used.
+	if (Host::GetBaseBoolSettingValue("SPU2", "NeonReverbSIMD", false))
+	{
+		SPU2::RegisterNEONBackend();
+		Console.WriteLn("SPU2: NEON reverb SIMD backend enabled");
+	}
+#endif
 
 	s_current_chunk_pos = 0;
 	s_psxmode = psxmode;
@@ -528,6 +553,13 @@ static void DCFilter(float *input)
 
 __forceinline void spu2Output(StereoOut32 out)
 {
+	// Optional left/right swap, read live so toggling the setting applies
+	// without a VM restart. Done here (the single mixed-output choke point)
+	// so every output path is covered. Useful for flipped-speaker or
+	// reverse-landscape devices where the stereo image is reversed.
+	if (EmuConfig.SPU2.SwapChannels)
+		std::swap(out.Left, out.Right);
+
 	float conv[2];
 
 	conv[0] = static_cast<float>(clamp_mix(out.Left)) / INT16_MAX;

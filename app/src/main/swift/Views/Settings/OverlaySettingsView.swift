@@ -23,6 +23,15 @@ struct OverlaySettingsView: View {
                 }
             }
 
+            Section {
+                Toggle(settings.localized("On-screen Notifications"), isOn: $settings.osdShowMessages)
+                Text(settings.localized("Shows transient in-game messages such as shader compilation, save states, and settings-applied notices. Turn off to hide them. Critical errors and alerts are not affected."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text(settings.localized("Notifications"))
+            }
+
             Section(settings.localized("Displayed Items")) {
                 Toggle(settings.localized("Show FPS"), isOn: $settings.osdShowFPS)
                 Toggle(settings.localized("Show VPS"), isOn: $settings.osdShowVPS)
@@ -37,6 +46,7 @@ struct OverlaySettingsView: View {
                 Toggle(settings.localized("Show Frame Times"), isOn: $settings.osdShowFrameTimes)
                 Toggle(settings.localized("Show Version"), isOn: $settings.osdShowVersion)
                 Toggle(settings.localized("Show Hardware Info"), isOn: $settings.osdShowHardwareInfo)
+                Toggle(settings.localized("Show Texture Replacements"), isOn: $settings.osdShowTextureReplacements)
                 Toggle(settings.localized("Show Device Stats"), isOn: $settings.osdShowDeviceStats)
             }
 
