@@ -13,6 +13,7 @@ struct MemoryCardSettingsView: View {
     @State private var createFolderCard = false
     @State private var resultMessage: String?
     @State private var showResult = false
+    @State private var pendingDeleteCard: String?
 
     private let cardSizes = [8, 16, 32, 64]
     private let pathLikeCharacters: [Character] = ["/", "\\", ":", "*", "?", "\"", "<", ">", "|"]
@@ -84,7 +85,19 @@ struct MemoryCardSettingsView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(availableCards, id: \.self) { card in
-                        Text(card)
+                        HStack {
+                            Image(systemName: (slot1Card == card || slot2Card == card) ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle((slot1Card == card || slot2Card == card) ? .green : .secondary)
+                            Text(card)
+                            Spacer()
+                            Button {
+                                pendingDeleteCard = card
+                            } label: {
+                                Image(systemName: "trash")
+                                    .foregroundStyle(.red)
+                            }
+                            .buttonStyle(.borderless)
+                        }
                     }
                 }
             }
@@ -97,12 +110,53 @@ struct MemoryCardSettingsView: View {
         } message: {
             Text(settings.localized(resultMessage ?? ""))
         }
+        .confirmationDialog(
+            settings.localized("Delete Memory Card?"),
+            isPresented: Binding(
+                get: { pendingDeleteCard != nil },
+                set: { if !$0 { pendingDeleteCard = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(settings.localized("Delete"), role: .destructive) {
+                if let card = pendingDeleteCard {
+                    let success = ARMSX2Bridge.deleteMemoryCard(named: card)
+                    refresh()
+                    resultMessage = success ? "Memory card deleted." : "Could not delete the memory card. It may be in use."
+                    showResult = true
+                }
+                pendingDeleteCard = nil
+            }
+            Button(settings.localized("Cancel"), role: .cancel) {
+                pendingDeleteCard = nil
+            }
+        } message: {
+            if let card = pendingDeleteCard {
+                Text(settings.localized("Delete \"\(card)\"? Saves on it will be lost, and it will be removed from any slot it is assigned to."))
+            }
+        }
     }
 
     private func refresh() {
-        availableCards = ARMSX2Bridge.availableMemoryCards()
-        slot1Card = ARMSX2Bridge.memoryCardName(forSlot: 1) ?? ""
-        slot2Card = ARMSX2Bridge.memoryCardName(forSlot: 2) ?? ""
+        let cards = ARMSX2Bridge.availableMemoryCards()
+        availableCards = cards
+        let s1 = ARMSX2Bridge.memoryCardName(forSlot: 1) ?? ""
+        let s2 = ARMSX2Bridge.memoryCardName(forSlot: 2) ?? ""
+        // Self-heal: a slot may still point at a card that was removed out-of-app
+        // (e.g. via the Files app). Clear it so the slot does not reference a stale
+        // filename, which previously made the other slot's card mislabel at boot.
+        if !s1.isEmpty && !cards.contains(s1) {
+            ARMSX2Bridge.setMemoryCard(name: "", forSlot: 1, enabled: false)
+            slot1Card = ""
+        } else {
+            slot1Card = s1
+        }
+        if !s2.isEmpty && !cards.contains(s2) {
+            ARMSX2Bridge.setMemoryCard(name: "", forSlot: 2, enabled: false)
+            slot2Card = ""
+        } else {
+            slot2Card = s2
+        }
     }
 
     private func createCard() {
