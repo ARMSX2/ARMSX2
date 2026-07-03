@@ -12,10 +12,10 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
 endif()
 
 set(ARMSX2_VERSION_MAJOR 2)
-set(ARMSX2_VERSION_MINOR 3)
-set(ARMSX2_VERSION_PATCH 1)
+set(ARMSX2_VERSION_MINOR 4)
+set(ARMSX2_VERSION_PATCH 0)
 set(ARMSX2_VERSION "${ARMSX2_VERSION_MAJOR}.${ARMSX2_VERSION_MINOR}.${ARMSX2_VERSION_PATCH}")
-set(ARMSX2_BUILD_NUMBER 231)
+set(ARMSX2_BUILD_NUMBER 240)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	set(CMAKE_C_COMPILER_WORKS 1)
@@ -139,19 +139,26 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		${CMAKE_SOURCE_DIR}/../swift/Views/RootView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/BootSplashView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/GameListView.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/PerGameSettingsPanel.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/CoverThumbnailView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/BIOSListView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/HelpView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/GameScreenView.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/QuickMenuView.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/GameOverlayContainer.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/OverlayDesignSystem.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/MetalGameView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/EmulatorView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/VirtualControllerView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/CheatsPatchesManagerView.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/AnimatedLibraryBackgroundView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/LicenseView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/SettingsRootView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/AppearanceSettingsView.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/AppIconSettingsView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/EmulatorSettingsView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/GraphicsSettingsView.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/AudioSettingsView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/MemoryCardSettingsView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/StorageSettingsView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/RetroAchievementsSettingsView.swift
@@ -275,6 +282,31 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 				set_source_files_properties("${IOS_APP_ICON_FILE}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 			endif()
 		endforeach()
+		# Alternate app icons (user-selectable from Settings). Bundled as loose
+		# Resources and referenced by name in Info.plist CFBundleAlternateIcons.
+		file(GLOB IOS_ALTERNATE_APP_ICON_FILES "${CMAKE_SOURCE_DIR}/../assets/app_icons/alternate_app_icons/*.png")
+		foreach(IOS_ALTERNATE_APP_ICON_FILE IN LISTS IOS_ALTERNATE_APP_ICON_FILES)
+			if(EXISTS "${IOS_ALTERNATE_APP_ICON_FILE}")
+				target_sources(ARMSX2iOS PRIVATE "${IOS_ALTERNATE_APP_ICON_FILE}")
+				set_source_files_properties("${IOS_ALTERNATE_APP_ICON_FILE}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+			endif()
+		endforeach()
+		# Preview thumbnails for the SwiftUI icon picker.
+		file(GLOB IOS_ALTERNATE_APP_ICON_PREVIEWS "${CMAKE_SOURCE_DIR}/../assets/app_icons/alternate_app_icons/previews/*.png")
+		foreach(IOS_ALTERNATE_APP_ICON_PREVIEW IN LISTS IOS_ALTERNATE_APP_ICON_PREVIEWS)
+			if(EXISTS "${IOS_ALTERNATE_APP_ICON_PREVIEW}")
+				target_sources(ARMSX2iOS PRIVATE "${IOS_ALTERNATE_APP_ICON_PREVIEW}")
+				set_source_files_properties("${IOS_ALTERNATE_APP_ICON_PREVIEW}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+			endif()
+		endforeach()
+		# Full-resolution icon images exported for Home Screen shortcuts.
+		file(GLOB IOS_ALTERNATE_APP_ICON_EXPORTS "${CMAKE_SOURCE_DIR}/../assets/app_icons/alternate_app_icons/exports/*.png")
+		foreach(IOS_ALTERNATE_APP_ICON_EXPORT IN LISTS IOS_ALTERNATE_APP_ICON_EXPORTS)
+			if(EXISTS "${IOS_ALTERNATE_APP_ICON_EXPORT}")
+				target_sources(ARMSX2iOS PRIVATE "${IOS_ALTERNATE_APP_ICON_EXPORT}")
+				set_source_files_properties("${IOS_ALTERNATE_APP_ICON_EXPORT}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+			endif()
+		endforeach()
 		if(EXISTS "${BOOT_SPLASH_VIDEO}")
 			target_sources(ARMSX2iOS PRIVATE "${BOOT_SPLASH_VIDEO}")
 			set_source_files_properties("${BOOT_SPLASH_VIDEO}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
@@ -384,6 +416,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	file(GLOB METAL_SHADERS "${CMAKE_SOURCE_DIR}/pcsx2/GS/Renderers/Metal/*.metal")
 	file(GLOB FONTS "${CMAKE_SOURCE_DIR}/../assets/resources/fonts/*.ttf" "${CMAKE_SOURCE_DIR}/../assets/resources/fonts/*.otf")
 	file(GLOB_RECURSE IOS_SHADER_RESOURCES "${CMAKE_SOURCE_DIR}/../assets/resources/shaders/*")
+	file(GLOB_RECURSE IOS_SOUND_RESOURCES "${CMAKE_SOURCE_DIR}/../assets/resources/sounds/*")
 	set(IOS_TOP_LEVEL_RESOURCES
 		"${CMAKE_SOURCE_DIR}/../assets/resources/GameIndex.yaml"
 		"${CMAKE_SOURCE_DIR}/../assets/resources/RedumpDatabase.yaml"
@@ -408,6 +441,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		file(RELATIVE_PATH IOS_SHADER_SUBDIR "${CMAKE_SOURCE_DIR}/../assets/resources" "${IOS_SHADER_DIR}")
 		set_source_files_properties("${IOS_SHADER_RESOURCE}" PROPERTIES
 			MACOSX_PACKAGE_LOCATION "Resources/${IOS_SHADER_SUBDIR}")
+	endforeach()
+	target_sources(ARMSX2iOS PRIVATE ${IOS_SOUND_RESOURCES})
+	foreach(IOS_SOUND_RESOURCE IN LISTS IOS_SOUND_RESOURCES)
+		get_filename_component(IOS_SOUND_DIR "${IOS_SOUND_RESOURCE}" DIRECTORY)
+		file(RELATIVE_PATH IOS_SOUND_SUBDIR "${CMAKE_SOURCE_DIR}/../assets/resources" "${IOS_SOUND_DIR}")
+		set_source_files_properties("${IOS_SOUND_RESOURCE}" PROPERTIES
+			MACOSX_PACKAGE_LOCATION "Resources/${IOS_SOUND_SUBDIR}")
 	endforeach()
 
 	if(CMAKE_GENERATOR STREQUAL "Xcode" AND ARMSX2_MAC_CATALYST)
