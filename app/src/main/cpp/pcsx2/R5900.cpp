@@ -192,10 +192,10 @@ void cpuTlbMissW(u32 addr, u32 bd) {
 // sets a branch test to occur some time from an arbitrary starting point.
 __fi void cpuSetNextEvent( u64 startCycle, s32 delta )
 {
-	// typecast the conditional to signed so that things don't blow up
-	// if startCycle is greater than our next branch cycle.
-
-	if( (int)(cpuRegs.nextEventCycle - startCycle) > delta )
+	// (s64) not (int): cpuRegs.cycle is a free-running u64 that passes 2^31
+	// after ~7s; the old (int) cast truncated the delta and could leave
+	// nextEventCycle pinned in the past, deadlocking the EE scheduler.
+	if( (s64)(cpuRegs.nextEventCycle - startCycle) > delta )
 	{
 		cpuRegs.nextEventCycle = startCycle + delta;
 	}
@@ -213,8 +213,10 @@ __fi int cpuGetCycles(int interrupt)
 		return 1;
 	else
 	{
-		const int cycles = (cpuRegs.sCycle[interrupt] + cpuRegs.eCycle[interrupt]) - cpuRegs.cycle;
-		return std::max(1, cycles);
+		// Compute in s64 so a large sCycle/cycle can't truncate the
+		// remaining-cycle count to garbage (see cpuSetNextEvent).
+		const s64 cycles = (s64)(cpuRegs.sCycle[interrupt] + cpuRegs.eCycle[interrupt]) - (s64)cpuRegs.cycle;
+		return (int)std::max<s64>(1, cycles);
 	}
 
 }
@@ -223,10 +225,9 @@ __fi int cpuGetCycles(int interrupt)
 // Returns true if the delta time has passed.
 __fi int cpuTestCycle( u64 startCycle, s32 delta )
 {
-	// typecast the conditional to signed so that things don't explode
-	// if the startCycle is ahead of our current cpu cycle.
-
-	return (int)(cpuRegs.cycle - startCycle) >= delta;
+	// (s64) not (int): see cpuSetNextEvent — a long-overdue interrupt
+	// would read as "not due yet" under the old truncating cast.
+	return (s64)(cpuRegs.cycle - startCycle) >= delta;
 }
 
 // tells the EE to run the branch test the next time it gets a chance.
