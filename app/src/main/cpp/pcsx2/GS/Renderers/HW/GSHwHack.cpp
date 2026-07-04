@@ -585,11 +585,7 @@ bool GSHwHack::GSC_BurnoutGames(GSRendererHW& r, int& skip)
 		}
 	}
 
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-	return true;
-#else
 	return GSC_BlackAndBurnoutSky(r, skip);
-#endif
 }
 
 bool GSHwHack::GSC_BlackAndBurnoutSky(GSRendererHW& r, int& skip)
