@@ -74,6 +74,10 @@ fun OverlayTab(state: MutableState<Settings>) {
         SettingsDivider()
         ToggleRow("Emulator version", s.osdShowVersion) { apply(s.copy(osdShowVersion = it)) }
         SettingsDivider()
+        ToggleRow("Settings summary (bottom-left)", s.osdShowSettings) { apply(s.copy(osdShowSettings = it)) }
+        SettingsDivider()
+        ToggleRow("Control inputs (bottom-right)", s.osdShowInputs) { apply(s.copy(osdShowInputs = it)) }
+        SettingsDivider()
         ToggleRow("On-screen notifications (shader compile, saves, etc.)", s.osdShowMessages) { apply(s.copy(osdShowMessages = it)) }
         SettingsDivider()
         // Android hotkey pop-ups (Fast-Forward on/off, etc.) — separate from the emulator

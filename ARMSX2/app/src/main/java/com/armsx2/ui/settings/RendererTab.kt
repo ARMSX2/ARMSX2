@@ -310,9 +310,9 @@ fun RendererTab(state: MutableState<Settings>) {
             }
             SettingsDivider()
             ToggleRow(
-                "Accurate blending fast path (experimental)",
+                "Accurate blending fast path",
                 s.adrenoFbFetch,
-                description = "Vulkan + Adreno only: route accurate blending through the tile-memory framebuffer-fetch path instead of ROV / texture-barrier copies — the mobile-native equivalent of desktop ROV, and usually much faster on a tiler. Experimental: some drivers return stale reads and may show artifacts (sprite alpha cutouts, invisible floor patches), so verify your games. Restart the game to apply. No effect on Mali (already enabled) or OpenGL.",
+                description = "Vulkan + Adreno only: route accurate blending through the tile-memory framebuffer-fetch path instead of ROV / texture-barrier copies — the mobile-native equivalent of desktop ROV, and usually much faster on a tiler. ON by default. A few proprietary Adreno drivers return stale reads and may show artifacts (sprite alpha cutouts, invisible floor patches) — turn this off if you see them. Restart the game to apply. No effect on Mali (already enabled) or OpenGL.",
             ) {
                 apply(s.copy(adrenoFbFetch = it))
             }

@@ -75,6 +75,25 @@ fun PerformanceTab(state: MutableState<Settings>) {
         }
         HelpText("Tap a preset. Optimal = safe for most games. Fast = aggressive speedhacks + native resolution for low-end devices; may glitch some. Low-End = Fast plus every cheap GPU lever (native res, min blending, no mipmaps/palette-conv, partial texture preload) with MTVU auto-set from your CPU. Tweaking any setting un-highlights the presets (custom).")
         SettingsDivider()
+        // ---- Display Resolution (HW scaler), NetherSX2-style ----------------
+        // Shrinks the game's OUTPUT surface (hardware-composer upscales to the
+        // screen) to cut GPU present cost, heat and battery. Global pref (not a
+        // Settings/EmuCore field) applied live via SurfaceCallbacks.applyHwScaler.
+        run {
+            val hwScaler = com.armsx2.Main.prefs.getInt("ui.hwScaler", 0)
+            SegmentedRow(
+                label = "Display Resolution (HW scaler)",
+                options = listOf("Screen", "3x PS2", "2x PS2", "1x PS2"),
+                selectedIndex = when (hwScaler) { 3 -> 1; 2 -> 2; 1 -> 3; else -> 0 },
+                description = "Reduces the display resolution to significantly decrease device heat and battery drain. Screen = full quality (off). 3x PS2 = High Quality, 2x PS2 = Balanced, 1x PS2 = Battery Saver / Max Performance. Separate from the internal rendering resolution — menus stay sharp either way.",
+                onChange = {
+                    val n = when (it) { 1 -> 3; 2 -> 2; 3 -> 1; else -> 0 }
+                    com.armsx2.Main.prefs.edit().putInt("ui.hwScaler", n).apply()
+                    (com.armsx2.Main.surface.value as? com.armsx2.SurfaceCallbacks)?.applyHwScaler()
+                },
+            )
+        }
+        SettingsDivider()
         CollapsibleSection("Speedhacks", initiallyExpanded = false) {
             IntSliderRow(
                 label = "EE Cycle Rate",

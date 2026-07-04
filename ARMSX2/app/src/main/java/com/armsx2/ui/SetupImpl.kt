@@ -258,6 +258,7 @@ object SetupImpl {
         // post-init via Main.kickoffEmucoreInit's pushBiosFilenamePin().
         if (outFile.absolutePath == Main.bios.value && outFile.exists() && outFile.length() > 0L) {
             configuredBiosInfo.value = bios.info
+            copyBiosSiblings(context, bios, biosDir)
             pinBiosIfReady(outFile)
             return outFile.absolutePath
         }
@@ -265,6 +266,7 @@ object SetupImpl {
         return try {
             if (!copyBiosSafely(context, bios, outFile))
                 return null
+            copyBiosSiblings(context, bios, biosDir)
 
             Main.bios.value = outFile.absolutePath
             Main.prefs.edit().putString("bios", outFile.absolutePath).apply()
@@ -311,6 +313,54 @@ object SetupImpl {
         }.getOrDefault(false)
         tmp.delete()
         return installed && outFile.exists() && outFile.length() > 0L
+    }
+
+    // Copy the BIOS's sibling ROM1/ROM2/EROM extension images from the picked
+    // source folder into the app-private BIOS dir, alongside the main BIOS. The
+    // Chinese BIOS needs its 2MB ROM2 to boot; the emulator's LoadExtraRom looks
+    // for "<mainbios>.rom2" / "<base>.rom2" next to the BIOS, but setup previously
+    // copied only the main file, so Chinese BIOS/games never booted (Rudrox #). The
+    // sibling images have no ROMVER header so they're skipped by the BIOS scanner —
+    // we match them here purely by filename against the selected BIOS.
+    private fun copyBiosSiblings(context: Context, bios: ScannedBios, biosDir: File) {
+        val treeUri = biosDirUri.value ?: lastScannedDir.value ?: return
+        val displayName = bios.displayName
+        val base = displayName.substringBeforeLast('.', displayName)
+        val romExts = setOf("rom1", "rom2", "erom")
+        val tree = runCatching { DocumentFile.fromTreeUri(context, treeUri) }.getOrNull() ?: return
+        for (f in tree.listFiles()) {
+            if (!f.isFile) continue
+            val name = f.name ?: continue
+            val ext = name.substringAfterLast('.', "").lowercase()
+            if (ext !in romExts) continue
+            val stem = name.substringBeforeLast('.')
+            // Land it under the exact name LoadExtraRom builds (append form for a
+            // "<mainbios>.rom2" sibling, replace-ext form for a "<base>.rom2" one),
+            // with a lowercased extension so the case-sensitive fs lookup matches.
+            val target = when {
+                stem.equals(displayName, ignoreCase = true) -> "$displayName.$ext"
+                stem.equals(base, ignoreCase = true) -> "$base.$ext"
+                else -> continue
+            }
+            val outFile = File(biosDir, target)
+            if (outFile.exists() && outFile.length() > 0L) continue
+            runCatching {
+                val tmp = File(biosDir, ".$target.import.tmp")
+                if (tmp.exists()) tmp.delete()
+                val copied = context.contentResolver.openInputStream(f.uri)?.use { ins ->
+                    tmp.outputStream().use { outs -> ins.copyTo(outs) }
+                } ?: 0L
+                if (copied > 0L && tmp.length() > 0L) {
+                    outFile.delete()
+                    if (!tmp.renameTo(outFile)) {
+                        tmp.copyTo(outFile, overwrite = true)
+                        tmp.delete()
+                    }
+                } else {
+                    tmp.delete()
+                }
+            }
+        }
     }
 
     private fun selectedBiosSourceFile(bios: ScannedBios): File? {

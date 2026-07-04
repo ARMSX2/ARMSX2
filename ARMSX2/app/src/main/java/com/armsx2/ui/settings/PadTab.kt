@@ -428,56 +428,11 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                     refreshToken.value++
                 }
                 SettingsDivider()
-                IntSliderRow(
-                    label = "Stick Deadzone",
-                    value = (ControllerMappings.stickDeadzone() * 100f).toInt(), // 0.0..0.4 -> 0..40
-                    min = 0,
-                    max = (ControllerMappings.STICK_DZ_MAX * 100f).toInt(),
-                    description = "Fraction of physical analog travel ignored near center. Lower = stick responds sooner (handheld sticks have little range); 0 = none. Movement re-normalizes past it, so no jump.",
-                    valueFormatter = { if (it == 0) "Off" else "${it}%" },
-                    onChange = { ControllerMappings.setStickDeadzone(it / 100f); refreshToken.value++ },
-                )
-                SettingsDivider()
-                IntSliderRow(
-                    label = "Stick Outer Deadzone",
-                    value = (ControllerMappings.stickOuterDeadzone() * 100f).toInt(), // 0.0..0.4 -> 0..40
-                    min = 0,
-                    max = (ControllerMappings.STICK_OUTER_MAX * 100f).toInt(),
-                    description = "Fraction of travel near the EDGE mapped to full output, so a stick that can't physically reach its corners still hits 100% (short-throw / handheld sticks like the Odin). 0 = off.",
-                    valueFormatter = { if (it == 0) "Off" else "${it}%" },
-                    onChange = { ControllerMappings.setStickOuterDeadzone(it / 100f); refreshToken.value++ },
-                )
-                SettingsDivider()
-                IntSliderRow(
-                    label = "Stick Anti-Deadzone",
-                    value = (ControllerMappings.stickAntiDeadzone() * 100f).toInt(), // 0.0..0.6 -> 0..60
-                    min = 0,
-                    max = (ControllerMappings.STICK_ANTIDZ_MAX * 100f).toInt(),
-                    description = "Smallest output sent to the game, to cancel a game's OWN built-in stick deadzone (e.g. Cold Fear / Area 51 ignore the stick until ~45%, then aim jumps). Set near the game's deadzone so any stick movement responds immediately and the full travel maps smoothly above it. 0 = off.",
-                    valueFormatter = { if (it == 0) "Off" else "${it}%" },
-                    onChange = { ControllerMappings.setStickAntiDeadzone(it / 100f); refreshToken.value++ },
-                )
-                SettingsDivider()
-                IntSliderRow(
-                    label = "Stick Sensitivity",
-                    value = (ControllerMappings.stickSensitivity() * 20f).toInt(), // 0.5..2.0 -> 10..40
-                    min = 10,
-                    max = 40,
-                    description = "Linear scale on the physical analog sticks (native Analog + Custom analog directions). Under 100% = finer/slower aim, over 100% = faster.",
-                    valueFormatter = { "${it * 5}%" },
-                    onChange = { ControllerMappings.setStickSensitivity(it / 20f); refreshToken.value++ },
-                )
-                SettingsDivider()
-                IntSliderRow(
-                    label = "Stick Acceleration",
-                    value = (ControllerMappings.stickAcceleration() * 10f).toInt(), // 0.0..2.0 -> 0..20
-                    min = 0,
-                    max = 20,
-                    description = "Non-linear response curve: small tilts stay precise for aiming, full tilt ramps up to full speed. 0 = linear (off); higher = more curve.",
-                    valueFormatter = { if (it == 0) "Off (linear)" else "+%.1f".format(it / 10f) },
-                    onChange = { ControllerMappings.setStickAcceleration(it / 10f); refreshToken.value++ },
-                )
-                SettingsDivider()
+                // Stick FEEL is per-stick now (tester: lowering sensitivity for
+                // camera aim also slowed walking). Existing single-value settings
+                // migrate to both sticks automatically.
+                StickFeelSliders(left = true, title = "Left Stick Feel", refreshToken = refreshToken)
+                StickFeelSliders(left = false, title = "Right Stick Feel", refreshToken = refreshToken)
             }
         }
         CollapsibleSection("Button Mapping", initiallyExpanded = false) {
@@ -547,6 +502,66 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 description = "Vibrate briefly when you press an on-screen button (like PPSSPP / Azahar). Separate from controller rumble.",
             ) { TouchControls.setTouchHaptics(it) }
         }
+    }
+}
+
+/** The five stick-FEEL sliders (deadzone / outer / anti-deadzone / sensitivity /
+ *  acceleration) for ONE stick. Rendered twice — Left and Right — since every
+ *  feel tunable is per-stick (a camera-stick sensitivity tweak must not slow the
+ *  walk stick). Values migrate from the old shared keys on first read. */
+@Composable
+private fun StickFeelSliders(left: Boolean, title: String, refreshToken: androidx.compose.runtime.MutableState<Int>) {
+    CollapsibleSection(title, initiallyExpanded = false) {
+        IntSliderRow(
+            label = "Deadzone",
+            value = (ControllerMappings.stickDeadzone(left) * 100f).toInt(), // 0.0..0.4 -> 0..40
+            min = 0,
+            max = (ControllerMappings.STICK_DZ_MAX * 100f).toInt(),
+            description = "Fraction of physical analog travel ignored near center (applied to the stick's radial distance, so diagonals behave like cardinals). Output re-normalizes past it, so movement still ramps smoothly from 0 — which also means the on-screen effect can be masked by a game's OWN built-in deadzone (Area 51 ignores input below ~45% no matter what you set here; use Anti-Deadzone for that). 0 = off — raw hardware values pass through, including any stick drift.",
+            valueFormatter = { if (it == 0) "Off" else "${it}%" },
+            onChange = { ControllerMappings.setStickDeadzone(left, it / 100f); refreshToken.value++ },
+        )
+        SettingsDivider()
+        IntSliderRow(
+            label = "Outer Deadzone",
+            value = (ControllerMappings.stickOuterDeadzone(left) * 100f).toInt(), // 0.0..0.4 -> 0..40
+            min = 0,
+            max = (ControllerMappings.STICK_OUTER_MAX * 100f).toInt(),
+            description = "Fraction of travel near the EDGE mapped to full output, so a stick that can't physically reach its corners still hits 100% (short-throw / handheld sticks like the Odin). 0 = off.",
+            valueFormatter = { if (it == 0) "Off" else "${it}%" },
+            onChange = { ControllerMappings.setStickOuterDeadzone(left, it / 100f); refreshToken.value++ },
+        )
+        SettingsDivider()
+        IntSliderRow(
+            label = "Anti-Deadzone",
+            value = (ControllerMappings.stickAntiDeadzone(left) * 100f).toInt(), // 0.0..0.6 -> 0..60
+            min = 0,
+            max = (ControllerMappings.STICK_ANTIDZ_MAX * 100f).toInt(),
+            description = "Smallest output sent to the game, to cancel a game's OWN built-in stick deadzone (e.g. Cold Fear / Area 51 ignore the stick until ~45%, then aim jumps). Set near the game's deadzone so any stick movement responds immediately and the full travel maps smoothly above it. 0 = off.",
+            valueFormatter = { if (it == 0) "Off" else "${it}%" },
+            onChange = { ControllerMappings.setStickAntiDeadzone(left, it / 100f); refreshToken.value++ },
+        )
+        SettingsDivider()
+        IntSliderRow(
+            label = "Sensitivity",
+            value = (ControllerMappings.stickSensitivity(left) * 20f).toInt(), // 0.5..2.0 -> 10..40
+            min = 10,
+            max = 40,
+            description = "Linear scale on this stick (native Analog + Custom analog directions). Under 100% = finer/slower, over 100% = faster. Per-stick: tune camera aim without slowing movement.",
+            valueFormatter = { "${it * 5}%" },
+            onChange = { ControllerMappings.setStickSensitivity(left, it / 20f); refreshToken.value++ },
+        )
+        SettingsDivider()
+        IntSliderRow(
+            label = "Acceleration",
+            value = (ControllerMappings.stickAcceleration(left) * 10f).toInt(), // 0.0..2.0 -> 0..20
+            min = 0,
+            max = 20,
+            description = "Non-linear response curve: small tilts stay precise for aiming, full tilt ramps up to full speed. 0 = linear (off); higher = more curve.",
+            valueFormatter = { if (it == 0) "Off (linear)" else "+%.1f".format(it / 10f) },
+            onChange = { ControllerMappings.setStickAcceleration(left, it / 10f); refreshToken.value++ },
+        )
+        SettingsDivider()
     }
 }
 

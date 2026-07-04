@@ -66,6 +66,15 @@ private data class EditSession(
     val cheats: List<PatchRepo.LocalCheat>,
 )
 
+// One installed local .pnach expanded into its individual cheats/patches, for the
+// unified "My local patches & cheats" checkbox browser (mirrors the online one).
+private data class LocalFileCheats(
+    val file: File,
+    val source: String, // "cheats" or "patches"
+    val gametitle: String,
+    val cheats: List<PatchRepo.LocalCheat>,
+)
+
 private val activeGameIdRegex = Regex("""([A-Za-z]{4}-\d{5})\s*\(([0-9A-Fa-f]{8})\)""")
 private val serialRegex = Regex("""([A-Za-z]{4})[\s_-]?(\d{3})\.?(\d{2})""")
 private val crcRegex = Regex("""(?<![0-9A-Fa-f])([0-9A-Fa-f]{8})(?![0-9A-Fa-f])""")
@@ -171,7 +180,13 @@ private fun manualPnachContents(title: String, body: String, gameId: PnachGameId
         if (title.isNotBlank()) add("// $title")
         if (gameId != null) add("// ${gameId.serial} ${gameId.crc}")
     }.joinToString("\n")
-    val normalizedBody = executablePnachBody(body)
+    // Imported/manual cheats go to the cheats folder — keep their [Section] labels
+    // (pnach-2.0) instead of flattening to //comments (the old method). PCSX2 then
+    // sees individual cheat groups: they auto-enable until the user toggles (the
+    // has_cheat_selection fallback in Patch.cpp), and the "Edit" per-cheat toggle
+    // list can split them. If the file has no labels, labelledCheatBody leaves the
+    // bare patch= lines as-is (still auto-enabled, unlabelled — old behavior).
+    val normalizedBody = labelledCheatBody(body)
     return "$header\n$normalizedBody\n"
 }
 
@@ -251,6 +266,11 @@ fun PatchesTab(state: MutableState<Settings>) {
     // Per-cheat editor for an already-installed .pnach (index -> checked).
     var editSession by remember { mutableStateOf<EditSession?>(null) }
     val editSelected = remember { mutableStateMapOf<Int, Boolean>() }
+    // "My local patches & cheats": a flat checkbox browser over every cheat/patch
+    // found in the installed .pnach files (mirrors the online browser). Key = the
+    // "fileIndex:cheatIndex" of each entry.
+    var localBrowse by remember { mutableStateOf<List<LocalFileCheats>?>(null) }
+    val localSelected = remember { mutableStateMapOf<String, Boolean>() }
     val scope = rememberCoroutineScope()
     // Game whose settings were opened from the library via long-press (null
     // when a game is actually running). Lets us browse before booting.
@@ -352,12 +372,12 @@ fun PatchesTab(state: MutableState<Settings>) {
                 val file = File(dir, "$base.pnach")
                 val isCheat = source == "cheats"
                 if (picked.isEmpty()) {
-                    file.delete() // nothing selected here -> turn it off
-                    // Clear this game's cheat Enable list so no stale names linger.
-                    if (isCheat)
-                        NativeApp.setEnabledPatches(true,
-                            res.entries.filter { it.source == "cheats" }.map { it.name }.toTypedArray(),
-                            emptyArray())
+                    // The user picked nothing from THIS category — leave it completely
+                    // alone. (Previously this deleted the category's file and cleared
+                    // its Enable list, so applying an online PATCH wiped the user's
+                    // separately-imported CHEATS. Categories are now independent; to
+                    // remove an item, uncheck it in "My local patches & cheats" or use
+                    // Delete in the installed-file list.)
                     return@forEach
                 }
                 if (isCheat) {
@@ -448,6 +468,62 @@ fun PatchesTab(state: MutableState<Settings>) {
                 "Saved ${sess.file.name}: $onCount cheat${if (onCount == 1) "" else "s"} on. Start the game to load."
             else ->
                 "Saved ${sess.file.name}: $onCount on ($active live). Restart to (re)load boot-time patches."
+        }
+        refresh()
+    }
+
+    // Expand every installed .pnach (cheats + patches) into its individual entries
+    // for the unified checkbox browser. Skips files with no togglable entries.
+    fun collectLocalFiles(): List<LocalFileCheats> =
+        pnachFiles.mapNotNull { file ->
+            val text = runCatching { file.readText() }.getOrNull() ?: return@mapNotNull null
+            val source = if (file.parentFile?.name == "cheats") "cheats" else "patches"
+            val (gt, cheats) = PatchRepo.parseInstalled(text, source)
+            if (cheats.isEmpty()) null else LocalFileCheats(file, source, gt, cheats)
+        }
+
+    fun openLocalBrowser() {
+        val files = collectLocalFiles()
+        if (files.isEmpty()) {
+            pnachStatus = "No local patches or cheats with individual entries yet. Import a .pnach, or copy one into the cheats/patches folder."
+            return
+        }
+        localSelected.clear()
+        files.forEachIndexed { fi, f -> f.cheats.forEachIndexed { ci, c -> localSelected["$fi:$ci"] = c.enabled } }
+        localBrowse = files
+    }
+
+    // Write the browser's checkbox states back to each file (cheats keep [labels] +
+    // the [Cheats] Enable list; patches flatten to auto-run), then reload PNACH.
+    fun applyLocalBrowse() {
+        val files = localBrowse ?: return
+        localBrowse = null
+        val allCheatNames = mutableListOf<String>()
+        val enabledCheatNames = mutableListOf<String>()
+        var anyCheat = false
+        var onCount = 0
+        var savedCount = 0
+        files.forEachIndexed { fi, f ->
+            val isCheat = f.source == "cheats"
+            val paired = f.cheats.mapIndexed { ci, c -> c to (localSelected["$fi:$ci"] ?: c.enabled) }
+            if (runCatching { f.file.writeText(rebuildInstalledPnach(f.gametitle, paired, keepLabels = isCheat)) }.isSuccess) savedCount++
+            onCount += paired.count { it.second }
+            if (isCheat) {
+                anyCheat = true
+                f.cheats.forEach { allCheatNames.add(it.name) }
+                paired.filter { it.second }.forEach { enabledCheatNames.add(it.first.name) }
+            }
+        }
+        if (!state.value.enablePatches) apply(state.value.copy(enablePatches = true))
+        NativeApp.setSetting("EmuCore", "EnablePatches", "bool", "true")
+        if (allCheatNames.isNotEmpty())
+            NativeApp.setEnabledPatches(true, allCheatNames.toTypedArray(), enabledCheatNames.toTypedArray())
+        val active = if (anyCheat) activateCheatsAndReload() else { NativeApp.commitSettings(); NativeApp.reloadPatches(); 0 }
+        pnachStatus = when {
+            Main.eState.value == EmuState.STOPPED ->
+                "Saved: $onCount entr${if (onCount == 1) "y" else "ies"} on across $savedCount file${if (savedCount == 1) "" else "s"}. Start the game to load."
+            else ->
+                "Saved: $onCount on ($active live). Restart to (re)load boot-time patches."
         }
         refresh()
     }
@@ -591,6 +667,69 @@ fun PatchesTab(state: MutableState<Settings>) {
         )
     }
 
+    localBrowse?.let { files ->
+        AlertDialog(
+            onDismissRequest = { localBrowse = null },
+            containerColor = Colors.surfaceColor,
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
+            title = { Text("My local patches & cheats", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(modifier = Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = {
+                            files.forEachIndexed { fi, f ->
+                                f.cheats.indices.forEach { ci ->
+                                    if (!(hardcore && f.source == "cheats")) localSelected["$fi:$ci"] = true
+                                }
+                            }
+                        }) { Text("Select all") }
+                        TextButton(onClick = {
+                            files.forEachIndexed { fi, f -> f.cheats.indices.forEach { ci -> localSelected["$fi:$ci"] = false } }
+                        }) { Text("None") }
+                    }
+                    files.forEachIndexed { fi, f ->
+                        Text(
+                            "${f.file.name}  [${f.source}]",
+                            fontSize = 10.sp,
+                            color = Color(0xFF8CA6C8),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+                        )
+                        f.cheats.forEachIndexed { ci, c ->
+                            val key = "$fi:$ci"
+                            val locked = hardcore && f.source == "cheats"
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .alpha(if (locked) 0.4f else 1f)
+                                    .clickable(enabled = !locked) { localSelected[key] = !(localSelected[key] ?: false) }
+                                    .padding(vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(checked = localSelected[key] == true, enabled = !locked, onCheckedChange = { if (!locked) localSelected[key] = it })
+                                Column(modifier = Modifier.weight(1f).padding(start = 4.dp)) {
+                                    Text(c.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                                    if (c.description.isNotEmpty())
+                                        Text(
+                                            c.description,
+                                            fontSize = 10.sp,
+                                            color = Color(0xFF9A9A9A),
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { applyLocalBrowse() }) { Text("APPLY") } },
+            dismissButton = { TextButton(onClick = { localBrowse = null }) { Text("CANCEL") } },
+        )
+    }
+
     editSession?.let { sess ->
         AlertDialog(
             onDismissRequest = { editSession = null },
@@ -728,7 +867,31 @@ fun PatchesTab(state: MutableState<Settings>) {
             contentAlignment = Alignment.CenterStart,
         ) {
             Text(
-                if (downloading) "Fetching…" else "⤓  Browse patches & cheats online",
+                if (downloading) "Fetching…" else "⤓  Browse online — patches & cheats",
+                color = Colors.pasx2_blue,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        // Browse the user's OWN cheat files (imported/copied into the cheats
+        // folder) and toggle each cheat on/off — the counterpart to the online
+        // browser above. Routes straight into the per-cheat editor.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(36.dp)
+                .background(rowAura())
+                .controllerFocusable(
+                    controllerId = "patch:local",
+                    onConfirm = { openLocalBrowser() },
+                )
+                .clickable { openLocalBrowser() }
+                .padding(horizontal = 8.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(
+                "☰  My local patches & cheats  (toggle on/off)",
                 color = Colors.pasx2_blue,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
@@ -788,6 +951,13 @@ fun PatchesTab(state: MutableState<Settings>) {
                 modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp),
             )
         } else {
+            Text(
+                "Installed files (including cheats you copied into the cheats folder). " +
+                    "Tap Edit to turn individual cheats on/off.",
+                color = Color(0xFF9C9C9C),
+                fontSize = 10.sp,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp),
+            )
             pnachFiles.forEach { file ->
                 val kind = if (file.parentFile?.name == "cheats") "cheat" else "patch"
                 Row(

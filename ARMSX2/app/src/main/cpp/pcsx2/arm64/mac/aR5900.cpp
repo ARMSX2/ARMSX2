@@ -40,6 +40,7 @@
 #include <vector>
 
 extern void _vu0WaitMicro();
+extern void vu0Sync(); // VU0.cpp — catch VU0 up to the EE clock (no force-finish); vc111
 
 namespace pcsx2_macrec {
 
@@ -495,8 +496,34 @@ static void recShutdown()
 	recPtrEnd = nullptr;
 }
 
+// @@COP2MODE@@: COP2 interp-routing mode under FullVU0SyncHack (VU0<->EE handshake games,
+// e.g. Ratchet: Deadlocked SCUS-97465 via GameDB). Default = mode 12, the on-device-validated
+// maximum-native config: SPECIAL1 + ACC families (the hot VMULA/VMADDA matrix chains) +
+// transfers + LQC2/SQC2 all NATIVE; only the rare SPECIAL2 residue (DIV/SQRT/RSQRT, VI
+// load/stores, ABS/CLIP/MOVE/MR32, ITOF/FTOI, RNG) runs the inline interpreter. Any other
+// combination of ≥2 of those groups native breaks the game's transforms (interaction bug,
+// individual groups all test clean — see the vc117-vc124 bisect). <DataRoot>/cop2mode.txt
+// overrides for debugging (re-read at every rec reset; emit-time only, never the hot path).
+static int s_cop2InterpMode = 12;
+static bool s_cop2ModeLoaded = false;
+static void recLoadCop2Mode()
+{
+	int m = 12;
+	const std::string path = EmuFolders::DataRoot + "/cop2mode.txt";
+	if (FILE* f = fopen(path.c_str(), "r"))
+	{
+		if (fscanf(f, "%d", &m) != 1)
+			m = 12;
+		fclose(f);
+		Console.WriteLn("@@COP2MODE@@ override mode=%d (%s)", m, path.c_str());
+	}
+	s_cop2InterpMode = m;
+	s_cop2ModeLoaded = true;
+}
+
 static void recResetRaw()
 {
+	s_cop2ModeLoaded = false; // @@COP2MODE@@ re-read on every cache reset
 	// Rewind the emit cursor, drop all cached trampolines/literals, regenerate the
 	// dispatcher stubs at the head of the cache, then reset every block slot. Order
 	// matters: recGenDispatchers fills the JITCompile / UnmappedRecLUTPage pointers
@@ -595,6 +622,7 @@ static void recSQC2();
 bool recVUMacroIsMode0(u32 op);
 bool recVUMacroEmitMode0(u32 op);
 static void mVUFinishVU0();
+static bool recCop2ForceInterp(u32 op); // vc105: FullVU0SyncHack → COP2 on inline interp
 
 struct RecGprConstState
 {
@@ -2706,6 +2734,17 @@ static bool recTranslateOp(u32 op, u32 pc)
 		// recEmitBranch/armEmitBranchLikelyTest, Phase M4), which ends the block at them — so
 		// they never reach here as a straight-line op (the case below is a defensive fallback).
 		case 0x12:
+			// vc105: FullVU0SyncHack routes every straight-line COP2 op to the inline
+			// interpreter (the interpreter fully syncs VU0 on each op, so the EE/VU0 clocks
+			// never drift and the reconciliation can't wedge the scheduler — Ratchet freeze).
+			// BC2 branches (rs==0x08) are block-terminating control flow, handled by
+			// recRecompile, so they never reach here; the predicate excludes them anyway.
+			if (recCop2ForceInterp(op))
+			{
+				cpuRegs.code = op;
+				recEmitInterpInline(op);
+				return true;
+			}
 			switch (rs)
 			{
 				case 0x01: // QMFC2 (M3.3) — native, memory-backed
@@ -2763,10 +2802,12 @@ static bool recTranslateOp(u32 op, u32 pc)
 		// (faithful to microVU_Macro.inl). cpuRegs.code set for the _Rt_/_Rs_/_Imm_ macros.
 		case OP_LQC2:
 			cpuRegs.code = op;
+			if (recCop2ForceInterp(op)) { recEmitInterpInline(op); return true; } // vc105
 			recLQC2();
 			return true;
 		case OP_SQC2:
 			cpuRegs.code = op;
+			if (recCop2ForceInterp(op)) { recEmitInterpInline(op); return true; } // vc105
 			recSQC2();
 			return true;
 
@@ -3540,6 +3581,159 @@ static bool recEmitTrapCompareIfTrap(u32 op, a64::Label* skip)
 	return false;
 }
 
+// vc105: FullVU0SyncHack correctness path. Native macro-mode COP2 uses an analysis-driven,
+// one-block-at-a-time VU0 sync that lets cpuRegs.cycle and VU0.cycle drift billions apart when
+// the EE defers a launched program; the eventual `cpuRegs.cycle += VU0.cycle - startcycle`
+// reconciliation in _vu0run then slams the EE clock backward and the event scheduler wedges
+// (Ratchet: Deadlocked SCUS-97465 — image freezes, audio keeps running). The interpreter never
+// drifts because it fully syncs (vu0Sync/_vu0FinishMicro) on EVERY COP2 op (VU0.cpp). So under
+// FullVU0SyncHack we route every straight-line COP2 op (transfers + macro ALU + LQC2/SQC2, but
+// NOT the BC2 branches, which are block-terminating control flow) to the inline interpreter —
+// exactly the mechanism CALLMS/CALLMSR already use (recEmitInterpInline + a live-cycle commit).
+// The EE recompiler still handles all non-COP2 code, so this is far faster than EE-interpreter.
+static bool recCop2ForceInterp(u32 op)
+{
+	// FullVU0SyncHack correctness path. The native macro-mode COP2 recompiler has two timing
+	// defects on VU0-handshake games (Ratchet: Deadlocked SCUS-97465): (1) a backward EE-clock
+	// jump on deferred VU0 finish — fixed by the monotonic guard in _vu0run (VU0.cpp); and (2) a
+	// deeper EE event-scheduler wedge when the game idles that the guard does NOT fix (vc106
+	// still froze at d=+3.9e9). Routing every straight-line COP2 op to the inline interpreter
+	// (proven: vc105 runs at 100% / native res) sidesteps BOTH — the interpreter keeps VU0
+	// tightly synced every op, so the scheduler never wedges. The EE rec still runs all non-COP2
+	// code, so the cost is only the few VU0 ops per frame. kForceInterp stays true; the _vu0run
+	// guard is kept anyway (a correct monotonic-clock invariant, harmless in the normal case).
+	// vc110: the freeze is a VU0<->EE HANDSHAKE DEADLOCK — the game's main thread blocks in the
+	// kernel idle loop waiting for a VU0-side signal the native macro-mode COP2 path drops (the
+	// interpreter produces it; vc105 never froze). That signal rides the EE<->VU0 TRANSFER ops,
+	// not the vertex math. kMode: 0 = all-native; 1 = transfers (QMFC2/CFC2/QMTC2/CTC2) + LQC2/
+	// SQC2 → interp, keep hot native VU0 macro ALU on the rec (this test — perf-preserving);
+	// 2 = all COP2 → interp (vc105 fallback, safe/slower).
+	if (!EmuConfig.Gamefixes.FullVU0SyncHack)
+		return false;
+	// kMode: 0 = all native (fast, alignment/flicker glitch); 1 = transfers+LQC2/SQC2 → interp;
+	// 2 = all COP2 → interp (correct, slower); 3 = READS (QMFC2/CFC2) → interp (vc115: still broken);
+	// 4 = ALU/SPECIAL (rs>=0x10) → interp, transfers+LQC2/SQC2 native (vc116 — the never-tested
+	// complement of kMode 1). Evidence: EVERY correct config (EE-interp, vc105) runs the macro ALU
+	// on the interpreter; EVERY broken one (native, vc110, vc115) runs it native — transfers/reads
+	// have been interp-routed both ways without fixing the graphics. This isolates the ALU. The
+	// interp COP2_SPECIAL wrapper also computes FULL flags (no FLAGHACK elision) — a wrong
+	// MAC/status-flag read is exactly the boolean-flip signature (stuck facing / model blinking).
+	// vc117 bisect: kMode 5 = SPECIAL2 (funct>=0x3c: ADDA/MADDA/MULA/SUBA/MSUBA families, CLIP,
+	// DIV/SQRT/RSQRT, MOVE/MR32, ITOF/FTOI, LQI/SQI/LQD/SQD, MFIR/MTIR, RNG) → interp; SPECIAL1
+	// (funct<0x3c: VADD/VSUB/VMUL/VMADD/VMSUB/VMAX/VMINI + bc/i/q, IADD/ISUB/IAND/IOR) stays
+	// NATIVE. kMode 6 = the complement (SPECIAL1 → interp, SPECIAL2 native). vc116 (kMode 4,
+	// all-ALU→interp) proved the bug is in one of these; this halves the search.
+	// vc124: runtime mode from <DataRoot>/cop2mode.txt (see recLoadCop2Mode). Modes:
+	// 0=all native; 1=transfers+LQ/SQ→interp; 2=ALL COP2→interp (safe); 3=reads→interp;
+	// 4=all ALU→interp (vc116-good); 5=SPECIAL2→interp (vc117-good); 6=SPECIAL1→interp;
+	// 7-11 = suspect-group→interp bisects; 12-16 = ONLY-one-group-NATIVE probes
+	// (12=ACC,13=Q,14=mem/VI,15=moves/clip,16=converts — broken verdict convicts that group).
+	if (!s_cop2ModeLoaded)
+		recLoadCop2Mode();
+	const int kMode = s_cop2InterpMode;
+	if (kMode == 0)
+		return false;
+	const u32 opc = op >> 26;
+	if (opc == OP_LQC2 || opc == OP_SQC2)
+		return (kMode == 1 || kMode == 2); // kMode 3/4/5/6 keep LQC2/SQC2 native
+	if (opc != 0x12)
+		return false;
+	const u32 rs = (op >> 21) & 0x1f;
+	if (rs == 0x08)
+		return false; // BC2 branches — control flow, native
+	if (kMode == 2)
+		return true; // all straight-line COP2 → interp
+	if (kMode == 3)
+		return (rs == 0x01 || rs == 0x02); // READS only (QMFC2/CFC2) → interp
+	if (kMode == 4)
+		return rs >= 0x10; // ALL ALU/SPECIAL → interp (vc116 — known-good graphics)
+	if (kMode == 5)
+		return rs >= 0x10 && (op & 0x3f) >= 0x3c; // SPECIAL2 → interp, SPECIAL1 native
+	if (kMode == 6)
+		return rs >= 0x10 && (op & 0x3f) < 0x3c; // SPECIAL1 → interp, SPECIAL2 native
+	if (kMode == 7)
+	{
+		// vc118: ONLY the SPECIAL2 ACC families → interp (ADDA/SUBA/MADDA/MSUBA/MULA + bc/i/q,
+		// OPMULA — everything that writes/reads the accumulator); the rest of SPECIAL2 (ITOF/
+		// FTOI/ABS/CLIP/MOVE/MR32/LQI/SQI/DIV/SQRT/RSQRT/MTIR/MFIR/ILWR/ISWR/RNG) NATIVE, all
+		// of SPECIAL1 NATIVE. Suspect: macro-mode ACC doesn't survive the per-op regAlloc
+		// reset/flush round-trip (MULA's ACC lost before MADDA reads it).
+		if (rs < 0x10 || (op & 0x3f) < 0x3c)
+			return false; // not SPECIAL2
+		const u32 idx = (op & 3) | ((op >> 4) & 0x7c); // SPECIAL2 table index
+		return idx <= 0x0f                                  // ADDAbc/SUBAbc/MADDAbc/MSUBAbc
+		    || (idx >= 0x18 && idx <= 0x1c)                 // MULAbc + MULAq
+		    || idx == 0x1e                                  // MULAi
+		    || (idx >= 0x20 && idx <= 0x2e && idx != 0x2b); // *Aq/*Ai/plain A-forms + OPMULA
+	}
+	if (kMode == 8)
+	{
+		// vc119: vc118 (ACC→interp, rest native) BROKE → ACC families are INNOCENT; the bug is
+		// in the rest of SPECIAL2. Prime suspect = the Q-register group (DIV/SQRT/RSQRT, mode
+		// 0x112: bespoke Q lane load/store + D/I flag fold). Route ONLY those (+WAITQ) → interp;
+		// EVERYTHING else native.
+		if (rs < 0x10 || (op & 0x3f) < 0x3c)
+			return false; // not SPECIAL2
+		const u32 idx = (op & 3) | ((op >> 4) & 0x7c);
+		return idx >= 0x38 && idx <= 0x3b; // DIV/SQRT/RSQRT/WAITQ → interp
+	}
+	if (kMode == 9)
+	{
+		// vc120: vc119 exonerated the Q group (interp'd, still broke). Guilty ∈ misc SPECIAL2.
+		// This splits it: VI-pointer/memory ops (LQI/SQI/LQD/SQD 0x34-0x37 — matrix-row walking —
+		// + MTIR/MFIR/ILWR/ISWR 0x3c-0x3f) → interp; converts/moves/CLIP/RNG + ACC + Q all NATIVE.
+		if (rs < 0x10 || (op & 0x3f) < 0x3c)
+			return false; // not SPECIAL2
+		const u32 idx = (op & 3) | ((op >> 4) & 0x7c);
+		return (idx >= 0x34 && idx <= 0x37) || (idx >= 0x3c && idx <= 0x3f);
+	}
+	if (kMode == 10)
+	{
+		// vc121: vc120 exonerated mem/VI ops. Remaining: ITOF/FTOI, ABS, CLIP, MOVE, MR32, RNG.
+		// This puts the moves/clip cluster (ABS 0x1d, CLIP 0x1f, MOVE 0x30, MR32 0x31) → interp;
+		// converts (ITOF/FTOI 0x10-0x17) + RNG (0x40-0x43) stay NATIVE with everything else.
+		if (rs < 0x10 || (op & 0x3f) < 0x3c)
+			return false; // not SPECIAL2
+		const u32 idx = (op & 3) | ((op >> 4) & 0x7c);
+		return idx == 0x1d || idx == 0x1f || idx == 0x30 || idx == 0x31;
+	}
+	if (kMode == 11)
+	{
+		// vc122: single-culprit ledger leaves {ITOF/FTOI, RNG}. Converts only → interp
+		// (idx 0x10-0x17); RNG + everything else NATIVE. If broken too, the single-culprit
+		// assumption is wrong (two guilty families in different bisect groups).
+		if (rs < 0x10 || (op & 0x3f) < 0x3c)
+			return false; // not SPECIAL2
+		const u32 idx = (op & 3) | ((op >> 4) & 0x7c);
+		return idx >= 0x10 && idx <= 0x17; // ITOF0/4/12/15 + FTOI0/4/12/15 → interp
+	}
+	// vc123+ (kMode 12..16): MULTI-CULPRIT hunt — flip ONE group native at a time from the
+	// known-good all-SPECIAL2-interp baseline (vc117). Each build independently convicts or
+	// clears its group: broken => that group is guilty; good => innocent. SPECIAL1 stays
+	// native throughout (exonerated by vc117).
+	if (kMode >= 12 && kMode <= 16)
+	{
+		if (rs < 0x10 || (op & 0x3f) < 0x3c)
+			return false; // not SPECIAL2
+		const u32 idx = (op & 3) | ((op >> 4) & 0x7c);
+		const bool acc   = idx <= 0x0f || (idx >= 0x18 && idx <= 0x1c) || idx == 0x1e
+		                || (idx >= 0x20 && idx <= 0x2e && idx != 0x2b);
+		const bool qgrp  = idx >= 0x38 && idx <= 0x3b;
+		const bool mem   = (idx >= 0x34 && idx <= 0x37) || (idx >= 0x3c && idx <= 0x3f);
+		const bool moves = idx == 0x1d || idx == 0x1f || idx == 0x30 || idx == 0x31;
+		const bool conv  = idx >= 0x10 && idx <= 0x17;
+		switch (kMode)
+		{
+			case 12: return !acc;   // ONLY ACC native (vc123)
+			case 13: return !qgrp;  // ONLY Q-group native
+			case 14: return !mem;   // ONLY mem/VI native
+			case 15: return !moves; // ONLY ABS/CLIP/MOVE/MR32 native
+			case 16: return !conv;  // ONLY converts native
+		}
+	}
+	return (rs == 0x01 || rs == 0x02 || rs == 0x05 || rs == 0x06); // transfers only (kMode 1)
+}
+
 // True for ops that run the interpreter inline AND need a live, current cpuRegs.cycle —
 // COP2 / VU0-macro ops (opcode 0x12, excluding the BC2 branches which already single-step).
 // The VU sync inside the COP2 handler reads cpuRegs.cycle, so the block's accumulated cycles
@@ -3556,6 +3750,9 @@ static bool recEmitTrapCompareIfTrap(u32 op, a64::Label* skip)
 // the uncommitted cycles in s_nBlockCycles so they ride past the finish.) See recRecompile.
 static bool recOpNeedsCycleFlush(u32 op)
 {
+	// Force-interp COP2 ops run the interpreter inline (like CALLMS) and need a live clock.
+	if (recCop2ForceInterp(op))
+		return true;
 	if ((op >> 26) == 0x12)
 	{
 		if (((op >> 21) & 0x1f) == 0x08)
@@ -3687,6 +3884,18 @@ static void mVUSyncVU0(u32 raw)
 // either run-to-catch-up + _vu0WaitMicro (M-bit sync) or _vu0FinishMicro.
 static void COP2_Interlock(bool mBitSync, u32 raw)
 {
+	// vc112: the interpreter does vu0Sync() at the TOP of every COP2 transfer op (VU0.cpp
+	// QMFC2/CFC2/QMTC2/CTC2) — with a LIVE cpuRegs.cycle — catching VU0 up to the EE clock
+	// BEFORE any force-finish. The native path skipped this, so its force-finish ran VU0 from a
+	// stale, far-behind position and broke the VU0 handshake (Ratchet freeze). vc111 added the
+	// leading vu0Sync but with a STALE clock (block cycles not yet committed), so it only
+	// PARTIALLY caught VU0 up → VF reads returned stale data (model flicker / stuck transform).
+	// Fix: commit the block's cycles FIRST so vu0Sync sees the live clock and fully syncs — the
+	// interpreter's exact order. This is the sole cycle commit for transfer ops now (the handlers
+	// pass 0 to their downstream mVUSyncVU0 so there is no double-commit).
+	recEmitCommitBlockCycles(raw);
+	armEmitCall(reinterpret_cast<const void*>(::vu0Sync)); // both reads+writes (freeze lives on writes)
+
 	if (!(cpuRegs.code & 1))
 		return;
 
@@ -3698,12 +3907,7 @@ static void COP2_Interlock(bool mBitSync, u32 raw)
 
 	const a64::Register rax = RXVIXLSCRATCH; // x16
 
-	armAsm->Ldr(rax, a64::MemOperand(RESTATEPTR, EE_CYCLE_OFFSET));
-	if (raw != 0)
-	{
-		armAsm->Add(rax, rax, recScaleBlockCycles(raw));
-		armAsm->Str(rax, a64::MemOperand(RESTATEPTR, EE_CYCLE_OFFSET));
-	}
+	armAsm->Ldr(rax, a64::MemOperand(RESTATEPTR, EE_CYCLE_OFFSET)); // already committed above (vc112)
 
 	armMoveAddressToReg(RSCRATCHADDR, &VU0.VI[REG_VPU_STAT].UL);
 	armAsm->Ldr(RWARG3, a64::MemOperand(RSCRATCHADDR));
@@ -3776,7 +3980,7 @@ static void recCFC2()
 	if (!(cpuRegs.code & 1))
 	{
 		if (g_pCurInstInfo->info & EEINST_COP2_SYNC_VU0)
-			mVUSyncVU0(s_cop2RawCycles);
+			mVUSyncVU0(0); // vc112: cycles already committed in COP2_Interlock — no double-commit
 		else if (g_pCurInstInfo->info & EEINST_COP2_FINISH_VU0)
 			mVUFinishVU0();
 	}
@@ -3837,7 +4041,7 @@ static void recCTC2()
 	if (!(cpuRegs.code & 1))
 	{
 		if (g_pCurInstInfo->info & EEINST_COP2_SYNC_VU0)
-			mVUSyncVU0(s_cop2RawCycles);
+			mVUSyncVU0(0); // vc112: cycles already committed in COP2_Interlock — no double-commit
 		else if (g_pCurInstInfo->info & EEINST_COP2_FINISH_VU0)
 			mVUFinishVU0();
 	}
@@ -3971,7 +4175,7 @@ static void recQMFC2()
 	if (!(cpuRegs.code & 1))
 	{
 		if (g_pCurInstInfo->info & EEINST_COP2_SYNC_VU0)
-			mVUSyncVU0(s_cop2RawCycles);
+			mVUSyncVU0(0); // vc112: cycles already committed in COP2_Interlock — no double-commit
 		else if (g_pCurInstInfo->info & EEINST_COP2_FINISH_VU0)
 			mVUFinishVU0();
 	}
@@ -3993,7 +4197,7 @@ static void recQMTC2()
 	if (!(cpuRegs.code & 1))
 	{
 		if (g_pCurInstInfo->info & EEINST_COP2_SYNC_VU0)
-			mVUSyncVU0(s_cop2RawCycles);
+			mVUSyncVU0(0); // vc112: cycles already committed in COP2_Interlock — no double-commit
 		else if (g_pCurInstInfo->info & EEINST_COP2_FINISH_VU0)
 			mVUFinishVU0();
 	}
@@ -4771,7 +4975,7 @@ static void recRecompile(u32 startpc)
 		{
 			raw_cycles += eeOpCycles(op);
 			s_cop2RawCycles = raw_cycles;
-			if (recCop2IsCallms(op))
+			if (recCop2IsCallms(op) || recCop2ForceInterp(op))
 			{
 				// CALLMS/CALLMSR are x86's only INTERPRETATE_COP2_FUNC ops: they commit the
 				// scaled block cycles to cpuRegs.cycle and clear the accumulator
@@ -4782,6 +4986,9 @@ static void recRecompile(u32 startpc)
 				// but a LAUNCH does not collapse it, so for these two ops the cycles must be
 				// committed here. Emitted before recTranslateOpOptimized's cache flush + interp
 				// call below, mirroring x86's order (commit, then recCall(V##f)).
+				// vc105: force-interp COP2 ops (FullVU0SyncHack) are ALSO run via the inline
+				// interpreter, whose vu0Sync/_vu0FinishMicro read cpuRegs.cycle — same live-clock
+				// requirement as CALLMS, so they take this commit-then-inline path too.
 				recEmitCommitBlockCycles(s_cop2RawCycles);
 				raw_cycles = 0;
 			}

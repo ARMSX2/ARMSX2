@@ -37,6 +37,18 @@ object LibraryTitles {
     }
 }
 
+/** Whether the "Recently Played" shelf shows above the library (#263). Off =
+ *  a single unified library with no recent shelf. Default on. */
+object LibraryRecentShelf {
+    private const val KEY = "library.showRecentlyPlayed"
+    val show = mutableStateOf(true)
+    fun load() { show.value = Main.prefs.getBoolean(KEY, true) }
+    fun set(value: Boolean) {
+        show.value = value
+        Main.prefs.edit().putBoolean(KEY, value).apply()
+    }
+}
+
 /**
  * Library view options: switch between the cover SHELF view and a compact LIST
  * view (game names only) for fast finding on small screens, plus a manual grid

@@ -30,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -83,6 +84,86 @@ import java.util.Locale
  */
 object SaveStatePicker {
     enum class Mode { Save, Load }
+
+    // Controller-navigation bridge: Render() publishes the current tile count and
+    // an activator (flat tile index -> save/load action) so the in-game overlay's
+    // D-pad + confirm can drive the grid without touch. Flat order matches the
+    // grid: [autosave (Load+present)] then slots 0..9.
+    // Three controller focus zones: the manager Header switches (Load mode only),
+    // the slot Grid, and the Back button. Up from the top grid row enters Header;
+    // Down from the bottom grid row enters Back.
+    enum class NavZone { Header, Grid, Back }
+    val zone = mutableStateOf(NavZone.Grid)
+    val controllerSel = mutableStateOf(0)   // grid tile index
+    val headerSel = mutableStateOf(0)       // header control index
+    // Manager-header switch state, shared so both taps and the controller (header
+    // zone) drive the same toggles and the UI reflects either.
+    val autoSaveOnExit = mutableStateOf(false)
+    val autoLoadOnBoot = mutableStateOf(false)
+    private var tileCount = 0
+    private var headerCount = 0             // 0 in Save mode (no manager header)
+    private var activator: ((Int) -> Unit)? = null
+    private var headerActivator: ((Int) -> Unit)? = null
+    private var backAction: (() -> Unit)? = null
+
+    fun resetControllerSel() {
+        controllerSel.value = 0; headerSel.value = 0; zone.value = NavZone.Grid
+        autoSaveOnExit.value = Main.prefs.getBoolean("autoSaveOnExit", false)
+        autoLoadOnBoot.value = Main.prefs.getBoolean("autoLoadOnBoot", false)
+    }
+
+    fun move(dx: Int, dy: Int) {
+        when (zone.value) {
+            NavZone.Grid -> {
+                val i = controllerSel.value
+                if (dy < 0 && i % 2 == 0 && headerCount > 0) {
+                    zone.value = NavZone.Header; headerSel.value = 0; return   // land on Auto-save
+                }
+                if (dy > 0 && i % 2 == 1) { zone.value = NavZone.Back; return }
+                moveGrid(dx, dy)
+            }
+            // Header layout is 2D: the two switches are STACKED on the left
+            // (0=Auto-save on top, 1=Auto-load below); Backup(2)/Restore(3) sit on the
+            // top-right. Match that visually so Up/Down flip the switches and Right
+            // reaches Backup/Restore. Down off the bottom control returns to the grid.
+            NavZone.Header -> {
+                val cur = headerSel.value
+                when {
+                    dy > 0 && cur == 0 -> headerSel.value = 1        // Auto-save ↓ Auto-load
+                    dy > 0 -> zone.value = NavZone.Grid              // Auto-load/Backup/Restore ↓ grid
+                    dy < 0 && cur == 1 -> headerSel.value = 0        // Auto-load ↑ Auto-save
+                    dx > 0 && cur < 2 -> headerSel.value = 2         // a switch → Backup
+                    dx > 0 && cur == 2 -> headerSel.value = 3        // Backup → Restore
+                    dx < 0 && cur == 3 -> headerSel.value = 2        // Restore → Backup
+                    dx < 0 && cur == 2 -> headerSel.value = 0        // Backup → Auto-save
+                }
+            }
+            NavZone.Back -> if (dy < 0) zone.value = NavZone.Grid
+        }
+    }
+
+    // 2-row, column-major grid: flat index i sits at row = i%2, col = i/2. Left/Right
+    // step a whole column (±2); Up/Down flip the row within the current column.
+    private fun moveGrid(dx: Int, dy: Int) {
+        if (tileCount <= 0) return
+        val i = controllerSel.value
+        val next = when {
+            dx > 0 -> i + 2
+            dx < 0 -> i - 2
+            dy > 0 -> if (i % 2 == 0) i + 1 else i
+            dy < 0 -> if (i % 2 == 1) i - 1 else i
+            else -> i
+        }
+        controllerSel.value = next.coerceIn(0, tileCount - 1)
+    }
+
+    fun confirm() {
+        when (zone.value) {
+            NavZone.Grid -> activator?.invoke(controllerSel.value)
+            NavZone.Header -> headerActivator?.invoke(headerSel.value)
+            NavZone.Back -> backAction?.invoke()
+        }
+    }
 
     private const val SLOTS = 10
     // Fixed tile width — LazyHorizontalGrid computes tile height from the
@@ -197,9 +278,55 @@ object SaveStatePicker {
             )
             if (manage) {
                 Spacer(Modifier.height(8.dp))
-                ManagerHeader(scope, context) { pendingRestore = true }
+                ManagerHeader(
+                    scope, context,
+                    focused = if (zone.value == NavZone.Header) headerSel.value else -1,
+                ) { pendingRestore = true }
             }
             Spacer(Modifier.height(8.dp))
+            // Publish the flat tile list to the controller bridge: [autosave?] then
+            // slots 0..9. The overlay's D-pad moves controllerSel; confirm calls this.
+            val autosaveShown = mode == Mode.Load && hasAutosave
+            val offset = if (autosaveShown) 1 else 0
+            SideEffect {
+                tileCount = offset + SLOTS
+                // Header zone (Load mode): 0=Auto-save switch, 1=Auto-load switch,
+                // 2=Backup, 3=Restore. Save mode has no header.
+                headerCount = if (manage) 4 else 0
+                headerActivator = { idx ->
+                    when (idx) {
+                        0 -> { val v = !autoSaveOnExit.value; autoSaveOnExit.value = v
+                               Main.prefs.edit().putBoolean("autoSaveOnExit", v).apply() }
+                        1 -> { val v = !autoLoadOnBoot.value; autoLoadOnBoot.value = v
+                               Main.prefs.edit().putBoolean("autoLoadOnBoot", v).apply() }
+                        2 -> scope.launch(Dispatchers.IO) {
+                            val n = backupAll()
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, if (n > 0) "Backed up $n save(s)" else "No saves to back up", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        3 -> pendingRestore = true
+                    }
+                }
+                backAction = onBack
+                activator = { idx ->
+                    if (autosaveShown && idx == 0) {
+                        scope.launch(Dispatchers.IO) {
+                            NativeApp.loadAutosaveState()
+                            withContext(Dispatchers.Main) { onDone() }
+                        }
+                    } else {
+                        val slot = (idx - offset).coerceIn(0, SLOTS - 1)
+                        scope.launch(Dispatchers.IO) {
+                            when (mode) {
+                                Mode.Save -> NativeApp.saveStateToSlot(slot)
+                                Mode.Load -> NativeApp.loadStateFromSlot(slot)
+                            }
+                            withContext(Dispatchers.Main) { onDone() }
+                        }
+                    }
+                }
+            }
             // 2-row horizontal grid. Autosave (Load mode only) is the
             // leading tile, then numbered slots 0-9 flow column-by-column.
             LazyHorizontalGrid(
@@ -211,7 +338,7 @@ object SaveStatePicker {
             ) {
                 if (mode == Mode.Load && hasAutosave) {
                     item(key = "autosave") {
-                        AutosaveTile {
+                        AutosaveTile(highlighted = zone.value == NavZone.Grid && controllerSel.value == 0) {
                             scope.launch(Dispatchers.IO) {
                                 NativeApp.loadAutosaveState()
                                 withContext(Dispatchers.Main) { onDone() }
@@ -224,6 +351,7 @@ object SaveStatePicker {
                         slot = slot,
                         mode = mode,
                         refreshTick = refreshTick,
+                        highlighted = zone.value == NavZone.Grid && controllerSel.value == slot + offset,
                         onPick = { selected ->
                             when (mode) {
                                 Mode.Save -> scope.launch(Dispatchers.IO) {
@@ -241,7 +369,7 @@ object SaveStatePicker {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            BackRow(onBack)
+            BackRow(highlighted = zone.value == NavZone.Back, onBack = onBack)
         }
     }
 
@@ -250,22 +378,28 @@ object SaveStatePicker {
     private fun ManagerHeader(
         scope: CoroutineScope,
         context: android.content.Context,
+        focused: Int,
         onRestoreRequest: () -> Unit,
     ) {
-        var autoSave by remember { mutableStateOf(Main.prefs.getBoolean("autoSaveOnExit", false)) }
-        var autoLoad by remember { mutableStateOf(Main.prefs.getBoolean("autoLoadOnBoot", false)) }
+        val glow = Color(0xFF3DA5FF)
+        // Controller-focus ring around the header control at index [focused]
+        // (0=auto-save, 1=auto-load, 2=Backup, 3=Restore; -1 = none).
+        fun ring(i: Int): Modifier =
+            if (focused == i) Modifier.border(1.5.dp, glow, RoundedCornerShape(6.dp)) else Modifier
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Auto-save on exit", color = Color.White, fontSize = 12.sp)
-            Spacer(Modifier.width(6.dp))
-            Switch(
-                checked = autoSave,
-                onCheckedChange = {
-                    autoSave = it
-                    Main.prefs.edit().putBoolean("autoSaveOnExit", it).apply()
-                },
-            )
+            Row(ring(0).padding(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Auto-save on exit", color = Color.White, fontSize = 12.sp)
+                Spacer(Modifier.width(6.dp))
+                Switch(
+                    checked = autoSaveOnExit.value,
+                    onCheckedChange = {
+                        autoSaveOnExit.value = it
+                        Main.prefs.edit().putBoolean("autoSaveOnExit", it).apply()
+                    },
+                )
+            }
             Spacer(Modifier.weight(1f))
-            PillButton("Backup") {
+            PillButton("Backup", highlighted = focused == 2) {
                 scope.launch(Dispatchers.IO) {
                     val n = backupAll()
                     withContext(Dispatchers.Main) {
@@ -278,31 +412,37 @@ object SaveStatePicker {
                 }
             }
             Spacer(Modifier.width(6.dp))
-            PillButton("Restore", onRestoreRequest)
+            PillButton("Restore", highlighted = focused == 3, onClick = onRestoreRequest)
         }
         Row(
             Modifier.fillMaxWidth().padding(top = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Auto-load last state on boot", color = Color.White, fontSize = 12.sp)
-            Spacer(Modifier.width(6.dp))
-            Switch(
-                checked = autoLoad,
-                onCheckedChange = {
-                    autoLoad = it
-                    Main.prefs.edit().putBoolean("autoLoadOnBoot", it).apply()
-                },
-            )
+            Row(ring(1).padding(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Auto-load last state on boot", color = Color.White, fontSize = 12.sp)
+                Spacer(Modifier.width(6.dp))
+                Switch(
+                    checked = autoLoadOnBoot.value,
+                    onCheckedChange = {
+                        autoLoadOnBoot.value = it
+                        Main.prefs.edit().putBoolean("autoLoadOnBoot", it).apply()
+                    },
+                )
+            }
         }
     }
 
     @Composable
-    private fun PillButton(label: String, onClick: () -> Unit) {
+    private fun PillButton(label: String, highlighted: Boolean = false, onClick: () -> Unit) {
         Box(
             Modifier
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color(0xFF272525).copy(alpha = 0.6f))
-                .border(1.dp, Color(0xFF3A3A3A).copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                .border(
+                    if (highlighted) 1.5.dp else 1.dp,
+                    if (highlighted) Color(0xFF3DA5FF) else Color(0xFF3A3A3A).copy(alpha = 0.7f),
+                    RoundedCornerShape(8.dp),
+                )
                 .clickable(onClick = onClick)
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         ) {
@@ -331,7 +471,7 @@ object SaveStatePicker {
     }
 
     @Composable
-    private fun AutosaveTile(onPick: () -> Unit) {
+    private fun AutosaveTile(highlighted: Boolean = false, onPick: () -> Unit) {
         val gamePath by produceState<String?>(initialValue = null) {
             value = withContext(Dispatchers.IO) { NativeApp.getAutosaveGamePath() }
         }
@@ -346,6 +486,7 @@ object SaveStatePicker {
         TileFrame(
             borderColor = Color(0xFFFFB347).copy(alpha = 0.7f),
             backgroundColor = Color(0xFF2F2820).copy(alpha = 0.45f),
+            highlighted = highlighted,
             onClick = onPick,
         ) {
             val bmp = image
@@ -367,7 +508,7 @@ object SaveStatePicker {
     }
 
     @Composable
-    private fun SlotTile(slot: Int, mode: Mode, refreshTick: Int, onPick: (Int) -> Unit, onDelete: (Int) -> Unit) {
+    private fun SlotTile(slot: Int, mode: Mode, refreshTick: Int, highlighted: Boolean = false, onPick: (Int) -> Unit, onDelete: (Int) -> Unit) {
         // Re-probe whenever a delete/restore bumps the tick. File existence is
         // the authoritative "empty" signal (getGamePathSlot builds a name even
         // for empty slots).
@@ -399,6 +540,7 @@ object SaveStatePicker {
             borderColor = Color(0xFF3A3A3A).copy(alpha = 0.6f),
             backgroundColor = Color(0xFF272525).copy(alpha = 0.3f),
             enabled = enabled,
+            highlighted = highlighted,
             onClick = { onPick(slot) },
         ) {
             val bmp = image
@@ -446,16 +588,20 @@ object SaveStatePicker {
         borderColor: Color,
         backgroundColor: Color,
         enabled: Boolean = true,
+        highlighted: Boolean = false,
         onClick: () -> Unit,
         content: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit,
     ) {
+        // Controller focus draws a bright, thicker ring over the normal border.
+        val ringColor = if (highlighted) Color(0xFF3DA5FF) else borderColor
+        val ringWidth = if (highlighted) 2.5.dp else 1.dp
         Box(
             Modifier
                 .width(TILE_WIDTH_DP.dp)
                 .fillMaxHeight()
                 .clip(RoundedCornerShape(8.dp))
                 .background(backgroundColor)
-                .border(1.dp, borderColor, RoundedCornerShape(8.dp))
+                .border(ringWidth, ringColor, RoundedCornerShape(8.dp))
                 .clickable(enabled = enabled, onClick = onClick),
         ) {
             content()
@@ -507,14 +653,18 @@ object SaveStatePicker {
     }
 
     @Composable
-    private fun BackRow(onBack: () -> Unit) {
+    private fun BackRow(highlighted: Boolean = false, onBack: () -> Unit) {
         Box(
             Modifier
                 .fillMaxWidth()
                 .height(40.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color(0xFF272525).copy(alpha = 0.3f))
-                .border(1.dp, Color(0xFF3A3A3A).copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                .border(
+                    if (highlighted) 1.5.dp else 1.dp,
+                    if (highlighted) Color(0xFF3DA5FF) else Color(0xFF3A3A3A).copy(alpha = 0.6f),
+                    RoundedCornerShape(8.dp),
+                )
                 .clickable(onClick = onBack)
                 .padding(horizontal = 14.dp),
             contentAlignment = Alignment.CenterStart,

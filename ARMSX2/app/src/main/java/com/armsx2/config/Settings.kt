@@ -201,10 +201,12 @@ data class Settings(
     val hwAa1: Boolean = false,
     /** EmuCore/GS/HWAccurateAlphaTest — accurate alpha test for the HW renderer (pairs with ROV). Default off. */
     val hwAat: Boolean = false,
-    /** EmuCore/GS/EnableAdrenoFramebufferFetch — opt-in: enable the Vulkan framebuffer-fetch
-     * (ROAA) accurate-blending fast path on non-Mali (Adreno) GPUs that expose the extension.
-     * Experimental; default off. Applies on game restart. */
-    val adrenoFbFetch: Boolean = false,
+    /** EmuCore/GS/EnableAdrenoFramebufferFetch — enable the Vulkan framebuffer-fetch
+     * (ROAA) accurate-blending fast path on non-Mali (Adreno) GPUs that expose the
+     * extension. Default ON so accurate blending runs in-tile (fast) instead of the
+     * per-primitive barrier fallback. A few proprietary Adreno drivers show stale-ROAA
+     * read artifacts — turn this off in the Renderer tab if so. Applies on game restart. */
+    val adrenoFbFetch: Boolean = true,
     /** EmuCore/GS/OverrideTextureBarriers — -1 Auto / 0 Off / 1 On. */
     val overrideTextureBarriers: Int = -1,
     /** EmuCore/GS/DisableVertexShaderExpand — force CPU vertex expansion. Renderer-init; restart to apply. */
@@ -395,26 +397,26 @@ data class Settings(
     // initialize(), which turns every OsdShow* bit on at first boot.
     // Disabling GPU also stops the GPU timing queries (real perf win).
     /** EmuCore/GS/OsdShowFPS. */
-    val osdShowFps: Boolean = true,
+    val osdShowFps: Boolean = false,
     /** EmuCore/GS/VsyncEnable — sync presentation to the display refresh (less
      *  tearing/smoother, slightly higher latency). Applies on game restart. */
     val vsyncEnable: Boolean = false,
     /** EmuCore/GS/OsdShowVPS. */
-    val osdShowVps: Boolean = true,
+    val osdShowVps: Boolean = false,
     /** EmuCore/GS/OsdShowSpeed. */
-    val osdShowSpeed: Boolean = true,
+    val osdShowSpeed: Boolean = false,
     /** EmuCore/GS/OsdShowCPU. */
-    val osdShowCpu: Boolean = true,
+    val osdShowCpu: Boolean = false,
     /** EmuCore/GS/OsdShowGPU. */
-    val osdShowGpu: Boolean = true,
+    val osdShowGpu: Boolean = false,
     /** EmuCore/GS/OsdShowResolution. */
-    val osdShowResolution: Boolean = true,
+    val osdShowResolution: Boolean = false,
     /** EmuCore/GS/OsdShowGSStats. */
-    val osdShowGsStats: Boolean = true,
+    val osdShowGsStats: Boolean = false,
     /** EmuCore/GS/OsdShowFrameTimes. */
-    val osdShowFrameTimes: Boolean = true,
+    val osdShowFrameTimes: Boolean = false,
     /** EmuCore/GS/OsdShowHardwareInfo — the CPU/GPU model info line. */
-    val osdShowHardwareInfo: Boolean = true,
+    val osdShowHardwareInfo: Boolean = false,
     /** EmuCore/GS/OsdMessagesPos — transient OSD notifications (shader-compile
      *  popups, "settings applied", save-state, etc.). true = shown (TopLeft),
      *  false = hidden (None). Achievement popups are separate & unaffected. */
@@ -424,7 +426,11 @@ data class Settings(
      *  diagnostic that adds per-frame query overhead. */
     val osdShowGpuStats: Boolean = false,
     /** EmuCore/GS/OsdShowVersion — the emulator version line. */
-    val osdShowVersion: Boolean = true,
+    val osdShowVersion: Boolean = false,
+    /** EmuCore/GS/OsdShowSettings — the settings summary (bottom-left). */
+    val osdShowSettings: Boolean = false,
+    /** EmuCore/GS/OsdShowInputs — the control inputs (bottom-right). */
+    val osdShowInputs: Boolean = false,
     /** EmuCore/GS/UserHacks_AutoFlushLevel — GSHWAutoFlushLevel:
      *  0 Disabled · 1 SpritesOnly · 2 Enabled. */
     val autoFlush: Int = 0,
@@ -684,6 +690,8 @@ data class Settings(
         NativeApp.osdShowMessages(osdShowMessages)
         NativeApp.osdShowGpuStats(osdShowGpuStats)
         NativeApp.osdShowVersion(osdShowVersion)
+        NativeApp.osdShowSettings(osdShowSettings)
+        NativeApp.osdShowInputs(osdShowInputs)
         // USB keyboard (#254): live attach/detach on the running VM. A plain
         // setSetting("USB1","Type",...) write is persisted but doesn't reattach
         // USB devices, so drive the device (re)creation explicitly. No-op before
@@ -771,6 +779,8 @@ data class Settings(
         put("EmuCore/GS", "OsdMessagesPos", "int", if (osdShowMessages) "1" else "0")
         put("EmuCore/GS", "OsdShowGPUStats", "bool", osdShowGpuStats.toString())
         put("EmuCore/GS", "OsdShowVersion", "bool", osdShowVersion.toString())
+        put("EmuCore/GS", "OsdShowSettings", "bool", osdShowSettings.toString())
+        put("EmuCore/GS", "OsdShowInputs", "bool", osdShowInputs.toString())
         // Display / PCRTC fixes (not gated by the UserHacks master).
         put("EmuCore/GS", "pcrtc_offsets", "bool", screenOffsets.toString())
         put("EmuCore/GS", "pcrtc_overscan", "bool", showOverscan.toString())
@@ -1078,6 +1088,8 @@ data class Settings(
         put("osdShowMessages", osdShowMessages)
         put("osdShowGpuStats", osdShowGpuStats)
         put("osdShowVersion", osdShowVersion)
+        put("osdShowSettings", osdShowSettings)
+        put("osdShowInputs", osdShowInputs)
         put("autoFlush", autoFlush)
         put("halfPixelOffset", halfPixelOffset)
         put("limit24BitDepth", limit24BitDepth)
@@ -1308,6 +1320,8 @@ data class Settings(
                 osdShowMessages = json.optBoolean("osdShowMessages", def.osdShowMessages),
                 osdShowGpuStats = json.optBoolean("osdShowGpuStats", def.osdShowGpuStats),
                 osdShowVersion = json.optBoolean("osdShowVersion", def.osdShowVersion),
+                osdShowSettings = json.optBoolean("osdShowSettings", def.osdShowSettings),
+                osdShowInputs = json.optBoolean("osdShowInputs", def.osdShowInputs),
                 autoFlush = json.optInt("autoFlush", def.autoFlush),
                 halfPixelOffset = json.optInt("halfPixelOffset", def.halfPixelOffset),
                 limit24BitDepth = json.optInt("limit24BitDepth", def.limit24BitDepth),
@@ -1498,6 +1512,8 @@ data class Settings(
             if (current.osdShowMessages != base.osdShowMessages) j.put("osdShowMessages", current.osdShowMessages)
             if (current.osdShowGpuStats != base.osdShowGpuStats) j.put("osdShowGpuStats", current.osdShowGpuStats)
             if (current.osdShowVersion != base.osdShowVersion) j.put("osdShowVersion", current.osdShowVersion)
+            if (current.osdShowSettings != base.osdShowSettings) j.put("osdShowSettings", current.osdShowSettings)
+            if (current.osdShowInputs != base.osdShowInputs) j.put("osdShowInputs", current.osdShowInputs)
             if (current.autoFlush           != base.autoFlush)           j.put("autoFlush", current.autoFlush)
             if (current.halfPixelOffset     != base.halfPixelOffset)     j.put("halfPixelOffset", current.halfPixelOffset)
             if (current.limit24BitDepth     != base.limit24BitDepth)     j.put("limit24BitDepth", current.limit24BitDepth)
@@ -1682,6 +1698,8 @@ data class Settings(
             osdShowMessages = if (overrides.has("osdShowMessages")) overrides.getBoolean("osdShowMessages") else base.osdShowMessages,
             osdShowGpuStats = if (overrides.has("osdShowGpuStats")) overrides.getBoolean("osdShowGpuStats") else base.osdShowGpuStats,
             osdShowVersion = if (overrides.has("osdShowVersion")) overrides.getBoolean("osdShowVersion") else base.osdShowVersion,
+            osdShowSettings = if (overrides.has("osdShowSettings")) overrides.getBoolean("osdShowSettings") else base.osdShowSettings,
+            osdShowInputs = if (overrides.has("osdShowInputs")) overrides.getBoolean("osdShowInputs") else base.osdShowInputs,
             autoFlush = if (overrides.has("autoFlush")) overrides.getInt("autoFlush") else base.autoFlush,
             halfPixelOffset = if (overrides.has("halfPixelOffset")) overrides.getInt("halfPixelOffset") else base.halfPixelOffset,
             limit24BitDepth = if (overrides.has("limit24BitDepth")) overrides.getInt("limit24BitDepth") else base.limit24BitDepth,

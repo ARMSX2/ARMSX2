@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import androidx.documentfile.provider.DocumentFile
 import com.armsx2.Main
 import com.armsx2.config.ConfigStore
+import com.armsx2.config.SettingsScope
 import com.armsx2.ui.settings.SettingsControllerNav
 import com.armsx2.ui.settings.controllerFocusable
 import java.io.File
@@ -140,6 +142,20 @@ object MemoryCardManager {
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+                    // Memcard changes need a game reboot to take effect — offer it
+                    // right here (left of Close) so the user doesn't hunt for Reset.
+                    if (Main.currentGame.value != null) {
+                        Button(
+                            onClick = { visible.value = false; Main.restart() },
+                            modifier = Modifier
+                                .padding(end = 8.dp)
+                                .controllerFocusable("mc:restart", onConfirm = { visible.value = false; Main.restart() }),
+                            colors = ps2ButtonColors(),
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Text("Restart")
+                        }
+                    }
                     Button(
                         onClick = { visible.value = false },
                         modifier = Modifier.controllerFocusable("mc:close", onConfirm = { visible.value = false }),
@@ -217,6 +233,73 @@ object MemoryCardManager {
                     ) {
                         perGameCards = !perGameCards
                         Main.prefs.edit().putBoolean("memcard.perGame", perGameCards).apply()
+                    }
+                }
+
+                // Per-game Slot 1 picker: assign a SPECIFIC card to the current
+                // game instead of the forced serial-named card. Only shown while a
+                // game is loaded (currentGame set). Writing memoryCardSlot1Filename
+                // as a per-game override is respected by Main.applyRendererPrefs,
+                // which skips the auto serial card when an explicit override exists.
+                val game = Main.currentGame.value
+                val gameSerial = game?.serial?.takeIf { it.isNotBlank() }
+                if (gameSerial != null) {
+                    // Bump on assign so the highlight re-reads resolveForGame().
+                    var pgVersion by remember { mutableStateOf(0) }
+                    // Read effective per-game + global values (pgVersion forces re-read).
+                    val effective = remember(gameSerial, pgVersion) { ConfigStore.resolveForGame(gameSerial) }
+                    val globalSlot1 = remember(pgVersion) { ConfigStore.loadGlobal().memoryCardSlot1Filename }
+                    val current = effective.memoryCardSlot1Filename
+                    val usesGlobal = current.equals(globalSlot1, ignoreCase = true)
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "Slot 1 card for \"${game.title}\"",
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Pick a card for this game only (overrides the auto serial card). Restart the game to apply.",
+                        color = Color(0xFFAAAAAA),
+                        fontSize = 10.sp,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    val pgScroll = rememberScrollState()
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(pgScroll),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        SelectChip(
+                            label = "Global default",
+                            selected = usesGlobal,
+                            id = "mc:pg:__global__",
+                        ) {
+                            val g = ConfigStore.resolveForGame(gameSerial)
+                            ConfigStore.save(
+                                SettingsScope.Game,
+                                gameSerial,
+                                g.copy(memoryCardSlot1Filename = globalSlot1, memoryCardSlot1Enabled = true),
+                            )
+                            status.value = "\"${game.title}\" now uses the global Slot 1 card. Restart the game to apply."
+                            pgVersion++
+                        }
+                        files.filter { it.isFile }.forEach { card ->
+                            val selected = !usesGlobal && card.name.equals(current, ignoreCase = true)
+                            SelectChip(
+                                label = card.name,
+                                selected = selected,
+                                id = "mc:pg:${card.name}",
+                            ) {
+                                val g = ConfigStore.resolveForGame(gameSerial)
+                                ConfigStore.save(
+                                    SettingsScope.Game,
+                                    gameSerial,
+                                    g.copy(memoryCardSlot1Filename = card.name, memoryCardSlot1Enabled = true),
+                                )
+                                status.value = "Assigned ${card.name} to ${game.title}. Restart the game to apply."
+                                pgVersion++
+                            }
+                        }
                     }
                 }
 

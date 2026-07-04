@@ -308,7 +308,11 @@ object PatchRepo {
         val body: String,
     )
 
-    private val PATCH_LINE_RE = Regex("^\\s*//?\\s*patch\\s*=", RegexOption.IGNORE_CASE)
+    // `/{0,2}` = an OPTIONAL leading // (0, 1 or 2 slashes). The old `//?` required
+    // at least one slash, so ACTIVE `patch=` lines never matched — the per-cheat
+    // editor/browser then saw zero cheats in any normal file, and toggling a cheat
+    // off was silently ignored. Must match both active and //-commented patch lines.
+    private val PATCH_LINE_RE = Regex("^\\s*/{0,2}\\s*patch\\s*=", RegexOption.IGNORE_CASE)
     private val META_COMMENT_RE = Regex("^[A-Z]{4}-\\d{5}\\s+[0-9A-Fa-f]{8}$")
 
     /** True if [line] is a `patch=` command (whether active or `//`-commented). */

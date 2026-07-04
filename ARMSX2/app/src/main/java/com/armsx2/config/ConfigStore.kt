@@ -40,6 +40,10 @@ object ConfigStore {
     // One-time seed of the (now per-game) renderer/upscale fields from the legacy
     // global prefs, so updating doesn't reset everyone's backend/resolution.
     private const val KEY_RENDERER_MIGRATED = "config.migrated.rendererUpscale"
+    // One-time flip of existing saves to the new Adreno framebuffer-fetch default-on.
+    private const val KEY_ADRENO_FBFETCH_MIGRATED = "config.migrated.adrenoFbFetchOn"
+    // One-time flip of existing all-on OSD saves to the new default-off.
+    private const val KEY_OSD_OFF_MIGRATED = "config.migrated.osdDefaultOff"
     private fun keyForGame(serial: String) = "config.game.$serial"
 
     fun loadGlobal(): Settings {
@@ -74,6 +78,40 @@ object ConfigStore {
                 dirty = true
             }
             Main.prefs.edit().putBoolean(KEY_RENDERER_MIGRATED, true).apply()
+        }
+
+        // Adreno framebuffer-fetch is now default-on. Flip existing global saves that
+        // still carry the old default-off ONCE, so updating users get the fast
+        // accurate-blending path too (they can turn it back off in the Renderer tab).
+        if (raw != null && !Main.prefs.getBoolean(KEY_ADRENO_FBFETCH_MIGRATED, false) &&
+            !parsed.adrenoFbFetch) {
+            parsed = parsed.copy(adrenoFbFetch = true)
+            dirty = true
+        }
+        if (!Main.prefs.getBoolean(KEY_ADRENO_FBFETCH_MIGRATED, false)) {
+            Main.prefs.edit().putBoolean(KEY_ADRENO_FBFETCH_MIGRATED, true).apply()
+        }
+
+        // The perf OSD (FPS/stats counters) now defaults OFF — it read as clutter.
+        // Flip existing saves that still sit at the old all-on default ONCE; a user
+        // who'd already turned any element off is left untouched, and the in-game
+        // "OSD" toggle re-enables everything. (The bottom-left/right summaries are
+        // handled by their own absent-key default for pre-2.6 saves.)
+        if (raw != null && !Main.prefs.getBoolean(KEY_OSD_OFF_MIGRATED, false) &&
+            parsed.osdShowFps && parsed.osdShowVps && parsed.osdShowSpeed &&
+            parsed.osdShowCpu && parsed.osdShowGpu && parsed.osdShowResolution &&
+            parsed.osdShowGsStats && parsed.osdShowFrameTimes &&
+            parsed.osdShowHardwareInfo && parsed.osdShowVersion) {
+            parsed = parsed.copy(
+                osdShowFps = false, osdShowVps = false, osdShowSpeed = false,
+                osdShowCpu = false, osdShowGpu = false, osdShowResolution = false,
+                osdShowGsStats = false, osdShowFrameTimes = false,
+                osdShowHardwareInfo = false, osdShowVersion = false,
+            )
+            dirty = true
+        }
+        if (!Main.prefs.getBoolean(KEY_OSD_OFF_MIGRATED, false)) {
+            Main.prefs.edit().putBoolean(KEY_OSD_OFF_MIGRATED, true).apply()
         }
 
         if (dirty) saveGlobal(parsed)

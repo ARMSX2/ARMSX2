@@ -39,6 +39,7 @@ import compose.icons.lineawesomeicons.PlaySolid
 import compose.icons.lineawesomeicons.PowerOffSolid
 import compose.icons.lineawesomeicons.RedoAltSolid
 import compose.icons.lineawesomeicons.SaveSolid
+import compose.icons.lineawesomeicons.SdCardSolid
 import compose.icons.lineawesomeicons.TachometerAltSolid
 import compose.icons.lineawesomeicons.ThLargeSolid
 import androidx.compose.animation.core.LinearEasing
@@ -475,6 +476,7 @@ object InGameOverlay {
                     osdShowGpuStats = base.osdShowGpuStats,
                     osdShowResolution = base.osdShowResolution, osdShowSpeed = base.osdShowSpeed,
                     osdShowVersion = base.osdShowVersion, osdShowVps = base.osdShowVps,
+                    osdShowSettings = base.osdShowSettings, osdShowInputs = base.osdShowInputs,
                 )
             }
             Tab.Pad -> {
@@ -689,6 +691,14 @@ object InGameOverlay {
             NativeApp.setSetting("EmuCore/GS", "OsdShowVersion", "bool", updated.osdShowVersion.toString())
             NativeApp.osdShowVersion(updated.osdShowVersion)
         }
+        if (previous.osdShowSettings != updated.osdShowSettings) {
+            NativeApp.setSetting("EmuCore/GS", "OsdShowSettings", "bool", updated.osdShowSettings.toString())
+            NativeApp.osdShowSettings(updated.osdShowSettings)
+        }
+        if (previous.osdShowInputs != updated.osdShowInputs) {
+            NativeApp.setSetting("EmuCore/GS", "OsdShowInputs", "bool", updated.osdShowInputs.toString())
+            NativeApp.osdShowInputs(updated.osdShowInputs)
+        }
 
         // Renderer / hardware-fix / upscaling-fix changes apply live via a GS-only
         // reconfigure (Settings.applyGsLive → native applyGSSettingsLive). It does
@@ -720,8 +730,16 @@ object InGameOverlay {
         when (state.value) {
             is State.Root -> {
                 if (currentTab.value == Tab.PlayingNow && !settingsOnly.value) {
-                    val row = playSelection.value / 4
-                    val col = playSelection.value % 4
+                    val sel = playSelection.value
+                    if (sel == 12) {
+                        // Memory Cards is the tall button on the RIGHT of the 3x4 grid.
+                        // Left re-enters the grid at its right column (middle row).
+                        if (dx < 0) playSelection.value = 7
+                        return true
+                    }
+                    val row = sel / 4
+                    val col = sel % 4
+                    if (dx > 0 && col == 3) { playSelection.value = 12; return true } // right off grid → cards
                     val nextRow = (row + dy).coerceIn(0, 2)
                     val nextCol = (col + dx).coerceIn(0, 3)
                     playSelection.value = nextRow * 4 + nextCol
@@ -795,6 +813,11 @@ object InGameOverlay {
                 achievementsScroll.value += delta
                 return true
             }
+            is State.SaveStateSlots, is State.LoadStateSlots -> {
+                // Zone-aware nav: header switches / slot grid / back button.
+                SaveStatePicker.move(dx, dy)
+                return true
+            }
             else -> return false
         }
         return false
@@ -846,6 +869,10 @@ object InGameOverlay {
             }
             is State.Achievements, is State.AchievementsLogin ->
                 return SettingsControllerNav.confirm()
+            is State.SaveStateSlots, is State.LoadStateSlots -> {
+                SaveStatePicker.confirm()
+                return true
+            }
             else -> return false
         }
         return false
@@ -909,7 +936,7 @@ object InGameOverlay {
         ((this % modulus) + modulus) % modulus
 
     private fun activatePlaySelection(index: Int) {
-        when (index.coerceIn(0, 11)) {
+        when (index.coerceIn(0, 12)) {
             0 -> closeAndResume()
             1 -> openSaveStates()
             2 -> openLoadStates()
@@ -922,16 +949,19 @@ object InGameOverlay {
             9 -> toggleOsd()
             10 -> enterState(State.ResetConfirm)
             11 -> closeGame()
+            12 -> openMemcards()
         }
     }
 
     private fun openSaveStates() {
         // Saving IS allowed in RetroAchievements hardcore (matches desktop PCSX2);
         // only loading is blocked — see openLoadStates + native LoadStateFromSlot.
+        SaveStatePicker.resetControllerSel()
         enterState(State.SaveStateSlots)
     }
 
     private fun openLoadStates() {
+        SaveStatePicker.resetControllerSel()
         enterState(if (hardcoreOn.value) State.HardcoreSaveStateBlocked else State.LoadStateSlots)
     }
 
@@ -971,6 +1001,14 @@ object InGameOverlay {
     private fun openLibrary() {
         if (Main.eState.value == EmuState.PAUSED) Main.resume()
         WindowImpl.showLibrary.value = true
+        closeKeepingState()
+    }
+
+    /** Open the Memory Card manager over the running game. Because a game is loaded,
+     *  its per-game Slot 1 picker (#137) is available here. Closing the manager
+     *  returns to the (still-paused) game. */
+    private fun openMemcards() {
+        MemoryCardManager.visible.value = true
         closeKeepingState()
     }
 
@@ -2293,13 +2331,20 @@ object InGameOverlay {
         val gap = 8.dp
         // Cap shorter (was 112) so the Play-tab bubbles stay compact on
         // tall panels / small screens instead of ballooning to fill height.
+        // 4 rows now (added Memory Cards), so divide the height by 4.
+        // 3 uniform rows again (Memory Cards moved out to the right column, so the
+        // bubbles no longer shrink to fit a 4th row).
         val cellH = ((maxHeight - gap * 2) / 3).coerceIn(64.dp, 96.dp)
-        Column(
+        Row(
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(gap),
+            horizontalArrangement = Arrangement.spacedBy(gap),
         ) {
+          Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(gap),
+          ) {
             // Row 1: primary + save/load + swap disc.
 	            BubbleRow(cellH) {
 	                BubbleButton(
@@ -2398,6 +2443,18 @@ object InGameOverlay {
 	                    modifier = Modifier.weight(1f),
 	                ) { activatePlaySelection(11) }
 	            }
+          }
+          // Memory Cards — full-height button on the RIGHT of the grid (its per-game
+          // Slot 1 picker #137 opens here in-game). Kept beside the grid so the main
+          // bubbles keep their full 3-row height instead of shrinking for a 4th row.
+          BubbleButton(
+              "Memory Cards",
+              LineAwesomeIcons.SdCardSolid,
+              selected = playSelection.value == 12,
+              modifier = Modifier
+                  .width(94.dp)
+                  .height(cellH * 3 + gap * 2),
+          ) { activatePlaySelection(12) }
         }
       }
     }

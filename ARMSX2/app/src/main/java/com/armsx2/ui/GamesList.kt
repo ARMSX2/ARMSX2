@@ -39,6 +39,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed as lazyItemsIndexed
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
@@ -92,6 +93,7 @@ import com.armsx2.FilenameParser
 import com.armsx2.CoverArtStyle
 import com.armsx2.CustomCovers
 import com.armsx2.GameInfo
+import com.armsx2.LibraryRecentShelf
 import com.armsx2.LibraryTitles
 import com.armsx2.LibraryView
 import com.armsx2.GamePlatform
@@ -182,9 +184,43 @@ object GamesList {
     // The left rail holds an info button (top), an "Aa" titles toggle (middle),
     // and the gear (bottom). On small screens the old help text was tall enough
     // to push the gear off-screen, so it now lives behind the info button as its
-    // own screen. 0 = info, 1 = titles toggle, 2 = gear.
+    // own screen. 0 = info, 1 = titles, 2 = list view, 3 = gear/settings. (The
+    // Recently-Played toggle lives in the TOP toolbar now, not the rail.)
     private val railSelection = mutableStateOf(3)
     private val infoDialogOpen = mutableStateOf(false)
+
+    // ---- #267 Library search ----------------------------------------------
+    // Query filters the library grid live (title OR serial, case-insensitive).
+    // The panel is a gamepad-first on-screen keyboard (RetroArch-style): D-pad
+    // moves the key focus, A presses, B closes-and-clears, "Done" closes but
+    // KEEPS the filter; every key is also tappable for touch users. Opened from
+    // the toolbar Search chip or the Y/Triangle button in the library.
+    val searchOpen = mutableStateOf(false)
+    val searchQuery = mutableStateOf("")
+    private val searchKbRow = mutableStateOf(0)
+    private val searchKbCol = mutableStateOf(0)
+    private val searchKeys: List<List<String>> = listOf(
+        listOf("A", "B", "C", "D", "E", "F", "G", "H", "I", "J"),
+        listOf("K", "L", "M", "N", "O", "P", "Q", "R", "S", "T"),
+        listOf("U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3"),
+        listOf("4", "5", "6", "7", "8", "9", "Space", "Del", "Clear", "Done"),
+    )
+
+    fun openSearch() {
+        searchOpen.value = true
+        searchKbRow.value = 0
+        searchKbCol.value = 0
+    }
+
+    private fun searchKeyPress(key: String) {
+        when (key) {
+            "Space" -> searchQuery.value += " "
+            "Del" -> searchQuery.value = searchQuery.value.dropLast(1)
+            "Clear" -> searchQuery.value = ""
+            "Done" -> searchOpen.value = false // keep the filter active
+            else -> searchQuery.value += key
+        }
+    }
     // Toolbar actions, published from HeaderRow composition so they capture the
     // live ActivityResult launchers / context. Label + click action, in order.
     private var controllerToolbarActions: List<Pair<String, () -> Unit>> = emptyList()
@@ -200,6 +236,16 @@ object GamesList {
 
     fun handleControllerMove(dx: Int, dy: Int): Boolean {
         if (!controllerActive()) return false
+
+        // Search keyboard captures nav while open (D-pad moves the key focus).
+        if (searchOpen.value) {
+            if (dy != 0) searchKbRow.value = (searchKbRow.value + dy).coerceIn(0, searchKeys.lastIndex)
+            if (dx != 0) {
+                val rowLast = searchKeys[searchKbRow.value].lastIndex
+                searchKbCol.value = (searchKbCol.value.coerceIn(0, rowLast) + dx).coerceIn(0, rowLast)
+            }
+            return true
+        }
 
         when (controllerZone.value) {
             Zone.TOOLBAR -> {
@@ -256,6 +302,7 @@ object GamesList {
 
     fun handleControllerConfirm(): Boolean {
         if (!controllerActive()) return false
+        if (handleSearchConfirm()) return true
         when (controllerZone.value) {
             Zone.TOOLBAR ->
                 controllerToolbarActions.getOrNull(controllerToolbarIndex.value)?.second?.invoke()
@@ -274,10 +321,20 @@ object GamesList {
         return true
     }
 
+    /** A/confirm while the search keyboard is open: press the focused key.
+     *  Checked BEFORE the zone dispatch by handleControllerConfirm. */
+    private fun handleSearchConfirm(): Boolean {
+        if (!searchOpen.value) return false
+        val row = searchKeys[searchKbRow.value]
+        searchKeyPress(row[searchKbCol.value.coerceIn(0, row.lastIndex)])
+        return true
+    }
+
     /** Open per-game settings for the currently-highlighted cover (controller
      *  equivalent of long-pressing a game). Used by the Menu hotkey / Y button
      *  while browsing the library. */
     fun openSelectedGameSettings(): Boolean {
+        if (searchOpen.value) return true // swallow X while the search panel is up
         if (!controllerActive() || controllerZone.value != Zone.GRID) return false
         val rows = controllerRows.filter { it.games.isNotEmpty() }
         if (rows.isEmpty()) return false
@@ -287,6 +344,12 @@ object GamesList {
 
     fun handleControllerBack(): Boolean {
         if (!controllerActive()) return false
+        // Search panel: B closes it AND clears the filter ("Done" keeps it).
+        if (searchOpen.value) {
+            searchOpen.value = false
+            searchQuery.value = ""
+            return true
+        }
         // The info screen captures back/B first so it can be dismissed.
         if (infoDialogOpen.value) {
             infoDialogOpen.value = false
@@ -501,11 +564,22 @@ object GamesList {
             } else Float.MAX_VALUE
             minOf(byCol, byRow).coerceIn(48f, 220f).dp
         } else null
-        val currentShelfGames = if (listMode) emptyList() else recentUris
+        // #267: live search filter — title OR serial, case-insensitive. Applies to
+        // the library grid (and its controller model) as you type.
+        val searchQ = searchQuery.value.trim()
+        val visibleGames = if (searchQ.isEmpty()) games.toList() else games.filter {
+            it.title.contains(searchQ, ignoreCase = true) ||
+                (it.serial?.contains(searchQ, ignoreCase = true) == true)
+        }
+        // Recently-Played shelf hides entirely when the rail toggle is off (#263);
+        // emptying the list here also drops its header, controller row, and the
+        // "Library" section label — leaving one unified library. It also hides
+        // while a search filter is active, so results present as one grid.
+        val currentShelfGames = if (listMode || searchQ.isNotEmpty() || !LibraryRecentShelf.show.value) emptyList() else recentUris
             .mapNotNull { uri -> games.firstOrNull { it.uri.toString() == uri } }
             .take(perRow)
             .ifEmpty { games.take(perRow) }
-        val libraryRows = games.chunked(perRow)
+        val libraryRows = visibleGames.chunked(perRow)
         val controllerLayoutRows = buildList {
             if (currentShelfGames.isNotEmpty()) add(currentShelfGames)
             addAll(libraryRows)
@@ -722,6 +796,73 @@ object GamesList {
                 }
             }
             }
+            // #267: gamepad-first search keyboard, floating over the grid so the
+            // filtered results stay visible and update live as keys are pressed.
+            if (searchOpen.value) SearchPanel(resultCount = visibleGames.size)
+        }
+    }
+
+    /** RetroArch-style on-screen search keyboard: D-pad moves the focused key,
+     *  A presses it, B closes-and-clears, "Done" closes keeping the filter. Every
+     *  key is also tappable for touch users. Anchored to the bottom so the
+     *  filtered shelves remain visible above it. */
+    @Composable
+    private fun androidx.compose.foundation.layout.BoxScope.SearchPanel(resultCount: Int) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color(0xF20A1626), Color(0xF7060D18)),
+                    ),
+                )
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(
+                (if (searchQuery.value.isEmpty()) "Search games…" else searchQuery.value) +
+                    "   •   $resultCount found",
+                color = Color.White,
+                fontFamily = TitleFont,
+                fontSize = 15.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            searchKeys.forEachIndexed { r, row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    row.forEachIndexed { c, key ->
+                        val focused = searchKbRow.value == r &&
+                            searchKbCol.value.coerceIn(0, row.lastIndex) == c
+                        Box(
+                            Modifier
+                                .defaultMinSize(
+                                    minWidth = if (key.length > 1) 52.dp else 30.dp,
+                                    minHeight = 30.dp,
+                                )
+                                .background(
+                                    if (focused) Color(0xFF2E6BB0) else Color(0x26FFFFFF),
+                                    RoundedCornerShape(5.dp),
+                                )
+                                .clickable {
+                                    searchKbRow.value = r
+                                    searchKbCol.value = c
+                                    searchKeyPress(key)
+                                }
+                                .padding(horizontal = 6.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(key, color = Color.White, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+            Text(
+                "D-pad move · A type · Done = keep filter · B close & clear",
+                color = Color.White.copy(alpha = 0.5f),
+                fontSize = 10.sp,
+            )
         }
     }
 
@@ -784,7 +925,13 @@ object GamesList {
         // behind the "⋮ More" toggle. Each caption renders UNDER its icon. Controller
         // nav sees a flat list that grows/shrinks when the toggle flips.
         val toolbarActions: List<Triple<String, String, () -> Unit>> = buildList {
-            add(Triple(LibIcons.SEARCH, "Scan") {
+            // #267: search/filter the library — gamepad-first (Y also opens it).
+            // Caption reflects an active filter so it's obvious why games "vanished".
+            add(Triple(
+                LibIcons.SEARCH,
+                if (searchQuery.value.isEmpty()) "Search" else "\"${searchQuery.value.take(8)}\"",
+            ) { openSearch() })
+            add(Triple(LibIcons.REFRESH, "Scan") {
                 when {
                     romsDirs.isEmpty() ->
                         Toast.makeText(context, "Choose a game folder first", Toast.LENGTH_SHORT).show()
@@ -826,6 +973,12 @@ object GamesList {
                         "Rows " + (if (LibraryView.rows.value == 0) "Auto" else LibraryView.rows.value.toString()),
                     ) { LibraryView.cycleRows() })
                 }
+                // Recently-Played shelf on/off — lives up here in the top toolbar next
+                // to Rows so it doesn't crowd the settings gear off the left rail.
+                add(Triple(
+                    LibIcons.CLOCK,
+                    "Recent " + (if (LibraryRecentShelf.show.value) "On" else "Off"),
+                ) { LibraryRecentShelf.set(!LibraryRecentShelf.show.value) })
                 add(Triple(LibIcons.TOOL, "Setup") {
                     SetupImpl.resetForReentry()
                     Main.reopenSetup()
@@ -840,7 +993,7 @@ object GamesList {
         Row(
             Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             SectionHeader(
                 text = title,
@@ -915,13 +1068,13 @@ object GamesList {
             Modifier
                 .clip(RoundedCornerShape(10.dp))
                 .clickable(onClick = onClick)
-                .padding(horizontal = 4.dp, vertical = 2.dp),
+                .padding(horizontal = 2.dp, vertical = 2.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Box(
                 Modifier
                     .height(34.dp)
-                    .widthIn(min = 44.dp)
+                    .widthIn(min = 40.dp)
                     .then(
                         if (highlighted)
                             Modifier.shadow(10.dp, RoundedCornerShape(17.dp), ambientColor = glow, spotColor = glow)
@@ -965,6 +1118,8 @@ object GamesList {
         const val POWER = "M7 6a7.75 7.75 0 1 0 10 0 M12 4l0 8"
         const val LAYOUT_COLUMNS = "M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1 -1 1h-14a1 1 0 0 1 -1 -1v-14a1 1 0 0 1 1 -1 M12 4v16"
         const val LAYOUT_ROWS = "M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1 -1 1h-14a1 1 0 0 1 -1 -1v-14a1 1 0 0 1 1 -1 M4 12h16"
+        // Tabler "clock" — the Recently-Played shelf toggle.
+        const val CLOCK = "M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0 M12 7v5l3 3"
 
         // vivi's settings cog — NOTE a 95x95 viewBox (unlike the 24x24 Tabler glyphs
         // above), so NavGlyph scales it by /95. Two subpaths (center-hole outline +
@@ -990,7 +1145,7 @@ object GamesList {
                             listOf(Color(0xFF06416E), Color(0xFF002C50)),
                         ),
                     )
-                    .padding(vertical = 28.dp),
+                    .padding(vertical = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween,
             ) {
@@ -1009,14 +1164,12 @@ object GamesList {
                         highlighted = controllerZone.value == Zone.RAIL && railSelection.value == 2,
                     )
                 }
-                Box(Modifier.offset(y = 12.dp)) {
-                    NavButton(
-                        NavKind.Settings,
-                        null,
-                        active = false,
-                        highlighted = controllerZone.value == Zone.RAIL && railSelection.value == 3,
-                    ) { InGameOverlay.openGlobalSettings() }
-                }
+                NavButton(
+                    NavKind.Settings,
+                    null,
+                    active = false,
+                    highlighted = controllerZone.value == Zone.RAIL && railSelection.value == 3,
+                ) { InGameOverlay.openGlobalSettings() }
             }
         } else {
             Row(

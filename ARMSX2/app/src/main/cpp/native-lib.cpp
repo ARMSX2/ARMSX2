@@ -23,6 +23,8 @@
 #include "pcsx2/Patch.h"
 #include "pcsx2/R5900.h"
 #include "pcsx2/EEDiffVerify.h" // @@EEDIFF@@ diff-verifier toggle
+#include <atomic>
+#include <thread>
 #include "PerformanceMetrics.h"
 #include "GameList.h"
 #include "GameDatabase.h"
@@ -2924,6 +2926,18 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdShowGSStats(JNIEnv*, jclass, jboolean en
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowVersion(JNIEnv*, jclass, jboolean enabled) {
     EmuConfig.GS.OsdShowVersion = enabled;
+    applyOsdSetting();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_osdShowSettings(JNIEnv*, jclass, jboolean enabled) {
+    EmuConfig.GS.OsdShowSettings = enabled;
+    applyOsdSetting();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_osdShowInputs(JNIEnv*, jclass, jboolean enabled) {
+    EmuConfig.GS.OsdShowInputs = enabled;
     applyOsdSetting();
 }
 

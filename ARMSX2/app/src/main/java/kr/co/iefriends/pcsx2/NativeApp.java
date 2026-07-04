@@ -245,6 +245,8 @@ public class NativeApp {
 	public static native void osdShowMessages(boolean enabled);
 	public static native void osdShowGpuStats(boolean enabled);
 	public static native void osdShowVersion(boolean enabled);
+	public static native void osdShowSettings(boolean enabled);
+	public static native void osdShowInputs(boolean enabled);
 
 	/** Per-game settings export — writes only the keys that differ from global
 	 *  into gamesettings/<serial>_<CRC>.ini for the running game (sparse, like

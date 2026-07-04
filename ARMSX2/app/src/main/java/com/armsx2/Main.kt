@@ -105,6 +105,42 @@ class SurfaceCallbacks(context: Context) : SurfaceView(context), SurfaceHolder.C
         NativeApp.onNativeSurfaceChanged(null, 0, 0)
     }
 
+    // ---- Display Resolution (HW scaler), NetherSX2-style -------------------
+    // holder.setFixedSize() shrinks the surface BUFFER; the hardware composer
+    // scales it to the screen for ~free. The GS swapchain then renders/presents
+    // at the smaller size — less GPU present cost, heat and battery — while the
+    // Compose UI (menus/overlay) stays at full screen resolution. Separate from
+    // the INTERNAL PS2 render resolution (upscale multiplier): this caps the
+    // OUTPUT surface. prefs int "ui.hwScaler": 0 = screen native (off, default),
+    // 1/2/3 = surface sized to N× the PS2's 448-line output, aspect-matched to
+    // the view. Never upscales past the view's own size.
+    private var viewW = 0
+    private var viewH = 0
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        viewW = w
+        viewH = h
+        applyHwScaler()
+    }
+    fun applyHwScaler() {
+        val n = Main.prefs.getInt("ui.hwScaler", 0)
+        if (viewW <= 0 || viewH <= 0) return
+        if (n <= 0) {
+            holder.setSizeFromLayout()
+            return
+        }
+        val shortSide = minOf(viewW, viewH)
+        val targetShort = 448 * n
+        if (targetShort >= shortSide) {
+            // Buffer would be >= the view — no point, use the layout size.
+            holder.setSizeFromLayout()
+            return
+        }
+        val scale = targetShort.toFloat() / shortSide
+        val bw = Math.round(viewW * scale).coerceAtLeast(1)
+        val bh = Math.round(viewH * scale).coerceAtLeast(1)
+        holder.setFixedSize(bw, bh)
+    }
 }
 
 private const val STICK_DEAD = 0.15f
@@ -332,6 +368,10 @@ class Main: ComponentActivity() {
         // momentary). Reset to false whenever a game starts.
         @Volatile var fastForwardToggleActive = false
 
+        // Latched state for the "Slow Down (toggle)" hotkey (LimiterModeType::Slomo).
+        // Mutually exclusive with the fast-forward latch; blocked in RA hardcore.
+        @Volatile var slowDownToggleActive = false
+
         // #254: whether the emulated USB keyboard is attached for the running
         // game (resolved Settings.usbKeyboard, cached at launch in
         // applyRendererPrefs). Read hot in dispatchKeyEvent to decide whether a
@@ -353,6 +393,10 @@ class Main: ComponentActivity() {
 
         private var m_szGamefile = ""
         private val pendingExternalLaunch = mutableStateOf<String?>(null)
+        // A library game tapped before native init finished — deferred and fired once
+        // nativeReady. Fixes the first-cold-launch / DeX crash: applyRendererPrefs
+        // pushed GS settings before the base settings layer existed → native SIGSEGV.
+        private val pendingLaunch = mutableStateOf<Pair<String, GameInfo?>?>(null)
 
         fun onTestResults(result: TestResult) {
             when (result.name) {
@@ -496,17 +540,18 @@ class Main: ComponentActivity() {
             var resolved = com.armsx2.config.ConfigStore.resolveForGame(currentGame.value?.settingsKey)
             // Per-game memory cards (NetherSX2-style): when the global toggle is
             // on, point Slot 1 at a serial-named card (the core auto-creates +
-            // formats it at boot) — unless this game already has an explicit
-            // per-game Slot 1 override, which wins.
+            // formats it at boot) — but ONLY for games still on the factory-default
+            // card. A user who assigned a real card (imported/created, globally OR
+            // per-game) has a non-default filename, so we must NOT clobber it with a
+            // blank serial card. (Bug: the old guard compared against the current
+            // global, which a global assignment always equals, so it wiped it.)
             currentGame.value?.serial?.takeIf { it.isNotBlank() }?.let { serial ->
-                if (prefs.getBoolean("memcard.perGame", false)) {
-                    val globalSlot1 = com.armsx2.config.ConfigStore.loadGlobal().memoryCardSlot1Filename
-                    if (resolved.memoryCardSlot1Filename == globalSlot1) {
-                        resolved = resolved.copy(
-                            memoryCardSlot1Filename = "$serial.ps2",
-                            memoryCardSlot1Enabled = true,
-                        )
-                    }
+                if (prefs.getBoolean("memcard.perGame", false) &&
+                    resolved.memoryCardSlot1Filename.equals("mcd001.ps2", ignoreCase = true)) {
+                    resolved = resolved.copy(
+                        memoryCardSlot1Filename = "$serial.ps2",
+                        memoryCardSlot1Enabled = true,
+                    )
                 }
             }
             upscale.value = resolved.upscaleFloat
@@ -594,6 +639,16 @@ class Main: ComponentActivity() {
                     "uri=${uri.take(240)} state=${eState.value} runLoop=$vmRunLoopActive " +
                     "stopping=$vmStopInProgress nativeReady=${nativeReady.value}"
             )
+            // Native GS/settings calls in start()→applyRendererPrefs null-deref if the
+            // base settings layer isn't installed yet (initialize() not finished). On a
+            // cold first launch — reliably on Samsung DeX — a fast game tap races init
+            // and crashes with no error. Defer until nativeReady; the LaunchedEffect
+            // watching pendingLaunch fires it once init completes.
+            if (!nativeReady.value) {
+                println("@@ANDROID_LAUNCH_DEFER@@ nativeReady=false — queuing '${info?.title ?: uri.take(80)}'")
+                pendingLaunch.value = uri to info
+                return
+            }
             currentGame.value = info
             launchedExternally = external
             // Arm a one-shot auto-load of the autosave state for this boot (fired by
@@ -613,10 +668,16 @@ class Main: ComponentActivity() {
         }
 
         private fun launchPendingExternalGameIfReady() {
-            val queued = pendingExternalLaunch.value
-            if (queued.isNullOrEmpty() || !setupComplete.value || !nativeReady.value)
+            if (!setupComplete.value || !nativeReady.value) return
+            // A deferred library launch (nativeReady-gated) fires first, keeping its
+            // GameInfo so per-game settings / title still apply.
+            pendingLaunch.value?.let { (u, i) ->
+                pendingLaunch.value = null
+                launchGame(u, i)
                 return
-
+            }
+            val queued = pendingExternalLaunch.value
+            if (queued.isNullOrEmpty()) return
             pendingExternalLaunch.value = null
             launchGame(queued, null, external = true)
         }
@@ -707,8 +768,10 @@ class Main: ComponentActivity() {
         }
 
         fun stop(saveAutosave: Boolean = false, restartAfterStop: Boolean = false) {
-            // Drop any latched fast-forward toggle; the next game boots at normal speed.
+            // Drop any latched fast-forward / slow-down toggle; the next game boots
+            // at normal speed.
             fastForwardToggleActive = false
+            slowDownToggleActive = false
             val nativeActive = runCatching { NativeApp.hasActiveVM() }.getOrDefault(false)
             val shouldStop = synchronized(vmLifecycleLock) {
                 if (restartAfterStop)
@@ -1193,8 +1256,15 @@ class Main: ComponentActivity() {
                 // buttons while the modifier is held; 0 (full press) otherwise.
                 pad_force = com.armsx2.ui.touch.TouchControls.pressureRangeFor(p_keycode)
             }
+            // KEYS bound to an analog stick code (d-pad-as-left-stick, or a button
+            // bound to a "(send)" stick row): register the held deflection with the
+            // merge layer so a stick MOTION event can't release it mid-hold.
+            if (p_keycode in 110..123 && port in 0..1)
+                analogKeyHeld[port][p_keycode] = pad_force / 32767f
             NativeApp.setPadButtonForPort(port, p_keycode, pad_force, true)
         } else if (p_action == KeyEventType.KeyUp || p_action == KeyEventType.Unknown) {
+            if (p_keycode in 110..123 && port in 0..1)
+                analogKeyHeld[port].remove(p_keycode)
             NativeApp.setPadButtonForPort(port, p_keycode, 0, false)
         }
     }
@@ -1232,6 +1302,7 @@ class Main: ComponentActivity() {
         applyEmulationOrientation()
         com.armsx2.CoverArtStyle.load()
         com.armsx2.LibraryTitles.load()
+        com.armsx2.LibraryRecentShelf.load()
         com.armsx2.LibraryView.load()
         com.armsx2.ui.UiScale.load()
         com.armsx2.ControllerSkinStore.load(applicationContext)
@@ -1357,6 +1428,7 @@ class Main: ComponentActivity() {
                 setupComplete.value,
                 nativeReady.value,
                 pendingExternalLaunch.value,
+                pendingLaunch.value,
             ) {
                 launchPendingExternalGameIfReady()
             }
@@ -1634,11 +1706,18 @@ class Main: ComponentActivity() {
         // (handheld back buttons are often gamepad-sourced). Diagnostic log so a
         // device where it "does nothing" reveals whether BACK even arrives + the gate.
         if (kc == KeyEvent.KEYCODE_BACK) {
+            // If the user bound BACK to a hotkey (e.g. Menu), that binding WINS — do
+            // not hijack it for hold-to-exit. (Regression fix: hold-back consumed
+            // BACK before the hotkey dispatch below, killing a BACK-bound Menu key.)
+            val backBoundToHotkey = ControllerMappings.SysHotkey.values().any {
+                ControllerMappings.hotkeyCode(it) == KeyEvent.KEYCODE_BACK ||
+                    ControllerMappings.hotkeyModCode(it) == KeyEvent.KEYCODE_BACK
+            }
             val inGame = Main.eState.value == EmuState.RUNNING &&
                 !WindowImpl.overlayVisible.value && !WindowImpl.showLibrary.value
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
-                println("@@ANDROID_HOLDBACK@@ back_down source=0x${Integer.toHexString(event.source)} inGame=$inGame pref=${Main.prefs.getBoolean("ui.holdBackToExit", true)}")
-            if (inGame && Main.prefs.getBoolean("ui.holdBackToExit", true)) {
+                println("@@ANDROID_HOLDBACK@@ back_down source=0x${Integer.toHexString(event.source)} inGame=$inGame backBound=$backBoundToHotkey pref=${Main.prefs.getBoolean("ui.holdBackToExit", true)}")
+            if (!backBoundToHotkey && inGame && Main.prefs.getBoolean("ui.holdBackToExit", true)) {
                 when (event.action) {
                     KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) {
                         backHoldRunnable?.let { backHoldHandler.removeCallbacks(it) }
@@ -1815,6 +1894,16 @@ class Main: ComponentActivity() {
                         GamesList.openSelectedGameSettings()
                     return true
                 }
+                // #267: Y (Triangle) opens the library SEARCH — the requested
+                // single-button access. While the panel is open Y is swallowed
+                // (the panel owns nav; B closes it).
+                if (kc == KeyEvent.KEYCODE_BUTTON_Y) {
+                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 &&
+                        !GamesList.searchOpen.value
+                    )
+                        GamesList.openSearch()
+                    return true
+                }
                 val handled = when (kc) {
                     KeyEvent.KEYCODE_DPAD_LEFT -> event.action != KeyEvent.ACTION_DOWN || run {
                         if (event.repeatCount == 0) {
@@ -1964,6 +2053,10 @@ class Main: ComponentActivity() {
                     if (down && event.repeatCount == 0) toggleFastForward()
                     return true
                 }
+                ControllerMappings.SysHotkey.SLOW_DOWN -> {
+                    if (down && event.repeatCount == 0) toggleSlowDown()
+                    return true
+                }
                 ControllerMappings.SysHotkey.RES_UP -> {
                     if (down) stepResolution(1)
                     return true
@@ -2066,8 +2159,27 @@ class Main: ComponentActivity() {
     fun toggleFastForward() {
         Main.fastForwardToggleActive = !Main.fastForwardToggleActive
         val on = Main.fastForwardToggleActive
+        // Fast-forward supersedes an active slow-down latch (mutually exclusive).
+        if (on) Main.slowDownToggleActive = false
         runCatching { NativeApp.speedhackLimitermode(if (on) 1 else baseLimiterMode()) }
         hotkeyToast(if (on) "Fast Forward ON" else "Fast Forward OFF")
+    }
+
+    /** Toggle slow motion (native LimiterModeType::Slomo, ~50% speed). BLOCKED in
+     *  RetroAchievements hardcore — slow-mo is a banned advantage there (matching
+     *  desktop PCSX2's hardcore restrictions); shows a notice instead of engaging. */
+    fun toggleSlowDown() {
+        if (com.armsx2.ui.InGameOverlay.hardcoreOn.value) {
+            Main.slowDownToggleActive = false
+            hotkeyToast("Slow Down is disabled in RetroAchievements Hardcore mode")
+            return
+        }
+        Main.slowDownToggleActive = !Main.slowDownToggleActive
+        val on = Main.slowDownToggleActive
+        // Slow-down supersedes an active fast-forward latch (mutually exclusive).
+        if (on) Main.fastForwardToggleActive = false
+        runCatching { NativeApp.speedhackLimitermode(if (on) 2 else baseLimiterMode()) }
+        hotkeyToast(if (on) "Slow Down ON (50%)" else "Slow Down OFF")
     }
 
     // Hotkey pop-up toasts (Fast-Forward, etc.). Android Toasts QUEUE, so toggling a
@@ -2135,6 +2247,13 @@ class Main: ComponentActivity() {
         }
         captureHatX = 0
         captureHatY = 0
+        if (captureHeldSynth.isNotEmpty()) {
+            // Capture ended while a synthetic direction was still "held": no UP was
+            // ever dispatched for it, so also purge it from heldKeys or a stale
+            // direction would satisfy combo-modifier checks forever after.
+            heldKeys.removeAll(captureHeldSynth)
+            captureHeldSynth.clear()
+        }
         if (com.armsx2.ui.MemoryCardManager.visible.value) {
             handleMemcardControllerMotion(ev)
             return true
@@ -2191,9 +2310,75 @@ class Main: ComponentActivity() {
                 KeyEvent.KEYCODE_BUTTON_L2, port)
             sendTrigger(ev, MotionEvent.AXIS_RTRIGGER, MotionEvent.AXIS_GAS,
                 KeyEvent.KEYCODE_BUTTON_R2, port)
+            // Physical STICK DIRECTIONS bound to a PS2 control via the "(send)"
+            // rows — e.g. R-Stick Down bound to send Square. The analog "(send)"
+            // targets contribute to the merge layer like every other writer.
+            dispatchStickDirBindings(ev, port)
+            // Single write per analog code per event, merged across ALL writers.
+            flushAnalogAxes(port)
+            debugStickProbe(ev)
             return true
         }
         return super.dispatchGenericMotionEvent(ev)
+    }
+
+    // ---- Physical stick-direction → bound PS2 control ("(send)" rows) ------
+    // The Pad tab's stick-target rows may be bound to ANY physical input; when the
+    // physical side is a stick direction (reserved keycodes 1000-1007), keys never
+    // fire for it in gameplay — this pass reads the axes each motion event and
+    // drives the bound PS2 target: proportionally for an analog target (via the
+    // merge layer), thresholded for a digital one (change-tracked per code so we
+    // only write edges, like dispatchDpadCombined).
+    private val stickDirDigitalHeld = Array(2) { HashSet<Int>() }
+    private fun dispatchStickDirBindings(ev: MotionEvent, port: Int) {
+        for (left in booleanArrayOf(true, false)) {
+            // Same axis correction the main dispatch applies (swap, then inverts).
+            var vx = ev.getAxisValue(if (left) MotionEvent.AXIS_X else MotionEvent.AXIS_Z)
+            var vy = ev.getAxisValue(if (left) MotionEvent.AXIS_Y else MotionEvent.AXIS_RZ)
+            if (ControllerMappings.stickSwapXY(left)) { val t = vx; vx = vy; vy = t }
+            if (ControllerMappings.stickInvertX(left)) vx = -vx
+            if (ControllerMappings.stickInvertY(left)) vy = -vy
+            for (dir in ControllerMappings.StickDir.values()) {
+                val physCode = ControllerMappings.stickHotkeyKeyCode(left, dir)
+                val target = ControllerMappings.targetForPhysical(physCode, port) ?: continue
+                val mag = when (dir) {
+                    ControllerMappings.StickDir.UP -> -vy
+                    ControllerMappings.StickDir.DOWN -> vy
+                    ControllerMappings.StickDir.LEFT -> -vx
+                    ControllerMappings.StickDir.RIGHT -> vx
+                }.coerceAtLeast(0f)
+                if (target in 110..123) {
+                    accumAnalog(target, shapeStickMag(mag, left))
+                } else {
+                    val held = stickDirDigitalHeld[port]
+                    val on = mag > STICK_DIGITAL_THRESHOLD
+                    val was = held.contains(target)
+                    if (on != was) {
+                        NativeApp.setPadButtonForPort(port, target, if (on) 32767 else 0, on)
+                        if (on) held.add(target) else held.remove(target)
+                    }
+                }
+            }
+        }
+    }
+
+    // Rate-limited raw-axis probe for the right-stick diagonals report (Area 51:
+    // camera moves only in a cross pattern on Android). OFF unless the tester sets
+    // prefs boolean "debug.stickLog" true. Shows the raw axes, the corrected pair
+    // and the shaped radial output in logcat + the exportable emulog.
+    private var lastStickProbeMs = 0L
+    private fun debugStickProbe(ev: MotionEvent) {
+        if (!prefs.getBoolean("debug.stickLog", false)) return
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastStickProbeMs < 250) return
+        lastStickProbeMs = now
+        val z = ev.getAxisValue(MotionEvent.AXIS_Z)
+        val rz = ev.getAxisValue(MotionEvent.AXIS_RZ)
+        val rx = ev.getAxisValue(MotionEvent.AXIS_RX)
+        val ry = ev.getAxisValue(MotionEvent.AXIS_RY)
+        val mag = kotlin.math.hypot(z, rz)
+        println("@@STICKPROBE@@ dev=${ev.deviceId} Z=%.3f RZ=%.3f RX=%.3f RY=%.3f mag=%.3f shaped=%.3f".format(
+            z, rz, rx, ry, mag, shapeStickMag(mag.coerceAtMost(1f), false)))
     }
 
     private fun controllerDrivesFrontend(): Boolean =
@@ -2405,35 +2590,55 @@ class Main: ComponentActivity() {
     private var captureHatX = 0
     private var captureHatY = 0
 
-    /** During a pad/hotkey (re)bind, turn a HAT-axis D-pad press into a synthetic
-     *  D-pad KeyEvent routed through the normal capture path. Always consumes the
-     *  motion so the D-pad/stick can't navigate the UI while capturing. */
+    /** During a pad/hotkey (re)bind, turn HAT-axis D-pad presses and firm stick
+     *  pushes into synthetic KeyEvents routed through the normal capture path.
+     *  Always consumes the motion so the D-pad/stick can't navigate the UI while
+     *  capturing.
+     *
+     *  HELD-STATE MODEL (stick/D-pad + button combos): each engaged direction
+     *  dispatches a synthetic DOWN when it engages and a synthetic UP only when it
+     *  RELEASES — mirroring a real button. The old code fired DOWN+UP instantly,
+     *  which (a) finalized every capture as a single-key bind the moment a stick
+     *  moved ("the moment you hold the stick it registers just the stick"), and
+     *  (b) made a direction unusable as a combo member (the zero eventTime of the
+     *  bare KeyEvent constructor failed the combo anti-ghost gap check). Synthetic
+     *  events now carry real uptimeMillis timestamps, so hold-direction-then-press-
+     *  button and hold-button-then-push-direction both bind combos, and a push
+     *  released with nothing else still binds the plain single direction. */
+    private val captureHeldSynth = HashSet<Int>()
     private fun handleCaptureMotion(ev: MotionEvent): Boolean {
+        // Desired engaged-direction set for this event: at most one per HAT axis
+        // pair and one per stick (dominant direction), so sweeping through a
+        // diagonal can't spuriously bind a two-direction combo.
+        val want = HashSet<Int>()
         val dx = uiHatDirection(ev.getAxisValue(MotionEvent.AXIS_HAT_X))
         val dy = uiHatDirection(ev.getAxisValue(MotionEvent.AXIS_HAT_Y))
-        var code = 0
-        if (dx != captureHatX && dx != 0)
-            code = if (dx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT
-        else if (dy != captureHatY && dy != 0)
-            code = if (dy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
+        if (dx != 0) want.add(if (dx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT)
+        if (dy != 0) want.add(if (dy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP)
+        captureStickCode(ev, MotionEvent.AXIS_X, MotionEvent.AXIS_Y, true).takeIf { it != 0 }?.let { want.add(it) }
+        captureStickCode(ev, MotionEvent.AXIS_Z, MotionEvent.AXIS_RZ, false).takeIf { it != 0 }?.let { want.add(it) }
         captureHatX = dx
         captureHatY = dy
-        if (code != 0) {
+        val now = android.os.SystemClock.uptimeMillis()
+        // Releases first (a direction that flipped is an UP then a DOWN).
+        val released = captureHeldSynth.filter { it !in want }
+        for (code in released) {
+            captureHeldSynth.remove(code)
             // Re-enter dispatchKeyEvent (not super) so it reaches the hotkey
-            // capture (dispatchKeyEvent) AND, while padCapturing, falls through to
-            // Compose's onPreviewKeyEvent which records the pad bind.
-            dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
-            dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+            // capture AND, while padCapturing, falls through to Compose's
+            // onPreviewKeyEvent which records the pad bind.
+            dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0))
         }
-        // Analog sticks (the HAT path above only covers the d-pad): bind a stick
-        // DIRECTION to the hotkey on a firm push, by synthesizing its reserved keycode
-        // and routing it through dispatchKeyEvent. One-shot per arm — binding ends the
-        // capture, so the gate above stops further events.
-        var stickCode = captureStickCode(ev, MotionEvent.AXIS_X, MotionEvent.AXIS_Y, true)
-        if (stickCode == 0) stickCode = captureStickCode(ev, MotionEvent.AXIS_Z, MotionEvent.AXIS_RZ, false)
-        if (stickCode != 0) {
-            dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, stickCode))
-            dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, stickCode))
+        for (code in want) {
+            if (captureHeldSynth.add(code))
+                dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0))
+        }
+        // Binding may have completed mid-loop (endHotkeyCapture); drop any held
+        // state so the next capture session starts clean (incl. heldKeys, since no
+        // UP will ever arrive for these synthetic codes).
+        if (ControllerMappings.captureHotkey.value == null && !ControllerMappings.padCapturing.value) {
+            heldKeys.removeAll(captureHeldSynth)
+            captureHeldSynth.clear()
         }
         return true
     }
@@ -2518,55 +2723,88 @@ class Main: ComponentActivity() {
      *  (exponential response curve) to a post-deadzone magnitude in [0,1]. accel 0
      *  = linear; higher = finer control near center, faster toward full tilt. Only
      *  shapes real analog output (native passthrough + CUSTOM analog targets). */
-    private fun shapeStickMag(m: Float): Float {
-        val dz = ControllerMappings.stickDeadzone()
+    private fun shapeStickMag(m: Float, left: Boolean): Float {
+        val dz = ControllerMappings.stickDeadzone(left)
         if (m <= dz) return 0f
         // Re-normalize the window [dz, 1-outer] to [0, 1] so output ramps smoothly
         // from 0 past the inner deadzone (no jump), and reaches FULL at (1-outer) —
         // the outer/anti-deadzone lets a short-throw stick that can't physically
         // reach its corners still hit 100%. Then apply the accel curve + sensitivity.
-        val outer = ControllerMappings.stickOuterDeadzone()
+        // ALL feel tunables are PER-STICK now (left/right independent).
+        val outer = ControllerMappings.stickOuterDeadzone(left)
         val hi = (1f - outer).coerceAtLeast(dz + 0.01f) // upper edge; guard hi > dz
         val t = ((m - dz) / (hi - dz)).coerceIn(0f, 1f)
-        val accel = ControllerMappings.stickAcceleration()
+        val accel = ControllerMappings.stickAcceleration(left)
         val curved =
             if (accel > 0f) Math.pow(t.toDouble(), (1f + accel).toDouble()).toFloat()
             else t
-        val out = (curved * ControllerMappings.stickSensitivity()).coerceIn(0f, 1f)
+        val out = (curved * ControllerMappings.stickSensitivity(left)).coerceIn(0f, 1f)
         // Anti-deadzone (output floor): lift ANY non-zero output up to start at the floor,
         // so a game with its own large stick deadzone responds the instant the stick moves
         // and the rest of the travel maps proportionally above it (no dead bottom, no jump).
         // True center (out == 0) stays 0. 0 floor = unchanged behaviour.
         if (out <= 0f) return 0f
-        val anti = ControllerMappings.stickAntiDeadzone()
+        val anti = ControllerMappings.stickAntiDeadzone(left)
         return if (anti > 0f) (anti + out * (1f - anti)).coerceIn(0f, 1f) else out
     }
 
-    // [v] is the already-corrected axis value (swap/invert applied by dispatchStick).
-    private fun sendAxis(v: Float, posCode: Int, negCode: Int, port: Int) {
-        // Deadzone is applied (and re-normalized) inside shapeStickMag now.
-        val posVal = if (v > 0f) shapeStickMag(v) else 0f
-        val negVal = if (v < 0f) shapeStickMag(-v) else 0f
-        NativeApp.setPadButtonForPort(port, posCode, (posVal * 32767).toInt(), posVal > 0f)
-        NativeApp.setPadButtonForPort(port, negCode, (negVal * 32767).toInt(), negVal > 0f)
+    // ---- Analog-code merge layer (native codes 110-123) --------------------
+    // Several writers can drive the SAME PS2 stick direction in one motion event:
+    // the physical stick (ANALOG mode), a CUSTOM direction defaulting to analog,
+    // the D-pad HAT fold, a trigger bound to a stick direction, and a stick
+    // direction of the OTHER stick bound via the "(send)" rows. Before this layer
+    // each writer set the code directly, so whichever wrote LAST (usually the
+    // resting real stick, at 0) released everyone else's deflection — the same
+    // clobber class as the old dispatchDpadCombined bug. Now every motion-event
+    // writer CONTRIBUTES (max per code) and flushAnalogAxes writes each code once.
+    // Button-held deflections (sendKeyAction: a KEY bound to an analog code, incl.
+    // d-pad-as-left-stick key path) are tracked in [analogKeyHeld] and folded into
+    // every flush so stick motion can no longer release a held button-deflection.
+    private val analogAccum = HashMap<Int, Float>()
+    private val analogPrevSent = Array(2) { HashMap<Int, Float>() }
+    val analogKeyHeld = Array(2) { HashMap<Int, Float>() } // written by sendKeyAction
+
+    private fun accumAnalog(code: Int, v: Float) {
+        if (v <= 0f) return
+        val cur = analogAccum[code] ?: 0f
+        if (v > cur) analogAccum[code] = v
     }
 
-    /** Like sendAxis but drives one analog direction-pair from whichever of two
-     *  axes is deflected more — used to fold the physical D-pad (a centered HAT
-     *  axis) into the left stick for "D-pad as Left Stick" without a separate
-     *  writer releasing the stick on the next event. The HAT reads ±1 so a d-pad
-     *  press becomes full deflection. */
-    // [a] is the already-corrected stick value; the HAT axis [axisB] (physical D-pad)
-    // is read raw — it stays correct regardless of the stick's invert/swap correction.
-    private fun sendAxisMax(a: Float, event: MotionEvent, axisB: Int, posCode: Int, negCode: Int, port: Int) {
-        val b = event.getAxisValue(axisB)
-        // The real stick (axisA) gets the user's deadzone/sensitivity/acceleration
-        // shaping; the D-pad HAT (axisB, ±1) stays full so the D-pad keeps full
-        // deflection in "D-pad as Left Stick" mode.
-        val pos = maxOf(if (a > 0f) shapeStickMag(a) else 0f, if (b > STICK_DEAD) b else 0f)
-        val neg = maxOf(if (a < 0f) shapeStickMag(-a) else 0f, if (b < -STICK_DEAD) -b else 0f)
-        NativeApp.setPadButtonForPort(port, posCode, (pos * 32767).toInt(), pos > 0f)
-        NativeApp.setPadButtonForPort(port, negCode, (neg * 32767).toInt(), neg > 0f)
+    /** Write the merged analog codes for this motion event: union of the fresh
+     *  contributions, the key-held deflections, and everything sent last event
+     *  (so stale codes release exactly once). */
+    private fun flushAnalogAxes(port: Int) {
+        val prev = analogPrevSent[port]
+        for ((code, held) in analogKeyHeld[port]) accumAnalog(code, held)
+        // Release pass: codes we sent before but that have no contribution now.
+        for (code in prev.keys) {
+            if (!analogAccum.containsKey(code)) {
+                NativeApp.setPadButtonForPort(port, code, 0, false)
+            }
+        }
+        for ((code, v) in analogAccum) {
+            if (prev[code] != v)
+                NativeApp.setPadButtonForPort(port, code, (v * 32767).toInt(), true)
+        }
+        prev.clear()
+        prev.putAll(analogAccum)
+        analogAccum.clear()
+    }
+
+    /** RADIAL analog-stick shaping: deadzone/curve/sensitivity applied to the
+     *  stick's radial magnitude (not per-axis), so diagonals shape identically to
+     *  cardinals — a per-axis deadzone was a "square" zone that ate diagonals.
+     *  Direction is preserved exactly; only the magnitude is reshaped. */
+    private fun accumStickRadial(vx: Float, vy: Float, left: Boolean,
+                                 aXPos: Int, aXNeg: Int, aYPos: Int, aYNeg: Int) {
+        val mag = kotlin.math.hypot(vx, vy)
+        if (mag <= 0f) return
+        val shaped = shapeStickMag(mag.coerceAtMost(1f), left)
+        val scale = shaped / mag // preserves direction; caps square-gate diagonals at unit circle
+        val ox = vx * scale
+        val oy = vy * scale
+        if (ox > 0f) accumAnalog(aXPos, ox) else if (ox < 0f) accumAnalog(aXNeg, -ox)
+        if (oy > 0f) accumAnalog(aYPos, oy) else if (oy < 0f) accumAnalog(aYNeg, -oy)
     }
 
     /** Route one physical stick's two axes to the PS2 pad per [mode]: native analog
@@ -2589,16 +2827,18 @@ class Main: ComponentActivity() {
         if (ControllerMappings.stickInvertY(leftStick)) vy = -vy
         when (mode) {
             ControllerMappings.StickMode.ANALOG -> {
+                // Radial shaping into the merge layer (flushAnalogAxes writes once
+                // per event, after every contributor has been folded in).
+                accumStickRadial(vx, vy, leftStick, aXPos, aXNeg, aYPos, aYNeg)
                 if (leftStick && ControllerMappings.dpadAsLeftStick()) {
                     // Fold the physical D-pad (HAT) into the left stick so the
-                    // D-pad drives analog movement. Combining into ONE writer (max
-                    // deflection per axis) avoids the resting stick releasing the
-                    // D-pad's press — the HAT is gated out of dispatchDpadCombined.
-                    sendAxisMax(vx, event, MotionEvent.AXIS_HAT_X, aXPos, aXNeg, port)
-                    sendAxisMax(vy, event, MotionEvent.AXIS_HAT_Y, aYPos, aYNeg, port)
-                } else {
-                    sendAxis(vx, aXPos, aXNeg, port)
-                    sendAxis(vy, aYPos, aYNeg, port)
+                    // D-pad drives analog movement — full deflection, unshaped
+                    // (a d-pad press is digital). The HAT is gated out of
+                    // dispatchDpadCombined while this is on.
+                    val hx = event.getAxisValue(MotionEvent.AXIS_HAT_X)
+                    val hy = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
+                    if (hx > STICK_DEAD) accumAnalog(aXPos, hx) else if (hx < -STICK_DEAD) accumAnalog(aXNeg, -hx)
+                    if (hy > STICK_DEAD) accumAnalog(aYPos, hy) else if (hy < -STICK_DEAD) accumAnalog(aYNeg, -hy)
                 }
             }
             ControllerMappings.StickMode.FACE -> {
@@ -2610,13 +2850,13 @@ class Main: ComponentActivity() {
                 // (19-22) are owned by dispatchDpadCombined() (avoids the release race);
                 // emitCustom keeps analog targets proportional, others thresholded.
                 emitCustom(ControllerMappings.customStickCode(leftStick, ControllerMappings.StickDir.RIGHT, port),
-                    if (vx > 0f) vx else 0f, port)
+                    if (vx > 0f) vx else 0f, port, leftStick)
                 emitCustom(ControllerMappings.customStickCode(leftStick, ControllerMappings.StickDir.LEFT, port),
-                    if (vx < 0f) -vx else 0f, port)
+                    if (vx < 0f) -vx else 0f, port, leftStick)
                 emitCustom(ControllerMappings.customStickCode(leftStick, ControllerMappings.StickDir.DOWN, port),
-                    if (vy > 0f) vy else 0f, port)
+                    if (vy > 0f) vy else 0f, port, leftStick)
                 emitCustom(ControllerMappings.customStickCode(leftStick, ControllerMappings.StickDir.UP, port),
-                    if (vy < 0f) -vy else 0f, port)
+                    if (vy < 0f) -vy else 0f, port, leftStick)
             }
         }
     }
@@ -2644,10 +2884,21 @@ class Main: ComponentActivity() {
         )
         for ((dir, value) in dirs) {
             val code = ControllerMappings.stickHotkeyKeyCode(left, dir)
-            val hk = ControllerMappings.hotkeyFor(code)
-            if (hk == null) { held.remove(code); continue }
-            if (value > STICK_DIGITAL_THRESHOLD) { if (held.add(code)) runStickHotkey(hk) }
-            else held.remove(code)
+            if (value > STICK_DIGITAL_THRESHOLD) {
+                // Mirror the held direction into heldKeys so it can serve as the
+                // MODIFIER of a stick+button combo hotkey (dispatchKeyEvent's
+                // matchHotkey consults heldKeys when the button arrives).
+                heldKeys.add(code)
+                if (held.add(code)) {
+                    // Edge: fire a hotkey with this direction as its MAIN key —
+                    // combo-aware (e.g. "hold Select + push R-Stick Up"), falling
+                    // back to a plain single-direction binding.
+                    ControllerMappings.matchHotkey(code, heldKeys)?.let { runStickHotkey(it) }
+                }
+            } else {
+                heldKeys.remove(code)
+                held.remove(code)
+            }
         }
     }
 
@@ -2696,6 +2947,7 @@ class Main: ComponentActivity() {
                 Main.stop(saveAutosave = true)
             }
             ControllerMappings.SysHotkey.RESET_GAME -> Main.restart()
+            ControllerMappings.SysHotkey.SLOW_DOWN -> toggleSlowDown()
             // Hold-type hotkeys have no one-shot stick-edge meaning.
             ControllerMappings.SysHotkey.FAST_FORWARD,
             ControllerMappings.SysHotkey.PRESSURE_MOD -> {}
@@ -2705,7 +2957,7 @@ class Main: ComponentActivity() {
     /** Emit one CUSTOM stick-direction binding given its 0..1 deflection [mag]
      *  toward that direction. D-pad codes (19-22) are skipped — dispatchDpadCombined
      *  owns them; analog codes (110-123) stay proportional; others are thresholded. */
-    private fun emitCustom(code: Int, mag: Float, port: Int) {
+    private fun emitCustom(code: Int, mag: Float, port: Int, srcLeft: Boolean) {
         // Bound to an ARMSX2 hotkey? Edge-trigger it (fire once on threshold crossing,
         // re-arm on release) instead of sending a PS2 button.
         ControllerMappings.hotkeyForStickCode(code)?.let { hk ->
@@ -2719,8 +2971,12 @@ class Main: ComponentActivity() {
         }
         if (code in 19..22) return
         if (code in 110..123) {
-            val m = shapeStickMag(mag)
-            NativeApp.setPadButtonForPort(port, code, (m * 32767).toInt(), m > 0f)
+            // Analog target: shape with the SOURCE stick's feel settings (the stick
+            // being physically moved), and contribute to the merge layer instead of
+            // writing directly, so a CUSTOM direction can't fight the other stick's
+            // ANALOG writer (or a trigger/button bound to the same direction).
+            val m = shapeStickMag(mag, srcLeft)
+            accumAnalog(code, m)
         } else {
             NativeApp.setPadButtonForPort(port, code, 32767, mag > STICK_DIGITAL_THRESHOLD)
         }
@@ -2855,7 +3111,14 @@ class Main: ComponentActivity() {
         val target = ControllerMappings.targetForPhysical(code, port) ?: return
         val raw = maxOf(event.getAxisValue(axisA), event.getAxisValue(axisB)).coerceIn(0f, 1f)
         val out = if (raw <= TRIGGER_DEAD) 0f else (raw - TRIGGER_DEAD) / (1f - TRIGGER_DEAD)
-        NativeApp.setPadButtonForPort(port, target, (out * 32767).toInt(), out > 0f)
+        if (target in 110..123) {
+            // Trigger bound to a PS2 STICK direction ("(send)" rows): contribute the
+            // proportional pressure to the merge layer so it can't be released by
+            // the target stick's own (resting) ANALOG writer in the same event.
+            accumAnalog(target, out)
+        } else {
+            NativeApp.setPadButtonForPort(port, target, (out * 32767).toInt(), out > 0f)
+        }
     }
 
     override fun onPause() {
@@ -2885,6 +3148,14 @@ class Main: ComponentActivity() {
     }
 
     override fun onDestroy() {
+        // On a CONFIGURATION-driven recreate (e.g. Samsung DeX moving the activity to
+        // an external display, density/uiMode change) Android destroys+recreates us.
+        // Do NOT tear down the native VM or hard-kill the process then — that races the
+        // recreate and crashes ("this app has a bug"). Only shut down on a real finish.
+        if (isChangingConfigurations()) {
+            super.onDestroy()
+            return
+        }
         NativeApp.shutdown()
         super.onDestroy()
 

@@ -35,6 +35,25 @@ object ControllerMappings {
         // few games that require the analog toggle (e.g. Driving Emotion Type-S)
         // actually enable their sticks. Parity with desktop PCSX2.
         Action("analog", "Analog (toggle)", 200, KeyEvent.KEYCODE_UNKNOWN),
+        // ---- PS2 analog-stick DIRECTIONS as bindable targets (AetherSX2-style) ----
+        // Any physical input — button, trigger, or another stick's direction — can be
+        // bound to SEND a PS2 stick direction (e.g. physical L2 -> R-Stick Down for
+        // Burnout 3 boost-camera setups). Targets are the native analog codes 110-123;
+        // a digital source gives full deflection, an analog trigger stays proportional
+        // (sendTrigger resolves through targetForPhysical), and a physical stick
+        // direction source is driven proportionally in dispatchStickDirBindings.
+        // UNBOUND by default — zero change unless the user binds them. NOTE: binding
+        // e.g. physical L2 here does NOT auto-clear the PS2 L2 row; targetForPhysical
+        // returns the FIRST action bound to a physical key, so users should Clear the
+        // button row they're stealing from (the row description says so).
+        Action("ls_up", "L-Stick Up (send)", 110, KeyEvent.KEYCODE_UNKNOWN),
+        Action("ls_down", "L-Stick Down (send)", 112, KeyEvent.KEYCODE_UNKNOWN),
+        Action("ls_left", "L-Stick Left (send)", 113, KeyEvent.KEYCODE_UNKNOWN),
+        Action("ls_right", "L-Stick Right (send)", 111, KeyEvent.KEYCODE_UNKNOWN),
+        Action("rs_up", "R-Stick Up (send)", 120, KeyEvent.KEYCODE_UNKNOWN),
+        Action("rs_down", "R-Stick Down (send)", 122, KeyEvent.KEYCODE_UNKNOWN),
+        Action("rs_left", "R-Stick Left (send)", 123, KeyEvent.KEYCODE_UNKNOWN),
+        Action("rs_right", "R-Stick Right (send)", 121, KeyEvent.KEYCODE_UNKNOWN),
     )
 
     // ---- Analog stick remapping (physical sticks → digital PS2 inputs) ----
@@ -164,33 +183,48 @@ object ControllerMappings {
     // curve applied to the post-deadzone magnitude (0 = linear; higher = finer
     // control near center, ramping to full speed at full tilt). Global controller
     // feel, persisted in Main.prefs; cached so the hot motion path avoids a lookup.
+    //
+    // PER-STICK since the feature batch that split them: every feel tunable exists
+    // for the LEFT and RIGHT stick independently (tester feedback: lowering
+    // sensitivity for camera aim also slowed walking). Storage = old key + ".l" /
+    // ".r"; the OLD single key is the migration fallback, so an existing user's
+    // tuned value carries over to BOTH sticks and nothing changes until they split.
     private const val KEY_STICK_SENS = "pad.stick.sensitivity"
     private const val KEY_STICK_ACCEL = "pad.stick.acceleration"
     const val STICK_SENS_MIN = 0.5f
     const val STICK_SENS_MAX = 2.0f
     const val STICK_ACCEL_MAX = 2.0f
-    @Volatile private var sStickSens = Float.NaN
-    @Volatile private var sStickAccel = Float.NaN
-    fun stickSensitivity(): Float {
-        if (sStickSens.isNaN())
-            sStickSens = Main.prefs.getFloat(KEY_STICK_SENS, 1.0f).coerceIn(STICK_SENS_MIN, STICK_SENS_MAX)
-        return sStickSens
+
+    /** Per-stick float pref with migration: "<base>.l"/".r" if present, else the
+     *  legacy single "<base>" key, else [def]. Cached per stick for the hot path. */
+    private class PerStickPref(val baseKey: String, val def: Float, val lo: Float, val hi: Float) {
+        @Volatile var cacheL = Float.NaN
+        @Volatile var cacheR = Float.NaN
+        fun key(left: Boolean) = baseKey + if (left) ".l" else ".r"
+        fun get(left: Boolean): Float {
+            val c = if (left) cacheL else cacheR
+            if (!c.isNaN()) return c
+            val v = (if (Main.prefs.contains(key(left))) Main.prefs.getFloat(key(left), def)
+                else Main.prefs.getFloat(baseKey, def)).coerceIn(lo, hi)
+            if (left) cacheL = v else cacheR = v
+            return v
+        }
+        fun set(left: Boolean, v: Float) {
+            val c = v.coerceIn(lo, hi)
+            if (left) cacheL = c else cacheR = c
+            Main.prefs.edit().putFloat(key(left), c).apply()
+        }
+        fun reset(edit: android.content.SharedPreferences.Editor) {
+            edit.remove(baseKey).remove(key(true)).remove(key(false))
+            cacheL = Float.NaN; cacheR = Float.NaN
+        }
     }
-    fun setStickSensitivity(v: Float) {
-        val c = v.coerceIn(STICK_SENS_MIN, STICK_SENS_MAX)
-        sStickSens = c
-        Main.prefs.edit().putFloat(KEY_STICK_SENS, c).apply()
-    }
-    fun stickAcceleration(): Float {
-        if (sStickAccel.isNaN())
-            sStickAccel = Main.prefs.getFloat(KEY_STICK_ACCEL, 0.0f).coerceIn(0f, STICK_ACCEL_MAX)
-        return sStickAccel
-    }
-    fun setStickAcceleration(v: Float) {
-        val c = v.coerceIn(0f, STICK_ACCEL_MAX)
-        sStickAccel = c
-        Main.prefs.edit().putFloat(KEY_STICK_ACCEL, c).apply()
-    }
+    private val prefStickSens = PerStickPref(KEY_STICK_SENS, 1.0f, STICK_SENS_MIN, STICK_SENS_MAX)
+    private val prefStickAccel = PerStickPref(KEY_STICK_ACCEL, 0.0f, 0f, STICK_ACCEL_MAX)
+    fun stickSensitivity(left: Boolean): Float = prefStickSens.get(left)
+    fun setStickSensitivity(left: Boolean, v: Float) = prefStickSens.set(left, v)
+    fun stickAcceleration(left: Boolean): Float = prefStickAccel.get(left)
+    fun setStickAcceleration(left: Boolean, v: Float) = prefStickAccel.set(left, v)
 
     // App-side analog stick deadzone (fraction of travel ignored). Kept small by
     // default and user-adjustable down to 0 — handheld "switch" sticks have tiny
@@ -199,17 +233,9 @@ object ControllerMappings {
     // of jumping. Pairs with forcing the NATIVE pad deadzone to 0.
     private const val KEY_STICK_DZ = "pad.stick.deadzone"
     const val STICK_DZ_MAX = 0.40f
-    @Volatile private var sStickDz = Float.NaN
-    fun stickDeadzone(): Float {
-        if (sStickDz.isNaN())
-            sStickDz = Main.prefs.getFloat(KEY_STICK_DZ, 0.05f).coerceIn(0f, STICK_DZ_MAX)
-        return sStickDz
-    }
-    fun setStickDeadzone(v: Float) {
-        val c = v.coerceIn(0f, STICK_DZ_MAX)
-        sStickDz = c
-        Main.prefs.edit().putFloat(KEY_STICK_DZ, c).apply()
-    }
+    private val prefStickDz = PerStickPref(KEY_STICK_DZ, 0.05f, 0f, STICK_DZ_MAX)
+    fun stickDeadzone(left: Boolean): Float = prefStickDz.get(left)
+    fun setStickDeadzone(left: Boolean, v: Float) = prefStickDz.set(left, v)
 
     // Outer (anti-)deadzone: fraction of travel near the EDGE that maps to full
     // output, so a stick that can't physically reach its corners still hits 100%
@@ -217,17 +243,9 @@ object ControllerMappings {
     // Main.shapeStickMag as the upper edge of the post-deadzone re-normalize window.
     private const val KEY_STICK_OUTER = "pad.stick.outerDeadzone"
     const val STICK_OUTER_MAX = 0.40f
-    @Volatile private var sStickOuter = Float.NaN
-    fun stickOuterDeadzone(): Float {
-        if (sStickOuter.isNaN())
-            sStickOuter = Main.prefs.getFloat(KEY_STICK_OUTER, 0.0f).coerceIn(0f, STICK_OUTER_MAX)
-        return sStickOuter
-    }
-    fun setStickOuterDeadzone(v: Float) {
-        val c = v.coerceIn(0f, STICK_OUTER_MAX)
-        sStickOuter = c
-        Main.prefs.edit().putFloat(KEY_STICK_OUTER, c).apply()
-    }
+    private val prefStickOuter = PerStickPref(KEY_STICK_OUTER, 0.0f, 0f, STICK_OUTER_MAX)
+    fun stickOuterDeadzone(left: Boolean): Float = prefStickOuter.get(left)
+    fun setStickOuterDeadzone(left: Boolean, v: Float) = prefStickOuter.set(left, v)
 
     // Anti-deadzone (output floor): the SMALLEST non-zero analog output sent to the PS2.
     // Many PS2 games have a large built-in stick deadzone (e.g. Cold Fear / Area 51 ignore
@@ -238,17 +256,9 @@ object ControllerMappings {
     // AFTER sensitivity, only to a non-zero magnitude (true center still reads 0).
     private const val KEY_STICK_ANTIDZ = "pad.stick.antiDeadzone"
     const val STICK_ANTIDZ_MAX = 0.60f
-    @Volatile private var sStickAntiDz = Float.NaN
-    fun stickAntiDeadzone(): Float {
-        if (sStickAntiDz.isNaN())
-            sStickAntiDz = Main.prefs.getFloat(KEY_STICK_ANTIDZ, 0.0f).coerceIn(0f, STICK_ANTIDZ_MAX)
-        return sStickAntiDz
-    }
-    fun setStickAntiDeadzone(v: Float) {
-        val c = v.coerceIn(0f, STICK_ANTIDZ_MAX)
-        sStickAntiDz = c
-        Main.prefs.edit().putFloat(KEY_STICK_ANTIDZ, c).apply()
-    }
+    private val prefStickAntiDz = PerStickPref(KEY_STICK_ANTIDZ, 0.0f, 0f, STICK_ANTIDZ_MAX)
+    fun stickAntiDeadzone(left: Boolean): Float = prefStickAntiDz.get(left)
+    fun setStickAntiDeadzone(left: Boolean, v: Float) = prefStickAntiDz.set(left, v)
 
     // Master rumble / vibration enable. Gates NativeApp.onPadRumble (controller motors AND
     // the device-haptic fallback). Persisted in prefs and mirrored into the native gate
@@ -450,12 +460,11 @@ object ControllerMappings {
      *  why the Settings reset alone didn't clear them.) */
     fun resetTunables() {
         val edit = Main.prefs.edit()
-        edit.remove(KEY_STICK_SENS).remove(KEY_STICK_ACCEL).remove(KEY_STICK_DZ)
-            .remove(KEY_STICK_OUTER).remove(KEY_STICK_ANTIDZ).remove(KEY_DPAD_AS_LSTICK)
+        edit.remove(KEY_DPAD_AS_LSTICK)
             .remove(KEY_LSTICK_INVX).remove(KEY_LSTICK_INVY).remove(KEY_LSTICK_SWAP)
             .remove(KEY_RSTICK_INVX).remove(KEY_RSTICK_INVY).remove(KEY_RSTICK_SWAP)
-        sStickSens = Float.NaN; sStickAccel = Float.NaN; sStickDz = Float.NaN
-        sStickOuter = Float.NaN; sStickAntiDz = Float.NaN
+        prefStickSens.reset(edit); prefStickAccel.reset(edit); prefStickDz.reset(edit)
+        prefStickOuter.reset(edit); prefStickAntiDz.reset(edit)
         for (p in intArrayOf(P1, P2)) {
             edit.remove(playerPrefix(p) + KEY_LSTICK).remove(playerPrefix(p) + KEY_RSTICK)
             for (left in booleanArrayOf(true, false))
@@ -485,6 +494,11 @@ object ControllerMappings {
         TEXTURE_DUMP("pad.texdump.keycode", "Toggle Texture Dumping"),
         FAST_FORWARD("pad.fastforward.keycode", "Fast Forward (hold)"),
         FAST_FORWARD_TOGGLE("pad.fastforwardtoggle.keycode", "Fast Forward (toggle)"),
+        // Slow motion toggle (50% speed, native LimiterModeType::Slomo). DISABLED
+        // while RetroAchievements hardcore is active — slowdown is a banned
+        // advantage in hardcore, matching desktop PCSX2 (the handler shows an OSD
+        // notice instead of engaging).
+        SLOW_DOWN("pad.slowdown.keycode", "Slow Down (toggle)"),
         RES_UP("pad.resup.keycode", "Increase Resolution"),
         RES_DOWN("pad.resdown.keycode", "Decrease Resolution"),
         ACHIEVEMENTS("pad.achievements.keycode", "Open Achievements"),

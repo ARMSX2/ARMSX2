@@ -195,8 +195,14 @@ __fi void cpuSetNextEvent( u64 startCycle, s32 delta )
 {
 	// typecast the conditional to signed so that things don't blow up
 	// if startCycle is greater than our next branch cycle.
-
-	if( (int)(cpuRegs.nextEventCycle - startCycle) > delta )
+	//
+	// Port of upstream's 64-bit cycle-counter fix (post-2.7.407 "EE: switch to 64-bit
+	// cycle counter"). cpuRegs.cycle is a free-running u64 that passes 2^31 after ~7s;
+	// the old (int) cast truncated (nextEventCycle - startCycle) to 32 bits, so once an
+	// event landed far from the clock the comparison read the wrong sign and left
+	// nextEventCycle pinned in the past — the EE event scheduler then deadlocked in the
+	// kernel idle loop (Ratchet: Deadlocked SCUS-97465 image-freeze). (s64) is exact.
+	if( (s64)(cpuRegs.nextEventCycle - startCycle) > delta )
 	{
 		cpuRegs.nextEventCycle = startCycle + delta;
 	}
@@ -214,8 +220,10 @@ __fi int cpuGetCycles(int interrupt)
 		return 1;
 	else
 	{
-		const int cycles = (cpuRegs.sCycle[interrupt] + cpuRegs.eCycle[interrupt]) - cpuRegs.cycle;
-		return std::max(1, cycles);
+		// 64-bit-safe delta (see cpuSetNextEvent): compute in s64 so a large sCycle/cycle
+		// (free-running u64 past 2^31) can't truncate the remaining-cycle count to garbage.
+		const s64 cycles = (s64)(cpuRegs.sCycle[interrupt] + cpuRegs.eCycle[interrupt]) - (s64)cpuRegs.cycle;
+		return (int)std::max<s64>(1, cycles);
 	}
 
 }
@@ -226,8 +234,12 @@ __fi int cpuTestCycle( u64 startCycle, s32 delta )
 {
 	// typecast the conditional to signed so that things don't explode
 	// if the startCycle is ahead of our current cpu cycle.
-
-	return (int)(cpuRegs.cycle - startCycle) >= delta;
+	//
+	// 64-bit fix (see cpuSetNextEvent): the old (int) cast truncated (cycle - startCycle)
+	// to 32 bits once cpuRegs.cycle passed 2^31, so a long-overdue interrupt (small stale
+	// startCycle vs a multi-billion clock) read as "not due yet" and never fired/cleared —
+	// the scheduler then re-pinned nextEventCycle to it forever. (s64) reports it correctly.
+	return (s64)(cpuRegs.cycle - startCycle) >= delta;
 }
 
 // tells the EE to run the branch test the next time it gets a chance.

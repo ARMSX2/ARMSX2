@@ -74,7 +74,17 @@ __fi void _vu0run(bool breakOnMbit, bool addCycles, bool sync_only) {
 	// Add cycles if called from EE's COP2
 	if (addCycles)
 	{
-		cpuRegs.cycle += (VU0.cycle - startcycle);
+		// The EE clock is monotonic — never rewind it. Under the ARM64 macro-mode COP2
+		// recompiler, a launched VU0 program can be deferred while cpuRegs.cycle races far
+		// ahead; when it is finally finished here, (VU0.cycle - startcycle) is hugely
+		// NEGATIVE and the old unconditional `cpuRegs.cycle +=` slammed the EE clock backward
+		// by billions of cycles. The EE event scheduler then never reaches the next VBlank,
+		// so the guest deadlocks in the kernel idle loop with VBlank pending-but-undelivered
+		// (Ratchet: Deadlocked SCUS-97465 image-freeze under FullVU0SyncHack; the freeze
+		// sampler showed cpuRegs.cycle frozen with a ~15.5e9 EE-VU0 delta). Only advance.
+		const s64 vu0delta = static_cast<s64>(VU0.cycle - startcycle);
+		if (vu0delta > 0)
+			cpuRegs.cycle += static_cast<u64>(vu0delta);
 		CpuVU1->ExecuteBlock(0); // Catch up VU1 as it's likely fallen behind
 
 		if(VU0.VI[REG_VPU_STAT].UL & 1)

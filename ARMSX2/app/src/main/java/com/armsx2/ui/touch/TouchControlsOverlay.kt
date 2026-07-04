@@ -1093,9 +1093,17 @@ private fun StickWidget(cfg: TouchButtonCfg, edit: Boolean) {
                     val capDx = dx * scale
                     val capDy = dy * scale
                     thumb.value = Offset(capDx, capDy)
-                    val nx = (capDx / capPx).coerceIn(-1f, 1f)
-                    val ny = (capDy / capPx).coerceIn(-1f, 1f)
-                    val emit = computeStickEmit(nx, ny)
+                    var nx = (capDx / capPx).coerceIn(-1f, 1f)
+                    var ny = (capDy / capPx).coerceIn(-1f, 1f)
+                    // Honor the per-stick axis correction (swap first, then inverts)
+                    // exactly like the physical-pad path (Main.dispatchStick) — the
+                    // tester's "Right Stick Invert Y works on a gamepad but the touch
+                    // stick is still upside-down".
+                    val leftStick = cfg.id == TouchButtonId.L_STICK
+                    if (com.armsx2.input.ControllerMappings.stickSwapXY(leftStick)) { val t = nx; nx = ny; ny = t }
+                    if (com.armsx2.input.ControllerMappings.stickInvertX(leftStick)) nx = -nx
+                    if (com.armsx2.input.ControllerMappings.stickInvertY(leftStick)) ny = -ny
+                    val emit = computeStickEmit(nx, ny, leftStick)
                     if (emit != lastEmit.value) {
                         applyStickDiff(codes, lastEmit.value, emit)
                         lastEmit.value = emit
@@ -1156,18 +1164,18 @@ private data class StickEmit(
     fun any() = xPos != 0 || xNeg != 0 || yPos != 0 || yNeg != 0
 }
 
-/** Apply the shared, user-configurable analog deadzone and re-normalize past it so
- *  the on-screen stick responds from low values without a jump — matching the
+/** Apply the user-configurable PER-STICK analog deadzone and re-normalize past it
+ *  so the on-screen stick responds from low values without a jump — matching the
  *  physical-stick path (Main.shapeStickMag). */
-private fun shapeTouchAxis(m: Float): Float {
-    val dz = ControllerMappings.stickDeadzone()
+private fun shapeTouchAxis(m: Float, left: Boolean): Float {
+    val dz = ControllerMappings.stickDeadzone(left)
     if (m <= dz) return 0f
     return (if (dz < 1f) (m - dz) / (1f - dz) else 0f).coerceIn(0f, 1f)
 }
 
-private fun computeStickEmit(nx: Float, ny: Float): StickEmit {
-    val scaleX = (shapeTouchAxis(abs(nx)) * 32767f).toInt()
-    val scaleY = (shapeTouchAxis(abs(ny)) * 32767f).toInt()
+private fun computeStickEmit(nx: Float, ny: Float, left: Boolean): StickEmit {
+    val scaleX = (shapeTouchAxis(abs(nx), left) * 32767f).toInt()
+    val scaleY = (shapeTouchAxis(abs(ny), left) * 32767f).toInt()
     return StickEmit(
         xPos = if (nx > 0) scaleX else 0,
         xNeg = if (nx < 0) scaleX else 0,
