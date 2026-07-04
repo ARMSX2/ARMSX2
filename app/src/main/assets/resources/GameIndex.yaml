@@ -12608,6 +12608,7 @@ SCUS-97465:
   compat: 5
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+    - FullVU0SyncHack # VU0<->EE handshake: fixes invisible/stuck player and image-freeze.
   gsHWFixes:
     disablePartialInvalidation: 1 # Prevents world geometry and some models from vanishing when pausing or opening vendor.
     halfPixelOffset: 4 # Aligns post bloom.

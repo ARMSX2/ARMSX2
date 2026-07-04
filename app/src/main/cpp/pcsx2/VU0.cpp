@@ -74,7 +74,14 @@ __fi void _vu0run(bool breakOnMbit, bool addCycles, bool sync_only) {
 	// Add cycles if called from EE's COP2
 	if (addCycles)
 	{
-		cpuRegs.cycle += (VU0.cycle - startcycle);
+		// The EE clock is monotonic — never rewind it. Under the ARM64 macro-mode
+		// COP2 recompiler a launched VU0 program can be deferred while cpuRegs.cycle
+		// races ahead; when it finishes here (VU0.cycle - startcycle) is hugely
+		// negative and an unconditional advance would slam the EE clock backward,
+		// deadlocking the scheduler (Ratchet: Deadlocked under FullVU0SyncHack).
+		const s64 vu0delta = static_cast<s64>(VU0.cycle - startcycle);
+		if (vu0delta > 0)
+			cpuRegs.cycle += static_cast<u64>(vu0delta);
 		CpuVU1->ExecuteBlock(0); // Catch up VU1 as it's likely fallen behind
 
 		if(VU0.VI[REG_VPU_STAT].UL & 1)
