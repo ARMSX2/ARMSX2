@@ -140,6 +140,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		${CMAKE_SOURCE_DIR}/../swift/Views/BootSplashView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/GameListView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/PerGameSettingsPanel.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/PerGameTab.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/EnumPicker.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/GeneralTab.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/GraphicsTab.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/AudioTab.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/CPUTab.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/PadTab.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/FixesTab.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/CheatsTab.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/CoverThumbnailView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/BIOSListView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/HelpView.swift
@@ -150,6 +159,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		${CMAKE_SOURCE_DIR}/../swift/Views/MetalGameView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/EmulatorView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/VirtualControllerView.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Controller/ControllerEnvironment.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Controller/ControllerAsset.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Controller/PressSurface.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Controller/ControllerGlyphs.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Controller/ControllerButtons.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/Controller/CompositeControls.swift
+		${CMAKE_SOURCE_DIR}/../swift/Views/TransientBannerController.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/CheatsPatchesManagerView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/AnimatedLibraryBackgroundView.swift
 		${CMAKE_SOURCE_DIR}/../swift/Views/LicenseView.swift
@@ -176,6 +192,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		${CMAKE_SOURCE_DIR}/../swift/Models/VirtualPadSkin.swift
 		${CMAKE_SOURCE_DIR}/../swift/Models/VPadSkinLibraryStore.swift
 		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore.swift
+		${CMAKE_SOURCE_DIR}/../swift/Models/Setting.swift
+		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+Graphics.swift
+		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+Audio.swift
+		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+CPU.swift
+		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+Speedhacks.swift
+		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+GameFixes.swift
+		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+UI.swift
+		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+DEV9.swift
 		${CMAKE_SOURCE_DIR}/../swift/Models/FileImportHandler.swift
 		${CMAKE_SOURCE_DIR}/../swift/Models/ImportFileCopier.swift
 		${CMAKE_SOURCE_DIR}/../swift/Models/ExternalGameLibrary.swift
@@ -222,7 +246,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		set(ARMSX2_ENABLE_HARDENED_RUNTIME "NO")
 	endif()
 
-	add_executable(ARMSX2iOS ios_main.mm ARMSX2Bridge.mm ${SWIFT_SOURCES})
+	set(IOS_RUNTIME_SOURCES
+		ios_main.mm
+		IOS/AppDelegate.mm
+		IOS/GamepadHaptics.mm
+		IOS/HostImpls.mm
+		IOS/PlaySoundAsync.mm
+		IOS/SceneDelegate.mm
+	)
+	add_executable(ARMSX2iOS ${IOS_RUNTIME_SOURCES} ARMSX2Bridge.mm ${SWIFT_SOURCES})
 	set_target_properties(ARMSX2iOS PROPERTIES
 		MACOSX_BUNDLE TRUE
 		MACOSX_BUNDLE_GUI_IDENTIFIER "${ARMSX2_BUNDLE_IDENTIFIER}"
@@ -256,7 +288,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 			XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "@executable_path/Frameworks /usr/lib/swift"
 			XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS "$(inherited) $(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME) /usr/lib/swift"
 			XCODE_ATTRIBUTE_OTHER_SWIFT_FLAGS ""
-			XCODE_ATTRIBUTE_MTL_HEADER_SEARCH_PATHS "\"${CMAKE_SOURCE_DIR}/pcsx2/GS/Renderers/Metal\" \"${CMAKE_SOURCE_DIR}/3rdparty/include\" \"${CMAKE_SOURCE_DIR}/../assets\" \"${CMAKE_SOURCE_DIR}/../assets/resources\""
+			XCODE_ATTRIBUTE_MTL_HEADER_SEARCH_PATHS "${CMAKE_SOURCE_DIR}/pcsx2/GS/Renderers/Metal ${CMAKE_SOURCE_DIR}/3rdparty/include ${CMAKE_SOURCE_DIR}/../assets ${CMAKE_SOURCE_DIR}/../assets/resources"
 			XCODE_ATTRIBUTE_MTL_ENABLE_DEBUG_INFO "$<IF:$<CONFIG:Debug>,INCLUDE_SOURCE,>"
 		)
 
