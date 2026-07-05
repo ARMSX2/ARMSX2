@@ -102,12 +102,12 @@ struct GameScreenView: View {
     @State private var runtimePerGameSettingsEntry: ISOEntry?
     @State private var runtimePerGameSettings: [String: Any]?
     @State private var runtimePadLayoutIdentity: PadLayoutGameIdentity?
-    @State private var statusMessage: String? = nil
-    @State private var statusMessageGeneration = 0
-    @State private var statusMessageDismissTask: Task<Void, Never>?
-    @State private var retroAchievementsToast: RetroAchievementsToast? = nil
-    @State private var retroAchievementsToastGeneration = 0
-    @State private var retroAchievementsToastDismissTask: Task<Void, Never>?
+    // Auto-dismissing banner controllers. Status uses the brief duration as its
+    // default (important messages override per-call); achievements use 5s. Both
+    // preserve the original easeOut/easeIn 0.18s show/hide and generation-bump
+    // cancel semantics (see TransientBannerController).
+    @StateObject private var statusBanner = TransientBannerController<String>(defaultDisplayDuration: Self.briefStatusDisplayDuration)
+    @StateObject private var achievementsBanner = TransientBannerController<RetroAchievementsToast>(defaultDisplayDuration: Self.retroAchievementsToastDisplayDuration)
     @State private var runtimeOverlayPauseActive = false
     @State private var previousHideHomeIndicator = false
     @State private var previousHideStatusBar = false
@@ -329,8 +329,8 @@ struct GameScreenView: View {
             startMenuRestorePollingIfNeeded()
         }
         .onDisappear {
-            statusMessageDismissTask?.cancel()
-            retroAchievementsToastDismissTask?.cancel()
+            statusBanner.cancelDismiss()
+            achievementsBanner.cancelDismiss()
             stopMenuRestorePolling()
             leaveGameplaySystemChromeMode()
         }
@@ -895,7 +895,7 @@ struct GameScreenView: View {
 
     @ViewBuilder
     private var statusToastOverlay: some View {
-        if let statusMessage {
+        if let statusMessage = statusBanner.content {
             Text(statusMessage)
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.white)
@@ -910,7 +910,7 @@ struct GameScreenView: View {
 
     @ViewBuilder
     private var retroAchievementsToastOverlay: some View {
-        if let retroAchievementsToast {
+        if let retroAchievementsToast = achievementsBanner.content {
             HStack(spacing: 12) {
                 retroAchievementsBadge(path: retroAchievementsToast.badgePath)
 
@@ -969,20 +969,7 @@ struct GameScreenView: View {
         _ message: String,
         displayDuration: TimeInterval = Self.briefStatusDisplayDuration
     ) {
-        statusMessageDismissTask?.cancel()
-        statusMessageGeneration += 1
-        let currentGeneration = statusMessageGeneration
-        withAnimation(.easeOut(duration: 0.18)) {
-            statusMessage = message
-        }
-        statusMessageDismissTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(displayDuration))
-            guard !Task.isCancelled else { return }
-            guard statusMessageGeneration == currentGeneration else { return }
-            withAnimation(.easeIn(duration: 0.18)) {
-                statusMessage = nil
-            }
-        }
+        statusBanner.present(message, displayDuration: displayDuration)
     }
 
     private func cycleOsdPreset() {
@@ -1021,20 +1008,7 @@ struct GameScreenView: View {
             badgePath: badgePathValue.isEmpty ? nil : badgePathValue
         )
 
-        retroAchievementsToastDismissTask?.cancel()
-        retroAchievementsToastGeneration += 1
-        let currentGeneration = retroAchievementsToastGeneration
-        withAnimation(.easeOut(duration: 0.18)) {
-            retroAchievementsToast = toast
-        }
-        retroAchievementsToastDismissTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(Self.retroAchievementsToastDisplayDuration))
-            guard !Task.isCancelled else { return }
-            guard retroAchievementsToastGeneration == currentGeneration else { return }
-            withAnimation(.easeIn(duration: 0.18)) {
-                retroAchievementsToast = nil
-            }
-        }
+        achievementsBanner.present(toast)
     }
 
     private func consumePendingRetroAchievementsToast() {
