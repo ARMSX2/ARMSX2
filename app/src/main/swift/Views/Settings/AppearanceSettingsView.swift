@@ -97,7 +97,7 @@ struct AppearanceSettingsView: View {
             guard let newItem else { return }
             let role = selectedBackgroundRole
             selectedPhotoItem = nil
-            Task {
+            Task { @MainActor in
                 await importLibraryBackground(from: newItem, role: role)
             }
         }

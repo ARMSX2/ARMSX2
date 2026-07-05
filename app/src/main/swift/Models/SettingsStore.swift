@@ -67,8 +67,9 @@ struct GameFixOption: Identifiable, Hashable {
     var id: String { key }
 }
 
+@MainActor
 @Observable
-final class SettingsStore: @unchecked Sendable {
+final class SettingsStore {
     static let shared = SettingsStore()
     static let minTargetFPS: Float = 15.0
     static let maxTargetFPS: Float = 120.0
@@ -81,26 +82,7 @@ final class SettingsStore: @unchecked Sendable {
     static let skipDrawRange = 0...5000
     static let defaultOsdPerformancePosition = 3
 
-    /// Manual EmuCore/Gamefixes toggles, in display order.
-    static let gameFixOptions: [GameFixOption] = [
-        .init(key: "VuAddSubHack", label: "VU Add-Sub Hack"),
-        .init(key: "FpuMulHack", label: "FPU Multiply Hack"),
-        .init(key: "XgKickHack", label: "Extra XGKICK Hack"),
-        .init(key: "EETimingHack", label: "EE Timing Hack"),
-        .init(key: "InstantDMAHack", label: "Instant DMA Hack"),
-        .init(key: "SoftwareRendererFMVHack", label: "Software Renderer FMV Hack"),
-        .init(key: "SkipMPEGHack", label: "Skip MPEG Hack"),
-        .init(key: "OPHFlagHack", label: "OPH Flag Hack"),
-        .init(key: "DMABusyHack", label: "DMA Busy Hack"),
-        .init(key: "VIF1StallHack", label: "VIF1 Stall Hack"),
-        .init(key: "GIFFIFOHack", label: "GIF FIFO Hack"),
-        .init(key: "GoemonTlbHack", label: "Goemon TLB Hack"),
-        .init(key: "IbitHack", label: "I-Bit Hack"),
-        .init(key: "VUSyncHack", label: "VU Sync Hack"),
-        .init(key: "VUOverflowHack", label: "VU Overflow Hack"),
-        .init(key: "BlitInternalFPSHack", label: "Blit Internal FPS Hack"),
-        .init(key: "FullVU0SyncHack", label: "Full VU0 Sync Hack")
-    ]
+    /// Manual EmuCore/Gamefixes toggles — see SettingsStore+GameFixes.swift.
 
     @ObservationIgnored private var suppressINIWrites = false
     @ObservationIgnored private var frameLimiterDisabledForFastForward = false
@@ -132,6 +114,7 @@ final class SettingsStore: @unchecked Sendable {
     }
 
     // ── Emulator / CPU ──
+    // writes CoreType + UseArm64Dynarec
     var eeCoreType: Int {
         didSet {
             guard !suppressINIWrites else { return }
@@ -139,24 +122,31 @@ final class SettingsStore: @unchecked Sendable {
             ARMSX2Bridge.setINIBool("EmuCore/CPU", key: "UseArm64Dynarec", value: eeCoreType == 2)
         }
     }
-    var iopRecompiler: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "EnableIOP", value: iopRecompiler)
-        }
-    }
-    var vu0Recompiler: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "EnableVU0", value: vu0Recompiler)
-        }
-    }
-    var vu1Recompiler: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "EnableVU1", value: vu1Recompiler)
-        }
-    }
+    let _iopRecompilerConfig = Setting<Bool>(
+        section: "EmuCore/CPU/Recompiler", key: "EnableIOP", default: true,
+        writer: ARMSX2Bridge.setINIBool)
+    var iopRecompiler: Bool = true { didSet {
+        guard !(_iopRecompilerConfig.suppressible && suppressINIWrites) else { return }
+        _iopRecompilerConfig.writer(_iopRecompilerConfig.section, _iopRecompilerConfig.key, iopRecompiler)
+        _iopRecompilerConfig.onSet?(iopRecompiler)
+    }}
+    let _vu0RecompilerConfig = Setting<Bool>(
+        section: "EmuCore/CPU/Recompiler", key: "EnableVU0", default: true,
+        writer: ARMSX2Bridge.setINIBool)
+    var vu0Recompiler: Bool = true { didSet {
+        guard !(_vu0RecompilerConfig.suppressible && suppressINIWrites) else { return }
+        _vu0RecompilerConfig.writer(_vu0RecompilerConfig.section, _vu0RecompilerConfig.key, vu0Recompiler)
+        _vu0RecompilerConfig.onSet?(vu0Recompiler)
+    }}
+    let _vu1RecompilerConfig = Setting<Bool>(
+        section: "EmuCore/CPU/Recompiler", key: "EnableVU1", default: true,
+        writer: ARMSX2Bridge.setINIBool)
+    var vu1Recompiler: Bool = true { didSet {
+        guard !(_vu1RecompilerConfig.suppressible && suppressINIWrites) else { return }
+        _vu1RecompilerConfig.writer(_vu1RecompilerConfig.section, _vu1RecompilerConfig.key, vu1Recompiler)
+        _vu1RecompilerConfig.onSet?(vu1Recompiler)
+    }}
+    // writes GameISO/FastBoot + EmuCore/EnableFastBoot
     var fastBoot: Bool {
         didSet {
             guard !suppressINIWrites else { return }
@@ -164,6 +154,7 @@ final class SettingsStore: @unchecked Sendable {
             ARMSX2Bridge.setINIBool("EmuCore", key: "EnableFastBoot", value: fastBoot)
         }
     }
+    // writes ManualFastmem + EnableFastmem
     var fastmem: Bool {
         didSet {
             guard !suppressINIWrites else { return }
@@ -177,24 +168,30 @@ final class SettingsStore: @unchecked Sendable {
     // Clamp modes are stored as a single 0–3 level and unpacked to the three
     // (EE) / six (VU0+VU1) boolean keys the PCSX2 recompiler reads, matching the
     // Android refresh UI and the upstream PCSX2 GUI. Changes take effect on next boot.
-    var eeFpuRoundMode: Int {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIInt("EmuCore/CPU", key: "FPU.Roundmode", value: Int32(Self.clampedRoundMode(eeFpuRoundMode)))
-        }
-    }
-    var vu0RoundMode: Int {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIInt("EmuCore/CPU", key: "VU0.Roundmode", value: Int32(Self.clampedRoundMode(vu0RoundMode)))
-        }
-    }
-    var vu1RoundMode: Int {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIInt("EmuCore/CPU", key: "VU1.Roundmode", value: Int32(Self.clampedRoundMode(vu1RoundMode)))
-        }
-    }
+    let _eeFpuRoundModeConfig = Setting<Int>(
+        section: "EmuCore/CPU", key: "FPU.Roundmode", default: 3,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clampedRoundMode(v))) })
+    var eeFpuRoundMode: Int = 3 { didSet {
+        guard !(_eeFpuRoundModeConfig.suppressible && suppressINIWrites) else { return }
+        _eeFpuRoundModeConfig.writer(_eeFpuRoundModeConfig.section, _eeFpuRoundModeConfig.key, eeFpuRoundMode)
+        _eeFpuRoundModeConfig.onSet?(eeFpuRoundMode)
+    }}
+    let _vu0RoundModeConfig = Setting<Int>(
+        section: "EmuCore/CPU", key: "VU0.Roundmode", default: 3,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clampedRoundMode(v))) })
+    var vu0RoundMode: Int = 3 { didSet {
+        guard !(_vu0RoundModeConfig.suppressible && suppressINIWrites) else { return }
+        _vu0RoundModeConfig.writer(_vu0RoundModeConfig.section, _vu0RoundModeConfig.key, vu0RoundMode)
+        _vu0RoundModeConfig.onSet?(vu0RoundMode)
+    }}
+    let _vu1RoundModeConfig = Setting<Int>(
+        section: "EmuCore/CPU", key: "VU1.Roundmode", default: 3,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clampedRoundMode(v))) })
+    var vu1RoundMode: Int = 3 { didSet {
+        guard !(_vu1RoundModeConfig.suppressible && suppressINIWrites) else { return }
+        _vu1RoundModeConfig.writer(_vu1RoundModeConfig.section, _vu1RoundModeConfig.key, vu1RoundMode)
+        _vu1RoundModeConfig.onSet?(vu1RoundMode)
+    }}
     var eeClampMode: Int {
         didSet {
             guard !suppressINIWrites else { return }
@@ -211,6 +208,7 @@ final class SettingsStore: @unchecked Sendable {
         didSet { applyFrameLimiterSettings() }
     }
     var fastForwardRuntimeEnabled = false
+    // clamps to 15...120
     var targetFPS: Float {
         didSet {
             let normalized = Self.clampedTargetFPS(targetFPS)
@@ -221,6 +219,7 @@ final class SettingsStore: @unchecked Sendable {
             applyFrameLimiterSettings()
         }
     }
+    // clamps to 1.25...10.0
     var fastForwardScalar: Float {
         didSet {
             let normalized = Self.clampedSpeedScalar(fastForwardScalar)
@@ -232,6 +231,7 @@ final class SettingsStore: @unchecked Sendable {
             ARMSX2Bridge.setINIFloat("Framerate", key: "TurboScalar", value: fastForwardScalar)
         }
     }
+    // clamps to 0...150
     var emulatorVolumePercent: Int {
         didSet {
             let normalized = Self.clampedEmulatorVolumePercent(emulatorVolumePercent)
@@ -245,36 +245,46 @@ final class SettingsStore: @unchecked Sendable {
     }
 
     // ── Audio Output (SPU2/Output) ── applied live by the SPU2 stream.
-    var audioTimeStretch: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIString("SPU2/Output", key: "SyncMode", value: audioTimeStretch ? "TimeStretch" : "Disabled")
-        }
-    }
-    var audioBufferMs: Int {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIInt("SPU2/Output", key: "BufferMS", value: Int32(Self.clamped(audioBufferMs, to: 10...200)))
-        }
-    }
-    var audioOutputLatencyMs: Int {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIInt("SPU2/Output", key: "OutputLatencyMS", value: Int32(Self.clamped(audioOutputLatencyMs, to: 5...200)))
-        }
-    }
-    var audioFastForwardVolume: Int {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIInt("SPU2/Output", key: "FastForwardVolume", value: Int32(Self.clamped(audioFastForwardVolume, to: 0...200)))
-        }
-    }
-    var audioSwapChannels: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("SPU2/Output", key: "SwapChannels", value: audioSwapChannels)
-        }
-    }
+    let _audioTimeStretchConfig = Setting<Bool>(
+        section: "SPU2/Output", key: "SyncMode", default: true,
+        writer: { s, k, v in ARMSX2Bridge.setINIString(s, key: k, value: v ? "TimeStretch" : "Disabled") })
+    var audioTimeStretch: Bool = true { didSet {
+        guard !(_audioTimeStretchConfig.suppressible && suppressINIWrites) else { return }
+        _audioTimeStretchConfig.writer(_audioTimeStretchConfig.section, _audioTimeStretchConfig.key, audioTimeStretch)
+        _audioTimeStretchConfig.onSet?(audioTimeStretch)
+    }}
+    let _audioBufferMsConfig = Setting<Int>(
+        section: "SPU2/Output", key: "BufferMS", default: 50,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 10...200))) })
+    var audioBufferMs: Int = 50 { didSet {
+        guard !(_audioBufferMsConfig.suppressible && suppressINIWrites) else { return }
+        _audioBufferMsConfig.writer(_audioBufferMsConfig.section, _audioBufferMsConfig.key, audioBufferMs)
+        _audioBufferMsConfig.onSet?(audioBufferMs)
+    }}
+    let _audioOutputLatencyMsConfig = Setting<Int>(
+        section: "SPU2/Output", key: "OutputLatencyMS", default: 20,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 5...200))) })
+    var audioOutputLatencyMs: Int = 20 { didSet {
+        guard !(_audioOutputLatencyMsConfig.suppressible && suppressINIWrites) else { return }
+        _audioOutputLatencyMsConfig.writer(_audioOutputLatencyMsConfig.section, _audioOutputLatencyMsConfig.key, audioOutputLatencyMs)
+        _audioOutputLatencyMsConfig.onSet?(audioOutputLatencyMs)
+    }}
+    let _audioFastForwardVolumeConfig = Setting<Int>(
+        section: "SPU2/Output", key: "FastForwardVolume", default: 100,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...200))) })
+    var audioFastForwardVolume: Int = 100 { didSet {
+        guard !(_audioFastForwardVolumeConfig.suppressible && suppressINIWrites) else { return }
+        _audioFastForwardVolumeConfig.writer(_audioFastForwardVolumeConfig.section, _audioFastForwardVolumeConfig.key, audioFastForwardVolume)
+        _audioFastForwardVolumeConfig.onSet?(audioFastForwardVolume)
+    }}
+    let _audioSwapChannelsConfig = Setting<Bool>(
+        section: "SPU2/Output", key: "SwapChannels", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var audioSwapChannels: Bool = false { didSet {
+        guard !(_audioSwapChannelsConfig.suppressible && suppressINIWrites) else { return }
+        _audioSwapChannelsConfig.writer(_audioSwapChannelsConfig.section, _audioSwapChannelsConfig.key, audioSwapChannels)
+        _audioSwapChannelsConfig.onSet?(audioSwapChannels)
+    }}
     var ntscFramerate: Float {
         didSet {
             guard !suppressINIWrites else { return }
@@ -282,34 +292,43 @@ final class SettingsStore: @unchecked Sendable {
             applyFrameLimiterSettings()
         }
     }
-    var palFramerate: Float {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIFloat("EmuCore/GS", key: "FrameratePAL", value: palFramerate)
-        }
-    }
+    let _palFramerateConfig = Setting<Float>(
+        section: "EmuCore/GS", key: "FrameratePAL", default: 50.0,
+        writer: ARMSX2Bridge.setINIFloat)
+    var palFramerate: Float = 50.0 { didSet {
+        guard !(_palFramerateConfig.suppressible && suppressINIWrites) else { return }
+        _palFramerateConfig.writer(_palFramerateConfig.section, _palFramerateConfig.key, palFramerate)
+        _palFramerateConfig.onSet?(palFramerate)
+    }}
 
     // ── Boot ──
-    var fastCDVD: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "fastCDVD", value: fastCDVD)
-        }
-    }
+    let _fastCDVDConfig = Setting<Bool>(
+        section: "EmuCore/Speedhacks", key: "fastCDVD", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var fastCDVD: Bool = false { didSet {
+        guard !(_fastCDVDConfig.suppressible && suppressINIWrites) else { return }
+        _fastCDVDConfig.writer(_fastCDVDConfig.section, _fastCDVDConfig.key, fastCDVD)
+        _fastCDVDConfig.onSet?(fastCDVD)
+    }}
 
     // ── Advanced Speedhacks ──
-    var eeCycleRate: Int {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIInt("EmuCore/Speedhacks", key: "EECycleRate", value: Int32(eeCycleRate))
-        }
-    }
-    var vu1Instant: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "vu1Instant", value: vu1Instant)
-        }
-    }
+    let _eeCycleRateConfig = Setting<Int>(
+        section: "EmuCore/Speedhacks", key: "EECycleRate", default: 0,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
+    var eeCycleRate: Int = 0 { didSet {
+        guard !(_eeCycleRateConfig.suppressible && suppressINIWrites) else { return }
+        _eeCycleRateConfig.writer(_eeCycleRateConfig.section, _eeCycleRateConfig.key, eeCycleRate)
+        _eeCycleRateConfig.onSet?(eeCycleRate)
+    }}
+    let _vu1InstantConfig = Setting<Bool>(
+        section: "EmuCore/Speedhacks", key: "vu1Instant", default: true,
+        writer: ARMSX2Bridge.setINIBool)
+    var vu1Instant: Bool = true { didSet {
+        guard !(_vu1InstantConfig.suppressible && suppressINIWrites) else { return }
+        _vu1InstantConfig.writer(_vu1InstantConfig.section, _vu1InstantConfig.key, vu1Instant)
+        _vu1InstantConfig.onSet?(vu1Instant)
+    }}
+    // writes ManualMTVU + ManualMTVUVersion + vuThread
     var mtvu: Bool {
         didSet {
             guard !suppressINIWrites else { return }
@@ -318,51 +337,101 @@ final class SettingsStore: @unchecked Sendable {
             ARMSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "vuThread", value: mtvu)
         }
     }
-    var waitLoop: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "WaitLoop", value: waitLoop)
-        }
-    }
-    var intcStat: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "IntcStat", value: intcStat)
-        }
-    }
-    var eeCycleSkip: Int {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIInt("EmuCore/Speedhacks", key: "EECycleSkip", value: Int32(Self.clampedCycleSkip(eeCycleSkip)))
-        }
-    }
-    var vuFlagHack: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "vuFlagHack", value: vuFlagHack)
-        }
-    }
-    var enableCheats: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore", key: "EnableCheats", value: enableCheats) }
-    }
-    var enablePatches: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore", key: "EnablePatches", value: enablePatches) }
-    }
-    var enableGameFixes: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore", key: "EnableGameFixes", value: enableGameFixes) }
-    }
-    var enableGameDBHardwareFixes: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "UserHacks", value: !enableGameDBHardwareFixes) }
-    }
-    var enableWidescreenPatches: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore", key: "EnableWideScreenPatches", value: enableWidescreenPatches) }
-    }
-    var enableNoInterlacingPatches: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore", key: "EnableNoInterlacingPatches", value: enableNoInterlacingPatches) }
-    }
-    var hostFilesystem: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore", key: "HostFs", value: hostFilesystem) }
-    }
+    let _waitLoopConfig = Setting<Bool>(
+        section: "EmuCore/Speedhacks", key: "WaitLoop", default: true,
+        writer: ARMSX2Bridge.setINIBool)
+    var waitLoop: Bool = true { didSet {
+        guard !(_waitLoopConfig.suppressible && suppressINIWrites) else { return }
+        _waitLoopConfig.writer(_waitLoopConfig.section, _waitLoopConfig.key, waitLoop)
+        _waitLoopConfig.onSet?(waitLoop)
+    }}
+    let _intcStatConfig = Setting<Bool>(
+        section: "EmuCore/Speedhacks", key: "IntcStat", default: true,
+        writer: ARMSX2Bridge.setINIBool)
+    var intcStat: Bool = true { didSet {
+        guard !(_intcStatConfig.suppressible && suppressINIWrites) else { return }
+        _intcStatConfig.writer(_intcStatConfig.section, _intcStatConfig.key, intcStat)
+        _intcStatConfig.onSet?(intcStat)
+    }}
+    let _eeCycleSkipConfig = Setting<Int>(
+        section: "EmuCore/Speedhacks", key: "EECycleSkip", default: 0,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clampedCycleSkip(v))) })
+    var eeCycleSkip: Int = 0 { didSet {
+        guard !(_eeCycleSkipConfig.suppressible && suppressINIWrites) else { return }
+        _eeCycleSkipConfig.writer(_eeCycleSkipConfig.section, _eeCycleSkipConfig.key, eeCycleSkip)
+        _eeCycleSkipConfig.onSet?(eeCycleSkip)
+    }}
+    let _vuFlagHackConfig = Setting<Bool>(
+        section: "EmuCore/Speedhacks", key: "vuFlagHack", default: true,
+        writer: ARMSX2Bridge.setINIBool)
+    var vuFlagHack: Bool = true { didSet {
+        guard !(_vuFlagHackConfig.suppressible && suppressINIWrites) else { return }
+        _vuFlagHackConfig.writer(_vuFlagHackConfig.section, _vuFlagHackConfig.key, vuFlagHack)
+        _vuFlagHackConfig.onSet?(vuFlagHack)
+    }}
+    let _enableCheatsConfig = Setting<Bool>(
+        section: "EmuCore", key: "EnableCheats", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var enableCheats: Bool = false { didSet {
+        guard !(_enableCheatsConfig.suppressible && suppressINIWrites) else { return }
+        _enableCheatsConfig.writer(_enableCheatsConfig.section, _enableCheatsConfig.key, enableCheats)
+        _enableCheatsConfig.onSet?(enableCheats)
+    }}
+    let _enablePatchesConfig = Setting<Bool>(
+        section: "EmuCore", key: "EnablePatches", default: true,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var enablePatches: Bool = true { didSet {
+        guard !(_enablePatchesConfig.suppressible && suppressINIWrites) else { return }
+        _enablePatchesConfig.writer(_enablePatchesConfig.section, _enablePatchesConfig.key, enablePatches)
+        _enablePatchesConfig.onSet?(enablePatches)
+    }}
+    let _enableGameFixesConfig = Setting<Bool>(
+        section: "EmuCore", key: "EnableGameFixes", default: true,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var enableGameFixes: Bool = true { didSet {
+        guard !(_enableGameFixesConfig.suppressible && suppressINIWrites) else { return }
+        _enableGameFixesConfig.writer(_enableGameFixesConfig.section, _enableGameFixesConfig.key, enableGameFixes)
+        _enableGameFixesConfig.onSet?(enableGameFixes)
+    }}
+    let _enableGameDBHardwareFixesConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "UserHacks", default: true,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIBool(s, key: k, value: !v) })
+    var enableGameDBHardwareFixes: Bool = true { didSet {
+        guard !(_enableGameDBHardwareFixesConfig.suppressible && suppressINIWrites) else { return }
+        _enableGameDBHardwareFixesConfig.writer(_enableGameDBHardwareFixesConfig.section, _enableGameDBHardwareFixesConfig.key, enableGameDBHardwareFixes)
+        _enableGameDBHardwareFixesConfig.onSet?(enableGameDBHardwareFixes)
+    }}
+    let _enableWidescreenPatchesConfig = Setting<Bool>(
+        section: "EmuCore", key: "EnableWideScreenPatches", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var enableWidescreenPatches: Bool = false { didSet {
+        guard !(_enableWidescreenPatchesConfig.suppressible && suppressINIWrites) else { return }
+        _enableWidescreenPatchesConfig.writer(_enableWidescreenPatchesConfig.section, _enableWidescreenPatchesConfig.key, enableWidescreenPatches)
+        _enableWidescreenPatchesConfig.onSet?(enableWidescreenPatches)
+    }}
+    let _enableNoInterlacingPatchesConfig = Setting<Bool>(
+        section: "EmuCore", key: "EnableNoInterlacingPatches", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var enableNoInterlacingPatches: Bool = false { didSet {
+        guard !(_enableNoInterlacingPatchesConfig.suppressible && suppressINIWrites) else { return }
+        _enableNoInterlacingPatchesConfig.writer(_enableNoInterlacingPatchesConfig.section, _enableNoInterlacingPatchesConfig.key, enableNoInterlacingPatches)
+        _enableNoInterlacingPatchesConfig.onSet?(enableNoInterlacingPatches)
+    }}
+    let _hostFilesystemConfig = Setting<Bool>(
+        section: "EmuCore", key: "HostFs", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var hostFilesystem: Bool = false { didSet {
+        guard !(_hostFilesystemConfig.suppressible && suppressINIWrites) else { return }
+        _hostFilesystemConfig.writer(_hostFilesystemConfig.section, _hostFilesystemConfig.key, hostFilesystem)
+        _hostFilesystemConfig.onSet?(hostFilesystem)
+    }}
 
     // ── Manual Game Fixes (EmuCore/Gamefixes/<key>) ──
     // Dictionary-backed because the 17 fixes are homogeneous toggles. Effective only
@@ -389,84 +458,177 @@ final class SettingsStore: @unchecked Sendable {
     }
 
     // ── Graphics ──
-    var renderer: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "Renderer", value: Int32(renderer)) }
-    }
-    var upscaleMultiplier: Float {
-        didSet {
-            ARMSX2Bridge.setINIFloat("EmuCore/GS", key: "upscale_multiplier", value: upscaleMultiplier)
-            requestGraphicsApply()
-        }
-    }
-    var vsyncQueueSize: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "VsyncQueueSize", value: Int32(vsyncQueueSize)) }
-    }
-    var textureFiltering: Int {
-        didSet {
-            ARMSX2Bridge.setINIInt("EmuCore/GS", key: "filter", value: Int32(textureFiltering))
-            requestGraphicsApply()
-        }
-    }
-    var hardwareMipmapping: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "hw_mipmap", value: hardwareMipmapping) }
-    }
-    var fxaa: Bool {
-        didSet {
-            ARMSX2Bridge.setINIBool("EmuCore/GS", key: "fxaa", value: fxaa)
-            requestGraphicsApply()
-        }
-    }
-    var casMode: Int {
-        didSet {
-            ARMSX2Bridge.setINIInt("EmuCore/GS", key: "CASMode", value: Int32(casMode))
-            requestGraphicsApply()
-        }
-    }
-    var casSharpness: Int {
-        didSet {
-            ARMSX2Bridge.setINIInt("EmuCore/GS", key: "CASSharpness", value: Int32(casSharpness))
-            requestGraphicsApply()
-        }
-    }
-    var interlaceMode: Int {
-        didSet {
-            ARMSX2Bridge.setINIInt("EmuCore/GS", key: "deinterlace_mode", value: Int32(interlaceMode))
-            requestGraphicsApply()
-        }
-    }
-    var aspectRatio: Int {
-        didSet {
-            ARMSX2Bridge.setINIString("EmuCore/GS", key: "AspectRatio", value: Self.aspectRatioName(for: aspectRatio))
-            requestGraphicsApply()
-        }
-    }
-    var blendingAccuracy: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "accurate_blending_unit", value: Int32(blendingAccuracy)) }
-    }
-    var dithering: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "dithering_ps2", value: Int32(dithering)) }
-    }
-    var trilinearFiltering: Int {
-        didSet {
-            ARMSX2Bridge.setINIInt("EmuCore/GS", key: "TriFilter", value: Int32(trilinearFiltering))
-            requestGraphicsApply()
-        }
-    }
-    var halfPixelOffset: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_HalfPixelOffset", value: Int32(halfPixelOffset)) }
-    }
-    var roundSprite: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_round_sprite_offset", value: Int32(roundSprite)) }
-    }
-    var alignSprite: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "UserHacks_align_sprite_X", value: alignSprite) }
-    }
-    var mergeSprite: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "UserHacks_merge_pp_sprite", value: mergeSprite) }
-    }
-    var wildArmsOffset: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "UserHacks_ForceEvenSpritePosition", value: wildArmsOffset) }
-    }
+    let _rendererConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "Renderer", default: 17,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
+    var renderer: Int = 17 { didSet {
+        guard !(_rendererConfig.suppressible && suppressINIWrites) else { return }
+        _rendererConfig.writer(_rendererConfig.section, _rendererConfig.key, renderer)
+        _rendererConfig.onSet?(renderer)
+    }}
+    let _upscaleMultiplierConfig = Setting<Float>(
+        section: "EmuCore/GS", key: "upscale_multiplier", default: 1.0,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIFloat,
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var upscaleMultiplier: Float = 1.0 { didSet {
+        guard !(_upscaleMultiplierConfig.suppressible && suppressINIWrites) else { return }
+        _upscaleMultiplierConfig.writer(_upscaleMultiplierConfig.section, _upscaleMultiplierConfig.key, upscaleMultiplier)
+        _upscaleMultiplierConfig.onSet?(upscaleMultiplier)
+    }}
+    let _vsyncQueueSizeConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "VsyncQueueSize", default: 8,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
+    var vsyncQueueSize: Int = 8 { didSet {
+        guard !(_vsyncQueueSizeConfig.suppressible && suppressINIWrites) else { return }
+        _vsyncQueueSizeConfig.writer(_vsyncQueueSizeConfig.section, _vsyncQueueSizeConfig.key, vsyncQueueSize)
+        _vsyncQueueSizeConfig.onSet?(vsyncQueueSize)
+    }}
+    let _textureFilteringConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "filter", default: 2,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var textureFiltering: Int = 2 { didSet {
+        guard !(_textureFilteringConfig.suppressible && suppressINIWrites) else { return }
+        _textureFilteringConfig.writer(_textureFilteringConfig.section, _textureFilteringConfig.key, textureFiltering)
+        _textureFilteringConfig.onSet?(textureFiltering)
+    }}
+    let _hardwareMipmappingConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "hw_mipmap", default: true,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var hardwareMipmapping: Bool = true { didSet {
+        guard !(_hardwareMipmappingConfig.suppressible && suppressINIWrites) else { return }
+        _hardwareMipmappingConfig.writer(_hardwareMipmappingConfig.section, _hardwareMipmappingConfig.key, hardwareMipmapping)
+        _hardwareMipmappingConfig.onSet?(hardwareMipmapping)
+    }}
+    let _fxaaConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "fxaa", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool,
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var fxaa: Bool = false { didSet {
+        guard !(_fxaaConfig.suppressible && suppressINIWrites) else { return }
+        _fxaaConfig.writer(_fxaaConfig.section, _fxaaConfig.key, fxaa)
+        _fxaaConfig.onSet?(fxaa)
+    }}
+    let _casModeConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "CASMode", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var casMode: Int = 0 { didSet {
+        guard !(_casModeConfig.suppressible && suppressINIWrites) else { return }
+        _casModeConfig.writer(_casModeConfig.section, _casModeConfig.key, casMode)
+        _casModeConfig.onSet?(casMode)
+    }}
+    let _casSharpnessConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "CASSharpness", default: 50,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var casSharpness: Int = 50 { didSet {
+        guard !(_casSharpnessConfig.suppressible && suppressINIWrites) else { return }
+        _casSharpnessConfig.writer(_casSharpnessConfig.section, _casSharpnessConfig.key, casSharpness)
+        _casSharpnessConfig.onSet?(casSharpness)
+    }}
+    let _interlaceModeConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "deinterlace_mode", default: 7,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var interlaceMode: Int = 7 { didSet {
+        guard !(_interlaceModeConfig.suppressible && suppressINIWrites) else { return }
+        _interlaceModeConfig.writer(_interlaceModeConfig.section, _interlaceModeConfig.key, interlaceMode)
+        _interlaceModeConfig.onSet?(interlaceMode)
+    }}
+    let _aspectRatioConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "AspectRatio", default: 1,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIString(s, key: k, value: SettingsStore.aspectRatioName(for: v)) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var aspectRatio: Int = 1 { didSet {
+        guard !(_aspectRatioConfig.suppressible && suppressINIWrites) else { return }
+        _aspectRatioConfig.writer(_aspectRatioConfig.section, _aspectRatioConfig.key, aspectRatio)
+        _aspectRatioConfig.onSet?(aspectRatio)
+    }}
+    let _blendingAccuracyConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "accurate_blending_unit", default: 1,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
+    var blendingAccuracy: Int = 1 { didSet {
+        guard !(_blendingAccuracyConfig.suppressible && suppressINIWrites) else { return }
+        _blendingAccuracyConfig.writer(_blendingAccuracyConfig.section, _blendingAccuracyConfig.key, blendingAccuracy)
+        _blendingAccuracyConfig.onSet?(blendingAccuracy)
+    }}
+    let _ditheringConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "dithering_ps2", default: 2,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
+    var dithering: Int = 2 { didSet {
+        guard !(_ditheringConfig.suppressible && suppressINIWrites) else { return }
+        _ditheringConfig.writer(_ditheringConfig.section, _ditheringConfig.key, dithering)
+        _ditheringConfig.onSet?(dithering)
+    }}
+    let _trilinearFilteringConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "TriFilter", default: -1,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var trilinearFiltering: Int = -1 { didSet {
+        guard !(_trilinearFilteringConfig.suppressible && suppressINIWrites) else { return }
+        _trilinearFilteringConfig.writer(_trilinearFilteringConfig.section, _trilinearFilteringConfig.key, trilinearFiltering)
+        _trilinearFilteringConfig.onSet?(trilinearFiltering)
+    }}
+    let _halfPixelOffsetConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "UserHacks_HalfPixelOffset", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
+    var halfPixelOffset: Int = 0 { didSet {
+        guard !(_halfPixelOffsetConfig.suppressible && suppressINIWrites) else { return }
+        _halfPixelOffsetConfig.writer(_halfPixelOffsetConfig.section, _halfPixelOffsetConfig.key, halfPixelOffset)
+        _halfPixelOffsetConfig.onSet?(halfPixelOffset)
+    }}
+    let _roundSpriteConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "UserHacks_round_sprite_offset", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
+    var roundSprite: Int = 0 { didSet {
+        guard !(_roundSpriteConfig.suppressible && suppressINIWrites) else { return }
+        _roundSpriteConfig.writer(_roundSpriteConfig.section, _roundSpriteConfig.key, roundSprite)
+        _roundSpriteConfig.onSet?(roundSprite)
+    }}
+    let _alignSpriteConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "UserHacks_align_sprite_X", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var alignSprite: Bool = false { didSet {
+        guard !(_alignSpriteConfig.suppressible && suppressINIWrites) else { return }
+        _alignSpriteConfig.writer(_alignSpriteConfig.section, _alignSpriteConfig.key, alignSprite)
+        _alignSpriteConfig.onSet?(alignSprite)
+    }}
+    let _mergeSpriteConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "UserHacks_merge_pp_sprite", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var mergeSprite: Bool = false { didSet {
+        guard !(_mergeSpriteConfig.suppressible && suppressINIWrites) else { return }
+        _mergeSpriteConfig.writer(_mergeSpriteConfig.section, _mergeSpriteConfig.key, mergeSprite)
+        _mergeSpriteConfig.onSet?(mergeSprite)
+    }}
+    let _wildArmsOffsetConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "UserHacks_ForceEvenSpritePosition", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var wildArmsOffset: Bool = false { didSet {
+        guard !(_wildArmsOffsetConfig.suppressible && suppressINIWrites) else { return }
+        _wildArmsOffsetConfig.writer(_wildArmsOffsetConfig.section, _wildArmsOffsetConfig.key, wildArmsOffset)
+        _wildArmsOffsetConfig.onSet?(wildArmsOffset)
+    }}
+    // clamps to -4096...4096
     var textureOffsetX: Int {
         didSet {
             let normalized = Self.clampedTextureOffset(textureOffsetX)
@@ -477,6 +639,7 @@ final class SettingsStore: @unchecked Sendable {
             ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_TCOffsetX", value: Int32(textureOffsetX))
         }
     }
+    // clamps to -4096...4096
     var textureOffsetY: Int {
         didSet {
             let normalized = Self.clampedTextureOffset(textureOffsetY)
@@ -487,6 +650,7 @@ final class SettingsStore: @unchecked Sendable {
             ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_TCOffsetY", value: Int32(textureOffsetY))
         }
     }
+    // clamps to 0...5000
     var skipDrawStart: Int {
         didSet {
             let normalized = Self.clampedSkipDraw(skipDrawStart)
@@ -497,6 +661,7 @@ final class SettingsStore: @unchecked Sendable {
             ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_SkipDraw_Start", value: Int32(skipDrawStart))
         }
     }
+    // clamps to 0...5000
     var skipDrawEnd: Int {
         didSet {
             let normalized = Self.clampedSkipDraw(skipDrawEnd)
@@ -507,93 +672,204 @@ final class SettingsStore: @unchecked Sendable {
             ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_SkipDraw_End", value: Int32(skipDrawEnd))
         }
     }
-    var loadTextureReplacements: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "LoadTextureReplacements", value: loadTextureReplacements) }
-    }
-    var loadTextureReplacementsAsync: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "LoadTextureReplacementsAsync", value: loadTextureReplacementsAsync) }
-    }
-    var precacheTextureReplacements: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "PrecacheTextureReplacements", value: precacheTextureReplacements) }
-    }
-    var texturePreloading: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "texture_preloading", value: Int32(texturePreloading)) }
-    }
-    var dumpReplaceableTextures: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "DumpReplaceableTextures", value: dumpReplaceableTextures) }
-    }
-    var dumpReplaceableMipmaps: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "DumpReplaceableMipmaps", value: dumpReplaceableMipmaps) }
-    }
-    var dumpTexturesWithFMVActive: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "DumpTexturesWithFMVActive", value: dumpTexturesWithFMVActive) }
-    }
-    var dumpDirectTextures: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "DumpDirectTextures", value: dumpDirectTextures) }
-    }
-    var dumpPaletteTextures: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "DumpPaletteTextures", value: dumpPaletteTextures) }
-    }
+    let _loadTextureReplacementsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "LoadTextureReplacements", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var loadTextureReplacements: Bool = false { didSet {
+        guard !(_loadTextureReplacementsConfig.suppressible && suppressINIWrites) else { return }
+        _loadTextureReplacementsConfig.writer(_loadTextureReplacementsConfig.section, _loadTextureReplacementsConfig.key, loadTextureReplacements)
+        _loadTextureReplacementsConfig.onSet?(loadTextureReplacements)
+    }}
+    let _loadTextureReplacementsAsyncConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "LoadTextureReplacementsAsync", default: true,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var loadTextureReplacementsAsync: Bool = true { didSet {
+        guard !(_loadTextureReplacementsAsyncConfig.suppressible && suppressINIWrites) else { return }
+        _loadTextureReplacementsAsyncConfig.writer(_loadTextureReplacementsAsyncConfig.section, _loadTextureReplacementsAsyncConfig.key, loadTextureReplacementsAsync)
+        _loadTextureReplacementsAsyncConfig.onSet?(loadTextureReplacementsAsync)
+    }}
+    let _precacheTextureReplacementsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "PrecacheTextureReplacements", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var precacheTextureReplacements: Bool = false { didSet {
+        guard !(_precacheTextureReplacementsConfig.suppressible && suppressINIWrites) else { return }
+        _precacheTextureReplacementsConfig.writer(_precacheTextureReplacementsConfig.section, _precacheTextureReplacementsConfig.key, precacheTextureReplacements)
+        _precacheTextureReplacementsConfig.onSet?(precacheTextureReplacements)
+    }}
+    let _texturePreloadingConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "texture_preloading", default: 2,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
+    var texturePreloading: Int = 2 { didSet {
+        guard !(_texturePreloadingConfig.suppressible && suppressINIWrites) else { return }
+        _texturePreloadingConfig.writer(_texturePreloadingConfig.section, _texturePreloadingConfig.key, texturePreloading)
+        _texturePreloadingConfig.onSet?(texturePreloading)
+    }}
+    let _dumpReplaceableTexturesConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "DumpReplaceableTextures", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var dumpReplaceableTextures: Bool = false { didSet {
+        guard !(_dumpReplaceableTexturesConfig.suppressible && suppressINIWrites) else { return }
+        _dumpReplaceableTexturesConfig.writer(_dumpReplaceableTexturesConfig.section, _dumpReplaceableTexturesConfig.key, dumpReplaceableTextures)
+        _dumpReplaceableTexturesConfig.onSet?(dumpReplaceableTextures)
+    }}
+    let _dumpReplaceableMipmapsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "DumpReplaceableMipmaps", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var dumpReplaceableMipmaps: Bool = false { didSet {
+        guard !(_dumpReplaceableMipmapsConfig.suppressible && suppressINIWrites) else { return }
+        _dumpReplaceableMipmapsConfig.writer(_dumpReplaceableMipmapsConfig.section, _dumpReplaceableMipmapsConfig.key, dumpReplaceableMipmaps)
+        _dumpReplaceableMipmapsConfig.onSet?(dumpReplaceableMipmaps)
+    }}
+    let _dumpTexturesWithFMVActiveConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "DumpTexturesWithFMVActive", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var dumpTexturesWithFMVActive: Bool = false { didSet {
+        guard !(_dumpTexturesWithFMVActiveConfig.suppressible && suppressINIWrites) else { return }
+        _dumpTexturesWithFMVActiveConfig.writer(_dumpTexturesWithFMVActiveConfig.section, _dumpTexturesWithFMVActiveConfig.key, dumpTexturesWithFMVActive)
+        _dumpTexturesWithFMVActiveConfig.onSet?(dumpTexturesWithFMVActive)
+    }}
+    let _dumpDirectTexturesConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "DumpDirectTextures", default: true,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var dumpDirectTextures: Bool = true { didSet {
+        guard !(_dumpDirectTexturesConfig.suppressible && suppressINIWrites) else { return }
+        _dumpDirectTexturesConfig.writer(_dumpDirectTexturesConfig.section, _dumpDirectTexturesConfig.key, dumpDirectTextures)
+        _dumpDirectTexturesConfig.onSet?(dumpDirectTextures)
+    }}
+    let _dumpPaletteTexturesConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "DumpPaletteTextures", default: true,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var dumpPaletteTextures: Bool = true { didSet {
+        guard !(_dumpPaletteTexturesConfig.suppressible && suppressINIWrites) else { return }
+        _dumpPaletteTexturesConfig.writer(_dumpPaletteTexturesConfig.section, _dumpPaletteTexturesConfig.key, dumpPaletteTextures)
+        _dumpPaletteTexturesConfig.onSet?(dumpPaletteTextures)
+    }}
 
     // ── GS Hardware Fixes (EmuCore/GS) ──
     // Compatibility-oriented hardware-renderer fixes. AAT (HWAccurateAlphaTest) and
     // Texture Inside RT close the GameDB advisory gap added in 2.3.2. Applied live by
     // the GS thread (no VM restart); some may require GameDB Graphics Fixes off.
-    var hwAccurateAlphaTest: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "HWAccurateAlphaTest", value: hwAccurateAlphaTest) }
-    }
-    var textureInsideRt: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_TextureInsideRt", value: Int32(Self.clamped(textureInsideRt, to: 0...2))) }
-    }
-    var limit24BitDepth: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_Limit24BitDepth", value: Int32(Self.clamped(limit24BitDepth, to: 0...2))) }
-    }
-    var nativeScaling: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_native_scaling", value: Int32(Self.clamped(nativeScaling, to: 0...4))) }
-    }
-    var cpuClutRender: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_CPUCLUTRender", value: Int32(Self.clamped(cpuClutRender, to: 0...2))) }
-    }
-    var cpuSpriteRenderBw: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_CPUSpriteRenderBW", value: Int32(Self.clamped(cpuSpriteRenderBw, to: 0...10))) }
-    }
-    var cpuSpriteRenderLevel: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_CPUSpriteRenderLevel", value: Int32(Self.clamped(cpuSpriteRenderLevel, to: 0...2))) }
-    }
-    var gpuTargetClut: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_GPUTargetCLUTMode", value: Int32(Self.clamped(gpuTargetClut, to: 0...2))) }
-    }
-    var bilinearUpscaleHack: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_BilinearHack", value: Int32(Self.clamped(bilinearUpscaleHack, to: 0...2))) }
-    }
-    var maxAnisotropy: Int {
-        didSet {
-            ARMSX2Bridge.setINIInt("EmuCore/GS", key: "MaxAnisotropy", value: Int32(Self.clamped(maxAnisotropy, to: 0...16)))
-            requestGraphicsApply()
-        }
-    }
-    var hardwareDownloadMode: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "HWDownloadMode", value: Int32(Self.clamped(hardwareDownloadMode, to: 0...4))) }
-    }
-    var tvShader: Int {
-        didSet {
-            ARMSX2Bridge.setINIInt("EmuCore/GS", key: "TVShader", value: Int32(Self.clamped(tvShader, to: 0...7)))
-            requestGraphicsApply()
-        }
-    }
+    let _hwAccurateAlphaTestConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "HWAccurateAlphaTest", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var hwAccurateAlphaTest: Bool = false { didSet {
+        guard !(_hwAccurateAlphaTestConfig.suppressible && suppressINIWrites) else { return }
+        _hwAccurateAlphaTestConfig.writer(_hwAccurateAlphaTestConfig.section, _hwAccurateAlphaTestConfig.key, hwAccurateAlphaTest)
+        _hwAccurateAlphaTestConfig.onSet?(hwAccurateAlphaTest)
+    }}
+    let _textureInsideRtConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "UserHacks_TextureInsideRt", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...2))) })
+    var textureInsideRt: Int = 0 { didSet {
+        guard !(_textureInsideRtConfig.suppressible && suppressINIWrites) else { return }
+        _textureInsideRtConfig.writer(_textureInsideRtConfig.section, _textureInsideRtConfig.key, textureInsideRt)
+        _textureInsideRtConfig.onSet?(textureInsideRt)
+    }}
+    let _limit24BitDepthConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "UserHacks_Limit24BitDepth", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...2))) })
+    var limit24BitDepth: Int = 0 { didSet {
+        guard !(_limit24BitDepthConfig.suppressible && suppressINIWrites) else { return }
+        _limit24BitDepthConfig.writer(_limit24BitDepthConfig.section, _limit24BitDepthConfig.key, limit24BitDepth)
+        _limit24BitDepthConfig.onSet?(limit24BitDepth)
+    }}
+    let _nativeScalingConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "UserHacks_native_scaling", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...4))) })
+    var nativeScaling: Int = 0 { didSet {
+        guard !(_nativeScalingConfig.suppressible && suppressINIWrites) else { return }
+        _nativeScalingConfig.writer(_nativeScalingConfig.section, _nativeScalingConfig.key, nativeScaling)
+        _nativeScalingConfig.onSet?(nativeScaling)
+    }}
+    let _cpuClutRenderConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "UserHacks_CPUCLUTRender", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...2))) })
+    var cpuClutRender: Int = 0 { didSet {
+        guard !(_cpuClutRenderConfig.suppressible && suppressINIWrites) else { return }
+        _cpuClutRenderConfig.writer(_cpuClutRenderConfig.section, _cpuClutRenderConfig.key, cpuClutRender)
+        _cpuClutRenderConfig.onSet?(cpuClutRender)
+    }}
+    let _cpuSpriteRenderBwConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "UserHacks_CPUSpriteRenderBW", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...10))) })
+    var cpuSpriteRenderBw: Int = 0 { didSet {
+        guard !(_cpuSpriteRenderBwConfig.suppressible && suppressINIWrites) else { return }
+        _cpuSpriteRenderBwConfig.writer(_cpuSpriteRenderBwConfig.section, _cpuSpriteRenderBwConfig.key, cpuSpriteRenderBw)
+        _cpuSpriteRenderBwConfig.onSet?(cpuSpriteRenderBw)
+    }}
+    let _cpuSpriteRenderLevelConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "UserHacks_CPUSpriteRenderLevel", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...2))) })
+    var cpuSpriteRenderLevel: Int = 0 { didSet {
+        guard !(_cpuSpriteRenderLevelConfig.suppressible && suppressINIWrites) else { return }
+        _cpuSpriteRenderLevelConfig.writer(_cpuSpriteRenderLevelConfig.section, _cpuSpriteRenderLevelConfig.key, cpuSpriteRenderLevel)
+        _cpuSpriteRenderLevelConfig.onSet?(cpuSpriteRenderLevel)
+    }}
+    let _gpuTargetClutConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "UserHacks_GPUTargetCLUTMode", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...2))) })
+    var gpuTargetClut: Int = 0 { didSet {
+        guard !(_gpuTargetClutConfig.suppressible && suppressINIWrites) else { return }
+        _gpuTargetClutConfig.writer(_gpuTargetClutConfig.section, _gpuTargetClutConfig.key, gpuTargetClut)
+        _gpuTargetClutConfig.onSet?(gpuTargetClut)
+    }}
+    let _bilinearUpscaleHackConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "UserHacks_BilinearHack", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...2))) })
+    var bilinearUpscaleHack: Int = 0 { didSet {
+        guard !(_bilinearUpscaleHackConfig.suppressible && suppressINIWrites) else { return }
+        _bilinearUpscaleHackConfig.writer(_bilinearUpscaleHackConfig.section, _bilinearUpscaleHackConfig.key, bilinearUpscaleHack)
+        _bilinearUpscaleHackConfig.onSet?(bilinearUpscaleHack)
+    }}
+    let _maxAnisotropyConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "MaxAnisotropy", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...16))) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var maxAnisotropy: Int = 0 { didSet {
+        guard !(_maxAnisotropyConfig.suppressible && suppressINIWrites) else { return }
+        _maxAnisotropyConfig.writer(_maxAnisotropyConfig.section, _maxAnisotropyConfig.key, maxAnisotropy)
+        _maxAnisotropyConfig.onSet?(maxAnisotropy)
+    }}
+    let _hardwareDownloadModeConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "HWDownloadMode", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...4))) })
+    var hardwareDownloadMode: Int = 0 { didSet {
+        guard !(_hardwareDownloadModeConfig.suppressible && suppressINIWrites) else { return }
+        _hardwareDownloadModeConfig.writer(_hardwareDownloadModeConfig.section, _hardwareDownloadModeConfig.key, hardwareDownloadMode)
+        _hardwareDownloadModeConfig.onSet?(hardwareDownloadMode)
+    }}
+    let _tvShaderConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "TVShader", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...7))) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var tvShader: Int = 0 { didSet {
+        guard !(_tvShaderConfig.suppressible && suppressINIWrites) else { return }
+        _tvShaderConfig.writer(_tvShaderConfig.section, _tvShaderConfig.key, tvShader)
+        _tvShaderConfig.onSet?(tvShader)
+    }}
 
-    /// Homogeneous bool GS hacks, in display order.
-    static let gsBoolHackOptions: [GameFixOption] = [
-        .init(key: "paltex", label: "GPU Palette Conversion"),
-        .init(key: "UserHacks_CPU_FB_Conversion", label: "CPU Framebuffer Conversion"),
-        .init(key: "UserHacks_ReadTCOnClose", label: "Read Targets When Closing"),
-        .init(key: "UserHacks_DisableDepthSupport", label: "Disable Depth Emulation"),
-        .init(key: "UserHacks_DisablePartialInvalidation", label: "Disable Partial Invalidation"),
-        .init(key: "preload_frame_with_gs_data", label: "Preload Frame Data"),
-        .init(key: "UserHacks_EstimateTextureRegion", label: "Estimate Texture Region"),
-        .init(key: "UserHacks_DrawBuffering", label: "Draw Buffering"),
-        .init(key: "UserHacks_NativePaletteDraw", label: "Unscaled Palette Draw")
-    ]
+    /// Homogeneous bool GS hacks — see SettingsStore+Graphics.swift for the option list.
     var gsBoolHacks: [String: Bool] = [:]
 
     func gsBoolHackEnabled(_ key: String) -> Bool {
@@ -615,77 +891,127 @@ final class SettingsStore: @unchecked Sendable {
     }
 
     // ── Screen / PCRTC (EmuCore/GS) ── display-output options, applied live.
-    var pcrtcOffsets: Bool {
-        didSet {
-            ARMSX2Bridge.setINIBool("EmuCore/GS", key: "pcrtc_offsets", value: pcrtcOffsets)
-            requestGraphicsApply()
-        }
-    }
-    var pcrtcOverscan: Bool {
-        didSet {
-            ARMSX2Bridge.setINIBool("EmuCore/GS", key: "pcrtc_overscan", value: pcrtcOverscan)
-            requestGraphicsApply()
-        }
-    }
-    var pcrtcAntiBlur: Bool {
-        didSet {
-            ARMSX2Bridge.setINIBool("EmuCore/GS", key: "pcrtc_antiblur", value: pcrtcAntiBlur)
-            requestGraphicsApply()
-        }
-    }
-    var disableInterlaceOffset: Bool {
-        didSet {
-            ARMSX2Bridge.setINIBool("EmuCore/GS", key: "disable_interlace_offset", value: disableInterlaceOffset)
-            requestGraphicsApply()
-        }
-    }
-    var skipDuplicateFrames: Bool {
-        didSet {
-            ARMSX2Bridge.setINIBool("EmuCore/GS", key: "SkipDuplicateFrames", value: skipDuplicateFrames)
-            requestGraphicsApply()
-        }
-    }
-    var syncToHostRefresh: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "SyncToHostRefreshRate", value: syncToHostRefresh) }
-    }
-    var integerScaling: Bool {
-        didSet {
-            ARMSX2Bridge.setINIBool("EmuCore/GS", key: "IntegerScaling", value: integerScaling)
-            requestGraphicsApply()
-        }
-    }
+    let _pcrtcOffsetsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "pcrtc_offsets", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool,
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var pcrtcOffsets: Bool = false { didSet {
+        guard !(_pcrtcOffsetsConfig.suppressible && suppressINIWrites) else { return }
+        _pcrtcOffsetsConfig.writer(_pcrtcOffsetsConfig.section, _pcrtcOffsetsConfig.key, pcrtcOffsets)
+        _pcrtcOffsetsConfig.onSet?(pcrtcOffsets)
+    }}
+    let _pcrtcOverscanConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "pcrtc_overscan", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool,
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var pcrtcOverscan: Bool = false { didSet {
+        guard !(_pcrtcOverscanConfig.suppressible && suppressINIWrites) else { return }
+        _pcrtcOverscanConfig.writer(_pcrtcOverscanConfig.section, _pcrtcOverscanConfig.key, pcrtcOverscan)
+        _pcrtcOverscanConfig.onSet?(pcrtcOverscan)
+    }}
+    let _pcrtcAntiBlurConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "pcrtc_antiblur", default: true,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool,
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var pcrtcAntiBlur: Bool = true { didSet {
+        guard !(_pcrtcAntiBlurConfig.suppressible && suppressINIWrites) else { return }
+        _pcrtcAntiBlurConfig.writer(_pcrtcAntiBlurConfig.section, _pcrtcAntiBlurConfig.key, pcrtcAntiBlur)
+        _pcrtcAntiBlurConfig.onSet?(pcrtcAntiBlur)
+    }}
+    let _disableInterlaceOffsetConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "disable_interlace_offset", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool,
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var disableInterlaceOffset: Bool = false { didSet {
+        guard !(_disableInterlaceOffsetConfig.suppressible && suppressINIWrites) else { return }
+        _disableInterlaceOffsetConfig.writer(_disableInterlaceOffsetConfig.section, _disableInterlaceOffsetConfig.key, disableInterlaceOffset)
+        _disableInterlaceOffsetConfig.onSet?(disableInterlaceOffset)
+    }}
+    let _skipDuplicateFramesConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "SkipDuplicateFrames", default: true,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool,
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var skipDuplicateFrames: Bool = true { didSet {
+        guard !(_skipDuplicateFramesConfig.suppressible && suppressINIWrites) else { return }
+        _skipDuplicateFramesConfig.writer(_skipDuplicateFramesConfig.section, _skipDuplicateFramesConfig.key, skipDuplicateFrames)
+        _skipDuplicateFramesConfig.onSet?(skipDuplicateFrames)
+    }}
+    let _syncToHostRefreshConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "SyncToHostRefreshRate", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var syncToHostRefresh: Bool = false { didSet {
+        guard !(_syncToHostRefreshConfig.suppressible && suppressINIWrites) else { return }
+        _syncToHostRefreshConfig.writer(_syncToHostRefreshConfig.section, _syncToHostRefreshConfig.key, syncToHostRefresh)
+        _syncToHostRefreshConfig.onSet?(syncToHostRefresh)
+    }}
+    let _integerScalingConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "IntegerScaling", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool,
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var integerScaling: Bool = false { didSet {
+        guard !(_integerScalingConfig.suppressible && suppressINIWrites) else { return }
+        _integerScalingConfig.writer(_integerScalingConfig.section, _integerScalingConfig.key, integerScaling)
+        _integerScalingConfig.onSet?(integerScaling)
+    }}
 
     // ── Shade Boost (EmuCore/GS) ── post-process color adjustment, applied live.
-    var shadeBoost: Bool {
-        didSet {
-            ARMSX2Bridge.setINIBool("EmuCore/GS", key: "ShadeBoost", value: shadeBoost)
-            requestGraphicsApply()
-        }
-    }
-    var shadeBoostBrightness: Int {
-        didSet {
-            ARMSX2Bridge.setINIInt("EmuCore/GS", key: "ShadeBoost_Brightness", value: Int32(Self.clamped(shadeBoostBrightness, to: 1...100)))
-            requestGraphicsApply()
-        }
-    }
-    var shadeBoostContrast: Int {
-        didSet {
-            ARMSX2Bridge.setINIInt("EmuCore/GS", key: "ShadeBoost_Contrast", value: Int32(Self.clamped(shadeBoostContrast, to: 1...100)))
-            requestGraphicsApply()
-        }
-    }
-    var shadeBoostSaturation: Int {
-        didSet {
-            ARMSX2Bridge.setINIInt("EmuCore/GS", key: "ShadeBoost_Saturation", value: Int32(Self.clamped(shadeBoostSaturation, to: 1...100)))
-            requestGraphicsApply()
-        }
-    }
-    var shadeBoostGamma: Int {
-        didSet {
-            ARMSX2Bridge.setINIInt("EmuCore/GS", key: "ShadeBoost_Gamma", value: Int32(Self.clamped(shadeBoostGamma, to: 1...100)))
-            requestGraphicsApply()
-        }
-    }
+    let _shadeBoostConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "ShadeBoost", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool,
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var shadeBoost: Bool = false { didSet {
+        guard !(_shadeBoostConfig.suppressible && suppressINIWrites) else { return }
+        _shadeBoostConfig.writer(_shadeBoostConfig.section, _shadeBoostConfig.key, shadeBoost)
+        _shadeBoostConfig.onSet?(shadeBoost)
+    }}
+    let _shadeBoostBrightnessConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "ShadeBoost_Brightness", default: 50,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var shadeBoostBrightness: Int = 50 { didSet {
+        guard !(_shadeBoostBrightnessConfig.suppressible && suppressINIWrites) else { return }
+        _shadeBoostBrightnessConfig.writer(_shadeBoostBrightnessConfig.section, _shadeBoostBrightnessConfig.key, shadeBoostBrightness)
+        _shadeBoostBrightnessConfig.onSet?(shadeBoostBrightness)
+    }}
+    let _shadeBoostContrastConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "ShadeBoost_Contrast", default: 50,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var shadeBoostContrast: Int = 50 { didSet {
+        guard !(_shadeBoostContrastConfig.suppressible && suppressINIWrites) else { return }
+        _shadeBoostContrastConfig.writer(_shadeBoostContrastConfig.section, _shadeBoostContrastConfig.key, shadeBoostContrast)
+        _shadeBoostContrastConfig.onSet?(shadeBoostContrast)
+    }}
+    let _shadeBoostSaturationConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "ShadeBoost_Saturation", default: 50,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var shadeBoostSaturation: Int = 50 { didSet {
+        guard !(_shadeBoostSaturationConfig.suppressible && suppressINIWrites) else { return }
+        _shadeBoostSaturationConfig.writer(_shadeBoostSaturationConfig.section, _shadeBoostSaturationConfig.key, shadeBoostSaturation)
+        _shadeBoostSaturationConfig.onSet?(shadeBoostSaturation)
+    }}
+    let _shadeBoostGammaConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "ShadeBoost_Gamma", default: 50,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) },
+        onSet: { _ in SettingsStore.shared.requestGraphicsApply() })
+    var shadeBoostGamma: Int = 50 { didSet {
+        guard !(_shadeBoostGammaConfig.suppressible && suppressINIWrites) else { return }
+        _shadeBoostGammaConfig.writer(_shadeBoostGammaConfig.section, _shadeBoostGammaConfig.key, shadeBoostGamma)
+        _shadeBoostGammaConfig.onSet?(shadeBoostGamma)
+    }}
 
     // ── OSD Overlay ──
     var osdPreset: OsdPreset {
@@ -701,100 +1027,243 @@ final class SettingsStore: @unchecked Sendable {
             applyOsdPreset(osdPreset)
         }
     }
-    var lastActiveOsdPreset: OsdPreset {
-        didSet {
-            ARMSX2Bridge.setINIInt("ARMSX2iOS/UI", key: "LastActiveOsdPreset", value: Int32(lastActiveOsdPreset.rawValue))
-        }
-    }
-    var osdPerformancePosition: Int {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "OsdPerformancePos", value: Int32(osdPerformancePosition)) }
-    }
+    let _lastActiveOsdPresetConfig = Setting<OsdPreset>(
+        section: "ARMSX2iOS/UI", key: "LastActiveOsdPreset", default: .simple,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v.rawValue)) })
+    var lastActiveOsdPreset: OsdPreset = .simple { didSet {
+        guard !(_lastActiveOsdPresetConfig.suppressible && suppressINIWrites) else { return }
+        _lastActiveOsdPresetConfig.writer(_lastActiveOsdPresetConfig.section, _lastActiveOsdPresetConfig.key, lastActiveOsdPreset)
+        _lastActiveOsdPresetConfig.onSet?(lastActiveOsdPreset)
+    }}
+    let _osdPerformancePositionConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "OsdPerformancePos", default: 3,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
+    var osdPerformancePosition: Int = 3 { didSet {
+        guard !(_osdPerformancePositionConfig.suppressible && suppressINIWrites) else { return }
+        _osdPerformancePositionConfig.writer(_osdPerformancePositionConfig.section, _osdPerformancePositionConfig.key, osdPerformancePosition)
+        _osdPerformancePositionConfig.onSet?(osdPerformancePosition)
+    }}
     /// Suppresses transient on-screen messages (shader compilation, save state,
     /// settings-applied). Critical SwiftUI alerts are unaffected. Backed by the
     /// core's OsdMessagesPos (1 = TopLeft default, 0 = None).
-    var osdShowMessages: Bool {
-        didSet { ARMSX2Bridge.setINIInt("EmuCore/GS", key: "OsdMessagesPos", value: osdShowMessages ? 1 : 0) }
-    }
-    var osdShowFPS: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowFPS", value: osdShowFPS) }
-    }
-    var osdShowVPS: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowVPS", value: osdShowVPS) }
-    }
-    var osdShowSpeed: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowSpeed", value: osdShowSpeed) }
-    }
-    var osdShowCPU: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowCPU", value: osdShowCPU) }
-    }
-    var osdShowGPU: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowGPU", value: osdShowGPU) }
-    }
-    var osdShowResolution: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowResolution", value: osdShowResolution) }
-    }
-    var osdShowGSStats: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowGSStats", value: osdShowGSStats) }
-    }
-    var osdShowIndicators: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowIndicators", value: osdShowIndicators) }
-    }
-    var osdShowSettings: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowSettings", value: osdShowSettings) }
-    }
-    var osdShowInputs: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowInputs", value: osdShowInputs) }
-    }
-    var osdShowFrameTimes: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowFrameTimes", value: osdShowFrameTimes) }
-    }
-    var osdShowVersion: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowVersion", value: osdShowVersion) }
-    }
-    var osdShowHardwareInfo: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowHardwareInfo", value: osdShowHardwareInfo) }
-    }
-    var osdShowTextureReplacements: Bool {
-        didSet { ARMSX2Bridge.setINIBool("EmuCore/GS", key: "OsdShowTextureReplacements", value: osdShowTextureReplacements) }
-    }
-    var osdShowDeviceStats: Bool {
-        didSet { ARMSX2Bridge.setINIBool("ARMSX2iOS/UI", key: "OsdShowDeviceStats", value: osdShowDeviceStats) }
-    }
+    let _osdShowMessagesConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdMessagesPos", default: true,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: v ? 1 : 0) })
+    var osdShowMessages: Bool = true { didSet {
+        guard !(_osdShowMessagesConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowMessagesConfig.writer(_osdShowMessagesConfig.section, _osdShowMessagesConfig.key, osdShowMessages)
+        _osdShowMessagesConfig.onSet?(osdShowMessages)
+    }}
+    let _osdShowFPSConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowFPS", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowFPS: Bool = false { didSet {
+        guard !(_osdShowFPSConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowFPSConfig.writer(_osdShowFPSConfig.section, _osdShowFPSConfig.key, osdShowFPS)
+        _osdShowFPSConfig.onSet?(osdShowFPS)
+    }}
+    let _osdShowVPSConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowVPS", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowVPS: Bool = false { didSet {
+        guard !(_osdShowVPSConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowVPSConfig.writer(_osdShowVPSConfig.section, _osdShowVPSConfig.key, osdShowVPS)
+        _osdShowVPSConfig.onSet?(osdShowVPS)
+    }}
+    let _osdShowSpeedConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowSpeed", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowSpeed: Bool = false { didSet {
+        guard !(_osdShowSpeedConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowSpeedConfig.writer(_osdShowSpeedConfig.section, _osdShowSpeedConfig.key, osdShowSpeed)
+        _osdShowSpeedConfig.onSet?(osdShowSpeed)
+    }}
+    let _osdShowCPUConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowCPU", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowCPU: Bool = false { didSet {
+        guard !(_osdShowCPUConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowCPUConfig.writer(_osdShowCPUConfig.section, _osdShowCPUConfig.key, osdShowCPU)
+        _osdShowCPUConfig.onSet?(osdShowCPU)
+    }}
+    let _osdShowGPUConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowGPU", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowGPU: Bool = false { didSet {
+        guard !(_osdShowGPUConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowGPUConfig.writer(_osdShowGPUConfig.section, _osdShowGPUConfig.key, osdShowGPU)
+        _osdShowGPUConfig.onSet?(osdShowGPU)
+    }}
+    let _osdShowResolutionConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowResolution", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowResolution: Bool = false { didSet {
+        guard !(_osdShowResolutionConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowResolutionConfig.writer(_osdShowResolutionConfig.section, _osdShowResolutionConfig.key, osdShowResolution)
+        _osdShowResolutionConfig.onSet?(osdShowResolution)
+    }}
+    let _osdShowGSStatsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowGSStats", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowGSStats: Bool = false { didSet {
+        guard !(_osdShowGSStatsConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowGSStatsConfig.writer(_osdShowGSStatsConfig.section, _osdShowGSStatsConfig.key, osdShowGSStats)
+        _osdShowGSStatsConfig.onSet?(osdShowGSStats)
+    }}
+    let _osdShowIndicatorsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowIndicators", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowIndicators: Bool = false { didSet {
+        guard !(_osdShowIndicatorsConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowIndicatorsConfig.writer(_osdShowIndicatorsConfig.section, _osdShowIndicatorsConfig.key, osdShowIndicators)
+        _osdShowIndicatorsConfig.onSet?(osdShowIndicators)
+    }}
+    let _osdShowSettingsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowSettings", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowSettings: Bool = false { didSet {
+        guard !(_osdShowSettingsConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowSettingsConfig.writer(_osdShowSettingsConfig.section, _osdShowSettingsConfig.key, osdShowSettings)
+        _osdShowSettingsConfig.onSet?(osdShowSettings)
+    }}
+    let _osdShowInputsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowInputs", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowInputs: Bool = false { didSet {
+        guard !(_osdShowInputsConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowInputsConfig.writer(_osdShowInputsConfig.section, _osdShowInputsConfig.key, osdShowInputs)
+        _osdShowInputsConfig.onSet?(osdShowInputs)
+    }}
+    let _osdShowFrameTimesConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowFrameTimes", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowFrameTimes: Bool = false { didSet {
+        guard !(_osdShowFrameTimesConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowFrameTimesConfig.writer(_osdShowFrameTimesConfig.section, _osdShowFrameTimesConfig.key, osdShowFrameTimes)
+        _osdShowFrameTimesConfig.onSet?(osdShowFrameTimes)
+    }}
+    let _osdShowVersionConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowVersion", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowVersion: Bool = false { didSet {
+        guard !(_osdShowVersionConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowVersionConfig.writer(_osdShowVersionConfig.section, _osdShowVersionConfig.key, osdShowVersion)
+        _osdShowVersionConfig.onSet?(osdShowVersion)
+    }}
+    let _osdShowHardwareInfoConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowHardwareInfo", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowHardwareInfo: Bool = false { didSet {
+        guard !(_osdShowHardwareInfoConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowHardwareInfoConfig.writer(_osdShowHardwareInfoConfig.section, _osdShowHardwareInfoConfig.key, osdShowHardwareInfo)
+        _osdShowHardwareInfoConfig.onSet?(osdShowHardwareInfo)
+    }}
+    let _osdShowTextureReplacementsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowTextureReplacements", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowTextureReplacements: Bool = false { didSet {
+        guard !(_osdShowTextureReplacementsConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowTextureReplacementsConfig.writer(_osdShowTextureReplacementsConfig.section, _osdShowTextureReplacementsConfig.key, osdShowTextureReplacements)
+        _osdShowTextureReplacementsConfig.onSet?(osdShowTextureReplacements)
+    }}
+    let _osdShowDeviceStatsConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "OsdShowDeviceStats", default: false,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var osdShowDeviceStats: Bool = false { didSet {
+        guard !(_osdShowDeviceStatsConfig.suppressible && suppressINIWrites) else { return }
+        _osdShowDeviceStatsConfig.writer(_osdShowDeviceStatsConfig.section, _osdShowDeviceStatsConfig.key, osdShowDeviceStats)
+        _osdShowDeviceStatsConfig.onSet?(osdShowDeviceStats)
+    }}
 
     // ── Gamepad / UI ──
-    var padOpacity: Float {
-        didSet { ARMSX2Bridge.setINIFloat("ARMSX2iOS/UI", key: "PadOpacity", value: padOpacity) }
-    }
-    var hapticFeedback: Bool {
-        didSet { ARMSX2Bridge.setINIBool("ARMSX2iOS/UI", key: "HapticFeedback", value: hapticFeedback) }
-    }
-    var dpadDiagonalsEnabled: Bool {
-        didSet { ARMSX2Bridge.setINIBool("ARMSX2iOS/UI", key: "DpadDiagonalsEnabled", value: dpadDiagonalsEnabled) }
-    }
-    var faceComboZonesEnabled: Bool {
-        didSet { ARMSX2Bridge.setINIBool("ARMSX2iOS/UI", key: "FaceComboZonesEnabled", value: faceComboZonesEnabled) }
-    }
-    var virtualPadSkin: VirtualPadSkin {
-        didSet { ARMSX2Bridge.setINIInt("ARMSX2iOS/UI", key: "VirtualPadSkin", value: Int32(virtualPadSkin.rawValue)) }
-    }
-    var autoHideVirtualPadWhenControllerConnected: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("ARMSX2iOS/UI", key: "AutoHideVirtualPadWhenControllerConnected", value: autoHideVirtualPadWhenControllerConnected)
-        }
-    }
-    var autoFullscreen: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("ARMSX2iOS/UI", key: "AutoFullscreen", value: autoFullscreen)
-        }
-    }
-    var hideMenuButton: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("ARMSX2iOS/UI", key: "HideMenuButton", value: hideMenuButton)
-        }
-    }
+    let _padOpacityConfig = Setting<Float>(
+        section: "ARMSX2iOS/UI", key: "PadOpacity", default: 0.6,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIFloat)
+    var padOpacity: Float = 0.6 { didSet {
+        guard !(_padOpacityConfig.suppressible && suppressINIWrites) else { return }
+        _padOpacityConfig.writer(_padOpacityConfig.section, _padOpacityConfig.key, padOpacity)
+        _padOpacityConfig.onSet?(padOpacity)
+    }}
+    let _hapticFeedbackConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "HapticFeedback", default: true,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var hapticFeedback: Bool = true { didSet {
+        guard !(_hapticFeedbackConfig.suppressible && suppressINIWrites) else { return }
+        _hapticFeedbackConfig.writer(_hapticFeedbackConfig.section, _hapticFeedbackConfig.key, hapticFeedback)
+        _hapticFeedbackConfig.onSet?(hapticFeedback)
+    }}
+    let _dpadDiagonalsEnabledConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "DpadDiagonalsEnabled", default: true,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var dpadDiagonalsEnabled: Bool = true { didSet {
+        guard !(_dpadDiagonalsEnabledConfig.suppressible && suppressINIWrites) else { return }
+        _dpadDiagonalsEnabledConfig.writer(_dpadDiagonalsEnabledConfig.section, _dpadDiagonalsEnabledConfig.key, dpadDiagonalsEnabled)
+        _dpadDiagonalsEnabledConfig.onSet?(dpadDiagonalsEnabled)
+    }}
+    let _faceComboZonesEnabledConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "FaceComboZonesEnabled", default: true,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var faceComboZonesEnabled: Bool = true { didSet {
+        guard !(_faceComboZonesEnabledConfig.suppressible && suppressINIWrites) else { return }
+        _faceComboZonesEnabledConfig.writer(_faceComboZonesEnabledConfig.section, _faceComboZonesEnabledConfig.key, faceComboZonesEnabled)
+        _faceComboZonesEnabledConfig.onSet?(faceComboZonesEnabled)
+    }}
+    let _virtualPadSkinConfig = Setting<VirtualPadSkin>(
+        section: "ARMSX2iOS/UI", key: "VirtualPadSkin", default: .armsx2Refresh,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v.rawValue)) })
+    var virtualPadSkin: VirtualPadSkin = .armsx2Refresh { didSet {
+        guard !(_virtualPadSkinConfig.suppressible && suppressINIWrites) else { return }
+        _virtualPadSkinConfig.writer(_virtualPadSkinConfig.section, _virtualPadSkinConfig.key, virtualPadSkin)
+        _virtualPadSkinConfig.onSet?(virtualPadSkin)
+    }}
+    let _autoHideVirtualPadWhenControllerConnectedConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "AutoHideVirtualPadWhenControllerConnected", default: true,
+        writer: ARMSX2Bridge.setINIBool)
+    var autoHideVirtualPadWhenControllerConnected: Bool = true { didSet {
+        guard !(_autoHideVirtualPadWhenControllerConnectedConfig.suppressible && suppressINIWrites) else { return }
+        _autoHideVirtualPadWhenControllerConnectedConfig.writer(_autoHideVirtualPadWhenControllerConnectedConfig.section, _autoHideVirtualPadWhenControllerConnectedConfig.key, autoHideVirtualPadWhenControllerConnected)
+        _autoHideVirtualPadWhenControllerConnectedConfig.onSet?(autoHideVirtualPadWhenControllerConnected)
+    }}
+    let _autoFullscreenConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "AutoFullscreen", default: true,
+        writer: ARMSX2Bridge.setINIBool)
+    var autoFullscreen: Bool = true { didSet {
+        guard !(_autoFullscreenConfig.suppressible && suppressINIWrites) else { return }
+        _autoFullscreenConfig.writer(_autoFullscreenConfig.section, _autoFullscreenConfig.key, autoFullscreen)
+        _autoFullscreenConfig.onSet?(autoFullscreen)
+    }}
+    let _hideMenuButtonConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "HideMenuButton", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var hideMenuButton: Bool = false { didSet {
+        guard !(_hideMenuButtonConfig.suppressible && suppressINIWrites) else { return }
+        _hideMenuButtonConfig.writer(_hideMenuButtonConfig.section, _hideMenuButtonConfig.key, hideMenuButton)
+        _hideMenuButtonConfig.onSet?(hideMenuButton)
+    }}
+    // clamps to 0.8...1.6
     var analogStickScale: Float {
         didSet {
             let clamped = Self.clampedAnalogStickScale(analogStickScale)
@@ -806,26 +1275,43 @@ final class SettingsStore: @unchecked Sendable {
             ARMSX2Bridge.setINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", value: analogStickScale)
         }
     }
-    var appLanguage: AppLanguage {
-        didSet { ARMSX2Bridge.setINIString("ARMSX2iOS/UI", key: "AppLanguage", value: appLanguage.rawValue) }
-    }
-    var controllerMultitapMode: Int {
-        didSet { ARMSX2Bridge.setINIInt("ARMSX2iOS/Gamepad", key: "MultitapMode", value: Int32(controllerMultitapMode)) }
-    }
-    var autoOpenStikDebug: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("ARMSX2iOS/JIT", key: "AutoOpenStikDebug", value: autoOpenStikDebug)
-        }
-    }
-    var jitScriptProtocol: JITScriptProtocol {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIString("ARMSX2iOS/JIT", key: "ScriptProtocol", value: jitScriptProtocol.rawValue)
-        }
-    }
+    let _appLanguageConfig = Setting<AppLanguage>(
+        section: "ARMSX2iOS/UI", key: "AppLanguage", default: .system,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIString(s, key: k, value: v.rawValue) })
+    var appLanguage: AppLanguage = .system { didSet {
+        guard !(_appLanguageConfig.suppressible && suppressINIWrites) else { return }
+        _appLanguageConfig.writer(_appLanguageConfig.section, _appLanguageConfig.key, appLanguage)
+        _appLanguageConfig.onSet?(appLanguage)
+    }}
+    let _controllerMultitapModeConfig = Setting<Int>(
+        section: "ARMSX2iOS/Gamepad", key: "MultitapMode", default: 0,
+        suppressible: false,
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
+    var controllerMultitapMode: Int = 0 { didSet {
+        guard !(_controllerMultitapModeConfig.suppressible && suppressINIWrites) else { return }
+        _controllerMultitapModeConfig.writer(_controllerMultitapModeConfig.section, _controllerMultitapModeConfig.key, controllerMultitapMode)
+        _controllerMultitapModeConfig.onSet?(controllerMultitapMode)
+    }}
+    let _autoOpenStikDebugConfig = Setting<Bool>(
+        section: "ARMSX2iOS/JIT", key: "AutoOpenStikDebug", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var autoOpenStikDebug: Bool = false { didSet {
+        guard !(_autoOpenStikDebugConfig.suppressible && suppressINIWrites) else { return }
+        _autoOpenStikDebugConfig.writer(_autoOpenStikDebugConfig.section, _autoOpenStikDebugConfig.key, autoOpenStikDebug)
+        _autoOpenStikDebugConfig.onSet?(autoOpenStikDebug)
+    }}
+    let _jitScriptProtocolConfig = Setting<JITScriptProtocol>(
+        section: "ARMSX2iOS/JIT", key: "ScriptProtocol", default: .legacy,
+        writer: { s, k, v in ARMSX2Bridge.setINIString(s, key: k, value: v.rawValue) })
+    var jitScriptProtocol: JITScriptProtocol = .legacy { didSet {
+        guard !(_jitScriptProtocolConfig.suppressible && suppressINIWrites) else { return }
+        _jitScriptProtocolConfig.writer(_jitScriptProtocolConfig.section, _jitScriptProtocolConfig.key, jitScriptProtocol)
+        _jitScriptProtocolConfig.onSet?(jitScriptProtocol)
+    }}
 
     // DEV9 / Network
+    // writes HddEnable + HddFile (+ excludes HDD image from backup on enable)
     var dev9HddEnabled: Bool {
         didSet {
             guard !suppressINIWrites else { return }
@@ -838,12 +1324,15 @@ final class SettingsStore: @unchecked Sendable {
             }
         }
     }
-    var dev9HddFile: String {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIString("DEV9/Hdd", key: "HddFile", value: dev9HddFile)
-        }
-    }
+    let _dev9HddFileConfig = Setting<String>(
+        section: "DEV9/Hdd", key: "HddFile", default: "DEV9hdd.raw",
+        writer: ARMSX2Bridge.setINIString)
+    var dev9HddFile: String = "DEV9hdd.raw" { didSet {
+        guard !(_dev9HddFileConfig.suppressible && suppressINIWrites) else { return }
+        _dev9HddFileConfig.writer(_dev9HddFileConfig.section, _dev9HddFileConfig.key, dev9HddFile)
+        _dev9HddFileConfig.onSet?(dev9HddFile)
+    }}
+    // writes EthEnable + EthApi + EthDevice
     var dev9EthernetEnabled: Bool {
         didSet {
             guard !suppressINIWrites else { return }
@@ -854,6 +1343,7 @@ final class SettingsStore: @unchecked Sendable {
             }
         }
     }
+    // writes EthApi + EthDevice
     var dev9EthDevice: String {
         didSet {
             guard !suppressINIWrites else { return }
@@ -861,48 +1351,62 @@ final class SettingsStore: @unchecked Sendable {
             ARMSX2Bridge.setINIString("DEV9/Eth", key: "EthDevice", value: dev9EthDevice.isEmpty ? "Auto" : dev9EthDevice)
         }
     }
-    var dev9InterceptDHCP: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("DEV9/Eth", key: "InterceptDHCP", value: dev9InterceptDHCP)
-        }
-    }
-    var dev9EthLogDHCP: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("DEV9/Eth", key: "EthLogDHCP", value: dev9EthLogDHCP)
-        }
-    }
-    var dev9EthLogDNS: Bool {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIBool("DEV9/Eth", key: "EthLogDNS", value: dev9EthLogDNS)
-        }
-    }
-    var dev9DNS1Mode: String {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIString("DEV9/Eth", key: "ModeDNS1", value: dev9DNS1Mode)
-        }
-    }
-    var dev9DNS1: String {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIString("DEV9/Eth", key: "DNS1", value: dev9DNS1)
-        }
-    }
-    var dev9DNS2Mode: String {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIString("DEV9/Eth", key: "ModeDNS2", value: dev9DNS2Mode)
-        }
-    }
-    var dev9DNS2: String {
-        didSet {
-            guard !suppressINIWrites else { return }
-            ARMSX2Bridge.setINIString("DEV9/Eth", key: "DNS2", value: dev9DNS2)
-        }
-    }
+    let _dev9InterceptDHCPConfig = Setting<Bool>(
+        section: "DEV9/Eth", key: "InterceptDHCP", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var dev9InterceptDHCP: Bool = false { didSet {
+        guard !(_dev9InterceptDHCPConfig.suppressible && suppressINIWrites) else { return }
+        _dev9InterceptDHCPConfig.writer(_dev9InterceptDHCPConfig.section, _dev9InterceptDHCPConfig.key, dev9InterceptDHCP)
+        _dev9InterceptDHCPConfig.onSet?(dev9InterceptDHCP)
+    }}
+    let _dev9EthLogDHCPConfig = Setting<Bool>(
+        section: "DEV9/Eth", key: "EthLogDHCP", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var dev9EthLogDHCP: Bool = false { didSet {
+        guard !(_dev9EthLogDHCPConfig.suppressible && suppressINIWrites) else { return }
+        _dev9EthLogDHCPConfig.writer(_dev9EthLogDHCPConfig.section, _dev9EthLogDHCPConfig.key, dev9EthLogDHCP)
+        _dev9EthLogDHCPConfig.onSet?(dev9EthLogDHCP)
+    }}
+    let _dev9EthLogDNSConfig = Setting<Bool>(
+        section: "DEV9/Eth", key: "EthLogDNS", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var dev9EthLogDNS: Bool = false { didSet {
+        guard !(_dev9EthLogDNSConfig.suppressible && suppressINIWrites) else { return }
+        _dev9EthLogDNSConfig.writer(_dev9EthLogDNSConfig.section, _dev9EthLogDNSConfig.key, dev9EthLogDNS)
+        _dev9EthLogDNSConfig.onSet?(dev9EthLogDNS)
+    }}
+    let _dev9DNS1ModeConfig = Setting<String>(
+        section: "DEV9/Eth", key: "ModeDNS1", default: "Auto",
+        writer: ARMSX2Bridge.setINIString)
+    var dev9DNS1Mode: String = "Auto" { didSet {
+        guard !(_dev9DNS1ModeConfig.suppressible && suppressINIWrites) else { return }
+        _dev9DNS1ModeConfig.writer(_dev9DNS1ModeConfig.section, _dev9DNS1ModeConfig.key, dev9DNS1Mode)
+        _dev9DNS1ModeConfig.onSet?(dev9DNS1Mode)
+    }}
+    let _dev9DNS1Config = Setting<String>(
+        section: "DEV9/Eth", key: "DNS1", default: "0.0.0.0",
+        writer: ARMSX2Bridge.setINIString)
+    var dev9DNS1: String = "0.0.0.0" { didSet {
+        guard !(_dev9DNS1Config.suppressible && suppressINIWrites) else { return }
+        _dev9DNS1Config.writer(_dev9DNS1Config.section, _dev9DNS1Config.key, dev9DNS1)
+        _dev9DNS1Config.onSet?(dev9DNS1)
+    }}
+    let _dev9DNS2ModeConfig = Setting<String>(
+        section: "DEV9/Eth", key: "ModeDNS2", default: "Auto",
+        writer: ARMSX2Bridge.setINIString)
+    var dev9DNS2Mode: String = "Auto" { didSet {
+        guard !(_dev9DNS2ModeConfig.suppressible && suppressINIWrites) else { return }
+        _dev9DNS2ModeConfig.writer(_dev9DNS2ModeConfig.section, _dev9DNS2ModeConfig.key, dev9DNS2Mode)
+        _dev9DNS2ModeConfig.onSet?(dev9DNS2Mode)
+    }}
+    let _dev9DNS2Config = Setting<String>(
+        section: "DEV9/Eth", key: "DNS2", default: "0.0.0.0",
+        writer: ARMSX2Bridge.setINIString)
+    var dev9DNS2: String = "0.0.0.0" { didSet {
+        guard !(_dev9DNS2Config.suppressible && suppressINIWrites) else { return }
+        _dev9DNS2Config.writer(_dev9DNS2Config.section, _dev9DNS2Config.key, dev9DNS2)
+        _dev9DNS2Config.onSet?(dev9DNS2)
+    }}
 
     // ── Library Background ──
     var libraryBackgroundPath: String {
@@ -927,52 +1431,17 @@ final class SettingsStore: @unchecked Sendable {
         }
     }
 
-    private static func aspectRatioName(for value: Int) -> String {
-        switch value {
-        case 0: return "Stretch"
-        case 1: return "Auto 4:3/3:2"
-        case 2: return "4:3"
-        case 3: return "16:9"
-        case 4: return "10:7"
-        default: return "Auto 4:3/3:2"
-        }
-    }
-
-    private static func aspectRatioValue(from name: String) -> Int {
-        switch name {
-        case "Stretch", "0": return 0
-        case "Auto 4:3/3:2", "1": return 1
-        case "4:3", "2": return 2
-        case "16:9", "3": return 3
-        case "10:7", "4": return 4
-        default: return 1
-        }
-    }
-
-    private static func loadedFastBoot() -> Bool {
-        let coreFastBoot = ARMSX2Bridge.getINIBool("EmuCore", key: "EnableFastBoot", defaultValue: false)
-        return ARMSX2Bridge.getINIBool("GameISO", key: "FastBoot", defaultValue: coreFastBoot)
-    }
-
-    private static func loadedJITScriptProtocol() -> JITScriptProtocol {
-        let protocolValue = JITScriptProtocol.normalized(
-            ARMSX2Bridge.getINIString("ARMSX2iOS/JIT", key: "ScriptProtocol", defaultValue: JITScriptProtocol.defaultValue.rawValue)
-        )
-        let migrated = ARMSX2Bridge.getINIBool("ARMSX2iOS/Migrations", key: "JITScriptProtocolByOSV1", defaultValue: false)
-        if !migrated && JITScriptProtocol.defaultValue == .legacy && protocolValue == .universal {
-            ARMSX2Bridge.setINIString("ARMSX2iOS/JIT", key: "ScriptProtocol", value: JITScriptProtocol.legacy.rawValue)
-            ARMSX2Bridge.setINIBool("ARMSX2iOS/Migrations", key: "JITScriptProtocolByOSV1", value: true)
-            NSLog("[ARMSX2 iOS Settings] Migrated JIT script protocol to legacy for this iOS version")
-            return .legacy
-        }
-        if !migrated {
-            ARMSX2Bridge.setINIBool("ARMSX2iOS/Migrations", key: "JITScriptProtocolByOSV1", value: true)
-        }
-        return protocolValue
-    }
+    // aspectRatioName / aspectRatioValue — see SettingsStore+Graphics.swift.
+    // loadedFastBoot / loadedJITScriptProtocol — see SettingsStore+Speedhacks.swift.
 
     // ── Init from INI ──
     private init() {
+        // The wrapped properties now have inline default values, so assignments
+        // here fire their didSet. Suppress INI writes during initialization so
+        // reading from INI does not also write back. Matches reload()'s pattern.
+        suppressINIWrites = true
+        defer { suppressINIWrites = false }
+
         // CPU
         eeCoreType = Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "CoreType", defaultValue: 2))
         iopRecompiler = ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "EnableIOP", defaultValue: true)
@@ -1358,9 +1827,7 @@ final class SettingsStore: @unchecked Sendable {
         return min(max(stepped, minFastForwardScalar), maxFastForwardScalar)
     }
 
-    static func clampedEmulatorVolumePercent(_ value: Int) -> Int {
-        min(max(value, 0), 150)
-    }
+    // clampedEmulatorVolumePercent — see SettingsStore+Audio.swift.
 
     private static func clampedAnalogStickScale(_ scale: Float) -> Float {
         guard scale.isFinite else { return 1.0 }
@@ -1386,46 +1853,7 @@ final class SettingsStore: @unchecked Sendable {
         return clampedStart > 0 && clampedEnd < clampedStart ? clampedStart : clampedEnd
     }
 
-    // MARK: - CPU rounding/clamp helpers
-
-    /// 0=Nearest 1=Negative 2=Positive 3=Chop (Zero).
-    static let roundModeLabels = ["Nearest", "Negative", "Positive", "Chop (Zero)"]
-    /// 0=None 1=Normal 2=Extra 3=Full.
-    static let eeClampModeLabels = ["None", "Normal", "Extra", "Full"]
-    /// 0=None 1=Normal 2=Extra 3=Extra + Sign.
-    static let vuClampModeLabels = ["None", "Normal", "Extra", "Extra + Sign"]
-
-    static func clampedRoundMode(_ value: Int) -> Int {
-        min(max(value, 0), 3)
-    }
-
-    static func clampedClampMode(_ value: Int) -> Int {
-        min(max(value, 0), 3)
-    }
-
-    static func clampedCycleSkip(_ value: Int) -> Int {
-        min(max(value, 0), 3)
-    }
-
-    static func clamped(_ value: Int, to range: ClosedRange<Int>) -> Int {
-        min(max(value, range.lowerBound), range.upperBound)
-    }
-
-    /// Reconstruct the EE clamp level (0–3) from the three FPU overflow booleans.
-    static func eeClampModeFromBools(_ overflow: Bool, _ extra: Bool, _ full: Bool) -> Int {
-        if full { return 3 }
-        if extra { return 2 }
-        if overflow { return 1 }
-        return 0
-    }
-
-    /// Reconstruct a VU clamp level (0–3) from the three VU overflow booleans.
-    static func vuClampModeFromBools(_ overflow: Bool, _ extra: Bool, _ sign: Bool) -> Int {
-        if sign { return 3 }
-        if extra { return 2 }
-        if overflow { return 1 }
-        return 0
-    }
+    // MARK: - CPU rounding/clamp writers
 
     /// Write the EE clamp level to the three FPU recompiler keys.
     static func applyEEClampMode(_ mode: Int) {
@@ -1456,22 +1884,7 @@ final class SettingsStore: @unchecked Sendable {
         ARMSX2Bridge.setINIFloat("Framerate", key: "NominalScalar", value: sanitized)
     }
 
-    /// Marks the DEV9 HDD image file as excluded from iCloud/iTunes backup so a
-    /// multi-gigabyte image does not fill the user's backup. Targets only the
-    /// image file (not the inis directory, which also holds small config files
-    /// worth backing up). Called when HDD is enabled and on settings reload so
-    /// the flag is applied once the core has created the image.
-    private func excludeHddImageFromBackup() {
-        let documents = ARMSX2Bridge.documentsDirectory()
-        let fileName = dev9HddFile.isEmpty ? "DEV9hdd.raw" : dev9HddFile
-        var imageURL = URL(fileURLWithPath: (documents as NSString)
-            .appendingPathComponent("iPSX2/inis"))
-            .appendingPathComponent(fileName)
-        guard FileManager.default.fileExists(atPath: imageURL.path) else { return }
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try? imageURL.setResourceValues(values)
-    }
+    // excludeHddImageFromBackup / normalizeDEV9Settings — see SettingsStore+DEV9.swift.
 
     private static func normalizedOsdPerformancePosition(_ value: Int) -> Int {
         switch value {
@@ -1514,33 +1927,8 @@ final class SettingsStore: @unchecked Sendable {
         }
     }
 
-    private func normalizeDEV9Settings() {
-        if dev9HddEnabled {
-            ARMSX2Bridge.setINIString("DEV9/Hdd", key: "HddFile", value: dev9HddFile.isEmpty ? "DEV9hdd.raw" : dev9HddFile)
-        }
-
-        if dev9EthernetEnabled {
-            ARMSX2Bridge.setINIString("DEV9/Eth", key: "EthApi", value: "Sockets")
-            ARMSX2Bridge.setINIString("DEV9/Eth", key: "EthDevice", value: dev9EthDevice.isEmpty ? "Auto" : dev9EthDevice)
-        }
-    }
-
-    private static func supportedIOSRenderer(_ value: Int) -> Int {
-        switch value {
-        case 17, 13, 11:
-            return value
-        default:
-            return 17
-        }
-    }
-
-    func localized(_ key: String) -> String {
-        appLanguage.localized(key)
-    }
-
-    var localizedLayoutDirection: LayoutDirection {
-        appLanguage.layoutDirection
-    }
+    // supportedIOSRenderer — see SettingsStore+Graphics.swift.
+    // localized / localizedLayoutDirection — see SettingsStore+UI.swift.
 
     /// Apply OSD preset — writes ALL OSD flags to INI + GSConfig
     private func applyOsdPreset(_ preset: OsdPreset) {
