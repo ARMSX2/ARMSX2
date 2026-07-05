@@ -205,11 +205,21 @@ private struct CompositeDPadTouchSurface: UIViewRepresentable {
     }
 }
 
+// Resolved per-direction art for one D-pad direction, ready to draw.
+struct DirectionalFaceArt {
+    let normal: UIImage?
+    let pressed: UIImage?
+}
+
 struct CompositeDPadView: View {
     let faces: [CompositeDPadFaceInfo]
     let centroid: CGPoint
     let captureDiameter: CGFloat
     let deadzone: CGFloat
+    var backgroundNormal: UIImage? = nil
+    var backgroundPressed: UIImage? = nil
+    var backgroundFrame: CGRect? = nil
+    var directional: [ARMSX2PadButton: DirectionalFaceArt]? = nil
 
     @State private var pressed: Set<ARMSX2PadButton> = []
     @Environment(\.padOpacity) private var padOpacity
@@ -217,6 +227,37 @@ struct CompositeDPadView: View {
 
     var body: some View {
         ZStack {
+            if let frame = backgroundFrame {
+                let image = directional == nil
+                    ? (pressed.isEmpty ? backgroundNormal : (backgroundPressed ?? backgroundNormal))
+                    : backgroundNormal
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .antialiased(true)
+                        .scaledToFit()
+                        .frame(width: frame.width, height: frame.height)
+                        .position(x: frame.midX, y: frame.midY)
+                        .allowsHitTesting(false)
+                }
+            }
+
+            if let directional {
+                ForEach(faces, id: \.button) { face in
+                    if let art = directional[face.button],
+                       let image = pressed.contains(face.button) ? (art.pressed ?? art.normal) : art.normal {
+                        Image(uiImage: image)
+                            .resizable()
+                            .interpolation(.high)
+                            .antialiased(true)
+                            .scaledToFit()
+                            .frame(width: face.baseSize, height: face.baseSize)
+                            .position(x: face.center.x, y: face.center.y)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
             CompositeDPadTouchSurface(
                 onBegan: {
                     if SettingsStore.shared.hapticFeedback {

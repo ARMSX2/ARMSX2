@@ -191,6 +191,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		${CMAKE_SOURCE_DIR}/../swift/Models/AppLanguage.swift
 		${CMAKE_SOURCE_DIR}/../swift/Models/VirtualPadSkin.swift
 		${CMAKE_SOURCE_DIR}/../swift/Models/VPadSkinLibraryStore.swift
+		${CMAKE_SOURCE_DIR}/../swift/Models/SkinManifestV2.swift
+		${CMAKE_SOURCE_DIR}/../swift/Models/SkinManifestImporter.swift
+		${CMAKE_SOURCE_DIR}/../swift/Models/SkinManifestRuntimeLayout.swift
 		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore.swift
 		${CMAKE_SOURCE_DIR}/../swift/Models/Setting.swift
 		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+Graphics.swift

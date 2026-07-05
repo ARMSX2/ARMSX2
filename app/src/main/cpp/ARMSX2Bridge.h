@@ -92,6 +92,13 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
                                                     toDirectory:(nonnull NSURL *)destinationDirectory
     NS_SWIFT_NAME(extractControllerSkinArchive(at:to:));
 
++ (nullable NSData *)peekSkinManifestDataAtURL:(nonnull NSURL *)archiveURL
+    NS_SWIFT_NAME(peekSkinManifestData(at:));
+
++ (nonnull NSArray<NSURL *> *)extractSkinPackageArchiveAtURL:(nonnull NSURL *)archiveURL
+                                                    toDirectory:(nonnull NSURL *)destinationDirectory
+    NS_SWIFT_NAME(extractSkinPackageArchive(at:to:));
+
 // OSD overlay
 + (void)setPerformanceOverlayVisible:(BOOL)visible;
 + (BOOL)isPerformanceOverlayVisible;

@@ -377,6 +377,112 @@
                 <string>rom</string>
             </array>
         </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>ARMSX2 Skin Package</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.armsx2.skin</string>
+            </array>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>armsx2skin</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Compatible Skin Package</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.rileytestut.delta.skin</string>
+                <string>site.manicemu.skin</string>
+            </array>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>deltaskin</string>
+                <string>manicskin</string>
+            </array>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.armsx2.skin</string>
+            <key>UTTypeDescription</key>
+            <string>ARMSX2 Skin Package</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+                <string>public.archive</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>armsx2skin</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>application/zip</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.rileytestut.delta.skin</string>
+            <key>UTTypeDescription</key>
+            <string>Delta Skin Package</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+                <string>public.archive</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>deltaskin</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>application/zip</string>
+                </array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>site.manicemu.skin</string>
+            <key>UTTypeDescription</key>
+            <string>Manic Skin Package</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+                <string>public.archive</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>manicskin</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>application/zip</string>
+                </array>
+            </dict>
+        </dict>
     </array>
 </dict>
 </plist>
