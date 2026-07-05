@@ -114,6 +114,11 @@ static std::deque<std::function<void()>> s_cpu_thread_queue;
 static std::thread::id s_cpu_thread_id;
 int s_window_width = 0;
 int s_window_height = 0;
+// Display refresh rate (Hz) reported by the Kotlin surface layer via
+// setDisplayRefreshRate(). 0 = unknown -> throttle/pacing falls back to 60Hz.
+// Populated so high-refresh handhelds (90/120Hz) pace against the real panel
+// instead of being 60Hz-blind. Guarded by s_window_mutex.
+float s_window_refresh_rate = 0.0f;
 ANativeWindow* s_window = nullptr;
 // Guards s_window against the UI-thread surfaceChanged/surfaceDestroyed
 // writers racing the GS thread's AcquireRenderWindow reader. Without it the
@@ -567,6 +572,16 @@ extern "C"
 JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_isHardcoreMode(JNIEnv *env, jclass clazz) {
     return Achievements::IsHardcoreModeActive() ? JNI_TRUE : JNI_FALSE;
+}
+
+// Returns the PERSISTED hardcore setting (Achievements/ChallengeMode) — what will take
+// effect on the next game boot. Unlike isHardcoreMode() this is valid with NO game
+// running, so the global (home-screen) toggle can show and drive the setting directly
+// instead of reflecting the live rcheevos flag (which is always off with no game).
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_isHardcorePersisted(JNIEnv *env, jclass clazz) {
+    return Host::GetBaseBoolSettingValue("Achievements", "ChallengeMode", false) ? JNI_TRUE : JNI_FALSE;
 }
 
 // Toggle one of the RetroAchievements presentation options (notifications,
@@ -1580,6 +1595,15 @@ Java_kr_co_iefriends_pcsx2_NativeApp_onNativeSurfaceCreated(JNIEnv *env, jclass 
 
 extern "C"
 JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setDisplayRefreshRate(JNIEnv *env, jclass clazz, jfloat p_hz) {
+    // Called from the surface layer before onNativeSurfaceChanged so the value is
+    // in place when AcquireRenderWindow() reads it during window (re)acquisition.
+    std::lock_guard<std::mutex> lock(s_window_mutex);
+    s_window_refresh_rate = (p_hz > 1.0f) ? (float)p_hz : 0.0f;
+}
+
+extern "C"
+JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_onNativeSurfaceChanged(JNIEnv *env, jclass clazz,
                                                             jobject p_surface, jint p_width, jint p_height) {
     {
@@ -1669,6 +1693,7 @@ std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
     _windowInfo.surface_width = s_window_width;
     _windowInfo.surface_height = s_window_height;
     _windowInfo.surface_scale = _fScale;
+    _windowInfo.surface_refresh_rate = s_window_refresh_rate;
     _windowInfo.window_handle = s_window;
 
     return _windowInfo;

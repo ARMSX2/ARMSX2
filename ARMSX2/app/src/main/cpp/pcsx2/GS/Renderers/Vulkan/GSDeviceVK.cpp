@@ -1288,6 +1288,8 @@ void GSDeviceVK::WaitForCommandBufferCompletion(u32 index)
 
 void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 {
+	m_render_passes_since_submit = 0; // yaps2 readback kick: reset the mid-frame counter
+
 	FrameResources& resources = m_frame_resources[m_current_frame];
 
 	// End the current command buffer.
@@ -3125,6 +3127,17 @@ GSTexture* GSDeviceVK::CreateSurface(GSTexture::Usage usage, int width, int heig
 std::unique_ptr<GSDownloadTexture> GSDeviceVK::CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format)
 {
 	return GSDownloadTextureVK::Create(width, height, format);
+}
+
+void GSDeviceVK::HintReadbackSource(GSTexture* tex)
+{
+	// yaps2 2a5c0b1b: MRU ring of 2. Per-frame readback patterns re-read the same one or
+	// two targets, and the next draw INTO one of them predicts the next readback.
+	if (m_recent_readback_sources[0] == tex || m_recent_readback_sources[1] == tex)
+		return;
+
+	m_recent_readback_sources[1] = m_recent_readback_sources[0];
+	m_recent_readback_sources[0] = tex;
 }
 
 void GSDeviceVK::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
@@ -5498,6 +5511,7 @@ void GSDeviceVK::ExecuteCommandBufferAndRestartPresent(bool wait_for_completion,
 
 void GSDeviceVK::ExecuteCommandBufferForReadback()
 {
+	m_render_passes_since_readback = 0; // yaps2 readback kick: a readback just happened
 	ExecuteCommandBuffer(true);
 	if (m_spinning_supported && GSConfig.HWSpinGPUForReadbacks)
 	{
@@ -5804,6 +5818,11 @@ void GSDeviceVK::EndRenderPass()
 
 	m_current_render_pass = VK_NULL_HANDLE;
 	g_perfmon.Put(GSPerfMon::RenderPasses, 1);
+	// yaps2 readback kick: count render passes since the last submit / readback so
+	// RenderHW can decide when to submit mid-frame.
+	m_render_passes_since_submit++;
+	if (m_render_passes_since_readback != ~0u)
+		m_render_passes_since_readback++;
 
 	vkCmdEndRenderPass(GetCurrentCommandBuffer());
 }
@@ -6220,6 +6239,36 @@ GSTextureVK* GSDeviceVK::SetupPrimitiveTrackingDATE(GSHWDrawConfig& config)
 
 void GSDeviceVK::RenderHW(GSHWDrawConfig& config)
 {
+	// yaps2 27984e96/2a5c0b1b — mid-frame command-buffer kick for readback-prone frames.
+	// While a readback frame records, submit accumulated work at this render-pass boundary
+	// (draw entry — nothing staged yet, every binding below re-applies via dirty flags) so
+	// the GPU runs concurrently with GS-thread recording instead of only starting when the
+	// readback fence-waits on it. Gated to OUTSIDE a render pass (no forced tile flush on
+	// tilers) and to frames near an actual readback (games that never read back see zero
+	// change). Threshold is insensitive 4..16 (measured OutRun 2006/SD865, 19.6->16.2ms).
+	{
+		constexpr u32 kick_threshold = 8;
+		constexpr u32 readback_window = 128; // ~a few frames' worth of render passes
+		// A draw into a recent readback source is (almost certainly) producing the data for
+		// the next readback, which follows immediately — kick regardless of the threshold.
+		const bool produces_readback_data = config.rt &&
+			(config.rt == m_recent_readback_sources[0] || config.rt == m_recent_readback_sources[1]);
+		if ((m_render_passes_since_submit >= kick_threshold ||
+				(produces_readback_data && m_render_passes_since_submit > 0)) &&
+			m_render_passes_since_readback <= readback_window && !InRenderPass())
+		{
+			// Never block: submitting cycles to the next command buffer, and
+			// ActivateCommandBuffer fence-waits if that buffer's previous submission is still
+			// executing — a hidden GPU sync worse than the backlog the kick drains. Only kick
+			// when the next buffer is verifiably complete; otherwise keep recording and retry
+			// at the next draw (the counter keeps the gate open).
+			ScanForCommandBufferCompletion();
+			const u32 next_buffer = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
+			if (m_frame_resources[next_buffer].fence_counter <= m_completed_fence_counter)
+				ExecuteCommandBuffer(WaitType::None);
+		}
+	}
+
 	const GSVector2i rtsize(config.rt ? config.rt->GetSize() : config.ds->GetSize());
 	GSTextureVK* draw_rt = config.ps.HasColorROV() ? nullptr : static_cast<GSTextureVK*>(config.rt);
 	GSTextureVK* draw_ds = config.ps.HasDepthROV() ? nullptr : static_cast<GSTextureVK*>(config.ds);

@@ -201,6 +201,7 @@ public class NativeApp {
 	/** True iff the rcheevos hardcore flag is currently set. The Kotlin
 	 *  achievements panel polls this for the badge / button colour. */
 	public static native boolean isHardcoreMode();
+	public static native boolean isHardcorePersisted();
 
 	/** Toggle a RetroAchievements presentation option. {@code key} is one of
 	 *  "notifications", "leaderboardNotifications", "overlays", "lbOverlays",
@@ -565,6 +566,7 @@ public class NativeApp {
 	public static native void onNativeSurfaceCreated();
 	public static native void onNativeSurfaceChanged(Surface surface, int w, int h);
 	public static native void onNativeSurfaceDestroyed();
+	public static native void setDisplayRefreshRate(float hz);
 
 	public static native boolean runVMThread(String path);
 	public static native void pause();

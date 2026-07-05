@@ -62,6 +62,13 @@ object CustomDriver {
             "https://api.github.com/repos/MrPurple666/purple-turnip/releases",
             "purpleturnip",
         ),
+        // Scheduled biweekly freedreno/Turnip adrenotools builds (incl. Gen8 + a7xx
+        // Qualcomm driver packages). Same GitHub-releases meta.json format as above.
+        DriverSource(
+            "StevenMXZ · Adreno-Tools",
+            "https://api.github.com/repos/StevenMXZ/Adreno-Tools-Drivers/releases",
+            "stevenmxz",
+        ),
     )
 
     /** Sane default for the driver's library soname when meta.json

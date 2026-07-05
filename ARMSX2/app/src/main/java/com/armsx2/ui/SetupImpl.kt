@@ -189,7 +189,12 @@ object SetupImpl {
     private val recAntiBlur = mutableStateOf(true)
     private val recWidescreen = mutableStateOf(false)
     private val recDeinterlaceOff = mutableStateOf(false) // false = Automatic, true = Off
-    private val recPerfFast = mutableStateOf(false)  // false = Optimal (safe), true = Fast
+    // Recommended performance preset: 0 = Optimal (safe), 1 = Fast (aggressive
+    // speedhacks + native res), 2 = Low-End (Fast plus every cheap GPU lever — min
+    // blending, no mipmaps/palette-conv, partial texture preload, ROV off). Detected
+    // low-end devices pre-select Low-End so budget users actually get those defaults
+    // instead of leaving 2x on the table in settings they never find (#124).
+    private val recPerfPreset = mutableStateOf(0)
 
     // -------- Custom Vulkan driver state --------
     /** Active driver id (matches `CustomDriver.InstalledDriver.id`). null
@@ -676,12 +681,17 @@ object SetupImpl {
         recWidescreen.value = g.enableWideScreenPatches
         recDeinterlaceOff.value = g.deinterlaceMode == 1 // 0 = Auto, 1 = Off
         // Default the Performance choice from any prior config, but on a fresh
-        // low-end device pre-RECOMMEND Fast (never forced — the user can flip it
-        // back to Optimal on the same screen). The probe is best-effort; a bad
-        // read reports "not low-end" and leaves the prior/Optimal choice.
+        // low-end device pre-RECOMMEND the full Low-End preset (never forced — the
+        // user can flip it on the same screen). The probe is best-effort; a bad read
+        // reports "not low-end" and falls back to detecting Fast vs Optimal from the
+        // prior config.
         val ctx = Main.instance
         val lowEnd = ctx != null && runCatching { com.armsx2.DeviceTier.isLowEnd(ctx) }.getOrDefault(false)
-        recPerfFast.value = g.eeCycleSkip >= 2 || g.fastCDVD || lowEnd
+        recPerfPreset.value = when {
+            lowEnd -> 2
+            g.eeCycleSkip >= 2 || g.fastCDVD -> 1
+            else -> 0
+        }
     }
 
     /** Write the Recommended Settings choices to the GLOBAL config tier. */
@@ -702,19 +712,26 @@ object SetupImpl {
                 deinterlaceMode = if (recDeinterlaceOff.value) 1 else 0,
                 mtvu = mtvuDefault,
             )
-            // Performance preset: Optimal (safe) vs Fast (aggressive). Fast mirrors
-            // the in-game PerformanceTab Fast snapshot (EE cycle skip + fast CDVD +
-            // native resolution + Basic blending), keeping the device-aware MTVU.
-            val resolved = if (recPerfFast.value)
-                base.copy(
+            // Performance preset (mirrors the in-game PerformanceTab presets so the
+            // wizard and settings agree):
+            //   0 Optimal  — safe defaults.
+            //   1 Fast     — EE cycle skip + fast CDVD + native res + Basic blending.
+            //   2 Low-End  — the shared Settings.lowEndPreset: Fast plus every cheap
+            //                GPU lever (Minimum blending, no mipmaps/palette-conv,
+            //                Partial texture preload, ROV off, eeCycleSkip 1), MTVU
+            //                already seeded device-aware in [base]. #124: this is what
+            //                a detected low-end device now gets by default.
+            val resolved = when (recPerfPreset.value) {
+                2 -> com.armsx2.config.Settings.lowEndPreset(base.copy(eeCycleRate = 0, fastCDVD = true), mtvuDefault)
+                1 -> base.copy(
                     eeCycleRate = 0,
                     eeCycleSkip = 2,
                     fastCDVD = true,
                     upscaleFloat = 1.0f,
                     accurateBlendingUnit = 1,
                 )
-            else
-                base.copy(eeCycleRate = 0, eeCycleSkip = 0, fastCDVD = false)
+                else -> base.copy(eeCycleRate = 0, eeCycleSkip = 0, fastCDVD = false)
+            }
             com.armsx2.config.ConfigStore.saveGlobal(resolved)
         }
     }
@@ -2035,7 +2052,7 @@ object SetupImpl {
             RecChoiceRow("Anti-Blur", listOf("Off", "On"), if (recAntiBlur.value) 1 else 0, blue) { recAntiBlur.value = it == 1 }
             RecChoiceRow("Widescreen Patches", listOf("Off", "On"), if (recWidescreen.value) 1 else 0, blue) { recWidescreen.value = it == 1 }
             RecChoiceRow("Deinterlacing", listOf("Auto", "Off"), if (recDeinterlaceOff.value) 1 else 0, blue) { recDeinterlaceOff.value = it == 1 }
-            RecChoiceRow("Performance", listOf("Optimal", "Fast"), if (recPerfFast.value) 1 else 0, blue) { recPerfFast.value = it == 1 }
+            RecChoiceRow("Performance", listOf("Optimal", "Fast", "Low-End"), recPerfPreset.value.coerceIn(0, 2), blue) { recPerfPreset.value = it }
             Spacer(Modifier.height(20.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(

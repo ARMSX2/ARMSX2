@@ -240,17 +240,35 @@ fun PatchesTab(state: MutableState<Settings>) {
     val scroll = remember { ScrollState(0) }
     ControllerAutoScroll(scroll)
     val activeGameId = activePnachGameId()
+    // The game this per-game view belongs to: the running game, else the library
+    // game opened via long-press. Used to FILTER the installed list so importing a
+    // pnach for game A no longer shows it under game B — files are named
+    // <SERIAL>_<CRC>...pnach (or legacy <CRC>...pnach), matching how emucore loads them.
+    val viewLibraryGame = InGameOverlay.patchPreviewGame
+    val viewSerial = (activeGameId?.serial ?: normalizeSerial(viewLibraryGame?.serial))?.uppercase()
+    val viewCrc = activeGameId?.crc?.uppercase()
+    fun pnachBelongsToView(name: String): Boolean {
+        // No game context (global view, nothing running/previewed) -> show everything.
+        if (viewSerial == null && viewCrc == null) return true
+        val n = name.uppercase()
+        // Serial-prefixed file for this game (CRC-lenient: any dump of the same game).
+        if (viewSerial != null && n.startsWith("${viewSerial}_")) return true
+        // CRC-only (legacy) file for this exact dump.
+        if (viewCrc != null && n.startsWith(viewCrc)) return true
+        return false
+    }
 
     val cheatsDir = remember { File(Main.assetCopyRoot(context), "cheats").apply { mkdirs() } }
     // Loose patches load from <DataRoot>/patches (EmuFolders::Patches); cheats
     // from <DataRoot>/cheats. Downloaded files land in the matching dir.
     val patchesDir = remember { File(Main.assetCopyRoot(context), "patches").apply { mkdirs() } }
-    // List both folders so the manager shows everything that's installed (and
-    // lets the user confirm a browse actually wrote files).
+    // List both folders, but only the CURRENT game's pnach (see pnachBelongsToView) so
+    // one game's cheats never bleed into another game's per-game view.
     fun listPnach(): List<File> =
         listOf(patchesDir, cheatsDir)
             .flatMap { it.listFiles()?.toList() ?: emptyList() }
             .filter { it.isFile && it.name.endsWith(".pnach", ignoreCase = true) }
+            .filter { pnachBelongsToView(it.name) }
             .sortedBy { it.name.lowercase() }
     var pnachFiles: List<File> by remember { mutableStateOf(listPnach()) }
     fun refresh() { pnachFiles = listPnach() }

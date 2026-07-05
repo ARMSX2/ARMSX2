@@ -80,16 +80,45 @@ fun PerformanceTab(state: MutableState<Settings>) {
         // screen) to cut GPU present cost, heat and battery. Global pref (not a
         // Settings/EmuCore field) applied live via SurfaceCallbacks.applyHwScaler.
         run {
-            val hwScaler = com.armsx2.Main.prefs.getInt("ui.hwScaler", 0)
+            // Observable state seeded from the raw pref so the segmented control reflects
+            // the change LIVE — a plain prefs.getInt() read isn't observed by Compose, so
+            // the highlight only moved on menu re-entry.
+            val hwScaler = remember { androidx.compose.runtime.mutableStateOf(com.armsx2.Main.prefs.getInt("ui.hwScaler", 0)) }
             SegmentedRow(
                 label = "Display Resolution (HW scaler)",
                 options = listOf("Screen", "3x PS2", "2x PS2", "1x PS2"),
-                selectedIndex = when (hwScaler) { 3 -> 1; 2 -> 2; 1 -> 3; else -> 0 },
+                selectedIndex = when (hwScaler.value) { 3 -> 1; 2 -> 2; 1 -> 3; else -> 0 },
                 description = "Reduces the display resolution to significantly decrease device heat and battery drain. Screen = full quality (off). 3x PS2 = High Quality, 2x PS2 = Balanced, 1x PS2 = Battery Saver / Max Performance. Separate from the internal rendering resolution — menus stay sharp either way.",
                 onChange = {
                     val n = when (it) { 1 -> 3; 2 -> 2; 3 -> 1; else -> 0 }
+                    hwScaler.value = n
                     com.armsx2.Main.prefs.edit().putInt("ui.hwScaler", n).apply()
                     (com.armsx2.Main.surface.value as? com.armsx2.SurfaceCallbacks)?.applyHwScaler()
+                },
+            )
+        }
+        // ---- Sustained Performance (#128) ---------------------------------------
+        // Asks Android to hold a steady, thermally-sustainable clock instead of
+        // boost-then-throttle. Better for long sessions on handhelds, but it CAPS the
+        // peak clock so peak-hungry games can lose fps — a user choice, default Off.
+        // Global pref, applied at launch (Main.onCreate) and live here via the window.
+        run {
+            val sustained = remember { androidx.compose.runtime.mutableStateOf(com.armsx2.Main.prefs.getBoolean("ui.sustainedPerf", false)) }
+            SegmentedRow(
+                label = "Sustained Performance",
+                options = listOf("Off", "On"),
+                selectedIndex = if (sustained.value) 1 else 0,
+                description = "Holds a steady, thermally-sustainable GPU/CPU clock for long play sessions — reduces mid-session throttling, heat and battery drain on handhelds. Trade-off: it caps the peak clock, so demanding games that rely on short bursts of max speed may run a little slower. Off = full peak clocks (default).",
+                onChange = {
+                    val on = it == 1
+                    sustained.value = on
+                    com.armsx2.Main.prefs.edit().putBoolean("ui.sustainedPerf", on).apply()
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                        runCatching {
+                            (com.armsx2.Main.surface.value?.context as? android.app.Activity)
+                                ?.window?.setSustainedPerformanceMode(on)
+                        }
+                    }
                 },
             )
         }

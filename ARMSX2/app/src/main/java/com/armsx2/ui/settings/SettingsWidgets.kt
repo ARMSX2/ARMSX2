@@ -6,8 +6,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -681,14 +684,19 @@ private fun DiscreteSlider(
                     val f = ((x - edgePx) / usable).coerceIn(0f, 1f)
                     latestOnChange(min + (f * steps).roundToInt())
                 }
-                detectTapGestures { update(it.x) }
-            }
-            .pointerInput(min, max) {
-                val edgePx = 6.dp.toPx()
-                detectHorizontalDragGestures { change, _ ->
-                    val usable = (size.width - edgePx * 2).coerceAtLeast(1f)
-                    val f = ((change.position.x - edgePx) / usable).coerceIn(0f, 1f)
-                    latestOnChange(min + (f * steps).roundToInt())
+                // ONE gesture handler: set on touch-down (tap-to-position) AND follow the
+                // finger continuously (drag). The old split detectTapGestures /
+                // detectHorizontalDragGestures across two separate pointerInput blocks fought
+                // for the pointer — the tap detector consumed the down, so a drag only landed
+                // the initial jump and then stalled until you lifted and touched again.
+                // Consuming each drag change also stops the scrolling parent from stealing it.
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    update(down.position.x)
+                    drag(down.id) { change ->
+                        update(change.position.x)
+                        change.consume()
+                    }
                 }
             },
     ) {

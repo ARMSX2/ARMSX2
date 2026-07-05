@@ -138,14 +138,14 @@ fun FixesTab(state: MutableState<Settings>) {
             onChange = { apply(s.copy(dithering = it)) },
         )
         SettingsDivider()
-        IntSliderRow(
-            label = "Vsync Queue Size",
-            value = s.vsyncQueueSize.coerceIn(0, 3),
-            min = 0,
-            max = 3,
-            description = "Frames the GS thread may queue ahead. Higher can smooth pacing; adds latency.",
-            onChange = { apply(s.copy(vsyncQueueSize = it)) },
-        )
+        // PCSX2's "Optimal Frame Pacing" checkbox = force the GS-thread frame queue to 0.
+        // On -> tightest pacing + lowest input latency; Off -> the default small queue (2),
+        // which is smoother on weaker devices at the cost of a little lag.
+        ToggleRow(
+            "Optimal Frame Pacing",
+            s.vsyncQueueSize == 0,
+            description = "Runs the GS thread with zero queued frames for the tightest frame pacing and lowest input latency (matches PCSX2). Turn off if a weaker device paces more smoothly with a small frame queue.",
+        ) { apply(s.copy(vsyncQueueSize = if (it) 0 else 2)) }
         }
 
         CollapsibleSection("Upscaling Fixes") {

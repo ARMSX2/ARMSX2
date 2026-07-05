@@ -106,6 +106,23 @@ object MemoryCardManager {
                 refresh(context)
             }
         }
+        // Export a memory card OUT to a user-picked location (Downloads / Drive / etc.) via
+        // SAF, so casual users can back up or migrate saves without a file manager or Shizuku.
+        var exportPending by remember { mutableStateOf<File?>(null) }
+        val exportLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.CreateDocument("application/octet-stream")
+        ) { uri: Uri? ->
+            val src = exportPending
+            exportPending = null
+            if (uri != null && src != null) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        src.inputStream().use { it.copyTo(out) }
+                    } ?: error("could not open destination")
+                }.onSuccess { status.value = "Exported ${src.name}." }
+                    .onFailure { status.value = "Export failed: ${it.message}" }
+            }
+        }
 
         LaunchedEffect(Unit) {
             refresh(context)
@@ -479,6 +496,20 @@ object MemoryCardManager {
                                 ) {
                                     Text(if (inSlot2) "✓ Slot 2" else "Slot 2", fontSize = 11.sp)
                                 }
+                                // Export (file cards only — folder cards aren't a single file).
+                                if (!file.isDirectory) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Button(
+                                        onClick = { exportPending = file; exportLauncher.launch(file.name) },
+                                        colors = darkButtonColors(),
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier
+                                            .height(32.dp)
+                                            .controllerFocusable("mc:export:${file.name}", onConfirm = { exportPending = file; exportLauncher.launch(file.name) }),
+                                    ) {
+                                        Text("Export", fontSize = 11.sp)
+                                    }
+                                }
                                 Spacer(Modifier.width(6.dp))
                                 val armed = deleteArmed == file.name
                                 Button(
@@ -507,7 +538,7 @@ object MemoryCardManager {
 
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "Import File adds a memory card (then tap Slot 1 or Slot 2 to use it). Import Folder imports .ps2/.mcr cards found in a folder, or the folder itself as a folder memory card. Delete removes a card and clears its slot.",
+                    "Import File adds a memory card (then tap Slot 1 or Slot 2 to use it). Import Folder imports .ps2/.mcr cards found in a folder, or the folder itself as a folder memory card. Export saves a card out to Downloads / Drive / anywhere for backup or moving to another device. Delete removes a card and clears its slot.",
                     color = Color(0xFF888888),
                     fontSize = 11.sp,
                 )

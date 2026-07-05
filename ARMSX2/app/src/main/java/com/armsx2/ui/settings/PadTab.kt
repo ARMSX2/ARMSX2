@@ -511,6 +511,14 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
  *  walk stick). Values migrate from the old shared keys on first read. */
 @Composable
 private fun StickFeelSliders(left: Boolean, title: String, refreshToken: androidx.compose.runtime.MutableState<Int>) {
+    // Subscribe this composable to the token. Each slider's `value` is read from a
+    // raw pref (ControllerMappings.stick*), which Compose can't observe — so without
+    // this read a bump (fired in every onChange) wouldn't recompose StickFeelSliders
+    // (its params are unchanged, so Compose skips it) and the thumb/number would only
+    // catch up on menu re-entry. Reading .value here puts the whole function in the
+    // token's restart scope, so each drag step refreshes the displayed value live.
+    @Suppress("UNUSED_EXPRESSION")
+    refreshToken.value
     CollapsibleSection(title, initiallyExpanded = false) {
         IntSliderRow(
             label = "Deadzone",

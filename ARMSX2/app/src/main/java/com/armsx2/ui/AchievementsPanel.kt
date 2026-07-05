@@ -235,7 +235,13 @@ private fun parseSnapshot(json: String): AchievementSnapshot {
             items = items,
             active = root.optBoolean("active", false),
             loggedIn = root.optBoolean("loggedIn", false),
-            hardcore = root.optBoolean("hardcore", false),
+            // With NO game running the live rcheevos flag is always off, which made the
+            // global (home-screen) Hardcore toggle read + show as off even when the user
+            // had it enabled. Fall back to the PERSISTED Achievements/ChallengeMode setting
+            // (what engages on the next boot) so the global toggle reflects reality.
+            hardcore = if (com.armsx2.Main.eState.value == com.armsx2.EmuState.STOPPED)
+                runCatching { NativeApp.isHardcorePersisted() }.getOrDefault(false)
+            else root.optBoolean("hardcore", false),
             userName = root.optString("userName", ""),
             score = root.optLong("score", -1),
             softcoreScore = root.optLong("softcoreScore", -1),

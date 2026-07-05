@@ -1084,7 +1084,15 @@ object InGameOverlay {
         // item) so hardcore comes up clean.
         NativeApp.setHardcoreMode(true)
         hardcoreOn.value = true
-        resetSystem()
+        if (Main.eState.value == EmuState.STOPPED) {
+            // No game running (global / home-screen toggle): setHardcoreMode already
+            // persisted Achievements/ChallengeMode, which engages on the next boot.
+            // Resetting here would reboot into the BIOS — there's no game to reset — which
+            // is exactly the "it just boots the BIOS" report. Just close back to root.
+            enterState(State.Root)
+        } else {
+            resetSystem()
+        }
     }
 
     private fun disableHardcoreMode() {
@@ -2731,7 +2739,12 @@ object InGameOverlay {
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "The current game will reset.",
+                    // No game loaded (global toggle): it's saved now and engages on the
+                    // next launch — nothing to reset. With a game running it reboots clean.
+                    if (Main.eState.value == EmuState.STOPPED)
+                        "Enabled globally — applies when you launch a game."
+                    else
+                        "The current game will reset.",
                     color = Color(0xFFFFAAAA),
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,

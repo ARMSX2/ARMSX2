@@ -9,6 +9,8 @@
 #include "common/Console.h"
 #include "common/HostSys.h"
 
+#include <new> // placement new for s_armAsmStorage
+
 
 namespace pcsx2_macrec {
 
@@ -100,6 +102,14 @@ void armAlignAsmPtr()
 	armAsmPtr = new_ptr;
 }
 
+// Placement-new the per-block MacroAssembler into a thread_local buffer instead of a heap
+// new/delete on every JIT block compile: one fewer alloc/free pair per block, and it
+// sidesteps the Android scudo tag/header corruption class this exact new/delete-per-block
+// pattern is prone to (yaps2 810020d8, crediting ARMSX2 1c1d0b880). Safe because armAsm is
+// itself thread_local and the pxAssert(!armAsm) invariant keeps one live per thread (MTVU
+// compiles VU1 on its own thread, with its own buffer).
+alignas(vixl::aarch64::MacroAssembler) static thread_local u8 s_armAsmStorage[sizeof(vixl::aarch64::MacroAssembler)];
+
 u8* armStartBlock()
 {
 	armAlignAsmPtr();
@@ -107,7 +117,7 @@ u8* armStartBlock()
 	HostSys::BeginCodeWrite();
 
 	pxAssert(!armAsm);
-	armAsm = new vixl::aarch64::MacroAssembler(static_cast<vixl::byte*>(armAsmPtr), armAsmCapacity);
+	armAsm = new (s_armAsmStorage) vixl::aarch64::MacroAssembler(static_cast<vixl::byte*>(armAsmPtr), armAsmCapacity);
 	armAsm->GetScratchVRegisterList()->Remove(31);
 	armAsm->GetScratchRegisterList()->Remove(RSCRATCHADDR.GetCode());
 	return armAsmPtr;
@@ -122,7 +132,7 @@ u8* armEndBlock()
 	const u32 size = static_cast<u32>(armAsm->GetSizeOfCodeGenerated());
 	pxAssert(size < armAsmCapacity);
 
-	delete armAsm;
+	armAsm->~MacroAssembler(); // placement-new'd into s_armAsmStorage; no delete
 	armAsm = nullptr;
 
 	HostSys::EndCodeWrite();

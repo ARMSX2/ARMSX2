@@ -89,14 +89,36 @@ u64 GetAvailablePhysicalMemory()
 
 u64 GetTickFrequency()
 {
+#if defined(__aarch64__)
+	// yaps2 0bd68bd0: frequency of the architected virtual counter read by GetCPUTicks()
+	// (e.g. 19.2MHz on Snapdragon 865, 24MHz on Apple M2). Every tick consumer converts
+	// through this, so switching the counter's units is transparent.
+	u64 freq;
+	asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+	return freq;
+#else
 	return 1000000000; // unix measures in nanoseconds
+#endif
 }
 
 u64 GetCPUTicks()
 {
+#if defined(__aarch64__)
+	// yaps2 0bd68bd0: read the architected virtual counter directly (a single mrs) instead
+	// of the vDSO clock_gettime() (call + seqlock + isb + ns conversion) — the same counter
+	// the vDSO reads underneath, ~10x faster per call. ARMSX2's frame throttle busy-spins on
+	// this every frame (VMManager Throttle -> SleepUntil), so on low-end Snapdragon the
+	// clock_gettime cost was measurable EE-thread overhead. Monotonic + core-consistent;
+	// Linux/bionic always enable EL0 counter access (their own vDSO fast path needs it).
+	// Resolution is ~52ns at 19.2MHz — ample; all consumers convert via GetTickFrequency().
+	u64 val;
+	asm volatile("mrs %0, cntvct_el0" : "=r"(val)::"memory");
+	return val;
+#else
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (static_cast<u64>(ts.tv_sec) * 1000000000ULL) + ts.tv_nsec;
+#endif
 }
 
 std::string GetOSVersionString()
@@ -403,12 +425,25 @@ void Threading::Sleep(int ms)
 
 void Threading::SleepUntil(u64 ticks)
 {
-	struct timespec ts;
-	ts.tv_sec = static_cast<time_t>(ticks / 1000000000ULL);
-	ts.tv_nsec = static_cast<long>(ticks % 1000000000ULL);
-	// Loop on EINTR so a stray signal (debugger attach, SIGPROF from samplers)
-	// can't return us early before the deadline. With TIMER_ABSTIME the abstime
-	// argument is unchanged across retries, so re-passing &ts is correct.
-	while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr) == EINTR)
-		;
+	// yaps2 0bd68bd0: GetCPUTicks() is now raw CNTVCT_EL0 (a different epoch than
+	// CLOCK_MONOTONIC ns), so TIMER_ABSTIME can no longer be used. Sleep off the remaining
+	// delta and retry on early wakeup — matching the Windows/Darwin implementations. This
+	// also SUBSUMES the old EINTR loop's never-wake-early guarantee: the loop re-checks
+	// diff <= 0 regardless of why nanosleep returned, so a stray signal can't return us
+	// before the deadline (and an unexpected errno bails rather than spinning forever).
+	for (;;)
+	{
+		const s64 diff = static_cast<s64>(ticks - GetCPUTicks());
+		if (diff <= 0)
+			return;
+
+		const u64 freq = GetTickFrequency();
+		struct timespec ts;
+		ts.tv_sec = static_cast<time_t>(static_cast<u64>(diff) / freq);
+		ts.tv_nsec = static_cast<long>(((static_cast<u64>(diff) % freq) * 1000000000ULL) / freq);
+
+		const int err = clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, nullptr);
+		if (err != 0 && err != EINTR)
+			return;
+	}
 }

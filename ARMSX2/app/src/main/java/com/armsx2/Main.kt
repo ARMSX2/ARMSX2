@@ -99,7 +99,19 @@ class SurfaceCallbacks(context: Context) : SurfaceView(context), SurfaceHolder.C
         requestFocus()
     }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        // Report the panel's real refresh rate so the native throttle/frame
+        // pacing aligns to it (90/120Hz handhelds instead of a blind 60Hz).
+        // Set BEFORE onNativeSurfaceChanged: that call re-acquires the render
+        // window, which reads surface_refresh_rate. 0 => native keeps the 60Hz
+        // fallback.
+        NativeApp.setDisplayRefreshRate(currentDisplayRefreshHz())
         NativeApp.onNativeSurfaceChanged(holder.surface, width, height)
+    }
+    private fun currentDisplayRefreshHz(): Float {
+        return try {
+            val d = if (android.os.Build.VERSION.SDK_INT >= 30) context.display else display
+            d?.refreshRate ?: 0f
+        } catch (_: Throwable) { 0f }
     }
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         NativeApp.onNativeSurfaceChanged(null, 0, 0)
@@ -152,6 +164,12 @@ private const val TRIGGER_DEAD = 0.06f
 // Threshold past which a stick remapped to D-pad / face buttons registers as a
 // digital press. Higher than STICK_DEAD so a resting/wobbling stick doesn't fire.
 private const val STICK_DIGITAL_THRESHOLD = 0.5f
+// Off-axis bleed gate for the RADIAL analog path (accumStickRadial): the minor axis is
+// dropped when it's below this fraction of the major axis, so a near-cardinal push on a
+// stick that isn't perfectly centered on the other axis doesn't leak a phantom second
+// direction ("up also presses right"). 0.15 ≈ snaps only ~<9° diagonals to the cardinal;
+// genuine diagonals (minor axis well above this) pass through untouched.
+private const val STICK_CROSS_GATE = 0.15f
 private const val UI_NAV_DEAD = 0.20f
 private const val UI_NAV_RELEASE_DEAD = 0.06f
 private const val UI_HAT_DEAD = 0.50f
@@ -2797,12 +2815,26 @@ class Main: ComponentActivity() {
      *  Direction is preserved exactly; only the magnitude is reshaped. */
     private fun accumStickRadial(vx: Float, vy: Float, left: Boolean,
                                  aXPos: Int, aXNeg: Int, aYPos: Int, aYNeg: Int) {
-        val mag = kotlin.math.hypot(vx, vy)
+        // Off-axis BLEED gate (fixes the "push up also presses right" regression). Moving
+        // the deadzone from per-axis to radial (above) stopped diagonals being eaten, but
+        // the old per-axis zone was also silently cleaning up small perpendicular values —
+        // so a near-cardinal push on a stick that doesn't sit perfectly centered on the
+        // other axis now leaks that value through. Restore the cleanup WITHOUT the square
+        // zone: drop the minor axis only when it's a small fraction of the major one. That
+        // snaps just very shallow (~<9°) diagonals to the cardinal; genuine diagonals (minor
+        // axis well above STICK_CROSS_GATE of the major) are untouched, so 8-way is intact.
+        var gx = vx
+        var gy = vy
+        val ax = kotlin.math.abs(gx)
+        val ay = kotlin.math.abs(gy)
+        if (ax >= ay) { if (ay < ax * STICK_CROSS_GATE) gy = 0f }
+        else { if (ax < ay * STICK_CROSS_GATE) gx = 0f }
+        val mag = kotlin.math.hypot(gx, gy)
         if (mag <= 0f) return
         val shaped = shapeStickMag(mag.coerceAtMost(1f), left)
         val scale = shaped / mag // preserves direction; caps square-gate diagonals at unit circle
-        val ox = vx * scale
-        val oy = vy * scale
+        val ox = gx * scale
+        val oy = gy * scale
         if (ox > 0f) accumAnalog(aXPos, ox) else if (ox < 0f) accumAnalog(aXNeg, -ox)
         if (oy > 0f) accumAnalog(aYPos, oy) else if (oy < 0f) accumAnalog(aYNeg, -oy)
     }
