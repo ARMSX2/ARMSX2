@@ -24377,6 +24377,9 @@ SLES-53616:
     eeClampMode: 2 # Fixes SPS on highway.
   roundModes:
     eeRoundMode: 0 # Fixes scene switching in intro.
+  gameFixes:
+    - VUSyncHack # Fixes floor/asset shimmer and geometry flicker (VU/EE sync timing).
+    - FullVU0SyncHack # Fully syncs VU0 with the EE - clears remaining flicker with no perf cost.
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -24393,6 +24396,9 @@ SLES-53617:
     eeClampMode: 2 # Fixes SPS on highway.
   roundModes:
     eeRoundMode: 0 # Fixes scene switching in intro.
+  gameFixes:
+    - VUSyncHack # Fixes floor/asset shimmer and geometry flicker (VU/EE sync timing).
+    - FullVU0SyncHack # Fully syncs VU0 with the EE - clears remaining flicker with no perf cost.
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -24409,6 +24415,9 @@ SLES-53618:
     eeClampMode: 2 # Fixes SPS on highway.
   roundModes:
     eeRoundMode: 0 # Fixes scene switching in intro.
+  gameFixes:
+    - VUSyncHack # Fixes floor/asset shimmer and geometry flicker (VU/EE sync timing).
+    - FullVU0SyncHack # Fully syncs VU0 with the EE - clears remaining flicker with no perf cost.
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -50317,6 +50326,9 @@ SLPM-66473:
     eeClampMode: 2 # Fixes SPS on highway.
   roundModes:
     eeRoundMode: 0 # Fixes scene switching in intro.
+  gameFixes:
+    - VUSyncHack # Fixes floor/asset shimmer and geometry flicker (VU/EE sync timing).
+    - FullVU0SyncHack # Fully syncs VU0 with the EE - clears remaining flicker with no perf cost.
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -54468,6 +54480,9 @@ SLPM-74243:
     eeClampMode: 2 # Fixes SPS on highway.
   roundModes:
     eeRoundMode: 0 # Fixes scene switching in intro.
+  gameFixes:
+    - VUSyncHack # Fixes floor/asset shimmer and geometry flicker (VU/EE sync timing).
+    - FullVU0SyncHack # Fully syncs VU0 with the EE - clears remaining flicker with no perf cost.
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -70437,6 +70452,9 @@ SLUS-21106:
     eeClampMode: 2 # Fixes SPS on highway.
   roundModes:
     eeRoundMode: 0 # Fixes scene switching in intro.
+  gameFixes:
+    - VUSyncHack # Fixes floor/asset shimmer and geometry flicker (VU/EE sync timing).
+    - FullVU0SyncHack # Fully syncs VU0 with the EE - clears remaining flicker with no perf cost.
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -70446,7 +70464,6 @@ SLUS-21106:
     nativeScaling: 2 # Fixes remaining post misalignment and light bloom and shadows.
     autoFlush: 1 # Fixes shadow alignment.
     bilinearUpscale: 2 # Fixes sun glare textures to behave like native.
-    textureInsideRT: 2 # Handles the "uneven pages" local transfers so the world (not just the HUD) renders on the HW renderer.
 SLUS-21107:
   name: "X-Men - The Official Game"
   region: "NTSC-U"

@@ -2,6 +2,7 @@ package com.armsx2
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ActivityInfo
@@ -16,6 +17,7 @@ import android.view.KeyCharacterMap
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
 import androidx.activity.compose.setContent
@@ -102,6 +104,33 @@ class SurfaceCallbacks(context: Context) : SurfaceView(context), SurfaceHolder.C
         // free when the game stops and the view detaches.
         keepScreenOn = true
     }
+
+    // Resolve the hosting Activity's window through any ContextWrapper chain.
+    private fun hostWindow(): android.view.Window? {
+        var c: Context? = context
+        while (c is ContextWrapper) {
+            if (c is android.app.Activity) return c.window
+            c = c.baseContext
+        }
+        return null
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        // Belt-and-suspenders over the view-level keepScreenOn above: also hold
+        // FLAG_KEEP_SCREEN_ON at the Activity WINDOW level, so the panel stays awake
+        // even when the game surface is briefly covered (e.g. a paused settings menu)
+        // and the SurfaceView itself reads as not-visible — the exact window where the
+        // idle timeout would otherwise fire, tear down the surface, and (over a few
+        // cycles) crash the VM. Cleared on detach so the library never stays lit.
+        hostWindow()?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    override fun onDetachedFromWindow() {
+        hostWindow()?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        super.onDetachedFromWindow()
+    }
+
     override fun surfaceCreated(holder: SurfaceHolder) {
         // Pull focus the moment the surface is ready. Without this the
         // AndroidView starts un-focused and gamepad input falls on the
