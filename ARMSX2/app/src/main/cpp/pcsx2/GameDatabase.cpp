@@ -444,6 +444,7 @@ static const char* s_gs_hw_fix_names[] = {
 	"getSkipCount",
 	"beforeDraw",
 	"moveHandler",
+	"hwDownloadMode",
 };
 static_assert(std::size(s_gs_hw_fix_names) == static_cast<u32>(GameDatabaseSchema::GSHWFixId::Count), "HW fix name lookup is correct size");
 
@@ -626,6 +627,9 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 		case GSHWFixId::AutoFlush:
 			return (static_cast<int>(config.UserHacks_AutoFlush) == value);
 
+		case GSHWFixId::HWDownloadMode:
+			return (static_cast<int>(config.HWDownloadMode) == value);
+
 		case GSHWFixId::CPUFramebufferConversion:
 			return (static_cast<int>(config.UserHacks_CPUFBConversion) == value);
 
@@ -770,6 +774,13 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 			{
 				if (value >= 0 && value <= static_cast<int>(GSHWAutoFlushLevel::Enabled))
 					config.UserHacks_AutoFlush = static_cast<GSHWAutoFlushLevel>(value);
+			}
+			break;
+
+			case GSHWFixId::HWDownloadMode:
+			{
+				if (value >= 0 && value <= static_cast<int>(GSHardwareDownloadMode::Disabled))
+					config.HWDownloadMode = static_cast<GSHardwareDownloadMode>(value);
 			}
 			break;
 

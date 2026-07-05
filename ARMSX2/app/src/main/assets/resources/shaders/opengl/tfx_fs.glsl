@@ -186,7 +186,9 @@ layout(binding = 3) uniform sampler2D img_prim_min;
 // Depth feedback mode 1 binds depth buffer directly as a texture.
 // Depth feedback mode 2 (depth as color) can use FB fetch for the feedback,
 // in which case we don't need to explicitly bind depth as a texture.
-#if (DEPTH_FEEDBACK_SUPPORT == 1 || (DEPTH_FEEDBACK_SUPPORT == 2 && !HAS_FRAMEBUFFER_FETCH)) && SW_DEPTH
+// HAS_ARM_DEPTH_FETCH reads prior depth from gl_LastFragDepthARM (coherent,
+// tile-local) — no sampler needed, so skip the binding entirely.
+#if (DEPTH_FEEDBACK_SUPPORT == 1 || (DEPTH_FEEDBACK_SUPPORT == 2 && !HAS_FRAMEBUFFER_FETCH)) && SW_DEPTH && !HAS_ARM_DEPTH_FETCH
 layout(binding = 4) uniform sampler2D DepthSampler;
 #endif
 
@@ -209,6 +211,10 @@ float sample_from_depth()
 {
 #if !SW_DEPTH
 	return 0.0f;
+#elif HAS_ARM_DEPTH_FETCH
+	// Coherent tile-local read of the current depth attachment — no sampler,
+	// no second fetch output, so it links on Adreno and doesn't read stale depth.
+	return gl_LastFragDepthARM;
 #elif HAS_FRAMEBUFFER_FETCH && (DEPTH_FEEDBACK_SUPPORT == 2)
 	return o_col1;
 #else

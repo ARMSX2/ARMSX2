@@ -154,7 +154,8 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 refreshToken.value++
                 true
             }
-            .verticalScroll(scroll),
+            .verticalScroll(scroll)
+            .verticalScrollbar(scroll),
     ) {
         Text(
             "Tap an action, then press a physical controller button.",

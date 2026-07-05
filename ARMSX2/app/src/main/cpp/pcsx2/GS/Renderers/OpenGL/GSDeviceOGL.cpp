@@ -1026,6 +1026,36 @@ bool GSDeviceOGL::CheckFeatures()
 	else if (use_adreno_profile)
 	{
 		Console.WriteLn(Color_Cyan, "GL: Adreno profile active (EXT/PLS framebuffer fetch).");
+
+		// Adreno's GLES driver rejects a fragment shader that declares TWO
+		// framebuffer-fetch `inout` outputs. The depth-as-colour feedback path
+		// (DEPTH_FEEDBACK_SUPPORT 2) emits exactly that whenever the colour output
+		// already needs fetch AND a SW-Z depth draw is in flight -- o_col0 (colour
+		// fetch) at location 0 and o_col1 (depth fetch) at location 1 both become
+		// `inout`. That combination is produced by the accurate-alpha-test RGB-only
+		// + depth-write path, so any game carrying accurateAlphaTest (e.g. Everybody's
+		// Golf 4 / Minna no Golf 4, SCKA-20057 / SCPS-15059) fails to link those draws
+		// -> "Output o_col1 location or component exceeds max allowed" -> garbage
+		// (black-boxed faces, a floating RT rectangle, blue bars). Vulkan is unaffected
+		// (real depth attachment, no second fetch output). Route depth feedback through
+		// the real depth sampler (DEPTH_FEEDBACK_SUPPORT 1) so only o_col0 is a fetch
+		// output and the program links. test_and_sample_depth is already true above,
+		// and texture_barrier==true here keeps the DS-clone path (bind at ~3402) inert.
+		// Only override Auto -- an explicit DepthFeedbackMode choice is honoured.
+		if (m_features.framebuffer_fetch && GSConfig.DepthFeedbackMode == GSDepthFeedbackMode::Auto)
+		{
+			m_features.depth_feedback = true;
+			// The mode-1 depth SAMPLER read is incoherent on GLES (no texture_barrier
+			// for a sampled depth attachment) -> stale reads make occluded/interior
+			// triangles poke through as white shards. When the coherent ARM depth-
+			// stencil fetch extension is present, read prior depth via gl_LastFragDepthARM
+			// instead (tile-local, one output, no sampler, no feedback-loop bind).
+			m_arm_depth_fetch = GLAD_GL_ARM_shader_framebuffer_fetch_depth_stencil;
+			Console.WriteLn(m_arm_depth_fetch
+				? "GL: Adreno - depth feedback via coherent ARM depth-stencil fetch (gl_LastFragDepthARM)."
+				: "GL: Adreno - routing depth feedback through the depth sampler "
+				  "(avoids the dual framebuffer-fetch output link failure).");
+		}
 	}
 
 	{
@@ -1805,6 +1835,10 @@ std::string GSDeviceOGL::GenGlslHeader(const std::string_view entry, GLenum type
                 header += "#extension GL_EXT_shader_framebuffer_fetch : require\n";
         }
 
+        // Coherent prior-depth read for SW-Z feedback (gl_LastFragDepthARM).
+        if (m_arm_depth_fetch)
+            header += "#extension GL_ARM_shader_framebuffer_fetch_depth_stencil : require\n";
+
         header += "precision highp float;\n";
         header += "precision highp int;\n";
         header += "precision highp sampler2D;\n";
@@ -1849,6 +1883,7 @@ std::string GSDeviceOGL::GenGlslHeader(const std::string_view entry, GLenum type
 
 	header += fmt::format("#define HAS_EXT_SHADER_FRAMEBUFFER_FETCH {}\n", GLAD_GL_EXT_shader_framebuffer_fetch ? 1 : 0);
 	header += fmt::format("#define HAS_ARM_SHADER_FRAMEBUFFER_FETCH {}\n", GLAD_GL_ARM_shader_framebuffer_fetch ? 1 : 0);
+	header += fmt::format("#define HAS_ARM_DEPTH_FETCH {}\n", m_arm_depth_fetch ? 1 : 0);
 	header += fmt::format("#define HAS_EXT_SHADER_PIXEL_LOCAL_STORAGE {}\n", GLAD_GL_EXT_shader_pixel_local_storage ? 1 : 0);
 	header += fmt::format("#define GPU_PROFILE_MALI {}\n", IsMaliGPUProfile() ? 1 : 0);
 	header += fmt::format("#define GPU_PROFILE_ADRENO {}\n", IsAdrenoGPUProfile() ? 1 : 0);
@@ -3265,7 +3300,10 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 	if (m_features.texture_barrier && (config.require_one_barrier || config.require_full_barrier))
 		PSSetShaderResource(TEXTURE_RT, colclip_rt ? colclip_rt : config.rt);
 	if (m_features.texture_barrier && (config.require_one_barrier || config.require_full_barrier) && config.ps.IsFeedbackLoopDepth())
-		PSSetShaderResource(TEXTURE_DEPTH, m_features.depth_feedback ? config.ds : m_ds_as_rt);
+		// With ARM depth-stencil fetch the shader reads gl_LastFragDepthARM, not a
+		// sampler, so don't bind the live depth attachment as a texture (avoids a
+		// feedback-loop bind the driver may flag).
+		PSSetShaderResource(TEXTURE_DEPTH, (m_features.depth_feedback && !m_arm_depth_fetch) ? config.ds : m_ds_as_rt);
 
 	SetupSampler(config.sampler);
 

@@ -43,7 +43,8 @@ fun RecompilerTab(state: MutableState<Settings>) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .verticalScroll(scroll),
+            .verticalScroll(scroll)
+            .verticalScrollbar(scroll),
     ) {
         Text(
             "Disabling a recompiler drops to interpreter — debug only, expect a heavy slowdown.",

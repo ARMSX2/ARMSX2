@@ -55,8 +55,10 @@ import com.armsx2.config.ConfigStore
 import com.armsx2.config.SettingsScope
 import com.armsx2.ui.settings.SettingsControllerNav
 import com.armsx2.ui.settings.controllerFocusable
+import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.util.zip.ZipInputStream
 import kr.co.iefriends.pcsx2.NativeApp
 
 object MemoryCardManager {
@@ -598,10 +600,17 @@ object MemoryCardManager {
 
     private fun importCardFile(context: Context, uri: Uri) {
         val dir = memcardsDir(context).apply { mkdirs() }
+        val rawName = runCatching { DocumentFile.fromSingleUri(context, uri)?.name }.getOrNull()
+        // A zipped card (a PCSX2 folder card, or loose .ps2/.mcr files) must be
+        // EXTRACTED, not byte-copied — copying the .zip verbatim as "<name>.ps2"
+        // produced a garbage, unformatted card (e.g. "Big Card.ps2.zip.ps2" @ 95KB).
+        if (isZipCard(context, uri, rawName)) {
+            importZip(context, uri, rawName ?: "Card.zip")
+            return
+        }
         // Keep the source filename (unique-ified) instead of always writing
         // Mcd001.ps2 — re-importing previously OVERWROTE the first card and forced
         // Slot 1. Now each import is a distinct card the user assigns to a slot.
-        val rawName = runCatching { DocumentFile.fromSingleUri(context, uri)?.name }.getOrNull()
         var name = sanitizeFileName(rawName?.takeIf { it.isNotBlank() } ?: "Mcd001.ps2")
         if (!name.endsWith(".ps2", true) && !name.endsWith(".mcr", true)) name += ".ps2"
         val outFile = uniqueFile(dir, name)
@@ -669,6 +678,109 @@ object MemoryCardManager {
         } catch (e: Exception) {
             status.value = "Folder import failed: ${e.message ?: "unknown error"}"
             Toast.makeText(context, status.value, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** True when the picked file is a .zip (by name or PK magic bytes). */
+    private fun isZipCard(context: Context, uri: Uri, name: String?): Boolean {
+        if (name?.endsWith(".zip", true) == true) return true
+        return runCatching {
+            context.contentResolver.openInputStream(uri)?.use { ins ->
+                val b = ByteArray(4)
+                ins.read(b) == 4 && b[0] == 0x50.toByte() && b[1] == 0x4B.toByte() &&
+                    (b[2] == 0x03.toByte() || b[2] == 0x05.toByte() || b[2] == 0x07.toByte())
+            } ?: false
+        }.getOrDefault(false)
+    }
+
+    /** Extract a zipped memory card. Handles a zip that wraps a PCSX2 FOLDER card
+     *  (a directory holding a "_pcsx2_superblock"), or that holds loose .ps2/.mcr
+     *  card FILES. macOS resource-fork junk ("__MACOSX/", "._*") and path-traversal
+     *  entries are skipped. Everything stages in a temp dir that is always cleaned. */
+    private fun importZip(context: Context, uri: Uri, displayName: String) {
+        val dir = memcardsDir(context).apply { mkdirs() }
+        val staging = File(dir, ".zipimport_tmp").apply { deleteRecursively(); mkdirs() }
+        try {
+            var files = 0
+            context.contentResolver.openInputStream(uri)?.use { raw ->
+                ZipInputStream(BufferedInputStream(raw)).use { zin ->
+                    var entry = zin.nextEntry
+                    while (entry != null) {
+                        val path = entry.name.replace('\\', '/')
+                        val base = path.substringAfterLast('/')
+                        val junk = path.startsWith("__MACOSX/") || base.startsWith("._")
+                        // Sanitize each segment and drop "."/".." so a malicious
+                        // entry can't escape the staging dir.
+                        val safeRel = path.split('/')
+                            .filter { it.isNotBlank() && it != "." && it != ".." }
+                            .joinToString("/") { sanitizeFileName(it) }
+                        if (!junk && safeRel.isNotBlank()) {
+                            val out = File(staging, safeRel)
+                            if (entry.isDirectory) {
+                                out.mkdirs()
+                            } else {
+                                out.parentFile?.mkdirs()
+                                FileOutputStream(out).use { os -> zin.copyTo(os) }
+                                files++
+                            }
+                        }
+                        zin.closeEntry()
+                        entry = zin.nextEntry
+                    }
+                }
+            } ?: error("Could not open the zip")
+            if (files == 0) error("The zip has no usable files")
+
+            // 1) A PCSX2 folder card wrapped inside the zip.
+            val folderCard = findFolderCardRoot(staging)
+            if (folderCard != null) {
+                val trimmed = if (displayName.endsWith(".zip", true)) displayName.dropLast(4) else displayName
+                val dest = uniqueChild(dir, sanitizeFileName(trimmed.ifBlank { folderCard.name }))
+                if (!folderCard.renameTo(dest)) {
+                    dest.mkdirs()
+                    folderCard.copyRecursively(dest, overwrite = true)
+                }
+                val assigned = runCatching { assignSlot(context, 1, dest) }.getOrDefault(false)
+                status.value = if (assigned)
+                    "Imported folder card ${dest.name} from zip to Slot 1."
+                else
+                    "Imported folder card ${dest.name} from zip — assign it to a slot below."
+                Toast.makeText(context, status.value, Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            // 2) Loose .ps2 / .mcr card files anywhere in the zip.
+            val cardFiles = staging.walkTopDown().filter {
+                it.isFile && (it.name.endsWith(".ps2", true) || it.name.endsWith(".mcr", true))
+            }.toList()
+            if (cardFiles.isNotEmpty()) {
+                var imported = 0
+                for (f in cardFiles) {
+                    val out = uniqueFile(dir, sanitizeFileName(f.name))
+                    val ok = runCatching { f.copyTo(out, overwrite = false); true }.getOrDefault(false)
+                    if (ok && out.isFile && out.length() > 0L) imported++ else runCatching { out.delete() }
+                }
+                if (imported == 0) error("Could not read the card files in the zip")
+                status.value = "Imported $imported memory card${if (imported == 1) "" else "s"} from zip — assign one to a slot below."
+                Toast.makeText(context, status.value, Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            error("No PS2 memory card (folder card or .ps2/.mcr) found in the zip")
+        } catch (e: Exception) {
+            status.value = "Zip import failed: ${e.message ?: "unknown error"}"
+            Toast.makeText(context, status.value, Toast.LENGTH_LONG).show()
+        } finally {
+            runCatching { staging.deleteRecursively() }
+        }
+    }
+
+    /** A PCSX2 folder card = a directory that directly holds a "_pcsx2_superblock".
+     *  Checks [root] itself, then any descendant directory. */
+    private fun findFolderCardRoot(root: File): File? {
+        if (File(root, "_pcsx2_superblock").isFile) return root
+        return root.walkTopDown().firstOrNull {
+            it.isDirectory && File(it, "_pcsx2_superblock").isFile
         }
     }
 
@@ -818,7 +930,10 @@ object MemoryCardManager {
     private fun copyDocumentFolder(context: Context, source: DocumentFile, dest: File): Int {
         var copied = 0
         for (child in source.listFiles()) {
-            val name = sanitizeFileName(child.name ?: continue)
+            val raw = child.name ?: continue
+            // Skip macOS resource-fork junk so it never lands inside a folder card.
+            if (raw == "__MACOSX" || raw.startsWith("._")) continue
+            val name = sanitizeFileName(raw)
             if (child.isDirectory) {
                 val childDest = File(dest, name).apply { mkdirs() }
                 copied += copyDocumentFolder(context, child, childDest)

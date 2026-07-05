@@ -170,6 +170,10 @@ private:
 	} m_bugs;
 
 	bool m_disable_download_pbo = false;
+	// Adreno: read prior depth for SW-Z feedback via the coherent ARM depth-stencil
+	// fetch (gl_LastFragDepthARM) instead of the incoherent depth sampler, when the
+	// GL_ARM_shader_framebuffer_fetch_depth_stencil extension is present.
+	bool m_arm_depth_fetch = false;
 
 	GLuint m_fbo = 0; // frame buffer container
 	GLuint m_fbo_read = 0; // frame buffer container only for reading

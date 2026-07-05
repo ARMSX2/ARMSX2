@@ -86,6 +86,7 @@ namespace GameDatabaseSchema
 		GetSkipCount,
 		BeforeDraw,
 		MoveHandler,
+		HWDownloadMode,
 
 		Count
 	};

@@ -807,7 +807,8 @@ fun PatchesTab(state: MutableState<Settings>) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .verticalScroll(scroll),
+            .verticalScroll(scroll)
+            .verticalScrollbar(scroll),
     ) {
         Text(
             "Patches apply at boot — restart the game after changing these.",

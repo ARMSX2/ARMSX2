@@ -40,7 +40,8 @@ fun OverlayTab(state: MutableState<Settings>) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .verticalScroll(scroll),
+            .verticalScroll(scroll)
+            .verticalScrollbar(scroll),
     ) {
         Text(
             "Show or hide parts of the performance overlay. Turning GPU off also " +

@@ -1657,8 +1657,13 @@ SCAJ-20058:
 SCAJ-20059:
   name: "Minna no Golf 4"
   region: "NTSC-Unk"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCAJ-20060:
   name: "Time Crisis 3"
   region: "NTSC-Unk"
@@ -1888,8 +1893,13 @@ SCAJ-20093:
 SCAJ-20094:
   name: "Minna no Golf 4 [PlayStation2 the Best]"
   region: "NTSC-Unk"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCAJ-20095:
   name: "Digital Devil Saga - Avatar Tuner"
   region: "NTSC-Unk"
@@ -2394,6 +2404,10 @@ SCAJ-20162:
 SCAJ-20163:
   name: "Tales of the Abyss"
   region: "NTSC-Unk"
+  clampModes:
+    eeClampMode: 3 # Fixes progression stalls (e.g. cannot climb stairs) — VU/FPU overflow under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu / Everybody's Golf 4.
+    vu0ClampMode: 3 # VU0 Extra+Sign.
+    vu1ClampMode: 3 # VU1 Extra+Sign.
   gsHWFixes:
     halfPixelOffset: 5 # Fixes post positioning.
     nativeScaling: 2 # Fixes post effects.
@@ -2593,8 +2607,13 @@ SCAJ-20193:
 SCAJ-20194:
   name: "Minna no Golf 4 [PlayStation2 the Best]"
   region: "NTSC-Unk"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCAJ-20195:
   name: "Ape Escape 3 [PlayStation2 the Best]"
   region: "NTSC-C"
@@ -5448,6 +5467,8 @@ SCES-51463:
   region: "PAL-M6"
   compat: 5
   clampModes:
+    eeClampMode: 3 # Fixes the intro-ladder progression hang (descent state never triggers without EE/FPU Full clamping).
+    vu0ClampMode: 3 # Paired with EE Full clamp + VU1 below for the ladder fix.
     vu1ClampMode: 3 # Fixes sporadic white triangle SPS.
   gsHWFixes:
     halfPixelOffset: 5 # Fixes misalignment.
@@ -5732,6 +5753,8 @@ SCES-52156:
   name: "Ghosthunter - Hunter on the spectres"
   region: "PAL-M3"
   clampModes:
+    eeClampMode: 3 # Fixes the intro-ladder progression hang (descent state never triggers without EE/FPU Full clamping).
+    vu0ClampMode: 3 # Paired with EE Full clamp + VU1 below for the ladder fix.
     vu1ClampMode: 3 # Fixes sporadic white triangle SPS.
   gsHWFixes:
     halfPixelOffset: 5 # Fixes misalignment.
@@ -5933,8 +5956,13 @@ SCES-52566:
 SCES-52582:
   name: "Everybody's Golf 4"
   region: "PAL-M5"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCES-52586:
   name: "Death by Degrees"
   region: "PAL-E-S"
@@ -7730,8 +7758,13 @@ SCKA-20057:
   name: "모두의 골프 4"
   name-en: "Everybody's Golf 4"
   region: "NTSC-K"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCKA-20058:
   name: "액션 로망 범피 트롯"
   name-en: "Action Romance Bumpy Trot"
@@ -8109,6 +8142,13 @@ SCKA-20105:
   name: "모두의 골프 4"
   name-en: "Everybody's Golf 4"
   region: "NTSC-K"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
+  gsHWFixes:
+    accurateAlphaTest: 1 # Fixes broken face and UI rendering (matches the rest of the Everybody's Golf 4 family).
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCKA-20106:
   name: "완다 와 거상 [PlayStation 2 BigHit Series]" # Undumped on ReDump as of 2025-08-28
   name-en: "Wander and the Colossus [PlayStation 2 BigHit Series]"
@@ -9233,8 +9273,13 @@ SCPS-15059:
   name-sort: "みんなのごるふ 4"
   name-en: "Minna no Golf 4"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCPS-15060:
   name: "幸福操作官"
   name-sort: "こうふくそうさかん"
@@ -10148,8 +10193,13 @@ SCPS-19301:
   name-sort: "みんなのごるふ4 [PlayStation2 the Best]"
   name-en: "Minna no Golf 4 [PlayStation2 the Best]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCPS-19302:
   name: "ラチェット&クランク2 ガガガ！銀河のコマンドーっす [PlayStation2 the Best]"
   name-sort: "らちぇっとあんどくらんく2 ががが！ぎんがのこまんどーっす [PlayStation2 the Best]"
@@ -10338,8 +10388,13 @@ SCPS-19319:
   name-sort: "みんなのごるふ 4 [PlayStation2 the Best]"
   name-en: "Minna no Golf 4 [PlayStation2 the Best]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCPS-19320:
   name: "ワンダと巨像 [PlayStation2 the Best]"
   name-sort: "わんだときょぞう [PlayStation2 the Best]"
@@ -12320,9 +12375,14 @@ SCUS-97400:
 SCUS-97401:
   name: "Hot Shots Golf Fore!"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   compat: 5
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCUS-97402:
   name: "Killzone"
   region: "NTSC-U"
@@ -12445,8 +12505,13 @@ SCUS-97425:
 SCUS-97427:
   name: "Hot Shots Golf Fore! [Online Public Beta]"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCUS-97428:
   name: "Kiosk Demo Disc Q3-Q4 2004"
   region: "NTSC-U"
@@ -12469,8 +12534,13 @@ SCUS-97429:
 SCUS-97430:
   name: "Hot Shots Golf Fore! [Regular Demo]"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCUS-97431:
   name: "Killzone Public Beta V1.0"
   region: "NTSC-U"
@@ -12932,8 +13002,13 @@ SCUS-97514:
 SCUS-97515:
   name: "Hot Shots Golf Fore! [Greatest Hits]"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 SCUS-97516:
   name: "Jak 3 [Greatest Hits]"
   region: "NTSC-U"
@@ -18381,6 +18456,9 @@ SLES-51553:
     halfPixelOffset: 5 # Aligns post-processing.
     roundSprite: 2 # Fixes vertical lines and some font artifacts but not completely fixed.
     textureInsideRT: 1 # Fixes rainbow shadow of legions.
+  gameFixes:
+    - VUSyncHack # Runs VU behind the EE for tight VU/EE sync.
+    - FullVU0SyncHack # Fully syncs VU0 with the EE - fixes player hits not registering on enemies.
 SLES-51554:
   name: "Cel Damage Overdrive"
   region: "PAL-M5"
@@ -31430,6 +31508,9 @@ SLKA-25026:
     halfPixelOffset: 5 # Aligns post-processing.
     roundSprite: 2 # Fixes vertical lines and some font artifacts but not completely fixed.
     textureInsideRT: 1 # Fixes rainbow shadow of legions.
+  gameFixes:
+    - VUSyncHack # Runs VU behind the EE for tight VU/EE sync.
+    - FullVU0SyncHack # Fully syncs VU0 with the EE - fixes player hits not registering on enemies.
 SLKA-25027:
   name: "NBA 스트리트 2"
   name-en: "NBA Street Vol. 2"
@@ -35249,6 +35330,10 @@ SLPM-55252:
   name-sort: "ぷろやきゅうすぴりっつ2010"
   name-en: "Pro Yakyuu Spirits 2010"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes the mid-gameplay freeze (VU stalls to 0% without EE/FPU Full clamping; regressed when Android moved to the mac recompiler).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1 for the freeze fix.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0 for the freeze fix.
 SLPM-55253:
   name: "Winning Post World 2010"
   name-sort: "ういにんぐぽすとわーるど 2010"
@@ -42849,6 +42934,9 @@ SLPM-65249:
     halfPixelOffset: 5 # Aligns post-processing.
     roundSprite: 2 # Fixes vertical lines and some font artifacts but not completely fixed.
     textureInsideRT: 1 # Fixes rainbow shadow of legions.
+  gameFixes:
+    - VUSyncHack # Runs VU behind the EE for tight VU/EE sync.
+    - FullVU0SyncHack # Fully syncs VU0 with the EE - fixes player hits not registering on enemies.
 SLPM-65250:
   name: "カットビ！！ ゴルフ"
   name-sort: "かっとび！！ ごるふ"
@@ -43548,6 +43636,9 @@ SLPM-65374:
   gsHWFixes:
     recommendedBlendingLevel: 5 # Alleviates color banding also the cockpit and missile shadows are darker if enabled.
     autoFlush: 2 # Corrects post-processing effect on jet exhausts.
+  memcardFilters:
+    - SLPM-65177 # Energy Airforce (previous title)
+    - SLPM-65374 # aimStrike
 SLPM-65375:
   name: "真・三國無双3 & 真・三國無双3 猛将伝 [ディスク 1] [プレミアムパック]"
   name-sort: "しんさんごくむそう3 & しんさんごくむそう3 もうしょうでん [でぃすく 1] [ぷれみあむぱっく]"
@@ -51988,6 +52079,8 @@ SLPM-66748:
   gameFixes:
     - DMABusyHack
     - SoftwareRendererFMVHack # Vertical lines in FMV.
+  gsHWFixes:
+    roundSprite: 1 # Fixes misalignment of textures in the Pause Menu.
 SLPM-66749:
   name: "ウィザードリィ エクス2 ～無限の学徒～ [ワンダープライス]"
   name-sort: "うぃざーどりぃ えくす2 むげんのがくと [わんだーぷらいす]"
@@ -53388,6 +53481,10 @@ SLPM-66994:
   gameFixes:
     - DMABusyHack
     - SoftwareRendererFMVHack # Vertical lines in FMV.
+  gsHWFixes:
+    roundSprite: 1 # Fixes misalignment of textures in the Pause Menu.
+  memcardFilters:
+    - SLPM-66748 # Original Version
 SLPM-66995:
   name: "beatmania Ⅱ DX 14 - Gold"
   name-sort: "びーとまにあ 2 DX 14 - Gold"
@@ -61011,6 +61108,10 @@ SLPS-25586:
   name-sort: "ているず おぶ じ あびす"
   name-en: "Tales of the Abyss"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes progression stalls (e.g. cannot climb stairs) — VU/FPU overflow under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu / Everybody's Golf 4.
+    vu0ClampMode: 3 # VU0 Extra+Sign.
+    vu1ClampMode: 3 # VU1 Extra+Sign.
   compat: 5
   gsHWFixes:
     halfPixelOffset: 5 # Fixes post positioning.
@@ -64205,6 +64306,10 @@ SLPS-73252:
   name-sort: "ているず おぶ じ あびす [PlayStation2 the Best]"
   name-en: "Tales of the Abyss [PlayStation2 the Best]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes progression stalls (e.g. cannot climb stairs) — VU/FPU overflow under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu / Everybody's Golf 4.
+    vu0ClampMode: 3 # VU0 Extra+Sign.
+    vu1ClampMode: 3 # VU1 Extra+Sign.
   gsHWFixes:
     halfPixelOffset: 5 # Fixes post positioning.
     nativeScaling: 2 # Fixes post effects.
@@ -67938,6 +68043,9 @@ SLUS-20695:
     halfPixelOffset: 5 # Aligns post-processing.
     roundSprite: 2 # Fixes vertical lines and some font artifacts but not completely fixed.
     textureInsideRT: 1 # Fixes rainbow shadow of legions.
+  gameFixes:
+    - VUSyncHack # Runs VU behind the EE for tight VU/EE sync.
+    - FullVU0SyncHack # Fully syncs VU0 with the EE - fixes player hits not registering on enemies.
 SLUS-20696:
   name: "Nickelodeon Jimmy Neutron Boy Genius - Jet Fusion"
   region: "NTSC-U"
@@ -69626,6 +69734,8 @@ SLUS-20993:
   region: "NTSC-U"
   compat: 5
   clampModes:
+    eeClampMode: 3 # Fixes the intro-ladder progression hang (descent state never triggers without EE/FPU Full clamping).
+    vu0ClampMode: 3 # Paired with EE Full clamp + VU1 below for the ladder fix.
     vu1ClampMode: 3 # Fixes sporadic white triangle SPS.
   gsHWFixes:
     halfPixelOffset: 5 # Fixes misalignment.
@@ -72266,6 +72376,10 @@ SLUS-21385:
 SLUS-21386:
   name: "Tales of the Abyss"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes progression stalls (e.g. cannot climb stairs) — VU/FPU overflow under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu / Everybody's Golf 4.
+    vu0ClampMode: 3 # VU0 Extra+Sign.
+    vu1ClampMode: 3 # VU1 Extra+Sign.
   compat: 5
   gsHWFixes:
     halfPixelOffset: 5 # Fixes post positioning.
@@ -76429,8 +76543,13 @@ TCES-52456:
 TCES-52582:
   name: "Everybody's Golf 4 [Beta Trial Code]"
   region: "PAL-E"
+  clampModes:
+    eeClampMode: 3 # Fixes the VU-stall soft-lock on match load (VU drops to 0% under default Normal clamping; same mac-recompiler class as Ghosthunter / Pro Yakyuu).
+    vu0ClampMode: 3 # VU0 Extra+Sign, paired with EE Full + VU1.
+    vu1ClampMode: 3 # VU1 Extra+Sign, paired with EE Full + VU0.
   gsHWFixes:
     accurateAlphaTest: 1 # Fixes broken face and UI rendering.
+    hwDownloadMode: 2 # No Readbacks: the per-frame GS downloads aren't used visually but stall the GS thread; skipping them restores full speed on mobile.
 TCES-53033:
   name: "Formula One 05 Beta Trial Code"
   region: "PAL-E"

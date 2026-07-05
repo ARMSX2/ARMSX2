@@ -42,7 +42,8 @@ fun HotkeysTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .verticalScroll(scroll),
+            .verticalScroll(scroll)
+            .verticalScrollbar(scroll),
     ) {
         Text(
             "Controller hotkeys",

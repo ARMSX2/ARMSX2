@@ -47,7 +47,8 @@ fun FixesTab(state: MutableState<Settings>) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .verticalScroll(scroll),
+            .verticalScroll(scroll)
+            .verticalScrollbar(scroll),
     ) {
         CollapsibleSection("Display Fixes") {
         HelpText(

@@ -8,9 +8,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -41,6 +38,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.ScrollState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -57,11 +55,15 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.ui.Colors
@@ -678,24 +680,109 @@ private fun DiscreteSlider(
             .fillMaxWidth()
             .height(14.dp)
             .pointerInput(min, max) {
+                // -- Approach C: axis-arbitrated gesture, built from first principles on
+                // awaitPointerEvent so the parent verticalScroll and this slider never
+                // both act on the same drag.
+                //
+                // The slider lives inside a Column with Modifier.verticalScroll. That
+                // scroll container installs its OWN pointer handler that, once it detects
+                // vertical touch-slop, starts consuming the drag (marking each change as
+                // consumed) to move the list. Our handler must therefore:
+                //   1. Never mutate the value on a bare touch-down (the OLD bug: down
+                //      immediately jogged the slider even when the user meant to scroll).
+                //   2. Wait past touch-slop and decide by DOMINANT AXIS:
+                //        - vertical wins  -> do nothing, leave the change UNconsumed so
+                //          the parent verticalScroll takes over and scrolls the list.
+                //        - horizontal wins -> claim the pointer (consume) and drive the
+                //          value, following the finger live until lift.
+                //   3. Stay ONE awaitEachGesture so tap + drag share the same pointer and
+                //      a drag doesn't stall after its first jump (the OTHER old bug).
+                //   4. Route every value write through latestOnChange (never the captured
+                //      onChange), so editing this slider can't revert a sibling.
                 val edgePx = 6.dp.toPx()
-                fun update(x: Float) {
+                fun frac(x: Float): Float {
                     val usable = (size.width - edgePx * 2).coerceAtLeast(1f)
-                    val f = ((x - edgePx) / usable).coerceIn(0f, 1f)
-                    latestOnChange(min + (f * steps).roundToInt())
+                    return ((x - edgePx) / usable).coerceIn(0f, 1f)
                 }
-                // ONE gesture handler: set on touch-down (tap-to-position) AND follow the
-                // finger continuously (drag). The old split detectTapGestures /
-                // detectHorizontalDragGestures across two separate pointerInput blocks fought
-                // for the pointer — the tap detector consumed the down, so a drag only landed
-                // the initial jump and then stalled until you lifted and touched again.
-                // Consuming each drag change also stops the scrolling parent from stealing it.
+                fun commit(x: Float) {
+                    latestOnChange(min + (frac(x) * steps).roundToInt())
+                }
+                val slop = viewConfiguration.touchSlop
+
                 awaitEachGesture {
+                    // awaitFirstDown(requireUnconsumed = false): suspends until the first
+                    // pointer presses inside our bounds, returning that PointerInputChange.
+                    // We do NOT consume it and we do NOT touch the value yet — a touch-down
+                    // that turns into a vertical scroll must leave the slider untouched.
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    update(down.position.x)
-                    drag(down.id) { change ->
-                        update(change.position.x)
-                        change.consume()
+                    val pointerId: PointerId = down.id
+                    var totalDx = 0f
+                    var totalDy = 0f
+                    var mode = 0 // 0 = undecided, 1 = horizontal (ours), 2 = vertical (parent's)
+
+                    // Accumulate motion until we cross touch-slop, then lock the axis.
+                    // Pass ordering is the whole reason this works: the slider is a
+                    // DESCENDANT of the verticalScroll node, and on PointerEventPass.Main
+                    // events dispatch child -> ancestor. So on Main WE (the child) see each
+                    // move BEFORE verticalScroll does. If we lock horizontal and consume,
+                    // the parent never gets an unconsumed move and cannot scroll. If we lock
+                    // vertical and DON'T consume, verticalScroll — running right after us on
+                    // the same Main event — receives the unconsumed move and scrolls. The
+                    // isConsumed early-out below is a belt-and-suspenders guard for the rare
+                    // case some other node consumed first; it is not the primary mechanism.
+                    while (mode == 0) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                        if (!change.pressed) break // lifted before slop -> treat as tap below
+
+                        // If an ancestor already consumed this change (e.g. the parent's
+                        // vertical-scroll handler locked the drag), concede: vertical wins,
+                        // stop arbitrating, and never write the value.
+                        if (change.isConsumed) { mode = 2; break }
+
+                        val d = change.positionChange() // per-event delta in local px
+                        totalDx += d.x
+                        totalDy += d.y
+                        if (abs(totalDx) >= slop || abs(totalDy) >= slop) {
+                            // Dominant-axis decision at the moment slop is first crossed.
+                            mode = if (abs(totalDx) >= abs(totalDy)) 1 else 2
+                        }
+                    }
+
+                    when (mode) {
+                        1 -> {
+                            // Horizontal drag is ours. Seed the value from the current finger
+                            // position, then follow it live. Consume each change so the parent
+                            // verticalScroll can't also steal this gesture.
+                            var pos = down.position.x + totalDx
+                            commit(pos)
+                            var active = true
+                            while (active) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val change = event.changes.firstOrNull { it.id == pointerId }
+                                if (change == null || !change.pressed) { active = false }
+                                else {
+                                    pos = change.position.x
+                                    commit(pos)
+                                    change.consume() // claim it; blocks parent scroll
+                                }
+                            }
+                        }
+                        2 -> {
+                            // Vertical won (or the parent already claimed it). Do nothing:
+                            // leave every change UNconsumed so Modifier.verticalScroll drives
+                            // the list. The slider value is never modified.
+                        }
+                        else -> {
+                            // mode == 0: the arbitration loop exited via the !change.pressed
+                            // break (the pointer lifted) before either axis crossed slop. That
+                            // is exactly a clean tap. Because total motion stayed under
+                            // touch-slop it cannot have been the start of a scroll, so it is
+                            // safe to set the value to the tapped position (spec nice-to-have).
+                            if (abs(totalDx) < slop && abs(totalDy) < slop) {
+                                commit(down.position.x + totalDx)
+                            }
+                        }
                     }
                 }
             },
@@ -919,3 +1006,60 @@ fun SegmentedGridRow(
 
 private fun Int.floorMod(modulus: Int): Int =
     if (modulus <= 0) 0 else ((this % modulus) + modulus) % modulus
+
+/** A scroll indicator drawn down the right edge of a vertically-scrolled
+ *  container, inside a DEDICATED right gutter so the rows never sit under it.
+ *
+ *  Layout (Approach C): the modifier reserves a fixed [gutter] column on the
+ *  right via `.padding(end = gutter)` and draws the thumb INTO that gutter with
+ *  a small [edgeInset] off the very edge, so:
+ *    - sliders / rows are inset by [gutter] and can no longer be caught while
+ *      you drag the scrollbar (the user's "too close" / "I still hit sliders"
+ *      complaint), and
+ *    - the bar reads as a proper, wider, grabbable indicator rather than a hair
+ *      pinned to the pixel edge.
+ *
+ *  Modifier ORDER matters and is the whole trick:
+ *    this.drawWithContent{…}.padding(end = gutter)
+ *  drawWithContent is the OUTER node, so its `size.width` is the FULL width and
+ *  it can paint the thumb in the gutter. padding is the INNER node, so it insets
+ *  the scrollable content (the Column's rows) by [gutter], leaving that column
+ *  empty for the bar. Because this whole modifier is applied AFTER
+ *  `.verticalScroll(state)`, the gutter/inset belongs to the fixed viewport and
+ *  does not scroll away.
+ *
+ *  Visible only when there IS content to scroll. The thumb's height reflects how
+ *  much of the content fits on screen; its position reflects scroll progress.
+ *  Non-interactive (indicator only) so it can never fight verticalScroll's own
+ *  pointer handling — apply it right after `.verticalScroll(state)`. */
+fun Modifier.verticalScrollbar(
+    state: ScrollState,
+    width: Dp = 5.dp,
+    gutter: Dp = 12.dp,
+    edgeInset: Dp = 3.dp,
+    color: Color = Color.White.copy(alpha = 0.45f),
+    minThumb: Dp = 28.dp,
+): Modifier = this
+    .drawWithContent {
+        drawContent()
+        val max = state.maxValue
+        if (max <= 0) return@drawWithContent // fits on screen -> no bar
+        val viewport = size.height
+        val content = viewport + max // total scrollable content height
+        val w = width.toPx()
+        val inset = edgeInset.toPx()
+        val thumb = (viewport * viewport / content).coerceAtLeast(minThumb.toPx())
+        val track = (viewport - thumb).coerceAtLeast(0f)
+        val y = (state.value.toFloat() / max) * track
+        // size.width is the FULL width here (drawWithContent is the outer node),
+        // so the bar sits in the reserved gutter, inset from the very edge.
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(size.width - w - inset, y),
+            size = Size(w, thumb),
+            cornerRadius = CornerRadius(w / 2f, w / 2f),
+        )
+    }
+    // Reserve the gutter: this padding is the INNER node, so it insets the
+    // scrollable rows (not the bar) and keeps them out from under the indicator.
+    .padding(end = gutter)

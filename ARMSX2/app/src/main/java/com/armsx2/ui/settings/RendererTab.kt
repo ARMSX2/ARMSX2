@@ -87,7 +87,8 @@ fun RendererTab(state: MutableState<Settings>) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .verticalScroll(scroll),
+            .verticalScroll(scroll)
+            .verticalScrollbar(scroll),
     ) {
         CollapsibleSection("Display & Resolution", initiallyExpanded = false) {
             // Graphics API (OpenGL / Vulkan) + Vulkan custom-driver picker. Ported
@@ -382,6 +383,9 @@ fun RendererTab(state: MutableState<Settings>) {
                     apply(s.copy(gpuProfile = it))
                 },
             )
+
+            SettingsDivider()
+            ClearShaderCacheRow()
         }
     }
 }
@@ -439,6 +443,61 @@ private fun TexturePackImportRow() {
             )
         }
     }
+}
+
+@Composable
+private fun ClearShaderCacheRow() {
+    val context = LocalContext.current
+    val status = remember { mutableStateOf("") }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .background(rowAura())
+            .clickable {
+                val n = clearShaderCache(File(Main.assetCopyRoot(context), "cache"))
+                status.value = if (n > 0)
+                    "Cleared $n shader-cache file${if (n == 1) "" else "s"} — restart the game to rebuild."
+                else
+                    "Shader cache is already empty."
+                Toast.makeText(context, status.value, Toast.LENGTH_SHORT).show()
+            }
+            .padding(horizontal = 6.dp, vertical = 5.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Column {
+            Text(
+                "Clear Shader Cache",
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                status.value.ifEmpty {
+                    "Wipes the compiled Vulkan + GL shader/pipeline caches. Use if a game renders corrupt after a driver swap or update — the next launch rebuilds them clean."
+                },
+                color = Colors.pasx2_blue,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    }
+}
+
+/** Delete the on-disk compiled shader/pipeline caches (Vulkan + GL). They rebuild
+ *  on the next renderer init; a stale/mismatched cache (e.g. after a driver change)
+ *  can otherwise leave a game rendering corrupt. Returns how many files were removed. */
+private fun clearShaderCache(cacheDir: File): Int {
+    val names = listOf(
+        "vulkan_pipelines.bin", "vulkan_shaders.bin", "vulkan_shaders.idx",
+        "gl_programs.bin", "gl_programs.idx",
+    )
+    var removed = 0
+    for (name in names) {
+        val f = File(cacheDir, name)
+        if (f.isFile && runCatching { f.delete() }.getOrDefault(false)) removed++
+    }
+    return removed
 }
 
 @Composable

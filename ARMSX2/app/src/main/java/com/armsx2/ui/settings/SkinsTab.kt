@@ -88,6 +88,7 @@ fun SkinsTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
         Modifier
             .fillMaxWidth()
             .verticalScroll(scroll)
+            .verticalScrollbar(scroll)
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Text("Custom Controller Skins", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)

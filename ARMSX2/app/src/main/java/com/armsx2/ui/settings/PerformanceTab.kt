@@ -40,7 +40,8 @@ fun PerformanceTab(state: MutableState<Settings>) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .verticalScroll(scroll),
+            .verticalScroll(scroll)
+            .verticalScrollbar(scroll),
     ) {
         // Speedhack profile presets. Equality against s.copy(...) means the
         // segment auto-reflects "Custom" once the user tweaks any speedhack below.
@@ -272,6 +273,9 @@ fun PerformanceTab(state: MutableState<Settings>) {
                     ToggleBubble("FMV Software", s.gamefixSoftwareRendererFmv, modifier = Modifier.weight(1f)) {
                         apply(s.copy(enableGameFixes = true, gamefixSoftwareRendererFmv = it))
                     }
+                }
+                if (s.gamefixSkipMpeg) {
+                    HelpText("⚠ Skip MPEG is a last-resort fix for games that hang on FMVs. It forces videos to report \"finished\", which can break interactive cutscenes and softlock some games (e.g. God of War II's Colossus grab, Battlefield 2's memory-card create). Best set per-game — leave it off globally unless a specific game needs it.")
                 }
                 BubbleGridRow {
                     ToggleBubble("EE Timing", s.gamefixEETiming, modifier = Modifier.weight(1f)) {

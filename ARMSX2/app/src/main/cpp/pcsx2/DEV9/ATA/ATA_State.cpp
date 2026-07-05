@@ -7,6 +7,8 @@
 #include "ATA.h"
 #include "DEV9/DEV9.h"
 
+#include <chrono>
+
 #if _WIN32
 #include "pathcch.h"
 #include <io.h>
@@ -95,6 +97,30 @@ int ATA::Open(const std::string& hddPath)
 
 	//Store HddImage size for later use
 	hddImageSize = static_cast<u64>(size);
+
+	// @@ARMSX2_HDD_PROBE@@ (issue #272) One-shot storage read-speed probe.
+	// A DEV9 HDD image on slow SD / exFAT / FUSE-backed storage makes OPL's
+	// per-sector game loads crawl (reported ~10s vs. instant on internal ext4).
+	// Time a single 128 KiB read from LBA 0 at open so a logcat capture shows
+	// whether the slowdown is the storage medium (low MiB/s here) rather than
+	// the emulator. Read-only; the file pointer is restored to 0 afterwards.
+	{
+		size_t probeBytes = readBufferLen;
+		if (static_cast<u64>(probeBytes) > hddImageSize)
+			probeBytes = static_cast<size_t>(hddImageSize);
+		const auto t0 = std::chrono::steady_clock::now();
+		const bool ok = probeBytes == 0 ||
+						(FileSystem::FSeek64(hddImage, 0, SEEK_SET) == 0 &&
+							std::fread(readBuffer, probeBytes, 1, hddImage) == 1);
+		const auto t1 = std::chrono::steady_clock::now();
+		FileSystem::FSeek64(hddImage, 0, SEEK_SET); // restore for the emulator
+		const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+		const double mibps = (ok && ms > 0.0) ? (probeBytes / 1048576.0) / (ms / 1000.0) : 0.0;
+		Console.WriteLn("DEV9: ATA: HDD open probe: '%s' read %llu bytes in %.1f ms (%.1f MiB/s)%s",
+			hddPath.c_str(), static_cast<unsigned long long>(probeBytes), ms, mibps,
+			ok ? "" : " [READ FAILED]");
+	}
+
 	lba48Supported = (hddImageSize > ((static_cast<s64>(1) << 28) - 1) * 512);
 
 	CreateHDDinfo(hddImageSize / 512);

@@ -61,7 +61,8 @@ fun NetworkTab(state: MutableState<Settings>) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .verticalScroll(scroll),
+            .verticalScroll(scroll)
+            .verticalScrollbar(scroll),
     ) {
         Text(
             "PS2 network/HDD support. Restart the game or BIOS after changing DEV9.",

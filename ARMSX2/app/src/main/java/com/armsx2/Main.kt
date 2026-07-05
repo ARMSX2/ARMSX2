@@ -91,6 +91,16 @@ class SurfaceCallbacks(context: Context) : SurfaceView(context), SurfaceHolder.C
         // gamepad path) that overlay tints the game output grey. Suppress
         // it — we never paint a "selected" affordance on the surface.
         defaultFocusHighlightEnabled = false
+        // Keep the screen on while a game is on-screen. PCSX2's native
+        // screensaver-inhibit is a desktop path that no-ops on Android
+        // ("Failed to inhibit screen saver" in logcat), so the panel would
+        // sleep after the system timeout mid-game; each screen-off then tore
+        // down and re-created the render surface, and a few of those cycles
+        // crashed the VM. Tying keep-screen-on to THIS view (which only exists
+        // during a game session — Main.surface is null in the library) holds
+        // the display awake exactly while gaming and Android releases it for
+        // free when the game stops and the view detaches.
+        keepScreenOn = true
     }
     override fun surfaceCreated(holder: SurfaceHolder) {
         // Pull focus the moment the surface is ready. Without this the

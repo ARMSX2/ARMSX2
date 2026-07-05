@@ -31,7 +31,8 @@ fun AudioTab(state: MutableState<Settings>) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .verticalScroll(scroll),
+            .verticalScroll(scroll)
+            .verticalScrollbar(scroll),
     ) {
         Text(
             "PS2 audio (SPU2) output. Volume/mute apply instantly; the rest reapply the moment you change them.",
