@@ -224,7 +224,7 @@ struct AppIconSettingsView: View {
     private func applyIcon(_ option: AppIconOption) {
         // Skip when the chosen icon is already active to avoid a redundant prompt.
         guard currentIcon != option.id else { return }
-        Task {
+        Task { @MainActor in
             if let error = await AppIconManager.setAlternateIcon(option.id) {
                 NSLog("[ARMSX2 iOS AppIcon] setAlternateIconName failed: %@", error.localizedDescription)
                 pendingExport = option

@@ -296,7 +296,7 @@ struct StorageSettingsView: View {
                 LabeledContent(settings.localized("Generated Total"), value: formatBytes(report.totalGeneratedBytes))
 
                 Button {
-                    Task { await refreshReport() }
+                    Task { @MainActor in await refreshReport() }
                 } label: {
                     Label(settings.localized("Refresh Storage Usage"), systemImage: "arrow.clockwise")
                 }
@@ -460,7 +460,7 @@ struct StorageSettingsView: View {
                 Button(settings.localized(pendingAction.title), role: .destructive) {
                     let action = pendingAction
                     self.pendingAction = nil
-                    Task { await clear(action) }
+                    Task { @MainActor in await clear(action) }
                 }
             }
 

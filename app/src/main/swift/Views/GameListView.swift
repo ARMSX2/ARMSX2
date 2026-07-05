@@ -1294,7 +1294,7 @@ struct GameListView: View {
 
     private func downloadMissingCovers() {
         let targets = games.map(\.coverInfo)
-        Task {
+        Task { @MainActor in
             _ = await coverStore.downloadMissingCovers(for: targets)
             loadGames()
         }
@@ -1328,14 +1328,14 @@ struct GameListView: View {
     }
 
     private func downloadCover(for game: ISOEntry) {
-        Task {
+        Task { @MainActor in
             _ = await coverStore.downloadMissingCovers(for: [game.coverInfo])
             loadGames()
         }
     }
 
     private func importCoverPhoto(_ photoItem: PhotosPickerItem, forGameNamed gameName: String) {
-        Task {
+        Task { @MainActor in
             do {
                 guard let data = try await photoItem.loadTransferable(type: Data.self) else {
                     coverStore.lastCoverMessage = "The selected photo could not be loaded."
@@ -1360,7 +1360,7 @@ struct GameListView: View {
 			return CoverGameInfo(name: game.name, fileURL: game.fileURL, metadata: metadata, hasCover: existingCover != nil)
 		}
 
-		Task {
+		Task { @MainActor in
 			let summary = await coverStore.downloadMissingCovers(for: targets, showResult: false)
 			if summary.downloaded > 0 {
 				loadGames()
@@ -1385,7 +1385,7 @@ struct GameListView: View {
 		let coverTargets = targets.map(\.coverInfo)
 		let serials = coverTargets.map { $0.metadata["serial"] ?? "" }.filter { !$0.isEmpty }.joined(separator: ",")
 		NSLog("[ARMSX2 iOS Covers] auto-download external missing covers count=%d serials=%@", targets.count, serials)
-		Task {
+		Task { @MainActor in
 			let summary = await coverStore.downloadMissingCovers(for: coverTargets, showResult: false)
 			if summary.downloaded > 0 {
 				loadGames()
