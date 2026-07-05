@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "common/Assertions.h"
+#include "common/FileSystem.h"
 #include "common/Path.h"
 #include "common/StringUtil.h"
 
+#include "ATA/HddCreate.h"
 #include "IopDma.h"
 
 #ifdef _WIN32
@@ -80,6 +82,17 @@ int mapping;
 
 bool isRunning = false;
 
+// A bare HddFile name (no path separator) is app-managed and may be
+// auto-created. A value containing a separator is the user pointing at a real
+// image, which is used in place and never auto-created.
+static bool HddFileIsBareName()
+{
+	const std::string& f = EmuConfig.DEV9.HddFile;
+	return !f.empty() &&
+		f.find('/') == std::string::npos &&
+		f.find('\\') == std::string::npos;
+}
+
 std::string GetHDDPath()
 {
 	//GHC uses UTF8 on all platforms
@@ -88,10 +101,59 @@ std::string GetHDDPath()
 	if (hddPath.empty())
 		EmuConfig.DEV9.HddEnable = false;
 
-	if (!Path::IsAbsolute(hddPath))
+	if (HddFileIsBareName())
+	{
+		// Bare name: resolve under the BIOS dir (the app-private files dir),
+		// not the user's data root. Non-sparse storage is rejected by the
+		// HddCreate sparse guard, so a stray image is never written there.
+		std::string hddRoot(Path::GetDirectory(EmuFolders::Bios));
+		if (hddRoot.empty())
+			hddRoot = EmuFolders::DataRoot.empty() ? EmuFolders::Settings : EmuFolders::DataRoot;
+		hddPath = Path::Combine(Path::Combine(hddRoot, "hdd"), hddPath);
+	}
+	else if (!Path::IsAbsolute(hddPath))
 		hddPath = Path::Combine(EmuFolders::Settings, hddPath);
 
 	return hddPath;
+}
+
+// allowCreate is true only for the app-managed bare-name case. A user-supplied
+// custom path is opened in place and, if missing, reported rather than created.
+static bool EnsureHDDImageExists(const std::string& hddPath, bool allowCreate)
+{
+	if (FileSystem::FileExists(hddPath.c_str()))
+		return true;
+
+	if (!allowCreate)
+	{
+		Console.Error("DEV9: HDD image '%s' not found; not creating a custom path. "
+			"Use a bare name to create one on app storage.", hddPath.c_str());
+		return false;
+	}
+
+	const std::string directory(Path::GetDirectory(hddPath));
+	if (!directory.empty() && !FileSystem::CreateDirectoryPath(directory.c_str(), true))
+	{
+		Console.Error("DEV9: Failed to create HDD directory '%s'", directory.c_str());
+		return false;
+	}
+
+	// Create a sparse 8 GiB image on first enable so the toggle boots.
+	static constexpr u64 DEFAULT_HDD_SIZE = static_cast<u64>(8) * 1024 * 1024 * 1024;
+
+	Console.WriteLn("DEV9: Creating default HDD image '%s' (8 GiB sparse)", hddPath.c_str());
+	HddCreate hddCreator;
+	hddCreator.filePath = hddPath;
+	hddCreator.neededSize = DEFAULT_HDD_SIZE;
+	hddCreator.Start();
+
+	if (hddCreator.errored || !FileSystem::FileExists(hddPath.c_str()))
+	{
+		Console.Error("DEV9: Failed to create default HDD image '%s'", hddPath.c_str());
+		return false;
+	}
+
+	return true;
 }
 
 s32 DEV9init()
@@ -192,6 +254,9 @@ s32 DEV9open()
 
 	if (EmuConfig.DEV9.HddEnable)
 	{
+		if (!EnsureHDDImageExists(hddPath, HddFileIsBareName()))
+			EmuConfig.DEV9.HddEnable = false;
+
 		if (dev9.ata->Open(hddPath) != 0)
 			EmuConfig.DEV9.HddEnable = false;
 	}
@@ -1174,11 +1239,14 @@ void DEV9CheckChanges(const Pcsx2Config& old_config)
 			if (EmuConfig.DEV9.HddFile != old_config.DEV9.HddFile)
 			{
 				dev9.ata->Close();
-				if (dev9.ata->Open(hddPath) != 0)
+				// Create the new image if it's a bare name that doesn't exist yet.
+				if (!EnsureHDDImageExists(hddPath, HddFileIsBareName()) || dev9.ata->Open(hddPath) != 0)
 					EmuConfig.DEV9.HddEnable = false;
 			}
 		}
-		else if (dev9.ata->Open(hddPath) != 0)
+		// Live enable: create the image first so a fresh install attaches
+		// instead of silently disabling (matches DEV9open).
+		else if (!EnsureHDDImageExists(hddPath, HddFileIsBareName()) || dev9.ata->Open(hddPath) != 0)
 			EmuConfig.DEV9.HddEnable = false;
 	}
 	else if (old_config.DEV9.HddEnable)

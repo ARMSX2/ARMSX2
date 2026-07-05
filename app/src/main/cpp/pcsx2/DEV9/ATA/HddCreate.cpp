@@ -164,6 +164,25 @@ void HddCreate::WriteImage(const std::string& hddPath, u64 fileBytes, u64 zeroSi
 		sparseSupported = true;
 		// File is automatically sparse.
 	}
+
+	// SAFETY: the write loop below zero-fills the entire image when the target
+	// filesystem lacks sparse support. On non-sparse storage that writes a full
+	// multi-GiB image synchronously on the boot thread, filling the volume and
+	// hanging the app; since HddEnable is persisted it re-hangs on every launch.
+	// Refuse instead: the caller (EnsureHDDImageExists -> DEV9open /
+	// DEV9CheckChanges) disables the HDD and boots normally.
+	if (!sparseSupported)
+	{
+		Console.Error("DEV9: HddCreate: '%s' is on storage without sparse-file "
+			"support; refusing to allocate a full %llu-byte image. HDD left "
+			"disabled.", hddPath.c_str(), static_cast<unsigned long long>(fileBytes));
+		[[maybe_unused]] int truncRes = ftruncate(nativeFile, 0);
+		newImage.reset();
+		FileSystem::DeleteFilePath(hddPath.c_str());
+		errored.store(true);
+		SetError();
+		return;
+	}
 #endif
 
 	lastUpdate = std::chrono::steady_clock::now();
