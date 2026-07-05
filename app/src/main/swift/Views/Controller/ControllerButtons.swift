@@ -292,6 +292,9 @@ struct StickView: View {
     let isLeft: Bool
     let sizeScale: CGFloat
     var layoutScale: CGFloat = 1.0
+    var captureDiameter: CGFloat? = nil
+    var knobImage: UIImage? = nil
+    var knobSize: CGSize? = nil
 
     private var clampedScale: CGFloat {
         min(max(sizeScale, 0.8), 1.6)
@@ -304,6 +307,9 @@ struct StickView: View {
     }
     private var knob: CGFloat {
         30 * effectiveScale
+    }
+    private var effectiveCapture: CGFloat {
+        max(captureDiameter ?? sz, sz)
     }
 
     @State private var off: CGSize = .zero
@@ -362,6 +368,17 @@ struct StickView: View {
                     .frame(width: 18, height: 18)
                     .opacity(0.45 * padOpacity)
                     .offset(y: sz / 2 + 9)
+            } else if let knobImage {
+                Image(uiImage: knobImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
+                    .scaledToFit()
+                    .frame(width: knobSize?.width ?? knob, height: knobSize?.height ?? knob)
+                    .opacity(padOpacity)
+                    .brightness(isDragging ? 0.12 : 0)
+                    .scaleEffect(isDragging ? 1.06 : 1.0)
+                    .offset(off)
             } else if isDragging {
                 Circle()
                     .fill(.white.opacity(0.22 * padOpacity))
@@ -370,6 +387,7 @@ struct StickView: View {
                     .offset(off)
             }
         }
+        .frame(width: effectiveCapture, height: effectiveCapture)
         .contentShape(Circle())
         .simultaneousGesture(DragGesture(minimumDistance: 0)
             .onChanged { v in

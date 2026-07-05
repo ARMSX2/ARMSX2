@@ -156,7 +156,7 @@ struct VirtualPadSettingsView: View {
                 Text(settings.localized("Drag buttons to reposition. Pinch to resize."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Simple custom pad skins are shown behind the blue hit boxes in Edit Layout. Full-phone Manic skins need layout metadata support before they can be used in gameplay.")
+                Text("Simple custom pad skins are shown behind the blue hit boxes in Edit Layout. Advanced skin packages can include their own PS2 control layout metadata. Non-PS2 Delta/Manic skins are not converted automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -215,6 +215,9 @@ struct VirtualPadSettingsView: View {
                     UTType(filenameExtension: "zip") ?? .data,
                     UTType(filenameExtension: "skin") ?? .data,
                     UTType(filenameExtension: "manic") ?? .data,
+                    UTType(filenameExtension: "armsx2skin") ?? .data,
+                    UTType(filenameExtension: "deltaskin") ?? .data,
+                    UTType(filenameExtension: "manicskin") ?? .data,
                     .data
                 ],
                 allowsMultipleSelection: true
@@ -408,7 +411,15 @@ struct VirtualPadSettingsView: View {
 
             let archiveDirectory = stagingDirectory
                 .appendingPathComponent(sourceURL.deletingPathExtension().lastPathComponent, isDirectory: true)
-            let extracted = ARMSX2Bridge.extractControllerSkinArchive(at: sourceURL, to: archiveDirectory)
+            let isV2Package = SkinManifestImporter.shouldTreatAsV2(
+                manifestData: ARMSX2Bridge.peekSkinManifestData(at: sourceURL)
+            )
+            let extracted: [URL]
+            if isV2Package {
+                extracted = ARMSX2Bridge.extractSkinPackageArchive(at: sourceURL, to: archiveDirectory)
+            } else {
+                extracted = ARMSX2Bridge.extractControllerSkinArchive(at: sourceURL, to: archiveDirectory)
+            }
             if extracted.isEmpty {
                 messages.append("No usable skin files were imported from \(sourceURL.lastPathComponent).")
                 continue
@@ -435,6 +446,7 @@ struct VirtualPadSettingsView: View {
     private func isSkinArchive(_ url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()
         return ext == "zip" || ext == "skin" || ext == "manic"
+            || ext == "armsx2skin" || ext == "deltaskin" || ext == "manicskin"
     }
 
     static func canonicalSkinFileName(forImportPath path: String) -> String? {

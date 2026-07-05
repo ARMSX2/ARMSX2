@@ -248,6 +248,17 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         originalImportName: String? = nil,
         layoutPresets: PadLayoutPresetStore
     ) throws -> VPadSkinImportResult {
+        // Additive v2 manifest detection. A package carrying a valid v2 manifest
+        // (info.json or a v2 manifest.json) is imported as an advanced manifest
+        // skin; everything else falls through to the legacy importer below.
+        switch importV2ManifestSkin(from: sourceURL, originalImportName: originalImportName) {
+        case .notV2:
+            break
+        case .imported(let outcome):
+            return outcome.asImportResult()
+        case .failed(let error):
+            throw error
+        }
         let now = Date()
         let files = skinImportFiles(from: sourceURL)
         let manifest = manifest(in: files)
@@ -340,6 +351,78 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
             importedImageCount: importedImageCount,
             extractedFileCount: files.count
         )
+    }
+
+    private func importV2ManifestSkin(from sourceURL: URL, originalImportName: String?) -> SkinManifestImporter.V2ImportDecision {
+        switch SkinManifestImporter.detectPackage(sourceURL: sourceURL) {
+        case .legacy:
+            return .notV2
+        case .invalidV2(let message):
+            return .failed(.invalidManifest(message: message))
+        case .v2(let manifest, let packageRoot, let repairedParentFolder):
+            let validation = SkinManifestImporter.validateForInstall(manifest, packageRoot: packageRoot)
+            if !validation.errors.isEmpty {
+                return .failed(.invalidManifest(message: SkinManifestImporter.summarizeErrors(validation.errors)))
+            }
+
+            let displayName = uniqueDisplayName(
+                sanitizedDisplayName(manifest.name, fallback: originalImportName ?? sourceURL.lastPathComponent)
+            )
+            let id = "imported-\(UUID().uuidString)"
+            let destination = assetsRootURL.appendingPathComponent(id, isDirectory: true)
+
+            do {
+                let manifestURL = SkinManifestImporter.manifestFile(in: packageRoot)
+                let manifestData = manifestURL.flatMap { try? Data(contentsOf: $0) }
+                let install = try SkinManifestImporter.installValidatedPackage(
+                    manifest: manifest,
+                    manifestData: manifestData,
+                    packageRoot: packageRoot,
+                    destination: destination,
+                    maxFileBytes: 16 * 1024 * 1024,
+                    maxFiles: 128
+                )
+
+                let now = Date()
+                let descriptor = VPadSkinDescriptor(
+                    id: id,
+                    displayName: displayName,
+                    source: .imported,
+                    storageFolderName: id,
+                    manifestVersion: 2,
+                    originalImportName: originalImportName ?? sourceURL.lastPathComponent,
+                    createdAt: now,
+                    updatedAt: now
+                )
+                importedDescriptors.append(descriptor)
+                persist()
+
+                let reservedWarnings = validation.warnings.filter { SkinManifestImporter.isReservedFieldWarning($0) }
+                let otherWarnings = validation.warnings.filter { !SkinManifestImporter.isReservedFieldWarning($0) }
+                var warnings = SkinManifestImporter.successLines(
+                    repaired: repairedParentFolder,
+                    reservedWarnings: reservedWarnings,
+                    author: manifest.author,
+                    version: manifest.version
+                )
+                warnings.append(contentsOf: otherWarnings)
+
+                let outcome = SkinManifestImporter.V2ImportOutcome(
+                    descriptor: descriptor,
+                    warnings: warnings,
+                    manifestName: manifest.name,
+                    manifestIdentifier: manifest.identifier,
+                    manifestVersion: manifest.version,
+                    manifestAuthor: manifest.author,
+                    copiedAssetCount: install.copiedAssetCount,
+                    repairedParentFolder: repairedParentFolder
+                )
+                return .imported(outcome)
+            } catch {
+                try? FileManager.default.removeItem(at: destination)
+                return .failed(.storageFailed(message: error.localizedDescription))
+            }
+        }
     }
 
     func renameImportedSkin(id: String, to name: String) throws {
