@@ -12,11 +12,6 @@ struct PerGameSettingsPanel: View {
     @State private var layoutPresets = PadLayoutPresetStore.shared
     @State private var skinLibrary = VPadSkinLibraryStore.shared
 
-    private struct PickerOption: Identifiable {
-        let id: Int
-        let title: String
-    }
-
     private enum PerGameSettingsCategory: CaseIterable, Identifiable {
         case general, graphics, audio, cpu, pad, fixes, cheats
 
@@ -53,39 +48,6 @@ struct PerGameSettingsPanel: View {
     private static let fastBootUseGlobalSentinel = -1
     private static let fastBootOff = 0
     private static let fastBootOn = 1
-
-    private static let deinterlaceOptions = [
-        PickerOption(id: 0, title: "None"),
-        PickerOption(id: 1, title: "Weave (TFF)"),
-        PickerOption(id: 2, title: "Weave (BFF)"),
-        PickerOption(id: 3, title: "Bob (TFF)"),
-        PickerOption(id: 4, title: "Bob (BFF)"),
-        PickerOption(id: 5, title: "Blend (TFF)"),
-        PickerOption(id: 6, title: "Blend (BFF)"),
-        PickerOption(id: 7, title: "Adaptive (Default)")
-    ]
-    private static let trilinearFilteringOptions = [
-        PickerOption(id: trilinearUseGlobalSentinel, title: "Use Global"),
-        PickerOption(id: -1, title: "Automatic / Default"),
-        PickerOption(id: 0, title: "Off"),
-        PickerOption(id: 1, title: "PS2"),
-        PickerOption(id: 2, title: "Forced")
-    ]
-    private static let halfPixelOffsetOptions = [
-        PickerOption(id: useGlobalSentinel, title: "Use Global"),
-        PickerOption(id: 0, title: "Off"),
-        PickerOption(id: 1, title: "Normal / Vertex"),
-        PickerOption(id: 2, title: "Special / Texture"),
-        PickerOption(id: 3, title: "Special / Texture Aggressive"),
-        PickerOption(id: 4, title: "Align to Native"),
-        PickerOption(id: 5, title: "Align to Native + Texture Offset")
-    ]
-    private static let roundSpriteOptions = [
-        PickerOption(id: useGlobalSentinel, title: "Use Global"),
-        PickerOption(id: 0, title: "Off"),
-        PickerOption(id: 1, title: "Half"),
-        PickerOption(id: 2, title: "Full")
-    ]
 
     let game: ISOEntry
     let onDone: (() -> Void)?
@@ -339,59 +301,14 @@ struct PerGameSettingsPanel: View {
         save()
     }
 
-    private var manualAdvancedHacksEnabled: Bool {
-        enabled && !enableGameDBHardwareFixes
-    }
-
     /// Whether OPH Flag Hack is effectively on for this game: a per-game override of 1, or
     /// the global value when the per-game override is set to use-global (-1). Used to hide
-    /// the higher-resolution OPH suggestion once OPH is in effect.
+    /// the higher-resolution OPH suggestion once OPH is in effect. Passed to GraphicsTab.
     private var ophFlagHackEffective: Bool {
         let perGame = perGameFixes["OPHFlagHack"] ?? -1
         if perGame == 1 { return true }
         if perGame == 0 { return false }
         return settings.gameFixEnabled("OPHFlagHack")
-    }
-
-    private var skipDrawStartBinding: Binding<Int> {
-        Binding(
-            get: { skipDrawStart },
-            set: { newValue in
-                skipDrawStart = Self.clampedSkipDraw(newValue)
-                normalizeSkipDrawRangeIfNeeded()
-            }
-        )
-    }
-
-    private var skipDrawEndBinding: Binding<Int> {
-        Binding(
-            get: { skipDrawEnd },
-            set: { newValue in
-                skipDrawEnd = Self.normalizedSkipDrawEnd(
-                    start: skipDrawStart,
-                    end: newValue,
-                    startOverride: skipDrawStartOverride,
-                    endOverride: skipDrawEndOverride
-                )
-            }
-        )
-    }
-
-    private var volumeOverrideBinding: Binding<Bool> {
-        Binding(
-            get: { volumeOverride },
-            set: { newValue in
-                volumeOverride = newValue
-                volumePercent = newValue ? Self.clampedVolume(volumePercent) : globalVolumePercent
-            }
-        )
-    }
-
-    private var volumeSliderBinding: Binding<Double> {
-        Binding(
-            get: { Double(volumePercent) },
-            set: { volumePercent = Self.clampedVolume(Int($0.rounded())) }
-        )
     }
 
     var body: some View {
@@ -547,23 +464,160 @@ struct PerGameSettingsPanel: View {
 
     @ViewBuilder
     private var detailPane: some View {
-        Form {
-            detailContent(for: landscapeCategory)
-        }
-        .scrollContentBackground(.hidden)
-        .pickerStyle(.menu)
+        detailContent(for: landscapeCategory)
+            .pickerStyle(.menu)
     }
 
     private func detailContent(for category: PerGameSettingsCategory) -> AnyView {
         switch category {
-        case .general:  return AnyView(generalBody)
-        case .graphics: return AnyView(graphicsBody)
-        case .audio:    return AnyView(audioBody)
-        case .cpu:      return AnyView(cpuBody)
-        case .pad:      return AnyView(padBody)
-        case .fixes:    return AnyView(fixesBody)
-        case .cheats:   return AnyView(cheatsBody)
+        case .general:  return AnyView(generalTab)
+        case .graphics: return AnyView(graphicsTab)
+        case .audio:    return AnyView(audioTab)
+        case .cpu:      return AnyView(cpuTab)
+        case .pad:      return AnyView(padTab)
+        case .fixes:    return AnyView(fixesTab)
+        case .cheats:   return AnyView(cheatsTab)
         }
+    }
+
+    // MARK: - Tab construction
+
+    private var generalTab: some View {
+        GeneralTab(
+            enabled: $enabled,
+            hasGameSettingsIdentity: $hasGameSettingsIdentity,
+            showResetAllConfirmation: $showResetAllConfirmation,
+            statusMessage: $statusMessage,
+            displayName: displayName,
+            hasPendingChanges: hasPendingChanges,
+            game: game,
+            settings: settings
+        )
+    }
+
+    private var graphicsTab: some View {
+        GraphicsTab(
+            enabled: $enabled,
+            enableGameDBHardwareFixes: $enableGameDBHardwareFixes,
+            trilinearUseGlobalSentinel: Self.trilinearUseGlobalSentinel,
+            ophFlagHackEffective: ophFlagHackEffective,
+            upscaleMultiplier: $upscaleMultiplier,
+            aspectRatio: $aspectRatio,
+            textureFiltering: $textureFiltering,
+            hardwareMipmapping: $hardwareMipmapping,
+            blendingAccuracy: $blendingAccuracy,
+            interlaceMode: $interlaceMode,
+            trilinearFiltering: $trilinearFiltering,
+            halfPixelOffset: $halfPixelOffset,
+            roundSprite: $roundSprite,
+            alignSpriteOverride: $alignSpriteOverride,
+            alignSprite: $alignSprite,
+            mergeSpriteOverride: $mergeSpriteOverride,
+            mergeSprite: $mergeSprite,
+            wildArmsOffsetOverride: $wildArmsOffsetOverride,
+            wildArmsOffset: $wildArmsOffset,
+            textureOffsetXOverride: $textureOffsetXOverride,
+            textureOffsetX: $textureOffsetX,
+            textureOffsetYOverride: $textureOffsetYOverride,
+            textureOffsetY: $textureOffsetY,
+            skipDrawStartOverride: $skipDrawStartOverride,
+            skipDrawStart: $skipDrawStart,
+            skipDrawEndOverride: $skipDrawEndOverride,
+            skipDrawEnd: $skipDrawEnd,
+            perGameFXAA: $perGameFXAA,
+            perGameShadeBoost: $perGameShadeBoost,
+            perGameShadeBoostBrightness: $perGameShadeBoostBrightness,
+            perGameShadeBoostContrast: $perGameShadeBoostContrast,
+            perGameShadeBoostSaturation: $perGameShadeBoostSaturation,
+            perGameShadeBoostGamma: $perGameShadeBoostGamma,
+            perGameDithering: $perGameDithering,
+            perGameTVShader: $perGameTVShader,
+            perGameCASMode: $perGameCASMode,
+            perGameMaxAnisotropy: $perGameMaxAnisotropy,
+            perGameCASSharpness: $perGameCASSharpness,
+            perGamePCRTCOffsets: $perGamePCRTCOffsets,
+            perGameIntegerScaling: $perGameIntegerScaling,
+            perGameSkipDupFrames: $perGameSkipDupFrames,
+            perGamePCRTCOverscan: $perGamePCRTCOverscan,
+            perGamePCRTCAntiBlur: $perGamePCRTCAntiBlur,
+            perGameDisableInterlaceOffset: $perGameDisableInterlaceOffset,
+            perGameHWDownloadMode: $perGameHWDownloadMode,
+            perGameCPUCLUT: $perGameCPUCLUT,
+            perGameGPUTargetCLUT: $perGameGPUTargetCLUT,
+            perGameVsyncQueue: $perGameVsyncQueue,
+            perGameLoadTextureReplacements: $perGameLoadTextureReplacements,
+            perGameLoadTextureReplacementsAsync: $perGameLoadTextureReplacementsAsync,
+            perGamePrecacheTextureReplacements: $perGamePrecacheTextureReplacements,
+            perGameSyncToHostRefresh: $perGameSyncToHostRefresh,
+            settings: settings
+        )
+    }
+
+    private var audioTab: some View {
+        AudioTab(
+            enabled: $enabled,
+            volumeOverride: $volumeOverride,
+            volumePercent: $volumePercent,
+            globalVolumePercent: $globalVolumePercent,
+            perGameFastForwardVolume: $perGameFastForwardVolume,
+            perGameBufferMS: $perGameBufferMS,
+            perGameOutputLatencyMS: $perGameOutputLatencyMS,
+            settings: settings
+        )
+    }
+
+    private var cpuTab: some View {
+        CPUTab(
+            enabled: $enabled,
+            eeCoreType: $eeCoreType,
+            mtvu: $mtvu,
+            eeCycleRate: $eeCycleRate,
+            globalEECycleRate: $globalEECycleRate,
+            eeCycleSkip: $eeCycleSkip,
+            globalEECycleSkip: $globalEECycleSkip,
+            fastBoot: $fastBoot,
+            globalFastBoot: $globalFastBoot,
+            perGameIOP: $perGameIOP,
+            perGameVU0: $perGameVU0,
+            perGameVU1: $perGameVU1,
+            settings: settings,
+            eeCycleRateUseGlobalSentinel: Self.eeCycleRateUseGlobalSentinel,
+            fastBootUseGlobalSentinel: Self.fastBootUseGlobalSentinel,
+            fastBootOff: Self.fastBootOff,
+            fastBootOn: Self.fastBootOn
+        )
+    }
+
+    private var padTab: some View {
+        PadTab(
+            padLayoutIdentity: $padLayoutIdentity,
+            showPadLayoutEditor: $showPadLayoutEditor,
+            layoutPresets: layoutPresets,
+            skinLibrary: skinLibrary
+        )
+    }
+
+    private var fixesTab: some View {
+        FixesTab(
+            enabled: $enabled,
+            perGameRenderer: $perGameRenderer,
+            perGameAAT: $perGameAAT,
+            perGameTextureInsideRt: $perGameTextureInsideRt,
+            perGameFixes: $perGameFixes,
+            settings: settings
+        )
+    }
+
+    private var cheatsTab: some View {
+        CheatsTab(
+            enabled: $enabled,
+            enableGameFixes: $enableGameFixes,
+            enableGameDBHardwareFixes: $enableGameDBHardwareFixes,
+            perGameWidescreen: $perGameWidescreen,
+            perGameNoInterlace: $perGameNoInterlace,
+            showCheatsManager: $showCheatsManager,
+            settings: settings
+        )
     }
 
     private var rootForm: some View {
@@ -632,32 +686,32 @@ struct PerGameSettingsPanel: View {
     private var categoryLinksSection: some View {
         Section {
             NavigationLink {
-                perGameCategoryDetail(settings.localized("Graphics")) { AnyView(graphicsBody) }
+                graphicsTab
             } label: {
                 Label(settings.localized("Graphics"), systemImage: "paintbrush")
             }
             NavigationLink {
-                perGameCategoryDetail(settings.localized("Audio")) { AnyView(audioBody) }
+                audioTab
             } label: {
                 Label(settings.localized("Audio"), systemImage: "speaker.wave.2")
             }
             NavigationLink {
-                perGameCategoryDetail(settings.localized("CPU & Speedhacks")) { AnyView(cpuBody) }
+                cpuTab
             } label: {
                 Label(settings.localized("CPU & Speedhacks"), systemImage: "cpu")
             }
             NavigationLink {
-                perGameCategoryDetail(settings.localized("Virtual Pad")) { AnyView(padBody) }
+                padTab
             } label: {
                 Label(settings.localized("Virtual Pad"), systemImage: "gamecontroller")
             }
             NavigationLink {
-                perGameCategoryDetail(settings.localized("Fixes & Compatibility")) { AnyView(fixesBody) }
+                fixesTab
             } label: {
                 Label(settings.localized("Fixes & Compatibility"), systemImage: "wrench.and.screwdriver")
             }
             NavigationLink {
-                perGameCategoryDetail(settings.localized("Cheats & Patches")) { AnyView(cheatsBody) }
+                cheatsTab
             } label: {
                 Label(settings.localized("Cheats & Patches"), systemImage: "rectangle.stack.badge.plus")
             }
@@ -673,13 +727,6 @@ struct PerGameSettingsPanel: View {
                     .foregroundStyle(.secondary)
             }
         }
-    }
-
-    @ViewBuilder
-    private var generalBody: some View {
-        identitySection
-        overridesSection
-        statusSection
     }
 
     private func saveCancelFooter(compact: Bool) -> some View {
@@ -736,35 +783,6 @@ struct PerGameSettingsPanel: View {
             initialSnapshot: preset?.snapshot,
             skinDescriptor: layoutPresets.effectiveSkinDescriptor(for: padLayoutIdentity, using: skinLibrary)
         )
-    }
-
-    private var globalLayoutDisplayName: String {
-        layoutPresets.effectivePreset(for: nil)?.displayName ?? "Current Layout"
-    }
-
-    private var globalSkinDisplayName: String {
-        skinLibrary.selectedDescriptor.displayName
-    }
-
-    private var linkedLayoutIDForCurrentSkin: String? {
-        guard let descriptor = currentPerGameSkinDescriptor,
-              let linkedLayoutID = descriptor.linkedLayoutPresetID,
-              layoutPresets.preset(id: linkedLayoutID) != nil else {
-            return nil
-        }
-        return linkedLayoutID
-    }
-
-    private var currentPerGameSkinDescriptor: VPadSkinDescriptor? {
-        layoutPresets.effectiveSkinDescriptor(for: padLayoutIdentity, using: skinLibrary)
-    }
-
-    private func validPerGameSkinID(for identity: PadLayoutGameIdentity) -> String? {
-        guard let skinID = layoutPresets.skinID(for: identity),
-              skinLibrary.descriptor(id: skinID) != nil else {
-            return nil
-        }
-        return skinID
     }
 
     private var displayName: String {
@@ -1135,16 +1153,6 @@ struct PerGameSettingsPanel: View {
         }
     }
 
-    private func normalizeSkipDrawRangeIfNeeded() {
-        let normalized = normalizedSkipDrawValues()
-        if skipDrawStart != normalized.start {
-            skipDrawStart = normalized.start
-        }
-        if skipDrawEnd != normalized.end {
-            skipDrawEnd = normalized.end
-        }
-    }
-
     private func normalizedSkipDrawValues() -> (start: Int, end: Int) {
         let start = Self.clampedSkipDraw(skipDrawStart)
         let end = Self.normalizedSkipDrawEnd(
@@ -1205,706 +1213,11 @@ struct PerGameSettingsPanel: View {
         min(max(value, -3), 3)
     }
 
-    private static func formatPercent(_ value: Int) -> String {
-        "\(clampedVolume(value))%"
-    }
-
-    private static func formatEECycleRate(_ value: Int) -> String {
-        let clamped = clampedEECycleRate(value)
-        return clamped > 0 ? "+\(clamped)" : "\(clamped)"
-    }
-
-    /// A 1...100 Shade Boost parameter row. -1 means "Use Global": the slider is hidden
-    /// and a button restores the per-game override at the inherited global default so the
-    /// user can dial in any value (the previous picker only offered 25/50/75/100).
-    @ViewBuilder
-    private func shadeBoostSlider(_ title: String, value: Binding<Int>) -> some View {
-        if value.wrappedValue == -1 {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(settings.localized("Use Global"))
-                    .foregroundStyle(.secondary)
-                Button(settings.localized("Override")) {
-                    value.wrappedValue = 50
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-        } else {
-            HStack {
-                Text(title)
-                Slider(value: Binding(
-                    get: { Double(value.wrappedValue) },
-                    set: { value.wrappedValue = Int($0.rounded()) }
-                ), in: 1...100)
-                Text("\(value.wrappedValue)%")
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 44, alignment: .trailing)
-                Button(settings.localized("Global")) {
-                    value.wrappedValue = -1
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-        }
-    }
-
     private static func normalizedSkipDrawEnd(start: Int, end: Int, startOverride: Bool, endOverride: Bool) -> Int {
         let clampedEnd = clampedSkipDraw(end)
         guard startOverride && endOverride else {
             return clampedEnd
         }
         return SettingsStore.normalizedSkipDrawEnd(start: start, end: clampedEnd)
-    }
-
-    private func perGameCategoryDetail(_ title: String, content: @escaping () -> AnyView) -> some View {
-        Form {
-            content()
-        }
-        .scrollContentBackground(.hidden)
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(OverlayTheme.shell, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
-    }
-
-    @ViewBuilder
-    private var graphicsBody: some View {
-                Section(settings.localized("Graphics")) {
-                    Picker(settings.localized("Internal Resolution"), selection: $upscaleMultiplier) {
-                        Text("0.25x (Fastest)").tag(Float(0.25))
-                        Text("0.5x").tag(Float(0.5))
-                        Text("0.75x").tag(Float(0.75))
-                        Text("1x Native").tag(Float(1.0))
-                        Text("2x").tag(Float(2.0))
-                        Text("3x").tag(Float(3.0))
-                        Text("4x").tag(Float(4.0))
-                    }
-                    .disabled(!enabled)
-
-                    if upscaleMultiplier > 1 && !ophFlagHackEffective {
-                        Text(settings.localized("Tip: OPH Flag Hack may help reduce slowdowns at higher resolutions."))
-                            .font(.caption)
-                            .foregroundStyle(OverlayTheme.warm)
-                    }
-
-                    Picker(settings.localized("Aspect Ratio"), selection: $aspectRatio) {
-                        Text("Auto 4:3 / 3:2").tag("Auto 4:3/3:2")
-                        Text("4:3").tag("4:3")
-                        Text("16:9").tag("16:9")
-                        Text("10:7").tag("10:7")
-                        Text("Stretch").tag("Stretch")
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("Texture Filtering"), selection: $textureFiltering) {
-                        Text("Nearest").tag(0)
-                        Text("Bilinear Forced").tag(1)
-                        Text("Bilinear PS2 Default").tag(2)
-                        Text("Bilinear excl. Sprite").tag(3)
-                    }
-                    .disabled(!enabled)
-
-                    Toggle(settings.localized("Hardware Mipmapping"), isOn: $hardwareMipmapping)
-                        .disabled(!enabled)
-                    Text(settings.localized("Turn this off only for games with mipmap-related texture stripes, shimmer, or bad LOD. Reset/relaunch the game after changing it."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Picker(settings.localized("Blending Accuracy"), selection: $blendingAccuracy) {
-                        Text("Minimum").tag(0)
-                        Text("Basic").tag(1)
-                        Text("Medium").tag(2)
-                        Text("High").tag(3)
-                        Text("Full").tag(4)
-                        Text("Ultra").tag(5)
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("Deinterlace"), selection: $interlaceMode) {
-                        ForEach(Self.deinterlaceOptions) { option in
-                            Text(settings.localized(option.title)).tag(option.id)
-                        }
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("FXAA"), selection: $perGameFXAA) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("Shade Boost"), selection: $perGameShadeBoost) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-                    shadeBoostSlider(settings.localized("Shade Boost Brightness"), value: $perGameShadeBoostBrightness)
-                        .disabled(!enabled)
-                    shadeBoostSlider(settings.localized("Shade Boost Contrast"), value: $perGameShadeBoostContrast)
-                        .disabled(!enabled)
-                    shadeBoostSlider(settings.localized("Shade Boost Saturation"), value: $perGameShadeBoostSaturation)
-                        .disabled(!enabled)
-                    shadeBoostSlider(settings.localized("Shade Boost Gamma"), value: $perGameShadeBoostGamma)
-                        .disabled(!enabled)
-                    Picker(settings.localized("Dithering"), selection: $perGameDithering) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("Unscaled")).tag(1)
-                        Text(settings.localized("Scaled")).tag(2)
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("TV/CRT Shader"), selection: $perGameTVShader) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("Scanline")).tag(1)
-                        Text(settings.localized("Diagonal")).tag(2)
-                        Text(settings.localized("Tri")).tag(3)
-                        Text(settings.localized("Wave")).tag(4)
-                        Text(settings.localized("Lottes")).tag(5)
-                    }
-                    .disabled(!enabled)
-                    Text(settings.localized("Scanline and CRT effects are subtle on high-resolution displays and are more visible at a lower Internal Resolution."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Picker(settings.localized("CAS Sharpening"), selection: $perGameCASMode) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("Max Anisotropy"), selection: $perGameMaxAnisotropy) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text("2x").tag(2)
-                        Text("4x").tag(4)
-                        Text("8x").tag(8)
-                        Text("16x").tag(16)
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("CAS Sharpness"), selection: $perGameCASSharpness) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text("0").tag(0)
-                        Text("25").tag(25)
-                        Text("50").tag(50)
-                        Text("75").tag(75)
-                        Text("100").tag(100)
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("Screen Offsets"), selection: $perGamePCRTCOffsets) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("Integer Scaling"), selection: $perGameIntegerScaling) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("Skip Duplicate Frames"), selection: $perGameSkipDupFrames) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("Show Overscan"), selection: $perGamePCRTCOverscan) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("Anti-Blur"), selection: $perGamePCRTCAntiBlur) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-
-                    Picker(settings.localized("Disable Interlace Offset"), selection: $perGameDisableInterlaceOffset) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-                }
-
-                Section(settings.localized("Advanced Upscaling Hacks")) {
-                    Text(settings.localized("Manual advanced hacks only apply when Use Per-Game Overrides is on and GameDB Graphics Fixes is off. Save, then reset or relaunch the game."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if enabled && enableGameDBHardwareFixes {
-                        Text(settings.localized("GameDB Graphics Fixes is on, so manual advanced hacks are saved but ignored until it is turned off for this game."))
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-
-                    Picker(settings.localized("Trilinear Filtering"), selection: $trilinearFiltering) {
-                        ForEach(Self.trilinearFilteringOptions) { option in
-                            Text(settings.localized(option.title)).tag(option.id)
-                        }
-                    }
-                    .disabled(!enabled)
-
-                    if trilinearFiltering != Self.trilinearUseGlobalSentinel && trilinearFiltering != -1 {
-                        Text(settings.localized("Non-automatic trilinear filtering may break textures in some games."))
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-
-                    Picker(settings.localized("Half-pixel Offset"), selection: $halfPixelOffset) {
-                        ForEach(Self.halfPixelOffsetOptions) { option in
-                            Text(settings.localized(option.title)).tag(option.id)
-                        }
-                    }
-                    .disabled(!manualAdvancedHacksEnabled)
-
-                    Picker(settings.localized("Round Sprite"), selection: $roundSprite) {
-                        ForEach(Self.roundSpriteOptions) { option in
-                            Text(settings.localized(option.title)).tag(option.id)
-                        }
-                    }
-                    .disabled(!manualAdvancedHacksEnabled)
-
-                    Toggle(settings.localized("Override Align Sprite"), isOn: $alignSpriteOverride)
-                        .disabled(!manualAdvancedHacksEnabled)
-                    if alignSpriteOverride {
-                        Toggle(settings.localized("Align Sprite"), isOn: $alignSprite)
-                            .disabled(!manualAdvancedHacksEnabled)
-                    }
-
-                    Toggle(settings.localized("Override Merge Sprite"), isOn: $mergeSpriteOverride)
-                        .disabled(!manualAdvancedHacksEnabled)
-                    if mergeSpriteOverride {
-                        Toggle(settings.localized("Merge Sprite"), isOn: $mergeSprite)
-                            .disabled(!manualAdvancedHacksEnabled)
-                    }
-
-                    Toggle(settings.localized("Override Wild Arms Offset"), isOn: $wildArmsOffsetOverride)
-                        .disabled(!manualAdvancedHacksEnabled)
-                    if wildArmsOffsetOverride {
-                        Toggle(settings.localized("Wild Arms Offset"), isOn: $wildArmsOffset)
-                            .disabled(!manualAdvancedHacksEnabled)
-                    }
-
-                    Toggle(settings.localized("Override Texture Offset X"), isOn: $textureOffsetXOverride)
-                        .disabled(!manualAdvancedHacksEnabled)
-                    if textureOffsetXOverride {
-                        ClampedIntField(title: settings.localized("Texture Offset X"), value: $textureOffsetX, range: SettingsStore.textureOffsetRange, isEnabled: manualAdvancedHacksEnabled)
-                    }
-
-                    Toggle(settings.localized("Override Texture Offset Y"), isOn: $textureOffsetYOverride)
-                        .disabled(!manualAdvancedHacksEnabled)
-                    if textureOffsetYOverride {
-                        ClampedIntField(title: settings.localized("Texture Offset Y"), value: $textureOffsetY, range: SettingsStore.textureOffsetRange, isEnabled: manualAdvancedHacksEnabled)
-                    }
-
-                    Toggle(settings.localized("Override Skipdraw Start"), isOn: $skipDrawStartOverride)
-                        .disabled(!manualAdvancedHacksEnabled)
-                    if skipDrawStartOverride {
-                        ClampedIntField(title: settings.localized("Skipdraw Start"), value: skipDrawStartBinding, range: SettingsStore.skipDrawRange, isEnabled: manualAdvancedHacksEnabled)
-                    }
-
-                    Toggle(settings.localized("Override Skipdraw End"), isOn: $skipDrawEndOverride)
-                        .disabled(!manualAdvancedHacksEnabled)
-                    if skipDrawEndOverride {
-                        ClampedIntField(title: settings.localized("Skipdraw End"), value: skipDrawEndBinding, range: SettingsStore.skipDrawRange, isEnabled: manualAdvancedHacksEnabled)
-                    }
-                    if skipDrawStartOverride || skipDrawEndOverride {
-                        Text(settings.localized("For Skipdraw 1, use Start 1 and End 1. Changes apply after reset/relaunch."))
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                }
-
-                Section(settings.localized("Hardware Fixes & Display")) {
-                    Picker(settings.localized("Hardware Download Mode"), selection: $perGameHWDownloadMode) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Enabled")).tag(0)
-                        Text(settings.localized("Force Full")).tag(1)
-                        Text(settings.localized("No Readbacks")).tag(2)
-                        Text(settings.localized("Unsynchronized")).tag(3)
-                        Text(settings.localized("Disabled")).tag(4)
-                    }
-                    .disabled(!enabled)
-                    Picker(settings.localized("CPU CLUT Render"), selection: $perGameCPUCLUT) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Disabled")).tag(0)
-                        Text(settings.localized("Normal")).tag(1)
-                        Text(settings.localized("Aggressive")).tag(2)
-                    }
-                    .disabled(!enabled)
-                    Picker(settings.localized("GPU Target CLUT"), selection: $perGameGPUTargetCLUT) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("Enabled (Exact)")).tag(1)
-                        Text(settings.localized("Enabled (Inside Target)")).tag(2)
-                    }
-                    .disabled(!enabled)
-                    Picker(settings.localized("VSync Queue Size"), selection: $perGameVsyncQueue) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        ForEach([2, 3, 4, 5, 6, 8, 10, 12, 16], id: \.self) { Text("\($0)").tag($0) }
-                    }
-                    .disabled(!enabled)
-                    Picker(settings.localized("Sync to Host Refresh"), selection: $perGameSyncToHostRefresh) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-                    Text(settings.localized("Sync to Host Refresh needs a restart to take effect."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section(settings.localized("Texture Replacement")) {
-                    Picker(settings.localized("Load Replacement Textures"), selection: $perGameLoadTextureReplacements) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-                    Picker(settings.localized("Async Loading"), selection: $perGameLoadTextureReplacementsAsync) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-                    Picker(settings.localized("Precache Textures"), selection: $perGamePrecacheTextureReplacements) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-                    Text(settings.localized("Texture replacement needs a restart to take effect."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-    }
-
-    @ViewBuilder
-    private var audioBody: some View {
-                Section(settings.localized("Audio")) {
-                    Toggle(settings.localized("Use Custom Volume"), isOn: volumeOverrideBinding)
-                        .disabled(!enabled)
-
-                    if volumeOverride {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(settings.localized("Emulator Volume"))
-                                Spacer()
-                                Text(Self.formatPercent(volumePercent))
-                                    .foregroundStyle(.secondary)
-                                    .font(.callout.monospacedDigit())
-                            }
-
-                            Slider(value: volumeSliderBinding, in: 0...100, step: 1)
-                                .disabled(!enabled)
-                                .accessibilityLabel(settings.localized("Per-Game Emulator Volume"))
-                                .accessibilityValue(Self.formatPercent(volumePercent))
-                                .accessibilityHint(settings.localized("Adjusts emulator audio for this game without changing iOS system volume or other apps."))
-
-                            HStack {
-                                Text("0%")
-                                Spacer()
-                                Button(settings.localized("Reset to Global")) {
-                                    volumeOverride = false
-                                    volumePercent = globalVolumePercent
-                                }
-                                .buttonStyle(.borderless)
-                                .disabled(!enabled)
-                                Spacer()
-                                Text("100%")
-                            }
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        HStack {
-                            Text(settings.localized("Using Global"))
-                            Spacer()
-                            Text(Self.formatPercent(globalVolumePercent))
-                                .foregroundStyle(.secondary)
-                                .font(.callout.monospacedDigit())
-                        }
-                    }
-
-                    Text(settings.localized("Custom volume changes this game's emulator audio only. Turn it off to inherit the global Emulator Volume setting."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Picker(settings.localized("Fast-Forward Volume"), selection: $perGameFastForwardVolume) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        ForEach([0, 50, 100, 150, 200], id: \.self) { Text("\($0)%").tag($0) }
-                    }
-                    .disabled(!enabled)
-                    Picker(settings.localized("Buffer Size"), selection: $perGameBufferMS) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        ForEach([10, 25, 50, 75, 100, 150, 200], id: \.self) { Text("\($0) ms").tag($0) }
-                    }
-                    .disabled(!enabled)
-                    Picker(settings.localized("Output Latency"), selection: $perGameOutputLatencyMS) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        ForEach([5, 10, 20, 30, 50, 100, 200], id: \.self) { Text("\($0) ms").tag($0) }
-                    }
-                    .disabled(!enabled)
-                }
-    }
-
-    @ViewBuilder
-    private var cpuBody: some View {
-                Section(settings.localized("CPU")) {
-                    Picker(settings.localized("EE Core"), selection: $eeCoreType) {
-                        Text(settings.localized("ARM64 JIT")).tag(2)
-                        Text(settings.localized("Interpreter")).tag(1)
-                    }
-                    .disabled(!enabled)
-
-                    Text(settings.localized("Interpreter is slower, but can help isolate EE JIT crashes for specific games. Reset/relaunch after changing it."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Toggle("MTVU", isOn: $mtvu)
-                        .disabled(!enabled)
-                    Text(settings.localized("MTVU can improve performance and may help some visual issues, but can cause compatibility problems. Reset/relaunch after changing it."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Picker(settings.localized("IOP Recompiler"), selection: $perGameIOP) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("ARM64 JIT")).tag(1)
-                        Text(settings.localized("Interpreter")).tag(0)
-                    }
-                    .disabled(!enabled)
-                    Picker(settings.localized("VU0 Recompiler"), selection: $perGameVU0) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("JIT")).tag(1)
-                        Text(settings.localized("Interpreter")).tag(0)
-                    }
-                    .disabled(!enabled)
-                    Picker(settings.localized("VU1 Recompiler"), selection: $perGameVU1) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("JIT")).tag(1)
-                        Text(settings.localized("Interpreter")).tag(0)
-                    }
-                    .disabled(!enabled)
-
-                    Text(settings.localized("IOP, VU0, and VU1 handle PS2 sub-processors. JIT is much faster; Interpreter is a fallback for the rare game that breaks under JIT. Reset or relaunch the game after changing these."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Performance / Compatibility") {
-                    Picker("EE Cycle Rate", selection: $eeCycleRate) {
-                        Text("Global Default (\(Self.formatEECycleRate(globalEECycleRate)))").tag(Self.eeCycleRateUseGlobalSentinel)
-                        ForEach(-3...3, id: \.self) { value in
-                            Text(Self.formatEECycleRate(value)).tag(value)
-                        }
-                    }
-                    .disabled(!enabled)
-
-                    Button("Reset EE Cycle Rate to Global") {
-                        eeCycleRate = Self.eeCycleRateUseGlobalSentinel
-                    }
-                    .disabled(!enabled || eeCycleRate == Self.eeCycleRateUseGlobalSentinel)
-
-                    Text("Can improve performance in heavy games, but may cause timing or compatibility issues. Reset or relaunch the game after changing it.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Picker("EE Cycle Skip", selection: $eeCycleSkip) {
-                        Text("Global Default (\(globalEECycleSkip))").tag(-1)
-                        ForEach(0...3, id: \.self) { value in
-                            Text("\(value)").tag(value)
-                        }
-                    }
-                    .disabled(!enabled)
-
-                    Button("Reset EE Cycle Skip to Global") {
-                        eeCycleSkip = -1
-                    }
-                    .disabled(!enabled || eeCycleSkip == -1)
-
-                    Text("Skips EE cycles to boost performance; higher values are more aggressive and can cause audio or timing issues. Reset or relaunch the game after changing it.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Picker("Fast Boot", selection: $fastBoot) {
-                        Text("Global Default (\(globalFastBoot ? "On" : "Off"))").tag(Self.fastBootUseGlobalSentinel)
-                        Text("On").tag(Self.fastBootOn)
-                        Text("Off").tag(Self.fastBootOff)
-                    }
-                    .disabled(!enabled)
-
-                    Button("Reset Fast Boot to Global") {
-                        fastBoot = Self.fastBootUseGlobalSentinel
-                    }
-                    .disabled(!enabled || fastBoot == Self.fastBootUseGlobalSentinel)
-
-                    Text("Some games may need Fast Boot on or off to avoid looping at the disc screen. Reset or relaunch the game after changing it.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-    }
-
-    @ViewBuilder
-    private var padBody: some View {
-                Section("Virtual Pad") {
-                    if let padLayoutIdentity {
-                        Picker("Layout", selection: Binding<String?>(
-                            get: { layoutPresets.presetID(for: padLayoutIdentity) },
-                            set: { layoutPresets.setPreset($0, for: padLayoutIdentity) }
-                        )) {
-                            Text("Global Default (\(globalLayoutDisplayName))").tag(nil as String?)
-                            ForEach(layoutPresets.presets) { preset in
-                                Text(preset.displayName).tag(Optional(preset.id))
-                            }
-                        }
-
-                        Picker("Skin", selection: Binding<String?>(
-                            get: { validPerGameSkinID(for: padLayoutIdentity) },
-                            set: { skinID in
-                                if let skinID {
-                                    layoutPresets.setSkin(skinID, for: padLayoutIdentity, using: skinLibrary)
-                                } else {
-                                    layoutPresets.clearSkin(for: padLayoutIdentity)
-                                }
-                            }
-                        )) {
-                            Text("Global Default (\(globalSkinDisplayName))").tag(nil as String?)
-                            ForEach(skinLibrary.allDescriptors) { skin in
-                                Text(skin.displayName).tag(Optional(skin.id))
-                            }
-                        }
-
-                        if let linkedLayoutID = linkedLayoutIDForCurrentSkin,
-                           let linkedLayout = layoutPresets.preset(id: linkedLayoutID) {
-                            Button {
-                                layoutPresets.setPreset(linkedLayoutID, for: padLayoutIdentity)
-                            } label: {
-                                Label("Apply Linked Skin Layout to This Game", systemImage: "square.and.arrow.down")
-                            }
-                            Text("Applies \(linkedLayout.displayName) for this game only. The selected skin is unchanged.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Button {
-                            showPadLayoutEditor = true
-                        } label: {
-                            Label("Edit Layout for This Game", systemImage: "square.resize")
-                        }
-
-                        Button("Reset VPad Layout to Global") {
-                            layoutPresets.setPreset(nil, for: padLayoutIdentity)
-                        }
-
-                        Button("Reset VPad Skin to Global") {
-                            layoutPresets.clearSkin(for: padLayoutIdentity)
-                        }
-
-                        Button(role: .destructive) {
-                            layoutPresets.clearVPadOverrides(for: padLayoutIdentity)
-                        } label: {
-                            Label("Reset All VPad Overrides", systemImage: "arrow.counterclockwise")
-                        }
-                    } else {
-                        Text("Start this game once before choosing a custom layout or skin.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-    }
-
-    @ViewBuilder
-    private var cheatsBody: some View {
-                Section(settings.localized("Cheats & Patches")) {
-                    Button {
-                        showCheatsManager = true
-                    } label: {
-                        Label(settings.localized("Cheats & Patches"), systemImage: "rectangle.stack.badge.plus")
-                    }
-                    Toggle(settings.localized("GameDB Core Fixes"), isOn: $enableGameFixes)
-                        .disabled(!enabled)
-                    Toggle(settings.localized("GameDB Graphics Fixes"), isOn: $enableGameDBHardwareFixes)
-                        .disabled(!enabled)
-                    Picker(settings.localized("Widescreen Patches"), selection: $perGameWidescreen) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-                    Picker(settings.localized("No-Interlacing Patches"), selection: $perGameNoInterlace) {
-                        Text(settings.localized("Use Global")).tag(-1)
-                        Text(settings.localized("Off")).tag(0)
-                        Text(settings.localized("On")).tag(1)
-                    }
-                    .disabled(!enabled)
-                    Text(settings.localized("If a game looks worse after GameDB, turn off GameDB Graphics Fixes for this game and reset/relaunch it. Core fixes cover timing, clamps, and other compatibility behavior."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-    }
-
-    @ViewBuilder
-    private var fixesBody: some View {
-                    Section {
-                        Picker(settings.localized("Renderer"), selection: $perGameRenderer) {
-                            Text(settings.localized("Use Global")).tag(-1)
-                            Text(settings.localized("Metal (Hardware)")).tag(17)
-                            Text(settings.localized("Software")).tag(13)
-                        }
-                        .disabled(!enabled)
-                        Text(settings.localized("Software Renderer is much slower but can fix games that break on Metal. It applies the next time this game boots."))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Picker(settings.localized("Accurate Alpha Test"), selection: $perGameAAT) {
-                            Text(settings.localized("Use Global")).tag(-1)
-                            Text(settings.localized("Off")).tag(0)
-                            Text(settings.localized("On")).tag(1)
-                        }
-                        .disabled(!enabled)
-                        Text(settings.localized("Improves the accuracy of transparency and alpha-blended edges. Leave Off unless a game shows halos or broken transparency on Metal. Applies on next boot."))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Picker(settings.localized("Texture Inside RT"), selection: $perGameTextureInsideRt) {
-                            Text(settings.localized("Use Global")).tag(-1)
-                            Text(settings.localized("Off")).tag(0)
-                            Text(settings.localized("Inside Targets")).tag(1)
-                            Text(settings.localized("Merge Targets")).tag(2)
-                        }
-                        .disabled(!enabled)
-                        Text(settings.localized("Fixes games that render into areas of the framebuffer they later read back as textures (common half-screen or garbled-graphics fixes). Applies on next boot."))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        ForEach(SettingsStore.gameFixOptions) { option in
-                            Picker(settings.localized(option.label), selection: Binding(
-                                get: { perGameFixes[option.key] ?? -1 },
-                                set: { perGameFixes[option.key] = $0 }
-                            )) {
-                                Text(settings.localized("Use Global")).tag(-1)
-                                Text(settings.localized("Off")).tag(0)
-                                Text(settings.localized("On")).tag(1)
-                            }
-                            .disabled(!enabled)
-                        }
-                    } header: {
-                        Text(settings.localized("Compatibility Overrides"))
-                    } footer: {
-                        Text(settings.localized("Override global settings for this game only. Game fixes apply while per-game GameDB Core Fixes is on. Some changes need a game reset or relaunch."))
-                    }
     }
 }
