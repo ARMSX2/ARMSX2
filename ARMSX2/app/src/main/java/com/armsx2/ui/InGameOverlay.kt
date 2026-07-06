@@ -101,6 +101,7 @@ import com.armsx2.config.ConfigStore
 import com.armsx2.config.LiveGsApplyQueue
 import com.armsx2.config.Settings
 import com.armsx2.config.SettingsScope
+import com.armsx2.ui.settings.AppTab
 import com.armsx2.ui.settings.AudioTab
 import com.armsx2.ui.settings.controllerFocusable
 import com.armsx2.ui.settings.FixesTab
@@ -179,6 +180,7 @@ object InGameOverlay {
         Skins("Skins"),
         Hotkeys("Hotkeys"),
         Recompiler("JIT"),
+        App("Language"),
         Info("Info"),
     }
     private val currentTab = mutableStateOf(Tab.PlayingNow)
@@ -922,7 +924,7 @@ object InGameOverlay {
 
     private fun cycleTab(delta: Int) {
         val tabs = if (settingsOnly.value) {
-            listOf(Tab.Performance, Tab.Renderer, Tab.Fixes, Tab.Audio, Tab.Patches, Tab.Network, Tab.Overlay, Tab.Pad, Tab.Skins, Tab.Hotkeys, Tab.Recompiler, Tab.Info)
+            listOf(Tab.Performance, Tab.Renderer, Tab.Fixes, Tab.Audio, Tab.Patches, Tab.Network, Tab.Overlay, Tab.Pad, Tab.Skins, Tab.Hotkeys, Tab.Recompiler, Tab.App, Tab.Info)
         } else {
             Tab.values().toList()
         }
@@ -1918,6 +1920,7 @@ object InGameOverlay {
             Tab.Skins -> SkinsTab(settingsState)
             Tab.Hotkeys -> HotkeysTab(settingsState)
             Tab.Recompiler -> RecompilerTab(settingsState)
+            Tab.App -> AppTab()
             Tab.Info -> GameInfoTab()
         }
         SettingsControllerNav.end()
@@ -2112,7 +2115,7 @@ object InGameOverlay {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             val tabs = if (settingsOnly.value) {
-                listOf(Tab.Performance, Tab.Renderer, Tab.Fixes, Tab.Audio, Tab.Patches, Tab.Network, Tab.Overlay, Tab.Pad, Tab.Skins, Tab.Hotkeys, Tab.Recompiler, Tab.Info)
+                listOf(Tab.Performance, Tab.Renderer, Tab.Fixes, Tab.Audio, Tab.Patches, Tab.Network, Tab.Overlay, Tab.Pad, Tab.Skins, Tab.Hotkeys, Tab.Recompiler, Tab.App, Tab.Info)
             } else {
                 Tab.values().toList()
             }

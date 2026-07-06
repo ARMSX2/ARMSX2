@@ -29,6 +29,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.ControllerSkinStore
 import com.armsx2.config.Settings
+import com.armsx2.i18n.I18n
+import com.armsx2.i18n.str
 import com.armsx2.ui.Colors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -57,7 +59,7 @@ fun SkinsTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
         if (id != null) {
             ControllerSkinStore.setActive(ctx, id)
             refresh.value++
-            status.value = "Imported and selected."
+            status.value = I18n.get("skins.status.importedAndSelected")
         } else {
             status.value = "No ic_controller_*.png images found in that $sourceLabel."
         }
@@ -91,18 +93,16 @@ fun SkinsTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             .verticalScrollbar(scroll)
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
-        Text("Custom Controller Skins", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        Text(str("skins.title"), color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
         Text(
-            "Import a folder or .zip of ic_controller_*.png images (iOS-format skin packs work). " +
-                "Replaces the on-screen touch buttons; anything a skin doesn't include keeps the " +
-                "built-in look.",
+            str("skins.description"),
             color = Color(0xFFAAAAAA), fontSize = 11.sp,
             modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
         )
 
-        ActionRow("Import skin folder…", "skins-import-folder") { folderLauncher.launch(null) }
+        ActionRow(str("skins.importFolder"), "skins-import-folder") { folderLauncher.launch(null) }
         SettingsDivider()
-        ActionRow("Import skin .zip…", "skins-import-zip") {
+        ActionRow(str("skins.importZip"), "skins-import-zip") {
             zipLauncher.launch(
                 arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")
             )
@@ -110,7 +110,7 @@ fun SkinsTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
         SettingsDivider()
 
         if (busy.value) {
-            Text("Importing…", color = Color(0xFFAACCFF), fontSize = 12.sp,
+            Text(str("skins.importing"), color = Color(0xFFAACCFF), fontSize = 12.sp,
                 modifier = Modifier.padding(vertical = 4.dp))
         }
         status.value?.let {
@@ -119,11 +119,11 @@ fun SkinsTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
         }
 
         Spacer(Modifier.height(10.dp))
-        Text("Active skin", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+        Text(str("skins.activeSkin"), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(bottom = 4.dp))
 
         SkinRow(
-            name = "Built-in (default)",
+            name = str("skins.builtinDefault"),
             selected = activeId == null,
             controllerId = "skin-builtin",
             onSelect = { ControllerSkinStore.setActive(ctx, null) },
@@ -208,7 +208,7 @@ private fun SkinRow(
                     .padding(horizontal = 10.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("Delete", color = Color(0xFFFF8888), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(str("action.delete"), color = Color(0xFFFF8888), fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
         }
     }

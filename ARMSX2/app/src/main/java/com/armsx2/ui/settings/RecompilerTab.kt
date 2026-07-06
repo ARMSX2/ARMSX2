@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Text
 import com.armsx2.config.Settings
+import com.armsx2.i18n.str
 import com.armsx2.ui.InGameOverlay
 import kr.co.iefriends.pcsx2.NativeApp
 
@@ -47,7 +48,7 @@ fun RecompilerTab(state: MutableState<Settings>) {
             .verticalScrollbar(scroll),
     ) {
         Text(
-            "Disabling a recompiler drops to interpreter — debug only, expect a heavy slowdown.",
+            str("jit.recompiler.warning"),
             color = Color(0xFFB0B0B0),
             fontSize = 11.sp,
             modifier = Modifier.padding(bottom = 8.dp),
@@ -85,13 +86,13 @@ fun RecompilerTab(state: MutableState<Settings>) {
             // logcat. Off by default (zero overhead); expect a heavy slowdown when on.
             var eeDiff by remember { mutableStateOf(false) }
             Text(
-                "Diagnostics",
+                str("jit.diagnostics.header"),
                 color = Color(0xFF8090A0),
                 fontSize = 10.sp,
                 modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
             )
             BubbleGridRow {
-                ToggleBubble("EE Diff Verify (diag)", eeDiff, modifier = Modifier.weight(2f)) {
+                ToggleBubble(str("jit.eeDiffVerify.label"), eeDiff, modifier = Modifier.weight(2f)) {
                     eeDiff = it
                     runCatching { NativeApp.setEeDiffVerify(it) }
                 }
@@ -99,8 +100,7 @@ fun RecompilerTab(state: MutableState<Settings>) {
                 Spacer(Modifier.weight(1f))
             }
             Text(
-                "Logs the first EE instruction whose recompiled result differs from the " +
-                    "interpreter (\"@@EEDIFF@@ ... DIVERGE\" in logcat). Very slow — turn off after capturing.",
+                str("jit.eeDiffVerify.description"),
                 color = Color(0xFFB0B0B0),
                 fontSize = 10.sp,
                 modifier = Modifier.padding(top = 4.dp),

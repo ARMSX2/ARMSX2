@@ -49,6 +49,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.Main
+import com.armsx2.i18n.I18n
+import com.armsx2.i18n.str
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -237,7 +239,7 @@ object SaveStatePicker {
             ConfirmDialog(
                 title = "Delete Slot $slot?",
                 message = "Permanently removes the save in slot $slot for this game.",
-                confirmLabel = "DELETE",
+                confirmLabel = str("action.delete"),
                 onConfirm = {
                     pendingDelete = null
                     scope.launch(Dispatchers.IO) {
@@ -250,9 +252,9 @@ object SaveStatePicker {
         }
         if (pendingRestore) {
             ConfirmDialog(
-                title = "Restore backup?",
-                message = "Replaces this game's current slots with the last backup. Current saves are overwritten.",
-                confirmLabel = "RESTORE",
+                title = str("savestate.restoreBackup.confirmTitle"),
+                message = str("savestate.restoreBackup.confirmMessage"),
+                confirmLabel = str("action.restore"),
                 onConfirm = {
                     pendingRestore = false
                     scope.launch(Dispatchers.IO) {
@@ -261,7 +263,7 @@ object SaveStatePicker {
                             refreshTick++
                             Toast.makeText(
                                 context,
-                                if (n > 0) "Restored $n save(s)" else "No backup found",
+                                if (n > 0) "Restored $n save(s)" else I18n.get("savestate.noBackupFound"),
                                 Toast.LENGTH_SHORT,
                             ).show()
                         }
@@ -273,7 +275,7 @@ object SaveStatePicker {
 
         Column(Modifier.fillMaxSize()) {
             Text(
-                if (mode == Mode.Save) "Save State" else "Load / Manage Saves",
+                if (mode == Mode.Save) str("savestate.title.save") else str("savestate.title.loadManage"),
                 color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
             )
             if (manage) {
@@ -302,7 +304,7 @@ object SaveStatePicker {
                         2 -> scope.launch(Dispatchers.IO) {
                             val n = backupAll()
                             withContext(Dispatchers.Main) {
-                                Toast.makeText(context, if (n > 0) "Backed up $n save(s)" else "No saves to back up", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, if (n > 0) "Backed up $n save(s)" else I18n.get("savestate.noSavesToBackUp"), Toast.LENGTH_SHORT).show()
                             }
                         }
                         3 -> pendingRestore = true
@@ -388,7 +390,7 @@ object SaveStatePicker {
             if (focused == i) Modifier.border(1.5.dp, glow, RoundedCornerShape(6.dp)) else Modifier
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Row(ring(0).padding(2.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Auto-save on exit", color = Color.White, fontSize = 12.sp)
+                Text(str("savestate.autoSaveOnExit"), color = Color.White, fontSize = 12.sp)
                 Spacer(Modifier.width(6.dp))
                 Switch(
                     checked = autoSaveOnExit.value,
@@ -399,27 +401,27 @@ object SaveStatePicker {
                 )
             }
             Spacer(Modifier.weight(1f))
-            PillButton("Backup", highlighted = focused == 2) {
+            PillButton(str("savestate.backup"), highlighted = focused == 2) {
                 scope.launch(Dispatchers.IO) {
                     val n = backupAll()
                     withContext(Dispatchers.Main) {
                         Toast.makeText(
                             context,
-                            if (n > 0) "Backed up $n save(s)" else "No saves to back up",
+                            if (n > 0) "Backed up $n save(s)" else I18n.get("savestate.noSavesToBackUp"),
                             Toast.LENGTH_SHORT,
                         ).show()
                     }
                 }
             }
             Spacer(Modifier.width(6.dp))
-            PillButton("Restore", highlighted = focused == 3, onClick = onRestoreRequest)
+            PillButton(str("savestate.restore"), highlighted = focused == 3, onClick = onRestoreRequest)
         }
         Row(
             Modifier.fillMaxWidth().padding(top = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(ring(1).padding(2.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Auto-load last state on boot", color = Color.White, fontSize = 12.sp)
+                Text(str("savestate.autoLoadOnBoot"), color = Color.White, fontSize = 12.sp)
                 Spacer(Modifier.width(6.dp))
                 Switch(
                     checked = autoLoadOnBoot.value,
@@ -466,7 +468,7 @@ object SaveStatePicker {
             title = { Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp) },
             text = { Text(message, fontSize = 13.sp) },
             confirmButton = { TextButton(onClick = onConfirm) { Text(confirmLabel) } },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("CANCEL") } },
+            dismissButton = { TextButton(onClick = onDismiss) { Text(str("action.cancel")) } },
         )
     }
 
@@ -493,15 +495,15 @@ object SaveStatePicker {
             if (bmp != null) {
                 Image(
                     bitmap = bmp.asImageBitmap(),
-                    contentDescription = "Autosave screenshot",
+                    contentDescription = str("savestate.autosave.screenshotDesc"),
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
             BottomLabel(
-                title = "Autosave",
+                title = str("savestate.autosave.title"),
                 subtitle = gamePath?.substringAfterLast('/')?.substringBeforeLast('.')
-                    ?: "(saved on exit)",
+                    ?: str("savestate.autosave.savedOnExit"),
                 titleColor = Color(0xFFFFB347),
             )
         }
@@ -556,7 +558,7 @@ object SaveStatePicker {
                 title = "Slot $slot",
                 subtitle = when {
                     !empty -> meta
-                    mode == Mode.Save -> "(empty — tap to save here)"
+                    mode == Mode.Save -> str("savestate.slot.emptyTapToSave")
                     else -> null
                 },
                 titleColor = Color.White,
@@ -669,7 +671,7 @@ object SaveStatePicker {
                 .padding(horizontal = 14.dp),
             contentAlignment = Alignment.CenterStart,
         ) {
-            Text("Back", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text(str("action.back"), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }

@@ -47,6 +47,8 @@ import com.armsx2.EmuState
 import com.armsx2.Main
 import com.armsx2.PatchRepo
 import com.armsx2.config.Settings
+import com.armsx2.i18n.I18n
+import com.armsx2.i18n.str
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -297,7 +299,7 @@ fun PatchesTab(state: MutableState<Settings>) {
     fun apply(updated: Settings) = InGameOverlay.saveSettings(updated)
     fun activateCheatsAndReload(): Int {
         if (hardcore) {
-            pnachStatus = "Cheats are disabled while RetroAchievements Hardcore mode is active."
+            pnachStatus = I18n.get("patches.status.cheatsDisabledHardcore")
             return 0
         }
         if (!state.value.enableCheats)
@@ -332,11 +334,11 @@ fun PatchesTab(state: MutableState<Settings>) {
         val running = activePnachGameId()
         val librarySerial = libraryGame?.serial?.takeIf { it.isNotBlank() }
         if ((running == null || running.crc.isBlank()) && librarySerial == null) {
-            pnachStatus = "Boot the game, or long-press it in your library, to browse its patches."
+            pnachStatus = I18n.get("patches.status.bootOrLongPress")
             return
         }
         downloading = true
-        pnachStatus = "Searching the PCSX2 patch database…"
+        pnachStatus = I18n.get("patches.status.searchingDatabase")
         scope.launch(Dispatchers.IO) {
             val res = if (running != null && running.crc.isNotBlank())
                 PatchRepo.fetchForGame(running.serial, running.crc)
@@ -503,7 +505,7 @@ fun PatchesTab(state: MutableState<Settings>) {
     fun openLocalBrowser() {
         val files = collectLocalFiles()
         if (files.isEmpty()) {
-            pnachStatus = "No local patches or cheats with individual entries yet. Import a .pnach, or copy one into the cheats/patches folder."
+            pnachStatus = I18n.get("patches.status.noLocalEntries")
             return
         }
         localSelected.clear()
@@ -607,21 +609,15 @@ fun PatchesTab(state: MutableState<Settings>) {
             containerColor = Colors.surfaceColor,
             titleContentColor = Color.White,
             textContentColor = Color.White,
-            title = { Text("Patch codes") },
+            title = { Text(str("patches.warning.title")) },
             text = {
                 Text(
-                    "Using patch codes can have unpredictable effects on games, causing " +
-                        "crashes, graphical glitches, and corrupted saves. By using patch " +
-                        "codes, you agree that it is an unsupported configuration, and we " +
-                        "will not provide you with any assistance when games break.\n\n" +
-                        "Some codes persist through save states even after being disabled, " +
-                        "please remember to reset/reboot the game after turning off any " +
-                        "codes.\n\nAre you sure you want to continue?",
+                    str("patches.warning.message"),
                     fontSize = 13.sp,
                 )
             },
             confirmButton = {
-                TextButton(onClick = { showPatchWarning = false; startBrowse() }) { Text("YES") }
+                TextButton(onClick = { showPatchWarning = false; startBrowse() }) { Text(str("patches.action.yes")) }
             },
             dismissButton = {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -629,8 +625,8 @@ fun PatchesTab(state: MutableState<Settings>) {
                         Main.prefs.edit().putBoolean("patchCodesWarnAck", true).apply()
                         showPatchWarning = false
                         startBrowse()
-                    }) { Text("DON'T ASK AGAIN") }
-                    TextButton(onClick = { showPatchWarning = false }) { Text("NO") }
+                    }) { Text(str("patches.action.dontAskAgain")) }
+                    TextButton(onClick = { showPatchWarning = false }) { Text(str("patches.action.no")) }
                 }
             },
         )
@@ -644,7 +640,7 @@ fun PatchesTab(state: MutableState<Settings>) {
             textContentColor = Color.White,
             title = {
                 Text(
-                    if (res.gametitle.isNotEmpty()) res.gametitle else "Patches & cheats",
+                    if (res.gametitle.isNotEmpty()) res.gametitle else str("patches.dialog.patchesAndCheats"),
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                 )
@@ -652,8 +648,8 @@ fun PatchesTab(state: MutableState<Settings>) {
             text = {
                 Column(modifier = Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        TextButton(onClick = { res.entries.indices.forEach { selected[it] = true } }) { Text("Select all") }
-                        TextButton(onClick = { selected.clear() }) { Text("None") }
+                        TextButton(onClick = { res.entries.indices.forEach { selected[it] = true } }) { Text(str("patches.action.selectAll")) }
+                        TextButton(onClick = { selected.clear() }) { Text(str("patches.action.none")) }
                     }
                     res.entries.forEachIndexed { i, e ->
                         val locked = hardcore && e.source == "cheats"
@@ -680,8 +676,8 @@ fun PatchesTab(state: MutableState<Settings>) {
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { applySelected() }) { Text("APPLY") } },
-            dismissButton = { TextButton(onClick = { browseResult = null }) { Text("CANCEL") } },
+            confirmButton = { TextButton(onClick = { applySelected() }) { Text(str("patches.action.apply")) } },
+            dismissButton = { TextButton(onClick = { browseResult = null }) { Text(str("patches.action.cancel")) } },
         )
     }
 
@@ -691,7 +687,7 @@ fun PatchesTab(state: MutableState<Settings>) {
             containerColor = Colors.surfaceColor,
             titleContentColor = Color.White,
             textContentColor = Color.White,
-            title = { Text("My local patches & cheats", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+            title = { Text(str("patches.dialog.myLocal"), fontSize = 15.sp, fontWeight = FontWeight.Bold) },
             text = {
                 Column(modifier = Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -701,10 +697,10 @@ fun PatchesTab(state: MutableState<Settings>) {
                                     if (!(hardcore && f.source == "cheats")) localSelected["$fi:$ci"] = true
                                 }
                             }
-                        }) { Text("Select all") }
+                        }) { Text(str("patches.action.selectAll")) }
                         TextButton(onClick = {
                             files.forEachIndexed { fi, f -> f.cheats.indices.forEach { ci -> localSelected["$fi:$ci"] = false } }
-                        }) { Text("None") }
+                        }) { Text(str("patches.action.none")) }
                     }
                     files.forEachIndexed { fi, f ->
                         Text(
@@ -743,8 +739,8 @@ fun PatchesTab(state: MutableState<Settings>) {
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { applyLocalBrowse() }) { Text("APPLY") } },
-            dismissButton = { TextButton(onClick = { localBrowse = null }) { Text("CANCEL") } },
+            confirmButton = { TextButton(onClick = { applyLocalBrowse() }) { Text(str("patches.action.apply")) } },
+            dismissButton = { TextButton(onClick = { localBrowse = null }) { Text(str("patches.action.cancel")) } },
         )
     }
 
@@ -766,14 +762,14 @@ fun PatchesTab(state: MutableState<Settings>) {
             text = {
                 Column(modifier = Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
                     Text(
-                        "Tick the cheats to keep on. Unticked ones are commented out (kept in the file).",
+                        str("patches.editHint"),
                         fontSize = 10.sp,
                         color = Color(0xFF9A9A9A),
                         modifier = Modifier.padding(bottom = 4.dp),
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        TextButton(onClick = { sess.cheats.indices.forEach { editSelected[it] = true } }) { Text("All on") }
-                        TextButton(onClick = { sess.cheats.indices.forEach { editSelected[it] = false } }) { Text("All off") }
+                        TextButton(onClick = { sess.cheats.indices.forEach { editSelected[it] = true } }) { Text(str("patches.action.allOn")) }
+                        TextButton(onClick = { sess.cheats.indices.forEach { editSelected[it] = false } }) { Text(str("patches.action.allOff")) }
                     }
                     sess.cheats.forEachIndexed { i, c ->
                         Row(
@@ -799,8 +795,8 @@ fun PatchesTab(state: MutableState<Settings>) {
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { applyEdit() }) { Text("SAVE") } },
-            dismissButton = { TextButton(onClick = { editSession = null }) { Text("CANCEL") } },
+            confirmButton = { TextButton(onClick = { applyEdit() }) { Text(str("patches.action.save")) } },
+            dismissButton = { TextButton(onClick = { editSession = null }) { Text(str("patches.action.cancel")) } },
         )
     }
 
@@ -811,34 +807,32 @@ fun PatchesTab(state: MutableState<Settings>) {
             .verticalScrollbar(scroll),
     ) {
         Text(
-            "Patches apply at boot — restart the game after changing these.",
+            str("patches.applyAtBoot"),
             color = Color(0xFFB0B0B0),
             fontSize = 11.sp,
             modifier = Modifier.padding(bottom = 8.dp),
         )
-        ToggleRow("Enable Patches", s.enablePatches) { apply(s.copy(enablePatches = it)) }
+        ToggleRow(str("patches.enablePatches.label"), s.enablePatches) { apply(s.copy(enablePatches = it)) }
         SettingsDivider()
-        ToggleRow("Widescreen (16:9) Patches", s.enableWideScreenPatches) {
+        ToggleRow(str("patches.widescreen.label"), s.enableWideScreenPatches) {
             apply(s.copy(enableWideScreenPatches = it))
         }
         SettingsDivider()
-        ToggleRow("No-Interlacing Patches", s.enableNoInterlacingPatches) {
+        ToggleRow(str("patches.noInterlacing.label"), s.enableNoInterlacingPatches) {
             apply(s.copy(enableNoInterlacingPatches = it))
         }
         SettingsDivider()
         if (hardcore) {
             Box(Modifier.fillMaxWidth().alpha(0.4f)) {
-                ToggleRow("Cheats (PNACH) — disabled in Hardcore", false) { /* locked */ }
+                ToggleRow(str("patches.cheats.labelHardcore"), false) { /* locked */ }
             }
         } else {
-            ToggleRow("Cheats (PNACH)", s.enableCheats) { apply(s.copy(enableCheats = it)) }
+            ToggleRow(str("patches.cheats.label"), s.enableCheats) { apply(s.copy(enableCheats = it)) }
         }
         SettingsDivider()
-        ToggleRow("HostFS (host: filesystem)", s.hostFs) { apply(s.copy(hostFs = it)) }
+        ToggleRow(str("patches.hostFs.label"), s.hostFs) { apply(s.copy(hostFs = it)) }
         Text(
-            "Lets the game read files from the host: namespace — needed for some ELF / homebrew " +
-                "and game mods (e.g. modded Persona 3 FES, paired with a per-game ELF/disc path). " +
-                "Applies on the next game boot. Leave OFF for normal play.",
+            str("patches.hostFs.description"),
             color = Color(0xFFB0B0B0),
             fontSize = 11.sp,
             modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
@@ -847,7 +841,7 @@ fun PatchesTab(state: MutableState<Settings>) {
 
         // ---- PNACH importer ----
         Text(
-            "Installed patches & cheats (.pnach)",
+            str("patches.installedHeader"),
             color = Color.White,
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,
@@ -857,15 +851,15 @@ fun PatchesTab(state: MutableState<Settings>) {
             when {
                 activeGameId != null -> "Active game: ${activeGameId.serial} / CRC ${activeGameId.crc}"
                 libraryGame?.serial?.isNotBlank() == true -> "Selected game: ${libraryGame.serial} — browse its patches below."
-                else -> "Start a game, or long-press one in your library, to browse its patches."
+                else -> str("patches.startOrLongPress")
             },
             color = Color(0xFF8C8C8C),
             fontSize = 10.sp,
             modifier = Modifier.padding(bottom = 4.dp),
         )
         Text(
-            if (hardcore) "Cheats are disabled while RetroAchievements Hardcore mode is active. Patches still apply."
-            else "Paste/import PCSX2 PNACH patch= lines. Hardcore achievements disables cheats.",
+            if (hardcore) str("patches.hardcoreNoticeCheatsDisabled")
+            else str("patches.pasteImportHint"),
             color = Color(0xFF8C8C8C),
             fontSize = 10.sp,
             modifier = Modifier.padding(bottom = 4.dp),
@@ -886,7 +880,7 @@ fun PatchesTab(state: MutableState<Settings>) {
             contentAlignment = Alignment.CenterStart,
         ) {
             Text(
-                if (downloading) "Fetching…" else "⤓  Browse online — patches & cheats",
+                if (downloading) str("patches.button.fetching") else str("patches.button.browseOnline"),
                 color = Colors.pasx2_blue,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
@@ -910,7 +904,7 @@ fun PatchesTab(state: MutableState<Settings>) {
             contentAlignment = Alignment.CenterStart,
         ) {
             Text(
-                "☰  My local patches & cheats  (toggle on/off)",
+                str("patches.button.myLocalToggle"),
                 color = Colors.pasx2_blue,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
@@ -935,7 +929,7 @@ fun PatchesTab(state: MutableState<Settings>) {
                     .padding(horizontal = 8.dp),
                 contentAlignment = Alignment.CenterStart,
             ) {
-                Text("+ Import .pnach", color = Colors.pasx2_blue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text(str("patches.button.importPnach"), color = Colors.pasx2_blue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             }
             Box(
                 Modifier
@@ -951,7 +945,7 @@ fun PatchesTab(state: MutableState<Settings>) {
                     .padding(horizontal = 8.dp),
                 contentAlignment = Alignment.CenterStart,
             ) {
-                Text("+ Enter codes", color = Colors.pasx2_blue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text(str("patches.button.enterCodes"), color = Colors.pasx2_blue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             }
         }
         if (pnachStatus.isNotEmpty()) {
@@ -964,15 +958,14 @@ fun PatchesTab(state: MutableState<Settings>) {
         }
         if (pnachFiles.isEmpty()) {
             Text(
-                "No patch or cheat files installed yet.",
+                str("patches.noFilesInstalled"),
                 color = Color(0xFF8C8C8C),
                 fontSize = 11.sp,
                 modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp),
             )
         } else {
             Text(
-                "Installed files (including cheats you copied into the cheats folder). " +
-                    "Tap Edit to turn individual cheats on/off.",
+                str("patches.installedFilesHint"),
                 color = Color(0xFF9C9C9C),
                 fontSize = 10.sp,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp),
@@ -995,7 +988,7 @@ fun PatchesTab(state: MutableState<Settings>) {
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        "Edit",
+                        str("patches.action.edit"),
                         color = Colors.pasx2_blue,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
@@ -1004,7 +997,7 @@ fun PatchesTab(state: MutableState<Settings>) {
                             .padding(start = 8.dp),
                     )
                     Text(
-                        "Delete",
+                        str("patches.action.delete"),
                         color = Color(0xFFFF6B6B),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
@@ -1050,13 +1043,13 @@ private fun ManualPnachDialog(
         onDismissRequest = onDismiss,
         containerColor = Color(0xFF151515),
         title = {
-            Text("Enter PNACH Codes", color = Color.White, fontWeight = FontWeight.Bold)
+            Text(str("patches.dialog.enterCodesTitle"), color = Color.White, fontWeight = FontWeight.Bold)
         },
         text = {
             Column {
                 Text(
                     gameId?.let { "Saving for ${it.serial} / ${it.crc}" }
-                        ?: "No active CRC found; start the game first for auto-naming.",
+                        ?: str("patches.dialog.noActiveCrc"),
                     color = Color(0xFFAAAAAA),
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 6.dp),
@@ -1064,7 +1057,7 @@ private fun ManualPnachDialog(
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
-                    label = { Text("Name") },
+                    label = { Text(str("patches.field.name")) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                     colors = tfColors,
@@ -1074,7 +1067,7 @@ private fun ManualPnachDialog(
                 OutlinedTextField(
                     value = body,
                     onValueChange = { body = it },
-                    label = { Text("PNACH patch= lines") },
+                    label = { Text(str("patches.field.pnachLines")) },
                     minLines = 6,
                     maxLines = 10,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
@@ -1089,12 +1082,12 @@ private fun ManualPnachDialog(
                 enabled = body.isNotBlank(),
                 onClick = { execute() },
             ) {
-                Text("Execute", color = if (body.isNotBlank()) Colors.pasx2_blue else Color(0xFF777777))
+                Text(str("patches.action.execute"), color = if (body.isNotBlank()) Colors.pasx2_blue else Color(0xFF777777))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel", color = Color(0xFFCCCCCC))
+                Text(str("patches.action.cancelMixed"), color = Color(0xFFCCCCCC))
             }
         },
     )

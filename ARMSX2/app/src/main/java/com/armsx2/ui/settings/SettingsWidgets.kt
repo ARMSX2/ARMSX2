@@ -118,15 +118,31 @@ internal object SettingsControllerNav {
         positions[id] = y to x
     }
 
-    private fun orderedIds(): List<String> =
-        // Stable sort: unpositioned items (briefly, before layout) keep their
-        // registration order.
-        registry.keys.sortedWith(
+    private fun orderedIds(): List<String> {
+        // Sort by measured y (then x). Items that haven't reported a position YET — an
+        // off-screen row before its first layout, or a freshly-shown one — INHERIT the
+        // previous registered item's y instead of sinking to Float.MAX_VALUE at the bottom.
+        // Registration order (LinkedHashMap) mirrors visual order, so an unmeasured row stays
+        // navigable in place. Without this, Down from a measured row skipped every unmeasured
+        // neighbour and jumped to the next measured item (e.g. past a long driver list to the
+        // next dropdown header). A stable insertion-order tiebreak keeps same-y rows in order.
+        var lastY = 0f
+        val effY = HashMap<String, Float>(registry.size)
+        val idx = HashMap<String, Int>(registry.size)
+        var i = 0
+        for (id in registry.keys) {
+            positions[id]?.first?.let { lastY = it }
+            effY[id] = lastY
+            idx[id] = i++
+        }
+        return registry.keys.sortedWith(
             compareBy(
-                { positions[it]?.first ?: Float.MAX_VALUE },
+                { effY[it] ?: 0f },
                 { positions[it]?.second ?: 0f },
+                { idx[it] ?: 0 },
             ),
         )
+    }
 
     fun begin(scope: String) {
         if (scopeKey != scope) {

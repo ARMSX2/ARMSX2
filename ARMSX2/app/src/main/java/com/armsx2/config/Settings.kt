@@ -369,6 +369,9 @@ data class Settings(
     /** EmuCore/GS/filter — BiFiltering:
      *  0 Nearest · 1 Forced (Bilinear) · 2 PS2 · 3 Forced_But_Sprite. */
     val textureFiltering: Int = 2,
+    /** EmuCore/GS/linear_present_mode — GSPostBilinearMode:
+     *  0 Off (nearest) · 1 Smooth · 2 Sharp. Display output (scan-out) bilinear filter. */
+    val displayBilinear: Int = 1,
     /** EmuCore/GS/texture_preloading — TexturePreloadingLevel:
      *  0 Off · 1 Partial · 2 Full. */
     val texturePreloading: Int = 2,
@@ -753,6 +756,7 @@ data class Settings(
         put("EmuCore/GS", "hw_mipmap", "bool", hwMipmap.toString())
         put("EmuCore/GS", "accurate_blending_unit", "int", accurateBlendingUnit.toString())
         put("EmuCore/GS", "filter", "int", textureFiltering.toString())
+        put("EmuCore/GS", "linear_present_mode", "int", displayBilinear.coerceIn(0, 2).toString())
         put("EmuCore/GS", "texture_preloading", "int", texturePreloading.toString())
         put("EmuCore/GS", "HWDownloadMode", "int", hardwareDownloadMode.coerceIn(0, 4).toString())
         put("EmuCore/GS", "TVShader", "int", tvShader.coerceIn(0, 7).toString())
@@ -891,6 +895,7 @@ data class Settings(
     fun gsDiffersFrom(other: Settings): Boolean =
         deinterlaceMode != other.deinterlaceMode ||
             textureFiltering != other.textureFiltering ||
+            displayBilinear != other.displayBilinear ||
             texturePreloading != other.texturePreloading ||
             hardwareDownloadMode != other.hardwareDownloadMode ||
             tvShader != other.tvShader ||
@@ -1062,6 +1067,7 @@ data class Settings(
         put("hwMipmap", hwMipmap)
         put("accurateBlendingUnit", accurateBlendingUnit)
         put("textureFiltering", textureFiltering)
+        put("displayBilinear", displayBilinear)
         put("texturePreloading", texturePreloading)
         put("hardwareDownloadMode", hardwareDownloadMode)
         put("tvShader", tvShader)
@@ -1294,6 +1300,7 @@ data class Settings(
                 hwMipmap = json.optBoolean("hwMipmap", def.hwMipmap),
                 accurateBlendingUnit = json.optInt("accurateBlendingUnit", def.accurateBlendingUnit),
                 textureFiltering = json.optInt("textureFiltering", def.textureFiltering),
+                displayBilinear = json.optInt("displayBilinear", def.displayBilinear),
                 texturePreloading = json.optInt("texturePreloading", def.texturePreloading),
                 hardwareDownloadMode = json.optInt("hardwareDownloadMode", def.hardwareDownloadMode),
                 tvShader = json.optInt("tvShader", def.tvShader),
@@ -1486,6 +1493,7 @@ data class Settings(
             if (current.hwMipmap            != base.hwMipmap)            j.put("hwMipmap", current.hwMipmap)
             if (current.accurateBlendingUnit!= base.accurateBlendingUnit)j.put("accurateBlendingUnit", current.accurateBlendingUnit)
             if (current.textureFiltering    != base.textureFiltering)    j.put("textureFiltering", current.textureFiltering)
+            if (current.displayBilinear     != base.displayBilinear)     j.put("displayBilinear", current.displayBilinear)
             if (current.texturePreloading   != base.texturePreloading)   j.put("texturePreloading", current.texturePreloading)
             if (current.hardwareDownloadMode!= base.hardwareDownloadMode)j.put("hardwareDownloadMode", current.hardwareDownloadMode)
             if (current.tvShader            != base.tvShader)            j.put("tvShader", current.tvShader)
@@ -1672,6 +1680,7 @@ data class Settings(
             hwMipmap = if (overrides.has("hwMipmap")) overrides.getBoolean("hwMipmap") else base.hwMipmap,
             accurateBlendingUnit = if (overrides.has("accurateBlendingUnit")) overrides.getInt("accurateBlendingUnit") else base.accurateBlendingUnit,
             textureFiltering = if (overrides.has("textureFiltering")) overrides.getInt("textureFiltering") else base.textureFiltering,
+            displayBilinear = if (overrides.has("displayBilinear")) overrides.getInt("displayBilinear") else base.displayBilinear,
             texturePreloading = if (overrides.has("texturePreloading")) overrides.getInt("texturePreloading") else base.texturePreloading,
             hardwareDownloadMode = if (overrides.has("hardwareDownloadMode")) overrides.getInt("hardwareDownloadMode") else base.hardwareDownloadMode,
             tvShader = if (overrides.has("tvShader")) overrides.getInt("tvShader") else base.tvShader,

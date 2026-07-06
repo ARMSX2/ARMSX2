@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.config.Settings
+import com.armsx2.i18n.str
 import com.armsx2.ui.InGameOverlay
 import com.armsx2.ui.UiScale
 
@@ -44,48 +45,47 @@ fun OverlayTab(state: MutableState<Settings>) {
             .verticalScrollbar(scroll),
     ) {
         Text(
-            "Show or hide parts of the performance overlay. Turning GPU off also " +
-                "stops the GPU timing queries, which gives back a little performance.",
+            str("overlay.intro.description"),
             color = Color(0xFFB0B0B0),
             fontSize = 11.sp,
             modifier = Modifier.padding(bottom = 8.dp),
         )
 
-        ToggleRow("GPU usage (saves perf when off)", s.osdShowGpu) {
+        ToggleRow(str("overlay.toggle.gpuUsage"), s.osdShowGpu) {
             apply(s.copy(osdShowGpu = it))
         }
         SettingsDivider()
-        ToggleRow("CPU usage", s.osdShowCpu) { apply(s.copy(osdShowCpu = it)) }
+        ToggleRow(str("overlay.toggle.cpuUsage"), s.osdShowCpu) { apply(s.copy(osdShowCpu = it)) }
         SettingsDivider()
-        ToggleRow("FPS", s.osdShowFps) { apply(s.copy(osdShowFps = it)) }
+        ToggleRow(str("overlay.toggle.fps"), s.osdShowFps) { apply(s.copy(osdShowFps = it)) }
         SettingsDivider()
-        ToggleRow("VPS (vblanks/sec)", s.osdShowVps) { apply(s.copy(osdShowVps = it)) }
+        ToggleRow(str("overlay.toggle.vps"), s.osdShowVps) { apply(s.copy(osdShowVps = it)) }
         SettingsDivider()
-        ToggleRow("Emulation speed %", s.osdShowSpeed) { apply(s.copy(osdShowSpeed = it)) }
+        ToggleRow(str("overlay.toggle.emulationSpeed"), s.osdShowSpeed) { apply(s.copy(osdShowSpeed = it)) }
         SettingsDivider()
-        ToggleRow("Internal resolution", s.osdShowResolution) { apply(s.copy(osdShowResolution = it)) }
+        ToggleRow(str("overlay.toggle.internalResolution"), s.osdShowResolution) { apply(s.copy(osdShowResolution = it)) }
         SettingsDivider()
-        ToggleRow("GS statistics", s.osdShowGsStats) { apply(s.copy(osdShowGsStats = it)) }
+        ToggleRow(str("overlay.toggle.gsStatistics"), s.osdShowGsStats) { apply(s.copy(osdShowGsStats = it)) }
         SettingsDivider()
-        ToggleRow("Frame times graph", s.osdShowFrameTimes) { apply(s.copy(osdShowFrameTimes = it)) }
+        ToggleRow(str("overlay.toggle.frameTimesGraph"), s.osdShowFrameTimes) { apply(s.copy(osdShowFrameTimes = it)) }
         SettingsDivider()
-        ToggleRow("Hardware info (CPU/GPU model)", s.osdShowHardwareInfo) { apply(s.copy(osdShowHardwareInfo = it)) }
+        ToggleRow(str("overlay.toggle.hardwareInfo"), s.osdShowHardwareInfo) { apply(s.copy(osdShowHardwareInfo = it)) }
         SettingsDivider()
-        ToggleRow("GPU pipeline stats (VSI/PSI, Vulkan only)", s.osdShowGpuStats) { apply(s.copy(osdShowGpuStats = it)) }
+        ToggleRow(str("overlay.toggle.gpuPipelineStats"), s.osdShowGpuStats) { apply(s.copy(osdShowGpuStats = it)) }
         SettingsDivider()
-        ToggleRow("Emulator version", s.osdShowVersion) { apply(s.copy(osdShowVersion = it)) }
+        ToggleRow(str("overlay.toggle.emulatorVersion"), s.osdShowVersion) { apply(s.copy(osdShowVersion = it)) }
         SettingsDivider()
-        ToggleRow("Settings summary (bottom-right)", s.osdShowSettings) { apply(s.copy(osdShowSettings = it)) }
+        ToggleRow(str("overlay.toggle.settingsSummary"), s.osdShowSettings) { apply(s.copy(osdShowSettings = it)) }
         SettingsDivider()
-        ToggleRow("Control inputs (bottom-left)", s.osdShowInputs) { apply(s.copy(osdShowInputs = it)) }
+        ToggleRow(str("overlay.toggle.controlInputs"), s.osdShowInputs) { apply(s.copy(osdShowInputs = it)) }
         SettingsDivider()
-        ToggleRow("On-screen notifications (shader compile, saves, etc.)", s.osdShowMessages) { apply(s.copy(osdShowMessages = it)) }
+        ToggleRow(str("overlay.toggle.onScreenNotifications"), s.osdShowMessages) { apply(s.copy(osdShowMessages = it)) }
         SettingsDivider()
         // Android hotkey pop-ups (Fast-Forward on/off, etc.) — separate from the emulator
         // OSD, pref-backed. Cancel-previous already stops them stacking; this switches
         // them off entirely for heavy fast-forward users.
         val ffToasts = remember { mutableStateOf(com.armsx2.Main.prefs.getBoolean("ui.hotkeyToasts", true)) }
-        ToggleRow("Fast-Forward pop-ups", ffToasts.value) {
+        ToggleRow(str("overlay.toggle.fastForwardPopups"), ffToasts.value) {
             ffToasts.value = it
             com.armsx2.Main.prefs.edit().putBoolean("ui.hotkeyToasts", it).apply()
         }
@@ -95,28 +95,27 @@ fun OverlayTab(state: MutableState<Settings>) {
         // and text for different screen aspect ratios / handheld sizes. Does NOT
         // touch the game image or the on-screen touch controls.
         Text(
-            "Interface scaling — resize the library and menu UI to fit your screen. " +
-                "Does not affect the game image or on-screen touch controls.",
+            str("overlay.interfaceScaling.description"),
             color = Color(0xFFB0B0B0),
             fontSize = 11.sp,
             modifier = Modifier.padding(top = 10.dp, bottom = 6.dp),
         )
         IntSliderRow(
-            label = "UI Size (borders)",
+            label = str("overlay.uiSize.label"),
             value = (UiScale.borderScale.value * 100f).toInt(),
             min = (UiScale.MIN * 100f).toInt(),
             max = (UiScale.BORDER_MAX * 100f).toInt(),
-            description = "Scales menu/library padding and control sizes. 100% = default.",
+            description = str("overlay.uiSize.description"),
             valueFormatter = { "$it%" },
             onChange = { UiScale.setBorderScale(it / 100f) },
         )
         SettingsDivider()
         IntSliderRow(
-            label = "UI Font Size",
+            label = str("overlay.uiFontSize.label"),
             value = (UiScale.fontScale.value * 100f).toInt(),
             min = (UiScale.MIN * 100f).toInt(),
             max = (UiScale.MAX * 100f).toInt(),
-            description = "Scales menu/library text. 100% = default.",
+            description = str("overlay.uiFontSize.description"),
             valueFormatter = { "$it%" },
             onChange = { UiScale.setFontScale(it / 100f) },
         )

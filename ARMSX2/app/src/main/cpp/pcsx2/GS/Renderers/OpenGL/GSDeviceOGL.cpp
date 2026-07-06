@@ -1129,7 +1129,13 @@ void GSDeviceOGL::SetSwapInterval()
 	m_vsync_mode = (m_vsync_mode == GSVSyncMode::Mailbox) ? GSVSyncMode::FIFO : m_vsync_mode;
 
 	// Window framebuffer has to be bound to call SetSwapInterval.
-	const s32 interval = static_cast<s32>(m_vsync_mode == GSVSyncMode::FIFO);
+	s32 interval = static_cast<s32>(m_vsync_mode == GSVSyncMode::FIFO);
+	// ARM Mali GLES breaks with eglSwapInterval(0): after a handful of swaps the surface
+	// stops presenting entirely (frozen screen). Never pass 0 on Mali — force interval 1.
+	// A forced-on vsync beats a frozen display, and the FIFO present pacer still lets
+	// fast-forward exceed the panel rate via dropped presents. (cf. Dolphin BUG_BROKEN_VSYNC)
+	if (interval == 0 && IsMaliGPUProfile())
+		interval = 1;
 	GLint current_fbo = 0;
 	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &current_fbo);
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);

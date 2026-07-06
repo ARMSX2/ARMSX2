@@ -821,8 +821,18 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 	// never use it there even when present.
 	if (m_use_push_descriptors && properties2.properties.vendorID == 0x13B5u)
 		m_use_push_descriptors = false;
+	// Adreno (Qualcomm, 0x5143): push descriptors stall on the per-draw TFX texture-rebind hot
+	// path (both Eden and Dolphin avoid them on Adreno); the descriptor-set fallback is faster.
+	if (m_use_push_descriptors && properties2.properties.vendorID == 0x5143u)
+		m_use_push_descriptors = false;
 	if (!m_use_push_descriptors)
 		Console.Warning("VK: Using non-push-descriptor texture binding fallback.");
+
+	// Adreno mis-selects the provoking vertex with VK_EXT_provoking_vertex (Eden strips it on
+	// Qualcomm); drop it so GSRendererHW's software provoking-vertex-first path runs instead.
+	// A/B on Adreno: if this regresses perf without fixing a visible flat-shading glitch, revert.
+	if (m_optional_extensions.vk_ext_provoking_vertex && properties2.properties.vendorID == 0x5143u)
+		m_optional_extensions.vk_ext_provoking_vertex = false;
 
 	if (m_optional_extensions.vk_ext_line_rasterization && !line_rasterization_feature.bresenhamLines)
 	{
@@ -2320,8 +2330,14 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		return false;
 	}
 
+	// CAS uses a compute pipeline; some Android drivers (older Adreno ES compilers — see the
+	// Adreno-650 CAS crash) reject it. Don't fail device init over it — disable CAS and carry on,
+	// mirroring how the GL backend gates CAS to desktop only.
 	if (!CompileCASPipelines())
-		return false;
+	{
+		Console.Warning("VK: CAS pipeline compilation failed - disabling CAS sharpening.");
+		m_features.cas_sharpening = false;
+	}
 
 	if (!CompileImGuiPipeline())
 		return false;
@@ -2910,7 +2926,11 @@ bool GSDeviceVK::CheckFeatures()
 	// barriers spiking GS on transparency-heavy scenes. Proprietary Adreno stays
 	// opt-in via EnableAdrenoFramebufferFetch; DisableFramebufferFetch still overrides.
 	const bool is_turnip = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP);
-	const bool vendor_allows_fbfetch = is_mali_vk || is_turnip || GSConfig.EnableAdrenoFramebufferFetch;
+	// Samsung Xclipse (Exynos AMD-RDNA2) has no working ROAA-based framebuffer fetch — force it off
+	// there so we never route the fast-blend path into a broken unit. Inert if the 0x144D vendorID
+	// guess is wrong (a real Xclipse tester must confirm IsDeviceXclipse() fires).
+	const bool is_xclipse_vk = IsDeviceXclipse();
+	const bool vendor_allows_fbfetch = (is_mali_vk || is_turnip || GSConfig.EnableAdrenoFramebufferFetch) && !is_xclipse_vk;
 	m_features.framebuffer_fetch = vendor_allows_fbfetch &&
 		m_optional_extensions.vk_ext_rasterization_order_attachment_access && !GSConfig.DisableFramebufferFetch;
 	m_features.texture_barrier = GSConfig.OverrideTextureBarriers != 0;

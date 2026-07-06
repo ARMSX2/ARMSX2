@@ -79,6 +79,8 @@ import androidx.documentfile.provider.DocumentFile
 import com.armsx2.BiosInfo
 import com.armsx2.Main
 import com.armsx2.R
+import com.armsx2.i18n.I18n
+import com.armsx2.i18n.str
 import kr.co.iefriends.pcsx2.NativeApp
 import java.io.File
 
@@ -457,9 +459,7 @@ object SetupImpl {
         // picked folder resolves to a real native-writable path.
         val posix = Main.resolveTreeUriToPosix(uri.toString())
         if (posix == null || !Main.validateSystemDirWritable(posix)) {
-            systemDirError.value = "That folder can't be used for writable emulator data on this Android version. " +
-                "Use the App-Private Folder for memory cards, save states, and configs; " +
-                "game folders can still be added from SD card on the ROM folder step."
+            systemDirError.value = I18n.get("setup.systemDir.error.notWritable")
             return null
         }
 
@@ -601,7 +601,7 @@ object SetupImpl {
             else -> {
                 // SD card app-specific absolute path (volume-choice model).
                 systemDirUri.value = null
-                systemDirDisplay.value = "SD Card"
+                systemDirDisplay.value = I18n.get("setup.systemDir.sdCard")
                 systemDirUseDefault.value = false
             }
         }
@@ -619,22 +619,22 @@ object SetupImpl {
 
     /** Page heading shown in the upper-left of the title row. */
     private fun pageTitle(): String = when (setupState.value) {
-        0 -> "Welcome"
-        1 -> "Choose renderer"
-        2 -> "System data folder"
-        3 -> "Select your BIOS"
-        4 -> "Select ROMs folder"
+        0 -> I18n.get("setup.page.welcome.title")
+        1 -> I18n.get("setup.page.renderer.title")
+        2 -> I18n.get("setup.page.systemDir.title")
+        3 -> I18n.get("setup.page.bios.title")
+        4 -> I18n.get("setup.page.roms.title")
         else -> ""
     }
 
     /** Label for the page-local action button (in the nav row). null = no button. */
     private fun midButtonLabel(): String? = when (setupState.value) {
-        2 -> if (systemDirUri.value == null) "Pick Custom Folder" else "Pick a different folder"
+        2 -> if (systemDirUri.value == null) I18n.get("setup.button.pickCustomFolder") else I18n.get("setup.button.pickDifferentFolder")
         // Use the URI presence (not the in-memory list) so the label says
         // "Pick a different folder" immediately on re-entry when we already
         // have a remembered biosDir, even before the auto-rescan finishes.
-        3 -> if (biosDirUri.value == null) "Pick BIOS Folder" else "Pick a different folder"
-        4 -> if (romsDirsState.isEmpty()) "Pick ROMs Folder" else "Add Another Folder"
+        3 -> if (biosDirUri.value == null) I18n.get("setup.button.pickBiosFolder") else I18n.get("setup.button.pickDifferentFolder")
+        4 -> if (romsDirsState.isEmpty()) I18n.get("setup.button.pickRomsFolder") else I18n.get("setup.button.addAnotherFolder")
         else -> null
     }
 
@@ -796,9 +796,9 @@ object SetupImpl {
             val posix = Main.resolveTreeUriToPosix(treeUri.toString())
             if (posix == null || !Main.validateSystemDirWritable(posix)) {
                 systemDirError.value = if (!allFilesAccessGranted())
-                    "Couldn't write to that folder. Grant All-Files Access, then pick it again."
+                    I18n.get("setup.systemDir.error.grantAllFiles")
                 else
-                    "That folder can't be used for writable emulator data. Try another."
+                    I18n.get("setup.systemDir.error.tryAnother")
                 return@rememberLauncherForActivityResult
             }
             try {
@@ -807,7 +807,7 @@ object SetupImpl {
             } catch (_: SecurityException) { /* already persisted */ }
             systemDirUri.value = treeUri
             systemDirDisplay.value = treeUri.lastPathSegment?.substringAfterLast(':')?.ifBlank { null }
-                ?: "Custom folder"
+                ?: I18n.get("setup.systemDir.customFolder")
             systemDirUseDefault.value = false
             systemDirError.value = null
             refreshAllowNext()
@@ -855,7 +855,7 @@ object SetupImpl {
         fun applySdCardSystem() {
             val sd = Main.sdCardDataDir(context)
             if (sd == null) {
-                systemDirError.value = "No SD card detected — staying on Internal storage."
+                systemDirError.value = I18n.get("setup.systemDir.error.noSdCard")
                 systemDirUseDefault.value = true
                 systemDirUri.value = null
                 systemDirDisplay.value = null
@@ -865,7 +865,7 @@ object SetupImpl {
                 Main.systemDir.value = sd
                 Main.prefs.edit().putString("systemDir", sd).apply()
                 systemDirUseDefault.value = false
-                systemDirDisplay.value = "SD Card"
+                systemDirDisplay.value = I18n.get("setup.systemDir.sdCard")
                 systemDirError.value = null
             }
             refreshAllowNext()
@@ -1078,14 +1078,13 @@ object SetupImpl {
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Text(
-                    "Restart required",
+                    str("setup.restart.title"),
                     color = Color(0xFF7CF6EF),
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Black,
                 )
                 Text(
-                    "Moving app data to a new location takes effect after a restart. " +
-                        "ARMSX2 will close and reopen now.",
+                    str("setup.restart.message"),
                     color = Color.White.copy(alpha = 0.82f),
                     fontSize = 13.sp,
                 )
@@ -1094,12 +1093,12 @@ object SetupImpl {
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     SetupMiniButton(
-                        text = "Cancel",
+                        text = str("action.cancel"),
                         modifier = Modifier.weight(1f).height(40.dp),
                         onClick = onCancel,
                     )
                     SetupMiniButton(
-                        text = "Restart now",
+                        text = str("setup.restart.now"),
                         modifier = Modifier.weight(1f).height(40.dp),
                         onClick = onRestart,
                     )
@@ -1139,36 +1138,33 @@ object SetupImpl {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    "App data location",
+                    str("setup.storageChooser.title"),
                     color = Color(0xFF7CF6EF),
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Black,
                 )
                 Text(
-                    "Internal lives in app-private storage (wiped on uninstall). SD Card creates " +
-                        "an app-prefixed folder on your card, meant for Google Play users. Custom " +
-                        "Folder uses All-Files Access to keep your data in a real folder you choose, " +
-                        "so it survives uninstalls.",
+                    str("setup.storageChooser.description"),
                     color = Color.White.copy(alpha = 0.82f),
                     fontSize = 12.sp,
                 )
                 SetupMiniButton(
-                    text = "Internal (app-private)",
+                    text = str("setup.storageChooser.internal"),
                     modifier = Modifier.fillMaxWidth().height(40.dp),
                     onClick = onInternal,
                 )
                 SetupMiniButton(
-                    text = "SD Card",
+                    text = str("setup.systemDir.sdCard"),
                     modifier = Modifier.fillMaxWidth().height(40.dp),
                     onClick = onSdCard,
                 )
                 SetupMiniButton(
-                    text = if (granted) "Custom Folder…" else "Grant All-Files Access…",
+                    text = if (granted) str("setup.storageChooser.customFolder") else str("setup.storageChooser.grantAllFiles"),
                     modifier = Modifier.fillMaxWidth().height(40.dp),
                     onClick = onCustomFolder,
                 )
                 SetupMiniButton(
-                    text = "Cancel",
+                    text = str("action.cancel"),
                     modifier = Modifier.fillMaxWidth().height(40.dp),
                     onClick = onDismiss,
                 )
@@ -1387,33 +1383,33 @@ object SetupImpl {
                     item {
                         SetupStepCard(
                             step = "1.",
-                            title = "App Data Folder",
+                            title = str("setup.step.appData.title"),
                             description = if (BuildConfig.STORAGE_ALL_FILES)
-                                "Where memory cards, save states, and configs are stored. Choose Internal, an SD card, or a custom folder. (Game ROMs are added separately.)"
+                                str("setup.step.appData.description.allFiles")
                             else
-                                "Where memory cards, save states, and configs are stored. Internal uses your main device storage; SD Card uses a memory card if one is present. (Game ROMs are added separately.)",
+                                str("setup.step.appData.description.play"),
                             ready = appFolderReady(),
                             status = appFolderStatus(),
                             visual = SetupVisual.Folder,
                             // github build: one button opens the Internal/SD/Custom chooser.
                             // play build: SD Card / Internal as before.
                             onClick = if (BuildConfig.STORAGE_ALL_FILES) onPickSystem else onUseDefaultSystem,
-                            primaryLabel = if (BuildConfig.STORAGE_ALL_FILES) "Choose Data Location" else "SD Card",
+                            primaryLabel = if (BuildConfig.STORAGE_ALL_FILES) str("setup.button.chooseDataLocation") else str("setup.systemDir.sdCard"),
                             onPrimary = onPickSystem,
-                            secondaryLabel = if (BuildConfig.STORAGE_ALL_FILES) null else "Internal",
+                            secondaryLabel = if (BuildConfig.STORAGE_ALL_FILES) null else str("setup.storageChooser.internalShort"),
                             onSecondary = if (BuildConfig.STORAGE_ALL_FILES) null else onUseDefaultSystem,
                         )
                     }
                     item {
                         SetupStepCard(
                             step = "2.",
-                            title = "BIOS Location",
-                            description = "Select a PS2 BIOS file to start playing your games.",
+                            title = str("setup.step.bios.title"),
+                            description = str("setup.step.bios.description"),
                             ready = biosReady(),
                             status = biosStatus(),
                             visual = SetupVisual.Bios,
                             onClick = onPickBiosFolder,
-                            primaryLabel = if (biosScanning.value) "Scanning..." else "Scan Folder",
+                            primaryLabel = if (biosScanning.value) str("setup.button.scanning") else str("setup.button.scanFolder"),
                             onPrimary = onPickBiosFolder,
                             secondaryLabel = null,
                             onSecondary = null,
@@ -1422,13 +1418,13 @@ object SetupImpl {
                     item {
                         SetupStepCard(
                             step = "3.",
-                            title = "ROM Location",
-                            description = "Pick one or more folders where you keep your PS2 games. Supports ISO, CHD, BIN, IMG, MDF, and GZ.",
+                            title = str("setup.step.rom.title"),
+                            description = str("setup.step.rom.description"),
                             ready = romsReady(),
                             status = romsStatus(),
                             visual = SetupVisual.Disc,
                             onClick = onPickRoms,
-                            primaryLabel = if (romsDirsState.isEmpty()) "Select Folder" else "Add Folder",
+                            primaryLabel = if (romsDirsState.isEmpty()) str("setup.button.selectFolder") else str("setup.button.addFolder"),
                             onPrimary = onPickRoms,
                             secondaryLabel = null,
                             onSecondary = null,
@@ -1453,7 +1449,7 @@ object SetupImpl {
                     CircleBackButton(onBack)
                     Spacer(Modifier.weight(1f))
                     GlowActionButton(
-                        text = "Let's Go",
+                        text = str("setup.button.letsGo"),
                         enabled = dashboardReady(),
                         onClick = onFinish,
                         modifier = Modifier.fillMaxWidth(if (wide) 0.42f else 0.68f),
@@ -1522,7 +1518,7 @@ object SetupImpl {
                 )
                 SetupMiniButton(
                     // github: one chooser entry point; play: the Internal shortcut.
-                    text = if (BuildConfig.STORAGE_ALL_FILES) "Choose" else "Internal",
+                    text = if (BuildConfig.STORAGE_ALL_FILES) str("setup.button.choose") else str("setup.storageChooser.internalShort"),
                     modifier = Modifier
                         .offset(x = maxWidth * 0.68f, y = maxHeight * 0.252f)
                         .size(width = maxWidth * 0.20f, height = maxHeight * 0.038f),
@@ -1557,7 +1553,7 @@ object SetupImpl {
                 )
                 if (romsDirsState.isNotEmpty()) {
                     SetupMiniButton(
-                        text = "Clear",
+                        text = str("setup.button.clear"),
                         modifier = Modifier
                             .offset(x = maxWidth * 0.78f, y = maxHeight * 0.809f)
                             .size(width = maxWidth * 0.12f, height = maxHeight * 0.038f),
@@ -1661,13 +1657,13 @@ object SetupImpl {
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "Select BIOS",
+                        str("setup.bios.selectTitle"),
                         color = Color.White,
                         fontSize = 28.sp,
                         fontWeight = FontWeight.Light,
                     )
                     Spacer(Modifier.weight(1f))
-                    SmallSetupButton("Scan Different Folder", strong = false, onClick = onPickDifferentFolder)
+                    SmallSetupButton(str("setup.button.scanDifferentFolder"), strong = false, onClick = onPickDifferentFolder)
                 }
                 Spacer(Modifier.height(12.dp))
                 Box(
@@ -1688,7 +1684,7 @@ object SetupImpl {
                     CircleBackButton(onBack)
                     Spacer(Modifier.weight(1f))
                     GlowActionButton(
-                        text = "Use Selected BIOS",
+                        text = str("setup.bios.useSelected"),
                         enabled = selectedBiosIdx.value != null,
                         onClick = onUseSelected,
                         modifier = Modifier.fillMaxWidth(0.68f),
@@ -1901,7 +1897,7 @@ object SetupImpl {
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                "Remove",
+                str("setup.button.remove"),
                 color = Color(0xFFFF8B8B),
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -1912,32 +1908,32 @@ object SetupImpl {
 
     private fun appFolderStatus(): String {
         if (systemDirUseDefault.value || (Main.systemDir.value == null && Main.setupComplete.value)) {
-            return "Internal storage (main device)"
+            return I18n.get("setup.status.internalStorage")
         }
         return systemDirDisplay.value
             ?: Main.systemDir.value?.let { runCatching { Uri.parse(it).lastPathSegment }.getOrNull() ?: it }
-            ?: "Not selected"
+            ?: I18n.get("setup.status.notSelected")
     }
 
     private fun biosStatus(): String {
         if (biosScanning.value) {
-            return "Scanning BIOS folder..."
+            return I18n.get("setup.status.scanningBios")
         }
         selectedBiosIdx.value?.let { idx ->
-            return scannedBioses.getOrNull(idx)?.displayName ?: "BIOS selected"
+            return scannedBioses.getOrNull(idx)?.displayName ?: I18n.get("setup.status.biosSelected")
         }
         if (scannedBioses.isNotEmpty()) {
             return "${scannedBioses.size} BIOS files found - tap to choose"
         }
         return Main.bios.value?.let { File(it).name }
             ?: biosScanError.value
-            ?: "Not selected"
+            ?: I18n.get("setup.status.notSelected")
     }
 
     private fun romsStatus(): String =
         when (val count = romsDirsState.size) {
-            0 -> "Not selected"
-            1 -> romsDirsState.first().lastPathSegment ?: "1 folder selected"
+            0 -> I18n.get("setup.status.notSelected")
+            1 -> romsDirsState.first().lastPathSegment ?: I18n.get("setup.status.oneFolderSelected")
             else -> "$count folders selected"
         }
 
@@ -1948,10 +1944,10 @@ object SetupImpl {
     @Composable
     fun Welcome() {
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
-            Text("Welcome to ARMSX2 setup!", Modifier.align(Alignment.CenterHorizontally),
+            Text(str("setup.welcome.heading"), Modifier.align(Alignment.CenterHorizontally),
                 fontSize = 28.sp, color = Color.White, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
-            Text("Hit Next to get started", Modifier.align(Alignment.CenterHorizontally),
+            Text(str("setup.welcome.subheading"), Modifier.align(Alignment.CenterHorizontally),
                 fontSize = 14.sp, color = Color.LightGray)
         }
     }
@@ -2032,14 +2028,14 @@ object SetupImpl {
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 8.dp),
         ) {
-            Text("Recommended Settings", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(str("setup.recommended.title"), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Text(
-                "Optional — set these now or change them anytime in Settings.",
+                str("setup.recommended.subtitle"),
                 color = Color(0xFFAAAAAA),
                 fontSize = 12.sp,
                 modifier = Modifier.padding(top = 2.dp, bottom = 14.dp),
             )
-            RecChoiceRow("Renderer", listOf("OpenGL", "Vulkan"), if (selectedRenderer.value == "vulkan") 1 else 0, blue) {
+            RecChoiceRow(str("setup.recommended.renderer"), listOf("OpenGL", "Vulkan"), if (selectedRenderer.value == "vulkan") 1 else 0, blue) {
                 selectedRenderer.value = if (it == 1) "vulkan" else "opengl"
             }
             if (selectedRenderer.value == "vulkan") {
@@ -2047,24 +2043,24 @@ object SetupImpl {
                 GpuDriverSection()
                 Spacer(Modifier.height(12.dp))
             }
-            RecChoiceRow("Aspect Ratio", listOf("Stretch", "Auto", "4:3", "16:9", "10:7"), recAspect.value, blue) { recAspect.value = it }
-            RecChoiceRow("Internal Resolution", listOf("1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x"), recUpscale.value - 1, blue) { recUpscale.value = it + 1 }
-            RecChoiceRow("Anti-Blur", listOf("Off", "On"), if (recAntiBlur.value) 1 else 0, blue) { recAntiBlur.value = it == 1 }
-            RecChoiceRow("Widescreen Patches", listOf("Off", "On"), if (recWidescreen.value) 1 else 0, blue) { recWidescreen.value = it == 1 }
-            RecChoiceRow("Deinterlacing", listOf("Auto", "Off"), if (recDeinterlaceOff.value) 1 else 0, blue) { recDeinterlaceOff.value = it == 1 }
-            RecChoiceRow("Performance", listOf("Optimal", "Fast", "Low-End"), recPerfPreset.value.coerceIn(0, 2), blue) { recPerfPreset.value = it }
+            RecChoiceRow(str("setup.recommended.aspectRatio"), listOf(str("setup.aspect.stretch"), str("setup.aspect.auto"), "4:3", "16:9", "10:7"), recAspect.value, blue) { recAspect.value = it }
+            RecChoiceRow(str("setup.recommended.internalResolution"), listOf("1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x"), recUpscale.value - 1, blue) { recUpscale.value = it + 1 }
+            RecChoiceRow(str("setup.recommended.antiBlur"), listOf(str("setup.toggle.off"), str("setup.toggle.on")), if (recAntiBlur.value) 1 else 0, blue) { recAntiBlur.value = it == 1 }
+            RecChoiceRow(str("setup.recommended.widescreenPatches"), listOf(str("setup.toggle.off"), str("setup.toggle.on")), if (recWidescreen.value) 1 else 0, blue) { recWidescreen.value = it == 1 }
+            RecChoiceRow(str("setup.recommended.deinterlacing"), listOf(str("setup.aspect.auto"), str("setup.toggle.off")), if (recDeinterlaceOff.value) 1 else 0, blue) { recDeinterlaceOff.value = it == 1 }
+            RecChoiceRow(str("setup.recommended.performance"), listOf(str("setup.perf.optimal"), str("setup.perf.fast"), str("setup.perf.lowEnd")), recPerfPreset.value.coerceIn(0, 2), blue) { recPerfPreset.value = it }
             Spacer(Modifier.height(20.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
                     onClick = onSkip,
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A2A), contentColor = Color.White),
                     shape = RoundedCornerShape(8.dp),
-                ) { Text("Skip") }
+                ) { Text(str("setup.button.skip")) }
                 Button(
                     onClick = onFinish,
                     colors = ButtonDefaults.buttonColors(containerColor = blue, contentColor = Color.White),
                     shape = RoundedCornerShape(8.dp),
-                ) { Text("Apply & Finish") }
+                ) { Text(str("setup.button.applyFinish")) }
             }
             Spacer(Modifier.height(14.dp))
         }
@@ -2131,14 +2127,14 @@ object SetupImpl {
     @Composable
     private fun GpuDriverSection() {
         Text(
-            "GPU Driver",
+            str("setup.gpuDriver.title"),
             color = Color.White,
             fontSize = 16.sp,
             fontWeight = FontWeight.Bold,
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            "Replace the system Vulkan driver with Mesa Turnip or another Adreno driver. Recommended for Adreno-6XX users on stale OEM drivers. Takes effect on the next game launch.",
+            str("setup.gpuDriver.description"),
             color = Color(0xFFAAAAAA),
             fontSize = 12.sp,
         )
@@ -2149,9 +2145,9 @@ object SetupImpl {
         ) {
             item {
                 DriverChip(
-                    label = "Default",
-                    sublabel = "System driver",
-                    detail = "Use the device's stock Vulkan ICD",
+                    label = str("setup.gpuDriver.default.label"),
+                    sublabel = str("setup.gpuDriver.default.sublabel"),
+                    detail = str("setup.gpuDriver.default.detail"),
                     selected = selectedDriverId.value == null,
                     onClick = { selectedDriverId.value = null },
                 )
@@ -2283,7 +2279,7 @@ object SetupImpl {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("+", color = Colors.pasx2_blue, fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    "Add Driver",
+                    str("setup.gpuDriver.add"),
                     color = Colors.pasx2_blue,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
@@ -2327,7 +2323,7 @@ object SetupImpl {
                     driverBrowserError.value = null
                     showDriverBrowser.value = false
                 } else {
-                    driverBrowserError.value = "Couldn't import that file. It needs to be an AdrenoToolsDrivers-style .zip with meta.json + libvulkan_freedreno.so at the root."
+                    driverBrowserError.value = I18n.get("setup.gpuDriver.error.importFailed")
                 }
             }
         }
@@ -2340,7 +2336,7 @@ object SetupImpl {
                 val fetched = withContext(Dispatchers.IO) { CustomDriver.fetchRemote() }
                 remoteDrivers.value = fetched
                 if (fetched.isEmpty()) {
-                    driverBrowserError.value = "Couldn't reach github.com/K11MCH1/AdrenoToolsDrivers. Check your connection and try again."
+                    driverBrowserError.value = I18n.get("setup.gpuDriver.error.unreachable")
                 }
             }
         }
@@ -2351,7 +2347,7 @@ object SetupImpl {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "Available drivers",
+                    str("setup.gpuDriver.availableTitle"),
                     color = Color.White,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
@@ -2368,7 +2364,7 @@ object SetupImpl {
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 ) {
                     Text(
-                        "Pick local .zip",
+                        str("setup.gpuDriver.pickLocalZip"),
                         color = Color.White,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
@@ -2382,11 +2378,11 @@ object SetupImpl {
                         .clickable { showDriverBrowser.value = false }
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 ) {
-                    Text("Close", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(str("action.close"), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
             }
             Text(
-                "Source: github.com/K11MCH1/AdrenoToolsDrivers — Mesa Turnip and friends. Each driver lands under app-private storage.",
+                str("setup.gpuDriver.sourceNote"),
                 color = Color(0xFF888888),
                 fontSize = 11.sp,
                 modifier = Modifier.padding(bottom = 10.dp),
@@ -2418,12 +2414,12 @@ object SetupImpl {
                             color = Colors.pasx2_blue,
                         )
                         Spacer(Modifier.width(12.dp))
-                        Text("Loading driver list…", color = Color.White, fontSize = 13.sp)
+                        Text(str("setup.gpuDriver.loading"), color = Color.White, fontSize = 13.sp)
                     }
                 }
                 list.isEmpty() -> {
                     Text(
-                        "No drivers available right now.",
+                        str("setup.gpuDriver.noneAvailable"),
                         color = Color.LightGray,
                     )
                 }
@@ -2550,7 +2546,7 @@ object SetupImpl {
                             color = Colors.pasx2_blue,
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text("Installing…", color = Color(0xFFCCCCCC), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(str("setup.gpuDriver.installing"), color = Color(0xFFCCCCCC), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
                 active -> {
@@ -2564,7 +2560,7 @@ object SetupImpl {
                             .padding(vertical = 7.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("✓ Active", color = Color(0xFF9ED49E), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(str("setup.gpuDriver.active"), color = Color(0xFF9ED49E), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
                 installed -> {
@@ -2580,7 +2576,7 @@ object SetupImpl {
                             .padding(vertical = 7.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("Select", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(str("setup.gpuDriver.select"), color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
                 else -> {
@@ -2593,7 +2589,7 @@ object SetupImpl {
                             .padding(vertical = 7.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("Install", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(str("setup.gpuDriver.install"), color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -2657,7 +2653,7 @@ object SetupImpl {
                             color = Colors.pasx2_blue,
                         )
                         Spacer(Modifier.width(12.dp))
-                        Text("Scanning…", color = Color.White)
+                        Text(str("setup.bios.scanning"), color = Color.White)
                     }
                 }
                 biosScanError.value != null -> {
@@ -2709,7 +2705,7 @@ object SetupImpl {
                 }
                 else -> {
                     Text(
-                        "No BIOS folder selected yet — use the Pick BIOS Folder button below.",
+                        str("setup.bios.noneSelected"),
                         color = Color.LightGray,
                     )
                 }
@@ -2742,7 +2738,7 @@ object SetupImpl {
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        info.zone.ifBlank { "Unknown" },
+                        info.zone.ifBlank { str("setup.bios.unknownZone") },
                         color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold,
                     )
                     Spacer(Modifier.width(8.dp))
@@ -2764,9 +2760,7 @@ object SetupImpl {
     private fun SetupSystemDirContent() {
         Column(Modifier.fillMaxSize()) {
             Text(
-                "ARMSX2 stores memory cards, save states, configs, and shader data in app-private storage by default. " +
-                "Use a custom folder only if Android exposes it as a native-writable path. " +
-                "Game folders can still be added from SD card on the ROM folder step.",
+                str("setup.systemDir.intro"),
                 fontSize = 14.sp, color = Color.LightGray,
                 modifier = Modifier.padding(bottom = 12.dp),
             )
@@ -2803,7 +2797,7 @@ object SetupImpl {
                     Text("📁", fontSize = 24.sp)
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("Selected:", color = Color.LightGray, fontSize = 12.sp)
+                        Text(str("setup.systemDir.selectedLabel"), color = Color.LightGray, fontSize = 12.sp)
                         Text(display, color = Color.White, fontSize = 14.sp)
                     }
                 }
@@ -2818,14 +2812,14 @@ object SetupImpl {
                     Text("✅", fontSize = 22.sp)
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("Using App-Private Folder", color = Color.White, fontSize = 13.sp,
+                        Text(str("setup.systemDir.usingAppPrivate"), color = Color.White, fontSize = 13.sp,
                             fontWeight = FontWeight.Bold)
-                        Text("App-private Android/data folder",
+                        Text(str("setup.systemDir.appPrivateSubtitle"),
                             color = Color.LightGray, fontSize = 11.sp)
                     }
                 }
             } else {
-                Text("No system data folder selected yet. Use the app-private default or pick a custom folder.",
+                Text(str("setup.systemDir.noneSelected"),
                     color = Color.LightGray)
             }
 
@@ -2987,7 +2981,7 @@ object SetupImpl {
                         else -> null
                     }
                 } else {
-                    biosScanError.value = "No valid PS2 BIOS files found in that folder."
+                    biosScanError.value = I18n.get("setup.bios.error.noneFound")
                 }
             } catch (e: Exception) {
                 biosScanError.value = "Scan failed: ${e.message}"

@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.config.Settings
+import com.armsx2.i18n.str
 import com.armsx2.ui.InGameOverlay
 
 /**
@@ -35,69 +36,69 @@ fun AudioTab(state: MutableState<Settings>) {
             .verticalScrollbar(scroll),
     ) {
         Text(
-            "PS2 audio (SPU2) output. Volume/mute apply instantly; the rest reapply the moment you change them.",
+            str("audio.header.description"),
             color = Color(0xFFB0B0B0),
             fontSize = 11.sp,
             modifier = Modifier.padding(bottom = 8.dp),
         )
         IntSliderRow(
-            label = "Volume",
+            label = str("audio.volume.label"),
             value = s.audioVolume.coerceIn(0, 150),
             min = 0,
             max = 150,
-            description = "Above 100% boosts/amplifies SPU2 output — handy for quiet games, but very high levels can distort/clip.",
+            description = str("audio.volume.description"),
             valueFormatter = { "$it%" },
             onChange = { apply(s.copy(audioVolume = it)) },
         )
         SettingsDivider()
-        ToggleRow("Mute", s.audioMuted) { apply(s.copy(audioMuted = it)) }
+        ToggleRow(str("audio.mute.label"), s.audioMuted) { apply(s.copy(audioMuted = it)) }
         SettingsDivider()
         ToggleRow(
-            "Audio Synchronization",
+            str("audio.synchronization.label"),
             s.audioTimeStretch,
-            description = "Time Stretch — keeps audio pitch stable when emulation speed varies (PCSX2 2.7 \"Synchronization\"). Off = a bit less CPU, but pitch/clock can drift under load.",
+            description = str("audio.synchronization.description"),
         ) { apply(s.copy(audioTimeStretch = it)) }
         SettingsDivider()
         IntSliderRow(
-            label = "Audio Buffer",
+            label = str("audio.buffer.label"),
             value = s.audioBufferMs.coerceIn(20, 200),
             min = 20,
             max = 200,
-            description = "Bigger buffer = fewer crackles/dropouts but more latency. Raise this if audio stutters on low-end devices.",
+            description = str("audio.buffer.description"),
             valueFormatter = { "$it ms" },
             onChange = { apply(s.copy(audioBufferMs = it)) },
         )
         SettingsDivider()
         IntSliderRow(
-            label = "Output Latency",
+            label = str("audio.outputLatency.label"),
             value = s.audioOutputLatencyMs.coerceIn(5, 100),
             min = 5,
             max = 100,
-            description = "Target output latency. Lower is more responsive; higher is safer against dropouts.",
+            description = str("audio.outputLatency.description"),
             valueFormatter = { "$it ms" },
             onChange = { apply(s.copy(audioOutputLatencyMs = it)) },
         )
         SettingsDivider()
         IntSliderRow(
-            label = "Fast-Forward Volume",
+            label = str("audio.fastForwardVolume.label"),
             value = s.audioFastForwardVolume.coerceIn(0, 100),
             min = 0,
             max = 100,
-            description = "Output volume while fast-forwarding.",
+            description = str("audio.fastForwardVolume.description"),
             valueFormatter = { "$it%" },
             onChange = { apply(s.copy(audioFastForwardVolume = it)) },
         )
         SettingsDivider()
         ToggleRow(
-            "Swap Left/Right Channels",
+            str("audio.swapChannels.label"),
             s.audioSwapChannels,
-            description = "Swaps the stereo output (L↔R). Useful when a device's Type-C port forces reverse-landscape and flips the physical speakers (e.g. the Clamp gamepad), which otherwise reverses the stereo image in racing games. Applies instantly.",
+            description = str("audio.swapChannels.description"),
         ) { apply(s.copy(audioSwapChannels = it)) }
         SettingsDivider()
         ToggleRow(
-            "SPU2 SIMD audio (experimental)",
+            str("audio.spu2Simd.label"),
             s.spu2NeonReverb,
-            description = "NEON fast path for reverb audio processing — frees up CPU, which can help performance on CPU-limited devices. Off (default) uses the standard path with unchanged audio. Reboot the game to switch.",
+            description = str("audio.spu2Simd.description"),
         ) { apply(s.copy(spu2NeonReverb = it)) }
     }
 }

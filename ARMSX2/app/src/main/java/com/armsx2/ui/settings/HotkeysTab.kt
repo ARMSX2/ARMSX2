@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.Main
 import com.armsx2.config.Settings
+import com.armsx2.i18n.str
 import com.armsx2.input.ControllerMappings
 import com.armsx2.ui.Colors
 
@@ -46,17 +47,14 @@ fun HotkeysTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             .verticalScrollbar(scroll),
     ) {
         Text(
-            "Controller hotkeys",
+            str("hotkeys.header"),
             color = Color.White,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp),
         )
         HelpText(
-            "Bind physical buttons (back paddles work too) to in-game actions — " +
-                "no on-screen cog needed. Press one button for a single bind, or " +
-                "two together for a combo (e.g. Select + R1). Quick Save/Load use " +
-                "the active slot (change it with Cycle Save Slot).",
+            str("hotkeys.help"),
         )
         ControllerMappings.SysHotkey.values().forEach { hk ->
             @Suppress("UNUSED_EXPRESSION") ControllerMappings.hotkeyBindTick.value
@@ -80,7 +78,7 @@ fun HotkeysTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 Spacer(Modifier.weight(1f))
                 if (!unset && !capturing) {
                     Text(
-                        "Clear",
+                        str("hotkeys.clear"),
                         color = Color(0xFFFF6B6B),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
@@ -94,8 +92,8 @@ fun HotkeysTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 }
                 Text(
                     when {
-                        capturing -> "Press a button, push a stick, or 2 together…"
-                        unset -> "Not set"
+                        capturing -> str("hotkeys.capturePrompt")
+                        unset -> str("hotkeys.notSet")
                         else -> binding
                     },
                     color = if (capturing) Color(0xFFFFD33A) else Color(0xFFCCCCCC),
@@ -111,9 +109,9 @@ fun HotkeysTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             mutableStateOf(Main.prefs.getBoolean("ui.exitToLauncherExternal", true))
         }
         ToggleRow(
-            "Exit to launcher on close (external games)",
+            str("hotkeys.exitToLauncher.label"),
             exitToLauncher.value,
-            description = "When a game was launched from another app (e.g. ES-DE), Close Game returns to that app instead of the ARMSX2 library.",
+            description = str("hotkeys.exitToLauncher.description"),
         ) { v ->
             exitToLauncher.value = v
             Main.prefs.edit().putBoolean("ui.exitToLauncherExternal", v).apply()

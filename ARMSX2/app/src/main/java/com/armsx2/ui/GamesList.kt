@@ -98,6 +98,8 @@ import com.armsx2.LibraryTitles
 import com.armsx2.LibraryView
 import com.armsx2.GamePlatform
 import com.armsx2.Main
+import com.armsx2.i18n.I18n
+import com.armsx2.i18n.str
 import kr.co.iefriends.pcsx2.NativeApp
 import org.json.JSONArray
 import org.json.JSONObject
@@ -443,8 +445,8 @@ object GamesList {
         ) {
             when {
                 romsDirs.isEmpty() -> EmptyMessage(
-                    "No ROMs folders configured",
-                    "Use the Settings cog to add one or more.",
+                    str("games.empty.noFolders.title"),
+                    str("games.empty.noFolders.body"),
                 )
                 scanning.value && games.isEmpty() -> ScanningSpinner()
                 scanError.value != null -> Text(
@@ -721,7 +723,7 @@ object GamesList {
             if (currentShelfGames.isNotEmpty()) {
                 item(key = "__current_title__") {
                     HeaderRow(
-                        title = "Recently Played",
+                        title = str("games.section.recentlyPlayed"),
                         context = context,
                         romsDirs = romsDirs,
                         romsKey = romsKey,
@@ -750,7 +752,7 @@ object GamesList {
             } else {
                 item(key = "__empty_actions__") {
                     HeaderRow(
-                        title = "Library",
+                        title = str("games.section.library"),
                         context = context,
                         romsDirs = romsDirs,
                         romsKey = romsKey,
@@ -764,7 +766,7 @@ object GamesList {
                 // the doubled heading in list view / no-recent libraries).
                 if (currentShelfGames.isNotEmpty()) {
                     item(key = "__library_title__") {
-                        SectionHeader("Library")
+                        SectionHeader(str("games.section.library"))
                     }
                 }
                 lazyItemsIndexed(libraryRows, key = { _, row ->
@@ -822,7 +824,7 @@ object GamesList {
             verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             Text(
-                (if (searchQuery.value.isEmpty()) "Search games…" else searchQuery.value) +
+                (if (searchQuery.value.isEmpty()) str("games.search.placeholder") else searchQuery.value) +
                     "   •   $resultCount found",
                 color = Color.White,
                 fontFamily = TitleFont,
@@ -859,7 +861,7 @@ object GamesList {
                 }
             }
             Text(
-                "D-pad move · A type · Done = keep filter · B close & clear",
+                str("games.search.hint"),
                 color = Color.White.copy(alpha = 0.5f),
                 fontSize = 10.sp,
             )
@@ -929,38 +931,38 @@ object GamesList {
             // Caption reflects an active filter so it's obvious why games "vanished".
             add(Triple(
                 LibIcons.SEARCH,
-                if (searchQuery.value.isEmpty()) "Search" else "\"${searchQuery.value.take(8)}\"",
+                if (searchQuery.value.isEmpty()) str("games.toolbar.search") else "\"${searchQuery.value.take(8)}\"",
             ) { openSearch() })
-            add(Triple(LibIcons.REFRESH, "Scan") {
+            add(Triple(LibIcons.REFRESH, str("games.toolbar.scan")) {
                 when {
                     romsDirs.isEmpty() ->
-                        Toast.makeText(context, "Choose a game folder first", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, I18n.get("games.toast.chooseFolderFirst"), Toast.LENGTH_SHORT).show()
                     scanning.value ->
-                        Toast.makeText(context, "Library scan already running", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, I18n.get("games.toast.scanAlreadyRunning"), Toast.LENGTH_SHORT).show()
                     else -> {
-                        Toast.makeText(context, "Scanning library...", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, I18n.get("games.toast.scanningLibrary"), Toast.LENGTH_SHORT).show()
                         lastScannedRoms.value = null
                         scanRoms(context, romsDirs, romsKey)
                     }
                 }
             })
-            add(Triple(LibIcons.CPU, "BIOS") {
+            add(Triple(LibIcons.CPU, str("games.toolbar.bios")) {
                 WindowImpl.showLibrary.value = false
                 Main.startBios()
             })
-            add(Triple(LibIcons.SD_CARD, "Cards") { MemoryCardManager.visible.value = true })
+            add(Triple(LibIcons.SD_CARD, str("games.toolbar.cards")) { MemoryCardManager.visible.value = true })
             add(Triple(
                 if (CoverArtStyle.use3d.value) LibIcons.BOX else LibIcons.PHOTO,
-                if (CoverArtStyle.use3d.value) "Cover 3D" else "Cover 2D",
+                if (CoverArtStyle.use3d.value) str("games.toolbar.cover3d") else str("games.toolbar.cover2d"),
             ) { CoverArtStyle.set(!CoverArtStyle.use3d.value) })
-            add(Triple(LibIcons.DOTS, if (toolbarExpanded.value) "Less" else "More") {
+            add(Triple(LibIcons.DOTS, if (toolbarExpanded.value) str("games.toolbar.less") else str("games.toolbar.more")) {
                 toolbarExpanded.value = !toolbarExpanded.value
             })
             if (toolbarExpanded.value) {
-                add(Triple(LibIcons.FILE_CODE, "ELF") { bootElfLauncher.launch(arrayOf("*/*")) })
-                add(Triple(LibIcons.WALLPAPER, "Background") { wallLauncher.launch(arrayOf("image/*")) })
+                add(Triple(LibIcons.FILE_CODE, str("games.toolbar.elf")) { bootElfLauncher.launch(arrayOf("*/*")) })
+                add(Triple(LibIcons.WALLPAPER, str("games.toolbar.background")) { wallLauncher.launch(arrayOf("image/*")) })
                 if (customBackgroundPath.value != null) {
-                    add(Triple(LibIcons.REFRESH, "Reset BG") { resetCustomBackground(context) })
+                    add(Triple(LibIcons.REFRESH, str("games.toolbar.resetBg")) { resetCustomBackground(context) })
                 }
                 // Cover-grid size (shelf view only): cycle columns / rows; cover size
                 // adjusts to fit. Captions show the live value (Auto = auto-fit).
@@ -970,20 +972,20 @@ object GamesList {
                 if (!LibraryView.listMode.value) {
                     add(Triple(
                         LibIcons.LAYOUT_ROWS,
-                        "Rows " + (if (LibraryView.rows.value == 0) "Auto" else LibraryView.rows.value.toString()),
+                        str("games.toolbar.rows") + " " + (if (LibraryView.rows.value == 0) str("games.toolbar.auto") else LibraryView.rows.value.toString()),
                     ) { LibraryView.cycleRows() })
                 }
                 // Recently-Played shelf on/off — lives up here in the top toolbar next
                 // to Rows so it doesn't crowd the settings gear off the left rail.
                 add(Triple(
                     LibIcons.CLOCK,
-                    "Recent " + (if (LibraryRecentShelf.show.value) "On" else "Off"),
+                    str("games.toolbar.recent") + " " + (if (LibraryRecentShelf.show.value) str("games.toolbar.on") else str("games.toolbar.off")),
                 ) { LibraryRecentShelf.set(!LibraryRecentShelf.show.value) })
-                add(Triple(LibIcons.TOOL, "Setup") {
+                add(Triple(LibIcons.TOOL, str("games.toolbar.setup")) {
                     SetupImpl.resetForReentry()
                     Main.reopenSetup()
                 })
-                add(Triple(LibIcons.POWER, "Exit") { showExitConfirm.value = true })
+                add(Triple(LibIcons.POWER, str("games.toolbar.exit")) { showExitConfirm.value = true })
             }
         }
         SideEffect { controllerToolbarActions = toolbarActions.map { it.second to it.third } }
@@ -1012,17 +1014,17 @@ object GamesList {
             androidx.compose.material3.AlertDialog(
                 onDismissRequest = { showExitConfirm.value = false },
                 containerColor = Color(0xFF1B1A1A),
-                title = { Text("Exit ARMSX2?", color = Color.White) },
-                text = { Text("Are you sure you want to close the app?", color = Color(0xFFCCCCCC)) },
+                title = { Text(str("games.exit.title"), color = Color.White) },
+                text = { Text(str("games.exit.message"), color = Color(0xFFCCCCCC)) },
                 confirmButton = {
                     androidx.compose.material3.TextButton(onClick = {
                         showExitConfirm.value = false
                         Main.exitApp()
-                    }) { Text("Yes", color = Color(0xFFFF6B6B)) }
+                    }) { Text(str("action.yes"), color = Color(0xFFFF6B6B)) }
                 },
                 dismissButton = {
                     androidx.compose.material3.TextButton(onClick = { showExitConfirm.value = false }) {
-                        Text("No", color = Color(0xFFAACCFF))
+                        Text(str("action.no"), color = Color(0xFFAACCFF))
                     }
                 },
             )
@@ -1149,7 +1151,7 @@ object GamesList {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween,
             ) {
-                NavButton(NavKind.Library, "LIBRARY", active = true) {}
+                NavButton(NavKind.Library, str("games.nav.library"), active = true) {}
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -1185,7 +1187,7 @@ object GamesList {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                NavButton(NavKind.Library, "LIBRARY", active = true) {}
+                NavButton(NavKind.Library, str("games.nav.library"), active = true) {}
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1378,27 +1380,23 @@ object GamesList {
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    "Library Help",
+                    str("games.info.title"),
                     color = Colors.pasx2_blue,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
                 )
                 Spacer(Modifier.height(16.dp))
                 InfoParagraph(
-                    "Navigating",
-                    "Scroll up and down to move between shelves. Scroll left and right " +
-                        "to reveal more games on a shelf.",
+                    str("games.info.navigating.title"),
+                    str("games.info.navigating.body"),
                 )
                 InfoParagraph(
-                    "Per-game settings",
-                    "On a controller, press the X button on a highlighted cover. " +
-                        "On touch, long-press a game cover.",
+                    str("games.info.perGameSettings.title"),
+                    str("games.info.perGameSettings.body"),
                 )
                 InfoParagraph(
-                    "In-game menu",
-                    "While in a game, tap the top-middle of the screen to pop up the gear " +
-                        "icon — tap it to open the pause overlay. On a controller, you can " +
-                        "bind hotkeys for the menu and many other toggles in Settings.",
+                    str("games.info.inGameMenu.title"),
+                    str("games.info.inGameMenu.body"),
                 )
                 // Open / copy the app data folder (memory cards, custom textures, etc.).
                 val ctx = LocalContext.current
@@ -1415,15 +1413,14 @@ object GamesList {
                         .padding(12.dp),
                 ) {
                     Text(
-                        "Open data folder",
+                        str("games.info.openDataFolder.title"),
                         color = Colors.pasx2_blue,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold,
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Manage memory cards, custom textures, and other files. Tap to open it in " +
-                            "a file manager (or copy the path if none can open it).",
+                        str("games.info.openDataFolder.body"),
                         color = Color.White.copy(alpha = 0.72f),
                         fontSize = 12.sp,
                         lineHeight = 16.sp,
@@ -1435,7 +1432,7 @@ object GamesList {
                 }
                 Spacer(Modifier.height(18.dp))
                 Text(
-                    "Tap anywhere or press B to close",
+                    str("games.info.tapToClose"),
                     color = Color.White.copy(alpha = 0.5f),
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -1923,7 +1920,7 @@ object GamesList {
                     Main.launchGame(outFile.absolutePath, game)
                     return
                 }
-                Toast.makeText(ctx, "Couldn't load ELF", Toast.LENGTH_SHORT).show()
+                Toast.makeText(ctx, I18n.get("games.toast.couldntLoadElf"), Toast.LENGTH_SHORT).show()
                 return
             }
         }
@@ -2032,9 +2029,9 @@ object GamesList {
         if (ok) {
             Main.prefs.edit().putString(KEY_LIBRARY_BACKGROUND, outFile.absolutePath).apply()
             customBackgroundPath.value = outFile.absolutePath
-            Toast.makeText(context, "Library background imported", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, I18n.get("games.toast.backgroundImported"), Toast.LENGTH_SHORT).show()
         } else {
-            Toast.makeText(context, "Could not import background", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, I18n.get("games.toast.backgroundImportFailed"), Toast.LENGTH_LONG).show()
         }
     }
 
@@ -2042,7 +2039,7 @@ object GamesList {
         customBackgroundPath.value?.let { runCatching { File(it).delete() } }
         customBackgroundPath.value = null
         Main.prefs.edit().remove(KEY_LIBRARY_BACKGROUND).apply()
-        Toast.makeText(context, "Library background reset", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, I18n.get("games.toast.backgroundReset"), Toast.LENGTH_SHORT).show()
     }
 
     @Composable
@@ -2067,7 +2064,7 @@ object GamesList {
                 color = Colors.pasx2_blue,
             )
             Spacer(Modifier.width(12.dp))
-            Text("Scanning ROMs…", color = Color.White)
+            Text(str("games.scanningRoms"), color = Color.White)
         }
     }
 
@@ -2109,7 +2106,7 @@ object GamesList {
             }
             Column(Modifier.padding(8.dp)) {
                 Text(
-                    if (isScanning) "Scanning…" else "Refresh",
+                    if (isScanning) str("games.card.scanning") else str("games.card.refresh"),
                     color = Color.White,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
@@ -2118,7 +2115,7 @@ object GamesList {
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Re-scan ROMs folder",
+                    str("games.card.rescanRomsFolder"),
                     color = Color.LightGray,
                     fontSize = 11.sp,
                     maxLines = 1,
@@ -2153,7 +2150,7 @@ object GamesList {
             }
             Column(Modifier.padding(8.dp)) {
                 Text(
-                    "Start BIOS",
+                    str("games.card.startBios"),
                     color = Color.White,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
@@ -2162,7 +2159,7 @@ object GamesList {
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Boot without a disc",
+                    str("games.card.bootWithoutDisc"),
                     color = Color.LightGray,
                     fontSize = 11.sp,
                     maxLines = 1,
@@ -2267,7 +2264,7 @@ object GamesList {
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    game.serial?.let { s -> game.region?.let { "$s · $it" } ?: s } ?: "Unknown serial",
+                    game.serial?.let { s -> game.region?.let { "$s · $it" } ?: s } ?: str("games.unknownSerial"),
                     color = if (game.serial != null) Color(0xFFAACCFF) else Color(0xFF6F6F6F),
                     fontSize = 10.sp,
                     maxLines = 1,
@@ -2549,10 +2546,10 @@ object GamesList {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 if (missingSerial) {
                     Text("?", color = Color(0xFF8A4A4A), fontSize = 56.sp)
-                    Text("No serial", color = Color(0xFF8A4A4A), fontSize = 10.sp)
+                    Text(str("games.noSerial"), color = Color(0xFF8A4A4A), fontSize = 10.sp)
                 } else {
                     Text("📀", color = Color(0xFF3F3F3F), fontSize = 56.sp)
-                    Text("No cover", color = Color(0xFF6F6F6F), fontSize = 10.sp)
+                    Text(str("games.noCover"), color = Color(0xFF6F6F6F), fontSize = 10.sp)
                 }
             }
         }

@@ -53,6 +53,8 @@ import androidx.documentfile.provider.DocumentFile
 import com.armsx2.Main
 import com.armsx2.config.ConfigStore
 import com.armsx2.config.SettingsScope
+import com.armsx2.i18n.I18n
+import com.armsx2.i18n.str
 import com.armsx2.ui.settings.SettingsControllerNav
 import com.armsx2.ui.settings.controllerFocusable
 import java.io.BufferedInputStream
@@ -148,7 +150,7 @@ object MemoryCardManager {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(
-                            "Memory Cards",
+                            str("memcard.title"),
                             color = Color.White,
                             fontSize = 24.sp,
                             fontWeight = FontWeight.Bold,
@@ -172,7 +174,7 @@ object MemoryCardManager {
                             colors = ps2ButtonColors(),
                             shape = RoundedCornerShape(8.dp),
                         ) {
-                            Text("Restart")
+                            Text(str("memcard.restart"))
                         }
                     }
                     Button(
@@ -181,7 +183,7 @@ object MemoryCardManager {
                         colors = darkButtonColors(),
                         shape = RoundedCornerShape(8.dp),
                     ) {
-                        Text("Close")
+                        Text(str("action.close"))
                     }
                 }
 
@@ -194,7 +196,7 @@ object MemoryCardManager {
                         colors = ps2ButtonColors(),
                         shape = RoundedCornerShape(8.dp),
                     ) {
-                        Text(if (creating) "Cancel New" else "+ New Card")
+                        Text(if (creating) str("memcard.cancelNew") else str("memcard.newCard"))
                     }
                     Button(
                         onClick = { fileLauncher.launch("*/*") },
@@ -202,7 +204,7 @@ object MemoryCardManager {
                         colors = ps2ButtonColors(),
                         shape = RoundedCornerShape(8.dp),
                     ) {
-                        Text("Import File")
+                        Text(str("memcard.importFile"))
                     }
                     Button(
                         onClick = { folderLauncher.launch(null) },
@@ -210,7 +212,7 @@ object MemoryCardManager {
                         colors = ps2ButtonColors(),
                         shape = RoundedCornerShape(8.dp),
                     ) {
-                        Text("Import Folder")
+                        Text(str("memcard.importFolder"))
                     }
                     Button(
                         onClick = {
@@ -224,7 +226,7 @@ object MemoryCardManager {
                         colors = ps2ButtonColors(),
                         shape = RoundedCornerShape(8.dp),
                     ) {
-                        Text("Use Default Slots")
+                        Text(str("memcard.useDefaultSlots"))
                     }
                 }
 
@@ -238,15 +240,15 @@ object MemoryCardManager {
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("Per-Game Memory Cards", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text(str("memcard.perGame.label"), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Boot each game with its own Slot 1 card (named after its serial, auto-created). Restart the game to apply.",
+                            str("memcard.perGame.description"),
                             color = Color(0xFFAAAAAA),
                             fontSize = 10.sp,
                         )
                     }
                     SelectChip(
-                        label = if (perGameCards) "On" else "Off",
+                        label = if (perGameCards) str("common.on") else str("common.off"),
                         selected = perGameCards,
                         id = "mc:pergame",
                     ) {
@@ -278,7 +280,7 @@ object MemoryCardManager {
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        "Pick a card for this game only (overrides the auto serial card). Restart the game to apply.",
+                        str("memcard.perGameSlot1.description"),
                         color = Color(0xFFAAAAAA),
                         fontSize = 10.sp,
                     )
@@ -289,7 +291,7 @@ object MemoryCardManager {
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         SelectChip(
-                            label = "Global default",
+                            label = str("memcard.globalDefault"),
                             selected = usesGlobal,
                             id = "mc:pg:__global__",
                         ) {
@@ -335,7 +337,7 @@ object MemoryCardManager {
                             .background(Color(0xFF151515), RoundedCornerShape(8.dp))
                             .padding(12.dp),
                     ) {
-                        Text("New Memory Card", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        Text(str("memcard.newCard.title"), color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
                         Box(
                             Modifier
@@ -349,7 +351,7 @@ object MemoryCardManager {
                                 value = newName,
                                 onValueChange = { newName = it },
                                 singleLine = true,
-                                label = { Text("Card name (A to type)") },
+                                label = { Text(str("memcard.cardName.label")) },
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedTextColor = Color.White,
                                     unfocusedTextColor = Color.White,
@@ -363,25 +365,25 @@ object MemoryCardManager {
                             )
                         }
                         Spacer(Modifier.height(10.dp))
-                        Text("Type", color = Color(0xFF999999), fontSize = 12.sp)
+                        Text(str("memcard.type.label"), color = Color(0xFF999999), fontSize = 12.sp)
                         Spacer(Modifier.height(4.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            SelectChip("File", newType == 1, "mc:typefile") { newType = 1 }
-                            SelectChip("Folder", newType == 2, "mc:typefolder") { newType = 2 }
+                            SelectChip(str("memcard.type.file"), newType == 1, "mc:typefile") { newType = 1 }
+                            SelectChip(str("memcard.type.folder"), newType == 2, "mc:typefolder") { newType = 2 }
                         }
                         if (newType == 1) {
                             Spacer(Modifier.height(10.dp))
-                            Text("Size", color = Color(0xFF999999), fontSize = 12.sp)
+                            Text(str("memcard.size.label"), color = Color(0xFF999999), fontSize = 12.sp)
                             Spacer(Modifier.height(4.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                SelectChip("8 MB", newSize == 1, "mc:size8") { newSize = 1 }
-                                SelectChip("16 MB", newSize == 2, "mc:size16") { newSize = 2 }
-                                SelectChip("32 MB", newSize == 3, "mc:size32") { newSize = 3 }
-                                SelectChip("64 MB", newSize == 4, "mc:size64") { newSize = 4 }
+                                SelectChip(str("memcard.size.8mb"), newSize == 1, "mc:size8") { newSize = 1 }
+                                SelectChip(str("memcard.size.16mb"), newSize == 2, "mc:size16") { newSize = 2 }
+                                SelectChip(str("memcard.size.32mb"), newSize == 3, "mc:size32") { newSize = 3 }
+                                SelectChip(str("memcard.size.64mb"), newSize == 4, "mc:size64") { newSize = 4 }
                             }
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "8 MB is the most compatible. Larger cards work in many but not all games.",
+                                str("memcard.size.hint"),
                                 color = Color(0xFF888888),
                                 fontSize = 10.sp,
                             )
@@ -405,7 +407,7 @@ object MemoryCardManager {
                             colors = ps2ButtonColors(),
                             shape = RoundedCornerShape(8.dp),
                         ) {
-                            Text("Create")
+                            Text(str("memcard.create"))
                         }
                     }
                 }
@@ -421,7 +423,7 @@ object MemoryCardManager {
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            "No memory-card files found yet.",
+                            str("memcard.empty"),
                             color = Color(0xFF999999),
                             fontSize = 13.sp,
                         )
@@ -460,9 +462,9 @@ object MemoryCardManager {
                                     Spacer(Modifier.width(6.dp))
                                     Text(
                                         when {
-                                            inSlot1 && inSlot2 -> "● SLOTS 1 & 2"
-                                            inSlot1 -> "● SLOT 1"
-                                            else -> "● SLOT 2"
+                                            inSlot1 && inSlot2 -> str("memcard.marker.bothSlots")
+                                            inSlot1 -> str("memcard.marker.slot1")
+                                            else -> str("memcard.marker.slot2")
                                         },
                                         color = Color(0xFF6FCF7F),
                                         fontSize = 10.sp,
@@ -472,7 +474,7 @@ object MemoryCardManager {
                                 }
                                 Spacer(Modifier.width(8.dp))
                                 Text(
-                                    if (file.isDirectory) "Folder" else readableSize(file.length()),
+                                    if (file.isDirectory) str("memcard.type.folder") else readableSize(file.length()),
                                     color = Color(0xFFAAAAAA),
                                     fontSize = 11.sp,
                                 )
@@ -485,7 +487,7 @@ object MemoryCardManager {
                                         .height(32.dp)
                                         .controllerFocusable("mc:slot1:${file.name}", onConfirm = { assignSlot(context, 1, file) }),
                                 ) {
-                                    Text(if (inSlot1) "✓ Slot 1" else "Slot 1", fontSize = 11.sp)
+                                    Text(if (inSlot1) str("memcard.slot1.active") else str("memcard.slot1"), fontSize = 11.sp)
                                 }
                                 Spacer(Modifier.width(6.dp))
                                 Button(
@@ -496,7 +498,7 @@ object MemoryCardManager {
                                         .height(32.dp)
                                         .controllerFocusable("mc:slot2:${file.name}", onConfirm = { assignSlot(context, 2, file) }),
                                 ) {
-                                    Text(if (inSlot2) "✓ Slot 2" else "Slot 2", fontSize = 11.sp)
+                                    Text(if (inSlot2) str("memcard.slot2.active") else str("memcard.slot2"), fontSize = 11.sp)
                                 }
                                 // Export (file cards only — folder cards aren't a single file).
                                 if (!file.isDirectory) {
@@ -509,7 +511,7 @@ object MemoryCardManager {
                                             .height(32.dp)
                                             .controllerFocusable("mc:export:${file.name}", onConfirm = { exportPending = file; exportLauncher.launch(file.name) }),
                                     ) {
-                                        Text("Export", fontSize = 11.sp)
+                                        Text(str("action.export"), fontSize = 11.sp)
                                     }
                                 }
                                 Spacer(Modifier.width(6.dp))
@@ -531,7 +533,7 @@ object MemoryCardManager {
                                             else deleteArmed = file.name
                                         }),
                                 ) {
-                                    Text(if (armed) "Sure?" else "Delete", fontSize = 11.sp)
+                                    Text(if (armed) str("memcard.delete.confirm") else str("action.delete"), fontSize = 11.sp)
                                 }
                             }
                         }
@@ -540,7 +542,7 @@ object MemoryCardManager {
 
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "Import File adds a memory card (then tap Slot 1 or Slot 2 to use it). Import Folder imports .ps2/.mcr cards found in a folder, or the folder itself as a folder memory card. Export saves a card out to Downloads / Drive / anywhere for backup or moving to another device. Delete removes a card and clears its slot.",
+                    str("memcard.help"),
                     color = Color(0xFF888888),
                     fontSize = 11.sp,
                 )
@@ -619,7 +621,7 @@ object MemoryCardManager {
                 FileOutputStream(outFile).use { outs -> ins.copyTo(outs) }
             } ?: error("Could not open selected file")
             status.value = "Imported ${outFile.name} — tap Slot 1 or Slot 2 to use it."
-            Toast.makeText(context, "Memory card imported", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, I18n.get("memcard.toast.imported"), Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             status.value = "Import failed: ${e.message ?: "unknown error"}"
             Toast.makeText(context, status.value, Toast.LENGTH_LONG).show()
@@ -673,7 +675,7 @@ object MemoryCardManager {
                 error("Selected folder is empty (no card files or folder-card contents)")
             if (assignSlot(context, 1, dest)) {
                 status.value = "Imported folder card ${dest.name} to Slot 1."
-                Toast.makeText(context, "Folder memory card imported", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, I18n.get("memcard.toast.folderImported"), Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
             status.value = "Folder import failed: ${e.message ?: "unknown error"}"
@@ -788,8 +790,8 @@ object MemoryCardManager {
         memcardsDir(context).mkdirs()
         try {
             setDefaultSlots()
-            status.value = "Default memory-card slots enabled."
-            Toast.makeText(context, "Default memory-card slots enabled", Toast.LENGTH_SHORT).show()
+            status.value = I18n.get("memcard.status.defaultSlotsEnabled")
+            Toast.makeText(context, I18n.get("memcard.status.defaultSlotsEnabled"), Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             status.value = "Could not update memory-card settings: ${e.message ?: "unknown error"}"
             Toast.makeText(context, status.value, Toast.LENGTH_LONG).show()
@@ -798,7 +800,7 @@ object MemoryCardManager {
 
     private fun assignSlot(context: Context, slot: Int, file: File): Boolean {
         if (!Main.nativeReady.value) {
-            status.value = "Core settings are still starting up."
+            status.value = I18n.get("memcard.status.coreStarting")
             Toast.makeText(context, status.value, Toast.LENGTH_LONG).show()
             return false
         }
@@ -1006,13 +1008,13 @@ object MemoryCardManager {
      *  size (File only): 1=8MB 2=16 3=32 4=64. Returns true on success. */
     private fun createCard(context: Context, rawName: String, type: Int, size: Int): Boolean {
         if (!Main.nativeReady.value) {
-            status.value = "Core settings are still starting up."
+            status.value = I18n.get("memcard.status.coreStarting")
             Toast.makeText(context, status.value, Toast.LENGTH_LONG).show()
             return false
         }
         val trimmed = rawName.trim()
         if (trimmed.isEmpty()) {
-            status.value = "Enter a card name first."
+            status.value = I18n.get("memcard.status.enterName")
             Toast.makeText(context, status.value, Toast.LENGTH_SHORT).show()
             return false
         }
@@ -1028,7 +1030,7 @@ object MemoryCardManager {
             val ok = NativeApp.createMemoryCard(name, type, fileType)
             if (ok) {
                 status.value = "Created $name."
-                Toast.makeText(context, "Memory card created", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, I18n.get("memcard.toast.created"), Toast.LENGTH_SHORT).show()
                 true
             } else {
                 status.value = "Could not create $name (it may already exist)."

@@ -48,6 +48,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
+import com.armsx2.i18n.I18n
+import com.armsx2.i18n.str
 import com.armsx2.ui.settings.controllerFocusable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -158,12 +160,12 @@ private fun formatRelativeUnlock(unlockTimeSec: Long): String {
     if (unlockTimeSec <= 0) return ""
     val nowSec = System.currentTimeMillis() / 1000
     val delta = nowSec - unlockTimeSec
-    if (delta < 0) return "just now"
+    if (delta < 0) return I18n.get("ra.time.justNow")
     val minute = 60L
     val hour = 60L * minute
     val day = 24L * hour
     return when {
-        delta < minute     -> "just now"
+        delta < minute     -> I18n.get("ra.time.justNow")
         delta < hour       -> "${delta / minute}m ago"
         delta < day        -> "${delta / hour}h ago"
         delta < 7 * day    -> "${delta / day}d ago"
@@ -378,18 +380,18 @@ fun AchievementsPanel(
 
         when {
             !snapshot.loggedIn -> StatusCard(
-                title = "Not signed in",
-                body = "Tap (or press A) to sign in to RetroAchievements and track unlocks for the games you play.",
+                title = str("ra.status.notSignedIn.title"),
+                body = str("ra.status.notSignedIn.body"),
                 controllerId = "ach:signin",
                 onClick = onSignInClick,
             )
             !snapshot.active -> StatusCard(
-                title = "No achievements",
-                body = "This game has no RetroAchievements set, or the title isn't recognised.",
+                title = str("ra.status.noAchievements.title"),
+                body = str("ra.status.noAchievements.body"),
             )
             snapshot.items.isEmpty() -> StatusCard(
-                title = "Loading…",
-                body = "Fetching achievement list.",
+                title = str("ra.status.loading.title"),
+                body = str("ra.status.loading.body"),
             )
             else -> {
                 val unlocked = snapshot.items.count { it.unlocked }
@@ -465,8 +467,9 @@ private fun AchievementsAccountRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
+            val signedInLabel = str("ra.account.signedIn")
             Text(
-                text = snapshot.userName.ifEmpty { "Signed in" },
+                text = snapshot.userName.ifEmpty { signedInLabel },
                 color = Color(0xFFAACCFF),
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
@@ -502,7 +505,7 @@ private fun AchievementsAccountRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = if (active) "HARDCORE" else "CASUAL",
+                    text = if (active) str("ra.mode.hardcore") else str("ra.mode.casual"),
                     color = fg,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
@@ -511,7 +514,7 @@ private fun AchievementsAccountRow(
             Spacer(Modifier.width(8.dp))
         }
         Text(
-            text = "Logout",
+            text = str("ra.account.logout"),
             color = Color(0xFFFF8888),
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
@@ -556,7 +559,7 @@ private fun AchievementsOptions(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "Options",
+                text = str("ra.options.header"),
                 color = Color(0xFFCCCCCC),
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
@@ -570,27 +573,27 @@ private fun AchievementsOptions(
         }
         if (!expanded) return@Column
 
-        OptionToggleRow("Unlock Notifications", snapshot.notifications, "ach:opt:notifications") {
+        OptionToggleRow(str("ra.options.unlockNotifications"), snapshot.notifications, "ach:opt:notifications") {
             val nv = !snapshot.notifications
             runCatching { NativeApp.setAchievementsOption("notifications", nv) }
             onOptimistic(snapshot.copy(notifications = nv))
         }
-        OptionToggleRow("Leaderboard Notifications", snapshot.leaderboardNotifications, "ach:opt:lbnotif") {
+        OptionToggleRow(str("ra.options.leaderboardNotifications"), snapshot.leaderboardNotifications, "ach:opt:lbnotif") {
             val nv = !snapshot.leaderboardNotifications
             runCatching { NativeApp.setAchievementsOption("leaderboardNotifications", nv) }
             onOptimistic(snapshot.copy(leaderboardNotifications = nv))
         }
-        OptionToggleRow("In-Game Indicators", snapshot.overlays, "ach:opt:overlays") {
+        OptionToggleRow(str("ra.options.inGameIndicators"), snapshot.overlays, "ach:opt:overlays") {
             val nv = !snapshot.overlays
             runCatching { NativeApp.setAchievementsOption("overlays", nv) }
             onOptimistic(snapshot.copy(overlays = nv))
         }
-        OptionToggleRow("Leaderboard Trackers", snapshot.lbOverlays, "ach:opt:lboverlays") {
+        OptionToggleRow(str("ra.options.leaderboardTrackers"), snapshot.lbOverlays, "ach:opt:lboverlays") {
             val nv = !snapshot.lbOverlays
             runCatching { NativeApp.setAchievementsOption("lbOverlays", nv) }
             onOptimistic(snapshot.copy(lbOverlays = nv))
         }
-        OptionToggleRow("Sound Effects", snapshot.soundEffects, "ach:opt:sound") {
+        OptionToggleRow(str("ra.options.soundEffects"), snapshot.soundEffects, "ach:opt:sound") {
             val nv = !snapshot.soundEffects
             runCatching { NativeApp.setAchievementsOption("soundEffects", nv) }
             onOptimistic(snapshot.copy(soundEffects = nv))
@@ -772,6 +775,12 @@ private fun AchievementRow(ach: Achievement) {
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     typeChip(ach.type)?.let { (label, color) ->
+                        val chipText = when (ach.type) {
+                            1 -> str("ra.typeChip.missable")
+                            2 -> str("ra.typeChip.progression")
+                            3 -> str("ra.typeChip.win")
+                            else -> label
+                        }
                         Spacer(Modifier.width(6.dp))
                         Box(
                             modifier = Modifier
@@ -781,7 +790,7 @@ private fun AchievementRow(ach: Achievement) {
                                 .padding(horizontal = 4.dp, vertical = 1.dp),
                         ) {
                             Text(
-                                label,
+                                chipText,
                                 color = color,
                                 fontSize = 8.sp,
                                 fontWeight = FontWeight.Bold,
@@ -806,8 +815,15 @@ private fun AchievementRow(ach: Achievement) {
                 Spacer(Modifier.height(3.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (ach.rarity > 0f) {
+                        val tierLabel = when (tier) {
+                            RarityTier.Legendary -> str("ra.tier.legendary")
+                            RarityTier.Epic -> str("ra.tier.epic")
+                            RarityTier.Rare -> str("ra.tier.rare")
+                            RarityTier.Uncommon -> str("ra.tier.uncommon")
+                            RarityTier.Common -> str("ra.tier.common")
+                        }
                         Text(
-                            tier.label.uppercase() + " · " +
+                            tierLabel.uppercase() + " · " +
                                 String.format(java.util.Locale.US, "%.1f%%", ach.rarity),
                             color = tierColor,
                             fontSize = 9.sp,

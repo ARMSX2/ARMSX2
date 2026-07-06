@@ -38,6 +38,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.armsx2.i18n.I18n
+import com.armsx2.i18n.str
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -92,14 +94,14 @@ fun AchievementsLoginPanel(onClose: () -> Unit) {
             .padding(10.dp),
     ) {
         Text(
-            "Sign in to RetroAchievements",
+            str("ralogin.title"),
             color = Color.White,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
         )
         Spacer(Modifier.height(2.dp))
         Text(
-            "Password isn't stored — rcheevos exchanges it for an auth token.",
+            str("ralogin.passwordNotStored"),
             color = Color(0xFFAAAAAA),
             fontSize = 9.sp,
         )
@@ -125,7 +127,7 @@ fun AchievementsLoginPanel(onClose: () -> Unit) {
             OutlinedTextField(
                 value = user,
                 onValueChange = { if (!inFlight) user = it.trim() },
-                label = { Text("Username (A to type)") },
+                label = { Text(str("ralogin.username.label")) },
                 singleLine = true,
                 enabled = !inFlight,
                 colors = tfColors,
@@ -141,7 +143,7 @@ fun AchievementsLoginPanel(onClose: () -> Unit) {
             OutlinedTextField(
                 value = pass,
                 onValueChange = { if (!inFlight) pass = it },
-                label = { Text("Password (A to type)") },
+                label = { Text(str("ralogin.password.label")) },
                 singleLine = true,
                 enabled = !inFlight,
                 visualTransformation = PasswordVisualTransformation(),
@@ -171,7 +173,7 @@ fun AchievementsLoginPanel(onClose: () -> Unit) {
         Spacer(Modifier.height(10.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
             ActionButton(
-                label = "Cancel",
+                label = str("action.cancel"),
                 primary = false,
                 enabled = !inFlight,
                 onClick = onClose,
@@ -180,7 +182,7 @@ fun AchievementsLoginPanel(onClose: () -> Unit) {
             )
             Spacer(Modifier.width(8.dp))
             ActionButton(
-                label = if (inFlight) "Signing in…" else "Sign in",
+                label = if (inFlight) str("ralogin.signingIn") else str("ralogin.signIn"),
                 primary = true,
                 enabled = !inFlight && user.isNotEmpty() && pass.isNotEmpty(),
                 onClick = {
@@ -200,7 +202,7 @@ fun AchievementsLoginPanel(onClose: () -> Unit) {
                                     error = msg
                                 }
                             }
-                            .onFailure { error = it.message ?: "Login failed." }
+                            .onFailure { error = it.message ?: I18n.get("ralogin.loginFailed") }
                     }
                 },
                 modifier = Modifier.weight(1f),

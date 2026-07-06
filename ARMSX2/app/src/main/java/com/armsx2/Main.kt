@@ -1356,6 +1356,7 @@ class Main: ComponentActivity() {
             // intentionally empty — pure stay-alive sentinel
         }
         prefs = applicationContext.getSharedPreferences("ARMSX2", MODE_PRIVATE)
+        com.armsx2.i18n.I18n.init(applicationContext)
         applyEmulationOrientation()
         com.armsx2.CoverArtStyle.load()
         com.armsx2.LibraryTitles.load()

@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.sp
 import androidx.documentfile.provider.DocumentFile
 import com.armsx2.Main
 import com.armsx2.config.Settings
+import com.armsx2.i18n.I18n
+import com.armsx2.i18n.str
 import com.armsx2.ui.Colors
 import com.armsx2.ui.InGameOverlay
 import kr.co.iefriends.pcsx2.NativeApp
@@ -90,7 +92,7 @@ fun RendererTab(state: MutableState<Settings>) {
             .verticalScroll(scroll)
             .verticalScrollbar(scroll),
     ) {
-        CollapsibleSection("Display & Resolution", initiallyExpanded = false) {
+        CollapsibleSection(str("renderer.section.displayResolution"), initiallyExpanded = false) {
             // Graphics API (OpenGL / Vulkan) + Vulkan custom-driver picker. Ported
             // from the removed first-run setup renderer page into settings.
             RendererBackendSection(state)
@@ -99,11 +101,11 @@ fun RendererTab(state: MutableState<Settings>) {
                 .indexOfFirst { abs(it.value - s.upscaleFloat) < 0.01f }
                 .takeIf { it >= 0 } ?: 0
             SegmentedGridRow(
-                label = "Upscale",
+                label = str("renderer.upscale.label"),
                 options = UPSCALE_OPTIONS.map { it.label },
                 selectedIndex = upscaleIndex,
                 columns = 4,
-                description = "Internal resolution. Higher values are sharper but can expose game-specific bloom or alignment artifacts.",
+                description = str("renderer.upscale.description"),
                 onChange = { index ->
                     val mult = UPSCALE_OPTIONS[index].value
                     // Persist scope-aware (per-game when the overlay scope is Game);
@@ -113,10 +115,10 @@ fun RendererTab(state: MutableState<Settings>) {
             )
             SettingsDivider()
             SegmentedRow(
-                label = "Display Mode",
+                label = str("renderer.displayMode.label"),
                 options = listOf("Stretch", "Auto", "4:3", "16:9", "10:7"),
                 selectedIndex = s.aspectRatio.coerceIn(0, 4),
-                description = "Controls how the PS2 image fits the screen.",
+                description = str("renderer.displayMode.description"),
                 onChange = { apply(s.copy(aspectRatio = it)) },
             )
             SettingsDivider()
@@ -124,10 +126,15 @@ fun RendererTab(state: MutableState<Settings>) {
             // in prefs and applied via Main; not an emucore/per-game setting.
             val orientation = remember { mutableStateOf(com.armsx2.Main.prefs.getInt("ui.orientation", 0)) }
             SegmentedRow(
-                label = "Emulation Screen Orientation",
-                options = listOf("Device", "Landscape", "Portrait", "Auto-Rotate"),
+                label = str("renderer.orientation.label"),
+                options = listOf(
+                    str("renderer.orientation.device"),
+                    str("renderer.orientation.landscape"),
+                    str("renderer.orientation.portrait"),
+                    str("renderer.orientation.autoRotate"),
+                ),
                 selectedIndex = orientation.value.coerceIn(0, 3),
-                description = "Locks the app's screen orientation. \"Device\" follows your system auto-rotate setting.",
+                description = str("renderer.orientation.description"),
                 onChange = {
                     orientation.value = it
                     com.armsx2.Main.prefs.edit().putInt("ui.orientation", it).apply()
@@ -136,135 +143,143 @@ fun RendererTab(state: MutableState<Settings>) {
             )
             SettingsDivider()
             SegmentedGridRow(
-                label = "Deinterlacing",
+                label = str("renderer.deinterlacing.label"),
                 options = listOf(
                     "Auto", "Off", "Weave TFF", "Weave BFF", "Bob TFF",
                     "Bob BFF", "Blend TFF", "Blend BFF", "Adapt TFF", "Adapt BFF",
                 ),
                 selectedIndex = s.deinterlaceMode.coerceIn(0, 9),
                 columns = 5,
-                description = "Changes how interlaced video is displayed. Auto is safest.",
+                description = str("renderer.deinterlacing.description"),
                 onChange = { apply(s.copy(deinterlaceMode = it)) },
             )
         }
         SettingsDivider()
-        CollapsibleSection("Textures & Filtering") {
+        CollapsibleSection(str("renderer.section.texturesFiltering")) {
             SegmentedRow(
-                label = "Texture Filtering",
+                label = str("renderer.textureFiltering.label"),
                 options = listOf("Nearest", "Forced", "PS2", "Sprite"),
                 selectedIndex = s.textureFiltering.coerceIn(0, 3),
-                description = "Controls texture smoothing. PS2 is safest; Forced can soften or brighten some games.",
+                description = str("renderer.textureFiltering.description"),
                 onChange = { apply(s.copy(textureFiltering = it)) },
             )
             SettingsDivider()
             SegmentedRow(
-                label = "Texture Preloading",
+                label = str("renderer.texturePreloading.label"),
                 options = listOf("Off", "Partial", "Full"),
                 selectedIndex = s.texturePreloading.coerceIn(0, 2),
-                description = "Preloads textures to avoid missing or late texture uploads. Full is the safe default.",
+                description = str("renderer.texturePreloading.description"),
                 onChange = { apply(s.copy(texturePreloading = it)) },
             )
             SettingsDivider()
             SegmentedGridRow(
-                label = "Hardware Download Mode",
+                label = str("renderer.hardwareDownloadMode.label"),
                 options = listOf("Accurate", "Force Full", "No Readbacks", "Unsync", "Disabled"),
                 selectedIndex = s.hardwareDownloadMode.coerceIn(0, 4),
                 columns = 3,
-                description = "Readback accuracy for effects that need GPU data. Faster modes may break effects.",
+                description = str("renderer.hardwareDownloadMode.description"),
                 onChange = { apply(s.copy(hardwareDownloadMode = it)) },
             )
         }
         SettingsDivider()
-        CollapsibleSection("Display Effects") {
+        CollapsibleSection(str("renderer.section.displayEffects")) {
+            SegmentedRow(
+                label = str("renderer.displayFilter.label"),
+                options = listOf("Nearest", "Smooth", "Sharp"),
+                selectedIndex = s.displayBilinear.coerceIn(0, 2),
+                description = str("renderer.displayFilter.description"),
+                onChange = { apply(s.copy(displayBilinear = it)) },
+            )
+            SettingsDivider()
             SegmentedGridRow(
-                label = "CRT / TV Shader",
+                label = str("renderer.tvShader.label"),
                 options = listOf("Off", "Scanline", "Diagonal", "Tri", "Wave", "Lottes", "4xRGSS", "NxAGSS"),
                 selectedIndex = s.tvShader.coerceIn(0, 7),
                 columns = 4,
-                description = "Post-process CRT/TV filters. Applies live on supported renderers.",
+                description = str("renderer.tvShader.description"),
                 onChange = { apply(s.copy(tvShader = it)) },
             )
             SettingsDivider()
             ToggleRow(
                 "VSync",
                 s.vsyncEnable,
-                description = "Sync presentation to the display refresh — less tearing/smoother, slightly more latency. Restart the game to apply.",
+                description = str("renderer.vsync.description"),
             ) {
                 apply(s.copy(vsyncEnable = it))
             }
             SettingsDivider()
             ToggleRow(
-                "Shadeboost",
+                str("renderer.shadeboost.label"),
                 s.shadeBoost,
-                description = "Post-process colour controls for brightness, contrast, saturation, and gamma.",
+                description = str("renderer.shadeboost.description"),
             ) {
                 apply(s.copy(shadeBoost = it))
             }
             if (s.shadeBoost) {
                 SettingsDivider()
                 IntSliderRow(
-                    label = "Brightness",
+                    label = str("renderer.brightness.label"),
                     value = s.shadeBoostBrightness.coerceIn(1, 100),
                     min = 1,
                     max = 100,
-                    description = "50 is normal.",
+                    description = str("renderer.shadeboost.fiftyIsNormal"),
                     valueFormatter = { "$it%" },
                     onChange = { apply(s.copy(shadeBoostBrightness = it)) },
                 )
                 SettingsDivider()
                 IntSliderRow(
-                    label = "Contrast",
+                    label = str("renderer.contrast.label"),
                     value = s.shadeBoostContrast.coerceIn(1, 100),
                     min = 1,
                     max = 100,
-                    description = "50 is normal.",
+                    description = str("renderer.shadeboost.fiftyIsNormal"),
                     valueFormatter = { "$it%" },
                     onChange = { apply(s.copy(shadeBoostContrast = it)) },
                 )
                 SettingsDivider()
                 IntSliderRow(
-                    label = "Saturation",
+                    label = str("renderer.saturation.label"),
                     value = s.shadeBoostSaturation.coerceIn(1, 100),
                     min = 1,
                     max = 100,
-                    description = "50 is normal.",
+                    description = str("renderer.shadeboost.fiftyIsNormal"),
                     valueFormatter = { "$it%" },
                     onChange = { apply(s.copy(shadeBoostSaturation = it)) },
                 )
                 SettingsDivider()
                 IntSliderRow(
-                    label = "Gamma",
+                    label = str("renderer.gamma.label"),
                     value = s.shadeBoostGamma.coerceIn(1, 100),
                     min = 1,
                     max = 100,
-                    description = "50 is normal.",
+                    description = str("renderer.shadeboost.fiftyIsNormal"),
                     valueFormatter = { "$it%" },
                     onChange = { apply(s.copy(shadeBoostGamma = it)) },
                 )
             }
         }
         SettingsDivider()
-        CollapsibleSection("Texture Packs") {
+        CollapsibleSection(str("renderer.section.texturePacks")) {
             ToggleRow(
-                "Load Texture Packs",
+                str("renderer.loadTexturePacks.label"),
                 s.loadTextureReplacements,
-                description = "Loads replacement textures from the active game's texture folder.",
+                description = str("renderer.loadTexturePacks.description"),
             ) {
                 apply(s.copy(loadTextureReplacements = it))
             }
             SettingsDivider()
             ToggleRow(
-                "Async Texture Loading",
+                str("renderer.asyncTextureLoading.label"),
                 s.loadTextureReplacementsAsync,
-                description = "Loads replacements in the background to reduce stalls.",
+                description = str("renderer.asyncTextureLoading.description"),
             ) {
                 apply(s.copy(loadTextureReplacementsAsync = it))
             }
             SettingsDivider()
             ToggleRow(
-                "Precache Texture Packs",
+                str("renderer.precacheTexturePacks.label"),
                 s.precacheTextureReplacements,
-                description = "Scans replacements at boot. Slower startup, fewer in-game hitches.",
+                description = str("renderer.precacheTexturePacks.description"),
             ) {
                 apply(s.copy(precacheTextureReplacements = it))
             }
@@ -274,28 +289,28 @@ fun RendererTab(state: MutableState<Settings>) {
             GsDumpCaptureRow()
             SettingsDivider()
             ToggleRow(
-                "Dump Replaceable Textures",
+                str("renderer.dumpReplaceableTextures.label"),
                 s.dumpReplaceableTextures,
-                description = "Writes textures used by the game to disk for pack creation.",
+                description = str("renderer.dumpReplaceableTextures.description"),
             ) {
                 apply(s.copy(dumpReplaceableTextures = it))
             }
             SettingsDivider()
             ToggleRow(
-                "Texture Pack OSD",
+                str("renderer.texturePackOsd.label"),
                 s.osdShowTextureReplacements,
-                description = "Shows texture replacement status messages in-game.",
+                description = str("renderer.texturePackOsd.description"),
             ) {
                 apply(s.copy(osdShowTextureReplacements = it))
             }
         }
         SettingsDivider()
-        CollapsibleSection("Blending & Advanced") {
+        CollapsibleSection(str("renderer.section.blendingAdvanced")) {
             SegmentedRow(
-                label = "Blending Accuracy",
+                label = str("renderer.blendingAccuracy.label"),
                 options = listOf("Min", "Basic", "Med", "High", "Full", "Max"),
                 selectedIndex = s.accurateBlendingUnit.coerceIn(0, 5),
-                description = "Controls alpha/blending precision. Basic is faster; higher can fix effects.",
+                description = str("renderer.blendingAccuracy.description"),
                 onChange = { apply(s.copy(accurateBlendingUnit = it)) },
             )
             // Blending-accuracy companion features (match upstream's grouping under
@@ -303,33 +318,33 @@ fun RendererTab(state: MutableState<Settings>) {
             // game restart.
             SettingsDivider()
             ToggleRow(
-                "Rasterizer Ordered View (ROV)",
+                str("renderer.rov.label"),
                 s.hwRov,
-                description = "Vulkan only: accurate blending via fragment-shader interlock. Mainly benefits desktop GPUs — most mobile GPUs either lack the required interlock (e.g. Turnip) or run it slower than the default blending path. Leave off unless your own benchmarks show a gain. No effect on OpenGL. Applies live.",
+                description = str("renderer.rov.description"),
             ) {
                 apply(s.copy(hwRov = it))
             }
             SettingsDivider()
             ToggleRow(
-                "Accurate blending fast path",
+                str("renderer.accurateBlendingFastPath.label"),
                 s.adrenoFbFetch,
-                description = "Vulkan + Adreno only: route accurate blending through the tile-memory framebuffer-fetch path instead of ROV / texture-barrier copies — the mobile-native equivalent of desktop ROV, and usually much faster on a tiler. ON by default. A few proprietary Adreno drivers return stale reads and may show artifacts (sprite alpha cutouts, invisible floor patches) — turn this off if you see them. Restart the game to apply. No effect on Mali (already enabled) or OpenGL.",
+                description = str("renderer.accurateBlendingFastPath.description"),
             ) {
                 apply(s.copy(adrenoFbFetch = it))
             }
             SettingsDivider()
             ToggleRow(
-                "Accurate Alpha Test",
+                str("renderer.accurateAlphaTest.label"),
                 s.hwAat,
-                description = "More accurate alpha testing in the hardware renderer (pairs with ROV). Applies live.",
+                description = str("renderer.accurateAlphaTest.description"),
             ) {
                 apply(s.copy(hwAat = it))
             }
             SettingsDivider()
             ToggleRow(
-                "HW AA1 (edge anti-aliasing)",
+                str("renderer.hwAa1.label"),
                 s.hwAa1,
-                description = "Hardware PS2 AA1 line/triangle edge anti-aliasing. Restart the game to apply.",
+                description = str("renderer.hwAa1.description"),
             ) {
                 apply(s.copy(hwAa1 = it))
             }
@@ -337,9 +352,9 @@ fun RendererTab(state: MutableState<Settings>) {
             // "Fixes" tab (FixesTab) to keep Render focused on quality/display.
             SettingsDivider()
             ToggleRow(
-                "HW Mipmapping",
+                str("renderer.hwMipmapping.label"),
                 s.hwMipmap,
-                description = "Uses mipmaps in hardware renderers. Can fix texture shimmer or broken effects.",
+                description = str("renderer.hwMipmapping.description"),
             ) {
                 apply(s.copy(hwMipmap = it))
             }
@@ -348,10 +363,10 @@ fun RendererTab(state: MutableState<Settings>) {
             val triLabels = listOf("Auto", "Off", "PS2", "Forced")
             val triIdx = (s.triFilter + 1).coerceIn(0, 3)
             SegmentedRow(
-                label = "Trilinear",
+                label = str("renderer.trilinear.label"),
                 options = triLabels,
                 selectedIndex = triIdx,
-                description = "Mip texture filtering. Auto is safest for compatibility.",
+                description = str("renderer.trilinear.description"),
                 onChange = { apply(s.copy(triFilter = it - 1)) },
             )
             SettingsDivider()
@@ -359,10 +374,10 @@ fun RendererTab(state: MutableState<Settings>) {
             val anisoVals = listOf(0, 2, 4, 8, 16)
             val anisoIdx = anisoVals.indexOf(s.maxAnisotropy).coerceAtLeast(0)
             SegmentedRow(
-                label = "Anisotropic",
+                label = str("renderer.anisotropic.label"),
                 options = anisoLabels,
                 selectedIndex = anisoIdx,
-                description = "Sharpens angled textures. Higher values can cost GPU time.",
+                description = str("renderer.anisotropic.description"),
                 onChange = { apply(s.copy(maxAnisotropy = anisoVals[it])) },
             )
             SettingsDivider()
@@ -375,10 +390,10 @@ fun RendererTab(state: MutableState<Settings>) {
             // runs once at device init, so we kick Main.restart() the same way
             // RestartButton does.
             SegmentedRow(
-                label = "GPU Profile",
+                label = str("renderer.gpuProfile.label"),
                 options = listOf("Auto", "Mali", "Adreno", "PowerVR"),
                 selectedIndex = s.gpuProfile.coerceIn(0, 3),
-                description = "Overrides Android GPU workaround selection. Auto is recommended.",
+                description = str("renderer.gpuProfile.description"),
                 onChange = {
                     apply(s.copy(gpuProfile = it))
                 },
@@ -400,7 +415,7 @@ private fun TexturePackImportRow() {
         if (uri == null) {
             return@rememberLauncherForActivityResult
         } else if (serial == null) {
-            Toast.makeText(context, "Boot a game before importing its texture pack.", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, I18n.get("renderer.import.bootGameFirst"), Toast.LENGTH_LONG).show()
         } else {
             scope.launch(Dispatchers.IO) {
                 val copied = runCatching { importTexturePack(context, uri, serial) }.getOrDefault(-1)
@@ -408,7 +423,7 @@ private fun TexturePackImportRow() {
                     val msg = if (copied >= 0)
                         "Imported $copied texture files for $serial."
                     else
-                        "Texture pack import failed."
+                        I18n.get("renderer.import.failed")
                     status.value = msg
                     Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
                 }
@@ -426,7 +441,7 @@ private fun TexturePackImportRow() {
     ) {
         Column {
             Text(
-                "Import Texture Pack",
+                str("renderer.importTexturePack.label"),
                 color = Color.White,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -435,7 +450,7 @@ private fun TexturePackImportRow() {
             Text(
                 status.value.ifEmpty {
                     activeTextureSerial()?.let { "Copies into textures/$it/replacements" }
-                        ?: "Boot a game first so ARMSX2 knows the serial."
+                        ?: I18n.get("renderer.importTexturePack.bootFirst")
                 },
                 color = Colors.pasx2_blue,
                 fontSize = 10.sp,
@@ -458,7 +473,7 @@ private fun ClearShaderCacheRow() {
                 status.value = if (n > 0)
                     "Cleared $n shader-cache file${if (n == 1) "" else "s"} — restart the game to rebuild."
                 else
-                    "Shader cache is already empty."
+                    I18n.get("renderer.clearShaderCache.alreadyEmpty")
                 Toast.makeText(context, status.value, Toast.LENGTH_SHORT).show()
             }
             .padding(horizontal = 6.dp, vertical = 5.dp),
@@ -466,7 +481,7 @@ private fun ClearShaderCacheRow() {
     ) {
         Column {
             Text(
-                "Clear Shader Cache",
+                str("renderer.clearShaderCache.label"),
                 color = Color.White,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -474,7 +489,7 @@ private fun ClearShaderCacheRow() {
             Spacer(Modifier.height(2.dp))
             Text(
                 status.value.ifEmpty {
-                    "Wipes the compiled Vulkan + GL shader/pipeline caches. Use if a game renders corrupt after a driver swap or update — the next launch rebuilds them clean."
+                    I18n.get("renderer.clearShaderCache.description")
                 },
                 color = Colors.pasx2_blue,
                 fontSize = 10.sp,
@@ -509,10 +524,10 @@ private fun GsDumpCaptureRow() {
             .background(rowAura())
             .clickable {
                 if (Main.eState.value == com.armsx2.EmuState.STOPPED) {
-                    Toast.makeText(context, "Start a game first, then capture while the glitch is on screen.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, I18n.get("renderer.gsDump.startGameFirst"), Toast.LENGTH_LONG).show()
                 } else {
                     runCatching { NativeApp.captureGsDump(1) }
-                    Toast.makeText(context, "GS dump queued — close this menu so it captures the frame. Saved to the snaps folder.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, I18n.get("renderer.gsDump.queued"), Toast.LENGTH_LONG).show()
                 }
             }
             .padding(horizontal = 6.dp, vertical = 5.dp),
@@ -520,14 +535,14 @@ private fun GsDumpCaptureRow() {
     ) {
         Column {
             Text(
-                "Capture GS Dump (bug report)",
+                str("renderer.gsDump.label"),
                 color = Color.White,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                "Saves one frame of GPU commands (.gs) to the snaps folder — replayable in desktop PCSX2 to diagnose rendering bugs.",
+                str("renderer.gsDump.description"),
                 color = Colors.pasx2_blue,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,

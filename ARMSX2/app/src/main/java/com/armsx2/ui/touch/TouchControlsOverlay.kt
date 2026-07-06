@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.ControllerSkinStore
 import com.armsx2.EmuState
+import com.armsx2.i18n.str
 import com.armsx2.Main
 import com.armsx2.input.ControllerMappings
 import com.armsx2.R
@@ -320,7 +321,7 @@ private fun InGameSettingsButton(modifier: Modifier = Modifier, onClick: () -> U
     ) {
         Icon(
             imageVector = LineAwesomeIcons.CogSolid,
-            contentDescription = "Open in-game settings",
+            contentDescription = str("touch.settingsButton.description"),
             tint = Color.White.copy(alpha = 0.92f),
             modifier = Modifier.size(32.dp),
         )
@@ -689,7 +690,7 @@ private fun PauseWidget(cfg: TouchButtonCfg, edit: Boolean) {
         ) {
             EditAdornment(cfg.id)
             Text(
-                "PAUSE",
+                str("touch.pause.editLabel"),
                 color = Color.White.copy(alpha = 0.75f),
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -808,7 +809,7 @@ private fun MacroWidget(cfg: TouchButtonCfg, edit: Boolean) {
  *  hotkeys remain quick-to-current-slot). Opt-in (disabled in the default layout). */
 @Composable
 private fun StateActionWidget(cfg: TouchButtonCfg, edit: Boolean) {
-    val label = if (cfg.id == TouchButtonId.SAVE_STATE) "SAVE" else "LOAD"
+    val label = if (cfg.id == TouchButtonId.SAVE_STATE) str("touch.stateAction.save") else str("touch.stateAction.load")
     if (edit) {
         Box(
             modifier = Modifier.fillMaxSize().editGestures(cfg),
@@ -932,7 +933,7 @@ private fun DpadWidget(cfg: TouchButtonCfg, edit: Boolean) {
             painter = skUp ?: painterResource(
                 if (active.value.up) R.drawable.pad_dpad_up_pressed else R.drawable.pad_dpad_up
             ),
-            contentDescription = "DPad up",
+            contentDescription = str("touch.dpad.up.description"),
             contentScale = ContentScale.Fit,
             alpha = opacity,
             modifier = Modifier
@@ -945,7 +946,7 @@ private fun DpadWidget(cfg: TouchButtonCfg, edit: Boolean) {
             painter = skDown ?: painterResource(
                 if (active.value.down) R.drawable.pad_dpad_up_pressed else R.drawable.pad_dpad_up
             ),
-            contentDescription = "DPad down",
+            contentDescription = str("touch.dpad.down.description"),
             contentScale = ContentScale.Fit,
             alpha = opacity,
             modifier = Modifier
@@ -958,7 +959,7 @@ private fun DpadWidget(cfg: TouchButtonCfg, edit: Boolean) {
             painter = skLeft ?: painterResource(
                 if (active.value.left) R.drawable.pad_dpad_left_pressed else R.drawable.pad_dpad_left
             ),
-            contentDescription = "DPad left",
+            contentDescription = str("touch.dpad.left.description"),
             contentScale = ContentScale.Fit,
             alpha = opacity,
             modifier = Modifier
@@ -970,7 +971,7 @@ private fun DpadWidget(cfg: TouchButtonCfg, edit: Boolean) {
             painter = skRight ?: painterResource(
                 if (active.value.right) R.drawable.pad_dpad_right_pressed else R.drawable.pad_dpad_right
             ),
-            contentDescription = "DPad right",
+            contentDescription = str("touch.dpad.right.description"),
             contentScale = ContentScale.Fit,
             alpha = opacity,
             modifier = Modifier
@@ -1367,8 +1368,8 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
         // layout (per-game layouts need a running disc).
         Text(
             if (Main.eState.value == EmuState.RUNNING || Main.eState.value == EmuState.PAUSED)
-                "Editing this game's touch layout"
-            else "Editing Global Default touch layout",
+                str("touch.editor.scopeGame")
+            else str("touch.editor.scopeGlobal"),
             color = Color(0xFFFFD33A), fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
         )
         // Action chips up top — save commits the live layout into the
@@ -1378,15 +1379,15 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ToolbarChip("Save") {
+            ToolbarChip(str("action.save")) {
                 TouchControls.saveLiveLayoutToActive()
                 TouchControls.exitEditMode()
             }
-            ToolbarChip("Discard") {
+            ToolbarChip(str("touch.editor.discard")) {
                 TouchControls.discardEdits()
                 TouchControls.exitEditMode()
             }
-            ToolbarChip("Reset") {
+            ToolbarChip(str("action.reset")) {
                 TouchControls.resetActiveToDefault()
                 // Only clear a per-game key when a VM is actually running. From
                 // the library this is a Global Default edit; resolving a serial
@@ -1394,15 +1395,15 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
                 // the last-played game's per-serial layout.
                 TouchControls.clearGameLayoutIfRunning()
             }
-            ToolbarChip("Profiles") { TouchControls.profileDialogOpen.value = true }
-            ToolbarChip(if (TouchControls.faceMultiTouch.value) "Multi-Touch On" else "Multi-Touch Off") {
+            ToolbarChip(str("touch.editor.profiles")) { TouchControls.profileDialogOpen.value = true }
+            ToolbarChip(if (TouchControls.faceMultiTouch.value) str("touch.editor.multiTouchOn") else str("touch.editor.multiTouchOff")) {
                 TouchControls.setFaceMultiTouch(!TouchControls.faceMultiTouch.value)
             }
             // Touch Gliding: drag a finger to hold every button it crosses (NetherSX2-style).
-            ToolbarChip(if (TouchControls.touchGliding.value) "Gliding On" else "Gliding Off") {
+            ToolbarChip(if (TouchControls.touchGliding.value) str("touch.editor.glidingOn") else str("touch.editor.glidingOff")) {
                 TouchControls.setTouchGliding(!TouchControls.touchGliding.value)
             }
-            ToolbarChip(if (TouchControls.floatingStick.value) "Floating Stick On" else "Floating Stick Off") {
+            ToolbarChip(if (TouchControls.floatingStick.value) str("touch.editor.floatingStickOn") else str("touch.editor.floatingStickOff")) {
                 TouchControls.setFloatingStick(!TouchControls.floatingStick.value)
             }
         }
@@ -1479,7 +1480,7 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
                     fontSize = 11.sp,
                     modifier = Modifier.width(48.dp),
                 )
-                ToolbarChip(if (selectedCfg.enabled) "Hide" else "Show") {
+                ToolbarChip(if (selectedCfg.enabled) str("touch.editor.hide") else str("touch.editor.show")) {
                     TouchControls.updateButton(selectedCfg.id) { it.copy(enabled = !it.enabled) }
                 }
                 // Tap-to-hold (latch) only applies to the digital action buttons that
@@ -1488,7 +1489,7 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
                 if (selectedCfg.id.kind == TouchButtonId.Kind.FACE ||
                     selectedCfg.id.kind == TouchButtonId.Kind.SHOULDER
                 ) {
-                    ToolbarChip(if (selectedCfg.tapToHold) "Tap-Hold On" else "Tap-Hold Off") {
+                    ToolbarChip(if (selectedCfg.tapToHold) str("touch.editor.tapHoldOn") else str("touch.editor.tapHoldOff")) {
                         TouchControls.updateButton(selectedCfg.id) { it.copy(tapToHold = !it.tapToHold) }
                     }
                 }
@@ -1537,16 +1538,16 @@ private fun ProfilePicker(onDismiss: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                "Touch Control Profiles",
+                str("touch.profiles.title"),
                 color = Color.White,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
             )
             Text(
                 if (InGameOverlay.currentSerial.value != null)
-                    "Choosing a profile here also sets it as this game's layout. Profiles save to the inputprofiles folder."
+                    str("touch.profiles.infoGame")
                 else
-                    "Profiles save to the inputprofiles folder, so they're portable and survive moving your data folder.",
+                    str("touch.profiles.infoGlobal"),
                 color = Color(0xFFB0B0B0),
                 fontSize = 11.sp,
             )
@@ -1570,7 +1571,7 @@ private fun ProfilePicker(onDismiss: () -> Unit) {
                     )
                     if (TouchControls.profiles.size > 1) {
                         Text(
-                            "Delete",
+                            str("action.delete"),
                             color = Color(0xFFFF6B6B),
                             fontSize = 11.sp,
                             modifier = Modifier
@@ -1581,7 +1582,7 @@ private fun ProfilePicker(onDismiss: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            Text("Save current layout as new profile:", color = Color(0xFFAAAAAA), fontSize = 12.sp)
+            Text(str("touch.profiles.saveNewLabel"), color = Color(0xFFAAAAAA), fontSize = 12.sp)
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1591,7 +1592,7 @@ private fun ProfilePicker(onDismiss: () -> Unit) {
                     value = newName,
                     onValueChange = { newName = it },
                     singleLine = true,
-                    placeholder = { Text("Profile name", color = Color(0xFF888888)) },
+                    placeholder = { Text(str("touch.profiles.namePlaceholder"), color = Color(0xFF888888)) },
                     colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
                         unfocusedTextColor = Color.White,
@@ -1610,7 +1611,7 @@ private fun ProfilePicker(onDismiss: () -> Unit) {
                         }
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
-                    Text("Save As", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(str("touch.profiles.saveAs"), color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
             Spacer(Modifier.height(6.dp))
@@ -1622,7 +1623,7 @@ private fun ProfilePicker(onDismiss: () -> Unit) {
                     .clickable(onClick = onDismiss)
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             ) {
-                Text("Close", color = Color.White, fontSize = 12.sp)
+                Text(str("action.close"), color = Color.White, fontSize = 12.sp)
             }
         }
     }
