@@ -37,6 +37,62 @@ SLUS-21452:
   gsHWFixes:
     nativeScaling: 1   # Upscaling Fixes = Normal (upstream Aggressive 2 blows out on mobile)
     roundSprite: 1     # Round Sprite = Half
+# Same mobile render-target blowout (Adreno/Mali) affects EVERY region of VP2, not just
+# NTSC-U — the upscale glitch is GPU-driven, not region-specific. A user on Odin 2 (Adreno)
+# reported "big orange spots all over the screen" at Chapter 1 on the PAL-I disc (SLES-54647)
+# while NTSC-U was clean — because only NTSC-U had this override. Apply the identical fix to
+# all PAL (E/F/G/I/S), Asian (SCAJ), Korean (SCKA) and Japanese (SLPM incl. Ultimate Hits)
+# serials so they inherit the same clean config.
+SLES-54644:            # PAL-E
+  name: "Valkyrie Profile 2 - Silmeria"
+  gsHWFixes:
+    nativeScaling: 1
+    roundSprite: 1
+SLES-54645:            # PAL-F
+  name: "Valkyrie Profile 2 - Silmeria"
+  gsHWFixes:
+    nativeScaling: 1
+    roundSprite: 1
+SLES-54646:            # PAL-G
+  name: "Valkyrie Profile 2 - Silmeria"
+  gsHWFixes:
+    nativeScaling: 1
+    roundSprite: 1
+SLES-54647:            # PAL-I (reported: Odin 2, orange spots at Chapter 1)
+  name: "Valkyrie Profile 2 - Silmeria"
+  gsHWFixes:
+    nativeScaling: 1
+    roundSprite: 1
+SLES-54648:            # PAL-S
+  name: "Valkyrie Profile 2 - Silmeria"
+  gsHWFixes:
+    nativeScaling: 1
+    roundSprite: 1
+SCAJ-20177:            # NTSC-Asia
+  name: "Valkyrie Profile 2 - Silmeria"
+  gsHWFixes:
+    nativeScaling: 1
+    roundSprite: 1
+SCAJ-20197:            # NTSC-Asia
+  name: "Valkyrie Profile 2 - Silmeria"
+  gsHWFixes:
+    nativeScaling: 1
+    roundSprite: 1
+SCKA-20079:            # NTSC-K
+  name: "Valkyrie Profile 2 - Silmeria"
+  gsHWFixes:
+    nativeScaling: 1
+    roundSprite: 1
+SLPM-66419:            # NTSC-J
+  name: "Valkyrie Profile 2 - Silmeria"
+  gsHWFixes:
+    nativeScaling: 1
+    roundSprite: 1
+SLPM-66782:            # NTSC-J (Ultimate Hits)
+  name: "Valkyrie Profile 2 - Silmeria"
+  gsHWFixes:
+    nativeScaling: 1
+    roundSprite: 1
 
 # LEGO Batman: The Videogame (all releases) — upstream sets halfPixelOffset:4 +
 # nativeScaling:1, which is right, but mobile (Vulkan AND OpenGL) still shows
