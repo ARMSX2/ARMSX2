@@ -401,6 +401,8 @@ data class Settings(
     // Disabling GPU also stops the GPU timing queries (real perf win).
     /** EmuCore/GS/OsdShowFPS. */
     val osdShowFps: Boolean = false,
+    /** EmuCore/GS/OsdScale — size of on-screen messages/stats, percent (25–500, 100 = normal). */
+    val osdScale: Int = 100,
     /** EmuCore/GS/VsyncEnable — sync presentation to the display refresh (less
      *  tearing/smoother, slightly higher latency). Applies on game restart. */
     val vsyncEnable: Boolean = false,
@@ -682,6 +684,7 @@ data class Settings(
             shadeBoostGamma.coerceIn(1, 100),
         )
         NativeApp.osdShowFPS(osdShowFps)
+        NativeApp.osdSetScale(osdScale.toFloat())
         NativeApp.osdShowVPS(osdShowVps)
         NativeApp.osdShowSpeed(osdShowSpeed)
         NativeApp.osdShowCPU(osdShowCpu)
@@ -771,6 +774,7 @@ data class Settings(
         put("EmuCore/GS", "DumpReplaceableTextures", "bool", dumpReplaceableTextures.toString())
         put("EmuCore/GS", "OsdShowTextureReplacements", "bool", osdShowTextureReplacements.toString())
         put("EmuCore/GS", "OsdShowFPS", "bool", osdShowFps.toString())
+        put("EmuCore/GS", "OsdScale", "int", osdScale.coerceIn(25, 500).toString())
         put("EmuCore/GS", "VsyncEnable", "bool", vsyncEnable.toString())
         put("EmuCore/GS", "OsdShowVPS", "bool", osdShowVps.toString())
         put("EmuCore/GS", "OsdShowSpeed", "bool", osdShowSpeed.toString())
@@ -1082,6 +1086,7 @@ data class Settings(
         put("dumpReplaceableTextures", dumpReplaceableTextures)
         put("osdShowTextureReplacements", osdShowTextureReplacements)
         put("osdShowFps", osdShowFps)
+        put("osdScale", osdScale)
         put("vsyncEnable", vsyncEnable)
         put("osdShowVps", osdShowVps)
         put("osdShowSpeed", osdShowSpeed)
@@ -1315,6 +1320,7 @@ data class Settings(
                 dumpReplaceableTextures = json.optBoolean("dumpReplaceableTextures", def.dumpReplaceableTextures),
                 osdShowTextureReplacements = json.optBoolean("osdShowTextureReplacements", def.osdShowTextureReplacements),
                 osdShowFps = json.optBoolean("osdShowFps", def.osdShowFps),
+                osdScale = json.optInt("osdScale", def.osdScale),
                 vsyncEnable = json.optBoolean("vsyncEnable", def.vsyncEnable),
                 osdShowVps = json.optBoolean("osdShowVps", def.osdShowVps),
                 osdShowSpeed = json.optBoolean("osdShowSpeed", def.osdShowSpeed),
@@ -1508,6 +1514,7 @@ data class Settings(
             if (current.dumpReplaceableTextures != base.dumpReplaceableTextures) j.put("dumpReplaceableTextures", current.dumpReplaceableTextures)
             if (current.osdShowTextureReplacements != base.osdShowTextureReplacements) j.put("osdShowTextureReplacements", current.osdShowTextureReplacements)
             if (current.osdShowFps != base.osdShowFps) j.put("osdShowFps", current.osdShowFps)
+            if (current.osdScale != base.osdScale) j.put("osdScale", current.osdScale)
             if (current.vsyncEnable != base.vsyncEnable) j.put("vsyncEnable", current.vsyncEnable)
             if (current.osdShowVps != base.osdShowVps) j.put("osdShowVps", current.osdShowVps)
             if (current.osdShowSpeed != base.osdShowSpeed) j.put("osdShowSpeed", current.osdShowSpeed)
@@ -1695,6 +1702,7 @@ data class Settings(
             dumpReplaceableTextures = if (overrides.has("dumpReplaceableTextures")) overrides.getBoolean("dumpReplaceableTextures") else base.dumpReplaceableTextures,
             osdShowTextureReplacements = if (overrides.has("osdShowTextureReplacements")) overrides.getBoolean("osdShowTextureReplacements") else base.osdShowTextureReplacements,
             osdShowFps = if (overrides.has("osdShowFps")) overrides.getBoolean("osdShowFps") else base.osdShowFps,
+            osdScale = if (overrides.has("osdScale")) overrides.getInt("osdScale") else base.osdScale,
             vsyncEnable = if (overrides.has("vsyncEnable")) overrides.getBoolean("vsyncEnable") else base.vsyncEnable,
             osdShowVps = if (overrides.has("osdShowVps")) overrides.getBoolean("osdShowVps") else base.osdShowVps,
             osdShowSpeed = if (overrides.has("osdShowSpeed")) overrides.getBoolean("osdShowSpeed") else base.osdShowSpeed,

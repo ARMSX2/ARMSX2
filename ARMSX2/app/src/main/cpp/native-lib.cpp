@@ -2966,6 +2966,13 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdShowInputs(JNIEnv*, jclass, jboolean ena
     applyOsdSetting();
 }
 
+// Size of on-screen messages / performance monitors, as a percentage (25–500; 100 = normal).
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_osdSetScale(JNIEnv*, jclass, jfloat scale) {
+    EmuConfig.GS.OsdScale = scale;
+    applyOsdSetting();
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowFrameTimes(JNIEnv*, jclass, jboolean enabled) {
     EmuConfig.GS.OsdShowFrameTimes = enabled;

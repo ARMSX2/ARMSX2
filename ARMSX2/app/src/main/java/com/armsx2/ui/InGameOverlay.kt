@@ -653,6 +653,10 @@ object InGameOverlay {
             NativeApp.setSetting("EmuCore/GS", "OsdShowFPS", "bool", updated.osdShowFps.toString())
             NativeApp.osdShowFPS(updated.osdShowFps)
         }
+        if (previous.osdScale != updated.osdScale) {
+            NativeApp.setSetting("EmuCore/GS", "OsdScale", "int", updated.osdScale.coerceIn(25, 500).toString())
+            NativeApp.osdSetScale(updated.osdScale.toFloat())
+        }
         if (previous.osdShowVps != updated.osdShowVps) {
             NativeApp.setSetting("EmuCore/GS", "OsdShowVPS", "bool", updated.osdShowVps.toString())
             NativeApp.osdShowVPS(updated.osdShowVps)

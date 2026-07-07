@@ -51,6 +51,16 @@ fun OverlayTab(state: MutableState<Settings>) {
             modifier = Modifier.padding(bottom = 8.dp),
         )
 
+        IntSliderRow(
+            label = "OSD Scale",
+            value = s.osdScale,
+            min = 50,
+            max = 250,
+            description = "Increases or decreases the size of on-screen messages/statistics.",
+            valueFormatter = { "$it%" },
+            onChange = { apply(s.copy(osdScale = it)) },
+        )
+        SettingsDivider()
         ToggleRow(str("overlay.toggle.gpuUsage"), s.osdShowGpu) {
             apply(s.copy(osdShowGpu = it))
         }

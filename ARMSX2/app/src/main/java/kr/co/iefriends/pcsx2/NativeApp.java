@@ -248,6 +248,8 @@ public class NativeApp {
 	public static native void osdShowVersion(boolean enabled);
 	public static native void osdShowSettings(boolean enabled);
 	public static native void osdShowInputs(boolean enabled);
+	/** OSD size (percentage; 25–500, 100 = normal). Applies live via MTGS. */
+	public static native void osdSetScale(float scale);
 
 	/** Per-game settings export — writes only the keys that differ from global
 	 *  into gamesettings/<serial>_<CRC>.ini for the running game (sparse, like
