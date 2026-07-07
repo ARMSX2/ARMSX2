@@ -18,6 +18,9 @@ struct MetalGameView: UIViewRepresentable {
 
     private func applyIOS27TouchPolicy(to uiView: UIView) {
         if #available(iOS 27.0, *) {
+            // Keep game-play touch routing (SwiftUI overlays own touch on iOS 27), but leave
+            // the view interactive while VoiceOver is active so accessibility activation works.
+            guard !UIAccessibility.isVoiceOverRunning else { return }
             guard uiView.isUserInteractionEnabled else { return }
             uiView.isUserInteractionEnabled = false
             NSLog("@@IOS27_TOUCH_POLICY@@ metal_render_view_interactive=0")

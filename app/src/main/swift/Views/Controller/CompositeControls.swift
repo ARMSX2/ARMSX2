@@ -294,6 +294,9 @@ struct CompositeDPadView: View {
         .onDisappear {
             releaseAll()
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("D-pad")
+        .accessibilityAddTraits(.isButton)
     }
 
     // Press only directions that newly entered the set and release only those
@@ -568,6 +571,9 @@ struct CompositeFaceView: View {
         .onDisappear {
             releaseAll()
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Face buttons")
+        .accessibilityAddTraits(.isButton)
     }
 
     // Press only buttons that newly entered the union and release only those that

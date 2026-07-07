@@ -619,6 +619,28 @@ private struct SkinManifestButtonView: View {
         }
     }
 
+    private var accessibilityName: String {
+        switch button {
+        case .up: return "D-pad up"
+        case .down: return "D-pad down"
+        case .left: return "D-pad left"
+        case .right: return "D-pad right"
+        case .triangle: return "Triangle"
+        case .cross: return "Cross"
+        case .square: return "Square"
+        case .circle: return "Circle"
+        case .L1: return "L1"
+        case .R1: return "R1"
+        case .L2: return "L2"
+        case .R2: return "R2"
+        case .start: return "Start"
+        case .select: return "Select"
+        case .L3: return "L3"
+        case .R3: return "R3"
+        @unknown default: return symbol
+        }
+    }
+
     var body: some View {
         ZStack {
             Color.clear
@@ -644,6 +666,9 @@ private struct SkinManifestButtonView: View {
         .task(id: pressedPath ?? "") {
             pressedImage = pressedPath.flatMap { SkinManifestRuntimeLayout.image(forRelativePath: $0, in: assetsDirectory) }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityName)
+        .accessibilityAddTraits(.isButton)
     }
 
     @ViewBuilder

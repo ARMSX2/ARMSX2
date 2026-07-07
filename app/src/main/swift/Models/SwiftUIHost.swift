@@ -80,4 +80,14 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
         hostingController.view.isOpaque = false
         return hostingController
     }
+
+    // Device haptic fallback for game rumble. Called from ARMSX2Bridge on the
+    // main queue when no rumble-capable controller is connected.
+    @MainActor
+    @objc public static func triggerDeviceHaptic(large: UInt, small: UInt) {
+        GameEventHaptics.shared.trigger(
+            large: UInt16(truncatingIfNeeded: large),
+            small: UInt16(truncatingIfNeeded: small)
+        )
+    }
 }

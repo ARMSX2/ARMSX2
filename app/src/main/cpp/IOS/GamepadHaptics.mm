@@ -17,6 +17,7 @@
 #include "pcsx2/SIO/Pad/PadDualshock2.h"
 
 #include "IOSRuntime.h"
+#import "ARMSX2Bridge.h"
 
 #pragma mark - Gamepad state
 SDL_Gamepad* s_gamepads[ARMSX2_MAX_IOS_GAMEPADS] = {};
@@ -1021,6 +1022,11 @@ void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
         dispatch_async(dispatch_get_main_queue(), ^{
             ARMSX2ApplyNativeGamepadRumblePulseOnMain(slot, native_packed, "no-sdl-gamepad");
         });
+        // No SDL gamepad and no native haptic controller: fall back to the
+        // device taptic engine so rumble is felt on phones (e.g. Kishi 3).
+        if (!ARMSX2FindNativeHapticController()) {
+            [ARMSX2Bridge triggerDeviceHapticLarge:large small:small];
+        }
     }
 
     s_appliedGamepadRumble[gamepad_index] = packed;

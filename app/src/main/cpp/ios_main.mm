@@ -770,6 +770,25 @@ extern "C" const char* ARMSX2_iOSGetDeviceStatsOverlayLine()
     return ARMSX2IOSRefreshDeviceStatsCacheLocked().line.c_str();
 }
 
+// Structured device stats for the SwiftUI VoiceOver HUD mirror. Reads the same
+// cache as ARMSX2_iOSGetDeviceStatsOverlayLine but exposes individual fields.
+// TODO: FPS - the overlay FPS lives in the PerformanceOverlay path with no
+// thread-safe getter surfaced here yet; omitted for now.
+extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outThermalState,
+                                          double* outRamGB, bool* outLowPower)
+{
+    std::lock_guard<std::mutex> lock(s_device_stats_mutex);
+    const auto& stats = ARMSX2IOSRefreshDeviceStatsCacheLocked();
+    if (outBatteryPercent) {
+        UIDevice* device = [UIDevice currentDevice];
+        const float battery = [device batteryLevel];
+        *outBatteryPercent = (battery >= 0.0f) ? static_cast<int>(std::round(battery * 100.0f)) : -1;
+    }
+    if (outThermalState) *outThermalState = stats.severity;
+    if (outRamGB) *outRamGB = ARMSX2IOSGetAppRAMGB();
+    if (outLowPower) *outLowPower = [[NSProcessInfo processInfo] isLowPowerModeEnabled];
+}
+
 float ARMSX2SanitizedNominalScalar(float scalar)
 {
     if (!std::isfinite(scalar))
