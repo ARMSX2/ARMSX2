@@ -19,6 +19,17 @@ final class PatchStore: @unchecked Sendable {
     static let enableKey = "Enable"
     static let defaultPatchDatabaseURLTemplate = "https://raw.githubusercontent.com/PCSX2/pcsx2_patches/main/patches/${serial}_${crc}.pnach"
     static let defaultCheatDatabaseURLTemplate = "https://raw.githubusercontent.com/xs1l3n7x/pcsx2_cheats_collection/main/cheats/${serial}_${crc}.pnach"
+    static let defaultUltraWidescreenPatchURLTemplate = "https://raw.githubusercontent.com/henyckma/ARMSX2-UltraWidescreen-NaturalVision/main/patches/${serial}_${crc}.pnach"
+
+    // Bundled template lists. Both patch DBs install into the same serial_CRC.pnach file,
+    // so PCSX2 still scans a single merged file with no core changes.
+    static let bundledPatchDatabaseTemplates = [
+        defaultPatchDatabaseURLTemplate,
+        defaultUltraWidescreenPatchURLTemplate,
+    ]
+    static let bundledCheatDatabaseTemplates = [
+        defaultCheatDatabaseURLTemplate,
+    ]
 
     private static let patchDatabaseURLTemplateKey = "ARMSX2iOSPatchURLTemplate"
     private static let cheatDatabaseURLTemplateKey = "ARMSX2iOSCheatURLTemplate"
@@ -64,44 +75,56 @@ final class PatchStore: @unchecked Sendable {
     private var currentCRC = ""
     private var currentTitle = ""
 
-    var patchDatabaseURLTemplate: String {
+    var patchDatabaseURLTemplates: [String] {
         get {
             let defaults = UserDefaults.standard
-            guard defaults.object(forKey: Self.patchDatabaseURLTemplateKey) != nil else {
-                return Self.defaultPatchDatabaseURLTemplate
+            if defaults.object(forKey: Self.patchDatabaseURLTemplateKey) != nil {
+                // Backward compat: the legacy key may hold a single String or a new array.
+                if let arr = defaults.stringArray(forKey: Self.patchDatabaseURLTemplateKey), !arr.isEmpty {
+                    return arr
+                }
+                // Migrate a legacy single-string value into a one-element list.
+                if let single = defaults.string(forKey: Self.patchDatabaseURLTemplateKey), !single.isEmpty {
+                    return [single]
+                }
             }
-            return defaults.string(forKey: Self.patchDatabaseURLTemplateKey) ?? ""
+            return Self.bundledPatchDatabaseTemplates
         }
         set {
-            UserDefaults.standard.set(
-                newValue.trimmingCharacters(in: .whitespacesAndNewlines),
-                forKey: Self.patchDatabaseURLTemplateKey
-            )
+            let cleaned = newValue
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            UserDefaults.standard.set(cleaned, forKey: Self.patchDatabaseURLTemplateKey)
         }
     }
 
-    var cheatDatabaseURLTemplate: String {
+    var cheatDatabaseURLTemplates: [String] {
         get {
             let defaults = UserDefaults.standard
-            guard defaults.object(forKey: Self.cheatDatabaseURLTemplateKey) != nil else {
-                return Self.defaultCheatDatabaseURLTemplate
+            if defaults.object(forKey: Self.cheatDatabaseURLTemplateKey) != nil {
+                if let arr = defaults.stringArray(forKey: Self.cheatDatabaseURLTemplateKey), !arr.isEmpty {
+                    return arr
+                }
+                if let single = defaults.string(forKey: Self.cheatDatabaseURLTemplateKey), !single.isEmpty {
+                    return [single]
+                }
             }
-            return defaults.string(forKey: Self.cheatDatabaseURLTemplateKey) ?? ""
+            return Self.bundledCheatDatabaseTemplates
         }
         set {
-            UserDefaults.standard.set(
-                newValue.trimmingCharacters(in: .whitespacesAndNewlines),
-                forKey: Self.cheatDatabaseURLTemplateKey
-            )
+            let cleaned = newValue
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            UserDefaults.standard.set(cleaned, forKey: Self.cheatDatabaseURLTemplateKey)
         }
     }
 
     var hasConfiguredPatchDatabase: Bool {
-        Self.isConfiguredDatabaseTemplate(patchDatabaseURLTemplate)
+        patchDatabaseURLTemplates.contains { Self.isConfiguredDatabaseTemplate($0) }
     }
 
     var hasConfiguredCheatDatabase: Bool {
-        Self.isConfiguredDatabaseTemplate(cheatDatabaseURLTemplate)
+        cheatDatabaseURLTemplates.contains { Self.isConfiguredDatabaseTemplate($0) }
     }
 
     private init() {}
@@ -174,16 +197,18 @@ final class PatchStore: @unchecked Sendable {
                   !path.isEmpty,
                   fileManager.fileExists(atPath: path) else { continue }
             let fileName = (path as NSString).lastPathComponent
-            let origin = sidecarSource(forISO: iso, fileName: fileName) ?? .installed
+            let originPair = sidecarSourceRaw(forISO: iso, fileName: fileName) ?? (source: .installed, detail: nil)
+            let origin = originPair.source
+            let originDetail = originPair.detail
 
             guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
-                entries.append(unparseableEntry(path: path, fileName: fileName, isCheat: isCheat, origin: origin))
+                entries.append(unparseableEntry(path: path, fileName: fileName, isCheat: isCheat, origin: origin, detail: originDetail))
                 continue
             }
 
             switch PnachParser.parse(text) {
             case .invalid:
-                entries.append(unparseableEntry(path: path, fileName: fileName, isCheat: isCheat, origin: origin))
+                entries.append(unparseableEntry(path: path, fileName: fileName, isCheat: isCheat, origin: origin, detail: originDetail))
             case .valid(let parsed):
                 let enabledNames = isCheat ? enabledCheats : enabledPatches
                 for parsedEntry in parsed {
@@ -199,7 +224,8 @@ final class PatchStore: @unchecked Sendable {
                         isCheat: isCheat,
                         fileName: fileName,
                         isLegacy: parsedEntry.isLegacy,
-                        enabled: enabled
+                        enabled: enabled,
+                        sourceDetail: originDetail
                     ))
                 }
             }
@@ -227,7 +253,7 @@ final class PatchStore: @unchecked Sendable {
         iso == isoName ? canManageInstalledFiles : hasManagedPath(forISO: iso)
     }
 
-    private func unparseableEntry(path: String, fileName: String, isCheat: Bool, origin: PatchSource) -> PatchEntry {
+    private func unparseableEntry(path: String, fileName: String, isCheat: Bool, origin: PatchSource, detail: String? = nil) -> PatchEntry {
         PatchEntry(
             id: "\(path)|legacy",
             name: "",
@@ -237,7 +263,8 @@ final class PatchStore: @unchecked Sendable {
             isCheat: isCheat,
             fileName: fileName,
             isLegacy: true,
-            enabled: true
+            enabled: true,
+            sourceDetail: detail
         )
     }
 
@@ -383,7 +410,7 @@ final class PatchStore: @unchecked Sendable {
 
     // MARK: - Install (shared by import and download; pure, takes an explicit ISO)
 
-    func writePatch(text: String, forISO iso: String, asCheat: Bool, autoEnable: Bool, source: PatchSource) -> InstallOutcome {
+    func writePatch(text: String, forISO iso: String, asCheat: Bool, autoEnable: Bool, source: PatchSource, sourceDetail: String? = nil) -> InstallOutcome {
         guard hasUsableManagedPath(forISO: iso) else { return .noIdentity }
 
         let parsed: [ParsedPatchEntry]
@@ -423,10 +450,10 @@ final class PatchStore: @unchecked Sendable {
             // Preserve the file's original origin; only record a source if none exists yet, so
             // appending to a known file does not silently relabel where it came from.
             if sidecarSource(forISO: iso, fileName: fileName) == nil {
-                recordSidecar(forISO: iso, fileName: fileName, source: source)
+                recordSidecar(forISO: iso, fileName: fileName, source: source, detail: sourceDetail)
             }
         } else {
-            recordSidecar(forISO: iso, fileName: fileName, source: source)
+            recordSidecar(forISO: iso, fileName: fileName, source: source, detail: sourceDetail)
         }
 
         let newNames = parsed.filter { !$0.name.isEmpty }.map(\.name)
@@ -517,8 +544,9 @@ final class PatchStore: @unchecked Sendable {
             return
         }
 
-        let template = asCheat ? cheatDatabaseURLTemplate : patchDatabaseURLTemplate
-        guard Self.isConfiguredDatabaseTemplate(template) else {
+        let templates = (asCheat ? cheatDatabaseURLTemplates : patchDatabaseURLTemplates)
+            .filter { Self.isConfiguredDatabaseTemplate($0) }
+        guard !templates.isEmpty else {
             let kind = asCheat ? "cheat" : "patch"
             applyFeedback("No \(kind) database source is configured. Add a trusted URL in Advanced.", kind: .information)
             return
@@ -526,54 +554,84 @@ final class PatchStore: @unchecked Sendable {
 
         let serial = iso == isoName ? currentSerial : PadLayoutGameIdentity.normalizedSerial(ARMSX2Bridge.gameSettings(forISO: iso)["serial"] as? String)
         let title = iso == isoName ? currentTitle : (ARMSX2Bridge.gameMetadata(forISO: iso)["title"] ?? iso)
-        guard let url = resolvedDatabaseURL(template: template, serial: serial, crc: crc, title: title) else {
-            applyFeedback("The database URL could not be created for this game. Check its placeholders in Advanced.", kind: .error)
-            return
-        }
 
         isDownloading = true
         defer { isDownloading = false }
 
-        do {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 10
-            request.cachePolicy = .reloadIgnoringLocalCacheData
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                applyFeedback("Could not download from the database. Please try again.", kind: .error)
-                return
+        var succeededSources: [String] = []
+        var notFoundCount = 0
+        var firstError: String?
+
+        for template in templates {
+            guard let url = resolvedDatabaseURL(template: template, serial: serial, crc: crc, title: title) else {
+                continue
             }
-            if http.statusCode == 404 {
-                applyFeedback(asCheat ? "No cheat found for this game." : "No patch found for this game.", kind: .information)
-                return
+            let sourceName = PatchSource.databaseName(forTemplate: template)
+
+            do {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 10
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    if firstError == nil { firstError = "Could not download from \(sourceName)." }
+                    continue
+                }
+                if http.statusCode == 404 {
+                    notFoundCount += 1
+                    continue
+                }
+                guard http.statusCode == 200 else {
+                    if firstError == nil { firstError = "\(sourceName) returned status \(http.statusCode)." }
+                    continue
+                }
+                guard data.count <= Self.maxPatchDownloadBytes else {
+                    if firstError == nil { firstError = "The file from \(sourceName) is too large to be a valid patch." }
+                    continue
+                }
+                guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else {
+                    if firstError == nil { firstError = "The file from \(sourceName) was not a valid patch." }
+                    continue
+                }
+                guard case .valid = PnachParser.parse(text) else {
+                    if firstError == nil { firstError = "The file from \(sourceName) was not a valid patch." }
+                    continue
+                }
+                let outcome = writePatch(
+                    text: text,
+                    forISO: iso,
+                    asCheat: asCheat,
+                    autoEnable: false,
+                    source: .database,
+                    sourceDetail: sourceName
+                )
+                if outcome.isSuccess {
+                    succeededSources.append(sourceName)
+                } else {
+                    if firstError == nil { firstError = "\(sourceName): \(outcome.message)" }
+                }
+            } catch {
+                if firstError == nil { firstError = "Could not reach \(sourceName). Check your connection or URL." }
             }
-            guard http.statusCode == 200 else {
-                applyFeedback("Could not download from the database. The server returned status \(http.statusCode).", kind: .error)
-                return
-            }
-            guard data.count <= Self.maxPatchDownloadBytes else {
-                applyFeedback("The downloaded patch is too large to be a valid patch file.", kind: .error)
-                return
-            }
-            guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else {
-                applyFeedback("The downloaded file was not a valid patch file.", kind: .error)
-                return
-            }
-            guard case .valid = PnachParser.parse(text) else {
-                applyFeedback("The downloaded file was not a valid patch file.", kind: .error)
-                return
-            }
-            let outcome = writePatch(text: text, forISO: iso, asCheat: asCheat, autoEnable: false, source: .database)
-            if outcome.isSuccess {
-                // Refresh the installed list now so the new entries appear without
-                // closing and reopening the manager.
-                loadInstalled(forISO: iso, launchContext: launchContext)
-                applyFeedback("\(asCheat ? "Cheat" : "Patch") downloaded and installed. Enable the entries you want.", kind: .success)
-            } else {
-                applyFeedback("The downloaded file could not be installed: \(outcome.message)", kind: .error)
-            }
-        } catch {
-            applyFeedback("Could not reach the database. Check your connection or URL and try again.", kind: .error)
+        }
+
+        let kindWord = asCheat ? "Cheat" : "Patch"
+        if !succeededSources.isEmpty {
+            // Refresh so newly installed entries show up without reopening the manager.
+            loadInstalled(forISO: iso, launchContext: launchContext)
+            let list = succeededSources.joined(separator: ", ")
+            applyFeedback("\(kindWord) downloaded from \(list). Enable the entries you want.", kind: .success)
+        } else if notFoundCount == templates.count {
+            applyFeedback(
+                asCheat
+                    ? "No cheat found in any configured database."
+                    : "No patch found in any configured database.",
+                kind: .information
+            )
+        } else if let firstError {
+            applyFeedback(firstError, kind: .error)
+        } else {
+            applyFeedback("Could not download from any configured database.", kind: .error)
         }
     }
 
@@ -737,16 +795,30 @@ final class PatchStore: @unchecked Sendable {
         return "\(serial)|\(crc)"
     }
 
-    private func sidecarSource(forISO iso: String, fileName: String) -> PatchSource? {
+    // Reads the sidecar raw value and returns both the resolved source case and any DB
+    // name suffix ("database:PCSX2 database" -> (.database, "PCSX2 database")). Older
+    // sidecars stored a bare raw value, which still parses.
+    private func sidecarSourceRaw(forISO iso: String, fileName: String) -> (source: PatchSource, detail: String?)? {
         guard let raw = loadSidecar().games[gameID(forISO: iso)]?[fileName] else { return nil }
-        return PatchSource(rawValue: raw)
+        let parts = raw.split(separator: ":", maxSplits: 1).map(String.init)
+        guard let head = parts.first, let source = PatchSource(rawValue: head) else { return nil }
+        let detail = parts.count > 1 ? parts[1] : nil
+        return (source, detail)
     }
 
-    private func recordSidecar(forISO iso: String, fileName: String, source: PatchSource) {
+    private func sidecarSource(forISO iso: String, fileName: String) -> PatchSource? {
+        sidecarSourceRaw(forISO: iso, fileName: fileName)?.source
+    }
+
+    private func recordSidecar(forISO iso: String, fileName: String, source: PatchSource, detail: String? = nil) {
         var sidecar = loadSidecar()
         let id = gameID(forISO: iso)
         var perGame = sidecar.games[id] ?? [:]
-        perGame[fileName] = source.rawValue
+        if source == .database, let detail, !detail.isEmpty {
+            perGame[fileName] = "\(source.rawValue):\(detail)"
+        } else {
+            perGame[fileName] = source.rawValue
+        }
         sidecar.games[id] = perGame
         saveSidecar(sidecar)
     }

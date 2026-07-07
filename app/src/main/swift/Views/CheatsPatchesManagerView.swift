@@ -18,8 +18,8 @@ struct CheatsPatchesManagerView: View {
     @State private var store = PatchStore.shared
     @State private var showImportPicker = false
     @State private var importAsCheat = false
-    @State private var patchDBURLDraft = ""
-    @State private var cheatDBURLDraft = ""
+    @State private var patchSourcesDraft: [String] = []
+    @State private var cheatSourcesDraft: [String] = []
     @State private var pendingRemoval: InstalledFileRemoval?
     @State private var pendingEntryRemoval: PatchEntry?
     @State private var showAdvanced = false
@@ -70,8 +70,8 @@ struct CheatsPatchesManagerView: View {
             }
             .onAppear {
                 reload()
-                patchDBURLDraft = store.patchDatabaseURLTemplate
-                cheatDBURLDraft = store.cheatDatabaseURLTemplate
+                patchSourcesDraft = store.patchDatabaseURLTemplates
+                cheatSourcesDraft = store.cheatDatabaseURLTemplates
             }
             .sheet(isPresented: $showImportPicker) {
                 ImportDocumentPicker(
@@ -395,7 +395,7 @@ struct CheatsPatchesManagerView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
                     .background(Color.secondary.opacity(0.15), in: Capsule())
-                Text(entry.source.displayName)
+                Text(entry.sourceDisplayName)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 if entry.isLegacy {
@@ -419,12 +419,12 @@ struct CheatsPatchesManagerView: View {
                     Task { await store.downloadFromDatabase(forISO: isoName, asCheat: false) }
                 } label: {
                     Label(
-                        hasDatabasePatch ? "Reinstall Official Patch" : "Download Official Patch",
+                        hasDatabasePatch ? "Reinstall Patches" : "Download Patches",
                         systemImage: hasDatabasePatch ? "arrow.clockwise.icloud" : "icloud.and.arrow.down"
                     )
                 }
                 .disabled(!store.identityState.canUseDatabase || !store.canManageInstalledFiles || store.isDownloading)
-                .accessibilityHint(store.identityState.canUseDatabase ? "Downloads the matching patch for this game" : "Requires an identified game CRC")
+                .accessibilityHint(store.identityState.canUseDatabase ? "Downloads matching patches from every configured source" : "Requires an identified game CRC")
             } else {
                 Text("No patch download source is configured. Add one in Advanced or import a file below.")
                     .font(.caption)
@@ -437,7 +437,7 @@ struct CheatsPatchesManagerView: View {
                     Task { await store.downloadFromDatabase(forISO: isoName, asCheat: true) }
                 } label: {
                     Label(
-                        hasDatabaseCheat ? "Reinstall Database Cheat" : "Download Cheat",
+                        hasDatabaseCheat ? "Reinstall Cheats" : "Download Cheats",
                         systemImage: hasDatabaseCheat ? "arrow.clockwise.icloud" : "icloud.and.arrow.down"
                     )
                 }
@@ -458,7 +458,7 @@ struct CheatsPatchesManagerView: View {
         } header: {
             Text("Available")
         } footer: {
-            Text("Downloads install named entries disabled and merge with the current file after making a backup. Patches must match this game’s region and version.")
+            Text("Downloads query every configured source and merge results into one file after making a backup. Patches must match this game’s region and version.")
         }
     }
 
@@ -498,26 +498,60 @@ struct CheatsPatchesManagerView: View {
     private var advancedSection: some View {
         Section {
             DisclosureGroup(isExpanded: $showAdvanced) {
-                TextField("Patch Source URL", text: $patchDBURLDraft, axis: .vertical)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .font(.caption.monospaced())
-                    .accessibilityLabel("Patch source URL")
-
-                TextField("Cheat Source URL", text: $cheatDBURLDraft, axis: .vertical)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .font(.caption.monospaced())
-                    .accessibilityLabel("Cheat source URL")
-
-                Button("Save Source URLs") {
-                    store.patchDatabaseURLTemplate = patchDBURLDraft
-                    store.cheatDatabaseURLTemplate = cheatDBURLDraft
-                    store.applyFeedback("Source URLs saved.", kind: .success)
+                Text("Patch sources")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                ForEach(patchSourcesDraft.indices, id: \.self) { index in
+                    sourceRow(
+                        placeholder: "Patch Source URL",
+                        text: $patchSourcesDraft[index],
+                        label: "Patch source URL"
+                    ) {
+                        guard patchSourcesDraft.indices.contains(index) else { return }
+                        patchSourcesDraft.remove(at: index)
+                    }
+                }
+                Button {
+                    patchSourcesDraft.append("")
+                } label: {
+                    Label("Add source", systemImage: "plus.circle")
                 }
                 .buttonStyle(.borderless)
 
-                Text("Supported placeholders: \u{24}{serial}, \u{24}{crc}, and \u{24}{title}. Built-in sources provide PCSX2 patches and a community cheat collection. Only add sources you trust.")
+                Text("Cheat sources")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                    .padding(.top, 8)
+                ForEach(cheatSourcesDraft.indices, id: \.self) { index in
+                    sourceRow(
+                        placeholder: "Cheat Source URL",
+                        text: $cheatSourcesDraft[index],
+                        label: "Cheat source URL"
+                    ) {
+                        guard cheatSourcesDraft.indices.contains(index) else { return }
+                        cheatSourcesDraft.remove(at: index)
+                    }
+                }
+                Button {
+                    cheatSourcesDraft.append("")
+                } label: {
+                    Label("Add source", systemImage: "plus.circle")
+                }
+                .buttonStyle(.borderless)
+
+                Button("Save Source URLs") {
+                    store.patchDatabaseURLTemplates = patchSourcesDraft
+                    store.cheatDatabaseURLTemplates = cheatSourcesDraft
+                    patchSourcesDraft = store.patchDatabaseURLTemplates
+                    cheatSourcesDraft = store.cheatDatabaseURLTemplates
+                    store.applyFeedback("Source URLs saved.", kind: .success)
+                }
+                .buttonStyle(.borderless)
+                .padding(.top, 8)
+
+                Text("Supported placeholders: \u{24}{serial}, \u{24}{crc}, and \u{24}{title}. Built-in sources provide PCSX2 patches, an UltraWidescreen / NaturalVision pack, and a community cheat collection. Only add sources you trust.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -528,6 +562,30 @@ struct CheatsPatchesManagerView: View {
             }
         } header: {
             Text("Advanced")
+        }
+    }
+
+    // One source-URL row. The text binding is captured per-row so SwiftUI tracks it
+    // independently of the surrounding indices; the remove closure guards its index.
+    @ViewBuilder
+    private func sourceRow(
+        placeholder: String,
+        text: Binding<String>,
+        label: String,
+        onRemove: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 8) {
+            TextField(placeholder, text: text, axis: .vertical)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.caption.monospaced())
+                .accessibilityLabel(label)
+            Button(action: onRemove) {
+                Image(systemName: "minus.circle.fill")
+                    .foregroundStyle(.red)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove source")
         }
     }
 }

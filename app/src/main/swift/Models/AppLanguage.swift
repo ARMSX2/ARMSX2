@@ -171,7 +171,17 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Uses the main background when no landscape image is selected.": "未选择横屏图片时使用主背景。",
             "Background Dim": "背景暗度",
             "Use a custom image behind your game library.": "在游戏库后面使用自定义图片。",
-            "Background image could not be loaded.": "无法加载背景图片。"
+            "Background image could not be loaded.": "无法加载背景图片。",
+            "Download from all databases": "Download from all databases",
+            "No patch found in any configured database.": "No patch found in any configured database.",
+            "No cheat found in any configured database.": "No cheat found in any configured database.",
+            "Patch sources": "Patch sources",
+            "Cheat sources": "Cheat sources",
+            "Add source": "Add source",
+            "Remove source": "Remove source",
+            "Save Source URLs": "Save Source URLs",
+            "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
+            "PCSX2 database": "PCSX2 database"
         ],
         .arabic: [
             "System Default": "حسب النظام",
@@ -267,7 +277,17 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Uses the main background when no landscape image is selected.": "تُستخدم الخلفية الرئيسية عند عدم اختيار صورة أفقية.",
             "Background Dim": "تعتيم الخلفية",
             "Use a custom image behind your game library.": "استخدم صورة مخصصة خلف مكتبة الألعاب.",
-            "Background image could not be loaded.": "تعذر تحميل صورة الخلفية."
+            "Background image could not be loaded.": "تعذر تحميل صورة الخلفية.",
+            "Download from all databases": "Download from all databases",
+            "No patch found in any configured database.": "No patch found in any configured database.",
+            "No cheat found in any configured database.": "No cheat found in any configured database.",
+            "Patch sources": "Patch sources",
+            "Cheat sources": "Cheat sources",
+            "Add source": "Add source",
+            "Remove source": "Remove source",
+            "Save Source URLs": "Save Source URLs",
+            "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
+            "PCSX2 database": "PCSX2 database"
         ],
         .spanish: [
             "System Default": "Predeterminado del sistema",
@@ -363,7 +383,17 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Uses the main background when no landscape image is selected.": "Se usa el fondo principal cuando no se selecciona una imagen horizontal.",
             "Background Dim": "Oscurecer fondo",
             "Use a custom image behind your game library.": "Usa una imagen personalizada detrás de tu biblioteca de juegos.",
-            "Background image could not be loaded.": "No se pudo cargar la imagen de fondo."
+            "Background image could not be loaded.": "No se pudo cargar la imagen de fondo.",
+            "Download from all databases": "Download from all databases",
+            "No patch found in any configured database.": "No patch found in any configured database.",
+            "No cheat found in any configured database.": "No cheat found in any configured database.",
+            "Patch sources": "Patch sources",
+            "Cheat sources": "Cheat sources",
+            "Add source": "Add source",
+            "Remove source": "Remove source",
+            "Save Source URLs": "Save Source URLs",
+            "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
+            "PCSX2 database": "PCSX2 database"
         ],
         .french: [
             "System Default": "Langue du système",
@@ -431,7 +461,17 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Uses the main background when no landscape image is selected.": "Le fond principal est utilisé lorsqu'aucune image en paysage n'est sélectionnée.",
             "Background Dim": "Assombrissement du fond",
             "Use a custom image behind your game library.": "Utilisez une image personnalisée derrière votre bibliothèque de jeux.",
-            "Background image could not be loaded.": "Impossible de charger l'image de fond."
+            "Background image could not be loaded.": "Impossible de charger l'image de fond.",
+            "Download from all databases": "Download from all databases",
+            "No patch found in any configured database.": "No patch found in any configured database.",
+            "No cheat found in any configured database.": "No cheat found in any configured database.",
+            "Patch sources": "Patch sources",
+            "Cheat sources": "Cheat sources",
+            "Add source": "Add source",
+            "Remove source": "Remove source",
+            "Save Source URLs": "Save Source URLs",
+            "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
+            "PCSX2 database": "PCSX2 database"
         ],
         .german: [
             "System Default": "Systemstandard",
@@ -527,7 +567,17 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Uses the main background when no landscape image is selected.": "Verwendet den Haupthintergrund, wenn kein Querformat-Bild ausgewählt ist.",
             "Background Dim": "Hintergrundabdunklung",
             "Use a custom image behind your game library.": "Verwende ein eigenes Bild hinter deiner Spielebibliothek.",
-            "Background image could not be loaded.": "Das Hintergrundbild konnte nicht geladen werden."
+            "Background image could not be loaded.": "Das Hintergrundbild konnte nicht geladen werden.",
+            "Download from all databases": "Download from all databases",
+            "No patch found in any configured database.": "No patch found in any configured database.",
+            "No cheat found in any configured database.": "No cheat found in any configured database.",
+            "Patch sources": "Patch sources",
+            "Cheat sources": "Cheat sources",
+            "Add source": "Add source",
+            "Remove source": "Remove source",
+            "Save Source URLs": "Save Source URLs",
+            "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
+            "PCSX2 database": "PCSX2 database"
         ],
         .italian: [
             "System Default": "Predefinito di sistema",
@@ -623,7 +673,17 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Uses the main background when no landscape image is selected.": "Usa lo sfondo principale quando non è selezionata un'immagine orizzontale.",
             "Background Dim": "Oscuramento sfondo",
             "Use a custom image behind your game library.": "Usa un'immagine personalizzata dietro la libreria giochi.",
-            "Background image could not be loaded.": "Impossibile caricare l'immagine di sfondo."
+            "Background image could not be loaded.": "Impossibile caricare l'immagine di sfondo.",
+            "Download from all databases": "Download from all databases",
+            "No patch found in any configured database.": "No patch found in any configured database.",
+            "No cheat found in any configured database.": "No cheat found in any configured database.",
+            "Patch sources": "Patch sources",
+            "Cheat sources": "Cheat sources",
+            "Add source": "Add source",
+            "Remove source": "Remove source",
+            "Save Source URLs": "Save Source URLs",
+            "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
+            "PCSX2 database": "PCSX2 database"
         ],
         .portuguese: [
             "System Default": "Padrão do sistema",
@@ -691,7 +751,17 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Uses the main background when no landscape image is selected.": "O fundo principal é usado quando nenhuma imagem em paisagem é selecionada.",
             "Background Dim": "Escurecer fundo",
             "Use a custom image behind your game library.": "Use uma imagem personalizada atrás da sua biblioteca de jogos.",
-            "Background image could not be loaded.": "Não foi possível carregar a imagem de fundo."
+            "Background image could not be loaded.": "Não foi possível carregar a imagem de fundo.",
+            "Download from all databases": "Download from all databases",
+            "No patch found in any configured database.": "No patch found in any configured database.",
+            "No cheat found in any configured database.": "No cheat found in any configured database.",
+            "Patch sources": "Patch sources",
+            "Cheat sources": "Cheat sources",
+            "Add source": "Add source",
+            "Remove source": "Remove source",
+            "Save Source URLs": "Save Source URLs",
+            "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
+            "PCSX2 database": "PCSX2 database"
         ],
         .japanese: [
             "System Default": "システム設定",
@@ -759,7 +829,17 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Uses the main background when no landscape image is selected.": "横向きの画像が選択されていない場合はメインの背景を使用します。",
             "Background Dim": "背景の暗さ",
             "Use a custom image behind your game library.": "ゲームライブラリの背景にカスタム画像を使用します。",
-            "Background image could not be loaded.": "背景画像を読み込めませんでした。"
+            "Background image could not be loaded.": "背景画像を読み込めませんでした。",
+            "Download from all databases": "Download from all databases",
+            "No patch found in any configured database.": "No patch found in any configured database.",
+            "No cheat found in any configured database.": "No cheat found in any configured database.",
+            "Patch sources": "Patch sources",
+            "Cheat sources": "Cheat sources",
+            "Add source": "Add source",
+            "Remove source": "Remove source",
+            "Save Source URLs": "Save Source URLs",
+            "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
+            "PCSX2 database": "PCSX2 database"
         ],
         .korean: [
             "System Default": "시스템 기본값",
@@ -827,7 +907,17 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Uses the main background when no landscape image is selected.": "가로 방향 이미지를 선택하지 않으면 기본 배경을 사용합니다.",
             "Background Dim": "배경 어둡기",
             "Use a custom image behind your game library.": "게임 라이브러리 뒤에 사용자 지정 이미지를 사용하세요.",
-            "Background image could not be loaded.": "배경 이미지를 로드할 수 없습니다."
+            "Background image could not be loaded.": "배경 이미지를 로드할 수 없습니다.",
+            "Download from all databases": "Download from all databases",
+            "No patch found in any configured database.": "No patch found in any configured database.",
+            "No cheat found in any configured database.": "No cheat found in any configured database.",
+            "Patch sources": "Patch sources",
+            "Cheat sources": "Cheat sources",
+            "Add source": "Add source",
+            "Remove source": "Remove source",
+            "Save Source URLs": "Save Source URLs",
+            "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
+            "PCSX2 database": "PCSX2 database"
         ]
     ]
 
