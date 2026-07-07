@@ -99,6 +99,10 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
                                                     toDirectory:(nonnull NSURL *)destinationDirectory
     NS_SWIFT_NAME(extractSkinPackageArchive(at:to:));
 
+// Extracts the first .ps2 file from a ZIP into the memory-card directory.
++ (nullable NSString *)extractMemoryCardArchiveAtURL:(nonnull NSURL *)archiveURL
+    NS_SWIFT_NAME(extractMemoryCardArchive(at:));
+
 // OSD overlay
 + (void)setPerformanceOverlayVisible:(BOOL)visible;
 + (BOOL)isPerformanceOverlayVisible;

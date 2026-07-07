@@ -2491,6 +2491,72 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
     return extracted;
 }
 
++ (nullable NSString *)extractMemoryCardArchiveAtURL:(nonnull NSURL *)archiveURL {
+    static const zip_uint64_t kMaxMemcardEntryBytes = 128 * 1024 * 1024;
+    static const zip_int64_t kMaxMemcardTotalEntries = 64;
+
+    if (!archiveURL.isFileURL) {
+        return nil;
+    }
+
+    zip_error_t ze = {};
+    auto zf = zip_open_managed(archiveURL.path.UTF8String, ZIP_RDONLY, &ze);
+    if (!zf) {
+        NSLog(@"[ARMSX2 iOS Memcards] Could not open archive %@: %s",
+              archiveURL.lastPathComponent, zip_error_strerror(&ze));
+        return nil;
+    }
+
+    const zip_int64_t count = zip_get_num_entries(zf.get(), 0);
+    if (count > kMaxMemcardTotalEntries) {
+        NSLog(@"[ARMSX2 iOS Memcards] Archive has too many entries (%lld); skipping %@.",
+              static_cast<long long>(count), archiveURL.lastPathComponent);
+        return nil;
+    }
+
+    NSString *memcardDir = [self memoryCardDirectory];
+    for (zip_uint64_t i = 0; i < static_cast<zip_uint64_t>(std::max<zip_int64_t>(count, 0)); i++) {
+        zip_stat_t stat = {};
+        if (zip_stat_index(zf.get(), i, ZIP_FL_ENC_GUESS, &stat) != 0 || !stat.name)
+            continue;
+        if ((stat.valid & ZIP_STAT_SIZE) && stat.size > kMaxMemcardEntryBytes)
+            continue;
+
+        NSString *entryName = [NSString stringWithUTF8String:stat.name];
+        if (entryName.length == 0 || [entryName hasSuffix:@"/"])
+            continue;
+        if ([entryName containsString:@"__MACOSX"] || [entryName containsString:@".."])
+            continue;
+        if (![entryName.pathExtension.lowercaseString isEqualToString:@"ps2"])
+            continue;
+
+        NSString *safeName = entryName.lastPathComponent;
+        if ([safeName hasPrefix:@"."])
+            continue;
+
+        auto file = zip_fopen_index_managed(zf.get(), i, ZIP_FL_ENC_GUESS);
+        if (!file)
+            continue;
+        std::optional<std::vector<u8>> data = ReadBinaryFileInZip(file.get());
+        if (!data.has_value() || data->empty())
+            continue;
+
+        NSString *destinationPath = [memcardDir stringByAppendingPathComponent:safeName];
+        if (![destinationPath hasPrefix:[memcardDir stringByAppendingString:@"/"]])
+            continue;
+
+        NSData *nsdata = [NSData dataWithBytes:data->data() length:data->size()];
+        if ([nsdata writeToFile:destinationPath atomically:YES]) {
+            NSLog(@"[ARMSX2 iOS Memcards] Extracted %@ from %@", safeName, archiveURL.lastPathComponent);
+            return safeName;
+        }
+    }
+
+    NSLog(@"[ARMSX2 iOS Memcards] No .ps2 memory card found in %@",
+          archiveURL.lastPathComponent);
+    return nil;
+}
+
 + (nullable NSString *)currentISOPath {
     NSString *docsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     NSString *iniPath = [docsPath stringByAppendingPathComponent:@"ARMSX2-iOS.ini"];

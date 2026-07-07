@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 import SwiftUI
+import UniformTypeIdentifiers
+import UIKit
 
 struct MemoryCardSettingsView: View {
     @State private var settings = SettingsStore.shared
@@ -14,6 +16,8 @@ struct MemoryCardSettingsView: View {
     @State private var resultMessage: String?
     @State private var showResult = false
     @State private var pendingDeleteCard: String?
+    @State private var pendingExportCard: String?
+    @State private var showZipImportPicker = false
 
     private let cardSizes = [8, 16, 32, 64]
     private let pathLikeCharacters: [Character] = ["/", "\\", ":", "*", "?", "\"", "<", ">", "|"]
@@ -91,6 +95,12 @@ struct MemoryCardSettingsView: View {
                             Text(card)
                             Spacer()
                             Button {
+                                pendingExportCard = card
+                            } label: {
+                                Image(systemName: "square.and.arrow.up")
+                            }
+                            .buttonStyle(.borderless)
+                            Button {
                                 pendingDeleteCard = card
                             } label: {
                                 Image(systemName: "trash")
@@ -100,6 +110,18 @@ struct MemoryCardSettingsView: View {
                         }
                     }
                 }
+            }
+
+            Section {
+                Button {
+                    showZipImportPicker = true
+                } label: {
+                    Label(settings.localized("Import Card from ZIP"), systemImage: "doc.zipper")
+                }
+            } header: {
+                Text(settings.localized("Import"))
+            } footer: {
+                Text(settings.localized("Import a memory card from a .zip archive. The first .ps2 file inside the archive is extracted into the memory-card directory."))
             }
         }
         .navigationTitle(settings.localized("Memory Cards"))
@@ -133,6 +155,40 @@ struct MemoryCardSettingsView: View {
         } message: {
             if let card = pendingDeleteCard {
                 Text(settings.localized("Delete \"\(card)\"? Saves on it will be lost, and it will be removed from any slot it is assigned to."))
+            }
+        }
+        .sheet(item: Binding(
+            get: { pendingExportCard.map { ExportableCard(name: $0) } },
+            set: { pendingExportCard = $0?.name }
+        )) { exportable in
+            if let url = memoryCardURL(for: exportable.name) {
+                ExportDocumentPicker(exportURLs: [url])
+            } else {
+                EmptyView()
+            }
+        }
+        .sheet(isPresented: $showZipImportPicker) {
+            ImportDocumentPicker(
+                allowedContentTypes: [
+                    UTType(filenameExtension: "zip") ?? .data,
+                    .archive,
+                    .data
+                ],
+                allowsMultipleSelection: false,
+                legacyDocumentTypes: ["public.zip-archive", "com.pkware.zip-archive", "public.archive"],
+                legacyDocumentMode: .import,
+                asCopy: true
+            ) { result in
+                showZipImportPicker = false
+                switch result {
+                case .success(let urls):
+                    importMemcardZip(urls)
+                case .failure(let error):
+                    if !FileImportHandler.isUserCancelledPickerError(error) {
+                        resultMessage = "Could not import the ZIP archive.\n\(error.localizedDescription)"
+                        showResult = true
+                    }
+                }
             }
         }
     }
@@ -188,4 +244,47 @@ struct MemoryCardSettingsView: View {
 
         return nil
     }
+
+    private func memoryCardURL(for name: String) -> URL? {
+        let directory = ARMSX2Bridge.memoryCardDirectory()
+        let url = URL(fileURLWithPath: (directory as NSString).appendingPathComponent(name))
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            return nil
+        }
+        return url
+    }
+
+    private func importMemcardZip(_ urls: [URL]) {
+        guard let url = urls.first else {
+            resultMessage = "No archive was selected."
+            showResult = true
+            return
+        }
+        let accessing = url.startAccessingSecurityScopedResource()
+        let extractedName = ARMSX2Bridge.extractMemoryCardArchive(at: url)
+        if accessing { url.stopAccessingSecurityScopedResource() }
+        refresh()
+        if let extractedName {
+            resultMessage = "Imported memory card \"\(extractedName)\" from the archive."
+        } else {
+            resultMessage = "No .ps2 memory card was found in the archive, or it could not be read."
+        }
+        showResult = true
+    }
+}
+
+private struct ExportableCard: Identifiable {
+    let name: String
+    var id: String { name }
+}
+
+private struct ExportDocumentPicker: UIViewControllerRepresentable {
+    let exportURLs: [URL]
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        UIDocumentPickerViewController(forExporting: exportURLs, asCopy: true)
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
 }
