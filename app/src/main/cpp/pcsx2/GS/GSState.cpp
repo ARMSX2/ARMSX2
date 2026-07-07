@@ -5771,7 +5771,7 @@ __noinline bool GSState::CheckOverlapVertsSlow(u32 n)
 				
 				GSVector2i prev_vert;
 				if (m_env.PRIM.PRIM == GS_TRIANGLEFAN && i == (n - 2))
-					prev_vert = GSVector2i(v[m_vertex->head].XYZ.X - m_context->XYOFFSET.OFX, v[m_vertex->head].XYZ.X - m_context->XYOFFSET.OFY);
+					prev_vert = GSVector2i(v[m_vertex->head].XYZ.X - m_context->XYOFFSET.OFX, v[m_vertex->head].XYZ.Y - m_context->XYOFFSET.OFY);
 				else
 					prev_vert = GSVector2i(v[pos].XYZ.X - m_context->XYOFFSET.OFX, v[pos].XYZ.Y - m_context->XYOFFSET.OFY);
 
