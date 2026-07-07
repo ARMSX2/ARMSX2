@@ -199,6 +199,28 @@ void armEmitJmp(const void* ptr, bool force_inline)
 	}
 }
 
+void armEmitJmpPtr(void* code_address, const void* target, bool flush_icache)
+{
+	const s64 displacement = GetPCDisplacement(code_address, target);
+	pxAssert(vixl::IsInt26(displacement));
+
+	// ARM64 B (unconditional branch): 0b000101 | imm26
+	u32 insn = 0x14000000u | (static_cast<u32>(displacement) & 0x03FFFFFFu);
+
+	// code_address is the executable (RX) alias. Under iOS W^X dual-mapping the RX page
+	// is read-only, so the write must go through the RW mirror (rx + g_code_rw_offset).
+	// On macOS (single RWX region, or pthread_jit_write_protect_np toggle) the offset is 0
+	// and this reduces to writing code_address directly. armGetWritableCodePtr encodes both.
+	u8* const writable = armGetWritableCodePtr(static_cast<u8*>(code_address));
+
+	HostSys::BeginCodeWrite();
+	std::memcpy(writable, &insn, sizeof(insn));
+	HostSys::EndCodeWrite();
+
+	if (flush_icache)
+		HostSys::FlushInstructionCache(code_address, 4);
+}
+
 void armEmitCall(const void* ptr, bool force_inline)
 {
 	s64 displacement = GetPCDisplacement(armGetCurrentCodePointer(), ptr);

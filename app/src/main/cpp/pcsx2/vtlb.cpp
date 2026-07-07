@@ -128,6 +128,10 @@ static std::unordered_multimap<u32, u32> s_fastmem_physical_mapping; // maps mai
 static std::unordered_map<uptr, LoadstoreBackpatchInfo> s_fastmem_backpatch_info;
 static std::unordered_set<u32> s_fastmem_faulting_pcs;
 
+// Process-lifetime guard against re-enabling fastmem after allocation failure.
+static bool s_fastmem_area_unavailable = false;
+bool vtlb_FastmemAreaUnavailable() { return s_fastmem_area_unavailable; }
+
 vtlb_private::VTLBPhysical vtlb_private::VTLBPhysical::fromPointer(sptr ptr)
 {
 	pxAssertMsg(ptr >= 0, "Address too high");
@@ -1686,11 +1690,7 @@ static void vtlb_RemoveFastmemMappings()
 bool vtlb_ResolveFastmemMapping(uptr* addr)
 {
 	uptr uaddr = *addr;
-	// yaps2 2801ebde: subtraction-first, single unsigned bound. `fastmem_start +
-	// 0xFFFFFFFF` overflows a 64-bit uptr when the fastmem mapping lands within 4 GB of the
-	// top of the address space (exotic kernels / high-mmap allocators), wrapping fastmem_end
-	// below fastmem_start so the two-sided compare silently rejected every valid in-range
-	// address. `offset >= FASTMEM_AREA_SIZE` is overflow-proof regardless of base.
+	// Subtraction-first avoids overflow when the mapping is near the top of the address space.
 	const uptr fastmem_start = (uptr)vtlbdata.fastmem_base;
 	const uptr offset = uaddr - fastmem_start;
 	if (offset >= FASTMEM_AREA_SIZE)
@@ -1714,11 +1714,7 @@ bool vtlb_ResolveFastmemMapping(uptr* addr)
 
 bool vtlb_GetGuestAddress(uptr host_addr, u32* guest_addr)
 {
-	// yaps2 2801ebde: subtraction-first, single unsigned bound. `fastmem_start +
-	// 0xFFFFFFFF` overflows a 64-bit uptr when the fastmem mapping lands within 4 GB of the
-	// top of the address space (exotic kernels / high-mmap allocators), wrapping fastmem_end
-	// below fastmem_start so the two-sided compare silently rejected every valid in-range
-	// address. `offset >= FASTMEM_AREA_SIZE` is overflow-proof regardless of base.
+	// Subtraction-first avoids overflow when the mapping is near the top of the address space.
 	const uptr fastmem_start = (uptr)vtlbdata.fastmem_base;
 	const uptr offset = host_addr - fastmem_start;
 	if (offset >= FASTMEM_AREA_SIZE)
@@ -1779,11 +1775,7 @@ void vtlb_AddLoadStoreInfo(uptr code_address, u32 code_size, u32 guest_pc, u32 g
 
 bool vtlb_BackpatchLoadStore(uptr code_address, uptr fault_address)
 {
-	// yaps2 2801ebde: subtraction-first, single unsigned bound. `fastmem_start +
-	// 0xFFFFFFFF` overflows a 64-bit uptr when the fastmem mapping lands within 4 GB of the
-	// top of the address space (exotic kernels / high-mmap allocators), wrapping fastmem_end
-	// below fastmem_start so the two-sided compare silently rejected every valid in-range
-	// address. `offset >= FASTMEM_AREA_SIZE` is overflow-proof regardless of base.
+	// Subtraction-first avoids overflow when the mapping is near the top of the address space.
 	const uptr fastmem_start = (uptr)vtlbdata.fastmem_base;
 	const uptr offset = fault_address - fastmem_start;
 	if (offset >= FASTMEM_AREA_SIZE)
@@ -2064,12 +2056,13 @@ bool vtlb_Core_Alloc()
 	{
 		// 4GB virtual reservation can fail on devices with limited VA space (e.g. iPhone SE 2).
 #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-		Console.Warning("@@FASTMEM_SKIP@@ 4GB fastmem area allocation failed — continuing without fastmem");
-		std::fprintf(stderr, "@@FASTMEM_SKIP@@ area_create_failed size=%zu\n", static_cast<size_t>(FASTMEM_AREA_SIZE));
+		Console.Warning("Failed to allocate the 4 GB fastmem area; continuing without fastmem");
+		std::fprintf(stderr, "Fastmem area allocation failed (size=%zu)\n", static_cast<size_t>(FASTMEM_AREA_SIZE));
 		std::fflush(stderr);
 		vtlbdata.fastmem_base = 0;
 		EmuConfig.Cpu.Recompiler.EnableFastmem = false;
-		Console.Warning("@@FASTMEM_SKIP@@ EnableFastmem forced OFF (CHECK_FASTMEM will be false)");
+		s_fastmem_area_unavailable = true;
+		Console.Warning("Fastmem disabled after area allocation failure");
 #else
 		Host::ReportErrorAsync("Error", "Failed to allocate fastmem area");
 		return false;
@@ -2082,12 +2075,12 @@ bool vtlb_Core_Alloc()
 		const bool ini_disabled = !EmuConfig.Cpu.Recompiler.EnableFastmem;
 		if (s_fastmem_area && (env_force || ini_disabled))
 		{
-			Console.Warning("@@FASTMEM_SKIP@@ Fastmem disabled (env=%d ini=%d) — releasing fastmem area",
+			Console.Warning("Fastmem disabled (env=%d ini=%d); releasing fastmem area",
 				(int)env_force, (int)ini_disabled);
 			s_fastmem_area.reset();
 			vtlbdata.fastmem_base = 0;
 			EmuConfig.Cpu.Recompiler.EnableFastmem = false;
-			Console.Warning("@@FASTMEM_SKIP@@ EnableFastmem forced OFF (CHECK_FASTMEM will be false)");
+			Console.Warning("Fastmem remains disabled after area allocation failure");
 		}
 	}
 
