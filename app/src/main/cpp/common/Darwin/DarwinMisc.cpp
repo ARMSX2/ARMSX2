@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <errno.h>
 #include <dlfcn.h>
 #include <setjmp.h>
 #include <optional>
@@ -107,7 +108,14 @@ static const u64 tickfreq = []() {
 // GetTickFrequency() to maintain good precision.
 u64 GetTickFrequency()
 {
+#if defined(__aarch64__)
+	// Frequency of the architected virtual counter used by GetCPUTicks().
+	u64 freq;
+	asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+	return freq;
+#else
 	return tickfreq;
+#endif
 }
 
 // return the number of "ticks" since some arbitrary, fixed time in the
@@ -116,7 +124,14 @@ u64 GetTickFrequency()
 // nanoseconds.
 u64 GetCPUTicks()
 {
+#if defined(__aarch64__)
+	// Read the monotonic architected virtual counter directly.
+	u64 val;
+	asm volatile("mrs %0, cntvct_el0" : "=r"(val)::"memory");
+	return val;
+#else
 	return mach_absolute_time();
+#endif
 }
 
 static std::string sysctl_str(int category, int name)
@@ -254,6 +269,24 @@ void Threading::Sleep(int ms)
 
 void Threading::SleepUntil(u64 ticks)
 {
+#if defined(__aarch64__)
+	// Convert the remaining counter ticks and retry after interrupted sleeps.
+	for (;;)
+	{
+		const s64 diff = static_cast<s64>(ticks - GetCPUTicks());
+		if (diff <= 0)
+			return;
+
+		const u64 freq = GetTickFrequency();
+		struct timespec ts;
+		ts.tv_sec = static_cast<time_t>(static_cast<u64>(diff) / freq);
+		ts.tv_nsec = static_cast<long>(((static_cast<u64>(diff) % freq) * 1000000000ULL) / freq);
+
+		const int err = nanosleep(&ts, nullptr);
+		if (err != 0 && errno != EINTR)
+			return;
+	}
+#else
 	// This is definitely sub-optimal, but apparently clock_nanosleep() doesn't exist.
 	const s64 diff = static_cast<s64>(ticks - GetCPUTicks());
 	if (diff <= 0)
@@ -267,6 +300,7 @@ void Threading::SleepUntil(u64 ticks)
 	ts.tv_sec = nanos / 1000000000ULL;
 	ts.tv_nsec = nanos % 1000000000ULL;
 	nanosleep(&ts, nullptr);
+#endif
 }
 
 std::vector<DarwinMisc::CPUClass> DarwinMisc::GetCPUClasses()
