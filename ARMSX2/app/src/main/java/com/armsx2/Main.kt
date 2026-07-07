@@ -2112,6 +2112,10 @@ class Main: ComponentActivity() {
                     }
                     return true
                 }
+                ControllerMappings.SysHotkey.TOGGLE_OSD -> {
+                    if (down && event.repeatCount == 0) com.armsx2.ui.InGameOverlay.toggleOsd()
+                    return true
+                }
                 ControllerMappings.SysHotkey.FAST_FORWARD -> {
                     // Hold to fast-forward (Turbo), release to return to the user's
                     // current limiter mode (Nominal if frame-limit is on, else Unlimited)
@@ -3041,6 +3045,7 @@ class Main: ComponentActivity() {
             }
             ControllerMappings.SysHotkey.RESET_GAME -> Main.restart()
             ControllerMappings.SysHotkey.SLOW_DOWN -> toggleSlowDown()
+            ControllerMappings.SysHotkey.TOGGLE_OSD -> com.armsx2.ui.InGameOverlay.toggleOsd()
             // Hold-type hotkeys have no one-shot stick-edge meaning.
             ControllerMappings.SysHotkey.FAST_FORWARD,
             ControllerMappings.SysHotkey.PRESSURE_MOD -> {}

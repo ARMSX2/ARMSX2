@@ -1062,7 +1062,9 @@ object InGameOverlay {
         closeKeepingState()
     }
 
-    private fun toggleOsd() {
+    /** Public so the TOGGLE_OSD hotkey (Main.dispatchKeyEvent) can flip the
+     *  performance overlay through the exact same path as the on-screen button. */
+    fun toggleOsd() {
         val enabled = !osdShown.value
         saveSettings(withAllOsdElements(settingsState.value, enabled))
         NativeApp.osdShowAll(enabled)
