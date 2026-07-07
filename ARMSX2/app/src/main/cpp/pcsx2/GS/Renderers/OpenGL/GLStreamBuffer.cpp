@@ -312,17 +312,8 @@ namespace
 
 std::unique_ptr<GLStreamBuffer> GLStreamBuffer::Create(GLenum target, u32 size)
 {
-	const char* vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
-
-	// Qualcomm/Adreno GLES driver bug (ported from PPSSPP): a persistent-mapped
-	// buffer's mapping is torn out from under us on an Android task-switch, so the
-	// GS thread's next write to the held pointer SIGSEGVs. Modern Adreno advertises
-	// EXT_buffer_storage, so skip the persistent path on Qualcomm and fall through
-	// to orphan-per-draw glBufferData (no held mapping).
-	const bool is_qualcomm = vendor && (std::strstr(vendor, "Qualcomm") || std::strstr(vendor, "Adreno"));
-
 	std::unique_ptr<GLStreamBuffer> buf;
-	if (!is_qualcomm && (GLAD_GL_VERSION_4_4 || GLAD_GL_ARB_buffer_storage || GLAD_GL_EXT_buffer_storage))
+	if (GLAD_GL_VERSION_4_4 || GLAD_GL_ARB_buffer_storage || GLAD_GL_EXT_buffer_storage)
 	{
 		buf = BufferStorageStreamBuffer::Create(target, size);
 		if (buf)
@@ -330,7 +321,8 @@ std::unique_ptr<GLStreamBuffer> GLStreamBuffer::Create(GLenum target, u32 size)
 	}
 
 	// BufferSubData is slower on all drivers except NVIDIA...
-	if (vendor && std::strstr(vendor, "NVIDIA"))
+	const char* vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+	if (std::strstr(vendor, "NVIDIA"))
 		return BufferSubDataStreamBuffer::Create(target, size);
 	else
 		return BufferDataStreamBuffer::Create(target, size);
