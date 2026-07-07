@@ -105,6 +105,7 @@ Open it later from Settings → Open ARMSX2 directory.</string>
     <string name="settings_app_icon_error_loading">Unable to load this icon.</string>
     <string name="drawer_toggle_content_description">Toggle in-game options</string>
     <string name="drawer_title_in_game_options">In-game options</string>
+    <string name="in_game_back_exit_hint">Press back again to exit the game</string>
     <string name="drawer_reboot_content_description">Reboot the emulator</string>
     <string name="drawer_pause_content_description">Pause the game</string>
     <string name="drawer_resume_content_description">Resume the game</string>

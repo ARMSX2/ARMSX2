@@ -118,6 +118,7 @@ import kr.co.iefriends.pcsx2.input.view.DPadView;
 import kr.co.iefriends.pcsx2.input.view.JoystickView;
 import kr.co.iefriends.pcsx2.input.view.PSButtonView;
 import kr.co.iefriends.pcsx2.input.view.PSShoulderButtonView;
+import kr.co.iefriends.pcsx2.utils.BackPressPolicy;
 import kr.co.iefriends.pcsx2.utils.DataDirectoryManager;
 import kr.co.iefriends.pcsx2.utils.DebugLog;
 import kr.co.iefriends.pcsx2.utils.DeviceProfiles;
@@ -233,11 +234,15 @@ public class MainActivity extends AppCompatActivity {
     
     private int currentControllerMode = 0; // 0=2 Sticks, 1=1 Stick+Face, 2=D-Pad Only
 
+    // Window during which a second back press exits the game instead of toggling the menu.
+    private static final long BACK_EXIT_CONFIRM_WINDOW_MS = 2000L;
+    private long lastBackExitPromptMs = 0L;
+
     private final OnBackPressedCallback onBackPressCallback =
         new OnBackPressedCallback(false) {
             @Override
             public void handleOnBackPressed() {
-                shutdownVmToHome();
+                handleInGameBackPress();
             }
         };
     private final OnBackPressedCallback onSearchBackPressCallback =
@@ -2192,6 +2197,8 @@ public class MainActivity extends AppCompatActivity {
                 public void onDrawerClosed(@NonNull View drawerView) {
                     lastInput = InputSource.TOUCH;
                     lastTouchTimeMs = System.currentTimeMillis();
+                    // Closing the menu (by any means) disarms the double-back exit shortcut.
+                    lastBackExitPromptMs = 0L;
                     maybeAutoHideControls();
                 }
             });
@@ -2385,6 +2392,32 @@ public class MainActivity extends AppCompatActivity {
     private void closeInGameDrawer() {
         if (inGameDrawer != null && inGameDrawer.isDrawerOpen(GravityCompat.START)) {
             inGameDrawer.closeDrawer(GravityCompat.START);
+        }
+    }
+
+    // System back while in-game: toggle the settings menu instead of killing the VM.
+    // A quick double-back (menu closed -> opens, then back again within the window) exits to the library.
+    private void handleInGameBackPress() {
+        long now = System.currentTimeMillis();
+        boolean drawerOpen = inGameDrawer != null && inGameDrawer.isDrawerOpen(GravityCompat.START);
+
+        switch (BackPressPolicy.decide(drawerOpen, lastBackExitPromptMs, now, BACK_EXIT_CONFIRM_WINDOW_MS)) {
+            case EXIT:
+                lastBackExitPromptMs = 0L;
+                shutdownVmToHome();
+                break;
+            case CLOSE_MENU:
+                // Menu already open (e.g. via the toggle button) -> back just closes it.
+                closeInGameDrawer();
+                break;
+            case OPEN_MENU_ARM:
+                // Menu closed -> open it and arm the exit confirmation for a quick second back press.
+                lastBackExitPromptMs = now;
+                toggleInGameDrawer();
+                try {
+                    Toast.makeText(this, R.string.in_game_back_exit_hint, Toast.LENGTH_SHORT).show();
+                } catch (Throwable ignored) {}
+                break;
         }
     }
 
