@@ -144,6 +144,11 @@ Open it later from Settings → Open ARMSX2 directory.</string>
     <string name="drawer_error_import_cheats_title">Cheat Import Failed</string>
     <string name="drawer_error_import_textures_title">Texture Import Failed</string>
     <string name="drawer_error_import_unknown">Import failed but no reason was provided.</string>
+    <string name="drawer_cheat_import_start_game_first">Error: start the game first</string>
+    <string name="drawer_cheat_imported">Cheat imported: %1$s</string>
+    <string name="drawer_cheat_import_error">Error: %1$s</string>
+    <string name="disc_changed">Disc changed: %1$s</string>
+    <string name="disc_change_failed">Failed to change disc: %1$s</string>
     <string name="settings_fxaa">FXAA</string>
     <string name="settings_graphics_advanced_heading">Advanced Rendering</string>
     <string name="settings_graphics_renderer">Renderer</string>

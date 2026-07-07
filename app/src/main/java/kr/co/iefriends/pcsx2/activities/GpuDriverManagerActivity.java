@@ -215,7 +215,7 @@ public class GpuDriverManagerActivity extends AppCompatActivity {
     @Nullable
     private String getFileNameFromUri(@NonNull Uri uri) {
         String result = null;
-        if (uri.getScheme().equals("content")) {
+        if ("content".equals(uri.getScheme())) {
             try (android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
                 if (cursor != null && cursor.moveToFirst()) {
                     int nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);

@@ -5136,7 +5136,7 @@ public class MainActivity extends AppCompatActivity {
             int crcInt = NativeApp.getGameCRC();
 
             if (TextUtils.isEmpty(serial) || crcInt == 0) {
-                Toast.makeText(this, "Erro: Start the Game First", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, R.string.drawer_cheat_import_start_game_first, Toast.LENGTH_SHORT).show();
                 return;
             }
 
@@ -5152,10 +5152,10 @@ public class MainActivity extends AppCompatActivity {
             NativeApp.setEnableCheats(false);
             NativeApp.setEnableCheats(true);
 
-            Toast.makeText(this, "Cheat Imported: " + fileName, Toast.LENGTH_LONG).show();
+            Toast.makeText(this, getString(R.string.drawer_cheat_imported, fileName), Toast.LENGTH_LONG).show();
 
         } catch (Exception e) {
-            Toast.makeText(this, "Erro: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.drawer_cheat_import_error, e.getMessage()), Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -5447,9 +5447,9 @@ public class MainActivity extends AppCompatActivity {
                             displayName = uri.getLastPathSegment();
                         }
                         if (NativeApp.changeDisc(uri.toString())) {
-                            Toast.makeText(this, "Disc Changed: " + displayName, Toast.LENGTH_SHORT).show();
+                            Toast.makeText(this, getString(R.string.disc_changed, displayName), Toast.LENGTH_SHORT).show();
                         } else {
-                            Toast.makeText(this, "Failure to Change Disk: " + displayName, Toast.LENGTH_LONG).show();
+                            Toast.makeText(this, getString(R.string.disc_change_failed, displayName), Toast.LENGTH_LONG).show();
                         }
                     }
                 }
