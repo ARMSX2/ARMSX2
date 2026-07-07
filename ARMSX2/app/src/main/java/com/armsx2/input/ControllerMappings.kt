@@ -497,6 +497,23 @@ object ControllerMappings {
         return actions.firstOrNull { physicalFor(it, player) == physicalKeyCode }?.targetKeyCode
     }
 
+    // ---- Turbo / rapid-fire (per PS2 button, per player) -------------------
+    // A turbo-flagged button, while its bound PHYSICAL controller button is held,
+    // auto-presses/releases the PS2 button at ~15 Hz (Main.handleTurbo). Global
+    // (not per-game). Only the physical-controller dispatch consults this — the
+    // on-screen touch buttons stay normal — matching "hold a back paddle to spam".
+    private const val TURBO_PREFIX = "pad.turbo."
+    private fun turboKey(action: Action, player: Int) = playerPrefix(player) + TURBO_PREFIX + action.id
+    fun isTurboAction(action: Action, player: Int = 0): Boolean =
+        Main.prefs.getBoolean(turboKey(action, player), false)
+    fun setTurboAction(action: Action, player: Int, on: Boolean) =
+        Main.prefs.edit().putBoolean(turboKey(action, player), on).apply()
+    /** True when a physical button's PS2 target [targetKeyCode] is turbo-flagged. */
+    fun isTurboTarget(targetKeyCode: Int, player: Int = 0): Boolean {
+        val action = actions.firstOrNull { it.targetKeyCode == targetKeyCode } ?: return false
+        return isTurboAction(action, player)
+    }
+
     // ---- System hotkeys (menu / quick save / quick load) -----------------
     // Physical buttons bound to app actions, NOT forwarded to the PS2. Handled in
     // Main.dispatchKeyEvent (so they can catch KEYCODE_BACK / back-paddle keys the

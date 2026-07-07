@@ -1304,6 +1304,38 @@ class Main: ComponentActivity() {
         }
     }
 
+    // ---- Turbo / rapid-fire ------------------------------------------------
+    // While a turbo-flagged physical button is held, alternately press/release its
+    // PS2 target at ~15 Hz on the main thread. Keyed by (port, physical keycode) so
+    // multiple turbo buttons (and both players) autofire independently.
+    private val turboHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val turboRunnables = HashMap<Long, Runnable>()
+    private val turboPressed = HashMap<Long, Boolean>()
+    private fun turboMapKey(physicalCode: Int, port: Int) =
+        (port.toLong() shl 32) or (physicalCode.toLong() and 0xffffffffL)
+
+    private fun handleTurbo(physicalCode: Int, type: KeyEventType, target: Int, port: Int) {
+        val key = turboMapKey(physicalCode, port)
+        if (type == KeyEventType.KeyDown) {
+            if (turboRunnables.containsKey(key)) return // already firing (auto-repeat DOWNs)
+            turboPressed[key] = false
+            val r = object : Runnable {
+                override fun run() {
+                    val pressed = !(turboPressed[key] ?: false)
+                    turboPressed[key] = pressed
+                    sendKeyAction(if (pressed) KeyEventType.KeyDown else KeyEventType.KeyUp, target, port)
+                    turboHandler.postDelayed(this, 33L) // ~15 presses/sec (33ms on, 33ms off)
+                }
+            }
+            turboRunnables[key] = r
+            turboHandler.post(r)
+        } else {
+            turboRunnables.remove(key)?.let { turboHandler.removeCallbacks(it) }
+            turboPressed.remove(key)
+            sendKeyAction(KeyEventType.KeyUp, target, port) // guarantee released on let-go
+        }
+    }
+
     fun sendKeyAction(p_action: KeyEventType, p_keycode_in: Int, port: Int = 0) {
         // Any physical gamepad key event implies the user is on a
         // controller — latch the on-screen touch controls hidden until a
@@ -1658,6 +1690,12 @@ class Main: ComponentActivity() {
                                 }
                                 val target = ControllerMappings.targetForPhysical(event.key.nativeKeyCode, port)
                                     ?: return@onKeyEvent false
+                                // Turbo/rapid-fire: while the physical button is held, the
+                                // PS2 button auto-presses at ~15 Hz (see handleTurbo).
+                                if (ControllerMappings.isTurboTarget(target, port)) {
+                                    handleTurbo(event.key.nativeKeyCode, event.type, target, port)
+                                    return@onKeyEvent true
+                                }
                                 sendKeyAction(event.type, target, port)
                                 true
                             })

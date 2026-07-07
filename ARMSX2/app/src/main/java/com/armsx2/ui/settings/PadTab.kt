@@ -468,6 +468,38 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                         refreshToken.value++
                     },
                 )
+                // Turbo / rapid-fire toggle — only meaningful once the button is
+                // bound to a physical controller button.
+                if (physical != android.view.KeyEvent.KEYCODE_UNKNOWN) {
+                    val turbo = remember(action.id, editPlayer.value, refreshToken.value) {
+                        mutableStateOf(ControllerMappings.isTurboAction(action, editPlayer.value))
+                    }
+                    androidx.compose.foundation.layout.Row(
+                        androidx.compose.ui.Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val nv = !turbo.value
+                                turbo.value = nv
+                                ControllerMappings.setTurboAction(action, editPlayer.value, nv)
+                            }
+                            .padding(start = 18.dp, end = 10.dp, top = 2.dp, bottom = 4.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.material3.Text(
+                            "↳ Turbo (rapid-fire while held)",
+                            color = androidx.compose.ui.graphics.Color(0xFFB0B0B0),
+                            fontSize = 11.sp,
+                            modifier = androidx.compose.ui.Modifier.weight(1f),
+                        )
+                        androidx.compose.material3.Text(
+                            if (turbo.value) "ON" else "OFF",
+                            color = if (turbo.value) androidx.compose.ui.graphics.Color(0xFF4DA3FF)
+                            else androidx.compose.ui.graphics.Color(0xFF808080),
+                            fontSize = 12.sp,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                        )
+                    }
+                }
                 SettingsDivider()
             }
             // Reset clears this scope's binds: Global wipes the global map; Game
