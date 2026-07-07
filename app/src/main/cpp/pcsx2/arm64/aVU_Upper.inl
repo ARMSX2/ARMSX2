@@ -221,8 +221,13 @@ static bool doSafeSub(microVU& mVU, int opCase, int opType, bool isACC)
 }
 
 // Sets Up Ft Reg for Normal, BC, I, and Q Cases
-static void setupFtReg(microVU& mVU, a64::VRegister& Ft, a64::VRegister& tempFt, int opCase, int clampType)
+// Fold an unclamped broadcast multiply into an equivalent lane-indexed FMUL.
+static constexpr bool kMvuFmulLaneFold = true;
+
+// A non-negative bcLane leaves Ft unbroadcast for a lane-indexed multiply.
+static void setupFtReg(microVU& mVU, a64::VRegister& Ft, a64::VRegister& tempFt, int opCase, int clampType, int& bcLane, bool canLaneFold)
 {
+	bcLane = -1;
 	opCase1
 	{
 		// Based on mVUclamp2 -> mVUclamp1 below.
@@ -234,11 +239,22 @@ static void setupFtReg(microVU& mVU, a64::VRegister& Ft, a64::VRegister& tempFt,
 	}
 	opCase2
 	{
-		tempFt = mVU.regAlloc->allocReg(_Ft_);
-		Ft     = mVU.regAlloc->allocReg();
-		mVUunpack_xyzw(Ft, tempFt, _bc_);
-		mVU.regAlloc->clearNeeded(tempFt);
-		tempFt = Ft;
+		// Avoid materializing a broadcast when the multiply is the only consumer.
+		const bool willClamp = (clampE || ((clampType & cFt) && !clampE && (CHECK_VU_OVERFLOW(mVU.index) || CHECK_VU_SIGN_OVERFLOW(mVU.index))));
+		if (kMvuFmulLaneFold && canLaneFold && !willClamp && !_XYZW_SS)
+		{
+			Ft     = mVU.regAlloc->allocReg(_Ft_); // read-only raw mapping, held until the consumer's Fmul
+			tempFt = xEmptyReg;
+			bcLane = _bc_;
+		}
+		else
+		{
+			tempFt = mVU.regAlloc->allocReg(_Ft_);
+			Ft     = mVU.regAlloc->allocReg();
+			mVUunpack_xyzw(Ft, tempFt, _bc_);
+			mVU.regAlloc->clearNeeded(tempFt);
+			tempFt = Ft;
+		}
 	}
 	opCase3
 	{
@@ -271,7 +287,8 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 			return;
 
 		a64::VRegister Fs, Ft, ACC, tempFt;
-		setupFtReg(mVU, Ft, tempFt, opCase, clampType);
+		int bcLane = -1;
+		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, opType == 2); // fold only for MUL
 
 		if (isACC)
 		{
@@ -285,11 +302,13 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 			Fs = mVU.regAlloc->allocReg(_Fs_, _Fd_, _X_Y_Z_W);
 		}
 
-		if (clampType & cFt) mVUclamp2(mVU, Ft, xEmptyReg, _X_Y_Z_W);
-		if (clampType & cFs) mVUclamp2(mVU, Fs, xEmptyReg, _X_Y_Z_W);
+		if ((clampType & cFt) && bcLane < 0) mVUclamp2(mVU, Ft, xEmptyReg, _X_Y_Z_W);
+		if (clampType & cFs)                 mVUclamp2(mVU, Fs, xEmptyReg, _X_Y_Z_W);
 
-		if (_XYZW_SS) SSE_SS[opType](mVU, Fs, Ft, xEmptyReg, xEmptyReg);
-		else          SSE_PS[opType](mVU, Fs, Ft, xEmptyReg, xEmptyReg);
+		// The scalar view selects the correct by-element encoding in VIXL.
+		if (bcLane >= 0)   armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane);
+		else if (_XYZW_SS) SSE_SS[opType](mVU, Fs, Ft, xEmptyReg, xEmptyReg);
+		else               SSE_PS[opType](mVU, Fs, Ft, xEmptyReg, xEmptyReg);
 
 		if (isACC)
 		{
@@ -324,7 +343,8 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 	pass2
 	{
 		a64::VRegister Fs, Ft, ACC, tempFt;
-		setupFtReg(mVU, Ft, tempFt, opCase, clampType);
+		int bcLane = -1;
+		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, true);
 
 		Fs = mVU.regAlloc->allocReg(_Fs_, 0, _X_Y_Z_W);
 		ACC = mVU.regAlloc->allocReg(32, 32, 0xf, false);
@@ -332,11 +352,13 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 		if (_XYZW_SS2)
 			mVUshufflePS(ACC, ACC, shuffleSS(_X_Y_Z_W));
 
-		if (clampType & cFt) mVUclamp2(mVU, Ft, xEmptyReg, _X_Y_Z_W);
-		if (clampType & cFs) mVUclamp2(mVU, Fs, xEmptyReg, _X_Y_Z_W);
+		if ((clampType & cFt) && bcLane < 0) mVUclamp2(mVU, Ft, xEmptyReg, _X_Y_Z_W);
+		if (clampType & cFs)                 mVUclamp2(mVU, Fs, xEmptyReg, _X_Y_Z_W);
 
-		if (_XYZW_SS) SSE_SS[2](mVU, Fs, Ft, xEmptyReg, xEmptyReg);
-		else          SSE_PS[2](mVU, Fs, Ft, xEmptyReg, xEmptyReg);
+		// Multiply directly from the selected Ft lane when possible.
+		if (bcLane >= 0)   armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane);
+		else if (_XYZW_SS) SSE_SS[2](mVU, Fs, Ft, xEmptyReg, xEmptyReg);
+		else               SSE_PS[2](mVU, Fs, Ft, xEmptyReg, xEmptyReg);
 
 		if (_XYZW_SS || _X_Y_Z_W == 0xf)
 		{
@@ -372,7 +394,8 @@ static void mVU_FMACc(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 	pass2
 	{
 		a64::VRegister Fs, Ft, ACC, tempFt;
-		setupFtReg(mVU, Ft, tempFt, opCase, clampType);
+		int bcLane = -1;
+		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, true);
 
 		ACC = mVU.regAlloc->allocReg(32);
 		Fs = mVU.regAlloc->allocReg(_Fs_, _Fd_, _X_Y_Z_W);
@@ -380,12 +403,17 @@ static void mVU_FMACc(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 		if (_XYZW_SS2)
 			mVUshufflePS(ACC, ACC, shuffleSS(_X_Y_Z_W));
 
-		if (clampType & cFt)  mVUclamp2(mVU, Ft,  xEmptyReg, _X_Y_Z_W);
-		if (clampType & cFs)  mVUclamp2(mVU, Fs,  xEmptyReg, _X_Y_Z_W);
-		if (clampType & cACC) mVUclamp2(mVU, ACC, xEmptyReg, _X_Y_Z_W);
+		if ((clampType & cFt) && bcLane < 0) mVUclamp2(mVU, Ft,  xEmptyReg, _X_Y_Z_W);
+		if (clampType & cFs)                 mVUclamp2(mVU, Fs,  xEmptyReg, _X_Y_Z_W);
+		if (clampType & cACC)                mVUclamp2(mVU, ACC, xEmptyReg, _X_Y_Z_W);
 
 		if (_XYZW_SS) { SSE_SS[2](mVU, Fs, Ft, xEmptyReg, xEmptyReg); SSE_SS[0](mVU, Fs, ACC, tempFt, xEmptyReg); }
-		else          { SSE_PS[2](mVU, Fs, Ft, xEmptyReg, xEmptyReg); SSE_PS[0](mVU, Fs, ACC, tempFt, xEmptyReg); }
+		else
+		{
+			if (bcLane >= 0) armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane);
+			else             SSE_PS[2](mVU, Fs, Ft, xEmptyReg, xEmptyReg);
+			SSE_PS[0](mVU, Fs, ACC, tempFt, xEmptyReg);
+		}
 
 		if (_XYZW_SS2)
 			mVUshufflePS(ACC, ACC, shuffleSS(_X_Y_Z_W));
@@ -408,17 +436,23 @@ static void mVU_FMACd(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 	pass2
 	{
 		a64::VRegister Fs, Ft, Fd, tempFt;
-		setupFtReg(mVU, Ft, tempFt, opCase, clampType);
+		int bcLane = -1;
+		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, true);
 
 		Fs = mVU.regAlloc->allocReg(_Fs_,  0, _X_Y_Z_W);
 		Fd = mVU.regAlloc->allocReg(32, _Fd_, _X_Y_Z_W);
 
-		if (clampType & cFt)  mVUclamp2(mVU, Ft, xEmptyReg, _X_Y_Z_W);
-		if (clampType & cFs)  mVUclamp2(mVU, Fs, xEmptyReg, _X_Y_Z_W);
-		if (clampType & cACC) mVUclamp2(mVU, Fd, xEmptyReg, _X_Y_Z_W);
+		if ((clampType & cFt) && bcLane < 0) mVUclamp2(mVU, Ft, xEmptyReg, _X_Y_Z_W);
+		if (clampType & cFs)                 mVUclamp2(mVU, Fs, xEmptyReg, _X_Y_Z_W);
+		if (clampType & cACC)                mVUclamp2(mVU, Fd, xEmptyReg, _X_Y_Z_W);
 
 		if (_XYZW_SS) { SSE_SS[2](mVU, Fs, Ft, xEmptyReg, xEmptyReg); SSE_SS[1](mVU, Fd, Fs, tempFt, xEmptyReg); }
-		else          { SSE_PS[2](mVU, Fs, Ft, xEmptyReg, xEmptyReg); SSE_PS[1](mVU, Fd, Fs, tempFt, xEmptyReg); }
+		else
+		{
+			if (bcLane >= 0) armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane);
+			else             SSE_PS[2](mVU, Fs, Ft, xEmptyReg, xEmptyReg);
+			SSE_PS[1](mVU, Fd, Fs, tempFt, xEmptyReg);
+		}
 
 		mVUupdateFlags(mVU, Fd, Fs, tempFt);
 

@@ -1856,6 +1856,66 @@ static bool recTryTranslateCachedConstOp(u32 op, RecGprConstState& const_state, 
 	}
 }
 
+// --- @@MAC_EE_CONSTFOLD@@ Mixed-operand constant folding (task #121) -------------------
+// When exactly one source of a reg-reg ALU op is a compile-time-known constant (the other
+// runtime), fold that constant into an ARM immediate instead of loading it from guest
+// memory into a cache slot. This reuses the SAME const value that recConstEmitKnown already
+// stored to memory and that recTryTranslateCachedConstOp already trusts (it Movs folded
+// constants straight into dest cache regs) — so it adds no new correctness trust, only
+// better instruction selection. Both the fully-const case (handled earlier by
+// recTryTranslateCachedConstOp) and this mixed case leave the const tracker to
+// recConstApplyCachedEffects, which marks the runtime destination unknown exactly as the
+// plain reg-reg path would. The fold is taken ONLY when the immediate encodes as a single
+// add/sub or logical instruction (IsImmAddSub / IsImmLogical), so it is never worse than
+// the memory load it replaces. Flip to false to fall back to the plain reg-reg emitters.
+static bool s_eeGprMixedConstFold = true;
+
+// True iff `addend` (mod 2^width) can be added to a register with a single add/sub
+// immediate — either directly (ADD) or via its two's complement (SUB). Pure test, emits
+// nothing, so encodability can be decided before any cache load/dest allocation (avoids
+// the load-after-dest aliasing hazard).
+static __fi bool recAddImmEncodableW(u32 addend)
+{
+	return addend == 0 || a64::Assembler::IsImmAddSub(static_cast<int64_t>(addend)) ||
+		a64::Assembler::IsImmAddSub(static_cast<int64_t>(static_cast<u32>(0u - addend)));
+}
+static __fi bool recAddImmEncodableX(u64 addend)
+{
+	return addend == 0 || a64::Assembler::IsImmAddSub(static_cast<int64_t>(addend)) ||
+		a64::Assembler::IsImmAddSub(static_cast<int64_t>(0ull - addend));
+}
+
+// Emit dst.W = src.W + addend (mod 2^32) as a single add/sub immediate. Precondition:
+// recAddImmEncodableW(addend) is true, so exactly one instruction is emitted.
+static __fi void recEmitAddImmW(const a64::Register& dst, const a64::Register& src, u32 addend)
+{
+	if (addend == 0)
+	{
+		if (!dst.W().Is(src.W()))
+			armAsm->Mov(dst.W(), src.W());
+		return;
+	}
+	if (a64::Assembler::IsImmAddSub(static_cast<int64_t>(addend)))
+		armAsm->Add(dst.W(), src.W(), addend);
+	else
+		armAsm->Sub(dst.W(), src.W(), static_cast<u32>(0u - addend));
+}
+// Emit dst.X = src.X + addend (mod 2^64) as a single add/sub immediate. Precondition:
+// recAddImmEncodableX(addend) is true.
+static __fi void recEmitAddImmX(const a64::Register& dst, const a64::Register& src, u64 addend)
+{
+	if (addend == 0)
+	{
+		if (!dst.X().Is(src.X()))
+			armAsm->Mov(dst.X(), src.X());
+		return;
+	}
+	if (a64::Assembler::IsImmAddSub(static_cast<int64_t>(addend)))
+		armAsm->Add(dst.X(), src.X(), addend);
+	else
+		armAsm->Sub(dst.X(), src.X(), 0ull - addend);
+}
+
 static bool recTryTranslateCachedOp(u32 op, RecGprCacheState& cache, const RecGprConstState& const_state)
 {
 	const u32 opcode = op >> 26;
@@ -2141,10 +2201,42 @@ static bool recTryTranslateCachedOp(u32 op, RecGprCacheState& cache, const RecGp
 		{
 			if (rd == 0)
 				return true;
+			const bool is_add = (funct == 0x20 || funct == 0x21);
+			// @@MAC_EE_CONSTFOLD@@ Exactly one const source -> fold into an add/sub imm.
+			if (s_eeGprMixedConstFold)
+			{
+				// rt const (both ADD and SUB: dst = rs +/- c). Encode as rs + (add ? c : -c).
+				if (const_state.known[rt] && !const_state.known[rs])
+				{
+					const u32 addend = is_add ? static_cast<u32>(const_state.value[rt])
+											  : static_cast<u32>(0u - static_cast<u32>(const_state.value[rt]));
+					if (recAddImmEncodableW(addend))
+					{
+						const a64::Register& src = recCacheLoad(cache, rs);
+						const a64::Register& dst = recCacheDest(cache, rd, rs);
+						recEmitAddImmW(dst, src, addend);
+						armAsm->Sxtw(dst, dst.W());
+						return true;
+					}
+				}
+				// rs const, ADD only (commutative): dst = rt + c.
+				else if (is_add && const_state.known[rs] && !const_state.known[rt])
+				{
+					const u32 addend = static_cast<u32>(const_state.value[rs]);
+					if (recAddImmEncodableW(addend))
+					{
+						const a64::Register& src = recCacheLoad(cache, rt);
+						const a64::Register& dst = recCacheDest(cache, rd, rt);
+						recEmitAddImmW(dst, src, addend);
+						armAsm->Sxtw(dst, dst.W());
+						return true;
+					}
+				}
+			}
 			const a64::Register& lhs = recCacheLoad(cache, rs);
 			const a64::Register& rhs = recCacheLoad(cache, rt);
 			const a64::Register& dst = recCacheDest(cache, rd, rs, rt);
-			if (funct == 0x20 || funct == 0x21)
+			if (is_add)
 				armAsm->Add(dst.W(), lhs.W(), rhs.W());
 			else
 				armAsm->Sub(dst.W(), lhs.W(), rhs.W());
@@ -2159,10 +2251,37 @@ static bool recTryTranslateCachedOp(u32 op, RecGprCacheState& cache, const RecGp
 		{
 			if (rd == 0)
 				return true;
+			const bool is_add = (funct == 0x2C || funct == 0x2D);
+			// @@MAC_EE_CONSTFOLD@@ Exactly one const source -> fold into a 64-bit add/sub imm.
+			if (s_eeGprMixedConstFold)
+			{
+				if (const_state.known[rt] && !const_state.known[rs])
+				{
+					const u64 addend = is_add ? const_state.value[rt] : (0ull - const_state.value[rt]);
+					if (recAddImmEncodableX(addend))
+					{
+						const a64::Register& src = recCacheLoad(cache, rs);
+						const a64::Register& dst = recCacheDest(cache, rd, rs);
+						recEmitAddImmX(dst, src, addend);
+						return true;
+					}
+				}
+				else if (is_add && const_state.known[rs] && !const_state.known[rt])
+				{
+					const u64 addend = const_state.value[rs];
+					if (recAddImmEncodableX(addend))
+					{
+						const a64::Register& src = recCacheLoad(cache, rt);
+						const a64::Register& dst = recCacheDest(cache, rd, rt);
+						recEmitAddImmX(dst, src, addend);
+						return true;
+					}
+				}
+			}
 			const a64::Register& lhs = recCacheLoad(cache, rs);
 			const a64::Register& rhs = recCacheLoad(cache, rt);
 			const a64::Register& dst = recCacheDest(cache, rd, rs, rt);
-			if (funct == 0x2C || funct == 0x2D)
+			if (is_add)
 				armAsm->Add(dst, lhs, rhs);
 			else
 				armAsm->Sub(dst, lhs, rhs);
@@ -2176,6 +2295,53 @@ static bool recTryTranslateCachedOp(u32 op, RecGprCacheState& cache, const RecGp
 		{
 			if (rd == 0)
 				return true;
+			// @@MAC_EE_CONSTFOLD@@ Exactly one const source -> fold into a 64-bit logical imm
+			// (all four ops are commutative in their two register sources).
+			if (s_eeGprMixedConstFold)
+			{
+				u32 vreg = 0xff; // the runtime (non-const) source register
+				u64 c = 0;
+				if (const_state.known[rt] && !const_state.known[rs]) { vreg = rs; c = const_state.value[rt]; }
+				else if (const_state.known[rs] && !const_state.known[rt]) { vreg = rt; c = const_state.value[rs]; }
+				if (vreg != 0xff)
+				{
+					if (c == 0)
+					{
+						// c==0 identities (not encodable as logical immediates): AND->0,
+						// OR/XOR->src, NOR->~src.
+						if (funct == 0x24)
+						{
+							const a64::Register& dst = recCacheDest(cache, rd);
+							armAsm->Mov(dst, 0);
+							return true;
+						}
+						const a64::Register& src = recCacheLoad(cache, vreg);
+						const a64::Register& dst = recCacheDest(cache, rd, vreg);
+						if (funct == 0x27)
+							armAsm->Mvn(dst, src);
+						else if (!dst.Is(src))
+							armAsm->Mov(dst, src);
+						return true;
+					}
+					if (a64::Assembler::IsImmLogical(c, 64))
+					{
+						const a64::Register& src = recCacheLoad(cache, vreg);
+						const a64::Register& dst = recCacheDest(cache, rd, vreg);
+						if (funct == 0x24)
+							armAsm->And(dst, src, c);
+						else if (funct == 0x25)
+							armAsm->Orr(dst, src, c);
+						else if (funct == 0x26)
+							armAsm->Eor(dst, src, c);
+						else
+						{
+							armAsm->Orr(dst, src, c);
+							armAsm->Mvn(dst, dst);
+						}
+						return true;
+					}
+				}
+			}
 			const a64::Register& lhs = recCacheLoad(cache, rs);
 			const a64::Register& rhs = recCacheLoad(cache, rt);
 			const a64::Register& dst = recCacheDest(cache, rd, rs, rt);
@@ -4648,6 +4814,35 @@ static void recRecompile(u32 startpc)
 			armAsm->Bind(&skip);                     // NOT taken: fall through, stay in-block
 
 			waitloop_possible = false;               // a block with a trap is not a poll loop
+			pc += 4;
+			endpc = pc;
+			if (++compiled >= MAX_BLOCK_INSTS)
+			{
+				recEmitWritePc(pc);
+				known_dispatch_pc = true;
+				dispatch_pc = pc;
+				break;
+			}
+			continue;
+		}
+
+		// FlushCache / iFlushCache syscall skip (x86 recSYSCALL). This rec does NOT model the
+		// EE instruction/data cache, so a guest `syscall` whose number ($v1 / GPR[3]) is
+		// FlushCache (0x64) or iFlushCache (0x68) has no architectural effect here. Single-
+		// stepping it through the interpreter would run the real BIOS handler, whose emulated
+		// per-op cycle sum does not match real hardware, mis-timing it relative to the
+		// GS/VU/IOP/VBlank schedule. x86 instead skips the op and charges a flat 5650 cycles
+		// (measured on hardware). That accurate timing is why timing-sensitive games render
+		// correctly on the x86 rec but glitch under the interpreter (True Crime: NYC billboard,
+		// Mortal Kombat menu). Fires only when $v1 is a known compile-time constant, exactly
+		// like x86's GPR_IS_CONST1(3); otherwise fall through to the normal syscall path below.
+		// 5650 is added UNSCALED into the block cycle sum (recScaleBlockCycles scales the total
+		// at commit), matching x86's s_nBlockCycles += 5650 which bypasses the per-op *(2-DIE) mult.
+		if ((op >> 26) == 0 && (op & 0x3f) == 0x0C && // SPECIAL / SYSCALL
+			const_state.known[3] &&
+			(((const_state.value[3] & 0xFF) == 0x64) || ((const_state.value[3] & 0xFF) == 0x68)))
+		{
+			raw_cycles += 5650; // flat, unscaled; the syscall body is not emitted (cache unmodelled)
 			pc += 4;
 			endpc = pc;
 			if (++compiled >= MAX_BLOCK_INSTS)
