@@ -526,6 +526,8 @@ val EN: Map<String, String> = mapOf(
     "pad.rightStick.swapXY.description" to "Swap the right stick's horizontal and vertical axes (for a stick that reads rotated 90°).",
     "pad.rightStick.swapXY.label" to "Right Stick — Swap X/Y",
     "pad.rightStickFeel.title" to "Right Stick Feel",
+    "pad.multitap.description" to "Enable PS2 Multitap so up to 8 controllers can play. Connect your gamepads, then launch the game — the first pad is Player 1, the second is Player 2, and any others fill the multitap slots. Leave off for normal 1–2 player games.",
+    "pad.multitap.label" to "Multitap (up to 8 players)",
     "pad.rumble.description" to "Master switch for controller rumble and the device's built-in vibration. Turn off to silence all haptics.",
     "pad.rumble.label" to "Rumble / Vibration",
     "pad.scopeHint.global" to "○ Editing GLOBAL controls (all games).",

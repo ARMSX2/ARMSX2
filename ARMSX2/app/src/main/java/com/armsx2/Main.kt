@@ -658,6 +658,24 @@ class Main: ComponentActivity() {
                     NativeApp.setSetting("Pad2", "AxisScale", "float", "1.33")
                     NativeApp.setSetting("Pad2", "ButtonDeadzone", "float", "0")
                 }
+                // PS2 Multitap: when enabled, arm BOTH ports as 4-slot multitaps at BOOT
+                // (before runVMThread -> Pad::LoadConfig) so a game launched with 3-8
+                // controllers sees them. Flag keys are off-by-one: [Pad] MultitapPort1 ->
+                // physical port 0, MultitapPort2 -> port 1. Unified slots: [Pad2] = port-1
+                // main, [Pad3..Pad5] = port-0 taps, [Pad6..Pad8] = port-1 taps. Force all
+                // 8 slots on for a complete pair of taps; idle slots are harmless (games
+                // ignore unused pads). Unconditional-when-ON so a pad joining after boot
+                // still lands on a live slot; the Pad-tab toggle covers mid-session enable.
+                if (com.armsx2.input.ControllerMappings.multitapEnabled()) {
+                    NativeApp.setSetting("Pad", "MultitapPort1", "bool", "true")
+                    NativeApp.setSetting("Pad", "MultitapPort2", "bool", "true")
+                    for (s in 2..8) {
+                        NativeApp.setSetting("Pad$s", "Type", "string", "DualShock2")
+                        NativeApp.setSetting("Pad$s", "Deadzone", "float", "0")
+                        NativeApp.setSetting("Pad$s", "AxisScale", "float", "1.33")
+                        NativeApp.setSetting("Pad$s", "ButtonDeadzone", "float", "0")
+                    }
+                }
             }
 
             // Settings.applyTo() above writes the persisted FrameLimitEnable
@@ -1316,11 +1334,11 @@ class Main: ComponentActivity() {
             // KEYS bound to an analog stick code (d-pad-as-left-stick, or a button
             // bound to a "(send)" stick row): register the held deflection with the
             // merge layer so a stick MOTION event can't release it mid-hold.
-            if (p_keycode in 110..123 && port in 0..1)
+            if (p_keycode in 110..123 && port in analogKeyHeld.indices)
                 analogKeyHeld[port][p_keycode] = pad_force / 32767f
             NativeApp.setPadButtonForPort(port, p_keycode, pad_force, true)
         } else if (p_action == KeyEventType.KeyUp || p_action == KeyEventType.Unknown) {
-            if (p_keycode in 110..123 && port in 0..1)
+            if (p_keycode in 110..123 && port in analogKeyHeld.indices)
                 analogKeyHeld[port].remove(p_keycode)
             NativeApp.setPadButtonForPort(port, p_keycode, 0, false)
         }
@@ -1366,6 +1384,9 @@ class Main: ComponentActivity() {
         com.armsx2.ControllerSkinStore.load(applicationContext)
         // Restore the saved rumble master toggle into the native gate (NativeApp.onPadRumble).
         kr.co.iefriends.pcsx2.NativeApp.sRumbleEnabled = com.armsx2.input.ControllerMappings.rumbleEnabled()
+        // Seed the pad-router's multitap gate before any in-game input is dispatched, so
+        // slot routing (2 vs 8 slots) is correct from the first controller event.
+        com.armsx2.input.PadRouter.multitapEnabled = com.armsx2.input.ControllerMappings.multitapEnabled()
         setupComplete.value = prefs.getBoolean("setupComplete", false)
         systemDir.value = prefs.getString("systemDir", null)
         bios.value = prefs.getString("bios", null)
@@ -2387,7 +2408,7 @@ class Main: ComponentActivity() {
     // drives the bound PS2 target: proportionally for an analog target (via the
     // merge layer), thresholded for a digital one (change-tracked per code so we
     // only write edges, like dispatchDpadCombined).
-    private val stickDirDigitalHeld = Array(2) { HashSet<Int>() }
+    private val stickDirDigitalHeld = Array(8) { HashSet<Int>() } // per unified pad slot (multitap)
     private fun dispatchStickDirBindings(ev: MotionEvent, port: Int) {
         for (left in booleanArrayOf(true, false)) {
             // Same axis correction the main dispatch applies (swap, then inverts).
@@ -2819,8 +2840,8 @@ class Main: ComponentActivity() {
     // d-pad-as-left-stick key path) are tracked in [analogKeyHeld] and folded into
     // every flush so stick motion can no longer release a held button-deflection.
     private val analogAccum = HashMap<Int, Float>()
-    private val analogPrevSent = Array(2) { HashMap<Int, Float>() }
-    val analogKeyHeld = Array(2) { HashMap<Int, Float>() } // written by sendKeyAction
+    private val analogPrevSent = Array(8) { HashMap<Int, Float>() } // per unified pad slot (multitap)
+    val analogKeyHeld = Array(8) { HashMap<Int, Float>() } // written by sendKeyAction; per unified pad slot
 
     private fun accumAnalog(code: Int, v: Float) {
         if (v <= 0f) return
@@ -2936,7 +2957,7 @@ class Main: ComponentActivity() {
     // CUSTOM stick directions bound to an ARMSX2 hotkey are edge-triggered: this tracks
     // which hotkey codes are currently held past the threshold, per port, so each
     // crossing fires exactly once (re-armed on release).
-    private val stickHotkeyHeld = Array(2) { HashSet<Int>() }
+    private val stickHotkeyHeld = Array(8) { HashSet<Int>() } // per unified pad slot (multitap)
 
     /** Fire any SysHotkey bound (Hotkeys tab) to a stick DIRECTION, edge-triggered. The
      *  stick still drives the pad, so this is meant for sticks/directions a game doesn't
@@ -3066,7 +3087,7 @@ class Main: ComponentActivity() {
     // presses. Owns the D-pad from ALL non-KeyEvent sources: the physical HAT, a
     // stick in DPAD mode, and any CUSTOM stick direction bound to a D-pad code.
     // PER-PORT (index = player) so P1 and P2 D-pad presses can't release each other.
-    private val dpadOwnHeld = Array(2) { HashSet<Int>() }
+    private val dpadOwnHeld = Array(8) { HashSet<Int>() } // per unified pad slot (multitap)
 
     /** True when any CUSTOM-mode stick has a direction bound to a D-pad code, for
      *  the given player. */

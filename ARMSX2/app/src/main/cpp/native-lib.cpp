@@ -1381,6 +1381,60 @@ Java_kr_co_iefriends_pcsx2_NativeApp_enablePad2(JNIEnv *env, jclass clazz) {
     Console.WriteLn("@@ANDROID_COOP@@ Pad2 enabled (DualShock2)");
 }
 
+// PS2 Multitap: enable/disable the 3 extra "tap" slots on one physical PS2 port so a
+// game can see up to 4 pads per port (8 total). Unified-slot layout (Sio.h): port 0 taps
+// = unified slots 2,3,4 ([Pad3..Pad5]); port 1 taps = slots 5,6,7 ([Pad6..Pad8]). The
+// on-disk multitap flag keys are OFF-BY-ONE: [Pad] "MultitapPort1" -> engine
+// MultitapPort0_Enabled (physical port 0), "MultitapPort2" -> port 1. A tap only goes
+// live when BOTH the flag is set AND Ports[slot].Type == DualShock2 (Pad::LoadConfig
+// forces NotConnected otherwise). Sio2 reads the multitap flag + Pad::GetPad(port,slot)
+// live every poll, so no SIO re-init is needed — Pad::LoadConfig sends eject ticks and
+// the running game re-detects. Threading mirrors enablePad2 exactly: ScopedVMPause parks
+// the CPU/MTGS/MTVU side and s_pad_mutex serializes the input thread against the
+// s_controllers[] rebuild. MUST be called off the UI thread (the park can take up to 3s).
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setMultitap(JNIEnv *env, jclass clazz, jint p_port, jboolean p_enabled) {
+    if (!VMManager::HasValidVM())
+        return;
+    const u32 port = (p_port <= 0) ? 0u : 1u;
+    const bool enabled = (p_enabled == JNI_TRUE);
+    const char* flagKey = (port == 0) ? "MultitapPort1" : "MultitapPort2";
+    u32 taps[3];
+    if (port == 0) { taps[0] = 2u; taps[1] = 3u; taps[2] = 4u; }
+    else           { taps[0] = 5u; taps[1] = 6u; taps[2] = 7u; }
+
+    ScopedVMPause vm_pause(false);
+    if (!vm_pause.parked())
+        return;
+    {
+        auto lock = Host::GetSettingsLock();
+        if (SettingsInterface* si = Host::GetSettingsInterface()) {
+            si->SetBoolValue("Pad", flagKey, enabled);
+            for (int k = 0; k < 3; k++) {
+                const std::string section = Pad::GetConfigSection(taps[k]); // [Pad3..Pad8]
+                si->SetStringValue(section.c_str(), "Type", enabled ? "DualShock2" : "None");
+                si->SetFloatValue(section.c_str(), "Deadzone", 0.0f);       // app shapes the stick
+                si->SetFloatValue(section.c_str(), "AxisScale", 1.33f);     // PCSX2 default
+                si->SetFloatValue(section.c_str(), "ButtonDeadzone", 0.0f);
+            }
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(s_pad_mutex);
+        if (port == 0)
+            EmuConfig.Pad.MultitapPort0_Enabled = enabled;
+        else
+            EmuConfig.Pad.MultitapPort1_Enabled = enabled;
+        // Only ever touch the 3 tap slots for THIS port — never Ports[0]/Ports[1]
+        // (the port mains) or we'd eject P1/P2 mid-game.
+        for (int k = 0; k < 3; k++)
+            EmuConfig.Pad.Ports[taps[k]].Type = enabled ? Pad::ControllerType::DualShock2
+                                                        : Pad::ControllerType::NotConnected;
+        Pad::LoadConfig(*Host::GetSettingsInterface()); // eject ticks -> running game re-detects
+    }
+    Console.WriteLn("@@ANDROID_MULTITAP@@ port=%u enabled=%d", port, (int)enabled);
+}
+
 // jobjectArray<String> -> std::vector<std::string>.
 static std::vector<std::string> jStringArrayToVector(JNIEnv* env, jobjectArray arr) {
     std::vector<std::string> out;

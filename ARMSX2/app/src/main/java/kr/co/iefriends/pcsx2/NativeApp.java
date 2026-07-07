@@ -281,6 +281,11 @@ public class NativeApp {
 	/** Local co-op: hot-plug a 2nd DualShock2 into PS2 port 2 when a second physical
 	 *  controller joins. Idempotent; briefly parks the VM to rebuild the pad list. */
 	public static native void enablePad2();
+	/** PS2 Multitap: enable/disable the 3 extra pad slots on one physical port
+	 *  (port 0 = PS2 port 1 / unified slots 2,3,4; port 1 = PS2 port 2 / slots 5,6,7).
+	 *  Idempotent; briefly parks the VM (up to ~3s) to rebuild the pad list, so call
+	 *  it OFF the UI thread. */
+	public static native void setMultitap(int port, boolean enabled);
 	public static native void resetKeyStatus();
 
 	// ---- USB keyboard (#254: EQOA / Konami-keyboard games) ----

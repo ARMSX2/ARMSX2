@@ -76,7 +76,12 @@ object ControllerMappings {
     // deadzone / d-pad-as-left-stick) and SYSTEM hotkeys stay global.
     const val P1 = 0
     const val P2 = 1
-    private fun playerPrefix(player: Int) = if (player == 0) "" else "p${player + 1}."
+    // Mapping tier by unified pad slot. Only slot 1 (P2 main) has its own remap tier
+    // ("p2."); slot 0 AND the multitap tap slots 2-7 all share Player 1's mapping ("").
+    // This is the single chokepoint every per-player lookup (targetForPhysical, stick
+    // modes, turbo, custom-stick) routes through, so clamping here makes the tap slots
+    // reuse P1's config without threading a mapping-player through the input dispatch.
+    private fun playerPrefix(player: Int) = if (player == 1) "p2." else ""
 
     // ---- Per-game scope (issue #246) --------------------------------------
     // The INPUT-MAPPING layer — button binds, stick modes, custom stick codes —
@@ -268,6 +273,16 @@ object ControllerMappings {
     fun setRumbleEnabled(on: Boolean) {
         Main.prefs.edit().putBoolean(KEY_RUMBLE, on).apply()
         kr.co.iefriends.pcsx2.NativeApp.sRumbleEnabled = on
+    }
+
+    // PS2 Multitap master switch. OFF (default) = classic 2-player co-op. ON = up to 8
+    // controllers routed to the 2 ports x 4 slots. Extra pads (slots 2-7) reuse the P1
+    // button mapping. Also drives PadRouter's routing gate.
+    private const val KEY_MULTITAP = "pad.multitap.enabled"
+    fun multitapEnabled(): Boolean = Main.prefs.getBoolean(KEY_MULTITAP, false)
+    fun setMultitapEnabled(on: Boolean) {
+        Main.prefs.edit().putBoolean(KEY_MULTITAP, on).apply()
+        com.armsx2.input.PadRouter.multitapEnabled = on
     }
 
     // ---- Custom per-direction stick→button binding (StickMode.CUSTOM) ----

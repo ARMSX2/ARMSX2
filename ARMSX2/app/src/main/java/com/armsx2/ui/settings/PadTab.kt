@@ -315,6 +315,23 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 refreshToken.value++
             }
             SettingsDivider()
+            // PS2 Multitap: route up to 8 controllers (both ports become 4-slot taps).
+            // The pref drives PadRouter's slot count + the boot-time native arming; when a
+            // game is already running we also arm it live. setMultitap parks the VM, so it
+            // must run off the UI thread (and is a safe no-op when no VM is active).
+            ToggleRow(
+                str("pad.multitap.label"),
+                ControllerMappings.multitapEnabled(),
+                description = str("pad.multitap.description"),
+            ) { on ->
+                ControllerMappings.setMultitapEnabled(on)
+                Thread {
+                    NativeApp.setMultitap(0, on)
+                    NativeApp.setMultitap(1, on)
+                }.start()
+                refreshToken.value++
+            }
+            SettingsDivider()
             // Buzz the selected player's controller and report whether Android can drive
             // its rumble — separates a routing problem from a pad whose haptics simply
             // aren't exposed to Android (common for DualSense/DS4 over Bluetooth).
