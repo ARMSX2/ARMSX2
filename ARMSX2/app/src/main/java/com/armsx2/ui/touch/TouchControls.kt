@@ -30,6 +30,8 @@ object TouchControls {
     private const val KEY_FACE_MULTI = "touch.faceMulti"
     private const val KEY_TOUCH_GLIDING = "touch.gliding"
     private const val KEY_TOUCH_HAPTICS = "touch.haptics"
+    private const val KEY_MULTI_RADIUS = "touch.multiRadius"
+    private const val KEY_DPAD_SPACING = "touch.dpadSpacing"
     private const val KEY_FLOATING_STICK = "touch.floatingStick"
     private const val KEY_VIS_MODE = "touch.visibilityMode"
     // One-shot 2.4.7 defaults migration for EXISTING users (saved prefs/layouts
@@ -108,6 +110,18 @@ object TouchControls {
     // on-screen button press (via NativeApp.touchHaptic). Independent of game rumble.
     // Default ON. Under KEY_TOUCH_HAPTICS.
     val touchHaptics = mutableStateOf(true)
+
+    // Multi-touch hit radius as a fraction of a button's size (GGPO-style). Higher =
+    // buttons register a press from further out, so multitouch/rolling works with more
+    // space between them. Persisted under KEY_MULTI_RADIUS. Default 0.62.
+    val multiTouchRadius = mutableStateOf(0.62f)
+
+    // On-screen D-pad key spacing, as a fraction of the pad's half-size. 0 = the four
+    // directions meet at the center (a tight +). Higher pushes each direction OUT toward
+    // its edge, opening a visible gap in the middle (NetherSX2-style) and growing the
+    // center dead-zone to match. Edited in the Touch Layout editor (select the D-Pad).
+    // Persisted under KEY_DPAD_SPACING. Default 0 (normal tight D-pad).
+    val dpadSpacing = mutableStateOf(0.0f)
 
     // Floating on-screen stick: the first touch-down inside a stick's zone becomes
     // its origin (the ring re-centers under your finger) instead of a fixed center —
@@ -248,6 +262,8 @@ object TouchControls {
         faceMultiTouch.value = Main.prefs.getBoolean(KEY_FACE_MULTI, true)
         touchGliding.value = Main.prefs.getBoolean(KEY_TOUCH_GLIDING, false)
         touchHaptics.value = Main.prefs.getBoolean(KEY_TOUCH_HAPTICS, true)
+        multiTouchRadius.value = Main.prefs.getFloat(KEY_MULTI_RADIUS, 0.62f).coerceIn(0.50f, 0.95f)
+        dpadSpacing.value = Main.prefs.getFloat(KEY_DPAD_SPACING, 0.0f).coerceIn(0.0f, 0.35f)
         floatingStick.value = Main.prefs.getBoolean(KEY_FLOATING_STICK, false)
         visibilityMode.value = Main.prefs.getInt(KEY_VIS_MODE, 11).coerceIn(0, 11)
         if (visibilityMode.value == 0) visible.value = false
@@ -280,6 +296,8 @@ object TouchControls {
             .putBoolean(KEY_FACE_MULTI, faceMultiTouch.value)
             .putBoolean(KEY_TOUCH_GLIDING, touchGliding.value)
             .putBoolean(KEY_TOUCH_HAPTICS, touchHaptics.value)
+            .putFloat(KEY_MULTI_RADIUS, multiTouchRadius.value)
+            .putFloat(KEY_DPAD_SPACING, dpadSpacing.value)
             .putBoolean(KEY_FLOATING_STICK, floatingStick.value)
             .putInt(KEY_VIS_MODE, visibilityMode.value)
             .apply()
@@ -599,6 +617,16 @@ object TouchControls {
 
     fun setTouchHaptics(enabled: Boolean) {
         touchHaptics.value = enabled
+        persist()
+    }
+
+    fun setMultiTouchRadius(v: Float) {
+        multiTouchRadius.value = v.coerceIn(0.50f, 0.95f)
+        persist()
+    }
+
+    fun setDpadSpacing(v: Float) {
+        dpadSpacing.value = v.coerceIn(0.0f, 0.35f)
         persist()
     }
 

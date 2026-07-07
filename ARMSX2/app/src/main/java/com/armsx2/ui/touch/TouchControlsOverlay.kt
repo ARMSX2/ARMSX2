@@ -532,7 +532,7 @@ private fun UnifiedTouchLayer(
         val sizePx = with(density) { cfg.sizeDp.dp.toPx() }
         val cx = widthPx * cfg.xFrac
         val cy = heightPx * cfg.yFrac
-        UnifiedHit(id = cfg.id, cx = cx, cy = cy, radius = sizePx * 0.62f)
+        UnifiedHit(id = cfg.id, cx = cx, cy = cy, radius = sizePx * TouchControls.multiTouchRadius.value)
     }
     val cogPx = with(density) { CogTapZoneDp.toPx() }
     val foreignBounds = foreignRects.map { cfg ->
@@ -872,7 +872,10 @@ private fun DpadWidget(cfg: TouchButtonCfg, edit: Boolean) {
                     val cy = size.height / 2f
                     val dx = pos.x - cx
                     val dy = pos.y - cy
-                    val deadR = min(cx, cy) * 0.22f
+                    // Dead-center grows with the key spacing so the empty middle gap
+                    // between the spread-apart arms registers nothing (a small base gap
+                    // is always present to avoid center-jitter at spacing 0).
+                    val deadR = min(cx, cy) * (0.08f + TouchControls.dpadSpacing.value)
                     val r = hypot(dx, dy)
                     // 8-way with cardinal-biased sectors: the minor axis
                     // only fires when its magnitude is at least
@@ -915,6 +918,11 @@ private fun DpadWidget(cfg: TouchButtonCfg, edit: Boolean) {
     // label-stripped L/R siblings.
     val upRatio    = 45f / 52f
     val lrRatio    = 53f / 44f
+    // D-pad key spacing (NetherSX2-style): each arm normally fills half the pad and meets
+    // at center; subtracting the gap pulls it back toward its edge, opening a middle gap so
+    // the four directions read as spaced-apart keys. Clamped so an arm never vanishes.
+    val dpadGap = TouchControls.dpadSpacing.value.coerceIn(0f, 0.35f)
+    val armFill = 0.5f - dpadGap
     Box(
         modifier = Modifier.fillMaxSize().then(pressMod),
     ) {
@@ -939,7 +947,7 @@ private fun DpadWidget(cfg: TouchButtonCfg, edit: Boolean) {
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .offset(y = (-4).dp)
-                .fillMaxHeight(0.5f)
+                .fillMaxHeight(armFill)
                 .aspectRatio(upRatio),
         )
         Image(
@@ -951,7 +959,7 @@ private fun DpadWidget(cfg: TouchButtonCfg, edit: Boolean) {
             alpha = opacity,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .fillMaxHeight(0.5f)
+                .fillMaxHeight(armFill)
                 .aspectRatio(upRatio)
                 .rotate(if (skDown != null) 0f else 180f),
         )
@@ -964,7 +972,7 @@ private fun DpadWidget(cfg: TouchButtonCfg, edit: Boolean) {
             alpha = opacity,
             modifier = Modifier
                 .align(Alignment.CenterStart)
-                .fillMaxWidth(0.5f)
+                .fillMaxWidth(armFill)
                 .aspectRatio(lrRatio),
         )
         Image(
@@ -976,7 +984,7 @@ private fun DpadWidget(cfg: TouchButtonCfg, edit: Boolean) {
             alpha = opacity,
             modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .fillMaxWidth(0.5f)
+                .fillMaxWidth(armFill)
                 .aspectRatio(lrRatio),
         )
         if (edit) EditAdornment(cfg.id)
@@ -1492,6 +1500,40 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
                     ToolbarChip(if (selectedCfg.tapToHold) str("touch.editor.tapHoldOn") else str("touch.editor.tapHoldOff")) {
                         TouchControls.updateButton(selectedCfg.id) { it.copy(tapToHold = !it.tapToHold) }
                     }
+                }
+            }
+            // D-Pad key spacing — only when the D-Pad is selected. Spreads the four
+            // directions apart (opens a center gap), NetherSX2-style, with live preview.
+            if (selectedCfg.id == TouchButtonId.DPAD) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "D-Pad spacing",
+                        color = Color(0xFFFFD33A),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    androidx.compose.material3.Slider(
+                        value = TouchControls.dpadSpacing.value,
+                        onValueChange = { TouchControls.setDpadSpacing(it) },
+                        valueRange = 0f..0.35f,
+                        modifier = Modifier
+                            .width(240.dp)
+                            .height(28.dp),
+                        colors = androidx.compose.material3.SliderDefaults.colors(
+                            thumbColor = Color(0xFFFFD33A),
+                            activeTrackColor = Color(0xFFFFD33A),
+                            inactiveTrackColor = Color(0xFF444433),
+                        ),
+                    )
+                    Text(
+                        "${(TouchControls.dpadSpacing.value * 100).toInt()}%",
+                        color = Color(0xFFAAAAAA),
+                        fontSize = 11.sp,
+                        modifier = Modifier.width(48.dp),
+                    )
                 }
             }
         }

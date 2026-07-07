@@ -503,6 +503,21 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 TouchControls.touchHaptics.value,
                 description = str("pad.touchHaptics.description"),
             ) { TouchControls.setTouchHaptics(it) }
+            SettingsDivider()
+            // Multi-touch reach: how far from a button's center a touch still counts.
+            // Higher = press adjacent buttons together with more space between them.
+            IntSliderRow(
+                label = "Multi-touch Reach",
+                value = (TouchControls.multiTouchRadius.value * 100f).toInt(),
+                min = 50,
+                max = 95,
+                description = "How far from a button's center a touch still registers. Raise this if multi-touch only works when buttons are almost touching.",
+                valueFormatter = { "${it}%" },
+                onChange = { TouchControls.setMultiTouchRadius(it / 100f) },
+            )
+            // D-Pad key spacing lives in the Touch Layout editor now: open the editor,
+            // tap the D-Pad to select it, and use the "D-Pad spacing" slider to spread
+            // the four directions apart (NetherSX2-style) with a live preview.
         }
     }
 }
