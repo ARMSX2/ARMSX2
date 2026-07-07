@@ -12,7 +12,6 @@
 #if defined(__aarch64__) || defined(_M_ARM64)
 
 #include "SPU2/spu2_neon.h"
-#include "SPU2/spu2_neon_mixer.h"
 #include "SPU2/spu2_neon_reverb_ex.h"
 #include "SPU2/spu2_neon_dcfilter.h"
 #include "SPU2/spu2_sve2_fir.h"
