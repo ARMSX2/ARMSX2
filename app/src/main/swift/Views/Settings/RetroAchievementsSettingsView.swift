@@ -277,7 +277,16 @@ struct RetroAchievementsSettingsView: View {
     private func refresh() {
         state = ARMSX2Bridge.retroAchievementsState()
         achievementsEnabled = bool("enabled")
-        hardcoreEnabled = bool("hardcorePreference")
+        // The in-memory EmuConfig.Achievements.HardcoreMode (exposed via
+        // "hardcorePreference") can lag the persisted INI when no game has
+        // booted yet, so the home-screen toggle showed stale state. Fall back
+        // to the persisted Achievements/ChallengeMode INI value in that case so
+        // the toggle reflects what was last saved.
+        if bool("hardcoreActive") {
+            hardcoreEnabled = bool("hardcorePreference")
+        } else {
+            hardcoreEnabled = ARMSX2Bridge.getINIBool("Achievements", key: "ChallengeMode", defaultValue: false)
+        }
         notificationsEnabled = bool("notifications", fallback: true)
         leaderboardNotificationsEnabled = bool("leaderboardNotifications", fallback: true)
         overlaysEnabled = bool("overlays", fallback: true)

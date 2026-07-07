@@ -539,11 +539,15 @@ struct GameScreenView: View {
         previousHideHomeIndicator = appState.hideHomeIndicator
         previousHideStatusBar = appState.hideStatusBar
         appState.hideHomeIndicator = true
+        // Keep the display awake while a game is on screen so it does not sleep mid-play.
+        UIApplication.shared.isIdleTimerDisabled = true
     }
 
     private func leaveGameplaySystemChromeMode() {
         appState.hideHomeIndicator = previousHideHomeIndicator
         appState.hideStatusBar = previousHideStatusBar
+        // Allow the screen to auto-sleep again once gameplay ends.
+        UIApplication.shared.isIdleTimerDisabled = false
     }
 
     /// Single source of truth for applying the runtime fullscreen state. Keeps the

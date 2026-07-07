@@ -5,6 +5,9 @@ import SwiftUI
 
 struct GraphicsSettingsView: View {
     @State private var settings = SettingsStore.shared
+    @State private var showShaderCacheClearConfirm = false
+    @State private var shaderCacheResult: String?
+    @State private var showShaderCacheResult = false
 
     private var manualAdvancedHacks: Bool {
         !settings.enableGameDBHardwareFixes
@@ -55,6 +58,15 @@ struct GraphicsSettingsView: View {
                         .foregroundStyle(.orange)
                 }
 #endif
+
+                Button(role: .destructive) {
+                    showShaderCacheClearConfirm = true
+                } label: {
+                    Label(settings.localized("Clear Shader Cache"), systemImage: "square.slash")
+                }
+                Text(settings.localized("Removes cached GS/Metal shader and pipeline artifacts so they rebuild from scratch. Use this if visuals glitch after a settings change. Effects apply on the next frame or restart."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section(settings.localized("Upscaling")) {
@@ -371,6 +383,48 @@ struct GraphicsSettingsView: View {
         }
         .navigationTitle(settings.localized("Graphics"))
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            settings.localized("Clear Shader Cache?"),
+            isPresented: $showShaderCacheClearConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(settings.localized("Clear"), role: .destructive) {
+                clearShaderCache()
+            }
+            Button(settings.localized("Cancel"), role: .cancel) {}
+        } message: {
+            Text(settings.localized("This removes cached shader and GS artifacts. The renderer may briefly stutter as they rebuild."))
+        }
+        .alert(settings.localized("Shader Cache"), isPresented: $showShaderCacheResult) {
+            Button(settings.localized("OK")) {}
+        } message: {
+            Text(settings.localized(shaderCacheResult ?? ""))
+        }
+    }
+
+    /// Clears the GS/Metal shader and pipeline cache. The Metal renderer builds
+    /// shaders in memory from the compiled metallib, so there is no dedicated
+    /// on-disk shader directory; the GS-generated cache under the app's cache
+    /// directory holds the rebuildable artifacts this targets.
+    private func clearShaderCache() {
+        let docsPath = ARMSX2Bridge.documentsDirectory()
+        let cacheURL = URL(fileURLWithPath: (docsPath as NSString).appendingPathComponent("cache"), isDirectory: true)
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: cacheURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            shaderCacheResult = "Shader cache is already empty."
+            showShaderCacheResult = true
+            return
+        }
+        do {
+            for child in try fileManager.contentsOfDirectory(at: cacheURL, includingPropertiesForKeys: nil) {
+                try? fileManager.removeItem(at: child)
+            }
+            shaderCacheResult = "Shader cache cleared."
+        } catch {
+            shaderCacheResult = "Could not fully clear the cache: \(error.localizedDescription)"
+        }
+        showShaderCacheResult = true
     }
 
     /// Labeled picker over an explicit (label, value) option list, used for the GS

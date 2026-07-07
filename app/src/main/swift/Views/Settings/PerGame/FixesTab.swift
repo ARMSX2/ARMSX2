@@ -53,6 +53,11 @@ struct FixesTab: View {
                         Text(settings.localized("On")).tag(1)
                     }
                     .disabled(!enabled)
+                    if option.key == "SkipMPEGHack" {
+                        Text(settings.localized("Skip MPEG is a last-resort FMV hack that can break interactive cutscenes. Best set per-game."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             } header: {
                 Text(settings.localized("Compatibility Overrides"))
