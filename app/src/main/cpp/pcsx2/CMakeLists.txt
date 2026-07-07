@@ -275,7 +275,6 @@ set(pcsx2SPU2Headers
 	SPU2/regs.h
 	SPU2/spdif.h
 	SPU2/spu2_neon.h
-	SPU2/spu2_neon_mixer.h
 	SPU2/spu2_neon_dcfilter.h
 	SPU2/spu2_neon_reverb_ex.h
 	SPU2/spu2_sve2_fir.h
