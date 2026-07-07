@@ -736,6 +736,8 @@ val EN: Map<String, String> = mapOf(
     "renderer.displayFilter.label" to "Display Filter",
     "renderer.displayMode.description" to "Controls how the PS2 image fits the screen.",
     "renderer.displayMode.label" to "Display Mode",
+    "renderer.fmvAspect.description" to "Aspect ratio used only while an FMV/cutscene is playing. Off keeps the Display Mode above. Fixes stretched or letterboxed movies in games that render FMVs at a different ratio.",
+    "renderer.fmvAspect.label" to "FMV Aspect Ratio",
     "renderer.dumpReplaceableTextures.description" to "Writes textures used by the game to disk for pack creation.",
     "renderer.dumpReplaceableTextures.label" to "Dump Replaceable Textures",
     "renderer.gamma.label" to "Gamma",

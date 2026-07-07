@@ -122,6 +122,16 @@ fun RendererTab(state: MutableState<Settings>) {
                 onChange = { apply(s.copy(aspectRatio = it)) },
             )
             SettingsDivider()
+            // FMV Aspect Ratio override — applies only during FMVs/cutscenes; "Off" keeps
+            // the aspect above. Handy for games that render FMVs at a different ratio.
+            SegmentedRow(
+                label = str("renderer.fmvAspect.label"),
+                options = listOf("Off", "Auto", "4:3", "16:9", "10:7"),
+                selectedIndex = s.fmvAspectRatio.coerceIn(0, 4),
+                description = str("renderer.fmvAspect.description"),
+                onChange = { apply(s.copy(fmvAspectRatio = it)) },
+            )
+            SettingsDivider()
             // Emulation Screen Orientation — global (Android activity orientation), stored
             // in prefs and applied via Main; not an emucore/per-game setting.
             val orientation = remember { mutableStateOf(com.armsx2.Main.prefs.getInt("ui.orientation", 0)) }

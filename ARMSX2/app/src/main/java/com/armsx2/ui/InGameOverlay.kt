@@ -397,7 +397,8 @@ object InGameOverlay {
             Tab.Renderer -> cur.copy(
                 renderer = base.renderer,
                 accurateBlendingUnit = base.accurateBlendingUnit, adrenoFbFetch = base.adrenoFbFetch,
-                aspectRatio = base.aspectRatio, deinterlaceMode = base.deinterlaceMode,
+                aspectRatio = base.aspectRatio, fmvAspectRatio = base.fmvAspectRatio,
+                deinterlaceMode = base.deinterlaceMode,
                 dumpReplaceableTextures = base.dumpReplaceableTextures, gpuProfile = base.gpuProfile,
                 hardwareDownloadMode = base.hardwareDownloadMode, hwAa1 = base.hwAa1,
                 hwAat = base.hwAat, hwMipmap = base.hwMipmap, hwRov = base.hwRov,
@@ -612,6 +613,18 @@ object InGameOverlay {
             }
             NativeApp.setSetting("EmuCore/GS", "AspectRatio", "string", name)
             NativeApp.setAspectRatio(ratio)
+        }
+        if (previous.fmvAspectRatio != updated.fmvAspectRatio) {
+            val fmvRatio = updated.fmvAspectRatio.coerceIn(0, 4)
+            val fmvName = when (fmvRatio) {
+                1 -> "Auto 4:3/3:2"
+                2 -> "4:3"
+                3 -> "16:9"
+                4 -> "10:7"
+                else -> "Off"
+            }
+            NativeApp.setSetting("EmuCore/GS", "FMVAspectRatioSwitch", "string", fmvName)
+            NativeApp.setFmvAspectRatio(fmvRatio)
         }
 
         // USB keyboard (#254) — attach/detach the emulated HID keyboard live and

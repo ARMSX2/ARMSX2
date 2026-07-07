@@ -526,6 +526,7 @@ public class NativeApp {
 	}
 
 	public static native void setAspectRatio(int type);
+	public static native void setFmvAspectRatio(int type);
 	public static native void speedhackLimitermode(int value);
 	/** Custom speed / FPS cap as a percent of native (100 = full speed).
 	 *  Applies live to the running VM's frame pacer. */

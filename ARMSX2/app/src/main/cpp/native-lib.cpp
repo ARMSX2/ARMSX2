@@ -809,6 +809,25 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAspectRatio(JNIEnv *env, jclass clazz,
     EmuConfig.CurrentAspectRatio = static_cast<AspectRatioType>(ratio);
 }
 
+// FMV Aspect Ratio override — applied only while an FMV/MPEG is playing (Counters.cpp
+// swaps EmuConfig.CurrentAspectRatio to this on FMV state transitions, restoring the
+// generic AspectRatio when the FMV ends). 0 Off (use the generic aspect) · 1 Auto
+// 4:3/3:2 · 2 4:3 · 3 16:9 · 4 10:7. Mirrors setAspectRatio; updates EmuConfig.GS live
+// so the next FMV transition honours a change made mid-session.
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setFmvAspectRatio(JNIEnv *env, jclass clazz,
+                                                       jint p_type) {
+    const int ratio = std::clamp(static_cast<int>(p_type), 0,
+        static_cast<int>(FMVAspectRatioSwitchType::MaxCount) - 1);
+    const char* name = Pcsx2Config::GSOptions::FMVAspectRatioSwitchNames[ratio];
+    if (!name)
+        return;
+
+    Host::SetBaseStringSettingValue("EmuCore/GS", "FMVAspectRatioSwitch", name);
+    EmuConfig.GS.FMVAspectRatioSwitch = static_cast<FMVAspectRatioSwitchType>(ratio);
+}
+
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_speedhackLimitermode(JNIEnv *env, jclass clazz,

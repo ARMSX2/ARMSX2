@@ -245,6 +245,10 @@ data class Settings(
     /** EmuCore/GS/AspectRatio:
      *  0 Stretch · 1 Auto 4:3/3:2 · 2 4:3 · 3 16:9 · 4 10:7. */
     val aspectRatio: Int = 1,
+    /** EmuCore/GS/FMVAspectRatioSwitch — aspect ratio used ONLY while an FMV/MPEG is
+     *  playing (restores [aspectRatio] when it ends). 0 Off (no override) · 1 Auto
+     *  4:3/3:2 · 2 4:3 · 3 16:9 · 4 10:7. Default Off. */
+    val fmvAspectRatio: Int = 0,
     /** Host graphics API: "auto" / "opengl" / "vulkan" / "software". Applied via
      *  the renderer JNI helpers on (re)launch; per-game so each title can pick its
      *  own backend. Seeded from the legacy global "renderer" pref on first load. */
@@ -675,6 +679,7 @@ data class Settings(
         // Live convenience pokes. Harmless when the GS is closed; commitSettings()
         // below performs the authoritative apply for a cold start / restart.
         NativeApp.setAspectRatio(aspectRatio.coerceIn(0, 4))
+        NativeApp.setFmvAspectRatio(fmvAspectRatio.coerceIn(0, 4))
         NativeApp.renderTvShader(tvShader.coerceIn(0, 7))
         NativeApp.renderShadeBoost(
             shadeBoost,
@@ -753,6 +758,14 @@ data class Settings(
             else -> "Auto 4:3/3:2"
         }
         put("EmuCore/GS", "AspectRatio", "string", aspectRatioName)
+        val fmvAspectRatioName = when (fmvAspectRatio.coerceIn(0, 4)) {
+            1 -> "Auto 4:3/3:2"
+            2 -> "4:3"
+            3 -> "16:9"
+            4 -> "10:7"
+            else -> "Off"
+        }
+        put("EmuCore/GS", "FMVAspectRatioSwitch", "string", fmvAspectRatioName)
         put("EmuCore/GS", "deinterlace_mode", "int", deinterlaceMode.coerceIn(0, 9).toString())
         put("EmuCore/GS", "FramerateNTSC", "float", framerateNtsc.toString())
         put("EmuCore/GS", "FrameratePAL", "float", frameratePal.toString())
@@ -1027,6 +1040,7 @@ data class Settings(
         put("swThreads", swThreads)
         put("swThreadsHeight", swThreadsHeight)
         put("aspectRatio", aspectRatio)
+        put("fmvAspectRatio", fmvAspectRatio)
         put("deinterlaceMode", deinterlaceMode)
         put("dev9EthEnable", dev9EthEnable)
         put("dev9EthApi", dev9EthApi)
@@ -1255,6 +1269,7 @@ data class Settings(
                 swThreads = json.optInt("swThreads", def.swThreads),
                 swThreadsHeight = json.optInt("swThreadsHeight", def.swThreadsHeight),
                 aspectRatio = json.optInt("aspectRatio", def.aspectRatio),
+                fmvAspectRatio = json.optInt("fmvAspectRatio", def.fmvAspectRatio),
                 deinterlaceMode = json.optInt("deinterlaceMode", def.deinterlaceMode),
                 dev9EthEnable = json.optBoolean("dev9EthEnable", def.dev9EthEnable),
                 dev9EthApi = json.optString("dev9EthApi", def.dev9EthApi).ifEmpty { def.dev9EthApi },
@@ -1464,6 +1479,7 @@ data class Settings(
             if (current.swThreads            != base.swThreads)            j.put("swThreads", current.swThreads)
             if (current.swThreadsHeight      != base.swThreadsHeight)      j.put("swThreadsHeight", current.swThreadsHeight)
             if (current.aspectRatio         != base.aspectRatio)         j.put("aspectRatio", current.aspectRatio)
+            if (current.fmvAspectRatio      != base.fmvAspectRatio)      j.put("fmvAspectRatio", current.fmvAspectRatio)
             if (current.deinterlaceMode     != base.deinterlaceMode)     j.put("deinterlaceMode", current.deinterlaceMode)
             if (current.dev9EthEnable       != base.dev9EthEnable)       j.put("dev9EthEnable", current.dev9EthEnable)
             if (current.dev9EthApi          != base.dev9EthApi)          j.put("dev9EthApi", current.dev9EthApi)
@@ -1648,6 +1664,7 @@ data class Settings(
             swThreads = if (overrides.has("swThreads")) overrides.getInt("swThreads") else base.swThreads,
             swThreadsHeight = if (overrides.has("swThreadsHeight")) overrides.getInt("swThreadsHeight") else base.swThreadsHeight,
             aspectRatio = if (overrides.has("aspectRatio")) overrides.getInt("aspectRatio") else base.aspectRatio,
+            fmvAspectRatio = if (overrides.has("fmvAspectRatio")) overrides.getInt("fmvAspectRatio") else base.fmvAspectRatio,
             deinterlaceMode = if (overrides.has("deinterlaceMode")) overrides.getInt("deinterlaceMode") else base.deinterlaceMode,
             dev9EthEnable = if (overrides.has("dev9EthEnable")) overrides.getBoolean("dev9EthEnable") else base.dev9EthEnable,
             dev9EthApi = if (overrides.has("dev9EthApi")) overrides.getString("dev9EthApi").ifEmpty { base.dev9EthApi } else base.dev9EthApi,
