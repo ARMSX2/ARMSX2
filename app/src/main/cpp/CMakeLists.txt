@@ -135,84 +135,10 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	enable_language(Swift)
 
-	set(SWIFT_SOURCES
-		${CMAKE_SOURCE_DIR}/../swift/Views/RootView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/BootSplashView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/GameListView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/PerGameSettingsPanel.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/PerGameTab.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/EnumPicker.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/GeneralTab.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/GraphicsTab.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/AudioTab.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/CPUTab.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/PadTab.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/FixesTab.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PerGame/CheatsTab.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/CoverThumbnailView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/BIOSListView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/HelpView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/GameScreenView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/QuickMenuView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/GameOverlayContainer.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/OverlayDesignSystem.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/MetalGameView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/EmulatorView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/VirtualControllerView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Controller/ControllerEnvironment.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Controller/ControllerAsset.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Controller/PressSurface.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Controller/ControllerGlyphs.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Controller/ControllerButtons.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Controller/CompositeControls.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/TransientBannerController.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/CheatsPatchesManagerView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/AnimatedLibraryBackgroundView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/LicenseView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/SettingsRootView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/AppearanceSettingsView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/AppIconSettingsView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/EmulatorSettingsView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/GraphicsSettingsView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/AudioSettingsView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/MemoryCardSettingsView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/StorageSettingsView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/RetroAchievementsSettingsView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/OverlaySettingsView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/GamepadSettingsView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/VirtualPadSettingsView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Views/Settings/PadLayoutEditView.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/PadLayoutStore.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/PadLayoutPresetStore.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/PadLayoutImportExport.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/EmulatorBridge.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/SwiftUIHost.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/AppState.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/AppLanguage.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/VirtualPadSkin.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/VPadSkinLibraryStore.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/SkinManifestV2.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/SkinManifestImporter.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/SkinManifestRuntimeLayout.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/Setting.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+Graphics.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+Audio.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+CPU.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+Speedhacks.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+GameFixes.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+UI.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore+DEV9.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/FileImportHandler.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/ImportFileCopier.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/ExternalGameLibrary.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/ARMSX2DeepLinkHandler.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/ImportDocumentPicker.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/ShareSheet.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/CoverStore.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/PatchModels.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/PnachParser.swift
-		${CMAKE_SOURCE_DIR}/../swift/Models/PatchStore.swift
+	# Swift sources are globbed so newly-added files are picked up automatically at
+	# configure time. CONFIGURE_DEPENDS makes CMake re-scan when files change.
+	file(GLOB_RECURSE SWIFT_SOURCES CONFIGURE_DEPENDS
+		${CMAKE_SOURCE_DIR}/../swift/*.swift
 	)
 
 	configure_file("${CMAKE_SOURCE_DIR}/Info.plist.in" "${CMAKE_BINARY_DIR}/Info.plist" @ONLY)

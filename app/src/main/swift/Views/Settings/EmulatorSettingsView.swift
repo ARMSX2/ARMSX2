@@ -236,6 +236,11 @@ struct EmulatorSettingsView: View {
                         get: { settings.gameFixEnabled(option.key) },
                         set: { settings.setGameFix(option.key, $0) }
                     ))
+                    if option.key == "SkipMPEGHack" {
+                        Text(settings.localized("Skip MPEG is a last-resort FMV hack that can break interactive cutscenes. Best set per-game."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .disabled(!settings.enableGameFixes)
             } header: {
