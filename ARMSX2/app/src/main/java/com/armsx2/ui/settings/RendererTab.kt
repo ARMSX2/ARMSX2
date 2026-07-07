@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
@@ -39,7 +40,9 @@ import kr.co.iefriends.pcsx2.NativeApp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.BufferedInputStream
 import java.io.File
+import java.util.zip.ZipInputStream
 import kotlin.math.abs
 
 /**
@@ -420,51 +423,84 @@ private fun TexturePackImportRow() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val status = remember { mutableStateOf("") }
-    val launcher = rememberLauncherForActivityResult(OpenDocumentTree()) { uri: Uri? ->
+
+    // Shared handler: both the folder and .zip pickers need a booted game (for the
+    // serial) and run the copy off the UI thread, reporting the file count the same way.
+    fun runImport(doCopy: (String) -> Int) {
         val serial = activeTextureSerial()
-        if (uri == null) {
-            return@rememberLauncherForActivityResult
-        } else if (serial == null) {
+        if (serial == null) {
             Toast.makeText(context, I18n.get("renderer.import.bootGameFirst"), Toast.LENGTH_LONG).show()
-        } else {
-            scope.launch(Dispatchers.IO) {
-                val copied = runCatching { importTexturePack(context, uri, serial) }.getOrDefault(-1)
-                withContext(Dispatchers.Main) {
-                    val msg = if (copied >= 0)
-                        "Imported $copied texture files for $serial."
-                    else
-                        I18n.get("renderer.import.failed")
-                    status.value = msg
-                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                }
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            val copied = runCatching { doCopy(serial) }.getOrDefault(-1)
+            withContext(Dispatchers.Main) {
+                val msg = if (copied >= 0)
+                    "Imported $copied texture files for $serial."
+                else
+                    I18n.get("renderer.import.failed")
+                status.value = msg
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
             }
         }
     }
+    val folderLauncher = rememberLauncherForActivityResult(OpenDocumentTree()) { uri: Uri? ->
+        if (uri != null) runImport { s -> importTexturePack(context, uri, s) }
+    }
+    val zipLauncher = rememberLauncherForActivityResult(OpenDocument()) { uri: Uri? ->
+        if (uri != null) runImport { s -> importTexturePackZip(context, uri, s) }
+    }
 
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .background(rowAura())
-            .clickable { launcher.launch(null) }
-            .padding(horizontal = 6.dp, vertical = 5.dp),
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        Column {
+    Column(Modifier.fillMaxWidth()) {
+        // Folder import (the pack's folder, with or without a nested "replacements/").
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .background(rowAura())
+                .clickable { folderLauncher.launch(null) }
+                .padding(horizontal = 6.dp, vertical = 5.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Column {
+                Text(
+                    str("renderer.importTexturePack.label"),
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    status.value.ifEmpty {
+                        activeTextureSerial()?.let { "Copies into textures/$it/replacements" }
+                            ?: I18n.get("renderer.importTexturePack.bootFirst")
+                    },
+                    color = Colors.pasx2_blue,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+        // .zip import — extracts the archive into the same per-game replacements folder.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .background(rowAura())
+                .clickable {
+                    zipLauncher.launch(
+                        arrayOf(
+                            "application/zip", "application/x-zip-compressed",
+                            "application/octet-stream", "*/*",
+                        ),
+                    )
+                }
+                .padding(horizontal = 6.dp, vertical = 5.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
             Text(
-                str("renderer.importTexturePack.label"),
+                str("renderer.importTexturePackZip.label"),
                 color = Color.White,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                status.value.ifEmpty {
-                    activeTextureSerial()?.let { "Copies into textures/$it/replacements" }
-                        ?: I18n.get("renderer.importTexturePack.bootFirst")
-                },
-                color = Colors.pasx2_blue,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
             )
         }
     }
@@ -573,6 +609,41 @@ private fun importTexturePack(context: Context, uri: Uri, serial: String): Int {
     if (!dest.exists() && !dest.mkdirs())
         return -1
     return copyDocumentTree(context, source, dest)
+}
+
+/** Extract a picked .zip of replacement textures into textures/<serial>/replacements,
+ *  preserving the archive's internal folder structure. The native loader scans that
+ *  directory RECURSIVELY and matches by hash filename, so a pack that nests its files
+ *  (e.g. under its own "replacements/" or a pack-name folder) still resolves. Guards
+ *  against Zip-Slip path traversal by rejecting any entry that escapes the dest dir. */
+private fun importTexturePackZip(context: Context, zipUri: Uri, serial: String): Int {
+    val dest = File(Main.assetCopyRoot(context), "textures/$serial/replacements")
+    if (!dest.exists() && !dest.mkdirs())
+        return -1
+    val destCanon = dest.canonicalPath
+    var copied = 0
+    context.contentResolver.openInputStream(zipUri)?.use { raw ->
+        ZipInputStream(BufferedInputStream(raw)).use { zin ->
+            while (true) {
+                val e = zin.nextEntry ?: break
+                if (!e.isDirectory) {
+                    val rel = e.name.replace('\\', '/').trimStart('/')
+                    val out = File(dest, rel)
+                    // Zip-Slip guard: the resolved path must stay inside dest.
+                    val outCanon = out.canonicalPath
+                    if (outCanon == destCanon || outCanon.startsWith(destCanon + File.separator)) {
+                        out.parentFile?.mkdirs()
+                        // Per-entry guard: a mid-copy failure deletes that partial file
+                        // and lets the remaining entries still import.
+                        val ok = runCatching { out.outputStream().use { zin.copyTo(it) } }.isSuccess
+                        if (ok) copied++ else out.delete()
+                    }
+                }
+                zin.closeEntry()
+            }
+        }
+    } ?: return -1
+    return copied
 }
 
 private fun copyDocumentTree(context: Context, source: DocumentFile, dest: File): Int {

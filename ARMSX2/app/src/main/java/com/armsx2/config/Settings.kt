@@ -953,7 +953,17 @@ data class Settings(
             preloadFrameData != other.preloadFrameData ||
             estimateTextureRegion != other.estimateTextureRegion ||
             hwAccurateAlphaTest != other.hwAccurateAlphaTest ||
-            drawBuffering != other.drawBuffering
+            drawBuffering != other.drawBuffering ||
+            // Texture-replacement toggles: without these here the in-game "Load Texture
+            // Packs" switch only wrote the base layer (setSetting) and never fired the
+            // live GS reconfigure, so a just-imported pack didn't appear until the next
+            // game boot. Including them routes through applyGSSettingsLive → GSUpdateConfig
+            // → GSTextureReplacements reload/purge, so the pack loads immediately.
+            loadTextureReplacements != other.loadTextureReplacements ||
+            loadTextureReplacementsAsync != other.loadTextureReplacementsAsync ||
+            precacheTextureReplacements != other.precacheTextureReplacements ||
+            dumpReplaceableTextures != other.dumpReplaceableTextures ||
+            osdShowTextureReplacements != other.osdShowTextureReplacements
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("eeCycleRate", eeCycleRate)
