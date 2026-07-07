@@ -246,6 +246,32 @@ private fun GpuDriverSection(context: Context, scope: kotlinx.coroutines.Corouti
         }
         val list = remote
         Spacer(Modifier.height(6.dp))
+        // GPU-based driver recommendation ("driver update assistant", Eden-style):
+        // probe the physical GPU once (off the main thread) and, for Adreno, point
+        // the user at the source most likely to have a good Turnip pack for it.
+        val gpuName = remember { mutableStateOf<String?>(null) }
+        LaunchedEffect(Unit) {
+            gpuName.value = withContext(Dispatchers.IO) { com.armsx2.GpuInfo.rendererName() }
+        }
+        gpuName.value?.let { name ->
+            val rec = com.armsx2.GpuInfo.recommendation(name)
+            Column(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("GPU  ", color = Color(0xFFAAAAAA), fontSize = 11.sp)
+                    Text(name, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (rec != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Recommended  ", color = Color(0xFFAAAAAA), fontSize = 11.sp)
+                        Text(rec.sourceLabel, color = Color(0xFF4DA3FF), fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold)
+                    }
+                    Text(rec.reason, color = Color(0xFF808080), fontSize = 10.sp)
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+        }
         if (list == null) {
             Text(str("backend.driver.loadingList"), color = Color(0xFFAAAAAA), fontSize = 11.sp,
                 modifier = Modifier.padding(horizontal = 6.dp))
@@ -428,6 +454,7 @@ private fun friendlyDriverSource(source: String): String = when {
     source.contains("Steven", ignoreCase = true) -> "StevenMXZ"
     source.contains("Purple", ignoreCase = true) -> "Mr Purple"
     source.contains("K11MCH1", ignoreCase = true) || source.contains("AdrenoTools", ignoreCase = true) -> "KIMCHI"
+    source.contains("GameHub", ignoreCase = true) || source.contains("crueter", ignoreCase = true) -> "GameHub 8Elite"
     else -> source.ifEmpty { "Other" }
 }
 

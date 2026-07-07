@@ -69,6 +69,13 @@ object CustomDriver {
             "https://api.github.com/repos/StevenMXZ/Adreno-Tools-Drivers/releases",
             "stevenmxz",
         ),
+        // crueter's GameHub Turnip packs, tuned for Snapdragon 8 Elite / Adreno 8xx
+        // (Gen 8). Same GitHub-releases adrenotools zip format as the sources above.
+        DriverSource(
+            "crueter · GameHub 8Elite",
+            "https://api.github.com/repos/crueter/GameHub-8Elite-Drivers/releases",
+            "gamehub8e",
+        ),
     )
 
     /** Sane default for the driver's library soname when meta.json
