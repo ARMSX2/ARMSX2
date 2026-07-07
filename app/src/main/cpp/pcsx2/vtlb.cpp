@@ -1686,12 +1686,17 @@ static void vtlb_RemoveFastmemMappings()
 bool vtlb_ResolveFastmemMapping(uptr* addr)
 {
 	uptr uaddr = *addr;
-	uptr fastmem_start = (uptr)vtlbdata.fastmem_base;
-	uptr fastmem_end = fastmem_start + 0xFFFFFFFFu;
-	if (uaddr < fastmem_start || uaddr > fastmem_end)
+	// yaps2 2801ebde: subtraction-first, single unsigned bound. `fastmem_start +
+	// 0xFFFFFFFF` overflows a 64-bit uptr when the fastmem mapping lands within 4 GB of the
+	// top of the address space (exotic kernels / high-mmap allocators), wrapping fastmem_end
+	// below fastmem_start so the two-sided compare silently rejected every valid in-range
+	// address. `offset >= FASTMEM_AREA_SIZE` is overflow-proof regardless of base.
+	const uptr fastmem_start = (uptr)vtlbdata.fastmem_base;
+	const uptr offset = uaddr - fastmem_start;
+	if (offset >= FASTMEM_AREA_SIZE)
 		return false;
 
-	const u32 vaddr = static_cast<u32>(uaddr - fastmem_start);
+	const u32 vaddr = static_cast<u32>(offset);
 	FASTMEM_LOG("Trying to resolve %p (vaddr %08X)", (void*)uaddr, vaddr);
 
 	const u32 vpage = vaddr / VTLB_PAGE_SIZE;
@@ -1709,12 +1714,17 @@ bool vtlb_ResolveFastmemMapping(uptr* addr)
 
 bool vtlb_GetGuestAddress(uptr host_addr, u32* guest_addr)
 {
-	uptr fastmem_start = (uptr)vtlbdata.fastmem_base;
-	uptr fastmem_end = fastmem_start + 0xFFFFFFFFu;
-	if (host_addr < fastmem_start || host_addr > fastmem_end)
+	// yaps2 2801ebde: subtraction-first, single unsigned bound. `fastmem_start +
+	// 0xFFFFFFFF` overflows a 64-bit uptr when the fastmem mapping lands within 4 GB of the
+	// top of the address space (exotic kernels / high-mmap allocators), wrapping fastmem_end
+	// below fastmem_start so the two-sided compare silently rejected every valid in-range
+	// address. `offset >= FASTMEM_AREA_SIZE` is overflow-proof regardless of base.
+	const uptr fastmem_start = (uptr)vtlbdata.fastmem_base;
+	const uptr offset = host_addr - fastmem_start;
+	if (offset >= FASTMEM_AREA_SIZE)
 		return false;
 
-	*guest_addr = static_cast<u32>(host_addr - fastmem_start);
+	*guest_addr = static_cast<u32>(offset);
 	return true;
 }
 
@@ -1769,9 +1779,14 @@ void vtlb_AddLoadStoreInfo(uptr code_address, u32 code_size, u32 guest_pc, u32 g
 
 bool vtlb_BackpatchLoadStore(uptr code_address, uptr fault_address)
 {
-	uptr fastmem_start = (uptr)vtlbdata.fastmem_base;
-	uptr fastmem_end = fastmem_start + 0xFFFFFFFFu;
-	if (fault_address < fastmem_start || fault_address > fastmem_end)
+	// yaps2 2801ebde: subtraction-first, single unsigned bound. `fastmem_start +
+	// 0xFFFFFFFF` overflows a 64-bit uptr when the fastmem mapping lands within 4 GB of the
+	// top of the address space (exotic kernels / high-mmap allocators), wrapping fastmem_end
+	// below fastmem_start so the two-sided compare silently rejected every valid in-range
+	// address. `offset >= FASTMEM_AREA_SIZE` is overflow-proof regardless of base.
+	const uptr fastmem_start = (uptr)vtlbdata.fastmem_base;
+	const uptr offset = fault_address - fastmem_start;
+	if (offset >= FASTMEM_AREA_SIZE)
 		return false;
 
 	auto iter = s_fastmem_backpatch_info.find(code_address);
@@ -1779,7 +1794,7 @@ bool vtlb_BackpatchLoadStore(uptr code_address, uptr fault_address)
 		return false;
 
 	const LoadstoreBackpatchInfo& info = iter->second;
-	const u32 guest_addr = static_cast<u32>(fault_address - fastmem_start);
+	const u32 guest_addr = static_cast<u32>(offset);
 	vtlb_DynBackpatchLoadStore(code_address, info.code_size, info.guest_pc, guest_addr,
 		info.gpr_bitmask, info.fpr_bitmask, info.address_register, info.data_register,
 		info.size_in_bits, info.is_signed, info.is_load, info.is_fpr);

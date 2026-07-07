@@ -333,8 +333,6 @@ static void mVUclampedArith(mV, const a64::VRegister& to, const a64::VRegister& 
 {
 	const a64::VRegister ct = t1.IsNone() ? RQSCRATCH : t1;
 	const int xyzw = isPS ? 0xf : 0x8;
-	if (!isPS)
-		armAsm->Mov(RQSCRATCH.Q(), to.Q());
 	mVUclamp3(mVU, to, ct, xyzw);
 	mVUclamp3(mVU, from, ct, xyzw);
 	if (isPS)
@@ -349,16 +347,22 @@ static void mVUclampedArith(mV, const a64::VRegister& to, const a64::VRegister& 
 	}
 	else
 	{
+		// AArch64 scalar FP ops write the result to Sd and ZERO bits [127:32] of the V
+		// register, unlike x86 ADDSS/MULSS which preserve the upper 3 lanes. microVU's
+		// single-scalar (_XYZW_SS) model shuffles the target lane into lane0, operates,
+		// then shuffles back, and DEPENDS on the other lanes surviving (e.g. mVU_FMACb's
+		// MADDAw.z accumulates into ACC.z while ACC.x/.y must be preserved). Compute into
+		// a scratch and insert only lane0 of `to` (fixes GoW2 black screen / GS packet
+		// storm from ACC.x/.y being poisoned). Port of macOS be3adf93ae.
+		const a64::VRegister sres = RQSCRATCH;
 		switch (op)
 		{
-			case mVU_ADD_OP: armAsm->Fadd(to.S(), to.S(), from.S()); break;
-			case mVU_SUB_OP: armAsm->Fsub(to.S(), to.S(), from.S()); break;
-			case mVU_MUL_OP: armAsm->Fmul(to.S(), to.S(), from.S()); break;
-			case mVU_DIV_OP: armAsm->Fdiv(to.S(), to.S(), from.S()); break;
+			case mVU_ADD_OP: armAsm->Fadd(sres.S(), to.S(), from.S()); break;
+			case mVU_SUB_OP: armAsm->Fsub(sres.S(), to.S(), from.S()); break;
+			case mVU_MUL_OP: armAsm->Fmul(sres.S(), to.S(), from.S()); break;
+			case mVU_DIV_OP: armAsm->Fdiv(sres.S(), to.S(), from.S()); break;
 		}
-		armAsm->Ins(to.V4S(), 1, RQSCRATCH.V4S(), 1);
-		armAsm->Ins(to.V4S(), 2, RQSCRATCH.V4S(), 2);
-		armAsm->Ins(to.V4S(), 3, RQSCRATCH.V4S(), 3);
+		armAsm->Ins(to.V4S(), 0, sres.V4S(), 0);
 	}
 	mVUclamp4(mVU, to, ct, xyzw);
 }
