@@ -108,6 +108,12 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (BOOL)isPerformanceOverlayVisible;
 + (void)applyOsdPreset:(int)preset;  // 0=off, 1=simple, 2=detail, 3=full
 
+// Accessibility: structured device stats for the VoiceOver HUD mirror.
++ (nonnull NSDictionary<NSString *, id> *)deviceStatsForAccessibility;
+
+// Device haptic fallback for game rumble when no rumble-capable controller is connected.
++ (void)triggerDeviceHapticLarge:(NSUInteger)large small:(NSUInteger)small;
+
 // Audio
 + (int)emulatorVolumePercent;
 + (void)setEmulatorVolumePercent:(int)value;

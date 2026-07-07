@@ -2,11 +2,25 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #import "ARMSX2Bridge.h"
+
+// Xcode names the generated Swift bridge header after the Swift module.
+#if __has_include("ARMSX2iOS-Swift.h")
+#import "ARMSX2iOS-Swift.h"
+#define ARMSX2_HAS_SWIFTUI_HOST 1
+#elif __has_include("ARMSX2-Swift.h")
+#import "ARMSX2-Swift.h"
+#define ARMSX2_HAS_SWIFTUI_HOST 1
+#else
+#define ARMSX2_HAS_SWIFTUI_HOST 0
+#endif
+
 #include "common/Darwin/DarwinMisc.h"
 #include <SDL3/SDL.h>
 
 extern "C" void ARMSX2_SetSDLFullscreen(bool enabled);
 extern "C" bool ARMSX2_IsSDLFullscreen();
+extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outThermalState,
+                                          double* outRamGB, bool* outLowPower);
 #include "Common.h"
 #include "Config.h"
 #include "CDVD/CDVD.h"
@@ -3147,6 +3161,37 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
 
 + (BOOL)isPerformanceOverlayVisible {
     return GSConfig.OsdPerformancePos != OsdOverlayPos::None;
+}
+
++ (nonnull NSDictionary<NSString *, id> *)deviceStatsForAccessibility {
+    int battery = -1, severity = 0;
+    double ramGB = 0.0;
+    bool lowPower = false;
+    ARMSX2_iOSCopyDeviceStats(&battery, &severity, &ramGB, &lowPower);
+    NSString* thermal;
+    switch (severity) {
+        case 2:  thermal = @"Serious"; break;
+        case 1:  thermal = @"Fair"; break;
+        default: thermal = @"Nominal"; break;
+    }
+    return @{
+        @"battery": @(battery),
+        @"thermalState": thermal,
+        @"ramGB": @(ramGB),
+        @"lowPower": @(lowPower),
+    };
+}
+
++ (void)triggerDeviceHapticLarge:(NSUInteger)large small:(NSUInteger)small {
+    // GameEventHaptics is @MainActor-isolated; dispatch to the main queue.
+    dispatch_async(dispatch_get_main_queue(), ^{
+#if ARMSX2_HAS_SWIFTUI_HOST
+        [SwiftUIHost triggerDeviceHapticWithLarge:large small:small];
+#else
+        (void)large;
+        (void)small;
+#endif
+    });
 }
 
 // Apply OSD preset — sets ALL GSConfig flags to match the preset

@@ -51,6 +51,16 @@ struct PSBtn: View {
     @Environment(\.padSkinDescriptor) private var padSkinDescriptor
     @Environment(\.padUsesFullSkin) private var padUsesFullSkin
 
+    private var accessibilityName: String {
+        switch btn {
+        case .triangle: return "Triangle"
+        case .cross: return "Cross"
+        case .square: return "Square"
+        case .circle: return "Circle"
+        default: return sym
+        }
+    }
+
     private var visibleW: CGFloat {
         PadLayoutMetrics.visibleLength(baseLength: sz, visibleScale: visibleScaleX)
     }
@@ -93,6 +103,9 @@ struct PSBtn: View {
         .onDisappear {
             updatePressed(false)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityName)
+        .accessibilityAddTraits(.isButton)
     }
 
     private var centeredButtonFace: some View {
@@ -234,6 +247,28 @@ struct PadBtn: View {
     @Environment(\.padOpacity) private var padOpacity
     @Environment(\.padUsesFullSkin) private var padUsesFullSkin
 
+    private var accessibilityName: String {
+        switch btn {
+        case .up: return "D-pad up"
+        case .down: return "D-pad down"
+        case .left: return "D-pad left"
+        case .right: return "D-pad right"
+        case .triangle: return "Triangle"
+        case .cross: return "Cross"
+        case .square: return "Square"
+        case .circle: return "Circle"
+        case .L1: return "L1"
+        case .R1: return "R1"
+        case .L2: return "L2"
+        case .R2: return "R2"
+        case .start: return "Start"
+        case .select: return "Select"
+        case .L3: return "L3"
+        case .R3: return "R3"
+        @unknown default: return label
+        }
+    }
+
     private var touchW: CGFloat {
         PadLayoutMetrics.touchLength(baseLength: w, hitScale: hitScaleX)
     }
@@ -272,6 +307,9 @@ struct PadBtn: View {
         .onDisappear {
             updatePressed(false)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityName)
+        .accessibilityAddTraits(.isButton)
     }
 
     private func updatePressed(_ pressed: Bool) {
@@ -389,6 +427,9 @@ struct StickView: View {
         }
         .frame(width: effectiveCapture, height: effectiveCapture)
         .contentShape(Circle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(isLeft ? "Left stick" : "Right stick")
+        .accessibilityAddTraits(.isButton)
         .simultaneousGesture(DragGesture(minimumDistance: 0)
             .onChanged { v in
                 let maxR = (sz - knob) / 2

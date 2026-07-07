@@ -204,6 +204,11 @@ struct GameScreenView: View {
                     ZStack {
                         MetalGameView()
                             .onTapGesture { restoreMenuButtonIfHidden() }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Game display")
+                            .accessibilityAddTraits(.isImage)
+                            .accessibilityHint("VoiceOver image recognition can read on-screen text.")
+                        AccessibilityHUDMirror()
                         if effectiveVirtualPadVisible {
                             VirtualControllerView(
                                 isLandscape: true,
@@ -225,6 +230,11 @@ struct GameScreenView: View {
                             .frame(height: gameHeight)
                             .clipped()
                             .onTapGesture { restoreMenuButtonIfHidden() }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Game display")
+                            .accessibilityAddTraits(.isImage)
+                            .accessibilityHint("VoiceOver image recognition can read on-screen text.")
+                            .overlay { AccessibilityHUDMirror() }
 
                         if effectiveVirtualPadVisible {
                             ZStack {

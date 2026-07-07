@@ -17,17 +17,17 @@ final class PatchStore: @unchecked Sendable {
     static let cheatsSection = "Cheats"
     static let patchesSection = "Patches"
     static let enableKey = "Enable"
-    static let defaultPatchDatabaseURLTemplate = "https://raw.githubusercontent.com/PCSX2/pcsx2_patches/main/patches/${serial}_${crc}.pnach"
-    static let defaultCheatDatabaseURLTemplate = "https://raw.githubusercontent.com/xs1l3n7x/pcsx2_cheats_collection/main/cheats/${serial}_${crc}.pnach"
-    static let defaultUltraWidescreenPatchURLTemplate = "https://raw.githubusercontent.com/henyckma/ARMSX2-UltraWidescreen-NaturalVision/main/patches/${serial}_${crc}.pnach"
+    nonisolated static let defaultPatchDatabaseURLTemplate = "https://raw.githubusercontent.com/PCSX2/pcsx2_patches/main/patches/${serial}_${crc}.pnach"
+    nonisolated static let defaultCheatDatabaseURLTemplate = "https://raw.githubusercontent.com/xs1l3n7x/pcsx2_cheats_collection/main/cheats/${serial}_${crc}.pnach"
+    nonisolated static let defaultUltraWidescreenPatchURLTemplate = "https://raw.githubusercontent.com/henyckma/ARMSX2-UltraWidescreen-NaturalVision/main/patches/${serial}_${crc}.pnach"
 
     // Bundled template lists. Both patch DBs install into the same serial_CRC.pnach file,
     // so PCSX2 still scans a single merged file with no core changes.
-    static let bundledPatchDatabaseTemplates = [
+    nonisolated static let bundledPatchDatabaseTemplates = [
         defaultPatchDatabaseURLTemplate,
         defaultUltraWidescreenPatchURLTemplate,
     ]
-    static let bundledCheatDatabaseTemplates = [
+    nonisolated static let bundledCheatDatabaseTemplates = [
         defaultCheatDatabaseURLTemplate,
     ]
 
