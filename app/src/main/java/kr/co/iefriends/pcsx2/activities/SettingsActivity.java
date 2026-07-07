@@ -22,6 +22,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.AutoCompleteTextView;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.ImageView;
@@ -98,6 +99,7 @@ public class SettingsActivity extends AppCompatActivity {
 	private static final String ACTION_BROWSE_DOCUMENT_ROOT = "android.provider.action.BROWSE_DOCUMENT_ROOT";
 	private TextView tvDataDirPath;
 	private AlertDialog dataDirProgressDialog;
+	private AlertDialog memcardProgressDialog;
     private boolean disableTouchControls;
     private MaterialToolbar toolbar;
     private ViewFlipper sectionFlipper;
@@ -184,6 +186,10 @@ public class SettingsActivity extends AppCompatActivity {
     protected void onDestroy() {
         DiscordBridge.setListener(null);
         RetroAchievementsBridge.setListener(null);
+        if (memcardProgressDialog != null) {
+            memcardProgressDialog.dismiss();
+            memcardProgressDialog = null;
+        }
         super.onDestroy();
     }
 
@@ -2026,7 +2032,7 @@ public class SettingsActivity extends AppCompatActivity {
                 Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                 i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
                 i.setType("*/*");
-                startActivityForResult(Intent.createChooser(i, "Select memory card"), REQ_IMPORT_MEMCARD);
+                startActivityForResult(Intent.createChooser(i, getString(R.string.settings_import_memory_card)), REQ_IMPORT_MEMCARD);
             });
         }
 
@@ -2040,6 +2046,10 @@ public class SettingsActivity extends AppCompatActivity {
                 updateMemoryCardUi();
                 Toast.makeText(this, R.string.settings_swap_cards, Toast.LENGTH_SHORT).show();
             });
+        }
+        View btnManageCards = findViewById(R.id.btn_manage_cards);
+        if (btnManageCards != null) {
+            btnManageCards.setOnClickListener(v -> showManageCardsDialog());
         }
         MaterialSwitch swFilter = findViewById(R.id.sw_memcard_filter);
         if (swFilter != null) {
@@ -2081,18 +2091,37 @@ public class SettingsActivity extends AppCompatActivity {
         }
     }
 
+    private File getMemcardsDir() {
+        File memcardsDir = new File(DataDirectoryManager.getDataRoot(this), "memcards");
+        if (!memcardsDir.exists()) memcardsDir.mkdirs();
+        return memcardsDir;
+    }
+
+    private File[] listMemoryCards() {
+        File[] files = getMemcardsDir().listFiles((dir, name) -> name.toLowerCase().endsWith(".ps2"));
+        if (files == null) return new File[0];
+        java.util.Arrays.sort(files, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+        return files;
+    }
+
+    private String cardDisplayName(File card) {
+        return card.isDirectory()
+                ? getString(R.string.settings_memory_card_folder_suffix, card.getName())
+                : card.getName();
+    }
+
     private void showCreateCardDialog() {
-        final TextInputEditText input = new TextInputEditText(this);
-        input.setHint("Memory card name (e.g. MySave)");
+        View dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_create_memcard, null);
+        final TextInputEditText nameInput = dialogView.findViewById(R.id.et_memcard_name);
+        final AutoCompleteTextView sizeDropdown = dialogView.findViewById(R.id.dd_memcard_size);
 
         final String[] options = {
-                "8 MB (Standard High compatibility)",
-                "16 MB (May cause issues)",
-                "32 MB (May cause issues)",
-                "64 MB (Too Large - May cause issues)",
-                "Folder (Recommended - Unlimited size)"
+                getString(R.string.settings_memory_card_size_8mb),
+                getString(R.string.settings_memory_card_size_16mb),
+                getString(R.string.settings_memory_card_size_32mb),
+                getString(R.string.settings_memory_card_size_64mb),
+                getString(R.string.settings_memory_card_size_folder)
         };
-
         final long[] sizes = {
                 8650752,       // 8MB
                 17301504,      // 16MB
@@ -2100,94 +2129,122 @@ public class SettingsActivity extends AppCompatActivity {
                 69206016,      // 64MB
                 -1             // Folder
         };
-
         final int[] selectedOption = {0};
 
-        new MaterialAlertDialogBuilder(this)
-                .setTitle("Create New Memory Card")
-                .setView(input)
-                .setSingleChoiceItems(options, 0, (dialog, which) -> {
-                    selectedOption[0] = which;
-                })
-                .setPositiveButton("Create", (dialog, which) -> {
-                    String name = input.getText().toString().trim();
-                    if (TextUtils.isEmpty(name)) return;
+        sizeDropdown.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, options));
+        sizeDropdown.setText(options[0], false);
+        sizeDropdown.setOnItemClickListener((parent, view, position, id) -> selectedOption[0] = position);
 
-                    if (!name.toLowerCase().endsWith(".ps2")) {
-                        name += ".ps2";
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.settings_memory_card_create_title)
+                .setView(dialogView)
+                .setPositiveButton(R.string.settings_memory_card_create, (dialog, which) -> {
+                    String name = nameInput.getText() == null ? "" : nameInput.getText().toString().trim();
+                    if (TextUtils.isEmpty(name)) return;
+                    if (!name.toLowerCase().endsWith(".ps2")) name += ".ps2";
+
+                    File card = new File(getMemcardsDir(), name);
+                    if (card.exists()) {
+                        Toast.makeText(this, R.string.settings_memory_card_exists, Toast.LENGTH_SHORT).show();
+                        return;
                     }
 
-                    File memcardsDir = new File(DataDirectoryManager.getDataRoot(this), "memcards");
-                    if (!memcardsDir.exists() && !memcardsDir.mkdirs()) return;
-
                     long size = sizes[selectedOption[0]];
-
                     if (size == -1) {
-                        File folderCard = new File(memcardsDir, name);
-                        if (folderCard.exists()) {
-                            Toast.makeText(this, "Folder or File already exists", Toast.LENGTH_SHORT).show();
-                            return;
-                        }
-                        if (folderCard.mkdirs()) {
-                            Toast.makeText(this, "Folder memory card created!", Toast.LENGTH_SHORT).show();
+                        // Folder cards are created instantly; no need for a progress dialog.
+                        if (card.mkdirs()) {
+                            Toast.makeText(this, getString(R.string.settings_memory_card_created, card.getName()), Toast.LENGTH_SHORT).show();
                             updateMemoryCardUi();
+                        } else {
+                            Toast.makeText(this, R.string.settings_memory_card_create_failed, Toast.LENGTH_LONG).show();
                         }
                     } else {
-                        File fileCard = new File(memcardsDir, name);
-                        if (fileCard.exists()) {
-                            Toast.makeText(this, "File already exists", Toast.LENGTH_SHORT).show();
-                            return;
-                        }
-                        try {
-                            if (fileCard.createNewFile()) {
-                                java.io.RandomAccessFile raf = new java.io.RandomAccessFile(fileCard, "rw");
-                                byte[] buffer = new byte[1024 * 1024];
-                                java.util.Arrays.fill(buffer, (byte) 0xFF);
-
-                                long bytesWritten = 0;
-                                while (bytesWritten < size) {
-                                    long toWrite = Math.min(buffer.length, size - bytesWritten);
-                                    raf.write(buffer, 0, (int) toWrite);
-                                    bytesWritten += toWrite;
-                                }
-                                raf.close();
-                                Toast.makeText(this, "File card created: " + name, Toast.LENGTH_SHORT).show();
-                                updateMemoryCardUi();
-                            }
-                        } catch (Exception e) {
-                            Toast.makeText(this, "Error: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                        }
+                        createFileCardAsync(card, size);
                     }
                 })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
     }
 
-    private void showMemoryCardSelector(int slot) {
-        File memcardsDir = new File(DataDirectoryManager.getDataRoot(this), "memcards");
-        if (!memcardsDir.exists()) memcardsDir.mkdirs();
-
-        File[] files = memcardsDir.listFiles((dir, name) -> name.toLowerCase().endsWith(".ps2"));
-        if (files == null || files.length == 0) {
-            Toast.makeText(this, "No memory cards found in /memcards", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        String[] displayNames = new String[files.length];
-        String[] realNames = new String[files.length];
-
-        for (int i = 0; i < files.length; i++) {
-            realNames[i] = files[i].getName();
-            if (files[i].isDirectory()) {
-                displayNames[i] = files[i].getName() + " (Folder)";
-            } else {
-                displayNames[i] = files[i].getName();
+    private void createFileCardAsync(@NonNull File card, long size) {
+        showMemcardProgressDialog(R.string.settings_memory_card_creating);
+        new Thread(() -> {
+            boolean success = false;
+            try {
+                if (card.createNewFile()) {
+                    try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(card, "rw")) {
+                        byte[] buffer = new byte[1024 * 1024];
+                        java.util.Arrays.fill(buffer, (byte) 0xFF);
+                        long written = 0;
+                        while (written < size) {
+                            long toWrite = Math.min(buffer.length, size - written);
+                            raf.write(buffer, 0, (int) toWrite);
+                            written += toWrite;
+                        }
+                    }
+                    success = true;
+                }
+            } catch (Exception e) {
+                success = false;
             }
+            final boolean ok = success;
+            runOnUiThread(() -> {
+                dismissMemcardProgressDialog();
+                if (ok) {
+                    Toast.makeText(this, getString(R.string.settings_memory_card_created, card.getName()), Toast.LENGTH_SHORT).show();
+                } else {
+                    if (card.exists() && !card.isDirectory()) card.delete();
+                    Toast.makeText(this, R.string.settings_memory_card_create_failed, Toast.LENGTH_LONG).show();
+                }
+                updateMemoryCardUi();
+            });
+        }, "MemcardCreate").start();
+    }
+
+    private void showMemcardProgressDialog(int messageRes) {
+        runOnUiThread(() -> {
+            if (memcardProgressDialog != null && memcardProgressDialog.isShowing()) return;
+            ProgressBar progressBar = new ProgressBar(this);
+            int padding = dpToPx(24);
+            progressBar.setPadding(padding, padding, padding, padding);
+            memcardProgressDialog = new MaterialAlertDialogBuilder(this)
+                    .setMessage(messageRes)
+                    .setView(progressBar)
+                    .setCancelable(false)
+                    .create();
+            memcardProgressDialog.show();
+        });
+    }
+
+    private void dismissMemcardProgressDialog() {
+        runOnUiThread(() -> {
+            if (memcardProgressDialog != null) {
+                memcardProgressDialog.dismiss();
+                memcardProgressDialog = null;
+            }
+        });
+    }
+
+    private void showMemoryCardSelector(int slot) {
+        File[] files = listMemoryCards();
+
+        // First entry unsets the slot ("None"); the rest are the available cards.
+        String[] displayNames = new String[files.length + 1];
+        displayNames[0] = getString(R.string.settings_memory_card_none);
+        for (int i = 0; i < files.length; i++) {
+            displayNames[i + 1] = cardDisplayName(files[i]);
         }
 
         new MaterialAlertDialogBuilder(this)
+                .setTitle(slot == 1 ? R.string.settings_memory_card_1 : R.string.settings_memory_card_2)
                 .setItems(displayNames, (dialog, which) -> {
-                    String selected = realNames[which];
+                    if (which == 0) {
+                        NativeApp.setSetting("MemoryCards", "Slot" + slot + "_Filename", "string", "");
+                        updateMemoryCardUi();
+                        Toast.makeText(this, getString(R.string.settings_memory_card_slot_unset, slot), Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    String selected = files[which - 1].getName();
                     int otherSlot = (slot == 1) ? 2 : 1;
                     String otherCard = NativeApp.getSetting("MemoryCards", "Slot" + otherSlot + "_Filename", "string");
                     if (selected.equals(otherCard)) {
@@ -2196,10 +2253,127 @@ public class SettingsActivity extends AppCompatActivity {
                     }
                     NativeApp.setSetting("MemoryCards", "Slot" + slot + "_Filename", "string", selected);
                     updateMemoryCardUi();
-                    Toast.makeText(this, "Slot " + slot + " set to: " + selected, Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, getString(R.string.settings_memory_card_slot_set, slot, selected), Toast.LENGTH_SHORT).show();
                 })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
+    }
+
+    private void showManageCardsDialog() {
+        File[] files = listMemoryCards();
+        if (files.length == 0) {
+            Toast.makeText(this, R.string.settings_memory_card_none_found, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String slot1 = NativeApp.getSetting("MemoryCards", "Slot1_Filename", "string");
+        String slot2 = NativeApp.getSetting("MemoryCards", "Slot2_Filename", "string");
+
+        String[] displayNames = new String[files.length];
+        for (int i = 0; i < files.length; i++) {
+            String name = files[i].getName();
+            boolean inUse = name.equals(slot1) || name.equals(slot2);
+            displayNames[i] = inUse
+                    ? getString(R.string.settings_memory_card_in_use_label, cardDisplayName(files[i]))
+                    : cardDisplayName(files[i]);
+        }
+
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.settings_manage_cards)
+                .setItems(displayNames, (dialog, which) -> showCardActionsDialog(files[which]))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showCardActionsDialog(@NonNull File card) {
+        String[] actions = {
+                getString(R.string.settings_memory_card_rename),
+                getString(R.string.settings_memory_card_delete)
+        };
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(card.getName())
+                .setItems(actions, (dialog, which) -> {
+                    if (which == 0) {
+                        showRenameCardDialog(card);
+                    } else {
+                        confirmDeleteCard(card);
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showRenameCardDialog(@NonNull File card) {
+        View dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_rename_memcard, null);
+        final TextInputEditText input = dialogView.findViewById(R.id.et_memcard_rename);
+        input.setText(card.getName());
+
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.settings_memory_card_rename_title)
+                .setView(dialogView)
+                .setPositiveButton(R.string.settings_memory_card_rename, (dialog, which) -> {
+                    String newName = input.getText() == null ? "" : input.getText().toString().trim();
+                    if (TextUtils.isEmpty(newName)) return;
+                    if (!newName.toLowerCase().endsWith(".ps2")) newName += ".ps2";
+                    renameMemoryCard(card, newName);
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void renameMemoryCard(@NonNull File card, @NonNull String newName) {
+        String oldName = card.getName();
+        if (newName.equals(oldName)) return;
+
+        File target = new File(getMemcardsDir(), newName);
+        if (target.exists()) {
+            Toast.makeText(this, R.string.settings_memory_card_exists, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (card.renameTo(target)) {
+            // Keep any slot that referenced the old name pointing at the renamed card.
+            for (int slot = 1; slot <= 2; slot++) {
+                String assigned = NativeApp.getSetting("MemoryCards", "Slot" + slot + "_Filename", "string");
+                if (oldName.equals(assigned)) {
+                    NativeApp.setSetting("MemoryCards", "Slot" + slot + "_Filename", "string", newName);
+                }
+            }
+            updateMemoryCardUi();
+            Toast.makeText(this, getString(R.string.settings_memory_card_renamed, newName), Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, R.string.settings_memory_card_rename_failed, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void confirmDeleteCard(@NonNull File card) {
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.settings_memory_card_delete_title)
+                .setMessage(getString(R.string.settings_memory_card_delete_message, card.getName()))
+                .setPositiveButton(R.string.settings_memory_card_delete, (dialog, which) -> deleteMemoryCard(card))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void deleteMemoryCard(@NonNull File card) {
+        if (deleteRecursively(card)) {
+            // updateMemoryCardUi() clears any slot whose file no longer exists.
+            updateMemoryCardUi();
+            Toast.makeText(this, getString(R.string.settings_memory_card_deleted, card.getName()), Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, R.string.settings_memory_card_delete_failed, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private boolean deleteRecursively(@NonNull File file) {
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    if (!deleteRecursively(child)) return false;
+                }
+            }
+        }
+        return file.delete();
     }
 
     private void updateMemoryCardUi() {
@@ -2915,13 +3089,7 @@ public class SettingsActivity extends AppCompatActivity {
                 getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
             } catch (Exception ignored) {}
 
-            if (importMemcardToSlot1(uri, fileName)) {
-                NativeApp.setSetting("MemoryCards", "Slot1_Filename", "string", fileName);
-                updateMemoryCardUi();
-                Toast.makeText(this, "Imported: " + fileName, Toast.LENGTH_SHORT).show();
-            } else {
-				Toast.makeText(this, R.string.settings_memory_card_import_failed, Toast.LENGTH_LONG).show();
-			}
+            importMemcardToSlot1Async(uri, fileName);
 		} else if (requestCode == 9912 && resultCode == RESULT_OK && data != null && data.getData() != null) {
 			Uri uri = data.getData();
 			try {
@@ -2942,6 +3110,23 @@ public class SettingsActivity extends AppCompatActivity {
 			}
 		}
 	}
+
+    private void importMemcardToSlot1Async(Uri uri, String fileName) {
+        showMemcardProgressDialog(R.string.settings_memory_card_importing);
+        new Thread(() -> {
+            boolean success = importMemcardToSlot1(uri, fileName);
+            runOnUiThread(() -> {
+                dismissMemcardProgressDialog();
+                if (success) {
+                    NativeApp.setSetting("MemoryCards", "Slot1_Filename", "string", fileName);
+                    updateMemoryCardUi();
+                    Toast.makeText(this, getString(R.string.settings_memory_card_imported, fileName), Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, R.string.settings_memory_card_import_failed, Toast.LENGTH_LONG).show();
+                }
+            });
+        }, "MemcardImport").start();
+    }
 
     private boolean importMemcardToSlot1(Uri uri, String fileName) {
         try {
