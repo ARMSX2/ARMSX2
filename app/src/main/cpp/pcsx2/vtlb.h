@@ -47,6 +47,9 @@ extern void vtlb_Shutdown();
 extern void vtlb_Reset();
 extern void vtlb_ResetFastmem();
 
+// True after the process fails to allocate the 4 GB fastmem area.
+extern bool vtlb_FastmemAreaUnavailable();
+
 extern vtlbHandler vtlb_NewHandler();
 
 extern vtlbHandler vtlb_RegisterHandler(

@@ -420,6 +420,13 @@ bool VMManager::Internal::CPUThreadInitialize()
 	// This also sorts out input sources.
 	LoadSettings();
 
+	// Settings reloads must not re-enable fastmem after its address-space allocation failed.
+	if (vtlb_FastmemAreaUnavailable() && EmuConfig.Cpu.Recompiler.EnableFastmem)
+	{
+		EmuConfig.Cpu.Recompiler.EnableFastmem = false;
+		Console.Warning("Fastmem remains disabled because its address space could not be allocated");
+	}
+
 	if (EmuConfig.Achievements.Enabled)
 		Achievements::Initialize();
 
@@ -912,6 +919,9 @@ void VMManager::ApplySettings()
 	EmuConfig = Pcsx2Config();
 	EmuConfig.CopyRuntimeConfig(old_config);
 	LoadSettings();
+	// Preserve the runtime disable across settings reloads.
+	if (vtlb_FastmemAreaUnavailable() && EmuConfig.Cpu.Recompiler.EnableFastmem)
+		EmuConfig.Cpu.Recompiler.EnableFastmem = false;
 	CheckForConfigChanges(old_config);
 }
 
