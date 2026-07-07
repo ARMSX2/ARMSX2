@@ -199,6 +199,7 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.2.1'
     implementation 'com.caverock:androidsvg:1.4'
     implementation 'androidx.browser:browser:1.9.0'
+    testImplementation 'junit:junit:4.13.2'
     if (enableRN) {
         // React Native core and Hermes engine (brownfield integration)
         implementation 'com.facebook.react:react-android:0.74.3'
