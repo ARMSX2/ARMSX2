@@ -18375,6 +18375,9 @@ SLES-51548:
 SLES-51553:
   name: "Chaos Legion"
   region: "PAL-M5"
+  gameFixes:
+    - VUSyncHack
+    - FullVU0SyncHack
   clampModes:
     vuClampMode: 2 # Fixes SPS in item menu.
   gsHWFixes:
@@ -24295,10 +24298,15 @@ SLES-53614:
 SLES-53616:
   name: "True Crime - New York City"
   region: "PAL-E"
+  speedHacks:
+    mvuFlag: 0 # Fixes texture flickering caused by the VU Flag Hack.
   clampModes:
     eeClampMode: 2 # Fixes SPS on highway.
   roundModes:
     eeRoundMode: 0 # Fixes scene switching in intro.
+  gameFixes:
+    - VUSyncHack
+    - FullVU0SyncHack
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -24311,10 +24319,15 @@ SLES-53616:
 SLES-53617:
   name: "True Crime - New York City"
   region: "PAL-G"
+  speedHacks:
+    mvuFlag: 0 # Fixes texture flickering caused by the VU Flag Hack.
   clampModes:
     eeClampMode: 2 # Fixes SPS on highway.
   roundModes:
     eeRoundMode: 0 # Fixes scene switching in intro.
+  gameFixes:
+    - VUSyncHack
+    - FullVU0SyncHack
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -24327,10 +24340,15 @@ SLES-53617:
 SLES-53618:
   name: "True Crime - New York City"
   region: "PAL-S"
+  speedHacks:
+    mvuFlag: 0 # Fixes texture flickering caused by the VU Flag Hack.
   clampModes:
     eeClampMode: 2 # Fixes SPS on highway.
   roundModes:
     eeRoundMode: 0 # Fixes scene switching in intro.
+  gameFixes:
+    - VUSyncHack
+    - FullVU0SyncHack
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -31424,6 +31442,9 @@ SLKA-25026:
   name: "카오스 레기온"
   name-en: "Chaos Legion"
   region: "NTSC-K"
+  gameFixes:
+    - VUSyncHack
+    - FullVU0SyncHack
   clampModes:
     vuClampMode: 2 # Fixes SPS in item menu.
   gsHWFixes:
@@ -42843,6 +42864,9 @@ SLPM-65249:
   name-en: "Chaos Legion"
   region: "NTSC-J"
   compat: 5
+  gameFixes:
+    - VUSyncHack
+    - FullVU0SyncHack
   clampModes:
     vuClampMode: 2 # Fixes SPS in item menu.
   gsHWFixes:
@@ -50222,10 +50246,15 @@ SLPM-66473:
   name-sort: "とぅるー くらいむ にゅーよーくしてぃ"
   name-en: "True Crime - New York City"
   region: "NTSC-J"
+  speedHacks:
+    mvuFlag: 0 # Fixes texture flickering caused by the VU Flag Hack.
   clampModes:
     eeClampMode: 2 # Fixes SPS on highway.
   roundModes:
     eeRoundMode: 0 # Fixes scene switching in intro.
+  gameFixes:
+    - VUSyncHack
+    - FullVU0SyncHack
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -54367,10 +54396,15 @@ SLPM-74243:
   name-sort: "とぅるー くらいむ にゅーよーくしてぃ [PlayStation2 the Best]"
   name-en: "True Crime - New York City [PlayStation2 the Best]"
   region: "NTSC-J"
+  speedHacks:
+    mvuFlag: 0 # Fixes texture flickering caused by the VU Flag Hack.
   clampModes:
     eeClampMode: 2 # Fixes SPS on highway.
   roundModes:
     eeRoundMode: 0 # Fixes scene switching in intro.
+  gameFixes:
+    - VUSyncHack
+    - FullVU0SyncHack
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -67932,6 +67966,9 @@ SLUS-20695:
   name: "Chaos Legion"
   region: "NTSC-U"
   compat: 5
+  gameFixes:
+    - VUSyncHack
+    - FullVU0SyncHack
   clampModes:
     vuClampMode: 2 # Fixes SPS in item menu.
   gsHWFixes:
@@ -70323,10 +70360,15 @@ SLUS-21106:
   name: "True Crime - New York City"
   region: "NTSC-U"
   compat: 5
+  speedHacks:
+    mvuFlag: 0 # Fixes texture flickering caused by the VU Flag Hack.
   clampModes:
     eeClampMode: 2 # Fixes SPS on highway.
   roundModes:
     eeRoundMode: 0 # Fixes scene switching in intro.
+  gameFixes:
+    - VUSyncHack
+    - FullVU0SyncHack
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -70336,7 +70378,6 @@ SLUS-21106:
     nativeScaling: 2 # Fixes remaining post misalignment and light bloom and shadows.
     autoFlush: 1 # Fixes shadow alignment.
     bilinearUpscale: 2 # Fixes sun glare textures to behave like native.
-    textureInsideRT: 2 # Handles the "uneven pages" local transfers so the world (not just the HUD) renders on the HW renderer.
 SLUS-21107:
   name: "X-Men - The Official Game"
   region: "NTSC-U"
