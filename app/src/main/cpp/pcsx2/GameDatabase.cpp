@@ -482,44 +482,12 @@ static bool IsIOSMidnightClub3Game(const std::string& name)
 	return name.rfind("Midnight Club 3", 0) == 0;
 }
 
-static std::string GetIOSCompatibilityLabProfileForGSPolicy()
-{
-	SettingsInterface* si = Host::GetSettingsInterface();
-	if (!si)
-		return "unknown";
-
-	std::string profile = si->GetStringValue("ARMSX2/JITBisect", "Profile", "off");
-	if (!profile.empty() && !StringUtil::compareNoCase(profile, "off") && !StringUtil::compareNoCase(profile, "custom"))
-		return profile;
-
-	static constexpr const char* flag_keys[] = {
-		"COP1EverythingOnly",
-		"COP1EverythingPlusLoadStore",
-		"COP1EverythingPlusMMI",
-		"COP1EverythingPlusCOP2VU",
-		"COP1EverythingPlusMultDiv",
-		"COP1EverythingPlusShifts",
-		"COP1EverythingPlusMoves",
-		"COP1EverythingPlusIntegerALU",
-		"COP1EverythingPlusBranches",
-	};
-
-	int active_flags = 0;
-	for (const char* key : flag_keys)
-		active_flags += si->GetBoolValue("ARMSX2/JITBisect", key, false) ? 1 : 0;
-
-	if (active_flags == 0)
-		return "off";
-
-	return (active_flags == 1) ? "single-flag" : "custom";
-}
-
-static void ClearIOSMetalCompatLabOffGSHWFixes(Pcsx2Config::GSOptions& config)
+static void ClearIOSMetalGSHWFixes(Pcsx2Config::GSOptions& config)
 {
 	auto clear_int = [](auto& field, auto default_value, const char* name) {
 		if (field != default_value)
 		{
-			Console.Warning("iOS Metal CompatLabOff: cleared manual GS HW fix %s", name);
+			Console.Warning("iOS Metal: cleared manual GS HW fix %s", name);
 			field = default_value;
 		}
 	};
@@ -529,7 +497,7 @@ static void ClearIOSMetalCompatLabOffGSHWFixes(Pcsx2Config::GSOptions& config)
 	{ \
 		if (config.field) \
 		{ \
-			Console.Warning("iOS Metal CompatLabOff: cleared manual GS HW fix %s", name); \
+			Console.Warning("iOS Metal: cleared manual GS HW fix %s", name); \
 			config.field = false; \
 		} \
 	} while (false)
@@ -571,11 +539,10 @@ static bool ShouldBlockIOSMetalGSHardwareFixes(const Pcsx2Config::GSOptions& con
 	if (config.Renderer != GSRendererType::Metal)
 		return false;
 
-	// ARMSX2 iOS exposes GameDB Core Fixes and Graphics Fixes separately. When either
-	// compatibility path is off, do not allow GameDB/manual hardware hacks to survive
-	// the ELF CRC settings reload and break strict Metal rendering.
-	const std::string compat_profile = GetIOSCompatibilityLabProfileForGSPolicy();
-	return StringUtil::compareNoCase(compat_profile, "off") || !EmuConfig.EnableGameFixes || config.ManualUserHacks;
+	// ARMSX2 iOS exposes GameDB Core Fixes and Graphics Fixes separately. When GameDB
+	// fixes are off or manual user hacks are set, do not allow GameDB/manual hardware
+	// hacks to survive the ELF CRC settings reload and break strict Metal rendering.
+	return !EmuConfig.EnableGameFixes || config.ManualUserHacks;
 }
 
 static bool IsIOSMetalHighRiskAutoGSHWFix(GameDatabaseSchema::GSHWFixId id)
@@ -591,34 +558,7 @@ static bool IsIOSMetalHighRiskAutoGSHWFix(GameDatabaseSchema::GSHWFixId id)
 	}
 }
 
-static bool IsIOSMetalAllowedAutoGSHWCallback(const GameDatabaseSchema::GameEntry& entry, GameDatabaseSchema::GSHWFixId id, int value)
-{
-	switch (id)
-	{
-		case GameDatabaseSchema::GSHWFixId::GetSkipCount:
-		{
-			static const s16 burnout_games = GSLookupGetSkipCountFunctionId("GSC_BurnoutGames");
-			static const s16 burnout_sky = GSLookupGetSkipCountFunctionId("GSC_BlackAndBurnoutSky");
-			static const s16 midnight_club3 = GSLookupGetSkipCountFunctionId("GSC_MidnightClub3");
-			return (IsIOSBurnoutMetalCallbackGame(entry.name) && value == burnout_games) ||
-				(IsIOSBurnoutMetalCallbackGame(entry.name) && value == burnout_sky) ||
-				(IsIOSMidnightClub3Game(entry.name) && value == midnight_club3);
-		}
-
-		case GameDatabaseSchema::GSHWFixId::BeforeDraw:
-		{
-			static const s16 burnout_games = GSLookupBeforeDrawFunctionId("OI_BurnoutGames");
-			static const s16 sonic_unleashed = GSLookupBeforeDrawFunctionId("OI_SonicUnleashed");
-			return ((IsIOSBurnoutMetalCallbackGame(entry.name) || IsIOSBlackGame(entry.name)) && value == burnout_games) ||
-				(IsIOSSonicUnleashedGame(entry.name) && value == sonic_unleashed);
-		}
-
-		default:
-			return false;
-	}
-}
-
-static bool IsIOSMetalAllowedCompatLabOffGSHWFix(const GameDatabaseSchema::GameEntry& entry, GameDatabaseSchema::GSHWFixId id, int value)
+static bool IsIOSMetalAllowedGSHWFix(const GameDatabaseSchema::GameEntry& entry, GameDatabaseSchema::GSHWFixId id, int value)
 {
 	if (!IsIOSMetalHighRiskAutoGSHWFix(id))
 		return true;
@@ -646,22 +586,6 @@ static bool IsIOSMetalAllowedCompatLabOffGSHWFix(const GameDatabaseSchema::GameE
 		default:
 			return false;
 	}
-}
-
-static void ClearIOSMetalHighRiskCallbacks(Pcsx2Config::GSOptions& config, const char* reason)
-{
-	auto clear_callback = [reason](auto& field, auto default_value, const char* name) {
-		if (field != default_value)
-		{
-			Console.Warning("@@IOS_METAL_GS_CALLBACK_CLEAR@@ fix=%s old=%d reason=%s",
-				name, static_cast<int>(field), reason);
-			field = default_value;
-		}
-	};
-
-	clear_callback(config.GetSkipCountFunctionId, static_cast<s16>(-1), "getSkipCount");
-	clear_callback(config.BeforeDrawFunctionId, static_cast<s16>(-1), "beforeDraw");
-	clear_callback(config.MoveHandlerFunctionId, static_cast<s16>(-1), "moveHandler");
 }
 
 static const char* IOSBool(bool value)
@@ -1035,17 +959,10 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 	const bool block_ios_metal_gs_fixes = ShouldBlockIOSMetalGSHardwareFixes(config);
 	if (block_ios_metal_gs_fixes)
 	{
-		const std::string compat_profile = GetIOSCompatibilityLabProfileForGSPolicy();
-		Console.Warning("@@IOS_METAL_GS_POLICY@@ compat_lab=%s game=\"%s\" renderer=%s enable_game_fixes=%d manual_user_hacks=%d action=sanitize_high_risk_callbacks",
-			compat_profile.c_str(), name.c_str(), Pcsx2Config::GSOptions::GetRendererName(config.Renderer),
-			EmuConfig.EnableGameFixes ? 1 : 0, config.ManualUserHacks ? 1 : 0);
-		Console.Warning("iOS Metal CompatLabOff: allowing GameDB GS HW fixes; high-risk callbacks require the iOS Metal allowlist");
-		ClearIOSMetalCompatLabOffGSHWFixes(config);
+		Console.Warning("iOS Metal: sanitizing unsupported GameDB GS hardware fixes for %s", name.c_str());
+		ClearIOSMetalGSHWFixes(config);
 		apply_auto_fixes = false;
 	}
-
-	if (!block_ios_metal_gs_fixes && config.Renderer == GSRendererType::Metal && apply_auto_fixes)
-		ClearIOSMetalHighRiskCallbacks(config, "pre-auto-apply");
 #else
 	constexpr bool block_ios_metal_gs_fixes = false;
 #endif
@@ -1061,7 +978,7 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 		if (block_ios_metal_gs_fixes)
 		{
-			if (IsIOSMetalAllowedCompatLabOffGSHWFix(*this, id, value))
+			if (IsIOSMetalAllowedGSHWFix(*this, id, value))
 			{
 				Console.Warning("@@IOS_METAL_GS_FIX_ALLOW@@ game=\"%s\" fix=%s requested=%d reason=%s",
 					name.c_str(), getHWFixName(id), value,
@@ -1072,22 +989,6 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 			{
 				Console.Warning("@@IOS_METAL_GS_SKIP@@ game=\"%s\" fix=%s requested=%d reason=callback_fix_not_safe_on_metal",
 					name.c_str(), getHWFixName(id), value);
-				continue;
-			}
-		}
-
-		if (!block_ios_metal_gs_fixes && config.Renderer == GSRendererType::Metal && apply_auto_fixes && IsIOSMetalHighRiskAutoGSHWFix(id))
-		{
-			if (IsIOSMetalAllowedAutoGSHWCallback(*this, id, value))
-			{
-				Console.Warning("@@IOS_METAL_GS_CALLBACK_ALLOW@@ game=\"%s\" fix=%s requested=%d reason=ios_metal_callback_allowlist",
-					name.c_str(), getHWFixName(id), value);
-			}
-			else
-			{
-				Console.Warning("@@IOS_METAL_GS_SKIP@@ game=\"%s\" fix=%s requested=%d reason=callback_fix_not_safe_on_metal",
-					name.c_str(), getHWFixName(id), value);
-				ClearIOSMetalHighRiskCallbacks(config, getHWFixName(id));
 				continue;
 			}
 		}
