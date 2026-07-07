@@ -99,12 +99,42 @@ enum PatchSource: String, Codable {
     case database
     case installed
 
+    // Pure enum case name. The sidecar stores `database:<name>` for per-DB provenance,
+    // so the raw value is split out from any name suffix on read.
     var displayName: String {
         switch self {
         case .local: return "Imported"
         case .database: return "Database"
         case .installed: return "Installed"
         }
+    }
+
+    // Human-readable label for a database origin, surfacing the specific DB name when known.
+    func displayName(detail: String?) -> String {
+        switch self {
+        case .database:
+            if let detail, !detail.isEmpty { return detail }
+            return "Database"
+        default:
+            return displayName
+        }
+    }
+
+    // Bundled DB display names. Used for the default templates and for resolving a
+    // custom URL into a short label when no explicit name was recorded.
+    static func databaseName(forTemplate template: String) -> String {
+        if template == PatchStore.defaultPatchDatabaseURLTemplate {
+            return "PCSX2 database"
+        }
+        if template == PatchStore.defaultUltraWidescreenPatchURLTemplate {
+            return "UltraWidescreen / NaturalVision"
+        }
+        if template == PatchStore.defaultCheatDatabaseURLTemplate {
+            return "PCSX2 cheat collection"
+        }
+        // Fall back to the URL host so user-added sources get a readable label.
+        if let host = URL(string: template)?.host { return host }
+        return "Custom database"
     }
 }
 
@@ -120,6 +150,13 @@ struct PatchEntry: Identifiable, Hashable {
     let fileName: String
     let isLegacy: Bool
     var enabled: Bool
+    // Carries the originating database name (e.g. "PCSX2 database") when source is .database,
+    // nil otherwise. Surfaced in the row badge via sourceDisplayName.
+    var sourceDetail: String? = nil
+
+    var sourceDisplayName: String {
+        source.displayName(detail: sourceDetail)
+    }
 
     var displayTitle: String {
         if name.isEmpty { return isCheat ? "Untitled Cheat" : "Untitled Patch" }
