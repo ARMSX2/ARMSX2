@@ -1991,6 +1991,7 @@ object InGameOverlay {
             if (game != null) {
                 Spacer(Modifier.height(4.dp))
                 CustomCoverControls(game)
+                ProfileImportExportControls(game)
                 // Always show — some launchers report isRequestPinShortcutSupported=false
                 // even when they accept the pin, and others fall back to the legacy
                 // INSTALL_SHORTCUT broadcast; pin() tries both and toasts on real failure.
@@ -2072,6 +2073,70 @@ object InGameOverlay {
             Spacer(Modifier.height(4.dp))
             Text(
                 "Use your own image for this game's cover — handy for homebrew or discs with no serial.",
+                color = Color.White.copy(alpha = 0.5f),
+                fontSize = 11.sp,
+            )
+        }
+    }
+
+    /** Export / import this game's tuned settings as a portable .json profile so a
+     *  known-good per-game config can be shared or moved between installs. Keyed by
+     *  serial; export snapshots the fully-resolved Settings, import re-persists them
+     *  as this game's per-game override (applies on next launch). */
+    @Composable
+    private fun ProfileImportExportControls(game: GameInfo) {
+        val serial = game.serial?.takeIf { it.isNotBlank() } ?: return
+        val context = LocalContext.current
+        val scope = rememberCoroutineScope()
+        val exporter = rememberLauncherForActivityResult(
+            ActivityResultContracts.CreateDocument("application/json"),
+        ) { uri ->
+            if (uri != null) scope.launch {
+                val ok = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val json = ConfigStore.resolveForGame(serial).toJson().toString(2)
+                        context.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
+                        true
+                    }.getOrDefault(false)
+                }
+                android.widget.Toast.makeText(
+                    context, if (ok) "Profile exported" else "Export failed",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
+        val importer = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument(),
+        ) { uri ->
+            if (uri != null) scope.launch {
+                val ok = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val text = context.contentResolver.openInputStream(uri)
+                            ?.bufferedReader()?.use { it.readText() } ?: return@runCatching false
+                        val imported = Settings.fromJson(org.json.JSONObject(text))
+                        ConfigStore.save(SettingsScope.Game, serial, imported)
+                        true
+                    }.getOrDefault(false)
+                }
+                android.widget.Toast.makeText(
+                    context,
+                    if (ok) "Profile imported — applies on next launch" else "Import failed",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
+        Column(Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 4.dp)) {
+            Text("Per-Game Profile", color = Colors.pasx2_blue, fontSize = 11.sp)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CoverPill("Export") { exporter.launch("armsx2-profile-$serial.json") }
+                CoverPill("Import") {
+                    importer.launch(arrayOf("application/json", "application/octet-stream", "text/plain"))
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Save this game's tuned settings to a file, or load a shared profile.",
                 color = Color.White.copy(alpha = 0.5f),
                 fontSize = 11.sp,
             )
