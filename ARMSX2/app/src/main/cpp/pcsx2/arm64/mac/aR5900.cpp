@@ -289,8 +289,22 @@ static void eePatchWaitingPredecessors(u32 my_pc, u8* my_entry)
 }
 
 // Unpatch every inbound link whose target is in [start_hw, end_hw), then drop
-// records for blocks whose own start is in that range. Called from recClear.
-static void eeInvalidateLinks(u32 start_hw, u32 end_hw)
+// records for blocks whose own start is in that range. Called from recClear on
+// EVERY SMC invalidation, so its cost is on the hot path during code-streaming
+// loads (BF2 online MP.BIN, OPL/DEV9hdd — #283 / #272).
+//
+// The straight two-pass scan below is O(total compiled blocks) per call. During a
+// disc-stream that overwrites EE code in thousands of small spans it becomes an
+// O(N*M) host-cycle storm — the sole reason a chained build loads such titles ~4x
+// slower in WALL-CLOCK than an unchained one (identical emulated work either way).
+// The fast path walks only the CLEARED span instead: inbound links are found via
+// the s_eeWaitingForHw reverse index (target_hw -> predecessor hwaddrs, already
+// maintained by eeIndexBlockExits), and records are erased by direct key lookup.
+// That is O(span/4 + inbound links) — bounded by the write, not by the cache size.
+// When the span is wider than the whole block table (rare page/TLB resets) the flat
+// scan is cheaper, so keep it as the fallback. recHWAddr is linear over the span
+// (asserted by the caller), so word-stepped keys hit every block-start / target hw.
+static void eeInvalidateLinksScan(u32 start_hw, u32 end_hw)
 {
 	for (auto& kv : s_eeBlockLinks)
 	{
@@ -308,6 +322,40 @@ static void eeInvalidateLinks(u32 start_hw, u32 end_hw)
 			it = s_eeBlockLinks.erase(it);
 		else
 			++it;
+	}
+}
+
+static void eeInvalidateLinks(u32 start_hw, u32 end_hw)
+{
+	const u32 span_words = (end_hw - start_hw) >> 2;
+	if (span_words > s_eeBlockLinks.size())
+	{
+		eeInvalidateLinksScan(start_hw, end_hw); // cleared span wider than the table
+		return;
+	}
+	for (u32 hw = start_hw; hw < end_hw; hw += 4)
+	{
+		// Unpatch inbound direct-B links whose target == hw, via the reverse index.
+		auto wit = s_eeWaitingForHw.find(hw);
+		if (wit != s_eeWaitingForHw.end())
+		{
+			for (u32 pred_hw : wit->second)
+			{
+				auto bit = s_eeBlockLinks.find(pred_hw);
+				if (bit == s_eeBlockLinks.end())
+					continue; // stale index entry — predecessor already gone
+				EEBlockLinks& pred = bit->second;
+				for (u32 e = 0; e < pred.num_exits; e++)
+				{
+					if (recHWAddr(pred.exits[e].target_pc) == hw)
+						eeUnpatchLinkSite(pred.exits[e]);
+				}
+			}
+		}
+		// Drop the record whose own start == hw.
+		auto bit = s_eeBlockLinks.find(hw);
+		if (bit != s_eeBlockLinks.end())
+			s_eeBlockLinks.erase(bit);
 	}
 }
 
