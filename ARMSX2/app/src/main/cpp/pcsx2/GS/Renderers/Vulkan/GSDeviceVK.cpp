@@ -1106,6 +1106,17 @@ VkRenderPass GSDeviceVK::GetRenderPass(VkFormat color_format, VkFormat depth_for
 	key.color_feedback_loop = color_feedback_loop;
 	key.depth_sampling = depth_sampling;
 
+	// Mali driver bug (ported from PPSSPP): a packed depth/stencil attachment whose
+	// depth vs stencil load-ops MISMATCH corrupts on ARM Mali. PCSX2's GS uses one
+	// combined D24S8/D32S8 attachment whose aspects are normally loaded/cleared
+	// together, so this is a no-op in practice — normalize defensively (prefer the
+	// depth aspect's op) so a stray mismatch can't trip the bug. Mali-only.
+	if (IsDeviceMali() && key.stencil_load_op != key.depth_load_op)
+	{
+		key.stencil_load_op = key.depth_load_op;
+		key.stencil_store_op = key.depth_store_op;
+	}
+
 	auto it = m_render_pass_cache.find(key.key);
 	if (it != m_render_pass_cache.end())
 		return it->second;
@@ -2979,6 +2990,17 @@ bool GSDeviceVK::CheckFeatures()
 		m_features.texture_barrier ? "on" : "off",
 		m_use_push_descriptors ? "on" : "off");
 
+	// Adreno colorWriteMask-with-depthtest bug (PPSSPP #10421 / thin3d_vulkan.cpp): on
+	// Adreno 5xx and pre-0x801EA000 drivers the pipeline colorWriteMask is ignored while a
+	// depth test is active, so masked RGBA channels get written. PS2 FBMASK relies on the
+	// write mask; we emulate the one case Vulkan blend can express (RGB fully masked, alpha
+	// independent) in CreateTFXPipeline. No user toggle; excludes Adreno 6xx/7xx/8xx.
+	m_broken_colormask_with_depth = IsDeviceAdreno() &&
+		(m_device_properties.deviceID < 0x06000000u || m_device_properties.driverVersion < 0x801EA000u);
+	if (m_broken_colormask_with_depth)
+		Console.WriteLn("VK: Adreno colorWriteMask-with-depthtest workaround active (deviceID=0x%08X driver=0x%08X)",
+			m_device_properties.deviceID, m_device_properties.driverVersion);
+
 	// whether we can do point/line expand depends on the range of the device
 	const float f_upscale = static_cast<float>(GSConfig.UpscaleMultiplier);
 	m_features.point_expand = (m_device_features.largePoints && limits.pointSizeRange[0] <= f_upscale &&
@@ -4045,6 +4067,10 @@ static void AddShaderHeader(std::stringstream& ss)
 
 	ss << "#version 460 core\n";
 	ss << "#extension GL_EXT_samplerless_texture_functions : require\n";
+
+	// Mali driver-bug shader gate (currently the EQUAL_WZ_CORRUPTS_DEPTH z-nudge in
+	// tfx.glsl). 1 only on Mali; the guarded code compiles out on every other GPU.
+	ss << "#define GPU_PROFILE_MALI " << (dev->IsDeviceMali() ? 1 : 0) << "\n";
 
 	if (!features.texture_barrier)
 		ss << "#define DISABLE_TEXTURE_BARRIER 1\n";
@@ -5338,6 +5364,23 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 		gpb.SetBlendAttachment(0, true, vk_blend_factors[pbs.src_factor], vk_blend_factors[pbs.dst_factor],
 			vk_blend_ops[pbs.op], vk_blend_factors[pbs.src_factor_alpha], vk_blend_factors[pbs.dst_factor_alpha],
 			VK_BLEND_OP_ADD, p.cms.wrgba);
+	}
+	else if (m_broken_colormask_with_depth && (p.cms.wrgba & 0x7u) == 0 &&
+			 (p.dss.ztst != ZTST_ALWAYS || p.dss.zwe))
+	{
+		// Adreno colorWriteMask-with-depthtest bug (PPSSPP #10421): with a depth test
+		// active the pipeline write mask is ignored, so a masked-RGB draw (FBMASK RGB=off)
+		// would wrongly write colour. Only alpha can differ here (RGB is fully masked),
+		// which Vulkan blend CAN express: open the write mask so the broken HW mask can't
+		// misfire, keep old RGB via (src=ZERO,dst=ONE), gate alpha on wa. Arbitrary
+		// per-channel RGB masks are not emulable this way (would corrupt), so they fall
+		// through to the normal path below.
+		const bool write_alpha = (p.cms.wrgba & 0x8u) != 0;
+		gpb.SetBlendAttachment(0, true,
+			VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE, VK_BLEND_OP_ADD,
+			write_alpha ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO,
+			write_alpha ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE,
+			VK_BLEND_OP_ADD, 0xFu);
 	}
 	else
 	{

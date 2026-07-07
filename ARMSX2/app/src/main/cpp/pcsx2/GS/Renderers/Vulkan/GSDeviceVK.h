@@ -89,6 +89,10 @@ public:
 	/// Returns true if running on a Qualcomm Adreno GPU (vendorID 0x5143).
 	__fi bool IsDeviceAdreno() const { return (m_device_properties.vendorID == 0x5143u); }
 
+	// Adreno-5xx / pre-0x801EA000 driver bug: colorWriteMask is ignored while a depth
+	// test is active (PPSSPP #10421). Cached in CheckFeatures, consumed in CreateTFXPipeline.
+	bool m_broken_colormask_with_depth = false;
+
 	/// Returns true if running on an Imagination PowerVR GPU (vendorID 0x1010).
 	__fi bool IsDevicePowerVR() const { return (m_device_properties.vendorID == 0x1010u); }
 

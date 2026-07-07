@@ -94,6 +94,13 @@ void vs_main()
 
 	gl_Position.w = 1.0f;
 
+#if GPU_PROFILE_MALI
+	// Mali HW bug (PPSSPP EQUAL_WZ_CORRUPTS_DEPTH): a draw where clip-space z == w
+	// corrupts the depth buffer after the perspective divide. Nudge z off w by a
+	// negligible amount. No-op on any non-Mali GPU (the define is 0 there).
+	if (gl_Position.z == gl_Position.w) gl_Position.z *= 0.999999f;
+#endif
+
 	texture_coord();
 
 	VSout.c = i_c;
@@ -467,6 +474,10 @@ void main()
 #endif
 
 	gl_Position = vtx.p;
+#if GPU_PROFILE_MALI
+	// Mali EQUAL_WZ_CORRUPTS_DEPTH nudge (VS_EXPAND path); see vs_main above.
+	if (gl_Position.z == gl_Position.w) gl_Position.z *= 0.999999f;
+#endif
 	VSout.t_float = vtx.t_float;
 	VSout.t_int = vtx.t_int;
 	VSout.c = vtx.c;

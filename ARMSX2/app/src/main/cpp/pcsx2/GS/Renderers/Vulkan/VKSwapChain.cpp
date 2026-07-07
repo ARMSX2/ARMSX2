@@ -376,6 +376,18 @@ bool VKSwapChain::CreateSwapChain()
 	size.height =
 		std::clamp(size.height, surface_capabilities.minImageExtent.height, surface_capabilities.maxImageExtent.height);
 
+	// PowerVR (Imagination) driver bug: older drivers heavily corrupt the output
+	// unless the swap-chain width is a multiple of 32. Ported from PPSSPP
+	// (VulkanContext::InitSwapchain, issues #11743/#15773) — round the width down
+	// to a /32 boundary on affected PowerVR drivers. ARMSX2 had zero PowerVR
+	// handling, so this can only help. Gated by vendorID (0x1010) + driver version.
+	if (GSDeviceVK::GetInstance()->IsDevicePowerVR() &&
+		GSDeviceVK::GetInstance()->GetDeviceProperties().driverVersion < 0x00582558u &&
+		(size.width & ~31u) >= surface_capabilities.minImageExtent.width)
+	{
+		size.width &= ~31u;
+	}
+
 	// Prefer identity transform if possible
 	VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	if (!(surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR))
