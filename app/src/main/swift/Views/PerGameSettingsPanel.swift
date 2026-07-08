@@ -124,6 +124,16 @@ struct PerGameSettingsPanel: View {
     @State private var perGameIOP: Int
     @State private var perGameVU0: Int
     @State private var perGameVU1: Int
+    @State private var perGameEEFpuRound: Int
+    @State private var perGameVU0Round: Int
+    @State private var perGameVU1Round: Int
+    @State private var perGameEEClamp: Int
+    @State private var perGameVUClamp: Int
+    @State private var globalEEFpuRound: Int
+    @State private var globalVU0Round: Int
+    @State private var globalVU1Round: Int
+    @State private var globalEEClamp: Int
+    @State private var globalVUClamp: Int
     @State private var perGameHWDownloadMode: Int
     @State private var perGameCPUCLUT: Int
     @State private var perGameGPUTargetCLUT: Int
@@ -271,6 +281,22 @@ struct PerGameSettingsPanel: View {
         _perGameIOP = State(initialValue: Self.loadedPerGameBool("EmuCore/CPU/Recompiler", "EnableIOP", useCurrent: useCurrent, iso: perGameISO))
         _perGameVU0 = State(initialValue: Self.loadedPerGameBool("EmuCore/CPU/Recompiler", "EnableVU0", useCurrent: useCurrent, iso: perGameISO))
         _perGameVU1 = State(initialValue: Self.loadedPerGameBool("EmuCore/CPU/Recompiler", "EnableVU1", useCurrent: useCurrent, iso: perGameISO))
+        _perGameEEFpuRound = State(initialValue: Self.loadedPerGameInt("EmuCore/CPU", "FPU.Roundmode", globalDefault: 3, useCurrent: useCurrent, iso: perGameISO))
+        _perGameVU0Round = State(initialValue: Self.loadedPerGameInt("EmuCore/CPU", "VU0.Roundmode", globalDefault: 3, useCurrent: useCurrent, iso: perGameISO))
+        _perGameVU1Round = State(initialValue: Self.loadedPerGameInt("EmuCore/CPU", "VU1.Roundmode", globalDefault: 3, useCurrent: useCurrent, iso: perGameISO))
+        _perGameEEClamp = State(initialValue: Self.loadedPerGameEEClamp(useCurrent: useCurrent, iso: perGameISO))
+        _perGameVUClamp = State(initialValue: Self.loadedPerGameVUClamp(useCurrent: useCurrent, iso: perGameISO))
+        _globalEEFpuRound = State(initialValue: SettingsStore.clampedRoundMode(Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "FPU.Roundmode", defaultValue: 3))))
+        _globalVU0Round = State(initialValue: SettingsStore.clampedRoundMode(Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "VU0.Roundmode", defaultValue: 3))))
+        _globalVU1Round = State(initialValue: SettingsStore.clampedRoundMode(Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "VU1.Roundmode", defaultValue: 3))))
+        _globalEEClamp = State(initialValue: SettingsStore.eeClampModeFromBools(
+            ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "fpuOverflow", defaultValue: true),
+            ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "fpuExtraOverflow", defaultValue: false),
+            ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "fpuFullMode", defaultValue: false)))
+        _globalVUClamp = State(initialValue: SettingsStore.vuClampModeFromBools(
+            ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "vu0Overflow", defaultValue: true),
+            ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "vu0ExtraOverflow", defaultValue: false),
+            ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "vu0SignOverflow", defaultValue: false)))
         _perGameHWDownloadMode = State(initialValue: Self.loadedPerGameInt("EmuCore/GS", "HWDownloadMode", globalDefault: 0, useCurrent: useCurrent, iso: perGameISO))
         _perGameCPUCLUT = State(initialValue: Self.loadedPerGameInt("EmuCore/GS", "UserHacks_CPUCLUTRender", globalDefault: 0, useCurrent: useCurrent, iso: perGameISO))
         _perGameGPUTargetCLUT = State(initialValue: Self.loadedPerGameInt("EmuCore/GS", "UserHacks_GPUTargetCLUTMode", globalDefault: 0, useCurrent: useCurrent, iso: perGameISO))
@@ -287,7 +313,7 @@ struct PerGameSettingsPanel: View {
     /// Encodes the current editable per-game state so Save can be gated on real changes.
     private func perGameFingerprint() -> String {
         let fixes = SettingsStore.gameFixOptions.map { "\($0.key):\(perGameFixes[$0.key] ?? -1)" }.joined(separator: ",")
-        return "\(enabled)|\(upscaleMultiplier)|\(aspectRatio)|\(textureFiltering)|\(hardwareMipmapping)|\(blendingAccuracy)|\(interlaceMode)|\(trilinearFiltering)|\(halfPixelOffset)|\(roundSprite)|\(alignSpriteOverride)|\(alignSprite)|\(mergeSpriteOverride)|\(mergeSprite)|\(wildArmsOffsetOverride)|\(wildArmsOffset)|\(textureOffsetXOverride)|\(textureOffsetX)|\(textureOffsetYOverride)|\(textureOffsetY)|\(skipDrawStartOverride)|\(skipDrawStart)|\(skipDrawEndOverride)|\(skipDrawEnd)|\(volumeOverride)|\(volumePercent)|\(eeCoreType)|\(mtvu)|\(eeCycleRate)|\(eeCycleSkip)|\(fastBoot)|\(enableCheats)|\(enablePatches)|\(enableGameFixes)|\(enableGameDBHardwareFixes)|\(perGameAAT)|\(perGameTextureInsideRt)|\(perGameRenderer)|\(perGameFXAA)|\(perGameShadeBoost)|\(perGameTVShader)|\(perGameCASMode)|\(perGameMaxAnisotropy)|\(perGameCASSharpness)|\(perGamePCRTCOffsets)|\(perGameIntegerScaling)|\(perGameSkipDupFrames)|\(perGamePCRTCOverscan)|\(perGamePCRTCAntiBlur)|\(perGameDisableInterlaceOffset)|\(perGameWidescreen)|\(perGameNoInterlace)|\(perGameShadeBoostBrightness)|\(perGameShadeBoostContrast)|\(perGameShadeBoostSaturation)|\(perGameShadeBoostGamma)|\(perGameDithering)|\(perGameFastForwardVolume)|\(perGameIOP)|\(perGameVU0)|\(perGameVU1)|\(perGameHWDownloadMode)|\(perGameCPUCLUT)|\(perGameGPUTargetCLUT)|\(perGameVsyncQueue)|\(perGameLoadTextureReplacements)|\(perGameLoadTextureReplacementsAsync)|\(perGamePrecacheTextureReplacements)|\(perGameSyncToHostRefresh)|\(perGameBufferMS)|\(perGameOutputLatencyMS)|\(fixes)"
+        return "\(enabled)|\(upscaleMultiplier)|\(aspectRatio)|\(textureFiltering)|\(hardwareMipmapping)|\(blendingAccuracy)|\(interlaceMode)|\(trilinearFiltering)|\(halfPixelOffset)|\(roundSprite)|\(alignSpriteOverride)|\(alignSprite)|\(mergeSpriteOverride)|\(mergeSprite)|\(wildArmsOffsetOverride)|\(wildArmsOffset)|\(textureOffsetXOverride)|\(textureOffsetX)|\(textureOffsetYOverride)|\(textureOffsetY)|\(skipDrawStartOverride)|\(skipDrawStart)|\(skipDrawEndOverride)|\(skipDrawEnd)|\(volumeOverride)|\(volumePercent)|\(eeCoreType)|\(mtvu)|\(eeCycleRate)|\(eeCycleSkip)|\(fastBoot)|\(enableCheats)|\(enablePatches)|\(enableGameFixes)|\(enableGameDBHardwareFixes)|\(perGameAAT)|\(perGameTextureInsideRt)|\(perGameRenderer)|\(perGameFXAA)|\(perGameShadeBoost)|\(perGameTVShader)|\(perGameCASMode)|\(perGameMaxAnisotropy)|\(perGameCASSharpness)|\(perGamePCRTCOffsets)|\(perGameIntegerScaling)|\(perGameSkipDupFrames)|\(perGamePCRTCOverscan)|\(perGamePCRTCAntiBlur)|\(perGameDisableInterlaceOffset)|\(perGameWidescreen)|\(perGameNoInterlace)|\(perGameShadeBoostBrightness)|\(perGameShadeBoostContrast)|\(perGameShadeBoostSaturation)|\(perGameShadeBoostGamma)|\(perGameDithering)|\(perGameFastForwardVolume)|\(perGameIOP)|\(perGameVU0)|\(perGameVU1)|\(perGameHWDownloadMode)|\(perGameCPUCLUT)|\(perGameGPUTargetCLUT)|\(perGameVsyncQueue)|\(perGameLoadTextureReplacements)|\(perGameLoadTextureReplacementsAsync)|\(perGamePrecacheTextureReplacements)|\(perGameSyncToHostRefresh)|\(perGameBufferMS)|\(perGameOutputLatencyMS)|\(perGameEEFpuRound)|\(perGameVU0Round)|\(perGameVU1Round)|\(perGameEEClamp)|\(perGameVUClamp)|\(fixes)"
     }
 
     private var hasPendingChanges: Bool {
@@ -580,11 +606,21 @@ struct PerGameSettingsPanel: View {
             perGameIOP: $perGameIOP,
             perGameVU0: $perGameVU0,
             perGameVU1: $perGameVU1,
+            perGameEEFpuRound: $perGameEEFpuRound,
+            perGameVU0Round: $perGameVU0Round,
+            perGameVU1Round: $perGameVU1Round,
+            perGameEEClamp: $perGameEEClamp,
+            perGameVUClamp: $perGameVUClamp,
             settings: settings,
             eeCycleRateUseGlobalSentinel: Self.eeCycleRateUseGlobalSentinel,
             fastBootUseGlobalSentinel: Self.fastBootUseGlobalSentinel,
             fastBootOff: Self.fastBootOff,
-            fastBootOn: Self.fastBootOn
+            fastBootOn: Self.fastBootOn,
+            globalEEFpuRound: globalEEFpuRound,
+            globalVU0Round: globalVU0Round,
+            globalVU1Round: globalVU1Round,
+            globalEEClamp: globalEEClamp,
+            globalVUClamp: globalVUClamp
         )
     }
 
@@ -844,6 +880,50 @@ struct PerGameSettingsPanel: View {
             ARMSX2Bridge.deletePerGameINIValueForCurrentGame(section, key: key)
         } else {
             ARMSX2Bridge.deletePerGameINIValue(section, key: key, forISO: iso)
+        }
+    }
+
+    private static func loadedPerGameEEClamp(useCurrent: Bool, iso: String) -> Int {
+        let overflow = loadedPerGameBool("EmuCore/CPU/Recompiler", "fpuOverflow", useCurrent: useCurrent, iso: iso)
+        guard overflow != -1 else { return -1 }
+        let extra = loadedPerGameBool("EmuCore/CPU/Recompiler", "fpuExtraOverflow", useCurrent: useCurrent, iso: iso) == 1
+        let full = loadedPerGameBool("EmuCore/CPU/Recompiler", "fpuFullMode", useCurrent: useCurrent, iso: iso) == 1
+        return SettingsStore.eeClampModeFromBools(overflow == 1, extra, full)
+    }
+
+    private static func savePerGameEEClamp(_ mode: Int, enabled: Bool, useCurrent: Bool, iso: String) {
+        if enabled && mode != -1 {
+            setPerGameBoolValue("EmuCore/CPU/Recompiler", "fpuOverflow", mode >= 1, useCurrent: useCurrent, iso: iso)
+            setPerGameBoolValue("EmuCore/CPU/Recompiler", "fpuExtraOverflow", mode >= 2, useCurrent: useCurrent, iso: iso)
+            setPerGameBoolValue("EmuCore/CPU/Recompiler", "fpuFullMode", mode >= 3, useCurrent: useCurrent, iso: iso)
+        } else {
+            for key in ["fpuOverflow", "fpuExtraOverflow", "fpuFullMode"] {
+                clearPerGameValue("EmuCore/CPU/Recompiler", key, useCurrent: useCurrent, iso: iso)
+            }
+        }
+    }
+
+    private static func loadedPerGameVUClamp(useCurrent: Bool, iso: String) -> Int {
+        let overflow = loadedPerGameBool("EmuCore/CPU/Recompiler", "vu0Overflow", useCurrent: useCurrent, iso: iso)
+        guard overflow != -1 else { return -1 }
+        let extra = loadedPerGameBool("EmuCore/CPU/Recompiler", "vu0ExtraOverflow", useCurrent: useCurrent, iso: iso) == 1
+        let sign = loadedPerGameBool("EmuCore/CPU/Recompiler", "vu0SignOverflow", useCurrent: useCurrent, iso: iso) == 1
+        return SettingsStore.vuClampModeFromBools(overflow == 1, extra, sign)
+    }
+
+    private static func savePerGameVUClamp(_ mode: Int, enabled: Bool, useCurrent: Bool, iso: String) {
+        if enabled && mode != -1 {
+            for prefix in ["vu0", "vu1"] {
+                setPerGameBoolValue("EmuCore/CPU/Recompiler", "\(prefix)Overflow", mode >= 1, useCurrent: useCurrent, iso: iso)
+                setPerGameBoolValue("EmuCore/CPU/Recompiler", "\(prefix)ExtraOverflow", mode >= 2, useCurrent: useCurrent, iso: iso)
+                setPerGameBoolValue("EmuCore/CPU/Recompiler", "\(prefix)SignOverflow", mode >= 3, useCurrent: useCurrent, iso: iso)
+            }
+        } else {
+            for prefix in ["vu0", "vu1"] {
+                for suffix in ["Overflow", "ExtraOverflow", "SignOverflow"] {
+                    clearPerGameValue("EmuCore/CPU/Recompiler", "\(prefix)\(suffix)", useCurrent: useCurrent, iso: iso)
+                }
+            }
         }
     }
 
@@ -1151,6 +1231,23 @@ struct PerGameSettingsPanel: View {
         } else {
             Self.clearPerGameValue("EmuCore/Speedhacks", "EECycleSkip", useCurrent: useCurrent, iso: iso)
         }
+        if enabled && perGameEEFpuRound != -1 {
+            Self.setPerGameIntValue("EmuCore/CPU", "FPU.Roundmode", perGameEEFpuRound, useCurrent: useCurrent, iso: iso)
+        } else {
+            Self.clearPerGameValue("EmuCore/CPU", "FPU.Roundmode", useCurrent: useCurrent, iso: iso)
+        }
+        if enabled && perGameVU0Round != -1 {
+            Self.setPerGameIntValue("EmuCore/CPU", "VU0.Roundmode", perGameVU0Round, useCurrent: useCurrent, iso: iso)
+        } else {
+            Self.clearPerGameValue("EmuCore/CPU", "VU0.Roundmode", useCurrent: useCurrent, iso: iso)
+        }
+        if enabled && perGameVU1Round != -1 {
+            Self.setPerGameIntValue("EmuCore/CPU", "VU1.Roundmode", perGameVU1Round, useCurrent: useCurrent, iso: iso)
+        } else {
+            Self.clearPerGameValue("EmuCore/CPU", "VU1.Roundmode", useCurrent: useCurrent, iso: iso)
+        }
+        Self.savePerGameEEClamp(perGameEEClamp, enabled: enabled, useCurrent: useCurrent, iso: iso)
+        Self.savePerGameVUClamp(perGameVUClamp, enabled: enabled, useCurrent: useCurrent, iso: iso)
     }
 
     private func normalizedSkipDrawValues() -> (start: Int, end: Int) {
