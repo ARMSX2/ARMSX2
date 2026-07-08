@@ -91,6 +91,11 @@ static std::vector<u8> s_icon_pf_font_data;
 
 static float s_window_width;
 static float s_window_height;
+// OSD safe-area insets (device pixels). 0 unless the platform sets them (iOS).
+static float s_osd_safe_area_left = 0.0f;
+static float s_osd_safe_area_top = 0.0f;
+static float s_osd_safe_area_right = 0.0f;
+static float s_osd_safe_area_bottom = 0.0f;
 static Common::Timer s_last_render_time;
 
 // cached copies of WantCaptureKeyboard/Mouse, used to know when to dispatch events
@@ -239,6 +244,34 @@ float ImGuiManager::GetWindowWidth()
 float ImGuiManager::GetWindowHeight()
 {
 	return s_window_height;
+}
+
+void ImGuiManager::SetOSDSafeAreaInsets(float left, float top, float right, float bottom)
+{
+	s_osd_safe_area_left = std::max(0.0f, left);
+	s_osd_safe_area_top = std::max(0.0f, top);
+	s_osd_safe_area_right = std::max(0.0f, right);
+	s_osd_safe_area_bottom = std::max(0.0f, bottom);
+}
+
+float ImGuiManager::GetOSDSafeAreaLeft()
+{
+	return s_osd_safe_area_left;
+}
+
+float ImGuiManager::GetOSDSafeAreaTop()
+{
+	return s_osd_safe_area_top;
+}
+
+float ImGuiManager::GetOSDSafeAreaRight()
+{
+	return s_osd_safe_area_right;
+}
+
+float ImGuiManager::GetOSDSafeAreaBottom()
+{
+	return s_osd_safe_area_bottom;
 }
 
 void ImGuiManager::WindowResized()
@@ -906,33 +939,37 @@ void ImGuiManager::DrawOSDMessages(Common::Timer::Value current_time)
 	const float margin = std::ceil(GSConfig.OsdMargin * scale);
 	const float padding = std::ceil(8.0f * scale);
 	const float rounding = std::ceil(5.0f * scale);
-	const float max_width = s_window_width - (margin + padding) * 2.0f;
-	
-	float position_y = margin;
+	const float eff_left = std::max(margin, s_osd_safe_area_left);
+	const float eff_right = std::max(margin, s_osd_safe_area_right);
+	const float eff_top = std::max(margin, s_osd_safe_area_top);
+	const float eff_bottom = std::max(margin, s_osd_safe_area_bottom);
+	const float max_width = s_window_width - eff_left - eff_right - padding * 2.0f;
+
+	float position_y = eff_top;
 	switch (GSConfig.OsdMessagesPos)
 	{
 		case OsdOverlayPos::TopLeft:
 		case OsdOverlayPos::TopCenter:
 		case OsdOverlayPos::TopRight:
-			position_y = margin;
+			position_y = eff_top;
 			break;
-			
+
 		case OsdOverlayPos::CenterLeft:
 		case OsdOverlayPos::Center:
 		case OsdOverlayPos::CenterRight:
 			position_y = s_window_height * 0.5f;
 			break;
-			
+
 		case OsdOverlayPos::BottomLeft:
 		case OsdOverlayPos::BottomCenter:
 		case OsdOverlayPos::BottomRight:
 			// For bottom positions, start from the bottom and let messages stack upward
-			position_y = s_window_height - margin;
+			position_y = s_window_height - eff_bottom;
 			break;
-			
+
 		case OsdOverlayPos::None:
 		default:
-			position_y = margin;
+			position_y = eff_top;
 			break;
 	}
 

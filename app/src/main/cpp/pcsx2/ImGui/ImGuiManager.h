@@ -44,6 +44,13 @@ namespace ImGuiManager
 	/// Updates internal state when the window is size.
 	void WindowResized();
 
+	/// OSD safe-area insets in device pixels, fixes rounded corners/notch cutoff
+	void SetOSDSafeAreaInsets(float left, float top, float right, float bottom);
+	float GetOSDSafeAreaLeft();
+	float GetOSDSafeAreaTop();
+	float GetOSDSafeAreaRight();
+	float GetOSDSafeAreaBottom();
+
 	/// Updates scaling of the on-screen elements.
 	void RequestScaleUpdate();
 

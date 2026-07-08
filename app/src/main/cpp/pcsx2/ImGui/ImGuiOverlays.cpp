@@ -114,26 +114,32 @@ static ImU32 ARMSX2IOSDeviceStatsColor()
 // OSD positioning funcs
 ImVec2 CalculateOSDPosition(OsdOverlayPos position, float margin, const ImVec2& text_size, float window_width, float window_height)
 {
+	// Fold per-edge safe-area insets into the margin so the HUD clears rounded
+	// corners / notch / home indicator on iOS. Insets are 0 elsewhere.
+	const float eff_left = std::max(margin, ImGuiManager::GetOSDSafeAreaLeft());
+	const float eff_top = std::max(margin, ImGuiManager::GetOSDSafeAreaTop());
+	const float eff_right = std::max(margin, ImGuiManager::GetOSDSafeAreaRight());
+	const float eff_bottom = std::max(margin, ImGuiManager::GetOSDSafeAreaBottom());
 	switch (position)
 	{
 		case OsdOverlayPos::TopLeft:
-			return ImVec2(margin, margin);
+			return ImVec2(eff_left, eff_top);
 		case OsdOverlayPos::TopCenter:
-			return ImVec2((window_width - text_size.x) * 0.5f, margin);
+			return ImVec2((window_width - text_size.x) * 0.5f, eff_top);
 		case OsdOverlayPos::TopRight:
-			return ImVec2(window_width - margin - text_size.x, margin);
+			return ImVec2(window_width - eff_right - text_size.x, eff_top);
 		case OsdOverlayPos::CenterLeft:
-			return ImVec2(margin, (window_height - text_size.y) * 0.5f);
+			return ImVec2(eff_left, (window_height - text_size.y) * 0.5f);
 		case OsdOverlayPos::Center:
 			return ImVec2((window_width - text_size.x) * 0.5f, (window_height - text_size.y) * 0.5f);
 		case OsdOverlayPos::CenterRight:
-			return ImVec2(window_width - margin - text_size.x, (window_height - text_size.y) * 0.5f);
+			return ImVec2(window_width - eff_right - text_size.x, (window_height - text_size.y) * 0.5f);
 		case OsdOverlayPos::BottomLeft:
-			return ImVec2(margin, window_height - margin - text_size.y);
+			return ImVec2(eff_left, window_height - eff_bottom - text_size.y);
 		case OsdOverlayPos::BottomCenter:
-			return ImVec2((window_width - text_size.x) * 0.5f, window_height - margin - text_size.y);
+			return ImVec2((window_width - text_size.x) * 0.5f, window_height - eff_bottom - text_size.y);
 		case OsdOverlayPos::BottomRight:
-			return ImVec2(window_width - margin - text_size.x, window_height - margin - text_size.y);
+			return ImVec2(window_width - eff_right - text_size.x, window_height - eff_bottom - text_size.y);
 		case OsdOverlayPos::None:
 		default:
 			return ImVec2(0.0f, 0.0f);
@@ -143,6 +149,10 @@ ImVec2 CalculateOSDPosition(OsdOverlayPos position, float margin, const ImVec2& 
 ImVec2 CalculatePerformanceOverlayTextPosition(OsdOverlayPos position, float margin, const ImVec2& text_size, float window_width, float position_y)
 {
 	const float abs_margin = std::abs(margin);
+	// Fold horizontal safe-area insets so left/right-anchored text clears the
+	// notch / rounded corners on iOS (insets are 0 elsewhere).
+	const float eff_left = std::max(abs_margin, ImGuiManager::GetOSDSafeAreaLeft());
+	const float eff_right = std::max(abs_margin, ImGuiManager::GetOSDSafeAreaRight());
 
 	// Get the X position based on horizontal alignment
 	float x_pos;
@@ -151,7 +161,7 @@ ImVec2 CalculatePerformanceOverlayTextPosition(OsdOverlayPos position, float mar
 		case OsdOverlayPos::TopLeft:
 		case OsdOverlayPos::CenterLeft:
 		case OsdOverlayPos::BottomLeft:
-			x_pos = abs_margin; // Left alignment
+			x_pos = eff_left; // Left alignment
 			break;
 
 		case OsdOverlayPos::TopCenter:
@@ -164,7 +174,7 @@ ImVec2 CalculatePerformanceOverlayTextPosition(OsdOverlayPos position, float mar
 		case OsdOverlayPos::CenterRight:
 		case OsdOverlayPos::BottomRight:
 		default:
-			x_pos = window_width - text_size.x - abs_margin; // Right alignment
+			x_pos = window_width - text_size.x - eff_right; // Right alignment
 			break;
 	}
 
@@ -251,7 +261,7 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 		case OsdOverlayPos::BottomCenter:
 		case OsdOverlayPos::BottomRight:
 
-			position_y = GetWindowHeight() - margin - (line_height * 15.0f + spacing * 14.0f);
+			position_y = GetWindowHeight() - std::max(margin, ImGuiManager::GetOSDSafeAreaBottom()) - (line_height * 15.0f + spacing * 14.0f);
 			break;
 
 		case OsdOverlayPos::TopLeft:
@@ -915,9 +925,9 @@ __ri void ImGuiManager::DrawShaderCompileIndicator(float scale, float margin, fl
 	ImFont* const font = ImGuiManager::GetOSDFont();
 	const float font_size = ImGuiManager::GetFontSizeStandard();
 	const float baseline_y =
-		GetWindowHeight() - margin - (GSConfig.OsdShowSettings ? font_size : 0.0f);
+		GetWindowHeight() - std::max(margin, ImGuiManager::GetOSDSafeAreaBottom()) - (GSConfig.OsdShowSettings ? font_size : 0.0f);
 	const float radius = std::ceil(10.0f * scale);
-	const float cx = GetWindowWidth() - margin - radius;
+	const float cx = GetWindowWidth() - std::max(margin, ImGuiManager::GetOSDSafeAreaRight()) - radius;
 	const float cy = baseline_y - spacing - radius;
 	const ImVec2 center(cx, cy);
 
@@ -1093,12 +1103,12 @@ __ri void ImGuiManager::DrawSettingsOverlay(float scale, float margin, float spa
 	const float shadow_offset = std::ceil(scale);
 	ImFont* const font = ImGuiManager::GetOSDFont();
 	const float font_size = ImGuiManager::GetFontSizeStandard();
-	const float position_y = GetWindowHeight() - margin - font_size;
+	const float position_y = GetWindowHeight() - std::max(margin, ImGuiManager::GetOSDSafeAreaBottom()) - font_size;
 
 	ImDrawList* dl = ImGui::GetBackgroundDrawList();
 	ImVec2 text_size =
 		font->CalcTextSizeA(font_size, std::numeric_limits<float>::max(), -1.0f, text.c_str(), text.c_str() + text.length(), nullptr);
-	const ImVec2 text_pos(GetWindowWidth() - margin - text_size.x, position_y);
+	const ImVec2 text_pos(GetWindowWidth() - std::max(margin, ImGuiManager::GetOSDSafeAreaRight()) - text_size.x, position_y);
 	const bool bold_osd = GSConfig.OsdBoldText;
 	dl->AddText(font, font_size,
 		ImVec2(text_pos.x + shadow_offset, text_pos.y + shadow_offset), IM_COL32(0, 0, 0, 100),
@@ -1144,9 +1154,12 @@ __ri void ImGuiManager::DrawInputsOverlay(float scale, float margin, float spaci
 			num_ports++;
 	}
 
-	float current_x = ImFloor(margin);
-	float current_y = ImFloor(display_size.y - margin - ((static_cast<float>(num_ports) * (line_height + spacing)) - spacing));
-	const ImVec4 clip_rect(current_x, current_y, display_size.x - margin, display_size.y);
+	const float eff_left = std::max(margin, ImGuiManager::GetOSDSafeAreaLeft());
+	const float eff_right = std::max(margin, ImGuiManager::GetOSDSafeAreaRight());
+	const float eff_bottom = std::max(margin, ImGuiManager::GetOSDSafeAreaBottom());
+	float current_x = ImFloor(eff_left);
+	float current_y = ImFloor(display_size.y - eff_bottom - ((static_cast<float>(num_ports) * (line_height + spacing)) - spacing));
+	const ImVec4 clip_rect(current_x, current_y, display_size.x - eff_right, display_size.y);
 
 	SmallString text;
 
@@ -1281,9 +1294,9 @@ __ri void ImGuiManager::DrawInputRecordingOverlay(float& position_y, float scale
 	{ \
 		text_size = font->CalcTextSizeA(size, std::numeric_limits<float>::max(), -1.0f, (text), nullptr, nullptr); \
 		dl->AddText(font, size, \
-			ImVec2(GetWindowWidth() - margin - text_size.x + shadow_offset, position_y + shadow_offset), \
+			ImVec2(GetWindowWidth() - std::max(margin, ImGuiManager::GetOSDSafeAreaRight()) - text_size.x + shadow_offset, position_y + shadow_offset), \
 			IM_COL32(0, 0, 0, 100), (text)); \
-		dl->AddText(font, size, ImVec2(GetWindowWidth() - margin - text_size.x, position_y), color, (text)); \
+		dl->AddText(font, size, ImVec2(GetWindowWidth() - std::max(margin, ImGuiManager::GetOSDSafeAreaRight()) - text_size.x, position_y), color, (text)); \
 		position_y += text_size.y + spacing; \
 	} while (0)
 
@@ -1326,17 +1339,17 @@ __ri void ImGuiManager::DrawVideoCaptureOverlay(float& position_y, float scale, 
 
 	// Shadow
 	dl->AddText(osd_font, font_size,
-		ImVec2(GetWindowWidth() - margin - text_size.x - icon_size.x + shadow_offset, position_y + shadow_offset),
+		ImVec2(GetWindowWidth() - std::max(margin, ImGuiManager::GetOSDSafeAreaRight()) - text_size.x - icon_size.x + shadow_offset, position_y + shadow_offset),
 		IM_COL32(0, 0, 0, 100), ICON);
 	dl->AddText(osd_font, font_size,
-		ImVec2(GetWindowWidth() - margin - text_size.x + shadow_offset, position_y + shadow_offset),
+		ImVec2(GetWindowWidth() - std::max(margin, ImGuiManager::GetOSDSafeAreaRight()) - text_size.x + shadow_offset, position_y + shadow_offset),
 		IM_COL32(0, 0, 0, 100), text_msg.c_str(), text_msg.end_ptr());
 
 	// Text
 	dl->AddText(osd_font, font_size,
-		ImVec2(GetWindowWidth() - margin - text_size.x - icon_size.x, position_y), IM_COL32(255, 0, 0, 255), ICON);
+		ImVec2(GetWindowWidth() - std::max(margin, ImGuiManager::GetOSDSafeAreaRight()) - text_size.x - icon_size.x, position_y), IM_COL32(255, 0, 0, 255), ICON);
 	dl->AddText(osd_font, font_size,
-		ImVec2(GetWindowWidth() - margin - text_size.x, position_y), white_color, text_msg.c_str(),
+		ImVec2(GetWindowWidth() - std::max(margin, ImGuiManager::GetOSDSafeAreaRight()) - text_size.x, position_y), white_color, text_msg.c_str(),
 		text_msg.end_ptr());
 
 	position_y += std::max(icon_size.y, text_size.y) + spacing;
@@ -1374,7 +1387,7 @@ __ri void ImGuiManager::DrawTextureReplacementsOverlay(float& position_y, float 
 	}
 
 	ImVec2 text_size = osd_font->CalcTextSizeA(font_size, std::numeric_limits<float>::max(), -1.0f, texture_line.c_str(), nullptr, nullptr);
-	const ImVec2 text_pos(GetWindowWidth() - margin - text_size.x, position_y);
+	const ImVec2 text_pos(GetWindowWidth() - std::max(margin, ImGuiManager::GetOSDSafeAreaRight()) - text_size.x, position_y);
 
 	dl->AddText(osd_font, font_size, ImVec2(text_pos.x + shadow_offset, text_pos.y + shadow_offset), IM_COL32(0, 0, 0, 100), texture_line.c_str());
 	dl->AddText(osd_font, font_size, text_pos, white_color, texture_line.c_str());
@@ -1403,9 +1416,9 @@ __ri void ImGuiManager::DrawIndicatorsOverlay(float& position_y, float scale, fl
 		{ \
 			text_size = font->CalcTextSizeA(size, std::numeric_limits<float>::max(), -1.0f, (text), nullptr, nullptr); \
 			dl->AddText(font, size, \
-				ImVec2(GetWindowWidth() - margin - text_size.x + shadow_offset, position_y + shadow_offset), \
+				ImVec2(GetWindowWidth() - std::max(margin, ImGuiManager::GetOSDSafeAreaRight()) - text_size.x + shadow_offset, position_y + shadow_offset), \
 				IM_COL32(0, 0, 0, 100), (text)); \
-			dl->AddText(font, size, ImVec2(GetWindowWidth() - margin - text_size.x, position_y), color, (text)); \
+			dl->AddText(font, size, ImVec2(GetWindowWidth() - std::max(margin, ImGuiManager::GetOSDSafeAreaRight()) - text_size.x, position_y), color, (text)); \
 			position_y += text_size.y + spacing; \
 		} while (0)
 
@@ -1868,7 +1881,8 @@ void ImGuiManager::RenderOverlays()
 	const float scale = ImGuiManager::GetGlobalScale();
 	const float margin = std::ceil(GSConfig.OsdMargin * scale);
 	const float spacing = std::ceil(5.0f * scale);
-	float position_y = margin;
+	// Start the top-anchored overlay stack below the top safe-area inset (0 off-iOS).
+	float position_y = std::max(margin, ImGuiManager::GetOSDSafeAreaTop());
 
 	DrawIndicatorsOverlay(position_y, scale, margin, spacing);
 	DrawVideoCaptureOverlay(position_y, scale, margin, spacing);

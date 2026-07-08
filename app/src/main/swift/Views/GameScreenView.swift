@@ -987,7 +987,7 @@ struct GameScreenView: View {
     }
 
     private func cycleOsdPreset() {
-        let allPresets: [OsdPreset] = [.off, .simple, .detail, .full]
+        let allPresets: [OsdPreset] = OsdPreset.allCases
         guard let currentIndex = allPresets.firstIndex(of: settings.osdPreset) else {
             return
         }
