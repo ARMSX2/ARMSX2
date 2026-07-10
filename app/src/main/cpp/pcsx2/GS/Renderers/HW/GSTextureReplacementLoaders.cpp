@@ -55,6 +55,10 @@ GSTextureReplacements::ReplacementTextureLoader GSTextureReplacements::GetLoader
 // Helper routines
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// Hard ceiling for a single decoded DDS image (base or mip). Replacement textures are well
+// under this; anything larger is a corrupted or hostile file and would OOM the device.
+static constexpr u64 DDS_MAX_IMAGE_SIZE = 256ull * 1024 * 1024;
+
 static u32 GetBlockCount(u32 extent, u32 block_size)
 {
 	return std::max(Common::AlignUp(extent, block_size) / block_size, 1u);
@@ -70,7 +74,12 @@ static void CalcBlockMipmapSize(u32 block_size, u32 bytes_per_block, u32 base_wi
 
 	// Pitch can't be specified with each mip level, so we have to calculate it ourselves.
 	pitch = blocks_wide * bytes_per_block;
-	size = blocks_high * pitch;
+	const u64 size_64 = static_cast<u64>(blocks_high) * pitch;
+	// Defensive: a corrupted base dimension could still overflow u32 at a mip level. Clamp
+	// rather than wrap; ReadDDSMipLevel re-validates against the file size before allocating.
+	size = (size_64 > DDS_MAX_IMAGE_SIZE || size_64 > static_cast<u64>(std::numeric_limits<u32>::max()))
+		? 0
+		: static_cast<u32>(size_64);
 }
 
 static void ConvertTexture_X8B8G8R8(u32 width, u32 height, std::vector<u8>& data, u32& pitch)
@@ -595,29 +604,44 @@ static bool ParseDDSHeader(std::FILE* fp, DDSLoadInfo* info)
 	// Pitch can be specified in the header, otherwise we can derive it from the dimensions. For
 	// compressed formats, both DDS_HEADER_FLAGS_LINEARSIZE and DDS_HEADER_FLAGS_PITCH should be
 	// set. See https://msdn.microsoft.com/en-us/library/windows/desktop/bb943982(v=vs.85).aspx
+	const u32 derived_pitch = blocks_wide * info->bytes_per_block;
+	u64 base_image_size_64 = 0;
 	if (header.dwFlags & DDS_HEADER_FLAGS_PITCH && header.dwFlags & DDS_HEADER_FLAGS_LINEARSIZE)
 	{
-		// Convert pitch (in bytes) to texels/row length.
+		// Header pitch must be sane: at least one row of blocks, and never more than a 32-bit
+		// value (the field is u32, but a corrupted file can still request absurd memory).
 		if (header.dwPitchOrLinearSize < info->bytes_per_block)
-		{
-			// Likely a corrupted or invalid file.
 			return false;
-		}
 
-		info->base_image_pitch = header.dwPitchOrLinearSize;
-		info->base_image_size = info->base_image_pitch * blocks_high;
+		// Prefer the derived pitch when the header's is implausibly large for the dimensions,
+		// otherwise honour it (some encoders pad rows). Cap to derived * 4 as a sanity margin.
+		const u64 header_pitch = static_cast<u64>(header.dwPitchOrLinearSize);
+		info->base_image_pitch = (header_pitch > static_cast<u64>(derived_pitch) * 4)
+			? derived_pitch
+			: header.dwPitchOrLinearSize;
+		base_image_size_64 = static_cast<u64>(info->base_image_pitch) * blocks_high;
 	}
 	else
 	{
-		// Assume no padding between rows of blocks.
-		info->base_image_pitch = blocks_wide * info->bytes_per_block;
-		info->base_image_size = info->base_image_pitch * blocks_high;
+		info->base_image_pitch = derived_pitch;
+		base_image_size_64 = static_cast<u64>(derived_pitch) * blocks_high;
 	}
 
-	// Check for truncated or corrupted files.
+	// Reject corrupted/hostile files before the allocation: size must fit in u32, stay under
+	// the hard cap, and not exceed the bytes remaining in the file.
 	info->base_image_offset = sizeof(magic) + header_size;
-	if (info->base_image_offset >= FileSystem::FSize64(fp))
+	const s64 file_size_signed = FileSystem::FSize64(fp);
+	if (file_size_signed < 0 || file_size_signed <= static_cast<s64>(info->base_image_offset))
 		return false;
+	const u64 file_size = static_cast<u64>(file_size_signed);
+	const u64 remaining = file_size - static_cast<u64>(info->base_image_offset);
+	if (base_image_size_64 > DDS_MAX_IMAGE_SIZE || base_image_size_64 > remaining ||
+		base_image_size_64 > static_cast<u64>(std::numeric_limits<u32>::max()))
+	{
+		Console.Error("DDS texture is too large or truncated (size=%llu, remaining=%llu).", base_image_size_64, remaining);
+		return false;
+	}
+	info->base_image_size = static_cast<u32>(base_image_size_64);
 
 	return true;
 }
@@ -633,6 +657,21 @@ static bool ReadDDSMipLevel(std::FILE* fp, const std::string& filename, u32 mip_
 			"Invalid dimensions for DDS texture %s. For compressed textures of this format, "
 			"the width/height of the first mip level must be a multiple of %u.",
 			filename.c_str(), info.block_size);
+		return false;
+	}
+
+	// Final guard before the allocation: refuse to resize to a nonsensical size. CalcBlockMipmapSize
+	// yields 0 on overflow, and a truncated file can't supply `size` bytes regardless.
+	if (size == 0)
+	{
+		Console.Error("DDS texture %s has an invalid mip level %u size.", filename.c_str(), mip_level);
+		return false;
+	}
+	const s64 pos = FileSystem::FTell64(fp);
+	const s64 file_size = FileSystem::FSize64(fp);
+	if (pos < 0 || file_size < 0 || static_cast<u64>(file_size - pos) < static_cast<u64>(size))
+	{
+		Console.Error("DDS texture %s is truncated at mip level %u (need %u bytes).", filename.c_str(), mip_level, size);
 		return false;
 	}
 
