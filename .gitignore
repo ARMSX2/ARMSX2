@@ -13,9 +13,6 @@ local.properties
 # OS junk
 **/.DS_Store
 
-# Local agent working files (specs, logs, audit artifacts)
-.ai-local/
-
 # Sensitive or key material
 armsx2_release.jks
 armsx2_keystore.properties
