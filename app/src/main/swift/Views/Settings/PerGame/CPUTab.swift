@@ -22,6 +22,7 @@ struct CPUTab: View {
     @Binding var perGameEEClamp: Int
     @Binding var perGameVUClamp: Int
 
+    let savesToRunningGame: Bool
     let settings: SettingsStore
     let eeCycleRateUseGlobalSentinel: Int
     let fastBootUseGlobalSentinel: Int
@@ -89,7 +90,7 @@ struct CPUTab: View {
                 }
                 .disabled(!enabled || eeCycleRate == eeCycleRateUseGlobalSentinel)
 
-                Text("Can improve performance in heavy games, but may cause timing or compatibility issues. Reset or relaunch the game after changing it.")
+                Text(settings.localized("Can improve performance in heavy games, but may cause timing or compatibility issues. " + (savesToRunningGame ? "Takes effect when you save." : "Takes effect on next boot.")))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -106,7 +107,7 @@ struct CPUTab: View {
                 }
                 .disabled(!enabled || eeCycleSkip == -1)
 
-                Text("Skips EE cycles to boost performance; higher values are more aggressive and can cause audio or timing issues. Reset or relaunch the game after changing it.")
+                Text(settings.localized("Skips EE cycles to boost performance; higher values are more aggressive and can cause audio or timing issues. " + (savesToRunningGame ? "Takes effect when you save." : "Takes effect on next boot.")))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 

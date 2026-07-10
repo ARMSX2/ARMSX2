@@ -326,6 +326,20 @@ struct PerGameSettingsPanel: View {
         perGameFingerprint() != savedFingerprint
     }
 
+    /// Status shown after Save. In-game most settings apply immediately via the
+    /// live-apply bridge path; a few (renderer, recompiler toggles, MTVU) need a
+    /// reset. From the library nothing is running, so the next boot is the earliest.
+    private var postSaveMessage: String {
+        if !enabled {
+            return settings.localized("Per-game overrides cleared.")
+        }
+        let serial = game.metadata["serial"] ?? game.name
+        let suffix = savesToRunningGame
+            ? settings.localized("Saved — changes apply now. Renderer and recompiler settings need a reset.")
+            : settings.localized("Reset or relaunch the game to apply.")
+        return "\(settings.localized("Saved for")) \(serial). \(suffix)"
+    }
+
     /// Clears every per-game override by disabling the master toggle and saving; the
     /// save path deletes all per-game keys so the global values apply on next boot.
     private func resetAllOverrides() {
@@ -523,6 +537,7 @@ struct PerGameSettingsPanel: View {
             statusMessage: $statusMessage,
             displayName: displayName,
             hasPendingChanges: hasPendingChanges,
+            savesToRunningGame: savesToRunningGame,
             game: game,
             settings: settings
         )
@@ -582,6 +597,7 @@ struct PerGameSettingsPanel: View {
             perGameLoadTextureReplacementsAsync: $perGameLoadTextureReplacementsAsync,
             perGamePrecacheTextureReplacements: $perGamePrecacheTextureReplacements,
             perGameSyncToHostRefresh: $perGameSyncToHostRefresh,
+            savesToRunningGame: savesToRunningGame,
             settings: settings
         )
     }
@@ -618,6 +634,7 @@ struct PerGameSettingsPanel: View {
             perGameVU1Round: $perGameVU1Round,
             perGameEEClamp: $perGameEEClamp,
             perGameVUClamp: $perGameVUClamp,
+            savesToRunningGame: savesToRunningGame,
             settings: settings,
             eeCycleRateUseGlobalSentinel: Self.eeCycleRateUseGlobalSentinel,
             fastBootUseGlobalSentinel: Self.fastBootUseGlobalSentinel,
@@ -647,6 +664,7 @@ struct PerGameSettingsPanel: View {
             perGameAAT: $perGameAAT,
             perGameTextureInsideRt: $perGameTextureInsideRt,
             perGameFixes: $perGameFixes,
+            savesToRunningGame: savesToRunningGame,
             settings: settings
         )
     }
@@ -659,6 +677,7 @@ struct PerGameSettingsPanel: View {
             perGameWidescreen: $perGameWidescreen,
             perGameNoInterlace: $perGameNoInterlace,
             showCheatsManager: $showCheatsManager,
+            savesToRunningGame: savesToRunningGame,
             settings: settings
         )
     }
@@ -703,7 +722,9 @@ struct PerGameSettingsPanel: View {
                             .textSelection(.enabled)
                     }
                     Text(hasPendingChanges
-                         ? settings.localized("Unsaved changes — Save to apply on next boot/reset.")
+                         ? (savesToRunningGame
+                            ? settings.localized("Unsaved changes — tap Save to apply now.")
+                            : settings.localized("Unsaved changes — Save to apply on next boot."))
                          : settings.localized("No pending changes."))
                         .font(.caption)
                         .foregroundStyle(hasPendingChanges ? Color.accentColor : Color.secondary)
@@ -717,7 +738,9 @@ struct PerGameSettingsPanel: View {
     private var overridesSection: some View {
         Section {
             Toggle(settings.localized("Use Per-Game Overrides"), isOn: $enabled)
-            Text(settings.localized("Overrides are saved for this game only and apply on the next boot/reset of this title."))
+            Text(settings.localized(savesToRunningGame
+                ? "Overrides are saved for this game only and apply when you save, while the game runs."
+                : "Overrides are saved for this game only and apply on the next boot of this title."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if !hasGameSettingsIdentity {
@@ -989,16 +1012,16 @@ struct PerGameSettingsPanel: View {
                 skipDrawEnd: Int32(normalizedSkipDraw.end),
                 volumeOverride: enabled && volumeOverride,
                 volumePercent: Int32(volumePercent),
-                eeCoreType: Int32(eeCoreType),
-                mtvu: mtvu,
+                eeCoreType: enabled ? Int32(eeCoreType) : 0,
+                mtvu: enabled && mtvu,
                 eeCycleRateOverride: enabled && eeCycleRate != Self.eeCycleRateUseGlobalSentinel,
                 eeCycleRate: Int32(Self.clampedEECycleRate(eeCycleRate == Self.eeCycleRateUseGlobalSentinel ? globalEECycleRate : eeCycleRate)),
                 fastBootOverride: enabled && fastBoot != Self.fastBootUseGlobalSentinel,
                 fastBoot: fastBoot == Self.fastBootOn,
-                enableCheats: enableCheats,
-                enablePatches: enablePatches,
-                enableGameFixes: enableGameFixes,
-                enableGameDBHardwareFixes: enableGameDBHardwareFixes
+                enableCheats: enabled && enableCheats,
+                enablePatches: enabled && enablePatches,
+                enableGameFixes: enabled && enableGameFixes,
+                enableGameDBHardwareFixes: enabled && enableGameDBHardwareFixes
             )
         } else {
             ARMSX2Bridge.setGameSettings(
@@ -1029,23 +1052,20 @@ struct PerGameSettingsPanel: View {
                 skipDrawEnd: Int32(normalizedSkipDraw.end),
                 volumeOverride: enabled && volumeOverride,
                 volumePercent: Int32(volumePercent),
-                eeCoreType: Int32(eeCoreType),
-                mtvu: mtvu,
+                eeCoreType: enabled ? Int32(eeCoreType) : 0,
+                mtvu: enabled && mtvu,
                 eeCycleRateOverride: enabled && eeCycleRate != Self.eeCycleRateUseGlobalSentinel,
                 eeCycleRate: Int32(Self.clampedEECycleRate(eeCycleRate == Self.eeCycleRateUseGlobalSentinel ? globalEECycleRate : eeCycleRate)),
                 fastBootOverride: enabled && fastBoot != Self.fastBootUseGlobalSentinel,
                 fastBoot: fastBoot == Self.fastBootOn,
-                enableCheats: enableCheats,
-                enablePatches: enablePatches,
-                enableGameFixes: enableGameFixes,
-                enableGameDBHardwareFixes: enableGameDBHardwareFixes
+                enableCheats: enabled && enableCheats,
+                enablePatches: enabled && enablePatches,
+                enableGameFixes: enabled && enableGameFixes,
+                enableGameDBHardwareFixes: enabled && enableGameDBHardwareFixes
             )
         }
         savePerGameCompatibility()
-        let applyMessage = savesToRunningGame ?
-            settings.localized("Volume changes apply now; some settings need reset or relaunch.") :
-            settings.localized("Reset or relaunch the game to apply.")
-        statusMessage = enabled ? "\(settings.localized("Saved for")) \(game.metadata["serial"] ?? game.name). \(applyMessage)" : settings.localized("Per-game overrides cleared.")
+        statusMessage = postSaveMessage
         savedFingerprint = perGameFingerprint()
     }
 
@@ -1073,8 +1093,10 @@ struct PerGameSettingsPanel: View {
         } else {
             Self.clearPerGameValue("EmuCore/GS", "UserHacks_TextureInsideRt", useCurrent: useCurrent, iso: iso)
         }
-        // Renderer is a boot-time choice, so write the per-game file only and let it
-        // take effect on the next boot rather than switching a running game live.
+        // Renderer is a boot-time choice — switching Metal↔Software mid-game would
+        // require recreating the GS device, which PCSX2's GSreopen does support but
+        // not from the per-game INI write path. Write the file only (bypassing the
+        // live-apply ForCurrentGame variant) so it takes effect on next boot.
         let rendererIso = game.bootName
         if enabled && perGameRenderer != -1 {
             ARMSX2Bridge.setPerGameINIInt("EmuCore/GS", key: "Renderer", value: Int32(perGameRenderer), forISO: rendererIso)

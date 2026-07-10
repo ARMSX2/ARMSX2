@@ -303,6 +303,16 @@ final class PatchStore: @unchecked Sendable {
             return
         }
 
+        // Per-game patch keys are written to the game INI regardless of the master
+        // overrides toggle. Block the write when overrides are off so stale keys
+        // don't linger and apply on the next boot.
+        if launchContext == .inGame,
+           !ARMSX2Bridge.getPerGameINIBoolForCurrentGame("ARMSX2iOS/PerGame", key: "Enabled", defaultValue: false)
+        {
+            applyFeedback("Per-game overrides are off — enable them in Per-Game Settings to save cheats for this game.", kind: .error)
+            return
+        }
+
         var names = enableList(forISO: isoName, isCheat: entry.isCheat)
         if let index = names.firstIndex(where: { $0.caseInsensitiveCompare(entry.name) == .orderedSame }) {
             names.remove(at: index)
@@ -334,6 +344,13 @@ final class PatchStore: @unchecked Sendable {
 
     func setAllNamedEntries(enabled: Bool) {
         guard canManageInstalledFiles else { return }
+
+        if enabled, launchContext == .inGame,
+           !ARMSX2Bridge.getPerGameINIBoolForCurrentGame("ARMSX2iOS/PerGame", key: "Enabled", defaultValue: false)
+        {
+            applyFeedback("Per-game overrides are off — enable them in Per-Game Settings to save cheats for this game.", kind: .error)
+            return
+        }
 
         let hcBlocks = Self.hardcoreBlocksPnachContent()
         let existingPatch = enabled ? enableList(forISO: isoName, isCheat: false) : []
