@@ -165,6 +165,11 @@ struct GameListView: View {
 	@State private var isLoadingGames = false
 	@State private var showCoverImporter = false
     @State private var showCoverPhotoPicker = false
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    private var cardMaterial: Material {
+        reduceTransparency ? .regularMaterial : .thinMaterial
+    }
     @State private var showRestartAlert = false
     @State private var showStopAlert = false
     @State private var showCoverTemplateEditor = false
@@ -598,7 +603,19 @@ struct GameListView: View {
             }
             .padding(.top, 12)
         }
-        .background(hasCustomBackground ? Color.clear : Color(.systemGroupedBackground))
+        .background(
+            Group {
+                if hasCustomBackground {
+                    Color.clear
+                } else {
+                    LinearGradient(
+                        colors: [Color(.systemGroupedBackground), Color(.secondarySystemGroupedBackground)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+            }
+        )
         .transaction { transaction in
             transaction.animation = nil
         }
@@ -836,7 +853,7 @@ struct GameListView: View {
             }
             .padding(8)
             .frame(maxWidth: .infinity, minHeight: 268, alignment: .top)
-            .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background(cardMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 				.overlay {
 					RoundedRectangle(cornerRadius: 18, style: .continuous)
 						.strokeBorder(isRunning(game) ? .green.opacity(0.6) : .white.opacity(0.08), lineWidth: 1)
@@ -891,7 +908,7 @@ struct GameListView: View {
                 .frame(width: metrics.textWidth)
             }
             .padding(metrics.cardPadding)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous))
+            .background(cardMaterial, in: RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous))
 			.overlay {
 				RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
 					.strokeBorder(isRunning(game) ? .green.opacity(0.7) : .white.opacity(0.12), lineWidth: 1)
@@ -940,7 +957,7 @@ struct GameListView: View {
             .buttonStyle(.bordered)
         }
         .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(cardMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .alert(settings.localized("Stop Emulation?"), isPresented: $showStopAlert) {
             Button(settings.localized("Cancel"), role: .cancel) { }
             Button(settings.localized("Stop"), role: .destructive) {
@@ -980,7 +997,7 @@ struct GameListView: View {
         }
         .frame(width: metrics.statusWidth, height: metrics.statusHeight)
         .padding(metrics.cardPadding)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous))
+        .background(cardMaterial, in: RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous))
         .alert(settings.localized("Stop Emulation?"), isPresented: $showStopAlert) {
             Button(settings.localized("Cancel"), role: .cancel) { }
             Button(settings.localized("Stop"), role: .destructive) {
@@ -1435,6 +1452,7 @@ struct GameListView: View {
 
 private struct LibraryBackgroundListRowModifier: ViewModifier {
     let isEnabled: Bool
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -1442,7 +1460,7 @@ private struct LibraryBackgroundListRowModifier: ViewModifier {
             content
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(reduceTransparency ? AnyShapeStyle(.background) : AnyShapeStyle(.regularMaterial), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
