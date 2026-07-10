@@ -1437,25 +1437,38 @@ final class SettingsStore {
     }}
 
     // ── Library Background ──
-    var libraryBackgroundPath: String {
+    var backgroundPrimaryAsset: BackgroundAsset? {
         didSet {
-            UserDefaults.standard.set(libraryBackgroundPath, forKey: "ARMSX2iOSLibraryBackgroundPath")
-        }
-    }
-    var libraryLandscapeBackgroundPath: String {
-        didSet {
-            UserDefaults.standard.set(libraryLandscapeBackgroundPath, forKey: "ARMSX2iOSLibraryLandscapeBackgroundPath")
-        }
-    }
-    var libraryBackgroundRevision = 0
-    var libraryBackgroundDim: Double {
-        didSet {
-            let clamped = Self.clampedLibraryBackgroundDim(libraryBackgroundDim)
-            guard libraryBackgroundDim == clamped else {
-                libraryBackgroundDim = clamped
-                return
+            if let asset = backgroundPrimaryAsset {
+                UserDefaults.standard.set(try? JSONEncoder().encode(asset), forKey: "ARMSX2iOSBackgroundPrimaryAsset")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "ARMSX2iOSBackgroundPrimaryAsset")
             }
-            UserDefaults.standard.set(libraryBackgroundDim, forKey: "ARMSX2iOSLibraryBackgroundDim")
+        }
+    }
+    var backgroundLandscapeAsset: BackgroundAsset? {
+        didSet {
+            if let asset = backgroundLandscapeAsset {
+                UserDefaults.standard.set(try? JSONEncoder().encode(asset), forKey: "ARMSX2iOSBackgroundLandscapeAsset")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "ARMSX2iOSBackgroundLandscapeAsset")
+            }
+        }
+    }
+    var backgroundFitMode: BackgroundFitMode {
+        didSet { UserDefaults.standard.set(backgroundFitMode.rawValue, forKey: "ARMSX2iOSBackgroundFitMode") }
+    }
+    var backgroundLandscapeFitMode: BackgroundFitMode = .fill {
+        didSet { UserDefaults.standard.set(backgroundLandscapeFitMode.rawValue, forKey: "ARMSX2iOSBackgroundLandscapeFitMode") }
+    }
+    var backgroundVideoMuted: Bool {
+        didSet { UserDefaults.standard.set(backgroundVideoMuted, forKey: "ARMSX2iOSBackgroundVideoMuted") }
+    }
+    var backgroundDim: Double {
+        didSet {
+            let clamped = Self.clampedBackgroundDim(backgroundDim)
+            guard backgroundDim == clamped else { backgroundDim = clamped; return }
+            UserDefaults.standard.set(backgroundDim, forKey: "ARMSX2iOSBackgroundDim")
         }
     }
 
@@ -1645,10 +1658,13 @@ final class SettingsStore {
         dev9DNS1 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS1", defaultValue: "0.0.0.0")
         dev9DNS2Mode = ARMSX2Bridge.getINIString("DEV9/Eth", key: "ModeDNS2", defaultValue: "Auto")
         dev9DNS2 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS2", defaultValue: "0.0.0.0")
-        libraryBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryBackgroundPath") ?? ""
-        libraryLandscapeBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryLandscapeBackgroundPath") ?? ""
-        let savedDim = UserDefaults.standard.object(forKey: "ARMSX2iOSLibraryBackgroundDim") as? Double
-        libraryBackgroundDim = Self.clampedLibraryBackgroundDim(savedDim ?? 0.35)
+        BackgroundStorage.migrateLegacyBackgroundsIfNeeded()
+        backgroundPrimaryAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundPrimaryAsset")
+        backgroundLandscapeAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundLandscapeAsset")
+        backgroundFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundFitMode") ?? "") ?? .fill
+        backgroundLandscapeFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundLandscapeFitMode") ?? "") ?? .fill
+        backgroundVideoMuted = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundVideoMuted") as? Bool ?? true
+        backgroundDim = Self.clampedBackgroundDim(UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundDim") as? Double ?? 0.35)
         normalizeDEV9Settings()
         VPadSkinLibraryStore.shared.adoptLegacySelection(virtualPadSkin)
         ARMSX2Bridge.setINIString("EmuCore/GS", key: "AspectRatio", value: Self.aspectRatioName(for: aspectRatio))
@@ -1836,10 +1852,12 @@ final class SettingsStore {
         dev9DNS1 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS1", defaultValue: "0.0.0.0")
         dev9DNS2Mode = ARMSX2Bridge.getINIString("DEV9/Eth", key: "ModeDNS2", defaultValue: "Auto")
         dev9DNS2 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS2", defaultValue: "0.0.0.0")
-        libraryBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryBackgroundPath") ?? ""
-        libraryLandscapeBackgroundPath = UserDefaults.standard.string(forKey: "ARMSX2iOSLibraryLandscapeBackgroundPath") ?? ""
-        let savedDimReload = UserDefaults.standard.object(forKey: "ARMSX2iOSLibraryBackgroundDim") as? Double
-        libraryBackgroundDim = Self.clampedLibraryBackgroundDim(savedDimReload ?? 0.35)
+        backgroundPrimaryAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundPrimaryAsset")
+        backgroundLandscapeAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundLandscapeAsset")
+        backgroundFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundFitMode") ?? "") ?? .fill
+        backgroundLandscapeFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundLandscapeFitMode") ?? "") ?? .fill
+        backgroundVideoMuted = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundVideoMuted") as? Bool ?? true
+        backgroundDim = Self.clampedBackgroundDim(UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundDim") as? Double ?? 0.35)
         normalizeDEV9Settings()
         VPadSkinLibraryStore.shared.adoptLegacySelection(virtualPadSkin)
     }
@@ -1871,9 +1889,30 @@ final class SettingsStore {
         return min(max(scale, 0.8), 1.6)
     }
 
-    private static func clampedLibraryBackgroundDim(_ value: Double) -> Double {
+    private static func clampedBackgroundDim(_ value: Double) -> Double {
         guard value.isFinite else { return 0.35 }
-        return min(max(value, 0.0), 0.8)
+        return min(max(value, 0.0), 1.0)
+    }
+
+    private static func loadBackgroundAsset(forKey key: String) -> BackgroundAsset? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(BackgroundAsset.self, from: data)
+    }
+
+    /// Removes background assets whose files no longer exist. Returns `true`
+    /// when at least one stale asset was cleared so callers can surface a notice.
+    @discardableResult
+    func sanitizeBackgroundAssets() -> Bool {
+        var removed = false
+        if let primary = backgroundPrimaryAsset, !BackgroundStorage.exists(primary) {
+            backgroundPrimaryAsset = nil
+            removed = true
+        }
+        if let landscape = backgroundLandscapeAsset, !BackgroundStorage.exists(landscape) {
+            backgroundLandscapeAsset = nil
+            removed = true
+        }
+        return removed
     }
 
     private static func clampedTextureOffset(_ offset: Int) -> Int {
