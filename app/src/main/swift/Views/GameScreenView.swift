@@ -107,7 +107,7 @@ struct GameScreenView: View {
     // preserve the original easeOut/easeIn 0.18s show/hide and generation-bump
     // cancel semantics (see TransientBannerController).
     @StateObject private var statusBanner = TransientBannerController<String>(defaultDisplayDuration: Self.briefStatusDisplayDuration)
-    @StateObject private var achievementsBanner = TransientBannerController<RetroAchievementsToast>(defaultDisplayDuration: Self.retroAchievementsToastDisplayDuration)
+    @StateObject private var achievementsBanner = TransientBannerController<RetroAchievementsToast>(defaultDisplayDuration: Self.retroAchievementsToastDisplayDuration, queuesConcurrentPresentations: true)
     @State private var runtimeOverlayPauseActive = false
     @State private var previousHideHomeIndicator = false
     @State private var previousHideStatusBar = false
