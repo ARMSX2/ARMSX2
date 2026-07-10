@@ -184,23 +184,15 @@ struct GameListView: View {
     @State private var pendingDeleteDataGame: ISOEntry?
     @State private var gameActionTitle = ""
     @State private var gameActionMessage: String?
+    @State private var showBackgroundAssetError = false
     @AppStorage("ARMSX2iOSGameLibraryLayout") private var libraryLayout = "grid"
     @AppStorage("ARMSX2iOSLandscapeCoverFlowEnabled") private var landscapeCoverFlowEnabled = true
-    @State private var backgroundImage: UIImage?
-    @State private var landscapeBackgroundImage: UIImage?
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-
+#if DEBUG
+    @State private var ranBackgroundValidation = false
+#endif
+    // Background state is now kept in SettingsStore and rendered by BackgroundContainerView.
     private var hasCustomBackground: Bool {
-        backgroundImage != nil || landscapeBackgroundImage != nil
-    }
-
-    private var effectiveDim: Double {
-        let dim = settings.libraryBackgroundDim
-        if reduceTransparency || colorSchemeContrast == .increased {
-            return max(dim, 0.55)
-        }
-        return dim
+        settings.backgroundPrimaryAsset != nil || settings.backgroundLandscapeAsset != nil
     }
 
     private struct CoverFlowMetrics {
@@ -242,27 +234,7 @@ struct GameListView: View {
     @ViewBuilder
     private var libraryBackgroundLayer: some View {
         GeometryReader { geometry in
-            if let animatedURL = activeAnimatedBackgroundURL(for: geometry.size) {
-                ZStack {
-                    AnimatedLibraryBackgroundView(url: animatedURL)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .clipped()
-
-                    Color.black.opacity(effectiveDim)
-                }
-                .frame(width: geometry.size.width, height: geometry.size.height)
-            } else if let image = libraryBackgroundImage(for: geometry.size) {
-                ZStack {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .clipped()
-
-                    Color.black.opacity(effectiveDim)
-                }
-                .frame(width: geometry.size.width, height: geometry.size.height)
-            }
+            BackgroundContainerView(size: geometry.size)
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)
@@ -491,6 +463,11 @@ struct GameListView: View {
             } message: {
                 Text(FileImportHandler.replacementConfirmationMessage(for: existingGameImportFileNames))
             }
+            .alert(settings.localized("Background image could not be loaded."), isPresented: $showBackgroundAssetError) {
+                Button(settings.localized("OK")) {
+                    showBackgroundAssetError = false
+                }
+            }
 				.sheet(isPresented: $showGameImporter) {
 					ImportDocumentPicker(
 						allowedContentTypes: FileImportHandler.gameContentTypes,
@@ -567,20 +544,19 @@ struct GameListView: View {
                     .presentationDragIndicator(.visible)
             }
         }
-	        .onAppear {
+		.onAppear {
 			externalLibrary.reload()
 			restoreCachedGamesIfNeeded()
 			loadGames(autoDownloadExternalCovers: true)
-			reloadLibraryBackground()
-		}
-		.onChange(of: settings.libraryBackgroundPath) { _, _ in
-			reloadLibraryBackground()
-		}
-		.onChange(of: settings.libraryLandscapeBackgroundPath) { _, _ in
-			reloadLibraryBackground()
-		}
-		.onChange(of: settings.libraryBackgroundRevision) { _, _ in
-			reloadLibraryBackground()
+			if settings.sanitizeBackgroundAssets() {
+				showBackgroundAssetError = true
+			}
+#if DEBUG
+			if !ranBackgroundValidation {
+				ranBackgroundValidation = true
+				BackgroundValidation.run()
+			}
+#endif
 		}
 		.onReceive(NotificationCenter.default.publisher(for: ExternalGameLibrary.didChangeNotification)) { _ in
 			loadGames(autoDownloadExternalCovers: true)
@@ -1455,40 +1431,6 @@ struct GameListView: View {
         return String(format: "%.0f MB", mb)
     }
 
-    private func libraryBackgroundImage(for size: CGSize) -> UIImage? {
-        if size.width > size.height, let landscapeBackgroundImage {
-            return landscapeBackgroundImage
-        }
-        return backgroundImage ?? landscapeBackgroundImage
-    }
-
-    /// Returns the active animated-background file URL when the chosen
-    /// background is a multi-frame image, following the same landscape/main
-    /// resolution rule as `libraryBackgroundImage(for:)`. Returns nil for
-    /// static images so the static render path is used instead.
-    private func activeAnimatedBackgroundURL(for size: CGSize) -> URL? {
-        func animatedURL(forPath path: String) -> URL? {
-            guard !path.isEmpty, FileManager.default.fileExists(atPath: path),
-                  AnimatedBackgroundLoader.isAnimated(URL(fileURLWithPath: path)) else { return nil }
-            return URL(fileURLWithPath: path)
-        }
-        if size.width > size.height,
-           let landscape = animatedURL(forPath: settings.libraryLandscapeBackgroundPath) {
-            return landscape
-        }
-        return animatedURL(forPath: settings.libraryBackgroundPath)
-            ?? animatedURL(forPath: settings.libraryLandscapeBackgroundPath)
-    }
-
-    private func reloadLibraryBackground() {
-        backgroundImage = loadLibraryBackground(at: settings.libraryBackgroundPath)
-        landscapeBackgroundImage = loadLibraryBackground(at: settings.libraryLandscapeBackgroundPath)
-    }
-
-    private func loadLibraryBackground(at path: String) -> UIImage? {
-        guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return nil }
-        return UIImage(contentsOfFile: path)
-    }
 }
 
 private struct LibraryBackgroundListRowModifier: ViewModifier {
