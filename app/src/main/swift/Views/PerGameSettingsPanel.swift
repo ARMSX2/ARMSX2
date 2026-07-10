@@ -13,7 +13,7 @@ struct PerGameSettingsPanel: View {
     @State private var skinLibrary = VPadSkinLibraryStore.shared
 
     private enum PerGameSettingsCategory: CaseIterable, Identifiable {
-        case general, graphics, audio, cpu, pad, fixes, cheats
+        case general, graphics, audio, cpu, pad, fixes, cheats, retroAchievements
 
         var id: Self { self }
 
@@ -26,6 +26,7 @@ struct PerGameSettingsPanel: View {
             case .pad: return "Virtual Pad"
             case .fixes: return "Fixes & Compatibility"
             case .cheats: return "Cheats & Patches"
+            case .retroAchievements: return "RetroAchievements"
             }
         }
 
@@ -38,6 +39,7 @@ struct PerGameSettingsPanel: View {
             case .pad: return "gamecontroller"
             case .fixes: return "wrench.and.screwdriver"
             case .cheats: return "rectangle.stack.badge.plus"
+            case .retroAchievements: return "trophy"
             }
         }
     }
@@ -150,6 +152,8 @@ struct PerGameSettingsPanel: View {
     @State private var showDiscardConfirmation = false
     @State private var savedFingerprint: String = ""
     @State private var landscapeCategory: PerGameSettingsCategory = .general
+    @State private var raEnabledOverride: Int
+    @State private var raHardcoreOverride: Int
 
     init(
         game: ISOEntry,
@@ -307,13 +311,15 @@ struct PerGameSettingsPanel: View {
         _perGameSyncToHostRefresh = State(initialValue: Self.loadedPerGameBool("EmuCore/GS", "SyncToHostRefreshRate", useCurrent: useCurrent, iso: perGameISO))
         _perGameBufferMS = State(initialValue: Self.loadedPerGameInt("SPU2/Output", "BufferMS", globalDefault: 50, useCurrent: useCurrent, iso: perGameISO))
         _perGameOutputLatencyMS = State(initialValue: Self.loadedPerGameInt("SPU2/Output", "OutputLatencyMS", globalDefault: 20, useCurrent: useCurrent, iso: perGameISO))
+        _raEnabledOverride = State(initialValue: Self.loadedPerGameBool("Achievements", "Enabled", useCurrent: useCurrent, iso: perGameISO))
+        _raHardcoreOverride = State(initialValue: Self.loadedPerGameBool("Achievements", "ChallengeMode", useCurrent: useCurrent, iso: perGameISO))
         _savedFingerprint = State(initialValue: perGameFingerprint())
     }
 
     /// Encodes the current editable per-game state so Save can be gated on real changes.
     private func perGameFingerprint() -> String {
         let fixes = SettingsStore.gameFixOptions.map { "\($0.key):\(perGameFixes[$0.key] ?? -1)" }.joined(separator: ",")
-        return "\(enabled)|\(upscaleMultiplier)|\(aspectRatio)|\(textureFiltering)|\(hardwareMipmapping)|\(blendingAccuracy)|\(interlaceMode)|\(trilinearFiltering)|\(halfPixelOffset)|\(roundSprite)|\(alignSpriteOverride)|\(alignSprite)|\(mergeSpriteOverride)|\(mergeSprite)|\(wildArmsOffsetOverride)|\(wildArmsOffset)|\(textureOffsetXOverride)|\(textureOffsetX)|\(textureOffsetYOverride)|\(textureOffsetY)|\(skipDrawStartOverride)|\(skipDrawStart)|\(skipDrawEndOverride)|\(skipDrawEnd)|\(volumeOverride)|\(volumePercent)|\(eeCoreType)|\(mtvu)|\(eeCycleRate)|\(eeCycleSkip)|\(fastBoot)|\(enableCheats)|\(enablePatches)|\(enableGameFixes)|\(enableGameDBHardwareFixes)|\(perGameAAT)|\(perGameTextureInsideRt)|\(perGameRenderer)|\(perGameFXAA)|\(perGameShadeBoost)|\(perGameTVShader)|\(perGameCASMode)|\(perGameMaxAnisotropy)|\(perGameCASSharpness)|\(perGamePCRTCOffsets)|\(perGameIntegerScaling)|\(perGameSkipDupFrames)|\(perGamePCRTCOverscan)|\(perGamePCRTCAntiBlur)|\(perGameDisableInterlaceOffset)|\(perGameWidescreen)|\(perGameNoInterlace)|\(perGameShadeBoostBrightness)|\(perGameShadeBoostContrast)|\(perGameShadeBoostSaturation)|\(perGameShadeBoostGamma)|\(perGameDithering)|\(perGameFastForwardVolume)|\(perGameIOP)|\(perGameVU0)|\(perGameVU1)|\(perGameHWDownloadMode)|\(perGameCPUCLUT)|\(perGameGPUTargetCLUT)|\(perGameVsyncQueue)|\(perGameLoadTextureReplacements)|\(perGameLoadTextureReplacementsAsync)|\(perGamePrecacheTextureReplacements)|\(perGameSyncToHostRefresh)|\(perGameBufferMS)|\(perGameOutputLatencyMS)|\(perGameEEFpuRound)|\(perGameVU0Round)|\(perGameVU1Round)|\(perGameEEClamp)|\(perGameVUClamp)|\(fixes)"
+        return "\(enabled)|\(upscaleMultiplier)|\(aspectRatio)|\(textureFiltering)|\(hardwareMipmapping)|\(blendingAccuracy)|\(interlaceMode)|\(trilinearFiltering)|\(halfPixelOffset)|\(roundSprite)|\(alignSpriteOverride)|\(alignSprite)|\(mergeSpriteOverride)|\(mergeSprite)|\(wildArmsOffsetOverride)|\(wildArmsOffset)|\(textureOffsetXOverride)|\(textureOffsetX)|\(textureOffsetYOverride)|\(textureOffsetY)|\(skipDrawStartOverride)|\(skipDrawStart)|\(skipDrawEndOverride)|\(skipDrawEnd)|\(volumeOverride)|\(volumePercent)|\(eeCoreType)|\(mtvu)|\(eeCycleRate)|\(eeCycleSkip)|\(fastBoot)|\(enableCheats)|\(enablePatches)|\(enableGameFixes)|\(enableGameDBHardwareFixes)|\(perGameAAT)|\(perGameTextureInsideRt)|\(perGameRenderer)|\(perGameFXAA)|\(perGameShadeBoost)|\(perGameTVShader)|\(perGameCASMode)|\(perGameMaxAnisotropy)|\(perGameCASSharpness)|\(perGamePCRTCOffsets)|\(perGameIntegerScaling)|\(perGameSkipDupFrames)|\(perGamePCRTCOverscan)|\(perGamePCRTCAntiBlur)|\(perGameDisableInterlaceOffset)|\(perGameWidescreen)|\(perGameNoInterlace)|\(perGameShadeBoostBrightness)|\(perGameShadeBoostContrast)|\(perGameShadeBoostSaturation)|\(perGameShadeBoostGamma)|\(perGameDithering)|\(perGameFastForwardVolume)|\(perGameIOP)|\(perGameVU0)|\(perGameVU1)|\(perGameHWDownloadMode)|\(perGameCPUCLUT)|\(perGameGPUTargetCLUT)|\(perGameVsyncQueue)|\(perGameLoadTextureReplacements)|\(perGameLoadTextureReplacementsAsync)|\(perGamePrecacheTextureReplacements)|\(perGameSyncToHostRefresh)|\(perGameBufferMS)|\(perGameOutputLatencyMS)|\(perGameEEFpuRound)|\(perGameVU0Round)|\(perGameVU1Round)|\(perGameEEClamp)|\(perGameVUClamp)|\(raEnabledOverride)|\(raHardcoreOverride)|\(fixes)"
     }
 
     private var hasPendingChanges: Bool {
@@ -503,6 +509,7 @@ struct PerGameSettingsPanel: View {
         case .pad:      return AnyView(padTab)
         case .fixes:    return AnyView(fixesTab)
         case .cheats:   return AnyView(cheatsTab)
+        case .retroAchievements: return AnyView(retroAchievementsTab)
         }
     }
 
@@ -656,6 +663,15 @@ struct PerGameSettingsPanel: View {
         )
     }
 
+    private var retroAchievementsTab: some View {
+        RetroAchievementsTab(
+            enabled: $enabled,
+            raEnabledOverride: $raEnabledOverride,
+            raHardcoreOverride: $raHardcoreOverride,
+            settings: settings
+        )
+    }
+
     private var rootForm: some View {
         Form {
             identitySection
@@ -750,6 +766,11 @@ struct PerGameSettingsPanel: View {
                 cheatsTab
             } label: {
                 Label(settings.localized("Cheats & Patches"), systemImage: "rectangle.stack.badge.plus")
+            }
+            NavigationLink {
+                retroAchievementsTab
+            } label: {
+                Label(settings.localized("RetroAchievements"), systemImage: "trophy")
             }
         }
     }
@@ -1248,6 +1269,16 @@ struct PerGameSettingsPanel: View {
         }
         Self.savePerGameEEClamp(perGameEEClamp, enabled: enabled, useCurrent: useCurrent, iso: iso)
         Self.savePerGameVUClamp(perGameVUClamp, enabled: enabled, useCurrent: useCurrent, iso: iso)
+        if enabled && raEnabledOverride != -1 {
+            Self.setPerGameBoolValue("Achievements", "Enabled", raEnabledOverride == 1, useCurrent: useCurrent, iso: iso)
+        } else {
+            Self.clearPerGameValue("Achievements", "Enabled", useCurrent: useCurrent, iso: iso)
+        }
+        if enabled && raHardcoreOverride != -1 {
+            Self.setPerGameBoolValue("Achievements", "ChallengeMode", raHardcoreOverride == 1, useCurrent: useCurrent, iso: iso)
+        } else {
+            Self.clearPerGameValue("Achievements", "ChallengeMode", useCurrent: useCurrent, iso: iso)
+        }
     }
 
     private func normalizedSkipDrawValues() -> (start: Int, end: Int) {

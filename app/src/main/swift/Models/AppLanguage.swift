@@ -287,7 +287,12 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Remove source": "Remove source",
             "Save Source URLs": "Save Source URLs",
             "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
-            "PCSX2 database": "PCSX2 database"
+            "PCSX2 database": "PCSX2 database",
+            "Enable RetroAchievements": "Enable RetroAchievements",
+            "Hardcore Mode": "Hardcore Mode",
+            "Hardcore mode disables save states, cheats, and slow-motion for this game.": "Hardcore mode disables save states, cheats, and slow-motion for this game.",
+            "Per-game RetroAchievements overrides can be set from the per-game settings panel.": "Per-game RetroAchievements overrides can be set from the per-game settings panel.",
+            "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off."
         ],
         .spanish: [
             "System Default": "Predeterminado del sistema",
@@ -471,7 +476,12 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Remove source": "Remove source",
             "Save Source URLs": "Save Source URLs",
             "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
-            "PCSX2 database": "PCSX2 database"
+            "PCSX2 database": "PCSX2 database",
+            "Enable RetroAchievements": "Enable RetroAchievements",
+            "Hardcore Mode": "Hardcore Mode",
+            "Hardcore mode disables save states, cheats, and slow-motion for this game.": "Hardcore mode disables save states, cheats, and slow-motion for this game.",
+            "Per-game RetroAchievements overrides can be set from the per-game settings panel.": "Per-game RetroAchievements overrides can be set from the per-game settings panel.",
+            "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off."
         ],
         .german: [
             "System Default": "Systemstandard",
@@ -839,7 +849,12 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Remove source": "Remove source",
             "Save Source URLs": "Save Source URLs",
             "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
-            "PCSX2 database": "PCSX2 database"
+            "PCSX2 database": "PCSX2 database",
+            "Enable RetroAchievements": "Enable RetroAchievements",
+            "Hardcore Mode": "Hardcore Mode",
+            "Hardcore mode disables save states, cheats, and slow-motion for this game.": "Hardcore mode disables save states, cheats, and slow-motion for this game.",
+            "Per-game RetroAchievements overrides can be set from the per-game settings panel.": "Per-game RetroAchievements overrides can be set from the per-game settings panel.",
+            "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off."
         ],
         .korean: [
             "System Default": "시스템 기본값",
@@ -917,11 +932,23 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "Remove source": "Remove source",
             "Save Source URLs": "Save Source URLs",
             "UltraWidescreen / NaturalVision": "UltraWidescreen / NaturalVision",
-            "PCSX2 database": "PCSX2 database"
+            "PCSX2 database": "PCSX2 database",
+            "Enable RetroAchievements": "Enable RetroAchievements",
+            "Hardcore Mode": "Hardcore Mode",
+            "Hardcore mode disables save states, cheats, and slow-motion for this game.": "Hardcore mode disables save states, cheats, and slow-motion for this game.",
+            "Per-game RetroAchievements overrides can be set from the per-game settings panel.": "Per-game RetroAchievements overrides can be set from the per-game settings panel.",
+            "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off."
         ]
     ]
 
     private static let commonTranslations: [AppLanguage: [String: String]] = [
+        .english: [
+            "Enable RetroAchievements": "Enable RetroAchievements",
+            "Hardcore Mode": "Hardcore Mode",
+            "Hardcore mode disables save states, cheats, and slow-motion for this game.": "Hardcore mode disables save states, cheats, and slow-motion for this game.",
+            "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.",
+            "Per-game RetroAchievements overrides can be set from the per-game settings panel.": "Per-game RetroAchievements overrides can be set from the per-game settings panel.",
+        ],
         .simplifiedChinese: [
             "OSD": "叠加层",
             "Full Screen": "全屏",
@@ -1031,6 +1058,9 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "StikDebug": "StikDebug",
             "Auto-open StikDebug": "自动打开 StikDebug",
             "Access is available. Confirm EE:JIT / IOP:JIT / VU:JIT in the in-game OSD.": "JIT 访问权限可用。请在游戏内 OSD 中确认 EE:JIT / IOP:JIT / VU:JIT。",
+            "Hardcore mode disables save states, cheats, and slow-motion for this game.": "Hardcore mode disables save states, cheats, and slow-motion for this game.",
+            "Per-game RetroAchievements overrides can be set from the per-game settings panel.": "Per-game RetroAchievements overrides can be set from the per-game settings panel.",
+            "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.",
         ],
         .spanish: [
             "OSD": "OSD",
@@ -1140,6 +1170,9 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "StikDebug": "StikDebug",
             "Auto-open StikDebug": "Abrir StikDebug automáticamente",
             "Access is available. Confirm EE:JIT / IOP:JIT / VU:JIT in the in-game OSD.": "El acceso está disponible. Confirma EE:JIT / IOP:JIT / VU:JIT en el OSD del juego.",
+            "Hardcore mode disables save states, cheats, and slow-motion for this game.": "Hardcore mode disables save states, cheats, and slow-motion for this game.",
+            "Per-game RetroAchievements overrides can be set from the per-game settings panel.": "Per-game RetroAchievements overrides can be set from the per-game settings panel.",
+            "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.",
         ],
         .german: [
             "OSD": "OSD",
@@ -1250,6 +1283,9 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "StikDebug": "StikDebug",
             "Auto-open StikDebug": "StikDebug automatisch öffnen",
             "Access is available. Confirm EE:JIT / IOP:JIT / VU:JIT in the in-game OSD.": "Zugriff ist verfügbar. Bestätige EE:JIT / IOP:JIT / VU:JIT im OSD im Spiel.",
+            "Hardcore mode disables save states, cheats, and slow-motion for this game.": "Hardcore mode disables save states, cheats, and slow-motion for this game.",
+            "Per-game RetroAchievements overrides can be set from the per-game settings panel.": "Per-game RetroAchievements overrides can be set from the per-game settings panel.",
+            "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.",
         ],
         .italian: [
             "OSD": "OSD",
@@ -1360,6 +1396,9 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "StikDebug": "StikDebug",
             "Auto-open StikDebug": "Apri automaticamente StikDebug",
             "Access is available. Confirm EE:JIT / IOP:JIT / VU:JIT in the in-game OSD.": "L'accesso è disponibile. Conferma EE:JIT / IOP:JIT / VU:JIT nell'OSD in gioco.",
+            "Hardcore mode disables save states, cheats, and slow-motion for this game.": "Hardcore mode disables save states, cheats, and slow-motion for this game.",
+            "Per-game RetroAchievements overrides can be set from the per-game settings panel.": "Per-game RetroAchievements overrides can be set from the per-game settings panel.",
+            "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.",
         ],
         .portuguese: [
             "OSD": "OSD",
@@ -1469,6 +1508,9 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             "StikDebug": "StikDebug",
             "Auto-open StikDebug": "Abrir StikDebug automaticamente",
             "Access is available. Confirm EE:JIT / IOP:JIT / VU:JIT in the in-game OSD.": "O acesso está disponível. Confirme EE:JIT / IOP:JIT / VU:JIT no OSD dentro do jogo.",
+            "Hardcore mode disables save states, cheats, and slow-motion for this game.": "Hardcore mode disables save states, cheats, and slow-motion for this game.",
+            "Per-game RetroAchievements overrides can be set from the per-game settings panel.": "Per-game RetroAchievements overrides can be set from the per-game settings panel.",
+            "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.",
         ]
     ]
 
