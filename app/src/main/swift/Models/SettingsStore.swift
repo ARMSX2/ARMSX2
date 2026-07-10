@@ -69,6 +69,12 @@ struct GameFixOption: Identifiable, Hashable {
     var id: String { key }
 }
 
+/// Which analog stick an axis-inversion setting applies to.
+enum StickSide: String, CaseIterable, Identifiable {
+    case left, right
+    var id: String { rawValue }
+}
+
 @MainActor
 @Observable
 final class SettingsStore {
@@ -1303,6 +1309,50 @@ final class SettingsStore {
             ARMSX2Bridge.setINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", value: analogStickScale)
         }
     }
+    private static let stickInversionSection = "ARMSX2iOS/UI"
+    let _invertLeftStickXConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "InvertLeftStickX", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var invertLeftStickX: Bool = false { didSet {
+        guard !(_invertLeftStickXConfig.suppressible && suppressINIWrites) else { return }
+        _invertLeftStickXConfig.writer(_invertLeftStickXConfig.section, _invertLeftStickXConfig.key, invertLeftStickX)
+    }}
+    let _invertLeftStickYConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "InvertLeftStickY", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var invertLeftStickY: Bool = false { didSet {
+        guard !(_invertLeftStickYConfig.suppressible && suppressINIWrites) else { return }
+        _invertLeftStickYConfig.writer(_invertLeftStickYConfig.section, _invertLeftStickYConfig.key, invertLeftStickY)
+    }}
+    let _invertRightStickXConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "InvertRightStickX", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var invertRightStickX: Bool = false { didSet {
+        guard !(_invertRightStickXConfig.suppressible && suppressINIWrites) else { return }
+        _invertRightStickXConfig.writer(_invertRightStickXConfig.section, _invertRightStickXConfig.key, invertRightStickX)
+    }}
+    let _invertRightStickYConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "InvertRightStickY", default: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var invertRightStickY: Bool = false { didSet {
+        guard !(_invertRightStickYConfig.suppressible && suppressINIWrites) else { return }
+        _invertRightStickYConfig.writer(_invertRightStickYConfig.section, _invertRightStickYConfig.key, invertRightStickY)
+    }}
+
+    /// Effective axis inversion for a stick, resolving a per-game override (current game INI)
+    /// before the global default. Read live at the stick input choke point.
+    func stickInversion(for side: StickSide) -> (x: Bool, y: Bool) {
+        func resolve(_ key: String, global: Bool) -> Bool {
+            if ARMSX2Bridge.hasPerGameINIValueForCurrentGame(Self.stickInversionSection, key: key) {
+                return ARMSX2Bridge.getPerGameINIBoolForCurrentGame(Self.stickInversionSection, key: key, defaultValue: global)
+            }
+            return global
+        }
+        switch side {
+        case .left: return (resolve("InvertLeftStickX", global: invertLeftStickX), resolve("InvertLeftStickY", global: invertLeftStickY))
+        case .right: return (resolve("InvertRightStickX", global: invertRightStickX), resolve("InvertRightStickY", global: invertRightStickY))
+        }
+    }
     let _appLanguageConfig = Setting<AppLanguage>(
         section: "ARMSX2iOS/UI", key: "AppLanguage", default: .system,
         suppressible: false,
@@ -1643,6 +1693,10 @@ final class SettingsStore {
         autoFullscreen = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "AutoFullscreen", defaultValue: true)
         hideMenuButton = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HideMenuButton", defaultValue: false)
         analogStickScale = Self.clampedAnalogStickScale(ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", defaultValue: 1.0))
+        invertLeftStickX = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertLeftStickX", defaultValue: false)
+        invertLeftStickY = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertLeftStickY", defaultValue: false)
+        invertRightStickX = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertRightStickX", defaultValue: false)
+        invertRightStickY = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertRightStickY", defaultValue: false)
         appLanguage = AppLanguage(rawValue: ARMSX2Bridge.getINIString("ARMSX2iOS/UI", key: "AppLanguage", defaultValue: AppLanguage.system.rawValue)) ?? .system
         controllerMultitapMode = Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/Gamepad", key: "MultitapMode", defaultValue: 0))
         autoOpenStikDebug = ARMSX2Bridge.getINIBool("ARMSX2iOS/JIT", key: "AutoOpenStikDebug", defaultValue: false)
@@ -1836,6 +1890,10 @@ final class SettingsStore {
         autoFullscreen = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "AutoFullscreen", defaultValue: true)
         hideMenuButton = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HideMenuButton", defaultValue: false)
         analogStickScale = Self.clampedAnalogStickScale(ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", defaultValue: 1.0))
+        invertLeftStickX = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertLeftStickX", defaultValue: false)
+        invertLeftStickY = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertLeftStickY", defaultValue: false)
+        invertRightStickX = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertRightStickX", defaultValue: false)
+        invertRightStickY = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertRightStickY", defaultValue: false)
         appLanguage = AppLanguage(rawValue: ARMSX2Bridge.getINIString("ARMSX2iOS/UI", key: "AppLanguage", defaultValue: AppLanguage.system.rawValue)) ?? .system
         controllerMultitapMode = Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/Gamepad", key: "MultitapMode", defaultValue: 0))
         autoOpenStikDebug = ARMSX2Bridge.getINIBool("ARMSX2iOS/JIT", key: "AutoOpenStikDebug", defaultValue: false)
