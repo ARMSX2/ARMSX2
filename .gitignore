@@ -1,29 +1,20 @@
 # Build system and IDE files
 build/
-.gradle
 .vscode/
 .idea/
 .project
 .settings/
 local.properties
-node_modules/
-bun.lockb
-package-lock.json
 /build-ios*/
 /build-maccatalyst/
 /ipa-package/
 *.ipa
 
-# OS junk & editor/files
-.DS_Store
-app/.DS_Store
-app/src/.DS_Store
-app/src/main/.DS_Store
+# OS junk
+**/.DS_Store
 
-# Android/NDK/intermediate output
-app/.cxx/
-app/src/main/jniLibs/
-app/src/main/cpp/bin
+# Local agent working files (specs, logs, audit artifacts)
+.ai-local/
 
 # Sensitive or key material
 armsx2_release.jks
