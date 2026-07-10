@@ -23,6 +23,7 @@
 #include "fmt/format.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <span>
 #include <sstream>
@@ -115,6 +116,18 @@ namespace Patch
 	static constexpr std::string_view WS_PATCH_NAME = "Widescreen 16:9";
 	static constexpr std::string_view NI_PATCH_NAME = "No-Interlacing";
 	static constexpr std::string_view PATCHES_ZIP_NAME = "patches.zip";
+
+	// Presentation patches considered Hardcore-safe: widescreen (exact name) and 60fps
+	// (name-based, since PCSX2 has no first-class 60fps marker). Used to narrow the patch
+	// enable list under Hardcore so only these apply; cheats and other patches stay blocked.
+	static bool IsHardcoreAllowedPatchName(const std::string_view name)
+	{
+		if (name == WS_PATCH_NAME)
+			return true;
+		std::string lower(name);
+		std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+		return lower.find("60fps") != std::string::npos || lower.find("60 fps") != std::string::npos;
+	}
 
 	const char* PATCHES_CONFIG_SECTION = "Patches";
 	const char* CHEATS_CONFIG_SECTION = "Cheats";
@@ -373,8 +386,10 @@ template <typename F>
 void Patch::EnumeratePnachFiles(const std::string_view serial, u32 crc, bool cheats, bool for_ui, const F& f)
 {
 	// Prefer files on disk over the zip.
+	// Under Hardcore, cheats are never scanned for application. Patches are still scanned
+	// (presentation-only ones are filtered in ReloadEnabledLists) so widescreen/60fps can apply.
 	std::vector<std::string> disk_patch_files;
-	if (for_ui || !Achievements::IsHardcoreModeActive())
+	if (for_ui || !cheats || !Achievements::IsHardcoreModeActive())
 		disk_patch_files = FindPatchFilesOnDisk(serial, crc, cheats, for_ui);
 
 	bool unlabeled_patch_found = false;
@@ -592,9 +607,9 @@ std::string Patch::GetPnachFilename(const std::string_view serial, u32 crc, bool
 
 void Patch::ReloadEnabledLists()
 {
-	// RetroAchievements Hardcore Mode disables all user .pnach content: cheats AND patches.
-	// Patches can skip cutscenes or otherwise affect achievement legitimacy, so while Hardcore
-	// is active neither enable list is loaded and previously-enabled entries do not apply.
+	// RetroAchievements Hardcore Mode blocks cheats outright. Patches are narrowed to the
+	// Hardcore-safe presentation set (widescreen / 60fps) so other patches — which can affect
+	// achievement legitimacy — stay listed in the INI but take no effect while Hardcore is on.
 	const bool hardcore_active = Achievements::IsHardcoreModeActive();
 
 	const std::vector<std::string> prev_enabled_cheats = std::move(s_enabled_cheats);
@@ -603,29 +618,39 @@ void Patch::ReloadEnabledLists()
 	else
 		s_enabled_cheats = {};
 
-	const std::vector<std::string> prev_enabled_patches = std::exchange(s_enabled_patches,
-		hardcore_active ? std::vector<std::string>() : Host::GetStringListSetting(PATCHES_CONFIG_SECTION, PATCH_ENABLE_CONFIG_KEY));
+	const std::vector<std::string> ini_patches = Host::GetStringListSetting(PATCHES_CONFIG_SECTION, PATCH_ENABLE_CONFIG_KEY);
+	const std::vector<std::string> prev_enabled_patches = std::exchange(s_enabled_patches, hardcore_active
+		? std::vector<std::string>()
+		: ini_patches);
+
+	// Under Hardcore, keep only the Hardcore-safe names from the INI list.
+	if (hardcore_active)
+	{
+		for (const std::string& name : ini_patches)
+		{
+			if (IsHardcoreAllowedPatchName(name) &&
+				std::find(s_enabled_patches.begin(), s_enabled_patches.end(), name) == s_enabled_patches.end())
+			{
+				s_enabled_patches.emplace_back(name);
+			}
+		}
+	}
+
 	const std::vector<std::string> disabled_patches = Host::GetStringListSetting(PATCHES_CONFIG_SECTION, PATCH_DISABLE_CONFIG_KEY);
 
-	// Name based matching for widescreen/NI settings (also blocked under Hardcore).
-	if (!hardcore_active)
+	// Auto-enable the global widescreen / no-interlace patches when their toggles are on.
+	// Widescreen is Hardcore-safe so it applies under Hardcore too; No-Interlacing is not.
+	if (EmuConfig.EnableWideScreenPatches &&
+		std::none_of(s_enabled_patches.begin(), s_enabled_patches.end(),
+			[](const std::string& it) { return (it == WS_PATCH_NAME); }))
 	{
-		if (EmuConfig.EnableWideScreenPatches)
-		{
-			if (std::none_of(s_enabled_patches.begin(), s_enabled_patches.end(),
-					[](const std::string& it) { return (it == WS_PATCH_NAME); }))
-			{
-				s_enabled_patches.emplace_back(WS_PATCH_NAME);
-			}
-		}
-		if (EmuConfig.EnableNoInterlacingPatches)
-		{
-			if (std::none_of(s_enabled_patches.begin(), s_enabled_patches.end(),
-					[](const std::string& it) { return (it == NI_PATCH_NAME); }))
-			{
-				s_enabled_patches.emplace_back(NI_PATCH_NAME);
-			}
-		}
+		s_enabled_patches.emplace_back(WS_PATCH_NAME);
+	}
+	if (!hardcore_active && EmuConfig.EnableNoInterlacingPatches &&
+		std::none_of(s_enabled_patches.begin(), s_enabled_patches.end(),
+			[](const std::string& it) { return (it == NI_PATCH_NAME); }))
+	{
+		s_enabled_patches.emplace_back(NI_PATCH_NAME);
 	}
 
 	for (auto it = s_enabled_patches.begin(); it != s_enabled_patches.end();)
