@@ -199,6 +199,12 @@ struct RetroAchievementsSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            Section {
+                Text(settings.localized("Per-game RetroAchievements overrides can be set from the per-game settings panel."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .navigationTitle(settings.localized("RetroAchievements"))
         .navigationBarTitleDisplayMode(.inline)
