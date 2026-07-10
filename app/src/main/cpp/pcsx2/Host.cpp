@@ -178,7 +178,7 @@ std::string Host::GetHTTPUserAgent()
 {
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 	const char* core_version = (BuildVersion::GitTag && BuildVersion::GitTag[0]) ? BuildVersion::GitTag : BuildVersion::GitRev;
-	return fmt::format("ARMSX2-iOS/v2.4.0 ({}) pcsx2/{}", GetIOSVersionForUserAgent(), core_version);
+	return fmt::format("ARMSX2-iOS/v2.4.1 ({}) pcsx2/{}", GetIOSVersionForUserAgent(), core_version);
 #else
 	return fmt::format("PCSX2 {} ({})", BuildVersion::GitRev, GetOSVersionString());
 #endif
