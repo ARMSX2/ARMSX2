@@ -27524,7 +27524,7 @@ SLES-54586:
   name: "Ar tonelico - Melody of Elemia"
   region: "PAL-E"
   gsHWFixes:
-    roundSprite: 1 # Fixes vertical lines in FMVs, character portraits and other sprites.
+    roundSprite: 2 # Fixes vertical lines in FMVs, character portraits and other sprites.
 SLES-54587:
   name: "Raw Danger"
   region: "PAL-E"
@@ -61288,7 +61288,7 @@ SLPS-25604:
   name-en: "Ar tonelico - Sekai no Owari de Utai Tsuzukeru Shoujo"
   region: "NTSC-J"
   gsHWFixes:
-    roundSprite: 1 # Fixes vertical lines in FMVs, character portraits and other sprites.
+    roundSprite: 2 # Fixes vertical lines in FMVs, character portraits and other sprites.
 SLPS-25605:
   name: "NEOGEOオンラインコレクション Vol.3 THE KING OF FIGHTERS ～オロチ編～ [通常版]"
   name-sort: "ねおじおおんらいんこれくしょん Vol. 3 ざ きんぐ おぶ ふぁいたーず おろちへん [つうじょうばん]"
@@ -64342,7 +64342,7 @@ SLPS-73249:
   name-en: "Ar tonelico - Sekai no Owari de Utai Tsuzukeru Shoujo [PlayStation2 the Best]"
   region: "NTSC-J"
   gsHWFixes:
-    roundSprite: 1 # Fixes vertical lines in FMVs, character portraits and other sprites.
+    roundSprite: 2 # Fixes vertical lines in FMVs, character portraits and other sprites.
 SLPS-73250:
   name: "エースコンバット・ゼロ・ザ・ベルカン・ウォー [PlayStation2 the Best]"
   name-sort: "えーすこんばっと・ぜろ・ざ・べるかん・うぉー [PlayStation2 the Best]"
@@ -72867,7 +72867,7 @@ SLUS-21445:
   region: "NTSC-U"
   compat: 5
   gsHWFixes:
-    roundSprite: 1 # Fixes vertical lines in FMVs, character portraits and other sprites.
+    roundSprite: 2 # Fixes vertical lines in FMVs, character portraits and other sprites.
 SLUS-21446:
   name: "Family Feud"
   region: "NTSC-U"
