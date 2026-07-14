@@ -25469,6 +25469,8 @@ SLES-53955:
 SLES-53956:
   name: "Aeon Flux"
   region: "PAL-E"
+  speedHacks:
+      eeCycleRate: 4 # Fixes stuttering
   compat: 5
 SLES-53957:
   name: "Namco Museum - 50th Anniversary"
@@ -26116,6 +26118,8 @@ SLES-54168:
 SLES-54169:
   name: "Aeon Flux"
   region: "PAL-M4"
+  speedHacks:
+      eeCycleRate: 4 # Fixes stuttering
 SLES-54170:
   name: "Jaws Unleashed"
   region: "PAL-M5"
@@ -71131,6 +71135,8 @@ SLUS-21205:
   name: "Aeon Flux"
   region: "NTSC-U"
   compat: 5
+  speedHacks:
+      eeCycleRate: 4 # Fixes stuttering
 SLUS-21206:
   name: "Shining Force Neo"
   region: "NTSC-U"
