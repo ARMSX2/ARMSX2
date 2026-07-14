@@ -46968,11 +46968,15 @@ SLPM-65940:
   name-sort: "まびのすたいる [しょかいげんていばん]"
   name-en: "Mabino x Style [Limited Edition]"
   region: "NTSC-J"
+  gsHWFixes:
+    roundSprite: 2 # Fixes Sprite
 SLPM-65941:
   name: "マビノ×スタイル"
   name-sort: "まびのすたいる"
   name-en: "Mabino x Style"
   region: "NTSC-J"
+  gsHWFixes:
+    roundSprite: 2 # Fixes Sprite
 SLPM-65942:
   name: "マーセナリーズ"
   name-sort: "まーせなりーず"
@@ -50494,6 +50498,8 @@ SLPM-66489:
   name-sort: "まびのすたいる [2800 Collection]"
   name-en: "Mabino x Style [2800 Collection]"
   region: "NTSC-J"
+  gsHWFixes:
+    roundSprite: 2 # Fixes Sprite
 SLPM-66491:
   name: "あやかしびと -幻妖異聞録- [通常版]"
   name-sort: "あやかしびと げんよういぶんろく [つうじょうばん]"
