@@ -41,6 +41,29 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.Eject
+import androidx.compose.material.icons.filled.EmojiEvents
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.Gamepad
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Monitor
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.SdCard
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SportsEsports
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -57,6 +80,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -295,12 +319,12 @@ private fun MenuRail(
             modifier = Modifier.padding(vertical = 2.dp).width(40.dp),
             color = MaterialTheme.colorScheme.outline.copy(alpha = 0.34f),
         )
-        MenuRailAction("⤢", str("action.allSettings"), onAllSettings)
+        MenuRailAction(Icons.Filled.OpenInNew, str("action.allSettings"), onAllSettings)
     }
 }
 
 @Composable
-private fun MenuRailAction(glyph: String, label: String, onClick: () -> Unit) {
+private fun MenuRailAction(icon: ImageVector, label: String, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         modifier = Modifier.size(56.dp).semantics { contentDescription = label },
@@ -309,11 +333,11 @@ private fun MenuRailAction(glyph: String, label: String, onClick: () -> Unit) {
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Text(
-                text = glyph,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(24.dp),
             )
         }
     }
@@ -335,11 +359,11 @@ private fun MenuRailTab(tab: EmulationMenuTab, active: Boolean, onSelect: (Emula
         ),
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Text(
-                text = tabGlyph(tab),
-                fontSize = 23.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            Icon(
+                tabIcon(tab),
+                contentDescription = null,
+                tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(23.dp),
             )
         }
     }
@@ -381,11 +405,11 @@ private fun MenuTab(tab: EmulationMenuTab, active: Boolean, onSelect: (Emulation
                 else MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = tabGlyph(tab),
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    Icon(
+                        tabIcon(tab),
+                        contentDescription = null,
+                        tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp),
                     )
                 }
             }
@@ -401,19 +425,16 @@ private fun MenuTab(tab: EmulationMenuTab, active: Boolean, onSelect: (Emulation
     }
 }
 
-// Rail tab icons. No monochrome Unicode exists for gamepad/wrench/trophy/display, so those
-// use color emoji (the bundled NotoColorEmoji renders them); Session keeps its clean text
-// glyph. Performance uses the high-voltage emoji so it reads as a yellow lightning bolt.
-// Options carries the settings gear; the full-settings shortcut below the rail divider uses
-// a distinct "open" glyph so there aren't two gears.
-private fun tabGlyph(tab: EmulationMenuTab): String = when (tab) {
-    EmulationMenuTab.Session -> "☰"
-    EmulationMenuTab.Graphics -> "🖥️"
-    EmulationMenuTab.Fixes -> "🔧"
-    EmulationMenuTab.Performance -> "⚡"
-    EmulationMenuTab.Controls -> "🎮"
-    EmulationMenuTab.Options -> "⚙"
-    EmulationMenuTab.Achievements -> "🏆"
+// Rail tab icons — proper Material icons for each pause-menu tab, replacing the old
+// mix of emoji and box-drawing glyphs.
+private fun tabIcon(tab: EmulationMenuTab): ImageVector = when (tab) {
+    EmulationMenuTab.Session -> Icons.Filled.Menu
+    EmulationMenuTab.Graphics -> Icons.Filled.Monitor
+    EmulationMenuTab.Fixes -> Icons.Filled.Build
+    EmulationMenuTab.Performance -> Icons.Filled.Bolt
+    EmulationMenuTab.Controls -> Icons.Filled.SportsEsports
+    EmulationMenuTab.Options -> Icons.Filled.Settings
+    EmulationMenuTab.Achievements -> Icons.Filled.EmojiEvents
 }
 
 @Composable
@@ -477,16 +498,16 @@ private fun MenuHeader(compact: Boolean, hardcore: Boolean, richPresence: String
 private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
     ActionGrid(
         actions = listOf(
-            MenuAction(str("action.resume"), str("action.play"), "▶", Success, viewModel::resume),
+            MenuAction(str("action.resume"), str("action.play"), Icons.Filled.PlayArrow, Success, viewModel::resume),
             MenuAction(
                 str("action.fastForward"),
                 if (MainActivityRuntime.fastForwardToggleActive) str("action.fastForward.on") else str("action.fastForward.detail"),
-                "⏩",
+                Icons.Filled.FastForward,
                 if (MainActivityRuntime.fastForwardToggleActive) Success else null,
             ) { MainActivityRuntime.instance?.toggleFastForward(); viewModel.resume() },
-            MenuAction(str("memcard.restart"), str("action.reset"), "↻", null, MainActivityRuntime::restart),
-            MenuAction(str("action.swapDisc"), str("action.swapDisc.detail"), "⏏", null, MainActivityRuntime::promptSwapDisc),
-            MenuAction(str("action.close"), MainActivityRuntime.currentGame.value?.title.orEmpty(), "■", Danger) {
+            MenuAction(str("memcard.restart"), str("action.reset"), Icons.Filled.Refresh, null, MainActivityRuntime::restart),
+            MenuAction(str("action.swapDisc"), str("action.swapDisc.detail"), Icons.Filled.Eject, null, MainActivityRuntime::promptSwapDisc),
+            MenuAction(str("action.close"), MainActivityRuntime.currentGame.value?.title.orEmpty(), Icons.Filled.Stop, Danger) {
                 MainActivityRuntime.stop(false)
             },
         ),
@@ -542,10 +563,10 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
         // auto-save/-load toggles), matching the old UI. The slot chips above stay
         // the quick-slot selector used by the on-screen / hotkey quick-save.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            CompactAction(str("savestate.title.save"), "↥", Modifier.weight(1f)) {
+            CompactAction(str("savestate.title.save"), Icons.Filled.Save, Modifier.weight(1f)) {
                 com.armsx2.ui.WindowImpl.openInGameScreen(com.armsx2.ui.InGameScreen.SaveState)
             }
-            CompactAction(str("touch.stateAction.load"), "↧", Modifier.weight(1f)) {
+            CompactAction(str("touch.stateAction.load"), Icons.Filled.FileDownload, Modifier.weight(1f)) {
                 com.armsx2.ui.WindowImpl.openInGameScreen(com.armsx2.ui.InGameScreen.LoadState)
             }
         }
@@ -576,7 +597,7 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
             viewModel.updateSettings { it.copy(useAngleOpenGL = on) }
         }
     }
-    CompactAction(str("backend.applyRestart"), "↻", Modifier.fillMaxWidth(), MainActivityRuntime::restart)
+    CompactAction(str("backend.applyRestart"), Icons.Filled.Refresh, Modifier.fillMaxWidth(), MainActivityRuntime::restart)
     HorizontalOptions(
         title = str("renderer.upscale.label"),
         // Share the full settings-tab list so the sub-native 0.25/0.5/0.75/Native
@@ -840,9 +861,9 @@ private fun ControlsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     MenuSwitchRow(str("network.emulateUsbKeyboard"), state.settings.usbKeyboard) {
         viewModel.updateSettings { current -> current.copy(usbKeyboard = it) }
     }
-    CompactAction(str("pad.controllerMapping"), "⌁", Modifier.fillMaxWidth(), viewModel::openControlsManager)
+    CompactAction(str("pad.controllerMapping"), Icons.Filled.Gamepad, Modifier.fillMaxWidth(), viewModel::openControlsManager)
     Spacer(Modifier.height(6.dp))
-    CompactAction(str("pad.editTouchLayout"), "✥", Modifier.fillMaxWidth(), viewModel::editTouchControls)
+    CompactAction(str("pad.editTouchLayout"), Icons.Filled.TouchApp, Modifier.fillMaxWidth(), viewModel::editTouchControls)
     // Motion / gyroscope controls in-game (mode, sensitivity, smoothing, invert). Global scope
     // to match the rumble/multitap toggles above; the per-game scope lives in All Settings › Controls.
     com.armsx2.ui.settings.GyroSection()
@@ -856,13 +877,13 @@ private fun OptionsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
     val settings = state.settings
     // Item 3: gateway to the full per-game settings (all categories the compact menu omits:
     // OSD, Skins, Audio, Hotkeys, Network, Recompiler, ...).
-    CompactAction(str("action.allSettings"), "⚙", Modifier.fillMaxWidth(), viewModel::openFullSettings)
+    CompactAction(str("action.allSettings"), Icons.Filled.Settings, Modifier.fillMaxWidth(), viewModel::openFullSettings)
     Spacer(Modifier.height(6.dp))
     // In-game access to the manager screens (the library drawer's Memory Cards /
     // Patches & Cheats / Controller mapping) — open over the paused game.
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        CompactAction(str("memcard.title"), "▤", Modifier.weight(1f), viewModel::openMemcard)
-        CompactAction(str("patches.dialog.patchesAndCheats"), "✦", Modifier.weight(1f), viewModel::openPatches)
+        CompactAction(str("memcard.title"), Icons.Filled.SdCard, Modifier.weight(1f), viewModel::openMemcard)
+        CompactAction(str("patches.dialog.patchesAndCheats"), Icons.Filled.AutoFixHigh, Modifier.weight(1f), viewModel::openPatches)
     }
     Spacer(Modifier.height(6.dp))
     MenuSwitchRow(str("patches.enablePatches.label"), settings.enablePatches) {
@@ -913,7 +934,7 @@ private fun OptionsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
 @Composable
 private fun AchievementsPane(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
     // Gateway to the full RetroAchievements screen (unlock list + presentation options).
-    CompactAction(str("ra.viewAchievements"), "★", Modifier.fillMaxWidth(), viewModel::openAchievements)
+    CompactAction(str("ra.viewAchievements"), Icons.Filled.EmojiEvents, Modifier.fillMaxWidth(), viewModel::openAchievements)
     Spacer(Modifier.height(4.dp))
     SectionCard("RetroAchievements") {
         Text(
@@ -959,7 +980,14 @@ private fun InGameAchievementRow(item: AchievementItem) {
                     Modifier.size(40.dp).clip(RoundedCornerShape(9.dp))
                         .background(MaterialTheme.colorScheme.surface),
                     contentAlignment = Alignment.Center,
-                ) { Text(if (item.unlocked) "★" else "☆") }
+                ) {
+                    Icon(
+                        if (item.unlocked) Icons.Filled.Star else Icons.Filled.StarBorder,
+                        contentDescription = null,
+                        tint = if (item.unlocked) Color(0xFFFFC857) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
@@ -997,7 +1025,7 @@ private fun HardcoreBadge() {
 private data class MenuAction(
     val title: String,
     val detail: String,
-    val glyph: String,
+    val icon: ImageVector,
     val accent: Color?,
     val action: () -> Unit,
 )
@@ -1022,12 +1050,11 @@ private fun ActionGrid(actions: List<MenuAction>, selected: Int, onSelect: (Int)
                 ),
             ) {
                 Row(Modifier.padding(horizontal = 13.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        item.glyph,
-                        color = item.accent ?: MaterialTheme.colorScheme.primary,
-                        fontSize = 19.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.width(30.dp),
+                    Icon(
+                        item.icon,
+                        contentDescription = null,
+                        tint = item.accent ?: MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.width(30.dp).size(19.dp),
                     )
                     Column(Modifier.weight(1f)) {
                         Text(item.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -1184,7 +1211,7 @@ private fun MenuSwitchRow(
 }
 
 @Composable
-private fun CompactAction(title: String, glyph: String, modifier: Modifier, onClick: () -> Unit) {
+private fun CompactAction(title: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         modifier = modifier.controllerFocusable("pause.compact.$title", onConfirm = onClick),
@@ -1197,7 +1224,7 @@ private fun CompactAction(title: String, glyph: String, modifier: Modifier, onCl
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(glyph, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
             Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 2)
         }
     }
