@@ -50,6 +50,21 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Wallpaper
+import androidx.compose.material.icons.filled.Album
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -77,6 +92,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import com.armsx2.CoverArtStyle
@@ -617,22 +633,22 @@ fun HomeScreen(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                 )
-                GameMenuAction("▶", str("action.play")) {
+                GameMenuAction(Icons.Filled.PlayArrow, str("action.play")) {
                     menuGame = null
                     viewModel.launch(game)
                 }
-                GameMenuAction("⚙", str("action.settings")) {
+                GameMenuAction(Icons.Filled.Settings, str("action.settings")) {
                     menuGame = null
                     onOpenGameSettings(game)
                 }
                 // Per-game BIOS: open the BIOS manager scoped to THIS game (no need to load it),
                 // since the BIOS manager isn't reachable from the in-game menu.
-                GameMenuAction("📀", str("bios.perGame.menu")) {
+                GameMenuAction(Icons.Filled.Album, str("bios.perGame.menu")) {
                     menuGame = null
                     com.armsx2.navigation.UiNavigator.navigate(com.armsx2.navigation.AppRoute.BiosManager(game))
                 }
                 val hidden = com.armsx2.HiddenGames.isHidden(game)
-                GameMenuAction(if (hidden) "◍" else "🚫", str(if (hidden) "games.unhide" else "games.hide")) {
+                GameMenuAction(if (hidden) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, str(if (hidden) "games.unhide" else "games.hide")) {
                     viewModel.setHidden(game, !hidden)
                     menuGame = null
                 }
@@ -642,7 +658,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun GameMenuAction(glyph: String, label: String, onClick: () -> Unit) {
+private fun GameMenuAction(icon: ImageVector, label: String, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
@@ -655,7 +671,7 @@ private fun GameMenuAction(glyph: String, label: String, onClick: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text(glyph, color = MaterialTheme.colorScheme.primary, fontSize = 20.sp)
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
             Text(label, style = MaterialTheme.typography.titleMedium)
         }
     }
@@ -701,56 +717,56 @@ private fun LibraryOverflowMenu(
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.Bold,
         )
-        LibraryOverflowItem("☰", str("games.overflow.openNavigation")) {
+        LibraryOverflowItem(icon = Icons.Filled.Menu, label = str("games.overflow.openNavigation")) {
             closeThen(onOpenNavigation)
         }
         LibraryOverflowItem(
-            glyph = "A–Z",
+            badgeText = "A–Z",
             label = str("games.overflow.sortTitle"),
             selected = selectedSort == HomeSort.Title,
         ) {
             closeThen { onSort(HomeSort.Title) }
         }
         LibraryOverflowItem(
-            glyph = "⇅",
+            icon = Icons.Filled.SwapVert,
             label = str("games.overflow.sortRecent"),
             selected = selectedSort == HomeSort.RecentlyPlayed,
         ) {
             closeThen { onSort(HomeSort.RecentlyPlayed) }
         }
         LibraryOverflowItem(
-            glyph = if (use3dCovers) "3D" else "2D",
+            badgeText = if (use3dCovers) "3D" else "2D",
             label = str("games.overflow.coverStyle"),
             trailing = if (use3dCovers) "3D" else "2D",
         ) {
             closeThen(onToggleCoverStyle)
         }
         LibraryOverflowItem(
-            glyph = "Aa",
+            badgeText = "Aa",
             label = str("games.overflow.gridNames"),
             trailing = if (showGridNames) str("common.on") else str("common.off"),
         ) {
             closeThen(onToggleGridNames)
         }
         LibraryOverflowItem(
-            glyph = "◍",
+            icon = Icons.Filled.Visibility,
             label = str("games.overflow.showHidden"),
             trailing = if (showHidden) str("common.on") else str("common.off"),
         ) {
             closeThen(onToggleShowHidden)
         }
-        LibraryOverflowItem("▧", str("games.background.choose")) {
+        LibraryOverflowItem(icon = Icons.Filled.Wallpaper, label = str("games.background.choose")) {
             closeThen(onChooseBackground)
         }
         if (hasCustomBackground) {
-            LibraryOverflowItem("×", str("games.background.clear")) {
+            LibraryOverflowItem(icon = Icons.Filled.Clear, label = str("games.background.clear")) {
                 closeThen(onClearBackground)
             }
         }
-        LibraryOverflowItem("↻", str("games.overflow.setup")) {
+        LibraryOverflowItem(icon = Icons.Filled.RestartAlt, label = str("games.overflow.setup")) {
             closeThen { MainActivityRuntime.reopenSetup() }
         }
-        LibraryOverflowItem("⏻", str("games.toolbar.exit")) {
+        LibraryOverflowItem(icon = Icons.Filled.PowerSettingsNew, label = str("games.toolbar.exit")) {
             closeThen(onExitApp)
         }
     }
@@ -758,8 +774,9 @@ private fun LibraryOverflowMenu(
 
 @Composable
 private fun LibraryOverflowItem(
-    glyph: String,
     label: String,
+    icon: ImageVector? = null,
+    badgeText: String? = null,
     selected: Boolean = false,
     trailing: String? = null,
     onClick: () -> Unit,
@@ -782,18 +799,23 @@ private fun LibraryOverflowItem(
                 color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = glyph,
-                        fontSize = if (glyph.length > 2) 11.sp else 17.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                    )
+                    val contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                    if (icon != null) {
+                        Icon(icon, contentDescription = null, tint = contentColor, modifier = Modifier.size(18.dp))
+                    } else if (badgeText != null) {
+                        Text(
+                            text = badgeText,
+                            fontSize = if (badgeText.length > 2) 11.sp else 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = contentColor,
+                        )
+                    }
                 }
             }
         },
         trailingIcon = {
             when {
-                selected -> Text("✓", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                selected -> Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 trailing != null -> Text(trailing, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
             }
         },
@@ -873,7 +895,12 @@ private fun GameListCard(game: GameInfo, selected: Boolean, onClick: () -> Unit,
                 Spacer(Modifier.height(5.dp))
                 GameMetadata(game)
             }
-            Text("▶", color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(10.dp))
+            Icon(
+                Icons.Filled.PlayArrow,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(10.dp).size(20.dp),
+            )
         }
     }
 }
@@ -905,7 +932,11 @@ private fun GameMetadata(game: GameInfo) {
         StatusChip(game.extension.ifBlank { game.platform.key.uppercase() })
         game.regionFlag?.let { Text(it, fontSize = 13.sp) }
         if (game.compatibility > 0) {
-            Text("★".repeat(game.compatibility), color = Color(0xFFFFC857), fontSize = 9.sp, maxLines = 1)
+            Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                repeat(game.compatibility) {
+                    Icon(Icons.Filled.Star, contentDescription = null, tint = Color(0xFFFFC857), modifier = Modifier.size(9.dp))
+                }
+            }
         }
     }
 }
