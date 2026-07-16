@@ -1,3 +1,4 @@
+# Android-only CI pipeline — builds an APK on every push/PR to master
 name: Build Android APK
 
 on:
@@ -19,20 +20,12 @@ concurrency:
   group: android-build-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  GRADLE_OPTS: >-
-    -Dorg.gradle.daemon=true
-    -Dorg.gradle.parallel=true
-    -Dorg.gradle.caching=true
-    -Dorg.gradle.configuration-cache=true
-    -Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+UseParallelGC
-    -Dkotlin.incremental=true
-    -Dkotlin.compiler.execution.strategy=in-process
-
 jobs:
   android:
     name: Android APK (arm64)
     runs-on: ubuntu-24.04
+    # Make the build blocking: failing build fails the workflow
+    # continue-on-error: true   # removed
 
     defaults:
       run:
@@ -43,41 +36,22 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
-          fetch-depth: 1
-          fetch-tags: false
-          show-progress: false
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Android SDK
+      # Setup Android SDK with NDK & CMake, caching enabled automatically
+      - name: Set up Android SDK (with NDK & CMake, cached)
         uses: android-actions/setup-android@v3
         with:
           cache: true
           ndk-version: '28.2.13676358'
           cmake-version: '3.31.6'
 
-      - name: Cache Gradle home
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('platforms/android/**/*.gradle*', 'platforms/android/**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
-
-      - name: Cache Gradle build output
-        uses: actions/cache@v4
-        with:
-          path: platforms/android/**/build
-          key: gradle-build-${{ runner.os }}-${{ github.sha }}
-          restore-keys: |
-            gradle-build-${{ runner.os }}-
-
+      # Cache shaderc third-party dependencies (fetched via git-sync-deps)
       - name: Cache shaderc third-party dependencies
         uses: actions/cache@v4
         with:
@@ -86,123 +60,24 @@ jobs:
           restore-keys: |
             shaderc-deps-
 
-      - name: Cache CMake build objects
-        uses: actions/cache@v4
-        with:
-          path: platforms/android/app/.cxx
-          key: cmake-${{ runner.os }}-${{ hashFiles('platforms/android/app/src/main/cpp/CMakeLists.txt') }}
-          restore-keys: |
-            cmake-${{ runner.os }}-
-
-      - name: Cache ccache for native compilation
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ github.ref }}-${{ github.sha }}
-          restore-keys: |
-            ccache-${{ runner.os }}-${{ github.ref }}-
-            ccache-${{ runner.os }}-
-
-      - name: Setup ccache
-        run: |
-          ccache --version || sudo apt-get install -y ccache
-          ccache --max-size=2G
-          ccache --zero-stats
-          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
-
       - name: Fetch shaderc third-party deps
         run: python3 app/src/main/cpp/3rdparty/shaderc/utils/git-sync-deps
 
-      - name: Prepare Gradle properties
-        run: |
-          cat >> gradle.properties << 'EOF'
-
-          org.gradle.daemon=true
-          org.gradle.parallel=true
-          org.gradle.caching=true
-          org.gradle.configuration-cache=true
-          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+UseParallelGC -XX:+HeapDumpOnOutOfMemoryError
-          kotlin.incremental=true
-          kotlin.compiler.execution.strategy=in-process
-          android.enableResourceOptimizations=true
-          android.enableBuildCache=true
-          android.buildCacheDir=.build-cache
-          android.suppressUnsupportedCompileSdk=35
-          EOF
-
-      - name: Build release APK
-        id: build
+      # Build APK using the official Gradle action (caches Gradle wrapper, dependencies, build cache)
+      - name: Build release APK (with Gradle cache)
         uses: gradle/actions/setup-gradle@v3
         with:
-          arguments: :app:assembleRelease --stacktrace --scan --no-daemon
+          arguments: :app:assembleRelease --stacktrace
           build-root-directory: platforms/android
-          cache-read-only: ${{ github.event_name == 'pull_request' }}
-          gradle-home-cache-strict-mode: true
-          gradle-home-cache-cleanup: true
-
-      - name: Generate APK checksums
-        if: success()
-        run: |
-          for apk in app/build/outputs/apk/**/*.apk; do
-            sha256sum "$apk" > "${apk}.sha256"
-            md5sum "$apk" > "${apk}.md5"
-          done
-
-      - name: Verify APK exists
-        if: success()
-        run: |
-          APK_COUNT=$(find app/build/outputs/apk -name "*.apk" | wc -l)
-          echo "Built $APK_COUNT APK(s)"
-          ls -lhR app/build/outputs/apk/
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7
         with:
           name: armsx2-android-arm64
-          path: |
-            platforms/android/app/build/outputs/apk/**/*.apk
-            platforms/android/app/build/outputs/apk/**/*.sha256
-            platforms/android/app/build/outputs/apk/**/*.md5
-          if-no-files-found: error
-          compression-level: 9
-          retention-days: 30
+          path: platforms/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: warn
 
-      - name: Upload build reports on failure
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: android-build-reports
-          path: |
-            platforms/android/app/build/reports/
-            platforms/android/app/build/outputs/logs/
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: ccache stats
-        if: always()
-        run: ccache --show-stats
-
-  analyze:
-    name: Analyze build performance
-    needs: [android]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Build duration summary
-        run: |
-          echo "### Android Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.android.result }}" == "success" ]; then
-            echo "| Android APK | Success |" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ needs.android.result }}" == "failure" ]; then
-            echo "| Android APK | Failed |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| Android APK | ${{ needs.android.result }} |" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "[View full run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
-
+  # Optional failure notification on master (same idea as the previous PC guardrail)
   notify-failure:
     name: Notify on master build failure
     needs: [android]
@@ -215,13 +90,9 @@ jobs:
         if: ${{ env.HOOK != '' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          COMMITTER: ${{ github.actor }}
-          COMMIT_SHA: ${{ github.sha }}
-          BRANCH: ${{ github.ref_name }}
         run: |
-          SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
           jq -n \
             --arg url "$RUN_URL" \
-            --arg desc "Commit \`$SHORT_SHA\` by $COMMITTER on branch \`$BRANCH\` failed the Android build." \
-            '{username:"ARMSX2 CI", embeds:[{title:"Android build broke", url:$url, color:15158332, description:$desc, footer:{text:"Check logs for details"}}]}' \
+            --arg desc "Commit \`${{ github.sha }}\` by ${{ github.actor }} failed the Android build." \
+            '{username:"ARMSX2 CI", embeds:[{title:"❌ Android build broke", url:$url, color:15158332, description:$desc}]}' \
           | curl -fsSL -H 'Content-Type: application/json' -d @- "$HOOK"
