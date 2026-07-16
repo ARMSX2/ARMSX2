@@ -25,6 +25,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Gamepad
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Monitor
+import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -39,8 +54,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.armsx2.GameInfo
 import com.armsx2.i18n.str
@@ -65,7 +80,7 @@ import com.armsx2.ui.settings.SegmentedRow
 import com.armsx2.ui.settings.SkinsTab
 import com.armsx2.ui.settings.LocalSettingsScrollState
 
-private data class SettingsSection(val category: SettingsCategory, val titleKey: String, val glyph: String)
+private data class SettingsSection(val category: SettingsCategory, val titleKey: String, val icon: ImageVector)
 
 /** Retains the settings page's scroll offset across close/reopen. The selected category already
  *  persists in the view-model, so restoring this one offset returns you to where you were (esp.
@@ -291,10 +306,11 @@ private fun SettingsCategoryBar(
                         label = { Text(str(section.titleKey), maxLines = 1, style = MaterialTheme.typography.labelLarge) },
                         leadingIcon = {
                             Box(Modifier.size(17.dp), contentAlignment = Alignment.Center) {
-                                Text(
-                                    section.glyph,
-                                    fontSize = 13.sp,
-                                    color = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                Icon(
+                                    section.icon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         },
@@ -316,20 +332,20 @@ private fun SettingsCategoryBar(
 }
 
 private fun settingsSections() = listOf(
-    SettingsSection(SettingsCategory.General, "tab.app", "⌂"),
-    SettingsSection(SettingsCategory.Info, "tab.info", "ⓘ"),
-    SettingsSection(SettingsCategory.Performance, "tab.performance", "↯"),
-    SettingsSection(SettingsCategory.Graphics, "tab.renderer", "◫"),
-    SettingsSection(SettingsCategory.Audio, "tab.audio", "♫"),
-    SettingsSection(SettingsCategory.Controls, "tab.controls", "⌁"),
-    SettingsSection(SettingsCategory.Hotkeys, "tab.hotkeys", "⌘"),
-    SettingsSection(SettingsCategory.Network, "tab.network", "◎"),
-    SettingsSection(SettingsCategory.OnScreen, "tab.overlay", "⊕"),
-    SettingsSection(SettingsCategory.Skins, "tab.skins", "◈"),
-    SettingsSection(SettingsCategory.Advanced, "tab.fixes", "⌘"),
-    SettingsSection(SettingsCategory.Recompiler, "tab.recompiler", "⚙"),
-    SettingsSection(SettingsCategory.Patches, "tab.patches", "✦"),
-    SettingsSection(SettingsCategory.About, "about.title", "ⓘ"),
+    SettingsSection(SettingsCategory.General, "tab.app", Icons.Filled.Home),
+    SettingsSection(SettingsCategory.Info, "tab.info", Icons.Filled.Info),
+    SettingsSection(SettingsCategory.Performance, "tab.performance", Icons.Filled.Speed),
+    SettingsSection(SettingsCategory.Graphics, "tab.renderer", Icons.Filled.Monitor),
+    SettingsSection(SettingsCategory.Audio, "tab.audio", Icons.Filled.VolumeUp),
+    SettingsSection(SettingsCategory.Controls, "tab.controls", Icons.Filled.Gamepad),
+    SettingsSection(SettingsCategory.Hotkeys, "tab.hotkeys", Icons.Filled.Keyboard),
+    SettingsSection(SettingsCategory.Network, "tab.network", Icons.Filled.Wifi),
+    SettingsSection(SettingsCategory.OnScreen, "tab.overlay", Icons.Filled.Layers),
+    SettingsSection(SettingsCategory.Skins, "tab.skins", Icons.Filled.Palette),
+    SettingsSection(SettingsCategory.Advanced, "tab.fixes", Icons.Filled.Build),
+    SettingsSection(SettingsCategory.Recompiler, "tab.recompiler", Icons.Filled.Memory),
+    SettingsSection(SettingsCategory.Patches, "tab.patches", Icons.Filled.AutoFixHigh),
+    SettingsSection(SettingsCategory.About, "about.title", Icons.Filled.Info),
 )
 
 @Composable
