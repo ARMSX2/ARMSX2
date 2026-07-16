@@ -1,3 +1,4 @@
+
 package com.armsx2.navigation
 
 import androidx.activity.compose.BackHandler
@@ -16,7 +17,19 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.EmojiEvents
+import androidx.compose.material.icons.filled.Gamepad
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.SdCard
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -48,7 +61,6 @@ import android.content.res.Configuration
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.runtime.MainActivityRuntime
@@ -63,7 +75,7 @@ private val TrophyGold = Color(0xFFFFC93C)
 
 private data class DrawerItem(
     val titleKey: String,
-    val glyph: String,
+    val icon: ImageVector,
     // A nav destination OR an action (onAction). Action rows (e.g. Boot BIOS) run onAction and
     // close the drawer instead of navigating to a screen.
     val destination: AppRoute? = null,
@@ -123,23 +135,23 @@ fun NavigationDrawer(
 @Composable
 private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, onDismiss: () -> Unit) {
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    // Intuitive glyphs that read as what they do — matching the in-game overlay's emoji-icon style
-    // (the old box-drawing characters like ▦ ◉ ⌁ ✦ were unclear per tester feedback).
+    // Material icons that read as what they do — replacing the old emoji/box-drawing
+    // glyphs, which testers found unclear and inconsistent with the rest of the UI.
     val primary = listOf(
-        DrawerItem("games.section.library", "🎮", AppRoute.Home),
+        DrawerItem("games.section.library", Icons.Filled.SportsEsports, AppRoute.Home),
         // Boot straight into the PS2 system BIOS with no disc — distinct from "BIOS Location"
         // below, which only points the emulator at your BIOS file.
-        DrawerItem("bios.boot.title", "▶️", onAction = { MainActivityRuntime.startBios(); onDismiss() }),
-        DrawerItem("ra.title", "🏆", AppRoute.Achievements, iconRes = com.armsx2.R.drawable.ic_trophy),
-        DrawerItem("action.settings", "⚙️", AppRoute.Settings()),
+        DrawerItem("bios.boot.title", Icons.Filled.PlayArrow, onAction = { MainActivityRuntime.startBios(); onDismiss() }),
+        DrawerItem("ra.title", Icons.Filled.EmojiEvents, AppRoute.Achievements, iconRes = com.armsx2.R.drawable.ic_trophy),
+        DrawerItem("action.settings", Icons.Filled.Settings, AppRoute.Settings()),
     )
     val managers = listOf(
-        DrawerItem("setup.step.bios.title", "📀", AppRoute.BiosManager()),
-        DrawerItem("memcard.title", "💾", AppRoute.MemoryCardManager),
-        DrawerItem("savestate.title.loadManage", "📥", AppRoute.SaveManager),
-        DrawerItem("tab.controls", "🕹️", AppRoute.ControllerManager),
-        DrawerItem("patches.dialog.patchesAndCheats", "🪄", AppRoute.PatchManager),
-        DrawerItem("renderer.section.texturePacks", "🖌️", AppRoute.TextureManager),
+        DrawerItem("setup.step.bios.title", Icons.Filled.Album, AppRoute.BiosManager()),
+        DrawerItem("memcard.title", Icons.Filled.SdCard, AppRoute.MemoryCardManager),
+        DrawerItem("savestate.title.loadManage", Icons.Filled.FileDownload, AppRoute.SaveManager),
+        DrawerItem("tab.controls", Icons.Filled.Gamepad, AppRoute.ControllerManager),
+        DrawerItem("patches.dialog.patchesAndCheats", Icons.Filled.AutoFixHigh, AppRoute.PatchManager),
+        DrawerItem("renderer.section.texturePacks", Icons.Filled.Brush, AppRoute.TextureManager),
     )
 
     Column(
@@ -185,7 +197,7 @@ private fun DrawerSection(
         DrawerRow(
             controllerId = "drawer.${item.destination?.let { it::class.simpleName } ?: item.titleKey}",
             title = str(item.titleKey),
-            glyph = item.glyph,
+            icon = item.icon,
             iconRes = item.iconRes,
             selected = item.destination != null && sameDestination(selected, item.destination),
             onClick = { item.onAction?.invoke() ?: item.destination?.let(onNavigate) },
@@ -197,7 +209,7 @@ private fun DrawerSection(
 private fun DrawerRow(
     controllerId: String,
     title: String,
-    glyph: String,
+    icon: ImageVector,
     iconRes: Int? = null,
     selected: Boolean,
     onClick: () -> Unit,
@@ -218,12 +230,12 @@ private fun DrawerRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (iconRes != null) {
-                Box(Modifier.width(32.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.width(32.dp), contentAlignment = Alignment.Center) {
+                if (iconRes != null) {
                     Icon(painterResource(iconRes), contentDescription = null, tint = TrophyGold, modifier = Modifier.size(24.dp))
+                } else {
+                    Icon(icon, contentDescription = null, tint = contentColor, modifier = Modifier.size(24.dp))
                 }
-            } else {
-                Text(glyph, color = contentColor, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(32.dp))
             }
             Text(title, color = contentColor, style = MaterialTheme.typography.titleMedium)
         }
