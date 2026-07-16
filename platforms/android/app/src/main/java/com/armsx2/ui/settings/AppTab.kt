@@ -10,6 +10,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -21,9 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import com.armsx2.i18n.I18n
 import com.armsx2.i18n.str
@@ -63,7 +66,12 @@ fun AppTab() {
                     color = MaterialTheme.colorScheme.primaryContainer,
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                        Text("◎", color = MaterialTheme.colorScheme.primary, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+                        Icon(
+                            Icons.Filled.Language,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp),
+                        )
                     }
                 }
                 Spacer(Modifier.width(12.dp))
@@ -75,7 +83,12 @@ fun AppTab() {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Text("›", color = MaterialTheme.colorScheme.primary, fontSize = 26.sp)
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(26.dp),
+                )
             }
         }
 
@@ -162,7 +175,12 @@ private fun ClearCacheRow() {
                 color = MaterialTheme.colorScheme.primaryContainer,
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                    Text("🧹", fontSize = 21.sp)
+                    Icon(
+                        Icons.Filled.DeleteSweep,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp),
+                    )
                 }
             }
             Spacer(Modifier.width(12.dp))
