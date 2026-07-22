@@ -99,6 +99,35 @@ class GameLibraryRepository(private val context: Context) {
                 JSONArray(current).toString()
             )
         }
+        exportRecentGamesPublic(current, game)
+    }
+
+    /**
+     * Mirrors [markPlayed]'s `recentGameUris` list to a plain JSON file under the app's
+     * data root (the shared-storage folder the user picked, e.g. .../ARMSX2/recent_games.json,
+     * or the app-private externalFilesDir when no folder was chosen). `recentGameUris` itself
+     * lives in app-private SharedPreferences, unreachable to any other app without root — this
+     * gives companion tools (launchers, RetroAchievements offline caches, etc.) the same "what
+     * was played recently" data the same way they already read gamesettings/ and memcards/
+     * from this folder, no root or debuggable build required.
+     */
+    private fun exportRecentGamesPublic(orderedUris: List<String>, justPlayed: GameInfo) {
+        val root = MainActivityRuntime.systemDirPosix()
+            ?: context.getExternalFilesDir(null)?.absolutePath
+            ?: return
+        val byUri = (loadCached().games + justPlayed).associateBy { it.uri.toString() }
+        val array = JSONArray()
+        orderedUris.forEach { uriString ->
+            val g = byUri[uriString] ?: return@forEach
+            array.put(JSONObject().apply {
+                put("uri", g.uri.toString())
+                put("title", g.title)
+                put("serial", g.serial ?: JSONObject.NULL)
+                put("ext", g.extension)
+                put("platform", g.platform.key)
+            })
+        }
+        runCatching { File(root, "recent_games.json").writeText(array.toString()) }
     }
 
     private fun scanDocumentTree(
