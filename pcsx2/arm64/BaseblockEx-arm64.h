@@ -12,12 +12,24 @@
 //   - Link()/New() touch the multimap, but they only run from the
 //     compile path (single-threaded, never from a signal).
 //   - Remove() does NOT walk the link map. Instead it overwrites the
-//     first 4 bytes of each removed block with `B JITCompile`, so any
-//     stale link still resolves correctly via the dispatcher (which
-//     can re-patch the link to the freshly compiled target on its next
-//     dispatch). Block memory isn't reclaimed until a full reset, so
-//     this 4-byte rewrite always lands on memory the recompiler still
-//     owns.
+//     first 4 bytes of each removed block with `B DispatcherReg`, so any
+//     stale link re-dispatches through the recLUT. Block memory isn't
+//     reclaimed until a full reset, so this 4-byte rewrite always lands
+//     on memory the recompiler still owns.
+//
+// Stale sites divert to the DISPATCHER, never to JITCompile. Every link
+// tail stores the target guest pc into cpuRegs.pc before its branch (both
+// recs, all forms — see SetBranchImm / psxSetBranchImm), so a diverted
+// site re-dispatches from a pc that is already correct; the recLUT (the
+// single SMC-invalidation rewrite point) then routes it to the current
+// code, or through JITCompile if the target is genuinely uncompiled.
+// Routing stale sites at JITCompile directly instead re-enters
+// recRecompile on an already-compiled block whenever the target has been
+// removed-and-recompiled — tripping the fnptr assert on Devel, and on
+// Release spuriously superseding live code in place, which strands
+// orphaned callers in the stale pre-SMC compile (the NFS Carbon
+// SLUS-21493 block-cache corruption). AetherSX2's Remove() and the
+// pre-transplant linker enforce the same fallback-to-dispatcher policy.
 //
 // The patch site for each link is the address of a single B instruction
 // emitted by SetBranchImm (see iR5900-arm64.cpp). Aligned 32-bit stores
@@ -77,6 +89,16 @@ protected:
 	BaseBlockArray blocks;
 	linkmap_t links;
 	uptr jitcompile = 0;
+	uptr dispatcher = 0;
+
+	// Where a stale site (unresolved Link(), Remove() entry stamp) diverts.
+	// The dispatcher when one is registered — re-dispatch from the pc the
+	// site's own tail stored — with a JITCompile fallback for direct
+	// instantiation (unit tests) that never registers one.
+	__fi uptr StaleDispatchTarget() const
+	{
+		return dispatcher ? dispatcher : jitcompile;
+	}
 
 	// The block currently being compiled, published by New(). Link() stamps
 	// it onto every site it records.
@@ -203,6 +225,11 @@ public:
 		jitcompile = reinterpret_cast<uptr>(recompiler_);
 	}
 
+	void SetDispatcher(const void* dispatcher_)
+	{
+		dispatcher = reinterpret_cast<uptr>(dispatcher_);
+	}
+
 	// Register a link site that wants to branch directly to the block at
 	// `pc`. Patches immediately if a block already exists; otherwise
 	// records the site so New(pc, ...) can patch it later. `call` sites
@@ -215,7 +242,7 @@ public:
 
 		BASEBLOCKEX* target = Get(pc);
 		const uptr target_addr = (target && target->startpc == pc)
-			? target->fnptr : jitcompile;
+			? target->fnptr : StaleDispatchTarget();
 		// No flush: the site is in the block being emitted right now, and
 		// armEndBlock() range-flushes that buffer. See PatchWord.
 		PatchWord(reinterpret_cast<uptr>(patch_site),
@@ -337,12 +364,16 @@ public:
 	}
 
 	// Signal-safe: writes a redirect stub at each removed block's entry
-	// point so any stale link still resolves through JITCompile, then
-	// erases from the flat sorted array. Does NOT touch the link map —
-	// mutating an STL container here is not signal-safe. The entries this
-	// strands are reaped by the next New() for their destination PC, which
-	// sees the owner is gone; until then the redirect stub keeps any site
-	// still pointing at this block correct.
+	// point so any stale link re-dispatches through the recLUT (see the
+	// stale-dispatch policy note in the file header — the diverting site's
+	// tail already stored the correct pc, so DispatcherReg routes it to the
+	// current code; JITCompile here would re-enter recRecompile on a
+	// removed-and-recompiled block), then erases from the flat sorted
+	// array. Does NOT touch the link map — mutating an STL container here
+	// is not signal-safe. The entries this strands are reaped by the next
+	// New() for their destination PC, which sees the owner is gone; until
+	// then the redirect stub keeps any site still pointing at this block
+	// correct.
 	//
 	// SL-1: a resident self-loop's back-edge is an internal B to the loop-top
 	// (past the entry redirect), so it gets its own atomic repoint — to the
@@ -358,7 +389,7 @@ public:
 			for (int i = first; i <= last; ++i)
 			{
 				const uptr site = blocks[i].fnptr;
-				PatchAtomic(site, EncodeB(site, jitcompile));
+				PatchAtomic(site, EncodeB(site, StaleDispatchTarget()));
 
 				if (blocks[i].backedge_site)
 					PatchAtomic(blocks[i].backedge_site,
