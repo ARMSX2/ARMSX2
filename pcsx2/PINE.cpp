@@ -157,7 +157,7 @@ namespace PINEServer
 		MsgWrite16 = 5, /**< Write 16 bit value to memory. */
 		MsgWrite32 = 6, /**< Write 32 bit value to memory. */
 		MsgWrite64 = 7, /**< Write 64 bit value to memory. */
-		MsgVersion = 8, /**< Returns PCSX2 version. */
+		MsgVersion = 8, /**< Returns ARMSX2 version. */
 		MsgSaveState = 9, /**< Saves a savestate. */
 		MsgLoadState = 0xA, /**< Loads a savestate. */
 		MsgTitle = 0xB, /**< Returns the game title. */
@@ -760,12 +760,12 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 			}
 			case MsgVersion:
 			{
-				u32 size = strlen(BuildVersion::GitRev) + 7;
+				u32 size = strlen(BuildVersion::GitRev) + 8;
 				if (!SafetyChecks(buf_cnt, 0, ret_cnt, size + 4, buf_size)) [[unlikely]]
 					goto error;
 				ToResultVector(ret_buffer, size, ret_cnt);
 				ret_cnt += 4;
-				snprintf(reinterpret_cast<char*>(&ret_buffer[ret_cnt]), size, "PCSX2 %s", BuildVersion::GitRev);
+				snprintf(reinterpret_cast<char*>(&ret_buffer[ret_cnt]), size, "ARMSX2 %s", BuildVersion::GitRev);
 				ret_cnt += size;
 				break;
 			}

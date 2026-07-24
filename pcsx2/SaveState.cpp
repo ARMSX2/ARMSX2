@@ -1164,10 +1164,10 @@ static bool CheckVersion(const std::string& filename, zip_t* zf, Error* error)
 		{
 			current_emulator_version = "Unknown";
 		}
-		Error::SetString(error, fmt::format(TRANSLATE_FS("SaveState","This save state was created with PCSX2 version {0}. It is no longer compatible "
-											"with your current PCSX2 version {1}.\n\n"
-											"If you have any unsaved progress on this save state, you can download the compatible PCSX2 version {0} "
-											"from pcsx2.net, load the save state, and save your progress to the memory card."),
+		Error::SetString(error, fmt::format(TRANSLATE_FS("SaveState","This save state was created with ARMSX2 version {0}. It is no longer compatible "
+											"with your current ARMSX2 version {1}.\n\n"
+											"If you have any unsaved progress on this save state, you can download the compatible ARMSX2 version {0} "
+											"from armsx2.net, load the save state, and save your progress to the memory card."),
 											version_string, current_emulator_version));
 		return false;
 	}

@@ -40,7 +40,7 @@ bool SetupWizardDialog::canShowNextPage()
 			if (!m_ui.biosList->currentItem())
 			{
 				if (QMessageBox::question(this, tr("Warning"),
-						tr("A BIOS image has not been selected. PCSX2 <strong>will not</strong> be able to run games "
+						tr("A BIOS image has not been selected. ARMSX2 <strong>will not</strong> be able to run games "
 						   "without a BIOS image.<br><br>Are you sure you wish to continue without selecting a BIOS "
 						   "image?")) != QMessageBox::Yes)
 				{
@@ -89,9 +89,9 @@ void SetupWizardDialog::nextPage()
 	if (current_page == Page_Complete)
 	{
 		if (m_ui.createDesktopShortcut->isChecked())
-			QtUtils::CreateShortcut(this, "PCSX2", std::string(), {}, std::string(), std::string(), true, false);
+			QtUtils::CreateShortcut(this, "ARMSX2", std::string(), {}, std::string(), std::string(), true, false);
 		if (m_ui.addToApplicationMenu->isChecked())
-			QtUtils::CreateShortcut(this, "PCSX2", std::string(), {}, std::string(), std::string(), false, false);
+			QtUtils::CreateShortcut(this, "ARMSX2", std::string(), {}, std::string(), std::string(), false, false);
 
 		accept();
 		return;
@@ -149,8 +149,8 @@ void SetupWizardDialog::updatePageButtons()
 void SetupWizardDialog::confirmCancel()
 {
 	if (QMessageBox::question(this, tr("Cancel Setup"),
-			tr("Are you sure you want to cancel PCSX2 setup?\n\nAny changes have been saved, and the wizard will run "
-			   "again next time you start PCSX2.")) != QMessageBox::Yes)
+			tr("Are you sure you want to cancel ARMSX2 setup?\n\nAny changes have been saved, and the wizard will run "
+			   "again next time you start ARMSX2.")) != QMessageBox::Yes)
 	{
 		return;
 	}
@@ -447,7 +447,7 @@ void SetupWizardDialog::setupCompletePage()
 {
 #if defined(_WIN32)
 	const bool can_create_shortcuts = true;
-	m_ui.addToApplicationMenu->setText(tr("Add PCSX2 to the Start Menu"));
+	m_ui.addToApplicationMenu->setText(tr("Add ARMSX2 to the Start Menu"));
 #elif defined(__linux__)
 	// Only offer shortcuts for the AppImage since Flatpak creates its own launcher, and
 	// third-party builds (AUR, COPR, etc.) ship their own .desktop file.
