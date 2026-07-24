@@ -2063,7 +2063,15 @@ static bool ZoomFromCheckpoint(const std::string& ckpt)
 		// full of short scan loops doesn't exhaust the tight timer budget.
 		{
 			u32 loop_branch_addr = 0;
-			const u32 loop_target = BlockBackwardBranchTarget(ar.pc, &loop_branch_addr);
+			// The self-loop can be the block being ENTERED (a re-entry sample), OR
+			// the offending block just executed (ar.prev_pc): the interpreter
+			// samples the loop's terminating-branch delay slot at branch+8, which
+			// aliases the loop's fall-through EXIT pc every iteration — so the
+			// divergence is reported "entering <exit>" with the loop sitting in
+			// prev_pc. Check the entered block first, then the offending block.
+			u32 loop_target = BlockBackwardBranchTarget(ar.pc, &loop_branch_addr);
+			if (loop_target == 0 && ar.prev_pc)
+				loop_target = BlockBackwardBranchTarget(ar.prev_pc, &loop_branch_addr);
 			if (loop_target != 0 && selfloop_skipped < kSelfLoopCap)
 			{
 				const u32 loop_lo = loop_target;
@@ -2234,6 +2242,52 @@ static bool ZoomFromCheckpoint(const std::string& ckpt)
 			ar.pc, ar.jit_idx, ar.prev_pc));
 		if (ar.prev_pc)
 			DisasmBlock(ar.prev_pc);
+
+		// Offending-block ENTRY probe: dump BOTH streams' GPR file at prev_pc
+		// (the offending block's head). Tells apart "entered already-diverged =
+		// upstream culprit" from "entered identical, exits diverged = this block
+		// is the bug", and hands a single-block fixture the real seed values.
+		if (ar.prev_pc)
+		{
+			auto entry_snap = [&](const std::vector<ee_divtrace::Sample>& stream, uint32_t upto,
+								   bool jit_side, ee_divtrace::FullSnap& out) -> bool {
+				for (uint32_t pi = upto; pi-- > 0;)
+				{
+					if (stream[pi].pc == ar.prev_pc)
+					{
+						if (!reload(jit_side))
+							return false;
+						out = RunFineSnapAtFromHere(pi);
+						return true;
+					}
+				}
+				return false;
+			};
+			ee_divtrace::FullSnap ientry{}, jentry{};
+			const bool hi = entry_snap(interp_fine, ar.interp_idx, false, ientry);
+			const bool hj = entry_snap(jit_fine, ar.jit_idx, true, jentry);
+			if (hi && hj)
+			{
+				Console.WriteLn(fmt::format("STEPDIFF zoom: offending-block ENTRY GPRs @ {:#010x} (interp | jit):", ar.prev_pc));
+				for (int r = 0; r < 32; ++r)
+				{
+					const u64 iv = ientry.cpu.GPR.r[r].UD[0];
+					const u64 jv = jentry.cpu.GPR.r[r].UD[0];
+					if (iv != jv || (r >= 4 && r <= 7))
+						Console.WriteLn(fmt::format("    r{:<2} {:#018x} | {:#018x}{}", r, iv, jv,
+							iv != jv ? "   <-- DIFFERS" : ""));
+				}
+				Console.WriteLn("STEPDIFF zoom: offending-block ENTRY FPRs (interp | jit; f0-f3,f12 + diffs):");
+				for (int f = 0; f < 32; ++f)
+				{
+					const u32 iv = ientry.fpu.fpr[f].UL;
+					const u32 jv = jentry.fpu.fpr[f].UL;
+					if (iv != jv || f <= 3 || f == 12)
+						Console.WriteLn(fmt::format("    f{:<2} {:#010x} | {:#010x}{}", f, iv, jv,
+							iv != jv ? "   <-- DIFFERS" : ""));
+				}
+			}
+		}
 
 		const auto diffs = DiffFullSnaps(jsnap, isnap);
 		if (diffs.empty())

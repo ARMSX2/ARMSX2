@@ -629,9 +629,13 @@ static void _DynGen_Dispatchers()
 	DispatchPageReset = _DynGen_DispatchPageReset();
 	UnmappedRecLUTPage = _DynGen_UnmappedRecLUTPage();
 
-	// Block linker needs JITCompile so it can route stale / not-yet-compiled
-	// link sites through the dispatcher path.
+	// Block linker: stale / not-yet-compiled link sites divert to
+	// DispatcherReg — re-dispatch from the pc the site's tail already
+	// stored, never a direct re-compile (see the stale-dispatch policy in
+	// BaseblockEx-arm64.h). JITCompile is the direct-instantiation
+	// fallback and stays registered for the unit tests' sake.
 	recBlocks.SetJITCompile(JITCompile);
+	recBlocks.SetDispatcher(DispatcherReg);
 
 	Perf::any.Register(start, static_cast<u32>(armGetCurrentCodePointer() - start), "EE Dispatcher");
 }
