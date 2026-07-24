@@ -3,9 +3,8 @@
 
 import Foundation
 
-/// Downloads a skin zip from the catalog repo and installs it through the existing
-/// `VPadSkinLibraryStore.importSkin(from:)` path — which handles extraction, images,
-/// and the linked layout preset in one call (validated by spike 009).
+/// Downloads a skin zip from the catalog repo, extracts it via the bridge, and
+/// installs through VPadSkinLibraryStore.importSkin(from: directoryURL).
 @MainActor
 final class SkinInstaller: ObservableObject {
     @Published private(set) var installingName: String?
@@ -26,12 +25,30 @@ final class SkinInstaller: ObservableObject {
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 throw URLError(.badServerResponse)
             }
+
+            // Give the temp file a .zip name so the bridge recognises it.
+            let zipFile = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(skin.name)-\(UUID().uuidString).zip")
+            try FileManager.default.moveItem(at: tempURL, to: zipFile)
+            defer { try? FileManager.default.removeItem(at: zipFile) }
+
+            // Extract the zip to a temp directory — importSkin expects a
+            // directory of loose files, not a raw zip archive.
+            let extractDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("skin-import-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: extractDir) }
+
+            let extracted = ARMSX2Bridge.extractControllerSkinArchive(at: zipFile, to: extractDir)
+            guard !extracted.isEmpty else {
+                throw URLError(.cannotDecodeContentData)
+            }
+
             _ = try VPadSkinLibraryStore.shared.importSkin(
-                from: tempURL,
+                from: extractDir,
                 originalImportName: skin.name,
                 layoutPresets: .shared
             )
-            try? FileManager.default.removeItem(at: tempURL)
         } catch {
             errors[skin.name] = error.localizedDescription
         }
