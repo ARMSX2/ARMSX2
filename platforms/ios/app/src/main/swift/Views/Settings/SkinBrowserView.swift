@@ -7,6 +7,8 @@ struct SkinBrowserView: View {
     @StateObject private var catalog = SkinCatalog()
     @StateObject private var installer: SkinInstaller
     @State private var searchText = ""
+    @State private var errorAlert: String?
+    @State private var previewSkin: CatalogSkin?
 
     init() {
         let catalog = SkinCatalog()
@@ -36,6 +38,17 @@ struct SkinBrowserView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await catalog.fetch() }
         .refreshable { await catalog.fetch() }
+        .alert("Download Failed", isPresented: Binding(
+            get: { errorAlert != nil },
+            set: { if !$0 { errorAlert = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorAlert ?? "")
+        }
+        .sheet(item: $previewSkin) { skin in
+            SkinPreviewSheet(skin: skin, catalog: catalog)
+        }
     }
 
     private var filteredSkins: [CatalogSkin] {
@@ -47,15 +60,20 @@ struct SkinBrowserView: View {
     private func skinRow(_ skin: CatalogSkin) -> some View {
         HStack(spacing: 12) {
             if let url = catalog.previewURL(for: skin) {
-                AsyncImage(url: url) { image in
-                    image.resizable().aspectRatio(contentMode: .fit)
-                } placeholder: {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(.quaternary)
-                        .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+                Button {
+                    previewSkin = skin
+                } label: {
+                    AsyncImage(url: url) { image in
+                        image.resizable().aspectRatio(contentMode: .fit)
+                    } placeholder: {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(.quaternary)
+                            .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+                    }
+                    .frame(width: 80, height: 50)
+                    .cornerRadius(8)
                 }
-                .frame(width: 64, height: 40)
-                .cornerRadius(8)
+                .buttonStyle(.plain)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -81,9 +99,13 @@ struct SkinBrowserView: View {
             }
 
             if let error = installer.errors[skin.name] {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                    .help(error)
+                Button {
+                    errorAlert = error
+                } label: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                .buttonStyle(.plain)
             }
         }
         .swipeActions(edge: .trailing) {
@@ -92,6 +114,30 @@ struct SkinBrowserView: View {
                     installer.uninstall(skin)
                 } label: {
                     Label("Remove", systemImage: "trash")
+                }
+            }
+        }
+    }
+}
+
+private struct SkinPreviewSheet: View {
+    let skin: CatalogSkin
+    let catalog: SkinCatalog
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            AsyncImage(url: catalog.previewURL(for: skin)) { image in
+                image.resizable().aspectRatio(contentMode: .fit)
+            } placeholder: {
+                ProgressView()
+            }
+            .padding()
+            .navigationTitle(skin.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
                 }
             }
         }
