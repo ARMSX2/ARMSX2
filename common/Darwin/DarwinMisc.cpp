@@ -966,11 +966,11 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
 		rx_ptr, size, JitModeName(mode));
 	std::fflush(stderr);
 
+	struct sigaction sa_brk_old = {};
 	if (mode == JitMode::LuckTXM)
 	{
 		static thread_local sigjmp_buf s_alloc_brk_jmp;
 		struct sigaction sa_brk = {};
-		struct sigaction sa_brk_old = {};
 		sa_brk.sa_handler = +[](int) { siglongjmp(s_alloc_brk_jmp, 1); };
 		sigemptyset(&sa_brk.sa_mask);
 		sigaction(SIGTRAP, &sa_brk, &sa_brk_old);
@@ -1085,15 +1085,10 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
 			}
 			// else: universal completed but failed (sigtrap) — brk_ok stays false
 		}
-		// NOTE: If the Universal TXM worker (detached, possibly hung) traps late
-		// after the Legacy fallback, it may hit the handler after restoration.
-		// This race is bounded: it only occurs with Universal protocol + hang +
-		// late trap. ARMSX2_JIT_PROTOCOL=legacy avoids the Universal path entirely.
-		sigaction(SIGTRAP, &sa_brk_old, nullptr);
-
 		if (!brk_ok)
 		{
 			munmap(rx_ptr, size);
+			sigaction(SIGTRAP, &sa_brk_old, nullptr);
 			return nullptr;
 		}
 	}
@@ -1109,6 +1104,8 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
 		std::fprintf(stderr, "@@JIT_ALLOC@@ dualmap_remap_fail kr=%d\n", kr);
 		std::fflush(stderr);
 		munmap(rx_ptr, size);
+		if (mode == JitMode::LuckTXM)
+			sigaction(SIGTRAP, &sa_brk_old, nullptr);
 		return nullptr;
 	}
 
@@ -1119,6 +1116,8 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
 		std::fflush(stderr);
 		vm_deallocate(mach_task_self(), rw_region, static_cast<vm_size_t>(size));
 		munmap(rx_ptr, size);
+		if (mode == JitMode::LuckTXM)
+			sigaction(SIGTRAP, &sa_brk_old, nullptr);
 		return nullptr;
 	}
 
@@ -1128,6 +1127,8 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
 	std::fprintf(stderr, "@@JIT_ALLOC@@ dualmap_ok rx=%p rw=%p offset=%td size=0x%zx mode=%s\n",
 		rx_ptr, rw_ptr, g_code_rw_offset, size, JitModeName(mode));
 	std::fflush(stderr);
+	if (mode == JitMode::LuckTXM)
+		sigaction(SIGTRAP, &sa_brk_old, nullptr);
 	return rx_ptr;
 #endif
 }
