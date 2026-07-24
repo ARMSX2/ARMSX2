@@ -63,6 +63,7 @@ internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("perf.displayResolution.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.screenRes.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.sustainedPerformance.label", true, SettingsCategory.Performance),
+    SettingsSearchEntry("perf.adpf.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.eeFpuClamping.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.vuClamping.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.eeFpuRoundMode.label", true, SettingsCategory.Performance),

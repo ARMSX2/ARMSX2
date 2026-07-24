@@ -1518,6 +1518,16 @@ open class MainActivityRuntime : ComponentActivity() {
         // after reused-folder recovery had its chance. Capable handhelds start in
         // low-latency mode (queue 0); low-end devices retain the smoother queue 2.
         runCatching { com.armsx2.config.ConfigStore.seedFreshInstallDefaults(applicationContext) }
+        // One-time: existing capable devices also get the Low Latency default (matches fresh installs).
+        runCatching { com.armsx2.config.ConfigStore.migrateLowLatencyDefault(applicationContext) }
+        // Steer the renderer's Auto resolution to Vulkan HW on Adreno (tile-memory framebuffer-fetch
+        // fast path); Mali/others stay on OpenGL. Sets a native flag GSUtil::GetPreferredRenderer reads
+        // before the GS starts, so an explicit GL/SW pick still wins. Re-asserted each launch.
+        runCatching {
+            kr.co.iefriends.pcsx2.NativeApp.setPreferVulkan(
+                com.armsx2.GpuInfo.rendererName()?.contains("Adreno", ignoreCase = true) == true
+            )
+        }
 
         // Default resources — shaders, GameIndex, fonts, fullscreenui,
         // patches.zip, controller DB. assetCopyRoot resolves to the
@@ -1918,6 +1928,10 @@ open class MainActivityRuntime : ComponentActivity() {
             prefs.getBoolean("ui.sustainedPerf", false)) {
             runCatching { window.setSustainedPerformanceMode(true) }
         }
+
+        // ADPF CPU clock hint (experimental, default OFF): re-assert the saved state to native
+        // before any game runs. Referencing NativeApp also loads the native lib (static init).
+        runCatching { kr.co.iefriends.pcsx2.NativeApp.setAdpfEnabled(prefs.getBoolean("ui.adpf", false)) }
 
         // Defer asset copy + emucore init until setup is complete. On the
         // first-ever run, `systemDir` isn't picked yet at onCreate time —

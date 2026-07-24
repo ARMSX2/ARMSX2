@@ -168,6 +168,26 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 },
             )
         }
+        // ---- CPU clock hint (ADPF) ---------------------------------------------
+        // PerformanceHintManager: reports the per-frame CPU work to the OS scheduler so it can
+        // raise the EE/GS/MTVU threads' CPU frequency toward the frame deadline, countering the
+        // DVFS governor under-clocking emulation's bursty load. EXPERIMENTAL, default OFF.
+        // No-op below API 33. Applied at launch (MainActivityRuntime) + live here.
+        run {
+            val adpf = remember { androidx.compose.runtime.mutableStateOf(com.armsx2.runtime.MainActivityRuntime.prefs.getBoolean("ui.adpf", false)) }
+            SegmentedRow(
+                label = str("perf.adpf.label"),
+                options = listOf(str("common.off"), str("common.on")),
+                selectedIndex = if (adpf.value) 1 else 0,
+                description = str("perf.adpf.description"),
+                onChange = {
+                    val on = it == 1
+                    adpf.value = on
+                    com.armsx2.runtime.MainActivityRuntime.prefs.edit { putBoolean("ui.adpf", on) }
+                    runCatching { kr.co.iefriends.pcsx2.NativeApp.setAdpfEnabled(on) }
+                },
+            )
+        }
         SettingsDivider()
         CollapsibleSection(str("perf.speedhacks.title"), initiallyExpanded = false) {
             IntSliderRow(
