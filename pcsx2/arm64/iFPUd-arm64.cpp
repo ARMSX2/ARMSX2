@@ -540,12 +540,27 @@ static void ClearIDFlags()
 	armStoreEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
 }
 
-// x86 SetMaxValue: keep the sign bit, force all magnitude bits -> ±PS2 max.
+// x86 SetMaxValue: keep the sign bit, force every magnitude bit set.
+//
+// The constant is 0x7fffffff, NOT the 0x7f7fffff (+FLT_MAX) that the
+// single-precision bodies use. x86 iFPUd.cpp SetMaxValue() reads:
+//
+//     if (FPU_RESULT)                                  // #define FPU_RESULT 1
+//         xOR.PS(regd, s_const.pos[0]);                // 0x7fffffff  <- live
+//     else { xAND.PS(regd, s_const.neg[0]);            //             (dead)
+//            xOR.PS(regd, g_maxvals[0]); }             // 0x7f7fffff
+//
+// so only the first arm is ever emitted; the else-arm is dead code. ToPS2FPU's
+// overflow clamp (above) uses the same 0x7fffffff, which is why this file is
+// otherwise consistent. The result carries exponent field 0xff — on the EE
+// that is an ordinary large finite float (the EE has no NaN/Inf), but guest
+// softfloat routines do classify exp==0xff separately, so the one-ULP-band
+// difference from +FLT_MAX is game-visible.
 static void SetMaxValueS(int idx)
 {
 	armAsm->Fmov(RWSCRATCH, armSRegister(idx));
 	armAsm->And(RWSCRATCH, RWSCRATCH, 0x80000000);
-	armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x7f7fffff);
+	armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x7fffffff);
 	armAsm->Fmov(armSRegister(idx), RWSCRATCH);
 }
 
@@ -564,7 +579,9 @@ static void recDIVhelper1(int sreg, int treg)
 	armAsm->Fcmp(armSRegister(treg), 0.0);
 	armAsm->B(&normal, a64::ne);
 
-	// Divisor is ±0: pick the flag pair, then result = sign(fs^ft) | +max.
+	// Divisor is ±0: pick the flag pair, then result = (fs ^ ft) | 0x7fffffff
+	// (x86 SetMaxValue under FPU_RESULT — see SetMaxValueS above; masking the
+	// XOR down to its sign bit first is equivalent, the OR sets bits 0..30).
 	armAsm->Fcmp(armSRegister(sreg), 0.0);
 	armAsm->B(&xOverZero, a64::ne);
 	SetFprcOr(FPUflagI | FPUflagSI); // 0/0
@@ -577,7 +594,7 @@ static void recDIVhelper1(int sreg, int treg)
 	armAsm->Fmov(RWARG1, armSRegister(treg));
 	armAsm->Eor(RWSCRATCH, RWSCRATCH, RWARG1);
 	armAsm->And(RWSCRATCH, RWSCRATCH, 0x80000000);
-	armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x7f7fffff);
+	armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x7fffffff);
 	armAsm->Fmov(armSRegister(sreg), RWSCRATCH);
 	armAsm->B(&done);
 

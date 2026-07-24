@@ -211,10 +211,13 @@ static void _DynGen_Dispatchers()
 	iopEnterRecompiledCode = _DynGen_EnterRecompiledCode();
 	iopUnmappedRecLUTPage = _DynGen_UnmappedRecLUTPage();
 
-	// Block linker needs iopJITCompile so it can route stale / not-yet-
-	// compiled link sites through the dispatcher path. Mirrors EE rec
-	// at iR5900-arm64.cpp:674 and x86 IOP rec at iR3000A.cpp:257.
+	// Block linker: stale / not-yet-compiled link sites divert to
+	// iopDispatcherReg — re-dispatch from the pc the site's tail already
+	// stored (psxSetBranchImm and the fallthrough tail both Str psxRegs.pc
+	// before the link site), never a direct re-compile. See the
+	// stale-dispatch policy in BaseblockEx-arm64.h; mirrors the EE rec.
 	recBlocks.SetJITCompile(iopJITCompile);
+	recBlocks.SetDispatcher(iopDispatcherReg);
 
 	Perf::any.Register(start, static_cast<u32>(armGetCurrentCodePointer() - start), "IOP Dispatcher");
 }

@@ -239,6 +239,108 @@ TEST(Arm64BaseBlocksLink, MapStaysBoundedUnderOwnerChurn)
 	EXPECT_EQ(code[0], first_word);
 }
 
+// ---------------------------------------------------------------------------
+// Stale-dispatch policy. Every link tail stores the target guest pc into
+// cpuRegs.pc before its branch, so a site that goes stale needs re-DISPATCH
+// (LUT lookup on the already-correct pc), never re-COMPILE. Routing stale
+// sites at JITCompile instead re-enters recRecompile on an already-compiled
+// block — the NFS Carbon (SLUS-21493) block-cache corruption: the spurious
+// recompile supersedes live code in place, leaving orphaned callers running
+// the stale pre-SMC compile.
+// ---------------------------------------------------------------------------
+
+TEST(Arm64BaseBlocksLink, RemoveStampsRedirectToDispatcherNotRecompiler)
+{
+	alignas(64) static u32 code[64];
+	std::memset(code, 0, sizeof(code));
+
+	Arm64BaseBlocks bb;
+	u32* const jitcompile = &code[0];
+	u32* const dispatcher = &code[4];
+	bb.SetJITCompile(jitcompile);
+	bb.SetDispatcher(dispatcher);
+
+	constexpr u32 kPc = 0x3000;
+	u32* const site = &code[8];
+	u32* const entry1 = &code[16];
+
+	bb.Link(kPc, site);
+	bb.New(kPc, reinterpret_cast<uptr>(entry1));
+
+	const int idx = bb.Index(kPc);
+	ASSERT_GE(idx, 0);
+	bb.Remove(idx, idx);
+
+	// The dead entry's redirect must target the dispatcher: a stale caller
+	// landing here re-dispatches from the pc its own tail already stored.
+	EXPECT_EQ(OpcodeBits(*entry1), kOpcB);
+	EXPECT_EQ(DecodeImm26Bytes(*entry1),
+		reinterpret_cast<intptr_t>(dispatcher) - reinterpret_cast<intptr_t>(entry1));
+
+	// Recompile at a new address: the old entry keeps diverting to the
+	// dispatcher, which routes the stale caller into the new code via the
+	// LUT — recRecompile is never re-entered on the compiled block.
+	u32* const entry2 = &code[32];
+	bb.New(kPc, reinterpret_cast<uptr>(entry2));
+	EXPECT_EQ(DecodeImm26Bytes(*entry1),
+		reinterpret_cast<intptr_t>(dispatcher) - reinterpret_cast<intptr_t>(entry1));
+	EXPECT_EQ(bb.Get(kPc)->fnptr, reinterpret_cast<uptr>(entry2));
+}
+
+TEST(Arm64BaseBlocksLink, UnresolvedLinkFallsBackToDispatcher)
+{
+	alignas(64) static u32 code[64];
+	std::memset(code, 0, sizeof(code));
+
+	Arm64BaseBlocks bb;
+	u32* const jitcompile = &code[0];
+	u32* const dispatcher = &code[4];
+	bb.SetJITCompile(jitcompile);
+	bb.SetDispatcher(dispatcher);
+
+	constexpr u32 kPc = 0x3000;
+	u32* const site_b = &code[8];
+	u32* const site_bl = &code[9];
+
+	// Not-yet-compiled target: both forms route through the dispatcher (one
+	// extra hop on the cold first execution; the LUT slot still holds
+	// JITCompile, so compilation is reached through it with a correct pc).
+	bb.Link(kPc, site_b);
+	bb.Link(kPc, site_bl, /*call=*/true);
+	EXPECT_EQ(OpcodeBits(*site_b), kOpcB);
+	EXPECT_EQ(OpcodeBits(*site_bl), kOpcBL);
+	EXPECT_EQ(DecodeImm26Bytes(*site_b),
+		reinterpret_cast<intptr_t>(dispatcher) - reinterpret_cast<intptr_t>(site_b));
+	EXPECT_EQ(DecodeImm26Bytes(*site_bl),
+		reinterpret_cast<intptr_t>(dispatcher) - reinterpret_cast<intptr_t>(site_bl));
+}
+
+TEST(Arm64BaseBlocksLink, NoDispatcherRegisteredKeepsJITCompileFallback)
+{
+	// Direct-instantiation compatibility: with no dispatcher registered the
+	// class behaves exactly as before (fallback = JITCompile).
+	alignas(64) static u32 code[64];
+	std::memset(code, 0, sizeof(code));
+
+	Arm64BaseBlocks bb;
+	bb.SetJITCompile(&code[0]);
+
+	constexpr u32 kPc = 0x3000;
+	u32* const site = &code[8];
+	u32* const entry = &code[16];
+
+	bb.Link(kPc, site);
+	EXPECT_EQ(DecodeImm26Bytes(*site),
+		reinterpret_cast<intptr_t>(&code[0]) - reinterpret_cast<intptr_t>(site));
+
+	bb.New(kPc, reinterpret_cast<uptr>(entry));
+	const int idx = bb.Index(kPc);
+	ASSERT_GE(idx, 0);
+	bb.Remove(idx, idx);
+	EXPECT_EQ(DecodeImm26Bytes(*entry),
+		reinterpret_cast<intptr_t>(&code[0]) - reinterpret_cast<intptr_t>(entry));
+}
+
 TEST(Arm64BaseBlocksLink, BlFormSurvivesPruning)
 {
 	alignas(64) static u32 code[64];
