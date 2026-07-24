@@ -49,7 +49,7 @@ SCAJ-20059:
     vu1ClampMode: 3
   gsHWFixes:
     accurateAlphaTest: 1
-    hwDownloadMode: 3
+    hwDownloadMode: 2
 SCAJ-20094:
   clampModes:
     eeClampMode: 3
@@ -57,7 +57,7 @@ SCAJ-20094:
     vu1ClampMode: 3
   gsHWFixes:
     accurateAlphaTest: 1
-    hwDownloadMode: 3
+    hwDownloadMode: 2
 SCAJ-20104:
   gsHWFixes:
     alignSprite: 1
@@ -116,7 +116,7 @@ SCAJ-20194:
     vu1ClampMode: 3
   gsHWFixes:
     accurateAlphaTest: 1
-    hwDownloadMode: 3
+    hwDownloadMode: 2
 SCAJ-20197:
   gsHWFixes:
     nativeScaling: 1
@@ -222,7 +222,7 @@ SCES-52582:
     vu1ClampMode: 3
   gsHWFixes:
     accurateAlphaTest: 1
-    hwDownloadMode: 3
+    hwDownloadMode: 2
 SCES-53202:
   clampModes:
     eeClampMode: 3
@@ -287,7 +287,7 @@ SCKA-20057:
     vu1ClampMode: 3
   gsHWFixes:
     accurateAlphaTest: 1
-    hwDownloadMode: 3
+    hwDownloadMode: 2
 SCKA-20070:
   gsHWFixes:
     alignSprite: 1
@@ -319,7 +319,7 @@ SCKA-20105:
     vu1ClampMode: 3
   gsHWFixes:
     accurateAlphaTest: 1
-    hwDownloadMode: 3
+    hwDownloadMode: 2
 SCPS-15056:
   gsHWFixes:
     autoFlush: 2
@@ -333,7 +333,7 @@ SCPS-15059:
     vu1ClampMode: 3
   gsHWFixes:
     accurateAlphaTest: 1
-    hwDownloadMode: 3
+    hwDownloadMode: 2
 SCPS-15084:
   gsHWFixes:
     autoFlush: 2
@@ -355,7 +355,7 @@ SCPS-19301:
     vu1ClampMode: 3
   gsHWFixes:
     accurateAlphaTest: 1
-    hwDownloadMode: 3
+    hwDownloadMode: 2
 SCPS-19302:
   gsHWFixes:
     autoFlush: 2
@@ -386,7 +386,7 @@ SCPS-19319:
     vu1ClampMode: 3
   gsHWFixes:
     accurateAlphaTest: 1
-    hwDownloadMode: 3
+    hwDownloadMode: 2
 SCPS-55010:
   gsHWFixes:
     halfPixelOffset: 1
@@ -1705,4 +1705,4 @@ TCES-52582:
     vu1ClampMode: 3
   gsHWFixes:
     accurateAlphaTest: 1
-    hwDownloadMode: 3
+    hwDownloadMode: 2
