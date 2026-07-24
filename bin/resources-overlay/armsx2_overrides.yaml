@@ -15,16 +15,16 @@
 # hand-edit.
 SLUS-21124:
   gameFixes:
-    - InstantDMAHack # Fixes broken half-bottom artifacts.
-    - BlitInternalFPSHack # Fixes internal FPS detection.
+    - InstantDMAHack
+    - BlitInternalFPSHack
   gsHWFixes:
-    hwDownloadMode: 3 # Fixes Some Effect
+    hwDownloadMode: 3
 SLES-53299:
   gameFixes:
-    - InstantDMAHack # Fixes broken half-bottom artifacts.
-    - BlitInternalFPSHack # Fixes internal FPS detection.
+    - InstantDMAHack
+    - BlitInternalFPSHack
   gsHWFixes:
-    hwDownloadMode: 3 # Fixes Some Effect
+    hwDownloadMode: 3
 PAPX-90522:
   clampModes:
     eeClampMode: 3
