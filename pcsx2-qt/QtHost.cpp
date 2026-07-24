@@ -2522,9 +2522,14 @@ int main(int argc, char* argv[])
 	QtHost::HookSignals();
 	EmuThread::start();
 
-	// Optionally run setup wizard.
+	// Optionally run setup wizard. When launching straight into Big Picture mode (controller-only
+	// / couch play), skip the mouse-and-keyboard Qt wizard and let the controller-navigable
+	// setup flow in FullscreenUI handle first-time configuration instead. The "SetupWizardIncomplete"
+	// flag is left set so FullscreenUI picks it up on startup.
+	const bool start_big_picture_mode = s_start_big_picture_mode || Host::GetBaseBoolSettingValue("UI", "StartBigPictureMode", false);
+
 	int result;
-	if (s_run_setup_wizard && !QtHost::RunSetupWizard())
+	if (s_run_setup_wizard && !start_big_picture_mode && !QtHost::RunSetupWizard())
 	{
 		result = EXIT_FAILURE;
 		goto shutdown_and_exit;
@@ -2550,7 +2555,7 @@ int main(int argc, char* argv[])
 
 	// Initialize big picture mode if requested by command line or settings.
 	// As CLI arguments are baked-in, they're tracked separately from settings which can be changed during runtime.
-	if (s_start_big_picture_mode || Host::GetBaseBoolSettingValue("UI", "StartBigPictureMode", false))
+	if (start_big_picture_mode)
 		g_emu_thread->startFullscreenUI(s_start_fullscreen || Host::GetBaseBoolSettingValue("UI", "StartFullscreen", false));
 
 	if (s_boot_and_debug
