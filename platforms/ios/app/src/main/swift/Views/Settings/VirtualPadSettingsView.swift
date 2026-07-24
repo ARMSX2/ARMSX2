@@ -110,6 +110,12 @@ struct VirtualPadSettingsView: View {
                     Label(settings.localized("Import Skin"), systemImage: "paintpalette")
                 }
 
+                NavigationLink {
+                    SkinBrowserView()
+                } label: {
+                    Label("Browse Skins", systemImage: "square.grid.2x2")
+                }
+
                 Text("Import loose PNG/JPG/WebP button images, a full portrait/landscape controller image, or a zipped skin pack. Button files can be named cross, circle, square, triangle, up, down, left, right, L1, R1, L2, R2, start, select, analog_base, or analog_stick.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
