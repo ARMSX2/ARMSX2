@@ -44,6 +44,23 @@ fun PerformanceTab(state: MutableState<Settings>) {
         modifier = Modifier
             .fillMaxWidth(),
     ) {
+        // Prominent latency preset: zero queued GS frames keeps the emulated CPU
+        // from running ahead of presentation, and the Surface requests a matching
+        // high-refresh display mode. Settings scope is supplied by InGameOverlay,
+        // so the same switch naturally supports Global and Game overrides. Off
+        // restores the small, smoother queue and Android's automatic refresh policy.
+        ToggleRow(
+            label = str("perf.lowLatencyMode.label"),
+            value = s.vsyncQueueSize == 0,
+            description = str("perf.lowLatencyMode.description"),
+        ) { enabled ->
+            apply(s.copy(vsyncQueueSize = if (enabled) 0 else 2))
+            // Apply the scoped Surface frame-rate vote immediately while the
+            // paused in-game overlay is open.
+            com.armsx2.runtime.MainActivityRuntime.surface.value
+                ?.applyFrameRatePreference()
+        }
+        SettingsDivider()
         // Speedhack profile presets. Equality against s.copy(...) means the
         // segment auto-reflects "Custom" once the user tweaks any speedhack below.
         run {

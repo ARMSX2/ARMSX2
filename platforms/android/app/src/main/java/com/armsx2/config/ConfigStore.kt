@@ -177,6 +177,20 @@ object ConfigStore {
         writeBackupMirror()
     }
 
+    /**
+     * Persist capability-aware defaults only when this is genuinely a fresh install.
+     *
+     * Call after [reconcileReusedFolder]: a reused data directory gets first chance to
+     * restore its prior global settings, while an empty install starts with the
+     * zero-frame GS queue on capable devices. Low-end devices retain the smoother
+     * two-frame queue. Once persisted, this never changes an existing user's choice.
+     */
+    fun seedFreshInstallDefaults(context: android.content.Context) {
+        if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) != null) return
+        val queueSize = if (com.armsx2.DeviceTier.isLowEnd(context)) 2 else 0
+        saveGlobal(Settings(vsyncQueueSize = queueSize))
+    }
+
     /** Load the sparse per-game override blob, or null if there are none. */
     fun loadOverrides(serial: String): JSONObject? {
         val raw = MainActivityRuntime.prefs.getString(keyForGame(serial), null) ?: return null

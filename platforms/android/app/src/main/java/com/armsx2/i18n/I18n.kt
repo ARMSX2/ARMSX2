@@ -1006,6 +1006,8 @@ val EN: Map<String, String> = mapOf(
     "perf.speedhackProfile.help" to "Tap a preset. Optimal = safe for most games. Fast = aggressive speedhacks + native resolution for low-end devices; may glitch some. Low-End = Fast plus every cheap GPU lever (native res, min blending, no mipmaps/palette-conv, partial texture preload) with MTVU auto-set from your CPU. Tweaking any setting un-highlights the presets (custom).",
     "perf.speedhackProfile.label" to "Speedhack Profile",
     "perf.speedhackProfile.lowEnd" to "Low-End",
+    "perf.lowLatencyMode.label" to "Low Latency Mode",
+    "perf.lowLatencyMode.description" to "Uses a zero-frame GS queue and requests a matching high-refresh display mode to reduce controller-to-screen latency. Recommended on mid/high-end handhelds. Turn off if a weaker device becomes less smooth.",
     "perf.speedhackProfile.optimal" to "Optimal",
     "perf.speedhacks.title" to "Speedhacks",
     "perf.sustainedPerformance.description" to "Holds a steady, thermally-sustainable GPU/CPU clock for long play sessions — reduces mid-session throttling, heat and battery drain on handhelds. Trade-off: it caps the peak clock, so demanding games that rely on short bursts of max speed may run a little slower. Off = full peak clocks (default).",

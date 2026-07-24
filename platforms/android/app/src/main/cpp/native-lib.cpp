@@ -783,6 +783,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getFPS(JNIEnv *env, jclass clazz) {
 }
 
 extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getNominalFrameRate(JNIEnv*, jclass) {
+    return VMManager::HasValidVM() ? static_cast<jfloat>(VMManager::GetFrameRate()) : 0.0f;
+}
+
+extern "C"
 JNIEXPORT jstring JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_getPauseGameTitle(JNIEnv *env, jclass clazz) {
     std::string ret = VMManager::GetTitle(true);

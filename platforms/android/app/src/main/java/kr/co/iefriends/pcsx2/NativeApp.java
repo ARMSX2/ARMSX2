@@ -182,6 +182,8 @@ public class NativeApp {
 	public static native String getGameSerial();
 	public static native String getGameCRC();
 	public static native float getFPS();
+	/** Current game's nominal emulated refresh (~59.94 NTSC / 50 PAL), or 0 without a VM. */
+	public static native float getNominalFrameRate();
 
 	/** Build version string from BuildVersion::GitRev — formatted as
 	 *  "GitTagHi.GitTagMid.GitTagLo.ARMSX2Build-SNAPSHOT". Used by the
