@@ -13,6 +13,18 @@
 # Generated from the Android GameIndex delta vs bin plus the former runtime
 # armsx2_overrides.yaml. Regenerate via devs/bmdhacks tooling; do not bulk
 # hand-edit.
+SLUS-21124:
+  gameFixes:
+    - InstantDMAHack # Fixes broken half-bottom artifacts.
+    - BlitInternalFPSHack # Fixes internal FPS detection.
+  gsHWFixes:
+    hwDownloadMode: 3 # Fixes Some Effect
+SLES-53299:
+  gameFixes:
+    - InstantDMAHack # Fixes broken half-bottom artifacts.
+    - BlitInternalFPSHack # Fixes internal FPS detection.
+  gsHWFixes:
+    hwDownloadMode: 3 # Fixes Some Effect
 PAPX-90522:
   clampModes:
     eeClampMode: 3
