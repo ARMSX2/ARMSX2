@@ -1003,18 +1003,13 @@ void GSDevice::RenderHW(GSHWDrawConfig& config)
 		return;
 	}
 
-	// One run is one render pass, so a draw aimed at different attachments ends the run
-	// that is open. Coalescing across an alternation - the whole point of this - needs
-	// more than one run open at a time and is not enabled yet.
-	if (m_deferred_draw_count != 0 && !m_pass_scheduler->MatchesOpenRun(config))
-		FlushDeferredDraws();
-
-	if (!m_pass_scheduler->Enqueue(config))
+	if (m_pass_scheduler->TryEnqueue(config) != GSPassScheduler::Disposition::Queued)
 	{
-		// Out of room. Emit the backlog and retry once against an empty queue; if the draw
-		// still does not fit it is bigger than the whole arena, so just render it.
+		// Either this draw can see something already queued, or a cap was reached. Emit the
+		// backlog and retry once against an empty queue; a draw that still will not fit is
+		// bigger than the whole arena, so just render it.
 		FlushDeferredDraws();
-		if (!m_pass_scheduler->Enqueue(config))
+		if (m_pass_scheduler->TryEnqueue(config) != GSPassScheduler::Disposition::Queued)
 		{
 			DoRenderHW(config);
 			return;

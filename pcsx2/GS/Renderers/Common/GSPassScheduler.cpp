@@ -5,6 +5,7 @@
 
 #include "common/Assertions.h"
 
+#include <algorithm>
 #include <cstring>
 
 GSPassScheduler::GSPassScheduler() = default;
@@ -53,31 +54,106 @@ bool GSPassScheduler::IsDeferrable(const GSHWDrawConfig& config)
 	return true;
 }
 
-bool GSPassScheduler::MatchesOpenRun(const GSHWDrawConfig& config) const
+bool GSPassScheduler::IsAttachmentOfAnyRun(const GSTexture* tex) const
 {
-	if (m_records.empty())
+	if (!tex)
 		return false;
 
-	// A render pass is defined by its attachments, so that is the whole key.
-	const GSHWDrawConfig& open = m_records.back().config;
-	return open.rt == config.rt && open.ds == config.ds;
+	for (u32 i = 0; i < m_run_count; i++)
+	{
+		if (m_runs[i].rt == tex || m_runs[i].ds == tex)
+			return true;
+	}
+	return false;
 }
 
-bool GSPassScheduler::Enqueue(const GSHWDrawConfig& config)
+bool GSPassScheduler::WasSampled(const GSTexture* tex) const
+{
+	return tex && std::find(m_sampled.begin(), m_sampled.end(), tex) != m_sampled.end();
+}
+
+bool GSPassScheduler::NoteSampled(GSTexture* tex)
+{
+	if (!tex || WasSampled(tex))
+		return true;
+	if (m_sampled.size() >= MAX_SAMPLED)
+		return false;
+
+	m_sampled.push_back(tex);
+	return true;
+}
+
+bool GSPassScheduler::ConflictsWithQueued(const GSHWDrawConfig& config) const
+{
+	// Read-after-write: this draw samples something an already-queued draw writes.
+	// Reordering could move that write in front of this read.
+	if (IsAttachmentOfAnyRun(config.tex) || IsAttachmentOfAnyRun(config.pal))
+		return true;
+
+	// Write-after-read: this draw writes something an already-queued draw samples.
+	// Reordering could move this write in front of that read.
+	//
+	// This deliberately fires even when the draw is joining the run that already owns the
+	// attachment: the queued reader may live in the *other* run, and reordering this write
+	// ahead of it would show it the wrong contents.
+	if (WasSampled(config.rt) || WasSampled(config.ds))
+		return true;
+
+	return false;
+}
+
+GSPassScheduler::Disposition GSPassScheduler::TryEnqueue(const GSHWDrawConfig& config)
 {
 	pxAssert(IsDeferrable(config));
+
+	if (ConflictsWithQueued(config))
+		return Disposition::NeedsFlush;
+
+	// Find the run this draw belongs to. A render pass is defined by its attachments, so
+	// that pair is the whole key.
+	Run* run = nullptr;
+	for (u32 i = 0; i < m_run_count; i++)
+	{
+		if (m_runs[i].rt == config.rt && m_runs[i].ds == config.ds)
+		{
+			run = &m_runs[i];
+			break;
+		}
+	}
+
+	if (!run)
+	{
+		if (m_run_count >= MAX_RUNS)
+			return Disposition::NeedsFlush;
+
+		// Runs get reordered against each other, so they must not share an attachment. A
+		// partial match - same depth buffer, different colour target, say - is exactly the
+		// aliasing write this cannot allow.
+		if (IsAttachmentOfAnyRun(config.rt) || IsAttachmentOfAnyRun(config.ds))
+			return Disposition::NeedsFlush;
+
+		run = &m_runs[m_run_count++];
+		run->rt = config.rt;
+		run->ds = config.ds;
+		pxAssert(run->records.empty());
+	}
 
 	const size_t vertex_bytes = sizeof(GSVertex) * config.nverts;
 	const size_t index_bytes = sizeof(u16) * config.nindices;
 
-	if (m_records.size() >= MAX_DRAWS)
-		return false;
+	if (m_queued >= MAX_DRAWS)
+		return Disposition::NeedsFlush;
 	if ((m_vertices.size() * sizeof(GSVertex)) + vertex_bytes > MAX_VERTEX_BYTES)
-		return false;
+		return Disposition::NeedsFlush;
 	if ((m_indices.size() * sizeof(u16)) + index_bytes > MAX_INDEX_BYTES)
-		return false;
+		return Disposition::NeedsFlush;
 
-	Record& rec = m_records.emplace_back();
+	// Record what this draw reads before committing it, so a full sampled set forces a flush
+	// rather than silently dropping a hazard.
+	if (!NoteSampled(config.tex) || !NoteSampled(config.pal))
+		return Disposition::NeedsFlush;
+
+	Record& rec = run->records.emplace_back();
 	rec.config = config;
 	rec.vertex_offset = static_cast<u32>(m_vertices.size());
 	rec.index_offset = static_cast<u32>(m_indices.size());
@@ -90,18 +166,26 @@ bool GSPassScheduler::Enqueue(const GSHWDrawConfig& config)
 	m_indices.resize(m_indices.size() + config.nindices);
 	std::memcpy(m_indices.data() + rec.index_offset, config.indices, index_bytes);
 
-	return true;
+	m_queued++;
+	return Disposition::Queued;
 }
 
 void GSPassScheduler::Emit(GSDevice* dev)
 {
-	// Resolve the geometry pointers only now: the vectors have finished growing, so
-	// data() is finally stable.
-	for (Record& rec : m_records)
+	// The runs are independent by construction - anything that could have made them
+	// dependent flushed on the way in - so emitting them back to back is free to pick an
+	// order. Each run's draws land contiguously, which is what collapses them into one
+	// render pass.
+	for (u32 i = 0; i < m_run_count; i++)
 	{
-		rec.config.verts = m_vertices.data() + rec.vertex_offset;
-		rec.config.indices = m_indices.data() + rec.index_offset;
-		dev->DoRenderHW(rec.config);
+		// Resolve the geometry pointers only now: the vectors have finished growing, so
+		// data() is finally stable.
+		for (Record& rec : m_runs[i].records)
+		{
+			rec.config.verts = m_vertices.data() + rec.vertex_offset;
+			rec.config.indices = m_indices.data() + rec.index_offset;
+			dev->DoRenderHW(rec.config);
+		}
 	}
 
 	Clear();
@@ -110,7 +194,16 @@ void GSPassScheduler::Emit(GSDevice* dev)
 void GSPassScheduler::Clear()
 {
 	// Keep the capacity - see the note on the members.
-	m_records.clear();
+	for (u32 i = 0; i < m_run_count; i++)
+	{
+		m_runs[i].records.clear();
+		m_runs[i].rt = nullptr;
+		m_runs[i].ds = nullptr;
+	}
+
+	m_run_count = 0;
+	m_queued = 0;
+	m_sampled.clear();
 	m_vertices.clear();
 	m_indices.clear();
 }
