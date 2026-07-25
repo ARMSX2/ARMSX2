@@ -144,6 +144,11 @@ u8* armEndBlock();
 void armDisassembleAndDumpCode(const void* ptr, size_t size);
 void armEmitJmp(const void* ptr, bool force_inline = false);
 void armEmitCall(const void* ptr, bool force_inline = false);
+// Store one instruction word into code memory, opening its own W^X scope when
+// the target lies outside the open emit window. Use for anything that patches
+// code outside the block being emitted — link sites, entry stubs, fastmem
+// backpatch. No cache maintenance: callers own the flush policy.
+void armPatchCodeWord(void* site, u32 instr);
 // In-place patch: overwrite the 4-byte B at `code_address` with a branch to
 // `target`. Used by EE block chaining to rewrite a link site (not tied to the
 // current emit cursor). `code_address` must already hold a single B instruction.

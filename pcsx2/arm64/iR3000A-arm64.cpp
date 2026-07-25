@@ -1225,20 +1225,18 @@ static __fi u32 psxRecClearMem(u32 pc)
 
 static void recClearIOP(u32 Addr, u32 Size)
 {
-	// On macOS/Apple Silicon the IOP code cache is MAP_JIT (per-thread W^X).
-	// recClearIOP is IOP SMC detection: every qualifying store in IopMem.cpp (plus
-	// DMA/SIF/BIOS-HLE) funnels here via psxCpu->Clear while the IOP thread is
-	// *executing* recompiled code, i.e. execute-protected with no emit scope open.
-	// psxRecClearMem's recBlocks.Remove() patches compiled block entry points
-	// (Arm64BaseBlocks::Remove -> PatchAtomic) inside that cache, so we must flip
-	// to write mode first or the patch faults (ESR 0x9200004f, byte-write
-	// permission). Refcounted (nests safely), no-op on Linux. Mirrors the EE
-	// recClear fix (b54fbcdad).
-	HostSys::BeginCodeWrite();
+	// IOP SMC detection: every qualifying store funnels here via psxCpu->Clear
+	// (IopMem.cpp, DMA/SIF/BIOS-HLE, and the out-of-line store stubs'
+	// iopStoreClearHit). The only code writes underneath are
+	// Arm64BaseBlocks::Remove()'s entry stubs, and those open their own
+	// per-site W^X scope (armPatchCodeWord) — SetFnptr targets are heap data.
+	// The arena-wide Begin/EndCodeWrite this used to hold was both wasteful
+	// (a whole-arena mprotect pair per covered store in iOS Legacy mode) and
+	// hazardous: Legacy range windows bypass the refcount, so the paired
+	// EndCodeWrite RX-flipped any emit window open on another thread.
 	u32 end = Addr + Size * 4;
 	for (u32 i = Addr; i < end; i += PSXREC_CLEARM(i))
 		;
-	HostSys::EndCodeWrite();
 }
 
 // Called from the JIT RAM-store fast-path stubs when the stored-to granule
