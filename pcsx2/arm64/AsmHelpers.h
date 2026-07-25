@@ -171,32 +171,61 @@ void armGetMemOperandInRegister(const vixl::aarch64::Register& addr_reg,
 
 void armLoadConstant128(const vixl::aarch64::VRegister& reg, const void* ptr);
 
-// Pack 4 per-lane bool lanes (each lane is all-1s or 0 — the natural output of
-// a NEON CMxx / FCMxx against zero) into a 4-bit GPR using the canonical
-// AArch64 movemask idiom: AND with a per-lane weight vector, ADDV-sum across
-// lanes, then UMOV to GPR.
+// Per-lane weight for armEmitPackSignZeroBits' combined weight vector.
 //
-// `data` is clobbered (AND in-place, ADDV writes the low S lane in-place).
-// `tmp`  is loaded with the weight vector via the vixl literal pool; must
-// differ from `data`. Both must be Q-form (128-bit).
+// Lane `lane` contributes its zero bit at result bit `bit` and its sign bit at
+// bit `bit + 4`, where bit = reverse ? (3 - lane) : lane — PS2 MAC flag order
+// is bit0=W, bit3=X, the reverse of NEON lane order, which is what x86 pays a
+// PSHUF.D 0x1B for. Lanes outside `keepMask` weigh zero, so the dest-field
+// mask (x86's AND_XYZW) costs nothing; `shift` likewise absorbs x86's
+// single-scalar SHIFT_XYZW rotate. Both are emit-time constants.
 //
-// PS2 MAC flag bit order is bit0=W, bit3=X (reverse of NEON lane order). Pass
-// reverse=true to get that mapping; reverse=false yields lane[i]→bit[i].
-//
-// Emits 4 insns: ldr q (literal pool) + and.16b + addv s + umov w.
-__fi static void armEmitPackLaneBits(const vixl::aarch64::Register& dst,
-	const vixl::aarch64::VRegister& data, const vixl::aarch64::VRegister& tmp,
-	bool reverse)
+// The caller must keep `bit + shift <= 3` so the zero half stays inside the
+// low nibble — see the SLI note in armEmitPackSignZeroBits.
+static constexpr u32 armPackLaneWeight(int lane, u32 keepMask, bool reverse, int shift)
 {
-	// Weight vector as u32 lanes [0..3]. low64 packs lanes 0+1, high64 packs 2+3.
-	//   forward {1,2,4,8}: low = (2<<32)|1, high = (8<<32)|4
-	//   reverse {8,4,2,1}: low = (4<<32)|8, high = (1<<32)|2
-	const u64 low64  = reverse ? 0x0000000400000008ULL : 0x0000000200000001ULL;
-	const u64 high64 = reverse ? 0x0000000100000002ULL : 0x0000000800000004ULL;
-	armAsm->Ldr(tmp, high64, low64);
-	armAsm->And(data.V16B(), data.V16B(), tmp.V16B());
-	armAsm->Addv(vixl::aarch64::VRegister(data.GetCode(), 32), data.V4S());
-	armAsm->Umov(dst, data.V4S(), 0);
+	const int bit = reverse ? (3 - lane) : lane;
+	if (!(keepMask & (1u << bit)))
+		return 0;
+	const u32 w = 1u << (bit + shift);
+	return w | (w << 4);
+}
+
+// Pack the sign and zero predicates of a 4-lane float vector into one GPR as
+// the PS2's 8-bit "sign nibble : zero nibble" MAC value, with a SINGLE
+// horizontal add.
+//
+// The lever is SLI. CMLT/FCMEQ both yield all-ones-or-zero lanes, so
+//   sli vZero.4s, vSign.4s, #4
+// leaves bits [31:4] = sign and bits [3:0] = zero in one register, and a
+// single AND against armPackLaneWeight's vector then selects lane i's sign
+// into bit (i+4) and its zero into bit i. The per-lane bit sets are disjoint,
+// so ADDV's sum is an OR. That replaces the two independent movemask
+// sequences (two AND/ADDV/UMOV chains plus the GPR AND/SHL/AND/OR that glue
+// them) the x86 path needs, and the weight vector swallows the field mask and
+// the single-scalar rotate on the way past.
+//
+// `vSign` and `vZero` are clobbered; `vZero` receives the result. `weights`
+// may alias `vSign` — the sign predicate is dead by the time load_weights
+// runs, which is what lets the whole thing work in the two temporaries the
+// caller already had. load_weights(weights) emits the weight-vector load;
+// callers choose their cheapest route to it (a pinned-base Ldr in microVU, a
+// literal in the EE's COP2 macro path).
+//
+// Emits 6 insns + the weight load.
+template <typename LoadWeightsFn>
+__fi static void armEmitPackSignZeroBits(const vixl::aarch64::Register& dst,
+	const vixl::aarch64::VRegister& src, const vixl::aarch64::VRegister& vSign,
+	const vixl::aarch64::VRegister& vZero, const vixl::aarch64::VRegister& weights,
+	LoadWeightsFn&& load_weights)
+{
+	armAsm->Cmlt(vSign.V4S(), src.V4S(), 0);    // all-1s where negative
+	armAsm->Fcmeq(vZero.V4S(), src.V4S(), 0.0); // all-1s where zero
+	armAsm->Sli(vZero.V4S(), vSign.V4S(), 4);   // [31:4] = sign, [3:0] = zero
+	load_weights(weights);
+	armAsm->And(vZero.V16B(), vZero.V16B(), weights.V16B());
+	armAsm->Addv(vixl::aarch64::VRegister(vZero.GetCode(), 32), vZero.V4S());
+	armAsm->Fmov(dst, vixl::aarch64::VRegister(vZero.GetCode(), 32));
 }
 
 // may clobber RSCRATCH/RSCRATCH2. they shouldn't be inputs.

@@ -6,7 +6,17 @@
 //------------------------------------------------------------------
 // mVUupdateFlags() - ARM64 NEON flag extraction
 //------------------------------------------------------------------
-// Uses NEON CMLT/FCMEQ + lane extraction in place of x86 MOVMSKPS.
+// x86 runs two independent MOVMSKPS extractions and glues them together with
+// GPR AND/SHL/AND/OR. AArch64 has no MOVMSKPS, so the naive port pays two
+// AND/ADDV/UMOV chains plus a per-site weight-vector literal — 16 instructions
+// of flag packing around 2 instructions of real FMAC work, which measured as
+// ~29% of all VU1 code time in God of War II.
+//
+// Instead, SLI merges both predicates into one register (bits [31:4] = sign,
+// [3:0] = zero) so a single AND against a combined weight vector and a single
+// ADDV produce the whole 8-bit MAC value. Because the weight vector is chosen
+// at emit time it also absorbs AND_XYZW and SHIFT_XYZW, which stop existing as
+// instructions. See armEmitPackSignZeroBits.
 
 #define AND_XYZW ((_XYZW_SS && modXYZW) ? (1) : (mFLAG.doFlag ? (_X_Y_Z_W) : (flipMask[_X_Y_Z_W])))
 #define ADD_XYZW ((_XYZW_SS && modXYZW) ? (_X ? 3 : (_Y ? 2 : (_Z ? 1 : 0))) : 0)
@@ -25,6 +35,13 @@ static void mVUupdateFlags(mV, const a64::VRegister& reg,
 	const a64::Register& sReg = getFlagReg(sFLAG.write);
 	static const u16 flipMask[16] = {0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15};
 
+	// Micro mode only. The weight-vector load (and the overflow path's maxvals
+	// load) ride gprMVUglob, which the COP2 macro path deliberately leaves
+	// unpinned — x25 is the EE recompiler's RECCYCLE inside an EE block. COP2
+	// macro ops pack their flags in cop2EmitFlagUpdate (iCOP2-arm64.cpp) with a
+	// literal weight vector instead.
+	pxAssert(!mVU.cop2);
+
 	if (!sFLAG.doFlag && !mFLAG.doFlag)
 		return;
 
@@ -32,12 +49,18 @@ static void mVUupdateFlags(mV, const a64::VRegister& reg,
 	bool regT1b = regT1in.IsNone();
 	a64::VRegister regT1 = regT1b ? mVU.regAlloc->allocReg() : regT1in;
 
-	// The x86 path shuffles WZYX→XYZW via PSHUFD 0x1B when updating MAC flag (not in
-	// single-scalar mode) so MOVMSKPS produces [W,Z,Y,X] in bits [0:3],
-	// matching PS2 MAC flag order. ARM64 achieves the same bit layout
-	// by passing reverse=true to armEmitPackLaneBits, which picks the
-	// {8,4,2,1} weight vector so lane3→bit0, lane0→bit3.
+	// The x86 path shuffles WZYX→XYZW via PSHUFD 0x1B when updating MAC flag (not
+	// in single-scalar mode) so MOVMSKPS produces [W,Z,Y,X] in bits [0:3],
+	// matching PS2 MAC flag order. We get the same layout for free by reversing
+	// the lane→bit assignment inside the weight vector.
 	const bool macPath = mFLAG.doFlag && !(_XYZW_SS && modXYZW);
+
+	// The overflow gamefix ORs its bits in at the MAC O nibble *before*
+	// SHIFT_XYZW rotates the whole word, so that path keeps the rotate as a real
+	// Lsl and packs with unshifted weights. Everywhere else the rotate is an
+	// emit-time constant that folds into the weight vector for nothing.
+	const bool doOverflow = sFLAG.doFlag && CHECK_VUOVERFLOWHACK;
+	const int foldShift = (mFLAG.doFlag && !doOverflow) ? ADD_XYZW : 0;
 
 	if (sFLAG.doFlag)
 	{
@@ -46,21 +69,13 @@ static void mVUupdateFlags(mV, const a64::VRegister& reg,
 			armAsm->And(sReg.W(), sReg.W(), 0xfffc00ffu);
 	}
 
-	//--------- Extract sign bits (negative lanes) → bits [7:4] ---------
+	//--------- Sign bits → [7:4], zero bits → [3:0], in one horizontal add ------
+	// AND_XYZW and SHIFT_XYZW ride in the weight vector; neither costs an insn.
 
-	armAsm->Cmlt(regT1.V4S(), reg.V4S(), 0); // All-1s where negative
-	armEmitPackLaneBits(mReg.W(), regT1, RQSCRATCH3, macPath);
-
-	armAsm->And(mReg.W(), mReg.W(), AND_XYZW);
-	armAsm->Lsl(mReg.W(), mReg.W(), 4);
-
-	//--------- Extract zero bits (zero lanes) → bits [3:0] ---------
-
-	armAsm->Fcmeq(regT1.V4S(), reg.V4S(), 0.0);
-	armEmitPackLaneBits(gprT2, regT1, RQSCRATCH3, macPath);
-
-	armAsm->And(gprT2, gprT2, AND_XYZW);
-	armAsm->Orr(mReg.W(), mReg.W(), gprT2);
+	armEmitPackSignZeroBits(mReg.W(), reg, RQSCRATCH3, regT1, RQSCRATCH3,
+		[&](const a64::VRegister& w) {
+			armAsm->Ldr(w, mVUglobMem(mVUmacWeightVec(AND_XYZW, macPath, foldShift)));
+		});
 
 	//--------- Overflow flags (VUOverflowHack gamefix only) ---------
 	// Port of x86 microVU_Upper.inl CHECK_VUOVERFLOWHACK block. We can't
@@ -71,22 +86,24 @@ static void mVUupdateFlags(mV, const a64::VRegister& reg,
 	// floats the integer ordering equals the float ordering and Inf/NaN sit above
 	// FLT_MAX). Sets STATUS O+S (0x820000) and, when emitting the MAC flag, ORs
 	// the per-lane overflow bits in at the O nibble (<<12).
-	if (sFLAG.doFlag && CHECK_VUOVERFLOWHACK)
+	if (doOverflow)
 	{
 		armAsm->Fabs(regT1.V4S(), reg.V4S());                     // strip sign
 		armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.maxvals[0])); // FLT_MAX per lane
 		armAsm->Cmge(regT1.V4S(), regT1.V4S(), RQSCRATCH3.V4S()); // all-1s where |x| >= FLT_MAX
-		armEmitPackLaneBits(gprT2, regT1, RQSCRATCH3, macPath);
-		armAsm->And(gprT2, gprT2, AND_XYZW);
+		// Reuse the shared weight vector: on an all-1s lane it contributes both
+		// nibbles, so the mask falls out of the low one.
+		armAsm->Ldr(RQSCRATCH3, mVUglobMem(mVUmacWeightVec(AND_XYZW, macPath, 0)));
+		armAsm->And(regT1.V16B(), regT1.V16B(), RQSCRATCH3.V16B());
+		armAsm->Addv(a64::VRegister(regT1.GetCode(), 32), regT1.V4S());
+		armAsm->Fmov(gprT2, a64::VRegister(regT1.GetCode(), 32));
+		armAsm->And(gprT2, gprT2, 0xF);
 
 		a64::Label noOverflow;
 		armAsm->Cbz(gprT2, &noOverflow);
 		armAsm->Orr(sReg.W(), sReg.W(), 0x820000);
 		if (mFLAG.doFlag)
-		{
-			armAsm->Lsl(gprT2, gprT2, 12); // into the MAC O nibble
-			armAsm->Orr(mReg.W(), mReg.W(), gprT2);
-		}
+			armAsm->Orr(mReg.W(), mReg.W(), a64::Operand(gprT2, a64::LSL, 12)); // MAC O nibble
 		armAsm->Bind(&noOverflow);
 	}
 
@@ -94,18 +111,28 @@ static void mVUupdateFlags(mV, const a64::VRegister& reg,
 
 	if (mFLAG.doFlag)
 	{
-		SHIFT_XYZW(mReg.W());
+		if (foldShift == 0)
+			SHIFT_XYZW(mReg.W()); // no-op unless the overflow path blocked the fold
 		mVUallocMFLAGb(mVU, mReg, mFLAG.write);
 	}
 
 	if (sFLAG.doFlag)
 	{
-		armAsm->And(a64::w12, mReg.W(), 0xFF);
-		armAsm->Orr(sReg.W(), sReg.W(), a64::w12);
-		if (sFLAG.doNonSticky)
+		if (doOverflow)
 		{
-			armAsm->Lsl(a64::w12, a64::w12, 8);
+			// Only this path can leave bits above 7 in mReg.
+			armAsm->And(a64::w12, mReg.W(), 0xFF);
 			armAsm->Orr(sReg.W(), sReg.W(), a64::w12);
+			if (sFLAG.doNonSticky)
+				armAsm->Orr(sReg.W(), sReg.W(), a64::Operand(a64::w12, a64::LSL, 8));
+		}
+		else
+		{
+			// Every weight lands in bits [7:0], so x86's `AND mReg, 0xFF` is a
+			// no-op and the non-sticky copy folds into the ORR's shifted operand.
+			armAsm->Orr(sReg.W(), sReg.W(), mReg.W());
+			if (sFLAG.doNonSticky)
+				armAsm->Orr(sReg.W(), sReg.W(), a64::Operand(mReg.W(), a64::LSL, 8));
 		}
 	}
 
