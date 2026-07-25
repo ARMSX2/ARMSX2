@@ -72,6 +72,11 @@ bool GSPassScheduler::IsAttachmentOfAnyRun(const GSTexture* tex) const
 	return false;
 }
 
+bool GSPassScheduler::References(const GSTexture* tex) const
+{
+	return IsAttachmentOfAnyRun(tex) || WasSampled(tex);
+}
+
 bool GSPassScheduler::WasSampled(const GSTexture* tex) const
 {
 	return tex && std::find(m_sampled.begin(), m_sampled.end(), tex) != m_sampled.end();

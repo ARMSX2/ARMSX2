@@ -1519,7 +1519,13 @@ protected:
 	u32 m_deferred_draw_count = 0;
 	bool m_flushing = false;
 
+	/// Textures the texture cache has finished with, but which queued draws still read or
+	/// write. They go back into the pool once those draws have run - returning them any
+	/// earlier would let FetchSurface hand out a texture that is about to be sampled.
+	std::vector<GSTexture*> m_deferred_recycle;
+
 	void FlushDeferredDrawsImpl();
+	bool DeferredDrawsReference(const GSTexture* tex) const;
 
 	bool AcquireWindow(bool recreate_window);
 
@@ -1894,6 +1900,16 @@ public:
 	__fi void FlushDeferredDraws()
 	{
 		if (m_deferred_draw_count != 0 && !m_flushing)
+			FlushDeferredDrawsImpl();
+	}
+
+	/// Narrower form for the entry points that only touch one texture: flushes just when a
+	/// queued draw can actually observe it. Texture pooling and deferred-clear bookkeeping
+	/// run several times a frame on textures the queue has never heard of, and flushing for
+	/// those throws away most of the coalescing.
+	__fi void FlushDeferredDrawsFor(const GSTexture* tex)
+	{
+		if (m_deferred_draw_count != 0 && !m_flushing && DeferredDrawsReference(tex))
 			FlushDeferredDrawsImpl();
 	}
 

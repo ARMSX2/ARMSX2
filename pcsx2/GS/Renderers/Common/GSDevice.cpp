@@ -442,6 +442,13 @@ void GSDevice::Destroy()
 	m_pass_scheduler->Clear();
 	m_deferred_draw_count = 0;
 
+	// Nothing references these any more, and PurgePool() below deletes whatever the pool
+	// holds - so putting them back is how they get freed.
+	std::vector<GSTexture*> pending;
+	pending.swap(m_deferred_recycle);
+	for (GSTexture* tex : pending)
+		Recycle(tex);
+
 	ClearCurrent();
 	PurgePool();
 }
@@ -500,13 +507,13 @@ void GSDevice::ThrottlePresentation()
 
 void GSDevice::ClearRenderTarget(GSTexture* t, u32 c)
 {
-	FlushDeferredDraws();
+	FlushDeferredDrawsFor(t);
 	t->SetClearColor(c);
 }
 
 void GSDevice::ClearDepth(GSTexture* t, float d)
 {
-	FlushDeferredDraws();
+	FlushDeferredDrawsFor(t);
 	t->SetClearDepth(d);
 }
 
@@ -553,7 +560,7 @@ bool GSDevice::ProcessClearsBeforeCopy(GSTexture* sTex, GSTexture* dTex, const b
 
 void GSDevice::InvalidateRenderTarget(GSTexture* t)
 {
-	FlushDeferredDraws();
+	FlushDeferredDrawsFor(t);
 	t->SetState(GSTexture::State::Invalidated);
 }
 
@@ -672,7 +679,9 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, const GSVector2i& size
 
 GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, bool clear, bool prefer_reuse)
 {
-	FlushDeferredDraws();
+	// No flush here: what comes back is either brand new or was recycled into the pool, and
+	// Recycle() holds back anything the queue still references. The deferred-clear calls at
+	// the tail guard themselves.
 	const GSVector2i size(std::clamp(width, 1, static_cast<int>(g_gs_device->GetMaxTextureSize())),
 		std::clamp(height, 1, static_cast<int>(g_gs_device->GetMaxTextureSize())));
 	FastList<GSTexture*>& pool = m_pool[!GSTexture::IsTexture(usage)];
@@ -757,9 +766,17 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height,
 
 void GSDevice::Recycle(GSTexture* t)
 {
-	FlushDeferredDraws();
 	if (!t)
 		return;
+
+	// Holding the texture back is much cheaper than flushing for it. The texture cache has
+	// dropped its reference, so nobody but the queue can still name it, and the queue is
+	// drained before this list is.
+	if (m_deferred_draw_count != 0 && !m_flushing && DeferredDrawsReference(t))
+	{
+		m_deferred_recycle.push_back(t);
+		return;
+	}
 
 	t->SetLastFrameUsed(m_frame);
 	
@@ -1019,6 +1036,11 @@ void GSDevice::RenderHW(GSHWDrawConfig& config)
 	m_deferred_draw_count = m_pass_scheduler->GetCount();
 }
 
+bool GSDevice::DeferredDrawsReference(const GSTexture* tex) const
+{
+	return m_pass_scheduler->References(tex);
+}
+
 void GSDevice::FlushDeferredDrawsImpl()
 {
 	pxAssert(!m_flushing);
@@ -1028,6 +1050,16 @@ void GSDevice::FlushDeferredDrawsImpl()
 	m_flushing = false;
 
 	m_deferred_draw_count = 0;
+
+	// The draws that were holding these back have run, so the pool can have them. Swap
+	// first: Recycle() is re-entrant through the backend overrides.
+	if (!m_deferred_recycle.empty())
+	{
+		std::vector<GSTexture*> pending;
+		pending.swap(m_deferred_recycle);
+		for (GSTexture* tex : pending)
+			Recycle(tex);
+	}
 }
 
 void GSDevice::DoDrawMultiStretchRects(

@@ -53,6 +53,9 @@ public:
 	/// simply behaves as it did before.
 	static bool IsDeferrable(const GSHWDrawConfig& config);
 
+	/// True if any queued draw reads or writes this texture.
+	bool References(const GSTexture* tex) const;
+
 	/// Copies the draw into whichever run it belongs to, opening one if there is room.
 	/// Returns NeedsFlush when the draw would be reordered against something it can see, or
 	/// when a cap is reached. The geometry is copied because config.verts and config.indices
@@ -68,9 +71,11 @@ public:
 	void Clear();
 
 private:
-	// Two runs is what the ping-pong pattern needs, and every extra run widens the window in
-	// which an aliasing draw forces everything to flush.
-	static constexpr u32 MAX_RUNS = 2;
+	// Two runs covers the plain ping-pong; the rest is headroom for the third and fourth
+	// target that show up once the queue lives long enough to see them. Every extra run does
+	// widen the window in which an aliasing draw forces everything to flush, and past four
+	// the measured return is nil.
+	static constexpr u32 MAX_RUNS = 4;
 
 	// Caps exist so a pathological frame cannot grow the queue without bound. Hitting one is
 	// not an error: it forces an earlier flush, which costs a render pass, not correctness.
