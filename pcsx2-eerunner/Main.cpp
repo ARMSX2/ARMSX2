@@ -62,6 +62,7 @@
 #include "pcsx2/Achievements.h"
 #include "pcsx2/DebugTools/Debug.h"
 #include "pcsx2/GS/GS.h"
+#include "pcsx2/MTGS.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/INISettingsInterface.h"
 #include "pcsx2/ImGui/FullscreenUI.h"
@@ -122,6 +123,17 @@ static GSRendererType s_renderer = GSRendererType::Null; // --renderer (Null def
 static bool s_renderer_explicit = false; // user passed --renderer (an explicit null is honored in liverun)
 static std::string s_memdump_prefix; // --memdump <prefix>: write <prefix>.{interp,jit}.bin at the last frame
 static bool s_perf_jitdump = false; // --perf-jitdump: emit Linux perf jitdump for `perf inject --jit` (profiling)
+
+// --gsdump: headless GS-dump capture from a --liverun. A .gs dump is a recording of
+// the GIF command stream, so replaying one in pcsx2-gsrunner exercises the GS with
+// ZERO emulator in front of it — which is the only way to A/B the GS across two
+// builds honestly. Measuring the GS inside a live run cannot work: the MTGS ring and
+// the SW rasterizer's job queue both spin while waiting, so a build with a faster EE
+// changes the GS threads' instruction counts without changing a single pixel of GS
+// work. Capture once here, then replay the same dump on both builds.
+static std::string s_gsdump_path;         // --gsdump <path.png>: dump basename (extension replaced)
+static uint32_t s_gsdump_frames = 0;      // number of frames to record
+static uint32_t s_gsdump_at = 30;         // --gsdump-at F: start recording after frame F
 
 // twindiff (cross-BUILD divergence finder) state — see the big comment above
 // RunTwinDump. The same byte-identical runner is built in two trees (working
@@ -544,6 +556,12 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               cop2 narrows further into cop2move (QMFC2/CFC2/QMTC2/CTC2), cop2vu (the VU\n");
 	std::fprintf(stderr, "               macro ops) and cop2ls (LQC2/SQC2).\n");
 	std::fprintf(stderr, "               Pairs well with --mkstate --renderer sw for a visual oracle. arm64 only.\n");
+	std::fprintf(stderr, "  --gsdump <path>[:<frames>]: with --liverun, record a .gs dump of the GIF stream (default 1\n");
+	std::fprintf(stderr, "               frame) starting after --gsdump-at frames (default 30, so the scene has settled).\n");
+	std::fprintf(stderr, "               Replaying that dump in pcsx2-gsrunner is the only honest way to A/B the GS across\n");
+	std::fprintf(stderr, "               builds: it drives the GS with no emulator in front of it, so the MTGS ring and the\n");
+	std::fprintf(stderr, "               SW job queue can't spin-wait a faster EE into a bogus GS instruction-count delta.\n");
+	std::fprintf(stderr, "  --gsdump-at <frame>: frame after which --gsdump starts recording (default 30).\n");
 	std::fprintf(stderr, "  --renderer <null|vk|ogl|sw>: GS renderer (default null). Use vk on Intel GPUs / boxes where\n");
 	std::fprintf(stderr, "               the auto-check declines Vulkan and the surfaceless GL path fails to open GS.\n");
 	std::fprintf(stderr, "  --savestate <file>: Savestate to load after Initialize (required).\n");
@@ -640,6 +658,40 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG("--liverun"))
 			{
 				s_mode = RunMode::LiveRun;
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--gsdump"))
+			{
+				const std::string_view spec(argv[++i]);
+				const std::string_view::size_type at = spec.rfind(':');
+				std::string_view path = spec;
+				s_gsdump_frames = 1;
+				// "<path>:<frames>" — the colon is optional, and a Windows-style
+				// drive letter can't appear here, so rfind is unambiguous.
+				if (at != std::string_view::npos)
+				{
+					if (const std::optional<u32> n = StringUtil::FromChars<u32>(spec.substr(at + 1), 10))
+					{
+						s_gsdump_frames = std::max<u32>(1, n.value());
+						path = spec.substr(0, at);
+					}
+				}
+				s_gsdump_path = path;
+				// QueueSnapshot only honours a caller-supplied path when it ends in
+				// ".png" (it strips the extension and appends the dump's own).
+				if (!StringUtil::EndsWithNoCase(s_gsdump_path, ".png"))
+					s_gsdump_path += ".png";
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--gsdump-at"))
+			{
+				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
+				if (!n.has_value())
+				{
+					Console.Error("--gsdump-at expects a frame number.");
+					return false;
+				}
+				s_gsdump_at = n.value();
 				continue;
 			}
 			else if (CHECK_ARG("--perf-jitdump"))
@@ -827,6 +879,27 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 	{
 		Console.ErrorFmt("Savestate '{}' does not exist.", s_savestate_path);
 		return false;
+	}
+
+	if (!s_gsdump_path.empty())
+	{
+		if (s_mode != RunMode::LiveRun)
+		{
+			Console.Error("--gsdump needs --liverun: the diff modes suppress the real GS, so there is no GIF stream to record.");
+			return false;
+		}
+		if (s_renderer_explicit && s_renderer == GSRendererType::Null)
+		{
+			Console.Error("--gsdump cannot use --renderer null: Null drops GIF/PATH3 instead of consuming it.");
+			return false;
+		}
+		// Recording is armed after frame s_gsdump_at and needs s_gsdump_frames more
+		// vsyncs to close the file; a short --frames would truncate it silently.
+		if (s_frames < s_gsdump_at + s_gsdump_frames + 1)
+		{
+			s_frames = s_gsdump_at + s_gsdump_frames + 1;
+			Console.WarningFmt("--gsdump: raising --frames to {} so the dump can finish.", s_frames);
+		}
 	}
 
 	if (s_iso_path.empty())
@@ -3876,6 +3949,18 @@ static int RunLiveRun()
 		VMManager::FrameAdvance(1);
 		VMManager::Execute(); // blocks for one frame; if the EE wedges, never returns
 		s_liverun_frame.store(f + 1, std::memory_order_relaxed);
+
+		// Arm the GS dump once the scene has settled. Recording stops on its own
+		// after s_gsdump_frames vsyncs (GSRenderer counts m_dump_frames down), so
+		// the run just has to outlast it — hence the frame-budget check below.
+		if (!s_gsdump_path.empty() && (f + 1) == s_gsdump_at)
+		{
+			Console.WriteLn(fmt::format("GSDUMP: recording {} frame(s) from frame {} to '{}'",
+				s_gsdump_frames, s_gsdump_at, s_gsdump_path));
+			const std::string path = s_gsdump_path;
+			const u32 nframes = s_gsdump_frames;
+			MTGS::RunOnGSThread([path, nframes]() { GSQueueSnapshot(path, nframes); });
+		}
 
 		if (watch_addr)
 		{
