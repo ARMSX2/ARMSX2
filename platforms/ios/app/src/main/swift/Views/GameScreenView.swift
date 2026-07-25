@@ -1295,9 +1295,15 @@ struct GameScreenView: View {
     }
 
     private func consumePendingRetroAchievementsToast() {
-        guard let userInfo = ARMSX2Bridge.consumePendingRetroAchievementsNotification(), !userInfo.isEmpty else { return }
-        let notificationUserInfo = Dictionary(uniqueKeysWithValues: userInfo.map { (AnyHashable($0.key), $0.value) })
-        presentRetroAchievementsToast(Notification(name: retroAchievementsToastNotification, object: nil, userInfo: notificationUserInfo))
+        guard let userInfo = ARMSX2Bridge.consumePendingRetroAchievementsNotification(), userInfo.count > 0 else { return }
+        // Extract known fields by key to avoid NSDictionary → Swift Dictionary
+        // bridging, which crashes if any value is an NSAttributedString.
+        var toast: [String: Any] = [:]
+        toast["title"] = (userInfo["title"] as? String) ?? ""
+        toast["message"] = (userInfo["message"] as? String) ?? ""
+        if let badge = userInfo["badgePath"] as? String { toast["badgePath"] = badge }
+        if let duration = (userInfo["duration"] as? NSNumber) { toast["duration"] = duration }
+        presentRetroAchievementsToast(Notification(name: retroAchievementsToastNotification, object: nil, userInfo: toast))
     }
 
     private func presentImportantStatusMessage(_ message: String) {

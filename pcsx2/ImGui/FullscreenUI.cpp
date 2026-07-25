@@ -355,7 +355,12 @@ bool FullscreenUI::Initialize()
 	{
 		const bool open_main_window = s_current_main_window == MainWindowType::None;
 		if (open_main_window)
-			ReturnToMainWindow();
+		{
+			if (ShouldShowSetupWizard())
+				SwitchToSetup();
+			else
+				ReturnToMainWindow();
+		}
 	}
 
 	ForceKeyNavEnabled();
@@ -588,6 +593,7 @@ void FullscreenUI::Render()
 	ImGuiFullscreen::BeginLayout();
 
 	const bool should_draw_background = (s_current_main_window == MainWindowType::Landing ||
+		s_current_main_window == MainWindowType::Setup ||
 		s_current_main_window == MainWindowType::StartGame ||
 		s_current_main_window == MainWindowType::Exit ||
 		s_current_main_window == MainWindowType::GameList ||
@@ -610,6 +616,9 @@ void FullscreenUI::Render()
 	{
 		case MainWindowType::Landing:
 			DrawLandingWindow();
+			break;
+		case MainWindowType::Setup:
+			DrawSetupWindow();
 			break;
 		case MainWindowType::StartGame:
 			DrawStartGameWindow();
@@ -3068,51 +3077,8 @@ void FullscreenUI::HandleGameListOptions(const GameList::Entry* entry)
 		});
 }
 
-void FullscreenUI::DrawGameListSettingsWindow()
+void FullscreenUI::DrawSearchDirectoriesList()
 {
-	ImGuiIO& io = ImGui::GetIO();
-	const ImVec2 heading_size =
-		ImVec2(io.DisplaySize.x, LayoutScale(LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY) +
-									 (LayoutScale(LAYOUT_MENU_BUTTON_Y_PADDING) * 2.0f) + LayoutScale(2.0f));
-
-	const float bg_alpha = VMManager::HasValidVM() ? 0.90f : 1.0f;
-
-	if (BeginFullscreenWindow(ImVec2(0.0f, 0.0f), heading_size, "gamelist_view", MulAlpha(UIPrimaryColor, bg_alpha)))
-	{
-		BeginNavBar();
-
-		if (NavButton(ICON_PF_BACKWARD, true, true))
-		{
-			s_current_main_window = MainWindowType::GameList;
-			QueueResetFocus(FocusResetType::WindowChanged);
-		}
-
-		NavTitle(FSUI_CSTR("Game List Settings"));
-		EndNavBar();
-	}
-
-	EndFullscreenWindow();
-
-	if (!BeginFullscreenWindow(
-			ImVec2(0.0f, heading_size.y),
-			ImVec2(io.DisplaySize.x, io.DisplaySize.y - heading_size.y - LayoutScale(LAYOUT_FOOTER_HEIGHT)),
-			"settings_parent", UIBackgroundColor, 0.0f, ImVec2(ImGuiFullscreen::LAYOUT_MENU_WINDOW_X_PADDING, 0.0f)))
-	{
-		EndFullscreenWindow();
-		return;
-	}
-
-	if (ImGui::IsWindowFocused() && WantsToCloseMenu())
-	{
-		s_current_main_window = MainWindowType::GameList;
-		QueueResetFocus(FocusResetType::WindowChanged);
-	}
-
-	auto lock = Host::GetSettingsLock();
-	SettingsInterface* bsi = GetEditingSettingsInterface(false);
-
-	BeginMenuButtons();
-
 	MenuHeading(FSUI_CSTR("Search Directories"));
 	if (MenuButton(FSUI_ICONSTR(ICON_FA_FOLDER_PLUS, "Add Search Directory"), FSUI_CSTR("Adds a new directory to the game search list.")))
 	{
@@ -3195,6 +3161,240 @@ void FullscreenUI::DrawGameListSettingsWindow()
 				});
 		}
 	}
+}
+
+bool FullscreenUI::ShouldShowSetupWizard()
+{
+	return Host::GetBaseBoolSettingValue("UI", "SetupWizardIncomplete", false);
+}
+
+void FullscreenUI::SwitchToSetup()
+{
+	s_setup_wizard_step = 0;
+	s_current_main_window = MainWindowType::Setup;
+	{
+		auto lock = Host::GetSettingsLock();
+		PopulateGameListDirectoryCache(Host::Internal::GetBaseSettingsLayer());
+	}
+	QueueResetFocus(FocusResetType::WindowChanged);
+}
+
+void FullscreenUI::CompleteSetupWizard()
+{
+	Host::SetBaseBoolSettingValue("UI", "SetupWizardIncomplete", false);
+	Host::CommitBaseSettingChanges();
+
+	// If game directories were configured, drop straight into the game list so the
+	// user immediately sees the scanned results; otherwise the normal main menu.
+	if (!s_game_list_directories_cache.empty())
+		SwitchToGameList();
+	else
+		ReturnToMainWindow();
+}
+
+void FullscreenUI::DrawSetupWindow()
+{
+	// Controller-navigable first-time setup, shown in Big Picture when the desktop
+	// setup wizard was skipped (see QtHost). Steps mirror the essentials the Qt
+	// wizard covers that matter for couch play: BIOS, game directories, achievements.
+	static constexpr const char* step_titles[] = {
+		FSUI_NSTR("Welcome"),
+		FSUI_NSTR("BIOS"),
+		FSUI_NSTR("Game Directories"),
+		FSUI_NSTR("RetroAchievements"),
+		FSUI_NSTR("Finished"),
+	};
+	static constexpr u32 STEP_COUNT = std::size(step_titles);
+
+	const u32 step = std::min(s_setup_wizard_step, STEP_COUNT - 1);
+	const bool last_step = (step == STEP_COUNT - 1);
+
+	const auto go_prev = [&step]() {
+		if (step > 0)
+		{
+			s_setup_wizard_step = step - 1;
+			QueueResetFocus(FocusResetType::WindowChanged);
+		}
+		else
+		{
+			// Leave the flag set so setup reappears next launch; users can still reach Settings.
+			ReturnToMainWindow();
+		}
+	};
+	const auto go_next = [&step, last_step]() {
+		if (last_step)
+		{
+			CompleteSetupWizard();
+		}
+		else
+		{
+			s_setup_wizard_step = step + 1;
+			QueueResetFocus(FocusResetType::WindowChanged);
+		}
+	};
+
+	ImGuiIO& io = ImGui::GetIO();
+	const ImVec2 heading_size =
+		ImVec2(io.DisplaySize.x, LayoutScale(LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY) +
+									 (LayoutScale(LAYOUT_MENU_BUTTON_Y_PADDING) * 2.0f) + LayoutScale(2.0f));
+
+	if (BeginFullscreenWindow(ImVec2(0.0f, 0.0f), heading_size, "setup_heading", UIPrimaryColor))
+	{
+		BeginNavBar();
+
+		if (NavButton(ICON_PF_BACKWARD, false, true))
+			go_prev();
+
+		NavTitle(SmallString::from_format(FSUI_FSTR("Initial Setup - {} ({}/{})"),
+			Host::TranslateToCString(TR_CONTEXT, step_titles[step]), step + 1, STEP_COUNT));
+
+		static constexpr float NAV_ITEM_WIDTH = 25.0f;
+		RightAlignNavButtons(1, NAV_ITEM_WIDTH, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
+		if (NavButton(last_step ? ICON_FA_CHECK : ICON_PF_ARROW_RIGHT, false, true, NAV_ITEM_WIDTH, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
+			go_next();
+
+		EndNavBar();
+	}
+	EndFullscreenWindow();
+
+	// Per-step window ID: each step must have its own ImGui nav state. A fixed ID would
+	// carry a stale NavId across steps (e.g. an Achievements item that doesn't exist on the
+	// Finished page), leaving focus on nothing and making buttons unselectable by controller.
+	if (!BeginFullscreenWindow(
+			ImVec2(0.0f, heading_size.y),
+			ImVec2(io.DisplaySize.x, io.DisplaySize.y - heading_size.y - LayoutScale(LAYOUT_FOOTER_HEIGHT)),
+			TinyString::from_format("setup_content_{}", step).c_str(), UIBackgroundColor, 0.0f,
+			ImVec2(ImGuiFullscreen::LAYOUT_MENU_WINDOW_X_PADDING, 0.0f)))
+	{
+		EndFullscreenWindow();
+		return;
+	}
+
+	ResetFocusHere();
+
+	if (!ImGui::IsPopupOpen(0u, ImGuiPopupFlags_AnyPopup))
+	{
+		if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false))
+			go_prev();
+		else if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false))
+			go_next();
+		else if (ImGui::IsWindowFocused() && WantsToCloseMenu())
+			go_prev();
+	}
+
+	// NOTE: The settings pages below require the settings lock held, but the Welcome and
+	// Finished steps must NOT hold it: their buttons call CompleteSetupWizard(), which
+	// re-acquires the (non-recursive) settings lock via SwitchToGameList/SetBaseBoolSettingValue.
+	// Holding it across those calls would deadlock, so scope the lock to the steps that need it.
+	switch (step)
+	{
+		case 0: // Welcome
+		{
+			BeginMenuButtons();
+			MenuHeading(FSUI_CSTR("Welcome to ARMSX2!"));
+			ActiveButton(FSUI_CSTR("Navigate with the D-Pad, and use the shoulder buttons to move between steps."), false, false,
+				LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
+			if (MenuButton(FSUI_ICONSTR(ICON_FA_GEAR, "Set Up ARMSX2"),
+					FSUI_CSTR("Choose a BIOS, add your game directories, and optionally sign in to RetroAchievements.")))
+				go_next();
+			ImGui::SetItemDefaultFocus();
+			if (MenuButton(FSUI_ICONSTR(ICON_FA_PLAY, "Skip Setup and Start Playing"),
+					FSUI_CSTR("Go straight to the main menu. You can configure everything later from Settings.")))
+				CompleteSetupWizard();
+			EndMenuButtons();
+		}
+		break;
+
+		case 1: // BIOS
+		{
+			auto lock = Host::GetSettingsLock();
+			DrawBIOSSettingsPage();
+		}
+		break;
+
+		case 2: // Game Directories
+		{
+			auto lock = Host::GetSettingsLock();
+			BeginMenuButtons();
+			DrawSearchDirectoriesList();
+			EndMenuButtons();
+		}
+		break;
+
+		case 3: // RetroAchievements
+		{
+			auto lock = Host::GetSettingsLock();
+			DrawAchievementsSettingsPage(lock);
+		}
+		break;
+
+		case 4: // Finished
+		default:
+		{
+			BeginMenuButtons();
+			MenuHeading(FSUI_CSTR("Setup Complete!"));
+			ActiveButton(FSUI_CSTR("You're all set. These options can be changed at any time from the Settings menu."), false, false,
+				LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
+			if (MenuButton(FSUI_ICONSTR(ICON_FA_CHECK, "Finish and Start Playing"),
+					FSUI_CSTR("Completes setup and opens the main menu.")))
+				go_next();
+			ImGui::SetItemDefaultFocus();
+			EndMenuButtons();
+		}
+		break;
+	}
+
+	EndFullscreenWindow();
+
+	SetStandardSelectionFooterText(true);
+}
+
+void FullscreenUI::DrawGameListSettingsWindow()
+{
+	ImGuiIO& io = ImGui::GetIO();
+	const ImVec2 heading_size =
+		ImVec2(io.DisplaySize.x, LayoutScale(LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY) +
+									 (LayoutScale(LAYOUT_MENU_BUTTON_Y_PADDING) * 2.0f) + LayoutScale(2.0f));
+
+	const float bg_alpha = VMManager::HasValidVM() ? 0.90f : 1.0f;
+
+	if (BeginFullscreenWindow(ImVec2(0.0f, 0.0f), heading_size, "gamelist_view", MulAlpha(UIPrimaryColor, bg_alpha)))
+	{
+		BeginNavBar();
+
+		if (NavButton(ICON_PF_BACKWARD, true, true))
+		{
+			s_current_main_window = MainWindowType::GameList;
+			QueueResetFocus(FocusResetType::WindowChanged);
+		}
+
+		NavTitle(FSUI_CSTR("Game List Settings"));
+		EndNavBar();
+	}
+
+	EndFullscreenWindow();
+
+	if (!BeginFullscreenWindow(
+			ImVec2(0.0f, heading_size.y),
+			ImVec2(io.DisplaySize.x, io.DisplaySize.y - heading_size.y - LayoutScale(LAYOUT_FOOTER_HEIGHT)),
+			"settings_parent", UIBackgroundColor, 0.0f, ImVec2(ImGuiFullscreen::LAYOUT_MENU_WINDOW_X_PADDING, 0.0f)))
+	{
+		EndFullscreenWindow();
+		return;
+	}
+
+	if (ImGui::IsWindowFocused() && WantsToCloseMenu())
+	{
+		s_current_main_window = MainWindowType::GameList;
+		QueueResetFocus(FocusResetType::WindowChanged);
+	}
+
+	auto lock = Host::GetSettingsLock();
+	SettingsInterface* bsi = GetEditingSettingsInterface(false);
+
+	BeginMenuButtons();
+
+	DrawSearchDirectoriesList();
 
 	static constexpr const char* view_types[] = {
 		FSUI_NSTR("Game Grid"),

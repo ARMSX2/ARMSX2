@@ -6,6 +6,7 @@
 #include "harness/EeRecTestHarness.h"
 
 #include "Config.h"
+#include "Counters.h"
 #include "vtlb.h"
 
 #include <gtest/gtest.h>
@@ -1180,4 +1181,138 @@ TEST(EeRecLoadStore, Lwc1FaultPathLandsInResidentSlot)
 	for (u32 a = RecompilerTestEnvironment::kProgramPc; a < RecompilerTestEnvironment::kProgramPc + 0x20; a += 4)
 		faulted |= vtlb_IsFaultingPC(a);
 	EXPECT_TRUE(faulted) << "MMIO LWC1 did not take the fastmem-fault/backpatch path";
+}
+
+// ===========================================================================
+//  Const-mark retention across vtlb seams (FLUSH_VTLB / FLUSH_CONST_KEEP).
+//
+//  vtlb C-call seams write dirty const-tracked GPRs to memory but KEEP the
+//  const marks — the callee set (MMIO handlers, vtlb_memRead/Write) cannot
+//  write guest GPRs, so the tracking stays valid (x86 parity: FLUSH_FULLVTLB
+//  flushes nothing at these sites). Before this, the first vtlb seam in a
+//  block deleted every const mark, so an MMIO burst (N stores off one
+//  lui/ori const address) degraded accesses 2..N from the const-paddr
+//  shortcut (direct BL) to the dynamic fastmem/softmem path — the DBZ3
+//  GS-priv artifact block 0x0029474c (5x sd to 0x120000xx) emitted one BL +
+//  four dynamic stores where x86/lrps2 emit five BLs.
+//
+//  Shape oracle: with marks retained, every access in the burst compiles to
+//  the shortcut and never touches fastmem, so no faulting PC is recorded.
+//  If a seam kills the marks, accesses 2+ fastmem-probe the MMIO page,
+//  fault, and land in the faulting-PC set (process-global; cleared first).
+// ===========================================================================
+
+TEST(EeRecLoadStore, ConstAddrMmioBurstStaysOnShortcut)
+{
+	EeRecTestHarness h;
+	vtlb_ClearLoadStoreInfo();
+	h.LoadProgram({
+		LUI(reg::a0, 0x1000),
+		ORI(reg::a0, reg::a0, 0xF000),   // a0 = 0x1000F000 (INTC_STAT), const
+		ORI(reg::a1, reg::zero, 0x0001), // const data
+		ORI(reg::a2, reg::zero, 0x0002),
+		SW(reg::a1, 0, reg::a0),         // shortcut seam 1 (W1C on 0: no-op)
+		SW(reg::a2, 0, reg::a0),         // must STILL take the shortcut
+		SW(reg::zero, 0, reg::a0),
+		LW(reg::v1, 0, reg::a0),         // shortcut load: INTC_STAT reads 0
+		ADDIU(reg::v0, reg::a1, 0x10),   // post-seam use of a pre-seam const
+	});
+	h.Run();
+	h.ExpectGpr64(reg::v0, 0x11ull);
+	h.ExpectGpr64(reg::v1, 0ull);
+	for (u32 a = RecompilerTestEnvironment::kProgramPc;
+		 a < RecompilerTestEnvironment::kProgramPc + 9 * 4; a += 4)
+	{
+		EXPECT_FALSE(vtlb_IsFaultingPC(a))
+			<< "access at 0x" << std::hex << a << " degraded off the const-paddr shortcut";
+	}
+}
+
+TEST(EeRecLoadStore, ConstDataSurvivesMmioSeamOnSoftmem)
+{
+	// Same seam class, softmem flavor (the faulting-PC fallback in real runs),
+	// checking the VALUE side: consts flushed at the seam stay usable as
+	// store data and ALU operands after it. JIT-vs-interp auto-diff plus the
+	// tracked RAM window are the oracle.
+	EeRecTestHarness h;
+	const bool old_fastmem = EmuConfig.Cpu.Recompiler.EnableFastmem;
+	EmuConfig.Cpu.Recompiler.EnableFastmem = false;
+	h.SetGpr64(reg::t0, kScratch);       // non-const RAM base -> softmem path
+	h.TrackMemWindow(kScratch, 16);
+	h.LoadProgram({
+		LUI(reg::a0, 0x1000),
+		ORI(reg::a0, reg::a0, 0xF000),   // INTC_STAT, const
+		ORI(reg::a1, reg::zero, 0x1234), // const data
+		SW(reg::a1, 0, reg::a0),         // MMIO seam
+		SW(reg::a1, 0, reg::t0),         // post-seam const store data (32-bit)
+		ee::SD(reg::a1, 8, reg::t0),     // post-seam const store data (64-bit)
+		ADDIU(reg::v0, reg::a1, 1),      // post-seam const ALU operand
+	});
+	h.Run();
+	EmuConfig.Cpu.Recompiler.EnableFastmem = old_fastmem;
+	EXPECT_EQ(h.ReadU32(kScratch), 0x1234u);
+	EXPECT_EQ(h.ReadU64(kScratch + 8), 0x1234ull);
+	h.ExpectGpr64(reg::v0, 0x1235ull);
+}
+
+TEST(EeRecLoadStore, ConstQuadStoreMaterializesAndAliasLoadKillsConst)
+{
+	// The seam change makes recLQ/recSQ's fastmem paths see live const marks
+	// for the first time: SQ with const rt exercises _allocGPRtoNEONreg's
+	// MODE_READ const-materialization (128-bit memory load + Ins const lower
+	// — lane 1 must come from memory), and LQ with rs==rt must delete the
+	// dest's const mark so later readers use the LOADED value, not the
+	// stale compile-time constant.
+	EeRecTestHarness h;
+	h.SetGpr128(reg::a0, 0, 0xAABBCCDDEEFF0011ull); // lane1 sentinel; LUI keeps it
+	h.WriteU64(kScratch + 16, 0x1111222233334444ull);
+	h.WriteU64(kScratch + 24, 0x5555666677778888ull);
+	h.TrackMemWindow(kScratch, 32);
+	h.LoadProgram({
+		LUI(reg::a0, 0x0002),            // a0 lower 64 = kScratch (0x20000), const
+		ee::SQ(reg::a0, 0, reg::a0),     // const rs AND const rt
+		ee::LQ(reg::a1, 0, reg::a0),     // const rs, load the quad back
+		ADDIU(reg::v0, reg::a1, 4),      // consumes loaded lane 0
+		ee::LQ(reg::a0, 16, reg::a0),    // rs==rt alias: dest const mark dies
+		ADDIU(reg::v1, reg::a0, 0),      // must be the LOADED value
+	});
+	h.Run();
+	EXPECT_EQ(h.ReadU64(kScratch), 0x20000ull);
+	EXPECT_EQ(h.ReadU64(kScratch + 8), 0xAABBCCDDEEFF0011ull);
+	h.ExpectGpr128(reg::a1, 0x20000ull, 0xAABBCCDDEEFF0011ull);
+	h.ExpectGpr64(reg::v0, 0x20004ull);
+	h.ExpectGpr128(reg::a0, 0x1111222233334444ull, 0x5555666677778888ull);
+	h.ExpectGpr64(reg::v1, 0x33334444ull);
+}
+
+TEST(EeRecLoadStore, ConstCounterReadEventTestExitResumesAtNextPc)
+{
+	// A const-address read of an EE counter (0x10000000..0x10001FFF) takes the
+	// const-paddr MMIO shortcut AND ends the block with the g_branch=2
+	// event-test exit (forceEventTest). That exit's FLUSH_EVERYTHING does NOT
+	// include FLUSH_PC (0x1ff vs 0x200), so the shortcut's seam flush is the
+	// only place the resume pc reaches cpuRegs.pc before the dispatcher reads
+	// it. The handler-identity FLUSH_PC trim (hardware handlers skip the pc
+	// store) must therefore still flush pc on the forceEventTest path — if it
+	// doesn't, the JIT re-dispatches at a stale pc and the instructions after
+	// the counter read never execute.
+	// T0 stopped + zeroed so the read is deterministic on both sides. Direct
+	// struct writes only — rcntInit() would reschedule the vsync event to
+	// immediately-due, and the event test this block ends with would then
+	// run VSyncStart (input poll, GS) in an env that can't host it.
+	counters[0].modeval = 0;
+	counters[0].count = 0;
+	EeRecTestHarness h;
+	vtlb_ClearLoadStoreInfo();
+	h.LoadProgram({
+		LUI(reg::a0, 0x1000),             // a0 = 0x10000000 (T0_COUNT), const
+		LW(reg::v0, 0, reg::a0),          // counter read: event-test block end
+		ADDIU(reg::v1, reg::zero, 0x123), // next block, reached via cpuRegs.pc
+	});
+	h.Run();
+	h.ExpectGpr64(reg::v0, 0ull);
+	h.ExpectGpr64(reg::v1, 0x123ull);
+	// Shape: the counter read stayed on the const-paddr shortcut.
+	EXPECT_FALSE(vtlb_IsFaultingPC(RecompilerTestEnvironment::kProgramPc + 4))
+		<< "counter read degraded off the const-paddr shortcut";
 }

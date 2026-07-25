@@ -144,112 +144,72 @@ __ri void yuv2rgb_sse2()
 #include <arm_neon.h>
 #endif
 
-#define MULHI16(a, b) vshrq_n_s16(vqdmulhq_s16((a), (b)), 1)
-
+// The whole conversion runs on sqdmulh at rescaled coefficients; since
+// sqdmulh(a, b) floors (2*a*b) >> 16 and floors compose, these are exactly
+// the reference c*coeff >> 6 / y*coeff >> 6 with no post-multiply shifts:
+//   c*coeff >> 6 == sqdmulh(c << 8, coeff << 1)   (|coeff << 1| <= 0x204, no saturation)
+//   y*coeff >> 6 == sqdmulh(y << 5, coeff << 4)   (y << 5 <= 239 << 5 = 7648)
+// The << 8 and << 5 widenings come for free via shll/ushll.
 __ri void yuv2rgb_neon()
 {
-	const int8x16_t c_bias = vdupq_n_s8(s8(IPU_C_BIAS));
 	const uint8x16_t y_bias = vdupq_n_u8(IPU_Y_BIAS);
-	const int16x8_t y_mask = vdupq_n_s16(s16(0xFF00));
-	// Specifying round off instead of round down as everywhere else
-	// implies that this is right
-	const int16x8_t round_1bit = vdupq_n_s16(0x0001);
-	;
+	const uint8x8_t c_bias = vdup_n_u8(IPU_C_BIAS);
+	const uint8x16_t alpha = vdupq_n_u8(0x80);
 
-	const int16x8_t y_coefficient = vdupq_n_s16(s16(IPU_Y_COEFF << 2));
-	const int16x8_t gcr_coefficient = vdupq_n_s16(s16(u16(IPU_GCR_COEFF) << 2));
-	const int16x8_t gcb_coefficient = vdupq_n_s16(s16(u16(IPU_GCB_COEFF) << 2));
-	const int16x8_t rcr_coefficient = vdupq_n_s16(s16(IPU_RCR_COEFF << 2));
-	const int16x8_t bcb_coefficient = vdupq_n_s16(s16(IPU_BCB_COEFF << 2));
-
-	// Alpha set to 0x80 here. The threshold stuff is done later.
-	const uint8x16_t alpha = vreinterpretq_u8_s8(c_bias);
+	const int16x8_t y_coefficient = vdupq_n_s16(s16(IPU_Y_COEFF << 4));
+	const int16x8_t gcr_coefficient = vdupq_n_s16(s16(u16(IPU_GCR_COEFF) << 1));
+	const int16x8_t gcb_coefficient = vdupq_n_s16(s16(u16(IPU_GCB_COEFF) << 1));
+	const int16x8_t rcr_coefficient = vdupq_n_s16(s16(IPU_RCR_COEFF << 1));
+	const int16x8_t bcb_coefficient = vdupq_n_s16(s16(IPU_BCB_COEFF << 1));
 
 	for (int n = 0; n < 8; ++n)
 	{
-		// could skip the loadl_epi64 but most SSE instructions require 128-bit
-		// alignment so two versions would be needed.
-		int8x16_t cb = vcombine_s8(vld1_s8(reinterpret_cast<s8*>(&decoder.mb8.Cb[n][0])), vdup_n_s8(0));
-		int8x16_t cr = vcombine_s8(vld1_s8(reinterpret_cast<s8*>(&decoder.mb8.Cr[n][0])), vdup_n_s8(0));
+		uint8x8_t cb_u8 = vld1_u8(reinterpret_cast<u8*>(&decoder.mb8.Cb[n][0]));
+		uint8x8_t cr_u8 = vld1_u8(reinterpret_cast<u8*>(&decoder.mb8.Cr[n][0]));
 
 		// (Cb - 128) << 8, (Cr - 128) << 8
-		cb = veorq_s8(cb, c_bias);
-		cr = veorq_s8(cr, c_bias);
-		cb = vzip1q_s8(vdupq_n_s8(0), cb);
-		cr = vzip1q_s8(vdupq_n_s8(0), cr);
+		int16x8_t cb = vreinterpretq_s16_u16(vshll_n_u8(veor_u8(cb_u8, c_bias), 8));
+		int16x8_t cr = vreinterpretq_s16_u16(vshll_n_u8(veor_u8(cr_u8, c_bias), 8));
 
-		int16x8_t rc = MULHI16(vreinterpretq_s16_s8(cr), rcr_coefficient);
-		int16x8_t gc = vqaddq_s16(MULHI16(vreinterpretq_s16_s8(cr), gcr_coefficient), MULHI16(vreinterpretq_s16_s8(cb), gcb_coefficient));
-		int16x8_t bc = MULHI16(vreinterpretq_s16_s8(cb), bcb_coefficient);
+		int16x8_t rc = vqdmulhq_s16(cr, rcr_coefficient);
+		int16x8_t gc = vqaddq_s16(vqdmulhq_s16(cr, gcr_coefficient), vqdmulhq_s16(cb, gcb_coefficient));
+		int16x8_t bc = vqdmulhq_s16(cb, bcb_coefficient);
+
+		// duplicate chroma for linear pixel order: each value covers 2 adjacent pixels
+		int16x8_t rc_lo = vzip1q_s16(rc, rc);
+		int16x8_t rc_hi = vzip2q_s16(rc, rc);
+		int16x8_t gc_lo = vzip1q_s16(gc, gc);
+		int16x8_t gc_hi = vzip2q_s16(gc, gc);
+		int16x8_t bc_lo = vzip1q_s16(bc, bc);
+		int16x8_t bc_hi = vzip2q_s16(bc, bc);
 
 		for (int m = 0; m < 2; ++m)
 		{
 			uint8x16_t y = vld1q_u8(&decoder.mb8.Y[n * 2 + m][0]);
 			y = vqsubq_u8(y, y_bias);
-			// Y << 8 for pixels 0, 2, 4, 6, 8, 10, 12, 14
-			int16x8_t y_even = vshlq_n_s16(vreinterpretq_s16_u8(y), 8);
-			// Y << 8 for pixels 1, 3, 5, 7 ,9, 11, 13, 15
-			int16x8_t y_odd = vandq_s16(vreinterpretq_s16_u8(y), y_mask);
 
-			// y_even = _mm_mulhi_epu16(y_even, y_coefficient);
-			// y_odd = _mm_mulhi_epu16(y_odd, y_coefficient);
+			// Y * coefficient >> 6 for pixels 0-7 and 8-15
+			int16x8_t y_res_lo = vqdmulhq_s16(
+				vreinterpretq_s16_u16(vshll_n_u8(vget_low_u8(y), 5)), y_coefficient);
+			int16x8_t y_res_hi = vqdmulhq_s16(
+				vreinterpretq_s16_u16(vshll_high_n_u8(y, 5)), y_coefficient);
 
-			uint16x4_t a3210 = vget_low_u16(vreinterpretq_u16_s16(y_even));
-			uint16x4_t b3210 = vget_low_u16(vreinterpretq_u16_s16(y_coefficient));
-			uint32x4_t ab3210 = vmull_u16(a3210, b3210);
-			uint32x4_t ab7654 = vmull_high_u16(vreinterpretq_u16_s16(y_even), vreinterpretq_u16_s16(y_coefficient));
-			y_even = vreinterpretq_s16_u16(vuzp2q_u16(vreinterpretq_u16_u32(ab3210), vreinterpretq_u16_u32(ab7654)));
+			// add chroma + rounding shift right + saturating narrow
+			uint8x16_t r = vcombine_u8(
+				vqrshrun_n_s16(vqaddq_s16(rc_lo, y_res_lo), 1),
+				vqrshrun_n_s16(vqaddq_s16(rc_hi, y_res_hi), 1));
+			uint8x16_t g = vcombine_u8(
+				vqrshrun_n_s16(vqaddq_s16(gc_lo, y_res_lo), 1),
+				vqrshrun_n_s16(vqaddq_s16(gc_hi, y_res_hi), 1));
+			uint8x16_t b = vcombine_u8(
+				vqrshrun_n_s16(vqaddq_s16(bc_lo, y_res_lo), 1),
+				vqrshrun_n_s16(vqaddq_s16(bc_hi, y_res_hi), 1));
 
-			a3210 = vget_low_u16(vreinterpretq_u16_s16(y_odd));
-			b3210 = vget_low_u16(vreinterpretq_u16_s16(y_coefficient));
-			ab3210 = vmull_u16(a3210, b3210);
-			ab7654 = vmull_high_u16(vreinterpretq_u16_s16(y_odd), vreinterpretq_u16_s16(y_coefficient));
-			y_odd = vreinterpretq_s16_u16(vuzp2q_u16(vreinterpretq_u16_u32(ab3210), vreinterpretq_u16_u32(ab7654)));
-
-			int16x8_t r_even = vqaddq_s16(rc, y_even);
-			int16x8_t r_odd = vqaddq_s16(rc, y_odd);
-			int16x8_t g_even = vqaddq_s16(gc, y_even);
-			int16x8_t g_odd = vqaddq_s16(gc, y_odd);
-			int16x8_t b_even = vqaddq_s16(bc, y_even);
-			int16x8_t b_odd = vqaddq_s16(bc, y_odd);
-
-			// round
-			r_even = vshrq_n_s16(vaddq_s16(r_even, round_1bit), 1);
-			r_odd = vshrq_n_s16(vaddq_s16(r_odd, round_1bit), 1);
-			g_even = vshrq_n_s16(vaddq_s16(g_even, round_1bit), 1);
-			g_odd = vshrq_n_s16(vaddq_s16(g_odd, round_1bit), 1);
-			b_even = vshrq_n_s16(vaddq_s16(b_even, round_1bit), 1);
-			b_odd = vshrq_n_s16(vaddq_s16(b_odd, round_1bit), 1);
-
-			// combine even and odd bytes in original order
-			uint8x16_t r = vcombine_u8(vqmovun_s16(r_even), vqmovun_s16(r_odd));
-			uint8x16_t g = vcombine_u8(vqmovun_s16(g_even), vqmovun_s16(g_odd));
-			uint8x16_t b = vcombine_u8(vqmovun_s16(b_even), vqmovun_s16(b_odd));
-
-			r = vzip1q_u8(r, vreinterpretq_u8_u64(vdupq_laneq_u64(vreinterpretq_u64_u8(r), 1)));
-			g = vzip1q_u8(g, vreinterpretq_u8_u64(vdupq_laneq_u64(vreinterpretq_u64_u8(g), 1)));
-			b = vzip1q_u8(b, vreinterpretq_u8_u64(vdupq_laneq_u64(vreinterpretq_u64_u8(b), 1)));
-
-			// Create RGBA (we could generate A here, but we don't) quads
-			uint8x16_t rg_l = vzip1q_u8(r, g);
-			uint8x16_t ba_l = vzip1q_u8(b, alpha);
-			uint16x8_t rgba_ll = vzip1q_u16(vreinterpretq_u16_u8(rg_l), vreinterpretq_u16_u8(ba_l));
-			uint16x8_t rgba_lh = vzip2q_u16(vreinterpretq_u16_u8(rg_l), vreinterpretq_u16_u8(ba_l));
-
-			uint8x16_t rg_h = vzip2q_u8(r, g);
-			uint8x16_t ba_h = vzip2q_u8(b, alpha);
-			uint16x8_t rgba_hl = vzip1q_u16(vreinterpretq_u16_u8(rg_h), vreinterpretq_u16_u8(ba_h));
-			uint16x8_t rgba_hh = vzip2q_u16(vreinterpretq_u16_u8(rg_h), vreinterpretq_u16_u8(ba_h));
-
-			vst1q_u8(reinterpret_cast<u8*>(&decoder.rgb32.c[n * 2 + m][0]), vreinterpretq_u8_u16(rgba_ll));
-			vst1q_u8(reinterpret_cast<u8*>(&decoder.rgb32.c[n * 2 + m][4]), vreinterpretq_u8_u16(rgba_lh));
-			vst1q_u8(reinterpret_cast<u8*>(&decoder.rgb32.c[n * 2 + m][8]), vreinterpretq_u8_u16(rgba_hl));
-			vst1q_u8(reinterpret_cast<u8*>(&decoder.rgb32.c[n * 2 + m][12]), vreinterpretq_u8_u16(rgba_hh));
+			uint8x16x4_t rgba = {r, g, b, alpha};
+			vst4q_u8(reinterpret_cast<u8*>(&decoder.rgb32.c[n * 2 + m][0]), rgba);
 		}
 	}
 }
-
-#undef MULHI16
 
 #endif
 

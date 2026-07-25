@@ -21,6 +21,8 @@
 using namespace recompiler_tests;
 using namespace mips;
 
+extern bool recEeBlockHostInfo(u32 pc_query, uptr* fnptr, u32* host_size, uptr* lut_fnptr);
+
 namespace {
 constexpr u32 kProgramPc = RecompilerTestEnvironment::kProgramPc;
 } // namespace
@@ -219,6 +221,97 @@ TEST(EeRecSmc, OverlappingCompileClearsStaleBlock)
 	LoadOverlapCaller(h, kOverlapRoutinePc, 0x333);
 	h.Run(EeRecTestHarness::RunMode::PreserveCache);
 	h.ExpectGpr64(reg::v0, 7);
+}
+
+// Producer (248/248 of the reuses in a DBZ3 eerunner boot): the GE-18
+// stale-overlap walk fires recClear MID-COMPILE. The walk skips the
+// in-progress block (so its BASEBLOCKEX survives), but the removed stale
+// straddler-from-below spans the in-progress startpc, so the post-walk
+// ClearRecLUT tail wipes BLOCK(startpc)->fnptr. The arm64 port set the LUT
+// fnptr at the START of recRecompile (x86 sets it at the END, after the
+// walk — ix86-32/iR5900.cpp:2664), so nothing restored it. The next
+// dispatch recompiled into the surviving entry, which never refreshed
+// BASEBLOCKEX::fnptr: the linker (recBlocks.Link) then targets the OLD
+// copy while the LUT dispatches the NEW one, and x86size (end − stale
+// fnptr) spans both copies (162KB of duplicate bodies in a battle dump).
+//
+// The caller uses JALR (indirect) so every entry to the victim goes
+// through the LUT dispatcher, never a patched direct link. The target
+// comes from t1 (seeded per-Run by the harness), so the caller block is
+// compiled ONCE and never needs invalidating — the harness wires no page
+// protection, so a reloaded program is not reliably re-compiled.
+TEST(EeRecSmc, MidCompileOverlapClearKeepsLutAndLinkerCoherent)
+{
+	EeRecTestHarness h;
+
+	// Straddler A at S: entered at S it sets v0 = 5+1+1 = 7. The victim
+	// block is entered at V = S+4 (inside A), so A straddles V from below.
+	constexpr u32 kS = 0x000A0000;
+	constexpr u32 kV = kS + 4;
+	h.WriteU32(kS + 0x00, ADDIU(reg::v0, reg::zero, 5));
+	h.WriteU32(kS + 0x04, ADDIU(reg::v0, reg::v0, 1));
+	h.WriteU32(kS + 0x08, ADDIU(reg::v0, reg::v0, 1));
+	h.WriteU32(kS + 0x0C, JR(reg::ra));
+	h.WriteU32(kS + 0x10, NOP);
+
+	h.LoadProgram({
+		OR(reg::t0, reg::ra, reg::zero),
+		ADDIU(reg::v0, reg::zero, 0x40),
+		JALR(reg::ra, reg::t1),
+		NOP,
+		OR(reg::ra, reg::t0, reg::zero),
+	});
+
+	// 1. Compile + run A from its head; its source is snapshotted into
+	//    recRAMCopy. v0 = 7.
+	h.SetGpr64(reg::t1, kS);
+	h.Run(EeRecTestHarness::RunMode::FreshCache);
+	h.ExpectGpr64(reg::v0, 7);
+
+	// 2. RAW poke of A's first word (the write class no protection path
+	//    sees in the harness) — A's snapshot is now stale. V's own words
+	//    (S+4..) are untouched.
+	*(u32*)PSM(kS) = ADDIU(reg::v0, reg::zero, 6);
+
+	// 3. Compile the victim by entering at V. At the end of that compile
+	//    the overlap walk sees stale A → recClear(V, ...) → A removed, and
+	//    the ClearRecLUT tail over A's extent [S, S+0x14) wipes LUT[V].
+	//    v0 = 0x40 + 2 = 0x42.
+	h.SetGpr64(reg::t1, kV);
+	h.Run(EeRecTestHarness::RunMode::PreserveCache);
+	h.ExpectGpr64(reg::v0, 0x42);
+
+	// Inertness guard: prove the mid-compile overlap walk actually fired.
+	// Everything below only means something if recClear ran and removed A;
+	// without this, a future change that stops the walk from firing turns
+	// the whole test green-but-inert instead of failing.
+	{
+		uptr afn = 0, alut = 0;
+		u32 asz = 0;
+		EXPECT_FALSE(recEeBlockHostInfo(kS, &afn, &asz, &alut))
+			<< "PROBE: straddler A survived — the overlap walk never fired";
+	}
+
+	// THE PIN: after the mid-compile clear, the victim's LUT dispatch
+	// target and its BASEBLOCKEX fnptr must agree (recRecompile must
+	// restore the LUT after the walk, as x86 does).
+	uptr fn1 = 0, lut1 = 0;
+	u32 sz1 = 0;
+	ASSERT_TRUE(recEeBlockHostInfo(kV, &fn1, &sz1, &lut1));
+	EXPECT_EQ(lut1, fn1) << "LUT and BASEBLOCKEX disagree after mid-compile recClear";
+
+	// 4. Re-dispatch V. On the broken baseline this recompiles into the
+	//    surviving entry: a duplicate adjacent body, stale fnptr, x86size
+	//    spanning both copies.
+	h.SetGpr64(reg::t1, kV);
+	h.Run(EeRecTestHarness::RunMode::PreserveCache);
+	h.ExpectGpr64(reg::v0, 0x42);
+	uptr fn2 = 0, lut2 = 0;
+	u32 sz2 = 0;
+	ASSERT_TRUE(recEeBlockHostInfo(kV, &fn2, &sz2, &lut2));
+	EXPECT_EQ(lut2, fn2) << "linker (BASEBLOCKEX) and dispatcher (LUT) diverged";
+	EXPECT_EQ(fn2, fn1) << "victim was needlessly recompiled";
+	EXPECT_EQ(sz2, sz1) << "x86size grew — duplicate block body emitted";
 }
 
 TEST(EeRecSmc, OverlapWalkIgnoresUnmodifiedNeighbors)

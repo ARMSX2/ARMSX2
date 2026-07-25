@@ -62,6 +62,7 @@
 #include "pcsx2/Achievements.h"
 #include "pcsx2/DebugTools/Debug.h"
 #include "pcsx2/GS/GS.h"
+#include "pcsx2/MTGS.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/INISettingsInterface.h"
 #include "pcsx2/ImGui/FullscreenUI.h"
@@ -76,6 +77,10 @@
 #include "pcsx2/VUmicro.h"
 
 #include "pcsx2/ee_divtrace.h"
+
+#if defined(ARCH_ARM64)
+#include "pcsx2/arm64/iR5900-arm64.h"
+#endif
 
 #include "svnrev.h"
 
@@ -119,6 +124,17 @@ static bool s_renderer_explicit = false; // user passed --renderer (an explicit 
 static std::string s_memdump_prefix; // --memdump <prefix>: write <prefix>.{interp,jit}.bin at the last frame
 static bool s_perf_jitdump = false; // --perf-jitdump: emit Linux perf jitdump for `perf inject --jit` (profiling)
 
+// --gsdump: headless GS-dump capture from a --liverun. A .gs dump is a recording of
+// the GIF command stream, so replaying one in pcsx2-gsrunner exercises the GS with
+// ZERO emulator in front of it — which is the only way to A/B the GS across two
+// builds honestly. Measuring the GS inside a live run cannot work: the MTGS ring and
+// the SW rasterizer's job queue both spin while waiting, so a build with a faster EE
+// changes the GS threads' instruction counts without changing a single pixel of GS
+// work. Capture once here, then replay the same dump on both builds.
+static std::string s_gsdump_path;         // --gsdump <path.png>: dump basename (extension replaced)
+static uint32_t s_gsdump_frames = 0;      // number of frames to record
+static uint32_t s_gsdump_at = 30;         // --gsdump-at F: start recording after frame F
+
 // twindiff (cross-BUILD divergence finder) state — see the big comment above
 // RunTwinDump. The same byte-identical runner is built in two trees (working
 // vs broken); one dumps a trace, the other compares against it.
@@ -133,6 +149,10 @@ struct SetOverride
 	std::string section, key, value;
 };
 static std::vector<SetOverride> s_set_overrides; // --set Section/Key=Value (repeatable)
+static u32 s_rec_fallback_groups = 0; // --rec-fallback <groups>: EE opcode groups forced to interp
+#if defined(ARCH_ARM64)
+static u32 s_rec_fallback_reg_masks[EERecFallback::kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u}; // per-COP2-move-op register filters
+#endif
 
 bool EERunner::InitializeConfig()
 {
@@ -528,6 +548,20 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --localize / --repro: aliases of --stepdiff (the old jittery frame-boundary funnel was removed).\n");
 	std::fprintf(stderr, "  --selfcheck: Characterize run-to-run determinism (interp only). Expected to flag benign ~10-cycle\n");
 	std::fprintf(stderr, "               pause-point sampling jitter; use it to understand the noise floor, not as a gate.\n");
+	std::fprintf(stderr, "  --rec-fallback <groups>: comma-separated EE opcode groups to force through the INTERPRETER\n");
+	std::fprintf(stderr, "               instead of native codegen, with everything else still JIT. Bisects \"the EE JIT\n");
+	std::fprintf(stderr, "               miscomputes something\" down to one emitter family without a rebuild per hypothesis:\n");
+	std::fprintf(stderr, "               the group that makes the symptom disappear contains the bug. Groups: fpu, cop2,\n");
+	std::fprintf(stderr, "               mmi, multdiv, shift, arith, loadstore, move, cop0, branch (plus all / none).\n");
+	std::fprintf(stderr, "               cop2 narrows further into cop2move (QMFC2/CFC2/QMTC2/CTC2), cop2vu (the VU\n");
+	std::fprintf(stderr, "               macro ops) and cop2ls (LQC2/SQC2).\n");
+	std::fprintf(stderr, "               Pairs well with --mkstate --renderer sw for a visual oracle. arm64 only.\n");
+	std::fprintf(stderr, "  --gsdump <path>[:<frames>]: with --liverun, record a .gs dump of the GIF stream (default 1\n");
+	std::fprintf(stderr, "               frame) starting after --gsdump-at frames (default 30, so the scene has settled).\n");
+	std::fprintf(stderr, "               Replaying that dump in pcsx2-gsrunner is the only honest way to A/B the GS across\n");
+	std::fprintf(stderr, "               builds: it drives the GS with no emulator in front of it, so the MTGS ring and the\n");
+	std::fprintf(stderr, "               SW job queue can't spin-wait a faster EE into a bogus GS instruction-count delta.\n");
+	std::fprintf(stderr, "  --gsdump-at <frame>: frame after which --gsdump starts recording (default 30).\n");
 	std::fprintf(stderr, "  --renderer <null|vk|ogl|sw>: GS renderer (default null). Use vk on Intel GPUs / boxes where\n");
 	std::fprintf(stderr, "               the auto-check declines Vulkan and the surfaceless GL path fails to open GS.\n");
 	std::fprintf(stderr, "  --savestate <file>: Savestate to load after Initialize (required).\n");
@@ -626,6 +660,40 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_mode = RunMode::LiveRun;
 				continue;
 			}
+			else if (CHECK_ARG_PARAM("--gsdump"))
+			{
+				const std::string_view spec(argv[++i]);
+				const std::string_view::size_type at = spec.rfind(':');
+				std::string_view path = spec;
+				s_gsdump_frames = 1;
+				// "<path>:<frames>" — the colon is optional, and a Windows-style
+				// drive letter can't appear here, so rfind is unambiguous.
+				if (at != std::string_view::npos)
+				{
+					if (const std::optional<u32> n = StringUtil::FromChars<u32>(spec.substr(at + 1), 10))
+					{
+						s_gsdump_frames = std::max<u32>(1, n.value());
+						path = spec.substr(0, at);
+					}
+				}
+				s_gsdump_path = path;
+				// QueueSnapshot only honours a caller-supplied path when it ends in
+				// ".png" (it strips the extension and appends the dump's own).
+				if (!StringUtil::EndsWithNoCase(s_gsdump_path, ".png"))
+					s_gsdump_path += ".png";
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--gsdump-at"))
+			{
+				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
+				if (!n.has_value())
+				{
+					Console.Error("--gsdump-at expects a frame number.");
+					return false;
+				}
+				s_gsdump_at = n.value();
+				continue;
+			}
 			else if (CHECK_ARG("--perf-jitdump"))
 			{
 				// Emit a Linux perf jitdump so `perf inject --jit` can resolve EE_/VU1_/...
@@ -707,6 +775,26 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				s_set_overrides.push_back({kv.substr(0, slash), kv.substr(slash + 1, eq - slash - 1), kv.substr(eq + 1)});
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--rec-fallback"))
+			{
+				const std::string_view list = StringUtil::StripWhitespace(argv[++i]);
+#if defined(ARCH_ARM64)
+				std::string err;
+				u32 mask = 0;
+				u32 reg_masks[EERecFallback::kCop2MoveOpCount] = {};
+				if (!EERecFallback::ParseGroups(list, &mask, reg_masks, &err))
+				{
+					Console.Error(err.c_str());
+					return false;
+				}
+				s_rec_fallback_groups = mask;
+				std::memcpy(s_rec_fallback_reg_masks, reg_masks, sizeof(reg_masks));
+#else
+				Console.Error("--rec-fallback is implemented for the arm64 EE recompiler only.");
+				return false;
+#endif
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--renderer"))
@@ -791,6 +879,27 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 	{
 		Console.ErrorFmt("Savestate '{}' does not exist.", s_savestate_path);
 		return false;
+	}
+
+	if (!s_gsdump_path.empty())
+	{
+		if (s_mode != RunMode::LiveRun)
+		{
+			Console.Error("--gsdump needs --liverun: the diff modes suppress the real GS, so there is no GIF stream to record.");
+			return false;
+		}
+		if (s_renderer_explicit && s_renderer == GSRendererType::Null)
+		{
+			Console.Error("--gsdump cannot use --renderer null: Null drops GIF/PATH3 instead of consuming it.");
+			return false;
+		}
+		// Recording is armed after frame s_gsdump_at and needs s_gsdump_frames more
+		// vsyncs to close the file; a short --frames would truncate it silently.
+		if (s_frames < s_gsdump_at + s_gsdump_frames + 1)
+		{
+			s_frames = s_gsdump_at + s_gsdump_frames + 1;
+			Console.WarningFmt("--gsdump: raising --frames to {} so the dump can finish.", s_frames);
+		}
 	}
 
 	if (s_iso_path.empty())
@@ -978,6 +1087,19 @@ void EERunner::SettingsOverride()
 		s_settings_interface.SetStringValue(so.section.c_str(), so.key.c_str(), so.value.c_str());
 		Console.WriteLn(fmt::format("SettingsOverride: --set [{}] {} = {}", so.section, so.key, so.value));
 	}
+
+#if defined(ARCH_ARM64)
+	// --rec-fallback: route whole EE opcode groups through the interpreter. Not a
+	// setting (it lives in the recompiler, not EmuConfig), so it is applied here,
+	// before any block is compiled, and stays put for the whole run.
+	EERecFallback::g_groups = s_rec_fallback_groups;
+	std::memcpy(EERecFallback::g_cop2RegMask, s_rec_fallback_reg_masks, sizeof(s_rec_fallback_reg_masks));
+	if (s_rec_fallback_groups != 0)
+	{
+		Console.WriteLn(fmt::format("EE REC FALLBACK: forcing to interpreter -> {}",
+			EERecFallback::DescribeGroups(s_rec_fallback_groups)));
+	}
+#endif
 }
 
 // Snapshot live cpuRegs/fpuRegs into a FullSnap (frame-boundary capture; pc/cycle
@@ -2063,7 +2185,15 @@ static bool ZoomFromCheckpoint(const std::string& ckpt)
 		// full of short scan loops doesn't exhaust the tight timer budget.
 		{
 			u32 loop_branch_addr = 0;
-			const u32 loop_target = BlockBackwardBranchTarget(ar.pc, &loop_branch_addr);
+			// The self-loop can be the block being ENTERED (a re-entry sample), OR
+			// the offending block just executed (ar.prev_pc): the interpreter
+			// samples the loop's terminating-branch delay slot at branch+8, which
+			// aliases the loop's fall-through EXIT pc every iteration — so the
+			// divergence is reported "entering <exit>" with the loop sitting in
+			// prev_pc. Check the entered block first, then the offending block.
+			u32 loop_target = BlockBackwardBranchTarget(ar.pc, &loop_branch_addr);
+			if (loop_target == 0 && ar.prev_pc)
+				loop_target = BlockBackwardBranchTarget(ar.prev_pc, &loop_branch_addr);
 			if (loop_target != 0 && selfloop_skipped < kSelfLoopCap)
 			{
 				const u32 loop_lo = loop_target;
@@ -2234,6 +2364,52 @@ static bool ZoomFromCheckpoint(const std::string& ckpt)
 			ar.pc, ar.jit_idx, ar.prev_pc));
 		if (ar.prev_pc)
 			DisasmBlock(ar.prev_pc);
+
+		// Offending-block ENTRY probe: dump BOTH streams' GPR file at prev_pc
+		// (the offending block's head). Tells apart "entered already-diverged =
+		// upstream culprit" from "entered identical, exits diverged = this block
+		// is the bug", and hands a single-block fixture the real seed values.
+		if (ar.prev_pc)
+		{
+			auto entry_snap = [&](const std::vector<ee_divtrace::Sample>& stream, uint32_t upto,
+								   bool jit_side, ee_divtrace::FullSnap& out) -> bool {
+				for (uint32_t pi = upto; pi-- > 0;)
+				{
+					if (stream[pi].pc == ar.prev_pc)
+					{
+						if (!reload(jit_side))
+							return false;
+						out = RunFineSnapAtFromHere(pi);
+						return true;
+					}
+				}
+				return false;
+			};
+			ee_divtrace::FullSnap ientry{}, jentry{};
+			const bool hi = entry_snap(interp_fine, ar.interp_idx, false, ientry);
+			const bool hj = entry_snap(jit_fine, ar.jit_idx, true, jentry);
+			if (hi && hj)
+			{
+				Console.WriteLn(fmt::format("STEPDIFF zoom: offending-block ENTRY GPRs @ {:#010x} (interp | jit):", ar.prev_pc));
+				for (int r = 0; r < 32; ++r)
+				{
+					const u64 iv = ientry.cpu.GPR.r[r].UD[0];
+					const u64 jv = jentry.cpu.GPR.r[r].UD[0];
+					if (iv != jv || (r >= 4 && r <= 7))
+						Console.WriteLn(fmt::format("    r{:<2} {:#018x} | {:#018x}{}", r, iv, jv,
+							iv != jv ? "   <-- DIFFERS" : ""));
+				}
+				Console.WriteLn("STEPDIFF zoom: offending-block ENTRY FPRs (interp | jit; f0-f3,f12 + diffs):");
+				for (int f = 0; f < 32; ++f)
+				{
+					const u32 iv = ientry.fpu.fpr[f].UL;
+					const u32 jv = jentry.fpu.fpr[f].UL;
+					if (iv != jv || f <= 3 || f == 12)
+						Console.WriteLn(fmt::format("    f{:<2} {:#010x} | {:#010x}{}", f, iv, jv,
+							iv != jv ? "   <-- DIFFERS" : ""));
+				}
+			}
+		}
 
 		const auto diffs = DiffFullSnaps(jsnap, isnap);
 		if (diffs.empty())
@@ -3773,6 +3949,18 @@ static int RunLiveRun()
 		VMManager::FrameAdvance(1);
 		VMManager::Execute(); // blocks for one frame; if the EE wedges, never returns
 		s_liverun_frame.store(f + 1, std::memory_order_relaxed);
+
+		// Arm the GS dump once the scene has settled. Recording stops on its own
+		// after s_gsdump_frames vsyncs (GSRenderer counts m_dump_frames down), so
+		// the run just has to outlast it — hence the frame-budget check below.
+		if (!s_gsdump_path.empty() && (f + 1) == s_gsdump_at)
+		{
+			Console.WriteLn(fmt::format("GSDUMP: recording {} frame(s) from frame {} to '{}'",
+				s_gsdump_frames, s_gsdump_at, s_gsdump_path));
+			const std::string path = s_gsdump_path;
+			const u32 nframes = s_gsdump_frames;
+			MTGS::RunOnGSThread([path, nframes]() { GSQueueSnapshot(path, nframes); });
+		}
 
 		if (watch_addr)
 		{

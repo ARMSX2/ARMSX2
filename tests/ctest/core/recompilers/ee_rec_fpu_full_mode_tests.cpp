@@ -502,10 +502,17 @@ TEST(EeRecFpuFull, DivPseudoInfByTwoExact)
 	EXPECT_EQ(h.GetFprBitsJit(2), 0x7f000000u); // fast path clamps fs -> 0x7effffff
 }
 
+// The DOUBLE-mode divide-by-zero result is NOT the single-mode ±FLT_MAX.
+// x86 iFPUd.cpp SetMaxValue() branches on FPU_RESULT, which is #defined to 1,
+// so the live arm is `xOR.PS(regd, s_const.pos[0])` with pos[0] == 0x7fffffff
+// — exponent field 0xff, one ULP band above the 0x7f7fffff that the *dead*
+// else-arm (and the single-precision iFPU.cpp recDIVhelper1) uses. On the EE
+// that is just a larger finite float (no NaN/Inf encodings), but guest
+// softfloat routines classify exp==0xff separately, so the distinction is
+// game-visible. See NFS Carbon below.
 TEST(EeRecFpuFull, DivByZeroFlagsAndMax)
 {
-	// x/0: D|SD set, result = sign(fs^ft) | +max. Semantics guard (the fast
-	// body shares this shape); pins the DOUBLE zero-path port.
+	// x/0: D|SD set, result = (fs ^ ft) | 0x7fffffff.
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.EnableFpuFullMode();
@@ -516,8 +523,33 @@ TEST(EeRecFpuFull, DivByZeroFlagsAndMax)
 		CFC1(reg::v0, 31),
 	});
 	h.RunJitNoDiff();
-	EXPECT_EQ(h.GetFprBitsJit(2), 0xff7fffffu);
+	EXPECT_EQ(h.GetFprBitsJit(2), 0xffffffffu);
 	EXPECT_EQ(h.GetGpr64Jit(reg::v0) & 0x00010020u, 0x00010020u) << "D|SD not set";
+}
+
+// NFS Carbon (SLUS-21493, eeClampMode:3) regression. A disabled sine-wobble
+// axis leaves both parameters +0.0, so the game divides 0.0/0.0 every time it
+// builds the table and relies on the result's exponent field being 0xff: its
+// softfloat float->double->int helper classifies that as non-finite and
+// returns a value <= 0, which the following `blez` uses to skip the table
+// build. Emitting 0x7f7fffff instead makes the helper saturate to INT_MAX, and
+// the game then allocates and byte-fills a 2^31-entry table, wiping guest RAM
+// until a NULL vtable dispatch lands the EE at PC 0 and the kernel halts.
+TEST(EeRecFpuFull, DivZeroOverZeroKeepsPseudoInfExponent)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	h.EnableFpuFullMode();
+	h.SetFprBits(0, 0x00000000u); // +0.0 dividend
+	h.SetFprBits(1, 0x00000000u); // +0.0 divisor
+	h.LoadProgram({
+		DIV_S(2, 0, 1),
+		CFC1(reg::v0, 31),
+	});
+	h.RunJitNoDiff();
+	EXPECT_EQ(h.GetFprBitsJit(2), 0x7fffffffu);
+	EXPECT_EQ((h.GetFprBitsJit(2) >> 23) & 0xffu, 0xffu) << "exponent must be 0xff";
+	EXPECT_EQ(h.GetGpr64Jit(reg::v0) & 0x00020040u, 0x00020040u) << "I|SI not set";
 }
 
 TEST(EeRecFpuFull, SqrtPseudoInfExact)
@@ -563,9 +595,9 @@ TEST(EeRecFpuFull, RsqrtPseudoInfExact)
 
 TEST(EeRecFpuFull, RsqrtDivByZeroSignedMaxFromDividend)
 {
-	// ft == 0: D|SD and result = sign(FS) | +max (x86 DOUBLE keys the sign off
+	// ft == 0: D|SD and result = FS | 0x7fffffff (x86 DOUBLE keys the sign off
 	// the DIVIDEND; the interp fallback keys it off the divisor — x86-JIT is
-	// the FULL-mode oracle).
+	// the FULL-mode oracle). Same SetMaxValue constant as DIV above.
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.EnableFpuFullMode();
@@ -576,7 +608,7 @@ TEST(EeRecFpuFull, RsqrtDivByZeroSignedMaxFromDividend)
 		CFC1(reg::v0, 31),
 	});
 	h.RunJitNoDiff();
-	EXPECT_EQ(h.GetFprBitsJit(2), 0xff7fffffu);
+	EXPECT_EQ(h.GetFprBitsJit(2), 0xffffffffu);
 	EXPECT_EQ(h.GetGpr64Jit(reg::v0) & 0x00010020u, 0x00010020u) << "D|SD not set";
 }
 

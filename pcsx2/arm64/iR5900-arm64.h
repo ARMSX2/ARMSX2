@@ -9,6 +9,9 @@
 #include "VU.h"
 #include "arm64/iCore-arm64.h"
 
+#include <string>
+#include <string_view>
+
 // Per-category interpreter fallback toggles.
 // Comment out a define to enable native ARM64 codegen for that category.
 // #define FORCE_INTERP_BRANCH 1
@@ -905,3 +908,72 @@ void eeRecompileCodeRC2_MEM(R5900FNPTR constcode, R5900FNPTR_INFO noconstcode, i
 
 int eeRecompileCodeXMM(int xmminfo);
 void eeFPURecompileCode(R5900FNPTR_INFO xmmcode, R5900FNPTR fpucode, int xmminfo);
+
+#ifdef PCSX2_RECOMPILER_TESTS
+
+//////////////////////////////////////////////////////////////////////////////////////////
+// Opcode-group interpreter-fallback bisect switch (harness-only).
+//
+// Divergence hunts start with "the EE JIT miscomputes something in this game" and
+// no idea which emitter. Selecting a group here routes every opcode in it through
+// recCall(interpret) instead of its native emitter, so a handful of runs against a
+// visual/memory oracle bisects the bug down to one emitter family without a rebuild
+// per hypothesis. The interpreters are the known-good baseline, so a group that
+// makes the symptom disappear contains the bug.
+//
+// Gated on PCSX2_RECOMPILER_TESTS: never compiled into a shipping build.
+namespace EERecFallback
+{
+	enum Group : u32
+	{
+		Fpu       = 1u << 0,  // COP1 + LWC1/SWC1
+		                      // bit 1 free (COP2 is split into sub-groups below)
+		Mmi       = 1u << 2,  // MMI (128-bit multimedia)
+		MultDiv   = 1u << 3,  // SPECIAL MULT/MULTU/DIV/DIVU
+		Shift     = 1u << 4,  // SPECIAL shifts (incl. doubleword)
+		Arith     = 1u << 5,  // SPECIAL + immediate integer ALU
+		LoadStore = 1u << 6,  // integer loads/stores (incl. LQ/SQ, unaligned)
+		Move      = 1u << 7,  // MFHI/MTHI/MFLO/MTLO/MOVZ/MOVN
+		Cop0      = 1u << 8,  // COP0
+		Branch    = 1u << 9,  // branches and jumps
+
+		// COP2 sub-groups, for narrowing once `cop2` has been implicated.
+		Cop2Vu    = 1u << 11, // the VU macro-mode instructions themselves (CO=1) + BC2
+		Cop2Ls    = 1u << 12, // LQC2 / SQC2
+
+		// Individual COP2 move ops, for the last step of the narrowing.
+		Qmfc2     = 1u << 13, // VF -> EE GPR (128-bit)
+		Cfc2      = 1u << 14, // VI -> EE GPR (32-bit)
+		Qmtc2     = 1u << 15, // EE GPR -> VF (128-bit)
+		Ctc2      = 1u << 16, // EE GPR -> VI (32-bit)
+
+		Cop2Move  = Qmfc2 | Cfc2 | Qmtc2 | Ctc2,
+		Cop2All   = Cop2Move | Cop2Vu | Cop2Ls,
+	};
+
+	// Bitmask of groups to force to the interpreter. 0 = full native codegen.
+	extern u32 g_groups;
+
+	// Per-COP2-move-op register filters. The four EE<->VU move ops each carry an
+	// fs/rd field naming one of 32 registers whose semantics differ wildly (VI01
+	// is a plain integer, REG_I is a broadcast constant, CMSAR0 a micro-program
+	// address, FBRST a reset port). Once a hunt has narrowed to one of these ops,
+	// filtering by register is the next bisect axis. Index by Cop2MoveOp; a mask
+	// of ~0u (the default) means "every register".
+	enum Cop2MoveOp { kQmfc2 = 0, kCfc2, kQmtc2, kCtc2, kCop2MoveOpCount };
+	extern u32 g_cop2RegMask[kCop2MoveOpCount];
+
+	// True when `code` belongs to a selected group (and passes its register filter).
+	bool Selected(u32 code);
+
+	// Parse a comma-separated group list ("fpu,mmi" / "all" / "none"). A COP2 move
+	// group may carry a register filter: "ctc2:27" or "ctc2:16:21" selects only
+	// those fs values. Returns false and leaves the outputs untouched on a parse
+	// error. `reg_masks` must point at kCop2MoveOpCount entries.
+	bool ParseGroups(const std::string_view& list, u32* out, u32* reg_masks, std::string* error);
+
+	// Human-readable rendering of a mask, for run banners.
+	std::string DescribeGroups(u32 groups);
+} // namespace EERecFallback
+
+#endif // PCSX2_RECOMPILER_TESTS

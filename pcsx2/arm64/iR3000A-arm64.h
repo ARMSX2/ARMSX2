@@ -57,6 +57,26 @@ static const int psxInstCycles_Load = 0;
 
 extern uptr psxRecLUT[];
 
+// Block-coverage counters over the HWADDR window (defined and maintained in
+// iR3000A-arm64.cpp). g_iopCodeCov[g] counts live recBlocks entries whose
+// span overlaps 256-byte granule g; zero means no store into that granule can
+// touch compiled code. rpsxStoreGeneric emits an inline probe of this array
+// on the RAM-store fast path, calling iopStoreClearHit only on nonzero.
+static constexpr u32 kIopCovShift = 8;
+static constexpr u32 kIopCovSpan = 0x800000; // 8MB: IOP RAM incl. extraRam mirrors
+static constexpr u32 kIopCovGranules = kIopCovSpan >> kIopCovShift;
+extern u16 g_iopCodeCov[kIopCovGranules];
+
+// Slow tail of the RAM-store fast-path stubs: the store landed in a granule
+// with live block coverage, so run the full SMC clear (same single-word form
+// iopMemWrite* uses via psxCpu->Clear).
+void iopStoreClearHit(u32 addr);
+
+// Out-of-line RAM-store fast-path stubs (JIT-emitted per reset alongside the
+// dispatchers): index 0/1/2 = 8/16/32-bit. w0 = address, w1 = value; sites
+// call them with a single BL so the fast path adds no per-site icache cost.
+extern const void* g_iopStoreStub[3];
+
 void _psxFlushConstReg(int reg);
 void _psxFlushConstRegs();
 
