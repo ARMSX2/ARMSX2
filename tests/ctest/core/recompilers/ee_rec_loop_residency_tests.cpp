@@ -275,3 +275,80 @@ TEST(EeRecLoopResidency, ManyIterationsSurviveEventExits)
 	h.ExpectGpr64(reg::t0, 100ull);
 	h.ExpectGpr64(reg::t1, 0ull);
 }
+
+// The DBZ3 byte-copy loop at EE pc 0x002a9aa8 (verbatim shape): lbu/sb through
+// separate walking pointers, counter compared against a NON-ZERO bound held in
+// a register — here 64-bit -1, so the loop exits on the sign-extended wrap of
+// ADDIU, not on zero. A stepdiff run flagged this block (JIT a2=-1 vs interp
+// a2=0x10); investigation proved that report a sampling artifact of SL-1
+// residency (one block-entry sample per resident run vs interp's per-op
+// stream). This pins the actual semantics the artifact was mistaken for:
+// trip count, copied bytes, and final pointer/counter state.
+TEST(EeRecLoopResidency, ByteCopyLoopBoundMinusOneMatchesInterp)
+{
+	EeRecTestHarness h;
+	constexpr u32 kSrc = kDataAddr;
+	constexpr u32 kDst = kDataAddr + 0xf8; // in-game dst-src delta
+	constexpr u32 kLen = 0x12;             // a2=0x11 down to -1 inclusive
+	for (u32 i = 0; i < kLen; ++i)
+		h.WriteU8(kSrc + i, (i == 0) ? 0xff : (i == kLen - 1) ? 0x00 : static_cast<u8>(0xa0 + i));
+	h.WriteU8(kDst + kLen, 0x5a); // sentinel: one-past-end must stay untouched
+	h.TrackMemWindow(kDataAddr, 0x120);
+	h.SetGpr64(reg::a0, 0xffffffffffffffffull); // loop bound
+	h.SetGpr64(reg::a2, 0x11);                  // counter
+	h.SetGpr64(reg::a1, kSrc);
+	h.SetGpr64(reg::v1, kDst);
+	h.LoadProgramNoTerm({
+		// 0x00 loop:
+		LBU(reg::v0, 0, reg::a1),
+		ADDIU(reg::a2, reg::a2, -1),
+		ADDIU(reg::a1, reg::a1, 1),
+		SB(reg::v0, 0, reg::v1),
+		ADDIU(reg::v1, reg::v1, 1),
+		BNE(reg::a2, reg::a0, -6), // → 0x00
+		NOP,
+		J(kPark), NOP,
+	});
+	h.Run();
+	h.ExpectGpr64(reg::a2, 0xffffffffffffffffull);
+	h.ExpectGpr64(reg::a1, kSrc + kLen);
+	h.ExpectGpr64(reg::v1, kDst + kLen);
+	h.ExpectGpr64(reg::v0, 0x00ull); // last byte copied
+	for (u32 i = 0; i < kLen; ++i)
+		EXPECT_EQ(h.ReadU8(kDst + i), h.ReadU8(kSrc + i)) << "byte " << i;
+	EXPECT_EQ(h.ReadU8(kDst + kLen), 0x5au);
+}
+
+// Same copy loop with dst-src smaller than the length: the forward byte copy
+// self-replicates the first `delta` bytes across the destination. Any load
+// hoisting / store deferral across resident back-edge iterations changes the
+// result, so this pins the strict per-iteration memory order.
+TEST(EeRecLoopResidency, OverlappingByteCopySelfReplicates)
+{
+	EeRecTestHarness h;
+	constexpr u32 kSrc = kDataAddr;
+	constexpr u32 kDst = kDataAddr + 4; // overlap: delta < length
+	constexpr u32 kLen = 32;
+	const u8 seed[4] = {0xde, 0xad, 0xbe, 0xef};
+	for (u32 i = 0; i < 4; ++i)
+		h.WriteU8(kSrc + i, seed[i]);
+	h.TrackMemWindow(kDataAddr, 0x40);
+	h.SetGpr64(reg::a0, 0xffffffffffffffffull);
+	h.SetGpr64(reg::a2, kLen - 1);
+	h.SetGpr64(reg::a1, kSrc);
+	h.SetGpr64(reg::v1, kDst);
+	h.LoadProgramNoTerm({
+		// 0x00 loop:
+		LBU(reg::v0, 0, reg::a1),
+		ADDIU(reg::a2, reg::a2, -1),
+		ADDIU(reg::a1, reg::a1, 1),
+		SB(reg::v0, 0, reg::v1),
+		ADDIU(reg::v1, reg::v1, 1),
+		BNE(reg::a2, reg::a0, -6), // → 0x00
+		NOP,
+		J(kPark), NOP,
+	});
+	h.Run();
+	for (u32 i = 0; i < kLen; ++i)
+		EXPECT_EQ(h.ReadU8(kDst + i), seed[i % 4]) << "byte " << i;
+}
