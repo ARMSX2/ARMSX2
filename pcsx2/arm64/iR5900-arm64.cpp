@@ -3231,6 +3231,24 @@ u32 recEeBlockGuestSize(u32 pc_query)
 	return b ? b->size : 0;
 }
 
+// The block entry at pc_query as the linker sees it (BASEBLOCKEX fnptr +
+// host byte size) plus the LUT dispatch target, so tests can assert that
+// the two dispatch routes agree. A mid-compile recClear whose removed-
+// straddler extent covers the in-progress startpc can wipe the LUT entry;
+// if nothing restores it, the next dispatch recompiles the block a second
+// time into the surviving BASEBLOCKEX. Returns false if no entry starts
+// exactly at pc_query.
+bool recEeBlockHostInfo(u32 pc_query, uptr* fnptr, u32* host_size, uptr* lut_fnptr)
+{
+	BASEBLOCKEX* b = recBlocks.Get(HWADDR(pc_query));
+	if (!b || b->startpc != HWADDR(pc_query))
+		return false;
+	*fnptr = b->fnptr;
+	*host_size = b->x86size;
+	*lut_fnptr = GETBLOCK(pc_query)->GetFnptr();
+	return true;
+}
+
 // Test-harness recLUT coverage introspection: does this guest PC dispatch to
 // a real (compile-on-first-hit) LUT page rather than UnmappedRecLUTPage?
 // The harness can't execute code from ROM regions (it's hardwired to EE
