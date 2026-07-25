@@ -22,6 +22,7 @@ using namespace recompiler_tests;
 using namespace mips;
 
 extern bool recEeBlockHostInfo(u32 pc_query, uptr* fnptr, u32* host_size, uptr* lut_fnptr);
+extern u32 recEeBlockGuestSize(u32 pc_query);
 
 namespace {
 constexpr u32 kProgramPc = RecompilerTestEnvironment::kProgramPc;
@@ -339,4 +340,113 @@ TEST(EeRecSmc, OverlapWalkIgnoresUnmodifiedNeighbors)
 	LoadOverlapCaller(h, kOverlapRoutinePc, 0x333);
 	h.Run(EeRecTestHarness::RunMode::PreserveCache);
 	h.ExpectGpr64(reg::v0, 9);
+}
+
+namespace {
+// A second RAM page, for the four-block skip geometry below.
+constexpr u32 kSkipRoutinePc = 0x000B0000;
+
+// v0 = head_imm, then nine increments, then JR ra. Entering at any word
+// yields a distinct v0, so which compiled body actually ran is observable.
+//
+//   +0x00  ADDIU v0, zero, head_imm
+//   +0x04 .. +0x24  ADDIU v0, v0, 1        (9 words)
+//   +0x28  JR ra
+//   +0x2C  NOP                             extent = [S, S+0x30), 12 words
+void SeedSkipRoutine(EeRecTestHarness& h, u16 head_imm)
+{
+	h.WriteU32(kSkipRoutinePc + 0x00, ADDIU(reg::v0, reg::zero, head_imm));
+	for (u32 off = 0x04; off <= 0x24; off += 4)
+		h.WriteU32(kSkipRoutinePc + off, ADDIU(reg::v0, reg::v0, 1));
+	h.WriteU32(kSkipRoutinePc + 0x28, JR(reg::ra));
+	h.WriteU32(kSkipRoutinePc + 0x2C, NOP);
+}
+} // namespace
+
+// The walk descends recBlocks by startpc and `break`s at the first block that
+// ends before the new block starts. That assumes end addresses rise with start
+// addresses — recBlocks guarantees no such thing. A long block at a LOW address
+// can jump clean over a short one lying between it and the new block, and the
+// break stops the walk before the long one is ever compared, so a genuinely
+// stale block survives.
+//
+// Geometry (one 4K page, so no page-boundary split interferes):
+//
+//   S+0x00  A ──────────────────────────────────────────┐  [S,      S+0x30)
+//   S+0x10  B ────────┐                                 │  [S+0x10, S+0x18)
+//   S+0x18  C ────────┴──────────────────────┐          │  [S+0x18, S+0x30)
+//   S+0x20  N ───────────────────┐           │          │  [S+0x20, S+0x30)
+//   S+0x28  JR ra                            │          │
+//
+// B is short because the boundary scan stops at the first address that already
+// holds a compiled block (`pblock->GetFnptr() != JITCompile`) and C is compiled
+// first. Compiling N then walks: C (overlaps, matches) → B (does not reach N) →
+// and must keep going to reach the stale A underneath it.
+//
+// A goes stale only AFTER B and C compiled, so no earlier walk clears it: that
+// is what makes this reachable rather than merely theoretical.
+TEST(EeRecSmc, OverlapWalkScansPastNonOverlappingNeighbor)
+{
+	EeRecTestHarness h;
+
+	SeedSkipRoutine(h, 5);
+
+	// JALR through t1 (seeded per-Run) so every entry re-dispatches through
+	// the LUT and the caller block itself is compiled once, as in
+	// MidCompileOverlapClearKeepsLutAndLinkerCoherent.
+	h.LoadProgram({
+		OR(reg::t0, reg::ra, reg::zero),
+		ADDIU(reg::v0, reg::zero, 0x40),
+		JALR(reg::ra, reg::t1),
+		NOP,
+		OR(reg::ra, reg::t0, reg::zero),
+	});
+
+	// 1. A, from the head: snapshotted into recRAMCopy over [S, S+0x30).
+	h.SetGpr64(reg::t1, kSkipRoutinePc);
+	h.Run(EeRecTestHarness::RunMode::FreshCache);
+	h.ExpectGpr64(reg::v0, 5 + 9);
+
+	// 2. C, before B, so B has something to terminate against.
+	h.SetGpr64(reg::t1, kSkipRoutinePc + 0x18);
+	h.Run(EeRecTestHarness::RunMode::PreserveCache);
+	h.ExpectGpr64(reg::v0, 0x40 + 4);
+
+	// 3. B — truncated at C, so it ends below N and the walk will meet it.
+	h.SetGpr64(reg::t1, kSkipRoutinePc + 0x10);
+	h.Run(EeRecTestHarness::RunMode::PreserveCache);
+	h.ExpectGpr64(reg::v0, 0x40 + 6); // falls through C's words to the JR
+
+	// Fixture guard: without the short B between A and N there is nothing for
+	// the walk to break on, and the whole test passes green-but-inert.
+	ASSERT_EQ(recEeBlockGuestSize(kSkipRoutinePc), 12u)
+		<< "A did not span the routine — fixture geometry broken";
+	ASSERT_EQ(recEeBlockGuestSize(kSkipRoutinePc + 0x10), 2u)
+		<< "B was not truncated at C — fixture geometry broken";
+	ASSERT_LE(kSkipRoutinePc + 0x10 + 2 * 4, kSkipRoutinePc + 0x20)
+		<< "B reaches N — nothing for the walk to break on";
+
+	// 4. RAW poke of A's head only (the write class no protection path sees in
+	//    the harness). B's and C's own words are untouched, so only A is stale.
+	*(u32*)PSM(kSkipRoutinePc) = ADDIU(reg::v0, reg::zero, 6);
+
+	// 5. Compile N. Its walk must reach past B and clear stale A.
+	h.SetGpr64(reg::t1, kSkipRoutinePc + 0x20);
+	h.Run(EeRecTestHarness::RunMode::PreserveCache);
+	h.ExpectGpr64(reg::v0, 0x40 + 2);
+
+	// THE PIN: A overlaps N and is stale, so the walk must have cleared it.
+	{
+		uptr afn = 0, alut = 0;
+		u32 asz = 0;
+		EXPECT_FALSE(recEeBlockHostInfo(kSkipRoutinePc, &afn, &asz, &alut))
+			<< "stale A survived: the walk stopped at non-overlapping B "
+			   "instead of scanning past it";
+	}
+
+	// 6. Re-enter A's head. Cleared → recompiles from current memory (6+9);
+	//    a stale survivor still executes the pre-poke body (5+9).
+	h.SetGpr64(reg::t1, kSkipRoutinePc);
+	h.Run(EeRecTestHarness::RunMode::PreserveCache);
+	h.ExpectGpr64(reg::v0, 6 + 9);
 }
