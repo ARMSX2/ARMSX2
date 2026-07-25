@@ -393,9 +393,30 @@ const std::string& VMManager::GetCurrentELF()
 	return s_elf_path;
 }
 
+// Identity of the CPU thread, for IsOnCPUThread(). The CPU thread owns EmuConfig and is the
+// sole producer into the MTGS ring, so a good deal of core state may only be touched from it;
+// this backs the dev asserts that catch a frontend calling in from its UI thread instead of
+// marshalling via Host::RunOnCPUThread().
+static std::atomic<std::thread::id> s_cpu_thread_id{};
+
+bool VMManager::Internal::IsOnCPUThread()
+{
+	const std::thread::id owner = s_cpu_thread_id.load(std::memory_order_acquire);
+
+	// Permissive before CPUThreadInitialize() and after CPUThreadShutdown(): during startup and
+	// teardown there is no CPU thread to marshal onto, and the frontends legitimately drive core
+	// setup inline (e.g. VMManager::ApplySettings before the first Initialize). Test harnesses
+	// which never register a CPU thread at all are covered by the same allowance.
+	if (owner == std::thread::id())
+		return true;
+
+	return owner == std::this_thread::get_id();
+}
+
 bool VMManager::Internal::CPUThreadInitialize()
 {
 	Threading::SetNameOfCurrentThread("CPU Thread");
+	s_cpu_thread_id.store(std::this_thread::get_id(), std::memory_order_release);
 	PerformanceMetrics::SetCPUThread(Threading::ThreadHandle::GetForCallingThread());
 	PerformanceMetrics::AdpfRegisterCallingThread(); // ADPF: hint the EE thread's core (Android)
 
@@ -495,6 +516,9 @@ void VMManager::Internal::CPUThreadShutdown()
 	Log::SetFileOutputLevel(LOGLEVEL_NONE, std::string());
 
 	R5900SymbolImporter.ShutdownWorkerThread();
+
+	// Last: everything above still runs as the CPU thread and may hit an IsOnCPUThread() assert.
+	s_cpu_thread_id.store(std::thread::id(), std::memory_order_release);
 }
 
 u64 VMManager::Internal::GetPerformanceClusterAffinityMask()
@@ -809,6 +833,17 @@ void VMManager::ApplyGameFixes()
 
 void VMManager::ApplySettings()
 {
+	// Must run on the CPU thread. This move-constructs and then reconstructs the whole global
+	// EmuConfig — every std::string in it is freed and reallocated, and there is a window where
+	// EmuConfig is moved-from — and CheckForCPUConfigChanges() below goes on to call
+	// ClearCPUExecutionCaches(), i.e. it resets the recompiler code caches. That function
+	// documents that it expects to be re-entered from inside the running CPU ("we're still
+	// executing the cpu when this function is called"), which is only true on the CPU thread.
+	// Called from a UI thread instead, it frees the JIT code buffer under an executing JIT.
+	//
+	// Note the WaitVU/WaitGS below is a *drain*, not a park: it does not stop the EE, so it is no
+	// substitute for being on the right thread.
+
 	Console.WriteLn("Applying settings...");
 
 	// If we're running, ensure the threads are synced.

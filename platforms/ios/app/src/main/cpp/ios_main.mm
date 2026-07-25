@@ -321,7 +321,10 @@ void ARMSX2ConfigureImGuiFonts(const char* reason)
     // Indent corner-anchored OSD by a small fixed clearance so it isn't clipped by the display's rounded corners
     constexpr double kOsdCornerInsetPt = 18.0;
     const float osd_inset = (float)(kOsdCornerInsetPt * scale);
-    MTGS::RunOnGSThread([w, h, s, osd_inset]() {
+    // -layoutSubviews is UIKit, i.e. the main thread, and it fires on every rotation and resize
+    // with the VM running. The MTGS ring is single-producer and belongs to the CPU thread, so hop
+    // there first (Host::RunOnGSThread chains RunOnCPUThread -> MTGS::RunOnGSThread).
+    Host::RunOnGSThread([w, h, s, osd_inset]() {
         GSResizeDisplayWindow(w, h, s);
         ImGuiManager::SetOSDSafeAreaInsets(osd_inset, osd_inset, osd_inset, osd_inset);
     });

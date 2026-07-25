@@ -956,6 +956,18 @@ void MTGS::Freeze(FreezeAction mode, MTGS::FreezeData& data)
 
 void MTGS::RunOnGSThread(AsyncCallType func)
 {
+	// The ring is single-producer: s_WritePos is owned by the CPU/EE thread, and the send path
+	// below is a relaxed load / slot write / release store with no CAS. A second producer makes
+	// both writers claim the same slot and both advance the position, so one packet is dropped —
+	// if the loser was a data-packet header the GS thread then parses payload qwords as command
+	// tags and dereferences a garbage pointer as an AsyncCallType. It also desyncs the
+	// pending-packet count, which lost-wakeup-deadlocks a WaitGS'ing EE against a sleeping GS
+	// thread (see the same reasoning spelled out in PINE.cpp's BuildStatsJson).
+	//
+	// So: marshal first. Host::RunOnGSThread() is the primitive for that — it chains through
+	// Host::RunOnCPUThread(), whose queue the CPU thread drains every vsync via
+	// PollInputOnCPUThread().
+
 	SendPointerPacket(Command::AsyncCall, 0, new AsyncCallType(std::move(func)));
 
 	// wake the gs thread in case it's sleeping

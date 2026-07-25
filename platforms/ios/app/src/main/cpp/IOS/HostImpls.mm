@@ -28,6 +28,7 @@
 #include "pcsx2/Config.h"            // EmuConfig, GSConfig
 #include "pcsx2/Host.h"
 #include "pcsx2/Host/AudioStreamTypes.h"
+#include "pcsx2/MTGS.h" // Host::RunOnGSThread
 #include "pcsx2/INISettingsInterface.h"
 #include "pcsx2/PerformanceMetrics.h"
 #include "pcsx2/R5900.h"
@@ -226,6 +227,18 @@ namespace Host
         }
         std::fprintf(stderr, "@@CPU_TASK_WAIT_OK@@ id=%llu\n", task->id);
         std::fflush(stderr);
+    }
+    // Post to the GS thread from anywhere. Mirrors pcsx2-qt (QtHost.cpp): the MTGS ring is
+    // single-producer and s_WritePos belongs to the CPU thread, so a UI-thread caller has to hop
+    // to the CPU thread first and let it push the packet. Our UIKit callbacks and Swift bridge
+    // entry points all run on the main thread, so this is the only correct route for them.
+    // Fire-and-forget — never block a UIKit callback on the GS thread.
+    void RunOnGSThread(std::function<void()> function)
+    {
+        RunOnCPUThread([fn = std::move(function)]() {
+            if (MTGS::IsOpen())
+                MTGS::RunOnGSThread(std::move(fn));
+        }, false);
     }
     void ReportInfoAsync(std::string_view, std::string_view) {}
     void ReportErrorAsync(std::string_view title, std::string_view msg) {

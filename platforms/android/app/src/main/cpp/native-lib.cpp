@@ -210,7 +210,9 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_captureGsDump(JNIEnv*, jclass, jint frames) {
     const u32 n = (frames > 0) ? static_cast<u32>(frames) : 1u;
-    MTGS::RunOnGSThread([n]() { GSQueueSnapshot(std::string(), n); });
+    // Called straight from a Compose click handler (RendererTab.kt) = UI thread, so it has to
+    // marshal; see Host::RunOnGSThread.
+    Host::RunOnGSThread([n]() { GSQueueSnapshot(std::string(), n); });
 }
 
 // @@EEDIFF@@ Toggle the EE recompiler-vs-interpreter differential verifier (throwaway
@@ -577,8 +579,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loginAchievements(JNIEnv *env, jclass clazz
     // s_client, then BeginLoadGame loads the running game's achievement
     // set.
     Host::SetBaseBoolSettingValue("Achievements", "Enabled", true);
-    if (VMManager::HasValidVM())
-        VMManager::ApplySettings();
+    // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
+    // see the assert at the top of VMManager::ApplySettings().
+    Host::RunOnCPUThread([]() {
+        if (VMManager::HasValidVM())
+            VMManager::ApplySettings();
+    });
     return nullptr;
 }
 
@@ -614,8 +620,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setHardcoreMode(JNIEnv *env, jclass clazz, 
     Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", enabled == JNI_TRUE);
     if (s_settings_interface && s_settings_interface->IsDirty())
         s_settings_interface->Save();
-    if (VMManager::HasValidVM())
-        VMManager::ApplySettings();
+    // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
+    // see the assert at the top of VMManager::ApplySettings().
+    Host::RunOnCPUThread([]() {
+        if (VMManager::HasValidVM())
+            VMManager::ApplySettings();
+    });
 }
 
 // Returns the live hardcore-mode flag (rcheevos s_hardcore_mode), not the
@@ -666,8 +676,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsOption(JNIEnv *env, jclass c
     Host::SetBaseBoolSettingValue("Achievements", ini_key, enabled == JNI_TRUE);
     if (s_settings_interface && s_settings_interface->IsDirty())
         s_settings_interface->Save();
-    if (VMManager::HasValidVM())
-        VMManager::ApplySettings();
+    // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
+    // see the assert at the top of VMManager::ApplySettings().
+    Host::RunOnCPUThread([]() {
+        if (VMManager::HasValidVM())
+            VMManager::ApplySettings();
+    });
 }
 
 // Integer-valued [Achievements] options: notification/leaderboard durations (seconds) and the two
@@ -690,8 +704,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsOptionInt(JNIEnv *env, jclas
     Host::SetBaseIntSettingValue("Achievements", ini_key, static_cast<int>(value));
     if (s_settings_interface && s_settings_interface->IsDirty())
         s_settings_interface->Save();
-    if (VMManager::HasValidVM())
-        VMManager::ApplySettings();
+    // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
+    // see the assert at the top of VMManager::ApplySettings().
+    Host::RunOnCPUThread([]() {
+        if (VMManager::HasValidVM())
+            VMManager::ApplySettings();
+    });
 }
 
 // Custom achievement-unlock sound. Writes the [Achievements] UnlockSoundName path
@@ -707,8 +725,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsUnlockSound(JNIEnv *env, jcl
     Host::SetBaseBoolSettingValue("Achievements", "UnlockSound", true);
     if (s_settings_interface && s_settings_interface->IsDirty())
         s_settings_interface->Save();
-    if (VMManager::HasValidVM())
-        VMManager::ApplySettings();
+    // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
+    // see the assert at the top of VMManager::ApplySettings().
+    Host::RunOnCPUThread([]() {
+        if (VMManager::HasValidVM())
+            VMManager::ApplySettings();
+    });
 }
 
 // Rebuild the rc_client so CreateClient re-reads the [Achievements] Host
@@ -726,8 +748,12 @@ static void RestartAchievementsForHostChange() {
 static void PersistAndApplyAchievementsSettings() {
     if (s_settings_interface && s_settings_interface->IsDirty())
         s_settings_interface->Save();
-    if (VMManager::HasValidVM())
-        VMManager::ApplySettings();
+    // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
+    // see the assert at the top of VMManager::ApplySettings().
+    Host::RunOnCPUThread([]() {
+        if (VMManager::HasValidVM())
+            VMManager::ApplySettings();
+    });
 }
 
 // Point the RetroAchievements client at a loopback proxy. Drives the same
@@ -994,10 +1020,17 @@ Java_kr_co_iefriends_pcsx2_NativeApp_toggleTextureDumping(JNIEnv *env, jclass cl
     // new state so the UI can show ON/OFF.
     if (!VMManager::HasValidVM())
         return JNI_FALSE;
-    const bool newval = !EmuConfig.GS.DumpReplaceableTextures;
-    EmuConfig.GS.DumpReplaceableTextures = newval;
-    if (MTGS::IsOpen())
-        MTGS::ApplySettings();
+    // Read-modify-write of EmuConfig plus a ring push: has to happen as one step on the CPU
+    // thread, and the UI wants the resulting state back to label the button. Blocking is safe
+    // here — the CPU thread drains its queue every vsync while running and every 16 ms while
+    // paused — and this is a deliberate button press, not an ANR-deadline callback.
+    bool newval = false;
+    Host::RunOnCPUThread([&newval]() {
+        newval = !EmuConfig.GS.DumpReplaceableTextures;
+        EmuConfig.GS.DumpReplaceableTextures = newval;
+        if (MTGS::IsOpen())
+            MTGS::ApplySettings();
+    }, /*block=*/true);
     return newval ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -1147,9 +1180,15 @@ Java_kr_co_iefriends_pcsx2_NativeApp_speedhackEecyclerate(JNIEnv *env, jclass cl
                                                           jint p_value) {
     const int value = std::clamp(static_cast<int>(p_value), -3, 3);
     Host::SetBaseIntSettingValue("EmuCore/Speedhacks", "EECycleRate", value);
-    EmuConfig.Speedhacks.EECycleRate = value;
-    if (VMManager::HasValidVM())
-        VMManager::ApplySettings();
+    // EmuConfig belongs to the CPU thread, and ApplySettings (which resets the JIT caches) is
+    // the CPU thread's to run -- see the assert at the top of VMManager::ApplySettings(). The
+    // direct write only matters pre-VM; with a VM up, ApplySettings re-derives it from the base
+    // layer we just wrote.
+    Host::RunOnCPUThread([value]() {
+        EmuConfig.Speedhacks.EECycleRate = value;
+        if (VMManager::HasValidVM())
+            VMManager::ApplySettings();
+    });
 }
 
 extern "C"
@@ -1158,9 +1197,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_speedhackEecycleskip(JNIEnv *env, jclass cl
                                                           jint p_value) {
     const int value = std::clamp(static_cast<int>(p_value), 0, 3);
     Host::SetBaseIntSettingValue("EmuCore/Speedhacks", "EECycleSkip", value);
-    EmuConfig.Speedhacks.EECycleSkip = value;
-    if (VMManager::HasValidVM())
-        VMManager::ApplySettings();
+    // See speedhackEecyclerate: EmuConfig write and ApplySettings both belong to the CPU thread.
+    Host::RunOnCPUThread([value]() {
+        EmuConfig.Speedhacks.EECycleSkip = value;
+        if (VMManager::HasValidVM())
+            VMManager::ApplySettings();
+    });
 }
 
 extern "C"
@@ -1168,7 +1210,11 @@ JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setInstantVU1(JNIEnv*, jclass, jboolean enabled) {
     const bool value = (enabled == JNI_TRUE);
     Host::SetBaseBoolSettingValue("EmuCore/Speedhacks", "vu1Instant", value);
-    EmuConfig.Speedhacks.vu1Instant = value;
+    // vu1Instant is a `bool : 1` in the Speedhacks BITFIELD32, so this assignment is a
+    // read-modify-write of the storage unit it shares with fastCDVD / IntcStat / WaitLoop /
+    // vuFlagHack / vuThread. Done from the UI thread it can write back a stale copy of those
+    // neighbours -- silently reverting a speedhack the CPU thread just changed. Marshal.
+    Host::RunOnCPUThread([value]() { EmuConfig.Speedhacks.vu1Instant = value; });
     Console.WriteLnFmt("@@ANDROID_SPEEDHACK@@ vu1Instant={}", value ? 1 : 0);
 }
 
@@ -1268,23 +1314,24 @@ static void LogAndroidGSSettings(const char* reason)
         static_cast<int>(EmuConfig.GS.UserHacks_BilinearHack));
 }
 
-static bool ApplyLiveGSSettingsIfOpen(const char* reason)
+// Runs `mutate` (the caller's EmuConfig.GS edit) and the resulting GS-thread reconfigure together
+// on the CPU thread. Both halves have to be there: EmuConfig is the CPU thread's, and
+// MTGS::ApplySettings pushes to the single-producer ring. This replaces a ScopedVMPause park —
+// which, besides being weaker than owning the thread, only ever covered the ApplySettings call
+// and not the EmuConfig.GS mutation the callers did first (that reload rewrites the struct
+// wholesale, std::string Adapter included, so a concurrent reader could see it mid-flight).
+static bool ApplyLiveGSSettings(const char* reason, std::function<bool()> mutate)
 {
-    if (MTGS::IsOpen())
-    {
-        // pause_audio=false: keep the audio device alive across the park so a
-        // live GS reconfigure can't mute audio (see ScopedVMPause).
-        ScopedVMPause vm_pause(/*pause_audio=*/false);
-        if (!vm_pause.parked())
-        {
-            Console.WriteLnFmt("@@ANDROID_GS_SETTINGS@@ reason={} skipped=cpu_not_parked", reason);
-            return false;
-        }
-        MTGS::ApplySettings();
-    }
-
-    LogAndroidGSSettings(reason);
-    return true;
+    bool ok = false;
+    Host::RunOnCPUThread([&ok, reason, &mutate]() {
+        ok = !mutate || mutate();
+        if (!ok)
+            return;
+        if (MTGS::IsOpen())
+            MTGS::ApplySettings();
+        LogAndroidGSSettings(reason);
+    }, /*block=*/true);
+    return ok;
 }
 
 // Generic setting writer — mirror of pcsx2-qt's settings save path.
@@ -1339,28 +1386,26 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setSetting(JNIEnv *env, jclass clazz,
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_commitSettings(JNIEnv *env, jclass clazz) {
-    if (VMManager::HasValidVM()) {
-        // ApplySettings mutates state the EE/MTVU/MTGS pipeline reads
-        // concurrently (JIT cache flushes, GS reconfig), so it must not race
-        // a RUNNING VM. The pause overlay used to guarantee that by pausing
-        // synchronously on the UI thread before any settings write could be
-        // sent; pause is now dispatched to a background executor (it can
-        // block for seconds when MTVU/MTGS drain slowly), so enforce
-        // quiescence here instead of trusting caller ordering. Near-zero
-        // cost when the VM is already parked. Skipped entirely pre-VM:
-        // s_execute_exit is false before the first Execute(), so the guard
-        // would spin its full 3s watchdog during setup-wizard commits.
-        // pause_audio=false: a heavy gamefix can park the VM for seconds;
-        // pausing the audio device that long lets Android reclaim it and the
-        // game goes silent until a manual menu resume. Keep it running (it
-        // fills with silence on underrun) while the JIT/GS caches rebuild.
-        ScopedVMPause vm_pause(/*pause_audio=*/false);
-        VMManager::ApplySettings();
+    // ApplySettings mutates state the EE/MTVU/MTGS pipeline reads concurrently (JIT cache
+    // flushes, GS reconfig), so it must not race a RUNNING VM. This used to be enforced by
+    // parking the VM (ScopedVMPause) and then mutating from the UI thread anyway. Marshalling
+    // onto the CPU thread is strictly stronger and is what upstream does: the queue drains from
+    // PollInputOnCPUThread() at the vsync boundary, which is exactly the re-entry point
+    // CheckForCPUConfigChanges() is written for ("we're still executing the cpu when this
+    // function is called"), and it defers the recompiler swap to the next Execute() itself.
+    //
+    // The park is therefore not just redundant here, it is unusable: ScopedVMPause waits for
+    // s_execute_exit, which the run loop only sets AFTER Execute() returns, so a park attempted
+    // from inside a CPU-thread task would spin its full 3 s watchdog and then report failure.
+    //
+    // Blocking so the settings-applied ordering the UI relies on (commit, then read back state)
+    // is preserved, and so the log line below reports post-apply values as it always has.
+    Host::RunOnCPUThread([]() {
+        if (VMManager::HasValidVM())
+            VMManager::ApplySettings();
         if (MTGS::IsOpen())
             MTGS::ApplySettings();
-    } else if (MTGS::IsOpen()) {
-        MTGS::ApplySettings();
-    }
+    }, /*block=*/true);
     if (s_settings_interface && s_settings_interface->IsDirty())
         s_settings_interface->Save();
     LogAndroidGSSettings("commit");
@@ -1400,67 +1445,75 @@ Java_kr_co_iefriends_pcsx2_NativeApp_applyGSSettingsLive(JNIEnv *env, jclass cla
     // (renderTvShader, …) are safe precisely because they never touch these.
     // So snapshot the live device fields, reload, then restore them — only the
     // safe in-place render / hardware-fix / upscaling-fix options end up changing.
-    const auto saved_renderer        = EmuConfig.GS.Renderer;
-    const auto saved_adapter         = EmuConfig.GS.Adapter;
-    const auto saved_debug_device    = EmuConfig.GS.UseDebugDevice;
-    const auto saved_blit_swap       = EmuConfig.GS.UseBlitSwapChain;
-    const auto saved_no_shader_cache = EmuConfig.GS.DisableShaderCache;
-    const auto saved_no_fb_fetch     = EmuConfig.GS.DisableFramebufferFetch;
-    const auto saved_adreno_fbfetch  = EmuConfig.GS.EnableAdrenoFramebufferFetch;
-    const auto saved_mali_fbfetch    = EmuConfig.GS.ForceMaliFramebufferFetch;
-    const auto saved_no_vs_expand    = EmuConfig.GS.DisableVertexShaderExpand;
-    const auto saved_tex_barriers    = EmuConfig.GS.OverrideTextureBarriers;
-    const auto saved_depth_feedback  = EmuConfig.GS.DepthFeedbackMode;
-    const auto saved_back_thread     = EmuConfig.GS.BackThreadMode;
-    const auto saved_hwaa1           = EmuConfig.GS.HWAA1;
-    const auto saved_exclusive_fs    = EmuConfig.GS.ExclusiveFullscreenControl;
-    const auto saved_sw_threads      = EmuConfig.GS.SWExtraThreads;
-    const auto saved_sw_threads_h    = EmuConfig.GS.SWExtraThreadsHeight;
+    //
+    // All of this runs on the CPU thread: EmuConfig is its state, LoadSave() rewrites the whole
+    // GS struct (std::string Adapter included) rather than poking one field, and the reconfigure
+    // it feeds pushes to the single-producer MTGS ring. The previous version mutated here on the
+    // UI thread and only parked the VM around the MTGS push at the end, leaving the reload itself
+    // unsynchronised against the EE.
+    return ApplyLiveGSSettings("ui_render_live", [&]() {
+        const auto saved_renderer        = EmuConfig.GS.Renderer;
+        const auto saved_adapter         = EmuConfig.GS.Adapter;
+        const auto saved_debug_device    = EmuConfig.GS.UseDebugDevice;
+        const auto saved_blit_swap       = EmuConfig.GS.UseBlitSwapChain;
+        const auto saved_no_shader_cache = EmuConfig.GS.DisableShaderCache;
+        const auto saved_no_fb_fetch     = EmuConfig.GS.DisableFramebufferFetch;
+        const auto saved_adreno_fbfetch  = EmuConfig.GS.EnableAdrenoFramebufferFetch;
+        const auto saved_mali_fbfetch    = EmuConfig.GS.ForceMaliFramebufferFetch;
+        const auto saved_no_vs_expand    = EmuConfig.GS.DisableVertexShaderExpand;
+        const auto saved_tex_barriers    = EmuConfig.GS.OverrideTextureBarriers;
+        const auto saved_depth_feedback  = EmuConfig.GS.DepthFeedbackMode;
+        const auto saved_back_thread     = EmuConfig.GS.BackThreadMode;
+        const auto saved_hwaa1           = EmuConfig.GS.HWAA1;
+        const auto saved_exclusive_fs    = EmuConfig.GS.ExclusiveFullscreenControl;
+        const auto saved_sw_threads      = EmuConfig.GS.SWExtraThreads;
+        const auto saved_sw_threads_h    = EmuConfig.GS.SWExtraThreadsHeight;
 
-    {
-        auto lock = Host::GetSettingsLock();
-        SettingsInterface* si = Host::GetSettingsInterface();
-        if (!si)
-            return JNI_FALSE;
-        SettingsLoadWrapper slw(*si);
-        EmuConfig.GS.LoadSave(slw);
-    }
+        {
+            auto lock = Host::GetSettingsLock();
+            SettingsInterface* si = Host::GetSettingsInterface();
+            if (!si)
+                return false;
+            SettingsLoadWrapper slw(*si);
+            EmuConfig.GS.LoadSave(slw);
+        }
 
-    // Restore everything RestartOptionsAreEqual() compares (+ the SW-thread quick-
-    // reopen pair) so a live apply can NEVER trigger a device/renderer recreate.
-    EmuConfig.GS.Renderer                   = saved_renderer;
-    EmuConfig.GS.Adapter                    = saved_adapter;
-    EmuConfig.GS.UseDebugDevice             = saved_debug_device;
-    EmuConfig.GS.UseBlitSwapChain           = saved_blit_swap;
-    EmuConfig.GS.DisableShaderCache         = saved_no_shader_cache;
-    EmuConfig.GS.DisableFramebufferFetch    = saved_no_fb_fetch;
-    EmuConfig.GS.EnableAdrenoFramebufferFetch = saved_adreno_fbfetch;
-    EmuConfig.GS.ForceMaliFramebufferFetch  = saved_mali_fbfetch;
-    EmuConfig.GS.DisableVertexShaderExpand  = saved_no_vs_expand;
-    EmuConfig.GS.OverrideTextureBarriers    = saved_tex_barriers;
-    EmuConfig.GS.DepthFeedbackMode          = saved_depth_feedback;
-    EmuConfig.GS.BackThreadMode             = saved_back_thread;
-    EmuConfig.GS.HWAA1                       = saved_hwaa1;
-    EmuConfig.GS.ExclusiveFullscreenControl = saved_exclusive_fs;
-    EmuConfig.GS.SWExtraThreads             = saved_sw_threads;
-    EmuConfig.GS.SWExtraThreadsHeight       = saved_sw_threads_h;
+        // Restore everything RestartOptionsAreEqual() compares (+ the SW-thread quick-
+        // reopen pair) so a live apply can NEVER trigger a device/renderer recreate.
+        EmuConfig.GS.Renderer                   = saved_renderer;
+        EmuConfig.GS.Adapter                    = saved_adapter;
+        EmuConfig.GS.UseDebugDevice             = saved_debug_device;
+        EmuConfig.GS.UseBlitSwapChain           = saved_blit_swap;
+        EmuConfig.GS.DisableShaderCache         = saved_no_shader_cache;
+        EmuConfig.GS.DisableFramebufferFetch    = saved_no_fb_fetch;
+        EmuConfig.GS.EnableAdrenoFramebufferFetch = saved_adreno_fbfetch;
+        EmuConfig.GS.ForceMaliFramebufferFetch  = saved_mali_fbfetch;
+        EmuConfig.GS.DisableVertexShaderExpand  = saved_no_vs_expand;
+        EmuConfig.GS.OverrideTextureBarriers    = saved_tex_barriers;
+        EmuConfig.GS.DepthFeedbackMode          = saved_depth_feedback;
+        EmuConfig.GS.BackThreadMode             = saved_back_thread;
+        EmuConfig.GS.HWAA1                       = saved_hwaa1;
+        EmuConfig.GS.ExclusiveFullscreenControl = saved_exclusive_fs;
+        EmuConfig.GS.SWExtraThreads             = saved_sw_threads;
+        EmuConfig.GS.SWExtraThreadsHeight       = saved_sw_threads_h;
 
-    // Mirror VMManager::LoadCoreSettings: strip user/upscaling hacks when their
-    // master toggles are off so stale keys can't leak through into the renderer.
-    EmuConfig.GS.MaskUserHacks();
-    EmuConfig.GS.MaskUpscalingHacks();
-
-    // Re-apply the active game's GameDB GS hardware fixes. LoadSave above only
-    // restored the user/base layer; per-game fixes (e.g. True Crime's
-    // textureInsideRT) apply on TOP of it in VMManager::ApplyGameFixes. Without
-    // this, a live GS settings change would wipe them and the game would break
-    // until the next launch. Mirrors ApplyGameFixes' GS portion.
-    if (const GameDatabaseSchema::GameEntry* game = GameDatabase::findGame(VMManager::GetDiscSerial()))
-    {
-        game->applyGSHardwareFixes(EmuConfig.GS);
+        // Mirror VMManager::LoadCoreSettings: strip user/upscaling hacks when their
+        // master toggles are off so stale keys can't leak through into the renderer.
+        EmuConfig.GS.MaskUserHacks();
         EmuConfig.GS.MaskUpscalingHacks();
-    }
-    return ApplyLiveGSSettingsIfOpen("ui_render_live") ? JNI_TRUE : JNI_FALSE;
+
+        // Re-apply the active game's GameDB GS hardware fixes. LoadSave above only
+        // restored the user/base layer; per-game fixes (e.g. True Crime's
+        // textureInsideRT) apply on TOP of it in VMManager::ApplyGameFixes. Without
+        // this, a live GS settings change would wipe them and the game would break
+        // until the next launch. Mirrors ApplyGameFixes' GS portion.
+        if (const GameDatabaseSchema::GameEntry* game = GameDatabase::findGame(VMManager::GetDiscSerial()))
+        {
+            game->applyGSHardwareFixes(EmuConfig.GS);
+            EmuConfig.GS.MaskUpscalingHacks();
+        }
+        return true;
+    }) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C"
@@ -1469,22 +1522,21 @@ Java_kr_co_iefriends_pcsx2_NativeApp_reloadPatches(JNIEnv *env, jclass clazz) {
     if (!VMManager::HasValidVM())
         return static_cast<jint>(Patch::GetActiveCheatsCount());
 
-    ScopedVMPause vm_pause;
-    if (!vm_pause.parked())
-    {
-        Console.WriteLn("@@ANDROID_PNACH@@ reload skipped: cpu_not_parked");
-        return -1;
-    }
-
-    // setEnabledPatches may have just CREATED gamesettings/<serial>_<CRC>.ini for a game
-    // that booted without one — no LAYER_GAME is installed then, so the per-game Enable
-    // list is invisible to ReloadEnabledLists. ReloadGameSettings re-reads the file,
-    // reinstalls the layer and reloads patches; it also runs ApplySettings, so only take
-    // that heavier path when the layer is actually missing.
-    if (!s_game_layer_needs_install.exchange(false, std::memory_order_acq_rel) ||
-        !VMManager::ReloadGameSettings())
-        VMManager::ReloadPatches(true, true, true, true);
-    const u32 active_cheats = Patch::GetActiveCheatsCount();
+    // Patch state and the settings layers are CPU-thread state, and ReloadGameSettings() runs
+    // ApplySettings() internally, so this marshals rather than parking the VM from the UI thread.
+    // Blocking because the UI wants the resulting cheat count back.
+    u32 active_cheats = 0;
+    Host::RunOnCPUThread([&active_cheats]() {
+        // setEnabledPatches may have just CREATED gamesettings/<serial>_<CRC>.ini for a game
+        // that booted without one — no LAYER_GAME is installed then, so the per-game Enable
+        // list is invisible to ReloadEnabledLists. ReloadGameSettings re-reads the file,
+        // reinstalls the layer and reloads patches; it also runs ApplySettings, so only take
+        // that heavier path when the layer is actually missing.
+        if (!s_game_layer_needs_install.exchange(false, std::memory_order_acq_rel) ||
+            !VMManager::ReloadGameSettings())
+            VMManager::ReloadPatches(true, true, true, true);
+        active_cheats = Patch::GetActiveCheatsCount();
+    }, /*block=*/true);
     Console.WriteLnFmt("@@ANDROID_PNACH@@ reload active_cheats={}", active_cheats);
     return static_cast<jint>(active_cheats);
 }
@@ -1494,7 +1546,10 @@ JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_reloadTextureReplacements(JNIEnv *env, jclass clazz) {
     if (!MTGS::IsOpen())
         return JNI_FALSE;
-    MTGS::RunOnGSThread([]() {
+    // TextureManagerViewModel calls this off the UI thread's viewModelScope, never the CPU
+    // thread, so it must marshal; see Host::RunOnGSThread. Return value only reports that the
+    // reload was queued (it always was, asynchronously, even before this change).
+    Host::RunOnGSThread([]() {
         if (!g_gs_renderer)
             return;
         GSTextureReplacements::ReloadReplacementMap();
@@ -1743,8 +1798,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderUpscalemultiplier(JNIEnv *env, jclass
     // picks it up. Also update EmuConfig directly + nudge MTGS so a live
     // VM picks up the change without a settings file save round-trip.
     Host::SetBaseFloatSettingValue("EmuCore/GS", "upscale_multiplier", p_value);
-    EmuConfig.GS.UpscaleMultiplier = p_value;
-    ApplyLiveGSSettingsIfOpen("upscale");
+    ApplyLiveGSSettings("upscale", [p_value]() {
+        EmuConfig.GS.UpscaleMultiplier = p_value;
+        return true;
+    });
 }
 
 extern "C"
@@ -1753,8 +1810,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderMipmap(JNIEnv *env, jclass clazz,
                                                   jint p_value) {
     const bool enabled = (p_value != 0);
     Host::SetBaseBoolSettingValue("EmuCore/GS", "hw_mipmap", enabled);
-    EmuConfig.GS.HWMipmap = enabled;
-    ApplyLiveGSSettingsIfOpen("hw_mipmap");
+    ApplyLiveGSSettings("hw_mipmap", [enabled]() {
+        EmuConfig.GS.HWMipmap = enabled;
+        return true;
+    });
 }
 
 extern "C"
@@ -1764,8 +1823,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderHalfpixeloffset(JNIEnv *env, jclass c
     const int value = std::clamp(static_cast<int>(p_value), 0,
         static_cast<int>(GSHalfPixelOffset::MaxCount) - 1);
     Host::SetBaseIntSettingValue("EmuCore/GS", "UserHacks_HalfPixelOffset", value);
-    EmuConfig.GS.UserHacks_HalfPixelOffset = static_cast<GSHalfPixelOffset>(value);
-    ApplyLiveGSSettingsIfOpen("half_pixel_offset");
+    ApplyLiveGSSettings("half_pixel_offset", [value]() {
+        EmuConfig.GS.UserHacks_HalfPixelOffset = static_cast<GSHalfPixelOffset>(value);
+        return true;
+    });
 }
 
 extern "C"
@@ -1774,8 +1835,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderTvShader(JNIEnv *env, jclass clazz,
                                                     jint p_value) {
     const int value = std::clamp(static_cast<int>(p_value), 0, 7);
     Host::SetBaseIntSettingValue("EmuCore/GS", "TVShader", value);
-    EmuConfig.GS.TVShader = static_cast<u8>(value);
-    ApplyLiveGSSettingsIfOpen("tv_shader");
+    ApplyLiveGSSettings("tv_shader", [value]() {
+        EmuConfig.GS.TVShader = static_cast<u8>(value);
+        return true;
+    });
 }
 
 extern "C"
@@ -1798,12 +1861,14 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderShadeBoost(JNIEnv *env, jclass clazz,
     Host::SetBaseIntSettingValue("EmuCore/GS", "ShadeBoost_Saturation", saturation);
     Host::SetBaseIntSettingValue("EmuCore/GS", "ShadeBoost_Gamma", gamma);
 
-    EmuConfig.GS.ShadeBoost = enabled;
-    EmuConfig.GS.ShadeBoost_Brightness = static_cast<u8>(brightness);
-    EmuConfig.GS.ShadeBoost_Contrast = static_cast<u8>(contrast);
-    EmuConfig.GS.ShadeBoost_Saturation = static_cast<u8>(saturation);
-    EmuConfig.GS.ShadeBoost_Gamma = static_cast<u8>(gamma);
-    ApplyLiveGSSettingsIfOpen("shadeboost");
+    ApplyLiveGSSettings("shadeboost", [enabled, brightness, contrast, saturation, gamma]() {
+        EmuConfig.GS.ShadeBoost = enabled;
+        EmuConfig.GS.ShadeBoost_Brightness = static_cast<u8>(brightness);
+        EmuConfig.GS.ShadeBoost_Contrast = static_cast<u8>(contrast);
+        EmuConfig.GS.ShadeBoost_Saturation = static_cast<u8>(saturation);
+        EmuConfig.GS.ShadeBoost_Gamma = static_cast<u8>(gamma);
+        return true;
+    });
 }
 
 extern "C"
@@ -1813,8 +1878,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderPreloading(JNIEnv *env, jclass clazz,
     const int value = std::clamp(static_cast<int>(p_value), 0,
         static_cast<int>(TexturePreloadingLevel::Full));
     Host::SetBaseIntSettingValue("EmuCore/GS", "texture_preloading", value);
-    EmuConfig.GS.TexturePreloading = static_cast<TexturePreloadingLevel>(value);
-    ApplyLiveGSSettingsIfOpen("texture_preloading");
+    ApplyLiveGSSettings("texture_preloading", [value]() {
+        EmuConfig.GS.TexturePreloading = static_cast<TexturePreloadingLevel>(value);
+        return true;
+    });
 }
 
 extern "C"
@@ -1837,10 +1904,14 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderSoftware(JNIEnv *env, jclass clazz) {
     // "Software" would silently boot back into hardware.
     Host::SetBaseIntSettingValue("EmuCore/GS", "Renderer",
         static_cast<int>(GSRendererType::SW));
-    EmuConfig.GS.Renderer = GSRendererType::SW;
-    if(MTGS::IsOpen()) {
-        MTGS::SetSoftwareRendering(true, EmuConfig.GS.InterlaceMode, false);
-    }
+    // EmuConfig belongs to the CPU thread and SetSoftwareRendering pushes to the MTGS ring, so
+    // both halves marshal together — splitting them would let the EE observe a half-applied
+    // renderer switch.
+    Host::RunOnCPUThread([]() {
+        EmuConfig.GS.Renderer = GSRendererType::SW;
+        if (MTGS::IsOpen())
+            MTGS::SetSoftwareRendering(true, EmuConfig.GS.InterlaceMode, false);
+    });
 }
 
 // Auto = let GSUtil::GetPreferredRenderer pick at runtime based on what
@@ -1853,10 +1924,12 @@ JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_renderAuto(JNIEnv *env, jclass clazz) {
     Host::SetBaseIntSettingValue("EmuCore/GS", "Renderer",
         static_cast<int>(GSRendererType::Auto));
-    EmuConfig.GS.Renderer = GSRendererType::Auto;
-    if(MTGS::IsOpen()) {
-        MTGS::ApplySettings();
-    }
+    // See renderSoftware: EmuConfig write + ring push both belong to the CPU thread.
+    Host::RunOnCPUThread([]() {
+        EmuConfig.GS.Renderer = GSRendererType::Auto;
+        if (MTGS::IsOpen())
+            MTGS::ApplySettings();
+    });
 }
 
 extern "C"
@@ -1864,14 +1937,17 @@ JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_renderOpenGL(JNIEnv *env, jclass clazz) {
     Host::SetBaseIntSettingValue("EmuCore/GS", "Renderer",
         static_cast<int>(GSRendererType::OGL));
-    EmuConfig.GS.Renderer = GSRendererType::OGL;
-    if(MTGS::IsOpen()) {
-        // In-game pill SW→HW: keep the existing OGL device, swap renderer to HW.
-        // ApplySettings would do a full teardown which is fine here (same backend),
-        // but SetSoftwareRendering is cheaper and matches the symmetric path used
-        // by renderSoftware.
-        MTGS::SetSoftwareRendering(false, EmuConfig.GS.InterlaceMode, false);
-    }
+    // See renderSoftware: EmuConfig write + ring push both belong to the CPU thread.
+    Host::RunOnCPUThread([]() {
+        EmuConfig.GS.Renderer = GSRendererType::OGL;
+        if (MTGS::IsOpen()) {
+            // In-game pill SW→HW: keep the existing OGL device, swap renderer to HW.
+            // ApplySettings would do a full teardown which is fine here (same backend),
+            // but SetSoftwareRendering is cheaper and matches the symmetric path used
+            // by renderSoftware.
+            MTGS::SetSoftwareRendering(false, EmuConfig.GS.InterlaceMode, false);
+        }
+    });
 }
 
 // Android renderer Auto steering: g_gs_android_prefer_vk (GSUtil.cpp) makes GetPreferredRenderer's
@@ -1910,12 +1986,15 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderVulkan(JNIEnv *env, jclass clazz) {
     // (c) the AccBlendLevel default in the wizard is Full and the in-game
     // overlay has the toggle if the user hits the regression.
     Host::SetBaseIntSettingValue("EmuCore/GS", "Renderer", static_cast<int>(GSRendererType::VK));
-    EmuConfig.GS.Renderer = GSRendererType::VK;
-    if(MTGS::IsOpen()) {
-        // In-game pill SW→HW with Vulkan backend: keep the existing VK device,
-        // swap renderer to HW.
-        MTGS::SetSoftwareRendering(false, EmuConfig.GS.InterlaceMode, false);
-    }
+    // See renderSoftware: EmuConfig write + ring push both belong to the CPU thread.
+    Host::RunOnCPUThread([]() {
+        EmuConfig.GS.Renderer = GSRendererType::VK;
+        if (MTGS::IsOpen()) {
+            // In-game pill SW→HW with Vulkan backend: keep the existing VK device,
+            // swap renderer to HW.
+            MTGS::SetSoftwareRendering(false, EmuConfig.GS.InterlaceMode, false);
+        }
+    });
 }
 
 extern "C"
@@ -1951,8 +2030,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_onNativeSurfaceChanged(JNIEnv *env, jclass 
         }
     }
 
-    if(p_width > 0 && p_height > 0 && MTGS::IsOpen()) {
-        MTGS::UpdateDisplayWindow();
+    // SurfaceHolder.Callback runs on the Android UI thread (EmulationSurface.kt), and this fires
+    // on every rotation / fold / multi-window resize — i.e. with the EE mid-frame, actively
+    // pushing GIF packets. MTGS::UpdateDisplayWindow() posts to the ring, which only the CPU
+    // thread may do, so hop threads first. The window itself is already handed over safely via
+    // s_window_mutex above, so the GS thread reads a consistent surface whenever the repost lands.
+    if(p_width > 0 && p_height > 0) {
+        Host::RunOnCPUThread([]() {
+            if (MTGS::IsOpen())
+                MTGS::UpdateDisplayWindow();
+        });
     }
 }
 
@@ -1969,11 +2056,17 @@ Java_kr_co_iefriends_pcsx2_NativeApp_onNativeSurfaceDestroyed(JNIEnv *env, jclas
     // Tear the swapchain down now rather than letting the GS thread keep
     // presenting into the dead window until a failed present forces a
     // recreate. AcquireRenderWindow reports Surfaceless while s_window is
-    // null, so the recreate path skips swapchain creation cleanly. Async
-    // post to the GS thread — safe from the UI thread.
-    if(MTGS::IsOpen()) {
-        MTGS::UpdateDisplayWindow();
-    }
+    // null, so the recreate path skips swapchain creation cleanly.
+    //
+    // Marshalled onto the CPU thread: this is the UI thread, and the ring is the CPU thread's to
+    // write. (The previous comment here claimed posting to the GS thread was "safe from the UI
+    // thread" — it is not, and that belief is what produced this whole class of bug.) s_window is
+    // already null by now, so however long the repost takes, the GS thread sees Surfaceless and
+    // stops presenting into the dead surface.
+    Host::RunOnCPUThread([]() {
+        if (MTGS::IsOpen())
+            MTGS::UpdateDisplayWindow();
+    });
 }
 
 
@@ -2576,8 +2669,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromSlot(JNIEnv *env, jclass clazz
     // frame isn't shown until the game draws its next frame. When the game is already running
     // that's the next vsync (imperceptible), but a load early in boot — before the present loop
     // is flowing — otherwise leaves a black screen. Force the restored frame to display now.
+    // PresentCurrentFrame posts to the MTGS ring, so it goes through the CPU thread even though
+    // the park above has the EE stopped — MTGS.h says as much ("Should only be called from the
+    // CPU thread"). Not blocking: this is a cosmetic nudge, and the load itself already landed.
     if (loaded)
-        MTGS::PresentCurrentFrame();
+        Host::RunOnCPUThread([]() { MTGS::PresentCurrentFrame(); });
     return loaded;
 }
 
@@ -2738,8 +2834,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadAutosaveState(JNIEnv *env, jclass clazz
     // Force the restored frame to display — this load fires during boot (auto-load / Save+Quit
     // resume), before the game has drawn its first frame, so without an explicit present the
     // screen stays black until the game happens to redraw. See loadStateFromSlot.
+    // PresentCurrentFrame posts to the MTGS ring, so it goes through the CPU thread even though
+    // the park above has the EE stopped — MTGS.h says as much ("Should only be called from the
+    // CPU thread"). Not blocking: this is a cosmetic nudge, and the load itself already landed.
     if (loaded)
-        MTGS::PresentCurrentFrame();
+        Host::RunOnCPUThread([]() { MTGS::PresentCurrentFrame(); });
     return loaded;
 }
 
@@ -2982,6 +3081,24 @@ void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false 
         std::lock_guard lock(s_cpu_thread_mutex);
         s_cpu_thread_queue.push_back(std::move(function));
     }
+}
+
+// Post to the GS thread from anywhere. Mirrors pcsx2-qt's implementation (QtHost.cpp) — the
+// MTGS ring is single-producer and s_WritePos belongs to the CPU thread, so a UI-thread caller
+// must hop to the CPU thread FIRST and let it push the packet. Our JNI entry points run on the
+// Android UI thread and on Dispatchers.IO, so this is the only correct way for them to reach the
+// GS thread; calling MTGS::RunOnGSThread() directly from JNI is the bug this replaces (and now
+// trips a dev assert inside MTGS::RunOnGSThread).
+//
+// Fire-and-forget: the CPU thread drains its queue every vsync via PollInputOnCPUThread(), and
+// while paused via the run loop's 16 ms tick. We deliberately never block the UI thread here —
+// onPause/surfaceDestroyed are on an ANR deadline.
+void Host::RunOnGSThread(std::function<void()> function)
+{
+    RunOnCPUThread([fn = std::move(function)]() {
+        if (MTGS::IsOpen())
+            MTGS::RunOnGSThread(std::move(fn));
+    });
 }
 
 void Host::RefreshGameListAsync(bool invalidate_cache)
@@ -3420,107 +3537,132 @@ int Host::LocaleSensitiveCompare(std::string_view lhs, std::string_view rhs)
 // MTGS::ApplySettings, which DEFERS the copy to the GS thread and is skipped
 // entirely when MTGS isn't open. That meant an OSD toggle could land in
 // EmuConfig yet never reach GSConfig, so the on-screen display appeared to
-// ignore the switch. Copy the OSD fields straight into GSConfig here (plain
-// bools/ints — a torn cross-thread read is impossible), so the change is
-// immediate and reliable, then still run the MTGS reconfigure for the rest.
-static void applyOsdSetting()
+// ignore the switch. Copy the OSD fields straight into GSConfig here, so the
+// change is immediate and reliable, then still run the MTGS reconfigure for the rest.
+//
+// `mutate` is the caller's EmuConfig.GS write, and it runs HERE rather than in the JNI function
+// because it must happen on the CPU thread like everything else in this callback. The OSD flags
+// are `bool : 1` bit-fields (Config.h GSOptions BITFIELD32) sharing storage with the GS
+// device-restart flags — DisableFramebufferFetch, EnableAdrenoFramebufferFetch,
+// ForceMaliFramebufferFetch, UseBlitSwapChain, DisableShaderCache. A bit-field assignment is a
+// read-modify-write of that whole storage unit, so a UI-thread OSD toggle racing the CPU thread
+// can write back a stale copy of its neighbours. Lose applyGSSettingsLive's restore of one of
+// those and RestartOptionsAreEqual() goes false, which takes GSUpdateConfig down the full device
+// teardown path — the one GS operation that crashes mid-game here. An OSD toggle is emphatically
+// not worth that, hence the hop.
+static void applyOsdSetting(std::function<void()> mutate)
 {
-    GSConfig.OsdShowSpeed = EmuConfig.GS.OsdShowSpeed;
-    GSConfig.OsdShowFPS = EmuConfig.GS.OsdShowFPS;
-    GSConfig.OsdShowVPS = EmuConfig.GS.OsdShowVPS;
-    GSConfig.OsdShowCPU = EmuConfig.GS.OsdShowCPU;
-    GSConfig.OsdShowGPU = EmuConfig.GS.OsdShowGPU;
-    GSConfig.OsdShowResolution = EmuConfig.GS.OsdShowResolution;
-    GSConfig.OsdShowGSStats = EmuConfig.GS.OsdShowGSStats;
-    GSConfig.OsdShowFrameTimes = EmuConfig.GS.OsdShowFrameTimes;
-    GSConfig.OsdShowHardwareInfo = EmuConfig.GS.OsdShowHardwareInfo;
-    GSConfig.OsdShowGPUStats = EmuConfig.GS.OsdShowGPUStats;
-    GSConfig.OsdShowVersion = EmuConfig.GS.OsdShowVersion;
-    GSConfig.OsdShowSettings = EmuConfig.GS.OsdShowSettings;
-    GSConfig.OsdShowInputs = EmuConfig.GS.OsdShowInputs;
-    GSConfig.OsdMessagesPos = EmuConfig.GS.OsdMessagesPos;
-    GSConfig.OsdScale = EmuConfig.GS.OsdScale;
-    GSConfig.OsdColor = EmuConfig.GS.OsdColor;
-    // Record the user's authoritative OSD choice for the overlay renderer. This snapshot
-    // is immune to VMManager::ApplySettings (which re-derives EmuConfig.GS from the layered
-    // settings and could otherwise resurrect an OSD the user just turned off). Every OSD
-    // setter (osdShow*, osdShowAll, osdApplyFlags) funnels through here, so this always
-    // reflects the last explicit choice.
-    ImGuiManager::SetAndroidOSDVisibility(
-        EmuConfig.GS.OsdShowFPS, EmuConfig.GS.OsdShowVPS, EmuConfig.GS.OsdShowSpeed,
-        EmuConfig.GS.OsdShowResolution, EmuConfig.GS.OsdShowCPU, EmuConfig.GS.OsdShowGPU,
-        EmuConfig.GS.OsdShowGSStats, EmuConfig.GS.OsdShowFrameTimes, EmuConfig.GS.OsdShowHardwareInfo,
-        EmuConfig.GS.OsdShowVersion, EmuConfig.GS.OsdShowGPUStats, EmuConfig.GS.OsdShowSettings,
-        EmuConfig.GS.OsdShowInputs);
-    if (MTGS::IsOpen())
-        MTGS::ApplySettings();
+    Host::RunOnCPUThread([mutate = std::move(mutate)]() {
+        if (mutate)
+            mutate();
+        GSConfig.OsdShowSpeed = EmuConfig.GS.OsdShowSpeed;
+        GSConfig.OsdShowFPS = EmuConfig.GS.OsdShowFPS;
+        GSConfig.OsdShowVPS = EmuConfig.GS.OsdShowVPS;
+        GSConfig.OsdShowCPU = EmuConfig.GS.OsdShowCPU;
+        GSConfig.OsdShowGPU = EmuConfig.GS.OsdShowGPU;
+        GSConfig.OsdShowResolution = EmuConfig.GS.OsdShowResolution;
+        GSConfig.OsdShowGSStats = EmuConfig.GS.OsdShowGSStats;
+        GSConfig.OsdShowFrameTimes = EmuConfig.GS.OsdShowFrameTimes;
+        GSConfig.OsdShowHardwareInfo = EmuConfig.GS.OsdShowHardwareInfo;
+        GSConfig.OsdShowGPUStats = EmuConfig.GS.OsdShowGPUStats;
+        GSConfig.OsdShowVersion = EmuConfig.GS.OsdShowVersion;
+        GSConfig.OsdShowSettings = EmuConfig.GS.OsdShowSettings;
+        GSConfig.OsdShowInputs = EmuConfig.GS.OsdShowInputs;
+        GSConfig.OsdMessagesPos = EmuConfig.GS.OsdMessagesPos;
+        GSConfig.OsdScale = EmuConfig.GS.OsdScale;
+        GSConfig.OsdColor = EmuConfig.GS.OsdColor;
+        // Record the user's authoritative OSD choice for the overlay renderer. This snapshot
+        // is immune to VMManager::ApplySettings (which re-derives EmuConfig.GS from the layered
+        // settings and could otherwise resurrect an OSD the user just turned off). Every OSD
+        // setter (osdShow*, osdShowAll, osdApplyFlags) funnels through here, so this always
+        // reflects the last explicit choice.
+        ImGuiManager::SetAndroidOSDVisibility(
+            EmuConfig.GS.OsdShowFPS, EmuConfig.GS.OsdShowVPS, EmuConfig.GS.OsdShowSpeed,
+            EmuConfig.GS.OsdShowResolution, EmuConfig.GS.OsdShowCPU, EmuConfig.GS.OsdShowGPU,
+            EmuConfig.GS.OsdShowGSStats, EmuConfig.GS.OsdShowFrameTimes, EmuConfig.GS.OsdShowHardwareInfo,
+            EmuConfig.GS.OsdShowVersion, EmuConfig.GS.OsdShowGPUStats, EmuConfig.GS.OsdShowSettings,
+            EmuConfig.GS.OsdShowInputs);
+        if (MTGS::IsOpen())
+            MTGS::ApplySettings();
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowCPU(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowCPU = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowCPU = enabled;
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowGPU(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowGPU = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowGPU = enabled;
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowFPS(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowFPS = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowFPS = enabled;
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowVPS(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowVPS = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowVPS = enabled;
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowSpeed(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowSpeed = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowSpeed = enabled;
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowResolution(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowResolution = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowResolution = enabled;
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowGSStats(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowGSStats = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowGSStats = enabled;
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowVersion(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowVersion = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowVersion = enabled;
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowSettings(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowSettings = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowSettings = enabled;
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowInputs(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowInputs = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowInputs = enabled;
+    });
 }
 
 // Size of on-screen messages / performance monitors, as a percentage (25–500; 100 = normal).
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdSetScale(JNIEnv*, jclass, jfloat scale) {
-    EmuConfig.GS.OsdScale = scale;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdScale = scale;
+    });
 }
 
 // OSD text colour as 0xRRGGBB; 0 restores the default white. Rides applyOsdSetting()'s
@@ -3528,20 +3670,23 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdSetScale(JNIEnv*, jclass, jfloat scale) 
 // re-deriving EmuConfig.GS can't revert it mid-session.
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdSetColor(JNIEnv*, jclass, jint rgb) {
-    EmuConfig.GS.OsdColor = static_cast<u32>(rgb) & 0x00FFFFFFu;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdColor = static_cast<u32>(rgb) & 0x00FFFFFFu;
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowFrameTimes(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowFrameTimes = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowFrameTimes = enabled;
+    });
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowHardwareInfo(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowHardwareInfo = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowHardwareInfo = enabled;
+    });
 }
 
 // Transient OSD notification messages (shader-compile popups, "settings applied",
@@ -3550,8 +3695,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdShowHardwareInfo(JNIEnv*, jclass, jboole
 // Achievement popups use a separate NotificationPosition and are unaffected.
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowMessages(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdMessagesPos = enabled ? OsdOverlayPos::TopLeft : OsdOverlayPos::None;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdMessagesPos = enabled ? OsdOverlayPos::TopLeft : OsdOverlayPos::None;
+    });
 }
 
 // GPU pipeline-statistics OSD line (VSI/PSI). applyOsdSetting() routes through
@@ -3559,8 +3705,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdShowMessages(JNIEnv*, jclass, jboolean e
 // query on the device (real on Vulkan; a no-op that degrades to n/a on GLES).
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowGpuStats(JNIEnv*, jclass, jboolean enabled) {
-    EmuConfig.GS.OsdShowGPUStats = enabled;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowGPUStats = enabled;
+    });
 }
 
 // Master OSD toggle — flips every OSD bit we enable at first init in
@@ -3571,17 +3718,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdShowGpuStats(JNIEnv*, jclass, jboolean e
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_osdShowAll(JNIEnv*, jclass, jboolean enabled) {
     const bool e = enabled;
-    EmuConfig.GS.OsdShowFPS = e;
-    EmuConfig.GS.OsdShowSpeed = e;
-    EmuConfig.GS.OsdShowResolution = e;
-    EmuConfig.GS.OsdShowCPU = e;
-    EmuConfig.GS.OsdShowGPU = e;
-    EmuConfig.GS.OsdShowGSStats = e;
-    EmuConfig.GS.OsdShowFrameTimes = e;
-    EmuConfig.GS.OsdShowHardwareInfo = e;
-    EmuConfig.GS.OsdShowVersion = e;
-    EmuConfig.GS.OsdShowSettings = e;
-    EmuConfig.GS.OsdShowInputs = e;
 
     Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowFPS", e);
     Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowSpeed", e);
@@ -3597,7 +3733,21 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdShowAll(JNIEnv*, jclass, jboolean enable
     if (s_settings_interface && s_settings_interface->IsDirty())
         s_settings_interface->Save();
 
-    applyOsdSetting();
+    // The EmuConfig half rides applyOsdSetting's CPU-thread hop; the base-layer writes above stay
+    // here because they go through the settings interface, not EmuConfig.
+    applyOsdSetting([e]() {
+        EmuConfig.GS.OsdShowFPS = e;
+        EmuConfig.GS.OsdShowSpeed = e;
+        EmuConfig.GS.OsdShowResolution = e;
+        EmuConfig.GS.OsdShowCPU = e;
+        EmuConfig.GS.OsdShowGPU = e;
+        EmuConfig.GS.OsdShowGSStats = e;
+        EmuConfig.GS.OsdShowFrameTimes = e;
+        EmuConfig.GS.OsdShowHardwareInfo = e;
+        EmuConfig.GS.OsdShowVersion = e;
+        EmuConfig.GS.OsdShowSettings = e;
+        EmuConfig.GS.OsdShowInputs = e;
+    });
 }
 
 // Live-only OSD flag apply — writes EmuConfig.GS.* (read per-frame by the OSD renderer) but does
@@ -3610,19 +3760,20 @@ Java_kr_co_iefriends_pcsx2_NativeApp_osdApplyFlags(JNIEnv*, jclass,
     jboolean fps, jboolean vps, jboolean speed, jboolean cpu, jboolean gpu,
     jboolean res, jboolean gsStats, jboolean frameTimes, jboolean hwInfo,
     jboolean version, jboolean settings, jboolean inputs) {
-    EmuConfig.GS.OsdShowFPS = fps;
-    EmuConfig.GS.OsdShowVPS = vps;
-    EmuConfig.GS.OsdShowSpeed = speed;
-    EmuConfig.GS.OsdShowCPU = cpu;
-    EmuConfig.GS.OsdShowGPU = gpu;
-    EmuConfig.GS.OsdShowResolution = res;
-    EmuConfig.GS.OsdShowGSStats = gsStats;
-    EmuConfig.GS.OsdShowFrameTimes = frameTimes;
-    EmuConfig.GS.OsdShowHardwareInfo = hwInfo;
-    EmuConfig.GS.OsdShowVersion = version;
-    EmuConfig.GS.OsdShowSettings = settings;
-    EmuConfig.GS.OsdShowInputs = inputs;
-    applyOsdSetting();
+    applyOsdSetting([=]() {
+        EmuConfig.GS.OsdShowFPS = fps;
+        EmuConfig.GS.OsdShowVPS = vps;
+        EmuConfig.GS.OsdShowSpeed = speed;
+        EmuConfig.GS.OsdShowCPU = cpu;
+        EmuConfig.GS.OsdShowGPU = gpu;
+        EmuConfig.GS.OsdShowResolution = res;
+        EmuConfig.GS.OsdShowGSStats = gsStats;
+        EmuConfig.GS.OsdShowFrameTimes = frameTimes;
+        EmuConfig.GS.OsdShowHardwareInfo = hwInfo;
+        EmuConfig.GS.OsdShowVersion = version;
+        EmuConfig.GS.OsdShowSettings = settings;
+        EmuConfig.GS.OsdShowInputs = inputs;
+    });
 }
 
 // ---- Per-game settings export (upstream-style sparse game INI) ----

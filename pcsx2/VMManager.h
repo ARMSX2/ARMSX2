@@ -327,6 +327,13 @@ namespace VMManager
 		/// Cleans up common host state, called on the CPU thread.
 		void CPUThreadShutdown();
 
+		/// Whether the caller is the CPU thread, i.e. the thread that ran CPUThreadInitialize().
+		/// The CPU thread owns EmuConfig and is the sole producer into the MTGS ring, so most core
+		/// mutation is only legal from it — everything else must marshal via Host::RunOnCPUThread()
+		/// (or Host::RunOnGSThread(), which chains through it). Returns true when no CPU thread is
+		/// registered, so startup/teardown and CPU-thread-less test harnesses stay unencumbered.
+		bool IsOnCPUThread();
+
 		/// Android: affinity mask of the performance ("big") CPU cluster hosting the
 		/// EE/VU/GS threads, so adjacent helper threads (e.g. the Oboe audio callback)
 		/// can pin onto the same cluster. Returns 0 when pinning is off / unresolved.
