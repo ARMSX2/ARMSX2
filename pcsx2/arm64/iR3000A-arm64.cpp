@@ -56,6 +56,10 @@ static u32 s_nEndBlock = 0;
 static u32 s_branchTo;
 static bool s_nBlockFF;
 
+// Longest guest extent, in bytes, of any block compiled since the last reset.
+// Bounds how far back the straddler walk in psxRecClearMem must scan.
+static u32 s_maxBlockBytes = 0;
+
 static u32 s_saveConstRegs[32];
 static u32 s_saveHasConstReg = 0, s_saveFlushedConstReg = 0;
 static EEINST* s_psaveInstInfo = nullptr;
@@ -1193,13 +1197,31 @@ static __fi u32 psxRecClearMem(u32 pc)
 
 	u32 lowerextent = pc, upperextent = pc + 4;
 
-	while (BASEBLOCKEX* pexblock = recBlocks[blockidx - 1])
+	// Walk down for straddlers: blocks starting below the merged range whose
+	// bodies reach into it. `scanidx` is the cursor; `blockidx` only follows it
+	// down onto blocks we actually absorb, so a skipped survivor never becomes
+	// the start of the removal range below.
+	int scanidx = blockidx - 1;
+	while (BASEBLOCKEX* pexblock = recBlocks[scanidx])
 	{
 		if (pexblock->startpc + pexblock->size * 4 <= HWADDR(lowerextent))
-			break;
+		{
+			// Not overlapping — but recBlocks is ordered by startpc, NOT by end
+			// address, so a block further down can still be long enough to reach
+			// the merged range; this one is no proof the rest miss too. Skip it
+			// and carry on until even the longest block compiled since the last
+			// reset could not span the gap. (Upstream x86 breaks here —
+			// iR3000A.cpp — and silently leaves the straddler below compiled.)
+			if (pexblock->startpc + s_maxBlockBytes <= HWADDR(lowerextent))
+				break;
+
+			scanidx--;
+			continue;
+		}
 
 		lowerextent = std::min(lowerextent, pexblock->startpc);
-		blockidx--;
+		blockidx = scanidx;
+		scanidx--;
 	}
 
 	while (BASEBLOCKEX* pexblock = recBlocks[blockidx])
@@ -1371,6 +1393,7 @@ void recResetIOP()
 	recBlocks.Reset();
 	memset(g_iopCodeCov, 0, sizeof(g_iopCodeCov));
 	g_psxMaxRecMem = 0;
+	s_maxBlockBytes = 0;
 
 	psxbranch = 0;
 }
@@ -1600,6 +1623,10 @@ StartRecomp:
 	pxAssert((psxpc - startpc) >> 2 <= 0xffff);
 	s_pCurBlockEx->size = (psxpc - startpc) >> 2;
 	iopCovAdjust(s_pCurBlockEx->startpc, s_pCurBlockEx->size * 4, +1);
+
+	// High-water mark of any compiled block's guest extent, for the straddler
+	// walk's scan-back bound in psxRecClearMem. Reset with the block array.
+	s_maxBlockBytes = std::max(s_maxBlockBytes, psxpc - startpc);
 
 	if (!(psxpc & 0x10000000))
 		g_psxMaxRecMem = std::max((psxpc & ~0xa0000000), g_psxMaxRecMem);
