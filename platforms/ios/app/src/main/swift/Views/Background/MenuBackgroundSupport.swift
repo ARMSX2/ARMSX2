@@ -41,19 +41,36 @@ final class PersistentMenuBackgroundHost: ObservableObject {
         controller.loadViewIfNeeded()
         guard let hostedView = controller.view else { return }
         if hostedView.superview !== attachment {
-            hostedView.removeFromSuperview()
-            hostedView.frame = attachment.bounds
-            hostedView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            attachment.insertSubview(hostedView, at: 0)
+            UIView.performWithoutAnimation {
+                hostedView.removeFromSuperview()
+                hostedView.frame = attachment.bounds
+                hostedView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                attachment.insertSubview(hostedView, at: 0)
+                attachment.layoutIfNeeded()
+                hostedView.layoutIfNeeded()
+            }
         }
         hostedView.isHidden = false
     }
 
     func setSelectedTabAllowsBackground(_ isAllowed: Bool) {
         selectedTabAllowsBackground = isAllowed
-        if !isAllowed {
+        guard isAllowed else {
+            // A disabled destination has no valid background attachment.
+            // Clearing it also prevents a later enable from briefly restoring
+            // the renderer into an off-screen tab retained by TabView.
+            activeAttachment = nil
             unloadRenderer()
+            return
         }
+
+        // TabView may update the destination's UIViewRepresentable before this
+        // selection permission changes. In that order attach(to:) records the
+        // new view but correctly refuses to load while permission is still
+        // false. Retry that recorded attachment now so disabled → enabled tab
+        // transitions cannot remain blank.
+        guard exclusivePreviewDepth == 0, let activeAttachment else { return }
+        attach(to: activeAttachment)
     }
 
     /// The Appearance screen uses the same expensive renderer in its preview.
@@ -167,9 +184,13 @@ struct MenuBackgroundLayer: View {
                 host: persistentHost,
                 isActive: isActive
             )
-            .ignoresSafeArea()
-            .accessibilityHidden(true)
-            .allowsHitTesting(false)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+                .allowsHitTesting(false)
+                .transaction { transaction in
+                    transaction.animation = nil
+                    transaction.disablesAnimations = true
+                }
         } else if isActive {
             GeometryReader { geometry in
                 BackgroundContainerView(size: geometry.size)
@@ -201,8 +222,33 @@ struct MenuBackgroundListRowModifier: ViewModifier {
     }
 }
 
+/// Gives non-library menu rows the clear Liquid Glass tint used by Games cards
+/// without changing the Games list-mode treatment.
+struct GameCardTintMenuBackgroundListRowModifier: ViewModifier {
+    let isEnabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .glassSurface(clear: true, cornerRadius: 16)
+                .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+        } else {
+            content
+        }
+    }
+}
+
 extension View {
     func menuBackgroundListRow(_ isEnabled: Bool) -> some View {
         modifier(MenuBackgroundListRowModifier(isEnabled: isEnabled))
+    }
+
+    func gameCardTintMenuBackgroundListRow(_ isEnabled: Bool) -> some View {
+        modifier(GameCardTintMenuBackgroundListRowModifier(isEnabled: isEnabled))
     }
 }

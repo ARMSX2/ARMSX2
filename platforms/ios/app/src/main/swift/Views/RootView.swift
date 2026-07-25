@@ -96,6 +96,19 @@ struct MenuTabView: View {
         }
     }
 
+    private var tabSelection: Binding<Int> {
+        Binding(
+            get: { selectedTab },
+            set: { newTab in
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    selectedTab = newTab
+                }
+            }
+        )
+    }
+
     var body: some View {
         Group {
 #if targetEnvironment(macCatalyst)
@@ -121,7 +134,7 @@ struct MenuTabView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .tint(.blue)
 #else
-            TabView(selection: $selectedTab) {
+            TabView(selection: tabSelection) {
                 // Games tab is NOT wrapped in SafeAreaProtectedMenuTabContent — it
                 // renders its own edge-to-edge custom wallpaper (BackgroundContainerView)
                 // inside its NavigationStack ZStack, which must not be clipped by the

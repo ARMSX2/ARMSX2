@@ -21,7 +21,7 @@ struct BIOSListView: View {
     }
 
     private var backgroundActive: Bool {
-        backgroundConfigured && menuTabIsActive
+        backgroundConfigured
     }
 
     var body: some View {
@@ -38,7 +38,7 @@ struct BIOSListView: View {
                         List {
                             ForEach(bioses, id: \.self) { bios in
                                 biosRow(bios)
-                                    .menuBackgroundListRow(backgroundActive)
+                                    .gameCardTintMenuBackgroundListRow(backgroundActive)
                             }
                         }
                         .scrollContentBackground(backgroundActive ? .hidden : .automatic)
@@ -289,7 +289,7 @@ struct BIOSListView: View {
         if backgroundActive {
             badgeContent(for: bios)
                 .frame(width: 44, height: 44)
-                .glassSurface(cornerRadius: 12)
+                .glassSurface(clear: true, cornerRadius: 12)
                 .accessibilityLabel(bios.valid ? "\(bios.regionName) BIOS" : settings.localized("Not a boot BIOS"))
         } else {
             badgeContent(for: bios)
