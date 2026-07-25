@@ -247,14 +247,14 @@ bool Pcsx2SDL::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			const char* x_pos = std::strchr(mode, 'x');
 			if (!x_pos)
 			{
-				Console.ErrorFmt("Invalid --fullscreen-mode '{}', expected WxH (e.g. 1280x720).", mode);
+				std::fprintf(stderr, "Invalid --fullscreen-mode '%s', expected WxH (e.g. 1280x720).\n", mode);
 				return false;
 			}
 			s_requested_width = StringUtil::FromChars<u32>(std::string_view(mode, x_pos - mode)).value_or(0);
 			s_requested_height = StringUtil::FromChars<u32>(x_pos + 1).value_or(0);
 			if (s_requested_width == 0 || s_requested_height == 0)
 			{
-				Console.ErrorFmt("Invalid --fullscreen-mode '{}'.", mode);
+				std::fprintf(stderr, "Invalid --fullscreen-mode '%s'.\n", mode);
 				return false;
 			}
 			continue;
@@ -276,14 +276,17 @@ bool Pcsx2SDL::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 		}
 		if (argv[i][0] == '-')
 		{
-			Console.ErrorFmt("Unknown argument: '{}'", argv[i]);
+			// Note for anyone arriving from the Qt frontend: this one takes none of its
+			// flags - no -fullscreen, -bigpicture, -nogui, -batch or -fastboot. Fullscreen
+			// is always on, and with no ISO it starts in the Big Picture game-picker.
+			std::fprintf(stderr, "Unknown argument: '%s'\nRun with --help for the accepted options.\n", argv[i]);
 			return false;
 		}
 
 		// Positional: ISO path.
 		if (!params.filename.empty())
 		{
-			Console.Error("Multiple ISO paths supplied; expected exactly one.");
+			std::fprintf(stderr, "Multiple ISO paths supplied; expected exactly one.\n");
 			return false;
 		}
 		params.filename = argv[i];
@@ -1028,8 +1031,8 @@ int main(int argc, char* argv[])
 		}
 		else
 		{
-			Console.Error("No ISO path supplied. Use --bios-only to boot the BIOS, "
-						  "or set UI/StartBigPictureMode=true in PCSX2.ini for the game-picker.");
+			std::fprintf(stderr, "No ISO path supplied. Use --bios-only to boot the BIOS, "
+								 "or set UI/StartBigPictureMode=true in PCSX2.ini for the game-picker.\n");
 			return EXIT_FAILURE;
 		}
 	}
