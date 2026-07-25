@@ -32,6 +32,7 @@ namespace MTGS
 		GSPacket,
 		MTVUGSPacket,
 		InitAndReadFIFO,
+		AsyncReadFIFO,
 		AsyncCall,
 	};
 

@@ -70,7 +70,11 @@ namespace GLState
 
 		depth = false;
 		depth_func = GL_LESS;
-		depth_mask = false;
+		// GL_DEPTH_WRITEMASK defaults to GL_TRUE on a fresh context. Seeding the shadow
+		// with false made it disagree with the driver, and since the setters early-return
+		// on "unchanged" the first glDepthMask(false) was skipped — depth kept being
+		// written by a draw that had asked for writes off.
+		depth_mask = true;
 
 		stencil = false;
 		stencil_func = GL_ALWAYS;

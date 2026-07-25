@@ -415,8 +415,29 @@ enum class GSHardwareDownloadMode : u8
 	EnabledForceFull,
 	NoReadbacks,
 	Unsynchronized,
-	Disabled
+	Disabled,
+	// Appended for wire compatibility (HWDownloadMode is stored as a raw int in the ini and
+	// in GameDB). NOTE: because of that, this enum is NO LONGER ordered by "how much readback
+	// happens" — never use relational comparisons on it. Use the predicates below instead.
+	Asynchronous
 };
+
+/// True when the mode performs a real GPU->CPU readback of render targets into local memory.
+/// (Asynchronous does the same download, just without making the EE thread wait for it.)
+constexpr bool IsHardwareDownloadReadbackEnabled(GSHardwareDownloadMode mode)
+{
+	return mode == GSHardwareDownloadMode::Enabled ||
+	       mode == GSHardwareDownloadMode::EnabledForceFull ||
+	       mode == GSHardwareDownloadMode::Asynchronous;
+}
+
+/// True when the EE thread reads GS local memory itself, without synchronizing the GS thread.
+/// These modes cannot run with a separate GS front-parser object (no drain point exists).
+constexpr bool IsHardwareDownloadEEThreadRead(GSHardwareDownloadMode mode)
+{
+	return mode == GSHardwareDownloadMode::Unsynchronized ||
+	       mode == GSHardwareDownloadMode::Asynchronous;
+}
 
 enum class GSCASMode : u8
 {
@@ -1100,6 +1121,7 @@ struct Pcsx2Config
 			PCAP_Switched = 2,
 			TAP = 3,
 			Sockets = 4,
+			LocalLink = 5,
 		};
 		static const char* NetApiNames[];
 
@@ -1127,6 +1149,11 @@ struct Pcsx2Config
 		std::string EthDevice;
 		bool EthLogDHCP{false};
 		bool EthLogDNS{false};
+		bool LocalLinkHost{false};
+		std::string LocalLinkAddress;
+		u32 LocalLinkPort{19072};
+		u32 LocalLinkPeerId{1};
+		std::string LocalLinkRoomCode;
 
 		bool InterceptDHCP{false};
 		u8 PS2IP[4]{};

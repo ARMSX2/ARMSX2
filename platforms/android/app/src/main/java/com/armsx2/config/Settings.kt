@@ -354,6 +354,20 @@ data class Settings(
      *  centering (false), so the bottom is free for touch controls. Applied live via
      *  NativeApp.setPortraitRenderTop; only affects a portrait window. */
     val portraitRenderTop: Boolean = true,
+    /** Auto Progressive Scan: hold Triangle+Cross on port 1 through the boot sequence, which is
+     *  the real-console combo a number of PS2 titles probe to offer 480p progressive output
+     *  (Tekken 4, several Criterion games). Purely a synthetic pad hold — no core setting — so it
+     *  only does anything on games that implement the prompt. Per-game because the same combo is
+     *  a normal input elsewhere, and titles that ignore the prompt gain nothing from holding it. */
+    val autoProgressiveScan: Boolean = false,
+    /** Affinity Control Mode (EXPERIMENTAL, default 0 = off). 0 Disabled · 1 EE>VU>GS ·
+     *  2 EE>GS>VU · 3 VU>EE>GS · 4 VU>GS>EE · 5 GS>EE>VU · 6 GS>VU>EE · 7 Performance Cores.
+     *  Pushed to native via NativeApp.setAffinityMode before runVMThread and consumed by
+     *  VMManager::SetEmuThreadAffinities, so it applies on the next boot. Per-game because the
+     *  best placement is workload-dependent: GS-bound titles want the GS thread on the prime
+     *  core, VU-bound ones want VU left free to float there. Off is still the recommended
+     *  default — Android's EAS scheduler usually beats hand-pinning. */
+    val affinityMode: Int = 0,
     /** EmuCore/GS FramerateNTSC — the emulated PS2 vsync rate for NTSC games
      *  (PCSX2 default 59.94). Lowering it slows the game's target rate; raising it
      *  speeds it up. Mirrors NetherSX2's "Framerate For NTSC". */
@@ -367,8 +381,24 @@ data class Settings(
     // ---- DEV9 — PS2 HDD / Ethernet ----
     /** DEV9/Eth/EthEnable — PS2 network adapter. */
     val dev9EthEnable: Boolean = false,
-    /** DEV9/Eth/EthApi — "Sockets" is the usable Android backend. */
+    /** DEV9/Eth/EthApi — "Sockets" for internet play, "Local Link" for device-to-device LAN. */
     val dev9EthApi: String = "Sockets",
+    // ---- Local Link (EthApi = "Local Link") -------------------------------------------------
+    // Bridges the emulated PS2 Ethernet frames between devices over UDP on the local network, so
+    // games with native System Link / LAN support see each other as if on one switch. Each device
+    // runs its own VM — this is NOT netplay, and it does nothing for online-only or i.Link titles.
+    /** DEV9/Eth/LocalLinkHost — true = this device relays for the session; false = it joins one. */
+    val localLinkHost: Boolean = false,
+    /** DEV9/Eth/LocalLinkAddress — the host's LAN IPv4, entered on joining devices only. */
+    val localLinkAddress: String = "",
+    /** DEV9/Eth/LocalLinkPort — UDP port; must match on every device (no negotiation). */
+    val localLinkPort: Int = 19072,
+    /** DEV9/Eth/LocalLinkPeerId — 1 for the host, 2+ for each guest. Must be unique per device;
+     *  duplicate ids collide because the peer id is what derives the emulated MAC and IP. */
+    val localLinkPeerId: Int = 1,
+    /** DEV9/Eth/LocalLinkRoomCode — shared 4-12 char code that keys the packet authentication.
+     *  Prevents crosstalk between sessions on the same Wi-Fi; it is NOT strong security. */
+    val localLinkRoomCode: String = "",
     /** DEV9/Eth/EthDevice — "Auto" lets the sockets backend choose. */
     val dev9EthDevice: String = "Auto",
     /** DEV9/Eth/EthLogDHCP — logs DHCP packets for network debugging. */
@@ -482,7 +512,10 @@ data class Settings(
      *  0 Off · 1 Partial · 2 Full. */
     val texturePreloading: Int = 2,
     /** EmuCore/GS/HWDownloadMode — GSHardwareDownloadMode:
-     *  0 Accurate · 1 Force Full · 2 No Readbacks · 3 Unsync · 4 Disabled. */
+     *  0 Accurate · 1 Force Full · 2 No Readbacks · 3 Unsync · 4 Disabled · 5 Asynchronous.
+     *  ★ 5 (Asynchronous) is EXPERIMENTAL: a non-blocking GPU→CPU readback pipeline, so the EE
+     *  thread never stalls on the GS thread. Note the enum stops being ordered at 5 — never write
+     *  `mode > n` comparisons against it. Keep the clamp in applyTo in sync with this list. */
     val hardwareDownloadMode: Int = 0,
     /** EmuCore/GS/TVShader — CRT / TV shader preset. */
     val tvShader: Int = 0,
@@ -768,6 +801,11 @@ data class Settings(
         // made from the in-game overlay are persisted for the next boot.
         put("DEV9/Eth", "EthEnable", "bool", dev9EthEnable.toString())
         put("DEV9/Eth", "EthApi", "string", dev9EthApi)
+        put("DEV9/Eth", "LocalLinkHost", "bool", localLinkHost.toString())
+        put("DEV9/Eth", "LocalLinkAddress", "string", localLinkAddress)
+        put("DEV9/Eth", "LocalLinkPort", "int", localLinkPort.coerceIn(1, 65535).toString())
+        put("DEV9/Eth", "LocalLinkPeerId", "int", localLinkPeerId.coerceIn(1, 65533).toString())
+        put("DEV9/Eth", "LocalLinkRoomCode", "string", localLinkRoomCode)
         put("DEV9/Eth", "EthDevice", "string", dev9EthDevice.ifEmpty { "Auto" })
         put("DEV9/Eth", "EthLogDHCP", "bool", dev9EthLogDhcp.toString())
         put("DEV9/Eth", "EthLogDNS", "bool", dev9EthLogDns.toString())
@@ -973,6 +1011,11 @@ data class Settings(
             // ---- DEV9 — Ethernet / HDD ----
             dev9EthEnable = boolAt("DEV9/Eth/EthEnable") ?: this.dev9EthEnable,
             dev9EthApi = strAt("DEV9/Eth/EthApi") ?: this.dev9EthApi,
+            localLinkHost = boolAt("DEV9/Eth/LocalLinkHost") ?: this.localLinkHost,
+            localLinkAddress = strAt("DEV9/Eth/LocalLinkAddress") ?: this.localLinkAddress,
+            localLinkPort = intAt("DEV9/Eth/LocalLinkPort") ?: this.localLinkPort,
+            localLinkPeerId = intAt("DEV9/Eth/LocalLinkPeerId") ?: this.localLinkPeerId,
+            localLinkRoomCode = strAt("DEV9/Eth/LocalLinkRoomCode") ?: this.localLinkRoomCode,
             dev9EthDevice = strAt("DEV9/Eth/EthDevice") ?: this.dev9EthDevice,
             dev9EthLogDhcp = boolAt("DEV9/Eth/EthLogDHCP") ?: this.dev9EthLogDhcp,
             dev9EthLogDns = boolAt("DEV9/Eth/EthLogDNS") ?: this.dev9EthLogDns,
@@ -1231,7 +1274,10 @@ data class Settings(
         put("EmuCore/GS", "filter", "int", textureFiltering.toString())
         put("EmuCore/GS", "linear_present_mode", "int", displayBilinear.coerceIn(0, 2).toString())
         put("EmuCore/GS", "texture_preloading", "int", texturePreloading.toString())
-        put("EmuCore/GS", "HWDownloadMode", "int", hardwareDownloadMode.coerceIn(0, 4).toString())
+        // Upper bound MUST match the highest GSHardwareDownloadMode value (now 5 = Asynchronous).
+        // This clamp silently swallowed anything above it, so a new mode would have looked like it
+        // simply did nothing — the same failure shape that cost hours on the DEV9 hunt.
+        put("EmuCore/GS", "HWDownloadMode", "int", hardwareDownloadMode.coerceIn(0, 5).toString())
         put("EmuCore/GS", "TVShader", "int", tvShader.coerceIn(0, 7).toString())
         put("EmuCore/GS", "ShadeBoost", "bool", shadeBoost.toString())
         put("EmuCore/GS", "ShadeBoost_Brightness", "int", shadeBoostBrightness.coerceIn(1, 100).toString())
@@ -1499,6 +1545,8 @@ data class Settings(
         put("customDriverId", customDriverId)
         put("orientation", orientation)
         put("portraitRenderTop", portraitRenderTop)
+        put("autoProgressiveScan", autoProgressiveScan)
+        put("affinityMode", affinityMode)
         put("framerateNtsc", framerateNtsc.toDouble())
         put("frameratePal", frameratePal.toDouble())
         put("enablePatches", enablePatches)
@@ -1567,6 +1615,11 @@ data class Settings(
         put("deinterlaceMode", deinterlaceMode)
         put("dev9EthEnable", dev9EthEnable)
         put("dev9EthApi", dev9EthApi)
+        put("localLinkHost", localLinkHost)
+        put("localLinkAddress", localLinkAddress)
+        put("localLinkPort", localLinkPort)
+        put("localLinkPeerId", localLinkPeerId)
+        put("localLinkRoomCode", localLinkRoomCode)
         put("dev9EthDevice", dev9EthDevice)
         put("dev9EthLogDhcp", dev9EthLogDhcp)
         put("dev9EthLogDns", dev9EthLogDns)
@@ -1748,6 +1801,8 @@ data class Settings(
                 customDriverId = json.optString("customDriverId", def.customDriverId),
                 orientation = json.optInt("orientation", def.orientation),
                 portraitRenderTop = json.optBoolean("portraitRenderTop", def.portraitRenderTop),
+                autoProgressiveScan = json.optBoolean("autoProgressiveScan", def.autoProgressiveScan),
+                affinityMode = json.optInt("affinityMode", def.affinityMode),
                 framerateNtsc = json.optDouble("framerateNtsc", def.framerateNtsc.toDouble()).toFloat(),
                 frameratePal = json.optDouble("frameratePal", def.frameratePal.toDouble()).toFloat(),
                 enablePatches = json.optBoolean("enablePatches", def.enablePatches),
@@ -1820,6 +1875,11 @@ data class Settings(
                 deinterlaceMode = json.optInt("deinterlaceMode", def.deinterlaceMode),
                 dev9EthEnable = json.optBoolean("dev9EthEnable", def.dev9EthEnable),
                 dev9EthApi = json.optString("dev9EthApi", def.dev9EthApi).ifEmpty { def.dev9EthApi },
+                localLinkHost = json.optBoolean("localLinkHost", def.localLinkHost),
+                localLinkAddress = json.optString("localLinkAddress", def.localLinkAddress),
+                localLinkPort = json.optInt("localLinkPort", def.localLinkPort),
+                localLinkPeerId = json.optInt("localLinkPeerId", def.localLinkPeerId),
+                localLinkRoomCode = json.optString("localLinkRoomCode", def.localLinkRoomCode),
                 dev9EthDevice = json.optString("dev9EthDevice", def.dev9EthDevice).ifEmpty { def.dev9EthDevice },
                 dev9EthLogDhcp = json.optBoolean("dev9EthLogDhcp", def.dev9EthLogDhcp),
                 dev9EthLogDns = json.optBoolean("dev9EthLogDns", def.dev9EthLogDns),
@@ -1983,6 +2043,8 @@ data class Settings(
             if (current.customDriverId != base.customDriverId) j.put("customDriverId", current.customDriverId)
             if (current.orientation != base.orientation) j.put("orientation", current.orientation)
             if (current.portraitRenderTop != base.portraitRenderTop) j.put("portraitRenderTop", current.portraitRenderTop)
+            if (current.autoProgressiveScan != base.autoProgressiveScan) j.put("autoProgressiveScan", current.autoProgressiveScan)
+            if (current.affinityMode != base.affinityMode) j.put("affinityMode", current.affinityMode)
             if (current.framerateNtsc != base.framerateNtsc) j.put("framerateNtsc", current.framerateNtsc.toDouble())
             if (current.frameratePal != base.frameratePal) j.put("frameratePal", current.frameratePal.toDouble())
             if (current.enablePatches != base.enablePatches) j.put("enablePatches", current.enablePatches)
@@ -2051,6 +2113,11 @@ data class Settings(
             if (current.deinterlaceMode     != base.deinterlaceMode)     j.put("deinterlaceMode", current.deinterlaceMode)
             if (current.dev9EthEnable       != base.dev9EthEnable)       j.put("dev9EthEnable", current.dev9EthEnable)
             if (current.dev9EthApi          != base.dev9EthApi)          j.put("dev9EthApi", current.dev9EthApi)
+            if (current.localLinkHost != base.localLinkHost) j.put("localLinkHost", current.localLinkHost)
+            if (current.localLinkAddress != base.localLinkAddress) j.put("localLinkAddress", current.localLinkAddress)
+            if (current.localLinkPort != base.localLinkPort) j.put("localLinkPort", current.localLinkPort)
+            if (current.localLinkPeerId != base.localLinkPeerId) j.put("localLinkPeerId", current.localLinkPeerId)
+            if (current.localLinkRoomCode != base.localLinkRoomCode) j.put("localLinkRoomCode", current.localLinkRoomCode)
             if (current.dev9EthDevice       != base.dev9EthDevice)       j.put("dev9EthDevice", current.dev9EthDevice)
             if (current.dev9EthLogDhcp      != base.dev9EthLogDhcp)      j.put("dev9EthLogDhcp", current.dev9EthLogDhcp)
             if (current.dev9EthLogDns       != base.dev9EthLogDns)       j.put("dev9EthLogDns", current.dev9EthLogDns)
@@ -2199,6 +2266,8 @@ data class Settings(
             customDriverId = if (overrides.has("customDriverId")) overrides.getString("customDriverId") else base.customDriverId,
             orientation = if (overrides.has("orientation")) overrides.getInt("orientation") else base.orientation,
             portraitRenderTop = if (overrides.has("portraitRenderTop")) overrides.getBoolean("portraitRenderTop") else base.portraitRenderTop,
+            autoProgressiveScan = if (overrides.has("autoProgressiveScan")) overrides.getBoolean("autoProgressiveScan") else base.autoProgressiveScan,
+            affinityMode = if (overrides.has("affinityMode")) overrides.getInt("affinityMode") else base.affinityMode,
             framerateNtsc = if (overrides.has("framerateNtsc")) overrides.getDouble("framerateNtsc").toFloat() else base.framerateNtsc,
             frameratePal = if (overrides.has("frameratePal")) overrides.getDouble("frameratePal").toFloat() else base.frameratePal,
             enablePatches = if (overrides.has("enablePatches")) overrides.getBoolean("enablePatches") else base.enablePatches,
@@ -2272,6 +2341,11 @@ data class Settings(
             deinterlaceMode = if (overrides.has("deinterlaceMode")) overrides.getInt("deinterlaceMode") else base.deinterlaceMode,
             dev9EthEnable = if (overrides.has("dev9EthEnable")) overrides.getBoolean("dev9EthEnable") else base.dev9EthEnable,
             dev9EthApi = if (overrides.has("dev9EthApi")) overrides.getString("dev9EthApi").ifEmpty { base.dev9EthApi } else base.dev9EthApi,
+            localLinkHost = if (overrides.has("localLinkHost")) overrides.getBoolean("localLinkHost") else base.localLinkHost,
+            localLinkAddress = if (overrides.has("localLinkAddress")) overrides.getString("localLinkAddress") else base.localLinkAddress,
+            localLinkPort = if (overrides.has("localLinkPort")) overrides.getInt("localLinkPort") else base.localLinkPort,
+            localLinkPeerId = if (overrides.has("localLinkPeerId")) overrides.getInt("localLinkPeerId") else base.localLinkPeerId,
+            localLinkRoomCode = if (overrides.has("localLinkRoomCode")) overrides.getString("localLinkRoomCode") else base.localLinkRoomCode,
             dev9EthDevice = if (overrides.has("dev9EthDevice")) overrides.getString("dev9EthDevice").ifEmpty { base.dev9EthDevice } else base.dev9EthDevice,
             dev9EthLogDhcp = if (overrides.has("dev9EthLogDhcp")) overrides.getBoolean("dev9EthLogDhcp") else base.dev9EthLogDhcp,
             dev9EthLogDns = if (overrides.has("dev9EthLogDns")) overrides.getBoolean("dev9EthLogDns") else base.dev9EthLogDns,

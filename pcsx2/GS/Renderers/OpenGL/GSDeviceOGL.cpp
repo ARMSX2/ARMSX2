@@ -3130,6 +3130,11 @@ bool GSDeviceOGL::DoCAS(GSTexture* sTex, GSTexture* dTex, bool sharpen_only, con
 	const int dispatchY = (dTex->GetHeight() + (threadGroupWorkRegionDim - 1)) / threadGroupWorkRegionDim;
 	glDispatchCompute(dispatchX, dispatchY, 1);
 
+	// dTex is written through an image binding, but the caller turns straight around and
+	// samples it for the present blit. Image stores are incoherent without an explicit
+	// barrier, so the fetch is otherwise free to observe the pre-dispatch contents.
+	glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
 	return true;
 }
 

@@ -1386,6 +1386,7 @@ const char* Pcsx2Config::DEV9Options::NetApiNames[] = {
 	"PCAP Switched",
 	"TAP",
 	"Sockets",
+	"Local Link",
 	nullptr};
 
 const char* Pcsx2Config::DEV9Options::DnsModeNames[] = {
@@ -1408,6 +1409,11 @@ void Pcsx2Config::DEV9Options::LoadSave(SettingsWrapper& wrap)
 		SettingsWrapEntry(EthDevice);
 		SettingsWrapEntry(EthLogDHCP);
 		SettingsWrapEntry(EthLogDNS);
+		SettingsWrapEntry(LocalLinkHost);
+		SettingsWrapEntry(LocalLinkAddress);
+		SettingsWrapEntry(LocalLinkPort);
+		SettingsWrapEntry(LocalLinkPeerId);
+		SettingsWrapEntry(LocalLinkRoomCode);
 
 		SettingsWrapEntry(InterceptDHCP);
 
@@ -1502,6 +1508,11 @@ bool Pcsx2Config::DEV9Options::operator==(const DEV9Options& right) const
 		   OpEqu(EthDevice) &&
 		   OpEqu(EthLogDHCP) &&
 		   OpEqu(EthLogDNS) &&
+		   OpEqu(LocalLinkHost) &&
+		   OpEqu(LocalLinkAddress) &&
+		   OpEqu(LocalLinkPort) &&
+		   OpEqu(LocalLinkPeerId) &&
+		   OpEqu(LocalLinkRoomCode) &&
 
 		   OpEqu(InterceptDHCP) &&
 		   (*(int*)PS2IP == *(int*)right.PS2IP) &&

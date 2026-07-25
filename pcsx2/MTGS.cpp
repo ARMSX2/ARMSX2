@@ -18,6 +18,7 @@
 #include <list>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 // Uncomment this to enable profiling of the GS RingBufferCopy function.
 //#define PCSX2_GSRING_SAMPLING_STATS
@@ -284,7 +285,23 @@ void MTGS::PostVsyncStart(bool registers_written)
 
 void MTGS::InitAndReadFIFO(u8* mem, u32 qwc)
 {
-	if (EmuConfig.GS.HWDownloadMode >= GSHardwareDownloadMode::Unsynchronized && GSIsHardwareRenderer())
+	if (EmuConfig.GS.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && GSIsHardwareRenderer())
+	{
+		// Hand back the CPU-side shadow of GS memory immediately; the ordered GS-thread command
+		// below schedules the real GPU download, which refreshes that shadow a few frames later.
+		// The EE thread never waits on the GS thread here.
+		GSReadLocalMemoryUnsync(mem, qwc, vif1.BITBLTBUF._u64, vif1.TRXPOS._u64, vif1.TRXREG._u64);
+		SendSimplePacket(Command::AsyncReadFIFO, static_cast<int>(qwc), 0, 0);
+		SetEvent();
+		return;
+	}
+
+	// NOTE: GSHardwareDownloadMode is no longer ordered (Asynchronous is appended after
+	// Disabled), so this has to enumerate the modes explicitly. NoReadbacks is deliberately
+	// NOT in this set — it falls through to the synchronizing path below.
+	if ((EmuConfig.GS.HWDownloadMode == GSHardwareDownloadMode::Unsynchronized ||
+			EmuConfig.GS.HWDownloadMode == GSHardwareDownloadMode::Disabled) &&
+		GSIsHardwareRenderer())
 	{
 		if (EmuConfig.GS.HWDownloadMode == GSHardwareDownloadMode::Unsynchronized)
 			GSReadLocalMemoryUnsync(mem, qwc, vif1.BITBLTBUF._u64, vif1.TRXPOS._u64, vif1.TRXREG._u64);
@@ -547,6 +564,19 @@ void MTGS::MainLoop()
 							MTGS_LOG("(MTGS Packet Read) ringtype=Fifo2, size=%d", tag.data[0]);
 							GSInitAndReadFIFO((u8*)tag.pointer, tag.data[0]);
 							break;
+
+						case Command::AsyncReadFIFO:
+						{
+							// The EE thread already took its answer from the shadow; this only
+							// exists to issue the GPU download that refreshes it. The result goes
+							// into a scratch buffer (some GS formats write one quadword past the
+							// requested transfer size, hence the +1).
+							MTGS_LOG("(MTGS Packet Read) ringtype=AsyncFifo, size=%d", tag.data[0]);
+							static thread_local std::vector<u8> async_fifo_buffer;
+							async_fifo_buffer.resize((static_cast<size_t>(tag.data[0]) + 1) * 16);
+							GSInitAndReadFIFO(async_fifo_buffer.data(), tag.data[0]);
+						}
+						break;
 
 #ifdef PCSX2_DEVBUILD
 						default:
@@ -947,9 +977,9 @@ void MTGS::ApplySettings()
 	});
 
 	// We need to synchronize the thread when changing any settings when the download mode
-	// is unsynchronized, because otherwise we might potentially read in the middle of
-	// the GS renderer being reopened.
-	if (EmuConfig.GS.HWDownloadMode == GSHardwareDownloadMode::Unsynchronized)
+	// reads local memory from the EE thread, because otherwise we might potentially read in
+	// the middle of the GS renderer being reopened.
+	if (IsHardwareDownloadEEThreadRead(EmuConfig.GS.HWDownloadMode))
 		WaitGS(false, false, false);
 }
 
@@ -1010,7 +1040,7 @@ void MTGS::SetSoftwareRendering(bool software, GSInterlaceMode interlace, bool d
 	});
 
 	// See note in ApplySettings() for reasoning here.
-	if (EmuConfig.GS.HWDownloadMode == GSHardwareDownloadMode::Unsynchronized)
+	if (IsHardwareDownloadEEThreadRead(EmuConfig.GS.HWDownloadMode))
 		WaitGS(false, false, false);
 }
 

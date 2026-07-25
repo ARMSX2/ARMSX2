@@ -99,6 +99,8 @@ internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("renderer.fmvAspect.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.orientation.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.portraitPosition.label", true, SettingsCategory.Graphics),
+    SettingsSearchEntry("renderer.autoProgressive.label", true, SettingsCategory.Graphics),
+    SettingsSearchEntry("perf.affinity.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("renderer.textureFiltering.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.texturePreloading.label", true, SettingsCategory.Graphics),
     SettingsSearchEntry("renderer.displayFilter.label", true, SettingsCategory.Graphics),

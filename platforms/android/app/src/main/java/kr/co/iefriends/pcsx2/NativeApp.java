@@ -633,6 +633,9 @@ public class NativeApp {
 	public static native void renderAuto();
 	// When true, the Auto renderer resolves to Vulkan HW instead of OpenGL (set for Adreno devices).
 	public static native void setPreferVulkan(boolean enabled);
+	/** Affinity Control Mode: 0 off (scheduler decides), 1-6 EE/VU/GS priority orders,
+	 *  7 Performance Cores. Read when the VM boots — set it before runVMThread. */
+	public static native void setAffinityMode(int mode);
 	public static native void renderPreloading(int value);
 
 	/** Flip texture dumping on/off live (PCSX2's ToggleTextureDumping hotkey).

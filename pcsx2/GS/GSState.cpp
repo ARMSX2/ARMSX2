@@ -148,6 +148,11 @@ GSState::GSState(GSBackQueue::Channel* shared_chan)
 	memset(&m_v, 0, sizeof(m_v));
 	memset(m_mem.m_vm8, 0, m_mem.m_vmsize);
 
+	// Hardware renderers only: the SW renderer never issues GPU downloads, so there is
+	// nothing to shadow and MTGS::InitAndReadFIFO keeps taking the synchronizing path.
+	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && GSConfig.UseHardwareRenderer())
+		EnsureAsyncReadbackMemory();
+
 	m_v.RGBAQ.Q = 1.0f;
 
 	PRIM = &m_env.PRIM;
@@ -1155,6 +1160,18 @@ void GSState::ResetPCRTC()
 void GSState::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 {
 	m_mipmap = GSConfig.Mipmap;
+
+	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && GSConfig.UseHardwareRenderer())
+	{
+		if (old_config.HWDownloadMode != GSHardwareDownloadMode::Asynchronous || !m_async_readback_mem)
+			EnsureAsyncReadbackMemory();
+	}
+	else if (old_config.HWDownloadMode == GSHardwareDownloadMode::Asynchronous)
+	{
+		// The allocation is deliberately kept (the EE thread may be mid-read), but stop
+		// publishing into it so a later re-enable always re-seeds from live memory.
+		m_async_readback_ready.store(false, std::memory_order_release);
+	}
 
 	if (
 		GSConfig.AutoFlushSW != old_config.AutoFlushSW ||
@@ -2905,7 +2922,24 @@ void GSState::ExecTransferRecord(const GSBackQueue::TransferRecord& rec)
 	GIFRegBITBLTBUF blit = rec.blit;
 	GIFRegTRXPOS pos = rec.pos;
 	GIFRegTRXREG reg = rec.reg;
+	const int async_start_x = m_exec_tr_x;
+	const int async_start_y = m_exec_tr_y;
 	wi(m_mem, m_exec_tr_x, m_exec_tr_y, rec.payload, rec.len, blit, pos, reg);
+
+	// This EE upload is authoritative: replay it into the shadow and bump the covered
+	// pages so an already-queued (older) GPU download can't roll them back.
+	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && m_async_readback_mem)
+	{
+		GIFRegBITBLTBUF async_blit = rec.blit;
+		GIFRegTRXPOS async_pos = rec.pos;
+		GIFRegTRXREG async_reg = rec.reg;
+		int async_x = async_start_x;
+		int async_y = async_start_y;
+		const std::lock_guard lock(m_async_readback_mutex);
+		wi(*m_async_readback_mem, async_x, async_y, rec.payload, rec.len, async_blit, async_pos, async_reg);
+		MarkAsyncReadbackPagesWritten(
+			m_async_readback_mem->GetOffset(rec.blit.DBP, rec.blit.DBW, rec.blit.DPSM), r);
+	}
 
 	g_perfmon.Put(GSPerfMon::Swizzle, rec.stat_len);
 	// The executing object counts the same slice stream the submitter did, so
@@ -3926,54 +3960,70 @@ void GSState::Move()
 		}
 	};
 
-	if (spsm.trbpp == dpsm.trbpp && spsm.trbpp >= 16)
+	// Parameterized on the destination memory so the local->local move can be replayed
+	// verbatim into the asynchronous-readback shadow below.
+	const auto move_in_memory = [&](GSLocalMemory& local_mem)
 	{
-		if (spsm.trbpp == 32)
+		if (spsm.trbpp == dpsm.trbpp && spsm.trbpp >= 16)
 		{
-			u32* vm = m_mem.vm32();
-			copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32), [vm](u32 doff, u32 soff)
+			if (spsm.trbpp == 32)
+			{
+				u32* vm = local_mem.vm32();
+				copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32), [vm](u32 doff, u32 soff)
+				{
+					vm[doff] = vm[soff];
+				});
+			}
+			else if (spsm.trbpp == 24)
+			{
+				u32* vm = local_mem.vm32();
+				copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32), [vm](u32 doff, u32 soff)
+				{
+					vm[doff] = (vm[doff] & 0xff000000) | (vm[soff] & 0x00ffffff);
+				});
+			}
+			else // if (spsm.trbpp == 16)
+			{
+				u16* vm = local_mem.vm16();
+				copy(dpo.assertSizesMatch(GSLocalMemory::swizzle16), spo.assertSizesMatch(GSLocalMemory::swizzle16), [vm](u32 doff, u32 soff)
+				{
+					vm[doff] = vm[soff];
+				});
+			}
+		}
+		else if (m_env.BITBLTBUF.SPSM == PSMT8 && m_env.BITBLTBUF.DPSM == PSMT8)
+		{
+			u8* vm = local_mem.m_vm8;
+			copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT8), GSOffset::fromKnownPSM(sbp, sbw, PSMT8), [vm](u32 doff, u32 soff)
 			{
 				vm[doff] = vm[soff];
 			});
 		}
-		else if (spsm.trbpp == 24)
+		else if (m_env.BITBLTBUF.SPSM == PSMT4 && m_env.BITBLTBUF.DPSM == PSMT4)
 		{
-			u32* vm = m_mem.vm32();
-			copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32), [vm](u32 doff, u32 soff)
+			copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT4), GSOffset::fromKnownPSM(sbp, sbw, PSMT4), [&local_mem](u32 doff, u32 soff)
 			{
-				vm[doff] = (vm[doff] & 0xff000000) | (vm[soff] & 0x00ffffff);
+				local_mem.WritePixel4(doff, local_mem.ReadPixel4(soff));
 			});
 		}
-		else // if (spsm.trbpp == 16)
+		else
 		{
-			u16* vm = m_mem.vm16();
-			copy(dpo.assertSizesMatch(GSLocalMemory::swizzle16), spo.assertSizesMatch(GSLocalMemory::swizzle16), [vm](u32 doff, u32 soff)
+			copy(dpo, spo, [&local_mem, &dpsm, &spsm](u32 doff, u32 soff)
 			{
-				vm[doff] = vm[soff];
+				(local_mem.*dpsm.wpa)(doff, (local_mem.*spsm.rpa)(soff));
 			});
 		}
-	}
-	else if (m_env.BITBLTBUF.SPSM == PSMT8 && m_env.BITBLTBUF.DPSM == PSMT8)
+	};
+
+	move_in_memory(m_mem);
+
+	// Same reasoning as the EE upload path: the move is authoritative for its destination
+	// pages, so replay it and bump their generations to fence off older in-flight downloads.
+	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && m_async_readback_mem)
 	{
-		u8* vm = m_mem.m_vm8;
-		copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT8), GSOffset::fromKnownPSM(sbp, sbw, PSMT8), [vm](u32 doff, u32 soff)
-		{
-			vm[doff] = vm[soff];
-		});
-	}
-	else if (m_env.BITBLTBUF.SPSM == PSMT4 && m_env.BITBLTBUF.DPSM == PSMT4)
-	{
-		copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT4), GSOffset::fromKnownPSM(sbp, sbw, PSMT4), [&](u32 doff, u32 soff)
-		{
-			m_mem.WritePixel4(doff, m_mem.ReadPixel4(soff));
-		});
-	}
-	else
-	{
-		copy(dpo, spo, [&](u32 doff, u32 soff)
-		{
-			(m_mem.*dpsm.wpa)(doff, (m_mem.*spsm.rpa)(soff));
-		});
+		const std::lock_guard lock(m_async_readback_mutex);
+		move_in_memory(*m_async_readback_mem);
+		MarkAsyncReadbackPagesWritten(dpo, r);
 	}
 
 	m_env.TRXDIR.XDIR = 3;
@@ -4019,35 +4069,119 @@ void GSState::ReadLocalMemoryUnsync(u8* mem, int qwc, GIFRegBITBLTBUF BITBLTBUF,
 
 	const u16 bpp = GSLocalMemory::m_psm[BITBLTBUF.SPSM].trbpp;
 
-	GSTransferBuffer tb;
-
-	if(m_tr.end >= m_tr.total || m_tr.write == true)
+	// This runs on the EE thread. Keep a separate transfer cursor (and its own staging
+	// buffer) so an unsynchronized/asynchronous read never races with — or advances —
+	// the renderer's GS-thread transfer state in m_tr.
+	static thread_local GSTransferBuffer tb;
+	if (tb.end >= tb.total || tb.write || tb.m_blit.U64 != BITBLTBUF.U64 ||
+		tb.m_pos.U64 != TRXPOS.U64 || tb.m_reg.U64 != TRXREG.U64)
+	{
 		tb.Init(TRXPOS, TRXREG, BITBLTBUF, false);
+	}
 
 	int len = qwc * 16;
 	if (!tb.Update(w, h, bpp, len))
 		return;
 
-	if (m_tr.start == 0)
+	if (tb.start == 0)
 	{
-		m_mem_target->m_mem.ReadImageX(tb.x, tb.y, m_tr.buff, m_tr.total, BITBLTBUF, TRXPOS, TRXREG);
-		m_tr.start += m_tr.total;
+		if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && IsAsyncReadbackReady())
+		{
+			// Only hold the CPU mutex while taking a coherent snapshot of the shadow. GPU
+			// completion is polled on the GS thread before anything is published into it, so
+			// this never waits on a fence and never stalls the EE thread.
+			const std::lock_guard lock(GetAsyncReadbackMutex());
+			GetAsyncReadbackMemory().ReadImageX(tb.x, tb.y, tb.buff, tb.total, BITBLTBUF, TRXPOS, TRXREG);
+		}
+		else
+		{
+			m_mem_target->m_mem.ReadImageX(tb.x, tb.y, tb.buff, tb.total, BITBLTBUF, TRXPOS, TRXREG);
+		}
+		tb.start = tb.total;
 	}
 
-	if ((m_tr.end + len) > m_mem.m_vmsize)
+	if ((tb.end + len) > m_mem.m_vmsize)
 	{
-		const int masked_end = m_tr.end & 0x3FFFFF; // 4mb.
+		const int masked_end = tb.end & 0x3FFFFF; // 4mb.
 		const int first_transfer = m_mem.m_vmsize - masked_end;
 		const int second_transfer = len - first_transfer;
-		memcpy(mem, &m_tr.buff[masked_end], first_transfer);
-		memcpy(&mem[first_transfer], &m_tr.buff, second_transfer);
-		m_tr.end += len;
+		memcpy(mem, &tb.buff[masked_end], first_transfer);
+		memcpy(&mem[first_transfer], &tb.buff, second_transfer);
+		tb.end += len;
 	}
 	else
 	{
-		memcpy(mem, &m_tr.buff[m_tr.end], len);
-		m_tr.end += len;
+		memcpy(mem, &tb.buff[tb.end], len);
+		tb.end += len;
 	}
+}
+
+bool GSState::EnsureAsyncReadbackMemory()
+{
+	if (!m_async_readback_mem)
+	{
+		m_async_readback_mem = std::make_unique<GSLocalMemory>();
+		if (!m_async_readback_mem)
+			return false;
+
+		Console.WriteLn("GS: asynchronous HW download shadow allocated (%u KB).",
+			static_cast<unsigned>(m_async_readback_mem->m_vmsize / 1024));
+	}
+
+	SyncAsyncReadbackMemory();
+	m_async_readback_ready.store(true, std::memory_order_release);
+	return true;
+}
+
+void GSState::SyncAsyncReadbackMemory()
+{
+	if (!m_async_readback_mem)
+		return;
+
+	const std::lock_guard lock(m_async_readback_mutex);
+	std::memcpy(m_async_readback_mem->m_vm8, m_mem.m_vm8, m_mem.m_vmsize);
+	m_async_readback_page_generations.fill(++m_async_readback_generation);
+}
+
+void GSState::MarkAsyncReadbackPagesWritten(const GSOffset& offset, const GSVector4i& rect)
+{
+	const u64 generation = ++m_async_readback_generation;
+	offset.loopPages(rect, [this, generation](u32 page) {
+		m_async_readback_page_generations[page] = generation;
+	});
+}
+
+std::array<u64, GS_MAX_PAGES> GSState::CaptureAsyncReadbackPageGenerations()
+{
+	GSState* const target = m_mem_target;
+	const std::lock_guard lock(target->m_async_readback_mutex);
+	return target->m_async_readback_page_generations;
+}
+
+bool GSState::AreAsyncReadbackPagesCurrent(const std::array<u64, GS_MAX_PAGES>& generations,
+	const GIFRegTEX0& TEX0, const GSVector4i& rect)
+{
+	GSState* const target = m_mem_target;
+	if (!target->m_async_readback_mem)
+		return false;
+
+	const std::lock_guard lock(target->m_async_readback_mutex);
+	bool current = true;
+	target->m_async_readback_mem->GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM)
+		.loopPages(rect, [target, &generations, &current](u32 page) {
+			current &= (target->m_async_readback_page_generations[page] == generations[page]);
+		});
+	return current;
+}
+
+void GSState::MarkAsyncReadbackPagesWrittenLocked(const GIFRegTEX0& TEX0, const GSVector4i& rect)
+{
+	GSState* const target = m_mem_target;
+	if (!target->m_async_readback_mem)
+		return;
+
+	target->MarkAsyncReadbackPagesWritten(
+		target->m_async_readback_mem->GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM), rect);
 }
 
 void GSState::PurgeTextureCache(bool sources, bool targets, bool hash_cache)
@@ -4489,6 +4623,10 @@ int GSState::Defrost(const freezeData* fd)
 	}
 
 	ReadState(m_mem_target->m_mem.m_vm8, data, m_mem_target->m_mem.m_vmsize);
+
+	// Local memory was replaced wholesale — re-seed the asynchronous shadow (and bump every
+	// page generation, retiring any download still in flight from before the load).
+	m_mem_target->SyncAsyncReadbackMemory();
 
 	// Split front: seed the back's executor cursor from the restored m_tr.x/y
 	// so a resumed mid-transfer continues where the savestate left off.

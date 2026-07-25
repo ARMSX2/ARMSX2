@@ -656,7 +656,10 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     )
     HorizontalOptions(
         title = str("renderer.hardwareDownloadMode.label"),
-        options = listOf("Accurate", "Force Full", "No Readbacks", "Unsync", "Disabled").mapIndexed { index, label -> index to label },
+        // Index == GSHardwareDownloadMode, so the order is load-bearing. "Async" is 5 and must stay
+        // last; it is experimental (non-blocking readback) and is not the default.
+        options = listOf("Accurate", "Force Full", "No Readbacks", "Unsync", "Disabled", "Async")
+            .mapIndexed { index, label -> index to label },
         selected = settings.hardwareDownloadMode,
         onSelect = viewModel::setHardwareDownloadMode,
     )

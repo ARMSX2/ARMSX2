@@ -197,12 +197,15 @@ size_t GSTextureReplacements::GetReplacementCacheBudget()
 	// EVICTING, and evicting a pack that would otherwise have fit turns a one-off load into
 	// repeated reload churn (felt as stutter when walking into a new area). Real packs
 	// measured: God of War 1 HD = 2.97 GB, Persona 3 FES HD = 5.0 GB, both UNCOMPRESSED DDS.
-	// A 2 GB ceiling made the GoW1 pack evict even on a 12 GB tablet with room to spare, so
-	// it is 3 GB: enough to hold that pack whole, while RAM/4 remains the real limiter on the
-	// phones that actually need protecting. NOTE 3 GB is also the largest round value that
-	// cannot overflow a 32-bit size_t (4 GB would wrap to 0 and evict everything).
+	//
+	// RAM/2 below is the policy that actually protects small devices; MAX_BUDGET only exists to
+	// stop an absurd figure on huge-RAM machines, so it binds solely at >= 12 GB RAM (under that,
+	// RAM/2 is already lower). Raised 6 -> 16 GB so a 16-24 GB handheld can hold a large
+	// uncompressed pack whole instead of evicting with RAM to spare. Must stay a 64-bit-safe
+	// value: this is only correct because arm64/desktop size_t is 64-bit — on a 32-bit build
+	// anything >= 4 GB wraps to 0 and would evict everything.
 	constexpr size_t MIN_BUDGET = static_cast<size_t>(192) * 1024 * 1024;
-	constexpr size_t MAX_BUDGET = static_cast<size_t>(6144) * 1024 * 1024; // 6 GB (arm64: 64-bit size_t, no wrap)
+	constexpr size_t MAX_BUDGET = static_cast<size_t>(16384) * 1024 * 1024; // 16 GB
 	const u64 physical = GetPhysicalMemory();
 	size_t budget = (physical != 0) ? static_cast<size_t>(physical / 2) : MIN_BUDGET; // RAM/2 (was /4): hold real packs whole
 	if (budget < MIN_BUDGET)

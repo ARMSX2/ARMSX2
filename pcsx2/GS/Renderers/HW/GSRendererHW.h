@@ -332,6 +332,9 @@ private:
 	u32 m_split_clear_color = 0;
 
 	bool m_userhacks_tcoffset = false;
+	// Set around the software Move() fallback: its source readback must not be deferred by
+	// GSHardwareDownloadMode::Asynchronous, because the blit consumes local memory right away.
+	bool m_force_synchronous_local_readback = false;
 	float m_userhacks_tcoffset_x = 0.0f;
 	float m_userhacks_tcoffset_y = 0.0f;
 

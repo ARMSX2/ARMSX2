@@ -222,7 +222,10 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
 
     fun setTexturePreloading(value: Int) = updateSettings { it.copy(texturePreloading = value.coerceIn(0, 2)) }
 
-    fun setHardwareDownloadMode(value: Int) = updateSettings { it.copy(hardwareDownloadMode = value.coerceIn(0, 4)) }
+    // Upper bound MUST track the highest GSHardwareDownloadMode (5 = Asynchronous). At 4 this
+    // silently clamped a tap on "Async" down to Disabled, so the option could never be selected
+    // and quietly picked a different mode instead.
+    fun setHardwareDownloadMode(value: Int) = updateSettings { it.copy(hardwareDownloadMode = value.coerceIn(0, 5)) }
 
     fun setEeCycleRate(value: Int) = updateSettings { it.copy(eeCycleRate = value.coerceIn(-3, 3)) }
 

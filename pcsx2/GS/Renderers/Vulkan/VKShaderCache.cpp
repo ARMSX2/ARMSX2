@@ -386,10 +386,19 @@ void VKShaderCache::Open()
 		const std::string index_filename = base_filename + ".idx";
 		const std::string blob_filename = base_filename + ".bin";
 
-		if (!ReadExistingShaderCache(index_filename, blob_filename))
+		const bool shader_cache_reset = !ReadExistingShaderCache(index_filename, blob_filename);
+		if (shader_cache_reset)
 			CreateNewShaderCache(index_filename, blob_filename);
 
-		if (!ReadExistingPipelineCache())
+		// Discard the pipeline blob whenever the SPIR-V cache was discarded. The blob itself is
+		// only validated against the Vulkan device header (vendorID/deviceID/pipelineCacheUUID),
+		// all of which are identical across an app update on the same phone — so a
+		// SHADER_CACHE_VERSION bump used to wipe the shaders while keeping every pipeline built
+		// from the *previous* build's shaders. Nothing prunes or size-caps that blob, and
+		// FlushPipelineCache() re-serialises it in full on the GS thread every N new compiles, so
+		// the dead entries turned into an ever-growing mid-gameplay stall that only a clean
+		// reinstall cleared (users reported "clean install improved performance").
+		if (shader_cache_reset || !ReadExistingPipelineCache())
 			CreateNewPipelineCache();
 	}
 	else

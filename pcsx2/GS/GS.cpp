@@ -285,9 +285,11 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 	// thread with no drain — that session runs single-object (lockstep).
 	if (GSConfig.BackThreadMode == GSBackThreadMode::Pipelined && g_gs_renderer->IsBackThreadRunning())
 	{
-		if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Unsynchronized && GSConfig.UseHardwareRenderer())
+		// Asynchronous joins Unsynchronized here: both read GS local memory from the EE thread
+		// with no drain point, so neither can run against a separate front parser object.
+		if (IsHardwareDownloadEEThreadRead(GSConfig.HWDownloadMode) && GSConfig.UseHardwareRenderer())
 		{
-			Console.Warning("GS: pipelined mode is unsupported with unsynchronized HW downloads — running lockstep.");
+			Console.Warning("GS: pipelined mode is unsupported with EE-thread HW downloads — running lockstep.");
 		}
 		else
 		{

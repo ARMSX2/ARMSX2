@@ -151,3 +151,6 @@ CMakeSettings.json
 # RetroAchievements client User-Agent secret — the real pinned version is injected
 # from this header at build time and must NEVER be committed (spoofing prevention).
 ra_ua_secret.h
+
+# Kotlin compiler session scratch dir created by Gradle next to the android project.
+platforms/android/.kotlin/

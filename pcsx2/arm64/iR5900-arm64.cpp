@@ -5,6 +5,7 @@
 // Dispatcher, block management, all instructions as interpreter fallbacks.
 
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <memory>
 #include <unordered_map>
@@ -125,7 +126,11 @@ static ArmConstantPool s_eeConstantPool;
 static fastjmp_buf m_SetJmp_StateCheck;
 static bool eeCpuExecuting = false;
 static bool eeRecNeedsReset = false;
-static bool eeRecExitRequested = false;
+// Set by recSafeExitExecution() — which the Android pause/stop JNI calls from the UI thread via
+// Cpu->ExitExecution() — and consumed on the CPU thread in recEventTest(). Atomic because a plain
+// bool here is a cross-thread data race: under ARM64's weak memory model the request can be
+// reordered or hoisted, leaving the EE spinning through a pause the user already asked for.
+static std::atomic<bool> eeRecExitRequested{false};
 
 #ifdef PCSX2_RECOMPILER_TESTS
 // Harness-entry state. Set by recEeExecuteBlock before entering the JIT,
@@ -382,9 +387,9 @@ static void recEventTest()
 	_cpuEventTest_Shared();
 	eeEventTestIsActive = false;
 
-	if (eeRecExitRequested)
+	if (eeRecExitRequested.load(std::memory_order_acquire))
 	{
-		eeRecExitRequested = false;
+		eeRecExitRequested.store(false, std::memory_order_relaxed);
 		recExitExecution();
 	}
 
@@ -3120,7 +3125,7 @@ static void recExitExecution()
 
 static void recSafeExitExecution()
 {
-	eeRecExitRequested = true;
+	eeRecExitRequested.store(true, std::memory_order_release);
 
 	if (!eeEventTestIsActive)
 	{
@@ -3188,7 +3193,7 @@ s32 recEeExecuteBlock(s32 cycles, u32 park_pc)
 	g_eeHarnessParkPc = park_pc;
 	g_eeHarnessCycleBudget = cap;
 	g_eeHarnessCycleStart = cpuRegs.cycle;
-	eeRecExitRequested = false;
+	eeRecExitRequested.store(false, std::memory_order_relaxed);
 
 	cpuRegs.nextEventCycle = cpuRegs.cycle;
 

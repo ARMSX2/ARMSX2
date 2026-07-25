@@ -53,9 +53,21 @@ fun NetworkTab(state: MutableState<Settings>) {
     val scroll = settingsScrollState()
     ControllerAutoScroll(scroll)
     val adapters = remember { enumerateAdapters() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    /** This device's own LAN IPv4s, shown to the host so it can read one out to the guests. */
+    val localAddresses = remember { enumerateLocalIPv4() }
+    /** Stable per-device guest id. The peer id decides the emulated console's MAC and IP, so two
+     *  devices sharing one cannot connect — deriving it removes both the collision and the need to
+     *  ask the user for a number they have no way to choose sensibly. */
+    val derivedPeerId = remember { derivePeerId(context) }
+    // "Local Link" is deliberately NOT offered here — the Network mode control below owns it, so
+    // there is exactly one way into LAN play. Indices still line up with NetApi in Config.h.
     val apiValues = listOf("Unset", "PCAP Bridged", "PCAP Switched", "TAP", "Sockets")
     val apiLabels = listOf("Unset", "PCAP Br.", "PCAP Sw.", "TAP", "Sockets")
     val apiIndex = apiValues.indexOf(s.dev9EthApi).let { if (it >= 0) it else apiValues.lastIndex }
+    // 0 Online / 1 Host / 2 Join — derived from the stored settings rather than kept as its own
+    // field, so there is a single source of truth and no way for the two to disagree.
+    val netMode = if (s.dev9EthApi != "Local Link") 0 else if (s.localLinkHost) 1 else 2
     val dnsModes = listOf("Manual", "Auto", "Internal")
     val dns1Index = dnsModes.indexOf(s.dev9ModeDns1).let { if (it >= 0) it else 1 }
     val dns2Index = dnsModes.indexOf(s.dev9ModeDns2).let { if (it >= 0) it else 1 }
@@ -85,19 +97,134 @@ fun NetworkTab(state: MutableState<Settings>) {
             )
         }
         SettingsDivider()
+        // Network mode is the FIRST thing under the enable toggle, because "am I playing online or
+        // on a LAN with the person next to me?" is the top-level question. LAN play used to be
+        // buried as one entry in the Ethernet API picker, where nobody would ever find it.
         SegmentedRow(
-            label = str("network.ethernetApi"),
-            options = apiLabels,
-            selectedIndex = apiIndex,
-            onChange = { apply(s.copy(dev9EthApi = apiValues[it])) },
+            label = str("network.mode.label"),
+            options = listOf(
+                str("network.mode.online"),
+                str("network.mode.host"),
+                str("network.mode.join"),
+            ),
+            selectedIndex = netMode,
+            description = str("network.mode.description"),
+            onChange = { mode ->
+                // A room code outside 4-12 chars makes LocalLinkAdapter's constructor bail, which
+                // deletes the adapter and clears EthEnable — so the GAME reports "network adapter
+                // not connected" and nothing points at the room code. It defaulted to empty, so the
+                // feature was unusable until you happened to type one. Seed a code when switching
+                // into a LAN mode; the host reads it out and guests retype it, same as the address.
+                val seededCode = s.localLinkRoomCode.takeIf { it.length in 4..12 } ?: generateRoomCode()
+                apply(
+                    when (mode) {
+                        // Host is peer 1 by protocol; guests take the derived id so two devices
+                        // never share one. Set here (not during composition) so it is a plain edit.
+                        1 -> s.copy(dev9EthApi = "Local Link", localLinkHost = true, localLinkPeerId = 1, localLinkRoomCode = seededCode)
+                        2 -> s.copy(dev9EthApi = "Local Link", localLinkHost = false, localLinkPeerId = derivedPeerId, localLinkRoomCode = seededCode)
+                        else -> s.copy(dev9EthApi = "Sockets", localLinkHost = false)
+                    }
+                )
+            },
         )
         SettingsDivider()
-        DeviceChooser(
-            selected = s.dev9EthDevice.ifEmpty { "Auto" },
-            adapters = adapters,
-            onChange = { apply(s.copy(dev9EthDevice = it.ifEmpty { "Auto" })) },
-        )
-        SettingsDivider()
+
+        if (netMode == 0) {
+            SegmentedRow(
+                label = str("network.ethernetApi"),
+                options = apiLabels,
+                selectedIndex = apiIndex,
+                onChange = { apply(s.copy(dev9EthApi = apiValues[it])) },
+            )
+            SettingsDivider()
+            DeviceChooser(
+                selected = s.dev9EthDevice.ifEmpty { "Auto" },
+                adapters = adapters,
+                onChange = { apply(s.copy(dev9EthDevice = it.ifEmpty { "Auto" })) },
+            )
+            SettingsDivider()
+        } else {
+            // Ordered to match what players actually do: get the devices on one network, host reads
+            // out its address, guests type it in, then everyone matches port and room code.
+            HelpText(str("network.localLink.help"))
+            // First row in the section, because "which of my games can even do this?" is the first
+            // question and the honest answer is a list we should not try to maintain ourselves.
+            ActionRow(
+                controllerId = "network.localLink.gamesList",
+                label = str("network.localLink.gamesList"),
+                description = str("network.localLink.gamesList.desc"),
+                context = context,
+            ) {
+                android.content.Intent(
+                    android.content.Intent.ACTION_VIEW,
+                    android.net.Uri.parse(LAN_GAMES_URL),
+                )
+            }
+            SettingsDivider()
+            ActionRow(
+                controllerId = "network.localLink.wifi",
+                label = str("network.localLink.wifiSettings"),
+                description = str("network.localLink.wifiSettings.desc"),
+                context = context,
+            ) {
+                android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS)
+            }
+            SettingsDivider()
+            if (netMode == 1) {
+                ReadOnlyRow(
+                    label = str("network.localLink.hostAddress"),
+                    value = localAddresses.joinToString(", ").ifEmpty { str("network.localLink.noAddress") },
+                    description = str("network.localLink.hostAddress.desc"),
+                )
+            } else {
+                LocalLinkRow(
+                    controllerId = "network.localLink.address",
+                    label = str("network.localLink.address"),
+                    value = s.localLinkAddress,
+                    description = str("network.localLink.address.desc"),
+                    fieldLabel = str("network.address"),
+                ) { apply(s.copy(localLinkAddress = it)) }
+            }
+            SettingsDivider()
+            LocalLinkRow(
+                controllerId = "network.localLink.port",
+                label = str("network.localLink.port"),
+                value = s.localLinkPort.toString(),
+                description = str("network.localLink.port.desc"),
+                fieldLabel = str("network.localLink.port"),
+            ) { apply(s.copy(localLinkPort = it.toIntOrNull()?.coerceIn(1024, 65535) ?: 19072)) }
+            SettingsDivider()
+            LocalLinkRow(
+                controllerId = "network.localLink.roomCode",
+                label = str("network.localLink.roomCode"),
+                value = s.localLinkRoomCode,
+                description = str("network.localLink.roomCode.desc"),
+                fieldLabel = str("network.localLink.roomCode"),
+                onGenerate = { apply(s.copy(localLinkRoomCode = generateRoomCode())) },
+            ) {
+                // Uppercased to match the native side, which normalises before deriving the key.
+                // An out-of-range code disables DEV9 entirely, so refuse it rather than storing it.
+                val cleaned = it.uppercase().filter { c -> c.isLetterOrDigit() }.take(12)
+                apply(s.copy(localLinkRoomCode = cleaned.ifEmpty { s.localLinkRoomCode }))
+            }
+            // Loud, visible warning instead of the silent "no network adapter" the game reports.
+            if (s.localLinkRoomCode.length !in 4..12)
+                HelpText(str("network.localLink.roomCode.invalid"))
+            SettingsDivider()
+            ReadOnlyRow(
+                label = str("network.localLink.peerId"),
+                value = (if (netMode == 1) 1 else s.localLinkPeerId).toString(),
+                description = str("network.localLink.peerId.desc"),
+            )
+            HelpText(str("network.localLink.limits"))
+            Spacer(Modifier.height(8.dp))
+        }
+
+        // Everything below is Online-only: DHCP interception, the PS2's own IP/mask/gateway, DNS
+        // modes and host mappings all describe how the emulated adapter talks to the internet.
+        // Local Link assigns those itself from the peer id, so showing them in LAN mode would be
+        // presenting settings that silently do nothing.
+        if (netMode == 0) {
         ToggleRow(str("network.interceptDhcp"), s.dev9InterceptDhcp) {
             apply(s.copy(dev9InterceptDhcp = it))
         }
@@ -171,6 +298,7 @@ fun NetworkTab(state: MutableState<Settings>) {
                 SettingsDivider()
             }
         }
+        } // end Online-only block
         ToggleRow(str("network.logDhcp"), s.dev9EthLogDhcp) {
             apply(s.copy(dev9EthLogDhcp = it))
         }
@@ -202,6 +330,210 @@ fun NetworkTab(state: MutableState<Settings>) {
             apply(s.copy(usbKeyboard = it))
         }
         HelpText(str("network.usbKeyboard.help"))
+    }
+}
+
+/** This device's own LAN IPv4 addresses, so a host can read one out to the guests instead of being
+ *  told to go hunting in Android's settings. Hotspot interfaces are included on purpose — a hotspot
+ *  is the most reliable way to get two handhelds onto one network. */
+private fun enumerateLocalIPv4(): List<String> {
+    val out = linkedSetOf<String>()
+    runCatching {
+        val interfaces = NetworkInterface.getNetworkInterfaces() ?: return@runCatching
+        for (iface in interfaces.toList()) {
+            val usable = runCatching { iface.isUp && !iface.isLoopback }.getOrDefault(false)
+            if (!usable) continue
+            for (addr in iface.inetAddresses.toList()) {
+                if (addr is java.net.Inet4Address && !addr.isLoopbackAddress)
+                    addr.hostAddress?.let { out.add(it) }
+            }
+        }
+    }
+    return out.toList()
+}
+
+/** A fresh 8-character room code. Seeded automatically when LAN mode is first selected, because an
+ *  empty code silently disables DEV9 (see the Network mode onChange for the full failure chain).
+ *  Uppercase alphanumerics only, matching what the native side normalises to. */
+private fun generateRoomCode(): String {
+    val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no I/O/0/1 — these get read aloud
+    return (1..8).map { alphabet[kotlin.random.Random.nextInt(alphabet.length)] }.joinToString("")
+}
+
+/** A stable guest peer id in 2..65533, derived from ANDROID_ID so it differs per device and never
+ *  needs to be chosen by hand. 1 is reserved for the host by the wire protocol. */
+private fun derivePeerId(context: android.content.Context): Int {
+    val seed = runCatching {
+        android.provider.Settings.Secure.getString(
+            context.contentResolver,
+            android.provider.Settings.Secure.ANDROID_ID,
+        )
+    }.getOrNull().orEmpty().ifEmpty { android.os.Build.FINGERPRINT }
+    // 65532 slots starting at 2; abs() on the hash, guarding Int.MIN_VALUE.
+    val h = seed.hashCode()
+    val positive = if (h == Int.MIN_VALUE) 0 else if (h < 0) -h else h
+    return 2 + (positive % 65532)
+}
+
+/** A tappable label+subtitle row that fires an Intent. Used for the Wi-Fi shortcut (the devices have
+ *  to be on one network before any of this works, and that is the step people miss) and for the
+ *  supported-games list. Registers with the pad-nav registry — without that the whole Local Link
+ *  section was unreachable on a controller, since only the shared ToggleRow/SegmentedRow widgets
+ *  self-register and every custom row here was skipped. */
+@Composable
+private fun ActionRow(
+    controllerId: String,
+    label: String,
+    description: String,
+    context: android.content.Context,
+    intent: () -> android.content.Intent,
+) {
+    val fire = {
+        // runCatching: no ACTION_VIEW handler (no browser) or a blocked settings intent must not
+        // take the settings screen down with it.
+        runCatching {
+            context.startActivity(intent().addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+        Unit
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(64.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(rowAura())
+            .clickable(onClick = fire)
+            .controllerFocusable(controllerId, onConfirm = fire)
+            .padding(horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column {
+            Text(
+                label,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                description,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+            )
+        }
+    }
+}
+
+/** Wikipedia's LAN-games section: the authoritative answer to "which games can I actually use this
+ *  with?", which is the first thing anyone asks. Kept as a link rather than a baked-in list so it
+ *  can't go stale in our strings. */
+private const val LAN_GAMES_URL =
+    "https://en.wikipedia.org/wiki/List_of_PlayStation_2_online_games#LAN_Games"
+
+/** A non-editable value row (host address, local peer id) — same shape as the editable rows so the
+ *  section reads consistently, but with no tap target, because these are computed, not chosen. */
+@Composable
+private fun ReadOnlyRow(label: String, value: String, description: String) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(rowAura())
+            .padding(horizontal = 6.dp, vertical = 8.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                value,
+                color = Color(0xFFCCCCCC),
+                fontSize = 14.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            description,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 3.dp),
+        )
+    }
+}
+
+/**
+ * A Local Link field: same look as [EditableTextRow], but it shows a description under the label
+ * and does not assume the value is an IP address. [EditableTextRow] prefills AND displays
+ * "0.0.0.0" for an empty value and hardcodes the edit dialog's field label to "Address" — correct
+ * for the DNS/gateway rows it serves, wrong for a room code, a port or a peer id. Kept separate
+ * rather than adding switches to that one, which has a dozen existing call sites.
+ *
+ * onChange receives the trimmed text; callers do their own validation/coercion.
+ */
+@Composable
+private fun LocalLinkRow(
+    controllerId: String,
+    label: String,
+    value: String,
+    description: String,
+    fieldLabel: String,
+    /** When supplied, adds a Generate action (button + D-pad Right) that fills the field. Used for
+     *  the room code, which has validity rules a person shouldn't have to remember. */
+    onGenerate: (() -> Unit)? = null,
+    onChange: (String) -> Unit,
+) {
+    // Text entry goes through LibraryKeyboard, NOT an AlertDialog. A Compose dialog takes its own
+    // focused window and swallows gamepad keys, so a pad user could open it and then be stuck with
+    // no way to type or dismiss. LibraryKeyboard is D-pad navigable by design, and it also honours
+    // the "Use system keyboard" preference for touch users.
+    val edit = {
+        com.armsx2.ui.home.LibraryKeyboard.open(value, onChange, fieldLabel)
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(rowAura())
+            .clickable(onClick = edit)
+            .controllerFocusable(
+                controllerId,
+                onConfirm = edit,
+                // D-pad Right regenerates, matching how other rows use left/right to adjust.
+                onRight = onGenerate,
+            )
+            .padding(horizontal = 6.dp, vertical = 8.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                value.ifEmpty { str("network.localLink.notSet") },
+                color = Color(0xFFCCCCCC),
+                fontSize = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (onGenerate != null) {
+                // One-tap valid code, without opening the editor. Its own clickable consumes the
+                // tap, so it does not also open the row's edit dialog.
+                TextButton(onClick = onGenerate) { Text(str("network.localLink.generate")) }
+            }
+        }
+        Text(
+            description,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 3.dp),
+        )
     }
 }
 

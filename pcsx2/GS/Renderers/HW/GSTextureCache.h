@@ -7,6 +7,8 @@
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSDirtyRect.h"
 
+#include <array>
+#include <deque>
 #include <unordered_set>
 #include <utility>
 #include <limits>
@@ -460,6 +462,34 @@ protected:
 	std::unique_ptr<GSDownloadTexture> m_uint16_download_texture;
 	std::unique_ptr<GSDownloadTexture> m_uint32_download_texture;
 
+	/// A GPU->CPU copy issued under GSHardwareDownloadMode::Asynchronous, waiting on its fence.
+	struct PendingDownload
+	{
+		std::unique_ptr<GSDownloadTexture> texture;
+		GIFRegTEX0 tex0 = {};
+		GSVector4i read_rect = {};
+		GSVector4i target_rect = {};
+		u32 write_mask = 0;
+		u64 queued_frame = 0;
+		bool cpu_convert_rgb5a1 = false;
+		/// Per-page write generations at the time the copy was queued. If any covered page has
+		/// moved on (EE upload / local->local move / synchronous readback) the result is stale
+		/// and must be dropped rather than rolled back into the shadow.
+		std::array<u64, GS_MAX_PAGES> page_generations = {};
+	};
+
+	static constexpr size_t MAX_PENDING_DOWNLOADS = 8;
+	/// 1x1 reads are visibility/occlusion queries. Give them a FIXED latency instead of
+	/// whatever the fence happens to deliver, so variable mobile GPU latency cannot turn a
+	/// steady effect into an on/off oscillation.
+	static constexpr u64 VISIBILITY_QUERY_LATENCY_FRAMES = 3;
+	/// Backends without a real non-blocking completion test (Metal/DX/Null keep the base
+	/// Poll()) would never retire an entry. Force one through after this many frames so the
+	/// pipeline always makes progress — on the GS thread at VSync, never on the EE thread.
+	static constexpr u64 MAX_PENDING_DOWNLOAD_FRAMES = 4;
+	std::deque<PendingDownload> m_pending_downloads;
+	std::vector<std::unique_ptr<GSDownloadTexture>> m_async_download_texture_pool;
+
 	Source* CreateSource(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, const GIFRegCLAMP& CLAMP, Target* t, int x_offset, int y_offset, const GSVector2i* lod, const GSVector4i* src_range, GSTexture* gpu_clut, SourceRegion region, bool force_temporary = false);
 
 	bool PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, const GSVector2i& valid_size, bool is_frame,
@@ -474,6 +504,8 @@ protected:
 
 	/// Resizes the download texture if needed.
 	bool PrepareDownloadTexture(u32 width, u32 height, GSTexture::Format format, std::unique_ptr<GSDownloadTexture>* tex);
+	/// Swizzles a completed asynchronous download into the EE-facing shadow of local memory.
+	void ApplyPendingDownload(PendingDownload& download);
 
 	HashCacheEntry* LookupHashCache(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, bool& paltex, const u32* clut, const GSVector2i* lod, SourceRegion region);
 	HashCacheMap::iterator RemoveFromHashCache(HashCacheMap::iterator it);
@@ -511,8 +543,12 @@ public:
 	__fi u64 GetSourceMemoryUsage() const { return m_source_memory_usage; }
 	__fi u64 GetTargetMemoryUsage() const { return m_target_memory_usage; }
 
-	void Read(Target* t, const GSVector4i& r);
+	void Read(Target* t, const GSVector4i& r, bool force_synchronous = false);
 	void Read(Source* t, const GSVector4i& r);
+	/// Retires completed asynchronous downloads into the shadow. GS thread, VSync only.
+	void ProcessPendingDownloads();
+	/// Drops every queued asynchronous download (mode change, target flush, reset).
+	void DiscardPendingDownloads();
 	void RemoveAll(bool sources, bool targets, bool hash_cache);
 	void ReadbackAll();
 	static void AddDirtyRectTarget(Target* target, GSVector4i rect, u32 psm, u32 bw, RGBAMask rgba, bool req_linear = false);
@@ -565,7 +601,8 @@ public:
 	void InvalidateVideoMemType(int type, u32 bp, u32 write_psm = PSMCT32, u32 write_fbmsk = 0, bool dirty_only = false);
 	void InvalidateVideoMemSubTarget(GSTextureCache::Target* rt);
 	void InvalidateVideoMem(const GSOffset& off, const GSVector4i& r, bool target = true);
-	void InvalidateLocalMem(const GSOffset& off, const GSVector4i& r, bool full_flush = false);
+	void InvalidateLocalMem(const GSOffset& off, const GSVector4i& r, bool full_flush = false,
+		bool force_synchronous = false);
 
 	/// Removes any sources which point to the specified target.
 	void InvalidateSourcesFromTarget(const Target* t);

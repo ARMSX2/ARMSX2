@@ -15,6 +15,7 @@
 #endif
 #include "pcap_io.h"
 #include "sockets.h"
+#include "LocalLinkAdapter.h"
 
 #include "PacketReader/EthernetFrame.h"
 #include "PacketReader/IP/IP_Packet.h"
@@ -78,12 +79,25 @@ NetAdapter* GetNetAdapter()
 		case Pcsx2Config::DEV9Options::NetApi::Sockets:
 			na = static_cast<NetAdapter*>(new SocketAdapter());
 			break;
+		case Pcsx2Config::DEV9Options::NetApi::LocalLink:
+			na = static_cast<NetAdapter*>(new LocalLinkAdapter());
+			break;
 		default:
+			// Used to `return 0` in silence, which meant a mis-set or overridden EthApi produced no
+			// log line anywhere — the emulator simply had no network adapter and the GAME reported
+			// "network adaptor is not connected" three layers away. Name the value.
+			Console.Error("DEV9: no network backend for EthApi=%d, Ethernet stays off (a stale "
+						  "per-game gamesettings INI can override your choice here)",
+				static_cast<int>(EmuConfig.DEV9.EthApi));
 			return 0;
 	}
 
 	if (!na->isInitialised())
 	{
+		// Likewise: the backend's own constructor logs why it bailed, but without this line there
+		// is nothing tying that failure to "and therefore you have no adapter at all".
+		Console.Error("DEV9: network backend for EthApi=%d failed to initialise, Ethernet stays off",
+			static_cast<int>(EmuConfig.DEV9.EthApi));
 		delete na;
 		return 0;
 	}
@@ -128,7 +142,12 @@ void ReconfigureLiveNet(const Pcsx2Config& old_config)
 		{
 			//Reload Net if adapter changed
 			if (EmuConfig.DEV9.EthDevice != old_config.DEV9.EthDevice ||
-				EmuConfig.DEV9.EthApi != old_config.DEV9.EthApi)
+				EmuConfig.DEV9.EthApi != old_config.DEV9.EthApi ||
+				EmuConfig.DEV9.LocalLinkHost != old_config.DEV9.LocalLinkHost ||
+				EmuConfig.DEV9.LocalLinkAddress != old_config.DEV9.LocalLinkAddress ||
+				EmuConfig.DEV9.LocalLinkPort != old_config.DEV9.LocalLinkPort ||
+				EmuConfig.DEV9.LocalLinkPeerId != old_config.DEV9.LocalLinkPeerId ||
+				EmuConfig.DEV9.LocalLinkRoomCode != old_config.DEV9.LocalLinkRoomCode)
 			{
 				TermNet();
 				InitNet();

@@ -111,6 +111,23 @@ object InGameOverlay {
                 }
             }
         }
+
+        // ...and the same regeneration when there is NO VM. Without this, editing settings from the
+        // library left a stale gamesettings/<serial>_<CRC>.ini in place, and because that file loads
+        // into a HIGHER-priority layer than anything we write, every key it already contained
+        // silently ignored the user forever. Confirmed the hard way: Local Link came up correctly on
+        // a game with no INI and never initialised on one with an old [DEV9/Eth] block, across six
+        // back-to-back boots. Only the category-Reset path rewrote the INI, which is why Reset was
+        // the only thing that ever "worked". Uses the by-serial overload since there is no running
+        // game to reach it through; a no-op when the game never wrote an INI.
+        if (MainActivityRuntime.eState.value == EmuState.STOPPED) {
+            runCatching {
+                currentSerial.value?.takeIf { it.isNotBlank() }?.let { serial ->
+                    ConfigStore.resolveForGame(serial)
+                        .writeGameSettingsIni(ConfigStore.loadGlobal(), serial)
+                }
+            }
+        }
     }
 
     fun open() {

@@ -12,14 +12,24 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -66,10 +76,35 @@ object LibraryKeyboard {
         listOf(SPACE, BACKSPACE, CLEAR, DONE),
     )
 
+    /** Use the Android system IME instead of these on-screen keys. Opt-in: the built-in keyboard
+     *  stays the default because it is fully gamepad-navigable, whereas the system IME is not (and
+     *  Android IMEs never deliver key events to the emulated PS2 pad at all). Switching here rather
+     *  than at each call site means the library search and the rename field both follow the
+     *  setting with no changes of their own. */
+    private const val SystemImeKey = "ui.useSystemKeyboard"
+    val useSystemIme = mutableStateOf(false)
+
+    fun setUseSystemIme(on: Boolean) {
+        useSystemIme.value = on
+        com.armsx2.runtime.MainActivityRuntime.prefs.edit().putBoolean(SystemImeKey, on).apply()
+    }
+
+    /** Load the stored preference into [useSystemIme]. Called from open() and from the Settings
+     *  row, which can be composed before the keyboard has ever been opened. */
+    fun refreshUseSystemIme(): Boolean {
+        useSystemIme.value = runCatching {
+            com.armsx2.runtime.MainActivityRuntime.prefs.getBoolean(SystemImeKey, false)
+        }.getOrDefault(false)
+        return useSystemIme.value
+    }
+
     fun open(initial: String, onChange: (String) -> Unit, placeholder: String = "Search games…") {
         text.value = initial
         this.onChange = onChange
         this.placeholder.value = placeholder
+        // Re-read on every open so the preference needs no wiring into app startup, and so a
+        // change made in Settings takes effect the next time the keyboard is summoned.
+        refreshUseSystemIme()
         row.intValue = 0
         col.intValue = 0
         shifted.value = false
@@ -148,6 +183,10 @@ object LibraryKeyboard {
                 Modifier.padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                if (useSystemIme.value) {
+                    SystemImeField()
+                    return@Column
+                }
                 Text(
                     text = text.value.ifEmpty { placeholder.value },
                     color = if (text.value.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
@@ -180,6 +219,38 @@ object LibraryKeyboard {
             }
         }
         }
+    }
+
+    /**
+     * The system-IME alternative to the key grid. Rendered INLINE in the library's Box, never in a
+     * Dialog: a modal Dialog takes its own focused window and swallows gamepad keys, so it would
+     * strand anyone who toggles this on and then reaches for a controller.
+     */
+    @Composable
+    private fun SystemImeField() {
+        val focus = remember { FocusRequester() }
+        val ime = LocalSoftwareKeyboardController.current
+        OutlinedTextField(
+            value = text.value,
+            onValueChange = {
+                // Strip newlines so a multiline IME can't inject them into a search query.
+                val next = it.replace("\n", "")
+                text.value = next
+                onChange(next)
+            },
+            placeholder = { Text(placeholder.value) },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { ime?.hide(); close() }),
+            modifier = Modifier.fillMaxWidth().focusRequester(focus),
+        )
+        // Summon the IME with the field, and make sure it goes away with the overlay — otherwise a
+        // dismissed keyboard leaves the system IME covering the library.
+        LaunchedEffect(Unit) {
+            focus.requestFocus()
+            ime?.show()
+        }
+        DisposableEffect(Unit) { onDispose { ime?.hide() } }
     }
 
     @Composable

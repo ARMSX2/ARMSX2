@@ -187,6 +187,17 @@ fun RendererTab(state: MutableState<Settings>) {
                 onChange = { apply(s.copy(portraitRenderTop = it == 0)) },
             )
             SettingsDivider()
+            // Auto Progressive Scan — holds Triangle+Cross through boot, the combo some titles
+            // probe to offer 480p progressive. Takes effect on the next boot (it is a boot-time
+            // pad hold, not a live setting), and only does anything on games that implement it.
+            ToggleRow(
+                str("renderer.autoProgressive.label"),
+                s.autoProgressiveScan,
+                description = str("renderer.autoProgressive.description"),
+            ) {
+                apply(s.copy(autoProgressiveScan = it))
+            }
+            SettingsDivider()
             SegmentedGridRow(
                 label = str("renderer.deinterlacing.label"),
                 options = listOf(
@@ -219,8 +230,11 @@ fun RendererTab(state: MutableState<Settings>) {
             SettingsDivider()
             SegmentedGridRow(
                 label = str("renderer.hardwareDownloadMode.label"),
-                options = listOf("Accurate", "Force Full", "No Readbacks", "Unsync", "Disabled"),
-                selectedIndex = s.hardwareDownloadMode.coerceIn(0, 4),
+                // Index == GSHardwareDownloadMode; "Async" is 5 and must stay last. Keep this list
+                // and the clamp below in sync with the enum AND with the in-game menu's copy in
+                // EmulationMenuScreen — there are two independent pickers for this setting.
+                options = listOf("Accurate", "Force Full", "No Readbacks", "Unsync", "Disabled", "Async"),
+                selectedIndex = s.hardwareDownloadMode.coerceIn(0, 5),
                 columns = 3,
                 description = str("renderer.hardwareDownloadMode.description"),
                 onChange = { apply(s.copy(hardwareDownloadMode = it)) },

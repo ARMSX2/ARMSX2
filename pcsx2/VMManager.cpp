@@ -3915,6 +3915,15 @@ void VMManager::EnsureCPUInfoInitialized()
 	std::call_once(s_processor_list_initialized, InitializeProcessorList);
 }
 
+#if defined(__ANDROID__)
+// Android "Affinity Control Mode", set by the app from NativeApp.setAffinityMode() before the VM
+// boots (see SetEmuThreadAffinities below for the semantics of each value):
+//   0 Disabled (default — scheduler decides)   1 EE>VU>GS   2 EE>GS>VU   3 VU>EE>GS
+//   4 VU>GS>EE   5 GS>EE>VU   6 GS>VU>EE       7 Performance Cores
+// A plain int like g_gs_android_prefer_vk: written once at startup/boot, read on the CPU thread.
+int g_android_affinity_mode = 0;
+#endif
+
 void VMManager::SetEmuThreadAffinities()
 {
 #if defined(__ANDROID__)
@@ -3927,11 +3936,121 @@ void VMManager::SetEmuThreadAffinities()
 	// which slams GoW2). cpuinfo also can't read per-core frequency on many Android
 	// devices (all clusters report 0 MHz), so the frequency-ordered pin is unreliable
 	// anyway. Release any affinity so the scheduler can use the prime for VU.
-	MTGS::GetThreadHandle().SetAffinity(0);
-	vu1Thread.GetThreadHandle().SetAffinity(0);
-	s_vm_thread_handle.SetAffinity(0);
-	s_software_renderer_processor_list = {};
-	s_thread_affinities_set = false;
+	//
+	// Affinity Control Mode (g_android_affinity_mode, default 0 = Disabled) is the opt-in
+	// escape hatch from that default. It exists because the reasoning above is not universal:
+	// on GS-bound titles an unpinned GS thread measurably regressed (Burnout 3), and community
+	// testers on other SoCs report gains from explicit placement. It is EXPERIMENTAL and
+	// off by default — the unpinned scheduler path below stays the recommended setting.
+	if (g_android_affinity_mode == 0)
+	{
+		MTGS::GetThreadHandle().SetAffinity(0);
+		vu1Thread.GetThreadHandle().SetAffinity(0);
+		s_vm_thread_handle.SetAffinity(0);
+		s_software_renderer_processor_list = {};
+		s_thread_affinities_set = false;
+		return;
+	}
+
+	EnsureCPUInfoInitialized();
+	if (s_processor_list.empty())
+	{
+		// cpuinfo gave us nothing to place threads on — behave exactly like Disabled.
+		MTGS::GetThreadHandle().SetAffinity(0);
+		vu1Thread.GetThreadHandle().SetAffinity(0);
+		s_vm_thread_handle.SetAffinity(0);
+		s_software_renderer_processor_list = {};
+		s_thread_affinities_set = false;
+		return;
+	}
+
+	const bool android_mtvu = EmuConfig.Speedhacks.vuThread;
+
+	// Mode 7 = "Performance Cores": don't hand out individual cores at all, just confine all
+	// three threads to the big/prime cluster and let EAS place them within it. This is the
+	// safest of the pinning modes because it never pins VU to a specific mid-tier core.
+	if (g_android_affinity_mode == 7)
+	{
+		// NOTE: deliberately NOT Internal::GetPerformanceClusterAffinityMask() — that is still a
+		// stub returning 0 in this core, which would make this mode silently do nothing. Derive
+		// the cluster from cpuinfo here instead: find the cluster owning the highest-frequency
+		// core and union every processor in it. cpuinfo reports 0 MHz for all cores on many
+		// Android SoCs, in which case this settles on the first cluster it lists — still a
+		// coherent cluster rather than a garbage mask.
+		const u64 perf_mask = [] {
+			const u32 count = cpuinfo_get_processors_count();
+			const cpuinfo_cluster* target = nullptr;
+			u32 best_freq = 0;
+			for (u32 i = 0; i < count; i++)
+			{
+				const cpuinfo_processor* proc = cpuinfo_get_processor(i);
+				if (!proc || proc->smt_id != 0 || !proc->core || !proc->cluster)
+					continue;
+				if (!target || proc->core->frequency > best_freq)
+				{
+					target = proc->cluster;
+					best_freq = proc->core->frequency;
+				}
+			}
+			u64 mask = 0;
+			if (!target)
+				return mask;
+			for (u32 i = 0; i < count; i++)
+			{
+				const cpuinfo_processor* proc = cpuinfo_get_processor(i);
+				if (!proc || proc->smt_id != 0 || proc->cluster != target)
+					continue;
+				mask |= static_cast<u64>(1) << GetProcessorIdForProcessor(proc);
+			}
+			return mask;
+		}();
+		if (perf_mask != 0)
+		{
+			INFO_LOG("Affinity mode: Performance Cores (mask 0x{:x})", perf_mask);
+			s_vm_thread_handle.SetAffinity(perf_mask);
+			MTGS::GetThreadHandle().SetAffinity(perf_mask);
+			vu1Thread.GetThreadHandle().SetAffinity(android_mtvu ? perf_mask : 0);
+			s_thread_affinities_set = true;
+			return;
+		}
+		// No usable cluster mask — fall through to the ordered path rather than silently
+		// leaving the user's chosen mode doing nothing.
+	}
+
+	// Modes 1-6: explicit EE/VU/GS priority over s_processor_list, which is ordered fastest
+	// core first. Rows are {ee_rank, vu_rank, gs_rank}; the row order matches the UI order.
+	//   1 EE>VU>GS   2 EE>GS>VU   3 VU>EE>GS   4 VU>GS>EE   5 GS>EE>VU   6 GS>VU>EE
+	static constexpr int kAffinityRanks[6][3] = {
+		{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {2, 0, 1}, {1, 2, 0}, {2, 1, 0},
+	};
+	const int mode_row = std::clamp(g_android_affinity_mode, 1, 6) - 1;
+	int ee_rank = kAffinityRanks[mode_row][0];
+	int vu_rank = kAffinityRanks[mode_row][1];
+	int gs_rank = kAffinityRanks[mode_row][2];
+
+	// With MTVU off there is no VU thread to place, so let GS inherit VU's slot when VU
+	// ranked higher — otherwise the faster core sits idle. Mirrors the desktop path's
+	// "steal vu's thread if mtvu is off".
+	if (!android_mtvu && vu_rank < gs_rank)
+		gs_rank = vu_rank;
+
+	// cpuinfo frequently reports fewer usable processors than ranks; clamp rather than
+	// running off the end of the list.
+	const auto affinity_for_rank = [](int rank) -> u64 {
+		const size_t idx = std::min(static_cast<size_t>(rank), s_processor_list.size() - 1);
+		return static_cast<u64>(1) << s_processor_list[idx];
+	};
+
+	const u64 android_ee_affinity = affinity_for_rank(ee_rank);
+	const u64 android_gs_affinity = affinity_for_rank(gs_rank);
+	INFO_LOG("Affinity mode {}: EE rank {} (0x{:x}), VU rank {}, GS rank {} (0x{:x}), mtvu={}",
+		g_android_affinity_mode, ee_rank, android_ee_affinity, vu_rank, gs_rank,
+		android_gs_affinity, android_mtvu ? 1 : 0);
+
+	s_vm_thread_handle.SetAffinity(android_ee_affinity);
+	MTGS::GetThreadHandle().SetAffinity(android_gs_affinity);
+	vu1Thread.GetThreadHandle().SetAffinity(android_mtvu ? affinity_for_rank(vu_rank) : 0);
+	s_thread_affinities_set = true;
 	return;
 #else
 	const bool new_pin_enable = (GetState() != VMState::Shutdown && EmuConfig.EnableThreadPinning);

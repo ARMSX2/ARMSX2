@@ -302,6 +302,7 @@ set(pcsx2DEV9Sources
 	DEV9/InternalServers/DHCP_Server.cpp
 	DEV9/InternalServers/DNS_Logger.cpp
 	DEV9/InternalServers/DNS_Server.cpp
+	DEV9/LocalLinkAdapter.cpp
 	DEV9/PacketReader/ARP/ARP_Packet.cpp
 	DEV9/PacketReader/ARP/ARP_PacketEditor.cpp
 	DEV9/PacketReader/IP/ICMP/ICMP_Packet.cpp

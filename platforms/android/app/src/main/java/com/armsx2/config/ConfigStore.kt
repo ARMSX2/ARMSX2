@@ -187,23 +187,34 @@ object ConfigStore {
      */
     fun seedFreshInstallDefaults(context: android.content.Context) {
         if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) != null) return
-        val queueSize = if (com.armsx2.DeviceTier.isLowEnd(context)) 2 else 0
-        saveGlobal(Settings(vsyncQueueSize = queueSize))
+        // Low Latency (zero-frame GS queue) is NOT the default any more — it was briefly seeded on
+        // capable devices, but a zero-frame queue gives the GS thread no slack and cost smoothness
+        // on too many setups. Everyone starts on PCSX2's two-frame queue and can opt in from the
+        // Performance tab. Settings.vsyncQueueSize already defaults to 2, so this just materialises
+        // the global save that the rest of the config layer keys "is this a fresh install?" off.
+        saveGlobal(Settings())
     }
 
-    private const val KEY_LOWLATENCY_MIGRATED = "config.migrated.lowLatencyDefault"
+    // Migration 1 (config.migrated.lowLatencyDefault) flipped existing capable devices ON. It is
+    // retired rather than deleted: the key must never be reused, or an install that already ran it
+    // would skip the correction below.
+    private const val KEY_LOWLATENCY_OFF_MIGRATED = "config.migrated.lowLatencyOff"
     /**
-     * One-time flip of EXISTING capable installs to Low Latency (zero-frame GS queue), matching the
-     * fresh-install default seeded above. Flagged so it runs exactly once — a user who later turns it
-     * off keeps that choice. Low-end devices keep the smoother two-frame queue.
+     * One-time correction that undoes migration 1: puts existing installs back on the two-frame GS
+     * queue. Keyed separately so it runs exactly once even on devices that already took the earlier
+     * flip, and after it runs the user's own choice sticks.
+     *
+     * Caveat, deliberately accepted: this cannot distinguish "queue 0 because migration 1 set it"
+     * from "queue 0 because the user chose it", so anyone who opted in during the short window that
+     * shipped the ON default gets reset once and has to re-enable it.
      */
-    fun migrateLowLatencyDefault(context: android.content.Context) {
-        if (MainActivityRuntime.prefs.getBoolean(KEY_LOWLATENCY_MIGRATED, false)) return
-        MainActivityRuntime.prefs.edit().putBoolean(KEY_LOWLATENCY_MIGRATED, true).apply()
+    fun migrateLowLatencyOff(context: android.content.Context) {
+        if (MainActivityRuntime.prefs.getBoolean(KEY_LOWLATENCY_OFF_MIGRATED, false)) return
+        MainActivityRuntime.prefs.edit().putBoolean(KEY_LOWLATENCY_OFF_MIGRATED, true).apply()
         // Fresh installs are handled by seedFreshInstallDefaults; only touch an existing global save.
-        if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) == null || com.armsx2.DeviceTier.isLowEnd(context)) return
+        if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) == null) return
         val g = loadGlobal()
-        if (g.vsyncQueueSize != 0) saveGlobal(g.copy(vsyncQueueSize = 0))
+        if (g.vsyncQueueSize == 0) saveGlobal(g.copy(vsyncQueueSize = 2))
     }
 
     /** Load the sparse per-game override blob, or null if there are none. */

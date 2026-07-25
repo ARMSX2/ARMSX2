@@ -96,6 +96,13 @@ void GSRendererHW::Reset(bool hardware_reset)
 
 void GSRendererHW::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 {
+	if (old_config.HWDownloadMode == GSHardwareDownloadMode::Asynchronous &&
+		GSConfig.HWDownloadMode != GSHardwareDownloadMode::Asynchronous)
+	{
+		// Nothing will ever retire these once the mode is off.
+		g_texture_cache->DiscardPendingDownloads();
+	}
+
 	GSRenderer::UpdateSettings(old_config);
 	m_mipmap = GSConfig.HWMipmap;
 	SetTCOffset();
@@ -103,6 +110,10 @@ void GSRendererHW::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 
 void GSRendererHW::VSync(u32 field, bool registers_written, bool idle_frame)
 {
+	// Retire whatever the GPU finished since the last frame. Runs unconditionally: after the
+	// mode is switched off there can still be a tail of queued downloads to drain.
+	g_texture_cache->ProcessPendingDownloads();
+
 	if (GSConfig.LoadTextureReplacements)
 		GSTextureReplacements::ProcessAsyncLoadedTextures();
 
@@ -1438,7 +1449,12 @@ void GSRendererHW::MergeSprite(GSTextureCache::Source* tex)
 					{
 						bool unique_found = false;
 
-						for (u32 j = i & 1; j < unique_verts; i += 2)
+						// Walk j (not i) over the already-collected unique pairs: j is seeded from i's
+						// parity and stepped by 2. Stepping i here instead left j loop-invariant, so
+						// `j < unique_verts` was permanently true and the only exit was the break —
+						// on equal X values i ran away past m_vertex->tail, reading vertices out of
+						// bounds until it happened to hit a mismatch.
+						for (u32 j = i & 1; j < unique_verts; j += 2)
 						{
 							if (s[i].XYZ.X != s[j].XYZ.X)
 							{
@@ -1479,7 +1495,8 @@ void GSRendererHW::MergeSprite(GSTextureCache::Source* tex)
 					{
 						bool unique_found = false;
 
-						for (u32 j = i & 1; j < unique_verts; i+=2)
+						// Same out-of-bounds walk as the X pass above: step j, not i.
+						for (u32 j = i & 1; j < unique_verts; j += 2)
 						{
 							if (s[i].XYZ.Y != s[j].XYZ.Y)
 							{
@@ -2345,7 +2362,8 @@ void GSRendererHW::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GS
 	if (!skip)
 	{
 		const bool recursive_copy = (BITBLTBUF.SBP == BITBLTBUF.DBP) && (m_env.TRXDIR.XDIR == 2);
-		g_texture_cache->InvalidateLocalMem(m_mem.GetOffset(BITBLTBUF.SBP, BITBLTBUF.SBW, BITBLTBUF.SPSM), r, recursive_copy);
+		g_texture_cache->InvalidateLocalMem(m_mem.GetOffset(BITBLTBUF.SBP, BITBLTBUF.SBW, BITBLTBUF.SPSM), r,
+			recursive_copy, m_force_synchronous_local_readback);
 	}
 }
 
@@ -2380,7 +2398,11 @@ void GSRendererHW::Move()
 		return;
 	}
 
+	// The CPU fallback below consumes the source out of local memory immediately, so it cannot
+	// work off a frame-old asynchronous snapshot. Only this uncommon fallback forces the read.
+	m_force_synchronous_local_readback = true;
 	GSRenderer::Move();
+	m_force_synchronous_local_readback = false;
 }
 
 u16 GSRendererHW::Interpolate_UV(float alpha, int t0, int t1)

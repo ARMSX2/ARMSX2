@@ -193,6 +193,10 @@ s32 DEV9open()
 
 	if (EmuConfig.DEV9.EthEnable)
 		InitNet();
+	else
+		// Say so. A silent skip here is indistinguishable in the log from a backend that failed,
+		// and both present to the user as the game claiming the network adaptor is unplugged.
+		Console.WriteLn("DEV9: Ethernet is disabled, no network adapter will be created");
 
 	isRunning = true;
 	return 0;

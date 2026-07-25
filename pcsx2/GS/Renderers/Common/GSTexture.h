@@ -303,6 +303,11 @@ public:
 	/// call to CopyFromTexture() and the Flush() call.
 	virtual void Flush() = 0;
 
+	/// Checks whether a queued GPU download has completed, WITHOUT waiting on it.
+	/// Returns true when Map() can be called without blocking. Backends which cannot test
+	/// completion non-blockingly keep it pending until a Flush() has happened.
+	virtual bool Poll() { return !m_needs_flush; }
+
 #ifdef PCSX2_DEVBUILD
 	/// Sets object name that will be displayed in graphics debuggers.
 	virtual void SetDebugName(std::string_view name) = 0;

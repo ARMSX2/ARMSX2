@@ -991,6 +991,21 @@ void GSDownloadTextureVK::Flush()
 	}
 }
 
+bool GSDownloadTextureVK::Poll()
+{
+	if (!m_needs_flush)
+		return true;
+
+	// Purely a fence-counter test — no submit, no wait. If the copy is still sitting in the
+	// current (unsubmitted) command buffer this just stays pending until the frame is
+	// submitted, which is exactly the intended behaviour.
+	if (GSDeviceVK::GetInstance()->GetCompletedFenceCounter() < m_copy_fence_counter)
+		return false;
+
+	m_needs_flush = false;
+	return true;
+}
+
 #ifdef PCSX2_DEVBUILD
 
 void GSDownloadTextureVK::SetDebugName(std::string_view name)

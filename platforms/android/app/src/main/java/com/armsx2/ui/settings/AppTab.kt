@@ -131,6 +131,26 @@ fun AppTab() {
                 }
             }
 
+            // OLED black is a MODIFIER on whichever theme is chosen above, not a theme of its own,
+            // so "OLED + purple" / "OLED + yellow" are possible (the standalone OLED chip stays as
+            // the neutral blue-accent preset). A chip rather than a ToggleRow so it lives with the
+            // theme chips and keeps the controllerFocusable registration pad navigation needs.
+            Spacer(Modifier.height(10.dp))
+            run {
+                val toggleOled = { ThemePreferences.setOledBase(!ThemePreferences.oledBase.value) }
+                FilterChip(
+                    selected = ThemePreferences.oledBase.value,
+                    onClick = toggleOled,
+                    label = { Text(str("app.theme.oledBase")) },
+                    shape = RoundedCornerShape(11.dp),
+                    modifier = Modifier.controllerFocusable(
+                        "app.theme.oledBase",
+                        RoundedCornerShape(11.dp),
+                        onConfirm = toggleOled,
+                    ),
+                )
+            }
+
             // RGB picker, only while Custom is the active theme. The scheme is derived from
             // this colour's hue with saturation/brightness clamped (see customScheme), so the
             // accent stays recognisably what was picked without any channel combination being
@@ -447,6 +467,19 @@ fun AppTab() {
             description = str("app.library.search.desc"),
             onChange = LibraryChromePreferences::setShowSearch,
         )
+
+        // Text entry: our own on-screen keyboard (default, gamepad-navigable) vs the Android IME.
+        // Seeded via refreshUseSystemIme() because this row can compose before the keyboard has
+        // ever been opened, which is the only other place the preference gets read.
+        run {
+            remember { com.armsx2.ui.home.LibraryKeyboard.refreshUseSystemIme() }
+            ToggleRow(
+                label = str("app.keyboard.systemIme"),
+                value = com.armsx2.ui.home.LibraryKeyboard.useSystemIme.value,
+                description = str("app.keyboard.systemIme.desc"),
+                onChange = com.armsx2.ui.home.LibraryKeyboard::setUseSystemIme,
+            )
+        }
 
         ToggleRow(
             label = str("app.library.recents"),

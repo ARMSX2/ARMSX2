@@ -1884,6 +1884,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setPreferVulkan(JNIEnv*, jclass, jboolean e
     g_gs_android_prefer_vk = (enabled == JNI_TRUE);
 }
 
+// Affinity Control Mode (VMManager.cpp). 0 = Disabled/scheduler-decides (default), 1-6 = explicit
+// EE/VU/GS priority orders, 7 = Performance Cores. Read by SetEmuThreadAffinities when the VM
+// boots, so the app sets it before runVMThread; changing it takes effect on the next boot.
+extern int g_android_affinity_mode;
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setAffinityMode(JNIEnv*, jclass, jint mode) {
+    g_android_affinity_mode = (mode < 0 || mode > 7) ? 0 : static_cast<int>(mode);
+}
+
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_renderVulkan(JNIEnv *env, jclass clazz) {
@@ -2417,8 +2427,27 @@ Java_kr_co_iefriends_pcsx2_NativeApp_flushShaderCache(JNIEnv *env, jclass clazz)
     // VKShaderCache also flushes, but we can't rely on onDestroy running before
     // Android reaps the process. No-op for the OpenGL backend (GL backend
     // manages its own cache via GLShaderCache; this is Vulkan-specific).
-    if (g_vulkan_shader_cache)
-        g_vulkan_shader_cache->FlushPipelineCache();
+    //
+    // ★ MUST run on the GS thread. This used to call FlushPipelineCache() straight from the UI
+    // thread (onPause), which means vkGetPipelineCacheData() on the same VkPipelineCache that the
+    // GS thread passes to vkCreateGraphicsPipelines. Vulkan requires host access to a pipeline
+    // cache to be externally synchronised, and nothing here synchronised it — so backgrounding the
+    // app while the GS thread happened to be compiling a pipeline was a data race inside the
+    // driver. Being a spec violation rather than a driver quirk, it crashed on Adreno and Xclipse
+    // alike, intermittently, which matches the field reports. Routed via the CPU thread because
+    // MTGS::RunOnGSThread writes the EE-owned MTGS ring and must not be posted from the UI thread.
+    //
+    // Fire-and-forget: we deliberately do NOT block the UI thread waiting for the GS thread (that
+    // risks an ANR, and onPause is on a deadline). If the process is reaped before it lands we
+    // lose only this one flush — GetTFXPipeline's threshold flush already persists incrementally.
+    if (!VMManager::HasValidVM() || !MTGS::IsOpen())
+        return;
+    Host::RunOnCPUThread([]() {
+        MTGS::RunOnGSThread([]() {
+            if (g_vulkan_shader_cache)
+                g_vulkan_shader_cache->FlushPipelineCache();
+        });
+    });
 }
 
 extern "C"

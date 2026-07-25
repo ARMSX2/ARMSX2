@@ -73,6 +73,7 @@ public:
 	void Unmap() override;
 
 	void Flush() override;
+	bool Poll() override;
 
 #ifdef PCSX2_DEVBUILD
 	void SetDebugName(std::string_view name) override;

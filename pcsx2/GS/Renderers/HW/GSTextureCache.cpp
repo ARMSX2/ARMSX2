@@ -73,13 +73,19 @@ void GSTextureCache::ReadbackAll()
 	for (int type = 0; type < 2; type++)
 	{
 		for (auto t : m_dst[type])
-			Read(t, t->m_drawn_since_read);
+		{
+			// Callers (CSR reset, savestate freeze, renderer swap) consume local memory
+			// straight after this, so these reads can never be deferred to a later frame.
+			Read(t, t->m_drawn_since_read, true);
+		}
 	}
 }
 
 void GSTextureCache::RemoveAll(bool sources, bool targets, bool hash_cache)
 {
 	InvalidateTemporaryZ();
+	if (targets)
+		DiscardPendingDownloads();
 
 	if (sources || targets)
 	{
@@ -1763,7 +1769,9 @@ GSTextureCache::Source* GSTextureCache::LookupSource(const bool is_color, const 
 							{
 								t->UnscaleRTAlpha();
 
-								Read(t, t->m_drawn_since_read);
+								// The CPU conversion below consumes local memory immediately, so
+								// this one cannot be deferred to a later frame.
+								Read(t, t->m_drawn_since_read, true);
 
 								t->m_drawn_since_read = GSVector4i::zero();
 							}
@@ -4484,6 +4492,142 @@ bool GSTextureCache::PrepareDownloadTexture(u32 width, u32 height, GSTexture::Fo
 	return true;
 }
 
+void GSTextureCache::ApplyPendingDownload(PendingDownload& download)
+{
+	// An EE upload or a local->local move issued after this GPU copy is authoritative for
+	// those pages. Don't let the delayed result roll them back to an older frame.
+	if (!g_gs_renderer->AreAsyncReadbackPagesCurrent(
+			download.page_generations, download.tex0, download.target_rect))
+	{
+		return;
+	}
+
+	if (!download.texture->Map(download.read_rect))
+		return;
+
+	const GIFRegTEX0& TEX0 = download.tex0;
+	const u8* bits = download.texture->GetMapPointer();
+	const u32 pitch = download.texture->GetMapPitch();
+
+	// Mirrors the synchronous write-back in Read(), including our CPU RGB5A1 pack.
+	std::vector<u16> packed;
+	if (download.cpu_convert_rgb5a1)
+	{
+		const u32 w = static_cast<u32>(download.read_rect.z);
+		const u32 h = static_cast<u32>(download.read_rect.w);
+		packed.resize(static_cast<size_t>(w) * h);
+		for (u32 y = 0; y < h; y++)
+		{
+			const u32* src_px = reinterpret_cast<const u32*>(bits + y * pitch);
+			u16* dst_px = &packed[static_cast<size_t>(y) * w];
+			for (u32 x = 0; x < w; x++)
+			{
+				const u32 c = src_px[x];
+				dst_px[x] = static_cast<u16>(
+					((c >> 3) & 0x001Fu) | ((c >> 6) & 0x03E0u) | ((c >> 9) & 0x7C00u) | ((c >> 16) & 0x8000u));
+			}
+		}
+	}
+
+	// Publish the complete result atomically into the EE-facing shadow. This is a CPU-only
+	// lock around the swizzle/copy and never turns into a GPU wait.
+	{
+		GSLocalMemory& local_mem = g_gs_renderer->GetAsyncReadbackMemory();
+		const std::lock_guard lock(g_gs_renderer->GetAsyncReadbackMutex());
+		const GSOffset off = local_mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM);
+		switch (TEX0.PSM)
+		{
+			case PSMCT32:
+			case PSMZ32:
+			case PSMCT24:
+			case PSMZ24:
+				local_mem.WritePixel32(const_cast<u8*>(bits), pitch, off, download.target_rect, download.write_mask);
+				break;
+			case PSMCT16:
+			case PSMCT16S:
+			case PSMZ16:
+			case PSMZ16S:
+				if (download.cpu_convert_rgb5a1)
+				{
+					local_mem.WritePixel16(reinterpret_cast<u8*>(packed.data()),
+						static_cast<u32>(download.read_rect.z) * sizeof(u16), off, download.target_rect);
+				}
+				else
+				{
+					local_mem.WritePixel16(const_cast<u8*>(bits), pitch, off, download.target_rect);
+				}
+				break;
+			default:
+				Console.Error("TC: Unknown PSM %u on asynchronous readback", TEX0.PSM);
+				break;
+		}
+
+		g_gs_renderer->MarkAsyncReadbackPagesWrittenLocked(TEX0, download.target_rect);
+	}
+
+	download.texture->Unmap();
+}
+
+void GSTextureCache::ProcessPendingDownloads()
+{
+	if (m_pending_downloads.empty())
+		return;
+
+	// Publish only on VSync. If several snapshots of the same range completed during one
+	// frame, skip the intermediate versions and expose only the newest one.
+	const u64 current_frame = static_cast<u64>(g_perfmon.GetFrame());
+	// While the queue is saturated Read() is dropping every new snapshot, so retire at least
+	// the head unconditionally. Without this, a backend with no real Poll() (or a frame
+	// counter that got reset under us) could wedge the pipeline permanently.
+	const bool force_head = m_pending_downloads.size() >= MAX_PENDING_DOWNLOADS;
+	size_t ready_count = 0;
+	for (PendingDownload& download : m_pending_downloads)
+	{
+		const bool force = force_head && ready_count == 0;
+		const u64 age = current_frame >= download.queued_frame ? current_frame - download.queued_frame : 0;
+		const bool visibility_query = download.target_rect.width() == 1 && download.target_rect.height() == 1;
+		if (visibility_query && age < VISIBILITY_QUERY_LATENCY_FRAMES && !force)
+			break;
+
+		if (!download.texture->Poll())
+		{
+			if (age < MAX_PENDING_DOWNLOAD_FRAMES && !force)
+				break;
+
+			// Backend can't test completion (or the GPU is badly behind): retire it here on
+			// the GS thread rather than stalling the pipeline forever.
+			download.texture->Flush();
+		}
+		ready_count++;
+	}
+
+	while (ready_count > 0)
+	{
+		PendingDownload& download = m_pending_downloads.front();
+		const bool has_newer_snapshot = std::any_of(
+			std::next(m_pending_downloads.begin()),
+			std::next(m_pending_downloads.begin(), static_cast<ptrdiff_t>(ready_count)),
+			[&download](const PendingDownload& newer) {
+				return newer.tex0.U64 == download.tex0.U64 && newer.target_rect.eq(download.target_rect);
+			});
+
+		if (!has_newer_snapshot)
+			ApplyPendingDownload(download);
+
+		std::unique_ptr<GSDownloadTexture> completed_texture = std::move(download.texture);
+		m_pending_downloads.pop_front();
+		if (completed_texture && m_async_download_texture_pool.size() < MAX_PENDING_DOWNLOADS)
+			m_async_download_texture_pool.push_back(std::move(completed_texture));
+		ready_count--;
+	}
+}
+
+void GSTextureCache::DiscardPendingDownloads()
+{
+	m_pending_downloads.clear();
+	m_async_download_texture_pool.clear();
+}
+
 /*void GSTextureCache::InvalidateContainedTargets(u32 start_bp, u32 end_bp, u32 write_psm, u32 write_bw)
 {
 	const bool preserve_alpha = (GSLocalMemory::m_psm[write_psm].trbpp == 24);
@@ -4940,7 +5084,8 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 // Goal: retrive the data from the GPU to the GS memory.
 // Called each time you want to read from the GS memory.
 // full_flush is set when it's a Local->Local stransfer and both src and destination are the same.
-void GSTextureCache::InvalidateLocalMem(const GSOffset& off, const GSVector4i& r, bool full_flush)
+void GSTextureCache::InvalidateLocalMem(
+	const GSOffset& off, const GSVector4i& r, bool full_flush, bool force_synchronous)
 {
 	const u32 bp = off.bp();
 	const u32 psm = off.psm();
@@ -4960,7 +5105,7 @@ void GSTextureCache::InvalidateLocalMem(const GSOffset& off, const GSVector4i& r
 	// Could be reading Z24/32 back as CT32 (Gundam Battle Assault 3)
 	if (GSLocalMemory::m_psm[psm].bpp >= 16)
 	{
-		if (GSConfig.HWDownloadMode > GSHardwareDownloadMode::EnabledForceFull)
+		if (!IsHardwareDownloadReadbackEnabled(GSConfig.HWDownloadMode))
 		{
 			DevCon.Error("TC: Skipping depth readback of %ux%u @ %u,%u", r.width(), r.height(), r.left, r.top);
 			return;
@@ -5069,7 +5214,7 @@ void GSTextureCache::InvalidateLocalMem(const GSOffset& off, const GSVector4i& r
 					if (t->m_TEX0.TBP0 == bp && !dirty_rect.rintersect(targetr).rempty())
 						t->Update();
 
-					Read(t, draw_rect);
+					Read(t, draw_rect, force_synchronous);
 
 					if (draw_rect.rintersect(t->m_drawn_since_read).eq(t->m_drawn_since_read))
 						t->m_drawn_since_read = GSVector4i::zero();
@@ -5230,7 +5375,7 @@ void GSTextureCache::InvalidateLocalMem(const GSOffset& off, const GSVector4i& r
 					}
 				}
 
-				if (GSConfig.HWDownloadMode > GSHardwareDownloadMode::EnabledForceFull)
+				if (!IsHardwareDownloadReadbackEnabled(GSConfig.HWDownloadMode))
 				{
 					DevCon.Error("TC: Skipping depth readback of %ux%u @ %u,%u", targetr.width(), targetr.height(), targetr.left, targetr.top);
 					continue;
@@ -5240,7 +5385,7 @@ void GSTextureCache::InvalidateLocalMem(const GSOffset& off, const GSVector4i& r
 				if (exact_bp && !dirty_rect.rintersect(targetr).rempty())
 					t->Update();
 
-				Read(t, targetr);
+				Read(t, targetr, force_synchronous);
 
 				// Try to cut down how much we read next, if we can.
 				// Fatal Frame reads in vertical strips, SOCOM 2 does horizontal, so we can handle that below.
@@ -7346,7 +7491,7 @@ std::shared_ptr<GSTextureCache::Palette> GSTextureCache::LookupPaletteObject(con
 	return m_palette_map.LookupPalette(clut, pal, need_gs_texture);
 }
 
-void GSTextureCache::Read(Target* t, const GSVector4i& r)
+void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous)
 {
 	if ((!t->m_dirty.empty() && !t->m_dirty.GetTotalRect(t->m_TEX0, t->m_unscaled_size).rintersect(r).rempty()) || r.width() == 0 || r.height() == 0)
 		return;
@@ -7432,7 +7577,44 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r)
 	const bool direct_read =
 		(t->m_type == RenderTarget && t->m_scale == 1.0f && ps_shader == ShaderConvert::COPY) || cpu_convert_rgb5a1;
 
+	// GSHardwareDownloadMode::Asynchronous: issue the copy into a throwaway staging texture
+	// and retire it at a later VSync, so nothing here ever waits on a fence.
+	const bool asynchronous = !force_synchronous &&
+		GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous &&
+		g_gs_renderer->IsAsyncReadbackReady();
+	std::unique_ptr<GSDownloadTexture> asynchronous_dltex;
+	if (asynchronous)
+	{
+		if (m_pending_downloads.size() >= MAX_PENDING_DOWNLOADS)
+		{
+			// Keep the already-issued copies alive until their fences complete: dropping an
+			// incoming snapshot is safer than destroying an in-flight staging allocation, and
+			// it must never degrade back into a blocking readback when the GPU falls behind.
+			return;
+		}
+
+		// Only recycle a staging texture of the same format — PrepareDownloadTexture() sizes
+		// but does not re-format, so a mismatched buffer would be read with the wrong pitch.
+		for (auto it = m_async_download_texture_pool.begin(); it != m_async_download_texture_pool.end(); ++it)
+		{
+			if ((*it)->GetFormat() != fmt)
+				continue;
+
+			asynchronous_dltex = std::move(*it);
+			m_async_download_texture_pool.erase(it);
+			break;
+		}
+
+		dltex = &asynchronous_dltex;
+	}
+
 	if (!PrepareDownloadTexture(drc.z, drc.w, fmt, dltex))
+		return;
+
+	// PrepareDownloadTexture() reports success even when CreateDownloadTexture() returned
+	// null (it null-checks the pointer-to-unique_ptr, not the unique_ptr). Don't let that
+	// put a null texture into the pending queue, where Poll() would dereference it.
+	if (asynchronous && !asynchronous_dltex)
 		return;
 
 	// Per-frame readback patterns (occlusion tests etc.) redraw the same target before
@@ -7459,57 +7641,84 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r)
 		}
 	}
 
+	if (asynchronous)
+	{
+		m_pending_downloads.push_back({std::move(asynchronous_dltex), TEX0, drc, r, write_mask,
+			static_cast<u64>(g_perfmon.GetFrame()), cpu_convert_rgb5a1,
+			g_gs_renderer->CaptureAsyncReadbackPageGenerations()});
+		return;
+	}
+
 	dltex->get()->Flush();
 	if (!dltex->get()->Map(drc))
 		return;
 
 	// Why does WritePixelNN() not take a const pointer?
-	const GSOffset off = g_gs_renderer->m_mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM);
 	u8* bits = const_cast<u8*>(dltex->get()->GetMapPointer());
 	const u32 pitch = dltex->get()->GetMapPitch();
 
-	switch (TEX0.PSM)
+	std::vector<u16> packed;
+	if (cpu_convert_rgb5a1)
 	{
-		case PSMCT32:
-		case PSMZ32:
-		case PSMCT24:
-		case PSMZ24:
-			g_gs_renderer->m_mem.WritePixel32(bits, pitch, off, r, write_mask);
-			break;
-		case PSMCT16:
-		case PSMCT16S:
-		case PSMZ16:
-		case PSMZ16S:
-			if (cpu_convert_rgb5a1)
+		// Bit-identical to ps_convert_rgb5a1_16bits: the shader truncates each
+		// unorm channel back to its byte and packs (r&0xF8)>>3 | (g&0xF8)<<2 |
+		// (b&0xF8)<<7 | (a&0x80)<<8; here c already holds those bytes.
+		const u32 w = static_cast<u32>(drc.z);
+		const u32 h = static_cast<u32>(drc.w);
+		packed.resize(static_cast<size_t>(w) * h);
+		for (u32 y = 0; y < h; y++)
+		{
+			const u32* src_px = reinterpret_cast<const u32*>(bits + y * pitch);
+			u16* dst_px = &packed[static_cast<size_t>(y) * w];
+			for (u32 x = 0; x < w; x++)
 			{
-				// Bit-identical to ps_convert_rgb5a1_16bits: the shader truncates each
-				// unorm channel back to its byte and packs (r&0xF8)>>3 | (g&0xF8)<<2 |
-				// (b&0xF8)<<7 | (a&0x80)<<8; here c already holds those bytes.
-				const u32 w = static_cast<u32>(drc.z);
-				const u32 h = static_cast<u32>(drc.w);
-				std::vector<u16> packed(w * h);
-				for (u32 y = 0; y < h; y++)
-				{
-					const u32* src_px = reinterpret_cast<const u32*>(bits + y * pitch);
-					u16* dst_px = &packed[y * w];
-					for (u32 x = 0; x < w; x++)
-					{
-						const u32 c = src_px[x];
-						dst_px[x] = static_cast<u16>(
-							((c >> 3) & 0x001Fu) | ((c >> 6) & 0x03E0u) | ((c >> 9) & 0x7C00u) | ((c >> 16) & 0x8000u));
-					}
-				}
-				g_gs_renderer->m_mem.WritePixel16(reinterpret_cast<u8*>(packed.data()), w * sizeof(u16), off, r);
+				const u32 c = src_px[x];
+				dst_px[x] = static_cast<u16>(
+					((c >> 3) & 0x001Fu) | ((c >> 6) & 0x03E0u) | ((c >> 9) & 0x7C00u) | ((c >> 16) & 0x8000u));
 			}
-			else
-			{
-				g_gs_renderer->m_mem.WritePixel16(bits, pitch, off, r);
-			}
-			break;
+		}
+	}
 
-		default:
-			Console.Error("Unknown PSM %u on Read", TEX0.PSM);
-			break;
+	const auto write_download = [&](GSLocalMemory& local_mem) {
+		const GSOffset off = local_mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM);
+		switch (TEX0.PSM)
+		{
+			case PSMCT32:
+			case PSMZ32:
+			case PSMCT24:
+			case PSMZ24:
+				local_mem.WritePixel32(bits, pitch, off, r, write_mask);
+				break;
+			case PSMCT16:
+			case PSMCT16S:
+			case PSMZ16:
+			case PSMZ16S:
+				if (cpu_convert_rgb5a1)
+				{
+					local_mem.WritePixel16(reinterpret_cast<u8*>(packed.data()),
+						static_cast<u32>(drc.z) * sizeof(u16), off, r);
+				}
+				else
+				{
+					local_mem.WritePixel16(bits, pitch, off, r);
+				}
+				break;
+
+			default:
+				Console.Error("Unknown PSM %u on Read", TEX0.PSM);
+				break;
+		}
+	};
+
+	write_download(g_gs_renderer->m_mem);
+
+	// A forced-synchronous read under Asynchronous mode is authoritative too: publish it and
+	// bump the page generations so an older in-flight download can't overwrite it later.
+	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && g_gs_renderer->IsAsyncReadbackReady())
+	{
+		const std::lock_guard lock(g_gs_renderer->GetAsyncReadbackMutex());
+		write_download(g_gs_renderer->GetAsyncReadbackMemory());
+		g_gs_renderer->MarkAsyncReadbackPagesWrittenLocked(TEX0, r);
 	}
 
 	dltex->get()->Unmap();

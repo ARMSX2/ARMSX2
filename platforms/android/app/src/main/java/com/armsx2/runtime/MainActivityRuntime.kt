@@ -65,7 +65,9 @@ import com.armsx2.ui.WindowImpl
 import compose.icons.LineAwesomeIcons
 import compose.icons.lineawesomeicons.Android
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kr.co.iefriends.pcsx2.MainActivity
 import kr.co.iefriends.pcsx2.NativeApp
@@ -498,6 +500,79 @@ open class MainActivityRuntime : ComponentActivity() {
         @JvmStatic
         fun isVmStopInProgress(): Boolean = vmStopInProgress
 
+        /** True from game/BIOS boot until we are back in the library. This — not currentGame —
+         *  decides which rotation tier applyEmulationOrientation() uses: a BIOS boot has no
+         *  GameInfo yet is still emulation, so keying on currentGame made the BIOS follow the
+         *  LAUNCHER rotation (reported as "BIOS ignores the Renderer rotation and goes portrait"). */
+        private var emulationOwnsOrientation = false
+
+        /** The single "we're back in the library" cleanup: drop the current-game pointer (so
+         *  Settings reverts to Global scope) and hand the Activity's rotation back to the
+         *  launcher preference.
+         *
+         *  This MUST run on every terminal path out of the VM. It used to live only inside
+         *  stop()'s post-shutdown branch, which is guarded on `!vmRunLoopActive` — a flag the
+         *  VM thread clears from its own finally. stop() usually evaluates that guard first, so
+         *  the block was skipped and the surviving path never reverted anything: the launcher
+         *  stayed locked in the game's landscape until the process was killed. Idempotent. */
+        private fun onReturnedToLibrary() {
+            currentGame.value = null
+            emulationOwnsOrientation = false
+            stopAutoProgressiveScanHold()
+            instance?.runOnUiThread { instance?.applyEmulationOrientation() }
+        }
+
+        // ---- Auto Progressive Scan -------------------------------------------------------
+        // Some PS2 titles (Tekken 4, a number of Criterion games) offer 480p progressive output
+        // only if Triangle+Cross are held while the game boots — on real hardware you hold them
+        // from power-on. We reproduce that as a synthetic pad hold; games without the prompt
+        // simply ignore it. Codes match applyPadButton()'s switch in native-lib.cpp.
+        private const val PAD_CODE_TRIANGLE = 100
+        private const val PAD_CODE_CROSS = 96
+
+        /** How long to keep the combo held. Titles probe it at very different points — some well
+         *  after the PS2 logo — so this deliberately spans the whole boot sequence. */
+        private const val AUTO_PROGRESSIVE_HOLD_MS = 30_000L
+
+        /** Pad writes are dropped while no VM exists (applyPadButton bails on !HasValidVM), so
+         *  wait for boot rather than pressing into the void. Bounded so a failed boot can't spin. */
+        private const val AUTO_PROGRESSIVE_VM_WAIT_MS = 15_000L
+
+        private var autoProgressiveScanJob: Job? = null
+
+        private fun startAutoProgressiveScanHold() {
+            stopAutoProgressiveScanHold()
+            autoProgressiveScanJob = eScope.launch {
+                var held = false
+                try {
+                    var waited = 0L
+                    while (!NativeApp.hasActiveVM() && waited < AUTO_PROGRESSIVE_VM_WAIT_MS) {
+                        delay(100)
+                        waited += 100
+                    }
+                    if (!NativeApp.hasActiveVM())
+                        return@launch
+                    held = true
+                    NativeApp.setPadButton(PAD_CODE_TRIANGLE, 0, true)
+                    NativeApp.setPadButton(PAD_CODE_CROSS, 0, true)
+                    delay(AUTO_PROGRESSIVE_HOLD_MS)
+                } finally {
+                    // Release on every exit path, cancellation included — a stuck Triangle+Cross
+                    // would make the game unplayable. These are plain JNI calls, not suspends, so
+                    // they still run in a cancelled coroutine.
+                    if (held && NativeApp.hasActiveVM()) {
+                        NativeApp.setPadButton(PAD_CODE_TRIANGLE, 0, false)
+                        NativeApp.setPadButton(PAD_CODE_CROSS, 0, false)
+                    }
+                }
+            }
+        }
+
+        private fun stopAutoProgressiveScanHold() {
+            autoProgressiveScanJob?.cancel()
+            autoProgressiveScanJob = null
+        }
+
         fun start() {
             synchronized(vmLifecycleLock) {
                 if (vmStopInProgress || vmRunLoopActive || eState.value != EmuState.STOPPED) {
@@ -517,7 +592,18 @@ open class MainActivityRuntime : ComponentActivity() {
                     WindowImpl.showLibrary.value = false
                     WindowImpl.overlayVisible.value = false
                     WindowImpl.toolbarVisible.value = false
+                    emulationOwnsOrientation = true
                     applyRendererPrefs()
+                    // Both of these are consumed by native when the VM boots, so they must be
+                    // pushed BEFORE runVMThread (which blocks until the VM exits). One resolve,
+                    // per-game ∘ global.
+                    val bootCfg = com.armsx2.config.ConfigStore
+                        .resolveForGame(currentGame.value?.settingsKey)
+                    // Read by VMManager::SetEmuThreadAffinities during boot.
+                    runCatching { NativeApp.setAffinityMode(bootCfg.affinityMode) }
+                    // The hold itself waits for the VM to come up. BIOS boots skip it.
+                    if (bootCfg.autoProgressiveScan)
+                        startAutoProgressiveScanHold()
                     NativeApp.runVMThread(m_szGamefile)
                 } finally {
                     // runVMThread blocks until the VM exits (Stopping/Shutdown
@@ -541,6 +627,10 @@ open class MainActivityRuntime : ComponentActivity() {
                         WindowImpl.toolbarVisible.value = true
                         WindowImpl.showLibrary.value = false
                         WindowImpl.overlayVisible.value = false
+                        // This is the branch that actually fires on a normal game exit (stop()'s
+                        // equivalent block loses the vmRunLoopActive race), so the return-to-library
+                        // cleanup has to happen here or the launcher keeps the game's rotation.
+                        onReturnedToLibrary()
                         finishToLauncherIfRequested()
                     }
                 }
@@ -860,6 +950,9 @@ open class MainActivityRuntime : ComponentActivity() {
                     eState.value = EmuState.RUNNING
                     println("@@ANDROID_START_VM@@ kind=bios path=<empty>")
                     com.armsx2.input.PadRouter.reset()
+                    // The BIOS is emulation too: claim the renderer rotation tier so it honours the
+                    // Renderer page (global, since there is no game) instead of the launcher's.
+                    emulationOwnsOrientation = true
                     applyRendererPrefs()
                     NativeApp.runVMThread(m_szGamefile)
                 } finally {
@@ -876,6 +969,10 @@ open class MainActivityRuntime : ComponentActivity() {
                     }
                     if (restartNow) {
                         start()
+                    } else {
+                        // BIOS exit had no cleanup at all — it relied entirely on stop()'s racy
+                        // branch, so quitting the BIOS also left the launcher stuck in its rotation.
+                        onReturnedToLibrary()
                     }
                 }
             }
@@ -941,8 +1038,12 @@ open class MainActivityRuntime : ComponentActivity() {
                     true
                 }
             }
-            if (!shouldStop)
+            if (!shouldStop) {
+                // Nothing left to stop (the VM self-terminated). Still reconcile the library
+                // state — this early return also used to leak a stale per-game rotation.
+                onReturnedToLibrary()
                 return
+            }
 
             WindowImpl.overlayVisible.value = false
             WindowImpl.showLibrary.value = false
@@ -977,15 +1078,9 @@ open class MainActivityRuntime : ComponentActivity() {
                             WindowImpl.showLibrary.value = false
                             WindowImpl.overlayVisible.value = false
                         }
-                        // No game is running any more — clear the current-game pointer so the
-                        // Settings screen reverts to Global scope. Otherwise the last-played game
-                        // lingered here and SettingsScreen's scopeContext (game ?: currentGame)
-                        // kept surfacing per-game scope for it after returning to the library.
-                        currentGame.value = null
-                        // No game running → revert the Activity to the GLOBAL orientation (a
-                        // per-game rotation lock must not linger in the library). currentGame is
-                        // now null so applyEmulationOrientation resolves the global value.
-                        instance?.runOnUiThread { instance?.applyEmulationOrientation() }
+                        // Clear the current-game pointer (so Settings reverts to Global scope) and
+                        // hand rotation back to the launcher. Shared with the other terminal paths.
+                        onReturnedToLibrary()
                         finishToLauncherIfRequested()
                     }
                 }
@@ -1519,7 +1614,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // low-latency mode (queue 0); low-end devices retain the smoother queue 2.
         runCatching { com.armsx2.config.ConfigStore.seedFreshInstallDefaults(applicationContext) }
         // One-time: existing capable devices also get the Low Latency default (matches fresh installs).
-        runCatching { com.armsx2.config.ConfigStore.migrateLowLatencyDefault(applicationContext) }
+        runCatching { com.armsx2.config.ConfigStore.migrateLowLatencyOff(applicationContext) }
         // Steer the renderer's Auto resolution to Vulkan HW on Adreno (tile-memory framebuffer-fetch
         // fast path); Mali/others stay on OpenGL. Sets a native flag GSUtil::GetPreferredRenderer reads
         // before the GS starts, so an explicit GL/SW pick still wins. Re-asserted each launch.
@@ -1732,12 +1827,13 @@ open class MainActivityRuntime : ComponentActivity() {
     /** Apply the user's Emulation Screen Orientation choice, resolved per-game (∘ global).
      *  0=Use Device Setting, 1=Landscape, 2=Portrait, 3=Auto-Rotate. SENSOR_* variants let
      *  the device still flip 180° within the locked axis. Called on launch, on change, at
-     *  game boot (applyRendererPrefs) and on exit-to-library — currentGame decides the tier:
-     *  a running game gets its per-game rotation, the library/menus get the global one. */
+     *  game boot (applyRendererPrefs) and on exit-to-library — emulationOwnsOrientation decides
+     *  the tier: emulation gets the renderer rotation, the library/menus get the launcher one. */
     fun applyEmulationOrientation() {
-        // A running game uses its per-game renderer rotation; the launcher/library uses its own
-        // app-level rotation (AetherSX2-style split). Both share the 0/1/2/3 mapping below.
-        val orientation = if (currentGame.value != null)
+        // Emulation (game OR BIOS) uses the renderer rotation, resolved per-game when there is a
+        // game and global otherwise; the launcher/library uses its own app-level rotation
+        // (AetherSX2-style split). Both share the 0/1/2/3 mapping below.
+        val orientation = if (emulationOwnsOrientation)
             com.armsx2.config.ConfigStore.resolveForGame(currentGame.value?.settingsKey).orientation
         else
             com.armsx2.ui.theme.LauncherOrientationPreferences.mode.value

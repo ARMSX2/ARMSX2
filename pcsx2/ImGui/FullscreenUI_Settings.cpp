@@ -2871,6 +2871,9 @@ void FullscreenUI::DrawGraphicsSettingsPage(SettingsInterface* bsi, bool show_ad
 		FSUI_NSTR("Disable Readbacks (Synchronize GS Thread)"),
 		FSUI_NSTR("Unsynchronized (Non-Deterministic)"),
 		FSUI_NSTR("Disabled (Ignore Transfers)"),
+		// Must stay index 5 to match GSHardwareDownloadMode::Asynchronous; without this entry
+		// DrawIntListSetting falls back to "Unknown" for the mode.
+		FSUI_NSTR("Asynchronous (Experimental, Readback Lags A Frame)"),
 	};
 	static constexpr const char* s_screenshot_sizes[] = {
 		FSUI_NSTR("Display Resolution (Aspect Corrected)"),

@@ -18,8 +18,11 @@
 
 #include "common/Threading.h"
 
+#include <array>
 #include <atomic>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -154,6 +157,29 @@ private:
 		bool Update(int tw, int th, int bpp, int& len);
 
 	} m_tr;
+
+	// GSHardwareDownloadMode::Asynchronous shadow of local memory.
+	//
+	// Completed GPU downloads are swizzled in here instead of directly becoming the EE
+	// thread's view of live GS memory. That stops a frame-old download from racing with
+	// the next frame's writes and exposing a half-old/half-new result. Every access is
+	// CPU-only and under m_async_readback_mutex — it must NEVER become a GPU wait.
+	//
+	// Deviation from the upstream port: allocated on demand (a second GSLocalMemory is a
+	// 4MB wrapped mapping, and the two-object split would otherwise pay for two of them
+	// even though this mode is opt-in). Never freed once allocated, because the EE thread
+	// may be inside a shadow read while the GS thread turns the mode off.
+	std::unique_ptr<GSLocalMemory> m_async_readback_mem;
+	std::mutex m_async_readback_mutex;
+	std::atomic<bool> m_async_readback_ready{false};
+	std::array<u64, GS_MAX_PAGES> m_async_readback_page_generations = {};
+	u64 m_async_readback_generation = 0;
+
+	/// Bumps the generation of every page in `rect`. Caller must hold m_async_readback_mutex.
+	void MarkAsyncReadbackPagesWritten(const GSOffset& offset, const GSVector4i& rect);
+
+	/// Allocates + seeds the shadow if this object doesn't have one yet. GS thread only.
+	bool EnsureAsyncReadbackMemory();
 
 protected:
 	// Executor-owned HOST->LOCAL write cursor (advanced by wi() across transfer
@@ -676,6 +702,26 @@ public:
 	void WriteCSR(u32 csr) { m_regs->CSR.U32[1] = csr; }
 	void ReadFIFO(u8* mem, int size);
 	void ReadLocalMemoryUnsync(u8* mem, int qwc, GIFRegBITBLTBUF BITBLTBUF, GIFRegTRXPOS TRXPOS, GIFRegTRXREG TRXREG);
+
+	// Asynchronous-readback shadow. Every accessor routes through m_mem_target so the front
+	// parser object and the back renderer object always agree on the one authoritative shadow.
+	GSLocalMemory& GetAsyncReadbackMemory() { return *m_mem_target->m_async_readback_mem; }
+	std::mutex& GetAsyncReadbackMutex() { return m_mem_target->m_async_readback_mutex; }
+	bool IsAsyncReadbackReady() const
+	{
+		return m_mem_target->m_async_readback_ready.load(std::memory_order_acquire);
+	}
+	/// Snapshot of the per-page write generations, taken when a GPU download is queued.
+	std::array<u64, GS_MAX_PAGES> CaptureAsyncReadbackPageGenerations();
+	/// False when any page covered by (TEX0, rect) was written after `generations` was taken,
+	/// i.e. a CPU upload or local->local move superseded the in-flight download.
+	bool AreAsyncReadbackPagesCurrent(const std::array<u64, GS_MAX_PAGES>& generations,
+		const GIFRegTEX0& TEX0, const GSVector4i& rect);
+	/// Marks (TEX0, rect) written. Caller must already hold GetAsyncReadbackMutex().
+	void MarkAsyncReadbackPagesWrittenLocked(const GIFRegTEX0& TEX0, const GSVector4i& rect);
+	/// Re-seeds the whole shadow from live local memory (boot, savestate load, mode enable).
+	void SyncAsyncReadbackMemory();
+
 	template<int index> void Transfer(const u8* mem, u32 size);
 	int Freeze(freezeData* fd, bool sizeonly);
 	int Defrost(const freezeData* fd);

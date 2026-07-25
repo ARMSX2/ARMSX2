@@ -54,11 +54,25 @@ object ThemePreferences {
         val stored = MainActivityRuntime.prefs.getString(PreferenceKey, ThemeMode.System.name)
         mode.value = ThemeMode.entries.firstOrNull { it.name == stored } ?: ThemeMode.Blue
         loadCustomColor()
+        loadOledBase()
     }
 
     fun set(value: ThemeMode) {
         mode.value = value
         MainActivityRuntime.prefs.edit { putString(PreferenceKey, value.name) }
+    }
+
+    /** "OLED black" as a MODIFIER on whatever theme is selected, rather than its own theme.
+     *  Requested so users can have e.g. OLED + purple or OLED + yellow; as a modifier it also
+     *  composes with Custom and the animated RGB mode, and needs no enum entry per hue. */
+    private const val OledBaseKey = "ui.theme.oledBase"
+    val oledBase = mutableStateOf(false)
+
+    fun loadOledBase() { oledBase.value = MainActivityRuntime.prefs.getBoolean(OledBaseKey, false) }
+
+    fun setOledBase(on: Boolean) {
+        oledBase.value = on
+        MainActivityRuntime.prefs.edit { putBoolean(OledBaseKey, on) }
     }
 
     /** Accent for [ThemeMode.Custom], as packed ARGB. Defaults to the Cyan accent. */
@@ -330,6 +344,32 @@ private val OledScheme = NightScheme.copy(
 )
 
 /**
+ * Drop the large surfaces of an already-resolved scheme to true black, keeping that scheme's
+ * accent and containers. This is what makes "OLED + purple" / "OLED + yellow" possible: the hue
+ * themes tint their own surfaces, so only the big areas need overriding to get an OLED panel's
+ * deepest black while the accent still reads against it.
+ *
+ * Deliberately does NOT touch the primary, secondary or container roles — those are small chips
+ * where the
+ * selected hue is exactly what the user asked to keep. ThemeMode.Oled remains the neutral
+ * (blue-accent) preset for anyone who wants the old all-grey look.
+ */
+/** Is this a DARK scheme? Checked by luminance rather than by ThemeMode, because a light scheme
+ *  can arrive from several modes (Light, System-in-light, and MaterialYou's dynamicLight, which is
+ *  not reference-equal to DayScheme). Blackening a light scheme's surfaces would leave dark text
+ *  on black — unreadable — so OLED base must skip those. */
+private fun ColorScheme.isDarkScheme(): Boolean =
+    (background.red * 0.299f + background.green * 0.587f + background.blue * 0.114f) < 0.5f
+
+private fun ColorScheme.withOledBase(): ColorScheme = copy(
+    background = Color.Black,
+    surface = Color.Black,
+    surfaceVariant = Color(0xFF0E0E0E),
+    outline = Color(0xFF262626),
+    outlineVariant = Color(0xFF161616),
+)
+
+/**
  * A hue-tinted dark scheme, built from Night the same way Black/Oled are.
  *
  * Night IS the blue theme, so a colour variant is "Night with a different hue": the accent
@@ -491,7 +531,13 @@ fun Armsx2Theme(content: @Composable () -> Unit) {
         }
     }
     MaterialTheme(
-        colorScheme = scheme,
+        // OLED base is a modifier over the resolved scheme, so it applies to every mode above —
+        // including MaterialYou, Custom and the animated Rgb one. Light themes are left alone;
+        // forcing black surfaces under light-theme text would be unreadable.
+        colorScheme = if (ThemePreferences.oledBase.value && scheme.isDarkScheme())
+            scheme.withOledBase()
+        else
+            scheme,
         typography = ArmsTypography,
         content = content,
     )

@@ -189,6 +189,29 @@ fun PerformanceTab(state: MutableState<Settings>) {
             )
         }
         SettingsDivider()
+        // Affinity Control Mode — opt-in CPU pinning for the EE/VU/GS threads. Android normally
+        // leaves them unpinned on purpose (EAS puts the busiest thread on the prime core, and
+        // pinning VU to a mid-tier big core measured ~1.4x slower), so this is EXPERIMENTAL and
+        // default Disabled. It exists because the tradeoff is workload-dependent: GS-bound titles
+        // benefited from an explicitly placed GS thread. Applies on the next boot.
+        SegmentedGridRow(
+            label = str("perf.affinity.label"),
+            options = listOf(
+                str("perf.affinity.disabled"),
+                "EE > VU > GS",
+                "EE > GS > VU",
+                "VU > EE > GS",
+                "VU > GS > EE",
+                "GS > EE > VU",
+                "GS > VU > EE",
+                str("perf.affinity.performanceCores"),
+            ),
+            selectedIndex = s.affinityMode.coerceIn(0, 7),
+            columns = 2,
+            description = str("perf.affinity.description"),
+            onChange = { apply(s.copy(affinityMode = it)) },
+        )
+        SettingsDivider()
         CollapsibleSection(str("perf.speedhacks.title"), initiallyExpanded = false) {
             IntSliderRow(
                 label = str("perf.eeCycleRate.label"),
