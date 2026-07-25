@@ -414,7 +414,7 @@ static void recStoreLoadResult(const a64::Register& result = a64::x0)
 // LDR off RFASTMEMBASE is already optimal for those.
 //
 // Returns true if the shortcut emitted the load; caller should bail out.
-static bool recLoadConstPaddrMMIOShortcut(u32 bits, bool sign)
+static bool recLoadConstPaddrMMIOShortcut(u32 bits, bool sign, bool forceEventTest)
 {
 	if (!GPR_IS_CONST1(_Rs_))
 		return false;
@@ -433,10 +433,28 @@ static bool recLoadConstPaddrMMIOShortcut(u32 bits, bool sign)
 	// of degrading to the dynamic path after the first access. x86 parity:
 	// its const-MMIO sites flush nothing at all (FLUSH_FULLVTLB).
 	//
-	// FLUSH_PC is needed: a const address can resolve to the UNMAPPED handler,
-	// whose vtlb_Miss > cpuTlbMiss > cpuException path computes EPC from the
-	// cpuRegs.pc this seam flushes.
-	iFlushCall(FLUSH_VTLB | FLUSH_PC);
+	// FLUSH_PC only when the const address resolves to an UNMAPPED handler:
+	// its vtlb_Miss > cpuTlbMiss > cpuException path computes EPC from the
+	// cpuRegs.pc this seam flushes (pinned by
+	// EeRecTraps.LoadTlbMissInDelaySlotSetsCauseBdAndBranchEpc). Hardware
+	// handlers never raise guest exceptions and tolerate a stale cpuRegs.pc
+	// (x86 parity again: it never flushes pc at MMIO sites), so their per-access
+	// mov/movk/str pc store would be dead weight in MMIO bursts.
+	//
+	// EXCEPTION: forceEventTest (EE-counter reads). The caller ends the block
+	// with the g_branch=2 event-test exit, whose FLUSH_EVERYTHING does NOT
+	// include FLUSH_PC (0x200 vs 0x1ff) — this seam's pc store (pc is already
+	// advanced past the load) is what DispatcherReg resumes from.
+	//
+	// Note this reads handler identity at COMPILE time to decide a RUNTIME
+	// property, but adds no new assumption: the shortcut already resolves the
+	// callee from the same compile-time mapping and hard-codes a direct BL to
+	// it. If a remap could invalidate the handler identity here it would
+	// already be branching to the wrong callee, so the pc decision is exactly
+	// as sound as the shortcut itself.
+	const bool needPcFlush =
+		vtlb_IsUnmappedHandlerID(vmv.assumeHandlerGetID()) || forceEventTest;
+	iFlushCall(needPcFlush ? (FLUSH_VTLB | FLUSH_PC) : FLUSH_VTLB);
 
 	// INTC_STAT inline-load when the speedhack is disabled. With it on
 	// (the default), fall through to a direct BL of the registered
@@ -524,7 +542,7 @@ static void recLoad(u32 bits, bool sign)
 		forceEventTest = (srcadr & 0xFFFFE000) == 0x10000000;
 	}
 
-	if (recLoadConstPaddrMMIOShortcut(bits, sign))
+	if (recLoadConstPaddrMMIOShortcut(bits, sign, forceEventTest))
 	{
 		if (forceEventTest)
 			g_branch = 2;
@@ -679,11 +697,14 @@ static bool recStoreConstPaddrMMIOShortcut(u32 bits)
 
 	const u32 paddr = vmv.assumeHandlerGetPAddr(addr_const);
 
-	// FLUSH_VTLB | FLUSH_PC - see recLoadConstPaddrMMIOShortcut for both
-	// halves (PC feeds the unmapped-page TLB-miss EPC). Keeping const marks
-	// is what lets a GS-priv store burst (5x sd to 0x120000xx off one LUI)
-	// emit five direct BLs instead of one BL + four dynamic-path stores.
-	iFlushCall(FLUSH_VTLB | FLUSH_PC);
+	// FLUSH_VTLB, plus FLUSH_PC only for unmapped handlers — see
+	// recLoadConstPaddrMMIOShortcut for both halves (PC feeds the
+	// unmapped-page TLB-miss EPC; hardware handlers never read it).
+	// Keeping const marks is what lets a GS-priv store burst (5x sd to
+	// 0x120000xx off one LUI) emit five direct BLs instead of one BL +
+	// four dynamic-path stores.
+	const bool canRaiseException = vtlb_IsUnmappedHandlerID(vmv.assumeHandlerGetID());
+	iFlushCall(canRaiseException ? (FLUSH_VTLB | FLUSH_PC) : FLUSH_VTLB);
 
 	int szidx = 0;
 	switch (bits)

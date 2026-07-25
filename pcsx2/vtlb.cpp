@@ -749,6 +749,11 @@ __ri vtlbHandler vtlb_RegisterHandler(vtlbMemR8FP* r8, vtlbMemR16FP* r16, vtlbMe
 	return rv;
 }
 
+bool vtlb_IsUnmappedHandlerID(vtlbHandler id)
+{
+	return id == UnmappedVirtHandler || id == UnmappedPhyHandler;
+}
+
 
 // Maps the given hander (created with vtlb_RegisterHandler) to the specified memory region.
 // New mappings always assume priority over previous mappings, so place "generic" mappings for

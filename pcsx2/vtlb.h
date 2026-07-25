@@ -67,6 +67,14 @@ extern void vtlb_ReassignHandler( vtlbHandler rv,
 	vtlbMemW8FP* w8,vtlbMemW16FP* w16,vtlbMemW32FP* w32,vtlbMemW64FP* w64,vtlbMemW128FP* w128
 );
 
+// True if the handler id is one of the two unmapped-page handlers
+// (UnmappedVirtHandler / UnmappedPhyHandler). These are the only handlers
+// whose access paths can raise a guest exception (vtlb_Miss -> cpuTlbMiss
+// reads cpuRegs.pc for EPC); every registered hardware handler tolerates a
+// stale cpuRegs.pc. Recompilers use this to decide whether a compile-time
+// resolved handler call needs the current pc flushed.
+extern bool vtlb_IsUnmappedHandlerID(vtlbHandler id);
+
 
 extern void vtlb_MapHandler(vtlbHandler handler,u32 start,u32 size);
 extern void vtlb_MapBlock(void* base,u32 start,u32 size,u32 blocksize=0);
