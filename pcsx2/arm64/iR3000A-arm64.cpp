@@ -1043,8 +1043,53 @@ void rpsxBREAK()
 
 // recLUT_SetPage is defined in BaseblockEx.h (architecture-independent)
 
+// Block-coverage counters for the recClearIOP fast path. s_iopCodeCov[g]
+// counts live recBlocks entries whose [startpc, startpc+size*4) span overlaps
+// 256-byte granule g of the HWADDR window. Every qualifying IOP RAM store
+// funnels through psxRecClearMem (SMC detection), and in practice ~100% of
+// them hit addresses no compiled block covers — a zero counter proves that in
+// O(1) and skips the binary search over recBlocks entirely. Maintained at the
+// three block-lifecycle points in this file (size-finalize, recompile reuse
+// of an existing entry, psxRecClearMem removal) and zeroed on recResetIOP.
+//
+// Counting the whole span rather than just block heads is what keeps
+// mid-block stores correct, and counts (not bits) stay exact when overlapping
+// blocks are removed independently.
+//
+// ROM-resident blocks (startpc >= kIopCovSpan, e.g. BIOS at 0x1fcxxxxx) are
+// never counted: stores can't target ROM, so no clear ever queries them.
+static constexpr u32 kIopCovShift = 8;
+static constexpr u32 kIopCovSpan = 0x800000; // 8MB: IOP RAM incl. extraRam mirrors
+static constexpr u32 kIopCovGranules = kIopCovSpan >> kIopCovShift;
+static u16 s_iopCodeCov[kIopCovGranules];
+
+static __fi void iopCovAdjust(u32 startpc_hw, u32 bytes, int delta)
+{
+	if (startpc_hw >= kIopCovSpan || bytes == 0)
+		return;
+
+	const u32 gfirst = startpc_hw >> kIopCovShift;
+	// A block whose span runs off the end of the window (top-of-RAM start,
+	// long block) would otherwise index past the array. Those tail granules
+	// are unreachable by any store — the probe index is masked into the
+	// window — so clamping only drops coverage nothing can query.
+	const u32 glast = std::min((startpc_hw + bytes - 1) >> kIopCovShift, kIopCovGranules - 1);
+	for (u32 g = gfirst; g <= glast; g++)
+	{
+		pxAssert(delta > 0 ? s_iopCodeCov[g] != 0xFFFF : s_iopCodeCov[g] != 0);
+		s_iopCodeCov[g] = static_cast<u16>(static_cast<int>(s_iopCodeCov[g]) + delta);
+	}
+}
+
 static __fi u32 psxRecClearMem(u32 pc)
 {
+	// O(1) reject: if no live block's span overlaps this granule, nothing can
+	// need clearing — skip ahead to the next granule boundary. This is the
+	// overwhelmingly common case (IOP stores to data addresses).
+	const u32 hw = HWADDR(pc);
+	if (hw < kIopCovSpan && s_iopCodeCov[hw >> kIopCovShift] == 0)
+		return (((hw >> kIopCovShift) + 1) << kIopCovShift) - hw;
+
 	// Look up the containing block via recBlocks instead of testing the
 	// per-instruction LUT fnptr. The LUT only patches block-head slots away
 	// from iopJITCompile; mid-block words still hold the trampoline, so a
@@ -1072,6 +1117,7 @@ static __fi u32 psxRecClearMem(u32 pc)
 
 		lowerextent = std::min(lowerextent, pexblock->startpc);
 		upperextent = std::max(upperextent, pexblock->startpc + pexblock->size * 4);
+		iopCovAdjust(pexblock->startpc, pexblock->size * 4, -1);
 		recBlocks.Remove(blockidx, blockidx);
 	}
 
@@ -1220,6 +1266,7 @@ void recResetIOP()
 		memset(s_pInstCache, 0, sizeof(EEINST) * s_nInstCacheSize);
 
 	recBlocks.Reset();
+	memset(s_iopCodeCov, 0, sizeof(s_iopCodeCov));
 	g_psxMaxRecMem = 0;
 
 	psxbranch = 0;
@@ -1306,6 +1353,14 @@ static void iopRecRecompile(const u32 startpc)
 	// address — using recPtr instead lands the branch on padding bytes
 	// and triggers SIGILL. Same fix as EE rec at iR5900-arm64.cpp:1751.
 	const uptr block_fnptr = (uptr)armGetCurrentCodePointer();
+
+	// New() re-binds an existing entry in place rather than replacing it, and
+	// the entry keeps its old size until the size-finalize at the end of this
+	// function overwrites it. Retire that stale span's coverage first — the
+	// old and new spans can differ. (A never-finalized entry has size 0 from
+	// insert()'s memset, which iopCovAdjust ignores.)
+	if (BASEBLOCKEX* prev = recBlocks.Get(HWADDR(startpc)); prev && prev->startpc == HWADDR(startpc))
+		iopCovAdjust(prev->startpc, prev->size * 4, -1);
 
 	// See the EE rec's equivalent: New() creates or re-binds, and publishes
 	// the owner for the link sites this block is about to register.
@@ -1441,6 +1496,7 @@ StartRecomp:
 
 	pxAssert((psxpc - startpc) >> 2 <= 0xffff);
 	s_pCurBlockEx->size = (psxpc - startpc) >> 2;
+	iopCovAdjust(s_pCurBlockEx->startpc, s_pCurBlockEx->size * 4, +1);
 
 	if (!(psxpc & 0x10000000))
 		g_psxMaxRecMem = std::max((psxpc & ~0xa0000000), g_psxMaxRecMem);

@@ -162,6 +162,56 @@ TEST(IopSmc, ClearOutsideCodeRegionLeavesActiveBlockIntact)
 	EXPECT_EQ(h.GetGprInterp(reg::v0), 42u);
 }
 
+TEST(IopSmc, OverwritePastCoverageGranuleBoundaryTriggersRecompile)
+{
+	// Regression coverage for the s_iopCodeCov fast path in psxRecClearMem
+	// (iR3000A-arm64.cpp): a zero coverage counter lets a store skip the
+	// recBlocks search entirely. A block longer than one 256-byte granule
+	// must bump the counter for EVERY granule its span overlaps — if only
+	// the head granule were counted, a store into the block's tail would
+	// early-out and leak the SMC through to stale compiled code.
+	//
+	// 70 body words = 280 bytes from kProgramPc (granule-aligned), so the
+	// block spans two granules and the overwritten word (offset 268) sits
+	// in the second one.
+	JitTestHarness h;
+	std::vector<u32> body;
+	body.push_back(ADDIU(reg::v0, reg::zero, 0));
+	for (int i = 0; i < 69; i++)
+		body.push_back(ADDIU(reg::v0, reg::v0, 1));
+	h.LoadProgramAt(kProgramPc, body.data(), body.size(), /*append_jr_ra_term=*/true);
+	h.Run();
+	ASSERT_EQ(h.GetGprInterp(reg::v0), 69u);
+
+	// Word 67 (byte offset 268 >= 256): +1 becomes +100 → 68 + 100.
+	iopMemWrite32(kProgramPc + 67 * 4, ADDIU(reg::v0, reg::v0, 100));
+	h.SetPc(kProgramPc);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	EXPECT_EQ(h.GetGprInterp(reg::v0), 168u);
+}
+
+TEST(IopSmc, MirrorAddressStoreClearsBlock)
+{
+	// Store through the KSEG0 mirror (0x8001xxxx) of a block compiled at
+	// its KUSEG address. The clear path and the s_iopCodeCov fast path
+	// both key on HWADDR (mirror prefix stripped), so the mirror store
+	// must invalidate the same block. If the mirrored address were used
+	// raw, its granule counter would read zero and the SMC would leak.
+	JitTestHarness h;
+	h.LoadProgram({
+		ADDIU(reg::v0, reg::zero, 100),
+	});
+	h.Run();
+	ASSERT_EQ(h.GetGprInterp(reg::v0), 100u);
+
+	iopMemWrite32(0x80000000u | kProgramPc, ADDIU(reg::v0, reg::zero, 200));
+	h.SetPc(kProgramPc);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	EXPECT_EQ(h.GetGprInterp(reg::v0), 200u);
+}
+
 TEST(IopSmc, OverwriteLastWordOfBlockBeforeTerminator)
 {
 	// Edge case: write at the exact last instruction of a block's body
