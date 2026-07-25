@@ -301,4 +301,56 @@ TEST(EeVu0Cfc2Ctc2RoundTrip, CfcThenCtcShufflesViBetweenIndices)
 	EXPECT_EQ(h.GetVu0ViJit(7), h.GetVu0ViInterp(7));
 }
 
+// =========================================================================
+//  CTC2 to vi00 — the write is a no-op, the SYNC is not
+// =========================================================================
+
+// vi00 is hardwired to zero, so `CTC2 rt, $vi00` stores nothing — which makes
+// it a free VU0 barrier, and games use it as exactly that. The emitter used to
+// `return` on `fs == 0` BEFORE emitting the conditional sync, deleting the
+// barrier: the EE then ran ahead of an in-flight micro program and consumed
+// half-computed VU0 results. (Xenosaga Episode I rendered massively zoomed in;
+// the game brackets its transform setup with interlocked CTC2-to-vi00.)
+//
+// Both references emit the sync before any destination-based early return:
+// x86 recCTC2 calls COP2_Interlock(1) ahead of its `if (!_Rd_) return`, and the
+// interpreter runs vu0Sync() + _vu0WaitMicro() ahead of its `_Fs_ == 0` check.
+//
+// The following CFC2 is the detector: the COP2 analysis pass marks only the
+// FIRST COP2 op after a kick as the sync point ("nothing can trigger a VU0
+// program between COP2 instructions"), so the CFC2 emits no sync of its own and
+// reads whatever VI state the barrier left behind.
+TEST(EeVu0Ctc2, InterlockedWriteToVi00DrainsPendingMicro)
+{
+	EeRecTestHarness h;
+	h.EnableVu0Capture();
+	h.EnableCop1();
+	h.SeedVu0Vi(REG_VPU_STAT, 0); // start clean
+	h.SeedVu0Vi(1, 0x0000);       // stale; the micro program rewrites it to 0x111
+
+	// 32 NOP pairs keep VPU_STAT bit 0 set past the kick, so the barrier's sync
+	// seam takes the CALL path rather than the "already idle" skip.
+	u32 off = 0;
+	for (int i = 0; i < 32; i++, off += 8)
+		h.SeedVu0Microprogram(off, {vu::NopPair()});
+	h.SeedVu0Microprogram(off, {
+		vu::VuOp{vu::VIADDIU_L(vu::vi::vi1, vu::vi::vi0, 0x111), vu::VNOP_U()},
+		vu::EBitNopPair(),
+		vu::NopPair(), // explicit E-bit delay pair — keep micro mem deterministic
+	});
+
+	h.LoadProgram({
+		VCALLMS(0),      // kick — VPU_STAT busy, vi1 not yet written
+		CTC2_I(r_t0, 0), // barrier: interlocked write to read-only vi00
+		CFC2(r_t1, 1),   // analysis clears this op's sync — relies on the barrier
+	});
+	h.Run();
+
+	// With the barrier the micro has drained and vi1 == 0x111. Without it the
+	// JIT reads the stale 0.
+	EXPECT_EQ(static_cast<u32>(h.GetGpr64Jit(r_t1)), 0x111u);
+	EXPECT_EQ(h.GetGpr64Jit(r_t1), h.GetGpr64Interp(r_t1));
+	EXPECT_EQ(h.GetVu0ViJit(1), h.GetVu0ViInterp(1));
+}
+
 } // namespace recompiler_tests

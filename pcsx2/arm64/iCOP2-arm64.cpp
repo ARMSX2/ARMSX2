@@ -1361,13 +1361,27 @@ void recCOP2_CTC2()
 {
 	const int fs = _Rd_; // _Fs_ in VU encoding = _Rd_ in EE encoding
 
-	if (fs == 0) return; // VI[0] is read-only
-
-	// Read-only registers — no-op
-	if (fs == REG_MAC_FLAG || fs == REG_TPC || fs == REG_VPU_STAT)
+	// The VU0 sync is a property of the INSTRUCTION, not of its destination, so
+	// it must be emitted before any "this register is read-only" early return.
+	// x86 recCTC2 runs COP2_Interlock(1) before its `if (!_Rd_) return`, and the
+	// interpreter runs vu0Sync() + _vu0WaitMicro() before its own `_Fs_ == 0`
+	// check. Writing the read-only vi00 is a standard "wait until VU0 finishes"
+	// barrier idiom (Xenosaga Episode I uses it throughout its transform setup),
+	// so returning early without emitting the interlock silently deletes the
+	// barrier: the EE then races ahead of the micro program and consumes a
+	// half-computed transform. Symptom was a massively zoomed-in scene.
+	if (fs == 0)
+	{
+		// vi00 is hardwired read-only, so there is nothing to write — but the
+		// interlock still applies. Matches x86, which returns after
+		// COP2_Interlock(1) and therefore skips the non-interlock sync below.
+		if (cpuRegs.code & 1)
+			cop2EmitConditionalSync(true, _vu0WaitMicro);
 		return;
+	}
 
-	// FBRST and CMSAR1 have complex side effects — use interpreter
+	// FBRST and CMSAR1 have complex side effects — use interpreter (::CTC2 does
+	// its own vu0Sync/_vu0WaitMicro, so the sync is covered on that path).
 	if (fs == REG_FBRST || fs == REG_CMSAR1)
 	{
 		recCall(::CTC2);
@@ -1379,6 +1393,11 @@ void recCOP2_CTC2()
 	// (const/scalar/quad/pin aware) and writes only VU0 state; its raw w1/w2/
 	// w3/w9 scratch is outside the EE allocator pool by the GE-M2 carve-out.
 	cop2EmitConditionalSync(cpuRegs.code & 1, _vu0WaitMicro);
+
+	// Read-only registers — the sync above is the whole effect; no write. (x86
+	// likewise falls through to its switch and breaks, after the sync.)
+	if (fs == REG_MAC_FLAG || fs == REG_TPC || fs == REG_VPU_STAT)
+		return;
 
 	// Load source value from cpuRegs.GPR[rt].UL[0]
 	if (GPR_IS_CONST1(_Rt_))

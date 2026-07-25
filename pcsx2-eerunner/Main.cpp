@@ -77,6 +77,10 @@
 
 #include "pcsx2/ee_divtrace.h"
 
+#if defined(ARCH_ARM64)
+#include "pcsx2/arm64/iR5900-arm64.h"
+#endif
+
 #include "svnrev.h"
 
 namespace EERunner
@@ -133,6 +137,10 @@ struct SetOverride
 	std::string section, key, value;
 };
 static std::vector<SetOverride> s_set_overrides; // --set Section/Key=Value (repeatable)
+static u32 s_rec_fallback_groups = 0; // --rec-fallback <groups>: EE opcode groups forced to interp
+#if defined(ARCH_ARM64)
+static u32 s_rec_fallback_reg_masks[EERecFallback::kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u}; // per-COP2-move-op register filters
+#endif
 
 bool EERunner::InitializeConfig()
 {
@@ -528,6 +536,14 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --localize / --repro: aliases of --stepdiff (the old jittery frame-boundary funnel was removed).\n");
 	std::fprintf(stderr, "  --selfcheck: Characterize run-to-run determinism (interp only). Expected to flag benign ~10-cycle\n");
 	std::fprintf(stderr, "               pause-point sampling jitter; use it to understand the noise floor, not as a gate.\n");
+	std::fprintf(stderr, "  --rec-fallback <groups>: comma-separated EE opcode groups to force through the INTERPRETER\n");
+	std::fprintf(stderr, "               instead of native codegen, with everything else still JIT. Bisects \"the EE JIT\n");
+	std::fprintf(stderr, "               miscomputes something\" down to one emitter family without a rebuild per hypothesis:\n");
+	std::fprintf(stderr, "               the group that makes the symptom disappear contains the bug. Groups: fpu, cop2,\n");
+	std::fprintf(stderr, "               mmi, multdiv, shift, arith, loadstore, move, cop0, branch (plus all / none).\n");
+	std::fprintf(stderr, "               cop2 narrows further into cop2move (QMFC2/CFC2/QMTC2/CTC2), cop2vu (the VU\n");
+	std::fprintf(stderr, "               macro ops) and cop2ls (LQC2/SQC2).\n");
+	std::fprintf(stderr, "               Pairs well with --mkstate --renderer sw for a visual oracle. arm64 only.\n");
 	std::fprintf(stderr, "  --renderer <null|vk|ogl|sw>: GS renderer (default null). Use vk on Intel GPUs / boxes where\n");
 	std::fprintf(stderr, "               the auto-check declines Vulkan and the surfaceless GL path fails to open GS.\n");
 	std::fprintf(stderr, "  --savestate <file>: Savestate to load after Initialize (required).\n");
@@ -707,6 +723,26 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				s_set_overrides.push_back({kv.substr(0, slash), kv.substr(slash + 1, eq - slash - 1), kv.substr(eq + 1)});
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--rec-fallback"))
+			{
+				const std::string_view list = StringUtil::StripWhitespace(argv[++i]);
+#if defined(ARCH_ARM64)
+				std::string err;
+				u32 mask = 0;
+				u32 reg_masks[EERecFallback::kCop2MoveOpCount] = {};
+				if (!EERecFallback::ParseGroups(list, &mask, reg_masks, &err))
+				{
+					Console.Error(err.c_str());
+					return false;
+				}
+				s_rec_fallback_groups = mask;
+				std::memcpy(s_rec_fallback_reg_masks, reg_masks, sizeof(reg_masks));
+#else
+				Console.Error("--rec-fallback is implemented for the arm64 EE recompiler only.");
+				return false;
+#endif
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--renderer"))
@@ -978,6 +1014,19 @@ void EERunner::SettingsOverride()
 		s_settings_interface.SetStringValue(so.section.c_str(), so.key.c_str(), so.value.c_str());
 		Console.WriteLn(fmt::format("SettingsOverride: --set [{}] {} = {}", so.section, so.key, so.value));
 	}
+
+#if defined(ARCH_ARM64)
+	// --rec-fallback: route whole EE opcode groups through the interpreter. Not a
+	// setting (it lives in the recompiler, not EmuConfig), so it is applied here,
+	// before any block is compiled, and stays put for the whole run.
+	EERecFallback::g_groups = s_rec_fallback_groups;
+	std::memcpy(EERecFallback::g_cop2RegMask, s_rec_fallback_reg_masks, sizeof(s_rec_fallback_reg_masks));
+	if (s_rec_fallback_groups != 0)
+	{
+		Console.WriteLn(fmt::format("EE REC FALLBACK: forcing to interpreter -> {}",
+			EERecFallback::DescribeGroups(s_rec_fallback_groups)));
+	}
+#endif
 }
 
 // Snapshot live cpuRegs/fpuRegs into a FullSnap (frame-boundary capture; pc/cycle
