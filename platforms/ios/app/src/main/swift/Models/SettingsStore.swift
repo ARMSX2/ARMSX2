@@ -1569,19 +1569,43 @@ final class SettingsStore {
         _invertRightStickYConfig.writer(_invertRightStickYConfig.section, _invertRightStickYConfig.key, invertRightStickY)
     }}
 
-    /// Effective axis inversion for a stick, resolving a per-game override (current game INI)
-    /// before the global default. Read live at the stick input choke point.
+    static let stickInversionKeys = ["InvertLeftStickX", "InvertLeftStickY", "InvertRightStickX", "InvertRightStickY"]
+    /// Per-game overrides for the game the cache was built from. Only the overridden keys
+    /// are stored, so a change to a global still takes effect without rebuilding.
+    @ObservationIgnored private var stickInversionOverrides: [String: Bool] = [:]
+    @ObservationIgnored private var stickInversionOverridesGame = ""
+
+    /// Effective axis inversion for a stick: the per-game override if there is one, else the
+    /// global. Called once per stick sample, so it must not touch the filesystem — the
+    /// per-game INI is read only when the running game changes or an override is written.
     func stickInversion(for side: StickSide) -> (x: Bool, y: Bool) {
-        // Passing the global as the default covers "no override", "no per-game file"
-        // and "no running game" in one read. A separate ContainsValue probe would
-        // parse the INI twice on every stick sample.
-        func resolve(_ key: String, global: Bool) -> Bool {
-            ARMSX2Bridge.getPerGameINIBoolForCurrentGame(Self.stickInversionSection, key: key, defaultValue: global)
+        let game = ARMSX2Bridge.perGameIdentityKeyForCurrentGame()
+        if game != stickInversionOverridesGame {
+            stickInversionOverridesGame = game
+            stickInversionOverrides = game.isEmpty ? [:] : Self.loadedStickInversionOverrides()
         }
         switch side {
-        case .left: return (resolve("InvertLeftStickX", global: invertLeftStickX), resolve("InvertLeftStickY", global: invertLeftStickY))
-        case .right: return (resolve("InvertRightStickX", global: invertRightStickX), resolve("InvertRightStickY", global: invertRightStickY))
+        case .left:
+            return (stickInversionOverrides["InvertLeftStickX"] ?? invertLeftStickX,
+                    stickInversionOverrides["InvertLeftStickY"] ?? invertLeftStickY)
+        case .right:
+            return (stickInversionOverrides["InvertRightStickX"] ?? invertRightStickX,
+                    stickInversionOverrides["InvertRightStickY"] ?? invertRightStickY)
         }
+    }
+
+    /// Call after writing or clearing a per-game inversion key so the next sample picks it up.
+    func reloadStickInversionOverrides() {
+        stickInversionOverridesGame = ARMSX2Bridge.perGameIdentityKeyForCurrentGame()
+        stickInversionOverrides = stickInversionOverridesGame.isEmpty ? [:] : Self.loadedStickInversionOverrides()
+    }
+
+    private static func loadedStickInversionOverrides() -> [String: Bool] {
+        var overrides: [String: Bool] = [:]
+        for key in stickInversionKeys where ARMSX2Bridge.hasPerGameINIValueForCurrentGame(stickInversionSection, key: key) {
+            overrides[key] = ARMSX2Bridge.getPerGameINIBoolForCurrentGame(stickInversionSection, key: key, defaultValue: false)
+        }
+        return overrides
     }
     let _appLanguageConfig = Setting<AppLanguage>(
         section: "ARMSX2iOS/UI", key: "AppLanguage", default: .system,
