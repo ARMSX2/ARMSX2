@@ -1693,7 +1693,11 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
         si.ContainsValue("EmuCore/Speedhacks", "EECycleRate") ||
         si.ContainsValue("EmuCore", "EnableFastBoot") ||
         si.ContainsValue("SPU2/Output", "StandardVolume") ||
-        si.ContainsValue("SPU2/Output", "FastForwardVolume");
+        si.ContainsValue("SPU2/Output", "FastForwardVolume") ||
+        si.ContainsValue("ARMSX2iOS/UI", "InvertLeftStickX") ||
+        si.ContainsValue("ARMSX2iOS/UI", "InvertLeftStickY") ||
+        si.ContainsValue("ARMSX2iOS/UI", "InvertRightStickX") ||
+        si.ContainsValue("ARMSX2iOS/UI", "InvertRightStickY");
 
     result[@"enabled"] = @(hasKnownOverride);
     const bool hasStandardVolumeOverride = si.ContainsValue("SPU2/Output", "StandardVolume");
@@ -3781,6 +3785,22 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
     VMManager::ReloadGameSettings();
     if (MTGS::IsOpen())
         MTGS::ApplySettings();
+}
+
++ (nonnull NSString *)perGameIdentityKeyForCurrentGame {
+    std::string serial;
+    u32 crc = 0;
+    if (!ARMSX2PerGameIdentityForCurrentGame(&serial, &crc))
+        return @"";
+    return [NSString stringWithFormat:@"%s_%08X", serial.c_str(), (unsigned int)crc];
+}
+
++ (nonnull NSString *)perGameIdentityKeyForISO:(nonnull NSString *)isoName {
+    std::string serial;
+    u32 crc = 0;
+    if (!ARMSX2PerGameIdentityForISO(isoName, &serial, &crc))
+        return @"";
+    return [NSString stringWithFormat:@"%s_%08X", serial.c_str(), (unsigned int)crc];
 }
 
 + (int)limiterMode

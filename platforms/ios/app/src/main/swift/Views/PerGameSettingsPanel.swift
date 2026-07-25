@@ -361,9 +361,24 @@ struct PerGameSettingsPanel: View {
 
     /// Clears every per-game override by disabling the master toggle and saving; the
     /// save path deletes all per-game keys so the global values apply on next boot.
+    /// Virtual Pad state isn't part of that path — layout and skin live in the preset
+    /// store, stick inversion is written as you edit it — so clear those by hand here.
     private func resetAllOverrides() {
+        if let padLayoutIdentity {
+            layoutPresets.clearVPadOverrides(for: padLayoutIdentity)
+        }
+        clearStickInversionOverrides()
         enabled = false
         save()
+    }
+
+    private func clearStickInversionOverrides() {
+        for key in SettingsStore.stickInversionKeys {
+            Self.clearPerGameValue("ARMSX2iOS/UI", key, useCurrent: savesToRunningGame, iso: game.bootName)
+        }
+        if savesToRunningGame {
+            settings.reloadStickInversionOverrides()
+        }
     }
 
     /// Whether OPH Flag Hack is effectively on for this game: a per-game override of 1, or
@@ -707,7 +722,8 @@ struct PerGameSettingsPanel: View {
             layoutPresets: layoutPresets,
             skinLibrary: skinLibrary,
             savesToRunningGame: savesToRunningGame,
-            iso: game.bootName
+            iso: game.bootName,
+            hasGameSettingsIdentity: hasGameSettingsIdentity
         )
     }
 

@@ -11,9 +11,10 @@ struct PadTab: View {
     let skinLibrary: VPadSkinLibraryStore
     let savesToRunningGame: Bool
     let iso: String
+    let hasGameSettingsIdentity: Bool
 
     @State private var inversionDrafts: [String: Int] = [:]
-    private let inversionKeys = ["InvertLeftStickX", "InvertLeftStickY", "InvertRightStickX", "InvertRightStickY"]
+    private let inversionKeys = SettingsStore.stickInversionKeys
     private let inversionSection = "ARMSX2iOS/UI"
 
     var body: some View {
@@ -88,7 +89,9 @@ struct PadTab: View {
                 }
             }
 
-            if padLayoutIdentity != nil {
+            // Inversion lands in the per-game INI, which is keyed on the game's CRC —
+            // without one the pickers would move and write nowhere.
+            if hasGameSettingsIdentity {
                 Section {
                     ForEach(inversionKeys, id: \.self) { key in
                         Picker(inversionLabel(for: key), selection: Binding<Int>(
@@ -162,6 +165,7 @@ struct PadTab: View {
     private func setInversionOverride(_ key: String, _ value: Bool) {
         if savesToRunningGame {
             ARMSX2Bridge.setPerGameINIBoolForCurrentGame(inversionSection, key: key, value: value)
+            SettingsStore.shared.reloadStickInversionOverrides()
         } else {
             ARMSX2Bridge.setPerGameINIBool(inversionSection, key: key, value: value, forISO: iso)
         }
@@ -170,6 +174,7 @@ struct PadTab: View {
     private func clearInversionOverride(_ key: String) {
         if savesToRunningGame {
             ARMSX2Bridge.deletePerGameINIValueForCurrentGame(inversionSection, key: key)
+            SettingsStore.shared.reloadStickInversionOverrides()
         } else {
             ARMSX2Bridge.deletePerGameINIValue(inversionSection, key: key, forISO: iso)
         }
