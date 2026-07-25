@@ -2758,6 +2758,37 @@ static void recClear(u32 addr, u32 size)
 
 	upperextent = std::min(upperextent, ceiling);
 
+#ifdef PCSX2_DEVBUILD
+	// The walk above must leave no surviving block overlapping [addr, end).
+	// Upstream x86 asserts the same thing and calls it "Impossible block
+	// clearing failure" (iR5900.cpp) — and it was reachable there, because the
+	// same commit that added the check (801d71f7f0, 2009) also added the
+	// startpc-ordered early break that lets a straddler-from-below slip past.
+	//
+	// Upstream rescans every block in the array; bound it instead the way the
+	// walk itself is bounded. A survivor overlapping [addr, end) has to start
+	// within s_maxBlockBytes below addr, so the window is the same size the
+	// walk already covers rather than O(live blocks) on every clear.
+	{
+		const u32 floor = (addr > s_maxBlockBytes) ? (addr - s_maxBlockBytes) : 0;
+		for (int i = std::max(0, recBlocks.LastIndex(floor)); BASEBLOCKEX* peb = recBlocks[i]; i++)
+		{
+			if (peb->startpc >= end)
+				break;
+			if (GETBLOCK(peb->startpc) == s_pCurBlock)
+				continue; // spared on purpose — it is mid-compile
+
+			const u32 peb_end = peb->startpc + peb->size * 4;
+			if (peb_end > addr) [[unlikely]]
+			{
+				Console.Error("[EE] Impossible block clearing failure: block %08X..%08X survived clear of %08X..%08X",
+					peb->startpc, peb_end, addr, end);
+				pxFail("[EE] Impossible block clearing failure");
+			}
+		}
+	}
+#endif
+
 	// Reset interior BLOCKs across the full removed-block extent. Without
 	// this, interior fnptrs of straddler blocks can stay non-JITCompile
 	// from a prior compilation, leading to wrong dispatch on a later JR
