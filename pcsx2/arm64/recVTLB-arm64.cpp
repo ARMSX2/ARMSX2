@@ -426,7 +426,17 @@ static bool recLoadConstPaddrMMIOShortcut(u32 bits, bool sign)
 
 	const u32 paddr = vmv.assumeHandlerGetPAddr(addr_const);
 
-	iFlushCall(FLUSH_INTERPRETER);
+	// FLUSH_VTLB, not FLUSH_INTERPRETER: the registered handler is the same
+	// callee set the softmem slow path dispatches to, and it cannot write guest
+	// GPRs. So const marks survive and an MMIO burst (consecutive
+	// const-address accesses off one LUI) keeps taking this shortcut instead
+	// of degrading to the dynamic path after the first access. x86 parity:
+	// its const-MMIO sites flush nothing at all (FLUSH_FULLVTLB).
+	//
+	// FLUSH_PC is needed: a const address can resolve to the UNMAPPED handler,
+	// whose vtlb_Miss > cpuTlbMiss > cpuException path computes EPC from the
+	// cpuRegs.pc this seam flushes.
+	iFlushCall(FLUSH_VTLB | FLUSH_PC);
 
 	// INTC_STAT inline-load when the speedhack is disabled. With it on
 	// (the default), fall through to a direct BL of the registered
@@ -490,12 +500,14 @@ static bool recLoadConstPaddrMMIOShortcut(u32 bits, bool sign)
 // Fastmem path: no flush — the backpatch thunk in RecStubs.cpp saves/
 // restores live regs around the slow-path C call.
 //
-// Softmem path: FLUSH_CONSTANT_REGS only. iFlushCall already evicts all
-// caller-saved GPRs + NEON unconditionally; constants must additionally
-// be written back so post-call emit re-reads from cpuRegs.GPR rather than
-// trusting now-stale const tracking. PC and CODE are not load-bearing —
-// vtlb_memRead<T> doesn't read them, and exception handlers that fire
-// from the slow path stash their own PC.
+// Softmem path: FLUSH_VTLB only. iFlushCall already evicts all caller-saved
+// GPRs + NEON unconditionally; constants must additionally be written back
+// because the softmem paths re-read guest GPRs from cpuRegs memory post-flush
+// and vtlb exception paths expect memory to be current.
+// The MARKS survive (FLUSH_CONST_KEEP): vtlb handlers cannot write guest GPRs,
+// so the tracking stays valid and later const-address accesses keep folding.
+// PC and CODE are not essential as vtlb_memRead<T> doesn't read them, and
+// exception handlers that fire from the slow path stash their own PC.
 static void recLoad(u32 bits, bool sign)
 {
 	// Force an event test on EE counter-range reads (the EE timers at
@@ -530,8 +542,9 @@ static void recLoad(u32 bits, bool sign)
 		// (vtlb_DynBackpatchLoadStore) saves/restores live registers per the
 		// masks recorded at emit time, which become nonzero with this change.
 		// What must remain:
-		//   - _flushConstRegs: load-bearing at L/S sites (Tier-2G bisect
-		//     f4601964b).
+		//   - _flushConstRegs: the VALUE writeback is integral at L/S sites;
+		//     the marks are kept (delete_const=false) so the GPR_IS_CONST1
+		//     fold below stays live - vtlb callees can't write guest GPRs.
 		//   - Rs coherence: a dirty NEON dual-residence (or MODE_WRITE GPR)
 		//     copy of Rs means the pin/memory value is stale — write it back
 		//     (mapping kept). Same writeback today's eviction performed,
@@ -539,7 +552,7 @@ static void recLoad(u32 bits, bool sign)
 		//   - x0 eviction below (the load result target when Rt is unpinned;
 		//     x0 is an allocator pool member).
 		// Rt dest invalidation is recStoreLoadResult's job (unchanged).
-		_flushConstRegs(true);
+		_flushConstRegs(false);
 		if (GPR_IS_CONST1(_Rs_))
 		{
 			armAsm->Mov(a64::w9, g_cpuConstRegs[_Rs_].UL[0] + _Imm_);
@@ -564,7 +577,7 @@ static void recLoad(u32 bits, bool sign)
 	}
 	else if (GPR_IS_CONST1(_Rs_))
 	{
-		iFlushCall(FLUSH_CONSTANT_REGS);
+		iFlushCall(FLUSH_VTLB);
 		armAsm->Mov(a64::w9, g_cpuConstRegs[_Rs_].UL[0] + _Imm_);
 	}
 	else if (const a64::Register* pin = armEEPinForGPR(_Rs_))
@@ -575,7 +588,7 @@ static void recLoad(u32 bits, bool sign)
 		// AFTER the flush, from the pin. _Imm_==0 skips even the Add: the pin
 		// itself is the fastmem index / softmem address (the backpatch info
 		// records the address register per site; RecStubs normalizes it).
-		iFlushCall(FLUSH_CONSTANT_REGS);
+		iFlushCall(FLUSH_VTLB);
 		if (_Imm_ != 0)
 			armAsm->Add(a64::w9, pin->W(), _Imm_);
 		else
@@ -584,7 +597,7 @@ static void recLoad(u32 bits, bool sign)
 	else
 	{
 		_eeMoveGPRtoR(a64::w9, _Rs_);
-		iFlushCall(FLUSH_CONSTANT_REGS);
+		iFlushCall(FLUSH_VTLB);
 		if (_Imm_ != 0)
 			armAsm->Add(a64::w9, a64::w9, _Imm_);
 	}
@@ -666,7 +679,11 @@ static bool recStoreConstPaddrMMIOShortcut(u32 bits)
 
 	const u32 paddr = vmv.assumeHandlerGetPAddr(addr_const);
 
-	iFlushCall(FLUSH_INTERPRETER);
+	// FLUSH_VTLB | FLUSH_PC - see recLoadConstPaddrMMIOShortcut for both
+	// halves (PC feeds the unmapped-page TLB-miss EPC). Keeping const marks
+	// is what lets a GS-priv store burst (5x sd to 0x120000xx off one LUI)
+	// emit five direct BLs instead of one BL + four dynamic-path stores.
+	iFlushCall(FLUSH_VTLB | FLUSH_PC);
 
 	int szidx = 0;
 	switch (bits)
@@ -707,7 +724,7 @@ static void recStore(u32 bits)
 		// dirty NEON/GPR copy written back (mappings kept); the store emit
 		// itself clobbers no allocator pool member (w9/w10/x8/x17 are all
 		// outside the pool).
-		_flushConstRegs(true);
+		_flushConstRegs(false);
 
 		unsigned value_reg = 10;
 		if (GPR_IS_CONST1(_Rt_))
@@ -754,7 +771,7 @@ static void recStore(u32 bits)
 	}
 
 	// Softmem: full flush, as before. Flush rationale: see recLoad.
-	// FLUSH_CONSTANT_REGS only.
+	// FLUSH_VTLB only.
 	unsigned value_reg = 10;
 	if (GPR_IS_CONST1(_Rt_))
 	{
@@ -779,13 +796,13 @@ static void recStore(u32 bits)
 	unsigned addr_reg = 9;
 	if (GPR_IS_CONST1(_Rs_))
 	{
-		iFlushCall(FLUSH_CONSTANT_REGS);
+		iFlushCall(FLUSH_VTLB);
 		armAsm->Mov(a64::w9, g_cpuConstRegs[_Rs_].UL[0] + _Imm_);
 	}
 	else if (const a64::Register* pin = armEEPinForGPR(_Rs_))
 	{
 		// Pinned base — post-flush pin read; see recLoad. (WS-C2)
-		iFlushCall(FLUSH_CONSTANT_REGS);
+		iFlushCall(FLUSH_VTLB);
 		if (_Imm_ != 0)
 			armAsm->Add(a64::w9, pin->W(), _Imm_);
 		else
@@ -794,7 +811,7 @@ static void recStore(u32 bits)
 	else
 	{
 		_eeMoveGPRtoR(a64::w9, _Rs_);
-		iFlushCall(FLUSH_CONSTANT_REGS);
+		iFlushCall(FLUSH_VTLB);
 		if (_Imm_ != 0)
 			armAsm->Add(a64::w9, a64::w9, _Imm_);
 	}
@@ -902,14 +919,13 @@ void recLQ()
 	// safe to clobber once the allocator is evicted).
 	if (useFastmem && _Rt_)
 	{
-		// Address BEFORE the const flush (keeps the const-Rs fold — the flush
-		// clears every const flag) and BEFORE the dest alloc (rt may alias rs,
-		// and the MODE_WRITE alloc invalidates rt's prior GPR/const residency).
+		// Address BEFORE the dest alloc (rt may alias rs, and the MODE_WRITE
+		// alloc invalidates rt's prior GPR/const residency).
 		// w9 is immune to both: the flush materializes into pins/RXSCRATCH and
 		// the alloc's evictions are NEON stores.
 		recComputeAddr();
 		armAsm->And(a64::w9, a64::w9, (u32)~0xF);
-		_flushConstRegs(true);
+		_flushConstRegs(false);
 
 		const int qd = _allocGPRtoNEONreg(_Rt_, MODE_WRITE);
 		_validateRegs();
@@ -920,7 +936,7 @@ void recLQ()
 	// addr = (rs + imm) & ~0xF — compute from live registers, then flush
 	recComputeAddr();
 	armAsm->And(a64::w9, a64::w9, (u32)~0xF);
-	iFlushCall(FLUSH_CONSTANT_REGS);
+	iFlushCall(FLUSH_VTLB);
 
 	if (useFastmem)
 		vtlbFastmemRead128(9, 0);
@@ -950,24 +966,24 @@ void recSQ()
 	// rt currently lives before the alloc can move it.
 	if (useFastmem)
 	{
-		// Address first (before the const flush clears the const-Rs fold; w9
-		// is immune to the flush and alloc emissions — see recLQ).
+		// Address first (w9 is immune to the flush and alloc emissions — see
+		// recLQ).
 		recComputeAddr();
 		armAsm->And(a64::w9, a64::w9, (u32)~0xF);
-		_flushConstRegs(true);
+		_flushConstRegs(false);
 		const int qs = _allocGPRtoNEONreg(_Rt_, MODE_READ);
 		_validateRegs();
 		vtlbFastmemWrite128(9, qs);
 		return;
 	}
 
-	// Softmem: FLUSH_CONSTANT_REGS only (flush rationale: see recLoad).
+	// Softmem: FLUSH_VTLB only (flush rationale: see recLoad).
 	// Rt and Rs are read from memory after the flush. iFlushCall has
 	// freed all NEON unconditionally (writeback-on-dirty), so any EE
 	// GPR allocated in NEON is in memory. EE GPRs in arm64gprs[] are
 	// not written back by FLUSH_CONSTANT_REGS — relies on allocator
 	// preferring NEON for full-128-bit guest GPRs.
-	iFlushCall(FLUSH_CONSTANT_REGS);
+	iFlushCall(FLUSH_VTLB);
 	// Raw quad load (bypasses the scalar tripwire): the lower half is
 	// intentionally stale-then-merged below for a dirty pin OR scalar slot.
 	armLoadEERegPtrRaw(a64::q0, &cpuRegs.GPR.r[_Rt_].UQ);
@@ -1015,7 +1031,7 @@ void recLWC1()
 	}
 	else
 	{
-		iFlushCall(FLUSH_CONSTANT_REGS);
+		iFlushCall(FLUSH_VTLB);
 		vtlbSoftmemRead(9, 32, false);
 
 		// fpr[ft] in memory is about to be overwritten; the allocator's slot
@@ -1054,7 +1070,7 @@ void recSWC1()
 	}
 	else
 	{
-		iFlushCall(FLUSH_CONSTANT_REGS);
+		iFlushCall(FLUSH_VTLB);
 		vtlbSoftmemWrite(9, 10, 32);
 	}
 }
@@ -1117,7 +1133,7 @@ static void recUnalignedWord(bool is_lwl)
 
 	// Compute Rs+imm in w9. Mirrors recLoad: load Rs first, then flush, then add imm.
 	_eeMoveGPRtoR(a64::w9, _Rs_);
-	iFlushCall(FLUSH_CONSTANT_REGS);
+	iFlushCall(FLUSH_VTLB);
 	if (_Imm_ != 0)
 		armAsm->Add(a64::w9, a64::w9, _Imm_);
 
@@ -1220,7 +1236,7 @@ static void recUnalignedStoreWord(bool is_swl)
 	const bool useFastmem = CHECK_FASTMEM && !vtlb_IsFaultingPC(pc);
 
 	_eeMoveGPRtoR(a64::w9, _Rs_);
-	iFlushCall(FLUSH_CONSTANT_REGS);
+	iFlushCall(FLUSH_VTLB);
 	if (_Imm_ != 0)
 		armAsm->Add(a64::w9, a64::w9, _Imm_);
 
@@ -1337,7 +1353,7 @@ static void recUnalignedLoadDouble(bool is_ldl)
 			// MultiRegUnalignedDwordCopyBlock test. READ|WRITE forces a coherent
 			// residence; the redundant old-value load is free vs the bug.
 			_eeMoveGPRtoR(a64::w9, _Rs_);
-			iFlushCall(FLUSH_CONSTANT_REGS);
+			iFlushCall(FLUSH_VTLB);
 			if (ldrImm != 0)
 				armAsm->Add(a64::w9, a64::w9, ldrImm);
 			// memTemp only parks the loaded value AFTER the read, so it never
@@ -1359,7 +1375,7 @@ static void recUnalignedLoadDouble(bool is_ldl)
 	const bool useFastmem = CHECK_FASTMEM && !vtlb_IsFaultingPC(pc);
 
 	_eeMoveGPRtoR(a64::w9, _Rs_);
-	iFlushCall(FLUSH_CONSTANT_REGS);
+	iFlushCall(FLUSH_VTLB);
 	if (_Imm_ != 0)
 		armAsm->Add(a64::w9, a64::w9, _Imm_);
 
@@ -1475,7 +1491,7 @@ static void recUnalignedStoreDouble(bool is_sdl)
 			// exactly like the non-fused store's whole-Rt (special) path.
 			// _eeMoveGPRtoR handles Rt==0 (store $zero).
 			_eeMoveGPRtoR(a64::w9, _Rs_);
-			iFlushCall(FLUSH_CONSTANT_REGS);
+			iFlushCall(FLUSH_VTLB);
 			if (sdrImm != 0)
 				armAsm->Add(a64::w9, a64::w9, sdrImm);
 			// Neither temp crosses a call (both are consumed into w9/x0 before the
@@ -1503,7 +1519,7 @@ static void recUnalignedStoreDouble(bool is_sdl)
 	const bool useFastmem = CHECK_FASTMEM && !vtlb_IsFaultingPC(pc);
 
 	_eeMoveGPRtoR(a64::w9, _Rs_);
-	iFlushCall(FLUSH_CONSTANT_REGS);
+	iFlushCall(FLUSH_VTLB);
 	if (_Imm_ != 0)
 		armAsm->Add(a64::w9, a64::w9, _Imm_);
 
@@ -1603,7 +1619,7 @@ void recLQC2()
 
 	// S4-3 fastmem path: no iFlushCall — the allocator (caller-saved scalar
 	// GPRs, FPRC, NEON quads/FPRs) rides through, matching the GE-14 recLQ
-	// shape. Address before the const flush (keeps the const-Rs fold); only
+	// shape. Address from live registers via recComputeAddr; only
 	// constants must be memory-visible for the fault-path C handler. The
 	// quad lands in RQSCRATCH (q30) — per-op scratch, never allocator-
 	// tracked, so no q0 detach is needed — and is stored to VU0.VF[ft]
@@ -1614,7 +1630,7 @@ void recLQC2()
 	{
 		recComputeAddr();
 		armAsm->And(a64::w9, a64::w9, (u32)~0xF);
-		_flushConstRegs(true);
+		_flushConstRegs(false);
 		vtlbFastmemRead128(9, RQSCRATCH.GetCode());
 		if (_Rt_)
 			armAsm->Str(RQSCRATCH, armVU0Mem(&VU0.VF[_Rt_]));
@@ -1625,7 +1641,7 @@ void recLQC2()
 	// shape (the C call clobbers caller-saved state anyway).
 	recComputeAddr();
 	armAsm->And(a64::w9, a64::w9, (u32)~0xF);
-	iFlushCall(FLUSH_CONSTANT_REGS);
+	iFlushCall(FLUSH_VTLB);
 	vtlbSoftmemRead128(9);
 
 	// Store 128-bit result to VU0.VF[rt] (COP2 ft field = rt field)
@@ -1648,7 +1664,7 @@ void recSQC2()
 	{
 		recComputeAddr();
 		armAsm->And(a64::w9, a64::w9, (u32)~0xF);
-		_flushConstRegs(true);
+		_flushConstRegs(false);
 		armAsm->Ldr(RQSCRATCH, armVU0Mem(&VU0.VF[_Rt_]));
 		vtlbFastmemWrite128(9, RQSCRATCH.GetCode());
 		return;
@@ -1662,7 +1678,7 @@ void recSQC2()
 	// Flush before the q0 load. iFlushCall unconditionally evicts all NEON
 	// (iR5900-arm64.cpp:765-769) and writes back any dirty cache; after
 	// this point q0 is allocator-detached and safe to touch directly.
-	iFlushCall(FLUSH_CONSTANT_REGS);
+	iFlushCall(FLUSH_VTLB);
 
 	// Load 128-bit VU0.VF[rt] into q0 (COP2 ft field = rt field). MUST be
 	// after iFlushCall: q0 may otherwise be tracked by the EE NEON allocator

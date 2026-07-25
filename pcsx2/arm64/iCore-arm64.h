@@ -344,7 +344,19 @@ int _allocIfUsedFPUtoNEON(int fpureg, int mode);
 #define FLUSH_PC               0x200
 #define FLUSH_CODE             0x800
 
+// Modifier for FLUSH_CONSTANT_REGS: write dirty const values to memory but
+// KEEP the const-tracking marks. For C-call seams whose callee cannot write
+// guest GPRs (the vtlb/MMIO handler seams) post-call code may keep folding
+// const addresses/values. x86 goes further at these sites (FLUSH_FULLVTLB =
+// no const flush at all); we keep the value writeback because softmem reads
+// guest GPRs from memory post-flush and exception paths out of vtlb expect
+// memory to be current. Interpreter-call seams must NOT set this: the
+// interpreter writes cpuRegs.GPR, so marks go stale.
+#define FLUSH_CONST_KEEP       0x1000
+
 #define FLUSH_EVERYTHING   0x1ff
 #define FLUSH_INTERPRETER  0xfff
 #define FLUSH_FULLVTLB 0x000
 #define FLUSH_NODESTROY (FLUSH_CONSTANT_REGS | FLUSH_FLUSH_XMM | FLUSH_ALL_X86)
+// The vtlb load/store C-call seam: constants memory-visible, marks retained.
+#define FLUSH_VTLB (FLUSH_CONSTANT_REGS | FLUSH_CONST_KEEP)

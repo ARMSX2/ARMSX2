@@ -730,8 +730,13 @@ void iFlushCall(int flushtype)
 	if (flushtype & FLUSH_ALL_X86)
 		_flushArm64GPRregs();
 
+	// the callee can't write guest GPRs, so const values are written back
+	// for memory coherence but the marks survive. Post-call code keeps
+	// folding const addresses (x86 parity: FLUSH_FULLVTLB doesn't even
+	// write the values). Without the modifier (interpreter seams),
+	// delete: the callee may change cpuRegs.GPR.
 	if (flushtype & FLUSH_CONSTANT_REGS)
-		_flushConstRegs(true);
+		_flushConstRegs(!(flushtype & FLUSH_CONST_KEEP));
 
 	if ((flushtype & FLUSH_PC) && !g_cpuFlushedPC)
 	{
