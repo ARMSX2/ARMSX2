@@ -1364,8 +1364,13 @@ static inline u32 GetVertexAlignment(GSHWDrawConfig::VSExpand expand)
 	}
 }
 
+class GSPassScheduler;
+
 class GSDevice : public GSAlignedClass<32>
 {
+	/// Emits queued draws through DoRenderHW, which is protected.
+	friend class GSPassScheduler;
+
 public:
 	enum class PresentResult
 	{
@@ -1507,6 +1512,14 @@ protected:
 	GSTexture* m_mfx_output = nullptr; ///< MetalFX spatial upscale destination (Metal backend).
 	GSTexture* m_colclip_rt = nullptr; ///< Temp hw colclip texture
 	GSTexture* m_ds_as_rt = nullptr; ///< Depth as color
+
+	/// Render passes are coalesced by holding draws here until something needs to observe
+	/// the target. See GSPassScheduler and FlushDeferredDraws().
+	std::unique_ptr<GSPassScheduler> m_pass_scheduler;
+	u32 m_deferred_draw_count = 0;
+	bool m_flushing = false;
+
+	void FlushDeferredDrawsImpl();
 
 	bool AcquireWindow(bool recreate_window);
 
@@ -1873,7 +1886,16 @@ public:
 	/// Re-entrant by design: emitting a deferred draw calls DoRenderHW, and several
 	/// backends call CopyRect on themselves from inside it to clone an RT for a feedback
 	/// loop. Re-entry is a no-op rather than recursion.
-	void FlushDeferredDraws() {}
+	///
+	/// The queue depth is mirrored here rather than read from the scheduler so that the
+	/// overwhelmingly common "nothing queued" case stays one load and one branch, and so
+	/// that GSDevice.h - which most of the GS tree includes - does not have to pull in
+	/// GSPassScheduler.h.
+	__fi void FlushDeferredDraws()
+	{
+		if (m_deferred_draw_count != 0 && !m_flushing)
+			FlushDeferredDrawsImpl();
+	}
 
 	virtual void ClearSamplerCache() = 0;
 

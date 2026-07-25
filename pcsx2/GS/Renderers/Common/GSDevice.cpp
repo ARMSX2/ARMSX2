@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Common/GSPassScheduler.h"
 #include "GS/GSGL.h"
 #include "GS/GS.h"
 #include "GS/GSUtil.h"
@@ -281,6 +282,7 @@ static const char* TextureLabelString(TextureLabel label)
 std::unique_ptr<GSDevice> g_gs_device;
 
 GSDevice::GSDevice()
+	: m_pass_scheduler(std::make_unique<GSPassScheduler>())
 {
 #ifdef PCSX2_DEVBUILD
 	s_texture_counts.fill(0);
@@ -435,6 +437,11 @@ bool GSDevice::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 
 void GSDevice::Destroy()
 {
+	// Drop rather than emit: nothing is going to present these, and the targets they name
+	// are about to be destroyed.
+	m_pass_scheduler->Clear();
+	m_deferred_draw_count = 0;
+
 	ClearCurrent();
 	PurgePool();
 }
@@ -985,7 +992,47 @@ void GSDevice::StretchRectAutoMask(GSTexture* sTex, GSTexture* dTex, bool red, b
 
 void GSDevice::RenderHW(GSHWDrawConfig& config)
 {
-	DoRenderHW(config);
+	// m_flushing: we are already inside Emit(), so this is a draw the backend is issuing
+	// on its own behalf. IsDSInRTActive: the caller is mid depth-as-colour sequence and
+	// will tear the temporary target down as soon as we return.
+	if (!GSConfig.CoalesceRenderPasses || m_flushing || IsDSInRTActive() ||
+		!GSPassScheduler::IsDeferrable(config))
+	{
+		FlushDeferredDraws();
+		DoRenderHW(config);
+		return;
+	}
+
+	// One run is one render pass, so a draw aimed at different attachments ends the run
+	// that is open. Coalescing across an alternation - the whole point of this - needs
+	// more than one run open at a time and is not enabled yet.
+	if (m_deferred_draw_count != 0 && !m_pass_scheduler->MatchesOpenRun(config))
+		FlushDeferredDraws();
+
+	if (!m_pass_scheduler->Enqueue(config))
+	{
+		// Out of room. Emit the backlog and retry once against an empty queue; if the draw
+		// still does not fit it is bigger than the whole arena, so just render it.
+		FlushDeferredDraws();
+		if (!m_pass_scheduler->Enqueue(config))
+		{
+			DoRenderHW(config);
+			return;
+		}
+	}
+
+	m_deferred_draw_count = m_pass_scheduler->GetCount();
+}
+
+void GSDevice::FlushDeferredDrawsImpl()
+{
+	pxAssert(!m_flushing);
+
+	m_flushing = true;
+	m_pass_scheduler->Emit(this);
+	m_flushing = false;
+
+	m_deferred_draw_count = 0;
 }
 
 void GSDevice::DoDrawMultiStretchRects(
