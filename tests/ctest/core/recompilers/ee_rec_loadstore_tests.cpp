@@ -7,6 +7,8 @@
 
 #include "Config.h"
 #include "Counters.h"
+#include "Hw.h"
+#include "Memory.h"
 #include "vtlb.h"
 
 #include <gtest/gtest.h>
@@ -16,7 +18,26 @@ using namespace mips;
 
 namespace {
 constexpr u32 kScratch = RecompilerTestEnvironment::kScratchAddr;
+
+// The MMIO register these tests read across a vtlb seam. Nothing about the
+// seam depends on WHICH register it is; INTC_STAT is convenient because it
+// is harmless to touch.
+constexpr u32 kMmioReg = 0x1000F000u; // INTC_STAT
+
+// Establish INTC_STAT = 0 rather than assuming it.
+//
+// INTC_STAT is process-global emulator state, is write-1-to-clear, and any
+// test that raises a VU/DMA/timer interrupt leaves its bit set — hwIntcIrq is
+// just `psHu32(INTC_STAT) |= 1 << n`. A guest store of 0 clears nothing, so a
+// leftover bit survives into every later test that reads it. In declaration
+// order these tests happened to run before anything that raises; under
+// --gtest_shuffle they read a stray 0x40 (bit 6, INTC_VU0) instead of 0.
+// Clear it host-side, which is not W1C-gated.
+void ResetMmioReg()
+{
+	psHu32(kMmioReg) = 0;
 }
+} // namespace
 
 TEST(EeRecLoadStore, LwSignExtends)
 {
@@ -1031,7 +1052,8 @@ TEST(EeRecLoadStore, FastmemFaultLoadPreservesLiveMmiState)
 	EeRecTestHarness h;
 	h.WriteU32(kScratch + 0, 0x00003000u);
 	h.SetGpr64(reg::a0, kScratch);
-	h.SetGpr64(reg::a1, 0x1000F000u); // INTC_STAT: MMIO page → fastmem fault → thunk
+	ResetMmioReg();
+	h.SetGpr64(reg::a1, kMmioReg); // MMIO page → fastmem fault → thunk
 	h.SetGpr128(reg::t4, 0x1111'2222'3333'4444ull, 0x5555'6666'7777'8888ull);
 	h.SetGpr128(reg::t5, 0x0101'0101'0101'0101ull, 0x0202'0202'0202'0202ull);
 	vtlb_ClearLoadStoreInfo(); // ensure this compile takes fastmem (set is process-global)
@@ -1060,7 +1082,8 @@ TEST(EeRecLoadStore, FastmemFaultStorePreservesLiveMmiState)
 	EeRecTestHarness h;
 	h.WriteU32(kScratch + 0, 0x00004000u);
 	h.SetGpr64(reg::a0, kScratch);
-	h.SetGpr64(reg::a1, 0x1000F000u); // INTC_STAT is write-1-to-clear; state 0 stays 0
+	ResetMmioReg();
+	h.SetGpr64(reg::a1, kMmioReg); // W1C, so the guest stores below leave it 0
 	h.SetGpr128(reg::t4, 0x1111'2222'3333'4444ull, 0x5555'6666'7777'8888ull);
 	h.SetGpr128(reg::t5, 0x0101'0101'0101'0101ull, 0x0202'0202'0202'0202ull);
 	vtlb_ClearLoadStoreInfo();
@@ -1095,7 +1118,8 @@ TEST(EeRecLoadStore, Swc1ResidentValueStoresAndSurvivesFault)
 	h.SetFprBits(4, 0x40000000u); // 2.0f
 	h.SetFprBits(5, 0x3F800000u); // 1.0f
 	h.SetGpr64(reg::a0, kScratch);
-	h.SetGpr64(reg::a1, 0x1000F000u); // INTC_STAT (W1C; harness state 0 stays 0)
+	ResetMmioReg();
+	h.SetGpr64(reg::a1, kMmioReg); // W1C, so the guest stores below leave it 0
 	vtlb_ClearLoadStoreInfo();
 	h.LoadProgram({
 		ee::ADD_S(6, 4, 5),           // f6 = 3.0f, resident + dirty
@@ -1165,7 +1189,11 @@ TEST(EeRecLoadStore, Lwc1FaultPathLandsInResidentSlot)
 	h.EnableCop1();
 	h.SetFprBits(4, 0x40000000u); // 2.0f
 	h.SetFprBits(5, 0x3F800000u); // 1.0f
-	h.SetGpr64(reg::a1, 0x1000F000u); // INTC_STAT (harness state 0 → loads 0)
+	// Poison the load's destination so "f1 == 0" can only mean the faulted-in
+	// value actually landed in the slot, not that f1 was already zero.
+	h.SetFprBits(1, 0xDEADBEEFu);
+	ResetMmioReg();
+	h.SetGpr64(reg::a1, kMmioReg); // reads 0
 	vtlb_ClearLoadStoreInfo();
 	h.LoadProgram({
 		ee::ADD_S(6, 4, 5),           // f6 = 3.0f resident+dirty across the fault
@@ -1205,6 +1233,10 @@ TEST(EeRecLoadStore, Lwc1FaultPathLandsInResidentSlot)
 TEST(EeRecLoadStore, ConstAddrMmioBurstStaysOnShortcut)
 {
 	EeRecTestHarness h;
+	ResetMmioReg();
+	// Poison the load destination: "v1 == 0" then means the shortcut load
+	// really read the register, not that v1 happened to start at zero.
+	h.SetGpr64(reg::v1, 0xDEADBEEFull);
 	vtlb_ClearLoadStoreInfo();
 	h.LoadProgram({
 		LUI(reg::a0, 0x1000),
