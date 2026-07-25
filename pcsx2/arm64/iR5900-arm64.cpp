@@ -2970,6 +2970,11 @@ static void recReserveRAM()
 	recROM2 = curpos;
 	curpos += (Ps2MemSize::Rom2 / 4);
 
+	// MainRam, deliberately — this whole rec is MainRam-only: recLutEntries and
+	// the recRAM advance above, the (MainRam / _64kb) alias mask in recResetRaw,
+	// and manual_page / manual_counter. Upstream x86 uses ExposedRam throughout
+	// instead (iR5900.cpp:564-577). Widening this buffer alone would desync the
+	// snapshots from a LUT that aliases high RAM back into the low 32 MB.
 	if (recRAMCopy.size() != Ps2MemSize::MainRam)
 		recRAMCopy.resize(Ps2MemSize::MainRam);
 }
