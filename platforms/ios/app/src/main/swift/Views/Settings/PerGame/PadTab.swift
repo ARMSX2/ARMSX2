@@ -9,6 +9,8 @@ struct PadTab: View {
 
     let layoutPresets: PadLayoutPresetStore
     let skinLibrary: VPadSkinLibraryStore
+    let savesToRunningGame: Bool
+    let iso: String
 
     @State private var inversionDrafts: [String: Int] = [:]
     private let inversionKeys = ["InvertLeftStickX", "InvertLeftStickY", "InvertRightStickX", "InvertRightStickY"]
@@ -74,7 +76,7 @@ struct PadTab: View {
                         layoutPresets.clearVPadOverrides(for: padLayoutIdentity)
                         inversionDrafts = [:]
                         for key in inversionKeys {
-                            ARMSX2Bridge.deletePerGameINIValueForCurrentGame(inversionSection, key: key)
+                            clearInversionOverride(key)
                         }
                     } label: {
                         Label("Reset All VPad Overrides", systemImage: "arrow.counterclockwise")
@@ -101,7 +103,7 @@ struct PadTab: View {
                 } header: {
                     Text("Stick Inversion")
                 } footer: {
-                    Text("Overrides the global stick inversion for this game only.")
+                    Text("Overrides the global stick inversion for this game only. Everything on this page saves as you change it, so Save and Cancel don't apply here.")
                 }
             }
         }
@@ -121,21 +123,55 @@ struct PadTab: View {
     private func loadInversionDrafts() {
         var drafts: [String: Int] = [:]
         for key in inversionKeys {
-            if ARMSX2Bridge.hasPerGameINIValueForCurrentGame(inversionSection, key: key) {
-                drafts[key] = ARMSX2Bridge.getPerGameINIBoolForCurrentGame(inversionSection, key: key, defaultValue: false) ? 1 : 0
+            if hasInversionOverride(key) {
+                drafts[key] = inversionOverride(key) ? 1 : 0
             }
         }
         inversionDrafts = drafts
     }
 
+    // Commits on pick, like the layout and skin pickers. Nothing in this tab is
+    // staged, so none of it feeds the panel's Save fingerprint.
     private func applyInversion(_ key: String, value: Int) {
         var drafts = inversionDrafts
         drafts[key] = value
         inversionDrafts = drafts
         if value == -1 {
+            clearInversionOverride(key)
+        } else {
+            setInversionOverride(key, value == 1)
+        }
+    }
+
+    // The panel opens both in-game and from the library. The "current game" bridge
+    // variants resolve their identity from the running VM and silently no-op without
+    // one, so the library path has to address the per-game INI by ISO instead.
+
+    private func hasInversionOverride(_ key: String) -> Bool {
+        savesToRunningGame
+            ? ARMSX2Bridge.hasPerGameINIValueForCurrentGame(inversionSection, key: key)
+            : ARMSX2Bridge.hasPerGameINIValue(inversionSection, key: key, forISO: iso)
+    }
+
+    private func inversionOverride(_ key: String) -> Bool {
+        savesToRunningGame
+            ? ARMSX2Bridge.getPerGameINIBoolForCurrentGame(inversionSection, key: key, defaultValue: false)
+            : ARMSX2Bridge.getPerGameINIBool(inversionSection, key: key, defaultValue: false, forISO: iso)
+    }
+
+    private func setInversionOverride(_ key: String, _ value: Bool) {
+        if savesToRunningGame {
+            ARMSX2Bridge.setPerGameINIBoolForCurrentGame(inversionSection, key: key, value: value)
+        } else {
+            ARMSX2Bridge.setPerGameINIBool(inversionSection, key: key, value: value, forISO: iso)
+        }
+    }
+
+    private func clearInversionOverride(_ key: String) {
+        if savesToRunningGame {
             ARMSX2Bridge.deletePerGameINIValueForCurrentGame(inversionSection, key: key)
         } else {
-            ARMSX2Bridge.setPerGameINIBoolForCurrentGame(inversionSection, key: key, value: value == 1)
+            ARMSX2Bridge.deletePerGameINIValue(inversionSection, key: key, forISO: iso)
         }
     }
 

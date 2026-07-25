@@ -1572,11 +1572,11 @@ final class SettingsStore {
     /// Effective axis inversion for a stick, resolving a per-game override (current game INI)
     /// before the global default. Read live at the stick input choke point.
     func stickInversion(for side: StickSide) -> (x: Bool, y: Bool) {
+        // Passing the global as the default covers "no override", "no per-game file"
+        // and "no running game" in one read. A separate ContainsValue probe would
+        // parse the INI twice on every stick sample.
         func resolve(_ key: String, global: Bool) -> Bool {
-            if ARMSX2Bridge.hasPerGameINIValueForCurrentGame(Self.stickInversionSection, key: key) {
-                return ARMSX2Bridge.getPerGameINIBoolForCurrentGame(Self.stickInversionSection, key: key, defaultValue: global)
-            }
-            return global
+            ARMSX2Bridge.getPerGameINIBoolForCurrentGame(Self.stickInversionSection, key: key, defaultValue: global)
         }
         switch side {
         case .left: return (resolve("InvertLeftStickX", global: invertLeftStickX), resolve("InvertLeftStickY", global: invertLeftStickY))
