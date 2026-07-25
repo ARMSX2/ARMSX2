@@ -749,6 +749,15 @@ bool DarwinMisc::IsJITAvailable()
 #endif
 }
 
+// Set by the platform layer at scene connect, before the worker that allocates
+// the arena exists, so the canary below can tell whether anything JIT is live.
+static bool (*s_jit_activity_query)() = nullptr;
+
+void DarwinMisc::SetJITActivityQuery(bool (*query)())
+{
+	s_jit_activity_query = query;
+}
+
 bool DarwinMisc::ValidateJITAlive()
 {
 #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
@@ -764,21 +773,24 @@ bool DarwinMisc::ValidateJITAlive()
 	}
 
 	// Check 2: JIT code memory still writable? Write a canary, read it back.
-	//
-	// Under a dual-mapping (g_code_rw_offset != 0) g_code_rw_base is the RW
-	// alias — writable by construction, and a dead alias is exactly what this
-	// probe detects. Under an identity mapping (offset == 0) the base IS the
-	// live RX code page (the EE dispatcher sits at arena offset 0 once the VM
-	// has prewarmed), so the store needs a real write scope: a bare store
-	// faults with KERN_PROTECTION_FAILURE on the main thread (boot-gate crash,
-	// 2026-07-25). In Legacy mode flip just the first page RW and back via
-	// mprotect, treating a failed flip as "grant died" (alive=0) instead of
-	// letting the write SIGBUS; in the MAP_JIT toggle mode use the per-thread
-	// Begin/EndCodeWrite. Every caller runs while the VM is parked (the
-	// keepalive timer skips when the VM thread is active), so briefly dropping
-	// execute on that page cannot race JIT execution.
+	// Under a dual-mapping the base is the RW alias and a dead alias is exactly
+	// what this detects. Under an identity mapping it is the live RX dispatcher
+	// page, so Legacy flips just that page RW and back via mprotect, treating a
+	// failed flip as "grant died" (alive=0) instead of letting the store SIGBUS;
+	// the MAP_JIT toggle mode uses the per-thread Begin/EndCodeWrite.
 	if (g_code_rw_base != 0 && g_code_rw_size > 0)
 	{
+		// Never touch a page a JIT thread might be executing: the Legacy flip
+		// drops execute on the dispatcher page, and the store rewrites its
+		// first instruction in every mode. A running VM is proof enough that
+		// the grant works, so skip the probe and say so in the log.
+		if (s_jit_activity_query && s_jit_activity_query())
+		{
+			std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=1 cs_debugged=1 canary=skipped-vm-active\n");
+			std::fflush(stderr);
+			return true;
+		}
+
 		volatile u8* canary = reinterpret_cast<volatile u8*>(g_code_rw_base);
 #ifdef ARCH_ARM64
 		const bool identity = (g_code_rw_offset == 0);

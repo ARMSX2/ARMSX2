@@ -59,12 +59,19 @@
 #import "IOS/ARMSX2GameView.h"
 #import "IOS/PCSX2SceneDelegate.h"
 
+// Defined below, next to the VM worker state it reads.
+static bool ARMSX2JITWorkerBusy();
+
 @implementation PCSX2SceneDelegate
 
 #pragma mark - Scene connection & bootstrap
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
     if (![scene isKindOfClass:[UIWindowScene class]]) return;
-    
+
+    // Let ValidateJITAlive see VM/worker state before any of its callers can
+    // run (they are all scene-driven, so this is always first).
+    DarwinMisc::SetJITActivityQuery(&ARMSX2JITWorkerBusy);
+
     UIWindowScene *windowScene = (UIWindowScene *)scene;
     
     // --- SDL Initialization ---
@@ -621,6 +628,21 @@ static std::atomic<bool> s_jitExpired{false};
 static std::atomic<bool> s_vmInitComplete{false};
 static std::atomic<bool> s_vmThreadShouldExit{false};
 static std::atomic<bool> s_idleVMPrewarmResolved{false};
+
+// True while some thread may be executing or emitting JIT code: the VM is
+// running, or the worker is still inside CPUThreadInitialize. ValidateJITAlive
+// skips its arena canary while this holds — the didBecomeActive prewarm re-runs
+// the keepalive on every app switch, and flipping the dispatcher page under a
+// live CPU thread is an instant Instruction Abort.
+static bool ARMSX2JITWorkerBusy()
+{
+    if (s_vmThreadActive.load(std::memory_order_relaxed))
+        return true;
+    // Before the worker exists the arena doesn't either (the canary is
+    // already skipped on g_code_rw_base==0), so "init not complete" only
+    // bites while CPUThreadInitialize is actually in flight.
+    return !s_vmInitComplete.load(std::memory_order_relaxed);
+}
 
 static void ARMSX2ResolveIdleVMPrewarm()
 {
