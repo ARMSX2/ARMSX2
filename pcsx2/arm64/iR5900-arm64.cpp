@@ -4123,8 +4123,16 @@ StartRecomp:
 			if ((oldBlock->startpc + oldBlock->size * 4) <= HWADDR(startpc))
 				break;
 
-			if (memcmp(&recRAMCopy[oldBlock->startpc / 4], PSM(oldBlock->startpc),
-					oldBlock->size * 4))
+			// recRAMCopy is a byte array covering guest main RAM 1:1 — index
+			// it by guest address. Do NOT reintroduce the `/ 4` upstream x86
+			// still carries (iR5900.cpp:2691/2701): it dates from when
+			// recRAMCopy was u32* (dropped in 2010), and it packs the
+			// snapshots 4:1 so overlapping blocks overwrite each other's and
+			// the compare never matches — each then recClears the other
+			// forever. Clamp keeps a block straddling the top of RAM in bounds.
+			const u32 cmplen = std::min<u32>(oldBlock->size * 4,
+				Ps2MemSize::MainRam - oldBlock->startpc);
+			if (memcmp(&recRAMCopy[oldBlock->startpc], PSM(oldBlock->startpc), cmplen))
 			{
 				recClear(startpc, (pc - startpc) / 4);
 				s_pCurBlockEx = recBlocks.Get(HWADDR(startpc));
@@ -4133,7 +4141,7 @@ StartRecomp:
 			}
 		}
 
-		memcpy(&recRAMCopy[HWADDR(startpc) / 4], PSM(startpc), pc - startpc);
+		memcpy(&recRAMCopy[HWADDR(startpc)], PSM(startpc), pc - startpc);
 	}
 
 	if (g_branch == 2)
