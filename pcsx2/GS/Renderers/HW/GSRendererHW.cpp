@@ -5770,11 +5770,22 @@ void GSRendererHW::EmulateZbuffer(const GSTextureCache::Target* ds)
 	m_conf.cb_ps.TA_MaxDepth_Af.z = 0.0f;
 	m_conf.ps.zclamp = false;
 
+	// The floor only does something while one PS2 Z unit is finer than a float32 ULP at that
+	// depth. A ULP at z is 2^(exp(z) - 23) and a Z unit is 2^-32, so from z >= 2^-9 -- i.e.
+	// integer Z >= 2^23 -- they are the same size and floor(z * 2^32) * 2^-32 == z for every
+	// value the draw can produce. All that is left is the gl_FragDepth write itself, which
+	// moves the depth this pass stores off the fixed-function path that a later read-only pass
+	// tests against; the two need not agree bit-for-bit, and where they don't, a GEQUAL retest
+	// of the same geometry fails. God of War II's Athena statue draws its stone layer over an
+	// env-map layer exactly that way and speckles wherever the retest drops out. Skipping a
+	// provably-identity floor keeps the arithmetic and restores early-ZS.
+	const bool zfloor_is_noop = static_cast<u32>(GSVector4i(m_vt.m_min.p).z) >= (1u << 23);
+
 	// Even when Z is read-only, Z floor must be enabled with ZTST_GREATER since otherwise there
 	// can be false passing if the incoming Z is not floored when the buffer value is floored.
 	// On tilers (Mali), the device can opt out: declaring gl_FragDepth disables early-ZS for
 	// the entire pipeline. zclamp (large_z) is independent and stays correct.
-	m_conf.ps.zfloor = !flat_z && !g_gs_device->Features().no_ps2_z_quantization &&
+	m_conf.ps.zfloor = !flat_z && !zfloor_is_noop && !g_gs_device->Features().no_ps2_z_quantization &&
 		(m_cached_ctx.DepthWrite() || (m_cached_ctx.DepthRead() && m_cached_ctx.TEST.ZTST == ZTST_GREATER));
 
 	if (m_cached_ctx.DepthWrite() && large_z)
