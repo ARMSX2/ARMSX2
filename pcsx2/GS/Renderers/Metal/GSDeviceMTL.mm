@@ -28,17 +28,31 @@ GSDevice* MakeGSDeviceMTL()
 	return new GSDeviceMTL();
 }
 
+static GSAdapterInfo GetMetalAdapterInfo(id<MTLDevice> dev)
+{
+	GSAdapterInfo ai;
+	ai.name = [[dev name] UTF8String];
+	ai.max_texture_size = GSMTLDevice::GetMaxTextureSize(dev);
+	ai.max_upscale_multiplier = GSGetMaxUpscaleMultiplier(ai.max_texture_size);
+	return ai;
+}
+
 std::vector<GSAdapterInfo> GetMetalAdapterList()
 { @autoreleasepool {
 	std::vector<GSAdapterInfo> list;
-	auto devs = MRCTransfer(MTLCopyAllDevices());
-	for (id<MTLDevice> dev in devs.Get())
+	// MTLCopyAllDevices only exists on iOS 18. We ship down to 17, where there's a
+	// single GPU and nothing to enumerate anyway.
+	if (@available(macOS 10.11, iOS 18.0, *))
 	{
-		GSAdapterInfo ai;
-		ai.name = [[dev name] UTF8String];
-		ai.max_texture_size = GSMTLDevice::GetMaxTextureSize(dev);
-		ai.max_upscale_multiplier = GSGetMaxUpscaleMultiplier(ai.max_texture_size);
-		list.push_back(std::move(ai));
+		auto devs = MRCTransfer(MTLCopyAllDevices());
+		for (id<MTLDevice> dev in devs.Get())
+			list.push_back(GetMetalAdapterInfo(dev));
+	}
+	else
+	{
+		auto dev = MRCTransfer(MTLCreateSystemDefaultDevice());
+		if (dev.Get())
+			list.push_back(GetMetalAdapterInfo(dev.Get()));
 	}
 	return list;
 }}
@@ -1091,11 +1105,15 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		return false;
 
 	NSString* ns_adapter_name = [NSString stringWithUTF8String:GSConfig.Adapter.c_str()];
-	auto devs = MRCTransfer(MTLCopyAllDevices());
-	for (id<MTLDevice> dev in devs.Get())
+	// No device enumeration below iOS 18 — fall through to the default device.
+	if (@available(macOS 10.11, iOS 18.0, *))
 	{
-		if ([[dev name] isEqualToString:ns_adapter_name])
-			m_dev = GSMTLDevice(MRCRetain(dev));
+		auto devs = MRCTransfer(MTLCopyAllDevices());
+		for (id<MTLDevice> dev in devs.Get())
+		{
+			if ([[dev name] isEqualToString:ns_adapter_name])
+				m_dev = GSMTLDevice(MRCRetain(dev));
+		}
 	}
 	if (!m_dev.dev)
 	{
