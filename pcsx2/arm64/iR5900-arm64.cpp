@@ -1863,6 +1863,246 @@ static bool recSuperblockLivenessBarrier(u32 addr)
 // INTC/DMAC/TIMR fire only at event tests (block boundary, branch==0 there),
 // and AdEL (RaiseAddressError) is a stub. Pinned by ee_rec_traps_tests.cpp
 // delay-slot raiser tests + AluDelaySlotBranchSemanticsSurviveWithoutBracket.
+#ifdef PCSX2_RECOMPILER_TESTS
+
+namespace EERecFallback
+{
+	u32 g_groups = 0;
+	u32 g_cop2RegMask[kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u};
+
+	bool Selected(u32 code)
+	{
+		if (g_groups == 0)
+			return false;
+
+		const u32 primary = code >> 26;
+		u32 group = 0;
+
+		switch (primary)
+		{
+			case 0x00: // SPECIAL
+			{
+				const u32 funct = code & 0x3F;
+				if (funct == 0x08 || funct == 0x09) // JR / JALR
+					group = Branch;
+				else if (funct == 0x0A || funct == 0x0B || (funct >= 0x10 && funct <= 0x13))
+					group = Move; // MOVZ/MOVN, MFHI/MTHI/MFLO/MTLO
+				else if (funct >= 0x18 && funct <= 0x1B)
+					group = MultDiv;
+				else if (funct <= 0x07 || funct == 0x14 || funct == 0x16 || funct == 0x17 ||
+						 funct == 0x38 || funct == 0x3A || funct == 0x3B || funct == 0x3C ||
+						 funct == 0x3E || funct == 0x3F)
+					group = Shift;
+				else if ((funct >= 0x20 && funct <= 0x2F) || funct == 0x28 || funct == 0x29)
+					group = Arith; // ADD..NOR, SLT/SLTU, DADD..DSUBU, MFSA/MTSA
+				break;
+			}
+			case 0x01: // REGIMM — branches (trap immediates stay native)
+			{
+				const u32 rt = (code >> 16) & 0x1F;
+				if (rt <= 0x03 || (rt >= 0x10 && rt <= 0x13))
+					group = Branch;
+				break;
+			}
+			case 0x02: case 0x03:                                     // J / JAL
+			case 0x04: case 0x05: case 0x06: case 0x07:               // BEQ/BNE/BLEZ/BGTZ
+			case 0x14: case 0x15: case 0x16: case 0x17:               // *L variants
+				group = Branch;
+				break;
+			case 0x08: case 0x09: case 0x0A: case 0x0B:               // ADDI/ADDIU/SLTI/SLTIU
+			case 0x0C: case 0x0D: case 0x0E: case 0x0F:               // ANDI/ORI/XORI/LUI
+			case 0x18: case 0x19:                                     // DADDI/DADDIU
+				group = Arith;
+				break;
+			case 0x10: group = Cop0; break;
+			case 0x11: group = Fpu; break;                            // COP1
+			case 0x12: // COP2 — split by rs so the VU macro ops can be isolated
+			{
+				const u32 rs = (code >> 21) & 0x1F;
+				int moveOp = -1;
+				switch (rs)
+				{
+					case 0x01: group = Qmfc2; moveOp = kQmfc2; break;
+					case 0x02: group = Cfc2;  moveOp = kCfc2;  break;
+					case 0x05: group = Qmtc2; moveOp = kQmtc2; break;
+					case 0x06: group = Ctc2;  moveOp = kCtc2;  break;
+					default:   group = Cop2Vu; break;                 // BC2 + CO=1 macro ops
+				}
+				// Register filter: fs/rd is bits 15-11 for all four move ops.
+				if (moveOp >= 0 && (g_cop2RegMask[moveOp] & (1u << ((code >> 11) & 0x1F))) == 0)
+					return false;
+				break;
+			}
+			case 0x1C: group = Mmi; break;
+			case 0x31: case 0x39: group = Fpu; break;                 // LWC1 / SWC1
+			case 0x36: case 0x3E: group = Cop2Ls; break;              // LQC2 / SQC2
+			case 0x1A: case 0x1B:                                     // LDL / LDR
+			case 0x1E: case 0x1F:                                     // LQ / SQ
+			case 0x37: case 0x3F:                                     // LD / SD
+				group = LoadStore;
+				break;
+			default:
+				if (primary >= 0x20 && primary <= 0x2E) // LB..SWR
+					group = LoadStore;
+				break;
+		}
+
+		return group != 0 && (g_groups & group) != 0;
+	}
+
+	static const struct { const char* name; u32 bit; } kGroupNames[] = {
+		{"fpu", Fpu}, {"cop2", Cop2All}, {"mmi", Mmi}, {"multdiv", MultDiv},
+		{"shift", Shift}, {"arith", Arith}, {"loadstore", LoadStore},
+		{"move", Move}, {"cop0", Cop0}, {"branch", Branch},
+		{"cop2move", Cop2Move}, {"cop2vu", Cop2Vu}, {"cop2ls", Cop2Ls},
+		{"qmfc2", Qmfc2}, {"cfc2", Cfc2}, {"qmtc2", Qmtc2}, {"ctc2", Ctc2},
+	};
+
+	// Maps a group bit to its COP2 move-op register-filter slot, or -1.
+	static int MoveOpSlotForGroup(u32 bit)
+	{
+		switch (bit)
+		{
+			case Qmfc2: return kQmfc2;
+			case Cfc2:  return kCfc2;
+			case Qmtc2: return kQmtc2;
+			case Ctc2:  return kCtc2;
+			default:    return -1;
+		}
+	}
+
+	bool ParseGroups(const std::string_view& list, u32* out, u32* reg_masks, std::string* error)
+	{
+		u32 local_reg_masks[kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u};
+		bool reg_filtered[kCop2MoveOpCount] = {false, false, false, false};
+		u32 mask = 0;
+		size_t pos = 0;
+		while (pos <= list.size())
+		{
+			const size_t comma = list.find(',', pos);
+			const size_t end = (comma == std::string_view::npos) ? list.size() : comma;
+			std::string_view tok = list.substr(pos, end - pos);
+			while (!tok.empty() && tok.front() == ' ') tok.remove_prefix(1);
+			while (!tok.empty() && tok.back() == ' ') tok.remove_suffix(1);
+
+			if (!tok.empty())
+			{
+				if (tok == "none")
+				{
+					mask = 0;
+				}
+				else if (tok == "all")
+				{
+					for (const auto& g : kGroupNames)
+						mask |= g.bit;
+				}
+				else
+				{
+					// Optional "<group>:<reg>[:<reg>...]" register filter.
+					std::string_view name = tok;
+					std::string_view regs;
+					const size_t colon = tok.find(':');
+					if (colon != std::string_view::npos)
+					{
+						name = tok.substr(0, colon);
+						regs = tok.substr(colon + 1);
+					}
+
+					bool found = false;
+					for (const auto& g : kGroupNames)
+					{
+						if (name != g.name)
+							continue;
+						found = true;
+						mask |= g.bit;
+
+						if (!regs.empty())
+						{
+							const int slot = MoveOpSlotForGroup(g.bit);
+							if (slot < 0)
+							{
+								if (error)
+								{
+									*error = fmt::format("EE rec fallback group '{}' does not take a register "
+										"filter (only qmfc2/cfc2/qmtc2/ctc2 do)", std::string(name));
+								}
+								return false;
+							}
+							size_t rp = 0;
+							while (rp <= regs.size())
+							{
+								const size_t rc = regs.find(':', rp);
+								const size_t rend = (rc == std::string_view::npos) ? regs.size() : rc;
+								const std::string_view rtok = regs.substr(rp, rend - rp);
+								const std::optional<u32> parsed = StringUtil::FromChars<u32>(rtok, 10);
+								const u32 reg = parsed.value_or(0);
+								if (rtok.empty() || !parsed.has_value() || reg > 31)
+								{
+									if (error)
+									{
+										*error = fmt::format("bad register '{}' in EE rec fallback filter "
+											"'{}' (expected 0-31)", std::string(rtok), std::string(tok));
+									}
+									return false;
+								}
+								if (!reg_filtered[slot])
+								{
+									local_reg_masks[slot] = 0;
+									reg_filtered[slot] = true;
+								}
+								local_reg_masks[slot] |= (1u << reg);
+								if (rc == std::string_view::npos)
+									break;
+								rp = rc + 1;
+							}
+						}
+						break;
+					}
+					if (!found)
+					{
+						if (error)
+						{
+							*error = fmt::format("unknown EE rec fallback group '{}'; valid: none, all, "
+								"fpu, cop2, mmi, multdiv, shift, arith, loadstore, move, cop0, branch, "
+								"cop2move, cop2vu, cop2ls, qmfc2, cfc2, qmtc2, ctc2 (the last four accept "
+								"a ':<reg>' filter, e.g. ctc2:27)",
+								std::string(name));
+						}
+						return false;
+					}
+				}
+			}
+
+			if (comma == std::string_view::npos)
+				break;
+			pos = comma + 1;
+		}
+
+		*out = mask;
+		for (int i = 0; i < kCop2MoveOpCount; i++)
+			reg_masks[i] = local_reg_masks[i];
+		return true;
+	}
+
+	std::string DescribeGroups(u32 groups)
+	{
+		if (groups == 0)
+			return "none (full native codegen)";
+		std::string s;
+		for (const auto& g : kGroupNames)
+		{
+			if (groups & g.bit)
+			{
+				if (!s.empty()) s += ",";
+				s += g.name;
+			}
+		}
+		return s;
+	}
+} // namespace EERecFallback
+
+#endif // PCSX2_RECOMPILER_TESTS
+
 static bool delaySlotNeedsBranchBracket(u32 code, const R5900::OPCODE& op)
 {
 	if (op.flags & (IS_LOAD | IS_STORE | IS_MEMORY))
@@ -1871,6 +2111,11 @@ static bool delaySlotNeedsBranchBracket(u32 code, const R5900::OPCODE& op)
 		return true; // SYSCALL + branch-in-delay-slot interpreter fallback
 	if (!op.recompile)
 		return true; // conservative: interpreter fallback may raise
+#ifdef PCSX2_RECOMPILER_TESTS
+	if (EERecFallback::Selected(code))
+		return true; // same conservatism for a harness-forced interpreter fallback,
+		             // so the bisect switch cannot itself change exception semantics
+#endif
 	const u32 primary = code >> 26;
 	if (primary == 0x00)
 	{
@@ -2073,7 +2318,13 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 			// Guard: branch/jump in a delay slot would cause infinite
 			// compile-time recursion. Use interpreter for the instruction.
 			const bool isBranchInDelaySlot = delayslot && (opcode.flags & IS_BRANCH);
-			if (isBranchInDelaySlot || !opcode.recompile)
+#ifdef PCSX2_RECOMPILER_TESTS
+			// Harness-only: --rec-fallback bisect switch (see EERecFallback).
+			const bool forcedInterp = EERecFallback::Selected(cpuRegs.code);
+#else
+			constexpr bool forcedInterp = false;
+#endif
+			if (isBranchInDelaySlot || !opcode.recompile || forcedInterp)
 			{
 				if ((opcode.flags & IS_BRANCH) && !isBranchInDelaySlot)
 					recBranchCall(opcode.interpret);
