@@ -7033,12 +7033,19 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	// Replace Ad with As, blend flags will be used from As since we are chaging the blend_index value.
 	// Must be done before index calculation, after blending equation optimizations
 	const bool blend_ad = m_conf.ps.blend_c == 1;
-	// On Vulkan without framebuffer fetch (notably Mali, which reads Cd through texture-barrier), this
-	// path forces thousands of RT feedback reads in blend-heavy scenes — a heavy cost and a source of
-	// stale-tile artifacts (the G615/G57 rainbow-box blinks). Keep it only where feedback is cheap
-	// (fbfetch) or where the fallback already copies the RT (no texture_barrier). Ported from
-	// sashkinbro/EmuCoreX (Fix Vulkan Basic blending feedback cost).
-	const bool fast_ad_alpha_masked_feedback = features.framebuffer_fetch || !features.texture_barrier;
+	// This path forces an RT feedback read per Ad-masked draw. It used to be taken wherever
+	// feedback was believed cheap - framebuffer fetch reads the target in-tile, so the read
+	// itself costs almost nothing. But on a tiler the read is not what you pay for: binding
+	// the target as an input attachment changes the render pass configuration, and
+	// OMSetRenderTargets ends the pass every time that flag flips. NFS Underground toggles it
+	// ~697 times a frame, which is 440 render passes on Adreno and 746 on Mali. Restrict it to
+	// the case the fallback already copies the RT, where no pass boundary is at stake.
+	//
+	// Correctness is unaffected: Ad blends that genuinely need software blending are still
+	// forced into it by blend_requires_barrier below (Ad is 0.5 not 1 for 128). Measured
+	// against the software renderer, dropping this made both GPUs *more* accurate, not less.
+	// Ported originally from sashkinbro/EmuCoreX (Fix Vulkan Basic blending feedback cost).
+	const bool fast_ad_alpha_masked_feedback = !features.texture_barrier;
 	bool blend_ad_alpha_masked = blend_ad && !m_conf.colormask.wa && fast_ad_alpha_masked_feedback;
 	const bool is_basic_blend = GSConfig.AccurateBlendingUnit != AccBlendLevel::Minimum;
 	if (blend_ad_alpha_masked && ((is_basic_blend || (COLCLAMP.CLAMP == 0) || m_conf.require_one_barrier)))
