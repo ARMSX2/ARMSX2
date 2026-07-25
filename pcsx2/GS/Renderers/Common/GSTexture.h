@@ -97,6 +97,9 @@ protected:
 #ifdef PCSX2_DEVBUILD
 	std::string m_debug_name;
 #endif
+
+	virtual bool DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer = 0) = 0;
+
 public:
 	GSTexture();
 	virtual ~GSTexture();
@@ -104,7 +107,10 @@ public:
 	// Returns the native handle of a texture.
 	virtual void* GetNativeHandle() const = 0;
 
-	virtual bool Update(const GSVector4i& r, const void* data, int pitch, int layer = 0) = 0;
+	/// Uploads CPU data into the texture. Flushes any deferred draws first: a draw held
+	/// back by GSPassScheduler must not be reordered past an upload into a texture it
+	/// writes, nor past one into a texture it samples.
+	bool Update(const GSVector4i& r, const void* data, int pitch, int layer = 0);
 	virtual bool Map(GSMap& m, const GSVector4i* r = nullptr, int layer = 0) = 0;
 	virtual void Unmap() = 0;
 	virtual void GenerateMipmap() = 0;
@@ -262,6 +268,10 @@ public:
 
 class GSDownloadTexture
 {
+protected:
+	virtual void DoCopyFromTexture(
+		const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch) = 0;
+
 public:
 	GSDownloadTexture(u32 width, u32 height, GSTexture::Format format);
 	virtual ~GSDownloadTexture();
@@ -285,8 +295,10 @@ public:
 	/// Does not complete immediately, you should flush before accessing the buffer.
 	/// use_transfer_pitch should be true if there's only a single texture being copied to this buffer before
 	/// it will be used. This allows the image to be packed tighter together, and buffer reuse.
-	virtual void CopyFromTexture(
-		const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch = true) = 0;
+	/// Flushes any deferred draws first, so a readback always sees every draw that had been
+	/// submitted when it was issued.
+	void CopyFromTexture(
+		const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch = true);
 
 	/// Maps the texture into the CPU address space, enabling it to read the contents.
 	/// The Map call may not perform synchronization. If the contents of the staging texture

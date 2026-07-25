@@ -20,7 +20,7 @@ void* GSTextureNone::GetNativeHandle() const
 	return nullptr;
 }
 
-bool GSTextureNone::Update(const GSVector4i& r, const void* data, int pitch, int layer)
+bool GSTextureNone::DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer)
 {
 	return true;
 }
@@ -61,7 +61,7 @@ GSDownloadTextureNone::GSDownloadTextureNone(u32 width, u32 height, GSTexture::F
 	m_buffer.resize(GetBufferSize(width, height, format));
 }
 
-void GSDownloadTextureNone::CopyFromTexture(
+void GSDownloadTextureNone::DoCopyFromTexture(
 	const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch)
 {
 	m_current_pitch = GetTransferPitch(use_transfer_pitch ? static_cast<u32>(drc.width()) : m_width, 1);

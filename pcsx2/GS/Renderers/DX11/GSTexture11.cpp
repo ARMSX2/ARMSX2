@@ -55,7 +55,7 @@ void* GSTexture11::GetNativeHandle() const
 	return static_cast<ID3D11ShaderResourceView*>(*const_cast<GSTexture11*>(this));
 }
 
-bool GSTexture11::Update(const GSVector4i& r, const void* data, int pitch, int layer)
+bool GSTexture11::DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer)
 {
 	if (layer >= m_mipmap_levels)
 		return false;
@@ -232,7 +232,7 @@ std::unique_ptr<GSDownloadTexture11> GSDownloadTexture11::Create(u32 width, u32 
 	return std::unique_ptr<GSDownloadTexture11>(new GSDownloadTexture11(std::move(tex), width, height, format));
 }
 
-void GSDownloadTexture11::CopyFromTexture(
+void GSDownloadTexture11::DoCopyFromTexture(
 	const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch)
 {
 	pxAssert(stex->GetFormat() == m_format);

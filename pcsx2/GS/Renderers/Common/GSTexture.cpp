@@ -16,6 +16,12 @@ GSTexture::GSTexture() = default;
 
 GSTexture::~GSTexture() = default;
 
+bool GSTexture::Update(const GSVector4i& r, const void* data, int pitch, int layer)
+{
+	g_gs_device->FlushDeferredDraws();
+	return DoUpdate(r, data, pitch, layer);
+}
+
 bool GSTexture::ValidateUsageAndFormat(Usage usage, Format format)
 {
 	if (IsDepthStencil(usage) && (usage & (Usage::ShaderWrite | Usage::RenderTarget)))
@@ -228,6 +234,13 @@ GSDownloadTexture::GSDownloadTexture(u32 width, u32 height, GSTexture::Format fo
 }
 
 GSDownloadTexture::~GSDownloadTexture() = default;
+
+void GSDownloadTexture::CopyFromTexture(
+	const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch)
+{
+	g_gs_device->FlushDeferredDraws();
+	DoCopyFromTexture(drc, stex, src, src_level, use_transfer_pitch);
+}
 
 u32 GSDownloadTexture::GetBufferSize(u32 width, u32 height, GSTexture::Format format, u32 pitch_align /* = 1 */)
 {

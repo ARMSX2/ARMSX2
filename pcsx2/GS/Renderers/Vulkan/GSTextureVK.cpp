@@ -329,7 +329,7 @@ void GSTextureVK::UpdateFromBuffer(VkCommandBuffer cmdbuf, int level, u32 x, u32
 		TransitionSubresourcesToLayout(cmdbuf, level, 1, Layout::TransferDst, old_layout);
 }
 
-bool GSTextureVK::Update(const GSVector4i& r, const void* data, int pitch, int layer)
+bool GSTextureVK::DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer)
 {
 	if (layer >= m_mipmap_levels)
 		return false;
@@ -383,7 +383,7 @@ bool GSTextureVK::Update(const GSVector4i& r, const void* data, int pitch, int l
 	}
 
 	const VkCommandBuffer cmdbuf = GetCommandBufferForUpdate();
-	GL_PUSH("GSTextureVK::Update({%d,%d} %dx%d Lvl:%u", r.x, r.y, r.width(), r.height(), layer);
+	GL_PUSH("GSTextureVK::DoUpdate({%d,%d} %dx%d Lvl:%u", r.x, r.y, r.width(), r.height(), layer);
 
 	// first time the texture is used? don't leave it undefined
 	if (m_layout == Layout::Undefined)
@@ -420,7 +420,7 @@ bool GSTextureVK::Map(GSMap& m, const GSVector4i* r, int layer)
 	m.pitch = Common::AlignUpPow2(
 		CalcUploadPitch(m_map_area.width()), GSDeviceVK::GetInstance()->GetBufferCopyRowPitchAlignment());
 
-	// see note in Update() for the reason why.
+	// see note in DoUpdate() for the reason why.
 	const u32 required_size = CalcUploadSize(m_map_area.height(), m.pitch);
 	VKStreamBuffer& buffer = GSDeviceVK::GetInstance()->GetTextureUploadBuffer();
 	if (required_size >= (buffer.GetCurrentSize() / 2))
@@ -464,7 +464,7 @@ void GSTextureVK::Unmap()
 	buffer.CommitMemory(required_size);
 
 	const VkCommandBuffer cmdbuf = GetCommandBufferForUpdate();
-	GL_PUSH("GSTextureVK::Update({%d,%d} %dx%d Lvl:%u", m_map_area.x, m_map_area.y, m_map_area.width(),
+	GL_PUSH("GSTextureVK::DoUpdate({%d,%d} %dx%d Lvl:%u", m_map_area.x, m_map_area.y, m_map_area.width(),
 		m_map_area.height(), m_map_level);
 
 	// first time the texture is used? don't leave it undefined
@@ -883,7 +883,7 @@ std::unique_ptr<GSDownloadTextureVK> GSDownloadTextureVK::Create(u32 width, u32 
 	return tex;
 }
 
-void GSDownloadTextureVK::CopyFromTexture(
+void GSDownloadTextureVK::DoCopyFromTexture(
 	const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch)
 {
 	GSTextureVK* const vkTex = static_cast<GSTextureVK*>(stex);
@@ -905,7 +905,7 @@ void GSDownloadTextureVK::CopyFromTexture(
 	vkTex->CommitClear();
 
 	const VkCommandBuffer cmdbuf = GSDeviceVK::GetInstance()->GetCurrentCommandBuffer();
-	GL_INS("GSDownloadTextureVK::CopyFromTexture: {%d,%d} %ux%u", src.left, src.top, src.width(), src.height());
+	GL_INS("GSDownloadTextureVK::DoCopyFromTexture: {%d,%d} %ux%u", src.left, src.top, src.width(), src.height());
 
 	GSTextureVK::Layout old_layout = vkTex->GetLayout();
 	if (old_layout == GSTextureVK::Layout::Undefined)

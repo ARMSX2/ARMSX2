@@ -578,7 +578,7 @@ void GSTexture12::CopyTextureDataForUpload(void* dst, const void* src, u32 pitch
 	StringUtil::StrideMemCpy(dst, upload_pitch, src, pitch, std::min(upload_pitch, pitch), count);
 }
 
-bool GSTexture12::Update(const GSVector4i& r, const void* data, int pitch, int layer)
+bool GSTexture12::DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer)
 {
 	if (layer >= m_mipmap_levels)
 		return false;
@@ -631,7 +631,7 @@ bool GSTexture12::Update(const GSVector4i& r, const void* data, int pitch, int l
 	}
 
 	const D3D12CommandList& cmdlist = GetCommandBufferForUpdate();
-	GL_PUSH("GSTexture12::Update({%d,%d} %dx%d Lvl:%u", r.x, r.y, r.width(), r.height(), layer);
+	GL_PUSH("GSTexture12::DoUpdate({%d,%d} %dx%d Lvl:%u", r.x, r.y, r.width(), r.height(), layer);
 
 	// first time the texture is used? don't leave it undefined
 	if (m_resource_state == GSTexture12::ResourceState::Undefined)
@@ -676,7 +676,7 @@ bool GSTexture12::Map(GSMap& m, const GSVector4i* r, int layer)
 	m_map_level = layer;
 	m.pitch = Common::AlignUpPow2(CalcUploadPitch(m_map_area.width()), D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
 
-	// see note in Update() for the reason why.
+	// see note in DoUpdate() for the reason why.
 	const u32 required_size = CalcUploadSize(m_map_area.height(), m.pitch);
 	D3D12StreamBuffer& buffer = GSDevice12::GetInstance()->GetTextureStreamBuffer();
 	if (required_size >= (buffer.GetSize() / 2))
@@ -709,7 +709,7 @@ void GSTexture12::Unmap()
 	buffer.CommitMemory(required_size);
 
 	const D3D12CommandList& cmdlist = GetCommandBufferForUpdate();
-	GL_PUSH("GSTexture12::Update({%d,%d} %dx%d Lvl:%u", m_map_area.x, m_map_area.y, m_map_area.width(),
+	GL_PUSH("GSTexture12::DoUpdate({%d,%d} %dx%d Lvl:%u", m_map_area.x, m_map_area.y, m_map_area.width(),
 		m_map_area.height(), m_map_level);
 
 	// first time the texture is used? don't leave it undefined
@@ -1209,7 +1209,7 @@ std::unique_ptr<GSDownloadTexture12> GSDownloadTexture12::Create(u32 width, u32 
 	return tex;
 }
 
-void GSDownloadTexture12::CopyFromTexture(
+void GSDownloadTexture12::DoCopyFromTexture(
 	const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch)
 {
 	GSTexture12* const tex12 = static_cast<GSTexture12*>(stex);

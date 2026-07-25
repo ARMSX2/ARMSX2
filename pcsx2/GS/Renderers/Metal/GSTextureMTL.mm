@@ -43,7 +43,7 @@ void* GSTextureMTL::GetNativeHandle() const
 	return (__bridge void*)m_texture;
 }
 
-bool GSTextureMTL::Update(const GSVector4i& r, const void* data, int pitch, int layer)
+bool GSTextureMTL::DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer)
 {
 	if (void* buffer = MapWithPitch(r, pitch, layer))
 	{
@@ -176,7 +176,7 @@ std::unique_ptr<GSDownloadTextureMTL> GSDownloadTextureMTL::Create(GSDeviceMTL* 
 	return std::unique_ptr<GSDownloadTextureMTL>(new GSDownloadTextureMTL(dev, buffer, width, height, format));
 }}
 
-void GSDownloadTextureMTL::CopyFromTexture(
+void GSDownloadTextureMTL::DoCopyFromTexture(
 	const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch)
 { @autoreleasepool {
 	GSTextureMTL* const mtlTex = static_cast<GSTextureMTL*>(stex);
@@ -199,7 +199,7 @@ void GSDownloadTextureMTL::CopyFromTexture(
 
 	m_copy_cmdbuffer = MRCRetain(m_dev->GetRenderCmdBuf());
 
-	[m_copy_cmdbuffer pushDebugGroup:@"GSDownloadTextureMTL::CopyFromTexture"];
+	[m_copy_cmdbuffer pushDebugGroup:@"GSDownloadTextureMTL::DoCopyFromTexture"];
 	id<MTLBlitCommandEncoder> encoder = [m_copy_cmdbuffer blitCommandEncoder];
 	[encoder copyFromTexture:mtlTex->GetTexture()
 	             sourceSlice:0

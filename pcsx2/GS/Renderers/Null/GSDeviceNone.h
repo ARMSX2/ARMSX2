@@ -20,7 +20,7 @@ public:
 	GSTextureNone(Usage usage, int width, int height, int levels, Format format);
 
 	void* GetNativeHandle() const override;
-	bool Update(const GSVector4i& r, const void* data, int pitch, int layer = 0) override;
+	bool DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer = 0) override;
 	bool Map(GSMap& m, const GSVector4i* r = nullptr, int layer = 0) override;
 	void Unmap() override;
 	void GenerateMipmap() override;
@@ -38,7 +38,7 @@ class GSDownloadTextureNone final : public GSDownloadTexture
 public:
 	GSDownloadTextureNone(u32 width, u32 height, GSTexture::Format format);
 
-	void CopyFromTexture(const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level,
+	void DoCopyFromTexture(const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level,
 		bool use_transfer_pitch = true) override;
 	bool Map(const GSVector4i& read_rc) override;
 	void Unmap() override;

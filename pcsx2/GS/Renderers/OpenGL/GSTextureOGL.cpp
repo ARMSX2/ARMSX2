@@ -179,7 +179,7 @@ void* GSTextureOGL::GetNativeHandle() const
 	return reinterpret_cast<void*>(static_cast<uintptr_t>(m_texture_id));
 }
 
-bool GSTextureOGL::Update(const GSVector4i& r, const void* data, int pitch, int layer)
+bool GSTextureOGL::DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer)
 {
 	pxAssert(!IsDepthStencil());
 
@@ -416,7 +416,7 @@ std::unique_ptr<GSDownloadTextureOGL> GSDownloadTextureOGL::Create(u32 width, u3
 	return ret;
 }
 
-void GSDownloadTextureOGL::CopyFromTexture(
+void GSDownloadTextureOGL::DoCopyFromTexture(
 	const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch)
 {
 	GSTextureOGL* const glTex = static_cast<GSTextureOGL*>(stex);
