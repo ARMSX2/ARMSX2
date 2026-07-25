@@ -136,6 +136,19 @@ GSPassScheduler::Disposition GSPassScheduler::TryEnqueue(const GSHWDrawConfig& c
 		run->rt = config.rt;
 		run->ds = config.ds;
 		pxAssert(run->records.empty());
+
+		// GSTexture::State is not private to the backend: the texture cache reads it to decide
+		// whether a target has been written yet, and an undeferred draw would have flipped it
+		// to Dirty on the spot, when the backend picked the attachment's load op. Do that here
+		// so the deferral window is invisible, and stash the original to hand back at emit -
+		// the backend still needs to see Cleared or Invalidated to get the load op right.
+		run->rt_state = run->rt->GetState();
+		run->rt->SetState(GSTexture::State::Dirty);
+		if (run->ds)
+		{
+			run->ds_state = run->ds->GetState();
+			run->ds->SetState(GSTexture::State::Dirty);
+		}
 	}
 
 	const size_t vertex_bytes = sizeof(GSVertex) * config.nverts;
@@ -178,6 +191,12 @@ void GSPassScheduler::Emit(GSDevice* dev)
 	// render pass.
 	for (u32 i = 0; i < m_run_count; i++)
 	{
+		// Rewind the attachment state to what the first draw would have found, so the backend
+		// picks the same load op it would have picked undeferred. It sets Dirty again itself.
+		m_runs[i].rt->SetState(m_runs[i].rt_state);
+		if (m_runs[i].ds)
+			m_runs[i].ds->SetState(m_runs[i].ds_state);
+
 		// Resolve the geometry pointers only now: the vectors have finished growing, so
 		// data() is finally stable.
 		for (Record& rec : m_runs[i].records)

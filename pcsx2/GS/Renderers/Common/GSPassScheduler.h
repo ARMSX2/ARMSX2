@@ -91,6 +91,11 @@ private:
 	{
 		GSTexture* rt = nullptr;
 		GSTexture* ds = nullptr;
+
+		/// What the attachments' State was when the run opened. The backend consumes it at
+		/// emit time to pick a load op; see TryEnqueue() for why it cannot just stay there.
+		GSTexture::State rt_state = GSTexture::State::Dirty;
+		GSTexture::State ds_state = GSTexture::State::Dirty;
 		std::vector<Record> records;
 	};
 
