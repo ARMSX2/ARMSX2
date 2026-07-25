@@ -1408,7 +1408,7 @@ std::string GSDeviceOGL::GetDriverInfo() const
 		"OpenGL Context:\n{}\n{} {}\nGLSL: {}", gl_version, gl_vendor, gl_renderer, gl_shading_language_version);
 }
 
-GSDevice::PresentResult GSDeviceOGL::BeginPresent(bool frame_skip)
+GSDevice::PresentResult GSDeviceOGL::DoBeginPresent(bool frame_skip)
 {
 	if (frame_skip || m_window_info.type == WindowInfo::Type::Surfaceless)
 		return PresentResult::FrameSkipped;
@@ -2201,12 +2201,12 @@ void GSDeviceOGL::BlitRect(GSTexture* sTex, const GSVector4i& r, const GSVector2
 }
 
 // Copy a sub part of a texture into another
-void GSDeviceOGL::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
+void GSDeviceOGL::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
 {
 	// Empty rect, abort copy.
 	if (r.rempty())
 	{
-		GL_INS("GL: CopyRect rect empty.");
+		GL_INS("GL: DoCopyRect rect empty.");
 		return;
 	}
 
@@ -2226,7 +2226,7 @@ void GSDeviceOGL::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r
 	}
 
 	g_perfmon.Put(GSPerfMon::TextureCopies, 1);
-	GL_PUSH("CopyRect from %d to %d", sid, did);
+	GL_PUSH("DoCopyRect from %d to %d", sid, did);
 
 	// Commit destination clear if partially overwritten (color only).
 	if (dTex->GetState() == GSTexture::State::Cleared && !full_draw_copy)
@@ -2367,7 +2367,7 @@ void GSDeviceOGL::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture
 	DrawStretchRect(flip_sr, dRect, ds);
 }
 
-void GSDeviceOGL::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
+void GSDeviceOGL::DoUpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
 {
 	CommitClear(sTex, false);
 
@@ -2389,7 +2389,7 @@ void GSDeviceOGL::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, 
 	DrawStretchRect(GSVector4::zero(), dRect, dTex->GetSize());
 }
 
-void GSDeviceOGL::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM)
+void GSDeviceOGL::DoConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM)
 {
 	CommitClear(sTex, false);
 
@@ -2413,7 +2413,7 @@ void GSDeviceOGL::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 off
 	DrawStretchRect(GSVector4::zero(), dRect, dTex->GetSize());
 }
 
-void GSDeviceOGL::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
+void GSDeviceOGL::DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
 {
 	CommitClear(sTex, false);
 
@@ -2463,7 +2463,7 @@ void GSDeviceOGL::DrawStretchRect(const GSVector4& sRect, const GSVector4& dRect
 	DrawPrimitive();
 }
 
-void GSDeviceOGL::DrawMultiStretchRects(
+void GSDeviceOGL::DoDrawMultiStretchRects(
 	const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader)
 {
 	shader = shader.SetMask(); // Mask is handled separately from program.
@@ -3520,7 +3520,7 @@ static constexpr std::array<GLenum, 3> s_gl_blend_ops = { {
 } };
 // clang-format on
 
-void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
+void GSDeviceOGL::DoRenderHW(GSHWDrawConfig& config)
 {
 	if (!GLState::scissor.eq(config.scissor))
 	{
@@ -3891,14 +3891,14 @@ void GSDeviceOGL::FeedbackCopyAndBind(const GSHWDrawConfig& config,
 {
 	if (rt_clone)
 	{
-		CopyRect(rt, rt_clone, copyarea, copyarea.left, copyarea.top);
+		DoCopyRect(rt, rt_clone, copyarea, copyarea.left, copyarea.top);
 		PSSetShaderResource(2, rt_clone);
 		if (config.tex_hazard == GSHWDrawConfig::TEX_HAZARD_RT)
 			PSSetShaderResource(0, rt_clone);
 	}
 	if (ds_clone)
 	{
-		CopyRect(ds, ds_clone, copyarea, copyarea.left, copyarea.top);
+		DoCopyRect(ds, ds_clone, copyarea, copyarea.left, copyarea.top);
 		PSSetShaderResource(4, ds_clone);
 		if (config.tex_hazard == GSHWDrawConfig::TEX_HAZARD_DEPTH)
 			PSSetShaderResource(0, ds_clone);

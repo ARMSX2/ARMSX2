@@ -1513,7 +1513,7 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 
 	if (resources.pipeline_statistics_query == QueryState::Querying)
 	{
-		// Didn't end query in BeginPresent() so end it here.
+		// Didn't end query in DoBeginPresent() so end it here.
 		resources.pipeline_statistics_query = QueryState::Ready;
 		vkCmdEndQuery(m_current_command_buffer, m_pipeline_statistics_query_pool, m_current_frame);
 	}
@@ -2661,7 +2661,7 @@ void GSDeviceVK::ResizeWindow(u32 new_window_width, u32 new_window_height, float
 	if (!m_swap_chain)
 	{
 		// Surfaceless (libretro): the "window" is the backbuffer rendered for
-		// the frontend, so just adopt the new size — BeginPresent recreates
+		// the frontend, so just adopt the new size — DoBeginPresent recreates
 		// the backbuffer to match on the next frame.
 		m_window_info.surface_width = new_window_width;
 		m_window_info.surface_height = new_window_height;
@@ -2757,7 +2757,7 @@ void GSDeviceVK::SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
 	}
 }
 
-GSDevice::PresentResult GSDeviceVK::BeginPresent(bool frame_skip)
+GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 {
 	EndRenderPass();
 
@@ -3489,7 +3489,7 @@ bool GSDeviceVK::CheckFeatures()
 
 	// Mobile tile-native ordered depth feedback ("mobile ROV"), opt-in via HWROV. Reads the
 	// depth buffer in-tile (subpassLoad on a depth input attachment) instead of copying it to a
-	// colour RT (BeginDSAsRT), so SW-Z / DATE / alpha-test / AA1 depth passes fuse in-pass rather
+	// colour RT (DoBeginDSAsRT), so SW-Z / DATE / alpha-test / AA1 depth passes fuse in-pass rather
 	// than round-tripping. It needs an ordered in-tile depth read: ROAA on the depth aspect on the
 	// framebuffer_fetch path (Mali-default / opt-in Adreno), or the render-pass self-dependency on
 	// the texture_barrier path. Gated behind HWROV so toggle-off is byte-for-byte the well-tested
@@ -3691,7 +3691,7 @@ std::unique_ptr<GSDownloadTexture> GSDeviceVK::CreateDownloadTexture(u32 width, 
 	return GSDownloadTextureVK::Create(width, height, format);
 }
 
-void GSDeviceVK::HintReadbackSource(GSTexture* tex)
+void GSDeviceVK::DoHintReadbackSource(GSTexture* tex)
 {
 	// MRU ring of 2 (see the member comment): per-frame readback patterns re-read the
 	// same one or two targets, and the next draw into one of them predicts a readback.
@@ -3702,12 +3702,12 @@ void GSDeviceVK::HintReadbackSource(GSTexture* tex)
 	m_recent_readback_sources[0] = tex;
 }
 
-void GSDeviceVK::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
+void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
 {
 	// Empty rect, abort copy.
 	if (r.rempty())
 	{
-		GL_INS("VK: CopyRect rect empty.");
+		GL_INS("VK: DoCopyRect rect empty.");
 		return;
 	}
 
@@ -3809,7 +3809,7 @@ void GSDeviceVK::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture*
 		m_present[static_cast<int>(shader)], filter, true);
 }
 
-void GSDeviceVK::DrawMultiStretchRects(
+void GSDeviceVK::DoDrawMultiStretchRects(
 	const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader)
 {
 	GSTexture* last_tex = rects[0].src;
@@ -4119,7 +4119,7 @@ void GSDeviceVK::BlitRect(GSTexture* sTex, const GSVector4i& sRect, u32 sLevel, 
 		filter == Biln ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
 }
 
-void GSDeviceVK::UpdateCLUTTexture(
+void GSDeviceVK::DoUpdateCLUTTexture(
 	GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
 {
 	// Super annoying, but apparently NVIDIA doesn't like floats/ints packed together in the same vec4?
@@ -4139,7 +4139,7 @@ void GSDeviceVK::UpdateCLUTTexture(
 		GetConvertPipeline(shader), Nearest, true);
 }
 
-void GSDeviceVK::ConvertToIndexedTexture(
+void GSDeviceVK::DoConvertToIndexedTexture(
 	GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM)
 {
 	struct alignas(16) Uniforms
@@ -4161,7 +4161,7 @@ void GSDeviceVK::ConvertToIndexedTexture(
 		GetConvertPipeline(shader), Nearest, true);
 }
 
-void GSDeviceVK::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
+void GSDeviceVK::DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
 {
 	struct alignas(16) Uniforms
 	{
@@ -4519,7 +4519,7 @@ bool GSDeviceVK::DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex)
 	//
 	// PCSX2 violates that. GSRenderer::VSync calls Merge() -- and therefore the chain --
 	// BEFORE it decides whether to present, and a skipped present (SkipDuplicateFrames,
-	// which is default-on, or the FIFO present throttle) returns early from BeginPresent
+	// which is default-on, or the FIFO present throttle) returns early from DoBeginPresent
 	// and never reaches EndPresent, so it never submits. MAX_SKIPPED_DUPLICATE_FRAMES is
 	// 3 -- exactly the ring depth -- so three skipped frames in a row let librashader
 	// destroy views that are still bound to the command buffer we are STILL recording.
@@ -6447,7 +6447,7 @@ void GSDeviceVK::ExecuteCommandBufferAndRestartPresent(bool wait_for_completion,
 	vkCmdBeginRenderPass(GetCurrentCommandBuffer(), &rp, VK_SUBPASS_CONTENTS_INLINE);
 
 	// Dynamic viewport/scissor and push-constant state do not survive a command-buffer submission.
-	// BeginPresent() normally emits them; this rare restart path must do the same, or strict mobile
+	// DoBeginPresent() normally emits them; this rare restart path must do the same, or strict mobile
 	// Vulkan drivers present with undefined viewport/coordinates. Ported from sashkinbro/EmuCoreX.
 	const VkViewport present_vp{0.0f, 0.0f, static_cast<float>(swap_chain_texture->GetWidth()),
 		static_cast<float>(swap_chain_texture->GetHeight()), 0.0f, 1.0f};
@@ -7214,7 +7214,7 @@ GSTextureVK* GSDeviceVK::SetupPrimitiveTrackingDATE(GSHWDrawConfig& config)
 	return image;
 }
 
-void GSDeviceVK::RenderHW(GSHWDrawConfig& config)
+void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 {
 	// Mid-frame kick (see m_render_passes_since_submit in the header): while a
 	// readback-prone frame is recording, submit accumulated work at a render-pass
@@ -7502,17 +7502,17 @@ void GSDeviceVK::RenderHW(GSHWDrawConfig& config)
 				{
 					const GSVector4i snapped_drawarea = ProcessCopyArea(GSVector4i(0, 0, rtsize.x, rtsize.y), config.drawarea);
 					const GSVector4i snapped_samplearea = ProcessCopyArea(GSVector4i(0, 0, rtsize.x, rtsize.y), config.samplearea);
-					CopyRect(draw_rt, draw_rt_clone, snapped_drawarea, snapped_drawarea.left, snapped_drawarea.top);
-					CopyRect(draw_rt, draw_rt_clone, snapped_samplearea, snapped_samplearea.left, snapped_samplearea.top);
+					DoCopyRect(draw_rt, draw_rt_clone, snapped_drawarea, snapped_drawarea.left, snapped_drawarea.top);
+					DoCopyRect(draw_rt, draw_rt_clone, snapped_samplearea, snapped_samplearea.left, snapped_samplearea.top);
 				}
 				else
 				{
-					CopyRect(draw_rt, draw_rt_clone, union_rect, union_rect.left, union_rect.top);
+					DoCopyRect(draw_rt, draw_rt_clone, union_rect, union_rect.left, union_rect.top);
 				}
 			}
 			else
 			{
-				CopyRect(draw_rt, draw_rt_clone, config.drawarea, config.drawarea.left, config.drawarea.top);
+				DoCopyRect(draw_rt, draw_rt_clone, config.drawarea, config.drawarea.left, config.drawarea.top);
 			}
 
 			if (config.require_one_barrier)

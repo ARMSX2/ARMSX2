@@ -451,7 +451,7 @@ public:
 
 	void UpdateTexture(id<MTLTexture> texture, u32 x, u32 y, u32 width, u32 height, const void* data, u32 data_stride);
 
-	PresentResult BeginPresent(bool frame_skip) override;
+	PresentResult DoBeginPresent(bool frame_skip) override;
 	void EndPresent() override;
 	void SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle) override;
 
@@ -466,18 +466,18 @@ public:
 
 	void ClearSamplerCache() override;
 
-	void CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
+	void DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
 	void BeginStretchRect(NSString* name, GSTexture* dTex, MTLLoadAction action);
 	void DoStretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, id<MTLRenderPipelineState> pipeline, std::optional<Filter> filter, LoadAction load_action, const void* frag_uniform, size_t frag_uniform_len);
 	void DrawStretchRect(const GSVector4& sRect, const GSVector4& dRect, const GSVector2& ds);
 	/// Copy from a position in sTex to the same position in the currently active render encoder using the given fs pipeline and rect
 	void RenderCopy(GSTexture* sTex, id<MTLRenderPipelineState> pipeline, const GSVector4i& rect);
 	void PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, PresentShader shader, float shaderTime, Filter filter) override;
-	void DrawMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader) override;
-	void UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize) override;
-	void ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM) override;
-	void FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect) override;
-	void BeginDSAsRT(GSTexture* ds, const GSVector4i& drawarea) override;
+	void DoDrawMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader) override;
+	void DoUpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize) override;
+	void DoConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM) override;
+	void DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect) override;
+	void DoBeginDSAsRT(GSTexture* ds, const GSVector4i& drawarea) override;
 
 	void FlushClears(GSTexture* tex);
 
@@ -502,7 +502,7 @@ public:
 
 	void SetupDestinationAlpha(GSTexture* rt, GSTexture* ds, const GSVector4i& r, SetDATM datm);
 	void PrepareROVTexture(GSTexture** ptex);
-	void RenderHW(GSHWDrawConfig& config) override;
+	void DoRenderHW(GSHWDrawConfig& config) override;
 	void SendHWDraw(GSHWDrawConfig& config, id<MTLRenderCommandEncoder> enc, id<MTLBuffer> buffer, size_t off,
 		bool one_barrier, bool full_barrier);
 

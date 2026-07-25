@@ -11,7 +11,7 @@
 // renderer for headless runs (pcsx2-eerunner --renderer null): the Null RENDERER
 // draws nothing, but every other GSDevice backend still needs a live Vulkan/GL
 // device just to open — which fails on boxes with no usable GPU context from a
-// scripted session (mq65/turnip over ssh, CI). BeginPresent() always reports
+// scripted session (mq65/turnip over ssh, CI). DoBeginPresent() always reports
 // FrameSkipped, so the present/ImGui path never draws; textures are RAM-backed
 // stubs so callers that map/update them stay memory-safe.
 class GSTextureNone final : public GSTexture
@@ -64,7 +64,7 @@ public:
 	bool UpdateWindow() override;
 	void ResizeWindow(u32 new_window_width, u32 new_window_height, float new_window_scale) override;
 	bool SupportsExclusiveFullscreen() const override;
-	PresentResult BeginPresent(bool frame_skip) override;
+	PresentResult DoBeginPresent(bool frame_skip) override;
 	void EndPresent() override;
 	void SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle) override;
 	std::string GetDriverInfo() const override;
@@ -78,16 +78,16 @@ public:
 	void InsertDebugMessage(DebugMessageCategory category, const char* fmt, ...) override;
 
 	std::unique_ptr<GSDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format) override;
-	void CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
+	void DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
 	void PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 		PresentShader shader, float shaderTime, Filter filter) override;
-	void UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex,
+	void DoUpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex,
 		u32 dOffset, u32 dSize) override;
-	void ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM,
+	void DoConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM,
 		GSTexture* dTex, u32 DBW, u32 DPSM) override;
-	void FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor,
+	void DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor,
 		const GSVector2i& clamp_min, const GSVector4& dRect) override;
-	void RenderHW(GSHWDrawConfig& config) override;
+	void DoRenderHW(GSHWDrawConfig& config) override;
 	void ClearSamplerCache() override;
 
 protected:

@@ -642,7 +642,7 @@ public:
 
 	void SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle) override;
 
-	PresentResult BeginPresent(bool frame_skip) override;
+	PresentResult DoBeginPresent(bool frame_skip) override;
 	void EndPresent() override;
 	bool IsPresenting() const;
 
@@ -672,13 +672,13 @@ public:
 	void Draw(const GSHWDrawConfig& config, int offset, int count);
 
 	std::unique_ptr<GSDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format) override;
-	void HintReadbackSource(GSTexture* tex) override;
+	void DoHintReadbackSource(GSTexture* tex) override;
 
-	void CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
+	void DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
 
 	void PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 		PresentShader shader, float shaderTime, Filter filter) override;
-	void DrawMultiStretchRects(
+	void DoDrawMultiStretchRects(
 		const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader) override;
 	void DoMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTextureVK* dTex, ShaderConvertSelector shader);
 
@@ -691,11 +691,11 @@ public:
 	void BlitRect(GSTexture* sTex, const GSVector4i& sRect, u32 sLevel, GSTexture* dTex, const GSVector4i& dRect,
 		u32 dLevel, Filter filter);
 
-	void UpdateCLUTTexture(
+	void DoUpdateCLUTTexture(
 		GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize) override;
-	void ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM,
+	void DoConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM,
 		GSTexture* dTex, u32 DBW, u32 DPSM) override;
-	void FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect) override;
+	void DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect) override;
 
 	void SetupDATE(GSTexture* rt, GSTexture* ds, SetDATM datm, const GSVector4i& bbox);
 	GSTextureVK* SetupPrimitiveTrackingDATE(GSHWDrawConfig& config);
@@ -716,7 +716,7 @@ public:
 	void SetVSPushConstants(u32 base_vertex, u32 base_index = 0, bool force_update = false);
 	bool BindDrawPipeline(const PipelineSelector& p);
 
-	void RenderHW(GSHWDrawConfig& config) override;
+	void DoRenderHW(GSHWDrawConfig& config) override;
 	void UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelector& pipe);
 	void UploadHWDrawVerticesAndIndices(GSHWDrawConfig& config);
 	VkImageMemoryBarrier GetColorBufferFeedbackBarrier(GSTextureVK* rt) const;
@@ -842,9 +842,9 @@ private:
 	u32 m_render_passes_since_submit = 0;
 	u32 m_render_passes_since_readback = ~0u;
 
-	// Textures recently used as synchronous-readback sources (see HintReadbackSource).
+	// Textures recently used as synchronous-readback sources (see DoHintReadbackSource).
 	// A draw INTO one of these is almost certainly the producer of the next readback,
-	// so RenderHW kicks the command buffer first: the queued backlog drains while the
+	// so DoRenderHW kicks the command buffer first: the queued backlog drains while the
 	// producing pass records, leaving the readback to wait on one small pass + copy
 	// instead of the whole backlog. Compared by pointer only, never dereferenced —
 	// a recycled allocation at worst causes one extra readback-window submit.

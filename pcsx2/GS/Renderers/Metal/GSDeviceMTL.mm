@@ -402,7 +402,7 @@ void GSDeviceMTL::EndRenderPass()
 	}
 	// The late-upload blit encoder also lives on the render command buffer; any code
 	// that ends the render pass and then opens a new encoder on that buffer (e.g.
-	// CopyRect's blit encoder during OI_BlitFMV) must leave it closed, or Metal aborts
+	// DoCopyRect's blit encoder during OI_BlitFMV) must leave it closed, or Metal aborts
 	// with "A command encoder is already encoding to this command buffer".
 	if (m_late_texture_upload_encoder)
 	{
@@ -1566,7 +1566,7 @@ void GSDeviceMTL::UpdateTexture(id<MTLTexture> texture, u32 x, u32 y, u32 width,
 
 static bool s_capture_next = false;
 
-GSDevice::PresentResult GSDeviceMTL::BeginPresent(bool frame_skip)
+GSDevice::PresentResult GSDeviceMTL::DoBeginPresent(bool frame_skip)
 { @autoreleasepool {
 	if (m_capture_start_frame && FrameNo() == m_capture_start_frame)
 		s_capture_next = true;
@@ -1595,7 +1595,7 @@ GSDevice::PresentResult GSDeviceMTL::BeginPresent(bool frame_skip)
 
 void GSDeviceMTL::EndPresent()
 { @autoreleasepool {
-	pxAssertMsg(m_current_render.encoder && m_current_render_cmdbuf, "BeginPresent cmdbuf was destroyed");
+	pxAssertMsg(m_current_render.encoder && m_current_render_cmdbuf, "DoBeginPresent cmdbuf was destroyed");
 	ImGui::Render();
 	RenderImGui(ImGui::GetDrawData());
 	EndRenderPass();
@@ -1734,12 +1734,12 @@ void GSDeviceMTL::ClearSamplerCache()
 	m_sampler_hw[SamplerSelector::Point().key] = CreateSampler(m_dev.dev, SamplerSelector::Point());
 }}
 
-void GSDeviceMTL::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
+void GSDeviceMTL::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
 { @autoreleasepool {
 	// Empty rect, abort copy.
 	if (r.rempty())
 	{
-		GL_INS("Metal: CopyRect rect empty.");
+		GL_INS("Metal: DoCopyRect rect empty.");
 		return;
 	}
 	
@@ -1774,7 +1774,7 @@ void GSDeviceMTL::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r
 
 	id<MTLCommandBuffer> cmdbuf = GetRenderCmdBuf();
 	id<MTLBlitCommandEncoder> encoder = [cmdbuf blitCommandEncoder];
-	[encoder setLabel:@"CopyRect"];
+	[encoder setLabel:@"DoCopyRect"];
 	[encoder copyFromTexture:sT->GetTexture()
 	             sourceSlice:0
 	             sourceLevel:0
@@ -1913,7 +1913,7 @@ void GSDeviceMTL::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture
 	}
 }}
 
-void GSDeviceMTL::DrawMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader)
+void GSDeviceMTL::DoDrawMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader)
 { @autoreleasepool {
 	BeginStretchRect(@"MultiStretchRect", dTex, MTLLoadActionLoad);
 
@@ -1971,7 +1971,7 @@ void GSDeviceMTL::DrawMultiStretchRects(const MultiStretchRect* rects, u32 num_r
 	flush(num_rects);
 }}
 
-void GSDeviceMTL::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
+void GSDeviceMTL::DoUpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
 {
 	GSMTLCLUTConvertPSUniform uniform = { sScale, {offsetX, offsetY}, dOffset };
 
@@ -1983,7 +1983,7 @@ void GSDeviceMTL::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, 
 	RenderCopy(sTex, m_clut_pipeline[!is_clut4], dRect);
 }
 
-void GSDeviceMTL::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM)
+void GSDeviceMTL::DoConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM)
 { @autoreleasepool {
 	const ShaderConvert shader = ((SPSM & 0xE) == 0) ? ShaderConvert::RGBA_TO_8I : ShaderConvert::RGB5A1_TO_8I;
 	id<MTLRenderPipelineState> pipeline = GetConvertPipeline(shader);
@@ -1996,7 +1996,7 @@ void GSDeviceMTL::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 off
 	DoStretchRect(sTex, GSVector4::zero(), dTex, dRect, pipeline, Nearest, LoadAction::DontCareIfFull, &uniform, sizeof(uniform));
 }}
 
-void GSDeviceMTL::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
+void GSDeviceMTL::DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
 { @autoreleasepool {
 	const ShaderConvert shader = ShaderConvert::DOWNSAMPLE_COPY;
 	id<MTLRenderPipelineState> pipeline = GetConvertPipeline(shader);
@@ -2019,10 +2019,10 @@ static id<MTLTexture> CreateDSAsRTTexture(id<MTLDevice> dev, NSUInteger width, N
 	return result;
 }
 
-void GSDeviceMTL::BeginDSAsRT(GSTexture* ds, const GSVector4i& drawarea)
+void GSDeviceMTL::DoBeginDSAsRT(GSTexture* ds, const GSVector4i& drawarea)
 {
 	if (!m_features.framebuffer_fetch)
-		return GSDevice::BeginDSAsRT(ds, drawarea);
+		return GSDevice::DoBeginDSAsRT(ds, drawarea);
 	u32 needed_width = ds->GetWidth();
 	u32 needed_height = ds->GetHeight();
 	u32 current_width = static_cast<u32>([m_ds_as_rt_texture width]);
@@ -2479,7 +2479,7 @@ __fi void GSDeviceMTL::PrepareROVTexture(GSTexture** ptex)
 	*ptex = nullptr;
 }
 
-void GSDeviceMTL::RenderHW(GSHWDrawConfig& config)
+void GSDeviceMTL::DoRenderHW(GSHWDrawConfig& config)
 { @autoreleasepool {
 	if (config.tex && (config.ds == config.tex || config.rt == config.tex))
 		EndRenderPass(); // Barrier
@@ -2622,7 +2622,7 @@ void GSDeviceMTL::RenderHW(GSHWDrawConfig& config)
 	if (!rt && !config.ds)
 	{
 		// If we were rendering depth-only and depth gets cleared by the above check, that turns into rendering nothing, which should be a no-op
-		pxAssertMsg(0, "RenderHW was given a completely useless draw call!");
+		pxAssertMsg(0, "DoRenderHW was given a completely useless draw call!");
 		[m_current_render.encoder insertDebugSignpost:@"Skipped no-color no-depth draw"];
 		if (primid_tex)
 			Recycle(primid_tex);
@@ -2639,7 +2639,7 @@ void GSDeviceMTL::RenderHW(GSHWDrawConfig& config)
 	if (!rt_bind && !ds_bind && !stencil)
 		BeginFullROV(@"RenderHWROV", rt_size->GetWidth(), rt_size->GetHeight());
 	else
-		BeginRenderPass(@"RenderHW", rt_bind, MTLLoadActionLoad, ds_bind, MTLLoadActionLoad, stencil, MTLLoadActionLoad, rt1);
+		BeginRenderPass(@"DoRenderHW", rt_bind, MTLLoadActionLoad, ds_bind, MTLLoadActionLoad, stencil, MTLLoadActionLoad, rt1);
 	id<MTLRenderCommandEncoder> mtlenc = m_current_render.encoder;
 	FlushDebugEntries(mtlenc);
 	if (usesStencil(config.destination_alpha))

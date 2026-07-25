@@ -1556,8 +1556,23 @@ protected:
 	{
 		pxFailRel("Not implemented");
 	}
-	void DoStretchRectWithAssertions(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, 
+	void DoStretchRectWithAssertions(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 		ShaderConvertSelector shader, Filter filter);
+
+	/// Backend entry points for work that reads or writes texture contents. These are
+	/// reached only through the public non-virtual wrappers of the same name, which run
+	/// FlushDeferredDraws() first — see that function for why the indirection exists.
+	/// Backends may call them directly on themselves to skip the (re-entrant) flush.
+	virtual void DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) = 0;
+	virtual void DoDrawMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader);
+	virtual void DoUpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize) = 0;
+	virtual void DoConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM) = 0;
+	virtual void DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect) = 0;
+	virtual void DoRenderHW(GSHWDrawConfig& config) = 0;
+	virtual void DoBeginDSAsRT(GSTexture* ds, const GSVector4i& drawarea);
+	virtual void DoHintReadbackSource(GSTexture* tex);
+	virtual PresentResult DoBeginPresent(bool frame_skip) = 0;
+
 public:
 	GSDevice();
 	virtual ~GSDevice();
@@ -1571,7 +1586,11 @@ public:
 
 	bool IsDSInRTActive() const { return m_ds_as_rt; }
 	/// Create a temporary color clone of depth for depth feedback
-	virtual void BeginDSAsRT(GSTexture* ds, const GSVector4i& drawarea);
+	void BeginDSAsRT(GSTexture* ds, const GSVector4i& drawarea)
+	{
+		FlushDeferredDraws();
+		DoBeginDSAsRT(ds, drawarea);
+	}
 	void EndDSAsRT();
 
 	/// Returns a string representing the specified API.
@@ -1686,7 +1705,11 @@ public:
 
 	/// Returns false if the window was completely occluded. If frame_skip is set, the frame won't be
 	/// displayed, but the GPU command queue will still be flushed.
-	virtual PresentResult BeginPresent(bool frame_skip) = 0;
+	PresentResult BeginPresent(bool frame_skip)
+	{
+		FlushDeferredDraws();
+		return DoBeginPresent(frame_skip);
+	}
 
 	/// Presents the frame to the display.
 	virtual void EndPresent() = 0;
@@ -1767,9 +1790,17 @@ public:
 	/// back every frame (e.g. small occlusion-test targets) will typically draw into the
 	/// same texture again shortly before the next readback; backends can use this to
 	/// schedule command submission so that readback has minimal GPU backlog to wait on.
-	virtual void HintReadbackSource(GSTexture* tex);
+	void HintReadbackSource(GSTexture* tex)
+	{
+		FlushDeferredDraws();
+		DoHintReadbackSource(tex);
+	}
 
-	virtual void CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) = 0;
+	void CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
+	{
+		FlushDeferredDraws();
+		DoCopyRect(sTex, dTex, r, destX, destY);
+	}
 
 	// StretchRect - all options
 	void StretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect, ShaderConvertSelector shader, Filter filter);
@@ -1793,21 +1824,56 @@ public:
 
 	/// Same as doing StretchRect for each item, except tries to batch together rectangles in as few draws as possible.
 	/// The provided list should be sorted by texture, the implementations only check if it's the same as the last.
-	virtual void DrawMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader = ShaderConvert::COPY);
+	void DrawMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader = ShaderConvert::COPY)
+	{
+		FlushDeferredDraws();
+		DoDrawMultiStretchRects(rects, num_rects, dTex, shader);
+	}
 
 	/// Sorts a MultiStretchRect list for optimal batching.
 	static void SortMultiStretchRects(MultiStretchRect* rects, u32 num_rects);
 
 	/// Updates a GPU CLUT texture from a source texture.
-	virtual void UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize) = 0;
+	void UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
+	{
+		FlushDeferredDraws();
+		DoUpdateCLUTTexture(sTex, sScale, offsetX, offsetY, dTex, dOffset, dSize);
+	}
 
 	/// Converts a colour format to an indexed format texture.
-	virtual void ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM) = 0;
+	void ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM)
+	{
+		FlushDeferredDraws();
+		DoConvertToIndexedTexture(sTex, sScale, offsetX, offsetY, SBW, SPSM, dTex, DBW, DPSM);
+	}
 
 	/// Uses box downsampling to resize a texture.
-	virtual void FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect) = 0;
+	void FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
+	{
+		FlushDeferredDraws();
+		DoFilteredDownsampleTexture(sTex, dTex, downsample_factor, clamp_min, dRect);
+	}
 
-	virtual void RenderHW(GSHWDrawConfig& config) = 0;
+	/// Submits a hardware draw. With the render-pass scheduler active this may hold the
+	/// draw back and emit it later, coalesced with other draws to the same target — see
+	/// GSPassScheduler. Any device entry point that could observe the result flushes
+	/// first, so the deferral is invisible.
+	void RenderHW(GSHWDrawConfig& config);
+
+	/// Emits any draws the render-pass scheduler is holding back, in an order that
+	/// preserves what every deferred draw would have seen had it run immediately.
+	///
+	/// This is the load-bearing half of the coalescing design. Deferral is safe only
+	/// because *observing* a render target — copying it, sampling it, downsampling it,
+	/// presenting it, reading it back — has to go through a GSDevice entry point, and
+	/// every one of those entry points calls this first. The virtuals behind them are
+	/// protected and named Do*, so a caller cannot reach the backend without passing
+	/// through the flush.
+	///
+	/// Re-entrant by design: emitting a deferred draw calls DoRenderHW, and several
+	/// backends call CopyRect on themselves from inside it to clone an RT for a feedback
+	/// loop. Re-entry is a no-op rather than recursion.
+	void FlushDeferredDraws() {}
 
 	virtual void ClearSamplerCache() = 0;
 

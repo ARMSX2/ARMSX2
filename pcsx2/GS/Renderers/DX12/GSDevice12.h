@@ -520,7 +520,7 @@ public:
 
 	void SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle) override;
 
-	PresentResult BeginPresent(bool frame_skip) override;
+	PresentResult DoBeginPresent(bool frame_skip) override;
 	void EndPresent() override;
 
 	bool SetGPUTimingEnabled(bool enabled) override;
@@ -545,17 +545,17 @@ public:
 
 	std::unique_ptr<GSDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format) override;
 
-	void CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
+	void DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override;
 
 	void PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 		PresentShader shader, float shaderTime, Filter filter) override;
-	void UpdateCLUTTexture(
+	void DoUpdateCLUTTexture(
 		GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize) override;
-	void ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM,
+	void DoConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM,
 		GSTexture* dTex, u32 DBW, u32 DPSM) override;
-	void FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect) override;
+	void DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect) override;
 
-	void DrawMultiStretchRects(
+	void DoDrawMultiStretchRects(
 		const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader) override;
 	void DoMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTexture12* dTex, ShaderConvertSelector shader);
 
@@ -584,7 +584,7 @@ public:
 	void SetVSPushConstants(u32 base_vertex, u32 base_index = 0, bool force_update = false);
 	bool BindDrawPipeline(const PipelineSelector& p);
 
-	void RenderHW(GSHWDrawConfig& config) override;
+	void DoRenderHW(GSHWDrawConfig& config) override;
 	void SendHWDraw(const PipelineSelector& pipe, const GSHWDrawConfig& config, GSTexture12* draw_rt,
 		GSTexture12* draw_ds, GSTexture12* draw_rt_rov, GSTexture12* draw_ds_rov,
 		const bool feedback_rt, const bool feedback_depth, const bool one_barrier, const bool full_barrier);

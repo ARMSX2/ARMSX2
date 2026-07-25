@@ -493,21 +493,24 @@ void GSDevice::ThrottlePresentation()
 
 void GSDevice::ClearRenderTarget(GSTexture* t, u32 c)
 {
+	FlushDeferredDraws();
 	t->SetClearColor(c);
 }
 
 void GSDevice::ClearDepth(GSTexture* t, float d)
 {
+	FlushDeferredDraws();
 	t->SetClearDepth(d);
 }
 
-void GSDevice::HintReadbackSource(GSTexture* tex)
+void GSDevice::DoHintReadbackSource(GSTexture* tex)
 {
 	// Default: no scheduling hint. See GSDeviceVK for a backend that uses it.
 }
 
 bool GSDevice::ProcessClearsBeforeCopy(GSTexture* sTex, GSTexture* dTex, const bool full_copy)
 {
+	FlushDeferredDraws();
 	pxAssert(sTex->GetState() == GSTexture::State::Cleared && dTex->IsRenderTargetOrDepthStencil());
 
 	// Pass it forward if we're clearing the whole thing.
@@ -543,6 +546,7 @@ bool GSDevice::ProcessClearsBeforeCopy(GSTexture* sTex, GSTexture* dTex, const b
 
 void GSDevice::InvalidateRenderTarget(GSTexture* t)
 {
+	FlushDeferredDraws();
 	t->SetState(GSTexture::State::Invalidated);
 }
 
@@ -661,6 +665,7 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, const GSVector2i& size
 
 GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, bool clear, bool prefer_reuse)
 {
+	FlushDeferredDraws();
 	const GSVector2i size(std::clamp(width, 1, static_cast<int>(g_gs_device->GetMaxTextureSize())),
 		std::clamp(height, 1, static_cast<int>(g_gs_device->GetMaxTextureSize())));
 	FastList<GSTexture*>& pool = m_pool[!GSTexture::IsTexture(usage)];
@@ -745,6 +750,7 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height,
 
 void GSDevice::Recycle(GSTexture* t)
 {
+	FlushDeferredDraws();
 	if (!t)
 		return;
 
@@ -807,6 +813,7 @@ bool GSDevice::UsesLowerLeftOrigin() const
 
 void GSDevice::AgePool()
 {
+	FlushDeferredDraws();
 	m_frame++;
 
 	// Toss out textures when they're not too-recently used.
@@ -830,6 +837,7 @@ void GSDevice::AgePool()
 
 void GSDevice::PurgePool()
 {
+	FlushDeferredDraws();
 	for (FastList<GSTexture*>& pool : m_pool)
 	{
 		for (GSTexture* t : pool)
@@ -911,6 +919,7 @@ void GSDevice::DoStretchRectWithAssertions(GSTexture* sTex, const GSVector4& sRe
 {
 	pxAssert((dTex && dTex->IsDepthLike()) == shader.Float32Output());
 	pxAssert(!(filter == Biln && shader.SupportsBilinear())); // Don't allow HW bilinear if SW bilinear is required.
+	FlushDeferredDraws();
 	GL_INS("StretchRect(%s) {%d,%d} %dx%d -> {%d,%d) %dx%d", ShaderConvertName(shader.Shader()),
 		int(sRect.left), int(sRect.top),
 		int(sRect.right - sRect.left), int(sRect.bottom - sRect.top), int(dRect.left), int(dRect.top),
@@ -974,7 +983,12 @@ void GSDevice::StretchRectAutoMask(GSTexture* sTex, GSTexture* dTex, bool red, b
 	StretchRectAutoMask(sTex, dTex, GSVector4(dTex->GetRect()), red, green, blue, alpha, src_bpp, dst_bpp);
 }
 
-void GSDevice::DrawMultiStretchRects(
+void GSDevice::RenderHW(GSHWDrawConfig& config)
+{
+	DoRenderHW(config);
+}
+
+void GSDevice::DoDrawMultiStretchRects(
 	const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader)
 {
 	for (u32 i = 0; i < num_rects; i++)
@@ -1000,6 +1014,7 @@ void GSDevice::SortMultiStretchRects(MultiStretchRect* rects, u32 num_rects)
 
 void GSDevice::ClearCurrent()
 {
+	FlushDeferredDraws();
 	m_current = nullptr;
 
 	delete m_merge;
@@ -1021,6 +1036,7 @@ void GSDevice::ClearCurrent()
 
 void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, const GSVector2i& fs, const GSRegPMODE& PMODE, const GSRegEXTBUF& EXTBUF, u32 c)
 {
+	FlushDeferredDraws();
 	if (ResizeRenderTarget(&m_merge, fs.x, fs.y, false, false))
 		DoMerge(sTex, sRect, m_merge, dRect, PMODE, EXTBUF, c, BilnIf(GSConfig.PCRTCOffsets));
 
@@ -1029,6 +1045,7 @@ void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, con
 
 void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffset)
 {
+	FlushDeferredDraws();
 	static int bufIdx = 0;
 	float offset = yoffset * static_cast<float>(field);
 	offset = GSConfig.DisableInterlaceOffset ? 0.0f : offset;
@@ -1097,6 +1114,7 @@ void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffse
 
 void GSDevice::FXAA()
 {
+	FlushDeferredDraws();
 	// Combining FXAA+ShadeBoost can't share the same target.
 	GSTexture*& dTex = (m_current == m_target_tmp) ? m_merge : m_target_tmp;
 	if (ResizeRenderTarget(&dTex, m_current->GetWidth(), m_current->GetHeight(), false, false))
@@ -1108,6 +1126,7 @@ void GSDevice::FXAA()
 
 bool GSDevice::ApplyShaderChain(const GSVector2i& output_size)
 {
+	FlushDeferredDraws();
 	// Guarded here rather than in the backends so a device that never overrides
 	// DoApplyShaderChain (software, or a build without librashader) costs nothing.
 	if (!GSConfig.ShaderChainEnabled || GSConfig.ShaderChainPreset.empty() || !m_current)
@@ -1135,6 +1154,7 @@ bool GSDevice::ApplyShaderChain(const GSVector2i& output_size)
 
 void GSDevice::ShadeBoost()
 {
+	FlushDeferredDraws();
 	if (ResizeRenderTarget(&m_target_tmp, m_current->GetWidth(), m_current->GetHeight(), false, false))
 	{
 		// predivide to avoid the divide (multiply) in the shader
@@ -1152,6 +1172,7 @@ void GSDevice::ShadeBoost()
 
 void GSDevice::Resize(int width, int height)
 {
+	FlushDeferredDraws();
 	GSTexture*& dTex = (m_current == m_target_tmp) ? m_merge : m_target_tmp;
 	GSVector2i s = m_current->GetSize();
 	int multiplier = 1;
@@ -1217,7 +1238,7 @@ bool GSDevice::ResizeRenderTarget(GSTexture** t, int w, int h, bool preserve_con
 	return true;
 }
 
-void GSDevice::BeginDSAsRT(GSTexture* ds, const GSVector4i& drawarea)
+void GSDevice::DoBeginDSAsRT(GSTexture* ds, const GSVector4i& drawarea)
 {
 	// Create a temporary RT and copy the area needed for the draw.
 	const int w = ds->GetWidth();
@@ -1271,6 +1292,7 @@ bool GSDevice::GetCASShaderSource(std::string* source)
 
 void GSDevice::CAS(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect, bool sharpen_only)
 {
+	FlushDeferredDraws();
 	const int dst_width = sharpen_only ? src_rect.width() : static_cast<int>(std::ceil(draw_rect.z - draw_rect.x));
 	const int dst_height = sharpen_only ? src_rect.height() : static_cast<int>(std::ceil(draw_rect.w - draw_rect.y));
 	const int src_offset_x = static_cast<int>(src_rect.x);
@@ -1309,6 +1331,7 @@ void GSDevice::CAS(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, con
 
 void GSDevice::MetalFXUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect)
 {
+	FlushDeferredDraws();
 	const int dst_width = static_cast<int>(std::ceil(draw_rect.z - draw_rect.x));
 	const int dst_height = static_cast<int>(std::ceil(draw_rect.w - draw_rect.y));
 	if (dst_width <= 0 || dst_height <= 0)
