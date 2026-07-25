@@ -457,6 +457,18 @@ void normJumpCompile(mV, microFlagCycles& mFC, bool isEvilJump)
 // constructed once per mVUreset over the whole post-dispatcher cache range.
 static thread_local ptrdiff_t s_mVUblockStartOffset = 0;
 
+// The write scope covers exactly the persistent MA's buffer span
+// [x86start, physical region end]: every byte a session emits lands in
+// there. Range form, not the whole-arena BeginCodeWrite: in iOS Legacy
+// mode the whole-arena EndCodeWrite RX-flips the entire arena on close,
+// which killed any EE emit window open on the other thread (Legacy range
+// windows bypass the refcount). Toggle modes fall through to the same
+// refcounted whole-region toggle as before; dual-mapping is a no-op.
+static size_t mVUcodeCacheWriteSpan(microVU& mVU)
+{
+	return static_cast<size_t>(mVU.prog.x86end - mVU.prog.x86start) + (mVUcacheSafeZone * _1mb);
+}
+
 static void mVUopenCodeCache(microVU& mVU)
 {
 	// Nested call (same thread re-enters before its outer close): no-op.
@@ -465,7 +477,7 @@ static void mVUopenCodeCache(microVU& mVU)
 
 	pxAssert(mVU.jitAsm); // mVUreset must have built it.
 
-	HostSys::BeginCodeWrite();
+	HostSys::BeginCodeWriteRange(mVU.prog.x86start, mVUcodeCacheWriteSpan(mVU));
 	// armAsmPtr MUST equal the MA's buffer base (= mVU.prog.x86start) for
 	// armGetCurrentCodePointer() to return the real write position:
 	//   armGetCurrentCodePointer() = armAsmPtr + armAsm->GetCursorOffset()
@@ -519,7 +531,7 @@ static void mVUcloseCodeCache(microVU& mVU)
 	mVUPersist::EndEpisode(mVU, codeStart + codeSize);
 
 	armAsm = nullptr; // unbind; do not delete (persistent)
-	HostSys::EndCodeWrite();
+	HostSys::EndCodeWriteRange(mVU.prog.x86start, mVUcodeCacheWriteSpan(mVU));
 	if (codeSize > 0)
 	{
 		HostSys::FlushInstructionCache(codeStart, codeSize);

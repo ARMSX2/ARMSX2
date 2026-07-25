@@ -1793,8 +1793,10 @@ static void recPatchIslandB(u8* site, const u8* target)
 {
 	const intptr_t imm26 = (reinterpret_cast<intptr_t>(target) - reinterpret_cast<intptr_t>(site)) >> 2;
 	pxAssertRel(imm26 >= -(1 << 25) && imm26 < (1 << 25), "Cold-exit island out of B imm26 range");
-	// iOS dual-map W^X: store via the RW alias; displacement/flush stay on RX.
-	*reinterpret_cast<volatile u32*>(armGetWritableCodePtr(site)) = 0x14000000u | (static_cast<u32>(imm26) & 0x03FFFFFFu);
+	// armPatchCodeWord opens its own W^X scope: the islands live in the hot
+	// block, whose window armEndBlock() already closed by the time the cold
+	// session patches them.
+	armPatchCodeWord(site, 0x14000000u | (static_cast<u32>(imm26) & 0x03FFFFFFu));
 	HostSys::FlushInstructionCache(site, 4);
 }
 
@@ -1831,10 +1833,11 @@ static void recEmitColdSideExits()
 	pxAssert(armGetCurrentCodePointer() < SysMemory::GetEERecEnd());
 	s_coldPtr = armEndBlock();
 
-	HostSys::BeginCodeWrite();
+	// Each island patch opens its own write scope (armPatchCodeWord); an
+	// arena-wide Begin/EndCodeWrite here would RX-flip a concurrently open
+	// MTVU emit window in Legacy mode on its way out.
 	for (int k = 0; k < n; k++)
 		recPatchIslandB(s_sideExitIslands[k], coldStart[k]);
-	HostSys::EndCodeWrite();
 
 	g_branch = 1;
 }
@@ -2675,14 +2678,14 @@ static void recClear(u32 addr, u32 size)
 	if (blockidx == -1)
 		return;
 
-	// macOS/Apple Silicon (no-op elsewhere): recClear runs from the EE
-	// page-fault handler (fastmem backpatch + SMC via mmap_ClearCpuBlock) and
-	// from runtime SMC on the executing CPU thread — both enter with the
-	// MAP_JIT code cache in execute-protected (W^X) mode. The SetFnptr writes
-	// and Arm64BaseBlocks::Remove() stub patches below target that region, so
-	// a write faults (SIGBUS) unless we flip the thread to write mode first.
-	// Refcounted, so it nests harmlessly when reached from an open emit scope.
-	HostSys::BeginCodeWrite();
+	// No write scope here: the only code writes below are Remove()'s entry
+	// stubs, and those open their own per-site scope (armPatchCodeWord).
+	// SetFnptr/recLUT targets are ordinary heap data. The arena-wide
+	// Begin/EndCodeWrite this used to hold was worse than useless on iOS
+	// Legacy mode — the range-window emit scope bypasses the refcount, so
+	// when recClear runs mid-compile (the stale-overlap walk in
+	// recRecompile) the paired EndCodeWrite RX-flipped the open emit window
+	// and the next emitted instruction faulted.
 
 	// Track the EE-address span of all blocks we touch so the post-walk
 	// tail can reset interior BLOCKs across the *full* extent of the
@@ -2795,8 +2798,6 @@ static void recClear(u32 addr, u32 size)
 	// into the middle of a freshly-recompiled block.
 	if (upperextent > lowerextent)
 		iopClearRecLUT(GETBLOCK(lowerextent), upperextent - lowerextent);
-
-	HostSys::EndCodeWrite();
 }
 
 static void iopClearRecLUT(BASEBLOCK* base, int count)

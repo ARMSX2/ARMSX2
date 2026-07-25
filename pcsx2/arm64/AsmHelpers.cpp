@@ -191,6 +191,43 @@ u8* armEndBlock()
 	return armAsmPtr;
 }
 
+// Patch one instruction word at `site`, handling W^X itself instead of
+// trusting the caller to hold a write scope — link sites in earlier blocks
+// sit in windows armStartBlock never opened, which is a SIGBUS on iOS
+// Legacy mode. Pages inside the open emit window are stored to directly
+// (the previous block's link site often shares a page with the current
+// block's start, and RX-flipping that mid-emit would kill the compile);
+// anything else gets its own page-granular Begin/EndCodeWriteRange.
+// Aligned 4-byte stores are atomic on AArch64, and mprotect is fine from
+// the Mach exception-handler thread, so the fastmem-fault path can use it.
+void armPatchCodeWord(void* site, u32 instr)
+{
+	u8* const rx_site = static_cast<u8*>(site);
+
+	bool in_open_window = false;
+	if (s_arm_block_start)
+	{
+		static const uintptr_t page_mask = []() {
+			size_t page_size = HostSys::GetRuntimePageSize();
+			if (page_size == 0)
+				page_size = 4096;
+			return ~(static_cast<uintptr_t>(page_size) - 1);
+		}();
+
+		const uintptr_t site_page = reinterpret_cast<uintptr_t>(rx_site) & page_mask;
+		const uintptr_t first_page = reinterpret_cast<uintptr_t>(s_arm_block_start) & page_mask;
+		const uintptr_t last_page =
+			(reinterpret_cast<uintptr_t>(s_arm_block_start) + s_arm_block_write_size - 1) & page_mask;
+		in_open_window = (site_page >= first_page && site_page <= last_page);
+	}
+
+	if (!in_open_window)
+		HostSys::BeginCodeWriteRange(rx_site, sizeof(u32));
+	*reinterpret_cast<volatile u32*>(armGetWritableCodePtr(rx_site)) = instr;
+	if (!in_open_window)
+		HostSys::EndCodeWriteRange(rx_site, sizeof(u32));
+}
+
 void armDisassembleAndDumpCode(const void* ptr, size_t size)
 {
 #ifdef INCLUDE_DISASSEMBLER
@@ -254,13 +291,7 @@ void armEmitJmpPtr(void* code_address, const void* target, bool flush_icache)
 	pxAssertRel((off & 3) == 0, "armEmitJmpPtr: branch offset not 4-byte aligned");
 	const intptr_t imm26 = off >> 2;
 	pxAssertRel(imm26 >= -(1 << 25) && imm26 < (1 << 25), "armEmitJmpPtr: branch offset out of B imm26 range");
-	// code_address is the RX alias; under iOS dual-mapping the store must go
-	// through the RW mirror. Begin/EndCodeWrite covers the toggle modes
-	// (refcounted, so it nests inside an open emit scope).
-	HostSys::BeginCodeWrite();
-	*reinterpret_cast<volatile u32*>(armGetWritableCodePtr(static_cast<u8*>(code_address))) =
-		0x14000000u | (static_cast<u32>(imm26) & 0x03FFFFFFu);
-	HostSys::EndCodeWrite();
+	armPatchCodeWord(code_address, 0x14000000u | (static_cast<u32>(imm26) & 0x03FFFFFFu));
 	if (flush_icache)
 		HostSys::FlushInstructionCache(code_address, 4);
 }
