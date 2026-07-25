@@ -966,7 +966,14 @@ void MTGS::RunOnGSThread(AsyncCallType func)
 	//
 	// So: marshal first. Host::RunOnGSThread() is the primitive for that — it chains through
 	// Host::RunOnCPUThread(), whose queue the CPU thread drains every vsync via
-	// PollInputOnCPUThread().
+	// PollInputOnCPUThread(). Dev-only because the remaining Android/iOS offenders should surface
+	// as a debuggable assert during development, not an abort in a shipped build.
+	//
+	// The data-packet path (PrepDataPacket/SendDataPacket/SendSimpleGSPacket) is deliberately not
+	// asserted: it is reached only from Gif_Unit, which is EE-thread code by construction, and it
+	// is hot enough that even a dev-build check per GIF packet is not worth it.
+	pxAssertMsg(VMManager::Internal::IsOnCPUThread(),
+		"MTGS::RunOnGSThread() off the CPU thread — use Host::RunOnGSThread() instead");
 
 	SendPointerPacket(Command::AsyncCall, 0, new AsyncCallType(std::move(func)));
 

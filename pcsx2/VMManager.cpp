@@ -843,6 +843,8 @@ void VMManager::ApplySettings()
 	//
 	// Note the WaitVU/WaitGS below is a *drain*, not a park: it does not stop the EE, so it is no
 	// substitute for being on the right thread.
+	pxAssertMsg(Internal::IsOnCPUThread(),
+		"VMManager::ApplySettings() off the CPU thread — marshal via Host::RunOnCPUThread()");
 
 	Console.WriteLn("Applying settings...");
 
