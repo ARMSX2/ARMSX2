@@ -212,6 +212,142 @@ TEST(IopSmc, MirrorAddressStoreClearsBlock)
 	EXPECT_EQ(h.GetGprInterp(reg::v0), 200u);
 }
 
+// Shared shape for the JIT-store invalidation tests below. The victim block
+// (kBlock2Pc, producing 0x0BAD) is COMPILED FIRST by entering it directly —
+// only then does the storing block run, so a stale-cache leak is actually
+// observable. A fresh-Run-only version would pass vacuously: the store would
+// execute before the victim is ever compiled and no invalidation would be
+// needed.
+static void RunStoreInvalidatesCompiledBlock(JitTestHarness& h,
+	std::initializer_list<u32> store_block)
+{
+	h.LoadProgramAt(kProgramPc, store_block.begin(), store_block.size(),
+		/*append_jr_ra_term=*/false);
+	h.LoadProgramAt(kBlock2Pc, {
+		ADDIU(reg::v0, reg::zero, 0x0BAD),   // original opcode; overwritten
+	}, /*append_jr_ra_term=*/true);
+
+	// 1st run enters the victim directly → compiles it with 0x0BAD.
+	h.SetPc(kBlock2Pc);
+	h.Run();
+	ASSERT_EQ(h.GetGprInterp(reg::v0), 0x0BADu);
+
+	// 2nd run enters the storing block. Its JIT store must invalidate the
+	// compiled victim, or stale code produces 0x0BAD again.
+	h.SetPc(kProgramPc);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	EXPECT_EQ(h.GetGprInterp(reg::v0), 0x1337u);
+}
+
+TEST(IopSmc, JitStoreThroughKseg1MirrorInvalidatesCompiledBlock)
+{
+	// JIT-executed SW through the KSEG1 mirror (0xa001xxxx) of the victim's
+	// KUSEG address. Exercises the inline store fast path's region gate and
+	// mirror-collapsing mask (rpsxStoreGeneric): the store must land in the
+	// same RAM bytes and its coverage probe must key on the same granule as
+	// the KUSEG-compiled block, or the SMC leaks through to stale code.
+	JitTestHarness h;
+	h.SetGpr(reg::a0, 0xa0000000u | kBlock2Pc);
+	h.SetGpr(reg::a1, ADDIU(reg::v0, reg::zero, 0x1337));
+	RunStoreInvalidatesCompiledBlock(h, {
+		SW(reg::a1, 0, reg::a0),
+		J(kBlock2Pc),
+		NOP,
+	});
+}
+
+TEST(IopSmc, JitConstAddressStoreInvalidatesCompiledBlock)
+{
+	// Target address materialized in-block via LUI+ORI so constant
+	// propagation marks rs const. This drives rpsxStoreGeneric's
+	// compile-time-known RAM branch (no runtime region gate emitted) — the
+	// store and coverage probe must still fire.
+	JitTestHarness h;
+	h.SetGpr(reg::a1, ADDIU(reg::v0, reg::zero, 0x1337));
+	RunStoreInvalidatesCompiledBlock(h, {
+		LUI(reg::a0, static_cast<u16>(kBlock2Pc >> 16)),
+		ORI(reg::a0, reg::a0, static_cast<u16>(kBlock2Pc & 0xFFFF)),
+		SW(reg::a1, 0, reg::a0),
+		J(kBlock2Pc),
+		NOP,
+	});
+}
+
+TEST(IopSmc, JitByteStoreInvalidatesCompiledBlock)
+{
+	// SB over compiled code: the victim ADDIU's immediate low byte is
+	// patched from 0xAD to 0x37 while its high byte is patched by a second
+	// SB, turning 0x0BAD into 0x1337. Exercises the Strb fast path's
+	// coverage probe.
+	JitTestHarness h;
+	h.SetGpr(reg::a0, kBlock2Pc);
+	h.SetGpr(reg::a1, 0x37);
+	h.SetGpr(reg::a2, 0x13);
+	RunStoreInvalidatesCompiledBlock(h, {
+		SB(reg::a1, 0, reg::a0),             // imm low byte 0xAD → 0x37
+		SB(reg::a2, 1, reg::a0),             // imm high byte 0x0B → 0x13
+		J(kBlock2Pc),
+		NOP,
+	});
+}
+
+TEST(IopSmc, JitHalfwordStoreInvalidatesCompiledBlock)
+{
+	// SH over compiled code: the victim ADDIU's imm16 replaced wholesale by
+	// a JIT-executed halfword store. Exercises the Strh fast path's probe.
+	JitTestHarness h;
+	h.SetGpr(reg::a0, kBlock2Pc);
+	h.SetGpr(reg::a1, 0x1337);
+	RunStoreInvalidatesCompiledBlock(h, {
+		SH(reg::a1, 0, reg::a0),             // imm16 0x0BAD → 0x1337
+		J(kBlock2Pc),
+		NOP,
+	});
+}
+
+TEST(IopSmc, JitStoreToUnmappedLowRegionIsDropped)
+{
+	// 0x00900000 has bit 28 clear but no WLUT mapping — iopMemWrite32 drops
+	// the store. A fast path gated on bit 28 alone (lrps2-style) would alias
+	// it into RAM at 0x00100000 (addr & 0x1FFFFF). Track the alias target so
+	// the JIT-vs-interp diff catches any stray write.
+	JitTestHarness h;
+	iopMemWrite32(0x00100000, 0x5AFE5AFEu); // sentinel at the RAM alias
+	h.TrackMemWindow(0x00100000, 4);
+	h.SetGpr(reg::a0, 0x00900000u);
+	h.SetGpr(reg::a1, 0xDEADBEEFu);
+	h.LoadProgramAt(kProgramPc, {
+		SW(reg::a1, 0, reg::a0),
+	}, /*append_jr_ra_term=*/true);
+	h.Run();
+	EXPECT_EQ(iopMemRead32(0x00100000), 0x5AFE5AFEu);
+}
+
+TEST(IopSmc, JitStoreWithCacheIsolatedIsSwallowed)
+{
+	// BIOS-style cache isolation: with CP0 Status.IsC (bit 16) set, RAM
+	// stores are swallowed — no memory write, no SMC clear. Block 2 must
+	// keep executing its original opcode and RAM must be unmodified.
+	JitTestHarness h;
+	constexpr u32 kOldInstr = ADDIU(reg::v0, reg::zero, 0x0BAD);
+	h.SetGpr(reg::a0, kBlock2Pc);
+	h.SetGpr(reg::a1, ADDIU(reg::v0, reg::zero, 0x1337));
+	h.LoadProgramAt(kProgramPc, {
+		SW(reg::a1, 0, reg::a0),
+		J(kBlock2Pc),
+		NOP,
+	}, /*append_jr_ra_term=*/false);
+	h.LoadProgramAt(kBlock2Pc, {
+		kOldInstr,
+	}, /*append_jr_ra_term=*/true);
+	psxRegs.CP0.n.Status |= 0x10000;
+	h.Run();
+	psxRegs.CP0.n.Status &= ~0x10000u;
+	EXPECT_EQ(h.GetGprInterp(reg::v0), 0x0BADu);
+	EXPECT_EQ(iopMemRead32(kBlock2Pc), kOldInstr);
+}
+
 TEST(IopSmc, OverwriteLastWordOfBlockBeforeTerminator)
 {
 	// Edge case: write at the exact last instruction of a block's body

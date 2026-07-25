@@ -678,6 +678,17 @@ static void rpsxLoadGeneric(int size, bool sign)
 	armStorePsxRegPtr(RWARG1, &psxRegs.GPR.r[_Rt_]);
 }
 
+// Emit the C fallback for a store — address in w0, value in w1.
+static void rpsxEmitStoreCall(int size)
+{
+	switch (size)
+	{
+		case 8:  armEmitCall((void*)iopMemWrite8);  break;
+		case 16: armEmitCall((void*)iopMemWrite16); break;
+		case 32: armEmitCall((void*)iopMemWrite32); break;
+	}
+}
+
 static void rpsxStoreGeneric(int size)
 {
 	// Read const values before flush
@@ -707,13 +718,22 @@ static void rpsxStoreGeneric(int size)
 	else
 		armLoadPsxRegPtr(RWARG2, &psxRegs.GPR.r[_Rt_]);
 
-	// Call iopMemWrite — address in w0, value in w1
-	switch (size)
+	// RAM-store fast path, out-of-line: one BL into the shared per-width stub
+	// (g_iopStoreStub, emitted with the dispatchers — see _DynGen_StoreStub
+	// in iR3000A-arm64.cpp for the routing derivation). The site stays the
+	// same size as the old C call, so the fast path costs no per-site icache
+	// footprint; the stub tail-jumps to iopMemWrite* for hw/unmapped targets,
+	// which then returns here directly.
+	//
+	// Compile-time-known hw/unmapped targets skip the stub and call C
+	// straight away — identical to the old code.
+	if (rs_const && ((rs_val + _Imm_) & 0x1f800000) != 0)
 	{
-		case 8:  armEmitCall((void*)iopMemWrite8);  break;
-		case 16: armEmitCall((void*)iopMemWrite16); break;
-		case 32: armEmitCall((void*)iopMemWrite32); break;
+		rpsxEmitStoreCall(size);
+		return;
 	}
+
+	armEmitCall(g_iopStoreStub[size == 8 ? 0 : (size == 16 ? 1 : 2)]);
 }
 
 static void rpsxLB()  { rpsxLoadGeneric(8, true); }
