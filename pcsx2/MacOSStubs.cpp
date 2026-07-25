@@ -132,6 +132,10 @@ void PCAPAdapter::reloadSettings() {}
 // On iOS, CocoaTools.mm is excluded from the build. Provide stubs for the
 // functions referenced by iOS-compiled core code (DynamicLibrary, WindowInfo,
 // Pcsx2Config, etc.). iOS uses UIKit/Foundation, not Cocoa/AppKit.
+//
+// CreateMetalLayer, DestroyMetalLayer and GetBundlePath are deliberately absent:
+// the app's HostImpls.mm implements them for real. Defining them here too gave the
+// linker two of each and it picked one on its own.
 #include "common/CocoaTools.h"
 #include "common/WindowInfo.h"
 #include <optional>
@@ -139,11 +143,8 @@ void PCAPAdapter::reloadSettings() {}
 
 namespace CocoaTools
 {
-	bool CreateMetalLayer(WindowInfo* wi) { return false; }
-	void DestroyMetalLayer(WindowInfo* wi) {}
 	std::optional<float> GetViewRefreshRate(const WindowInfo& wi) { return std::nullopt; }
 	void MarkHelpMenu(void* menu) {}
-	std::optional<std::string> GetBundlePath() { return std::nullopt; }
 	std::optional<std::string> GetNonTranslocatedBundlePath() { return std::nullopt; }
 	std::optional<std::string> MoveToTrash(std::string_view file) { return std::nullopt; }
 	bool DelayedLaunch(std::string_view file) { return false; }

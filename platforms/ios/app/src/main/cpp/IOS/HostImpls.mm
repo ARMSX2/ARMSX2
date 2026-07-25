@@ -751,27 +751,27 @@ namespace FileSystem {
 namespace CocoaTools {
     void InhibitAppNap(const std::string&) {}
     void UninhibitAppNap() {}
-    std::string GetBundlePath() { return [[NSBundle mainBundle].bundlePath UTF8String]; }
+    // Signature must match common/CocoaTools.h (not included here, it's mostly
+    // macOS-only). Return types aren't mangled, so a mismatch still links and
+    // callers read garbage off the stack.
+    std::optional<std::string> GetBundlePath() { return std::string([[NSBundle mainBundle].bundlePath UTF8String]); }
     
-    void* CreateMetalLayer(WindowInfo* wi) {
-        if (!Host::g_sdl_window) return nullptr;
-        
-        // Return existing layer if we already have it
-        if (wi->surface_handle) {
-            return SDL_Metal_GetLayer((SDL_MetalView)wi->surface_handle);
-        }
-        
+    bool CreateMetalLayer(WindowInfo* wi) {
+        if (!Host::g_sdl_window) return false;
+
+        // Already have one
+        if (wi->surface_handle) return true;
+
         // Create the Metal view
         SDL_MetalView view = SDL_Metal_CreateView(Host::g_sdl_window);
         if (!view) {
             Console.Error("SDL_Metal_CreateView failed: %s", SDL_GetError());
-            return nullptr;
+            return false;
         }
-        
-        void* layer = SDL_Metal_GetLayer(view);
+
         wi->surface_handle = view; // Store view handle to destroy later
-        Console.WriteLn("Created Metal Layer: %p from View: %p", layer, view);
-        return layer;
+        Console.WriteLn("Created Metal Layer: %p from View: %p", SDL_Metal_GetLayer(view), view);
+        return true;
     }
     
     void DestroyMetalLayer(WindowInfo* wi) {
