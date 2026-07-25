@@ -41,8 +41,13 @@ bool GSPassScheduler::IsDeferrable(const GSHWDrawConfig& config)
 	if (config.colclip_mode != GSHWDrawConfig::ColClipMode::NoModify)
 		return false;
 
-	// Multi-pass draws re-read the target between their own passes.
-	if (config.alpha_second_pass.enable || config.blend_multi_pass.enable)
+	// The second passes are not render passes: they are extra draws the backend issues
+	// inside this one RenderHW call, into the same attachments, with different pipeline
+	// state and the same geometry. Nothing new is sampled and the render pass stays open,
+	// so they travel with the record. Only their own barrier requests are disqualifying,
+	// for the same reason the primary one is above.
+	if (config.alpha_second_pass.enable &&
+		(config.alpha_second_pass.require_one_barrier || config.alpha_second_pass.require_full_barrier))
 		return false;
 
 	// A drawlist means the backend splits the draw per primitive group for barriers; it is
