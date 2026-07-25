@@ -763,20 +763,67 @@ bool DarwinMisc::ValidateJITAlive()
 		return false;
 	}
 
-	// Check 2: RW alias still writable? Write a canary, read it back.
+	// Check 2: JIT code memory still writable? Write a canary, read it back.
+	//
+	// Under a dual-mapping (g_code_rw_offset != 0) g_code_rw_base is the RW
+	// alias — writable by construction, and a dead alias is exactly what this
+	// probe detects. Under an identity mapping (offset == 0) the base IS the
+	// live RX code page (the EE dispatcher sits at arena offset 0 once the VM
+	// has prewarmed), so the store needs a real write scope: a bare store
+	// faults with KERN_PROTECTION_FAILURE on the main thread (boot-gate crash,
+	// 2026-07-25). In Legacy mode flip just the first page RW and back via
+	// mprotect, treating a failed flip as "grant died" (alive=0) instead of
+	// letting the write SIGBUS; in the MAP_JIT toggle mode use the per-thread
+	// Begin/EndCodeWrite. Every caller runs while the VM is parked (the
+	// keepalive timer skips when the VM thread is active), so briefly dropping
+	// execute on that page cannot race JIT execution.
 	if (g_code_rw_base != 0 && g_code_rw_size > 0)
 	{
 		volatile u8* canary = reinterpret_cast<volatile u8*>(g_code_rw_base);
+#ifdef ARCH_ARM64
+		const bool identity = (g_code_rw_offset == 0);
+		const bool legacy_scope = identity && GetJitMode() == JitMode::Legacy && s_legacy_code_base;
+		if (legacy_scope)
+		{
+			if (!LegacyProtectCodeRange(reinterpret_cast<void*>(g_code_rw_base), 1,
+					PROT_READ | PROT_WRITE, "keepalive_rw"))
+			{
+				std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=legacy_mprotect_rw_failed\n");
+				std::fflush(stderr);
+				return false;
+			}
+		}
+		else if (identity)
+			HostSys::BeginCodeWrite();
+#endif
 		const u8 saved = *canary;
 		*canary = 0x42;
 		const u8 readback = *canary;
 		*canary = saved; // restore so we don't corrupt the first code byte
+#ifdef ARCH_ARM64
+		bool reprotect_ok = true;
+		if (legacy_scope)
+		{
+			reprotect_ok = LegacyProtectCodeRange(reinterpret_cast<void*>(g_code_rw_base), 1,
+				PROT_READ | PROT_EXEC, "keepalive_rx");
+		}
+		else if (identity)
+			HostSys::EndCodeWrite();
+#endif
 		if (readback != 0x42)
 		{
 			std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=rw_alias_dead readback=0x%02x\n", readback);
 			std::fflush(stderr);
 			return false;
 		}
+#ifdef ARCH_ARM64
+		if (!reprotect_ok)
+		{
+			std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=legacy_mprotect_rx_failed\n");
+			std::fflush(stderr);
+			return false;
+		}
+#endif
 	}
 
 	std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=1 cs_debugged=1 canary=ok\n");
