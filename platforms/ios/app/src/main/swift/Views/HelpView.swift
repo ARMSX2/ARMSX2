@@ -112,7 +112,7 @@ struct HelpView: View {
     }
 
     private var backgroundActive: Bool {
-        backgroundConfigured && menuTabIsActive
+        backgroundConfigured
     }
 
     var body: some View {
@@ -169,7 +169,7 @@ struct HelpView: View {
                                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                                         .contentShape(Rectangle())
                                 }
-                                .menuBackgroundListRow(backgroundActive)
+                                .gameCardTintMenuBackgroundListRow(backgroundActive)
                             }
                         } header: {
                             Label(settings.localized(section.title), systemImage: section.icon)
@@ -184,15 +184,18 @@ struct HelpView: View {
                                 .foregroundStyle(.secondary)
                                 .font(.caption)
                         }
+                        .gameCardTintMenuBackgroundListRow(backgroundActive)
                         Button {
                             copyTroubleshootingInfo()
                         } label: {
                             Label(settings.localized("Copy Troubleshooting Info"), systemImage: "doc.on.doc")
                         }
+                        .gameCardTintMenuBackgroundListRow(backgroundActive)
                         if let copyStatusMessage {
                             Text(settings.localized(copyStatusMessage))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .gameCardTintMenuBackgroundListRow(backgroundActive)
                         }
                     } header: {
                         Label(settings.localized("About"), systemImage: "info.circle")

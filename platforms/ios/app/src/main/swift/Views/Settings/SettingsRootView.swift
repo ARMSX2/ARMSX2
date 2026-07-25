@@ -122,7 +122,7 @@ struct SettingsRootView: View {
     }
 
     private var backgroundActive: Bool {
-        backgroundConfigured && menuTabIsActive
+        backgroundConfigured
     }
 
     var body: some View {
@@ -153,11 +153,13 @@ struct SettingsRootView: View {
                 } label: {
                     Label(settings.localized("Language"), systemImage: "globe")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink {
                     AppearanceSettingsView()
                 } label: {
                     Label(settings.localized("Appearance"), systemImage: "paintpalette")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
 
             Section(settings.localized("Emulation")) {
@@ -166,21 +168,25 @@ struct SettingsRootView: View {
                 } label: {
                     Label(settings.localized("Emulator"), systemImage: "cpu")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink {
                     GraphicsSettingsView()
                 } label: {
                     Label(settings.localized("Graphics"), systemImage: "paintbrush")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink {
                     FramePacingSettingsView()
                 } label: {
                     Label(settings.localized("Frame Pacing"), systemImage: "speedometer")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink {
                     AudioSettingsView()
                 } label: {
                     Label(settings.localized("Audio"), systemImage: "speaker.wave.2")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
 
             Section(settings.localized("Input")) {
@@ -189,16 +195,19 @@ struct SettingsRootView: View {
                 } label: {
                     Label(settings.localized("Game Controller"), systemImage: "gamecontroller")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink {
                     VirtualPadSettingsView()
                 } label: {
                     Label(settings.localized("Virtual Pad"), systemImage: "hand.draw")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink {
                     LocalMultiplayerSettingsView()
                 } label: {
                     Label(settings.localized("Local Multiplayer"), systemImage: "person.3")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
 
             Section(settings.localized("Storage & Memory")) {
@@ -207,16 +216,19 @@ struct SettingsRootView: View {
                 } label: {
                     Label(settings.localized("Memory Cards"), systemImage: "memorychip")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink {
                     StorageSettingsView()
                 } label: {
                     Label(settings.localized("Storage"), systemImage: "internaldrive")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink {
                     NetworkSettingsView()
                 } label: {
                     Label(settings.localized("Network"), systemImage: "network")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
 
             Section(settings.localized("Features")) {
@@ -225,20 +237,24 @@ struct SettingsRootView: View {
                 } label: {
                     Label(settings.localized("Settings Presets"), systemImage: "slider.horizontal.3")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink {
                     RetroAchievementsSettingsView()
                 } label: {
                     Label(settings.localized("RetroAchievements"), systemImage: "trophy")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink {
                     OverlaySettingsView()
                 } label: {
                     Label(settings.localized("Overlay (OSD)"), systemImage: "text.below.photo")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
 
             Section {
                 jitStatusRow
+                    .gameCardTintMenuBackgroundListRow(backgroundActive)
 
                 Button {
                     stikDebugOpenInProgress = true
@@ -252,10 +268,12 @@ struct SettingsRootView: View {
                     Label(settings.localized("Open StikDebug"), systemImage: "bolt.horizontal.circle")
                 }
                 .disabled(stikDebugOpenInProgress)
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
 
                 Text(settings.localized("JIT Access means iOS currently allows executable memory. Confirm the real runtime state in-game: the OSD should show EE:JIT, IOP:JIT, and VU:JIT. Match the StikDebug script to the JIT Script setting in Emulator settings."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .gameCardTintMenuBackgroundListRow(backgroundActive)
             } header: {
                 Text(settings.localized("JIT Status"))
             }
@@ -266,6 +284,7 @@ struct SettingsRootView: View {
                 } label: {
                     Label(settings.localized("Licenses & Credits"), systemImage: "doc.text")
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
 
             Section(settings.localized("About")) {
@@ -276,6 +295,7 @@ struct SettingsRootView: View {
                         .foregroundStyle(.secondary)
                         .font(.caption)
                 }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
         }
         .scrollContentBackground(backgroundActive ? .hidden : .automatic)
