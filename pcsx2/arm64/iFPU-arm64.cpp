@@ -72,9 +72,10 @@ void recCFC1()
 	if (_Fs_ >= 16)
 	{
 		// FCR31: mask out always-zero bits, set always-one bits (x86 recCFC1
-		// shape; the interpreter returns the raw word — JIT-side fixed-bit
-		// emulation is an x86-parity divergence by design, pinned by
-		// EeRecFpu.CompareThenCfc1SeesFreshConditionBit).
+		// shape; the interpreter's CFC1 applies the same model, so this is
+		// not a divergence — pinned by
+		// EeRecFpu.CompareThenCfc1SeesFreshConditionBit and
+		// EeFpuFcrConsoleConformance.BothEnginesMatchConsoleFcrModel).
 		const int fl = fpuTryAllocFCR31(MODE_READ);
 		if (fl >= 0)
 			armAsm->And(RWSCRATCH, armWRegister(fl), 0x0083c078);

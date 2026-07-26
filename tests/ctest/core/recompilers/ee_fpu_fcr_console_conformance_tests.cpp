@@ -89,28 +89,11 @@ u32 RunAndReadGpr(const std::vector<u32>& prog, u32 fcr31_pre, bool jit,
 	return jit ? h.GetGprJit(gpr) : h.GetGprInterp(gpr);
 }
 
-// Where this emulator does not reproduce the console. Recorded from a real
-// run, not derived from a rule. Every one of them is the shared interpreter;
-// the arm64 JIT's recCFC1 already implements the hardware model.
-struct Divergence { const char* what; bool bad_interp, bad_jit; };
-constexpr Divergence kDivergences[] = {
-	// CFC1 hardcodes 0x2E00 instead of reading fprc[0].
-	{"fcr0", true, false},
-	// CFC1 returns 0 for every index that is not 0 or 31; hardware aliases
-	// 0-15 onto FCR0 and 16-31 onto FCR31.
-	{"alias", true, false},
-	// Neither CFC1 nor CTC1 applies the mask model in the interpreter; it
-	// stores and returns the raw word.
-	{"mask", true, false},
-};
-
-bool KnownBad(const char* what, bool jit)
-{
-	for (const Divergence& d : kDivergences)
-		if (std::string(d.what) == what)
-			return jit ? d.bad_jit : d.bad_interp;
-	return false;
-}
+// No recorded divergences: both engines reproduce the console FCR model. The
+// shared interpreter's CFC1 used to hardcode 0x2E00 rather than reading
+// fprc[0], return 0 for every index that is not 0 or 31, and hand back the raw
+// FCR31 word; it now applies the same alias-on-bit-4 and mask model the
+// recompilers do (iFPU.cpp recCFC1, iFPU-arm64.cpp recCFC1).
 } // namespace
 
 // A ctc1 of 0xDEADBEEF into $0 leaves fcr0 at 00002e30.
@@ -125,17 +108,8 @@ TEST(EeFpuFcrConsoleConformance, Fcr0IsReadOnly)
 			CFC1(kRd, 0),
 		};
 		const bool ok = RunAndReadGpr(prog, kFcr31FixedOnes, jit != 0) == kFcr0;
-		if (!KnownBad("fcr0", jit != 0))
-		{
-			SCOPED_TRACE(jit ? "[jit]" : "[interp]");
-			EXPECT_TRUE(ok) << "new divergence from silicon";
-		}
-		else
-		{
-			EXPECT_FALSE(ok)
-				<< (jit ? "[jit]" : "[interp]")
-				<< " FCR0 now matches silicon; drop the row from kDivergences.";
-		}
+		SCOPED_TRACE(jit ? "[jit]" : "[interp]");
+		EXPECT_TRUE(ok) << "new divergence from silicon";
 	}
 }
 
@@ -183,19 +157,9 @@ TEST(EeFpuFcrConsoleConformance, ControlRegisterIndicesAliasOnBit4)
 					ok = false;
 			}
 		}
-		if (!KnownBad("alias", jit != 0))
-		{
-			SCOPED_TRACE(jit ? "[jit]" : "[interp]");
-			EXPECT_TRUE(ok) << "new divergence from silicon: the 32 control "
-			                   "register indices must alias onto FCR0/FCR31";
-		}
-		else
-		{
-			EXPECT_FALSE(ok)
-				<< (jit ? "[jit]" : "[interp]")
-				<< " aliasing now matches silicon; drop the row from "
-				   "kDivergences.";
-		}
+		SCOPED_TRACE(jit ? "[jit]" : "[interp]");
+		EXPECT_TRUE(ok) << "new divergence from silicon: the 32 control "
+		                   "register indices must alias onto FCR0/FCR31";
 	}
 }
 
@@ -223,19 +187,10 @@ TEST(EeFpuFcrConsoleConformance, Fcr31WriteMaskMatchesConsole)
 		{
 			const bool ok =
 				RunAndReadGpr(prog, kFcr31FixedOnes, jit != 0) == w.readback;
-			if (!KnownBad("mask", jit != 0))
-			{
-				SCOPED_TRACE(::testing::Message()
-				             << "Update " << w.what
-				             << (jit ? " [jit]" : " [interp]"));
-				EXPECT_TRUE(ok) << "new divergence from silicon";
-			}
-			else
-			{
-				EXPECT_FALSE(ok)
-					<< "Update " << w.what << (jit ? " [jit]" : " [interp]")
-					<< " now matches silicon; drop the row from kDivergences.";
-			}
+			SCOPED_TRACE(::testing::Message()
+			             << "Update " << w.what
+			             << (jit ? " [jit]" : " [interp]"));
+			EXPECT_TRUE(ok) << "new divergence from silicon";
 		}
 		++checked;
 	}
@@ -349,9 +304,9 @@ TEST(EeFpuFcrConsoleConformance, ExceptionFlagsMatchConsole)
 	EXPECT_EQ(checked, kFlagSituationCount);
 }
 
-// What passing looks like once the interpreter's CFC1/CTC1 model the hardware
-// the way the recompiler already does.
-TEST(EeFpuFcrConsoleConformance, DISABLED_BothEnginesMatchConsoleFcrModel)
+// Both engines model the hardware: every control-register index aliases onto
+// FCR0/FCR31 and every FCR31 write comes back through the mask model.
+TEST(EeFpuFcrConsoleConformance, BothEnginesMatchConsoleFcrModel)
 {
 	for (int jit = 0; jit < 2; ++jit)
 	{

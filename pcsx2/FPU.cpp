@@ -234,12 +234,13 @@ void C_LT() {
 void CFC1() {
 	if (!_Rt_) return;
 
-	if (_Fs_ == 31)
-		cpuRegs.GPR.r[_Rt_].SD[0] = (s32)fpuRegs.fprc[31];	// force sign extension to 64 bit
-	else if (_Fs_ == 0)
-		cpuRegs.GPR.r[_Rt_].SD[0] = 0x2E00;
+	// Only bit 4 of the register field is decoded: 0-15 alias FCR0, 16-31
+	// alias FCR31. Both recompilers implement this (iFPU.cpp recCFC1,
+	// iFPU-arm64.cpp recCFC1); the SD[0] stores force sign extension to 64 bit.
+	if (_Fs_ >= 16)
+		cpuRegs.GPR.r[_Rt_].SD[0] = (s32)((fpuRegs.fprc[31] & 0x0083c078) | 0x01000001); // drop always-zero bits, set always-one bits
 	else
-		cpuRegs.GPR.r[_Rt_].SD[0] = 0;
+		cpuRegs.GPR.r[_Rt_].SD[0] = (s32)fpuRegs.fprc[0];
 }
 
 void CTC1() {
