@@ -45,6 +45,7 @@
 #include <TargetConditionals.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -78,6 +79,11 @@ SmallString s_gpu_usage_line;
 SmallString s_gpu_debug_info_line;
 SmallString s_gpu_stats_line;
 SmallString s_speed_icon;
+
+// Shrink-to-fit for the performance overlay. The widest line measured last frame decides how much
+// this frame has to come down; one frame of lag is invisible and it means we only measure once.
+static float s_osd_fit = 1.0f;
+static float s_osd_max_base_w = 0.0f;
 
 constexpr ImU32 white_color = IM_COL32(255, 255, 255, 255);
 
@@ -150,7 +156,9 @@ ImVec2 CalculatePerformanceOverlayTextPosition(OsdOverlayPos position, float mar
 			break;
 	}
 
-	return ImVec2(x_pos, position_y);
+	// A line wider than the window would otherwise start at negative x and run off the left edge,
+	// which is far worse than being clipped on the right.
+	return ImVec2(std::max(abs_margin, x_pos), position_y);
 }
 
 bool ShouldUseLeftAlignment(OsdOverlayPos position)
@@ -226,7 +234,15 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 	const float shadow_offset = std::ceil(scale);
 
 	ImFont* const osd_font = ImGuiManager::GetOSDFont();
-	const float font_size = ImGuiManager::GetFontSizeStandard();
+	const float base_font_size = ImGuiManager::GetFontSizeStandard();
+	const float avail = GetWindowWidth() - 2.0f * margin;
+	// Only ever shrink: the user picked their size with OsdScale and we are not going to second-guess
+	// it upwards. Portrait is less than half the width of landscape, which is where this bites.
+	s_osd_fit = (avail > 0.0f && s_osd_max_base_w > avail) ? std::clamp(avail / s_osd_max_base_w, 0.5f, 1.0f) : 1.0f;
+	s_osd_max_base_w = 0.0f;
+	// Integral so we don't ask ImGui for a new font bake on every sub-pixel wobble.
+	const float font_size = std::max(1.0f, std::floor(base_font_size * s_osd_fit));
+	const float fit_norm = base_font_size / font_size;
 	const float line_height = ImGuiFullscreen::GetLineHeight({ osd_font, font_size });
 
 	ImDrawList* dl = ImGui::GetBackgroundDrawList();
@@ -261,6 +277,8 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 	do \
 	{ \
 		text_size = font->CalcTextSizeA(size, std::numeric_limits<float>::max(), -1.0f, (text), nullptr, nullptr); \
+		/* Normalise back to the unshrunk width, or the factor chases its own tail every frame. */ \
+		s_osd_max_base_w = std::max(s_osd_max_base_w, text_size.x * fit_norm); \
 		const ImVec2 text_pos = CalculatePerformanceOverlayTextPosition(GSConfig.OsdPerformancePos, margin, text_size, GetWindowWidth(), position_y); \
 		const bool __bold_osd = GSConfig.OsdBoldText; \
 		dl->AddText(font, size, ImVec2(text_pos.x + shadow_offset, text_pos.y + shadow_offset), IM_COL32(0, 0, 0, 100), (text)); \
@@ -777,22 +795,26 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 			float min_vps = s_vps_min;
 			float max_vps = std::max(s_vps_max, min_vps + 10.0f);
 
+			// The graph has to come down with the text or it overhangs a shrunken block.
+			const float graph_scale = scale * s_osd_fit;
+
 			SmallString label_buf;
 			label_buf.format("{:.1f}", max_val);
-			const float y_label_w = osd_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label_buf.c_str(), label_buf.c_str() + label_buf.length()).x + 4.0f * scale;
+			const float y_label_w = osd_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label_buf.c_str(), label_buf.c_str() + label_buf.length()).x + 4.0f * graph_scale;
 			label_buf.format("{:.0f}", max_vps);
-			const float right_label_w = osd_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label_buf.c_str(), label_buf.c_str() + label_buf.length()).x + 4.0f * scale;
+			const float right_label_w = osd_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label_buf.c_str(), label_buf.c_str() + label_buf.length()).x + 4.0f * graph_scale;
 
-			const float pad = 4.0f * scale;
-			const float row_gap = 2.0f * scale;
+			const float pad = 4.0f * graph_scale;
+			const float row_gap = 2.0f * graph_scale;
 			const float legend_h = (font_size * 2.0f) + row_gap + pad;
-			const ImVec2 graph_size(200.0f * scale, 60.0f * scale);
+			const ImVec2 graph_size(200.0f * graph_scale, 60.0f * graph_scale);
 			const ImVec2 total_size(y_label_w + graph_size.x + right_label_w + 2.0f * pad, graph_size.y + legend_h + 2.0f * pad);
+			s_osd_max_base_w = std::max(s_osd_max_base_w, total_size.x * fit_norm);
 
 			ImGui::SetNextWindowSize(total_size);
 			ImGui::SetNextWindowPos(CalculatePerformanceOverlayTextPosition(GSConfig.OsdPerformancePos, margin, total_size, GetWindowWidth(), position_y));
 			ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.45f));
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f * scale);
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f * graph_scale);
 			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 			ImGui::PushFont(osd_font, font_size);
@@ -807,7 +829,7 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 
 				const int num_ticks = std::max(1, std::min(8, static_cast<int>(graph_size.y / (font_size * 1.1f))));
 				const float left_label_x = wpos.x + pad + y_label_w;
-				const float right_label_x = plot_br.x + 2.0f * scale;
+				const float right_label_x = plot_br.x + 2.0f * graph_scale;
 
 				const ImU32 ft_col = IM_COL32(100, 200, 255, 230);
 				const ImU32 vps_col = IM_COL32(100, 255, 100, 230);
@@ -824,7 +846,7 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 
 						s.format("{:.1f}", min_val + (max_val - min_val) * frac);
 						const float left_text_w = osd_font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, s.c_str(), s.c_str() + s.length()).x;
-						const float lx = left_label_x - left_text_w - 2.0f * scale;
+						const float lx = left_label_x - left_text_w - 2.0f * graph_scale;
 						dl->AddText(osd_font, font_size, ImVec2(lx + shadow_offset, ly + shadow_offset), IM_COL32(0, 0, 0, 100), s.c_str(), s.c_str() + s.length());
 						dl->AddText(osd_font, font_size, ImVec2(lx, ly), ft_col, s.c_str(), s.c_str() + s.length());
 
@@ -865,7 +887,7 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 
 				const float legend_y = plot_br.y + pad * 0.5f;
 				const float legend_square_size = font_size * 0.65f;
-				const float legend_gap = 4.0f * scale;
+				const float legend_gap = 4.0f * graph_scale;
 				SmallString frame_part, vps_part;
 				frame_part.format("Frame: {:.2f} ms", PerformanceMetrics::GetAverageFrameTime());
 				vps_part.format("V-Blank: {:.2f}", PerformanceMetrics::GetFPS());
@@ -894,6 +916,10 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 
 #undef DRAW_LINE
 }
+
+// How tall the settings string ended up. It wraps now, so the indicator below can no longer
+// assume one line. DrawSettingsOverlay runs first, so this is current.
+static float s_settings_overlay_height = 0.0f;
 
 __ri void ImGuiManager::DrawShaderCompileIndicator(float scale, float margin, float spacing)
 {
@@ -933,8 +959,7 @@ __ri void ImGuiManager::DrawShaderCompileIndicator(float scale, float margin, fl
 
 	ImFont* const font = ImGuiManager::GetOSDFont();
 	const float font_size = ImGuiManager::GetFontSizeStandard();
-	const float baseline_y =
-		GetWindowHeight() - margin - (GSConfig.OsdShowSettings ? font_size : 0.0f);
+	const float baseline_y = GetWindowHeight() - margin - s_settings_overlay_height;
 	const float radius = std::ceil(10.0f * scale);
 	const float cx = GetWindowWidth() - margin - radius;
 	const float cy = baseline_y - spacing - radius;
@@ -972,6 +997,8 @@ __ri void ImGuiManager::DrawShaderCompileIndicator(float scale, float margin, fl
 
 __ri void ImGuiManager::DrawSettingsOverlay(float scale, float margin, float spacing)
 {
+	s_settings_overlay_height = 0.0f;
+
 	if (!GSConfig.OsdShowSettings ||
 		FullscreenUI::HasActiveWindow())
 		return;
@@ -1111,23 +1138,38 @@ __ri void ImGuiManager::DrawSettingsOverlay(float scale, float margin, float spa
 
 	const float shadow_offset = std::ceil(scale);
 	ImFont* const font = ImGuiManager::GetOSDFont();
-	const float font_size = ImGuiManager::GetFontSizeStandard();
-	const float position_y = GetWindowHeight() - margin - font_size;
+	const float base_font_size = ImGuiManager::GetFontSizeStandard();
+	const float avail = GetWindowWidth() - 2.0f * margin;
 
 	ImDrawList* dl = ImGui::GetBackgroundDrawList();
 	ImVec2 text_size =
-		font->CalcTextSizeA(font_size, std::numeric_limits<float>::max(), -1.0f, text.c_str(), text.c_str() + text.length(), nullptr);
-	const ImVec2 text_pos(GetWindowWidth() - margin - text_size.x, position_y);
+		font->CalcTextSizeA(base_font_size, std::numeric_limits<float>::max(), -1.0f, text.c_str(), text.c_str() + text.length(), nullptr);
+
+	// This one runs to a couple of hundred characters, so shrinking it far enough to fit on a single
+	// line would leave it unreadable. Take it down a little, then let it wrap onto two or three.
+	float font_size = base_font_size;
+	float wrap_width = 0.0f;
+	if (avail > 0.0f && text_size.x > avail)
+	{
+		font_size = std::max(1.0f, std::floor(base_font_size * std::clamp(avail / text_size.x, 0.6f, 1.0f)));
+		wrap_width = avail;
+		text_size = font->CalcTextSizeA(font_size, std::numeric_limits<float>::max(), wrap_width, text.c_str(), text.c_str() + text.length(), nullptr);
+	}
+
+	s_settings_overlay_height = text_size.y;
+
+	const float position_y = GetWindowHeight() - margin - text_size.y;
+	const ImVec2 text_pos(std::max(margin, GetWindowWidth() - margin - text_size.x), position_y);
 	const bool bold_osd = GSConfig.OsdBoldText;
 	dl->AddText(font, font_size,
 		ImVec2(text_pos.x + shadow_offset, text_pos.y + shadow_offset), IM_COL32(0, 0, 0, 100),
-		text.c_str(), text.c_str() + text.length());
+		text.c_str(), text.c_str() + text.length(), wrap_width);
 	dl->AddText(font, font_size, text_pos, white_color,
-		text.c_str(), text.c_str() + text.length());
+		text.c_str(), text.c_str() + text.length(), wrap_width);
 	if (bold_osd)
 	{
 		dl->AddText(font, font_size, ImVec2(text_pos.x + 0.6f, text_pos.y), white_color,
-			text.c_str(), text.c_str() + text.length());
+			text.c_str(), text.c_str() + text.length(), wrap_width);
 	}
 }
 
