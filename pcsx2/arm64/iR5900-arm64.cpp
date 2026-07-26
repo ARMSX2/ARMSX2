@@ -3133,6 +3133,12 @@ static void recResetRaw()
 		memset(s_pInstCache, 0, sizeof(EEINST) * s_nInstCacheSize);
 
 	recBlocks.Reset();
+	// The code cache is about to be rewound, so every fastmem backpatch record
+	// points at code that no longer exists. vtlb_AddLoadStoreInfo overwrites a
+	// colliding code_address, so a stale record cannot mispatch — but nothing
+	// else prunes the map, and it would otherwise accumulate for the whole VM
+	// session. Mirrors x86 iR5900.cpp.
+	vtlb_ClearLoadStoreInfo();
 	maxrecmem = 0;
 	s_maxBlockBytes = 0;
 
