@@ -53,7 +53,7 @@ bool GSTextureMTL::DoUpdate(const GSVector4i& r, const void* data, int pitch, in
 	return false;
 }
 
-bool GSTextureMTL::Map(GSMap& m, const GSVector4i* _r, int layer)
+bool GSTextureMTL::DoMap(GSMap& m, const GSVector4i* _r, int layer)
 {
 	GSVector4i r = _r ? *_r : GSVector4i(0, 0, m_size.x, m_size.y);
 	u32 block_size = GetCompressedBlockSize();

@@ -99,6 +99,7 @@ protected:
 #endif
 
 	virtual bool DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer = 0) = 0;
+	virtual bool DoMap(GSMap& m, const GSVector4i* r, int layer) = 0;
 
 public:
 	GSTexture();
@@ -111,7 +112,11 @@ public:
 	/// back by GSPassScheduler must not be reordered past an upload into a texture it
 	/// writes, nor past one into a texture it samples.
 	bool Update(const GSVector4i& r, const void* data, int pitch, int layer = 0);
-	virtual bool Map(GSMap& m, const GSVector4i* r = nullptr, int layer = 0) = 0;
+
+	/// Maps the texture for a CPU upload. Flushes deferred draws for the same reason
+	/// Update() does — the write lands as soon as the caller fills the mapping, so a
+	/// queued draw against this texture must not be reordered past it.
+	bool Map(GSMap& m, const GSVector4i* r = nullptr, int layer = 0);
 	virtual void Unmap() = 0;
 	virtual void GenerateMipmap() = 0;
 

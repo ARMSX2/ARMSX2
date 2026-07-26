@@ -26,6 +26,12 @@ bool GSTexture::Update(const GSVector4i& r, const void* data, int pitch, int lay
 	return DoUpdate(r, data, pitch, layer);
 }
 
+bool GSTexture::Map(GSMap& m, const GSVector4i* r, int layer)
+{
+	g_gs_device->FlushDeferredDrawsFor(this);
+	return DoMap(m, r, layer);
+}
+
 bool GSTexture::ValidateUsageAndFormat(Usage usage, Format format)
 {
 	if (IsDepthStencil(usage) && (usage & (Usage::ShaderWrite | Usage::RenderTarget)))
@@ -227,6 +233,11 @@ void GSTexture::GenerateMipmapsIfNeeded()
 		return;
 
 	m_needs_mipmaps_generated = false;
+
+	// Reads every level of the texture and writes the smaller ones, so it is an observation
+	// point like any other. Guarding the single non-virtual caller keeps the six backend
+	// GenerateMipmap() overrides untouched.
+	g_gs_device->FlushDeferredDrawsFor(this);
 	GenerateMipmap();
 }
 

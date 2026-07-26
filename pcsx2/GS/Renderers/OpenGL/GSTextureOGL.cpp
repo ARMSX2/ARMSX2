@@ -248,7 +248,7 @@ bool GSTextureOGL::DoUpdate(const GSVector4i& r, const void* data, int pitch, in
 	return true;
 }
 
-bool GSTextureOGL::Map(GSMap& m, const GSVector4i* _r, int layer)
+bool GSTextureOGL::DoMap(GSMap& m, const GSVector4i* _r, int layer)
 {
 	if (layer >= m_mipmap_levels || IsCompressedFormat())
 		return false;

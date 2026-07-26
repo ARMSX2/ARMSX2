@@ -25,7 +25,7 @@ bool GSTextureNone::DoUpdate(const GSVector4i& r, const void* data, int pitch, i
 	return true;
 }
 
-bool GSTextureNone::Map(GSMap& m, const GSVector4i* r, int layer)
+bool GSTextureNone::DoMap(GSMap& m, const GSVector4i* r, int layer)
 {
 	// 8 bytes/texel covers the widest uncompressed format (RGBA16); callers get
 	// scratch memory they can safely write through, contents are discarded.

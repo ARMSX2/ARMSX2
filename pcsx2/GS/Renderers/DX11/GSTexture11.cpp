@@ -74,7 +74,7 @@ bool GSTexture11::DoUpdate(const GSVector4i& r, const void* data, int pitch, int
 	return true;
 }
 
-bool GSTexture11::Map(GSMap& m, const GSVector4i* r, int layer)
+bool GSTexture11::DoMap(GSMap& m, const GSVector4i* r, int layer)
 {
 	// Not supported
 	return false;
