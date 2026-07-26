@@ -447,6 +447,20 @@ static void cop2ApplyDestMaskACC(const a64::VRegister& result)
 // PS2 VU has no infinities — overflow clamps to ±FLT_MAX (0x7f7fffff).
 // NEON FPCR has FZ=1 (denormals flushed to zero), so only post-op clamping is needed.
 // FMINNM/FMAXNM match x86 MINPS/MAXPS semantics: NaN → non-NaN operand.
+//
+// FPCR.FZ here is measured, not assumed: a real boot logs FPCR = 0x1c00000
+// inside the EE dispatcher -- FZ set and RMode = ChopZero, from
+// EmuConfig.Cpu.FPUFPCR, whose default is DAZ+FTZ+ChopZero (Pcsx2Config.cpp
+// DEFAULT_FPU_FP_CONTROL_REGISTER). The recompiler test harness runs FPCR = 0
+// instead (RecompilerTestEnvironment.cpp mirrors CPUThreadInitialize and stops
+// before the VM applies FPUFPCR), so denormals survive there and not in a
+// default game.
+//
+// That is not a licence to depend on the hardware: DenormalsAreZero is a
+// per-unit user setting (EmuCore/CPU: FPU/VU0/VU1.DenormalsAreZero), so FZ can
+// be off in production too. Modelling the FZ-off case in software is deferred
+// to the pending COP2 U/O redesign; the DISABLED tripwires in
+// vu_sticky_console_conformance_tests.cpp record what it owes.
 
 alignas(16) static const u32 s_cop2MaxFloat[4] = {0x7f7fffff, 0x7f7fffff, 0x7f7fffff, 0x7f7fffff};
 
