@@ -320,37 +320,18 @@ TEST(EeRecFpuRsqrt, ClearsIDPreservesStickyOnPositive)
 }
 
 // ---- Positive-path single-precision value (x86 / hardware parity) ----------
-// JIT-only: the interpreter computes this quotient in double and lands 1 ULP
-// away (see the DISABLED tripwire), so Run()'s auto-diff cannot be used.
+// Both engines round the sqrt to single before dividing, so Run()'s auto-diff
+// applies here.
 TEST(EeRecFpuRsqrt, PositivePathSinglePrecisionValue)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest}; // see DifferentialFuzzZeroAndNegativeDivisor
-	// 1 / sqrt(1.5): single = 0x3f5105eb, interp double-rounds to 0x3f5105ec.
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFpr(1, 1.0f);
-	h.SetFpr(2, 1.5f);
-	h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
-	h.RunJitNoDiff();
-	EXPECT_EQ(h.GetFprBitsJit(3), 0x3F5105EBu); // single-precision (matches x86)
-}
-
-// Known divergence (accepted, not a bug): on the positive-divisor path the
-// interpreter divides by a double-precision sqrt result, so its output is 1 ULP
-// off from the single-precision EE FPU / x86 / native result. Enabling this
-// asserts the JIT equals the interp and will fail, documenting the gap.
-// Mirrors the DISABLED-tripwire convention for known interp divergences.
-TEST(EeRecFpuRsqrt, DISABLED_RsqrtSPositivePathDivergesFromInterp)
-{
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.SetFpr(1, 1.0f);
 	h.SetFpr(2, 1.5f);
 	h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
 	h.Run();
-	// Would require GetFprBitsJit == GetFprBitsInterp; native=0x3f5105eb,
-	// interp=0x3f5105ec. Left disabled as the pin for this known 1-ULP gap.
-	EXPECT_EQ(h.GetFprBitsJit(3), h.GetFprBitsInterp(3));
+	h.ExpectFpr(3, 0x3F5105EBu); // 1 / sqrt(1.5) in single precision
 }
 
 // The single-rounding fix above holds at round-to-nearest and NOT under the

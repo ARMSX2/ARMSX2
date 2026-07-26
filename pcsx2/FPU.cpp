@@ -454,12 +454,16 @@ void RSQRT_S() {
 		_FdValUl_ = ( _FsValUl_ & 0x80000000 ) | posFmax;
 		return;
 	}
-	else if ( _FtValUl_ & 0x80000000 ) { // Ft is negative
+	else if ( _FtValUl_ & 0x80000000 ) // Ft is negative
 		_ContVal_ |= FPUflagI | FPUflagSI;
-		temp.f = sqrt( fabs( fpuDouble( _FtValUl_ ) ) );
-		_FdValf_ = fpuDouble( _FsValUl_ ) / fpuDouble( temp.UL );
-	}
-	else { _FdValf_ = fpuDouble( _FsValUl_ ) / sqrt( fpuDouble( _FtValUl_ ) ); } // Ft is positive and not zero
+
+	// Both paths divide by a sqrt rounded to single. Dividing by the unrounded
+	// double instead lands 1 ULP from the EE FPU and from both recompilers,
+	// which stay in single-precision fsqrt+fdiv (x86 recRSQRThelper1, arm64
+	// recRSQRT_S_xmm): 1.0 rsqrt 1.5 comes back 0x3F5105EC that way, hardware
+	// gives 0x3F5105EB.
+	temp.f = sqrt( fabs( fpuDouble( _FtValUl_ ) ) );
+	_FdValf_ = fpuDouble( _FsValUl_ ) / fpuDouble( temp.UL );
 
 	if (checkOverflow( _FdValUl_, 0)) return;
 	checkUnderflow( _FdValUl_, 0);
