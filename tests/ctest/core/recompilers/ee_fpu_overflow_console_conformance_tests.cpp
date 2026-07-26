@@ -44,6 +44,8 @@
 
 #include <gtest/gtest.h>
 
+#include <ios>
+
 using namespace recompiler_tests;
 using namespace mips;
 using namespace mips::ee;
@@ -156,20 +158,14 @@ constexpr EngineDivergence kEngineDivergences[] = {
 	// question is deferred to the redesign (see the DISABLED tripwires in
 	// ee_fpu_fcr_console_conformance_tests.cpp).
 
-	// CLASS 2 -- a real gap, and the capture is what surfaced it. SQRT.S is the
-	// ONLY op in iFPU-arm64.cpp whose emitter never clamps its operand:
-	// fpuClampInput has twelve call sites covering ADD/SUB/MUL/DIV/RSQRT and
-	// the six accumulator forms, and recSQRT_S_xmm calls it zero times. So an
-	// exponent-255 Ft reaches Fsqrt as a host +Inf, sqrt(Inf) is Inf, and
-	// fpuClampResult flattens it to 0x7F7FFFFF -- while the interpreter's
-	// SQRT_S does sqrt(fpuDouble(Ft)) and lands two binades away. Unlike class
-	// 1 this does NOT close under CHECK_FPU_EXTRA_OVERFLOW, because there is no
-	// gate to turn on. The interpreter is the side nearer the console on both
-	// rows, so the direction is to give SQRT the clamp the rest of the family
-	// already has -- never to stop the interpreter clamping.
-	// Pinned by DISABLED_SqrtOperandClampIsMissing below.
-	{44, false, "sqrt +EEMAX -- recSQRT_S_xmm never clamps Ft"},
-	{45, false, "sqrt 2^128 -- same"},
+	// CLASS 2 used to live here: rows 44 and 45, sqrt of an exponent-255 Ft,
+	// where recSQRT_S_xmm was the one emitter in iFPU-arm64.cpp that never
+	// clamped its operand at all. That was a defect rather than a mode axis --
+	// it did not close under CHECK_FPU_EXTRA_OVERFLOW because there was no gate
+	// to turn on -- and it is fixed: SQRT now clamps under CHECK_FPU_OVERFLOW,
+	// matching x86 recSQRT_S_xmm. The rows are covered by
+	// SqrtClampsItsOperandLikeTheRestOfTheFamily below and by the general
+	// agreement test, so they must NOT be listed here any more.
 };
 constexpr int kEngineDivergenceCount =
 	static_cast<int>(sizeof(kEngineDivergences) / sizeof(kEngineDivergences[0]));
@@ -218,12 +214,15 @@ TEST(EeFpuOverflowConsole, EnginesAgreeExceptOnTheDocumentedRows)
 }
 
 // ---------------------------------------------------------------------------
-// ENABLED. Splits the divergence list in two by measurement rather than by
-// assertion in a comment: the operand-clamp rows close when the clamp is on,
-// the SQRT rows do not, because SQRT has no clamp to turn on.
+// ENABLED. Classifies the divergence list by measurement rather than by
+// assertion in a comment: every listed row must close when the operand clamp
+// is on. The else-branch is the liveness clause for any future entry that does
+// NOT close -- a defect rather than the mode axis, which is what rows 44/45
+// were before SQRT gained its clamp.
 // ---------------------------------------------------------------------------
-TEST(EeFpuOverflowConsole, OperandClampHealsEveryDivergenceExceptSqrt)
+TEST(EeFpuOverflowConsole, OperandClampHealsEveryDocumentedDivergence)
 {
+	ASSERT_GT(kEngineDivergenceCount, 0) << "nothing left to classify";
 	for (int i = 0; i < kEngineDivergenceCount; ++i)
 	{
 		const EngineDivergence& d = kEngineDivergences[i];
@@ -280,29 +279,141 @@ TEST(EeFpuOverflowConsole, DefaultClampModeSaturatesToFltMaxOnBothEngines)
 }
 
 // ---------------------------------------------------------------------------
-// TRIPWIRE. SQRT.S is the only EE FPU op whose arm64 emitter never clamps its
-// operand. Enable this after giving recSQRT_S_xmm the fpuClampInput call the
-// other twelve emitters have, gated on CHECK_FPU_EXTRA_OVERFLOW the same way;
-// then drop rows 44 and 45 from kEngineDivergences.
+// REGRESSION TEST for the defect this capture surfaced. recSQRT_S_xmm was the
+// one emitter in iFPU-arm64.cpp that never clamped its operand -- fpuClampInput
+// had twelve call sites covering ADD/SUB/MUL/DIV/RSQRT and the six accumulator
+// forms, and SQRT called it zero times. An exponent-255 Ft therefore reached
+// Fsqrt as a host +Inf, sqrt(Inf) was Inf, and fpuClampResult flattened it to
+// 0x7F7FFFFF, while the interpreter's sqrt(fpuDouble(Ft)) landed two binades
+// away at 0x5F7FFFFF.
 //
-// Direction matters here: the interpreter is the side nearer the console on
-// both rows (console 5fb504f3 / 5f800000, interp 5f7fffff, JIT 7f7fffff), so
-// this is fixed by moving the recompiler, never by making the interpreter stop
-// clamping.
+// Before the fix this failed on rows 44 and 45 and passed on row 46 (whose Ft
+// is representable and needs no clamp).
+//
+// Two things are asserted, not one. Agreement alone is a weak pin: it can be
+// reached by degrading the interpreter, which is the side NEARER the console
+// here (console 5fb504f3 / 5f800000 vs interp 5f7fffff vs old JIT 7f7fffff).
+// So the expected value is spelled out as well -- the interpreter's answer,
+// which is sqrt of the fpuDouble-clamped operand.
+//
+// The clamp is gated on CHECK_FPU_OVERFLOW (eeClampMode >= 1, on by default),
+// matching x86 recSQRT_S_xmm's `if (CHECK_FPU_OVERFLOW) xMIN.SS(...)`, so the
+// DEFAULT mode is checked first and the higher clamp mode second.
 // ---------------------------------------------------------------------------
-TEST(EeFpuOverflowConsole, DISABLED_SqrtOperandClampIsMissing)
+TEST(EeFpuOverflowConsole, SqrtClampsItsOperandLikeTheRestOfTheFamily)
 {
+	ASSERT_TRUE(EmuConfig.Cpu.Recompiler.fpuOverflow)
+		<< "the SQRT operand clamp is gated on CHECK_FPU_OVERFLOW; with the "
+		   "option off the recompiler is not being asked to clamp at all";
+
+	// sqrt(0x7F7FFFFF), i.e. sqrt of the operand after fpuDouble/xMIN.SS has
+	// pulled an exponent-255 word down to +FLT_MAX. Both engines must produce
+	// this for any Ft whose exponent field is 255.
+	constexpr u32 kSqrtOfFastPathMax = 0x5F7FFFFFu;
+
+	int clamped_rows = 0, total_rows = 0;
 	for (int i = 0; i < kCaseCount; ++i)
 	{
 		const FpuOvfCase& c = kCases[i];
 		if (c.op != FO_SQRT)
 			continue;
+		++total_rows;
 		SCOPED_TRACE(::testing::Message() << "row " << i << ": " << c.what);
-		EXPECT_TRUE(Agree(RunCase(c, false, /*extra_overflow=*/true),
-						  RunCase(c, true, /*extra_overflow=*/true)))
-			<< "SQRT.S still does not clamp its operand under "
-			   "CHECK_FPU_EXTRA_OVERFLOW";
+
+		for (int extra = 0; extra < 2; ++extra)
+		{
+			SCOPED_TRACE(::testing::Message()
+						 << (extra ? "eeClampMode >= 2" : "default clamp mode"));
+			const Observed in = RunCase(c, false, extra != 0);
+			const Observed ji = RunCase(c, true, extra != 0);
+			EXPECT_TRUE(Agree(in, ji))
+				<< "interp " << std::hex << in.result << "/" << in.fcr31
+				<< " vs jit " << ji.result << "/" << ji.fcr31;
+
+			if ((c.ft & 0x7F800000u) == 0x7F800000u)
+			{
+				if (extra == 0)
+					++clamped_rows;
+				EXPECT_EQ(in.result, kSqrtOfFastPathMax) << "interp";
+				EXPECT_EQ(ji.result, kSqrtOfFastPathMax) << "jit";
+			}
+		}
 	}
+
+	EXPECT_GT(total_rows, 0) << "no SQRT rows in the capture; vacuous";
+	EXPECT_GT(clamped_rows, 0)
+		<< "no SQRT row feeds an exponent-255 operand any more, so the clamp "
+		   "itself is never exercised; this test would pass vacuously";
+}
+
+// ---------------------------------------------------------------------------
+// The same property as above, over the WHOLE exponent-255 class rather than
+// the three patterns the capture happens to contain.
+//
+// The capture's SQRT rows feed 0x7FFFFFFF, 0x7F800000 and 0xFF7FFFFF. As host
+// bit patterns those are a quiet NaN, an infinity and a finite number -- the
+// one class it never feeds is a SIGNALLING NaN, and that is the class the
+// arm64 clamp misses. Fminnm is not MINSS: MINSS returns src2 for ANY NaN,
+// while FMINNM only prefers the number when the other operand is a QUIET NaN.
+// A signalling operand goes down the FPProcessNaNs path instead and comes back
+// quieted, unclamped. That is half the exponent-255 mantissa space --
+// 4194303 of the 8388608 positive patterns -- passing straight through a clamp
+// the comment above says covers "any Ft whose exponent field is 255".
+//
+// The interpreter has no such split: fpuDouble (FPU.cpp) switches on the
+// exponent FIELD alone, so every exponent-255 operand becomes +-0x7F7FFFFF
+// regardless of mantissa. It is also the side nearer the console. So this is
+// asserted as a value, not just as agreement.
+// ---------------------------------------------------------------------------
+TEST(EeFpuOverflowConsole, SqrtClampCoversSignallingOperandsToo)
+{
+	ASSERT_TRUE(EmuConfig.Cpu.Recompiler.fpuOverflow)
+		<< "the SQRT operand clamp is gated on CHECK_FPU_OVERFLOW";
+
+	constexpr u32 kSqrtOfFastPathMax = 0x5F7FFFFFu;
+
+	struct Operand
+	{
+		u32 ft;
+		const char* what;
+	};
+	// Every exponent-255 shape, both signs. The host classification is noted
+	// because it is the axis the defect splits on -- nothing about the EE
+	// itself distinguishes these, they are all just large floats.
+	static constexpr Operand kOperands[] = {
+		{0x7F800000u, "+2^128        (host +Inf)"},
+		{0xFF800000u, "-2^128        (host -Inf)"},
+		{0x7F800001u, "exp255 mant 1 (host +sNaN, smallest)"},
+		{0xFF800001u, "exp255 mant 1 (host -sNaN, smallest)"},
+		{0x7FBFFFFFu, "exp255 mant 0x3FFFFF (host +sNaN, largest)"},
+		{0x7FC00000u, "exp255 mant 0x400000 (host +qNaN, smallest)"},
+		{0x7FFFFFFFu, "+EEMAX        (host +qNaN, largest)"},
+		{0xFFFFFFFFu, "-EEMAX        (host -qNaN, largest)"},
+	};
+
+	int signalling = 0;
+	for (const Operand& o : kOperands)
+	{
+		const FpuOvfCase c{FO_SQRT, 0u, o.ft, 0u, 0u, 0u, false, o.what};
+		SCOPED_TRACE(::testing::Message() << o.what);
+
+		const Observed in = RunCase(c, false);
+		const Observed ji = RunCase(c, true);
+		EXPECT_EQ(in.result, kSqrtOfFastPathMax)
+			<< "[interp] fpuDouble keys on the exponent field alone";
+		EXPECT_EQ(ji.result, kSqrtOfFastPathMax)
+			<< "[jit] the operand reached Fsqrt unclamped -- Fminnm passes a "
+			   "signalling NaN through where x86's MINSS would return +fMax";
+		EXPECT_EQ(in.fcr31, ji.fcr31) << "FCR31 diverges between engines";
+
+		const u32 mant = o.ft & 0x7FFFFFu;
+		if (mant != 0 && (mant & 0x400000u) == 0)
+			++signalling;
+	}
+
+	EXPECT_GE(signalling, 3)
+		<< "anti-vacuity: the operand pool must keep signalling-NaN patterns, "
+		   "which are the only ones the Fminnm/MINSS split can act on";
 }
 
 // ---------------------------------------------------------------------------

@@ -363,6 +363,40 @@ static void fpuClampResultPositive(const a64::VRegister& fpr)
 	armAsm->Fminnm(fpr, fpr, a64::s8);
 }
 
+// Positive OPERAND clamp, for a value that is about to be fed to another FP
+// op rather than written back — currently SQRT.S's post-Fabs Ft.
+//
+// Fminnm would be the obvious choice and is wrong here. It is only NaN-eating
+// for QUIET NaNs: FPMinNum prefers the number when the other operand is a
+// quiet NaN, but a SIGNALLING operand goes down FPProcessNaNs first and comes
+// back merely quieted, so it survives the clamp. x86's MINSS has no such
+// split — it returns src2 for any NaN — and half of the EE's exponent-255
+// mantissa space (4194303 of the 8388608 positive patterns) is signalling.
+// Those are ordinary large PS2 floats, not errors; the interpreter's fpuDouble
+// keys on the exponent FIELD and clamps all of them.
+//
+// So clamp in the integer domain. The input is post-Fabs, hence bit 31 is
+// clear, and over non-negative floats the IEEE ordering IS the unsigned
+// integer ordering: every pattern above 0x7F7FFFFF is exponent-255 (Inf, sNaN
+// or qNaN alike) and must come down, everything at or below it is a
+// representable finite value and must pass. One instruction, same as Fminnm,
+// and exact agreement with MINSS on every input.
+//
+// Umin has no scalar form, so this is a 2S vector op. Only lane 0 carries the
+// operand; lane 1 takes min(garbage, v8[1]) and is discarded by the scalar
+// Fsqrt that follows, which zeroes bits [127:32] of its destination.
+//
+// Deliberately NOT folded into fpuClampResultPositive above. That helper's
+// other caller, recABS_S_xmm, emits its clamp with no CHECK_FPU_* gate at all,
+// where both the interpreter and the console leave exponent-255 operands
+// untouched — a separate pre-existing defect whose fix is to DELETE the clamp,
+// not to change which wrong answer it produces (see the DISABLED tripwire
+// EeFpuAbsNegClamp.DISABLED_JitMatchesConsoleInEveryClampMode). Changing the
+// shared helper would silently move ABS.S's output for that unfixed case.
+static void fpuClampOperandPositive(const a64::VRegister& fpr)
+{
+	armAsm->Umin(fpr.V2S(), fpr.V2S(), a64::v8.V2S());
+}
 // Sign-preserving operand clamp for FPU comparisons (C.cond.S).
 //
 // Mirrors the x86 JIT's fpuFloat3 (PMIN.SD vs 0x7f7fffff then PMIN.UD vs
@@ -1001,6 +1035,37 @@ static void recSQRT_S_xmm(int info)
 
 	// PS2 takes sqrt of |ft| → Fabs first.
 	armAsm->Fabs(armSRegister(EEREC_D), ft);
+
+	// Source-operand clamp. An exponent-255 Ft is an ordinary large PS2 float
+	// (the EE has no Inf/NaN), but the host reads it as Inf/NaN — so without
+	// this, Fsqrt returns Inf and fpuClampResult flattens it to +fMax, two
+	// binades from where the interpreter lands (SQRT_S routes Ft through
+	// fpuDouble unconditionally). Measured against the hardware capture:
+	// sqrt(0x7FFFFFFF) was interp 0x5F7FFFFF vs JIT 0x7F7FFFFF, and
+	// sqrt(0x7F800000) the same pair — autocases_fpuovf.h rows 44/45, pinned by
+	// EeFpuOverflowConsole.SqrtClampsItsOperandLikeTheRestOfTheFamily.
+	//
+	// The gate is CHECK_FPU_OVERFLOW (eeClampMode >= 1, ON by default), NOT the
+	// arithmetic family's CHECK_FPU_EXTRA_OVERFLOW (>= 2) that fpuClampInput
+	// carries. x86 recSQRT_S_xmm clamps at that same lower threshold
+	// (`if (CHECK_FPU_OVERFLOW) xMIN.SS(EEREC_D, g_maxvals[0])`, iFPU.cpp:1777),
+	// so matching it is what puts interp, x86 and arm64 on one answer in the
+	// mode games actually run in — the same lower-gate reasoning as
+	// fpuClampMinMaxOperand above. SQRT is alone in this: x86 recRSQRThelper1 /
+	// recRSQRThelper2 (iFPU.cpp:1835/1853) gate RSQRT's operand clamp on
+	// CHECK_FPU_EXTRA_OVERFLOW, which is what recRSQRT_S_xmm below already does,
+	// and every remaining x86 clamp reaches the FPU through fpuFloat/fpuFloat2
+	// under the same higher gate.
+	//
+	// One-sided, because Fabs has already made the operand non-negative: only
+	// the upper half of fpuClampResult could ever fire. That is exactly x86's
+	// positive-only xMIN.SS — and it has to match MINSS on NaNs too, which is
+	// why this is an integer Umin and not an Fminnm; see the comment on
+	// fpuClampOperandPositive for the signalling-NaN split that rules Fminnm
+	// out. Pinned by EeFpuOverflowConsole.SqrtClampCoversSignallingOperandsToo.
+	if (CHECK_FPU_OVERFLOW)
+		fpuClampOperandPositive(armSRegister(EEREC_D));
+
 	armAsm->Fsqrt(armSRegister(EEREC_D), armSRegister(EEREC_D));
 	fpuClampResult(armSRegister(EEREC_D));
 

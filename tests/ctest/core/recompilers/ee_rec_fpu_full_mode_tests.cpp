@@ -561,7 +561,12 @@ TEST(EeRecFpuFull, SqrtPseudoInfExact)
 	h.SetFprBits(1, kPs2HugePos);
 	h.LoadProgram({SQRT_S(2, 1)});
 	h.RunJitNoDiff();
-	EXPECT_EQ(h.GetFprBitsJit(2), 0x5f800000u); // fast: sqrt(clamped FLT_MAX)
+	// Discriminator: ToDouble carries exponent 255 across exactly, so FULL gets
+	// the true sqrt(2^128). The single-precision fast body clamps the operand
+	// to +FLT_MAX first (recSQRT_S_xmm's CHECK_FPU_OVERFLOW xMIN, matching x86)
+	// and lands one ULP low at 0x5f7fffff — measured in
+	// EeFpuOverflowConsole.SqrtClampsItsOperandLikeTheRestOfTheFamily.
+	EXPECT_EQ(h.GetFprBitsJit(2), 0x5f800000u);
 }
 
 TEST(EeRecFpuFull, SqrtNegativeSetsIFlagAndUsesAbs)
