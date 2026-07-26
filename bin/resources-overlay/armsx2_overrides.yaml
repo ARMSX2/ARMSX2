@@ -95,7 +95,6 @@ SCAJ-20169:
     autoFlush: 1
     coalesceRenderPasses: 1
     halfPixelOffset: 5
-    hwDownloadMode: 2
     nativeScaling: 2
     recommendedBlendingLevel: 4
 SCAJ-20173:
@@ -947,7 +946,6 @@ SLES-54185:
     autoFlush: 1
     coalesceRenderPasses: 1
     halfPixelOffset: 5
-    hwDownloadMode: 2
     nativeScaling: 2
     recommendedBlendingLevel: 4
 SLES-54321:
@@ -1228,7 +1226,6 @@ SLPM-66271:
     autoFlush: 1
     coalesceRenderPasses: 1
     halfPixelOffset: 5
-    hwDownloadMode: 2
     nativeScaling: 2
     recommendedBlendingLevel: 4
 SLPM-66354:
@@ -1274,7 +1271,6 @@ SLPM-66629:
     autoFlush: 1
     coalesceRenderPasses: 1
     halfPixelOffset: 5
-    hwDownloadMode: 2
     nativeScaling: 2
     recommendedBlendingLevel: 4
 SLPM-66782:
@@ -1299,7 +1295,6 @@ SLPM-68016:
     autoFlush: 1
     coalesceRenderPasses: 1
     halfPixelOffset: 5
-    hwDownloadMode: 2
     nativeScaling: 2
     recommendedBlendingLevel: 4
 SLPM-74229:
@@ -1617,7 +1612,6 @@ SLUS-21419:
     autoFlush: 1
     coalesceRenderPasses: 1
     halfPixelOffset: 5
-    hwDownloadMode: 2
     nativeScaling: 2
     recommendedBlendingLevel: 4
 SLUS-21442:
