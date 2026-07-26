@@ -250,6 +250,7 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_advanced.spinCPUDuringReadbacks, "EmuCore/GS", "HWSpinCPUForReadbacks", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_advanced.spinGPUDuringReadbacks, "EmuCore/GS", "HWSpinGPUForReadbacks", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_advanced.rovBarriersVK, "EmuCore/GS", "HWROVBarriersVK", false);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_advanced.coalesceRenderPasses, "EmuCore/GS", "CoalesceRenderPasses", false);
 	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_advanced.texturePreloading, "EmuCore/GS", "texture_preloading", static_cast<int>(TexturePreloadingLevel::Off));
 
 	setTabVisible(m_advanced_tab, QtHost::ShouldShowAdvancedSettings());
@@ -559,6 +560,12 @@ GraphicsSettingsWidget::GraphicsSettingsWidget(SettingsWindow* settings_dialog, 
 		dialog()->registerWidgetHelp(m_advanced.spinGPUDuringReadbacks, tr("Spin GPU During Readbacks"), tr("Unchecked"),
 			tr("Submits useless work to the GPU during readbacks to prevent it from going into powersave modes. "
 			   "May improve performance during readbacks but with a significant increase in power usage."));
+
+		dialog()->registerWidgetHelp(m_advanced.coalesceRenderPasses, tr("Coalesce Render Passes"), tr("Unchecked"),
+			tr("Holds draws back so that consecutive draws to the same render target share one render pass, instead of "
+			   "starting a new one every time a game alternates between two targets. Intended for tiling GPUs, where "
+			   "every pass boundary costs a full tile load and store - it does nothing useful on a desktop GPU. Rendering "
+			   "is unchanged either way. Games known to benefit have it enabled automatically."));
 
 		// Software
 		dialog()->registerWidgetHelp(m_sw.extraSWThreads, tr("Software Rendering Threads"), tr("2 threads"),
