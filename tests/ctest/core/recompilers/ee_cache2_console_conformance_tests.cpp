@@ -78,7 +78,9 @@
 #include "R5900.h"
 #include "R5900OpcodeTables.h"
 
+#if __has_include(<sys/mman.h>)
 #include <sys/mman.h>
+#endif
 
 #include <cstdio>
 #include <cstring>
@@ -145,8 +147,19 @@ u32 Obs(int id, const char* name)
 // A page mapped at a host address we choose, so the wild write PCSX2 performs
 // lands somewhere observable instead of killing the process. Several
 // candidates because any one of them may already be taken by the loader.
+// MAP_FIXED_NOREPLACE is Linux-only (4.17+). Demanding an exact address
+// without it means either MAP_FIXED, which silently unmaps whatever already
+// lives there, or a hint the kernel may ignore — neither is safe in a test
+// process. Elsewhere the two callers skip.
+//
+// The candidates are 4K-aligned but none is 16K-aligned, so on a 16K-page
+// kernel — Asahi, Apple Silicon, some Android — every one is rejected outright
+// and the two callers always skip. Re-picking them 16K-aligned would need the
+// tag/index constraints re-derived against the console capture, so it is left
+// to whoever holds that data.
 void* MapAt(u32* chosen)
 {
+#if defined(MAP_FIXED_NOREPLACE)
 	static const u32 kCandidates[] = {0x00129000u, 0x00229000u, 0x00329000u,
 	                                  0x10429000u};
 	for (u32 want : kCandidates)
@@ -162,6 +175,9 @@ void* MapAt(u32* chosen)
 		if (p != MAP_FAILED)
 			munmap(p, 0x1000);
 	}
+#else
+	(void)chosen;
+#endif
 	return nullptr;
 }
 } // namespace
