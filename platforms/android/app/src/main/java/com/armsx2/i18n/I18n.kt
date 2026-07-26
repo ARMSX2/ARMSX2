@@ -255,7 +255,10 @@ val EN: Map<String, String> = mapOf(
     "app.library.recents.desc" to "Show the Recently Played section on the library home screen.",
     "app.library.opacity" to "Library opacity",
     "ra.library.header" to "Library progress",
-    "ra.library.desc" to "Show achievement progress on every game in your library, including ones you have never played. Needs your RetroAchievements web API key (Settings → Keys on retroachievements.org) — that is a different credential from your password.",
+    "ra.library.desc" to "Show achievement progress on every game in your library, including ones you have never played.",
+    // %s is replaced by ra.library.keyHelp.link, rendered as a tappable link. Keep the placeholder.
+    "ra.library.keyHelp" to "While authenticated, visit %s on the RetroAchievements website. Find the \"Keys\" section on the page. Copy the web API key value and input it to sync your library.",
+    "ra.library.keyHelp.link" to "your control panel",
     "ra.library.apiKey" to "Web API key",
     "ra.library.sync" to "Sync library",
     "ra.library.syncing" to "Syncing…",

@@ -49,6 +49,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -558,6 +559,9 @@ private fun AchievementFilterTabs(selected: AchFilter, items: List<AchievementIt
  * whole library, matched by disc hash. That uses the site's **web API key**, which is a separate
  * credential from the login token above, so it has to be pasted in once.
  */
+/** Where RetroAchievements exposes the web API key, under its "Keys" section. */
+private const val CONTROL_PANEL_URL = "https://retroachievements.org/controlpanel.php"
+
 @Composable
 private fun LibraryProgressSection() {
     var key by remember { mutableStateOf(com.armsx2.RaLibrary.webApiKey) }
@@ -570,6 +574,44 @@ private fun LibraryProgressSection() {
             str("ra.library.desc"),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        // Where to get the key. The control-panel link is tappable for touch and activatable from a
+        // pad (controllerFocusable below) — this screen is fully gamepad-navigable, and a link that
+        // only responded to a finger would be unreachable on a handheld.
+        val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+        val openControlPanel = { runCatching { uriHandler.openUri(CONTROL_PANEL_URL) }.let {} }
+        val linkLabel = str("ra.library.keyHelp.link")
+        val help = str("ra.library.keyHelp")
+        Text(
+            androidx.compose.ui.text.buildAnnotatedString {
+                val split = help.indexOf("%s")
+                if (split < 0) {
+                    // A translation that dropped the placeholder still has to render its own text,
+                    // with the link appended rather than lost.
+                    append(help)
+                    append(" ")
+                } else {
+                    append(help.substring(0, split))
+                }
+                withLink(
+                    androidx.compose.ui.text.LinkAnnotation.Url(
+                        CONTROL_PANEL_URL,
+                        androidx.compose.ui.text.TextLinkStyles(
+                            style = androidx.compose.ui.text.SpanStyle(
+                                color = MaterialTheme.colorScheme.primary,
+                                textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                            ),
+                        ),
+                    ),
+                ) { append(linkLabel) }
+                if (split >= 0) append(help.substring(split + 2))
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.controllerFocusable(
+                "ra.library.controlPanel",
+                onConfirm = openControlPanel,
+            ),
         )
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
