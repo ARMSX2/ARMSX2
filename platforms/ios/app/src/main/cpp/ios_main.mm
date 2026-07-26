@@ -318,15 +318,20 @@ void ARMSX2ConfigureImGuiFonts(const char* reason)
     int h = std::max(1, (int)(self.bounds.size.height * scale + 0.5));
     float s = (float)scale;
 
-    // Indent corner-anchored OSD by a small fixed clearance so it isn't clipped by the display's rounded corners
-    constexpr double kOsdCornerInsetPt = 18.0;
-    const float osd_inset = (float)(kOsdCornerInsetPt * scale);
+    // Keep corner-anchored OSD out of the notch, the Dynamic Island and the home indicator. UIKit
+    // already knows where those are; a flat constant was both too much on a device with square
+    // corners and nowhere near enough on one with a cut-out.
+    const UIEdgeInsets safe = self.safeAreaInsets;
+    ImGuiManager::SetOSDSafeAreaInsets((float)(safe.left * scale), (float)(safe.top * scale),
+                                       (float)(safe.right * scale), (float)(safe.bottom * scale));
+
     // -layoutSubviews is UIKit, i.e. the main thread, and it fires on every rotation and resize
     // with the VM running. The MTGS ring is single-producer and belongs to the CPU thread, so hop
-    // there first (Host::RunOnGSThread chains RunOnCPUThread -> MTGS::RunOnGSThread).
-    Host::RunOnGSThread([w, h, s, osd_inset]() {
+    // there first (Host::RunOnGSThread chains RunOnCPUThread -> MTGS::RunOnGSThread). The insets
+    // go direct because that hop drops anything queued while the GS thread is closed, which is
+    // every layout pass before a game boots — the OSD then drew unindented until the first rotate.
+    Host::RunOnGSThread([w, h, s]() {
         GSResizeDisplayWindow(w, h, s);
-        ImGuiManager::SetOSDSafeAreaInsets(osd_inset, osd_inset, osd_inset, osd_inset);
     });
 }
 @end
