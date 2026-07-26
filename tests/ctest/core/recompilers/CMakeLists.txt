@@ -115,6 +115,7 @@ add_pcsx2_test(recompiler_tests
 	# from the captures and are not edited by hand.
 	ee_mmi_console_conformance_tests.cpp
 	ee_fpu_fcr_console_conformance_tests.cpp
+	ee_lsu_console_conformance_tests.cpp
 )
 
 target_include_directories(recompiler_tests PRIVATE
