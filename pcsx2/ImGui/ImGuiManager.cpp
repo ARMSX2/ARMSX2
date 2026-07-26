@@ -990,18 +990,25 @@ void ImGuiManager::DrawOSDMessages(Common::Timer::Value current_time)
 	const float font_size = GetFontSizeStandard();
 	const float scale = s_global_scale;
 	const float spacing = std::ceil(5.0f * scale);
-	const float margin = std::ceil(GSConfig.OsdMargin * scale);
+	const float base_margin = std::ceil(GSConfig.OsdMargin * scale);
+	// Same clearance the performance overlay gets — messages land in the same corners, so a notch
+	// covers them just as readily.
+	const float inset_left = s_osd_inset_left.load(std::memory_order_relaxed);
+	const float inset_right = s_osd_inset_right.load(std::memory_order_relaxed);
+	const float margin = base_margin + std::max(inset_left, inset_right);
+	const float top_margin = base_margin + s_osd_inset_top.load(std::memory_order_relaxed);
+	const float bottom_margin = base_margin + s_osd_inset_bottom.load(std::memory_order_relaxed);
 	const float padding = std::ceil(8.0f * scale);
 	const float rounding = std::ceil(5.0f * scale);
 	const float max_width = s_window_width - (margin + padding) * 2.0f;
 
-	float position_y = margin;
+	float position_y = top_margin;
 	switch (GSConfig.OsdMessagesPos)
 	{
 		case OsdOverlayPos::TopLeft:
 		case OsdOverlayPos::TopCenter:
 		case OsdOverlayPos::TopRight:
-			position_y = margin;
+			position_y = top_margin;
 			break;
 
 		case OsdOverlayPos::CenterLeft:
@@ -1014,12 +1021,12 @@ void ImGuiManager::DrawOSDMessages(Common::Timer::Value current_time)
 		case OsdOverlayPos::BottomCenter:
 		case OsdOverlayPos::BottomRight:
 			// For bottom positions, start from the bottom and let messages stack upward
-			position_y = s_window_height - margin;
+			position_y = s_window_height - bottom_margin;
 			break;
 
 		case OsdOverlayPos::None:
 		default:
-			position_y = margin;
+			position_y = top_margin;
 			break;
 	}
 
