@@ -1,6 +1,7 @@
 package com.armsx2.ui.textures
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,7 +41,9 @@ import com.armsx2.TexturePackInstaller
 import com.armsx2.i18n.I18n
 import com.armsx2.i18n.str
 import com.armsx2.ui.common.GlassPanel
+import com.armsx2.ui.common.SearchField
 import com.armsx2.ui.common.SectionTitle
+import com.armsx2.ui.home.LibraryKeyboard
 import com.armsx2.ui.settings.controllerFocusable
 
 /**
@@ -77,6 +80,10 @@ fun TextureOnlineSection(
     var progressFraction by remember { mutableStateOf(0f) }
     var cancelRequested by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
+    // The catalog is 113 packs and growing, so it folds away once someone has what they came for.
+    // Saveable, so it survives rotation and does not spring back open.
+    var listOpen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
+    var query by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
 
     val installRevision = TexturePackInstallState.revision.value
     val installed = remember(installRevision) { TexturePackInstallState.all() }
@@ -94,10 +101,38 @@ fun TextureOnlineSection(
 
     GlassPanel(modifier) {
         Column {
-            SectionTitle(str("textures.online.title"), str("textures.online.subtitle"))
+            val toggle = { listOpen = !listOpen }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .controllerFocusable("textures.online.toggle", onConfirm = toggle)
+                    .clickable(onClick = toggle),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SectionTitle(
+                    str("textures.online.title"),
+                    str("textures.online.subtitle"),
+                    Modifier.weight(1f),
+                )
+                if (packs.isNotEmpty()) {
+                    Text(
+                        packs.size.toString(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(
+                    if (listOpen) "\u25be" else "\u25b8",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             Spacer(Modifier.height(8.dp))
 
-            when {
+            if (!listOpen) {
+                // collapsed: header only
+            } else when {
                 loading -> Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(10.dp))
@@ -111,6 +146,24 @@ fun TextureOnlineSection(
                 )
 
                 else -> {
+                    // Search across everything a person might type: pack name, game title, serial
+                    // and author. Uses the in-app keyboard like the library search, so it works on a
+                    // handheld with no touchscreen keyboard and honours the system-IME preference.
+                    val open = { LibraryKeyboard.open(query, { query = it }, I18n.get("textures.online.search")) }
+                    SearchField(
+                        value = query,
+                        onClick = open,
+                        placeholder = str("textures.online.search"),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    )
+                    val needle = query.trim().lowercase()
+                    val packs = if (needle.isEmpty()) packs else packs.filter { p ->
+                        p.name.lowercase().contains(needle) ||
+                            p.gameTitle.lowercase().contains(needle) ||
+                            p.serials.any { it.lowercase().contains(needle) } ||
+                            p.authors.any { it.lowercase().contains(needle) }
+                    }
+
                     // Ordering only: the game in context first, then anything in the library, then
                     // the rest of the catalog. Nothing is hidden — a pack you cannot use today is
                     // still a pack you may want tomorrow.

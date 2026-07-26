@@ -1237,6 +1237,7 @@ val EN: Map<String, String> = mapOf(
     "textures.online.installing" to "Installing\u2026",
     "textures.online.done" to "Installed. Restart the game to apply.",
     "textures.online.cancelled" to "Cancelled.",
+    "textures.online.search" to "Search packs\u2026",
     "textures.online.contribute" to "Where these come from \u2014 submit a pack \u2197",
     "textures.online.cached" to "Showing a saved copy of the catalog \u2014 could not refresh.",
     "renderer.section.texturePacks" to "Texture Packs",
