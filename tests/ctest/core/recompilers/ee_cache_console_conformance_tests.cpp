@@ -34,7 +34,9 @@
 //     toggling -- which is precisely what PCSX2 already does. Five fills into
 //     one set alternate 0,1,0,1,0 on both.
 //   * A hit op issued at the 0x20000000 uncached alias of a dirty line did
-//     not write it back; the same op at the cached address did.
+//     not write it back; the same op at the cached address did. Round 2
+//     separated the two mechanisms that fit: the tag compare is physical, and
+//     an uncached page is what is excluded from it.
 //   * The instruction cache is real and readable: `cache 0x00` / `cache 0x01`
 //     return its tags and its instruction words, and the words matched the
 //     ELF byte for byte. PCSX2 implements neither op and has no I-cache.
@@ -478,11 +480,21 @@ TEST(EeCacheConsole, InvalidateKeepsThePhysicalTagOnConsole)
 // 2..0 do not exist. PCSX2 masks with ALL_FLAGS = 0x7FF and reads back 0x7BF,
 // keeping all seven of them.
 //
+// The written value here has D deliberately clear -- a D=1 tag with an address
+// of the prober's choosing turns the next eviction into a 64-byte write
+// wherever it points -- so 0xFFFFF038 says only that D reads back 0 when 0 is
+// written, and the implemented mask cannot be read off it. Round 2 wrote a D
+// and it stuck (ee_cache2_console_conformance_tests.cpp, console cases 9 and
+// 10): the writable flag field is D V R L, mask 0x78. What is asserted below
+// is the observation, which is unchanged; the name says 0x78 because that is
+// what the observation plus round 2 amounts to.
+//
 // Its own bit 11 (isValidPFN) is NOT reachable this way, which was worth
 // checking rather than assuming: setAddr() masks with ALL_BITS = 0xFFF and so
 // preserves bit 11 across the store, and flags() masks it back off on the way
-// out, so a guest DXSTG can neither set nor read it.
-TEST(EeCacheConsole, DxstgWritableMaskIsPtagLoPlus0x38)
+// out, so a guest DXSTG can neither set nor read it. It can still be left
+// standing from a fill, and round 2 shows what that costs.
+TEST(EeCacheConsole, DxstgWritableMaskIsPtagLoPlus0x78)
 {
 	EeRecTestHarness h;
 	resetCache();
