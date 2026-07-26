@@ -67,7 +67,9 @@ import compose.icons.lineawesomeicons.Android
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kr.co.iefriends.pcsx2.MainActivity
 import kr.co.iefriends.pcsx2.NativeApp
@@ -538,6 +540,12 @@ open class MainActivityRuntime : ComponentActivity() {
         /// How often the synthetic Triangle+Cross hold is re-pressed. Must be well under a frame
         /// budget's worth of pad polling so the game never samples a gap, and short enough that a
         /// pad re-init can't swallow the whole hold.
+        // Achievement-progress capture cadence. The first wait lets RetroAchievements resolve the
+        // set over the network after boot; the poll only exists so a process killed mid-session
+        // still leaves a recent figure in the library. Neither is latency-sensitive.
+        private const val ACHIEVEMENT_SNAPSHOT_FIRST_MS = 15_000L
+        private const val ACHIEVEMENT_SNAPSHOT_POLL_MS = 120_000L
+
         private const val AUTO_PROGRESSIVE_REASSERT_MS = 200L
         /// Keep holding this long after the game's ELF starts, then let go — the 480p prompt is
         /// checked at game start, and holding into the menus would fight the player.
@@ -2219,6 +2227,27 @@ open class MainActivityRuntime : ComponentActivity() {
                         PlayTime.startSession(currentGame.value?.serial)
                     else
                         PlayTime.endSession()
+                }
+                // Capture achievement progress while the game is loaded. Only the achievements panel
+                // used to do this, so the library showed nothing for anyone who never opened it. The
+                // core cannot be asked about a game it has not loaded, so the numbers have to be
+                // taken now: once shortly after the set resolves, then on a slow poll so a killed
+                // process still leaves a recent figure behind, and once more on the way out of
+                // RUNNING (pausing or quitting) to bank whatever was earned since.
+                androidx.compose.runtime.LaunchedEffect(eState.value, currentGame.value?.serial) {
+                    val serial = currentGame.value?.serial
+                    if (eState.value != EmuState.RUNNING) {
+                        // Still paused here, not yet shut down, so the set is still queryable.
+                        withContext(Dispatchers.Default) { com.armsx2.AchievementsProgress.snapshot(serial) }
+                        return@LaunchedEffect
+                    }
+                    // The set is not loaded at the instant the VM starts running; RA resolves it
+                    // over the network a moment later. snapshot() no-ops until it is there.
+                    delay(ACHIEVEMENT_SNAPSHOT_FIRST_MS)
+                    while (true) {
+                        withContext(Dispatchers.Default) { com.armsx2.AchievementsProgress.snapshot(serial) }
+                        delay(ACHIEVEMENT_SNAPSHOT_POLL_MS)
+                    }
                 }
                 // Drop the emulated-keyboard IME when the VM stops. Reactive off eState for the
                 // same reason as the orientation effect below: three separate paths set STOPPED,

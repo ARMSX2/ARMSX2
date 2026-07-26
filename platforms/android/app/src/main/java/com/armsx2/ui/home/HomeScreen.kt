@@ -990,14 +990,43 @@ private fun GameMetadata(game: GameInfo) {
             Text("⏳ $played", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, maxLines = 1)
         }
         val ach = remember(game.serial, rev) { com.armsx2.PlayTime.achievements(game.serial) }
-        ach?.let { (unlocked, total) ->
+        ach?.let { p ->
+            // Hardcore and softcore are different accomplishments on RetroAchievements — hardcore
+            // forbids save states, cheats and slow motion — so they get different treatment rather
+            // than being merged into one number. Lead with hardcore when any exists (it is the
+            // stricter figure), and only mention softcore separately when it is actually ahead.
+            val leadHardcore = p.hardcore > 0
+            val shown = if (leadHardcore) p.hardcore else p.softcore
+            val mastered = if (leadHardcore) p.masteredHardcore else p.masteredSoftcore
             Text(
-                "🏆 $unlocked/$total",
-                color = if (unlocked >= total) Color(0xFFFFC857)
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                "🏆 $shown/${p.total}",
+                color = when {
+                    mastered && leadHardcore -> Color(0xFFFFC857)  // gold: mastered in hardcore
+                    mastered -> Color(0xFFB9C2CC)                  // silver: completed in softcore
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
                 fontSize = 11.sp,
                 maxLines = 1,
             )
+            if (leadHardcore) {
+                Text(
+                    "HC",
+                    color = Color(0xFFFFC857),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                )
+            }
+            // Softcore ahead of hardcore: show what is still only earned in casual mode, so the gap
+            // is visible instead of the row silently under-reporting the collection.
+            if (leadHardcore && p.softcore > p.hardcore) {
+                Text(
+                    "+${p.softcore - p.hardcore} SC",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 9.sp,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }

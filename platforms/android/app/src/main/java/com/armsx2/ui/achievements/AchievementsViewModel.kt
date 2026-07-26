@@ -18,6 +18,9 @@ data class AchievementItem(
     val description: String,
     val points: Int,
     val unlocked: Boolean,
+    // rc_client RC_CLIENT_ACHIEVEMENT_UNLOCKED_* bits: 1 = softcore, 2 = hardcore. A hardcore
+    // unlock also sets the softcore bit. -1 when the native side did not report it.
+    val unlockedMask: Int = -1,
     val progress: String,
     val iconUrl: String,
     // Which RA subset this achievement belongs to (0 = base/shared set). Used to split
@@ -96,7 +99,13 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
                 com.armsx2.PlayTime.recordAchievements(
                     com.armsx2.runtime.MainActivityRuntime.currentGame.value?.serial
                         ?: NativeApp.getGameSerial(),
-                    snapshot.items.count { it.unlocked },
+                    // Mask when present, boolean otherwise; a hardcore unlock counts as softcore too.
+                    snapshot.items.count {
+                        if (it.unlockedMask >= 0) it.unlockedMask != 0 else it.unlocked
+                    },
+                    // Guard the unknown case: -1 has every bit set, so a bare mask test would
+                    // report an unearned hardcore unlock for any build that omits the field.
+                    snapshot.items.count { it.unlockedMask > 0 && (it.unlockedMask and 2) != 0 },
                     snapshot.items.size,
                 )
             }
@@ -317,6 +326,7 @@ fun parseAchievementItems(json: String): List<AchievementItem> {
                     description = item.optString("description"),
                     points = item.optInt("points"),
                     unlocked = item.optBoolean("unlocked"),
+                    unlockedMask = item.optInt("unlockedMask", -1),
                     progress = item.optString("measuredProgress"),
                     iconUrl = item.optString("iconUrl", item.optString("badgeUrl")),
                     subsetId = item.optInt("subsetId"),

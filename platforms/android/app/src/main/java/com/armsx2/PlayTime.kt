@@ -24,6 +24,7 @@ object PlayTime {
     // ask "how far am I in this one" — the numbers have to be remembered while the game IS running.
     // Stored here because this object already owns the per-serial pref namespace.
     private const val ACH_UNLOCKED_PREFIX = "ach.unlocked."
+    private const val ACH_HARDCORE_PREFIX = "ach.hardcore."
     private const val ACH_TOTAL_PREFIX = "ach.total."
 
     private var sessionSerial: String? = null
@@ -69,28 +70,41 @@ object PlayTime {
     fun lastPlayedMillis(serial: String?): Long =
         serial?.takeIf { it.isNotEmpty() }?.let { MainActivityRuntime.prefs.getLong(LAST_PREFIX + it, 0L) } ?: 0L
 
+    /** Softcore and hardcore unlock counts against the set size. RetroAchievements tracks the two
+     *  separately — a hardcore unlock requires save states, cheats and slow-motion to be off — and
+     *  they are not interchangeable, so the library must not present one as the other. Hardcore
+     *  unlocks always also count as softcore, hence [softcore] >= [hardcore]. */
+    data class Progress(val softcore: Int, val hardcore: Int, val total: Int) {
+        /** Every achievement earned under hardcore rules: RA "mastered". */
+        val masteredHardcore: Boolean get() = total > 0 && hardcore >= total
+        val masteredSoftcore: Boolean get() = total > 0 && softcore >= total
+    }
+
     /** Remember achievement progress for [serial] so the library can show it later. Ignores a
      *  total of 0 — that means the set had not loaded yet, and writing it would blank a real
      *  figure every time a game starts. */
-    fun recordAchievements(serial: String?, unlocked: Int, total: Int) {
+    fun recordAchievements(serial: String?, softcore: Int, hardcore: Int, total: Int) {
         val s = serial?.takeIf { it.isNotEmpty() } ?: return
         if (total <= 0) return
         runCatching {
             MainActivityRuntime.prefs.edit()
-                .putInt(ACH_UNLOCKED_PREFIX + s, unlocked.coerceIn(0, total))
+                .putInt(ACH_UNLOCKED_PREFIX + s, softcore.coerceIn(0, total))
+                .putInt(ACH_HARDCORE_PREFIX + s, hardcore.coerceIn(0, total))
                 .putInt(ACH_TOTAL_PREFIX + s, total)
                 .apply()
         }
         bumpRevision()
     }
 
-    /** Last-known "unlocked / total", or null if this game has never reported a set. */
-    fun achievements(serial: String?): Pair<Int, Int>? {
+    /** Last-known progress, or null if this game has never reported a set. */
+    fun achievements(serial: String?): Progress? {
         val s = serial?.takeIf { it.isNotEmpty() } ?: return null
-        val total = runCatching { MainActivityRuntime.prefs.getInt(ACH_TOTAL_PREFIX + s, 0) }.getOrDefault(0)
+        val prefs = MainActivityRuntime.prefs
+        val total = runCatching { prefs.getInt(ACH_TOTAL_PREFIX + s, 0) }.getOrDefault(0)
         if (total <= 0) return null
-        val unlocked = runCatching { MainActivityRuntime.prefs.getInt(ACH_UNLOCKED_PREFIX + s, 0) }.getOrDefault(0)
-        return unlocked to total
+        val softcore = runCatching { prefs.getInt(ACH_UNLOCKED_PREFIX + s, 0) }.getOrDefault(0)
+        val hardcore = runCatching { prefs.getInt(ACH_HARDCORE_PREFIX + s, 0) }.getOrDefault(0)
+        return Progress(softcore, hardcore, total)
     }
 
     /** "" when zero, else e.g. "2h 15m", "45m", "30s". */
