@@ -109,6 +109,21 @@ add_pcsx2_test(recompiler_tests
 	mvu_persist_roundtrip_tests.cpp
 	mvu_progcache_disk_tests.cpp
 	mvu_waitmtvu_stub_tests.cpp
+	# Conformance against real-hardware captures rather than against the other
+	# engine: each case is scored on interp and JIT separately, so a mistake the
+	# two share is still visible. Case tables in autocases*.h are generated
+	# from the captures and are not edited by hand.
+	iop_lsu_branch_console_conformance_tests.cpp
+	ee_mmi_console_conformance_tests.cpp
+	ee_fpu_fcr_console_conformance_tests.cpp
+	ee_lsu_console_conformance_tests.cpp
+	vu0_macro_console_conformance_tests.cpp
+	vu1_efu_console_conformance_tests.cpp
+	vu_sticky_console_conformance_tests.cpp
+	ee_sa_perf_console_conformance_tests.cpp
+	ee_cache_console_conformance_tests.cpp
+	ee_cache2_console_conformance_tests.cpp
+	ee_cache3_console_conformance_tests.cpp
 )
 
 target_include_directories(recompiler_tests PRIVATE

@@ -148,6 +148,19 @@ public:
 	u32 GetGprJit     (u32 reg_idx) const { return static_cast<u32>(GetGpr64Jit(reg_idx)); }
 	u64 GetHi64Interp() const;
 	u64 GetLo64Interp() const;
+	u64 GetHi64Jit   () const;
+	u64 GetLo64Jit   () const;
+	// Upper 64 bits of the 128-bit HI/LO pair, where MULT1/DIV1 land and where
+	// the parallel multiply-accumulate ops write their odd-indexed words. A
+	// 64-bit mfhi/mflo cannot see them, so a test reading only GetHi64*/GetLo64*
+	// misses half of what those ops do.
+	u64 GetHiUpper64Interp() const;
+	u64 GetLoUpper64Interp() const;
+	u64 GetHiUpper64Jit   () const;
+	u64 GetLoUpper64Jit   () const;
+	// Upper 64 bits of a 128-bit GPR.
+	u64 GetGprUpper64Interp(u32 reg_idx) const;
+	u64 GetGprUpper64Jit   (u32 reg_idx) const;
 	u32 GetFprBitsInterp(u32 reg_idx) const;
 	u32 GetFprBitsJit   (u32 reg_idx) const;
 	u32 GetAccBitsInterp() const;

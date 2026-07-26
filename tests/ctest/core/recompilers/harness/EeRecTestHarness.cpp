@@ -33,6 +33,12 @@ void ZeroCpuRegs()
 {
 	std::memset(&cpuRegs, 0, sizeof(cpuRegs));
 	std::memset(&fpuRegs, 0, sizeof(fpuRegs));
+	// FCR0 is a read-only implementation/revision register, seeded once by
+	// cpuReset() (pcsx2/R5900.cpp) and never written afterwards. A bare
+	// memset leaves it at zero, which no running system ever sees — and the
+	// JIT's recCFC1 reads it out of memory, so a zeroed slot would make CFC1
+	// of FCR0 look broken when it is only unseeded.
+	fpuRegs.fprc[0] = 0x00002e30;
 }
 
 } // namespace
@@ -468,6 +474,14 @@ u64 EeRecTestHarness::GetGpr64Interp(u32 r) const { return interp_snapshot_.regs
 u64 EeRecTestHarness::GetGpr64Jit   (u32 r) const { return jit_snapshot_.regs.GPR.r[r].UD[0]; }
 u64 EeRecTestHarness::GetHi64Interp() const       { return interp_snapshot_.regs.HI.UD[0]; }
 u64 EeRecTestHarness::GetLo64Interp() const       { return interp_snapshot_.regs.LO.UD[0]; }
+u64 EeRecTestHarness::GetHi64Jit   () const       { return jit_snapshot_.regs.HI.UD[0]; }
+u64 EeRecTestHarness::GetLo64Jit   () const       { return jit_snapshot_.regs.LO.UD[0]; }
+u64 EeRecTestHarness::GetHiUpper64Interp() const  { return interp_snapshot_.regs.HI.UD[1]; }
+u64 EeRecTestHarness::GetLoUpper64Interp() const  { return interp_snapshot_.regs.LO.UD[1]; }
+u64 EeRecTestHarness::GetHiUpper64Jit   () const  { return jit_snapshot_.regs.HI.UD[1]; }
+u64 EeRecTestHarness::GetLoUpper64Jit   () const  { return jit_snapshot_.regs.LO.UD[1]; }
+u64 EeRecTestHarness::GetGprUpper64Interp(u32 r) const { return interp_snapshot_.regs.GPR.r[r].UD[1]; }
+u64 EeRecTestHarness::GetGprUpper64Jit   (u32 r) const { return jit_snapshot_.regs.GPR.r[r].UD[1]; }
 u32 EeRecTestHarness::GetFprBitsInterp(u32 r) const { return interp_snapshot_.fprs.fpr[r].UL; }
 u32 EeRecTestHarness::GetFprBitsJit   (u32 r) const { return jit_snapshot_.fprs.fpr[r].UL; }
 u32 EeRecTestHarness::GetAccBitsInterp() const      { return interp_snapshot_.fprs.ACC.UL; }

@@ -450,19 +450,23 @@ void recMFSA()
 	_eeStoreGPRDestReg(_Rd_, dst);
 }
 
-// MTSA — sa = rs
+// MTSA — sa = rs[3:0]. SA is four bits wide on hardware (console capture:
+// `mtsa 0x10` -> 0, `mtsa 0xFFFFFFFF` -> 0xF), and MFSA reads the masked
+// value back, so the mask belongs at the write rather than at QFSRV's
+// consumption.
 void recMTSA()
 {
 	if (GPR_IS_CONST1(_Rs_))
 	{
-		armAsm->Mov(RWSCRATCH, g_cpuConstRegs[_Rs_].UL[0]);
+		armAsm->Mov(RWSCRATCH, g_cpuConstRegs[_Rs_].UL[0] & 0xF);
 		armAsm->Str(RWSCRATCH, armCpuRegMem(&cpuRegs.sa));
 	}
 	else
 	{
 		_deleteEEreg(_Rs_, 1);
 		const a64::Register rs = _eeGetGPRSourceReg(RWSCRATCH, _Rs_);
-		armAsm->Str(rs, armCpuRegMem(&cpuRegs.sa));
+		armAsm->And(RWSCRATCH, rs, 0xF); // read rs, write scratch (rs may be a pin)
+		armAsm->Str(RWSCRATCH, armCpuRegMem(&cpuRegs.sa));
 	}
 }
 

@@ -321,6 +321,11 @@ constexpr u32 VEEXP_L   (u32 fs, u32 fsf)         { return BuildLowerT3(0x3E, 0x
 constexpr u32 VERLENG_L (u32 fs)                  { return BuildLowerT3(0x3F, 0x1C, 0, fs, 0); }
 constexpr u32 VWAITP_L  ()                        { return BuildLowerT3(0x3F, 0x1E, 0, 0, 0); }
 
+// VMFP: ft.{xyzw masked} = P. T3_00 sub 0x19 (VUops.cpp table index 25).
+// Deliberately NOT an EFU-pipe op — MFP does not interlock with P, so a read
+// issued before the producing op's latency has elapsed returns the previous P.
+constexpr u32 VMFP_L(u32 mask_xyzw, u32 ft) { return BuildLowerT3(0x3C, 0x19, ft, 0, mask_xyzw); }
+
 // VU1-only XGKICK — T3_00 sub 0x1B (per VUops.cpp:3614, table index 27).
 // Reads the current GIF-target address from VI[is], drains it into the GIF
 // Path 1 stream.

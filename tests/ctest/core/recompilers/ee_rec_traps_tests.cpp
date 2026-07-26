@@ -393,17 +393,19 @@ TEST(EeRecTraps, TneiTakenRaisesException)
 // the snapshot machinery (DiffEe asserts both paths match) — sa is included
 // in the EeSnapshot so any divergence fails the test.
 
-TEST(EeRecTraps, MtsaCopiesFullRegister)
+TEST(EeRecTraps, MtsaMasksToFourBits)
 {
-	// PS2 spec (R5900OpcodeImpl.cpp:1265): cpuRegs.sa = (u32)rs[lo]. No mask.
-	// Only MTSAB/MTSAH narrow the value (low 4 / low 3 bits respectively).
+	// This used to assert the full 32-bit copy PCSX2 has always done. A console
+	// capture says otherwise: SA is four bits wide, so `mtsa 0xFFFFFFF7` leaves
+	// 7 behind, not 0xFFFFFFF7. See
+	// EeSaPerfConsoleConformance.MfsaMatchesConsole.
 	EeRecTestHarness h;
 	h.SetGpr64(reg::a0, 0xFFFFFFF7u);
 	h.LoadProgram({
 		ee::MTSA(reg::a0),
 	});
 	h.Run();
-	EXPECT_EQ(h.InterpSnapshot().regs.sa, 0xFFFFFFF7u);
+	EXPECT_EQ(h.InterpSnapshot().regs.sa, 0x7u);
 }
 
 TEST(EeRecTraps, MtsabXorsLow4BitsWithImmediate)
@@ -474,8 +476,9 @@ TEST(EeRecTraps, MtsaConstFoldsAtCompile)
 {
 	// Exercise the GPR_IS_CONST1 fast path: rs is set via a LUI+ORI sequence
 	// that the const-prop tracker captures. Same end-state as the runtime
-	// path (full 32-bit copy, no mask); a divergence here would point at a
-	// const-fold bug.
+	// path (masked to four bits); a divergence here would point at a
+	// const-fold bug. Upstream x86 masks on this path but NOT on the runtime
+	// one, which is how the two ever came apart.
 	EeRecTestHarness h;
 	h.LoadProgram({
 		LUI(reg::a0, 0),
@@ -483,7 +486,7 @@ TEST(EeRecTraps, MtsaConstFoldsAtCompile)
 		ee::MTSA(reg::a0),
 	});
 	h.Run();
-	EXPECT_EQ(h.InterpSnapshot().regs.sa, 0xF7u);
+	EXPECT_EQ(h.InterpSnapshot().regs.sa, 0x7u);
 }
 
 TEST(EeRecTraps, MtsabConstFoldsAtCompile)
