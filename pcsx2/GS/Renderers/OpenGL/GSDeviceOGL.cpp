@@ -787,8 +787,12 @@ bool GSDeviceOGL::CheckFeatures()
 
 	const char* vendor_raw = (const char*)glGetString(GL_VENDOR);
 	const char* renderer_raw = (const char*)glGetString(GL_RENDERER);
+	const char* gl_version_raw = (const char*)glGetString(GL_VERSION);
 	const char* vendor_str = vendor_raw ? vendor_raw : "";
 	const char* renderer_str = renderer_raw ? renderer_raw : "";
+	// GL_VERSION is the only place the GLES stack names its own build ("OpenGL ES 3.2 v1.r44p1-...",
+	// "... V@0502", "... build 1.9@4850625"), so it is what the driver-profile resolver parses.
+	const char* gl_version_str = gl_version_raw ? gl_version_raw : "";
 
 	if (std::strstr(vendor_str, "Advanced Micro Devices") || std::strstr(vendor_str, "ATI Technologies Inc.") ||
 		std::strstr(vendor_str, "ATI"))
@@ -838,15 +842,35 @@ bool GSDeviceOGL::CheckFeatures()
 	// regressed FPS on Mali-G615). The Mali-G77 crash under ANGLE was NOT these hacks but stale
 	// program binaries from the native driver being fed to ANGLE's glProgramBinary(); that is
 	// fixed at the source in GLShaderCache (driver-keyed cache), so no per-GPU profile gating here.
-	const GpuProfileSelection profile_selection =
-		GpuProfileDetector::Resolve(GSConfig.AndroidGpuProfileOverride, vendor_str, renderer_str);
+	//
+	// The driver context below feeds the driver-bug database (ported from EmuCoreX/sashkinbro with
+	// his approval). GL has no equivalent of VkPhysicalDeviceDriverProperties, so the renderer and
+	// version strings are all the identity there is; the resolver parses the vendor-specific build
+	// tag out of them. Nothing here changes behaviour on its own — every workaround it can turn on
+	// is off unless a rule matches this exact driver.
+	MobileDriverContext driver_context;
+	driver_context.api = MobileGpuApi::OpenGL;
+	driver_context.driver_name = renderer_str;
+	driver_context.api_version_string = gl_version_str;
+	const GpuProfileSelection profile_selection = GpuProfileDetector::Resolve(
+		GSConfig.AndroidGpuProfileOverride, vendor_str, renderer_str, driver_context);
 	SetRuntimeGPUProfile(profile_selection.runtime_profile);
 	SetMobileGPUIdentity(profile_selection.gpu);
 	SetMobileGSTuning(profile_selection.gs_tuning);
+	SetMobileDriverProfile(profile_selection.driver);
 	SetMediaTekSoC(profile_selection.is_mediatek_soc);
-	Console.WriteLn("GL: GPU profile override='%s' resolved='%s'.",
+	Console.WriteLn("GL: GPU profile override='%s' resolved='%s' driver='%s' version=%u.%u.%u.%u "
+					"rules=%u bugs=%016llx workarounds=%016llx.",
 		GpuProfileDetector::OverrideToConfigString(profile_selection.override_mode),
-		GpuProfileDetector::RuntimeProfileToString(profile_selection.runtime_profile));
+		GpuProfileDetector::RuntimeProfileToString(profile_selection.runtime_profile),
+		GpuProfileDetector::DriverToString(profile_selection.driver.driver),
+		static_cast<unsigned>(profile_selection.driver.version.major),
+		static_cast<unsigned>(profile_selection.driver.version.minor),
+		static_cast<unsigned>(profile_selection.driver.version.patch),
+		static_cast<unsigned>(profile_selection.driver.version.build),
+		static_cast<unsigned>(profile_selection.driver.matched_rule_count),
+		static_cast<unsigned long long>(profile_selection.driver.bugs),
+		static_cast<unsigned long long>(profile_selection.driver.workarounds));
 	DevCon.WriteLn("GL: GPU profile hints: %s", profile_selection.hints.c_str());
 	bool use_mali_profile = IsMaliGPUProfile();
 	bool use_adreno_profile = IsAdrenoGPUProfile();
@@ -880,7 +904,7 @@ bool GSDeviceOGL::CheckFeatures()
 
 	// Log extension string for debugging purposes.
 	Console.WriteLn(fmt::format("GL_VENDOR: {}", reinterpret_cast<const char*>(glGetString(GL_VENDOR))));
-	Console.WriteLn(fmt::format("GL_VERSION: {}", reinterpret_cast<const char*>(glGetString(GL_VERSION))));
+	Console.WriteLn(fmt::format("GL_VERSION: {}", gl_version_str));
 	Console.WriteLn(fmt::format("GL_RENDERER: {}", reinterpret_cast<const char*>(glGetString(GL_RENDERER))));
 	Console.WriteLn(fmt::format(
 		"GL_SHADING_LANGUAGE_VERSION: {}", reinterpret_cast<const char*>(glGetString(GL_SHADING_LANGUAGE_VERSION))));
@@ -2060,6 +2084,21 @@ std::string GSDeviceOGL::GenGlslHeader(const std::string_view entry, GLenum type
 	header += fmt::format("#define GPU_PROFILE_POWERVR {}\n", IsPowerVRGPUProfile() ? 1 : 0);
 	header += fmt::format("#define HAS_ARM_DEPTH_FETCH {}\n", m_arm_depth_fetch ? 1 : 0);
 
+	// Shader-compiler workarounds from the driver-bug database (ported from EmuCoreX/sashkinbro
+	// with his approval). Each one is off unless a rule matched this exact driver, so the emitted
+	// GLSL is byte-identical to before on anything the database does not know about.
+	//
+	// ScalarizeVectorBitwiseAnd additionally keeps the pre-existing IsMaliGPUProfile() gate: this
+	// tree has scalarized vector ANDs on every Mali GL profile since the original fix, including
+	// Mali reached through ANGLE or Panfrost where the database resolves a non-ARM driver and would
+	// otherwise match nothing. Widening only, never narrowing — nobody loses a fix they had.
+	header += fmt::format("#define DRIVER_SCALARIZE_VECTOR_BITWISE_AND {}\n",
+		(UsesMobileDriverWorkaround(DriverWorkaround::ScalarizeVectorBitwiseAnd) || IsMaliGPUProfile()) ? 1 : 0);
+	header += fmt::format("#define DRIVER_REWRITE_BOOLEAN_NEGATION {}\n",
+		UsesMobileDriverWorkaround(DriverWorkaround::RewriteBooleanNegation) ? 1 : 0);
+	header += fmt::format("#define DRIVER_STORE_BITWISE_NEGATION_IN_TEMPORARY {}\n",
+		UsesMobileDriverWorkaround(DriverWorkaround::StoreBitwiseNegationInTemporary) ? 1 : 0);
+
 	if (GLAD_GL_ARB_conservative_depth)
 	{
 		header += "#extension GL_ARB_conservative_depth : enable\n";
@@ -2115,6 +2154,66 @@ std::string GSDeviceOGL::GenGlslHeader(const std::string_view entry, GLenum type
 	}
 
 	header += macro;
+
+	// Emitted last, after every #extension directive above: GLSL requires those to precede any
+	// non-preprocessor token, and these are real function definitions. The bodies come straight
+	// from EmuCoreX so the .glsl call sites stay identical between the two trees.
+	header += R"(
+bool gpu_boolean_not(bool value)
+{
+#if DRIVER_REWRITE_BOOLEAN_NEGATION
+	return value == false;
+#else
+	return !value;
+#endif
+}
+
+uvec2 gpu_bitwise_and(uvec2 a, uvec2 b)
+{
+#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
+	return uvec2(a.x & b.x, a.y & b.y);
+#else
+	return a & b;
+#endif
+}
+
+uvec3 gpu_bitwise_and(uvec3 a, uvec3 b)
+{
+#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
+	return uvec3(a.x & b.x, a.y & b.y, a.z & b.z);
+#else
+	return a & b;
+#endif
+}
+
+uvec4 gpu_bitwise_and(uvec4 a, uvec4 b)
+{
+#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
+	return uvec4(a.x & b.x, a.y & b.y, a.z & b.z, a.w & b.w);
+#else
+	return a & b;
+#endif
+}
+
+ivec3 gpu_bitwise_and(ivec3 a, ivec3 b)
+{
+#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
+	return ivec3(a.x & b.x, a.y & b.y, a.z & b.z);
+#else
+	return a & b;
+#endif
+}
+
+uvec4 gpu_bitwise_not(uvec4 value)
+{
+#if DRIVER_STORE_BITWISE_NEGATION_IN_TEMPORARY
+	uvec4 result = ~value;
+	return result;
+#else
+	return ~value;
+#endif
+}
+)";
 
 	return header;
 }

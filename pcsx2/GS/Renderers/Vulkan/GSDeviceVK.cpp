@@ -3270,8 +3270,29 @@ bool GSDeviceVK::CheckFeatures()
 	// through ROAA (black / missing textures) across GPU generations, so detect the SoC
 	// here and disable fbfetch below. Ported from sashkinbro/EmuCoreX. Detection reads the
 	// ro.soc.* props already folded into the profile hints (no new JNI needed).
+	//
+	// The driver context feeds the driver-bug database (ported from EmuCoreX/sashkinbro with his
+	// approval). Vulkan is the good case: VkPhysicalDeviceDriverProperties names the blob outright,
+	// which is what the r44p1 DEVICE_LOST and 8-Elite push-descriptor fixes both learned the hard
+	// way — gate on driverID, never on vendorID, or Turnip/PanVK inherit proprietary workarounds.
+	// ProcessDeviceExtensions() has already filled m_device_driver_properties by the time we get
+	// here (CreateDeviceAndSwapChain runs before CheckFeatures), so one resolve sees everything.
+	MobileDriverContext driver_context;
+	driver_context.api = MobileGpuApi::Vulkan;
+	driver_context.vendor_id = m_device_properties.vendorID;
+	driver_context.device_id = m_device_properties.deviceID;
+	driver_context.driver_version = m_device_properties.driverVersion;
+	driver_context.api_version = m_device_properties.apiVersion;
+	driver_context.max_draw_indirect_count = m_device_properties.limits.maxDrawIndirectCount;
+	if (m_optional_extensions.vk_khr_driver_properties)
+	{
+		driver_context.driver_id = static_cast<u32>(m_device_driver_properties.driverID);
+		driver_context.driver_name = m_device_driver_properties.driverName;
+		driver_context.driver_info = m_device_driver_properties.driverInfo;
+	}
 	const GpuProfileSelection mobile_profile = GpuProfileDetector::Resolve(
-		GSConfig.AndroidGpuProfileOverride, std::string_view(), m_device_properties.deviceName);
+		GSConfig.AndroidGpuProfileOverride, std::string_view(), m_device_properties.deviceName,
+		driver_context);
 	// ★ Vulkan resolved mobile_profile and pushed every OTHER piece of it into the device
 	// (MediaTek SoC, GPU identity, GS tuning) but never the runtime profile itself, so
 	// IsMaliGPUProfile()/IsAdrenoGPUProfile() answered from the default for the entire Vulkan
@@ -3287,6 +3308,20 @@ bool GSDeviceVK::CheckFeatures()
 	// This is what constrains texture/target caching on weaker Mali (e.g. G615). From EmuCoreX.
 	SetMobileGPUIdentity(mobile_profile.gpu);
 	SetMobileGSTuning(mobile_profile.gs_tuning);
+	SetMobileDriverProfile(mobile_profile.driver);
+	Console.WriteLn("VK: GPU profile override='%s' resolved='%s' driver='%s' version=%u.%u.%u "
+					"raw=%08x rules=%u bugs=%016llx workarounds=%016llx.",
+		GpuProfileDetector::OverrideToConfigString(mobile_profile.override_mode),
+		GpuProfileDetector::RuntimeProfileToString(mobile_profile.runtime_profile),
+		GpuProfileDetector::DriverToString(mobile_profile.driver.driver),
+		static_cast<unsigned>(mobile_profile.driver.version.major),
+		static_cast<unsigned>(mobile_profile.driver.version.minor),
+		static_cast<unsigned>(mobile_profile.driver.version.patch),
+		static_cast<unsigned>(mobile_profile.driver.version.raw),
+		static_cast<unsigned>(mobile_profile.driver.matched_rule_count),
+		static_cast<unsigned long long>(mobile_profile.driver.bugs),
+		static_cast<unsigned long long>(mobile_profile.driver.workarounds));
+	DevCon.WriteLn("VK: GPU profile hints: %s", mobile_profile.hints.c_str());
 #endif
 
 	// framebuffer_fetch: the tiler-native ordered Cd read (ROAA / subpassLoad in tile
@@ -4874,6 +4909,77 @@ static void AddShaderHeader(std::stringstream& ss)
 		ss << "#extension GL_ARB_fragment_shader_interlock : require\n";
 		ss << "#extension GL_ARB_shader_image_load_store : require\n";
 	}
+
+	// Shader-compiler workarounds from the driver-bug database (ported from EmuCoreX/sashkinbro
+	// with his approval). Both default to 0, so the generated SPIR-V is unchanged on any driver
+	// the database has no rule for. Emitted after the #extension directives above because GLSL
+	// wants those before any real code, and the wrapper bodies below are real code.
+	AddMacro(ss, "DRIVER_SCALARIZE_VECTOR_BITWISE_AND",
+		dev->UsesMobileDriverWorkaround(DriverWorkaround::ScalarizeVectorBitwiseAnd) ? 1 : 0);
+	AddMacro(ss, "DRIVER_REWRITE_UNIFORM_INDEXING",
+		dev->UsesMobileDriverWorkaround(DriverWorkaround::RewriteUniformIndexing) ? 1 : 0);
+	ss << R"(
+uvec2 gpu_bitwise_and(uvec2 a, uvec2 b)
+{
+#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
+	return uvec2(a.x & b.x, a.y & b.y);
+#else
+	return a & b;
+#endif
+}
+
+uvec3 gpu_bitwise_and(uvec3 a, uvec3 b)
+{
+#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
+	return uvec3(a.x & b.x, a.y & b.y, a.z & b.z);
+#else
+	return a & b;
+#endif
+}
+
+uvec4 gpu_bitwise_and(uvec4 a, uvec4 b)
+{
+#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
+	return uvec4(a.x & b.x, a.y & b.y, a.z & b.z, a.w & b.w);
+#else
+	return a & b;
+#endif
+}
+
+ivec3 gpu_bitwise_and(ivec3 a, ivec3 b)
+{
+#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
+	return ivec3(a.x & b.x, a.y & b.y, a.z & b.z);
+#else
+	return a & b;
+#endif
+}
+
+float gpu_matrix_element(mat4 value, int column, int row)
+{
+#if DRIVER_REWRITE_UNIFORM_INDEXING
+	vec4 selected_column;
+	if (column == 0)
+		selected_column = value[0];
+	else if (column == 1)
+		selected_column = value[1];
+	else if (column == 2)
+		selected_column = value[2];
+	else
+		selected_column = value[3];
+
+	if (row == 0)
+		return selected_column[0];
+	if (row == 1)
+		return selected_column[1];
+	if (row == 2)
+		return selected_column[2];
+	return selected_column[3];
+#else
+	return value[column][row];
+#endif
+}
+)";
 }
 
 static void AddShaderStageMacro(std::stringstream& ss, bool vs, bool gs, bool fs)

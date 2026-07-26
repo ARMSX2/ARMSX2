@@ -1471,6 +1471,12 @@ protected:
 	// GPU-profile system (sashkinbro/EmuCoreX). Drives texture/target pool sizing on Android below.
 	MobileGpuIdentity m_mobile_gpu_identity;
 	MobileGsTuning m_mobile_gs_tuning;
+	// Resolved driver identity + the workarounds the driver-bug database says this exact
+	// driver needs. Kept beside the GPU identity because the two answer different questions:
+	// the identity is "which silicon", this is "which blob", and the blob is what actually
+	// miscompiles shaders (see GSGPUDriverProfile.cpp). Empty/conservative until a backend
+	// resolves it, so a device with no matching rule behaves exactly as it did before.
+	MobileDriverProfile m_mobile_driver_profile;
 	// Android: true when the SoC is MediaTek (Dimensity/Helio). Hoisted from GSDeviceVK
 	// so both backends + GS.cpp Android GameDB overrides can read it. Set during device
 	// open from the resolved GPU profile.
@@ -1665,6 +1671,17 @@ public:
 	__fi void SetMobileGSTuning(const MobileGsTuning& tuning) { m_mobile_gs_tuning = tuning; }
 	__fi const MobileGpuIdentity& GetMobileGPUIdentity() const { return m_mobile_gpu_identity; }
 	__fi const MobileGsTuning& GetMobileGSTuning() const { return m_mobile_gs_tuning; }
+	__fi void SetMobileDriverProfile(const MobileDriverProfile& profile) { m_mobile_driver_profile = profile; }
+	__fi const MobileDriverProfile& GetMobileDriverProfile() const { return m_mobile_driver_profile; }
+	/// The driver is *known* to have this defect. Diagnostics only — never gate rendering on it,
+	/// because a recorded bug whose mitigation is not integrated yet still has no workaround bit.
+	__fi bool HasMobileDriverBug(DriverBug bug) const { return m_mobile_driver_profile.HasBug(bug); }
+	/// The one call sites should use: "is this mitigation active for this driver". False for every
+	/// device the database has no rule for, so untouched hardware keeps its existing behaviour.
+	__fi bool UsesMobileDriverWorkaround(DriverWorkaround workaround) const
+	{
+		return m_mobile_driver_profile.UsesWorkaround(workaround);
+	}
 	__fi bool IsConstrainedMobileGPUProfile() const { return m_mobile_gs_tuning.constrained; }
 	__fi RuntimeGpuProfile GetRuntimeGPUProfile() const { return m_runtime_gpu_profile; }
 	__fi void SetMediaTekSoC(bool v) { m_is_mediatek_soc = v; }

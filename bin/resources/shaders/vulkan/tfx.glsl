@@ -941,7 +941,7 @@ vec4 clamp_wrap_uv(vec4 uv)
 			// textures. Fixes Xenosaga's hair issue.
 			uv = fract(uv);
 			#endif
-			uv = vec4((uvec4(uv * tex_size) & floatBitsToUint(MinMax.xyxy)) | floatBitsToUint(MinMax.zwzw)) / tex_size;
+			uv = vec4(gpu_bitwise_and(uvec4(uv * tex_size), floatBitsToUint(MinMax.xyxy)) | floatBitsToUint(MinMax.zwzw)) / tex_size;
 		}
 		#endif
 	}
@@ -964,7 +964,7 @@ vec4 clamp_wrap_uv(vec4 uv)
 			#if PS_FST == 0
 			uv.xz = fract(uv.xz);
 			#endif
-			uv.xz = vec2((uvec2(uv.xz * tex_size.xx) & floatBitsToUint(MinMax.xx)) | floatBitsToUint(MinMax.zz)) / tex_size.xx;
+			uv.xz = vec2(gpu_bitwise_and(uvec2(uv.xz * tex_size.xx), floatBitsToUint(MinMax.xx)) | floatBitsToUint(MinMax.zz)) / tex_size.xx;
 		}
 		#endif
 		#if PS_REGION_RECT == 1 && PS_WMT == 0
@@ -984,7 +984,7 @@ vec4 clamp_wrap_uv(vec4 uv)
 			#if PS_FST == 0
 			uv.yw = fract(uv.yw);
 			#endif
-			uv.yw = vec2((uvec2(uv.yw * tex_size.yy) & floatBitsToUint(MinMax.yy)) | floatBitsToUint(MinMax.ww)) / tex_size.yy;
+			uv.yw = vec2(gpu_bitwise_and(uvec2(uv.yw * tex_size.yy), floatBitsToUint(MinMax.yy)) | floatBitsToUint(MinMax.ww)) / tex_size.yy;
 		}
 		#endif
 	}
@@ -1324,7 +1324,7 @@ vec4 sample_color(vec2 st)
 		#if (PS_AEM_FMT == FMT_24)
 			c[i].a = (PS_AEM == 0 || any(bvec3(c[i].rgb))) ? TA.x : 0.0f;
 		#elif (PS_AEM_FMT == FMT_16)
-			c[i].a = (c[i].a >= 0.5) ? TA.y : ((PS_AEM == 0 || any(bvec3(ivec3(c[i].rgb * 255.0f) & ivec3(0xF8)))) ? TA.x : 0.0f);
+			c[i].a = (c[i].a >= 0.5) ? TA.y : ((PS_AEM == 0 || any(bvec3(gpu_bitwise_and(ivec3(c[i].rgb * 255.0f), ivec3(0xF8))))) ? TA.x : 0.0f);
 		#endif
 	}
 
@@ -1456,7 +1456,7 @@ vec4 ps_color()
 			T.a = float(denorm_c_before.g & 0x80u);
 		#endif
 
-		T.a = ((T.a >= 127.5f) ? TA.y : ((PS_AEM == 0 || any(bvec3(ivec3(T.rgb) & ivec3(0xF8)))) ? TA.x : 0.0f)) * 255.0f;
+		T.a = ((T.a >= 127.5f) ? TA.y : ((PS_AEM == 0 || any(bvec3(gpu_bitwise_and(ivec3(T.rgb), ivec3(0xF8))))) ? TA.x : 0.0f)) * 255.0f;
 	#endif
 
 	vec4 C = tfx(T, vsIn.c);
@@ -1474,7 +1474,7 @@ void ps_fbmask(inout vec4 C)
 		#else
 			vec4 RT = trunc(sample_from_rt() * 255.0f + 0.1f);
 		#endif
-		C = vec4((uvec4(C) & ~FbMask) | (uvec4(RT) & FbMask));
+		C = vec4(gpu_bitwise_and(uvec4(C), ~FbMask) | gpu_bitwise_and(uvec4(RT), FbMask));
 	#endif
 }
 
@@ -1489,7 +1489,7 @@ void ps_dither(inout vec3 C, float As)
 			fpos = ivec2(gl_FragCoord.xy * RcpScaleFactor);
 		#endif
 
-		float value = DitherMatrix[fpos.y & 3][fpos.x & 3];
+		float value = gpu_matrix_element(DitherMatrix, fpos.y & 3, fpos.x & 3);
 
 		// The idea here is we add on the dither amount adjusted by the alpha before it goes to the hw blend
 		// so after the alpha blend the resulting value should be the same as (Cs - Cd) * As + Cd + Dither.
@@ -1535,13 +1535,13 @@ void ps_color_clamp_wrap(inout vec3 C)
 	// GPU: Color = 1/255, Alpha = 255/255 * 255/128 => output 1.9921875
 #if PS_DST_FMT == FMT_16 && PS_DITHER != 3 && (PS_BLEND_MIX == 0 || PS_DITHER > 0)
 	// In 16 bits format, only 5 bits of colors are used. It impacts shadows computation of Castlevania
-	C = vec3(ivec3(C) & ivec3(0xF8));
+	C = vec3(gpu_bitwise_and(ivec3(C), ivec3(0xF8)));
 #elif PS_COLCLIP == 1 || PS_COLCLIP_HW == 1
-	C = vec3(ivec3(C) & ivec3(0xFF));
+	C = vec3(gpu_bitwise_and(ivec3(C), ivec3(0xFF)));
 #endif
 
 #elif PS_DST_FMT == FMT_16 && PS_DITHER != 3 && PS_BLEND_MIX == 0 && PS_BLEND_HW == 0
-	C = vec3(ivec3(C) & ivec3(0xF8));
+	C = vec3(gpu_bitwise_and(ivec3(C), ivec3(0xF8)));
 #endif
 }
 

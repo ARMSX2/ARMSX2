@@ -55,13 +55,13 @@ vec4 sample_c(vec2 uv)
 
 uint rgba8_to_uint(vec4 c)
 {
-	uvec4 i = uvec4(c * 255.5f) & 0xFFu;
+	uvec4 i = gpu_bitwise_and(uvec4(c * 255.5f), uvec4(0xFFu));
 	return i.r | (i.g << 8) | (i.b << 16) | (i.a << 24);
 }
 
 uint rgb5a1_to_uint(vec4 c)
 {
-	uvec4 i = uvec4(c * 255.5f) & uvec4(0xF8u, 0xF8u, 0xF8u, 0x80u);
+	uvec4 i = gpu_bitwise_and(uvec4(c * 255.5f), uvec4(0xF8u, 0xF8u, 0xF8u, 0x80u));
 	return (i.r >> 3) | (i.g << 2) | (i.b << 7) | (i.a << 8);
 }
 
@@ -77,7 +77,7 @@ vec4 uint_to_rgba8(uint i)
 
 vec4 uint_to_rgb5a1(uint i)
 {
-	return vec4(uvec4(i << 3, i >> 2, i >> 7, i >> 8) & uvec4(0xF8u, 0xF8u, 0xF8u, 0x80u)) / 255.0f;
+	return vec4(gpu_bitwise_and(uvec4(i << 3, i >> 2, i >> 7, i >> 8), uvec4(0xF8u, 0xF8u, 0xF8u, 0x80u))) / 255.0f;
 }
 
 float uint_to_depth32(uint i)
@@ -245,7 +245,7 @@ void ps_colclip_init()
 void ps_colclip_resolve()
 {
 	vec4 value = sample_c(v_tex);
-	OUTPUT = vec4(vec3(uvec3(value.rgb * 65535.5f) & 255u) / 255.0f, value.a);
+	OUTPUT = vec4(vec3(gpu_bitwise_and(uvec3(value.rgb * 65535.5f), uvec3(255u))) / 255.0f, value.a);
 }
 #endif
 
@@ -367,8 +367,8 @@ void ps_convert_rgb5a1_8i()
 	uvec2 pos = uvec2(gl_FragCoord.xy);
 
 	// Collapse separate R G B A areas into their base pixel
-	uvec2 column = (pos & ~uvec2(0u, 3u)) / uvec2(1u, 2u);
-	uvec2 subcolumn = (pos & uvec2(0u, 1u));
+	uvec2 column = gpu_bitwise_and(pos, ~uvec2(0u, 3u)) / uvec2(1u, 2u);
+	uvec2 subcolumn = gpu_bitwise_and(pos, uvec2(0u, 1u));
 	column.x -= (column.x / 128u) * 64u;
 	column.y += (column.y / 32u) * 32u;
 
@@ -490,8 +490,8 @@ void ps_convert_rgba_8i()
 	uvec2 pos = uvec2(gl_FragCoord.xy);
 
 	// Collapse separate R G B A areas into their base pixel
-	uvec2 block = (pos & ~uvec2(15u, 3u)) >> 1;
-	uvec2 subblock = pos & uvec2(7u, 1u);
+	uvec2 block = gpu_bitwise_and(pos, ~uvec2(15u, 3u)) >> 1;
+	uvec2 subblock = gpu_bitwise_and(pos, uvec2(7u, 1u));
 	uvec2 coord = block | subblock;
 
 	// Compensate for potentially differing page pitch.

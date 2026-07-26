@@ -1168,7 +1168,8 @@ if(ANDROID)
 	list(APPEND pcsx2GSSources
 		GS/Renderers/OpenGL/GLContextEGL.cpp
 		GS/Renderers/OpenGL/GLContextEGLAndroid.cpp
-		GS/Renderers/Common/GSGPUProfile.cpp
+		GS/Renderers/Common/GSGPUDriverProfile.cpp
+	GS/Renderers/Common/GSGPUProfile.cpp
 		GS/Renderers/Common/GSGPUProfileMali.cpp
 		GS/Renderers/Common/GSGPUProfileAdreno.cpp
 		GS/Renderers/Common/GSGPUProfilePowerVR.cpp)

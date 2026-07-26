@@ -87,11 +87,15 @@ static std::string GetAndroidProperty(const char* name)
 }
 #endif
 
-static std::string BuildHints(std::string_view gpu_vendor, std::string_view gpu_renderer_or_name)
+static std::string BuildHints(std::string_view gpu_vendor, std::string_view gpu_renderer_or_name,
+	const MobileDriverContext& driver_context)
 {
 	std::string hints;
 	AppendHint(hints, "gpu_vendor", gpu_vendor);
 	AppendHint(hints, "gpu", gpu_renderer_or_name);
+	AppendHint(hints, "driver_name", driver_context.driver_name);
+	AppendHint(hints, "driver_info", driver_context.driver_info);
+	AppendHint(hints, "api_version", driver_context.api_version_string);
 
 #if defined(__ANDROID__)
 	static constexpr const char* property_names[] = {
@@ -254,33 +258,135 @@ static void ApplyResolvedProfile(GpuProfileSelection& selection, RuntimeGpuProfi
 	selection.gs_tuning = resolved.tuning;
 }
 
+const char* GpuProfileDetector::ApiToString(MobileGpuApi value)
+{
+	switch (value)
+	{
+		case MobileGpuApi::OpenGL: return "OpenGL";
+		case MobileGpuApi::Vulkan: return "Vulkan";
+		case MobileGpuApi::Unknown:
+		default: return "Unknown";
+	}
+}
+
+const char* GpuProfileDetector::DriverToString(MobileGpuDriver value)
+{
+	switch (value)
+	{
+		case MobileGpuDriver::ArmProprietary: return "ARM proprietary";
+		case MobileGpuDriver::MesaPanVK: return "Mesa PanVK";
+		case MobileGpuDriver::QualcommProprietary: return "Qualcomm proprietary";
+		case MobileGpuDriver::MesaTurnip: return "Mesa Turnip";
+		case MobileGpuDriver::ImaginationProprietary: return "Imagination proprietary";
+		case MobileGpuDriver::MesaPowerVR: return "Mesa PowerVR";
+		case MobileGpuDriver::Angle: return "ANGLE";
+		case MobileGpuDriver::Unknown:
+		default: return "Unknown";
+	}
+}
+
+const char* GpuProfileDetector::BugToString(DriverBug value)
+{
+	switch (value)
+	{
+		case DriverBug::BrokenBufferStreaming: return "BrokenBufferStreaming";
+		case DriverBug::BrokenUnsynchronizedMapping: return "BrokenUnsynchronizedMapping";
+		case DriverBug::BrokenNegatedBoolean: return "BrokenNegatedBoolean";
+		case DriverBug::BrokenVectorBitwiseAnd: return "BrokenVectorBitwiseAnd";
+		case DriverBug::BrokenBitwiseOpNegation: return "BrokenBitwiseOpNegation";
+		case DriverBug::BrokenPrimitiveRestart: return "BrokenPrimitiveRestart";
+		case DriverBug::BrokenPushDescriptors: return "BrokenPushDescriptors";
+		case DriverBug::BrokenProvokingVertex: return "BrokenProvokingVertex";
+		case DriverBug::BrokenAttachmentFeedbackLoopLayout: return "BrokenAttachmentFeedbackLoopLayout";
+		case DriverBug::BrokenSubpassFeedback: return "BrokenSubpassFeedback";
+		case DriverBug::BrokenColorWriteMaskWithDepthTest: return "BrokenColorWriteMaskWithDepthTest";
+		case DriverBug::BrokenDepthStencilDiscard: return "BrokenDepthStencilDiscard";
+		case DriverBug::BrokenReversedDepthRange: return "BrokenReversedDepthRange";
+		case DriverBug::SlowCachedReadbackMemory: return "SlowCachedReadbackMemory";
+		case DriverBug::SlowOptimalImageToBufferCopy: return "SlowOptimalImageToBufferCopy";
+		case DriverBug::BrokenClearLoadOpRenderPass: return "BrokenClearLoadOpRenderPass";
+		case DriverBug::Broken16BitTextureFormats: return "Broken16BitTextureFormats";
+		case DriverBug::BrokenGenerateMipmapTallTexture: return "BrokenGenerateMipmapTallTexture";
+		case DriverBug::BrokenEmptyRenderPass: return "BrokenEmptyRenderPass";
+		case DriverBug::BrokenConstantLoad: return "BrokenConstantLoad";
+		case DriverBug::BrokenUniformIndexing: return "BrokenUniformIndexing";
+		case DriverBug::BrokenVSync: return "BrokenVSync";
+		case DriverBug::BrokenMultithreadedShaderCompilation: return "BrokenMultithreadedShaderCompilation";
+		case DriverBug::BrokenDynamicRendering: return "BrokenDynamicRendering";
+		case DriverBug::BrokenImagelessFramebuffer: return "BrokenImagelessFramebuffer";
+		case DriverBug::BrokenExtendedDynamicState: return "BrokenExtendedDynamicState";
+		case DriverBug::BrokenPrimitiveTopologyDynamicState: return "BrokenPrimitiveTopologyDynamicState";
+		case DriverBug::BrokenGraphicsPipelineLibrary: return "BrokenGraphicsPipelineLibrary";
+		case DriverBug::Count:
+		default: return "Unknown";
+	}
+}
+
+const char* GpuProfileDetector::WorkaroundToString(DriverWorkaround value)
+{
+	switch (value)
+	{
+		case DriverWorkaround::RewriteBooleanNegation: return "RewriteBooleanNegation";
+		case DriverWorkaround::ScalarizeVectorBitwiseAnd: return "ScalarizeVectorBitwiseAnd";
+		case DriverWorkaround::StoreBitwiseNegationInTemporary: return "StoreBitwiseNegationInTemporary";
+		case DriverWorkaround::UseDescriptorSets: return "UseDescriptorSets";
+		case DriverWorkaround::DisableProvokingVertex: return "DisableProvokingVertex";
+		case DriverWorkaround::DisableAttachmentFeedbackLoopLayout: return "DisableAttachmentFeedbackLoopLayout";
+		case DriverWorkaround::EmulateColorWriteMask: return "EmulateColorWriteMask";
+		case DriverWorkaround::PreferCoherentReadback: return "PreferCoherentReadback";
+		case DriverWorkaround::UseStagingImageForReadback: return "UseStagingImageForReadback";
+		case DriverWorkaround::AvoidClearLoadOpRenderPass: return "AvoidClearLoadOpRenderPass";
+		case DriverWorkaround::GenerateMipmapManuallyForTallTextures: return "GenerateMipmapManuallyForTallTextures";
+		case DriverWorkaround::RewriteUniformIndexing: return "RewriteUniformIndexing";
+		case DriverWorkaround::ForceFifoPresent: return "ForceFifoPresent";
+		case DriverWorkaround::AlignSwapchainWidthTo32: return "AlignSwapchainWidthTo32";
+		case DriverWorkaround::Count:
+		default: return "Unknown";
+	}
+}
+
+
 GpuProfileSelection GpuProfileDetector::Resolve(std::string_view override_value, std::string_view gpu_vendor,
 	std::string_view gpu_renderer_or_name)
 {
+	// No driver context: the driver profile stays in its conservative-fallback state, so callers
+	// that have not been taught to pass one behave exactly as before.
+	return Resolve(override_value, gpu_vendor, gpu_renderer_or_name, MobileDriverContext{});
+}
+
+GpuProfileSelection GpuProfileDetector::Resolve(std::string_view override_value, std::string_view gpu_vendor,
+	std::string_view gpu_renderer_or_name, const MobileDriverContext& driver_context)
+{
 	GpuProfileSelection selection;
 	selection.override_mode = ParseOverride(override_value);
-	selection.hints = BuildHints(gpu_vendor, gpu_renderer_or_name);
+	selection.hints = BuildHints(gpu_vendor, gpu_renderer_or_name, driver_context);
 	const std::string lowered_hints = GpuProfileDetail::ToLowerASCII(selection.hints);
 	const std::string lowered_override = GpuProfileDetail::ToLowerASCII(override_value);
 	selection.is_mediatek_soc = (lowered_override == "mediatek") || LooksLikeMediaTekSoc(lowered_hints);
 	selection.gs_tuning = GpuProfileDetail::MakeConservativeMobileGsTuning();
+	// Attached on every exit path so the driver profile is always populated, whether the family
+	// came from an override, from detection, or from nothing at all.
+	const auto finalize = [&]() {
+		selection.driver = GpuProfileDetail::ResolveDriverProfile(selection, driver_context, lowered_hints);
+		return selection;
+	};
 
 	if (selection.override_mode == GpuProfileOverride::Mali)
 	{
 		ApplyResolvedProfile(selection, RuntimeGpuProfile::Mali, GpuProfileDetail::ResolveMaliProfile(lowered_hints));
-		return selection;
+		return finalize();
 	}
 
 	if (selection.override_mode == GpuProfileOverride::Adreno)
 	{
 		ApplyResolvedProfile(selection, RuntimeGpuProfile::Adreno, GpuProfileDetail::ResolveAdrenoProfile(lowered_hints));
-		return selection;
+		return finalize();
 	}
 
 	if (selection.override_mode == GpuProfileOverride::PowerVR)
 	{
 		ApplyResolvedProfile(selection, RuntimeGpuProfile::PowerVR, GpuProfileDetail::ResolvePowerVRProfile(lowered_hints));
-		return selection;
+		return finalize();
 	}
 
 	if (selection.override_mode == GpuProfileOverride::Xclipse)
@@ -291,7 +397,7 @@ GpuProfileSelection GpuProfileDetector::Resolve(std::string_view override_value,
 		// profile is enough for GSDeviceVK to force fbfetch off; keep the conservative GS
 		// tuning already assigned above.
 		selection.runtime_profile = RuntimeGpuProfile::Xclipse;
-		return selection;
+		return finalize();
 	}
 
 	if (GpuProfileDetail::LooksLikeAdreno(lowered_hints))
@@ -307,5 +413,5 @@ GpuProfileSelection GpuProfileDetector::Resolve(std::string_view override_value,
 		ApplyResolvedProfile(selection, RuntimeGpuProfile::Mali, GpuProfileDetail::ResolveMaliProfile(lowered_hints));
 	}
 
-	return selection;
+	return finalize();
 }

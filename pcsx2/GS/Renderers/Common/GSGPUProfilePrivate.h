@@ -32,4 +32,6 @@ ResolvedGpuProfile ResolveMaliProfile(std::string_view lowered_hints);
 
 bool LooksLikePowerVR(std::string_view lowered_hints);
 ResolvedGpuProfile ResolvePowerVRProfile(std::string_view lowered_hints);
+MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
+	const MobileDriverContext& context, std::string_view lowered_hints);
 } // namespace GpuProfileDetail
