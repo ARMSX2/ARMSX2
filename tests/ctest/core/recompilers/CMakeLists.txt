@@ -113,6 +113,7 @@ add_pcsx2_test(recompiler_tests
 	# engine: each case is scored on interp and JIT separately, so a mistake the
 	# two share is still visible. Case tables in autocases*.h are generated
 	# from the captures and are not edited by hand.
+	iop_lsu_branch_console_conformance_tests.cpp
 	ee_mmi_console_conformance_tests.cpp
 	ee_fpu_fcr_console_conformance_tests.cpp
 	ee_lsu_console_conformance_tests.cpp

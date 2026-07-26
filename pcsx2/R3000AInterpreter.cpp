@@ -109,11 +109,12 @@ void psxJR()
 
 void psxJALR()
 {
+	const u32 target = _u32(_rRs_); // latch the target before linking
 	if (_Rd_)
 	{
 		_SetLink(_Rd_);
 	}
-	doBranch(_u32(_rRs_));
+	doBranch(target);
 }
 
 void psxBreakpoint(bool memcheck)
