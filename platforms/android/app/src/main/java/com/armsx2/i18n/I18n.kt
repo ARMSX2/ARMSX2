@@ -303,9 +303,9 @@ val EN: Map<String, String> = mapOf(
     "app.theme.custom.g" to "Green",
     "app.theme.custom.b" to "Blue",
     "app.bgColor" to "Background Color",
-    "app.bgColor.desc" to "Recolor the animated library background. The white waves ride over your color; the theme accent above stays separate. Updates live as you drag.",
+    "app.bgColor.desc" to "Recolor the animated library background. The white waves ride over your color; the theme accent above stays separate. Updates live as you drag. Has no effect on devices that fall back to the simpler wave background \u2014 some GPUs can't run the animated one, and the fallback isn't recolorable.",
     "app.bgColor.rgb" to "RGB Cycle",
-    "app.bgColor.rgb.desc" to "Continuously drift the background through the colour spectrum, like RGB peripherals. Overrides the fixed colour below.",
+    "app.bgColor.rgb.desc" to "Continuously drift the background through the colour spectrum, like RGB peripherals. Overrides the fixed colour below. Same limitation as above: no effect where the fallback background is in use.",
     "app.theme.light" to "Light",
     // "Dark" renamed to "Blue" — it was always the blue-tinted dark theme, which only became
     // confusing once the other hues existed. Keys are the lowercased ThemeMode names.
