@@ -93,6 +93,7 @@ SCAJ-20163:
 SCAJ-20169:
   gsHWFixes:
     autoFlush: 1
+    coalesceRenderPasses: 1
     halfPixelOffset: 5
     hwDownloadMode: 2
     nativeScaling: 2
@@ -944,6 +945,7 @@ SLES-54169:
 SLES-54185:
   gsHWFixes:
     autoFlush: 1
+    coalesceRenderPasses: 1
     halfPixelOffset: 5
     hwDownloadMode: 2
     nativeScaling: 2
@@ -1224,6 +1226,7 @@ SLPM-66232:
 SLPM-66271:
   gsHWFixes:
     autoFlush: 1
+    coalesceRenderPasses: 1
     halfPixelOffset: 5
     hwDownloadMode: 2
     nativeScaling: 2
@@ -1269,6 +1272,7 @@ SLPM-66617:
 SLPM-66629:
   gsHWFixes:
     autoFlush: 1
+    coalesceRenderPasses: 1
     halfPixelOffset: 5
     hwDownloadMode: 2
     nativeScaling: 2
@@ -1293,6 +1297,7 @@ SLPM-68005:
 SLPM-68016:
   gsHWFixes:
     autoFlush: 1
+    coalesceRenderPasses: 1
     halfPixelOffset: 5
     hwDownloadMode: 2
     nativeScaling: 2
@@ -1610,6 +1615,7 @@ SLUS-21386:
 SLUS-21419:
   gsHWFixes:
     autoFlush: 1
+    coalesceRenderPasses: 1
     halfPixelOffset: 5
     hwDownloadMode: 2
     nativeScaling: 2
