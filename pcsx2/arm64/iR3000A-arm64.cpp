@@ -212,15 +212,25 @@ static const void* _DynGen_EnterRecompiledCode()
 // when the granule counter is nonzero, i.e. when psxRecClearMem would not
 // have early-outed anyway.
 //
-// ⚠ The coverage probe here is mirror-collapsed (addr & (ExposedIopRam-1)),
-// while iopCovAdjust and psxRecClearMem key the same array by HWADDR, which
-// strips the KSEG base but does NOT collapse the RAM mirrors — recLUT_SetPage
-// only sets psxhwLUT[page] = -(pagebase << 16). Under a 2MB configuration a
-// block executed from a mirror page (0x20-0x7f) therefore registers coverage
-// at a different granule than a store to its physical alias probes. That
-// degrades to exactly the pre-existing blindness of keying recBlocks by
-// HWADDR, so it is not a regression, but the two domains are a trap: keep
-// them in mind before making either side finer-grained.
+// ⚠ Two address domains meet here, and they are NOT the same. The store above
+// is mirror-collapsed (addr & (ExposedIopRam-1)), because that is where the
+// bytes live. The coverage probe below must instead use HWADDR, the domain
+// iopCovAdjust and psxRecClearMem key g_iopCodeCov by — and HWADDR strips the
+// KSEG base but does NOT collapse the RAM mirrors, since recLUT_SetPage only
+// writes psxhwLUT[page] = -(pagebase << 16) and pagebase is 0 for the whole
+// 0x00-0x7f RAM window. Under the default 2MB configuration a block executed
+// from a mirror page (0x20-0x7f) therefore registers coverage at granule
+// (0x00214000 >> 8) while the collapsed offset would probe (0x00014000 >> 8);
+// probing collapsed meant a store to the very address the block was compiled
+// at read a zero counter and skipped the clear the C path makes. Above the
+// region gate every reachable address satisfies HWADDR == addr & (kIopCovSpan-1)
+// — bits 23-28 are zero, and the psxhwLUT subtraction for a KSEG mirror is
+// exactly the removal of bits 29-31 — so the two masks are one AND apart, and
+// they coincide outright in the 8MB configuration.
+//
+// This makes the stub exactly as blind as the C path it replaces, no more: a
+// store to a *different* mirror of a block's page still misses, because
+// recBlocks itself is keyed by HWADDR and psxRecClearMem would miss it too.
 //
 // Anything else tail-jumps to the C handler, which returns to the store site.
 //
@@ -250,8 +260,14 @@ static const void* _DynGen_StoreStub(int size)
 		case 32: armAsm->Str(a64::w1, a64::MemOperand(a64::x4, a64::x2));  break;
 	}
 
+	// Probe by HWADDR (see the domain note in the header comment). w2 already
+	// holds it when the RAM mask spans the whole coverage window, i.e. in the
+	// 8MB configuration; otherwise re-mask into w7.
 	armMoveAddressToReg(a64::x5, g_iopCodeCov);
-	armAsm->Lsr(a64::w6, a64::w2, kIopCovShift);
+	const a64::Register cov_off = (ram_mask == kIopCovSpan - 1) ? a64::w2 : a64::w7;
+	if (!cov_off.Is(a64::w2))
+		armAsm->And(cov_off, a64::w0, kIopCovSpan - 1);
+	armAsm->Lsr(a64::w6, cov_off, kIopCovShift);
 	armAsm->Ldrh(a64::w6, a64::MemOperand(a64::x5, a64::x6, a64::LSL, 1));
 	armAsm->Cbnz(a64::w6, &clearHit);
 	armAsm->Bind(&swallowed);

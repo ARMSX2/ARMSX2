@@ -306,6 +306,55 @@ TEST(IopSmc, JitHalfwordStoreInvalidatesCompiledBlock)
 	});
 }
 
+TEST(IopSmc, JitStoreThroughRamMirrorInvalidatesBlockCompiledThere)
+{
+	// The two mirror tests above use KSEG mirrors, whose only difference from
+	// the physical address is a base that HWADDR strips — so every domain in
+	// the clear path agrees and they pass either way. This is the *RAM*
+	// mirror, which is a different thing entirely.
+	//
+	// In the default 2MB configuration the IOP's RAM appears four times across
+	// the 8MB window: iopMemReset and the recLUT setup both map guest page `i`
+	// to physical page `i & 0x1f`. So a block at 0x00214000 shares its bytes
+	// AND its BASEBLOCK slots with one at 0x00014000 — but not its HWADDR,
+	// because psxhwLUT only subtracts the KSEG base (recLUT_SetPage writes
+	// `-(pagebase << 16)`, and pagebase is 0 here). HWADDR(0x00214000) is
+	// 0x00214000, granule 0x2140; the store stub's mirror-collapsed offset is
+	// 0x14000, granule 0x140.
+	//
+	// Store and block are both at the mirror address, so the C clear path
+	// agrees with itself and invalidates. The JIT store stub does not: it
+	// probes the collapsed granule, reads zero, and returns without clearing.
+	ASSERT_EQ(Ps2MemSize::ExposedIopRam, 2u * 1024u * 1024u)
+		<< "this test is about mirroring that only exists in the 2MB config";
+
+	constexpr u32 kMirrorBlock2Pc = 0x00200000u + kBlock2Pc;
+
+	JitTestHarness h;
+	h.SetGpr(reg::a0, kMirrorBlock2Pc);
+	h.SetGpr(reg::a1, ADDIU(reg::v0, reg::zero, 0x1337));
+	h.LoadProgramAt(kProgramPc, {
+		SW(reg::a1, 0, reg::a0),
+		J(kMirrorBlock2Pc),
+		NOP,
+	}, /*append_jr_ra_term=*/false);
+	h.LoadProgramAt(kMirrorBlock2Pc, {
+		ADDIU(reg::v0, reg::zero, 0x0BAD),   // original opcode; overwritten
+	}, /*append_jr_ra_term=*/true);
+
+	// Compile the victim first, entering it directly at the mirror address.
+	h.SetPc(kMirrorBlock2Pc);
+	h.Run();
+	ASSERT_EQ(h.GetGprInterp(reg::v0), 0x0BADu);
+
+	h.SetPc(kProgramPc);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	EXPECT_EQ(h.GetGprJit(reg::v0), 0x1337u) << "the JIT store stub probed the "
+		"mirror-collapsed granule and missed the block's HWADDR coverage";
+	EXPECT_EQ(h.GetGprInterp(reg::v0), 0x1337u);
+}
+
 TEST(IopSmc, JitStoreToUnmappedLowRegionIsDropped)
 {
 	// 0x00900000 has bit 28 clear but no WLUT mapping — iopMemWrite32 drops
