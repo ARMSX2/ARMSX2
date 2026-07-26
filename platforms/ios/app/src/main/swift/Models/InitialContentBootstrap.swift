@@ -179,7 +179,7 @@ final class InitialContentBootstrap {
 
         configureDefaultBIOS()
         let appliedPresets = applyPresetFiles(named: preparation.presetNames)
-        let skinImport = importSkinArchives(preparation.skinArchives)
+        let skinImport = await importSkinArchives(preparation.skinArchives)
         NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
 
         let gameImport = await Task.detached(priority: .utility) {
@@ -261,7 +261,7 @@ final class InitialContentBootstrap {
         return applied
     }
 
-    private func importSkinArchives(_ sourceURLs: [URL]) -> InitialSkinImportResult {
+    private func importSkinArchives(_ sourceURLs: [URL]) async -> InitialSkinImportResult {
         let skinLibrary = VPadSkinLibraryStore.shared
         let layoutPresets = PadLayoutPresetStore.shared
         var result = InitialSkinImportResult()
@@ -280,7 +280,7 @@ final class InitialContentBootstrap {
                 result.skipped += 1
             } else {
                 do {
-                    let importResult = try skinLibrary.importSkinArchive(
+                    let importResult = try await skinLibrary.importSkinArchive(
                         from: sourceURL,
                         layoutPresets: layoutPresets
                     )

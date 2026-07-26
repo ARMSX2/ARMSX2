@@ -44,9 +44,10 @@ final class SkinInstaller: ObservableObject {
                 throw URLError(.cannotDecodeContentData)
             }
 
-            _ = try VPadSkinLibraryStore.shared.importSkin(
+            _ = try await VPadSkinLibraryStore.shared.importSkin(
                 from: extractDir,
                 originalImportName: skin.name,
+                catalogID: skin.file,
                 layoutPresets: .shared
             )
         } catch {

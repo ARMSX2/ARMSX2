@@ -578,14 +578,17 @@ struct VirtualPadSettingsView: View {
             ) { result in
                 switch result {
                 case .success(let urls):
-                    let result = importCustomSkins(urls)
-                    lastSkinImportResult = result.importResult
-                    skinImportMessage = result.message
+                    Task {
+                        let outcome = await importCustomSkins(urls)
+                        lastSkinImportResult = outcome.importResult
+                        skinImportMessage = outcome.message
+                        showSkinImportAlert = true
+                    }
                 case .failure(let error):
                     lastSkinImportResult = nil
                     skinImportMessage = "Skin import failed: \(error.localizedDescription)"
+                    showSkinImportAlert = true
                 }
-                showSkinImportAlert = true
             }
         }
         .alert(settings.localized("Custom Skin"), isPresented: $showSkinImportAlert) {
@@ -715,7 +718,7 @@ struct VirtualPadSettingsView: View {
         }
     }
 
-    private func importCustomSkins(_ urls: [URL]) -> (message: String, importResult: VPadSkinImportResult?) {
+    private func importCustomSkins(_ urls: [URL]) async -> (message: String, importResult: VPadSkinImportResult?) {
         let stagingDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ARMSX2SkinImport-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
@@ -743,7 +746,7 @@ struct VirtualPadSettingsView: View {
                 try? FileManager.default.copyItem(at: sourceURL, to: destination)
             }
             do {
-                let result = try skinLibrary.importSkin(
+                let result = try await skinLibrary.importSkin(
                     from: looseDirectory,
                     originalImportName: looseFiles.first?.lastPathComponent,
                     layoutPresets: layoutPresets
@@ -779,7 +782,7 @@ struct VirtualPadSettingsView: View {
                 continue
             }
             do {
-                let result = try skinLibrary.importSkin(
+                let result = try await skinLibrary.importSkin(
                     from: archiveDirectory,
                     originalImportName: sourceURL.lastPathComponent,
                     layoutPresets: layoutPresets
