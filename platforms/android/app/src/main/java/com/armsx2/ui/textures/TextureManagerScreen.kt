@@ -70,6 +70,10 @@ fun TextureManagerScreen(onBack: () -> Unit, viewModel: TextureManagerViewModel 
                     Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
                         TextureOptions(state, viewModel, Modifier.fillMaxWidth())
                         Spacer(Modifier.padding(top = 10.dp))
+                        TextureOnlineSection(catalogSerial(state), librarySerials(state), Modifier.fillMaxWidth()) {
+                            viewModel.onPackInstalled()
+                        }
+                        Spacer(Modifier.padding(top = 10.dp))
                         TexturePacks(state, viewModel, Modifier.fillMaxWidth(), onBack)
                     }
                 } else {
@@ -78,7 +82,13 @@ fun TextureManagerScreen(onBack: () -> Unit, viewModel: TextureManagerViewModel 
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
                         TextureOptions(state, viewModel, Modifier.width(310.dp))
-                        TexturePacks(state, viewModel, Modifier.weight(1f), onBack)
+                        Column(Modifier.weight(1f)) {
+                            TextureOnlineSection(catalogSerial(state), librarySerials(state), Modifier.fillMaxWidth()) {
+                                viewModel.onPackInstalled()
+                            }
+                            Spacer(Modifier.padding(top = 10.dp))
+                            TexturePacks(state, viewModel, Modifier.fillMaxWidth(), onBack)
+                        }
                     }
                 }
             }
@@ -234,3 +244,21 @@ private fun TexturePackRow(pack: TexturePackItem, onDelete: () -> Unit) {
 }
 
 private fun humanSize(bytes: Long): String = if (bytes >= 1024L * 1024L) "%.1f MB".format(bytes / (1024f * 1024f)) else "${bytes / 1024L} KB"
+
+/**
+ * The serial to match catalog packs against.
+ *
+ * Not simply [TextureManagerUiState.activeSerial]: booting a raw .ELF makes the live serial the
+ * executable's name ("PERSONA 3 FES"), which is right for "will this pack load" but matches nothing
+ * in a catalog keyed on disc serials. Accept it only when it is actually a PS2 serial.
+ */
+private fun catalogSerial(state: TextureManagerUiState): String? =
+    state.activeSerial?.takeIf { Regex("^[A-Za-z]{4}-[0-9]{5}$").matches(it.trim()) }?.trim()?.uppercase()
+
+/** Serials the user actually has, so packs for owned games sort to the top. Derived from the
+ *  installed-pack list plus the game in context — cheap, and needs no library scan here. */
+private fun librarySerials(state: TextureManagerUiState): Set<String> =
+    buildSet {
+        state.packs.forEach { add(it.serial.uppercase()) }
+        state.activeSerial?.let { add(it.uppercase()) }
+    }

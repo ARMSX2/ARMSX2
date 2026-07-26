@@ -128,9 +128,22 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
             } else {
                 state.value.copy(busy = false, error = "Unable to delete ${pack.serial}.")
             }
+            if (deleted) com.armsx2.TexturePackInstallState.forgetSerial(pack.serial)
             if (deleted && pack.serial.equals(state.value.activeSerial, true)) reloadCore()
             refresh()
         }
+    }
+
+    /**
+     * A catalog pack just landed. Texture replacement defaults to OFF, so without this the files
+     * are on disk and the game looks exactly the same — the single most confusing possible outcome.
+     */
+    fun onPackInstalled() {
+        if (!state.value.settings.loadTextureReplacements) {
+            update { it.copy(loadTextureReplacements = true) }
+        }
+        refresh()
+        reloadCore()
     }
 
     fun dismissMessage() {
