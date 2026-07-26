@@ -896,14 +896,8 @@ private fun GameGridCard(
             game,
             Modifier
                 .fillMaxWidth()
-                .aspectRatio(0.72f)
-                .border(
-                    BorderStroke(
-                        if (selected) 2.dp else 1.dp,
-                        if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f),
-                    ),
-                    RoundedCornerShape(12.dp),
-                ),
+                .aspectRatio(coverAspectRatio())
+                .coverFrame(selected, 2.dp, MaterialTheme.colorScheme.primary),
         )
         if (GridLabels.show.value) {
             Spacer(Modifier.height(4.dp))
@@ -931,7 +925,7 @@ private fun GameListCard(game: GameInfo, selected: Boolean, onClick: () -> Unit,
         ),
     ) {
         Row(Modifier.padding(7.dp), verticalAlignment = Alignment.CenterVertically) {
-            GameCover(game, Modifier.width(54.dp).aspectRatio(0.72f))
+            GameCover(game, Modifier.width(54.dp).aspectRatio(coverAspectRatio()))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(game.displayTitle(EnglishTitles.enabled.value), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -953,11 +947,8 @@ private fun RecentGameCard(game: GameInfo, selected: Boolean = false, onClick: (
     ) {
         GameCover(
             game,
-            Modifier.fillMaxWidth().aspectRatio(0.72f).border(
-                if (selected) 2.5.dp else 1.dp,
-                if (selected) Color(0xFF3DA5FF) else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f),
-                RoundedCornerShape(12.dp),
-            ),
+            Modifier.fillMaxWidth().aspectRatio(coverAspectRatio())
+                .coverFrame(selected, 2.5.dp, Color(0xFF3DA5FF)),
         )
         Spacer(Modifier.height(5.dp))
         Text(game.displayTitle(EnglishTitles.enabled.value), style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1022,6 +1013,36 @@ private fun GameMetadata(game: GameInfo) {
                 )
             }
         }
+    }
+}
+
+/**
+ * Aspect ratio of a cover slot, matched to the artwork actually served.
+ *
+ * xlenore's 3D case renders are 567x878 (0.646) while the flat 2D scans are 512x736 (0.696). The
+ * slot was hardcoded to 0.72 for both, so with ContentScale.Fit the 3D art — being narrower than
+ * its slot — sat with transparent margins down each side: the "poorly filled square" that 2D does
+ * not show, because 0.696 all but fills 0.72. Reported by Isshin.
+ */
+@Composable
+private fun coverAspectRatio(): Float = if (CoverArtStyle.use3d.value) 0.646f else 0.72f
+
+/**
+ * Frame around a cover slot.
+ *
+ * The idle 1dp frame only makes sense for the flat 2D scans, which fill their slot as a rectangle
+ * so the frame hugs the artwork. A 3D case render is transparent around the angled case, so the
+ * same frame draws a rounded rectangle through empty space beside it — the stray outline and edge
+ * lines reported in grid view. The shelf never showed them because it frames only the selected
+ * cover; do the same here, so 3D gets a selection frame and nothing else.
+ */
+@Composable
+private fun Modifier.coverFrame(selected: Boolean, selectedWidth: Dp, selectedColor: Color): Modifier {
+    val idle = !CoverArtStyle.use3d.value
+    return when {
+        selected -> this.border(selectedWidth, selectedColor, RoundedCornerShape(12.dp))
+        idle -> this.border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), RoundedCornerShape(12.dp))
+        else -> this
     }
 }
 

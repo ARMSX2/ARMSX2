@@ -60,6 +60,11 @@ import java.io.File
 fun PatchManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: PatchManagerViewModel = viewModel()) {
     val state = viewModel.state.value
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(viewModel::import) }
+    // Folder import: cheats arrive as a folder of files far more often than one at a time, and the
+    // single-file picker made adding a set a repetitive chore. Requested by Fun (SD712).
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        uri?.let(viewModel::importFolder)
+    }
     // Keyed on the game (this screen shares one Activity-scoped VM with the settings tab), and
     // resets the online browser first so a previous game's fetched results don't linger here.
     LaunchedEffect(game?.uri) { viewModel.resetOnlineForGame(); viewModel.refresh() }
@@ -71,6 +76,7 @@ fun PatchManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Pa
                 leading = { RoundAction("←", str("action.back"), onBack) },
                 actions = {
                     RoundAction("＋", str("action.import"), { picker.launch(arrayOf("text/plain", "application/octet-stream", "*/*")) })
+                    RoundAction("🗀", str("patches.import.folder"), { folderPicker.launch(null) })
                     RoundAction("↻", str("games.card.refresh"), viewModel::refresh)
                 },
             )

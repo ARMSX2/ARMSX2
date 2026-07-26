@@ -100,9 +100,11 @@ fun AppNavigation() {
                 AppRoute.Language -> LanguageScreen(
                     onBack = { UiNavigator.navigate(AppRoute.Settings(SettingsCategory.General)) },
                 )
-                AppRoute.About -> AboutScreen(
-                    onBack = { UiNavigator.navigate(AppRoute.Settings(SettingsCategory.General)) },
-                )
+                // Back goes to the library, like every other drawer destination (Memory Cards,
+                // Controls, Patches...). It used to return to the Settings tab, which was already
+                // odd and became simply wrong once About moved out of the settings tab strip and
+                // into the drawer — you were sent to a screen you had not come from.
+                AppRoute.About -> AboutScreen(onBack = UiNavigator::home)
             }
         }
 

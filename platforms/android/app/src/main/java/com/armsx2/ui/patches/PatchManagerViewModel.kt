@@ -11,6 +11,7 @@ import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.config.ConfigStore
 import com.armsx2.config.Settings
 import com.armsx2.config.SettingsScope
+import com.armsx2.i18n.I18n
 import com.armsx2.ui.InGameOverlay
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -41,6 +42,12 @@ data class PatchManagerUiState(
 )
 
 class PatchManagerViewModel(application: Application) : AndroidViewModel(application) {
+    private companion object {
+        /** A user can hand us a storage root by accident; an unbounded SAF walk of that is a hang. */
+        const val MAX_IMPORT_DEPTH = 4
+        const val MAX_IMPORT_FILES = 200
+    }
+
     var state = androidx.compose.runtime.mutableStateOf(PatchManagerUiState())
         private set
 
@@ -126,6 +133,53 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
             ?: runCatching { NativeApp.getGameSerial() }.getOrNull()
             ?: MainActivityRuntime.contextGame.value?.serial)
             ?.trim()?.uppercase()?.takeIf { Regex("^[A-Z]{4}-\\d{5}$").matches(it) }
+
+    /**
+     * Import every .pnach in a picked folder, recursively.
+     *
+     * People keep their cheats as a folder of files, not one file at a time, and the single-file
+     * picker made adding a set a repetitive chore. Reuses [import] per file so each one still gets
+     * the canonical-name treatment and the cheats/patches routing — a folder import must not be a
+     * second, subtly different code path.
+     *
+     * Requested by Fun (SD712).
+     */
+    fun importFolder(tree: Uri) {
+        val context = getApplication<Application>()
+        viewModelScope.launch {
+            val found = withContext(Dispatchers.IO) {
+                runCatching { collectPnachFiles(context, tree) }.getOrDefault(emptyList())
+            }
+            if (found.isEmpty()) {
+                state.value = state.value.copy(error = I18n.get("patches.import.noneFound"))
+                return@launch
+            }
+            found.forEach { import(it) }
+        }
+    }
+
+    /** Depth-limited walk of a SAF tree for .pnach files. Bounded because a user can hand us their
+     *  whole storage root by accident, and an unbounded walk of that is a hang. */
+    private fun collectPnachFiles(context: android.content.Context, tree: Uri): List<Uri> {
+        val root = DocumentFile.fromTreeUri(context, tree)
+            ?: return emptyList()
+        val out = ArrayList<Uri>()
+        fun walk(dir: DocumentFile, depth: Int) {
+            if (depth > MAX_IMPORT_DEPTH || out.size >= MAX_IMPORT_FILES) return
+            dir.listFiles().forEach { f ->
+                if (out.size >= MAX_IMPORT_FILES) return
+                when {
+                    f.isDirectory -> walk(f, depth + 1)
+                    f.name?.endsWith(".pnach", ignoreCase = true) == true -> out.add(f.uri)
+                    // .txt too: the packs people are handed often ship cheats named that way, and
+                    // import() already renames to the canonical form.
+                    f.name?.endsWith(".txt", ignoreCase = true) == true -> out.add(f.uri)
+                }
+            }
+        }
+        walk(root, 0)
+        return out
+    }
 
     fun import(uri: Uri) {
         val context = getApplication<Application>()

@@ -48,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.style.TextOverflow
@@ -562,6 +563,10 @@ private fun AchievementFilterTabs(selected: AchFilter, items: List<AchievementIt
 /** Where RetroAchievements exposes the web API key, under its "Keys" section. */
 private const val CONTROL_PANEL_URL = "https://retroachievements.org/controlpanel.php"
 
+/** The site itself. Accounts can only be created there — RetroAchievements exposes no signup API,
+ *  so without this link the sign-in screen is a dead end for anyone who has not registered yet. */
+private const val RA_SITE_URL = "https://retroachievements.org"
+
 @Composable
 private fun LibraryProgressSection() {
     var key by remember { mutableStateOf(com.armsx2.RaLibrary.webApiKey) }
@@ -578,7 +583,7 @@ private fun LibraryProgressSection() {
         // Where to get the key. The control-panel link is tappable for touch and activatable from a
         // pad (controllerFocusable below) — this screen is fully gamepad-navigable, and a link that
         // only responded to a finger would be unreachable on a handheld.
-        val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+        val uriHandler = LocalUriHandler.current
         val openControlPanel = { runCatching { uriHandler.openUri(CONTROL_PANEL_URL) }.let {} }
         val linkLabel = str("ra.library.keyHelp.link")
         val help = str("ra.library.keyHelp")
@@ -663,6 +668,7 @@ private fun LibraryProgressSection() {
 
 @Composable
 private fun LoginPanel(loading: Boolean, onLogin: (String, String) -> Unit, modifier: Modifier) {
+    val uriHandler = LocalUriHandler.current
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     Box(modifier, contentAlignment = Alignment.Center) {
@@ -718,6 +724,16 @@ private fun LoginPanel(loading: Boolean, onLogin: (String, String) -> Unit, modi
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // An account cannot be created from here — RA exposes no signup API — so somebody
+                // without one reaches this screen and has nowhere to go. Link the site out.
+                Spacer(Modifier.height(10.dp))
+                val openSite = { runCatching { uriHandler.openUri(RA_SITE_URL) }.let {} }
+                TextButton(
+                    onClick = openSite,
+                    modifier = Modifier.fillMaxWidth().controllerFocusable(
+                        "ra.website", onConfirm = openSite,
+                    ),
+                ) { Text(str("ra.website.open")) }
             }
         }
     }
