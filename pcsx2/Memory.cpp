@@ -375,6 +375,24 @@ bool memGetExtraMemMode()
 
 void memSetExtraMemMode(bool mode)
 {
+#ifdef ARCH_ARM64
+	// The ARM64 EE recompiler is MainRam-only: its LUT loop, recLutEntries, the
+	// recRAM advance, the alias mask and the manual_page/manual_counter arrays are
+	// all sized to Ps2MemSize::MainRam, where the x86 rec sizes the same things to
+	// ExposedRam. Pages 0x0200-0x1FFF therefore keep the unmapped default, and
+	// dispatching into one lands on UnmappedRecLUTPage -> recError. Converting all
+	// of them together is real work and has to happen as one change (c4d0a8a47c
+	// spells out why); until it does, refuse the setting at the seam rather than
+	// let a user-selectable option fail as a recError deep inside a game. The
+	// interpreter handles the 128MB map fine, so gate on the recompiler only.
+	if (mode && EmuConfig.Cpu.Recompiler.EnableEE)
+	{
+		Console.Warning("Extended RAM (128MB) is not supported by the ARM64 EE recompiler; ignoring it. "
+						"Disable the EE recompiler if you need it.");
+		mode = false;
+	}
+#endif
+
 	s_extra_memory = mode;
 
 	// update the amount of RAM exposed to the VM
