@@ -92,6 +92,10 @@ __ri void VU_STAT_UPDATE(VURegs * VU) {
 	if (VU->macflag & 0x00F0) newflag |= 0x2;
 	if (VU->macflag & 0x0F00) newflag |= 0x4;
 	if (VU->macflag & 0xF000) newflag |= 0x8;
-	// Save old sticky flags and D/I settings, everthing else is the new flags only
+	// Cause nibble only -- this deliberately does NOT preserve the old sticky
+	// bits or the D/I pair, despite what this comment used to claim. Both are
+	// carried by the consumer instead: macro mode merges against
+	// VI[REG_STATUS_FLAG] in SYNCMSFLAGS, micro mode against the pipeline entry
+	// in _vuFMACflush.
 	VU->statusflag = newflag;
 }

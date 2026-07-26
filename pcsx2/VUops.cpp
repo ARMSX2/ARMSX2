@@ -3909,9 +3909,16 @@ _vuRegsTables(VU1, VU1regs, FnPtr_VuRegsN)
 //  VU0macro (COP2)
 // --------------------------------------------------------------------------------------
 
+// An FMAC owns only the ZSUO cause nibble; it replaces that and ORs the
+// matching stickies in. The D/I cause pair (0x30) belongs to the div unit and
+// survives untouched -- VU_STAT_UPDATE assigns statusflag outright, so the
+// previous values have to come from VI, not from statusflag. Preserving only
+// 0xFC0 here dropped the D/I cause on every macro FMAC, against both the
+// console (VUSTICKY_FMAC_KEEPS_DI) and the arm64 recompiler, which keeps its
+// denormalized bits 18-19 across cop2EmitFlagUpdate for x86 parity.
 static __fi void SYNCMSFLAGS()
 {
-	VU0.VI[REG_STATUS_FLAG].UL = (VU0.VI[REG_STATUS_FLAG].UL & 0xFC0) | (VU0.statusflag & 0xF) | ((VU0.statusflag & 0xF) << 6);
+	VU0.VI[REG_STATUS_FLAG].UL = (VU0.VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU0.statusflag & 0xF) | ((VU0.statusflag & 0xF) << 6);
 	VU0.VI[REG_MAC_FLAG].UL = VU0.macflag;
 }
 
@@ -3925,10 +3932,15 @@ static __fi void SYNCSTATUSFLAG()
 	VU0.VI[REG_STATUS_FLAG].UL = (VU0.VI[REG_STATUS_FLAG].UL & 0xFC0) | (VU0.statusflag & 0xF) | ((VU0.statusflag & 0xF) << 6);
 }
 
+// A div-unit op REPLACES the D/I cause pair -- a clean divide clears it -- but
+// the stickies only ever grow. Preserving only 0x3CF cleared sticky IS/DS
+// (0xC00) and then re-derived them from the current cause, so sticky D/I could
+// never accumulate across two div ops (VUSTICKY_DI_ACCUMULATE_SQRT_DIV) nor
+// outlive a clean one (VUSTICKY_CLEAN_DIV_KEEPS_STICKY_DI).
 static __fi void SYNCFDIV()
 {
 	VU0.VI[REG_Q].UL = VU0.q.UL;
-	VU0.VI[REG_STATUS_FLAG].UL = (VU0.VI[REG_STATUS_FLAG].UL & 0x3CF) | (VU0.statusflag & 0x30) | ((VU0.statusflag & 0x30) << 6);
+	VU0.VI[REG_STATUS_FLAG].UL = (VU0.VI[REG_STATUS_FLAG].UL & 0xFCF) | (VU0.statusflag & 0x30) | ((VU0.statusflag & 0x30) << 6);
 }
 
 void VABS()  { VU0.code = cpuRegs.code; _vuABS(&VU0); }

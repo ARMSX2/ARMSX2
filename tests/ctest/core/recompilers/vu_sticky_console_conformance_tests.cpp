@@ -148,8 +148,8 @@ struct Divergence
 	const char* cause;
 };
 
-// Recorded from an actual run of both engines, never derived from a rule.  Six
-// distinct causes are represented; each row names its own.
+// Recorded from an actual run of both engines, never derived from a rule. Each
+// row names its own cause.
 //
 // The largest group is one defect, seen thirty times: `cop2EmitFlagUpdate`
 // (pcsx2/arm64/iCOP2-arm64.cpp) extracts a sign bit (CMLT) and a zero bit
@@ -159,8 +159,11 @@ struct Divergence
 // `Arm64Cop2MacroFlagExtractionIsSignAndZeroOnly` below states that once, with
 // a minimal witness; these rows are its fallout across the sticky cases.
 //
-// The rest are one-line mask defects in the shared interpreter, and in every
-// one of them the arm64 JIT is the engine that matches the console.
+// What remains on the interpreter side is a single case, and both engines fail
+// it: VRSQRT of -0 raises only D where hardware raises D and I, and slots 2-3
+// are that one missing bit carried forward. The interpreter's macro flag-merge
+// masks (SYNCMSFLAGS, SYNCFDIV) used to account for eight more rows here and no
+// longer do.
 constexpr Divergence kMacroStatusDivergences[] = {
 	{"VUSTICKY_FMAC_ZSUO_ACCUMULATE", 1, false, true,
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
@@ -180,24 +183,12 @@ constexpr Divergence kMacroStatusDivergences[] = {
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
 	{"VUSTICKY_ONE_OP_ALL_FOUR", 3, false, true,
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
-	{"VUSTICKY_DIV_DI_ACCUMULATE", 2, true, false,
-	 "macro SYNCFDIV clears sticky D/I (VUops.cpp:3907)"},
-	{"VUSTICKY_DIV_DI_ACCUMULATE", 3, true, false,
-	 "macro SYNCFDIV clears sticky D/I (VUops.cpp:3907)"},
 	{"VUSTICKY_DIV_KEEPS_FMAC_FLAGS", 1, false, true,
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
 	{"VUSTICKY_DIV_KEEPS_FMAC_FLAGS", 2, false, true,
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
 	{"VUSTICKY_DIV_KEEPS_FMAC_FLAGS", 3, false, true,
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
-	{"VUSTICKY_FMAC_KEEPS_DI", 2, true, false,
-	 "macro SYNCMSFLAGS drops the D/I cause (VUops.cpp:3889)"},
-	{"VUSTICKY_FMAC_KEEPS_DI", 3, true, false,
-	 "macro SYNCMSFLAGS drops the D/I cause (VUops.cpp:3889)"},
-	{"VUSTICKY_DI_ACCUMULATE_SQRT_DIV", 2, true, false,
-	 "macro SYNCFDIV clears sticky D/I (VUops.cpp:3907)"},
-	{"VUSTICKY_DI_ACCUMULATE_SQRT_DIV", 3, true, false,
-	 "macro SYNCFDIV clears sticky D/I (VUops.cpp:3907)"},
 	{"VUSTICKY_CTC2_CLEARS_STICKY_NOT_CAUSE", 1, false, true,
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
 	{"VUSTICKY_CTC2_CLEARS_STICKY_NOT_CAUSE", 2, false, true,
@@ -230,16 +221,12 @@ constexpr Divergence kMacroStatusDivergences[] = {
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
 	{"VUSTICKY_THREE_EVENTS_ONE_ACCUMULATION", 3, false, true,
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
-	{"VUSTICKY_DI_CAUSE_REPLACED_STICKY_KEPT", 2, true, false,
-	 "macro SYNCFDIV clears sticky D/I (VUops.cpp:3907)"},
-	{"VUSTICKY_DI_CAUSE_REPLACED_STICKY_KEPT", 3, true, false,
-	 "macro SYNCFDIV clears sticky D/I (VUops.cpp:3907)"},
 	{"VUSTICKY_CLEAN_DIV_KEEPS_STICKY_DI", 1, true, true,
 	 "vrsqrt of -0 raises only D; hardware raises D and I"},
 	{"VUSTICKY_CLEAN_DIV_KEEPS_STICKY_DI", 2, true, true,
-	 "macro SYNCFDIV clears sticky D/I (VUops.cpp:3907)"},
+	 "fallout of slot 1: the I the interpreter never raised cannot be sticky here"},
 	{"VUSTICKY_CLEAN_DIV_KEEPS_STICKY_DI", 3, true, true,
-	 "macro SYNCFDIV clears sticky D/I (VUops.cpp:3907)"},
+	 "fallout of slot 1: the I the interpreter never raised cannot be sticky here"},
 };
 
 // MAC is scored on its own table for the same reason STATUS is: a mask defect
