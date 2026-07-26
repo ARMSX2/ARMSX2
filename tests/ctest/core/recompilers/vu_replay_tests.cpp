@@ -116,13 +116,66 @@ TEST(VuReplay, ReplayVu0VaddProducesExpectedAndDoesNotDiverge)
 	const auto result = ReplayCapture(rec);
 
 	ASSERT_TRUE(result.ok);
-	EXPECT_FALSE(result.diverged);
+	// Print the diff, same as the VU1 twin above -- a bare EXPECT_FALSE on
+	// `diverged` says nothing about WHICH register moved, which made an
+	// order-dependent failure here far more expensive to triage than it
+	// needed to be.
+	EXPECT_FALSE(result.diverged) << [&] {
+		std::string s;
+		for (const auto& l : result.diff_lines) { s += "  "; s += l; s += "\n"; }
+		return s;
+	}();
 
 	const auto& jit_vf3 = result.jit_snapshot.regs.VF[3];
 	EXPECT_FLOAT_EQ(AsFloat(jit_vf3.i.x), 11.0f);
 	EXPECT_FLOAT_EQ(AsFloat(jit_vf3.i.y), 22.0f);
 	EXPECT_FLOAT_EQ(AsFloat(jit_vf3.i.z), 33.0f);
 	EXPECT_FLOAT_EQ(AsFloat(jit_vf3.i.w), 44.0f);
+}
+
+// A replay must not inherit the interpreter's live flag accumulators from
+// whatever ran before it.
+//
+// vu_capture::CapturedState carries microVU's four-deep micro_statusflags[]
+// shadows but not the interpreter's scalar VU->statusflag/macflag/clipflag, so
+// RestoreState has to derive those from VI[] -- see the comment there. The one
+// that bites is STATUS: every op recomputes the 0xF cause nibble, but the
+// 0xFC0 sticky field is only ever cleared by FSSET, so a stale sticky bit
+// rides _vuFMACAdd into fmac[i].statusflag and _vuFMACflush ORs it straight
+// into VI[REG_STATUS_FLAG]. The JIT derives its status entirely from the
+// restored micro_statusflags[] and so never grows the phantom bit, and the
+// replay reports a divergence that belongs to neither engine.
+//
+// This surfaced as an order-dependent failure of
+// ReplayVu0VaddProducesExpectedAndDoesNotDiverge under --gtest_shuffle, where
+// a preceding microVU test left VU0.statusflag = 0x82 and the replay of a VADD
+// of all-positive operands came out `vi16: JIT=0x0 INTERP=0x80`. Seeding the
+// accumulator directly is the same fault with none of the ordering, so it
+// belongs in the suite rather than in a shuffle seed.
+TEST(VuReplay, ReplayDoesNotInheritStaleInterpreterStickyFlags)
+{
+	const auto rec = MakeVaddProgram(0);
+
+	// 0x82 = sticky Sign (bit 7) + cause Sign (bit 1), exactly what the
+	// triggering predecessor left behind. Only the sticky half survives an op,
+	// which is why a cause-only value would not reproduce this.
+	vuRegs[0].statusflag = 0x82;
+	vuRegs[0].macflag = 0xC0;
+	vuRegs[0].clipflag = 0;
+
+	const auto result = ReplayCapture(rec);
+	ASSERT_TRUE(result.ok);
+	EXPECT_FALSE(result.diverged) << [&] {
+		std::string s;
+		for (const auto& l : result.diff_lines) { s += "  "; s += l; s += "\n"; }
+		return s;
+	}();
+	// The captured state has STATUS = 0, so a clean replay must end there too:
+	// no phantom sticky bit on either side.
+	EXPECT_EQ(result.interp_snapshot.regs.VI[REG_STATUS_FLAG].UL & 0xFC0u, 0u)
+		<< "[interp] carried a sticky STATUS bit the program never set";
+	EXPECT_EQ(result.jit_snapshot.regs.VI[REG_STATUS_FLAG].UL & 0xFC0u, 0u)
+		<< "[jit] carried a sticky STATUS bit the program never set";
 }
 
 TEST(VuReplay, LoadAndReplayRoundTripsThroughDisk)

@@ -257,6 +257,34 @@ namespace vu_capture
 		std::memcpy(regs.micro_macflags, state.micro_macflags, sizeof(state.micro_macflags));
 		std::memcpy(regs.micro_clipflags, state.micro_clipflags, sizeof(state.micro_clipflags));
 		std::memcpy(regs.micro_statusflags, state.micro_statusflags, sizeof(state.micro_statusflags));
+
+		// The INTERPRETER's live flag accumulators. CapturedState carries only
+		// microVU's four-deep shadows above, so without this the interpreter
+		// pass of a replay inherits whatever the previous program left in
+		// VURegs -- and one field of it is never recomputed, so it survives all
+		// the way into the architectural result:
+		//
+		//   _vuFMACAdd  snapshots VU->statusflag into fmac[i].statusflag
+		//   _vuFMACflush ORs (fmac[i].statusflag & 0xFC0) into VI[REG_STATUS_FLAG]
+		//
+		// 0xFC0 is the STICKY field (ZS/SS/US/OS/IS/DS). Every op recomputes the
+		// 0xF cause nibble, but nothing clears the sticky bits except FSSET, so
+		// a stale one lands in VI[REG_STATUS_FLAG] as a phantom flag the JIT --
+		// which derives its status purely from the restored micro_statusflags --
+		// never produces. Measured: with VU0.statusflag = 0x80 carried in, a
+		// replay of a VADD of all-positive operands came out
+		// `vi16: JIT=0x0 INTERP=0x80`.
+		//
+		// Seeded from VI rather than zeroed, because that is the exact inverse
+		// of the flush above (VI[REG_MAC_FLAG] = fmac[i].macflag, and STATUS
+		// takes the sticky field plus the cause nibble). A capture taken with
+		// sticky flags already raised therefore replays with them, instead of
+		// silently losing them. No format bump: this is derived from VI[], which
+		// CapturedState already carries in full.
+		regs.statusflag = state.VI[REG_STATUS_FLAG];
+		regs.macflag = state.VI[REG_MAC_FLAG];
+		regs.clipflag = state.VI[REG_CLIP_FLAG];
+
 		regs.xgkickaddr = state.xgkickaddr;
 		regs.xgkickdiff = state.xgkickdiff;
 		regs.xgkicksizeremaining = state.xgkicksizeremaining;
