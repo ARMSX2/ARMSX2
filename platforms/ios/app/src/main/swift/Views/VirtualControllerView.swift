@@ -300,6 +300,7 @@ struct VirtualControllerView: View {
         // Prepare mask images before gameplay input so the first press cannot decode/scan on the hot path.
         .onAppear {
             ARMSX2VirtualPadMaskImageCache.prewarm(descriptor: effectiveSkinDescriptor)
+            activeTouchActionSession.refreshHardcoreAutomaticFireRestriction()
             configureAuxiliaryInputs()
         }
         .onChange(of: skinLibrary.selectedSkinID) { _, _ in
@@ -331,7 +332,15 @@ struct VirtualControllerView: View {
             cancelActiveInputSession()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            activeTouchActionSession.refreshHardcoreAutomaticFireRestriction()
             configureAuxiliaryInputs()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: Notification.Name("ARMSX2RetroAchievementsStateChanged")
+            )
+        ) { _ in
+            activeTouchActionSession.refreshHardcoreAutomaticFireRestriction()
         }
         .onDisappear {
             stopAuxiliaryInputs()

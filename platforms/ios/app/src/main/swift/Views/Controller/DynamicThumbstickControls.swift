@@ -648,6 +648,7 @@ final class VirtualPadTouchActionController {
     private var aimEngaged = false
     private var enteredAimThisInteraction = false
     private var rapidFireEngaged = false
+    private var automaticFireBlockedByHardcore = false
     private var aimReleaseTask: Task<Void, Never>?
     private var fireReleaseTask: Task<Void, Never>?
     private var fireLoopTask: Task<Void, Never>?
@@ -686,13 +687,21 @@ final class VirtualPadTouchActionController {
             setAimPressed(true)
         }
 
-        let insideRapidWindow = lastFireTapTime.map { now - $0 <= settings.rapidTapWindow } == true
-        if !insideRapidWindow { fireTapCount = 0 }
-        if !enteredAimThisInteraction &&
-            settings.rapidTapFireEnabled &&
-            insideRapidWindow &&
-            fireTapCount >= max(settings.rapidTapActivationCount - 1, 1) {
-            startRapidFire()
+        let automaticActionsAllowed = aimEngaged || settings.actionsOnNonAimMode
+        if automaticFireIsBlocked || !automaticActionsAllowed {
+            resetFireTapSequence()
+            if automaticFireIsBlocked {
+                stopRapidFire()
+            }
+        } else {
+            let insideRapidWindow = lastFireTapTime.map { now - $0 <= settings.rapidTapWindow } == true
+            if !insideRapidWindow { fireTapCount = 0 }
+            if !enteredAimThisInteraction &&
+                settings.rapidTapFireEnabled &&
+                insideRapidWindow &&
+                fireTapCount >= max(settings.rapidTapActivationCount - 1, 1) {
+                startRapidFire()
+            }
         }
     }
 
@@ -716,17 +725,24 @@ final class VirtualPadTouchActionController {
             return
         }
 
-        if let lastFireTapTime, now - lastFireTapTime <= settings.rapidTapWindow {
-            fireTapCount += 1
+        if (aimEngaged || settings.actionsOnNonAimMode) && !automaticFireIsBlocked {
+            if let lastFireTapTime, now - lastFireTapTime <= settings.rapidTapWindow {
+                fireTapCount += 1
+            } else {
+                fireTapCount = 1
+            }
+            self.lastFireTapTime = now
         } else {
-            fireTapCount = 1
+            resetFireTapSequence()
         }
-        self.lastFireTapTime = now
 
         if rapidFireEngaged {
             return
         }
-        guard settings.tapToFire else { return }
+        guard settings.tapToFire,
+              aimEngaged || settings.singleTapActionAllowedInNonAimMode else {
+            return
+        }
         if settings.doubleTapToHoldAim && !aimEngaged {
             scheduleSingleFire(after: settings.doubleTapWindow)
         } else {
@@ -827,7 +843,12 @@ final class VirtualPadTouchActionController {
     }
 
     private func startRapidFire() {
-        guard !rapidFireEngaged else { return }
+        let settings = DynamicThumbstickSettings.shared
+        guard !rapidFireEngaged,
+              !automaticFireIsBlocked,
+              aimEngaged || settings.actionsOnNonAimMode else {
+            return
+        }
         cancelPendingSingleFire()
         rapidFireEngaged = true
         crosshairState.setRapidFiring(true)
@@ -835,6 +856,12 @@ final class VirtualPadTouchActionController {
         fireLoopTask?.cancel()
         fireLoopTask = Task { @MainActor [weak self] in
             while !Task.isCancelled, let self, self.rapidFireEngaged {
+                guard !self.automaticFireIsBlocked else {
+                    self.rapidFireEngaged = false
+                    self.crosshairState.setRapidFiring(false)
+                    self.resetFireTapSequence()
+                    break
+                }
                 let interval = max(DynamicThumbstickSettings.shared.automaticFireInterval, 0.06)
                 self.setHoldFirePressed(true)
                 self.crosshairState.triggerShot()
@@ -878,12 +905,32 @@ final class VirtualPadTouchActionController {
     }
 
     private func setHoldFirePressed(_ pressed: Bool) {
+        if pressed && automaticFireIsBlocked {
+            Self.setActionButton(
+                pressed: false,
+                activeButton: &activeHoldFireButton,
+                selectedButton: DynamicThumbstickSettings.shared.holdFireButton(for: side),
+                source: "\(sourcePrefix).holdFire"
+            )
+            return
+        }
         Self.setActionButton(
             pressed: pressed,
             activeButton: &activeHoldFireButton,
             selectedButton: DynamicThumbstickSettings.shared.holdFireButton(for: side),
             source: "\(sourcePrefix).holdFire"
         )
+    }
+
+    func updateHardcoreAutomaticFireRestriction(_ blocked: Bool) {
+        automaticFireBlockedByHardcore = blocked
+        guard blocked else { return }
+        resetFireTapSequence()
+        stopRapidFire()
+    }
+
+    private var automaticFireIsBlocked: Bool {
+        automaticFireBlockedByHardcore || ARMSX2Bridge.isRetroAchievementsHardcoreActive()
     }
 
     private var sourcePrefix: String {
@@ -916,6 +963,16 @@ final class VirtualPadTouchActionController {
 final class VirtualPadTouchActionSession {
     let left = VirtualPadTouchActionController(side: .left)
     let right = VirtualPadTouchActionController(side: .right)
+
+    init() {
+        refreshHardcoreAutomaticFireRestriction()
+    }
+
+    func refreshHardcoreAutomaticFireRestriction() {
+        let blocked = DynamicThumbstickSettings.automaticFireBlockedByHardcore()
+        left.updateHardcoreAutomaticFireRestriction(blocked)
+        right.updateHardcoreAutomaticFireRestriction(blocked)
+    }
 
     func reset() {
         left.reset()
