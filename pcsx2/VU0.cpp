@@ -252,11 +252,29 @@ void CTC2() {
 			vu1Finish(true);
 			vu1ExecMicro(cpuRegs.GPR.r[_Rt_].US[0]);	// Execute VU1 Micro SubRoutine
 			break;
+		case REG_STATUS_FLAG:
+			// Only the sticky field (0xFC0) is writable; the current-flag
+			// field (0x3F) belongs to the FMAC pipeline and survives the
+			// write. Both recompilers do exactly this (microVU_Macro.inl
+			// recCTC2, iCOP2-arm64.cpp recCOP2_CTC2). They additionally
+			// broadcast the denormalized value into micro_statusflags; the
+			// interpreter does not need to, because vu0ExecMicro re-copies
+			// VI[REG_STATUS_FLAG] into the micro instances at program start.
+			VU0.VI[REG_STATUS_FLAG].UL = (VU0.VI[REG_STATUS_FLAG].UL & 0x3F) |
+			                             (cpuRegs.GPR.r[_Rt_].UL[0] & 0xFC0);
+			break;
 		case REG_CLIP_FLAG:
 			VU0.clipflag = cpuRegs.GPR.r[_Rt_].UL[0];
 			[[fallthrough]];
 		default:
-			VU0.VI[_Fs_].UL = cpuRegs.GPR.r[_Rt_].UL[0];
+			// VI01-VI15 are 16-bit integer registers, so only the low half is
+			// stored (the recompilers emit a 16-bit store here too). The
+			// control registers that land in this arm — CLIP, I, Q and the
+			// rest — are full 32-bit words.
+			if (_Fs_ < REG_STATUS_FLAG)
+				VU0.VI[_Fs_].US[0] = cpuRegs.GPR.r[_Rt_].US[0];
+			else
+				VU0.VI[_Fs_].UL = cpuRegs.GPR.r[_Rt_].UL[0];
 			break;
 	}
 }

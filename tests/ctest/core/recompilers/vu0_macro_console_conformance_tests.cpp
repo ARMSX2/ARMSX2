@@ -247,21 +247,19 @@ u32 Ctc2Readback(int reg, bool jit)
 }
 
 // Where this emulator does not reproduce the console, recorded from a real
-// run and NOT derived from a rule. Two distinct stories here:
+// run and NOT derived from a rule.
 //
-//   vi01, vi16 — the arm64 macro JIT already narrows these deliberately
-//     (Strh for the 16-bit integer VIs; And #0xFC0 for STATUS, iCOP2-arm64.cpp
-//     recCTC2). The shared interpreter CTC2 (pcsx2/VU0.cpp) does a plain
-//     32-bit store. The JIT is the correct side.
+// vi01 and vi16 used to be listed here as interpreter-only divergences; the
+// shared CTC2 (pcsx2/VU0.cpp) now narrows them the way both recompilers always
+// have — a 16-bit store for the integer VIs, and the 0xFC0 write mask for
+// STATUS that leaves the 0x3F current-flag field alone.
 //
-//   vi18, vi27, vi31 — both engines are wrong. CLIP is a 24-bit field and
-//     CMSAR0/CMSAR1 are 16-bit, but CTC2's default arm stores all 32 bits; and
-//     the REG_CMSAR1 case kicks VU1 without ever storing the value, so a
-//     read-back returns whatever VI[31] held before.
+// What is left is the class where both engines are wrong: CLIP is a 24-bit
+// field and CMSAR0/CMSAR1 are 16-bit, but CTC2's default arm stores all 32
+// bits; and the REG_CMSAR1 case kicks VU1 without ever storing the value, so a
+// read-back returns whatever VI[31] held before.
 struct Ctc2Divergence { int reg; bool bad_interp, bad_jit; };
 constexpr Ctc2Divergence kCtc2Divergences[] = {
-	{1, true, false},   // interp stores 32 bits into a 16-bit VI
-	{16, true, false},  // interp ignores the 0xFC0 STATUS write mask
 	{18, true, true},   // CLIP is 24-bit on silicon; both store 32
 	{27, true, true},   // CMSAR0 is 16-bit on silicon; both store 32
 	{31, true, true},   // CMSAR1 never stored at all; CTC2 only kicks VU1
@@ -310,7 +308,7 @@ TEST(Vu0MacroConsoleConformance, Ctc2WriteMasksMatchConsole)
 		++checked;
 	}
 	EXPECT_EQ(checked, 12);
-	EXPECT_EQ(diverged, 8);
+	EXPECT_EQ(diverged, 6);
 }
 
 // What passing looks like once CTC2's write masks are right.
