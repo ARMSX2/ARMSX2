@@ -1214,3 +1214,80 @@ TEST(EeRecMmiCoherence, SqFaultPathStoresResidentQuad)
 		faulted |= vtlb_IsFaultingPC(a);
 	EXPECT_TRUE(faulted) << "MMIO SQ did not take the fastmem-fault/backpatch path";
 }
+
+// ============================================================================
+//  Raw guest-GPR memory reads vs the lazy-dirty pins (SM-010)
+// ============================================================================
+//
+// The pins (kEEPinTable) mirror GPR.r[n].UD[0] for nine hot guest regs, and
+// under lazy-dirty the PIN is authoritative: _eeStoreGPRDestReg resolves a
+// pinned dest to the pin itself and armStoreEERegPtrRaw then emits NOTHING, so
+// GPR.r[n].UD[0] in memory is stale until a seam flushes (armFlushEEGPRPins).
+//
+// mmiFlushReg is NOT such a seam — it reconciles const-prop, the scalar slot
+// and the NEON slot (_deleteEEreg) and never touches the pins. So any MMI path
+// that reads guest-GPR memory RAW, rather than via mmiLoadReg (which merges
+// through armMergeEEResidentIntoQuad) or armLoadEERegPtr (which substitutes the
+// pin), reads a stale lower half.
+//
+// recQFSRV's adjacent-source fast path (Rs == Rt+1) is exactly that: it takes
+// &GPR.r[Rt] and Ldr's 128 unaligned bits across the two registers. Four
+// adjacent pairs are BOTH pinned — ($at,$v0) ($v0,$v1) ($v1,$a0) ($a0,$a1) —
+// and eight more have one pinned operand, which is precisely the register range
+// a funnel-shift memcpy loop uses.
+
+// Rt is pinned ($a0 → x27) and written earlier in the same block, so its
+// canonical memory slot is stale when QFSRV's fast path reads it.
+TEST(EeRecMmiCoherence, QfsrvAdjacentFastPathSeesDirtyPinnedRt)
+{
+	EeRecTestHarness h;
+	h.SetMmiPair(reg::a0, 0x1122'3344'5566'7788ull, 0x99AA'BBCC'DDEE'FF00ull); // Rt
+	h.SetMmiPair(reg::a1, 0xAABB'CCDD'1122'3344ull, 0x5566'7788'99AA'BBCCull); // Rs == Rt+1
+	h.SetGpr64(reg::t0, 0xF0E0'D0C0'B0A0'9080ull);
+	h.LoadProgram({
+		ee::MTSAB(reg::zero, 4),
+		OR       (reg::a0, reg::t0, reg::zero), // pinned write: pin dirty, memory stale
+		ee::QFSRV(reg::v0, reg::a1, reg::a0),
+	});
+	h.Run();
+	// {Rs:Rt} >> 4 bytes with Rt.UD[0] = the value just written.
+	h.ExpectMmiPair(reg::v0, 0xDDEE'FF00'F0E0'D0C0ull, 0x1122'3344'99AA'BBCCull);
+	// A stale read yields the pre-write Rt bytes: UD[0] == 0xDDEEFF0011223344.
+}
+
+// Same defect through the other operand: Rs is pinned ($a1 → x21) and dirty,
+// so the upper half of the funnel result comes from stale memory.
+TEST(EeRecMmiCoherence, QfsrvAdjacentFastPathSeesDirtyPinnedRs)
+{
+	EeRecTestHarness h;
+	h.SetMmiPair(reg::a0, 0x1122'3344'5566'7788ull, 0x99AA'BBCC'DDEE'FF00ull); // Rt
+	h.SetMmiPair(reg::a1, 0xAABB'CCDD'1122'3344ull, 0x5566'7788'99AA'BBCCull); // Rs == Rt+1
+	h.SetGpr64(reg::t0, 0xF0E0'D0C0'B0A0'9080ull);
+	h.LoadProgram({
+		ee::MTSAB(reg::zero, 4),
+		OR       (reg::a1, reg::t0, reg::zero), // pinned write to Rs
+		ee::QFSRV(reg::v0, reg::a1, reg::a0),
+	});
+	h.Run();
+	h.ExpectMmiPair(reg::v0, 0xDDEE'FF00'1122'3344ull, 0xB0A0'9080'99AA'BBCCull);
+	// A stale read yields the pre-write Rs bytes: UD[1] == 0x1122334499AABBCC.
+}
+
+// Green control: identical dirty-pin setup, but Rs != Rt+1 so the temp-buffer
+// path runs. That path loads through mmiLoadReg, which merges the dirty pin —
+// it must stay correct both before and after the fast path is gated, proving
+// the divergence above belongs to the fast path and not to the expectations.
+TEST(EeRecMmiCoherence, QfsrvNonAdjacentPathMergesDirtyPin)
+{
+	EeRecTestHarness h;
+	h.SetMmiPair(reg::a0, 0x1122'3344'5566'7788ull, 0x99AA'BBCC'DDEE'FF00ull); // Rt
+	h.SetMmiPair(reg::a2, 0xAABB'CCDD'1122'3344ull, 0x5566'7788'99AA'BBCCull); // Rs != Rt+1
+	h.SetGpr64(reg::t0, 0xF0E0'D0C0'B0A0'9080ull);
+	h.LoadProgram({
+		ee::MTSAB(reg::zero, 4),
+		OR       (reg::a0, reg::t0, reg::zero),
+		ee::QFSRV(reg::v0, reg::a2, reg::a0),
+	});
+	h.Run();
+	h.ExpectMmiPair(reg::v0, 0xDDEE'FF00'F0E0'D0C0ull, 0x1122'3344'99AA'BBCCull);
+}
