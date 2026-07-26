@@ -489,11 +489,11 @@ TEST(EeCacheConsole, InvalidateKeepsThePhysicalTagOnConsole)
 // is the observation, which is unchanged; the name says 0x78 because that is
 // what the observation plus round 2 amounts to.
 //
-// Its own bit 11 (isValidPFN) is NOT reachable this way, which was worth
-// checking rather than assuming: setAddr() masks with ALL_BITS = 0xFFF and so
-// preserves bit 11 across the store, and flags() masks it back off on the way
-// out, so a guest DXSTG can neither set nor read it. It can still be left
-// standing from a fill, and round 2 shows what that costs.
+// Its own bit 11 (isValidPFN) is not reachable as a *bit*: DXSTG's flag mask is
+// ALL_FLAGS = 0x7FF, setAddr() masks with ALL_BITS = 0xFFF and so preserves bit
+// 11 across the store, and flags() masks it back off on the way out, so a guest
+// can neither read it nor write it directly. It is now set from whether the tag
+// DXSTG stored resolves to guest memory; round 2 has why.
 TEST(EeCacheConsole, DxstgWritableMaskIsPtagLoPlus0x78)
 {
 	EeRecTestHarness h;

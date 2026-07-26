@@ -15,13 +15,10 @@
 //   - Negative nonzero divisor: interp rounds sqrt(|Ft|) into a float temp
 //     before dividing, so its divide is single-precision and matches native
 //     bit-for-bit. I|SI raised.
-//   - Positive nonzero divisor: interp computes Fs / sqrt(Ft) in DOUBLE (bare
-//     libm sqrt returns double, so the divide promotes) then rounds to float,
-//     while native/x86/hardware stay single-precision. The results disagree by
-//     exactly <=1 ULP on inexact quotients (~10% of random positive-Ft inputs).
-//     Native reproduces the single-precision EE FPU / x86 result, so those
-//     values are asserted JIT-only; the interp double-rounding divergence is
-//     pinned as a DISABLED tripwire (RsqrtSPositivePathDivergesFromInterp).
+//   - Positive nonzero divisor: same, since RSQRT_S() (pcsx2/FPU.cpp) stopped
+//     dividing by the double libm sqrt returns. At the production rounding
+//     mode the two still part by one ULP, pinned by
+//     DISABLED_RsqrtSPositivePathDivergesInProductionFpEnv.
 
 #include "harness/EeRecTestHarness.h"
 
@@ -81,7 +78,7 @@ u32 fuzzOperand(Lcg& r)
 // ---------------------------------------------------------------------------
 // Differential fuzzer over the exactly-matching domain: zero and negative
 // divisors (interp and native both stay single-precision there). Any Fs.
-// Run()'s auto-diff checks the result value; the sticky flags are diffed too.
+// The result value and the sticky flags are both diffed.
 // ---------------------------------------------------------------------------
 // These three ran green only because the old harness rounded to nearest. Under
 // the production environment the interpreter's double-rounded RSQRT lands one

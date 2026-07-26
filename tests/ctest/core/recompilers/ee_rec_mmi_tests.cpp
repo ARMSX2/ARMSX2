@@ -277,7 +277,8 @@ TEST(EeRecMmi, PexcwAliasedRdEqualsRt)
 TEST(EeRecMmi, QfsrvAdjacentSourceContiguous)
 {
 	// Rs == Rt+1 (a1 == a0+1) hits the contiguous-memory path that reads the
-	// two source registers directly and skips the temp-buffer stores. sa = 4 bytes.
+	// two source registers directly instead of going through the general
+	// path's TBL. sa = 4 bytes.
 	EeRecTestHarness h;
 	h.SetMmiPair(reg::a0, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull); // Rt
 	h.SetMmiPair(reg::a1, 0xAABBCCDD11223344ull, 0x5566778899AABBCCull); // Rs
@@ -288,7 +289,7 @@ TEST(EeRecMmi, QfsrvAdjacentSourceContiguous)
 
 TEST(EeRecMmi, QfsrvNonAdjacentSource)
 {
-	// Rs != Rt+1 (a2 != a0+1) takes the temp-buffer path. Same Rt/Rs values,
+	// Rs != Rt+1 (a2 != a0+1) takes the general TBL path. Same Rt/Rs values,
 	// sa = 7 bytes.
 	EeRecTestHarness h;
 	h.SetMmiPair(reg::a0, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull); // Rt

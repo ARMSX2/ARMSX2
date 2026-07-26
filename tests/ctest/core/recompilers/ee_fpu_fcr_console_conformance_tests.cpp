@@ -299,17 +299,9 @@ struct FlagSituation
 	u32 fcr31;
 	bool check_fd;
 	u32 fd;
-	// The arm64 recompiler now raises O/SO (fpuEmitOverflowFlags in
-	// iFPU-arm64.cpp), so "Overflow" matches silicon on both engines. "NAN
-	// math" does not, and cannot at this clamp mode: it feeds ADD.S two raw
-	// exp-255 words, which the interpreter turns into ±fMax through fpuDouble
-	// (giving an Inf sum, hence O) while the default fast path hands them to
-	// the host untouched and gets a NaN, which is not an overflow. Turning on
-	// CHECK_FPU_EXTRA_OVERFLOW makes the JIT clamp its operands the same way
-	// and the row aligns — measured by
-	// EeFpuFcrConsoleConformance.NanMathOverflowIsAnOperandClampModeDifference.
-	// So this flag now means "diverges at the default clamp mode", not "the
-	// recompiler has no O/SO".
+	// Rows where the fast path does not reproduce the console word. "NAN
+	// math" diverges only at the default clamp mode; see
+	// DISABLED_NanMathOverflowIsAnOperandClampModeDifference.
 	bool bad_jit;
 };
 constexpr FlagSituation kFlagSituations[] = {
@@ -443,7 +435,7 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_EnginesAgreeExceptOnTheOverflowFlags)
 			<< "the engines now AGREE. If the JIT started clamping its operands "
 			   "at the default clamp mode, drop this row from "
 			   "kFcrEngineDivergences.";
-		// Pin WHICH side is right, so a future "fix" that aligns them by
+		// Pin which side is right, so a future "fix" that aligns them by
 		// removing the interpreter's flags fails here instead of passing.
 		EXPECT_EQ(got[0], s.fcr31)
 			<< "[interp] must stay the console-matching side";
@@ -509,8 +501,7 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_NanMathOverflowIsAnOperandClampModeDif
 		   "fpuDouble does must reproduce the interpreter's O|SO exactly -- if "
 		   "this fails the divergence is NOT the operand-clamp axis and the "
 		   "attribution above is wrong";
-	// The value is identical in all three legs, which is precisely why this
-	// divergence stayed invisible until FCR31 was read back.
+	// The value is identical in all three legs; only FCR31 moves.
 	EXPECT_EQ(res[0], 0x7F7FFFFFu);
 	EXPECT_EQ(res[1], res[0]);
 	EXPECT_EQ(res[2], res[0]);
@@ -519,36 +510,17 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_NanMathOverflowIsAnOperandClampModeDif
 // ---------------------------------------------------------------------------
 // The O/U class, engine against engine.
 //
-// The two console rows above are one window into a whole family: FCR31's
-// overflow and underflow maintenance, which pcsx2/FPU.cpp performs on EVERY
-// arithmetic op and the recompilers performed on none. Three distinct
-// behaviours live in the interpreter and all three are testable without a
-// capture, because the interpreter is the reference side here:
+// The console rows above are one window into a family: the FCR31 overflow and
+// underflow maintenance pcsx2/FPU.cpp performs on every arithmetic op and the
+// recompilers perform on none. It needs no capture, because the interpreter is
+// the reference side; the three behaviours it implements are the three groups
+// of kFamCases below.
 //
-//   1. the ten ops that call checkOverflow(result, O|SO) and then
-//      checkUnderflow(result, U|SU) -- ADD/SUB/MUL, the A-forms ADDA/SUBA/
-//      MULA, and the multiply-accumulates MADD/MSUB/MADDA/MSUBA. On an Inf
-//      result they set O|SO and RETURN, leaving U alone; otherwise they CLEAR
-//      O and then clear (or set) U.
-//   2. ABS/NEG/MAX/MIN, which clearFPUFlags(O|U) and nothing else.
-//   3. DIV/SQRT/RSQRT, which touch I and D but pass 0 to checkOverflow, so
-//      O and U must survive them untouched. These are the negative controls,
-//      and they are live ones: rows 1 and 2 in the same table prove the probe
-//      can see an FCR31 change at all, so "unchanged" here means preserved
-//      rather than unobserved.
-//
-// The clear in (1) and (2) is observable on its own -- preset O and U through
-// ctc1 (both are in the writable mask) and run a non-overflowing op. That is
-// why the pre-state below is 0x0100C001 rather than the bare fixed-ones word:
-// it makes set, clear and preserve three distinguishable outcomes instead of
-// two.
-//
-// The underflow half of (1) is deliberately NOT exercised here: FZ is set in
-// every FP environment PCSX2 runs the EE under (DAZ+FTZ+ChopZero is the
-// shipping default, and both ScopedFpEnv kinds this file uses keep FZ on), so
-// no denormal result can reach checkUnderflow and U is only ever cleared. What
-// happens with FZ off is the denormal-operand question -- a separate work
-// item -- and is pinned by DISABLED_UnderflowFlagsNeedFzOff below.
+// Only the overflow half is exercised. FZ is set in every FP environment PCSX2
+// runs the EE under -- DAZ+FTZ+ChopZero is the shipping default and both
+// ScopedFpEnv kinds this file uses keep FZ on -- so no denormal result can
+// reach checkUnderflow and U is only ever cleared.
+// DISABLED_UnderflowFlagsNeedFzOff pins the FZ-off half.
 namespace
 {
 enum FamOp
@@ -581,7 +553,7 @@ struct FamCase
 	u32 want_fcr31;
 };
 
-// No row here overflows the intermediate PRODUCT of a multiply-accumulate:
+// No row here overflows the intermediate product of a multiply-accumulate:
 // that corner is a deliberate default-clamp-mode divergence between the
 // engines (see recMADD_S_xmm in iFPU-arm64.cpp, pinned by
 // EeRecFpu.MaddSProductOverflowDefaultModeMatchesX86Jit), and pulling it in
@@ -623,7 +595,9 @@ constexpr FamCase kFamCases[] = {
 	{"MIN.S clears O|U",  FA_MIN,   0, kOne,    kTwo, kFcr31FixedOnes},
 
 	// (3) Negative controls -- the divide unit passes 0 to checkOverflow, so
-	// O and U must come out exactly as they went in.
+	// O and U must come out exactly as they went in. Groups (1) and (2) above
+	// move the same bits from the same pre-state, so "unchanged" here means
+	// preserved rather than unobserved.
 	{"DIV.S preserves",   FA_DIV,   0, kOne, kTwo,  kOuPreset},
 	{"SQRT.S preserves",  FA_SQRT,  0, 0,    kFour, kOuPreset},
 	{"RSQRT.S preserves", FA_RSQRT, 0, kOne, kFour, kOuPreset},
@@ -700,14 +674,11 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_EnginesAgreeOnOverflowFlagsAcrossTheAr
 		const u32 jit = RunFamCase(c, true, &res[1]);
 
 		SCOPED_TRACE(::testing::Message() << c.what);
-		// The interpreter is the reference side: it is what matches the console
-		// on the two captured rows above, so pin it to the value FPU.cpp's
-		// checkOverflow/clearFPUFlags model says it must produce.
+		// Pin the interpreter to what FPU.cpp's checkOverflow/clearFPUFlags
+		// model says it must produce.
 		EXPECT_EQ(interp, c.want_fcr31) << "[interp] no longer matches the "
 		                                   "checkOverflow model in FPU.cpp";
 		EXPECT_EQ(jit, interp) << "engines disagree on FCR31 O/U";
-		// Only the flags are supposed to be under test -- if the arithmetic
-		// diverged too, the row is measuring the wrong thing.
 		EXPECT_EQ(res[1], res[0]) << "engines disagree on the RESULT, so this "
 		                             "row no longer isolates the flag write";
 		++checked;
@@ -715,13 +686,10 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_EnginesAgreeOnOverflowFlagsAcrossTheAr
 	EXPECT_EQ(checked, kFamCaseCount);
 }
 
-// Several flag writers in ONE block, which is where the recompiler's FCR31
-// block residency (GE-12) has to hold the whole model together: the arithmetic
-// family now read-modify-writes the same allocator-resident FCR31 that C.cond
-// writes the condition bit into, so a bad mask would either eat C or make SO
-// non-sticky. Both orderings are checked because they exercise different
-// halves: O has to come back down when a later op does not overflow, and it has
-// to stay up when the last one does. Neither may disturb C.
+// Several flag writers in one block, where the recompiler's FCR31 block
+// residency (GE-12) has to hold the model together: the arithmetic family
+// read-modify-writes the same allocator-resident FCR31 that C.cond writes the
+// condition bit into, so a bad mask would either eat C or make SO non-sticky.
 // TRIPWIRE -- see the O/SO rejection note above.
 TEST(EeFpuFcrConsoleConformance, DISABLED_OverflowFlagsComposeAcrossOneBlock)
 {
@@ -776,7 +744,7 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_OverflowFlagsComposeAcrossOneBlock)
 // The underflow half of checkUnderflow(result, U|SU), which needs a denormal
 // result and therefore needs FZ off. DISABLED because it is the denormal-
 // operand work item, not this one: with FZ off the two engines also disagree
-// on the VALUE (the interpreter flushes the denormal to signed zero inside
+// on the value (the interpreter flushes the denormal to signed zero inside
 // checkUnderflow, the recompilers keep it), and pinning the flag without the
 // value would assert half a behaviour. Force-enable to see the current state.
 TEST(EeFpuFcrConsoleConformance, DISABLED_UnderflowFlagsNeedFzOff)

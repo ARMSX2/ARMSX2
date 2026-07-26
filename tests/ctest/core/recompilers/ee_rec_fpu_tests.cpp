@@ -429,8 +429,8 @@ TEST(EeRecFpu, CvtWNegativeNanSaturatesToIntMin)
 
 // ----- SQRT.S sticky-flag handling -----------------------------------
 //
-// PS2 SQRT.S clears the I|D cause flags unconditionally and sets I|SI when
-// Ft is negative non-zero (interp SQRT_S, FPU.cpp; CHECK_FPU_EXTRA_FLAGS is
+// PS2 SQRT.S clears the I|D cause flags unconditionally and sets I|SI whenever
+// Ft's sign bit is set (interp SQRT_S, FPU.cpp; CHECK_FPU_EXTRA_FLAGS is
 // hardcoded on). Run()'s auto-diff does not gate on fprc[31], so assert the
 // flag bits directly on both snapshots (they must agree — the JIT matches
 // interp). Result value (sqrt(|Ft|)) is unchanged and stays in the auto-diff.
@@ -478,13 +478,11 @@ TEST(EeRecFpu, SqrtSPositiveClearsStaleIDFlags)
 // Found by a randomized SQRT.S differential, which is why a case this small
 // went unnoticed: every hand-written SQRT.S test above uses +/-4.0.
 //
-// The FLAG half of this used to be asserted here as "no I|SI, the zero path is
-// not the negative path", on nothing but the two engines agreeing. That was
-// wrong: ps2autotests' sqrt.expected prints results only, never FCR31, so it
-// could not have said either way. A first-party capture that does record FCR31
-// (fpmatrix cases 226/227) shows the console raising I|SI here. It now lives
-// in SqrtSInvalidFlagFollowsTheSignBitAlone below, which owns the whole rule;
-// this test keeps the value and asserts only that D stays clear.
+// The flag half used to be asserted here as "no I|SI", on nothing but the two
+// engines agreeing; ps2autotests' sqrt.expected prints results only, never
+// FCR31. The console does raise I|SI on -0, and the rule now lives in
+// SqrtSInvalidFlagFollowsTheSignBitAlone below. This test keeps the value and
+// asserts only that D stays clear.
 TEST(EeRecFpu, SqrtSOfNegativeZeroIsPositiveZero)
 {
 	EeRecTestHarness h;
@@ -500,16 +498,12 @@ TEST(EeRecFpu, SqrtSOfNegativeZeroIsPositiveZero)
 }
 
 // ----- SQRT.S's I flag keys off the sign bit, not the exponent --------
-// The rule, from a first-party PS2 capture that records FCR31 alongside the
-// result (~/.claude/projects/.../captures/fpmatrix, corpus 62dd6882, the 38
-// SQRT.S cases):
-//
-//     SQRT.S raises I|SI whenever Ft's SIGN BIT is set. Full stop. The
-//     exponent field plays no part.
-//
-// So -0.0 and the negative denormals -- which are flushed to -0 before the op
-// and produce +0, a perfectly ordinary result -- still raise invalid-operation.
-// Every capture row agrees; the ten below are the sign x exponent matrix:
+// From a first-party PS2 capture that records FCR31 alongside the result
+// (corpus 62dd6882, the 38 SQRT.S cases): SQRT.S raises I|SI whenever Ft's
+// sign bit is set, whatever the
+// exponent. So -0.0 and the negative denormals, flushed to -0 before the op
+// and producing an ordinary +0, still raise invalid-operation. Every capture
+// row agrees; the ten below are the sign x exponent matrix:
 //
 //     case 226  sqrt 00000000  ->  00000000/01000001    +0
 //     case 227  sqrt 80000000  ->  00000000/01020041    -0          <- I|SI
@@ -523,23 +517,9 @@ TEST(EeRecFpu, SqrtSOfNegativeZeroIsPositiveZero)
 //     case 241  sqrt 80800000  ->  20000000/01020041    -MIN_NORMAL <- I|SI
 //
 // 0x01020041 is I|SI plus FCR31's two always-set bits (0x01000001); 0x01000001
-// is those two bits alone. The positive rows are CONTROLS and they are why this
-// is a matrix rather than two rows: the fix is a deletion (a gate on the
-// exponent field comes out of the flag test), and a deletion that went too far
-// -- dropping the sign test as well -- would raise I on every SQRT.S. Nothing
-// but the positive rows would notice.
-//
-// Those controls are live, not decorative, and that was measured rather than
-// assumed: with the sign test also deleted from both engines, all six positive
-// rows fail on both and the four negative rows still pass. The two -0/-denormal
-// rows were likewise seen failing before the fix (0x01000001 against
-// 0x01020041, both engines) and passing after.
-//
-// Both engines used to gate the flag on `exp != 0 && sign`, so both missed
-// exactly the two rows where the sign is set and the exponent is zero. x86's
-// recSQRT_S_xmm (iFPU.cpp) has always tested MOVMSKPS's sign bit alone, as has
-// the FULL-mode DOUBLE path in iFPUd-arm64.cpp -- upstream's x86 JIT is the
-// only column in the capture that got these two rows right.
+// is those two bits alone. The positive rows are controls: a deletion that took
+// the sign test out along with the exponent gate would raise I on every SQRT.S,
+// and nothing but those rows would catch it.
 namespace {
 struct SqrtFlagRow { u32 ft, result, fcr31; const char* what; };
 constexpr SqrtFlagRow kSqrtFlagRows[] = {
@@ -912,13 +892,11 @@ TEST(EeRecFpu, MsubaSSubtractsProductFromAccumulator)
 
 // ----- MADDA/MSUBA must NOT clamp the intermediate product -----------
 //
-// Interp MADD_S/MSUB_S route the fs*ft product through fpuDouble (clamping it
-// to +-fMax) before the accumulate, but MADDA_S/MSUBA_S (FPU.cpp) add the raw
-// product directly and overflow-check only the final ACC. Clamping the product
-// in all four ops diverges when fs*ft overflows: an overflowing product
-// clamped to +fMax cancels against an opposite-signed ACC (-> 0) instead of
-// overflowing the accumulate (-> +-fMax). Run()'s auto-diff compares ACC, and
-// these cases are chosen so JIT and interp agree only without the product clamp.
+// A product clamped to +-fMax cancels against an opposite-signed ACC (-> 0)
+// instead of overflowing the accumulate (-> +-fMax), and these cases are chosen
+// so that only the unclamped behaviour survives. Neither engine clamps it any
+// more; the interpreter rounds the product to an EE single and stops there if
+// it overflowed (eeMulAccumulate).
 // The next four all turn on the raw product reaching the accumulator as Inf,
 // which only happens at round-to-nearest: round-toward-zero, the production
 // mode, rounds an overflowing product to +/-FLT_MAX instead. Under that mode

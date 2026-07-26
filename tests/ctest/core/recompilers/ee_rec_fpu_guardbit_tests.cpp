@@ -13,8 +13,8 @@
 // CHECK_FPU_GUARDED / fpuGuardedAddSub option, which is ON by default (games
 // like True Crime NYC and Jak 3 misrender without it, and per-game flagging
 // proved impractical) but can be turned off globally for EE-heavy titles that
-// don't need it. These tests run under the default (ON); DisableEmitsPlainOp
-// at the bottom pins the opt-out path.
+// don't need it. These tests run under the default (on);
+// DisableEmitsPlainOpMatchingInterp at the bottom pins the opt-out path.
 //
 // THESE ARE JIT-ONLY TESTS. The shared interpreter's ADD_S/SUB_S (FPU.cpp) is a
 // plain host float + float (fpuDouble() returns float and does no masking),

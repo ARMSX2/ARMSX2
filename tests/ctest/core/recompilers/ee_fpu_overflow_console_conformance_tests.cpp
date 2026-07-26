@@ -24,14 +24,10 @@
 // engine-vs-engine divergence is not. The console column is therefore carried
 // as data and asserted only by the DISABLED tripwire at the bottom.
 //
-// SQRT.S is the one op that has left this compromise. Exponent 255 is an
-// ordinary binade, so its operands never needed saturating at all: both engines
-// now compute sqrt(|Ft|/4)*2 and match the console exactly, without widening to
-// double and without changing any operand whose exponent field is <= 254. That
-// is what moved rows 44 and 45 out of the value-only column below. The same
-// argument is available to ABS.S (see the DISABLED EeFpuAbsNegClamp tripwire)
-// but NOT to the arithmetic ops, whose results genuinely exceed what the host
-// single can hold.
+// SQRT.S has left this compromise: both engines scale instead of clamping and
+// match the console, which is what moved rows 44 and 45 out of the value-only
+// column below. ABS.S likewise (ee_fpu_absneg_clamp_tests.cpp). The arithmetic
+// ops cannot follow: their results do exceed what a host single can hold.
 //
 // The measured console divergences, all shared by both engines and all
 // deliberate, for the record:
@@ -235,11 +231,9 @@ TEST(EeFpuOverflowConsole, EnginesAgreeExceptOnTheDocumentedRows)
 }
 
 // ---------------------------------------------------------------------------
-// ENABLED. Classifies the divergence list by measurement rather than by
-// assertion in a comment: every listed row must close when the operand clamp
-// is on. The else-branch is the liveness clause for any future entry that does
-// NOT close -- a defect rather than the mode axis, which is what rows 44/45
-// were before SQRT gained its clamp.
+// ENABLED. Every listed row must close when the operand clamp is on. The
+// else-branch covers a future entry that does not close: that would be a
+// defect rather than the mode axis.
 // ---------------------------------------------------------------------------
 TEST(EeFpuOverflowConsole, OperandClampHealsEveryDocumentedDivergence)
 {
@@ -300,32 +294,20 @@ TEST(EeFpuOverflowConsole, DefaultClampModeSaturatesToFltMaxOnBothEngines)
 }
 
 // ---------------------------------------------------------------------------
-// REGRESSION TEST for the defect this capture surfaced, and then for the fix.
+// Both engines against the console on every SQRT row in the capture.
 //
-// Round one: recSQRT_S_xmm was the one emitter in iFPU-arm64.cpp that never
-// clamped its operand, so an exponent-255 Ft reached Fsqrt as a host +Inf and
-// fpuClampResult flattened the result to 0x7F7FFFFF, while the interpreter's
-// sqrt(fpuDouble(Ft)) landed two binades away at 0x5F7FFFFF. SQRT was given a
-// clamp to match, and the engines agreed -- on 0x5F7FFFFF, which is not what
-// the console returns either. Agreement is a weaker property than accuracy and
-// that round bought it at the cost of accuracy.
+// The capture surfaced this as a clamp defect: recSQRT_S_xmm was the one
+// emitter in iFPU-arm64.cpp that never clamped its operand, so an exponent-255
+// Ft reached Fsqrt as a host +Inf and fpuClampResult flattened the result to
+// 0x7F7FFFFF, while the interpreter's sqrt(fpuDouble(Ft)) gave 0x5F7FFFFF.
+// Clamping SQRT too made both engines say 0x5F7FFFFF, which is not the console
+// value either. They scale instead now -- see SQRT_S (pcsx2/FPU.cpp) and
+// recSQRT_S_xmm (pcsx2/arm64/iFPU-arm64.cpp).
 //
-// Round two, what this now pins: neither engine clamps this operand. Both
-// compute sqrt(|Ft|/4)*2, which keeps operand and result inside the ordinary
-// single range without widening to double -- exponent 255 is an ordinary binade
-// on the EE, so there was never anything here to saturate. See SQRT_S
-// (pcsx2/FPU.cpp) and recSQRT_S_xmm (pcsx2/arm64/iFPU-arm64.cpp).
-//
-// Before the fix this failed on rows 44 and 45 (console 5fb504f3 / 5f800000,
-// both engines 5f7fffff) and passed on row 46, whose Ft has exponent field 254
-// and so never reached the clamp. Row 46 is therefore the negative control for
-// the scaling branch's condition: if the branch were simply always taken, or
-// the condition inverted, row 46 would move.
-//
-// The console value is asserted, not merely engine agreement -- agreement can
-// always be reached by degrading whichever engine is nearer silicon, which is
-// how round one went wrong. Both clamp modes are checked because the old clamp
-// was gated on CHECK_FPU_OVERFLOW and the replacement deliberately is not.
+// Rows 44 and 45 failed until then (console 5fb504f3 / 5f800000, both engines
+// 5f7fffff); row 46's Ft has exponent field 254, never reached the clamp, and
+// passed throughout. Both clamp modes are checked because the clamp this
+// replaced was gated on CHECK_FPU_OVERFLOW.
 // ---------------------------------------------------------------------------
 TEST(EeFpuOverflowConsole, SqrtMatchesConsoleOnEveryCapturedOperand)
 {
@@ -374,28 +356,19 @@ TEST(EeFpuOverflowConsole, SqrtMatchesConsoleOnEveryCapturedOperand)
 }
 
 // ---------------------------------------------------------------------------
-// The same property as above, over the WHOLE exponent-255 class rather than the
-// three patterns the capture happens to contain.
+// The same property over the whole exponent-255 class rather than the three
+// patterns the capture happens to contain. As host bit patterns those words
+// are infinities, quiet NaNs and signalling NaNs; to the EE they are all large
+// finite floats, so the pool carries every shape. The signalling ones are the
+// half a host-NaN-aware implementation gets wrong -- see recSQRT_S_xmm
+// (iFPU-arm64.cpp) for why the clamp they replaced had to be an integer Umin
+// rather than an Fminnm.
 //
-// This exists because the class splits on an axis the capture cannot see. As
-// HOST bit patterns, exponent-255 words are infinities, quiet NaNs and
-// signalling NaNs; to the EE they are all just large finite floats. The old
-// arm64 clamp had to be an integer Umin rather than an Fminnm precisely because
-// of that split -- FMINNM only prefers the number against a QUIET NaN, while a
-// signalling operand comes back merely quieted, so half the mantissa space
-// (4194303 of the 8388608 positive patterns) would have passed through a clamp
-// that was supposed to catch it. Testing the exponent FIELD, as both engines
-// now do, never asks the host what kind of NaN it thinks it is holding, so the
-// whole taxonomy should be irrelevant -- and this is what proves it.
-//
-// Expected values are correctly-rounded square roots computed by exact integer
-// arithmetic (math.isqrt on the significand, round-to-nearest-even, which is
-// the divide unit's mode), NOT by a host float, so they cannot inherit the
-// behaviour under test. That model was validated against silicon on the six
-// operands the capture does witness -- marked `true` below -- and agreed on all
-// six including the exponent-254 control. The three unwitnessed rows are
-// therefore computed expectations, not measurements; they are here for class
-// coverage and are flagged as such.
+// The wanted values are correctly-rounded square roots computed by exact
+// integer arithmetic (math.isqrt on the significand, round-to-nearest-even,
+// the divide unit's mode) rather than by a host float. The six marked `true`
+// were read off silicon; the other three are computed only, for class
+// coverage.
 // ---------------------------------------------------------------------------
 TEST(EeFpuOverflowConsole, SqrtMatchesConsoleOnEveryExponent255Operand)
 {
@@ -421,8 +394,7 @@ TEST(EeFpuOverflowConsole, SqrtMatchesConsoleOnEveryExponent255Operand)
 		{0x7FC00000u, 0x5F9CC471u, 0x5F9CC470u, true,  "exp255 mant 0x400000 (host +qNaN, smallest)"},
 		{0x7FFFFFFFu, 0x5FB504F3u, 0x5FB504F2u, true,  "+EEMAX        (host +qNaN, largest)"},
 		{0xFFFFFFFFu, 0x5FB504F3u, 0x5FB504F2u, true,  "-EEMAX        (host -qNaN, largest)"},
-		// CONTROL: exponent field 254, so the scaling branch must NOT fire.
-		// If it does, this row comes back one binade low.
+		// Control: exponent field 254, below the scaling branch.
 		{0xFF7FFFFFu, 0x5F7FFFFFu, 0x5F7FFFFFu, true,  "-FLT_MAX      (exp 254 -- CONTROL)"},
 	};
 
@@ -471,7 +443,7 @@ TEST(EeFpuOverflowConsole, SqrtMatchesConsoleOnEveryExponent255Operand)
 
 // ---------------------------------------------------------------------------
 // TRIPWIRE for the later hardware-alignment stage. Both engines, every row,
-// against the console. Expected to fail on 37 of 57 rows today for the three
+// against the console. Expected to fail on 35 of 57 rows today for the three
 // documented reasons at the top of this file.
 // ---------------------------------------------------------------------------
 TEST(EeFpuOverflowConsole, DISABLED_AllRowsMatchConsole)

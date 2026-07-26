@@ -468,7 +468,27 @@ namespace R5900
 						const int way = addr & 0x1;
 						CacheLine line = cache.lineAt(index, way);
 
-						line.tag.setAddr(cpuRegs.CP0.n.TagLo);
+						// TagLo carries a guest physical page. Our tags do not: they hold the
+						// host pointer the fill translated to (CacheLine::load stores `ppf`),
+						// which is what writeBackIfNeeded dereferences, so copying the guest
+						// word in raw aimed a 64-byte store at an address the guest chose --
+						// setAddr zeroes the top 32 bits, so somewhere below 4 GiB: an
+						// emulator crash normally, or a write into whatever happened to be
+						// mapped there. Translate it the way a fill does instead, through the
+						// KSEG0 alias of the physical page (Memory.cpp maps 0x80000000 onto
+						// physical 0), so the write-back lands at the physical address the
+						// guest named, and take isValidPFN from the same translation so the
+						// two cannot disagree. A tag that does not resolve to plain memory --
+						// an MMIO handler page, or a physical address that does not exist --
+						// is marked unbacked; the line still caches and reports its flags,
+						// and loses its data on eviction (see the comment on CacheTag).
+						const u32 pageTag = cpuRegs.CP0.n.TagLo & ~static_cast<u32>(CacheTag::ALL_BITS);
+						const u32 alias = 0x80000000u | (pageTag & 0x1FFFFFFFu);
+						const VTLBVirtual vmv = vtlbdata.vmap[alias >> VTLB_PAGE_BITS];
+						const bool backed = !vmv.isHandler(alias);
+
+						line.tag.setValidPFN(backed);
+						line.tag.setAddr(backed ? vmv.assumePtr(alias) : static_cast<uptr>(pageTag));
 						line.tag.rawValue &= ~CacheTag::ALL_FLAGS;
 						line.tag.rawValue |= (cpuRegs.CP0.n.TagLo & CacheTag::ALL_FLAGS);
 
