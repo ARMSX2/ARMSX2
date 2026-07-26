@@ -88,6 +88,19 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
 
     fun refresh() {
         val snapshot = runCatching { parse(NativeApp.getAchievementsJSON().orEmpty()) }.getOrNull()
+        // Remember this game's progress while it is loaded — the core only reports achievements for
+        // the running VM, so this poll is the only moment the numbers exist. The library reads them
+        // back from PlayTime to show progress on games that are not running.
+        if (snapshot != null && snapshot.items.isNotEmpty()) {
+            runCatching {
+                com.armsx2.PlayTime.recordAchievements(
+                    com.armsx2.runtime.MainActivityRuntime.currentGame.value?.serial
+                        ?: NativeApp.getGameSerial(),
+                    snapshot.items.count { it.unlocked },
+                    snapshot.items.size,
+                )
+            }
+        }
         if (snapshot != null) state.value = snapshot.copy(
             richPresence = runCatching { NativeApp.getRichPresence() }.getOrDefault(""),
             // Preserve the transient confirm-dialog state across the 3s poll.

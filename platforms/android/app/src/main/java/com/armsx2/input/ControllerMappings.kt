@@ -839,6 +839,9 @@ object ControllerMappings {
         LOAD_STATE("pad.loadstate.keycode", "Quick Load State"),
         CYCLE_SLOT("pad.cycleslot.keycode", "Cycle Save Slot"),
         TEXTURE_DUMP("pad.texdump.keycode", "Toggle Texture Dumping"),
+        // Bindable screenshot, so it can live on a spare button (L3 is the usual pick) instead of
+        // the Android system gesture, which interrupts play. Writes a PNG to the snapshots folder.
+        SCREENSHOT("pad.screenshot.keycode", "Screenshot"),
         // Toggles the whole on-screen performance overlay (FPS/CPU/GPU/etc.) via
         // the same path as the on-screen OSD button, so the two stay in sync.
         TOGGLE_OSD("pad.toggleosd.keycode", "Cycle Perf Stats (OSD)"),

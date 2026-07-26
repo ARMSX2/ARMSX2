@@ -25,7 +25,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -321,6 +325,8 @@ fun AppTab() {
             onChange = { BootLogoPreferences.set(it) },
         )
 
+        BackupRestoreRows()
+
         ToggleRow(
             label = str("app.blockHome"),
             value = com.armsx2.ui.ScreenPinning.enabled.value,
@@ -550,6 +556,115 @@ private fun ClearCacheRow() {
                 Text(str("app.clearCache"), style = MaterialTheme.typography.titleMedium)
                 Text(
                     status.ifEmpty { str("app.clearCache.desc") },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** Export / import everything a reinstall would destroy: save states, memory cards, artwork,
+ *  per-game settings, controller profiles, patches and every preference. ROMs and BIOS are left
+ *  out — those live outside the app and survive on their own. See [com.armsx2.BackupManager]. */
+@Composable
+private fun BackupRestoreRows() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("") }
+
+    // Both directions run on IO: a full data root is tens to hundreds of MB and would jank (or ANR)
+    // on the main thread. `busy` blocks a second tap while one is in flight.
+    val exporter = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true
+        status = I18n.get("app.backup.working")
+        scope.launch(Dispatchers.IO) {
+            val r = runCatching {
+                context.contentResolver.openOutputStream(uri)?.use {
+                    com.armsx2.BackupManager.export(context, it)
+                } ?: com.armsx2.BackupManager.BackupResult(false, "could not open destination")
+            }.getOrElse { com.armsx2.BackupManager.BackupResult(false, it.message ?: "failed") }
+            withContext(Dispatchers.Main) {
+                busy = false
+                status = if (r.ok) I18n.get("app.backup.exported").replace("%s", r.detail)
+                         else I18n.get("app.backup.failed").replace("%s", r.detail)
+                Toast.makeText(context, status, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val importer = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true
+        status = I18n.get("app.backup.working")
+        scope.launch(Dispatchers.IO) {
+            val r = runCatching {
+                context.contentResolver.openInputStream(uri)?.use {
+                    com.armsx2.BackupManager.restore(context, it)
+                } ?: com.armsx2.BackupManager.BackupResult(false, "could not open file")
+            }.getOrElse { com.armsx2.BackupManager.BackupResult(false, it.message ?: "failed") }
+            withContext(Dispatchers.Main) {
+                busy = false
+                status = if (r.ok) I18n.get("app.backup.imported").replace("%s", r.detail)
+                         else I18n.get("app.backup.failed").replace("%s", r.detail)
+                Toast.makeText(context, status, Toast.LENGTH_LONG).show()
+                // Preferences are read once at startup, so this process would keep serving the old
+                // values and then overwrite the restored XML on its next write. Restart to adopt.
+                if (r.ok) MainActivityRuntime.restartApp(context)
+            }
+        }
+    }
+
+    val doExport = { if (!busy) exporter.launch(com.armsx2.BackupManager.suggestedName(context)) }
+    val doImport = {
+        if (!busy) importer.launch(arrayOf("application/zip", "application/octet-stream"))
+    }
+
+    BackupActionRow("💾", "app.backup.export", "app.backup.export.desc", status, busy, doExport)
+    BackupActionRow("📥", "app.backup.import", "app.backup.import.desc", "", busy, doImport)
+}
+
+@Composable
+private fun BackupActionRow(
+    emoji: String,
+    labelKey: String,
+    descKey: String,
+    status: String,
+    busy: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        enabled = !busy,
+        modifier = Modifier.fillMaxWidth()
+            .controllerFocusable(labelKey, RoundedCornerShape(20.dp), onConfirm = onClick),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.46f)),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                modifier = Modifier.size(46.dp),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                    Text(emoji, fontSize = 21.sp)
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(str(labelKey), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    status.ifEmpty { str(descKey) },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

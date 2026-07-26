@@ -2963,6 +2963,10 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (down) InGameOverlay.toggle()
                     return true
                 }
+                ControllerMappings.SysHotkey.SCREENSHOT -> {
+                    if (down) com.armsx2.Screenshots.capture(applicationContext)
+                    return true
+                }
                 ControllerMappings.SysHotkey.SAVE_STATE -> {
                     if (down) {
                         val slot = currentSaveSlot.value
@@ -4206,6 +4210,7 @@ open class MainActivityRuntime : ComponentActivity() {
     private fun runStickHotkey(h: ControllerMappings.SysHotkey) {
         when (h) {
             ControllerMappings.SysHotkey.MENU -> InGameOverlay.toggle()
+            ControllerMappings.SysHotkey.SCREENSHOT -> com.armsx2.Screenshots.capture(applicationContext)
             ControllerMappings.SysHotkey.SAVE_STATE -> {
                 val slot = currentSaveSlot.value
                 kotlin.concurrent.thread { runCatching { NativeApp.saveStateToSlot(slot) } }

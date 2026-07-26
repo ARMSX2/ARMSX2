@@ -17,6 +17,8 @@ internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("app.library.search", true, SettingsCategory.General),
     SettingsSearchEntry("app.library.recents", true, SettingsCategory.General),
     SettingsSearchEntry("app.library.coverSize", true, SettingsCategory.General),
+    SettingsSearchEntry("app.backup.export", true, SettingsCategory.General),
+    SettingsSearchEntry("app.backup.import", true, SettingsCategory.General),
     SettingsSearchEntry("app.blockHome", true, SettingsCategory.General),
     SettingsSearchEntry("app.theme", true, SettingsCategory.General),
     SettingsSearchEntry("app.toolbarPosition", true, SettingsCategory.General),

@@ -113,6 +113,11 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
     private fun liveCrc(): String? =
         runCatching { NativeApp.getGameCRC() }.getOrNull()
             ?.takeIf { it.length == 8 && it != "00000000" }?.uppercase()
+        // No VM, or a different game booted: identify the image directly rather than refusing.
+        // This is why installing a patch used to demand you launch the game first — the CRC was
+        // only ever read from the running VM. Blocking (reads the boot ELF), so callers must be off
+        // the main thread; import() and installSelected() both are.
+            ?: MainActivityRuntime.contextGame.value?.uri?.let { com.armsx2.DiscIdentity.crcOf(it) }
 
     /** Best known serial: the pause overlay's, then the live VM's, then the last game opened
      *  (which outlives quitting to the library, unlike the other two). */
@@ -134,11 +139,33 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
         // trailing wildcard still matches it, so the user can recognise their own file.
         val serial = bestSerial()
         val crc = liveCrc()
-        val alreadyCanonical = Regex("^[A-Z]{4}-\\d{5}_[0-9A-F]{8}").containsMatchIn(stem.uppercase())
+        // Patch::GetPnachTemplate accepts TWO canonical forms: "<SERIAL>_<CRC>*.pnach" and a bare
+        // "<CRC>*.pnach". A stem already in either form only needs its extension corrected.
+        //
+        // ★ Always build from `stem`, never from `original`. Appending to the full filename turned
+        // "F0A6D880.txt" into "F0A6D880.txt.pnach" — reported by Rei Ayanami. That name matches
+        // neither glob, so the import looked fine and could never load. It is also exactly the
+        // CRC-only case: "F0A6D880" IS a valid pnach name, so the right answer is F0A6D880.pnach.
+        val up = stem.uppercase()
+        // The prefix must be UPPERCASE to be found: the template is built with "{:08X}" and an
+        // uppercase disc serial, and WildcardMatch is case-sensitive — so "f0a6d880.pnach" is just
+        // as invisible to the core as "F0A6D880.txt.pnach" was. Uppercase the canonical prefix and
+        // leave the user's own trailing text alone so they can still recognise their file.
+        val canonicalSerialCrc = Regex("^[A-Z]{4}-\\d{5}_[0-9A-F]{8}").find(up)
+        // Exactly 8 hex digits at the start, not part of a longer hex run.
+        val leadingCrc = Regex("^[0-9A-F]{8}(?![0-9A-F])").find(up)?.value
+        fun canonicalise(prefixLength: Int) = up.take(prefixLength) + stem.drop(prefixLength)
         val requested = when {
-            alreadyCanonical -> if (original.endsWith(".pnach", true)) original else "$original.pnach"
+            canonicalSerialCrc != null -> "${canonicalise(canonicalSerialCrc.value.length)}.pnach"
+            // The stem already leads with THIS game's CRC, so it is already canonical for it.
+            leadingCrc != null && crc != null && leadingCrc == crc -> "${canonicalise(8)}.pnach"
+            // Otherwise prefer the fully-qualified form: a stem that merely happens to begin with
+            // 8 hex characters is not necessarily this game's CRC, and guessing wrong produces a
+            // file the core silently never loads.
             serial != null && crc != null -> "${serial}_$crc $stem.pnach"
-            else -> if (original.endsWith(".pnach", true)) original else "$original.pnach"
+            // Nothing better available. A leading CRC is still a valid form on its own, and for
+            // anything else the caller is warned below that it won't load until re-imported.
+            else -> "$stem.pnach"
         }
         // Cheats are gated behind EnableCheats and suppressed under RA hardcore; widescreen and
         // no-interlacing patches must not be. Route by what the file actually contains rather
@@ -158,7 +185,11 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
         }.getOrDefault(false)
         if (!success) target.delete()
         state.value = if (success) {
-            val loadable = Regex("^[A-Z]{4}-\\d{5}_[0-9A-F]{8}").containsMatchIn(target.name.uppercase())
+            // Both canonical forms count as loadable — a bare <CRC>.pnach is valid, so don't warn
+            // about it. Mirrors the naming rules above.
+            val n = target.name.uppercase()
+            val loadable = Regex("^[A-Z]{4}-\\d{5}_[0-9A-F]{8}").containsMatchIn(n) ||
+                Regex("^[0-9A-F]{8}([^0-9A-F]|$)").containsMatchIn(n)
             state.value.copy(
                 message = if (loadable) "Imported as ${target.name}."
                 else "Imported ${target.name}, but the core only loads <SERIAL>_<CRC>.pnach and " +

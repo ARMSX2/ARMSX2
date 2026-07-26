@@ -217,6 +217,31 @@ Java_kr_co_iefriends_pcsx2_NativeApp_captureGsDump(JNIEnv*, jclass, jint frames)
     Host::RunOnGSThread([n]() { GSQueueSnapshot(std::string(), n); });
 }
 
+// Save a PNG screenshot to EmuFolders::Snapshots. Same GSQueueSnapshot entry point as the GS dump
+// above, with a frame count of zero — that is the difference between "capture the command stream"
+// and "capture the picture". Exists so a screenshot can be bound to a controller button: the
+// Android system screenshot gesture interrupts play, which is the whole complaint.
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_saveScreenshot(JNIEnv* env, jclass, jstring path) {
+    if (!VMManager::HasValidVM())
+        return;
+    // An explicit path (GSQueueSnapshot honours anything ending in .png) lets the Java side know
+    // exactly which file to publish to the gallery afterwards. snaps/ is app-private and Android 11+
+    // hides Android/data from the Files app, so a screenshot nobody can find is a screenshot that
+    // may as well not exist. Empty falls back to the core's own serial+timestamp naming.
+    std::string target;
+    if (path != nullptr) {
+        const char* chars = env->GetStringUTFChars(path, nullptr);
+        if (chars) {
+            target.assign(chars);
+            env->ReleaseStringUTFChars(path, chars);
+        }
+    }
+    // Callable from the input path (UI thread) as well as a hotkey, so marshal like captureGsDump.
+    Host::RunOnGSThread([target = std::move(target)]() { GSQueueSnapshot(target, 0); });
+}
+
 // @@EEDIFF@@ Toggle the EE recompiler-vs-interpreter differential verifier (throwaway
 // diagnostic — see EEDiffVerify.h). Sets the enable flag AND clears the EE block cache so
 // blocks recompile WITH (enabled) or WITHOUT (disabled) the per-op verify hooks. With it

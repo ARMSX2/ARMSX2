@@ -978,6 +978,27 @@ private fun GameMetadata(game: GameInfo) {
         if (game.compatibility > 0) {
             Text("★".repeat(game.compatibility), color = Color(0xFFFFC857), fontSize = 9.sp, maxLines = 1)
         }
+        // Playtime and last-known achievement progress, shown only when there is something to show
+        // so an untouched library looks exactly as before. Playtime is app-side per serial; the
+        // achievement counts are whatever the game last reported while running (the core cannot be
+        // asked about a game it has not loaded).
+        val rev = com.armsx2.PlayTime.revision.value
+        val played = remember(game.serial, rev) {
+            com.armsx2.PlayTime.formatPlayed(com.armsx2.PlayTime.playedSeconds(game.serial))
+        }
+        if (played.isNotEmpty()) {
+            Text("⏳ $played", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, maxLines = 1)
+        }
+        val ach = remember(game.serial, rev) { com.armsx2.PlayTime.achievements(game.serial) }
+        ach?.let { (unlocked, total) ->
+            Text(
+                "🏆 $unlocked/$total",
+                color = if (unlocked >= total) Color(0xFFFFC857)
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                maxLines = 1,
+            )
+        }
     }
 }
 

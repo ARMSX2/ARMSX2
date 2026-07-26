@@ -122,6 +122,8 @@ public class NativeApp {
 	// Save a GS dump (.gs of GPU commands) to the snaps folder for diagnosing
 	// rendering bugs. frames <= 0 captures a single frame.
 	public static native void captureGsDump(int frames);
+	/** PNG screenshot into the snapshots folder. No-op with no VM. */
+	public static native void saveScreenshot(String pngPath);
 
 	// @@EEDIFF@@ Toggle the EE recompiler-vs-interpreter differential verifier (throwaway
 	// diagnostic). Enabling clears the EE block cache so blocks recompile with per-op
