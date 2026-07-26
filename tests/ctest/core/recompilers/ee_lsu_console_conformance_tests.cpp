@@ -105,27 +105,11 @@ void Prepare(EeRecTestHarness& h)
 	h.SetGpr128(kRt, kGarbageLo, kGarbageHi);
 }
 
-// Recorded from a real run, per engine — never derived from a rule.
-struct Divergence { const char* label; bool bad_interp, bad_jit; };
-constexpr Divergence kLoadDivergences[] = {
-	// The interpreter's LD (R5900OpcodeImpl.cpp) writes
-	// cpuRegs.GPR.r[_Rt_].UD[0] with no `!_Rt_` guard, so the following
-	// `ori rt, $0, 0` reads back the loaded quad instead of zero. All eleven
-	// of its neighbours guard: LB/LBU/LH/LHU/LW/LWU/LWL/LWR/LDL/LDR early-out
-	// on !_Rt_ and LQ routes through gpr_GetWritePtr, whose reason for
-	// existing is the dummy zero slot. The recompiler gets it right.
-	{"ld -> $0", true, false},
-};
-
-bool IsKnownBad(const char* label, bool jit)
-{
-	for (const Divergence& d : kLoadDivergences)
-	{
-		if (std::string(label) == d.label)
-			return jit ? d.bad_jit : d.bad_interp;
-	}
-	return false;
-}
+// No recorded divergences: every load case matches silicon on both engines.
+// The interpreter's LD used to write cpuRegs.GPR.r[_Rt_].UD[0] with no `!_Rt_`
+// guard, so a following `ori rt, $0, 0` read back the loaded quad instead of
+// zero; it now guards like its eleven neighbours (LB/LBU/LH/LHU/LW/LWU/LWL/
+// LWR/LDL/LDR early-out on !_Rt_, LQ routes through gpr_GetWritePtr).
 
 // Builds and runs one load case on one engine. Returns false if an opcode has
 // no encoder, so the caller can fail with a useful name.
@@ -168,7 +152,6 @@ bool RunLoadCase(const LoadCase& c, bool jit, u64& lo, u64& hi)
 // console independently rather than against the other.
 TEST(EeLsuConsoleConformance, LoadsMatchConsole)
 {
-	int diverged = 0;
 	for (int i = 0; i < kLoadCaseCount; ++i)
 	{
 		const LoadCase& c = kLoadCases[i];
@@ -177,38 +160,6 @@ TEST(EeLsuConsoleConformance, LoadsMatchConsole)
 		for (int jit = 0; jit < 2; ++jit)
 		{
 			SCOPED_TRACE(jit ? "[jit]" : "[interp]");
-			u64 lo = 0, hi = 0;
-			ASSERT_TRUE(RunLoadCase(c, jit != 0, lo, hi));
-
-			if (!IsKnownBad(c.label, jit != 0))
-			{
-				EXPECT_EQ(lo, c.lo) << "bits 63:0";
-				EXPECT_EQ(hi, c.hi) << "bits 127:64";
-			}
-			else
-			{
-				++diverged;
-				EXPECT_FALSE(lo == c.lo && hi == c.hi)
-					<< c.label << (jit ? " [jit]" : " [interp]")
-					<< " now MATCHES silicon. If LD was given the `!_Rt_` "
-					   "guard its eleven neighbours have, drop it from "
-					   "kLoadDivergences and delete the DISABLED tripwire.";
-			}
-		}
-	}
-	EXPECT_EQ(diverged, 1) << "exactly one recorded divergence";
-}
-
-// What passing looks like once LD stops writing the zero register.
-TEST(EeLsuConsoleConformance, DISABLED_AllLoadsMatchConsole)
-{
-	for (int i = 0; i < kLoadCaseCount; ++i)
-	{
-		const LoadCase& c = kLoadCases[i];
-		for (int jit = 0; jit < 2; ++jit)
-		{
-			SCOPED_TRACE(::testing::Message()
-			             << c.label << (jit ? " [jit]" : " [interp]"));
 			u64 lo = 0, hi = 0;
 			ASSERT_TRUE(RunLoadCase(c, jit != 0, lo, hi));
 			EXPECT_EQ(lo, c.lo) << "bits 63:0";

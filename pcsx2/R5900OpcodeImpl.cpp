@@ -710,7 +710,10 @@ void LD()
 	if (addr & 7) [[unlikely]]
 		RaiseAddressError(addr, false);
 
-	cpuRegs.GPR.r[_Rt_].UD[0] = memRead64(addr);
+	u64 temp = memRead64(addr);
+
+	if (!_Rt_) return;
+	cpuRegs.GPR.r[_Rt_].UD[0] = temp;
 }
 
 static const u64 LDL_MASK[8] =
