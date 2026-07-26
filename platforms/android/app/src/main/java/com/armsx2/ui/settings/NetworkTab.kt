@@ -86,7 +86,18 @@ fun NetworkTab(state: MutableState<Settings>) {
         )
         HelpText(str("network.dev9.help"))
 
-        ToggleRow(str("network.enableDev9Ethernet"), s.dev9EthEnable) {
+        // Carries a warning because an attached network adapter can stop a game seeing the pad at
+        // all: GT4 with this on loops its attract FMV and ignores every button, on screen and on a
+        // controller, with nothing to say why — the on-screen input display still shows the presses,
+        // since that is drawn host-side.
+        //
+        // The mechanism is NOT established. An earlier version of this comment blamed the IOP being
+        // busy with network modules; that does not survive the evidence, because the identical DEV9
+        // code delivered working input in this same game at 069f8a44. Under investigation as a
+        // regression somewhere in 069f8a44..94d2e3f6 — DEV9 itself is unchanged across that window,
+        // so it is a trigger rather than the cause. Warn about the effect, do not assert a cause.
+        ToggleRow(str("network.enableDev9Ethernet"), s.dev9EthEnable,
+            description = str("network.enableDev9Ethernet.desc")) {
             val currentDevice = s.dev9EthDevice.ifEmpty { "Auto" }
             apply(
                 s.copy(

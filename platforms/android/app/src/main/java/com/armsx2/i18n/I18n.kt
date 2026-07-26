@@ -708,6 +708,7 @@ val EN: Map<String, String> = mapOf(
     "network.dns2" to "DNS 2",
     "network.emulateUsbKeyboard" to "Emulate USB Keyboard",
     "network.enableDev9Ethernet" to "Enable DEV9 Ethernet",
+    "network.enableDev9Ethernet.desc" to "Only for games with online or LAN play. With the network adapter attached, some games stop responding to the controller entirely \u2014 if a game ignores every button, turn this off first.",
     "network.enableDev9VirtualHdd" to "Enable DEV9 Virtual HDD",
     "network.ethernetApi" to "Ethernet API",
     "network.ethernetDevice" to "Ethernet Device",
