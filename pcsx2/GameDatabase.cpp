@@ -801,9 +801,14 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 				// deliberate choice (their per-game/global Hardware Download Mode wins, since
 				// LoadCoreSettings runs before this). So only apply when the current value is
 				// still the default (Enabled). Enable manual HW fixes to force Accurate back.
+				// The bound is a RANGE check over the raw wire value, not an ordering by
+				// accuracy (see the GSHardwareDownloadMode comment in Config.h) — so it has
+				// to name the LAST enumerator. Asynchronous was appended after Disabled, so
+				// bounding at Disabled silently discarded a GameDB entry asking for it: the
+				// parser accepted the value and this dropped it with no diagnostic.
 				if (config.HWDownloadMode == GSHardwareDownloadMode::Enabled &&
 					value > static_cast<int>(GSHardwareDownloadMode::Enabled) &&
-					value <= static_cast<int>(GSHardwareDownloadMode::Disabled))
+					value <= static_cast<int>(GSHardwareDownloadMode::Asynchronous))
 				{
 					config.HWDownloadMode = static_cast<GSHardwareDownloadMode>(value);
 				}
