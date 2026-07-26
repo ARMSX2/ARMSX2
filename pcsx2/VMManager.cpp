@@ -2773,9 +2773,26 @@ void VMManager::LogCPUCapabilities()
 		extensions += "AVX2 ";
 	if (g_cpu.vectorISA >= ProcessorFeatures::VectorISA::AVX512F)
 		extensions += "AVX512F ";
-#ifdef ARCH_ARM64
+#elif defined(ARCH_ARM64)
+	// This arm used to sit nested *inside* the ARCH_X86 block, so it never
+	// compiled and the whole "CPU Extensions Detected" section never printed
+	// on ARM. NEON on its own says nothing — it is architectural on AArch64 —
+	// so report what actually varies across our targets: LSE (absent on the
+	// ARMv8.0 handhelds) and SVE (SPU2 selects its SVE2 path at compile time,
+	// making a mismatch here the first thing to check on a SIGILL report).
+	// cpuinfo_initialize() has already run unconditionally in
+	// CPUThreadInitialize, immediately before this function is called.
+	std::string extensions;
 	if (cpuinfo_has_arm_neon())
 		extensions += "NEON ";
+	if (cpuinfo_has_arm_atomics())
+		extensions += "LSE ";
+	if (cpuinfo_has_arm_crc32())
+		extensions += "CRC32 ";
+	if (cpuinfo_has_arm_sve())
+		extensions += "SVE ";
+	if (cpuinfo_has_arm_sve2())
+		extensions += "SVE2 ";
 #endif
 
 	StringUtil::StripWhitespace(&extensions);
@@ -2783,7 +2800,6 @@ void VMManager::LogCPUCapabilities()
 	Console.WriteLn(Color_StrongBlack, "CPU Extensions Detected:");
 	Console.WriteLnFmt("  {}", extensions);
 	Console.WriteLn();
-#endif
 
 #ifdef ARCH_ARM64
 	const size_t runtime_cache_line_size = HostSys::GetRuntimeCacheLineSize();
