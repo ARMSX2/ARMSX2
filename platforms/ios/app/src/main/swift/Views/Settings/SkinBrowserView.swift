@@ -5,16 +5,10 @@ import SwiftUI
 
 struct SkinBrowserView: View {
     @StateObject private var catalog = SkinCatalog()
-    @StateObject private var installer: SkinInstaller
+    @StateObject private var installer = SkinInstaller()
     @State private var searchText = ""
     @State private var errorAlert: String?
     @State private var previewSkin: CatalogSkin?
-
-    init() {
-        let catalog = SkinCatalog()
-        _catalog = StateObject(wrappedValue: catalog)
-        _installer = StateObject(wrappedValue: SkinInstaller(catalog: catalog))
-    }
 
     var body: some View {
         List {
@@ -47,7 +41,7 @@ struct SkinBrowserView: View {
             Text(errorAlert ?? "")
         }
         .sheet(item: $previewSkin) { skin in
-            SkinPreviewSheet(skin: skin, catalog: catalog)
+            SkinPreviewSheet(skin: skin)
         }
     }
 
@@ -59,7 +53,7 @@ struct SkinBrowserView: View {
     @ViewBuilder
     private func skinRow(_ skin: CatalogSkin) -> some View {
         HStack(spacing: 12) {
-            if let url = catalog.previewURL(for: skin) {
+            if let url = SkinCatalog.previewURL(for: skin) {
                 Button {
                     previewSkin = skin
                 } label: {
@@ -88,7 +82,7 @@ struct SkinBrowserView: View {
             if installer.isInstalled(skin) {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
-            } else if installer.installingName == skin.name {
+            } else if installer.installing.contains(skin.file) {
                 ProgressView()
             } else {
                 Button("Get") {
@@ -98,7 +92,7 @@ struct SkinBrowserView: View {
                 .controlSize(.small)
             }
 
-            if let error = installer.errors[skin.name] {
+            if let error = installer.errors[skin.file] {
                 Button {
                     errorAlert = error
                 } label: {
@@ -122,12 +116,11 @@ struct SkinBrowserView: View {
 
 private struct SkinPreviewSheet: View {
     let skin: CatalogSkin
-    let catalog: SkinCatalog
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            AsyncImage(url: catalog.previewURL(for: skin)) { image in
+            AsyncImage(url: SkinCatalog.previewURL(for: skin)) { image in
                 image.resizable().aspectRatio(contentMode: .fit)
             } placeholder: {
                 ProgressView()
