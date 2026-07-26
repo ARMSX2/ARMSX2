@@ -1776,29 +1776,29 @@ static __ri void _vuERCPR(VURegs* VU)
 	VU->p.F = p;
 }
 
+// The EFU square root takes the operand's MAGNITUDE: a negative input is rooted
+// as if positive, it is not passed through unchanged. Both recompilers do this
+// by ANDing the raw bits with absclip before FSQRT (mVU_ESQRT / mVU_ERSQRT);
+// the `p >= 0` guard here returned the operand untouched instead, so ESQRT and
+// ERSQRT of -1.0 gave -1.0 where the console gives 1.0. Masking the sign off the
+// raw bits before vuDouble is the same order the recompilers use.
 static __ri void _vuESQRT(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
+	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_] & 0x7FFFFFFF);
 
-	if (p >= 0)
-	{
-		p = sqrt(p);
-	}
+	p = sqrt(p);
 
 	VU->p.F = p;
 }
 
 static __ri void _vuERSQRT(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
+	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_] & 0x7FFFFFFF);
 
-	if (p >= 0)
+	p = sqrt(p);
+	if (p)
 	{
-		p = sqrt(p);
-		if (p)
-		{
-			p = 1.0f / p;
-		}
+		p = 1.0f / p;
 	}
 
 	VU->p.F = p;
