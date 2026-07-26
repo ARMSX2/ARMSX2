@@ -33,6 +33,12 @@ void ZeroCpuRegs()
 {
 	std::memset(&cpuRegs, 0, sizeof(cpuRegs));
 	std::memset(&fpuRegs, 0, sizeof(fpuRegs));
+	// FCR0 is a read-only implementation/revision register, seeded once by
+	// cpuReset() (pcsx2/R5900.cpp) and never written afterwards. A bare
+	// memset leaves it at zero, which no running system ever sees — and the
+	// JIT's recCFC1 reads it out of memory, so a zeroed slot would make CFC1
+	// of FCR0 look broken when it is only unseeded.
+	fpuRegs.fprc[0] = 0x00002e30;
 }
 
 } // namespace
