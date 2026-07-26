@@ -319,12 +319,39 @@ static void CloseGSRenderer()
 	}
 }
 
+// GV7-2, same hazard GSUpdateConfig documents: the back thread executes draws
+// against g_gs_device, so mutating that device from the MTGS thread — swapchain
+// resize, window recreate, vsync change — races it. Drain first. The front only
+// parses on this thread, so one drain up front quiesces the back thread for the
+// whole call. No-op when the back thread is off (the default), and g_gs_renderer
+// can legitimately be null while g_gs_device exists: the device is created first.
+static void DrainBackQueueBeforeDeviceMutation()
+{
+	if (g_gs_renderer)
+		g_gs_renderer->DrainBackQueue();
+}
+
 bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_renderer,
 	std::optional<const Pcsx2Config::GSOptions*> old_config)
 {
 	Console.WriteLn("Reopening GS with %s device", recreate_device ? "new" : "existing");
 
 	GSParseTarget()->Flush(GSState::GSFlushReason::GSREOPEN);
+
+	// The Flush above only flushes FRONT parse state — it queues the resulting
+	// draw, it does not execute it. Everything below then hands the back thread's
+	// textures to the shredder: the device-loss arm purges the texture cache and
+	// the device pool outright, and the readback arm reads the texture cache. So
+	// drain between the two.
+	//
+	// This is safe on the device-loss path, which is the one that looks alarming.
+	// The back thread cannot be wedged in the driver here: BeginPresent only
+	// reports DeviceLost off m_last_submit_failed, i.e. the driver has ALREADY
+	// declared the loss, and post-loss calls return VK_ERROR_DEVICE_LOST rather
+	// than blocking. Nor is there a backlog to chew through — SubmitVsync drains
+	// before ExecVsyncRecord and present never queues, so the queue is empty on
+	// entry and the Flush above is the only producer.
+	DrainBackQueueBeforeDeviceMutation();
 
 	if (recreate_device && !recreate_renderer)
 	{
@@ -690,18 +717,6 @@ bool GSHasDisplayWindow()
 {
 	pxAssert(g_gs_device);
 	return (g_gs_device->GetWindowInfo().type != WindowInfo::Type::Surfaceless);
-}
-
-// GV7-2, same hazard GSUpdateConfig documents: the back thread executes draws
-// against g_gs_device, so mutating that device from the MTGS thread — swapchain
-// resize, window recreate, vsync change — races it. Drain first. The front only
-// parses on this thread, so one drain up front quiesces the back thread for the
-// whole call. No-op when the back thread is off (the default), and g_gs_renderer
-// can legitimately be null while g_gs_device exists: the device is created first.
-static void DrainBackQueueBeforeDeviceMutation()
-{
-	if (g_gs_renderer)
-		g_gs_renderer->DrainBackQueue();
 }
 
 void GSResizeDisplayWindow(u32 width, u32 height, float scale)
