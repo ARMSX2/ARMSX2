@@ -69,6 +69,14 @@ public:
 	void EnableFpuFullMode();
 	void EnableFpuMulHack();
 
+	// Turns ON the (default-OFF) fpuExtraOverflow Recompiler option — GameDB
+	// eeClampMode >= 2, CHECK_FPU_EXTRA_OVERFLOW — so the JIT clamps each fpr
+	// SOURCE operand to ±fMax before the op, the way the interpreter's
+	// fpuDouble always does. The interpreter has no equivalent switch, so this
+	// is the clamp mode in which the two engines see the same operands.
+	// Restored to its previous value in the dtor.
+	void EnableFpuExtraOverflow();
+
 	// Turns OFF the (default-ON) fpuGuardedAddSub Recompiler option so the JIT
 	// emits a plain single-precision add/sub with no guard-bit masking — the
 	// opt-out perf path. Off makes the JIT bit-identical to the single-precision
@@ -364,6 +372,8 @@ private:
 	bool prev_fpu_mul_hack_ = false;
 	bool fpu_guarded_changed_ = false;
 	bool prev_fpu_guarded_ = false;
+	bool fpu_extra_overflow_changed_ = false;
+	bool prev_fpu_extra_overflow_ = false;
 };
 
 } // namespace recompiler_tests

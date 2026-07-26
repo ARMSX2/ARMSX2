@@ -70,6 +70,9 @@ EeRecTestHarness::~EeRecTestHarness()
 
 	if (fpu_guarded_changed_)
 		EmuConfig.Cpu.Recompiler.fpuGuardedAddSub = prev_fpu_guarded_;
+
+	if (fpu_extra_overflow_changed_)
+		EmuConfig.Cpu.Recompiler.fpuExtraOverflow = prev_fpu_extra_overflow_;
 }
 
 void EeRecTestHarness::SetGpr64(u32 reg_idx, u64 value)
@@ -132,6 +135,16 @@ void EeRecTestHarness::DisableFpuGuarded()
 		fpu_guarded_changed_ = true;
 	}
 	EmuConfig.Cpu.Recompiler.fpuGuardedAddSub = false;
+}
+
+void EeRecTestHarness::EnableFpuExtraOverflow()
+{
+	if (!fpu_extra_overflow_changed_)
+	{
+		prev_fpu_extra_overflow_ = EmuConfig.Cpu.Recompiler.fpuExtraOverflow;
+		fpu_extra_overflow_changed_ = true;
+	}
+	EmuConfig.Cpu.Recompiler.fpuExtraOverflow = true;
 }
 
 void EeRecTestHarness::SetStatusBits(u32 mask) { cpuRegs.CP0.n.Status.val |= mask; }
