@@ -3,7 +3,9 @@ import unittest
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
+# Repo root. This fix used to live in an iOS-only copy of GameIndex.yaml; our
+# GameDB changes go in the overlay now, which is merged over upstream's.
+ROOT = Path(__file__).resolve().parents[4]
 
 
 class TrueCrimeGameDBTests(unittest.TestCase):
@@ -18,7 +20,7 @@ class TrueCrimeGameDBTests(unittest.TestCase):
 
     def test_all_new_york_city_entries_disable_vu_flag_hack(self):
         game_index = (
-            ROOT / "app/src/main/assets/resources/GameIndex.yaml"
+            ROOT / "bin/resources-overlay/armsx2_overrides.yaml"
         ).read_text(encoding="utf-8")
 
         for serial in self.SERIALS:

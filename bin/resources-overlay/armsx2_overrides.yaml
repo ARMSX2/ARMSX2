@@ -886,14 +886,20 @@ SLES-53559:
     halfPixelOffset: 5
     nativeScaling: 2
 SLES-53616:
+  speedHacks:
+    mvuFlag: 0 # Fixes texture flickering caused by the VU Flag Hack.
   gameFixes:
   - VUSyncHack
   - FullVU0SyncHack
 SLES-53617:
+  speedHacks:
+    mvuFlag: 0 # Fixes texture flickering caused by the VU Flag Hack.
   gameFixes:
   - VUSyncHack
   - FullVU0SyncHack
 SLES-53618:
+  speedHacks:
+    mvuFlag: 0 # Fixes texture flickering caused by the VU Flag Hack.
   gameFixes:
   - VUSyncHack
   - FullVU0SyncHack
@@ -1242,6 +1248,8 @@ SLPM-66419:
     nativeScaling: 1
     roundSprite: 1
 SLPM-66473:
+  speedHacks:
+    mvuFlag: 0 # Fixes texture flickering caused by the VU Flag Hack.
   gameFixes:
   - VUSyncHack
   - FullVU0SyncHack
@@ -1306,6 +1314,8 @@ SLPM-74241:
     hwDownloadMode: 3
     nativeScaling: 2
 SLPM-74243:
+  speedHacks:
+    mvuFlag: 0 # Fixes texture flickering caused by the VU Flag Hack.
   gameFixes:
   - VUSyncHack
   - FullVU0SyncHack
@@ -1523,6 +1533,8 @@ SLUS-21087:
     halfPixelOffset: 5
     hwDownloadMode: 3
 SLUS-21106:
+  speedHacks:
+    mvuFlag: 0 # Fixes texture flickering caused by the VU Flag Hack.
   gameFixes:
   - VUSyncHack
   - FullVU0SyncHack

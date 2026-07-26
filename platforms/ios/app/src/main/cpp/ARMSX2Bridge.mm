@@ -3072,27 +3072,38 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
 // Toggle overlay visibility via position (None vs TopRight).
 // Individual OSD flags are controlled by preset in SettingsStore, not here.
 + (void)setPerformanceOverlayVisible:(BOOL)visible {
+    // Hidden in the config means the user never picked a corner, so give them one.
+    OsdOverlayPos pos = OsdOverlayPos::None;
     if (visible) {
-        GSConfig.OsdPerformancePos = EmuConfig.GS.OsdPerformancePos;
-        // If user had None in config, default to TopRight
-        if (GSConfig.OsdPerformancePos == OsdOverlayPos::None) {
-            GSConfig.OsdPerformancePos = OsdOverlayPos::TopRight;
-            EmuConfig.GS.OsdPerformancePos = OsdOverlayPos::TopRight;
-        }
-    } else {
-        GSConfig.OsdPerformancePos = OsdOverlayPos::None;
-        EmuConfig.GS.OsdPerformancePos = OsdOverlayPos::None;
+        pos = EmuConfig.GS.OsdPerformancePos;
+        if (pos == OsdOverlayPos::None)
+            pos = OsdOverlayPos::TopRight;
     }
 
     if (g_p44_settings_interface) {
-        g_p44_settings_interface->SetIntValue("EmuCore/GS", "OsdPerformancePos",
-            static_cast<int>(EmuConfig.GS.OsdPerformancePos));
+        g_p44_settings_interface->SetIntValue("EmuCore/GS", "OsdPerformancePos", static_cast<int>(pos));
         g_p44_settings_interface->Save();
     }
+
+    // GSConfig belongs to the GS thread and EmuConfig to the CPU thread; this is
+    // called from the UI. Both live in a bitfield, so an off-thread write can drop
+    // a neighbouring flag -- including the ones that decide whether GSUpdateConfig
+    // tears the device down.
+    Host::RunOnCPUThread([pos]() {
+        EmuConfig.GS.OsdPerformancePos = pos;
+        GSConfig.OsdPerformancePos = pos;
+    });
 }
 
 + (BOOL)isPerformanceOverlayVisible {
-    return GSConfig.OsdPerformancePos != OsdOverlayPos::None;
+    // Read the INI, not GSConfig: the setter writes the INI now and hands the
+    // config update to the CPU thread, so GSConfig lags a toggle by a hop and a
+    // UI read-back would bounce the switch.
+    if (g_p44_settings_interface) {
+        return g_p44_settings_interface->GetIntValue("EmuCore/GS", "OsdPerformancePos",
+            static_cast<int>(OsdOverlayPos::None)) != static_cast<int>(OsdOverlayPos::None);
+    }
+    return EmuConfig.GS.OsdPerformancePos != OsdOverlayPos::None;
 }
 
 + (nonnull NSDictionary<NSString *, id> *)deviceStatsForAccessibility {
@@ -3147,72 +3158,46 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
 
 // Apply OSD preset — sets ALL GSConfig flags to match the preset
 + (void)applyOsdPreset:(int)preset {
-    // Clear everything first
-    GSConfig.OsdShowFPS = false;
-    GSConfig.OsdShowSpeed = false;
-    GSConfig.OsdShowVPS = false;
-    GSConfig.OsdShowCPU = false;
-    GSConfig.OsdShowGPU = false;
-    GSConfig.OsdShowResolution = false;
-    GSConfig.OsdShowGSStats = false;
-    GSConfig.OsdShowFrameTimes = false;
-    GSConfig.OsdShowVersion = false;
-    GSConfig.OsdShowHardwareInfo = false;
-    GSConfig.OsdShowIndicators = false;
-    GSConfig.OsdShowSettings = false;
-    GSConfig.OsdShowInputs = false;
-    GSConfig.OsdShowVideoCapture = false;
-    GSConfig.OsdShowInputRec = false;
+    // 1 simple: clean player readout; device stats are Swift-side.
+    // 2 detail: performance and renderer diagnostics.
+    // 3 full: closest to Android's full stats section. 0 is off.
+    const bool simple = (preset == 1);
+    const bool detail = (preset == 2);
+    const bool full = (preset == 3);
 
-    switch (preset) {
-    case 1: // simple: clean player readout; device stats are Swift-side
-        GSConfig.OsdShowFPS = true;
-        GSConfig.OsdShowSpeed = true;
-        GSConfig.OsdShowCPU = true;
-        GSConfig.OsdShowVersion = true;
-        break;
-    case 2: // detail: performance and renderer diagnostics
-        GSConfig.OsdShowFPS = true;
-        GSConfig.OsdShowVPS = true;
-        GSConfig.OsdShowSpeed = true;
-        GSConfig.OsdShowCPU = true;
-        GSConfig.OsdShowGPU = true;
-        GSConfig.OsdShowResolution = true;
-        GSConfig.OsdShowIndicators = true;
-        GSConfig.OsdShowVersion = true;
-        break;
-    case 3: // full: closest to Android's full stats section
-        GSConfig.OsdShowFPS = true;
-        GSConfig.OsdShowVPS = true;
-        GSConfig.OsdShowSpeed = true;
-        GSConfig.OsdShowCPU = true;
-        GSConfig.OsdShowGPU = true;
-        GSConfig.OsdShowResolution = true;
-        GSConfig.OsdShowGSStats = true;
-        GSConfig.OsdShowFrameTimes = true;
-        GSConfig.OsdShowVersion = true;
-        GSConfig.OsdShowHardwareInfo = true;
-        GSConfig.OsdShowIndicators = true;
-        GSConfig.OsdShowSettings = true;
-        GSConfig.OsdShowInputs = true;
-        break;
-    default: // 0 = off
-        break;
-    }
+    const bool fps = simple || detail || full;
+    const bool vps = detail || full;
+    const bool speed = simple || detail || full;
+    const bool cpu = simple || detail || full;
+    const bool gpu = detail || full;
+    const bool resolution = detail || full;
+    const bool indicators = detail || full;
+    const bool version = simple || detail || full;
+    const bool gsStats = full;
+    const bool frameTimes = full;
+    const bool hardwareInfo = full;
+    const bool settings = full;
+    const bool inputs = full;
 
-    EmuConfig.GS.OsdShowFPS = GSConfig.OsdShowFPS;
-    EmuConfig.GS.OsdShowVPS = GSConfig.OsdShowVPS;
-    EmuConfig.GS.OsdShowSpeed = GSConfig.OsdShowSpeed;
-    EmuConfig.GS.OsdShowCPU = GSConfig.OsdShowCPU;
-    EmuConfig.GS.OsdShowGPU = GSConfig.OsdShowGPU;
-    EmuConfig.GS.OsdShowResolution = GSConfig.OsdShowResolution;
-    EmuConfig.GS.OsdShowGSStats = GSConfig.OsdShowGSStats;
-    EmuConfig.GS.OsdShowFrameTimes = GSConfig.OsdShowFrameTimes;
-    EmuConfig.GS.OsdShowVersion = GSConfig.OsdShowVersion;
-    EmuConfig.GS.OsdShowHardwareInfo = GSConfig.OsdShowHardwareInfo;
-    EmuConfig.GS.OsdShowIndicators = GSConfig.OsdShowIndicators;
-    EmuConfig.GS.OsdShowSettings = GSConfig.OsdShowSettings;
-    EmuConfig.GS.OsdShowInputs = GSConfig.OsdShowInputs;
+    // Same ownership problem as setPerformanceOverlayVisible: these are bitfield
+    // members of the CPU and GS threads' configs, written here from the UI.
+    Host::RunOnCPUThread([=]() {
+        EmuConfig.GS.OsdShowFPS = GSConfig.OsdShowFPS = fps;
+        EmuConfig.GS.OsdShowVPS = GSConfig.OsdShowVPS = vps;
+        EmuConfig.GS.OsdShowSpeed = GSConfig.OsdShowSpeed = speed;
+        EmuConfig.GS.OsdShowCPU = GSConfig.OsdShowCPU = cpu;
+        EmuConfig.GS.OsdShowGPU = GSConfig.OsdShowGPU = gpu;
+        EmuConfig.GS.OsdShowResolution = GSConfig.OsdShowResolution = resolution;
+        EmuConfig.GS.OsdShowGSStats = GSConfig.OsdShowGSStats = gsStats;
+        EmuConfig.GS.OsdShowFrameTimes = GSConfig.OsdShowFrameTimes = frameTimes;
+        EmuConfig.GS.OsdShowVersion = GSConfig.OsdShowVersion = version;
+        EmuConfig.GS.OsdShowHardwareInfo = GSConfig.OsdShowHardwareInfo = hardwareInfo;
+        EmuConfig.GS.OsdShowIndicators = GSConfig.OsdShowIndicators = indicators;
+        EmuConfig.GS.OsdShowSettings = GSConfig.OsdShowSettings = settings;
+        EmuConfig.GS.OsdShowInputs = GSConfig.OsdShowInputs = inputs;
+        GSConfig.OsdShowVideoCapture = false;
+        GSConfig.OsdShowInputRec = false;
+    });
 }
 
 + (int)emulatorVolumePercent {
@@ -3443,9 +3428,9 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
     // the single-producer ring — both the CPU thread's, and this runs on the UI thread.
     //
     // The push looks redundant (ApplySettings ends in CheckForGSConfigChanges, which pushes
-    // for us) but it is not: applyOsdPreset and setPerformanceOverlayVisible still write
-    // EmuConfig.GS from the UI thread, so the reload can find nothing changed and skip its
-    // own push. Keep this until they stop doing that.
+    // for us) but it is not: applyOsdPreset and setPerformanceOverlayVisible still pre-write
+    // EmuConfig.GS, so the reload can find nothing changed and skip its own push. They are
+    // queued onto this same thread now, so ordering is defined, but the pre-write remains.
     Host::RunOnCPUThread([]() {
         VMManager::ApplySettings();
         if (MTGS::IsOpen())
