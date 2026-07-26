@@ -1033,23 +1033,29 @@ void QFSRV() {				// JayteeMaster: changed a bit to avoid screw up
 
 //*********MMI2 OPCODES***************************************
 
+// The accumulator each lane multiplies into is a SINGLE 64-bit quantity: LO's
+// low word supplies bits 0..31 and HI's low word bits 32..63. This used to be
+// modelled as two independent 32-bit accumulations, which cost the carry
+// between the halves, needed a truncating `/ 0xFFFFFFFF` where an arithmetic
+// shift belongs, and grew a +0x70000000 lane-0 addend to paper over the result.
+// x86 has always done it the right way (recPMADDW: PMULDQ + PADDQ + PMOVSXDQ),
+// and against the 64 ps2autotests PMADDW/PMSUBW captures the packed form scores
+// 64/64 where the split form scored 54/64.
+//
+// The three errata behaviours are not separable: the truncating divide's
+// off-by-one very nearly cancels the missing carry on these operands, so
+// removing either one alone scores far WORSE than leaving both in (3/64 and
+// 33/64 respectively). They come out together or not at all.
 static __fi void _PMADDW(int dd, int ss)
 {
-	s64 temp = ((s64)cpuRegs.GPR.r[_Rs_].SL[ss] * (s64)cpuRegs.GPR.r[_Rt_].SL[ss]);
-	s64 temp2 = temp + ((s64)cpuRegs.HI.SL[ss] << 32);
+	const s64 product = (s64)cpuRegs.GPR.r[_Rs_].SL[ss] * (s64)cpuRegs.GPR.r[_Rt_].SL[ss];
+	const u64 acc = (u64)cpuRegs.LO.UL[ss] | ((u64)cpuRegs.HI.UL[ss] << 32);
+	const u64 result = acc + (u64)product;
 
-	//PlayStation 2 division voodoo, for some reason only the lower half is affected
-	if (ss == 0)
-	{
-		if (((cpuRegs.GPR.r[_Rt_].SL[ss] & 0x7FFFFFFF) == 0 || (cpuRegs.GPR.r[_Rt_].SL[ss] & 0x7FFFFFFF) == 0x7FFFFFFF) &&
-			cpuRegs.GPR.r[_Rs_].SL[ss] != cpuRegs.GPR.r[_Rt_].SL[ss])
-			temp2 += 0x70000000;
-	}
-	//Multiplication error on the PS2 causes this not to be exactly >> 32 (off by 1)
-	temp2 = (s32)(temp2 / 4294967295);
-
-	cpuRegs.LO.SD[dd] = (s32)(temp & 0xffffffff) + cpuRegs.LO.SL[ss];
-	cpuRegs.HI.SD[dd] = (s32)temp2;
+	// Both halves are re-derived from the one result, so LO carries no 33rd bit
+	// of its own -- it is the sign-extended low word of the architectural value.
+	cpuRegs.LO.SD[dd] = (s32)(u32)result;
+	cpuRegs.HI.SD[dd] = (s32)(u32)(result >> 32);
 
 	if (_Rd_)
 	{
@@ -1081,16 +1087,16 @@ void PSRLVW() {
 										  (cpuRegs.GPR.r[_Rs_].UL[2] & 0x1F));
 }
 
+// Same packed 64-bit accumulator as _PMADDW, subtracting instead of adding, so
+// a borrow out of the low half reaches HI. PMSUBW never had the lane-0 addend.
 __fi void  _PMSUBW(int dd, int ss)
 {
-	s64 temp = ((s64)cpuRegs.GPR.r[_Rs_].SL[ss] * (s64)cpuRegs.GPR.r[_Rt_].SL[ss]);
-	s64 temp2 = ((s64)cpuRegs.HI.SL[ss] << 32) - temp;
+	const s64 product = (s64)cpuRegs.GPR.r[_Rs_].SL[ss] * (s64)cpuRegs.GPR.r[_Rt_].SL[ss];
+	const u64 acc = (u64)cpuRegs.LO.UL[ss] | ((u64)cpuRegs.HI.UL[ss] << 32);
+	const u64 result = acc - (u64)product;
 
-	//Multiplication error on the PS2 causes this not to be exactly >> 32 (off by 1)
-	temp2 = (s32)(temp2 / 4294967295);
-
-	cpuRegs.LO.SD[dd] = cpuRegs.LO.SL[ss] - (s32)(temp & 0xffffffff);
-	cpuRegs.HI.SD[dd] = (s32)temp2;
+	cpuRegs.LO.SD[dd] = (s32)(u32)result;
+	cpuRegs.HI.SD[dd] = (s32)(u32)(result >> 32);
 
 	if (_Rd_)
 	{

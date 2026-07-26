@@ -884,106 +884,76 @@ void recPSRAVW()
 //  Multiply / Divide / MAC - PDIV* stay interp (x86 parity); PMADD*/PMSUBW native
 // ============================================================================
 
-// These stay as REC_FUNC because production x86 stays REC_FUNC too (the
-// MMI2_RECOMPILE native code paths in pcsx2/x86/iMMI.cpp live behind a never-
-// defined macro):
+// PDIVW / PDIVBW / PDIVUW stay as REC_FUNC because production x86 does too:
+// its MMI2_RECOMPILE "native" path for these is itself `recCall(Interp::PDIV*)`
+// after a targeted `_deleteEEreg(_Rd_, 0)`, so there is no codegen to port, and
+// AArch64 NEON has no integer divide to build one from either.
 //
-//   PDIVW / PDIVBW / PDIVUW — AArch64 NEON has no integer divide, and x86's
-//     commented-out "native" path is itself `recCall(Interp::PDIV*)` after a
-//     targeted `_deleteEEreg(_Rd_, 0)`.  There is no codegen to port.
+// (MMI2_RECOMPILE itself is defined unconditionally at Config.h:1650 — an
+// earlier version of this comment called it "never-defined", which made the
+// rest of pcsx2/x86/iMMI.cpp look like dead reference code when it is in fact
+// the shipping x86 implementation.)
 //
 // PMADDUW gets a native impl below — its interp is plain u64 arithmetic (no
 // errata), so a NEON port matches interp bit-for-bit.
-//
-// PMADDW / PMSUBW get a native SCALAR impl (AX-16): the old "any fast path
-// diverges" claim was wrong — the errata division is by the CONSTANT
-// 0xFFFFFFFF, so a 64-bit SDIV against positive 0x00000000FFFFFFFF is
-// exactly the interp's C `temp2 / 4294967295` (s64 truncation toward zero;
-// the divisor is positive so the INT64_MIN/-1 overflow case can't arise),
-// and the lane-0 "division voodoo" is two logical-immediate tests. Proven
-// emittable by ARMSX2's mac backend emitPMADDWLane (Tyler Bochard, GPLv3).
 REC_FUNC(PDIVW);
 REC_FUNC(PDIVBW);
 REC_FUNC(PDIVUW);
 
-// One PMADDW/PMSUBW lane pair (dd = dest half, ss = source SL index), matching
-// MMI.cpp _PMADDW/_PMSUBW field-for-field:
-//   temp  = (s64)Rs.SL[ss] * Rt.SL[ss]
-//   acc   = temp + (HI.SL[ss] << 32)        (PMADDW; +0x70000000 lane-0 voodoo)
-//         = (HI.SL[ss] << 32) - temp        (PMSUBW; never voodoo)
-//   HI.SD[dd] = (s32)(acc / 0xFFFFFFFF)     (trunc toward zero — NOT >>32)
-//   LO.SD[dd] = (s64)LO.SL[ss] ± (s64)(s32)low32(temp)
-//       (the interp's `(s32)+(s32)` overflows are compiled as a 64-bit add of
-//        the sign-extended halves; x86 shares the exact interp path via
-//        REC_FUNC, so that UB-resolution is the cross-arch reference — pinned
-//        by EeRecMmi.PmaddwLoWrapAddAndRsAliasesRt)
-//   Rd.UD[dd] = LO.UL[dd*2] | HI.UL[dd*2] << 32
+// One PMADDW/PMSUBW lane pair (dd = dest half, ss = source word index).
 //
-// Scratches w8/w9/w10/x17 are all outside the allocatable GPR pool, and
-// armCpuRegMem is a pure [RSTATE, #imm] MemOperand (no address scratch), so
-// x17 is safe as a value register here. Lane 1 reads SL[2]/UL[2] fields that
-// lane 0's SD[0]/UD[0] stores never touch, so sequential per-lane commit
-// matches the interp's ordering under every Rd/Rs/Rt aliasing.
+// The accumulator is one 64-bit quantity per lane, not two 32-bit halves:
+//   acc       = LO.UL[ss] | HI.UL[ss] << 32
+//   result    = acc ± (s64)Rs.SL[ss] * Rt.SL[ss]      (full 64-bit, carry kept)
+//   LO.SD[dd] = (s32)result           HI.SD[dd] = (s32)(result >> 32)
+//   Rd.UD[dd] = LO.UL[dd*2] | HI.UL[dd*2] << 32, i.e. `result` itself
+//
+// This replaces a lane-split version that emitted an SDIV by 0xFFFFFFFF and a
+// conditional +0x70000000 lane-0 addend to reproduce the PS2 multiply errata.
+// Those were wrong: against the ps2autotests console captures the errata form
+// scores 54/64 and this one 64/64 (see MMI.cpp _PMADDW). The interpreter was
+// changed in the same commit, so the two engines still agree.
+//
+// Scratches w8/w9/w10 are outside the allocatable GPR pool and armCpuRegMem is
+// a pure [RSTATE, #imm] MemOperand (no address scratch). Lane 1 reads word 2 of
+// each source, which lane 0's SD[0]/UD[0] stores never touch, so sequential
+// per-lane commit matches the interp's ordering under every Rd/Rs/Rt aliasing.
 static void recPMADDWLane(int dd, int ss, bool isSub)
 {
-	// armLoadEERegPtr: lane 0 (SL[0]) substitutes a pinned reg's mirror —
+	// armLoadEERegPtr: lane 0 (word 0) substitutes a pinned reg's mirror —
 	// required under lazy-dirty (memory lower half may be stale) and a free
-	// Ldr→Mov under write-through; lane 2 (SL[2]) is upper-half → memory is
+	// Ldr→Mov under write-through; lane 1 (word 2) is upper-half → memory is
 	// always canonical there and the helper falls through to the plain Ldr.
 	armLoadEERegPtr(a64::w8, &cpuRegs.GPR.r[_Rs_].SL[ss]);
 	armLoadEERegPtr(a64::w9, &cpuRegs.GPR.r[_Rt_].SL[ss]);
+	armAsm->Smull(a64::x10, a64::w8, a64::w9);
 
-	if (!isSub && ss == 0)
-	{
-		// x17 = voodoo addend: 0x70000000 iff ((rt & 0x7FFFFFFF) is 0 or
-		// 0x7FFFFFFF) && rs != rt, else 0.
-		armAsm->And(a64::w10, a64::w9, 0x7FFFFFFF);
-		armAsm->Eor(a64::w17, a64::w10, 0x7FFFFFFF);
-		// 64-bit product of two nonzero u32 can't be zero, so x10 == 0 iff
-		// either factor was 0 iff (rt & 0x7FFFFFFF) hit a boundary value.
-		armAsm->Umull(a64::x10, a64::w10, a64::w17);
-		armAsm->Cmp(a64::w8, a64::w9);
-		// If rs != rt: flags = (x10 == 0). Else: nzcv = 0 so eq fails.
-		armAsm->Ccmp(a64::x10, 0, vixl::aarch64::NoFlag, a64::ne);
-		armAsm->Mov(a64::w17, 0x70000000);
-		armAsm->Csel(a64::x17, a64::x17, a64::xzr, a64::eq);
-	}
+	// Both loads are 32-bit, so the upper halves are zeroed and a shifted Orr
+	// splices the accumulator without masking.
+	armAsm->Ldr(a64::w8, armCpuRegMem(&cpuRegs.HI.UL[ss]));
+	armAsm->Ldr(a64::w9, armCpuRegMem(&cpuRegs.LO.UL[ss]));
+	armAsm->Orr(a64::x9, a64::x9, a64::Operand(a64::x8, a64::LSL, 32));
 
-	armAsm->Smull(a64::x10, a64::w8, a64::w9); // temp
-	armAsm->Ldr(a64::w8, armCpuRegMem(&cpuRegs.HI.SL[ss]));
 	if (!isSub)
-	{
-		armAsm->Add(a64::x8, a64::x10, a64::Operand(a64::x8, a64::LSL, 32));
-		if (ss == 0)
-			armAsm->Add(a64::x8, a64::x8, a64::x17);
-	}
+		armAsm->Add(a64::x9, a64::x9, a64::x10);
 	else
-	{
-		armAsm->Lsl(a64::x8, a64::x8, 32);
-		armAsm->Sub(a64::x8, a64::x8, a64::x10);
-	}
+		armAsm->Sub(a64::x9, a64::x9, a64::x10);
 
-	armAsm->Mov(a64::x17, 0xFFFFFFFFull);
-	armAsm->Sdiv(a64::x17, a64::x8, a64::x17);
-	armAsm->Sxtw(a64::x17, a64::w17); // HI.SD[dd] = (s32)quotient
-	armAsm->Str(a64::x17, armCpuRegMem(&cpuRegs.HI.SD[dd]));
-
-	armAsm->Ldrsw(a64::x9, armCpuRegMem(&cpuRegs.LO.SL[ss]));
-	if (!isSub)
-		armAsm->Add(a64::x9, a64::x9, a64::Operand(a64::w10, a64::SXTW));
-	else
-		armAsm->Sub(a64::x9, a64::x9, a64::Operand(a64::w10, a64::SXTW));
-	armAsm->Str(a64::x9, armCpuRegMem(&cpuRegs.LO.SD[dd]));
+	// An Asr of the 64-bit result by 32 IS the sign-extended high word, so HI
+	// needs no separate Sxtw.
+	armAsm->Sxtw(a64::x10, a64::w9);
+	armAsm->Str(a64::x10, armCpuRegMem(&cpuRegs.LO.SD[dd]));
+	armAsm->Asr(a64::x8, a64::x9, 32);
+	armAsm->Str(a64::x8, armCpuRegMem(&cpuRegs.HI.SD[dd]));
 
 	if (_Rd_)
 	{
-		// Rd.UD[dd] = the two low words just stored: LO in x9[31:0], HI
-		// inserted from x17[31:0]. Through armStoreEERegPtr, NOT a raw Str:
+		// Rd.UD[dd] is the raw result: its low word is what LO keeps and its
+		// high word is what HI keeps. Through armStoreEERegPtr, NOT a raw Str:
 		// a raw store bypassed the pin mirror, leaving a pinned Rd's mirror
 		// stale after PMADDW/PMSUBW (latent under write-through — any
 		// pin-served read of Rd afterward saw the old value; fatal under
 		// lazy-dirty, where the seam flush then clobbered the result).
-		armAsm->Bfi(a64::x9, a64::x17, 32, 32);
 		armStoreEERegPtr(a64::x9, &cpuRegs.GPR.r[_Rd_].UD[dd]);
 	}
 }
