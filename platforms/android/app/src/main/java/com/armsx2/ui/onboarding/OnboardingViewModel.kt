@@ -140,10 +140,21 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             val options = withContext(Dispatchers.IO) {
                 val children = DocumentFile.fromTreeUri(context, treeUri)?.listFiles()?.filter(DocumentFile::isFile).orEmpty()
-                children.mapNotNull { child ->
+                // Source stem -> imported stem, so the .mec/.nvm companions below can follow
+                // whatever name the BIOS actually got after sanitising/de-duplication.
+                val importedStems = HashMap<String, String>()
+                val candidates = children.mapNotNull { child ->
                     val (target, info) = importBiosFile(context, child.uri) ?: return@mapNotNull null
+                    child.name?.substringBeforeLast('.')?.lowercase()?.let { srcStem ->
+                        importedStems[srcStem] = target.name.substringBeforeLast('.')
+                    }
                     BiosCandidate(target.name, target.absolutePath, info)
                 }.sortedBy { it.name.lowercase() }
+                // The BIOS's own NVRAM/mechacon files are not BIOS images, so importBiosFile
+                // rejects them and they were dropped — the .bin arrived without the console
+                // settings that belong to it. Requested by Rei Ayanami.
+                copyBiosSiblings(context, children, importedStems)
+                candidates
             }
             val chosen = options.firstOrNull()
             state.value = if (chosen != null) {
@@ -158,6 +169,30 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                 )
             } else {
                 state.value.copy(busy = false, error = "No PlayStation 2 BIOS files were found in that folder.")
+            }
+        }
+    }
+
+    /** Copy .mec / .nvm companions in beside the BIOS they belong to, renamed to its final stem
+     *  (the core looks for them by stem). Folder import only — a single-document URI cannot see
+     *  its siblings. Mirrors BiosManagerViewModel.copyBiosSiblings. */
+    private fun copyBiosSiblings(
+        context: android.content.Context,
+        children: List<DocumentFile>,
+        importedStems: Map<String, String>,
+    ) {
+        if (importedStems.isEmpty()) return
+        val directory = MainActivityRuntime.internalBiosDir(context)
+        children.forEach { child ->
+            val name = child.name ?: return@forEach
+            val ext = name.substringAfterLast('.', "").lowercase()
+            if (ext != "mec" && ext != "nvm") return@forEach
+            val stem = importedStems[name.substringBeforeLast('.').lowercase()] ?: return@forEach
+            runCatching {
+                val target = File(directory, "$stem.$ext")
+                context.contentResolver.openInputStream(child.uri)?.use { input ->
+                    target.outputStream().use(input::copyTo)
+                }
             }
         }
     }

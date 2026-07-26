@@ -1424,7 +1424,7 @@ val EN: Map<String, String> = mapOf(
     "setup.step.appData.description.allFiles" to "Where memory cards, save states, and configs are stored. Choose Internal, an SD card, or a custom folder. (Game ROMs are added separately.)",
     "setup.step.appData.description.play" to "Where memory cards, save states, and configs are stored. Internal uses your main device storage; SD Card uses a memory card if one is present. (Game ROMs are added separately.)",
     "setup.step.appData.title" to "App Data Folder",
-    "setup.step.bios.description" to "Pick a folder of PS2 BIOS files to start playing — every BIOS inside is added.",
+    "setup.step.bios.description" to "Pick a folder of PS2 BIOS files to start playing — every BIOS inside is added, along with any matching .mec and .nvm files.",
     "setup.step.bios.title" to "BIOS Location",
     "bios.boot.title" to "Boot BIOS",
     "bios.perGame.menu" to "Per-game BIOS",

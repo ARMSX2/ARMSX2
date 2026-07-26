@@ -117,9 +117,23 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
             val imported = withContext(Dispatchers.IO) {
                 val context = getApplication<Application>()
                 var count = 0
-                DocumentFile.fromTreeUri(context, treeUri)?.listFiles()?.forEach { child ->
-                    if (child.isFile && importFile(child.uri).isSuccess) count++
+                val children = DocumentFile.fromTreeUri(context, treeUri)?.listFiles()?.filter { it.isFile }.orEmpty()
+                // Remember what each BIOS was called in the source folder AND what it ended up
+                // called here: sanitising and de-duplication can rename it, and the siblings below
+                // are matched by stem, so they have to follow the name the file actually got.
+                val importedStems = HashMap<String, String>()
+                children.forEach { child ->
+                    val result = importFile(child.uri)
+                    if (result.isSuccess) {
+                        count++
+                        val sourceStem = child.name?.substringBeforeLast('.')?.lowercase()
+                        val target = result.getOrNull()
+                        if (sourceStem != null && target != null) {
+                            importedStems[sourceStem] = target.name.substringBeforeLast('.')
+                        }
+                    }
                 }
+                copyBiosSiblings(context, children, importedStems)
                 count
             }
             if (imported == 0) {
@@ -151,6 +165,37 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
 
     fun dismissError() {
         state.value = state.value.copy(error = null)
+    }
+
+    /**
+     * Copy a BIOS's .mec / .nvm companions in alongside it.
+     *
+     * These are not BIOS images, so importFile rejects them — getBiosInfoFromFd fails and they were
+     * silently dropped, which is why importing a folder brought the .bin and left the console's
+     * NVRAM behind. The core looks for them beside the BIOS under the SAME stem, so they are
+     * renamed to follow whatever the imported BIOS ended up called. Requested by Rei Ayanami.
+     *
+     * Only reachable from a folder import: a single-document URI gives no access to its siblings.
+     */
+    private fun copyBiosSiblings(
+        context: android.content.Context,
+        children: List<DocumentFile>,
+        importedStems: Map<String, String>,
+    ) {
+        if (importedStems.isEmpty()) return
+        val directory = MainActivityRuntime.internalBiosDir(context)
+        children.forEach { child ->
+            val name = child.name ?: return@forEach
+            val ext = name.substringAfterLast('.', "").lowercase()
+            if (ext != "mec" && ext != "nvm") return@forEach
+            val stem = importedStems[name.substringBeforeLast('.').lowercase()] ?: return@forEach
+            runCatching {
+                val target = File(directory, "$stem.$ext")
+                context.contentResolver.openInputStream(child.uri)?.use { input ->
+                    target.outputStream().use(input::copyTo)
+                }
+            }
+        }
     }
 
     private fun importFile(uri: Uri): Result<File> = runCatching {
