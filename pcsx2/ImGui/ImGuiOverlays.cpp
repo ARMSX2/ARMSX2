@@ -83,10 +83,13 @@ SmallString s_speed_icon;
 SmallString s_ios_device_stats_line;
 #endif
 
-// Shrink-to-fit for the performance overlay. The widest line measured last frame decides how much
-// this frame has to come down; one frame of lag is invisible and it means we only measure once.
-static float s_osd_fit = 1.0f;
-static float s_osd_max_base_w = 0.0f;
+// Shrink-to-fit for the performance overlay. Only ever comes down, and only far enough for the widest
+// line to fit, so a value gaining a digit can't resize the block under the reader.
+static float s_osd_font_size = 0.0f;
+static float s_osd_fit_avail = -1.0f;
+static float s_osd_fit_base = -1.0f;
+static u32 s_osd_fit_lines = 0;
+static float s_osd_widest = 0.0f;
 
 constexpr ImU32 white_color = IM_COL32(255, 255, 255, 255);
 
@@ -249,32 +252,50 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 	// the top of RenderOverlays (see the note there). When every perf line is off, draw
 	// nothing and return BEFORE any draw call, so a line string cached before a pause can't
 	// linger on screen (the rebuild block below is skipped while the VM is paused, which is
-	// why toggling in the menu looked inert).
-	const bool no_perf_lines = !GSConfig.OsdShowFPS && !GSConfig.OsdShowVPS && !GSConfig.OsdShowSpeed &&
-							   !GSConfig.OsdShowResolution && !GSConfig.OsdShowCPU && !GSConfig.OsdShowGPU &&
-							   !GSConfig.OsdShowGSStats && !GSConfig.OsdShowFrameTimes && !GSConfig.OsdShowHardwareInfo &&
-							   !GSConfig.OsdShowVersion && !GSConfig.OsdShowGPUStats;
+	// why toggling in the menu looked inert). Packed rather than a chain of ors because the
+	// shrink-to-fit below needs to notice the set changing, not just emptying.
+	u32 enabled_lines =
+		(static_cast<u32>(GSConfig.OsdShowFPS) << 0) | (static_cast<u32>(GSConfig.OsdShowVPS) << 1) |
+		(static_cast<u32>(GSConfig.OsdShowSpeed) << 2) | (static_cast<u32>(GSConfig.OsdShowResolution) << 3) |
+		(static_cast<u32>(GSConfig.OsdShowCPU) << 4) | (static_cast<u32>(GSConfig.OsdShowGPU) << 5) |
+		(static_cast<u32>(GSConfig.OsdShowGSStats) << 6) | (static_cast<u32>(GSConfig.OsdShowFrameTimes) << 7) |
+		(static_cast<u32>(GSConfig.OsdShowHardwareInfo) << 8) | (static_cast<u32>(GSConfig.OsdShowVersion) << 9) |
+		(static_cast<u32>(GSConfig.OsdShowGPUStats) << 10);
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 	// A Custom preset with nothing but Device Stats ticked is reachable, and it lands here.
-	if (no_perf_lines && !ARMSX2_iOSShouldShowDeviceStatsOverlay())
-		return;
-#else
-	if (no_perf_lines)
-		return;
+	enabled_lines |= static_cast<u32>(ARMSX2_iOSShouldShowDeviceStatsOverlay()) << 11;
 #endif
+	if (enabled_lines == 0)
+		return;
 
 	const float shadow_offset = std::ceil(scale);
 
 	ImFont* const osd_font = ImGuiManager::GetOSDFont();
 	const float base_font_size = ImGuiManager::GetFontSizeStandard();
 	const float avail = GetWindowWidth() - 2.0f * margin;
-	// Only ever shrink: the user picked their size with OsdScale and we are not going to second-guess
-	// it upwards. Portrait is less than half the width of landscape, which is where this bites.
-	s_osd_fit = (avail > 0.0f && s_osd_max_base_w > avail) ? std::clamp(avail / s_osd_max_base_w, 0.5f, 1.0f) : 1.0f;
-	s_osd_max_base_w = 0.0f;
-	// Integral so we don't ask ImGui for a new font bake on every sub-pixel wobble.
-	const float font_size = std::max(1.0f, std::floor(base_font_size * s_osd_fit));
-	const float fit_norm = base_font_size / font_size;
+
+	// Deriving the size from the current text every frame is what made the block dance — the widest
+	// line changes width constantly, and right-aligned rows each move by their own share of the
+	// rescale. Start over only when the space or the line set changes; in between, ratchet and hold.
+	if (avail != s_osd_fit_avail || base_font_size != s_osd_fit_base || enabled_lines != s_osd_fit_lines)
+	{
+		s_osd_fit_avail = avail;
+		s_osd_fit_base = base_font_size;
+		s_osd_fit_lines = enabled_lines;
+		s_osd_font_size = base_font_size;
+		s_osd_widest = 0.0f;
+	}
+	else if (avail > 0.0f && s_osd_widest > avail)
+	{
+		// Widths are linear in the size, so one step gets there. Integral, or ImGui bakes a fresh
+		// atlas for every sub-pixel wobble; half size is as small as this stays readable.
+		const float needed = std::floor(s_osd_font_size * avail / s_osd_widest);
+		s_osd_font_size = std::clamp(needed, std::max(1.0f, std::floor(base_font_size * 0.5f)), s_osd_font_size);
+	}
+	s_osd_widest = 0.0f;
+
+	const float font_size = s_osd_font_size;
+	const float fit = font_size / base_font_size;
 	const float line_height = ImGuiFullscreen::GetLineHeight({ osd_font, font_size });
 
 	ImDrawList* dl = ImGui::GetBackgroundDrawList();
@@ -309,8 +330,7 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 	do \
 	{ \
 		text_size = font->CalcTextSizeA(size, std::numeric_limits<float>::max(), -1.0f, (text), nullptr, nullptr); \
-		/* Normalise back to the unshrunk width, or the factor chases its own tail every frame. */ \
-		s_osd_max_base_w = std::max(s_osd_max_base_w, text_size.x * fit_norm); \
+		s_osd_widest = std::max(s_osd_widest, text_size.x); \
 		const ImVec2 text_pos = CalculatePerformanceOverlayTextPosition(GSConfig.OsdPerformancePos, margin, text_size, GetWindowWidth(), position_y); \
 		const bool __bold_osd = GSConfig.OsdBoldText; \
 		dl->AddText(font, size, ImVec2(text_pos.x + shadow_offset, text_pos.y + shadow_offset), IM_COL32(0, 0, 0, 100), (text)); \
@@ -842,8 +862,9 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 			float min_vps = s_vps_min;
 			float max_vps = std::max(s_vps_max, min_vps + 10.0f);
 
-			// The graph has to come down with the text or it overhangs a shrunken block.
-			const float graph_scale = scale * s_osd_fit;
+			// The graph has to come down with the text or it overhangs a shrunken block. Off the size
+			// the text actually got, not the ratio we asked for, or the two disagree by up to a step.
+			const float graph_scale = scale * fit;
 
 			SmallString label_buf;
 			label_buf.format("{:.1f}", max_val);
@@ -856,7 +877,7 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 			const float legend_h = (font_size * 2.0f) + row_gap + pad;
 			const ImVec2 graph_size(200.0f * graph_scale, 60.0f * graph_scale);
 			const ImVec2 total_size(y_label_w + graph_size.x + right_label_w + 2.0f * pad, graph_size.y + legend_h + 2.0f * pad);
-			s_osd_max_base_w = std::max(s_osd_max_base_w, total_size.x * fit_norm);
+			s_osd_widest = std::max(s_osd_widest, total_size.x);
 
 			ImGui::SetNextWindowSize(total_size);
 			ImGui::SetNextWindowPos(CalculatePerformanceOverlayTextPosition(GSConfig.OsdPerformancePos, margin, total_size, GetWindowWidth(), position_y));
