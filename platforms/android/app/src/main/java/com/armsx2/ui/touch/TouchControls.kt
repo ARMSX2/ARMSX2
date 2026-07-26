@@ -758,7 +758,9 @@ object TouchControls {
     }
 
     fun resetActiveToDefault() {
-        activeLayout.value = TouchLayout.default()
+        // Per-orientation: resetting in portrait must not hand back the landscape arrangement,
+        // whose fractions put the sticks and face buttons over the picture.
+        activeLayout.value = TouchLayout.defaultFor(portrait.value)
     }
 
     /** True when a VM is up (RUNNING or PAUSED) — i.e. an in-game edit, where we
@@ -1119,6 +1121,62 @@ data class TouchLayout(val buttons: List<TouchButtonCfg>) {
             val merged = list + default().buttons.filter { it.id !in have }
             return TouchLayout(merged)
         }
+
+        /** The default for [portrait], or the landscape one otherwise. Positions are screen
+         *  fractions, so the landscape layout does not merely look cramped in portrait — it lands
+         *  in the wrong half of a much taller window, on top of the game. */
+        fun defaultFor(portrait: Boolean): TouchLayout =
+            if (portrait) defaultPortrait() else default()
+
+        /**
+         * Portrait default: controls in the lower ~60% with the game above them.
+         *
+         * Laid out to a proposal from Isshin — shoulders paired at the top of the control area,
+         * left stick and the face diamond in the middle band, D-pad and right stick along the
+         * bottom, Select/Start centred between them and L3/R3 in the outer corners. Reproducing a
+         * real pad's geography rather than compressing the landscape arrangement, which put the
+         * sticks and face buttons over the picture.
+         *
+         * Everything sits at y >= 0.35 so nothing overlaps a top-aligned portrait render, and
+         * nothing goes past y 0.95, which is where the system gesture bar lives.
+         */
+        fun defaultPortrait(): TouchLayout = TouchLayout(
+            buttons = listOf(
+                // Shoulders: paired top-left and top-right of the control area, L2/R2 above L1/R1.
+                TouchButtonCfg(TouchButtonId.L2,       0.13f, 0.37f, 56f),
+                TouchButtonCfg(TouchButtonId.L1,       0.13f, 0.46f, 56f),
+                TouchButtonCfg(TouchButtonId.R2,       0.87f, 0.37f, 56f),
+                TouchButtonCfg(TouchButtonId.R1,       0.87f, 0.46f, 56f),
+                // Left stick mid-left; face diamond mid-right.
+                TouchButtonCfg(TouchButtonId.L_STICK,  0.19f, 0.62f, 150f),
+                TouchButtonCfg(TouchButtonId.TRIANGLE, 0.75f, 0.55f, 58f),
+                TouchButtonCfg(TouchButtonId.SQUARE,   0.61f, 0.62f, 58f),
+                TouchButtonCfg(TouchButtonId.CIRCLE,   0.89f, 0.62f, 58f),
+                TouchButtonCfg(TouchButtonId.CROSS,    0.75f, 0.69f, 58f),
+                // D-pad bottom-left, right stick bottom-right — the reverse of the band above, so
+                // neither thumb has to cross the other.
+                TouchButtonCfg(TouchButtonId.DPAD,     0.21f, 0.81f, 150f),
+                TouchButtonCfg(TouchButtonId.R_STICK,  0.72f, 0.81f, 150f),
+                // Select / Start centred at the bottom, L3 / R3 tucked into the outer corners.
+                TouchButtonCfg(TouchButtonId.SELECT,   0.41f, 0.94f, 48f),
+                TouchButtonCfg(TouchButtonId.START,    0.57f, 0.94f, 48f),
+                TouchButtonCfg(TouchButtonId.L3,       0.10f, 0.94f, 44f),
+                TouchButtonCfg(TouchButtonId.R3,       0.90f, 0.94f, 44f),
+                // Opt-in extras keep the landscape default's disabled state and park in the gap
+                // between the render and the shoulders, where they are grabbable in the editor.
+                TouchButtonCfg(TouchButtonId.FAST_FORWARD, 0.30f, 0.36f, 44f, enabled = false),
+                TouchButtonCfg(TouchButtonId.MACRO1, 0.40f, 0.36f, 42f, enabled = false),
+                TouchButtonCfg(TouchButtonId.MACRO2, 0.48f, 0.36f, 42f, enabled = false),
+                TouchButtonCfg(TouchButtonId.MACRO3, 0.56f, 0.36f, 42f, enabled = false),
+                TouchButtonCfg(TouchButtonId.MACRO4, 0.64f, 0.36f, 42f, enabled = false),
+            ).let { placed ->
+                // Splice in anything the landscape default has that this list does not (pause,
+                // pressure, save/load-state buttons...) so a new widget never goes missing in
+                // portrait just because this table was written before it existed.
+                val have = placed.map { it.id }.toSet()
+                placed + default().buttons.filter { it.id !in have }
+            },
+        )
 
         /** Landscape-tuned default. Coordinates assume a 16:9-ish layout
          *  and are clamped to safe areas on edges. The user can drag in

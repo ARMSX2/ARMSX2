@@ -74,7 +74,27 @@ class EmulationSurface(context: Context) :
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         reportActualDisplayRefreshRate()
         applyFrameRatePreference()
+        pushDisplayCutoutInset(width, height)
         NativeApp.onNativeSurfaceChanged(holder.surface, width, height)
+    }
+
+    /**
+     * Tell the GS how much room a punch-hole/notch camera needs at the top.
+     *
+     * Portrait top-aligns the render so the bottom is free for touch controls, which put the image
+     * directly under the camera — it sat on the game, reported by Isshin. Sent from here because
+     * this is the one place that runs on creation AND on every rotation and resize, and the value
+     * has to be in the same surface pixels the renderer works in.
+     *
+     * Landscape sends 0: the cutout is then on a side, and shifting vertically would not help.
+     */
+    private fun pushDisplayCutoutInset(width: Int, height: Int) {
+        val inset = if (height > width && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            runCatching { rootWindowInsets?.displayCutout?.safeInsetTop ?: 0 }.getOrDefault(0)
+        } else {
+            0
+        }
+        runCatching { NativeApp.setPortraitRenderTopInset(inset) }
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {

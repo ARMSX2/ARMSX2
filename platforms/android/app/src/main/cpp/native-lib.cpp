@@ -1173,6 +1173,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setPortraitRenderTop(JNIEnv*, jclass, jbool
 
 extern "C"
 JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setPortraitRenderTopInset(JNIEnv*, jclass, jint pixels) {
+    // Height of the display cutout (punch-hole / notch camera), in surface pixels. Top-aligning a
+    // portrait render put the image directly under the camera, which sat on the game. Reported by
+    // Isshin. Only the top-align path uses it, and that path always has spare room below, so the
+    // image shifts down rather than being cropped.
+    GSSetPortraitRenderTopInset(static_cast<int>(pixels));
+}
+
+extern "C"
+JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setFrameSkip(JNIEnv *env, jclass clazz,
                                                   jint p_skip) {
     // Manual frameskip for low-end devices: present 1 of every (skip+1) frames.

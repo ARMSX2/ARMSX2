@@ -625,6 +625,11 @@ public class NativeApp {
 
 	/** GitHub #375: top-align the render in portrait (true) vs vertical-center (false). */
 	public static native void setPortraitRenderTop(boolean top);
+
+	/** Pixels to keep clear at the top of a PORTRAIT render for a punch-hole/notch camera. Taken
+	 *  from the window's display cutout; 0 on devices without one. Only affects portrait
+	 *  top-aligned output. */
+	public static native void setPortraitRenderTopInset(int pixels);
 	/** SPU2 output volume, percent (0..200). Applies live + persists. */
 	public static native void setAudioVolume(int volume);
 	/** Mute/unmute SPU2 output. Applies live + persists. */
