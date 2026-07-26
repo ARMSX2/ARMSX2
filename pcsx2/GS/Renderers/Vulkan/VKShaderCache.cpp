@@ -348,7 +348,7 @@ VKShaderCache::VKShaderCache() = default;
 VKShaderCache::~VKShaderCache()
 {
 	CloseShaderCache();
-	FlushPipelineCache();
+	FlushPipelineCache(true); // teardown: never skip, this is the last chance to persist
 	ClosePipelineCache();
 }
 
@@ -602,10 +602,28 @@ bool VKShaderCache::ReadExistingPipelineCache()
 	return true;
 }
 
-bool VKShaderCache::FlushPipelineCache()
+bool VKShaderCache::FlushPipelineCache(bool force)
 {
 	if (m_pipeline_cache == VK_NULL_HANDLE || !m_pipeline_cache_dirty || m_pipeline_cache_filename.empty())
 		return false;
+
+	// ★ Rate-limited, because this whole function is synchronous ON THE GS THREAD: it re-serialises
+	// the ENTIRE cache (measured at 777 KB on a Retroid Pocket 6) and writes it to disk, and the
+	// emulator is frozen for the duration. GetTFXPipeline triggers it every 256 new compiles with
+	// no time bound, and fast-forward blasts through content at 4x+ — hitting many new pipeline
+	// variants in a burst, crossing the threshold repeatedly, and stalling the picture for seconds
+	// right as the user drops back to normal speed. That is the reported "turn FF off and it hangs
+	// for a few seconds", and it is intermittent precisely because it depends on whether the burst
+	// crossed the counter. Losing a flush costs nothing but recompiling those pipelines on the next
+	// cold start, so throttling is strictly a win; teardown passes force=true.
+	static constexpr std::chrono::seconds MIN_FLUSH_INTERVAL{120};
+	const auto now = std::chrono::steady_clock::now();
+	if (!force && m_last_pipeline_cache_flush.time_since_epoch().count() != 0 &&
+		(now - m_last_pipeline_cache_flush) < MIN_FLUSH_INTERVAL)
+	{
+		return false;
+	}
+	m_last_pipeline_cache_flush = now;
 
 	size_t data_size;
 	VkResult res =

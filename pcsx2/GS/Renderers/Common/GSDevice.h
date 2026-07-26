@@ -1460,7 +1460,13 @@ protected:
 	std::string m_name = "Unknown";
 	FeatureSupport m_features;
 	u32 m_max_texture_size = 0;
-	RuntimeGpuProfile m_runtime_gpu_profile = RuntimeGpuProfile::Adreno;
+	// ★ Unknown, NOT Adreno. Defaulting to a real vendor meant every backend that never calls
+	// SetRuntimeGPUProfile (Vulkan, Metal, DX12 — none of them did) silently identified as Adreno,
+	// and so did desktop OpenGL on anything not-Mali. That made IsAdrenoGPUProfile() fire
+	// Adreno-only workarounds on Apple Silicon, and made IsMaliGPUProfile() permanently false under
+	// Vulkan — which quietly disabled the Tekken 5 MediaTek-Mali GameDB fix on our default renderer.
+	// Unknown means "no vendor quirks", which is the only safe thing to assume before detection.
+	RuntimeGpuProfile m_runtime_gpu_profile = RuntimeGpuProfile::Unknown;
 	// Per-vendor mobile GPU identity + GS tuning (pool sizes / ages / constrained), resolved from the
 	// GPU-profile system (sashkinbro/EmuCoreX). Drives texture/target pool sizing on Android below.
 	MobileGpuIdentity m_mobile_gpu_identity;

@@ -7,6 +7,7 @@
 
 #include "common/HashCombine.h"
 
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <optional>
@@ -27,7 +28,9 @@ public:
 	VkPipelineCache GetPipelineCache(bool set_dirty = true);
 
 	/// Writes pipeline cache to file, saving all newly compiled pipelines.
-	bool FlushPipelineCache();
+	/// Serialises the pipeline cache to disk. This is SYNCHRONOUS and runs on the GS thread, so it
+	/// is rate-limited: pass force=true only where a missed flush actually loses data (teardown).
+	bool FlushPipelineCache(bool force = false);
 
 	VkShaderModule GetVertexShader(std::string_view shader_code);
 	VkShaderModule GetFragmentShader(std::string_view shader_code);
@@ -97,6 +100,8 @@ private:
 
 	VkPipelineCache m_pipeline_cache = VK_NULL_HANDLE;
 	bool m_pipeline_cache_dirty = false;
+	/// When the cache was last serialised, so the synchronous GS-thread write can be rate-limited.
+	std::chrono::steady_clock::time_point m_last_pipeline_cache_flush{};
 };
 
 extern std::unique_ptr<VKShaderCache> g_vulkan_shader_cache;

@@ -3272,6 +3272,14 @@ bool GSDeviceVK::CheckFeatures()
 	// ro.soc.* props already folded into the profile hints (no new JNI needed).
 	const GpuProfileSelection mobile_profile = GpuProfileDetector::Resolve(
 		GSConfig.AndroidGpuProfileOverride, std::string_view(), m_device_properties.deviceName);
+	// ★ Vulkan resolved mobile_profile and pushed every OTHER piece of it into the device
+	// (MediaTek SoC, GPU identity, GS tuning) but never the runtime profile itself, so
+	// IsMaliGPUProfile()/IsAdrenoGPUProfile() answered from the default for the entire Vulkan
+	// lifetime. Consequence: ApplyAndroidGameDBOverrides()'s `IsMaliGPUProfile() && IsMediaTekSoC()`
+	// gate could never pass, so the Tekken 5 duplicated-framebuffer fix was dead on the renderer we
+	// default to on Android, and the profile printed in VK logs was whatever the default happened
+	// to be rather than the detected GPU.
+	SetRuntimeGPUProfile(mobile_profile.runtime_profile);
 	SetMediaTekSoC(mobile_profile.is_mediatek_soc);
 	force_xclipse_profile = (mobile_profile.override_mode == GpuProfileOverride::Xclipse) ||
 		(mobile_profile.runtime_profile == RuntimeGpuProfile::Xclipse);
@@ -6287,7 +6295,20 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 	if (it != m_tfx_pipelines.end())
 		return it->second;
 
+	// A cache miss compiles SYNCHRONOUSLY on the GS thread, freezing the picture for as long as the
+	// driver takes. Normally invisible (a few ms, spread out), but fast-forward runs through content
+	// at 4x+ and hits a burst of new variants at once — which is the other half of "turn fast-forward
+	// off and it hangs for a few seconds". Timed so the stall is measurable instead of inferred;
+	// only slow compiles are logged, so this costs nothing in the common case.
+	const Common::Timer::Value tfx_compile_start = Common::Timer::GetCurrentValue();
 	VkPipeline pipeline = CreateTFXPipeline(p);
+	const double tfx_compile_ms =
+		Common::Timer::ConvertValueToMilliseconds(Common::Timer::GetCurrentValue() - tfx_compile_start);
+	if (tfx_compile_ms >= 20.0)
+	{
+		Console.Warning("@@ANDROID_TFXCOMPILE@@ %.1f ms for one pipeline (n=%u since last cache flush)",
+			tfx_compile_ms, m_tfx_pipeline_compile_counter + 1);
+	}
 	m_tfx_pipelines.emplace(p, pipeline);
 
 	// Persist the pipeline cache every N new compiles so an Android OOM-kill

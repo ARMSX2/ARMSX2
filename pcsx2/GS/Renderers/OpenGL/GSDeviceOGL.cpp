@@ -820,6 +820,10 @@ bool GSDeviceOGL::CheckFeatures()
 	// Matched on the renderer, not the vendor: Apple silicon reports the vendor of whoever
 	// wrote the driver ("Mesa" under Asahi, "Apple Inc." on macOS), while an Intel Mac reports
 	// vendor "Apple Inc." with an AMD or Intel GPU. The renderer names the actual GPU.
+	//
+	// Apple silicon is a TBDR, but it is not a mobile-vendor part and must not inherit their
+	// workarounds — detected explicitly so it resolves to its own profile instead of falling
+	// through to the old not-Mali-therefore-Adreno guess.
 	else if (std::strstr(renderer_str, "Apple"))
 	{
 		Console.WriteLn(Color_StrongCyan, "GL: Apple GPU detected.");
@@ -848,7 +852,16 @@ bool GSDeviceOGL::CheckFeatures()
 	bool use_adreno_profile = IsAdrenoGPUProfile();
 	bool use_powervr_profile = IsPowerVRGPUProfile();
 #else
-	SetRuntimeGPUProfile(vendor_id_mali ? RuntimeGpuProfile::Mali : RuntimeGpuProfile::Adreno);
+	// ★ Was `vendor_id_mali ? Mali : Adreno`, which claimed ADRENO for every non-Mali desktop GPU —
+	// NVIDIA, AMD, Intel and Apple Silicon all identified as Adreno. The locals below were already
+	// correct (real per-vendor detection), so only the member misfired, which is why it hid: it
+	// surfaced as Adreno-only workarounds engaging on an M2 (reported by bmd: "GL: Adreno - routing
+	// depth feedback through the depth sampler"). Mirror the locals instead of guessing, and fall
+	// back to Unknown — desktop GPUs are not tilers and want none of the mobile vendor paths.
+	SetRuntimeGPUProfile(vendor_id_mali    ? RuntimeGpuProfile::Mali :
+						 vendor_id_adreno  ? RuntimeGpuProfile::Adreno :
+						 vendor_id_apple   ? RuntimeGpuProfile::Apple :
+											 RuntimeGpuProfile::Unknown);
 	bool use_mali_profile = vendor_id_mali;
 	bool use_adreno_profile = vendor_id_adreno;
 	bool use_powervr_profile = false;

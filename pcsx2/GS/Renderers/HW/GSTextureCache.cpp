@@ -4716,7 +4716,17 @@ void GSTextureCache::InvalidateContainedTargets(u32 start_bp, u32 end_bp, u32 wr
 				const u32 end_width = write_bw * 64;
 				const u32 end_height = ((end_page_offset / std::max(write_bw, 1U)) * GSLocalMemory::m_psm[write_psm].pgs.y) + GSLocalMemory::m_psm[write_psm].pgs.y;
 				const GSVector4i r = GSVector4i(0, 0, end_width, end_height);
-				const GSVector4i invalidate_r = TranslateAlignedRectByPage(t, start_bp, write_psm, write_bw, r, false).rintersect(t->m_valid); // it is invalidation but we need a real rect.
+				// ★ is_invalidation=TRUE. This used to pass false with the comment "it is invalidation
+				// but we need a real rect" — but when the source and destination page widths differ
+				// there IS no real rect: the source region is a staircase in destination space, so
+				// TranslateAlignedRectByPage bails and returns zero(). An empty invalidate_r then
+				// makes AddDirtyRectTarget below a no-op (a GS memory clear silently fails to
+				// invalidate the target it overlaps) and, when the dirty rect misses, lets control
+				// fall through to the delete path — destroying a target that was never read back.
+				// Passing true takes the conservative whole-row band instead: a SUPERSET, which is
+				// exactly what dirtying wants, and strictly safer than deleting. This is also the
+				// dominant emitter of the "Uneven pages mess up" spam.
+				const GSVector4i invalidate_r = TranslateAlignedRectByPage(t, start_bp, write_psm, write_bw, r, true).rintersect(t->m_valid);
 
 				if (offset == 0 || dirty_rect.rempty() || !dirty_rect.rintersect(invalidate_r).rempty())
 				{

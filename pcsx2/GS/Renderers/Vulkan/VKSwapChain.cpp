@@ -877,13 +877,32 @@ VkResult VKSwapChain::AcquireNextImage()
 
 	const bool stats = s_stats_enabled.load(std::memory_order_relaxed);
 	const Common::Timer::Value t_start = stats ? Common::Timer::GetCurrentValue() : 0;
-	const VkResult res = vkAcquireNextImageKHR(GSDeviceVK::GetInstance()->GetDevice(), m_swap_chain, UINT64_MAX,
-		m_semaphores[m_current_semaphore].available_semaphore, VK_NULL_HANDLE, &m_current_image);
+	// ★ Bounded, NOT UINT64_MAX. On Android the surface can be destroyed under us (background,
+	// rotate, fold) while the GS thread is ALREADY inside this call — at which point an infinite
+	// timeout waits forever on a window nothing will ever present to. Everything that could
+	// rebuild the swapchain is marshalled through the CPU thread, and the CPU thread is itself
+	// blocked waiting on this GS thread, so the entire VM wedges: every thread asleep, 0% CPU,
+	// and no log output ever again. That is the observed "froze the whole emulator" / "sometimes
+	// it never unpauses" failure. A finite timeout turns a permanent deadlock into a recoverable
+	// one — BeginPresent already handles VK_ERROR_SURFACE_LOST_KHR by recreating the surface.
+	// 2 s is orders of magnitude beyond any legitimate acquire (a stalled compositor is tens of
+	// ms), so this cannot trip during normal rendering.
+	static constexpr u64 ACQUIRE_TIMEOUT_NS = 2'000'000'000ull;
+	VkResult res = vkAcquireNextImageKHR(GSDeviceVK::GetInstance()->GetDevice(), m_swap_chain,
+		ACQUIRE_TIMEOUT_NS, m_semaphores[m_current_semaphore].available_semaphore, VK_NULL_HANDLE,
+		&m_current_image);
 	if (stats)
 	{
 		const double elapsed_ms =
 			Common::Timer::ConvertValueToMilliseconds(Common::Timer::GetCurrentValue() - t_start);
 		NoteAcquire(elapsed_ms, res);
+	}
+	if (res == VK_TIMEOUT || res == VK_NOT_READY)
+	{
+		Console.Error("VK: vkAcquireNextImageKHR timed out after %llu ms — treating the surface as "
+					  "lost so the GS thread cannot deadlock the VM.",
+			static_cast<unsigned long long>(ACQUIRE_TIMEOUT_NS / 1'000'000ull));
+		res = VK_ERROR_SURFACE_LOST_KHR;
 	}
 	m_image_acquire_result = res;
 	return res;
