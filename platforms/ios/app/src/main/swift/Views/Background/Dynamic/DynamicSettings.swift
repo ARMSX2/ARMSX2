@@ -90,11 +90,11 @@ struct DynamicParticleSettings: Equatable, Codable {
   var multiColorAnimationSpeed = 1.0
   var multiColorAnimationSmoothness = 0.85
   var multiColorAnimationSpread = 0.35
-  var faceButtonsEnabled = false
-  var faceButtonAmount = 1.0
+  var faceButtonsEnabled = true
+  var faceButtonAmount = 0.5
   var faceButtonSpeed = 0.33
   var faceButtonDispersion = 1.0
-  var faceButtonSize = 1.0
+  var faceButtonSize = 1.3
   var faceButtonOpacity = 0.86
   var faceButtonRotation = 1.0
   var faceButtonPulse = 0.75
@@ -515,11 +515,11 @@ struct DynamicAppearancePreferences: Codable, Equatable {
   var isPlayStation3XMBPresetExplicit: Bool
 
   static let standard = DynamicAppearancePreferences(
-    dynamicBackground: .playStation2Menu,
-    sharedPalette: .xmbAzureHorizon,
+    dynamicBackground: .playStation3XMBByMart,
+    sharedPalette: .blue,
     sharedCustomColor: nil,
     sharedMultiColor: ThemeMultiColorSelection(),
-    ribbonPalette: .xmbAzureHorizon,
+    ribbonPalette: .cyan,
     ribbonCustomColor: nil,
     ribbonMultiColor: ThemeMultiColorSelection(),
     particleSettings: DynamicParticleSettings(),
@@ -655,29 +655,31 @@ struct DynamicSettingsValueSlider: View {
 
       Group {
         if let step {
-          Slider(value: $value, in: range, step: step)
+          Slider(
+            value: $value,
+            in: range,
+            step: step,
+            onEditingChanged: updateEditingState
+          )
         } else {
-          Slider(value: $value, in: range)
+          Slider(
+            value: $value,
+            in: range,
+            onEditingChanged: updateEditingState
+          )
         }
       }
-      .simultaneousGesture(
-        DragGesture(minimumDistance: 0)
-          .onChanged { _ in
-            guard !isEditing else { return }
-            isEditing = true
-            sliderActivity.update(title, formattedValue, true)
-          }
-          .onEnded { _ in
-            guard isEditing else { return }
-            isEditing = false
-            sliderActivity.update(title, formattedValue, false)
-          }
-      )
       .onChange(of: value) { _, _ in
         guard isEditing else { return }
         sliderActivity.update(title, formattedValue, true)
       }
     }
+  }
+
+  private func updateEditingState(_ editing: Bool) {
+    guard editing != isEditing else { return }
+    isEditing = editing
+    sliderActivity.update(title, formattedValue, editing)
   }
 }
 

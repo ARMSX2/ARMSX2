@@ -1743,6 +1743,11 @@ final class SettingsStore {
     var dynamicAppearancePreferences: DynamicAppearancePreferences = .standard {
         didSet { dynamicAppearancePreferences.save() }
     }
+    var clearLiquidGlassUI: Bool = true {
+        didSet {
+            UserDefaults.standard.set(clearLiquidGlassUI, forKey: "ARMSX2iOSClearLiquidGlassUI")
+        }
+    }
     var backgroundPrimaryAsset: BackgroundAsset? {
         didSet {
             if let asset = backgroundPrimaryAsset {
@@ -1782,12 +1787,12 @@ final class SettingsStore {
             UserDefaults.standard.set(backgroundEnabledInBIOS, forKey: "ARMSX2iOSBackgroundEnabledInBIOS")
         }
     }
-    var backgroundEnabledInHelp: Bool = false {
+    var backgroundEnabledInHelp: Bool = true {
         didSet {
             UserDefaults.standard.set(backgroundEnabledInHelp, forKey: "ARMSX2iOSBackgroundEnabledInHelp")
         }
     }
-    var backgroundEnabledInSettings: Bool = false {
+    var backgroundEnabledInSettings: Bool = true {
         didSet {
             UserDefaults.standard.set(backgroundEnabledInSettings, forKey: "ARMSX2iOSBackgroundEnabledInSettings")
         }
@@ -2025,6 +2030,9 @@ final class SettingsStore {
             forKey: "ARMSX2iOSDynamicBackgroundsEnabled"
         ) as? Bool ?? true
         dynamicAppearancePreferences = DynamicAppearancePreferences.load() ?? .standard
+        clearLiquidGlassUI = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSClearLiquidGlassUI"
+        ) as? Bool ?? true
         backgroundPrimaryAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundPrimaryAsset")
         backgroundLandscapeAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundLandscapeAsset")
         backgroundFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundFitMode") ?? "") ?? .fill
@@ -2032,8 +2040,8 @@ final class SettingsStore {
         backgroundVideoMuted = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundVideoMuted") as? Bool ?? true
         backgroundDim = Self.clampedBackgroundDim(UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundDim") as? Double ?? 0.0)
         backgroundEnabledInBIOS = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInBIOS") as? Bool ?? true
-        backgroundEnabledInHelp = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInHelp") as? Bool ?? false
-        backgroundEnabledInSettings = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInSettings") as? Bool ?? false
+        backgroundEnabledInHelp = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInHelp") as? Bool ?? true
+        backgroundEnabledInSettings = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInSettings") as? Bool ?? true
         normalizeDEV9Settings()
         VPadSkinLibraryStore.shared.adoptLegacySelection(virtualPadSkin)
         ARMSX2Bridge.setINIString("EmuCore/GS", key: "AspectRatio", value: Self.aspectRatioName(for: aspectRatio))
@@ -2252,6 +2260,9 @@ final class SettingsStore {
             forKey: "ARMSX2iOSDynamicBackgroundsEnabled"
         ) as? Bool ?? true
         dynamicAppearancePreferences = DynamicAppearancePreferences.load() ?? .standard
+        clearLiquidGlassUI = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSClearLiquidGlassUI"
+        ) as? Bool ?? true
         backgroundPrimaryAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundPrimaryAsset")
         backgroundLandscapeAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundLandscapeAsset")
         backgroundFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundFitMode") ?? "") ?? .fill
@@ -2259,8 +2270,8 @@ final class SettingsStore {
         backgroundVideoMuted = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundVideoMuted") as? Bool ?? true
         backgroundDim = Self.clampedBackgroundDim(UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundDim") as? Double ?? 0.0)
         backgroundEnabledInBIOS = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInBIOS") as? Bool ?? true
-        backgroundEnabledInHelp = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInHelp") as? Bool ?? false
-        backgroundEnabledInSettings = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInSettings") as? Bool ?? false
+        backgroundEnabledInHelp = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInHelp") as? Bool ?? true
+        backgroundEnabledInSettings = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInSettings") as? Bool ?? true
         normalizeDEV9Settings()
         VPadSkinLibraryStore.shared.adoptLegacySelection(virtualPadSkin)
     }

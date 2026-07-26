@@ -102,13 +102,12 @@ private let helpData: [HelpSection] = [
 struct HelpView: View {
     @State private var settings = SettingsStore.shared
     @State private var copyStatusMessage: String?
-    @Environment(\.menuTabIsActive) private var menuTabIsActive
 #if targetEnvironment(macCatalyst)
     @State private var selectedTopic: HelpTopic? = .item(section: 0, item: 0)
 #endif
 
     private var backgroundConfigured: Bool {
-        settings.hasCustomBackground && settings.backgroundEnabledInHelp
+        settings.hasCustomBackground && settings.backgroundEnabledInSettings
     }
 
     private var backgroundActive: Bool {
@@ -148,64 +147,51 @@ struct HelpView: View {
         .navigationSplitViewStyle(.balanced)
         .containerBackground(backgroundActive ? Color.clear : Color(uiColor: .systemGroupedBackground), for: .navigation)
 #else
-        NavigationStack {
-            ZStack {
-                if backgroundConfigured {
-                    MenuBackgroundLayer(isActive: menuTabIsActive)
-                }
-
-                List {
-                    ForEach(helpData) { section in
-                        Section {
-                            ForEach(section.items) { item in
-                                DisclosureGroup {
-                                    Text(settings.localized(item.answer))
-                                        .font(.body)
-                                        .foregroundStyle(.secondary)
-                                        .padding(.vertical, 4)
-                                } label: {
-                                    Text(settings.localized(item.question))
-                                        .font(.body)
-                                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                                        .contentShape(Rectangle())
-                                }
-                                .gameCardTintMenuBackgroundListRow(backgroundActive)
-                            }
-                        } header: {
-                            Label(settings.localized(section.title), systemImage: section.icon)
-                        }
-                    }
-
-                    Section {
-                        HStack {
-                            Text(settings.localized("Version"))
-                            Spacer()
-                            Text(ARMSX2Bridge.buildVersion())
+        List {
+            ForEach(helpData) { section in
+                Section {
+                    ForEach(section.items) { item in
+                        DisclosureGroup {
+                            Text(settings.localized(item.answer))
+                                .font(.body)
                                 .foregroundStyle(.secondary)
-                                .font(.caption)
-                        }
-                        .gameCardTintMenuBackgroundListRow(backgroundActive)
-                        Button {
-                            copyTroubleshootingInfo()
+                                .padding(.vertical, 4)
                         } label: {
-                            Label(settings.localized("Copy Troubleshooting Info"), systemImage: "doc.on.doc")
+                            Text(settings.localized(item.question))
+                                .font(.body)
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                .contentShape(Rectangle())
                         }
-                        .gameCardTintMenuBackgroundListRow(backgroundActive)
-                        if let copyStatusMessage {
-                            Text(settings.localized(copyStatusMessage))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .gameCardTintMenuBackgroundListRow(backgroundActive)
-                        }
-                    } header: {
-                        Label(settings.localized("About"), systemImage: "info.circle")
                     }
+                } header: {
+                    Label(settings.localized(section.title), systemImage: section.icon)
                 }
-                .scrollContentBackground(backgroundActive ? .hidden : .automatic)
             }
-            .navigationTitle(settings.localized("Help"))
-            .toolbarBackground(backgroundActive ? .hidden : .automatic, for: .navigationBar)
+
+            Section {
+                HStack {
+                    Text(settings.localized("Version"))
+                    Spacer()
+                    Text(ARMSX2Bridge.buildVersion())
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
+                Button {
+                    copyTroubleshootingInfo()
+                } label: {
+                    Label(settings.localized("Copy Troubleshooting Info"), systemImage: "doc.on.doc")
+                }
+                if let copyStatusMessage {
+                    Text(settings.localized(copyStatusMessage))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Label(settings.localized("About"), systemImage: "info.circle")
+            }
         }
+        .navigationTitle(settings.localized("Help"))
+        .navigationBarTitleDisplayMode(.inline)
 #endif
     }
 

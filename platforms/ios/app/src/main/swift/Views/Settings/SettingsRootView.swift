@@ -22,6 +22,7 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
     case gameController
     case localMultiplayer
     case virtualPad
+    case help
     case licenses
     case about
 
@@ -59,6 +60,8 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
             return "Local Multiplayer"
         case .virtualPad:
             return "Virtual Pad"
+        case .help:
+            return "Help"
         case .licenses:
             return "Licenses & Credits"
         case .about:
@@ -98,6 +101,8 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
             return "person.3"
         case .virtualPad:
             return "hand.draw"
+        case .help:
+            return "questionmark.circle"
         case .licenses:
             return "doc.text"
         case .about:
@@ -107,15 +112,21 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
 }
 
 struct SettingsRootView: View {
+    let resetToRootRequest: Int
     @State private var settings = SettingsStore.shared
     @State private var jitAvailable = ARMSX2Bridge.isJITAvailable()
     @State private var noJITFallbackActive = ARMSX2Bridge.isNoJITFallbackActive()
     @State private var stikDebugOpenFailed = false
     @State private var stikDebugOpenInProgress = false
+    @State private var navigationPath: [SettingsPane] = []
     @Environment(\.menuTabIsActive) private var menuTabIsActive
 #if targetEnvironment(macCatalyst)
     @State private var selectedPane: SettingsPane? = .emulator
 #endif
+
+    init(resetToRootRequest: Int = 0) {
+        self.resetToRootRequest = resetToRootRequest
+    }
 
     private var backgroundConfigured: Bool {
         settings.hasCustomBackground && settings.backgroundEnabledInSettings
@@ -141,6 +152,7 @@ struct SettingsRootView: View {
         .navigationSplitViewStyle(.balanced)
         .containerBackground(backgroundActive ? Color.clear : Color(uiColor: .systemGroupedBackground), for: .navigation)
 #else
+        NavigationStack(path: $navigationPath) {
         ZStack {
             if backgroundConfigured {
                 MenuBackgroundLayer(isActive: menuTabIsActive)
@@ -148,105 +160,75 @@ struct SettingsRootView: View {
 
             List {
             Section(settings.localized("Interface")) {
-                NavigationLink {
-                    LanguageSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.language) {
                     Label(settings.localized("Language"), systemImage: "globe")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
-                NavigationLink {
-                    AppearanceSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.appearance) {
                     Label(settings.localized("Appearance"), systemImage: "paintpalette")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
 
             Section(settings.localized("Emulation")) {
-                NavigationLink {
-                    EmulatorSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.emulator) {
                     Label(settings.localized("Emulator"), systemImage: "cpu")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
-                NavigationLink {
-                    GraphicsSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.graphics) {
                     Label(settings.localized("Graphics"), systemImage: "paintbrush")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
-                NavigationLink {
-                    FramePacingSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.framePacing) {
                     Label(settings.localized("Frame Pacing"), systemImage: "speedometer")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
-                NavigationLink {
-                    AudioSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.audio) {
                     Label(settings.localized("Audio"), systemImage: "speaker.wave.2")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
 
             Section(settings.localized("Input")) {
-                NavigationLink {
-                    GamepadSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.gameController) {
                     Label(settings.localized("Game Controller"), systemImage: "gamecontroller")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
-                NavigationLink {
-                    VirtualPadSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.virtualPad) {
                     Label(settings.localized("Virtual Pad"), systemImage: "hand.draw")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
-                NavigationLink {
-                    LocalMultiplayerSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.localMultiplayer) {
                     Label(settings.localized("Local Multiplayer"), systemImage: "person.3")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
 
             Section(settings.localized("Storage & Memory")) {
-                NavigationLink {
-                    MemoryCardSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.memoryCards) {
                     Label(settings.localized("Memory Cards"), systemImage: "memorychip")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
-                NavigationLink {
-                    StorageSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.storage) {
                     Label(settings.localized("Storage"), systemImage: "internaldrive")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
-                NavigationLink {
-                    NetworkSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.network) {
                     Label(settings.localized("Network"), systemImage: "network")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
 
             Section(settings.localized("Features")) {
-                NavigationLink {
-                    SettingsPresetsView()
-                } label: {
+                NavigationLink(value: SettingsPane.settingsPresets) {
                     Label(settings.localized("Settings Presets"), systemImage: "slider.horizontal.3")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
-                NavigationLink {
-                    RetroAchievementsSettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.retroAchievements) {
                     Label(settings.localized("RetroAchievements"), systemImage: "trophy")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
-                NavigationLink {
-                    OverlaySettingsView()
-                } label: {
+                NavigationLink(value: SettingsPane.overlay) {
                     Label(settings.localized("Overlay (OSD)"), systemImage: "text.below.photo")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
@@ -279,9 +261,7 @@ struct SettingsRootView: View {
             }
 
             Section {
-                NavigationLink {
-                    LicenseView()
-                } label: {
+                NavigationLink(value: SettingsPane.licenses) {
                     Label(settings.localized("Licenses & Credits"), systemImage: "doc.text")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
@@ -296,10 +276,21 @@ struct SettingsRootView: View {
                         .font(.caption)
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
+
+                NavigationLink(value: SettingsPane.help) {
+                    Label(settings.localized("Help"), systemImage: "questionmark.circle")
+                }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
         }
         .scrollContentBackground(backgroundActive ? .hidden : .automatic)
         }
+        .stableMenuContentGlassContainer()
+        // NavigationStack retains its root while a destination is pushed. The
+        // clear destination would otherwise reveal the root Settings rows
+        // underneath it, making both interfaces appear at once.
+        .opacity(navigationPath.isEmpty ? 1 : 0)
+        .clearNavigationContainerBackground()
         .navigationTitle(settings.localized("Settings"))
         .toolbarBackground(backgroundActive ? .hidden : .automatic, for: .navigationBar)
         .navigationBarTitleDisplayMode(.inline)
@@ -312,6 +303,18 @@ struct SettingsRootView: View {
             refreshJITStatus()
         }
 #endif
+        .navigationDestination(for: SettingsPane.self) { pane in
+            settingsDetail(for: pane)
+        }
+        }
+        .onChange(of: resetToRootRequest) { _, _ in
+            guard !navigationPath.isEmpty else { return }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                navigationPath.removeAll()
+            }
+        }
 #endif
     }
 
@@ -423,6 +426,8 @@ struct SettingsRootView: View {
             LocalMultiplayerSettingsView()
         case .virtualPad:
             VirtualPadSettingsView()
+        case .help:
+            HelpView()
         case .licenses:
             LicenseView()
         case .about:

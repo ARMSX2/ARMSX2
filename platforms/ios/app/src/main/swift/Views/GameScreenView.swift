@@ -8,6 +8,15 @@ import GameController
 private let runtimeMenuStateChangedNotification = Notification.Name("ARMSX2iOSRuntimeMenuStateChanged")
 private let retroAchievementsToastNotification = Notification.Name("ARMSX2RetroAchievementsNotification")
 
+private extension View {
+    func gameplayLaunchChrome(visible: Bool) -> some View {
+        opacity(visible ? 1 : 0)
+            .allowsHitTesting(visible)
+            .accessibilityHidden(!visible)
+            .animation(.easeOut(duration: 0.30), value: visible)
+    }
+}
+
 private enum EmulationOnlyNativeReleaseFlag {
     // Keep these bit positions synchronized with VMManager.h.
     static let patches: UInt = 1 << 0
@@ -165,6 +174,7 @@ struct EmulationOnlyGameView: View {
             skinDescriptor: appState.emulationOnlyPresentation.padSkinDescriptor,
             touchActionSession: touchActionSession
         )
+        .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
     }
 
     private var dynamicCrosshairOverlay: some View {
@@ -173,6 +183,7 @@ struct EmulationOnlyGameView: View {
             leftRuntime: touchActionSession.left.crosshairState,
             rightRuntime: touchActionSession.right.crosshairState
         )
+        .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
     }
 
     private func preparePresentation() {
@@ -191,6 +202,10 @@ struct EmulationOnlyGameView: View {
     }
 
     private func releasePresentation() {
+        if case .menu = appState.currentScreen {
+            appState.hideStatusBar = false
+            appState.hideHomeIndicator = false
+        }
         UIApplication.shared.isIdleTimerDisabled = false
     }
 }
@@ -338,9 +353,11 @@ struct GameScreenView: View {
                                 touchActionSession: touchActionSession
                             )
                             .id(padRebuildToken)
+                            .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
                         }
                         dynamicCrosshairOverlay
                         menuButtonOverlay(isLandscape: true)
+                            .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
                     }
                     .ignoresSafeArea()
                 } else {
@@ -373,6 +390,7 @@ struct GameScreenView: View {
                                     touchActionSession: touchActionSession
                                 )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .id(padRebuildToken)
@@ -383,6 +401,7 @@ struct GameScreenView: View {
                             menuButton()
                                 .padding(.top, 8)
                                 .padding(.trailing, 4)
+                                .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
                         }
                     }
                     .ignoresSafeArea(.container, edges: .bottom)
@@ -699,6 +718,7 @@ struct GameScreenView: View {
             leftRuntime: touchActionSession.left.crosshairState,
             rightRuntime: touchActionSession.right.crosshairState
         )
+        .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
     }
 
     @ViewBuilder
@@ -819,8 +839,13 @@ struct GameScreenView: View {
     }
 
     private func leaveGameplaySystemChromeMode() {
-        appState.hideHomeIndicator = previousHideHomeIndicator
-        appState.hideStatusBar = previousHideStatusBar
+        if case .menu = appState.currentScreen {
+            appState.hideHomeIndicator = false
+            appState.hideStatusBar = false
+        } else {
+            appState.hideHomeIndicator = previousHideHomeIndicator
+            appState.hideStatusBar = previousHideStatusBar
+        }
         // Allow the screen to auto-sleep again once gameplay ends.
         UIApplication.shared.isIdleTimerDisabled = false
     }
@@ -993,7 +1018,7 @@ struct GameScreenView: View {
         if gameMenuAvailable != gameReady {
             gameMenuAvailable = gameReady
         }
-        let identity = runtimePadLayoutIdentityForCurrentGame()
+        let identity = gameReady ? runtimePadLayoutIdentityForCurrentGame() : nil
         if runtimePadLayoutIdentity != identity {
             runtimePadLayoutIdentity = identity
         }
@@ -1011,6 +1036,14 @@ struct GameScreenView: View {
     private func currentRuntimeGameName() -> String? {
         if let gameName = normalizedRuntimeGameName(appState.runningGameName) {
             return gameName
+        }
+
+        // A BIOS-only session has no game identity. Avoid falling through to the
+        // library-matching path, which synchronously opens every local disc image.
+        // Once a disc is inserted, gameMenuAvailable becomes true and the normal
+        // game-name resolution path resumes.
+        if appState.runningGameName == "BIOS" && !gameMenuAvailable {
+            return nil
         }
 
         if let gameName = normalizedRuntimeGameName(ARMSX2Bridge.currentGameISOName()) {

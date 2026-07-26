@@ -33,17 +33,17 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .defaultPreset:
-            return "Default disables Fast Boot, PNACH Cheats, Widescreen Patches, Fast CDVD, FXAA, CAS Sharpening, OPH Flag Hack, Emulation-Only Mode, and backgrounds in Help and Settings; restores Internal Resolution to 1x Native, Aspect Ratio to Auto, and Queue Size to 8; and selects the White Colored Virtual Pad skin."
+            return "Default disables Fast Boot, PNACH Cheats, Widescreen Patches, Fast CDVD, FXAA, CAS Sharpening, OPH Flag Hack, Emulation-Only Mode, and the background in Settings; restores Internal Resolution to 1x Native, Aspect Ratio to Auto, and Queue Size to 8; and selects the White Colored Virtual Pad skin."
         case .ultraQuality:
-            return "Ultra Quality enables Fast Boot, PNACH Cheats, Widescreen Patches, Fast CDVD, FXAA, CAS Sharpening, and backgrounds in Help and Settings; sets Internal Resolution to 2x (1024x896), Aspect Ratio to Stretch to Window, and Queue Size to 2. OPH Flag Hack and Emulation-Only Mode are disabled. The selected Virtual Pad skin is preserved."
+            return "Ultra Quality enables Fast Boot, PNACH Cheats, Widescreen Patches, Fast CDVD, FXAA, CAS Sharpening, and the background in Settings; sets Internal Resolution to 2x (1024x896), Aspect Ratio to Stretch to Window, and Queue Size to 2. OPH Flag Hack and Emulation-Only Mode are disabled. The selected Virtual Pad skin is preserved."
         case .highQuality:
-            return "High Quality uses the Ultra Quality settings, including backgrounds in Help and Settings, with Internal Resolution set to 1x Native (512x448). The selected Virtual Pad skin is preserved."
+            return "High Quality uses the Ultra Quality settings, including the background in Settings, with Internal Resolution set to 1x Native (512x448). The selected Virtual Pad skin is preserved."
         case .highQuality30FPS:
-            return "High Quality 30 FPS uses the High Quality graphics and emulation settings, enables OPH Flag Hack, and disables backgrounds in Help and Settings. It does not change the frame-limiter target or the selected Virtual Pad skin."
+            return "High Quality 30 FPS uses the High Quality graphics and emulation settings, enables OPH Flag Hack, and disables the background in Settings. It does not change the frame-limiter target or the selected Virtual Pad skin."
         case .performance:
-            return "Performance uses the High Quality settings with FXAA, CAS Sharpening, and backgrounds in Help and Settings disabled. The selected Virtual Pad skin is preserved."
+            return "Performance uses the High Quality settings with FXAA, CAS Sharpening, and the background in Settings disabled. The selected Virtual Pad skin is preserved."
         case .ultraPerformance:
-            return "Ultra Performance uses the Performance settings, disables backgrounds in Help and Settings, and enables Emulation-Only Mode. This preset is intended for low-end devices and requires an external controller when Virtual Control Layout unloading is enabled. The selected Virtual Pad skin is preserved."
+            return "Ultra Performance uses the Performance settings, disables the background in Settings, and enables Emulation-Only Mode. This preset is intended for low-end devices and requires an external controller when Virtual Control Layout unloading is enabled. The selected Virtual Pad skin is preserved."
         }
     }
 
@@ -68,8 +68,7 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
             settings.upscaleMultiplier == configuration.upscaleMultiplier &&
             settings.gameFixEnabled("OPHFlagHack") == configuration.ophFlagHack &&
             settings.emulationOnlyModeEnabled == configuration.emulationOnlyMode &&
-            settings.backgroundEnabledInHelp == configuration.showBackgroundInHelpAndSettings &&
-            settings.backgroundEnabledInSettings == configuration.showBackgroundInHelpAndSettings
+            settings.backgroundEnabledInSettings == configuration.showBackgroundInSettings
         guard settingsMatch else { return false }
         guard self == .defaultPreset else { return true }
         return skinLibrary.selectedSkinID == VirtualPadSkin.armsx2Refresh.descriptorID &&
@@ -93,8 +92,7 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
         settings.upscaleMultiplier = configuration.upscaleMultiplier
         settings.setGameFix("OPHFlagHack", configuration.ophFlagHack)
         settings.emulationOnlyModeEnabled = configuration.emulationOnlyMode
-        settings.backgroundEnabledInHelp = configuration.showBackgroundInHelpAndSettings
-        settings.backgroundEnabledInSettings = configuration.showBackgroundInHelpAndSettings
+        settings.backgroundEnabledInSettings = configuration.showBackgroundInSettings
         if self == .defaultPreset {
             skinLibrary.selectSkin(id: VirtualPadSkin.armsx2Refresh.descriptorID)
             settings.virtualPadSkin = .armsx2Refresh
@@ -119,11 +117,11 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
             )
         case .ultraQuality:
             var configuration = qualityConfiguration(upscaleMultiplier: 2)
-            configuration.showBackgroundInHelpAndSettings = true
+            configuration.showBackgroundInSettings = true
             return configuration
         case .highQuality:
             var configuration = qualityConfiguration(upscaleMultiplier: 1)
-            configuration.showBackgroundInHelpAndSettings = true
+            configuration.showBackgroundInSettings = true
             return configuration
         case .highQuality30FPS:
             var configuration = qualityConfiguration(upscaleMultiplier: 1)
@@ -176,7 +174,7 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
         var upscaleMultiplier: Float
         var ophFlagHack: Bool
         var emulationOnlyMode: Bool
-        var showBackgroundInHelpAndSettings = false
+        var showBackgroundInSettings = false
     }
 }
 
