@@ -32,6 +32,17 @@ bool GSTexture::Map(GSMap& m, const GSVector4i* r, int layer)
 	return DoMap(m, r, layer);
 }
 
+#if defined(PCSX2_DEBUG) || defined(PCSX2_DEVBUILD)
+
+void GSTexture::AssertNoQueuedObserver(const char* what) const
+{
+	// g_gs_device is null while the device itself is being torn down, which is also when
+	// the last textures are destroyed - there is no queue to violate at that point.
+	pxAssertMsg(!g_gs_device || !g_gs_device->DeferredDrawsWouldObserve(this), what);
+}
+
+#endif
+
 bool GSTexture::ValidateUsageAndFormat(Usage usage, Format format)
 {
 	if (IsDepthStencil(usage) && (usage & (Usage::ShaderWrite | Usage::RenderTarget)))

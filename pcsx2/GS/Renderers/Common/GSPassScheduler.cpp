@@ -153,11 +153,11 @@ GSPassScheduler::Disposition GSPassScheduler::TryEnqueue(const GSHWDrawConfig& c
 		// so the deferral window is invisible, and stash the original to hand back at emit -
 		// the backend still needs to see Cleared or Invalidated to get the load op right.
 		run->rt_state = run->rt->GetState();
-		run->rt->SetState(GSTexture::State::Dirty);
+		run->rt->SetStateForDeferral(GSTexture::State::Dirty);
 		if (run->ds)
 		{
 			run->ds_state = run->ds->GetState();
-			run->ds->SetState(GSTexture::State::Dirty);
+			run->ds->SetStateForDeferral(GSTexture::State::Dirty);
 		}
 	}
 
@@ -203,9 +203,9 @@ void GSPassScheduler::Emit(GSDevice* dev)
 	{
 		// Rewind the attachment state to what the first draw would have found, so the backend
 		// picks the same load op it would have picked undeferred. It sets Dirty again itself.
-		m_runs[i].rt->SetState(m_runs[i].rt_state);
+		m_runs[i].rt->SetStateForDeferral(m_runs[i].rt_state);
 		if (m_runs[i].ds)
-			m_runs[i].ds->SetState(m_runs[i].ds_state);
+			m_runs[i].ds->SetStateForDeferral(m_runs[i].ds_state);
 
 		// Resolve the geometry pointers only now: the vectors have finished growing, so
 		// data() is finally stable.

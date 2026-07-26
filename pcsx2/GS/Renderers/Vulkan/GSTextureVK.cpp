@@ -408,7 +408,7 @@ bool GSTextureVK::DoUpdate(const GSVector4i& r, const void* data, int pitch, int
 	return true;
 }
 
-bool GSTextureVK::Map(GSMap& m, const GSVector4i* r, int layer)
+bool GSTextureVK::DoMap(GSMap& m, const GSVector4i* r, int layer)
 {
 	if (layer >= m_mipmap_levels || IsCompressedFormat())
 		return false;
@@ -586,6 +586,14 @@ void GSTextureVK::TransitionToLayout(VkCommandBuffer command_buffer, Layout new_
 {
 	if (m_layout == new_layout)
 		return;
+
+	// GPU-side half of the scheduler tripwire - see GSTexture::AssertNoQueuedObserver for
+	// the CPU-side one, which is where the bugs have actually been. A layout change is the
+	// backend's universal "something is about to use this image differently" point, so it
+	// sees every GPU path to the image including ones we have not enumerated; reaching one
+	// for a texture a queued draw references means a caller got here without flushing.
+	pxAssertMsg(!g_gs_device->DeferredDrawsWouldObserve(this),
+		"Image layout change on a texture with deferred draws queued against it");
 
 	TransitionSubresourcesToLayout(command_buffer, 0, m_mipmap_levels, m_layout, new_layout);
 

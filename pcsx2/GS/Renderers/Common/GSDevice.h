@@ -1913,6 +1913,17 @@ public:
 			FlushDeferredDrawsImpl();
 	}
 
+#if defined(PCSX2_DEBUG) || defined(PCSX2_DEVBUILD)
+	/// True when a queued draw can still observe [tex] — i.e. when reaching a backend path
+	/// that touches it, without having gone through FlushDeferredDraws() first, would be a
+	/// bug. Backends assert on this at their lowest-level "about to touch this texture"
+	/// chokepoint; see GSTextureVK::TransitionToLayout for the reasoning.
+	__fi bool DeferredDrawsWouldObserve(const GSTexture* tex) const
+	{
+		return (m_deferred_draw_count != 0 && !m_flushing && DeferredDrawsReference(tex));
+	}
+#endif
+
 	virtual void ClearSamplerCache() = 0;
 
 	void ClearCurrent();
