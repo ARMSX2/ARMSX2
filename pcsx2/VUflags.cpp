@@ -92,10 +92,17 @@ __ri void VU_STAT_UPDATE(VURegs * VU) {
 	if (VU->macflag & 0x00F0) newflag |= 0x2;
 	if (VU->macflag & 0x0F00) newflag |= 0x4;
 	if (VU->macflag & 0xF000) newflag |= 0x8;
-	// Cause nibble only -- this deliberately does NOT preserve the old sticky
-	// bits or the D/I pair, despite what this comment used to claim. Both are
-	// carried by the consumer instead: macro mode merges against
-	// VI[REG_STATUS_FLAG] in SYNCMSFLAGS, micro mode against the pipeline entry
-	// in _vuFMACflush.
-	VU->statusflag = newflag;
+	// Replace the ZSUO cause nibble and OR the matching sticky bits in, keeping
+	// the sticky field this op did not touch. The sticky OR has to happen HERE,
+	// at the point the flags are produced -- statusflag is seeded from the whole
+	// STATUS register (vu0ExecMicro), not from a bare cause nibble.
+	//
+	// Assigning `newflag` outright instead left the sticky field to be
+	// re-derived from the cause nibble by whoever consumed statusflag later.
+	// That is idempotent right up until an FSSET clears the sticky field, at
+	// which point the stale cause regenerates the bit FSSET just cleared.
+	//
+	// The D/I pair is deliberately not carried here: it belongs to the div unit,
+	// which maintains it in statusflag independently (VU_STICKY_DI).
+	VU->statusflag = (VU->statusflag & 0xFC0) | newflag | (newflag << 6);
 }

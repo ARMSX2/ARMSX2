@@ -281,8 +281,10 @@ constexpr Divergence kMacroMacDivergences[] = {
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
 };
 
-// Micro mode.  Note the reversal: on the div-unit stickies and on FSSET it is
-// the shared INTERPRETER that is wrong and microVU that matches the console.
+// Micro mode.  What is left here fails on BOTH engines; the interp-only FSSET
+// rows are gone (VU_STAT_UPDATE now ORs the sticky bits in where the flags are
+// produced, instead of leaving them to be re-derived from a stale cause nibble
+// at flush time -- which was what resurrected a bit FSSET had just cleared).
 constexpr Divergence kMicroDivergences[] = {
 	{"VUSTICKY_MICRO_FMAC_ZSUO_ACCUMULATE", 3, true, true,
 	 "micro FMAC loses U (VU_MAC_UPDATE's ~0x1100 clears U on a flush-to-zero) "
@@ -291,16 +293,6 @@ constexpr Divergence kMicroDivergences[] = {
 	 "vrsqrt of -0 raises only D where hardware raises D and I, so sticky I is "
 	 "never set -- both engines read back C00 as 800. Not the sticky-"
 	 "accumulation gap (VU_STICKY_DI fixed that); this is the cause bit itself"},
-	{"VUSTICKY_MICRO_FSSET_CLEARS", 3, true, false,
-	 "the interpreter keeps a sticky bit an earlier FMAC set across an FSSET "
-	 "that should have cleared the field. NOT an assign-vs-OR bug in _vuFSSET: "
-	 "it assigns (`(imm & 0xFC0) | (statusflag & 0x3F)`) and _vuFMACflush's "
-	 "REG_STATUS_FLAG arm assigns the field too (VUops.cpp:60). UNVERIFIED "
-	 "hypothesis for the real cause: the FMAC pipeline entry flushes after the "
-	 "FSSET entry and re-ORs its sticky bit back in via the non-FSSET arm"},
-	{"VUSTICKY_MICRO_FSSET_ASSIGNS_NOT_ORS", 3, true, false,
-	 "same FSSET gap, in the form that separates assign from OR: interp reads "
-	 "back 840 (sticky D from the FSSET plus a stale sticky Z) for 800"},
 	{"VUSTICKY_MICRO_SURVIVES_SILENT_FMAC", 3, true, true,
 	 "micro FMAC loses U on the flush-to-zero underflow, as above"},
 };
