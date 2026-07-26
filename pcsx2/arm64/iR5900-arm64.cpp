@@ -51,6 +51,9 @@ namespace a64 = vixl::aarch64;
 // =====================================================================================================
 
 u32 maxrecmem = 0;
+// Longest guest extent, in bytes, of any block compiled since the last reset.
+// Bounds how far back the stale-overlap walk in recRecompile must scan.
+static u32 s_maxBlockBytes = 0;
 u32 pc;
 int g_branch;
 u32 target;
@@ -1790,8 +1793,10 @@ static void recPatchIslandB(u8* site, const u8* target)
 {
 	const intptr_t imm26 = (reinterpret_cast<intptr_t>(target) - reinterpret_cast<intptr_t>(site)) >> 2;
 	pxAssertRel(imm26 >= -(1 << 25) && imm26 < (1 << 25), "Cold-exit island out of B imm26 range");
-	// iOS dual-map W^X: store via the RW alias; displacement/flush stay on RX.
-	*reinterpret_cast<volatile u32*>(armGetWritableCodePtr(site)) = 0x14000000u | (static_cast<u32>(imm26) & 0x03FFFFFFu);
+	// armPatchCodeWord opens its own W^X scope: the islands live in the hot
+	// block, whose window armEndBlock() already closed by the time the cold
+	// session patches them.
+	armPatchCodeWord(site, 0x14000000u | (static_cast<u32>(imm26) & 0x03FFFFFFu));
 	HostSys::FlushInstructionCache(site, 4);
 }
 
@@ -1828,10 +1833,11 @@ static void recEmitColdSideExits()
 	pxAssert(armGetCurrentCodePointer() < SysMemory::GetEERecEnd());
 	s_coldPtr = armEndBlock();
 
-	HostSys::BeginCodeWrite();
+	// Each island patch opens its own write scope (armPatchCodeWord); an
+	// arena-wide Begin/EndCodeWrite here would RX-flip a concurrently open
+	// MTVU emit window in Legacy mode on its way out.
 	for (int k = 0; k < n; k++)
 		recPatchIslandB(s_sideExitIslands[k], coldStart[k]);
-	HostSys::EndCodeWrite();
 
 	g_branch = 1;
 }
@@ -2672,20 +2678,27 @@ static void recClear(u32 addr, u32 size)
 	if (blockidx == -1)
 		return;
 
-	// macOS/Apple Silicon (no-op elsewhere): recClear runs from the EE
-	// page-fault handler (fastmem backpatch + SMC via mmap_ClearCpuBlock) and
-	// from runtime SMC on the executing CPU thread — both enter with the
-	// MAP_JIT code cache in execute-protected (W^X) mode. The SetFnptr writes
-	// and Arm64BaseBlocks::Remove() stub patches below target that region, so
-	// a write faults (SIGBUS) unless we flip the thread to write mode first.
-	// Refcounted, so it nests harmlessly when reached from an open emit scope.
-	HostSys::BeginCodeWrite();
+	// No write scope here: the only code writes below are Remove()'s entry
+	// stubs, and those open their own per-site scope (armPatchCodeWord).
+	// SetFnptr/recLUT targets are ordinary heap data. The arena-wide
+	// Begin/EndCodeWrite this used to hold was worse than useless on iOS
+	// Legacy mode — the range-window emit scope bypasses the refcount, so
+	// when recClear runs mid-compile (the stale-overlap walk in
+	// recRecompile) the paired EndCodeWrite RX-flipped the open emit window
+	// and the next emitted instruction faulted.
 
 	// Track the EE-address span of all blocks we touch so the post-walk
 	// tail can reset interior BLOCKs across the *full* extent of the
 	// removed blocks (a straddler can extend well past `end` or below
 	// `addr`). `ceiling` clamps the tail at the next surviving block's
 	// startpc so we never trample its interior.
+	//
+	// There is deliberately no matching floor clamp. A survivor skipped by the
+	// scan below can sit INSIDE a removed straddler's extent, and raising
+	// lowerextent to that survivor's end would leave the straddler's own start
+	// word still pointing at its removed stub — the fnptr-assert case
+	// StraddlerBlockRecClearResetsStartFnptr pins. Resetting a survivor's entry
+	// instead merely costs it a recompile.
 	u32 lowerextent = static_cast<u32>(-1);
 	u32 upperextent = 0;
 	u32 ceiling = static_cast<u32>(-1);
@@ -2721,8 +2734,19 @@ static void recClear(u32 addr, u32 size)
 
 		if (blockend <= addr)
 		{
-			lowerextent = std::max(lowerextent, blockend);
-			break;
+			// Not overlapping — but recBlocks is ordered by startpc, NOT by
+			// end address, so a block further down can still be long enough
+			// to reach [addr, end); this one is no proof the rest miss too.
+			// Keep it, splitting the pending remove range around it exactly
+			// as for s_pCurBlock, and carry on until even the longest block
+			// compiled since the last reset could not span the gap.
+			if (blockstart + s_maxBlockBytes <= addr)
+				break;
+
+			if (toRemoveLast != blockidx)
+				recBlocks.Remove(blockidx + 1, toRemoveLast);
+			toRemoveLast = --blockidx;
+			continue;
 		}
 
 		lowerextent = std::min(lowerextent, blockstart);
@@ -2737,14 +2761,43 @@ static void recClear(u32 addr, u32 size)
 
 	upperextent = std::min(upperextent, ceiling);
 
+#ifdef PCSX2_DEVBUILD
+	// The walk above must leave no surviving block overlapping [addr, end).
+	// Upstream x86 asserts the same thing and calls it "Impossible block
+	// clearing failure" (iR5900.cpp) — and it was reachable there, because the
+	// same commit that added the check (801d71f7f0, 2009) also added the
+	// startpc-ordered early break that lets a straddler-from-below slip past.
+	//
+	// Upstream rescans every block in the array; bound it instead the way the
+	// walk itself is bounded. A survivor overlapping [addr, end) has to start
+	// within s_maxBlockBytes below addr, so the window is the same size the
+	// walk already covers rather than O(live blocks) on every clear.
+	{
+		const u32 floor = (addr > s_maxBlockBytes) ? (addr - s_maxBlockBytes) : 0;
+		for (int i = std::max(0, recBlocks.LastIndex(floor)); BASEBLOCKEX* peb = recBlocks[i]; i++)
+		{
+			if (peb->startpc >= end)
+				break;
+			if (GETBLOCK(peb->startpc) == s_pCurBlock)
+				continue; // spared on purpose — it is mid-compile
+
+			const u32 peb_end = peb->startpc + peb->size * 4;
+			if (peb_end > addr) [[unlikely]]
+			{
+				Console.Error("[EE] Impossible block clearing failure: block %08X..%08X survived clear of %08X..%08X",
+					peb->startpc, peb_end, addr, end);
+				pxFail("[EE] Impossible block clearing failure");
+			}
+		}
+	}
+#endif
+
 	// Reset interior BLOCKs across the full removed-block extent. Without
 	// this, interior fnptrs of straddler blocks can stay non-JITCompile
 	// from a prior compilation, leading to wrong dispatch on a later JR
 	// into the middle of a freshly-recompiled block.
 	if (upperextent > lowerextent)
 		iopClearRecLUT(GETBLOCK(lowerextent), upperextent - lowerextent);
-
-	HostSys::EndCodeWrite();
 }
 
 static void iopClearRecLUT(BASEBLOCK* base, int count)
@@ -2918,6 +2971,11 @@ static void recReserveRAM()
 	recROM2 = curpos;
 	curpos += (Ps2MemSize::Rom2 / 4);
 
+	// MainRam, deliberately — this whole rec is MainRam-only: recLutEntries and
+	// the recRAM advance above, the (MainRam / _64kb) alias mask in recResetRaw,
+	// and manual_page / manual_counter. Upstream x86 uses ExposedRam throughout
+	// instead (iR5900.cpp:564-577). Widening this buffer alone would desync the
+	// snapshots from a LUT that aliases high RAM back into the low 32 MB.
 	if (recRAMCopy.size() != Ps2MemSize::MainRam)
 		recRAMCopy.resize(Ps2MemSize::MainRam);
 }
@@ -3076,6 +3134,7 @@ static void recResetRaw()
 
 	recBlocks.Reset();
 	maxrecmem = 0;
+	s_maxBlockBytes = 0;
 
 	memset(manual_page, 0, sizeof(manual_page));
 	memset(manual_counter, 0, sizeof(manual_counter));
@@ -4096,6 +4155,10 @@ StartRecomp:
 	pxAssert((pc - startpc) >> 2 <= 0xffff);
 	s_pCurBlockEx->size = (pc - startpc) >> 2;
 
+	// High-water mark of any compiled block's guest extent, for the
+	// stale-overlap walk's scan-back bound below. Reset with the block array.
+	s_maxBlockBytes = std::max(s_maxBlockBytes, pc - startpc);
+
 	if (!(pc & 0x10000000))
 		maxrecmem = std::max((pc & ~0xa0000000), maxrecmem);
 
@@ -4120,8 +4183,17 @@ StartRecomp:
 				continue;
 			if (oldBlock->startpc >= HWADDR(pc))
 				continue;
-			if ((oldBlock->startpc + oldBlock->size * 4) <= HWADDR(startpc))
+			// recBlocks is ordered by startpc, NOT by end address: a block
+			// starting lower can be longer and still reach us, jumping clean
+			// over a short one between it and [startpc, pc). So one
+			// non-overlapping neighbour is no proof the blocks below it miss
+			// too — skip it, and only stop once even the longest block ever
+			// compiled could not span the gap. (Upstream x86 breaks here —
+			// iR5900.cpp:2688 — and silently skips the stale block below.)
+			if (oldBlock->startpc + s_maxBlockBytes <= HWADDR(startpc))
 				break;
+			if ((oldBlock->startpc + oldBlock->size * 4) <= HWADDR(startpc))
+				continue;
 
 			// recRAMCopy is a byte array covering guest main RAM 1:1 — index
 			// it by guest address. Do NOT reintroduce the `/ 4` upstream x86

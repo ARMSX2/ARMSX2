@@ -63,6 +63,7 @@ namespace GameDatabaseSchema
 		DrawBuffering,
 		PCRTCOffsets,
 		PCRTCOverscan,
+		CoalesceRenderPasses,
 
 		// integer settings
 		TrilinearFiltering,

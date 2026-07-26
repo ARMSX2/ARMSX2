@@ -211,6 +211,8 @@ const char* GpuProfileDetector::RuntimeProfileToString(RuntimeGpuProfile value)
 			return "Adreno";
 		case RuntimeGpuProfile::Xclipse:
 			return "Xclipse";
+		case RuntimeGpuProfile::Apple:
+			return "Apple";
 		case RuntimeGpuProfile::Unknown:
 		default:
 			return "Unknown";

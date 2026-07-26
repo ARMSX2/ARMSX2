@@ -1061,7 +1061,7 @@ bool GSDevice11::SupportsExclusiveFullscreen() const
 	return true;
 }
 
-GSDevice::PresentResult GSDevice11::BeginPresent(bool frame_skip)
+GSDevice::PresentResult GSDevice11::DoBeginPresent(bool frame_skip)
 {
 	if (frame_skip || !m_swap_chain)
 		return PresentResult::FrameSkipped;
@@ -1114,7 +1114,7 @@ void GSDevice11::EndPresent()
 {
 	RenderImGui();
 
-	// See note in BeginPresent() for why it's conditional on vsync-off.
+	// See note in DoBeginPresent() for why it's conditional on vsync-off.
 	if (m_vsync_mode != GSVSyncMode::FIFO && m_gpu_timing_enabled)
 		PopTimestampQuery();
 
@@ -1510,12 +1510,12 @@ std::unique_ptr<GSDownloadTexture> GSDevice11::CreateDownloadTexture(u32 width, 
 	return GSDownloadTexture11::Create(width, height, format);
 }
 
-void GSDevice11::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
+void GSDevice11::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
 {
 	// Empty rect, abort copy.
 	if (r.rempty())
 	{
-		GL_INS("D3D11: CopyRect rect empty.");
+		GL_INS("D3D11: DoCopyRect rect empty.");
 		return;
 	}
 
@@ -1526,7 +1526,7 @@ void GSDevice11::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r,
 	// Sizes must match for full depth copies when no partial copies are supported.
 	if (sTex->IsDepthStencil() && !src_dst_rect_match)
 	{
-		GL_INS("D3D11: CopyRect rect mismatch for full depth copy.");
+		GL_INS("D3D11: DoCopyRect rect mismatch for full depth copy.");
 		return;
 	}
 
@@ -1713,7 +1713,7 @@ void GSDevice11::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture*
 	DrawPrimitive();
 }
 
-void GSDevice11::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
+void GSDevice11::DoUpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
 {
 	// match merge cb
 	struct alignas(16) Uniforms
@@ -1731,7 +1731,7 @@ void GSDevice11::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u
 	DoStretchRect(sTex, GSVector4::zero(), dTex, dRect, GetConvertShader(shader), m_merge.cb.get(), nullptr, Nearest);
 }
 
-void GSDevice11::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM)
+void GSDevice11::DoConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM)
 {
 	// match merge cb
 	struct alignas(16) Uniforms
@@ -1750,7 +1750,7 @@ void GSDevice11::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offs
 	DoStretchRect(sTex, GSVector4::zero(), dTex, dRect, GetConvertShader(shader), m_merge.cb.get(), nullptr, Nearest);
 }
 
-void GSDevice11::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
+void GSDevice11::DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
 {
 	struct alignas(16) Uniforms
 	{
@@ -1770,7 +1770,7 @@ void GSDevice11::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32
 	DoStretchRect(sTex, GSVector4::zero(), dTex, dRect, GetConvertShader(shader), m_merge.cb.get(), nullptr, Nearest);
 }
 
-void GSDevice11::DrawMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader)
+void GSDevice11::DoDrawMultiStretchRects(const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader)
 {
 	shader = shader.SetMask(); // Mask is handled separately from program.
 
@@ -3045,7 +3045,7 @@ D3D_SHADER_MACRO* GSDevice11::ShaderMacro::GetPtr()
 	return (D3D_SHADER_MACRO*)mout.data();
 }
 
-void GSDevice11::RenderHW(GSHWDrawConfig& config)
+void GSDevice11::DoRenderHW(GSHWDrawConfig& config)
 {
 	const GSVector2i rtsize = (config.rt ? config.rt : config.ds)->GetSize();
 	GSTexture* colclip_rt = g_gs_device->GetColorClipTexture();
@@ -3306,14 +3306,14 @@ void GSDevice11::FeedbackCopyAndBind(const GSHWDrawConfig& config,
 {
 	if (rt_clone)
 	{
-		CopyRect(rt, rt_clone, copyarea, copyarea.left, copyarea.top);
+		DoCopyRect(rt, rt_clone, copyarea, copyarea.left, copyarea.top);
 		PSSetShaderResource(2, rt_clone);
 		if (config.tex_hazard == GSHWDrawConfig::TEX_HAZARD_RT)
 			PSSetShaderResource(0, rt_clone);
 	}
 	if (ds_clone)
 	{
-		CopyRect(ds, ds_clone, copyarea, copyarea.left, copyarea.top);
+		DoCopyRect(ds, ds_clone, copyarea, copyarea.left, copyarea.top);
 		PSSetShaderResource(4, ds_clone);
 		if (config.tex_hazard == GSHWDrawConfig::TEX_HAZARD_DEPTH)
 			PSSetShaderResource(0, ds_clone);

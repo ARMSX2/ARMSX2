@@ -268,6 +268,20 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 onChange = { ControllerMappings.setHapticIntensity(it); refreshToken.intValue++ },
             )
             SettingsDivider()
+            // How hard the DS2 pressure modifier presses. There was a PRESSURE button (on-screen
+            // and bindable as "Pressure Modifier (hold)") but no way to choose the amount, so it
+            // was permanently stuck at the hardcoded 50%. Range is deliberately 5..95: 0 collides
+            // with the "full press" sentinel and 100 is just a normal press.
+            IntSliderRow(
+                label = str("pad.pressureAmount.label"),
+                value = com.armsx2.ui.touch.TouchControls.pressurePercent.intValue,
+                min = 5,
+                max = 95,
+                description = str("pad.pressureAmount.description"),
+                valueFormatter = { "${it}%" },
+                onChange = { com.armsx2.ui.touch.TouchControls.setPressurePercent(it) },
+            )
+            SettingsDivider()
             // PS2 Multitap: route up to 8 controllers (both ports become 4-slot taps).
             // The pref drives PadRouter's slot count + the boot-time native arming; when a
             // game is already running we also arm it live. setMultitap parks the VM, so it

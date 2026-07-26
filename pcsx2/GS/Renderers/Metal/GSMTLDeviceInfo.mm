@@ -151,6 +151,10 @@ GSMTLDevice::GSMTLDevice(MRCOwned<id<MTLDevice>> dev)
 			features.framebuffer_fetch = features.memoryless_textures = true;
 
 	if (@available(macOS 10.15, iOS 13.0, *))
+		if ([dev supportsFamily:MTLGPUFamilyApple1])
+			features.apple_gpu = true;
+
+	if (@available(macOS 10.15, iOS 13.0, *))
 		if ([dev supportsFamily:MTLGPUFamilyMac2] || [dev supportsFamily:MTLGPUFamilyApple1])
 			features.has_fast_half = true; // Approximate guess
 

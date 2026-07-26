@@ -275,6 +275,12 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)setPerGameINIFloatForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(float)value NS_SWIFT_NAME(setPerGameINIFloatForCurrentGame(_:key:value:));
 + (void)deletePerGameINIValueForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key NS_SWIFT_NAME(deletePerGameINIValueForCurrentGame(_:key:));
 
+// Identity the accessors above key on, or "" when there isn't one. The current-game
+// variant only reads VM state; the ISO variant opens the disc image, so keep it
+// off render paths.
++ (nonnull NSString *)perGameIdentityKeyForCurrentGame;
++ (nonnull NSString *)perGameIdentityKeyForISO:(nonnull NSString *)isoName NS_SWIFT_NAME(perGameIdentityKey(forISO:));
+
 // Runtime speed control
 + (int)limiterMode;
 + (void)setLimiterMode:(int)mode;

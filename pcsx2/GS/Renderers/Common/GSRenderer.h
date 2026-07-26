@@ -19,6 +19,11 @@ private:
 	std::string m_snapshot;
 	u32 m_dump_frames = 0;
 	u32 m_skipped_duplicate_frames = 0;
+	/// Manual frame-skip phase counter (Android "Frame Skip" 0..5). GS thread only.
+	u32 m_manual_frameskip_phase = 0;
+	/// Accumulator pacer for the max-presented-FPS cap: the tick deadline at which the next
+	/// present is due. 0 = not started/disabled. GS thread only.
+	u64 m_next_present_deadline = 0;
 
 	// Tracking draw counters for idle frame detection.
 	u64 m_last_draw_n = 0;

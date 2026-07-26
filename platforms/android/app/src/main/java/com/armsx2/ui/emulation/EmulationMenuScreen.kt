@@ -80,6 +80,7 @@ import com.armsx2.ui.touch.TouchControls
 import com.armsx2.ui.theme.Danger
 import com.armsx2.ui.common.StatusChip
 import com.armsx2.ui.theme.Success
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -94,7 +95,18 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
             if (!dismissing) {
                 dismissing = true
                 shown = false
-                scope.launch {
+                // ★ Dispatchers.Main, NOT the composition's own dispatcher. rememberCoroutineScope
+                // inherits the composition context, which on Android is AndroidUiDispatcher — it
+                // dispatches continuations on CHOREOGRAPHER FRAME CALLBACKS. We have just set
+                // shown = false, so once the exit animation settles Compose has nothing left to
+                // invalidate, no frame is scheduled, and the continuation after this delay is
+                // never dispatched: the VM is simply never told to resume. The game sits paused
+                // with the OSD reading "FPS: N/A" until something incidentally causes a frame —
+                // which is exactly why tapping the on-screen controls "speeds up" the recovery
+                // (touch input schedules a frame) and why waiting also eventually works.
+                // Dispatchers.Main is a plain main-looper Handler dispatcher with no frame
+                // dependency, so the resume fires on time whether or not anything is drawing.
+                scope.launch(Dispatchers.Main) {
                     delay(220)
                     viewModel.dismissHandler = null
                     viewModel.resumeImmediately()
@@ -614,6 +626,16 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         description = str("renderer.gsBackThread.description"),
     ) { on ->
         viewModel.updateSettings { it.copy(gsBackThreadMode = if (on) 3 else 0) }
+    }
+    // Every phone GPU is a tiler, so this belongs in the in-game menu next to the other
+    // renderer levers, not just in full settings — it is the kind of thing you toggle while
+    // looking at the framerate.
+    MenuSwitchRow(
+        str("renderer.coalesceRenderPasses.label"),
+        settings.coalesceRenderPasses,
+        description = str("renderer.coalesceRenderPasses.description"),
+    ) { on ->
+        viewModel.updateSettings { it.copy(coalesceRenderPasses = on) }
     }
     CompactAction(str("backend.applyRestart"), "↻", Modifier.fillMaxWidth(), MainActivityRuntime::restart)
     HorizontalOptions(

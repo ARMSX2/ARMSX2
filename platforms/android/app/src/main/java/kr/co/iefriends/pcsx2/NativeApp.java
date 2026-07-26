@@ -734,6 +734,9 @@ public class NativeApp {
 	public static native String getTitlesForSerial(String serial);
 
 	public static native boolean saveStateToSlot(int slot);
+	/** True while the emulated memory card is mid-write, when a state save is refused to protect
+	 *  the card. The counter only ticks down while the VM runs, so it does NOT clear while paused. */
+	public static native boolean isMemcardBusy();
 	public static native boolean loadStateFromSlot(int slot);
 	public static native String getGamePathSlot(int slot);
 	public static native byte[] getImageSlot(int slot);

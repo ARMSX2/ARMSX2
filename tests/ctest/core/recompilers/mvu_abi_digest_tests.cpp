@@ -178,6 +178,14 @@ constexpr AbiPin kPins[] = {
 	// three are bit-identical to abi 14. Harvested from the first, deliberately
 	// red, run.
 	{15, {0x52d7ab0dcf5ff0b0, 0xe306afec81428b0c, 0x8022f1986a924c1c, 0x119ed5c369c1435c, 0x49548c4995cf112f, 0xe9028a53cd86dcb7, 0x383abeec076a40fb}},
+	// abi 16: mVUupdateFlags packs sign and zero in a single SLI/AND/ADDV against
+	// a mVUglob-resident weight vector instead of two literal-pool movemask
+	// chains, folding AND_XYZW and SHIFT_XYZW into that vector (16 insns of flag
+	// packing per FMAC down to 7, and the per-site 16-byte literal-pool slot
+	// gone). Every flag-writing FMAC changes shape, and since abi 15 every probe
+	// ends in one, so all seven digests move. Harvested from the first,
+	// deliberately red, run.
+	{16, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs)

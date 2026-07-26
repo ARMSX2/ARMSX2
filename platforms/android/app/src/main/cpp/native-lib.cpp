@@ -21,10 +21,12 @@
 #include "pcsx2/CDVD/CDVDcommon.h"
 #include "pcsx2/CDVD/CDVD.h" // cdvdSaveNVRAM (flush BIOS NVM on background)
 #include "SIO/Memcard/MemoryCardFile.h"
+#include "SIO/Sio.h" // MemcardBusy — save-state refusal reason
 #include "pcsx2/Patch.h"
 #include "pcsx2/R5900.h"
 #include "pcsx2/EEDiffVerify.h" // @@EEDIFF@@ diff-verifier toggle
 #include <atomic>
+#include <chrono> // shader-cache flush throttle
 #include <thread>
 #include "PerformanceMetrics.h"
 #include "GameList.h"
@@ -2535,6 +2537,26 @@ Java_kr_co_iefriends_pcsx2_NativeApp_flushShaderCache(JNIEnv *env, jclass clazz)
     // lose only this one flush — GetTFXPipeline's threshold flush already persists incrementally.
     if (!VMManager::HasValidVM() || !MTGS::IsOpen())
         return;
+    // ★ Rate-limited. Measured on a Retroid Pocket 6: backgrounding wrote 777 KB of pipeline cache,
+    // synchronously on the GS thread, at the exact moment Android is also tearing the surface down
+    // and we are about to rebuild the swapchain. Every background paid it, because active play
+    // keeps compiling pipelines so the dirty flag is essentially always set — turning a quick
+    // alt-tab into a visible multi-second "FPS N/A" stall on return. The flush only exists to
+    // survive a swipe-kill, which is rare and cheap to lose (the pipelines just recompile), so one
+    // flush per interval is plenty. GetTFXPipeline's own threshold flush still persists
+    // incrementally during play, so nothing here is the sole path to durability.
+    static std::atomic<s64> s_last_flush_time{0};
+    const s64 now = static_cast<s64>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    constexpr s64 MIN_FLUSH_INTERVAL_SEC = 120;
+    s64 last = s_last_flush_time.load(std::memory_order_acquire);
+    if (last != 0 && (now - last) < MIN_FLUSH_INTERVAL_SEC)
+        return;
+    // CAS so two rapid background events can't both slip through.
+    if (!s_last_flush_time.compare_exchange_strong(last, now, std::memory_order_acq_rel))
+        return;
     Host::RunOnCPUThread([]() {
         MTGS::RunOnGSThread([]() {
             if (g_vulkan_shader_cache)
@@ -2625,25 +2647,60 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz, 
     // the picker re-reads slot state. The screenshot is captured by
     // VMManager::SaveStateToSlot from the GS framebuffer automatically
     // — no separate GSQueueSnapshot needed.
+    //
+    // ★ Every early-out here used to be silent — no OSD, and most had no log either — while the
+    // Kotlin caller discarded this boolean and closed the picker regardless. A failed save was
+    // therefore pixel-identical to a successful one, which is the whole of the "save states don't
+    // save, takes 2 or 3 tries" report. The dominant cause is MemcardBusy: its countdown is
+    // decremented only by VSyncStart, so it is FROZEN for as long as the pause overlay is up.
+    // Waiting inside the menu can never clear it; only resuming the game for a moment does, which
+    // is exactly why closing and re-entering "fixes" it on the second or third attempt. Refusing
+    // the save is correct — the .p2s does not contain the card image, so a state captured mid-write
+    // restores a VM that will never redo a write the host file has already partially applied. The
+    // defect was the silence, not the refusal. One grep-able line per exit; isMemcardBusy() below
+    // lets the picker name this specific reason and tell the user what to actually do about it.
+    const auto fail = [p_slot](const char* reason) -> jboolean {
+        Console.Error("@@ANDROID_SAVESTATE@@ slot=%d ok=0 reason=%s mcd_busy=%d crc=%08X serial=%s",
+            p_slot, reason, MemcardBusy::IsBusy() ? 1 : 0, VMManager::GetDiscCRC(),
+            VMManager::GetDiscSerial().c_str());
+        return JNI_FALSE;
+    };
     if (!VMManager::HasValidVM())
-        return false;
+        return fail("no_vm");
     if (VMManager::GetDiscCRC() == 0)
-        return false;
+        return fail("crc_zero");
+    // GetSaveStateFileName returns "" for an empty serial, which VMManager reports as "cannot
+    // generate filename" — guarded here so it is named rather than surfacing as a generic failure.
+    if (VMManager::GetDiscSerial().empty())
+        return fail("serial_empty");
+    // Checked before the pause guard so we can name it without the park dance; VMManager rechecks.
+    if (MemcardBusy::IsBusy())
+        return fail("memcard_busy");
     const ScopedVMPause pause_guard;
-    if (!pause_guard.parked()) {
-        Console.Error("saveStateToSlot: CPU thread failed to park, refusing to save");
-        return false;
-    }
+    if (!pause_guard.parked())
+        return fail("cpu_thread_not_parked");
     std::string save_error;
     VMManager::SaveStateToSlot(p_slot, /*zip_on_thread=*/false,
         [&save_error](const std::string& error) { save_error = error; });
     if (!save_error.empty()) {
         Console.Error("saveStateToSlot: %s", save_error.c_str());
-        return false;
+        return fail("save_error");
     }
     const std::string filename = VMManager::GetSaveStateFileName(
         VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC(), p_slot);
-    return !filename.empty() && FileSystem::FileExists(filename.c_str());
+    if (filename.empty() || !FileSystem::FileExists(filename.c_str()))
+        return fail("file_missing");
+    Console.WriteLn("@@ANDROID_SAVESTATE@@ slot=%d ok=1", p_slot);
+    return JNI_TRUE;
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_isMemcardBusy(JNIEnv *env, jclass clazz) {
+    // Lets the save-state picker distinguish "the card is mid-write" from a generic failure, so it
+    // can tell the user the one thing that actually helps: resume the game briefly, then retry.
+    // The counter only ticks down inside VSyncStart, so it does not move while the VM is paused.
+    return (VMManager::HasValidVM() && MemcardBusy::IsBusy()) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C"
@@ -2652,18 +2709,24 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromSlot(JNIEnv *env, jclass clazz
     // ScopedVMPause below guarantees the CPU thread is parked before the
     // load runs — do not rely on the Kotlin caller having paused the VM
     // (not every UI flow does, and a load racing a running VM corrupts it).
+    // Instrumented like saveStateToSlot: three of these exits used to return false with NO log at
+    // all, so a refused load was indistinguishable from a broken one. That gap is why "couldn't
+    // load that slot" had nothing behind it to diagnose.
+    const auto fail = [p_slot](const char* reason) -> jboolean {
+        Console.Error("@@ANDROID_LOADSTATE@@ slot=%d ok=0 reason=%s crc=%08X serial=%s", p_slot,
+            reason, VMManager::GetDiscCRC(), VMManager::GetDiscSerial().c_str());
+        return JNI_FALSE;
+    };
     if (!VMManager::HasValidVM())
-        return false;
+        return fail("no_vm");
     const u32 _crc = VMManager::GetDiscCRC();
     if (_crc == 0)
-        return false;
+        return fail("crc_zero");
     if (!VMManager::HasSaveStateInSlot(VMManager::GetDiscSerial().c_str(), _crc, p_slot))
-        return false;
+        return fail("no_state_in_slot");
     const ScopedVMPause pause_guard;
-    if (!pause_guard.parked()) {
-        Console.Error("loadStateFromSlot: CPU thread failed to park, refusing to load");
-        return false;
-    }
+    if (!pause_guard.parked())
+        return fail("cpu_thread_not_parked");
     const bool loaded = VMManager::LoadStateFromSlot(p_slot);
     // A normal LoadState does not present (only the input-recording path does), so the restored
     // frame isn't shown until the game draws its next frame. When the game is already running
@@ -3795,9 +3858,20 @@ static std::unique_ptr<INISettingsInterface> s_export_game_ini;
 // "Enable" lists written by setEnabledPatches, so changing ANY in-game setting silently wiped
 // that game's enabled patches. Clearing just the sections we own still drops stale overrides
 // (the original intent) while leaving anything we don't own alone — robust for future keys too.
+//
+// ★ This list MUST cover every section applyTo() writes, or the uncovered ones leak forever.
+// writeGameSettingsIni only emits keys that DIFFER from global, so once a per-game value is set
+// back to the global value nothing is emitted for it — and if its section isn't cleared here,
+// the stale key survives and keeps winning at LAYER_GAME (which outranks everything the app
+// writes, all of which lands in BASE). That is exactly the reported "some settings reset, others
+// stay no matter what", and it is why a stale per-game DEV9/Eth EthEnable=false was able to make
+// Local Link look broken for hours. The 8 EmuCore*/Framerate/MemoryCards entries were the
+// original list; DEV9*, SPU2*, and USB1 were written by applyTo but never cleared.
 static constexpr const char* OWNED_GAME_INI_SECTIONS[] = {
     "EmuCore", "EmuCore/CPU", "EmuCore/CPU/Recompiler", "EmuCore/GS",
     "EmuCore/Gamefixes", "EmuCore/Speedhacks", "Framerate", "MemoryCards",
+    "DEV9", "DEV9/Eth", "DEV9/Eth/Hosts", "DEV9/Hdd",
+    "SPU2", "SPU2/Output", "USB1",
 };
 
 // Open [path] as the active export interface for the gameIniPut/gameIniCommitWrite stream that
@@ -3805,8 +3879,15 @@ static constexpr const char* OWNED_GAME_INI_SECTIONS[] = {
 static void BeginGameIniExport(const std::string& path) {
     auto ini = std::make_unique<INISettingsInterface>(path);
     ini->Load(); // failure just means there was no file yet, i.e. nothing to preserve
+    // Per-host DNS entries live in INDEXED sections (DEV9/Eth/Hosts/Host0, Host1, ...) that can't
+    // be listed statically. Read the count BEFORE clearing, since Count lives in the parent
+    // section we are about to blank, then clear generously so shrinking the host list can't
+    // strand the tail entries.
+    const int host_count = ini->GetIntValue("DEV9/Eth/Hosts", "Count", 0);
     for (const char* sec : OWNED_GAME_INI_SECTIONS)
         ini->ClearSection(sec);
+    for (int i = 0, n = std::max(host_count, 8) + 8; i < n; i++)
+        ini->ClearSection(fmt::format("DEV9/Eth/Hosts/Host{}", i).c_str());
     s_export_game_ini = std::move(ini);
 }
 

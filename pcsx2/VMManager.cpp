@@ -3513,7 +3513,10 @@ void VMManager::WarnAboutUnsafeSettings()
 			append(ICON_FA_PAINTBRUSH,
 				TRANSLATE_SV("VMManager", "Blending Accuracy is below Basic, this may break effects in some games."));
 		}
-		if (EmuConfig.GS.HWDownloadMode > GSHardwareDownloadMode::EnabledForceFull)
+		// NOT a relational comparison: Asynchronous (5) was appended after Disabled (4), so the
+		// enum is no longer ordered by accuracy and `> EnabledForceFull` wrongly flags Async while
+		// the ordering trap is exactly what the rest of the port was rewritten to avoid.
+		if (!IsHardwareDownloadReadbackEnabled(EmuConfig.GS.HWDownloadMode))
 		{
 			append(ICON_FA_DOWNLOAD,
 				TRANSLATE_SV("VMManager", "Hardware Download Mode is not set to Accurate, this may break rendering in some games."));

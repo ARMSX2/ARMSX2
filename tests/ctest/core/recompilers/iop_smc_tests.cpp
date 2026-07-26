@@ -378,3 +378,85 @@ TEST(IopSmc, OverwriteLastWordOfBlockBeforeTerminator)
 	EXPECT_EQ(h.GetGprInterp(reg::v1), 30u);
 	EXPECT_EQ(h.GetGprInterp(reg::v0), 0xDEADu);
 }
+
+TEST(IopSmc, ClearScansPastNonOverlappingNeighborToStraddlerBelow)
+{
+	// psxRecClearMem walks DOWN from the block containing the written word to
+	// pick up straddlers that start below it. recBlocks is ordered by startpc,
+	// NOT by end address, so stopping at the first block that ends before the
+	// write is unsound: a longer block lower down can jump clean over a short
+	// one and still cover the write. The scan quits before it is ever examined,
+	// the straddler is neither removed nor LUT-reset, and it keeps executing
+	// stale code. (Upstream x86 carries the same stop — iR3000A.cpp — and it
+	// is the IOP half of the same 2009 commit, 801d71f7f0, that put the
+	// matching stop in the EE.)
+	//
+	// Geometry, built by compile order (block ends are set by the boundary
+	// scan in psxRecRecompile):
+	//
+	//   A = [S,      S+0x48)   long — S to the `jr ra` terminator
+	//   B = [S+0x10, S+0x20)   short — truncated against H's compiled head
+	//   H = [S+0x20, S+0x48)
+	//
+	// A must compile FIRST (nothing above it to truncate against), then H,
+	// then B — B's scan stops at H because H's LUT slot no longer holds
+	// iopJITCompile. That is the only way to get a block that both starts
+	// inside A and ends before A does.
+	//
+	// The write lands at S+0x30: inside A, inside H, and past B's end. The
+	// downward walk starts at H, sees B ending at S+0x20 <= S+0x30, and stops
+	// — never reaching A.
+	JitTestHarness h;
+	constexpr u32 kS = kProgramPc;
+	constexpr u32 kU = kProgramPc + 0x10; // B's entry
+	constexpr u32 kH = kProgramPc + 0x20; // H's entry
+	constexpr u32 kP = kProgramPc + 0x30; // the word we overwrite
+
+	// Straight-line body — no branches before the terminator, or A would end
+	// early and the geometry collapses.
+	h.LoadProgramAt(kS, {
+		ADDIU(reg::v0, reg::zero, 1),   // S+0x00  A entry
+		NOP, NOP, NOP,
+		ADDIU(reg::a0, reg::zero, 4),   // S+0x10  B entry
+		NOP, NOP, NOP,
+		ADDIU(reg::a1, reg::zero, 8),   // S+0x20  H entry
+		NOP, NOP, NOP,
+		ADDIU(reg::v1, reg::zero, 0x11),// S+0x30  overwritten below
+		NOP, NOP, NOP,
+		JR(reg::ra),                    // S+0x40
+		NOP,                            // S+0x44  delay slot; A ends at S+0x48
+	}, /*append_jr_ra_term=*/false);
+
+	// 1) A — enters at kS, runs to the terminator.
+	h.Run();
+	ASSERT_EQ(h.GetGprInterp(reg::v0), 1u);
+	ASSERT_EQ(h.GetGprInterp(reg::v1), 0x11u);
+
+	// 2) H — mid-A, so its LUT slot is still iopJITCompile and it compiles
+	//    as its own block running to the same terminator.
+	h.SetPc(kH);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	ASSERT_EQ(h.GetGprInterp(reg::a1), 8u);
+
+	// 3) B — its scan now hits H's compiled head and truncates there, so B
+	//    ends at S+0x20 and falls through into H.
+	h.SetPc(kU);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	ASSERT_EQ(h.GetGprInterp(reg::a0), 4u);
+
+	// The SMC write: inside A, past B's end.
+	iopMemWrite32(kP, ADDIU(reg::v1, reg::zero, 0x22));
+
+	// Re-enter at A. If the walk stopped at B, A is still cached with the old
+	// 0x11 baked in — the JIT returns 0x11 while the interpreter reads the
+	// patched word and returns 0x22, so DiffJitVsInterp fires as well.
+	h.SetGpr(reg::v1, 0xDEAD);
+	h.SetPc(kS);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	EXPECT_EQ(h.GetGprJit(reg::v1), 0x22u) << "block A executed stale code — "
+		"the downward walk in psxRecClearMem stopped at the short block B";
+	EXPECT_EQ(h.GetGprInterp(reg::v1), 0x22u);
+}

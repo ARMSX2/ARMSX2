@@ -13,6 +13,39 @@ struct microVU;
 // Global Variables
 //------------------------------------------------------------------
 
+// Combined sign/zero lane-weight vectors for the single-ADDV MAC/status flag
+// pack in mVUupdateFlags (see armEmitPackSignZeroBits). `byMask` is indexed by
+// [reverse][dest-field mask]; `bySSShift` holds the four single-scalar
+// variants, which keep lane 0 alone and additionally fold SHIFT_XYZW's rotate.
+//
+// These used to be materialised per call site as a vixl literal-pool load,
+// which burned a fresh 16-byte pool slot for every flag-writing FMAC in the
+// program — 1666 slots holding 34 distinct values in one God of War II VU1
+// program, 12.8% of its host code, every one of them on its own cache line.
+// Living in mVUglob they ride the pinned gprMVUglob base as a single
+// `Ldr q, [x25, #imm]` and share a handful of D-cache lines.
+struct mVU_MacWeights
+{
+	u32 byMask[2][16][4];
+	u32 bySSShift[4][4];
+};
+
+static constexpr mVU_MacWeights mVUmakeMacWeights()
+{
+	mVU_MacWeights t{};
+	for (int rev = 0; rev < 2; rev++)
+		for (u32 mask = 0; mask < 16; mask++)
+			for (int lane = 0; lane < 4; lane++)
+				t.byMask[rev][mask][lane] = armPackLaneWeight(lane, mask, rev != 0, 0);
+	// Single-scalar: the result sits in lane 0 and SHIFT_XYZW rotates it into
+	// the field's own MAC bit. shift <= 3 keeps the zero half inside the low
+	// nibble, so the SLI trick still holds.
+	for (int shift = 0; shift < 4; shift++)
+		for (int lane = 0; lane < 4; lane++)
+			t.bySSShift[shift][lane] = armPackLaneWeight(lane, 1, false, shift);
+	return t;
+}
+
 struct mVU_Globals
 {
 #define __four(val) { val, val, val, val }
@@ -59,10 +92,29 @@ struct mVU_Globals
 	                         {0x7f7fffff, 0x7f7fffff, 0x7f7fffff, 0x7f7fffff}};
 	u32 signMinvals[2][4] = {{0xff7fffff, 0xffffffff, 0xffffffff, 0xffffffff},
 	                         {0xff7fffff, 0xff7fffff, 0xff7fffff, 0xff7fffff}};
+	// Also appended at the end — see mVU_MacWeights.
+	mVU_MacWeights macWeights = mVUmakeMacWeights();
 #undef __four
 };
 
 alignas(32) static constexpr struct mVU_Globals mVUglob;
+
+// Every member is a 16-byte-multiple array, so `Ldr q` off gprMVUglob lands on
+// a 16-byte boundary and never straddles a cache line.
+static_assert(offsetof(mVU_Globals, macWeights) % 16 == 0,
+	"mVUglob.macWeights must stay 16-byte aligned for Ldr q [x25, #imm]");
+
+// Weight vector for one mVUupdateFlags pack. `shift` is non-zero only on the
+// single-scalar path, which always keeps lane 0 alone in forward bit order.
+__fi static const void* mVUmacWeightVec(u32 keepMask, bool reverse, int shift)
+{
+	if (shift != 0)
+	{
+		pxAssert(keepMask == 1 && !reverse && shift < 4);
+		return &mVUglob.macWeights.bySSShift[shift][0];
+	}
+	return &mVUglob.macWeights.byMask[reverse ? 1 : 0][keepMask & 0xF][0];
+}
 
 static const uint _Ibit_ = 1 << 31;
 static const uint _Ebit_ = 1 << 30;

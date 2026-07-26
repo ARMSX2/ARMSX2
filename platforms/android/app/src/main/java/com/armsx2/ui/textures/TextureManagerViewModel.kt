@@ -63,10 +63,15 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
             if (!live.isNullOrBlank()) return live
         }
         return MainActivityRuntime.currentGame.value?.serial
+            // Survives quitting to the library, where the two sources above are both blank.
+            ?: MainActivityRuntime.contextGame.value?.serial?.takeIf { it.isNotBlank() }
     }
 
     fun update(transform: (Settings) -> Settings) {
-        val updated = transform(state.value.settings)
+        // Transform the CURRENT global, not this screen's snapshot — see the note in
+        // EmulationMenuViewModel.updateSettings. This one saves to global explicitly, so read
+        // global explicitly rather than whatever was loaded when the screen opened.
+        val updated = transform(ConfigStore.loadGlobal())
         ConfigStore.saveGlobal(updated)
         if (MainActivityRuntime.nativeReady.value) runCatching { updated.applyTo() }
         state.value = state.value.copy(settings = updated)

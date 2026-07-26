@@ -64,7 +64,7 @@
 #include <map>
 
 #include "common/HostSys.h"
-#include "arm64/AsmHelpers.h" // armGetWritableCodePtr (iOS dual-map W^X)
+#include "arm64/AsmHelpers.h" // armPatchCodeWord (self-scoped W^X code patching)
 #include "x86/BaseblockEx.h"  // BASEBLOCK, BASEBLOCKEX, BaseBlockArray, recLUT_SetPage
 
 class Arm64BaseBlocks
@@ -123,20 +123,18 @@ protected:
 		return (call ? 0x94000000u : 0x14000000u) | (static_cast<u32>(imm26) & 0x03FFFFFFu);
 	}
 
-	// Store only, no cache maintenance. Valid ONLY for a site inside the
-	// block currently being emitted: that buffer has not been executed yet,
-	// and armEndBlock() issues one whole-range flush over it before it can
-	// be. (AetherSX2 does the same — its Link() performs no flush at all,
-	// leaving it to the single range flush in armEndBlock.)
-	// Never use this on code that is already live; use PatchAtomic.
+	// Store only, no cache maintenance. Fine for a site inside the block
+	// currently being emitted (that buffer has not been executed yet, and
+	// armEndBlock() issues one whole-range flush over it), and for the
+	// New() repoint loop, whose callers flush via FlushPatchedSites.
+	// Never use this on code that is already live without a flush; use
+	// PatchAtomic.
 	static void PatchWord(uptr site, u32 instr)
 	{
-		// 4-byte aligned word stores are atomic on AArch64. `site` is the RX
-		// address; under iOS dual-map W^X the store goes through the RW alias
-		// (identity elsewhere). Callers hold an open Begin/EndCodeWrite scope
-		// for the toggle modes; on Darwin the "signal handler" caller is
-		// really the Mach exception-handler thread, so that scope is safe.
-		*reinterpret_cast<volatile u32*>(armGetWritableCodePtr(reinterpret_cast<u8*>(site))) = instr;
+		// armPatchCodeWord owns the W^X handling — sites outside the open
+		// emit window get their own page-granular write scope. Nothing on
+		// the New()/Remove() paths holds one.
+		armPatchCodeWord(reinterpret_cast<u8*>(site), instr);
 	}
 
 	// (HostSys::FlushInstructionCache, not the raw builtin: on Darwin the

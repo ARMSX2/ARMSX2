@@ -112,6 +112,11 @@ struct CPUClass {
     /// Returns false if iOS has revoked the JIT grant since boot.
     bool ValidateJITAlive();
 
+    /// Registered by the platform layer. Returns true while any thread may be
+    /// executing or emitting JIT code; ValidateJITAlive skips its arena canary
+    /// while that holds, since the probe touches the live dispatcher page.
+    void SetJITActivityQuery(bool (*query)());
+
     // [P43] iOS 26 Dual-Mapping JIT
     enum class JitMode {
         Simulator,    // MAP_JIT + pthread_jit_write_protect_np

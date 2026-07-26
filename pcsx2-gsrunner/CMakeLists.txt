@@ -8,7 +8,13 @@ endif()
 
 target_sources(pcsx2-gsrunner PRIVATE
 	Main.cpp
+	RenderDocCapture.cpp
+	RenderDocCapture.h
 )
+
+if(UNIX)
+	target_link_libraries(pcsx2-gsrunner PRIVATE ${CMAKE_DL_LIBS})
+endif()
 
 target_include_directories(pcsx2-gsrunner PRIVATE
 	"${CMAKE_BINARY_DIR}/common/include"

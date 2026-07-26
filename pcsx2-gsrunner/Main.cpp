@@ -50,6 +50,8 @@
 #include "pcsx2/PerformanceMetrics.h"
 #include "pcsx2/VMManager.h"
 
+#include "RenderDocCapture.h"
+
 #include "svnrev.h"
 
 // Down here because X11 has a lot of defines that can conflict
@@ -84,6 +86,11 @@ static std::string s_output_prefix;
 static s32 s_loop_count = 1;
 static std::optional<bool> s_use_window;
 static bool s_no_console = false;
+
+// -renderdoc / -renderdoc-frame. Empty path means capture is not requested.
+static std::string s_renderdoc_path;
+static u32 s_renderdoc_start_frame = 1;
+static u32 s_renderdoc_frame_count = 1;
 
 // Owned by the GS thread.
 static u32 s_dump_frame_number = 0;
@@ -329,6 +336,11 @@ void Host::ReleaseRenderWindow()
 
 void Host::BeginPresentFrame()
 {
+	// Before anything else: this is the GS thread, at the boundary where the frame's
+	// GS work is submitted but not yet presented, which is where a RenderDoc capture
+	// has to open and close.
+	RenderDocCapture::OnPresentFrame(s_dump_frame_number);
+
 	if (s_loop_number == 0 && !s_output_prefix.empty())
 	{
 		// when we wrap around, don't race other files
@@ -613,6 +625,14 @@ static void PrintCommandLineHelp(const char* progname)
 		"and only those frames that are multiples of BF (intersection of -dumprange and -dumprangef used).\n"
 		"Defaults to 0,-1,1 (all frames). Only used if -dump is used.\n");
 	std::fprintf(stderr, "  -loop <count>: Loops dump playback N times. Defaults to 1. 0 will loop infinitely.\n");
+	std::fprintf(stderr, "  -renderdoc <path>: Capture GS work with RenderDoc, writing <path>_frameN.rdc. gsrunner "
+						 "triggers the capture itself, so no F12 and no RenderDoc UI are needed -- but RenderDoc must "
+						 "already be in the process, so either launch from qrenderdoc/renderdoccmd or prefix the command "
+						 "with LD_PRELOAD=/path/to/librenderdoc.so. Hardware renderers only. Prefer '-renderer vulkan "
+						 "-surfaceless': RenderDoc's Vulkan capture drops VK_KHR_wayland_surface, so a windowed Vulkan "
+						 "run cannot even create an instance under it.\n");
+	std::fprintf(stderr, "  -renderdoc-frame N[,C]: Capture dump frame N (base 0, minimum 1) and the C-1 frames after it, "
+						 "one .rdc each. Defaults to 1,1. Only used if -renderdoc is used.\n");
 	std::fprintf(stderr, "  -renderer <renderer>: Sets the graphics renderer. Defaults to Auto.\n");
 	std::fprintf(stderr, "  -swthreads <threads>: Sets the number of threads for the software renderer.\n");
 	std::fprintf(stderr, "  -backthread <mode>: GS back-thread mode (0=off, 1=inline-records, 2=lockstep, 3=pipelined). Defaults to 0.\n");
@@ -764,6 +784,27 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_settings_interface.SetIntValue("EmuCore/GS", "SaveFrameStart", start);
 				s_settings_interface.SetIntValue("EmuCore/GS", "SaveFrameCount", num);
 				s_settings_interface.SetIntValue("EmuCore/GS", "SaveFrameBy", by);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-renderdoc"))
+			{
+				s_renderdoc_path = StringUtil::StripWhitespace(argv[++i]);
+				if (s_renderdoc_path.empty())
+				{
+					Console.Error("Invalid RenderDoc capture path specified.");
+					return false;
+				}
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-renderdoc-frame"))
+			{
+				std::string str(argv[++i]);
+
+				std::vector<std::string_view> split = StringUtil::SplitString(str, ',');
+				if (split.size() > 0)
+					s_renderdoc_start_frame = StringUtil::FromChars<u32>(split[0]).value_or(1);
+				if (split.size() > 1)
+					s_renderdoc_frame_count = std::max(1u, StringUtil::FromChars<u32>(split[1]).value_or(1));
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-dumpdirhw"))
@@ -1369,6 +1410,17 @@ int main(int argc, char* argv[])
 	if (!GSRunner::ParseCommandLineArgs(argc, argv, params))
 		return EXIT_FAILURE;
 
+	// Must happen before the GS device is created on the CPU thread: RenderDoc
+	// installs its graphics-API hooks when its library loads, so a standalone run
+	// has to get it in ahead of libEGL/libvulkan.
+	if (!s_renderdoc_path.empty() &&
+		!RenderDocCapture::Initialize(s_renderdoc_path, s_renderdoc_start_frame, s_renderdoc_frame_count))
+	{
+		// RenderDocCapture reports the reason to stderr itself; Console output does
+		// not reach the terminal this early in startup.
+		return EXIT_FAILURE;
+	}
+
 	if (s_use_window.value_or(true) && !GSRunner::CreatePlatformWindow())
 	{
 		Console.Error("Failed to create window.");
@@ -1383,6 +1435,7 @@ int main(int argc, char* argv[])
 	GSRunner::PumpPlatformMessages(/*forever=*/true);
 	cputhread.join();
 
+	RenderDocCapture::Shutdown();
 	GSRunner::DestroyPlatformWindow();
 
 	return thread_ret.load();

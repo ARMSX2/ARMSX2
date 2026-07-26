@@ -420,6 +420,7 @@ static const char* s_gs_hw_fix_names[] = {
 	"drawBuffering",
 	"PCRTCOffsets",
 	"PCRTCOverscan",
+	"coalesceRenderPasses",
 	"trilinearFiltering",
 	"skipDrawStart",
 	"skipDrawEnd",
@@ -672,6 +673,9 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 		case GSHWFixId::PCRTCOverscan:
 			return (static_cast<int>(config.PCRTCOverscan) == value);
 
+		case GSHWFixId::CoalesceRenderPasses:
+			return (static_cast<int>(config.CoalesceRenderPasses) == value);
+
 		case GSHWFixId::Mipmap:
 			return (static_cast<int>(config.HWMipmap) == value);
 
@@ -860,6 +864,10 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 
 			case GSHWFixId::PCRTCOverscan:
 				config.PCRTCOverscan = (value > 0);
+				break;
+
+			case GSHWFixId::CoalesceRenderPasses:
+				config.CoalesceRenderPasses = (value > 0);
 				break;
 
 			case GSHWFixId::Mipmap:

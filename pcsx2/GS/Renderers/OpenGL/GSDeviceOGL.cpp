@@ -783,6 +783,7 @@ bool GSDeviceOGL::CheckFeatures()
 
 	bool vendor_id_mali = false;
 	bool vendor_id_adreno = false;
+	bool vendor_id_apple = false;
 
 	const char* vendor_raw = (const char*)glGetString(GL_VENDOR);
 	const char* renderer_raw = (const char*)glGetString(GL_RENDERER);
@@ -816,6 +817,18 @@ bool GSDeviceOGL::CheckFeatures()
 		Console.WriteLn(Color_Cyan, "GL: Qualcomm Adreno GPU detected.");
 		vendor_id_adreno = true;
 	}
+	// Matched on the renderer, not the vendor: Apple silicon reports the vendor of whoever
+	// wrote the driver ("Mesa" under Asahi, "Apple Inc." on macOS), while an Intel Mac reports
+	// vendor "Apple Inc." with an AMD or Intel GPU. The renderer names the actual GPU.
+	//
+	// Apple silicon is a TBDR, but it is not a mobile-vendor part and must not inherit their
+	// workarounds — detected explicitly so it resolves to its own profile instead of falling
+	// through to the old not-Mali-therefore-Adreno guess.
+	else if (std::strstr(renderer_str, "Apple"))
+	{
+		Console.WriteLn(Color_StrongCyan, "GL: Apple GPU detected.");
+		vendor_id_apple = true;
+	}
 
 #if defined(__ANDROID__)
 	// ANGLE (GLES-on-Vulkan) reports the underlying GPU in GL_RENDERER, e.g.
@@ -839,7 +852,16 @@ bool GSDeviceOGL::CheckFeatures()
 	bool use_adreno_profile = IsAdrenoGPUProfile();
 	bool use_powervr_profile = IsPowerVRGPUProfile();
 #else
-	SetRuntimeGPUProfile(vendor_id_mali ? RuntimeGpuProfile::Mali : RuntimeGpuProfile::Adreno);
+	// ★ Was `vendor_id_mali ? Mali : Adreno`, which claimed ADRENO for every non-Mali desktop GPU —
+	// NVIDIA, AMD, Intel and Apple Silicon all identified as Adreno. The locals below were already
+	// correct (real per-vendor detection), so only the member misfired, which is why it hid: it
+	// surfaced as Adreno-only workarounds engaging on an M2 (reported by bmd: "GL: Adreno - routing
+	// depth feedback through the depth sampler"). Mirror the locals instead of guessing, and fall
+	// back to Unknown — desktop GPUs are not tilers and want none of the mobile vendor paths.
+	SetRuntimeGPUProfile(vendor_id_mali    ? RuntimeGpuProfile::Mali :
+						 vendor_id_adreno  ? RuntimeGpuProfile::Adreno :
+						 vendor_id_apple   ? RuntimeGpuProfile::Apple :
+											 RuntimeGpuProfile::Unknown);
 	bool use_mali_profile = vendor_id_mali;
 	bool use_adreno_profile = vendor_id_adreno;
 	bool use_powervr_profile = false;
@@ -987,6 +1009,16 @@ bool GSDeviceOGL::CheckFeatures()
 	// optional features based on context
 	m_features.broken_point_sampler = false;
 	m_features.primitive_id = true;
+
+	// Apple GPUs miscompare depth written from the shader (the PS2 32-bit Z floor) against the
+	// fixed-function interpolation a later read-only pass tests with, so a GEQUAL retest of the
+	// same geometry drops out along shared triangle edges and the layer underneath shows through
+	// as pinpoints -- God of War II's Athena statue, and dark walls in Black. Reproduces here
+	// identically under GL and Vulkan (748 stray pixels either way), so it is the GPU, not the
+	// API. See the matching gate in GSDeviceVK::CheckFeatures for the measurements. Mali is
+	// deliberately not included: the Vulkan path opts it out for early-ZS, but that has not been
+	// tested on a Mali GL driver.
+	m_features.no_ps2_z_quantization = GSConfig.DisablePS2DepthQuantization || vendor_id_apple;
 
 	// GLES may omit dual-source blending (GL_EXT/ARB_blend_func_extended); desktop GL always has it.
 	// When absent, GSRendererHW emulates SRC1 blend equations in-shader per-draw rather than forcing
@@ -1408,7 +1440,7 @@ std::string GSDeviceOGL::GetDriverInfo() const
 		"OpenGL Context:\n{}\n{} {}\nGLSL: {}", gl_version, gl_vendor, gl_renderer, gl_shading_language_version);
 }
 
-GSDevice::PresentResult GSDeviceOGL::BeginPresent(bool frame_skip)
+GSDevice::PresentResult GSDeviceOGL::DoBeginPresent(bool frame_skip)
 {
 	if (frame_skip || m_window_info.type == WindowInfo::Type::Surfaceless)
 		return PresentResult::FrameSkipped;
@@ -2201,12 +2233,12 @@ void GSDeviceOGL::BlitRect(GSTexture* sTex, const GSVector4i& r, const GSVector2
 }
 
 // Copy a sub part of a texture into another
-void GSDeviceOGL::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
+void GSDeviceOGL::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
 {
 	// Empty rect, abort copy.
 	if (r.rempty())
 	{
-		GL_INS("GL: CopyRect rect empty.");
+		GL_INS("GL: DoCopyRect rect empty.");
 		return;
 	}
 
@@ -2226,7 +2258,7 @@ void GSDeviceOGL::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r
 	}
 
 	g_perfmon.Put(GSPerfMon::TextureCopies, 1);
-	GL_PUSH("CopyRect from %d to %d", sid, did);
+	GL_PUSH("DoCopyRect from %d to %d", sid, did);
 
 	// Commit destination clear if partially overwritten (color only).
 	if (dTex->GetState() == GSTexture::State::Cleared && !full_draw_copy)
@@ -2367,7 +2399,7 @@ void GSDeviceOGL::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture
 	DrawStretchRect(flip_sr, dRect, ds);
 }
 
-void GSDeviceOGL::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
+void GSDeviceOGL::DoUpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
 {
 	CommitClear(sTex, false);
 
@@ -2389,7 +2421,7 @@ void GSDeviceOGL::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, 
 	DrawStretchRect(GSVector4::zero(), dRect, dTex->GetSize());
 }
 
-void GSDeviceOGL::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM)
+void GSDeviceOGL::DoConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM)
 {
 	CommitClear(sTex, false);
 
@@ -2413,7 +2445,7 @@ void GSDeviceOGL::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 off
 	DrawStretchRect(GSVector4::zero(), dRect, dTex->GetSize());
 }
 
-void GSDeviceOGL::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
+void GSDeviceOGL::DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
 {
 	CommitClear(sTex, false);
 
@@ -2463,7 +2495,7 @@ void GSDeviceOGL::DrawStretchRect(const GSVector4& sRect, const GSVector4& dRect
 	DrawPrimitive();
 }
 
-void GSDeviceOGL::DrawMultiStretchRects(
+void GSDeviceOGL::DoDrawMultiStretchRects(
 	const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader)
 {
 	shader = shader.SetMask(); // Mask is handled separately from program.
@@ -3520,7 +3552,7 @@ static constexpr std::array<GLenum, 3> s_gl_blend_ops = { {
 } };
 // clang-format on
 
-void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
+void GSDeviceOGL::DoRenderHW(GSHWDrawConfig& config)
 {
 	if (!GLState::scissor.eq(config.scissor))
 	{
@@ -3891,14 +3923,14 @@ void GSDeviceOGL::FeedbackCopyAndBind(const GSHWDrawConfig& config,
 {
 	if (rt_clone)
 	{
-		CopyRect(rt, rt_clone, copyarea, copyarea.left, copyarea.top);
+		DoCopyRect(rt, rt_clone, copyarea, copyarea.left, copyarea.top);
 		PSSetShaderResource(2, rt_clone);
 		if (config.tex_hazard == GSHWDrawConfig::TEX_HAZARD_RT)
 			PSSetShaderResource(0, rt_clone);
 	}
 	if (ds_clone)
 	{
-		CopyRect(ds, ds_clone, copyarea, copyarea.left, copyarea.top);
+		DoCopyRect(ds, ds_clone, copyarea, copyarea.left, copyarea.top);
 		PSSetShaderResource(4, ds_clone);
 		if (config.tex_hazard == GSHWDrawConfig::TEX_HAZARD_DEPTH)
 			PSSetShaderResource(0, ds_clone);

@@ -24,6 +24,12 @@ enum class RuntimeGpuProfile : u8
 	Adreno,
 	PowerVR,
 	Xclipse,
+	/// Apple Silicon (M-series / A-series). A TBDR like the mobile parts, but it is NOT one of
+	/// them and must never inherit their workarounds — before this existed, desktop GL resolved
+	/// anything not-Mali to Adreno, so an M2 ran Adreno-only paths (reported by bmd: "GL: Adreno -
+	/// routing depth feedback through the depth sampler"). Distinct from Unknown so the tiler-ness
+	/// can be acted on deliberately later rather than by accident.
+	Apple,
 };
 
 enum class MobileGpuArchitecture : u8

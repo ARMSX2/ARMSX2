@@ -870,6 +870,11 @@ struct Pcsx2Config
 					HWROV : 1,
 					HWROVLogging : 1,
 					HWROVBarriersVK : 1,
+					// Hold hardware draws back so consecutive draws to the same target
+					// share one render pass (GSPassScheduler). Aimed at tiling GPUs,
+					// where every pass boundary is a full tile load and store. Hot-
+					// appliable: turning it off just stops deferring.
+					CoalesceRenderPasses : 1,
 					ManualUserHacks : 1,
 					UserHacks_AlignSpriteX : 1,
 					UserHacks_CPUFBConversion : 1,

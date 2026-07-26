@@ -30,6 +30,7 @@ object TouchControls {
     private const val KEY_PROFILES = "touch.profiles"
     private const val KEY_ACTIVE = "touch.active"
     private const val KEY_OPACITY = "touch.opacity"
+    private const val KEY_PRESSURE_PERCENT = "touch.pressurePercent"
     // #357: pause button is now a visible top-right single-tap button; this toggles its glyph
     // (off = invisible but still tappable). The migration key one-shot relocates the old
     // invisible center pause hotspot to the new top-right spot for existing layouts.
@@ -136,7 +137,10 @@ object TouchControls {
         MainActivityRuntime.prefs.getString(orient(baseKey), null)
             ?: MainActivityRuntime.prefs.getString(baseKey, null)
 
-    /** Master opacity 0.20..1.00. Persisted. */
+    /** Master opacity 0.00..1.00. Persisted. 0 = fully invisible controls, which stay touchable —
+     *  requested by players who know the layout by feel (#428), and matches PPSSPP/Dolphin/Citra.
+     *  The floor used to be 0.20; the per-widget legibility floors in TouchControlsOverlay now fade
+     *  out below that instead of bottoming out, so 0 really means invisible. */
     val opacity = mutableFloatStateOf(0.55f)
 
     /** #357: "tap to reveal" mode for the on-screen pause button. Off (default) = the ⏸ glyph
@@ -222,8 +226,24 @@ object TouchControls {
      *  on-screen PRESSURE button and the bound physical button. */
     val pressureModifierHeld = mutableStateOf(false)
 
-    /** ~50% of the native 0..32767 range → state≈0.5 in setPadButton. */
-    const val PRESSURE_HALF_RANGE = 16383
+    /** Full native press range. setPadButton maps 0..PRESSURE_FULL_RANGE onto state 0..1, and
+     *  treats a range of exactly 0 as "no modifier — full press". */
+    const val PRESSURE_FULL_RANGE = 32767
+
+    /** How hard the modifier presses, as a percentage of a full press. 50 reproduces the value
+     *  that used to be hardcoded (PCSX2's DEFAULT_PRESSURE_MODIFIER), which is why the on-screen
+     *  PRESSURE button was stuck at exactly half. Clamped away from BOTH ends deliberately: 0
+     *  would collide with the "full press" sentinel above, and 100 is indistinguishable from not
+     *  holding the modifier at all — neither is a usable setting. Persisted. */
+    val pressurePercent = mutableIntStateOf(50)
+
+    fun setPressurePercent(v: Int) {
+        val c = v.coerceIn(5, 95)
+        pressurePercent.intValue = c
+        // Persisted immediately rather than waiting for the layout save() — this is driven from a
+        // settings slider, not from the layout editor, so save() may never be called.
+        runCatching { MainActivityRuntime.prefs.edit().putInt(KEY_PRESSURE_PERCENT, c).apply() }
+    }
 
     // PS2 DualShock2 pressure-sensitive inputs (keycodes match native-lib.cpp's
     // setPadButton map): d-pad, face buttons, L1/L2/R1/R2. Start/Select/L3/R3 are
@@ -238,7 +258,9 @@ object TouchControls {
      *  (soft) range while the modifier is held on a pressure-capable button,
      *  else 0 (full press). */
     fun pressureRangeFor(keycode: Int): Int =
-        if (pressureModifierHeld.value && keycode in PRESSURE_KEYCODES) PRESSURE_HALF_RANGE else 0
+        if (pressureModifierHeld.value && keycode in PRESSURE_KEYCODES)
+            (PRESSURE_FULL_RANGE * pressurePercent.intValue / 100).coerceAtLeast(1)
+        else 0
 
     /** On-screen touch controls visibility. 0 = Never show (for physical-
      *  controls devices like the RP6 — also hides the settings cog so nothing
@@ -505,7 +527,8 @@ object TouchControls {
         activeProfileName.value = active
         val match = list.firstOrNull { it.name == active } ?: list.first()
         activeLayout.value = match.layout.copy()
-        opacity.floatValue = MainActivityRuntime.prefs.getFloat(KEY_OPACITY, 0.55f).coerceIn(0.20f, 1.0f)
+        opacity.floatValue = MainActivityRuntime.prefs.getFloat(KEY_OPACITY, 0.55f).coerceIn(0.0f, 1.0f)
+        pressurePercent.intValue = MainActivityRuntime.prefs.getInt(KEY_PRESSURE_PERCENT, 50).coerceIn(5, 95)
         faceMultiTouch.value = MainActivityRuntime.prefs.getBoolean(KEY_FACE_MULTI, true)
         touchGliding.value = MainActivityRuntime.prefs.getBoolean(KEY_TOUCH_GLIDING, false)
         touchHaptics.value = MainActivityRuntime.prefs.getBoolean(KEY_TOUCH_HAPTICS, true)
@@ -904,7 +927,7 @@ object TouchControls {
     }
 
     fun setOpacity(o: Float) {
-        opacity.floatValue = o.coerceIn(0.20f, 1.0f)
+        opacity.floatValue = o.coerceIn(0.0f, 1.0f)
         persist()
     }
 

@@ -91,7 +91,12 @@
 //       program end now emits its tail FMAC's flag writes instead of
 //       eliding them, so mVUendProgram finalises a written ring instance;
 //       every block ending in an E-bit changes shape.
-static constexpr u32 kMvuCompilerAbiVersion = 15;
+//  16 — mVUupdateFlags packs sign+zero with one SLI/AND/ADDV against a
+//       mVUglob-resident weight vector instead of two literal-pool movemask
+//       chains, and folds AND_XYZW/SHIFT_XYZW into that vector. Every
+//       flag-writing FMAC changes shape, and the emitted [x25, #imm] weight
+//       offsets only exist in mVUglob layouts carrying macWeights.
+static constexpr u32 kMvuCompilerAbiVersion = 16;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

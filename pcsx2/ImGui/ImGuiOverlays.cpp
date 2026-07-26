@@ -373,6 +373,25 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 			const float speed = PerformanceMetrics::GetSpeed();
 
 			s_speed_line.clear();
+
+#if defined(__ANDROID__)
+			// Display-rate limiters, FIRST in the line so they read as a qualifier on the FPS that
+			// follows rather than a stray value. Shown only while ACTIVE, so they cost nothing and
+			// need no toggle of their own. Both lower the ON-SCREEN rate while emulation keeps
+			// running full speed, so without a label a capped display is indistinguishable from the
+			// emulator running badly — which is a good part of why these looked broken.
+			if (const u32 fps_cap = GSGetMaxPresentFps(); fps_cap > 0)
+			{
+				s_speed_line.append_format("FPS CAP: {}", fps_cap);
+				// The cap is deliberately bypassed while fast-forwarding so the speed-up stays
+				// visible; say so, or it looks like the cap is simply being ignored.
+				if (GSGetPresentCapSuspended())
+					s_speed_line.append(" (off: FF)");
+			}
+			if (const u32 skip = GSGetManualFrameSkip(); skip > 0)
+				s_speed_line.append_format("{}SKIP: {}", s_speed_line.empty() ? "" : " | ", skip);
+#endif
+
 			if (GSConfig.OsdShowFPS)
 			{
 				switch (PerformanceMetrics::GetInternalFPSMethod())

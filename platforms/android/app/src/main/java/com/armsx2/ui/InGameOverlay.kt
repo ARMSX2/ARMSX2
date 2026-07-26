@@ -132,8 +132,15 @@ object InGameOverlay {
 
     fun open() {
         if (WindowImpl.overlayVisible.value) return
+        // getPauseGameSerial() formats as "SLUS-21621 (A422BB13)", but GameInfo.settingsKey — what
+        // every other reader and writer keys on — is the BARE serial. Used raw, this stored
+        // settings under "SLUS-21621 (A422BB13)" while boot looked up "SLUS-21621", so per-game
+        // settings silently never applied on any launch without a GameInfo (Boot Disc, Swap Disc,
+        // BIOS). A BIOS boot is worse still: CRC 0 yields " (00000000)", which is not blank, so it
+        // forced Game scope onto a phantom key. Strip to the serial and drop what's left if empty.
         val serial = MainActivityRuntime.currentGame.value?.settingsKey
-            ?: runCatching { NativeApp.getPauseGameSerial() }.getOrNull()?.takeIf(String::isNotBlank)
+            ?: runCatching { NativeApp.getPauseGameSerial() }.getOrNull()
+                ?.substringBefore(" (")?.trim()?.takeIf(String::isNotBlank)
         currentSerial.value = serial
         settingsScope.value = if (serial == null) SettingsScope.Global else SettingsScope.Game
         settingsState.value = ConfigStore.resolveForGame(serial)

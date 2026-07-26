@@ -60,7 +60,7 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
         val serial = InGameOverlay.currentSerial.value
             ?.trim()?.uppercase()
             ?.takeIf { Regex("^[A-Z]{4}-\\d{5}$").matches(it) }
-        val crc = runCatching { NativeApp.getGameCRC() }.getOrNull()?.takeIf { it.length == 8 }?.uppercase()
+        val crc = liveCrc()
         val files = patchDirectories().flatMap { directory ->
             if (!directory.isDirectory) emptyList() else directory.walkTopDown().filter { it.isFile && it.extension.equals("pnach", true) }.toList()
         }.filter { f ->
@@ -97,18 +97,59 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun update(transform: (Settings) -> Settings) {
-        val updated = transform(state.value.settings)
+        // Transform the CURRENT scoped settings, not this screen's snapshot — see the note in
+        // EmulationMenuViewModel.updateSettings. scopedSettings() resolves the same tier this
+        // save will land in, so the round-trip is consistent.
+        val updated = transform(scopedSettings())
         // The shared entry point: picks the tier from the scope, live-applies, and keeps
         // settingsState in step so the pause menu and the other tabs see the same values.
         InGameOverlay.saveSettings(updated)
         state.value = state.value.copy(settings = updated)
     }
 
+    /** The CRC of whatever is booted, or null. `getGameCRC()` formats "%08X" unconditionally, so
+     *  with no VM it returns the literal "00000000" — 8 characters, which sails through a bare
+     *  `length == 8` check and yields a `<serial>_00000000.pnach` the core can never load. */
+    private fun liveCrc(): String? =
+        runCatching { NativeApp.getGameCRC() }.getOrNull()
+            ?.takeIf { it.length == 8 && it != "00000000" }?.uppercase()
+
+    /** Best known serial: the pause overlay's, then the live VM's, then the last game opened
+     *  (which outlives quitting to the library, unlike the other two). */
+    private fun bestSerial(): String? =
+        (InGameOverlay.currentSerial.value
+            ?: runCatching { NativeApp.getGameSerial() }.getOrNull()
+            ?: MainActivityRuntime.contextGame.value?.serial)
+            ?.trim()?.uppercase()?.takeIf { Regex("^[A-Z]{4}-\\d{5}$").matches(it) }
+
     fun import(uri: Uri) {
         val context = getApplication<Application>()
         val original = DocumentFile.fromSingleUri(context, uri)?.name?.takeIf(String::isNotBlank) ?: "imported.pnach"
-        val requested = if (original.endsWith(".pnach", true)) original else "$original.pnach"
-        val directory = patchDirectories().first().apply { mkdirs() }
+        val stem = original.substringBeforeLast('.')
+        // The core only ever globs "<SERIAL>_<CRC>*.pnach" or "<CRC>*.pnach", case-SENSITIVELY
+        // (FileSystem::FindFiles -> WildcardMatch defaults to case_sensitive=true). Copying the
+        // file under its source name — which is what this did — produced something the Patch
+        // Manager happily listed and the core could never load, so it looked installed and did
+        // nothing. Rename to the canonical form, keeping the original stem after the CRC: the
+        // trailing wildcard still matches it, so the user can recognise their own file.
+        val serial = bestSerial()
+        val crc = liveCrc()
+        val alreadyCanonical = Regex("^[A-Z]{4}-\\d{5}_[0-9A-F]{8}").containsMatchIn(stem.uppercase())
+        val requested = when {
+            alreadyCanonical -> if (original.endsWith(".pnach", true)) original else "$original.pnach"
+            serial != null && crc != null -> "${serial}_$crc $stem.pnach"
+            else -> if (original.endsWith(".pnach", true)) original else "$original.pnach"
+        }
+        // Cheats are gated behind EnableCheats and suppressed under RA hardcore; widescreen and
+        // no-interlacing patches must not be. Route by what the file actually contains rather
+        // than dumping everything in cheats/ as before.
+        val text = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() }
+        }.getOrNull().orEmpty()
+        val isPatchNotCheat = Regex("(?i)\\[(widescreen|no-?interlacing)|gsaspectratio=|gsinterlacemode=")
+            .containsMatchIn(text)
+        val dirs = patchDirectories()
+        val directory = (if (isPatchNotCheat) dirs[1] else dirs[0]).apply { mkdirs() }
         val target = uniqueFile(directory, requested)
         val success = runCatching {
             context.contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use(input::copyTo) }
@@ -116,7 +157,14 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
             target.length() > 0L
         }.getOrDefault(false)
         if (!success) target.delete()
-        state.value = if (success) state.value.copy(message = "Imported ${target.name}.") else state.value.copy(error = "Patch import failed.")
+        state.value = if (success) {
+            val loadable = Regex("^[A-Z]{4}-\\d{5}_[0-9A-F]{8}").containsMatchIn(target.name.uppercase())
+            state.value.copy(
+                message = if (loadable) "Imported as ${target.name}."
+                else "Imported ${target.name}, but the core only loads <SERIAL>_<CRC>.pnach and " +
+                    "no CRC is known yet — launch this game once, then re-import to have it renamed.",
+            )
+        } else state.value.copy(error = "Patch import failed.")
         if (success) {
             // Register the imported file's enabled (labelled) cheats in the native Enable
             // list BEFORE reloading, or the first reload skips them (see syncEnableListForFile).
@@ -242,8 +290,10 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
         // therefore matches NOTHING: the install appeared to succeed and the cheats could
         // never apply. Fall back to the running game's CRC, and refuse outright rather than
         // write a file the core can never load.
-        val crcForName = snapshot.onlineCrc.takeIf { it.isNotBlank() }
-            ?: runCatching { NativeApp.getGameCRC() }.getOrNull()?.takeIf { it.length == 8 }
+        // liveCrc() rejects the "00000000" no-VM sentinel, which the old `length == 8` check let
+        // through — so this "refuse" branch never fired with nothing booted and it wrote a
+        // <serial>_00000000.pnach that could never load.
+        val crcForName = snapshot.onlineCrc.takeIf { it.isNotBlank() } ?: liveCrc()
         if (crcForName == null) {
             runCatching {
                 NativeApp.emulog(

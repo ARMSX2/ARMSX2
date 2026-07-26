@@ -360,14 +360,13 @@ void vtlb_DynBackpatchLoadStore(uptr code_address, u32 code_size, u32 guest_pc, 
 	pxAssertRel(branch_imm26 >= -0x2000000 && branch_imm26 <= 0x1FFFFFF,
 		"Backpatch thunk too far from faulting instruction for B instruction");
 
-	HostSys::BeginCodeWrite();
-	// iOS dual-map W^X: the faulting instruction lives at an RX address; the
-	// store goes through the RW alias (identity elsewhere). The branch
-	// displacement above was computed against the RX address, which is what
-	// the CPU executes.
-	u32* patch_ptr = reinterpret_cast<u32*>(armGetWritableCodePtr(reinterpret_cast<u8*>(code_address)));
-	*patch_ptr = 0x14000000u | (static_cast<u32>(branch_imm26) & 0x03FFFFFFu);
-	HostSys::EndCodeWrite();
+	// armPatchCodeWord handles W^X (page-granular scope on iOS Legacy mode,
+	// RW alias under dual-mapping) — an arena-wide Begin/EndCodeWrite here
+	// would RX-flip any emit window open on another thread on its way out.
+	// The branch displacement above was computed against the RX address,
+	// which is what the CPU executes.
+	armPatchCodeWord(reinterpret_cast<u8*>(code_address),
+		0x14000000u | (static_cast<u32>(branch_imm26) & 0x03FFFFFFu));
 
 	// Flush icache at the patch point too.
 	HostSys::FlushInstructionCache(reinterpret_cast<void*>(code_address), 4);

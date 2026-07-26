@@ -790,9 +790,8 @@ static bool cop2MacFlagLive()
 // endMacroOp_arm64 — a dead op may skip the scratch RMW because the next live
 // op re-seeds the scratch from VU0.VI[REG_STATUS_FLAG].
 // xyzw = dest field mask (which lanes were written); `result` is the register
-// holding the op's result (RQSCRATCH, or a VF-cache slot from cop2ResultReg —
-// slot results skip the q28 save/restore since the extraction never clobbers
-// them).
+// holding the op's result (RQSCRATCH, or a VF-cache slot from cop2ResultReg).
+// Either way it is only READ here.
 // Uses RQSCRATCH2, RQSCRATCH3 as temporaries.
 static void cop2EmitFlagUpdate(int xyzw, const a64::VRegister& result = RQSCRATCH)
 {
@@ -802,44 +801,19 @@ static void cop2EmitFlagUpdate(int xyzw, const a64::VRegister& result = RQSCRATC
 	if (xyzw == 0 || (!statusLive && !macLive))
 		return;
 
-	// When the result sits in RQSCRATCH the extraction below would clobber it
-	// (RQSCRATCH doubles as the lane-pack weight scratch) — park it in q28.
-	// A VF-cache-slot result needs no parking: the extraction only READS it.
-	const bool park = (result.GetCode() == RQSCRATCH.GetCode());
-	a64::VRegister savedResult = a64::VRegister(28, 128);
-	if (park)
-		armAsm->Mov(savedResult.V16B(), result.V16B());
-	const a64::VRegister& src = park ? savedResult : result;
+	// --- Pack sign and zero lanes into the 8-bit MAC value ---
+	// One CMLT + FCMEQ + SLI + AND + ADDV chain (armEmitPackSignZeroBits); the
+	// weight vector carries the PS2 MAC bit order (bit0=W, bit3=X — the reverse
+	// of NEON lane order) and the XYZW dest mask, so neither costs an
+	// instruction. Only q29/q31 are touched, so a result parked in RQSCRATCH
+	// (q30) survives for the caller's cop2ApplyDestMask.
+	u128 weights;
+	for (int lane = 0; lane < 4; lane++)
+		weights._u32[lane] = armPackLaneWeight(lane, static_cast<u32>(xyzw), /*reverse=*/true, 0);
 
-	// --- Extract sign bits from result ---
-	// CMLT produces all-1s per lane if negative. armEmitPackLaneBits expects
-	// all-1s/0 lanes (no Ushr needed) — AND-with-weights gives back the weight
-	// when the lane is set and 0 otherwise.
-	armAsm->Cmlt(RQSCRATCH2.V4S(), src.V4S(), 0);
-
-	// --- Extract zero bits ---
-	// FCMEQ produces all-1s per lane if == 0.0
-	armAsm->Fcmeq(RQSCRATCH3.V4S(), src.V4S(), 0);
-
-	// --- Pack 4 lane bits into GPR in PS2 MAC flag order ---
-	// PS2 MAC flag: bit0=W, bit1=Z, bit2=Y, bit3=X (reverse of NEON lane order
-	// [0]=x, [1]=y, [2]=z, [3]=w). reverse=true picks weight vector {8,4,2,1}.
-	// RQSCRATCH (q30) is free here — savedResult lives in q28.
-	const a64::Register signBits = a64::w1;
-	const a64::Register zeroBits = a64::w2;
-	armEmitPackLaneBits(signBits, RQSCRATCH2, RQSCRATCH, /*reverse=*/true);
-	armEmitPackLaneBits(zeroBits, RQSCRATCH3, RQSCRATCH, /*reverse=*/true);
-
-	// --- Apply XYZW dest mask ---
-	// _XYZW_cop2 = X(bit3) Y(bit2) Z(bit1) W(bit0) — matches PS2 MAC order
-	// Lanes not in dest mask should have their flag bits cleared.
-	armAsm->And(signBits, signBits, xyzw);
-	armAsm->And(zeroBits, zeroBits, xyzw);
-
-	// --- Build MAC flag: (sign << 4) | zero ---
 	const a64::Register macFlag = a64::w3;
-	armAsm->Lsl(macFlag, signBits, 4);
-	armAsm->Orr(macFlag, macFlag, zeroBits);
+	armEmitPackSignZeroBits(macFlag, result, RQSCRATCH2, RQSCRATCH3, RQSCRATCH2,
+		[&](const a64::VRegister& w) { armLoadConstant128(w, &weights); });
 
 	// --- Write MAC flag to VU0.VI[REG_MAC_FLAG] ---
 	if (macLive)
@@ -871,10 +845,6 @@ static void cop2EmitFlagUpdate(int xyzw, const a64::VRegister& result = RQSCRATC
 		armAsm->Str(RWSCRATCH, armCpuRegMem(&_cpuRegistersPack.cop2Rec.denormStatusFlag));
 		s_cop2DenormInScratch = true;
 	}
-
-	// Restore a parked result to RQSCRATCH for subsequent cop2ApplyDestMask
-	if (park)
-		armAsm->Mov(RQSCRATCH.V16B(), savedResult.V16B());
 }
 
 // ========================================================================

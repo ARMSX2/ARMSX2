@@ -35,6 +35,24 @@ namespace {
 constexpr u32 kPark = RecompilerTestEnvironment::kParkingPc;
 constexpr u32 kDataAddr = 0x00030000; // EE RAM scratch, away from the program
 constexpr u8 kFill = 0xAB;
+// Distinct from kFill and from 0, so an overrun is visible whatever it writes.
+constexpr u8 kGuard = 0x5A;
+
+// Lay a guard pattern over the destination window before the run.
+//
+// Guest RAM is process-global and nothing resets it between tests, so a test
+// that asserts "this byte was not written" must establish that byte itself.
+// These tests share kDataAddr and fill different lengths of it —
+// ManyIterations writes 100 bytes — so in any order but the declared one, a
+// shorter test used to see a neighbour's leftover kFill one past its end.
+// Seeding also strengthens the check: expecting 0 could not distinguish an
+// overrun that stores zero (the ExactGameEntryState shape stores exactly
+// that) from no overrun at all.
+void SeedGuard(EeRecTestHarness& h, u32 addr, u32 len)
+{
+	for (u32 i = 0; i < len; i++)
+		h.WriteU8(addr + i, kGuard);
+}
 
 // The exact Carbon block shape, parameterized by store-value reg, store-base
 // reg (whether it is the loop-carried, in-body-incremented pointer), and count.
@@ -57,6 +75,7 @@ TEST(EeRecCarbonSelfLoop, PinnedValueLoopCarriedBaseByteFill)
 	h.SetGpr64(reg::a2, 8);           // loop count
 	h.SetGpr64(reg::a3, kDataAddr);   // store base — loop-carried pointer
 	h.TrackMemWindow(kDataAddr, 16);
+	SeedGuard(h, kDataAddr, 16);
 	h.LoadProgramNoTerm({
 		SB(reg::a1, 0, reg::a3),
 		ADDIU(reg::a2, reg::a2, -1),
@@ -72,7 +91,7 @@ TEST(EeRecCarbonSelfLoop, PinnedValueLoopCarriedBaseByteFill)
 	// Correct (interp) result, documented for intent:
 	for (u32 i = 0; i < 8; i++)
 		EXPECT_EQ(h.ReadU8(kDataAddr + i), kFill) << "byte " << i;
-	EXPECT_EQ(h.ReadU8(kDataAddr + 8), 0u) << "one past end must be untouched";
+	EXPECT_EQ(h.ReadU8(kDataAddr + 8), kGuard) << "one past end must be untouched";
 	h.ExpectGpr64(reg::a2, 0ull);
 	h.ExpectGpr64(reg::a3, static_cast<u64>(kDataAddr + 8));
 }
@@ -87,6 +106,7 @@ TEST(EeRecCarbonSelfLoop, NonPinnedValueLoopCarriedBaseByteFill)
 	h.SetGpr64(reg::a2, 8);
 	h.SetGpr64(reg::a3, kDataAddr);
 	h.TrackMemWindow(kDataAddr, 16);
+	SeedGuard(h, kDataAddr, 16);
 	h.LoadProgramNoTerm({
 		SB(reg::t5, 0, reg::a3),
 		ADDIU(reg::a2, reg::a2, -1),
@@ -100,6 +120,7 @@ TEST(EeRecCarbonSelfLoop, NonPinnedValueLoopCarriedBaseByteFill)
 	h.Run();
 	for (u32 i = 0; i < 8; i++)
 		EXPECT_EQ(h.ReadU8(kDataAddr + i), kFill) << "byte " << i;
+	EXPECT_EQ(h.ReadU8(kDataAddr + 8), kGuard) << "one past end must be untouched";
 	h.ExpectGpr64(reg::a2, 0ull);
 	h.ExpectGpr64(reg::a3, static_cast<u64>(kDataAddr + 8));
 }
@@ -116,6 +137,7 @@ TEST(EeRecCarbonSelfLoop, PinnedValueFixedBaseByteFill)
 	h.SetGpr64(reg::a3, 0);           // loop-carried counter-ish, unused as base
 	h.SetGpr64(reg::t4, kDataAddr);   // fixed store base
 	h.TrackMemWindow(kDataAddr, 16);
+	SeedGuard(h, kDataAddr, 16);
 	h.LoadProgramNoTerm({
 		SB(reg::a1, 0, reg::t4),
 		ADDIU(reg::a2, reg::a2, -1),
@@ -128,6 +150,7 @@ TEST(EeRecCarbonSelfLoop, PinnedValueFixedBaseByteFill)
 	});
 	h.Run();
 	EXPECT_EQ(h.ReadU8(kDataAddr), kFill);
+	EXPECT_EQ(h.ReadU8(kDataAddr + 1), kGuard) << "fixed base must not advance";
 	h.ExpectGpr64(reg::a2, 0ull);
 	h.ExpectGpr64(reg::a3, 8ull);
 }
@@ -144,6 +167,7 @@ TEST(EeRecCarbonSelfLoop, ExactGameEntryStateFillsCorrectly)
 	h.SetGpr64(reg::a2, 4);
 	h.SetGpr64(reg::a3, kTop);
 	h.TrackMemWindow(kTop, 8);
+	SeedGuard(h, kTop, 8);
 	h.LoadProgramNoTerm({
 		SB(reg::a1, 0, reg::a3),
 		ADDIU(reg::a2, reg::a2, -1),
@@ -157,6 +181,7 @@ TEST(EeRecCarbonSelfLoop, ExactGameEntryStateFillsCorrectly)
 	h.Run();
 	for (u32 i = 0; i < 4; i++)
 		EXPECT_EQ(h.ReadU8(kTop + i), 0u) << "byte " << i;
+	EXPECT_EQ(h.ReadU8(kTop + 4), kGuard) << "one past end must be untouched";
 	h.ExpectGpr64(reg::a2, 0ull);
 	h.ExpectGpr64(reg::a3, static_cast<u64>(kTop + 4));
 }
@@ -170,6 +195,7 @@ TEST(EeRecCarbonSelfLoop, PinnedValueLoopCarriedBaseManyIterations)
 	h.SetGpr64(reg::a2, 100);
 	h.SetGpr64(reg::a3, kDataAddr);
 	h.TrackMemWindow(kDataAddr, 128);
+	SeedGuard(h, kDataAddr, 128);
 	h.LoadProgramNoTerm({
 		SB(reg::a1, 0, reg::a3),
 		ADDIU(reg::a2, reg::a2, -1),
@@ -183,6 +209,7 @@ TEST(EeRecCarbonSelfLoop, PinnedValueLoopCarriedBaseManyIterations)
 	h.Run();
 	for (u32 i = 0; i < 100; i++)
 		EXPECT_EQ(h.ReadU8(kDataAddr + i), kFill) << "byte " << i;
+	EXPECT_EQ(h.ReadU8(kDataAddr + 100), kGuard) << "one past end must be untouched";
 	h.ExpectGpr64(reg::a2, 0ull);
 	h.ExpectGpr64(reg::a3, static_cast<u64>(kDataAddr + 100));
 }

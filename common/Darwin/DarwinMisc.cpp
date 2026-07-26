@@ -749,6 +749,15 @@ bool DarwinMisc::IsJITAvailable()
 #endif
 }
 
+// Set by the platform layer at scene connect, before the worker that allocates
+// the arena exists, so the canary below can tell whether anything JIT is live.
+static bool (*s_jit_activity_query)() = nullptr;
+
+void DarwinMisc::SetJITActivityQuery(bool (*query)())
+{
+	s_jit_activity_query = query;
+}
+
 bool DarwinMisc::ValidateJITAlive()
 {
 #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
@@ -763,20 +772,70 @@ bool DarwinMisc::ValidateJITAlive()
 		return false;
 	}
 
-	// Check 2: RW alias still writable? Write a canary, read it back.
+	// Check 2: JIT code memory still writable? Write a canary, read it back.
+	// Under a dual-mapping the base is the RW alias and a dead alias is exactly
+	// what this detects. Under an identity mapping it is the live RX dispatcher
+	// page, so Legacy flips just that page RW and back via mprotect, treating a
+	// failed flip as "grant died" (alive=0) instead of letting the store SIGBUS;
+	// the MAP_JIT toggle mode uses the per-thread Begin/EndCodeWrite.
 	if (g_code_rw_base != 0 && g_code_rw_size > 0)
 	{
+		// Never touch a page a JIT thread might be executing: the Legacy flip
+		// drops execute on the dispatcher page, and the store rewrites its
+		// first instruction in every mode. A running VM is proof enough that
+		// the grant works, so skip the probe and say so in the log.
+		if (s_jit_activity_query && s_jit_activity_query())
+		{
+			std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=1 cs_debugged=1 canary=skipped-vm-active\n");
+			std::fflush(stderr);
+			return true;
+		}
+
 		volatile u8* canary = reinterpret_cast<volatile u8*>(g_code_rw_base);
+#ifdef ARCH_ARM64
+		const bool identity = (g_code_rw_offset == 0);
+		const bool legacy_scope = identity && GetJitMode() == JitMode::Legacy && s_legacy_code_base;
+		if (legacy_scope)
+		{
+			if (!LegacyProtectCodeRange(reinterpret_cast<void*>(g_code_rw_base), 1,
+					PROT_READ | PROT_WRITE, "keepalive_rw"))
+			{
+				std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=legacy_mprotect_rw_failed\n");
+				std::fflush(stderr);
+				return false;
+			}
+		}
+		else if (identity)
+			HostSys::BeginCodeWrite();
+#endif
 		const u8 saved = *canary;
 		*canary = 0x42;
 		const u8 readback = *canary;
 		*canary = saved; // restore so we don't corrupt the first code byte
+#ifdef ARCH_ARM64
+		bool reprotect_ok = true;
+		if (legacy_scope)
+		{
+			reprotect_ok = LegacyProtectCodeRange(reinterpret_cast<void*>(g_code_rw_base), 1,
+				PROT_READ | PROT_EXEC, "keepalive_rx");
+		}
+		else if (identity)
+			HostSys::EndCodeWrite();
+#endif
 		if (readback != 0x42)
 		{
 			std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=rw_alias_dead readback=0x%02x\n", readback);
 			std::fflush(stderr);
 			return false;
 		}
+#ifdef ARCH_ARM64
+		if (!reprotect_ok)
+		{
+			std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=legacy_mprotect_rx_failed\n");
+			std::fflush(stderr);
+			return false;
+		}
+#endif
 	}
 
 	std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=1 cs_debugged=1 canary=ok\n");

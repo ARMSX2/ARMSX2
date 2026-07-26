@@ -97,6 +97,17 @@ protected:
 #ifdef PCSX2_DEVBUILD
 	std::string m_debug_name;
 #endif
+
+	virtual bool DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer = 0) = 0;
+	virtual bool DoMap(GSMap& m, const GSVector4i* r, int layer) = 0;
+
+	/// The scheduler is the one caller that rewrites clear state while its own draws are
+	/// queued — it hides a pending clear at enqueue so the deferred draws see the target
+	/// as already-cleared, and restores it at emit. Everything else goes through SetState
+	/// and trips the tripwire.
+	friend class GSPassScheduler;
+	__fi void SetStateForDeferral(State state) { m_state = state; }
+
 public:
 	GSTexture();
 	virtual ~GSTexture();
@@ -104,8 +115,15 @@ public:
 	// Returns the native handle of a texture.
 	virtual void* GetNativeHandle() const = 0;
 
-	virtual bool Update(const GSVector4i& r, const void* data, int pitch, int layer = 0) = 0;
-	virtual bool Map(GSMap& m, const GSVector4i* r = nullptr, int layer = 0) = 0;
+	/// Uploads CPU data into the texture. Flushes any deferred draws first: a draw held
+	/// back by GSPassScheduler must not be reordered past an upload into a texture it
+	/// writes, nor past one into a texture it samples.
+	bool Update(const GSVector4i& r, const void* data, int pitch, int layer = 0);
+
+	/// Maps the texture for a CPU upload. Flushes deferred draws for the same reason
+	/// Update() does — the write lands as soon as the caller fills the mapping, so a
+	/// queued draw against this texture must not be reordered past it.
+	bool Map(GSMap& m, const GSVector4i* r = nullptr, int layer = 0);
 	virtual void Unmap() = 0;
 	virtual void GenerateMipmap() = 0;
 
@@ -226,7 +244,11 @@ public:
 	}
 
 	__fi State GetState() const { return m_state; }
-	__fi void SetState(State state) { m_state = state; }
+	__fi void SetState(State state)
+	{
+		AssertNoQueuedObserver("SetState on a texture with deferred draws queued against it");
+		m_state = state;
+	}
 
 	__fi u32 GetLastFrameUsed() const { return m_last_frame_used; }
 	void SetLastFrameUsed(u32 frame) { m_last_frame_used = frame; }
@@ -241,17 +263,38 @@ public:
 
 	__fi void SetClearColor(u32 color)
 	{
+		AssertNoQueuedObserver("SetClearColor on a texture with deferred draws queued against it");
 		m_state = State::Cleared;
 		m_clear_value.color = color;
 	}
 	__fi void SetClearDepth(float depth)
 	{
+		AssertNoQueuedObserver("SetClearDepth on a texture with deferred draws queued against it");
 		m_state = State::Cleared;
 		m_clear_value.depth = depth;
 	}
 
 	void GenerateMipmapsIfNeeded();
 	void ClearMipmapGenerationFlag() { m_needs_mipmaps_generated = false; }
+
+#if defined(PCSX2_DEBUG) || defined(PCSX2_DEVBUILD)
+	/// Tripwire for the render-pass scheduler, and the counterpart to the flush wrappers
+	/// on GSDevice. Those guard what a deferred draw can be *reordered past*; this guards
+	/// what a deferred draw can be *made to lie about*.
+	///
+	/// A queued draw has not run yet, but m_state says whether the target still owes a
+	/// clear. Rewriting it behind the scheduler's back is invisible in a frame hash right
+	/// up until the clear lands on the wrong side of the draw — which is how this class
+	/// has bitten twice: m_state going stale during deferral, and Recycle() parking a
+	/// texture a queued draw still named. Deliberately in Common rather than a backend:
+	/// this state is backend-agnostic, and the VK-layout-transition placement was tried
+	/// first and caught nothing, because none of these paths touch the GPU at all.
+	///
+	/// Out of line because GSTexture.h cannot include GSDevice.h.
+	void AssertNoQueuedObserver(const char* what) const;
+#else
+	__fi void AssertNoQueuedObserver(const char*) const {}
+#endif
 
 	// Typical size of a RGBA texture
 	u32 GetMemUsage() const { return m_size.x * m_size.y * (m_format == Format::UNorm8 ? 1 : 4); }
@@ -262,6 +305,10 @@ public:
 
 class GSDownloadTexture
 {
+protected:
+	virtual void DoCopyFromTexture(
+		const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch) = 0;
+
 public:
 	GSDownloadTexture(u32 width, u32 height, GSTexture::Format format);
 	virtual ~GSDownloadTexture();
@@ -285,8 +332,10 @@ public:
 	/// Does not complete immediately, you should flush before accessing the buffer.
 	/// use_transfer_pitch should be true if there's only a single texture being copied to this buffer before
 	/// it will be used. This allows the image to be packed tighter together, and buffer reuse.
-	virtual void CopyFromTexture(
-		const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch = true) = 0;
+	/// Flushes any deferred draws first, so a readback always sees every draw that had been
+	/// submitted when it was issued.
+	void CopyFromTexture(
+		const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch = true);
 
 	/// Maps the texture into the CPU address space, enabling it to read the contents.
 	/// The Map call may not perform synchronization. If the contents of the staging texture

@@ -134,11 +134,10 @@ struct MenuTabView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .tint(.blue)
 #else
+            // Render every tab directly, no if/else on the background toggle.
+            // Swapping view trees made SwiftUI recreate the NavigationStack,
+            // snapping back to root and breaking the neighbouring tabs.
             TabView(selection: tabSelection) {
-                // Games tab is NOT wrapped in SafeAreaProtectedMenuTabContent — it
-                // renders its own edge-to-edge custom wallpaper (BackgroundContainerView)
-                // inside its NavigationStack ZStack, which must not be clipped by the
-                // safe-area padding that the other tabs use.
                 GameListView()
                     .environment(\.menuTabIsActive, selectedTab == 0)
                     .tabItem {
@@ -146,47 +145,22 @@ struct MenuTabView: View {
                     }
                     .tag(0)
 
-                // When a tab's background is active it owns its edge-to-edge MenuBackgroundLayer
-                // inside its own NavigationStack (matching GameListView), so it must NOT be wrapped
-                // in SafeAreaProtectedMenuTabContent — the padding would clip the wallpaper.
-                Group {
-                    if biosBackgroundActive {
-                        BIOSListView()
-                    } else {
-                        SafeAreaProtectedMenuTabContent { BIOSListView() }
+                BIOSListView()
+                    .environment(\.menuTabIsActive, selectedTab == 1)
+                    .tabItem {
+                        Label(settings.localized("BIOS"), systemImage: "cpu")
                     }
-                }
-                .environment(\.menuTabIsActive, selectedTab == 1)
-                .tabItem {
-                    Label(settings.localized("BIOS"), systemImage: "cpu")
-                }
-                .tag(1)
+                    .tag(1)
 
-                Group {
-                    if helpBackgroundActive {
-                        HelpView()
-                    } else {
-                        SafeAreaProtectedMenuTabContent { HelpView() }
+                HelpView()
+                    .environment(\.menuTabIsActive, selectedTab == 2)
+                    .tabItem {
+                        Label(settings.localized("Help"), systemImage: "questionmark.circle")
                     }
-                }
-                .environment(\.menuTabIsActive, selectedTab == 2)
-                .tabItem {
-                    Label(settings.localized("Help"), systemImage: "questionmark.circle")
-                }
-                .tag(2)
+                    .tag(2)
 
-                Group {
-                    if settingsBackgroundActive {
-                        NavigationStack {
-                            SettingsRootView()
-                        }
-                    } else {
-                        SafeAreaProtectedMenuTabContent {
-                            NavigationStack {
-                                SettingsRootView()
-                            }
-                        }
-                    }
+                NavigationStack {
+                    SettingsRootView()
                 }
                 .environment(\.menuTabIsActive, selectedTab == 3)
                 .tabItem {

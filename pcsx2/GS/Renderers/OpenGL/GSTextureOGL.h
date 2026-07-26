@@ -38,8 +38,8 @@ public:
 
 	void* GetNativeHandle() const override;
 
-	bool Update(const GSVector4i& r, const void* data, int pitch, int layer = 0) override;
-	bool Map(GSMap& m, const GSVector4i* r = NULL, int layer = 0) override;
+	bool DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer = 0) override;
+	bool DoMap(GSMap& m, const GSVector4i* r, int layer) override;
 	void Unmap() override;
 	void GenerateMipmap() override;
 
@@ -67,7 +67,7 @@ public:
 
 	static std::unique_ptr<GSDownloadTextureOGL> Create(u32 width, u32 height, GSTexture::Format format);
 
-	void CopyFromTexture(const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch) override;
+	void DoCopyFromTexture(const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch) override;
 
 	bool Map(const GSVector4i& read_rc) override;
 	void Unmap() override;

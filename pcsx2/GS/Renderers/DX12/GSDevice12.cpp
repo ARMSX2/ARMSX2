@@ -601,7 +601,7 @@ bool GSDevice12::ExecuteCommandList(WaitType wait_for_completion)
 	{
 		if (res.pipeline_statistics_query == QueryState::Querying)
 		{
-			// Didn't end query in BeginPresent() so end it here.
+			// Didn't end query in DoBeginPresent() so end it here.
 			res.pipeline_statistics_query = QueryState::Ready;
 			res.command_lists[1].list4->EndQuery(m_pipeline_statistics_query_heap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, m_current_command_list);
 		}
@@ -1336,7 +1336,7 @@ bool GSDevice12::SupportsExclusiveFullscreen() const
 	return true;
 }
 
-GSDevice::PresentResult GSDevice12::BeginPresent(bool frame_skip)
+GSDevice::PresentResult GSDevice12::DoBeginPresent(bool frame_skip)
 {
 	EndRenderPass();
 
@@ -1680,12 +1680,12 @@ std::unique_ptr<GSDownloadTexture> GSDevice12::CreateDownloadTexture(u32 width, 
 	return GSDownloadTexture12::Create(width, height, format);
 }
 
-void GSDevice12::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
+void GSDevice12::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
 {
 	// Empty rect, abort copy.
 	if (r.rempty())
 	{
-		GL_INS("D3D12: CopyRect rect empty.");
+		GL_INS("D3D12: DoCopyRect rect empty.");
 		return;
 	}
 
@@ -1698,7 +1698,7 @@ void GSDevice12::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r,
 	// Sizes must match for full depth copies when no partial copies are supported.
 	if (sTex12->IsDepthStencil() && !src_dst_rect_match && !m_programmable_sample_positions)
 	{
-		GL_INS("D3D12: CopyRect rect mismatch for full depth copy.");
+		GL_INS("D3D12: DoCopyRect rect mismatch for full depth copy.");
 		return;
 	}
 
@@ -1811,7 +1811,7 @@ void GSDevice12::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture*
 		m_present[static_cast<int>(shader)].get(), filter, true);
 }
 
-void GSDevice12::UpdateCLUTTexture(
+void GSDevice12::DoUpdateCLUTTexture(
 	GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
 {
 	// match merge cb
@@ -1832,7 +1832,7 @@ void GSDevice12::UpdateCLUTTexture(
 		GetConvertPipeline(shader), Nearest, true);
 }
 
-void GSDevice12::ConvertToIndexedTexture(
+void GSDevice12::DoConvertToIndexedTexture(
 	GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM)
 {
 	// match merge cb
@@ -1854,7 +1854,7 @@ void GSDevice12::ConvertToIndexedTexture(
 		GetConvertPipeline(shader), Nearest, true);
 }
 
-void GSDevice12::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
+void GSDevice12::DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
 {
 	struct alignas(16) Uniforms
 	{
@@ -1877,7 +1877,7 @@ void GSDevice12::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32
 		GetConvertPipeline(shader), Nearest, true);
 }
 
-void GSDevice12::DrawMultiStretchRects(
+void GSDevice12::DoDrawMultiStretchRects(
 	const MultiStretchRect* rects, u32 num_rects, GSTexture* dTex, ShaderConvertSelector shader)
 {
 	GSTexture* last_tex = rects[0].src;
@@ -4369,7 +4369,7 @@ void GSDevice12::FeedbackBarrier(const GSTexture12* texture)
 	}
 }
 
-void GSDevice12::RenderHW(GSHWDrawConfig& config)
+void GSDevice12::DoRenderHW(GSHWDrawConfig& config)
 {
 	GSTexture12* colclip_rt = static_cast<GSTexture12*>(g_gs_device->GetColorClipTexture());
 	GSTexture12* draw_rt = config.ps.HasColorROV() ? nullptr : static_cast<GSTexture12*>(config.rt);
@@ -4571,17 +4571,17 @@ void GSDevice12::RenderHW(GSHWDrawConfig& config)
 				{
 					const GSVector4i snapped_drawarea = ProcessCopyArea(GSVector4i(0, 0, rtsize.x, rtsize.y), config.drawarea);
 					const GSVector4i snapped_samplearea = ProcessCopyArea(GSVector4i(0, 0, rtsize.x, rtsize.y), config.samplearea);
-					CopyRect(draw_rt, draw_rt_clone, snapped_drawarea, snapped_drawarea.left, snapped_drawarea.top);
-					CopyRect(draw_rt, draw_rt_clone, snapped_samplearea, snapped_samplearea.left, snapped_samplearea.top);
+					DoCopyRect(draw_rt, draw_rt_clone, snapped_drawarea, snapped_drawarea.left, snapped_drawarea.top);
+					DoCopyRect(draw_rt, draw_rt_clone, snapped_samplearea, snapped_samplearea.left, snapped_samplearea.top);
 				}
 				else
 				{
-					CopyRect(draw_rt, draw_rt_clone, union_rect, union_rect.left, union_rect.top);
+					DoCopyRect(draw_rt, draw_rt_clone, union_rect, union_rect.left, union_rect.top);
 				}
 			}
 			else
 			{
-				CopyRect(draw_rt, draw_rt_clone, config.drawarea, config.drawarea.left, config.drawarea.top);
+				DoCopyRect(draw_rt, draw_rt_clone, config.drawarea, config.drawarea.left, config.drawarea.top);
 			}
 
 			if (config.require_one_barrier)

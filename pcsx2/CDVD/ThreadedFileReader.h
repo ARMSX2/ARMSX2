@@ -72,8 +72,25 @@ private:
 		std::atomic<u32> size{0};
 		u32 cap = 0;
 	};
-	/// 2 buffers for readahead (current block, next block)
-	Buffer m_buffer[2];
+	/// Decompressed-chunk cache. For a CHD one entry is one HUNK, so this is the entire cache of
+	/// decompressed disc data — at the original 2 entries (current + next) any seek pattern that
+	/// revisits data even slightly out of order re-decompresses from scratch, off whatever storage
+	/// the image lives on.
+	///
+	/// ★ Raised from 2 after measuring on a Retroid Pocket 6: Ultimate Spider-Man (a .chd on an SD
+	/// card) streams its open city continuously, and after fast-forward — which moves the player
+	/// through the world ~4x faster than the streaming budget allows — the GAME stalls for seconds
+	/// waiting on disc data. The emulator is provably healthy through it (surface presenting at
+	/// 120 Hz, VSync producing new frames, EE running); the guest simply draws nothing and submits
+	/// no audio while it waits, which is exactly how it presents to the user: frozen picture,
+	/// silence, working UI, and internal FPS reading N/A. Enabling fastCDVD shortened the stall but
+	/// did not remove it, which isolates the remaining cost to decompression + storage latency.
+	///
+	/// Every access below is written against std::size(m_buffer) (search loops and the round-robin
+	/// eviction index alike), so this is safe to tune. Entries allocate lazily — an unused slot is
+	/// 24 bytes, and a used one is one chunk — so the real cost is bounded by chunks actually
+	/// touched, which matters on memory-tight handhelds.
+	Buffer m_buffer[8];
 	u32 m_nextBuffer = 0;
 
 	std::thread m_readThread;

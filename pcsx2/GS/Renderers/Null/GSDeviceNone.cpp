@@ -20,12 +20,12 @@ void* GSTextureNone::GetNativeHandle() const
 	return nullptr;
 }
 
-bool GSTextureNone::Update(const GSVector4i& r, const void* data, int pitch, int layer)
+bool GSTextureNone::DoUpdate(const GSVector4i& r, const void* data, int pitch, int layer)
 {
 	return true;
 }
 
-bool GSTextureNone::Map(GSMap& m, const GSVector4i* r, int layer)
+bool GSTextureNone::DoMap(GSMap& m, const GSVector4i* r, int layer)
 {
 	// 8 bytes/texel covers the widest uncompressed format (RGBA16); callers get
 	// scratch memory they can safely write through, contents are discarded.
@@ -61,7 +61,7 @@ GSDownloadTextureNone::GSDownloadTextureNone(u32 width, u32 height, GSTexture::F
 	m_buffer.resize(GetBufferSize(width, height, format));
 }
 
-void GSDownloadTextureNone::CopyFromTexture(
+void GSDownloadTextureNone::DoCopyFromTexture(
 	const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch)
 {
 	m_current_pitch = GetTransferPitch(use_transfer_pitch ? static_cast<u32>(drc.width()) : m_width, 1);
@@ -143,7 +143,7 @@ bool GSDeviceNone::SupportsExclusiveFullscreen() const
 
 // Always FrameSkipped: the caller skips the whole present/ImGui draw path, so
 // none of the drawing stubs below are ever reached with real work.
-GSDevice::PresentResult GSDeviceNone::BeginPresent(bool frame_skip)
+GSDevice::PresentResult GSDeviceNone::DoBeginPresent(bool frame_skip)
 {
 	return PresentResult::FrameSkipped;
 }
@@ -190,7 +190,7 @@ std::unique_ptr<GSDownloadTexture> GSDeviceNone::CreateDownloadTexture(u32 width
 	return std::make_unique<GSDownloadTextureNone>(width, height, format);
 }
 
-void GSDeviceNone::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
+void GSDeviceNone::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
 {
 }
 
@@ -199,22 +199,22 @@ void GSDeviceNone::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTextur
 {
 }
 
-void GSDeviceNone::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex,
+void GSDeviceNone::DoUpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex,
 	u32 dOffset, u32 dSize)
 {
 }
 
-void GSDeviceNone::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM,
+void GSDeviceNone::DoConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM,
 	GSTexture* dTex, u32 DBW, u32 DPSM)
 {
 }
 
-void GSDeviceNone::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor,
+void GSDeviceNone::DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor,
 	const GSVector2i& clamp_min, const GSVector4& dRect)
 {
 }
 
-void GSDeviceNone::RenderHW(GSHWDrawConfig& config)
+void GSDeviceNone::DoRenderHW(GSHWDrawConfig& config)
 {
 }
 

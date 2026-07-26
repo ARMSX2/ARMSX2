@@ -432,6 +432,16 @@ fun RendererTab(state: MutableState<Settings>) {
                 apply(s.copy(hwRov = it))
             }
             SettingsDivider()
+            // Every Android GPU is a tiler, so this is aimed at us even though it landed with
+            // only a desktop UI. Default OFF because it is brand new, not because it is risky.
+            ToggleRow(
+                str("renderer.coalesceRenderPasses.label"),
+                s.coalesceRenderPasses,
+                description = str("renderer.coalesceRenderPasses.description"),
+            ) {
+                apply(s.copy(coalesceRenderPasses = it))
+            }
+            SettingsDivider()
             ToggleRow(
                 str("renderer.accurateBlendingFastPath.label"),
                 s.adrenoFbFetch,
@@ -714,6 +724,11 @@ private fun GsDumpCaptureRow() {
 private fun activeTextureSerial(): String? {
     return MainActivityRuntime.currentGame.value?.serial?.takeIf { it.isNotBlank() }
         ?: runCatching { NativeApp.getGameSerial() }.getOrNull()?.takeIf { it.isNotBlank() }
+        // Last resort: the game the user most recently had open. Both sources above go blank the
+        // moment you quit to the library (currentGame is nulled so per-game settings scope can't
+        // leak, and the VM's serial dies with the VM), which stranded texture-pack import behind
+        // "Boot a game first" even though the user had just played — and quit — that game.
+        ?: MainActivityRuntime.contextGame.value?.serial?.takeIf { it.isNotBlank() }
 }
 
 private fun importTexturePack(context: Context, uri: Uri, serial: String): Int {
