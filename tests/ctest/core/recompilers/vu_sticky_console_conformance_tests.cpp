@@ -53,6 +53,7 @@
 
 using namespace console_vusticky;
 
+
 namespace recompiler_tests
 {
 namespace
@@ -163,19 +164,17 @@ struct Divergence
 // Recorded from an actual run of both engines, never derived from a rule. Each
 // row names its own cause.
 //
-// The largest group is one defect, seen thirty times: `cop2EmitFlagUpdate`
+// Twenty-eight of these rows are one defect: `cop2EmitFlagUpdate`
 // (pcsx2/arm64/iCOP2-arm64.cpp) extracts a sign bit (CMLT) and a zero bit
-// (FCMEQ) per lane and nothing else, so the arm64 COP2 macro path can never
-// raise MAC U or MAC O -- and, because the underflowing product is left as a
-// denormal rather than flushed, it does not even raise Z where hardware does.
-// `DISABLED_Arm64Cop2MacroExtractsUnderflowAndOverflow` below states that
-// once, with a minimal witness; these rows are its fallout across the cases.
+// (FCMEQ) per lane and nothing else, so the arm64 COP2 macro path cannot raise
+// MAC U or MAC O, and does not raise Z where hardware does -- an underflowing
+// product reaches the flag update as a live denormal, which FCMEQ calls
+// non-zero. DISABLED_Arm64Cop2MacroExtractsUnderflowAndOverflow below states
+// that once, with a minimal witness, and prices what an extraction would cost.
 //
-// What remains on the interpreter side is a single case, and both engines fail
-// it: VRSQRT of -0 raises only D where hardware raises D and I, and slots 2-3
-// are that one missing bit carried forward. The interpreter's macro flag-merge
-// masks (SYNCMSFLAGS, SYNCFDIV) used to account for eight more rows here and no
-// longer do.
+// The remaining three rows fail on BOTH engines and are a different bug:
+// VRSQRT of -0 raises only D where hardware raises D and I, and slots 2-3 are
+// that one missing bit carried forward.
 constexpr Divergence kMacroStatusDivergences[] = {
 	{"VUSTICKY_FMAC_ZSUO_ACCUMULATE", 1, false, true,
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
@@ -454,13 +453,13 @@ TEST(VuStickyConsoleConformance, MacroMacClipMatchConsole)
 // rather than deleted: same operands, same console values, required of both
 // engines the day the emitter learns U/O.
 //
-// `cop2EmitFlagUpdate` (pcsx2/arm64/iCOP2-arm64.cpp) builds the MAC flag
-// from exactly two per-lane predicates -- CMLT for the sign bit and FCMEQ for
-// the zero bit -- and clears the U/O positions outright. So on the arm64 COP2
-// macro path a product that underflows raises neither U nor Z (the result
-// arrives as a live denormal, which FCMEQ calls non-zero), and a product that
-// overflows raises no O (the +/-FLT_MAX clamp runs BEFORE the flag update and
-// has already folded Inf's exponent away).
+// `cop2EmitFlagUpdate` (pcsx2/arm64/iCOP2-arm64.cpp) builds the MAC flag from
+// exactly two per-lane predicates -- CMLT for the sign bit and FCMEQ for the
+// zero bit -- and clears the U/O positions outright. So on the arm64 COP2 macro
+// path a product that underflows raises neither U nor Z (the result arrives as
+// a live denormal, which FCMEQ calls non-zero), and a product that overflows
+// raises no O (the +/-FLT_MAX clamp runs BEFORE the flag update and has already
+// folded Inf's exponent away).
 //
 // Both halves need the IEEE environment to be observable at all: FZ erases the
 // mantissa U is defined over, and ChopZero saturates an overflow to FLT_MAX so
@@ -716,8 +715,8 @@ TEST(VuStickyConsoleConformance, DISABLED_Arm64Cop2MacroFlushesDenormalResultsTo
 // elided -- and with no software flush anywhere in the emitter.
 //
 // That is the point of the test. An explicit flush here would cost +5 ARM64
-// instructions on every flag-dead FMAC, i.e. exactly the path vuFlagHack
-// exists to make cheap, and it would be dead weight, because
+// instructions on every flag-dead FMAC -- exactly the path vuFlagHack exists
+// to make cheap -- and would be dead weight, because
 // FPCR.FZ already does it: the harness runs the FP environment a game runs in
 // (RecompilerTestEnvironment, FPUFPCR = DAZ+FTZ+ChopZero), and ARM flush-to-zero
 // is sign-preserving -- measured, -2^-126 * 0.5 -> 0x80000000, not 0x00000000.
@@ -918,4 +917,53 @@ TEST(VuStickyMicroConsoleConformance, DISABLED_AllMicroStatusMatchesConsole)
 	}
 }
 
+// Same defect class as Arm64Cop2MacroFlushesDenormalResultsToSignedZero, one
+// pipe over: the DIV unit. The interpreter post-processes its quotient through
+// vuDouble --
+//
+//     _vuDIV:   VU->q.F = fs / ft;  VU->q.F = vuDouble(VU->q.UL);
+//
+// -- and vuDouble's `case 0x0:` returns `f & 0x80000000`, so a denormal Q is
+// flushed to signed zero. The arm64 DIV/RSQRT emitters write the raw quotient
+// and leave it standing.
+//
+// JIT vs interp (RunJitNoDiff / RunInterpOnly, CFC2 of REG_Q):
+//     DIV   2^-126 /  2.0   jit 00400000   interp 00000000
+//     DIV  -2^-126 /  2.0   jit 80400000   interp 80000000
+//     DIV   2^-126 / -2.0   jit 80400000   interp 80000000
+//     RSQRT -2^-126 / sqrt(4.0)  jit 80400000   interp 80000000
+TEST(VuStickyConsoleConformance, DISABLED_Arm64Cop2DivUnitFlushesDenormalQToSignedZero)
+{
+	struct Witness
+	{
+		const char* what;
+		bool rsqrt;
+		u32 fs, ft;
+		u32 want_q;
+	};
+	static const Witness kWitnesses[] = {
+		{"DIV 2^-126 / 2.0", false, 0x00800000u, 0x40000000u, 0x00000000u},
+		{"DIV -2^-126 / 2.0", false, 0x80800000u, 0x40000000u, 0x80000000u},
+		{"DIV 2^-126 / -2.0", false, 0x00800000u, 0xC0000000u, 0x80000000u},
+		{"RSQRT -2^-126 / sqrt(4.0)", true, 0x80800000u, 0x40800000u, 0x80000000u},
+	};
+	for (const Witness& w : kWitnesses)
+	{
+		SCOPED_TRACE(w.what);
+		EeRecTestHarness h;
+		h.EnableVu0Capture();
+		h.SeedVu0VfBits(4, w.fs, w.fs, w.fs, w.fs);
+		h.SeedVu0VfBits(5, w.ft, w.ft, w.ft, w.ft);
+		h.LoadProgram({
+			CTC2(0, REG_STATUS_FLAG),
+			w.rsqrt ? VRSQRT_C2(0, 0, 4, 5) : VDIV_C2(0, 0, 4, 5),
+			CFC2(kRQ[0], REG_Q),
+		});
+		h.Run();
+		EXPECT_EQ(static_cast<u32>(h.GetGpr64Interp(kRQ[0])), w.want_q) << "[interp] Q";
+		EXPECT_EQ(static_cast<u32>(h.GetGpr64Jit(kRQ[0])), w.want_q) << "[jit] Q";
+	}
+}
+
 } // namespace recompiler_tests
+
