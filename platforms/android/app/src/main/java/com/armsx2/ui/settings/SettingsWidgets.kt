@@ -515,18 +515,37 @@ fun SettingsDivider() {
 /** Collapsible settings section: a tappable header (▸ collapsed / ▾ expanded) that
  *  shows or hides its content. Controller-focusable so a gamepad can open it. Shared
  *  by the Fixes / Pad / Performance / Renderer tabs to de-bloat long settings lists.
- *  [initiallyExpanded] lets a tab open its most-used section by default. */
+ *  [initiallyExpanded] lets a tab open its most-used section by default.
+ *
+ *  This is the de-bloating that the settings screens were built around, and it had stopped
+ *  happening: the header rendered as plain text and `content()` was called unconditionally, with
+ *  `initiallyExpanded` marked UNUSED_PARAMETER. Every tab was therefore one flat list of every
+ *  option it owns — the reason the settings became unusable in landscape. Restoring it shortens
+ *  Pad / Renderer / Performance / Advanced all at once.
+ *
+ *  State is [rememberSaveable] so a rotation does not re-collapse what the user just opened —
+ *  landscape being exactly where the long lists hurt most. */
 @Composable
 fun CollapsibleSection(
     title: String,
-    @Suppress("UNUSED_PARAMETER")
     initiallyExpanded: Boolean = false,
     content: @Composable () -> Unit,
 ) {
+    var expanded by androidx.compose.runtime.saveable.rememberSaveable(title) {
+        mutableStateOf(initiallyExpanded)
+    }
+    val toggle = {
+        expanded = !expanded
+        com.armsx2.MenuSfx.play(
+            if (expanded) com.armsx2.MenuSfx.Event.TOGGLE_ON else com.armsx2.MenuSfx.Event.TOGGLE_OFF
+        )
+    }
     Spacer(Modifier.height(12.dp))
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .controllerFocusable("section.$title", onConfirm = toggle)
+            .clickable(onClick = toggle)
             .padding(horizontal = 8.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -537,8 +556,16 @@ fun CollapsibleSection(
             fontWeight = FontWeight.Bold,
             modifier = Modifier.weight(1f),
         )
+        Text(
+            if (expanded) "▾" else "▸",
+            color = MaterialTheme.colorScheme.primary,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+        )
     }
-    content()
+    // Collapsed content is not composed at all, so its rows also drop out of the controller-focus
+    // registry — a pad cannot land on a setting the user cannot see.
+    if (expanded) content()
 }
 
 @Composable

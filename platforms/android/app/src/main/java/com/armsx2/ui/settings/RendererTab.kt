@@ -102,7 +102,7 @@ fun RendererTab(state: MutableState<Settings>) {
         modifier = Modifier
             .fillMaxWidth(),
     ) {
-        CollapsibleSection(str("renderer.section.displayResolution"), initiallyExpanded = false) {
+        CollapsibleSection(str("renderer.section.displayResolution"), initiallyExpanded = true) {
             // Graphics API (OpenGL / Vulkan) + Vulkan custom-driver picker.
             // from the removed first-run setup renderer page into settings.
             RendererBackendSection(state)

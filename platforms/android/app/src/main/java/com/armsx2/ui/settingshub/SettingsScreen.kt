@@ -67,7 +67,6 @@ import com.armsx2.ui.settings.NetworkTab
 import com.armsx2.ui.settings.OverlayTab
 import com.armsx2.ui.settings.PadTab
 import com.armsx2.ui.settings.PerformanceTab
-import com.armsx2.ui.settings.RecompilerTab
 import com.armsx2.ui.settings.RendererTab
 import com.armsx2.ui.settings.SegmentedRow
 import com.armsx2.ui.settings.SkinsTab
@@ -338,7 +337,7 @@ private fun SettingsCategoryBar(
 ) {
     // Row + horizontalScroll (NOT LazyRow): controllerFocusable registers each tab via a
     // SideEffect that only runs for COMPOSED children. A LazyRow leaves every off-screen
-    // tab (Skins / Fixes / Recompiler, past On-Screen) unregistered and unreachable, so
+    // tab (Skins / Advanced, past On-Screen) unregistered and unreachable, so
     // the controller got stuck at the last visible tab. A plain Row composes them all;
     // each selected chip's bringIntoView then scrolls it into view as the selector moves.
     val sections = settingsSections().filterNot {
@@ -417,9 +416,7 @@ private fun settingsSections() = listOf(
     SettingsSection(SettingsCategory.OnScreen, "tab.overlay", "⊕"),
     SettingsSection(SettingsCategory.Skins, "tab.skins", "◈"),
     SettingsSection(SettingsCategory.Advanced, "tab.fixes", "⌘"),
-    SettingsSection(SettingsCategory.Recompiler, "tab.recompiler", "⚙"),
     SettingsSection(SettingsCategory.Patches, "tab.patches", "✦"),
-    SettingsSection(SettingsCategory.About, "about.title", "ⓘ"),
 )
 
 @Composable
@@ -436,7 +433,6 @@ private fun CategoryContent(category: SettingsCategory, viewModel: SettingsViewM
         SettingsCategory.OnScreen -> OverlayTab(viewModel.settings)
         SettingsCategory.Skins -> SkinsTab(viewModel.settings)
         SettingsCategory.Advanced -> FixesTab(viewModel.settings)
-        SettingsCategory.Recompiler -> RecompilerTab(viewModel.settings)
         SettingsCategory.Patches -> com.armsx2.ui.patches.PatchesSettingsTab(viewModel.uiState.value.game)
         SettingsCategory.About -> Unit
     }
@@ -455,7 +451,6 @@ internal fun categoryTitle(category: SettingsCategory): String = when (category)
     SettingsCategory.OnScreen -> str("tab.overlay")
     SettingsCategory.Skins -> str("tab.skins")
     SettingsCategory.Advanced -> str("tab.fixes")
-    SettingsCategory.Recompiler -> str("tab.recompiler")
     SettingsCategory.Patches -> str("patches.dialog.patchesAndCheats")
     SettingsCategory.About -> str("about.title")
 }

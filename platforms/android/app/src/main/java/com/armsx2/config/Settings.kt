@@ -167,8 +167,13 @@ data class Settings(
     val enableWideScreenPatches: Boolean = false,
     /** EmuCore/EnableNoInterlacingPatches — no-interlacing patches. */
     val enableNoInterlacingPatches: Boolean = false,
-    /** EmuCore/EnableFastBoot — skip BIOS splash and boot straight to the game. */
-    val enableFastBoot: Boolean = false,
+    /** EmuCore/EnableFastBoot — skip BIOS splash and boot straight to the game.
+     *
+     *  Default ON: "how do I skip the boot animation" is one of the most-asked questions in the
+     *  Discord, and desktop PCSX2 fast-boots by default too. Only fresh installs are affected —
+     *  the saved JSON always carries this key, so anyone who already has a value keeps it rather
+     *  than having their boot behaviour changed under them by an update. */
+    val enableFastBoot: Boolean = true,
     /** EmuCore/HostFs — host: filesystem access in the VM, for ELF/homebrew and mods
      *  (e.g. modded Persona 3 FES). Per-game capable; applies on the next game boot. */
     val hostFs: Boolean = false,

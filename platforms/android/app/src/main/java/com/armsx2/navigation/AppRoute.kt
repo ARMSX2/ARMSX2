@@ -35,7 +35,6 @@ enum class SettingsCategory {
     OnScreen,
     Skins,
     Advanced,
-    Recompiler,
     Patches,
     About,
 }

@@ -758,9 +758,6 @@ private fun LibraryOverflowMenu(
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.Bold,
         )
-        LibraryOverflowItem("☰", str("games.overflow.openNavigation")) {
-            closeThen(onOpenNavigation)
-        }
         LibraryOverflowItem(
             glyph = "A–Z",
             label = str("games.overflow.sortTitle"),
@@ -775,19 +772,13 @@ private fun LibraryOverflowMenu(
         ) {
             closeThen { onSort(HomeSort.RecentlyPlayed) }
         }
+        OverflowSeparator()
         LibraryOverflowItem(
             glyph = if (use3dCovers) "3D" else "2D",
             label = str("games.overflow.coverStyle"),
             trailing = if (use3dCovers) "3D" else "2D",
         ) {
             closeThen(onToggleCoverStyle)
-        }
-        LibraryOverflowItem(
-            glyph = "Aa",
-            label = str("games.overflow.gridNames"),
-            trailing = if (showGridNames) str("common.on") else str("common.off"),
-        ) {
-            closeThen(onToggleGridNames)
         }
         LibraryOverflowItem(
             glyph = "Aa",
@@ -810,6 +801,7 @@ private fun LibraryOverflowMenu(
         ) {
             closeThen(onToggleShowHidden)
         }
+        OverflowSeparator()
         LibraryOverflowItem("▧", str("games.background.choose")) {
             closeThen(onChooseBackground)
         }
@@ -818,13 +810,15 @@ private fun LibraryOverflowMenu(
                 closeThen(onClearBackground)
             }
         }
-        LibraryOverflowItem("↻", str("games.overflow.setup")) {
-            closeThen { MainActivityRuntime.reopenSetup() }
-        }
-        LibraryOverflowItem("⏻", str("games.toolbar.exit")) {
-            closeThen(onExitApp)
-        }
     }
+}
+
+@Composable
+private fun OverflowSeparator() {
+    androidx.compose.material3.HorizontalDivider(
+        modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.30f),
+    )
 }
 
 @Composable

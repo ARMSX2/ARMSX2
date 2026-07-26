@@ -212,7 +212,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
             onChange = { apply(s.copy(affinityMode = it)) },
         )
         SettingsDivider()
-        CollapsibleSection(str("perf.speedhacks.title"), initiallyExpanded = false) {
+        CollapsibleSection(str("perf.speedhacks.title"), initiallyExpanded = true) {
             IntSliderRow(
                 label = str("perf.eeCycleRate.label"),
                 value = s.eeCycleRate,
@@ -346,30 +346,6 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 valueFormatter = { if (it == 0) com.armsx2.i18n.I18n.get("common.off") else "Skip $it" },
                 onChange = { apply(s.copy(frameSkip = it)) },
             )
-        }
-        SettingsDivider()
-        CollapsibleSection(str("perf.gamedbFixes.title")) {
-            HelpText(str("perf.gamedbFixes.help"))
-            ToggleRow(str("perf.fix.skipBios"), s.enableFastBoot, description = str("perf.fix.skipBios.desc")) { apply(s.copy(enableFastBoot = it)) }
-            ToggleRow(str("perf.fix.gamedbFixes"), s.enableGameFixes, description = str("perf.fix.gamedbFixes.desc")) { apply(s.copy(enableGameFixes = it)) }
-            ToggleRow(str("perf.fix.skipMpeg"), s.gamefixSkipMpeg, description = str("perf.fix.skipMpeg.desc")) { apply(s.copy(enableGameFixes = true, gamefixSkipMpeg = it)) }
-            if (s.gamefixSkipMpeg) HelpText(str("perf.fix.skipMpeg.warning"))
-            ToggleRow(str("perf.fix.fmvSoftware"), s.gamefixSoftwareRendererFmv, description = str("perf.fix.fmvSoftware.desc")) { apply(s.copy(enableGameFixes = true, gamefixSoftwareRendererFmv = it)) }
-            ToggleRow(str("perf.fix.eeTiming"), s.gamefixEETiming, description = str("perf.fix.eeTiming.desc")) { apply(s.copy(enableGameFixes = true, gamefixEETiming = it)) }
-            ToggleRow(str("perf.fix.instantDma"), s.gamefixInstantDma, description = str("perf.fix.instantDma.desc")) { apply(s.copy(enableGameFixes = true, gamefixInstantDma = it)) }
-            ToggleRow(str("perf.fix.blitFps"), s.gamefixBlitInternalFps, description = str("perf.fix.blitFps.desc")) { apply(s.copy(enableGameFixes = true, gamefixBlitInternalFps = it)) }
-            ToggleRow(str("perf.fix.fpuMultiply"), s.gamefixFpuMul, description = str("perf.fix.fpuMultiply.desc")) { apply(s.copy(enableGameFixes = true, gamefixFpuMul = it)) }
-            ToggleRow(str("perf.fix.ophFlag"), s.gamefixOphFlag, description = str("perf.fix.ophFlag.desc")) { apply(s.copy(enableGameFixes = true, gamefixOphFlag = it)) }
-            ToggleRow(str("perf.fix.gifFifo"), s.gamefixGifFifo, description = str("perf.fix.gifFifo.desc")) { apply(s.copy(enableGameFixes = true, gamefixGifFifo = it)) }
-            ToggleRow(str("perf.fix.dmaBusy"), s.gamefixDmaBusy, description = str("perf.fix.dmaBusy.desc")) { apply(s.copy(enableGameFixes = true, gamefixDmaBusy = it)) }
-            ToggleRow(str("perf.fix.vif1Stall"), s.gamefixVif1Stall, description = str("perf.fix.vif1Stall.desc")) { apply(s.copy(enableGameFixes = true, gamefixVif1Stall = it)) }
-            ToggleRow(str("perf.fix.iBit"), s.gamefixIbit, description = str("perf.fix.iBit.desc")) { apply(s.copy(enableGameFixes = true, gamefixIbit = it)) }
-            ToggleRow(str("perf.fix.fullVu0Sync"), s.gamefixFullVu0Sync, description = str("perf.fix.fullVu0Sync.desc")) { apply(s.copy(enableGameFixes = true, gamefixFullVu0Sync = it)) }
-            ToggleRow(str("perf.fix.vuAddSub"), s.gamefixVuAddSub, description = str("perf.fix.vuAddSub.desc")) { apply(s.copy(enableGameFixes = true, gamefixVuAddSub = it)) }
-            ToggleRow(str("perf.fix.vuOverflow"), s.gamefixVuOverflow, description = str("perf.fix.vuOverflow.desc")) { apply(s.copy(enableGameFixes = true, gamefixVuOverflow = it)) }
-            ToggleRow(str("perf.fix.extraXgkick"), s.gamefixXgkick, description = str("perf.fix.extraXgkick.desc")) { apply(s.copy(enableGameFixes = true, gamefixXgkick = it)) }
-            ToggleRow(str("perf.fix.goemonTlb"), s.gamefixGoemonTlb, description = str("perf.fix.goemonTlb.desc")) { apply(s.copy(enableGameFixes = true, gamefixGoemonTlb = it)) }
-            ToggleRow(str("perf.fix.vuSync"), s.gamefixVuSync, description = str("perf.fix.vuSync.desc")) { apply(s.copy(enableGameFixes = true, gamefixVuSync = it)) }
         }
         SettingsDivider()
         CollapsibleSection(str("perf.advancedSpeedhacks.title")) {

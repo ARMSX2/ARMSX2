@@ -25,8 +25,8 @@ import org.json.JSONObject
 internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = mapOf(
     // PerformanceTab.kt
     SettingsCategory.Performance to listOf(
-        "eeClampMode", "eeCycleRate", "eeCycleSkip", "eeFpuRoundMode", "enableFastBoot",
-        "enableGameFixes", "fastCDVD", "fpsLimit", "frameSkip", "framerateNtsc", "frameratePal",
+        "eeClampMode", "eeCycleRate", "eeCycleSkip", "eeFpuRoundMode",
+        "fastCDVD", "fpsLimit", "frameSkip", "framerateNtsc", "frameratePal",
         "intcStat", "mtvu", "nominalSpeedPercent", "skipDuplicateFrames", "vu0RoundMode",
         "vu1Instant", "vu1RoundMode", "vuClampMode", "vuDeferredWrites", "vuFlagHack",
         "vuNeonFusions", "vuSkipStallSim", "waitLoop",
@@ -65,8 +65,16 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
         "osdShowMessages", "osdShowResolution", "osdShowSettings", "osdShowSpeed",
         "osdShowVersion", "osdShowVps",
     ),
-    // FixesTab.kt
+    // FixesTab.kt — also owns the GameDB fixes and the recompiler toggles, which moved here
+    // from Performance and from the retired Recompiler tab.
     SettingsCategory.Advanced to listOf(
+        "enableFastBoot", "enableGameFixes",
+        "gamefixBlitInternalFps", "gamefixDmaBusy", "gamefixEETiming", "gamefixFpuMul",
+        "gamefixFullVu0Sync", "gamefixGifFifo", "gamefixGoemonTlb", "gamefixIbit",
+        "gamefixInstantDma", "gamefixOphFlag", "gamefixSkipMpeg",
+        "gamefixSoftwareRendererFmv", "gamefixVif1Stall", "gamefixVuAddSub",
+        "gamefixVuOverflow", "gamefixVuSync", "gamefixXgkick",
+        "enableFastmem", "recEE", "recIOP", "recVU0", "recVU1",
         "alignSprite", "antiBlur", "autoFlush", "autoFlushSw", "bilinearUpscale", "cpuClutRender",
         "cpuFramebufferConversion", "cpuSpriteRenderBw", "cpuSpriteRenderLevel", "cropBottom",
         "cropLeft", "cropRight", "cropTop", "displayZoom", "disableDepthEmulation", "disableFramebufferFetch",
@@ -80,10 +88,6 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
         "spinCpuReadbacks", "spinGpuReadbacks", "swThreads", "swThreadsHeight",
         "syncToHostRefresh", "textureInsideRt", "textureOffsetX", "textureOffsetY",
         "unscaledPaletteDraw", "useBlitSwapChain", "vsyncQueueSize",
-    ),
-    // RecompilerTab.kt
-    SettingsCategory.Recompiler to listOf(
-        "enableFastmem", "recEE", "recIOP", "recVU0", "recVU1",
     ),
     // Controls / Hotkeys / Skins / General / Info / Patches / About own no Settings fields —
     // Controls keeps its binds and tunables in ControllerMappings and has its own reset row.

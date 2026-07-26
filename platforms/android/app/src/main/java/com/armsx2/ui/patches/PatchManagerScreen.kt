@@ -401,11 +401,33 @@ private fun CollapsibleOnlineSection(
 
 @Composable
 private fun PatchFiles(state: PatchManagerUiState, viewModel: PatchManagerViewModel, modifier: Modifier) {
+    // The whole installed list folds away. A pnach pulled from the downloader can carry hundreds of
+    // codes, and with the list open there was no way past it to the rest of the screen.
+    var listOpen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
     Column(modifier) {
-        SectionTitle(str("patches.installedHeader"), state.files.size.toString())
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { listOpen = !listOpen },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SectionTitle(
+                str("patches.installedHeader"),
+                state.files.size.toString(),
+                Modifier.weight(1f),
+            )
+            if (state.files.isNotEmpty()) {
+                Text(
+                    if (listOpen) "▾" else "▸",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                )
+            }
+        }
         if (state.files.isEmpty()) {
             PatchFilesEmptyState()
-        } else {
+        } else if (listOpen) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 state.files.forEach { file ->
                     val expanded = state.localExpandedPath == file.absolutePath

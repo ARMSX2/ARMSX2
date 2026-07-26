@@ -68,6 +68,10 @@ import com.armsx2.ui.settings.controllerFocusable
 // gold trophy rather than the flat monochrome nav glyphs.
 private val TrophyGold = Color(0xFFFFC93C)
 
+// Exit is the only row here that ends your session, so it gets the standard power-red rather
+// than the neutral row tint — the same reason the trophy keeps its gold.
+private val ExitRed = Color(0xFFE60012)
+
 // Community/project links for the drawer's About section. Plain https on purpose: Android App
 // Links hand these to the Discord/GitHub apps when they're installed and fall back to the
 // browser when they aren't, so there's no app-specific scheme to special-case.
@@ -162,6 +166,27 @@ fun NavigationDrawer(
 private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, onDismiss: () -> Unit) {
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val context = LocalContext.current
+    // Exit moved here from the library overflow menu; it keeps its confirmation, which is the whole
+    // point of the row — quitting mid-session without one loses whatever is not saved.
+    val exitConfirm = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    if (exitConfirm.value) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { exitConfirm.value = false },
+            title = { androidx.compose.material3.Text(str("games.exit.title")) },
+            text = { androidx.compose.material3.Text(str("games.exit.message")) },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    exitConfirm.value = false
+                    MainActivityRuntime.exitApp()
+                }) { androidx.compose.material3.Text(str("games.toolbar.exit")) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { exitConfirm.value = false }) {
+                    androidx.compose.material3.Text(str("action.cancel"))
+                }
+            },
+        )
+    }
     // Intuitive glyphs that read as what they do — matching the in-game overlay's emoji-icon style
     // (the old box-drawing characters like ▦ ◉ ⌁ ✦ were unclear per tester feedback).
     val primary = listOf(
@@ -174,6 +199,10 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         DrawerItem("action.settings", "⚙️", AppRoute.Settings()),
     )
     val managers = listOf(
+        // Moved off the library overflow menu, which was its only entry point. Sits first, beside
+        // BIOS Location: both answer "where are my files".
+        DrawerItem("games.overflow.setup", "📂",
+            onAction = { MainActivityRuntime.reopenSetup(); onDismiss() }),
         DrawerItem("setup.step.bios.title", "📀", AppRoute.BiosManager()),
         DrawerItem("memcard.title", "💾", AppRoute.MemoryCardManager),
         DrawerItem("savestate.title.loadManage", "📥", AppRoute.SaveManager),
@@ -189,6 +218,15 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         DrawerItem("about.github", "🐙", iconRes = com.armsx2.R.drawable.ic_github,
             onAction = { openExternalUrl(context, GithubUrl); onDismiss() }),
         DrawerItem("about.website", "🌐", onAction = { openExternalUrl(context, WebsiteUrl); onDismiss() }),
+        // About left the settings tab strip: it is a read-only page, not a setting, and it sat in
+        // the tab row costing a slot on every settings visit.
+        DrawerItem("about.title", "ℹ️", AppRoute.About),
+    )
+    // Exit gets its own trailing section. It was briefly filed under ABOUT, next to the Discord and
+    // GitHub links, where nobody would think to look for "quit".
+    val session = listOf(
+        DrawerItem("games.toolbar.exit", "⏻", iconRes = com.armsx2.R.drawable.ic_power,
+            iconTint = ExitRed, onAction = { exitConfirm.value = true }),
     )
 
     Column(
@@ -216,6 +254,10 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
         Spacer(Modifier.height(14.dp))
         DrawerSection(str("about.section.header"), about, selected, onNavigate)
+        Spacer(Modifier.height(14.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+        Spacer(Modifier.height(14.dp))
+        DrawerSection(str("games.section.app"), session, selected, onNavigate)
     }
 }
 

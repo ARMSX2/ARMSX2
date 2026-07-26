@@ -501,6 +501,15 @@ fun AppTab() {
             onChange = LibraryChromePreferences::setShowRecents,
         )
 
+        // Moved off the library overflow menu, where it was the odd one out: every other
+        // library-appearance preference already lives here beside cover size and opacity.
+        ToggleRow(
+            label = str("games.overflow.gridNames"),
+            value = com.armsx2.GridLabels.show.value,
+            description = str("app.library.gridNames.desc"),
+            onChange = { com.armsx2.GridLabels.set(it) },
+        )
+
         IntSliderRow(
             label = str("app.library.coverSize"),
             value = (com.armsx2.ui.UiScale.coverScale.value * 100f).toInt().coerceIn(75, 250),

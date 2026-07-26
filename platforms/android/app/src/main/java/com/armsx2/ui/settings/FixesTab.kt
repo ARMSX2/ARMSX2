@@ -11,7 +11,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.armsx2.config.Settings
@@ -449,9 +452,84 @@ fun FixesTab(state: MutableState<Settings>) {
             onChange = { apply(s.copy(swThreadsHeight = it)) },
         )
         }
+        SettingsDivider()
+        // GameDB fixes moved here from Performance: they are per-game compatibility switches the
+        // GameDB already applies automatically, so they belong with the other advanced knobs
+        // rather than in the tab people open to change speed settings.
+        CollapsibleSection(str("perf.gamedbFixes.title")) {
+            HelpText(str("perf.gamedbFixes.help"))
+            ToggleRow(str("perf.fix.skipBios"), s.enableFastBoot, description = str("perf.fix.skipBios.desc")) { apply(s.copy(enableFastBoot = it)) }
+            ToggleRow(str("perf.fix.gamedbFixes"), s.enableGameFixes, description = str("perf.fix.gamedbFixes.desc")) { apply(s.copy(enableGameFixes = it)) }
+            ToggleRow(str("perf.fix.skipMpeg"), s.gamefixSkipMpeg, description = str("perf.fix.skipMpeg.desc")) { apply(s.copy(enableGameFixes = true, gamefixSkipMpeg = it)) }
+            if (s.gamefixSkipMpeg) HelpText(str("perf.fix.skipMpeg.warning"))
+            ToggleRow(str("perf.fix.fmvSoftware"), s.gamefixSoftwareRendererFmv, description = str("perf.fix.fmvSoftware.desc")) { apply(s.copy(enableGameFixes = true, gamefixSoftwareRendererFmv = it)) }
+            ToggleRow(str("perf.fix.eeTiming"), s.gamefixEETiming, description = str("perf.fix.eeTiming.desc")) { apply(s.copy(enableGameFixes = true, gamefixEETiming = it)) }
+            ToggleRow(str("perf.fix.instantDma"), s.gamefixInstantDma, description = str("perf.fix.instantDma.desc")) { apply(s.copy(enableGameFixes = true, gamefixInstantDma = it)) }
+            ToggleRow(str("perf.fix.blitFps"), s.gamefixBlitInternalFps, description = str("perf.fix.blitFps.desc")) { apply(s.copy(enableGameFixes = true, gamefixBlitInternalFps = it)) }
+            ToggleRow(str("perf.fix.fpuMultiply"), s.gamefixFpuMul, description = str("perf.fix.fpuMultiply.desc")) { apply(s.copy(enableGameFixes = true, gamefixFpuMul = it)) }
+            ToggleRow(str("perf.fix.ophFlag"), s.gamefixOphFlag, description = str("perf.fix.ophFlag.desc")) { apply(s.copy(enableGameFixes = true, gamefixOphFlag = it)) }
+            ToggleRow(str("perf.fix.gifFifo"), s.gamefixGifFifo, description = str("perf.fix.gifFifo.desc")) { apply(s.copy(enableGameFixes = true, gamefixGifFifo = it)) }
+            ToggleRow(str("perf.fix.dmaBusy"), s.gamefixDmaBusy, description = str("perf.fix.dmaBusy.desc")) { apply(s.copy(enableGameFixes = true, gamefixDmaBusy = it)) }
+            ToggleRow(str("perf.fix.vif1Stall"), s.gamefixVif1Stall, description = str("perf.fix.vif1Stall.desc")) { apply(s.copy(enableGameFixes = true, gamefixVif1Stall = it)) }
+            ToggleRow(str("perf.fix.iBit"), s.gamefixIbit, description = str("perf.fix.iBit.desc")) { apply(s.copy(enableGameFixes = true, gamefixIbit = it)) }
+            ToggleRow(str("perf.fix.fullVu0Sync"), s.gamefixFullVu0Sync, description = str("perf.fix.fullVu0Sync.desc")) { apply(s.copy(enableGameFixes = true, gamefixFullVu0Sync = it)) }
+            ToggleRow(str("perf.fix.vuAddSub"), s.gamefixVuAddSub, description = str("perf.fix.vuAddSub.desc")) { apply(s.copy(enableGameFixes = true, gamefixVuAddSub = it)) }
+            ToggleRow(str("perf.fix.vuOverflow"), s.gamefixVuOverflow, description = str("perf.fix.vuOverflow.desc")) { apply(s.copy(enableGameFixes = true, gamefixVuOverflow = it)) }
+            ToggleRow(str("perf.fix.extraXgkick"), s.gamefixXgkick, description = str("perf.fix.extraXgkick.desc")) { apply(s.copy(enableGameFixes = true, gamefixXgkick = it)) }
+            ToggleRow(str("perf.fix.goemonTlb"), s.gamefixGoemonTlb, description = str("perf.fix.goemonTlb.desc")) { apply(s.copy(enableGameFixes = true, gamefixGoemonTlb = it)) }
+            ToggleRow(str("perf.fix.vuSync"), s.gamefixVuSync, description = str("perf.fix.vuSync.desc")) { apply(s.copy(enableGameFixes = true, gamefixVuSync = it)) }
+        }
+        SettingsDivider()
+        RecompilerSection(state)
         Spacer(Modifier.height(8.dp))
     }
 }
 
 // CollapsibleSection now lives in SettingsWidgets.kt (shared by the Fixes / Pad /
 // Performance / Renderer tabs).
+
+/** The former standalone Recompiler tab, folded in as a section. Turning a recompiler off drops
+ *  that processor to an interpreter — correct but far slower — so it is a debugging control, not
+ *  something to browse past on the way to a speed setting. */
+@Composable
+private fun RecompilerSection(state: MutableState<Settings>) {
+    val settings = state.value
+    fun apply(updated: Settings) = InGameOverlay.saveSettings(updated)
+
+    CollapsibleSection(str("tab.recompiler")) {
+        Text(
+            str("jit.recompiler.warning"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+        )
+        ToggleRow("EE (R5900)", settings.recEE) { apply(settings.copy(recEE = it)) }
+        ToggleRow("IOP (R3000)", settings.recIOP) { apply(settings.copy(recIOP = it)) }
+        ToggleRow("VU0", settings.recVU0) { apply(settings.copy(recVU0 = it)) }
+        ToggleRow("VU1", settings.recVU1) { apply(settings.copy(recVU1 = it)) }
+        ToggleRow("Fastmem", settings.enableFastmem) { apply(settings.copy(enableFastmem = it)) }
+
+        Spacer(Modifier.height(14.dp))
+        Text(
+            str("jit.diagnostics.header"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+        // Seed from the REAL native flag: a plain `remember { false }` meant leaving the screen
+        // destroyed the state and the switch came back OFF while the native flag was still on.
+        var eeDiff by remember {
+            mutableStateOf(
+                runCatching { kr.co.iefriends.pcsx2.NativeApp.isEeDiffVerify() }.getOrDefault(false)
+            )
+        }
+        ToggleRow(
+            label = str("jit.eeDiffVerify.label"),
+            value = eeDiff,
+            description = str("jit.eeDiffVerify.description"),
+        ) {
+            eeDiff = it
+            runCatching { kr.co.iefriends.pcsx2.NativeApp.setEeDiffVerify(it) }
+        }
+    }
+}
