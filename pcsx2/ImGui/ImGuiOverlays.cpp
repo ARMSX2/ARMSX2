@@ -1996,9 +1996,15 @@ void ImGuiManager::RenderOverlays()
 	}
 
 	const float scale = ImGuiManager::GetGlobalScale();
-	const float margin = std::ceil(GSConfig.OsdMargin * scale);
+	const float base_margin = std::ceil(GSConfig.OsdMargin * scale);
 	const float spacing = std::ceil(5.0f * scale);
-	float position_y = margin;
+
+	// The frontend hands us the cut-out and rounded-corner clearance on every rotation. Only one
+	// horizontal margin is threaded through the draw functions, so take the worse side.
+	float inset_left = 0.0f, inset_top = 0.0f, inset_right = 0.0f;
+	ImGuiManager::GetOSDSafeAreaInsets(&inset_left, &inset_top, &inset_right, nullptr);
+	const float margin = base_margin + std::max(inset_left, inset_right);
+	float position_y = base_margin + inset_top;
 
 	DrawIndicatorsOverlay(position_y, scale, margin, spacing);
 	DrawVideoCaptureOverlay(position_y, scale, margin, spacing);
