@@ -243,6 +243,13 @@ struct GraphicsSettingsView: View {
                 Text(settings.localized("GameDB Graphics Fixes are safest for most games. Manual Advanced Hacks disable those automatic graphics fixes and allow the sprite, texture-offset, and Skipdraw values below. Reset/relaunch may be needed."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // MaskUpscalingHacks() zeroes these unless the multiplier is above 1, so the
+                // toggles read on and do nothing.
+                if settings.upscaleMultiplier <= 1.0 {
+                    Text(settings.localized("Half-pixel Offset, Round Sprite, Align Sprite, Merge Sprite, Wild Arms Offset and the texture offsets only apply above 1x Internal Resolution. At 1x or below they are ignored."))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
 
                 Picker(settings.localized("Trilinear Filtering"), selection: $settings.trilinearFiltering) {
                     Text(settings.localized("Automatic / Default")).tag(-1)
@@ -288,7 +295,7 @@ struct GraphicsSettingsView: View {
 
                 ClampedIntField(title: settings.localized("Skipdraw Start"), value: skipDrawStartBinding, range: SettingsStore.skipDrawRange, isEnabled: manualAdvancedHacks)
                 ClampedIntField(title: settings.localized("Skipdraw End"), value: skipDrawEndBinding, range: SettingsStore.skipDrawRange, isEnabled: manualAdvancedHacks)
-                Text(settings.localized("For Skipdraw 1, use Start 1 and End 1. Changes apply after reset/relaunch."))
+                Text(settings.localized("For Skipdraw 1, use Start 1 and End 1. Applies immediately."))
                     .font(.caption)
                     .foregroundStyle(.orange)
             }

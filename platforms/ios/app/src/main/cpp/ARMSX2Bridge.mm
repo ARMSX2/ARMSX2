@@ -1364,82 +1364,6 @@ static NSString* ARMSX2SanitizedSkinFileName(NSString* name)
     return sanitized;
 }
 
-static void ARMSX2ApplyLiveGSBoolSetting(const char* section, const char* key, bool value)
-{
-    if (std::strcmp(section, "EmuCore/GS") != 0)
-        return;
-
-#define APPLY_OSD_BOOL(name) \
-    do { \
-        if (std::strcmp(key, #name) == 0) { \
-            EmuConfig.GS.name = value; \
-            GSConfig.name = value; \
-            return; \
-        } \
-    } while (0)
-
-    APPLY_OSD_BOOL(OsdShowFPS);
-    APPLY_OSD_BOOL(OsdShowVPS);
-    APPLY_OSD_BOOL(OsdShowSpeed);
-    APPLY_OSD_BOOL(OsdShowCPU);
-    APPLY_OSD_BOOL(OsdShowGPU);
-    APPLY_OSD_BOOL(OsdShowResolution);
-    APPLY_OSD_BOOL(OsdShowGSStats);
-    APPLY_OSD_BOOL(OsdShowIndicators);
-    APPLY_OSD_BOOL(OsdShowSettings);
-    APPLY_OSD_BOOL(OsdShowInputs);
-    APPLY_OSD_BOOL(OsdShowFrameTimes);
-    APPLY_OSD_BOOL(OsdShowVersion);
-    APPLY_OSD_BOOL(OsdShowHardwareInfo);
-    APPLY_OSD_BOOL(OsdShowVideoCapture);
-    APPLY_OSD_BOOL(OsdShowInputRec);
-    APPLY_OSD_BOOL(DumpReplaceableTextures);
-    APPLY_OSD_BOOL(DumpReplaceableMipmaps);
-    APPLY_OSD_BOOL(DumpTexturesWithFMVActive);
-    APPLY_OSD_BOOL(DumpDirectTextures);
-    APPLY_OSD_BOOL(DumpPaletteTextures);
-    APPLY_OSD_BOOL(LoadTextureReplacements);
-    APPLY_OSD_BOOL(LoadTextureReplacementsAsync);
-    APPLY_OSD_BOOL(PrecacheTextureReplacements);
-
-    if (std::strcmp(key, "hw_mipmap") == 0) {
-        EmuConfig.GS.HWMipmap = value;
-        GSConfig.HWMipmap = value;
-        return;
-    }
-
-#undef APPLY_OSD_BOOL
-}
-
-static void ARMSX2ApplyLiveGSIntSetting(const char* section, const char* key, int value)
-{
-    if (std::strcmp(section, "EmuCore/GS") != 0)
-        return;
-
-    if (std::strcmp(key, "OsdPerformancePos") == 0) {
-        const int clamped = std::clamp(value, static_cast<int>(OsdOverlayPos::None), static_cast<int>(OsdOverlayPos::TopRight));
-        EmuConfig.GS.OsdPerformancePos = static_cast<OsdOverlayPos>(clamped);
-        GSConfig.OsdPerformancePos = static_cast<OsdOverlayPos>(clamped);
-    } else if (std::strcmp(key, "OsdMessagesPos") == 0) {
-        // Toggles the transient OSD message queue (shader-compilation, save,
-        // settings-applied, etc.) without touching performance counters or the
-        // separate SwiftUI alert path used for critical errors.
-        const int clamped = std::clamp(value, static_cast<int>(OsdOverlayPos::None), static_cast<int>(OsdOverlayPos::TopRight));
-        EmuConfig.GS.OsdMessagesPos = static_cast<OsdOverlayPos>(clamped);
-        GSConfig.OsdMessagesPos = static_cast<OsdOverlayPos>(clamped);
-    } else if (std::strcmp(key, "texture_preloading") == 0) {
-        const int clamped = std::clamp(value, 0, static_cast<int>(TexturePreloadingLevel::Full));
-        EmuConfig.GS.TexturePreloading = static_cast<TexturePreloadingLevel>(clamped);
-        GSConfig.TexturePreloading = static_cast<TexturePreloadingLevel>(clamped);
-    } else if (std::strcmp(key, "UserHacks_SkipDraw_Start") == 0) {
-        EmuConfig.GS.SkipDrawStart = value;
-        GSConfig.SkipDrawStart = value;
-    } else if (std::strcmp(key, "UserHacks_SkipDraw_End") == 0) {
-        EmuConfig.GS.SkipDrawEnd = std::max(EmuConfig.GS.SkipDrawStart, value);
-        GSConfig.SkipDrawEnd = EmuConfig.GS.SkipDrawEnd;
-    }
-}
-
 static void ARMSX2ApplyLiveTargetSpeedSetting(std::function<void()> update, const char* section, const char* key, float value)
 {
     const std::string sectionName(section ? section : "");
@@ -1514,40 +1438,23 @@ static bool ARMSX2ShouldBlockRetroAchievementsHardcoreBoolSetting(const char* se
     return false;
 }
 
+// Emulation-speed scalars only. EmuCore/GS is not handled here: every graphics
+// setting reloads through the Setting<T> hook -> applyGraphicsSettingsNow.
 static void ARMSX2ApplyLiveFloatSetting(const char* section, const char* key, float value)
 {
-    if (std::strcmp(section, "Framerate") == 0) {
-        const float clamped = std::isfinite(value) ? std::clamp(value, 0.05f, 10.0f) : 1.0f;
-        if (std::strcmp(key, "NominalScalar") == 0) {
-            const float normalized = ARMSX2NormalizeIOSNominalScalar(value);
-            if (std::fabs(normalized - clamped) > 0.001f)
-                NSLog(@"[ARMSX2Bridge] clamping unsupported NominalScalar %.3f -> %.3f", clamped, normalized);
-            ARMSX2ApplyLiveTargetSpeedSetting([normalized]() { EmuConfig.EmulationSpeed.NominalScalar = normalized; }, section, key, normalized);
-        } else if (std::strcmp(key, "TurboScalar") == 0)
-            ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.TurboScalar = clamped; }, section, key, clamped);
-        else if (std::strcmp(key, "SlomoScalar") == 0)
-            ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.SlomoScalar = clamped; }, section, key, clamped);
-        else
-            return;
-        return;
-    }
-
-    if (std::strcmp(section, "EmuCore/GS") != 0)
+    if (std::strcmp(section, "Framerate") != 0)
         return;
 
-    if (std::strcmp(key, "FramerateNTSC") == 0) {
-        ARMSX2ApplyLiveTargetSpeedSetting([value]() { EmuConfig.GS.FramerateNTSC = value; }, section, key, value);
-        return;
-    }
-    if (std::strcmp(key, "FrameratePAL") == 0) {
-        ARMSX2ApplyLiveTargetSpeedSetting([value]() { EmuConfig.GS.FrameratePAL = value; }, section, key, value);
-        return;
-    }
-    if (std::strcmp(key, "upscale_multiplier") == 0) {
-        const float clamped = std::clamp(value, 0.25f, 8.0f);
-        EmuConfig.GS.UpscaleMultiplier = clamped;
-        GSConfig.UpscaleMultiplier = clamped;
-        return;
+    const float clamped = std::isfinite(value) ? std::clamp(value, 0.05f, 10.0f) : 1.0f;
+    if (std::strcmp(key, "NominalScalar") == 0) {
+        const float normalized = ARMSX2NormalizeIOSNominalScalar(value);
+        if (std::fabs(normalized - clamped) > 0.001f)
+            NSLog(@"[ARMSX2Bridge] clamping unsupported NominalScalar %.3f -> %.3f", clamped, normalized);
+        ARMSX2ApplyLiveTargetSpeedSetting([normalized]() { EmuConfig.EmulationSpeed.NominalScalar = normalized; }, section, key, normalized);
+    } else if (std::strcmp(key, "TurboScalar") == 0) {
+        ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.TurboScalar = clamped; }, section, key, clamped);
+    } else if (std::strcmp(key, "SlomoScalar") == 0) {
+        ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.SlomoScalar = clamped; }, section, key, clamped);
     }
 }
 
@@ -3490,7 +3397,6 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
     }
     g_p44_settings_interface->SetIntValue(section.UTF8String, key.UTF8String, value);
     ARMSX2ScheduleINISave();
-    ARMSX2ApplyLiveGSIntSetting(section.UTF8String, key.UTF8String, value);
 }
 
 + (void)setINIBool:(nonnull NSString *)section key:(nonnull NSString *)key value:(BOOL)value {
@@ -3499,7 +3405,6 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
         value = NO;
     g_p44_settings_interface->SetBoolValue(section.UTF8String, key.UTF8String, value);
     ARMSX2ScheduleINISave();
-    ARMSX2ApplyLiveGSBoolSetting(section.UTF8String, key.UTF8String, value);
 }
 
 + (void)setINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key value:(float)value {
@@ -3536,6 +3441,11 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
 
     // ApplySettings owns EmuConfig and resets the JIT caches, and MTGS::ApplySettings pushes to
     // the single-producer ring — both the CPU thread's, and this runs on the UI thread.
+    //
+    // The push looks redundant (ApplySettings ends in CheckForGSConfigChanges, which pushes
+    // for us) but it is not: applyOsdPreset and setPerformanceOverlayVisible still write
+    // EmuConfig.GS from the UI thread, so the reload can find nothing changed and skip its
+    // own push. Keep this until they stop doing that.
     Host::RunOnCPUThread([]() {
         VMManager::ApplySettings();
         if (MTGS::IsOpen())
