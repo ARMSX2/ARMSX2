@@ -238,6 +238,10 @@ final class DynamicThumbstickSettings {
     var rightThumbstickActionsEnabled: Bool { didSet { setBool("DynamicThumbstickActionsEnabled", rightThumbstickActionsEnabled) } }
     var holdAimWhileSwipe: Bool { didSet { setBool("HoldAimWhileSwipe", holdAimWhileSwipe) } }
     var doubleTapToHoldAim: Bool { didSet { setBool("DoubleTapToHoldAim", doubleTapToHoldAim) } }
+    var singleTapActionOnNonAimMode: Bool {
+        didSet { setBool("SingleTapActionOnNonAimMode", singleTapActionOnNonAimMode) }
+    }
+    var actionsOnNonAimMode: Bool { didSet { setBool("ActionsOnNonAimMode", actionsOnNonAimMode) } }
     var tapToFire: Bool { didSet { setBool("TapToFire", tapToFire) } }
     var rapidTapFireEnabled: Bool { didSet { setBool("RapidTapFireEnabled", rapidTapFireEnabled) } }
     var releaseFireWhenTouchEnds: Bool { didSet { setBool("ReleaseFireWhenTouchEnds", releaseFireWhenTouchEnds) } }
@@ -304,6 +308,8 @@ final class DynamicThumbstickSettings {
         rightThumbstickActionsEnabled = Self.bool("DynamicThumbstickActionsEnabled", default: false)
         holdAimWhileSwipe = Self.bool("HoldAimWhileSwipe", default: false)
         doubleTapToHoldAim = Self.bool("DoubleTapToHoldAim", default: false)
+        singleTapActionOnNonAimMode = Self.bool("SingleTapActionOnNonAimMode", default: true)
+        actionsOnNonAimMode = Self.bool("ActionsOnNonAimMode", default: false)
         tapToFire = Self.bool("TapToFire", default: true)
         rapidTapFireEnabled = Self.bool("RapidTapFireEnabled", default: true)
         releaseFireWhenTouchEnds = Self.bool("ReleaseFireWhenTouchEnds", default: true)
@@ -336,7 +342,10 @@ final class DynamicThumbstickSettings {
             legacyThumbsticks = true
             dynamicThumbsticks = false
         }
-        if holdAimWhileSwipe && doubleTapToHoldAim {
+        if actionsOnNonAimMode && doubleTapToHoldAim {
+            doubleTapToHoldAim = false
+            setBool("DoubleTapToHoldAim", false)
+        } else if holdAimWhileSwipe && doubleTapToHoldAim {
             doubleTapToHoldAim = false
             setBool("DoubleTapToHoldAim", false)
         }
@@ -373,7 +382,34 @@ final class DynamicThumbstickSettings {
         doubleTapToHoldAim = enabled
         if enabled {
             holdAimWhileSwipe = false
+            actionsOnNonAimMode = false
         }
+    }
+
+    func setActionsOnNonAimMode(_ enabled: Bool) {
+        actionsOnNonAimMode = enabled
+        if enabled {
+            doubleTapToHoldAim = false
+        }
+    }
+
+    var singleTapActionAllowedInNonAimMode: Bool {
+        !doubleTapToHoldAim || singleTapActionOnNonAimMode || actionsOnNonAimMode
+    }
+
+    static func automaticFireBlockedByHardcore() -> Bool {
+        let state = ARMSX2Bridge.retroAchievementsState()
+        let active = (state["hardcoreActive"] as? NSNumber)?.boolValue ?? false
+        let preference = (state["hardcorePreference"] as? NSNumber)?.boolValue ?? false
+        let achievementsEnabled = (state["enabled"] as? NSNumber)?.boolValue ??
+            ARMSX2Bridge.getINIBool("Achievements", key: "Enabled", defaultValue: false)
+        let persistedPreference = ARMSX2Bridge.getINIBool(
+            "Achievements",
+            key: "ChallengeMode",
+            defaultValue: false
+        )
+        return active || ARMSX2Bridge.isRetroAchievementsHardcoreActive() ||
+            (achievementsEnabled && (preference || persistedPreference))
     }
 
     func restoreDefaults() {
@@ -411,6 +447,8 @@ final class DynamicThumbstickSettings {
         rightThumbstickActionsEnabled = false
         holdAimWhileSwipe = false
         doubleTapToHoldAim = false
+        singleTapActionOnNonAimMode = true
+        actionsOnNonAimMode = false
         tapToFire = true
         rapidTapFireEnabled = true
         releaseFireWhenTouchEnds = true

@@ -28,6 +28,7 @@ struct VirtualPadSettingsView: View {
     @State private var skinPendingDelete: VPadSkinDescriptor?
     @State private var skinPendingRename: VPadSkinDescriptor?
     @State private var skinRenameDraft = ""
+    @State private var automaticFireBlockedByHardcore = false
 
     var body: some View {
         Form {
@@ -444,6 +445,24 @@ struct VirtualPadSettingsView: View {
                             set: { dynamicSettings.setDoubleTapToHoldAim($0) }
                         )
                     )
+                    Toggle(
+                        settings.localized("Enable Single-Tap Action on Non-Aim Mode"),
+                        isOn: Binding(
+                            get: { dynamicSettings.singleTapActionAllowedInNonAimMode },
+                            set: { dynamicSettings.singleTapActionOnNonAimMode = $0 }
+                        )
+                    )
+                    .disabled(
+                        !dynamicSettings.doubleTapToHoldAim ||
+                            dynamicSettings.actionsOnNonAimMode
+                    )
+                    Toggle(
+                        settings.localized("Enable Actions on Non-Aim Mode"),
+                        isOn: Binding(
+                            get: { dynamicSettings.actionsOnNonAimMode },
+                            set: { dynamicSettings.setActionsOnNonAimMode($0) }
+                        )
+                    )
                     DynamicControlSlider(
                         title: dynamicActionTitle("Aim Release Delay", role: .aim),
                         value: $dynamicSettings.aimReleaseDelay,
@@ -480,8 +499,18 @@ struct VirtualPadSettingsView: View {
                     )
                     Toggle(
                         dynamicActionTitle("Multiple Taps Enable Automatic Fire", role: .holdFire),
-                        isOn: $dynamicSettings.rapidTapFireEnabled
+                        isOn: Binding(
+                            get: {
+                                dynamicSettings.rapidTapFireEnabled &&
+                                    !automaticFireBlockedByHardcore
+                            },
+                            set: { enabled in
+                                guard !automaticFireBlockedByHardcore else { return }
+                                dynamicSettings.rapidTapFireEnabled = enabled
+                            }
+                        )
                     )
+                    .disabled(automaticFireBlockedByHardcore)
                     DynamicControlSlider(
                         title: dynamicActionTitle("Multiple-Tap Window", role: .holdFire),
                         value: $dynamicSettings.rapidTapWindow,
@@ -489,7 +518,7 @@ struct VirtualPadSettingsView: View {
                         step: 0.01,
                         valueLabel: durationLabel
                     )
-                    .disabled(!dynamicSettings.rapidTapFireEnabled)
+                    .disabled(automaticFireControlsDisabled)
                     DynamicControlSlider(
                         title: dynamicActionTitle("Taps to Activate", role: .holdFire),
                         value: Binding(
@@ -500,7 +529,7 @@ struct VirtualPadSettingsView: View {
                         step: 1,
                         valueLabel: { "\(Int($0)) taps" }
                     )
-                    .disabled(!dynamicSettings.rapidTapFireEnabled)
+                    .disabled(automaticFireControlsDisabled)
                     DynamicControlSlider(
                         title: dynamicActionTitle("Automatic Fire Interval", role: .holdFire),
                         value: $dynamicSettings.automaticFireInterval,
@@ -508,17 +537,17 @@ struct VirtualPadSettingsView: View {
                         step: 0.01,
                         valueLabel: durationLabel
                     )
-                    .disabled(!dynamicSettings.rapidTapFireEnabled)
+                    .disabled(automaticFireControlsDisabled)
                     Toggle(
                         dynamicActionTitle("Extend Automatic Fire While Dragging", role: .holdFire),
                         isOn: $dynamicSettings.extendFireWhileDragging
                     )
-                        .disabled(!dynamicSettings.rapidTapFireEnabled)
+                        .disabled(automaticFireControlsDisabled)
                     Toggle(
                         dynamicActionTitle("Release Fire When Touch Ends", role: .holdFire),
                         isOn: $dynamicSettings.releaseFireWhenTouchEnds
                     )
-                        .disabled(!dynamicSettings.rapidTapFireEnabled)
+                        .disabled(automaticFireControlsDisabled)
                     DynamicControlSlider(
                         title: dynamicActionTitle("Fire Release Delay", role: .holdFire),
                         value: $dynamicSettings.fireReleaseDelay,
@@ -526,9 +555,16 @@ struct VirtualPadSettingsView: View {
                         step: 0.05,
                         valueLabel: durationLabel
                     )
-                    .disabled(!dynamicSettings.rapidTapFireEnabled || dynamicSettings.releaseFireWhenTouchEnds)
+                    .disabled(
+                        automaticFireControlsDisabled ||
+                            dynamicSettings.releaseFireWhenTouchEnds
+                    )
                 } header: {
                     Text(settings.localized("Dynamic Actions"))
+                } footer: {
+                    if automaticFireBlockedByHardcore {
+                        Text(settings.localized("Automatic Fire is disabled while RetroAchievements Hardcore Mode is on."))
+                    }
                 }
             }
 
@@ -540,6 +576,14 @@ struct VirtualPadSettingsView: View {
         }
         .navigationTitle(settings.localized("Virtual Pad"))
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear(perform: refreshHardcoreAutomaticFireRestriction)
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: Notification.Name("ARMSX2RetroAchievementsStateChanged")
+            )
+        ) { _ in
+            refreshHardcoreAutomaticFireRestriction()
+        }
         .sheet(isPresented: $showLayoutImporter) {
             ImportDocumentPicker(
                 allowedContentTypes: [.json, .data],
@@ -931,6 +975,14 @@ struct VirtualPadSettingsView: View {
 
     private func durationLabel(_ value: Double) -> String {
         String(format: "%.2f s", value)
+    }
+
+    private var automaticFireControlsDisabled: Bool {
+        automaticFireBlockedByHardcore || !dynamicSettings.rapidTapFireEnabled
+    }
+
+    private func refreshHardcoreAutomaticFireRestriction() {
+        automaticFireBlockedByHardcore = DynamicThumbstickSettings.automaticFireBlockedByHardcore()
     }
 }
 
