@@ -68,6 +68,26 @@ u32 fuzzOperand(Lcg& r)
 	}
 }
 
+// Overrides the ambient rounding mode alone. ScopedFpEnv rewrites all four
+// registers, equalizing FPUFPCR and FPUDivFPCR, which the header rules out.
+struct ScopedAmbientRoundMode
+{
+	FPControlRegister saved_cfg, saved_host;
+	explicit ScopedAmbientRoundMode(FPRoundMode mode)
+		: saved_cfg(EmuConfig.Cpu.FPUFPCR)
+		, saved_host(FPControlRegister::GetCurrent())
+	{
+		EmuConfig.Cpu.FPUFPCR.SetRoundMode(mode);
+	}
+	~ScopedAmbientRoundMode()
+	{
+		EmuConfig.Cpu.FPUFPCR = saved_cfg;
+		FPControlRegister::SetCurrent(saved_host);
+	}
+	ScopedAmbientRoundMode(const ScopedAmbientRoundMode&) = delete;
+	ScopedAmbientRoundMode& operator=(const ScopedAmbientRoundMode&) = delete;
+};
+
 // The premise every test here rests on.
 void RequireDistinctDivideRoundingMode()
 {
@@ -194,7 +214,19 @@ TEST(EeRecFpuDivUnitRounding, SqrtSOfFiveRoundsToNearest)
 // ---------------------------------------------------------------------------
 // The negative control. ADD.S does not belong to the divide unit and must keep
 // chopping under the ambient mode, so a fix that widened the swap to the whole
-// FPU fails here.
+// FPU fails here, and nothing else in the suite would catch it.
+//
+// Every other test in this file was validated by reverting the fix and
+// watching it fail. A negative control passes in both directions by
+// construction, so it gets the liveness clause at the bottom instead.
+//
+// The operands sum exactly to 2 - 2^-24, halfway between 0x3FFFFFFF (= 2 -
+// 2^-23, the largest float below 2) and 0x40000000, so chop-toward-zero keeps
+// the lower and round-to-nearest ties-to-even takes 2.0. Their one-bit
+// exponent difference means guard-bit masking (fpuGuardedAddSub, on by
+// default, fpuEmitGuardedAddSub in iFPU-arm64.cpp) masks off (diff - 1) = 0
+// bits, so the pair discriminates the same with that option on or off, on both
+// engines.
 // ---------------------------------------------------------------------------
 TEST(EeRecFpuDivUnitRounding, ArithmeticStillChopsUnderTheAmbientMode)
 {
@@ -202,24 +234,38 @@ TEST(EeRecFpuDivUnitRounding, ArithmeticStillChopsUnderTheAmbientMode)
 	ASSERT_EQ(EmuConfig.Cpu.FPUFPCR.GetRoundMode(), FPRoundMode::ChopZero)
 		<< "this control assumes the default chop-toward-zero ambient mode";
 
-	// 1.0 + 2^-25: the exact sum needs 26 mantissa bits, so it rounds to
-	// 0x3F800001 at nearest and truncates to 0x3F800000 toward zero.
-	const auto build = [](EeRecTestHarness& h) {
+	constexpr u32 kOne = 0x3F800000u;        // 1.0
+	constexpr u32 kJustBelowOne = 0x3F7FFFFFu; // 1 - 2^-24
+	constexpr u32 kChopped = 0x3FFFFFFFu;    // 2 - 2^-23
+	constexpr u32 kRounded = 0x40000000u;    // 2.0
+
+	const auto run = [](bool jit) {
+		EeRecTestHarness h;
 		h.EnableCop1();
 		h.SetFcr31(0);
-		h.SetFprBits(1, 0x3F800000u); // 1.0
-		h.SetFprBits(2, 0x33000000u); // 2^-25
+		h.SetFprBits(1, kOne);
+		h.SetFprBits(2, kJustBelowOne);
 		h.LoadProgram({ee::ADD_S(3, 1, 2)});
+		if (jit)
+			h.RunJitNoDiff();
+		else
+			h.RunInterpOnly();
+		return jit ? h.GetFprBitsJit(3) : h.GetFprBitsInterp(3);
 	};
-	EeRecTestHarness hj;
-	build(hj);
-	hj.RunJitNoDiff();
-	EeRecTestHarness hi;
-	build(hi);
-	hi.RunInterpOnly();
 
-	EXPECT_EQ(hj.GetFprBitsJit(3), 0x3F800000u)
-		<< "[jit] ADD.S must chop; 0x3F800001 means the divide-unit swap leaked";
-	EXPECT_EQ(hi.GetFprBitsInterp(3), 0x3F800000u)
-		<< "[interp] ADD.S must chop; 0x3F800001 means the divide-unit swap leaked";
+	EXPECT_EQ(run(true), kChopped)
+		<< "[jit] ADD.S must chop; 0x40000000 means the divide-unit swap leaked";
+	EXPECT_EQ(run(false), kChopped)
+		<< "[interp] ADD.S must chop; 0x40000000 means the divide-unit swap leaked";
+
+	// Liveness: under round-to-nearest the same operands must give the other
+	// value, or the assertions above pin a constant rather than a mode.
+	{
+		const ScopedAmbientRoundMode nearest{FPRoundMode::Nearest};
+		EXPECT_EQ(run(true), kRounded)
+			<< "[jit] control is DEAD -- these operands are insensitive to the "
+			   "ambient rounding mode, so the chop assertions above prove nothing";
+		EXPECT_EQ(run(false), kRounded)
+			<< "[interp] control is DEAD -- see above";
+	}
 }
