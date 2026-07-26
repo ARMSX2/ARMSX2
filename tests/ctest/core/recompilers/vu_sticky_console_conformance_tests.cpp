@@ -300,18 +300,20 @@ constexpr Divergence kMicroDivergences[] = {
 	{"VUSTICKY_MICRO_FMAC_ZSUO_ACCUMULATE", 3, true, true,
 	 "micro FMAC loses U (VU_MAC_UPDATE's ~0x1100 clears U on a flush-to-zero) "
 	 "and O (the configured clamp mode saturates below exp 255)"},
-	{"VUSTICKY_MICRO_DIV_DI_ACCUMULATE", 3, true, false,
-	 "_vuFDIVflush ORs `statusflag & 0xC30`, but statusflag never carries a "
-	 "sticky bit, so the interpreter's micro path sets NO sticky D or I at all; "
-	 "microVU accumulates them and is correct (VUops.cpp:104)"},
 	{"VUSTICKY_MICRO_CLEAN_DIV_KEEPS_STICKY_DI", 3, true, true,
-	 "interpreter: the same _vuFDIVflush gap; JIT: vrsqrt of -0 raises only D "
-	 "where hardware raises D and I, so sticky I is never set"},
+	 "vrsqrt of -0 raises only D where hardware raises D and I, so sticky I is "
+	 "never set -- both engines read back C00 as 800. Not the sticky-"
+	 "accumulation gap (VU_STICKY_DI fixed that); this is the cause bit itself"},
 	{"VUSTICKY_MICRO_FSSET_CLEARS", 3, true, false,
-	 "the interpreter's FSSET leaves the existing sticky bits standing; "
-	 "hardware and microVU both assign the field"},
+	 "the interpreter keeps a sticky bit an earlier FMAC set across an FSSET "
+	 "that should have cleared the field. NOT an assign-vs-OR bug in _vuFSSET: "
+	 "it assigns (`(imm & 0xFC0) | (statusflag & 0x3F)`) and _vuFMACflush's "
+	 "REG_STATUS_FLAG arm assigns the field too (VUops.cpp:60). UNVERIFIED "
+	 "hypothesis for the real cause: the FMAC pipeline entry flushes after the "
+	 "FSSET entry and re-ORs its sticky bit back in via the non-FSSET arm"},
 	{"VUSTICKY_MICRO_FSSET_ASSIGNS_NOT_ORS", 3, true, false,
-	 "same FSSET gap, in the form that separates assign from OR"},
+	 "same FSSET gap, in the form that separates assign from OR: interp reads "
+	 "back 840 (sticky D from the FSSET plus a stale sticky Z) for 800"},
 	{"VUSTICKY_MICRO_SURVIVES_SILENT_FMAC", 3, true, true,
 	 "micro FMAC loses U on the flush-to-zero underflow, as above"},
 };

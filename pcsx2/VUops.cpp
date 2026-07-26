@@ -928,6 +928,23 @@ static __fi void _vuCLIP(VURegs* VU)
 /*   VU Lower instructions    */
 /******************************/
 
+// Raise the sticky D/I bits (STATUS 11:10) for whichever current D/I bits
+// (STATUS 5:4) the div-unit op just set. Hardware sets the sticky bit whenever
+// it sets the corresponding cause bit, and the sticky field only ever
+// accumulates -- it is cleared by an explicit FSSET, not by a later op.
+//
+// Without this, VU->statusflag never carries a sticky bit at all, so the
+// snapshot _vuFDIVAdd hands to the pipeline (VU->fdiv.statusflag) has nothing
+// sticky in it and _vuFDIVflush's `& 0xC30` contributes only the cause bits --
+// the micro path set NO sticky D or I ever. microVU already accumulates them.
+//
+// The macro path is unaffected: SYNCFDIV derives the sticky field from the
+// cause bits itself (`(statusflag & 0x30) << 6`) and masks these bits out.
+static __fi void VU_STICKY_DI(VURegs* VU)
+{
+	VU->statusflag |= (VU->statusflag & 0x30) << 6;
+}
+
 static __fi void _vuDIV(VURegs* VU)
 {
 	float ft = vuDouble(VU->VF[_Ft_].UL[_Ftf_]);
@@ -953,6 +970,8 @@ static __fi void _vuDIV(VURegs* VU)
 		VU->q.F = fs / ft;
 		VU->q.F = vuDouble(VU->q.UL);
 	}
+
+	VU_STICKY_DI(VU);
 }
 
 static __fi void _vuSQRT(VURegs* VU)
@@ -965,6 +984,8 @@ static __fi void _vuSQRT(VURegs* VU)
 		VU->statusflag |= 0x10;
 	VU->q.F = sqrt(fabs(ft));
 	VU->q.F = vuDouble(VU->q.UL);
+
+	VU_STICKY_DI(VU);
 }
 
 static __fi void _vuRSQRT(VURegs* VU)
@@ -1009,6 +1030,8 @@ static __fi void _vuRSQRT(VURegs* VU)
 		VU->q.F = fs / temp;
 		VU->q.F = vuDouble(VU->q.UL);
 	}
+
+	VU_STICKY_DI(VU);
 }
 
 static __fi void _vuIADDI(VURegs* VU)
