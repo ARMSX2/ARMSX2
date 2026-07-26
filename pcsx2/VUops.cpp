@@ -1732,30 +1732,44 @@ static __ri float _vuCalculateEATAN(float inputvalue) {
 	return result;
 }
 
+// _vuCalculateEATAN evaluates the EFU's atan polynomial and then adds
+// eatanconst[8] = 0.785398185 = pi/4. That constant is only correct as the
+// second half of the range-reduction identity
+//
+//     atan(x) = pi/4 + atan((x - 1) / (x + 1))
+//
+// so the polynomial must be fed the REDUCED argument, not the raw one. Both
+// recompilers do exactly that -- arm64 `mVU_EATAN` computes (Fs-1)/(Fs+1)
+// before calling mVU_EATAN_arm, x86 `mVU_EATAN` the identical SUBSS/ADDSS/
+// DIVSS -- and the interpreter did not, so it was adding a pi/4 offset that
+// nothing had earned. Confirmed by arithmetic rather than by reading: for
+// Fs = 1.0 the unreduced expression evaluates to 0x3FCA1D99, which is
+// bit-for-bit the value the interpreter produced, while the reduced one gives
+// 0x3F490FDB, bit-for-bit the recompilers' (console: 0x3F490FDA).
+//
+// The xy/xz forms reduce the same identity for atan(y/x):
+//     (y/x - 1) / (y/x + 1) == (y - x) / (y + x)
+// which is the form both recompilers emit, and it removes the need for the
+// old `if (x != 0)` guard -- that guard returned +0 where both recompilers
+// and the console return a NaN pattern.
 static __ri void _vuEATAN(VURegs* VU)
 {
-	float p = _vuCalculateEATAN(vuDouble(VU->VF[_Fs_].UL[_Fsf_]));
-	VU->p.F = p;
+	const float fs = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
+	VU->p.F = _vuCalculateEATAN((fs - 1.0f) / (fs + 1.0f));
 }
 
 static __ri void _vuEATANxy(VURegs* VU)
 {
-	float p = 0;
-	if (vuDouble(VU->VF[_Fs_].i.x) != 0)
-	{
-		p = _vuCalculateEATAN(vuDouble(VU->VF[_Fs_].i.y) / vuDouble(VU->VF[_Fs_].i.x));
-	}
-	VU->p.F = p;
+	const float x = vuDouble(VU->VF[_Fs_].i.x);
+	const float y = vuDouble(VU->VF[_Fs_].i.y);
+	VU->p.F = _vuCalculateEATAN((y - x) / (y + x));
 }
 
 static __ri void _vuEATANxz(VURegs* VU)
 {
-	float p = 0;
-	if (vuDouble(VU->VF[_Fs_].i.x) != 0)
-	{
-		p = _vuCalculateEATAN(vuDouble(VU->VF[_Fs_].i.z) / vuDouble(VU->VF[_Fs_].i.x));
-	}
-	VU->p.F = p;
+	const float x = vuDouble(VU->VF[_Fs_].i.x);
+	const float z = vuDouble(VU->VF[_Fs_].i.z);
+	VU->p.F = _vuCalculateEATAN((z - x) / (z + x));
 }
 
 static __ri void _vuESUM(VURegs* VU)
