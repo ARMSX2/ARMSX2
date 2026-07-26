@@ -39,10 +39,6 @@ final class SkinInstaller: ObservableObject {
         await install(skin, replacing: installedDescriptor(for: skin)?.id)
     }
 
-    func isInstalled(_ skin: CatalogSkin) -> Bool {
-        installedDescriptor(for: skin) != nil
-    }
-
     func uninstall(_ skin: CatalogSkin) {
         errors[skin.file] = nil
         guard let descriptor = installedDescriptor(for: skin) else { return }
