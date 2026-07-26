@@ -679,11 +679,30 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, const GSVector2i& size
 
 GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, bool clear, bool prefer_reuse)
 {
-	// No flush here: what comes back is either brand new or was recycled into the pool, and
-	// Recycle() holds back anything the queue still references. The deferred-clear calls at
-	// the tail guard themselves.
+	// No blanket flush here: what comes back is either brand new or was recycled into the
+	// pool. The deferred-clear calls at the tail guard themselves.
 	const GSVector2i size(std::clamp(width, 1, static_cast<int>(g_gs_device->GetMaxTextureSize())),
 		std::clamp(height, 1, static_cast<int>(g_gs_device->GetMaxTextureSize())));
+
+	// Recycle() parks a texture a queued draw still names instead of returning it to the pool.
+	// That is invisible to correctness but not to allocation: if the surface being asked for is
+	// one of those, skipping the flush hands back a different texture than an undeferred run
+	// would, and the working set stays one larger for the rest of the frame. On God of War II
+	// that alone cost +7 render passes. Drain the queue when the answer is in that list, and
+	// only then - an unconditional flush here is what the scheduler exists to avoid.
+	if (!m_deferred_recycle.empty() && !m_flushing)
+	{
+		for (const GSTexture* held : m_deferred_recycle)
+		{
+			if (held->GetUsage() == usage && held->GetFormat() == format && held->GetSize() == size &&
+				held->GetMipmapLevels() == levels)
+			{
+				FlushDeferredDraws();
+				break;
+			}
+		}
+	}
+
 	FastList<GSTexture*>& pool = m_pool[!GSTexture::IsTexture(usage)];
 
 	GSTexture* t = nullptr;
