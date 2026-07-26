@@ -360,8 +360,11 @@ void RSQRT_S() {
 void SQRT_S() {
 	clearFPUFlags(FPUflagI | FPUflagD);
 
-	if ( ( _FtValUl_ & 0x7F800000 ) == 0 ) // If Ft = +/-0
-		_FdValUl_ = _FtValUl_ & 0x80000000;// result is 0
+	if ( ( _FtValUl_ & 0x7F800000 ) == 0 ) // If Ft = +/-0 (denormals included)
+		_FdValUl_ = 0;                     // +0: the EE drops the sign here, and
+		                                   // both recompilers already do (they
+		                                   // take |Ft| before the sqrt). See
+		                                   // EeRecFpu.SqrtSOfNegativeZeroIsPositiveZero.
 	else if ( _FtValUl_ & 0x80000000 ) { // If Ft is Negative
 		_ContVal_ |= FPUflagI | FPUflagSI;
 		_FdValf_ = sqrt( fabs( fpuDouble( _FtValUl_ ) ) );

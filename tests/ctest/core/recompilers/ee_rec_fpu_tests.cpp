@@ -455,6 +455,33 @@ TEST(EeRecFpu, SqrtSPositiveClearsStaleIDFlags)
 	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & (0x20000u | 0x10000u | 0x40u), 0u);
 }
 
+// ----- SQRT.S of -0.0 discards the sign -------------------------------
+// IEEE-754 says sqrt(-0) is -0, and the interpreter used to say so too
+// (`_FdValUl_ = _FtValUl_ & 0x80000000`). The EE does not: it returns +0, which
+// is what the recompilers have always emitted (recSQRT_S_xmm takes |Ft| before
+// the Fsqrt, so the sign is gone before the zero case is reached). Hardware,
+// from ps2autotests tests/cpu/ee_fpu/sqrt.expected:
+//
+//     sqrt 80000000/-0.00: 00000000/+0.00
+//     sqrt CF_NEGZERO:     00000000/+0.00
+//
+// Found by a randomized SQRT.S differential, which is why a case this small
+// went unnoticed: every hand-written SQRT.S test above uses +/-4.0.
+TEST(EeRecFpu, SqrtSOfNegativeZeroIsPositiveZero)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	h.SetFcr31(0);
+	h.SetFprBits(1, 0x80000000u);   // -0.0
+	h.LoadProgram({ee::SQRT_S(2, 1)});
+	h.Run();                         // auto-diff catches an engine keeping -0
+	h.ExpectFpr(2, 0x00000000u);
+	// The zero path is not the negative path: no I|SI, and D is cleared.
+	const u32 mask = 0x20000u | 0x10000u | 0x40u; // I | D | SI
+	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask, 0u);
+	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0u);
+}
+
 // ----- SQRT.S rounds to nearest regardless of FCR31 mode -------------
 // PS2 SQRT.S (like DIV.S) always rounds to nearest, independent of the
 // configured EE rounding mode. The EE rec runs under host FPCR = FPUFPCR
