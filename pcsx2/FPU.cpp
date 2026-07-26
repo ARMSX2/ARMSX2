@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Common.h"
+#include "Config.h"
+
+#include "common/FPControl.h"
 
 #include <cfloat>
 #include <cmath>
@@ -278,6 +281,45 @@ static u32 eeMulProduct(u32 fs, u32 ft)
 	return eeMulOneUlpLow( s.UL, t.UL ) ? p.UL - 1u : p.UL;
 }
 
+/*	The EE's divide/square-root unit rounds to nearest even when the rest of the
+	FPU is chopping toward zero, which is why PCSX2 carries a second control
+	register, FPUDivFPCR, whose only difference from FPUFPCR is the rounding
+	mode. Both recompilers swap the host rounding mode around DIV/SQRT/RSQRT
+	(arm64 recDIV_S_xmm / recSQRT_S_xmm / recRSQRT_S_xmm in iFPU-arm64.cpp and
+	the DOUBLE:: twins in iFPUd-arm64.cpp; x86 iFPU.cpp / iFPUd.cpp do the same
+	with xLDMXCSR). The interpreter never did, so those three ops came out one
+	ULP low against both recompilers and the console whenever a game is in the
+	default chop mode.
+
+	Gated the way the emitters gate it: where the two registers already agree
+	there is nothing to swap.
+*/
+class ScopedDivRoundMode
+{
+public:
+	__fi ScopedDivRoundMode()
+		: m_swap(EmuConfig.Cpu.FPUFPCR.bitmask != EmuConfig.Cpu.FPUDivFPCR.bitmask)
+	{
+		if (m_swap)
+		{
+			m_prev = FPControlRegister::GetCurrent();
+			FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUDivFPCR);
+		}
+	}
+	__fi ~ScopedDivRoundMode()
+	{
+		if (m_swap)
+			FPControlRegister::SetCurrent(m_prev);
+	}
+
+	ScopedDivRoundMode(const ScopedDivRoundMode&) = delete;
+	ScopedDivRoundMode& operator=(const ScopedDivRoundMode&) = delete;
+
+private:
+	FPControlRegister m_prev;
+	bool m_swap;
+};
+
 void ABS_S() {
 	_FdValUl_ = _FsValUl_ & 0x7fffffff;
 	clearFPUFlags( FPUflagO | FPUflagU );
@@ -355,6 +397,7 @@ void CVT_W() {
 }
 
 void DIV_S() {
+	const ScopedDivRoundMode div_round;
 	if (checkDivideByZero( _FdValUl_, _FtValUl_, _FsValUl_, FPUflagD | FPUflagSD, FPUflagI | FPUflagSI)) return;
 	_FdValf_ = fpuDouble( _FsValUl_ ) / fpuDouble( _FtValUl_ );
 	if (checkOverflow( _FdValUl_, 0)) return;
@@ -438,6 +481,7 @@ void NEG_S() {
 }
 
 void RSQRT_S() {
+	const ScopedDivRoundMode div_round;
 	FPRreg temp;
 	clearFPUFlags(FPUflagD | FPUflagI);
 
@@ -462,6 +506,8 @@ void RSQRT_S() {
 	// which stay in single-precision fsqrt+fdiv (x86 recRSQRThelper1, arm64
 	// recRSQRT_S_xmm): 1.0 rsqrt 1.5 comes back 0x3F5105EC that way, hardware
 	// gives 0x3F5105EB.
+	//
+
 	temp.f = sqrt( fabs( fpuDouble( _FtValUl_ ) ) );
 	_FdValf_ = fpuDouble( _FsValUl_ ) / fpuDouble( temp.UL );
 
@@ -470,6 +516,7 @@ void RSQRT_S() {
 }
 
 void SQRT_S() {
+	const ScopedDivRoundMode div_round;
 	clearFPUFlags(FPUflagI | FPUflagD);
 
 	// Invalid-operation keys off the SIGN BIT ALONE. -0 and the negative

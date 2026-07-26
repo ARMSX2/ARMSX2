@@ -559,26 +559,22 @@ TEST(EeRecFpu, SqrtSInvalidFlagFollowsTheSignBitAlone)
 
 // ----- SQRT.S rounds to nearest regardless of FCR31 mode -------------
 // PS2 SQRT.S (like DIV.S) always rounds to nearest, independent of the
-// configured EE rounding mode. The EE rec runs under host FPCR = FPUFPCR
-// (ChopZero by default), so recSQRT_S must swap to the nearest-rounding
-// FPUDivFPCR around the Fsqrt. This is not observable via Run()'s JIT-vs-interp
-// auto-diff (the harness runs both under the host-default nearest FPCR, where
-// the swap is a no-op). Instead replicate the real EE thread: set host FPCR to
-// FPUFPCR (chop) and assert the JIT result directly. sqrt(5) is rounding-
-// sensitive — nearest 0x400F1BBD vs round-toward-zero 0x400F1BBC. Without the
-// in-op swap the Fsqrt would round under the ambient chop and produce
-// 0x400F1BBC; with it the result is the PS2-correct nearest value.
+// configured EE rounding mode, so recSQRT_S swaps to the nearest-rounding
+// FPUDivFPCR around the Fsqrt. sqrt(5) is rounding-sensitive: nearest
+// 0x400F1BBD vs round-toward-zero 0x400F1BBC.
+//
+// The manual host-FPCR swap this used to carry is gone: the harness runs in the
+// production environment, so Run() diffs the interpreter against the JIT here
+// instead of leaving it unasserted. The randomized version, and DIV.S, are in
+// ee_rec_fpu_divunit_rounding_tests.cpp.
 TEST(EeRecFpu, SqrtSRoundsToNearestUnderChopFpcr)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.SetFprSingle(1, 5.0f);
 	h.LoadProgram({ee::SQRT_S(2, 1)});
-	const FPControlRegister saved = FPControlRegister::GetCurrent();
-	FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUFPCR); // EE-thread ambient (chop)
-	h.RunJitNoDiff();
-	FPControlRegister::SetCurrent(saved);
-	EXPECT_EQ(h.GetFprBitsJit(2), 0x400F1BBDu); // nearest-rounded sqrt(5)
+	h.Run();                            // auto-diff, in the production FP env
+	h.ExpectFpr(2, 0x400F1BBDu);        // nearest-rounded sqrt(5)
 }
 
 // ----- RSQRT.S sticky flags (native) ----------------------------------

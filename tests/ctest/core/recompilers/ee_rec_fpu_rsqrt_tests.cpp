@@ -12,13 +12,16 @@
 //     are always diffed. I|D are cleared each op; SI|SD are sticky.
 //   - Zero divisor (Ft exponent field == 0, denormals included): exact
 //     sign(Fs) | 0x7f7fffff, D|SD raised. Matches interp exactly.
-//   - Negative nonzero divisor: interp rounds sqrt(|Ft|) into a float temp
-//     before dividing, so its divide is single-precision and matches native
-//     bit-for-bit. I|SI raised.
-//   - Positive nonzero divisor: same, since RSQRT_S() (pcsx2/FPU.cpp) stopped
-//     dividing by the double libm sqrt returns. At the production rounding
-//     mode the two still part by one ULP, pinned by
-//     DISABLED_RsqrtSPositivePathDivergesInProductionFpEnv.
+//   - Every divisor class -- zero, negative, positive -- now matches the
+//     interpreter bit-for-bit, in any FP environment, so every case here is
+//     differential. Getting there took two independent fixes that this file
+//     once pinned as tripwires: the interpreter divided by an unrounded
+//     double-precision sqrt (bare libm sqrt returns double), and it never
+//     modelled the divide/sqrt unit's own round-to-nearest. Both landed on
+//     1.0 rsqrt 1.5 as 0x3F5105EC against hardware's 0x3F5105EB, which made
+//     two defects look like one; RSQRT_S in pcsx2/FPU.cpp has both at the
+//     divide they share. The same rounding mode over DIV.S and SQRT.S is in
+//     ee_rec_fpu_divunit_rounding_tests.cpp.
 
 #include "harness/EeRecTestHarness.h"
 
@@ -80,15 +83,11 @@ u32 fuzzOperand(Lcg& r)
 // divisors (interp and native both stay single-precision there). Any Fs.
 // The result value and the sticky flags are both diffed.
 // ---------------------------------------------------------------------------
-// These three ran green only because the old harness rounded to nearest. Under
-// the production environment the interpreter's double-rounded RSQRT lands one
-// ULP above the JIT and the differential fails -- which is work-order item 1,
-// not a new bug, and is pinned in the production environment by
-// DISABLED_RsqrtSPositivePathDivergesInProductionFpEnv below. Fixing item 1
-// retires the tag as well as the tripwire.
+// No ScopedFpEnv anywhere in this file: tagging these FlushNearest makes
+// FPUFPCR and FPUDivFPCR equal, which is the one environment where the divide
+// unit's rounding mode cannot be seen.
 TEST(EeRecFpuRsqrt, DifferentialFuzzZeroAndNegativeDivisor)
 {
-	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
 	Lcg r{0x123456789ABCDEF0ull};
 	for (u32 iter = 0; iter < 3000; ++iter)
 	{
@@ -119,15 +118,12 @@ TEST(EeRecFpuRsqrt, DifferentialFuzzZeroAndNegativeDivisor)
 }
 
 // ---------------------------------------------------------------------------
-// Positive-divisor fuzzer. The interp divides by a double-precision sqrt and
-// native stays single-precision, so Run()'s exact auto-diff cannot be used;
-// run JIT and interp on separate harnesses and assert the result is within the
-// proven <=1 ULP bound (a native bug producing a larger error would trip this)
-// and that the flags match exactly.
+// Positive-divisor fuzzer. An exact differential like every other case in this
+// file now that both engines are single-precision and share a rounding mode:
+// Run()'s auto-diff checks the value, the flags are diffed on top.
 // ---------------------------------------------------------------------------
-TEST(EeRecFpuRsqrt, PositiveDivisorWithinOneUlp)
+TEST(EeRecFpuRsqrt, PositiveDivisorMatchesInterpExactly)
 {
-	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest}; // see DifferentialFuzzZeroAndNegativeDivisor
 	Lcg r{0x0F0E0D0C0B0A0908ull};
 	for (u32 iter = 0; iter < 3000; ++iter)
 	{
@@ -141,28 +137,16 @@ TEST(EeRecFpuRsqrt, PositiveDivisorWithinOneUlp)
 		SCOPED_TRACE(::testing::Message()
 			<< "iter=" << iter << " Fs=" << std::hex << fsBits << " Ft=" << ftBits << " pre=" << pre);
 
-		EeRecTestHarness hj;
-		hj.EnableCop1();
-		hj.SetFprBits(1, fsBits);
-		hj.SetFprBits(2, ftBits);
-		hj.SetFcr31(pre);
-		hj.LoadProgram({ee::RSQRT_S(3, 1, 2)});
-		hj.RunJitNoDiff();
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetFprBits(1, fsBits);
+		h.SetFprBits(2, ftBits);
+		h.SetFcr31(pre);
+		h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
+		h.Run(); // auto-diffs the result value
 
-		EeRecTestHarness hi;
-		hi.EnableCop1();
-		hi.SetFprBits(1, fsBits);
-		hi.SetFprBits(2, ftBits);
-		hi.SetFcr31(pre);
-		hi.LoadProgram({ee::RSQRT_S(3, 1, 2)});
-		hi.RunInterpOnly();
-
-		const u32 jv = hj.GetFprBitsJit(3);
-		const u32 iv = hi.GetFprBitsInterp(3);
-		EXPECT_LE(std::llabs(static_cast<s64>(jv) - static_cast<s64>(iv)), 1)
-			<< "positive-path diff exceeds 1 ULP jit=" << std::hex << jv << " interp=" << iv;
-		EXPECT_EQ(hj.JitSnapshot().fprs.fprc[31] & kStickyMask,
-			hi.InterpSnapshot().fprs.fprc[31] & kStickyMask);
+		EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & kStickyMask,
+			h.InterpSnapshot().fprs.fprc[31] & kStickyMask);
 		if (::testing::Test::HasFailure())
 			return;
 	}
@@ -321,38 +305,28 @@ TEST(EeRecFpuRsqrt, ClearsIDPreservesStickyOnPositive)
 
 // ---- Positive-path single-precision value (x86 / hardware parity) ----------
 // Both engines round the sqrt to single before dividing, so Run()'s auto-diff
-// applies here.
+// applies here. A double-precision divide lands 1 ULP high, at 0x3F5105EC.
 TEST(EeRecFpuRsqrt, PositivePathSinglePrecisionValue)
 {
-	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest}; // see DifferentialFuzzZeroAndNegativeDivisor
+	// 1 / sqrt(1.5) = 0x3f5105eb in single precision.
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.SetFpr(1, 1.0f);
 	h.SetFpr(2, 1.5f);
 	h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
 	h.Run();
-	h.ExpectFpr(3, 0x3F5105EBu); // 1 / sqrt(1.5) in single precision
+	h.ExpectFpr(3, 0x3F5105EBu); // single-precision (matches x86 and hardware)
 }
 
-// The single-rounding fix above holds at round-to-nearest and NOT under the
-// production rounding mode, which is why the test that proves it now has to ask
-// for FlushNearest. `RSQRT_S` (pcsx2/FPU.cpp) rounds the sqrt to single but
-// still performs the DIVIDE in double and rounds the quotient afterwards:
+// ---- The divide/sqrt unit's own rounding mode -------------------------------
+// Graduated tripwire for the second of the two fixes in the file header: the
+// interpreter truncated where the console rounds and produced 0x3F5105EC for
+// this pair, the same value the earlier unrounded-sqrt defect produced.
 //
-//     temp.f  = sqrt(fabs(fpuDouble(_FtValUl_)));   // rounded to single: fixed
-//     _FdValf_ = fpuDouble(_FsValUl_) / fpuDouble(temp.UL);  // double divide
-//
-// Double-rounding a quotient is benign often enough to disappear at nearest.
-// Truncation is far less forgiving, so at ChopZero the interpreter lands one
-// ULP above the JIT again -- the identical 0x3F5105EC/0x3F5105EB pair the
-// original defect produced, and the randomized differential reproduces it at
-// many other operands too.
-//
-// So work-order item 1 is half-fixed: the sqrt rounds, the divide does not.
-// The remaining fix is to do the divide in single as well.
-TEST(EeRecFpuRsqrt, DISABLED_RsqrtSPositivePathDivergesInProductionFpEnv)
+// Separate JIT and interp runs rather than Run()'s auto-diff, so a failure
+// names which engine moved.
+TEST(EeRecFpuRsqrt, DivideUnitRoundsToNearestInProductionFpEnv)
 {
-	// No ScopedFpEnv: this is the environment a game runs in.
 	const auto build = [](EeRecTestHarness& h) {
 		h.EnableCop1();
 		h.SetFpr(1, 1.0f);
@@ -366,7 +340,10 @@ TEST(EeRecFpuRsqrt, DISABLED_RsqrtSPositivePathDivergesInProductionFpEnv)
 	build(hi);
 	hi.RunInterpOnly();
 
-	EXPECT_EQ(hj.GetFprBitsJit(3), 0x3F5105EBu) << "[jit] single-precision, correct";
+	ASSERT_NE(EmuConfig.Cpu.FPUFPCR.bitmask, EmuConfig.Cpu.FPUDivFPCR.bitmask)
+		<< "the production environment must have a distinct divide rounding mode";
+
+	EXPECT_EQ(hj.GetFprBitsJit(3), 0x3F5105EBu) << "[jit] round-to-nearest, matches console";
 	EXPECT_EQ(hi.GetFprBitsInterp(3), 0x3F5105EBu)
-		<< "[interp] double-rounded: expect 0x3F5105EC until the divide is single";
+		<< "[interp] 0x3F5105EC means the FPUDivFPCR swap was lost again";
 }

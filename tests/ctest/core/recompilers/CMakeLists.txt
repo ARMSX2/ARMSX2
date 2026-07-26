@@ -47,6 +47,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_callret_tests.cpp
 	ee_rec_cop0_tests.cpp
 	ee_rec_fpu_tests.cpp
+	ee_rec_fpu_divunit_rounding_tests.cpp
 	ee_rec_fpu_full_mode_tests.cpp
 	ee_rec_fpu_guardbit_tests.cpp
 	ee_rec_fpu_rsqrt_tests.cpp
