@@ -65,6 +65,114 @@ struct ISOEntry: Identifiable {
 }
 
 @MainActor
+private final class GameplayLaunchCardRegistry {
+    private final class WeakCardView {
+        weak var view: UIView?
+
+        init(_ view: UIView) {
+            self.view = view
+        }
+    }
+
+    private var cards: [String: WeakCardView] = [:]
+
+    func register(_ view: UIView, for gameID: String) {
+        guard cards[gameID]?.view !== view else { return }
+        cards[gameID] = WeakCardView(view)
+    }
+
+    func unregister(_ view: UIView, for gameID: String) {
+        guard cards[gameID]?.view === view else { return }
+        cards.removeValue(forKey: gameID)
+    }
+
+    func view(for gameID: String) -> UIView? {
+        guard let view = cards[gameID]?.view else {
+            cards.removeValue(forKey: gameID)
+            return nil
+        }
+        return view
+    }
+
+    func removeAll() {
+        cards.removeAll(keepingCapacity: false)
+    }
+}
+
+@MainActor
+private struct GameplayLaunchCardRegistrationView: UIViewRepresentable {
+    let gameID: String
+    let registry: GameplayLaunchCardRegistry
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(gameID: gameID, registry: registry)
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.backgroundColor = .clear
+        view.isOpaque = false
+        view.isUserInteractionEnabled = false
+        view.accessibilityElementsHidden = true
+        context.coordinator.registry.register(view, for: gameID)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        if context.coordinator.gameID != gameID {
+            context.coordinator.registry.unregister(
+                uiView,
+                for: context.coordinator.gameID
+            )
+            context.coordinator.gameID = gameID
+        }
+        context.coordinator.registry.register(uiView, for: gameID)
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        uiView: UIView,
+        context: Context
+    ) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height else {
+            return nil
+        }
+        return CGSize(width: width, height: height)
+    }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.registry.unregister(uiView, for: coordinator.gameID)
+    }
+
+    @MainActor
+    final class Coordinator {
+        var gameID: String
+        let registry: GameplayLaunchCardRegistry
+
+        init(gameID: String, registry: GameplayLaunchCardRegistry) {
+            self.gameID = gameID
+            self.registry = registry
+        }
+    }
+}
+
+private extension View {
+    @MainActor
+    func registerGameplayLaunchCard(
+        for gameID: String,
+        in registry: GameplayLaunchCardRegistry
+    ) -> some View {
+        background {
+            GameplayLaunchCardRegistrationView(
+                gameID: gameID,
+                registry: registry
+            )
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+@MainActor
 private final class GameLibrarySnapshot {
 	struct CachedGameMetadata: Codable {
 		let metadata: [String: String]
@@ -159,6 +267,12 @@ private final class GameLibrarySnapshot {
 }
 
 struct GameListView: View {
+    let embeddedInMenuNavigation: Bool
+
+    init(embeddedInMenuNavigation: Bool = false) {
+        self.embeddedInMenuNavigation = embeddedInMenuNavigation
+    }
+
     @State private var games: [ISOEntry] = []
     @State private var appState = AppState.shared
 	@State private var settings = SettingsStore.shared
@@ -192,6 +306,15 @@ struct GameListView: View {
     @State private var gameActionTitle = ""
     @State private var gameActionMessage: String?
     @State private var showBackgroundAssetError = false
+    @State private var gameplayLaunchCardRegistry = GameplayLaunchCardRegistry()
+    @State private var favoriteAnimationValues: [String: Int] = [:]
+    @State private var favoriteReorderAnimationActive = false
+    @State private var favoriteReorderResetTask: Task<Void, Never>?
+    @State private var nowRunningRemovalAnimationActive = false
+    @State private var nowRunningRemovalResetTask: Task<Void, Never>?
+    @State private var nowRunningAlertDismissTask: Task<Void, Never>?
+    @State private var departingRunningGameName: String?
+    @State private var nowRunningCardOpacity = 1.0
     @AppStorage("ARMSX2iOSGameLibraryLayout") private var libraryLayout = "grid"
     @AppStorage("ARMSX2iOSLandscapeCoverFlowEnabled") private var landscapeCoverFlowEnabled = true
 #if DEBUG
@@ -202,6 +325,10 @@ struct GameListView: View {
         settings.dynamicBackgroundsEnabled
             || settings.backgroundPrimaryAsset != nil
             || settings.backgroundLandscapeAsset != nil
+    }
+
+    private var displayedRunningGameName: String? {
+        appState.runningGameName ?? departingRunningGameName
     }
 
     private struct CoverFlowMetrics {
@@ -241,7 +368,7 @@ struct GameListView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        OptionalMenuNavigationStack(embedded: embeddedInMenuNavigation) {
             ZStack {
                 if hasCustomBackground {
                     MenuBackgroundLayer(isActive: menuTabIsActive)
@@ -249,7 +376,7 @@ struct GameListView: View {
 
                 GeometryReader { geo in
                     Group {
-                        if games.isEmpty && appState.runningGameName == nil {
+                        if games.isEmpty && displayedRunningGameName == nil {
                             emptyState
                         } else if libraryLayout == "grid" && geo.size.width > geo.size.height && landscapeCoverFlowEnabled {
                             coverFlowLibrary(containerSize: geo.size)
@@ -265,18 +392,26 @@ struct GameListView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-			.navigationTitle(settings.localized("Games"))
-			.toolbarBackground(hasCustomBackground ? .hidden : .automatic, for: .navigationBar)
-				.toolbar {
-					ToolbarItem(placement: .topBarTrailing) {
-						Button {
-							showGameImporter = true
-						} label: {
-							Image(systemName: "plus")
-						}
-						.accessibilityLabel(settings.localized("Import Games"))
-					}
-                ToolbarItem(placement: .topBarTrailing) {
+            .stableMenuContentGlassContainer()
+            .clearNavigationContainerBackground()
+            .optionalMenuNavigationChrome(
+                title: settings.localized("Games"),
+                backgroundHidden: hasCustomBackground,
+                embedded: embeddedInMenuNavigation
+            )
+            .toolbar {
+                if !embeddedInMenuNavigation || menuTabIsActive {
+                ToolbarItem(id: "menu.import", placement: .topBarTrailing) {
+                    Button {
+                        showGameImporter = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(settings.localized("Import Games"))
+                }
+                ToolbarItem(id: "menu.layout", placement: .topBarTrailing) {
                     Menu {
                         Button {
                             libraryLayout = libraryLayout == "grid" ? "list" : "grid"
@@ -294,10 +429,12 @@ struct GameListView: View {
                         }
                     } label: {
                         Image(systemName: libraryLayout == "grid" ? "list.bullet" : "square.grid.2x2")
+                            .foregroundStyle(.blue)
                     }
+                    .buttonStyle(.plain)
                     .accessibilityLabel(settings.localized("Library Layout"))
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(id: "menu.covers", placement: .topBarTrailing) {
                     Menu {
                         Button {
                             presentMenuPanel("cover_import_all") {
@@ -335,30 +472,42 @@ struct GameListView: View {
                         }
                     } label: {
                         Image(systemName: coverStore.isDownloadingCovers ? "icloud.and.arrow.down" : "photo.stack")
+                            .foregroundStyle(.blue)
                     }
+                    .buttonStyle(.plain)
                     .accessibilityLabel(settings.localized("Covers"))
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(id: "menu.refresh", placement: .topBarTrailing) {
                     Button { loadGames(forceMetadataRefresh: true) } label: {
                         Image(systemName: "arrow.clockwise")
+                            .foregroundStyle(.blue)
                     }
+                    .buttonStyle(.plain)
                     .disabled(isLoadingGames)
                     .accessibilityLabel(settings.localized("Refresh"))
                 }
-                ToolbarItem(placement: .topBarLeading) {
-                    if ARMSX2Bridge.hasBIOS() {
-                        Button(settings.localized("BIOS Only")) {
-                            if appState.runningGameName == "BIOS" {
-                                appState.returnToGame()
-                            } else if appState.runningGameName != nil {
-                                pendingGameName = ""
-                                showRestartAlert = true
-                            } else {
-                                appState.bootBIOSOnly()
-                            }
+                ToolbarItem(id: "menu.bootBIOS", placement: .topBarLeading) {
+                    Button {
+                        if appState.runningGameName == "BIOS" {
+                            appState.returnToGame()
+                        } else if appState.runningGameName != nil {
+                            pendingGameName = ""
+                            showRestartAlert = true
+                        } else {
+                            appState.bootBIOSOnly()
                         }
-                        .font(.callout)
+                    } label: {
+                        Text(settings.localized("Boot BIOS"))
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.blue)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, 8)
+                            .frame(minHeight: 36)
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(settings.localized("Boot BIOS"))
+                }
                 }
             }
             .alert(settings.localized("Cover Result"), isPresented: $coverStore.showCoverAlert) {
@@ -393,7 +542,7 @@ struct GameListView: View {
                     }
                 }
 			} message: {
-				let target = pendingGameName.isEmpty ? "BIOS Only" : (pendingGameName as NSString).lastPathComponent
+				let target = pendingGameName.isEmpty ? "Boot BIOS" : (pendingGameName as NSString).lastPathComponent
 				Text("\(settings.localized("VM is currently running."))\n\(settings.localized("Shut down and start")) \(settings.localized(target))?")
 			}
             .alert(
@@ -544,9 +693,19 @@ struct GameListView: View {
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
-		}
-		.onAppear {
-			CoverThumbnailCache.shared.activateForMenu()
+			}
+            .alert(settings.localized("Stop Emulation?"), isPresented: $showStopAlert) {
+                Button(settings.localized("Cancel"), role: .cancel) {
+                    showStopAlert = false
+                }
+                Button(settings.localized("Stop"), role: .destructive) {
+                    scheduleStopRunningGame()
+                }
+            } message: {
+                Text(settings.localized("This will shut down the running game. All unsaved progress will be lost."))
+            }
+			.onAppear {
+				CoverThumbnailCache.shared.activateForMenu()
 			externalLibrary.reload()
 			restoreCachedGamesIfNeeded()
 			loadGames(autoDownloadExternalCovers: true)
@@ -570,16 +729,19 @@ struct GameListView: View {
 			restoreCachedGamesIfNeeded()
 			loadGames(autoDownloadExternalCovers: false)
 		}
-		.onDisappear {
-			guard case .playing = appState.currentScreen else { return }
-			releaseLibraryResourcesForGameplay()
+			.onDisappear {
+				guard case .playing = appState.currentScreen else { return }
+				releaseLibraryResourcesForGameplay()
 		}
     }
 
     private var listLibrary: some View {
         List {
-            if let gameName = appState.runningGameName {
-                vmStatusSection(gameName: gameName)
+            if let gameName = displayedRunningGameName {
+                vmStatusSection(
+                    gameName: gameName,
+                    opacity: nowRunningCardOpacity
+                )
             }
             ForEach(games) { game in
                 gameRow(game)
@@ -592,9 +754,10 @@ struct GameListView: View {
     private var gridLibrary: some View {
         ScrollView {
             LazyVStack(spacing: 16) {
-                if let gameName = appState.runningGameName {
+                if let gameName = displayedRunningGameName {
                     vmStatusCard(gameName: gameName)
                         .padding(.horizontal)
+                        .opacity(nowRunningCardOpacity)
                 }
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 142), spacing: 14, alignment: .top)], spacing: 18) {
@@ -621,17 +784,21 @@ struct GameListView: View {
             }
         )
         .transaction { transaction in
-            transaction.animation = nil
+            if !favoriteReorderAnimationActive && !nowRunningRemovalAnimationActive {
+                transaction.animation = nil
+            }
         }
     }
 
     private func coverFlowLibrary(containerSize: CGSize) -> some View {
         let metrics = CoverFlowMetrics(containerSize: containerSize)
+        let availableHeight = max(0, containerSize.height - 62)
 
         return ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .center, spacing: metrics.itemSpacing) {
-                if let gameName = appState.runningGameName {
+                if let gameName = displayedRunningGameName {
                     vmStatusCoverCard(gameName: gameName, metrics: metrics)
+                        .opacity(nowRunningCardOpacity)
                 }
 
                 ForEach(games) { game in
@@ -640,12 +807,14 @@ struct GameListView: View {
             }
             .frame(
                 minWidth: max(0, containerSize.width - (metrics.horizontalPadding * 2)),
-                minHeight: max(0, containerSize.height - (metrics.verticalPadding * 2)),
+                minHeight: max(0, availableHeight - (metrics.verticalPadding * 2)),
                 alignment: .center
             )
             .padding(.horizontal, metrics.horizontalPadding)
             .padding(.vertical, metrics.verticalPadding)
         }
+        .frame(height: availableHeight)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(
             Group {
                 if hasCustomBackground {
@@ -660,14 +829,16 @@ struct GameListView: View {
             }
         )
         .transaction { transaction in
-            transaction.animation = nil
+            if !favoriteReorderAnimationActive && !nowRunningRemovalAnimationActive {
+                transaction.animation = nil
+            }
         }
     }
 
     /// Clean display title for the running game, preferring the library entry over the raw path.
     private func displayTitle(forRunningName name: String) -> String {
         if name == "BIOS" {
-            return settings.localized("BIOS Only")
+            return settings.localized("Boot BIOS")
         }
         if let entry = games.first(where: { $0.bootName == name || $0.name == name }) {
             let title = entry.metadata["title"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -684,7 +855,10 @@ struct GameListView: View {
         return (fileName as NSString).deletingPathExtension
     }
 
-    private func vmStatusSection(gameName: String) -> some View {
+    private func vmStatusSection(
+        gameName: String,
+        opacity: Double
+    ) -> some View {
         Section {
             // Resume row — tap anywhere to return to game
             Button {
@@ -716,6 +890,7 @@ struct GameListView: View {
             }
             .tint(.primary)
             .menuBackgroundListRow(hasCustomBackground)
+            .opacity(opacity)
 
             // Stop button — separate row with confirmation alert
             Button(role: .destructive) {
@@ -729,215 +904,241 @@ struct GameListView: View {
                 }
             }
             .menuBackgroundListRow(hasCustomBackground)
-        }
-        .alert(settings.localized("Stop Emulation?"), isPresented: $showStopAlert) {
-            Button(settings.localized("Cancel"), role: .cancel) { }
-            Button(settings.localized("Stop"), role: .destructive) {
-                ARMSX2Bridge.requestVMStop()
-                appState.runningGameName = nil
-            }
-        } message: {
-            Text(settings.localized("This will shut down the running game. All unsaved progress will be lost."))
+            .opacity(opacity)
         }
     }
 
     private func gameRow(_ game: ISOEntry) -> some View {
-		let running = isRunning(game)
-		return Button {
-            open(game)
-        } label: {
-            HStack(spacing: 12) {
-				coverThumbnail(for: game, running: running)
+        let running = isRunning(game)
+        return HStack(spacing: 4) {
+            Button {
+                open(game)
+            } label: {
+                HStack(spacing: 12) {
+                    coverThumbnail(for: game, running: running)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(coverStore.displayName(forGameName: game.name))
-                            .font(.body)
-                            .fontWeight(.medium)
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .layoutPriority(1)
-						if running {
-							Image(systemName: "circle.fill")
-								.font(.system(size: 8))
-								.foregroundStyle(.green)
-								.accessibilityLabel(settings.localized("Running"))
-                                .fixedSize()
-						}
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(coverStore.displayName(forGameName: game.name))
+                                .font(.body)
+                                .fontWeight(.medium)
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .layoutPriority(1)
+                            if running {
+                                Image(systemName: "circle.fill")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.green)
+                                    .accessibilityLabel(settings.localized("Running"))
+                                    .fixedSize()
+                            }
+                        }
+                        HStack(spacing: 8) {
+                            Text(formatSize(game.size))
+                            Text(game.name.pathExtensionLabel)
+                            if game.isExternal {
+                                Label(settings.localized("External"), systemImage: "externaldrive")
+                            }
+                            if let flag = regionFlagText(for: game) {
+                                Text(flag).accessibilityLabel(settings.localized("Region"))
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                     }
-                    HStack(spacing: 8) {
-						Text(formatSize(game.size))
-						Text(game.name.pathExtensionLabel)
-						if game.isExternal {
-							Label(settings.localized("External"), systemImage: "externaldrive")
-						}
-						if let flag = regionFlagText(for: game) {
-							Text(flag).accessibilityLabel(settings.localized("Region"))
-						}
-					}
-					.font(.caption)
-					.foregroundStyle(.secondary)
-                    .lineLimit(1)
-				}
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(1)
-				Spacer()
-				Button {
-					toggleFavorite(game)
-				} label: {
-					Image(systemName: game.isFavorite ? "star.fill" : "star")
-						.foregroundStyle(game.isFavorite ? .yellow : .gray)
-						.frame(width: 44, height: 44)
-						.contentShape(Rectangle())
-				}
-				.buttonStyle(.plain)
-				.accessibilityLabel(game.isFavorite ? settings.localized("Remove from favorites") : settings.localized("Add to favorites"))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
+                    Spacer()
+                    Image(systemName: running ? "play.fill" : "chevron.right")
+                        .foregroundStyle(running ? .green : .secondary)
+                        .font(.caption)
+                        .accessibilityHidden(true)
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
 
-				Image(systemName: running ? "play.fill" : "chevron.right")
-					.foregroundStyle(running ? .green : .secondary)
-					.font(.caption)
-					.accessibilityHidden(true)
-			}
-		}
-        .foregroundStyle(.primary)
+            favoriteButton(
+                for: game,
+                foreground: game.isFavorite ? .yellow : .gray
+            )
+        }
         .contextMenu {
             gameContextMenu(for: game)
         }
+        .registerGameplayLaunchCard(
+            for: game.id,
+            in: gameplayLaunchCardRegistry
+        )
     }
 
     private func gameGridCard(_ game: ISOEntry) -> some View {
-		let running = isRunning(game)
-		return Button {
-			open(game)
-		} label: {
-            VStack(alignment: .center, spacing: 10) {
-				ZStack(alignment: .topTrailing) {
-					coverThumbnail(for: game, width: 126, height: 189, running: running)
-						.frame(maxWidth: .infinity)
+        let running = isRunning(game)
+        return ZStack(alignment: .topTrailing) {
+            Button {
+                open(game)
+            } label: {
+                VStack(alignment: .center, spacing: 10) {
+                    coverThumbnail(for: game, width: 126, height: 189, running: running)
+                        .frame(maxWidth: .infinity)
 
-					Button {
-						toggleFavorite(game)
-					} label: {
-						Image(systemName: game.isFavorite ? "star.fill" : "star")
-							.font(.callout.weight(.semibold))
-							.foregroundStyle(game.isFavorite ? .yellow : .white.opacity(0.86))
-							.padding(6)
-							.background(.black.opacity(0.36), in: Circle())
-					}
-					.buttonStyle(.plain)
-					.padding(6)
-					.accessibilityLabel(game.isFavorite ? settings.localized("Remove from favorites") : settings.localized("Add to favorites"))
-				}
-
-                VStack(alignment: .center, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        Text(coverStore.displayName(forGameName: game.name))
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .layoutPriority(1)
-						if running {
-                            Image(systemName: "circle.fill")
-                                .font(.system(size: 7))
-                                .foregroundStyle(.green)
-                                .accessibilityLabel(settings.localized("Running"))
-                                .fixedSize()
+                    VStack(alignment: .center, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            Text(coverStore.displayName(forGameName: game.name))
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .layoutPriority(1)
+                            if running {
+                                Image(systemName: "circle.fill")
+                                    .font(.system(size: 7))
+                                    .foregroundStyle(.green)
+                                    .accessibilityLabel(settings.localized("Running"))
+                                    .fixedSize()
+                            }
                         }
+                        .frame(minHeight: 38, alignment: .top)
+                        HStack(spacing: 6) {
+                            Text(game.name.pathExtensionLabel)
+                            Text(formatSize(game.size))
+                            if game.isExternal {
+                                Image(systemName: "externaldrive")
+                                    .accessibilityLabel(settings.localized("External"))
+                            }
+                            if let flag = regionFlagText(for: game), !flag.isEmpty {
+                                Text(flag).accessibilityLabel(settings.localized("Region"))
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
                     }
-                    // Reserve space for two title lines so cards stay aligned
-                    // whether a title wraps or fits on one line. Uses a minimum
-                    // height so accessibility Dynamic Type sizes can grow beyond
-                    // it instead of being clipped.
-                    .frame(minHeight: 38, alignment: .top)
-                    HStack(spacing: 6) {
-                        Text(game.name.pathExtensionLabel)
-                        Text(formatSize(game.size))
-                        if game.isExternal {
-                            Image(systemName: "externaldrive")
-                                .accessibilityLabel(settings.localized("External"))
-                        }
-                        if let flag = regionFlagText(for: game), !flag.isEmpty {
-                            Text(flag).accessibilityLabel(settings.localized("Region"))
-                        }
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                 }
-                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(12)
+                .frame(maxWidth: .infinity, minHeight: 268, alignment: .top)
             }
+            .buttonStyle(.plain)
+            .zIndex(0)
+
+            favoriteButton(
+                for: game,
+                font: .callout.weight(.semibold),
+                foreground: game.isFavorite ? .yellow : .white.opacity(0.86),
+                backgroundOpacity: 0.36,
+                padding: 6
+            )
             .padding(12)
-            .frame(maxWidth: .infinity, minHeight: 268, alignment: .top)
-			.glassSurface(clear: true, cornerRadius: 18)
+            .zIndex(2)
         }
-		.buttonStyle(.plain)
-		.contextMenu {
-			gameContextMenu(for: game)
-		}
+        .glassSurface(clear: true, cornerRadius: 18)
+        .contextMenu {
+            gameContextMenu(for: game)
+        }
+        .registerGameplayLaunchCard(
+            for: game.id,
+            in: gameplayLaunchCardRegistry
+        )
     }
 
     private func coverFlowCard(_ game: ISOEntry, metrics: CoverFlowMetrics) -> some View {
-		let running = isRunning(game)
-		return Button {
-			open(game)
-		} label: {
-            VStack(spacing: metrics.cardSpacing) {
-				ZStack(alignment: .topTrailing) {
-					coverThumbnail(
-						for: game,
-						width: metrics.coverWidth,
-						height: metrics.coverHeight,
-						running: running
-					)
-					.shadow(color: running ? .clear : .black.opacity(0.28), radius: 18, y: 10)
+        let running = isRunning(game)
+        return ZStack(alignment: .topTrailing) {
+            Button {
+                open(game)
+            } label: {
+                VStack(spacing: metrics.cardSpacing) {
+                    coverThumbnail(
+                        for: game,
+                        width: metrics.coverWidth,
+                        height: metrics.coverHeight,
+                        running: running
+                    )
+                    .shadow(color: running ? .clear : .black.opacity(0.28), radius: 18, y: 10)
 
-					Button {
-						toggleFavorite(game)
-					} label: {
-						Image(systemName: game.isFavorite ? "star.fill" : "star")
-							.font((metrics.isCompact ? Font.subheadline : Font.headline).weight(.semibold))
-							.foregroundStyle(game.isFavorite ? .yellow : .white.opacity(0.88))
-							.padding(metrics.favoritePadding)
-							.background(.black.opacity(0.48), in: Circle())
-					}
-					.buttonStyle(.plain)
-					.padding(metrics.favoriteInset)
-					.accessibilityLabel(game.isFavorite ? settings.localized("Remove from favorites") : settings.localized("Add to favorites"))
-				}
-
-                VStack(spacing: 4) {
-                    Text(coverStore.displayName(forGameName: game.name))
-                        .font((metrics.isCompact ? Font.subheadline : Font.headline).weight(.semibold))
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        // minHeight keeps cards aligned for 1- vs 2-line titles
-                        // while letting Dynamic Type grow beyond it without clipping.
-                        .frame(minHeight: metrics.isCompact ? 38 : 46, alignment: .top)
-                    HStack(spacing: 4) {
-                        Text(game.isExternal ? "\(game.name.pathExtensionLabel)  \(formatSize(game.size))  \(settings.localized("External"))" : "\(game.name.pathExtensionLabel)  \(formatSize(game.size))")
-                        if let flag = regionFlagText(for: game) {
-                            Text(flag).accessibilityLabel(settings.localized("Region"))
+                    VStack(spacing: 4) {
+                        Text(coverStore.displayName(forGameName: game.name))
+                            .font((metrics.isCompact ? Font.subheadline : Font.headline).weight(.semibold))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .frame(minHeight: metrics.isCompact ? 38 : 46, alignment: .top)
+                        HStack(spacing: 4) {
+                            Text(game.isExternal ? "\(game.name.pathExtensionLabel)  \(formatSize(game.size))  \(settings.localized("External"))" : "\(game.name.pathExtensionLabel)  \(formatSize(game.size))")
+                            if let flag = regionFlagText(for: game) {
+                                Text(flag).accessibilityLabel(settings.localized("Region"))
+                            }
                         }
+                        .font(metrics.isCompact ? .caption2 : .caption)
+                        .foregroundStyle(.secondary)
                     }
-                    .font(metrics.isCompact ? .caption2 : .caption)
-                    .foregroundStyle(.secondary)
+                    .frame(width: metrics.textWidth)
                 }
-                .frame(width: metrics.textWidth)
+                .padding(metrics.cardPadding)
             }
-            .padding(metrics.cardPadding)
-			.glassSurface(clear: true, cornerRadius: metrics.cornerRadius)
+            .buttonStyle(.plain)
+            .zIndex(0)
+
+            favoriteButton(
+                for: game,
+                font: (metrics.isCompact ? Font.subheadline : Font.headline).weight(.semibold),
+                foreground: game.isFavorite ? .yellow : .white.opacity(0.88),
+                backgroundOpacity: 0.48,
+                padding: metrics.favoritePadding
+            )
+            .padding(metrics.cardPadding + metrics.favoriteInset)
+            .zIndex(2)
         }
-		.buttonStyle(.plain)
-		.contextMenu {
-			gameContextMenu(for: game)
-		}
+        .glassSurface(clear: true, cornerRadius: metrics.cornerRadius)
+        .contextMenu {
+            gameContextMenu(for: game)
+        }
+        .registerGameplayLaunchCard(
+            for: game.id,
+            in: gameplayLaunchCardRegistry
+        )
+    }
+
+    private func favoriteButton(
+        for game: ISOEntry,
+        font: Font = .body,
+        foreground: Color,
+        backgroundOpacity: Double? = nil,
+        padding: CGFloat = 0
+    ) -> some View {
+        Button {
+            toggleFavorite(game)
+        } label: {
+            Image(systemName: game.isFavorite ? "star.fill" : "star")
+                .font(font)
+                .foregroundStyle(foreground)
+                .padding(padding)
+                .background {
+                    if let backgroundOpacity {
+                        Circle().fill(.black.opacity(backgroundOpacity))
+                    }
+                }
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+                .contentTransition(.symbolEffect)
+                .symbolEffect(
+                    .bounce,
+                    value: favoriteAnimationValues[game.id, default: 0]
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            game.isFavorite
+                ? settings.localized("Remove from favorites")
+                : settings.localized("Add to favorites")
+        )
     }
 
 	private func coverThumbnail(
@@ -987,16 +1188,7 @@ struct GameListView: View {
             .buttonStyle(.bordered)
         }
         .padding()
-		.glassSurface(clear: true, cornerRadius: 18)
-        .alert(settings.localized("Stop Emulation?"), isPresented: $showStopAlert) {
-            Button(settings.localized("Cancel"), role: .cancel) { }
-            Button(settings.localized("Stop"), role: .destructive) {
-                ARMSX2Bridge.requestVMStop()
-                appState.runningGameName = nil
-            }
-        } message: {
-            Text(settings.localized("This will shut down the running game. All unsaved progress will be lost."))
-        }
+			.glassSurface(clear: true, cornerRadius: 18)
     }
 
     private func vmStatusCoverCard(gameName: String, metrics: CoverFlowMetrics) -> some View {
@@ -1027,16 +1219,7 @@ struct GameListView: View {
         }
         .frame(width: metrics.statusWidth, height: metrics.statusHeight)
         .padding(metrics.cardPadding)
-		.glassSurface(clear: true, cornerRadius: metrics.cornerRadius)
-        .alert(settings.localized("Stop Emulation?"), isPresented: $showStopAlert) {
-            Button(settings.localized("Cancel"), role: .cancel) { }
-            Button(settings.localized("Stop"), role: .destructive) {
-                ARMSX2Bridge.requestVMStop()
-                appState.runningGameName = nil
-            }
-        } message: {
-            Text(settings.localized("This will shut down the running game. All unsaved progress will be lost."))
-        }
+			.glassSurface(clear: true, cornerRadius: metrics.cornerRadius)
     }
 
 	@ViewBuilder
@@ -1176,12 +1359,6 @@ struct GameListView: View {
 			return
 		}
 
-		guard ARMSX2Bridge.hasBIOS() else {
-			gameActionTitle = settings.localized("BIOS Required")
-			gameActionMessage = settings.localized("Import a valid PS2 BIOS before starting games.")
-			return
-		}
-
 		guard ARMSX2Bridge.canResolveISO(game.bootName) else {
 			gameActionTitle = settings.localized("Game Not Found")
 			gameActionMessage = settings.localized("This game file is no longer available. Refresh the library or import it again.")
@@ -1193,9 +1370,60 @@ struct GameListView: View {
 			pendingGameName = game.bootName
 			showRestartAlert = true
 		} else {
-			appState.bootGame(isoName: game.bootName)
+            let transition = makeGameplayLaunchTransition(for: game)
+			appState.bootGame(
+                isoName: game.bootName,
+                launchTransition: transition
+            )
 		}
 	}
+
+    @MainActor
+    private func makeGameplayLaunchTransition(
+        for game: ISOEntry
+    ) -> GameplayLaunchTransition? {
+        guard let cardView = gameplayLaunchCardRegistry.view(for: game.id),
+              let window = cardView.window else {
+            return nil
+        }
+
+        let sourceFrame = cardView
+            .convert(cardView.bounds, to: window)
+            .intersection(window.bounds)
+        guard !sourceFrame.isNull,
+              sourceFrame.width > 2,
+              sourceFrame.height > 2
+        else {
+            return nil
+        }
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = window.screen.scale
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: sourceFrame.size, format: format)
+        let snapshot = renderer.image { _ in
+            window.drawHierarchy(
+                in: window.bounds.offsetBy(
+                    dx: -sourceFrame.minX,
+                    dy: -sourceFrame.minY
+                ),
+                afterScreenUpdates: false
+            )
+        }
+
+        let cornerRadius: CGFloat
+        if libraryLayout == "grid" {
+            cornerRadius = landscapeCoverFlowEnabled ? 24 : 18
+        } else {
+            cornerRadius = 14
+        }
+
+        return GameplayLaunchTransition(
+            snapshot: snapshot,
+            sourceFrame: sourceFrame,
+            cornerRadius: cornerRadius
+        )
+    }
 
     private var emptyState: some View {
         VStack(spacing: 16) {
@@ -1433,17 +1661,103 @@ struct GameListView: View {
 	private func releaseLibraryResourcesForGameplay() {
 		coverWorkTask?.cancel()
 		coverWorkTask = nil
-		games.removeAll(keepingCapacity: false)
+        favoriteReorderResetTask?.cancel()
+        favoriteReorderResetTask = nil
+        nowRunningRemovalResetTask?.cancel()
+        nowRunningRemovalResetTask = nil
+        nowRunningAlertDismissTask?.cancel()
+        nowRunningAlertDismissTask = nil
+        favoriteAnimationValues.removeAll(keepingCapacity: false)
+        favoriteReorderAnimationActive = false
+        nowRunningRemovalAnimationActive = false
+        departingRunningGameName = nil
+        nowRunningCardOpacity = 1
+        gameplayLaunchCardRegistry.removeAll()
+			games.removeAll(keepingCapacity: false)
 		externalCoverAutoDownloadAttemptedIDs.removeAll(keepingCapacity: false)
 		GameLibrarySnapshot.shared.releaseEntriesForGameplay()
 			CoverThumbnailCache.shared.releaseForGameplay()
 		}
 
+    private func scheduleStopRunningGame() {
+        showStopAlert = false
+        nowRunningAlertDismissTask?.cancel()
+        nowRunningAlertDismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(240))
+            guard !Task.isCancelled else { return }
+            nowRunningAlertDismissTask = nil
+            stopRunningGame()
+        }
+    }
+
+    private func stopRunningGame() {
+        guard !nowRunningRemovalAnimationActive,
+              let runningGameName = appState.runningGameName else {
+            return
+        }
+
+        nowRunningRemovalResetTask?.cancel()
+        departingRunningGameName = runningGameName
+        nowRunningRemovalAnimationActive = true
+        appState.runningGameName = nil
+        ARMSX2Bridge.requestVMStop()
+
+        nowRunningRemovalResetTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(16))
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeOut(duration: 0.30)) {
+                nowRunningCardOpacity = 0
+            }
+            try? await Task.sleep(for: .milliseconds(320))
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeInOut(duration: 0.30)) {
+                departingRunningGameName = nil
+            }
+            try? await Task.sleep(for: .milliseconds(320))
+            guard !Task.isCancelled else { return }
+
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                nowRunningCardOpacity = 1
+                nowRunningRemovalAnimationActive = false
+            }
+            nowRunningRemovalResetTask = nil
+        }
+    }
+
 	private func toggleFavorite(_ game: ISOEntry) {
 		let key = game.bootName
 		let current = ARMSX2Bridge.isFavorite(key)
-		ARMSX2Bridge.setFavorite(key, favorite: !current)
-		loadGames()
+        let updatedValue = !current
+		ARMSX2Bridge.setFavorite(key, favorite: updatedValue)
+
+        favoriteReorderAnimationActive = true
+        withAnimation(.spring(response: 0.46, dampingFraction: 0.82)) {
+            favoriteAnimationValues[game.id, default: 0] += 1
+            if let index = games.firstIndex(where: { $0.id == game.id }) {
+                games[index].isFavorite = updatedValue
+                games.sort { lhs, rhs in
+                    if lhs.isFavorite != rhs.isFavorite {
+                        return lhs.isFavorite
+                    }
+                    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                }
+            }
+        }
+
+        GameLibrarySnapshot.shared.update(games)
+        UISelectionFeedbackGenerator().selectionChanged()
+
+        favoriteReorderResetTask?.cancel()
+        favoriteReorderResetTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            favoriteReorderAnimationActive = false
+            favoriteReorderResetTask = nil
+        }
 	}
 
 	private func clearGameCache(_ game: ISOEntry) {

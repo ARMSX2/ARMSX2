@@ -15,160 +15,100 @@ extension EnvironmentValues {
     }
 }
 
-/// Owns exactly one live menu background renderer and moves its UIKit surface
-/// between the selected tab's background attachment point. Reparenting preserves
-/// video/display-link/Metal state instead of rebuilding those resources whenever
-/// the user selects another tab.
+/// Owns the lifecycle state for the single background renderer installed above
+/// the complete menu TabView hierarchy.
 @MainActor
 final class PersistentMenuBackgroundHost: ObservableObject {
-    let sessionStart = Date()
+    @Published private(set) var sessionStart = Date()
 
-    private var hostingController: UIHostingController<AnyView>?
-    private weak var activeAttachment: UIView?
-    private var hasLoadedRenderer = false
-    private var selectedTabAllowsBackground = true
-    private var exclusivePreviewDepth = 0
+    @Published private(set) var rendererMounted: Bool
+    @Published private(set) var presentationVisible = true
+    @Published private var exclusivePreviewDepth = 0
+    private var menuBackgroundAvailable = true
+    private var releasedForGameplay = false
 
-    func attach(to attachment: UIView) {
-        activeAttachment = attachment
-        guard selectedTabAllowsBackground, exclusivePreviewDepth == 0 else {
-            return
-        }
-
-        let controller = makeHostingControllerIfNeeded()
-        loadRendererIfNeeded(in: controller)
-
-        controller.loadViewIfNeeded()
-        guard let hostedView = controller.view else { return }
-        if hostedView.superview !== attachment {
-            UIView.performWithoutAnimation {
-                hostedView.removeFromSuperview()
-                hostedView.frame = attachment.bounds
-                hostedView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                attachment.insertSubview(hostedView, at: 0)
-                attachment.layoutIfNeeded()
-                hostedView.layoutIfNeeded()
-            }
-        }
-        hostedView.isHidden = false
+    init() {
+        let hasBackground = SettingsStore.shared.hasCustomBackground
+        menuBackgroundAvailable = hasBackground
+        rendererMounted = hasBackground
     }
 
-    func setSelectedTabAllowsBackground(_ isAllowed: Bool) {
-        selectedTabAllowsBackground = isAllowed
-        guard isAllowed else {
-            // A disabled destination has no valid background attachment.
-            // Clearing it also prevents a later enable from briefly restoring
-            // the renderer into an off-screen tab retained by TabView.
-            activeAttachment = nil
-            unloadRenderer()
-            return
-        }
+    /// Creates or destroys the menu renderer only when the user adds/removes
+    /// the configured background itself. Tab selection never calls this.
+    func setMenuBackgroundAvailable(_ isAvailable: Bool) {
+        menuBackgroundAvailable = isAvailable
+        rendererMounted = isAvailable
+            && !(exclusivePreviewDepth > 0 && SettingsStore.shared.dynamicBackgroundsEnabled)
+    }
 
-        // TabView may update the destination's UIViewRepresentable before this
-        // selection permission changes. In that order attach(to:) records the
-        // new view but correctly refuses to load while permission is still
-        // false. Retry that recorded attachment now so disabled → enabled tab
-        // transitions cannot remain blank.
-        guard exclusivePreviewDepth == 0, let activeAttachment else { return }
-        attach(to: activeAttachment)
+    /// Starts a fresh renderer session only after gameplay released the previous
+    /// one. Normal tab changes retain the same session and renderer identity.
+    func reactivateForMenu(isAvailable: Bool) {
+        if releasedForGameplay {
+            releasedForGameplay = false
+            sessionStart = Date()
+        }
+        setMenuBackgroundAvailable(isAvailable)
+    }
+
+    /// Hides the persistent renderer without removing it from SwiftUI. Video
+    /// playback position and unmuted audio continue on background-disabled tabs.
+    func setPresentationVisible(_ isVisible: Bool) {
+        presentationVisible = isVisible
     }
 
     /// The Appearance screen uses the same expensive renderer in its preview.
-    /// Temporarily unload the full-screen copy so only one background renderer
-    /// can exist while that preview is visible.
+    /// Dynamic backgrounds still yield to that preview to avoid two live
+    /// animation/Metal renderers. Imported image/video backgrounds remain
+    /// mounted but hidden so unmuted video audio and playback time are retained.
     func beginExclusivePreview() {
         exclusivePreviewDepth += 1
-        if exclusivePreviewDepth == 1 {
-            unloadRenderer()
+        if exclusivePreviewDepth == 1 && SettingsStore.shared.dynamicBackgroundsEnabled {
+            rendererMounted = false
         }
     }
 
     func endExclusivePreview() {
         exclusivePreviewDepth = max(0, exclusivePreviewDepth - 1)
-        guard exclusivePreviewDepth == 0,
-              selectedTabAllowsBackground,
-              let activeAttachment else {
-            return
+        if exclusivePreviewDepth == 0 {
+            rendererMounted = menuBackgroundAvailable
         }
-        attach(to: activeAttachment)
     }
 
-    /// Stops the renderer only when the selected destination is configured not
-    /// to show a background. Normal tab changes between enabled destinations do
-    /// not call this method.
+    /// Stops the renderer when the complete menu hierarchy is being released.
+    /// Normal tab changes and per-tab visibility toggles do not call this.
     func suspend() {
-        activeAttachment = nil
-        unloadRenderer()
+        rendererMounted = false
     }
 
-    private func unloadRenderer() {
-        hostingController?.view.removeFromSuperview()
-        guard let hostingController, hasLoadedRenderer else { return }
-        hostingController.rootView = AnyView(Color.clear)
-        hasLoadedRenderer = false
-    }
-
-    /// Destroys the hosted SwiftUI tree when the complete menu hierarchy leaves
-    /// the root (for example, when gameplay begins).
+    /// The surrounding MenuTabView is also removed at gameplay start, ensuring
+    /// SwiftUI dismantles video, animated-image, display-link, and Metal views.
     func release() {
+        releasedForGameplay = true
+        menuBackgroundAvailable = false
+        exclusivePreviewDepth = 0
         suspend()
-        hostingController = nil
     }
 
-    private func makeHostingControllerIfNeeded() -> UIHostingController<AnyView> {
-        if let hostingController {
-            return hostingController
-        }
-
-        let controller = UIHostingController(rootView: AnyView(Color.clear))
-        controller.view.backgroundColor = .clear
-        controller.view.isOpaque = false
-        controller.view.isUserInteractionEnabled = false
-        hostingController = controller
-        return controller
+    var shouldShowRenderer: Bool {
+        rendererMounted && presentationVisible && exclusivePreviewDepth == 0
     }
+}
 
-    private func loadRendererIfNeeded(in controller: UIHostingController<AnyView>) {
-        guard !hasLoadedRenderer else { return }
-        controller.rootView = AnyView(
+struct PersistentMenuBackgroundLayer: View {
+    @ObservedObject var host: PersistentMenuBackgroundHost
+
+    @ViewBuilder
+    var body: some View {
+        if host.rendererMounted {
             GeometryReader { geometry in
                 BackgroundContainerView(size: geometry.size)
             }
-            .environment(\.menuBackgroundSessionStart, sessionStart)
+            .environment(\.menuBackgroundSessionStart, host.sessionStart)
+            .opacity(host.shouldShowRenderer ? 1 : 0)
             .ignoresSafeArea()
             .accessibilityHidden(true)
             .allowsHitTesting(false)
-        )
-        hasLoadedRenderer = true
-    }
-}
-
-private final class MenuBackgroundAttachmentView: UIView {
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        backgroundColor = .clear
-        isOpaque = false
-        isUserInteractionEnabled = false
-        clipsToBounds = true
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}
-
-private struct PersistentMenuBackgroundAttachment: UIViewRepresentable {
-    let host: PersistentMenuBackgroundHost
-    let isActive: Bool
-
-    func makeUIView(context: Context) -> MenuBackgroundAttachmentView {
-        MenuBackgroundAttachmentView()
-    }
-
-    func updateUIView(_ uiView: MenuBackgroundAttachmentView, context: Context) {
-        if isActive {
-            host.attach(to: uiView)
         }
     }
 }
@@ -179,18 +119,11 @@ struct MenuBackgroundLayer: View {
 
     @ViewBuilder
     var body: some View {
-        if let persistentHost {
-            PersistentMenuBackgroundAttachment(
-                host: persistentHost,
-                isActive: isActive
-            )
+        if persistentHost != nil {
+            Color.clear
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
                 .allowsHitTesting(false)
-                .transaction { transaction in
-                    transaction.animation = nil
-                    transaction.disablesAnimations = true
-                }
         } else if isActive {
             GeometryReader { geometry in
                 BackgroundContainerView(size: geometry.size)
@@ -198,6 +131,77 @@ struct MenuBackgroundLayer: View {
             .ignoresSafeArea()
             .accessibilityHidden(true)
             .allowsHitTesting(false)
+        }
+    }
+}
+
+/// Lets Games and BIOS publish their existing navigation/toolbar preferences
+/// into MenuTabView's one persistent NavigationStack. Standalone previews and
+/// Catalyst call sites retain their original self-contained navigation stack.
+struct OptionalMenuNavigationStack<Content: View>: View {
+    let embedded: Bool
+    let content: Content
+
+    init(embedded: Bool, @ViewBuilder content: () -> Content) {
+        self.embedded = embedded
+        self.content = content()
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if embedded {
+            content
+        } else {
+            NavigationStack {
+                content
+            }
+        }
+    }
+}
+
+private struct OptionalMenuNavigationChromeModifier: ViewModifier {
+    let title: String
+    let backgroundHidden: Bool
+    let embedded: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if embedded {
+            content
+        } else {
+            content
+                .navigationTitle(title)
+                .toolbarBackground(
+                    backgroundHidden ? .hidden : .automatic,
+                    for: .navigationBar
+                )
+        }
+    }
+}
+
+private struct ClearNavigationContainerBackgroundModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.containerBackground(Color.clear, for: .navigation)
+        } else {
+            content
+        }
+    }
+}
+
+/// Keeps a tab's custom glass scene attached below its NavigationStack chrome.
+/// MenuTabView retains every tab page, so this container is not dismantled when
+/// another tab is selected.
+private struct StableMenuContentGlassContainerModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 0) {
+                content
+            }
+        } else {
+            content
         }
     }
 }
@@ -244,6 +248,28 @@ struct GameCardTintMenuBackgroundListRowModifier: ViewModifier {
 }
 
 extension View {
+    func optionalMenuNavigationChrome(
+        title: String,
+        backgroundHidden: Bool,
+        embedded: Bool
+    ) -> some View {
+        modifier(
+            OptionalMenuNavigationChromeModifier(
+                title: title,
+                backgroundHidden: backgroundHidden,
+                embedded: embedded
+            )
+        )
+    }
+
+    func stableMenuContentGlassContainer() -> some View {
+        modifier(StableMenuContentGlassContainerModifier())
+    }
+
+    func clearNavigationContainerBackground() -> some View {
+        modifier(ClearNavigationContainerBackgroundModifier())
+    }
+
     func menuBackgroundListRow(_ isEnabled: Bool) -> some View {
         modifier(MenuBackgroundListRowModifier(isEnabled: isEnabled))
     }

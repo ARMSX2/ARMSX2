@@ -2,6 +2,17 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 import SwiftUI
+import UIKit
+
+/// A single rasterized library card retained only while a game crosses from the
+/// menu root to the live Metal surface. The card is animated above the existing
+/// menu background, which is released as soon as the transition finishes.
+struct GameplayLaunchTransition: Identifiable {
+    let id = UUID()
+    let snapshot: UIImage
+    let sourceFrame: CGRect
+    let cornerRadius: CGFloat
+}
 
 struct EmulationOnlyPresentation: Equatable {
     var showsVirtualControls = false
@@ -27,6 +38,10 @@ final class AppState: @unchecked Sendable {
     var currentScreen: Screen = .menu
     var selectedTab: Int = 0
     var runningGameName: String? = nil
+    var bootDisclaimerMessage: String?
+    var gameplayLaunchTransition: GameplayLaunchTransition?
+    var gameplayLaunchControlsVisible = true
+    var gameplayLaunchBackgroundVisible = false
     var isEmulationOnlyMode: Bool = false
     var emulationOnlyPresentation = EmulationOnlyPresentation.minimal
     private(set) var emulationOnlyStartupReady: Bool = false
@@ -57,6 +72,7 @@ final class AppState: @unchecked Sendable {
             object: nil, queue: .main
         ) { [weak self] _ in
             self?.runningGameName = nil
+            self?.cancelGameplayLaunchTransition()
             self?.isEmulationOnlyMode = false
             self?.emulationOnlyPresentation = .minimal
             self?.emulationOnlyStartupReady = false
@@ -65,6 +81,7 @@ final class AppState: @unchecked Sendable {
                 action()
             } else {
                 // No pending reboot — return to menu (VM crash / normal shutdown)
+                self?.restoreMenuSystemChrome()
                 self?.currentScreen = .menu
             }
         }
@@ -77,6 +94,7 @@ final class AppState: @unchecked Sendable {
             self?.isEmulationOnlyMode = false
             self?.emulationOnlyPresentation = .minimal
             self?.emulationOnlyStartupReady = false
+            self?.cancelGameplayLaunchTransition()
             self?.releaseMenuBackgroundResourcesForGameplay()
             self?.runningGameName = "AutoBoot"
             self?.currentScreen = .playing
@@ -90,11 +108,22 @@ final class AppState: @unchecked Sendable {
         }
     }
 
-    func bootGame(isoName: String) {
+    @discardableResult
+    func bootGame(
+        isoName: String,
+        launchTransition: GameplayLaunchTransition? = nil
+    ) -> Bool {
+        guard requireBootableBIOS() else { return false }
+
         isEmulationOnlyMode = false
         emulationOnlyPresentation = .minimal
         emulationOnlyStartupReady = false
-        releaseMenuBackgroundResourcesForGameplay()
+        gameplayLaunchTransition = launchTransition
+        gameplayLaunchControlsVisible = launchTransition == nil
+        gameplayLaunchBackgroundVisible = launchTransition != nil
+        if launchTransition == nil {
+            releaseMenuBackgroundResourcesForGameplay()
+        }
         Task { @MainActor in
             StikDebugLauncher.autoOpenIfNeeded(reason: "game boot")
         }
@@ -105,12 +134,17 @@ final class AppState: @unchecked Sendable {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             ARMSX2Bridge.requestVMBoot()
         }
+        return true
     }
 
-    func bootBIOSOnly() {
+    @discardableResult
+    func bootBIOSOnly() -> Bool {
+        guard requireBootableBIOS() else { return false }
+
         isEmulationOnlyMode = false
         emulationOnlyPresentation = .minimal
         emulationOnlyStartupReady = false
+        cancelGameplayLaunchTransition()
         releaseMenuBackgroundResourcesForGameplay()
         Task { @MainActor in
             StikDebugLauncher.autoOpenIfNeeded(reason: "BIOS boot")
@@ -122,6 +156,7 @@ final class AppState: @unchecked Sendable {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             ARMSX2Bridge.requestVMBoot()
         }
+        return true
     }
 
     func returnToMenu() {
@@ -130,6 +165,8 @@ final class AppState: @unchecked Sendable {
         }
         isEmulationOnlyMode = false
         emulationOnlyPresentation = .minimal
+        cancelGameplayLaunchTransition()
+        restoreMenuSystemChrome()
         currentScreen = .menu
         // [P44-2] Restore opaque background on hosting controller
         NotificationCenter.default.post(name: NSNotification.Name("ARMSX2iOSReturnToMenu"), object: nil)
@@ -139,6 +176,7 @@ final class AppState: @unchecked Sendable {
         if runningGameName != nil {
             isEmulationOnlyMode = false
             emulationOnlyPresentation = .minimal
+            cancelGameplayLaunchTransition()
             releaseMenuBackgroundResourcesForGameplay()
             // [P44-2] Clear background so Metal surface shows through
             NotificationCenter.default.post(name: NSNotification.Name("ARMSX2iOSEnterGameScreen"), object: nil)
@@ -148,6 +186,7 @@ final class AppState: @unchecked Sendable {
     }
 
     func shutdownAndBoot(isoName: String) {
+        guard requireBootableBIOS() else { return }
         pendingBootAction = { [weak self] in
             self?.bootGame(isoName: isoName)
         }
@@ -155,6 +194,7 @@ final class AppState: @unchecked Sendable {
     }
 
     func shutdownAndBootBIOS() {
+        guard requireBootableBIOS() else { return }
         pendingBootAction = { [weak self] in
             self?.bootBIOSOnly()
         }
@@ -179,10 +219,47 @@ final class AppState: @unchecked Sendable {
         isEmulationOnlyMode = true
     }
 
+    func revealGameplayLaunchControls() {
+        gameplayLaunchControlsVisible = true
+        gameplayLaunchBackgroundVisible = false
+    }
+
+    func completeGameplayLaunchTransition(id: UUID) {
+        guard gameplayLaunchTransition?.id == id else { return }
+        gameplayLaunchTransition = nil
+        gameplayLaunchControlsVisible = true
+        gameplayLaunchBackgroundVisible = false
+        releaseMenuBackgroundResourcesForGameplay()
+    }
+
+    func cancelGameplayLaunchTransition() {
+        gameplayLaunchTransition = nil
+        gameplayLaunchControlsVisible = true
+        gameplayLaunchBackgroundVisible = false
+    }
+
+    @discardableResult
+    private func requireBootableBIOS() -> Bool {
+        guard ARMSX2Bridge.hasBIOS() else {
+            bootDisclaimerMessage = "BIOS not yet imported."
+            return false
+        }
+        return true
+    }
+
     private func releaseMenuBackgroundResourcesForGameplay() {
         NotificationCenter.default.post(
             name: Self.releaseMenuBackgroundResourcesNotification,
             object: nil
         )
+    }
+
+    private func restoreMenuSystemChrome() {
+        // Gameplay fullscreen belongs to SDL's root controller. Clear that
+        // authoritative state before asking the child SwiftUI host to show
+        // the menu status bar and home indicator again.
+        ARMSX2Bridge.setFullScreen(false)
+        hideStatusBar = false
+        hideHomeIndicator = false
     }
 }

@@ -5,6 +5,12 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct BIOSListView: View {
+    let embeddedInMenuNavigation: Bool
+
+    init(embeddedInMenuNavigation: Bool = false) {
+        self.embeddedInMenuNavigation = embeddedInMenuNavigation
+    }
+
     @State private var bioses: [ARMSX2BIOSInfo] = []
     @State private var defaultBIOS: String = ""
     @State private var settings = SettingsStore.shared
@@ -12,8 +18,10 @@ struct BIOSListView: View {
     @State private var showBIOSImporter = false
     @State private var showBIOSCompatibilityImporter = false
     @State private var showBIOSReplacementAlert = false
+    @State private var showRestartAlert = false
     @State private var pendingBIOSImportURLs: [URL] = []
     @State private var existingBIOSImportFileNames: [String] = []
+    @State private var appState = AppState.shared
     @Environment(\.menuTabIsActive) private var menuTabIsActive
 
     private var backgroundConfigured: Bool {
@@ -25,7 +33,7 @@ struct BIOSListView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        OptionalMenuNavigationStack(embedded: embeddedInMenuNavigation) {
             ZStack {
                 if backgroundConfigured {
                     MenuBackgroundLayer(isActive: menuTabIsActive)
@@ -49,10 +57,37 @@ struct BIOSListView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .navigationTitle(settings.localized("BIOS"))
-            .toolbarBackground(backgroundActive ? .hidden : .automatic, for: .navigationBar)
+            .stableMenuContentGlassContainer()
+            .clearNavigationContainerBackground()
+            .optionalMenuNavigationChrome(
+                title: settings.localized("BIOS"),
+                backgroundHidden: backgroundActive,
+                embedded: embeddedInMenuNavigation
+            )
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                if !embeddedInMenuNavigation || menuTabIsActive {
+                ToolbarItem(id: "menu.bootBIOS", placement: .topBarLeading) {
+                    Button {
+                        if appState.runningGameName == "BIOS" {
+                            appState.returnToGame()
+                        } else if appState.runningGameName != nil {
+                            showRestartAlert = true
+                        } else {
+                            appState.bootBIOSOnly()
+                        }
+                    } label: {
+                        Text(settings.localized("Boot BIOS"))
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.blue)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, 8)
+                            .frame(minHeight: 36)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(settings.localized("Boot BIOS"))
+                }
+                ToolbarItem(id: "menu.import", placement: .topBarTrailing) {
                     Menu {
                         Button {
                             presentMenuPanel("bios_import") {
@@ -72,13 +107,18 @@ struct BIOSListView: View {
                         }
                     } label: {
                         Image(systemName: "plus")
+                            .foregroundStyle(.blue)
                     }
+                    .buttonStyle(.plain)
                     .accessibilityLabel(settings.localized("Import BIOS"))
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(id: "menu.refresh", placement: .topBarTrailing) {
                     Button { loadBIOSes() } label: {
                         Image(systemName: "arrow.clockwise")
+                            .foregroundStyle(.blue)
                     }
+                    .buttonStyle(.plain)
+                }
                 }
             }
             .sheet(isPresented: $showBIOSImporter) {
@@ -110,6 +150,18 @@ struct BIOSListView: View {
                 }
             } message: {
                 Text(FileImportHandler.replacementConfirmationMessage(for: existingBIOSImportFileNames))
+            }
+            .alert(settings.localized("Restart VM?"), isPresented: $showRestartAlert) {
+                Button(settings.localized("Cancel"), role: .cancel) {}
+                Button(settings.localized("Restart"), role: .destructive) {
+                    appState.shutdownAndBootBIOS()
+                }
+            } message: {
+                Text(
+                    "\(settings.localized("VM is currently running."))\n" +
+                    "\(settings.localized("Shut down and start")) " +
+                    "\(settings.localized("Boot BIOS"))?"
+                )
             }
         }
         .onAppear { loadBIOSes() }

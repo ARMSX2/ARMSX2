@@ -4,6 +4,17 @@
 import SwiftUI
 import UIKit
 
+private struct ClearLiquidGlassUIEnvironmentKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var clearLiquidGlassUIEnabled: Bool {
+        get { self[ClearLiquidGlassUIEnvironmentKey.self] }
+        set { self[ClearLiquidGlassUIEnvironmentKey.self] = newValue }
+    }
+}
+
 struct DynamicBackgroundRendererView: View {
     let preferences: DynamicAppearancePreferences
     @State private var isRenderingEnabled = true
@@ -235,6 +246,7 @@ extension View {
         tint: Color? = nil,
         interactive: Bool = false,
         clear: Bool = false,
+        materializeTransition: Bool = false,
         cornerRadius: CGFloat
     ) -> some View {
         modifier(
@@ -242,6 +254,7 @@ extension View {
                 tint: tint,
                 interactive: interactive,
                 clear: clear,
+                materializeTransition: materializeTransition,
                 cornerRadius: cornerRadius
             )
         )
@@ -249,19 +262,24 @@ extension View {
 }
 
 private struct DynamicBackgroundGlassSurfaceModifier: ViewModifier {
+    @Environment(\.clearLiquidGlassUIEnabled) private var clearLiquidGlassUIEnabled
     let tint: Color?
     let interactive: Bool
     let clear: Bool
+    let materializeTransition: Bool
     let cornerRadius: CGFloat
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            if clear {
+            if clear && clearLiquidGlassUIEnabled {
                 content
                     .glassEffect(
                         .clear.tint(tint).interactive(interactive),
                         in: .rect(cornerRadius: cornerRadius)
+                    )
+                    .glassEffectTransition(
+                        materializeTransition ? .materialize : .identity
                     )
             } else {
                 content
@@ -269,13 +287,25 @@ private struct DynamicBackgroundGlassSurfaceModifier: ViewModifier {
                         .regular.tint(tint).interactive(interactive),
                         in: .rect(cornerRadius: cornerRadius)
                     )
+                    .glassEffectTransition(
+                        materializeTransition ? .materialize : .identity
+                    )
             }
         } else {
-            content
-                .background(
-                    .ultraThinMaterial,
-                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                )
+            if materializeTransition {
+                content
+                    .background(
+                        .ultraThinMaterial,
+                        in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.94)))
+            } else {
+                content
+                    .background(
+                        .ultraThinMaterial,
+                        in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    )
+            }
         }
     }
 }

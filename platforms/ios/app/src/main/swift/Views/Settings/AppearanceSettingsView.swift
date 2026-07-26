@@ -109,16 +109,23 @@ struct AppearanceSettingsView: View {
                 Toggle(isOn: $settings.backgroundEnabledInBIOS) {
                     Label(settings.localized("BIOS"), systemImage: "cpu")
                 }
-                Toggle(isOn: $settings.backgroundEnabledInHelp) {
-                    Label(settings.localized("Help"), systemImage: "questionmark.circle")
-                }
                 Toggle(isOn: $settings.backgroundEnabledInSettings) {
                     Label(settings.localized("Settings"), systemImage: "gearshape")
                 }
             } header: {
                 Text(settings.localized("Show Background In"))
             } footer: {
-                Text(settings.localized("The background also shows behind the Games library. Each tab can be toggled independently. Dim or mute from the settings above."))
+                Text(settings.localized("The background always shows behind Games. BIOS and Settings can be toggled independently. Dim or mute from the settings above."))
+            }
+
+            Section {
+                Toggle(isOn: $settings.clearLiquidGlassUI) {
+                    Label(settings.localized("Clear Liquid Glass UI"), systemImage: "rectangle.on.rectangle")
+                }
+            } header: {
+                Text(settings.localized("Interface"))
+            } footer: {
+                Text(settings.localized("Uses the clear Liquid Glass style for menu cards and controls. Turn this off to use the more opaque regular Liquid Glass style."))
             }
         }
         .navigationTitle(settings.localized("Appearance"))
@@ -133,19 +140,16 @@ struct AppearanceSettingsView: View {
             .presentationDetents([.large])
         }
         .onAppear {
-            if !ownsExclusiveBackgroundPreview {
-                menuBackgroundHost?.beginExclusivePreview()
-                ownsExclusiveBackgroundPreview = true
-            }
             isAppearanceVisible = true
+            synchronizeExclusivePreview()
             dynamicPreferences = settings.dynamicAppearancePreferences
+        }
+        .onChange(of: menuTabIsActive) { _, _ in
+            synchronizeExclusivePreview()
         }
         .onDisappear {
             isAppearanceVisible = false
-            if ownsExclusiveBackgroundPreview {
-                menuBackgroundHost?.endExclusivePreview()
-                ownsExclusiveBackgroundPreview = false
-            }
+            synchronizeExclusivePreview()
         }
     }
 
@@ -153,6 +157,21 @@ struct AppearanceSettingsView: View {
         isAppearanceVisible
             && menuTabIsActive
             && presentedEditor == nil
+    }
+
+    private func synchronizeExclusivePreview() {
+        let shouldOwnPreview = isAppearanceVisible && menuTabIsActive
+        guard shouldOwnPreview != ownsExclusiveBackgroundPreview,
+              let menuBackgroundHost else {
+            return
+        }
+
+        if shouldOwnPreview {
+            menuBackgroundHost.beginExclusivePreview()
+        } else {
+            menuBackgroundHost.endExclusivePreview()
+        }
+        ownsExclusiveBackgroundPreview = shouldOwnPreview
     }
 
     @ViewBuilder
@@ -198,11 +217,13 @@ struct AppearanceSettingsView: View {
 
     private func updatePrimary(_ asset: BackgroundAsset?) {
         if asset == nil { BackgroundStorage.remove(settings.backgroundPrimaryAsset) }
+        if asset != nil { settings.dynamicBackgroundsEnabled = false }
         settings.backgroundPrimaryAsset = asset
     }
 
     private func updateLandscape(_ asset: BackgroundAsset?) {
         if asset == nil { BackgroundStorage.remove(settings.backgroundLandscapeAsset) }
+        if asset != nil { settings.dynamicBackgroundsEnabled = false }
         settings.backgroundLandscapeAsset = asset
     }
 }

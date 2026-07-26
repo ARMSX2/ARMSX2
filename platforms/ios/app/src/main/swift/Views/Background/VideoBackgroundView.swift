@@ -103,7 +103,10 @@ private final class LoopingVideoView: UIView {
 
     @objc private func resumeIfReady() {
         guard UIApplication.shared.applicationState != .background, !ProcessInfo.processInfo.isLowPowerModeEnabled else { return }
-        player?.seek(to: .zero)
+        // When this view remains mounted, AVQueuePlayer retains its current
+        // item time while paused. Do not restart it after a temporary pause
+        // such as Low Power Mode. A full inactive-scene teardown is handled by
+        // BackgroundContainerView and intentionally creates a new session.
         player?.play()
     }
 
