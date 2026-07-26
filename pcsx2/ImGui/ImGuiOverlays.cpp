@@ -79,6 +79,9 @@ SmallString s_gpu_usage_line;
 SmallString s_gpu_debug_info_line;
 SmallString s_gpu_stats_line;
 SmallString s_speed_icon;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+SmallString s_ios_device_stats_line;
+#endif
 
 // Shrink-to-fit for the performance overlay. The widest line measured last frame decides how much
 // this frame has to come down; one frame of lag is invisible and it means we only measure once.
@@ -86,6 +89,14 @@ static float s_osd_fit = 1.0f;
 static float s_osd_max_base_w = 0.0f;
 
 constexpr ImU32 white_color = IM_COL32(255, 255, 255, 255);
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+// Battery, heat and RAM come from the iOS frontend. There is no header for these three; the bridge
+// forward-declares its own the same way.
+extern "C" bool ARMSX2_iOSShouldShowDeviceStatsOverlay();
+extern "C" int ARMSX2_iOSGetDeviceStatsOverlaySeverity();
+extern "C" const char* ARMSX2_iOSGetDeviceStatsOverlayLine();
+#endif
 
 /// The OSD's normal text colour. GSConfig.OsdColor is 0xRRGGBB, and 0 means "unset" — every
 /// frontend but Android leaves it there, so the overlay keeps its classic white by default.
@@ -98,6 +109,22 @@ __fi static ImU32 OsdTextColor()
 		return white_color;
 	return IM_COL32((rgb >> 16) & 0xFFu, (rgb >> 8) & 0xFFu, rgb & 0xFFu, 255);
 }
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+// Same red as the sub-95% speed line, so the OSD keeps one vocabulary of alarm.
+static ImU32 ARMSX2IOSDeviceStatsColor()
+{
+	switch (ARMSX2_iOSGetDeviceStatsOverlaySeverity())
+	{
+		case 2:
+			return IM_COL32(255, 100, 100, 255);
+		case 1:
+			return IM_COL32(255, 220, 100, 255);
+		default:
+			return OsdTextColor();
+	}
+}
+#endif
 
 // OSD positioning funcs
 ImVec2 CalculateOSDPosition(OsdOverlayPos position, float margin, const ImVec2& text_size, float window_width, float window_height)
@@ -223,13 +250,18 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 	// nothing and return BEFORE any draw call, so a line string cached before a pause can't
 	// linger on screen (the rebuild block below is skipped while the VM is paused, which is
 	// why toggling in the menu looked inert).
-	if (!GSConfig.OsdShowFPS && !GSConfig.OsdShowVPS && !GSConfig.OsdShowSpeed &&
-		!GSConfig.OsdShowResolution && !GSConfig.OsdShowCPU && !GSConfig.OsdShowGPU &&
-		!GSConfig.OsdShowGSStats && !GSConfig.OsdShowFrameTimes && !GSConfig.OsdShowHardwareInfo &&
-		!GSConfig.OsdShowVersion && !GSConfig.OsdShowGPUStats)
-	{
+	const bool no_perf_lines = !GSConfig.OsdShowFPS && !GSConfig.OsdShowVPS && !GSConfig.OsdShowSpeed &&
+							   !GSConfig.OsdShowResolution && !GSConfig.OsdShowCPU && !GSConfig.OsdShowGPU &&
+							   !GSConfig.OsdShowGSStats && !GSConfig.OsdShowFrameTimes && !GSConfig.OsdShowHardwareInfo &&
+							   !GSConfig.OsdShowVersion && !GSConfig.OsdShowGPUStats;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	// A Custom preset with nothing but Device Stats ticked is reachable, and it lands here.
+	if (no_perf_lines && !ARMSX2_iOSShouldShowDeviceStatsOverlay())
 		return;
-	}
+#else
+	if (no_perf_lines)
+		return;
+#endif
 
 	const float shadow_offset = std::ceil(scale);
 
@@ -475,6 +507,16 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 				DRAW_LINE(osd_font, font_size, s_speed_line.c_str(), s_speed_line_color);
 			}
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+			if (ARMSX2_iOSShouldShowDeviceStatsOverlay())
+			{
+				const char* stats_line = ARMSX2_iOSGetDeviceStatsOverlayLine();
+				s_ios_device_stats_line.assign(stats_line ? stats_line : "");
+				if (!s_ios_device_stats_line.empty())
+					DRAW_LINE(osd_font, font_size, s_ios_device_stats_line.c_str(), ARMSX2IOSDeviceStatsColor());
+			}
+#endif
+
 			if (GSConfig.OsdShowGSStats)
 			{
 				GSgetStats(s_gs_stats_line);
@@ -634,6 +676,11 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 		{
 			if (GSConfig.OsdShowFPS || GSConfig.OsdShowVPS || GSConfig.OsdShowSpeed || GSConfig.OsdShowVersion)
 				DRAW_LINE(osd_font, font_size, s_speed_line.c_str(), s_speed_line_color);
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+			if (ARMSX2_iOSShouldShowDeviceStatsOverlay() && !s_ios_device_stats_line.empty())
+				DRAW_LINE(osd_font, font_size, s_ios_device_stats_line.c_str(), ARMSX2IOSDeviceStatsColor());
+#endif
 
 			if (GSConfig.OsdShowGSStats)
 			{

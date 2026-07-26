@@ -3158,7 +3158,7 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
 
 // Apply OSD preset — sets ALL GSConfig flags to match the preset
 + (void)applyOsdPreset:(int)preset {
-    // 1 simple: clean player readout; device stats are Swift-side.
+    // 1 simple: clean player readout, plus the device stats line the overlay draws.
     // 2 detail: performance and renderer diagnostics.
     // 3 full: closest to Android's full stats section. 0 is off.
     const bool simple = (preset == 1);

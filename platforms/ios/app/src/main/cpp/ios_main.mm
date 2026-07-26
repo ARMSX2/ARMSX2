@@ -726,8 +726,11 @@ static const ARMSX2IOSDeviceStatsCache& ARMSX2IOSRefreshDeviceStatsCacheLocked()
         return s_device_stats_cache;
     }
 
+    // Mirror the rule the Swift side loads with, so a fresh install with the key still absent agrees
+    // with the preset instead of showing stats at Off.
     s_device_stats_cache.show = s_settings_interface ?
-        s_settings_interface->GetBoolValue("ARMSX2iOS/UI", "OsdShowDeviceStats", true) : true;
+        s_settings_interface->GetBoolValue("ARMSX2iOS/UI", "OsdShowDeviceStats",
+            s_settings_interface->GetIntValue("ARMSX2iOS/UI", "OsdPreset", 0) != 0) : false;
 
     @autoreleasepool {
         UIDevice* device = [UIDevice currentDevice];
@@ -774,8 +777,15 @@ extern "C" int ARMSX2_iOSGetDeviceStatsOverlaySeverity()
 
 extern "C" const char* ARMSX2_iOSGetDeviceStatsOverlayLine()
 {
-    std::lock_guard<std::mutex> lock(s_device_stats_mutex);
-    return ARMSX2IOSRefreshDeviceStatsCacheLocked().line.c_str();
+    // Handing back a pointer into the cached string leaves the caller reading it after the lock has
+    // gone, and another thread refreshing the cache can reallocate it underneath them. Copy into
+    // storage the calling thread owns instead.
+    static thread_local std::string copy;
+    {
+        std::lock_guard<std::mutex> lock(s_device_stats_mutex);
+        copy = ARMSX2IOSRefreshDeviceStatsCacheLocked().line;
+    }
+    return copy.c_str();
 }
 
 // Structured device stats for the SwiftUI VoiceOver HUD mirror. Reads the same
