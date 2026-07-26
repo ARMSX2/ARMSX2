@@ -322,6 +322,13 @@ fun AppTab() {
         )
 
         ToggleRow(
+            label = str("app.blockHome"),
+            value = com.armsx2.ui.ScreenPinning.enabled.value,
+            description = str("app.blockHome.desc"),
+            onChange = { com.armsx2.ui.ScreenPinning.set(it) },
+        )
+
+        ToggleRow(
             label = str("app.libraryMusic"),
             value = com.armsx2.LibraryMusic.enabled.value,
             description = str("app.libraryMusic.desc"),
@@ -486,6 +493,15 @@ fun AppTab() {
             value = LibraryChromePreferences.showRecents.value,
             description = str("app.library.recents.desc"),
             onChange = LibraryChromePreferences::setShowRecents,
+        )
+
+        IntSliderRow(
+            label = str("app.library.coverSize"),
+            value = (com.armsx2.ui.UiScale.coverScale.value * 100f).toInt().coerceIn(75, 250),
+            min = 75,
+            max = 250,
+            valueFormatter = { "$it%" },
+            onChange = { com.armsx2.ui.UiScale.setCoverScale(it / 100f) },
         )
 
         IntSliderRow(

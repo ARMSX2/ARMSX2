@@ -331,7 +331,12 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
     fun openAchievements() = com.armsx2.ui.WindowImpl.openInGameScreen(com.armsx2.ui.InGameScreen.Achievements)
 
     fun updateSettings(transform: (Settings) -> Settings) {
-        val updated = transform(state.value.settings)
+        // ★ Transform the LIVE shared settings, not this screen's snapshot. state.value.settings is
+        // only refreshed in load(), so every write here shipped the whole Settings object as it
+        // looked when the menu opened — silently reverting anything changed elsewhere since. That
+        // is the long-standing whole-object clobber, and it is why the FPS cap read back as 0
+        // moments after being set: a later save from a stale snapshot re-pushed the old value.
+        val updated = transform(InGameOverlay.settingsState.value)
         InGameOverlay.saveSettings(updated)
         state.value = state.value.copy(settings = updated)
     }

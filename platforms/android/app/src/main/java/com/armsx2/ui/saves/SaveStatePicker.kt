@@ -97,6 +97,8 @@ fun SaveStatePickerScreen(mode: SaveMode, onBack: () -> Unit) {
             runCatching { NativeApp.hasAutosaveState() }.getOrDefault(false)
         } else false
     }
+    // i18n KEY of the last slot-tap failure, shown in place of silently closing the picker.
+    var failure by remember { mutableStateOf<String?>(null) }
 
     ArmsBackdrop {
         Column(Modifier.fillMaxSize()) {
@@ -105,6 +107,14 @@ fun SaveStatePickerScreen(mode: SaveMode, onBack: () -> Unit) {
                 else str("savestate.title.loadManage"),
                 leading = { RoundAction("←", str("action.back"), onBack) },
             )
+            failure?.let { key ->
+                Text(
+                    str(key),
+                    color = Color(0xFFFFB4A2),
+                    fontSize = 13.sp,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
             // Scrollable body: the Load screen stacks the auto-save options ABOVE the
             // slot grid, and the interval-autosave row made that block tall enough to
             // squeeze a weight(1f) grid — the two rows of tiles shrank to fit and looked
@@ -142,11 +152,38 @@ fun SaveStatePickerScreen(mode: SaveMode, onBack: () -> Unit) {
                     items((0 until SLOTS).toList(), key = { "slot_$it" }) { slot ->
                         SlotTile(slot, mode) { selected ->
                             scope.launch(Dispatchers.IO) {
-                                when (mode) {
+                                // The result used to be discarded and onBack() called either way, so
+                                // a refused save closed the picker looking exactly like a successful
+                                // one — no state written, no warning. That is the reported "closes
+                                // as if saved, takes 2-3 attempts". Stay open and say why instead.
+                                val ok = when (mode) {
                                     SaveMode.Save -> NativeApp.saveStateToSlot(selected)
                                     SaveMode.Load -> NativeApp.loadStateFromSlot(selected)
                                 }
-                                withContext(Dispatchers.Main) { onBack() }
+                                val busy = !ok && mode == SaveMode.Save &&
+                                    runCatching { NativeApp.isMemcardBusy() }.getOrDefault(false)
+                                val hardcore = !ok &&
+                                    runCatching { NativeApp.isHardcoreMode() }.getOrDefault(false)
+                                withContext(Dispatchers.Main) {
+                                    if (ok) {
+                                        failure = null
+                                        onBack()
+                                    } else {
+                                        // Store the KEY, not the resolved text — str() is
+                                        // @Composable and this is a coroutine, and keeping the key
+                                        // lets the banner re-translate on a language switch.
+                                        failure = when {
+                                            // RA hardcore forbids save states outright, and the
+                                            // refusal happens inside VMManager — below every exit
+                                            // this JNI logs — so it surfaced as a bare "couldn't
+                                            // load that slot" with nothing in logcat. Name it.
+                                            hardcore -> "savestate.error.hardcore"
+                                            busy -> "savestate.error.memcardBusy"
+                                            mode == SaveMode.Save -> "savestate.error.save"
+                                            else -> "savestate.error.load"
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

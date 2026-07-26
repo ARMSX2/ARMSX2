@@ -276,13 +276,32 @@ object ConfigStore {
             // Every field, so a pinned key can be given its CURRENT value even when that
             // value equals global's (the diff above necessarily omits it).
             val full = updated.toJson()
+            val existing = loadOverrides(serial)
             val pinned = LinkedHashSet<String>()
-            loadOverrides(serial)?.keys()?.forEach { pinned.add(it) }
+            existing?.keys()?.forEach { pinned.add(it) }
             // What the user just changed, pinned even if it landed on global's value —
             // otherwise editing a field in Game scope could silently un-pin it.
-            previous?.let { Settings.diff(it, updated).keys().forEach { k -> pinned.add(k) } }
+            val changedNow = LinkedHashSet<String>()
+            previous?.let { Settings.diff(it, updated).keys().forEach { k -> changedNow.add(k); pinned.add(k) } }
             pinned.forEach { key ->
-                if (!overrides.has(key) && full.has(key)) overrides.put(key, full.get(key))
+                if (overrides.has(key))
+                    return@forEach
+                // ★ For a pinned key the caller did NOT touch in this save, keep the value ALREADY
+                // STORED rather than re-pinning whatever `updated` happens to hold. Every screen
+                // writes the whole Settings object, so `updated` can be a stale snapshot; the old
+                // unconditional `full.get(key)` then wrote that stale value straight back over a
+                // good override. That is how a per-game FPS cap of 30 came back as 0 and STAYED 0 —
+                // the pin made the wrong value sticky, so it survived even after the writers were
+                // fixed. Only trust `updated` for keys `previous` proves the caller just changed.
+                //
+                // When `previous` is absent the caller cannot tell us what it changed, so fall back
+                // to the original behaviour rather than silently altering semantics for those paths.
+                val trustUpdated = changedNow.contains(key) || previous == null
+                when {
+                    trustUpdated && full.has(key) -> overrides.put(key, full.get(key))
+                    existing != null && existing.has(key) -> overrides.put(key, existing.get(key))
+                    full.has(key) -> overrides.put(key, full.get(key))
+                }
             }
             saveOverrides(serial, overrides)
         } else {

@@ -253,6 +253,12 @@ data class Settings(
      * per-primitive barrier fallback. A few proprietary Adreno drivers show stale-ROAA
      * read artifacts — turn this off in the Renderer tab if so. Applies on game restart. */
     val adrenoFbFetch: Boolean = true,
+    /** EmuCore/GS/CoalesceRenderPasses — group consecutive draws to the same target into a
+     * single render pass. Aimed squarely at tiling GPUs (every Android GPU), where each pass
+     * boundary costs a full tile load and store; rendering output is unchanged. Default off,
+     * matching upstream, because it is new. bmd only wired this into the desktop UI, so
+     * without this it would be unreachable on the platform it was written for. */
+    val coalesceRenderPasses: Boolean = false,
     /** EmuCore/GS/ForceMaliFramebufferFetch — re-enable the Vulkan framebuffer-fetch
      * (ROAA) path on MediaTek Mali / Mali-G57, where it is force-disabled because those
      * drivers return zero/stale destination colour through ROAA (black or missing
@@ -1139,6 +1145,7 @@ data class Settings(
             hwRov = boolAt("EmuCore/GS/HWROV") ?: this.hwRov,
             hwAa1 = boolAt("EmuCore/GS/HWAA1") ?: this.hwAa1,
             adrenoFbFetch = boolAt("EmuCore/GS/EnableAdrenoFramebufferFetch") ?: this.adrenoFbFetch,
+            coalesceRenderPasses = boolAt("EmuCore/GS/CoalesceRenderPasses") ?: this.coalesceRenderPasses,
             forceMaliFbFetch = boolAt("EmuCore/GS/ForceMaliFramebufferFetch") ?: this.forceMaliFbFetch,
             useAngleOpenGL = boolAt("EmuCore/GS/AndroidUseAngleOpenGL") ?: this.useAngleOpenGL,
             overrideTextureBarriers = intAt("EmuCore/GS/OverrideTextureBarriers") ?: this.overrideTextureBarriers,
@@ -1335,6 +1342,7 @@ data class Settings(
         put("EmuCore/GS", "HWROV", "bool", hwRov.toString())
         put("EmuCore/GS", "HWAA1", "bool", hwAa1.toString())
         put("EmuCore/GS", "EnableAdrenoFramebufferFetch", "bool", adrenoFbFetch.toString())
+        put("EmuCore/GS", "CoalesceRenderPasses", "bool", coalesceRenderPasses.toString())
         put("EmuCore/GS", "ForceMaliFramebufferFetch", "bool", forceMaliFbFetch.toString())
         // Parity write (native reads the ARMSX2_ANGLE_EGL_LIBRARY env var set by
         // MainActivityRuntime.applyAngleEnv, not this key) — kept so the config file
@@ -1586,6 +1594,7 @@ data class Settings(
         put("hwRov", hwRov)
         put("hwAa1", hwAa1)
         put("adrenoFbFetch", adrenoFbFetch)
+        put("coalesceRenderPasses", coalesceRenderPasses)
         put("forceMaliFbFetch", forceMaliFbFetch)
         put("useAngleOpenGL", useAngleOpenGL)
         put("overrideTextureBarriers", overrideTextureBarriers)
@@ -1843,6 +1852,7 @@ data class Settings(
                 hwAa1 = json.optBoolean("hwAa1", def.hwAa1),
                 hwAat = false,
                 adrenoFbFetch = json.optBoolean("adrenoFbFetch", def.adrenoFbFetch),
+                coalesceRenderPasses = json.optBoolean("coalesceRenderPasses", def.coalesceRenderPasses),
                 forceMaliFbFetch = json.optBoolean("forceMaliFbFetch", def.forceMaliFbFetch),
                 useAngleOpenGL = json.optBoolean("useAngleOpenGL", def.useAngleOpenGL),
                 overrideTextureBarriers = json.optInt("overrideTextureBarriers", def.overrideTextureBarriers),
@@ -2084,6 +2094,7 @@ data class Settings(
             if (current.hwRov != base.hwRov) j.put("hwRov", current.hwRov)
             if (current.hwAa1 != base.hwAa1) j.put("hwAa1", current.hwAa1)
             if (current.adrenoFbFetch != base.adrenoFbFetch) j.put("adrenoFbFetch", current.adrenoFbFetch)
+            if (current.coalesceRenderPasses != base.coalesceRenderPasses) j.put("coalesceRenderPasses", current.coalesceRenderPasses)
             if (current.forceMaliFbFetch != base.forceMaliFbFetch) j.put("forceMaliFbFetch", current.forceMaliFbFetch)
             if (current.useAngleOpenGL != base.useAngleOpenGL) j.put("useAngleOpenGL", current.useAngleOpenGL)
             if (current.overrideTextureBarriers != base.overrideTextureBarriers) j.put("overrideTextureBarriers", current.overrideTextureBarriers)
@@ -2308,6 +2319,7 @@ data class Settings(
             hwAa1 = if (overrides.has("hwAa1")) overrides.getBoolean("hwAa1") else base.hwAa1,
             hwAat = false,
             adrenoFbFetch = if (overrides.has("adrenoFbFetch")) overrides.getBoolean("adrenoFbFetch") else base.adrenoFbFetch,
+            coalesceRenderPasses = if (overrides.has("coalesceRenderPasses")) overrides.getBoolean("coalesceRenderPasses") else base.coalesceRenderPasses,
             forceMaliFbFetch = if (overrides.has("forceMaliFbFetch")) overrides.getBoolean("forceMaliFbFetch") else base.forceMaliFbFetch,
             useAngleOpenGL = if (overrides.has("useAngleOpenGL")) overrides.getBoolean("useAngleOpenGL") else base.useAngleOpenGL,
             overrideTextureBarriers = if (overrides.has("overrideTextureBarriers")) overrides.getInt("overrideTextureBarriers") else base.overrideTextureBarriers,

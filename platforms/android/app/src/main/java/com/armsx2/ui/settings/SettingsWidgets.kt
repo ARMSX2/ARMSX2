@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -1140,7 +1142,18 @@ private fun InfoHint(title: String, message: String) {
         AlertDialog(
             onDismissRequest = { open = false },
             title = { Text(title) },
-            text = { Text(message) },
+            // AlertDialog does NOT scroll its text slot: a description longer than the slot was
+            // simply CLIPPED mid-sentence with no way to reach the rest, which is most of the
+            // longer setting explanations (reported against Low Latency Mode, which cuts off at
+            // "...turning back off if the frame pacing"). Cap the height and scroll inside it.
+            text = {
+                Text(
+                    message,
+                    modifier = Modifier
+                        .heightIn(max = 340.dp)
+                        .verticalScroll(rememberScrollState()),
+                )
+            },
             confirmButton = {
                 TextButton(onClick = { open = false }) { Text(str("action.close")) }
             },

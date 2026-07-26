@@ -79,7 +79,15 @@ class EmulationSurface(context: Context) :
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         lastRequestedFrameRate = Float.NaN
-        NativeApp.onNativeSurfaceChanged(null, 0, 0)
+        // ★ onNativeSurfaceDestroyed(), NOT onNativeSurfaceChanged(null, 0, 0). Both null s_window,
+        // but the latter gates its MTGS::UpdateDisplayWindow() repost on `width > 0 && height > 0`
+        // — false here — so the GS thread was NEVER told the surface died. It could then sit in
+        // vkAcquireNextImageKHR with a UINT64_MAX timeout on a swapchain whose window is no longer
+        // composited, and because every Java->GS route is marshalled through the CPU thread, the
+        // only code that could rebuild the swapchain was queued behind the CPU thread that the GS
+        // thread was blocking. Nothing times out — that is the "sometimes it never unpauses" case.
+        // The correct entry point existed and was fully implemented; it just had no caller.
+        NativeApp.onNativeSurfaceDestroyed()
     }
 
     override fun onDisplayAdded(displayId: Int) = Unit

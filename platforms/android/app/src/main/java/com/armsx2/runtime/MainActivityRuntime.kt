@@ -518,6 +518,8 @@ open class MainActivityRuntime : ComponentActivity() {
         private fun onReturnedToLibrary() {
             currentGame.value = null
             emulationOwnsOrientation = false
+            // Never leave the device pinned once the game is gone (#425).
+            com.armsx2.ui.ScreenPinning.stop()
             stopAutoProgressiveScanHold()
             instance?.runOnUiThread { instance?.applyEmulationOrientation() }
         }
@@ -533,6 +535,13 @@ open class MainActivityRuntime : ComponentActivity() {
         /** How long to keep the combo held. Titles probe it at very different points — some well
          *  after the PS2 logo — so this deliberately spans the whole boot sequence. */
         private const val AUTO_PROGRESSIVE_HOLD_MS = 30_000L
+        /// How often the synthetic Triangle+Cross hold is re-pressed. Must be well under a frame
+        /// budget's worth of pad polling so the game never samples a gap, and short enough that a
+        /// pad re-init can't swallow the whole hold.
+        private const val AUTO_PROGRESSIVE_REASSERT_MS = 200L
+        /// Keep holding this long after the game's ELF starts, then let go — the 480p prompt is
+        /// checked at game start, and holding into the menus would fight the player.
+        private const val AUTO_PROGRESSIVE_POST_ELF_MS = 4_000L
 
         /** Pad writes are dropped while no VM exists (applyPadButton bails on !HasValidVM), so
          *  wait for boot rather than pressing into the void. Bounded so a failed boot can't spin. */
@@ -553,9 +562,37 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (!NativeApp.hasActiveVM())
                         return@launch
                     held = true
-                    NativeApp.setPadButton(PAD_CODE_TRIANGLE, 0, true)
-                    NativeApp.setPadButton(PAD_CODE_CROSS, 0, true)
-                    delay(AUTO_PROGRESSIVE_HOLD_MS)
+                    // ★ RE-ASSERT, don't set once. setPadButton writes the button state a single
+                    // time, but the pad is (re)initialised during boot — "Pad: DS2 Config Finished"
+                    // lands well after the VM goes active — and that wipes the state we set before
+                    // it existed. So the hold silently evaporated before the game ever sampled it,
+                    // which is exactly the Tekken 4 report: holding Triangle+Cross by hand works,
+                    // the automatic hold does nothing. Re-pressing on a short interval survives any
+                    // number of pad resets.
+                    //
+                    // Release shortly after the game's own ELF starts rather than blocking for the
+                    // full timeout: the 480p prompt is checked at game start, and continuing to jam
+                    // Triangle+Cross into a booted game would fight the player in the menus. CRC
+                    // goes non-zero exactly when the ELF is running, so it is the right edge to
+                    // watch. AUTO_PROGRESSIVE_HOLD_MS remains the hard ceiling.
+                    var elapsed = 0L
+                    var sinceElf = -1L
+                    while (elapsed < AUTO_PROGRESSIVE_HOLD_MS) {
+                        if (!NativeApp.hasActiveVM())
+                            return@launch
+                        NativeApp.setPadButton(PAD_CODE_TRIANGLE, 0, true)
+                        NativeApp.setPadButton(PAD_CODE_CROSS, 0, true)
+                        delay(AUTO_PROGRESSIVE_REASSERT_MS)
+                        elapsed += AUTO_PROGRESSIVE_REASSERT_MS
+                        val elfRunning = runCatching { NativeApp.getGameCRC() }.getOrNull()
+                            ?.let { it.length == 8 && it != "00000000" } ?: false
+                        if (elfRunning) {
+                            if (sinceElf < 0) sinceElf = 0
+                            else sinceElf += AUTO_PROGRESSIVE_REASSERT_MS
+                            if (sinceElf >= AUTO_PROGRESSIVE_POST_ELF_MS)
+                                break
+                        }
+                    }
                 } finally {
                     // Release on every exit path, cancellation included — a stuck Triangle+Cross
                     // would make the game unplayable. These are plain JNI calls, not suspends, so
@@ -593,6 +630,9 @@ open class MainActivityRuntime : ComponentActivity() {
                     WindowImpl.overlayVisible.value = false
                     WindowImpl.toolbarVisible.value = false
                     emulationOwnsOrientation = true
+                    // Opt-in only: blocks a controller's Home button from minimising the game,
+                    // which the app cannot do any other way — HOME never reaches us (#425).
+                    instance?.let { com.armsx2.ui.ScreenPinning.start(it) }
                     applyRendererPrefs()
                     // Both of these are consumed by native when the VM boots, so they must be
                     // pushed BEFORE runVMThread (which blocks until the VM exits). One resolve,
@@ -829,7 +869,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 return
             }
             // Remember the game for a post-exit re-launch from the Save Manager (#374).
-            if (info != null) lastLaunchedGame = info
+            if (info != null) contextGame.value = info
             println(
                 "@@ANDROID_LAUNCH_GAME@@ title=${info?.title ?: "<direct>"} " +
                     "uri=${uri.take(240)} state=${eState.value} runLoop=$vmRunLoopActive " +
@@ -1003,6 +1043,29 @@ open class MainActivityRuntime : ComponentActivity() {
         fun pauseForOverlay() {
             if (vmStopInProgress)
                 return
+            // Routed through vmControl exactly like resume(), NOT inline. The comment above the
+            // executor claims pause and resume are serialised against each other; while this
+            // bypassed it they were enqueued from two different Java threads, so a pause raised
+            // while a resume was still in flight could be evaluated first and swallowed (native
+            // pause() only acts when the VM is exactly Running, and never retries) — which leaves
+            // the VM RUNNING in the background after the app is gone.
+            vmControl.execute {
+                if (vmStopInProgress)
+                    return@execute
+                pauseForOverlayOnVmThread()
+            }
+        }
+
+        private fun pauseForOverlayOnVmThread() {
+            // ★ Keep the audio device OPEN across an overlay pause. Otherwise SPU2::SetOutputPaused
+            // pauses the Oboe stream, Android reclaims an idle low-latency stream after a few
+            // seconds (#333), and then the RESUME has to Close/Open/Start it again — inline on the
+            // CPU thread, inside the resume task, AHEAD of Host::OnVMResumed(). That is why coming
+            // back from another app can sit "stuck on pause" for seconds before the game moves.
+            // Suppressed, the stream underruns to silence instead: nothing to reclaim, nothing to
+            // rebuild. native-lib.cpp has always documented pauseForOverlay as the caller that sets
+            // this — it simply never called it.
+            runCatching { NativeApp.setOutputPauseSuppressed(true) }
             NativeApp.pause()
         }
 
@@ -1010,8 +1073,12 @@ open class MainActivityRuntime : ComponentActivity() {
             if (vmStopInProgress)
                 return
             vmControl.execute {
-                if (!vmStopInProgress)
+                if (!vmStopInProgress) {
                     NativeApp.resume()
+                    // Cleared only after the resume lands, so a later non-overlay pause (VM stop,
+                    // shutdown) still releases the device normally.
+                    runCatching { NativeApp.setOutputPauseSuppressed(false) }
+                }
             }
         }
 
@@ -1181,10 +1248,10 @@ open class MainActivityRuntime : ComponentActivity() {
         // re-launch + load a save AFTER the game was exited. Kept SEPARATE from currentGame
         // (which stop() nulls for settings-scope) so it can't resurrect per-game scope in the
         // library. GitHub #374 — "exit, press Load → nothing boots" because currentGame was null.
-        private var lastLaunchedGame: GameInfo? = null
+        val contextGame = mutableStateOf<GameInfo?>(null)
 
         fun launchCurrentGameFromSaveSlot(slot: Int): Boolean {
-            val game = currentGame.value ?: lastLaunchedGame ?: return false
+            val game = currentGame.value ?: contextGame.value ?: return false
             val launchPath = if (game.uri.scheme == "file") {
                 game.uri.path ?: game.uri.toString()
             } else {
@@ -1837,12 +1904,24 @@ open class MainActivityRuntime : ComponentActivity() {
             com.armsx2.config.ConfigStore.resolveForGame(currentGame.value?.settingsKey).orientation
         else
             com.armsx2.ui.theme.LauncherOrientationPreferences.mode.value
-        requestedOrientation = when (orientation) {
+        val requested = when (orientation) {
             1 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             2 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
             3 -> ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
             else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
+        // ★ Only ASSIGN when it actually changes. Writing requestedOrientation makes Android
+        // re-evaluate orientation even when the value is identical, and with the default
+        // SCREEN_ORIENTATION_UNSPECIFIED there is no lock to hold it — so a handheld device can
+        // resolve portrait for one frame and snap back to landscape, producing TWO configuration
+        // changes. Each one destroys and recreates the Vulkan swapchain and re-uploads every ImGui
+        // resource, which freezes the PICTURE for seconds while the EE keeps running untouched.
+        // Confirmed on a Retroid Pocket 6: two "finishDrawing of orientation change" from
+        // WindowManager landing exactly on two "Creating a swap chain" (1080x1920 then 1920x1080).
+        // This function is called from several paths (boot, settings edits, and a LaunchedEffect
+        // keyed on the resolved settings tier), so redundant calls are normal and must be free.
+        if (requestedOrientation != requested)
+            requestedOrientation = requested
     }
 
     private fun applyEdgeToEdge() {
@@ -1924,6 +2003,7 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.ui.UiScale.load()
         com.armsx2.ui.theme.ThemePreferences.load()
         com.armsx2.ui.theme.BootLogoPreferences.load()
+        com.armsx2.ui.ScreenPinning.load()
         com.armsx2.ui.theme.ToolbarPositionPreferences.load()
         com.armsx2.ui.theme.LibraryChromePreferences.load()
         com.armsx2.ui.theme.LauncherOrientationPreferences.load()
@@ -2280,6 +2360,32 @@ open class MainActivityRuntime : ComponentActivity() {
                                 ) {
                                     resume()
                                 }
+                            }
+                        }
+                        // ★ The REAL stuck-resume backstop. The block above cannot serve as one:
+                        // it sits in the `else` of LaunchedEffect(frontendOwnsFocus), and reaching
+                        // that `else` requires frontendOwnsFocus == false, i.e. eState was already
+                        // RUNNING — so its `if (eState == PAUSED)` can only fire in the sliver
+                        // between composition and coroutine start, never in the state it was
+                        // written for. Keyed on the actual stuck condition instead, and it RETRIES:
+                        // the native resume() only acts when the VM is exactly Paused and there is
+                        // no retry anywhere, so a resume issued a moment too early is simply lost.
+                        val stuckPaused = !WindowImpl.frontendCovers &&
+                            eState.value == EmuState.PAUSED &&
+                            !WindowImpl.showLibrary.value &&
+                            !com.armsx2.ui.touch.TouchControls.editMode.value
+                        androidx.compose.runtime.LaunchedEffect(stuckPaused) {
+                            if (!stuckPaused) return@LaunchedEffect
+                            // The normal close path posts its resume after a 220 ms dismiss
+                            // animation, so let that win first; only then start nudging.
+                            repeat(4) {
+                                kotlinx.coroutines.delay(700)
+                                if (eState.value != EmuState.PAUSED || WindowImpl.frontendCovers ||
+                                    WindowImpl.showLibrary.value ||
+                                    com.armsx2.ui.touch.TouchControls.editMode.value
+                                ) return@LaunchedEffect
+                                println("@@ANDROID_RESUME_RETRY@@ attempt=$it eState=${eState.value}")
+                                resume()
                             }
                         }
                         AndroidView(factory = { surface.value!! }, modifier = Modifier

@@ -225,8 +225,13 @@ fun HomeScreen(
     ) {
         BoxWithConstraints(modifier.fillMaxSize()) {
             val compact = maxWidth < 600.dp
+            // Adaptive cells alone give a tablet MORE columns rather than BIGGER art, so scale the
+            // cell width. Bigger cells mean bigger covers and fewer, better-spaced columns. Opt-in:
+            // 1.0 everywhere until the user moves the Cover size slider.
+            val coverScale = com.armsx2.ui.UiScale.coverScale.value
+            val gridCellDp = (if (compact) 104f else 118f) * coverScale
             val columns = if (state.layout == LibraryLayout.Grid) {
-                GridCells.Adaptive(if (compact) 104.dp else 118.dp)
+                GridCells.Adaptive(gridCellDp.dp)
             } else {
                 // List and Shelf are full-width rows.
                 GridCells.Fixed(1)
@@ -236,8 +241,12 @@ fun HomeScreen(
             // otherwise Up/Down move one cover at a time (feeling like Left/Right) and
             // only the very first cover can step up into the Recents row.
             val estimatedColumns = when (state.layout) {
-                LibraryLayout.Grid -> (maxWidth.value / if (compact) 112f else 128f).toInt().coerceAtLeast(1)
-                LibraryLayout.Shelf -> (maxWidth.value / ((if (compact) 84f else 100f) + 20f)).toInt().coerceIn(3, 8)
+                // MUST track gridCellDp — this feeds HomeInputController's Up/Down step, so if the
+                // estimate and the real column count diverge, controller navigation skips rows.
+                LibraryLayout.Grid ->
+                    (maxWidth.value / ((if (compact) 112f else 128f) * coverScale)).toInt().coerceAtLeast(1)
+                LibraryLayout.Shelf ->
+                    (maxWidth.value / (((if (compact) 84f else 100f) * coverScale) + 20f)).toInt().coerceIn(3, 8)
                 LibraryLayout.List -> 1
             }
             LaunchedEffect(estimatedColumns) { HomeInputController.setColumnCount(estimatedColumns) }
@@ -472,7 +481,7 @@ fun HomeScreen(
                                 GameShelf(
                                     games = shownRecents,
                                     shelfRes = R.drawable.shelf_frosted,
-                                    coverWidth = if (compact) 84.dp else 100.dp,
+                                    coverWidth = ((if (compact) 84f else 100f) * coverScale).dp,
                                     scroll = true,
                                     selectedIndex = recentSel,
                                     onLaunch = { viewModel.launch(it) },
@@ -547,7 +556,7 @@ fun HomeScreen(
                     emptyLibrary(state.query.isBlank())
                 } else if (state.layout == LibraryLayout.Shelf) {
                     // Fill each plank: chunk by how many covers fit the shelf width.
-                    val shelfCoverW = if (compact) 84.dp else 100.dp
+                    val shelfCoverW = ((if (compact) 84f else 100f) * coverScale).dp
                     val perShelf = (maxWidth.value / (shelfCoverW.value + 20f)).toInt().coerceIn(3, 8)
                     val shelfRows = state.visibleGames.chunked(perShelf)
                     items(

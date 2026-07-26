@@ -28,9 +28,31 @@ object UiScale {
     val borderScale = mutableStateOf(1.0f)
     val fontScale = mutableStateOf(1.0f)
 
+    // ---- Library cover size ------------------------------------------------------------
+    // The library grid is GridCells.Adaptive with a fixed ~104/118dp cell, which is sized for a
+    // phone. On a tablet "adaptive" just means MORE columns, not bigger art — a 1200dp-wide screen
+    // gets ten columns of phone-sized covers, which is the reported "covers are tiny on a tablet,
+    // needs its own layout". Scaling the adaptive cell width fixes it without a second layout:
+    // wider cells => bigger art AND fewer, better-spaced columns, and phone users can use it too.
+    private const val KEY_COVER = "ui.coverScale"
+    const val COVER_MIN = 0.75f
+    const val COVER_MAX = 2.50f
+
+    /** Always 1.0 out of the box, on every screen size. An earlier version guessed a bigger default
+     *  for tablets from the measured width; that silently changed the library for people who never
+     *  asked, so the scaling is opt-in and tablet users just move the slider. */
+    val coverScale = mutableStateOf(1.0f)
+
     fun load() {
         borderScale.value = MainActivityRuntime.prefs.getFloat(KEY_BORDER, 1.0f).coerceIn(MIN, BORDER_MAX)
         fontScale.value = MainActivityRuntime.prefs.getFloat(KEY_FONT, 1.0f).coerceIn(MIN, MAX)
+        coverScale.value = MainActivityRuntime.prefs.getFloat(KEY_COVER, 1.0f).coerceIn(COVER_MIN, COVER_MAX)
+    }
+
+    fun setCoverScale(v: Float) {
+        val c = v.coerceIn(COVER_MIN, COVER_MAX)
+        coverScale.value = c
+        MainActivityRuntime.prefs.edit().putFloat(KEY_COVER, c).apply()
     }
 
     fun setBorderScale(v: Float) {

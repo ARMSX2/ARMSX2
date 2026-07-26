@@ -820,12 +820,23 @@ private fun PauseWidget(cfg: TouchButtonCfg, edit: Boolean) {
     }
 }
 
+/** [opacity] with a legibility [floor] applied — except that an opacity heading for 0 still reaches
+ *  0. At or above [floor] this is exactly `opacity.coerceIn(floor, 1f)`, so every tuned appearance
+ *  is unchanged; below it the result fades linearly so a deliberate 0% means invisible instead of
+ *  bottoming out at the floor (#428). Only the drawn alpha is affected — touch targets are sized
+ *  and hit-tested independently, so invisible controls still respond. */
+private fun legibleAlpha(opacity: Float, floor: Float): Float =
+    opacity.coerceIn(floor, 1f) * (opacity / floor).coerceIn(0f, 1f)
+
 /** Nether-style ⏸: two rounded bars on a soft dark disc. Everything scales off the widget's own
  *  size so resizing it in the editor keeps the proportions. Deliberately low-alpha — it shares the
  *  top-right corner with the performance OSD and shouldn't compete with it. */
 @Composable
 private fun PauseGlyph(sizeDp: Float, opacity: Float) {
     val a = opacity.coerceIn(0.20f, 1f)
+    // Scales the floors below to 0 as opacity approaches 0 so a deliberate 0% hides the glyph
+    // entirely (#428). At >= 0.20 this is 1f, leaving the tuned appearance untouched.
+    val fade = (opacity / 0.20f).coerceIn(0f, 1f)
     val disc = (sizeDp * 0.66f).dp
     val barW = (sizeDp * 0.095f).dp
     val barH = (sizeDp * 0.34f).dp
@@ -836,7 +847,7 @@ private fun PauseGlyph(sizeDp: Float, opacity: Float) {
         modifier = Modifier
             .size(disc)
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = (0.55f * a).coerceIn(0.32f, 0.60f))),
+            .background(Color.Black.copy(alpha = (0.55f * a).coerceIn(0.32f, 0.60f) * fade)),
         contentAlignment = Alignment.Center,
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(barW)) {
@@ -845,7 +856,7 @@ private fun PauseGlyph(sizeDp: Float, opacity: Float) {
                     Modifier
                         .size(barW, barH)
                         .background(
-                            Color.White.copy(alpha = (0.95f * a).coerceIn(0.72f, 1.0f)),
+                            Color.White.copy(alpha = (0.95f * a).coerceIn(0.72f, 1.0f) * fade),
                             RoundedCornerShape(barW / 2),
                         )
                 )
@@ -882,7 +893,7 @@ private fun FastForwardWidget(cfg: TouchButtonCfg, edit: Boolean) {
         ) {
             Text(
                 "▶▶",
-                color = Color.White.copy(alpha = opacity.coerceIn(0.35f, 1f)),
+                color = Color.White.copy(alpha = legibleAlpha(opacity, 0.35f)),
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
             )
@@ -944,7 +955,7 @@ private fun MacroWidget(cfg: TouchButtonCfg, edit: Boolean) {
         ) {
             Text(
                 cfg.id.label,
-                color = Color.White.copy(alpha = opacity.coerceIn(0.35f, 1f)),
+                color = Color.White.copy(alpha = legibleAlpha(opacity, 0.35f)),
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
             )
@@ -992,7 +1003,7 @@ private fun StateActionWidget(cfg: TouchButtonCfg, edit: Boolean) {
         ) {
             Text(
                 label,
-                color = Color.White.copy(alpha = opacity.coerceIn(0.35f, 1f)),
+                color = Color.White.copy(alpha = legibleAlpha(opacity, 0.35f)),
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
             )
@@ -1759,8 +1770,8 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
             }
         }
         // Opacity slider — controls the live HUD alpha so the user sees
-        // the change immediately while editing. Range 0.20..1.00 mirrors
-        // TouchControls.setOpacity's clamp.
+        // the change immediately while editing. Range 0.00..1.00 mirrors
+        // TouchControls.setOpacity's clamp; 0 = invisible but still touchable (#428).
         Row(
             // Wrap-content width + Column's CenterHorizontally alignment
             // centers the alpha bar horizontally inside the toolbar
@@ -1772,7 +1783,7 @@ private fun EditToolbar(modifier: Modifier = Modifier) {
             androidx.compose.material3.Slider(
                 value = TouchControls.opacity.floatValue,
                 onValueChange = { TouchControls.setOpacity(it) },
-                valueRange = 0.20f..1.0f,
+                valueRange = 0.0f..1.0f,
                 modifier = Modifier
                     .width(280.dp)
                     .height(28.dp),

@@ -1284,6 +1284,31 @@ val EN: Map<String, String> = mapOf(
     "savestate.restoreBackup.confirmTitle" to "Restore backup?",
     "savestate.slot.emptyTapToSave" to "(empty — tap to save here)",
     "savestate.title.loadManage" to "Load / Manage Saves",
+    "pad.pressureAmount.label" to "Pressure modifier amount",
+    "pad.pressureAmount.description" to
+        "How hard the pressure modifier presses, for DualShock 2 pressure-sensitive games " +
+        "(Metal Gear Solid, GTA). Applies to the on-screen PRESSURE button and to the " +
+        "\"Pressure Modifier (hold)\" binding. Lower = softer press.",
+    "renderer.coalesceRenderPasses.label" to "Coalesce render passes",
+    "renderer.coalesceRenderPasses.description" to
+        "Groups consecutive draws to the same target into one render pass. Helps on tiling GPUs " +
+        "— which is every phone GPU — where each pass boundary costs a full tile load and store. " +
+        "Rendering output is unchanged. New; off by default.",
+    "app.library.coverSize" to "Cover size",
+    "app.blockHome" to "Block Home button while playing",
+    "app.blockHome.desc" to
+        "Pins the screen while a game runs, so a controller's Home or Guide button can't minimise " +
+        "it. Android asks you to confirm the first time. To leave, hold Back + Recents — or just " +
+        "quit to the library, which unpins automatically.",
+    "savestate.error.hardcore" to
+        "Save states are disabled while RetroAchievements Hardcore Mode is on. Turn Hardcore off " +
+        "in the RetroAchievements settings to use them (this forfeits hardcore points for the session).",
+    "savestate.error.memcardBusy" to
+        "The game is still writing to the memory card, so the state was not saved. " +
+        "Resume the game for a second or two, then try again — the card stays busy for as " +
+        "long as the game is paused.",
+    "savestate.error.save" to "Couldn't save to that slot. Check the log for @@ANDROID_SAVESTATE@@.",
+    "savestate.error.load" to "Couldn't load that slot.",
     "savestate.title.save" to "Save State",
     "setup.aspect.auto" to "Auto",
     "setup.aspect.stretch" to "Stretch",
