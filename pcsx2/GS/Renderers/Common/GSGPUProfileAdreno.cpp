@@ -20,7 +20,7 @@ struct AdrenoSpec
 
 constexpr MobileGsTuning T(u32 pool, u32 target_age, u32 texture_age, bool prefer_new = false)
 {
-	return MobileGsTuning{pool < 128, prefer_new, pool < 128, pool, target_age, pool, texture_age};
+	return MobileGsTuning{pool < 128, prefer_new, pool, target_age, pool, texture_age};
 }
 
 // Renderer names are stable (for example "Adreno (TM) 740"), while Snapdragon product names are not.

@@ -21,7 +21,7 @@ struct MaliSpec
 
 constexpr MobileGsTuning T(u32 pool, u32 target_age, u32 texture_age, bool prefer_new = false)
 {
-	return MobileGsTuning{pool < 128, prefer_new, pool < 128, pool, target_age, pool, texture_age};
+	return MobileGsTuning{pool < 128, prefer_new, pool, target_age, pool, texture_age};
 }
 
 // Arm's public product families. Performance still depends heavily on MC/MP core count, which is applied below.
@@ -232,7 +232,6 @@ static void ApplyCoreCountLimits(MobileGsTuning* tuning, u8 core_count)
 	tuning->texture_age = std::min(tuning->texture_age, texture_age_cap);
 	tuning->constrained = (tuning->pooled_targets < 128 || tuning->pooled_textures < 128);
 	tuning->prefer_new_textures &= !tuning->constrained;
-	tuning->force_partial_texture_preloading = tuning->constrained;
 }
 } // namespace
 

@@ -215,7 +215,6 @@ struct MobileGsTuning
 {
 	bool constrained = true;
 	bool prefer_new_textures = false;
-	bool force_partial_texture_preloading = true;
 	u32 pooled_targets = 96;
 	u32 target_age = 8;
 	u32 pooled_textures = 96;

@@ -1148,14 +1148,9 @@ bool GSDeviceOGL::CheckFeatures()
 	// AND rather than an assignment, so a part whose table entry says "reuse" cannot turn
 	// preference back on for a profile that did not want it. sashkinbro/EmuCoreX.
 	m_features.prefer_new_textures &= GetMobileGSTuning().prefer_new_textures;
-	if (GetMobileGSTuning().force_partial_texture_preloading &&
-		GSConfig.TexturePreloading == TexturePreloadingLevel::Full)
-	{
-		GSConfig.TexturePreloading = TexturePreloadingLevel::Partial;
-		Console.Warning("GL: Mobile GS %s/%s profile lowered texture preloading to partial.",
-			GpuProfileDetector::RuntimeProfileToString(GetRuntimeGPUProfile()),
-			GetMobileGPUIdentity().name.c_str());
-	}
+	// See the matching note in GSDeviceVK::CheckFeatures: the forced downgrade of Texture
+	// Preloading to Partial is gone. It overrode an explicit user setting, applied to every
+	// unrecognised GPU via the conservative fallback, and depended on device-recreation ordering.
 #endif
 
 	if (use_mali_profile)

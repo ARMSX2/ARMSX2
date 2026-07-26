@@ -49,7 +49,6 @@ MobileGsTuning MakeMobileGsTuning(u32 pooled_targets, u32 target_age, u32 pooled
 	tuning.texture_age = texture_age;
 	tuning.constrained = (pooled_targets < 128 || pooled_textures < 128);
 	tuning.prefer_new_textures = prefer_new_textures;
-	tuning.force_partial_texture_preloading = tuning.constrained;
 	return tuning;
 }
 

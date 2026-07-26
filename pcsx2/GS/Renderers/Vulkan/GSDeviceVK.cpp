@@ -3429,14 +3429,15 @@ bool GSDeviceVK::CheckFeatures()
 	// Weak mobile parts would rather reuse than grow the pool, and full preloading blows
 	// their texture budget. Both from the resolved GPU profile; sashkinbro/EmuCoreX.
 	m_features.prefer_new_textures = GetMobileGSTuning().prefer_new_textures;
-	if (GetMobileGSTuning().force_partial_texture_preloading &&
-		GSConfig.TexturePreloading == TexturePreloadingLevel::Full)
-	{
-		GSConfig.TexturePreloading = TexturePreloadingLevel::Partial;
-		Console.Warning("VK: Mobile GS %s/%s profile lowered texture preloading to partial.",
-			GpuProfileDetector::RuntimeProfileToString(GetRuntimeGPUProfile()),
-			GetMobileGPUIdentity().name.c_str());
-	}
+	// The profile no longer forces Texture Preloading down to Partial. It silently contradicted an
+	// explicit user setting — our default is Full, and the downgrade fired for every "constrained"
+	// profile, which includes the conservative fallback used by any GPU the table does not
+	// recognise, so the UI said Full while the renderer ran Partial and only a log line said
+	// otherwise. It was also order-dependent: GSConfig is a global reassigned wholesale on each
+	// ApplySettings, while this override only re-runs when the device is recreated, so preloading
+	// could differ between a fresh boot and a mid-session settings change. sashkinbro dropped it
+	// too ("Restore fast mobile GS paths"); Full is upstream's default because it is usually the
+	// faster path, and a pool-size heuristic is not a measurement of texture-memory pressure.
 #endif
 	m_features.provoking_vertex_last = m_optional_extensions.vk_ext_provoking_vertex;
 	m_features.vs_expand = !GSConfig.DisableVertexShaderExpand;
