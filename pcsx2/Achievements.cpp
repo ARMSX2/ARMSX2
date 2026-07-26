@@ -4,6 +4,7 @@
 #include "Achievements.h"
 #include "BuildVersion.h"
 #include "CDVD/CDVD.h"
+#include "CDVD/CDVDcommon.h"
 #include "Elfheader.h"
 #include "Host.h"
 #include "GS/Renderers/Common/GSTexture.h"
@@ -349,6 +350,35 @@ std::string Achievements::GetGameHash(const std::string& elf_path)
 	return hash_str;
 }
 
+std::string Achievements::GetGameHashForImage(const std::string& image_path)
+{
+	// CDVD is a global, not thread-local (see the same note in GameList::GetIsoSerialAndCRC), so
+	// repointing it while a game is running would swap that game's disc out from under it. Refuse
+	// rather than corrupt a live session.
+	if (VMManager::HasValidVM())
+	{
+		Console.Warning("Achievements: refusing to hash '%s' while a VM is running.", image_path.c_str());
+		return {};
+	}
+
+	Error error;
+	CDVD = &CDVDapi_Iso;
+	if (!CDVD->open(image_path, &error))
+	{
+		Console.Error(fmt::format("Achievements: CDVD open of '{}' failed: {}", image_path, error.GetDescription()));
+		return {};
+	}
+
+	// Mirrors the game-list scanner: detect, read the disc info, hash the boot ELF, close. The hash
+	// is of the ELF name plus its contents, so it needs the ELF path from SYSTEM.CNF rather than the
+	// image path — cdvdGetDiscInfo hands that back.
+	DoCDVDdetectDiskType();
+	std::string elf_path;
+	cdvdGetDiscInfo(nullptr, &elf_path, nullptr, nullptr, nullptr);
+	std::string hash = elf_path.empty() ? std::string() : GetGameHash(elf_path);
+	DoCDVDclose();
+	return hash;
+}
 
 void Achievements::DownloadImage(std::string url, std::string cache_filename)
 {

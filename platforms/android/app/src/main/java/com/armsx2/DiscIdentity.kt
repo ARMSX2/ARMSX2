@@ -41,7 +41,9 @@ object DiscIdentity {
 
     fun crcOf(uri: android.net.Uri): String? = of(uri)?.crc
 
-    private fun nativePath(uri: android.net.Uri): String =
+    /** Internal-use path the native side expects for [uri]. Also used by [com.armsx2.RaLibrary]
+     *  to hash a disc for RetroAchievements identification. */
+    fun nativePath(uri: android.net.Uri): String =
         if (uri.scheme == "file") uri.path ?: uri.toString() else uri.toString()
 
     private fun probe(path: String): Id? {

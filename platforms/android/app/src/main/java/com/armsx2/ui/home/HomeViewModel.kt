@@ -59,6 +59,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     initialized = cached.games.isNotEmpty() || !pendingInitialScan,
                 ),
             )
+            // Library-wide RetroAchievements progress. Hooked here because this is where the game
+            // list lives, and the sync needs paths to hash. No-op unless a web API key is set.
+            if (nativeReady) com.armsx2.RaLibrary.onLibraryLoaded(state.value.allGames)
             if (nativeReady && pendingInitialScan) refresh()
         } else if (nativeReady && pendingInitialScan) {
             refresh()
@@ -80,6 +83,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 state.value = buildState(
                     state.value.copy(allGames = games, scanning = false, initialized = true),
                 )
+                com.armsx2.RaLibrary.onLibraryLoaded(games)
             }.onFailure { failure ->
                 pendingInitialScan = false
                 state.value = state.value.copy(

@@ -488,6 +488,24 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
     HTTPDownloaderAndroid::BindFromJNI(env);
 }
 
+// RetroAchievements hash for a disc image, computed WITHOUT booting it. This is what lets the
+// library show "0/40" for a game that has never been played: the core only knows about the game it
+// currently has loaded, so set sizes for everything else have to come from RA's game list, and the
+// hash is the only key that matches reliably (RA carries no PS2 serials).
+//
+// Repoints the global CDVD, so it returns "" while a VM is running rather than disturbing it.
+// Callers must be off the UI thread — it reads the disc.
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getAchievementsHashForPath(JNIEnv* env, jclass,
+                                                                jstring p_szpath) {
+    const std::string path = GetJavaString(env, p_szpath);
+    if (path.empty())
+        return env->NewStringUTF("");
+    const std::string hash = Achievements::GetGameHashForImage(path);
+    return env->NewStringUTF(hash.c_str());
+}
+
 extern "C"
 JNIEXPORT jstring JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_getGameTitle(JNIEnv *env, jclass clazz,

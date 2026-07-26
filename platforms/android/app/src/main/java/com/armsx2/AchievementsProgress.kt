@@ -23,6 +23,17 @@ object AchievementsProgress {
      * blanking a real figure. Blocking (builds and parses the set JSON), so keep it off hot paths;
      * it is cheap enough once per pause or on a slow poll.
      */
+    /** [snapshot] for whatever is loaded now. Called from the RA sound hook, which fires on every
+     *  unlock, so the library figure moves as achievements are earned instead of lagging the poll. */
+    @JvmStatic
+    fun snapshotCurrentGame() {
+        val serial = runCatching {
+            com.armsx2.runtime.MainActivityRuntime.currentGame.value?.serial
+                ?: NativeApp.getGameSerial()
+        }.getOrNull()
+        snapshot(serial)
+    }
+
     fun snapshot(serial: String?) {
         val s = serial?.takeIf { it.isNotEmpty() } ?: return
         val json = runCatching { NativeApp.getAchievementsJSON() }.getOrNull().orEmpty()

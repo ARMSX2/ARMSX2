@@ -207,6 +207,13 @@ public class NativeApp {
 	 *  (active=false, items=[]) when no game is loaded or not logged in. */
 	public static native String getAchievementsJSON();
 
+	/** RetroAchievements hash for a disc image, computed without booting it — the key used to look a
+	 *  game up in RA's game list so the library can show progress for games never played. Empty
+	 *  string if the image is unreadable, has no PS2 boot ELF, or a VM is currently running (it
+	 *  repoints the global CDVD, so it declines rather than disturb a live game). Reads the disc:
+	 *  call off the UI thread. */
+	public static native String getAchievementsHashForPath(String imagePath);
+
 	/** Live RetroAchievements rich-presence string. Recomputed every
 	 *  second on the native side from the game's RAM. Empty when no game,
 	 *  no client, or RP not supported by the loaded set. */
@@ -402,6 +409,10 @@ public class NativeApp {
 
 	public static void playSound(String path) {
 		if (path == null || path.isEmpty()) return;
+		// An RA sound means the set just changed state, so re-read the counts now rather than waiting
+		// for the slow poll — this is what makes the library's progress figure move as you play.
+		// Off-thread because it builds and parses the set JSON, and this call is on the emu thread.
+		new Thread(com.armsx2.AchievementsProgress::snapshotCurrentGame, "ach-progress").start();
 		// Cap concurrent players — a burst of simultaneous unlocks (combo/milestone) could
 		// otherwise exhaust the device's MediaPlayer/codec pool and make start() no-op.
 		if (sActiveSounds.size() >= 4) return;

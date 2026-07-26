@@ -205,7 +205,11 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
         val root = JSONObject(json)
         return AchievementsUiState(
             loggedIn = root.optBoolean("loggedIn"),
-            userName = root.optString("userName"),
+            userName = root.optString("userName").also {
+                // Persist it: a library-wide progress sync runs with no game loaded, so the
+                // panel is the only place the signed-in name is ever visible.
+                com.armsx2.RaLibrary.userName = it
+            },
             // Reflect the PERSISTED ChallengeMode (what takes effect on the next boot), not
             // the live rcheevos flag from the JSON — that's always off with no game running,
             // which would make the library RA tab's Hardcore toggle snap back off after you

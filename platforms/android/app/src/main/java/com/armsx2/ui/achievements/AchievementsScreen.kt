@@ -169,6 +169,7 @@ private fun AchievementAccount(
                 SectionTitle(state.userName.ifBlank { str("ra.account.signedIn") }, str("ra.options.header"), Modifier.weight(1f))
                 StatusChip("${state.items.count { it.unlocked }} / ${state.items.size}")
             }
+            LibraryProgressSection()
             SettingSwitchRow(
                 title = str("ra.mode.hardcore"),
                 description = str("patches.hardcoreNoticeCheatsDisabled"),
@@ -545,6 +546,73 @@ private fun AchievementFilterTabs(selected: AchFilter, items: List<AchievementIt
                     fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Library-wide progress. The core can only report achievements for the game it has loaded, so
+ * showing "0/40" on a game never played needs RetroAchievements' own game list — two requests for a
+ * whole library, matched by disc hash. That uses the site's **web API key**, which is a separate
+ * credential from the login token above, so it has to be pasted in once.
+ */
+@Composable
+private fun LibraryProgressSection() {
+    var key by remember { mutableStateOf(com.armsx2.RaLibrary.webApiKey) }
+    val syncing = com.armsx2.RaLibrary.syncing.value
+    val result = com.armsx2.RaLibrary.lastResult.value
+
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Text(str("ra.library.header"), style = MaterialTheme.typography.titleSmall)
+        Text(
+            str("ra.library.desc"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = key,
+            onValueChange = {
+                // Trim on entry: the site's copy button tends to bring whitespace with it, and a
+                // stray space produces a silent 401 that looks like the feature being broken.
+                key = it.trim()
+                com.armsx2.RaLibrary.webApiKey = key
+            },
+            label = { Text(str("ra.library.apiKey")) },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            shape = RoundedCornerShape(18.dp),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+        val sync = {
+            if (!com.armsx2.RaLibrary.syncNow()) {
+                com.armsx2.RaLibrary.lastResult.value = com.armsx2.i18n.I18n.get("ra.library.notReady")
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = sync,
+                enabled = !syncing && key.isNotEmpty(),
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.controllerFocusable(
+                    "ra.library.sync", RoundedCornerShape(18.dp), onConfirm = sync,
+                ),
+            ) {
+                if (syncing) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(str(if (syncing) "ra.library.syncing" else "ra.library.sync"))
+            }
+            if (result.isNotEmpty() && !syncing) {
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    result,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
