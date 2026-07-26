@@ -90,6 +90,9 @@ struct DigestSet
 	// codegen without moving a single digest above. Branch whose arms reach a
 	// program end, i.e. the shape that fix touches. 0 in a pin row = probe absent.
 	u64 vu1BranchToEbit;
+	// DIV / SQRT / RSQRT, the only div-unit probe (added at ABI v17); why it
+	// exists is at its build site. 0 in a pin row = probe absent.
+	u64 divUnit;
 };
 
 struct AbiPin
@@ -186,6 +189,12 @@ constexpr AbiPin kPins[] = {
 	// ends in one, so all seven digests move. Harvested from the first,
 	// deliberately red, run.
 	{16, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075}},
+	// abi 17: writeQreg flushes a denormal quotient to signed zero before the
+	// insert. mVU_DIV / mVU_SQRT / mVU_RSQRT all end there, so all three change
+	// shape; the seven digests above are bit-identical to abi 16, none of those
+	// probes having a div-unit op. divUnit is harvested from the first,
+	// deliberately red, run.
+	{17, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x319729a0643ec36d}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs)
@@ -294,6 +303,19 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
 	});
 
+	// All three div-unit ops plus a VWAITQ, so the probe covers mVU_DIV,
+	// mVU_SQRT and mVU_RSQRT (each of which ends in writeQreg) and the Q read
+	// back out. No probe above issues a div-unit op -- the lower-pipe ops they
+	// carry are branch and integer shaped -- so without this one the entire
+	// div-unit emitter could be rewritten without moving a digest.
+	actual.divUnit = CompileAndDigest({
+		LowerOnly(VDIV_L(vf::vf1, /*fsf=*/0, vf::vf2, /*ftf=*/0)),
+		LowerOnly(VSQRT_L(vf::vf2, /*ftf=*/1)),
+		LowerOnly(VRSQRT_L(vf::vf1, /*fsf=*/2, vf::vf2, /*ftf=*/3)),
+		VuOp{VWAITQ_L(), VNOP_U()},
+		UpperOnly(bits::E | VADDq_U(mask::xyzw, vf::vf3, vf::vf1)),
+	});
+
 	// VU1 counterpart of branchBothArms: both arms reach a program end, which is
 	// the shape the ABI-15 E-bit lookahead forcing touches. Every other probe
 	// here is VU0, so without this one a VU1-only emitter change moves no digest.
@@ -313,6 +335,7 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.broadcastChain, 0u);
 	ASSERT_NE(actual.condEvilBranch, 0u);
 	ASSERT_NE(actual.vu1BranchToEbit, 0u);
+	ASSERT_NE(actual.divUnit, 0u);
 
 #if !(defined(__linux__) && !defined(__ANDROID__) && defined(__GLIBCXX__))
 	// The pinned values embed guest-state field offsets baked into the emitted
@@ -344,7 +367,8 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.broadcastChain
 		<< ", 0x" << actual.condEvilBranch
 		<< ", 0x" << actual.spinLoop
-		<< ", 0x" << actual.vu1BranchToEbit << "}";
+		<< ", 0x" << actual.vu1BranchToEbit
+		<< ", 0x" << actual.divUnit << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -380,6 +404,11 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	{
 		EXPECT_EQ(actual.vu1BranchToEbit, pin->digests.vu1BranchToEbit)
 			<< explain("vu1BranchToEbit", actual.vu1BranchToEbit, pin->digests.vu1BranchToEbit);
+	}
+	if (pin->digests.divUnit != 0) // probe added at abi 17; older rows unpinned
+	{
+		EXPECT_EQ(actual.divUnit, pin->digests.divUnit)
+			<< explain("divUnit", actual.divUnit, pin->digests.divUnit);
 	}
 	ASSERT_NE(actual.spinLoop, 0u);
 }
