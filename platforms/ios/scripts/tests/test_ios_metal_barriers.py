@@ -2,13 +2,15 @@ import unittest
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
+# Repo root. The Metal renderer used to be vendored under platforms/ios; it is
+# shared core now, so everything below is relative to the top of the tree.
+ROOT = Path(__file__).resolve().parents[4]
 
 
 class IOSMetalBarrierTests(unittest.TestCase):
     def test_ios_does_not_advertise_unsupported_texture_barriers(self):
         implementation = (
-            ROOT / "app/src/main/cpp/pcsx2/GS/Renderers/Metal/GSDeviceMTL.mm"
+            ROOT / "pcsx2/GS/Renderers/Metal/GSDeviceMTL.mm"
         ).read_text(encoding="utf-8")
 
         self.assertRegex(

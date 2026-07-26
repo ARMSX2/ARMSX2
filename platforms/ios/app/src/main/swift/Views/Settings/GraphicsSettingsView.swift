@@ -5,9 +5,17 @@ import SwiftUI
 
 struct GraphicsSettingsView: View {
     @State private var settings = SettingsStore.shared
+    @State private var appState = AppState.shared
     @State private var showShaderCacheClearConfirm = false
     @State private var shaderCacheResult: String?
     @State private var showShaderCacheResult = false
+
+    // Returning to the menu only pauses the VM, so a game can still be loaded
+    // while this screen is open. Switching renderer then sends the next settings
+    // apply through a full GS teardown under that game.
+    private var gameIsLoaded: Bool {
+        appState.runningGameName != nil
+    }
 
     private var manualAdvancedHacks: Bool {
         !settings.enableGameDBHardwareFixes
@@ -59,6 +67,12 @@ struct GraphicsSettingsView: View {
                     Text(settings.localized("Software")).tag(13)
                     Text(settings.localized("Null (No Output)")).tag(11)
 #endif
+                }
+                .disabled(gameIsLoaded)
+                if gameIsLoaded {
+                    Text(settings.localized("Close the running game to change the renderer."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 #if targetEnvironment(macCatalyst)
                 Text(settings.localized("Metal is required for the Mac Catalyst build. Requires restart."))
