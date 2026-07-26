@@ -138,7 +138,8 @@ final class SettingsStore {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
     }
 
-    /// Used by the graphics `Setting<T>` onSet closures. Swift skips property
+    /// Used by every graphics writer: the `Setting<T>` onSet closures, the few
+    /// keys written from a plain `didSet`, and `setGSBoolHack`. Swift skips property
     /// observers during init, so they don't fire while loading from the INI;
     /// this no-ops while `suppressINIWrites` is true as a guard against that
     /// ever changing.
@@ -469,6 +470,7 @@ final class SettingsStore {
             guard !suppressINIWrites else { return }
             ARMSX2Bridge.setINIFloat("EmuCore/GS", key: "FramerateNTSC", value: ntscFramerate)
             applyFrameLimiterSettings()
+            requestGraphicsApplyGuarded()
         }
     }
     let _palFramerateConfig = Setting<Float>(
@@ -644,9 +646,13 @@ final class SettingsStore {
         ARMSX2Bridge.isMetalFXSupported()
     }
 
+    // Boot-only on purpose: a live switch is a restart option, so applying it
+    // would send GSUpdateConfig down GSreopen and tear the Metal device down
+    // under the running game. The picker says "Requires restart".
     let _rendererConfig = Setting<Int>(
         section: "EmuCore/GS", key: "Renderer", default: 17,
         suppressible: false,
+        bootOnly: true,
         writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
     var renderer: Int = 17 { didSet {
         guard !(_rendererConfig.suppressible && suppressINIWrites) else { return }
@@ -656,8 +662,7 @@ final class SettingsStore {
     let _upscaleMultiplierConfig = Setting<Float>(
         section: "EmuCore/GS", key: "upscale_multiplier", default: 1.0,
         suppressible: false,
-        writer: ARMSX2Bridge.setINIFloat,
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: ARMSX2Bridge.setINIFloat)
     var upscaleMultiplier: Float = 1.0 { didSet {
         guard !(_upscaleMultiplierConfig.suppressible && suppressINIWrites) else { return }
         _upscaleMultiplierConfig.writer(_upscaleMultiplierConfig.section, _upscaleMultiplierConfig.key, upscaleMultiplier)
@@ -676,8 +681,7 @@ final class SettingsStore {
     let _textureFilteringConfig = Setting<Int>(
         section: "EmuCore/GS", key: "filter", default: 2,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
     var textureFiltering: Int = 2 { didSet {
         guard !(_textureFilteringConfig.suppressible && suppressINIWrites) else { return }
         _textureFilteringConfig.writer(_textureFilteringConfig.section, _textureFilteringConfig.key, textureFiltering)
@@ -686,8 +690,7 @@ final class SettingsStore {
     let _backThreadModeConfig = Setting<Int>(
         section: "EmuCore/GS", key: "GSBackThreadMode", default: 0,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
     var backThreadMode: Int = 0 { didSet {
         guard !(_backThreadModeConfig.suppressible && suppressINIWrites) else { return }
         _backThreadModeConfig.writer(_backThreadModeConfig.section, _backThreadModeConfig.key, backThreadMode)
@@ -705,8 +708,7 @@ final class SettingsStore {
     let _fxaaConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "fxaa", default: false,
         suppressible: false,
-        writer: ARMSX2Bridge.setINIBool,
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: ARMSX2Bridge.setINIBool)
     var fxaa: Bool = false { didSet {
         guard !(_fxaaConfig.suppressible && suppressINIWrites) else { return }
         _fxaaConfig.writer(_fxaaConfig.section, _fxaaConfig.key, fxaa)
@@ -715,8 +717,7 @@ final class SettingsStore {
     let _casModeConfig = Setting<Int>(
         section: "EmuCore/GS", key: "CASMode", default: 0,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
     var casMode: Int = 0 { didSet {
         guard !(_casModeConfig.suppressible && suppressINIWrites) else { return }
         _casModeConfig.writer(_casModeConfig.section, _casModeConfig.key, casMode)
@@ -725,8 +726,7 @@ final class SettingsStore {
     let _casSharpnessConfig = Setting<Int>(
         section: "EmuCore/GS", key: "CASSharpness", default: 50,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
     var casSharpness: Int = 50 { didSet {
         guard !(_casSharpnessConfig.suppressible && suppressINIWrites) else { return }
         _casSharpnessConfig.writer(_casSharpnessConfig.section, _casSharpnessConfig.key, casSharpness)
@@ -735,8 +735,7 @@ final class SettingsStore {
     let _interlaceModeConfig = Setting<Int>(
         section: "EmuCore/GS", key: "deinterlace_mode", default: 7,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
     var interlaceMode: Int = 7 { didSet {
         guard !(_interlaceModeConfig.suppressible && suppressINIWrites) else { return }
         _interlaceModeConfig.writer(_interlaceModeConfig.section, _interlaceModeConfig.key, interlaceMode)
@@ -745,8 +744,7 @@ final class SettingsStore {
     let _aspectRatioConfig = Setting<Int>(
         section: "EmuCore/GS", key: "AspectRatio", default: 1,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIString(s, key: k, value: SettingsStore.aspectRatioName(for: v)) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIString(s, key: k, value: SettingsStore.aspectRatioName(for: v)) })
     var aspectRatio: Int = 1 { didSet {
         guard !(_aspectRatioConfig.suppressible && suppressINIWrites) else { return }
         _aspectRatioConfig.writer(_aspectRatioConfig.section, _aspectRatioConfig.key, aspectRatio)
@@ -773,8 +771,7 @@ final class SettingsStore {
     let _trilinearFilteringConfig = Setting<Int>(
         section: "EmuCore/GS", key: "TriFilter", default: -1,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
     var trilinearFiltering: Int = -1 { didSet {
         guard !(_trilinearFilteringConfig.suppressible && suppressINIWrites) else { return }
         _trilinearFilteringConfig.writer(_trilinearFilteringConfig.section, _trilinearFilteringConfig.key, trilinearFiltering)
@@ -834,6 +831,7 @@ final class SettingsStore {
                 return
             }
             ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_TCOffsetX", value: Int32(textureOffsetX))
+            requestGraphicsApplyGuarded()
         }
     }
     // clamps to -4096...4096
@@ -845,6 +843,7 @@ final class SettingsStore {
                 return
             }
             ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_TCOffsetY", value: Int32(textureOffsetY))
+            requestGraphicsApplyGuarded()
         }
     }
     // clamps to 0...5000
@@ -856,6 +855,7 @@ final class SettingsStore {
                 return
             }
             ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_SkipDraw_Start", value: Int32(skipDrawStart))
+            requestGraphicsApplyGuarded()
         }
     }
     // clamps to 0...5000
@@ -867,6 +867,7 @@ final class SettingsStore {
                 return
             }
             ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHacks_SkipDraw_End", value: Int32(skipDrawEnd))
+            requestGraphicsApplyGuarded()
         }
     }
     let _loadTextureReplacementsConfig = Setting<Bool>(
@@ -1039,8 +1040,7 @@ final class SettingsStore {
     let _maxAnisotropyConfig = Setting<Int>(
         section: "EmuCore/GS", key: "MaxAnisotropy", default: 0,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...16))) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...16))) })
     var maxAnisotropy: Int = 0 { didSet {
         guard !(_maxAnisotropyConfig.suppressible && suppressINIWrites) else { return }
         _maxAnisotropyConfig.writer(_maxAnisotropyConfig.section, _maxAnisotropyConfig.key, maxAnisotropy)
@@ -1058,8 +1058,7 @@ final class SettingsStore {
     let _tvShaderConfig = Setting<Int>(
         section: "EmuCore/GS", key: "TVShader", default: 0,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...7))) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...7))) })
     var tvShader: Int = 0 { didSet {
         guard !(_tvShaderConfig.suppressible && suppressINIWrites) else { return }
         _tvShaderConfig.writer(_tvShaderConfig.section, _tvShaderConfig.key, tvShader)
@@ -1070,8 +1069,7 @@ final class SettingsStore {
     let _upscalerConfig = Setting<Int>(
         section: "EmuCore/GS", key: "Upscaler", default: 0,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
     var upscaler: Int = 0 { didSet {
         guard !(_upscalerConfig.suppressible && suppressINIWrites) else { return }
         _upscalerConfig.writer(_upscalerConfig.section, _upscalerConfig.key, upscaler)
@@ -1085,10 +1083,14 @@ final class SettingsStore {
         gsBoolHacks[key] ?? false
     }
 
+    /// The single write funnel for those hacks. They live in a dictionary rather
+    /// than a Setting<T>, so the default EmuCore/GS apply hook cannot reach them;
+    /// this is their equivalent. Everything that changes one goes through here.
     func setGSBoolHack(_ key: String, _ value: Bool) {
         gsBoolHacks[key] = value
         guard !suppressINIWrites else { return }
         ARMSX2Bridge.setINIBool("EmuCore/GS", key: key, value: value)
+        requestGraphicsApplyGuarded()
     }
 
     private static func loadGSBoolHacks() -> [String: Bool] {
@@ -1103,8 +1105,7 @@ final class SettingsStore {
     let _pcrtcOffsetsConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "pcrtc_offsets", default: false,
         suppressible: false,
-        writer: ARMSX2Bridge.setINIBool,
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: ARMSX2Bridge.setINIBool)
     var pcrtcOffsets: Bool = false { didSet {
         guard !(_pcrtcOffsetsConfig.suppressible && suppressINIWrites) else { return }
         _pcrtcOffsetsConfig.writer(_pcrtcOffsetsConfig.section, _pcrtcOffsetsConfig.key, pcrtcOffsets)
@@ -1113,8 +1114,7 @@ final class SettingsStore {
     let _pcrtcOverscanConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "pcrtc_overscan", default: false,
         suppressible: false,
-        writer: ARMSX2Bridge.setINIBool,
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: ARMSX2Bridge.setINIBool)
     var pcrtcOverscan: Bool = false { didSet {
         guard !(_pcrtcOverscanConfig.suppressible && suppressINIWrites) else { return }
         _pcrtcOverscanConfig.writer(_pcrtcOverscanConfig.section, _pcrtcOverscanConfig.key, pcrtcOverscan)
@@ -1123,8 +1123,7 @@ final class SettingsStore {
     let _pcrtcAntiBlurConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "pcrtc_antiblur", default: true,
         suppressible: false,
-        writer: ARMSX2Bridge.setINIBool,
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: ARMSX2Bridge.setINIBool)
     var pcrtcAntiBlur: Bool = true { didSet {
         guard !(_pcrtcAntiBlurConfig.suppressible && suppressINIWrites) else { return }
         _pcrtcAntiBlurConfig.writer(_pcrtcAntiBlurConfig.section, _pcrtcAntiBlurConfig.key, pcrtcAntiBlur)
@@ -1133,8 +1132,7 @@ final class SettingsStore {
     let _disableInterlaceOffsetConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "disable_interlace_offset", default: false,
         suppressible: false,
-        writer: ARMSX2Bridge.setINIBool,
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: ARMSX2Bridge.setINIBool)
     var disableInterlaceOffset: Bool = false { didSet {
         guard !(_disableInterlaceOffsetConfig.suppressible && suppressINIWrites) else { return }
         _disableInterlaceOffsetConfig.writer(_disableInterlaceOffsetConfig.section, _disableInterlaceOffsetConfig.key, disableInterlaceOffset)
@@ -1143,8 +1141,7 @@ final class SettingsStore {
     let _skipDuplicateFramesConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "SkipDuplicateFrames", default: true,
         suppressible: false,
-        writer: ARMSX2Bridge.setINIBool,
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: ARMSX2Bridge.setINIBool)
     var skipDuplicateFrames: Bool = true { didSet {
         guard !(_skipDuplicateFramesConfig.suppressible && suppressINIWrites) else { return }
         _skipDuplicateFramesConfig.writer(_skipDuplicateFramesConfig.section, _skipDuplicateFramesConfig.key, skipDuplicateFrames)
@@ -1163,8 +1160,7 @@ final class SettingsStore {
     let _integerScalingConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "IntegerScaling", default: false,
         suppressible: false,
-        writer: ARMSX2Bridge.setINIBool,
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: ARMSX2Bridge.setINIBool)
     var integerScaling: Bool = false { didSet {
         guard !(_integerScalingConfig.suppressible && suppressINIWrites) else { return }
         _integerScalingConfig.writer(_integerScalingConfig.section, _integerScalingConfig.key, integerScaling)
@@ -1175,8 +1171,7 @@ final class SettingsStore {
     let _shadeBoostConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "ShadeBoost", default: false,
         suppressible: false,
-        writer: ARMSX2Bridge.setINIBool,
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: ARMSX2Bridge.setINIBool)
     var shadeBoost: Bool = false { didSet {
         guard !(_shadeBoostConfig.suppressible && suppressINIWrites) else { return }
         _shadeBoostConfig.writer(_shadeBoostConfig.section, _shadeBoostConfig.key, shadeBoost)
@@ -1185,8 +1180,7 @@ final class SettingsStore {
     let _shadeBoostBrightnessConfig = Setting<Int>(
         section: "EmuCore/GS", key: "ShadeBoost_Brightness", default: 50,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) })
     var shadeBoostBrightness: Int = 50 { didSet {
         guard !(_shadeBoostBrightnessConfig.suppressible && suppressINIWrites) else { return }
         _shadeBoostBrightnessConfig.writer(_shadeBoostBrightnessConfig.section, _shadeBoostBrightnessConfig.key, shadeBoostBrightness)
@@ -1195,8 +1189,7 @@ final class SettingsStore {
     let _shadeBoostContrastConfig = Setting<Int>(
         section: "EmuCore/GS", key: "ShadeBoost_Contrast", default: 50,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) })
     var shadeBoostContrast: Int = 50 { didSet {
         guard !(_shadeBoostContrastConfig.suppressible && suppressINIWrites) else { return }
         _shadeBoostContrastConfig.writer(_shadeBoostContrastConfig.section, _shadeBoostContrastConfig.key, shadeBoostContrast)
@@ -1205,8 +1198,7 @@ final class SettingsStore {
     let _shadeBoostSaturationConfig = Setting<Int>(
         section: "EmuCore/GS", key: "ShadeBoost_Saturation", default: 50,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) })
     var shadeBoostSaturation: Int = 50 { didSet {
         guard !(_shadeBoostSaturationConfig.suppressible && suppressINIWrites) else { return }
         _shadeBoostSaturationConfig.writer(_shadeBoostSaturationConfig.section, _shadeBoostSaturationConfig.key, shadeBoostSaturation)
@@ -1215,8 +1207,7 @@ final class SettingsStore {
     let _shadeBoostGammaConfig = Setting<Int>(
         section: "EmuCore/GS", key: "ShadeBoost_Gamma", default: 50,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) },
-        onSet: { _ in SettingsStore.shared.requestGraphicsApplyGuarded() })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) })
     var shadeBoostGamma: Int = 50 { didSet {
         guard !(_shadeBoostGammaConfig.suppressible && suppressINIWrites) else { return }
         _shadeBoostGammaConfig.writer(_shadeBoostGammaConfig.section, _shadeBoostGammaConfig.key, shadeBoostGamma)
@@ -2695,8 +2686,7 @@ final class SettingsStore {
         tvShader = 0
         upscaler = 0
         for option in Self.gsBoolHackOptions {
-            gsBoolHacks[option.key] = false
-            ARMSX2Bridge.setINIBool("EmuCore/GS", key: option.key, value: false)
+            setGSBoolHack(option.key, false)
         }
         // Screen / PCRTC and Shade Boost
         pcrtcOffsets = false
