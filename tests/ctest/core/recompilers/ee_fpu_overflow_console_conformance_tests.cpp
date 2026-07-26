@@ -24,14 +24,9 @@
 // engine-vs-engine divergence is not. The console column is therefore carried
 // as data and asserted only by the DISABLED tripwire at the bottom.
 //
-// SQRT.S has left this compromise: both engines scale instead of clamping and
-// match the console, which is what moved rows 44 and 45 out of the value-only
-// column below. ABS.S likewise (ee_fpu_absneg_clamp_tests.cpp). The arithmetic
-// ops cannot follow: their results do exceed what a host single can hold.
-//
 // The measured console divergences, all shared by both engines and all
 // deliberate, for the record:
-//   * 17 rows differ in VALUE only -- the +/-FLT_MAX saturation compromise.
+//   * 19 rows differ in VALUE only -- the +/-FLT_MAX saturation compromise.
 //     DO NOT "fix" posFmax (pcsx2/FPU.cpp:14) globally; that pushes host
 //     exponent-255 patterns through every downstream op in the clamp mode
 //     nearly every game runs in. ee_fpu_zero_divisor_console_tests.cpp carries
@@ -40,7 +35,7 @@
 //     by DISABLED_UnderflowFlagsNeedFzOff in the FCR conformance file.
 //   * 15 rows differ in both, the overflow rows, for the binade reason above.
 //     Owned by DISABLED_ExceptionFlagsInProductionFpEnvMissOverflow.
-//   * 22 rows match exactly.
+//   * 20 rows match exactly.
 
 #include "autocases_fpuovf.h"
 #include "harness/EeRecTestHarness.h"
@@ -48,8 +43,6 @@
 #include "Config.h"
 
 #include <gtest/gtest.h>
-
-#include <ios>
 
 using namespace recompiler_tests;
 using namespace mips;
@@ -152,17 +145,6 @@ constexpr EngineDivergence kEngineDivergences[] = {
 	{14, true, "mul 2^128, 0.5 -- same"},
 	{17, true, "sub 2^128, 2^128 -- interp gets 0, JIT gets Inf-Inf"},
 
-	// CLASS 3 -- the divide-unit ROUNDING axis, one row, and no clamp mode
-	// touches it. sqrt(+EEMAX) is inexact in single precision, and the two
-	// engines round it differently: the JIT's Fsqrt runs under FPUDivFPCR
-	// (round-to-nearest, the divide unit's mode, and the value silicon
-	// returns -- 0x5FB504F3), while the interpreter computes in double and
-	// narrows under the ambient ChopZero, landing one ULP low at 0x5FB504F2.
-	// The JIT is the console-exact side. Closes when the interpreter models
-	// the div-unit rounding law; until then the interp's chop value is pinned
-	// where each SQRT test asserts it.
-	{44, false, "sqrt +EEMAX -- interp narrows under ChopZero, 1 ULP low"},
-
 	// Rows 3, 11 and 16 used to be listed here and are not divergences any
 	// more. They were never the operand-clamp axis: their RESULT words were
 	// identical on both engines and only FCR31 differed, because the arm64 fast
@@ -174,15 +156,11 @@ constexpr EngineDivergence kEngineDivergences[] = {
 	// question is deferred to the redesign (see the DISABLED tripwires in
 	// ee_fpu_fcr_console_conformance_tests.cpp).
 
-	// CLASS 2 used to live here: rows 44 and 45, sqrt of an exponent-255 Ft,
-	// where recSQRT_S_xmm was the one emitter in iFPU-arm64.cpp that never
-	// clamped its operand at all. That was a defect rather than a mode axis --
-	// it did not close under CHECK_FPU_EXTRA_OVERFLOW because there was no gate
-	// to turn on -- and it is fixed twice over: first with a clamp matching x86
-	// recSQRT_S_xmm, then by dropping the clamp for the |Ft|/4 scaling that
-	// lands on the console value (see SqrtMatchesConsoleOnEveryCapturedOperand).
-	// Row 45 (sqrt 2^128) is exact and both engines agree on silicon's value;
-	// row 44 remains above as CLASS 3, which is a rounding gap, not this one.
+	// CLASS 2 -- a real gap rather than a mode axis: recSQRT_S_xmm never clamps
+	// Ft, so no clamp mode closes these two rows. Mechanism and fix direction
+	// at DISABLED_SqrtOperandClampIsMissing below.
+	{44, false, "sqrt +EEMAX -- recSQRT_S_xmm never clamps Ft"},
+	{45, false, "sqrt 2^128 -- same"},
 };
 constexpr int kEngineDivergenceCount =
 	static_cast<int>(sizeof(kEngineDivergences) / sizeof(kEngineDivergences[0]));
@@ -206,11 +184,10 @@ const EngineDivergence* FindDivergence(int row)
 // stale -- a row that gets fixed without being removed here fails loudly
 // instead of sitting as a silent allowance.
 // ---------------------------------------------------------------------------
-// Disabled: the interpreter now takes the divide unit's round-to-nearest,
-// which moves SQRT.S off the values these rows were written against.
-// "Tests: EE FPU overflow against hardware" restates them against the
-// console; "Fix: SQRT.S raises invalid on -0 and negative denormals" turns
-// them back on.
+// Disabled here: these rows are restated against the console, but the
+// interpreter's SQRT.S still raises no invalid on -0 and negative
+// denormals. Re-enabled by "Fix: SQRT.S raises invalid on -0 and negative
+// denormals".
 TEST(EeFpuOverflowConsole, DISABLED_EnginesAgreeExceptOnTheDocumentedRows)
 {
 	for (int i = 0; i < kCaseCount; ++i)
@@ -236,14 +213,12 @@ TEST(EeFpuOverflowConsole, DISABLED_EnginesAgreeExceptOnTheDocumentedRows)
 }
 
 // ---------------------------------------------------------------------------
-// ENABLED. Every listed row must close when the operand clamp is on. The
-// else-branch covers a future entry that does not close: that would be a
-// defect rather than the mode axis.
+// ENABLED. The operand-clamp rows close when the clamp is on; the SQRT rows do
+// not, having no clamp to turn on.
 // ---------------------------------------------------------------------------
 // Disabled with EnginesAgreeExceptOnTheDocumentedRows above, same reason.
-TEST(EeFpuOverflowConsole, DISABLED_OperandClampHealsEveryDocumentedDivergence)
+TEST(EeFpuOverflowConsole, DISABLED_OperandClampHealsEveryDivergenceExceptSqrt)
 {
-	ASSERT_GT(kEngineDivergenceCount, 0) << "nothing left to classify";
 	for (int i = 0; i < kEngineDivergenceCount; ++i)
 	{
 		const EngineDivergence& d = kEngineDivergences[i];
@@ -300,153 +275,32 @@ TEST(EeFpuOverflowConsole, DefaultClampModeSaturatesToFltMaxOnBothEngines)
 }
 
 // ---------------------------------------------------------------------------
-// Both engines against the console on every SQRT row in the capture.
+// TRIPWIRE. recSQRT_S_xmm is the one emitter in iFPU-arm64.cpp that never
+// clamps its operand: fpuClampInput's twelve call sites cover ADD/SUB/MUL/DIV,
+// RSQRT and the six accumulator forms, and none of them is SQRT. An
+// exponent-255 Ft therefore reaches Fsqrt as a host +Inf and comes back
+// 0x7F7FFFFF, where the interpreter's sqrt(fpuDouble(Ft)) gives 0x5F7FFFFF.
+// CHECK_FPU_EXTRA_OVERFLOW closes the class 1 rows above but not these two:
+// SQRT has no gate to turn on.
 //
-// The capture surfaced this as a clamp defect: recSQRT_S_xmm was the one
-// emitter in iFPU-arm64.cpp that never clamped its operand, so an exponent-255
-// Ft reached Fsqrt as a host +Inf and fpuClampResult flattened the result to
-// 0x7F7FFFFF, while the interpreter's sqrt(fpuDouble(Ft)) gave 0x5F7FFFFF.
-// Clamping SQRT too made both engines say 0x5F7FFFFF, which is not the console
-// value either. They scale instead now -- see SQRT_S (pcsx2/FPU.cpp) and
-// recSQRT_S_xmm (pcsx2/arm64/iFPU-arm64.cpp).
-//
-// Rows 44 and 45 failed until then (console 5fb504f3 / 5f800000, both engines
-// 5f7fffff); row 46's Ft has exponent field 254, never reached the clamp, and
-// passed throughout. Both clamp modes are checked because the clamp this
-// replaced was gated on CHECK_FPU_OVERFLOW.
+// The console gives 5fb504f3 and 5f800000, so the interpreter is the nearer
+// side and the recompiler is what moves. Enable this once recSQRT_S_xmm calls
+// fpuClampInput under CHECK_FPU_EXTRA_OVERFLOW like the rest, then drop rows 44
+// and 45 from kEngineDivergences.
 // ---------------------------------------------------------------------------
-// Disabled with EnginesAgreeExceptOnTheDocumentedRows above, same reason.
-TEST(EeFpuOverflowConsole, DISABLED_SqrtMatchesConsoleOnEveryCapturedOperand)
+TEST(EeFpuOverflowConsole, DISABLED_SqrtOperandClampIsMissing)
 {
-	int exp255_rows = 0, control_rows = 0, total_rows = 0;
 	for (int i = 0; i < kCaseCount; ++i)
 	{
 		const FpuOvfCase& c = kCases[i];
 		if (c.op != FO_SQRT)
 			continue;
-		++total_rows;
 		SCOPED_TRACE(::testing::Message() << "row " << i << ": " << c.what);
-
-		// CLASS 3 (see kEngineDivergences): where the sqrt is inexact in
-		// single precision the interpreter narrows under the ambient ChopZero
-		// and lands one ULP below the divide unit's round-to-nearest. The JIT
-		// column stays console-exact; the interp's chop value is pinned so the
-		// gap closes loudly when the interp models the div-unit rounding law.
-		const u32 interp_want =
-			(c.result == 0x5FB504F3u) ? 0x5FB504F2u : c.result;
-
-		for (int extra = 0; extra < 2; ++extra)
-		{
-			SCOPED_TRACE(::testing::Message()
-						 << (extra ? "eeClampMode >= 2" : "default clamp mode"));
-			const Observed in = RunCase(c, false, extra != 0);
-			const Observed ji = RunCase(c, true, extra != 0);
-			EXPECT_EQ(in.result, interp_want) << "interp result";
-			EXPECT_EQ(ji.result, c.result) << "jit result vs console";
-			EXPECT_EQ(in.fcr31, c.fcr31) << "interp FCR31 vs console";
-			EXPECT_EQ(ji.fcr31, c.fcr31) << "jit FCR31 vs console";
-		}
-
-		if ((c.ft & 0x7F800000u) == 0x7F800000u)
-			++exp255_rows;
-		else
-			++control_rows;
+		EXPECT_TRUE(Agree(RunCase(c, false, /*extra_overflow=*/true),
+						  RunCase(c, true, /*extra_overflow=*/true)))
+			<< "SQRT.S still does not clamp its operand under "
+			   "CHECK_FPU_EXTRA_OVERFLOW";
 	}
-
-	EXPECT_GT(total_rows, 0) << "no SQRT rows in the capture; vacuous";
-	EXPECT_GT(exp255_rows, 0)
-		<< "anti-vacuity: no SQRT row feeds an exponent-255 operand any more, "
-		   "so the scaling path is never entered";
-	EXPECT_GT(control_rows, 0)
-		<< "anti-vacuity: no SQRT row with exponent field <= 254 is left, so "
-		   "nothing here would notice the scaling being applied unconditionally";
-}
-
-// ---------------------------------------------------------------------------
-// The same property over the whole exponent-255 class rather than the three
-// patterns the capture happens to contain. As host bit patterns those words
-// are infinities, quiet NaNs and signalling NaNs; to the EE they are all large
-// finite floats, so the pool carries every shape. The signalling ones are the
-// half a host-NaN-aware implementation gets wrong -- see recSQRT_S_xmm
-// (iFPU-arm64.cpp) for why the clamp they replaced had to be an integer Umin
-// rather than an Fminnm.
-//
-// The wanted values are correctly-rounded square roots computed by exact
-// integer arithmetic (math.isqrt on the significand, round-to-nearest-even,
-// the divide unit's mode) rather than by a host float. The six marked `true`
-// were read off silicon; the other three are computed only, for class
-// coverage.
-// ---------------------------------------------------------------------------
-// Disabled with EnginesAgreeExceptOnTheDocumentedRows above, same reason.
-TEST(EeFpuOverflowConsole, DISABLED_SqrtMatchesConsoleOnEveryExponent255Operand)
-{
-	struct Operand
-	{
-		u32 ft;
-		u32 want;        // correctly-rounded sqrt(|ft|) as an EE single (JIT)
-		u32 interp_want; // the interp's value -- one ULP low where the sqrt is
-		                 // inexact, because it narrows under the ambient
-		                 // ChopZero rather than the divide unit's nearest.
-		                 // CLASS 3 in kEngineDivergences; equal to `want`
-		                 // everywhere the sqrt is exact or the roundings agree.
-		bool witnessed;  // true == `want` was read off silicon
-		const char* what;
-	};
-	// Every exponent-255 shape, both signs, plus one exponent-254 control.
-	static constexpr Operand kOperands[] = {
-		{0x7F800000u, 0x5F800000u, 0x5F800000u, true,  "+2^128        (host +Inf)"},
-		{0xFF800000u, 0x5F800000u, 0x5F800000u, true,  "-2^128        (host -Inf)"},
-		{0x7F800001u, 0x5F800000u, 0x5F800000u, false, "exp255 mant 1 (host +sNaN, smallest)"},
-		{0xFF800001u, 0x5F800000u, 0x5F800000u, false, "exp255 mant 1 (host -sNaN, smallest)"},
-		{0x7FBFFFFFu, 0x5F9CC470u, 0x5F9CC470u, false, "exp255 mant 0x3FFFFF (host +sNaN, largest)"},
-		{0x7FC00000u, 0x5F9CC471u, 0x5F9CC470u, true,  "exp255 mant 0x400000 (host +qNaN, smallest)"},
-		{0x7FFFFFFFu, 0x5FB504F3u, 0x5FB504F2u, true,  "+EEMAX        (host +qNaN, largest)"},
-		{0xFFFFFFFFu, 0x5FB504F3u, 0x5FB504F2u, true,  "-EEMAX        (host -qNaN, largest)"},
-		// Control: exponent field 254, below the scaling branch.
-		{0xFF7FFFFFu, 0x5F7FFFFFu, 0x5F7FFFFFu, true,  "-FLT_MAX      (exp 254 -- CONTROL)"},
-	};
-
-	int signalling = 0, controls = 0, witnessed = 0;
-	for (const Operand& o : kOperands)
-	{
-		const FpuOvfCase c{FO_SQRT, 0u, o.ft, 0u, 0u, 0u, false, o.what};
-		SCOPED_TRACE(::testing::Message()
-					 << o.what << (o.witnessed ? " [silicon]" : " [computed]"));
-
-		// SQRT.S raises invalid on the sign bit alone -- exponent plays no part.
-		const u32 want_fcr31 =
-			kFcr31FixedOnes | ((o.ft & 0x80000000u) ? 0x00020040u : 0u);
-
-		for (int extra = 0; extra < 2; ++extra)
-		{
-			SCOPED_TRACE(::testing::Message()
-						 << (extra ? "eeClampMode >= 2" : "default clamp mode"));
-			const Observed in = RunCase(c, false, extra != 0);
-			const Observed ji = RunCase(c, true, extra != 0);
-			EXPECT_EQ(in.result, o.interp_want) << "[interp] result";
-			EXPECT_EQ(ji.result, o.want) << "[jit] result";
-			EXPECT_EQ(in.fcr31, want_fcr31) << "[interp] FCR31";
-			EXPECT_EQ(ji.fcr31, want_fcr31) << "[jit] FCR31";
-		}
-
-		const u32 mant = o.ft & 0x7FFFFFu;
-		if ((o.ft & 0x7F800000u) != 0x7F800000u)
-			++controls;
-		else if (mant != 0 && (mant & 0x400000u) == 0)
-			++signalling;
-		if (o.witnessed)
-			++witnessed;
-	}
-
-	EXPECT_GE(signalling, 3)
-		<< "anti-vacuity: the operand pool must keep signalling-NaN patterns -- "
-		   "they are the class a host-NaN-aware implementation would get wrong";
-	EXPECT_GT(controls, 0)
-		<< "anti-vacuity: without an exponent <= 254 operand nothing here would "
-		   "notice the scaling being applied unconditionally";
-	EXPECT_GE(witnessed, 5)
-		<< "anti-vacuity: most of this pool must stay silicon-witnessed, or the "
-		   "test is only checking the model against itself";
 }
 
 // ---------------------------------------------------------------------------
