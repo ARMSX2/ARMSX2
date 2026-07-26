@@ -2971,11 +2971,14 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
                                         eeCycleRateOverride, eeCycleRate, fastBootOverride, fastBoot,
                                         enableCheats, enablePatches, enableGameFixes, enableGameDBHardwareFixes);
 
-    if (VMManager::HasValidVM()) {
+    // EmuConfig and the MTGS ring are the CPU thread's; this runs on the UI thread.
+    Host::RunOnCPUThread([]() {
+        if (!VMManager::HasValidVM())
+            return;
         VMManager::ReloadGameSettings();
         if (MTGS::IsOpen())
             MTGS::ApplySettings();
-    }
+    });
 }
 
 + (nullable NSString *)linkedDiscPathForELF:(nonnull NSString *)elfName {
@@ -3527,9 +3530,13 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
     if (!VMManager::HasValidVM())
         return;
 
-    VMManager::ApplySettings();
-    if (MTGS::IsOpen())
-        MTGS::ApplySettings();
+    // ApplySettings owns EmuConfig and resets the JIT caches, and MTGS::ApplySettings pushes to
+    // the single-producer ring — both the CPU thread's, and this runs on the UI thread.
+    Host::RunOnCPUThread([]() {
+        VMManager::ApplySettings();
+        if (MTGS::IsOpen())
+            MTGS::ApplySettings();
+    });
 }
 
 // Force any deferred base-settings INI write to disk immediately.
@@ -3697,9 +3704,12 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
     si.SetIntValue(section.UTF8String, key.UTF8String, value);
     Error error;
     si.Save(&error);
-    VMManager::ReloadGameSettings();
-    if (MTGS::IsOpen())
-        MTGS::ApplySettings();
+    // EmuConfig and the MTGS ring are the CPU thread's; this runs on the UI thread.
+    Host::RunOnCPUThread([]() {
+        VMManager::ReloadGameSettings();
+        if (MTGS::IsOpen())
+            MTGS::ApplySettings();
+    });
 }
 
 + (void)setPerGameINIBoolForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(BOOL)value {
@@ -3712,9 +3722,12 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
     si.SetBoolValue(section.UTF8String, key.UTF8String, value);
     Error error;
     si.Save(&error);
-    VMManager::ReloadGameSettings();
-    if (MTGS::IsOpen())
-        MTGS::ApplySettings();
+    // EmuConfig and the MTGS ring are the CPU thread's; this runs on the UI thread.
+    Host::RunOnCPUThread([]() {
+        VMManager::ReloadGameSettings();
+        if (MTGS::IsOpen())
+            MTGS::ApplySettings();
+    });
 }
 
 + (float)getPerGameINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(float)def forISO:(nonnull NSString *)isoName {
@@ -3761,9 +3774,12 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
     si.SetFloatValue(section.UTF8String, key.UTF8String, value);
     Error error;
     si.Save(&error);
-    VMManager::ReloadGameSettings();
-    if (MTGS::IsOpen())
-        MTGS::ApplySettings();
+    // EmuConfig and the MTGS ring are the CPU thread's; this runs on the UI thread.
+    Host::RunOnCPUThread([]() {
+        VMManager::ReloadGameSettings();
+        if (MTGS::IsOpen())
+            MTGS::ApplySettings();
+    });
 }
 
 + (void)deletePerGameINIValueForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key {
@@ -3778,9 +3794,12 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
     si.RemoveEmptySections();
     Error error;
     si.Save(&error);
-    VMManager::ReloadGameSettings();
-    if (MTGS::IsOpen())
-        MTGS::ApplySettings();
+    // EmuConfig and the MTGS ring are the CPU thread's; this runs on the UI thread.
+    Host::RunOnCPUThread([]() {
+        VMManager::ReloadGameSettings();
+        if (MTGS::IsOpen())
+            MTGS::ApplySettings();
+    });
 }
 
 + (int)limiterMode

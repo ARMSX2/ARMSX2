@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <thread>
 #if defined(__ANDROID__)
 #include <sched.h>
@@ -41,8 +42,20 @@ namespace {
 		bool onError(oboe::AudioStream* oboeStream, oboe::Result error) override;
 
 	private:
+		// ★ Serialises the stream lifecycle. onError() runs on OBOE'S OWN callback thread and
+		// tears the stream down and back up (Stop/Close/Open/Start), while the CPU thread can be
+		// inside SetPaused()/Close() on the very same object. SetPaused's `if (m_stream)` followed
+		// by `m_stream->requestPause()` is not atomic against onError's `m_stream.reset()`, so the
+		// stream could be destroyed between the null check and the dereference — a use-after-free.
+		// That window opens exactly where users report crashing: Android reclaims the audio device
+		// a few seconds into the pause menu (#333), onError fires to reopen it, and touching any
+		// setting at that moment re-enters SPU2 from the CPU thread (#422).
+		// Recursive because Close() calls Stop(), and onError() calls all four in sequence.
+		std::recursive_mutex m_lock;
+
 		bool m_playing = false;
-		bool m_stop_requested = false;
+		// Written by Start()/Stop() on the CPU thread, read by onError() on the callback thread.
+		std::atomic<bool> m_stop_requested{false};
 
 		std::shared_ptr<oboe::AudioStream> m_stream;
 
@@ -115,8 +128,11 @@ oboe::DataCallbackResult OboeAudioStream::onAudioReady(oboe::AudioStream* p_audi
 bool OboeAudioStream::onError(oboe::AudioStream* oboeStream, oboe::Result error)
 {
 	Console.Error("(Oboe) ErrorCB %d", error);
-	if (error == oboe::Result::ErrorDisconnected && !m_stop_requested)
+	if (error == oboe::Result::ErrorDisconnected && !m_stop_requested.load(std::memory_order_acquire))
 	{
+		// Held across the whole teardown/rebuild so the CPU thread can't observe (or destroy) a
+		// half-open stream partway through. See the m_lock comment.
+		const std::lock_guard<std::recursive_mutex> guard(m_lock);
 		Console.Error("(Oboe) Stream disconnected, reopening...");
 		Stop();
 		Close();
@@ -186,6 +202,7 @@ bool OboeAudioStream::Initialize(bool stretch_enabled)
 
 bool OboeAudioStream::Open()
 {
+	const std::lock_guard<std::recursive_mutex> guard(m_lock);
 	// Each Open() spawns a fresh Oboe audio thread with a new TID, so the
 	// per-stream pin latch needs to clear here. Without this, an error-
 	// recovery re-Open() (onError → Stop/Close/Open) keeps the latch set
@@ -227,11 +244,12 @@ bool OboeAudioStream::Open()
 
 bool OboeAudioStream::Start()
 {
+	const std::lock_guard<std::recursive_mutex> guard(m_lock);
 	if (m_playing)
 		return true;
 
 	Console.WriteLn("(Oboe) Starting stream...");
-	m_stop_requested = false;
+	m_stop_requested.store(false, std::memory_order_release);
 
 	oboe::Result result = m_stream->requestStart();
 	if (result != oboe::Result::OK)
@@ -245,11 +263,12 @@ bool OboeAudioStream::Start()
 
 void OboeAudioStream::Stop()
 {
+	const std::lock_guard<std::recursive_mutex> guard(m_lock);
 	if (!m_playing)
 		return;
 
 	Console.WriteLn("(Oboe) Stopping stream...");
-	m_stop_requested = true;
+	m_stop_requested.store(true, std::memory_order_release);
 
 	oboe::Result result = m_stream->requestStop();
 	if (result != oboe::Result::OK)
@@ -260,6 +279,7 @@ void OboeAudioStream::Stop()
 
 void OboeAudioStream::Close()
 {
+	const std::lock_guard<std::recursive_mutex> guard(m_lock);
 	Console.WriteLn("(Oboe) Closing stream...");
 	if (m_playing)
 		Stop();
@@ -272,6 +292,9 @@ void OboeAudioStream::Close()
 
 void OboeAudioStream::SetPaused(bool paused)
 {
+	// This is the CPU-thread side of the race with onError(): without the lock, m_stream can be
+	// reset by the reopen between the null check and the dereference below.
+	const std::lock_guard<std::recursive_mutex> guard(m_lock);
 	if (m_paused == paused)
 		return;
 
