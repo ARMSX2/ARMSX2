@@ -934,8 +934,36 @@ GSTexture* GSTextureReplacements::CreateReplacementTexture(const ReplacementText
 	if (!tex)
 		return nullptr;
 
+	// Update() CAN fail, and its result was being discarded. On Vulkan an upload needs either room
+	// in the shared streaming buffer or a dedicated staging allocation (GSTextureVK::DoUpdate), and
+	// either can fail under memory pressure — at which point the texture exists but its contents are
+	// UNDEFINED. Injecting it anyway reports success and hands the game garbage, which on screen is
+	// indistinguishable from a replacement that never loaded: missing cursors, letters cut in half.
+	//
+	// It is worse for us than upstream because of the CPU BC decode above: a BC7 texture becomes
+	// RGBA8 at four times the size, so the upload that has to succeed is four times larger. Drop the
+	// texture instead, so the game falls back to its original and the pack degrades to "not
+	// replaced" rather than "corrupt".
+	const auto upload_failed = [&](u32 level) {
+		static bool logged_once = false;
+		if (!logged_once)
+		{
+			logged_once = true;
+			Console.Error("Texture replacements: GPU upload failed (level %u, %dx%d %s). The "
+						  "replacement is being skipped rather than drawn with undefined contents. "
+						  "This usually means texture memory is exhausted — try turning Precache "
+						  "Texture Replacements off, or lowering the render resolution.",
+				level, rtex.width, rtex.height, GSTexture::GetFormatName(rtex.format));
+		}
+		g_gs_device->Recycle(tex);
+	};
+
 	// upload base level
-	tex->Update(GSVector4i(0, 0, rtex.width, rtex.height), rtex.data.data(), rtex.pitch);
+	if (!tex->Update(GSVector4i(0, 0, rtex.width, rtex.height), rtex.data.data(), rtex.pitch))
+	{
+		upload_failed(0);
+		return nullptr;
+	}
 
 	// and the mips if they're present in the replacement texture
 	if (!rtex.mips.empty())
@@ -943,7 +971,13 @@ GSTexture* GSTextureReplacements::CreateReplacementTexture(const ReplacementText
 		for (u32 i = 0; i < static_cast<u32>(rtex.mips.size()); i++)
 		{
 			const ReplacementTexture::MipData& mip = rtex.mips[i];
-			tex->Update(GSVector4i(0, 0, static_cast<int>(mip.width), static_cast<int>(mip.height)), mip.data.data(), mip.pitch, i + 1);
+			if (!tex->Update(GSVector4i(0, 0, static_cast<int>(mip.width), static_cast<int>(mip.height)),
+					mip.data.data(), mip.pitch, i + 1))
+			{
+				// A garbage mip is still garbage — it just only shows at distance.
+				upload_failed(i + 1);
+				return nullptr;
+			}
 		}
 	}
 
