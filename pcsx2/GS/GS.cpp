@@ -692,14 +692,30 @@ bool GSHasDisplayWindow()
 	return (g_gs_device->GetWindowInfo().type != WindowInfo::Type::Surfaceless);
 }
 
+// GV7-2, same hazard GSUpdateConfig documents: the back thread executes draws
+// against g_gs_device, so mutating that device from the MTGS thread — swapchain
+// resize, window recreate, vsync change — races it. Drain first. The front only
+// parses on this thread, so one drain up front quiesces the back thread for the
+// whole call. No-op when the back thread is off (the default), and g_gs_renderer
+// can legitimately be null while g_gs_device exists: the device is created first.
+static void DrainBackQueueBeforeDeviceMutation()
+{
+	if (g_gs_renderer)
+		g_gs_renderer->DrainBackQueue();
+}
+
 void GSResizeDisplayWindow(u32 width, u32 height, float scale)
 {
+	DrainBackQueueBeforeDeviceMutation();
+
 	g_gs_device->ResizeWindow(width, height, scale);
 	ImGuiManager::WindowResized();
 }
 
 void GSUpdateDisplayWindow()
 {
+	DrainBackQueueBeforeDeviceMutation();
+
 	if (!g_gs_device->UpdateWindow())
 	{
 		Host::ReportErrorAsync("Error", TRANSLATE_SV("GS", "Failed to change window after update. The log may contain more information."));
@@ -718,6 +734,9 @@ void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
 	}};
 	Console.WriteLnFmt(Color_StrongCyan, "Setting vsync mode: {}{}", modes[static_cast<size_t>(mode)],
 		allow_present_throttle ? " (throttle allowed)" : "");
+
+	DrainBackQueueBeforeDeviceMutation();
+
 	g_gs_device->SetVSyncMode(mode, allow_present_throttle);
 }
 
