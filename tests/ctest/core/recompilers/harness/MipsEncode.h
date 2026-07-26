@@ -522,6 +522,16 @@ constexpr u32 VISUB_C2 (u32 id, u32 is, u32 it) { return COP2_FMAC(0, id, is, it
 constexpr u32 VIAND_C2 (u32 id, u32 is, u32 it) { return COP2_FMAC(0, id, is, it, 0x34); }
 constexpr u32 VIOR_C2  (u32 id, u32 is, u32 it) { return COP2_FMAC(0, id, is, it, 0x35); }
 
+// VIADDI (funct 0x32) does NOT share that shape: like the VU lower-pipe IADDI
+// it writes _It_ (bits 20-16) from _Is_ (bits 15-11) plus a 5-bit immediate in
+// the FD/SA slot (bits 10-6). Sign extension is the VU's own, not MIPS's —
+// bit 4 of the field is the sign and bits 3-0 the magnitude, so -16 encodes as
+// 0x10 and -1 as 0x1F (VUops.cpp _vuIADDI).
+constexpr u32 VIADDI_C2(u32 it, u32 is, s32 simm5)
+{
+	return COP2_FMAC(0, static_cast<u32>(simm5) & 0x1Fu, is, it, 0x32);
+}
+
 // Fixed-point conversion macro ops (COP2-CO SPECIAL2 indices 16-23). FTOI/ITOF
 // share funct 0x3C..0x3F (the SPECIAL2 escape) with the sub-op selector in the
 // _Sa_/fd field (bits 10-6): 0x04 = ITOFx, 0x05 = FTOIx. The funct low 2 bits
