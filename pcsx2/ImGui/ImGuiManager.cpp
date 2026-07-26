@@ -92,6 +92,10 @@ static std::vector<u8> s_icon_pf_font_data;
 
 static float s_window_width;
 static float s_window_height;
+static float s_osd_inset_left = 0.0f;
+static float s_osd_inset_top = 0.0f;
+static float s_osd_inset_right = 0.0f;
+static float s_osd_inset_bottom = 0.0f;
 static Common::Timer s_last_render_time;
 
 // cached copies of WantCaptureKeyboard/Mouse, used to know when to dispatch events
@@ -285,7 +289,24 @@ void ImGuiManager::RequestScaleUpdate()
 
 void ImGuiManager::SetOSDSafeAreaInsets(float left, float top, float right, float bottom)
 {
-	// Stub — iOS uses this for rounded-corner OSD clearance. Full implementation in Phase 5.
+	// Already in physical pixels — the caller multiplies by the content scale — so these add
+	// straight onto margin without a conversion.
+	s_osd_inset_left = left;
+	s_osd_inset_top = top;
+	s_osd_inset_right = right;
+	s_osd_inset_bottom = bottom;
+}
+
+void ImGuiManager::GetOSDSafeAreaInsets(float* left, float* top, float* right, float* bottom)
+{
+	if (left)
+		*left = s_osd_inset_left;
+	if (top)
+		*top = s_osd_inset_top;
+	if (right)
+		*right = s_osd_inset_right;
+	if (bottom)
+		*bottom = s_osd_inset_bottom;
 }
 
 void ImGuiManager::ReloadFonts()
