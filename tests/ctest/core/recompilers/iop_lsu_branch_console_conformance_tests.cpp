@@ -586,19 +586,24 @@ TEST(IopLsuBranchConsoleConformance, BranchDelaySlotOrderingMatchesConsole)
 	}
 }
 
-// CHARACTERIZATION, NOT CONFORMANCE. psxBGEZAL and psxBLTZAL have the same
-// shape psxJALR used to have -- `_SetLink(31)` and only then a test of Rs --
-// as do BGEZAL / BLTZAL / BGEZALL / BLTZALL in the EE interpreter
-// (pcsx2/Interpreter.cpp). The ordering is only observable when Rs IS 31,
-// which the MIPS manual calls unpredictable and which ps2autotests never
-// captured, so nothing here claims to be hardware behaviour.
+// CHARACTERIZATION, NOT CONFORMANCE -- and the console has since disagreed.
+// psxBGEZAL and psxBLTZAL have the same shape psxJALR used to have --
+// `_SetLink(31)` and only then a test of Rs -- as do BGEZAL / BLTZAL /
+// BGEZALL / BLTZALL in the EE interpreter (pcsx2/Interpreter.cpp). The
+// ordering is only observable when Rs IS 31, which ps2autotests never
+// captured on either CPU.
 //
-// What it pins is that both IOP engines agree with each other today: both
+// What this pins is that both IOP engines agree with each other today: both
 // link first and then judge the LINKED value, so `bltzal $ra` with a
-// negative $ra falls through and `bgezal $ra` with a negative $ra branches
-// -- the opposite of what the pre-link value would give. That the JIT shares
-// the ordering is why the differential suite never noticed; it took an
-// external oracle to catch the jalr sibling.
+// negative $ra falls through and `bgezal $ra` with a negative $ra branches.
+// The EE half of the same question HAS been measured since -- silicon judges
+// these on the PRE-link value
+// (EeSaPerfConsoleConformance.LinkBranchesWithRaAsSourceMatchConsole), and
+// `jalr rd,rd` already agreed across both CPUs. So the two negative-$ra rows
+// below are very likely WRONG for the IOP too; whoever fixes
+// psxBGEZAL/psxBLTZAL should expect this test to resist and should invert
+// them rather than assume a regression. The IOP itself was never measured
+// (that needs an IRX, not an EE ELF).
 TEST(IopLsuBranchConsoleConformance, LinkBranchesWithRaAsSourceArePinned)
 {
 	struct Probe { const char* name; u32 word; u32 ra; u32 expect; };

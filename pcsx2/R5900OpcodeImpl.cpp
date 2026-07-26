@@ -1246,7 +1246,7 @@ void MFSA() {
 }
 
 void MTSA() {
-	cpuRegs.sa = (u32)cpuRegs.GPR.r[_Rs_].UD[0];
+	cpuRegs.sa = (u32)cpuRegs.GPR.r[_Rs_].UD[0] & 0xF; // SA is 4 bits wide
 }
 
 // SNY supports three basic modes, two which synchronize memory accesses (related

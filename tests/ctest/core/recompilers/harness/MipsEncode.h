@@ -72,6 +72,9 @@ constexpr u32 BLTZ  (u32 rs, s16 off) { return IType(0x01, rs, 0x00, (u16)off); 
 constexpr u32 BGEZ  (u32 rs, s16 off) { return IType(0x01, rs, 0x01, (u16)off); }
 constexpr u32 BLTZAL(u32 rs, s16 off) { return IType(0x01, rs, 0x10, (u16)off); }
 constexpr u32 BGEZAL(u32 rs, s16 off) { return IType(0x01, rs, 0x11, (u16)off); }
+// The "likely" link forms nullify the delay slot when not taken.
+constexpr u32 BLTZALL(u32 rs, s16 off) { return IType(0x01, rs, 0x12, (u16)off); }
+constexpr u32 BGEZALL(u32 rs, s16 off) { return IType(0x01, rs, 0x13, (u16)off); }
 
 // I-type arith/logic.
 constexpr u32 ADDI (u32 rt, u32 rs, s16 imm)  { return IType(0x08, rs, rt, (u16)imm); }
@@ -110,6 +113,15 @@ constexpr u32 SWR(u32 rt, s16 off, u32 base) { return IType(0x2E, base, rt, (u16
 // COP0 (op=0x10).
 constexpr u32 MFC0(u32 rt, u32 rd) { return (0x10u << 26) | (0x00u << 21) | ((rt & 0x1F) << 16) | ((rd & 0x1F) << 11); }
 constexpr u32 MTC0(u32 rt, u32 rd) { return (0x10u << 26) | (0x04u << 21) | ((rt & 0x1F) << 16) | ((rd & 0x1F) << 11); }
+
+// The performance counters share COP0 register 25; the low bits of the
+// instruction word pick which one (COP0.cpp: bit0 clear = the PCCR control
+// register, else bit1 picks PCR0 vs PCR1). Matches what the ps2dev assembler
+// emits for mfps/mtps/mfpc/mtpc.
+constexpr u32 MFPS(u32 rt)         { return MFC0(rt, 25); }
+constexpr u32 MTPS(u32 rt)         { return MTC0(rt, 25); }
+constexpr u32 MFPC(u32 rt, u32 n)  { return MFC0(rt, 25) | (n ? 3u : 1u); }
+constexpr u32 MTPC(u32 rt, u32 n)  { return MTC0(rt, 25) | (n ? 3u : 1u); }
 constexpr u32 RFE  = (0x10u << 26) | (0x10u << 21) | 0x10u;
 
 // COP0 branch on DMAC condition (op=0x10, rs=BC=0x08; rt selects F/T/FL/TL).
