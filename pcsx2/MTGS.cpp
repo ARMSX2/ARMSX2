@@ -483,7 +483,7 @@ void MTGS::MainLoop()
 					{
 						mtvu_lock.unlock();
 						// Wait for MTVU to complete vu1 program
-						vu1Thread.semaXGkick.Wait();
+						vu1Thread.semaXGkick.WaitWithSpin();
 						mtvu_lock.lock();
 					}
 					Gif_Path& path = gifUnit.gifPath[GIF_PATH_1];
