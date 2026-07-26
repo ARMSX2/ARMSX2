@@ -374,6 +374,33 @@ final class PadLayoutPresetStore: @unchecked Sendable {
         persist()
     }
 
+    /// Reinstalling a skin mints a new id, so per-game picks have to follow it
+    /// across instead of being cleared.
+    func repointSkinAssignments(from oldID: String, to newID: String) {
+        gameAssignments = gameAssignments.compactMapValues { assignment in
+            var updated = assignment
+            if updated.skinID == oldID {
+                updated.skinID = newID
+            }
+            return updated.isEmpty ? nil : updated
+        }
+        persist()
+    }
+
+    func repointLayoutPresetAssignments(from oldID: String, to newID: String) {
+        if globalPresetID == oldID {
+            globalPresetID = newID
+        }
+        gameAssignments = gameAssignments.compactMapValues { assignment in
+            var updated = assignment
+            if updated.layoutPresetID == oldID {
+                updated.layoutPresetID = newID
+            }
+            return updated.isEmpty ? nil : updated
+        }
+        persist()
+    }
+
     func clearVPadOverrides(for identity: PadLayoutGameIdentity) {
         gameAssignments.removeValue(forKey: identity.id)
         persist()

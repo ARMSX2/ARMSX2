@@ -19,6 +19,10 @@ struct VPadSkinDescriptor: Codable, Equatable, Identifiable {
     var manifestVersion: Int?
     var originalImportName: String?
     var builtInSkinRawValue: Int?
+    // Repo-relative zip path of the catalog entry this came from, nil for
+    // anything the user imported by hand. Must stay Optional: the library is
+    // decoded all-or-nothing and a required key would wipe every legacy entry.
+    var catalogID: String?
     var createdAt: Date
     var updatedAt: Date
 
@@ -31,6 +35,7 @@ struct VPadSkinDescriptor: Codable, Equatable, Identifiable {
         manifestVersion: Int? = nil,
         originalImportName: String? = nil,
         builtInSkinRawValue: Int? = nil,
+        catalogID: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -42,6 +47,7 @@ struct VPadSkinDescriptor: Codable, Equatable, Identifiable {
         self.manifestVersion = manifestVersion
         self.originalImportName = originalImportName
         self.builtInSkinRawValue = builtInSkinRawValue
+        self.catalogID = catalogID
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -246,12 +252,80 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
     func importSkin(
         from sourceURL: URL,
         originalImportName: String? = nil,
+        catalogID: String? = nil,
+        replacingSkinID: String? = nil,
         layoutPresets: PadLayoutPresetStore
-    ) throws -> VPadSkinImportResult {
+    ) async throws -> VPadSkinImportResult {
+        // Import first, delete second. A failed download or a corrupt zip has to
+        // leave the skin the user already has alone.
+        let wasSelected = replacingSkinID != nil && selectedSkinID == replacingSkinID
+        let result = try await performImport(
+            from: sourceURL,
+            originalImportName: originalImportName,
+            catalogID: catalogID,
+            replacingSkinID: replacingSkinID,
+            layoutPresets: layoutPresets
+        )
+        if let replacingSkinID {
+            retireReplacedSkin(
+                id: replacingSkinID,
+                replacement: result.descriptor,
+                wasSelected: wasSelected,
+                layoutPresets: layoutPresets
+            )
+        }
+        return result
+    }
+
+    /// Drops the install a reinstall just superseded, carrying the user's
+    /// per-game picks and the active layout over to the new descriptor.
+    private func retireReplacedSkin(
+        id oldID: String,
+        replacement: VPadSkinDescriptor,
+        wasSelected: Bool,
+        layoutPresets: PadLayoutPresetStore
+    ) {
+        let old = importedDescriptors.first { $0.id == oldID }
+
+        // Ahead of the delete, which would otherwise clear these instead.
+        layoutPresets.repointSkinAssignments(from: oldID, to: replacement.id)
+        if let oldPresetID = old?.linkedLayoutPresetID,
+           let newPresetID = replacement.linkedLayoutPresetID {
+            layoutPresets.repointLayoutPresetAssignments(from: oldPresetID, to: newPresetID)
+        }
+
+        try? deleteImportedSkin(id: oldID, layoutPresets: layoutPresets)
+
+        // createPreset does not uniquify, so without this every reinstall of
+        // Black leaves another preset called "Black Layout" in the picker.
+        if let oldPresetID = old?.linkedLayoutPresetID,
+           let preset = layoutPresets.preset(id: oldPresetID),
+           preset.source == .futureImportedSkin,
+           preset.linkedSkinID == oldID {
+            try? layoutPresets.deletePreset(id: oldPresetID)
+        }
+
+        if wasSelected {
+            selectSkin(id: replacement.id)
+        }
+    }
+
+    private func performImport(
+        from sourceURL: URL,
+        originalImportName: String?,
+        catalogID: String?,
+        replacingSkinID: String?,
+        layoutPresets: PadLayoutPresetStore
+    ) async throws -> VPadSkinImportResult {
         // Additive v2 manifest detection. A package carrying a valid v2 manifest
         // (info.json or a v2 manifest.json) is imported as an advanced manifest
         // skin; everything else falls through to the legacy importer below.
-        switch importV2ManifestSkin(from: sourceURL, originalImportName: originalImportName) {
+        switch importV2ManifestSkin(
+            from: sourceURL,
+            originalImportName: originalImportName,
+            catalogID: catalogID,
+            replacingSkinID: replacingSkinID
+        ) {
         case .notV2:
             break
         case .imported(let outcome):
@@ -269,7 +343,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
                 fallback: "Imported Skin"
             )
         )
-        let displayName = uniqueDisplayName(baseName)
+        let displayName = uniqueDisplayName(baseName, ignoringSkinID: replacingSkinID)
         let id = "imported-\(UUID().uuidString)"
         let destinationFolder = id
         let destination = assetsRootURL.appendingPathComponent(destinationFolder, isDirectory: true)
@@ -278,33 +352,21 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         let maxImageBytes: Int64 = 16 * 1024 * 1024
         let maxImportedImages: Int = 64
 
-        var importedImageCount = 0
-        var warnings: [String] = []
-        for fileURL in files where Self.isSupportedImageFile(fileURL) {
-            if importedImageCount >= maxImportedImages {
-                warnings.append("Skipped remaining images; the import limit was reached.")
-                break
-            }
-            guard let destinationName = Self.destinationSkinFileName(for: fileURL) else {
-                warnings.append("Skipped \(fileURL.lastPathComponent).")
-                continue
-            }
+        // A real skin is 18-21 PNGs, so decoding and re-encoding them inline
+        // stalls the pad settings screen for the whole install.
+        let decoded = await Task.detached(priority: .userInitiated) {
+            Self.decodeSkinImages(
+                from: files,
+                maxImageBytes: maxImageBytes,
+                maxImportedImages: maxImportedImages
+            )
+        }.value
 
-            let fileSize = ((try? FileManager.default.attributesOfItem(atPath: fileURL.path))?[.size] as? NSNumber)?.int64Value ?? 0
-            if fileSize > maxImageBytes {
-                warnings.append("Skipped large image \(fileURL.lastPathComponent).")
-                continue
-            }
-
-            guard let image = UIImage(contentsOfFile: fileURL.path),
-                  let pngData = image.pngData() else {
-                warnings.append("Skipped invalid image \(fileURL.lastPathComponent).")
-                continue
-            }
-
-            try writeSkinAsset(pngData, to: destination.appendingPathComponent(destinationName))
-            importedImageCount += 1
+        var warnings = decoded.warnings
+        for asset in decoded.assets {
+            try writeSkinAsset(asset.data, to: destination.appendingPathComponent(asset.name))
         }
+        let importedImageCount = decoded.assets.count
 
         guard importedImageCount > 0 else {
             try? FileManager.default.removeItem(at: destination)
@@ -318,6 +380,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
             storageFolderName: destinationFolder,
             manifestVersion: manifest?.schemaVersion,
             originalImportName: originalImportName ?? sourceURL.lastPathComponent,
+            catalogID: catalogID,
             createdAt: now,
             updatedAt: now
         )
@@ -357,7 +420,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
     func importSkinArchive(
         from sourceURL: URL,
         layoutPresets: PadLayoutPresetStore
-    ) throws -> VPadSkinImportResult {
+    ) async throws -> VPadSkinImportResult {
         let accessGranted = sourceURL.startAccessingSecurityScopedResource()
         defer {
             if accessGranted {
@@ -383,14 +446,19 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
             throw VPadSkinLibraryStoreError.noUsableSkinImages
         }
 
-        return try importSkin(
+        return try await importSkin(
             from: archiveDirectory,
             originalImportName: sourceURL.lastPathComponent,
             layoutPresets: layoutPresets
         )
     }
 
-    private func importV2ManifestSkin(from sourceURL: URL, originalImportName: String?) -> SkinManifestImporter.V2ImportDecision {
+    private func importV2ManifestSkin(
+        from sourceURL: URL,
+        originalImportName: String?,
+        catalogID: String?,
+        replacingSkinID: String?
+    ) -> SkinManifestImporter.V2ImportDecision {
         switch SkinManifestImporter.detectPackage(sourceURL: sourceURL) {
         case .legacy:
             return .notV2
@@ -403,7 +471,8 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
             }
 
             let displayName = uniqueDisplayName(
-                sanitizedDisplayName(manifest.name, fallback: originalImportName ?? sourceURL.lastPathComponent)
+                sanitizedDisplayName(manifest.name, fallback: originalImportName ?? sourceURL.lastPathComponent),
+                ignoringSkinID: replacingSkinID
             )
             let id = "imported-\(UUID().uuidString)"
             let destination = assetsRootURL.appendingPathComponent(id, isDirectory: true)
@@ -428,6 +497,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
                     storageFolderName: id,
                     manifestVersion: 2,
                     originalImportName: originalImportName ?? sourceURL.lastPathComponent,
+                    catalogID: catalogID,
                     createdAt: now,
                     updatedAt: now
                 )
@@ -684,6 +754,53 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         } catch {
             NSLog("[ARMSX2 iOS Skins] Failed to save skin library: %@", error.localizedDescription)
         }
+    }
+
+    /// Reads and re-encodes the skin's images. Deliberately touches nothing but
+    /// the files it is handed so it is safe to run off the main thread.
+    private static func decodeSkinImages(
+        from files: [URL],
+        maxImageBytes: Int64,
+        maxImportedImages: Int
+    ) -> (assets: [(name: String, data: Data)], warnings: [String]) {
+        var assets: [(name: String, data: Data)] = []
+        var warnings: [String] = []
+        // The caller writes these out afterwards, so the whole batch sits in
+        // memory at once. A real skin is a couple of MB; the per-image cap alone
+        // would let a hand-made package run to a gigabyte.
+        let maxTotalBytes = 64 * 1024 * 1024
+        var totalBytes = 0
+
+        for fileURL in files where isSupportedImageFile(fileURL) {
+            if assets.count >= maxImportedImages {
+                warnings.append("Skipped remaining images; the import limit was reached.")
+                break
+            }
+            if totalBytes >= maxTotalBytes {
+                warnings.append("Skipped remaining images; the skin is too large.")
+                break
+            }
+            guard let destinationName = destinationSkinFileName(for: fileURL) else {
+                warnings.append("Skipped \(fileURL.lastPathComponent).")
+                continue
+            }
+
+            let fileSize = ((try? FileManager.default.attributesOfItem(atPath: fileURL.path))?[.size] as? NSNumber)?.int64Value ?? 0
+            if fileSize > maxImageBytes {
+                warnings.append("Skipped large image \(fileURL.lastPathComponent).")
+                continue
+            }
+
+            guard let image = UIImage(contentsOfFile: fileURL.path),
+                  let pngData = image.pngData() else {
+                warnings.append("Skipped invalid image \(fileURL.lastPathComponent).")
+                continue
+            }
+
+            assets.append((name: destinationName, data: pngData))
+            totalBytes += pngData.count
+        }
+        return (assets, warnings)
     }
 
     private static func destinationSkinFileName(for url: URL) -> String? {
