@@ -3478,7 +3478,19 @@ bool GSDeviceVK::CheckFeatures()
 	// On tiler GPUs, declaring gl_FragDepth (for PS2 32-bit Z quantization) emits
 	// SPIR-V ExecutionMode DepthReplacing, which disables early-ZS for the entire
 	// pipeline. Default-on for Mali; opt-out via INI for Z-precision-sensitive titles.
-	m_features.no_ps2_z_quantization = GSConfig.DisablePS2DepthQuantization || IsDeviceMali();
+	//
+	// Apple GPUs additionally miscompare. Depth stored through gl_FragDepth does not
+	// bit-match the fixed-function interpolation that a later read-only pass tests
+	// against, so a GEQUAL retest of the same geometry drops out along shared triangle
+	// edges and whatever was drawn underneath shows through as pinpoints. The floor
+	// only ever lowers the stored value, so it masks the mismatch rather than causing
+	// it: on Black (SLUS-21376) a dark wall shows 7062 stray pixels with the depth
+	// write on the shader path and the floor removed, 748 with the floor, and 0 with
+	// the shader path skipped entirely. God of War II's Athena statue speckles the
+	// same way. Biasing the stored value one PS2 Z unit down also clears it, which
+	// puts the disagreement below a single Z unit.
+	m_features.no_ps2_z_quantization =
+		GSConfig.DisablePS2DepthQuantization || IsDeviceMali() || IsDeviceAppleGPU();
 
 	// whether we can do point/line expand depends on the range of the device
 	const float f_upscale = static_cast<float>(GSConfig.UpscaleMultiplier);

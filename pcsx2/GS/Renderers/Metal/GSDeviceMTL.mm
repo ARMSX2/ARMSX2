@@ -1181,6 +1181,13 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	m_features.test_and_sample_depth = true;
 	m_features.depth_feedback = getDepthFeedback(m_dev, m_features.framebuffer_fetch);
 	m_features.aa1 = GSConfig.HWAA1 && m_features.vs_expand;
+	// Apple GPUs miscompare depth written from the shader (the PS2 32-bit Z floor) against
+	// the fixed-function interpolation a later read-only pass tests with, so a GEQUAL retest
+	// of the same geometry drops out along shared triangle edges and the layer underneath
+	// shows through as pinpoints -- God of War II's Athena statue, and dark walls in Black.
+	// Skipping the floor also drops [[depth(less)]] output, restoring early-ZS on a TBDR.
+	// See the matching gate in GSDeviceVK::CheckFeatures for the measurements.
+	m_features.no_ps2_z_quantization = GSConfig.DisablePS2DepthQuantization || m_dev.features.apple_gpu;
 	// MetalFX spatial upscaler: macOS 13+ / iOS 16+ device. The supportsDevice:
 	// probe returns NO on devices whose GPU lacks the hardware. On the iOS Simulator
 	// the MetalFX framework is absent at compile time (PCSX2_HAS_METALFX=0), so the

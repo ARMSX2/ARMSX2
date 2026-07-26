@@ -783,6 +783,7 @@ bool GSDeviceOGL::CheckFeatures()
 
 	bool vendor_id_mali = false;
 	bool vendor_id_adreno = false;
+	bool vendor_id_apple = false;
 
 	const char* vendor_raw = (const char*)glGetString(GL_VENDOR);
 	const char* renderer_raw = (const char*)glGetString(GL_RENDERER);
@@ -815,6 +816,14 @@ bool GSDeviceOGL::CheckFeatures()
 	{
 		Console.WriteLn(Color_Cyan, "GL: Qualcomm Adreno GPU detected.");
 		vendor_id_adreno = true;
+	}
+	// Matched on the renderer, not the vendor: Apple silicon reports the vendor of whoever
+	// wrote the driver ("Mesa" under Asahi, "Apple Inc." on macOS), while an Intel Mac reports
+	// vendor "Apple Inc." with an AMD or Intel GPU. The renderer names the actual GPU.
+	else if (std::strstr(renderer_str, "Apple"))
+	{
+		Console.WriteLn(Color_StrongCyan, "GL: Apple GPU detected.");
+		vendor_id_apple = true;
 	}
 
 #if defined(__ANDROID__)
@@ -987,6 +996,16 @@ bool GSDeviceOGL::CheckFeatures()
 	// optional features based on context
 	m_features.broken_point_sampler = false;
 	m_features.primitive_id = true;
+
+	// Apple GPUs miscompare depth written from the shader (the PS2 32-bit Z floor) against the
+	// fixed-function interpolation a later read-only pass tests with, so a GEQUAL retest of the
+	// same geometry drops out along shared triangle edges and the layer underneath shows through
+	// as pinpoints -- God of War II's Athena statue, and dark walls in Black. Reproduces here
+	// identically under GL and Vulkan (748 stray pixels either way), so it is the GPU, not the
+	// API. See the matching gate in GSDeviceVK::CheckFeatures for the measurements. Mali is
+	// deliberately not included: the Vulkan path opts it out for early-ZS, but that has not been
+	// tested on a Mali GL driver.
+	m_features.no_ps2_z_quantization = GSConfig.DisablePS2DepthQuantization || vendor_id_apple;
 
 	// GLES may omit dual-source blending (GL_EXT/ARB_blend_func_extended); desktop GL always has it.
 	// When absent, GSRendererHW emulates SRC1 blend equations in-shader per-draw rather than forcing

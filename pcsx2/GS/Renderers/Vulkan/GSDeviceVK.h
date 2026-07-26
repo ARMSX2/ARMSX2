@@ -110,6 +110,16 @@ public:
 	/// must confirm this fires; if it reports a different vendorID the gate is simply inert.
 	__fi bool IsDeviceXclipse() const { return (m_device_properties.vendorID == 0x144Du); }
 
+	/// Returns true if running on an Apple GPU, under either MoltenVK or Asahi's Honeykrisp.
+	/// Unlike the checks above this gates on driverID, because Apple silicon does not report
+	/// Apple's vendorID on every driver — Honeykrisp reports Mesa's 0x10005, so a vendorID
+	/// check would silently miss it.
+	__fi bool IsDeviceAppleGPU() const
+	{
+		return (m_device_driver_properties.driverID == VK_DRIVER_ID_MOLTENVK ||
+				m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP);
+	}
+
 	// Creates a simple render pass.
 	VkRenderPass GetRenderPass(VkFormat color_format, VkFormat depth_format,
 		VkAttachmentLoadOp color_load_op = VK_ATTACHMENT_LOAD_OP_LOAD,
