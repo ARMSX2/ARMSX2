@@ -84,6 +84,45 @@ void InstallEeExceptionVectorStubs()
 
 } // namespace
 
+ScopedFpEnv::ScopedFpEnv(Kind kind)
+	: saved_host_(FPControlRegister::GetCurrent())
+	, saved_fpu_(EmuConfig.Cpu.FPUFPCR)
+	, saved_fpu_div_(EmuConfig.Cpu.FPUDivFPCR)
+	, saved_vu0_(EmuConfig.Cpu.VU0FPCR)
+	, saved_vu1_(EmuConfig.Cpu.VU1FPCR)
+{
+	FPControlRegister env{};
+	switch (kind)
+	{
+		case IeeeNearest:
+			env = FPControlRegister::GetDefault().DisableExceptions();
+			break;
+		case FlushNearest:
+			env = FPControlRegister::GetDefault()
+					  .DisableExceptions()
+					  .SetDenormalsAreZero(true)
+					  .SetFlushToZero(true);
+			break;
+	}
+	// All four together: leaving them inconsistent would make mVU's
+	// skip-when-equal FPCR gate and the EE DIV swap disagree about which
+	// environment is in force.
+	EmuConfig.Cpu.FPUFPCR = env;
+	EmuConfig.Cpu.FPUDivFPCR = env;
+	EmuConfig.Cpu.VU0FPCR = env;
+	EmuConfig.Cpu.VU1FPCR = env;
+	FPControlRegister::SetCurrent(env);
+}
+
+ScopedFpEnv::~ScopedFpEnv()
+{
+	EmuConfig.Cpu.FPUFPCR = saved_fpu_;
+	EmuConfig.Cpu.FPUDivFPCR = saved_fpu_div_;
+	EmuConfig.Cpu.VU0FPCR = saved_vu0_;
+	EmuConfig.Cpu.VU1FPCR = saved_vu1_;
+	FPControlRegister::SetCurrent(saved_host_);
+}
+
 bool RecompilerTestEnvironment::Initialize()
 {
 	if (s_ready)

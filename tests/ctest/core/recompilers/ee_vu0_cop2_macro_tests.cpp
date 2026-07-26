@@ -1969,8 +1969,16 @@ TEST(EeVu0Cop2PendingMicroSync, VwaitqConsumesFinishMarkAndDrainsPendingMicro)
 //  Status flag bits: Z=0 S=1 U=2 O=3, sticky copies at +6.
 // =========================================================================
 
+// Needs the IEEE environment: under the production rounding mode (ChopZero) an
+// overflowing sum saturates to +FLT_MAX, exp 254, and the O bit this test is
+// about is unreachable on BOTH engines. See
+// VuStickyConsoleConformance.ProductionFpEnvironmentErasesUnderflowAndOverflow,
+// which pins that.
+// TRIPWIRE -- see Arm64Cop2MacroExtractsUnderflowAndOverflow: the arm64 COP2
+// macro flag update does not raise STATUS U/O.
 TEST(EeVu0Cop2Macro, DISABLED_VaddOverflowSetsStatusUO)
 {
+	const ScopedFpEnv fp_env;
 	EeRecTestHarness h;
 	h.EnableVu0Capture();
 	h.EnableCop1();

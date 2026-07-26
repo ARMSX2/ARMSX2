@@ -280,9 +280,9 @@ u32 FlagOpWord(const FlagSituation& s)
 // stop raising them, which would have aligned all three engines by destroying
 // the only correct reference in the tree.
 //
-// fpuEmitOverflowFlags/fpuEmitClearOverflowFlags (iFPU-arm64.cpp) did that, and
-// the whole class went with it -- see
-// EnginesAgreeOnOverflowFlagsAcrossTheArithmeticFamily below, which covers all
+// An emitter raising them from the host result was tried and rejected -- see
+// the tripwire note below -- so the whole class is parked as DISABLED:
+// EnginesAgreeOnOverflowFlagsAcrossTheArithmeticFamily covers all
 // ten checkOverflow ops plus the four that only clear and the three that must
 // leave O and U alone.
 //
@@ -305,7 +305,7 @@ constexpr const char* kFcrEngineDivergences[] = {
 
 // TRIPWIRE -- the arm64 FPU fast path raises no FCR31 O/SO at all.
 //
-// The emitter that did (fpuEmitOverflowFlags) is reverted. It detected overflow
+// An emitter that raised them was tried and rejected. It detected overflow
 // as `fabs(result) > FLT_MAX`, i.e. by sniffing for a HOST infinity, which made
 // an architectural flag a function of eeRoundMode: never raised under the
 // shipping ChopZero default, and raised for ONE SIGN ONLY under
@@ -388,7 +388,7 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_EnginesAgreeExceptOnTheOverflowFlags)
 // fpuFloat2 on the same option) rather than an unattributed hole in the flag
 // logic, and it is the reason the row stays in kFcrEngineDivergences instead of
 // being "fixed" by making the fast path clamp unconditionally.
-// TRIPWIRE -- see the O/SO revert note above.
+// TRIPWIRE -- see the O/SO rejection note above.
 TEST(EeFpuFcrConsoleConformance, DISABLED_NanMathOverflowIsAnOperandClampModeDifference)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
@@ -603,7 +603,7 @@ u32 RunFamCase(const FamCase& c, bool jit, u32* result)
 }
 } // namespace
 
-// TRIPWIRE -- see the O/SO revert note above.
+// TRIPWIRE -- see the O/SO rejection note above.
 TEST(EeFpuFcrConsoleConformance, DISABLED_EnginesAgreeOnOverflowFlagsAcrossTheArithmeticFamily)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
@@ -641,7 +641,7 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_EnginesAgreeOnOverflowFlagsAcrossTheAr
 // non-sticky. Both orderings are checked because they exercise different
 // halves: O has to come back down when a later op does not overflow, and it has
 // to stay up when the last one does. Neither may disturb C.
-// TRIPWIRE -- see the O/SO revert note above.
+// TRIPWIRE -- see the O/SO rejection note above.
 TEST(EeFpuFcrConsoleConformance, DISABLED_OverflowFlagsComposeAcrossOneBlock)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
@@ -714,9 +714,10 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_UnderflowFlagsNeedFzOff)
 	EXPECT_EQ(res[1], res[0]) << "engines disagree on the denormal result";
 }
 
-// TRIPWIRE -- see the O/SO revert note above.
+// TRIPWIRE -- see the O/SO rejection note above.
 TEST(EeFpuFcrConsoleConformance, DISABLED_ExceptionFlagsMatchConsole)
 {
+	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
 	int checked = 0;
 	for (int i = 0; i < kFlagSituationCount; ++i)
 	{
@@ -761,6 +762,52 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_ExceptionFlagsMatchConsole)
 		++checked;
 	}
 	EXPECT_EQ(checked, kFlagSituationCount);
+}
+
+// The same table, in the environment a game actually runs in: no ScopedFpEnv,
+// so ChopZero is in force. Every overflow saturates to +/-FLT_MAX instead of
+// reaching Inf, and PCSX2's overflow detection -- which looks for Inf, in both
+// engines -- cannot fire. Measured: the Overflow and NAN-math rows read FCR31
+// 0x1000001 where the console says 0x1008011, i.e. O and SO missing.
+//
+// DISABLED because it is a statement about PCSX2, not a regression: the fix is
+// to stop inferring overflow from Inf, and until someone does that this is the
+// production truth. Force-enable it to see the current row-by-row state.
+//
+// The open hardware question is what "overflow" means on the EE FPU, since the
+// unit truncates: does silicon raise O from the magnitude of the exact result,
+// independently of rounding? A capture of FCR31 after an overflowing ADD.S/MUL.S
+// would settle it -- and the same answer decides the VU O flag (work-order
+// item 6 / the FP-environment section).
+TEST(EeFpuFcrConsoleConformance, DISABLED_ExceptionFlagsInProductionFpEnvMissOverflow)
+{
+	for (int i = 0; i < kFlagSituationCount; ++i)
+	{
+		const FlagSituation& s = kFlagSituations[i];
+		const u32 word = FlagOpWord(s);
+		ASSERT_NE(word, 0u) << s.what;
+
+		for (int jit = 0; jit < 2; ++jit)
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.SetFcr31(kFcr31FixedOnes);
+			h.SetFprBits(kFd, 0x00001337);
+			h.SetFprBits(kFs, s.fs);
+			h.SetFprBits(kFt, s.ft);
+			h.SetGpr128(kRd, 0, 0);
+			h.LoadProgram({word, CFC1(kRd, 31)});
+			if (jit)
+				h.RunJitNoDiff();
+			else
+				h.RunInterpOnly();
+
+			SCOPED_TRACE(::testing::Message()
+			             << s.what << (jit ? " [jit]" : " [interp]")
+			             << " (production FP environment)");
+			EXPECT_EQ(jit ? h.GetGprJit(kRd) : h.GetGprInterp(kRd), s.fcr31);
+		}
+	}
 }
 
 // Both engines model the hardware: every control-register index aliases onto

@@ -797,8 +797,16 @@ TEST(EeRecFpu, MsubaSSubtractsProductFromAccumulator)
 // clamped to +fMax cancels against an opposite-signed ACC (-> 0) instead of
 // overflowing the accumulate (-> +-fMax). Run()'s auto-diff compares ACC, and
 // these cases are chosen so JIT and interp agree only without the product clamp.
+// The next four all turn on the raw product reaching the accumulator as Inf,
+// which only happens at round-to-nearest: round-toward-zero, the production
+// mode, rounds an overflowing product to +/-FLT_MAX instead. Under that mode
+// -fMax + (+fMax) = 0 on both engines -- indistinguishable from the clamped
+// behaviour these tests exist to rule out, so their subject genuinely does not
+// exist there. Tagged rather than deleted because the extra-overflow clamp mode
+// they contrast with is still live code.
 TEST(EeRecFpu, MaddaSDoesNotClampIntermediateProduct)
 {
+	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.SetAccBits(0xFF7FFFFFu); // ACC = -fMax
@@ -812,6 +820,7 @@ TEST(EeRecFpu, MaddaSDoesNotClampIntermediateProduct)
 
 TEST(EeRecFpu, MsubaSDoesNotClampIntermediateProduct)
 {
+	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest}; // see MaddaSDoesNotClampIntermediateProduct
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.SetAccBits(0x7F7FFFFFu); // ACC = +fMax
@@ -1390,6 +1399,7 @@ TEST(EeRecFpu, DivSZeroOverZeroAliasedDest)
 
 TEST(EeRecFpu, MaddSProductOverflowDefaultModeMatchesX86Jit)
 {
+	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest}; // needs Inf -- see MaddaSDoesNotClampIntermediateProduct
 	// Interp leg: product clamped to +fMax → -fMax + fMax = 0.
 	{
 		EeRecTestHarness h;
@@ -1417,6 +1427,7 @@ TEST(EeRecFpu, MaddSProductOverflowDefaultModeMatchesX86Jit)
 
 TEST(EeRecFpu, MsubSProductOverflowDefaultModeMatchesX86Jit)
 {
+	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest}; // needs Inf -- see MaddaSDoesNotClampIntermediateProduct
 	// JIT (x86 parity): fd = +fMax - (+Inf) = -Inf → final clamp → -fMax.
 	// (Interp clamps the product: +fMax - fMax = 0.)
 	EeRecTestHarness h;

@@ -41,6 +41,48 @@ void ZeroCpuRegs()
 	fpuRegs.fprc[0] = 0x00002e30;
 }
 
+// Run the EE under the FP environment a real game runs it under.
+//
+// Production holds EmuConfig.Cpu.FPUFPCR on the EE thread for its whole
+// lifetime -- VMManager applies it at VM start and again on any CPU-config
+// change -- and every engine that needs something else switches away from THAT
+// baseline and back:
+//
+//   - the EE FPU DIV/SQRT/RSQRT emitters swap to FPUDivFPCR and restore
+//     FPUFPCR (iFPU-arm64.cpp, iFPUd-arm64.cpp; x86 does the same with LDMXCSR);
+//   - the microVU dispatcher loads VU0FPCR/VU1FPCR at entry and FPUFPCR at
+//     exit, and SKIPS both when they equal FPUFPCR (mvuNeedsFPCRUpdate) -- a
+//     gate that is only sound if the ambient value really is FPUFPCR;
+//   - the VU micro interpreters scope-guard to VU0FPCR/VU1FPCR
+//     (VU0microInterp.cpp, VU1microInterp.cpp).
+//
+// This harness used to leave the thread at FPControlRegister::GetDefault() and
+// merely CONTAIN whatever a JIT block did to FPCR, restoring the default before
+// the interp oracle ran. Three things were wrong with that. The two legs of
+// every diff ran in different rounding modes wherever a block touched FPCR at
+// all. The default is round-to-nearest with FZ clear while a default game runs
+// ChopZero with FZ set (0x1c00000 measured live), so denormal and inexact
+// results differed from production in both legs. And mVU's skip-when-equal gate
+// silently left the VU micro JIT at the host default while the VU micro interp
+// applied VU0FPCR -- VuTestHarness already works around exactly that by pinning
+// both of its passes to the VU FPCR, and this is the EE-side equivalent.
+//
+// Restoring on scope exit is still worth doing: gtest itself runs between
+// tests, and the environment's post-init default should not depend on which
+// test ran last.
+struct ScopedEeFpcr
+{
+	FPControlRegister saved;
+	ScopedEeFpcr()
+		: saved(FPControlRegister::GetCurrent())
+	{
+		FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUFPCR);
+	}
+	~ScopedEeFpcr() { FPControlRegister::SetCurrent(saved); }
+	ScopedEeFpcr(const ScopedEeFpcr&) = delete;
+	ScopedEeFpcr& operator=(const ScopedEeFpcr&) = delete;
+};
+
 } // namespace
 
 EeRecTestHarness::EeRecTestHarness()
@@ -337,13 +379,11 @@ void EeRecTestHarness::Run(RunMode mode)
 		vu0_pre_snapshot_ = VuSnapshot::Capture(0, {});
 	if (capture_vu1_)
 		vu1_pre_snapshot_ = VuSnapshot::Capture(1, {});
-	// A JIT block may legitimately leave host FPCR set to EmuConfig FPUFPCR
-	// (e.g. native DIV.S swaps to the div rounding mode and restores FPUFPCR,
-	// not the host default). The real EE thread holds FPUFPCR for its whole
-	// lifetime, but the harness never establishes that invariant, so contain
-	// the mutation to the JIT block: snapshot host FPCR and restore it before
-	// the interp oracle runs and before the next test.
-	const FPControlRegister saved_fpcr = FPControlRegister::GetCurrent();
+	// Both legs run under the EE's production FP environment (see
+	// ScopedEeFpcr). This used to only CONTAIN the mutation a JIT block made
+	// and leave the interp oracle at the host default, which put the two sides
+	// of every diff in different rounding modes.
+	const ScopedEeFpcr fpcr_guard;
 	// Production (VMManager) keeps the global Cpu pointer on the ACTIVE
 	// provider; code reached from inside JIT blocks branches on it. Concretely,
 	// vtlb_Miss takes the interpreter path when Cpu == &intCpu — including its
@@ -354,7 +394,6 @@ void EeRecTestHarness::Run(RunMode mode)
 	Cpu = &recCpu;
 	recEeExecuteBlock(kCycleBudget, kParkingPc);
 	Cpu = &intCpu;
-	FPControlRegister::SetCurrent(saved_fpcr);
 	if (capture_vu1_)
 		FireVif1Pass(/*jit=*/true);
 	jit_snapshot_ = EeSnapshot::Capture(mem_windows_);
@@ -447,12 +486,10 @@ void EeRecTestHarness::RunJitNoDiff(RunMode mode)
 		recCpu.Clear(kParkingPc, 2);
 	}
 
-	// Contain any FPCR mutation the JIT block makes (see note in Run()).
-	const FPControlRegister saved_fpcr = FPControlRegister::GetCurrent();
+	const ScopedEeFpcr fpcr_guard; // production FP environment — see Run()
 	Cpu = &recCpu; // active-provider invariant — see note in Run()
 	recEeExecuteBlock(kCycleBudget, kParkingPc);
 	Cpu = &intCpu;
-	FPControlRegister::SetCurrent(saved_fpcr);
 	jit_snapshot_ = EeSnapshot::Capture(mem_windows_);
 	if (capture_vu0_)
 		vu0_jit_snapshot_ = VuSnapshot::Capture(0, {});
@@ -475,6 +512,7 @@ void EeRecTestHarness::RunInterpOnly()
 	ASSERT_FALSE(program_words_.empty())
 		<< "LoadProgram() must be called before RunInterpOnly()";
 
+	const ScopedEeFpcr fpcr_guard; // production FP environment — see Run()
 	SeedEntryState();
 	pre_snapshot_ = EeSnapshot::Capture(mem_windows_);
 	StepInterpUntilParkedOrTimeout();
