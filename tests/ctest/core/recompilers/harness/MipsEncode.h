@@ -304,6 +304,16 @@ constexpr u32 PROT3W(u32 rd, u32 rt)         { return MMI2(0,  rt, rd, 0x1F); }
 constexpr u32 PEXCH (u32 rd, u32 rt)         { return MMI3(0,  rt, rd, 0x1A); }
 constexpr u32 PEXCW (u32 rd, u32 rt)         { return MMI3(0,  rt, rd, 0x1E); }
 
+// Variable word shifts — the count comes from rs rather than the sa field.
+constexpr u32 PSLLVW(u32 rd, u32 rt, u32 rs) { return MMI2(rs, rt, rd, 0x02); }
+constexpr u32 PSRLVW(u32 rd, u32 rt, u32 rs) { return MMI2(rs, rt, rd, 0x03); }
+constexpr u32 PSRAVW(u32 rd, u32 rt, u32 rs) { return MMI3(rs, rt, rd, 0x03); }
+
+// Parallel divides — HI/LO only, no rd.
+constexpr u32 PDIVW (u32 rs, u32 rt) { return MMI2(rs, rt, 0, 0x0D); }
+constexpr u32 PDIVBW(u32 rs, u32 rt) { return MMI2(rs, rt, 0, 0x1D); }
+constexpr u32 PDIVUW(u32 rs, u32 rt) { return MMI3(rs, rt, 0, 0x0D); }
+
 // PMFHL — top-level MMI (funct=0x30) with sa selecting one of 5 sub-formats:
 //   0=LW, 1=UW, 2=SLW, 3=LH, 4=SH (see MMI.cpp PMFHL()).
 constexpr u32 PMFHL (u32 rd, u32 sub) { return MMI(0, 0, rd, sub, 0x30); }

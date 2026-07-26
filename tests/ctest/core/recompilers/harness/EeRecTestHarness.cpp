@@ -468,6 +468,14 @@ u64 EeRecTestHarness::GetGpr64Interp(u32 r) const { return interp_snapshot_.regs
 u64 EeRecTestHarness::GetGpr64Jit   (u32 r) const { return jit_snapshot_.regs.GPR.r[r].UD[0]; }
 u64 EeRecTestHarness::GetHi64Interp() const       { return interp_snapshot_.regs.HI.UD[0]; }
 u64 EeRecTestHarness::GetLo64Interp() const       { return interp_snapshot_.regs.LO.UD[0]; }
+u64 EeRecTestHarness::GetHi64Jit   () const       { return jit_snapshot_.regs.HI.UD[0]; }
+u64 EeRecTestHarness::GetLo64Jit   () const       { return jit_snapshot_.regs.LO.UD[0]; }
+u64 EeRecTestHarness::GetHiUpper64Interp() const  { return interp_snapshot_.regs.HI.UD[1]; }
+u64 EeRecTestHarness::GetLoUpper64Interp() const  { return interp_snapshot_.regs.LO.UD[1]; }
+u64 EeRecTestHarness::GetHiUpper64Jit   () const  { return jit_snapshot_.regs.HI.UD[1]; }
+u64 EeRecTestHarness::GetLoUpper64Jit   () const  { return jit_snapshot_.regs.LO.UD[1]; }
+u64 EeRecTestHarness::GetGprUpper64Interp(u32 r) const { return interp_snapshot_.regs.GPR.r[r].UD[1]; }
+u64 EeRecTestHarness::GetGprUpper64Jit   (u32 r) const { return jit_snapshot_.regs.GPR.r[r].UD[1]; }
 u32 EeRecTestHarness::GetFprBitsInterp(u32 r) const { return interp_snapshot_.fprs.fpr[r].UL; }
 u32 EeRecTestHarness::GetFprBitsJit   (u32 r) const { return jit_snapshot_.fprs.fpr[r].UL; }
 u32 EeRecTestHarness::GetAccBitsInterp() const      { return interp_snapshot_.fprs.ACC.UL; }
