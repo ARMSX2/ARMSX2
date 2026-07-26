@@ -2820,15 +2820,11 @@ void VMManager::LogCPUCapabilities()
 
 void VMManager::InitializeCPUProviders()
 {
-#if defined(_M_X86) || defined(ARCH_ARM64)
 	recCpu.Reserve();
 	psxRec.Reserve();
 
 	CpuMicroVU0.Reserve();
 	CpuMicroVU1.Reserve();
-#else
-	vu1Thread.Open();
-#endif
 
 	VifUnpackSSE_Init();
 }
@@ -2841,16 +2837,11 @@ void VMManager::ShutdownCPUProviders()
 		dVifRelease(0);
 	}
 
-#if defined(_M_X86) || defined(ARCH_ARM64)
 	CpuMicroVU1.Shutdown();
 	CpuMicroVU0.Shutdown();
 
 	psxRec.Shutdown();
 	recCpu.Shutdown();
-#else
-	if (vu1Thread.IsOpen())
-		vu1Thread.WaitVU();
-#endif
 }
 
 void VMManager::UpdateCPUImplementations()
@@ -2864,24 +2855,11 @@ void VMManager::UpdateCPUImplementations()
 		return;
 	}
 
-#if defined(_M_X86) || defined(ARCH_ARM64)
 	Cpu = CHECK_EEREC ? &recCpu : &intCpu;
 	psxCpu = CHECK_IOPREC ? &psxRec : &psxInt;
 
 	CpuVU0 = EmuConfig.Cpu.Recompiler.EnableVU0 ? static_cast<BaseVUmicroCPU*>(&CpuMicroVU0) : static_cast<BaseVUmicroCPU*>(&CpuIntVU0);
 	CpuVU1 = EmuConfig.Cpu.Recompiler.EnableVU1 ? static_cast<BaseVUmicroCPU*>(&CpuMicroVU1) : static_cast<BaseVUmicroCPU*>(&CpuIntVU1);
-#else
-	// ARM64 (Phase 4.3): the EE recompiler is now functional, so select it when the
-	// EE rec is enabled (it falls back to the interpreter per-opcode for anything it
-	// can't compile yet). (Phase 6) the IOP recompiler is functional too — same
-	// per-opcode interpreter fallback model. (Phase 7.8) microVU0/1 are now ported, so
-	// select them when the VU recs are enabled (mirrors the x86 path).
-	Cpu = CHECK_EEREC ? &recCpu : &intCpu;
-	psxCpu = CHECK_IOPREC ? &psxRec : &psxInt;
-
-	CpuVU0 = EmuConfig.Cpu.Recompiler.EnableVU0 ? static_cast<BaseVUmicroCPU*>(&CpuMicroVU0) : static_cast<BaseVUmicroCPU*>(&CpuIntVU0);
-	CpuVU1 = EmuConfig.Cpu.Recompiler.EnableVU1 ? static_cast<BaseVUmicroCPU*>(&CpuMicroVU1) : static_cast<BaseVUmicroCPU*>(&CpuIntVU1);
-#endif
 }
 
 void VMManager::Internal::ClearCPUExecutionCaches()
@@ -2889,23 +2867,9 @@ void VMManager::Internal::ClearCPUExecutionCaches()
 	Cpu->Reset();
 	psxCpu->Reset();
 
-#if defined(_M_X86) || defined(ARCH_ARM64)
 	// mVU's VU0 needs to be properly initialized for macro mode even if it's not used for micro mode!
 	if (CHECK_EEREC && !EmuConfig.Cpu.Recompiler.EnableVU0)
 		CpuMicroVU0.Reset();
-#else
-	// ARM64 (Phase 1.5 / Phase 6): reset the EE + IOP rec code caches/constant pools
-	// even when not the active provider, so their emit cursors start clean on each VM
-	// reset (Cpu->Reset()/psxCpu->Reset() above only reset the interpreters when the
-	// recs aren't selected).
-	recCpu.Reset();
-	psxRec.Reset();
-
-	// (Phase 7.8) mVU's VU0 needs to be properly initialized for macro mode even if it's
-	// not used for micro mode (mirrors the x86 branch above).
-	if (CHECK_EEREC && !EmuConfig.Cpu.Recompiler.EnableVU0)
-		CpuMicroVU0.Reset();
-#endif
 
 	CpuVU0->Reset();
 	CpuVU1->Reset();
