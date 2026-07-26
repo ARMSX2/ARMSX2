@@ -199,10 +199,10 @@ bool ShouldUseLeftAlignment(OsdOverlayPos position)
 namespace ImGuiManager
 {
 	static void FormatProcessorStat(SmallStringBase& text, double usage, double time);
-	static void DrawPerformanceOverlay(float& position_y, float scale, float margin, float spacing);
-	static void DrawShaderCompileIndicator(float scale, float margin, float spacing);
-	static void DrawSettingsOverlay(float scale, float margin, float spacing);
-	static void DrawInputsOverlay(float scale, float margin, float spacing);
+	static void DrawPerformanceOverlay(float& position_y, float scale, float margin, float bottom_margin, float spacing);
+	static void DrawShaderCompileIndicator(float scale, float margin, float bottom_margin, float spacing);
+	static void DrawSettingsOverlay(float scale, float margin, float bottom_margin, float spacing);
+	static void DrawInputsOverlay(float scale, float margin, float bottom_margin, float spacing);
 	static void DrawInputRecordingOverlay(float& position_y, float scale, float margin, float spacing);
 	static void DrawVideoCaptureOverlay(float& position_y, float scale, float margin, float spacing);
 	static void DrawTextureReplacementsOverlay(float& position_y, float scale, float margin, float spacing);
@@ -246,7 +246,7 @@ __ri void ImGuiManager::FormatProcessorStat(SmallStringBase& text, double usage,
 		text.append_format("{:.1f}% ({:.2f}ms)", usage, time);
 }
 
-__ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, float margin, float spacing)
+__ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, float margin, float bottom_margin, float spacing)
 {
 	// The perf-OSD flags in GSConfig are refreshed from the authoritative EmuConfig.GS at
 	// the top of RenderOverlays (see the note there). When every perf line is off, draw
@@ -315,7 +315,7 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 		case OsdOverlayPos::BottomCenter:
 		case OsdOverlayPos::BottomRight:
 
-			position_y = GetWindowHeight() - margin - (line_height * 15.0f + spacing * 14.0f);
+			position_y = GetWindowHeight() - bottom_margin - (line_height * 15.0f + spacing * 14.0f);
 			break;
 
 		case OsdOverlayPos::TopLeft:
@@ -989,7 +989,7 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 // assume one line. DrawSettingsOverlay runs first, so this is current.
 static float s_settings_overlay_height = 0.0f;
 
-__ri void ImGuiManager::DrawShaderCompileIndicator(float scale, float margin, float spacing)
+__ri void ImGuiManager::DrawShaderCompileIndicator(float scale, float margin, float bottom_margin, float spacing)
 {
 	static bool s_indicator_was_visible = false;
 	static double s_indicator_fade_in_start = 0.0;
@@ -1027,7 +1027,7 @@ __ri void ImGuiManager::DrawShaderCompileIndicator(float scale, float margin, fl
 
 	ImFont* const font = ImGuiManager::GetOSDFont();
 	const float font_size = ImGuiManager::GetFontSizeStandard();
-	const float baseline_y = GetWindowHeight() - margin - s_settings_overlay_height;
+	const float baseline_y = GetWindowHeight() - bottom_margin - s_settings_overlay_height;
 	const float radius = std::ceil(10.0f * scale);
 	const float cx = GetWindowWidth() - margin - radius;
 	const float cy = baseline_y - spacing - radius;
@@ -1063,7 +1063,7 @@ __ri void ImGuiManager::DrawShaderCompileIndicator(float scale, float margin, fl
 	dl->PathStroke(text_col, thickness, false);
 }
 
-__ri void ImGuiManager::DrawSettingsOverlay(float scale, float margin, float spacing)
+__ri void ImGuiManager::DrawSettingsOverlay(float scale, float margin, float bottom_margin, float spacing)
 {
 	s_settings_overlay_height = 0.0f;
 
@@ -1226,7 +1226,7 @@ __ri void ImGuiManager::DrawSettingsOverlay(float scale, float margin, float spa
 
 	s_settings_overlay_height = text_size.y;
 
-	const float position_y = GetWindowHeight() - margin - text_size.y;
+	const float position_y = GetWindowHeight() - bottom_margin - text_size.y;
 	const ImVec2 text_pos(std::max(margin, GetWindowWidth() - margin - text_size.x), position_y);
 	const bool bold_osd = GSConfig.OsdBoldText;
 	dl->AddText(font, font_size,
@@ -1241,7 +1241,7 @@ __ri void ImGuiManager::DrawSettingsOverlay(float scale, float margin, float spa
 	}
 }
 
-__ri void ImGuiManager::DrawInputsOverlay(float scale, float margin, float spacing)
+__ri void ImGuiManager::DrawInputsOverlay(float scale, float margin, float bottom_margin, float spacing)
 {
 	// Technically this is racing the CPU thread.. but it doesn't really matter, at worst, the inputs get displayed onscreen late.
 	if (!GSConfig.OsdShowInputs ||
@@ -1274,7 +1274,7 @@ __ri void ImGuiManager::DrawInputsOverlay(float scale, float margin, float spaci
 	}
 
 	float current_x = ImFloor(margin);
-	float current_y = ImFloor(display_size.y - margin - ((static_cast<float>(num_ports) * (line_height + spacing)) - spacing));
+	float current_y = ImFloor(display_size.y - bottom_margin - ((static_cast<float>(num_ports) * (line_height + spacing)) - spacing));
 	const ImVec4 clip_rect(current_x, current_y, display_size.x - margin, display_size.y);
 
 	SmallString text;
@@ -2067,11 +2067,13 @@ void ImGuiManager::RenderOverlays()
 	const float base_margin = std::ceil(GSConfig.OsdMargin * scale);
 	const float spacing = std::ceil(5.0f * scale);
 
-	// The frontend hands us the cut-out and rounded-corner clearance on every rotation. Only one
-	// horizontal margin is threaded through the draw functions, so take the worse side.
-	float inset_left = 0.0f, inset_top = 0.0f, inset_right = 0.0f;
-	ImGuiManager::GetOSDSafeAreaInsets(&inset_left, &inset_top, &inset_right, nullptr);
+	// The frontend hands us the cut-out and home-indicator clearance on every rotation. Only one
+	// horizontal margin is threaded through the draw functions, so take the worse side; the bottom
+	// needs its own, or content anchored down there is spaced off the notch instead of the indicator.
+	float inset_left = 0.0f, inset_top = 0.0f, inset_right = 0.0f, inset_bottom = 0.0f;
+	ImGuiManager::GetOSDSafeAreaInsets(&inset_left, &inset_top, &inset_right, &inset_bottom);
 	const float margin = base_margin + std::max(inset_left, inset_right);
+	const float bottom_margin = base_margin + inset_bottom;
 	float position_y = base_margin + inset_top;
 
 	DrawIndicatorsOverlay(position_y, scale, margin, spacing);
@@ -2079,10 +2081,10 @@ void ImGuiManager::RenderOverlays()
 	DrawInputRecordingOverlay(position_y, scale, margin, spacing);
 	DrawTextureReplacementsOverlay(position_y, scale, margin, spacing);
 	if (GSConfig.OsdPerformancePos != OsdOverlayPos::None)
-		DrawPerformanceOverlay(position_y, scale, margin, spacing);
-	DrawSettingsOverlay(scale, margin, spacing);
-	DrawShaderCompileIndicator(scale, margin, spacing);
-	DrawInputsOverlay(scale, margin, spacing);
+		DrawPerformanceOverlay(position_y, scale, margin, bottom_margin, spacing);
+	DrawSettingsOverlay(scale, margin, bottom_margin, spacing);
+	DrawShaderCompileIndicator(scale, margin, bottom_margin, spacing);
+	DrawInputsOverlay(scale, margin, bottom_margin, spacing);
 	if (SaveStateSelectorUI::s_open)
 		SaveStateSelectorUI::Draw();
 }
