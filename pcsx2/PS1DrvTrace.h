@@ -2,22 +2,24 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // Rate-limited / categorized trace helpers for PS1-mode runtime debugging.
-// Toggles live in arm64/InterpFlags.h: PS1DRV_TRACE_<CAT> where CAT is one
-// of CDROM / DMA / IRQ / GPU / SIO / MDEC. Logs prefixed with
-// [PS1DRV-<CAT>] for grep-friendly filtering.
+// Everything here is off unless you turn it on: define PS1DRV_TRACE_<CAT> —
+// CAT being one of CDROM / DMA / IRQ / GPU / SIO / MDEC — for the build you
+// are debugging, either on the compiler command line or right here. Logs are
+// prefixed with [PS1DRV-<CAT>] for grep-friendly filtering.
 //
 // Capture: `adb logcat -s STDOUT:W | grep PS1DRV` while the device runs.
 //
-// Macros (no-op when toggle off):
-//   PS1DRV_TRACE_LOG(CAT, fmt, ...)
+// Macros (no-op when the toggle is off). CAT is part of the NAME, not an
+// argument — e.g. PS1DRV_LOG_CDROM("cmd=%02x", cmd):
+//   PS1DRV_LOG_<CAT>(fmt, ...)
 //     Unconditional log if PS1DRV_TRACE_<CAT> is defined.
 //
-//   PS1DRV_TRACE_RATE(CAT, key, every_n_cycles, fmt, ...)
+//   PS1DRV_RATE_<CAT>(key, every_n_cycles, fmt, ...)
 //     Log only if at least every_n_cycles IOP cycles have elapsed since the
 //     last hit at this `key` (a string literal — used as the dedupe key).
 //     Use for events that fire every frame / every block.
 //
-//   PS1DRV_TRACE_CHANGE(CAT, key, var, fmt, ...)
+//   PS1DRV_CHG_<CAT>(key, var, fmt, ...)
 //     Log only when `var` differs from the value seen at the previous call
 //     with the same `key`. Use to surface state transitions without
 //     spamming on no-change polls.
@@ -26,7 +28,6 @@
 
 #include "Common.h"
 #include "R3000A.h"
-#include "arm64/InterpFlags.h"
 
 #include <unordered_map>
 #include <cstdint>
