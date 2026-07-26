@@ -18,7 +18,11 @@ GSTexture::~GSTexture() = default;
 
 bool GSTexture::Update(const GSVector4i& r, const void* data, int pitch, int layer)
 {
-	g_gs_device->FlushDeferredDraws();
+	// An upload only conflicts with a queued draw that reads or writes this very texture -
+	// and the overwhelming majority are into a source the queue has never seen, since the
+	// texture cache uploads into freshly pooled surfaces. Flushing for all of them was 15%
+	// of every flush on Dirge of Cerberus.
+	g_gs_device->FlushDeferredDrawsFor(this);
 	return DoUpdate(r, data, pitch, layer);
 }
 
