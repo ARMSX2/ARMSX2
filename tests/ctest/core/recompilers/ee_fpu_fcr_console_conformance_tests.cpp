@@ -255,8 +255,73 @@ u32 FlagOpWord(const FlagSituation& s)
 }
 } // namespace
 
-// The console's FCR31 exception flags only reproduce at round-to-nearest,
-// hence the ScopedFpEnv. What the production rounding mode does to them is
+// Cross-engine agreement on FCR31, and the one place in the EE corpora where
+// the engines differ. On both rows below the interpreter raises O and SO and
+// matches silicon while neither recompiler raises them (see bad_jit above), so
+// the fix belongs in the recompilers.
+constexpr const char* kFcrEngineDivergences[] = {
+	"NAN math",
+	"Overflow",
+};
+
+TEST(EeFpuFcrConsoleConformance, EnginesAgreeExceptOnTheOverflowFlags)
+{
+	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
+	int diverged = 0;
+	for (int i = 0; i < kFlagSituationCount; ++i)
+	{
+		const FlagSituation& s = kFlagSituations[i];
+		const u32 word = FlagOpWord(s);
+		ASSERT_NE(word, 0u) << s.what;
+
+		u32 got[2];
+		for (int jit = 0; jit < 2; ++jit)
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.SetFcr31(kFcr31FixedOnes);
+			h.SetFprBits(kFd, 0x00001337);
+			h.SetFprBits(kFs, s.fs);
+			h.SetFprBits(kFt, s.ft);
+			h.SetGpr128(kRd, 0, 0);
+			h.LoadProgram({word, CFC1(kRd, 31)});
+			if (jit)
+				h.RunJitNoDiff();
+			else
+				h.RunInterpOnly();
+			got[jit] = jit ? h.GetGprJit(kRd) : h.GetGprInterp(kRd);
+		}
+
+		bool known = false;
+		for (const char* k : kFcrEngineDivergences)
+			known = known || (std::string(s.what) == k);
+
+		SCOPED_TRACE(::testing::Message() << s.what);
+		if (!known)
+		{
+			EXPECT_EQ(got[1], got[0]) << "engines disagree on FCR31";
+			continue;
+		}
+		++diverged;
+		EXPECT_NE(got[1], got[0])
+			<< "the engines now AGREE. If the recompiler gained O/SO handling, "
+			   "drop this row from kFcrEngineDivergences.";
+		// Pin which side is right, so a future "fix" that aligns them by
+		// removing the interpreter's flags fails here instead of passing.
+		EXPECT_EQ(got[0], s.fcr31)
+			<< "[interp] must stay the console-matching side";
+		EXPECT_EQ(got[0] & ~got[1], 0x00008010u)
+			<< "the gap must still be exactly O|SO";
+	}
+	EXPECT_EQ(diverged, static_cast<int>(std::size(kFcrEngineDivergences)));
+}
+
+// PCSX2 reproduces the console's FCR31 exception flags only at round-to-
+// nearest. Under the production rounding mode an overflow saturates to FLT_MAX
+// instead of producing Inf, and the interpreter's overflow detection -- which
+// looks for Inf -- never fires: FCR31 reads 0x1000001 where the console says
+// 0x1008011. That is not a stale expectation, it is PCSX2 diverging from
+// hardware in the environment a game runs in, and it is pinned separately by
 // DISABLED_ExceptionFlagsInProductionFpEnvMissOverflow below.
 TEST(EeFpuFcrConsoleConformance, ExceptionFlagsMatchConsole)
 {
