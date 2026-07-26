@@ -81,6 +81,12 @@ public:
 	// divergence.
 	void Run();
 
+	// Both passes, no JIT-vs-interp diff. For suites whose two engines
+	// legitimately disagree with each other and are each scored against an
+	// external oracle instead (the hardware captures). Mirrors
+	// EeRecTestHarness::RunJitNoDiff.
+	void RunNoDiff();
+
 	// One-sided execution against the interpreter only. Both `JitSnapshot()`
 	// and `InterpSnapshot()` reflect the interpreter result. Use when
 	// authoring a new test before the JIT path is ready.
@@ -133,6 +139,7 @@ public:
 	static constexpr u32 kProgramPc = 0;
 
 private:
+	void RunBothPasses();
 	void SeedEntryState(bool reset_block_cache = true);
 	void RunInterpFromSeeded();
 	void RunJitFromSeeded();

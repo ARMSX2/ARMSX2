@@ -117,6 +117,7 @@ add_pcsx2_test(recompiler_tests
 	ee_fpu_fcr_console_conformance_tests.cpp
 	ee_lsu_console_conformance_tests.cpp
 	vu0_macro_console_conformance_tests.cpp
+	vu1_efu_console_conformance_tests.cpp
 )
 
 target_include_directories(recompiler_tests PRIVATE

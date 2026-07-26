@@ -281,7 +281,44 @@ void VuTestHarness::RunJitFromSeeded()
 	JitCpu(vu_index_)->Execute(kCycleBudget);
 }
 
+void VuTestHarness::RunNoDiff()
+{
+	RunBothPasses();
+}
+
 void VuTestHarness::Run()
+{
+	RunBothPasses();
+	if (::testing::Test::HasFatalFailure())
+		return;
+
+	// PipelinePermissive (default): the interpreter doesn't populate the
+	// 4-stage micro_*flags pipeline arrays (those are microVU's shadow),
+	// so a strict diff would fire on every run. The architectural snapshot
+	// of MAC/STATUS/CLIP in VI is still strict. XgkickPacketEquivalent —
+	// further skips xgkickaddr/diff/cyclecount/enable/endpacket because
+	// the non-XGKICKHACK microVU path doesn't write VU1.xgkick* (see
+	// VuDiffMode docstring).
+	const auto diffs = DiffVu(jit_snapshot_, interp_snapshot_,
+		diff_mode_, ignored_vi_);
+	if (!diffs.empty())
+	{
+		std::ostringstream ss;
+		ss << "VU" << vu_index_ << " JIT-vs-interp divergence ("
+		   << diffs.size() << "):\n";
+		for (const auto& d : diffs)
+			ss << "  " << d << "\n";
+		ss << "Pre-state:\n";
+		PrintVu(ss, pre_snapshot_);
+		ss << "JIT post-state:\n";
+		PrintVu(ss, jit_snapshot_);
+		ss << "Interp post-state:\n";
+		PrintVu(ss, interp_snapshot_);
+		ADD_FAILURE() << ss.str();
+	}
+}
+
+void VuTestHarness::RunBothPasses()
 {
 	ASSERT_FALSE(program_pairs_.empty())
 		<< "LoadProgram() must be called before Run()";
@@ -323,31 +360,6 @@ void VuTestHarness::Run()
 	has_run_ = true;
 
 	FPControlRegister::SetCurrent(saved_fpcr);
-
-	// PipelinePermissive (default): the interpreter doesn't populate the
-	// 4-stage micro_*flags pipeline arrays (those are microVU's shadow),
-	// so a strict diff would fire on every run. The architectural snapshot
-	// of MAC/STATUS/CLIP in VI is still strict. XgkickPacketEquivalent —
-	// further skips xgkickaddr/diff/cyclecount/enable/endpacket because
-	// the non-XGKICKHACK microVU path doesn't write VU1.xgkick* (see
-	// VuDiffMode docstring).
-	const auto diffs = DiffVu(jit_snapshot_, interp_snapshot_,
-		diff_mode_, ignored_vi_);
-	if (!diffs.empty())
-	{
-		std::ostringstream ss;
-		ss << "VU" << vu_index_ << " JIT-vs-interp divergence ("
-		   << diffs.size() << "):\n";
-		for (const auto& d : diffs)
-			ss << "  " << d << "\n";
-		ss << "Pre-state:\n";
-		PrintVu(ss, pre_snapshot_);
-		ss << "JIT post-state:\n";
-		PrintVu(ss, jit_snapshot_);
-		ss << "Interp post-state:\n";
-		PrintVu(ss, interp_snapshot_);
-		ADD_FAILURE() << ss.str();
-	}
 }
 
 void VuTestHarness::RunJitPreserveBlockCache()
