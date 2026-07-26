@@ -1,0 +1,370 @@
+// SPDX-FileCopyrightText: 2026 yaps2 Dev Team
+// SPDX-License-Identifier: GPL-3.0+
+//
+// EE FPU overflow/underflow against a first-party PS2 capture.
+//
+// The capture and the rule it establishes are documented in autocases_fpuovf.h.
+// The short version, because everything below turns on it:
+//
+//   The EE FPU's representable maximum is 0x7FFFFFFF == (2 - 2^-23) * 2^128.
+//   Exponent 255 is an ordinary exponent; there is no Inf and no NaN. Overflow
+//   means exceeding THAT, it saturates there, and only then are O and SO
+//   raised.
+//
+// That is one binade ABOVE what IEEE single can represent, which is the reason
+// PCSX2's fast path cannot match the console here no matter how the flag test
+// is written: the host cannot hold the EE's top octave at all, so a result the
+// console returns exactly (+FLT_MAX + +FLT_MAX == 0x7FFFFFFF, FCR31 untouched)
+// necessarily arrives as a host overflow. The FULL double path can hold it,
+// and does -- see iFPUd-arm64.cpp ToPS2FPU_Full and the 0x7fffffff constant in
+// ee_rec_fpu_full_mode_tests.cpp.
+//
+// WHAT IS IN SCOPE HERE. Aligning the three engines with each other. A console
+// divergence that all engines share is an accepted end state at this stage; an
+// engine-vs-engine divergence is not. The console column is therefore carried
+// as data and asserted only by the DISABLED tripwire at the bottom.
+//
+// The measured console divergences, all shared by both engines and all
+// deliberate, for the record:
+//   * 19 rows differ in VALUE only -- the +/-FLT_MAX saturation compromise.
+//     DO NOT "fix" posFmax (pcsx2/FPU.cpp:14) globally; that pushes host
+//     exponent-255 patterns through every downstream op in the clamp mode
+//     nearly every game runs in. ee_fpu_zero_divisor_console_tests.cpp carries
+//     the same warning and the serial list behind it.
+//   * 3 rows differ in FLAGS only -- underflow U|SU, which needs FZ off. Owned
+//     by DISABLED_UnderflowFlagsNeedFzOff in the FCR conformance file.
+//   * 15 rows differ in both, the overflow rows, for the binade reason above.
+//     Owned by DISABLED_ExceptionFlagsInProductionFpEnvMissOverflow.
+//   * 20 rows match exactly.
+
+#include "autocases_fpuovf.h"
+#include "harness/EeRecTestHarness.h"
+
+#include "Config.h"
+
+#include <gtest/gtest.h>
+
+using namespace recompiler_tests;
+using namespace mips;
+using namespace mips::ee;
+using namespace console_fpuovf;
+
+namespace {
+
+constexpr u32 kFd = 4, kFs = 5, kFt = 6;
+
+constexpr u32 kFlagO = 0x00008000u;
+constexpr u32 kFcr31FixedOnes = 0x01000001u;
+constexpr u32 kFastPathMax = 0x7F7FFFFFu;
+
+struct Observed
+{
+	u32 result;
+	u32 fcr31;
+};
+
+u32 EncodeOp(FpuOvfOp op)
+{
+	switch (op)
+	{
+		case FO_ADD:   return ADD_S(kFd, kFs, kFt);
+		case FO_SUB:   return SUB_S(kFd, kFs, kFt);
+		case FO_MUL:   return MUL_S(kFd, kFs, kFt);
+		case FO_DIV:   return DIV_S(kFd, kFs, kFt);
+		case FO_SQRT:  return SQRT_S(kFd, kFt);
+		case FO_RSQRT: return RSQRT_S(kFd, kFs, kFt);
+		case FO_ADDA:  return ADDA_S(kFs, kFt);
+		case FO_SUBA:  return SUBA_S(kFs, kFt);
+		case FO_MULA:  return MULA_S(kFs, kFt);
+		case FO_MADD:  return MADD_S(kFd, kFs, kFt);
+		case FO_MSUB:  return MSUB_S(kFd, kFs, kFt);
+		case FO_MADDA: return MADDA_S(kFs, kFt);
+		case FO_MSUBA: return MSUBA_S(kFs, kFt);
+	}
+	return 0;
+}
+
+bool ReadsAcc(FpuOvfOp op)
+{
+	return op == FO_MADD || op == FO_MSUB || op == FO_MADDA || op == FO_MSUBA;
+}
+
+Observed RunCase(const FpuOvfCase& c, bool jit, bool extra_overflow = false)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	if (extra_overflow)
+		h.EnableFpuExtraOverflow();
+	// The console reached every row through `ctc1 $0, $31`, which reads back as
+	// the fixed-ones pattern, so seed that rather than a bare zero -- otherwise
+	// every row reports a flag mismatch that is only the harness writing the
+	// register more directly than CTC1 can.
+	h.SetFcr31(kFcr31FixedOnes);
+	h.SetFprBits(kFs, c.fs);
+	h.SetFprBits(kFt, c.ft);
+	if (ReadsAcc(c.op))
+		h.SetAccBits(c.acc);
+	h.LoadProgram({EncodeOp(c.op)});
+	if (jit)
+		h.RunJitNoDiff();
+	else
+		h.RunInterpOnly();
+
+	Observed o;
+	if (c.acc_dest)
+		o.result = jit ? h.GetAccBitsJit() : h.GetAccBitsInterp();
+	else
+		o.result = jit ? h.GetFprBitsJit(kFd) : h.GetFprBitsInterp(kFd);
+	o.fcr31 = (jit ? h.JitSnapshot() : h.InterpSnapshot()).fprs.fprc[31];
+	return o;
+}
+
+bool Agree(const Observed& a, const Observed& b)
+{
+	return a.result == b.result && a.fcr31 == b.fcr31;
+}
+
+// Every row on which the interpreter and the arm64 recompiler disagree, with
+// the reason and whether turning on the operand clamp closes it. Two classes,
+// and they want different things done about them.
+struct EngineDivergence
+{
+	int row;
+	bool healed_by_extra_overflow;
+	const char* why;
+};
+
+constexpr EngineDivergence kEngineDivergences[] = {
+	// CLASS 1 -- the operand-clamp mode axis, not a defect. The interpreter
+	// always clamps its sources through fpuDouble; the fast path only does so
+	// under CHECK_FPU_EXTRA_OVERFLOW (GameDB eeClampMode >= 2). Every row here
+	// feeds the op a raw exponent-255 word, so the two engines are not being
+	// asked the same question until the clamp is on. Same axis as the "NAN
+	// math" row in ee_fpu_fcr_console_conformance_tests.cpp.
+	{12, true, "div +EEMAX, +EEMAX -- interp gets 1.0, JIT divides Inf by Inf"},
+	{14, true, "mul 2^128, 0.5 -- same"},
+	{17, true, "sub 2^128, 2^128 -- interp gets 0, JIT gets Inf-Inf"},
+
+	// Rows 3, 11 and 16 used to be listed here and are not divergences any
+	// more. They were never the operand-clamp axis: their RESULT words were
+	// identical on both engines and only FCR31 differed, because the arm64 fast
+	// path raised O|SO off a `fabs(result) > FLT_MAX` predicate -- a host-Inf
+	// test, and therefore a function of eeRoundMode rather than of the
+	// architecture. It fired here, where the console says no overflow, and
+	// could not fire at all under the shipping ChopZero default. That emitter
+	// is reverted, both engines now read 0x01000001 on all three, and the O/SO
+	// question is deferred to the redesign (see the DISABLED tripwires in
+	// ee_fpu_fcr_console_conformance_tests.cpp).
+
+	// CLASS 2 -- a real gap, and the capture is what surfaced it. SQRT.S is the
+	// ONLY op in iFPU-arm64.cpp whose emitter never clamps its operand:
+	// fpuClampInput has twelve call sites covering ADD/SUB/MUL/DIV/RSQRT and
+	// the six accumulator forms, and recSQRT_S_xmm calls it zero times. So an
+	// exponent-255 Ft reaches Fsqrt as a host +Inf, sqrt(Inf) is Inf, and
+	// fpuClampResult flattens it to 0x7F7FFFFF -- while the interpreter's
+	// SQRT_S does sqrt(fpuDouble(Ft)) and lands two binades away. Unlike class
+	// 1 this does NOT close under CHECK_FPU_EXTRA_OVERFLOW, because there is no
+	// gate to turn on. The interpreter is the side nearer the console on both
+	// rows, so the direction is to give SQRT the clamp the rest of the family
+	// already has -- never to stop the interpreter clamping.
+	// Pinned by DISABLED_SqrtOperandClampIsMissing below.
+	{44, false, "sqrt +EEMAX -- recSQRT_S_xmm never clamps Ft"},
+	{45, false, "sqrt 2^128 -- same"},
+};
+constexpr int kEngineDivergenceCount =
+	static_cast<int>(sizeof(kEngineDivergences) / sizeof(kEngineDivergences[0]));
+
+const EngineDivergence* FindDivergence(int row)
+{
+	for (int i = 0; i < kEngineDivergenceCount; ++i)
+	{
+		if (kEngineDivergences[i].row == row)
+			return &kEngineDivergences[i];
+	}
+	return nullptr;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// ENABLED, and the one that matters at this stage: the engines agree with each
+// other on every row that is not on the documented list, and the rows that ARE
+// on the list still diverge. The second half is what keeps the list from going
+// stale -- a row that gets fixed without being removed here fails loudly
+// instead of sitting as a silent allowance.
+// ---------------------------------------------------------------------------
+TEST(EeFpuOverflowConsole, EnginesAgreeExceptOnTheDocumentedRows)
+{
+	for (int i = 0; i < kCaseCount; ++i)
+	{
+		const FpuOvfCase& c = kCases[i];
+		SCOPED_TRACE(::testing::Message() << "row " << i << ": " << c.what);
+		const Observed in = RunCase(c, false);
+		const Observed ji = RunCase(c, true);
+		const EngineDivergence* d = FindDivergence(i);
+
+		if (d == nullptr)
+		{
+			EXPECT_EQ(in.result, ji.result) << "result diverges between engines";
+			EXPECT_EQ(in.fcr31, ji.fcr31) << "FCR31 diverges between engines";
+		}
+		else
+		{
+			EXPECT_FALSE(Agree(in, ji))
+				<< "row " << i << " is listed as an engine divergence (" << d->why
+				<< ") but the engines now agree -- delete the entry";
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ENABLED. Splits the divergence list in two by measurement rather than by
+// assertion in a comment: the operand-clamp rows close when the clamp is on,
+// the SQRT rows do not, because SQRT has no clamp to turn on.
+// ---------------------------------------------------------------------------
+TEST(EeFpuOverflowConsole, OperandClampHealsEveryDivergenceExceptSqrt)
+{
+	for (int i = 0; i < kEngineDivergenceCount; ++i)
+	{
+		const EngineDivergence& d = kEngineDivergences[i];
+		const FpuOvfCase& c = kCases[d.row];
+		SCOPED_TRACE(::testing::Message() << "row " << d.row << ": " << c.what
+										  << " -- " << d.why);
+		const Observed in = RunCase(c, false);
+		const Observed jx = RunCase(c, true, /*extra_overflow=*/true);
+		if (d.healed_by_extra_overflow)
+		{
+			EXPECT_TRUE(Agree(in, jx))
+				<< "expected CHECK_FPU_EXTRA_OVERFLOW to close this row";
+		}
+		else
+		{
+			EXPECT_FALSE(Agree(in, jx))
+				<< "this row is recorded as NOT closing under the operand "
+				   "clamp; if it now does, SQRT gained a clamp and the entry "
+				   "and its tripwire should go";
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ENABLED. The compromise, pinned. On every row the console overflowed, both
+// engines must produce sign|0x7F7FFFFF -- the NON-console value. This exists so
+// that an attempt at the console tripwire below cannot quietly change what the
+// default clamp mode produces.
+//
+// If you are here because this failed: you changed the fast path's saturation.
+// Scope the change to the FULL path instead.
+// ---------------------------------------------------------------------------
+TEST(EeFpuOverflowConsole, DefaultClampModeSaturatesToFltMaxOnBothEngines)
+{
+	ASSERT_FALSE(EmuConfig.Cpu.Recompiler.fpuFullMode)
+		<< "this test describes the NON-full path; something enabled FULL mode";
+
+	int checked = 0;
+	for (int i = 0; i < kCaseCount; ++i)
+	{
+		const FpuOvfCase& c = kCases[i];
+		if ((c.fcr31 & kFlagO) == 0)
+			continue; // console did not call this row an overflow
+		if (FindDivergence(i) != nullptr)
+			continue; // covered by the divergence list instead
+		++checked;
+		const u32 want = (c.result & 0x80000000u) | kFastPathMax;
+		SCOPED_TRACE(::testing::Message() << "row " << i << ": " << c.what);
+		EXPECT_EQ(RunCase(c, false).result, want) << "interp";
+		EXPECT_EQ(RunCase(c, true).result, want) << "jit";
+	}
+	EXPECT_GT(checked, 10) << "the console overflow rows vanished from the "
+							  "capture; this test would pass vacuously";
+}
+
+// ---------------------------------------------------------------------------
+// TRIPWIRE. SQRT.S is the only EE FPU op whose arm64 emitter never clamps its
+// operand. Enable this after giving recSQRT_S_xmm the fpuClampInput call the
+// other twelve emitters have, gated on CHECK_FPU_EXTRA_OVERFLOW the same way;
+// then drop rows 44 and 45 from kEngineDivergences.
+//
+// Direction matters here: the interpreter is the side nearer the console on
+// both rows (console 5fb504f3 / 5f800000, interp 5f7fffff, JIT 7f7fffff), so
+// this is fixed by moving the recompiler, never by making the interpreter stop
+// clamping.
+// ---------------------------------------------------------------------------
+TEST(EeFpuOverflowConsole, DISABLED_SqrtOperandClampIsMissing)
+{
+	for (int i = 0; i < kCaseCount; ++i)
+	{
+		const FpuOvfCase& c = kCases[i];
+		if (c.op != FO_SQRT)
+			continue;
+		SCOPED_TRACE(::testing::Message() << "row " << i << ": " << c.what);
+		EXPECT_TRUE(Agree(RunCase(c, false, /*extra_overflow=*/true),
+						  RunCase(c, true, /*extra_overflow=*/true)))
+			<< "SQRT.S still does not clamp its operand under "
+			   "CHECK_FPU_EXTRA_OVERFLOW";
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TRIPWIRE for the later hardware-alignment stage. Both engines, every row,
+// against the console. Expected to fail on 37 of 57 rows today for the three
+// documented reasons at the top of this file.
+// ---------------------------------------------------------------------------
+TEST(EeFpuOverflowConsole, DISABLED_AllRowsMatchConsole)
+{
+	for (int i = 0; i < kCaseCount; ++i)
+	{
+		const FpuOvfCase& c = kCases[i];
+		for (int jit = 0; jit < 2; ++jit)
+		{
+			SCOPED_TRACE(::testing::Message()
+						 << "row " << i << ": " << c.what
+						 << (jit ? " [jit]" : " [interp]"));
+			const Observed o = RunCase(c, jit != 0);
+			EXPECT_EQ(o.result, c.result);
+			EXPECT_EQ(o.fcr31, c.fcr31);
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MEASUREMENT, not an assertion. Prints every row four ways so the console
+// divergences can be counted and classified without guessing. Run with
+// --gtest_also_run_disabled_tests --gtest_filter=*DumpConsoleComparison*
+// ---------------------------------------------------------------------------
+TEST(EeFpuOverflowConsole, DISABLED_DumpConsoleComparison)
+{
+	int agree = 0, val_only = 0, flag_only = 0, both = 0;
+	int engine_split = 0, split_healed = 0;
+	for (int i = 0; i < kCaseCount; ++i)
+	{
+		const FpuOvfCase& c = kCases[i];
+		const Observed in = RunCase(c, false);
+		const Observed ji = RunCase(c, true);
+		const Observed jx = RunCase(c, true, /*extra_overflow=*/true);
+		const bool vbad = (in.result != c.result);
+		const bool fbad = (in.fcr31 != c.fcr31);
+		const bool split = !Agree(in, ji);
+		const bool split_x = !Agree(in, jx);
+		engine_split += split;
+		split_healed += (split && !split_x);
+		if (!vbad && !fbad)
+			++agree;
+		else if (vbad && fbad)
+			++both;
+		else if (vbad)
+			++val_only;
+		else
+			++flag_only;
+
+		printf("%-3d %-34s console %08x/%08x  interp %08x/%08x  jit %08x/%08x  "
+			   "jit+xovf %08x/%08x %s%s%s%s\n",
+			i, c.what, c.result, c.fcr31, in.result, in.fcr31, ji.result, ji.fcr31,
+			jx.result, jx.fcr31, vbad ? "VAL " : "", fbad ? "FLAG " : "",
+			split ? "ENGINE-SPLIT " : "", (split && !split_x) ? "(healed by xovf)" : "");
+	}
+	printf("\n%d rows: %d match console, %d value-only, %d flag-only, %d both\n",
+		kCaseCount, agree, val_only, flag_only, both);
+	printf("%d engine-split in default mode, %d of them healed by "
+		   "CHECK_FPU_EXTRA_OVERFLOW\n", engine_split, split_healed);
+}
