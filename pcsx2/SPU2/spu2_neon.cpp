@@ -18,12 +18,6 @@
 // clamp_mix and the ReverbDownsample/ReverbUpsample function pointers.
 #include "SPU2/spu2_sve2_fir.h"
 #include "SPU2/defs.h"
-// NOTE: the spu2_neon_mixer / _reverb_ex / _dcfilter helper headers are
-// intentionally NOT included. They hold drop-in SIMD helpers meant to be called
-// from mixer.cpp / ReaVerb.cpp, but that integration hasn't been wired up — this
-// TU only needs the reverb FIR below plus the SVE2 hook. Pulling them in would
-// compile a pile of currently-unused (and not-yet-portable) code on every arm64
-// target (they use the MSVC-only __forceinline keyword unguarded).
 
 #include <arm_neon.h>
 #include <array>

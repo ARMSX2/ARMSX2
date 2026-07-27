@@ -1154,10 +1154,6 @@ if(ARCH_ARM64 OR ANDROID OR ARMSX2_IOS)
 		SPU2/spu2_neon.cpp)
 	list(APPEND pcsx2SPU2Headers
 		SPU2/spu2_neon.h
-		SPU2/spu2_neon_dcfilter.h
-		SPU2/spu2_neon_mixer.h
-		SPU2/spu2_neon_reverb_ex.h
-		SPU2/spu2_optimize.h
 		SPU2/spu2_sve2_fir.h
 		SPU2/spu2_mt6899_tuning.h)
 endif()
