@@ -99,6 +99,22 @@ private struct VPadSkinManifest: Codable {
     var layout: String?
 }
 
+/// Whether a package had a manifest at all matters as much as what it said. A
+/// package with none is normal; one carrying a manifest nobody can read is worth
+/// telling the author about.
+private enum ManifestRead {
+    case absent
+    case read(VPadSkinManifest, repaired: Bool)
+    case unreadable
+
+    var manifest: VPadSkinManifest? {
+        if case .read(let manifest, _) = self {
+            return manifest
+        }
+        return nil
+    }
+}
+
 enum VPadSkinLibraryStoreError: LocalizedError {
     case missingSkin
     case noUsableSkinImages
@@ -345,7 +361,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         let now = Date()
         let files = skinImportFiles(from: sourceURL)
         let manifestRead = manifest(in: files)
-        let manifest = manifestRead?.manifest
+        let manifest = manifestRead.manifest
         let baseName = sanitizedDisplayName(
             manifest?.name,
             fallback: sanitizedDisplayName(
@@ -373,8 +389,13 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         }.value
 
         var warnings = decoded.warnings
-        if manifestRead?.repaired == true {
+        switch manifestRead {
+        case .read(_, repaired: true):
             warnings.append("The skin's manifest had a formatting error and was repaired on import.")
+        case .unreadable:
+            warnings.append("The skin's manifest could not be read, so the name and layout were worked out from the files instead.")
+        case .read, .absent:
+            break
         }
         for asset in decoded.assets {
             try writeSkinAsset(asset.data, to: destination.appendingPathComponent(asset.name))
@@ -398,24 +419,41 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
             updatedAt: now
         )
 
+        var layoutURL: URL?
+        var namedLayoutMissing = false
         if let layoutName = manifest?.layout?.trimmingCharacters(in: .whitespacesAndNewlines),
            !layoutName.isEmpty {
-            if let layoutURL = files.first(where: { $0.lastPathComponent.caseInsensitiveCompare(URL(fileURLWithPath: layoutName).lastPathComponent) == .orderedSame }) {
-                do {
-                    let data = try Data(contentsOf: layoutURL)
-                    let snapshot = try Self.decodeImportedLayoutSnapshot(from: data)
-                    let preset = layoutPresets.createPreset(
-                        named: "\(displayName) Layout",
-                        snapshot: snapshot,
-                        source: .futureImportedSkin,
-                        linkedSkinID: descriptor.id
-                    )
-                    descriptor.linkedLayoutPresetID = preset.id
-                } catch {
-                    warnings.append("Skipped invalid recommended layout.")
-                }
-            } else {
+            layoutURL = files.first { $0.lastPathComponent.caseInsensitiveCompare(URL(fileURLWithPath: layoutName).lastPathComponent) == .orderedSame }
+            namedLayoutMissing = layoutURL == nil
+        }
+
+        if layoutURL == nil {
+            // Nothing named, nothing readable to name it, or the named file is not in
+            // the package. A skin folder almost always holds one other json and it is
+            // the layout, so a package that names the wrong file still works out.
+            let candidates = Self.candidateLayoutURLs(in: files)
+            if candidates.count == 1 {
+                layoutURL = candidates[0]
+            } else if candidates.count > 1 {
+                warnings.append("Several layouts were found in this skin; none was applied automatically.")
+            } else if namedLayoutMissing {
                 warnings.append("Skipped missing recommended layout.")
+            }
+        }
+
+        if let layoutURL {
+            do {
+                let data = try Data(contentsOf: layoutURL)
+                let snapshot = try Self.decodeImportedLayoutSnapshot(from: data)
+                let preset = layoutPresets.createPreset(
+                    named: "\(displayName) Layout",
+                    snapshot: snapshot,
+                    source: .futureImportedSkin,
+                    linkedSkinID: descriptor.id
+                )
+                descriptor.linkedLayoutPresetID = preset.id
+            } catch {
+                warnings.append("Skipped invalid recommended layout.")
             }
         }
 
@@ -433,23 +471,28 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
     /// "Something 2". Callers use it to spot a re-import of what they already
     /// have.
     func intendedDisplayName(forExtractedSkinAt url: URL) -> String {
-        let files = skinImportFiles(from: url)
+        let fallback = sanitizedDisplayName(
+            sourceName(from: url.lastPathComponent),
+            fallback: "Imported Skin"
+        )
+        // A v2 package keeps its name in info.json, so asking only the legacy
+        // manifest would miss it and quietly skip the prompt.
+        if case .v2(let v2Manifest, _, _) = SkinManifestImporter.detectPackage(sourceURL: url) {
+            return sanitizedDisplayName(v2Manifest.name, fallback: fallback)
+        }
         return sanitizedDisplayName(
-            manifest(in: files)?.manifest.name,
-            fallback: sanitizedDisplayName(
-                sourceName(from: url.lastPathComponent),
-                fallback: "Imported Skin"
-            )
+            manifest(in: skinImportFiles(from: url)).manifest?.name,
+            fallback: fallback
         )
     }
 
     /// Matched on the display name, not the file it arrived in - the same skin
-    /// gets re-zipped under a new filename all the time. Catalog installs are
-    /// left out; replacing one by hand would strand its catalogID and break the
-    /// installed badge in the browser.
+    /// gets re-zipped under a new filename all the time. Catalog installs count
+    /// too: replacing one by hand drops its catalogID, which is honest, since the
+    /// browser should go back to offering it rather than claiming it is installed.
     func existingImportedSkin(matchingName name: String) -> VPadSkinDescriptor? {
         importedDescriptors.first {
-            $0.catalogID == nil && $0.displayName.caseInsensitiveCompare(name) == .orderedSame
+            $0.displayName.caseInsensitiveCompare(name) == .orderedSame
         }
     }
 
@@ -617,6 +660,27 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         try PadLayoutImportExport.decodeSnapshot(from: data)
     }
 
+    /// Loose jsons in the package that actually decode as a layout. The payload
+    /// needs five keys, so the decode is the real filter and the name check just
+    /// keeps the manifests out of the loop.
+    private static func candidateLayoutURLs(in files: [URL]) -> [URL] {
+        let maxCandidates = 8
+        let maxBytes = 1024 * 1024
+        var examined = 0
+        var matches: [URL] = []
+        for url in files where examined < maxCandidates {
+            guard url.pathExtension.lowercased() == "json" else { continue }
+            let name = url.lastPathComponent.lowercased()
+            guard !SkinManifestImporter.manifestFileNames.contains(name), !name.hasPrefix(".") else { continue }
+            guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size < maxBytes else { continue }
+            examined += 1
+            guard let data = try? Data(contentsOf: url),
+                  (try? decodeImportedLayoutSnapshot(from: data)) != nil else { continue }
+            matches.append(url)
+        }
+        return matches
+    }
+
     static func canonicalSkinFileName(forImportPath path: String) -> String? {
         let url = URL(fileURLWithPath: path)
         let exact = url.lastPathComponent.lowercased()
@@ -745,19 +809,19 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         return [sourceURL]
     }
 
-    private func manifest(in files: [URL]) -> (manifest: VPadSkinManifest, repaired: Bool)? {
+    private func manifest(in files: [URL]) -> ManifestRead {
         guard let manifestURL = files.first(where: { $0.lastPathComponent.caseInsensitiveCompare("manifest.json") == .orderedSame }),
               let data = try? Data(contentsOf: manifestURL) else {
-            return nil
+            return .absent
         }
         if let decoded = try? JSONDecoder().decode(VPadSkinManifest.self, from: data) {
-            return (decoded, false)
+            return .read(decoded, repaired: false)
         }
         guard let repaired = SkinManifestImporter.repairedJSON(data),
               let decoded = try? JSONDecoder().decode(VPadSkinManifest.self, from: repaired) else {
-            return nil
+            return .unreadable
         }
-        return (decoded, true)
+        return .read(decoded, repaired: true)
     }
 
     private func copySkinAsset(from sourceURL: URL, to destinationURL: URL) throws {
