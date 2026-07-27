@@ -77,6 +77,13 @@ public:
 	// Restored to its previous value in the dtor.
 	void EnableFpuExtraOverflow();
 
+	// Turns OFF the (default-ON) fpuOverflow Recompiler option — GameDB
+	// eeClampMode 0, CHECK_FPU_OVERFLOW — the mode in which the JIT emits no
+	// clamping at all for the ops that gate on the LOWER threshold (SQRT.S's
+	// operand clamp, MAX.S/MIN.S's operands, and on x86 ABS.S's result). The
+	// interpreter has no equivalent switch. Restored in the dtor.
+	void DisableFpuOverflow();
+
 	// Turns OFF the (default-ON) fpuGuardedAddSub Recompiler option so the JIT
 	// emits a plain single-precision add/sub with no guard-bit masking — the
 	// opt-out perf path. Off makes the JIT bit-identical to the single-precision
@@ -374,6 +381,8 @@ private:
 	bool prev_fpu_guarded_ = false;
 	bool fpu_extra_overflow_changed_ = false;
 	bool prev_fpu_extra_overflow_ = false;
+	bool fpu_overflow_changed_ = false;
+	bool prev_fpu_overflow_ = false;
 };
 
 } // namespace recompiler_tests

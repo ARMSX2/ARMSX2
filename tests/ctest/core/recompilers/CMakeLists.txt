@@ -126,6 +126,7 @@ add_pcsx2_test(recompiler_tests
 	ee_mmi_console_conformance_tests.cpp
 	ee_fpu_fcr_console_conformance_tests.cpp
 	ee_fpu_overflow_console_conformance_tests.cpp
+	ee_fpu_absneg_clamp_tests.cpp
 	ee_lsu_console_conformance_tests.cpp
 	vu0_macro_console_conformance_tests.cpp
 	vu1_efu_console_conformance_tests.cpp
