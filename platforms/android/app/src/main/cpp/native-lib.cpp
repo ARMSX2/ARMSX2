@@ -18,7 +18,6 @@
 #include "SIO/Sio.h" // MemcardBusy — save-state refusal reason
 #include "pcsx2/Patch.h"
 #include "pcsx2/R5900.h"
-#include "pcsx2/EEDiffVerify.h" // @@EEDIFF@@ diff-verifier toggle
 #include <atomic>
 #include <chrono> // shader-cache flush throttle
 #include <thread>
@@ -236,23 +235,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveScreenshot(JNIEnv* env, jclass, jstring
     Host::RunOnGSThread([target = std::move(target)]() { GSQueueSnapshot(target, 0); });
 }
 
-// @@EEDIFF@@ Toggle the EE recompiler-vs-interpreter differential verifier (throwaway
-// diagnostic — see EEDiffVerify.h). Sets the enable flag AND clears the EE block cache so
-// blocks recompile WITH (enabled) or WITHOUT (disabled) the per-op verify hooks. With it
-// on, load True Crime NYC and watch logcat for "@@EEDIFF@@ ... DIVERGE ..." — the first
-// line names the exact guest instruction that miscompiles.
-extern "C"
-JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_setEeDiffVerify(JNIEnv*, jclass, jboolean enabled) {
-    eeDiffSetEnabled(enabled == JNI_TRUE);
-    Console.WriteLnFmt("EE diff verify {}", enabled == JNI_TRUE ? "ENABLED" : "disabled");
-    // Reset the EE recompiler so every block recompiles with the new hook state. Cpu is
-    // the active R5900 provider (the mac ARM64 rec on Android); Reset -> recResetEE, which
-    // defers safely to the dispatcher if a block is currently executing.
-    if (Cpu)
-        Cpu->Reset();
-}
-
 // ADPF (PerformanceHintManager): hint the OS scheduler to raise the EE/GS/MTVU threads' CPU
 // frequency toward the frame deadline instead of the DVFS governor under-clocking emulation's
 // bursty load. Basic API-33 path — CPU scheduling only, no explicit GPU timing. Applies live;
@@ -274,15 +256,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_emulog(JNIEnv *env, jclass, jstring p_msg) 
     const std::string msg = GetJavaString(env, p_msg);
     if (!msg.empty())
         Console.WriteLnFmt("{}", msg);
-}
-
-// Read the real flag so the UI can reflect it. The toggle previously kept its
-// state in a Compose `remember`, so navigating away reset the switch to off while the native
-// flag stayed on — the switch was lying about whether the diagnostic was armed.
-extern "C"
-JNIEXPORT jboolean JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_isEeDiffVerify(JNIEnv*, jclass) {
-    return eeDiffGetEnabled() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C"

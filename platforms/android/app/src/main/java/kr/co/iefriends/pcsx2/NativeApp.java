@@ -124,15 +124,6 @@ public class NativeApp {
 	/** PNG screenshot into the snapshots folder. No-op with no VM. */
 	public static native void saveScreenshot(String pngPath);
 
-	// @@EEDIFF@@ Toggle the EE recompiler-vs-interpreter differential verifier (throwaway
-	// diagnostic). Enabling clears the EE block cache so blocks recompile with per-op
-	// verify hooks; the first miscompiling guest instruction logs "@@EEDIFF@@ ... DIVERGE".
-	// Off by default = zero overhead / normal speed. Debug tool only — heavy slowdown when on.
-	public static native void setEeDiffVerify(boolean enabled);
-
-	/** Real state of the diagnostic flag (the UI toggle must not keep its own copy). */
-	public static native boolean isEeDiffVerify();
-
 	// ADPF (PerformanceHintManager): hint the OS to clock the EE/GS threads' cores up toward
 	// the frame deadline instead of the DVFS governor under-clocking emulation. Applies live;
 	// no-op below API 33. Persisted app-side (pref "ui.adpf") and re-applied at startup.

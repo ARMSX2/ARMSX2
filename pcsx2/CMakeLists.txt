@@ -1180,10 +1180,8 @@ if(ANDROID)
 		GS/Renderers/Common/GSGPUProfilePrivate.h)
 	list(APPEND pcsx2Sources
 		Android/AndroidStubs.cpp
-		Android/AndroidPcapStubs.cpp
-		EEDiffVerify.cpp)
+		Android/AndroidPcapStubs.cpp)
 	list(APPEND pcsx2Headers
-		EEDiffVerify.h
 		AndroidPerfBuckets.h
 		PS1DrvTrace.h)
 	# Oboe is the Android audio backend consumed by Host/OboeAudioStream.cpp.

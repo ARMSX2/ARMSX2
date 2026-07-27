@@ -508,28 +508,5 @@ private fun RecompilerSection(state: MutableState<Settings>) {
         ToggleRow("VU0", settings.recVU0) { apply(settings.copy(recVU0 = it)) }
         ToggleRow("VU1", settings.recVU1) { apply(settings.copy(recVU1 = it)) }
         ToggleRow("Fastmem", settings.enableFastmem) { apply(settings.copy(enableFastmem = it)) }
-
-        Spacer(Modifier.height(14.dp))
-        Text(
-            str("jit.diagnostics.header"),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-        )
-        // Seed from the REAL native flag: a plain `remember { false }` meant leaving the screen
-        // destroyed the state and the switch came back OFF while the native flag was still on.
-        var eeDiff by remember {
-            mutableStateOf(
-                runCatching { kr.co.iefriends.pcsx2.NativeApp.isEeDiffVerify() }.getOrDefault(false)
-            )
-        }
-        ToggleRow(
-            label = str("jit.eeDiffVerify.label"),
-            value = eeDiff,
-            description = str("jit.eeDiffVerify.description"),
-        ) {
-            eeDiff = it
-            runCatching { kr.co.iefriends.pcsx2.NativeApp.setEeDiffVerify(it) }
-        }
     }
 }

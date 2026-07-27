@@ -384,9 +384,6 @@ val EN: Map<String, String> = mapOf(
     "audio.lightweight.description" to "Skips SPU2 reverb processing to save CPU on low-end devices. This removes all echo and spatial reverb (caves, halls and ambience sound flat), so only enable it if you need the extra performance and SPU2 SIMD audio isn't enough. Off (default) plays full audio. Applies instantly.",
     // --- Recompiler (JIT) tab ---
     "jit.recompiler.warning" to "Disabling a recompiler drops that CPU/COP onto its interpreter — much slower, for debugging only. Changes apply to the running game.",
-    "jit.diagnostics.header" to "Diagnostics",
-    "jit.eeDiffVerify.label" to "EE Diff Verify",
-    "jit.eeDiffVerify.description" to "Recompiler-vs-interpreter differential check for the EE. Logs the first miscompiling instruction. Heavy slowdown; off by default.",
     // --- extracted UI strings (Increment 3, recovered from git diff) ---
     "action.no" to "No",
     "action.restore" to "RESTORE",
