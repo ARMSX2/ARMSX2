@@ -273,15 +273,27 @@ final class InitialContentBootstrap {
             let originalName = sourceURL.lastPathComponent
             let descriptor: VPadSkinDescriptor
 
-            if let existing = skinLibrary.importedDescriptors.first(where: {
+            let existing = skinLibrary.importedDescriptors.first {
                 $0.originalImportName?.caseInsensitiveCompare(originalName) == .orderedSame
-            }) {
+            }
+
+            // The same filename is not the same file. Someone dropping an
+            // updated zip in here expects it to take. An unreadable date keeps
+            // the old behaviour rather than reimporting on every launch.
+            var isNewerOnDisk = false
+            if let existing,
+               let modified = (try? sourceURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate {
+                isNewerOnDisk = modified > existing.updatedAt
+            }
+
+            if let existing, !isNewerOnDisk {
                 descriptor = existing
                 result.skipped += 1
             } else {
                 do {
                     let importResult = try await skinLibrary.importSkinArchive(
                         from: sourceURL,
+                        replacingSkinID: existing?.id,
                         layoutPresets: layoutPresets
                     )
                     descriptor = importResult.descriptor
