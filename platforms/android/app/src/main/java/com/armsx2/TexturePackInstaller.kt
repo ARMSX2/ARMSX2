@@ -66,15 +66,51 @@ object TexturePackInstaller {
 
             val archive = File(staging, "pack.zip")
             val digest = MessageDigest.getInstance("SHA-256")
-            if (!download(pack.downloadUrl, archive, digest, onProgress, isCancelled)) {
-                return if (isCancelled()) Outcome(false, null) else Outcome(false, "Download failed")
+
+            // A single-file pack is one part, so there is one loop rather than two code paths.
+            // Parts stream straight into the same archive in order: concatenating afterwards would
+            // mean holding the pieces AND the joined file, i.e. double the disk for a 4 GB pack.
+            val parts = pack.effectiveParts()
+            val split = parts.size > 1
+            var done = 0L
+            for ((index, part) in parts.withIndex()) {
+                val label = if (split) " (part ${index + 1} of ${parts.size})" else ""
+                val partDigest = MessageDigest.getInstance("SHA-256")
+                val n = download(
+                    url = part.downloadUrl,
+                    dest = archive,
+                    append = index > 0,
+                    overall = digest,
+                    part = partDigest,
+                    priorBytes = done,
+                    grandTotal = pack.sizeBytes,
+                    onProgress = onProgress,
+                    isCancelled = isCancelled,
+                )
+                if (n < 0L) {
+                    return if (isCancelled()) Outcome(false, null) else Outcome(false, "Download failed$label")
+                }
+                // Per-part checks name the bad piece, and stop us paying for the remaining parts of
+                // a transfer that already cannot produce the right archive.
+                if (n != part.sizeBytes) {
+                    Log.w(TAG, "part ${index + 1} size ${n} != ${part.sizeBytes}")
+                    return Outcome(false, "Size mismatch$label (expected ${part.sizeBytes}, got $n)")
+                }
+                val partActual = hex(partDigest.digest())
+                if (!partActual.equals(part.sha256, ignoreCase = true)) {
+                    Log.w(TAG, "part ${index + 1} sha256 mismatch: expected ${part.sha256} got $partActual")
+                    return Outcome(false, "Checksum mismatch$label — the download was corrupted")
+                }
+                done += n
             }
 
             onProgress(Progress.Verifying)
             if (archive.length() != pack.sizeBytes) {
                 return Outcome(false, "Size mismatch (expected ${pack.sizeBytes}, got ${archive.length()})")
             }
-            val actual = digest.digest().joinToString("") { "%02X".format(it) }
+            // Still verified end to end even when every part passed: the parts can each be intact
+            // and yet be the wrong parts, or joined in the wrong order.
+            val actual = hex(digest.digest())
             if (!actual.equals(pack.sha256, ignoreCase = true)) {
                 Log.w(TAG, "sha256 mismatch: expected ${pack.sha256} got $actual")
                 return Outcome(false, "Checksum mismatch — the download was corrupted")
@@ -106,14 +142,25 @@ object TexturePackInstaller {
 
     // ---- download -----------------------------------------------------------------------------
 
-    /** Streams to [dest] while feeding [digest], so verification costs no second pass over 1.5 GB. */
+    /**
+     * Streams one piece to [dest] while feeding both digests, so verification costs no second pass
+     * over several gigabytes. [overall] spans the whole concatenated archive and [part] just this
+     * piece. Returns the bytes written for this piece, or -1 on failure or cancellation.
+     *
+     * [priorBytes] and [grandTotal] exist so progress stays monotonic across a split download —
+     * reporting each part's own 0..n would restart the bar at every boundary.
+     */
     private fun download(
         url: String,
         dest: File,
-        digest: MessageDigest,
+        append: Boolean,
+        overall: MessageDigest,
+        part: MessageDigest,
+        priorBytes: Long,
+        grandTotal: Long,
         onProgress: (Progress) -> Unit,
         isCancelled: () -> Boolean,
-    ): Boolean {
+    ): Long {
         var conn: HttpURLConnection? = null
         try {
             conn = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -129,37 +176,39 @@ object TexturePackInstaller {
             }
             if (conn.responseCode != HttpURLConnection.HTTP_OK) {
                 Log.w(TAG, "download $url -> ${conn.responseCode}")
-                return false
+                return -1L
             }
-            val total = conn.contentLengthLong
             var read = 0L
             var reported = 0L
             conn.inputStream.use { input ->
-                FileOutputStream(dest).use { out ->
+                FileOutputStream(dest, append).use { out ->
                     val buf = ByteArray(256 * 1024)
                     while (true) {
-                        if (isCancelled()) return false
+                        if (isCancelled()) return -1L
                         val n = input.read(buf)
                         if (n < 0) break
                         out.write(buf, 0, n)
-                        digest.update(buf, 0, n)
+                        overall.update(buf, 0, n)
+                        part.update(buf, 0, n)
                         read += n
                         if (read - reported >= PROGRESS_BYTES_STEP) {
                             reported = read
-                            onProgress(Progress.Downloading(read, total))
+                            onProgress(Progress.Downloading(priorBytes + read, grandTotal))
                         }
                     }
                 }
             }
-            onProgress(Progress.Downloading(read, total))
-            return read > 0
+            onProgress(Progress.Downloading(priorBytes + read, grandTotal))
+            return read
         } catch (e: Exception) {
             Log.w(TAG, "download $url failed: ${e.message}")
-            return false
+            return -1L
         } finally {
             conn?.disconnect()
         }
     }
+
+    private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02X".format(it) }
 
     // ---- extract ------------------------------------------------------------------------------
 

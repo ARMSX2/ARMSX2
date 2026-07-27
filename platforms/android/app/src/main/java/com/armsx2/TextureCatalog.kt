@@ -39,6 +39,21 @@ object TextureCatalog {
      *  could never fit; the real free-space check happens in [TexturePackInstaller]. */
     private const val MAX_ARCHIVE_BYTES = 4L * 1024 * 1024 * 1024
 
+    /**
+     * One piece of a split archive. A GitHub release asset caps at 2 GB, so the larger packs cannot
+     * be published as a single file at all — they arrive as N pieces which concatenate, in this
+     * order, into the zip [Pack.sha256] describes.
+     *
+     * Each piece carries its own digest as well. That is not redundant with the whole-archive one:
+     * it says WHICH piece was corrupted, and it catches a truncated or substituted piece before we
+     * have spent the rest of the transfer on it.
+     */
+    data class Part(
+        val downloadUrl: String,
+        val sizeBytes: Long,
+        val sha256: String,
+    )
+
     data class Pack(
         val id: String,
         val name: String,
@@ -54,9 +69,18 @@ object TextureCatalog {
         val sizeBytes: Long,
         val sha256: String,
         val fileCount: Int,
+        /** Empty for a single-file pack, in which case [downloadUrl] is the archive. */
+        val parts: List<Part> = emptyList(),
     ) {
         fun matchesSerial(serial: String?): Boolean =
             !serial.isNullOrBlank() && serials.any { it.equals(serial, ignoreCase = true) }
+
+        /**
+         * The pieces to fetch, in order. A single-file pack presents as one piece so the installer
+         * has exactly one path to maintain rather than a split one.
+         */
+        fun effectiveParts(): List<Part> =
+            parts.ifEmpty { listOf(Part(downloadUrl, sizeBytes, sha256)) }
     }
 
     /** [fromCache] true when the network was not reached and this is what we had on disk — the UI
@@ -120,18 +144,37 @@ object TextureCatalog {
         val authors = strings(o, "authors")
         if (authors.isEmpty()) return null
 
+        // A split pack has no single archive URL, so downloadUrl is required only without parts.
+        // PARTS_MALFORMED is distinct from "absent": a split entry we cannot fully validate must be
+        // dropped, not silently downgraded to fetching part one and calling it the pack.
+        val parts = parseParts(o) ?: return null
+
         // https only, both for the archive and the credit link: these are URLs we hand to the
         // network stack and to the browser respectively, on someone else's say-so.
-        val downloadUrl = o.optString("downloadUrl").takeIf(::isHttps) ?: return null
+        val downloadUrl = if (parts.isEmpty()) {
+            o.optString("downloadUrl").takeIf(::isHttps) ?: return null
+        } else {
+            // Older builds parse this catalogue too, and they know nothing about parts. Leaving
+            // downloadUrl off a split entry makes THEM drop that one entry (this same check) and
+            // keep the rest of the catalogue, instead of downloading a fragment and unpacking junk.
+            o.optString("downloadUrl").takeIf(::isHttps).orEmpty()
+        }
         val sourceUrl = o.optString("sourceUrl").takeIf(::isHttps) ?: return null
 
         val sizeBytes = o.optLong("sizeBytes", 0L)
         if (sizeBytes <= 0L || sizeBytes > MAX_ARCHIVE_BYTES) return null
 
+        // The parts must add up to the archive they claim to be. Catch that here rather than after
+        // several gigabytes have been transferred and the final length check fails.
+        if (parts.isNotEmpty() && parts.sumOf { it.sizeBytes } != sizeBytes) {
+            Log.w(TAG, "pack $id parts sum ${parts.sumOf { it.sizeBytes }} != sizeBytes $sizeBytes")
+            return null
+        }
+
         // The digest is the only thing standing between a corrupted or substituted download and the
         // user's texture folder, so an entry without a well-formed one is not installable.
         val sha256 = o.optString("sha256").trim().uppercase()
-        if (!Regex("^[0-9A-F]{64}$").matches(sha256)) return null
+        if (!SHA256_RE.matches(sha256)) return null
 
         val fileCount = o.optInt("fileCount", 0)
         if (fileCount <= 0) return null
@@ -151,7 +194,35 @@ object TextureCatalog {
             sizeBytes = sizeBytes,
             sha256 = sha256,
             fileCount = fileCount,
+            parts = parts,
         )
+    }
+
+    /**
+     * Returns the pieces of a split archive, an empty list when the entry has none, or null when a
+     * "parts" key is present but unusable — the caller drops the entry in that case. An entry that
+     * declares parts and gets them wrong must not fall back to [Pack.downloadUrl]: that would fetch
+     * one fragment and try to unzip it.
+     */
+    private fun parseParts(o: JSONObject): List<Part>? {
+        val arr = o.optJSONArray("parts") ?: return emptyList()
+        if (arr.length() == 0) return null
+        val out = ArrayList<Part>(arr.length())
+        var total = 0L
+        for (i in 0 until arr.length()) {
+            val p = arr.optJSONObject(i) ?: return null
+            val url = p.optString("downloadUrl").takeIf(::isHttps) ?: return null
+            val size = p.optLong("sizeBytes", 0L)
+            if (size <= 0L) return null
+            // Guard the running total, not just each piece: enough valid pieces would otherwise
+            // overflow the archive cap that the single-file path enforces.
+            total += size
+            if (total > MAX_ARCHIVE_BYTES) return null
+            val digest = p.optString("sha256").trim().uppercase()
+            if (!SHA256_RE.matches(digest)) return null
+            out.add(Part(url, size, digest))
+        }
+        return out
     }
 
     private fun strings(o: JSONObject, key: String): List<String> {
@@ -168,6 +239,8 @@ object TextureCatalog {
     }
 
     private fun isHttps(url: String) = url.startsWith("https://", ignoreCase = true)
+
+    private val SHA256_RE = Regex("^[0-9A-F]{64}$")
 
     /** Loose title key for "this pack is for another region of the same game". */
     fun titleKey(title: String): String =
