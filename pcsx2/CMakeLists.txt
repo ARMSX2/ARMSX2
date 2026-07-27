@@ -1181,10 +1181,8 @@ if(ANDROID)
 	list(APPEND pcsx2Sources
 		Android/AndroidStubs.cpp
 		Android/AndroidPcapStubs.cpp
-		VU1Fingerprint.cpp
 		EEDiffVerify.cpp)
 	list(APPEND pcsx2Headers
-		VU1Fingerprint.h
 		EEDiffVerify.h
 		AndroidPerfBuckets.h
 		PS1DrvTrace.h)
