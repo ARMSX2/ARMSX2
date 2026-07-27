@@ -7,4 +7,8 @@
 // gpu_matrix_element). Every TFX and convert shader's source text changed, so a cached blob from
 // 108 no longer matches the source that produced it — leaving this alone hands users stale
 // binaries and garbage rendering after the update.
-static constexpr u32 SHADER_CACHE_VERSION = 109; // 108 was upstream PR 14688
+// 110: Vulkan emits the gpu_bitwise_and / gpu_matrix_element wrappers as bare #defines when no
+// driver workaround is active, so unaffected drivers get the same SPIR-V they had at 108. 109 wrapped
+// them in real functions on EVERY driver, and Qualcomm's SPIR-V compiler segfaults compiling a TFX
+// pipeline containing those calls.
+static constexpr u32 SHADER_CACHE_VERSION = 110; // 108 was upstream PR 14688

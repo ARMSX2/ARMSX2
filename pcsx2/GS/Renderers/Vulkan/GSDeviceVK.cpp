@@ -4919,46 +4919,46 @@ static void AddShaderHeader(std::stringstream& ss)
 		dev->UsesMobileDriverWorkaround(DriverWorkaround::ScalarizeVectorBitwiseAnd) ? 1 : 0);
 	AddMacro(ss, "DRIVER_REWRITE_UNIFORM_INDEXING",
 		dev->UsesMobileDriverWorkaround(DriverWorkaround::RewriteUniformIndexing) ? 1 : 0);
+	// When no workaround is active these MUST expand to the bare operator, not to a function that
+	// happens to return it. Overloads cost an OpFunctionCall in the SPIR-V at every call site --
+	// including inside the texture loop in tfx.glsl and the region-clamp path -- and Qualcomm's
+	// SPIR-V compiler segfaults building a TFX pipeline from that shape (LEGO Batman, Adreno 740,
+	// driver 512.676.53: SIGSEGV inside CreateQGLCProgram, chained to SIGABRT on the GS thread).
+	// OpenGL is unaffected because it hands GLSL straight to the driver and never goes through
+	// SPIR-V, which is why the same build renders that game fine on the GL renderer.
+	//
+	// This also makes good on what the wrappers were introduced promising -- that a driver the
+	// database has no rule for gets unchanged SPIR-V. It did not hold: the function wrapper was
+	// emitted unconditionally, so EVERY driver got new shader structure to please the two that
+	// needed it.
 	ss << R"(
+#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
 uvec2 gpu_bitwise_and(uvec2 a, uvec2 b)
 {
-#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
 	return uvec2(a.x & b.x, a.y & b.y);
-#else
-	return a & b;
-#endif
 }
 
 uvec3 gpu_bitwise_and(uvec3 a, uvec3 b)
 {
-#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
 	return uvec3(a.x & b.x, a.y & b.y, a.z & b.z);
-#else
-	return a & b;
-#endif
 }
 
 uvec4 gpu_bitwise_and(uvec4 a, uvec4 b)
 {
-#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
 	return uvec4(a.x & b.x, a.y & b.y, a.z & b.z, a.w & b.w);
-#else
-	return a & b;
-#endif
 }
 
 ivec3 gpu_bitwise_and(ivec3 a, ivec3 b)
 {
-#if DRIVER_SCALARIZE_VECTOR_BITWISE_AND
 	return ivec3(a.x & b.x, a.y & b.y, a.z & b.z);
-#else
-	return a & b;
-#endif
 }
+#else
+#define gpu_bitwise_and(a, b) ((a) & (b))
+#endif
 
+#if DRIVER_REWRITE_UNIFORM_INDEXING
 float gpu_matrix_element(mat4 value, int column, int row)
 {
-#if DRIVER_REWRITE_UNIFORM_INDEXING
 	vec4 selected_column;
 	if (column == 0)
 		selected_column = value[0];
@@ -4976,10 +4976,10 @@ float gpu_matrix_element(mat4 value, int column, int row)
 	if (row == 2)
 		return selected_column[2];
 	return selected_column[3];
-#else
-	return value[column][row];
-#endif
 }
+#else
+#define gpu_matrix_element(value, column, row) ((value)[(column)][(row)])
+#endif
 )";
 }
 
