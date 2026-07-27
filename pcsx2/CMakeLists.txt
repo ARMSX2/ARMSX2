@@ -1181,9 +1181,6 @@ if(ANDROID)
 	list(APPEND pcsx2Sources
 		Android/AndroidStubs.cpp
 		Android/AndroidPcapStubs.cpp)
-	list(APPEND pcsx2Headers
-		AndroidPerfBuckets.h
-		PS1DrvTrace.h)
 	# Oboe is the Android audio backend consumed by Host/OboeAudioStream.cpp.
 	# The `oboe` target (created in SearchForStuff.cmake) exports its `include/`
 	# dir as PUBLIC, so linking it into PCSX2_FLAGS propagates <oboe/Oboe.h> to
