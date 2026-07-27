@@ -812,8 +812,34 @@ static void cop2EmitFlagUpdate(int xyzw, const a64::VRegister& result = RQSCRATC
 	const bool statusLive = cop2StatusFlagLive();
 	const bool macLive = cop2MacFlagLive();
 
-	if (xyzw == 0 || (!statusLive && !macLive))
+	if (!statusLive && !macLive)
 		return;
+
+	// An empty dest mask is NOT a silent op. Every lane takes VU_MACx_CLEAR, so
+	// MAC reads back 0 and the STATUS cause nibble empties while the stickies
+	// stand — console case VUSTICKY_EMPTY_DEST_MASK_SILENT, which the
+	// interpreter already matches (applyBinaryMACOp runs the clear + STAT
+	// update; _getDst returns &RDzero for fd == 0, it does not skip the op) and
+	// which x86 also matches, since REC_COP2_mVU0 has no such early-out and
+	// reaches mVUupdateFlags with AND_XYZW == 0.
+	//
+	// Returning early here instead left the PREVIOUS FMAC's MAC standing across
+	// the masked op.
+	if (xyzw == 0)
+	{
+		if (macLive)
+			armAsm->Str(a64::wzr, armVU0Mem(&VU0.VI[REG_MAC_FLAG]));
+		if (statusLive)
+		{
+			// Same doNonSticky clear the full path below uses: drop current
+			// Z/S and U/O, keep I/D and every sticky bit.
+			armAsm->Ldr(RWSCRATCH, armCpuRegMem(&_cpuRegistersPack.cop2Rec.denormStatusFlag));
+			armAsm->And(RWSCRATCH, RWSCRATCH, 0xfffc00ff);
+			armAsm->Str(RWSCRATCH, armCpuRegMem(&_cpuRegistersPack.cop2Rec.denormStatusFlag));
+			s_cop2DenormInScratch = true;
+		}
+		return; // no lane written, so nothing to flush either
+	}
 
 	// --- Pack sign and zero lanes into the 8-bit MAC value ---
 	// One CMLT + FCMEQ + SLI + AND + ADDV chain (armEmitPackSignZeroBits); the
