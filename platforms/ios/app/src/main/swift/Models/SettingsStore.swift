@@ -1748,6 +1748,14 @@ final class SettingsStore {
             UserDefaults.standard.set(clearLiquidGlassUI, forKey: "ARMSX2iOSClearLiquidGlassUI")
         }
     }
+    var gameCardZoomAnimationEnabled: Bool = true {
+        didSet {
+            UserDefaults.standard.set(
+                gameCardZoomAnimationEnabled,
+                forKey: "ARMSX2iOSGameCardZoomAnimationEnabled"
+            )
+        }
+    }
     var backgroundPrimaryAsset: BackgroundAsset? {
         didSet {
             if let asset = backgroundPrimaryAsset {
@@ -2033,6 +2041,9 @@ final class SettingsStore {
         clearLiquidGlassUI = UserDefaults.standard.object(
             forKey: "ARMSX2iOSClearLiquidGlassUI"
         ) as? Bool ?? true
+        gameCardZoomAnimationEnabled = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSGameCardZoomAnimationEnabled"
+        ) as? Bool ?? true
         backgroundPrimaryAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundPrimaryAsset")
         backgroundLandscapeAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundLandscapeAsset")
         backgroundFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundFitMode") ?? "") ?? .fill
@@ -2262,6 +2273,9 @@ final class SettingsStore {
         dynamicAppearancePreferences = DynamicAppearancePreferences.load() ?? .standard
         clearLiquidGlassUI = UserDefaults.standard.object(
             forKey: "ARMSX2iOSClearLiquidGlassUI"
+        ) as? Bool ?? true
+        gameCardZoomAnimationEnabled = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSGameCardZoomAnimationEnabled"
         ) as? Bool ?? true
         backgroundPrimaryAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundPrimaryAsset")
         backgroundLandscapeAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundLandscapeAsset")

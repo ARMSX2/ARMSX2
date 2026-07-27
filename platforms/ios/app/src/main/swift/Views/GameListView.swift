@@ -162,12 +162,18 @@ private extension View {
         for gameID: String,
         in registry: GameplayLaunchCardRegistry
     ) -> some View {
-        background {
-            GameplayLaunchCardRegistrationView(
-                gameID: gameID,
-                registry: registry
-            )
-            .allowsHitTesting(false)
+        overlay {
+            GeometryReader { geometry in
+                GameplayLaunchCardRegistrationView(
+                    gameID: gameID,
+                    registry: registry
+                )
+                .frame(
+                    width: geometry.size.width,
+                    height: geometry.size.height
+                )
+                .allowsHitTesting(false)
+            }
         }
     }
 }
@@ -292,6 +298,7 @@ struct GameListView: View {
     @State private var showGameReplacementAlert = false
     @State private var coverTemplateDraft = CoverStore.defaultCoverURLTemplate
     @State private var pendingGameName: String = ""
+    @State private var pendingGameplayLaunchTransition: GameplayLaunchTransition?
     @State private var pendingGameImportURLs: [URL] = []
     @State private var existingGameImportFileNames: [String] = []
     @State private var pendingCoverGameName: String?
@@ -533,12 +540,20 @@ struct GameListView: View {
                 Text("Use ${serial}, ${title}, or ${filetitle}. Default: \(CoverStore.defaultCoverURLTemplate)")
             }
             .alert(settings.localized("Restart VM?"), isPresented: $showRestartAlert) {
-                Button(settings.localized("Cancel"), role: .cancel) {}
+                Button(settings.localized("Cancel"), role: .cancel) {
+                    pendingGameplayLaunchTransition = nil
+                }
                 Button(settings.localized("Restart"), role: .destructive) {
                     if pendingGameName.isEmpty {
+                        pendingGameplayLaunchTransition = nil
                         appState.shutdownAndBootBIOS()
                     } else {
-                        appState.shutdownAndBoot(isoName: pendingGameName)
+                        let transition = pendingGameplayLaunchTransition
+                        pendingGameplayLaunchTransition = nil
+                        appState.shutdownAndBoot(
+                            isoName: pendingGameName,
+                            launchTransition: transition
+                        )
                     }
                 }
 			} message: {
@@ -792,7 +807,7 @@ struct GameListView: View {
 
     private func coverFlowLibrary(containerSize: CGSize) -> some View {
         let metrics = CoverFlowMetrics(containerSize: containerSize)
-        let availableHeight = max(0, containerSize.height - 62)
+        let availableHeight = max(0, containerSize.height - 12)
 
         return ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .center, spacing: metrics.itemSpacing) {
@@ -1368,6 +1383,7 @@ struct GameListView: View {
 
 		if appState.runningGameName != nil {
 			pendingGameName = game.bootName
+            pendingGameplayLaunchTransition = makeGameplayLaunchTransition(for: game)
 			showRestartAlert = true
 		} else {
             let transition = makeGameplayLaunchTransition(for: game)
@@ -1382,6 +1398,9 @@ struct GameListView: View {
     private func makeGameplayLaunchTransition(
         for game: ISOEntry
     ) -> GameplayLaunchTransition? {
+        guard settings.gameCardZoomAnimationEnabled else {
+            return nil
+        }
         guard let cardView = gameplayLaunchCardRegistry.view(for: game.id),
               let window = cardView.window else {
             return nil

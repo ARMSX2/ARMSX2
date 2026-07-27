@@ -122,6 +122,9 @@ struct AppearanceSettingsView: View {
                 Toggle(isOn: $settings.clearLiquidGlassUI) {
                     Label(settings.localized("Clear Liquid Glass UI"), systemImage: "rectangle.on.rectangle")
                 }
+                Toggle(isOn: $settings.gameCardZoomAnimationEnabled) {
+                    Label(settings.localized("Game card zoom animation"), systemImage: "rectangle.inset.filled.and.person.filled")
+                }
             } header: {
                 Text(settings.localized("Interface"))
             } footer: {

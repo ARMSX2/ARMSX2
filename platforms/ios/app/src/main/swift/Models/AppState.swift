@@ -185,10 +185,16 @@ final class AppState: @unchecked Sendable {
         }
     }
 
-    func shutdownAndBoot(isoName: String) {
+    func shutdownAndBoot(
+        isoName: String,
+        launchTransition: GameplayLaunchTransition? = nil
+    ) {
         guard requireBootableBIOS() else { return }
         pendingBootAction = { [weak self] in
-            self?.bootGame(isoName: isoName)
+            self?.bootGame(
+                isoName: isoName,
+                launchTransition: launchTransition
+            )
         }
         ARMSX2Bridge.requestVMShutdown()
     }

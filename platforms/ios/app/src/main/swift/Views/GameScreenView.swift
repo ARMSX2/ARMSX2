@@ -316,7 +316,6 @@ struct GameScreenView: View {
                         clearCurrentGameCache()
                     },
                     onBackToMenu: {
-                        overlayRoute = .hidden
                         appState.returnToMenu()
                     },
                     onResume: {
