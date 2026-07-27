@@ -11,6 +11,43 @@ private enum DynamicActionRole {
     case holdFire
 }
 
+private struct SkinReplacePrompt: Identifiable {
+    let id = UUID()
+    let name: String
+    let existingSkinID: String
+}
+
+private enum SkinReplaceChoice {
+    case replace(String)
+    case keepBoth
+    case cancel
+}
+
+/// Holds the answer the import is waiting on. The view owns one, so leaving the
+/// screen with the dialog still up unblocks the import on the way out instead of
+/// parking it on a continuation nobody is left to resume.
+@MainActor
+private final class SkinReplaceGate {
+    private var continuation: CheckedContinuation<SkinReplaceChoice, Never>?
+
+    func wait() async -> SkinReplaceChoice {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    /// Answers at most once, whichever of the buttons or the dismissal gets here first.
+    func resume(_ choice: SkinReplaceChoice) {
+        guard let continuation else { return }
+        self.continuation = nil
+        continuation.resume(returning: choice)
+    }
+
+    deinit {
+        continuation?.resume(returning: .cancel)
+    }
+}
+
 struct VirtualPadSettingsView: View {
     @State private var settings = SettingsStore.shared
     @State private var dynamicSettings = DynamicThumbstickSettings.shared
@@ -28,6 +65,8 @@ struct VirtualPadSettingsView: View {
     @State private var skinPendingDelete: VPadSkinDescriptor?
     @State private var skinPendingRename: VPadSkinDescriptor?
     @State private var skinRenameDraft = ""
+    @State private var skinReplacePrompt: SkinReplacePrompt?
+    @State private var skinReplaceGate = SkinReplaceGate()
     @State private var automaticFireBlockedByHardcore = false
 
     var body: some View {
@@ -697,6 +736,37 @@ struct VirtualPadSettingsView: View {
         } message: { skin in
             Text("This removes the imported skin. Linked layout presets are kept.")
         }
+        .confirmationDialog(
+            "\(skinReplacePrompt?.name ?? "This skin") is already installed",
+            isPresented: Binding<Bool>(
+                get: { skinReplacePrompt != nil },
+                set: {
+                    if !$0 {
+                        skinReplacePrompt = nil
+                        // A tapped button gets there first. This only catches a
+                        // dialog that went away without one, which would
+                        // otherwise leave the import waiting forever.
+                        DispatchQueue.main.async { resumeSkinReplace(.cancel) }
+                    }
+                }
+            ),
+            presenting: skinReplacePrompt
+        ) { prompt in
+            Button("Replace") {
+                skinReplacePrompt = nil
+                resumeSkinReplace(.replace(prompt.existingSkinID))
+            }
+            Button("Keep Both") {
+                skinReplacePrompt = nil
+                resumeSkinReplace(.keepBoth)
+            }
+            Button("Cancel", role: .cancel) {
+                skinReplacePrompt = nil
+                resumeSkinReplace(.cancel)
+            }
+        } message: { _ in
+            Text("Replace it, or keep both copies?")
+        }
         .fullScreenCover(isPresented: $showLayoutEditor) {
             PadLayoutEditView(
                 onDismiss: { showLayoutEditor = false },
@@ -825,10 +895,26 @@ struct VirtualPadSettingsView: View {
                 messages.append("No usable skin files were imported from \(sourceURL.lastPathComponent).")
                 continue
             }
+
+            var replacingSkinID: String?
+            let intendedName = skinLibrary.intendedDisplayName(forExtractedSkinAt: archiveDirectory)
+            if let existing = skinLibrary.existingImportedSkin(matchingName: intendedName) {
+                switch await askAboutExistingSkin(named: intendedName, existingSkinID: existing.id) {
+                case .replace(let id):
+                    replacingSkinID = id
+                case .keepBoth:
+                    break
+                case .cancel:
+                    messages.append("Kept the existing '\(intendedName)'.")
+                    continue
+                }
+            }
+
             do {
                 let result = try await skinLibrary.importSkin(
                     from: archiveDirectory,
                     originalImportName: sourceURL.lastPathComponent,
+                    replacingSkinID: replacingSkinID,
                     layoutPresets: layoutPresets
                 )
                 latestResult = result
@@ -842,6 +928,15 @@ struct VirtualPadSettingsView: View {
             ? "No usable skin images were imported. Use loose button PNGs/JPGs/WebPs, a portrait/landscape controller image, or a zip skin pack containing image files."
             : messages.joined(separator: "\n\n")
         return (message, latestResult)
+    }
+
+    private func askAboutExistingSkin(named name: String, existingSkinID: String) async -> SkinReplaceChoice {
+        skinReplacePrompt = SkinReplacePrompt(name: name, existingSkinID: existingSkinID)
+        return await skinReplaceGate.wait()
+    }
+
+    private func resumeSkinReplace(_ choice: SkinReplaceChoice) {
+        skinReplaceGate.resume(choice)
     }
 
     private func isSkinArchive(_ url: URL) -> Bool {

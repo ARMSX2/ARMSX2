@@ -429,9 +429,34 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         )
     }
 
+    /// The name this extracted skin is asking for, before uniquing pushes it to
+    /// "Something 2". Callers use it to spot a re-import of what they already
+    /// have.
+    func intendedDisplayName(forExtractedSkinAt url: URL) -> String {
+        let files = skinImportFiles(from: url)
+        return sanitizedDisplayName(
+            manifest(in: files)?.manifest.name,
+            fallback: sanitizedDisplayName(
+                sourceName(from: url.lastPathComponent),
+                fallback: "Imported Skin"
+            )
+        )
+    }
+
+    /// Matched on the display name, not the file it arrived in - the same skin
+    /// gets re-zipped under a new filename all the time. Catalog installs are
+    /// left out; replacing one by hand would strand its catalogID and break the
+    /// installed badge in the browser.
+    func existingImportedSkin(matchingName name: String) -> VPadSkinDescriptor? {
+        importedDescriptors.first {
+            $0.catalogID == nil && $0.displayName.caseInsensitiveCompare(name) == .orderedSame
+        }
+    }
+
     @discardableResult
     func importSkinArchive(
         from sourceURL: URL,
+        replacingSkinID: String? = nil,
         layoutPresets: PadLayoutPresetStore
     ) async throws -> VPadSkinImportResult {
         let accessGranted = sourceURL.startAccessingSecurityScopedResource()
@@ -462,6 +487,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         return try await importSkin(
             from: archiveDirectory,
             originalImportName: sourceURL.lastPathComponent,
+            replacingSkinID: replacingSkinID,
             layoutPresets: layoutPresets
         )
     }
