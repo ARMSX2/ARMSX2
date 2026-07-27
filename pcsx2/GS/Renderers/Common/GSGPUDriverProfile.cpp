@@ -339,7 +339,7 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 // Sources and exact upstream revisions are mirrored in docs/gpu-driver-database.json. A known
 // driver bug is not automatically an active workaround: expensive renderer fallbacks stay disabled
 // until their PCSX2 integration has a bounded, tested condition.
-static constexpr std::array<DriverRule, 25> s_driver_rules = {{
+static constexpr std::array<DriverRule, 26> s_driver_rules = {{
 	{"gl-arm-buffer-stream", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenUnsynchronizedMapping) |
@@ -405,10 +405,27 @@ static constexpr std::array<DriverRule, 25> s_driver_rules = {{
 		MobileGpuDriver::QualcommProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenPrimitiveRestart) | Bug(DriverBug::BrokenProvokingVertex) |
 			Bug(DriverBug::BrokenSubpassFeedback) |
+			Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout) |
 			Bug(DriverBug::BrokenReversedDepthRange) | Bug(DriverBug::SlowCachedReadbackMemory) |
 			Bug(DriverBug::SlowOptimalImageToBufferCopy),
 		Workaround(DriverWorkaround::DisableProvokingVertex) |
-			Workaround(DriverWorkaround::PreferCoherentReadback)},
+			Workaround(DriverWorkaround::PreferCoherentReadback) |
+			Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback)},
+	// Turnip shares none of the blob's other defects but inherits the same broken render-target
+	// self-read, so it needs its own rule rather than the vk-qualcomm-proprietary one (which is
+	// keyed on MobileGpuDriver::QualcommProprietary).
+	//
+	// ARMSX2 #442: with an HD texture pack, Tales of the Abyss loses its entire 2D text layer the
+	// moment the replacement's alpha range flips those draws to require_one_barrier and the RT
+	// self-read engages. Device A/B on Turnip/Mesa 26.1.2 + Adreno 650 established that BOTH
+	// in-pass forms drop the content — the subpassLoad input attachment AND the
+	// feedback-loop-layout texelFetch sampler — while reading a separate RT copy renders
+	// correctly. Hence both bug bits and the expensive workaround. The reporter sees the same
+	// failure on the proprietary blob.
+	{"vk-turnip-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
+		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
+		Bug(DriverBug::BrokenSubpassFeedback) | Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout),
+		Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback)},
 	{"vk-qualcomm-pre-adreno8-readback", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::QualcommProprietary, MobileGpuArchitecture::Unknown, 200, 799, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::SlowOptimalImageToBufferCopy),

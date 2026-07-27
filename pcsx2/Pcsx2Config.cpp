@@ -978,6 +978,11 @@ bool Pcsx2Config::GSOptions::RestartOptionsAreEqual(const GSOptions& right) cons
 		   OpEqu(EnableAdrenoFramebufferFetch) &&
 		   OpEqu(ForceMaliFramebufferFetch) &&
 		   OpEqu(OverrideTextureBarriers) &&
+		   // Drivers carrying UseRenderTargetCopyForFeedback only take the RT-copy path when
+		   // replacements are loaded (see GSDeviceVK::CheckFeatures), and that decision picks the
+		   // tfx.glsl RT-read variant at shader-compile time. Toggling this in place would leave
+		   // m_features.texture_barrier and every compiled pipeline disagreeing with the setting.
+		   OpEqu(LoadTextureReplacements) &&
 		   OpEqu(DepthFeedbackMode) &&
 		   OpEqu(BackThreadMode) &&
 		   OpEqu(HWAA1) &&
