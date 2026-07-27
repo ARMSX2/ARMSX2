@@ -20,6 +20,7 @@ sealed interface AppRoute {
     data object TextureManager : AppRoute
     data object Achievements : AppRoute
     data object Language : AppRoute
+    data object News : AppRoute
     data object About : AppRoute
 }
 

@@ -22,6 +22,7 @@ import com.armsx2.ui.achievements.AchievementsScreen
 import com.armsx2.ui.bios.BiosManagerScreen
 import com.armsx2.ui.controls.ControllerManagerScreen
 import com.armsx2.ui.about.AboutScreen
+import com.armsx2.ui.news.NewsScreen
 import com.armsx2.ui.home.HomeScreen
 import com.armsx2.ui.memorycards.MemoryCardScreen
 import com.armsx2.ui.language.LanguageScreen
@@ -104,6 +105,7 @@ fun AppNavigation() {
                 // Controls, Patches...). It used to return to the Settings tab, which was already
                 // odd and became simply wrong once About moved out of the settings tab strip and
                 // into the drawer — you were sent to a screen you had not come from.
+                AppRoute.News -> NewsScreen(onBack = UiNavigator::home)
                 AppRoute.About -> AboutScreen(onBack = UiNavigator::home)
             }
         }

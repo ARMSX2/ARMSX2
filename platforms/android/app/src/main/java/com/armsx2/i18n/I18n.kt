@@ -161,6 +161,15 @@ fun str(key: String): String {
  */
 val EN: Map<String, String> = mapOf(
     "about.title" to "About app",
+    "news.title" to "What's new",
+    "news.refresh" to "Refresh",
+    "news.loading" to "Loading release notes…",
+    "news.unavailable" to "Release notes are unavailable right now.",
+    "news.offline" to "Showing saved notes — couldn't reach GitHub.",
+    "news.prerelease" to "Pre-release",
+    "news.noNotes" to "No notes for this release.",
+    "news.showMore" to "Show more",
+    "news.showLess" to "Show less",
     "about.tagline" to "Fast, modern PlayStation 2 emulation for Android.",
     "about.appVersion" to "App version",
     "about.coreVersion" to "Emulator version",

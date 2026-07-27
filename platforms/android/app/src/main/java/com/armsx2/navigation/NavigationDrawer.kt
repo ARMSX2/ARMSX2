@@ -218,6 +218,10 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         DrawerItem("about.github", "🐙", iconRes = com.armsx2.R.drawable.ic_github,
             onAction = { openExternalUrl(context, GithubUrl); onDismiss() }),
         DrawerItem("about.website", "🌐", onAction = { openExternalUrl(context, WebsiteUrl); onDismiss() }),
+        // In-app release notes. A destination rather than a link-out because the point is to read
+        // what changed without leaving for a browser — the GitHub row above is still there for
+        // anyone who wants the repo itself.
+        DrawerItem("news.title", "📰", AppRoute.News),
         // About left the settings tab strip: it is a read-only page, not a setting, and it sat in
         // the tab row costing a slot on every settings visit.
         DrawerItem("about.title", "ℹ️", AppRoute.About),
@@ -340,5 +344,6 @@ private fun sameDestination(current: AppRoute, target: AppRoute): Boolean = when
     AppRoute.TextureManager -> current is AppRoute.TextureManager
     AppRoute.Achievements -> current is AppRoute.Achievements
     AppRoute.Language -> current is AppRoute.Language
+    AppRoute.News -> current is AppRoute.News
     AppRoute.About -> current is AppRoute.About
 }
