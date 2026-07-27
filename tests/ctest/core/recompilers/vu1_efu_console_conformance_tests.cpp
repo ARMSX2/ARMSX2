@@ -29,6 +29,7 @@
 
 #include "VU.h"
 
+#include <cstdio>
 #include <string>
 
 #include "autocases_efu.h"
@@ -154,15 +155,18 @@ TEST(Vu1EfuConsoleConformance, OpsMatchConsole)
 //      runs every operand through vuDouble first and gets a finite clamp. The
 //      interpreter is the side nearer the console here.
 //   2. POLYNOMIAL COEFFICIENTS. On ordinary inputs (CVF_INCREASING,
-//      CVF_DECREASING, CVF_PI*) the two engines evaluate the same series with
+//      CVF_DECREASING, CVF_PI*) the two engines evaluated the same series with
 //      different numbers in it. This was first written off as double-vs-single
-//      precision drift "a few ULP" wide; measuring it killed that. The
-//      interpreter's x^7 coefficient was a mistyped T3 -- see
-//      _vuCalculateEATAN in VUops.cpp -- worth up to 3383 ULP on its own, and
-//      correcting it moved all 17 affected interpreter values toward silicon
-//      and none away. What is left on these rows is hundreds of ULP wide and
-//      sits on the recompiler side; pow() precision is not the cause of
-//      either half.
+//      precision drift "a few ULP" wide; measuring it killed that, and it
+//      turned out to be two independent transcription defects, one per engine.
+//      The interpreter's x^7 coefficient was a mistyped T3 (see
+//      _vuCalculateEATAN in VUops.cpp), worth up to 3383 ULP. The recompiler
+//      paired four coefficients with the wrong power of x, because
+//      mVU_Globals names them out of order (see mVU_EATAN_arm in
+//      microVU_Lower-arm64.inl), worth up to 919642 ULP. pow() precision was
+//      not the cause of either half. Both are fixed; what remains on these
+//      rows is the last 1-4 ULP, where the JIT is now the side nearer silicon
+//      -- see DISABLED_DumpEatanFamily below for the per-row numbers.
 //
 // Listing them rather than skipping the family keeps the property asserted for
 // the 15 that now agree, and makes any movement in either direction -- a fix
@@ -180,8 +184,6 @@ constexpr const char* kEatanEngineDivergences[] = {
 	"EATAN CVF_GARBAGE2",
 	"EATAN CVF_INCREASING",
 	"EATAN CVF_DECREASING",
-	"EATAN CVF_PI_OVER2",
-	"EATAN CVF_PI",
 	"EATAN CVF_3PI_OVER2",
 	"EATANxy CVF_ZERO",
 	"EATANxy CVF_NEGZERO",
@@ -304,6 +306,36 @@ TEST(Vu1EfuConsoleConformance, EatanAppliesTheRangeReductionBeforeThePolynomial)
 		   "the unreduced form (polynomial evaluated at 1.0 plus pi/4)";
 	EXPECT_EQ(jit, 0x3F490FDBu) << "[jit]";
 	EXPECT_EQ(one->p, 0x3F490FDAu) << "console, one ULP below both engines";
+}
+
+// The measurement behind the two lists above. Prints every EATAN-family case
+// as interp / jit / console plus each engine's signed ULP distance from the
+// capture, so the readings can be re-made from data instead of from the
+// emitters' source. ULP is computed over the monotonic ordering of the float
+// bit patterns, which is what "hundreds of ULP" in the comments refers to.
+TEST(Vu1EfuConsoleConformance, DISABLED_DumpEatanFamily)
+{
+	auto ordinal = [](u32 b) -> s64 {
+		// Map the sign-magnitude float encoding onto a monotonic integer.
+		return (b & 0x80000000u) ? -static_cast<s64>(b & 0x7FFFFFFFu)
+		                         : static_cast<s64>(b);
+	};
+
+	std::printf("\n%-26s %-9s %-9s %-9s %12s %12s\n",
+		"case", "interp", "jit", "console", "interp-ulp", "jit-ulp");
+	for (int i = 0; i < kEfuCaseCount; ++i)
+	{
+		const EfuCase& c = kEfuCases[i];
+		if (!IsEatanOp(c.op))
+			continue;
+		u32 jit = 0, interp = 0;
+		RunBothEngines(c, Encode(c), jit, interp);
+		std::printf("%-26s %08x  %08x  %08x  %12lld %12lld  %s\n",
+			c.label, interp, jit, c.p,
+			static_cast<long long>(ordinal(interp) - ordinal(c.p)),
+			static_cast<long long>(ordinal(jit) - ordinal(c.p)),
+			jit == interp ? "" : "<-- ENGINES DIFFER");
+	}
 }
 
 // What passing looks like once the EFU model is right. Also the way to

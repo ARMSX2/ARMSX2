@@ -286,7 +286,7 @@ static __fi void mVU_sumXYZ_arm(const a64::VRegister& dst, const a64::VRegister&
 		armAsm->Ins(dst.V4S(), 0, Fs.V4S(), 0);
 }
 
-// EATAN polynomial helper: pq[0] += Fs^(2*n+1) * T_n (Taylor-like series).
+// EATAN polynomial helper: pq[0] += Fs^(2*n+1) * <coefficient>.
 // Matches the x86 EATANhelper macro.
 // All scalar math operates on lane 0 of `pq` (a scratch, NOT qmmPQ).
 #define EATANhelper_arm(addr) \
@@ -298,19 +298,30 @@ static __fi void mVU_sumXYZ_arm(const a64::VRegister& dst, const a64::VRegister&
 		NEON_ADDSS(mVU, pq, t1); \
 	} while (0)
 
+// The odd-power atan series, x*c1 + x^3*c3 + ... + x^15*c15 + pi/4.
+//
+// mVU_Globals (microVU_Misc.h) stores the eight coefficients in ascending
+// power order but under permuted NAMES -- T1, T5, T2, T3, T4, T6, T7, T8 are
+// c1, c3, c5, c7, c9, c11, c13, c15 respectively. Calling the helpers in
+// name order therefore pairs four of them with the wrong power of x: c5 lands
+// on x^3, c7 on x^5, c9 on x^7 and c3 on x^9. Upstream x86 does exactly that
+// (microVU_Lower.inl) and is measurably wrong for it -- up to 919642 ULP
+// against the ps2autotests EFU capture, worst on the largest reduced
+// arguments. Order by POWER, not by name; the interpreter's eatanconst[]
+// (_vuCalculateEATAN in VUops.cpp) is the same nine values in this order.
 static __fi void mVU_EATAN_arm(mV, const a64::VRegister& pq, const a64::VRegister& Fs,
 	const a64::VRegister& t1, const a64::VRegister& t2)
 {
 	armAsm->Ins(pq.V4S(), 0, Fs.V4S(), 0);
-	mVUmulSSConst(pq, &mVUglob.T1[0]);
+	mVUmulSSConst(pq, &mVUglob.T1[0]); // x   * c1
 	mVUmovAPSReg(t2, Fs);
-	EATANhelper_arm(&mVUglob.T2[0]);
-	EATANhelper_arm(&mVUglob.T3[0]);
-	EATANhelper_arm(&mVUglob.T4[0]);
-	EATANhelper_arm(&mVUglob.T5[0]);
-	EATANhelper_arm(&mVUglob.T6[0]);
-	EATANhelper_arm(&mVUglob.T7[0]);
-	EATANhelper_arm(&mVUglob.T8[0]);
+	EATANhelper_arm(&mVUglob.T5[0]);   // x^3 * c3
+	EATANhelper_arm(&mVUglob.T2[0]);   // x^5 * c5
+	EATANhelper_arm(&mVUglob.T3[0]);   // x^7 * c7
+	EATANhelper_arm(&mVUglob.T4[0]);   // x^9 * c9
+	EATANhelper_arm(&mVUglob.T6[0]);   // x^11 * c11
+	EATANhelper_arm(&mVUglob.T7[0]);   // x^13 * c13
+	EATANhelper_arm(&mVUglob.T8[0]);   // x^15 * c15
 	mVUaddSSConst(pq, &mVUglob.Pi4[0]);
 }
 
