@@ -12,20 +12,6 @@
 #include <string>
 #include <string_view>
 
-// Per-category interpreter fallback toggles.
-// Comment out a define to enable native ARM64 codegen for that category.
-// #define FORCE_INTERP_BRANCH 1
-// #define FORCE_INTERP_JUMP 1
-// #define FORCE_INTERP_MOVE 1
-// #define FORCE_INTERP_SHIFT 1
-// #define FORCE_INTERP_ALU 1
-// #define FORCE_INTERP_ARITIMM 1
-// #define FORCE_INTERP_MULTDIV 1
-// #define FORCE_INTERP_MEMORY 1
-// #define FORCE_INTERP_COP0 1
-// #define FORCE_INTERP_FPU 1
-// #define FORCE_INTERP_COP2 1
-
 // Reserved ARM64 registers for the recompiler
 // x19: Fastmem base pointer (callee-saved)
 #define RFASTMEMBASE vixl::aarch64::x19

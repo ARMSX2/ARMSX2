@@ -171,195 +171,6 @@ static void iopClearRecLUT(BASEBLOCK* base, int count);
 
 // recBackpropBSC declared in arm64/iR5900Analysis.h
 
-// =====================================================================================================
-//  Native Codegen Verification Mode
-// =====================================================================================================
-
-#ifdef VERIFY_NATIVE_CODEGEN
-
-// Snapshot of GPR + HI/LO state before the native instruction executes
-static GPR_reg s_verifyGPR[32];
-static GPR_reg s_verifyHI, s_verifyLO;
-static u32 s_verifyMismatchCount = 0;
-
-// VU0 state snapshot for COP2 verification
-static VECTOR s_verifyVF[32];
-static VECTOR s_verifyACC;
-static REG_VI s_verifyVI[32];
-static u32 s_verifyClipFlag;
-
-// Called at runtime BEFORE the native instruction: snapshot all state
-static void verifySnapshotPre(u32 code, u32 instPC)
-{
-	memcpy(s_verifyGPR, cpuRegs.GPR.r, sizeof(s_verifyGPR));
-	s_verifyHI = cpuRegs.HI;
-	s_verifyLO = cpuRegs.LO;
-
-	// COP2: also snapshot VU0 state
-	if ((code >> 26) == 0x12) // COP2 opcode
-	{
-		memcpy(s_verifyVF, VU0.VF, sizeof(s_verifyVF));
-		s_verifyACC = VU0.ACC;
-		memcpy(s_verifyVI, VU0.VI, sizeof(s_verifyVI));
-		s_verifyClipFlag = VU0.clipflag;
-	}
-}
-
-// Called at runtime AFTER the native instruction: re-run via interpreter on the snapshot and compare
-static void verifyCheckPost(u32 code, u32 instPC)
-{
-	const bool isCOP2 = (code >> 26) == 0x12;
-
-	// Save native results
-	GPR_reg nativeGPR[32];
-	GPR_reg nativeHI, nativeLO;
-	memcpy(nativeGPR, cpuRegs.GPR.r, sizeof(nativeGPR));
-	nativeHI = cpuRegs.HI;
-	nativeLO = cpuRegs.LO;
-
-	// Save native VU0 state for COP2
-	VECTOR nativeVF[32];
-	VECTOR nativeACC;
-	REG_VI nativeVI[32];
-	u32 nativeClipFlag = 0;
-	if (isCOP2)
-	{
-		memcpy(nativeVF, VU0.VF, sizeof(nativeVF));
-		nativeACC = VU0.ACC;
-		memcpy(nativeVI, VU0.VI, sizeof(nativeVI));
-		nativeClipFlag = VU0.clipflag;
-	}
-
-	// Restore pre-instruction state
-	memcpy(cpuRegs.GPR.r, s_verifyGPR, sizeof(s_verifyGPR));
-	cpuRegs.HI = s_verifyHI;
-	cpuRegs.LO = s_verifyLO;
-	if (isCOP2)
-	{
-		memcpy(VU0.VF, s_verifyVF, sizeof(s_verifyVF));
-		VU0.ACC = s_verifyACC;
-		memcpy(VU0.VI, s_verifyVI, sizeof(s_verifyVI));
-		VU0.clipflag = s_verifyClipFlag;
-	}
-
-	// Run interpreter
-	const u32 savedCode = cpuRegs.code;
-	cpuRegs.code = code;
-	const R5900::OPCODE& opcode = R5900::GetCurrentInstruction();
-	if (opcode.interpret)
-		opcode.interpret();
-	cpuRegs.code = savedCode;
-
-	// Compare results
-	bool mismatch = false;
-	static const char* gpr_names[] = {
-		"zero","at","v0","v1","a0","a1","a2","a3",
-		"t0","t1","t2","t3","t4","t5","t6","t7",
-		"s0","s1","s2","s3","s4","s5","s6","s7",
-		"t8","t9","k0","k1","gp","sp","fp","ra"
-	};
-
-	for (int i = 1; i < 32; i++) // skip r0
-	{
-		if (cpuRegs.GPR.r[i].UD[0] != nativeGPR[i].UD[0])
-		{
-			if (!mismatch) { Console.Error("VERIFY MISMATCH at pc=0x%08X code=0x%08X:", instPC, code); mismatch = true; }
-			Console.Error("  %s(r%d): native=0x%016llX interp=0x%016llX (pre=0x%016llX)",
-				gpr_names[i], i, nativeGPR[i].UD[0], cpuRegs.GPR.r[i].UD[0], s_verifyGPR[i].UD[0]);
-		}
-	}
-
-	if (cpuRegs.HI.UD[0] != nativeHI.UD[0])
-	{
-		if (!mismatch) { Console.Error("VERIFY MISMATCH at pc=0x%08X code=0x%08X:", instPC, code); mismatch = true; }
-		Console.Error("  HI: native=0x%016llX interp=0x%016llX", nativeHI.UD[0], cpuRegs.HI.UD[0]);
-	}
-	if (cpuRegs.LO.UD[0] != nativeLO.UD[0])
-	{
-		if (!mismatch) { Console.Error("VERIFY MISMATCH at pc=0x%08X code=0x%08X:", instPC, code); mismatch = true; }
-		Console.Error("  LO: native=0x%016llX interp=0x%016llX", nativeLO.UD[0], cpuRegs.LO.UD[0]);
-	}
-
-	// COP2: compare VU0 state (tolerate 1-ULP float differences)
-	if (isCOP2)
-	{
-		auto ulpDiff = [](u32 a, u32 b) -> u32 {
-			return (a > b) ? (a - b) : (b - a);
-		};
-
-		for (int i = 1; i < 32; i++) // skip VF0
-		{
-			bool vfMismatch = false;
-			for (int lane = 0; lane < 4; lane++)
-			{
-				if (ulpDiff(VU0.VF[i].UL[lane], nativeVF[i].UL[lane]) > 100)
-					vfMismatch = true;
-			}
-			if (vfMismatch)
-			{
-				if (!mismatch) { Console.Error("VERIFY MISMATCH at pc=0x%08X code=0x%08X:", instPC, code); mismatch = true; }
-				Console.Error("  VF%d: native=[%08X,%08X,%08X,%08X] interp=[%08X,%08X,%08X,%08X]",
-					i, nativeVF[i].UL[0], nativeVF[i].UL[1], nativeVF[i].UL[2], nativeVF[i].UL[3],
-					VU0.VF[i].UL[0], VU0.VF[i].UL[1], VU0.VF[i].UL[2], VU0.VF[i].UL[3]);
-			}
-		}
-		bool accMismatch = false;
-		for (int lane = 0; lane < 4; lane++)
-		{
-			if (ulpDiff(VU0.ACC.UL[lane], nativeACC.UL[lane]) > 100)
-				accMismatch = true;
-		}
-		if (accMismatch)
-		{
-			if (!mismatch) { Console.Error("VERIFY MISMATCH at pc=0x%08X code=0x%08X:", instPC, code); mismatch = true; }
-			Console.Error("  ACC: native=[%08X,%08X,%08X,%08X] interp=[%08X,%08X,%08X,%08X]",
-				nativeACC.UL[0], nativeACC.UL[1], nativeACC.UL[2], nativeACC.UL[3],
-				VU0.ACC.UL[0], VU0.ACC.UL[1], VU0.ACC.UL[2], VU0.ACC.UL[3]);
-		}
-		// Check MAC and status flags
-		if (VU0.VI[REG_MAC_FLAG].UL != nativeVI[REG_MAC_FLAG].UL)
-		{
-			if (!mismatch) { Console.Error("VERIFY MISMATCH at pc=0x%08X code=0x%08X:", instPC, code); mismatch = true; }
-			Console.Error("  MAC_FLAG: native=0x%04X interp=0x%04X", nativeVI[REG_MAC_FLAG].UL, VU0.VI[REG_MAC_FLAG].UL);
-		}
-		if (VU0.VI[REG_STATUS_FLAG].UL != nativeVI[REG_STATUS_FLAG].UL)
-		{
-			if (!mismatch) { Console.Error("VERIFY MISMATCH at pc=0x%08X code=0x%08X:", instPC, code); mismatch = true; }
-			Console.Error("  STATUS_FLAG: native=0x%04X interp=0x%04X", nativeVI[REG_STATUS_FLAG].UL, VU0.VI[REG_STATUS_FLAG].UL);
-		}
-	}
-
-	if (mismatch)
-	{
-		const u32 op = code >> 26;
-		const u32 rs = (code >> 21) & 0x1f;
-		const u32 rt = (code >> 16) & 0x1f;
-		const u32 rd = (code >> 11) & 0x1f;
-		const u32 sa = (code >> 6) & 0x1f;
-		const u32 funct = code & 0x3f;
-		Console.Error("  Decode: op=%d rs=%d rt=%d rd=%d sa=%d funct=%d",
-			op, rs, rt, rd, sa, funct);
-		s_verifyMismatchCount++;
-		// Don't assert — remaining mismatches are rounding-induced flag diffs
-		// (MAC zero flag differs when result is on the boundary of 0.0).
-		// Log only, no crash.
-	}
-
-	// Restore native results so execution continues with native values
-	memcpy(cpuRegs.GPR.r, nativeGPR, sizeof(nativeGPR));
-	cpuRegs.HI = nativeHI;
-	cpuRegs.LO = nativeLO;
-	if (isCOP2)
-	{
-		memcpy(VU0.VF, nativeVF, sizeof(nativeVF));
-		VU0.ACC = nativeACC;
-		memcpy(VU0.VI, nativeVI, sizeof(nativeVI));
-		VU0.clipflag = nativeClipFlag;
-	}
-}
-
-#endif // VERIFY_NATIVE_CODEGEN
-
 #define GETBLOCK(x) PC_GETBLOCK_(x, recLUT)
 
 // =====================================================================================================
@@ -1874,8 +1685,7 @@ static bool recSuperblockLivenessBarrier(u32 addr)
 //     recCall): kept conservatively — an interp body may raise.
 // NON-raisers (bracket dropped — the 4-insn win on the common ALU/move/shift/
 // lui fillers): integer overflow is never raised by the rec (plain Add/Sub,
-// same as x86; only the debug-only FORCE_INTERP_* builds could see interp
-// overflow raise with a weakened BD — accepted), FPU/COP2 have no bd path,
+// same as x86), FPU/COP2 have no bd path,
 // INTC/DMAC/TIMR fire only at event tests (block boundary, branch==0 there),
 // and AdEL (RaiseAddressError) is a stub. Pinned by ee_rec_traps_tests.cpp
 // delay-slot raiser tests + AluDelaySlotBranchSemanticsSurviveWithoutBracket.
@@ -2290,66 +2100,24 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 		const R5900::OPCODE& opcode = R5900::GetCurrentInstruction();
 		s_nBlockCycles += opcode.cycles * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
 
-#ifdef VERIFY_NATIVE_CODEGEN
-		// Verification mode: verify native codegen against interpreter for
-		// instructions in categories that have native codegen enabled.
-		// Skip COP0/Memory/FPU which are interpreter-only and may have
-		// timing-sensitive behaviour (MFC0 Count reads cycle counter).
-		const u32 verifyOp = cpuRegs.code >> 26;
-		const bool isVerifiableCategory =
-			// Verify COP2 instructions (opcode 18 = 0x12)
-			(verifyOp == 0x12);
-
-		if (isVerifiableCategory && opcode.recompile && opcode.interpret)
+		// Guard: branch/jump in a delay slot would cause infinite
+		// compile-time recursion. Use interpreter for the instruction.
+		const bool isBranchInDelaySlot = delayslot && (opcode.flags & IS_BRANCH);
+#ifdef PCSX2_RECOMPILER_TESTS
+		// Harness-only: --rec-fallback bisect switch (see EERecFallback).
+		const bool forcedInterp = EERecFallback::Selected(cpuRegs.code);
+#else
+		constexpr bool forcedInterp = false;
+#endif
+		if (isBranchInDelaySlot || !opcode.recompile || forcedInterp)
 		{
-			// Step 1: Flush all registers to cpuRegs BEFORE native codegen
-			iFlushCall(FLUSH_EVERYTHING);
-
-			// Step 2: Emit call to snapshot pre-instruction state
-			armAsm->Mov(a64::w0, cpuRegs.code);
-			armAsm->Mov(a64::w1, pc - 4); // current instruction PC
-			armFlushEEGPRPins(); // lazy-dirty seam: snapshot READS guest GPR memory
-			armEmitCall((void*)verifySnapshotPre);
-			// The hook is GPR-read-only but clobbers the caller-saved pins,
-			// and the native codegen emitted next reads guest state through
-			// them.
-			armReloadEEClobberedPins();
-
-			// Step 3: Run the native codegen
-			opcode.recompile();
-
-			// Step 4: Flush native results to cpuRegs
-			iFlushCall(FLUSH_EVERYTHING);
-
-			// Step 5: Emit call to verify against interpreter
-			armAsm->Mov(a64::w0, cpuRegs.code);
-			armAsm->Mov(a64::w1, pc - 4);
-			armFlushEEGPRPins(); // lazy-dirty seam: verify READS guest GPR memory
-			armEmitCall((void*)verifyCheckPost);
-			armReloadEEClobberedPins(); // see verifySnapshotPre above
+			if ((opcode.flags & IS_BRANCH) && !isBranchInDelaySlot)
+				recBranchCall(opcode.interpret);
+			else
+				recCall(opcode.interpret);
 		}
 		else
-#endif
-		{
-			// Guard: branch/jump in a delay slot would cause infinite
-			// compile-time recursion. Use interpreter for the instruction.
-			const bool isBranchInDelaySlot = delayslot && (opcode.flags & IS_BRANCH);
-#ifdef PCSX2_RECOMPILER_TESTS
-			// Harness-only: --rec-fallback bisect switch (see EERecFallback).
-			const bool forcedInterp = EERecFallback::Selected(cpuRegs.code);
-#else
-			constexpr bool forcedInterp = false;
-#endif
-			if (isBranchInDelaySlot || !opcode.recompile || forcedInterp)
-			{
-				if ((opcode.flags & IS_BRANCH) && !isBranchInDelaySlot)
-					recBranchCall(opcode.interpret);
-				else
-					recCall(opcode.interpret);
-			}
-			else
-				opcode.recompile();
-		}
+			opcode.recompile();
 	}
 
 	// SP misalignment check disabled: MMI/COP2 instructions legitimately use

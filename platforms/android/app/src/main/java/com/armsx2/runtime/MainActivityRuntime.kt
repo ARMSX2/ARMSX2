@@ -54,7 +54,6 @@ import com.armsx2.EmuState
 import com.armsx2.FilenameParser
 import com.armsx2.GameInfo
 import com.armsx2.PlayTime
-import com.armsx2.events.TestResult
 import com.armsx2.input.ControllerMappings
 import com.armsx2.input.SoftKeyboard
 import com.armsx2.runtime.MainActivityRuntime.Companion.internalBiosDir
@@ -117,13 +116,6 @@ private const val NAV_REPEAT_INTERVAL_MS = 110L
 // emit two codes per button) rather than a deliberate modifier+key combo.
 // A real combo is a held first button + a later second press, well past this.
 private const val COMBO_MIN_GAP_MS = 40L
-
-val codeGenTests = mutableStateOf("")
-val patchTests = mutableStateOf("")
-val vuJitTests = mutableStateOf("")
-val eeJitTests = mutableStateOf("")
-val vifTests = mutableStateOf("")
-val eeSeqTests = mutableStateOf("")
 
 open class MainActivityRuntime : ComponentActivity() {
     private var lastUiNavCode = 0
@@ -426,18 +418,6 @@ open class MainActivityRuntime : ComponentActivity() {
         // nativeReady. Fixes the first-cold-launch / DeX crash: applyRendererPrefs
         // pushed GS settings before the base settings layer existed → native SIGSEGV.
         private val pendingLaunch = mutableStateOf<Pair<String, GameInfo?>?>(null)
-
-        fun onTestResults(result: TestResult) {
-            when (result.name) {
-                "VuJitTests" -> vuJitTests.value = "${result.passed}/${result.total}"
-                "PatchTests" -> patchTests.value = "${result.passed}/${result.total}"
-                "CodegenTests" -> codeGenTests.value = "${result.passed}/${result.total}"
-                "EeJitTests" -> eeJitTests.value = "${result.passed}/${result.total}"
-                "VifTests" -> vifTests.value = "${result.passed}/${result.total}"
-                "EeSeqTests" -> eeSeqTests.value = "${result.passed}/${result.total}"
-                else -> println("Test:${result.name}: ${result.passed}/${result.total}")
-            }
-        }
 
         fun invoke(task: suspend () -> Unit) {
             eScope.launch {
@@ -1807,11 +1787,6 @@ open class MainActivityRuntime : ComponentActivity() {
             HIDDeviceManager(applicationContext)
 
             println("PCSX2_INIT")
-
-            // Tests that need VTLB/eeMem — run after init
-            NativeApp.runEeJitTests()
-            NativeApp.runEeSeqTests()
-            NativeApp.runVifTests()
 
             // Debug-build auto-boot to BIOS. Lets us drop straight into the
             // BIOS shell on app launch for perfape baseline captures —

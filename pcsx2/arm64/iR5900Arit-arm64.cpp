@@ -15,22 +15,6 @@ namespace OpcodeImpl {
 
 namespace Interp = R5900::Interpreter::OpcodeImpl;
 
-#ifdef FORCE_INTERP_ALU
-REC_FUNC(ADD);
-void recADDU() { recADD(); }
-REC_FUNC(DADD);
-void recDADDU() { recDADD(); }
-REC_FUNC(SUB);
-void recSUBU() { recSUB(); }
-REC_FUNC(DSUB);
-void recDSUBU() { recDSUB(); }
-REC_FUNC(AND);
-REC_FUNC(OR);
-REC_FUNC(XOR);
-REC_FUNC(NOR);
-REC_FUNC(SLT);
-REC_FUNC(SLTU);
-#else
 
 // Operand helpers. Loads return the register holding the operand, coherent by
 // construction: a pin mirror when the guest reg is pinned, an allocator-
@@ -575,7 +559,6 @@ static void recSLTU_(int info)
 
 EERECOMPILE_CODERC0_MEM(SLTU, XMMINFO_WRITED | XMMINFO_READS | XMMINFO_READT | XMMINFO_64BITOP);
 
-#endif // !FORCE_INTERP_ALU
 
 } // namespace OpcodeImpl
 } // namespace Dynarec

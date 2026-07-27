@@ -16,12 +16,6 @@ namespace OpcodeImpl {
 
 namespace Interp = R5900::Interpreter::OpcodeImpl;
 
-#ifdef FORCE_INTERP_MULTDIV
-REC_FUNC(MULT);
-REC_FUNC(MULTU);
-REC_FUNC(DIV);
-REC_FUNC(DIVU);
-#else
 
 // Fetch Rs/Rt lower 32 bits for the mul/div ops. Substitution-aware
 // (EE-SRA 2 WS-C6): returns the pin / MODE_READ allocator reg directly (zero
@@ -275,7 +269,6 @@ void recDIVU()
 	armAsm->Str(RXSCRATCH, armCpuRegMem(&cpuRegs.HI.UD[0]));
 }
 
-#endif // !FORCE_INTERP_MULTDIV
 
 // Pipeline-1 Rd writeback — identical to recWritebackRd since GE-09 (the
 // rd value rides RXSCRATCH out of recWritebackHILO for either pipeline).

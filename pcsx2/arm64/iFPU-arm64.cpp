@@ -22,16 +22,6 @@ namespace COP1 {
 
 namespace Interp = R5900::Interpreter::OpcodeImpl::COP1;
 
-#ifdef FORCE_INTERP_FPU
-REC_FUNC(CFC1);
-REC_FUNC(CTC1);
-REC_FUNC(MFC1);
-REC_FUNC(MTC1);
-REC_SYS(BC1F);
-REC_SYS(BC1T);
-REC_SYS(BC1FL);
-REC_SYS(BC1TL);
-#else
 
 #define _Ft_ _Rt_
 #define _Fs_ _Rd_
@@ -330,7 +320,6 @@ void recBC1TL()
 #undef _Fs_
 #undef _Fd_
 
-#endif // !FORCE_INTERP_FPU
 
 #define _Ft_ _Rt_
 #define _Fs_ _Rd_

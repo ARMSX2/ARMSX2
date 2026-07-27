@@ -12,18 +12,9 @@
 #if defined(__aarch64__) || defined(_M_ARM64)
 
 #include "SPU2/spu2_neon.h"
-// spu2_sve2_fir.h defines SPU2_HAS_SVE2_COMPILER and, when the compiler actually
-// targets SVE2, TryRegisterSVE2FIR(); it also pulls in spu2_mt6899_tuning.h for
-// runtime CPU feature detection. defs.h provides V_Core / StereoOut32 /
-// clamp_mix and the ReverbDownsample/ReverbUpsample function pointers.
-#include "SPU2/spu2_sve2_fir.h"
+// defs.h provides V_Core / StereoOut32 / clamp_mix and the
+// ReverbDownsample/ReverbUpsample function pointers.
 #include "SPU2/defs.h"
-// NOTE: the spu2_neon_mixer / _reverb_ex / _dcfilter helper headers are
-// intentionally NOT included. They hold drop-in SIMD helpers meant to be called
-// from mixer.cpp / ReaVerb.cpp, but that integration hasn't been wired up — this
-// TU only needs the reverb FIR below plus the SVE2 hook. Pulling them in would
-// compile a pile of currently-unused (and not-yet-portable) code on every arm64
-// target (they use the MSVC-only __forceinline keyword unguarded).
 
 #include <arm_neon.h>
 #include <array>
@@ -131,26 +122,13 @@ static StereoOut32 ReverbUpsample_neon(V_Core& core)
 // That is dropped here: this runs on the VM/EE thread (not the Oboe audio
 // thread), the CPU-topology assumption is device-specific, and ARMSX2 already
 // manages audio-thread affinity. Only the FIR pointer override is kept.
-//
-// SVE2 is intentionally left out of this build: it is gated by
-// SPU2_HAS_SVE2_COMPILER (off on the default arm64-v8a target), and the
-// contributor's SVE2 upsample coefficients overflow s16. Only the NEON FIR
-// path is wired in.
 
 namespace SPU2
 {
 	void RegisterNEONBackend()
 	{
-		bool using_sve2 = false;
-#if SPU2_HAS_SVE2_COMPILER
-		using_sve2 = spu2_neon::TryRegisterSVE2FIR();
-#endif
-
-		if (!using_sve2)
-		{
-			ReverbDownsample = ReverbDownsample_neon;
-			ReverbUpsample   = ReverbUpsample_neon;
-		}
+		ReverbDownsample = ReverbDownsample_neon;
+		ReverbUpsample   = ReverbUpsample_neon;
 	}
 } // namespace SPU2
 

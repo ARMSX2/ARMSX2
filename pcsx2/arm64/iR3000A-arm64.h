@@ -123,57 +123,8 @@ extern void psxRecompileNextInstruction(bool delayslot, bool swapped_delayslot);
 extern u32 g_psxConstRegs[32];
 extern u32 g_psxHasConstReg, g_psxFlushedConstReg;
 
-typedef void (*R3000AFNPTR)();
-typedef void (*R3000AFNPTR_INFO)(int info);
-
 bool psxTrySwapDelaySlot(u32 rs, u32 rt, u32 rd);
 
-////////////////////////////////////////////////////////////////////
-// Constant propagation code generation macros
-
-// rd = rs op rt
-#define PSXRECOMPILE_CONSTCODE0(fn, info) \
-	void rpsx##fn(void) \
-	{ \
-		psxRecompileCodeConst0(rpsx##fn##_const, rpsx##fn##_consts, rpsx##fn##_constt, rpsx##fn##_, info); \
-	}
-
-// rt = rs op imm16
-#define PSXRECOMPILE_CONSTCODE1(fn, info) \
-	void rpsx##fn(void) \
-	{ \
-		psxRecompileCodeConst1(rpsx##fn##_const, rpsx##fn##_, info); \
-	}
-
-// rd = rt op sa
-#define PSXRECOMPILE_CONSTCODE2(fn, info) \
-	void rpsx##fn(void) \
-	{ \
-		psxRecompileCodeConst2(rpsx##fn##_const, rpsx##fn##_, info); \
-	}
-
-// [lo,hi] = rt op rs
-#define PSXRECOMPILE_CONSTCODE3(fn, LOHI) \
-	void rpsx##fn(void) \
-	{ \
-		psxRecompileCodeConst3(rpsx##fn##_const, rpsx##fn##_consts, rpsx##fn##_constt, rpsx##fn##_, LOHI); \
-	}
-
-#define PSXRECOMPILE_CONSTCODE3_PENALTY(fn, LOHI, cycles) \
-	void rpsx##fn(void) \
-	{ \
-		psxRecompileCodeConst3(rpsx##fn##_const, rpsx##fn##_consts, rpsx##fn##_constt, rpsx##fn##_, LOHI); \
-		g_iopCyclePenalty = cycles; \
-	}
-
-// rd = rs op rt
-void psxRecompileCodeConst0(R3000AFNPTR constcode, R3000AFNPTR_INFO constscode, R3000AFNPTR_INFO consttcode, R3000AFNPTR_INFO noconstcode, int xmminfo);
-// rt = rs op imm16
-void psxRecompileCodeConst1(R3000AFNPTR constcode, R3000AFNPTR_INFO noconstcode, int xmminfo);
 // IOP v1.0 IRX-import HLE backdoor (0x2400xxxx marker). Emits the HLE call +
 // re-dispatch; defined in iR3000A-arm64.cpp where iopDispatcherReg is visible.
 void psxRecompileIrxImport();
-// rd = rt op sa
-void psxRecompileCodeConst2(R3000AFNPTR constcode, R3000AFNPTR_INFO noconstcode, int xmminfo);
-// [lo,hi] = rt op rs
-void psxRecompileCodeConst3(R3000AFNPTR constcode, R3000AFNPTR_INFO constscode, R3000AFNPTR_INFO consttcode, R3000AFNPTR_INFO noconstcode, int LOHI);

@@ -1153,13 +1153,7 @@ if(ARCH_ARM64 OR ANDROID OR ARMSX2_IOS)
 	list(APPEND pcsx2SPU2Sources
 		SPU2/spu2_neon.cpp)
 	list(APPEND pcsx2SPU2Headers
-		SPU2/spu2_neon.h
-		SPU2/spu2_neon_dcfilter.h
-		SPU2/spu2_neon_mixer.h
-		SPU2/spu2_neon_reverb_ex.h
-		SPU2/spu2_optimize.h
-		SPU2/spu2_sve2_fir.h
-		SPU2/spu2_mt6899_tuning.h)
+		SPU2/spu2_neon.h)
 endif()
 
 if(ANDROID)
@@ -1180,14 +1174,7 @@ if(ANDROID)
 		GS/Renderers/Common/GSGPUProfilePrivate.h)
 	list(APPEND pcsx2Sources
 		Android/AndroidStubs.cpp
-		Android/AndroidPcapStubs.cpp
-		VU1Fingerprint.cpp
-		EEDiffVerify.cpp)
-	list(APPEND pcsx2Headers
-		VU1Fingerprint.h
-		EEDiffVerify.h
-		AndroidPerfBuckets.h
-		PS1DrvTrace.h)
+		Android/AndroidPcapStubs.cpp)
 	# Oboe is the Android audio backend consumed by Host/OboeAudioStream.cpp.
 	# The `oboe` target (created in SearchForStuff.cmake) exports its `include/`
 	# dir as PUBLIC, so linking it into PCSX2_FLAGS propagates <oboe/Oboe.h> to
@@ -1200,15 +1187,9 @@ endif()
 if(ARMSX2_IOS)
 	list(APPEND pcsx2Sources
 		MacOSStubs.cpp
-		QAProbe.cpp
-		TestHarness.cpp
 		# iOS has no libpcap, so pcap_io.cpp is excluded above; reuse the (platform-
 		# agnostic) Android stub to supply the PCAPAdapter definitions DEV9 references.
 		Android/AndroidPcapStubs.cpp)
-	list(APPEND pcsx2Headers
-		QAProbe.h
-		TestHarness.h
-		SifRingBuffer.h)
 endif()
 
 # These ones benefit a lot from LTO

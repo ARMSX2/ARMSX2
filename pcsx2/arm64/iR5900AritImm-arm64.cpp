@@ -14,17 +14,6 @@ namespace OpcodeImpl {
 
 namespace Interp = R5900::Interpreter::OpcodeImpl;
 
-#ifdef FORCE_INTERP_ARITIMM
-REC_FUNC(ADDI);
-void recADDIU() { recADDI(); }
-REC_FUNC(DADDI);
-void recDADDIU() { recDADDI(); }
-REC_FUNC(ANDI);
-REC_FUNC(ORI);
-REC_FUNC(XORI);
-REC_FUNC(SLTI);
-REC_FUNC(SLTIU);
-#else
 
 // Operand helpers. Loads return the register holding the operand, coherent by
 // construction: a pin mirror when the guest reg is pinned, an allocator-
@@ -202,7 +191,6 @@ static void recSLTIU_(int info)
 
 EERECOMPILE_CODEX_MEM(eeRecompileCodeRC1_MEM, SLTIU, XMMINFO_WRITET | XMMINFO_READS | XMMINFO_64BITOP);
 
-#endif // !FORCE_INTERP_ARITIMM
 
 } // namespace OpcodeImpl
 } // namespace Dynarec

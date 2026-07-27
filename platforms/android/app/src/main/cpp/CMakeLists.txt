@@ -80,10 +80,6 @@ set(ARMSX2_EMUCORE_LIBRARY_NAME "emucore_4k" CACHE STRING "Android emucore share
 
 add_library(${ARMSX2_EMUCORE_LIBRARY_NAME} SHARED
 	native-lib.cpp
-	# Recompiler/VIF/patch unit tests are compiled out: they call the arm64/mac
-	# backend test hooks (EE_Test*/mVU0_Test*) not present in this core, plus a
-	# gtest scaffold. No-op stubs keep native-lib's dev-only "run tests" JNIs linkable.
-	tests/android_test_stubs.cpp
 )
 
 target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
