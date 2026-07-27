@@ -1383,7 +1383,7 @@ struct GameListView: View {
 
 		if appState.runningGameName != nil {
 			pendingGameName = game.bootName
-            pendingGameplayLaunchTransition = makeGameplayLaunchTransition(for: game)
+			pendingGameplayLaunchTransition = makeGameplayLaunchTransition(for: game)
 			showRestartAlert = true
 		} else {
             let transition = makeGameplayLaunchTransition(for: game)
