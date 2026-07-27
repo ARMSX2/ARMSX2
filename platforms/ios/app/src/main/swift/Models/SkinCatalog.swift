@@ -21,15 +21,18 @@ struct SkinCatalogManifest: Codable {
 }
 
 enum SkinCatalogError: LocalizedError {
-    case fetchFailed(URL, Error)
-    case decodeFailed(Error)
+    case unreachable
+    case serverError(Int)
+    case malformed
 
     var errorDescription: String? {
         switch self {
-        case .fetchFailed(let url, let error):
-            return "Could not load the skin catalog: \(error.localizedDescription)"
-        case .decodeFailed(let error):
-            return "The skin catalog format changed: \(error.localizedDescription)"
+        case .unreachable:
+            return "Can't reach the skin catalog. Check your connection and pull down to try again."
+        case .serverError(let code):
+            return "The skin catalog server answered with \(code). Pull down to try again."
+        case .malformed:
+            return "The skin catalog downloaded fine but can't be read. The file itself is broken, so this needs fixing in the skins repo rather than here."
         }
     }
 }
@@ -73,15 +76,23 @@ final class SkinCatalog: ObservableObject {
             }
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-                throw URLError(.badServerResponse)
+                throw SkinCatalogError.serverError(http.statusCode)
             }
-            let manifest = try JSONDecoder().decode(SkinCatalogManifest.self, from: data)
             guard !Task.isCancelled else { return }
+            // Reaching the file and being able to read it are different failures. One
+            // missing comma upstream used to come out as "check your connection", which
+            // sent people hunting a network problem they did not have.
+            let manifest: SkinCatalogManifest
+            do {
+                manifest = try JSONDecoder().decode(SkinCatalogManifest.self, from: data)
+            } catch {
+                throw SkinCatalogError.malformed
+            }
             skins = manifest.skins
             lastUpdated = Date()
         } catch {
             guard !Task.isCancelled else { return }
-            lastError = error.localizedDescription
+            lastError = (error as? SkinCatalogError ?? .unreachable).localizedDescription
         }
     }
 

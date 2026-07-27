@@ -32,9 +32,7 @@ struct SkinBrowserView: View {
 
             if let error = catalog.lastError {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(catalog.skins.isEmpty
-                         ? "Can't reach the skin catalog. Check your connection and pull down to try again."
-                         : error)
+                    Text(error)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button("Retry") { Task { await catalog.fetch(force: true) } }
