@@ -331,6 +331,7 @@ const char* GpuProfileDetector::WorkaroundToString(DriverWorkaround value)
 		case DriverWorkaround::UseDescriptorSets: return "UseDescriptorSets";
 		case DriverWorkaround::DisableProvokingVertex: return "DisableProvokingVertex";
 		case DriverWorkaround::DisableAttachmentFeedbackLoopLayout: return "DisableAttachmentFeedbackLoopLayout";
+		case DriverWorkaround::UseRenderTargetCopyForFeedback: return "UseRenderTargetCopyForFeedback";
 		case DriverWorkaround::EmulateColorWriteMask: return "EmulateColorWriteMask";
 		case DriverWorkaround::PreferCoherentReadback: return "PreferCoherentReadback";
 		case DriverWorkaround::UseStagingImageForReadback: return "UseStagingImageForReadback";

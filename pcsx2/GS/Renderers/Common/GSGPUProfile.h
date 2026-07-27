@@ -142,6 +142,12 @@ enum class DriverWorkaround : u8
 	UseDescriptorSets,
 	DisableProvokingVertex,
 	DisableAttachmentFeedbackLoopLayout,
+	/// Read the render target from a separate COPY instead of in-pass, for drivers where no form
+	/// of attachment self-read works. Turns texture barriers off, which also disables framebuffer
+	/// fetch (it is the same in-tile read), so the RT is never bound as an attachment and sampled
+	/// at once. Expensive — a full render-target copy per feedback draw — so it is a last resort
+	/// for drivers that fail BOTH the input-attachment and feedback-loop-layout reads.
+	UseRenderTargetCopyForFeedback,
 	EmulateColorWriteMask,
 	PreferCoherentReadback,
 	UseStagingImageForReadback,

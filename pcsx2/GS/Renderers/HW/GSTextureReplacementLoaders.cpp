@@ -475,8 +475,10 @@ static bool ParseDDSHeader(std::FILE* fp, DDSLoadInfo* info)
 
 		const GSDevice::FeatureSupport features(g_gs_device->Features());
 		// Mobile GPUs frequently expose no BC/BPTC support at all (Vulkan
-		// textureCompressionBC false: Adreno 650 / Snapdragon 865, and Mesa Turnip on any
-		// Adreno). Rejecting the file there silently drops the ENTIRE pack — and for packs
+		// textureCompressionBC false). It is driver-dependent rather than a property of the
+		// hardware: on Adreno 650 the Qualcomm blob gained BC at driver 512.614 (vulkan.gpuinfo.org
+		// splits cleanly across that revision), and Mesa Turnip reports it true. Rejecting the file
+		// on a driver that lacks it silently drops the ENTIRE pack — and for packs
 		// that also ship game-side data the result is worse than "no upscale": the P3P Slim
 		// Font mod pairs new FONT0.FNT glyph metrics with BC7 replacement glyphs, so with
 		// the textures dropped the game indexes the new narrow metrics into the old wide

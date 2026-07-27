@@ -349,6 +349,11 @@
     </ClCompile>
     <ClCompile Include="GS\GSDump.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSFunctionMap.cpp" />
+    <ClCompile Include="GS\Renderers\Common\GSGPUDriverProfile.cpp" />
+    <ClCompile Include="GS\Renderers\Common\GSGPUProfile.cpp" />
+    <ClCompile Include="GS\Renderers\Common\GSGPUProfileMali.cpp" />
+    <ClCompile Include="GS\Renderers\Common\GSGPUProfileAdreno.cpp" />
+    <ClCompile Include="GS\Renderers\Common\GSGPUProfilePowerVR.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSHwHack.cpp" />
     <ClCompile Include="GS\GSLocalMemory.cpp" />
     <ClCompile Include="GS\GSLocalMemoryMultiISA.cpp" />
@@ -792,6 +797,8 @@
     <ClInclude Include="GS\GSDump.h" />
     <ClInclude Include="GS\Renderers\Common\GSFastList.h" />
     <ClInclude Include="GS\Renderers\Common\GSFunctionMap.h" />
+    <ClInclude Include="GS\Renderers\Common\GSGPUProfile.h" />
+    <ClInclude Include="GS\Renderers\Common\GSGPUProfilePrivate.h" />
     <ClInclude Include="GS\GSLocalMemory.h" />
     <ClInclude Include="GS\GSLzma.h" />
     <ClInclude Include="GS\GSPerfMon.h" />

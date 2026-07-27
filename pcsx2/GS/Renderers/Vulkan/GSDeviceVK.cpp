@@ -3265,18 +3265,26 @@ bool GSDeviceVK::CheckFeatures()
 	// their driver. Declared outside the Android block so it stays a harmless false on
 	// desktop. Populated from the resolved mobile profile just below.
 	bool force_xclipse_profile = false;
-#if defined(__ANDROID__)
-	// MediaTek (Dimensity/Helio) Mali Vulkan stacks return zero/stale destination color
-	// through ROAA (black / missing textures) across GPU generations, so detect the SoC
-	// here and disable fbfetch below. Ported from sashkinbro/EmuCoreX. Detection reads the
-	// ro.soc.* props already folded into the profile hints (no new JNI needed).
-	//
+
 	// The driver context feeds the driver-bug database (ported from EmuCoreX/sashkinbro with his
 	// approval). Vulkan is the good case: VkPhysicalDeviceDriverProperties names the blob outright,
 	// which is what the r44p1 DEVICE_LOST and 8-Elite push-descriptor fixes both learned the hard
 	// way — gate on driverID, never on vendorID, or Turnip/PanVK inherit proprietary workarounds.
 	// ProcessDeviceExtensions() has already filled m_device_driver_properties by the time we get
 	// here (CreateDeviceAndSwapChain runs before CheckFeatures), so one resolve sees everything.
+	//
+	// Resolved on EVERY platform, not just Android: the database is keyed on the DRIVER, and the
+	// same drivers ship off Android. Turnip on an ARM Linux handheld (Rocknix/Batocera) is the
+	// same Mesa stack with the same defects as Turnip on a phone, and it was the #442 reproducer.
+	// Gating this on __ANDROID__ made every rule silently dead on exactly the devices we test on.
+	// Resolution is pure data — a rule only changes behaviour where something queries HasBug()/
+	// UsesWorkaround(), and every such query is an explicit, per-defect decision.
+	//
+	// The MOBILE-SPECIFIC consequences below stay Android-only on purpose:
+	//   - SetRuntimeGPUProfile(): off Android the GL detector classifies every non-Mali GPU as
+	//     Adreno, so publishing the runtime profile here would hand desktop callers a wrong answer.
+	//   - GS tuning / GPU identity: their only consumers are themselves __ANDROID__-gated, and
+	//     changing desktop texture-pool sizing is not this code's business.
 	MobileDriverContext driver_context;
 	driver_context.api = MobileGpuApi::Vulkan;
 	driver_context.vendor_id = m_device_properties.vendorID;
@@ -3293,6 +3301,13 @@ bool GSDeviceVK::CheckFeatures()
 	const GpuProfileSelection mobile_profile = GpuProfileDetector::Resolve(
 		GSConfig.AndroidGpuProfileOverride, std::string_view(), m_device_properties.deviceName,
 		driver_context);
+	SetMobileDriverProfile(mobile_profile.driver);
+#if defined(__ANDROID__)
+	// MediaTek (Dimensity/Helio) Mali Vulkan stacks return zero/stale destination color
+	// through ROAA (black / missing textures) across GPU generations, so detect the SoC
+	// here and disable fbfetch below. Ported from sashkinbro/EmuCoreX. Detection reads the
+	// ro.soc.* props already folded into the profile hints (no new JNI needed).
+	//
 	// ★ Vulkan resolved mobile_profile and pushed every OTHER piece of it into the device
 	// (MediaTek SoC, GPU identity, GS tuning) but never the runtime profile itself, so
 	// IsMaliGPUProfile()/IsAdrenoGPUProfile() answered from the default for the entire Vulkan
@@ -3308,7 +3323,7 @@ bool GSDeviceVK::CheckFeatures()
 	// This is what constrains texture/target caching on weaker Mali (e.g. G615). From EmuCoreX.
 	SetMobileGPUIdentity(mobile_profile.gpu);
 	SetMobileGSTuning(mobile_profile.gs_tuning);
-	SetMobileDriverProfile(mobile_profile.driver);
+#endif
 	Console.WriteLn("VK: GPU profile override='%s' resolved='%s' driver='%s' version=%u.%u.%u "
 					"raw=%08x rules=%u bugs=%016llx workarounds=%016llx.",
 		GpuProfileDetector::OverrideToConfigString(mobile_profile.override_mode),
@@ -3322,7 +3337,28 @@ bool GSDeviceVK::CheckFeatures()
 		static_cast<unsigned long long>(mobile_profile.driver.bugs),
 		static_cast<unsigned long long>(mobile_profile.driver.workarounds));
 	DevCon.WriteLn("VK: GPU profile hints: %s", mobile_profile.hints.c_str());
-#endif
+
+	// BrokenSubpassFeedback + BrokenAttachmentFeedbackLoopLayout: on these drivers an in-pass
+	// render-target self-read can silently drop the whole draw, in BOTH shapes — the subpassLoad
+	// input attachment and the feedback-loop-layout texelFetch sampler. Reading a separate copy of
+	// the target is the only reliable form.
+	//
+	// ⚠️ Narrowed to replacement textures deliberately. Device A/B on Turnip/Adreno 650:
+	//   - TotA + HD pack, in-tile: text layer gone at 4x AND at 1x (so it is not tile-size related)
+	//   - TotA + HD pack, RT copy: correct
+	//   - NFS Underground, no pack, 608 barrier draws/frame through the same in-tile self-read:
+	//     renders correctly
+	// So the self-read is fine for ordinary blending and only fails when the draw also samples a
+	// replacement. Applying the copy unconditionally cost +38%/+40% frame time at 3x/4x on the
+	// NFSU dump (copies 5 -> 348 per frame, render passes 62 -> 391) for no correctness gain,
+	// which is far too much to charge every Adreno user for a bug none of them can hit without a
+	// texture pack. Pack users pay it and get correct output; everyone else keeps the fast path.
+	//
+	// If a title is ever reported losing draws WITHOUT a pack, widen this to unconditional — the
+	// underlying driver defect is not replacement-specific, only our evidence is.
+	const bool rt_self_read_is_broken =
+		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback) &&
+		GSConfig.LoadTextureReplacements;
 
 	// framebuffer_fetch: the tiler-native ordered Cd read (ROAA / subpassLoad in tile
 	// memory). It lets DetermineBarriers() (GSRendererHW.cpp) drop every per-primitive
@@ -3349,6 +3385,12 @@ bool GSDeviceVK::CheckFeatures()
 	// it ON there — the fast blend path on a tiler that drops the per-primitive
 	// barriers spiking GS on transparency-heavy scenes. Proprietary Adreno stays
 	// opt-in via EnableAdrenoFramebufferFetch; DisableFramebufferFetch still overrides.
+	//
+	// ⚠️ In practice this is currently moot on Adreno: UseRenderTargetCopyForFeedback turns texture
+	// barriers off below, and "fbfetch needs barriers" then clears framebuffer_fetch regardless of
+	// what this resolves to. Framebuffer fetch IS the in-tile self-read, so a driver that cannot
+	// do that read cannot have it. Kept as-is so a driver that stops carrying the bug recovers the
+	// fast path for free.
 	const bool is_turnip = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP);
 	// Samsung Xclipse (Exynos AMD-RDNA2) has no working ROAA-based framebuffer fetch — force it off
 	// there so we never route the fast-blend path into a broken unit. Inert if the 0x144D vendorID
@@ -3386,22 +3428,38 @@ bool GSDeviceVK::CheckFeatures()
 	// GL_ARM_shader_framebuffer_fetch (GSDeviceOGL) and never touches the Vulkan ROAA path.
 	const bool unreliable_mali_fbfetch =
 		(is_mediatek_mali_vk || is_mali_g57) && !GSConfig.ForceMaliFramebufferFetch;
+	// is_adreno (not just is_turnip): the removed `if (is_adreno)` block used to force fbfetch on
+	// for the whole vendor, so making it opt-in here would silently drop the proprietary blob onto
+	// the per-primitive barrier path — a regression unrelated to #442. Keeping the vendor listed
+	// preserves that default while letting DisableFramebufferFetch actually take effect, which the
+	// old unconditional force ate (see feedback_adreno_fbfetch_ini_override_measurement_trap).
+	// EnableAdrenoFramebufferFetch is therefore redundant now, but stays as a no-op OR term rather
+	// than churning a shipped INI key and its Android settings entry.
 	const bool vendor_allows_fbfetch = !unreliable_mali_fbfetch &&
-		(is_mali_vk || is_turnip || GSConfig.EnableAdrenoFramebufferFetch) && !is_xclipse_vk;
+		(is_mali_vk || is_adreno || GSConfig.EnableAdrenoFramebufferFetch) && !is_xclipse_vk;
 	m_features.framebuffer_fetch = vendor_allows_fbfetch &&
 		m_optional_extensions.vk_ext_rasterization_order_attachment_access && !GSConfig.DisableFramebufferFetch;
 	m_features.texture_barrier = GSConfig.OverrideTextureBarriers != 0;
-	// Qualcomm Adreno (turnip/freedreno) only reads the render target correctly through the coherent
-	// rasterization-order subpassLoad input-attachment path. The feedback-loop-layout sampler drops
-	// content (objects vanish) and the RT-copy fallback miscolours 16-bit fbmask draws, so force the
-	// subpassLoad path on regardless of INI: enable framebuffer fetch (requires the rasterization-order
-	// extension) and texture barriers, and disable the feedback-loop layout so the RT is bound as an
-	// input attachment. See GSTextureVK::Create for the matching image usage.
-	if (is_adreno)
+	// No working in-pass render-target self-read (ARMSX2 #442, Qualcomm/Turnip). Force the RT-COPY
+	// path: with texture barriers off, GSRendererHW reads Cd from a separate copy of the target
+	// (draw_rt_clone) instead of sampling the live attachment, and "fbfetch needs barriers" below
+	// (framebuffer_fetch &= texture_barrier) drops the in-tile read too. Expensive — one RT copy
+	// per feedback draw — but it is the only shape this driver renders correctly.
+	//
+	// tfx.glsl selects the read purely from two defines: DISABLE_TEXTURE_BARRIER (this path) or
+	// HAS_FEEDBACK_LOOP_LAYOUT. Both compile texelFetch; the difference is whether the sampled
+	// image is a copy or the live attachment, and only the copy works here. Turning
+	// framebuffer_fetch off on its own does NOT change the variant — it leaves subpassLoad in
+	// place, which is equally broken.
+	//
+	// Only applied when OverrideTextureBarriers is on auto (-1). An explicit 1 still wins, so the
+	// in-tile path stays reachable for A/B-ing this workaround's cost and for a future driver
+	// revision that fixes the read; an explicit 0 already lands here anyway.
+	if (rt_self_read_is_broken && GSConfig.OverrideTextureBarriers < 0)
 	{
-		m_optional_extensions.vk_ext_attachment_feedback_loop_layout = false;
-		m_features.framebuffer_fetch = m_optional_extensions.vk_ext_rasterization_order_attachment_access;
-		m_features.texture_barrier = true;
+		Console.WriteLn("VK: texture replacements active on a driver with an unreliable in-pass "
+						"render-target self-read — forcing the RT-copy blend path.");
+		m_features.texture_barrier = false;
 	}
 	// Mali r44p1: the attachment-feedback-loop-layout disable in CreateDevice only swapped the
 	// RT-as-texture LAYOUT/descriptor — it never removed the in-tile RT self-read itself, so Maximum
