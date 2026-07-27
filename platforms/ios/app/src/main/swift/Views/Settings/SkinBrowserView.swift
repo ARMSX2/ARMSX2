@@ -10,7 +10,7 @@ struct SkinBrowserView: View {
     // off whatever the installer happens to be publishing.
     @State private var skinLibrary = VPadSkinLibraryStore.shared
     @State private var searchText = ""
-    @State private var errorAlert: String?
+    @State private var detailAlert: String?
     @State private var previewSkin: CatalogSkin?
     @State private var skinPendingRemoval: CatalogSkin?
 
@@ -62,13 +62,13 @@ struct SkinBrowserView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await catalog.fetch() }
         .refreshable { await catalog.fetch(force: true) }
-        .alert("Download Failed", isPresented: Binding(
-            get: { errorAlert != nil },
-            set: { if !$0 { errorAlert = nil } }
+        .alert("Skin Install", isPresented: Binding(
+            get: { detailAlert != nil },
+            set: { if !$0 { detailAlert = nil } }
         )) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text(errorAlert ?? "")
+            Text(detailAlert ?? "")
         }
         .alert(
             "Remove Skin?",
@@ -184,13 +184,22 @@ struct SkinBrowserView: View {
 
             if let error = installer.errors[skin.file] {
                 Button {
-                    errorAlert = error
+                    detailAlert = error
                 } label: {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Show the error from \(skin.name)")
+            } else if let notice = installer.notices[skin.file] {
+                Button {
+                    detailAlert = notice
+                } label: {
+                    Image(systemName: "exclamationmark.circle")
+                        .foregroundStyle(.yellow)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Show what \(skin.name) reported during install")
             }
         }
         .swipeActions(edge: .trailing) {

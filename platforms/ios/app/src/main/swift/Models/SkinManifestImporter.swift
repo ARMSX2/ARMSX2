@@ -90,6 +90,10 @@ enum SkinManifestImporter {
             let manifest = try SkinManifestV2.decode(from: data)
             return .v2(manifest: manifest, packageRoot: packageRoot, repairedParentFolder: repairedParentFolder)
         } catch {
+            if let repaired = repairedJSON(data),
+               let manifest = try? SkinManifestV2.decode(from: repaired) {
+                return .v2(manifest: manifest, packageRoot: packageRoot, repairedParentFolder: repairedParentFolder)
+            }
             return .invalidV2(message: "the v2 manifest could not be parsed: \(error.localizedDescription)")
         }
     }
@@ -124,14 +128,51 @@ enum SkinManifestImporter {
     /// 2, a representations map, or a game-type identifier (the latter only when
     /// the file is not also an explicit v1 schemaVersion manifest).
     static func hasV2Marker(_ data: Data) -> Bool {
-        guard let object = try? JSONSerialization.jsonObject(with: data),
-              let dictionary = object as? [String: Any] else {
+        var object = try? JSONSerialization.jsonObject(with: data)
+        if object == nil, let repaired = repairedJSON(data) {
+            object = try? JSONSerialization.jsonObject(with: repaired)
+        }
+        guard let dictionary = object as? [String: Any] else {
             return false
         }
         if dictionary["representations"] != nil { return true }
         if (dictionary["formatVersion"] as? Int) == 2 { return true }
         if dictionary["gameTypeIdentifier"] != nil && dictionary["schemaVersion"] == nil { return true }
         return false
+    }
+
+    /// Substitutes a space for raw control bytes sitting inside JSON strings, so
+    /// a hand-edited manifest still parses. Returns nil when nothing changed;
+    /// callers parse strictly first and only fall back on failure. Nothing below
+    /// 0x20 can be a UTF-8 continuation byte or half of a "\t" pair, so escapes
+    /// and multi-byte text are left alone.
+    ///
+    /// The extractor needs this before Swift ever sees the file, so the same
+    /// walk exists as ARMSX2RepairedJSONData in ARMSX2Bridge.mm. Keep them level.
+    static func repairedJSON(_ data: Data) -> Data? {
+        var out = Data(capacity: data.count)
+        var inString = false
+        var escaped = false
+        var changed = false
+        for byte in data {
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if byte == 0x5C {
+                    escaped = true
+                } else if byte == 0x22 {
+                    inString = false
+                } else if byte < 0x20 {
+                    out.append(0x20)
+                    changed = true
+                    continue
+                }
+            } else if byte == 0x22 {
+                inString = true
+            }
+            out.append(byte)
+        }
+        return changed ? out : nil
     }
 
     // MARK: - Validation

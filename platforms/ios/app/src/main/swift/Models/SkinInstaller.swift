@@ -28,6 +28,8 @@ final class SkinInstaller: ObservableObject {
     /// knock each other's spinner out.
     @Published private(set) var installing: Set<String> = []
     @Published var errors: [String: String] = [:]
+    /// Warnings the import raised but which are not failures, keyed the same way.
+    @Published var notices: [String: String] = [:]
 
     private static let maxDownloadBytes: Int64 = 32 * 1024 * 1024
 
@@ -41,6 +43,7 @@ final class SkinInstaller: ObservableObject {
 
     func uninstall(_ skin: CatalogSkin) {
         errors[skin.file] = nil
+        notices[skin.file] = nil
         guard let descriptor = installedDescriptor(for: skin) else { return }
         do {
             try VPadSkinLibraryStore.shared.deleteImportedSkin(id: descriptor.id)
@@ -53,6 +56,7 @@ final class SkinInstaller: ObservableObject {
     private func install(_ skin: CatalogSkin, replacing replacingSkinID: String?) async {
         installing.insert(skin.file)
         errors[skin.file] = nil
+        notices[skin.file] = nil
         do {
             guard let zipURL = SkinCatalog.zipURL(for: skin) else {
                 throw SkinInstallError.unusableLink
@@ -90,13 +94,16 @@ final class SkinInstaller: ObservableObject {
                 throw SkinInstallError.emptyArchive
             }
 
-            _ = try await VPadSkinLibraryStore.shared.importSkin(
+            let result = try await VPadSkinLibraryStore.shared.importSkin(
                 from: extractDir,
                 originalImportName: skin.name,
                 catalogID: skin.file,
                 replacingSkinID: replacingSkinID,
                 layoutPresets: .shared
             )
+            if !result.warnings.isEmpty {
+                notices[skin.file] = result.warnings.joined(separator: "\n")
+            }
             syncSelectedSkin()
         } catch {
             errors[skin.file] = error.localizedDescription
