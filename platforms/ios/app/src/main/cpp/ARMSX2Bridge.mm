@@ -1312,15 +1312,60 @@ static BOOL ARMSX2IsControllerSkinImportName(NSString* name, NSSet<NSString*>* a
     return key.length > 0 && [allowedJSONNames containsObject:key];
 }
 
+// Skin authors hand-edit manifests and a raw tab inside a string is enough to
+// fail every JSON parser. Substituting a space keeps the length, and no byte
+// below 0x20 can be a UTF-8 continuation byte or part of a "\t" pair, so
+// multi-byte text and real escapes come through untouched.
+//
+// Swift has to do the same thing after extraction, so there is a second copy in
+// SkinManifestImporter.repairedJSON. Change one, change the other.
+static NSData* ARMSX2RepairedJSONData(NSData* data)
+{
+    NSMutableData* repaired = [data mutableCopy];
+    uint8_t* bytes = static_cast<uint8_t*>(repaired.mutableBytes);
+    const NSUInteger length = repaired.length;
+    BOOL inString = NO;
+    BOOL escaped = NO;
+    BOOL changed = NO;
+
+    for (NSUInteger i = 0; i < length; i++) {
+        const uint8_t byte = bytes[i];
+        if (!inString) {
+            if (byte == 0x22)
+                inString = YES;
+            continue;
+        }
+
+        if (escaped)
+            escaped = NO;
+        else if (byte == 0x5C)
+            escaped = YES;
+        else if (byte == 0x22)
+            inString = NO;
+        else if (byte < 0x20) {
+            bytes[i] = 0x20;
+            changed = YES;
+        }
+    }
+    return changed ? repaired : nil;
+}
+
 static NSMutableSet<NSString*>* ARMSX2AllowedControllerSkinJSONNames(zip_t* zf, zip_int64_t count)
 {
+    static const zip_uint64_t kMaxLooseLayoutBytes = 1024 * 1024;
+    static const NSUInteger kMaxLooseLayoutEntries = 8;
+
     NSMutableSet<NSString*>* allowedJSONNames = [NSMutableSet setWithObject:@"manifest.json"];
-    for (zip_uint64_t i = 0; i < static_cast<zip_uint64_t>(std::max<zip_int64_t>(count, 0)); i++) {
+    NSMutableSet<NSString*>* namedLayoutKeys = [NSMutableSet set];
+    const zip_uint64_t entryCount = static_cast<zip_uint64_t>(std::max<zip_int64_t>(count, 0));
+    for (zip_uint64_t i = 0; i < entryCount; i++) {
         zip_stat_t stat = {};
         if (zip_stat_index(zf, i, ZIP_FL_ENC_GUESS, &stat) != 0 || !stat.name)
             continue;
 
         NSString* entryName = [NSString stringWithUTF8String:stat.name];
+        if ([entryName containsString:@"__MACOSX"] || [entryName.lastPathComponent hasPrefix:@"."])
+            continue;
         if (![ARMSX2ControllerSkinJSONImportKey(entryName) isEqualToString:@"manifest.json"])
             continue;
 
@@ -1334,16 +1379,60 @@ static NSMutableSet<NSString*>* ARMSX2AllowedControllerSkinJSONNames(zip_t* zf, 
 
         NSData* manifestData = [NSData dataWithBytes:data->data() length:data->size()];
         id manifestObject = [NSJSONSerialization JSONObjectWithData:manifestData options:0 error:nil];
-        if (![manifestObject isKindOfClass:NSDictionary.class])
-            continue;
+        if (![manifestObject isKindOfClass:NSDictionary.class]) {
+            NSData* repaired = ARMSX2RepairedJSONData(manifestData);
+            manifestObject = repaired ? [NSJSONSerialization JSONObjectWithData:repaired options:0 error:nil] : nil;
+            if (![manifestObject isKindOfClass:NSDictionary.class])
+                continue;
+        }
 
         id layoutValue = [(NSDictionary*)manifestObject objectForKey:@"layout"];
         if (![layoutValue isKindOfClass:NSString.class])
             continue;
 
         NSString* layoutKey = ARMSX2ControllerSkinJSONImportKey((NSString*)layoutValue);
-        if (layoutKey.length > 0)
+        if (layoutKey.length > 0) {
             [allowedJSONNames addObject:layoutKey];
+            [namedLayoutKeys addObject:layoutKey];
+        }
+    }
+
+    // Naming a layout is not the same as shipping one. If the named file is really
+    // in there we are done; if it is not, fall through and let the loose pass find
+    // whatever the author actually shipped.
+    for (zip_uint64_t i = 0; i < entryCount && namedLayoutKeys.count > 0; i++) {
+        zip_stat_t stat = {};
+        if (zip_stat_index(zf, i, ZIP_FL_ENC_GUESS, &stat) != 0 || !stat.name)
+            continue;
+        NSString* entryName = [NSString stringWithUTF8String:stat.name];
+        if ([entryName containsString:@"__MACOSX"] || [entryName.lastPathComponent hasPrefix:@"."])
+            continue;
+        if ([namedLayoutKeys containsObject:ARMSX2ControllerSkinJSONImportKey(entryName)])
+            return allowedJSONNames;
+    }
+
+    // Nothing named, nothing readable to name it, or the named file is absent. Let
+    // the other jsons through so Swift can work out which one is the layout, but
+    // keep it bounded: too many candidates and it has no way to choose.
+    NSSet<NSString*>* manifestKeys = [NSSet setWithArray:@[@"manifest.json", @"info.json", @"manifest-v2.json"]];
+    NSUInteger looseCount = 0;
+    for (zip_uint64_t i = 0; i < entryCount && looseCount < kMaxLooseLayoutEntries; i++) {
+        zip_stat_t stat = {};
+        if (zip_stat_index(zf, i, ZIP_FL_ENC_GUESS, &stat) != 0 || !stat.name)
+            continue;
+        if ((stat.valid & ZIP_STAT_SIZE) && stat.size > kMaxLooseLayoutBytes)
+            continue;
+
+        NSString* entryName = [NSString stringWithUTF8String:stat.name];
+        if ([entryName containsString:@"__MACOSX"] || [entryName.lastPathComponent hasPrefix:@"."])
+            continue;
+
+        NSString* key = ARMSX2ControllerSkinJSONImportKey(entryName);
+        if (key.length == 0 || [manifestKeys containsObject:key] || [allowedJSONNames containsObject:key])
+            continue;
+
+        [allowedJSONNames addObject:key];
+        looseCount++;
     }
     return allowedJSONNames;
 }
@@ -2228,6 +2317,11 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
             continue;
 
         NSString *entryName = [NSString stringWithUTF8String:stat.name];
+        // Every file in a mac-built zip has a "._" sibling, and they were eating
+        // the entry budget one-for-one with the real art. Skips dotfiles in
+        // general, which a skin has no business shipping anyway.
+        if ([entryName containsString:@"__MACOSX"] || [entryName.lastPathComponent hasPrefix:@"."])
+            continue;
         if (entryName.length == 0 || [entryName hasSuffix:@"/"] || !ARMSX2IsControllerSkinImportName(entryName, allowedJSONNames))
             continue;
 
