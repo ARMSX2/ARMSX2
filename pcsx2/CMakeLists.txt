@@ -1193,15 +1193,9 @@ endif()
 if(ARMSX2_IOS)
 	list(APPEND pcsx2Sources
 		MacOSStubs.cpp
-		QAProbe.cpp
-		TestHarness.cpp
 		# iOS has no libpcap, so pcap_io.cpp is excluded above; reuse the (platform-
 		# agnostic) Android stub to supply the PCAPAdapter definitions DEV9 references.
 		Android/AndroidPcapStubs.cpp)
-	list(APPEND pcsx2Headers
-		QAProbe.h
-		TestHarness.h
-		SifRingBuffer.h)
 endif()
 
 # These ones benefit a lot from LTO
