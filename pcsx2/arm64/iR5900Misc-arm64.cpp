@@ -426,15 +426,7 @@ static void recCOP2_SPEC2() { recCOP2SPECIAL2t[(cpuRegs.code & 0x3) | ((cpuRegs.
 
 void recCOP2()
 {
-#ifdef FORCE_INTERP_COP2
-	// Use interpreter for all COP2 — but branches need recBranchCall
-	if (_Rs_ == 8) // BC2 branch instructions
-		recBranchCall(Interp::COP2);
-	else
-		recCall(Interp::COP2);
-#else
 	recCOP2t[_Rs_]();
-#endif
 }
 
 void recSYNC() {}

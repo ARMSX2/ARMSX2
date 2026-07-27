@@ -16,24 +16,6 @@ namespace OpcodeImpl {
 
 namespace Interp = R5900::Interpreter::OpcodeImpl;
 
-#ifdef FORCE_INTERP_BRANCH
-REC_SYS(BEQ);
-REC_SYS(BNE);
-REC_SYS(BEQL);
-REC_SYS(BNEL);
-REC_SYS(BLEZ);
-REC_SYS(BGTZ);
-REC_SYS(BLTZ);
-REC_SYS(BGEZ);
-REC_SYS(BLEZL);
-REC_SYS(BGTZL);
-REC_SYS(BLTZL);
-REC_SYS(BGEZL);
-REC_SYS(BLTZAL);
-REC_SYS(BGEZAL);
-REC_SYS(BLTZALL);
-REC_SYS(BGEZALL);
-#else
 
 // Thread-local label for the "not taken" forward branch
 static thread_local a64::Label* s_pBranchLabel = nullptr;
@@ -702,7 +684,6 @@ void recBGEZAL()  { recBranchLink(false); }
 void recBLTZALL() { recBranchLinkLikely(true); }
 void recBGEZALL() { recBranchLinkLikely(false); }
 
-#endif // !FORCE_INTERP_BRANCH
 
 } // namespace OpcodeImpl
 } // namespace Dynarec

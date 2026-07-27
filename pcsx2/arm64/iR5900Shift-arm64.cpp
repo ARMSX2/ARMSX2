@@ -15,23 +15,6 @@ namespace OpcodeImpl {
 
 namespace Interp = R5900::Interpreter::OpcodeImpl;
 
-#ifdef FORCE_INTERP_SHIFT
-REC_FUNC(SLL);
-REC_FUNC(SRL);
-REC_FUNC(SRA);
-REC_FUNC(DSLL);
-REC_FUNC(DSRL);
-REC_FUNC(DSRA);
-REC_FUNC(DSLL32);
-REC_FUNC(DSRL32);
-REC_FUNC(DSRA32);
-REC_FUNC(SLLV);
-REC_FUNC(SRLV);
-REC_FUNC(SRAV);
-REC_FUNC(DSLLV);
-REC_FUNC(DSRLV);
-REC_FUNC(DSRAV);
-#else
 
 // Operand helpers. Loads return the register holding the operand, coherent by
 // construction: a pin mirror when the guest reg is pinned, an allocator-
@@ -535,7 +518,6 @@ static void recDSRAV_(int info)
 
 EERECOMPILE_CODERC0_MEM(DSRAV, XMMINFO_WRITED | XMMINFO_READS | XMMINFO_READT | XMMINFO_64BITOP);
 
-#endif // !FORCE_INTERP_SHIFT
 
 } // namespace OpcodeImpl
 } // namespace Dynarec

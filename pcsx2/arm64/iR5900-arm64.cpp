@@ -1685,8 +1685,7 @@ static bool recSuperblockLivenessBarrier(u32 addr)
 //     recCall): kept conservatively — an interp body may raise.
 // NON-raisers (bracket dropped — the 4-insn win on the common ALU/move/shift/
 // lui fillers): integer overflow is never raised by the rec (plain Add/Sub,
-// same as x86; only the debug-only FORCE_INTERP_* builds could see interp
-// overflow raise with a weakened BD — accepted), FPU/COP2 have no bd path,
+// same as x86), FPU/COP2 have no bd path,
 // INTC/DMAC/TIMR fire only at event tests (block boundary, branch==0 there),
 // and AdEL (RaiseAddressError) is a stub. Pinned by ee_rec_traps_tests.cpp
 // delay-slot raiser tests + AluDelaySlotBranchSemanticsSurviveWithoutBracket.

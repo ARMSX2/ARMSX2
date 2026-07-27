@@ -13,8 +13,6 @@
 // 2. Softmem (fallback): Inline VTLB page table lookup. Used when fastmem
 //    is disabled or when a PC has previously faulted (vtlb_IsFaultingPC).
 
-// FORCE_INTERP_MEMORY is defined in iR5900-arm64.h to force interpreter fallback
-
 #include "arm64/iR5900-arm64.h"
 #include "arm64/AsmHelpers.h"
 #include "vtlb.h"
@@ -658,10 +656,6 @@ static void recLoad(u32 bits, bool sign)
 		g_branch = 2;
 }
 
-#ifdef FORCE_INTERP_MEMORY
-REC_FUNC(LB);  REC_FUNC(LBU); REC_FUNC(LH);  REC_FUNC(LHU);
-REC_FUNC(LW);  REC_FUNC(LWU); REC_FUNC(LD);
-#else
 void recLB()  { recLoad(8,  true);  }
 void recLBU() { recLoad(8,  false); }
 void recLH()  { recLoad(16, true);  }
@@ -669,7 +663,6 @@ void recLHU() { recLoad(16, false); }
 void recLW()  { recLoad(32, true);  }
 void recLWU() { recLoad(32, false); }
 void recLD()  { recLoad(64, false); }
-#endif
 
 // =====================================================================================================
 //  Store implementations
@@ -840,14 +833,10 @@ static void recStore(u32 bits)
 	vtlbSoftmemWrite(addr_reg, value_reg, bits);
 }
 
-#ifdef FORCE_INTERP_MEMORY
-REC_FUNC(SB); REC_FUNC(SH); REC_FUNC(SW); REC_FUNC(SD);
-#else
 void recSB() { recStore(8);  }
 void recSH() { recStore(16); }
 void recSW() { recStore(32); }
 void recSD() { recStore(64); }
-#endif
 
 // =====================================================================================================
 //  LQ / SQ — 128-bit quad load/store

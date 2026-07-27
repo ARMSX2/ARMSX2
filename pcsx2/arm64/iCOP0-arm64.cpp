@@ -173,10 +173,6 @@ void recDI()
 	armAsm->Bind(&done);
 }
 
-#ifdef FORCE_INTERP_COP0
-REC_FUNC(MFC0);
-REC_FUNC(MTC0);
-#else
 
 // Apply pending block cycles to the RECCYCLE delta and flush the ABSOLUTE
 // cycle to cpuRegs.cycle so the interpreter helper (which reads
@@ -357,7 +353,6 @@ void recMTC0()
 	}
 }
 
-#endif // !FORCE_INTERP_COP0
 
 } // namespace COP0
 } // namespace OpcodeImpl

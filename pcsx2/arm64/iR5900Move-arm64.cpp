@@ -14,19 +14,6 @@ namespace OpcodeImpl {
 
 namespace Interp = R5900::Interpreter::OpcodeImpl;
 
-#ifdef FORCE_INTERP_MOVE
-REC_FUNC(LUI);
-REC_FUNC(MFLO);
-REC_FUNC(MFHI);
-REC_FUNC(MTLO);
-REC_FUNC(MTHI);
-REC_FUNC(MFLO1);
-REC_FUNC(MFHI1);
-REC_FUNC(MTLO1);
-REC_FUNC(MTHI1);
-REC_FUNC(MOVZ);
-REC_FUNC(MOVN);
-#else
 
 //// LUI — rt = imm16 << 16 (sign-extended to 64 bits)
 void recLUI()
@@ -263,7 +250,6 @@ void recMOVN()
 	recMOVNtemp();
 }
 
-#endif // !FORCE_INTERP_MOVE
 
 } // namespace OpcodeImpl
 } // namespace Dynarec

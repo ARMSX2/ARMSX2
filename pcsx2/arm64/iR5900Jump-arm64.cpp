@@ -16,12 +16,6 @@ namespace OpcodeImpl {
 
 namespace Interp = R5900::Interpreter::OpcodeImpl;
 
-#ifdef FORCE_INTERP_JUMP
-REC_SYS(J);
-REC_SYS(JAL);
-REC_SYS(JR);
-REC_SYS(JALR);
-#else
 
 /*********************************************************
  * Jump to target                                        *
@@ -136,7 +130,6 @@ void recJALR()
 		SetBranchReg();
 }
 
-#endif // !FORCE_INTERP_JUMP
 
 } // namespace OpcodeImpl
 } // namespace Dynarec
