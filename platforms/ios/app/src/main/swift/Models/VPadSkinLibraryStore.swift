@@ -99,9 +99,18 @@ private struct VPadSkinManifest: Codable {
     var layout: String?
 }
 
-enum VPadSkinLibraryStoreError: Error {
+enum VPadSkinLibraryStoreError: LocalizedError {
     case missingSkin
     case noUsableSkinImages
+
+    var errorDescription: String? {
+        switch self {
+        case .missingSkin:
+            return "That skin is no longer in the library."
+        case .noUsableSkinImages:
+            return "No usable button images were found."
+        }
+    }
 }
 
 @Observable
@@ -335,7 +344,8 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         }
         let now = Date()
         let files = skinImportFiles(from: sourceURL)
-        let manifest = manifest(in: files)
+        let manifestRead = manifest(in: files)
+        let manifest = manifestRead?.manifest
         let baseName = sanitizedDisplayName(
             manifest?.name,
             fallback: sanitizedDisplayName(
@@ -363,6 +373,9 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         }.value
 
         var warnings = decoded.warnings
+        if manifestRead?.repaired == true {
+            warnings.append("The skin's manifest had a formatting error and was repaired on import.")
+        }
         for asset in decoded.assets {
             try writeSkinAsset(asset.data, to: destination.appendingPathComponent(asset.name))
         }
@@ -706,12 +719,19 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         return [sourceURL]
     }
 
-    private func manifest(in files: [URL]) -> VPadSkinManifest? {
+    private func manifest(in files: [URL]) -> (manifest: VPadSkinManifest, repaired: Bool)? {
         guard let manifestURL = files.first(where: { $0.lastPathComponent.caseInsensitiveCompare("manifest.json") == .orderedSame }),
               let data = try? Data(contentsOf: manifestURL) else {
             return nil
         }
-        return try? JSONDecoder().decode(VPadSkinManifest.self, from: data)
+        if let decoded = try? JSONDecoder().decode(VPadSkinManifest.self, from: data) {
+            return (decoded, false)
+        }
+        guard let repaired = SkinManifestImporter.repairedJSON(data),
+              let decoded = try? JSONDecoder().decode(VPadSkinManifest.self, from: repaired) else {
+            return nil
+        }
+        return (decoded, true)
     }
 
     private func copySkinAsset(from sourceURL: URL, to destinationURL: URL) throws {
