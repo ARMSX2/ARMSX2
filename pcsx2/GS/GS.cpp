@@ -687,6 +687,18 @@ void GSEndCapture()
 
 void GSPresentCurrentFrame()
 {
+	// Presenting records into the device's command buffer and begins a render pass, so it is a
+	// device mutation exactly like the four sites above -- this was the one that did not drain.
+	//
+	// It matters most while PAUSED. MTGS's idle loop re-presents the frame on a spin whenever the
+	// VM is not Running (MTGS.cpp, the s_run_idle_flag branch), so the moment the user pauses, this
+	// runs concurrently with a back thread that may still be executing queued draws. Both then call
+	// vkCmdBeginRenderPass on the same VkCommandBuffer, which Vulkan requires the caller to
+	// externally synchronize; Adreno's driver faults inside vkCmdBeginRenderPass rather than
+	// erroring, and both threads abort. Reproduced on an Adreno 740 by pausing with the GS back
+	// thread enabled.
+	DrainBackQueueBeforeDeviceMutation();
+
 	g_gs_renderer->PresentCurrentFrame();
 }
 
