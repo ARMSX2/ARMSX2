@@ -6,12 +6,6 @@
 #include <stdio.h>
 #include <mutex>
 #include "PrecompiledHeader.h"
-#include "tests/arm64/run_tests.h"
-#include "tests/core/run_patch_tests.h"
-#include "tests/mvu/run_mvu_tests.h"
-#include "tests/ee/run_ee_tests.h"
-#include "tests/ee/run_ee_seq_tests.h"
-#include "tests/vif/run_vif_tests.h"
 #include "common/StringUtil.h"
 #include "common/FileSystem.h"
 #include "common/ZipHelpers.h"
@@ -2348,20 +2342,6 @@ bool FileSystem::CreateFileViaJava(const char* path)
     return ok;
 }
 
-void ReportTestResults(const char* label, int passed, int total)
-{
-    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
-    if (!env) return;
-    jclass clazz = env->FindClass("kr/co/iefriends/pcsx2/NativeApp");
-    if (!clazz) return;
-    jmethodID mid = env->GetStaticMethodID(clazz, "onTestResults", "(Ljava/lang/String;II)V");
-    if (!mid) { env->DeleteLocalRef(clazz); return; }
-    jstring jlabel = env->NewStringUTF(label);
-    env->CallStaticVoidMethod(clazz, mid, jlabel, (jint)passed, (jint)total);
-    env->DeleteLocalRef(jlabel);
-    env->DeleteLocalRef(clazz);
-}
-
 extern "C"
 JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
@@ -4024,19 +4004,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameIniCommitWrite(JNIEnv*, jclass) {
         Console.ErrorFmt("@@ANDROID_GAMEINI@@ commit failed: {}", error.GetDescription());
     return ok ? JNI_TRUE : JNI_FALSE;
 }
-
-extern "C" JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_runCodegenTests(JNIEnv*, jclass) { RunArmCodegenTests(); }
-extern "C" JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_runPatchTests(JNIEnv*, jclass) { RunPatchTests(); }
-extern "C" JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_runVuJitTests(JNIEnv*, jclass) { RunVuJitTests(); }
-extern "C" JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_runEeJitTests(JNIEnv*, jclass) { RunEeJitTests(); }
-extern "C" JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_runVifTests(JNIEnv*, jclass) { RunVifTests(); }
-extern "C" JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_runEeSeqTests(JNIEnv*, jclass) { RunEeSeqTests(); }
 
 // ---------------------------------------------------------------------------
 // PS2 disc serial probe via ISO9660 directory walk.

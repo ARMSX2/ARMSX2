@@ -18,7 +18,6 @@ import android.view.Surface;
 import com.armsx2.BiosInfo;
 import com.armsx2.EmuState;
 import com.armsx2.runtime.MainActivityRuntime;
-import com.armsx2.events.TestResult;
 
 import java.io.File;
 import java.lang.ref.WeakReference;
@@ -681,29 +680,6 @@ public class NativeApp {
 	 *  the cache before Android can reap the process. Safe to call when no
 	 *  Vulkan device is active (becomes a no-op). */
 	public static native void flushShaderCache();
-
-	/** Runs ARM64 codegen tests and prints PASS/FAIL to logcat (tag: ARM64CodegenTest). */
-	public static native void runCodegenTests();
-
-	/** Runs Patch::ApplyPatches tests and prints PASS/FAIL to logcat (tag: PatchTests). */
-	public static native void runPatchTests();
-
-	/** Runs microVU JIT integer-instruction tests and prints PASS/FAIL to logcat (tag: VuJitTests). */
-	public static native void runVuJitTests();
-
-	/** Runs R5900 EE interpreter instruction tests and prints PASS/FAIL to logcat (tag: EeJitTests). */
-	public static native void runEeJitTests();
-
-	/** Runs VIF UNPACK C++ template tests and prints PASS/FAIL to logcat (tag: VifTests). */
-	public static native void runVifTests();
-
-	/** Runs EE multi-instruction sequence tests and prints PASS/FAIL to logcat (tag: EeSeqTests). */
-	public static native void runEeSeqTests();
-
-	/** Called from native when a test suite finishes.  Override or observe to surface results in UI. */
-	public static void onTestResults(String label, int passed, int total) {
-		MainActivityRuntime.Companion.onTestResults(new TestResult(label, passed, total));
-	}
 
 	/**
 	 * Probe a file descriptor for PS2 BIOS metadata. Used by the setup
