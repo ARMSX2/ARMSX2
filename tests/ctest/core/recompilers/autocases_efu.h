@@ -28,7 +28,7 @@ inline constexpr EfuCase kEfuCases[] = {
 	{"EATAN", "CVF_GARBAGE2", "EATAN CVF_GARBAGE2", true, {0xDEADBEEFu, 0xDEADBEEFu, 0xDEADBEEFu, 0xDEADBEEFu}, 0x3FC90FD9u, true, true},
 	{"EATAN", "CVF_INCREASING", "EATAN CVF_INCREASING", true, {0x3F800000u, 0x40000000u, 0x40400000u, 0x40800000u}, 0x3F9FE0BAu, true, true},
 	{"EATAN", "CVF_DECREASING", "EATAN CVF_DECREASING", true, {0x40800000u, 0x40400000u, 0x40000000u, 0x3F800000u}, 0x3F8DB70Bu, true, true},
-	{"EATAN", "CVF_PI_OVER2", "EATAN CVF_PI_OVER2", true, {0x3FC90FDBu, 0x3FC90FDBu, 0x3FC90FDBu, 0x3FC90FDBu}, 0x3F807F4Cu, true, true},
+	{"EATAN", "CVF_PI_OVER2", "EATAN CVF_PI_OVER2", true, {0x3FC90FDBu, 0x3FC90FDBu, 0x3FC90FDBu, 0x3FC90FDBu}, 0x3F807F4Cu, false, true},
 	{"EATAN", "CVF_PI", "EATAN CVF_PI", true, {0x40490FDBu, 0x40490FDBu, 0x40490FDBu, 0x40490FDBu}, 0x3FA19DC4u, true, true},
 	{"EATAN", "CVF_3PI_OVER2", "EATAN CVF_3PI_OVER2", true, {0x4096CBE4u, 0x4096CBE4u, 0x4096CBE4u, 0x4096CBE4u}, 0x3FAE4BE7u, true, true},
 	{"EATANxy", "CVF_ZERO", "EATANxy CVF_ZERO", false, {0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u}, 0x7FC90FD7u, true, true},
@@ -226,7 +226,7 @@ inline constexpr EfuCase kEfuCases[] = {
 };
 
 inline constexpr int kEfuCaseCount = 208;
-inline constexpr int kEfuBadInterp = 116;
+inline constexpr int kEfuBadInterp = 115;
 inline constexpr int kEfuBadJit = 126;
 
 } // namespace ps2auto_efu

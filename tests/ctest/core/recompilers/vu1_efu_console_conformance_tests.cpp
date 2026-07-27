@@ -153,11 +153,16 @@ TEST(Vu1EfuConsoleConformance, OpsMatchConsole)
 //      NaNs back (0x7FC00000, 0x7FFFFFFF, 0x7FC00001), where the interpreter
 //      runs every operand through vuDouble first and gets a finite clamp. The
 //      interpreter is the side nearer the console here.
-//   2. POLYNOMIAL PRECISION. The interpreter evaluates the series with
-//      double-precision pow() while both recompilers use a single-precision
-//      Horner chain, so the two drift by a few ULP on ordinary inputs
-//      (CVF_INCREASING, CVF_DECREASING, CVF_PI*). Again the interpreter is
-//      usually nearer the console.
+//   2. POLYNOMIAL COEFFICIENTS. On ordinary inputs (CVF_INCREASING,
+//      CVF_DECREASING, CVF_PI*) the two engines evaluate the same series with
+//      different numbers in it. This was first written off as double-vs-single
+//      precision drift "a few ULP" wide; measuring it killed that. The
+//      interpreter's x^7 coefficient was a mistyped T3 -- see
+//      _vuCalculateEATAN in VUops.cpp -- worth up to 3383 ULP on its own, and
+//      correcting it moved all 17 affected interpreter values toward silicon
+//      and none away. What is left on these rows is hundreds of ULP wide and
+//      sits on the recompiler side; pow() precision is not the cause of
+//      either half.
 //
 // Listing them rather than skipping the family keeps the property asserted for
 // the 15 that now agree, and makes any movement in either direction -- a fix
@@ -301,7 +306,7 @@ TEST(Vu1EfuConsoleConformance, EatanAppliesTheRangeReductionBeforeThePolynomial)
 	EXPECT_EQ(one->p, 0x3F490FDAu) << "console, one ULP below both engines";
 }
 
-// What passing looks like once the EFU model is right. Also the way to// What passing looks like once the EFU model is right. Also the way to
+// What passing looks like once the EFU model is right. Also the way to
 // regenerate the known-bad list: run it with --gtest_also_run_disabled_tests
 // and take the label plus engine out of each failing SCOPED_TRACE.
 TEST(Vu1EfuConsoleConformance, DISABLED_AllOpsMatchConsole)

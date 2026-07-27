@@ -1716,8 +1716,16 @@ static __ri void _vuERLENG(VURegs* VU)
 }
 
 
+// These are the EFU's atan series, the same table microVU keeps in
+// mVU_Globals as T1/T5/T2/T3/T4/T6/T7/T8 + Pi4 (microVU_Misc.h) -- all nine
+// re-encode to those globals bit for bit, so if one ever stops doing so,
+// suspect the transcription rather than the hardware. eatanconst[3] did
+// exactly that: it read -0.13085337519646f (0xBE05FE6D), T3's decimal
+// -0.139085337519646 with the first 9 dropped, and it cost up to 3383 ULP
+// against the ps2autotests EFU capture (worst at CVF_3PI_OVER2, since the
+// error goes as the reduced argument to the seventh power).
 static __ri float _vuCalculateEATAN(float inputvalue) {
-	float eatanconst[9] = { 0.999999344348907f, -0.333298563957214f, 0.199465364217758f, -0.13085337519646f,
+	float eatanconst[9] = { 0.999999344348907f, -0.333298563957214f, 0.199465364217758f, -0.139085337519646f,
 							0.096420042216778f, -0.055909886956215f, 0.021861229091883f, -0.004054057877511f,
 							0.785398185253143f };
 
