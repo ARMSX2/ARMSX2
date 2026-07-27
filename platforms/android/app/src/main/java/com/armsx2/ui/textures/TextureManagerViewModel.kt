@@ -5,6 +5,8 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.armsx2.TexturePackInstallState
+import com.armsx2.data.library.GameLibraryRepository
 import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.config.ConfigStore
 import com.armsx2.config.Settings
@@ -20,6 +22,8 @@ data class TextureManagerUiState(
     val settings: Settings = Settings(),
     val packs: List<TexturePackItem> = emptyList(),
     val activeSerial: String? = null,
+    /** Serials in the user's ROM library, upper-cased. Read from the scan cache, never scanned here. */
+    val librarySerials: Set<String> = emptySet(),
     val busy: Boolean = false,
     val progress: Int = 0,
     val message: String? = null,
@@ -30,19 +34,59 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
     var state = androidx.compose.runtime.mutableStateOf(TextureManagerUiState())
         private set
 
+    /**
+     * Rescan installed packs and refresh the library set.
+     *
+     * All of the disk work is on Dispatchers.IO. It used to run inline, and opening this screen
+     * then walked every installed pack on the MAIN thread — a real pack is thousands of files
+     * (DBZ BT3: 4277 / 1.8 GB), so the screen froze on open and could ANR outright, which is what
+     * "the texture packs menu hangs and I have to close the app" was.
+     */
     fun refresh() {
-        val root = textureRoot().apply { mkdirs() }
-        val packs = root.listFiles().orEmpty().filter(File::isDirectory).mapNotNull { serialDir ->
-            val replacements = File(serialDir, "replacements")
-            if (!replacements.isDirectory) return@mapNotNull null
-            val files = replacements.walkTopDown().filter(File::isFile).toList()
-            TexturePackItem(serialDir.name, replacements, files.size, files.sumOf(File::length))
-        }.sortedBy { it.serial }
-        state.value = state.value.copy(
-            settings = ConfigStore.loadGlobal(),
-            packs = packs,
-            activeSerial = runtimeSerial(),
-        )
+        viewModelScope.launch {
+            val scanned = withContext(Dispatchers.IO) {
+                val root = textureRoot().apply { mkdirs() }
+                val packs = root.listFiles().orEmpty().filter(File::isDirectory).mapNotNull { serialDir ->
+                    val replacements = File(serialDir, "replacements")
+                    if (!replacements.isDirectory) return@mapNotNull null
+                    // Count and total in one pass without materialising the file list — the list
+                    // itself was thousands of File objects built only to be measured.
+                    var count = 0
+                    var bytes = 0L
+                    replacements.walkTopDown().forEach { f ->
+                        if (f.isFile) { count++; bytes += f.length() }
+                    }
+                    TexturePackItem(serialDir.name, replacements, count, bytes)
+                }.sortedBy { it.serial }
+
+                // The install record is a JSON file that can drift from the filesystem: deleting a
+                // pack in a file manager, or a delete that only partly succeeded, used to leave the
+                // catalogue entry greyed out as "Installed" forever, which also blocked reinstalling
+                // or switching packs for that game. Reconcile against what is actually on disk.
+                TexturePackInstallState.reconcile(packs.map { it.serial.uppercase() }.toSet())
+
+                val settings = ConfigStore.loadGlobal()
+                // Cached scan results only — loadCached() reads the stored list, it does not walk
+                // storage. Without this the catalogue's "your games" grouping only knew about games
+                // that already had a pack or had been launched this session, so an owned game sat
+                // under "Other games" until you played it once (reported by Beep).
+                val library = runCatching {
+                    GameLibraryRepository(getApplication())
+                        .loadCached()
+                        .games
+                        .mapNotNull { it.serial?.takeIf(String::isNotBlank)?.uppercase() }
+                        .toSet()
+                }.getOrDefault(emptySet())
+
+                Triple(packs, settings, library)
+            }
+            state.value = state.value.copy(
+                settings = scanned.second,
+                packs = scanned.first,
+                librarySerials = scanned.third,
+                activeSerial = runtimeSerial(),
+            )
+        }
     }
 
     /**
@@ -121,7 +165,24 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
         state.value = state.value.copy(busy = true, message = null, error = null)
         viewModelScope.launch {
             val deleted = withContext(Dispatchers.IO) {
-                runCatching { serialDirectory.deleteRecursively() }.getOrDefault(false)
+                val ok = runCatching { serialDirectory.deleteRecursively() }.getOrDefault(false)
+                if (!ok) {
+                    // deleteRecursively() is all-or-nothing in its return value and says nothing
+                    // about WHICH entry refused, so a failure was previously unactionable — the
+                    // user just saw "Unable to delete". Name the survivors.
+                    val left = runCatching {
+                        serialDirectory.walkTopDown().filter { it != serialDirectory }.take(5).toList()
+                    }.getOrDefault(emptyList())
+                    android.util.Log.w(
+                        "TextureManager",
+                        "delete ${serialDirectory.absolutePath} failed; exists=${serialDirectory.exists()} " +
+                            "survivors=${left.joinToString { it.relativeTo(serialDirectory).path }}",
+                    )
+                }
+                // Treat "the directory is gone" as success regardless of what the walk returned:
+                // a partial failure that still removed everything is a success to the user, and
+                // the state reconcile below keys off the filesystem anyway.
+                ok || !serialDirectory.exists()
             }
             state.value = if (deleted) {
                 state.value.copy(busy = false, message = "Deleted texture pack ${pack.serial}.")

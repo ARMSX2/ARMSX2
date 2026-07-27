@@ -255,10 +255,20 @@ private fun humanSize(bytes: Long): String = if (bytes >= 1024L * 1024L) "%.1f M
 private fun catalogSerial(state: TextureManagerUiState): String? =
     state.activeSerial?.takeIf { Regex("^[A-Za-z]{4}-[0-9]{5}$").matches(it.trim()) }?.trim()?.uppercase()
 
-/** Serials the user actually has, so packs for owned games sort to the top. Derived from the
- *  installed-pack list plus the game in context — cheap, and needs no library scan here. */
+/**
+ * Serials the user actually has, so packs for owned games sort to the top.
+ *
+ * The ROM library is the point of this — it used to be only the installed-pack list plus the game
+ * in context, which meant an owned game sat under "Other games" until you launched it once, and
+ * then moved. Reported by Beep. The library set comes from the scan cache, so this still costs no
+ * storage walk.
+ *
+ * The other two are kept as well: a pack can be installed for a game whose disc is not in a scanned
+ * folder, and the game in context may be an .ELF boot with no library entry at all.
+ */
 private fun librarySerials(state: TextureManagerUiState): Set<String> =
     buildSet {
+        addAll(state.librarySerials)
         state.packs.forEach { add(it.serial.uppercase()) }
         state.activeSerial?.let { add(it.uppercase()) }
     }

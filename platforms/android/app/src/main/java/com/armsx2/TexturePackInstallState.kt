@@ -77,4 +77,27 @@ object TexturePackInstallState {
         doomed.forEach { root.remove(it.packId) }
         write(root)
     }
+
+    /**
+     * Drop every entry whose textures are no longer on disk. [presentSerials] is the set of serials
+     * that actually have a `textures/<SERIAL>/replacements` directory, upper-cased.
+     *
+     * This record and the filesystem are two stores that can disagree, and only one of them is the
+     * truth. [forgetSerial] runs on an in-app delete and nothing else, so deleting a pack in a file
+     * manager -- or an in-app delete that only partly succeeded -- left the entry behind claiming a
+     * pack that is not there. The catalogue then shows a permanently greyed-out "Installed" for it,
+     * and because that same flag disables the button, the user cannot reinstall it or switch to a
+     * different pack for that game either. Reported by SKRazy.
+     *
+     * Reconciling one way only: presence on disk retires a stale entry, but a pack that exists with
+     * no entry is left alone -- that is a hand-copied folder, which we cannot name a version for and
+     * must not invent one.
+     */
+    fun reconcile(presentSerials: Set<String>) {
+        val root = read()
+        val doomed = all().values.filter { it.serial.uppercase() !in presentSerials }
+        if (doomed.isEmpty()) return
+        doomed.forEach { root.remove(it.packId) }
+        write(root)
+    }
 }
