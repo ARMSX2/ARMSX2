@@ -432,6 +432,41 @@ const UnpackCase kCases[] = {
 	{"vif0_masked", 0, V4_32, true,  0, 4, 1, 1, 0, 0xE4B11B4Eu, 0x000, 0},
 	{"vif0_mode2",  0, V4_32, false, 0, 4, 1, 1, 2, 0, 0x000, 0},
 	{"vif0_skip",   0, V4_32, false, 0, 8, 2, 1, 0, 0, 0x000, 0},
+
+	// 8. Every write-lane subset, one case each.
+	//
+	//    The dynarec does not store a masked quadword with one instruction. It
+	//    selects, from a sixteen-way switch, a hand-written sequence that touches
+	//    only the lanes this cycle actually writes — and those sequences differ
+	//    in kind, not just in offset: a full-width store for X+Y, a 64-bit lane
+	//    store for Z+W, per-lane stores with hand-computed byte offsets for the
+	//    scattered subsets, and a post-indexed pair for Y+Z. Each one is an
+	//    independent opportunity to name the wrong lane or the wrong offset.
+	//
+	//    The subset is chosen by which lanes carry the write-protect code, so a
+	//    mask naming three protected lanes reaches the single-lane store. The
+	//    cases already above happen to land only on the three-lane subsets;
+	//    these reach the other ten. Protected lanes must come back holding the
+	//    fill pattern and written lanes the unpacked data, so a sequence that
+	//    stores to a neighbouring lane fails on both halves at once.
+	{"write_x",  1, V4_32, true, 0, 4, 1, 1, 0, 0xFCFCFCFCu, 0x000, 0},
+	{"write_y",  1, V4_32, true, 0, 4, 1, 1, 0, 0xF3F3F3F3u, 0x000, 0},
+	{"write_z",  1, V4_32, true, 0, 4, 1, 1, 0, 0xCFCFCFCFu, 0x000, 0},
+	{"write_w",  1, V4_32, true, 0, 4, 1, 1, 0, 0x3F3F3F3Fu, 0x000, 0},
+	{"write_xy", 1, V4_32, true, 0, 4, 1, 1, 0, 0xF0F0F0F0u, 0x000, 0},
+	{"write_xz", 1, V4_32, true, 0, 4, 1, 1, 0, 0xCCCCCCCCu, 0x000, 0},
+	{"write_xw", 1, V4_32, true, 0, 4, 1, 1, 0, 0x3C3C3C3Cu, 0x000, 0},
+	{"write_yz", 1, V4_32, true, 0, 4, 1, 1, 0, 0xC3C3C3C3u, 0x000, 0},
+	{"write_yw", 1, V4_32, true, 0, 4, 1, 1, 0, 0x33333333u, 0x000, 0},
+	{"write_zw", 1, V4_32, true, 0, 4, 1, 1, 0, 0x0F0F0F0Fu, 0x000, 0},
+
+	// The same selector again with a mode active, because doMaskWrite folds the
+	// mode merge and the mask merge into one lane computation before choosing
+	// the store: with lanes protected, the mode merge runs on a partial lane set
+	// rather than the whole register, which is a different code path from the
+	// unmasked mode cases in group 3.
+	{"write_yz_mode1", 1, V4_32, true, 0, 4, 1, 1, 1, 0xC3C3C3C3u, 0x000, 0},
+	{"write_x_mode2",  1, V4_32, true, 0, 4, 1, 1, 2, 0xFCFCFCFCu, 0x000, 0},
 };
 
 INSTANTIATE_TEST_SUITE_P(
@@ -484,6 +519,36 @@ TEST(VifUnpackWrap, OversizedTransferFallsBackToInterpreter)
 	// Taking the fallback means the result is the interpreter's, which is what
 	// the oracle models — including the address wrap back to the start.
 	ExpectMemEqual(c, expected, dyn, "dynarec wrap fallback");
+}
+
+// A cycle whose four lanes are all write-protected has nothing to store, and the
+// compiler drops the whole body for it rather than emitting a store of no lanes.
+// The differential case above (mask_all_protect) would pass either way, since a
+// generator that wrote something wrong and an oracle that wrote nothing only have
+// to agree with each other — and here they cannot, because the oracle writes
+// nothing at all. So this asserts the absolute fact instead: VU memory comes back
+// byte-identical to the fill pattern.
+//
+// It also pins the guard behind it. The store selector has a case for "no lanes"
+// that only logs an error, and it is reachable only if this skip stops working.
+TEST(VifUnpackMask, FullyProtectedBlockWritesNothing)
+{
+	ASSERT_TRUE(recompiler_tests::RecompilerTestEnvironment::IsReady());
+	EnsureVifUnpackReady();
+
+	UnpackCase c{"all_protect", 1, V4_32, true, 0, 8, 1, 1, 0, 0xFFFFFFFFu, 0x000, 0};
+	const std::vector<u8> data = MakeSourceData(static_cast<size_t>(c.num) * nVifT[V4_32]);
+
+	// The pattern RunPath seeds before it dispatches, to compare against.
+	FillVuMemPattern(c.idx);
+	std::vector<u8> untouched(VuMemSize(c.idx));
+	std::memcpy(untouched.data(), VuMem(c.idx), untouched.size());
+
+	const RunResult dyn = RunPath(c, data, Path::Dynarec);
+
+	ASSERT_EQ(untouched.size(), dyn.mem.size());
+	EXPECT_EQ(0, std::memcmp(untouched.data(), dyn.mem.data(), untouched.size()))
+		<< "a fully write-protected unpack must leave VU memory alone";
 }
 
 } // namespace
