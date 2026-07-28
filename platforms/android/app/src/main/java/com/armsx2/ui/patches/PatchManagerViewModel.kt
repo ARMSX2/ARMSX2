@@ -37,6 +37,11 @@ data class PatchManagerUiState(
     // Local per-cheat manager: the expanded file's parsed cheats (name/enabled).
     val localExpandedPath: String? = null,
     val localCheats: List<PatchRepo.LocalCheat> = emptyList(),
+    // What the BUNDLED patches.zip applies to this game. Invisible until now: the manager only
+    // ever listed files on disk, so the patches we ship applied with nothing to show for them.
+    val bundledEntry: String = "",
+    val bundledCheats: List<PatchRepo.LocalCheat> = emptyList(),
+    val bundledUnlabelled: Int = 0,
     val message: String? = null,
     val error: String? = null,
 )
@@ -77,6 +82,7 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
             }
         }.distinctBy { it.absolutePath }.sortedBy { it.name.lowercase() }
         state.value = state.value.copy(settings = scopedSettings(), files = files)
+        loadBundled(serial, crc, files.isNotEmpty())
         // Reflect every file's on-disk enabled cheats into the native Enable list so
         // labelled cheats apply even for imported/pre-enabled files the user never
         // toggled in-app (see syncAllEnableLists / pushEnableList).
@@ -467,6 +473,58 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    /**
+     * Turn every labelled cheat in the open file on or off in one pass.
+     *
+     * Requested by Rei: a big community pnach can hold a hundred entries, and disabling them one
+     * switch at a time means scrolling the whole list twice. Files like that are exactly the ones
+     * you most want to switch off wholesale when a game starts misbehaving.
+     *
+     * Rewrites the file once rather than per cheat: the same read-modify-write repeated a hundred
+     * times is a hundred chances to half-apply, and the enable list only needs pushing once.
+     */
+    fun setAllLocalCheats(enable: Boolean) {
+        val path = state.value.localExpandedPath ?: return
+        val before = state.value.localCheats
+        if (before.isEmpty() || before.all { it.enabled == enable }) return
+
+        // Optimistic, and carry each new body forward so a later single toggle still finds its
+        // block on disk — same reason toggleLocalCheat advances `body`.
+        val after = before.map { it.copy(enabled = enable, body = setBodyEnabled(it.body, enable)) }
+        state.value = state.value.copy(localCheats = after)
+
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val file = File(path)
+                    // Normalise line endings first: the parser builds each body from
+                    // lines()+"\n", so a CRLF file never matches verbatim.
+                    var text = file.readText().replace("\r\n", "\n").replace("\r", "\n")
+                    var changed = 0
+                    before.forEachIndexed { i, cheat ->
+                        val newBody = after[i].body
+                        if (newBody == cheat.body) return@forEachIndexed
+                        val replaced = text.replaceFirst(cheat.body, newBody)
+                        if (replaced != text) { text = replaced; changed++ }
+                    }
+                    if (changed == 0) return@runCatching false
+                    file.writeText(text)
+                    true
+                }.getOrDefault(false)
+            }
+            if (ok) {
+                pushEnableList(path)
+                reloadCore()
+            } else {
+                // Nothing was rewritten — put the switches back rather than leave the UI lying.
+                state.value = state.value.copy(
+                    localCheats = before,
+                    error = "Couldn't update ${File(path).name} (unusual formatting). Edit it as text instead.",
+                )
+            }
+        }
+    }
+
     fun toggleLocalCheat(name: String) {
         val path = state.value.localExpandedPath ?: return
         val target = state.value.localCheats.firstOrNull { it.name == name } ?: return
@@ -527,6 +585,84 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
 
     fun dismissMessage() {
         state.value = state.value.copy(message = null, error = null)
+    }
+
+    /**
+     * What the bundled patches.zip contributes to this game.
+     *
+     * We ship ~2 MB of community patches and the manager never showed any of it, because it lists
+     * files in the patches folder and these live in a zip. So a game could report "3 game patches
+     * are active" with nothing anywhere to explain it, let alone turn it off — the core auto-applies
+     * every UNLABELLED group it finds (Patch.cpp: "we auto enable anything that's not labelled"),
+     * and an unlabelled group has no name for a toggle to hang off.
+     *
+     * Skipped when the game already has a pnach on disk: the core prefers disk over the zip
+     * (EnumeratePnachFiles), so in that case the zip contributes nothing and listing it would be a
+     * lie. That same precedence is what makes [extractBundled] a real fix rather than a copy.
+     */
+    private fun loadBundled(serial: String?, crc: String?, hasDiskFiles: Boolean) {
+        if (serial == null || crc == null || hasDiskFiles) {
+            state.value = state.value.copy(bundledEntry = "", bundledCheats = emptyList(), bundledUnlabelled = 0)
+            return
+        }
+        viewModelScope.launch {
+            val found = withContext(Dispatchers.IO) {
+                runCatching {
+                    val zip = File(MainActivityRuntime.assetCopyRoot(getApplication()), "resources/patches.zip")
+                    if (!zip.isFile) return@runCatching null
+                    java.util.zip.ZipFile(zip).use { z ->
+                        // Same names the core looks for: <SERIAL>_<CRC>.pnach, then <CRC>.pnach.
+                        val names = listOf("${serial}_$crc.pnach", "$crc.pnach")
+                        val entry = names.firstNotNullOfOrNull { n ->
+                            z.entries().asSequence().firstOrNull { it.name.equals(n, ignoreCase = true) }
+                        } ?: return@runCatching null
+                        val text = z.getInputStream(entry).bufferedReader().readText()
+                        Triple(entry.name, PatchRepo.parseInstalled(text, entry.name).second, text)
+                    }
+                }.getOrNull()
+            }
+            state.value = if (found == null) {
+                state.value.copy(bundledEntry = "", bundledCheats = emptyList(), bundledUnlabelled = 0)
+            } else {
+                state.value.copy(
+                    bundledEntry = found.first,
+                    bundledCheats = found.second,
+                    bundledUnlabelled = found.second.count { it.name.equals("Unlabelled", true) },
+                )
+            }
+        }
+    }
+
+    /**
+     * Copy the bundled pnach into the patches folder so it can actually be edited.
+     *
+     * Not just convenience: the core prefers a pnach on disk over the zip, and explicitly disables
+     * the bundled copy when an unlabelled patch is found on disk ("Disabling any bundled
+     * 'patches.zip' patches due to unlabeled patch being loaded"). So extracting hands the user a
+     * file whose per-cheat switches work AND takes the invisible zip version out of play — which is
+     * the only way to turn an unlabelled bundled patch off at all.
+     */
+    fun extractBundled() {
+        val entry = state.value.bundledEntry.takeIf { it.isNotBlank() } ?: return
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = File(MainActivityRuntime.assetCopyRoot(getApplication()))
+                    val zip = File(root, "resources/patches.zip")
+                    val dest = uniqueFile(File(root, "patches").apply { mkdirs() }, entry.substringAfterLast('/'))
+                    java.util.zip.ZipFile(zip).use { z ->
+                        val e = z.getEntry(entry) ?: return@runCatching false
+                        dest.writeText(z.getInputStream(e).bufferedReader().readText())
+                    }
+                    true
+                }.getOrDefault(false)
+            }
+            state.value = state.value.copy(
+                message = if (ok) I18n.get("patches.bundled.extracted") else null,
+                error = if (ok) null else I18n.get("patches.bundled.extractFailed"),
+            )
+            if (ok) { refresh(); reloadCore() }
+        }
     }
 
     private fun patchDirectories(): List<File> {
