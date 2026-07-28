@@ -169,6 +169,8 @@ val EN: Map<String, String> = mapOf(
     "friends.disconnect" to "Disconnect",
     "friends.playingNow" to "In ARMSX2 now",
     "friends.nobody" to "None of your Discord friends are in ARMSX2 right now.",
+    "friends.notify" to "Notify me in game",
+    "friends.notify.desc" to "Show a message over the game when a friend starts playing ARMSX2.",
     "friends.unavailable" to "This build was made without the Discord SDK.",
     "news.title" to "What's new",
     "news.refresh" to "Refresh",

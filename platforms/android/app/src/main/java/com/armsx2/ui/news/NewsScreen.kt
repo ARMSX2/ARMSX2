@@ -1,5 +1,6 @@
 package com.armsx2.ui.news
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -85,7 +86,11 @@ fun NewsScreen(onBack: () -> Unit, viewModel: NewsViewModel = viewModel()) {
                                 Text(str("news.offline"), style = MaterialTheme.typography.bodySmall)
                             }
                         }
-                        state.items.forEach { item -> ReleaseCard(item) }
+                        // Newest open, the rest collapsed: the page should be scannable, not a wall
+                        // of every changelog we have ever shipped.
+                        state.items.forEachIndexed { index, item ->
+                            ReleaseCard(item, initiallyExpanded = index == 0)
+                        }
                     }
                 }
                 Spacer(Modifier.height(12.dp))
@@ -95,16 +100,21 @@ fun NewsScreen(onBack: () -> Unit, viewModel: NewsViewModel = viewModel()) {
 }
 
 @Composable
-private fun ReleaseCard(item: News.Item) {
-    // Newest release starts open; the rest collapsed, so the page is scannable rather than a wall
-    // of every changelog we have ever shipped. Keyed on the tag so it survives rotation.
-    var expanded by rememberSaveable(item.tag) { mutableStateOf(false) }
+private fun ReleaseCard(item: News.Item, initiallyExpanded: Boolean) {
+    // Keyed on the tag so it survives rotation.
+    var expanded by rememberSaveable(item.tag) { mutableStateOf(initiallyExpanded) }
+    val toggle = { expanded = !expanded }
 
     GlassPanel(Modifier.fillMaxWidth()) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .controllerFocusable("news.${item.tag}", onConfirm = { expanded = !expanded }),
+                // clickable AND controllerFocusable: the latter only wires the pad's confirm
+                // button into the nav registry, it does not make anything respond to a finger.
+                // Shipping only the focusable left "Show more" dead to touch, which is how every
+                // phone user meets this screen.
+                .clickable(onClick = toggle)
+                .controllerFocusable("news.${item.tag}", onConfirm = toggle),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(
@@ -154,10 +164,12 @@ private fun ReleaseCard(item: News.Item) {
                     str(if (expanded) "news.showLess" else "news.showMore"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.controllerFocusable(
-                        "news.toggle.${item.tag}",
-                        onConfirm = { expanded = !expanded },
-                    ),
+                    // Padded so it is a real touch target rather than a line of 11sp text, and
+                    // clickable in its own right even though the whole card toggles too — it looks
+                    // like a link, so it has to behave like one.
+                    modifier = Modifier
+                        .clickable(onClick = toggle)
+                        .padding(vertical = 4.dp),
                 )
             }
         }

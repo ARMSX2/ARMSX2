@@ -28,6 +28,7 @@ import com.armsx2.ui.common.ArmsBackdrop
 import com.armsx2.ui.common.ArmsTopBar
 import com.armsx2.ui.common.GlassPanel
 import com.armsx2.ui.common.RoundAction
+import com.armsx2.ui.common.SettingSwitchRow
 import com.armsx2.ui.settings.controllerFocusable
 
 /**
@@ -39,105 +40,125 @@ import com.armsx2.ui.settings.controllerFocusable
  */
 @Composable
 fun FriendsScreen(onBack: () -> Unit) {
-    val status by DiscordPresence.status
-    val friends by DiscordPresence.friends
-    val error by DiscordPresence.error
-
     ArmsBackdrop {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             ArmsTopBar(
                 title = str("friends.title"),
                 leading = { RoundAction("←", str("action.back"), onClick = onBack) },
             )
+            FriendsPanel(Modifier.padding(horizontal = 8.dp))
+        }
+    }
+}
 
-            Column(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                if (!DiscordPresence.available()) {
-                    // The SDK is optional at build time, so a build without it says so plainly
-                    // rather than offering a button that cannot work.
-                    GlassPanel(Modifier.fillMaxWidth()) {
-                        Text(str("friends.unavailable"), style = MaterialTheme.typography.bodySmall)
+/**
+ * The connect/status/friends block, without any screen chrome.
+ *
+ * Shared verbatim with the in-game menu's Friends tab rather than reimplemented there: the state
+ * lives in [DiscordPresence], so two copies would be two things to keep in step for no gain.
+ */
+@Composable
+fun FriendsPanel(modifier: Modifier = Modifier) {
+    val status by DiscordPresence.status
+    val friends by DiscordPresence.friends
+    val error by DiscordPresence.error
+    val notify by DiscordPresence.notifyState
+
+    Column(
+        modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        if (!DiscordPresence.available()) {
+            // The SDK is optional at build time, so a build without it says so plainly
+            // rather than offering a button that cannot work.
+            GlassPanel(Modifier.fillMaxWidth()) {
+                Text(str("friends.unavailable"), style = MaterialTheme.typography.bodySmall)
+            }
+            return@Column
+        }
+
+        GlassPanel(Modifier.fillMaxWidth()) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    str("friends.explain"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                when (status) {
+                    DiscordPresence.CONNECTED -> Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(str("friends.connected"), style = MaterialTheme.typography.bodySmall)
+                        TextButton(
+                            onClick = { DiscordPresence.signOut() },
+                            modifier = Modifier.controllerFocusable(
+                                "friends.signout",
+                                onConfirm = { DiscordPresence.signOut() },
+                            ),
+                        ) { Text(str("friends.disconnect")) }
                     }
-                    return@Column
-                }
 
-                GlassPanel(Modifier.fillMaxWidth()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DiscordPresence.AUTHORIZING, DiscordPresence.CONNECTING -> Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.size(8.dp))
+                        Text(str("friends.connecting"), style = MaterialTheme.typography.bodySmall)
+                    }
+
+                    else -> Button(
+                        onClick = { DiscordPresence.authorize() },
+                        modifier = Modifier.controllerFocusable(
+                            "friends.connect",
+                            onConfirm = { DiscordPresence.authorize() },
+                        ),
+                    ) { Text(str("friends.connect")) }
+                }
+                error?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        }
+
+        if (status == DiscordPresence.CONNECTED) {
+            GlassPanel(Modifier.fillMaxWidth()) {
+                SettingSwitchRow(
+                    title = str("friends.notify"),
+                    description = str("friends.notify.desc"),
+                    checked = notify,
+                    onCheckedChange = { DiscordPresence.notifyInGame = it },
+                )
+            }
+
+            GlassPanel(Modifier.fillMaxWidth()) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        str("friends.playingNow"),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    if (friends.isEmpty()) {
+                        // Empty is a real answer, not a failure — say which one it is, so
+                        // nobody reads a blank list as the feature being broken.
                         Text(
-                            str("friends.explain"),
+                            str("friends.nobody"),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        when (status) {
-                            DiscordPresence.CONNECTED -> Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(str("friends.connected"), style = MaterialTheme.typography.bodySmall)
-                                TextButton(
-                                    onClick = { DiscordPresence.signOut() },
-                                    modifier = Modifier.controllerFocusable(
-                                        "friends.signout",
-                                        onConfirm = { DiscordPresence.signOut() },
-                                    ),
-                                ) { Text(str("friends.disconnect")) }
-                            }
-
-                            DiscordPresence.AUTHORIZING, DiscordPresence.CONNECTING -> Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                                Spacer(Modifier.size(8.dp))
-                                Text(str("friends.connecting"), style = MaterialTheme.typography.bodySmall)
-                            }
-
-                            else -> Button(
-                                onClick = { DiscordPresence.authorize() },
-                                modifier = Modifier.controllerFocusable(
-                                    "friends.connect",
-                                    onConfirm = { DiscordPresence.authorize() },
-                                ),
-                            ) { Text(str("friends.connect")) }
-                        }
-                        error?.let {
-                            Text(
-                                it,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.error,
-                            )
+                    } else {
+                        friends.forEach { name ->
+                            Text(name, style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }
-
-                if (status == DiscordPresence.CONNECTED) {
-                    GlassPanel(Modifier.fillMaxWidth()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                str("friends.playingNow"),
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            if (friends.isEmpty()) {
-                                // Empty is a real answer, not a failure — say which one it is, so
-                                // nobody reads a blank list as the feature being broken.
-                                Text(
-                                    str("friends.nobody"),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            } else {
-                                friends.forEach { name ->
-                                    Text(name, style = MaterialTheme.typography.bodyMedium)
-                                }
-                            }
-                        }
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
             }
         }
+    Spacer(Modifier.height(12.dp))
     }
 }

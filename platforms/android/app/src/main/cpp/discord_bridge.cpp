@@ -34,6 +34,10 @@
 #define DISCORDPP_IMPLEMENTATION
 #include "discordpp.h"
 
+#include "Host.h"
+
+#include "IconsFontAwesome.h"
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -412,6 +416,21 @@ Java_kr_co_iefriends_pcsx2_NativeApp_discordFriends(JNIEnv* env, jclass)
 	return env->NewStringUTF(joined.c_str());
 }
 
+/// Put a line on the in-game OSD. Used for "someone started playing", which has to be visible
+/// without leaving the game — the whole point of an in-game notification.
+///
+/// Host::AddOSDMessage is the emulator's own overlay, so this rides the existing ImGui renderer and
+/// respects the user's OSD scale and position rather than inventing a second notification surface
+/// that would have to be drawn over the SurfaceView.
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_discordOsdMessage(JNIEnv* env, jclass, jstring text, jfloat seconds)
+{
+	const std::string message = JStr(env, text);
+	if (message.empty())
+		return;
+	Host::AddIconOSDMessage("discord_friend", ICON_FA_USERS, message, seconds);
+}
+
 /// Sign out. Drops the client entirely so no stale presence survives, and stops the pump thread —
 /// a disabled feature should cost nothing, not a thread waking 50 times a second forever.
 JNIEXPORT void JNICALL
@@ -443,6 +462,7 @@ JNIEXPORT jint JNICALL Java_kr_co_iefriends_pcsx2_NativeApp_discordStatus(JNIEnv
 JNIEXPORT jstring JNICALL Java_kr_co_iefriends_pcsx2_NativeApp_discordError(JNIEnv*, jclass) { return nullptr; }
 JNIEXPORT void JNICALL Java_kr_co_iefriends_pcsx2_NativeApp_discordSetPlaying(JNIEnv*, jclass, jstring, jstring) {}
 JNIEXPORT jstring JNICALL Java_kr_co_iefriends_pcsx2_NativeApp_discordFriends(JNIEnv* env, jclass) { return env->NewStringUTF(""); }
+JNIEXPORT void JNICALL Java_kr_co_iefriends_pcsx2_NativeApp_discordOsdMessage(JNIEnv*, jclass, jstring, jfloat) {}
 JNIEXPORT void JNICALL Java_kr_co_iefriends_pcsx2_NativeApp_discordStop(JNIEnv*, jclass) {}
 }
 

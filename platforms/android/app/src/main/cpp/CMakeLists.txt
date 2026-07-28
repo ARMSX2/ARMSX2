@@ -128,6 +128,10 @@ target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
 target_include_directories(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
 	"${ARMSX2_ROOT}"
 	"${ARMSX2_ROOT}/pcsx2"
+	# IconsFontAwesome.h, for the Discord bridge's OSD notification. Core sources include it bare
+	# because it is on the PCSX2 target's path; emucore has its own, so state it rather than rely
+	# on that propagating.
+	"${ARMSX2_ROOT}/3rdparty/include"
 	"${CMAKE_CURRENT_SOURCE_DIR}"
 )
 

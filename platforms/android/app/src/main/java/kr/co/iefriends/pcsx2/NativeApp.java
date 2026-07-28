@@ -781,6 +781,9 @@ public class NativeApp {
 	/** Friends currently in ARMSX2, newline-separated. Empty means nobody — not "not connected". */
 	public static native String discordFriends();
 
+	/** Put a line on the in-game OSD (friend started playing). */
+	public static native void discordOsdMessage(String text, float seconds);
+
 	/** Sign out: drops the client and stops the callback thread. */
 	public static native void discordStop();
 

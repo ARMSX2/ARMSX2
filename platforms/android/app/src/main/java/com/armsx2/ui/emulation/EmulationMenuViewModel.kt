@@ -19,6 +19,7 @@ enum class EmulationMenuTab(val titleKey: String) {
     Controls("tab.controls"),
     Options("action.settings"),
     Achievements("ra.title"),
+    Friends("friends.title"),
 }
 
 data class EmulationMenuUiState(
@@ -124,6 +125,9 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
             // Fixes is a registry-driven pane (its controls self-navigate), so it has
             // no discrete action grid — nothing to activate here.
             EmulationMenuTab.Fixes -> Unit
+            // Friends is the same self-navigating shape as Fixes: its own controls handle
+            // confirm, so there is no discrete action grid for the pad to step through.
+            EmulationMenuTab.Friends -> Unit
             EmulationMenuTab.Performance -> when (state.value.selectedAction) {
                 0 -> updateSettings { it.copy(frameLimitEnable = !it.frameLimitEnable) }
                 1 -> setSpeed(it = state.value.settings.nominalSpeedPercent + 5)
@@ -349,6 +353,7 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
         EmulationMenuTab.Controls -> 2
         EmulationMenuTab.Options -> 5
         EmulationMenuTab.Achievements -> 2
+        EmulationMenuTab.Friends -> 0
     }
 
     private fun Int.floorMod(modulus: Int): Int = ((this % modulus) + modulus) % modulus

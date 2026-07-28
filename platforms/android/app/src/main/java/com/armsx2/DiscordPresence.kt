@@ -31,6 +31,7 @@ object DiscordPresence {
     private const val TAG = "DiscordPresence"
     private const val PREF_ENABLED = "discord.enabled"
     private const val PREF_TOKEN = "discord.token"
+    private const val PREF_NOTIFY = "discord.notifyInGame"
 
     // Mirrors BridgeStatus in cpp/discord_bridge.cpp.
     const val DISABLED = 0
@@ -67,6 +68,20 @@ object DiscordPresence {
             runCatching { MainActivityRuntime.prefs.edit().putString(PREF_TOKEN, value).apply() }
         }
 
+    /** Announce on the in-game OSD when a friend joins. Default on: it is the point of the feature. */
+    var notifyInGame: Boolean
+        get() = runCatching { MainActivityRuntime.prefs.getBoolean(PREF_NOTIFY, true) }.getOrDefault(true)
+        set(value) {
+            runCatching { MainActivityRuntime.prefs.edit().putBoolean(PREF_NOTIFY, value).apply() }
+            notifyState.value = value
+        }
+
+    /** Mirror of [notifyInGame] for Compose, which cannot observe SharedPreferences. */
+    val notifyState = mutableStateOf(true)
+
+    // Who we had last poll, so a friend appearing can be told apart from a friend still being here.
+    private var knownFriends: Set<String> = emptySet()
+
     // Held weakly: this is the Activity, and the object outlives it.
     private var activityRef: java.lang.ref.WeakReference<Activity>? = null
     private var engineActivitySet = false
@@ -98,6 +113,7 @@ object DiscordPresence {
     fun start() {
         if (!available() || !enabled || started) return
         started = true
+        notifyState.value = notifyInGame
         bindEngineActivity()
         runCatching { NativeApp.discordStart(savedToken) }
             .onFailure { Log.w(TAG, "discordStart failed: ${it.message}"); started = false; return }
@@ -124,6 +140,7 @@ object DiscordPresence {
         presenceJob?.cancel(); presenceJob = null
         started = false
         savedToken = ""
+        knownFriends = emptySet()
         runCatching { NativeApp.discordStop() }
         status.value = if (available()) DISCONNECTED else DISABLED
         friends.value = emptyList()
@@ -153,12 +170,14 @@ object DiscordPresence {
                     }
                 }
 
-                friends.value = if (s == CONNECTED) {
+                val current = if (s == CONNECTED) {
                     runCatching { NativeApp.discordFriends() }.getOrDefault("")
                         .split('\n').filter { it.isNotBlank() }
                 } else {
                     emptyList()
                 }
+                announceArrivals(current)
+                friends.value = current
 
                 error.value = if (s == FAILED) {
                     runCatching { NativeApp.discordError() }.getOrNull()
@@ -168,6 +187,32 @@ object DiscordPresence {
 
                 delay(if (s == AUTHORIZING || s == CONNECTING) 300L else 1_000L)
             }
+        }
+    }
+
+    /**
+     * Tell the player when somebody joins, on the emulator's own OSD so it lands over the game
+     * rather than requiring them to be looking at the Friends screen.
+     *
+     * Only ARRIVALS: diffing against the previous set means a friend who is simply still online
+     * does not re-announce every second. Departures are deliberately silent — someone quitting is
+     * not news worth covering the game for.
+     *
+     * The first poll after connecting seeds the set without announcing. Otherwise signing in would
+     * dump one notification per friend already playing, which is a wall, not an alert.
+     */
+    private fun announceArrivals(current: List<String>) {
+        val currentSet = current.toSet()
+        val previous = knownFriends
+        knownFriends = currentSet
+        if (previous.isEmpty() && currentSet.isNotEmpty() && friends.value.isEmpty()) return
+        if (!notifyInGame) return
+        // Only while a game is up: the OSD is drawn by the emulator, so in the library there is
+        // nothing to draw on and the Friends screen already shows the list.
+        if (MainActivityRuntime.currentGame.value == null) return
+
+        currentSet.filterNot { it in previous }.forEach { name ->
+            runCatching { NativeApp.discordOsdMessage("$name is playing ARMSX2", 5.0f) }
         }
     }
 

@@ -270,6 +270,8 @@ private fun MenuPage(
                     EmulationMenuTab.Controls -> ControlsPane(state, viewModel)
                     EmulationMenuTab.Options -> OptionsPane(state, viewModel)
                     EmulationMenuTab.Achievements -> AchievementsPane(state, viewModel)
+                    // Same panel as the drawer screen — see FriendsPanel.
+                    EmulationMenuTab.Friends -> com.armsx2.ui.friends.FriendsPanel()
                 }
             }
         }
@@ -410,6 +412,7 @@ private fun tabGlyph(tab: EmulationMenuTab): String = when (tab) {
     EmulationMenuTab.Controls -> "🎮"
     EmulationMenuTab.Options -> "⚙"
     EmulationMenuTab.Achievements -> "🏆"
+    EmulationMenuTab.Friends -> "👥"
 }
 
 @Composable
