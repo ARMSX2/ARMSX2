@@ -717,6 +717,87 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT fragment_shader_interlock_ext_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
 
+	// An advertised EXTENSION does not guarantee its FEATURE bit, and asking for a feature the
+	// driver does not have fails vkCreateDevice outright with VK_ERROR_FEATURE_NOT_PRESENT —
+	// killing Vulkan entirely instead of quietly doing without one optional nicety. PowerVR
+	// BXM-8-256 does exactly this: it exposes the extensions below, reports at least one of their
+	// features as false, and the renderer then refuses to start at all with "Failed to create
+	// render device".
+	//
+	// ProcessDeviceExtensions performs this same reconcile, but it runs AFTER vkCreateDevice, so it
+	// can only ever describe the failure rather than prevent it. Probe every feature we are about to
+	// request, up front, and drop the ones that are not really there. This subsumes the depth-ROAA
+	// probe that used to be the only instance of this check.
+	{
+		VkPhysicalDeviceProvokingVertexFeaturesEXT probe_pv = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+		VkPhysicalDeviceLineRasterizationFeaturesEXT probe_line = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT};
+		VkPhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT probe_roaa = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_FEATURES_EXT};
+		VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT probe_afl = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
+		VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR probe_sm1 = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR};
+		VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT probe_fsi = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
+
+		// Only chain what we would actually enable: querying a struct whose extension is absent is
+		// not something the spec promises anything about.
+		VkPhysicalDeviceFeatures2 probe = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+		if (m_optional_extensions.vk_ext_provoking_vertex)
+			Vulkan::AddPointerToChain(&probe, &probe_pv);
+		if (m_optional_extensions.vk_ext_line_rasterization)
+			Vulkan::AddPointerToChain(&probe, &probe_line);
+		if (m_optional_extensions.vk_ext_rasterization_order_attachment_access)
+			Vulkan::AddPointerToChain(&probe, &probe_roaa);
+		if (m_optional_extensions.vk_ext_attachment_feedback_loop_layout)
+			Vulkan::AddPointerToChain(&probe, &probe_afl);
+		if (m_optional_extensions.vk_swapchain_maintenance1)
+			Vulkan::AddPointerToChain(&probe, &probe_sm1);
+		if (m_optional_extensions.vk_ext_fragment_shader_interlock)
+			Vulkan::AddPointerToChain(&probe, &probe_fsi);
+		vkGetPhysicalDeviceFeatures2(m_physical_device, &probe);
+
+		// Returns the flag rather than taking it by reference: m_optional_extensions members are
+		// bit-fields, which cannot bind to bool&.
+		const auto keep = [](const char* name, bool advertised, bool supported) -> bool {
+			if (advertised && !supported)
+			{
+				// Logged, because "Vulkan works but this one thing is off" is a very different
+				// bug report from "Vulkan does not start", and the next person needs to know
+				// which feature the driver advertised without supporting.
+				Console.Warning(fmt::format(
+					"VK: {} advertised but its feature is unsupported — not requesting it.", name));
+				return false;
+			}
+			return advertised;
+		};
+		m_optional_extensions.vk_ext_provoking_vertex = keep("VK_EXT_provoking_vertex",
+			m_optional_extensions.vk_ext_provoking_vertex, probe_pv.provokingVertexLast == VK_TRUE);
+		m_optional_extensions.vk_ext_line_rasterization = keep("VK_EXT_line_rasterization",
+			m_optional_extensions.vk_ext_line_rasterization, probe_line.bresenhamLines == VK_TRUE);
+		m_optional_extensions.vk_ext_rasterization_order_attachment_access =
+			keep("VK_EXT_rasterization_order_attachment_access",
+				m_optional_extensions.vk_ext_rasterization_order_attachment_access,
+				probe_roaa.rasterizationOrderColorAttachmentAccess == VK_TRUE);
+		m_optional_extensions.vk_ext_attachment_feedback_loop_layout =
+			keep("VK_EXT_attachment_feedback_loop_layout",
+				m_optional_extensions.vk_ext_attachment_feedback_loop_layout,
+				probe_afl.attachmentFeedbackLoopLayout == VK_TRUE);
+		m_optional_extensions.vk_swapchain_maintenance1 = keep("VK_EXT_swapchain_maintenance1",
+			m_optional_extensions.vk_swapchain_maintenance1, probe_sm1.swapchainMaintenance1 == VK_TRUE);
+		m_optional_extensions.vk_ext_fragment_shader_interlock = keep("VK_EXT_fragment_shader_interlock",
+			m_optional_extensions.vk_ext_fragment_shader_interlock,
+			probe_fsi.fragmentShaderPixelInterlock == VK_TRUE);
+
+		// Depth ROAA is an optional sub-feature: a driver can offer the extension and colour
+		// access yet not depth.
+		m_optional_extensions.vk_ext_roaa_depth =
+			m_optional_extensions.vk_ext_rasterization_order_attachment_access &&
+			probe_roaa.rasterizationOrderDepthAttachmentAccess == VK_TRUE;
+	}
+
 	if (m_optional_extensions.vk_ext_provoking_vertex)
 	{
 		provoking_vertex_feature.provokingVertexLast = VK_TRUE;
@@ -730,21 +811,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	if (m_optional_extensions.vk_ext_rasterization_order_attachment_access)
 	{
 		rasterization_order_access_feature.rasterizationOrderColorAttachmentAccess = VK_TRUE;
-
-		// Tile-native ordered DEPTH feedback ("mobile ROV"): the depth aspect of ROAA is an
-		// OPTIONAL sub-feature — a driver may expose the extension and color access yet not
-		// depth. The full feature reconcile (ProcessDeviceExtensions) runs only AFTER
-		// vkCreateDevice, too late to gate this, and requesting an unsupported feature fails
-		// device creation with VK_ERROR_FEATURE_NOT_PRESENT. So probe the depth bit up-front
-		// and only request it when the device actually advertises it.
-		VkPhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT roaa_probe = {
-			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_FEATURES_EXT};
-		VkPhysicalDeviceFeatures2 roaa_probe2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &roaa_probe};
-		vkGetPhysicalDeviceFeatures2(m_physical_device, &roaa_probe2);
-		m_optional_extensions.vk_ext_roaa_depth = (roaa_probe.rasterizationOrderDepthAttachmentAccess == VK_TRUE);
 		if (m_optional_extensions.vk_ext_roaa_depth)
 			rasterization_order_access_feature.rasterizationOrderDepthAttachmentAccess = VK_TRUE;
-
 		Vulkan::AddPointerToChain(&device_info, &rasterization_order_access_feature);
 	}
 	if (m_optional_extensions.vk_ext_attachment_feedback_loop_layout)
