@@ -67,13 +67,30 @@ object DiscordPresence {
             runCatching { MainActivityRuntime.prefs.edit().putString(PREF_TOKEN, value).apply() }
         }
 
+    // Held weakly: this is the Activity, and the object outlives it.
+    private var activityRef: java.lang.ref.WeakReference<Activity>? = null
+    private var engineActivitySet = false
+
     /**
-     * Hand the SDK an Activity. It needs one to launch the browser for sign-in, and it has no other
-     * way to get it — without this, authorize() fails with nothing useful in the log.
+     * Remember the Activity. Deliberately does NOT touch the SDK.
+     *
+     * Touching any com.discord class runs DiscordSocialSdkInit's static initializer, which
+     * System.loadLibrary's the SDK and runs its JNI_OnLoad — and that path ABORTS THE PROCESS on
+     * any problem rather than throwing. It is a native abort inside a static initializer, so
+     * runCatching cannot catch it and the app simply dies at boot; a missing proguard keep rule
+     * did exactly that. An opt-in feature must not be able to kill someone who never opted in, so
+     * the SDK is not loaded at all until the user asks for it.
      */
     fun attachActivity(activity: Activity) {
-        if (!available()) return
+        activityRef = java.lang.ref.WeakReference(activity)
+    }
+
+    /** Actually hand the Activity over. Only ever called once the user has opted in. */
+    private fun bindEngineActivity() {
+        if (engineActivitySet) return
+        val activity = activityRef?.get() ?: return
         runCatching { com.discord.socialsdk.DiscordSocialSdkInit.setEngineActivity(activity) }
+            .onSuccess { engineActivitySet = true }
             .onFailure { Log.w(TAG, "setEngineActivity failed: ${it.message}") }
     }
 
@@ -81,6 +98,7 @@ object DiscordPresence {
     fun start() {
         if (!available() || !enabled || started) return
         started = true
+        bindEngineActivity()
         runCatching { NativeApp.discordStart(savedToken) }
             .onFailure { Log.w(TAG, "discordStart failed: ${it.message}"); started = false; return }
         startPolling()
@@ -95,6 +113,7 @@ object DiscordPresence {
             runCatching { MainActivityRuntime.prefs.edit().putBoolean(PREF_ENABLED, true).apply() }
         }
         if (!started) start()
+        bindEngineActivity()
         error.value = null
         runCatching { NativeApp.discordAuthorize() }
             .onFailure { Log.w(TAG, "discordAuthorize failed: ${it.message}") }
