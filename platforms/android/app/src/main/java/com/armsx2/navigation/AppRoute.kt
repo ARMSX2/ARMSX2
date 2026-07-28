@@ -21,6 +21,7 @@ sealed interface AppRoute {
     data object Achievements : AppRoute
     data object Language : AppRoute
     data object News : AppRoute
+    data object Friends : AppRoute
     data object About : AppRoute
 }
 

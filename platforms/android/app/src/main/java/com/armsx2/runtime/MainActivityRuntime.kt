@@ -1982,6 +1982,11 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.HiddenGames.load()
         com.armsx2.LibraryTitles.load()
         com.armsx2.LibraryRecentShelf.load()
+        // Discord needs an Activity to launch its sign-in browser and has no other way to obtain
+        // one. Handing it over costs nothing when the user has not opted in — start() returns
+        // immediately unless the feature is enabled AND a token is stored.
+        com.armsx2.DiscordPresence.attachActivity(this)
+        com.armsx2.DiscordPresence.start()
         com.armsx2.LibraryView.load()
         com.armsx2.ui.UiScale.load()
         com.armsx2.ui.theme.ThemePreferences.load()

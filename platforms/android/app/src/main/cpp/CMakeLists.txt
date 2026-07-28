@@ -76,11 +76,40 @@ add_subdirectory(3rdparty/adrenotools)
 # compiles out, so a missing Rust toolchain can never break the build.
 add_subdirectory(3rdparty/librashader)
 
+# Discord Social SDK (rich presence + friends). Staged by hand rather than consumed as the
+# vendor .aar: that .aar's manifest declares RECORD_AUDIO and four foreground-service
+# permissions for its voice features, and the manifest merger would fold all of them into
+# ARMSX2. See app/build.gradle.kts for the rest of that reasoning.
+#
+# OPTIONAL, exactly like librashader above: a tree without the .so staged simply compiles the
+# feature out rather than failing to configure, so nobody needs a 680 MB SDK download to build.
+set(DISCORD_SDK_SO "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libdiscord_partner_sdk.so")
+if(EXISTS "${DISCORD_SDK_SO}")
+	add_library(discord_partner_sdk SHARED IMPORTED)
+	set_target_properties(discord_partner_sdk PROPERTIES
+		IMPORTED_LOCATION "${DISCORD_SDK_SO}"
+		INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/discord/include")
+	set(ARMSX2_HAVE_DISCORD ON)
+	message(STATUS "Discord Social SDK: ${DISCORD_SDK_SO}")
+else()
+	set(ARMSX2_HAVE_DISCORD OFF)
+	message(STATUS "Discord Social SDK not staged — presence/friends compiled out")
+endif()
+
 set(ARMSX2_EMUCORE_LIBRARY_NAME "emucore_4k" CACHE STRING "Android emucore shared library target/output name")
 
 add_library(${ARMSX2_EMUCORE_LIBRARY_NAME} SHARED
 	native-lib.cpp
+	discord_bridge.cpp
 )
+
+# Same trap as ARMSX2_HAS_LIBRASHADER below: the whole bridge is behind this define, so a missed
+# define compiles and links cleanly and silently ships the feature stubbed out. Verify with
+# `strings` on the built core, never the build log.
+if(ARMSX2_HAVE_DISCORD)
+	target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE discord_partner_sdk)
+	target_compile_definitions(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE ARMSX2_HAS_DISCORD=1)
+endif()
 
 target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
 	PCSX2

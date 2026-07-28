@@ -161,6 +161,15 @@ fun str(key: String): String {
  */
 val EN: Map<String, String> = mapOf(
     "about.title" to "About app",
+    "friends.title" to "Friends",
+    "friends.explain" to "Link Discord to show what you're playing and see which friends are in ARMSX2. Uses your existing Discord friends — ARMSX2 keeps no account and runs no server. Only while the app is open.",
+    "friends.connect" to "Connect Discord",
+    "friends.connecting" to "Connecting to Discord…",
+    "friends.connected" to "Discord connected",
+    "friends.disconnect" to "Disconnect",
+    "friends.playingNow" to "In ARMSX2 now",
+    "friends.nobody" to "None of your Discord friends are in ARMSX2 right now.",
+    "friends.unavailable" to "This build was made without the Discord SDK.",
     "news.title" to "What's new",
     "news.refresh" to "Refresh",
     "news.loading" to "Loading release notes…",

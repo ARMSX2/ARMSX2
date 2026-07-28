@@ -237,6 +237,17 @@ tasks.named("clean") {
 }
 
 dependencies {
+    // Discord Social SDK, staged by hand rather than consumed as an .aar. The .aar's manifest
+    // declares RECORD_AUDIO plus four foreground-service permissions and Bluetooth, all for its
+    // voice features, and the manifest merger would fold every one of them into ARMSX2 -- the Play
+    // listing would then show "Microphone" and need a data-safety declaration for a feature we do
+    // not ship. Taking the pieces we want means we inherit no permissions at all: the native lib
+    // lives in jniLibs, the headers under cpp/3rdparty/discord, and AuthenticationActivity is
+    // declared in our own manifest. libwebrtc is here because the SDK's audio classes reference it
+    // and would otherwise NoClassDefFoundError if any init path touches them.
+    implementation(files("libs/discord_partner_sdk.jar"))
+    implementation(files("libs/libwebrtc.jar"))
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)

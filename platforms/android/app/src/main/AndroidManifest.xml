@@ -103,6 +103,33 @@
                 <action android:name="${applicationId}.action.CLEAR_RETROACHIEVEMENTS_HOST_OVERRIDE" />
             </intent-filter>
         </receiver>
+
+        <!--
+            Discord Social SDK's OAuth landing activity. Declared here rather than inherited from
+            the vendor .aar on purpose: that .aar's manifest also declares RECORD_AUDIO, three
+            foreground-service permissions and Bluetooth for its voice features, and the merger
+            would fold every one of them into ARMSX2 — the Play listing would show "Microphone" and
+            need a data-safety declaration for a feature we do not ship. Declaring only this one
+            activity means we inherit no permissions at all.
+
+            The scheme must match the redirect URI registered in the Discord developer portal
+            (discord-<application id>) or the browser hands the code back to nothing and the sign-in
+            silently never completes. Same id as kApplicationId in cpp/discord_bridge.cpp.
+
+            Its ForegroundService is deliberately NOT declared — it exists for voice.
+        -->
+        <activity
+            android:name="com.discord.socialsdk.AuthenticationActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:launchMode="singleTask"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="discord-1531447040435814411" />
+            </intent-filter>
+        </activity>
     </application>
 
 
