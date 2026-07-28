@@ -412,9 +412,11 @@ private fun settingsSections() = listOf(
     SettingsSection(SettingsCategory.Audio, "tab.audio", "♫"),
     SettingsSection(SettingsCategory.Controls, "tab.controls", "⌁"),
     SettingsSection(SettingsCategory.Hotkeys, "tab.hotkeys", "⌘"),
+    // Skins sits with the control-related tabs rather than after On-Screen: it is controller
+    // artwork, so people look for it next to Controls and Shortcuts. Requested by Isshin.
+    SettingsSection(SettingsCategory.Skins, "tab.skins", "◈"),
     SettingsSection(SettingsCategory.Network, "tab.network", "◎"),
     SettingsSection(SettingsCategory.OnScreen, "tab.overlay", "⊕"),
-    SettingsSection(SettingsCategory.Skins, "tab.skins", "◈"),
     SettingsSection(SettingsCategory.Advanced, "tab.fixes", "⌘"),
     SettingsSection(SettingsCategory.Patches, "tab.patches", "✦"),
 )

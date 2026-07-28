@@ -831,6 +831,25 @@ private fun LibraryOverflowMenu(
                 closeThen(onClearBackground)
             }
         }
+        OverflowSeparator()
+        // Exit, back where it used to live. It moved to the drawer, which put it below every other
+        // destination -- so quitting, one of the most frequent things anyone does here, meant
+        // opening the drawer and scrolling to the bottom every time (issue #460, and shinobumaehara
+        // is right that frequency should decide placement). It stays in the drawer too; this is the
+        // short path, not a replacement.
+        //
+        // The confirmation is the point of the row and travels with it: quitting mid-session
+        // without one loses whatever is not saved.
+        // onExitApp was still a parameter and its confirmation dialog was still wired up — only
+        // the row that reached them had been removed. So this restores the item, not the feature.
+        LibraryOverflowItem(
+            glyph = "⏻",
+            label = str("games.toolbar.exit"),
+            iconRes = com.armsx2.R.drawable.ic_power,
+            iconTint = Color(0xFFE60012),
+        ) {
+            closeThen(onExitApp)
+        }
     }
 }
 
@@ -848,6 +867,10 @@ private fun LibraryOverflowItem(
     label: String,
     selected: Boolean = false,
     trailing: String? = null,
+    // A real drawable instead of a text glyph. Exit needs this: the power symbol (U+23FB) is not
+    // in the bundled font and rendered as a tofu box. Null keeps the glyph path for every other row.
+    iconRes: Int? = null,
+    iconTint: Color? = null,
     onClick: () -> Unit,
 ) {
     DropdownMenuItem(
@@ -868,12 +891,21 @@ private fun LibraryOverflowItem(
                 color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = glyph,
-                        fontSize = if (glyph.length > 2) 11.sp else 17.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                    )
+                    if (iconRes != null) {
+                        androidx.compose.material3.Icon(
+                            painter = androidx.compose.ui.res.painterResource(iconRes),
+                            contentDescription = null,
+                            tint = iconTint ?: MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(19.dp),
+                        )
+                    } else {
+                        Text(
+                            text = glyph,
+                            fontSize = if (glyph.length > 2) 11.sp else 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
                 }
             }
         },
