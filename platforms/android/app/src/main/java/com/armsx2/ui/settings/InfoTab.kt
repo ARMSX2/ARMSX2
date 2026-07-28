@@ -122,7 +122,9 @@ fun InfoTab(game: GameInfo?) {
             Spacer(Modifier.height(10.dp))
             InfoRow(str("info.title"), game.title, clipboard)
             InfoRow(str("info.serial"), serial ?: "—", clipboard)
-            crc?.let { InfoRow(str("info.crc"), it, clipboard) }
+            // Keep the row stable while an unbooted CHD is being identified in the
+            // background; once resolved this is the value used in the PNACH filename.
+            InfoRow(str("info.crc"), crc ?: "—", clipboard)
             InfoRow(str("info.region"), regionName(game.serial), clipboard)
             InfoRow(str("info.container"), game.extension.takeIf { it.isNotBlank() } ?: "—", clipboard)
             InfoRow(str("info.platform"), game.platform.name, clipboard)

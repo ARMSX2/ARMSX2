@@ -249,7 +249,7 @@ private fun MenuPage(
                 .padding(bottom = 18.dp),
         ) {
             if (compact) CompactMenuTabs(state.tab, viewModel::selectTab)
-            MenuHeader(compact, state.hardcore, state.richPresence)
+            MenuHeader(compact, state.hardcore, state.richPresence, state.gameCRC)
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = 8.dp),
                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.34f),
@@ -413,7 +413,7 @@ private fun tabGlyph(tab: EmulationMenuTab): String = when (tab) {
 }
 
 @Composable
-private fun MenuHeader(compact: Boolean, hardcore: Boolean, richPresence: String) {
+private fun MenuHeader(compact: Boolean, hardcore: Boolean, richPresence: String, gameCRC: String) {
     val game = MainActivityRuntime.currentGame.value
     Row(
         Modifier.fillMaxWidth().padding(horizontal = if (compact) 12.dp else 16.dp, vertical = 12.dp),
@@ -445,10 +445,14 @@ private fun MenuHeader(compact: Boolean, hardcore: Boolean, richPresence: String
                     com.armsx2.ui.common.StatusChip(g.extension.ifBlank { g.platform.key.uppercase() })
                 }
             }
-            if (!game?.serial.isNullOrBlank()) {
+            val identity = buildList {
+                game?.serial?.takeIf { it.isNotBlank() }?.let(::add)
+                gameCRC.takeIf { it.isNotBlank() }?.let { add("CRC $it") }
+            }.joinToString("  ·  ")
+            if (identity.isNotBlank()) {
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    game?.serial.orEmpty(),
+                    identity,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

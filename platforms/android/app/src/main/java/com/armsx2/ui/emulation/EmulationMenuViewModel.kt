@@ -42,6 +42,8 @@ data class EmulationMenuUiState(
     // RetroAchievements rich-presence line ("what you're doing right now"); shown in the
     // pause-menu header when a set is loaded. Empty when RA is off / no set.
     val richPresence: String = "",
+    // Current boot ELF CRC, used directly by <SERIAL>_<CRC>.pnach filenames.
+    val gameCRC: String = "",
 )
 
 class EmulationMenuViewModel(application: Application) : AndroidViewModel(application) {
@@ -59,6 +61,10 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
         val items = runCatching { parseAchievementItems(raJson) }.getOrDefault(emptyList())
         val raRoot = runCatching { org.json.JSONObject(raJson) }.getOrNull()
         val richPresence = runCatching { NativeApp.getRichPresence().orEmpty() }.getOrDefault("")
+        val gameCRC = runCatching { NativeApp.getGameCRC().orEmpty().trim().uppercase() }
+            .getOrDefault("")
+            .takeIf { it.matches(Regex("[0-9A-F]{8}")) && it != "00000000" }
+            .orEmpty()
         val summary = if (items.isNotEmpty()) {
             "${items.count { it.unlocked }} / ${items.size}"
         } else {
@@ -80,6 +86,7 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
             raAvatarUrl = raRoot?.optString("avatarUrl").orEmpty(),
             achievements = items,
             richPresence = richPresence,
+            gameCRC = gameCRC,
         )
     }
 

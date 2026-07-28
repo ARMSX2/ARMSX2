@@ -641,6 +641,20 @@ fun HomeScreen(
     }
 
     menuGame?.let { game ->
+        val menuCRC by androidx.compose.runtime.produceState<String?>(initialValue = null, game.uri) {
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val serial = game.serial?.takeIf { it.isNotBlank() }
+                runCatching {
+                    if (kr.co.iefriends.pcsx2.NativeApp.getGameSerial()?.takeIf { it.isNotBlank() } == serial) {
+                        kr.co.iefriends.pcsx2.NativeApp.getGameCRC()
+                            ?.takeIf { it.matches(Regex("[0-9A-Fa-f]{8}")) && it != "00000000" }
+                            ?.uppercase()
+                    } else {
+                        null
+                    }
+                }.getOrNull() ?: com.armsx2.DiscIdentity.crcOf(game.uri)
+            }
+        }
         ModalBottomSheet(onDismissRequest = { menuGame = null }) {
             Column(
                 Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 8.dp, end = 8.dp, bottom = 20.dp),
@@ -652,6 +666,16 @@ fun HomeScreen(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                )
+                val identity = buildList {
+                    game.serial?.takeIf { it.isNotBlank() }?.let(::add)
+                    add("CRC ${menuCRC ?: "…"}")
+                }.joinToString("  ·  ")
+                Text(
+                    identity,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp),
                 )
                 GameMenuAction("▶", str("action.play")) {
                     menuGame = null
