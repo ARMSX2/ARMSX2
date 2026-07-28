@@ -1,6 +1,8 @@
 package com.armsx2.ui.news
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -26,9 +28,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
 import com.armsx2.News
 import com.armsx2.i18n.str
 import com.armsx2.ui.common.ArmsBackdrop
@@ -99,6 +104,50 @@ fun NewsScreen(onBack: () -> Unit, viewModel: NewsViewModel = viewModel()) {
     }
 }
 
+/**
+ * The people this release credits, with their pictures.
+ *
+ * Read straight out of the release notes' @mentions, so it says exactly who the notes thank —
+ * including contributors whose work was ported in under somebody else's commit.
+ */
+@Composable
+private fun ReleaseContributors(people: List<News.Contributor>) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            str("news.contributors"),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            people.forEach { person ->
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.size(width = 56.dp, height = 62.dp),
+                ) {
+                    AsyncImage(
+                        model = person.avatar,
+                        contentDescription = person.login,
+                        modifier = Modifier.size(34.dp).clip(CircleShape),
+                        contentScale = ContentScale.Crop,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        person.login,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ReleaseCard(item: News.Item, initiallyExpanded: Boolean) {
     // Keyed on the tag so it survives rotation.
@@ -119,10 +168,18 @@ private fun ReleaseCard(item: News.Item, initiallyExpanded: Boolean) {
         ) {
             Row(
                 Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.padding(end = 8.dp)) {
+                if (item.authorAvatar.isNotBlank()) {
+                    AsyncImage(
+                        model = item.authorAvatar,
+                        contentDescription = item.authorLogin,
+                        modifier = Modifier.size(32.dp).clip(CircleShape),
+                        contentScale = ContentScale.Crop,
+                    )
+                    Spacer(Modifier.size(10.dp))
+                }
+                Column(Modifier.weight(1f).padding(end = 8.dp)) {
                     Text(
                         item.title,
                         style = MaterialTheme.typography.titleSmall,
@@ -132,6 +189,7 @@ private fun ReleaseCard(item: News.Item, initiallyExpanded: Boolean) {
                         buildString {
                             append(item.tag)
                             if (item.published.isNotBlank()) append(" · ").append(item.published)
+                            if (item.authorLogin.isNotBlank()) append(" · ").append(item.authorLogin)
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -150,6 +208,11 @@ private fun ReleaseCard(item: News.Item, initiallyExpanded: Boolean) {
                         )
                     }
                 }
+            }
+
+            // Under the notes, above nothing else: the credit belongs with the release it is for.
+            if (expanded && item.credited.isNotEmpty()) {
+                ReleaseContributors(item.credited)
             }
 
             if (item.notes.isBlank()) {

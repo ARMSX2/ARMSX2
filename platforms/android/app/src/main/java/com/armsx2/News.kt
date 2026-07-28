@@ -31,7 +31,45 @@ object News {
         val notes: String,
         val published: String,
         val prerelease: Boolean,
+        // Who published the release. Comes free in the releases payload — no extra request.
+        val authorLogin: String = "",
+        val authorAvatar: String = "",
+        // People @-mentioned in the notes: who this release actually credits.
+        val credited: List<Contributor> = emptyList(),
     )
+
+    /** Somebody credited in a release: their handle and their picture. */
+    data class Contributor(
+        val login: String,
+        val avatar: String,
+    )
+
+    /**
+     * GitHub usernames: 1-39 chars, alphanumeric or single hyphens, not starting/ending with one.
+     * The leading (^|[^\w@/]) stops this matching e-mails, @Composable in a code block, or the
+     * tail of a URL.
+     */
+    private val MENTION = Regex("(^|[^\\w@/])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)")
+
+    /**
+     * Who a release credits, read from its notes.
+     *
+     * NOT from commit authorship, which was the first attempt and was simply wrong: work ported
+     * from other projects lands as commits authored by whoever did the porting, so the people the
+     * release thanks never appear, while anyone who happened to commit in that tag range does —
+     * credited in a release that says nothing about them.
+     *
+     * The @mention in the notes is the actual credit, written deliberately by whoever wrote them.
+     * Avatars come from github.com/<login>.png, a plain redirect, so this costs no API calls at
+     * all — no rate limit, nothing to cache, and it works offline from cached release notes.
+     */
+    private fun creditsFrom(notes: String): List<Contributor> {
+        val seen = LinkedHashSet<String>()
+        MENTION.findAll(notes).forEach { m -> seen.add(m.groupValues[2]) }
+        return seen.map { login ->
+            Contributor(login = login, avatar = "https://github.com/$login.png?size=96")
+        }
+    }
 
     /** [fromCache] true when the network was not reached, so the UI can say so. */
     data class Result(val items: List<Item>, val fromCache: Boolean)
@@ -76,6 +114,9 @@ object News {
                             notes = tidy(o.optString("body", "")),
                             published = o.optString("published_at").take(10), // yyyy-MM-dd
                             prerelease = o.optBoolean("prerelease", false),
+                            authorLogin = o.optJSONObject("author")?.optString("login").orEmpty(),
+                            authorAvatar = o.optJSONObject("author")?.optString("avatar_url").orEmpty(),
+                            credited = creditsFrom(o.optString("body", "")),
                         ),
                     )
                 }
