@@ -751,41 +751,10 @@ public class NativeApp {
 	// surface and the screen stays black.
 	public static native int getPresentedFrameCount();
 
-	// ---- Discord Social SDK (see cpp/discord_bridge.cpp) ----------------------------------
-	// Kotlin POLLS status/friends rather than being called back into: the SDK fires on its own
-	// threads, and pushing would mean AttachCurrentThread plus a global ref outliving the Activity
-	// for a feature that only runs while foregrounded. All of these are safe with the SDK absent —
-	// the bridge ships stubs that report unavailable.
-
-	/** False when the SDK was not staged at build time; every call below is then a no-op. */
-	public static native boolean discordAvailable();
-
-	/** Create the client. Pass a previously saved token to skip the browser, or "" to stay signed out. */
-	public static native void discordStart(String savedToken);
-
-	/** Begin browser authorization. Progress is observed through {@link #discordStatus()}. */
-	public static native void discordAuthorize();
-
-	/** The token from a successful authorization, exactly once, for the caller to persist. Null otherwise. */
-	public static native String discordTakeToken();
-
-	/** 0 disabled, 1 disconnected, 2 authorizing, 3 connecting, 4 connected, 5 failed. */
-	public static native int discordStatus();
-
-	/** Last failure, or null. */
-	public static native String discordError();
-
-	/** Publish what is being played. Empty title means back in the library. */
-	public static native void discordSetPlaying(String serial, String title);
-
-	/** Friends currently in ARMSX2, newline-separated. Empty means nobody — not "not connected". */
-	public static native String discordFriends();
-
-	/** Put a line on the in-game OSD (friend started playing). */
-	public static native void discordOsdMessage(String text, float seconds);
-
-	/** Sign out: drops the client and stops the callback thread. */
-	public static native void discordStop();
+	// Discord lives in the :discord process now, not in emucore — see
+	// com.armsx2.discord.DiscordNative. ARMSX2 is GPL-3.0+ and the Social SDK is proprietary, so
+	// the two are kept as separate programs talking over IPC rather than one linked binary.
+	// Re-declaring those natives here would not link: emucore does not contain them.
 
 	public static void vmSetPaused(boolean paused) {
 		new Handler(Looper.getMainLooper()).post(() -> {

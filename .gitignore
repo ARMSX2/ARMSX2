@@ -154,3 +154,12 @@ ra_ua_secret.h
 
 # Kotlin compiler session scratch dir created by Gradle next to the android project.
 platforms/android/.kotlin/
+
+# Discord Social SDK — supplied privately at build time via DISCORD_SDK_DIR, never committed.
+# Discord's terms permit shipping the SDK inside a working application but not republishing the
+# raw SDK on its own, so none of it belongs in this repository. Our own bridge, IPC interface and
+# helper service ARE here; only Discord's material is excluded.
+**/libdiscord_partner_sdk.so
+**/discord_partner_sdk.aar
+**/discord_partner_sdk.jar
+platforms/android/app/src/main/cpp/3rdparty/discord/include/

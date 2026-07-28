@@ -56,6 +56,13 @@ tasks.matching { t ->
     dependsOn(generateSharedResources)
 }
 
+// Private, optional Discord SDK location. Set by release CI; absent in every public clone.
+// Deliberately not a product flavour: one release variant, and the only difference is whether this
+// directory was there at build time.
+val armsx2DiscordSdkDir: String? =
+    (System.getenv("DISCORD_SDK_DIR") ?: providers.gradleProperty("DISCORD_SDK_DIR").orNull)
+        ?.takeIf { File(it, "include/discordpp.h").isFile }
+
 android {
     namespace = "com.armsx2"
     compileSdk = 37
@@ -82,6 +89,22 @@ android {
         }
     }
 
+    // The SDK's .so comes from the private directory, never from the repository.
+    sourceSets {
+        getByName("main") {
+            if (armsx2DiscordSdkDir != null) jniLibs.srcDir(armsx2DiscordSdkDir)
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // The Discord .aar ships this .so AND the private dir supplies an identical copy for CMake
+            // to link against. Byte-identical (same file, extracted from the same .aar), so taking
+            // either is correct — without this the merger fails on the duplicate.
+            pickFirsts += "**/libdiscord_partner_sdk.so"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -103,6 +126,10 @@ android {
                 cmake {
                     arguments += "-DANDROID=true"
                     arguments += "-DANDROID_STL=c++_static"
+                    // Passed explicitly rather than relying on the environment leaking through to
+                    // the CMake invocation, so a build is reproducible from the Gradle property
+                    // alone. Absent = Discord compiles out.
+                    armsx2DiscordSdkDir?.let { arguments += "-DDISCORD_SDK_DIR=$it" }
                     arguments += "-DCMAKE_BUILD_TYPE=Release"
                     // PGO (profile-guided optimization), opt-in via -Parmsx2.pgo:
                     //   generate -> instrumented build (writes .profraw on-device); LTO OFF
@@ -140,6 +167,10 @@ android {
                 cmake {
                     arguments += "-DANDROID=true"
                     arguments += "-DANDROID_STL=c++_static"
+                    // Passed explicitly rather than relying on the environment leaking through to
+                    // the CMake invocation, so a build is reproducible from the Gradle property
+                    // alone. Absent = Discord compiles out.
+                    armsx2DiscordSdkDir?.let { arguments += "-DDISCORD_SDK_DIR=$it" }
                     arguments += "-DCMAKE_BUILD_TYPE=Debug"
                     arguments += "-DARMSX2_EMUCORE_LIBRARY_NAME=${armsx2NativeLibName.get()}"
                     arguments += "-DARMSX2_ANDROID_HOST_PAGE_SIZE=${armsx2HostPageSize.get()}"
@@ -245,8 +276,21 @@ dependencies {
     // lives in jniLibs, the headers under cpp/3rdparty/discord, and AuthenticationActivity is
     // declared in our own manifest. libwebrtc is here because the SDK's audio classes reference it
     // and would otherwise NoClassDefFoundError if any init path touches them.
-    implementation(files("libs/discord_partner_sdk.jar"))
-    implementation(files("libs/libwebrtc.jar"))
+    // The .aar, not its unpacked pieces: this is what delivers the SDK's manifest entries, its
+    // consumer proguard rules and its transitive dependencies. Reconstructing those by hand cost
+    // three separate bugs (boot crash, missing <queries>, missing androidx.browser).
+    // Only when a private SDK directory was supplied. A public clone has none, so the whole
+    // feature compiles out rather than failing to resolve — see DISCORD_SDK_DIR in cpp/CMakeLists.
+    if (armsx2DiscordSdkDir != null) {
+        implementation(group = "", name = "discord_partner_sdk", ext = "aar")
+    }
+    // REQUIRED by the Social SDK's authorization flow — its AuthenticationActivity drives sign-in
+    // through Custom Tabs, and without these classes the OAuth round trip completes and the result
+    // is then dropped on the Java side, with no error anywhere. Discord's Android guide lists it as
+    // a dependency; we never got it because hand-staging the .aar bypasses the mechanism that
+    // delivers a library's transitive dependencies. Third time that has bitten (proguard keeps,
+    // <queries>, now this) — assume anything an .aar would have brought is missing until checked.
+    implementation(libs.androidx.browser)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)

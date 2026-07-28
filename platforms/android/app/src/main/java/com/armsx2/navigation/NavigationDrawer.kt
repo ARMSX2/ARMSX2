@@ -20,6 +20,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
 import androidx.compose.ui.res.painterResource
@@ -111,6 +112,9 @@ private data class DrawerItem(
     // Null = tint the icon like the row's text. Only the trophy pins a fixed colour.
     val iconTint: Color? = null,
     val onAction: (() -> Unit)? = null,
+    // Overlay the live "friends online" count on this row's glyph. Only Friends uses it — the
+    // point is to be visible from the drawer without opening the screen.
+    val friendsBadge: Boolean = false,
 )
 
 @Composable
@@ -222,7 +226,7 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         // what changed without leaving for a browser — the GitHub row above is still there for
         // anyone who wants the repo itself.
         DrawerItem("news.title", "📰", AppRoute.News),
-        DrawerItem("friends.title", "👥", AppRoute.Friends),
+        DrawerItem("friends.title", "👥", AppRoute.Friends, friendsBadge = true),
         // About left the settings tab strip: it is a read-only page, not a setting, and it sat in
         // the tab row costing a slot on every settings visit.
         DrawerItem("about.title", "ℹ️", AppRoute.About),
@@ -288,6 +292,7 @@ private fun DrawerSection(
             glyph = item.glyph,
             iconRes = item.iconRes,
             iconTint = item.iconTint,
+            friendsBadge = item.friendsBadge,
             selected = item.destination != null && sameDestination(selected, item.destination),
             onClick = { item.onAction?.invoke() ?: item.destination?.let(onNavigate) },
         )
@@ -303,6 +308,7 @@ private fun DrawerRow(
     // Null tints the icon like the row's text. Only the trophy wants a fixed brand colour;
     // the About rows' marks must follow the row so they don't render gold.
     iconTint: Color? = null,
+    friendsBadge: Boolean = false,
     selected: Boolean,
     onClick: () -> Unit,
 ) {
@@ -325,6 +331,13 @@ private fun DrawerRow(
             if (iconRes != null) {
                 Box(Modifier.width(32.dp), contentAlignment = Alignment.Center) {
                     Icon(painterResource(iconRes), contentDescription = null, tint = iconTint ?: contentColor, modifier = Modifier.size(24.dp))
+                }
+            } else if (friendsBadge) {
+                Box(Modifier.width(32.dp)) {
+                    Text(glyph, color = contentColor, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    com.armsx2.ui.friends.FriendsCountBadge(
+                        Modifier.align(Alignment.TopEnd).offset(x = 4.dp, y = (-6).dp),
+                    )
                 }
             } else {
                 Text(glyph, color = contentColor, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(32.dp))

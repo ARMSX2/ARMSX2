@@ -41,3 +41,8 @@
 -keep class org.webrtc.** { *; }
 -dontwarn com.discord.**
 -dontwarn org.webrtc.**
+
+# The Discord helper process: its Service/Activity are referenced only from the manifest, and
+# DiscordNative's methods are bound by JNI name from libarmsx2_discord.so. R8 cannot see either
+# link, and stripping or renaming them fails at runtime rather than at build time.
+-keep class com.armsx2.discord.** { *; }

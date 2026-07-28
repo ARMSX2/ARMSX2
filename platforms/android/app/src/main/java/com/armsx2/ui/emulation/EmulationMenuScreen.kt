@@ -90,6 +90,7 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
     val scope = rememberCoroutineScope()
     var shown by remember { mutableStateOf(false) }
     var dismissing by remember { mutableStateOf(false) }
+    var friendsOpen by remember { mutableStateOf(false) }
     val closeMenu: () -> Unit = remember(viewModel, scope) {
         {
             if (!dismissing) {
@@ -124,7 +125,35 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
         }
     }
     LaunchedEffect(Unit) { shown = true }
-    BackHandler(onBack = closeMenu)
+
+    // Hand pad input to the Friends panel while it is open, and give it back on close.
+    //
+    // The nav registry is shared between the menu and the panel, so ownership has to be explicit:
+    // the selection is cleared on both edges, because a selection left pointing at a control on
+    // the other side of the transition highlights something the user cannot see.
+    DisposableEffect(friendsOpen) {
+        if (friendsOpen) {
+            EmulationMenuInputController.overlayDismiss = { friendsOpen = false }
+            com.armsx2.ui.settings.SettingsControllerNav.clearSelection()
+        }
+        onDispose {
+            EmulationMenuInputController.overlayDismiss = null
+            com.armsx2.ui.settings.SettingsControllerNav.clearSelection()
+        }
+    }
+    // Highlight the panel's first control once it has actually composed. Selecting in the same
+    // frame the panel opens would find an empty registry — controllerFocusable only registers
+    // items that exist, and the panel's do not until AnimatedVisibility has run.
+    LaunchedEffect(friendsOpen) {
+        if (friendsOpen) {
+            delay(260)
+            if (friendsOpen) com.armsx2.ui.settings.SettingsControllerNav.move(1)
+        }
+    }
+    // Back closes the friends overlay first when it is up. Without this, opening Friends and
+    // pressing Back would dismiss the entire pause menu and resume the game, which is not what
+    // anyone means by "go back" from a panel sitting on top of another panel.
+    BackHandler(onBack = { if (friendsOpen) friendsOpen = false else closeMenu() })
 
     state.pendingHardcore?.let { enabling ->
         androidx.compose.runtime.DisposableEffect(Unit) {
@@ -175,7 +204,13 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
                     shadowElevation = 22.dp,
                 ) {
-                    MenuPage(state, viewModel, compact = true, modifier = Modifier.fillMaxSize())
+                    MenuPage(
+                        state = state,
+                        viewModel = viewModel,
+                        compact = true,
+                        modifier = Modifier.fillMaxSize(),
+                        onOpenFriends = { friendsOpen = true },
+                    )
                 }
             } else {
                 Row(
@@ -199,6 +234,7 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                             viewModel = viewModel,
                             compact = false,
                             modifier = Modifier.fillMaxSize(),
+                            onOpenFriends = { friendsOpen = true },
                         )
                     }
                     Surface(
@@ -213,6 +249,67 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
                 }
             }
         }
+
+        // Friends, as its own panel over the menu.
+        //
+        // Composed here rather than as an AlertDialog on purpose: a Dialog gets its own focused
+        // window, and a focused window swallows gamepad keys before our input plumbing ever sees
+        // them — the pause menu would stop responding to the pad the moment this opened.
+        AnimatedVisibility(
+            visible = friendsOpen,
+            enter = fadeIn(tween(160, easing = EaseOut)),
+            exit = fadeOut(tween(140, easing = EaseIn)),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.72f))
+                    .clickable { friendsOpen = false },
+            )
+        }
+        AnimatedVisibility(
+            visible = friendsOpen,
+            enter = fadeIn(tween(190, easing = EaseOut)),
+            exit = fadeOut(tween(150, easing = EaseIn)),
+            modifier = Modifier.align(Alignment.Center),
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(if (compact) 0.94f else 0.6f)
+                    .widthIn(max = 620.dp)
+                    .fillMaxHeight(0.9f)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical)),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+                shadowElevation = 24.dp,
+            ) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 16.dp, end = 10.dp, top = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            str("friends.title"),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        // Between the title and Close: whose Discord this is.
+                        com.armsx2.ui.friends.SelfChip(
+                            Modifier.weight(1f).padding(horizontal = 12.dp),
+                        )
+                        TextButton(
+                            onClick = { friendsOpen = false },
+                            modifier = Modifier.controllerFocusable(
+                                "menu.friends.close",
+                                onConfirm = { friendsOpen = false },
+                            ),
+                        ) { Text(str("action.close")) }
+                    }
+                    com.armsx2.ui.friends.FriendsPanel(Modifier.padding(horizontal = 12.dp))
+                }
+            }
+        }
     }
 }
 
@@ -222,6 +319,7 @@ private fun MenuPage(
     viewModel: EmulationMenuViewModel,
     compact: Boolean,
     modifier: Modifier,
+    onOpenFriends: () -> Unit,
 ) {
     val tabScrollStates = remember {
         EmulationMenuTab.entries.associateWith {
@@ -249,7 +347,7 @@ private fun MenuPage(
                 .padding(bottom = 18.dp),
         ) {
             if (compact) CompactMenuTabs(state.tab, viewModel::selectTab)
-            MenuHeader(compact, state.hardcore, state.richPresence)
+            MenuHeader(compact, state.hardcore, state.richPresence, state.gameCRC, onOpenFriends)
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = 8.dp),
                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.34f),
@@ -270,8 +368,6 @@ private fun MenuPage(
                     EmulationMenuTab.Controls -> ControlsPane(state, viewModel)
                     EmulationMenuTab.Options -> OptionsPane(state, viewModel)
                     EmulationMenuTab.Achievements -> AchievementsPane(state, viewModel)
-                    // Same panel as the drawer screen — see FriendsPanel.
-                    EmulationMenuTab.Friends -> com.armsx2.ui.friends.FriendsPanel()
                 }
             }
         }
@@ -412,11 +508,16 @@ private fun tabGlyph(tab: EmulationMenuTab): String = when (tab) {
     EmulationMenuTab.Controls -> "🎮"
     EmulationMenuTab.Options -> "⚙"
     EmulationMenuTab.Achievements -> "🏆"
-    EmulationMenuTab.Friends -> "👥"
 }
 
 @Composable
-private fun MenuHeader(compact: Boolean, hardcore: Boolean, richPresence: String) {
+private fun MenuHeader(
+    compact: Boolean,
+    hardcore: Boolean,
+    richPresence: String,
+    gameCRC: String,
+    onOpenFriends: () -> Unit,
+) {
     val game = MainActivityRuntime.currentGame.value
     Row(
         Modifier.fillMaxWidth().padding(horizontal = if (compact) 12.dp else 16.dp, vertical = 12.dp),
@@ -448,10 +549,27 @@ private fun MenuHeader(compact: Boolean, hardcore: Boolean, richPresence: String
                     com.armsx2.ui.common.StatusChip(g.extension.ifBlank { g.platform.key.uppercase() })
                 }
             }
-            if (!game?.serial.isNullOrBlank()) {
+            // Serial and CRC together: a PNACH is named <SERIAL>_<CRC>.pnach, so the two values
+            // needed to name one should not live on separate screens.
+            //
+            // The live VM CRC is preferred but cannot be relied on: for ISO boots the core hands
+            // ELFLoadingOnCPUThread an empty path, so UpdateELFInfo takes its failure branch and
+            // leaves s_current_crc at 0 — the emulog shows the loader computing the real CRC and
+            // the VM then reporting 00000000. When that happens, identify the image instead, which
+            // is the same path the Info tab and the library's long-press sheet already take.
+            val resolvedCRC by androidx.compose.runtime.produceState(gameCRC, gameCRC, game?.uri) {
+                value = gameCRC.ifBlank {
+                    game?.uri?.let { com.armsx2.DiscIdentity.resolve(it, game.serial) }.orEmpty()
+                }
+            }
+            val identity = buildList {
+                game?.serial?.takeIf { it.isNotBlank() }?.let(::add)
+                resolvedCRC.takeIf { it.isNotBlank() }?.let { add("CRC $it") }
+            }.joinToString("  ·  ")
+            if (identity.isNotBlank()) {
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    game?.serial.orEmpty(),
+                    identity,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -467,6 +585,30 @@ private fun MenuHeader(compact: Boolean, hardcore: Boolean, richPresence: String
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+        }
+
+        // Friends, in the header where it is always visible, with the online count on it. A build
+        // without the SDK has nothing to show, so it does not take up header space there.
+        if (com.armsx2.DiscordPresence.available()) {
+            Spacer(Modifier.width(8.dp))
+            Surface(
+                onClick = onOpenFriends,
+                modifier = Modifier.controllerFocusable(
+                    "menu.friends",
+                    RoundedCornerShape(14.dp),
+                    onConfirm = onOpenFriends,
+                ),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+            ) {
+                Box(Modifier.padding(horizontal = 11.dp, vertical = 9.dp)) {
+                    com.armsx2.ui.friends.FriendsGlyphWithBadge(
+                        color = MaterialTheme.colorScheme.onSurface,
+                        glyphSize = 19.sp,
+                    )
+                }
             }
         }
     }

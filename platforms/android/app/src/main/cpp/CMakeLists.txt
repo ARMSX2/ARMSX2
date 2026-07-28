@@ -83,32 +83,66 @@ add_subdirectory(3rdparty/librashader)
 #
 # OPTIONAL, exactly like librashader above: a tree without the .so staged simply compiles the
 # feature out rather than failing to configure, so nobody needs a 680 MB SDK download to build.
-set(DISCORD_SDK_SO "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libdiscord_partner_sdk.so")
-if(EXISTS "${DISCORD_SDK_SO}")
+# Discord Social SDK — an OPTIONAL, PRIVATE build input.
+#
+# Discord's terms let us ship the SDK inside a working application, but not republish the raw
+# binary on its own. So it lives outside this repository and is supplied at build time through
+# DISCORD_SDK_DIR, which private release CI sets:
+#
+#   $DISCORD_SDK_DIR/include/discordpp.h
+#   $DISCORD_SDK_DIR/include/cdiscord.h
+#   $DISCORD_SDK_DIR/<abi>/libdiscord_partner_sdk.so
+#   $DISCORD_SDK_DIR/discord_partner_sdk.aar     (consumed by build.gradle.kts)
+#
+# Unset — which is the case for every public clone — the whole feature compiles out: no helper
+# library, no SDK, and the UI reports itself unavailable. That is a supported configuration, not a
+# broken build, and it is deliberately NOT a product flavour: one release variant, one code path,
+# and the only difference is whether a private directory was present.
+if(NOT DISCORD_SDK_DIR AND DEFINED ENV{DISCORD_SDK_DIR})
+	set(DISCORD_SDK_DIR "$ENV{DISCORD_SDK_DIR}")
+endif()
+
+set(DISCORD_SDK_SO "${DISCORD_SDK_DIR}/${ANDROID_ABI}/libdiscord_partner_sdk.so")
+set(DISCORD_SDK_INCLUDE "${DISCORD_SDK_DIR}/include")
+
+if(DISCORD_SDK_DIR AND EXISTS "${DISCORD_SDK_SO}" AND EXISTS "${DISCORD_SDK_INCLUDE}/discordpp.h")
 	add_library(discord_partner_sdk SHARED IMPORTED)
 	set_target_properties(discord_partner_sdk PROPERTIES
 		IMPORTED_LOCATION "${DISCORD_SDK_SO}"
-		INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/discord/include")
+		INTERFACE_INCLUDE_DIRECTORIES "${DISCORD_SDK_INCLUDE}")
 	set(ARMSX2_HAVE_DISCORD ON)
 	message(STATUS "Discord Social SDK: ${DISCORD_SDK_SO}")
 else()
 	set(ARMSX2_HAVE_DISCORD OFF)
-	message(STATUS "Discord Social SDK not staged — presence/friends compiled out")
+	message(STATUS "Discord Social SDK not supplied (DISCORD_SDK_DIR unset) — presence/friends compiled out")
 endif()
 
 set(ARMSX2_EMUCORE_LIBRARY_NAME "emucore_4k" CACHE STRING "Android emucore shared library target/output name")
 
 add_library(${ARMSX2_EMUCORE_LIBRARY_NAME} SHARED
 	native-lib.cpp
-	discord_bridge.cpp
 )
 
-# Same trap as ARMSX2_HAS_LIBRASHADER below: the whole bridge is behind this define, so a missed
-# define compiles and links cleanly and silently ships the feature stubbed out. Verify with
-# `strings` on the built core, never the build log.
+# The Discord bridge is its OWN shared library, and emucore must never link it.
+#
+# ARMSX2 is GPL-3.0+; the Discord Social SDK is proprietary with no published licence. Linking the
+# two into one binary would make the emulator a combined work with a library we cannot supply
+# corresponding source for. Keeping them as separate programs that talk over IPC is what makes the
+# feature shippable at all, and the linker is where that separation is actually enforced:
+#
+#   libarmsx2_discord.so  -> discord_partner_sdk   (loaded ONLY in the :discord process)
+#   libemucore_*.so       -> no Discord anything
+#
+# discord_bridge.cpp includes no PCSX2 header, so this target needs none of PCSX2's include paths.
+# If it ever fails to build for want of one, that is the signal that something GPL crept in — fix
+# the include, do not add the path.
+#
+# Verify after any build:  llvm-readelf -d libemucore_4k.so | grep -i discord   (must be empty)
 if(ARMSX2_HAVE_DISCORD)
-	target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE discord_partner_sdk)
-	target_compile_definitions(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE ARMSX2_HAS_DISCORD=1)
+	add_library(armsx2_discord SHARED discord_bridge.cpp)
+	target_link_libraries(armsx2_discord PRIVATE discord_partner_sdk log)
+	target_compile_definitions(armsx2_discord PRIVATE ARMSX2_HAS_DISCORD=1)
+	set_target_properties(armsx2_discord PROPERTIES OUTPUT_NAME "armsx2_discord")
 endif()
 
 target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE

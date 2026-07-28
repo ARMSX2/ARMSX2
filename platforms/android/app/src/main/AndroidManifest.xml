@@ -16,6 +16,26 @@
          isn't gated for devices without a gyroscope. -->
     <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
 
+    <!--
+        The Discord Social SDK .aar is now a real dependency, so its manifest merges into ours and
+        brings its <queries> for CustomTabsService with it — no need to restate that here.
+
+        What we DO have to undo is its voice permissions. The SDK declares RECORD_AUDIO, three
+        foreground-service permissions and Bluetooth for features we do not ship, and merged
+        unchallenged they would put "Microphone" on the Play listing and require a data-safety
+        declaration for a capability that does not exist in this app.
+
+        tools:node="remove" is the supported way to drop a merged permission, and it is checked:
+        build-play-aab.sh fails the build if RECORD_AUDIO or REQUEST_INSTALL_PACKAGES survive into
+        the bundle, so a regression here cannot ship quietly.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" tools:node="remove" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" tools:node="remove" />
+    <!-- The SDK's voice foreground service goes with them; we never start a call. -->
+
     <application
         android:name=".Pasx2Application"
         android:allowBackup="true"
@@ -120,6 +140,7 @@
         -->
         <activity
             android:name="com.discord.socialsdk.AuthenticationActivity"
+            android:process=":discord"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:launchMode="singleTask"
             android:exported="true">
@@ -130,6 +151,37 @@
                 <data android:scheme="discord-1531447040435814411" />
             </intent-filter>
         </activity>
+
+        <!-- Voice-only; we never start a call, and a declared foreground service we never use is
+             just Play-review surface. -->
+        <service android:name="com.discord.socialsdk.ForegroundService" tools:node="remove" />
+
+        <!--
+            The Discord helper, in its own process.
+
+            android:process=":discord" is the whole point, not a performance choice. ARMSX2 is
+            GPL-3.0+ and the Discord Social SDK is proprietary with no published licence; linking
+            them into one binary would make the emulator a combined work with a library whose
+            corresponding source cannot be supplied. Two programs exchanging messages over IPC is
+            a different thing, and this attribute is what makes that true at runtime: the SDK's
+            .so is loaded only here, and libemucore has no DT_NEEDED on it.
+
+            Not exported — nothing outside this app has any business binding it.
+
+            DiscordAuthActivity must share the process: the SDK launches sign-in through an
+            Activity handed to it, and one from the app process would be unusable from here.
+        -->
+        <service
+            android:name="com.armsx2.discord.DiscordService"
+            android:process=":discord"
+            android:exported="false" />
+
+        <activity
+            android:name="com.armsx2.discord.DiscordAuthActivity"
+            android:process=":discord"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:exported="false" />
     </application>
 
 

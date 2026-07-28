@@ -2471,6 +2471,20 @@ open class MainActivityRuntime : ComponentActivity() {
                     }
                 }
             }
+
+            // "<friend> is now online", over whatever is on screen.
+            //
+            // At the Compose root rather than inside the library's nav host, because in a game
+            // the library is not composed at all — the same banner has to serve both. This
+            // replaces the emulator OSD message that used to handle the in-game case: the OSD is
+            // text only, so it could never show an avatar, and it looked nothing like the
+            // library's version of the same event.
+            androidx.compose.foundation.layout.Box(
+                Modifier.fillMaxSize(),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                com.armsx2.ui.friends.FriendOnlineBanner()
+            }
             }
         }
     }
