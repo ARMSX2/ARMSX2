@@ -12,6 +12,14 @@ private struct MenuBackgroundSessionStartEnvironmentKey: EnvironmentKey {
     static let defaultValue = Date()
 }
 
+private struct MenuLargeTitleNamespaceEnvironmentKey: EnvironmentKey {
+    static let defaultValue: Namespace.ID? = nil
+}
+
+private struct MenuLargeTitleMorphActiveEnvironmentKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
     var menuTabIsActive: Bool {
         get { self[MenuTabIsActiveEnvironmentKey.self] }
@@ -22,6 +30,16 @@ extension EnvironmentValues {
         get { self[MenuBackgroundSessionStartEnvironmentKey.self] }
         set { self[MenuBackgroundSessionStartEnvironmentKey.self] = newValue }
     }
+
+    var menuLargeTitleNamespace: Namespace.ID? {
+        get { self[MenuLargeTitleNamespaceEnvironmentKey.self] }
+        set { self[MenuLargeTitleNamespaceEnvironmentKey.self] = newValue }
+    }
+
+    var menuLargeTitleMorphActive: Bool {
+        get { self[MenuLargeTitleMorphActiveEnvironmentKey.self] }
+        set { self[MenuLargeTitleMorphActiveEnvironmentKey.self] = newValue }
+    }
 }
 
 struct RootView: View {
@@ -29,7 +47,17 @@ struct RootView: View {
     @State private var settings = SettingsStore.shared
     @State private var fileImporter = FileImportHandler.shared
     @State private var showBootSplash = true
-    @StateObject private var backgroundHost = PersistentMenuBackgroundHost()
+    // The background layer observes renderer state directly. Keeping only the
+    // host reference here prevents snapshot/visibility publications from
+    // invalidating the complete menu hierarchy.
+    @State private var backgroundHost = PersistentMenuBackgroundHost()
+
+    private var menuScreenActive: Bool {
+        if case .menu = appState.currentScreen {
+            return true
+        }
+        return false
+    }
 
     var body: some View {
         ZStack {
@@ -46,10 +74,24 @@ struct RootView: View {
                     appState.gameplayLaunchTransition != nil ? 80 : 0
                 )
 
-            switch appState.currentScreen {
-            case .menu:
+            // Keep the menu hierarchy alive for the launch transition so the
+            // library fades behind the live SwiftUI card instead of vanishing
+            // on the same update that starts the VM.
+            if menuScreenActive || appState.gameplayLaunchTransition != nil {
                 MenuTabView(backgroundHost: backgroundHost)
-            case .playing:
+                    .opacity(menuScreenActive ? 1 : 0)
+                    .animation(
+                        .easeOut(duration: 0.34),
+                        value: menuScreenActive
+                    )
+                    .allowsHitTesting(menuScreenActive)
+                    .accessibilityHidden(!menuScreenActive)
+                    .zIndex(
+                        appState.gameplayLaunchTransition == nil ? 1 : 85
+                    )
+            }
+
+            if case .playing = appState.currentScreen {
                 if appState.isEmulationOnlyMode &&
                     !appState.emulationOnlyPresentation.showsQuickMenu {
                     EmulationOnlyGameView()
@@ -93,6 +135,11 @@ struct RootView: View {
             )
         ) { _ in
             backgroundHost.release()
+            // These stores outlive the tab hierarchy. Explicitly discard their
+            // decoded images and presentation-only state instead of depending
+            // exclusively on the selected tab's onDisappear ordering.
+            GameLibraryRuntimeResources.releaseForGameplay()
+            PatchStore.shared.releasePresentationResources()
         }
         .onOpenURL { url in
             if !ARMSX2DeepLinkHandler.handle(url) {
@@ -117,12 +164,30 @@ struct RootView: View {
         } message: {
             Text(settings.localized(appState.bootDisclaimerMessage ?? "BIOS not yet imported."))
         }
+        .alert(
+            "⚠️ \(settings.localized("JIT Access Not Detected"))",
+            isPresented: Binding(
+                get: { appState.pendingJITGameBoot != nil },
+                set: { if !$0 { appState.cancelPendingJITGameBoot() } }
+            )
+        ) {
+            Button(settings.localized("Cancel"), role: .cancel) {
+                appState.cancelPendingJITGameBoot()
+            }
+            Button(settings.localized("Continue")) {
+                appState.continuePendingJITGameBoot()
+            }
+        } message: {
+            Text(settings.localized(
+                "JIT access is not available. Match the StikDebug script to the JIT Script setting in Emulator settings."
+            ))
+        }
     }
 }
 
-/// Animates one rasterized Liquid Glass library card while the real menu tree is
-/// already being dismantled underneath it. The live Metal view mounts immediately,
-/// and the card cross-fades away as soon as the VM reaches its running state.
+/// Rebuilds the selected card as a live SwiftUI Liquid Glass surface while the
+/// menu tree is dismantled underneath it. The cover and text scale with the
+/// glass geometry, then the complete surface fades into the live Metal view.
 private struct GameplayLaunchOverlay: View {
     let transition: GameplayLaunchTransition
     let onRevealGameplay: () -> Void
@@ -149,18 +214,10 @@ private struct GameplayLaunchOverlay: View {
                 Color.black
                     .opacity(zoomed && !reduceMotion ? 0.14 : 0)
 
-                Image(uiImage: transition.snapshot)
-                    .resizable()
-                    .interpolation(.high)
+                FluidGameplayLaunchCard(transition: transition)
                     .frame(
                         width: transition.sourceFrame.width,
                         height: transition.sourceFrame.height
-                    )
-                    .clipShape(
-                        RoundedRectangle(
-                            cornerRadius: transition.cornerRadius,
-                            style: .continuous
-                        )
                     )
                     .scaleEffect(zoomed && !reduceMotion ? destinationScale : 1)
                     .position(zoomed && !reduceMotion ? destinationCenter : sourceCenter)
@@ -200,9 +257,13 @@ private struct GameplayLaunchOverlay: View {
 
     @MainActor
     private func revealWhenEmulationIsRunning() async {
-        // Preserve enough time for the zoom to read visually, but never keep the
-        // overlay over a game intro while waiting for optional startup work.
-        try? await Task.sleep(nanoseconds: 240_000_000)
+        // The spring settles in roughly 0.42 seconds. Keeping the overlay for
+        // 1.42 seconds leaves the fully zoomed Liquid Glass card readable for
+        // approximately one second without delaying the VM boot itself.
+        let minimumDisplayNanoseconds: UInt64 = reduceMotion
+            ? 240_000_000
+            : 1_420_000_000
+        try? await Task.sleep(nanoseconds: minimumDisplayNanoseconds)
         guard !Task.isCancelled else { return }
 
         for _ in 0..<24 where !ARMSX2Bridge.isVMRunning() {
@@ -222,12 +283,130 @@ private struct GameplayLaunchOverlay: View {
     }
 }
 
+struct FluidGameplayLaunchCard: View {
+    let transition: GameplayLaunchTransition
+    var showsUnselectedFavoriteIndicator = false
+
+    var body: some View {
+        Group {
+            switch transition.style {
+            case .list:
+                listContent
+            case .grid, .coverFlow:
+                coverContent
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .topTrailing) {
+            if transition.isFavorite || showsUnselectedFavoriteIndicator {
+                Image(systemName: transition.isFavorite ? "star.fill" : "star")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(
+                        transition.isFavorite ? .yellow : .white.opacity(0.86)
+                    )
+                    .padding(10)
+                    .shadow(color: .black.opacity(0.28), radius: 4, y: 2)
+            }
+        }
+        .glassSurface(clear: true, cornerRadius: transition.cornerRadius)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: transition.cornerRadius,
+                style: .continuous
+            )
+        )
+    }
+
+    private var listContent: some View {
+        HStack(spacing: 12) {
+            cover
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(transition.title)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                Text(transition.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+    }
+
+    private var coverContent: some View {
+        VStack(spacing: transition.style == .coverFlow ? 8 : 10) {
+            cover
+                .shadow(color: .black.opacity(0.28), radius: 18, y: 10)
+
+            VStack(spacing: 4) {
+                Text(transition.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                Text(transition.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(transition.style == .coverFlow ? 8 : 12)
+    }
+
+    private var cover: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+
+            if let image = transition.coverImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                VStack(spacing: 6) {
+                    Image(
+                        systemName: transition.gameName.lowercased().hasSuffix(".chd")
+                            ? "archivebox"
+                            : "opticaldisc"
+                    )
+                    .font(.system(size: 24, weight: .medium))
+                    Text(
+                        transition.gameName.lowercased().hasSuffix(".chd")
+                            ? "CHD"
+                            : "PS2"
+                    )
+                    .font(.caption2.bold())
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .frame(
+            width: transition.coverSize.width,
+            height: transition.coverSize.height
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
 struct MenuTabView: View {
     @State private var settings = SettingsStore.shared
     @State private var selectedTab = 0
+    @State private var activeLibraryTab = 0
     @State private var settingsRootResetRequest = 0
-    @ObservedObject var backgroundHost: PersistentMenuBackgroundHost
+    @State private var menuLargeTitleMorphActive = false
+    @State private var menuLargeTitleMorphResetTask: Task<Void, Never>?
+    let backgroundHost: PersistentMenuBackgroundHost
+    @Namespace private var largeTitleNamespace
     @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     private var biosBackgroundActive: Bool { settings.hasCustomBackground && settings.backgroundEnabledInBIOS }
     private var settingsBackgroundActive: Bool { settings.hasCustomBackground && settings.backgroundEnabledInSettings }
@@ -251,6 +430,11 @@ struct MenuTabView: View {
         20
     }
 
+    private var usesPageOwnedLibraryLargeTitle: Bool {
+        verticalSizeClass != .compact
+            && UIDevice.current.userInterfaceIdiom == .phone
+    }
+
     private var tabSelection: Binding<Int> {
         Binding(
             get: { selectedTab },
@@ -260,8 +444,21 @@ struct MenuTabView: View {
 
     private func selectTab(_ tab: Int) {
         guard (0...2).contains(tab), tab != selectedTab else { return }
+        menuLargeTitleMorphResetTask?.cancel()
+        menuLargeTitleMorphActive = true
         withAnimation(.easeInOut(duration: 0.24)) {
+            // Retain the last library toolbar state while the separate Settings
+            // navigation surface fades in.
+            if tab <= 1 {
+                activeLibraryTab = tab
+            }
             selectedTab = tab
+        }
+        menuLargeTitleMorphResetTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(280))
+            guard !Task.isCancelled else { return }
+            menuLargeTitleMorphActive = false
+            menuLargeTitleMorphResetTask = nil
         }
     }
 
@@ -298,31 +495,62 @@ struct MenuTabView: View {
                 .tint(.blue)
 #else
                 ZStack {
-                    // Games and BIOS share one persistent native navigation bar.
-                    // Stable toolbar IDs let the system morph its Liquid Glass
-                    // shapes while both tab pages remain mounted underneath.
+                    // Games and BIOS share one persistent navigation owner.
+                    // Their matching toolbar IDs therefore remain the same native
+                    // Liquid Glass controls and morph between tab configurations.
                     NavigationStack {
                         ZStack {
-                            GameListView(embeddedInMenuNavigation: true)
+                            GameListView(
+                                embeddedInMenuNavigation: true,
+                                ownsEmbeddedMenuToolbar: activeLibraryTab == 0
+                            )
                                 .environment(\.menuTabIsActive, selectedTab == 0)
                                 .retainedMenuTabPage(0, selection: selectedTab)
 
                             SafeAreaProtectedMenuTabContent(
                                 appliesLegacyLandscapeInsets: !biosBackgroundActive
                             ) {
-                                BIOSListView(embeddedInMenuNavigation: true)
+                                BIOSListView(
+                                    embeddedInMenuNavigation: true,
+                                    ownsEmbeddedMenuToolbar: activeLibraryTab == 1
+                                )
                             }
                             .environment(\.menuTabIsActive, selectedTab == 1)
                             .retainedMenuTabPage(1, selection: selectedTab)
                         }
                         .navigationTitle(
-                            settings.localized(selectedTab == 1 ? "BIOS" : "Games")
+                            settings.localized(
+                                usesPageOwnedLibraryLargeTitle
+                                    ? ""
+                                    : (activeLibraryTab == 1 ? "BIOS" : "Games")
+                            )
                         )
                         .toolbarBackground(
-                            (selectedTab == 0
+                            (activeLibraryTab == 0
                                 ? settings.hasCustomBackground
                                 : biosBackgroundActive) ? .hidden : .automatic,
                             for: .navigationBar
+                        )
+                        .navigationBarTitleDisplayMode(
+                            usesPageOwnedLibraryLargeTitle ? .inline : .large
+                        )
+                        .toolbar {
+                            if verticalSizeClass == .compact {
+                                ToolbarItem(id: "menu.collapsedTitle", placement: .principal) {
+                                    Text(
+                                        settings.localized(
+                                            activeLibraryTab == 1 ? "BIOS" : "Games"
+                                        )
+                                    )
+                                        .font(.headline)
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+                    }
+                    .safeAreaInset(edge: .top) {
+                        Color.clear.frame(
+                            height: usesPageOwnedLibraryLargeTitle ? 6 : 0
                         )
                     }
                     .retainedMenuPage(isActive: selectedTab != 2)
@@ -342,6 +570,11 @@ struct MenuTabView: View {
                     )
                     .frame(width: 0, height: 0)
                 }
+                .environment(\.menuLargeTitleNamespace, largeTitleNamespace)
+                .environment(
+                    \.menuLargeTitleMorphActive,
+                    menuLargeTitleMorphActive
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .tint(.blue)
                 .contentMargins(
@@ -350,25 +583,50 @@ struct MenuTabView: View {
                     for: .scrollContent
                 )
                 .safeAreaInset(edge: .bottom, spacing: tabBarContentSpacing) {
-                    NativeMenuTabBar(
-                        selection: tabSelection,
-                        titles: [
-                            settings.localized("Games"),
-                            settings.localized("BIOS"),
-                            settings.localized("Settings"),
-                        ],
-                        onReselect: { tab in
-                            guard tab == 2 else { return }
-                            settingsRootResetRequest += 1
+                    Group {
+                        if #available(iOS 26.0, *) {
+                            NativeMenuTabBar(
+                                selection: tabSelection,
+                                isCompactHeight: verticalSizeClass == .compact,
+                                titles: [
+                                    settings.localized("Games"),
+                                    settings.localized("BIOS"),
+                                    settings.localized("Settings"),
+                                ],
+                                onReselect: { tab in
+                                    guard tab == 2 else { return }
+                                    settingsRootResetRequest += 1
+                                }
+                            )
+                            // Align the native iOS 26 tab bar with compact-height content.
+                            .offset(
+                                y: verticalSizeClass == .compact ? 24.5 : 0
+                            )
+                        } else {
+                            LegacyGlassMenuTabBar(
+                                selection: tabSelection,
+                                titles: [
+                                    settings.localized("Games"),
+                                    settings.localized("BIOS"),
+                                    settings.localized("Settings"),
+                                ],
+                                onReselect: { tab in
+                                    guard tab == 2 else { return }
+                                    settingsRootResetRequest += 1
+                                }
+                            )
+                            // Raise the legacy compact tab bar above the home indicator.
+                            .offset(
+                                y: verticalSizeClass == .compact ? -6 : 0
+                            )
                         }
-                    )
+                    }
                     .zIndex(1_000)
                 }
 #endif
             }
         }
         .environment(\.menuBackgroundHost, backgroundHost)
-        .environment(\.menuBackgroundSessionStart, backgroundHost.sessionStart)
         .onAppear {
             backgroundHost.reactivateForMenu(isAvailable: settings.hasCustomBackground)
             backgroundHost.setPresentationVisible(selectedTabShowsBackground)
@@ -382,8 +640,125 @@ struct MenuTabView: View {
         .onChange(of: selectedTabShowsBackground) { _, showsBackground in
             backgroundHost.setPresentationVisible(showsBackground)
         }
+        .onDisappear {
+            menuLargeTitleMorphResetTask?.cancel()
+            menuLargeTitleMorphResetTask = nil
+            menuLargeTitleMorphActive = false
+        }
     }
 }
+
+#if !targetEnvironment(macCatalyst)
+/// iOS 17/18 does not provide the floating Liquid Glass tab bar used by iOS 26.
+/// Keep one compact, orientation-independent glass capsule so landscape uses
+/// the same centered icon-over-label layout and dimensions as portrait.
+private struct LegacyGlassMenuTabBar: View {
+    @Binding var selection: Int
+    let titles: [String]
+    let onReselect: (Int) -> Void
+    @Namespace private var selectionNamespace
+
+    private let systemImages = [
+        "gamecontroller",
+        "cpu",
+        "gearshape",
+    ]
+
+    private let selectionSpring = Animation.spring(
+        response: 0.5,
+        dampingFraction: 0.7,
+        blendDuration: 0.18
+    )
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(systemImages.indices, id: \.self) { index in
+                Button {
+                    if selection == index {
+                        onReselect(index)
+                    } else {
+                        selection = index
+                        UISelectionFeedbackGenerator().selectionChanged()
+                    }
+                } label: {
+                    VStack(spacing: 1) {
+                        Image(systemName: systemImages[index])
+                            .font(.system(size: 20, weight: .medium))
+                            .symbolRenderingMode(.monochrome)
+                            .scaleEffect(selection == index ? 1.06 : 1)
+
+                        Text(titles.indices.contains(index) ? titles[index] : "")
+                            .font(.system(size: 10, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .foregroundStyle(
+                        selection == index
+                            ? Color.blue
+                            : Color.secondary
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Capsule())
+                    .background {
+                        if selection == index {
+                            Capsule()
+                                .fill(.ultraThinMaterial)
+                                .overlay {
+                                    Capsule()
+                                        .fill(Color.blue.opacity(0.075))
+                                }
+                                .overlay {
+                                    Capsule()
+                                        .stroke(
+                                            Color.blue.opacity(0.2),
+                                            lineWidth: 0.65
+                                        )
+                                }
+                                .matchedGeometryEffect(
+                                    id: "legacy.tab.selection",
+                                    in: selectionNamespace
+                                )
+                        }
+                    }
+                }
+                .buttonStyle(LegacyGlassTabButtonStyle())
+                .accessibilityLabel(
+                    titles.indices.contains(index) ? titles[index] : ""
+                )
+                .accessibilityAddTraits(
+                    selection == index ? .isSelected : []
+                )
+            }
+        }
+        .padding(4)
+        .frame(width: 276)
+        .frame(height: 50)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(Color.primary.opacity(0.13), lineWidth: 0.65)
+        }
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
+        .animation(selectionSpring, value: selection)
+    }
+}
+
+private struct LegacyGlassTabButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .opacity(configuration.isPressed ? 0.78 : 1)
+            .animation(
+                .spring(
+                    response: 0.25,
+                    dampingFraction: 0.62,
+                    blendDuration: 0.08
+                ),
+                value: configuration.isPressed
+            )
+    }
+}
+#endif
 
 private extension View {
     /// Changes only presentation state. The page remains attached to the same
@@ -412,6 +787,7 @@ private extension View {
 /// remains a foreground sibling rather than being composited below tab content.
 private struct NativeMenuTabBar: UIViewRepresentable {
     @Binding var selection: Int
+    let isCompactHeight: Bool
     let titles: [String]
     let onReselect: (Int) -> Void
 
@@ -425,19 +801,25 @@ private struct NativeMenuTabBar: UIViewRepresentable {
         Coordinator(selection: $selection, onReselect: onReselect)
     }
 
-    func makeUIView(context: Context) -> UITabBar {
-        let tabBar = UITabBar()
+    func makeUIView(context: Context) -> LegacyCompatibleMenuTabBar {
+        let tabBar = LegacyCompatibleMenuTabBar()
         tabBar.delegate = context.coordinator
+        configureAppearance(of: tabBar)
         tabBar.items = makeItems()
         if let items = tabBar.items, items.indices.contains(selection) {
             tabBar.selectedItem = items[selection]
         }
+        tabBar.setSelectedIndex(selection, animated: false)
         return tabBar
     }
 
-    func updateUIView(_ tabBar: UITabBar, context: Context) {
+    func updateUIView(
+        _ tabBar: LegacyCompatibleMenuTabBar,
+        context: Context
+    ) {
         context.coordinator.selection = $selection
         context.coordinator.onReselect = onReselect
+        configureAppearance(of: tabBar)
 
         if tabBar.items?.count != systemImages.count {
             tabBar.items = makeItems()
@@ -446,17 +828,18 @@ private struct NativeMenuTabBar: UIViewRepresentable {
         if let items = tabBar.items {
             for index in items.indices where titles.indices.contains(index) {
                 items[index].title = titles[index]
-                items[index].image = UIImage(systemName: systemImages[index])
+                items[index].image = itemImage(at: index)
             }
             if items.indices.contains(selection) {
                 tabBar.selectedItem = items[selection]
             }
         }
+        tabBar.setSelectedIndex(selection, animated: true)
     }
 
     func sizeThatFits(
         _ proposal: ProposedViewSize,
-        uiView: UITabBar,
+        uiView: LegacyCompatibleMenuTabBar,
         context: Context
     ) -> CGSize? {
         let width = proposal.width ?? uiView.bounds.width
@@ -470,9 +853,332 @@ private struct NativeMenuTabBar: UIViewRepresentable {
         systemImages.indices.map { index in
             UITabBarItem(
                 title: titles.indices.contains(index) ? titles[index] : nil,
-                image: UIImage(systemName: systemImages[index]),
+                image: itemImage(at: index),
                 tag: index
             )
+        }
+    }
+
+    private func itemImage(at index: Int) -> UIImage? {
+        let configuration = UIImage.SymbolConfiguration(
+            pointSize: isCompactHeight ? 25 : 23,
+            weight: .regular
+        )
+        return UIImage(
+            systemName: systemImages[index],
+            withConfiguration: configuration
+        )
+    }
+
+    private func configureAppearance(of tabBar: LegacyCompatibleMenuTabBar) {
+        tabBar.tintColor = .systemBlue
+        tabBar.isTranslucent = true
+        tabBar.isOpaque = false
+        tabBar.backgroundColor = .clear
+        tabBar.backgroundImage = UIImage()
+        tabBar.shadowImage = UIImage()
+        tabBar.isCompactHeightLayout = isCompactHeight
+
+        let appearance = tabBar.standardAppearance.copy()
+        appearance.configureWithTransparentBackground()
+        appearance.backgroundColor = .clear
+        appearance.backgroundEffect = nil
+        appearance.shadowColor = .clear
+
+        if isCompactHeight {
+            let normalFont = UIFont.systemFont(ofSize: 13, weight: .regular)
+            let selectedFont = UIFont.systemFont(ofSize: 13, weight: .semibold)
+            appearance.inlineLayoutAppearance.normal.titleTextAttributes[
+                .font
+            ] = normalFont
+            appearance.inlineLayoutAppearance.selected.titleTextAttributes[
+                .font
+            ] = selectedFont
+            appearance.compactInlineLayoutAppearance.normal.titleTextAttributes[
+                .font
+            ] = normalFont
+            appearance.compactInlineLayoutAppearance.selected.titleTextAttributes[
+                .font
+            ] = selectedFont
+        }
+
+        if #available(iOS 26.0, *) {
+            // Tint UIKit's own Liquid Glass selection pill instead of replacing
+            // it. Its blur, refraction, morph, and press effects remain native.
+            appearance.selectionIndicatorImage = nil
+            appearance.selectionIndicatorTintColor =
+                UIColor.systemBlue.withAlphaComponent(0.18)
+            tabBar.usesLegacySelectionPill = false
+        } else {
+            // iOS 17/18 has no native floating tab capsule. Suppress UIKit's
+            // rectangular bar/indicator and render a material outer pill with
+            // a live, animated monochrome-blue selection pill below.
+            appearance.selectionIndicatorImage = UIImage()
+            appearance.selectionIndicatorTintColor = .clear
+            tabBar.usesLegacySelectionPill = true
+
+            let layouts = [
+                appearance.stackedLayoutAppearance,
+                appearance.inlineLayoutAppearance,
+                appearance.compactInlineLayoutAppearance,
+            ]
+            for layout in layouts {
+                layout.normal.iconColor = .secondaryLabel
+                layout.normal.titleTextAttributes[.foregroundColor] =
+                    UIColor.secondaryLabel
+                layout.selected.iconColor = .systemBlue
+                layout.selected.titleTextAttributes[.foregroundColor] =
+                    UIColor.systemBlue
+            }
+        }
+        tabBar.standardAppearance = appearance
+        tabBar.scrollEdgeAppearance = appearance
+    }
+
+    final class LegacyCompatibleMenuTabBar: UITabBar {
+        var isCompactHeightLayout = false {
+            didSet {
+                guard oldValue != isCompactHeightLayout else { return }
+                setNeedsLayout()
+            }
+        }
+
+        var usesLegacySelectionPill = false {
+            didSet {
+                legacyBarPill.isHidden = !usesLegacySelectionPill
+                legacySelectionPill.isHidden = !usesLegacySelectionPill
+                setNeedsLayout()
+            }
+        }
+
+        private let legacyBarPill = LegacyBarPillView()
+        private let legacySelectionPill = LegacySelectionPillView()
+        private var selectedIndex = 0
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            legacyBarPill.isHidden = true
+            legacyBarPill.isUserInteractionEnabled = false
+            legacySelectionPill.isHidden = true
+            legacySelectionPill.isUserInteractionEnabled = false
+            addSubview(legacyBarPill)
+            addSubview(legacySelectionPill)
+        }
+
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            legacyBarPill.isHidden = true
+            legacyBarPill.isUserInteractionEnabled = false
+            legacySelectionPill.isHidden = true
+            legacySelectionPill.isUserInteractionEnabled = false
+            addSubview(legacyBarPill)
+            addSubview(legacySelectionPill)
+        }
+
+        func setSelectedIndex(_ index: Int, animated: Bool) {
+            let changed = selectedIndex != index
+            selectedIndex = index
+            updateLegacySelectionPill(
+                animated: animated && changed && window != nil
+            )
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            updateLegacyBarLayout()
+            updateLegacySelectionPill(animated: false)
+        }
+
+        private var legacyBarFrame: CGRect {
+            let maximumWidth: CGFloat = isCompactHeightLayout ? 420 : 360
+            let proportionalWidth = bounds.width * 0.84
+            let width = min(
+                max(0, bounds.width - 24),
+                proportionalWidth,
+                maximumWidth
+            )
+            return CGRect(
+                x: (bounds.width - width) / 2,
+                y: 2,
+                width: width,
+                height: max(0, bounds.height - 4)
+            )
+        }
+
+        private func legacyItemControls() -> [UIControl] {
+            subviews
+                .compactMap { $0 as? UIControl }
+                .sorted { $0.frame.minX < $1.frame.minX }
+        }
+
+        private func updateLegacyBarLayout() {
+            guard usesLegacySelectionPill else {
+                setSystemBarBackgroundHidden(false)
+                return
+            }
+
+            setSystemBarBackgroundHidden(true)
+            let barFrame = legacyBarFrame
+            legacyBarPill.frame = barFrame
+            legacyBarPill.updateCornerRadius(barFrame.height / 2)
+
+            let itemControls = legacyItemControls()
+            guard !itemControls.isEmpty else { return }
+            let contentFrame = barFrame.insetBy(dx: 8, dy: 0)
+            let itemWidth = contentFrame.width / CGFloat(itemControls.count)
+            for (index, control) in itemControls.enumerated() {
+                control.frame = CGRect(
+                    x: contentFrame.minX + (CGFloat(index) * itemWidth),
+                    y: contentFrame.minY,
+                    width: itemWidth,
+                    height: contentFrame.height
+                )
+            }
+
+            insertSubview(legacyBarPill, at: 0)
+            if let firstItem = itemControls.first {
+                insertSubview(legacySelectionPill, belowSubview: firstItem)
+            }
+        }
+
+        private func setSystemBarBackgroundHidden(_ hidden: Bool) {
+            for view in subviews {
+                let className = NSStringFromClass(type(of: view))
+                if className.contains("BarBackground") {
+                    view.isHidden = hidden
+                }
+            }
+        }
+
+        private func updateLegacySelectionPill(animated: Bool) {
+            guard usesLegacySelectionPill else { return }
+
+            let itemControls = legacyItemControls()
+            guard itemControls.indices.contains(selectedIndex) else {
+                return
+            }
+
+            if let firstItem = itemControls.first {
+                insertSubview(legacySelectionPill, belowSubview: firstItem)
+            }
+
+            let itemFrame = itemControls[selectedIndex].frame
+            // Slightly overlap each slot so the selected pill feels broader
+            // than the icon/title pair while remaining inside the outer pill.
+            let proposedFrame = itemFrame.insetBy(dx: -5, dy: 4)
+            let targetFrame = proposedFrame.intersection(
+                legacyBarFrame.insetBy(dx: 4, dy: 4)
+            )
+            legacySelectionPill.updateCornerRadius(
+                max(0, targetFrame.height / 2)
+            )
+
+            let updates = {
+                self.legacySelectionPill.frame = targetFrame
+                self.legacySelectionPill.alpha = 1
+            }
+            if animated {
+                UIView.animate(
+                    withDuration: 0.36,
+                    delay: 0,
+                    usingSpringWithDamping: 0.82,
+                    initialSpringVelocity: 0.18,
+                    options: [.beginFromCurrentState, .allowUserInteraction],
+                    animations: updates
+                )
+            } else {
+                updates()
+            }
+        }
+    }
+
+    final class LegacyBarPillView: UIView {
+        private let materialView = UIVisualEffectView(
+            effect: UIBlurEffect(style: .systemUltraThinMaterial)
+        )
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isOpaque = false
+
+            layer.shadowColor = UIColor.black.cgColor
+            layer.shadowOpacity = 0.2
+            layer.shadowRadius = 14
+            layer.shadowOffset = CGSize(width: 0, height: 6)
+
+            materialView.isUserInteractionEnabled = false
+            materialView.clipsToBounds = true
+            addSubview(materialView)
+        }
+
+        required init?(coder: NSCoder) {
+            nil
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            materialView.frame = bounds
+            layer.shadowPath = UIBezierPath(
+                roundedRect: bounds,
+                cornerRadius: layer.cornerRadius
+            ).cgPath
+        }
+
+        func updateCornerRadius(_ radius: CGFloat) {
+            layer.cornerRadius = radius
+            materialView.layer.cornerRadius = radius
+            materialView.layer.borderWidth = 0.65
+            materialView.layer.borderColor =
+                UIColor.separator.withAlphaComponent(0.22).cgColor
+            setNeedsLayout()
+        }
+    }
+
+    final class LegacySelectionPillView: UIView {
+        private let materialView = UIVisualEffectView(
+            effect: UIBlurEffect(style: .systemUltraThinMaterial)
+        )
+        private let blueTintView = UIView()
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isOpaque = false
+
+            layer.shadowColor = UIColor.systemBlue.cgColor
+            layer.shadowOpacity = 0.1
+            layer.shadowRadius = 8
+            layer.shadowOffset = CGSize(width: 0, height: 2)
+
+            materialView.isUserInteractionEnabled = false
+            materialView.clipsToBounds = true
+            addSubview(materialView)
+
+            blueTintView.backgroundColor =
+                UIColor.systemBlue.withAlphaComponent(0.11)
+            materialView.contentView.addSubview(blueTintView)
+        }
+
+        required init?(coder: NSCoder) {
+            nil
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            materialView.frame = bounds
+            blueTintView.frame = materialView.bounds
+            layer.shadowPath = UIBezierPath(
+                roundedRect: bounds,
+                cornerRadius: layer.cornerRadius
+            ).cgPath
+        }
+
+        func updateCornerRadius(_ radius: CGFloat) {
+            layer.cornerRadius = radius
+            materialView.layer.cornerRadius = radius
+            materialView.layer.borderWidth = 0.75
+            materialView.layer.borderColor =
+                UIColor.systemBlue.withAlphaComponent(0.2).cgColor
+            setNeedsLayout()
         }
     }
 
@@ -654,7 +1360,11 @@ private struct SafeAreaProtectedMenuTabContent<Content: View>: View {
         // key-window insets. On iOS 26+ SwiftUI gets it right, and padding again would
         // double-inset the column. Tabs that draw their own edge-to-edge background skip
         // this wrapper entirely (see MenuTabView).
-        GeometryReader { geometry in
+        if !appliesLegacyLandscapeInsets {
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            GeometryReader { geometry in
             let isLandscapePhone = geometry.size.width > geometry.size.height
                 && UIDevice.current.userInterfaceIdiom == .phone
             let systemProvidesInset = geometry.safeAreaInsets.leading > 0
@@ -678,9 +1388,10 @@ private struct SafeAreaProtectedMenuTabContent<Content: View>: View {
                 .onChange(of: geometry.size) { _, _ in
                     safeAreaInsets = KeyWindowSafeArea.horizontalInsets()
                 }
-        }
-        .onAppear {
-            safeAreaInsets = KeyWindowSafeArea.horizontalInsets()
+            }
+            .onAppear {
+                safeAreaInsets = KeyWindowSafeArea.horizontalInsets()
+            }
         }
     }
 }

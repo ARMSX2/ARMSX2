@@ -16,6 +16,7 @@ struct AnimatedLibraryBackgroundView: View {
     let fitMode: BackgroundFitMode
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var frames: [AnimatedBackgroundLoader.Frame] = []
+    @State private var staticImage: UIImage?
     @State private var loadFailed = false
 
     var body: some View {
@@ -26,8 +27,19 @@ struct AnimatedLibraryBackgroundView: View {
                 AnimatedFramePlayer(frames: frames, fitMode: fitMode)
             }
         }
-        .task(id: url.path) {
-            guard frames.isEmpty, !loadFailed else { return }
+        .task(id: "\(url.path)|\(reduceMotion)") {
+            if staticImage == nil {
+                let firstFrameLoader = Task.detached(priority: .utility) {
+                    AnimatedBackgroundLoader.staticImage(from: url)
+                }
+                staticImage = await withTaskCancellationHandler {
+                    await firstFrameLoader.value
+                } onCancel: {
+                    firstFrameLoader.cancel()
+                }
+            }
+
+            guard !reduceMotion, frames.isEmpty, !loadFailed else { return }
             // Decode off the MainActor so a large multi-frame image cannot
             // stall the UI while the library is presented.
 			let loader = Task.detached(priority: .utility) {
@@ -53,8 +65,8 @@ struct AnimatedLibraryBackgroundView: View {
     /// payload can't be played.
     private var staticFirstFrame: some View {
         GeometryReader { geometry in
-            if let image = AnimatedBackgroundLoader.staticImage(from: url) {
-                Image(uiImage: image)
+            if let staticImage {
+                Image(uiImage: staticImage)
                     .resizable()
                     .applyBackgroundFitMode(fitMode)
                     .frame(width: geometry.size.width, height: geometry.size.height)
@@ -162,6 +174,11 @@ private final class AnimatedBackgroundImageView: UIView {
         guard !releasedForGameplay, displayLink == nil, !frames.isEmpty,
               UIApplication.shared.applicationState != .background else { return }
         let link = CADisplayLink(target: self, selector: #selector(tick))
+        link.preferredFrameRateRange = CAFrameRateRange(
+            minimum: 10,
+            maximum: 30,
+            preferred: 30
+        )
         link.add(to: .main, forMode: .common)
         displayLink = link
     }
@@ -214,6 +231,7 @@ enum AnimatedBackgroundLoader {
     /// or CPU on handheld devices.
     static let maxFrames = 120
     static let maxFrameDimension: CGFloat = 1280
+    static let maxDecodedBytes = 160 * 1024 * 1024
 
     /// True when the file at `url` is a multi-frame image that the loader will
     /// animate. Used to decide between the animated and static render paths.
@@ -232,11 +250,16 @@ enum AnimatedBackgroundLoader {
 
         var frames: [Frame] = []
         frames.reserveCapacity(count)
+        var decodedBytes = 0
         for i in 0..<count {
 			guard !Task.isCancelled else { return [] }
             guard let cgImage = CGImageSourceCreateImageAtIndex(source, i, nil) else { continue }
             // Skip oversized frames to avoid memory spikes; treat as static.
             if CGFloat(cgImage.width) > maxFrameDimension || CGFloat(cgImage.height) > maxFrameDimension {
+                return []
+            }
+            decodedBytes += cgImage.bytesPerRow * cgImage.height
+            guard decodedBytes <= maxDecodedBytes else {
                 return []
             }
             let image = UIImage(cgImage: cgImage)

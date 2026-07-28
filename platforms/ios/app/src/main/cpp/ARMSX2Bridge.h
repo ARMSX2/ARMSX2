@@ -111,6 +111,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 
 // Permanently releases the selected optional runtime resources for the current VM session.
 + (void)releaseNonEmulationResources:(NSUInteger)releaseFlags;
++ (BOOL)isEmulationOnlyModeActive;
 
 // Accessibility: structured device stats for the VoiceOver HUD mirror.
 + (nonnull NSDictionary<NSString *, id> *)deviceStatsForAccessibility;

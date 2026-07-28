@@ -207,7 +207,7 @@ struct MulticolorAmbientBackground: View {
             y: CGFloat(sin(time * 0.23)) * 130 + 180
           )
 
-        Canvas { context, size in
+        Canvas(rendersAsynchronously: true) { context, size in
           let particleColor = theme.ribbonColor(index: 2, time: time)
           for index in 0..<26 {
             let phase = Double(index) * 1.73
@@ -258,7 +258,7 @@ struct LightSpeedBackground: View {
           curvature: theme.sharedPaletteGradientCurvature
         )
 
-        Canvas { context, size in
+        Canvas(rendersAsynchronously: true) { context, size in
           let vanishingPoint = vanishingPoint(size: size, time: time)
 
           drawBackgroundNebulas(
@@ -546,7 +546,7 @@ struct SpatialRetroBackground: View {
             y: CGFloat(cos(time * 0.07)) * 80
           )
 
-        Canvas { context, size in
+        Canvas(rendersAsynchronously: true) { context, size in
           drawPerspectiveGrid(
             context: &context,
             size: size,
@@ -754,7 +754,7 @@ struct TowersOrbsBackground: View {
           curvature: theme.sharedPaletteGradientCurvature
         )
 
-        Canvas { context, size in
+        Canvas(rendersAsynchronously: true) { context, size in
           drawOrbitingOrbs(
             context: &context,
             size: size,
@@ -4032,7 +4032,7 @@ struct FaceButtonsBackground: View {
             )
         }
 
-        Canvas { context, size in
+        Canvas(rendersAsynchronously: true) { context, size in
           if showsLightBands && settings.backgrounds.faceButtonsShowsLightBands {
             drawWeavingLightBands(
               context: &context,
@@ -4407,7 +4407,7 @@ struct PlayStationPortableBlurBackground: View {
         )
 
         if settings.showsRibbons {
-          Canvas { context, size in
+          Canvas(rendersAsynchronously: true) { context, size in
             let ribbonCount = max(1, Int(settings.ribbonCount.rounded()))
             for index in 0..<ribbonCount {
               drawRibbon(
@@ -4608,7 +4608,7 @@ struct PlayStation3SplinesBackground: View {
           endRadius: 520
         )
 
-        Canvas { context, size in
+        Canvas(rendersAsynchronously: true) { context, size in
           if settings.showsParticles {
             drawParticles(
               context: &context,
@@ -4894,7 +4894,7 @@ struct PlayStation4ParticlesBackground: View {
           endRadius: 520
         )
 
-        Canvas { context, size in
+        Canvas(rendersAsynchronously: true) { context, size in
           if settings.showsParticles {
             drawParticles(
               context: &context,
@@ -5173,7 +5173,7 @@ struct PlayStation4WavesBackground: View {
         }
 
         if settings.showsParticles {
-          Canvas { context, size in
+          Canvas(rendersAsynchronously: true) { context, size in
             drawParticles(
               context: &context,
               size: size,
@@ -5184,7 +5184,7 @@ struct PlayStation4WavesBackground: View {
         }
 
         if showsWaves && settings.showsWaves {
-          Canvas { context, size in
+          Canvas(rendersAsynchronously: true) { context, size in
             drawWaves(
               context: &context,
               size: size,
@@ -5411,7 +5411,7 @@ struct PlayStationRibbonsBackground: View {
             y: CGFloat(sin(time * 0.06)) * 120 - 120
           )
 
-        Canvas { context, size in
+        Canvas(rendersAsynchronously: true) { context, size in
           if settings.showsPanels {
             drawLuminousPanels(
               context: &context,
