@@ -1042,6 +1042,11 @@ enum class TouchButtonId(val label: String, val keycode: Int, val kind: Kind) {
     // as the SAVE_STATE/LOAD_STATE hotkeys. Opt-in (disabled in the default layout).
     SAVE_STATE("SAVE", 0, Kind.STATEACTION),
     LOAD_STATE("LOAD", 0, Kind.STATEACTION),
+    // Screenshot, same shape as the save/load buttons. Lives here rather than in the pause menu:
+    // the core writes the PNG and confirms on the OSD, which is hidden while the menu is up, so a
+    // menu entry left you staring at nothing until you backed out and wondered if it had worked.
+    // On the overlay the confirmation appears immediately, where you are already looking.
+    SCREENSHOT("SHOT", 0, Kind.STATEACTION),
 
     // Macro / combo buttons: each fires a user-chosen SET of pad buttons at once
     // (e.g. R1+R2+R3). Emits no keycode of its own; the set is configured per macro
@@ -1218,6 +1223,7 @@ data class TouchLayout(val buttons: List<TouchButtonCfg>) {
                 // Quick save/load-state buttons — also OPT-IN (disabled). Second row.
                 TouchButtonCfg(TouchButtonId.SAVE_STATE, 0.30f, 0.54f, 44f, enabled = false),
                 TouchButtonCfg(TouchButtonId.LOAD_STATE, 0.38f, 0.54f, 44f, enabled = false),
+                TouchButtonCfg(TouchButtonId.SCREENSHOT, 0.46f, 0.54f, 44f, enabled = false),
                 // Analog sticks — bottom inside, between DPad/face cluster
                 // and the center, so thumb travel is short.
                 TouchButtonCfg(TouchButtonId.L_STICK,  0.28f, 0.80f, 130f),

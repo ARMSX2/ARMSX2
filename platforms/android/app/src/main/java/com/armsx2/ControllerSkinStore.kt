@@ -117,6 +117,20 @@ object ControllerSkinStore {
         put("analog_base_right", "ic_controller_analog_base_right.png")
         put("analog_stick_left", "ic_controller_analog_stick_left.png")
         put("analog_stick_right", "ic_controller_analog_stick_right.png")
+        // The four macro buttons. A macro can already fire any pad input -- including L-Stick
+        // Left/Right -- so a racing layout of steer/steer/brake/accelerate was buildable, but the
+        // buttons were stuck with the generic M1-M4 artwork because there was no skin slot for
+        // them. Reported by David, who reasonably tried "ic_controller_m1_button.png" and got
+        // silence. Both spellings are accepted below.
+        for (i in 1..4) put("macro$i", "ic_controller_macro${i}_button.png")
+    }
+
+    /** Spellings people actually ship, mapped to the canonical key. */
+    private val FILE_ALIASES: Map<String, String> = buildMap {
+        for (i in 1..4) {
+            put("m$i", "macro$i")
+            put("macro_$i", "macro$i")
+        }
     }
     /** Canonical logical key for an incoming image filename, accepting BOTH the
      *  bundled iOS scheme (`ic_controller_<key>_button.png`) AND the bare names
@@ -130,11 +144,17 @@ object ControllerSkinStore {
         // Note the d-pad's own "left"/"right" keys are distinct from the sticks'
         // "analog_stick_left"/"analog_stick_right" — the prefix keeps them apart.
         val core = n.removeSuffix(".png").removePrefix("ic_controller_").removeSuffix("_button")
-        return if (FILE.containsKey(core)) core else null
+        val canonical = FILE_ALIASES[core] ?: core
+        return if (FILE.containsKey(canonical)) canonical else null
     }
 
     // Import caps (generous but bounded — phone storage).
-    private const val MAX_IMAGES = 24
+    //
+    // Must stay ABOVE the number of keys in FILE, with headroom. There are 28 (16 buttons, 8
+    // analog, 4 macro) and this used to sit at 24, so a complete pack would have had its last
+    // few images dropped on import with no error — the images simply would not appear. Adding a
+    // skin slot means checking this number.
+    private const val MAX_IMAGES = 40
     private const val MAX_IMAGE_BYTES = 8L * 1024 * 1024
 
     private fun root(ctx: Context): File = File(ctx.filesDir, "controllerskins").apply { mkdirs() }
