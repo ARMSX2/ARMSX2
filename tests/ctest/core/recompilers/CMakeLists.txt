@@ -72,6 +72,7 @@ add_pcsx2_test(recompiler_tests
 	ee_timer_count_read_race_tests.cpp
 	vtlb_get_guest_address_tests.cpp
 	vif_unpack_dynarec_tests.cpp
+	ee_vu0_cop2_maxmini_conv_tests.cpp
 	vu0_harness_validation_tests.cpp
 	vu0_alu_upper_tests.cpp
 	vu0_alu_lower_tests.cpp
