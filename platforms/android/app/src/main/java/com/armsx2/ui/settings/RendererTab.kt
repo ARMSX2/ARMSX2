@@ -141,8 +141,11 @@ fun RendererTab(state: MutableState<Settings>) {
             SettingsDivider()
             SegmentedRow(
                 label = str("renderer.displayMode.label"),
-                options = listOf("Stretch", "Auto", "4:3", "16:9", "10:7"),
-                selectedIndex = s.aspectRatio.coerceIn(0, 4),
+                // Adding an option here means widening BOTH clamps: this one and
+                // EmulationMenuViewModel.setAspectRatio. A clamp left at the old maximum does not
+                // fail loudly -- it silently snaps the new choice back to the previous entry.
+                options = listOf("Stretch", "Auto", "4:3", "16:9", "10:7", "21:9"),
+                selectedIndex = s.aspectRatio.coerceIn(0, 5),
                 description = str("renderer.displayMode.description"),
                 onChange = { apply(s.copy(aspectRatio = it)) },
             )
@@ -151,8 +154,8 @@ fun RendererTab(state: MutableState<Settings>) {
             // the aspect above. Handy for games that render FMVs at a different ratio.
             SegmentedRow(
                 label = str("renderer.fmvAspect.label"),
-                options = listOf("Off", "Auto", "4:3", "16:9", "10:7"),
-                selectedIndex = s.fmvAspectRatio.coerceIn(0, 4),
+                options = listOf("Off", "Auto", "4:3", "16:9", "10:7", "21:9"),
+                selectedIndex = s.fmvAspectRatio.coerceIn(0, 5),
                 description = str("renderer.fmvAspect.description"),
                 onChange = { apply(s.copy(fmvAspectRatio = it)) },
             )

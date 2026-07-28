@@ -1535,4 +1535,5 @@ val EN: Map<String, String> = mapOf(
     "touch.settingsButton.description" to "Open in-game settings",
     "touch.stateAction.load" to "LOAD",
     "touch.stateAction.save" to "SAVE",
+    "touch.stateAction.screenshot" to "SHOT",
 )

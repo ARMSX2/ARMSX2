@@ -960,7 +960,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAspectRatio(JNIEnv *env, jclass clazz,
 // FMV Aspect Ratio override — applied only while an FMV/MPEG is playing (Counters.cpp
 // swaps EmuConfig.CurrentAspectRatio to this on FMV state transitions, restoring the
 // generic AspectRatio when the FMV ends). 0 Off (use the generic aspect) · 1 Auto
-// 4:3/3:2 · 2 4:3 · 3 16:9 · 4 10:7. Mirrors setAspectRatio; updates EmuConfig.GS live
+// 4:3/3:2 · 2 4:3 · 3 16:9 · 4 10:7 · 5 21:9. Mirrors setAspectRatio; updates EmuConfig.GS live
 // so the next FMV transition honours a change made mid-session.
 extern "C"
 JNIEXPORT void JNICALL

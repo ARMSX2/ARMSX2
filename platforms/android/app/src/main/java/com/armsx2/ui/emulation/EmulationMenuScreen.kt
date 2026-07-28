@@ -799,6 +799,7 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
             2 to "4:3",
             3 to "16:9",
             4 to "10:7",
+            5 to "21:9",
         ),
         selected = settings.aspectRatio,
         onSelect = viewModel::setAspectRatio,

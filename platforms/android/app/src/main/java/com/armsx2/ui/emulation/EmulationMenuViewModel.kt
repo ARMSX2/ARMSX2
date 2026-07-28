@@ -225,7 +225,7 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
         NativeApp.renderUpscalemultiplier(normalized)
     }
 
-    fun setAspectRatio(value: Int) = updateSettings { it.copy(aspectRatio = value.coerceIn(0, 4)) }
+    fun setAspectRatio(value: Int) = updateSettings { it.copy(aspectRatio = value.coerceIn(0, 5)) }
 
     fun setTextureFiltering(value: Int) = updateSettings { it.copy(textureFiltering = value.coerceIn(0, 3)) }
 
@@ -353,7 +353,9 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
     }
 
     private fun actionCount(tab: EmulationMenuTab): Int = when (tab) {
-        EmulationMenuTab.Session -> 4
+        // MUST match SessionPane's action list length. This was 4 against a list of 5, so the pad
+        // could never reach Close at all.
+        EmulationMenuTab.Session -> 5
         EmulationMenuTab.Graphics -> 4
         EmulationMenuTab.Fixes -> 0
         EmulationMenuTab.Performance -> 3

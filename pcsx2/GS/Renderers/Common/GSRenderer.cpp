@@ -371,6 +371,8 @@ static float GetCurrentAspectRatioFloat(bool is_progressive)
 			return 16.0f / 9.0f;
 		case AspectRatioType::R10_7:
 			return 10.0f / 7.0f;
+		case AspectRatioType::R21_9:
+			return 21.0f / 9.0f;
 	}
 }
 
@@ -402,6 +404,10 @@ static GSVector4 CalculateDrawDstRect(s32 window_width, s32 window_height, const
 	else if (EmuConfig.CurrentAspectRatio == AspectRatioType::R10_7)
 	{
 		targetAr = 10.0f / 7.0f;
+	}
+	else if (EmuConfig.CurrentAspectRatio == AspectRatioType::R21_9)
+	{
+		targetAr = 21.0f / 9.0f;
 	}
 
 	const float crop_adjust = (static_cast<float>(src_rect.width()) / static_cast<float>(src_size.x)) /

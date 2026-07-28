@@ -228,6 +228,11 @@ enum class AspectRatioType : u8
 	R4_3,
 	R16_9,
 	R10_7,
+	// Ultrawide. Only meaningful with a widescreen/ultrawide patch applied -- without one the
+	// game still renders 4:3 content and this just crops or pillarboxes it. Requested for fold
+	// and tablet users, DeX, and phones driving a 21:9 display, who otherwise had to use
+	// Stretch and accept the distortion.
+	R21_9,
 	MaxCount
 };
 
@@ -238,6 +243,11 @@ enum class FMVAspectRatioSwitchType : u8
 	R4_3,
 	R16_9,
 	R10_7,
+	// Ultrawide. Only meaningful with a widescreen/ultrawide patch applied -- without one the
+	// game still renders 4:3 content and this just crops or pillarboxes it. Requested for fold
+	// and tablet users, DeX, and phones driving a 21:9 display, who otherwise had to use
+	// Stretch and accept the distortion.
+	R21_9,
 	MaxCount
 };
 

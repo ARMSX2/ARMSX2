@@ -876,8 +876,11 @@ data class Settings(
         if (emitSink != null) return
         // Live convenience pokes. Harmless when the GS is closed; commitSettings()
         // below performs the authoritative apply for a cold start / restart.
-        NativeApp.setAspectRatio(aspectRatio.coerceIn(0, 4))
-        NativeApp.setFmvAspectRatio(fmvAspectRatio.coerceIn(0, 4))
+        // 0..5 — the upper bound is the LAST aspect index, so adding a ratio means widening this
+        // too. Left at 4 it silently sent 10:7 to the core no matter what the picker showed, which
+        // is the worst version of this bug: the UI looks correct and nothing happens.
+        NativeApp.setAspectRatio(aspectRatio.coerceIn(0, 5))
+        NativeApp.setFmvAspectRatio(fmvAspectRatio.coerceIn(0, 5))
         NativeApp.renderTvShader(tvShader.coerceIn(0, 7))
         NativeApp.renderShadeBoost(
             shadeBoost,
@@ -1083,6 +1086,7 @@ data class Settings(
                 "4:3" -> 2
                 "16:9" -> 3
                 "10:7" -> 4
+                "21:9" -> 5
                 else -> this.aspectRatio
             },
             fmvAspectRatio = when (strAt("EmuCore/GS/FMVAspectRatioSwitch")) {
@@ -1091,6 +1095,7 @@ data class Settings(
                 "4:3" -> 2
                 "16:9" -> 3
                 "10:7" -> 4
+                "21:9" -> 5
                 else -> this.fmvAspectRatio
             },
             deinterlaceMode = intAt("EmuCore/GS/deinterlace_mode") ?: this.deinterlaceMode,
@@ -1262,19 +1267,21 @@ data class Settings(
      *  [applyGsLive] (running VM). Keep the key list in sync with
      *  Pcsx2Config::GSOptions::LoadSave. */
     private fun writeGsToNative() {
-        val aspectRatioName = when (aspectRatio.coerceIn(0, 4)) {
+        val aspectRatioName = when (aspectRatio.coerceIn(0, 5)) {
             0 -> "Stretch"
             2 -> "4:3"
             3 -> "16:9"
             4 -> "10:7"
+            5 -> "21:9"
             else -> "Auto 4:3/3:2"
         }
         put("EmuCore/GS", "AspectRatio", "string", aspectRatioName)
-        val fmvAspectRatioName = when (fmvAspectRatio.coerceIn(0, 4)) {
+        val fmvAspectRatioName = when (fmvAspectRatio.coerceIn(0, 5)) {
             1 -> "Auto 4:3/3:2"
             2 -> "4:3"
             3 -> "16:9"
             4 -> "10:7"
+            5 -> "21:9"
             else -> "Off"
         }
         put("EmuCore/GS", "FMVAspectRatioSwitch", "string", fmvAspectRatioName)
