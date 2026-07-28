@@ -66,15 +66,7 @@ fun InfoTab(game: GameInfo?) {
     // identifying the image directly. That reads the boot ELF, so it runs on IO and streams in when
     // ready rather than blocking composition; the row simply appears a moment later.
     val crc by androidx.compose.runtime.produceState<String?>(initialValue = null, game.uri) {
-        value = withContext(Dispatchers.IO) {
-            runCatching {
-                if (NativeApp.getGameSerial()?.takeIf { it.isNotBlank() } == serial) {
-                    NativeApp.getGameCRC()?.takeIf { it.isNotBlank() && it != "00000000" }
-                } else {
-                    null
-                }
-            }.getOrNull() ?: com.armsx2.DiscIdentity.crcOf(game.uri)
-        }
+        value = com.armsx2.DiscIdentity.resolve(game.uri, serial)
     }
 
     val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -122,7 +114,9 @@ fun InfoTab(game: GameInfo?) {
             Spacer(Modifier.height(10.dp))
             InfoRow(str("info.title"), game.title, clipboard)
             InfoRow(str("info.serial"), serial ?: "—", clipboard)
-            crc?.let { InfoRow(str("info.crc"), it, clipboard) }
+            // Always present, so the row does not appear mid-identification and shove the rows
+            // below it down. This is the value that goes in the PNACH filename.
+            InfoRow(str("info.crc"), crc ?: "—", clipboard)
             InfoRow(str("info.region"), regionName(game.serial), clipboard)
             InfoRow(str("info.container"), game.extension.takeIf { it.isNotBlank() } ?: "—", clipboard)
             InfoRow(str("info.platform"), game.platform.name, clipboard)

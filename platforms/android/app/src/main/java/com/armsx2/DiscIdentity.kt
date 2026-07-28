@@ -41,6 +41,34 @@ object DiscIdentity {
 
     fun crcOf(uri: android.net.Uri): String? = of(uri)?.crc
 
+    /** Eight hex digits, as CRCs are rendered and as PNACH filenames spell them. */
+    val CRC_PATTERN = Regex("[0-9A-Fa-f]{8}")
+
+    /**
+     * The CRC for [game], preferring the running VM and falling back to identifying the image.
+     *
+     * One copy, called from the Info tab and from the library's long-press sheet. It was already
+     * duplicated once; a third copy was going to drift.
+     *
+     * Reads the VM only when the serial it reports matches this game — otherwise a different
+     * running game would lend its CRC to whatever the user long-pressed.
+     */
+    suspend fun resolve(uri: android.net.Uri, serial: String?): String? =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val wanted = serial?.takeIf { it.isNotBlank() }
+                if (wanted != null &&
+                    kr.co.iefriends.pcsx2.NativeApp.getGameSerial()?.takeIf { it.isNotBlank() } == wanted
+                ) {
+                    kr.co.iefriends.pcsx2.NativeApp.getGameCRC()
+                        ?.takeIf { it.matches(CRC_PATTERN) && it != "00000000" }
+                        ?.uppercase()
+                } else {
+                    null
+                }
+            }.getOrNull() ?: crcOf(uri)?.uppercase()
+        }
+
     /** Internal-use path the native side expects for [uri]. Also used by [com.armsx2.RaLibrary]
      *  to hash a disc for RetroAchievements identification. */
     fun nativePath(uri: android.net.Uri): String =

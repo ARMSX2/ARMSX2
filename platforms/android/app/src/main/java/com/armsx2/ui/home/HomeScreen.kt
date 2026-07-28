@@ -641,6 +641,12 @@ fun HomeScreen(
     }
 
     menuGame?.let { game ->
+        // Tri-state on purpose: null while identifying, blank when the image cannot be identified.
+        // produceState alone cannot tell those apart — both are null — so an unidentifiable game
+        // would sit on "…" forever, reading as still-loading when it is actually unknown.
+        val menuCRC by androidx.compose.runtime.produceState<String?>(initialValue = null, game.uri) {
+            value = com.armsx2.DiscIdentity.resolve(game.uri, game.serial) ?: ""
+        }
         ModalBottomSheet(onDismissRequest = { menuGame = null }) {
             Column(
                 Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 8.dp, end = 8.dp, bottom = 20.dp),
@@ -652,6 +658,21 @@ fun HomeScreen(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                )
+                // Serial and CRC — the two halves of a <SERIAL>_<CRC>.pnach filename.
+                val identity = buildList {
+                    game.serial?.takeIf { it.isNotBlank() }?.let(::add)
+                    add("CRC " + when (menuCRC) {
+                        null -> "…"   // still identifying
+                        "" -> "—"     // identified as unknown
+                        else -> menuCRC
+                    })
+                }.joinToString("  ·  ")
+                Text(
+                    identity,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp),
                 )
                 GameMenuAction("▶", str("action.play")) {
                     menuGame = null
