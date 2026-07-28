@@ -7,6 +7,8 @@
 #
 # Platform coverage mirrors build-all.yml's guardrail:
 #   * PC arm64 Qt GUI  -> macOS / Linux (4K+16K) / Windows   (blocking for release)
+#   * libretro core     -> RetroArch, linux arm64             (non-blocking, attach-if-present)
+#   * SDL kmsdrm        -> bare-display handhelds, linux arm64 (non-blocking, attach-if-present)
 #   * Android APK       -> sideloadable, debug-key-signed     (non-blocking, attach-if-present)
 #   * iOS               -> unsigned .ipa, sideloadable       (non-blocking, attach-if-present)
 name: Nightly
@@ -101,6 +103,8 @@ jobs:
             echo "- macOS arm64: macOS-arm64.tar.xz"
             echo "- Linux arm64: Linux-arm64-4K-pages.AppImage on most distros, or the 16K one on Asahi Linux and other Apple Silicon kernels (run getconf PAGESIZE if unsure)"
             echo "- Windows arm64: Windows-arm64.zip"
+            echo "- RetroArch on Linux arm64: Linux-arm64-libretro-core.tar.zst, a 4K-page build"
+            echo "- Bare-display kmsdrm handhelds: Linux-arm64-SDL-handheld.tar.zst, a 4K-page build (Rocknix and Batocera run compositors, so use the Qt AppImage there instead)"
             echo "- Android: Android-arm64.apk, sideload it"
             echo "- iOS: iOS-arm64.ipa, unsigned, sideload it"
             echo
@@ -163,6 +167,35 @@ jobs:
       jobName: "Windows arm64"
       artifactPrefixName: "armsx2-windows-arm64"
       fetchTags: true
+
+  # ---- libretro core + SDL handheld frontend (linux arm64) ---------------
+  # Both were in build-all.yml from the start but never in the nightly, so the
+  # RetroArch core and the kmsdrm handheld build had no published download.
+  # Non-blocking like the mobile jobs. `continue-on-error` is not a permitted key
+  # on a reusable-workflow job, so a failure here still reddens the run -- but the
+  # publish guard below names only the PC jobs, so it costs the asset, not the
+  # release. Both are 4K-page builds (see OVERRIDE_HOST_PAGE_SIZE in each).
+  pc-linux-arm64-libretro:
+    name: PC · Linux arm64 (libretro core)
+    needs: gate
+    if: ${{ needs.gate.outputs.proceed == 'true' }}
+    uses: ./.github/workflows/linux_build_libretro.yml
+    with:
+      jobName: "libretro Core Build (arm64)"
+      artifactPrefixName: "armsx2-linux-arm64-libretro"
+      fetchTags: true
+    secrets: inherit
+
+  pc-linux-arm64-sdl:
+    name: PC · Linux arm64 (SDL kmsdrm)
+    needs: gate
+    if: ${{ needs.gate.outputs.proceed == 'true' }}
+    uses: ./.github/workflows/linux_build_sdl.yml
+    with:
+      jobName: "SDL Handheld Build (arm64)"
+      artifactPrefixName: "armsx2-linux-arm64-sdl"
+      fetchTags: true
+    secrets: inherit
 
   # ---- Android APK (non-blocking; attached if it builds) -----------------
   android:
@@ -266,7 +299,7 @@ jobs:
   # ---- publish: gather artifacts -> dated pre-release --------------------
   publish:
     name: Publish nightly release
-    needs: [gate, pc-macos-arm64, pc-linux-arm64, pc-windows-arm64, android, ios]
+    needs: [gate, pc-macos-arm64, pc-linux-arm64, pc-windows-arm64, pc-linux-arm64-libretro, pc-linux-arm64-sdl, android, ios]
     # Run as long as the PC guardrail passed, even if Android failed (its APK is
     # then simply absent). `!cancelled()` disables the implicit "all needs must
     # succeed" gate so we can require only the PC jobs explicitly.
@@ -316,6 +349,8 @@ jobs:
           grab 'dl/*-macos-*/*'  '*.tar.xz'   'macOS-arm64.tar.xz'
           grab 'dl/*-4k-*/*'     '*.AppImage' 'Linux-arm64-4K-pages.AppImage'
           grab 'dl/*-16k-*/*'    '*.AppImage' 'Linux-arm64-16K-pages.AppImage'
+          grab 'dl/*-libretro-*/*' '*.tar.zst' 'Linux-arm64-libretro-core.tar.zst'
+          grab 'dl/*-sdl-*/*'    '*.tar.zst'  'Linux-arm64-SDL-handheld.tar.zst'
           grab 'dl/*-android-*/*' '*.apk'     'Android-arm64.apk'
           grab 'dl/*-ios-*/*'    '*.ipa'      'iOS-arm64.ipa'
 
