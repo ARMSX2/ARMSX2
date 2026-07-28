@@ -92,7 +92,17 @@ jobs:
           {
             echo "Automated nightly build for community testing (unsigned)."
             echo
-            echo "Platforms: macOS arm64, Linux arm64 (4K and 16K pages), Windows arm64, Android (sideloadable APK), iOS (.ipa)."
+            # Single-quoted: the backticks are Markdown code, not command substitution.
+            # Angle brackets would be eaten by GitHub's HTML sanitizer, so spell the
+            # placeholders out instead.
+            echo 'Every download is named `ARMSX2-nightly-DATE-COMMIT-PLATFORM`, so builds'
+            echo 'from different nights stay distinguishable after you have downloaded them.'
+            echo
+            echo "- macOS arm64: macOS-arm64.tar.xz"
+            echo "- Linux arm64: Linux-arm64-4K-pages.AppImage on most distros, or the 16K one on Asahi Linux and other Apple Silicon kernels (run getconf PAGESIZE if unsure)"
+            echo "- Windows arm64: Windows-arm64.zip"
+            echo "- Android: Android-arm64.apk, sideload it"
+            echo "- iOS: iOS-arm64.ipa, unsigned, sideload it"
             echo
             echo "## What's new"
             if [ -s changes.txt ]; then cat changes.txt; else echo "- No notable changes since the last nightly."; fi
@@ -274,17 +284,50 @@ jobs:
         with:
           path: dl
 
+      # Rename every asset to ONE scheme as it is collected:
+      #   ARMSX2-nightly-<YYYYMMDD>-<sha>-<platform>.<ext>
+      # The build jobs each name their CI artifact differently (the PC jobs use the
+      # shared armsx2-<target>-sha[<sha>] scheme, Android bakes in a versionCode,
+      # iOS ships a fixed ARMSX2-iOS-unsigned.ipa), which made downloaded files
+      # impossible to tell apart: no date, three naming conventions, and GitHub
+      # rewrites the '[' / ']' of sha[...] to '.' on upload so it reads as a second
+      # file extension. Renaming HERE keeps the per-workflow CI artifact names
+      # untouched for the Actions tab and for build-all.yml.
       - name: Collect release assets
+        env:
+          DATE: ${{ needs.gate.outputs.date }}
+          SHA: ${{ needs.gate.outputs.sha }}
         run: |
-          mkdir -p out
-          # Single-file assets: macOS .tar.xz, Linux .AppImage, Android .apk, iOS .ipa
-          find dl -type f \( -name '*.tar.xz' -o -name '*.AppImage' -o -name '*.apk' -o -name '*.ipa' \) -exec cp {} out/ \;
-          # Windows artifacts are a bin/ tree -> zip each one up
-          for d in dl/*windows*/; do
-            [ -d "$d" ] || continue
-            base=$(basename "$d")
-            (cd "$d" && zip -qr "$GITHUB_WORKSPACE/out/${base}.zip" .)
-          done
+          mkdir -p out dl
+          STEM="ARMSX2-nightly-${DATE}-${SHA}"
+
+          # grab <artifact-dir glob> <filename glob> <platform suffix>
+          grab() {
+            local src
+            src=$(find dl -type f -path "$1" -name "$2" | head -1) || true
+            if [ -z "$src" ]; then
+              echo "  MISSING  ${STEM}-$3   (no $2 under $1)"
+              return 0
+            fi
+            cp "$src" "out/${STEM}-$3"
+            echo "  ok       ${STEM}-$3   <-  $src"
+          }
+
+          grab 'dl/*-macos-*/*'  '*.tar.xz'   'macOS-arm64.tar.xz'
+          grab 'dl/*-4k-*/*'     '*.AppImage' 'Linux-arm64-4K-pages.AppImage'
+          grab 'dl/*-16k-*/*'    '*.AppImage' 'Linux-arm64-16K-pages.AppImage'
+          grab 'dl/*-android-*/*' '*.apk'     'Android-arm64.apk'
+          grab 'dl/*-ios-*/*'    '*.ipa'      'iOS-arm64.ipa'
+
+          # Windows ships a bin/ tree rather than a single file, so zip the artifact.
+          wdir=$(find dl -mindepth 1 -maxdepth 1 -type d -name '*windows*' | head -1) || true
+          if [ -n "$wdir" ]; then
+            (cd "$wdir" && zip -qr "$GITHUB_WORKSPACE/out/${STEM}-Windows-arm64.zip" .)
+            echo "  ok       ${STEM}-Windows-arm64.zip   <-  $wdir"
+          else
+            echo "  MISSING  ${STEM}-Windows-arm64.zip"
+          fi
+
           echo "Release assets:"; ls -la out
 
       - name: Publish GitHub pre-release
