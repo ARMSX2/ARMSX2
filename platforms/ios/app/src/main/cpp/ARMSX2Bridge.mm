@@ -3246,8 +3246,20 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
     }
 
     Host::RunOnCPUThread([releaseFlags]() {
+        if (!VMManager::HasValidVM())
+            return;
+
         VMManager::ReleaseNonEssentialRuntimeResources(static_cast<u32>(releaseFlags));
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:@"ARMSX2iOSEmulationOnlyResourcesReleased"
+                object:nil];
+        });
     }, false);
+}
+
++ (BOOL)isEmulationOnlyModeActive {
+    return VMManager::IsEmulationOnlyMode();
 }
 
 // Apply OSD preset — sets ALL GSConfig flags to match the preset

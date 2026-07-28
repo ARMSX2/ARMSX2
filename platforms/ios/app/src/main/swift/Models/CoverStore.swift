@@ -13,6 +13,14 @@ struct CoverGameInfo: Sendable {
     let hasCover: Bool
 }
 
+/// Immutable filename index used by one Game Library refresh. Each cover
+/// directory is enumerated once, regardless of the number of games.
+struct CoverLibraryLookupIndex {
+    fileprivate let managedDirectories: [URL]
+    fileprivate let fallbackDirectories: [URL]
+    fileprivate let filesByDirectory: [String: [String: URL]]
+}
+
 struct CoverDownloadSummary: Sendable {
     let downloaded: Int
     let skippedExisting: Int
@@ -75,6 +83,56 @@ final class CoverStore: @unchecked Sendable {
         let candidates = coverBaseCandidates(forGameName: gameName, metadata: metadata)
         for dir in coverSearchDirectories(gamePath: gamePath) {
             if let url = findCover(in: dir, matching: candidates) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    func makeLibraryCoverLookupIndex(gamePaths: [URL]) -> CoverLibraryLookupIndex {
+        let managedDirectories = managedCoverDirectories()
+        let docs = URL(fileURLWithPath: ARMSX2Bridge.documentsDirectory(), isDirectory: true)
+        let iso = URL(fileURLWithPath: ARMSX2Bridge.isoDirectory(), isDirectory: true)
+        let fallbackDirectories = uniqueURLs([iso, docs])
+        let gameDirectories = gamePaths.map { $0.deletingLastPathComponent() }
+        let directories = uniqueURLs(
+            managedDirectories + gameDirectories + fallbackDirectories
+        )
+
+        var filesByDirectory: [String: [String: URL]] = [:]
+        filesByDirectory.reserveCapacity(directories.count)
+        for directory in directories {
+            filesByDirectory[directory.standardizedFileURL.path] =
+                coverFileLookup(in: directory)
+        }
+
+        return CoverLibraryLookupIndex(
+            managedDirectories: managedDirectories,
+            fallbackDirectories: fallbackDirectories,
+            filesByDirectory: filesByDirectory
+        )
+    }
+
+    func coverURL(
+        forGameName gameName: String,
+        gamePath: URL?,
+        metadata: [String: String],
+        using index: CoverLibraryLookupIndex
+    ) -> URL? {
+        let candidates = coverBaseCandidates(
+            forGameName: gameName,
+            metadata: metadata
+        )
+        var directories = index.managedDirectories
+        if let gamePath {
+            directories.append(gamePath.deletingLastPathComponent())
+        }
+        directories.append(contentsOf: index.fallbackDirectories)
+
+        for directory in uniqueURLs(directories) {
+            let key = directory.standardizedFileURL.path
+            guard let lookup = index.filesByDirectory[key] else { continue }
+            if let url = findCover(in: lookup, matching: candidates) {
                 return url
             }
         }
@@ -339,11 +397,16 @@ final class CoverStore: @unchecked Sendable {
     }
 
     private func findCover(in directory: URL, matching candidates: [String]) -> URL? {
+        findCover(in: coverFileLookup(in: directory), matching: candidates)
+    }
+
+    private func coverFileLookup(in directory: URL) -> [String: URL] {
         guard let files = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else {
-            return nil
+            return [:]
         }
 
         var lookup: [String: URL] = [:]
+        lookup.reserveCapacity(files.count)
         for file in files {
             let ext = file.pathExtension.lowercased()
             guard Self.imageExtensions.contains(ext) else { continue }
@@ -352,7 +415,10 @@ final class CoverStore: @unchecked Sendable {
             }
             lookup[file.lastPathComponent.lowercased()] = file
         }
+        return lookup
+    }
 
+    private func findCover(in lookup: [String: URL], matching candidates: [String]) -> URL? {
         for candidate in candidates {
             let lower = candidate.lowercased()
             for ext in Self.imageExtensions {

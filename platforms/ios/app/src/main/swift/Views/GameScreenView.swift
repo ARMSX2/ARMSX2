@@ -258,6 +258,8 @@ struct GameScreenView: View {
     // key them on this to force a fresh layout on a flip.
     @State private var screenIsLandscape = true
     @State private var emulationOnlyTransitionTask: Task<Void, Never>?
+    @State private var emulationOnlyActivationInFlight = false
+    @State private var pendingEmulationOnlyPresentation: EmulationOnlyPresentation?
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -489,8 +491,15 @@ struct GameScreenView: View {
             Text(settings.localized("Restart the current game? Unsaved progress will be lost."))
         }
         .onAppear {
-            FrameTimeDynamicResolutionController.shared.resumeAfterEmulationOnlyMode()
-            GameEventHaptics.shared.prepareForGameplaySession()
+            let nativeEmulationOnlyMode = ARMSX2Bridge.isEmulationOnlyModeActive()
+            // Returning to the same stripped VM must not recreate services that
+            // Emulation-Only Mode already released.
+            if !appState.isEmulationOnlyMode && nativeEmulationOnlyMode {
+                restoreEmulationOnlyPresentation()
+            } else if !appState.isEmulationOnlyMode {
+                FrameTimeDynamicResolutionController.shared.resumeAfterEmulationOnlyMode()
+                GameEventHaptics.shared.prepareForGameplaySession()
+            }
             enterGameplaySystemChromeMode()
             syncFullscreenStateFromWindow()
             applyInitialFullscreenPreference()
@@ -562,6 +571,13 @@ struct GameScreenView: View {
         .onReceive(NotificationCenter.default.publisher(for: runtimeMenuStateChangedNotification)) { _ in
             refreshRuntimeMenuState()
         }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: AppState.emulationOnlyResourcesReleasedNotification
+            )
+        ) { _ in
+            finishEmulationOnlyActivation()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .GCControllerDidConnect)) { _ in
             refreshExternalControllerConnectionState()
             enterEmulationOnlyModeIfReady()
@@ -618,7 +634,8 @@ struct GameScreenView: View {
               appState.emulationOnlyStartupReady,
               !appState.isEmulationOnlyMode,
               ARMSX2Bridge.isVMRunning(),
-              emulationOnlyTransitionTask == nil
+              emulationOnlyTransitionTask == nil,
+              !emulationOnlyActivationInFlight
         else {
             return
         }
@@ -647,25 +664,64 @@ struct GameScreenView: View {
         guard settings.emulationOnlyModeEnabled,
               appState.emulationOnlyStartupReady,
               !appState.isEmulationOnlyMode,
-              ARMSX2Bridge.isVMRunning()
+              ARMSX2Bridge.isVMRunning(),
+              !emulationOnlyActivationInFlight
         else {
             return
         }
 
+        pendingEmulationOnlyPresentation = makeEmulationOnlyPresentation()
+        emulationOnlyActivationInFlight = true
+        ARMSX2Bridge.releaseNonEmulationResources(emulationOnlyNativeReleaseFlags)
+    }
+
+    @MainActor
+    private func restoreEmulationOnlyPresentation() {
+        guard ARMSX2Bridge.isVMRunning(),
+              ARMSX2Bridge.isEmulationOnlyModeActive(),
+              !appState.isEmulationOnlyMode
+        else {
+            return
+        }
+
+        pendingEmulationOnlyPresentation = makeEmulationOnlyPresentation()
+        emulationOnlyActivationInFlight = true
+        finishEmulationOnlyActivation()
+    }
+
+    @MainActor
+    private func makeEmulationOnlyPresentation() -> EmulationOnlyPresentation {
         let hasExternalController = !GCController.controllers().isEmpty
         let keepsVirtualControls =
             !hasExternalController ||
             (!settings.emulationOnlyDisableVirtualControls && effectiveVirtualPadVisible)
         let keepsQuickMenu = !settings.emulationOnlyDisableQuickMenu
-        let presentation = EmulationOnlyPresentation(
+        return EmulationOnlyPresentation(
             showsVirtualControls: keepsVirtualControls,
             showsQuickMenu: keepsQuickMenu,
             padLayoutSnapshot: keepsVirtualControls ? effectivePadLayoutSnapshot : nil,
             padSkinDescriptor: keepsVirtualControls ? effectivePadSkinDescriptor : nil
         )
+    }
+
+    @MainActor
+    private func finishEmulationOnlyActivation() {
+        guard emulationOnlyActivationInFlight,
+              let presentation = pendingEmulationOnlyPresentation
+        else {
+            return
+        }
+
+        emulationOnlyActivationInFlight = false
+        pendingEmulationOnlyPresentation = nil
+        guard ARMSX2Bridge.isVMRunning(),
+              appState.emulationOnlyStartupReady
+        else {
+            return
+        }
 
         overlayRoute = .hidden
-        if keepsQuickMenu {
+        if presentation.showsQuickMenu {
             menuButtonHidden = false
         }
         statusBanner.cancelDismiss()
@@ -676,7 +732,7 @@ struct GameScreenView: View {
         runtimePerGameSettings = nil
         runtimePadLayoutIdentity = nil
 
-        if !keepsVirtualControls {
+        if !presentation.showsVirtualControls {
             ARMSX2VirtualPadMaskImageCache.releaseForEmulationOnlyMode()
             HapticManager.releaseForEmulationOnlyMode()
         }
@@ -689,7 +745,6 @@ struct GameScreenView: View {
             FrameTimeDynamicResolutionController.shared.suspendForEmulationOnlyMode()
         }
 
-        ARMSX2Bridge.releaseNonEmulationResources(emulationOnlyNativeReleaseFlags)
         ARMSX2Bridge.setVMPaused(false)
         appState.enterEmulationOnlyMode(presentation: presentation)
     }

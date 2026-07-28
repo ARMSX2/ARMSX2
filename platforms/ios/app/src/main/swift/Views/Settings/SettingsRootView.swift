@@ -6,6 +6,10 @@ import SwiftUI
 import UIKit
 #endif
 
+private enum SettingsStaticInfo {
+    static let buildVersion = ARMSX2Bridge.buildVersion()
+}
+
 private enum SettingsPane: String, CaseIterable, Identifiable {
     case language
     case appearance
@@ -114,12 +118,14 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
 struct SettingsRootView: View {
     let resetToRootRequest: Int
     @State private var settings = SettingsStore.shared
-    @State private var jitAvailable = ARMSX2Bridge.isJITAvailable()
-    @State private var noJITFallbackActive = ARMSX2Bridge.isNoJITFallbackActive()
+    @State private var jitAvailable = false
+    @State private var noJITFallbackActive = false
+    @State private var hasLoadedJITStatus = false
     @State private var stikDebugOpenFailed = false
     @State private var stikDebugOpenInProgress = false
     @State private var navigationPath: [SettingsPane] = []
     @Environment(\.menuTabIsActive) private var menuTabIsActive
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 #if targetEnvironment(macCatalyst)
     @State private var selectedPane: SettingsPane? = .emulator
 #endif
@@ -134,6 +140,12 @@ struct SettingsRootView: View {
 
     private var backgroundActive: Bool {
         backgroundConfigured
+    }
+
+    private var showsPageOwnedLargeTitle: Bool {
+        navigationPath.isEmpty
+            && verticalSizeClass != .compact
+            && UIDevice.current.userInterfaceIdiom == .phone
     }
 
     var body: some View {
@@ -159,7 +171,14 @@ struct SettingsRootView: View {
             }
 
             List {
-            Section(settings.localized("Interface")) {
+            if showsPageOwnedLargeTitle {
+                EmbeddedMenuLargeTitle(title: settings.localized("Settings"))
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+
+            Section {
                 NavigationLink(value: SettingsPane.language) {
                     Label(settings.localized("Language"), systemImage: "globe")
                 }
@@ -168,6 +187,8 @@ struct SettingsRootView: View {
                     Label(settings.localized("Appearance"), systemImage: "paintpalette")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
+            } header: {
+                Text(settings.localized("Interface"))
             }
 
             Section(settings.localized("Emulation")) {
@@ -271,7 +292,7 @@ struct SettingsRootView: View {
                 HStack {
                     Text(settings.localized("Version"))
                     Spacer()
-                    Text(ARMSX2Bridge.buildVersion())
+                    Text(SettingsStaticInfo.buildVersion)
                         .foregroundStyle(.secondary)
                         .font(.caption)
                 }
@@ -283,6 +304,7 @@ struct SettingsRootView: View {
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
             }
         }
+        .contentMargins(.top, 0, for: .scrollContent)
         .scrollContentBackground(backgroundActive ? .hidden : .automatic)
         }
         .stableMenuContentGlassContainer()
@@ -291,16 +313,32 @@ struct SettingsRootView: View {
         // underneath it, making both interfaces appear at once.
         .opacity(navigationPath.isEmpty ? 1 : 0)
         .clearNavigationContainerBackground()
-        .navigationTitle(settings.localized("Settings"))
-        .toolbarBackground(backgroundActive ? .hidden : .automatic, for: .navigationBar)
+        .navigationTitle(
+            showsPageOwnedLargeTitle ? "" : settings.localized("Settings")
+        )
+        .toolbarBackground(
+            backgroundActive ? .hidden : .automatic,
+            for: .navigationBar
+        )
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top) {
             Color.clear.frame(height: 6)
         }
-        .onAppear(perform: refreshJITStatus)
+        .onAppear {
+            if menuTabIsActive {
+                refreshJITStatus()
+            }
+        }
+        .onChange(of: menuTabIsActive) { _, isActive in
+            if isActive && !hasLoadedJITStatus {
+                refreshJITStatus()
+            }
+        }
 #if canImport(UIKit)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-            refreshJITStatus()
+            if menuTabIsActive {
+                refreshJITStatus()
+            }
         }
 #endif
         .navigationDestination(for: SettingsPane.self) { pane in
@@ -391,6 +429,7 @@ struct SettingsRootView: View {
     private func refreshJITStatus() {
         jitAvailable = ARMSX2Bridge.isJITAvailable()
         noJITFallbackActive = ARMSX2Bridge.isNoJITFallbackActive()
+        hasLoadedJITStatus = true
     }
 
     @ViewBuilder
@@ -476,7 +515,7 @@ private struct SettingsAboutView: View {
                 HStack {
                     Text(settings.localized("Version"))
                     Spacer()
-                    Text(ARMSX2Bridge.buildVersion())
+                    Text(SettingsStaticInfo.buildVersion)
                         .foregroundStyle(.secondary)
                         .font(.caption)
                 }
@@ -489,6 +528,10 @@ private struct SettingsAboutView: View {
 private struct NetworkSettingsView: View {
     @State private var settings = SettingsStore.shared
     @State private var hosts: [DNSHost] = []
+    @State private var lastPersistedHosts: [DNSHost] = []
+    @State private var networkAdapters: [String] = []
+    @State private var hasLoadedHosts = false
+    @State private var hostSaveTask: Task<Void, Never>?
 
     var body: some View {
         Form {
@@ -524,7 +567,7 @@ private struct NetworkSettingsView: View {
                     }
 
                     Picker(settings.localized("Adapter"), selection: $settings.dev9EthDevice) {
-                        ForEach(ARMSX2Bridge.dev9NetworkAdapters(), id: \.self) { adapter in
+                        ForEach(networkAdapters, id: \.self) { adapter in
                             Text(adapter).tag(adapter)
                         }
                     }
@@ -583,8 +626,24 @@ private struct NetworkSettingsView: View {
             }
         }
         .navigationTitle(settings.localized("Network"))
-        .onAppear { loadHosts() }
-        .onChange(of: hosts) { _, _ in saveHosts() }
+        .onAppear {
+            loadNetworkAdaptersIfNeeded()
+            loadHosts()
+        }
+        .onChange(of: hosts) { _, newHosts in
+            guard hasLoadedHosts, newHosts != lastPersistedHosts else {
+                return
+            }
+            scheduleHostSave()
+        }
+        .onDisappear {
+            flushPendingHostSave()
+        }
+#if canImport(UIKit)
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            flushPendingHostSave()
+        }
+#endif
     }
 
     @ViewBuilder
@@ -627,6 +686,37 @@ private struct NetworkSettingsView: View {
             i += 1
         }
         hosts = loaded
+        lastPersistedHosts = loaded
+        hasLoadedHosts = true
+    }
+
+    private func loadNetworkAdaptersIfNeeded() {
+        guard networkAdapters.isEmpty else { return }
+        var loaded = ARMSX2Bridge.dev9NetworkAdapters()
+        if !settings.dev9EthDevice.isEmpty,
+           !loaded.contains(settings.dev9EthDevice) {
+            loaded.insert(settings.dev9EthDevice, at: 0)
+        }
+        networkAdapters = loaded
+    }
+
+    /// Text fields can publish on every keystroke. Coalescing those writes
+    /// avoids repeatedly rewriting every DEV9 host section while typing.
+    private func scheduleHostSave() {
+        hostSaveTask?.cancel()
+        hostSaveTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            saveHosts()
+            hostSaveTask = nil
+        }
+    }
+
+    private func flushPendingHostSave() {
+        hostSaveTask?.cancel()
+        hostSaveTask = nil
+        guard hasLoadedHosts, hosts != lastPersistedHosts else { return }
+        saveHosts()
     }
 
     private func saveHosts() {
@@ -644,6 +734,7 @@ private struct NetworkSettingsView: View {
             ARMSX2Bridge.setINIString(sec, key: "Address", value: host.address)
             ARMSX2Bridge.setINIBool(sec, key: "Enabled", value: host.enabled)
         }
+        lastPersistedHosts = hosts
     }
 }
 

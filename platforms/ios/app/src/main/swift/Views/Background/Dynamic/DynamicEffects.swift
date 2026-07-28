@@ -397,7 +397,7 @@ struct DynamicParticleOverlay: View {
     } else {
       TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
         let time = timeline.date.timeIntervalSinceReferenceDate
-        Canvas { context, size in
+        Canvas(rendersAsynchronously: true) { context, size in
           context.blendMode = .plusLighter
           drawParticles(
             context: &context,

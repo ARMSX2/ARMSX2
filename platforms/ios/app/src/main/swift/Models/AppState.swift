@@ -4,14 +4,32 @@
 import SwiftUI
 import UIKit
 
-/// A single rasterized library card retained only while a game crosses from the
-/// menu root to the live Metal surface. The card is animated above the existing
-/// menu background, which is released as soon as the transition finishes.
+enum GameplayLaunchCardStyle: Equatable {
+    case list
+    case grid
+    case coverFlow
+}
+
+/// Lightweight content used to rebuild the selected library card in SwiftUI.
+/// Only the already-decoded cover is retained; the menu hierarchy and full
+/// window are never rasterized for the transition.
 struct GameplayLaunchTransition: Identifiable {
     let id = UUID()
-    let snapshot: UIImage
     let sourceFrame: CGRect
     let cornerRadius: CGFloat
+    let style: GameplayLaunchCardStyle
+    let gameName: String
+    let title: String
+    let detail: String
+    let coverImage: UIImage?
+    let coverSize: CGSize
+    let isFavorite: Bool
+}
+
+struct PendingJITGameBoot {
+    let isoName: String
+    let launchTransition: GameplayLaunchTransition?
+    let requiresShutdown: Bool
 }
 
 struct EmulationOnlyPresentation: Equatable {
@@ -29,6 +47,7 @@ final class AppState: @unchecked Sendable {
     static let systemChromeNeedsUpdateNotification = Notification.Name("ARMSX2iOSSystemChromeNeedsUpdate")
     static let releaseMenuBackgroundResourcesNotification = Notification.Name("ARMSX2iOSReleaseMenuBackgroundResources")
     static let emulationOnlyStartupReadyNotification = Notification.Name("ARMSX2iOSEmulationOnlyStartupReady")
+    static let emulationOnlyResourcesReleasedNotification = Notification.Name("ARMSX2iOSEmulationOnlyResourcesReleased")
 
     enum Screen {
         case menu
@@ -39,6 +58,7 @@ final class AppState: @unchecked Sendable {
     var selectedTab: Int = 0
     var runningGameName: String? = nil
     var bootDisclaimerMessage: String?
+    var pendingJITGameBoot: PendingJITGameBoot?
     var gameplayLaunchTransition: GameplayLaunchTransition?
     var gameplayLaunchControlsVisible = true
     var gameplayLaunchBackgroundVisible = false
@@ -71,22 +91,25 @@ final class AppState: @unchecked Sendable {
             forName: NSNotification.Name("ARMSX2iOSVMDidShutdown"),
             object: nil, queue: .main
         ) { [weak self] _ in
-            self?.runningGameName = nil
             self?.cancelGameplayLaunchTransition()
             self?.isEmulationOnlyMode = false
             self?.emulationOnlyPresentation = .minimal
             self?.emulationOnlyStartupReady = false
             if let action = self?.pendingBootAction {
+                // A restart is one continuous menu session. Keep the current
+                // running identity until bootGame/bootBIOS replaces it so the
+                // Now Running glass card never disappears between VMs.
                 self?.pendingBootAction = nil
                 action()
             } else {
                 // No pending reboot — return to menu (VM crash / normal shutdown)
+                self?.runningGameName = nil
                 self?.restoreMenuSystemChrome()
                 self?.currentScreen = .menu
             }
         }
 
-        // [P48] Auto-boot: ObjC side posts this notification to switch UI to game screen
+        // Synchronize SwiftUI state when the native auto-boot path starts a VM.
         autoBootObserver = NotificationCenter.default.addObserver(
             forName: NSNotification.Name("ARMSX2iOSAutoBootDidStart"),
             object: nil, queue: .main
@@ -114,7 +137,27 @@ final class AppState: @unchecked Sendable {
         launchTransition: GameplayLaunchTransition? = nil
     ) -> Bool {
         guard requireBootableBIOS() else { return false }
+        guard ARMSX2Bridge.isJITAvailable() else {
+            pendingJITGameBoot = PendingJITGameBoot(
+                isoName: isoName,
+                launchTransition: launchTransition,
+                requiresShutdown: false
+            )
+            return false
+        }
 
+        return performBootGame(
+            isoName: isoName,
+            launchTransition: launchTransition
+        )
+    }
+
+    @discardableResult
+    private func performBootGame(
+        isoName: String,
+        launchTransition: GameplayLaunchTransition?
+    ) -> Bool {
+        pendingJITGameBoot = nil
         isEmulationOnlyMode = false
         emulationOnlyPresentation = .minimal
         emulationOnlyStartupReady = false
@@ -163,22 +206,18 @@ final class AppState: @unchecked Sendable {
         if ARMSX2Bridge.isVMRunning() {
             ARMSX2Bridge.setVMPaused(true)
         }
-        isEmulationOnlyMode = false
-        emulationOnlyPresentation = .minimal
         cancelGameplayLaunchTransition()
         restoreMenuSystemChrome()
         currentScreen = .menu
-        // [P44-2] Restore opaque background on hosting controller
+        // Notify the UIKit host to restore the menu presentation.
         NotificationCenter.default.post(name: NSNotification.Name("ARMSX2iOSReturnToMenu"), object: nil)
     }
 
     func returnToGame() {
         if runningGameName != nil {
-            isEmulationOnlyMode = false
-            emulationOnlyPresentation = .minimal
             cancelGameplayLaunchTransition()
             releaseMenuBackgroundResourcesForGameplay()
-            // [P44-2] Clear background so Metal surface shows through
+            // Make the hosting surface transparent before revealing Metal output.
             NotificationCenter.default.post(name: NSNotification.Name("ARMSX2iOSEnterGameScreen"), object: nil)
             currentScreen = .playing
             ARMSX2Bridge.setVMPaused(false)
@@ -190,8 +229,48 @@ final class AppState: @unchecked Sendable {
         launchTransition: GameplayLaunchTransition? = nil
     ) {
         guard requireBootableBIOS() else { return }
+        guard ARMSX2Bridge.isJITAvailable() else {
+            pendingJITGameBoot = PendingJITGameBoot(
+                isoName: isoName,
+                launchTransition: launchTransition,
+                requiresShutdown: true
+            )
+            return
+        }
+        performShutdownAndBoot(
+            isoName: isoName,
+            launchTransition: launchTransition
+        )
+    }
+
+    func continuePendingJITGameBoot() {
+        guard let request = pendingJITGameBoot else { return }
+        pendingJITGameBoot = nil
+        guard requireBootableBIOS() else { return }
+
+        if request.requiresShutdown {
+            performShutdownAndBoot(
+                isoName: request.isoName,
+                launchTransition: request.launchTransition
+            )
+        } else {
+            performBootGame(
+                isoName: request.isoName,
+                launchTransition: request.launchTransition
+            )
+        }
+    }
+
+    func cancelPendingJITGameBoot() {
+        pendingJITGameBoot = nil
+    }
+
+    private func performShutdownAndBoot(
+        isoName: String,
+        launchTransition: GameplayLaunchTransition?
+    ) {
         pendingBootAction = { [weak self] in
-            self?.bootGame(
+            self?.performBootGame(
                 isoName: isoName,
                 launchTransition: launchTransition
             )
@@ -217,10 +296,11 @@ final class AppState: @unchecked Sendable {
         }
     }
 
-    /// Permanently removes the in-game SwiftUI controls and menus for the current VM session.
-    /// A VM shutdown or a new boot resets this flag and restores the normal gameplay UI.
+    /// Records the reduced presentation for the active VM. The state deliberately
+    /// survives a temporary return to the menu and is reset only by VM shutdown or
+    /// the start of a new VM.
     func enterEmulationOnlyMode(presentation: EmulationOnlyPresentation) {
-        guard case .playing = currentScreen, emulationOnlyStartupReady else { return }
+        guard emulationOnlyStartupReady else { return }
         emulationOnlyPresentation = presentation
         isEmulationOnlyMode = true
     }

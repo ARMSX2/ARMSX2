@@ -8,6 +8,7 @@ import Foundation
 enum PlayStation3XMBByMartShaderLibrary {
   private static var cachedLibrary: MTLLibrary?
   private static var activeRendererCount = 0
+  private static var releaseWhenUnused = false
 
   static func makeLibrary(device: MTLDevice) -> MTLLibrary? {
     if let cachedLibrary {
@@ -38,23 +39,42 @@ enum PlayStation3XMBByMartShaderLibrary {
 
   static func retainForRenderer() {
     activeRendererCount += 1
+    releaseWhenUnused = false
   }
 
   static func releaseForRenderer() {
     guard activeRendererCount > 0 else {
-      cachedLibrary = nil
+      if releaseWhenUnused {
+        cachedLibrary = nil
+        releaseWhenUnused = false
+      }
       return
     }
 
     activeRendererCount -= 1
-    if activeRendererCount == 0 {
+    if activeRendererCount == 0 && releaseWhenUnused {
       cachedLibrary = nil
+      releaseWhenUnused = false
     }
   }
 
+  /// Renderer handoffs between the menu and Appearance preview may briefly
+  /// reach zero active surfaces. Keep the compiled library across that handoff.
   static func releaseIfUnused() {
+    if activeRendererCount == 0 && releaseWhenUnused {
+      cachedLibrary = nil
+      releaseWhenUnused = false
+    }
+  }
+
+  /// Gameplay and background removal end the complete menu session, so the
+  /// shader cache can be released even if SwiftUI dismantles the MTKView later.
+  static func releaseSessionCache() {
     if activeRendererCount == 0 {
       cachedLibrary = nil
+      releaseWhenUnused = false
+    } else {
+      releaseWhenUnused = true
     }
   }
 
