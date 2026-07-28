@@ -270,16 +270,49 @@ TEST(VuBroadcastSingleLane, SubZIntoWOnly)
 //
 //  The fold replaces "splat Ft.bc across a scratch register, then multiply"
 //  with a single multiply that names the lane directly. It is suppressed
-//  whenever an Ft clamp would be emitted — and MULbc at a packed mask asks
-//  for an Ft clamp, so under the shipped clamp default the plain MUL never
-//  reaches the fold at all. MADDbc, MSUBbc and MULAbc do, which is why the
-//  sweep above covers the mechanism; this pair covers the one op where
-//  reaching it takes a non-default clamp mode.
+//  whenever an Ft clamp would be emitted, and MULbc asks for one only at the
+//  full xyzw mask — so the sweep above, which uses xyzw throughout, reaches
+//  the fold through MADDbc / MSUBbc / MULAbc but not through plain MUL.
+//
+//  Two ways to get there, both covered below: any partial multi-lane mask
+//  (the common shape in real microprograms, and reachable under the shipped
+//  clamp default), or the full mask with the overflow clamp off.
 //
 //  Worth having because the fold is where the lane index stops being a
 //  shuffle operand and becomes part of the multiply encoding — a different
 //  way to get the lane wrong than anything above tests.
 // =========================================================================
+
+// Fd.xyz ← Fs.xyz * Ft.bc, w left at its sentinel. A partial mask drops the
+// Ft clamp, so this reaches the fold without touching the clamp config.
+TEST(VuBroadcastLaneFold, MulAtPartialMaskSelectsTheEncodedLane)
+{
+	struct
+	{
+		u32 upper;
+		float expect[3];
+	} const cases[] = {
+		{VMULx_U(mask::xyz, kFd, kFs, kFt), {2.0f, 5.0f, 8.0f}},
+		{VMULy_U(mask::xyz, kFd, kFs, kFt), {3.0f, 7.5f, 12.0f}},
+		{VMULz_U(mask::xyz, kFd, kFs, kFt), {5.0f, 12.5f, 20.0f}},
+		{VMULw_U(mask::xyz, kFd, kFs, kFt), {7.0f, 17.5f, 28.0f}},
+	};
+
+	static const char kLane[3] = {'x', 'y', 'z'};
+	for (int c = 0; c < 4; c++)
+	{
+		SCOPED_TRACE(::testing::Message() << "broadcast lane " << c);
+		VuTestHarness h(0);
+		h.SetVf(kFs, 1.0f, 2.5f, 4.0f, 6.0f);
+		h.SetVf(kFt, 2.0f, 3.0f, 5.0f, 7.0f);
+		h.SetVf(kFd, -101.0f, -102.0f, -103.0f, -104.0f);
+		h.LoadProgram({UpperOnly(cases[c].upper), EBitNopPair()});
+		h.Run();
+		for (int i = 0; i < 3; i++)
+			EXPECT_FLOAT_EQ(h.GetVfJit(kFd, kLane[i]), cases[c].expect[i]) << "lane " << kLane[i];
+		EXPECT_FLOAT_EQ(h.GetVfJit(kFd, 'w'), -104.0f) << "masked-out lane";
+	}
+}
 
 namespace {
 struct ScopedVuOverflowClamp
