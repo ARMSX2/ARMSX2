@@ -1,3 +1,35 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 contributors
+// SPDX-License-Identifier: MIT
+//
+// Licensed MIT, deliberately, and NOT GPL like the rest of ARMSX2.
+//
+// This file is on the helper side of the Discord process boundary: it links, or
+// belongs to the process that links, Discord's proprietary Social SDK. A GPL-3.0+
+// file cannot be combined with a proprietary library whose corresponding source we
+// cannot supply, so licensing this GPL would recreate exactly the defect the
+// separate process exists to avoid -- the boundary has to hold in the licence
+// headers as well as in the linker.
+//
+// MIT rather than Apache-2.0 because it is GPL-compatible in the other direction
+// too: the emulator side (DiscordPresence.kt and the Friends UI, which stay GPL)
+// consumes the shared IPC definitions here, and that only works if this side is
+// permissive.
+//
+// Do not "fix" this back to the PCSX2 GPL header. It is not PCSX2 code, and the
+// licence is load-bearing.
+//
+// Copyright (c) 2026 ARMSX2 contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of
+// this software and associated documentation files (the "Software"), to deal in
+// the Software without restriction, including without limitation the rights to
+// use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software is furnished to do so,
+// subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+
 package com.armsx2.discord;
 
 /**
