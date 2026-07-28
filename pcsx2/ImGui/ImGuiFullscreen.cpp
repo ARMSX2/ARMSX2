@@ -168,6 +168,14 @@ namespace ImGuiFullscreen
 	static constexpr float NOTIFICATION_FADE_IN_TIME = 0.2f;
 	static constexpr float NOTIFICATION_FADE_OUT_TIME = 0.8f;
 
+	// How many notifications may be on screen at once, and the least time between two of them
+	// appearing. Finishing a game submits every leaderboard at once — Final Fantasy XII posted six
+	// in a single frame — and with every one starting immediately they arrived as a wall that
+	// covered the screen and pushed the actual achievement unlock out of sight before it could be
+	// read. Anything past the limit now waits its turn instead of stacking.
+	static constexpr u32 MAX_VISIBLE_NOTIFICATIONS = 3;
+	static constexpr float NOTIFICATION_STAGGER_TIME = 0.4f;
+
 	struct Notification
 	{
 		std::string key;
@@ -3119,13 +3127,38 @@ void ImGuiFullscreen::AddNotification(std::string key, float duration, std::stri
 				it->text = std::move(text);
 				it->badge_path = std::move(image_path);
 
-				// Don't fade it in again
-				const float time_passed =
-					static_cast<float>(Common::Timer::ConvertValueToSeconds(current_time - it->start_time));
-				it->start_time =
-					current_time - Common::Timer::ConvertSecondsToValue(std::min(time_passed, NOTIFICATION_FADE_IN_TIME));
+				// Don't fade it in again -- but only if it is actually on screen. A replacement for
+				// a notification that is still QUEUED must keep its scheduled start: the elapsed
+				// time would be negative there, and Timer::Value is unsigned, so subtracting it
+				// would wrap and fling the notification years into the future.
+				if (it->start_time <= current_time)
+				{
+					const float time_passed =
+						static_cast<float>(Common::Timer::ConvertValueToSeconds(current_time - it->start_time));
+					it->start_time =
+						current_time - Common::Timer::ConvertSecondsToValue(std::min(time_passed, NOTIFICATION_FADE_IN_TIME));
+				}
 				return;
 			}
+		}
+	}
+
+	// Work out when this one is allowed to appear, rather than starting it now.
+	//
+	// Two constraints: it waits until at most MAX_VISIBLE_NOTIFICATIONS - 1 others are still on
+	// screen, and it never appears in the same instant as the one before it. A burst therefore
+	// arrives as a readable sequence instead of a wall.
+	Common::Timer::Value start_time = current_time;
+	if (!s_notifications.empty())
+	{
+		const Notification& previous = s_notifications.back();
+		start_time = std::max(start_time, previous.start_time + Common::Timer::ConvertSecondsToValue(NOTIFICATION_STAGGER_TIME));
+
+		if (s_notifications.size() >= MAX_VISIBLE_NOTIFICATIONS)
+		{
+			// The oldest one that still has to clear before there is room for this.
+			const Notification& blocker = s_notifications[s_notifications.size() - MAX_VISIBLE_NOTIFICATIONS];
+			start_time = std::max(start_time, blocker.start_time + Common::Timer::ConvertSecondsToValue(blocker.duration));
 		}
 	}
 
@@ -3135,8 +3168,8 @@ void ImGuiFullscreen::AddNotification(std::string key, float duration, std::stri
 	notif.title = std::move(title);
 	notif.text = std::move(text);
 	notif.badge_path = std::move(image_path);
-	notif.start_time = current_time;
-	notif.move_time = current_time;
+	notif.start_time = start_time;
+	notif.move_time = start_time;
 	notif.target_y = -1.0f;
 	notif.last_y = -1.0f;
 	s_notifications.push_back(std::move(notif));
@@ -3178,6 +3211,15 @@ void ImGuiFullscreen::DrawNotifications(ImVec2& position, float spacing)
 	for (u32 index = 0; index < static_cast<u32>(s_notifications.size());)
 	{
 		Notification& notif = s_notifications[index];
+		if (notif.start_time > current_time)
+		{
+			// Still queued behind the ones ahead of it. Not drawn, not laid out, and not aged —
+			// its duration only begins when it actually appears, so a queued notification is not
+			// quietly expiring while it waits.
+			index++;
+			continue;
+		}
+
 		const float time_passed = static_cast<float>(Common::Timer::ConvertValueToSeconds(current_time - notif.start_time));
 		if (time_passed >= notif.duration)
 		{
