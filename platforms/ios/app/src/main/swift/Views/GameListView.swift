@@ -38,7 +38,7 @@ enum RegionFlag {
     }
 }
 
-struct ISOEntry: Identifiable {
+struct ISOEntry: Identifiable, Equatable {
 	var id: String { bootPath ?? fileURL?.path ?? name }
 	let name: String
 	let fileURL: URL?
@@ -50,6 +50,63 @@ struct ISOEntry: Identifiable {
 	var isFavorite: Bool
 	var isExternal: Bool = false
 	var sourceName: String? = nil
+    let displayName: String
+    let sizeLabel: String
+    let regionFlag: String?
+    fileprivate let normalizedIdentifiers: Set<String>
+
+    init(
+        name: String,
+        fileURL: URL?,
+        bootPath: String?,
+        coverURL: URL?,
+        coverSignature: String?,
+        metadata: [String: String],
+        size: UInt64,
+        isFavorite: Bool,
+        isExternal: Bool = false,
+        sourceName: String? = nil
+    ) {
+        self.name = name
+        self.fileURL = fileURL
+        self.bootPath = bootPath
+        self.coverURL = coverURL
+        self.coverSignature = coverSignature
+        self.metadata = metadata
+        self.size = size
+        self.isFavorite = isFavorite
+        self.isExternal = isExternal
+        self.sourceName = sourceName
+        displayName = URL(fileURLWithPath: name)
+            .deletingPathExtension()
+            .lastPathComponent
+
+        let gigabytes = Double(size) / 1_073_741_824
+        if gigabytes >= 1 {
+            sizeLabel = String(format: "%.1f GB", gigabytes)
+        } else {
+            sizeLabel = String(
+                format: "%.0f MB",
+                Double(size) / 1_048_576
+            )
+        }
+
+        let region = metadata["region"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let flag = RegionFlag.emoji(for: region)
+        regionFlag = flag.isEmpty ? nil : flag
+
+        let identifierCandidates: [String?] = [
+            bootPath ?? fileURL?.path ?? name,
+            name,
+            fileURL?.path,
+        ]
+        let identifiers: [String] = identifierCandidates.compactMap { $0 }
+        normalizedIdentifiers = identifiers.reduce(into: Set<String>()) {
+            result, identifier in
+            result.formUnion(Self.normalizedIdentifierKeys(for: identifier))
+        }
+    }
 
 	var bootName: String {
 		isExternal ? (bootPath ?? fileURL?.path ?? name) : name
@@ -62,6 +119,17 @@ struct ISOEntry: Identifiable {
 	var coverInfo: CoverGameInfo {
 		CoverGameInfo(name: name, fileURL: fileURL, metadata: metadata, hasCover: coverURL != nil)
 	}
+
+    fileprivate static func normalizedIdentifierKeys(
+        for value: String
+    ) -> Set<String> {
+        let normalized = (value.removingPercentEncoding ?? value)
+            .replacingOccurrences(of: "\\", with: "/")
+            .lowercased()
+        guard !normalized.isEmpty else { return [] }
+        let fileName = (normalized as NSString).lastPathComponent
+        return fileName.isEmpty ? [normalized] : [normalized, fileName]
+    }
 }
 
 @MainActor
@@ -180,7 +248,7 @@ private extension View {
 
 @MainActor
 private final class GameLibrarySnapshot {
-	struct CachedGameMetadata: Codable {
+	struct CachedGameMetadata: Codable, Sendable {
 		let metadata: [String: String]
 		let modificationDate: Date?
 		let size: UInt64
@@ -196,6 +264,10 @@ private final class GameLibrarySnapshot {
 	// so a cold app launch does not rescan the whole library.
 	private var metadataCache: [String: CachedGameMetadata] = [:]
 	private var metadataCacheDirty = false
+	private let persistenceQueue = DispatchQueue(
+		label: "com.armsx2.ios.game-library-metadata",
+		qos: .utility
+	)
 
 	private static var persistenceURL: URL? {
 		let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -225,7 +297,12 @@ private final class GameLibrarySnapshot {
 
 	func update(_ entries: [ISOEntry]) {
 		orderedEntries = entries
-		entriesByID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { current, _ in current })
+		var updatedEntriesByID: [String: ISOEntry] = [:]
+		updatedEntriesByID.reserveCapacity(entries.count)
+		for entry in entries {
+			updatedEntriesByID[entry.id] = entry
+		}
+		entriesByID = updatedEntriesByID
 	}
 
 	func releaseEntriesForGameplay() {
@@ -254,29 +331,243 @@ private final class GameLibrarySnapshot {
 
 	/// Drops metadata for games no longer in the library so deleted files do not linger.
 	func purgeMetadata(keeping ids: Set<String>) {
-		let before = metadataCache.count
-		metadataCache = metadataCache.filter { ids.contains($0.key) }
-		if metadataCache.count != before {
-			metadataCacheDirty = true
+		let removedKeys = metadataCache.keys.filter { !ids.contains($0) }
+		guard !removedKeys.isEmpty else { return }
+		for key in removedKeys {
+			metadataCache.removeValue(forKey: key)
 		}
+		metadataCacheDirty = true
 	}
 
-	/// Writes the metadata cache to disk if it changed since the last save.
+	/// Copies dirty metadata and serializes it off the main thread. The serial
+	/// queue preserves write order when several library refreshes finish close together.
 	func persistMetadataCache() {
 		guard metadataCacheDirty else { return }
 		metadataCacheDirty = false
 		guard let url = Self.persistenceURL else { return }
-		try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-		guard let data = try? JSONEncoder().encode(metadataCache) else { return }
-		try? data.write(to: url, options: .atomic)
+		let snapshot = metadataCache
+		persistenceQueue.async {
+			try? FileManager.default.createDirectory(
+				at: url.deletingLastPathComponent(),
+				withIntermediateDirectories: true
+			)
+			guard let data = try? JSONEncoder().encode(snapshot) else { return }
+			try? data.write(to: url, options: .atomic)
+		}
+	}
+}
+
+private struct RunningCoverGlowPhase {
+    let radius: CGFloat
+    let x: CGFloat
+    let y: CGFloat
+    let opacity: Double
+
+    static let initial = RunningCoverGlowPhase(
+        radius: 9,
+        x: -0.5,
+        y: 0.5,
+        opacity: 0.35
+    )
+
+    static func random() -> RunningCoverGlowPhase {
+        RunningCoverGlowPhase(
+            radius: .random(in: 7.5...12.5),
+            x: .random(in: -2.25...2.25),
+            y: .random(in: -2.25...2.25),
+            opacity: .random(in: 0.20...0.45)
+        )
+    }
+}
+
+/// Animates only the active game's already-decoded cover. Randomized radius,
+/// intensity, and direction avoid the mechanical appearance of a fixed pulse
+/// without introducing a library-wide timeline or invalidating other cards.
+private struct RunningCoverNeonGlowModifier: ViewModifier {
+    let isRunning: Bool
+    @State private var phase = RunningCoverGlowPhase.initial
+
+    func body(content: Content) -> some View {
+        content
+            .shadow(
+                color: Color(red: 0.18, green: 1.0, blue: 0.28)
+                    .opacity(isRunning ? phase.opacity : 0),
+                radius: isRunning ? phase.radius : 0,
+                x: isRunning ? phase.x : 0,
+                y: isRunning ? phase.y : 0
+            )
+            .shadow(
+                color: Color(red: 0.48, green: 1.0, blue: 0.58)
+                    .opacity(isRunning ? phase.opacity * 0.76 : 0),
+                radius: isRunning ? phase.radius * 0.68 : 0,
+                x: isRunning ? -phase.x * 0.7 : 0,
+                y: isRunning ? -phase.y * 0.7 : 0
+            )
+            .animation(.easeOut(duration: 0.55), value: isRunning)
+            .task(id: isRunning) {
+                guard isRunning else {
+                    phase = .initial
+                    return
+                }
+
+                while !Task.isCancelled {
+                    let duration = Double.random(in: 0.8...1.35)
+                    withAnimation(.easeInOut(duration: duration)) {
+                        phase = .random()
+                    }
+                    try? await Task.sleep(
+                        for: .milliseconds(Int(duration * 1_000))
+                    )
+                }
+            }
+    }
+}
+
+/// Keeps transient library bookkeeping outside SwiftUI observation so scrolling
+/// and refresh guards do not invalidate every visible card.
+@MainActor
+private final class GameLibraryActivityState {
+    var isScrolling = false
+    var isLoading = false
+    private var scheduledReloadTask: Task<Void, Never>?
+    private var cachedRunningName: String?
+    private var cachedRunningIdentifiers: Set<String> = []
+
+    func scheduleReload(
+        after delay: Duration,
+        operation: @escaping @MainActor () -> Void
+    ) {
+        scheduledReloadTask?.cancel()
+        scheduledReloadTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            while self?.isScrolling == true {
+                try? await Task.sleep(for: .milliseconds(50))
+                guard !Task.isCancelled else { return }
+            }
+            operation()
+            self?.scheduledReloadTask = nil
+        }
+    }
+
+    func cancelScheduledReload() {
+        scheduledReloadTask?.cancel()
+        scheduledReloadTask = nil
+    }
+
+    func runningIdentifiers(for gameName: String?) -> Set<String> {
+        guard let gameName else {
+            cachedRunningName = nil
+            cachedRunningIdentifiers.removeAll(keepingCapacity: true)
+            return []
+        }
+        guard cachedRunningName != gameName else {
+            return cachedRunningIdentifiers
+        }
+        cachedRunningName = gameName
+        cachedRunningIdentifiers = ISOEntry.normalizedIdentifierKeys(
+            for: gameName
+        )
+        return cachedRunningIdentifiers
+    }
+}
+
+private struct GameLibraryScrollPhaseModifier: ViewModifier {
+    let activity: GameLibraryActivityState
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollPhaseChange { _, newPhase in
+                activity.isScrolling = newPhase.isScrolling
+            }
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func trackGameLibraryScrollPhase(
+        _ activity: GameLibraryActivityState
+    ) -> some View {
+        modifier(
+            GameLibraryScrollPhaseModifier(activity: activity)
+        )
+    }
+}
+
+private struct RunningStatusText: View {
+    let isStopping: Bool
+    let runningLabel: String
+    let gameTitle: String
+    let stoppingLabel: String
+    let stoppingFont: Font
+    var centered = false
+
+    @ViewBuilder
+    var body: some View {
+        if isStopping {
+            Text(stoppingLabel)
+                .font(stoppingFont.bold())
+                .foregroundStyle(.red)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .multilineTextAlignment(.center)
+                .transition(
+                    .opacity
+                        .combined(with: .scale(scale: 0.82))
+                        .combined(with: .offset(x: 8))
+                )
+        } else {
+            VStack(
+                alignment: centered ? .center : .leading,
+                spacing: 3
+            ) {
+                Text(runningLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(gameTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(centered ? 2 : 1)
+                    .truncationMode(.tail)
+                    .multilineTextAlignment(centered ? .center : .leading)
+            }
+            .transition(
+                .opacity
+                    .combined(with: .scale(scale: 0.88))
+                    .combined(with: .offset(x: -8))
+            )
+        }
+	}
+}
+
+/// Releases the shared, menu-only portion of the game library independently of
+/// SwiftUI view-disappearance timing. The persisted metadata index remains on
+/// disk, so returning to the menu can rebuild entries without reopening every
+/// active disc image.
+@MainActor
+enum GameLibraryRuntimeResources {
+	static func activateForMenu() {
+		CoverThumbnailCache.shared.activateForMenu()
+	}
+
+	static func releaseForGameplay() {
+		GameLibrarySnapshot.shared.releaseEntriesForGameplay()
+		CoverThumbnailCache.shared.releaseForGameplay()
 	}
 }
 
 struct GameListView: View {
     let embeddedInMenuNavigation: Bool
+    let ownsEmbeddedMenuToolbar: Bool
 
-    init(embeddedInMenuNavigation: Bool = false) {
+    init(
+        embeddedInMenuNavigation: Bool = false,
+        ownsEmbeddedMenuToolbar: Bool = true
+    ) {
         self.embeddedInMenuNavigation = embeddedInMenuNavigation
+        self.ownsEmbeddedMenuToolbar = ownsEmbeddedMenuToolbar
     }
 
     @State private var games: [ISOEntry] = []
@@ -288,10 +579,10 @@ struct GameListView: View {
 	@State private var externalCoverAutoDownloadAttemptedIDs = Set<String>()
 	@State private var coverWorkTask: Task<Void, Never>?
 	@State private var showGameImporter = false
-	@State private var isLoadingGames = false
     @State private var showCoverImporter = false
     @State private var showCoverPhotoPicker = false
     @Environment(\.menuTabIsActive) private var menuTabIsActive
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var showRestartAlert = false
     @State private var showStopAlert = false
     @State private var showCoverTemplateEditor = false
@@ -315,19 +606,19 @@ struct GameListView: View {
     @State private var showBackgroundAssetError = false
     @State private var gameplayLaunchCardRegistry = GameplayLaunchCardRegistry()
     @State private var favoriteAnimationValues: [String: Int] = [:]
-    @State private var favoriteReorderAnimationActive = false
-    @State private var favoriteReorderResetTask: Task<Void, Never>?
     @State private var nowRunningRemovalAnimationActive = false
     @State private var nowRunningRemovalResetTask: Task<Void, Never>?
-    @State private var nowRunningAlertDismissTask: Task<Void, Never>?
     @State private var departingRunningGameName: String?
     @State private var nowRunningCardOpacity = 1.0
+    @State private var nowRunningCardScale = 1.0
+    @State private var nowRunningStatusOpacity = 1.0
+    @State private var gameLibraryActivity = GameLibraryActivityState()
     @AppStorage("ARMSX2iOSGameLibraryLayout") private var libraryLayout = "grid"
     @AppStorage("ARMSX2iOSLandscapeCoverFlowEnabled") private var landscapeCoverFlowEnabled = true
 #if DEBUG
     @State private var ranBackgroundValidation = false
 #endif
-    // Background state is now kept in SettingsStore and rendered by BackgroundContainerView.
+    // SettingsStore owns background configuration; the shared container renders it.
     private var hasCustomBackground: Bool {
         settings.dynamicBackgroundsEnabled
             || settings.backgroundPrimaryAsset != nil
@@ -335,7 +626,53 @@ struct GameListView: View {
     }
 
     private var displayedRunningGameName: String? {
-        appState.runningGameName ?? departingRunningGameName
+        if let departingRunningGameName {
+            return departingRunningGameName
+        }
+        guard case .menu = appState.currentScreen else {
+            return nil
+        }
+        return appState.runningGameName
+    }
+
+    /// Departure values belong only to the retained stopping placeholder.
+    /// A normal running card always starts from its canonical appearance, so
+    /// cleanup never needs to reset animation state across the library tree.
+    private var displayedNowRunningCardOpacity: Double {
+        departingRunningGameName == nil ? 1 : nowRunningCardOpacity
+    }
+
+    private var displayedNowRunningCardScale: Double {
+        departingRunningGameName == nil ? 1 : nowRunningCardScale
+    }
+
+    private var displayedNowRunningStatusOpacity: Double {
+        departingRunningGameName == nil ? 1 : nowRunningStatusOpacity
+    }
+
+    private var showsPageOwnedLargeTitle: Bool {
+        embeddedInMenuNavigation
+            && verticalSizeClass != .compact
+            && UIDevice.current.userInterfaceIdiom == .phone
+    }
+
+    private func libraryPresentationIdentity(
+        for containerSize: CGSize
+    ) -> String {
+        let orientation = containerSize.width > containerSize.height
+            ? "landscape"
+            : "portrait"
+
+        if games.isEmpty && displayedRunningGameName == nil {
+            return "empty-\(orientation)"
+        }
+        if libraryLayout != "grid" {
+            return "list-\(orientation)"
+        }
+        if orientation == "landscape" && landscapeCoverFlowEnabled {
+            return "cover-flow-landscape"
+        }
+        return "grid-\(orientation)"
     }
 
     private struct CoverFlowMetrics {
@@ -384,7 +721,7 @@ struct GameListView: View {
                 GeometryReader { geo in
                     Group {
                         if games.isEmpty && displayedRunningGameName == nil {
-                            emptyState
+                            emptyLibrary(containerSize: geo.size)
                         } else if libraryLayout == "grid" && geo.size.width > geo.size.height && landscapeCoverFlowEnabled {
                             coverFlowLibrary(containerSize: geo.size)
                         } else if libraryLayout == "grid" {
@@ -396,6 +733,11 @@ struct GameListView: View {
 #endif
                         }
                     }
+                    // Portrait grids/lists and landscape cover flow use
+                    // different scroll axes. Give each presentation a stable
+                    // identity so rotation cannot reuse the previous
+                    // UIScrollView's content offset or alignment geometry.
+                    .id(libraryPresentationIdentity(for: geo.size))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
@@ -407,7 +749,7 @@ struct GameListView: View {
                 embedded: embeddedInMenuNavigation
             )
             .toolbar {
-                if !embeddedInMenuNavigation || menuTabIsActive {
+                if !embeddedInMenuNavigation || ownsEmbeddedMenuToolbar {
                 ToolbarItem(id: "menu.import", placement: .topBarTrailing) {
                     Button {
                         showGameImporter = true
@@ -490,7 +832,7 @@ struct GameListView: View {
                             .foregroundStyle(.blue)
                     }
                     .buttonStyle(.plain)
-                    .disabled(isLoadingGames)
+                    .disabled(gameLibraryActivity.isLoading)
                     .accessibilityLabel(settings.localized("Refresh"))
                 }
                 ToolbarItem(id: "menu.bootBIOS", placement: .topBarLeading) {
@@ -682,7 +1024,7 @@ struct GameListView: View {
                 importCoverPhoto(photoItem, forGameNamed: gameName)
             }
             .sheet(item: $gameInfoTarget) { game in
-                GameInfoPanel(game: game, coverStore: coverStore)
+                GameInfoPanel(game: game)
                     .presentationDetents([.medium, .large])
             }
             .sheet(item: $gameSettingsTarget) { game in
@@ -719,43 +1061,66 @@ struct GameListView: View {
             } message: {
                 Text(settings.localized("This will shut down the running game. All unsaved progress will be lost."))
             }
-			.onAppear {
-				CoverThumbnailCache.shared.activateForMenu()
-			externalLibrary.reload()
-			restoreCachedGamesIfNeeded()
-			loadGames(autoDownloadExternalCovers: true)
-			if settings.sanitizeBackgroundAssets() {
-				showBackgroundAssetError = true
-			}
+        .onAppear {
+            GameLibraryRuntimeResources.activateForMenu()
+            restoreCachedGamesIfNeeded()
+            scheduleLibraryReload(
+                after: .milliseconds(80),
+                autoDownloadExternalCovers: true
+            )
+            if settings.sanitizeBackgroundAssets() {
+                showBackgroundAssetError = true
+            }
 #if DEBUG
-			if !ranBackgroundValidation {
-				ranBackgroundValidation = true
-				BackgroundValidation.run()
-			}
+            if !ranBackgroundValidation {
+                ranBackgroundValidation = true
+                BackgroundValidation.run()
+            }
 #endif
-		}
-		.onReceive(NotificationCenter.default.publisher(for: ExternalGameLibrary.didChangeNotification)) { _ in
-			loadGames(autoDownloadExternalCovers: true)
-		}
-		.onReceive(NotificationCenter.default.publisher(for: InitialContentBootstrap.didChangeNotification)) { _ in
-			loadGames(autoDownloadExternalCovers: false)
-		}
-		.onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ARMSX2iOSReturnToMenu"))) { _ in
-			restoreCachedGamesIfNeeded()
-			loadGames(autoDownloadExternalCovers: false)
-		}
-			.onDisappear {
-				guard case .playing = appState.currentScreen else { return }
-				releaseLibraryResourcesForGameplay()
-		}
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ExternalGameLibrary.didChangeNotification)) { _ in
+            scheduleLibraryReload(
+                after: .milliseconds(120),
+                autoDownloadExternalCovers: true
+            )
+        }
+        .onReceive(NotificationCenter.default.publisher(for: InitialContentBootstrap.didChangeNotification)) { _ in
+            scheduleLibraryReload(
+                after: .milliseconds(120),
+                autoDownloadExternalCovers: false
+            )
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ARMSX2iOSReturnToMenu"))) { _ in
+            restoreCachedGamesIfNeeded()
+            scheduleLibraryReload(
+                after: .milliseconds(80),
+                autoDownloadExternalCovers: false
+            )
+        }
+        .onDisappear {
+            guard case .playing = appState.currentScreen else { return }
+            releaseLibraryResourcesForGameplay()
+        }
     }
 
     private var listLibrary: some View {
         List {
+            if showsPageOwnedLargeTitle {
+                EmbeddedMenuLargeTitle(title: settings.localized("Games"))
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+            if games.isEmpty && displayedRunningGameName == nil {
+                emptyState
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
             if let gameName = displayedRunningGameName {
                 vmStatusSection(
                     gameName: gameName,
-                    opacity: nowRunningCardOpacity
+                    opacity: displayedNowRunningCardOpacity,
+                    scale: displayedNowRunningCardScale
                 )
             }
             ForEach(games) { game in
@@ -763,16 +1128,43 @@ struct GameListView: View {
                     .menuBackgroundListRow(hasCustomBackground)
             }
         }
+        .contentMargins(.top, 0, for: .scrollContent)
         .scrollContentBackground(hasCustomBackground ? .hidden : .automatic)
+        .scrollDisabled(false)
+        .scrollBounceBehavior(.always)
+        .trackGameLibraryScrollPhase(gameLibraryActivity)
+        .transaction { transaction in
+            if transaction.isContinuous || gameLibraryActivity.isScrolling {
+                transaction.animation = nil
+            }
+        }
     }
 
     private var gridLibrary: some View {
         ScrollView {
             LazyVStack(spacing: 16) {
+                if showsPageOwnedLargeTitle {
+                    EmbeddedMenuLargeTitle(title: settings.localized("Games"))
+                }
+
+                if games.isEmpty && displayedRunningGameName == nil {
+                    emptyState
+                        .frame(minHeight: 300)
+                }
+
                 if let gameName = displayedRunningGameName {
                     vmStatusCard(gameName: gameName)
+                        .isolatedMenuGlassContainer()
                         .padding(.horizontal)
-                        .opacity(nowRunningCardOpacity)
+                        .compositingGroup()
+                        .scaleEffect(displayedNowRunningCardScale)
+                        .opacity(displayedNowRunningCardOpacity)
+                        .animation(
+                            .smooth(duration: 0.65, extraBounce: 0.04),
+                            value: displayedNowRunningCardScale
+                        )
+                        .animation(.linear(duration: 0.65), value: displayedNowRunningCardOpacity)
+                        .transition(.scale(scale: 0.86).combined(with: .opacity))
                 }
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 142), spacing: 14, alignment: .top)], spacing: 18) {
@@ -783,7 +1175,16 @@ struct GameListView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 20)
             }
-            .padding(.top, 12)
+            .padding(.top, showsPageOwnedLargeTitle ? 0 : 12)
+        }
+        .contentMargins(.top, 0, for: .scrollContent)
+        .scrollDisabled(false)
+        .scrollBounceBehavior(.always)
+        .trackGameLibraryScrollPhase(gameLibraryActivity)
+        .transaction { transaction in
+            if transaction.isContinuous || gameLibraryActivity.isScrolling {
+                transaction.animation = nil
+            }
         }
         .background(
             Group {
@@ -798,11 +1199,46 @@ struct GameListView: View {
                 }
             }
         )
-        .transaction { transaction in
-            if !favoriteReorderAnimationActive && !nowRunningRemovalAnimationActive {
-                transaction.animation = nil
+    }
+
+    private func emptyLibrary(containerSize: CGSize) -> some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                if showsPageOwnedLargeTitle {
+                    EmbeddedMenuLargeTitle(title: settings.localized("Games"))
+                }
+
+                emptyState
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: max(
+                            300,
+                            containerSize.height
+                                - (showsPageOwnedLargeTitle ? 64 : 0)
+                        ),
+                        alignment: .center
+                    )
             }
         }
+        .contentMargins(.top, 0, for: .scrollContent)
+        .scrollDisabled(false)
+        .scrollBounceBehavior(.always)
+        .background(
+            Group {
+                if hasCustomBackground {
+                    Color.clear
+                } else {
+                    LinearGradient(
+                        colors: [
+                            Color(.systemGroupedBackground),
+                            Color(.secondarySystemGroupedBackground),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+            }
+        )
     }
 
     private func coverFlowLibrary(containerSize: CGSize) -> some View {
@@ -811,9 +1247,32 @@ struct GameListView: View {
 
         return ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .center, spacing: metrics.itemSpacing) {
+                if games.isEmpty && displayedRunningGameName == nil {
+                    emptyState
+                        .frame(
+                            width: max(
+                                0,
+                                containerSize.width - (metrics.horizontalPadding * 2)
+                            ),
+                            height: max(
+                                0,
+                                availableHeight - (metrics.verticalPadding * 2)
+                            )
+                        )
+                }
+
                 if let gameName = displayedRunningGameName {
                     vmStatusCoverCard(gameName: gameName, metrics: metrics)
-                        .opacity(nowRunningCardOpacity)
+                        .isolatedMenuGlassContainer()
+                        .compositingGroup()
+                        .scaleEffect(displayedNowRunningCardScale)
+                        .opacity(displayedNowRunningCardOpacity)
+                        .animation(
+                            .smooth(duration: 0.65, extraBounce: 0.04),
+                            value: displayedNowRunningCardScale
+                        )
+                        .animation(.linear(duration: 0.65), value: displayedNowRunningCardOpacity)
+                        .transition(.scale(scale: 0.86).combined(with: .opacity))
                 }
 
                 ForEach(games) { game in
@@ -828,8 +1287,20 @@ struct GameListView: View {
             .padding(.horizontal, metrics.horizontalPadding)
             .padding(.vertical, metrics.verticalPadding)
         }
+        .scrollDisabled(false)
+        .scrollBounceBehavior(.always, axes: .horizontal)
+        .trackGameLibraryScrollPhase(gameLibraryActivity)
+        .transaction { transaction in
+            if transaction.isContinuous || gameLibraryActivity.isScrolling {
+                transaction.animation = nil
+            }
+        }
         .frame(height: availableHeight)
         .frame(maxHeight: .infinity, alignment: .top)
+        // The persistent bottom bar shortens the layout proposal. Offset by
+        // half the navigation/top-bar imbalance to keep the library visually
+        // centered in the complete landscape display.
+        .offset(y: 30)
         .background(
             Group {
                 if hasCustomBackground {
@@ -843,11 +1314,6 @@ struct GameListView: View {
                 }
             }
         )
-        .transaction { transaction in
-            if !favoriteReorderAnimationActive && !nowRunningRemovalAnimationActive {
-                transaction.animation = nil
-            }
-        }
     }
 
     /// Clean display title for the running game, preferring the library entry over the raw path.
@@ -872,117 +1338,158 @@ struct GameListView: View {
 
     private func vmStatusSection(
         gameName: String,
-        opacity: Double
+        opacity: Double,
+        scale: Double
     ) -> some View {
-        Section {
-            // Resume row — tap anywhere to return to game
+        let isStopping = nowRunningRemovalAnimationActive
+
+        return Section {
             Button {
                 appState.returnToGame()
             } label: {
                 HStack {
-                    Image(systemName: "play.circle.fill")
-                        .foregroundStyle(.green)
-                        .font(.title)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(settings.localized("Now Running"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(displayTitle(forRunningName: gameName))
-                            .font(.body)
-                            .fontWeight(.semibold)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                    HStack(spacing: 8) {
+                        Image(
+                            systemName: isStopping
+                                ? "stop.circle.fill"
+                                : "play.circle.fill"
+                        )
+                            .foregroundStyle(isStopping ? .red : .green)
+                            .font(.title)
+                            .contentTransition(.symbolEffect(.replace))
+
+                        RunningStatusText(
+                            isStopping: isStopping,
+                            runningLabel: settings.localized("Now Running"),
+                            gameTitle: displayTitle(forRunningName: gameName),
+                            stoppingLabel: settings.localized("Stopping..."),
+                            stoppingFont: .title2
+                        )
                     }
-                    Spacer()
-                    Text(settings.localized("Resume"))
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                    .opacity(displayedNowRunningStatusOpacity)
+                    .animation(.easeInOut(duration: 0.3), value: displayedNowRunningStatusOpacity)
+
+                    if !isStopping {
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Text(settings.localized("Resume"))
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    }
                 }
+                .frame(
+                    maxWidth: .infinity,
+                    alignment: isStopping ? .center : .leading
+                )
                 .padding(.vertical, 6)
+                .animation(
+                    .smooth(duration: 0.42, extraBounce: 0.02),
+                    value: isStopping
+                )
             }
+            .disabled(isStopping)
             .tint(.primary)
             .menuBackgroundListRow(hasCustomBackground)
+            .compositingGroup()
+            .scaleEffect(scale)
             .opacity(opacity)
+            .animation(.linear(duration: 0.65), value: opacity)
+            .animation(
+                .smooth(duration: 0.65, extraBounce: 0.04),
+                value: scale
+            )
 
-            // Stop button — separate row with confirmation alert
-            Button(role: .destructive) {
-                showStopAlert = true
-            } label: {
-                HStack {
-                    Spacer()
-                    Label(settings.localized("Stop Emulation"), systemImage: "stop.circle")
-                        .font(.subheadline)
-                    Spacer()
+            if !isStopping {
+                Button(role: .destructive) {
+                    showStopAlert = true
+                } label: {
+                    HStack {
+                        Spacer()
+                        Label(settings.localized("Stop Emulation"), systemImage: "stop.circle")
+                            .font(.subheadline)
+                        Spacer()
+                    }
                 }
+                .menuBackgroundListRow(hasCustomBackground)
+                .compositingGroup()
+                .scaleEffect(scale)
+                .opacity(opacity)
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                .animation(.linear(duration: 0.65), value: opacity)
+                .animation(
+                    .smooth(duration: 0.65, extraBounce: 0.04),
+                    value: scale
+                )
             }
-            .menuBackgroundListRow(hasCustomBackground)
-            .opacity(opacity)
         }
     }
 
     private func gameRow(_ game: ISOEntry) -> some View {
         let running = isRunning(game)
-        return HStack(spacing: 4) {
-            Button {
-                open(game)
-            } label: {
-                HStack(spacing: 12) {
-                    coverThumbnail(for: game, running: running)
+        return Button {
+            open(game)
+        } label: {
+            HStack(spacing: 12) {
+                coverThumbnail(for: game, running: running)
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Text(coverStore.displayName(forGameName: game.name))
-                                .font(.body)
-                                .fontWeight(.medium)
-                                .foregroundStyle(.primary)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .layoutPriority(1)
-                            if running {
-                                Image(systemName: "circle.fill")
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(.green)
-                                    .accessibilityLabel(settings.localized("Running"))
-                                    .fixedSize()
-                            }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(game.displayName)
+                            .font(.body)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .layoutPriority(1)
+                        if running {
+                            Image(systemName: "circle.fill")
+                                .font(.system(size: 8))
+                                .foregroundStyle(.green)
+                                .accessibilityLabel(settings.localized("Running"))
+                                .fixedSize()
                         }
-                        HStack(spacing: 8) {
-                            Text(formatSize(game.size))
-                            Text(game.name.pathExtensionLabel)
-                            if game.isExternal {
-                                Label(settings.localized("External"), systemImage: "externaldrive")
-                            }
-                            if let flag = regionFlagText(for: game) {
-                                Text(flag).accessibilityLabel(settings.localized("Region"))
-                            }
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(1)
-                    Spacer()
-                    Image(systemName: running ? "play.fill" : "chevron.right")
-                        .foregroundStyle(running ? .green : .secondary)
-                        .font(.caption)
-                        .accessibilityHidden(true)
+                    HStack(spacing: 8) {
+                        Text(game.sizeLabel)
+                        Text(game.name.pathExtensionLabel)
+                        if game.isExternal {
+                            Label(settings.localized("External"), systemImage: "externaldrive")
+                        }
+                        if let flag = game.regionFlag {
+                            Text(flag).accessibilityLabel(settings.localized("Region"))
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+                Spacer()
 
-            favoriteButton(
-                for: game,
-                foreground: game.isFavorite ? .yellow : .gray
-            )
+                favoriteButton(
+                    for: game,
+                    foreground: game.isFavorite ? .yellow : .gray
+                )
+
+                Image(systemName: running ? "play.fill" : "chevron.right")
+                    .foregroundStyle(running ? .green : .secondary)
+                    .font(.caption)
+                    .accessibilityHidden(true)
+            }
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
         .contextMenu {
             gameContextMenu(for: game)
+        } preview: {
+            gameContextMenuPreview(for: game)
         }
         .registerGameplayLaunchCard(
             for: game.id,
@@ -992,17 +1499,17 @@ struct GameListView: View {
 
     private func gameGridCard(_ game: ISOEntry) -> some View {
         let running = isRunning(game)
-        return ZStack(alignment: .topTrailing) {
-            Button {
-                open(game)
-            } label: {
+        return Button {
+            open(game)
+        } label: {
+            ZStack(alignment: .topTrailing) {
                 VStack(alignment: .center, spacing: 10) {
                     coverThumbnail(for: game, width: 126, height: 189, running: running)
                         .frame(maxWidth: .infinity)
 
                     VStack(alignment: .center, spacing: 4) {
                         HStack(alignment: .firstTextBaseline, spacing: 5) {
-                            Text(coverStore.displayName(forGameName: game.name))
+                            Text(game.displayName)
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.primary)
                                 .lineLimit(2)
@@ -1021,12 +1528,12 @@ struct GameListView: View {
                         .frame(minHeight: 38, alignment: .top)
                         HStack(spacing: 6) {
                             Text(game.name.pathExtensionLabel)
-                            Text(formatSize(game.size))
+                            Text(game.sizeLabel)
                             if game.isExternal {
                                 Image(systemName: "externaldrive")
                                     .accessibilityLabel(settings.localized("External"))
                             }
-                            if let flag = regionFlagText(for: game), !flag.isEmpty {
+                            if let flag = game.regionFlag {
                                 Text(flag).accessibilityLabel(settings.localized("Region"))
                             }
                         }
@@ -1038,23 +1545,24 @@ struct GameListView: View {
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, minHeight: 268, alignment: .top)
-            }
-            .buttonStyle(.plain)
-            .zIndex(0)
 
-            favoriteButton(
-                for: game,
-                font: .callout.weight(.semibold),
-                foreground: game.isFavorite ? .yellow : .white.opacity(0.86),
-                backgroundOpacity: 0.36,
-                padding: 6
-            )
-            .padding(12)
-            .zIndex(2)
+                favoriteButton(
+                    for: game,
+                    font: .callout.weight(.semibold),
+                    foreground: game.isFavorite ? .yellow : .white.opacity(0.86),
+                    backgroundOpacity: 0.36,
+                    padding: 6
+                )
+                .padding(12)
+                .zIndex(2)
+            }
+            .glassSurface(clear: true, cornerRadius: 18)
         }
-        .glassSurface(clear: true, cornerRadius: 18)
+        .buttonStyle(.plain)
         .contextMenu {
             gameContextMenu(for: game)
+        } preview: {
+            gameContextMenuPreview(for: game)
         }
         .registerGameplayLaunchCard(
             for: game.id,
@@ -1064,10 +1572,10 @@ struct GameListView: View {
 
     private func coverFlowCard(_ game: ISOEntry, metrics: CoverFlowMetrics) -> some View {
         let running = isRunning(game)
-        return ZStack(alignment: .topTrailing) {
-            Button {
-                open(game)
-            } label: {
+        return Button {
+            open(game)
+        } label: {
+            ZStack(alignment: .topTrailing) {
                 VStack(spacing: metrics.cardSpacing) {
                     coverThumbnail(
                         for: game,
@@ -1078,7 +1586,7 @@ struct GameListView: View {
                     .shadow(color: running ? .clear : .black.opacity(0.28), radius: 18, y: 10)
 
                     VStack(spacing: 4) {
-                        Text(coverStore.displayName(forGameName: game.name))
+                        Text(game.displayName)
                             .font((metrics.isCompact ? Font.subheadline : Font.headline).weight(.semibold))
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
@@ -1086,8 +1594,8 @@ struct GameListView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                             .frame(minHeight: metrics.isCompact ? 38 : 46, alignment: .top)
                         HStack(spacing: 4) {
-                            Text(game.isExternal ? "\(game.name.pathExtensionLabel)  \(formatSize(game.size))  \(settings.localized("External"))" : "\(game.name.pathExtensionLabel)  \(formatSize(game.size))")
-                            if let flag = regionFlagText(for: game) {
+                            Text(game.isExternal ? "\(game.name.pathExtensionLabel)  \(game.sizeLabel)  \(settings.localized("External"))" : "\(game.name.pathExtensionLabel)  \(game.sizeLabel)")
+                            if let flag = game.regionFlag {
                                 Text(flag).accessibilityLabel(settings.localized("Region"))
                             }
                         }
@@ -1097,23 +1605,24 @@ struct GameListView: View {
                     .frame(width: metrics.textWidth)
                 }
                 .padding(metrics.cardPadding)
-            }
-            .buttonStyle(.plain)
-            .zIndex(0)
 
-            favoriteButton(
-                for: game,
-                font: (metrics.isCompact ? Font.subheadline : Font.headline).weight(.semibold),
-                foreground: game.isFavorite ? .yellow : .white.opacity(0.88),
-                backgroundOpacity: 0.48,
-                padding: metrics.favoritePadding
-            )
-            .padding(metrics.cardPadding + metrics.favoriteInset)
-            .zIndex(2)
+                favoriteButton(
+                    for: game,
+                    font: (metrics.isCompact ? Font.subheadline : Font.headline).weight(.semibold),
+                    foreground: game.isFavorite ? .yellow : .white.opacity(0.88),
+                    backgroundOpacity: 0.48,
+                    padding: metrics.favoritePadding
+                )
+                .padding(metrics.cardPadding + metrics.favoriteInset)
+                .zIndex(2)
+            }
+            .glassSurface(clear: true, cornerRadius: metrics.cornerRadius)
         }
-        .glassSurface(clear: true, cornerRadius: metrics.cornerRadius)
+        .buttonStyle(.plain)
         .contextMenu {
             gameContextMenu(for: game)
+        } preview: {
+            gameContextMenuPreview(for: game)
         }
         .registerGameplayLaunchCard(
             for: game.id,
@@ -1162,79 +1671,132 @@ struct GameListView: View {
 		height: CGFloat = 87,
 		running: Bool
 	) -> some View {
-		CoverThumbnailView(
+        CoverThumbnailView(
             gameName: game.name,
             coverURL: game.coverURL,
             coverSignature: game.coverSignature,
             width: width,
             height: height
         )
-		.shadow(
-			color: running ? .green.opacity(0.7) : .clear,
-			radius: running ? 12 : 0,
-			y: running ? 4 : 0
-		)
+        .modifier(
+            RunningCoverNeonGlowModifier(
+                isRunning: running && !nowRunningRemovalAnimationActive
+            )
+        )
     }
 
     private func vmStatusCard(gameName: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "play.circle.fill")
-                .font(.title2)
-                .foregroundStyle(.green)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(settings.localized("Now Running"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(displayTitle(forRunningName: gameName))
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+        let isStopping = nowRunningRemovalAnimationActive
+
+        return HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Image(
+                    systemName: isStopping
+                        ? "stop.circle.fill"
+                        : "play.circle.fill"
+                )
+                    .font(.title2)
+                    .foregroundStyle(isStopping ? .red : .green)
+                    .contentTransition(.symbolEffect(.replace))
+
+                RunningStatusText(
+                    isStopping: isStopping,
+                    runningLabel: settings.localized("Now Running"),
+                    gameTitle: displayTitle(forRunningName: gameName),
+                    stoppingLabel: settings.localized("Stopping..."),
+                    stoppingFont: .title2
+                )
             }
-            Spacer()
-            Button(settings.localized("Resume")) {
-                appState.returnToGame()
+            .opacity(displayedNowRunningStatusOpacity)
+            .animation(.easeInOut(duration: 0.3), value: displayedNowRunningStatusOpacity)
+
+            if !isStopping {
+                Spacer()
+                HStack(spacing: 8) {
+                    Button(settings.localized("Resume")) {
+                        appState.returnToGame()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button(role: .destructive) {
+                        showStopAlert = true
+                    } label: {
+                        Image(systemName: "stop.circle")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
-            .buttonStyle(.borderedProminent)
-            Button(role: .destructive) {
-                showStopAlert = true
-            } label: {
-                Image(systemName: "stop.circle")
-            }
-            .buttonStyle(.bordered)
         }
+        .frame(
+            maxWidth: .infinity,
+            alignment: isStopping ? .center : .leading
+        )
         .padding()
-			.glassSurface(clear: true, cornerRadius: 18)
+        .animation(
+            .smooth(duration: 0.42, extraBounce: 0.02),
+            value: isStopping
+        )
+        .glassSurface(
+            clear: true,
+            materializeTransition: true,
+            cornerRadius: 18
+        )
     }
 
     private func vmStatusCoverCard(gameName: String, metrics: CoverFlowMetrics) -> some View {
-        VStack(spacing: metrics.isCompact ? 9 : 14) {
-            Image(systemName: "play.circle.fill")
-                .font(.system(size: metrics.statusIconSize))
-                .foregroundStyle(.green)
-            Text(settings.localized("Now Running"))
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(displayTitle(forRunningName: gameName))
-                .font((metrics.isCompact ? Font.subheadline : Font.headline).weight(.semibold))
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-            HStack(spacing: 8) {
-                Button(settings.localized("Resume")) {
-                    appState.returnToGame()
-                }
-                .buttonStyle(.borderedProminent)
-                Button(role: .destructive) {
-                    showStopAlert = true
-                } label: {
-                    Image(systemName: "stop.circle")
-                }
-                .buttonStyle(.bordered)
+        let isStopping = nowRunningRemovalAnimationActive
+
+        return VStack(spacing: metrics.isCompact ? 9 : 14) {
+            VStack(spacing: metrics.isCompact ? 7 : 10) {
+                Image(
+                    systemName: isStopping
+                        ? "stop.circle.fill"
+                        : "play.circle.fill"
+                )
+                    .font(.system(size: metrics.statusIconSize))
+                    .foregroundStyle(isStopping ? .red : .green)
+                    .contentTransition(.symbolEffect(.replace))
+
+                RunningStatusText(
+                    isStopping: isStopping,
+                    runningLabel: settings.localized("Now Running"),
+                    gameTitle: displayTitle(forRunningName: gameName),
+                    stoppingLabel: settings.localized("Stopping..."),
+                    stoppingFont: metrics.isCompact ? .headline : .title3,
+                    centered: true
+                )
             }
-            .controlSize(metrics.isCompact ? .small : .regular)
+            .opacity(displayedNowRunningStatusOpacity)
+            .animation(.easeInOut(duration: 0.3), value: displayedNowRunningStatusOpacity)
+
+            if !isStopping {
+                HStack(spacing: 8) {
+                    Button(settings.localized("Resume")) {
+                        appState.returnToGame()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button(role: .destructive) {
+                        showStopAlert = true
+                    } label: {
+                        Image(systemName: "stop.circle")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .controlSize(metrics.isCompact ? .small : .regular)
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            }
         }
         .frame(width: metrics.statusWidth, height: metrics.statusHeight)
         .padding(metrics.cardPadding)
-			.glassSurface(clear: true, cornerRadius: metrics.cornerRadius)
+        .animation(
+            .smooth(duration: 0.42, extraBounce: 0.02),
+            value: isStopping
+        )
+        .glassSurface(
+            clear: true,
+            materializeTransition: true,
+            cornerRadius: metrics.cornerRadius
+        )
     }
 
 	@ViewBuilder
@@ -1396,52 +1958,220 @@ struct GameListView: View {
 
     @MainActor
     private func makeGameplayLaunchTransition(
-        for game: ISOEntry
+        for game: ISOEntry,
+        respectingLaunchAnimationSetting: Bool = true
     ) -> GameplayLaunchTransition? {
-        guard settings.gameCardZoomAnimationEnabled else {
-            return nil
-        }
-        guard let cardView = gameplayLaunchCardRegistry.view(for: game.id),
-              let window = cardView.window else {
+        guard !respectingLaunchAnimationSetting
+            || settings.gameCardZoomAnimationEnabled else {
             return nil
         }
 
-        let sourceFrame = cardView
-            .convert(cardView.bounds, to: window)
-            .intersection(window.bounds)
-        guard !sourceFrame.isNull,
-              sourceFrame.width > 2,
-              sourceFrame.height > 2
-        else {
+        let cardView = gameplayLaunchCardRegistry.view(for: game.id)
+        guard let window = cardView?.window ?? activeMenuWindow() else {
             return nil
         }
 
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = window.screen.scale
-        format.opaque = false
-        let renderer = UIGraphicsImageRenderer(size: sourceFrame.size, format: format)
-        let snapshot = renderer.image { _ in
-            window.drawHierarchy(
-                in: window.bounds.offsetBy(
-                    dx: -sourceFrame.minX,
-                    dy: -sourceFrame.minY
-                ),
-                afterScreenUpdates: false
-            )
-        }
-
+        let usesCoverFlow = libraryLayout == "grid"
+            && landscapeCoverFlowEnabled
+            && window.bounds.width > window.bounds.height
+        let style: GameplayLaunchCardStyle
+        let coverSize: CGSize
         let cornerRadius: CGFloat
-        if libraryLayout == "grid" {
-            cornerRadius = landscapeCoverFlowEnabled ? 24 : 18
+        if usesCoverFlow {
+            let metrics = CoverFlowMetrics(containerSize: window.bounds.size)
+            style = .coverFlow
+            coverSize = CGSize(
+                width: metrics.coverWidth,
+                height: metrics.coverHeight
+            )
+            cornerRadius = metrics.cornerRadius
+        } else if libraryLayout == "grid" {
+            style = .grid
+            coverSize = CGSize(width: 126, height: 189)
+            cornerRadius = 18
         } else {
+            style = .list
+            coverSize = CGSize(width: 58, height: 87)
             cornerRadius = 14
         }
 
+        let sourceFrame: CGRect
+        if let cardView,
+           cardView.window === window {
+            let candidate = cardView
+                .convert(cardView.bounds, to: window)
+                .intersection(window.bounds)
+            sourceFrame = isValidGameplayLaunchFrame(candidate)
+                ? candidate
+                : fallbackGameplayLaunchFrame(
+                    style: style,
+                    coverSize: coverSize,
+                    in: window.bounds
+                )
+        } else {
+            sourceFrame = fallbackGameplayLaunchFrame(
+                style: style,
+                coverSize: coverSize,
+                in: window.bounds
+            )
+        }
+
+        let coverImage = game.coverURL.flatMap {
+            CoverThumbnailCache.shared.imageForGameplayTransition(
+                for: $0,
+                signature: game.coverSignature,
+                width: coverSize.width,
+                height: coverSize.height,
+                scale: window.screen.scale
+            )
+        }
+        let detailParts = [
+            game.name.pathExtensionLabel,
+            game.sizeLabel,
+            game.isExternal ? settings.localized("External") : nil,
+            game.regionFlag,
+        ].compactMap { $0 }
+
         return GameplayLaunchTransition(
-            snapshot: snapshot,
             sourceFrame: sourceFrame,
-            cornerRadius: cornerRadius
+            cornerRadius: cornerRadius,
+            style: style,
+            gameName: game.name,
+            title: game.displayName,
+            detail: detailParts.joined(separator: "  "),
+            coverImage: coverImage,
+            coverSize: coverSize,
+            isFavorite: game.isFavorite
         )
+    }
+
+    /// Supplies a larger live SwiftUI target for the system context-menu zoom.
+    /// Reusing the launch card keeps its glass, cover, text, and star in one
+    /// composited surface instead of scaling a rasterized snapshot.
+    @ViewBuilder
+    private func gameContextMenuPreview(for game: ISOEntry) -> some View {
+        if let transition = makeGameplayLaunchTransition(
+            for: game,
+            respectingLaunchAnimationSetting: false
+        ) {
+            let sourceSize = contextMenuPreviewSourceSize(
+                for: game,
+                transition: transition
+            )
+            let scale = contextMenuPreviewScale(
+                for: transition.style,
+                sourceSize: sourceSize
+            )
+
+            FluidGameplayLaunchCard(
+                transition: transition,
+                showsUnselectedFavoriteIndicator: true
+            )
+                .frame(width: sourceSize.width, height: sourceSize.height)
+                .scaleEffect(scale)
+                .frame(
+                    width: sourceSize.width * scale,
+                    height: sourceSize.height * scale
+                )
+                .shadow(
+                    color: .black.opacity(0.32),
+                    radius: 22,
+                    y: 12
+                )
+        } else {
+            EmptyView()
+        }
+    }
+
+    private func contextMenuPreviewSourceSize(
+        for game: ISOEntry,
+        transition: GameplayLaunchTransition
+    ) -> CGSize {
+        if let view = gameplayLaunchCardRegistry.view(for: game.id) {
+            let size = view.bounds.size
+            if size.width > 2,
+               size.height > 2,
+               size.width.isFinite,
+               size.height.isFinite {
+                return size
+            }
+        }
+        return transition.sourceFrame.size
+    }
+
+    private func contextMenuPreviewScale(
+        for style: GameplayLaunchCardStyle,
+        sourceSize: CGSize
+    ) -> CGFloat {
+        let desiredScale: CGFloat
+        switch style {
+        case .list:
+            desiredScale = 1.06
+        case .grid:
+            desiredScale = 1.20
+        case .coverFlow:
+            desiredScale = 1.14
+        }
+
+        let viewport = activeMenuWindow()?.bounds.size
+            ?? UIScreen.main.bounds.size
+        let widthLimit = (viewport.width * 0.88) / max(sourceSize.width, 1)
+        let heightLimit = (viewport.height * 0.76) / max(sourceSize.height, 1)
+        return max(1, min(desiredScale, min(widthLimit, heightLimit)))
+    }
+
+    @MainActor
+    private func activeMenuWindow() -> UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: { $0.isKeyWindow })
+    }
+
+    private func isValidGameplayLaunchFrame(_ frame: CGRect) -> Bool {
+        !frame.isNull
+            && !frame.isInfinite
+            && frame.origin.x.isFinite
+            && frame.origin.y.isFinite
+            && frame.width.isFinite
+            && frame.height.isFinite
+            && frame.width > 2
+            && frame.height > 2
+    }
+
+    private func fallbackGameplayLaunchFrame(
+        style: GameplayLaunchCardStyle,
+        coverSize: CGSize,
+        in windowBounds: CGRect
+    ) -> CGRect {
+        let size: CGSize
+        switch style {
+        case .list:
+            size = CGSize(
+                width: max(120, windowBounds.width - 32),
+                height: 112
+            )
+        case .grid:
+            size = CGSize(
+                width: min(180, max(142, windowBounds.width * 0.42)),
+                height: 268
+            )
+        case .coverFlow:
+            size = CGSize(
+                width: coverSize.width + 24,
+                height: min(
+                    windowBounds.height * 0.82,
+                    coverSize.height + 88
+                )
+            )
+        }
+
+        return CGRect(
+            x: windowBounds.midX - size.width / 2,
+            y: windowBounds.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        ).intersection(windowBounds)
     }
 
     private var emptyState: some View {
@@ -1472,87 +2202,148 @@ struct GameListView: View {
 				.multilineTextAlignment(.center)
         }
         .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 240)
     }
 
-	private func loadGames(autoDownloadExternalCovers: Bool = false, forceMetadataRefresh: Bool = false) {
-		guard !isLoadingGames else { return }
-		isLoadingGames = true
-		defer { isLoadingGames = false }
+    private func loadGames(
+        autoDownloadExternalCovers: Bool = false,
+        forceMetadataRefresh: Bool = false
+    ) {
+        guard !gameLibraryActivity.isLoading else { return }
+        gameLibraryActivity.isLoading = true
+        defer { gameLibraryActivity.isLoading = false }
 
-		let fm = FileManager.default
-		let allowFullMetadata = appState.runningGameName == nil
-		let existingGames = GameLibrarySnapshot.shared.existingEntries(merging: games)
-		externalLibrary.reload()
-		games = ARMSX2Bridge.availableISOEntries().compactMap { rawEntry -> ISOEntry? in
-			guard let name = rawEntry["name"] as? String,
-			      let path = rawEntry["path"] as? String else {
-				return nil
-			}
-			let external = (rawEntry["external"] as? NSNumber)?.boolValue ?? (rawEntry["external"] as? Bool ?? false)
-			let source = rawEntry["source"] as? String
-			let bootName = external ? path : name
-			let attrs = try? fm.attributesOfItem(atPath: path)
-			let size = attrs?[.size] as? UInt64 ?? 0
-			let modificationDate = attrs?[.modificationDate] as? Date
-			let fav = ARMSX2Bridge.isFavorite(bootName)
-			let fileURL = URL(fileURLWithPath: path)
-			let entryID = external ? path : fileURL.path
-			let metadata: [String: String]
-			if forceMetadataRefresh && allowFullMetadata {
-				metadata = ARMSX2Bridge.gameMetadata(forISO: bootName)
-				GameLibrarySnapshot.shared.storeMetadata(metadata, modificationDate: modificationDate, size: size, for: entryID)
-			} else if !allowFullMetadata {
-				if let existing = existingGames[entryID] {
-					metadata = existing.metadata
-				} else if let cached = GameLibrarySnapshot.shared.cachedMetadata(
-					for: entryID,
-					modificationDate: modificationDate,
-					size: size
-				) {
-					metadata = cached
-				} else {
-					metadata = ["fileTitle": (name as NSString).deletingPathExtension]
-				}
-			} else if let cached = GameLibrarySnapshot.shared.cachedMetadata(for: entryID, modificationDate: modificationDate, size: size) {
-				metadata = cached
-			} else {
-				metadata = ARMSX2Bridge.gameMetadata(forISO: bootName)
-				GameLibrarySnapshot.shared.storeMetadata(metadata, modificationDate: modificationDate, size: size, for: entryID)
-			}
-			let coverURL = coverStore.coverURL(forGameName: name, gamePath: fileURL, metadata: metadata)
-			let existingCover = retainedCover(from: existingGames[entryID])
-			let resolvedCoverURL = coverURL ?? existingCover?.url
-			let coverSignature = CoverThumbnailCache.signature(for: resolvedCoverURL) ?? existingCover?.signature
-			return ISOEntry(
-				name: name,
-				fileURL: fileURL,
-				bootPath: external ? path : nil,
-				coverURL: resolvedCoverURL,
-				coverSignature: coverSignature,
-				metadata: metadata,
-				size: size,
-				isFavorite: fav,
-				isExternal: external,
-				sourceName: source
-			)
-		}.sorted { a, b in
-			if a.isFavorite != b.isFavorite { return a.isFavorite }
-			return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-		}
+        let fm = FileManager.default
+        let allowFullMetadata = appState.runningGameName == nil
+        let existingGames = GameLibrarySnapshot.shared.existingEntries(
+            merging: games
+        )
+        externalLibrary.reload()
+        let rawEntries = ARMSX2Bridge.availableISOEntries()
+        let coverLookupIndex = coverStore.makeLibraryCoverLookupIndex(
+            gamePaths: rawEntries.compactMap { rawEntry in
+                guard let path = rawEntry["path"] as? String else { return nil }
+                return URL(fileURLWithPath: path)
+            }
+        )
+        let loadedGames = rawEntries.compactMap { rawEntry -> ISOEntry? in
+            guard let name = rawEntry["name"] as? String,
+                  let path = rawEntry["path"] as? String else {
+                return nil
+            }
+            let external = (rawEntry["external"] as? NSNumber)?.boolValue
+                ?? (rawEntry["external"] as? Bool ?? false)
+            let source = rawEntry["source"] as? String
+            let bootName = external ? path : name
+            let attrs = try? fm.attributesOfItem(atPath: path)
+            let size = attrs?[.size] as? UInt64 ?? 0
+            let modificationDate = attrs?[.modificationDate] as? Date
+            let favorite = ARMSX2Bridge.isFavorite(bootName)
+            let fileURL = URL(fileURLWithPath: path)
+            let entryID = external ? path : fileURL.path
+            let metadata: [String: String]
 
-		if !allowFullMetadata {
-			NSLog("[ARMSX2 iOS GameList] skipped full ISO metadata refresh while VM is active")
-		}
+            if forceMetadataRefresh && allowFullMetadata {
+                metadata = ARMSX2Bridge.gameMetadata(forISO: bootName)
+                GameLibrarySnapshot.shared.storeMetadata(
+                    metadata,
+                    modificationDate: modificationDate,
+                    size: size,
+                    for: entryID
+                )
+            } else if !allowFullMetadata {
+                if let existing = existingGames[entryID] {
+                    metadata = existing.metadata
+                } else if let cached = GameLibrarySnapshot.shared.cachedMetadata(
+                    for: entryID,
+                    modificationDate: modificationDate,
+                    size: size
+                ) {
+                    metadata = cached
+                } else {
+                    metadata = [
+                        "fileTitle": (name as NSString).deletingPathExtension
+                    ]
+                }
+            } else if let cached = GameLibrarySnapshot.shared.cachedMetadata(
+                for: entryID,
+                modificationDate: modificationDate,
+                size: size
+            ) {
+                metadata = cached
+            } else {
+                metadata = ARMSX2Bridge.gameMetadata(forISO: bootName)
+                GameLibrarySnapshot.shared.storeMetadata(
+                    metadata,
+                    modificationDate: modificationDate,
+                    size: size,
+                    for: entryID
+                )
+            }
 
-		GameLibrarySnapshot.shared.purgeMetadata(keeping: Set(games.map { $0.id }))
-		GameLibrarySnapshot.shared.update(games)
-		GameLibrarySnapshot.shared.persistMetadataCache()
+            let coverURL = coverStore.coverURL(
+                forGameName: name,
+                gamePath: fileURL,
+                metadata: metadata,
+                using: coverLookupIndex
+            )
+            let existingCover = retainedCover(from: existingGames[entryID])
+            let resolvedCoverURL = coverURL ?? existingCover?.url
+            let coverSignature = CoverThumbnailCache.signature(
+                for: resolvedCoverURL
+            ) ?? existingCover?.signature
 
-		if autoDownloadExternalCovers {
-			autoDownloadExternalCoversIfNeeded()
-		}
-	}
+            return ISOEntry(
+                name: name,
+                fileURL: fileURL,
+                bootPath: external ? path : nil,
+                coverURL: resolvedCoverURL,
+                coverSignature: coverSignature,
+                metadata: metadata,
+                size: size,
+                isFavorite: favorite,
+                isExternal: external,
+                sourceName: source
+            )
+        }.sorted { first, second in
+            if first.isFavorite != second.isFavorite {
+                return first.isFavorite
+            }
+            return first.name.localizedCaseInsensitiveCompare(second.name)
+                == .orderedAscending
+        }
+
+        if !allowFullMetadata {
+            NSLog("[ARMSX2 iOS GameList] skipped full ISO metadata refresh while VM is active")
+        }
+
+        if loadedGames != games {
+            games = loadedGames
+        }
+        GameLibrarySnapshot.shared.purgeMetadata(
+            keeping: Set(loadedGames.lazy.map(\.id))
+        )
+        GameLibrarySnapshot.shared.update(loadedGames)
+        GameLibrarySnapshot.shared.persistMetadataCache()
+
+        if autoDownloadExternalCovers {
+            autoDownloadExternalCoversIfNeeded()
+        }
+    }
+
+    /// Library-change notifications can arrive in bursts while files and
+    /// covers are imported. Refresh once, after scrolling settles, so a disk
+    /// scan cannot interrupt an active gesture or deceleration.
+    private func scheduleLibraryReload(
+        after delay: Duration,
+        autoDownloadExternalCovers: Bool
+    ) {
+        gameLibraryActivity.scheduleReload(after: delay) {
+            loadGames(
+                autoDownloadExternalCovers: autoDownloadExternalCovers
+            )
+        }
+    }
 
 	private func restoreCachedGamesIfNeeded() {
 		guard games.isEmpty else { return }
@@ -1680,69 +2471,82 @@ struct GameListView: View {
 	private func releaseLibraryResourcesForGameplay() {
 		coverWorkTask?.cancel()
 		coverWorkTask = nil
-        favoriteReorderResetTask?.cancel()
-        favoriteReorderResetTask = nil
         nowRunningRemovalResetTask?.cancel()
         nowRunningRemovalResetTask = nil
-        nowRunningAlertDismissTask?.cancel()
-        nowRunningAlertDismissTask = nil
         favoriteAnimationValues.removeAll(keepingCapacity: false)
-        favoriteReorderAnimationActive = false
         nowRunningRemovalAnimationActive = false
         departingRunningGameName = nil
         nowRunningCardOpacity = 1
+        nowRunningCardScale = 1
+        nowRunningStatusOpacity = 1
+        gameLibraryActivity.isScrolling = false
+        gameLibraryActivity.cancelScheduledReload()
         gameplayLaunchCardRegistry.removeAll()
 			games.removeAll(keepingCapacity: false)
 		externalCoverAutoDownloadAttemptedIDs.removeAll(keepingCapacity: false)
-		GameLibrarySnapshot.shared.releaseEntriesForGameplay()
-			CoverThumbnailCache.shared.releaseForGameplay()
+		GameLibraryRuntimeResources.releaseForGameplay()
 		}
 
     private func scheduleStopRunningGame() {
         showStopAlert = false
-        nowRunningAlertDismissTask?.cancel()
-        nowRunningAlertDismissTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(240))
-            guard !Task.isCancelled else { return }
-            nowRunningAlertDismissTask = nil
-            stopRunningGame()
-        }
-    }
-
-    private func stopRunningGame() {
         guard !nowRunningRemovalAnimationActive,
               let runningGameName = appState.runningGameName else {
             return
         }
 
         nowRunningRemovalResetTask?.cancel()
+        nowRunningCardOpacity = 1
+        nowRunningCardScale = 1
+        nowRunningStatusOpacity = 1
         departingRunningGameName = runningGameName
-        nowRunningRemovalAnimationActive = true
-        appState.runningGameName = nil
-        ARMSX2Bridge.requestVMStop()
+        withAnimation(.smooth(duration: 0.42, extraBounce: 0.02)) {
+            // Enter a visible stopping state immediately after confirmation:
+            // play becomes stop, actions dissolve, and both labels morph into
+            // one prominent status before the whole glass card leaves.
+            nowRunningRemovalAnimationActive = true
+        }
 
         nowRunningRemovalResetTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(16))
+            // Let the status morph complete, fade its foreground away, then
+            // collapse the complete composited glass surface to zero pixels.
+            try? await Task.sleep(for: .milliseconds(420))
             guard !Task.isCancelled else { return }
 
-            withAnimation(.easeOut(duration: 0.30)) {
-                nowRunningCardOpacity = 0
+            withAnimation(.easeInOut(duration: 0.3)) {
+                nowRunningStatusOpacity = 0
             }
             try? await Task.sleep(for: .milliseconds(320))
             guard !Task.isCancelled else { return }
 
-            withAnimation(.easeInOut(duration: 0.30)) {
+            withAnimation(.easeInOut(duration: 0.65)) {
+                nowRunningCardOpacity = 0
+                nowRunningCardScale = 0
+            }
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+
+            // Stop the VM as soon as the card's own departure completes. Keep
+            // the now-invisible layout placeholder alive while a drag or
+            // deceleration is active, so removing it cannot move the content
+            // underneath the user's finger.
+            appState.runningGameName = nil
+            ARMSX2Bridge.requestVMStop()
+
+            while gameLibraryActivity.isScrolling {
+                try? await Task.sleep(for: .milliseconds(50))
+                guard !Task.isCancelled else { return }
+            }
+
+            withAnimation(.smooth(duration: 0.52, extraBounce: 0.02)) {
                 departingRunningGameName = nil
             }
-            try? await Task.sleep(for: .milliseconds(320))
+            try? await Task.sleep(for: .milliseconds(540))
             guard !Task.isCancelled else { return }
 
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                nowRunningCardOpacity = 1
-                nowRunningRemovalAnimationActive = false
-            }
+            // The collapsed values remain private to the departed placeholder.
+            // Clearing only the phase flag avoids a second transaction through
+            // every persistent game-card glass surface.
+            nowRunningRemovalAnimationActive = false
             nowRunningRemovalResetTask = nil
         }
     }
@@ -1753,7 +2557,6 @@ struct GameListView: View {
         let updatedValue = !current
 		ARMSX2Bridge.setFavorite(key, favorite: updatedValue)
 
-        favoriteReorderAnimationActive = true
         withAnimation(.spring(response: 0.46, dampingFraction: 0.82)) {
             favoriteAnimationValues[game.id, default: 0] += 1
             if let index = games.firstIndex(where: { $0.id == game.id }) {
@@ -1769,14 +2572,6 @@ struct GameListView: View {
 
         GameLibrarySnapshot.shared.update(games)
         UISelectionFeedbackGenerator().selectionChanged()
-
-        favoriteReorderResetTask?.cancel()
-        favoriteReorderResetTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled else { return }
-            favoriteReorderAnimationActive = false
-            favoriteReorderResetTask = nil
-        }
 	}
 
 	private func clearGameCache(_ game: ISOEntry) {
@@ -1806,45 +2601,12 @@ struct GameListView: View {
 	}
 
 	private func isRunning(_ game: ISOEntry) -> Bool {
-		guard let runningGameName = appState.runningGameName else {
-			return false
-		}
-
-		return Self.gameIdentifiersMatch(runningGameName, game.bootName)
-			|| Self.gameIdentifiersMatch(runningGameName, game.name)
-			|| game.fileURL.map { Self.gameIdentifiersMatch(runningGameName, $0.path) } == true
-	}
-
-	private static func gameIdentifiersMatch(_ first: String, _ second: String) -> Bool {
-		let normalizedFirst = (first.removingPercentEncoding ?? first)
-			.replacingOccurrences(of: "\\", with: "/")
-		let normalizedSecond = (second.removingPercentEncoding ?? second)
-			.replacingOccurrences(of: "\\", with: "/")
-		if normalizedFirst.caseInsensitiveCompare(normalizedSecond) == .orderedSame {
-			return true
-		}
-
-		let firstFileName = (normalizedFirst as NSString).lastPathComponent
-		let secondFileName = (normalizedSecond as NSString).lastPathComponent
-		return !firstFileName.isEmpty
-			&& firstFileName.caseInsensitiveCompare(secondFileName) == .orderedSame
-	}
-
-	/// Region flag emoji for a game's metadata, or nil when unknown so the
-	/// caller can omit it instead of rendering a placeholder.
-	private func regionFlagText(for game: ISOEntry) -> String? {
-		let region = game.metadata["region"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-		let flag = RegionFlag.emoji(for: region)
-		return flag.isEmpty ? nil : flag
-	}
-
-    private func formatSize(_ bytes: UInt64) -> String {
-        let gb = Double(bytes) / 1_073_741_824
-        if gb >= 1.0 {
-            return String(format: "%.1f GB", gb)
-        }
-        let mb = Double(bytes) / 1_048_576
-        return String(format: "%.0f MB", mb)
+        let runningIdentifiers = gameLibraryActivity.runningIdentifiers(
+            for: appState.runningGameName
+        )
+        return !runningIdentifiers.isDisjoint(
+            with: game.normalizedIdentifiers
+        )
     }
 
 }
@@ -1854,7 +2616,6 @@ private struct GameInfoPanel: View {
     @State private var settings = SettingsStore.shared
 
     let game: ISOEntry
-    let coverStore: CoverStore
 
     var body: some View {
         NavigationStack {
@@ -1870,7 +2631,7 @@ private struct GameInfoPanel: View {
                         )
 
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(coverStore.displayName(forGameName: game.name))
+                            Text(game.displayName)
                                 .font(.headline)
                             Text(game.name)
                                 .font(.caption)
@@ -1897,7 +2658,7 @@ private struct GameInfoPanel: View {
                         Text(game.name.pathExtensionLabel)
                     }
                     LabeledContent(settings.localized("Size")) {
-                        Text(formatSize(game.size))
+                        Text(game.sizeLabel)
                     }
                 }
 
@@ -1928,15 +2689,6 @@ private struct GameInfoPanel: View {
     private func metadataValue(_ key: String) -> String {
         let value = game.metadata[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return value.isEmpty ? settings.localized("Unknown") : value
-    }
-
-    private func formatSize(_ bytes: UInt64) -> String {
-        let gb = Double(bytes) / 1_073_741_824
-        if gb >= 1.0 {
-            return String(format: "%.1f GB", gb)
-        }
-        let mb = Double(bytes) / 1_048_576
-        return String(format: "%.0f MB", mb)
     }
 }
 

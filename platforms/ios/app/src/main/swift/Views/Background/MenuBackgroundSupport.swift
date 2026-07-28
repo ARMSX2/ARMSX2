@@ -23,9 +23,12 @@ final class PersistentMenuBackgroundHost: ObservableObject {
 
     @Published private(set) var rendererMounted: Bool
     @Published private(set) var presentationVisible = true
+    @Published private(set) var inactiveSnapshot: UIImage?
+    @Published private(set) var inactiveSnapshotOpacity = 0.0
     @Published private var exclusivePreviewDepth = 0
     private var menuBackgroundAvailable = true
     private var releasedForGameplay = false
+    private var snapshotReleaseTask: Task<Void, Never>?
 
     init() {
         let hasBackground = SettingsStore.shared.hasCustomBackground
@@ -39,6 +42,10 @@ final class PersistentMenuBackgroundHost: ObservableObject {
         menuBackgroundAvailable = isAvailable
         rendererMounted = isAvailable
             && !(exclusivePreviewDepth > 0 && SettingsStore.shared.dynamicBackgroundsEnabled)
+        if !isAvailable {
+            releaseInactiveSnapshot()
+            PlayStation3XMBByMartShaderLibrary.releaseSessionCache()
+        }
     }
 
     /// Starts a fresh renderer session only after gameplay released the previous
@@ -81,13 +88,56 @@ final class PersistentMenuBackgroundHost: ObservableObject {
         rendererMounted = false
     }
 
+    /// Keeps one rasterized frame visible while iOS deactivates the scene and
+    /// tears down live video, display-link, and Metal rendering. The image is
+    /// intentionally held only across that inactive interval.
+    func retainInactiveSnapshot(_ image: UIImage) {
+        guard menuBackgroundAvailable, rendererMounted else { return }
+        snapshotReleaseTask?.cancel()
+        snapshotReleaseTask = nil
+        inactiveSnapshot = image
+        // Capture immediately on suspension; crossfade only after live
+        // rendering resumes.
+        inactiveSnapshotOpacity = 1
+    }
+
+    /// Scene activation restarts the live renderer first. Once it has produced
+    /// frames again, crossfade the still image away and release its pixel storage.
+    func releaseInactiveSnapshotWhenRendererIsReady() {
+        snapshotReleaseTask?.cancel()
+        guard inactiveSnapshot != nil else { return }
+        // Keep the held frame fully visible while the live renderer begins its
+        // warm-up interval.
+        inactiveSnapshotOpacity = 1
+        snapshotReleaseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.36)) {
+                self?.inactiveSnapshotOpacity = 0
+            }
+            try? await Task.sleep(for: .milliseconds(360))
+            guard !Task.isCancelled else { return }
+            self?.inactiveSnapshot = nil
+            self?.snapshotReleaseTask = nil
+        }
+    }
+
+    private func releaseInactiveSnapshot() {
+        snapshotReleaseTask?.cancel()
+        snapshotReleaseTask = nil
+        inactiveSnapshotOpacity = 0
+        inactiveSnapshot = nil
+    }
+
     /// The surrounding MenuTabView is also removed at gameplay start, ensuring
     /// SwiftUI dismantles video, animated-image, display-link, and Metal views.
     func release() {
         releasedForGameplay = true
         menuBackgroundAvailable = false
         exclusivePreviewDepth = 0
+        releaseInactiveSnapshot()
         suspend()
+        PlayStation3XMBByMartShaderLibrary.releaseSessionCache()
     }
 
     var shouldShowRenderer: Bool {
@@ -102,14 +152,208 @@ struct PersistentMenuBackgroundLayer: View {
     var body: some View {
         if host.rendererMounted {
             GeometryReader { geometry in
-                BackgroundContainerView(size: geometry.size)
+                ZStack {
+                    SnapshottingBackgroundRenderer(
+                        size: geometry.size,
+                        sessionStart: host.sessionStart,
+                        snapshotHost: host
+                    )
+
+                    if let snapshot = host.inactiveSnapshot {
+                        Image(uiImage: snapshot)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(
+                                width: geometry.size.width,
+                                height: geometry.size.height
+                            )
+                            .clipped()
+                            .opacity(host.inactiveSnapshotOpacity)
+                    }
+                }
             }
-            .environment(\.menuBackgroundSessionStart, host.sessionStart)
             .opacity(host.shouldShowRenderer ? 1 : 0)
             .ignoresSafeArea()
             .accessibilityHidden(true)
             .allowsHitTesting(false)
         }
+    }
+}
+
+/// Gives the persistent menu background its own UIKit subtree. Capturing this
+/// view therefore records only the background—not Games/BIOS/Settings chrome—
+/// before iOS suspends Metal, video, and display-link rendering.
+private struct SnapshottingBackgroundRenderer: UIViewControllerRepresentable {
+    let size: CGSize
+    let sessionStart: Date
+    let snapshotHost: PersistentMenuBackgroundHost
+
+    func makeUIViewController(
+        context: Context
+    ) -> BackgroundSnapshotHostingController {
+        BackgroundSnapshotHostingController(
+            size: size,
+            sessionStart: sessionStart,
+            snapshotHost: snapshotHost
+        )
+    }
+
+    func updateUIViewController(
+        _ controller: BackgroundSnapshotHostingController,
+        context: Context
+    ) {
+        controller.update(
+            size: size,
+            sessionStart: sessionStart,
+            snapshotHost: snapshotHost
+        )
+    }
+
+    static func dismantleUIViewController(
+        _ controller: BackgroundSnapshotHostingController,
+        coordinator: ()
+    ) {
+        controller.teardown()
+    }
+}
+
+@MainActor
+private final class BackgroundSnapshotHostingController: UIViewController {
+    private var backgroundController: UIHostingController<AnyView>?
+    private weak var snapshotHost: PersistentMenuBackgroundHost?
+    private var renderedSize: CGSize
+    private var renderedSessionStart: Date
+    private var observingLifecycle = false
+
+    init(
+        size: CGSize,
+        sessionStart: Date,
+        snapshotHost: PersistentMenuBackgroundHost
+    ) {
+        renderedSize = size
+        renderedSessionStart = sessionStart
+        self.snapshotHost = snapshotHost
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError()
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        installBackground(size: renderedSize, sessionStart: renderedSessionStart)
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationWillResignActive),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        observingLifecycle = true
+    }
+
+    func update(
+        size: CGSize,
+        sessionStart: Date,
+        snapshotHost: PersistentMenuBackgroundHost
+    ) {
+        self.snapshotHost = snapshotHost
+        guard size != renderedSize || sessionStart != renderedSessionStart else {
+            return
+        }
+        renderedSize = size
+        renderedSessionStart = sessionStart
+        backgroundController?.rootView = backgroundRoot(
+            size: size,
+            sessionStart: sessionStart
+        )
+    }
+
+    func teardown() {
+        if observingLifecycle {
+            NotificationCenter.default.removeObserver(self)
+            observingLifecycle = false
+        }
+        if let backgroundController {
+            backgroundController.willMove(toParent: nil)
+            backgroundController.view.removeFromSuperview()
+            backgroundController.removeFromParent()
+        }
+        backgroundController = nil
+        snapshotHost = nil
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func installBackground(size: CGSize, sessionStart: Date) {
+        let controller = UIHostingController(
+            rootView: backgroundRoot(size: size, sessionStart: sessionStart)
+        )
+        controller.view.backgroundColor = .clear
+        addChild(controller)
+        view.addSubview(controller.view)
+        controller.view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            controller.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            controller.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            controller.view.topAnchor.constraint(equalTo: view.topAnchor),
+            controller.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        controller.didMove(toParent: self)
+        backgroundController = controller
+    }
+
+    private func backgroundRoot(
+        size: CGSize,
+        sessionStart: Date
+    ) -> AnyView {
+        AnyView(
+            BackgroundContainerView(size: size)
+                .environment(\.menuBackgroundSessionStart, sessionStart)
+        )
+    }
+
+    @objc private func applicationWillResignActive() {
+        guard let targetView = backgroundController?.view,
+              targetView.window != nil,
+              targetView.bounds.width > 0,
+              targetView.bounds.height > 0 else {
+            return
+        }
+
+        targetView.layoutIfNeeded()
+        let format = UIGraphicsImageRendererFormat.preferred()
+        format.scale = targetView.window?.screen.scale ?? 1
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(
+            bounds: targetView.bounds,
+            format: format
+        )
+        let snapshot = renderer.image { context in
+            let captured = targetView.drawHierarchy(
+                in: targetView.bounds,
+                afterScreenUpdates: false
+            )
+            if !captured {
+                targetView.layer.render(in: context.cgContext)
+            }
+        }
+        snapshotHost?.retainInactiveSnapshot(snapshot)
+    }
+
+    @objc private func applicationDidBecomeActive() {
+        snapshotHost?.releaseInactiveSnapshotWhenRendererIsReady()
     }
 }
 
@@ -159,6 +403,63 @@ struct OptionalMenuNavigationStack<Content: View>: View {
     }
 }
 
+/// A page-owned replacement for UINavigationBar's large title on the retained
+/// Games/BIOS pages. One native large title cannot reliably track two live
+/// scroll views in the same NavigationStack; keeping the title in each page's
+/// scroll content makes its visibility and collapse state deterministic.
+struct EmbeddedMenuLargeTitle: View {
+    let title: String
+    @Environment(\.menuTabIsActive) private var menuTabIsActive
+    @Environment(\.menuLargeTitleNamespace) private var transitionNamespace
+    @Environment(\.menuLargeTitleMorphActive) private var morphActive
+
+    var body: some View {
+        titleContent
+            .modifier(
+                MenuLargeTitleMorphModifier(
+                    namespace: transitionNamespace,
+                    isEnabled: morphActive,
+                    isSource: menuTabIsActive
+                )
+            )
+    }
+
+    private var titleContent: some View {
+        HStack {
+            Text(title)
+                .font(.largeTitle.bold())
+                .foregroundStyle(.primary)
+                .contentTransition(.interpolate)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+    }
+}
+
+private struct MenuLargeTitleMorphModifier: ViewModifier {
+    let namespace: Namespace.ID?
+    let isEnabled: Bool
+    let isSource: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled, let namespace {
+            content.matchedGeometryEffect(
+                id: "menu.largeTitle",
+                in: namespace,
+                properties: .frame,
+                anchor: .topLeading,
+                isSource: isSource
+            )
+        } else {
+            content
+        }
+    }
+}
+
 private struct OptionalMenuNavigationChromeModifier: ViewModifier {
     let title: String
     let backgroundHidden: Bool
@@ -194,6 +495,22 @@ private struct ClearNavigationContainerBackgroundModifier: ViewModifier {
 /// MenuTabView retains every tab page, so this container is not dismantled when
 /// another tab is selected.
 private struct StableMenuContentGlassContainerModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 0) {
+                content
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// Prevents a transient glass surface from joining the persistent menu-card
+/// effect group. Removing the transient surface then cannot cause every
+/// remaining card to rematerialize its Liquid Glass properties.
+private struct IsolatedMenuGlassContainerModifier: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
@@ -264,6 +581,10 @@ extension View {
 
     func stableMenuContentGlassContainer() -> some View {
         modifier(StableMenuContentGlassContainerModifier())
+    }
+
+    func isolatedMenuGlassContainer() -> some View {
+        modifier(IsolatedMenuGlassContainerModifier())
     }
 
     func clearNavigationContainerBackground() -> some View {

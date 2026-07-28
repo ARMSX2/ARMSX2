@@ -1748,6 +1748,15 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	FullscreenUI::OnVMStarted();
 	UpdateInhibitScreensaver(EmuConfig.InhibitScreensaver);
 
+	// A BIOS-only boot has no game ELF or replacement-texture map to signal the
+	// normal readiness barriers. Its optional-resource teardown may begin once
+	// all VM subsystems above have finished initializing.
+	if (boot_params.filename.empty())
+	{
+		NotifyBootPatchesApplied();
+		NotifyTextureReplacementStartupComplete();
+	}
+
 	SetEmuThreadAffinities();
 
 	// do we want to load state?

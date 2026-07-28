@@ -3,6 +3,7 @@
 
 import SwiftUI
 import AVKit
+import ImageIO
 
 struct BackgroundContainerView: View {
     @State private var settings = SettingsStore.shared
@@ -12,6 +13,7 @@ struct BackgroundContainerView: View {
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @State private var videoPoster: UIImage?
     @State private var isRenderingEnabled = true
+    @State private var inactiveReleaseTask: Task<Void, Never>?
 
     private var activeAsset: BackgroundAsset? {
         if size.width > size.height, let landscape = settings.backgroundLandscapeAsset { return landscape }
@@ -41,13 +43,13 @@ struct BackgroundContainerView: View {
                     let url = BackgroundStorage.fileURL(for: asset)
                     switch asset.kind {
                     case .image:
-                        backgroundImage(UIImage(contentsOfFile: url.path))
+                        StaticLibraryBackgroundImageView(
+                            url: url,
+                            fitMode: effectiveFitMode,
+                            size: size
+                        )
                     case .animatedImage:
-                        if reduceMotion {
-                            backgroundImage(UIImage(contentsOfFile: url.path))
-                        } else {
-                            animated(url)
-                        }
+                        animated(url)
                     case .video:
                         if reduceMotion {
                             backgroundImage(videoPoster)
@@ -63,16 +65,29 @@ struct BackgroundContainerView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
         .onAppear {
+            inactiveReleaseTask?.cancel()
             isRenderingEnabled = true
         }
         .onReceive(NotificationCenter.default.publisher(for: UIScene.willDeactivateNotification)) { _ in
-            isRenderingEnabled = false
-            videoPoster = nil
+            inactiveReleaseTask?.cancel()
+            inactiveReleaseTask = Task { @MainActor in
+                // Allow the immediate captured frame to enter the hierarchy
+                // before releasing the inactive live surface.
+                try? await Task.sleep(for: .milliseconds(32))
+                guard !Task.isCancelled else { return }
+                isRenderingEnabled = false
+                videoPoster = nil
+                inactiveReleaseTask = nil
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIScene.didActivateNotification)) { _ in
+            inactiveReleaseTask?.cancel()
+            inactiveReleaseTask = nil
             isRenderingEnabled = true
         }
         .onReceive(NotificationCenter.default.publisher(for: AppState.releaseMenuBackgroundResourcesNotification)) { _ in
+            inactiveReleaseTask?.cancel()
+            inactiveReleaseTask = nil
             isRenderingEnabled = false
             videoPoster = nil
         }
@@ -109,6 +124,94 @@ struct BackgroundContainerView: View {
         } catch {
             videoPoster = nil
         }
+    }
+}
+
+/// Loads a screen-sized static wallpaper away from the main actor. The source
+/// image can be much larger than the display, so ImageIO downsamples it before
+/// UIKit and SwiftUI retain the decoded pixels.
+private struct StaticLibraryBackgroundImageView: View {
+    let url: URL
+    let fitMode: BackgroundFitMode
+    let size: CGSize
+    @State private var image: UIImage?
+
+    private var loadIdentity: String {
+        "\(url.path)|\(Int(size.width))x\(Int(size.height))"
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            if let image {
+                fitted(Image(uiImage: image))
+                    .frame(
+                        width: geometry.size.width,
+                        height: geometry.size.height
+                    )
+                    .clipped()
+            }
+        }
+        .task(id: loadIdentity) {
+            let scale = UIScreen.main.scale
+            let maximumPixelSize = max(
+                1,
+                Int(max(size.width, size.height) * scale)
+            )
+            let loader = Task.detached(priority: .utility) {
+                Self.downsampledImage(
+                    at: url,
+                    maximumPixelSize: maximumPixelSize,
+                    scale: scale
+                )
+            }
+            let loaded = await withTaskCancellationHandler {
+                await loader.value
+            } onCancel: {
+                loader.cancel()
+            }
+            guard !Task.isCancelled else { return }
+            image = loaded
+        }
+    }
+
+    @ViewBuilder
+    private func fitted(_ image: Image) -> some View {
+        switch fitMode {
+        case .fill:
+            image.resizable().scaledToFill()
+        case .fit:
+            image.resizable().scaledToFit()
+        case .stretch:
+            image.resizable()
+        }
+    }
+
+    private nonisolated static func downsampledImage(
+        at url: URL,
+        maximumPixelSize: Int,
+        scale: CGFloat
+    ) -> UIImage? {
+        let sourceOptions = [
+            kCGImageSourceShouldCache: false,
+        ] as CFDictionary
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize,
+        ] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(
+            url as CFURL,
+            sourceOptions
+        ),
+        let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+            source,
+            0,
+            thumbnailOptions
+        ) else {
+            return nil
+        }
+        return UIImage(cgImage: thumbnail, scale: scale, orientation: .up)
     }
 }
 
