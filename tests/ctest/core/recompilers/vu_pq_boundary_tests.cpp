@@ -256,4 +256,55 @@ TEST(VuPqBoundary, DivInvalidFlagReachesStatusWhenProgramEndsInsideLatency)
 	EXPECT_EQ(h.GetViJit(REG_Q), 0x7F7FFFFFu);
 }
 
+// =========================================================================
+//  Q/P commit on the T-bit end-program path
+//
+//  A T-bit stop on a branch does not go through the normal end-of-program
+//  routine — it has its own variant, with its own copy of the Q/P commit. The
+//  copy matters because committing a double-buffered scalar from a host
+//  vector means rotating lanes, and the rotate is not an involution: undoing
+//  a 4-byte rotate takes a 12-byte one, not another 4. A copy that no test
+//  ever runs is exactly where that kind of slip survives.
+//
+//  Reaching it needs both scalars still in flight AT the branch, so that the
+//  end-of-program cycle advance is what retires them and flips the instance —
+//  and VU1, since P only exists there.
+//
+//  Scored one-sided for the reason the other T-bit branch tests are (see
+//  vu0_e_d_t_m_bit_tests.cpp): the stop makes the two engines legitimately
+//  disagree on delay-slot execution.
+// =========================================================================
+
+TEST(VuPqBoundary, TBitStopCommitsBothInFlightScalarsOnVu1)
+{
+	VuTestHarness h(1);
+	vuRegs[1].VI[REG_FBRST].UL = 0x800u; // T-stop for VU1 (FBRST bit 11)
+	vuRegs[0].VI[REG_FBRST].UL = 0x800u;
+	h.SetQ(std::bit_cast<u32>(kStaleQ));
+	h.SetP(std::bit_cast<u32>(kStaleP));
+	h.SetVf(vf::vf1, 8.0f, 0.0f, 0.0f, 0.0f);
+	h.SetVf(vf::vf2, 2.0f, 0.0f, 0.0f, 0.0f);
+	h.SetVf(vf::vf3, 3.0f, 4.0f, 0.0f, 99.0f);
+	h.LoadProgram({
+		LowerOnly(VDIV_L(vf::vf1, 0, vf::vf2, 0)), // pair 0: Q = 8/2 = 4
+		LowerOnly(VESADD_L(vf::vf3)),              // pair 1: P = 9+16+0 = 25
+		TBit(LowerOnly(VB_L(+2))),                 // pair 2: T-bit branch, both in flight
+		Nop(),                                     // pair 3: delay slot
+		Nop(),                                     // pair 4: skipped
+		Nop(),                                     // pair 5: branch target
+		EBitNopPair(),                             // pair 6
+	});
+
+	h.RunInterpOnly();
+	h.RunJitPreserveBlockCache();
+
+	EXPECT_EQ((vuRegs[0].VI[REG_VPU_STAT].UL & 0x400u), 0x400u) << "VU1 T-finished bit";
+	EXPECT_FLOAT_EQ(std::bit_cast<float>(h.GetViJit(REG_Q)), 4.0f)
+		<< "T-bit stop must commit the in-flight quotient, not the buffer it "
+		   "displaced";
+	EXPECT_FLOAT_EQ(std::bit_cast<float>(h.GetViJit(REG_P)), 25.0f)
+		<< "T-bit stop must commit the in-flight EFU result, not the buffer it "
+		   "displaced";
+}
+
 } // namespace recompiler_tests
