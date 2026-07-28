@@ -101,6 +101,7 @@ add_pcsx2_test(recompiler_tests
 	vu1_alu_lower_tests.cpp
 	vu1_efu_p_pipeline_tests.cpp
 	vu1_xgkick_tests.cpp
+	vu1_xgkick_drain_tests.cpp
 	ee_vu1_vif_dispatch_tests.cpp
 	vu_capture_format_tests.cpp
 	vu_replay_tests.cpp
