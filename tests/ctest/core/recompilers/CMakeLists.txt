@@ -135,6 +135,8 @@ add_pcsx2_test(recompiler_tests
 	vu1_efu_console_conformance_tests.cpp
 	vu_sticky_console_conformance_tests.cpp
 	vu_branch_console_conformance_tests.cpp
+	vu_pipeline_console_conformance_tests.cpp
+	vu_memory_xgkick_console_conformance_tests.cpp
 	ee_sa_perf_console_conformance_tests.cpp
 	ee_cache_console_conformance_tests.cpp
 	ee_cache2_console_conformance_tests.cpp
