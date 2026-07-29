@@ -426,6 +426,9 @@ static void recCOP2_SPEC2() { recCOP2SPECIAL2t[(cpuRegs.code & 0x3) | ((cpuRegs.
 
 void recCOP2()
 {
+#ifdef PCSX2_RECOMPILER_TESTS
+	EERecFallback::NoteCop2VuCompiled(cpuRegs.code);
+#endif
 	recCOP2t[_Rs_]();
 }
 
