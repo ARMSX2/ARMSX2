@@ -97,7 +97,8 @@ namespace Patch
 	static bool PatchStringHasUnlabelledPatch(const std::string& pnach_data);
 	static void ExtractPatchInfo(std::vector<PatchInfo>* dst, const std::string& pnach_data, u32* num_unlabelled_patches);
 	static void ReloadEnabledLists();
-	static u32 EnablePatches(const std::vector<PatchGroup>* patches, const std::vector<std::string>& enable_list, const std::vector<std::string>* enable_immediately_list);
+	static u32 EnablePatches(const std::vector<PatchGroup>* patches, const std::vector<std::string>& enable_list,
+		const std::vector<std::string>* enable_immediately_list, bool hardcore_safe_only = false);
 
 	template <typename EEMemory, typename IOPMemory>
 		requires std::is_base_of_v<MemoryInterface, EEMemory> &&
@@ -371,9 +372,14 @@ void Patch::EnumeratePnachFiles(const std::string_view serial, u32 crc, bool che
 	// hardcore, so a widescreen/no-interlace/bug-fix patch worked when it shipped in our zip
 	// and silently did nothing when the same patch sat on disk. That killed everything the
 	// in-app Patch Manager writes (it only ever writes to disk) the moment a user turned
-	// hardcore on, with no message explaining why. Cheats remain gated here AND in
-	// ReloadEnabledLists (EnableCheats && !IsHardcoreModeActive), so cheat pnach files are
-	// still never enumerated or enabled under hardcore.
+	// hardcore on, with no message explaining why.
+	//
+	// This used to claim cheat pnach files are never enumerated under hardcore. They are, on
+	// a normal boot: UpdateDiscDetails reloads with reload_files before ResetHardcoreMode arms
+	// s_hardcore_mode, so the walk below happens while it is still false and the groups stay
+	// resident for the session. What actually keeps them from applying is ReloadEnabledLists
+	// emptying the enabled list and the cheat enable call sitting behind EnableCheats. The
+	// check here only saves the enumeration on later reloads.
 	std::vector<std::string> disk_patch_files;
 	if (for_ui || !cheats || !Achievements::IsHardcoreModeActive())
 		disk_patch_files = FindPatchFilesOnDisk(serial, crc, cheats, for_ui);
@@ -650,11 +656,39 @@ void Patch::ReloadEnabledLists()
 	}
 }
 
-u32 Patch::EnablePatches(const std::vector<PatchGroup>* patches, const std::vector<std::string>& enable_list, const std::vector<std::string>* enable_immediately_list)
+// Under hardcore, a group off the patches path is only allowed through if it declares what it
+// is for. gsaspectratio or gsinterlacemode means widescreen or no-interlace, which is what the
+// fork deliberately keeps working; a group that declares nothing and just writes memory is a
+// cheat whatever the label says.
+//
+// It has to be judged by content, not by file or by name. patches.zip files God of War 2's
+// [Skip Cutscenes] as a patch, in the same pnach as its [Widescreen 16:9], so location cannot
+// tell them apart. And "no memory writes" cannot either: the widescreen group writes EE memory
+// too. Declared intent is the only thing that separates them.
+static bool IsHardcoreSafePatchGroup(const Patch::PatchGroup& p)
+{
+	if (p.override_aspect_ratio.has_value() || p.override_interlace_mode.has_value())
+		return true;
+
+	// Nothing declared and nothing written is inert, so it costs nothing to allow.
+	return p.patches.empty() && p.dpatches.empty();
+}
+
+u32 Patch::EnablePatches(const std::vector<PatchGroup>* patches, const std::vector<std::string>& enable_list,
+	const std::vector<std::string>* enable_immediately_list, bool hardcore_safe_only)
 {
 	u32 count = 0;
 	for (const PatchGroup& p : *patches)
 	{
+		// Checked here rather than against the enable list, because an unlabelled group never
+		// consults that list at all -- see the auto-enable below.
+		if (hardcore_safe_only && !IsHardcoreSafePatchGroup(p))
+		{
+			Console.WriteLn(Color_Orange, fmt::format("Skipping patch under Hardcore: {}",
+											  p.name.empty() ? std::string_view("<unlabelled>") : std::string_view(p.name)));
+			continue;
+		}
+
 		// For compatibility, we auto enable anything that's not labelled.
 		// Also for gamedb patches.
 		if (!p.name.empty() && std::find(enable_list.begin(), enable_list.end(), p.name) == enable_list.end())
@@ -788,8 +822,12 @@ void Patch::UpdateActivePatches(bool reload_enabled_list, bool verbose, bool ver
 			message.append(TRANSLATE_PLURAL_STR("Patch", "%n GameDB patches are active.", "OSD Message", gp_count));
 	}
 
-	const u32 p_count = EnablePatches(
-		&s_game_patches, s_enabled_patches, apply_new_patches ? &s_just_enabled_patches : nullptr);
+	// The cheats list is emptied under hardcore, but this one never was, and the shipped
+	// patches.zip carries outright cheats filed as patches. So filter it by content instead.
+	// GameDB above is left alone deliberately: it is a curated compatibility layer, and
+	// dropping it under hardcore would break games rather than stop cheating.
+	const u32 p_count = EnablePatches(&s_game_patches, s_enabled_patches,
+		apply_new_patches ? &s_just_enabled_patches : nullptr, Achievements::IsHardcoreModeActive());
 	s_patches_counts = p_count;
 	if (p_count > 0)
 		message.append_format("{}{}", message.empty() ? "" : "\n",
