@@ -12,8 +12,9 @@ enum PauseLayoutVariant {
     /// iPad, any orientation: two side-by-side columns inside one unified scroll
     /// surface.
     case ipadTwoColumn
-    /// iPhone landscape: one wide single column. Covers every iPhone in landscape,
-    /// including Pro Max / Plus models that report a regular width size class.
+    /// iPhone landscape: one or two columns according to the panel's measured size.
+    /// Covers every iPhone in landscape, including Pro Max / Plus models that report
+    /// a regular width size class.
     case phoneLandscape
     /// iPhone portrait: one single column.
     case phonePortrait
@@ -36,7 +37,7 @@ struct OverlayMetrics {
     /// Deterministic dim behind the card. A plain opacity scrim is used instead of a
     /// SwiftUI Material, which collapses to a flat grey over a paused Metal frame
     /// (worst on iPad and under Reduce Transparency). Bumped for Reduce Transparency
-    /// users. Kept on the lighter side because the cards themselves are opaque.
+    /// users while remaining light enough for the paused game to show through glass.
     let scrimOpacity: Double
 
     init(size: CGSize, isIPad: Bool, safeArea: EdgeInsets, reduceTransparency: Bool) {
@@ -52,8 +53,8 @@ struct OverlayMetrics {
             let heightMargin: CGFloat = isLandscape ? 88 : 72
             let widthCap: CGFloat = isLandscape ? 980 : 620
             let heightCap: CGFloat = isLandscape ? 760 : 640
-            cardMaxWidth = min(widthCap, size.width - horizontalInset - widthMargin)
-            cardMaxHeight = min(heightCap, size.height - verticalInset - heightMargin)
+            cardMaxWidth = max(0, min(widthCap, size.width - horizontalInset - widthMargin))
+            cardMaxHeight = max(0, min(heightCap, size.height - verticalInset - heightMargin))
             scrimOpacity = reduceTransparency ? OverlayTheme.scrimPadReduceTransparency : OverlayTheme.scrimPad
         } else if isLandscape {
             // iPhone landscape: a tall floating command panel. Bounds leave a real margin
@@ -61,14 +62,14 @@ struct OverlayMetrics {
             // the virtual pad instead of reading as an edge-to-edge slab. Caps keep wide
             // phones from stretching past a comfortable reading width/height.
             variant = .phoneLandscape
-            cardMaxWidth = min(760, size.width - horizontalInset - 40)
-            cardMaxHeight = min(468, size.height - verticalInset - 36)
+            cardMaxWidth = max(0, min(760, size.width - horizontalInset - 40))
+            cardMaxHeight = max(0, min(468, size.height - verticalInset - 36))
             scrimOpacity = reduceTransparency ? OverlayTheme.scrimPhoneLandscapeReduceTransparency : OverlayTheme.scrimPhoneLandscape
         } else {
             // iPhone portrait: the liked compact card, slightly roomier.
             variant = .phonePortrait
-            cardMaxWidth = min(480, size.width - horizontalInset - 32)
-            cardMaxHeight = min(620, size.height - verticalInset - 32)
+            cardMaxWidth = max(0, min(480, size.width - horizontalInset - 32))
+            cardMaxHeight = max(0, min(620, size.height - verticalInset - 32))
             scrimOpacity = reduceTransparency ? OverlayTheme.scrimPhonePortraitReduceTransparency : OverlayTheme.scrimPhonePortrait
         }
     }
@@ -96,7 +97,6 @@ enum OverlayFrameMode {
 }
 
 struct GameOverlayContainer<Content: View>: View {
-    let safeAreaInsets: EdgeInsets
     var onTapOutside: (() -> Void)? = nil
     var frameMode: OverlayFrameMode = .bounded
     @ViewBuilder let content: (OverlayMetrics) -> Content
@@ -112,7 +112,16 @@ struct GameOverlayContainer<Content: View>: View {
 
     var body: some View {
         GeometryReader { geo in
-            let metrics = OverlayMetrics(size: geo.size, isIPad: isIPad, safeArea: safeAreaInsets, reduceTransparency: reduceTransparency)
+            // This geometry belongs to the active gameplay scene, so its insets update
+            // with rotation, Stage Manager, and system chrome. Using it here avoids a
+            // competing UIApplication/window lookup and preserves asymmetric notch space.
+            let safeAreaInsets = geo.safeAreaInsets
+            let metrics = OverlayMetrics(
+                size: geo.size,
+                isIPad: isIPad,
+                safeArea: safeAreaInsets,
+                reduceTransparency: reduceTransparency
+            )
 
             ZStack {
                 backdrop(metrics: metrics)
@@ -127,25 +136,21 @@ struct GameOverlayContainer<Content: View>: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .transition(reduceMotion ? .opacity : .scale(scale: 0.97).combined(with: .opacity))
                 } else if frameMode == .landscapePanel && metrics.variant == .phoneLandscape {
-                    // Polished landscape panel: as tall as the deck, but a floating rounded
-                    // card with bounded width, corner radius, and shadow instead of a
-                    // full-bleed slab. Vertical clearance uses deck-style explicit safe-area
-                    // gutters (applied before the frame so they create outside clearance, not
-                    // internal content padding), which recovers the height the earlier
-                    // centered cardMaxHeight bound was losing on large iPhones.
-                    let panelGutter: CGFloat = 8
+                    // Keep the landscape panel floating and bounded. Safe-area padding is
+                    // outside the clipped card, so an asymmetric notch shifts the panel
+                    // into the usable region instead of becoming empty space inside it.
                     content(metrics)
-                        .padding(.top, max(safeAreaInsets.top, panelGutter))
-                        .padding(.bottom, max(safeAreaInsets.bottom, panelGutter))
-                        .frame(maxWidth: metrics.cardMaxWidth, maxHeight: .infinity)
+                        .frame(maxWidth: metrics.cardMaxWidth, maxHeight: metrics.cardMaxHeight)
                         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
                         .shadow(color: .black.opacity(0.28), radius: 22, x: 0, y: 12)
+                        .padding(safeAreaInsets)
                         .transition(reduceMotion ? .opacity : .scale(scale: 0.97).combined(with: .opacity))
                 } else {
                     content(metrics)
                         .frame(maxWidth: metrics.cardMaxWidth, maxHeight: metrics.cardMaxHeight)
                         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
                         .shadow(color: .black.opacity(0.28), radius: 22, x: 0, y: 12)
+                        .padding(safeAreaInsets)
                         .transition(reduceMotion ? .opacity : .scale(scale: 0.96).combined(with: .opacity))
                 }
             }
