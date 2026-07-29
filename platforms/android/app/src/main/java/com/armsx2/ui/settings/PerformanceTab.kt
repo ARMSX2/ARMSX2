@@ -99,19 +99,17 @@ fun PerformanceTab(state: MutableState<Settings>) {
         // screen) to cut GPU present cost, heat and battery. Global pref (not a
         // Settings field) applied live to the active output surface.
         run {
-            // Observable state seeded from the raw pref so the segmented control reflects
-            // the change LIVE — a plain prefs.getInt() read isn't observed by Compose, so
-            // the highlight only moved on menu re-entry.
-            val hwScaler = remember { androidx.compose.runtime.mutableStateOf(com.armsx2.runtime.MainActivityRuntime.prefs.getInt("ui.hwScaler", 0)) }
+            // Per-game scoped (Duda, 2026-07-28): this used to write MainActivityRuntime.prefs
+            // directly, so changing it in Game scope silently moved the Global value too —
+            // there was no per-game copy to write. Now it routes through the same
+            // saveSettings() path as every other row in this tab.
             SegmentedRow(
                 label = str("perf.displayResolution.label"),
                 options = listOf(str("perf.displayResolution.screen"), str("perf.displayResolution.3xPs2"), str("perf.displayResolution.2xPs2"), str("perf.displayResolution.1xPs2")),
-                selectedIndex = when (hwScaler.value) { 3 -> 1; 2 -> 2; 1 -> 3; else -> 0 },
+                selectedIndex = when (s.hwScaler) { 3 -> 1; 2 -> 2; 1 -> 3; else -> 0 },
                 description = str("perf.displayResolution.description"),
                 onChange = {
-                    val n = when (it) { 1 -> 3; 2 -> 2; 3 -> 1; else -> 0 }
-                    hwScaler.value = n
-                    com.armsx2.runtime.MainActivityRuntime.prefs.edit { putInt("ui.hwScaler", n) }
+                    apply(s.copy(hwScaler = when (it) { 1 -> 3; 2 -> 2; 3 -> 1; else -> 0 }))
                     com.armsx2.runtime.MainActivityRuntime.surface.value?.applyOutputScale()
                 },
             )
@@ -123,17 +121,15 @@ fun PerformanceTab(state: MutableState<Settings>) {
         // on a 1080p screen) that squish 16:9 games and widescreen patches. Global pref,
         // live-applied to the output surface; composes with the HW scaler above.
         run {
-            val res = remember { androidx.compose.runtime.mutableStateOf(com.armsx2.runtime.MainActivityRuntime.prefs.getString("ui.screenResOverride", "auto") ?: "auto") }
+            // Per-game scoped for the same reason as the HW scaler above.
             val presets = listOf("auto", "2560x1440", "1920x1080", "1280x720")
             SegmentedRow(
                 label = str("perf.screenRes.label"),
                 options = listOf(str("perf.screenRes.auto"), "1440p", "1080p", "720p"),
-                selectedIndex = presets.indexOf(res.value).let { if (it >= 0) it else 0 },
+                selectedIndex = presets.indexOf(s.screenResOverride).let { if (it >= 0) it else 0 },
                 description = str("perf.screenRes.description"),
                 onChange = { idx ->
-                    val v = presets[idx]
-                    res.value = v
-                    com.armsx2.runtime.MainActivityRuntime.prefs.edit { putString("ui.screenResOverride", v) }
+                    apply(s.copy(screenResOverride = presets[idx]))
                     com.armsx2.runtime.MainActivityRuntime.surface.value?.applyOutputScale()
                 },
             )
