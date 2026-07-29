@@ -21,6 +21,54 @@ struct GraphicsSettingsView: View {
         !settings.enableGameDBHardwareFixes
     }
 
+    /// Touching a hack claims it, which is what stops the game database overwriting that
+    /// one on the next apply. Without this the row writes the INI and the database wins.
+    private func claiming<T: Equatable>(_ key: String, _ value: Binding<T>) -> Binding<T> {
+        Binding(
+            get: { value.wrappedValue },
+            set: { newValue in
+                guard newValue != value.wrappedValue else { return }
+                value.wrappedValue = newValue
+                settings.setGraphicsHackPinned(key, true)
+            }
+        )
+    }
+
+    /// One line under a row when what the game is running isn't what the row says, plus
+    /// the way back to the database value once the player has claimed it.
+    @ViewBuilder
+    private func hackNote(_ key: String, shown: Int) -> some View {
+        if let status = settings.graphicsHack(key), status.reason != .noGame {
+            if status.effective != shown, let explanation = explanation(for: status.reason) {
+                Text(explanation)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if status.pinned {
+                Button(settings.localized("Use the game database value")) {
+                    settings.setGraphicsHackPinned(key, false)
+                }
+                .font(.caption)
+            }
+        }
+    }
+
+    private func explanation(for reason: SettingsStore.GraphicsHackReason) -> String? {
+        switch reason {
+        case .needsUpscaling:
+            return settings.localized("Ignored at 1x Internal Resolution.")
+        case .fromGameDatabase:
+            if let game = appState.runningGameName {
+                return settings.localized("The game database is setting this for") + " \(game)."
+            }
+            return settings.localized("The game database is setting this for this game.")
+        case .needsManualHacks:
+            return settings.localized("The automatic graphics fixes are in charge of this one.")
+        case .applied, .noGame:
+            return nil
+        }
+    }
+
     private var skipDrawStartBinding: Binding<Int> {
         Binding(
             get: { settings.skipDrawStart },
@@ -254,7 +302,7 @@ struct GraphicsSettingsView: View {
                     get: { manualAdvancedHacks },
                     set: { settings.enableGameDBHardwareFixes = !$0 }
                 ))
-                Text(settings.localized("GameDB Graphics Fixes are safest for most games. Manual Advanced Hacks disable those automatic graphics fixes and allow the sprite, texture-offset, and Skipdraw values below. Reset/relaunch may be needed."))
+                Text(settings.localized("GameDB Graphics Fixes are safest for most games, and turning this on drops all of them. You don't need it to change one sprite or texture-offset value below: changing one keeps your answer for that setting and leaves the rest automatic. Skipdraw still needs this on."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 // MaskUpscalingHacks() zeroes these unless the multiplier is above 1, so the
@@ -277,7 +325,10 @@ struct GraphicsSettingsView: View {
                         .foregroundStyle(.orange)
                 }
 
-                Picker(settings.localized("Half-pixel Offset"), selection: $settings.halfPixelOffset) {
+                // These stay usable with the automatic fixes on. Changing one claims it,
+                // so the game database keeps every other fix for the game and loses only
+                // the one that was argued with.
+                Picker(settings.localized("Half-pixel Offset"), selection: claiming("UserHacks_HalfPixelOffset", $settings.halfPixelOffset)) {
                     Text(settings.localized("Off")).tag(0)
                     Text(settings.localized("Normal / Vertex")).tag(1)
                     Text(settings.localized("Special / Texture")).tag(2)
@@ -285,24 +336,24 @@ struct GraphicsSettingsView: View {
                     Text(settings.localized("Align to Native")).tag(4)
                     Text(settings.localized("Align to Native + Texture Offset")).tag(5)
                 }
-                .disabled(!manualAdvancedHacks)
+                hackNote("UserHacks_HalfPixelOffset", shown: settings.halfPixelOffset)
 
-                Picker(settings.localized("Round Sprite"), selection: $settings.roundSprite) {
+                Picker(settings.localized("Round Sprite"), selection: claiming("UserHacks_round_sprite_offset", $settings.roundSprite)) {
                     Text(settings.localized("Off")).tag(0)
                     Text(settings.localized("Half")).tag(1)
                     Text(settings.localized("Full")).tag(2)
                 }
-                .disabled(!manualAdvancedHacks)
+                hackNote("UserHacks_round_sprite_offset", shown: settings.roundSprite)
 
-                Toggle(settings.localized("Align Sprite"), isOn: $settings.alignSprite)
-                    .disabled(!manualAdvancedHacks)
-                Toggle(settings.localized("Merge Sprite"), isOn: $settings.mergeSprite)
-                    .disabled(!manualAdvancedHacks)
-                Toggle(settings.localized("Wild Arms Offset"), isOn: $settings.wildArmsOffset)
-                    .disabled(!manualAdvancedHacks)
+                Toggle(settings.localized("Align Sprite"), isOn: claiming("UserHacks_align_sprite_X", $settings.alignSprite))
+                hackNote("UserHacks_align_sprite_X", shown: settings.alignSprite ? 1 : 0)
+                Toggle(settings.localized("Merge Sprite"), isOn: claiming("UserHacks_merge_pp_sprite", $settings.mergeSprite))
+                hackNote("UserHacks_merge_pp_sprite", shown: settings.mergeSprite ? 1 : 0)
+                Toggle(settings.localized("Wild Arms Offset"), isOn: claiming("UserHacks_ForceEvenSpritePosition", $settings.wildArmsOffset))
+                hackNote("UserHacks_ForceEvenSpritePosition", shown: settings.wildArmsOffset ? 1 : 0)
 
-                ClampedIntField(title: settings.localized("Texture Offset X"), value: $settings.textureOffsetX, range: SettingsStore.textureOffsetRange, isEnabled: manualAdvancedHacks)
-                ClampedIntField(title: settings.localized("Texture Offset Y"), value: $settings.textureOffsetY, range: SettingsStore.textureOffsetRange, isEnabled: manualAdvancedHacks)
+                ClampedIntField(title: settings.localized("Texture Offset X"), value: claiming("UserHacks_TCOffsetX", $settings.textureOffsetX), range: SettingsStore.textureOffsetRange)
+                ClampedIntField(title: settings.localized("Texture Offset Y"), value: claiming("UserHacks_TCOffsetY", $settings.textureOffsetY), range: SettingsStore.textureOffsetRange)
                 Text(settings.localized("Texture offsets are advanced troubleshooting values. Type a value and clamp to range. Default is 0."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -425,6 +476,12 @@ struct GraphicsSettingsView: View {
         }
         .navigationTitle(settings.localized("Graphics"))
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { settings.refreshGraphicsHackStatus() }
+        // The core re-snapshots after every apply and on a game change, since that is
+        // when the masks and the database have finished arguing.
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2GraphicsHackStateChanged"))) { _ in
+            settings.refreshGraphicsHackStatus()
+        }
         .confirmationDialog(
             settings.localized("Clear Shader Cache?"),
             isPresented: $showShaderCacheClearConfirm,
