@@ -146,6 +146,8 @@ struct EmulationOnlyGameView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                     .ignoresSafeArea(.container, edges: .bottom)
+                    // Same top safe-area strip as the full game screen, same reason.
+                    .background(Color.black.ignoresSafeArea())
                 } else {
                     ZStack {
                         accessibleMetalSurface
@@ -406,6 +408,10 @@ struct GameScreenView: View {
                         }
                     }
                     .ignoresSafeArea(.container, edges: .bottom)
+                    // The game stays out of the top safe area on purpose, so something has
+                    // to fill it. Black rather than leaving it to whatever is behind: the
+                    // root controller is only black because a boot notification made it so.
+                    .background(Color.black.ignoresSafeArea())
                 }
             }
             .preference(key: GameScreenSizePreferenceKey.self, value: geo.size)

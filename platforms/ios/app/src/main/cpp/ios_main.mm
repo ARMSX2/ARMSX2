@@ -842,36 +842,28 @@ void ARMSX2SetIOSOsdFlags(bool show_fps, bool show_vps, bool show_speed, bool sh
     bool show_settings, bool show_inputs, bool show_frame_times, bool show_version,
     bool show_hardware_info)
 {
+    // EmuConfig only. GSConfig belongs to the GS thread, and this runs on whichever
+    // thread the caller happens to be on -- the UIKit one at scene connect. These are
+    // bitfields sharing a word, so writing one from here is a read-modify-write against
+    // whatever the GS thread is doing to its neighbours.
+    //
+    // Nothing is lost by dropping the second write: ImGuiOverlays copies all of these out
+    // of EmuConfig.GS into GSConfig every frame, on the GS thread, right before it draws.
     EmuConfig.GS.OsdShowFPS = show_fps;
-    GSConfig.OsdShowFPS = show_fps;
     EmuConfig.GS.OsdShowVPS = show_vps;
-    GSConfig.OsdShowVPS = show_vps;
     EmuConfig.GS.OsdShowSpeed = show_speed;
-    GSConfig.OsdShowSpeed = show_speed;
     EmuConfig.GS.OsdShowCPU = show_cpu;
-    GSConfig.OsdShowCPU = show_cpu;
     EmuConfig.GS.OsdShowGPU = show_gpu;
-    GSConfig.OsdShowGPU = show_gpu;
     EmuConfig.GS.OsdShowResolution = show_resolution;
-    GSConfig.OsdShowResolution = show_resolution;
     EmuConfig.GS.OsdShowGSStats = show_gs_stats;
-    GSConfig.OsdShowGSStats = show_gs_stats;
     EmuConfig.GS.OsdShowIndicators = show_indicators;
-    GSConfig.OsdShowIndicators = show_indicators;
     EmuConfig.GS.OsdShowSettings = show_settings;
-    GSConfig.OsdShowSettings = show_settings;
     EmuConfig.GS.OsdShowInputs = show_inputs;
-    GSConfig.OsdShowInputs = show_inputs;
     EmuConfig.GS.OsdShowFrameTimes = show_frame_times;
-    GSConfig.OsdShowFrameTimes = show_frame_times;
     EmuConfig.GS.OsdShowVersion = show_version;
-    GSConfig.OsdShowVersion = show_version;
     EmuConfig.GS.OsdShowHardwareInfo = show_hardware_info;
-    GSConfig.OsdShowHardwareInfo = show_hardware_info;
     EmuConfig.GS.OsdShowVideoCapture = false;
-    GSConfig.OsdShowVideoCapture = false;
     EmuConfig.GS.OsdShowInputRec = false;
-    GSConfig.OsdShowInputRec = false;
 }
 
 void ARMSX2WriteIOSOsdFlagsToSettings()
@@ -919,8 +911,11 @@ void ARMSX2ApplyIOSOsdPresetFromConfig(const char* reason)
     int position = s_settings_interface->GetIntValue("EmuCore/GS", "OsdPerformancePos", static_cast<int>(OsdOverlayPos::TopRight));
     if (position == static_cast<int>(OsdOverlayPos::TopCenter))
         position = static_cast<int>(OsdOverlayPos::TopRight);
+    // Not mirrored per frame the way the flags above are, so this one really does have to
+    // be pushed. Not from here though: this function has no thread hop and one of its
+    // callers is the UIKit thread, where MTGS::RunOnGSThread asserts. The call site that
+    // needs it is the only one running after the GS opens, and it pushes there.
     EmuConfig.GS.OsdPerformancePos = static_cast<OsdOverlayPos>(position);
-    GSConfig.OsdPerformancePos = static_cast<OsdOverlayPos>(position);
 
     Console.WriteLn("@@OSD@@ preset=%d position=%d reason=%s fps=%d vps=%d speed=%d gpu=%d device_stats=%d frame_times=%d version=%d hardware=%d",
         s_settings_interface->GetIntValue("ARMSX2iOS/UI", "OsdPreset", 0), position, reason ? reason : "unknown",

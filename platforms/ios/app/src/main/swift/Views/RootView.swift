@@ -61,8 +61,17 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
+            // Menu backdrop, and only that. It used to live inside the menu branch of a
+            // switch; once this became a ZStack it started painting over gameplay too,
+            // where it is near white in light mode and shows in the strip of top safe
+            // area the portrait game view leaves clear for the Dynamic Island. Same
+            // condition as the layer below so the two cannot drift apart.
             Color(uiColor: .systemGroupedBackground)
                 .ignoresSafeArea()
+                .opacity(
+                    appState.currentScreen == .menu ||
+                    appState.gameplayLaunchBackgroundVisible ? 1 : 0
+                )
 
             PersistentMenuBackgroundLayer(host: backgroundHost)
                 .opacity(

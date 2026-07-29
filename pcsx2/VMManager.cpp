@@ -815,7 +815,13 @@ void VMManager::ApplyGameFixes()
 		EmuConfig.Gamefixes.InstantDMAHack = true;
 
 		// Disable user's manual hardware fixes, it might be problematic.
+		// LoadCoreSettings() already masked with the flag still set, so clearing it here
+		// isn't enough on its own — the hacks it was meant to strip are still in EmuConfig.
+		// Claims don't get a say either: whether a hack is safe on the BIOS has nothing to
+		// do with whether the player asked for it.
 		EmuConfig.GS.ManualUserHacks = false;
+		EmuConfig.GS.MaskUserHacks(false);
+		EmuConfig.GS.MaskUpscalingHacks();
 		return;
 	}
 
