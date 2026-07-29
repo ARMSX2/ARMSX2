@@ -11,6 +11,9 @@ val armsx2NativeLibName = providers.gradleProperty("armsx2.nativeLibName").orEls
 val armsx2Pgo = providers.gradleProperty("armsx2.pgo").orElse("none") // none | generate | optimize
 val armsx2PgoProfile = providers.gradleProperty("armsx2.pgoProfile").orElse("") // abs path to merged .profdata (optimize)
 val armsx2HostPageSize = providers.gradleProperty("armsx2.hostPageSize").orElse("0x1000")
+// DIAGNOSTIC ONLY (-Parmsx2.recTestHooks=true): compiles the EERecFallback opcode-group
+// interpreter bisect into the EE recompiler. Never set for a shipped build.
+val armsx2RecTestHooks = providers.gradleProperty("armsx2.recTestHooks").orElse("false")
 val armsx2ApplicationId = providers.gradleProperty("armsx2.applicationId").orElse("com.armsx2")
 val armsx2SigningPropertiesFile = rootProject.file("armsx2_keystore.properties")
 val armsx2SigningProperties = Properties().apply {
@@ -131,6 +134,8 @@ android {
                     // alone. Absent = Discord compiles out.
                     armsx2DiscordSdkDir?.let { arguments += "-DDISCORD_SDK_DIR=$it" }
                     arguments += "-DCMAKE_BUILD_TYPE=Release"
+                    if (armsx2RecTestHooks.get() == "true")
+                        arguments += "-DENABLE_RECOMPILER_TEST_HOOKS=ON"
                     // PGO (profile-guided optimization), opt-in via -Parmsx2.pgo:
                     //   generate -> instrumented build (writes .profraw on-device); LTO OFF
                     //              for a faster/cleaner instrument pass.

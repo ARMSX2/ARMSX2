@@ -80,7 +80,8 @@ build_core() { # pagesize libname outapk
 		-Parmsx2.pgo="${PGO_MODE:-optimize}" \
 		-Parmsx2.pgoProfile="$PROF" \
 		-Parmsx2.versionCode="$VC" \
-		-Parmsx2.versionName="$VN"
+		-Parmsx2.versionName="$VN" \
+		-Parmsx2.recTestHooks="${REC_TEST_HOOKS:-false}"
 	[[ -f "$BUILT" ]] || { echo "FATAL gradle produced no APK for $ln" >&2; exit 1; }
 	unzip -l "$BUILT" "lib/arm64-v8a/lib${ln}.so" >/dev/null || { echo "FATAL $ln .so missing" >&2; exit 1; }
 	cp -f "$BUILT" "$outapk"
