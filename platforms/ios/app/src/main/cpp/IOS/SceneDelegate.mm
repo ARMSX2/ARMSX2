@@ -82,6 +82,7 @@ static UIWindowScene* s_externalWindowScene = nil; // owned while connected
 static UIWindow* s_externalWindow = nil;           // owned while active/retiring
 static ARMSX2GameView* s_externalGameRenderView = nil; // owned by s_externalWindow
 static PCSX2ExternalDisplaySceneDelegate* __unsafe_unretained s_externalSceneDelegate = nil;
+static UIView* s_phoneExternalDisplayPlaceholder = nil; // owned while external output is active
 
 #if ARMSX2_HAS_IOS27_SCENE_ACCESSORY
 static UISceneAccessoryRegistration* s_externalSceneAccessoryRegistration = nil;
@@ -110,6 +111,99 @@ static void ARMSX2ConfigureExternalScreenMode(UIScreen* screen)
     const CGSize size = selectedMode ? selectedMode.size : CGSizeZero;
     Console.WriteLn("[ExternalDisplay] mode=automatic size=%.0fx%.0f max_fps=%ld",
         size.width, size.height, static_cast<long>(screen.maximumFramesPerSecond));
+}
+
+static void ARMSX2SetPhoneExternalDisplayPlaceholderVisible(bool visible)
+{
+    pxAssert([NSThread isMainThread]);
+
+    if (!visible)
+    {
+        if (!s_phoneExternalDisplayPlaceholder)
+            return;
+
+        [s_phoneExternalDisplayPlaceholder removeFromSuperview];
+        [s_phoneExternalDisplayPlaceholder release];
+        s_phoneExternalDisplayPlaceholder = nil;
+        Console.WriteLn("[ExternalDisplay] phone placeholder=hidden");
+        return;
+    }
+
+    if (!g_gameRenderView)
+        return;
+
+    if (s_phoneExternalDisplayPlaceholder)
+    {
+        if (s_phoneExternalDisplayPlaceholder.superview != g_gameRenderView)
+            [g_gameRenderView addSubview:s_phoneExternalDisplayPlaceholder];
+        [g_gameRenderView bringSubviewToFront:s_phoneExternalDisplayPlaceholder];
+        return;
+    }
+
+    UIView* placeholder = [[UIView alloc] initWithFrame:g_gameRenderView.bounds];
+    placeholder.backgroundColor = [UIColor colorWithWhite:0.035 alpha:1.0];
+    placeholder.opaque = YES;
+    placeholder.userInteractionEnabled = NO;
+    placeholder.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    placeholder.isAccessibilityElement = YES;
+    placeholder.accessibilityLabel =
+        @"Playing on External Display. Video output is being sent over HDMI.";
+
+    UIImageSymbolConfiguration* symbolConfiguration =
+        [UIImageSymbolConfiguration configurationWithPointSize:42.0
+                                                         weight:UIImageSymbolWeightMedium];
+    UIImage* displayImage =
+        [UIImage systemImageNamed:@"tv" withConfiguration:symbolConfiguration];
+    UIImageView* imageView = [[UIImageView alloc] initWithImage:displayImage];
+    imageView.tintColor = [UIColor whiteColor];
+    imageView.contentMode = UIViewContentModeScaleAspectFit;
+
+    UILabel* titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    titleLabel.text = @"Playing on External Display";
+    titleLabel.textColor = [UIColor whiteColor];
+    titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    titleLabel.textAlignment = NSTextAlignmentCenter;
+    titleLabel.numberOfLines = 0;
+
+    UILabel* detailLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    detailLabel.text = @"Video output is being sent over HDMI.";
+    detailLabel.textColor = [UIColor colorWithWhite:0.72 alpha:1.0];
+    detailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    detailLabel.textAlignment = NSTextAlignmentCenter;
+    detailLabel.numberOfLines = 0;
+
+    UIStackView* contentStack = [[UIStackView alloc]
+        initWithArrangedSubviews:@[imageView, titleLabel, detailLabel]];
+    contentStack.axis = UILayoutConstraintAxisVertical;
+    contentStack.alignment = UIStackViewAlignmentCenter;
+    contentStack.spacing = 12.0;
+    [contentStack setCustomSpacing:18.0 afterView:imageView];
+    contentStack.translatesAutoresizingMaskIntoConstraints = NO;
+    [placeholder addSubview:contentStack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [contentStack.centerXAnchor constraintEqualToAnchor:placeholder.centerXAnchor],
+        [contentStack.centerYAnchor constraintEqualToAnchor:placeholder.centerYAnchor],
+        [contentStack.leadingAnchor constraintGreaterThanOrEqualToAnchor:placeholder.leadingAnchor
+                                                               constant:24.0],
+        [contentStack.trailingAnchor constraintLessThanOrEqualToAnchor:placeholder.trailingAnchor
+                                                              constant:-24.0],
+        [titleLabel.widthAnchor constraintLessThanOrEqualToAnchor:placeholder.widthAnchor
+                                                        constant:-48.0],
+        [detailLabel.widthAnchor constraintLessThanOrEqualToAnchor:placeholder.widthAnchor
+                                                         constant:-48.0],
+    ]];
+
+    [imageView release];
+    [titleLabel release];
+    [detailLabel release];
+    [contentStack release];
+
+    s_phoneExternalDisplayPlaceholder = placeholder;
+    [g_gameRenderView addSubview:placeholder];
+    [g_gameRenderView bringSubviewToFront:placeholder];
+    Console.WriteLn("[ExternalDisplay] phone placeholder=visible");
 }
 
 static void ARMSX2FinishRetiredExternalWindow(UIWindow* window)
@@ -177,7 +271,10 @@ static bool ARMSX2DeactivateExternalDisplay(
 
     UIWindow* retiredWindow = s_externalWindow;
     if (!retiredWindow && ARMSX2GetActiveGameRenderView() == g_gameRenderView)
+    {
+        ARMSX2SetPhoneExternalDisplayPlaceholderVisible(false);
         return false;
+    }
 
     s_externalWindow = nil;
     s_externalGameRenderView = nil;
@@ -185,6 +282,7 @@ static bool ARMSX2DeactivateExternalDisplay(
         s_externalSceneDelegate.window = nil;
 
     ARMSX2SetActiveGameRenderView(g_gameRenderView);
+    ARMSX2SetPhoneExternalDisplayPlaceholderVisible(false);
     Console.WriteLn("[ExternalDisplay] renderer target=iphone");
     if (retiredWindowOut)
         *retiredWindowOut = retiredWindow;
@@ -198,7 +296,12 @@ static bool ARMSX2DeactivateExternalDisplay(
 static bool ARMSX2ActivateExternalDisplay(bool retargetRenderer = true)
 {
     pxAssert([NSThread isMainThread]);
-    if (s_externalWindow || !s_externalWindowScene || !ARMSX2ShouldPresentExternalDisplay())
+    if (s_externalWindow)
+    {
+        ARMSX2SetPhoneExternalDisplayPlaceholderVisible(true);
+        return false;
+    }
+    if (!s_externalWindowScene || !ARMSX2ShouldPresentExternalDisplay())
         return false;
 
     ARMSX2ConfigureExternalScreenMode(s_externalWindowScene.screen);
@@ -227,6 +330,7 @@ static bool ARMSX2ActivateExternalDisplay(bool retargetRenderer = true)
     [window.rootViewController.view layoutIfNeeded];
 
     ARMSX2SetActiveGameRenderView(renderView);
+    ARMSX2SetPhoneExternalDisplayPlaceholderVisible(true);
     UIScreen* screen = s_externalWindowScene.screen;
     Console.WriteLn("[ExternalDisplay] renderer target=external size=%.0fx%.0f max_fps=%ld",
         window.bounds.size.width, window.bounds.size.height,
