@@ -177,6 +177,10 @@ namespace
 		std::string want_serial;
 		std::string want_title;
 		std::string want_cover;
+		// RetroAchievements rich presence — the game's own "what you are doing" line, which RA
+		// updates as you play ("Exploring Ivalice, Lv 34"). Empty when RA is off or the game has
+		// no set. Suggested by Tanos.
+		std::string want_ra;
 	};
 
 	State& S()
@@ -226,13 +230,14 @@ namespace
 	void PushPresence()
 	{
 		std::shared_ptr<discordpp::Client> client;
-		std::string serial, title, cover;
+		std::string serial, title, cover, ra;
 		{
 			std::lock_guard<std::mutex> lock(S().mutex);
 			client = S().client;
 			serial = S().want_serial;
 			title = S().want_title;
 			cover = S().want_cover;
+			ra = S().want_ra;
 		}
 		if (!client)
 			return;
@@ -245,10 +250,12 @@ namespace
 		if (!title.empty())
 		{
 			activity.SetDetails(title);
-			// State is our in-a-game marker, not just the serial: a friend's client decides
-			// "library or game" purely from whether this field is set, so a game that has no
-			// serial (a raw ELF) still has to set something or it reads as being in the library.
-			activity.SetState(serial.empty() ? std::string("-") : serial);
+			// Second line of the Discord status. RetroAchievements' own rich presence when there
+			// is one -- "Exploring Ivalice, Lv 34" is worth reading; a disc serial is not, and it
+			// was needless detail to publish about someone. Falls back to the serial so this stays
+			// the in-a-game marker: a friend's client decides "library or game" purely from whether
+			// State is set, so a game with no serial AND no RA still has to set something.
+			activity.SetState(!ra.empty() ? ra : (serial.empty() ? std::string("-") : serial));
 		}
 		else
 		{
@@ -264,7 +271,10 @@ namespace
 		// independently, so a URL in the large slot and an asset key in the small one both render.
 		discordpp::ActivityAssets assets;
 		assets.SetLargeImage(cover.empty() ? std::string(kIdleImageKey) : cover);
-		assets.SetLargeText(title.empty() ? std::string("ARMSX2") : title);
+		// LargeText now carries the SERIAL, because State no longer can -- a friend's client reads
+		// this to look up cover art. Nothing else may be appended: it is parsed, not just shown.
+		// (Hover text on the cover is a reasonable home for a serial anyway.)
+		assets.SetLargeText(serial.empty() ? (title.empty() ? std::string("ARMSX2") : title) : serial);
 		if (!cover.empty())
 		{
 			// Small badge in the corner keeps ARMSX2 identifiable when the big image is a cover.
@@ -307,16 +317,24 @@ namespace
 				discordpp::UserHandle::AvatarType::Png);
 
 			// We author the activity these friends are publishing, so this reads back exactly what
-			// PushPresence wrote: Details is the game title, State is the serial (or "-"), and no
-			// State at all means they are sitting in the library.
+			// PushPresence wrote: Details is the game title, State is their RA presence (or the
+			// serial as a fallback), LargeText is the serial, and no State at all means they are
+			// sitting in the library.
 			if (const auto activity = user->GameActivity(); activity.has_value())
 			{
 				const auto state = activity->State();
 				if (state.has_value() && !state->empty())
 				{
 					f.game = activity->Details().value_or(std::string());
-					if (*state != "-")
-						f.serial = *state;
+					// Serial comes from LargeText now. A friend on a build that predates this
+					// still publishes it in State, so fall back there -- otherwise everyone loses
+					// cover art the moment one side updates.
+					std::string large;
+					if (const auto a = activity->Assets(); a.has_value())
+						large = a->LargeText().value_or(std::string());
+					const std::string candidate = !large.empty() ? large : *state;
+					if (candidate != "-" && candidate != f.game && candidate != "ARMSX2")
+						f.serial = candidate;
 				}
 			}
 			found.push_back(std::move(f));
@@ -590,13 +608,14 @@ Java_com_armsx2_discord_DiscordNative_error(JNIEnv* env, jclass)
 /// Remember and publish what is being played. Empty title = back in the library.
 JNIEXPORT void JNICALL
 Java_com_armsx2_discord_DiscordNative_setPlaying(
-	JNIEnv* env, jclass, jstring serial, jstring title, jstring cover)
+	JNIEnv* env, jclass, jstring serial, jstring title, jstring cover, jstring ra)
 {
 	{
 		std::lock_guard<std::mutex> lock(S().mutex);
 		S().want_serial = JStr(env, serial);
 		S().want_title = JStr(env, title);
 		S().want_cover = JStr(env, cover);
+		S().want_ra = JStr(env, ra);
 	}
 	if (S().status.load(std::memory_order_acquire) == static_cast<int>(BridgeStatus::Connected))
 		PushPresence();
@@ -683,7 +702,7 @@ JNIEXPORT void JNICALL Java_com_armsx2_discord_DiscordNative_authorize(JNIEnv*, 
 JNIEXPORT jstring JNICALL Java_com_armsx2_discord_DiscordNative_takeToken(JNIEnv*, jclass) { return nullptr; }
 JNIEXPORT jint JNICALL Java_com_armsx2_discord_DiscordNative_status(JNIEnv*, jclass) { return 0; }
 JNIEXPORT jstring JNICALL Java_com_armsx2_discord_DiscordNative_error(JNIEnv*, jclass) { return nullptr; }
-JNIEXPORT void JNICALL Java_com_armsx2_discord_DiscordNative_setPlaying(JNIEnv*, jclass, jstring, jstring, jstring) {}
+JNIEXPORT void JNICALL Java_com_armsx2_discord_DiscordNative_setPlaying(JNIEnv*, jclass, jstring, jstring, jstring, jstring) {}
 JNIEXPORT jstring JNICALL Java_com_armsx2_discord_DiscordNative_friends(JNIEnv* env, jclass) { return env->NewStringUTF(""); }
 JNIEXPORT jstring JNICALL Java_com_armsx2_discord_DiscordNative_self(JNIEnv* env, jclass) { return env->NewStringUTF(""); }
 JNIEXPORT void JNICALL Java_com_armsx2_discord_DiscordNative_pump(JNIEnv*, jclass) {}

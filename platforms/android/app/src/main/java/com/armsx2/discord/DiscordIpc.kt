@@ -59,6 +59,7 @@ object DiscordIpc {
     const val DATA_SERIAL = "serial"
     const val DATA_TITLE = "title"
     const val DATA_COVER = "cover"
+    const val DATA_RA = "ra"
 
     const val DATA_STATUS = "status"
     const val DATA_FRIENDS = "friends"

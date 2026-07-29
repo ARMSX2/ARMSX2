@@ -125,6 +125,7 @@ class DiscordService : Service() {
                         d.getString(DiscordIpc.DATA_SERIAL).orEmpty(),
                         d.getString(DiscordIpc.DATA_TITLE).orEmpty(),
                         d.getString(DiscordIpc.DATA_COVER).orEmpty(),
+                        d.getString(DiscordIpc.DATA_RA).orEmpty(),
                     )
                 }
             }
