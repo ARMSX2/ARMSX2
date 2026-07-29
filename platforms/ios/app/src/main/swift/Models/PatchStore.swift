@@ -157,14 +157,23 @@ final class PatchStore: @unchecked Sendable {
         return !PadLayoutGameIdentity.normalizedCRC(crc).isEmpty
     }
 
-    /// True when RetroAchievements Hardcore Mode is enabled or active. While true, no `.pnach`
-    /// content — cheats *or* patches — may be enabled: the core also refuses to apply them, so
-    /// already-enabled entries take no effect until Hardcore is off.
+    /// True when Hardcore Mode is actually in force, which is the only state the core refuses
+    /// pnach content in. Every gate down there keys on IsHardcoreModeActive, so the preference
+    /// on its own must not count: Hardcore only arms on a reset, and until it does the entries
+    /// carry on applying no matter what this screen says about them.
     static func hardcoreBlocksPnachContent() -> Bool {
         let state = ARMSX2Bridge.retroAchievementsState()
         let active = (state["hardcoreActive"] as? NSNumber)?.boolValue ?? false
-        let preference = (state["hardcorePreference"] as? NSNumber)?.boolValue ?? false
-        return active || preference || ARMSX2Bridge.isRetroAchievementsHardcoreActive()
+        return active || ARMSX2Bridge.isRetroAchievementsHardcoreActive()
+    }
+
+    /// Hardcore is switched on but has not taken hold yet, because it only arms when a game
+    /// boots. Everything below is still live until then, and saying nothing is how people end
+    /// up believing a cheat beat Hardcore.
+    static func hardcorePendingRestart() -> Bool {
+        guard !hardcoreBlocksPnachContent() else { return false }
+        let state = ARMSX2Bridge.retroAchievementsState()
+        return (state["hardcorePreference"] as? NSNumber)?.boolValue ?? false
     }
 
     /// Presentation patches that stay legal under Hardcore: widescreen and 60fps from a
