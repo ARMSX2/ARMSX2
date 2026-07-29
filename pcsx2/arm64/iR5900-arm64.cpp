@@ -1236,6 +1236,34 @@ bool recEeBlockIsLoopResident(u32 pc_query)
 {
 	return s_loopResidentBlocks.find(HWADDR(pc_query)) != s_loopResidentBlocks.end();
 }
+
+// SL-03 introspection: the continuation sites a compiled block actually FORMED,
+// keyed by block startpc.
+//
+// Recorded at EMISSION time, not scan time, and the distinction is the whole
+// point: the scanner can record a site that the branch handler then declines —
+// it does exactly that when the delay slot would itself end the block — and only
+// the sites that survive into emission shape the code. A scan-time list reports
+// both alike and so cannot tell a formed superblock from a refused one.
+static std::unordered_map<u32, std::vector<u32>> s_blockContSites;
+static std::vector<u32> s_curBlockContSites;
+
+// How many continuation sites the compiled block at pc_query formed (0 = none,
+// or no such block). Fills `out` with their guest BRANCH pcs, up to out_len.
+u32 recEeBlockContinuationSites(u32 pc_query, u32* out, u32 out_len)
+{
+	const auto it = s_blockContSites.find(HWADDR(pc_query));
+	if (it == s_blockContSites.end())
+		return 0;
+	const std::vector<u32>& v = it->second;
+	if (out)
+	{
+		const u32 n = std::min<u32>(out_len, static_cast<u32>(v.size()));
+		for (u32 i = 0; i < n; i++)
+			out[i] = v[i];
+	}
+	return static_cast<u32>(v.size());
+}
 #endif
 
 // Emit the state transform "compile-state S1 → loop-top state S0" at the
@@ -1544,6 +1572,9 @@ a64::Label* recSuperblockAddSideExit(u32 branch_target, bool need_delay_slot)
 	x.dsPc = pc;
 	x.needDs = need_delay_slot;
 	x.state.capture();
+#ifdef PCSX2_RECOMPILER_TESTS
+	s_curBlockContSites.push_back(pc - 4); // pc is the delay slot; the site is its branch
+#endif
 	return x.label.get();
 }
 
@@ -2947,6 +2978,8 @@ static void recResetRaw()
 
 #ifdef PCSX2_RECOMPILER_TESTS
 	s_loopResidentBlocks.clear();
+	s_blockContSites.clear();
+	s_curBlockContSites.clear();
 #endif
 
 	// COP2 macro-mode emitters read their clamp/mask constants from the pack
@@ -3635,6 +3668,9 @@ static void recRecompile(const u32 startpc)
 	s_branchTo = -1;
 	s_branchLoopable = false;
 	s_numContSites = 0;
+#ifdef PCSX2_RECOMPILER_TESTS
+	s_curBlockContSites.clear();
+#endif
 
 	// Timeout loop detection (matches x86 recSkipTimeoutLoop pattern):
 	//   addiu reg,reg,-N / nop*N / bne reg,zero,loop / nop
@@ -4069,6 +4105,9 @@ StartRecomp:
 	}
 
 	pxAssert((pc - startpc) >> 2 <= 0xffff);
+#ifdef PCSX2_RECOMPILER_TESTS
+	s_blockContSites[HWADDR(startpc)] = s_curBlockContSites;
+#endif
 	s_pCurBlockEx->size = (pc - startpc) >> 2;
 
 	// High-water mark of any compiled block's guest extent, for the

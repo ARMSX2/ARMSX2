@@ -5,6 +5,7 @@
 // Branches read GPR values for comparison. Values are extracted from
 // NEON registers via FMOV or loaded from memory after flush.
 
+#include "Memory.h" // memRead32 — delay-slot decode in the SL-03 continuation guard
 #include "arm64/iR5900-arm64.h"
 #include "common/Assertions.h"
 
@@ -129,11 +130,42 @@ static void recBindBranchLabel()
 // condition sense inverted (branch out when TAKEN instead of skip when
 // not-taken), const fast paths included.
 
+// SL-03 correctness: a continuation site's delay slot must not TERMINATE the
+// block. recLoad forces an event test (g_branch = 2) for a const-address load in
+// the EE counter window 0x10000000..0x10001FFF, so that the guest sees an
+// up-to-date COUNT. When such a load is the delay slot of a forward conditional,
+// the mainline ends at the delay slot while a side exit for the taken arm has
+// already been registered -- a shape the SL-03 design audited only for
+// truncation at a LATER instruction. Refuse the site instead and let the branch
+// end the block the ordinary way.
+//
+// Found via a guest-PC bisect on Dragon Quest VIII PAL (SLES-53974), which hangs
+// forever on "Now checking memory cards": the branch at 0x143e9c is
+// `bne v1,s0` with `lw v0,0(v0)` in its delay slot and v0 == 0x10000000
+// (Timer 0 COUNT).
+static bool recSuperblockDelaySlotForcesEventTest()
+{
+	const u32 ds = memRead32(pc);
+	const u32 op = ds >> 26;
+	// LB/LBU/LH/LHU/LW/LWU/LWL/LWR — the <=32-bit loads recLoad handles.
+	const bool is_load32 = (op == 0x20 || op == 0x21 || op == 0x22 || op == 0x23 ||
+							op == 0x24 || op == 0x25 || op == 0x26 || op == 0x27);
+	if (!is_load32)
+		return false;
+	const u32 base = (ds >> 21) & 0x1f;
+	if (!GPR_IS_CONST1(base))
+		return false;
+	const u32 addr = g_cpuConstRegs[base].UL[0] + static_cast<s16>(ds & 0xffff);
+	return (addr & 0xFFFFE000) == 0x10000000;
+}
+
 // BEQ/BNE continuation. Returns true when fully handled (caller returns).
 static bool recTrySuperblockContinueEQ(bool is_bne)
 {
 	if (!recSuperblockIsContSite(pc - 4))
 		return false;
+	if (recSuperblockDelaySlotForcesEventTest())
+		return false; // delay slot would end the block -- see above
 	const u32 branchTo = ((s32)_Imm_ * 4) + pc;
 
 	if (GPR_IS_CONST2(_Rs_, _Rt_))
@@ -200,6 +232,8 @@ static bool recTrySuperblockContinueSingle(a64::Condition taken_cond)
 {
 	if (!recSuperblockIsContSite(pc - 4))
 		return false;
+	if (recSuperblockDelaySlotForcesEventTest())
+		return false; // delay slot would end the block -- see above
 	const u32 branchTo = ((s32)_Imm_ * 4) + pc;
 
 	if (GPR_IS_CONST1(_Rs_))
