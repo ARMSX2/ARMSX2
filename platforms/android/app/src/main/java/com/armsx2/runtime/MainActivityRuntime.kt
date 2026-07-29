@@ -3490,7 +3490,11 @@ open class MainActivityRuntime : ComponentActivity() {
     private val joyconLoggedDevices = HashSet<Int>()
     private var lastJoyconMotionLogMs = 0L
     private fun joyconLogEnabled(): Boolean =
-        BuildConfig.DEBUG && prefs.getBoolean("debug.joyconLog", false)
+        // Pref-gated, NOT BuildConfig.DEBUG-gated. The old `BuildConfig.DEBUG && pref` form
+        // made this permanently unreachable in a release build — i.e. unreachable for exactly
+        // the testers whose controllers we need to identify. It cost a round trip on the
+        // 8BitDo/Switch-Pro trigger report. Default off; costs one boolean read per event.
+        prefs.getBoolean("debug.joyconLog", false)
 
     /** Emit a diagnostic line to BOTH logcat (adb `-s ARMSX2_JOYCON`) AND the emulog (in-app
      *  Save Log — so a handheld tester with no PC can capture it). NativeApp.emulog no-ops
@@ -4423,7 +4427,33 @@ open class MainActivityRuntime : ComponentActivity() {
         apply(19, up)    // D-pad up
     }
 
+    /** Does this device actually report the given motion axis? InputDevice.getDevice is a
+     *  binder call and motion events arrive far too often to query per event, hence the cache. */
+    private val axisPresenceCache = HashMap<Long, Boolean>()
+    private fun deviceHasAxis(deviceId: Int, axis: Int): Boolean {
+        if (axis < 0) return false
+        return axisPresenceCache.getOrPut((deviceId.toLong() shl 32) or (axis.toLong() and 0xffffffffL)) {
+            runCatching { InputDevice.getDevice(deviceId)?.getMotionRange(axis) }.getOrNull() != null
+        }
+    }
+
     private fun sendTrigger(event: MotionEvent, axisA: Int, axisB: Int, code: Int, port: Int, axisC: Int = -1) {
+        // A pad with NO analog trigger axis at all — a Nintendo Switch Pro Controller, or an
+        // 8BitDo Pro in Switch mode, which enumerates as one (vendor 0x057e) — delivers L2/R2
+        // ONLY as KEYCODE_BUTTON_L2/R2 key events. Its axis list is just X/Y, Z/RZ and the HAT.
+        //
+        // Reading the absent trigger axes yields 0.0, so the lines below wrote "trigger
+        // released" on EVERY motion event. Hold R2 and move the stick and the stick's own
+        // motion event cancelled the held trigger — "R2 and the stick can't be used at the
+        // same time", which kills racing games. Buttons were unaffected because nothing on the
+        // motion path writes them; only L2/R2 have a motion-side writer. Same shape as the
+        // D-pad "last write wins" bug handled in dispatchDpadCombined.
+        //
+        // When the device has none of these axes, leave the key path in sole charge.
+        if (!deviceHasAxis(event.deviceId, axisA) && !deviceHasAxis(event.deviceId, axisB) &&
+            !deviceHasAxis(event.deviceId, axisC))
+            return
+
         // Pads report L2/R2 on AXIS_*TRIGGER or on AXIS_BRAKE/GAS — take the higher of
         // the two, clamping negatives (some non-Xbox pads idle an unused trigger axis at
         // -1). Then apply the SMALL trigger deadzone and re-normalize the remaining range
