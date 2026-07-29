@@ -1084,6 +1084,7 @@ final class SettingsStore {
         case needsUpscaling
         case fromGameDatabase
         case noGame
+        case perGame
     }
 
     struct GraphicsHackStatus {

@@ -64,6 +64,10 @@ struct GraphicsSettingsView: View {
             return settings.localized("The game database is setting this for this game.")
         case .needsManualHacks:
             return settings.localized("The automatic graphics fixes are in charge of this one.")
+        case .perGame:
+            // This screen edits the global value, so the row can honestly disagree with
+            // what the game is running. Change it in the game's own settings.
+            return settings.localized("This game has its own setting for this, and that is what it is using.")
         case .applied, .noGame:
             return nil
         }

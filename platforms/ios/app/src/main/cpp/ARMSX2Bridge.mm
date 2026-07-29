@@ -2187,6 +2187,7 @@ enum class ARMSX2GraphicsHackReason : int
     NeedsUpscaling,
     FromGameDatabase,
     NoGame,
+    PerGame,
 };
 
 struct ARMSX2GraphicsHackDescriptor
@@ -2269,7 +2270,21 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     const bool has_vm = VMManager::HasValidVM();
     const Pcsx2Config::GSOptions& gs = EmuConfig.GS;
 
-    for (const ARMSX2GraphicsHackDescriptor& hack : s_graphics_hacks) {
+    // Resolved before the lock below, deliberately. It walks the game database, and
+    // anything that reaches back into settings from under that lock would hang.
+    std::array<bool, s_graphics_hacks.size()> database_sets{};
+    for (size_t i = 0; i < s_graphics_hacks.size(); i++)
+        database_sets[i] = has_vm && ARMSX2GameDatabaseSetsHWFix(s_graphics_hacks[i].hw_fix_id);
+
+    // One lock for the whole sweep, reading the two layers by hand. The Host getters
+    // take this same lock per call and it isn't recursive, so nothing in here may call
+    // one -- that would hang rather than misreport.
+    std::unique_lock<std::mutex> settings_lock = Host::GetSettingsLock();
+    const SettingsInterface* base_layer = Host::Internal::GetBaseSettingsLayer();
+    const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer();
+
+    for (size_t i = 0; i < s_graphics_hacks.size(); i++) {
+        const ARMSX2GraphicsHackDescriptor& hack = s_graphics_hacks[i];
         ARMSX2GraphicsHackState state;
         state.ini_key = hack.ini_key;
         state.pinned = gs.IsUserHackPinned(hack.override_id);
@@ -2281,22 +2296,30 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
         }
 
         state.effective = hack.read(gs);
-        // The layered value, so a per-game override counts as what was asked for.
-        const int requested = hack.is_bool ?
-            static_cast<int>(Host::GetBoolSettingValue("EmuCore/GS", hack.ini_key, false)) :
-            Host::GetIntSettingValue("EmuCore/GS", hack.ini_key, 0);
+
+        // The graphics screen edits globals, so it shows the base value. The game may be
+        // running the per-game one, which is a different number and worth saying out loud.
+        const bool from_game_layer = game_layer && game_layer->ContainsValue("EmuCore/GS", hack.ini_key);
+        const SettingsInterface* source = from_game_layer ? game_layer : base_layer;
+        int requested = 0;
+        if (source) {
+            requested = hack.is_bool ?
+                static_cast<int>(source->GetBoolValue("EmuCore/GS", hack.ini_key, false)) :
+                source->GetIntValue("EmuCore/GS", hack.ini_key, 0);
+        }
 
         if (state.effective == requested)
-            state.reason = ARMSX2GraphicsHackReason::Applied;
+            state.reason = from_game_layer ? ARMSX2GraphicsHackReason::PerGame : ARMSX2GraphicsHackReason::Applied;
         else if (hack.upscaling_only && gs.UpscaleMultiplier <= 1.0f)
             state.reason = ARMSX2GraphicsHackReason::NeedsUpscaling;
-        else if (ARMSX2GameDatabaseSetsHWFix(hack.hw_fix_id))
+        else if (database_sets[i])
             state.reason = ARMSX2GraphicsHackReason::FromGameDatabase;
         else
             state.reason = ARMSX2GraphicsHackReason::NeedsManualHacks;
 
         snapshot.push_back(state);
     }
+    settings_lock.unlock();
 
     {
         std::lock_guard<std::mutex> lock(s_graphics_hack_mutex);
