@@ -526,7 +526,7 @@ object TouchControls {
         val active = MainActivityRuntime.prefs.getString(KEY_ACTIVE, list.first().name) ?: list.first().name
         activeProfileName.value = active
         val match = list.firstOrNull { it.name == active } ?: list.first()
-        activeLayout.value = match.layout.copy()
+        activeLayout.value = match.layoutFor(portrait.value).copy()
         opacity.floatValue = MainActivityRuntime.prefs.getFloat(KEY_OPACITY, 0.55f).coerceIn(0.0f, 1.0f)
         pressurePercent.intValue = MainActivityRuntime.prefs.getInt(KEY_PRESSURE_PERCENT, 50).coerceIn(5, 95)
         faceMultiTouch.value = MainActivityRuntime.prefs.getBoolean(KEY_FACE_MULTI, true)
@@ -657,6 +657,17 @@ object TouchControls {
      *  stops one game's edit from bleeding into the next. When no game is running
      *  (library/global edit), fall back to overwriting the active profile so the
      *  global Default still reflects the edit. */
+    /** Re-read the active PROFILE for the current orientation.
+     *
+     *  The in-game path re-applies on rotate via applyForSerial, but that only runs while a VM is
+     *  up — so a global-scope edit kept whichever orientation's layout happened to be loaded when
+     *  the screen opened, and rotating showed the wrong one. */
+    fun applyActiveProfileForOrientation() {
+        val match = profiles.firstOrNull { it.name == activeProfileName.value } ?: return
+        activeLayout.value = match.layoutFor(portrait.value).copy()
+        selectedButton.value = null
+    }
+
     fun saveLiveLayoutToActive() {
         // gameIsRunning() is the OUTER gate. The per-serial/CRC isolation paths
         // must only run when a VM is actually up — keying off a merely-non-null
@@ -699,7 +710,9 @@ object TouchControls {
             // active profile.
             val idx = profiles.indexOfFirst { it.name == activeProfileName.value }
             if (idx >= 0) {
-                profiles[idx] = profiles[idx].copy(layout = activeLayout.value.copy())
+                // Only the orientation currently being edited. Writing .copy(layout = ...) here
+                // unconditionally is what made landscape and portrait clobber each other.
+                profiles[idx] = profiles[idx].withLayoutFor(portrait.value, activeLayout.value.copy())
                 persist()
             }
         }
@@ -1248,10 +1261,32 @@ data class TouchLayout(val buttons: List<TouchButtonCfg>) {
     }
 }
 
-data class TouchProfile(val name: String, val layout: TouchLayout) {
+/** [layout] is the LANDSCAPE authoring; [portraitLayout] is portrait's own, null until the user
+ *  saves one. Per-game layouts got this via the ".portrait" key suffix (see orient()), but global
+ *  profiles held a single layout — so editing in one orientation overwrote the other, which is
+ *  exactly the "they are connected when they should be independent" report from Piixel and Isshin,
+ *  and why it worked per-game and not globally.
+ *
+ *  Null portraitLayout falls back to landscape when read, matching readGameLayoutJson's seeding: a
+ *  profile authored before this still shows something sensible in portrait, and the first portrait
+ *  Save splits them for good. Absent from the JSON when null, so old profiles load unchanged. */
+data class TouchProfile(
+    val name: String,
+    val layout: TouchLayout,
+    val portraitLayout: TouchLayout? = null,
+) {
+    /** The authoring for [portrait], falling back to landscape when portrait has none yet. */
+    fun layoutFor(portrait: Boolean): TouchLayout =
+        if (portrait) (portraitLayout ?: layout) else layout
+
+    /** Replace only the orientation being edited, leaving the other one alone. */
+    fun withLayoutFor(portrait: Boolean, updated: TouchLayout): TouchProfile =
+        if (portrait) copy(portraitLayout = updated) else copy(layout = updated)
+
     fun toJson(): JSONObject = JSONObject().apply {
         put("name", name)
         put("layout", layout.toJson())
+        portraitLayout?.let { put("portraitLayout", it.toJson()) }
     }
 
     companion object {
@@ -1260,6 +1295,7 @@ data class TouchProfile(val name: String, val layout: TouchLayout) {
                 name = json.optString("name", "Profile"),
                 layout = json.optJSONObject("layout")?.let { TouchLayout.fromJson(it) }
                     ?: TouchLayout.default(),
+                portraitLayout = json.optJSONObject("portraitLayout")?.let { TouchLayout.fromJson(it) },
             )
         }
     }

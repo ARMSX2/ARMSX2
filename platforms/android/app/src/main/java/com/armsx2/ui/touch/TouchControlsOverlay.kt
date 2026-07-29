@@ -110,6 +110,10 @@ fun TouchControlsOverlay() {
             // layout: resolve it here and it's up from the first frame, rather than
             // whenever the Skins tab happens to be opened.
             ControllerSkinStore.applyForSerial(skinCtx, gameSerial)
+        } else {
+            // Out of game the layout is the global profile's, and nothing re-read it on rotate —
+            // so the editor kept whichever orientation was loaded when it opened.
+            TouchControls.applyActiveProfileForOrientation()
         }
     }
     // ---- Gyroscope / motion controls -------------------------------------
@@ -951,20 +955,37 @@ private fun MacroWidget(cfg: TouchButtonCfg, edit: Boolean) {
         }
     } else {
         val opacity = TouchControls.opacity.floatValue
+        // A skin can replace the M1-M4 label with its own artwork. Adding the skin KEY and the
+        // skinKeyFor mapping was not enough on its own: this widget drew a Text and never consulted
+        // skinPainter at all, so a pack shipping ic_controller_macro1_button.png was parsed,
+        // stored, and then silently never drawn. Reported by Duda, who had analog_base working and
+        // reasonably assumed the macro name was wrong.
+        val skin = skinPainter(skinKeyFor(cfg.id))
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.30f * opacity))
+                // No dark circle behind custom art — the pack draws its own shape, and the backing
+                // would show as a disc behind a square button.
+                .then(if (skin == null) Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.30f * opacity)) else Modifier)
                 .macroPressGestures(cfg.id),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                cfg.id.label,
-                color = Color.White.copy(alpha = legibleAlpha(opacity, 0.35f)),
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-            )
+            if (skin != null) {
+                Image(
+                    painter = skin,
+                    contentDescription = cfg.id.label,
+                    contentScale = ContentScale.Fit,
+                    alpha = opacity,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Text(
+                    cfg.id.label,
+                    color = Color.White.copy(alpha = legibleAlpha(opacity, 0.35f)),
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
         }
     }
 }
