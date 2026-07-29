@@ -3419,10 +3419,13 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     // GSConfig belongs to the GS thread and EmuConfig to the CPU thread; this is
     // called from the UI. Both live in a bitfield, so an off-thread write can drop
     // a neighbouring flag -- including the ones that decide whether GSUpdateConfig
-    // tears the device down.
+    // tears the device down. So write only the one this thread owns and let the
+    // normal push carry it over. The position is not among the flags ImGuiOverlays
+    // re-copies every frame, so without the push it would not arrive at all.
     Host::RunOnCPUThread([pos]() {
         EmuConfig.GS.OsdPerformancePos = pos;
-        GSConfig.OsdPerformancePos = pos;
+        if (MTGS::IsOpen())
+            MTGS::ApplySettings();
     });
 }
 
@@ -3523,23 +3526,26 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     const bool inputs = full;
 
     // Same ownership problem as setPerformanceOverlayVisible: these are bitfield
-    // members of the CPU and GS threads' configs, written here from the UI.
+    // members of the CPU and GS threads' configs, written here from the UI. Only the
+    // CPU thread's copy gets written now. No push either, deliberately: ImGuiOverlays
+    // re-copies every one of these out of EmuConfig.GS on the GS thread each frame, so
+    // pushing would only add a queue drain per tap of the preset picker.
     Host::RunOnCPUThread([=]() {
-        EmuConfig.GS.OsdShowFPS = GSConfig.OsdShowFPS = fps;
-        EmuConfig.GS.OsdShowVPS = GSConfig.OsdShowVPS = vps;
-        EmuConfig.GS.OsdShowSpeed = GSConfig.OsdShowSpeed = speed;
-        EmuConfig.GS.OsdShowCPU = GSConfig.OsdShowCPU = cpu;
-        EmuConfig.GS.OsdShowGPU = GSConfig.OsdShowGPU = gpu;
-        EmuConfig.GS.OsdShowResolution = GSConfig.OsdShowResolution = resolution;
-        EmuConfig.GS.OsdShowGSStats = GSConfig.OsdShowGSStats = gsStats;
-        EmuConfig.GS.OsdShowFrameTimes = GSConfig.OsdShowFrameTimes = frameTimes;
-        EmuConfig.GS.OsdShowVersion = GSConfig.OsdShowVersion = version;
-        EmuConfig.GS.OsdShowHardwareInfo = GSConfig.OsdShowHardwareInfo = hardwareInfo;
-        EmuConfig.GS.OsdShowIndicators = GSConfig.OsdShowIndicators = indicators;
-        EmuConfig.GS.OsdShowSettings = GSConfig.OsdShowSettings = settings;
-        EmuConfig.GS.OsdShowInputs = GSConfig.OsdShowInputs = inputs;
-        GSConfig.OsdShowVideoCapture = false;
-        GSConfig.OsdShowInputRec = false;
+        EmuConfig.GS.OsdShowFPS = fps;
+        EmuConfig.GS.OsdShowVPS = vps;
+        EmuConfig.GS.OsdShowSpeed = speed;
+        EmuConfig.GS.OsdShowCPU = cpu;
+        EmuConfig.GS.OsdShowGPU = gpu;
+        EmuConfig.GS.OsdShowResolution = resolution;
+        EmuConfig.GS.OsdShowGSStats = gsStats;
+        EmuConfig.GS.OsdShowFrameTimes = frameTimes;
+        EmuConfig.GS.OsdShowVersion = version;
+        EmuConfig.GS.OsdShowHardwareInfo = hardwareInfo;
+        EmuConfig.GS.OsdShowIndicators = indicators;
+        EmuConfig.GS.OsdShowSettings = settings;
+        EmuConfig.GS.OsdShowInputs = inputs;
+        EmuConfig.GS.OsdShowVideoCapture = false;
+        EmuConfig.GS.OsdShowInputRec = false;
     });
 }
 
