@@ -36,7 +36,12 @@ struct DynamicThumbstickSample {
 }
 
 enum DynamicThumbstickMath {
-    static func sample(translation: CGSize, maximumRadius: CGFloat, deadZone: CGFloat) -> DynamicThumbstickSample {
+    static func sample(
+        translation: CGSize,
+        maximumRadius: CGFloat,
+        deadZone: CGFloat,
+        deadZoneProgressRadius: CGFloat? = nil
+    ) -> DynamicThumbstickSample {
         guard maximumRadius > 0 else {
             return DynamicThumbstickSample(input: .zero, rawDistance: 0)
         }
@@ -49,11 +54,16 @@ enum DynamicThumbstickMath {
         let safeDeadZone = min(max(deadZone, 0), 0.95)
         let cappedDistance = min(rawDistance, maximumRadius)
         let normalizedDistance = cappedDistance / maximumRadius
-        // Begin at a true 0% deadzone so even a tiny drag produces input. The
-        // configured deadzone grows with travel and reaches its selected value
-        // at the outer radius, while the remap still preserves full-scale output.
-        let adaptiveDeadZone = safeDeadZone * normalizedDistance
-        let magnitude = (normalizedDistance - adaptiveDeadZone) / (1 - adaptiveDeadZone)
+        // Input saturation and deadzone progression can use different radii.
+        // This preserves the larger movement area while letting the left stick
+        // reach its configured deadzone at the visible Maximum Radius.
+        let progressRadius = max(deadZoneProgressRadius ?? maximumRadius, 1)
+        let deadZoneProgress = min(rawDistance / progressRadius, 1)
+        let progressRadiusScale = min(progressRadius / maximumRadius, 1)
+        let adaptiveDeadZone =
+            safeDeadZone * deadZoneProgress * progressRadiusScale
+        let magnitude = max(normalizedDistance - adaptiveDeadZone, 0) /
+            (1 - adaptiveDeadZone)
 
         return DynamicThumbstickSample(
             input: DynamicThumbstickVector(
@@ -76,11 +86,25 @@ enum DynamicThumbstickMath {
         guard scale > 0 else { return 0 }
         return CGFloat(index + 1) / CGFloat(maximumDots + 1) * scale
     }
+
+    /// Keeps the maximum-pull feedback stable near the boundary so tiny finger
+    /// jitter cannot repeatedly retrigger its haptic.
+    static func overextensionState(
+        distance: CGFloat,
+        maximumRadius: CGFloat,
+        currentlyOverextended: Bool
+    ) -> Bool {
+        currentlyOverextended
+            ? distance > maximumRadius * 0.95
+            : distance > maximumRadius
+    }
 }
 
 struct DynamicThumbstickView: View {
     let isLeft: Bool
     let radius: CGFloat
+    let maximumRadius: CGFloat
+    var deadZoneProgressRadius: CGFloat? = nil
     let deadZone: CGFloat
     let hapticsEnabled: Bool
     let thumbstickOpacity: Double
@@ -99,6 +123,7 @@ struct DynamicThumbstickView: View {
     @State private var dragOffset = CGSize.zero
     @State private var dragDistance: CGFloat = 0
     @State private var isActive = false
+    @State private var isOverextended = false
     @State private var gestureStartedAt: Date?
     @State private var maximumTravel: CGFloat = 0
 
@@ -111,8 +136,10 @@ struct DynamicThumbstickView: View {
                 if isActive {
                     DynamicThumbstickVisual(
                         radius: radius,
+                        maximumRadius: maximumRadius,
                         dragOffset: dragOffset,
                         dragDistance: dragDistance,
+                        isOverextended: isOverextended,
                         thumbstickOpacity: thumbstickOpacity,
                         baseOpacity: baseOpacity,
                         trailOpacity: trailOpacity
@@ -145,6 +172,7 @@ struct DynamicThumbstickView: View {
                     }
                     if hapticsEnabled && SettingsStore.shared.hapticFeedback {
                         HapticManager.light.impactOccurred(intensity: 0.72)
+                        HapticManager.medium.prepare()
                     }
                 }
 
@@ -152,11 +180,13 @@ struct DynamicThumbstickView: View {
                 if tapActionsEnabled { onInteractionActivity() }
                 let sample = DynamicThumbstickMath.sample(
                     translation: value.translation,
-                    maximumRadius: radius,
-                    deadZone: deadZone
+                    maximumRadius: maximumRadius,
+                    deadZone: deadZone,
+                    deadZoneProgressRadius: deadZoneProgressRadius
                 )
                 dragOffset = value.translation
                 dragDistance = sample.rawDistance
+                updateOverextension(sample.rawDistance)
                 onVector(sample.input)
             }
             .onEnded { value in
@@ -181,6 +211,22 @@ struct DynamicThumbstickView: View {
         }
     }
 
+    private func updateOverextension(_ distance: CGFloat) {
+        let overextended = DynamicThumbstickMath.overextensionState(
+            distance: distance,
+            maximumRadius: maximumRadius,
+            currentlyOverextended: isOverextended
+        )
+        guard overextended != isOverextended else { return }
+        isOverextended = overextended
+        if overextended {
+            if hapticsEnabled && SettingsStore.shared.hapticFeedback {
+                HapticManager.medium.impactOccurred(intensity: 1)
+                HapticManager.medium.prepare()
+            }
+        }
+    }
+
     private func reset() {
         guard isActive || gestureStartedAt != nil else {
             onVector(.zero)
@@ -190,6 +236,7 @@ struct DynamicThumbstickView: View {
         if tapActionsEnabled && gestureStartedAt != nil { onInteractionEnded() }
         gestureStartedAt = nil
         maximumTravel = 0
+        isOverextended = false
         withAnimation(.easeOut(duration: 0.14)) {
             isActive = false
         }
@@ -198,8 +245,10 @@ struct DynamicThumbstickView: View {
 
 private struct DynamicThumbstickVisual: View {
     let radius: CGFloat
+    let maximumRadius: CGFloat
     let dragOffset: CGSize
     let dragDistance: CGFloat
+    let isOverextended: Bool
     let thumbstickOpacity: Double
     let baseOpacity: Double
     let trailOpacity: Double
@@ -207,8 +256,8 @@ private struct DynamicThumbstickVisual: View {
     var body: some View {
         ZStack {
             ForEach(0..<7, id: \.self) { index in
-                let scale = DynamicThumbstickMath.trailDotScale(index: index, rawDistance: dragDistance, maximumRadius: radius)
-                let progress = DynamicThumbstickMath.trailDotPositionProgress(index: index, rawDistance: dragDistance, maximumRadius: radius)
+                let scale = DynamicThumbstickMath.trailDotScale(index: index, rawDistance: dragDistance, maximumRadius: maximumRadius)
+                let progress = DynamicThumbstickMath.trailDotPositionProgress(index: index, rawDistance: dragDistance, maximumRadius: maximumRadius)
                 if scale > 0 {
                     Circle()
                         .fill(Color(white: 0.82).opacity(trailOpacity * Double(scale)))
@@ -222,6 +271,15 @@ private struct DynamicThumbstickVisual: View {
             Circle()
                 .fill(Color(white: 0.72).opacity(baseOpacity))
                 .frame(width: radius * 0.42, height: radius * 0.42)
+                .overlay {
+                    Circle()
+                        .stroke(
+                            Color.white.opacity(isOverextended ? 0.55 : 0),
+                            lineWidth: 1.5
+                        )
+                        .scaleEffect(isOverextended ? 1.45 : 1)
+                }
+                .scaleEffect(isOverextended ? 1.28 : 1)
 
             Circle()
                 .fill(Color(white: 0.88).opacity(thumbstickOpacity))
@@ -229,27 +287,71 @@ private struct DynamicThumbstickVisual: View {
                 .offset(dragOffset)
         }
         .frame(width: radius * 2, height: radius * 2)
+        .animation(
+            isOverextended
+                ? .easeInOut(duration: 0.42).repeatForever(autoreverses: true)
+                : .easeOut(duration: 0.16),
+            value: isOverextended
+        )
     }
 }
 
 struct VirtualPadCameraSwipeView: View {
     let maximumTapDuration: TimeInterval
     let tapTravelTolerance: CGFloat
+    let convertsToDynamicJoystick: Bool
+    let thumbstickRadius: CGFloat
+    let maximumThumbstickRadius: CGFloat
+    let thumbstickDeadZone: CGFloat
+    let convertIntoDynamicThumbstickThreshold: CGFloat
+    let pullingBackDistance: CGFloat
+    let thumbstickOpacity: Double
+    let baseOpacity: Double
+    let trailOpacity: Double
+    let hapticsEnabled: Bool
     let onDelta: (CGSize) -> Void
+    let onDynamicJoystick: (DynamicThumbstickVector?) -> Void
     let onBegan: () -> Void
     let onActivity: () -> Void
     let onTap: () -> Void
+    let onReleased: () -> Void
     let onEnded: () -> Void
 
     @State private var lastLocation: CGPoint?
     @State private var gestureStartedAt: Date?
     @State private var maximumTravel: CGFloat = 0
+    @State private var origin = CGPoint.zero
+    @State private var dragOffset = CGSize.zero
+    @State private var dragDistance: CGFloat = 0
+    @State private var isDynamicJoystickMode = false
+    @State private var isOverextended = false
+    @State private var activeDynamicThumbstickDistance: CGFloat?
+    @State private var dynamicJoystickPeakTravel: CGFloat = 0
+    @State private var previousRadialTravel: CGFloat = 0
 
     var body: some View {
         GeometryReader { _ in
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(swipeGesture)
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .contentShape(Rectangle())
+
+                if isDynamicJoystickMode {
+                    DynamicThumbstickVisual(
+                        radius: thumbstickRadius,
+                        maximumRadius: maximumThumbstickRadius,
+                        dragOffset: dragOffset,
+                        dragDistance: dragDistance,
+                        isOverextended: isOverextended,
+                        thumbstickOpacity: thumbstickOpacity,
+                        baseOpacity: baseOpacity,
+                        trailOpacity: trailOpacity
+                    )
+                    .position(origin)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .allowsHitTesting(false)
+                }
+            }
+            .gesture(swipeGesture)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Camera swipe area")
@@ -263,11 +365,75 @@ struct VirtualPadCameraSwipeView: View {
                 if gestureStartedAt == nil {
                     gestureStartedAt = value.time
                     maximumTravel = 0
+                    origin = value.startLocation
+                    dragOffset = .zero
+                    dragDistance = 0
+                    activeDynamicThumbstickDistance = thumbstickRadius * min(
+                        max(convertIntoDynamicThumbstickThreshold, 0.01),
+                        3
+                    )
+                    dynamicJoystickPeakTravel = 0
+                    previousRadialTravel = 0
                     onBegan()
+                    if convertsToDynamicJoystick &&
+                        hapticsEnabled &&
+                        SettingsStore.shared.hapticFeedback {
+                        HapticManager.medium.prepare()
+                    }
                 }
-                maximumTravel = max(maximumTravel, hypot(value.translation.width, value.translation.height))
+                let rawTravel = hypot(value.translation.width, value.translation.height)
+                maximumTravel = max(maximumTravel, rawTravel)
+                dragOffset = value.translation
+                dragDistance = rawTravel
                 onActivity()
-                defer { lastLocation = value.location }
+                defer {
+                    lastLocation = value.location
+                    previousRadialTravel = rawTravel
+                }
+
+                if convertsToDynamicJoystick {
+                    updateOverextension(rawTravel)
+                    let entryDistance = activeDynamicThumbstickDistance ??
+                        thumbstickRadius * min(max(convertIntoDynamicThumbstickThreshold, 0.01), 3)
+                    let pullbackDistance = thumbstickRadius *
+                        min(max(pullingBackDistance, 0.01), 1)
+
+                    if isDynamicJoystickMode {
+                        dynamicJoystickPeakTravel = max(dynamicJoystickPeakTravel, rawTravel)
+                        if dynamicJoystickPeakTravel - rawTravel >= pullbackDistance {
+                            onDynamicJoystick(nil)
+                            activeDynamicThumbstickDistance = rawTravel
+                            dynamicJoystickPeakTravel = 0
+                            withAnimation(.spring(response: 0.20, dampingFraction: 0.82)) {
+                                isDynamicJoystickMode = false
+                            }
+                        } else {
+                            let sample = DynamicThumbstickMath.sample(
+                                translation: value.translation,
+                                maximumRadius: maximumThumbstickRadius,
+                                deadZone: thumbstickDeadZone
+                            )
+                            onDynamicJoystick(sample.input)
+                        }
+                        return
+                    }
+
+                    let movingOutward = rawTravel > previousRadialTravel + 0.5
+                    if movingOutward && rawTravel >= entryDistance {
+                        let sample = DynamicThumbstickMath.sample(
+                            translation: value.translation,
+                            maximumRadius: maximumThumbstickRadius,
+                            deadZone: thumbstickDeadZone
+                        )
+                        withAnimation(.spring(response: 0.20, dampingFraction: 0.82)) {
+                            isDynamicJoystickMode = true
+                        }
+                        dynamicJoystickPeakTravel = rawTravel
+                        onDynamicJoystick(sample.input)
+                        return
+                    }
+                }
+
                 guard let lastLocation else { return }
                 let delta = CGSize(
                     width: value.location.x - lastLocation.x,
@@ -281,6 +447,7 @@ struct VirtualPadCameraSwipeView: View {
                 let duration = value.time.timeIntervalSince(gestureStartedAt ?? value.time)
                 let travel = max(maximumTravel, hypot(value.translation.width, value.translation.height))
                 if duration <= maximumTapDuration && travel <= tapTravelTolerance { onTap() }
+                onReleased()
                 onEnded()
                 reset()
             }
@@ -291,10 +458,38 @@ struct VirtualPadCameraSwipeView: View {
         reset()
     }
 
+    private func updateOverextension(_ distance: CGFloat) {
+        let overextended = DynamicThumbstickMath.overextensionState(
+            distance: distance,
+            maximumRadius: maximumThumbstickRadius,
+            currentlyOverextended: isOverextended
+        )
+        guard overextended != isOverextended else { return }
+        isOverextended = overextended
+        if overextended {
+            if hapticsEnabled && SettingsStore.shared.hapticFeedback {
+                HapticManager.medium.impactOccurred(intensity: 1)
+                HapticManager.medium.prepare()
+            }
+        }
+    }
+
     private func reset() {
+        if isDynamicJoystickMode {
+            onDynamicJoystick(nil)
+        }
         lastLocation = nil
         gestureStartedAt = nil
         maximumTravel = 0
+        dragOffset = .zero
+        dragDistance = 0
+        isOverextended = false
+        activeDynamicThumbstickDistance = nil
+        dynamicJoystickPeakTravel = 0
+        previousRadialTravel = 0
+        withAnimation(.easeOut(duration: 0.14)) {
+            isDynamicJoystickMode = false
+        }
     }
 }
 
@@ -303,6 +498,7 @@ final class SwipeCameraInputDriver: NSObject {
     private var displayLink: CADisplayLink?
     private var pendingDelta = CGSize.zero
     private var pendingDeltaIsAiming = false
+    private var heldJoystickVector: DynamicThumbstickVector?
     private var lastTimestamp: CFTimeInterval?
     private var outputWasActive = false
     var onCameraMotion: ((DynamicThumbstickVector) -> Void)?
@@ -316,9 +512,24 @@ final class SwipeCameraInputDriver: NSObject {
     }
 
     func add(delta: CGSize, isAiming: Bool) {
+        guard heldJoystickVector == nil else { return }
         pendingDelta.width += delta.width
         pendingDelta.height += delta.height
         pendingDeltaIsAiming = isAiming
+    }
+
+    func setDynamicJoystick(_ vector: DynamicThumbstickVector?) {
+        pendingDelta = .zero
+        pendingDeltaIsAiming = false
+
+        if let vector {
+            let limitedVector = vector.limited(to: 1)
+            heldJoystickVector = limitedVector
+            publish(limitedVector)
+        } else if heldJoystickVector != nil {
+            heldJoystickVector = nil
+            publish(.zero)
+        }
     }
 
     func stop() {
@@ -326,10 +537,9 @@ final class SwipeCameraInputDriver: NSObject {
         displayLink = nil
         pendingDelta = .zero
         pendingDeltaIsAiming = false
+        heldJoystickVector = nil
         lastTimestamp = nil
-        outputWasActive = false
-        onCameraMotion?(.zero)
-        EmulatorBridge.shared.setRightStick(x: 0, y: 0)
+        publish(.zero)
     }
 
     @objc private func update(_ link: CADisplayLink) {
@@ -337,14 +547,14 @@ final class SwipeCameraInputDriver: NSObject {
         let deltaTime = min(max(link.timestamp - previous, 1.0 / 240.0), 1.0 / 20.0)
         lastTimestamp = link.timestamp
 
+        guard heldJoystickVector == nil else { return }
+
         let delta = pendingDelta
         let isAiming = pendingDeltaIsAiming
         pendingDelta = .zero
         guard delta != .zero else {
             if outputWasActive {
-                outputWasActive = false
-                onCameraMotion?(.zero)
-                EmulatorBridge.shared.setRightStick(x: 0, y: 0)
+                publish(.zero)
             }
             return
         }
@@ -358,7 +568,11 @@ final class SwipeCameraInputDriver: NSObject {
             x: CGFloat(degreesPerSecondX / referenceDegreesPerSecond),
             y: CGFloat(degreesPerSecondY / referenceDegreesPerSecond)
         ).limited(to: 1)
-        outputWasActive = true
+        publish(motion)
+    }
+
+    private func publish(_ motion: DynamicThumbstickVector) {
+        outputWasActive = motion != .zero
         onCameraMotion?(motion)
         EmulatorBridge.shared.setRightStick(
             x: Float(motion.x),
@@ -478,6 +692,8 @@ private final class VirtualPadActionPressCoordinator {
     static let shared = VirtualPadActionPressCoordinator()
 
     private var pressedSources: [VirtualPadActionButton: Set<String>] = [:]
+    private var pulseTasks: [String: Task<Void, Never>] = [:]
+    private var pulseButtons: [String: VirtualPadActionButton] = [:]
 
     func set(_ button: VirtualPadActionButton, source: String, pressed: Bool) {
         var sources = pressedSources[button, default: []]
@@ -499,12 +715,47 @@ private final class VirtualPadActionPressCoordinator {
             EmulatorBridge.shared.setPadButton(button.padButton, pressed: isPressed)
         }
     }
+
+    func pulse(
+        _ button: VirtualPadActionButton,
+        source: String,
+        duration: TimeInterval = 0.075
+    ) {
+        pulseTasks[source]?.cancel()
+        if let previous = pulseButtons[source], previous != button {
+            set(previous, source: source, pressed: false)
+        }
+
+        pulseButtons[source] = button
+        set(button, source: source, pressed: true)
+        pulseTasks[source] = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(max(duration, 0)))
+            guard !Task.isCancelled, let self else { return }
+            self.set(button, source: source, pressed: false)
+            self.pulseTasks.removeValue(forKey: source)
+            self.pulseButtons.removeValue(forKey: source)
+        }
+    }
+}
+
+@MainActor
+func pulseVirtualPadActionButton(
+    _ button: VirtualPadActionButton,
+    source: String,
+    duration: TimeInterval = 0.075
+) {
+    VirtualPadActionPressCoordinator.shared.pulse(
+        button,
+        source: source,
+        duration: duration
+    )
 }
 
 @MainActor
 @Observable
 final class DynamicCrosshairRuntimeState {
     private(set) var isAiming = false
+    private(set) var isSwipeCrosshairVisible = false
     private(set) var isCameraMoving = false
     private(set) var isCameraSettling = false
     private(set) var isShooting = false
@@ -520,16 +771,17 @@ final class DynamicCrosshairRuntimeState {
     @ObservationIgnored private var sourceMotion: [DynamicCrosshairMotionSource: DynamicThumbstickVector] = [:]
     @ObservationIgnored private var settlingTask: Task<Void, Never>?
     @ObservationIgnored private var shotTask: Task<Void, Never>?
+    @ObservationIgnored private var swipeHideTask: Task<Void, Never>?
 
     func setAiming(_ aiming: Bool) {
         isAiming = aiming
-        if !aiming {
+        if !aiming && !isSwipeCrosshairVisible {
             clearTransientActivity()
         }
     }
 
     func updateCameraMotion(_ motion: DynamicThumbstickVector, source: DynamicCrosshairMotionSource) {
-        guard isAiming else { return }
+        guard isAiming || isSwipeCrosshairVisible else { return }
 
         let limitedMotion = motion.limited(to: 1.35)
         if limitedMotion.magnitude > 0.003 {
@@ -601,8 +853,31 @@ final class DynamicCrosshairRuntimeState {
     }
 
     func reset() {
+        swipeHideTask?.cancel()
+        swipeHideTask = nil
         isAiming = false
+        isSwipeCrosshairVisible = false
         clearTransientActivity()
+    }
+
+    func swipeInteractionBegan() {
+        swipeHideTask?.cancel()
+        swipeHideTask = nil
+        isSwipeCrosshairVisible = true
+    }
+
+    func swipeInteractionEnded(hideDelay: TimeInterval) {
+        swipeHideTask?.cancel()
+        let delay = max(hideDelay, 0)
+        swipeHideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            self.isSwipeCrosshairVisible = false
+            self.swipeHideTask = nil
+            if !self.isAiming {
+                self.clearTransientActivity()
+            }
+        }
     }
 
     private func clearTransientActivity() {
@@ -988,6 +1263,10 @@ struct DynamicAimCrosshairOverlay: View {
     private var activeRuntime: DynamicCrosshairRuntimeState? {
         if rightRuntime.isAiming { return rightRuntime }
         if leftRuntime.isAiming { return leftRuntime }
+        if settings.showCrosshairWhileHoldingSwipe,
+           rightRuntime.isSwipeCrosshairVisible {
+            return rightRuntime
+        }
         return nil
     }
 

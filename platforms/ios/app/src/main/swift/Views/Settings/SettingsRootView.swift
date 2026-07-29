@@ -117,6 +117,7 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
 
 struct SettingsRootView: View {
     let resetToRootRequest: Int
+    let onNavigationPathActivityChanged: (Bool) -> Void
     @State private var settings = SettingsStore.shared
     @State private var jitAvailable = false
     @State private var noJITFallbackActive = false
@@ -130,8 +131,12 @@ struct SettingsRootView: View {
     @State private var selectedPane: SettingsPane? = .emulator
 #endif
 
-    init(resetToRootRequest: Int = 0) {
+    init(
+        resetToRootRequest: Int = 0,
+        onNavigationPathActivityChanged: @escaping (Bool) -> Void = { _ in }
+    ) {
         self.resetToRootRequest = resetToRootRequest
+        self.onNavigationPathActivityChanged = onNavigationPathActivityChanged
     }
 
     private var backgroundConfigured: Bool {
@@ -352,6 +357,12 @@ struct SettingsRootView: View {
             withTransaction(transaction) {
                 navigationPath.removeAll()
             }
+        }
+        .onChange(of: navigationPath.isEmpty) { _, isEmpty in
+            onNavigationPathActivityChanged(!isEmpty)
+        }
+        .onAppear {
+            onNavigationPathActivityChanged(!navigationPath.isEmpty)
         }
 #endif
     }

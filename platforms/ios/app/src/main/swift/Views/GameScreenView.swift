@@ -277,14 +277,6 @@ struct GameScreenView: View {
             .first?.safeAreaInsets ?? .zero
     }
 
-    /// SwiftUI `EdgeInsets` view of `displaySafeAreaInsets`, for the shared overlay
-    /// container which bounds its card from the host window's safe-area insets so the
-    /// card clears the notch / Dynamic Island / home indicator.
-    private var displaySafeAreaEdgeInsets: EdgeInsets {
-        let insets = displaySafeAreaInsets
-        return EdgeInsets(top: insets.top, leading: insets.left, bottom: insets.bottom, trailing: insets.right)
-    }
-
     @ViewBuilder
     private var pauseMenuOverlay: some View {
         if case .paused = overlayRoute {
@@ -292,7 +284,6 @@ struct GameScreenView: View {
             // (`.pausedPresenting`) the card is omitted so it cannot z-order over the
             // child overlay; the child covers the screen and the card reappears on dismiss.
             GameOverlayContainer(
-                safeAreaInsets: displaySafeAreaEdgeInsets,
                 onTapOutside: { overlayRoute = .hidden },
                 frameMode: .landscapePanel
             ) { metrics in
@@ -474,7 +465,7 @@ struct GameScreenView: View {
                 // integrated with gameplay (no system sheet chrome / status bar / Dynamic
                 // Island leak). The panel dismisses via Save/Cancel, so the backdrop does
                 // not tap-to-dismiss.
-                GameOverlayContainer(safeAreaInsets: displaySafeAreaEdgeInsets, frameMode: .landscapePanel) { _ in
+                GameOverlayContainer(frameMode: .landscapePanel) { _ in
                     runtimePerGameSettingsContent
                 }
                 .id(screenIsLandscape)

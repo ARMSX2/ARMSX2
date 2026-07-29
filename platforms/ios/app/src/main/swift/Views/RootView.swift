@@ -410,6 +410,7 @@ struct MenuTabView: View {
     @State private var selectedTab = 0
     @State private var activeLibraryTab = 0
     @State private var settingsRootResetRequest = 0
+    @State private var settingsNavigationHasDestination = false
     @State private var menuLargeTitleMorphActive = false
     @State private var menuLargeTitleMorphResetTask: Task<Void, Never>?
     let backgroundHost: PersistentMenuBackgroundHost
@@ -494,7 +495,10 @@ struct MenuTabView: View {
                             BIOSListView()
                         default:
                             SettingsRootView(
-                                resetToRootRequest: settingsRootResetRequest
+                                resetToRootRequest: settingsRootResetRequest,
+                                onNavigationPathActivityChanged: {
+                                    settingsNavigationHasDestination = $0
+                                }
                             )
                         }
                     }
@@ -568,13 +572,17 @@ struct MenuTabView: View {
                         appliesLegacyLandscapeInsets: !settingsBackgroundActive
                     ) {
                         SettingsRootView(
-                            resetToRootRequest: settingsRootResetRequest
+                            resetToRootRequest: settingsRootResetRequest,
+                            onNavigationPathActivityChanged: {
+                                settingsNavigationHasDestination = $0
+                            }
                         )
                     }
                     .environment(\.menuTabIsActive, selectedTab == 2)
                     .retainedMenuTabPage(2, selection: selectedTab)
 
                     NativeMenuTabSwipeRecognizer(
+                        isEnabled: selectedTab != 2 || !settingsNavigationHasDestination,
                         onSwipe: navigateFromHorizontalSwipe
                     )
                     .frame(width: 0, height: 0)
@@ -1217,16 +1225,19 @@ private struct NativeMenuTabBar: UIViewRepresentable {
 /// ownership of their own drags.
 @MainActor
 private struct NativeMenuTabSwipeRecognizer: UIViewRepresentable {
+    let isEnabled: Bool
     let onSwipe: (CGFloat) -> Void
 
     func makeUIView(context: Context) -> InstallerView {
         let view = InstallerView()
         view.onSwipe = onSwipe
+        view.setEnabled(isEnabled)
         return view
     }
 
     func updateUIView(_ uiView: InstallerView, context: Context) {
         uiView.onSwipe = onSwipe
+        uiView.setEnabled(isEnabled)
     }
 
     static func dismantleUIView(_ uiView: InstallerView, coordinator: ()) {
@@ -1235,6 +1246,7 @@ private struct NativeMenuTabSwipeRecognizer: UIViewRepresentable {
 
     final class InstallerView: UIView, UIGestureRecognizerDelegate {
         var onSwipe: (CGFloat) -> Void = { _ in }
+        private var recognizesTabSwipes = true
         private weak var gestureHost: UIView?
         private lazy var panGesture: UIPanGestureRecognizer = {
             let gesture = UIPanGestureRecognizer(
@@ -1256,6 +1268,12 @@ private struct NativeMenuTabSwipeRecognizer: UIViewRepresentable {
         func uninstall() {
             gestureHost?.removeGestureRecognizer(panGesture)
             gestureHost = nil
+        }
+
+        func setEnabled(_ enabled: Bool) {
+            guard recognizesTabSwipes != enabled else { return }
+            recognizesTabSwipes = enabled
+            panGesture.isEnabled = enabled
         }
 
         private func install(on host: UIView?) {
@@ -1281,7 +1299,8 @@ private struct NativeMenuTabSwipeRecognizer: UIViewRepresentable {
         override func gestureRecognizerShouldBegin(
             _ gestureRecognizer: UIGestureRecognizer
         ) -> Bool {
-            guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+            guard recognizesTabSwipes,
+                  let pan = gestureRecognizer as? UIPanGestureRecognizer,
                   let gestureHost else {
                 return false
             }

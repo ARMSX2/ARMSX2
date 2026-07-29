@@ -1795,6 +1795,14 @@ final class SettingsStore {
             UserDefaults.standard.set(clearLiquidGlassUI, forKey: "ARMSX2iOSClearLiquidGlassUI")
         }
     }
+    var clearLiquidGlassUIQuickMenu: Bool = false {
+        didSet {
+            UserDefaults.standard.set(
+                clearLiquidGlassUIQuickMenu,
+                forKey: "ARMSX2iOSClearLiquidGlassUIQuickMenu"
+            )
+        }
+    }
     var gameCardZoomAnimationEnabled: Bool = true {
         didSet {
             UserDefaults.standard.set(
@@ -2088,6 +2096,9 @@ final class SettingsStore {
         clearLiquidGlassUI = UserDefaults.standard.object(
             forKey: "ARMSX2iOSClearLiquidGlassUI"
         ) as? Bool ?? true
+        clearLiquidGlassUIQuickMenu = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSClearLiquidGlassUIQuickMenu"
+        ) as? Bool ?? false
         gameCardZoomAnimationEnabled = UserDefaults.standard.object(
             forKey: "ARMSX2iOSGameCardZoomAnimationEnabled"
         ) as? Bool ?? true
@@ -2321,6 +2332,9 @@ final class SettingsStore {
         clearLiquidGlassUI = UserDefaults.standard.object(
             forKey: "ARMSX2iOSClearLiquidGlassUI"
         ) as? Bool ?? true
+        clearLiquidGlassUIQuickMenu = UserDefaults.standard.object(
+            forKey: "ARMSX2iOSClearLiquidGlassUIQuickMenu"
+        ) as? Bool ?? false
         gameCardZoomAnimationEnabled = UserDefaults.standard.object(
             forKey: "ARMSX2iOSGameCardZoomAnimationEnabled"
         ) as? Bool ?? true
