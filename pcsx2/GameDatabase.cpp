@@ -484,6 +484,37 @@ bool GameDatabaseSchema::isUserHackHWFix(GSHWFixId id)
 	}
 }
 
+// Which fixes a player can claim for themselves. Anything not listed keeps the old
+// behaviour, so the database still wins on the ones no UI exposes.
+static std::optional<GSUserHackOverride> UserHackOverrideForHWFix(GameDatabaseSchema::GSHWFixId id)
+{
+	switch (id)
+	{
+		case GameDatabaseSchema::GSHWFixId::AlignSprite:
+			return GSUserHackOverride::AlignSprite;
+		case GameDatabaseSchema::GSHWFixId::MergeSprite:
+			return GSUserHackOverride::MergeSprite;
+		case GameDatabaseSchema::GSHWFixId::RoundSprite:
+			return GSUserHackOverride::RoundSprite;
+		case GameDatabaseSchema::GSHWFixId::HalfPixelOffset:
+			return GSUserHackOverride::HalfPixelOffset;
+		case GameDatabaseSchema::GSHWFixId::ForceEvenSpritePosition:
+			return GSUserHackOverride::ForceEvenSpritePosition;
+		case GameDatabaseSchema::GSHWFixId::NativeScaling:
+			return GSUserHackOverride::NativeScaling;
+		case GameDatabaseSchema::GSHWFixId::NativePaletteDraw:
+			return GSUserHackOverride::NativePaletteDraw;
+		case GameDatabaseSchema::GSHWFixId::BilinearUpscale:
+			return GSUserHackOverride::BilinearHack;
+		case GameDatabaseSchema::GSHWFixId::AutoFlush:
+			return GSUserHackOverride::AutoFlush;
+		case GameDatabaseSchema::GSHWFixId::TextureInsideRT:
+			return GSUserHackOverride::TextureInsideRt;
+		default:
+			return std::nullopt;
+	}
+}
+
 void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool applyAuto) const
 {
 	// Only apply core game fixes if the user has enabled them.
@@ -760,7 +791,12 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 
 	for (const auto& [id, value] : gsHWFixes)
 	{
-		if (isUserHackHWFix(id) && !apply_auto_fixes)
+		// A pin is manual mode for one fix instead of all of them, so it takes the same
+		// road out: the player's value stays and this one gets named in the warning.
+		const std::optional<GSUserHackOverride> pin = UserHackOverrideForHWFix(id);
+		const bool pinned = pin.has_value() && config.IsUserHackPinned(pin.value());
+
+		if (isUserHackHWFix(id) && (!apply_auto_fixes || pinned))
 		{
 			if (configMatchesHWFix(config, id, value))
 				continue;
@@ -1077,10 +1113,12 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 
 	if (!is_sw_renderer && !disabled_fixes.empty())
 	{
+		// Pinning a single hack lands here too, and then blaming manual mode would be a lie.
+		const std::string_view reason = apply_auto_fixes ?
+			TRANSLATE_SV("GameDatabase", "Your own choice was kept for these graphics fixes, so the automatic ones were not applied:") :
+			TRANSLATE_SV("GameDatabase", "Manual GS hardware renderer fixes are enabled, automatic fixes were not applied:");
 		Host::AddKeyedOSDMessage("HWFixesWarning",
-			fmt::format(ICON_FA_WAND_MAGIC_SPARKLES " {}\n{}",
-				TRANSLATE_SV("GameDatabase", "Manual GS hardware renderer fixes are enabled, automatic fixes were not applied:"),
-				disabled_fixes),
+			fmt::format(ICON_FA_WAND_MAGIC_SPARKLES " {}\n{}", reason, disabled_fixes),
 			Host::OSD_ERROR_DURATION);
 	}
 	else
