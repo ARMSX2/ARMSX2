@@ -95,15 +95,6 @@ static bool ARMSX2ShouldPresentExternalDisplay()
            s_externalWindowScene != nil && !s_externalSceneDisconnectPending;
 }
 
-static NSString* ARMSX2LocalizedString(NSString* key)
-{
-#if ARMSX2_HAS_SWIFTUI
-    return [SwiftUIHost localizedString:key];
-#else
-    return key;
-#endif
-}
-
 static void ARMSX2ConfigureExternalScreenMode(UIScreen* screen)
 {
     if (!screen)
@@ -155,60 +146,7 @@ static void ARMSX2SetPhoneExternalDisplayPlaceholderVisible(bool visible)
     placeholder.userInteractionEnabled = NO;
     placeholder.autoresizingMask =
         UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    placeholder.isAccessibilityElement = YES;
-    NSString* title = ARMSX2LocalizedString(@"Playing on External Display");
-    NSString* detail = ARMSX2LocalizedString(@"Video output is being sent over HDMI.");
-    placeholder.accessibilityLabel = [NSString stringWithFormat:@"%@ %@", title, detail];
-
-    UIImageSymbolConfiguration* symbolConfiguration =
-        [UIImageSymbolConfiguration configurationWithPointSize:42.0
-                                                         weight:UIImageSymbolWeightMedium];
-    UIImage* displayImage =
-        [UIImage systemImageNamed:@"tv" withConfiguration:symbolConfiguration];
-    UIImageView* imageView = [[UIImageView alloc] initWithImage:displayImage];
-    imageView.tintColor = [UIColor whiteColor];
-    imageView.contentMode = UIViewContentModeScaleAspectFit;
-
-    UILabel* titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    titleLabel.text = title;
-    titleLabel.textColor = [UIColor whiteColor];
-    titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
-    titleLabel.textAlignment = NSTextAlignmentCenter;
-    titleLabel.numberOfLines = 0;
-
-    UILabel* detailLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    detailLabel.text = detail;
-    detailLabel.textColor = [UIColor colorWithWhite:0.72 alpha:1.0];
-    detailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    detailLabel.textAlignment = NSTextAlignmentCenter;
-    detailLabel.numberOfLines = 0;
-
-    UIStackView* contentStack = [[UIStackView alloc]
-        initWithArrangedSubviews:@[imageView, titleLabel, detailLabel]];
-    contentStack.axis = UILayoutConstraintAxisVertical;
-    contentStack.alignment = UIStackViewAlignmentCenter;
-    contentStack.spacing = 12.0;
-    [contentStack setCustomSpacing:18.0 afterView:imageView];
-    contentStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [placeholder addSubview:contentStack];
-
-    [NSLayoutConstraint activateConstraints:@[
-        [contentStack.centerXAnchor constraintEqualToAnchor:placeholder.centerXAnchor],
-        [contentStack.centerYAnchor constraintEqualToAnchor:placeholder.centerYAnchor],
-        [contentStack.leadingAnchor constraintGreaterThanOrEqualToAnchor:placeholder.leadingAnchor
-                                                               constant:24.0],
-        [contentStack.trailingAnchor constraintLessThanOrEqualToAnchor:placeholder.trailingAnchor
-                                                              constant:-24.0],
-        [titleLabel.widthAnchor constraintLessThanOrEqualToAnchor:placeholder.widthAnchor
-                                                        constant:-48.0],
-        [detailLabel.widthAnchor constraintLessThanOrEqualToAnchor:placeholder.widthAnchor
-                                                         constant:-48.0],
-    ]];
-
-    [imageView release];
-    [titleLabel release];
-    [detailLabel release];
-    [contentStack release];
+    placeholder.isAccessibilityElement = NO;
 
     s_phoneExternalDisplayPlaceholder = placeholder;
     [g_gameRenderView addSubview:placeholder];

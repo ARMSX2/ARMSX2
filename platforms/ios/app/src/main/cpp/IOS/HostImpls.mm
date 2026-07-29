@@ -23,13 +23,11 @@
 #include "common/HTTPDownloader.h"
 #include "common/Path.h"
 #include "common/ProgressCallback.h"
-#include "common/SmallString.h"
 #include "common/WindowInfo.h"
 
 #include "pcsx2/Counters.h"          // g_FrameCount
 #include "pcsx2/Config.h"            // EmuConfig, GSConfig
 #include "pcsx2/GS/GS.h"
-#include "pcsx2/GS/Renderers/Common/GSDevice.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/Host/AudioStreamTypes.h"
 #include "pcsx2/MTGS.h" // Host::RunOnGSThread
@@ -53,24 +51,19 @@
 
 namespace
 {
-    std::mutex s_phoneOSDMetricsMutex;
-    ARMSX2PhoneOSDMetrics s_phoneOSDMetrics;
-}
+    void ARMSX2PublishDedicatedExternalDisplayActive(bool active)
+    {
+        const bool changed = (GSIsDedicatedExternalDisplayActive() != active);
+        GSSetDedicatedExternalDisplayActive(active);
+        if (!changed)
+            return;
 
-bool ARMSX2CopyPhoneOSDMetrics(ARMSX2PhoneOSDMetrics* outMetrics)
-{
-    if (!outMetrics)
-        return false;
-
-    std::lock_guard<std::mutex> lock(s_phoneOSDMetricsMutex);
-    *outMetrics = s_phoneOSDMetrics;
-    return outMetrics->valid;
-}
-
-void ARMSX2ResetPhoneOSDMetrics()
-{
-    std::lock_guard<std::mutex> lock(s_phoneOSDMetricsMutex);
-    s_phoneOSDMetrics = {};
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:@"ARMSX2iOSDedicatedExternalDisplayActiveChanged"
+                              object:nil];
+        });
+    }
 }
 
 #pragma mark - namespace Host
@@ -161,7 +154,7 @@ namespace Host
         Console.WriteLn("Host::AcquireRenderWindow(recreate=%d) called.", recreate_window);
         if (!g_sdl_window) {
             Console.Error("Host::AcquireRenderWindow: g_sdl_window is NULL");
-            GSSetDedicatedExternalDisplayActive(false);
+            ARMSX2PublishDedicatedExternalDisplayActive(false);
             return std::nullopt;
         }
         
@@ -227,7 +220,7 @@ namespace Host
 
         // This runs on the GS thread and describes the exact view captured
         // above. It is the single source of truth for clean/aspect policy.
-        GSSetDedicatedExternalDisplayActive(dedicatedExternal);
+        ARMSX2PublishDedicatedExternalDisplayActive(dedicatedExternal);
 
         Console.WriteLn("Host::AcquireRenderWindow: Returning WindowInfo (Type=%d, View=%p, External=%d, Size=%ux%u, Scale=%.2f, Refresh=%.0f)",
             (int)wi.type, wi.window_handle, dedicatedExternal ? 1 : 0,
@@ -238,8 +231,7 @@ namespace Host
     }
     void ReleaseRenderWindow()
     {
-        GSSetDedicatedExternalDisplayActive(false);
-        ARMSX2ResetPhoneOSDMetrics();
+        ARMSX2PublishDedicatedExternalDisplayActive(false);
     }
     bool InNoGUIMode() { return false; }
     void OnVMPaused() {}
@@ -247,7 +239,6 @@ namespace Host
     void OnVMStarted() {}
     void OnVMStarting()
     {
-        ARMSX2ResetPhoneOSDMetrics();
         ARMSX2SetExternalDisplayVMRequested(true);
     }
     void EndTextInput() {}
@@ -263,7 +254,6 @@ namespace Host
     void OnVMDestroyed()
     {
         ARMSX2SetExternalDisplayVMRequested(false);
-        ARMSX2ResetPhoneOSDMetrics();
     }
     void SetFullscreen(bool) {}
     void BeginTextInput() {}
@@ -507,53 +497,6 @@ namespace Host
         const float vu_usage = PerformanceMetrics::GetVUThreadUsage();
         const float gs_usage = PerformanceMetrics::GetGSThreadUsage();
         const float gpu_usage = PerformanceMetrics::GetGPUUsage();
-
-        if (ARMSX2IsDedicatedExternalDisplayActive())
-        {
-            ARMSX2PhoneOSDMetrics phoneMetrics;
-            phoneMetrics.valid = true;
-            phoneMetrics.internalFPSValid = PerformanceMetrics::IsInternalFPSValid();
-            phoneMetrics.internalFPS = internal_fps;
-            phoneMetrics.vps = fps;
-            phoneMetrics.speed = speed;
-            phoneMetrics.targetSpeed = VMManager::GetTargetSpeed();
-            phoneMetrics.cpuUsage = cpu_usage;
-            phoneMetrics.cpuTime = PerformanceMetrics::GetCPUThreadAverageTime();
-            phoneMetrics.gsUsage = gs_usage;
-            phoneMetrics.gsTime = PerformanceMetrics::GetGSThreadAverageTime();
-            phoneMetrics.vuUsage = vu_usage;
-            phoneMetrics.vuTime = PerformanceMetrics::GetVUThreadAverageTime();
-            phoneMetrics.gpuUsage = gpu_usage;
-            phoneMetrics.gpuTime = PerformanceMetrics::GetGPUAverageTime();
-            phoneMetrics.minimumFrameTime = PerformanceMetrics::GetMinimumFrameTime();
-            phoneMetrics.averageFrameTime = PerformanceMetrics::GetAverageFrameTime();
-            phoneMetrics.maximumFrameTime = PerformanceMetrics::GetMaximumFrameTime();
-            GSgetInternalResolution(&phoneMetrics.resolutionWidth, &phoneMetrics.resolutionHeight);
-
-            const char* videoMode = ReportVideoMode();
-            const char* interlaceMode = ReportInterlaceMode();
-            std::snprintf(phoneMetrics.videoMode, sizeof(phoneMetrics.videoMode), "%s", videoMode ? videoMode : "");
-            std::snprintf(phoneMetrics.interlaceMode, sizeof(phoneMetrics.interlaceMode), "%s",
-                interlaceMode ? interlaceMode : "");
-
-            SmallString gsStats;
-            SmallString gsMemoryStats;
-            GSgetStats(gsStats);
-            GSgetMemoryStats(gsMemoryStats);
-            std::snprintf(phoneMetrics.gsStats, sizeof(phoneMetrics.gsStats), "%s", gsStats.c_str());
-            std::snprintf(phoneMetrics.gsMemoryStats, sizeof(phoneMetrics.gsMemoryStats), "%s",
-                gsMemoryStats.c_str());
-            if (g_gs_device)
-            {
-                std::snprintf(phoneMetrics.gpuName, sizeof(phoneMetrics.gpuName), "%s",
-                    g_gs_device->GetName().c_str());
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(s_phoneOSDMetricsMutex);
-                s_phoneOSDMetrics = phoneMetrics;
-            }
-        }
 
         if (!ARMSX2IOSRuntimeTelemetryEnabled())
             return;

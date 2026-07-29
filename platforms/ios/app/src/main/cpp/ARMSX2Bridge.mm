@@ -55,7 +55,6 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "pcsx2/INISettingsInterface.h"
 #include "pcsx2/PerformanceMetrics.h"
 #include "common/FileSystem.h"
-#include "common/HostSys.h"
 #include "common/Path.h"
 #include "common/ZipHelpers.h"
 #include "common/Error.h"
@@ -2456,6 +2455,43 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     g_touchPadState[PadDualshock2::Inputs::PAD_R_UP] = up > 0.01f;
 }
 
++ (void)resetVirtualPadInput {
+    auto* pad = static_cast<PadDualshock2*>(Pad::GetPad(0, 0));
+    extern bool g_touchPadState[64];
+    std::fill_n(g_touchPadState, 64, false);
+    if (!pad)
+        return;
+
+    static const u32 inputs[] = {
+        PadDualshock2::Inputs::PAD_UP,
+        PadDualshock2::Inputs::PAD_DOWN,
+        PadDualshock2::Inputs::PAD_LEFT,
+        PadDualshock2::Inputs::PAD_RIGHT,
+        PadDualshock2::Inputs::PAD_CROSS,
+        PadDualshock2::Inputs::PAD_CIRCLE,
+        PadDualshock2::Inputs::PAD_SQUARE,
+        PadDualshock2::Inputs::PAD_TRIANGLE,
+        PadDualshock2::Inputs::PAD_L1,
+        PadDualshock2::Inputs::PAD_R1,
+        PadDualshock2::Inputs::PAD_L2,
+        PadDualshock2::Inputs::PAD_R2,
+        PadDualshock2::Inputs::PAD_START,
+        PadDualshock2::Inputs::PAD_SELECT,
+        PadDualshock2::Inputs::PAD_L3,
+        PadDualshock2::Inputs::PAD_R3,
+        PadDualshock2::Inputs::PAD_L_RIGHT,
+        PadDualshock2::Inputs::PAD_L_LEFT,
+        PadDualshock2::Inputs::PAD_L_DOWN,
+        PadDualshock2::Inputs::PAD_L_UP,
+        PadDualshock2::Inputs::PAD_R_RIGHT,
+        PadDualshock2::Inputs::PAD_R_LEFT,
+        PadDualshock2::Inputs::PAD_R_DOWN,
+        PadDualshock2::Inputs::PAD_R_UP,
+    };
+    for (const u32 input : inputs)
+        pad->Set(input, 0.0f);
+}
+
 + (nonnull NSString *)biosName {
     return @"PS2";
 }
@@ -3466,51 +3502,6 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
         @"thermalState": thermal,
         @"ramGB": @(ramGB),
         @"lowPower": @(lowPower),
-    };
-}
-
-+ (nonnull NSDictionary<NSString *, id> *)externalDisplayPerformanceMetrics {
-    ARMSX2PhoneOSDMetrics metrics;
-    if (!ARMSX2CopyPhoneOSDMetrics(&metrics))
-        return @{};
-
-    const CPUInfo& cpu = GetCPUInfo();
-    NSString* cpuName = ARMSX2NSStringFromStdString(cpu.name);
-    NSString* gpuName = [NSString stringWithUTF8String:metrics.gpuName] ?: @"Metal";
-    NSString* videoMode = [NSString stringWithUTF8String:metrics.videoMode] ?: @"";
-    NSString* interlaceMode = [NSString stringWithUTF8String:metrics.interlaceMode] ?: @"";
-    NSString* gsStats = [NSString stringWithUTF8String:metrics.gsStats] ?: @"";
-    NSString* gsMemoryStats = [NSString stringWithUTF8String:metrics.gsMemoryStats] ?: @"";
-
-    return @{
-        @"valid": @(metrics.valid),
-        @"internalFPSValid": @(metrics.internalFPSValid),
-        @"internalFPS": @(metrics.internalFPS),
-        @"vps": @(metrics.vps),
-        @"speed": @(metrics.speed),
-        @"targetSpeed": @(metrics.targetSpeed),
-        @"cpuUsage": @(metrics.cpuUsage),
-        @"cpuTime": @(metrics.cpuTime),
-        @"gsUsage": @(metrics.gsUsage),
-        @"gsTime": @(metrics.gsTime),
-        @"vuUsage": @(metrics.vuUsage),
-        @"vuTime": @(metrics.vuTime),
-        @"gpuUsage": @(metrics.gpuUsage),
-        @"gpuTime": @(metrics.gpuTime),
-        @"minimumFrameTime": @(metrics.minimumFrameTime),
-        @"averageFrameTime": @(metrics.averageFrameTime),
-        @"maximumFrameTime": @(metrics.maximumFrameTime),
-        @"resolutionWidth": @(metrics.resolutionWidth),
-        @"resolutionHeight": @(metrics.resolutionHeight),
-        @"videoMode": videoMode,
-        @"interlaceMode": interlaceMode,
-        @"gsStats": gsStats,
-        @"gsMemoryStats": gsMemoryStats,
-        @"cpuName": cpuName,
-        @"cpuBigCores": @(cpu.num_big_cores),
-        @"cpuSmallCores": @(cpu.num_small_cores),
-        @"cpuThreads": @(cpu.num_threads),
-        @"gpuName": gpuName,
     };
 }
 

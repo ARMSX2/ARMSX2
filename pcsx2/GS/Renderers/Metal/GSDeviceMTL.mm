@@ -1623,8 +1623,7 @@ void GSDeviceMTL::EndPresent()
 { @autoreleasepool {
 	pxAssertMsg(m_current_render.encoder && m_current_render_cmdbuf, "DoBeginPresent cmdbuf was destroyed");
 	ImGui::Render();
-	if (!GSIsDedicatedExternalDisplayActive())
-		RenderImGui(ImGui::GetDrawData());
+	RenderImGui(ImGui::GetDrawData());
 	EndRenderPass();
 	if (m_current_drawable)
 	{

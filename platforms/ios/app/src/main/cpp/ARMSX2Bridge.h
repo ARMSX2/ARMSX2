@@ -85,6 +85,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)setPadButton:(ARMSX2PadButton)button pressed:(BOOL)pressed;
 + (void)setLeftStickX:(float)x Y:(float)y;
 + (void)setRightStickX:(float)x Y:(float)y;
++ (void)resetVirtualPadInput;
 
 // VM control
 + (void)requestVMStop;
@@ -124,9 +125,6 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 
 // Accessibility: structured device stats for the VoiceOver HUD mirror.
 + (nonnull NSDictionary<NSString *, id> *)deviceStatsForAccessibility;
-
-// Phone-only mirror of the performance OSD while dedicated HDMI output is active.
-+ (nonnull NSDictionary<NSString *, id> *)externalDisplayPerformanceMetrics;
 
 // Device haptic fallback for game rumble when no rumble-capable controller is connected.
 + (void)triggerDeviceHapticLarge:(NSUInteger)large small:(NSUInteger)small;

@@ -69,40 +69,6 @@ bool ARMSX2IsDedicatedExternalDisplayActive();
 void ARMSX2SetExternalDisplayVMRequested(bool requested);
 void ARMSX2RegisterExternalDisplayAccessoryIfNeeded(UIViewController* rootViewController);
 
-// Thread-safe snapshot of the core performance OSD. The GS thread refreshes
-// this after PerformanceMetrics publishes a new sample; SwiftUI reads a copy
-// for the phone-only overlay while dedicated external output is active.
-struct ARMSX2PhoneOSDMetrics
-{
-    bool valid = false;
-    bool internalFPSValid = false;
-    float internalFPS = 0.0f;
-    float vps = 0.0f;
-    float speed = 0.0f;
-    float targetSpeed = 0.0f;
-    double cpuUsage = 0.0;
-    double cpuTime = 0.0;
-    float gsUsage = 0.0f;
-    float gsTime = 0.0f;
-    float vuUsage = 0.0f;
-    float vuTime = 0.0f;
-    float gpuUsage = 0.0f;
-    float gpuTime = 0.0f;
-    float minimumFrameTime = 0.0f;
-    float averageFrameTime = 0.0f;
-    float maximumFrameTime = 0.0f;
-    int resolutionWidth = 0;
-    int resolutionHeight = 0;
-    char videoMode[32] = {};
-    char interlaceMode[32] = {};
-    char gsStats[256] = {};
-    char gsMemoryStats[256] = {};
-    char gpuName[128] = {};
-};
-
-bool ARMSX2CopyPhoneOSDMetrics(ARMSX2PhoneOSDMetrics* outMetrics);
-void ARMSX2ResetPhoneOSDMetrics();
-
 // ---------------------------------------------------------------------------
 // VM thread / boot coordination
 // ---------------------------------------------------------------------------

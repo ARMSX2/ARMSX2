@@ -7,6 +7,8 @@ import GameController
 
 private let runtimeMenuStateChangedNotification = Notification.Name("ARMSX2iOSRuntimeMenuStateChanged")
 private let retroAchievementsToastNotification = Notification.Name("ARMSX2RetroAchievementsNotification")
+private let dedicatedExternalDisplayActiveChangedNotification =
+    Notification.Name("ARMSX2iOSDedicatedExternalDisplayActiveChanged")
 
 private extension View {
     func gameplayLaunchChrome(visible: Bool) -> some View {
@@ -100,30 +102,117 @@ private enum OverlayRoute: Equatable {
     case pausedPresenting(QuickMenuDestination)
 }
 
+/// Phone-only companion surface shown after the renderer has actually moved to
+/// the dedicated external display. The Metal view stays mounted underneath so
+/// UIKit/SDL retain the same phone-side render-view lifecycle, while an opaque
+/// black layer guarantees that no stale game frame reaches the OLED panel.
+private struct ExternalDisplayCompanionView: View {
+    let settings: SettingsStore
+    let onOpenPauseMenu: (() -> Void)?
+
+    var body: some View {
+        ZStack {
+            MetalGameView()
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+
+            Color.black
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                Spacer(minLength: 24)
+
+                VStack(spacing: 14) {
+                    Image(systemName: "tv")
+                        .font(.system(size: 48, weight: .medium))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.white)
+                        .accessibilityHidden(true)
+
+                    Text(settings.localized("Playing on External Display"))
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+
+                    Text(settings.localized("Video output is being sent over HDMI."))
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.62))
+                        .multilineTextAlignment(.center)
+
+                    if let onOpenPauseMenu {
+                        Button {
+                            if settings.hapticFeedback {
+                                HapticManager.light.impactOccurred()
+                            }
+                            onOpenPauseMenu()
+                        } label: {
+                            Label(settings.localized("Pause Menu"), systemImage: "pause.circle.fill")
+                                .font(.headline)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 26)
+                                .frame(minWidth: 190, minHeight: 56)
+                        }
+                        .buttonStyle(.plain)
+                        .glassSurface(
+                            tint: OverlayTheme.accent.opacity(0.16),
+                            interactive: true,
+                            clear: true,
+                            cornerRadius: 22
+                        )
+                        .padding(.top, 16)
+                        .accessibilityHint(settings.localized("Opens the pause menu"))
+                    }
+                }
+                .frame(maxWidth: 460)
+                .padding(.horizontal, 28)
+
+                Spacer(minLength: 24)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            "\(settings.localized("Playing on External Display")). " +
+            settings.localized("Video output is being sent over HDMI.")
+        )
+    }
+}
+
 /// Gameplay presentation used after Emulation-Only Mode finishes startup cleanup.
 /// With every release switch enabled, this keeps only the existing Metal surface.
 struct EmulationOnlyGameView: View {
     @State private var appState = AppState.shared
+    @State private var settings = SettingsStore.shared
     @State private var dynamicSettings = DynamicThumbstickSettings.shared
     @State private var touchActionSession = VirtualPadTouchActionSession()
+    @State private var dedicatedExternalDisplayActive = false
 
     @ViewBuilder
     var body: some View {
-        if appState.emulationOnlyPresentation == .minimal {
-            MetalGameView()
-                .ignoresSafeArea()
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Game display")
-                .accessibilityAddTraits(.isImage)
-                .overlay { ExternalDisplayPhoneOSD() }
-                .persistentSystemOverlays(.hidden)
-                .onAppear(perform: preparePresentation)
-                .onDisappear(perform: releasePresentation)
-        } else {
-            retainedGameplayView
-                .persistentSystemOverlays(.hidden)
-                .onAppear(perform: preparePresentation)
-                .onDisappear(perform: releasePresentation)
+        Group {
+            if dedicatedExternalDisplayActive {
+                ExternalDisplayCompanionView(settings: settings, onOpenPauseMenu: nil)
+            } else if appState.emulationOnlyPresentation == .minimal {
+                MetalGameView()
+                    .ignoresSafeArea()
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Game display")
+                    .accessibilityAddTraits(.isImage)
+            } else {
+                retainedGameplayView
+            }
+        }
+        .persistentSystemOverlays(.hidden)
+        .onAppear {
+            refreshDedicatedExternalDisplayState()
+            preparePresentation()
+        }
+        .onDisappear(perform: releasePresentation)
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: dedicatedExternalDisplayActiveChangedNotification
+            )
+        ) { _ in
+            refreshDedicatedExternalDisplayState()
         }
     }
 
@@ -138,12 +227,7 @@ struct EmulationOnlyGameView: View {
                         accessibleMetalSurface
                             .frame(height: gameHeight)
                             .clipped()
-                            .overlay {
-                                ZStack {
-                                    dynamicCrosshairOverlay
-                                    ExternalDisplayPhoneOSD()
-                                }
-                            }
+                            .overlay { dynamicCrosshairOverlay }
 
                         ZStack {
                             Color.black
@@ -161,7 +245,6 @@ struct EmulationOnlyGameView: View {
                             retainedVirtualControls(isLandscape: true)
                         }
                         dynamicCrosshairOverlay
-                        ExternalDisplayPhoneOSD()
                     }
                     .ignoresSafeArea()
                 }
@@ -217,6 +300,17 @@ struct EmulationOnlyGameView: View {
         }
         UIApplication.shared.isIdleTimerDisabled = false
     }
+
+    private func refreshDedicatedExternalDisplayState() {
+        let active = ARMSX2Bridge.isDedicatedExternalDisplayActive()
+        guard dedicatedExternalDisplayActive != active else { return }
+        dedicatedExternalDisplayActive = active
+        if active {
+            touchActionSession.reset()
+            EmulatorBridge.shared.resetVirtualPadAnalogInput()
+            ARMSX2Bridge.resetVirtualPadInput()
+        }
+    }
 }
 
 struct GameScreenView: View {
@@ -230,6 +324,7 @@ struct GameScreenView: View {
     @State private var touchActionSession = VirtualPadTouchActionSession()
     @State private var userVirtualPadVisible = true
     @State private var externalControllerConnected = false
+    @State private var dedicatedExternalDisplayActive = false
     @State private var fullScreen = false
     @State private var menuButtonHidden = false
     @State private var vmMenuAvailable = false
@@ -336,7 +431,12 @@ struct GameScreenView: View {
             let isLandscape = geo.size.width > geo.size.height
 
             Group {
-                if isLandscape {
+                if dedicatedExternalDisplayActive {
+                    ExternalDisplayCompanionView(
+                        settings: settings,
+                        onOpenPauseMenu: { overlayRoute = .paused }
+                    )
+                } else if isLandscape {
                     // Landscape: full-screen layout so pad coordinates match the layout editor.
                     ZStack {
                         MetalGameView()
@@ -357,7 +457,6 @@ struct GameScreenView: View {
                             .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
                         }
                         dynamicCrosshairOverlay
-                        ExternalDisplayPhoneOSD()
                         menuButtonOverlay(isLandscape: true)
                             .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
                     }
@@ -380,7 +479,6 @@ struct GameScreenView: View {
                                 ZStack {
                                     AccessibilityHUDMirror()
                                     dynamicCrosshairOverlay
-                                    ExternalDisplayPhoneOSD()
                                 }
                             }
 
@@ -497,6 +595,7 @@ struct GameScreenView: View {
             Text(settings.localized("Restart the current game? Unsaved progress will be lost."))
         }
         .onAppear {
+            refreshDedicatedExternalDisplayState()
             let nativeEmulationOnlyMode = ARMSX2Bridge.isEmulationOnlyModeActive()
             // Returning to the same stripped VM must not recreate services that
             // Emulation-Only Mode already released.
@@ -579,6 +678,13 @@ struct GameScreenView: View {
         }
         .onReceive(
             NotificationCenter.default.publisher(
+                for: dedicatedExternalDisplayActiveChangedNotification
+            )
+        ) { _ in
+            refreshDedicatedExternalDisplayState()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
                 for: AppState.emulationOnlyResourcesReleasedNotification
             )
         ) { _ in
@@ -601,6 +707,7 @@ struct GameScreenView: View {
         }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
             refreshRuntimeMenuState()
+            refreshDedicatedExternalDisplayState()
         }
         .persistentSystemOverlays(.hidden)
     }
@@ -1083,6 +1190,17 @@ struct GameScreenView: View {
         }
     }
 
+    private func refreshDedicatedExternalDisplayState() {
+        let active = ARMSX2Bridge.isDedicatedExternalDisplayActive()
+        guard dedicatedExternalDisplayActive != active else { return }
+        dedicatedExternalDisplayActive = active
+        if active {
+            touchActionSession.reset()
+            EmulatorBridge.shared.resetVirtualPadAnalogInput()
+            ARMSX2Bridge.resetVirtualPadInput()
+        }
+    }
+
     private func refreshExternalControllerConnectionState() {
         let connected = !GCController.controllers().isEmpty
         if externalControllerConnected != connected {
@@ -1400,7 +1518,8 @@ struct GameScreenView: View {
         if appState.isEmulationOnlyMode {
             return appState.emulationOnlyPresentation.showsVirtualControls
         }
-        return userVirtualPadVisible &&
+        return !dedicatedExternalDisplayActive &&
+            userVirtualPadVisible &&
             (!settings.autoHideVirtualPadWhenControllerConnected || !externalControllerConnected) &&
             overlayRoute != .pausedPresenting(.padLayout)
     }
