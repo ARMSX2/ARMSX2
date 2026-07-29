@@ -73,6 +73,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (nonnull UIView *)gameRenderView;
 + (void)prepareGameRenderViewForCurrentRenderer;
 + (void)setDedicatedExternalDisplayEnabled:(BOOL)enabled;
++ (BOOL)isDedicatedExternalDisplayActive;
 
 // Lifecycle
 + (void)saveNVRAM;
@@ -123,6 +124,9 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 
 // Accessibility: structured device stats for the VoiceOver HUD mirror.
 + (nonnull NSDictionary<NSString *, id> *)deviceStatsForAccessibility;
+
+// Phone-only mirror of the performance OSD while dedicated HDMI output is active.
++ (nonnull NSDictionary<NSString *, id> *)externalDisplayPerformanceMetrics;
 
 // Device haptic fallback for game rumble when no rumble-capable controller is connected.
 + (void)triggerDeviceHapticLarge:(NSUInteger)large small:(NSUInteger)small;

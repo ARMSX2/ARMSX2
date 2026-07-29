@@ -150,7 +150,7 @@ static void ARMSX2SetPhoneExternalDisplayPlaceholderVisible(bool visible)
     }
 
     UIView* placeholder = [[UIView alloc] initWithFrame:g_gameRenderView.bounds];
-    placeholder.backgroundColor = [UIColor colorWithWhite:0.035 alpha:1.0];
+    placeholder.backgroundColor = [UIColor blackColor];
     placeholder.opaque = YES;
     placeholder.userInteractionEnabled = NO;
     placeholder.autoresizingMask =

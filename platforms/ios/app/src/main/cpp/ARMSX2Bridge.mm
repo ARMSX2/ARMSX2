@@ -55,6 +55,7 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "pcsx2/INISettingsInterface.h"
 #include "pcsx2/PerformanceMetrics.h"
 #include "common/FileSystem.h"
+#include "common/HostSys.h"
 #include "common/Path.h"
 #include "common/ZipHelpers.h"
 #include "common/Error.h"
@@ -2360,6 +2361,10 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     ARMSX2SetDedicatedExternalDisplayEnabled(enabled);
 }
 
++ (BOOL)isDedicatedExternalDisplayActive {
+    return ARMSX2IsDedicatedExternalDisplayActive();
+}
+
 + (void)saveNVRAM {
     cdvdSaveNVRAM();
     ARMSX2SetLastNVMSaveDate([NSDate date]);
@@ -3461,6 +3466,51 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
         @"thermalState": thermal,
         @"ramGB": @(ramGB),
         @"lowPower": @(lowPower),
+    };
+}
+
++ (nonnull NSDictionary<NSString *, id> *)externalDisplayPerformanceMetrics {
+    ARMSX2PhoneOSDMetrics metrics;
+    if (!ARMSX2CopyPhoneOSDMetrics(&metrics))
+        return @{};
+
+    const CPUInfo& cpu = GetCPUInfo();
+    NSString* cpuName = ARMSX2NSStringFromStdString(cpu.name);
+    NSString* gpuName = [NSString stringWithUTF8String:metrics.gpuName] ?: @"Metal";
+    NSString* videoMode = [NSString stringWithUTF8String:metrics.videoMode] ?: @"";
+    NSString* interlaceMode = [NSString stringWithUTF8String:metrics.interlaceMode] ?: @"";
+    NSString* gsStats = [NSString stringWithUTF8String:metrics.gsStats] ?: @"";
+    NSString* gsMemoryStats = [NSString stringWithUTF8String:metrics.gsMemoryStats] ?: @"";
+
+    return @{
+        @"valid": @(metrics.valid),
+        @"internalFPSValid": @(metrics.internalFPSValid),
+        @"internalFPS": @(metrics.internalFPS),
+        @"vps": @(metrics.vps),
+        @"speed": @(metrics.speed),
+        @"targetSpeed": @(metrics.targetSpeed),
+        @"cpuUsage": @(metrics.cpuUsage),
+        @"cpuTime": @(metrics.cpuTime),
+        @"gsUsage": @(metrics.gsUsage),
+        @"gsTime": @(metrics.gsTime),
+        @"vuUsage": @(metrics.vuUsage),
+        @"vuTime": @(metrics.vuTime),
+        @"gpuUsage": @(metrics.gpuUsage),
+        @"gpuTime": @(metrics.gpuTime),
+        @"minimumFrameTime": @(metrics.minimumFrameTime),
+        @"averageFrameTime": @(metrics.averageFrameTime),
+        @"maximumFrameTime": @(metrics.maximumFrameTime),
+        @"resolutionWidth": @(metrics.resolutionWidth),
+        @"resolutionHeight": @(metrics.resolutionHeight),
+        @"videoMode": videoMode,
+        @"interlaceMode": interlaceMode,
+        @"gsStats": gsStats,
+        @"gsMemoryStats": gsMemoryStats,
+        @"cpuName": cpuName,
+        @"cpuBigCores": @(cpu.num_big_cores),
+        @"cpuSmallCores": @(cpu.num_small_cores),
+        @"cpuThreads": @(cpu.num_threads),
+        @"gpuName": gpuName,
     };
 }
 

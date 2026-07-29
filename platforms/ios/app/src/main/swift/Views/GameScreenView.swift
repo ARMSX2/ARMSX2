@@ -115,6 +115,7 @@ struct EmulationOnlyGameView: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Game display")
                 .accessibilityAddTraits(.isImage)
+                .overlay { ExternalDisplayPhoneOSD() }
                 .persistentSystemOverlays(.hidden)
                 .onAppear(perform: preparePresentation)
                 .onDisappear(perform: releasePresentation)
@@ -137,7 +138,12 @@ struct EmulationOnlyGameView: View {
                         accessibleMetalSurface
                             .frame(height: gameHeight)
                             .clipped()
-                            .overlay { dynamicCrosshairOverlay }
+                            .overlay {
+                                ZStack {
+                                    dynamicCrosshairOverlay
+                                    ExternalDisplayPhoneOSD()
+                                }
+                            }
 
                         ZStack {
                             Color.black
@@ -155,6 +161,7 @@ struct EmulationOnlyGameView: View {
                             retainedVirtualControls(isLandscape: true)
                         }
                         dynamicCrosshairOverlay
+                        ExternalDisplayPhoneOSD()
                     }
                     .ignoresSafeArea()
                 }
@@ -350,6 +357,7 @@ struct GameScreenView: View {
                             .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
                         }
                         dynamicCrosshairOverlay
+                        ExternalDisplayPhoneOSD()
                         menuButtonOverlay(isLandscape: true)
                             .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
                     }
@@ -372,6 +380,7 @@ struct GameScreenView: View {
                                 ZStack {
                                     AccessibilityHUDMirror()
                                     dynamicCrosshairOverlay
+                                    ExternalDisplayPhoneOSD()
                                 }
                             }
 
