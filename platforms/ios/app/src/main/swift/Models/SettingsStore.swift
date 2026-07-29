@@ -1076,6 +1076,52 @@ final class SettingsStore {
         _upscalerConfig.onSet?(upscaler)
     }}
 
+    /// Why an upscaling hack isn't doing what the row says. Mirrors the enum in
+    /// ARMSX2Bridge.mm; the values cross as ints.
+    enum GraphicsHackReason: Int {
+        case applied = 0
+        case needsManualHacks
+        case needsUpscaling
+        case fromGameDatabase
+        case noGame
+    }
+
+    struct GraphicsHackStatus {
+        var effective: Int
+        var reason: GraphicsHackReason
+        var pinned: Bool
+    }
+
+    /// What the running game really has, keyed by INI key. The INI is what the player
+    /// asked for; between the two sit the two mask passes and the GameDB, and only the
+    /// core can see the result. Empty until a game is running.
+    var graphicsHackStatus: [String: GraphicsHackStatus] = [:]
+
+    func graphicsHack(_ key: String) -> GraphicsHackStatus? {
+        graphicsHackStatus[key]
+    }
+
+    func refreshGraphicsHackStatus() {
+        var parsed: [String: GraphicsHackStatus] = [:]
+        for (key, value) in ARMSX2Bridge.graphicsHackState() {
+            guard let entry = value as? [String: Any],
+                  let effective = entry["effective"] as? Int,
+                  let rawReason = entry["reason"] as? Int,
+                  let reason = GraphicsHackReason(rawValue: rawReason),
+                  let pinned = entry["pinned"] as? Bool else { continue }
+            parsed[key] = GraphicsHackStatus(effective: effective, reason: reason, pinned: pinned)
+        }
+        graphicsHackStatus = parsed
+    }
+
+    /// Claims a hack for the player so the GameDB stops overwriting that one. Shares the
+    /// debounced apply with the row's own write, so claiming and changing in one gesture
+    /// costs one apply rather than two.
+    func setGraphicsHackPinned(_ key: String, _ pinned: Bool) {
+        ARMSX2Bridge.setGraphicsHackPinned(key, pinned: pinned)
+        requestGraphicsApplyGuarded()
+    }
+
     /// Homogeneous bool GS hacks — see SettingsStore+Graphics.swift for the option list.
     var gsBoolHacks: [String: Bool] = [:]
 
@@ -2673,6 +2719,9 @@ final class SettingsStore {
 
     /// Reset graphics settings to ARMSX2 iOS defaults
     func resetGraphicsDefaults() {
+        // Hand the hacks back to the game database, otherwise a reset leaves whatever was
+        // claimed still overriding it.
+        ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHackOverrides", value: 0)
         renderer = 17           // Metal
         upscaleMultiplier = 1.0 // Native PS2
         vsyncQueueSize = 8
