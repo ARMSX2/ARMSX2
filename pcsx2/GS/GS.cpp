@@ -1067,10 +1067,21 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 		GSConfig.UserHacks_CPUSpriteRenderBW != old_config.UserHacks_CPUSpriteRenderBW ||
 		GSConfig.UserHacks_CPUCLUTRender != old_config.UserHacks_CPUCLUTRender ||
 		GSConfig.UserHacks_GPUTargetCLUTMode != old_config.UserHacks_GPUTargetCLUTMode ||
-		// Native scaling is the one geometry hack that outlives the draw: it swaps a
-		// target's texture for a downscaled one and pins m_scale to 1. Those targets
-		// stay downscaled after it's switched off, so they have to go.
-		GSConfig.UserHacks_NativeScaling != old_config.UserHacks_NativeScaling)
+		// The geometry hacks below all outlive the draw, because what they move ends up
+		// baked into a cached target: native scaling swaps a target's texture for a
+		// downscaled one and pins m_scale to 1, the rest shift vertices or texture
+		// coordinates on the way in. Switch one off and a target the game doesn't redraw
+		// keeps the old pixels — that's the ghosting people report as a stuck setting.
+		GSConfig.UserHacks_NativeScaling != old_config.UserHacks_NativeScaling ||
+		GSConfig.UserHacks_AlignSpriteX != old_config.UserHacks_AlignSpriteX ||
+		GSConfig.UserHacks_MergePPSprite != old_config.UserHacks_MergePPSprite ||
+		GSConfig.UserHacks_RoundSprite != old_config.UserHacks_RoundSprite ||
+		GSConfig.UserHacks_HalfPixelOffset != old_config.UserHacks_HalfPixelOffset ||
+		GSConfig.UserHacks_ForceEvenSpritePosition != old_config.UserHacks_ForceEvenSpritePosition ||
+		GSConfig.UserHacks_NativePaletteDraw != old_config.UserHacks_NativePaletteDraw ||
+		GSConfig.UserHacks_BilinearHack != old_config.UserHacks_BilinearHack ||
+		GSConfig.UserHacks_TCOffsetX != old_config.UserHacks_TCOffsetX ||
+		GSConfig.UserHacks_TCOffsetY != old_config.UserHacks_TCOffsetY)
 	{
 		if (GSConfig.UserHacks_ReadTCOnClose)
 			g_gs_renderer->ReadbackTextureCache();
