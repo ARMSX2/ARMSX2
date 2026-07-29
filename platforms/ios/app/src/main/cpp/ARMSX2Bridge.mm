@@ -116,6 +116,19 @@ static void ARMSX2FlushINISave()
 static NSDate* s_lastNVMSaveDate = nil;
 static ARMSX2RetroAchievementsToastInfo* s_pendingRetroAchievementsNotification = nil;
 
+// This file has no ARC, so a static holding an object has to own it. Both writers below
+// are handed autoreleased objects, and a raw assignment leaves the static pointing at
+// freed memory once the pool drains.
+static void ARMSX2SetLastNVMSaveDate(NSDate* date)
+{
+#if __has_feature(objc_arc)
+    s_lastNVMSaveDate = date;
+#else
+    [s_lastNVMSaveDate release];
+    s_lastNVMSaveDate = [date retain];
+#endif
+}
+
 @implementation ARMSX2SaveStateSlotInfo
 @end
 
@@ -1302,7 +1315,7 @@ static NSInteger ARMSX2BackupAssignedMemoryCards(const char* reason, s32 stateSl
 static bool ARMSX2FlushNVRAMAndMemoryCards(const char* reason)
 {
     cdvdSaveNVRAM();
-    s_lastNVMSaveDate = [NSDate date];
+    ARMSX2SetLastNVMSaveDate([NSDate date]);
 
     if (!VMManager::HasValidVM()) {
         NSLog(@"[ARMSX2Bridge] Save-state flush skipped memory cards reason=%s validVM=0",
@@ -2344,7 +2357,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
 
 + (void)saveNVRAM {
     cdvdSaveNVRAM();
-    s_lastNVMSaveDate = [NSDate date];
+    ARMSX2SetLastNVMSaveDate([NSDate date]);
     NSLog(@"[ARMSX2Bridge] NVM saved at %@", s_lastNVMSaveDate);
 }
 
@@ -4910,6 +4923,10 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
 + (nullable ARMSX2RetroAchievementsToastInfo *)consumePendingRetroAchievementsNotification {
     __block ARMSX2RetroAchievementsToastInfo* pending = nil;
     void (^consume)(void) = ^{
+        // Hands the static's reference to `pending`, which is why this clears the pointer
+        // by hand instead of calling ARMSX2ClearPendingRetroAchievementsNotification().
+        // That one releases, and the autorelease at the end of this function is already
+        // paying for the reference. Using it here would over-release.
         pending = s_pendingRetroAchievementsNotification;
         s_pendingRetroAchievementsNotification = nil;
     };
