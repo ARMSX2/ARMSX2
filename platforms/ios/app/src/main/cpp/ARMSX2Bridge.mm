@@ -111,13 +111,45 @@ static void ARMSX2FlushINISave()
 }
 
 static NSDate* s_lastNVMSaveDate = nil;
-static NSDictionary<NSString*, id>* s_pendingRetroAchievementsNotification = nil;
+static ARMSX2RetroAchievementsToastInfo* s_pendingRetroAchievementsNotification = nil;
 
 @implementation ARMSX2SaveStateSlotInfo
 @end
 
 @implementation ARMSX2BIOSInfo
 @end
+
+@implementation ARMSX2RetroAchievementsToastInfo
+#if !__has_feature(objc_arc)
+- (void)dealloc
+{
+    [_title release];
+    [_message release];
+    [_badgePath release];
+    [super dealloc];
+}
+#endif
+@end
+
+static void ARMSX2SetPendingRetroAchievementsNotification(ARMSX2RetroAchievementsToastInfo* toast)
+{
+#if __has_feature(objc_arc)
+    s_pendingRetroAchievementsNotification = toast;
+#else
+    [s_pendingRetroAchievementsNotification release];
+    s_pendingRetroAchievementsNotification = [toast retain];
+#endif
+}
+
+static void ARMSX2ClearPendingRetroAchievementsNotification()
+{
+#if __has_feature(objc_arc)
+    s_pendingRetroAchievementsNotification = nil;
+#else
+    [s_pendingRetroAchievementsNotification release];
+    s_pendingRetroAchievementsNotification = nil;
+#endif
+}
 
 static NSString* const ARMSX2CompatibilityProfileOff = @"off";
 static NSString* const ARMSX2CompatibilityProfileCOP1 = @"cop1";
@@ -497,17 +529,18 @@ extern "C" void ARMSX2_PostRetroAchievementsNotification(const char* title, cons
     NSNumber* durationNumber = (duration > 0.0f) ? @(duration) : nil;
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSMutableDictionary* userInfo = [NSMutableDictionary dictionaryWithCapacity:4];
-        userInfo[@"title"] = titleString;
-        userInfo[@"message"] = messageString;
-        userInfo[@"badgePath"] = badgePathString;
-        if (durationNumber != nil)
-            userInfo[@"duration"] = durationNumber;
-        userInfo[@"handledByUIKit"] = @NO;
-        s_pendingRetroAchievementsNotification = userInfo;
+        ARMSX2RetroAchievementsToastInfo* toast = [[ARMSX2RetroAchievementsToastInfo alloc] init];
+        toast.title = titleString;
+        toast.message = messageString;
+        toast.badgePath = badgePathString;
+        toast.duration = durationNumber != nil ? durationNumber.doubleValue : 0.0;
+        ARMSX2SetPendingRetroAchievementsNotification(toast);
+#if !__has_feature(objc_arc)
+        [toast release];
+#endif
+
         [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2RetroAchievementsNotification"
-                                                           object:nil
-                                                         userInfo:userInfo];
+                                                           object:nil];
     });
 }
 
@@ -3237,7 +3270,7 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
 + (void)releaseNonEmulationResources:(NSUInteger)releaseFlags {
     if (releaseFlags & VMManager::EMULATION_ONLY_RELEASE_ACHIEVEMENTS) {
         void (^clearPendingNotification)(void) = ^{
-            s_pendingRetroAchievementsNotification = nil;
+            ARMSX2ClearPendingRetroAchievementsNotification();
         };
         if ([NSThread isMainThread])
             clearPendingNotification();
@@ -4638,8 +4671,8 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
     return result;
 }
 
-+ (nullable NSDictionary<NSString *, id> *)consumePendingRetroAchievementsNotification {
-    __block NSDictionary<NSString*, id>* pending = nil;
++ (nullable ARMSX2RetroAchievementsToastInfo *)consumePendingRetroAchievementsNotification {
+    __block ARMSX2RetroAchievementsToastInfo* pending = nil;
     void (^consume)(void) = ^{
         pending = s_pendingRetroAchievementsNotification;
         s_pendingRetroAchievementsNotification = nil;
@@ -4651,7 +4684,11 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
         dispatch_sync(dispatch_get_main_queue(), consume);
     }
 
+#if __has_feature(objc_arc)
     return pending;
+#else
+    return [pending autorelease];
+#endif
 }
 
 + (BOOL)isRetroAchievementsHardcoreActive {
