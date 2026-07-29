@@ -519,6 +519,28 @@ enum class GSNativeScaling : u8
 	MaxCount
 };
 
+// A hack the player set on purpose. Normally the GameDB gets the last word on these
+// unless manual hacks are on, which is all or nothing: switching one hack off throws
+// away every automatic fix the game had. Pinning one keeps the rest.
+enum class GSUserHackOverride : u8
+{
+	AlignSprite,
+	MergeSprite,
+	RoundSprite,
+	HalfPixelOffset,
+	ForceEvenSpritePosition,
+	NativeScaling,
+	NativePaletteDraw,
+	BilinearHack,
+	TextureOffsetX,
+	AutoFlush,
+	TextureInsideRt,
+	// Appended rather than slotted in next to X, so a mask already written to an INI keeps
+	// meaning what it meant.
+	TextureOffsetY,
+	MaxCount
+};
+
 enum class GSDepthFeedbackMode : u8
 {
 	None      = 0,
@@ -1033,12 +1055,30 @@ struct Pcsx2Config
 		std::string HWDumpDirectory;
 		std::string SWDumpDirectory;
 
+		/// Hacks the player set deliberately, one bit per GSUserHackOverride. Kept out of
+		/// the bitfield union above on purpose: that packing is what OptionsAreEqual
+		/// compares wholesale, and this is not a hack value, it is who owns one.
+		u32 UserHackOverrides = 0;
+
 		GSOptions();
 
 		void LoadSave(SettingsWrapper& wrap);
 
-		/// Sets user hack values to defaults when user hacks are not enabled.
-		void MaskUserHacks();
+		bool IsUserHackPinned(GSUserHackOverride hack) const
+		{
+			return (UserHackOverrides & (1u << static_cast<u32>(hack))) != 0;
+		}
+
+		void SetUserHackPinned(GSUserHackOverride hack, bool pinned)
+		{
+			const u32 bit = 1u << static_cast<u32>(hack);
+			UserHackOverrides = pinned ? (UserHackOverrides | bit) : (UserHackOverrides & ~bit);
+		}
+
+		/// Sets user hack values to defaults when user hacks are not enabled. Hacks the
+		/// player claimed survive, unless the caller is stripping for safety rather than
+		/// preference, in which case pass false.
+		void MaskUserHacks(bool respect_claims = true);
 
 		/// Sets user hack values to defaults when upscaling is not enabled.
 		void MaskUpscalingHacks();
