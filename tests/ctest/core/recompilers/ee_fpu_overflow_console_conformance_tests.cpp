@@ -184,11 +184,7 @@ const EngineDivergence* FindDivergence(int row)
 // stale -- a row that gets fixed without being removed here fails loudly
 // instead of sitting as a silent allowance.
 // ---------------------------------------------------------------------------
-// Disabled here: these rows are restated against the console, but the
-// interpreter's SQRT.S still raises no invalid on -0 and negative
-// denormals. Re-enabled by "Fix: SQRT.S raises invalid on -0 and negative
-// denormals".
-TEST(EeFpuOverflowConsole, DISABLED_EnginesAgreeExceptOnTheDocumentedRows)
+TEST(EeFpuOverflowConsole, EnginesAgreeExceptOnTheDocumentedRows)
 {
 	for (int i = 0; i < kCaseCount; ++i)
 	{
