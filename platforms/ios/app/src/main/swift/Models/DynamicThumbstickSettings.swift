@@ -228,7 +228,39 @@ final class DynamicThumbstickSettings {
     var invertGyroVertical: Bool { didSet { setBool("InvertGyroVertical", invertGyroVertical) } }
 
     var thumbstickRadius: Double { didSet { setDouble("ThumbstickRadius", thumbstickRadius) } }
+    var leftThumbstickAreaScale: Double {
+        didSet { setDouble("LeftThumbstickAreaScale", leftThumbstickAreaScale) }
+    }
+    var rightThumbstickAreaScale: Double {
+        didSet { setDouble("RightThumbstickAreaScale", rightThumbstickAreaScale) }
+    }
     var deadZone: Double { didSet { setDouble("DeadZone", deadZone) } }
+    var leftInstantDeadzoneEnabled: Bool {
+        didSet { setBool("LeftInstantDeadzoneEnabled", leftInstantDeadzoneEnabled) }
+    }
+    var leftNegativeDeadzone: Double {
+        didSet { setDouble("LeftNegativeDeadzone", leftNegativeDeadzone) }
+    }
+    var rightInstantDeadzoneEnabled: Bool {
+        didSet { setBool("RightInstantDeadzoneEnabled", rightInstantDeadzoneEnabled) }
+    }
+    var rightNegativeDeadzone: Double {
+        didSet { setDouble("RightNegativeDeadzone", rightNegativeDeadzone) }
+    }
+    var convertSwipeToDynamicJoystick: Bool {
+        didSet { setBool("ConvertSwipeToDynamicJoystick", convertSwipeToDynamicJoystick) }
+    }
+    var convertIntoDynamicThumbstickThreshold: Double {
+        didSet {
+            setDouble(
+                "ConvertIntoDynamicThumbstickThreshold",
+                convertIntoDynamicThumbstickThreshold
+            )
+        }
+    }
+    var pullingBackDistance: Double {
+        didSet { setDouble("PullingBackDistance", pullingBackDistance) }
+    }
     var thumbstickOpacity: Double { didSet { setDouble("ThumbstickOpacity", thumbstickOpacity) } }
     var baseOpacity: Double { didSet { setDouble("BaseOpacity", baseOpacity) } }
     var trailOpacity: Double { didSet { setDouble("TrailOpacity", trailOpacity) } }
@@ -255,6 +287,15 @@ final class DynamicThumbstickSettings {
     var fireReleaseDelay: Double { didSet { setDouble("FireReleaseDelay", fireReleaseDelay) } }
     var automaticFireInterval: Double { didSet { setDouble("AutomaticFireInterval", automaticFireInterval) } }
     var dynamicCrosshairEnabled: Bool { didSet { setBool("DynamicCrosshairEnabled", dynamicCrosshairEnabled) } }
+    var showCrosshairWhileHoldingSwipe: Bool {
+        didSet { setBool("ShowCrosshairWhileHoldingSwipe", showCrosshairWhileHoldingSwipe) }
+    }
+    var swipeCrosshairHideDelay: Double {
+        didSet { setDouble("SwipeCrosshairHideDelay", swipeCrosshairHideDelay) }
+    }
+    var triggerButtonWhenUnholdingSwipe: Int {
+        didSet { setInt("TriggerButtonWhenUnholdingSwipe", triggerButtonWhenUnholdingSwipe) }
+    }
     var dynamicCrosshairSize: Double { didSet { setDouble("DynamicCrosshairSize", dynamicCrosshairSize) } }
     var dynamicCrosshairOpacity: Double {
         didSet { setDouble("DynamicCrosshairOpacity", dynamicCrosshairOpacity) }
@@ -299,7 +340,22 @@ final class DynamicThumbstickSettings {
         invertGyroHorizontal = Self.bool("InvertGyroHorizontal", default: false)
         invertGyroVertical = Self.bool("InvertGyroVertical", default: false)
         thumbstickRadius = Self.double("ThumbstickRadius", default: 52)
+        leftThumbstickAreaScale = Self.double("LeftThumbstickAreaScale", default: 3)
+        rightThumbstickAreaScale = Self.double("RightThumbstickAreaScale", default: 3)
         deadZone = Self.double("DeadZone", default: 0.08)
+        leftInstantDeadzoneEnabled = Self.bool("LeftInstantDeadzoneEnabled", default: false)
+        leftNegativeDeadzone = Self.double("LeftNegativeDeadzone", default: -0.08)
+        rightInstantDeadzoneEnabled = Self.bool("RightInstantDeadzoneEnabled", default: false)
+        rightNegativeDeadzone = Self.double("RightNegativeDeadzone", default: -0.08)
+        convertSwipeToDynamicJoystick = Self.bool("ConvertSwipeToDynamicJoystick", default: false)
+        convertIntoDynamicThumbstickThreshold = Self.double(
+            "ConvertIntoDynamicThumbstickThreshold",
+            default: 1
+        )
+        pullingBackDistance = Self.double(
+            "PullingBackDistance",
+            default: 0.05
+        )
         thumbstickOpacity = Self.double("ThumbstickOpacity", default: 0.72)
         baseOpacity = Self.double("BaseOpacity", default: 0.20)
         trailOpacity = Self.double("TrailOpacity", default: 0.10)
@@ -323,6 +379,9 @@ final class DynamicThumbstickSettings {
         fireReleaseDelay = Self.double("FireReleaseDelay", default: 0)
         automaticFireInterval = Self.double("AutomaticFireInterval", default: 0.12)
         dynamicCrosshairEnabled = Self.bool("DynamicCrosshairEnabled", default: false)
+        showCrosshairWhileHoldingSwipe = Self.bool("ShowCrosshairWhileHoldingSwipe", default: false)
+        swipeCrosshairHideDelay = Self.double("SwipeCrosshairHideDelay", default: 0.5)
+        triggerButtonWhenUnholdingSwipe = Self.int("TriggerButtonWhenUnholdingSwipe", default: -1)
         dynamicCrosshairSize = Self.double("DynamicCrosshairSize", default: 32)
         dynamicCrosshairOpacity = Self.double("DynamicCrosshairOpacity", default: 0.70)
         dynamicCrosshairType = DynamicCrosshairType(
@@ -397,6 +456,21 @@ final class DynamicThumbstickSettings {
         !doubleTapToHoldAim || singleTapActionOnNonAimMode || actionsOnNonAimMode
     }
 
+    func setConvertIntoDynamicThumbstickThreshold(_ value: Double) {
+        convertIntoDynamicThumbstickThreshold = min(max(value, 0.01), 3)
+    }
+
+    func setPullingBackDistance(_ value: Double) {
+        pullingBackDistance = min(max(value, 0.01), 1)
+    }
+
+    var effectiveSwipeConversionSettings: (dynamicThumbstick: Double, pullingBack: Double) {
+        (
+            min(max(convertIntoDynamicThumbstickThreshold, 0.01), 3),
+            min(max(pullingBackDistance, 0.01), 1)
+        )
+    }
+
     static func automaticFireBlockedByHardcore() -> Bool {
         let state = ARMSX2Bridge.retroAchievementsState()
         let active = (state["hardcoreActive"] as? NSNumber)?.boolValue ?? false
@@ -438,7 +512,16 @@ final class DynamicThumbstickSettings {
         invertGyroHorizontal = false
         invertGyroVertical = false
         thumbstickRadius = 52
+        leftThumbstickAreaScale = 3
+        rightThumbstickAreaScale = 3
         deadZone = 0.08
+        leftInstantDeadzoneEnabled = false
+        leftNegativeDeadzone = -0.08
+        rightInstantDeadzoneEnabled = false
+        rightNegativeDeadzone = -0.08
+        convertSwipeToDynamicJoystick = false
+        convertIntoDynamicThumbstickThreshold = 1
+        pullingBackDistance = 0.05
         thumbstickOpacity = 0.72
         baseOpacity = 0.20
         trailOpacity = 0.10
@@ -462,6 +545,9 @@ final class DynamicThumbstickSettings {
         fireReleaseDelay = 0
         automaticFireInterval = 0.12
         dynamicCrosshairEnabled = false
+        showCrosshairWhileHoldingSwipe = false
+        swipeCrosshairHideDelay = 0.5
+        triggerButtonWhenUnholdingSwipe = -1
         dynamicCrosshairSize = 32
         dynamicCrosshairOpacity = 0.70
         dynamicCrosshairType = .fourBoxes
@@ -484,6 +570,10 @@ final class DynamicThumbstickSettings {
 
     func holdFireButton(for side: VirtualPadThumbstickSide) -> VirtualPadActionButton {
         side == .left ? leftHoldFireButton : rightHoldFireButton
+    }
+
+    var swipeReleaseActionButton: VirtualPadActionButton? {
+        VirtualPadActionButton(rawValue: triggerButtonWhenUnholdingSwipe)
     }
 
     func effectiveSwipeSensitivity(isAiming: Bool) -> (horizontal: Double, vertical: Double) {
