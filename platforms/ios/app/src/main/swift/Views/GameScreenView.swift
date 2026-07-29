@@ -590,9 +590,8 @@ struct GameScreenView: View {
             padRebuildToken &+= 1
             overlayRoute = .paused
         }
-        .onReceive(NotificationCenter.default.publisher(for: retroAchievementsToastNotification)) { notification in
-            _ = ARMSX2Bridge.consumePendingRetroAchievementsNotification()
-            presentRetroAchievementsToast(notification)
+        .onReceive(NotificationCenter.default.publisher(for: retroAchievementsToastNotification)) { _ in
+            consumePendingRetroAchievementsToast()
         }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
             refreshRuntimeMenuState()
@@ -1355,42 +1354,34 @@ struct GameScreenView: View {
         presentStatusMessage("OSD: \(label)")
     }
 
-    private func presentRetroAchievementsToast(_ notification: Notification) {
-        if (notification.userInfo?["handledByUIKit"] as? Bool) == true {
-            return
-        }
-
-        let title = ((notification.userInfo?["title"] as? String) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    private func presentRetroAchievementsToast(
+        title rawTitle: String,
+        message rawMessage: String,
+        badgePath rawBadgePath: String,
+        duration: TimeInterval?
+    ) {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
 
-        let message = ((notification.userInfo?["message"] as? String) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let badgePathValue = ((notification.userInfo?["badgePath"] as? String) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        let badgePathValue = rawBadgePath.trimmingCharacters(in: .whitespacesAndNewlines)
         let toast = RetroAchievementsToast(
             title: title,
             message: message,
             badgePath: badgePathValue.isEmpty ? nil : badgePathValue
         )
 
-        // Honor the per-event duration the core passes through (seconds) instead of
-        // the banner default, so longer popups (e.g. mastery) and shorter ones are
-        // each respected.
-        let customDuration = notification.userInfo?["duration"] as? TimeInterval
-        achievementsBanner.present(toast, displayDuration: customDuration)
+        achievementsBanner.present(toast, displayDuration: duration)
     }
 
     private func consumePendingRetroAchievementsToast() {
-        guard let userInfo = ARMSX2Bridge.consumePendingRetroAchievementsNotification(), userInfo.count > 0 else { return }
-        // Extract known fields by key to avoid NSDictionary → Swift Dictionary
-        // bridging, which crashes if any value is an NSAttributedString.
-        var toast: [String: Any] = [:]
-        toast["title"] = (userInfo["title"] as? String) ?? ""
-        toast["message"] = (userInfo["message"] as? String) ?? ""
-        if let badge = userInfo["badgePath"] as? String { toast["badgePath"] = badge }
-        if let duration = (userInfo["duration"] as? NSNumber) { toast["duration"] = duration }
-        presentRetroAchievementsToast(Notification(name: retroAchievementsToastNotification, object: nil, userInfo: toast))
+        guard let pending = ARMSX2Bridge.consumePendingRetroAchievementsNotification() else { return }
+        presentRetroAchievementsToast(
+            title: pending.title,
+            message: pending.message,
+            badgePath: pending.badgePath,
+            duration: pending.duration > 0 ? pending.duration : nil
+        )
     }
 
     private func presentImportantStatusMessage(_ message: String) {

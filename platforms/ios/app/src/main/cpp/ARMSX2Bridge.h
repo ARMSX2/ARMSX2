@@ -57,6 +57,13 @@ typedef NS_ENUM(NSInteger, ARMSX2PadButton) {
 @property (nonatomic, assign) BOOL valid;
 @end
 
+@interface ARMSX2RetroAchievementsToastInfo : NSObject
+@property (nonatomic, copy, nonnull) NSString *title;
+@property (nonatomic, copy, nonnull) NSString *message;
+@property (nonatomic, copy, nonnull) NSString *badgePath;
+@property (nonatomic, assign) NSTimeInterval duration;
+@end
+
 typedef void (^ARMSX2SaveStateCompletion)(BOOL success);
 typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonnull message);
 
@@ -351,7 +358,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // RetroAchievements
 + (nonnull NSDictionary<NSString *, id> *)retroAchievementsState;
 + (nonnull NSArray<NSDictionary<NSString *, id> *> *)retroAchievementsForCurrentGame;
-+ (nullable NSDictionary<NSString *, id> *)consumePendingRetroAchievementsNotification;
++ (nullable ARMSX2RetroAchievementsToastInfo *)consumePendingRetroAchievementsNotification;
 + (BOOL)isRetroAchievementsHardcoreActive;
 + (void)setRetroAchievementsEnabled:(BOOL)enabled;
 + (void)setRetroAchievementsHardcore:(BOOL)enabled;
