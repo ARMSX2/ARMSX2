@@ -1010,10 +1010,15 @@ static void recSQRT_S_xmm(int info)
 		emitLoadFPCR(EmuConfig.Cpu.FPUDivFPCR.bitmask);
 
 	// PS2 SQRT.S flag handling (interp SQRT_S, FPU.cpp; CHECK_FPU_EXTRA_FLAGS
-	// is always on): clear I|D unconditionally, then set I|SI when Ft is a
-	// negative *non-zero* value (exp field nonzero AND sign bit set). The
-	// ±0 / denormal-as-zero case (exp field == 0) sets no flag. Read the Ft
-	// bits before Fabs clobbers EEREC_D, which may alias EEREC_T.
+	// is always on): clear I|D unconditionally, then set I|SI whenever Ft's
+	// SIGN BIT is set. The exponent field plays no part — −0 and the negative
+	// denormals raise I|SI too, even though they flush to −0 and produce +0.
+	// This used to carry an extra `exp != 0` gate, which cost exactly those two
+	// operand classes their flag; x86's recSQRT_S_xmm (iFPU.cpp, MOVMSKPS & 1)
+	// and the FULL-mode DOUBLE path (iFPUd-arm64.cpp) have always tested the
+	// sign alone. Scored against a first-party capture over the sign × exponent
+	// matrix — see EeRecFpu.SqrtSInvalidFlagFollowsTheSignBitAlone.
+	// Read the Ft bits before Fabs clobbers EEREC_D, which may alias EEREC_T.
 	// GE-12: flag RMW on the resident FCR31; alloc first (eviction stores
 	// must precede the RWARG1 clobber and the branch arms). GE-20 gave SQRT
 	// a DOUBLE:: variant, so this body no longer runs under FULL mode; the
@@ -1025,8 +1030,6 @@ static void recSQRT_S_xmm(int info)
 		armLoadEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
 	armAsm->Bic(flagReg, flagReg, FPUflagI | FPUflagD);
 	a64::Label skipFlag;
-	armAsm->Tst(RWARG1, 0x7F800000);                 // exp field
-	armAsm->B(&skipFlag, a64::eq);                    // ±0/denorm → no flag
 	armAsm->Tbz(RWARG1, 31, &skipFlag);              // positive → no flag
 	armAsm->Orr(flagReg, flagReg, FPUflagI | FPUflagSI);
 	armAsm->Bind(&skipFlag);

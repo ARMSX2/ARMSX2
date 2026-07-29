@@ -467,6 +467,14 @@ TEST(EeRecFpu, SqrtSPositiveClearsStaleIDFlags)
 //
 // Found by a randomized SQRT.S differential, which is why a case this small
 // went unnoticed: every hand-written SQRT.S test above uses +/-4.0.
+//
+// The FLAG half of this used to be asserted here as "no I|SI, the zero path is
+// not the negative path", on nothing but the two engines agreeing. That was
+// wrong: ps2autotests' sqrt.expected prints results only, never FCR31, so it
+// could not have said either way. A first-party capture that does record FCR31
+// (fpmatrix cases 226/227) shows the console raising I|SI here. It now lives
+// in SqrtSInvalidFlagFollowsTheSignBitAlone below, which owns the whole rule;
+// this test keeps the value and asserts only that D stays clear.
 TEST(EeRecFpu, SqrtSOfNegativeZeroIsPositiveZero)
 {
 	EeRecTestHarness h;
@@ -476,10 +484,87 @@ TEST(EeRecFpu, SqrtSOfNegativeZeroIsPositiveZero)
 	h.LoadProgram({ee::SQRT_S(2, 1)});
 	h.Run();                         // auto-diff catches an engine keeping -0
 	h.ExpectFpr(2, 0x00000000u);
-	// The zero path is not the negative path: no I|SI, and D is cleared.
-	const u32 mask = 0x20000u | 0x10000u | 0x40u; // I | D | SI
-	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask, 0u);
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0u);
+	// D is the divide-by-zero flag and SQRT.S never raises it.
+	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & 0x10000u, 0u);
+	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & 0x10000u, 0u);
+}
+
+// ----- SQRT.S's I flag keys off the sign bit, not the exponent --------
+// The rule, from a first-party PS2 capture that records FCR31 alongside the
+// result (~/.claude/projects/.../captures/fpmatrix, corpus 62dd6882, the 38
+// SQRT.S cases):
+//
+//     SQRT.S raises I|SI whenever Ft's SIGN BIT is set. Full stop. The
+//     exponent field plays no part.
+//
+// So -0.0 and the negative denormals -- which are flushed to -0 before the op
+// and produce +0, a perfectly ordinary result -- still raise invalid-operation.
+// Every capture row agrees; the ten below are the sign x exponent matrix:
+//
+//     case 226  sqrt 00000000  ->  00000000/01000001    +0
+//     case 227  sqrt 80000000  ->  00000000/01020041    -0          <- I|SI
+//     case 235  sqrt 00000001  ->  00000000/01000001    +MIN_DENORM
+//     case 236  sqrt 80000001  ->  00000000/01020041    -MIN_DENORM <- I|SI
+//     case 237  sqrt 00400000  ->  00000000/01000001    +mid denorm
+//     case 238  sqrt 007FFFFF  ->  00000000/01000001    +MAX_DENORM
+//     case 228  sqrt 3F800000  ->  3F800000/01000001    +1.0
+//     case 229  sqrt BF800000  ->  3F800000/01020041    -1.0        <- I|SI
+//     case 239  sqrt 00800000  ->  20000000/01000001    +MIN_NORMAL
+//     case 241  sqrt 80800000  ->  20000000/01020041    -MIN_NORMAL <- I|SI
+//
+// 0x01020041 is I|SI plus FCR31's two always-set bits (0x01000001); 0x01000001
+// is those two bits alone. The positive rows are CONTROLS and they are why this
+// is a matrix rather than two rows: the fix is a deletion (a gate on the
+// exponent field comes out of the flag test), and a deletion that went too far
+// -- dropping the sign test as well -- would raise I on every SQRT.S. Nothing
+// but the positive rows would notice.
+//
+// Those controls are live, not decorative, and that was measured rather than
+// assumed: with the sign test also deleted from both engines, all six positive
+// rows fail on both and the four negative rows still pass. The two -0/-denormal
+// rows were likewise seen failing before the fix (0x01000001 against
+// 0x01020041, both engines) and passing after.
+//
+// Both engines used to gate the flag on `exp != 0 && sign`, so both missed
+// exactly the two rows where the sign is set and the exponent is zero. x86's
+// recSQRT_S_xmm (iFPU.cpp) has always tested MOVMSKPS's sign bit alone, as has
+// the FULL-mode DOUBLE path in iFPUd-arm64.cpp -- upstream's x86 JIT is the
+// only column in the capture that got these two rows right.
+namespace {
+struct SqrtFlagRow { u32 ft, result, fcr31; const char* what; };
+constexpr SqrtFlagRow kSqrtFlagRows[] = {
+	{0x00000000u, 0x00000000u, 0x01000001u, "+0"},
+	{0x80000000u, 0x00000000u, 0x01020041u, "-0"},
+	{0x00000001u, 0x00000000u, 0x01000001u, "+MIN_DENORM"},
+	{0x80000001u, 0x00000000u, 0x01020041u, "-MIN_DENORM"},
+	{0x00400000u, 0x00000000u, 0x01000001u, "+mid denormal"},
+	{0x007FFFFFu, 0x00000000u, 0x01000001u, "+MAX_DENORM"},
+	{0x3F800000u, 0x3F800000u, 0x01000001u, "+1.0"},
+	{0xBF800000u, 0x3F800000u, 0x01020041u, "-1.0"},
+	{0x00800000u, 0x20000000u, 0x01000001u, "+MIN_NORMAL"},
+	{0x80800000u, 0x20000000u, 0x01020041u, "-MIN_NORMAL"},
+};
+} // namespace
+
+TEST(EeRecFpu, SqrtSInvalidFlagFollowsTheSignBitAlone)
+{
+	for (const SqrtFlagRow& r : kSqrtFlagRows)
+	{
+		SCOPED_TRACE(::testing::Message() << "sqrt.s " << r.what);
+
+		EeRecTestHarness h;
+		h.EnableCop1();
+		// The capture's own pre-state: FCR31 at its power-on fixed ones, so the
+		// sticky SI below can only have come from this instruction.
+		h.SetFcr31(0x01000001u);
+		h.SetFprBits(1, r.ft);
+		h.LoadProgram({ee::SQRT_S(2, 1)});
+		h.Run();                      // auto-diff scores the two engines' values
+		h.ExpectFpr(2, r.result);
+		// Run()'s diff does not cover fprc[31]; score each engine on the capture.
+		EXPECT_EQ(h.JitSnapshot().fprs.fprc[31], r.fcr31)    << "arm64 JIT";
+		EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31], r.fcr31) << "interpreter";
+	}
 }
 
 // ----- SQRT.S rounds to nearest regardless of FCR31 mode -------------

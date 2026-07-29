@@ -360,16 +360,24 @@ void RSQRT_S() {
 void SQRT_S() {
 	clearFPUFlags(FPUflagI | FPUflagD);
 
+	// Invalid-operation keys off the SIGN BIT ALONE. -0 and the negative
+	// denormals raise it too, even though they are flushed to -0 and produce a
+	// perfectly ordinary +0: the exponent field plays no part. This used to sit
+	// inside the negative-normal arm below, so those two operand classes came
+	// back with FCR31 untouched. x86's recSQRT_S_xmm has always tested the sign
+	// bit alone (iFPU.cpp, MOVMSKPS & 1), as has the FULL-mode DOUBLE path in
+	// iFPUd-arm64.cpp. Scored against a first-party capture over the sign x
+	// exponent matrix -- see EeRecFpu.SqrtSInvalidFlagFollowsTheSignBitAlone.
+	if ( _FtValUl_ & 0x80000000 )
+		_ContVal_ |= FPUflagI | FPUflagSI;
+
 	if ( ( _FtValUl_ & 0x7F800000 ) == 0 ) // If Ft = +/-0 (denormals included)
 		_FdValUl_ = 0;                     // +0: the EE drops the sign here, and
 		                                   // both recompilers already do (they
 		                                   // take |Ft| before the sqrt). See
 		                                   // EeRecFpu.SqrtSOfNegativeZeroIsPositiveZero.
-	else if ( _FtValUl_ & 0x80000000 ) { // If Ft is Negative
-		_ContVal_ |= FPUflagI | FPUflagSI;
-		_FdValf_ = sqrt( fabs( fpuDouble( _FtValUl_ ) ) );
-	} else
-		_FdValf_ = sqrt( fpuDouble( _FtValUl_ ) ); // If Ft is Positive
+	else
+		_FdValf_ = sqrt( fabs( fpuDouble( _FtValUl_ ) ) ); // sqrt of |Ft|
 }
 
 void SUB_S() {
