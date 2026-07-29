@@ -49,6 +49,7 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "GS/GSState.h"
 #include "SPU2/spu2.h"
 #include "GameList.h"
+#include "GameDatabase.h"
 #include "ps2/BiosTools.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/INISettingsInterface.h"
@@ -60,12 +61,14 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "common/MRCHelpers.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -1963,6 +1966,39 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         else
             si.DeleteValue("EmuCore/GS", "UserHacks_TCOffsetY");
 
+        // Overriding a hack for one game only counts if the GameDB stops writing that
+        // hack for that game, so the claim goes in this file too.
+        u32 perGameClaims = 0;
+        const auto claim = [&perGameClaims](GSUserHackOverride hack) {
+            perGameClaims |= 1u << static_cast<u32>(hack);
+        };
+        if (halfPixelOffset != ARMSX2UseGlobalIntSentinel)
+            claim(GSUserHackOverride::HalfPixelOffset);
+        if (roundSprite != ARMSX2UseGlobalIntSentinel)
+            claim(GSUserHackOverride::RoundSprite);
+        if (alignSpriteOverride)
+            claim(GSUserHackOverride::AlignSprite);
+        if (mergeSpriteOverride)
+            claim(GSUserHackOverride::MergeSprite);
+        if (wildArmsOffsetOverride)
+            claim(GSUserHackOverride::ForceEvenSpritePosition);
+        if (textureOffsetXOverride)
+            claim(GSUserHackOverride::TextureOffsetX);
+        if (textureOffsetYOverride)
+            claim(GSUserHackOverride::TextureOffsetY);
+
+        // The per-game layer replaces this key rather than merging into it, so the global
+        // claims have to be carried across or they vanish for any game with its own file,
+        // and the database takes those hacks straight back.
+        const u32 globalClaims = g_p44_settings_interface ?
+            static_cast<u32>(g_p44_settings_interface->GetIntValue("EmuCore/GS", "UserHackOverrides", 0)) : 0;
+        const u32 combinedClaims = globalClaims | perGameClaims;
+
+        if (combinedClaims != 0)
+            si.SetIntValue("EmuCore/GS", "UserHackOverrides", static_cast<int>(combinedClaims));
+        else
+            si.DeleteValue("EmuCore/GS", "UserHackOverrides");
+
         if (skipDrawStartOverride)
             si.SetIntValue("EmuCore/GS", "UserHacks_SkipDraw_Start", ARMSX2ClampInt(skipDrawStart, 0, 5000));
         else
@@ -2037,6 +2073,7 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         si.DeleteValue("EmuCore", "EnablePatches");
         si.DeleteValue("EmuCore", "EnableGameFixes");
         si.DeleteValue("EmuCore/GS", "UserHacks");
+        si.DeleteValue("EmuCore/GS", "UserHackOverrides");
         si.DeleteValue("EmuCore/CPU", "CoreType");
         si.DeleteValue("EmuCore/CPU", "UseArm64Dynarec");
         si.DeleteValue("ARMSX2iOS/PerGame", "ManualMTVU");
@@ -2138,6 +2175,137 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
 {
     FileSystem::CreateDirectoryPath(EmuFolders::GameSettings.c_str(), false);
     return VMManager::GetGameSettingsPath(serial, crc);
+}
+
+#pragma mark - Graphics hack state
+
+// Why a hack isn't doing what the screen says. Mirrored in GraphicsSettingsView.
+enum class ARMSX2GraphicsHackReason : int
+{
+    Applied = 0,
+    NeedsManualHacks,
+    NeedsUpscaling,
+    FromGameDatabase,
+    NoGame,
+};
+
+struct ARMSX2GraphicsHackDescriptor
+{
+    const char* ini_key;
+    GSUserHackOverride override_id;
+    GameDatabaseSchema::GSHWFixId hw_fix_id;
+    // Upscaling masks these at native res whatever else is true.
+    bool upscaling_only;
+    // Bools are written to the INI as true/false, so reading one back as an int just
+    // gives you the default and every row looks overridden.
+    bool is_bool;
+    int (*read)(const Pcsx2Config::GSOptions& gs);
+};
+
+struct ARMSX2GraphicsHackState
+{
+    const char* ini_key = "";
+    int effective = 0;
+    ARMSX2GraphicsHackReason reason = ARMSX2GraphicsHackReason::NoGame;
+    bool pinned = false;
+};
+
+static constexpr std::array<ARMSX2GraphicsHackDescriptor, 9> s_graphics_hacks = {{
+    {"UserHacks_align_sprite_X", GSUserHackOverride::AlignSprite, GameDatabaseSchema::GSHWFixId::AlignSprite, true, true,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_AlignSpriteX); }},
+    {"UserHacks_merge_pp_sprite", GSUserHackOverride::MergeSprite, GameDatabaseSchema::GSHWFixId::MergeSprite, true, true,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_MergePPSprite); }},
+    {"UserHacks_ForceEvenSpritePosition", GSUserHackOverride::ForceEvenSpritePosition, GameDatabaseSchema::GSHWFixId::ForceEvenSpritePosition, true, true,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_ForceEvenSpritePosition); }},
+    {"UserHacks_NativePaletteDraw", GSUserHackOverride::NativePaletteDraw, GameDatabaseSchema::GSHWFixId::NativePaletteDraw, true, true,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_NativePaletteDraw); }},
+    {"UserHacks_round_sprite_offset", GSUserHackOverride::RoundSprite, GameDatabaseSchema::GSHWFixId::RoundSprite, true, false,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_RoundSprite); }},
+    {"UserHacks_HalfPixelOffset", GSUserHackOverride::HalfPixelOffset, GameDatabaseSchema::GSHWFixId::HalfPixelOffset, true, false,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_HalfPixelOffset); }},
+    {"UserHacks_native_scaling", GSUserHackOverride::NativeScaling, GameDatabaseSchema::GSHWFixId::NativeScaling, true, false,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_NativeScaling); }},
+    {"UserHacks_TCOffsetX", GSUserHackOverride::TextureOffsetX, GameDatabaseSchema::GSHWFixId::Count, true, false,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_TCOffsetX); }},
+    {"UserHacks_TCOffsetY", GSUserHackOverride::TextureOffsetY, GameDatabaseSchema::GSHWFixId::Count, true, false,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_TCOffsetY); }},
+}};
+
+static std::mutex s_graphics_hack_mutex;
+static std::vector<ARMSX2GraphicsHackState> s_graphics_hack_state;
+
+static const ARMSX2GraphicsHackDescriptor* ARMSX2FindGraphicsHack(const char* ini_key)
+{
+    for (const ARMSX2GraphicsHackDescriptor& hack : s_graphics_hacks) {
+        if (std::strcmp(hack.ini_key, ini_key) == 0)
+            return &hack;
+    }
+    return nullptr;
+}
+
+static bool ARMSX2GameDatabaseSetsHWFix(GameDatabaseSchema::GSHWFixId id)
+{
+    if (id == GameDatabaseSchema::GSHWFixId::Count)
+        return false;
+
+    const GameDatabaseSchema::GameEntry* game = GameDatabase::findGame(VMManager::GetDiscSerial());
+    if (!game)
+        return false;
+
+    for (const auto& [fix_id, value] : game->gsHWFixes) {
+        if (fix_id == id)
+            return true;
+    }
+    return false;
+}
+
+// CPU thread only: EmuConfig is its and the masks have only settled by the time an
+// apply is finished.
+extern "C" void ARMSX2_CaptureGraphicsHackState(void)
+{
+    std::vector<ARMSX2GraphicsHackState> snapshot;
+    snapshot.reserve(s_graphics_hacks.size());
+
+    const bool has_vm = VMManager::HasValidVM();
+    const Pcsx2Config::GSOptions& gs = EmuConfig.GS;
+
+    for (const ARMSX2GraphicsHackDescriptor& hack : s_graphics_hacks) {
+        ARMSX2GraphicsHackState state;
+        state.ini_key = hack.ini_key;
+        state.pinned = gs.IsUserHackPinned(hack.override_id);
+
+        if (!has_vm) {
+            state.reason = ARMSX2GraphicsHackReason::NoGame;
+            snapshot.push_back(state);
+            continue;
+        }
+
+        state.effective = hack.read(gs);
+        // The layered value, so a per-game override counts as what was asked for.
+        const int requested = hack.is_bool ?
+            static_cast<int>(Host::GetBoolSettingValue("EmuCore/GS", hack.ini_key, false)) :
+            Host::GetIntSettingValue("EmuCore/GS", hack.ini_key, 0);
+
+        if (state.effective == requested)
+            state.reason = ARMSX2GraphicsHackReason::Applied;
+        else if (hack.upscaling_only && gs.UpscaleMultiplier <= 1.0f)
+            state.reason = ARMSX2GraphicsHackReason::NeedsUpscaling;
+        else if (ARMSX2GameDatabaseSetsHWFix(hack.hw_fix_id))
+            state.reason = ARMSX2GraphicsHackReason::FromGameDatabase;
+        else
+            state.reason = ARMSX2GraphicsHackReason::NeedsManualHacks;
+
+        snapshot.push_back(state);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(s_graphics_hack_mutex);
+        s_graphics_hack_state = std::move(snapshot);
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2GraphicsHackStateChanged" object:nil];
+    });
 }
 
 @implementation ARMSX2Bridge
@@ -3574,7 +3742,52 @@ static std::string ARMSX2PerGameSettingsPath(const std::string& serial, u32 crc)
         VMManager::ApplySettings();
         if (MTGS::IsOpen())
             MTGS::ApplySettings();
+        ARMSX2_CaptureGraphicsHackState();
     });
+}
+
+// The player's value and the value the game is running are two different things, and
+// the settings screen could only ever see the first one. MaskUserHacks,
+// MaskUpscalingHacks and the GameDB all sit in between and all of them settle on the
+// CPU thread, so snapshot there after an apply and let the UI read the copy.
++ (nonnull NSDictionary<NSString *, id> *)graphicsHackState
+{
+    NSMutableDictionary<NSString*, id>* result = [NSMutableDictionary dictionary];
+
+    // The snapshot is only meaningful while a game is up. It is taken again on shutdown,
+    // but whether the VM is already gone by then decides what it catches, and a leftover
+    // "the game database is setting this" back in the menu would be nonsense.
+    if (!VMManager::HasValidVM())
+        return result;
+
+    std::lock_guard<std::mutex> lock(s_graphics_hack_mutex);
+    for (const ARMSX2GraphicsHackState& hack : s_graphics_hack_state) {
+        result[@(hack.ini_key)] = @{
+            @"effective": @(hack.effective),
+            @"reason": @(static_cast<int>(hack.reason)),
+            @"pinned": @(hack.pinned),
+        };
+    }
+    return result;
+}
+
+// Writes the claim only. The caller asks for the apply, so claiming a hack and changing
+// its value in the same gesture coalesce into one instead of applying twice. Bit math
+// stays here rather than in Swift because the enum lives in Config.h.
++ (void)setGraphicsHackPinned:(nonnull NSString *)iniKey pinned:(BOOL)pinned
+{
+    if (!g_p44_settings_interface)
+        return;
+
+    const ARMSX2GraphicsHackDescriptor* descriptor = ARMSX2FindGraphicsHack(iniKey.UTF8String);
+    if (!descriptor)
+        return;
+
+    const u32 bit = 1u << static_cast<u32>(descriptor->override_id);
+    u32 mask = static_cast<u32>(g_p44_settings_interface->GetIntValue("EmuCore/GS", "UserHackOverrides", 0));
+    mask = pinned ? (mask | bit) : (mask & ~bit);
+    g_p44_settings_interface->SetIntValue("EmuCore/GS", "UserHackOverrides", static_cast<int>(mask));
+    ARMSX2ScheduleINISave();
 }
 
 // Force any deferred base-settings INI write to disk immediately.
