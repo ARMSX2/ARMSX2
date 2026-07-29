@@ -5658,6 +5658,8 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 
 					if (req_vert_backup)
 					{
+						EnsureDrawStaging(m_vertex->next, m_index->tail);
+
 						memcpy(m_draw_vertex.buff, m_vertex->buff, sizeof(GSVertex) * m_vertex->next);
 						memcpy(m_draw_index.buff, m_index->buff, sizeof(u16) * m_index->tail);
 
@@ -5722,6 +5724,8 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 
 	if (req_vert_backup)
 	{
+		EnsureDrawStaging(m_vertex->next, m_index->tail);
+
 		memcpy(m_draw_vertex.buff, m_vertex->buff, sizeof(GSVertex) * m_vertex->next);
 		memcpy(m_draw_index.buff, m_index->buff, sizeof(u16) * m_index->tail);
 

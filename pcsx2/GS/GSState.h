@@ -208,6 +208,14 @@ protected:
 
 	GSIndexBuff* m_index;
 
+	// Draw-time staging snapshot of the live vertex/index arrays, for the draws
+	// that must read the vertices while the backend also writes them. Contents are
+	// write-then-consume: fully overwritten before every use, so they are never
+	// preserved across a reallocation. Their capacity is deliberately NOT tied to
+	// m_vertex/m_index — on the pipelined split m_vertex points at pooled node
+	// arrays grown by the *front* object, which can be far larger than anything
+	// this object ever allocated — so EnsureDrawStaging sizes them at the point of
+	// use, from what is actually about to be staged, and only ever upwards.
 	GSVertexBuff m_draw_vertex = {};
 
 	struct
@@ -215,6 +223,13 @@ protected:
 		u16* buff;
 		u32 tail;
 	} m_draw_index = {};
+
+	// Allocated element counts of the two staging arrays above (0 = not allocated;
+	// they stay unallocated in sessions that never stage a draw).
+	u32 m_draw_vertex_alloc = 0;
+	u32 m_draw_index_alloc = 0;
+
+	void EnsureDrawStaging(u32 vertex_count, u32 index_count);
 
 	struct GSDrawBufferEnv
 	{

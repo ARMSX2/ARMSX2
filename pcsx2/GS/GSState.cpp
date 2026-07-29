@@ -4769,13 +4769,15 @@ void GSState::GrowVertexBuffer()
 		u32 old_size;
 		u32 new_size;
 	};
-	const std::array<AllocDesc, 5> alloc_desc = {{
+	// m_draw_vertex/m_draw_index are deliberately absent: they are staging arrays
+	// owned by EnsureDrawStaging, not parallel copies of these buffers. Sizing them
+	// here would both preserve dead contents and use m_vertex->tail as the copy
+	// length for an array whose allocation has nothing to do with m_vertex.
+	const std::array<AllocDesc, 3> alloc_desc = {{
 		{reinterpret_cast<void**>(&m_vertex->buff),      old_vertex_size, new_vertex_size},
 		// discard contents of buff_copy by setting old_size = 0
 		{reinterpret_cast<void**>(&m_vertex->buff_copy), 0,               new_vertex_size},
-		{reinterpret_cast<void**>(&m_draw_vertex.buff), old_vertex_size, new_vertex_size},
-		{reinterpret_cast<void**>(&m_index->buff),       old_index_size,  new_index_size},
-		{reinterpret_cast<void**>(&m_draw_index.buff),  old_index_size,  new_index_size}
+		{reinterpret_cast<void**>(&m_index->buff),       old_index_size,  new_index_size}
 	}};
 
 	// For logging
@@ -4804,6 +4806,44 @@ void GSState::GrowVertexBuffer()
 	}
 
 	m_vertex->maxcount = maxcount - 3; // -3 to have some space at the end of the buffer before DrawingKick can grow it
+}
+
+void GSState::EnsureDrawStaging(u32 vertex_count, u32 index_count)
+{
+	// Grow-only, and sized from the caller's live counts rather than from
+	// m_vertex/m_index capacity: the arrays being staged are the pooled node
+	// arrays the front object grew, so this object's own buffers are no bound on
+	// them. Contents are not preserved — every caller overwrites the full range it
+	// asked for before reading it back.
+	if (vertex_count > m_draw_vertex_alloc)
+	{
+		if (m_draw_vertex.buff)
+			_aligned_free(m_draw_vertex.buff);
+
+		m_draw_vertex.buff = static_cast<GSVertex*>(_aligned_malloc(sizeof(GSVertex) * vertex_count, 32));
+		if (!m_draw_vertex.buff)
+		{
+			m_draw_vertex_alloc = 0;
+			Console.Error("GS: failed to allocate %zu bytes for draw staging vertices.", sizeof(GSVertex) * vertex_count);
+			pxFailRel("Memory allocation failed");
+		}
+		m_draw_vertex_alloc = vertex_count;
+	}
+
+	if (index_count > m_draw_index_alloc)
+	{
+		if (m_draw_index.buff)
+			_aligned_free(m_draw_index.buff);
+
+		m_draw_index.buff = static_cast<u16*>(_aligned_malloc(sizeof(u16) * index_count, 32));
+		if (!m_draw_index.buff)
+		{
+			m_draw_index_alloc = 0;
+			Console.Error("GS: failed to allocate %zu bytes for draw staging indices.", sizeof(u16) * index_count);
+			pxFailRel("Memory allocation failed");
+		}
+		m_draw_index_alloc = index_count;
+	}
 }
 
 // For returning order of vertices to form a right triangle
