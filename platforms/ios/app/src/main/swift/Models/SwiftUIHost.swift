@@ -105,6 +105,11 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
         return hostingController
     }
 
+    @MainActor
+    @objc public static func localizedString(_ key: String) -> String {
+        SettingsStore.shared.localized(key)
+    }
+
     // Device haptic fallback for game rumble. Called from ARMSX2Bridge on the
     // main queue when no rumble-capable controller is connected.
     @MainActor

@@ -95,6 +95,15 @@ static bool ARMSX2ShouldPresentExternalDisplay()
            s_externalWindowScene != nil && !s_externalSceneDisconnectPending;
 }
 
+static NSString* ARMSX2LocalizedString(NSString* key)
+{
+#if ARMSX2_HAS_SWIFTUI
+    return [SwiftUIHost localizedString:key];
+#else
+    return key;
+#endif
+}
+
 static void ARMSX2ConfigureExternalScreenMode(UIScreen* screen)
 {
     if (!screen)
@@ -147,8 +156,9 @@ static void ARMSX2SetPhoneExternalDisplayPlaceholderVisible(bool visible)
     placeholder.autoresizingMask =
         UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     placeholder.isAccessibilityElement = YES;
-    placeholder.accessibilityLabel =
-        @"Playing on External Display. Video output is being sent over HDMI.";
+    NSString* title = ARMSX2LocalizedString(@"Playing on External Display");
+    NSString* detail = ARMSX2LocalizedString(@"Video output is being sent over HDMI.");
+    placeholder.accessibilityLabel = [NSString stringWithFormat:@"%@ %@", title, detail];
 
     UIImageSymbolConfiguration* symbolConfiguration =
         [UIImageSymbolConfiguration configurationWithPointSize:42.0
@@ -160,14 +170,14 @@ static void ARMSX2SetPhoneExternalDisplayPlaceholderVisible(bool visible)
     imageView.contentMode = UIViewContentModeScaleAspectFit;
 
     UILabel* titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    titleLabel.text = @"Playing on External Display";
+    titleLabel.text = title;
     titleLabel.textColor = [UIColor whiteColor];
     titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
     titleLabel.textAlignment = NSTextAlignmentCenter;
     titleLabel.numberOfLines = 0;
 
     UILabel* detailLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    detailLabel.text = @"Video output is being sent over HDMI.";
+    detailLabel.text = detail;
     detailLabel.textColor = [UIColor colorWithWhite:0.72 alpha:1.0];
     detailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
     detailLabel.textAlignment = NSTextAlignmentCenter;
