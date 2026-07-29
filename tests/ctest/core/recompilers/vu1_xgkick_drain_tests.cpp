@@ -76,11 +76,11 @@ void WriteEopOnlyTag(VuTestHarness& h, u32 addr)
 //
 //  Note on what the capture can see: the split's FIRST half goes out through
 //  Gif_Path::CopyGSPacketData and the second through
-//  Gif_Unit::TransferGSPacketData. Only the latter is hooked by the test
-//  sink, so the JIT's captured stream is the tail alone. That is a property
-//  of the capture, not of the transfer — and the tail is precisely what pins
-//  the seam arithmetic, since it must be exactly `size - diff` bytes taken
-//  from offset 0.
+//  Gif_Unit::TransferGSPacketData. Both feed the test sink, so the JIT's
+//  captured stream is the whole packet — head, then tail resuming at offset 0.
+//  It used to hook only the latter, which made a wrapped kick look like a
+//  headless packet carrying no GIFtag at all; the seam arithmetic was then the
+//  only thing this could pin, and the tag half was invisible.
 // =========================================================================
 
 TEST(Vu1XgkickDrain, PacketWrappingTheTopOfVu1MemorySplitsAtTheSeam)
@@ -114,16 +114,22 @@ TEST(Vu1XgkickDrain, PacketWrappingTheTopOfVu1MemorySplitsAtTheSeam)
 	h.Run();
 
 	const std::vector<u8>& jit = h.Path1PacketBytesJit();
-	ASSERT_EQ(jit.size(), kTailBytes)
-		<< "the wrapped half must be exactly (packet size - distance to the top "
-		   "of VU1 memory) bytes";
+	ASSERT_EQ(jit.size(), kPacketBytes)
+		<< "both halves of the split must reach the sink: the head up to the top "
+		   "of VU1 memory, then the wrapped remainder";
 
-	std::vector<u8> expected(kTailBytes);
-	std::memcpy(expected.data(), &vuRegs[1].Mem[0], kTailBytes);
-	EXPECT_EQ(jit, expected) << "the wrapped half must resume at VU1 memory offset 0";
+	// Head is `kDiff` bytes read from the tag address; the tail is the rest,
+	// taken from offset 0. A tail lifted from the wrong offset shows up as
+	// content, not merely as a length.
+	std::vector<u8> expected(kPacketBytes);
+	std::memcpy(expected.data(), &vuRegs[1].Mem[kTagAddr], kDiff);
+	std::memcpy(expected.data() + kDiff, &vuRegs[1].Mem[0], kTailBytes);
+	EXPECT_EQ(jit, expected)
+		<< "the head must carry the GIFtag and the wrapped half must resume at "
+		   "VU1 memory offset 0";
 
-	// The interpreter drains the same packet in two metered steps and pushes
-	// both through the hooked entry point, so it sees the whole 48 bytes.
+	// The interpreter drains the same packet in two metered steps, so it
+	// reaches the same 48 bytes by a different route.
 	EXPECT_EQ(h.Path1PacketBytesInterp().size(), kPacketBytes);
 }
 
@@ -192,9 +198,10 @@ TEST(Vu1XgkickDrain, XgKickHackDrainsAWrappingPacketInTwoChunks)
 	});
 	h.Run();
 
-	// Unlike the non-hack path, both halves go out through the hooked entry
-	// point here, so the capture is the whole packet: the tag from the top of
-	// memory followed by the two payload qwords from offset 0.
+	// The capture is the whole packet: the tag from the top of memory followed
+	// by the two payload qwords from offset 0. The hack reaches that through
+	// the metered loop rather than through the split above, which is the point
+	// of running the wrap under it as well.
 	const std::vector<u8>& jit = h.Path1PacketBytesJit();
 	ASSERT_EQ(jit.size(), kPacketBytes);
 

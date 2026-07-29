@@ -193,6 +193,22 @@ static __fi void incTag(u32& offset, u32& size, u32 incAmount)
 	offset += incAmount;
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+namespace gif_test_hooks
+{
+	// When non-null, the GIF Path 1 byte stream is appended to *g_path1_sink
+	// instead of entering the path-1 ring buffer + MTGS::WaitGS(), which
+	// asserts when no GS thread is running. VuTestHarness installs/clears
+	// this pointer. Both entry points feed it — see Gif_Path::CopyGSPacketData
+	// and Gif_Unit::TransferGSPacketData.
+	extern std::vector<u8>* g_path1_sink;
+
+	// When true, Gif_Unit::checkPaths(p1=true, ...) reports path 1 as busy.
+	// Used by EeVu1Vif's Mscalf-stall test to force the GIF-busy code path.
+	extern bool g_force_path1_busy;
+}
+#endif
+
 struct Gif_Path_MTVU
 {
 	u32 fakePackets; // Fake packets pending to be sent to MTGS
@@ -314,6 +330,21 @@ struct Gif_Path
 
 	void CopyGSPacketData(u8* pMem, u32 size, bool aligned = false)
 	{
+#ifdef PCSX2_RECOMPILER_TESTS
+		if (gif_test_hooks::g_path1_sink && idx == GIF_PATH_1)
+		{
+			// mVU's XGKICK wrap path (mVU_XGKICK_) copies the pre-wrap head
+			// of the packet straight into this buffer and hands only the
+			// post-wrap tail to TransferGSPacketData. Capturing just the
+			// latter made a wrapped kick look like a headless packet with no
+			// GIFtag — a harness blind spot, not a divergence. Feed the sink
+			// here too, and skip the ring entirely: with the sink installed
+			// nothing ever drains it.
+			gif_test_hooks::g_path1_sink->insert(
+				gif_test_hooks::g_path1_sink->end(), pMem, pMem + size);
+			return;
+		}
+#endif
 		if (curSize + size > buffSize)
 		{ // Move gsPack to front of buffer
 			GUNIT_LOG("CopyGSPacketData: Realigning packet!");
@@ -525,21 +556,6 @@ struct Gif_Path
 		return (u32)mtvu.gsPackQueue.size();
 	}
 };
-
-#ifdef PCSX2_RECOMPILER_TESTS
-namespace gif_test_hooks
-{
-	// When non-null, Gif_Unit::TransferGSPacketData(GIF_TRANS_XGKICK, ...)
-	// appends the packet bytes to *g_path1_sink and returns size — bypassing
-	// the path-1 ring buffer + MTGS::WaitGS() that asserts when no GS thread
-	// is running. VuTestHarness installs/clears this pointer.
-	extern std::vector<u8>* g_path1_sink;
-
-	// When true, Gif_Unit::checkPaths(p1=true, ...) reports path 1 as busy.
-	// Used by EeVu1Vif's Mscalf-stall test to force the GIF-busy code path.
-	extern bool g_force_path1_busy;
-}
-#endif
 
 struct Gif_Unit
 {
