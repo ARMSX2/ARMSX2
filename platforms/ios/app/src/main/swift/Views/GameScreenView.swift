@@ -154,7 +154,6 @@ private struct ExternalDisplayCompanionView: View {
                         }
                         .buttonStyle(.plain)
                         .glassSurface(
-                            tint: OverlayTheme.accent.opacity(0.16),
                             interactive: true,
                             clear: true,
                             cornerRadius: 22
