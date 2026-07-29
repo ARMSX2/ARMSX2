@@ -55,6 +55,7 @@ endif()
 # Compiler extra
 #-------------------------------------------------------------------------------
 option(USE_ASAN "Enable address sanitizer")
+option(USE_COVERAGE "Instrument the build with clang source-based coverage (-fprofile-instr-generate -fcoverage-mapping). Use with tools/coverage.sh; requires clang." OFF)
 
 #-------------------------------------------------------------------------------
 # if no build type is set, use Devel as default
@@ -357,6 +358,18 @@ if (USE_ASAN)
 	add_compile_options(-fsanitize=address)
 	add_link_options(-fsanitize=address)
 	list(APPEND PCSX2_DEFS ASAN_WORKAROUND)
+endif()
+
+if (USE_COVERAGE)
+	if(NOT USE_CLANG)
+		message(FATAL_ERROR "USE_COVERAGE requires clang (source-based coverage). Configure with the clang-coverage preset.")
+	endif()
+	# Instrument everything rather than just pcsx2/arm64: the emitters are reached
+	# through core and common call paths, and scoping the *report* (tools/coverage.sh
+	# passes -sources) is exact where scoping the *build* would silently drop
+	# counters for inline code that lives in headers outside the filter.
+	add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+	add_link_options(-fprofile-instr-generate)
 endif()
 
 if(USE_CLANG AND TIMETRACE)

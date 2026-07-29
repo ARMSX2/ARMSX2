@@ -34,6 +34,11 @@ svnrev.h
 /obj-*
 *.obj
 
+# Coverage-instrumented binaries drop these wherever they are run from when
+# LLVM_PROFILE_FILE is unset (tools/coverage.sh always sets it).
+*.profraw
+*.profdata
+
 .DS_Store
 Thumbs.db
 

@@ -75,6 +75,13 @@ object DiscordPresence {
     private const val PREF_TOKEN = "discord.token"
     private const val PREF_NOTIFY = "discord.notifyInGame"
 
+    /** Seconds between RA rich-presence re-checks. Discord rate-limits presence updates, so this
+     *  stays well clear of it while still following the game within a few seconds. */
+    private const val RA_REPUSH_SECONDS = 15
+
+    /** Discord truncates a long state line; stay under it rather than being cut mid-word. */
+    private const val RA_STATE_MAX = 126
+
     // Mirrors BridgeStatus in cpp/discord_bridge.cpp.
     const val DISABLED = 0
     const val DISCONNECTED = 1
@@ -163,13 +170,66 @@ object DiscordPresence {
         }.onFailure { Log.w(TAG, "ipc send($what) failed: ${it.message}") }
     }
 
+    // Last RA line published, so the poll below only re-pushes when it actually changes.
+    private var lastRaPresence = ""
+
+    /**
+     * The RetroAchievements line for Discord: the game's own rich presence, plus how many
+     * achievements are unlocked and whether this is a Hardcore or Softcore run.
+     *
+     *     Exploring Ivalice, Lv 34 · 12/45 · Hardcore
+     *
+     * Empty when RA is off or the game has no set, in which case the bridge falls back to the
+     * serial so the in-a-game marker still holds.
+     *
+     * The count follows the MODE: in hardcore it reports hardcore unlocks, otherwise any unlock.
+     * Reporting softcore progress next to a "Hardcore" label would be actively misleading, which
+     * is the whole reason the label is there.
+     */
+    private fun raPresence(): String {
+        if (MainActivityRuntime.currentGame.value == null) return ""
+        val presence = runCatching { kr.co.iefriends.pcsx2.NativeApp.getRichPresence().orEmpty() }
+            .getOrDefault("").trim()
+
+        val badge = runCatching {
+            val items = com.armsx2.ui.achievements.parseAchievementItems(
+                kr.co.iefriends.pcsx2.NativeApp.getAchievementsJSON().orEmpty(),
+            )
+            if (items.isEmpty()) return@runCatching ""
+            val hardcore = kr.co.iefriends.pcsx2.NativeApp.isHardcoreMode()
+            val unlocked = if (hardcore) {
+                // Guard the unknown case: -1 has every bit set, so a bare mask test would report
+                // an unearned hardcore unlock on any build that omits the field.
+                items.count { it.unlockedMask > 0 && (it.unlockedMask and 2) != 0 }
+            } else {
+                // Mask when present, boolean otherwise; a hardcore unlock counts as softcore too.
+                items.count { if (it.unlockedMask >= 0) it.unlockedMask != 0 else it.unlocked }
+            }
+            // Emoji rather than plain words: this is one short line on someone else's screen, and
+            // a trophy plus a colour reads at a glance where "12/45 Hardcore" needs parsing.
+            // "Casual" not "Softcore" -- that is what our own hardcore toggle calls it, and the
+            // two names for one mode in one app would be worse than either name alone.
+            "\uD83C\uDFC6 $unlocked/${items.size}  ·  " +
+                if (hardcore) "\uD83D\uDD34 Hardcore" else "\uD83D\uDD35 Casual"
+        }.getOrDefault("")
+
+        val line = listOf(presence, badge).filter { it.isNotBlank() }.joinToString("  ·  ")
+        // Discord truncates a long state; trim the free-text presence rather than the badge, since
+        // the counts are the part that cannot be inferred from anywhere else.
+        return if (line.length <= RA_STATE_MAX) line
+        else if (badge.isNotBlank()) badge
+        else line.take(RA_STATE_MAX)
+    }
+
     /** Re-publish the current game; used on (re)connect and whenever the running game changes. */
     private fun pushPresence() {
         val game = MainActivityRuntime.currentGame.value
+        lastRaPresence = raPresence()
         send(DiscordIpc.MSG_SET_PLAYING, Bundle().apply {
             putString(DiscordIpc.DATA_SERIAL, game?.serial.orEmpty())
             putString(DiscordIpc.DATA_TITLE, game?.let { it.displayTitle(false) }.orEmpty())
             putString(DiscordIpc.DATA_COVER, game?.coverUrl.orEmpty())
+            putString(DiscordIpc.DATA_RA, lastRaPresence)
         })
     }
 
@@ -307,6 +367,11 @@ object DiscordPresence {
         pollJob = scope.launch {
             var sinceRetry = 0
             var retryAfter = 5
+            // RA rich presence changes AS YOU PLAY, unlike the game title -- so it cannot ride the
+            // currentGame snapshotFlow alone. Re-checked here, but pushed only when the line really
+            // changed and at most every RA_REPUSH_SECONDS: Discord rate-limits presence updates,
+            // and some games update their RA line every few seconds.
+            var sinceRaCheck = 0
             while (true) {
                 // No pump here any more: the SDK's callback queue is drained inside the helper, on
                 // the thread that created the client. This loop only asks for a snapshot.
@@ -368,6 +433,11 @@ object DiscordPresence {
                             )
                         }
                     }
+                }
+
+                if (s == CONNECTED && ++sinceRaCheck >= RA_REPUSH_SECONDS) {
+                    sinceRaCheck = 0
+                    if (raPresence() != lastRaPresence) pushPresence()
                 }
 
                 error.value = if (s == FAILED) snap.getString(DiscordIpc.DATA_ERROR) else null

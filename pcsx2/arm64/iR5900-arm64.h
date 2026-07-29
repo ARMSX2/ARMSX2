@@ -962,14 +962,37 @@ namespace EERecFallback
 	enum Cop2MoveOp { kQmfc2 = 0, kCfc2, kQmtc2, kCtc2, kCop2MoveOpCount };
 	extern u32 g_cop2RegMask[kCop2MoveOpCount];
 
+	// Per-VU-macro-op filter, the next bisect axis once `cop2vu` is implicated.
+	// That group is 100+ distinct emitters, so narrowing it by name is the
+	// difference between one run and a hand-written binary search. Ids form a
+	// flat 256-entry space so one bitset covers all three dispatch tables:
+	// 0x00-0x1F BC2 (by rt), 0x40-0x7F SPECIAL1 (by funct), 0x80-0xFF SPECIAL2
+	// (by its packed index). All bits set (the default) means "every op".
+	inline constexpr int kCop2VuIdCount = 256;
+	extern u64 g_cop2VuMask[kCop2VuIdCount / 64];
+
+	// Canonical id for a VU macro op, or -1 if `code` is not one.
+	int Cop2VuOpId(u32 code);
+	// Mnemonic for an id ("vmulaw"), or nullptr for an unassigned slot.
+	const char* Cop2VuOpName(int id);
+
+	// Compile-time census of the VU macro ops the recompiler actually emitted.
+	// An op that is never compiled cannot be the bug, so this prunes a 100-way
+	// bisect down to the handful a given game really uses.
+	void NoteCop2VuCompiled(u32 code);
+	std::string DescribeCop2VuCensus();
+
 	// True when `code` belongs to a selected group (and passes its register filter).
 	bool Selected(u32 code);
 
 	// Parse a comma-separated group list ("fpu,mmi" / "all" / "none"). A COP2 move
 	// group may carry a register filter: "ctc2:27" or "ctc2:16:21" selects only
-	// those fs values. Returns false and leaves the outputs untouched on a parse
-	// error. `reg_masks` must point at kCop2MoveOpCount entries.
-	bool ParseGroups(const std::string_view& list, u32* out, u32* reg_masks, std::string* error);
+	// those fs values; "cop2vu" takes a mnemonic filter: "cop2vu:vmulaw:vmaddaz".
+	// Returns false and leaves the outputs untouched on a parse error.
+	// `reg_masks` must point at kCop2MoveOpCount entries, `cop2vu_mask` at
+	// kCop2VuIdCount/64.
+	bool ParseGroups(const std::string_view& list, u32* out, u32* reg_masks,
+		u64* cop2vu_mask, std::string* error);
 
 	// Human-readable rendering of a mask, for run banners.
 	std::string DescribeGroups(u32 groups);

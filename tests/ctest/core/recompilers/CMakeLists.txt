@@ -71,6 +71,9 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_traps_tests.cpp
 	ee_timer_count_read_race_tests.cpp
 	vtlb_get_guest_address_tests.cpp
+	vif_unpack_dynarec_tests.cpp
+	ee_vu0_cop2_maxmini_conv_tests.cpp
+	ee_vu0_cop2_madda_bc_tests.cpp
 	vu0_harness_validation_tests.cpp
 	vu0_alu_upper_tests.cpp
 	vu0_alu_lower_tests.cpp
@@ -84,6 +87,10 @@ add_pcsx2_test(recompiler_tests
 	vu0_clamp_modes_tests.cpp
 	vu_ftoi_saturation_tests.cpp
 	vu_madda_acc_lane_tests.cpp
+	vu_broadcast_lane_tests.cpp
+	vu_minmax_order_tests.cpp
+	vu_pq_boundary_tests.cpp
+	vu_branch_terminator_tests.cpp
 	vu_overflow_hack_tests.cpp
 	vu_mac_flag_pack_tests.cpp
 	ee_vu0_cfc2_ctc2_tests.cpp
@@ -95,6 +102,7 @@ add_pcsx2_test(recompiler_tests
 	vu1_alu_lower_tests.cpp
 	vu1_efu_p_pipeline_tests.cpp
 	vu1_xgkick_tests.cpp
+	vu1_xgkick_drain_tests.cpp
 	ee_vu1_vif_dispatch_tests.cpp
 	vu_capture_format_tests.cpp
 	vu_replay_tests.cpp

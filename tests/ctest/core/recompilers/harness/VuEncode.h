@@ -158,6 +158,15 @@ constexpr u32 VMSUBx_U(u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mas
 constexpr u32 VMSUBy_U(u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x0D); }
 constexpr u32 VMSUBz_U(u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x0E); }
 constexpr u32 VMSUBw_U(u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x0F); }
+// MAX / MINI broadcast variants. Primary opcodes 0x10..0x17 per the same table.
+constexpr u32 VMAXx_U (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x10); }
+constexpr u32 VMAXy_U (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x11); }
+constexpr u32 VMAXz_U (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x12); }
+constexpr u32 VMAXw_U (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x13); }
+constexpr u32 VMINIx_U(u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x14); }
+constexpr u32 VMINIy_U(u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x15); }
+constexpr u32 VMINIz_U(u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x16); }
+constexpr u32 VMINIw_U(u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return Upper(mask_xyzw, ft, fs, fd, 0x17); }
 
 // Upper NOP. Lives in UPPER_FD_11_TABLE[0x0B], reached by primary opcode
 // 0x3F + sub-op 0x0B in the FD field. Result: 0x000002FF.
@@ -444,6 +453,14 @@ constexpr u32 VOPMULA_U(u32 fs, u32 ft)                { return UpperFD(mask::xy
 // (fd_table_sel: 0=x 1=y 2=z 3=w); sub-op index within every table per
 // VUops.cpp:3705-3747: [0]=ADDAbc [1]=SUBAbc [2]=MADDAbc [3]=MSUBAbc
 // [6]=MULAbc.
+constexpr u32 VADDAx_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x00, 0); }
+constexpr u32 VADDAy_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x00, 1); }
+constexpr u32 VADDAz_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x00, 2); }
+constexpr u32 VADDAw_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x00, 3); }
+constexpr u32 VSUBAx_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x01, 0); }
+constexpr u32 VSUBAy_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x01, 1); }
+constexpr u32 VSUBAz_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x01, 2); }
+constexpr u32 VSUBAw_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x01, 3); }
 constexpr u32 VMULAx_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x06, 0); }
 constexpr u32 VMULAy_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x06, 1); }
 constexpr u32 VMULAz_U (u32 mask_xyzw, u32 fs, u32 ft) { return UpperFD(mask_xyzw, ft, fs, 0x06, 2); }

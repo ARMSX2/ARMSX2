@@ -46,6 +46,9 @@ object ConfigStore {
     // their legacy global prefs, so updating doesn't reset a user's rotation lock or GPU driver.
     private const val KEY_ORIENTATION_DRIVER_MIGRATED = "config.migrated.orientationDriver"
     // One-time flip of existing saves to the new Adreno framebuffer-fetch default-on.
+    // One-time seed of the (now per-game) output-scaler fields from their legacy
+    // global-only prefs, so updating doesn't reset a user's display resolution.
+    private const val KEY_OUTPUT_SCALE_MIGRATED = "config.migrated.outputScale"
     private const val KEY_ADRENO_FBFETCH_MIGRATED = "config.migrated.adrenoFbFetchOn"
     // One-time flip of existing all-on OSD saves to the new default-off.
     private const val KEY_OSD_OFF_MIGRATED = "config.migrated.osdDefaultOff"
@@ -66,6 +69,20 @@ object ConfigStore {
             Settings()
         }
         var dirty = false
+
+        // Legacy: the HW scaler + screen-resolution override were global-only prefs
+        // before they became per-game scoped. Adopt whatever the user had set.
+        if (!MainActivityRuntime.prefs.getBoolean(KEY_OUTPUT_SCALE_MIGRATED, false))
+        {
+            val legacyScaler = MainActivityRuntime.prefs.getInt("ui.hwScaler", 0)
+            val legacyRes = MainActivityRuntime.prefs.getString("ui.screenResOverride", "auto") ?: "auto"
+            if (legacyScaler != 0 || legacyRes != "auto")
+            {
+                parsed = parsed.copy(hwScaler = legacyScaler, screenResOverride = legacyRes)
+                dirty = true
+            }
+            MainActivityRuntime.prefs.edit { putBoolean(KEY_OUTPUT_SCALE_MIGRATED, true) }
+        }
 
         // Legacy: "Basic" blending migration.
         if (raw != null && !MainActivityRuntime.prefs.getBoolean(KEY_BLEND_BASIC_MIGRATED, false) &&

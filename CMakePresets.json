@@ -68,6 +68,19 @@
             }
         },
         {
+            "name": "clang-coverage",
+            "displayName": "Clang Devel + source-based coverage",
+            "description": "Devel build instrumented with -fprofile-instr-generate -fcoverage-mapping, into build-coverage/. Drive it with tools/coverage.sh, which runs the gtest binaries and reports line/region coverage scoped to pcsx2/arm64/.",
+            "inherits": "clang-devel",
+            "binaryDir": "${sourceDir}/build-coverage",
+            "cacheVariables": {
+                "USE_COVERAGE": "ON",
+                "ENABLE_TESTS": "ON",
+                "ENABLE_RECOMPILER_TEST_HOOKS": "ON",
+                "ENABLE_QT_UI": "OFF"
+            }
+        },
+        {
             "name": "clang-handheld",
             "displayName": "Clang Handheld (SDL3 / kmsdrm)",
             "description": "RelWithDebInfo build of the SDL3 frontend for handhelds. No Qt. Primary display path is VK_KHR_display (VulkanDirect, kmsdrm); WAYLAND_API is on so the SDL frontend can fall back to a Wayland Vulkan surface when launched inside a compositor. Requires ECM + Wayland-Egl dev headers on the build host — pure kmsdrm targets without them can build VulkanDirect-only by overriding -DWAYLAND_API=OFF.",

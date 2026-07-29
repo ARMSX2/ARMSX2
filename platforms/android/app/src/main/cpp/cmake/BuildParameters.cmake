@@ -7,6 +7,13 @@ include(GNUInstallDirs)
 # Misc option
 #-------------------------------------------------------------------------------
 option(ENABLE_TESTS "Enables building the unit tests" ON)
+# DIAGNOSTIC BUILD ONLY -- leave OFF for anything shipped. The root tree declares
+# this in cmake/BuildParameters.cmake but this Android-local copy never did, so
+# pcsx2/CMakeLists.txt's `if(ENABLE_RECOMPILER_TEST_HOOKS)` was always false and
+# the EERecFallback opcode-group bisect could not be compiled into an APK at all.
+option(ENABLE_RECOMPILER_TEST_HOOKS
+	"Compile harness hooks (EERecFallback opcode-group interpreter bisect) into the EE recompiler. Diagnostic builds only."
+	OFF)
 option(ENABLE_QT_UI "Enables building the PCSX2 Qt interface." ON)
 option(ENABLE_GSRUNNER "Enables building the GSRunner by default.  It can still be built with `make pcsx2-gsrunner` otherwise." OFF)
 option(LTO_PCSX2_CORE "Enable LTO/IPO/LTCG on the subset of pcsx2 that benefits most from it but not anything else")

@@ -152,6 +152,7 @@ static std::vector<SetOverride> s_set_overrides; // --set Section/Key=Value (rep
 static u32 s_rec_fallback_groups = 0; // --rec-fallback <groups>: EE opcode groups forced to interp
 #if defined(ARCH_ARM64)
 static u32 s_rec_fallback_reg_masks[EERecFallback::kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u}; // per-COP2-move-op register filters
+static u64 s_rec_fallback_vu_mask[EERecFallback::kCop2VuIdCount / 64] = {~0ull, ~0ull, ~0ull, ~0ull}; // per-VU-macro-op filter
 #endif
 
 bool EERunner::InitializeConfig()
@@ -554,7 +555,11 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               the group that makes the symptom disappear contains the bug. Groups: fpu, cop2,\n");
 	std::fprintf(stderr, "               mmi, multdiv, shift, arith, loadstore, move, cop0, branch (plus all / none).\n");
 	std::fprintf(stderr, "               cop2 narrows further into cop2move (QMFC2/CFC2/QMTC2/CTC2), cop2vu (the VU\n");
-	std::fprintf(stderr, "               macro ops) and cop2ls (LQC2/SQC2).\n");
+	std::fprintf(stderr, "               macro ops) and cop2ls (LQC2/SQC2). The four move ops take a ':<reg>' filter\n");
+	std::fprintf(stderr, "               (ctc2:27, ctc2:16:21); cop2vu takes a ':<mnemonic>' one (cop2vu:vmaddaw,\n");
+	std::fprintf(stderr, "               cop2vu:vmulax:vmaddaz) — cop2vu is ~100 emitters, so don't stop the funnel\n");
+	std::fprintf(stderr, "               there. --mkstate prints a COP2VU CENSUS of the macro ops actually compiled;\n");
+	std::fprintf(stderr, "               bisect over that list, since an op never compiled cannot be the bug.\n");
 	std::fprintf(stderr, "               Pairs well with --mkstate --renderer sw for a visual oracle. arm64 only.\n");
 	std::fprintf(stderr, "  --gsdump <path>[:<frames>]: with --liverun, record a .gs dump of the GIF stream (default 1\n");
 	std::fprintf(stderr, "               frame) starting after --gsdump-at frames (default 30, so the scene has settled).\n");
@@ -784,13 +789,15 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				std::string err;
 				u32 mask = 0;
 				u32 reg_masks[EERecFallback::kCop2MoveOpCount] = {};
-				if (!EERecFallback::ParseGroups(list, &mask, reg_masks, &err))
+				u64 vu_mask[EERecFallback::kCop2VuIdCount / 64] = {};
+				if (!EERecFallback::ParseGroups(list, &mask, reg_masks, vu_mask, &err))
 				{
 					Console.Error(err.c_str());
 					return false;
 				}
 				s_rec_fallback_groups = mask;
 				std::memcpy(s_rec_fallback_reg_masks, reg_masks, sizeof(reg_masks));
+				std::memcpy(s_rec_fallback_vu_mask, vu_mask, sizeof(vu_mask));
 #else
 				Console.Error("--rec-fallback is implemented for the arm64 EE recompiler only.");
 				return false;
@@ -1094,6 +1101,7 @@ void EERunner::SettingsOverride()
 	// before any block is compiled, and stays put for the whole run.
 	EERecFallback::g_groups = s_rec_fallback_groups;
 	std::memcpy(EERecFallback::g_cop2RegMask, s_rec_fallback_reg_masks, sizeof(s_rec_fallback_reg_masks));
+	std::memcpy(EERecFallback::g_cop2VuMask, s_rec_fallback_vu_mask, sizeof(s_rec_fallback_vu_mask));
 	if (s_rec_fallback_groups != 0)
 	{
 		Console.WriteLn(fmt::format("EE REC FALLBACK: forcing to interpreter -> {}",
@@ -3027,6 +3035,11 @@ static int RunMkState()
 	VMManager::WaitForSaveStateFlush();
 	Console.WriteLn(fmt::format("MKSTATE: {} after {} frames -> {}",
 		ok ? "wrote state" : "FAILED", s_frames, s_mkstate_path));
+#if defined(ARCH_ARM64)
+	// Which VU macro ops this run actually compiled — the candidate list for a
+	// `--rec-fallback cop2vu:<mnemonic>` bisect.
+	Console.WriteLn(fmt::format("COP2VU CENSUS: {}", EERecFallback::DescribeCop2VuCensus()));
+#endif
 	return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 

@@ -2137,13 +2137,26 @@ COP2_MADDA_OP(MADDA, Fadd)
 COP2_MADDA_OP(MSUBA, Fsub)
 
 // MADDA/MSUBA broadcast variants: ACC = ACC ± VF[fs] * VF[ft].bc
-#define COP2_MADDA_BC(name, addOp, bc) \
+//
+// MADDAx/y/z/w pre-clamp Fs before the multiply (clampFs=true), matching
+// mVU_MADDAx/y/z/w's cFs (microVU_Upper.inl). The PS2 VU has no infinities, so
+// an exp-FF Fs is an ordinary large number: against a zero broadcast lane it
+// must give clamped(Fs)*0 = 0, not the host's Inf*0 = NaN that the post-op
+// result clamp then folds to ±FLT_MAX. MSUBAx/y/z/w pass false because x86
+// gives them clampType 0 — that Fs divergence is shared and by design.
+#define COP2_MADDA_BC(name, addOp, bc, clampFs) \
 	void recCOP2_V##name() \
 	{ \
 		setupMacroOp_arm64(0x110); \
 		const a64::VRegister fs = cop2GetVF(_Fs_cop2); \
+		a64::VRegister mulA = fs; \
+		if (clampFs) \
+		{ \
+			cop2ClampInto(RQSCRATCH, fs); \
+			mulA = RQSCRATCH; \
+		} \
 		cop2LoadBroadcast(RQSCRATCH2, _Ft_cop2, bc); \
-		armAsm->Fmul(RQSCRATCH.V4S(), fs.V4S(), RQSCRATCH2.V4S()); \
+		armAsm->Fmul(RQSCRATCH.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \
 		const a64::VRegister acc = cop2GetACC(); \
 		const a64::VRegister rdA = (_XYZW_cop2 == 0xF) ? acc : RQSCRATCH; \
 		armAsm->addOp(rdA.V4S(), acc.V4S(), RQSCRATCH.V4S()); \
@@ -2153,15 +2166,15 @@ COP2_MADDA_OP(MSUBA, Fsub)
 		endMacroOp_arm64(0x110); \
 	}
 
-COP2_MADDA_BC(MADDAx, Fadd, 0)
-COP2_MADDA_BC(MADDAy, Fadd, 1)
-COP2_MADDA_BC(MADDAz, Fadd, 2)
-COP2_MADDA_BC(MADDAw, Fadd, 3)
+COP2_MADDA_BC(MADDAx, Fadd, 0, true)
+COP2_MADDA_BC(MADDAy, Fadd, 1, true)
+COP2_MADDA_BC(MADDAz, Fadd, 2, true)
+COP2_MADDA_BC(MADDAw, Fadd, 3, true)
 
-COP2_MADDA_BC(MSUBAx, Fsub, 0)
-COP2_MADDA_BC(MSUBAy, Fsub, 1)
-COP2_MADDA_BC(MSUBAz, Fsub, 2)
-COP2_MADDA_BC(MSUBAw, Fsub, 3)
+COP2_MADDA_BC(MSUBAx, Fsub, 0, false)
+COP2_MADDA_BC(MSUBAy, Fsub, 1, false)
+COP2_MADDA_BC(MSUBAz, Fsub, 2, false)
+COP2_MADDA_BC(MSUBAw, Fsub, 3, false)
 
 // MADDAq/MSUBAq
 #define COP2_MADDA_Q(name, addOp) \

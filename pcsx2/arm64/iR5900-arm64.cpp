@@ -1236,6 +1236,34 @@ bool recEeBlockIsLoopResident(u32 pc_query)
 {
 	return s_loopResidentBlocks.find(HWADDR(pc_query)) != s_loopResidentBlocks.end();
 }
+
+// SL-03 introspection: the continuation sites a compiled block actually FORMED,
+// keyed by block startpc.
+//
+// Recorded at EMISSION time, not scan time, and the distinction is the whole
+// point: the scanner can record a site that the branch handler then declines —
+// it does exactly that when the delay slot would itself end the block — and only
+// the sites that survive into emission shape the code. A scan-time list reports
+// both alike and so cannot tell a formed superblock from a refused one.
+static std::unordered_map<u32, std::vector<u32>> s_blockContSites;
+static std::vector<u32> s_curBlockContSites;
+
+// How many continuation sites the compiled block at pc_query formed (0 = none,
+// or no such block). Fills `out` with their guest BRANCH pcs, up to out_len.
+u32 recEeBlockContinuationSites(u32 pc_query, u32* out, u32 out_len)
+{
+	const auto it = s_blockContSites.find(HWADDR(pc_query));
+	if (it == s_blockContSites.end())
+		return 0;
+	const std::vector<u32>& v = it->second;
+	if (out)
+	{
+		const u32 n = std::min<u32>(out_len, static_cast<u32>(v.size()));
+		for (u32 i = 0; i < n; i++)
+			out[i] = v[i];
+	}
+	return static_cast<u32>(v.size());
+}
 #endif
 
 // Emit the state transform "compile-state S1 → loop-top state S0" at the
@@ -1544,6 +1572,9 @@ a64::Label* recSuperblockAddSideExit(u32 branch_target, bool need_delay_slot)
 	x.dsPc = pc;
 	x.needDs = need_delay_slot;
 	x.state.capture();
+#ifdef PCSX2_RECOMPILER_TESTS
+	s_curBlockContSites.push_back(pc - 4); // pc is the delay slot; the site is its branch
+#endif
 	return x.label.get();
 }
 
@@ -1695,6 +1726,92 @@ namespace EERecFallback
 {
 	u32 g_groups = 0;
 	u32 g_cop2RegMask[kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u};
+	u64 g_cop2VuMask[kCop2VuIdCount / 64] = {~0ull, ~0ull, ~0ull, ~0ull};
+
+	// Mnemonics parallel to recCOP2_BC2t / recCOP2SPECIAL1t / recCOP2SPECIAL2t
+	// (iR5900Misc-arm64.cpp). nullptr marks a hole in the encoding.
+	static const char* const kBc2Names[4] = {"vbc2f", "vbc2t", "vbc2fl", "vbc2tl"};
+
+	static const char* const kSpec1Names[64] = {
+		"vaddx",   "vaddy",    "vaddz",   "vaddw",   "vsubx",   "vsuby",   "vsubz",   "vsubw",
+		"vmaddx",  "vmaddy",   "vmaddz",  "vmaddw",  "vmsubx",  "vmsuby",  "vmsubz",  "vmsubw",
+		"vmaxx",   "vmaxy",    "vmaxz",   "vmaxw",   "vminix",  "vminiy",  "vminiz",  "vminiw",
+		"vmulx",   "vmuly",    "vmulz",   "vmulw",   "vmulq",   "vmaxi",   "vmuli",   "vminii",
+		"vaddq",   "vmaddq",   "vaddi",   "vmaddi",  "vsubq",   "vmsubq",  "vsubi",   "vmsubi",
+		"vadd",    "vmadd",    "vmul",    "vmax",    "vsub",    "vmsub",   "vopmsub", "vmini",
+		"viadd",   "visub",    "viaddi",  nullptr,   "viand",   "vior",    nullptr,   nullptr,
+		"vcallms", "vcallmsr", nullptr,   nullptr,   nullptr,   nullptr,   nullptr,   nullptr,
+	};
+
+	static const char* const kSpec2Names[128] = {
+		"vaddax",  "vadday",  "vaddaz",  "vaddaw",  "vsubax",  "vsubay",  "vsubaz",  "vsubaw",
+		"vmaddax", "vmadday", "vmaddaz", "vmaddaw", "vmsubax", "vmsubay", "vmsubaz", "vmsubaw",
+		"vitof0",  "vitof4",  "vitof12", "vitof15", "vftoi0",  "vftoi4",  "vftoi12", "vftoi15",
+		"vmulax",  "vmulay",  "vmulaz",  "vmulaw",  "vmulaq",  "vabs",    "vmulai",  "vclip",
+		"vaddaq",  "vmaddaq", "vaddai",  "vmaddai", "vsubaq",  "vmsubaq", "vsubai",  "vmsubai",
+		"vadda",   "vmadda",  "vmula",   nullptr,   "vsuba",   "vmsuba",  "vopmula", "vnop",
+		"vmove",   "vmr32",   nullptr,   nullptr,   "vlqi",    "vsqi",    "vlqd",    "vsqd",
+		"vdiv",    "vsqrt",   "vrsqrt",  "vwaitq",  "vmtir",   "vmfir",   "vilwr",   "viswr",
+		"vrnext",  "vrget",   "vrinit",  "vrxor",   nullptr,   nullptr,   nullptr,   nullptr,
+		// 0x48-0x7F are holes.
+	};
+
+	int Cop2VuOpId(u32 code)
+	{
+		if ((code >> 26) != 0x12)
+			return -1;
+		const u32 rs = (code >> 21) & 0x1F;
+		if (rs == 0x08) // BC2
+			return static_cast<int>((code >> 16) & 0x1F);
+		if (rs < 0x10) // QMFC2/CFC2/QMTC2/CTC2 and holes are not VU macro ops
+			return -1;
+
+		const u32 funct = code & 0x3F;
+		if (funct >= 0x3C) // SPECIAL2 escape
+			return 0x80 + static_cast<int>((code & 0x3) | ((code >> 4) & 0x7C));
+		return 0x40 + static_cast<int>(funct);
+	}
+
+	const char* Cop2VuOpName(int id)
+	{
+		if (id < 0 || id >= kCop2VuIdCount)
+			return nullptr;
+		if (id < 0x20)
+			return (id < 4) ? kBc2Names[id] : nullptr;
+		if (id >= 0x40 && id < 0x80)
+			return kSpec1Names[id - 0x40];
+		if (id >= 0x80)
+			return kSpec2Names[id - 0x80];
+		return nullptr;
+	}
+
+	static u32 s_cop2VuCensus[kCop2VuIdCount];
+
+	void NoteCop2VuCompiled(u32 code)
+	{
+		const int id = Cop2VuOpId(code);
+		if (id >= 0)
+			s_cop2VuCensus[id]++;
+	}
+
+	std::string DescribeCop2VuCensus()
+	{
+		std::string s;
+		u32 total = 0;
+		for (int id = 0; id < kCop2VuIdCount; id++)
+		{
+			if (s_cop2VuCensus[id] == 0)
+				continue;
+			total += s_cop2VuCensus[id];
+			const char* name = Cop2VuOpName(id);
+			if (!s.empty())
+				s += " ";
+			s += fmt::format("{}={}", name ? name : fmt::format("id0x{:02x}", id), s_cop2VuCensus[id]);
+		}
+		if (s.empty())
+			return "no VU macro ops compiled";
+		return fmt::format("{} (total {})", s, total);
+	}
 
 	bool Selected(u32 code)
 	{
@@ -1773,6 +1890,15 @@ namespace EERecFallback
 				break;
 		}
 
+		if (group == Cop2Vu)
+		{
+			// Per-op filter: an unnamed/unmapped encoding is never selected, so a
+			// mnemonic filter can't accidentally widen to the whole group.
+			const int id = Cop2VuOpId(code);
+			if (id < 0 || (g_cop2VuMask[id >> 6] & (1ull << (id & 63))) == 0)
+				return false;
+		}
+
 		return group != 0 && (g_groups & group) != 0;
 	}
 
@@ -1797,10 +1923,13 @@ namespace EERecFallback
 		}
 	}
 
-	bool ParseGroups(const std::string_view& list, u32* out, u32* reg_masks, std::string* error)
+	bool ParseGroups(const std::string_view& list, u32* out, u32* reg_masks,
+		u64* cop2vu_mask, std::string* error)
 	{
 		u32 local_reg_masks[kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u};
 		bool reg_filtered[kCop2MoveOpCount] = {false, false, false, false};
+		u64 local_vu_mask[kCop2VuIdCount / 64] = {~0ull, ~0ull, ~0ull, ~0ull};
+		bool vu_filtered = false;
 		u32 mask = 0;
 		size_t pos = 0;
 		while (pos <= list.size())
@@ -1842,7 +1971,47 @@ namespace EERecFallback
 						found = true;
 						mask |= g.bit;
 
-						if (!regs.empty())
+						if (!regs.empty() && g.bit == Cop2Vu)
+						{
+							// "cop2vu:vmulaw:vmaddaz" — narrow to named macro ops.
+							size_t rp = 0;
+							while (rp <= regs.size())
+							{
+								const size_t rc = regs.find(':', rp);
+								const size_t rend = (rc == std::string_view::npos) ? regs.size() : rc;
+								const std::string_view mnem = regs.substr(rp, rend - rp);
+								int id = -1;
+								for (int i = 0; i < kCop2VuIdCount; i++)
+								{
+									const char* n = Cop2VuOpName(i);
+									if (n && mnem == n)
+									{
+										id = i;
+										break;
+									}
+								}
+								if (id < 0)
+								{
+									if (error)
+									{
+										*error = fmt::format("unknown VU macro op '{}' in EE rec fallback "
+											"filter '{}'", std::string(mnem), std::string(tok));
+									}
+									return false;
+								}
+								if (!vu_filtered)
+								{
+									for (auto& w : local_vu_mask)
+										w = 0;
+									vu_filtered = true;
+								}
+								local_vu_mask[id >> 6] |= (1ull << (id & 63));
+								if (rc == std::string_view::npos)
+									break;
+								rp = rc + 1;
+							}
+						}
+						else if (!regs.empty())
 						{
 							const int slot = MoveOpSlotForGroup(g.bit);
 							if (slot < 0)
@@ -1850,7 +2019,8 @@ namespace EERecFallback
 								if (error)
 								{
 									*error = fmt::format("EE rec fallback group '{}' does not take a register "
-										"filter (only qmfc2/cfc2/qmtc2/ctc2 do)", std::string(name));
+										"filter (only qmfc2/cfc2/qmtc2/ctc2 take ':<reg>', cop2vu takes "
+										"':<mnemonic>')", std::string(name));
 								}
 								return false;
 							}
@@ -1891,7 +2061,8 @@ namespace EERecFallback
 							*error = fmt::format("unknown EE rec fallback group '{}'; valid: none, all, "
 								"fpu, cop2, mmi, multdiv, shift, arith, loadstore, move, cop0, branch, "
 								"cop2move, cop2vu, cop2ls, qmfc2, cfc2, qmtc2, ctc2 (the last four accept "
-								"a ':<reg>' filter, e.g. ctc2:27)",
+								"a ':<reg>' filter, e.g. ctc2:27; cop2vu accepts a ':<mnemonic>' filter, "
+								"e.g. cop2vu:vmaddaw)",
 								std::string(name));
 						}
 						return false;
@@ -1907,6 +2078,8 @@ namespace EERecFallback
 		*out = mask;
 		for (int i = 0; i < kCop2MoveOpCount; i++)
 			reg_masks[i] = local_reg_masks[i];
+		for (int i = 0; i < kCop2VuIdCount / 64; i++)
+			cop2vu_mask[i] = local_vu_mask[i];
 		return true;
 	}
 
@@ -2805,6 +2978,8 @@ static void recResetRaw()
 
 #ifdef PCSX2_RECOMPILER_TESTS
 	s_loopResidentBlocks.clear();
+	s_blockContSites.clear();
+	s_curBlockContSites.clear();
 #endif
 
 	// COP2 macro-mode emitters read their clamp/mask constants from the pack
@@ -3493,6 +3668,9 @@ static void recRecompile(const u32 startpc)
 	s_branchTo = -1;
 	s_branchLoopable = false;
 	s_numContSites = 0;
+#ifdef PCSX2_RECOMPILER_TESTS
+	s_curBlockContSites.clear();
+#endif
 
 	// Timeout loop detection (matches x86 recSkipTimeoutLoop pattern):
 	//   addiu reg,reg,-N / nop*N / bne reg,zero,loop / nop
@@ -3927,6 +4105,9 @@ StartRecomp:
 	}
 
 	pxAssert((pc - startpc) >> 2 <= 0xffff);
+#ifdef PCSX2_RECOMPILER_TESTS
+	s_blockContSites[HWADDR(startpc)] = s_curBlockContSites;
+#endif
 	s_pCurBlockEx->size = (pc - startpc) >> 2;
 
 	// High-water mark of any compiled block's guest extent, for the

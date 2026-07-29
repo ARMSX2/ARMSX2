@@ -23,6 +23,7 @@ using namespace mips;
 
 extern u32 recEeBlockGuestSize(u32 pc_query);
 extern bool recEeBlockIsLoopResident(u32 pc_query);
+extern u32 recEeBlockContinuationSites(u32 pc_query, u32* out, u32 out_len);
 
 namespace {
 constexpr u32 kPark = RecompilerTestEnvironment::kParkingPc;
@@ -408,6 +409,72 @@ TEST(EeRecSuperblock, HeadBranchDelaySlotLoopDoesNotWedge)
 
 // Store/load traffic straddling a continuation site: inline fastmem stores
 // publish before the branch, loads after it read them, both paths.
+// A const-address EE-counter read in the delay slot ENDS the block, so its
+// branch must not become a continuation site.
+//
+// recLoad forces an event test (g_branch = 2) for a constant-address load in
+// the counter window 0x10000000..0x10001FFF so the guest sees an up-to-date
+// COUNT — that TERMINATES the block. If the branch above it became a
+// continuation site, a cold side exit is registered for the taken arm and the
+// mainline then ends at the delay slot underneath it: a shape SL-03 audited
+// only for truncation at a LATER instruction.
+//
+// Both arms are pinned because the mainline alone cannot tell the two builds
+// apart (block size is the actual compiled pc either way — with the guard the
+// branch ends the block, without it the delay slot truncates it). The TAKEN arm
+// is the one that goes through the outlined side exit, which re-runs this same
+// event-test-forcing delay slot.
+//
+// The architectural result alone cannot tell the two builds apart: a short
+// isolated block comes out correct either way, and block size is the actual
+// compiled pc in both (with the guard the branch ends the block; without it the
+// delay slot truncates it). The pin is therefore FORMATION —
+// recEeBlockContinuationSites reports the sites emission actually kept.
+//
+// Dragon Quest VIII PAL (SLES-53974) hung forever on "Now checking memory cards
+// (PS2)" on exactly this shape: `bne v1,s0` at 0x143e9c with `lw v0,0(v0)` in
+// its delay slot and v0 == 0x10000000 (Timer 0 COUNT). NTSC-U lays the same
+// code out differently and never pairs them, which is why only PAL wedged.
+TEST(EeRecSuperblock, CounterReadDelaySlotNotTakenIsCorrect)
+{
+	ResetRecAndPageProtection();
+	EeRecTestHarness h;
+	h.SetGpr64(reg::t0, 0); // BNE not taken
+	h.LoadProgramNoTerm({
+		LUI(reg::t1, 0x1000),           // t1 = 0x10000000 — Timer 0 COUNT
+		BNE(reg::t0, reg::zero, 3),     // forward conditional
+		LW(reg::t2, 0, reg::t1),        // delay slot: const-address counter read
+		ADDIU(reg::t3, reg::zero, 5),
+		ADDIU(reg::t4, reg::zero, 7),
+		J(kPark), NOP,
+	});
+	h.Run(); // diffs full architectural state against the interpreter
+	h.ExpectGpr64(reg::t3, 5ull);
+	h.ExpectGpr64(reg::t4, 7ull);
+	// The branch must NOT have formed a continuation site.
+	EXPECT_EQ(recEeBlockContinuationSites(kProgPc, nullptr, 0), 0u);
+}
+
+// The taken arm: control leaves through the outlined cold side exit, whose
+// delay-slot replay is the counter read that forces the event test.
+TEST(EeRecSuperblock, CounterReadDelaySlotTakenIsCorrect)
+{
+	ResetRecAndPageProtection();
+	EeRecTestHarness h;
+	h.SetGpr64(reg::t0, 1); // BNE TAKEN — exercises the side exit
+	h.SetGpr64(reg::t3, 0);
+	h.LoadProgramNoTerm({
+		LUI(reg::t1, 0x1000),
+		BNE(reg::t0, reg::zero, 3),     // taken → skips the two ADDIUs
+		LW(reg::t2, 0, reg::t1),        // delay slot runs on BOTH paths
+		ADDIU(reg::t3, reg::zero, 5),   // skipped
+		ADDIU(reg::t4, reg::zero, 7),   // skipped
+		J(kPark), NOP,
+	});
+	h.Run();
+	h.ExpectGpr64(reg::t3, 0ull); // proves the branch was taken
+}
+
 TEST(EeRecSuperblock, MemoryTrafficAcrossContinuation)
 {
 	for (const u64 cond : {0ull, 1ull})
