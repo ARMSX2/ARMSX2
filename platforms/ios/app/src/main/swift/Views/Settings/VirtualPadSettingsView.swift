@@ -280,7 +280,7 @@ struct VirtualPadSettingsView: View {
             } header: {
                 Text(settings.localized("Dynamic Control Presets"))
             } footer: {
-                Text(settings.localized("Selecting a preset changes only the listed Dynamic Control options. All sensitivity, button assignments, and other Virtual Pad settings are preserved."))
+                Text(settings.localized("Each preset applies its listed Dynamic Control configuration. Unrelated Virtual Pad appearance and controller-layout settings are preserved."))
                     .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -306,6 +306,82 @@ struct VirtualPadSettingsView: View {
                 Text(settings.localized("Dynamic Controls"))
             } footer: {
                 Text(settings.localized("Legacy and Dynamic Thumbsticks are mutually exclusive. Dynamic sticks appear where each touch begins. Swipe Camera replaces the right touch stick, while Gyroscope Camera augments the active right-side control."))
+            }
+
+            Section {
+                Toggle(
+                    settings.localized("Left Thumbstick Instant Deadzone"),
+                    isOn: $dynamicSettings.leftInstantDeadzoneEnabled
+                )
+                if dynamicSettings.leftInstantDeadzoneEnabled {
+                    DynamicControlSlider(
+                        title: settings.localized("Left Negative Deadzone"),
+                        value: $dynamicSettings.leftNegativeDeadzone,
+                        range: -0.25...0,
+                        step: 0.01,
+                        valueLabel: negativeDeadzoneLabel
+                    )
+                }
+
+                Toggle(
+                    settings.localized("Right Thumbstick Instant Deadzone"),
+                    isOn: $dynamicSettings.rightInstantDeadzoneEnabled
+                )
+                if dynamicSettings.rightInstantDeadzoneEnabled {
+                    DynamicControlSlider(
+                        title: settings.localized("Right Negative Deadzone"),
+                        value: $dynamicSettings.rightNegativeDeadzone,
+                        range: -0.25...0,
+                        step: 0.01,
+                        valueLabel: negativeDeadzoneLabel
+                    )
+                }
+
+                DynamicControlSlider(
+                    title: settings.localized("Left Thumbstick Movement Area"),
+                    value: $dynamicSettings.leftThumbstickAreaScale,
+                    range: 1...5,
+                    step: 0.25,
+                    valueLabel: thumbstickAreaScaleLabel
+                )
+                DynamicControlSlider(
+                    title: settings.localized("Right Thumbstick Movement Area"),
+                    value: $dynamicSettings.rightThumbstickAreaScale,
+                    range: 1...5,
+                    step: 0.25,
+                    valueLabel: thumbstickAreaScaleLabel
+                )
+
+                Toggle(
+                    settings.localized("Convert Swipe to Dynamic Joystick"),
+                    isOn: $dynamicSettings.convertSwipeToDynamicJoystick
+                )
+                if dynamicSettings.convertSwipeToDynamicJoystick {
+                    DynamicControlSlider(
+                        title: settings.localized("Convert Into Dynamic Thumbstick"),
+                        value: Binding(
+                            get: { dynamicSettings.convertIntoDynamicThumbstickThreshold },
+                            set: { dynamicSettings.setConvertIntoDynamicThumbstickThreshold($0) }
+                        ),
+                        range: 0.01...3,
+                        step: 0.01,
+                        valueLabel: percentageLabel
+                    )
+                    DynamicControlSlider(
+                        title: settings.localized("Pulling Back Distance"),
+                        value: Binding(
+                            get: { dynamicSettings.pullingBackDistance },
+                            set: { dynamicSettings.setPullingBackDistance($0) }
+                        ),
+                        range: 0.01...1,
+                        step: 0.01,
+                        valueLabel: percentageLabel
+                    )
+                }
+            } header: {
+                Text(settings.localized("Instant Movement & Aiming"))
+            } footer: {
+                Text(settings.localized("Instant deadzones add the selected minimum output only after real movement, while preserving the progressive Dynamic Thumbstick deadzone. Movement areas default to 3× without enlarging the visible controls. Swipe conversion enters Dynamic Thumbstick mode at the selected outward distance. Pulling back by the selected distance returns to Swipe Camera and temporarily rebases the next outward conversion point until the screen is released."))
             }
 
             controlSensitivitySection
@@ -338,6 +414,23 @@ struct VirtualPadSettingsView: View {
                     isOn: $dynamicSettings.dynamicCrosshairEnabled
                 )
                 if dynamicSettings.dynamicCrosshairEnabled {
+                    Toggle(
+                        settings.localized("Show Crosshair While Holding Swipe"),
+                        isOn: $dynamicSettings.showCrosshairWhileHoldingSwipe
+                    )
+                    .disabled(!dynamicSettings.swipeCamera)
+
+                    if dynamicSettings.showCrosshairWhileHoldingSwipe {
+                        DynamicControlSlider(
+                            title: settings.localized("Crosshair Hide Delay"),
+                            value: $dynamicSettings.swipeCrosshairHideDelay,
+                            range: 0...3,
+                            step: 0.1,
+                            valueLabel: durationLabel
+                        )
+                        .disabled(!dynamicSettings.swipeCamera)
+                    }
+
                     DynamicControlSlider(
                         title: settings.localized("Crosshair Size"),
                         value: $dynamicSettings.dynamicCrosshairSize,
@@ -372,7 +465,7 @@ struct VirtualPadSettingsView: View {
             } header: {
                 Text(settings.localized("Dynamic Crosshair"))
             } footer: {
-                Text(settings.localized("The crosshair appears only while Aim Mode is active. Every animation follows live swipe, thumbstick, and gyroscope direction and speed, then reacts separately to single shots and automatic fire."))
+                Text(settings.localized("The crosshair appears while Aim Mode is active and can remain visible while holding Swipe Camera. The hide delay controls how long it stays after the swipe ends. Every animation follows live swipe, thumbstick, and gyroscope direction and speed, then reacts separately to single shots and automatic fire."))
             }
 
             if dynamicSettings.dynamicThumbsticks {
@@ -470,6 +563,18 @@ struct VirtualPadSettingsView: View {
                 (dynamicSettings.dynamicThumbsticks &&
                     (dynamicSettings.leftThumbstickActionsEnabled || dynamicSettings.rightThumbstickActionsEnabled)) {
                 Section {
+                    if dynamicSettings.swipeCamera {
+                        Picker(
+                            settings.localized("Trigger Button When Un-holding Swipe"),
+                            selection: $dynamicSettings.triggerButtonWhenUnholdingSwipe
+                        ) {
+                            Text(settings.localized("Off")).tag(-1)
+                            ForEach(VirtualPadActionButton.allCases) { button in
+                                Text(settings.localized(button.title)).tag(button.rawValue)
+                            }
+                        }
+                    }
+
                     Toggle(
                         dynamicActionTitle("Hold Aim While Touching Camera", role: .aim),
                         isOn: Binding(
@@ -1066,6 +1171,14 @@ struct VirtualPadSettingsView: View {
 
     private func percentageLabel(_ value: Double) -> String {
         "\(Int((value * 100).rounded()))%"
+    }
+
+    private func negativeDeadzoneLabel(_ value: Double) -> String {
+        "\(Int((value * 100).rounded()))% \(settings.localized("Deadzone"))"
+    }
+
+    private func thumbstickAreaScaleLabel(_ value: Double) -> String {
+        String(format: "%.2fx", value)
     }
 
     private func durationLabel(_ value: Double) -> String {

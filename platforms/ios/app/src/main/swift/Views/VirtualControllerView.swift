@@ -322,6 +322,9 @@ struct VirtualControllerView: View {
         .onChange(of: dynamicSettings.dynamicThumbsticks) { _, _ in
             resetDynamicInputs()
         }
+        .onChange(of: dynamicSettings.convertSwipeToDynamicJoystick) { _, _ in
+            resetDynamicInputs()
+        }
         .onChange(of: dynamicSettings.leftThumbstickActionsEnabled) { _, _ in
             resetDynamicInputs()
         }
@@ -514,6 +517,11 @@ struct VirtualControllerView: View {
 
     @ViewBuilder
     private func dynamicInputZones(w: CGFloat, h: CGFloat) -> some View {
+        let conversionSettings = dynamicSettings.effectiveSwipeConversionSettings
+        let visualRadius = CGFloat(dynamicSettings.thumbstickRadius)
+        let rightAreaScale = CGFloat(
+            min(max(dynamicSettings.rightThumbstickAreaScale, 1), 5)
+        )
         Group {
             if dynamicSettings.dynamicThumbsticks && isVisible("lstick") {
                 dynamicThumbstickZone(isLeft: true)
@@ -525,10 +533,30 @@ struct VirtualControllerView: View {
                 VirtualPadCameraSwipeView(
                     maximumTapDuration: dynamicSettings.tapMaximumDuration,
                     tapTravelTolerance: CGFloat(dynamicSettings.tapTravelTolerance),
+                    convertsToDynamicJoystick: dynamicSettings.convertSwipeToDynamicJoystick,
+                    thumbstickRadius: visualRadius,
+                    maximumThumbstickRadius: visualRadius * rightAreaScale,
+                    thumbstickDeadZone: CGFloat(dynamicSettings.deadZone),
+                    convertIntoDynamicThumbstickThreshold: CGFloat(
+                        conversionSettings.dynamicThumbstick
+                    ),
+                    pullingBackDistance: CGFloat(conversionSettings.pullingBack),
+                    thumbstickOpacity: dynamicSettings.thumbstickOpacity,
+                    baseOpacity: dynamicSettings.baseOpacity,
+                    trailOpacity: dynamicSettings.trailOpacity,
+                    hapticsEnabled: dynamicSettings.activationHaptics,
                     onDelta: {
                         swipeInput.add(delta: $0, isAiming: activeTouchActionSession.right.isAiming)
                     },
+                    onDynamicJoystick: {
+                        swipeInput.setDynamicJoystick($0)
+                    },
                     onBegan: {
+                        if dynamicSettings.dynamicCrosshairEnabled &&
+                            dynamicSettings.showCrosshairWhileHoldingSwipe {
+                            activeTouchActionSession.right.crosshairState
+                                .swipeInteractionBegan()
+                        }
                         if dynamicSettings.rightThumbstickActionsEnabled {
                             activeTouchActionSession.right.interactionBegan()
                         }
@@ -543,7 +571,19 @@ struct VirtualControllerView: View {
                             activeTouchActionSession.right.interactionTapped()
                         }
                     },
+                    onReleased: {
+                        if let button = dynamicSettings.swipeReleaseActionButton {
+                            pulseVirtualPadActionButton(
+                                button,
+                                source: "cameraSwipe.release"
+                            )
+                        }
+                    },
                     onEnded: {
+                        activeTouchActionSession.right.crosshairState
+                            .swipeInteractionEnded(
+                                hideDelay: dynamicSettings.swipeCrosshairHideDelay
+                            )
                         if dynamicSettings.rightThumbstickActionsEnabled {
                             activeTouchActionSession.right.interactionEnded()
                         }
@@ -567,9 +607,23 @@ struct VirtualControllerView: View {
         let actionController = isLeft
             ? activeTouchActionSession.left
             : activeTouchActionSession.right
+        let visualRadius = CGFloat(dynamicSettings.thumbstickRadius)
+        let areaScale = CGFloat(
+            min(
+                max(
+                    isLeft
+                        ? dynamicSettings.leftThumbstickAreaScale
+                        : dynamicSettings.rightThumbstickAreaScale,
+                    1
+                ),
+                5
+            )
+        )
         return DynamicThumbstickView(
             isLeft: isLeft,
-            radius: CGFloat(dynamicSettings.thumbstickRadius),
+            radius: visualRadius,
+            maximumRadius: visualRadius * areaScale,
+            deadZoneProgressRadius: isLeft ? visualRadius : nil,
             deadZone: CGFloat(dynamicSettings.deadZone),
             hapticsEnabled: dynamicSettings.activationHaptics,
             thumbstickOpacity: dynamicSettings.thumbstickOpacity,
