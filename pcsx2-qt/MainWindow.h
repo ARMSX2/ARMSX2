@@ -187,8 +187,7 @@ private Q_SLOTS:
 	void onViewSystemDisplayTriggered();
 	void onViewGamePropertiesActionTriggered();
 	void onGitHubRepositoryActionTriggered();
-	void onWikiActionTriggered();
-	void onDocumentationActionTriggered();
+	void onWebsiteActionTriggered();
 	void onAboutActionTriggered();
 	void onToolsOpenDataDirectoryTriggered();
 	void onToolsCoverDownloaderTriggered();

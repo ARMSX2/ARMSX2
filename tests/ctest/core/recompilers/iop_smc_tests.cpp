@@ -316,15 +316,13 @@ TEST(IopSmc, JitStoreThroughRamMirrorInvalidatesBlockCompiledThere)
 	// In the default 2MB configuration the IOP's RAM appears four times across
 	// the 8MB window: iopMemReset and the recLUT setup both map guest page `i`
 	// to physical page `i & 0x1f`. So a block at 0x00214000 shares its bytes
-	// AND its BASEBLOCK slots with one at 0x00014000 — but not its HWADDR,
-	// because psxhwLUT only subtracts the KSEG base (recLUT_SetPage writes
-	// `-(pagebase << 16)`, and pagebase is 0 here). HWADDR(0x00214000) is
-	// 0x00214000, granule 0x2140; the store stub's mirror-collapsed offset is
-	// 0x14000, granule 0x140.
-	//
-	// Store and block are both at the mirror address, so the C clear path
-	// agrees with itself and invalidates. The JIT store stub does not: it
-	// probes the collapsed granule, reads zero, and returns without clearing.
+	// AND its BASEBLOCK slots with one at 0x00014000 — and, since the hwLUT
+	// collapse in recResetIOP, its HWADDR too: registration, coverage and the
+	// clear path all key the canonical 0x14000. Historically HWADDR did NOT
+	// collapse, and this same-alias case was the first casualty: the store
+	// stub probed the collapsed granule 0x140 while the block's coverage sat
+	// at the un-collapsed 0x2140, so the stub read zero and returned without
+	// clearing — store and block at the very same guest address.
 	ASSERT_EQ(Ps2MemSize::ExposedIopRam, 2u * 1024u * 1024u)
 		<< "this test is about mirroring that only exists in the 2MB config";
 
@@ -352,6 +350,103 @@ TEST(IopSmc, JitStoreThroughRamMirrorInvalidatesBlockCompiledThere)
 	h.RunResume();
 	EXPECT_EQ(h.GetGprJit(reg::v0), 0x1337u) << "the JIT store stub probed the "
 		"mirror-collapsed granule and missed the block's HWADDR coverage";
+	EXPECT_EQ(h.GetGprInterp(reg::v0), 0x1337u);
+}
+
+// The three tests below pin CROSS-alias SMC: the store and the compiled block
+// name *different* mirrors of the same physical RAM. The recLUT shares the
+// BASEBLOCK slots across the four RAM mirrors (guest page i maps physical page
+// i & 0x1f), so a block compiled at one alias stays dispatchable through every
+// other — which means the clear path must find it from every other, too. The
+// shuffle suite found this for real: IopIrxHle leaves a block compiled at
+// canonical 0x14000, and JitStoreThroughRamMirrorInvalidatesBlockCompiledThere
+// then loads its victim program through the 0x214000 mirror; the C clear keyed
+// on the un-collapsed address missed the stale block and the JIT executed the
+// IRX test's code. These are the deterministic forms.
+
+TEST(IopSmc, CStoreThroughRamMirrorInvalidatesBlockAtCanonicalAddress)
+{
+	ASSERT_EQ(Ps2MemSize::ExposedIopRam, 2u * 1024u * 1024u)
+		<< "this test is about mirroring that only exists in the 2MB config";
+
+	constexpr u32 kMirrorBlock2Pc = 0x00200000u + kBlock2Pc;
+
+	JitTestHarness h;
+	h.LoadProgramAt(kBlock2Pc, {
+		ADDIU(reg::v0, reg::zero, 0x0BAD),   // original opcode; overwritten
+	}, /*append_jr_ra_term=*/true);
+	h.SetPc(kBlock2Pc);
+	h.Run();
+	ASSERT_EQ(h.GetGprInterp(reg::v0), 0x0BADu);
+
+	// C-path store through the +2MB mirror: same physical word the block was
+	// compiled from, different guest alias.
+	iopMemWrite32(kMirrorBlock2Pc, ADDIU(reg::v0, reg::zero, 0x1337));
+
+	h.SetPc(kBlock2Pc);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	EXPECT_EQ(h.GetGprJit(reg::v0), 0x1337u);
+	EXPECT_EQ(h.GetGprInterp(reg::v0), 0x1337u);
+}
+
+TEST(IopSmc, CStoreAtCanonicalAddressInvalidatesBlockCompiledAtMirror)
+{
+	// Reverse orientation: the block is compiled while executing at the
+	// mirror alias, the new code is stored at the canonical address.
+	ASSERT_EQ(Ps2MemSize::ExposedIopRam, 2u * 1024u * 1024u)
+		<< "this test is about mirroring that only exists in the 2MB config";
+
+	constexpr u32 kMirrorBlock2Pc = 0x00200000u + kBlock2Pc;
+
+	JitTestHarness h;
+	h.LoadProgramAt(kMirrorBlock2Pc, {
+		ADDIU(reg::v0, reg::zero, 0x0BAD),   // original opcode; overwritten
+	}, /*append_jr_ra_term=*/true);
+	h.SetPc(kMirrorBlock2Pc);
+	h.Run();
+	ASSERT_EQ(h.GetGprInterp(reg::v0), 0x0BADu);
+
+	iopMemWrite32(kBlock2Pc, ADDIU(reg::v0, reg::zero, 0x1337));
+
+	h.SetPc(kMirrorBlock2Pc);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	EXPECT_EQ(h.GetGprJit(reg::v0), 0x1337u);
+	EXPECT_EQ(h.GetGprInterp(reg::v0), 0x1337u);
+}
+
+TEST(IopSmc, JitStoreThroughRamMirrorInvalidatesBlockAtCanonicalAddress)
+{
+	// Same cross-alias geometry as the C-path test above, but the store is a
+	// guest SW compiled by the JIT, so it exercises the store stub's coverage
+	// probe rather than iopMemWrite32.
+	ASSERT_EQ(Ps2MemSize::ExposedIopRam, 2u * 1024u * 1024u)
+		<< "this test is about mirroring that only exists in the 2MB config";
+
+	constexpr u32 kMirrorBlock2Pc = 0x00200000u + kBlock2Pc;
+
+	JitTestHarness h;
+	h.SetGpr(reg::a0, kMirrorBlock2Pc);
+	h.SetGpr(reg::a1, ADDIU(reg::v0, reg::zero, 0x1337));
+	h.LoadProgramAt(kProgramPc, {
+		SW(reg::a1, 0, reg::a0),             // store through the mirror alias
+		J(kBlock2Pc),                        // enter through the canonical one
+		NOP,
+	}, /*append_jr_ra_term=*/false);
+	h.LoadProgramAt(kBlock2Pc, {
+		ADDIU(reg::v0, reg::zero, 0x0BAD),   // original opcode; overwritten
+	}, /*append_jr_ra_term=*/true);
+
+	// Compile the victim first at its canonical address.
+	h.SetPc(kBlock2Pc);
+	h.Run();
+	ASSERT_EQ(h.GetGprInterp(reg::v0), 0x0BADu);
+
+	h.SetPc(kProgramPc);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	EXPECT_EQ(h.GetGprJit(reg::v0), 0x1337u);
 	EXPECT_EQ(h.GetGprInterp(reg::v0), 0x1337u);
 }
 

@@ -120,7 +120,7 @@ void SettingsWindow::setupUi(const GameList::Entry* game)
 	{
 		addWidget(m_game_list_settings = new GameListSettingsWidget(this, m_ui.settingsContainer), tr("Game List"),
 			QStringLiteral("folder-open-line"),
-			tr("<strong>Game List Settings</strong><hr>The list above shows the directories which will be searched by PCSX2 to populate "
+			tr("<strong>Game List Settings</strong><hr>The list above shows the directories which will be searched by ARMSX2 to populate "
 			   "the game list. Search directories can be added, removed, and switched to recursive/non-recursive."));
 		addWidget(m_bios_settings = new BIOSSettingsWidget(this, m_ui.settingsContainer), tr("BIOS"), QStringLiteral("chip-line"),
 			tr("<strong>BIOS Settings</strong><hr>Configure your BIOS here.<br><br>Mouse over an option for additional information, "
@@ -178,7 +178,7 @@ void SettingsWindow::setupUi(const GameList::Entry* game)
 	{
 		addWidget(m_folder_settings = new FolderSettingsWidget(this, m_ui.settingsContainer), tr("Folders"),
 			QStringLiteral("folder-settings-line"),
-			tr("<strong>Folder Settings</strong><hr>These options control where PCSX2 will save runtime data files."));
+			tr("<strong>Folder Settings</strong><hr>These options control where ARMSX2 will save runtime data files."));
 	}
 
 	{
@@ -292,7 +292,7 @@ void SettingsWindow::onCopyGlobalSettingsClicked()
 	if (!isPerGameSettings())
 		return;
 
-	if (QMessageBox::question(this, tr("PCSX2 Settings"),
+	if (QMessageBox::question(this, tr("ARMSX2 Settings"),
 			tr("The configuration for this game will be replaced by the current global settings.\n\nAny current setting values will be "
 			   "overwritten.\n\nDo you want to continue?"),
 			QMessageBox::Yes, QMessageBox::No) != QMessageBox::Yes)
@@ -316,7 +316,7 @@ void SettingsWindow::onClearSettingsClicked()
 	if (!isPerGameSettings())
 		return;
 
-	if (QMessageBox::question(this, tr("PCSX2 Settings"),
+	if (QMessageBox::question(this, tr("ARMSX2 Settings"),
 			tr("The configuration for this game will be cleared.\n\nAny current setting values will be lost.\n\nDo you want to continue?"),
 			QMessageBox::Yes, QMessageBox::No) != QMessageBox::Yes)
 	{
@@ -354,7 +354,7 @@ void SettingsWindow::reopen(const QString& message)
 		close();
 		dlg->show();
 		if (!message.isEmpty())
-			QMessageBox::information(dlg, tr("PCSX2 Settings"), message);
+			QMessageBox::information(dlg, tr("ARMSX2 Settings"), message);
 	});
 }
 

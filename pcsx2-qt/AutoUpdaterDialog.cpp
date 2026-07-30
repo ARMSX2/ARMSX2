@@ -63,8 +63,8 @@ static constexpr u32 HTTP_POLL_INTERVAL = 10;
 #define UPDATE_ADDITIONAL_TAGS "SSE4"
 #endif
 
-#define LATEST_RELEASE_URL "https://api.pcsx2.net/v1/%1Releases?pageSize=1"
-#define CHANGES_URL "https://api.github.com/repos/PCSX2/pcsx2/compare/%1...%2"
+#define LATEST_RELEASE_URL "https://api.armsx2.net/v1/%1Releases?pageSize=1"
+#define CHANGES_URL "https://api.github.com/repos/ARMSX2/ARMSX2/compare/%1...%2"
 
 // Available release channels.
 static const char* UPDATE_TAGS[] = {"stable", "nightly"};
@@ -822,7 +822,7 @@ bool AutoUpdaterDialog::processUpdate(const std::vector<u8>& data, QProgressDial
 	}
 	QString open_path;
 	{
-		QTemporaryDir temp_dir(info.path() + QStringLiteral("/PCSX2-UpdateStaging-XXXXXX"));
+		QTemporaryDir temp_dir(info.path() + QStringLiteral("/ARMSX2-UpdateStaging-XXXXXX"));
 		if (!temp_dir.isValid())
 		{
 			reportError("Failed to create update staging directory");

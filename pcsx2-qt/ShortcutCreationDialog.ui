@@ -128,7 +128,7 @@
       <item row="0" column="0" colspan="3">
        <widget class="QCheckBox" name="portableModeToggle">
         <property name="text">
-         <string>Portable Mode (Stores data in local PCSX2 directory)</string>
+         <string>Portable Mode (Stores data in local ARMSX2 directory)</string>
         </property>
        </widget>
       </item>
@@ -426,7 +426,7 @@
          <bool>true</bool>
         </property>
         <property name="placeholderText">
-         <string>Default PCSX2 Icon</string>
+         <string>Default ARMSX2 Icon</string>
         </property>
        </widget>
       </item>
