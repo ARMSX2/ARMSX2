@@ -129,6 +129,21 @@ void RunJitFromSeeded(int idx, u32 cycles)
 	JitCpu(idx)->Execute(cycles);
 }
 
+// The PATH1 sink covers Gif_Unit::TransferGSPacketData, but microVU's XGKICK
+// wrap path sends the pre-wrap head through Gif_Path::CopyGSPacketData
+// directly (the harness blind spot pstef found landing the console XGKICK
+// cases) — those bytes land in the REAL gifPath[1] ring, which nothing drains
+// in a runner with no GS thread. Across a few hundred wrapped-kick captures
+// in one process the ring fills, CopyGSPacketData calls mtgsReadWait, and
+// MTGS::WaitGS trips its devel closed-thread assert (abort mid-sweep; release
+// would early-return and lose the wait entirely). Reset the path per replay
+// so escaped bytes can never accumulate across captures — still correct once
+// the sink covers both entry points, just belt-and-suspenders.
+static void ResetGifPath1()
+{
+	gifUnit.gifPath[GIF_PATH_1].Reset();
+}
+
 } // namespace
 
 void ReseedFromCapture(const vu_capture::CaptureRecord& rec)
@@ -159,6 +174,7 @@ std::vector<PmuCounters::Values> BenchJitSteady(const vu_capture::CaptureRecord&
 
 	std::vector<u8> path1_buf;
 	gif_test_hooks::g_path1_sink = &path1_buf;
+	ResetGifPath1();
 
 	// Prime once WITH a cache reset so iter 0 compiles the block; subsequent
 	// iters re-seed without a reset (block stays compiled) so the measured
@@ -213,6 +229,7 @@ VuReplayResult ReplayCapture(const vu_capture::CaptureRecord& rec,
 
 	std::vector<u8> path1_buf;
 	gif_test_hooks::g_path1_sink = &path1_buf;
+	ResetGifPath1();
 	PrimeFromCapture(rec);
 	const VuSnapshot pre = VuSnapshot::Capture(idx, windows);
 	path1_buf.clear();
