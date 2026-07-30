@@ -387,6 +387,60 @@ fun AppTab() {
             }
         }
 
+        // In-game pause music. Separate track and separate toggle from the library's: the pause
+        // menu was silent, and people sit in it browsing settings mid-game. Off by default —
+        // audio starting when you open a menu is startling if you didn't ask for it.
+        ToggleRow(
+            label = str("app.pauseMusic"),
+            value = com.armsx2.PauseMusic.enabled.value,
+            description = str("app.pauseMusic.desc"),
+            onChange = { com.armsx2.PauseMusic.set(appContext, it) },
+        )
+        if (com.armsx2.PauseMusic.enabled.value) {
+            IntSliderRow(
+                label = str("app.pauseMusic.volume"),
+                value = com.armsx2.PauseMusic.volumePercent.value,
+                min = 0,
+                max = 100,
+                valueFormatter = { "$it%" },
+                onChange = { com.armsx2.PauseMusic.setVolume(it) },
+            )
+            val pausePicker = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument()
+            ) { uri ->
+                if (uri != null) {
+                    val name = androidx.documentfile.provider.DocumentFile
+                        .fromSingleUri(appContext, uri)?.name ?: "Custom track"
+                    com.armsx2.PauseMusic.setCustomTrack(appContext, uri, name)
+                }
+            }
+            val pauseCustom = com.armsx2.PauseMusic.customName.value
+            Text(
+                if (pauseCustom != null) str("app.pauseMusic.current").format(pauseCustom)
+                else str("app.pauseMusic.default"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val pickPause = { pausePicker.launch(arrayOf("audio/*")) }
+                OutlinedButton(
+                    onClick = pickPause,
+                    modifier = Modifier.controllerFocusable("app.pauseMusic.choose", onConfirm = pickPause),
+                ) { Text(str("app.pauseMusic.choose")) }
+                if (pauseCustom != null) {
+                    val resetPause = { com.armsx2.PauseMusic.clearCustomTrack(appContext) }
+                    OutlinedButton(
+                        onClick = resetPause,
+                        modifier = Modifier.controllerFocusable("app.pauseMusic.reset", onConfirm = resetPause),
+                    ) { Text(str("app.pauseMusic.reset")) }
+                }
+            }
+        }
+
         // Menu sound effects. User-provided like the custom track above — the app ships no sounds;
         // the user imports a folder of named clips (select/back/menu/toggle_on/toggle_off/reset/
         // slider). Opt-in (off by default) since there are no bundled defaults to fall back on.

@@ -2046,6 +2046,7 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.ui.theme.LauncherOrientationPreferences.load()
         com.armsx2.ui.theme.LibraryBackgroundColorPreferences.load()
         com.armsx2.LibraryMusic.load()
+        com.armsx2.PauseMusic.load()
         com.armsx2.MenuSfx.load(applicationContext)
         com.armsx2.ControllerSkinStore.load(applicationContext)
         startAutosaveIntervalJob()
@@ -2316,6 +2317,32 @@ open class MainActivityRuntime : ComponentActivity() {
                         }
                     } else {
                         com.armsx2.LibraryMusic.stop(this@MainActivityRuntime)
+                    }
+                }
+                // In-game pause music: the mirror image of the above — it plays only while a
+                // frontend surface covers a running game, and goes quiet the moment the game
+                // resumes. Both the pause menu AND the in-game manager screens count, because
+                // openInGameScreen() closes the menu as it opens Settings/Achievements/etc., and
+                // sitting in those is exactly the long silence this exists to fill.
+                //
+                // Driven off the same states the overlay itself is drawn from rather than from
+                // InGameOverlay.open()/close(), for the reason the comment above gives: many paths
+                // reach each state (back button, menu button, hotkey, dismissInGameScreen, a boot
+                // that force-closes the overlay) and hooking them individually always misses one.
+                val pauseMenuUp = WindowImpl.overlayVisible.value || WindowImpl.inGameScreen.value != null
+                androidx.compose.runtime.LaunchedEffect(pauseMenuUp, com.armsx2.PauseMusic.enabled.value) {
+                    if (pauseMenuUp) {
+                        // Retry like the library track: pausing the VM suspends SPU2, but Oboe's
+                        // stream takes a moment to actually go idle and start() defers while
+                        // AudioManager still reports audio active. A single attempt would lose
+                        // that race every time and the menu would stay silent.
+                        repeat(10) {
+                            com.armsx2.PauseMusic.start(this@MainActivityRuntime)
+                            if (com.armsx2.PauseMusic.isPlaying()) return@LaunchedEffect
+                            kotlinx.coroutines.delay(300)
+                        }
+                    } else {
+                        com.armsx2.PauseMusic.stop()
                     }
                 }
                 // Screen orientation follows whichever tier is live: a running game's per-game
@@ -4592,6 +4619,9 @@ open class MainActivityRuntime : ComponentActivity() {
         // like the emulator ignoring the home button. Paused, not stopped, so returning
         // to the library picks it back up.
         com.armsx2.LibraryMusic.pause()
+        // Same for the pause-menu track: leaving the menu open and pressing home must not leave
+        // music playing behind a backgrounded app. Paused, not stopped, so coming back resumes it.
+        com.armsx2.PauseMusic.pause()
         super.onPause()
     }
 
@@ -4618,6 +4648,13 @@ open class MainActivityRuntime : ComponentActivity() {
         // still just un-pauses a merely-paused one — while its own guards keep it a no-op
         // when the setting is off, a VM is running, or that other app is still playing.
         com.armsx2.LibraryMusic.start(this)
+        // The pause-menu track can't rely on its LaunchedEffect here: the overlay states didn't
+        // change while we were backgrounded, so the effect never re-runs. Restart explicitly when
+        // we come back to a still-open menu (start() rebuilds a released player and no-ops when the
+        // setting is off or another app owns the audio).
+        if (WindowImpl.overlayVisible.value || WindowImpl.inGameScreen.value != null) {
+            com.armsx2.PauseMusic.start(this)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
