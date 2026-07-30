@@ -25,7 +25,12 @@ size_t GSCodeReserve::GetMemoryUsed()
 
 u8* GSCodeReserve::ReserveMemory(size_t size)
 {
-	pxAssert((s_memory_ptr + size) <= s_memory_end);
+	// Null means full, and the caller resets the cache and asks again. This
+	// used to be an assert, so a release build walked off the end of the
+	// reserve instead, which is the end of the whole code arena.
+	if ((s_memory_ptr + size) > s_memory_end)
+		return nullptr;
+
 	return s_memory_ptr;
 }
 
