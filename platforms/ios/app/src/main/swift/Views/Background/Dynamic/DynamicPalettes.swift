@@ -622,18 +622,32 @@ struct SavedPaletteColor: Codable, Hashable, Identifiable {
 
   private static func hexValue(for color: Color) -> String? {
     let uiColor = UIColor(color)
+
+    // The system picker hands back Display P3 on any recent device, and getRed reports
+    // those in extended sRGB, where anything outside the smaller gamut comes back
+    // outside 0...1. P3's pure red is 1.358, -0.074, -0.012. Scaled by 255 that is 346
+    // and -18, which %02X writes as three digits and as a 16 digit negative, and the
+    // reader below parses the result with UInt64(radix: 16) ?? 0 and lands on black.
+    // Converting first is what makes the saved swatch match what was picked; the clamp
+    // is belt and braces, since hex cannot express anything outside the gamut anyway.
     var red: CGFloat = 0
     var green: CGFloat = 0
     var blue: CGFloat = 0
     var alpha: CGFloat = 0
-    guard uiColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else {
+
+    if let srgbSpace = CGColorSpace(name: CGColorSpace.sRGB),
+      let converted = uiColor.cgColor.converted(
+        to: srgbSpace, intent: .defaultIntent, options: nil),
+      let components = converted.components, components.count >= 3
+    {
+      red = components[0]
+      green = components[1]
+      blue = components[2]
+    } else if !uiColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha) {
       return nil
     }
-    return String(
-      format: "#%02X%02X%02X",
-      Int(red * 255),
-      Int(green * 255),
-      Int(blue * 255)
-    )
+
+    let channel: (CGFloat) -> Int = { Int((min(1, max(0, $0)) * 255).rounded()) }
+    return String(format: "#%02X%02X%02X", channel(red), channel(green), channel(blue))
   }
 }
