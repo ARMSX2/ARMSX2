@@ -1580,6 +1580,7 @@ SLUS-20765:
 SLUS-20811:
   gsHWFixes:
     halfPixelOffset: 2
+    hwDownloadMode: 2 # No Readbacks — NFS Underground perf (community request)
     recommendedBlendingLevel: 3
 SLUS-20842:
   gsHWFixes:
@@ -1624,6 +1625,7 @@ SLUS-21059:
 SLUS-21065:
   gsHWFixes:
     halfPixelOffset: 5
+    hwDownloadMode: 2 # No Readbacks — NFS Underground 2 perf (community request)
     nativeScaling: 1
 SLUS-21087:
   gsHWFixes:
