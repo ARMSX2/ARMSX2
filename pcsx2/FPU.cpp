@@ -523,12 +523,34 @@ void SQRT_S() {
 		_ContVal_ |= FPUflagI | FPUflagSI;
 
 	if ( ( _FtValUl_ & 0x7F800000 ) == 0 ) // If Ft = +/-0 (denormals included)
+	{
 		_FdValUl_ = 0;                     // +0: the EE drops the sign here, and
 		                                   // both recompilers already do (they
 		                                   // take |Ft| before the sqrt). See
 		                                   // EeRecFpu.SqrtSOfNegativeZeroIsPositiveZero.
+	}
+	else if ( ( _FtValUl_ & 0x7F800000 ) == 0x7F800000 )
+	{
+		// Exponent 255 is an ordinary binade on the EE -- the representable max
+		// is 0x7FFFFFFF, not FLT_MAX -- so fpuDouble()'s clamp hands sqrt a
+		// different operand rather than a rounded one: sqrt(0x7FFFFFFF) came
+		// back 0x5F7FFFFF where the console gives 0x5FB504F3. Square-root
+		// |Ft|/4 and double it instead. 4 is an even power of two, so its own
+		// square root is exact and the sqrt below stays the only rounding step.
+		// recSQRT_S_xmm (iFPU-arm64.cpp) emits the same two steps and carries
+		// the rest of the argument.
+		//
+		// RSQRT_S does not get this: its two clamped operands cancel on
+		// rsqrt(2^128, 2^128), so unclamping only the sqrt breaks that row.
+		// It is all-or-nothing and is a separate change.
+		FPRreg quarter;
+		quarter.UL = ( _FtValUl_ & 0x7FFFFFFF ) - 0x01000000; // |Ft| / 4
+		_FdValf_ = 2.0 * sqrt( (double)quarter.f );
+	}
 	else
+	{
 		_FdValf_ = sqrt( fabs( fpuDouble( _FtValUl_ ) ) ); // sqrt of |Ft|
+	}
 }
 
 void SUB_S() {
