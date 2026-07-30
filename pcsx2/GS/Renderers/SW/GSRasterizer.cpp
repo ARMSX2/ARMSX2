@@ -1468,10 +1468,11 @@ void GSSingleRasterizer::Queue(const GSRingHeap::SharedPtr<GSRasterizerData>& da
 
 void GSSingleRasterizer::Draw(GSRasterizerData& data)
 {
-	if (!m_ds.SetupDraw(data)) [[unlikely]]
+	// Nothing else runs this code, so generating on the spot is fine here.
+	if (!m_ds.SetupDraw(data, true)) [[unlikely]]
 	{
 		m_ds.ResetCodeCache();
-		m_ds.SetupDraw(data);
+		m_ds.SetupDraw(data, true);
 	}
 
 	m_r.Draw(data);
@@ -1543,11 +1544,19 @@ void GSRasterizerList::Queue(const GSRingHeap::SharedPtr<GSRasterizerData>& data
 {
 	GSVector4i r = data->bbox.rintersect(data->scissor);
 
-	if (!m_ds.SetupDraw(*data.get())) [[unlikely]]
+	// Probe first. Generating a routine makes its pages writable for as long
+	// as the emit takes, and the workers are running from those same pages,
+	// so let them drain before we touch anything. Out of code space lands
+	// here too, and wants the same sync before the reset.
+	if (!m_ds.SetupDraw(*data.get(), false)) [[unlikely]]
 	{
 		Sync();
-		m_ds.ResetCodeCache();
-		m_ds.SetupDraw(*data.get());
+
+		if (!m_ds.SetupDraw(*data.get(), true))
+		{
+			m_ds.ResetCodeCache();
+			m_ds.SetupDraw(*data.get(), true);
+		}
 	}
 
 	pxAssert(r.top >= 0 && r.top <= 2048 && r.bottom >= 0 && r.bottom <= 2048);

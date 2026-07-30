@@ -39,8 +39,9 @@ public:
 	/// Flushes the code cache, forcing everything to be recompiled.
 	void ResetCodeCache();
 
-	/// Populates function pointers. If this returns false, we ran out of code space.
-	bool SetupDraw(GSRasterizerData& data);
+	/// Populates function pointers. If this returns false, we either ran out of code space, or
+	/// allow_compile was false and something still needed generating.
+	bool SetupDraw(GSRasterizerData& data, bool allow_compile);
 
 	/// Draw pre-calculations, computed per-thread.
 	static void BeginDraw(const GSRasterizerData& data, GSScanlineLocalData& local);
