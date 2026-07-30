@@ -1146,6 +1146,22 @@ void ImGuiManager::RenderOSD()
 	DrawSoftwareCursors();
 }
 
+bool ImGuiManager::HasPresentableOverlayContent()
+{
+	// Posted messages can be pushed from any thread, so this one read needs the lock. Active
+	// messages and the FullscreenUI state below are GS-thread-only and are read without it — this
+	// runs on the GS thread (from the present path), the same thread that drains and draws them.
+	{
+		std::unique_lock<std::mutex> lock(s_osd_messages_lock);
+		if (!s_osd_posted_messages.empty())
+			return true;
+	}
+	if (!s_osd_active_messages.empty())
+		return true;
+
+	return FullscreenUI::HasActiveWindow() || ImGuiFullscreen::HasActiveNotifications();
+}
+
 float ImGuiManager::GetGlobalScale()
 {
 	return s_global_scale;

@@ -877,11 +877,21 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 	// frames must take the normal present path: explicit APIs such as Vulkan need that path to
 	// submit the recorded command buffer and finalize texture state for the following frame.
 	// See GSPresentationPolicy.h. Ported from sashkinbro/EmuCoreX.
+	//
+	// ...but never suppress a blank that has an OSD message or a toast on top of it. With Skip BIOS
+	// on there is no boot animation, so the game shows a black screen with no GS output for a while,
+	// and the RetroAchievements "achievements loaded" toast posts into exactly that window. Skipping
+	// the present means EndPresentFrame() — and with it the OSD/notification draw — never runs, so
+	// the toast is queued but invisible until something forces a real present (opening the pause
+	// menu, which is why it appears there and vanishes on back-out). Presenting a blank with content
+	// on it is precisely what the pause menu already does here, and is safe: the swapchain image is
+	// acquired and ImGui draws over black.
 	const bool skip_blank = ShouldSkipAndroidBlankFrame(
 		blank_frame,
 		g_gs_device->GetCurrent() != nullptr,
 		g_gs_device->GetRenderAPI() == RenderAPI::Vulkan,
-		m_consecutive_blank_frames);
+		m_consecutive_blank_frames) &&
+		!ImGuiManager::HasPresentableOverlayContent();
 #else
 	constexpr bool skip_blank = false;
 #endif

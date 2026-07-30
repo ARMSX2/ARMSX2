@@ -320,6 +320,11 @@ namespace ImGuiFullscreen
 	void AddNotification(std::string key, float duration, std::string title, std::string text, std::string image_path);
 	void ClearNotifications();
 
+	/// True while any toast notification (e.g. an achievement popup) is queued or on screen. Used to
+	/// decide whether a frame that would otherwise be skipped must still be presented so the toast
+	/// is actually drawn. GS-thread only, like the notification list itself.
+	bool HasActiveNotifications();
+
 	void ShowToast(std::string title, std::string message, float duration = 10.0f);
 	void ClearToast();
 
