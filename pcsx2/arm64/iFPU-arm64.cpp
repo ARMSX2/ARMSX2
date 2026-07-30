@@ -30,6 +30,8 @@ namespace Interp = R5900::Interpreter::OpcodeImpl::COP1;
 #define FPUflagC  0x00800000
 #define FPUflagI  0x00020000
 #define FPUflagD  0x00010000
+#define FPUflagO  0x00008000
+#define FPUflagU  0x00004000
 #define FPUflagSI 0x00000040
 #define FPUflagSD 0x00000020
 
@@ -352,27 +354,37 @@ static void fpuClampResult(const a64::VRegister& fpr)
 	armAsm->Fmaxnm(fpr, fpr, a64::s9);
 }
 
-// One-sided positive clamp for results that are statically non-negative
-// (ABS.S). Fabs clears the sign bit, so the value is always >= 0 (NaN ->
-// +0x7FFFFFFF), which makes the lower Fmaxnm(-FLT_MAX) of fpuClampResult dead.
-// Like x86 recABS_S_xmm, only the positive clamp is needed (the ABS result is
-// never negative), so only one Fminnm vs 0x7f7fffff is emitted.
-// Saves one NEON insn per ABS.S.
-static void fpuClampResultPositive(const a64::VRegister& fpr)
-{
-	armAsm->Fminnm(fpr, fpr, a64::s8);
-}
-
-// NOTE for whoever touches fpuClampResultPositive: recABS_S_xmm emits its clamp
-// with no CHECK_FPU_* gate at all, where both the interpreter and the console
-// leave exponent-255 operands untouched — a pre-existing defect of the same
-// family SQRT.S just shed, and whose fix is likewise to DELETE the clamp rather
-// than to change which wrong answer it produces. See the DISABLED tripwire
-// EeFpuAbsNegClamp.DISABLED_JitMatchesConsoleInEveryClampMode.
+// This file used to carry two more clamp helpers, both now deleted along with
+// their only callers:
 //
-// (SQRT.S used to hold a second helper here, fpuClampOperandPositive, an integer
-// Umin against +fMax. recSQRT_S_xmm no longer clamps its operand — it scales by
-// a power of two instead — and that was the only caller.)
+//   fpuClampOperandPositive — an integer Umin against +fMax, for SQRT.S's
+//     post-Fabs operand. recSQRT_S_xmm scales by a power of two instead.
+//   fpuClampResultPositive — a one-sided Fminnm against +fMax, for ABS.S.
+//     recABS_S_xmm emits nothing but the Fabs now.
+//
+// All three removals are the same finding: exponent 255 is an ORDINARY binade
+// on the EE, so clamping those patterns to +fMax is not saturation, it is
+// corruption. Both interpreters and the console pass them through untouched.
+// See EeFpuAbsNegClamp and EeFpuOverflowConsole.SqrtMatchesConsoleOnEvery*.
+
+// Clear the O and U cause flags. ABS.S / NEG.S do this unconditionally — interp
+// ABS_S/NEG_S call clearFPUFlags(FPUflagO | FPUflagU) (FPU.cpp) and the FULL
+// path's ClearOUFlags does the same (iFPUd-arm64.cpp) — but the fast path never
+// did, so an O or U left over from a previous op survived an ABS.S that should
+// have cleared it. Pinned by EeFpuAbsNegClamp.AbsAndNegClearOverflowFlags.
+//
+// GE-12: honour a register-allocated FCR31 rather than going through memory,
+// same shape as recSQRT_S_xmm's flag RMW.
+static void fpuClearOUFlags()
+{
+	const int fl = fpuTryAllocFCR31(MODE_READ | MODE_WRITE);
+	const a64::Register flagReg = (fl >= 0) ? armWRegister(fl) : RWSCRATCH;
+	if (fl < 0)
+		armLoadEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
+	armAsm->Bic(flagReg, flagReg, FPUflagO | FPUflagU);
+	if (fl < 0)
+		armStoreEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
+}
 
 // Sign-preserving operand clamp for FPU comparisons (C.cond.S).
 //
@@ -695,11 +707,29 @@ void recMOV_S()
 		XMMINFO_WRITED | XMMINFO_READS);
 }
 
+// ABS.S / NEG.S are raw sign-bit operations on the EE — the interpreter does
+// `& 0x7fffffff` / `^ 0x80000000` and the console agrees on every operand,
+// including exponent-255 patterns and denormals. Neither clamps.
+//
+// The fast path used to clamp both to ±fMax, which corrupted 22 of the 54
+// ABS/NEG operands in the first-party capture, in two ways:
+//
+//   * exponent-255 in, +fMax out. Those are ordinary large PS2 floats, not
+//     infinities — abs(0x7F800000) is 0x7F800000, not 0x7F7FFFFF.
+//   * denormal in, ZERO out, on ABS only. The clamp was an Fminnm, an
+//     ARITHMETIC op, so FPCR.FZ flushed the operand before the compare even
+//     happened. NEG's clamp was an integer Smin/Umin and so never did this,
+//     which is exactly why only ABS lost its denormals.
+//
+// Fabs and Fneg alone are correct and total. They are non-arithmetic bit
+// operations on AArch64 — no exceptions, no flush, NaN payloads through with
+// only the sign changed — so they match x86's AND/XOR-with-mask and the
+// interpreter's bit ops exactly. Same code the FULL path has always emitted
+// (DOUBLE::recABS_S_xmm / recNEG_S_xmm, iFPUd-arm64.cpp).
 static void recABS_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	armAsm->Fabs(armSRegister(EEREC_D), armSRegister(EEREC_S));
-	// ABS output is always non-negative -> one-sided positive clamp.
-	fpuClampResultPositive(armSRegister(EEREC_D));
 }
 
 void recABS_S()
@@ -708,13 +738,14 @@ void recABS_S()
 		XMMINFO_WRITED | XMMINFO_READS);
 }
 
+// See recABS_S_xmm above. The clamp deleted from here was the sign-preserving
+// integer one (mirroring x86's switch from ClampValues to fpuFloat3, upstream
+// 4ffbe0bbf) — which fixed NEG.S folding -NaN to +fMax, but kept the underlying
+// mistake of clamping at all. The console does not.
 static void recNEG_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	armAsm->Fneg(armSRegister(EEREC_D), armSRegister(EEREC_S));
-	// Sign-preserving clamp: NEG.S of a poisoned +NaN/-Inf must keep the sign
-	// (-> -fMax), but fpuClampResult (Fminnm/Fmaxnm) folds every NaN to +fMax.
-	// Mirrors x86's switch from ClampValues to fpuFloat3 (upstream 4ffbe0bbf).
-	fpuClampCompareOperand(armSRegister(EEREC_D));
 }
 
 void recNEG_S()

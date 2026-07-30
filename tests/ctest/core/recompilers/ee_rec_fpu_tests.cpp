@@ -310,27 +310,37 @@ TEST(EeRecFpu, NegSFlipsSignBit)
 	h.ExpectFpr(2, FloatBits(-3.5f));
 }
 
-// NEG.S must preserve the sign when clamping a poisoned (raw Inf/NaN bits)
-// operand. NEG_S of a +NaN produces a -NaN intermediate (Fneg = sign flip),
-// which the result clamp must fold to -FLT_MAX (sign preserved), not +FLT_MAX.
-// The arm64 rec used fpuClampResult (Fminnm/Fmaxnm), which folds every NaN to
-// +fMax (sign lost); the fix uses fpuClampCompareOperand (Smin/Umin, sign-
-// preserving), mirroring x86's switch from ClampValues to fpuFloat3 (upstream
-// 4ffbe0bbf).
+// NEG.S of a host-NaN bit pattern. This test has been through three answers,
+// and the history is the point:
 //
-// JIT-only: the single-precision interp NEG_S (FPU.cpp:334) just XORs the sign
-// bit with no clamp at all (-> raw -NaN), so neither the pre- nor post-fix rec
-// matches it. Assert GetFprBitsJit() directly via RunJitNoDiff().
-TEST(EeRecFpu, NegSPreservesSignOnPoisonedNan)
+//   0x7FC00000 -> 0x7F7FFFFF   fpuClampResult (Fminnm/Fmaxnm) folded every NaN
+//                              to +fMax and lost the sign.
+//   0x7FC00000 -> 0xFF7FFFFF   fpuClampCompareOperand (Smin/Umin) kept the
+//                              sign, mirroring x86's ClampValues -> fpuFloat3
+//                              switch (upstream 4ffbe0bbf). Better, and still
+//                              wrong: it was fixing which way a clamp was
+//                              wrong rather than asking whether to clamp.
+//   0x7FC00000 -> 0xFFC00000   no clamp at all. NEG.S is a sign-bit flip; the
+//                              EE has no NaN, 0x7FC00000 is just a large
+//                              finite number, and negating it must return its
+//                              bit pattern with bit 31 set.
+//
+// The third is the console's answer, measured: first-party capture, `neg QNAN`,
+// hardware 0xFFC00000. It is also what the interpreter has always produced
+// (FPU.cpp NEG_S is `^ 0x80000000`) and what the FULL path has always emitted,
+// so the previous note here that "neither the pre- nor post-fix rec matches
+// [the interpreter]" no longer applies -- which is why this now runs the
+// engine diff instead of RunJitNoDiff().
+TEST(EeRecFpu, NegSOfANanBitPatternIsAPureSignFlip)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
-	h.SetFprBits(1, 0x7FC00000u); // +NaN raw bits (poisoned fpr)
+	h.SetFprBits(1, 0x7FC00000u); // host +qNaN; on the EE, an ordinary big float
 	h.LoadProgram({
 		ee::NEG_S(2, 1),
 	});
-	h.RunJitNoDiff();
-	EXPECT_EQ(h.GetFprBitsJit(2), 0xFF7FFFFFu); // -FLT_MAX (sign preserved)
+	h.Run(); // engine diff: interp and JIT must agree here now
+	h.ExpectFpr(2, 0xFFC00000u);
 }
 
 TEST(EeRecFpu, AbsSClearsSignBit)
