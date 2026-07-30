@@ -1852,18 +1852,32 @@ void GSRunner::PumpPlatformMessages(bool forever)
 	const int fd = wl_display_get_fd(s_display);
 	while (!s_shutdown_requested.load())
 	{
+		// Everything below has to stay non-blocking, because the only thing that ends this loop is
+		// the shutdown flag being noticed on the next iteration. wl_display_dispatch() would read
+		// the queued events and then *wait* for more, and a window nobody is drawing to gets no
+		// further events, so the flag would never be re-tested and the process would never exit.
+		while (wl_display_prepare_read(s_display) != 0)
+		{
+			if (wl_display_dispatch_pending(s_display) < 0)
+				return;
+		}
+
 		wl_display_flush(s_display);
+
 		pollfd pfd = {fd, POLLIN, 0};
 		const int p = poll(&pfd, 1, 16); // cap so we keep checking shutdown
 		if (p > 0 && (pfd.revents & POLLIN))
 		{
-			if (wl_display_dispatch(s_display) < 0)
-				break;
+			if (wl_display_read_events(s_display) < 0)
+				return;
 		}
 		else
 		{
-			wl_display_dispatch_pending(s_display);
+			wl_display_cancel_read(s_display);
 		}
+
+		if (wl_display_dispatch_pending(s_display) < 0)
+			return;
 	}
 }
 
