@@ -848,9 +848,20 @@ private:
 	// recorded before it. Submitting accumulated work at render-pass boundaries lets
 	// the GPU execute concurrently with GS-thread recording, so that wait finds the
 	// work already complete (OutRun 2006 SD865: 3 sun-occlusion readbacks/frame cost
-	// ~8ms/frame stalled without this). Counters in render passes; ~0u = never.
+	// ~8ms/frame stalled without this).
+	//
+	// Two independent quantities, counted in different units on purpose:
+	//   - the cadence, in render passes since the last submit, is how often we offer to
+	//     kick. Uniform across a frame, so no part of a frame is favoured.
+	//   - the arming window, in FRAMES since the last readback, is whether we bother at
+	//     all. Its only job is "a game that never reads back sees zero change", so it has
+	//     to decay in the unit the caller thinks in. It used to count render passes, which
+	//     made one fixed budget mean wildly different things per title: 128 passes is
+	//     ~3 frames of OutRun 2006 but only ~3/4 of a Rogue Galaxy frame, so RG had the
+	//     kick switch itself off partway through every frame at nobody's request.
+	// ~0u = no readback seen yet, window shut.
 	u32 m_render_passes_since_submit = 0;
-	u32 m_render_passes_since_readback = ~0u;
+	u32 m_readback_frame = ~0u;
 
 	// Textures recently used as synchronous-readback sources (see DoHintReadbackSource).
 	// A draw INTO one of these is almost certainly the producer of the next readback,

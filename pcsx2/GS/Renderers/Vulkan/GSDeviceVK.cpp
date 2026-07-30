@@ -6777,7 +6777,7 @@ void GSDeviceVK::ExecuteCommandBufferAndRestartPresent(bool wait_for_completion,
 
 void GSDeviceVK::ExecuteCommandBufferForReadback()
 {
-	m_render_passes_since_readback = 0;
+	m_readback_frame = m_frame;
 	ExecuteCommandBuffer(true);
 	if (m_spinning_supported && GSConfig.HWSpinGPUForReadbacks)
 	{
@@ -7089,8 +7089,6 @@ void GSDeviceVK::EndRenderPass()
 	m_current_render_pass = VK_NULL_HANDLE;
 	g_perfmon.Put(GSPerfMon::RenderPasses, 1);
 	m_render_passes_since_submit++;
-	if (m_render_passes_since_readback != ~0u)
-		m_render_passes_since_readback++;
 
 	vkCmdEndRenderPass(GetCurrentCommandBuffer());
 }
@@ -7534,19 +7532,29 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// nothing is staged yet, and every binding below re-applies via dirty flags.
 	// Gated to outside-a-render-pass (no forced tile flush on tilers) and to frames
 	// near an actual readback (games that never read back see zero change).
-	// Threshold is insensitive 4..16 (measured OutRun 2006/SD865); count resets on
-	// every submit, so this adds ~(RPs-per-frame / threshold) extra submits.
+	//
+	// Do not read the threshold as a submit budget. It sets how often we *offer* to kick;
+	// what we get is decided by the fence gate below, and that gate binds by a wide margin.
+	// With three command buffers only two submissions can be in flight, so a third kick
+	// needs the first to have retired. Measured on Rogue Galaxy (M2/Honeykrisp, 60 frames,
+	// ~116 RPs/frame): the arithmetic "RPs-per-frame / threshold" predicts ~14 kicks/frame
+	// and the real number is 2, because ~3300 of ~3400 offers find the next command buffer
+	// still executing. So raising the threshold buys far less than it looks like it should,
+	// and lowering it buys nothing. Sweeping it 8->16 measured -2% total GPU stall on Rogue
+	// Galaxy and +12% on OutRun 2006, i.e. no free lunch in either direction.
 	constexpr u32 kick_threshold = 8;
-	constexpr u32 readback_window = 128; // ~a few frames' worth of render passes
+	constexpr u32 readback_window_frames = 3;
 	// A draw into a recent readback source is (almost certainly) producing the data for
 	// the next readback, which follows immediately — kick regardless of the threshold so
 	// the backlog drains during this pass's recording and the readback waits only on the
 	// pass itself plus the copy (see m_recent_readback_sources).
 	const bool produces_readback_data =
 		config.rt && (config.rt == m_recent_readback_sources[0] || config.rt == m_recent_readback_sources[1]);
-	if ((m_render_passes_since_submit >= kick_threshold ||
+	const bool near_readback = m_readback_frame != ~0u && (m_frame - m_readback_frame) <= readback_window_frames;
+	if (near_readback &&
+		(m_render_passes_since_submit >= kick_threshold ||
 			(produces_readback_data && m_render_passes_since_submit > 0)) &&
-		m_render_passes_since_readback <= readback_window && !InRenderPass())
+		!InRenderPass())
 	{
 		// The kick must never block: submitting cycles to the next command buffer, and
 		// ActivateCommandBuffer fence-waits if that buffer's previous submission is still
