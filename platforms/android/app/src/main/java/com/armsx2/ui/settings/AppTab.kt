@@ -636,6 +636,21 @@ private fun BackupRestoreRows() {
 
     BackupActionRow("💾", "app.backup.export", "app.backup.export.desc", status, busy, doExport)
     BackupActionRow("📥", "app.backup.import", "app.backup.import.desc", "", busy, doImport)
+
+    // Factory reset. Sits with Backup/Restore because Export is the thing to do first — the
+    // prompt says so. Routed through GlobalConfirm rather than a local overlay: this row is
+    // inside a scrolling tab, so a scrim drawn here would clip to the row's bounds.
+    val doReset = {
+        if (!busy) {
+            com.armsx2.ui.common.GlobalConfirm.ask(
+                title = I18n.get("app.reset.title"),
+                message = I18n.get("app.reset.message"),
+                confirmLabel = I18n.get("app.reset.confirm"),
+                destructive = true,
+            ) { MainActivityRuntime.resetAppToDefaults(context) }
+        }
+    }
+    BackupActionRow("♻️", "app.reset", "app.reset.desc", "", busy, doReset)
 }
 
 @Composable

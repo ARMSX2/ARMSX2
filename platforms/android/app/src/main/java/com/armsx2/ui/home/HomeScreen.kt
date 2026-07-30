@@ -117,6 +117,7 @@ import com.armsx2.ui.common.RoundAction
 import com.armsx2.ui.common.SearchField
 import com.armsx2.ui.common.SectionTitle
 import com.armsx2.ui.common.StatusChip
+import com.armsx2.ui.settings.controllerFocusable
 import kotlin.math.abs
 
 private val LocalCustomCoverMap = staticCompositionLocalOf<Map<String, java.io.File>> { emptyMap() }
@@ -138,6 +139,7 @@ fun HomeScreen(
     var overflowMenu by remember { mutableStateOf(false) }
     var showExitConfirm by remember { mutableStateOf(false) }
     var menuGame by remember { mutableStateOf<GameInfo?>(null) }
+    var showClearRecentsConfirm by remember { mutableStateOf(false) }
     // #9 custom library background — inert until the user picks an image.
     LaunchedEffect(Unit) { LibraryBackground.ensureLoaded(); CoverArtStyle.load() }
     val backgroundPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
@@ -362,6 +364,15 @@ fun HomeScreen(
                         )
                     },
                     actions = {
+                        // Clock + battery, ahead of the buttons so it reads as status rather than
+                        // as another control. Deliberately NOT controllerFocusable — it isn't
+                        // interactive, and registering it would put a dead stop in the pad's path
+                        // through the toolbar.
+                        com.armsx2.ui.common.LibraryStatusCluster(
+                            // align(): the title block makes the bar taller than this two-line
+                            // cluster, so without it the pair sits high relative to the buttons.
+                            Modifier.align(Alignment.CenterVertically).padding(end = 6.dp),
+                        )
                         RoundAction(
                             "↻",
                             str("games.card.refresh"),
@@ -466,14 +477,35 @@ fun HomeScreen(
                     val recentSel = if (recentsSelected) HomeInputController.recentIndex.intValue else -1
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         Column {
-                            // In shelf view nudge the header right so it lines up with
-                            // the first cover's left edge (the shelf's 12dp inset).
-                            SectionTitle(
-                                str("games.section.recentlyPlayed"),
-                                modifier = Modifier.padding(
-                                    start = if (state.layout == LibraryLayout.Shelf) 4.dp else 0.dp,
-                                ),
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // In shelf view nudge the header right so it lines up with
+                                // the first cover's left edge (the shelf's 12dp inset).
+                                SectionTitle(
+                                    str("games.section.recentlyPlayed"),
+                                    modifier = Modifier.padding(
+                                        start = if (state.layout == LibraryLayout.Shelf) 4.dp else 0.dp,
+                                    ),
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                val clearAll = { showClearRecentsConfirm = true }
+                                Surface(
+                                    onClick = clearAll,
+                                    modifier = Modifier.controllerFocusable(
+                                        controllerId = "home.recents.clearAll",
+                                        shape = RoundedCornerShape(12.dp),
+                                        onConfirm = clearAll,
+                                    ),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                                ) {
+                                    Text(
+                                        str("games.recent.clearAll"),
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                             Spacer(Modifier.height(9.dp))
                             if (state.layout == LibraryLayout.Shelf) {
                                 // Same frosted-glass plank as All Games (bagas: one
@@ -638,6 +670,23 @@ fun HomeScreen(
         // well would draw it twice, and a per-screen host is what made it invisible from
         // Settings (a nav destination that unmounts this screen).
     }
+    }
+
+    // Sits outside the grid so it draws over the whole library. Not an AlertDialog — a Compose
+    // dialog is its own window and would swallow the D-pad, and this has to be pad-navigable.
+    if (showClearRecentsConfirm) {
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str("games.recent.clearAll.title"),
+            message = str("games.recent.clearAll.message"),
+            confirmLabel = str("games.recent.clearAll"),
+            destructive = true,
+            idPrefix = "clear-recents",
+            onConfirm = {
+                viewModel.clearRecent()
+                showClearRecentsConfirm = false
+            },
+            onDismiss = { showClearRecentsConfirm = false },
+        )
     }
 
     menuGame?.let { game ->

@@ -55,6 +55,14 @@ object TouchControls {
     private const val KEY_FACE_MULTI = "touch.faceMulti"
     private const val KEY_TOUCH_GLIDING = "touch.gliding"
     private const val KEY_TOUCH_HAPTICS = "touch.haptics"
+    private const val KEY_GESTURE_ON = "touch.gesture.enabled"
+    private const val KEY_GESTURE_UP = "touch.gesture.up"
+    private const val KEY_GESTURE_DOWN = "touch.gesture.down"
+    private const val KEY_GESTURE_LEFT = "touch.gesture.left"
+    private const val KEY_GESTURE_RIGHT = "touch.gesture.right"
+    private const val KEY_GESTURE_SENS = "touch.gesture.sensitivity"
+    private const val KEY_GESTURE_DTAP = "touch.gesture.doubleTap"
+    private const val KEY_GESTURE_DTAP_HOLD = "touch.gesture.doubleTapHold"
     private const val KEY_MULTI_RADIUS = "touch.multiRadius"
     private const val KEY_DPAD_SPACING = "touch.dpadSpacing"
     private const val KEY_FLOATING_STICK = "touch.floatingStick"
@@ -172,6 +180,28 @@ object TouchControls {
     // buttons register a press from further out, so multitouch/rolling works with more
     // space between them. Persisted under KEY_MULTI_RADIUS. Default 0.62.
     val multiTouchRadius = mutableFloatStateOf(0.62f)
+
+    // ---- Gesture control (PPSSPP-style, #SNAKEATER) --------------------------
+    // Swipes and a double-tap on EMPTY screen area (never on a button — the gesture layer
+    // ignores any finger whose DOWN was claimed by a control) fire PS2 buttons. Lets a
+    // touch-only player reach buttons that don't fit on screen.
+    // All under KEY_GESTURE_*; default OFF so nothing changes for existing users.
+    val gestureEnabled = mutableStateOf(false)
+    /** PS2 keycode per swipe direction, or 0 for unassigned. Same codes as TouchButtonId.keycode. */
+    val gestureSwipeUp = mutableIntStateOf(0)
+    val gestureSwipeDown = mutableIntStateOf(0)
+    val gestureSwipeLeft = mutableIntStateOf(0)
+    val gestureSwipeRight = mutableIntStateOf(0)
+    /** Fraction of the shorter screen edge a finger must travel to count as a swipe. */
+    val gestureSwipeSensitivity = mutableFloatStateOf(0.17f)
+    /** PS2 keycode fired by a double-tap, or 0 for unassigned. */
+    val gestureDoubleTap = mutableIntStateOf(0)
+    /**
+     * Double-tap behaviour. false = TAP: a momentary pulse (NFS nitro — tap it and it's done).
+     * true = HOLD: the button LATCHES down and a second double-tap releases it (ARPG camera lock).
+     * Requested by SNAKEATER, who wanted both shapes from the one gesture.
+     */
+    val gestureDoubleTapHold = mutableStateOf(false)
 
     // On-screen D-pad key spacing, as a fraction of the pad's half-size. 0 = the four
     // directions meet at the center (a tight +). Higher pushes each direction OUT toward
@@ -530,6 +560,15 @@ object TouchControls {
         opacity.floatValue = MainActivityRuntime.prefs.getFloat(KEY_OPACITY, 0.55f).coerceIn(0.0f, 1.0f)
         pressurePercent.intValue = MainActivityRuntime.prefs.getInt(KEY_PRESSURE_PERCENT, 50).coerceIn(5, 95)
         faceMultiTouch.value = MainActivityRuntime.prefs.getBoolean(KEY_FACE_MULTI, true)
+        gestureEnabled.value = MainActivityRuntime.prefs.getBoolean(KEY_GESTURE_ON, false)
+        gestureSwipeUp.intValue = MainActivityRuntime.prefs.getInt(KEY_GESTURE_UP, 0)
+        gestureSwipeDown.intValue = MainActivityRuntime.prefs.getInt(KEY_GESTURE_DOWN, 0)
+        gestureSwipeLeft.intValue = MainActivityRuntime.prefs.getInt(KEY_GESTURE_LEFT, 0)
+        gestureSwipeRight.intValue = MainActivityRuntime.prefs.getInt(KEY_GESTURE_RIGHT, 0)
+        gestureSwipeSensitivity.floatValue =
+            MainActivityRuntime.prefs.getFloat(KEY_GESTURE_SENS, 0.17f).coerceIn(0.05f, 0.60f)
+        gestureDoubleTap.intValue = MainActivityRuntime.prefs.getInt(KEY_GESTURE_DTAP, 0)
+        gestureDoubleTapHold.value = MainActivityRuntime.prefs.getBoolean(KEY_GESTURE_DTAP_HOLD, false)
         touchGliding.value = MainActivityRuntime.prefs.getBoolean(KEY_TOUCH_GLIDING, false)
         touchHaptics.value = MainActivityRuntime.prefs.getBoolean(KEY_TOUCH_HAPTICS, true)
         multiTouchRadius.floatValue = MainActivityRuntime.prefs.getFloat(KEY_MULTI_RADIUS, 0.62f).coerceIn(0.50f, 0.95f)
@@ -621,6 +660,14 @@ object TouchControls {
                 .putString(KEY_ACTIVE, activeProfileName.value)
                 .putFloat(KEY_OPACITY, opacity.floatValue)
                 .putBoolean(KEY_FACE_MULTI, faceMultiTouch.value)
+                .putBoolean(KEY_GESTURE_ON, gestureEnabled.value)
+                .putInt(KEY_GESTURE_UP, gestureSwipeUp.intValue)
+                .putInt(KEY_GESTURE_DOWN, gestureSwipeDown.intValue)
+                .putInt(KEY_GESTURE_LEFT, gestureSwipeLeft.intValue)
+                .putInt(KEY_GESTURE_RIGHT, gestureSwipeRight.intValue)
+                .putFloat(KEY_GESTURE_SENS, gestureSwipeSensitivity.floatValue)
+                .putInt(KEY_GESTURE_DTAP, gestureDoubleTap.intValue)
+                .putBoolean(KEY_GESTURE_DTAP_HOLD, gestureDoubleTapHold.value)
                 .putBoolean(KEY_TOUCH_GLIDING, touchGliding.value)
                 .putBoolean(KEY_TOUCH_HAPTICS, touchHaptics.value)
                 .putFloat(KEY_MULTI_RADIUS, multiTouchRadius.floatValue)
@@ -955,6 +1002,50 @@ object TouchControls {
         faceMultiTouch.value = enabled
         persist()
     }
+
+    // ---- Gesture control setters ---------------------------------------------
+    fun setGestureEnabled(enabled: Boolean) {
+        gestureEnabled.value = enabled
+        persist()
+    }
+
+    /** dir: 0=up 1=down 2=left 3=right. code 0 clears the assignment. */
+    fun setGestureSwipe(dir: Int, code: Int) {
+        when (dir) {
+            0 -> gestureSwipeUp.intValue = code
+            1 -> gestureSwipeDown.intValue = code
+            2 -> gestureSwipeLeft.intValue = code
+            3 -> gestureSwipeRight.intValue = code
+        }
+        persist()
+    }
+
+    fun setGestureSensitivity(v: Float) {
+        gestureSwipeSensitivity.floatValue = v.coerceIn(0.05f, 0.60f)
+        persist()
+    }
+
+    fun setGestureDoubleTap(code: Int) {
+        gestureDoubleTap.intValue = code
+        persist()
+    }
+
+    fun setGestureDoubleTapHold(hold: Boolean) {
+        gestureDoubleTapHold.value = hold
+        persist()
+    }
+
+    /**
+     * Buttons a gesture may fire, as (keycode, label).
+     *
+     * Digital only — FACE, SHOULDER and START/SELECT. A swipe cannot meaningfully drive a stick or
+     * a d-pad direction (those want a held magnitude, not a pulse), and the menu/state widgets are
+     * app actions rather than PS2 buttons.
+     */
+    fun gestureAssignableButtons(): List<Pair<Int, String>> =
+        TouchButtonId.values()
+            .filter { it.kind == TouchButtonId.Kind.FACE || it.kind == TouchButtonId.Kind.SHOULDER }
+            .map { it.keycode to it.label }
 
     fun setTouchGliding(enabled: Boolean) {
         touchGliding.value = enabled

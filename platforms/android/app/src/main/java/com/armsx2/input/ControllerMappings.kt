@@ -95,11 +95,20 @@ object ControllerMappings {
 
     // ---- Per-game scope (issue #246) --------------------------------------
     // The INPUT-MAPPING layer — button binds, stick modes, custom stick codes —
-    // may be overridden PER GAME, mirroring how renderer/touch already go
-    // per-serial. Global keys stay the baseline (single-player users unchanged);
-    // a per-game override lives under "game.<serial>." and shadows the global
-    // value for that serial ONLY. Controller FEEL (deadzone/sensitivity/accel/
-    // invert/rumble/dpad-as-lstick) stays GLOBAL — it describes the physical pad.
+	// may be overridden PER GAME, mirroring how renderer/touch already go
+	// per-serial. Global keys stay the baseline (single-player users unchanged);
+	// a per-game override lives under "game.<serial>." and shadows the global
+	// value for that serial ONLY.
+	//
+	// Stick FEEL (curve/deadzone/outer/anti-deadzone/sensitivity/accel) was
+	// deliberately GLOBAL here at first, on the reasoning that it describes the
+	// physical pad. That held for deadzone, which is about the hardware, but not
+	// for the rest: the response curve exists to tame one game's over-sensitive
+	// aiming (its own description names GTA: San Andreas), and a camera-stick
+	// sensitivity that suits a shooter is wrong for a racer. Users set it per game,
+	// found it silently moved the global value, and reported it. Now scoped like
+	// every other row in that tab. Rumble / invert / dpad-as-lstick stay global —
+	// those really are pad properties.
     private fun gameKey(serial: String, baseKey: String) = "game.$serial.$baseKey"
     private fun scopedKey(baseKey: String, serial: String?) =
         if (serial.isNullOrEmpty()) baseKey else gameKey(serial, baseKey)
@@ -257,27 +266,48 @@ object ControllerMappings {
 
     /** Per-stick float pref with migration: "<base>.l"/".r" if present, else the
      *  legacy single "<base>" key, else [def]. Cached per stick for the hot path. */
-    private class PerStickPref(val baseKey: String, val def: Float, val lo: Float, val hi: Float) {
-        @Volatile var cacheL = Float.NaN
-        @Volatile var cacheR = Float.NaN
-        fun key(left: Boolean) = baseKey + if (left) ".l" else ".r"
-        fun get(left: Boolean): Float {
-            val c = if (left) cacheL else cacheR
-            if (!c.isNaN()) return c
-            val v = (if (MainActivityRuntime.prefs.contains(key(left))) MainActivityRuntime.prefs.getFloat(key(left), def)
-                else MainActivityRuntime.prefs.getFloat(baseKey, def)).coerceIn(lo, hi)
-            if (left) cacheL = v else cacheR = v
-            return v
-        }
-        fun set(left: Boolean, v: Float) {
-            val c = v.coerceIn(lo, hi)
-            if (left) cacheL = c else cacheR = c
-            MainActivityRuntime.prefs.edit { putFloat(key(left), c) }
-        }
-        fun reset(edit: android.content.SharedPreferences.Editor) {
-            edit.remove(baseKey).remove(key(true)).remove(key(false))
-            cacheL = Float.NaN; cacheR = Float.NaN
-        }
+	private class PerStickPref(val baseKey: String, val def: Float, val lo: Float, val hi: Float) {
+		@Volatile var cacheL = Float.NaN
+		@Volatile var cacheR = Float.NaN
+		// Which game the cached pair was resolved for. get() runs per input event, so it
+		// cannot re-read prefs each time; the cache is dropped when the active game moves.
+		// The sentinel differs from null (= library) so the first read always resolves.
+		@Volatile var cachedFor: String? = "\u0000unset"
+		fun key(left: Boolean) = baseKey + if (left) ".l" else ".r"
+		fun get(left: Boolean): Float {
+			val serial = runtimeSerial()
+			if (serial != cachedFor) { cacheL = Float.NaN; cacheR = Float.NaN; cachedFor = serial }
+			val c = if (left) cacheL else cacheR
+			if (!c.isNaN()) return c
+			val p = MainActivityRuntime.prefs
+			// per-game override -> global per-stick -> legacy shared base key
+			val v = (when {
+				serial != null && p.contains(gameKey(serial, key(left))) ->
+					p.getFloat(gameKey(serial, key(left)), def)
+				p.contains(key(left)) -> p.getFloat(key(left), def)
+				else -> p.getFloat(baseKey, def)
+			}).coerceIn(lo, hi)
+			if (left) cacheL = v else cacheR = v
+			return v
+		}
+		fun set(left: Boolean, v: Float) {
+			val c = v.coerceIn(lo, hi)
+			if (left) cacheL = c else cacheR = c
+			// Scope the write the same way the mapping rows do: per game only when the
+			// overlay is in Game scope, global otherwise (including from the library).
+			val serial = if (com.armsx2.ui.InGameOverlay.settingsScope.value ==
+					com.armsx2.config.SettingsScope.Game) runtimeSerial() else null
+			MainActivityRuntime.prefs.edit {
+				putFloat(if (serial != null) gameKey(serial, key(left)) else key(left), c)
+			}
+			// Keep the cache consistent with whichever tier was just written.
+			cachedFor = runtimeSerial()
+		}
+		fun reset(edit: android.content.SharedPreferences.Editor) {
+			edit.remove(baseKey).remove(key(true)).remove(key(false))
+			runtimeSerial()?.let { edit.remove(gameKey(it, key(true))).remove(gameKey(it, key(false))) }
+			cacheL = Float.NaN; cacheR = Float.NaN; cachedFor = "\u0000unset"
+		}
     }
     private val prefStickSens = PerStickPref(KEY_STICK_SENS, 1.0f, STICK_SENS_MIN, STICK_SENS_MAX)
     private val prefStickAccel = PerStickPref(KEY_STICK_ACCEL, 0.0f, 0f, STICK_ACCEL_MAX)
@@ -780,28 +810,10 @@ object ControllerMappings {
         return false
     }
 
-    /** Reset the pad TUNABLES to defaults for the global "Reset to defaults" — stick
-     *  feel (deadzone/sensitivity/acceleration), D-pad-as-left-stick, stick modes and
-     *  CUSTOM stick-direction codes, for BOTH players. Does NOT touch the button binds
-     *  (those have their own per-player Reset). Bumps stickBindTick so the Pad tab
-     *  recomposes. (The button-bind sliders live outside the Settings object, which is
-     *  why the Settings reset alone didn't clear them.) */
-    fun resetTunables() {
-        MainActivityRuntime.prefs.edit {
-            remove(KEY_DPAD_AS_LSTICK)
-                .remove(KEY_LSTICK_INVX).remove(KEY_LSTICK_INVY).remove(KEY_LSTICK_SWAP)
-                .remove(KEY_RSTICK_INVX).remove(KEY_RSTICK_INVY).remove(KEY_RSTICK_SWAP)
-            prefStickSens.reset(this); prefStickAccel.reset(this); prefStickDz.reset(this)
-            prefStickOuter.reset(this); prefStickAntiDz.reset(this); prefStickCurve.reset(this)
-            for (p in intArrayOf(P1, P2)) {
-                remove(playerPrefix(p) + KEY_LSTICK).remove(playerPrefix(p) + KEY_RSTICK)
-                for (left in booleanArrayOf(true, false))
-                    for (dir in StickDir.values())
-                        remove(customKey(left, dir, p))
-            }
-        }
-        stickBindTick.value++
-    }
+    // resetTunables() lived here. It hand-listed the tunable keys, fell behind every setting
+    // added after it, and had ZERO call sites — so the "reset controls to defaults" it claimed
+    // to serve never existed. Superseded by [resetAllControls], which sweeps by key prefix and
+    // therefore cannot drift. Don't reintroduce an enumerated variant.
 
     fun targetForPhysical(physicalKeyCode: Int, player: Int = 0): Int? {
         // Unbound actions store KEYCODE_UNKNOWN; never let a stray UNKNOWN event match
@@ -878,6 +890,12 @@ object ControllerMappings {
         // Appended last on purpose: hotkeys are persisted by ordinal (hotkeyForStickCode's
         // index lookup), so inserting mid-enum would re-point everyone's existing bindings.
         TOGGLE_KEYBOARD("pad.togglekeyboard.keycode", "On-Screen Keyboard (toggle)"),
+        // Re-zeroes the motion neutral to however the device is being held right now. Matters
+        // most on the accelerometer fallback (no gyroscope), where the stick value IS an
+        // absolute tilt angle, so "level" has to be defined by the player rather than measured.
+        // Also useful for rotation-vector steering after shifting position mid-race.
+        // Appended last for the same persisted-by-ordinal reason as TOGGLE_KEYBOARD above.
+        GYRO_RECENTER("pad.gyrorecenter.keycode", "Motion Recenter"),
     }
 
     // A hotkey is either a single button or a two-button combo. The main key is
@@ -1027,6 +1045,48 @@ object ControllerMappings {
             }
         }
         invalidateRuntimeCaches()
+        hotkeyBindTick.value++
+    }
+
+    /**
+     * Reset the ENTIRE Controls tier — binds for both players, stick modes and custom stick
+     * codes, stick feel, gyro, rumble/haptics, multitap and hotkeys.
+     *
+     * Prefix sweep rather than an enumerated key list on purpose. Every control pref is either
+     * `pad.*` (global) or `game.<serial>.*` (per-game, written only by [gameKey]), and an
+     * enumerated list silently rots: the previous attempt at this, [resetTunables], listed keys
+     * by hand, drifted behind the settings that were added after it, and in the end had NO call
+     * site at all — so "reset controls" did nothing. A prefix can't fall behind.
+     *
+     * @param serial per-game scope: drops that game's overrides so it falls back to global.
+     *  Null/blank resets the global tier.
+     *
+     * Saved mapping PROFILES survive — those are user-authored content, not a setting, and
+     * wiping them on a reset would destroy work with no way back.
+     */
+    fun resetAllControls(serial: String?) {
+        val prefs = MainActivityRuntime.prefs
+        val keys = prefs.all.keys.toList()
+        val doomed = if (!serial.isNullOrEmpty()) {
+            val prefix = "game.$serial."
+            keys.filter { it.startsWith(prefix) }
+        } else {
+            keys.filter { it.startsWith("pad.") && it != KEY_PAD_PROFILES }
+        }
+        prefs.edit {
+            doomed.forEach { remove(it) }
+            // Hotkeys read "absent" as their DEFAULT binding, not as unbound, so removing the key
+            // is not the same as clearing it — write UNKNOWN explicitly. Global scope only;
+            // hotkeys have no per-game tier.
+            if (serial.isNullOrEmpty()) {
+                SysHotkey.values().forEach {
+                    putInt(it.prefKey, KeyEvent.KEYCODE_UNKNOWN)
+                        .putInt(it.prefKey + MOD_SUFFIX, KeyEvent.KEYCODE_UNKNOWN)
+                }
+            }
+        }
+        invalidateRuntimeCaches()
+        stickBindTick.value++
         hotkeyBindTick.value++
     }
 

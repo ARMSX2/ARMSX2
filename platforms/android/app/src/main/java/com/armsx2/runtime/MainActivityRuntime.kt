@@ -371,6 +371,13 @@ open class MainActivityRuntime : ComponentActivity() {
         // stick, so the physical stick is left driving on its own.
         val gyroActive = mutableStateOf(true)
 
+        // Bridge to the live AndroidGyroscopeInput's recenter(). The sensor instance is
+        // remembered inside TouchControlsOverlay, so the runtime (which owns hotkey
+        // dispatch) has no other handle on it. Set while a gyro session is registered and
+        // nulled on dispose, so GYRO_RECENTER can tell "no motion running" from a real
+        // recenter instead of silently doing nothing.
+        @Volatile var gyroRecenterHook: (() -> Unit)? = null
+
         // #254: whether the emulated USB keyboard is attached for the running
         // game (resolved Settings.usbKeyboard, cached at launch in
         // applyRendererPrefs). Read hot in dispatchKeyEvent to decide whether a
@@ -1417,6 +1424,25 @@ open class MainActivityRuntime : ComponentActivity() {
         private var lastInitDataRoot: String? = null
         fun currentInitDataRoot(): String? = lastInitDataRoot
 
+        /**
+         * Factory-reset every app SETTING and cold-restart.
+         *
+         * Wipes all preferences (settings, controls, hotkeys, touch layouts, per-game overrides,
+         * library cache, recents, onboarding state) plus the on-disk settings layers that would
+         * otherwise re-seed them — see [ConfigStore.purgeAllSettingsFiles], which is what stops
+         * the reset being silently undone on the next launch.
+         *
+         * Deliberately does NOT delete content: games, BIOS, saves, memory cards, save states,
+         * covers, texture packs and shaders all survive. Setup runs again afterwards because the
+         * chosen data root is a preference; pointing it at the same folder restores everything.
+         */
+        fun resetAppToDefaults(context: Context) {
+            // Files first — clearing prefs drops the data-root pref that locates them.
+            runCatching { com.armsx2.config.ConfigStore.purgeAllSettingsFiles() }
+            runCatching { prefs.edit { clear() } }
+            restartApp(context)
+        }
+
         /** Cold-restart the app so native re-runs initialize() with the newly
          *  chosen data root. Used after the user moves app data between Internal
          *  and SD in the setup wizard. */
@@ -1736,6 +1762,21 @@ open class MainActivityRuntime : ComponentActivity() {
         invoke {
             NativeApp.initializeOnce(applicationContext)
             nativeReady.value = true
+
+            // One-time repair of globally-armed patches. Older builds filled the global
+            // [Patches]/[Cheats] Enable lists just by opening the Patch Manager, and since
+            // patches are matched BY NAME those entries armed the same-named group in the
+            // bundled archive for every game — the "60fps/16:9 with every patch setting off,
+            // and it won't turn off" reports. The auto-sync is gone, but existing installs
+            // still carry the poisoned lists, so clear them once. Must run after
+            // initializeOnce (the base settings layer has to exist).
+            // Key is versioned: v1 cleared only the base layer, which a stale PER-GAME list then
+            // shadowed (GOW2 still reported "1 game patch active" with everything off). Bumping it
+            // re-runs the now-complete purge for anyone who already took v1.
+            if (!prefs.getBoolean("patchEnableListsPurged.v2", false)) {
+                runCatching { NativeApp.purgeGlobalPatchEnableLists() }
+                    .onSuccess { prefs.edit { putBoolean("patchEnableListsPurged.v2", true) } }
+            }
 
             // Pin Filenames/BIOS to the file the setup wizard copied —
             // deferred to here because Host::SetBaseStringSettingValue
@@ -3027,6 +3068,10 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (down && event.repeatCount == 0) toggleGyro()
                     return true
                 }
+                ControllerMappings.SysHotkey.GYRO_RECENTER -> {
+                    if (down && event.repeatCount == 0) recenterGyro()
+                    return true
+                }
                 ControllerMappings.SysHotkey.TOGGLE_KEYBOARD -> {
                     if (down && event.repeatCount == 0) toggleSoftKeyboard()
                     return true
@@ -3197,6 +3242,19 @@ open class MainActivityRuntime : ComponentActivity() {
         val on = !gyroActive.value
         gyroActive.value = on
         hotkeyToast(if (on) "Gyro ON" else "Gyro OFF")
+    }
+
+    /** Re-zero the motion neutral. Routed through [gyroRecenterHook] because the sensor
+     *  instance is owned by the touch overlay composable, not the runtime. No-op (with a
+     *  toast either way) when no gyro session is live, so the binding never feels dead. */
+    private fun recenterGyro() {
+        val hook = gyroRecenterHook
+        if (hook == null) {
+            hotkeyToast("Motion not active")
+            return
+        }
+        hook()
+        hotkeyToast("Motion recentered")
     }
 
     fun toggleFastForward() {
@@ -4264,6 +4322,7 @@ open class MainActivityRuntime : ComponentActivity() {
             // directions / combos) doesn't provide — behave as a toggle here rather than
             // latching gyro on with no release.
             ControllerMappings.SysHotkey.GYRO_HOLD -> toggleGyro()
+            ControllerMappings.SysHotkey.GYRO_RECENTER -> recenterGyro()
             ControllerMappings.SysHotkey.RES_UP -> stepResolution(1)
             ControllerMappings.SysHotkey.RES_DOWN -> stepResolution(-1)
             ControllerMappings.SysHotkey.ACHIEVEMENTS -> com.armsx2.ui.emulation.EmulationMenuInputController.open(com.armsx2.ui.emulation.EmulationMenuTab.Options)

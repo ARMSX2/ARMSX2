@@ -155,10 +155,18 @@ fun TouchControlsOverlay() {
                 ControllerMappings.gyroSmoothing(),
                 ControllerMappings.gyroInvertX(),
                 ControllerMappings.gyroInvertY())
+            // Hand the runtime a handle on recenter() — it owns hotkey dispatch but not the
+            // sensor. Only published while a session is actually registered so GYRO_RECENTER
+            // can report "not active" rather than appearing to work.
+            MainActivityRuntime.gyroRecenterHook = { gyro.recenter() }
         } else {
+            MainActivityRuntime.gyroRecenterHook = null
             gyro.stop()
         }
-        onDispose { gyro.stop() }
+        onDispose {
+            MainActivityRuntime.gyroRecenterHook = null
+            gyro.stop()
+        }
     }
     val edit = TouchControls.editMode.value
     val running = MainActivityRuntime.eState.value == EmuState.RUNNING ||
@@ -324,6 +332,13 @@ fun TouchControlsOverlay() {
                 glide = TouchControls.touchGliding.value,
                 onPressedChange = { unifiedPressed = it },
             )
+        }
+        // Gesture layer (swipes / double-tap on empty area). Composed here — below every visual
+        // widget — for the same reason as the layers around it: a finger that starts on a control
+        // is claimed by that control and never reaches the gesture handler. It also never consumes,
+        // so it cannot swallow a press even if this ordering changes later.
+        if (!edit) {
+            GestureLayer(widthPx = widthPx, heightPx = heightPx)
         }
         // Full-half invisible analog sticks: an invisible layer owning each screen half, composed
         // z-BELOW the visual widgets so a finger starting on a button drives the button, not a stick.

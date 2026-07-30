@@ -217,10 +217,13 @@ fun SettingsScreen(
                         Box(Modifier.controllerFocusable("settings.action.search", CircleShape, onConfirm = openSearch)) {
                             RoundAction("⌕", str("action.search"), openSearch)
                         }
-                        // Only offer Reset where the tab actually owns settings. Controls,
-                        // Hotkeys and Skins keep their state elsewhere (ControllerMappings et
-                        // al) and have their own reset rows, so a button here would no-op.
-                        if (categoryHasResettableSettings(displayedCategory)) {
+                        // Only offer Reset where there is something to reset. Controls owns no
+                        // Settings fields (its state lives in ControllerMappings) but IS
+                        // resettable via resetAllControls — it was previously excluded here AND
+                        // its own resetTunables had no call site, so controls had no working
+                        // reset at all. Hotkeys/Skins still have none of their own.
+                        if (categoryHasResettableSettings(displayedCategory) ||
+                            displayedCategory == SettingsCategory.Controls) {
                             Box(Modifier.controllerFocusable("settings.action.reset", CircleShape, onConfirm = { showReset = true })) {
                                 RoundAction("↺", str("action.reset"), { showReset = true })
                             }
@@ -270,23 +273,28 @@ fun SettingsScreen(
     }
 
     if (showReset) {
-        AlertDialog(
-            onDismissRequest = { showReset = false },
-            title = { Text(str("action.reset")) },
+        // ConfirmOverlay, not AlertDialog: a Compose dialog is its own window and swallows
+        // controller keys, so the old prompt could only be answered by touch.
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str("action.reset"),
             // Name the TAB being reset. The old dialog said only "Global"/"Game", so users
             // reasonably assumed Reset applied to the page they were on — and it didn't.
-            text = {
-                Text(
-                    categoryTitle(displayedCategory) + " · " +
-                        (if (scopeGame == null) str("scope.global") else str("scope.game")),
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { viewModel.resetCurrentScope(displayedCategory); showReset = false }) {
-                    Text(str("action.reset"), color = MaterialTheme.colorScheme.error)
+            message = categoryTitle(displayedCategory) + " · " +
+                (if (scopeGame == null) str("scope.global") else str("scope.game")),
+            confirmLabel = str("action.reset"),
+            destructive = true,
+            idPrefix = "settings-reset",
+            onConfirm = {
+                if (displayedCategory == SettingsCategory.Controls) {
+                    // Controls lives in ControllerMappings, outside the Settings object, so it
+                    // resets through its own path. Per-game scope drops that game's overrides.
+                    com.armsx2.input.ControllerMappings.resetAllControls(scopeGame?.settingsKey)
+                } else {
+                    viewModel.resetCurrentScope(displayedCategory)
                 }
+                showReset = false
             },
-            dismissButton = { TextButton(onClick = { showReset = false }) { Text(str("action.cancel")) } },
+            onDismiss = { showReset = false },
         )
     }
 }

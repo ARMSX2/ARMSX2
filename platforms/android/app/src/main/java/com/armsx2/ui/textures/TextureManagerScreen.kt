@@ -35,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.armsx2.i18n.str
@@ -232,8 +233,21 @@ private fun TexturePackRow(pack: TexturePackItem, onDelete: () -> Unit) {
             Text("▧", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(pack.serial, style = MaterialTheme.typography.titleMedium)
-                Text("${pack.fileCount} · ${humanSize(pack.size)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // Lead with the game name when the library can supply one — a list of bare
+                // serials is unreadable once you have more than a handful of packs. The serial
+                // stays on the detail line, since that's the folder the core actually reads.
+                Text(
+                    pack.gameTitle ?: pack.serial,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val detail = if (pack.gameTitle != null) "${pack.serial} · " else ""
+                Text(
+                    "$detail${pack.fileCount} · ${humanSize(pack.size)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             TextButton(
                 onClick = onDelete,

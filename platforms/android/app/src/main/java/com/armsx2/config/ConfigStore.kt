@@ -407,6 +407,28 @@ object ConfigStore {
         }
     }
 
+    /**
+     * Delete every settings layer that lives OUTSIDE SharedPreferences. Part of the full app
+     * reset, and it is not optional: prefs are only one of four stores, and clearing them alone
+     * leaves the reset silently undone.
+     *
+     *  - the in-folder mirror ([BACKUP_FILENAME]): [reconcileReusedFolder] re-seeds prefs from
+     *    it precisely BECAUSE config.global is missing, which is exactly the state a reset
+     *    creates — so the next launch would restore everything just wiped.
+     *  - `PCSX2-Android.ini`: the fallback seed for the same recovery path.
+     *  - the `gamesettings` directory of per-game INIs. The core reads those directly and they
+     *    SHADOW the global tier, so leaving them behind means per-game tweaks survive a reset
+     *    and then look like settings that "do nothing".
+     *
+     * Games, BIOS, saves, memory cards, save states, covers and texture packs are untouched.
+     */
+    fun purgeAllSettingsFiles() {
+        runCatching { backupFile()?.delete() }
+        val root = MainActivityRuntime.currentInitDataRoot()?.takeIf { it.isNotBlank() } ?: return
+        runCatching { File(root, "PCSX2-Android.ini").delete() }
+        runCatching { File(root, "gamesettings").deleteRecursively() }
+    }
+
     /** Minimal INI reader: "[Section]" + "Key = Value" -> map keyed "Section/Key". Comments
      *  (# / ;) and blank lines ignored. Section text is taken verbatim (it can itself contain
      *  slashes, e.g. "EmuCore/GS"), matching the (section,key) applyTo/readFromIni use. */

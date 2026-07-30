@@ -960,7 +960,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAspectRatio(JNIEnv *env, jclass clazz,
 // FMV Aspect Ratio override — applied only while an FMV/MPEG is playing (Counters.cpp
 // swaps EmuConfig.CurrentAspectRatio to this on FMV state transitions, restoring the
 // generic AspectRatio when the FMV ends). 0 Off (use the generic aspect) · 1 Auto
-// 4:3/3:2 · 2 4:3 · 3 16:9 · 4 10:7 · 5 21:9. Mirrors setAspectRatio; updates EmuConfig.GS live
+// 4:3/3:2 · 2 4:3 · 3 16:9 · 4 10:7 · 5 21:9 · 6 20:9 · 7 19.5:9. Mirrors setAspectRatio; updates EmuConfig.GS live
 // so the next FMV transition honours a change made mid-session.
 extern "C"
 JNIEXPORT void JNICALL
@@ -1800,6 +1800,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setEnabledPatches(
 
     // No VM / no CRC (Patch Manager opened from the library): base layer, which is what the
     // pre-boot browser has always targeted.
+    //
+    // KNOWN LIMITATION: the base list is matched BY NAME against every game, so a name enabled
+    // here arms the identically-named group in any bundled pnach. Tolerable only because it now
+    // takes a deliberate toggle to get here — the bulk auto-sync that used to fill this list just
+    // by opening the Patch Manager is gone (see PatchManagerViewModel.refresh). Scoping this to
+    // the pnach's own serial+CRC is the real fix and wants a serial/CRC parameter.
     SettingsInterface* si = Host::Internal::GetBaseSettingsLayer();
     if (!si)
         return;
@@ -1808,6 +1814,71 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setEnabledPatches(
     for (const auto& n : enabled)
         si->AddToStringList(section, "Enable", n.c_str());
     si->Save();
+}
+
+// One-time repair for enable lists poisoned by the old bulk auto-sync.
+//
+// Until this release, opening the Patch Manager persisted every uncommented group of every .pnach
+// on disk into the [Patches]/[Cheats] Enable lists. Because patches are enabled by NAME, those
+// entries then armed the same-named group in any of the ~4000 bundled pnach files — for games the
+// user had never opened the screen for. Removing the auto-sync stops new poisoning but cannot
+// un-poison what users are already carrying, and there is no way to tell an auto-added name from a
+// deliberate one. So drop the lists wholesale: erring toward "no patches applied" is the only safe
+// direction, and re-enabling a patch is one tap.
+//
+// ★ PER-GAME INIs MUST BE INCLUDED. The first version cleared only the base layer, on the
+// assumption that a per-game list could only come from an explicit toggle. That was wrong: the old
+// sync wrote to the GAME layer whenever a VM was running (see setEnabledPatches above, which takes
+// the game-ini path as soon as AndroidGameSettingsPath() is non-empty). And because
+// LayeredSettingsInterface::GetStringList returns the FIRST NON-EMPTY layer with the game layer
+// ahead of base, a stale per-game entry SHADOWS the cleaned base list entirely — which is exactly
+// how "GOW2 reports 1 game patch active with every patch setting off" survived the base-only purge.
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_purgeGlobalPatchEnableLists(JNIEnv*, jclass) {
+    auto lock = Host::GetSettingsLock();
+
+    if (SettingsInterface* si = Host::Internal::GetBaseSettingsLayer())
+    {
+        si->DeleteValue("Patches", "Enable");
+        si->DeleteValue("Cheats", "Enable");
+        si->Save();
+    }
+
+    // Every per-game INI. Load-then-modify (never regenerate): these files also carry the user's
+    // per-game EmuCore overrides and gamefixes, which must survive untouched.
+    u32 cleaned = 0;
+    FileSystem::FindResultsArray files;
+    FileSystem::FindFiles(EmuFolders::GameSettings.c_str(), "*.ini",
+        FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES, &files);
+    for (const FILESYSTEM_FIND_DATA& fd : files)
+    {
+        INISettingsInterface ini(fd.FileName);
+        if (!ini.Load())
+            continue;
+        // Only rewrite when there is something to remove, so this doesn't churn every file's mtime.
+        if (ini.GetStringList("Patches", "Enable").empty() &&
+            ini.GetStringList("Cheats", "Enable").empty())
+        {
+            continue;
+        }
+        ini.DeleteValue("Patches", "Enable");
+        ini.DeleteValue("Cheats", "Enable");
+        Error error;
+        if (ini.Save(&error))
+            cleaned++;
+        else
+            Console.ErrorFmt("@@ANDROID_PNACH@@ purge failed for {}: {}", fd.FileName, error.GetDescription());
+    }
+
+    // Drop the live game layer's copy too, or the running game keeps the patch for this session.
+    if (SettingsInterface* gsi = Host::Internal::GetGameSettingsLayer())
+    {
+        gsi->DeleteValue("Patches", "Enable");
+        gsi->DeleteValue("Cheats", "Enable");
+    }
+
+    Console.WriteLnFmt("@@ANDROID_PNACH@@ purged [Patches]/[Cheats] Enable lists (base + {} per-game INIs)", cleaned);
 }
 
 extern "C"

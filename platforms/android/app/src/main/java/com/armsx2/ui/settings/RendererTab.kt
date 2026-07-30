@@ -144,18 +144,38 @@ fun RendererTab(state: MutableState<Settings>) {
                 // Adding an option here means widening BOTH clamps: this one and
                 // EmulationMenuViewModel.setAspectRatio. A clamp left at the old maximum does not
                 // fail loudly -- it silently snaps the new choice back to the previous entry.
-                options = listOf("Stretch", "Auto", "4:3", "16:9", "10:7", "21:9"),
-                selectedIndex = s.aspectRatio.coerceIn(0, 5),
+                options = listOf("Stretch", "Auto", "4:3", "16:9", "10:7", "21:9", "20:9", "19.5:9", "Custom"),
+                selectedIndex = s.aspectRatio.coerceIn(0, 8),
                 description = str("renderer.displayMode.description"),
                 onChange = { apply(s.copy(aspectRatio = it)) },
             )
+            // Only meaningful for Custom (8), so it stays hidden otherwise rather than sitting there
+            // inert. Shown when EITHER the main aspect or the FMV override is Custom, since the FMV
+            // path reads the same ratio.
+            if (s.aspectRatio == 8 || s.fmvAspectRatio == 8) {
+                IntSliderRow(
+                    label = str("renderer.customAspect.label"),
+                    // Presented in hundredths: the slider is integral, the setting is a float.
+                    value = (s.customAspectRatio * 100f).toInt().coerceIn(50, 500),
+                    min = 50,
+                    max = 500,
+                    description = str("renderer.customAspect.description"),
+                    // Show the ratio itself plus its :9 equivalent, which is how phone panels are
+                    // quoted — makes "I want 19.5:9" reachable without mental arithmetic.
+                    valueFormatter = { hundredths ->
+                        val r = hundredths / 100f
+                        "%.2f  (%.1f:9)".format(r, r * 9f)
+                    },
+                    onChange = { apply(s.copy(customAspectRatio = it / 100f)) },
+                )
+            }
             SettingsDivider()
             // FMV Aspect Ratio override — applies only during FMVs/cutscenes; "Off" keeps
             // the aspect above. Handy for games that render FMVs at a different ratio.
             SegmentedRow(
                 label = str("renderer.fmvAspect.label"),
-                options = listOf("Off", "Auto", "4:3", "16:9", "10:7", "21:9"),
-                selectedIndex = s.fmvAspectRatio.coerceIn(0, 5),
+                options = listOf("Off", "Auto", "4:3", "16:9", "10:7", "21:9", "20:9", "19.5:9", "Custom"),
+                selectedIndex = s.fmvAspectRatio.coerceIn(0, 8),
                 description = str("renderer.fmvAspect.description"),
                 onChange = { apply(s.copy(fmvAspectRatio = it)) },
             )

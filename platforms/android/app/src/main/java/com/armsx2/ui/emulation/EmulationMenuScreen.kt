@@ -588,6 +588,14 @@ private fun MenuHeader(
             }
         }
 
+        // Clock + battery, same cluster as the library toolbar. Worth having here specifically:
+        // this menu is what you open mid-session on a handheld, so it's exactly when you want to
+        // know the time and how much charge is left. Not controllerFocusable — it's a readout.
+        Spacer(Modifier.width(8.dp))
+        com.armsx2.ui.common.LibraryStatusCluster(
+            Modifier.align(Alignment.CenterVertically),
+        )
+
         // Friends, in the header where it is always visible, with the online count on it. A build
         // without the SDK has nothing to show, so it does not take up header space there.
         if (com.armsx2.DiscordPresence.available()) {
@@ -800,6 +808,9 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
             3 to "16:9",
             4 to "10:7",
             5 to "21:9",
+            6 to "20:9",
+            7 to "19.5:9",
+            8 to "Custom",
         ),
         selected = settings.aspectRatio,
         onSelect = viewModel::setAspectRatio,

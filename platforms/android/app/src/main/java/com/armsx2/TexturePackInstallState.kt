@@ -23,23 +23,45 @@ object TexturePackInstallState {
         MainActivityRuntime.assetCopyRoot(MainActivityRuntime.instance!!.applicationContext), FILE,
     )
 
-    private fun read(): JSONObject = runCatching {
+    private fun read(): JSONObject {
         val f = stateFile()
-        if (f.isFile) JSONObject(f.readText()) else JSONObject()
-    }.getOrDefault(JSONObject())
+        runCatching { if (f.isFile) return JSONObject(f.readText()) }
+        // Fall back to the previous good copy. Without this, one unreadable/truncated state file
+        // silently reads as "nothing installed", and the next record() then persists a file
+        // containing only that one pack — which is how 60 installs collapsed to the most recent
+        // couple ("Texture Packs forget being installed", SKrazy).
+        val bak = File(f.parentFile, "$FILE.bak")
+        runCatching { if (bak.isFile) return JSONObject(bak.readText()) }
+        return JSONObject()
+    }
 
     private fun write(root: JSONObject) {
-        runCatching {
+        val ok = runCatching {
             val dest = stateFile()
             dest.parentFile?.mkdirs()
-            // tmp + rename: a half-written state file would make installed packs look absent and
-            // invite a second 1.5 GB download.
             val tmp = File(dest.parentFile, "$FILE.tmp")
             tmp.writeText(root.toString())
-            if (dest.exists()) dest.delete()
-            tmp.renameTo(dest)
+
+            // Keep the last good copy BEFORE replacing, so a failure here is recoverable by read().
+            if (dest.isFile)
+                runCatching { dest.copyTo(File(dest.parentFile, "$FILE.bak"), overwrite = true) }
+
+            // ATOMIC_MOVE, not delete()+renameTo(). The old sequence deleted the destination first
+            // and then renamed; if the rename failed for any reason the state file was simply GONE
+            // and the whole install record with it — and because the failure was swallowed, it
+            // looked like a successful save. An atomic move has no window where nothing exists.
+            java.nio.file.Files.move(
+                tmp.toPath(), dest.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+            )
+            true
+        }.getOrElse { e ->
+            // Surfaced, not swallowed: losing this file costs the user a re-download of every pack.
+            android.util.Log.e("ARMSX2", "texture-pack state write FAILED: ${e.message}")
+            false
         }
-        revision.value = revision.value + 1
+        if (ok) revision.value = revision.value + 1
     }
 
     fun all(): Map<String, Installed> {
@@ -95,7 +117,20 @@ object TexturePackInstallState {
      */
     fun reconcile(presentSerials: Set<String>) {
         val root = read()
-        val doomed = all().values.filter { it.serial.uppercase() !in presentSerials }
+        val known = all().values
+        // An EMPTY scan against a non-empty record is almost always a failed scan — File.listFiles()
+        // returning null on a FUSE/SAF path, or the textures root not resolved yet — not the user
+        // deleting every pack at once. Trusting it wiped the entire record. Refuse and log instead;
+        // a genuine "deleted everything" still reconciles one refresh later, once a scan succeeds
+        // and reports at least one pack.
+        if (presentSerials.isEmpty() && known.isNotEmpty()) {
+            android.util.Log.w(
+                "ARMSX2",
+                "texture-pack reconcile skipped: scan found 0 packs but ${known.size} are recorded",
+            )
+            return
+        }
+        val doomed = known.filter { it.serial.uppercase() !in presentSerials }
         if (doomed.isEmpty()) return
         doomed.forEach { root.remove(it.packId) }
         write(root)
