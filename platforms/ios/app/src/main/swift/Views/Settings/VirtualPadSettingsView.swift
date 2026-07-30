@@ -62,6 +62,9 @@ struct VirtualPadSettingsView: View {
     @State private var showLayoutImportAlert = false
     @State private var layoutImportMessage = ""
     @State private var layoutExportItem: ShareSheetItem?
+    @State private var layoutPendingRename: PadLayoutPreset?
+    @State private var layoutRenameDraft = ""
+    @State private var layoutPendingDelete: PadLayoutPreset?
     @State private var skinPendingDelete: VPadSkinDescriptor?
     @State private var skinPendingRename: VPadSkinDescriptor?
     @State private var skinRenameDraft = ""
@@ -244,13 +247,38 @@ struct VirtualPadSettingsView: View {
                             Text(preset.displayName)
                                 .lineLimit(1)
                             Spacer()
-                            Button {
-                                exportLayout(preset)
+                            Menu {
+                                Button {
+                                    layoutPendingRename = preset
+                                    layoutRenameDraft = preset.displayName
+                                } label: {
+                                    Label(
+                                        settings.localized("Rename Layout"),
+                                        systemImage: "pencil"
+                                    )
+                                }
+                                Button {
+                                    exportLayout(preset)
+                                } label: {
+                                    Label(
+                                        settings.localized("Share Layout"),
+                                        systemImage: "square.and.arrow.up"
+                                    )
+                                }
+                                Button(role: .destructive) {
+                                    layoutPendingDelete = preset
+                                } label: {
+                                    Label(
+                                        settings.localized("Delete Layout"),
+                                        systemImage: "trash"
+                                    )
+                                }
                             } label: {
-                                Image(systemName: "square.and.arrow.up")
+                                Image(systemName: "ellipsis.circle")
                             }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Export \(preset.displayName)")
+                            .accessibilityLabel(
+                                settings.localized("Layout Options") + " \(preset.displayName)"
+                            )
                         }
                     }
                 }
@@ -757,6 +785,66 @@ struct VirtualPadSettingsView: View {
             Button(settings.localized("OK"), role: .cancel) {}
         } message: {
             Text(layoutImportMessage)
+        }
+        .alert(
+            settings.localized("Rename Layout"),
+            isPresented: Binding<Bool>(
+                get: { layoutPendingRename != nil },
+                set: { if !$0 { layoutPendingRename = nil } }
+            )
+        ) {
+            TextField(settings.localized("Name"), text: $layoutRenameDraft)
+            Button(settings.localized("Rename")) {
+                if let preset = layoutPendingRename {
+                    do {
+                        try layoutPresets.renamePreset(
+                            id: preset.id,
+                            to: layoutRenameDraft
+                        )
+                    } catch {
+                        layoutImportMessage =
+                            "Layout rename failed: \(error.localizedDescription)"
+                        showLayoutImportAlert = true
+                    }
+                }
+                layoutPendingRename = nil
+            }
+            Button(settings.localized("Cancel"), role: .cancel) {
+                layoutPendingRename = nil
+            }
+        } message: {
+            Text(settings.localized("Choose a new name for this layout."))
+        }
+        .confirmationDialog(
+            settings.localized("Delete Layout?"),
+            isPresented: Binding<Bool>(
+                get: { layoutPendingDelete != nil },
+                set: { if !$0 { layoutPendingDelete = nil } }
+            ),
+            presenting: layoutPendingDelete
+        ) { preset in
+            Button(
+                "\(settings.localized("Delete")) \(preset.displayName)",
+                role: .destructive
+            ) {
+                do {
+                    try layoutPresets.deletePreset(id: preset.id)
+                } catch {
+                    layoutImportMessage =
+                        "Layout deletion failed: \(error.localizedDescription)"
+                    showLayoutImportAlert = true
+                }
+                layoutPendingDelete = nil
+            }
+            Button(settings.localized("Cancel"), role: .cancel) {
+                layoutPendingDelete = nil
+            }
+        } message: { _ in
+            Text(
+                settings.localized(
+                    "Games using this layout will fall back to their next available layout."
+                )
+            )
         }
         .sheet(isPresented: $showSkinImporter) {
             ImportDocumentPicker(
