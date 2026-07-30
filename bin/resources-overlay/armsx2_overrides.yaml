@@ -974,6 +974,12 @@ SLES-54385:
   gsHWFixes:
     roundSprite: 2
     texturePreloading: 0
+# Guitar Hero II (PAL) — the note-highway readback is pure cost on a tiler; the
+# game never samples the downloaded target back. Also covers GH2 Deluxe, which
+# keeps the retail serial.
+SLES-54442:
+  gsHWFixes:
+    hwDownloadMode: 2 # NoReadbacks. Large perf win, no visual regression.
 SLES-54490:
   gsHWFixes:
     halfPixelOffset: 2
@@ -1013,6 +1019,26 @@ SLES-54648:
 SLES-54822:
   gsHWFixes:
     roundSprite: 2
+# Guitar Hero III — NoReadbacks. Same rationale as the GH2 entries: the note-highway target is
+# never sampled back, so the readback is pure cost on a tiler. gsHWFixes is a clear-then-replace
+# map in this overlay, so every upstream key is restated here — dropping one would silently undo
+# the crowd-texture / bloom / post-processing fixes.
+SLES-54962:
+  gsHWFixes:
+    autoFlush: 1 # Fixes bloom intensity.
+    halfPixelOffset: 4 # Mostly aligns post-processing.
+    hwDownloadMode: 2 # NoReadbacks. Large perf win, no visual regression.
+    nativeScaling: 1 # Fixes post-processing smoothness and position.
+    textureInsideRT: 1 # Crowd textures.
+    getSkipCount: "GSC_GuitarHero"
+SLES-54974:
+  gsHWFixes:
+    autoFlush: 1 # Fixes bloom intensity.
+    halfPixelOffset: 4 # Mostly aligns post-processing.
+    hwDownloadMode: 2 # NoReadbacks. Large perf win, no visual regression.
+    nativeScaling: 1 # Fixes post-processing smoothness and position.
+    textureInsideRT: 1 # Crowd textures.
+    getSkipCount: "GSC_GuitarHero"
 SLES-55135:
   gsHWFixes:
     halfPixelOffset: 4
@@ -1089,6 +1115,14 @@ SLKA-25334:
     gpuTargetCLUT: 1
     halfPixelOffset: 5
     nativeScaling: 2
+# Guitar Hero III (NTSC-K) — see the SLES-549xx note above.
+SLKA-25363:
+  gsHWFixes:
+    autoFlush: 1 # Fixes bloom intensity.
+    halfPixelOffset: 4 # Mostly aligns post-processing.
+    hwDownloadMode: 2 # NoReadbacks. Large perf win, no visual regression.
+    nativeScaling: 1 # Fixes post-processing smoothness and position.
+    textureInsideRT: 1 # Crowd textures.
 SLKA-25372:
   gsHWFixes:
     autoFlush: 2
@@ -1102,6 +1136,14 @@ SLKA-25372:
 SLKA-25410:
   clampModes:
     vu1ClampMode: 1
+SLKA-25414:
+  gsHWFixes:
+    autoFlush: 1 # Fixes bloom intensity.
+    halfPixelOffset: 4 # Mostly aligns post-processing.
+    hwDownloadMode: 2 # NoReadbacks. Large perf win, no visual regression.
+    nativeScaling: 1 # Fixes post-processing smoothness and position.
+    textureInsideRT: 1 # Crowd textures.
+    getSkipCount: "GSC_GuitarHero"
 SLPM-55003:
   gsHWFixes:
     bilinearUpscale: 2
@@ -1632,6 +1674,11 @@ SLUS-21442:
 SLUS-21445:
   gsHWFixes:
     roundSprite: 2
+# Guitar Hero II (NTSC-U) — see the PAL entry above. This is also the serial the
+# GH2 Deluxe mod ships under, so Deluxe inherits the fix.
+SLUS-21447:
+  gsHWFixes:
+    hwDownloadMode: 2 # NoReadbacks. Large perf win, no visual regression.
 SLUS-21452:
   gsHWFixes:
     nativeScaling: 1
@@ -1652,6 +1699,14 @@ SLUS-21503:
 SLUS-21564:
   gsHWFixes:
     roundSprite: 2
+SLUS-21672:
+  gsHWFixes:
+    autoFlush: 1 # Fixes bloom intensity.
+    halfPixelOffset: 4 # Mostly aligns post-processing.
+    hwDownloadMode: 2 # NoReadbacks. Large perf win, no visual regression.
+    nativeScaling: 1 # Fixes post-processing smoothness and position.
+    textureInsideRT: 1 # Crowd textures.
+    getSkipCount: "GSC_GuitarHero"
 SLUS-21785:
   gsHWFixes:
     halfPixelOffset: 4
