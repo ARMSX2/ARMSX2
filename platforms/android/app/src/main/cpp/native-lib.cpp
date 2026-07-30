@@ -1816,6 +1816,63 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setEnabledPatches(
     si->Save();
 }
 
+// ---- USB lightgun (GunCon 2) ---------------------------------------------------------------
+//
+// The core already implements the device (usb_lightgun::GunCon2Device, DEVTYPE_GUNCON2). What was
+// missing on Android is the three things that feed it, because our input path is bespoke rather
+// than InputManager/SDL:
+//   * device selection  -> USB{n}/Type in the settings ini
+//   * aiming            -> InputManager::UpdatePointerAbsolutePosition, which is what
+//                          GunCon2State reads via GetPointerAbsolutePosition(0) when it has no
+//                          relative binds. Coordinates are WINDOW PIXELS; our SurfaceView is the
+//                          whole window, so raw touch x/y goes straight through.
+//   * buttons           -> USB::SetDeviceBindValue(port, BID_*, 0/1)
+// BID_* values are guncon2.cpp's binding ids, mirrored in NativeApp for the Kotlin side.
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_usbSetDeviceType(JNIEnv* env, jclass, jint port,
+                                                      jstring j_type) {
+    if (port < 0 || port > 1)
+        return;
+    const char* raw = j_type ? env->GetStringUTFChars(j_type, nullptr) : nullptr;
+    const std::string type = raw ? raw : "None";
+    if (raw)
+        env->ReleaseStringUTFChars(j_type, raw);
+
+    auto lock = Host::GetSettingsLock();
+    SettingsInterface* si = Host::Internal::GetBaseSettingsLayer();
+    if (!si)
+        return;
+    USB::SetConfigDevice(*si, static_cast<u32>(port), type.c_str());
+    si->Save();
+    // Mirror into EmuConfig so a running VM sees it without a full ApplySettings; USB reattaches
+    // the port on the next CheckForConfigChanges. Device changes are restart-recommended anyway —
+    // hot-swapping a USB device mid-game is the emulated equivalent of yanking the plug.
+    const s32 index = USB::DeviceTypeNameToIndex(type);
+    EmuConfig.USB.Ports[port].DeviceType = index;
+    Console.WriteLnFmt("@@ANDROID_USB@@ port={} type={} index={}", port + 1, type, index);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_usbLightgunAim(JNIEnv*, jclass, jfloat x, jfloat y) {
+    if (!VMManager::HasValidVM())
+        return;
+    // Pointer 0: GunCon2State::GetAbsolutePosition reads index 0 specifically.
+    InputManager::UpdatePointerAbsolutePosition(0, static_cast<float>(x), static_cast<float>(y));
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_usbLightgunButton(JNIEnv*, jclass, jint port, jint bind,
+                                                       jboolean pressed) {
+    if (!VMManager::HasValidVM() || port < 0 || port > 1)
+        return;
+    USB::SetDeviceBindValue(static_cast<u32>(port), static_cast<u32>(bind),
+        (pressed == JNI_TRUE) ? 1.0f : 0.0f);
+}
+
 // One-time repair for enable lists poisoned by the old bulk auto-sync.
 //
 // Until this release, opening the Patch Manager persisted every uncommented group of every .pnach

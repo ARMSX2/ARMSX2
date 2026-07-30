@@ -333,6 +333,12 @@ fun TouchControlsOverlay() {
                 onPressedChange = { unifiedPressed = it },
             )
         }
+        // Lightgun aiming, when a GunCon 2 is attached. Below the widgets (so gun buttons and
+        // pause win a finger that starts on them) but it DOES consume otherwise: with a gun
+        // attached, a touch on empty screen IS the shot.
+        if (!edit) {
+            LightgunLayer(widthPx = widthPx, heightPx = heightPx)
+        }
         // Gesture layer (swipes / double-tap on empty area). Composed here — below every visual
         // widget — for the same reason as the layers around it: a finger that starts on a control
         // is claimed by that control and never reaches the gesture handler. It also never consumes,
@@ -421,6 +427,12 @@ fun TouchControlsOverlay() {
                     EditToolbar()
                 }
             }
+        }
+
+        // Gun buttons LAST, so they sit above LightgunLayer: pressing A/B/C/Cal must be a button
+        // press, not a shot at that corner of the screen. They consume their own pointer.
+        if (!edit) {
+            LightgunButtons()
         }
 
         if (TouchControls.profileDialogOpen.value) {

@@ -647,7 +647,40 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             // the four directions apart (NetherSX2-style) with a live preview.
             SettingsDivider()
             GestureControlSection(refreshToken)
+            SettingsDivider()
+            LightgunSection(refreshToken)
         }
+    }
+}
+
+/**
+ * GunCon 2 lightgun, aimed with the touchscreen.
+ *
+ * The device type is a USB port setting, so it is restart-required — the game probes the port at
+ * boot and caches what it found. Said plainly in the description rather than left to be discovered.
+ */
+@Composable
+private fun LightgunSection(refreshToken: MutableState<Int>) {
+    @Suppress("UNUSED_EXPRESSION")
+    refreshToken.value
+    CollapsibleSection(str("pad.lightgun.section"), initiallyExpanded = false) {
+        ToggleRow(
+            str("pad.lightgun.enable.label"),
+            com.armsx2.input.Lightgun.enabled.value,
+            description = str("pad.lightgun.enable.description"),
+        ) { com.armsx2.input.Lightgun.setEnabled(it); refreshToken.value++ }
+
+        if (!com.armsx2.input.Lightgun.enabled.value) return@CollapsibleSection
+
+        SettingsDivider()
+        SegmentedRow(
+            label = str("pad.lightgun.port.label"),
+            options = listOf(str("pad.lightgun.port1"), str("pad.lightgun.port2")),
+            selectedIndex = com.armsx2.input.Lightgun.port.value,
+            description = str("pad.lightgun.port.description"),
+            onChange = { com.armsx2.input.Lightgun.setPort(it); refreshToken.value++ },
+        )
+        HelpText(str("pad.lightgun.help"))
     }
 }
 

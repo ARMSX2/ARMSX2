@@ -183,6 +183,35 @@ public class NativeApp {
 	 * archive for every game. Per-game lists are left alone. Call once, gated on a pref.
 	 */
 	public static native void purgeGlobalPatchEnableLists();
+
+	// ---- USB lightgun (GunCon 2) ----------------------------------------------
+	/** GunCon2 binding ids, from pcsx2/USB/usb-lightgun/guncon2.cpp. */
+	public static final int GUNCON_C = 1;
+	public static final int GUNCON_B = 2;
+	public static final int GUNCON_A = 3;
+	public static final int GUNCON_DPAD_UP = 4;
+	public static final int GUNCON_DPAD_RIGHT = 5;
+	public static final int GUNCON_DPAD_DOWN = 6;
+	public static final int GUNCON_DPAD_LEFT = 7;
+	public static final int GUNCON_TRIGGER = 13;
+	public static final int GUNCON_SELECT = 14;
+	public static final int GUNCON_START = 15;
+	/** Fires a deliberately off-screen shot — how these games are reloaded. */
+	public static final int GUNCON_SHOOT_OFFSCREEN = 16;
+	public static final int GUNCON_RECALIBRATE = 17;
+
+	/**
+	 * Set the emulated device in a USB port. {@code type} is a core type name
+	 * ("guncon2", "None", ...); port is 0 or 1. Restart recommended — swapping a USB
+	 * device on a running VM is the emulated equivalent of unplugging it.
+	 */
+	public static native void usbSetDeviceType(int port, String type);
+
+	/** Aim, in WINDOW PIXELS (our SurfaceView is the whole window, so raw touch x/y). */
+	public static native void usbLightgunAim(float x, float y);
+
+	/** Press/release one GUNCON_* binding on a port. */
+	public static native void usbLightgunButton(int port, int bind, boolean pressed);
 	public static native String getGameTitle(String path);
 	public static native String getGameSerial();
 	public static native String getGameCRC();

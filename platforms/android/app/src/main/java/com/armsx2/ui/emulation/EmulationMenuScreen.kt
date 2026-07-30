@@ -1091,6 +1091,40 @@ private fun ControlsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     MenuSwitchRow(str("network.emulateUsbKeyboard"), state.settings.usbKeyboard) {
         viewModel.updateSettings { current -> current.copy(usbKeyboard = it) }
     }
+
+    // Gesture control, in-game. Worth having here rather than only in All Settings: the swipe
+    // distance and the Tap/Hold choice are things you only discover the right value for while
+    // actually playing, and walking out to the settings tree to nudge them loses the moment.
+    // Local state, like the haptic slider above — these are plain prefs, not part of the ui state.
+    var gestureOn by remember { mutableStateOf(TouchControls.gestureEnabled.value) }
+    MenuSwitchRow(str("pad.gesture.enable.label"), gestureOn) {
+        gestureOn = it
+        TouchControls.setGestureEnabled(it)
+    }
+    if (gestureOn) {
+        var swipeSens by remember { mutableStateOf((TouchControls.gestureSwipeSensitivity.floatValue * 100f).toInt()) }
+        com.armsx2.ui.settings.IntSliderRow(
+            label = str("pad.gesture.sensitivity.label"),
+            value = swipeSens,
+            min = 5,
+            max = 60,
+            description = str("pad.gesture.sensitivity.description"),
+            valueFormatter = { "${it}%" },
+            onChange = { swipeSens = it; TouchControls.setGestureSensitivity(it / 100f) },
+        )
+        var holdMode by remember { mutableStateOf(TouchControls.gestureDoubleTapHold.value) }
+        HorizontalOptions(
+            title = str("pad.gesture.doubleTapMode.label"),
+            options = listOf(
+                0 to str("pad.gesture.doubleTapMode.tap"),
+                1 to str("pad.gesture.doubleTapMode.hold"),
+            ),
+            selected = if (holdMode) 1 else 0,
+            onSelect = { holdMode = it == 1; TouchControls.setGestureDoubleTapHold(holdMode) },
+        )
+        // The four swipe/double-tap ASSIGNMENTS stay in All Settings — six button pickers would
+        // swamp this pane, and you set them once rather than mid-session.
+    }
     CompactAction(str("pad.controllerMapping"), "⌁", Modifier.fillMaxWidth(), viewModel::openControlsManager)
     Spacer(Modifier.height(6.dp))
     CompactAction(str("pad.editTouchLayout"), "✥", Modifier.fillMaxWidth(), viewModel::editTouchControls)

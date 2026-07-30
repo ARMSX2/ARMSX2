@@ -1773,6 +1773,10 @@ open class MainActivityRuntime : ComponentActivity() {
             // Key is versioned: v1 cleared only the base layer, which a stale PER-GAME list then
             // shadowed (GOW2 still reported "1 game patch active" with everything off). Bumping it
             // re-runs the now-complete purge for anyone who already took v1.
+            // Lightgun: read the pref and re-assert the USB device type. The ini is
+            // authoritative, but this covers a first run that has no USB section yet.
+            runCatching { com.armsx2.input.Lightgun.load(); com.armsx2.input.Lightgun.applyAtBoot() }
+
             if (!prefs.getBoolean("patchEnableListsPurged.v2", false)) {
                 runCatching { NativeApp.purgeGlobalPatchEnableLists() }
                     .onSuccess { prefs.edit { putBoolean("patchEnableListsPurged.v2", true) } }
