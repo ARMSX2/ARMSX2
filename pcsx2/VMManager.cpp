@@ -458,18 +458,6 @@ bool VMManager::Internal::CPUThreadInitialize()
 	// This also sorts out input sources.
 	LoadSettings();
 
-	// LoadSettings() re-reads EnableFastmem from the INI, clobbering the runtime
-	// disable that vtlb_Core_Alloc applied when the 4 GB fastmem area failed to
-	// allocate on low-VA devices (e.g. iPhone SE 2). Re-apply the disable from
-	// the sticky flag so the EE recompiler does not emit fastmem load/store
-	// against a null base. The flag is process-lifetime: once the area fails,
-	// it stays failed.
-	if (vtlb_FastmemAreaUnavailable() && EmuConfig.Cpu.Recompiler.EnableFastmem)
-	{
-		EmuConfig.Cpu.Recompiler.EnableFastmem = false;
-		Console.Warning("Fastmem re-disabled after settings reload (area allocation previously failed)");
-	}
-
 	if (EmuConfig.Achievements.Enabled && !Achievements::IsActive())
 		Achievements::Initialize();
 
@@ -746,6 +734,23 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 	static const bool s_mvu_diff_env = (std::getenv("MVU_DIFF") != nullptr);
 	if (s_mvu_diff_env)
 		EmuConfig.Speedhacks.vuThread = false;
+
+	// The 4 GB fastmem reservation can fail outright on a low VA device, and the
+	// INI still says fastmem is on, so every reload from here turns it back on
+	// against a base that was never mapped. The flag is sticky for the life of
+	// the process. It belongs here rather than at the call sites: it used to be
+	// re-applied by hand after each load, and the ELF change path was missed.
+	if (vtlb_FastmemAreaUnavailable() && EmuConfig.Cpu.Recompiler.EnableFastmem)
+	{
+		EmuConfig.Cpu.Recompiler.EnableFastmem = false;
+
+		static bool s_warned_fastmem_reload = false;
+		if (!s_warned_fastmem_reload)
+		{
+			s_warned_fastmem_reload = true;
+			Console.Warning("Fastmem re-disabled after settings reload (area allocation previously failed)");
+		}
+	}
 }
 
 void VMManager::LoadInputBindings(SettingsInterface& si, std::unique_lock<std::mutex>& lock)
@@ -868,9 +873,6 @@ void VMManager::ApplySettings()
 	EmuConfig = Pcsx2Config();
 	EmuConfig.CopyRuntimeConfig(old_config);
 	LoadSettings();
-	// Re-apply the sticky fastmem-area-unavailable disable (see CPUThreadInitialize).
-	if (vtlb_FastmemAreaUnavailable() && EmuConfig.Cpu.Recompiler.EnableFastmem)
-		EmuConfig.Cpu.Recompiler.EnableFastmem = false;
 	CheckForConfigChanges(old_config);
 	if (s_emulation_only_mode.load(std::memory_order_acquire))
 		ReleaseNonEssentialRuntimeResources(s_emulation_only_release_flags.load(std::memory_order_acquire));
