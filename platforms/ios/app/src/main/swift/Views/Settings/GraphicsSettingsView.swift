@@ -235,7 +235,7 @@ struct GraphicsSettingsView: View {
 
             Section(settings.localized("Display")) {
                 Toggle(
-                    settings.localized("Dedicated HDMI Output"),
+                    settings.localized("Dedicated HDMI Output (Beta)"),
                     isOn: $settings.dedicatedExternalDisplayEnabled
                 )
                 Text(settings.localized(

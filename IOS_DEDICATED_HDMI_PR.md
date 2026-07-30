@@ -37,8 +37,9 @@ the replay rather than overwritten.
 
 ## Final user-facing behavior
 
-The feature adds **Dedicated HDMI Output** under **Settings > Graphics >
-Display**. It is disabled by default and persists in the normal INI settings:
+The feature adds **Dedicated HDMI Output (Beta)** under **Settings > Graphics >
+Display**. The Beta label is present in every supported interface language. It
+is disabled by default and persists in the normal INI settings:
 
 ```ini
 [ARMSX2iOS/UI]
@@ -409,19 +410,23 @@ the release artifact.
 
 ### Physical-device feedback
 
-The initial dedicated-output build was tested by the repository owner on an
-iPhone 17 Pro Max with JIT enabled, and dedicated HDMI rendering was reported
-working. That testing also exposed the stale phone frame, gray companion
-background, and missing OSD behavior addressed by the later commits.
+After the final UI and OSD fixes, the repository owner completed the manual test
+suite on an iPhone 17 Pro Max with JIT enabled and a compatible HDMI adapter.
+All tested behavior was reported working:
 
-The latest final IPA still needs a physical-device pass specifically confirming:
-
+- Dedicated gameplay rendering switches to HDMI and returns to the iPhone when
+  disconnected or disabled.
 - OSD metrics appear on HDMI and not on the iPhone.
 - The entire iPhone companion background is OLED black.
-- Virtual controls cannot render or leave stuck input while HDMI is active.
-- Pause-menu presentation and resume work from the companion screen.
-- Hot-plug, disconnect, disable, and re-enable remain stable after all final UI
-  changes.
+- Virtual controls remain hidden and do not leave stuck input while HDMI is
+  active.
+- Pause-menu presentation, settings access, resume, background/foreground, and
+  repeated scene connection work.
+- Hot-plug, disconnect, disable, and re-enable remain stable.
+- Aspect fitting and black bars behave as expected in the tested content.
+
+The subsequent `(Beta)` label and 2.6.7 bundle-version update do not alter the
+validated renderer, scene-lifecycle, input, OSD, or companion-screen paths.
 
 ### Validation not yet completed
 
@@ -429,27 +434,24 @@ The latest final IPA still needs a physical-device pass specifically confirming:
   SDK is iOS 26.5.
 - The added C++ aspect test was not executed in a configured desktop CTest
   harness during this work.
-- The final OSD-on-HDMI behavior has not been validated in a new physical-device
-  run.
 - Resolution/refresh combinations such as 1080p60, 4K30/60, and 120 Hz have not
   been exhaustively tested across adapters.
 
 ## Final unsigned IPA
 
-The current fork artifact was produced from source commit `a606cfdc39` on
-`feature/ios-dedicated-hdmi-output`. The only working-tree changes present
-during the build were this documentation refresh and the README section; neither
-changes the executable:
+The current fork artifact was produced from the final source state on
+`feature/ios-dedicated-hdmi-output`. The documentation commit made after the
+build does not change the executable:
 
 ```text
 File: ARMSX2-iOS-unsigned.ipa
 App: ARMSX2 iOS
 Bundle identifier: com.armsx2.ios
-Version: 2.5.0 (250)
+Version: 2.6.7 (267)
 Minimum iOS: 17.0
 Architecture: arm64
-Size: 25,669,324 bytes
-SHA-256: 7dc04b8286d03bc3f0a69284817eac6b512069532fd72c665e5ce5dabe144f08
+Size: 25,669,343 bytes
+SHA-256: f497482fc18d27c91ead1a826ced18af58ccf55838a4874bf5123a38515b4083
 ```
 
 The Release `iphoneos` build completed with Xcode 26.6 and SDK 26.5. The ZIP
@@ -468,21 +470,24 @@ No BIOS, game image, save data, or other private test content is present.
       diff.
 - [x] Build, install, and launch the Simulator configuration.
 - [x] Build and integrity-check the unsigned arm64 device IPA.
-- [ ] Sign and install the current fork IPA on a physical device.
+- [x] Sign and install the functional HDMI build on an iPhone 17 Pro Max with
+      JIT enabled.
 - [ ] Run `external_display_aspect_tests.cpp` in the upstream CTest setup.
 - [ ] Compile the iOS 27 scene-accessory path with an iOS 27 SDK.
-- [ ] Test default Off, persistence, mirroring, hot-plug, disconnect, and live
+- [x] Test default Off, persistence, mirroring, hot-plug, disconnect, and live
       toggle changes.
-- [ ] Test 4:3 pillarbox, 16:9 fill, Stretch fallback, and black bars.
-- [ ] Test OSD off and on; confirm it appears only on HDMI during dedicated
+- [x] Test aspect fitting, Stretch fallback, and black bars with the available
+      manual test content.
+- [x] Test OSD off and on; confirm it appears only on HDMI during dedicated
       output.
-- [ ] Confirm the phone companion is fully black across safe areas in portrait
+- [x] Confirm the phone companion is fully black across safe areas in portrait
       and landscape.
-- [ ] Confirm virtual input is hidden and reset regardless of Bluetooth
+- [x] Confirm virtual input is hidden and reset regardless of Bluetooth
       controller state.
-- [ ] Exercise pause, resume, background/foreground, VM teardown, and repeated
+- [x] Exercise pause, resume, background/foreground, VM teardown, and repeated
       scene connection.
-- [ ] Verify iOS 26 and iOS 27+ on physical devices where available.
+- [x] Verify the feature on an iPhone 17 Pro Max running iOS 26.
+- [ ] Verify the iOS 27+ path on a physical device when available.
 
 ## Suggested upstream PR text
 
@@ -497,7 +502,7 @@ iOS: add dedicated external-display output with HDMI companion UI
 ```markdown
 ## Summary
 
-- add an opt-in Dedicated HDMI Output setting under Graphics > Display
+- add an opt-in Dedicated HDMI Output (Beta) setting under Graphics > Display
 - move the existing Metal renderer between the iPhone and an external
   non-interactive UIWindowScene without a second renderer or frame copy
 - preserve normal iOS mirroring and all existing gameplay UI when the feature is
@@ -517,8 +522,10 @@ iOS: add dedicated external-display output with HDMI companion UI
 - Xcode 26.6 / iPhoneOS and iPhoneSimulator SDK 26.5
 - Simulator build, install, and launch on iPhone 17 Pro / iOS 26.5
 - unsigned arm64 device Release build and IPA integrity check
-- initial dedicated HDMI rendering validated on an iPhone 17 Pro Max with JIT
-- final HDMI OSD and the iOS 27 SDK path remain to be validated on hardware
+- complete manual HDMI suite passed on an iPhone 17 Pro Max with JIT, including
+  hot-plug, companion UI, virtual input suppression, pause/resume, and HDMI-only
+  OSD
+- the guarded iOS 27 SDK path remains to be compiled and validated
 
 ## Notes
 

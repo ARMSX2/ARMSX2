@@ -34,9 +34,9 @@ Large language models (LLMs) were used as an **accelerant for this translation w
 
 In other words: the hard engineering was done by the PCSX2 team over two decades. The hard *typing* — translating ~50k lines of x86 emitter code into ARM64 — is what AI helped compress.
 
-## iOS Dedicated External Display
+## iOS Dedicated External Display (Beta)
 
-The iOS build includes an opt-in **Dedicated HDMI Output** mode under
+The iOS build includes an opt-in **Dedicated HDMI Output (Beta)** mode under
 **Settings > Graphics > Display**:
 
 - the existing Metal renderer moves to a connected external display without a
@@ -50,6 +50,17 @@ The iOS build includes an opt-in **Dedicated HDMI Output** mode under
 - the iPhone becomes a localized, OLED-black companion screen with access to
   the existing pause menu; and
 - virtual controls are hidden and reset only while dedicated output is active.
+
+This feature is marked **Beta** in every supported interface language. Normal
+iOS mirroring remains the fallback, but dedicated-output behavior should still
+be validated on each physical device, iOS version, HDMI adapter, and display
+combination before relying on it.
+
+The complete manual HDMI test suite passed on an iPhone 17 Pro Max with JIT
+enabled, including hot-plug, HDMI-only OSD, the OLED-black companion screen,
+virtual-input suppression, and pause/resume. The current iOS package reports
+version **2.6.7**; the Beta label remains because other device, adapter, display,
+and future iOS combinations have not been exhaustively covered.
 
 See [iOS Dedicated HDMI Output — Upstream PR Handoff](IOS_DEDICATED_HDMI_PR.md)
 for the architecture, lifecycle, validation status, known limitations, and
