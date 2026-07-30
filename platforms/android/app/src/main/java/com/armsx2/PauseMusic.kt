@@ -18,10 +18,14 @@ import com.armsx2.runtime.MainActivityRuntime
  * the pause overlay is up. Sharing one player would mean one of them constantly fighting the
  * other's start conditions.
  *
- * Audio focus is deliberately NOT requested. The game's own audio is already suspended while paused
- * (`SPU2::SetOutputPaused`), so there is nothing to duck, and grabbing focus for a menu jingle would
- * stop whatever the player has going in another app. If they are listening to something else, this
- * simply stays quiet — see the isMusicActive check.
+ * No audio focus request and no deference to other playing audio — both would break it. On an
+ * overlay pause the game keeps its audio DEVICE open and merely underruns to silence: pauseForOverlay
+ * calls setOutputPauseSuppressed(true) so Android does not reclaim an idle low-latency stream and
+ * stall the resume (#333). That means AudioManager reports the game's stream as "active" the whole
+ * time the menu is up, even though nothing is audible — so an isMusicActive() check (as LibraryMusic
+ * uses to stay out of Spotify's way) would make this never play at all. Instead we simply play a
+ * second stream over the silent game one, and do not request focus so the game's own stream and its
+ * resume are left completely untouched.
  */
 object PauseMusic {
     private const val TAG = "PauseMusic"
@@ -30,8 +34,8 @@ object PauseMusic {
     private const val CustomNameKey = "pauseMusic.customName"
     private const val DefaultVolumePercent = 45
 
-    /** Off by default: unexpected audio when you open a menu is startling, so it is opt-in. */
-    val enabled = mutableStateOf(false)
+    /** On by default — the menu was silent and this fills it; the toggle turns it off. */
+    val enabled = mutableStateOf(true)
     val volumePercent = mutableStateOf(DefaultVolumePercent)
     /** Display name of an imported track, or null when using the bundled one. */
     val customName = mutableStateOf<String?>(null)
@@ -45,7 +49,7 @@ object PauseMusic {
         java.io.File(context.filesDir, "pause_music_custom")
 
     fun load() {
-        enabled.value = MainActivityRuntime.prefs.getBoolean(EnabledKey, false)
+        enabled.value = MainActivityRuntime.prefs.getBoolean(EnabledKey, true)
         volumePercent.value = MainActivityRuntime.prefs.getInt(VolumeKey, DefaultVolumePercent)
         customName.value = MainActivityRuntime.prefs.getString(CustomNameKey, null)
     }
@@ -100,7 +104,11 @@ object PauseMusic {
     }
 
     /**
-     * Start, if the pause overlay is up and nothing else is playing.
+     * Start playing (or resume a paused player).
+     *
+     * No isMusicActive() guard, unlike LibraryMusic — see the class header: the game's own audio
+     * device stays open and silent while the menu is up, so that check would always see it as active
+     * and this would never play.
      *
      * Built by hand rather than MediaPlayer.create() for the same reason as LibraryMusic: create()
      * prepares internally, so attributes set afterwards land on an already-prepared player and are
@@ -110,12 +118,6 @@ object PauseMusic {
         if (!enabled.value) return
         if (player != null) {
             runCatching { player?.takeIf { !it.isPlaying }?.start() }
-            return
-        }
-        // Defer to whatever the player already has going in another app.
-        val am = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
-        if (am?.isMusicActive == true) {
-            Log.i(TAG, "another app is playing audio; not starting pause music")
             return
         }
         runCatching {

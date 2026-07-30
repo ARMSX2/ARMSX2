@@ -2332,14 +2332,13 @@ open class MainActivityRuntime : ComponentActivity() {
                 val pauseMenuUp = WindowImpl.overlayVisible.value || WindowImpl.inGameScreen.value != null
                 androidx.compose.runtime.LaunchedEffect(pauseMenuUp, com.armsx2.PauseMusic.enabled.value) {
                     if (pauseMenuUp) {
-                        // Retry like the library track: pausing the VM suspends SPU2, but Oboe's
-                        // stream takes a moment to actually go idle and start() defers while
-                        // AudioManager still reports audio active. A single attempt would lose
-                        // that race every time and the menu would stay silent.
-                        repeat(10) {
+                        // start() plays immediately now (no active-audio deference — the game's own
+                        // stream stays open-but-silent behind the overlay). A couple of light
+                        // retries only cover a transient MediaPlayer prepare hiccup.
+                        repeat(3) {
                             com.armsx2.PauseMusic.start(this@MainActivityRuntime)
                             if (com.armsx2.PauseMusic.isPlaying()) return@LaunchedEffect
-                            kotlinx.coroutines.delay(300)
+                            kotlinx.coroutines.delay(250)
                         }
                     } else {
                         com.armsx2.PauseMusic.stop()
