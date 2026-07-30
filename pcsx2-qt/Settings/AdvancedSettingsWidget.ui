@@ -14,7 +14,7 @@
    <item>
     <widget class="QLabel" name="disclaimerLabel">
      <property name="text">
-      <string>Changing these options may cause games to become non-functional. Modify at your own risk, the PCSX2 team will not provide support for configurations with these settings changed.</string>
+      <string>Changing these options may cause games to become non-functional. Modify at your own risk, the ARMSX2 team will not provide support for configurations with these settings changed.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>

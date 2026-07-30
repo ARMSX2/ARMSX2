@@ -82,6 +82,9 @@ extern "C" void ARMSX2_PostRetroAchievementsStateChanged(void);
 extern "C" void ARMSX2_PostRetroAchievementsNotification(const char* title, const char* message,
 	const char* badgePath, float duration);
 extern "C" void ARMSX2_PostRuntimeMenuStateChanged(void);
+// Snapshots the upscaling hacks the running game ended up with, after the masks and
+// the GameDB have had their say. CPU thread only, since it reads EmuConfig.
+extern "C" void ARMSX2_CaptureGraphicsHackState(void);
 // Runtime telemetry gate (env-gated, cached).
 bool ARMSX2IOSRuntimeTelemetryEnabled();
 

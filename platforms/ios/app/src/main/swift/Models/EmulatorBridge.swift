@@ -114,8 +114,14 @@ final class EmulatorBridge: @unchecked Sendable {
 
     @MainActor
     func setLeftStick(x: Float, y: Float) {
-        let sensitivity = Float(DynamicThumbstickSettings.shared.movementSensitivity)
-        let output = Self.radiallyClamped(x: x * sensitivity, y: y * sensitivity)
+        let dynamicSettings = DynamicThumbstickSettings.shared
+        let sensitivity = Float(dynamicSettings.movementSensitivity)
+        let clamped = Self.radiallyClamped(x: x * sensitivity, y: y * sensitivity)
+        let output = Self.applyingNegativeDeadzone(
+            to: clamped,
+            enabled: dynamicSettings.leftInstantDeadzoneEnabled,
+            configuredDeadzone: dynamicSettings.leftNegativeDeadzone
+        )
         let inv = SettingsStore.shared.stickInversion(for: .left)
         ARMSX2Bridge.setLeftStickX(inv.x ? -output.x : output.x, y: inv.y ? -output.y : output.y)
     }
@@ -147,9 +153,15 @@ final class EmulatorBridge: @unchecked Sendable {
 
     @MainActor
     private func applyVirtualRightStick() {
-        let output = Self.radiallyClamped(
+        let dynamicSettings = DynamicThumbstickSettings.shared
+        let clamped = Self.radiallyClamped(
             x: virtualRightTouchX + virtualRightMotionX,
             y: virtualRightTouchY + virtualRightMotionY
+        )
+        let output = Self.applyingNegativeDeadzone(
+            to: clamped,
+            enabled: dynamicSettings.rightInstantDeadzoneEnabled,
+            configuredDeadzone: dynamicSettings.rightNegativeDeadzone
         )
         let inv = SettingsStore.shared.stickInversion(for: .right)
         ARMSX2Bridge.setRightStickX(inv.x ? -output.x : output.x, y: inv.y ? -output.y : output.y)
@@ -159,6 +171,23 @@ final class EmulatorBridge: @unchecked Sendable {
         let magnitude = hypotf(x, y)
         guard magnitude > 1 else { return (x, y) }
         return (x / magnitude, y / magnitude)
+    }
+
+    /// Applies a radial minimum-output floor without rescaling larger values.
+    /// This preserves the Dynamic Thumbstick's progressive deadzone curve.
+    private static func applyingNegativeDeadzone(
+        to input: (x: Float, y: Float),
+        enabled: Bool,
+        configuredDeadzone: Double
+    ) -> (x: Float, y: Float) {
+        guard enabled else { return input }
+        let magnitude = hypotf(input.x, input.y)
+        guard magnitude > 0 else { return input }
+
+        let floor = min(max(Float(-configuredDeadzone), 0), 0.95)
+        guard floor > 0, magnitude < floor else { return input }
+        let scale = floor / magnitude
+        return (input.x * scale, input.y * scale)
     }
 
     var isOsdVisible: Bool {

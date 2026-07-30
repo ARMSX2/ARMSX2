@@ -57,6 +57,13 @@ typedef NS_ENUM(NSInteger, ARMSX2PadButton) {
 @property (nonatomic, assign) BOOL valid;
 @end
 
+@interface ARMSX2RetroAchievementsToastInfo : NSObject
+@property (nonatomic, copy, nonnull) NSString *title;
+@property (nonatomic, copy, nonnull) NSString *message;
+@property (nonatomic, copy, nonnull) NSString *badgePath;
+@property (nonatomic, assign) NSTimeInterval duration;
+@end
+
 typedef void (^ARMSX2SaveStateCompletion)(BOOL success);
 typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonnull message);
 
@@ -243,6 +250,14 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)applyGraphicsSettingsNow;
 + (void)flushINISettings;
 
+// What the running game is actually using for each upscaling hack, keyed by INI key.
+// Each entry has "effective", "reason" (ARMSX2GraphicsHackReason) and "pinned". The
+// masks and the GameDB sit between the INI and the renderer, so this is the only way
+// the settings screen can tell whether a toggle did anything. Refreshed on the
+// ARMSX2GraphicsHackStateChanged notification.
++ (nonnull NSDictionary<NSString *, id> *)graphicsHackState;
++ (void)setGraphicsHackPinned:(nonnull NSString *)iniKey pinned:(BOOL)pinned NS_SWIFT_NAME(setGraphicsHackPinned(_:pinned:));
+
 // Frame-time history (read-only). frameTimeHistory wraps
 // PerformanceMetrics::GetFrameTimeHistory() (a thread-safe read of the
 // 150-sample ring buffer) and frameTimeHistoryPos returns its current write
@@ -351,7 +366,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // RetroAchievements
 + (nonnull NSDictionary<NSString *, id> *)retroAchievementsState;
 + (nonnull NSArray<NSDictionary<NSString *, id> *> *)retroAchievementsForCurrentGame;
-+ (nullable NSDictionary<NSString *, id> *)consumePendingRetroAchievementsNotification;
++ (nullable ARMSX2RetroAchievementsToastInfo *)consumePendingRetroAchievementsNotification;
 + (BOOL)isRetroAchievementsHardcoreActive;
 + (void)setRetroAchievementsEnabled:(BOOL)enabled;
 + (void)setRetroAchievementsHardcore:(BOOL)enabled;

@@ -85,6 +85,14 @@ SCAJ-20141:
   clampModes:
     eeClampMode: 3
     vu0ClampMode: 3
+SCAJ-20162:
+  gsHWFixes:
+    autoFlush: 2
+    disablePartialInvalidation: 1
+    halfPixelOffset: 2
+    nativeScaling: 2
+    recommendedBlendingLevel: 4
+    roundSprite: 1
 SCAJ-20163:
   clampModes:
     eeClampMode: 3
@@ -239,6 +247,14 @@ SCES-54041:
     recommendedBlendingLevel: 2
     roundSprite: 1
     texturePreloading: 1
+SCES-54552:
+  gsHWFixes:
+    autoFlush: 2
+    disablePartialInvalidation: 1
+    halfPixelOffset: 2
+    nativeScaling: 2
+    recommendedBlendingLevel: 4
+    roundSprite: 1
 SCKA-20022:
   gsHWFixes:
     getSkipCount: GSC_PolyphonyDigitalGames
@@ -345,9 +361,33 @@ SCPS-15095:
   clampModes:
     eeClampMode: 3
     vu0ClampMode: 3
+SCPS-15102:
+  gsHWFixes:
+    autoFlush: 2
+    disablePartialInvalidation: 1
+    halfPixelOffset: 2
+    nativeScaling: 2
+    recommendedBlendingLevel: 4
+    roundSprite: 1
 SCPS-15119:
   gsHWFixes:
     preloadFrameData: 1
+SCPS-17013:
+  gsHWFixes:
+    autoFlush: 2
+    disablePartialInvalidation: 1
+    halfPixelOffset: 2
+    nativeScaling: 2
+    recommendedBlendingLevel: 4
+    roundSprite: 1
+SCPS-19254:
+  gsHWFixes:
+    autoFlush: 2
+    disablePartialInvalidation: 1
+    halfPixelOffset: 2
+    nativeScaling: 2
+    recommendedBlendingLevel: 4
+    roundSprite: 1
 SCPS-19301:
   clampModes:
     eeClampMode: 3
@@ -547,6 +587,14 @@ SCUS-97487:
   gameFixes:
   - EETimingHack
   - FullVU0SyncHack
+SCUS-97490:
+  gsHWFixes:
+    autoFlush: 2
+    disablePartialInvalidation: 1
+    halfPixelOffset: 2
+    nativeScaling: 2
+    recommendedBlendingLevel: 4
+    roundSprite: 1
 SCUS-97504:
   clampModes:
     eeClampMode: 3
@@ -585,6 +633,14 @@ SCUS-97518:
     halfPixelOffset: 4
     nativeScaling: 1
     recommendedBlendingLevel: 3
+SCUS-97572:
+  gsHWFixes:
+    autoFlush: 2
+    disablePartialInvalidation: 1
+    halfPixelOffset: 2
+    nativeScaling: 2
+    recommendedBlendingLevel: 4
+    roundSprite: 1
 SLAJ-25073:
   clampModes:
     vu1ClampMode: 1

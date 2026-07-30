@@ -226,7 +226,7 @@ extern R5900cpu GSDumpReplayerCpu;
 
 bool VMManager::PerformEarlyHardwareChecks(const char** error)
 {
-#define COMMON_DOWNLOAD_MESSAGE "PCSX2 builds can be downloaded from https://pcsx2.net/downloads/"
+#define COMMON_DOWNLOAD_MESSAGE "ARMSX2 builds can be downloaded from https://armsx2.net/"
 
 #if defined(ARCH_X86)
 	// On Windows, this gets called as a global object constructor, before any of our objects are constructed.
@@ -815,7 +815,13 @@ void VMManager::ApplyGameFixes()
 		EmuConfig.Gamefixes.InstantDMAHack = true;
 
 		// Disable user's manual hardware fixes, it might be problematic.
+		// LoadCoreSettings() already masked with the flag still set, so clearing it here
+		// isn't enough on its own — the hacks it was meant to strip are still in EmuConfig.
+		// Claims don't get a say either: whether a hack is safe on the BIOS has nothing to
+		// do with whether the player asked for it.
 		EmuConfig.GS.ManualUserHacks = false;
+		EmuConfig.GS.MaskUserHacks(false);
+		EmuConfig.GS.MaskUpscalingHacks();
 		return;
 	}
 

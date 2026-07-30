@@ -7,6 +7,22 @@ struct EmulatorSettingsView: View {
     @State private var settings = SettingsStore.shared
     @State private var stikDebugOpenFailed = false
     @State private var stikDebugOpenInProgress = false
+    // Cached rather than asked per redraw: the lookup takes the achievements lock, and
+    // this sits in a Form that rebuilds on every other row.
+    @State private var hardcoreBlocksCheats = false
+
+    /// Hardcore only clears EnableCheats in the running config, so the INI this row reads
+    /// still says on and the row lies. The write is dropped further down as well, without
+    /// a word, so turning it on looks like it worked until something reloads.
+    private var cheatsBinding: Binding<Bool> {
+        Binding(
+            get: { hardcoreBlocksCheats ? false : settings.enableCheats },
+            set: { newValue in
+                guard !hardcoreBlocksCheats else { return }
+                settings.enableCheats = newValue
+            }
+        )
+    }
 
     var body: some View {
         Form {
@@ -266,7 +282,13 @@ struct EmulatorSettingsView: View {
                 Toggle(settings.localized("GameDB Core Fixes"), isOn: $settings.enableGameFixes)
                 Toggle(settings.localized("GameDB Graphics Fixes"), isOn: $settings.enableGameDBHardwareFixes)
                 Toggle(settings.localized("GameDB PNACH Patches"), isOn: $settings.enablePatches)
-                Toggle(settings.localized("Enable PNACH Cheats"), isOn: $settings.enableCheats)
+                Toggle(settings.localized("Enable PNACH Cheats"), isOn: cheatsBinding)
+                    .disabled(hardcoreBlocksCheats)
+                if hardcoreBlocksCheats {
+                    Text(settings.localized("Hardcore Mode is turning cheats off. Switch it off in RetroAchievements to use them again."))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 Toggle(settings.localized("Widescreen Patches"), isOn: $settings.enableWidescreenPatches)
                 Toggle(settings.localized("No-Interlacing Patches"), isOn: $settings.enableNoInterlacingPatches)
 
@@ -343,6 +365,10 @@ struct EmulatorSettingsView: View {
         .navigationTitle(settings.localized("Emulator"))
         .navigationBarTitleDisplayMode(.inline)
         .dynamicTypeSize(...DynamicTypeSize.accessibility3)
+        .onAppear { hardcoreBlocksCheats = PatchStore.hardcoreBlocksPnachContent() }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
+            hardcoreBlocksCheats = PatchStore.hardcoreBlocksPnachContent()
+        }
     }
 
     private static func formatFPS(_ value: Float) -> String {

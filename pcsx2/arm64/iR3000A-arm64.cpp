@@ -212,25 +212,19 @@ static const void* _DynGen_EnterRecompiledCode()
 // when the granule counter is nonzero, i.e. when psxRecClearMem would not
 // have early-outed anyway.
 //
-// ⚠ Two address domains meet here, and they are NOT the same. The store above
-// is mirror-collapsed (addr & (ExposedIopRam-1)), because that is where the
-// bytes live. The coverage probe below must instead use HWADDR, the domain
-// iopCovAdjust and psxRecClearMem key g_iopCodeCov by — and HWADDR strips the
-// KSEG base but does NOT collapse the RAM mirrors, since recLUT_SetPage only
-// writes psxhwLUT[page] = -(pagebase << 16) and pagebase is 0 for the whole
-// 0x00-0x7f RAM window. Under the default 2MB configuration a block executed
-// from a mirror page (0x20-0x7f) therefore registers coverage at granule
-// (0x00214000 >> 8) while the collapsed offset would probe (0x00014000 >> 8);
-// probing collapsed meant a store to the very address the block was compiled
-// at read a zero counter and skipped the clear the C path makes. Above the
-// region gate every reachable address satisfies HWADDR == addr & (kIopCovSpan-1)
-// — bits 23-28 are zero, and the psxhwLUT subtraction for a KSEG mirror is
-// exactly the removal of bits 29-31 — so the two masks are one AND apart, and
-// they coincide outright in the 8MB configuration.
-//
-// This makes the stub exactly as blind as the C path it replaces, no more: a
-// store to a *different* mirror of a block's page still misses, because
-// recBlocks itself is keyed by HWADDR and psxRecClearMem would miss it too.
+// The store above and the coverage probe below share one address domain: the
+// mirror-collapsed physical offset (addr & (ExposedIopRam-1)). That is where
+// the bytes live, and since recResetIOP writes psxhwLUT so HWADDR collapses
+// the RAM mirrors to the canonical physical address, it is also the domain
+// every HWADDR-keyed structure (block registration, g_iopCodeCov, recBlocks,
+// psxRecClearMem) is keyed by. This took two iterations to get right: the
+// probe originally collapsed while registration did not (a store to the very
+// address a mirror-page block was compiled at read a zero counter), the
+// interim fix made the probe match un-collapsed registration — and that left
+// both the stub and the C path blind to a store through a *different* mirror
+// of a block's page, even though the recLUT shares the BASEBLOCK slots across
+// aliases and keeps such a block dispatchable from every mirror. Collapsing
+// the whole domain (cross-alias SMC pinned in iop_smc_tests.cpp) closed that.
 //
 // Anything else tail-jumps to the C handler, which returns to the store site.
 //
@@ -260,14 +254,11 @@ static const void* _DynGen_StoreStub(int size)
 		case 32: armAsm->Str(a64::w1, a64::MemOperand(a64::x4, a64::x2));  break;
 	}
 
-	// Probe by HWADDR (see the domain note in the header comment). w2 already
-	// holds it when the RAM mask spans the whole coverage window, i.e. in the
-	// 8MB configuration; otherwise re-mask into w7.
+	// Probe by the mirror-collapsed offset — the domain g_iopCodeCov is keyed
+	// by now that psxhwLUT collapses the RAM mirrors (see recResetIOP). w2
+	// already holds it from the store above.
 	armMoveAddressToReg(a64::x5, g_iopCodeCov);
-	const a64::Register cov_off = (ram_mask == kIopCovSpan - 1) ? a64::w2 : a64::w7;
-	if (!cov_off.Is(a64::w2))
-		armAsm->And(cov_off, a64::w0, kIopCovSpan - 1);
-	armAsm->Lsr(a64::w6, cov_off, kIopCovShift);
+	armAsm->Lsr(a64::w6, a64::w2, kIopCovShift);
 	armAsm->Ldrh(a64::w6, a64::MemOperand(a64::x5, a64::x6, a64::LSL, 1));
 	armAsm->Cbnz(a64::w6, &clearHit);
 	armAsm->Bind(&swallowed);
@@ -1083,6 +1074,15 @@ static void recClearIOP(u32 Addr, u32 Size)
 	// (a whole-arena mprotect pair per covered store in iOS Legacy mode) and
 	// hazardous: Legacy range windows bypass the refcount, so the paired
 	// EndCodeWrite RX-flipped any emit window open on another thread.
+	//
+	// Callers pass the guest address in whatever alias the store used.
+	// Collapse RAM mirrors (and KSEG bases) to the canonical physical address
+	// up front: g_psxMaxRecMem and every HWADDR-keyed structure below live in
+	// the collapsed domain. Bits 23-28 being clear selects exactly the 8MB
+	// RAM window in every segment (see the store-stub header note), so this
+	// touches only RAM addresses.
+	if (!(Addr & 0x1f800000))
+		Addr &= Ps2MemSize::ExposedIopRam - 1;
 	u32 end = Addr + Size * 4;
 	for (u32 i = Addr; i < end; i += PSXREC_CLEARM(i))
 		;
@@ -1188,6 +1188,19 @@ void recResetIOP()
 		recLUT_SetPage(psxRecLUT, psxhwLUT, recRAM, 0x0000, i, i & mask);
 		recLUT_SetPage(psxRecLUT, psxhwLUT, recRAM, 0x8000, i, i & mask);
 		recLUT_SetPage(psxRecLUT, psxhwLUT, recRAM, 0xa000, i, i & mask);
+
+		// recLUT_SetPage collapses the RAM mirrors in the BASEBLOCK domain
+		// (mappage - page) but derives psxhwLUT from the segment base alone,
+		// which left HWADDR keeping each mirror distinct while the executable
+		// slots are shared — so registration, coverage and the clear path
+		// could not find a block reached through a different alias of the
+		// same physical page (cross-alias SMC executed stale code; pinned in
+		// iop_smc_tests.cpp). Rewrite the hwLUT entries so HWADDR collapses
+		// to the canonical physical address too. In the 8MB configuration
+		// `i & ~mask` is 0 and this degenerates to the segment-base strip.
+		psxhwLUT[0x0000 + i] = 0u - ((0x0000u + (u32)(i & ~mask)) << 16);
+		psxhwLUT[0x8000 + i] = 0u - ((0x8000u + (u32)(i & ~mask)) << 16);
+		psxhwLUT[0xa000 + i] = 0u - ((0xa000u + (u32)(i & ~mask)) << 16);
 	}
 
 	// Map ROM
@@ -1454,7 +1467,7 @@ StartRecomp:
 	s_maxBlockBytes = std::max(s_maxBlockBytes, psxpc - startpc);
 
 	if (!(psxpc & 0x10000000))
-		g_psxMaxRecMem = std::max((psxpc & ~0xa0000000), g_psxMaxRecMem);
+		g_psxMaxRecMem = std::max(HWADDR(psxpc), g_psxMaxRecMem);
 
 	if (psxbranch == 2)
 	{

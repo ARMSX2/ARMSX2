@@ -181,6 +181,7 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
 enum BuiltInDynamicControlPreset: String, CaseIterable, Identifiable {
     case defaultPreset = "Default"
     case mgs3 = "MGS 3"
+    case classicFirstPersonShooter = "Classic First Person Shooter"
 
     var id: String { rawValue }
 
@@ -190,11 +191,17 @@ enum BuiltInDynamicControlPreset: String, CaseIterable, Identifiable {
             return "Restores the Dynamic Control switches managed by presets while preserving sensitivities and button assignments."
         case .mgs3:
             return "Enables Dynamic Thumbsticks, Swipe Camera, right-thumbstick actions, the aiming crosshair, and Double Tap to Hold Aim."
+        case .classicFirstPersonShooter:
+            return "Configures responsive swipe aiming, adaptive swipe-to-stick conversion, right-thumbstick actions, automatic fire, and the reactive aiming crosshair for classic first-person shooters."
         }
     }
 
     @MainActor
     func isActive(settings: DynamicThumbstickSettings = .shared) -> Bool {
+        func matches(_ lhs: Double, _ rhs: Double) -> Bool {
+            abs(lhs - rhs) < 0.0001
+        }
+
         switch self {
         case .defaultPreset:
             return settings.legacyThumbsticks &&
@@ -209,6 +216,68 @@ enum BuiltInDynamicControlPreset: String, CaseIterable, Identifiable {
                 settings.rightThumbstickActionsEnabled &&
                 settings.dynamicCrosshairEnabled &&
                 settings.doubleTapToHoldAim
+        case .classicFirstPersonShooter:
+            return !settings.legacyThumbsticks &&
+                settings.dynamicThumbsticks &&
+                settings.swipeCamera &&
+                !settings.gyroscopeCamera &&
+                settings.leftInstantDeadzoneEnabled &&
+                matches(settings.leftNegativeDeadzone, -0.08) &&
+                settings.rightInstantDeadzoneEnabled &&
+                matches(settings.rightNegativeDeadzone, -0.14) &&
+                matches(settings.leftThumbstickAreaScale, 1) &&
+                matches(settings.rightThumbstickAreaScale, 1.75) &&
+                settings.convertSwipeToDynamicJoystick &&
+                matches(settings.convertIntoDynamicThumbstickThreshold, 1) &&
+                matches(settings.pullingBackDistance, 0.05) &&
+                matches(settings.movementSensitivity, 1) &&
+                matches(settings.lookSensitivity, 1) &&
+                matches(settings.swipeSensitivity, 0.28) &&
+                matches(settings.swipeHorizontalSensitivity, 1) &&
+                matches(settings.swipeVerticalSensitivity, 1) &&
+                !settings.swipeSensitivityWhileAimingEnabled &&
+                matches(settings.swipeSensitivityWhileAiming, 0.28) &&
+                matches(settings.swipeHorizontalSensitivityWhileAiming, 1) &&
+                matches(settings.swipeVerticalSensitivityWhileAiming, 1) &&
+                settings.swipeSensitivityWhileNotAimingEnabled &&
+                matches(settings.swipeSensitivityWhileNotAiming, 0.75) &&
+                matches(settings.swipeHorizontalSensitivityWhileNotAiming, 1) &&
+                matches(settings.swipeVerticalSensitivityWhileNotAiming, 1) &&
+                !settings.leftThumbstickActionsEnabled &&
+                settings.rightThumbstickActionsEnabled &&
+                settings.rightAimButton == .leftShoulder &&
+                settings.rightFireButton == .rightShoulder &&
+                settings.rightHoldFireButton == .rightShoulder &&
+                settings.dynamicCrosshairEnabled &&
+                settings.showCrosshairWhileHoldingSwipe &&
+                matches(settings.swipeCrosshairHideDelay, 0.5) &&
+                settings.triggerButtonWhenUnholdingSwipe == -1 &&
+                matches(settings.dynamicCrosshairSize, 32) &&
+                matches(settings.dynamicCrosshairOpacity, 0.70) &&
+                settings.dynamicCrosshairType == .fourBoxes &&
+                settings.dynamicCrosshairAnimation == .reactive &&
+                matches(settings.thumbstickRadius, 52) &&
+                matches(settings.deadZone, 0.08) &&
+                matches(settings.thumbstickOpacity, 0.72) &&
+                matches(settings.baseOpacity, 0.20) &&
+                matches(settings.trailOpacity, 0.10) &&
+                settings.activationHaptics &&
+                !settings.holdAimWhileSwipe &&
+                !settings.doubleTapToHoldAim &&
+                settings.singleTapActionOnNonAimMode &&
+                settings.actionsOnNonAimMode &&
+                matches(settings.aimReleaseDelay, 1.25) &&
+                matches(settings.doubleTapWindow, 0.28) &&
+                settings.tapToFire &&
+                matches(settings.tapMaximumDuration, 0.18) &&
+                matches(settings.tapTravelTolerance, 12) &&
+                settings.rapidTapFireEnabled &&
+                matches(settings.rapidTapWindow, 0.28) &&
+                settings.rapidTapActivationCount == 2 &&
+                matches(settings.automaticFireInterval, 0.12) &&
+                settings.extendFireWhileDragging &&
+                settings.releaseFireWhenTouchEnds &&
+                matches(settings.fireReleaseDelay, 0)
         }
     }
 
@@ -227,6 +296,73 @@ enum BuiltInDynamicControlPreset: String, CaseIterable, Identifiable {
             settings.rightThumbstickActionsEnabled = true
             settings.dynamicCrosshairEnabled = true
             settings.setDoubleTapToHoldAim(true)
+        case .classicFirstPersonShooter:
+            settings.setDynamicThumbsticks(true)
+            settings.swipeCamera = true
+            settings.gyroscopeCamera = false
+
+            settings.leftInstantDeadzoneEnabled = true
+            settings.leftNegativeDeadzone = -0.08
+            settings.rightInstantDeadzoneEnabled = true
+            settings.rightNegativeDeadzone = -0.14
+            settings.leftThumbstickAreaScale = 1
+            settings.rightThumbstickAreaScale = 1.75
+            settings.convertSwipeToDynamicJoystick = true
+            settings.setConvertIntoDynamicThumbstickThreshold(1)
+            settings.setPullingBackDistance(0.05)
+
+            settings.movementSensitivity = 1
+            settings.lookSensitivity = 1
+            settings.swipeSensitivity = 0.28
+            settings.swipeHorizontalSensitivity = 1
+            settings.swipeVerticalSensitivity = 1
+            settings.swipeSensitivityWhileAimingEnabled = false
+            settings.swipeSensitivityWhileAiming = 0.28
+            settings.swipeHorizontalSensitivityWhileAiming = 1
+            settings.swipeVerticalSensitivityWhileAiming = 1
+            settings.swipeSensitivityWhileNotAimingEnabled = true
+            settings.swipeSensitivityWhileNotAiming = 0.75
+            settings.swipeHorizontalSensitivityWhileNotAiming = 1
+            settings.swipeVerticalSensitivityWhileNotAiming = 1
+
+            settings.leftThumbstickActionsEnabled = false
+            settings.rightThumbstickActionsEnabled = true
+            settings.rightAimButton = .leftShoulder
+            settings.rightFireButton = .rightShoulder
+            settings.rightHoldFireButton = .rightShoulder
+
+            settings.dynamicCrosshairEnabled = true
+            settings.showCrosshairWhileHoldingSwipe = true
+            settings.swipeCrosshairHideDelay = 0.5
+            settings.triggerButtonWhenUnholdingSwipe = -1
+            settings.dynamicCrosshairSize = 32
+            settings.dynamicCrosshairOpacity = 0.70
+            settings.dynamicCrosshairType = .fourBoxes
+            settings.dynamicCrosshairAnimation = .reactive
+
+            settings.thumbstickRadius = 52
+            settings.deadZone = 0.08
+            settings.thumbstickOpacity = 0.72
+            settings.baseOpacity = 0.20
+            settings.trailOpacity = 0.10
+            settings.activationHaptics = true
+
+            settings.setHoldAimWhileSwipe(false)
+            settings.setDoubleTapToHoldAim(false)
+            settings.singleTapActionOnNonAimMode = true
+            settings.setActionsOnNonAimMode(true)
+            settings.aimReleaseDelay = 1.25
+            settings.doubleTapWindow = 0.28
+            settings.tapToFire = true
+            settings.tapMaximumDuration = 0.18
+            settings.tapTravelTolerance = 12
+            settings.rapidTapFireEnabled = true
+            settings.rapidTapWindow = 0.28
+            settings.rapidTapActivationCount = 2
+            settings.automaticFireInterval = 0.12
+            settings.extendFireWhileDragging = true
+            settings.releaseFireWhenTouchEnds = true
+            settings.fireReleaseDelay = 0
         }
     }
 }

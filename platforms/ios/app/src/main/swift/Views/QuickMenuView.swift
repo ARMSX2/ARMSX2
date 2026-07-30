@@ -15,11 +15,10 @@ enum QuickMenuDestination: Equatable {
     case resetROM
 }
 
-/// Native in-game pause menu: a premium opaque graphite "command deck" presented by the host as a
-/// bounded card over a lighter, controlled dim of the paused gameplay. The host pauses the VM
-/// while this card is shown. Toggles are bound directly; everything else is routed back to the
-/// host through closures (unchanged from before) so the existing panels, child-screen routing and
-/// confirmation flows stay exactly as in Phase A.
+/// Native in-game pause menu: a clear Liquid Glass "command deck" presented by the host as a
+/// bounded card over a controlled dim of the paused gameplay. The host pauses the VM while this
+/// card is shown. Toggles are bound directly; everything else is routed back to the host through
+/// closures so existing panels, child-screen routing, and confirmation flows remain unchanged.
 ///
 /// Layout adapts to the card's geometry (read via a GeometryReader, since the host frames this
 /// view to the bounded card size): two columns when the card is comfortably wide, one column
@@ -55,6 +54,10 @@ struct QuickMenuView: View {
         GeometryReader { geo in
             overlayBody(width: geo.size.width, height: geo.size.height)
         }
+        .environment(
+            \.clearLiquidGlassUIEnabled,
+            settings.clearLiquidGlassUIQuickMenu
+        )
     }
 
     @ViewBuilder
@@ -93,7 +96,7 @@ struct QuickMenuView: View {
                     iconOnly: width < 380
                 )
                 ScrollView {
-                    cardsContent(twoColumns: width > 700)
+                    cardsContent(twoColumns: supportsTwoColumns(width: width, height: height))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -101,11 +104,9 @@ struct QuickMenuView: View {
         .environment(\.overlayCompact, true)
     }
 
-    /// Two columns only when the card is wide enough to keep both columns comfortable.
-    /// iPad portrait and short/small phone-landscape devices fall back to one column.
-    /// iPhone portrait always uses a single-column scroll layout — the screen is
-    /// too narrow for two comfortable columns, even on Plus/Max devices. Landscape
-    /// and iPad still get two columns when wide enough.
+    /// Two columns only when the measured card can keep both columns comfortable.
+    /// iPhone portrait always uses one column, while compact landscape and iPad
+    /// layouts fall back to one column below their respective usable-size threshold.
     private func supportsTwoColumns(width: CGFloat, height: CGFloat) -> Bool {
         switch variant {
         case .phonePortrait:
@@ -113,7 +114,9 @@ struct QuickMenuView: View {
         case .ipadTwoColumn:
             return width >= 500 && height >= 320
         case .phoneLandscape:
-            return width >= 570 && height >= 300
+            // Notched 19.5:9 iPhones retain at least 640 points after safe-area
+            // clearance; smaller 16:9 phones continue using the compact column.
+            return width >= 640 && height >= 300
         }
     }
 
@@ -257,13 +260,13 @@ struct QuickMenuView: View {
     }
 
     /// Hosts an injected SwiftUI `Menu` (controller skin / change disc) as a row that matches the
-    /// graphite action rows as closely as an opaque AnyView allows. The menu's own action
+    /// action rows as closely as an opaque AnyView allows. The menu's own action
     /// semantics are untouched.
     @ViewBuilder
     private func injectedMenuRow(_ menu: AnyView) -> some View {
         menu
             .foregroundStyle(OverlayTheme.textPrimary)
-            .frame(maxWidth: .infinity, minHeight: variant == .phoneLandscape ? 38 : 44, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
     }
 }
 
@@ -300,7 +303,7 @@ private struct LandscapeCommandBar: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .controlSize(.regular)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 6)

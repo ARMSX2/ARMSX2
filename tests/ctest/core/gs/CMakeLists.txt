@@ -11,6 +11,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_vertex_tests.cpp
 	gs_backqueue_tests.cpp
 	gs_interlace_policy_tests.cpp
+	gs_draw_staging_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE

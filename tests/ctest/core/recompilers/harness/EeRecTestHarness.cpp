@@ -536,15 +536,38 @@ void EeRecTestHarness::EnableVu0Capture()
 	// — surfacing as order-dependent failures in EeVu0Cop2Macro.Vopm* under
 	// --gtest_shuffle. Zero the register/flag file here so test order can't leak.
 	//
-	// Only architectural register + flag state is cleared. Infra the VU0 engine
-	// needs (Mem/Micro pointers, idx, cycle) and the control registers at
-	// VI[24..31] (TPC/CMSAR0/FBRST/VPU_STAT/CMSAR1) are left intact; tests that
-	// care seed them explicitly after this call.
+	// Only architectural register + flag state is cleared; the Mem/Micro
+	// pointers and idx are infra and stay live.
 	VURegs& vu = vuRegs[0];
 	for (int i = 1; i < 32; i++)
 		vu.VF[i].UD[0] = vu.VF[i].UD[1] = 0;
 	for (int i = 1; i <= REG_P; i++) // VI[1..15] integer + VI[16..23] flags/R/I/Q/P
 		vu.VI[i].UL = 0;
+
+	// The control registers at VI[24..31] (TPC/CMSAR0/FBRST/VPU_STAT/CMSAR1),
+	// the M-bit handshake flag, VU0's clock, and the interpreter's resume
+	// sentinels were historically left to inherit from the previous test.
+	// That inheritance is what produced the order-dependent EeVu0* failures
+	// under --gtest_shuffle: a VU-harness test leaves vuRegs[0] mid-program
+	// (VPU_STAT.0 set, a couple of pairs from its E-bit), and the next EE
+	// test's non-interlocked COP2 sync then diverges on the 16-cycle
+	// run-ahead floor — the JIT's floored grant drains the leftover program
+	// while the interp's exact-delta sync leaves it running. That divergence
+	// is by design (x86 parity); see ee_vu0_runahead_floor_tests.cpp, which
+	// pins it with deliberately constructed state. Reset to idle here; tests
+	// that want a running VU0 construct it explicitly after this call.
+	for (int i = 24; i < 32; i++)
+		vu.VI[i].UL = 0;
+	vu.flags = 0;
+	vu.cycle = cpuRegs.cycle;
+	vu.ebit = 0;
+	vu.branch = 0;
+	vu.branchpc = 0;
+	vu.delaybranchpc = 0;
+	vu.takedelaybranch = 0;
+	vu.pending_q = 0;
+	vu.pending_p = 0;
+	vu.nextBlockCycles = 0;
 	vu.ACC.UD[0] = vu.ACC.UD[1] = 0;
 	vu.q.UL = 0;
 	vu.p.UL = 0;
@@ -616,6 +639,20 @@ void EeRecTestHarness::SeedVu0Microprogram(u32 byte_offset, std::initializer_lis
 		std::memcpy(vu.Micro + ((base + 0) & mask), &p.lower, 4);
 		std::memcpy(vu.Micro + ((base + 4) & mask), &p.upper, 4);
 		base += 8;
+	}
+
+	// Architectural E-bit cleanup executes one more pair after the E-bit
+	// pair. Micro mem is shared, never-reset global state, so leaving that
+	// delay slot unseeded executes whatever pair a previous test left there
+	// — order-dependent poison under --gtest_shuffle, and invisible to the
+	// JIT-vs-interp diff because both engines faithfully run the same stale
+	// word and agree. Mirror VuTestHarness::LoadProgram: when the caller's
+	// final pair ends the program, seed the delay slot with a NOP pair.
+	if (pairs.size() != 0 && ((pairs.end() - 1)->upper & vu::bits::E))
+	{
+		const vu::VuOp nop = vu::NopPair();
+		std::memcpy(vu.Micro + ((base + 0) & mask), &nop.lower, 4);
+		std::memcpy(vu.Micro + ((base + 4) & mask), &nop.upper, 4);
 	}
 }
 

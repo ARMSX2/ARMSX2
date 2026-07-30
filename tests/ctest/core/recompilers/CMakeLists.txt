@@ -95,6 +95,7 @@ add_pcsx2_test(recompiler_tests
 	vu_mac_flag_pack_tests.cpp
 	ee_vu0_cfc2_ctc2_tests.cpp
 	ee_vu0_qmfc2_qmtc2_tests.cpp
+	ee_vu0_runahead_floor_tests.cpp
 	ee_vu0_cop2_transfer_residency_tests.cpp
 	ee_vu0_cop2_clamp_residency_tests.cpp
 	ee_vu0_cop2_macro_tests.cpp
