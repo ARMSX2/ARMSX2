@@ -1746,7 +1746,13 @@ struct ThemePaletteEditor: View {
     applyEditorSnapshot(snapshot)
   }
 
-  private func applyEditorSnapshot(_ snapshot: ThemePaletteEditorSnapshot) {
+  // restoringSavedColors is false only for Cancel. Undo and redo do want the swatch list
+  // to move with everything else; Cancel does not, because saving a swatch is its own
+  // deliberate act and rolling it back reads as losing work.
+  private func applyEditorSnapshot(
+    _ snapshot: ThemePaletteEditorSnapshot,
+    restoringSavedColors: Bool = true
+  ) {
     pendingUndoSnapshot = nil
     sharedPalette = snapshot.sharedPalette
     sharedCustomColor = snapshot.sharedCustomColor
@@ -1756,7 +1762,9 @@ struct ThemePaletteEditor: View {
     ribbonMultiColor = snapshot.ribbonMultiColor
     particleSettings = snapshot.particleSettings
     isPlayStation3XMBPresetExplicit = snapshot.isPlayStation3XMBPresetExplicit
-    savedColorsJSON = snapshot.savedColorsJSON
+    if restoringSavedColors {
+      savedColorsJSON = snapshot.savedColorsJSON
+    }
     lastEditorSnapshot = snapshot
   }
 
@@ -1776,7 +1784,11 @@ struct ThemePaletteEditor: View {
     isClosingEditor = true
     endBackgroundPreview()
     if let initialEditorSnapshot {
-      applyEditorSnapshot(initialEditorSnapshot)
+      applyEditorSnapshot(initialEditorSnapshot, restoringSavedColors: false)
+      // Restoring the bindings is not enough. Saving a swatch mid session calls
+      // onSaveAppearance, which persists the whole preferences struct, so everything
+      // edited before that point is already committed and would outlive Cancel.
+      onSaveAppearance()
     }
     dismiss()
   }
