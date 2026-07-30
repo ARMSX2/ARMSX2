@@ -175,6 +175,14 @@ public class NativeApp {
 	 * enough — a patch is inert unless its name is enabled here.
 	 */
 	public static native void setEnabledPatches(boolean cheats, String[] allNames, String[] enabledNames);
+	/**
+	 * One-time repair: drop the GLOBAL [Patches]/[Cheats] "Enable" lists.
+	 * <p>
+	 * Older builds filled these automatically just by opening the Patch Manager, and because
+	 * patches are enabled by NAME those entries armed the same-named group in the bundled pnach
+	 * archive for every game. Per-game lists are left alone. Call once, gated on a pref.
+	 */
+	public static native void purgeGlobalPatchEnableLists();
 	public static native String getGameTitle(String path);
 	public static native String getGameSerial();
 	public static native String getGameCRC();

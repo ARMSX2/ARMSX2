@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,6 +31,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -77,6 +80,7 @@ fun PatchManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Pa
                 actions = {
                     RoundAction("＋", str("action.import"), { picker.launch(arrayOf("text/plain", "application/octet-stream", "*/*")) })
                     RoundAction("🗀", str("patches.import.folder"), { folderPicker.launch(null) })
+                    RoundAction("✎", str("patches.editor.new"), viewModel::newEditor)
                     RoundAction("↻", str("games.card.refresh"), viewModel::refresh)
                 },
             )
@@ -102,6 +106,9 @@ fun PatchManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Pa
             }
         }
     }
+    if (state.editorPath != null) {
+        PnachEditor(state, viewModel)
+    }
     (state.error ?: state.message)?.let { message ->
         androidx.compose.runtime.DisposableEffect(Unit) {
             com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_OPEN)
@@ -113,6 +120,80 @@ fun PatchManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Pa
             text = { Text(message) },
             confirmButton = { TextButton(onClick = viewModel::dismissMessage) { Text(str("action.ok")) } },
         )
+    }
+}
+
+/**
+ * Raw .pnach text editor.
+ *
+ * A plain text buffer, not a structured code form: pnach is what people copy off the web, headers
+ * and comments included, so anything that re-serialised it would mangle the paste.
+ *
+ * The explicit Paste button matters more than it looks — on a handheld with no touchscreen there is
+ * no way to reach the long-press paste menu, which is most of why "paste a code you found" didn't
+ * work here before.
+ */
+@Composable
+private fun PnachEditor(state: PatchManagerUiState, viewModel: PatchManagerViewModel) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.72f)),
+    ) {
+        Surface(
+            Modifier.fillMaxSize().padding(10.dp),
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+        ) {
+            Column(Modifier.fillMaxSize().padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        state.editorName.ifBlank { str("patches.editor.new") },
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val paste = {
+                        clipboard.getText()?.text?.let { pasted ->
+                            // Append rather than replace: the buffer already holds a gametitle line
+                            // (new file) or the user's existing codes (edit), and clobbering either
+                            // is never what "paste" is meant to do.
+                            viewModel.updateEditorText(
+                                if (state.editorText.isEmpty()) pasted
+                                else state.editorText.trimEnd() + "\n" + pasted,
+                            )
+                        }
+                        Unit
+                    }
+                    TextButton(
+                        onClick = paste,
+                        modifier = Modifier.controllerFocusable("patches.editor.paste", onConfirm = paste),
+                    ) { Text(str("patches.editor.paste")) }
+                    TextButton(
+                        onClick = viewModel::closeEditor,
+                        modifier = Modifier.controllerFocusable("patches.editor.cancel", onConfirm = viewModel::closeEditor),
+                    ) { Text(str("action.cancel")) }
+                    TextButton(
+                        onClick = viewModel::saveEditor,
+                        enabled = !state.editorLoading,
+                        modifier = Modifier.controllerFocusable("patches.editor.save", onConfirm = viewModel::saveEditor),
+                    ) { Text(str("action.save")) }
+                }
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = state.editorText,
+                    onValueChange = viewModel::updateEditorText,
+                    modifier = Modifier.fillMaxSize(),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    ),
+                    placeholder = { Text(str("patches.editor.placeholder")) },
+                )
+            }
+        }
     }
 }
 
@@ -203,23 +284,11 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
         Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
             SectionTitle(str("ra.options.header"), str("scope.global"))
             SettingSwitchRow(
-                str("patches.enablePatches.label"), str("patches.applyAtBoot"), state.settings.enablePatches,
-                onCheckedChange = { value -> viewModel.update { it.copy(enablePatches = value) } },
-                modifier = Modifier.controllerFocusable(
-                    "patches.enablePatches",
-                    onConfirm = { viewModel.update { it.copy(enablePatches = !state.settings.enablePatches) } },
-                    onLeft = { if (state.settings.enablePatches) viewModel.update { it.copy(enablePatches = false) } },
-                    onRight = { if (!state.settings.enablePatches) viewModel.update { it.copy(enablePatches = true) } },
-                ),
-            )
-            SettingSwitchRow(
                 str("patches.cheats.label"), str("patches.pasteImportHint"), state.settings.enableCheats,
                 onCheckedChange = { value -> viewModel.update { it.copy(enableCheats = value) } },
                 modifier = Modifier.controllerFocusable(
                     "patches.enableCheats",
                     onConfirm = { viewModel.update { it.copy(enableCheats = !state.settings.enableCheats) } },
-                    onLeft = { if (state.settings.enableCheats) viewModel.update { it.copy(enableCheats = false) } },
-                    onRight = { if (!state.settings.enableCheats) viewModel.update { it.copy(enableCheats = true) } },
                 ),
             )
             SettingSwitchRow(
@@ -231,8 +300,6 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
                 modifier = Modifier.controllerFocusable(
                     "patches.widescreen",
                     onConfirm = { viewModel.update { it.copy(enableWideScreenPatches = !state.settings.enableWideScreenPatches) } },
-                    onLeft = { if (state.settings.enableWideScreenPatches) viewModel.update { it.copy(enableWideScreenPatches = false) } },
-                    onRight = { if (!state.settings.enableWideScreenPatches) viewModel.update { it.copy(enableWideScreenPatches = true) } },
                 ),
             )
             SettingSwitchRow(
@@ -241,8 +308,6 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
                 modifier = Modifier.controllerFocusable(
                     "patches.noInterlacing",
                     onConfirm = { viewModel.update { it.copy(enableNoInterlacingPatches = !state.settings.enableNoInterlacingPatches) } },
-                    onLeft = { if (state.settings.enableNoInterlacingPatches) viewModel.update { it.copy(enableNoInterlacingPatches = false) } },
-                    onRight = { if (!state.settings.enableNoInterlacingPatches) viewModel.update { it.copy(enableNoInterlacingPatches = true) } },
                 ),
             )
             // HostFS (host: filesystem) — lets ELF/homebrew and certain advanced mods read
@@ -253,8 +318,6 @@ private fun PatchOptions(state: PatchManagerUiState, viewModel: PatchManagerView
                 modifier = Modifier.controllerFocusable(
                     "patches.hostFs",
                     onConfirm = { viewModel.update { it.copy(hostFs = !state.settings.hostFs) } },
-                    onLeft = { if (state.settings.hostFs) viewModel.update { it.copy(hostFs = false) } },
-                    onRight = { if (!state.settings.hostFs) viewModel.update { it.copy(hostFs = true) } },
                 ),
             )
         }
@@ -342,12 +405,12 @@ private fun OnlineBrowser(
 private fun OnlineEntryRow(entry: PatchRepo.Entry, checked: Boolean, onToggle: () -> Unit) {
     Surface(
         onClick = onToggle,
+        // Confirm (A) only — same reason as LocalCheatRow: scrolling past an entry must not tick
+        // it for install.
         modifier = Modifier.fillMaxWidth().controllerFocusable(
             "patches.online.entry.${entry.name}",
             RoundedCornerShape(14.dp),
             onConfirm = onToggle,
-            onLeft = { if (checked) onToggle() },
-            onRight = { if (!checked) onToggle() },
         ),
         shape = RoundedCornerShape(14.dp),
         color = if (checked) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
@@ -453,6 +516,7 @@ private fun PatchFiles(state: PatchManagerUiState, viewModel: PatchManagerViewMo
                         onExpand = { viewModel.expandLocal(file) },
                         onToggleCheat = viewModel::toggleLocalCheat,
                         onSetAllCheats = viewModel::setAllLocalCheats,
+                        onEdit = { viewModel.openEditor(file) },
                         onDelete = { viewModel.delete(file) },
                     )
                 }
@@ -564,6 +628,7 @@ private fun PatchFileRow(
     onExpand: () -> Unit,
     onToggleCheat: (String) -> Unit,
     onSetAllCheats: (Boolean) -> Unit,
+    onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Surface(
@@ -583,6 +648,7 @@ private fun PatchFileRow(
                     Text(file.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(file.parentFile?.name.orEmpty(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                TextButton(onClick = onEdit, modifier = Modifier.controllerFocusable("patches.file.${file.absolutePath}.edit", onConfirm = onEdit)) { Text(str("action.edit")) }
                 TextButton(onClick = onDelete, modifier = Modifier.controllerFocusable("patches.file.${file.absolutePath}.delete", onConfirm = onDelete)) { Text(str("action.delete")) }
             }
             if (expanded) {
@@ -634,11 +700,12 @@ private fun PatchFileRow(
 @Composable
 private fun LocalCheatRow(cheat: PatchRepo.LocalCheat, onToggle: () -> Unit) {
     Row(
+        // Confirm (A) only — no onLeft/onRight. D-pad Right used to enable the cheat under the
+        // cursor, so simply scrolling down a cheat list armed everything you passed. Enabling a
+        // patch or cheat must always be a deliberate press.
         Modifier.fillMaxWidth().clickable(onClick = onToggle).controllerFocusable(
             "patches.cheat.${cheat.name}",
             onConfirm = onToggle,
-            onLeft = { if (cheat.enabled) onToggle() },
-            onRight = { if (!cheat.enabled) onToggle() },
         ).padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

@@ -399,7 +399,15 @@ void Patch::EnumeratePnachFiles(const std::string_view serial, u32 crc, bool che
 	}
 
 	// Otherwise fall back to the zip.
-	if (cheats || unlabeled_patch_found || !OpenPatchesZip())
+	//
+	// "Otherwise" has to include "a disk file was found", which it previously didn't: the guard
+	// ignored disk_patch_files, so the bundled copy loaded ALONGSIDE the user's file every time,
+	// contradicting the "prefer files on disk" comment above. Two user-visible consequences, both
+	// reported: a hand-edited pnach couldn't fully replace the bundled one (dedupe-by-name only
+	// hid the bundled group while the disk name existed), and DELETING a pnach silently promoted
+	// the identically-named bundled group in its place — so a patch the user had removed carried
+	// on applying, with nothing left on disk to explain why.
+	if (cheats || unlabeled_patch_found || !disk_patch_files.empty() || !OpenPatchesZip())
 		return;
 
 	// Prefer filename with serial.
@@ -870,6 +878,12 @@ bool Patch::ReloadPatchAffectingOptions()
 	EmuConfig.GS.AspectRatio = new_ar;
 	EmuConfig.GS.InterlaceMode = static_cast<GSInterlaceMode>(Host::GetIntSettingValue(
 		"EmuCore/GS", "deinterlace_mode", static_cast<int>(Pcsx2Config::GSOptions::DEFAULT_INTERLACE_MODE)));
+
+	// Clear the patch-requested aspect before re-deriving it. ApplyPatchSettingOverrides only ever
+	// SETS CurrentCustomAspectRatio, so without this the last widescreen patch's ratio survived
+	// the patch being disabled and GSRenderer kept reading it (it takes any value > 0 in
+	// preference to the real aspect) — i.e. "I turned widescreen off and the game is still 16:9".
+	EmuConfig.CurrentCustomAspectRatio = 0.0f;
 
 	ApplyPatchSettingOverrides();
 
