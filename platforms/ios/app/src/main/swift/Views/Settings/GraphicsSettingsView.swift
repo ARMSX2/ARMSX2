@@ -155,16 +155,9 @@ struct GraphicsSettingsView: View {
 
             Section(settings.localized("Upscaling")) {
                 Picker(settings.localized("Internal Resolution"), selection: $settings.upscaleMultiplier) {
-                    Text(settings.localized("0.25x (Fastest)")).tag(Float(0.25))
-                    Text("0.5x").tag(Float(0.5))
-                    Text("0.75x").tag(Float(0.75))
-                    Text(settings.localized("1x Native (512x448)")).tag(Float(1.0))
-                    Text("2x (1024x896)").tag(Float(2.0))
-                    Text("3x (1536x1344)").tag(Float(3.0))
-                    Text("4x (2048x1792)").tag(Float(4.0))
-                    Text("5x (2560x2240)").tag(Float(5.0))
-                    Text("6x (3072x2688)").tag(Float(6.0))
-                    Text("8x (4096x3584)").tag(Float(8.0))
+                    ForEach(UpscaleOptions.all, id: \.id) { option in
+                        Text(settings.localized(option.title)).tag(option.id)
+                    }
                 }
                 Text(settings.localized("Lower values can help performance on heavy games. Higher values improve visual quality but reduce performance significantly. Applies immediately; the renderer may briefly stutter while it reinits."))
                     .font(.caption)

@@ -111,15 +111,6 @@ struct GraphicsTab: View {
         PickerOption(id: 2, title: "Full")
     ]
 
-    private static let upscaleOptions: [(id: Float, title: String)] = [
-        (0.25, "0.25x (Fastest)"),
-        (0.5, "0.5x"),
-        (0.75, "0.75x"),
-        (1.0, "1x Native"),
-        (2.0, "2x"),
-        (3.0, "3x"),
-        (4.0, "4x")
-    ]
     private static let aspectRatioOptions: [(id: String, title: String)] = [
         ("Auto 4:3/3:2", "Auto 4:3 / 3:2"),
         ("4:3", "4:3"),
@@ -151,7 +142,7 @@ struct GraphicsTab: View {
     @ViewBuilder
     private var graphicsContent: some View {
         Section(settings.localized("Graphics")) {
-            EnumPicker(Self.upscaleOptions, selection: $upscaleMultiplier) {
+            EnumPicker(UpscaleOptions.all, selection: $upscaleMultiplier) {
                 Text(settings.localized("Internal Resolution"))
             }
             .disabled(!enabled)
