@@ -328,6 +328,12 @@ namespace Host
         {
             ARMSX2RefreshIOSGamepads();
             for (u32 gamepad_index = 0; gamepad_index < ARMSX2_MAX_IOS_GAMEPADS; gamepad_index++) {
+                // Before the gamepad check, not after: this is what falls back to the
+                // phone's own taptic engine, and that case is precisely the one where
+                // there is no gamepad in the slot. It returns immediately when there
+                // is nothing pending, so idle slots cost nothing.
+                ARMSX2ApplyPendingGamepadRumble(gamepad_index);
+
                 SDL_Gamepad* gamepad = s_gamepads[gamepad_index];
                 if (!gamepad)
                     continue;
@@ -340,7 +346,6 @@ namespace Host
                 if (!gamepad_pad)
                     continue;
 
-                ARMSX2ApplyPendingGamepadRumble(gamepad_index);
                 ARMSX2ApplyIOSGamepadInput(gamepad_index, gamepad, gamepad_pad, gamepad_index == 0);
             }
         }

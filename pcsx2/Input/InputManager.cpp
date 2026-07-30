@@ -28,6 +28,10 @@
 #include <variant>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 // ------------------------------------------------------------------------
 // Constants
 // ------------------------------------------------------------------------
@@ -1458,8 +1462,19 @@ void InputManager::SetUSBVibrationIntensity(u32 port, float large_or_single_moto
 namespace Native { void onPadRumble(int pad, int largeMotor, int smallMotor); }
 #endif
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+// Same story as Android above: iOS drives pads through its own SDL bridge and binds no
+// motors, so s_pad_vibration_array is empty and the loop below never reaches a motor.
+// Hand every intensity change to the iOS rumble queue, which the VM thread drains once a
+// frame and turns into SDL rumble, a CoreHaptics pulse, or the phone's own taptic engine.
+extern "C" void ARMSX2_iOSUpdatePadVibration(u32 pad_index, float large_intensity, float small_intensity);
+#endif
+
 void InputManager::SetPadVibrationIntensity(u32 pad_index, float large_or_single_motor_intensity, float small_motor_intensity)
 {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	ARMSX2_iOSUpdatePadVibration(pad_index, large_or_single_motor_intensity, small_motor_intensity);
+#endif
 #ifdef __ANDROID__
 	if (pad_index < Pad::NUM_CONTROLLER_PORTS)
 	{
@@ -1524,6 +1539,12 @@ void InputManager::SetPadVibrationIntensity(u32 pad_index, float large_or_single
 
 void InputManager::PauseVibration()
 {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	// Nothing else stops the motor on the iOS path, so without this a pad that was
+	// rumbling when you opened the menu keeps rumbling behind it.
+	for (u32 pad_index = 0; pad_index < Pad::NUM_CONTROLLER_PORTS; pad_index++)
+		ARMSX2_iOSUpdatePadVibration(pad_index, 0.0f, 0.0f);
+#endif
 	for (PadVibrationBinding& binding : s_pad_vibration_array)
 	{
 		for (u32 motor_index = 0; motor_index < MAX_MOTORS_PER_PAD; motor_index++)
