@@ -1241,7 +1241,7 @@ float GSState::GetTvRefreshRate()
 		case GSVideoMode::HDTV_1080I:
 			return 60;
 		default:
-			Console.Error("GS: Unknown video mode. Please report: https://github.com/PCSX2/pcsx2/issues");
+			Console.Error("GS: Unknown video mode. Please report: https://github.com/ARMSX2/ARMSX2/issues");
 			return 0;
 	}
 
@@ -7966,7 +7966,7 @@ GIFRegTEX0 GSState::GetTex0Layer(u32 lod)
 			TEX0.TBW = m_context->MIPTBP2.TBW6;
 			break;
 		default:
-			Console.Error("GS: Invalid guest lod setting. Please report: https://github.com/PCSX2/pcsx2/issues");
+			Console.Error("GS: Invalid guest lod setting. Please report: https://github.com/ARMSX2/ARMSX2/issues");
 	}
 
 	// Correct the texture size

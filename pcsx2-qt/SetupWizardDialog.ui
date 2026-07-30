@@ -930,7 +930,7 @@
        <item>
         <widget class="QCheckBox" name="addToApplicationMenu">
          <property name="text">
-          <string>Add PCSX2 to the Application Menu</string>
+          <string>Add ARMSX2 to the Application Menu</string>
          </property>
         </widget>
        </item>

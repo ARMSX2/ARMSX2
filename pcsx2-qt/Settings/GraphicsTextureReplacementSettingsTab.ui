@@ -98,7 +98,7 @@
       <item row="0" column="0" colspan="4">
        <widget class="QLabel" name="textureDescriptionText">
         <property name="text">
-         <string>PCSX2 will dump and load texture replacements from this directory.</string>
+         <string>ARMSX2 will dump and load texture replacements from this directory.</string>
         </property>
         <property name="buddy">
          <cstring>texturesDirectory</cstring>
