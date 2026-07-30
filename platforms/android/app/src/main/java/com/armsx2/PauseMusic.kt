@@ -7,6 +7,12 @@ import android.util.Log
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.content.edit
 import com.armsx2.runtime.MainActivityRuntime
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Music for the in-game pause menu, which is otherwise silent — and people sit in it, browsing
@@ -34,6 +40,12 @@ object PauseMusic {
     private const val CustomNameKey = "pauseMusic.customName"
     private const val DefaultVolumePercent = 45
 
+    // Ease in from silence rather than slamming on at full volume, and ease back out so resuming the
+    // game isn't a hard cut. Ambient track, so a long, gentle fade-in suits it.
+    private const val FadeInMs = 1600L
+    private const val FadeOutMs = 500L
+    private const val FadeSteps = 32
+
     /** On by default — the menu was silent and this fills it; the toggle turns it off. */
     val enabled = mutableStateOf(true)
     val volumePercent = mutableStateOf(DefaultVolumePercent)
@@ -42,7 +54,17 @@ object PauseMusic {
 
     private var player: MediaPlayer? = null
 
+    // Drives the volume ramps. Main.immediate so setVolume lands on the same thread the player lives
+    // on; SupervisorJob so one cancelled ramp never tears the scope down.
+    private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
+    private var fadeJob: Job? = null
+
     private fun gain(): Float = (volumePercent.value.coerceIn(0, 100)) / 100f
+
+    private fun cancelFade() {
+        fadeJob?.cancel()
+        fadeJob = null
+    }
 
     /** Imported track, stored extension-less — MediaPlayer sniffs the container. */
     private fun customFile(context: Context): java.io.File =
@@ -73,6 +95,9 @@ object PauseMusic {
         val p = percent.coerceIn(0, 100)
         volumePercent.value = p
         MainActivityRuntime.prefs.edit { putInt(VolumeKey, p) }
+        // A manual change is an explicit request for this level — take over any in-progress fade so
+        // the slider doesn't fight the ramp.
+        cancelFade()
         runCatching { player?.setVolume(gain(), gain()) }
     }
 
@@ -117,10 +142,20 @@ object PauseMusic {
     fun start(context: Context) {
         if (!enabled.value) return
         if (player != null) {
-            runCatching { player?.takeIf { !it.isPlaying }?.start() }
+            // Already have a player — paused in the background, or a fade-out we're interrupting by
+            // reopening the menu. Cancel any ramp, make sure it's running, and go straight to full
+            // volume (no dip): a resume from background was already at full, and a snap up on a quick
+            // reopen reads as instant rather than abrupt.
+            cancelFade()
+            runCatching {
+                player?.let {
+                    if (!it.isPlaying) it.start()
+                    it.setVolume(gain(), gain())
+                }
+            }
             return
         }
-        runCatching {
+        val created = runCatching {
             MediaPlayer().apply {
                 setAudioAttributes(
                     AudioAttributes.Builder()
@@ -138,25 +173,55 @@ object PauseMusic {
                     )
                 }
                 isLooping = true
-                setVolume(gain(), gain())
+                setVolume(0f, 0f) // start silent; fadeIn() ramps up
                 prepare()
                 start()
                 player = this
             }
-        }.onFailure { Log.w(TAG, "start failed", it) }
+        }.isSuccess
+        if (created) fadeIn() else Log.w(TAG, "start failed")
     }
 
-    /** Stop and release — the overlay closed, the game resumed, or the toggle went off. */
-    fun stop() {
-        player?.let { p ->
-            runCatching { if (p.isPlaying) p.stop() }
-            runCatching { p.release() }
+    /** Ramp from silence up to the set volume so the track eases in instead of slamming on. */
+    private fun fadeIn() {
+        cancelFade()
+        fadeJob = scope.launch {
+            for (i in 1..FadeSteps) {
+                val v = gain() * i / FadeSteps // read gain() each step so a live volume change tracks
+                runCatching { player?.setVolume(v, v) }
+                delay(FadeInMs / FadeSteps) // throws on cancel, ending the ramp
+            }
+            runCatching { player?.setVolume(gain(), gain()) }
         }
+    }
+
+    /**
+     * Fade out over [FadeOutMs], then release — the overlay closed, the game resumed, or the toggle
+     * went off. Ownership of the player is handed to the fade coroutine immediately (player = null)
+     * so a start() during the fade builds a fresh player and the two cross-fade; the try/finally
+     * releases the old one even if that start() cancels this ramp, so nothing leaks.
+     */
+    fun stop() {
+        val p = player ?: return
         player = null
+        cancelFade()
+        fadeJob = scope.launch {
+            try {
+                for (i in FadeSteps - 1 downTo 0) {
+                    val v = gain() * i / FadeSteps
+                    runCatching { p.setVolume(v, v) }
+                    delay(FadeOutMs / FadeSteps)
+                }
+            } finally {
+                runCatching { if (p.isPlaying) p.stop() }
+                runCatching { p.release() }
+            }
+        }
     }
 
     /** Suspend without releasing — the app went to the background with the menu still up. */
     fun pause() {
+        cancelFade()
         runCatching { player?.takeIf { it.isPlaying }?.pause() }
     }
 
