@@ -77,7 +77,6 @@ struct DynamicParticleSettings: Equatable, Codable {
   var twinkle = 0.65
   var drift = 0.55
   var verticalLevel = 0.5
-  var widensPortraitBackground = true
   var backgroundPreviewBeforeApplyingDuration = 0.3
   var backgroundPreviewAfterApplyingDuration = 0.7
   var disablesDarkPaletteEffects = false
@@ -1099,16 +1098,6 @@ struct DynamicParticleSettingsControls: View {
         faceButtonSettings
       }
 
-      HStack {
-        Toggle("Widen theme in portrait", isOn: $particleSettings.widensPortraitBackground)
-        settingResetButton("Widen theme in portrait") {
-          particleSettings.widensPortraitBackground =
-            defaults.widensPortraitBackground
-        }
-      }
-      .font(.subheadline.weight(.semibold))
-      .foregroundStyle(.white)
-      .dynamicSettingsCard()
 
       particleSlider(
         "See background preview before applying",

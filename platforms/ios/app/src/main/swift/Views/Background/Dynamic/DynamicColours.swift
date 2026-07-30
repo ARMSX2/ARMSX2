@@ -1643,37 +1643,12 @@ struct ThemePaletteEditor: View {
     recordEditorChange()
     guard oldSnapshot.visualState != newSnapshot.visualState else { return }
 
-    if isOnlyPortraitWideningChange(from: oldSnapshot, to: newSnapshot)
-      || isOnlyBackgroundPreviewTimingChange(from: oldSnapshot, to: newSnapshot)
-    {
+    if isOnlyBackgroundPreviewTimingChange(from: oldSnapshot, to: newSnapshot) {
       lastThemeSnapshot = currentTheme
       return
     }
 
     scheduleBackgroundPreview()
-  }
-
-  private func isOnlyPortraitWideningChange(
-    from oldSnapshot: ThemePaletteEditorSnapshot,
-    to newSnapshot: ThemePaletteEditorSnapshot
-  ) -> Bool {
-    guard
-      oldSnapshot.sharedPalette == newSnapshot.sharedPalette,
-      oldSnapshot.sharedCustomColor == newSnapshot.sharedCustomColor,
-      oldSnapshot.sharedMultiColor == newSnapshot.sharedMultiColor,
-      oldSnapshot.ribbonPalette == newSnapshot.ribbonPalette,
-      oldSnapshot.ribbonCustomColor == newSnapshot.ribbonCustomColor,
-      oldSnapshot.ribbonMultiColor == newSnapshot.ribbonMultiColor,
-      oldSnapshot.particleSettings.widensPortraitBackground
-        != newSnapshot.particleSettings.widensPortraitBackground
-    else {
-      return false
-    }
-
-    var normalizedSettings = oldSnapshot.particleSettings
-    normalizedSettings.widensPortraitBackground =
-      newSnapshot.particleSettings.widensPortraitBackground
-    return normalizedSettings == newSnapshot.particleSettings
   }
 
   private func isOnlyBackgroundPreviewTimingChange(
