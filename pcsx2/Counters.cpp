@@ -475,6 +475,15 @@ static __fi void DoFMVSwitch()
 		case FMVAspectRatioSwitchType::R21_9:
 			EmuConfig.CurrentAspectRatio = new_fmv_state ? AspectRatioType::R21_9 : EmuConfig.GS.AspectRatio;
 			break;
+		case FMVAspectRatioSwitchType::R20_9:
+			EmuConfig.CurrentAspectRatio = new_fmv_state ? AspectRatioType::R20_9 : EmuConfig.GS.AspectRatio;
+			break;
+		case FMVAspectRatioSwitchType::R19_5_9:
+			EmuConfig.CurrentAspectRatio = new_fmv_state ? AspectRatioType::R19_5_9 : EmuConfig.GS.AspectRatio;
+			break;
+		case FMVAspectRatioSwitchType::Custom:
+			EmuConfig.CurrentAspectRatio = new_fmv_state ? AspectRatioType::Custom : EmuConfig.GS.AspectRatio;
+			break;
 		default:
 			break;
 	}

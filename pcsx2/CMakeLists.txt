@@ -582,7 +582,9 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSFunctionMap.h
 	GS/Renderers/Common/GSGPUProfile.h
 	GS/Renderers/Common/GSGPUProfilePrivate.h
+	GS/Renderers/Common/GSInterlaceModePolicy.h
 	GS/Renderers/Common/GSPassScheduler.h
+	GS/Renderers/Common/GSPresentationPolicy.h
 	GS/Renderers/Common/GSRenderer.h
 	GS/Renderers/Common/GSShaderEnums.h
 	GS/Renderers/Common/GSTexture.h

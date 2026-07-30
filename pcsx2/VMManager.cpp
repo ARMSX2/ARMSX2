@@ -1042,6 +1042,20 @@ void VMManager::RequestDisplaySize(float scale /*= 0.0f*/)
 		case AspectRatioType::R10_7:
 			x_scale = (10.0f / 7.0f) / (static_cast<float>(iwidth) / static_cast<float>(iheight));
 			break;
+		// These two were missing, so requesting a display size under an ultrawide ratio fell
+		// through to the Stretch case and asked for an unscaled (4:3-shaped) window.
+		case AspectRatioType::R21_9:
+			x_scale = (21.0f / 9.0f) / (static_cast<float>(iwidth) / static_cast<float>(iheight));
+			break;
+		case AspectRatioType::R20_9:
+			x_scale = (20.0f / 9.0f) / (static_cast<float>(iwidth) / static_cast<float>(iheight));
+			break;
+		case AspectRatioType::R19_5_9:
+			x_scale = (19.5f / 9.0f) / (static_cast<float>(iwidth) / static_cast<float>(iheight));
+			break;
+		case AspectRatioType::Custom:
+			x_scale = std::clamp(GSConfig.CustomAspectRatio, 0.5f, 5.0f) / (static_cast<float>(iwidth) / static_cast<float>(iheight));
+			break;
 		case AspectRatioType::Stretch:
 		default:
 			x_scale = 1.0f;

@@ -6429,6 +6429,23 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 				p.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
 			0);
 	}
+
+	// Declare the feedback loops on the PIPELINE, not just on the image layout and render pass.
+	//
+	// We put attachments into VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (see
+	// UseFeedbackLoopLayout()) but never set the matching pipeline create flags. The spec requires
+	// them on any pipeline used while its attachments are in that layout, so omitting them is
+	// undefined behaviour rather than a missing optimisation — and strict mobile drivers (Adreno)
+	// are exactly where undefined shows up as intermittently stale attachment reads.
+	// Ported from sashkinbro/EmuCoreX ("Fix Vulkan attachment feedback pipelines").
+	if (UseFeedbackLoopLayout())
+	{
+		if (p.IsRTFeedbackLoop())
+			gpb.AddPipelineFlags(VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+		if (p.IsTestingAndSamplingDepth())
+			gpb.AddPipelineFlags(VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+	}
+
 	gpb.SetPrimitiveTopology(topology_lookup[p.topology]);
 	gpb.SetRasterizationState(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
 	if (m_optional_extensions.vk_ext_line_rasterization &&

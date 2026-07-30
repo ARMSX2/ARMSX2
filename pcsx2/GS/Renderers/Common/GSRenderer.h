@@ -29,6 +29,12 @@ private:
 	u64 m_last_draw_n = 0;
 	u64 m_last_transfer_n = 0;
 
+	/// Length of the current run of blank (nothing-to-merge) frames, reset by the first frame that
+	/// produces output. Feeds ShouldSkipAndroidBlankFrame — a lone alternating blank is an
+	/// interlaced-field artefact, while a RUN of them is a real fade the game is drawing. GS thread
+	/// only. Ported alongside the presentation policy from sashkinbro/EmuCoreX.
+	u32 m_consecutive_blank_frames = 0;
+
 protected:
 	GSVector2i m_real_size{0, 0};
 
