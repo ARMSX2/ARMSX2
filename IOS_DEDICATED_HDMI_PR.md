@@ -4,34 +4,36 @@
 
 This document consolidates the complete implementation history, final behavior,
 architecture, changed areas, validation status, and upstream-integration notes for
-the dedicated external-display work developed in `moesuito/armsx2-main`.
+the dedicated external-display work now maintained in `moesuito/ARMSX2`.
 
 `HANDOFF.md` is the original implementation handoff and remains the detailed
 historical record for the first version of the feature. This document is the
 PR-oriented description of the final implementation after the subsequent UI,
 localization, OSD, controller, OLED-background, and pause-menu fixes.
 
-## Important repository topology note
+## Repository lineage
 
-Although this repository was intended to be a fork, GitHub currently reports
-`moesuito/armsx2-main` as a standalone repository (`isFork: false`) with no
-parent. Before this documentation commit, its implementation history contained
-seven commits, and the first commit was a root snapshot containing the complete
-source tree rather than a commit based on `ARMSX2/ARMSX2`. GitHub also still
-reports `master` as the repository default even though this work is on `main`.
+The first working copy, `moesuito/armsx2-main`, came from a GitHub source ZIP.
+It had no upstream Git history and was therefore unsuitable as a pull-request
+head. It has been retained privately as the known-working reference.
 
-Consequently, this repository cannot be used as a clean GitHub PR head against
-the original repository in its current form. Before opening the upstream PR:
+The PR candidate is now reconstructed in the public, real GitHub fork
+<https://github.com/moesuito/ARMSX2>:
 
-1. Create a real GitHub fork of <https://github.com/ARMSX2/ARMSX2>.
-2. Create a feature branch from the intended upstream base, normally
-   `ARMSX2/ARMSX2:master`.
-3. Port or reapply the final changes listed in this document.
-4. Squash away the superseded intermediate phone-OSD implementation.
-5. Build and validate that upstream-based branch before opening the PR.
+- parent: `ARMSX2/ARMSX2`
+- upstream base: `71c9ef857976c24c7c01c31a65994a917ea76ca1`
+- branch: `feature/ios-dedicated-hdmi-output`
+- original ZIP content base identified as:
+  `2ed3268f74bd74994ddd0dd3ad44273c2751fc23`
 
-The implementation commits in this repository remain useful as a chronological
-reference, but the root commit should not be submitted directly to upstream.
+The feature was replayed with three-way merges onto the newer upstream base.
+Unrelated ZIP artifacts, missing repository metadata, vendored/submodule
+differences, line-ending changes, and Windows project-file noise were not
+carried into the fork.
+
+The upstream already contained an equivalent version of the landscape
+pause-card safe-area/corner fix. That newer implementation was preserved during
+the replay rather than overwritten.
 
 ## Final user-facing behavior
 
@@ -322,20 +324,14 @@ The original `HANDOFF.md` documents these areas:
 - `pcsx2/GS/Renderers/Common/GSRenderer.h`
 - `pcsx2/GS/Renderers/Common/GSRenderer.cpp`
   - Implement external aspect/fitting policy and final FullscreenUI/OSD policy.
-- `pcsx2/GS/Renderers/Metal/GSDeviceMTL.mm`
-  - Implements final ImGui composition on the active Metal surface.
-- `tests/ctest/core/GS/external_display_aspect_tests.cpp`
-- `tests/ctest/core/GS/CMakeLists.txt`
+- `tests/ctest/core/gs/external_display_aspect_tests.cpp`
+- `tests/ctest/core/gs/CMakeLists.txt`
   - Add the external aspect-fit regression coverage.
 
 ### Follow-up UI and localization files
 
 - `platforms/ios/app/src/main/swift/Models/AppLanguage+MainTranslations.swift`
   - Adds every HDMI and companion string to all supported languages.
-- `platforms/ios/app/src/main/swift/Models/SwiftUIHost.swift`
-  - Received a `localizedString(_:)` helper for the earlier native-placeholder
-    stage. The final SwiftUI companion does not call it, so this residual
-    HDMI-specific addition should be omitted from the squashed upstream patch.
 - `platforms/ios/app/src/main/swift/Views/GameScreenView.swift`
   - Implements the companion screen, exact active-state reaction, virtual-pad
     suppression/reset, and existing pause-menu entry point.
@@ -343,24 +339,27 @@ The original `HANDOFF.md` documents these areas:
   - Fixes landscape pause-card clipping and safe-area gutter placement.
 - `platforms/ios/app/src/main/swift/Views/AccessibilityHUDMirror.swift`
   - Was temporarily extended for a phone-side OSD experiment, then restored to
-    its original VoiceOver-oriented role. It should not carry HDMI-specific
-    changes in a squashed upstream patch.
+    its original VoiceOver-oriented role and has no HDMI diff in this branch.
+- `platforms/ios/app/src/main/swift/Models/SwiftUIHost.swift`
+  - Received a temporary native-placeholder localization helper in the legacy
+    implementation. That unused helper was removed during the upstream replay
+    and has no HDMI diff in this branch.
 
 ## Implementation history
 
 | Commit | Description | Final-state relevance |
 |---|---|---|
-| `dc0fc40` | `feat(ios): add dedicated HDMI output support` | Initial full implementation and original `HANDOFF.md`. This is also the repository's root snapshot, not an upstream-based delta. |
-| `a88e765` | `fix(ios): replace frozen phone frame during HDMI output` | Added the first phone-side placeholder to hide the stale Metal frame. |
-| `69487bd` | `Localize dedicated HDMI output UI` | Added supported-language strings and language-change handling. |
-| `a3ffabd` | `Keep OSD live on iPhone during HDMI output` | Intermediate phone-side OSD snapshot experiment; superseded and removed by `0aee0bf`. |
-| `0aee0bf` | `Add HDMI companion screen and external OSD` | Established the final black companion UI, disabled virtual controls during HDMI output, and moved the PCSX2 OSD to HDMI. |
-| `c703e23` | `Use neutral glass for HDMI pause button` | Removed the unwanted accent tint while preserving the native glass style. |
-| `6370c07` | `Fix landscape pause menu corner clipping` | Restored rounded pause-menu corners in iPhone landscape. |
+| `89d84928b8` | `feat(ios): add dedicated HDMI output support` | Reconstructed the initial implementation and `HANDOFF.md` as a true upstream-based delta. |
+| `981abff462` | `fix(ios): replace frozen phone frame during HDMI output` | Added the first phone-side placeholder to hide the stale Metal frame. |
+| `08ad6fa3a0` | `Localize dedicated HDMI output UI` | Added supported-language strings. |
+| `c316d8f3b1` | `Keep OSD live on iPhone during HDMI output` | Intermediate phone-side OSD snapshot experiment; superseded by `5e138cf82d`. |
+| `5e138cf82d` | `Add HDMI companion screen and external OSD` | Established the final black companion UI, disabled virtual controls during HDMI output, removed the snapshot bridge, and moved the PCSX2 OSD to HDMI. |
+| `6d7ade480c` | `Use neutral glass for HDMI pause button` | Removed the unwanted accent tint while preserving the native glass style. |
+| `8806aa4084` | `refactor(ios): drop superseded HDMI scaffolding` | Removed residual unused imports/helpers and retained the upstream telemetry flow. |
 
 For an upstream PR, the final source state should be reviewed as one coherent
-change. The temporary `a3ffabd` snapshot bridge and phone OSD should not be
-ported.
+change. The intermediate phone-side OSD commit remains visible historically,
+but none of its snapshot bridge survives in the final diff.
 
 ## Validation performed
 
@@ -437,8 +436,10 @@ The latest final IPA still needs a physical-device pass specifically confirming:
 
 ## Final unsigned IPA
 
-The latest artifact was produced from commit `6370c07` before this documentation
-commit:
+The current fork artifact was produced from source commit `a606cfdc39` on
+`feature/ios-dedicated-hdmi-output`. The only working-tree changes present
+during the build were this documentation refresh and the README section; neither
+changes the executable:
 
 ```text
 File: ARMSX2-iOS-unsigned.ipa
@@ -447,23 +448,27 @@ Bundle identifier: com.armsx2.ios
 Version: 2.5.0 (250)
 Minimum iOS: 17.0
 Architecture: arm64
-Size: 25,372,244 bytes
-SHA-256: 0da4c82a88ffdad871dca7bbe565355d866f54e13cb58b2eab57fb140d8ad40f
+Size: 25,669,324 bytes
+SHA-256: 7dc04b8286d03bc3f0a69284817eac6b512069532fd72c665e5ce5dabe144f08
 ```
 
-The ZIP payload passes an integrity test. The IPA is deliberately unsigned; it
-must be signed or re-signed by the installation workflow, and gameplay still
-requires the JIT entitlements/runtime method expected by this iOS port.
+The Release `iphoneos` build completed with Xcode 26.6 and SDK 26.5. The ZIP
+payload passes an integrity test, and the contained executable is a 64-bit
+arm64 Mach-O. The IPA is deliberately unsigned; it must be signed or re-signed
+by the installation workflow, and gameplay still requires the JIT
+entitlements/runtime method expected by this iOS port.
 
 No BIOS, game image, save data, or other private test content is present.
 
 ## Upstream review checklist
 
-- [ ] Rebase/reapply the implementation onto a real branch of
-      `ARMSX2/ARMSX2`.
-- [ ] Confirm only the final state is included; omit the superseded phone-OSD
-      snapshot code.
-- [ ] Build both Simulator and unsigned/signed device configurations.
+- [x] Reapply the implementation onto a real branch of `ARMSX2/ARMSX2`.
+- [x] Exclude unrelated source-ZIP and repository-metadata differences.
+- [x] Confirm the superseded phone-OSD snapshot code is absent from the final
+      diff.
+- [x] Build, install, and launch the Simulator configuration.
+- [x] Build and integrity-check the unsigned arm64 device IPA.
+- [ ] Sign and install the current fork IPA on a physical device.
 - [ ] Run `external_display_aspect_tests.cpp` in the upstream CTest setup.
 - [ ] Compile the iOS 27 scene-accessory path with an iOS 27 SDK.
 - [ ] Test default Off, persistence, mirroring, hot-plug, disconnect, and live

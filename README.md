@@ -34,6 +34,27 @@ Large language models (LLMs) were used as an **accelerant for this translation w
 
 In other words: the hard engineering was done by the PCSX2 team over two decades. The hard *typing* — translating ~50k lines of x86 emitter code into ARM64 — is what AI helped compress.
 
+## iOS Dedicated External Display
+
+The iOS build includes an opt-in **Dedicated HDMI Output** mode under
+**Settings > Graphics > Display**:
+
+- the existing Metal renderer moves to a connected external display without a
+  second renderer, frame capture, or texture copy;
+- normal iOS mirroring and the original phone gameplay UI remain unchanged
+  while the setting is disabled or no dedicated target is active;
+- aspect ratio is fitted and centered with black pillarbox/letterbox bars,
+  without letting the external refresh rate change emulation speed;
+- the existing PCSX2 performance OSD can be shown on HDMI while FullscreenUI
+  remains off the television;
+- the iPhone becomes a localized, OLED-black companion screen with access to
+  the existing pause menu; and
+- virtual controls are hidden and reset only while dedicated output is active.
+
+See [iOS Dedicated HDMI Output — Upstream PR Handoff](IOS_DEDICATED_HDMI_PR.md)
+for the architecture, lifecycle, validation status, known limitations, and
+physical-device test checklist.
+
 ## System Requirements
 
 ARMSX2 targets ARM64 across desktop (macOS, Windows, Linux) and mobile (Android, iOS/iPadOS), all from the single shared core. Our [setup documentation page](https://pcsx2.net/docs/setup/requirements) contains additional details on software and hardware requirements.
