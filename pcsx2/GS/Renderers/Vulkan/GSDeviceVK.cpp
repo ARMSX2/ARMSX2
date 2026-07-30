@@ -3521,7 +3521,17 @@ bool GSDeviceVK::CheckFeatures()
 	// — a new vendor with working ROAA gets the fast path instead of being stranded until someone
 	// adds it to a list. If a non-Mali/non-Adreno vendor is ever REPORTED returning stale/empty
 	// ROAA, add it alongside is_xclipse_vk rather than re-narrowing this.
-	const bool vendor_allows_fbfetch = !unreliable_mali_fbfetch &&
+	// 8 Elite (Adreno 8xx on the Qualcomm PROPRIETARY driver): that blob returns STALE ROAA reads
+	// above Basic blending — invisible floors / alpha cutouts (A/B 2026-06-10, the "Adreno-840
+	// proprietary" case in the note above). Never reproduced on 6xx/7xx or on Turnip/Mesa. So keep
+	// the fast in-tile fbfetch path for every other Adreno, but route the 8xx proprietary blob onto
+	// the correct texture-barrier path — restoring the historical 8-Elite exclusion. A hard gate like
+	// is_xclipse_vk (the toggle can't force it back on), since it's a correctness bug, not a perf
+	// trade; Turnip on 8xx (open driver, no stale reads) is unaffected and keeps the fast path.
+	const bool is_adreno8xx_proprietary = is_adreno &&
+		m_device_driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&
+		mobile_profile.gpu.architecture == MobileGpuArchitecture::Adreno8xx;
+	const bool vendor_allows_fbfetch = !unreliable_mali_fbfetch && !is_adreno8xx_proprietary &&
 		(is_mali_vk || is_adreno || GSConfig.EnableAdrenoFramebufferFetch) && !is_xclipse_vk;
 	m_features.framebuffer_fetch = vendor_allows_fbfetch &&
 		m_optional_extensions.vk_ext_rasterization_order_attachment_access && !GSConfig.DisableFramebufferFetch;
