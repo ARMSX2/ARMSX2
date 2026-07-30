@@ -180,9 +180,14 @@ public:
 		}
 		else
 		{
-			HostSys::BeginCodeWrite();
-
+			// Page-granular window. This runs on the GS thread, and an
+			// arena-wide Begin/EndCodeWrite in Legacy mode is one mprotect
+			// over every recompiler, so the EE thread lost execute on its
+			// dispatcher mid-fetch. ReserveMemory only reads the bump
+			// pointer, so it is safe to take the address first.
 			u8* code_ptr = GSCodeReserve::ReserveMemory(MAX_SIZE);
+			HostSys::BeginCodeWriteRange(code_ptr, MAX_SIZE);
+
 			CG cg(key, code_ptr, MAX_SIZE);
 			cg.Generate();
 			pxAssert(cg.GetSize() < MAX_SIZE);
@@ -196,7 +201,7 @@ public:
 			const u32 size = static_cast<u32>(cg.GetSize());
 			GSCodeReserve::CommitMemory(size);
 
-			HostSys::EndCodeWrite();
+			HostSys::EndCodeWriteRange(code_ptr, MAX_SIZE);
 			HostSys::FlushInstructionCache(code_ptr, static_cast<u32>(size));
 
 			ret = (VALUE)cg.GetCode();
