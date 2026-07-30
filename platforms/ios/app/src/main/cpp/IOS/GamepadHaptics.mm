@@ -688,6 +688,7 @@ static void ARMSX2StopNativeGamepadRumblePulseOnMain(u32 slot)
 				exception.name.UTF8String ?: "unknown",
 				exception.reason.UTF8String ?: "unknown");
 		}
+		[s_nativePulseHapticEngine[slot] release];
 		s_nativePulseHapticEngine[slot] = nil;
 	}
 }
@@ -880,7 +881,11 @@ static bool ARMSX2ApplyNativeGamepadRumblePulseOnMain(u32 slot, u32 packed, cons
 		return false;
 	}
 
-	s_nativePulseHapticEngine[slot] = engine;
+	// createEngineWithLocality: hands back an autoreleased engine and this file is MRC,
+	// so without the retain the pool drains it at the end of this run loop turn and the
+	// delayed stop below messages freed memory.
+	[s_nativePulseHapticEngine[slot] release];
+	s_nativePulseHapticEngine[slot] = [engine retain];
 	const u32 stop_generation = s_nativePulseHapticStopGeneration[slot].fetch_add(1, std::memory_order_relaxed) + 1;
 	const u32 log_index = s_loggedNativePulseHapticEvents.fetch_add(1, std::memory_order_relaxed);
 	if (log_index < 16) {
@@ -906,6 +911,7 @@ static bool ARMSX2ApplyNativeGamepadRumblePulseOnMain(u32 slot, u32 packed, cons
 					exception.name.UTF8String ?: "unknown",
 					exception.reason.UTF8String ?: "unknown");
 			}
+			[s_nativePulseHapticEngine[slot] release];
 			s_nativePulseHapticEngine[slot] = nil;
 		}
 	});
