@@ -199,6 +199,14 @@ struct VirtualPadSettingsView: View {
 
             Section(settings.localized("Feedback")) {
                 Toggle(settings.localized("Haptic Feedback"), isOn: $settings.hapticFeedback)
+
+                VStack(alignment: .leading) {
+                    Text("\(settings.localized("Phone Rumble Strength")): \(Int(settings.phoneRumbleStrength * 100))%")
+                    Slider(value: $settings.phoneRumbleStrength, in: 0.0...1.0, step: 0.05)
+                }
+                Text(settings.localized("How hard the phone itself rumbles when no controller is connected. Has no effect on a controller's own motors."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section(settings.localized("Layout")) {

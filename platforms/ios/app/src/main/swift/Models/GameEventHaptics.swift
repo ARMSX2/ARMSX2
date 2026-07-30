@@ -44,7 +44,10 @@ final class GameEventHaptics {
             mediumGenerator = created
             generator = created
         }
-        generator.impactOccurred(intensity: CGFloat(max(0.3, min(1.0, intensity))))
+        // No floor. It used to be 0.3, which flattened every weak rumble onto the same
+        // knock as a medium one. This path is only reached on hardware with no taptic
+        // engine to run the continuous one, so it is a fallback rather than the norm.
+        generator.impactOccurred(intensity: CGFloat(min(1.0, intensity)))
     }
 
     func prepareForGameplaySession() {
