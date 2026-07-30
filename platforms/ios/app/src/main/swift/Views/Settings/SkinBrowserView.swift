@@ -4,12 +4,27 @@
 import SwiftUI
 
 struct SkinBrowserView: View {
+    /// Ready means the skin ships a layout for iOS. The rest still install, they
+    /// just leave you to place the buttons.
+    private enum Filter: Hashable, CaseIterable {
+        case all, installed, ready
+
+        var title: String {
+            switch self {
+            case .all: return "All"
+            case .installed: return "Installed"
+            case .ready: return "Ready"
+            }
+        }
+    }
+
     @StateObject private var catalog = SkinCatalog()
     @StateObject private var installer = SkinInstaller()
     // Held directly so the rows invalidate off the library itself rather than
     // off whatever the installer happens to be publishing.
     @State private var skinLibrary = VPadSkinLibraryStore.shared
     @State private var searchText = ""
+    @State private var filter: Filter = .all
     @State private var detailAlert: String?
     @State private var previewSkin: CatalogSkin?
     @State private var skinPendingRemoval: CatalogSkin?
@@ -45,8 +60,19 @@ struct SkinBrowserView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if !catalog.skins.isEmpty {
+                Picker("Show", selection: $filter) {
+                    ForEach(Filter.allCases, id: \.self) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .listRowSeparator(.hidden)
+            }
+
             if !catalog.skins.isEmpty && filteredSkins.isEmpty {
-                Text("No skins match that search.")
+                Text(emptyResultMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -55,7 +81,15 @@ struct SkinBrowserView: View {
                 skinRow(skin)
             }
         }
-        .searchable(text: $searchText, prompt: "Search skins")
+        // Pin this to the drawer. Left alone, iOS 26 puts the field at the
+        // bottom of the screen, which is where our tab bar lives, and the bar
+        // wins on z order. Always rather than automatic, so the field is
+        // sitting there instead of needing a pull down to find it.
+        .searchable(
+            text: $searchText,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: "Search skins"
+        )
         .navigationTitle("Skins")
         .navigationBarTitleDisplayMode(.inline)
         .task { await catalog.fetch() }
@@ -95,14 +129,40 @@ struct SkinBrowserView: View {
         Set(skinLibrary.importedDescriptors.compactMap(\.catalogID))
     }
 
+    /// Everything the filter allows, before the search query narrows it. Kept
+    /// apart so the empty state can tell which of the two emptied the list.
+    private var filteredByCategory: [CatalogSkin] {
+        let installed = installedFiles
+        switch filter {
+        case .all: return catalog.skins
+        case .installed: return catalog.skins.filter { installed.contains($0.file) }
+        case .ready: return catalog.skins.filter(\.isIOSReady)
+        }
+    }
+
     private var filteredSkins: [CatalogSkin] {
         let installed = installedFiles
-        let matches = searchText.isEmpty ? catalog.skins : catalog.skins.filter { skin in
-            skin.name.localizedCaseInsensitiveContains(searchText)
-                || (skin.author?.localizedCaseInsensitiveContains(searchText) ?? false)
+        // localizedStandard rather than localizedCaseInsensitive so an accent
+        // in the catalog doesn't hide a skin from someone typing without one.
+        let matches = searchText.isEmpty ? filteredByCategory : filteredByCategory.filter { skin in
+            skin.name.localizedStandardContains(searchText)
+                || (skin.author?.localizedStandardContains(searchText) ?? false)
         }
         return matches.filter { installed.contains($0.file) }
             + matches.filter { !installed.contains($0.file) }
+    }
+
+    /// Blame whichever one actually emptied the list. Telling someone their
+    /// search found nothing when it was the filter is just misleading.
+    private var emptyResultMessage: String {
+        if filteredByCategory.isEmpty {
+            switch filter {
+            case .all: return "No skins match that search."
+            case .installed: return "You haven't installed any skins yet."
+            case .ready: return "No skins ship a recommended layout yet."
+            }
+        }
+        return "No skins match that search."
     }
 
     private func subtitle(for skin: CatalogSkin) -> String? {
