@@ -1505,6 +1505,15 @@ final class SettingsStore {
         _padOpacityConfig.writer(_padOpacityConfig.section, _padOpacityConfig.key, padOpacity)
         _padOpacityConfig.onSet?(padOpacity)
     }}
+    let _phoneRumbleStrengthConfig = Setting<Float>(
+        section: "ARMSX2iOS/UI", key: "PhoneRumbleStrength", default: 1.0,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIFloat)
+    var phoneRumbleStrength: Float = 1.0 { didSet {
+        guard !(_phoneRumbleStrengthConfig.suppressible && suppressINIWrites) else { return }
+        _phoneRumbleStrengthConfig.writer(_phoneRumbleStrengthConfig.section, _phoneRumbleStrengthConfig.key, phoneRumbleStrength)
+        _phoneRumbleStrengthConfig.onSet?(phoneRumbleStrength)
+    }}
     let _hapticFeedbackConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "HapticFeedback", default: true,
         suppressible: false,
@@ -2053,6 +2062,7 @@ final class SettingsStore {
         // UI
         padOpacity = ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "PadOpacity", defaultValue: 0.6)
         hapticFeedback = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HapticFeedback", defaultValue: true)
+        phoneRumbleStrength = ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "PhoneRumbleStrength", defaultValue: 1.0)
         dpadDiagonalsEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "DpadDiagonalsEnabled", defaultValue: true)
         faceComboZonesEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "FaceComboZonesEnabled", defaultValue: true)
         virtualPadSkin = VirtualPadSkin(rawValue: Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/UI", key: "VirtualPadSkin", defaultValue: 0))) ?? .armsx2Refresh
@@ -2298,6 +2308,7 @@ final class SettingsStore {
         osdShowDeviceStats = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "OsdShowDeviceStats", defaultValue: osdPreset != .off)
         padOpacity = ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "PadOpacity", defaultValue: 0.6)
         hapticFeedback = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HapticFeedback", defaultValue: true)
+        phoneRumbleStrength = ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "PhoneRumbleStrength", defaultValue: 1.0)
         dpadDiagonalsEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "DpadDiagonalsEnabled", defaultValue: true)
         faceComboZonesEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "FaceComboZonesEnabled", defaultValue: true)
         virtualPadSkin = VirtualPadSkin(rawValue: Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/UI", key: "VirtualPadSkin", defaultValue: 0))) ?? .armsx2Refresh

@@ -38,7 +38,6 @@ static constexpr u16 ARMSX2_GAMEPAD_RUMBLE_MAX_INTENSITY = 0x7000;
 static CHHapticEngine* s_nativePulseHapticEngine[ARMSX2_MAX_IOS_GAMEPADS] = {};
 static std::atomic<u32> s_nativePulseHapticStopGeneration[ARMSX2_MAX_IOS_GAMEPADS];
 static std::atomic<u32> s_loggedNativePulseHapticEvents{0};
-static GCController* s_nativeHapticController = nil;
 static CHHapticEngine* s_nativeHapticEngine = nil;
 static id<CHHapticAdvancedPatternPlayer> s_nativeHapticPlayer = nil;
 static u32 s_nativeAppliedGamepadRumble = 0;
@@ -518,7 +517,8 @@ static void ARMSX2StopNativeGamepadRumbleOnMain()
         NSError* error = nil;
         [s_nativeHapticPlayer stopAtTime:CHHapticTimeImmediate error:&error];
         if (error)
-            Console.WriteLn("[ARMSX2 iOS Gamepad] Native rumble stop failed: %s", error.localizedDescription.UTF8String ?: "unknown");
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Device rumble stop failed: %s", error.localizedDescription.UTF8String ?: "unknown");
+        [s_nativeHapticPlayer release];
         s_nativeHapticPlayer = nil;
     }
 }
@@ -528,9 +528,9 @@ static void ARMSX2ResetNativeGamepadRumbleOnMain()
     ARMSX2StopNativeGamepadRumbleOnMain();
     if (s_nativeHapticEngine) {
         [s_nativeHapticEngine stopWithCompletionHandler:nil];
+        [s_nativeHapticEngine release];
         s_nativeHapticEngine = nil;
     }
-    s_nativeHapticController = nil;
     s_nativeAppliedGamepadRumble = 0;
     s_nativeAppliedGamepadRumbleValid = false;
     s_loggedNativeGamepadRumbleReady = false;
@@ -546,6 +546,18 @@ static GCController* ARMSX2FindNativeHapticController()
     return nil;
 }
 
+// True on a phone with a taptic engine. iPads and the older phones have none, and
+// asking them to play a pattern just fails every frame, so check once and remember.
+static bool ARMSX2DeviceSupportsHaptics()
+{
+    static const bool supported = [] {
+        if (@available(iOS 13.0, *))
+            return [CHHapticEngine capabilitiesForHardware].supportsHaptics != NO;
+        return false;
+    }();
+    return supported;
+}
+
 static bool ARMSX2EnsureNativeGamepadRumbleOnMain(float intensity, float sharpness)
 {
     if (@available(iOS 14.0, *)) {
@@ -553,26 +565,23 @@ static bool ARMSX2EnsureNativeGamepadRumbleOnMain(float intensity, float sharpne
         return false;
     }
 
-    GCController* controller = ARMSX2FindNativeHapticController();
-    if (!controller) {
+    if (!ARMSX2DeviceSupportsHaptics()) {
         if (!s_loggedNativeGamepadRumbleUnavailable) {
-            Console.WriteLn("[ARMSX2 iOS Gamepad] Native controller haptics unavailable");
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Device haptics unavailable on this hardware");
             s_loggedNativeGamepadRumbleUnavailable = true;
         }
-        ARMSX2ResetNativeGamepadRumbleOnMain();
         return false;
     }
 
-    if (s_nativeHapticController != controller) {
-        ARMSX2ResetNativeGamepadRumbleOnMain();
-        s_nativeHapticController = controller;
-    }
-
     if (!s_nativeHapticEngine) {
-        s_nativeHapticEngine = [controller.haptics createEngineWithLocality:GCHapticsLocalityAll];
+        // alloc/init, so the static owns it outright and releases on teardown. The
+        // controller path next door uses a factory method and has to retain instead.
+        NSError* create_error = nil;
+        s_nativeHapticEngine = [[CHHapticEngine alloc] initAndReturnError:&create_error];
         if (!s_nativeHapticEngine) {
             if (!s_loggedNativeGamepadRumbleUnavailable) {
-                Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic engine creation failed");
+                Console.WriteLn("[ARMSX2 iOS Gamepad] Device haptic engine creation failed: %s",
+                    create_error.localizedDescription.UTF8String ?: "unknown");
                 s_loggedNativeGamepadRumbleUnavailable = true;
             }
             return false;
@@ -580,17 +589,26 @@ static bool ARMSX2EnsureNativeGamepadRumbleOnMain(float intensity, float sharpne
 
         s_nativeHapticEngine.playsHapticsOnly = YES;
         s_nativeHapticEngine.autoShutdownEnabled = YES;
+        // The engine shuts itself down when idle and again when the app backgrounds.
+        // Drop the player so the next rumble rebuilds it; the engine restarts above.
+        // CoreHaptics calls these back on a queue of its own choosing, and everything
+        // else here touches the player from main. Hop before releasing it, or the
+        // release races the main thread still using it.
         s_nativeHapticEngine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) {
-            s_nativeHapticPlayer = nil;
-            s_nativeAppliedGamepadRumble = 0;
-            s_nativeAppliedGamepadRumbleValid = false;
-            Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic engine stopped reason=%ld", static_cast<long>(reason));
+            dispatch_async(dispatch_get_main_queue(), ^{
+                ARMSX2StopNativeGamepadRumbleOnMain();
+                s_nativeAppliedGamepadRumble = 0;
+                s_nativeAppliedGamepadRumbleValid = false;
+            });
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Device haptic engine stopped reason=%ld", static_cast<long>(reason));
         };
         s_nativeHapticEngine.resetHandler = ^{
-            s_nativeHapticPlayer = nil;
-            s_nativeAppliedGamepadRumble = 0;
-            s_nativeAppliedGamepadRumbleValid = false;
-            Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic engine reset");
+            dispatch_async(dispatch_get_main_queue(), ^{
+                ARMSX2StopNativeGamepadRumbleOnMain();
+                s_nativeAppliedGamepadRumble = 0;
+                s_nativeAppliedGamepadRumbleValid = false;
+            });
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Device haptic engine reset");
         };
     }
 
@@ -602,20 +620,20 @@ static bool ARMSX2EnsureNativeGamepadRumbleOnMain(float intensity, float sharpne
 
     if (!s_nativeHapticPlayer) {
         NSArray<CHHapticEventParameter*>* params = @[
-            [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:intensity],
-            [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:sharpness]
+            [[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:intensity] autorelease],
+            [[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:sharpness] autorelease]
         ];
-        CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
+        CHHapticEvent* event = [[[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
                                                               parameters:params
                                                             relativeTime:0.0
-                                                                 duration:1.0];
-        CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
+                                                                 duration:1.0] autorelease];
+        CHHapticPattern* pattern = [[[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error] autorelease];
         if (!pattern) {
             Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pattern failed: %s", error.localizedDescription.UTF8String ?: "unknown");
             return false;
         }
 
-        s_nativeHapticPlayer = [s_nativeHapticEngine createAdvancedPlayerWithPattern:pattern error:&error];
+        s_nativeHapticPlayer = [[s_nativeHapticEngine createAdvancedPlayerWithPattern:pattern error:&error] retain];
         if (!s_nativeHapticPlayer) {
             Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic player failed: %s", error.localizedDescription.UTF8String ?: "unknown");
             return false;
@@ -624,26 +642,26 @@ static bool ARMSX2EnsureNativeGamepadRumbleOnMain(float intensity, float sharpne
         s_nativeHapticPlayer.loopEnabled = YES;
         s_nativeHapticPlayer.loopEnd = 1.0;
         if (![s_nativeHapticPlayer startAtTime:CHHapticTimeImmediate error:&error]) {
-            Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic player start failed: %s", error.localizedDescription.UTF8String ?: "unknown");
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Device haptic player start failed: %s", error.localizedDescription.UTF8String ?: "unknown");
+            [s_nativeHapticPlayer release];
             s_nativeHapticPlayer = nil;
             return false;
         }
 
         if (!s_loggedNativeGamepadRumbleReady) {
-            NSString* vendor = controller.vendorName ?: @"unknown controller";
-            Console.WriteLn("[ARMSX2 iOS Gamepad] Native controller rumble active: %s", vendor.UTF8String);
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Device rumble active (continuous haptics)");
             s_loggedNativeGamepadRumbleReady = true;
         }
     }
 
     const float sharpnessControl = std::clamp((sharpness * 2.0f) - 1.0f, -1.0f, 1.0f);
     NSArray<CHHapticDynamicParameter*>* dynamicParams = @[
-        [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:intensity relativeTime:0.0],
-        [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticSharpnessControl value:sharpnessControl relativeTime:0.0]
+        [[[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:intensity relativeTime:0.0] autorelease],
+        [[[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticSharpnessControl value:sharpnessControl relativeTime:0.0] autorelease]
     ];
 
     if (![s_nativeHapticPlayer sendParameters:dynamicParams atTime:CHHapticTimeImmediate error:&error]) {
-        Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic update failed: %s", error.localizedDescription.UTF8String ?: "unknown");
+        Console.WriteLn("[ARMSX2 iOS Gamepad] Device haptic update failed: %s", error.localizedDescription.UTF8String ?: "unknown");
         ARMSX2StopNativeGamepadRumbleOnMain();
         return false;
     }
@@ -658,7 +676,13 @@ static void ARMSX2ApplyNativeGamepadRumbleOnMain(u32 packed)
 
     const float large = ARMSX2RumbleLargeIntensity(packed);
     const float small = ARMSX2RumbleSmallIntensity(packed);
-    const float intensity = std::clamp(std::max(large, small), 0.0f, 1.0f);
+    // Straight off the packed value, so the phone gets the whole 0..1 motor range
+    // rather than the 0x7000 ceiling the controller motors are held to. Read every
+    // time so dragging the slider is felt on the next rumble instead of next launch.
+    const float strength = s_settings_interface
+        ? std::clamp(s_settings_interface->GetFloatValue("ARMSX2iOS/UI", "PhoneRumbleStrength", 1.0f), 0.0f, 1.0f)
+        : 1.0f;
+    const float intensity = std::clamp(std::max(large, small) * strength, 0.0f, 1.0f);
     if (intensity <= 0.01f) {
         ARMSX2StopNativeGamepadRumbleOnMain();
         s_nativeAppliedGamepadRumble = packed;
@@ -953,8 +977,12 @@ void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
 
     if (!wants_rumble) {
         const u32 slot = gamepad_index;
+        const u32 native_packed_stop = packed;
         dispatch_async(dispatch_get_main_queue(), ^{
             ARMSX2StopNativeGamepadRumblePulseOnMain(slot);
+            // The device engine loops until it is told otherwise, so the zero has to
+            // reach it or the phone keeps buzzing after the game has stopped asking.
+            ARMSX2ApplyNativeGamepadRumbleOnMain(native_packed_stop);
         });
     }
 
@@ -1028,10 +1056,19 @@ void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
         dispatch_async(dispatch_get_main_queue(), ^{
             ARMSX2ApplyNativeGamepadRumblePulseOnMain(slot, native_packed, "no-sdl-gamepad");
         });
-        // No SDL gamepad and no native haptic controller: fall back to the
-        // device taptic engine so rumble is felt on phones (e.g. Kishi 3).
+        // No SDL gamepad and no native haptic controller: rumble the phone itself
+        // so it is felt on handheld grips (e.g. Kishi 3). The continuous engine
+        // sustains and tracks intensity; the one-shot tap is what is left on an
+        // iPad or an older phone with no taptic engine.
         if (!ARMSX2FindNativeHapticController()) {
-            [ARMSX2Bridge triggerDeviceHapticLarge:large small:small];
+            if (ARMSX2DeviceSupportsHaptics()) {
+                const u32 native_packed_device = packed;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    ARMSX2ApplyNativeGamepadRumbleOnMain(native_packed_device);
+                });
+            } else {
+                [ARMSX2Bridge triggerDeviceHapticLarge:large small:small];
+            }
         }
     }
 
