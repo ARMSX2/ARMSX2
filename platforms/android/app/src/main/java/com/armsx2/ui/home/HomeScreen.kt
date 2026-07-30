@@ -93,6 +93,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalDensity
@@ -173,30 +174,33 @@ fun HomeScreen(
             if (libraryBg == null) {
                 // Default: the live PS3-XMB wave (XmbGlView — a GLES3 port of linkev's
                 // grid-displacement mesh, matching iOS). When GL can't init — older Mali without
-                // float-texture filtering, or any EGL failure — we fall back to a looping GIF
-                // instead of a frozen still. The bundled still is the cheap floor shown during GL
-                // startup (and, once the wave is up, sits hidden behind it), so capable devices
-                // never decode the heavy GIF. Custom backgrounds below override all of this.
-                var xmbGlState by remember { mutableStateOf<Boolean?>(null) } // null=starting, true=up, false=failed
-                if (xmbGlState == false) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(context).data(R.raw.library_fallback).build(),
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                    )
+                // float-texture filtering, or any EGL failure — we fall back to LibraryWaveBackground,
+                // a procedural PPSSPP-style animated background drawn on the hardware 2D Canvas (no
+                // GLES3, runs anywhere) that reads the SAME colour prefs as the GL wave, so Mali users
+                // finally get an animated, recolourable backdrop instead of the old fixed GIF. The
+                // bundled still is the cheap floor shown during GL startup (and, once the wave is up,
+                // sits hidden behind it). Custom backgrounds below override all of this.
+                if (LibraryBackground.animated2D.value) {
+                    // User opted into the lightweight 2D animated wave everywhere (#Luminz) — the same
+                    // backdrop GL-fail devices get; skip the GLES3 XmbGlView entirely.
+                    LibraryWaveBackground(Modifier.fillMaxSize())
                 } else {
-                    Image(
-                        painter = painterResource(R.drawable.library_bg_xmb),
-                        contentDescription = null,
+                    var xmbGlState by remember { mutableStateOf<Boolean?>(null) } // null=starting, true=up, false=failed
+                    if (xmbGlState == false) {
+                        LibraryWaveBackground(Modifier.fillMaxSize())
+                    } else {
+                        Image(
+                            painter = painterResource(R.drawable.library_bg_xmb),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop,
+                        )
+                    }
+                    AndroidView(
+                        factory = { XmbGlView(it).apply { onGlStatus = { ok -> xmbGlState = ok } } },
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
                     )
                 }
-                AndroidView(
-                    factory = { XmbGlView(it).apply { onGlStatus = { ok -> xmbGlState = ok } } },
-                    modifier = Modifier.fillMaxSize(),
-                )
             } else {
                 // User-picked still image / GIF (Coil handles both).
                 AsyncImage(
@@ -372,6 +376,9 @@ fun HomeScreen(
                             // align(): the title block makes the bar taller than this two-line
                             // cluster, so without it the pair sits high relative to the buttons.
                             Modifier.align(Alignment.CenterVertically).padding(end = 6.dp),
+                            // Portrait: single compact row so the narrow bar doesn't cram it.
+                            compact = LocalConfiguration.current.orientation ==
+                                android.content.res.Configuration.ORIENTATION_PORTRAIT,
                         )
                         RoundAction(
                             "↻",

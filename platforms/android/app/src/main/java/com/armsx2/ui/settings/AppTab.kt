@@ -207,6 +207,15 @@ fun AppTab() {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // Opt into the lightweight 2D animated backdrop everywhere (the same one older Mali /
+            // GL-fail devices already get) instead of the GLES3 XMB wave. The colour options below
+            // apply to it too. No effect if a custom background image is set.
+            ToggleRow(
+                label = str("app.bg.simple"),
+                value = com.armsx2.ui.home.LibraryBackground.animated2D.value,
+                description = str("app.bg.simple.desc"),
+                onChange = { com.armsx2.ui.home.LibraryBackground.setAnimated2D(it) },
+            )
             // Continuous RGB hue-cycle — same idea as the theme's RGB mode. While on, the fixed
             // color (presets + sliders) doesn't apply, so it's hidden.
             ToggleRow(

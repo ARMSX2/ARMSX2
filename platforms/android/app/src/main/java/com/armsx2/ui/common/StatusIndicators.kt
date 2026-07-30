@@ -218,16 +218,34 @@ fun ClockIndicator(modifier: Modifier = Modifier) {
     )
 }
 
-/** Clock above battery, for the library toolbar's action row. */
+/**
+ * Clock + battery for the library toolbar's action row.
+ *
+ * Landscape stacks them (clock above battery) — the wide bar has the height for it. Portrait lays
+ * them side by side in a single compact row instead: the narrow bar crammed the two-line stack
+ * between the title and the buttons (#Isshin, S24 Ultra portrait), and one short line reads cleaner
+ * and leaves the buttons room.
+ */
 @Composable
-fun LibraryStatusCluster(modifier: Modifier = Modifier) {
-    Column(
-        modifier,
-        horizontalAlignment = Alignment.End,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        ClockIndicator()
-        Spacer(Modifier.height(1.dp))
-        BatteryIndicator()
+fun LibraryStatusCluster(modifier: Modifier = Modifier, compact: Boolean = false) {
+    if (compact) {
+        Row(
+            modifier,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ClockIndicator()
+            BatteryIndicator()
+        }
+    } else {
+        Column(
+            modifier,
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            ClockIndicator()
+            Spacer(Modifier.height(1.dp))
+            BatteryIndicator()
+        }
     }
 }

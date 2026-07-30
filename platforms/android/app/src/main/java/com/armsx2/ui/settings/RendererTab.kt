@@ -107,6 +107,11 @@ fun RendererTab(state: MutableState<Settings>) {
             // from the removed first-run setup renderer page into settings.
             RendererBackendSection(state)
             SettingsDivider()
+            // Clear Shader Cache — directly under the GPU driver picker. Switching the Vulkan driver
+            // is exactly when you want to wipe the on-disk shader cache so it recompiles on the new
+            // one, so the control lives with the driver rather than buried lower in the tab.
+            ClearShaderCacheRow()
+            SettingsDivider()
             // GS Multi-threading (GV7 front/back split), placed right under the
             // renderer/driver picker. Off = today's single-threaded path (the
             // default — opt-in); On = the GS runs on a dedicated back thread
@@ -554,9 +559,6 @@ fun RendererTab(state: MutableState<Settings>) {
                     apply(s.copy(gpuProfile = it))
                 },
             )
-
-            SettingsDivider()
-            ClearShaderCacheRow()
         }
     }
 }

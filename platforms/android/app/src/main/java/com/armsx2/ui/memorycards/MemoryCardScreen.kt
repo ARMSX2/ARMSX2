@@ -125,7 +125,7 @@ fun MemoryCardScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Memo
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text(str("memcard.delete.confirm")) },
-            text = { Text(item.file.name) },
+            text = { Text(str("memcard.delete.body").format(item.file.name)) },
             confirmButton = { TextButton(onClick = { viewModel.delete(item); deleteTarget = null }, modifier = Modifier.controllerFocusable("memcard.delete.confirm", onConfirm = { viewModel.delete(item); deleteTarget = null })) { Text(str("action.delete"), color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { deleteTarget = null }, modifier = Modifier.controllerFocusable("memcard.delete.cancel", onConfirm = { deleteTarget = null })) { Text(str("action.cancel")) } },
         )
