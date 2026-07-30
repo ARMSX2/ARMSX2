@@ -519,6 +519,9 @@ struct VirtualControllerView: View {
     private func dynamicInputZones(w: CGFloat, h: CGFloat) -> some View {
         let conversionSettings = dynamicSettings.effectiveSwipeConversionSettings
         let visualRadius = CGFloat(dynamicSettings.thumbstickRadius)
+        let swipeZoneCenterX = UIDevice.current.userInterfaceIdiom == .pad
+            ? w / 4
+            : w * 0.75
         let rightAreaScale = CGFloat(
             min(max(dynamicSettings.rightThumbstickAreaScale, 1), 5)
         )
@@ -590,7 +593,7 @@ struct VirtualControllerView: View {
                     }
                 )
                 .frame(width: w / 2, height: h)
-                .position(x: w * 0.75, y: h / 2)
+                .position(x: swipeZoneCenterX, y: h / 2)
             } else if dynamicSettings.dynamicThumbsticks && isVisible("rstick") {
                 dynamicThumbstickZone(isLeft: false)
                     .frame(width: w / 2, height: h)

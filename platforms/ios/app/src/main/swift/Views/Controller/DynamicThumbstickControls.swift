@@ -124,6 +124,7 @@ struct DynamicThumbstickView: View {
     @State private var dragDistance: CGFloat = 0
     @State private var isActive = false
     @State private var isOverextended = false
+    @State private var maximumPullPulseToken = 0
     @State private var gestureStartedAt: Date?
     @State private var maximumTravel: CGFloat = 0
 
@@ -139,7 +140,7 @@ struct DynamicThumbstickView: View {
                         maximumRadius: maximumRadius,
                         dragOffset: dragOffset,
                         dragDistance: dragDistance,
-                        isOverextended: isOverextended,
+                        maximumPullPulseToken: maximumPullPulseToken,
                         thumbstickOpacity: thumbstickOpacity,
                         baseOpacity: baseOpacity,
                         trailOpacity: trailOpacity
@@ -220,6 +221,7 @@ struct DynamicThumbstickView: View {
         guard overextended != isOverextended else { return }
         isOverextended = overextended
         if overextended {
+            maximumPullPulseToken &+= 1
             if hapticsEnabled && SettingsStore.shared.hapticFeedback {
                 HapticManager.medium.impactOccurred(intensity: 1)
                 HapticManager.medium.prepare()
@@ -237,6 +239,7 @@ struct DynamicThumbstickView: View {
         gestureStartedAt = nil
         maximumTravel = 0
         isOverextended = false
+        maximumPullPulseToken = 0
         withAnimation(.easeOut(duration: 0.14)) {
             isActive = false
         }
@@ -248,10 +251,12 @@ private struct DynamicThumbstickVisual: View {
     let maximumRadius: CGFloat
     let dragOffset: CGSize
     let dragDistance: CGFloat
-    let isOverextended: Bool
+    let maximumPullPulseToken: Int
     let thumbstickOpacity: Double
     let baseOpacity: Double
     let trailOpacity: Double
+
+    @State private var maximumPullPulseProgress: CGFloat = 0
 
     var body: some View {
         ZStack {
@@ -274,12 +279,12 @@ private struct DynamicThumbstickVisual: View {
                 .overlay {
                     Circle()
                         .stroke(
-                            Color.white.opacity(isOverextended ? 0.55 : 0),
+                            Color.white.opacity(0.55 * maximumPullPulseProgress),
                             lineWidth: 1.5
                         )
-                        .scaleEffect(isOverextended ? 1.45 : 1)
+                        .scaleEffect(1 + 0.45 * maximumPullPulseProgress)
                 }
-                .scaleEffect(isOverextended ? 1.28 : 1)
+                .scaleEffect(1 + 0.28 * maximumPullPulseProgress)
 
             Circle()
                 .fill(Color(white: 0.88).opacity(thumbstickOpacity))
@@ -287,12 +292,21 @@ private struct DynamicThumbstickVisual: View {
                 .offset(dragOffset)
         }
         .frame(width: radius * 2, height: radius * 2)
-        .animation(
-            isOverextended
-                ? .easeInOut(duration: 0.42).repeatForever(autoreverses: true)
-                : .easeOut(duration: 0.16),
-            value: isOverextended
-        )
+        .task(id: maximumPullPulseToken) {
+            guard maximumPullPulseToken > 0 else {
+                maximumPullPulseProgress = 0
+                return
+            }
+            maximumPullPulseProgress = 0
+            withAnimation(.spring(response: 0.18, dampingFraction: 0.58)) {
+                maximumPullPulseProgress = 1
+            }
+            try? await Task.sleep(for: .milliseconds(170))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.22)) {
+                maximumPullPulseProgress = 0
+            }
+        }
     }
 }
 
@@ -325,6 +339,7 @@ struct VirtualPadCameraSwipeView: View {
     @State private var dragDistance: CGFloat = 0
     @State private var isDynamicJoystickMode = false
     @State private var isOverextended = false
+    @State private var maximumPullPulseToken = 0
     @State private var activeDynamicThumbstickDistance: CGFloat?
     @State private var dynamicJoystickPeakTravel: CGFloat = 0
     @State private var previousRadialTravel: CGFloat = 0
@@ -341,7 +356,7 @@ struct VirtualPadCameraSwipeView: View {
                         maximumRadius: maximumThumbstickRadius,
                         dragOffset: dragOffset,
                         dragDistance: dragDistance,
-                        isOverextended: isOverextended,
+                        maximumPullPulseToken: maximumPullPulseToken,
                         thumbstickOpacity: thumbstickOpacity,
                         baseOpacity: baseOpacity,
                         trailOpacity: trailOpacity
@@ -467,6 +482,7 @@ struct VirtualPadCameraSwipeView: View {
         guard overextended != isOverextended else { return }
         isOverextended = overextended
         if overextended {
+            maximumPullPulseToken &+= 1
             if hapticsEnabled && SettingsStore.shared.hapticFeedback {
                 HapticManager.medium.impactOccurred(intensity: 1)
                 HapticManager.medium.prepare()
@@ -484,6 +500,7 @@ struct VirtualPadCameraSwipeView: View {
         dragOffset = .zero
         dragDistance = 0
         isOverextended = false
+        maximumPullPulseToken = 0
         activeDynamicThumbstickDistance = nil
         dynamicJoystickPeakTravel = 0
         previousRadialTravel = 0
