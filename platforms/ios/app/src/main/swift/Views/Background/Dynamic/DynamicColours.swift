@@ -590,6 +590,24 @@ struct ThemePaletteControls: View {
     }
   }
 
+  // Two separate things force the dark gradient to zero in DynamicBackgroundTheme, and the
+  // slider only ever greyed out for the first. The second is the eye button on a saved
+  // palette, which lives in another section and says nothing about this one, so the slider
+  // sat at full strength doing nothing with no way to work out why.
+  private var darkGradientIsInert: Bool {
+    particleSettings.disablesDarkPaletteEffects || sharedCustomColor?.usesDarkEffect == false
+  }
+
+  private var darkGradientInertReason: String? {
+    if particleSettings.disablesDarkPaletteEffects {
+      return "Dark effects on palettes are switched off above."
+    }
+    if sharedCustomColor?.usesDarkEffect == false {
+      return "This saved palette has its dark effect turned off, so the strength is ignored."
+    }
+    return nil
+  }
+
   private var paletteEffectsSection: some View {
     VStack(alignment: .leading, spacing: 12) {
       Toggle(
@@ -605,8 +623,13 @@ struct ThemePaletteControls: View {
         formattedValue: "\(Int(particleSettings.paletteDarkEffectIntensity * 100))%",
         resetValue: 1
       )
-      .disabled(particleSettings.disablesDarkPaletteEffects)
-      .opacity(particleSettings.disablesDarkPaletteEffects ? 0.45 : 1)
+      .disabled(darkGradientIsInert)
+      .opacity(darkGradientIsInert ? 0.45 : 1)
+      if let reason = darkGradientInertReason {
+        Text(reason)
+          .font(.caption)
+          .foregroundStyle(.orange)
+      }
 
       if target == .shared {
         particleSlider(
