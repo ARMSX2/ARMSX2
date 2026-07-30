@@ -136,7 +136,7 @@ private:
 	void GIFRegHandlerTRXDIR(const GIFReg* RESTRICT r);
 	void GIFRegHandlerHWREG(const GIFReg* RESTRICT r);
 
-	template<bool auto_flush> void SetPrimHandlers();
+	template<bool auto_flush, bool sprites_only> void SetPrimHandlers();
 
 	struct GSTransferBuffer
 	{
