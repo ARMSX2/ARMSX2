@@ -380,9 +380,17 @@ void Patch::EnumeratePnachFiles(const std::string_view serial, u32 crc, bool che
 	// resident for the session. What actually keeps them from applying is ReloadEnabledLists
 	// emptying the enabled list and the cheat enable call sitting behind EnableCheats. The
 	// check here only saves the enumeration on later reloads.
+	// CHEATS are matched across ALL CRCs of the serial (the "{serial}_*.pnach" glob), not just the
+	// running game's CRC. The in-app cheat editor writes "{serial}_00000000.pnach" whenever it can't
+	// read a live CRC (getGameCRC() returns the literal "00000000" with no VM up), and PATCHES the
+	// user pastes/imports are commonly named for a different revision's CRC — either way a
+	// CRC-specific boot-time glob silently drops them ("no cheats found" with the file sitting right
+	// there in the list). Cheats are serial-scoped by nature, so widening them to all_crcs recovers
+	// those files without a re-install. Real fixes/widescreen (cheats == false) stay CRC-specific at
+	// boot so a wrong-revision graphics patch can't auto-apply.
 	std::vector<std::string> disk_patch_files;
 	if (for_ui || !cheats || !Achievements::IsHardcoreModeActive())
-		disk_patch_files = FindPatchFilesOnDisk(serial, crc, cheats, for_ui);
+		disk_patch_files = FindPatchFilesOnDisk(serial, crc, cheats, for_ui || cheats);
 
 	bool unlabeled_patch_found = false;
 	if (!disk_patch_files.empty())
