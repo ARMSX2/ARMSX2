@@ -106,6 +106,10 @@ void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle);
 
 GSRendererType GSGetCurrentRenderer();
 bool GSIsHardwareRenderer();
+// Host presentation policy used by the iOS dedicated external-display path.
+// This never changes persisted GS settings or emulation timing.
+void GSSetDedicatedExternalDisplayActive(bool active);
+bool GSIsDedicatedExternalDisplayActive();
 std::string GetDefaultAdapter();
 bool GSWantsExclusiveFullscreen();
 std::optional<float> GSGetHostRefreshRate();

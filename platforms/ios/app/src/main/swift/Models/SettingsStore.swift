@@ -1149,6 +1149,18 @@ final class SettingsStore {
     }
 
     // ── Screen / PCRTC (EmuCore/GS) ── display-output options, applied live.
+    let _dedicatedExternalDisplayConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "DedicatedExternalDisplay", default: false,
+        writer: ARMSX2Bridge.setINIBool,
+        onSet: { ARMSX2Bridge.setDedicatedExternalDisplayEnabled($0) })
+    var dedicatedExternalDisplayEnabled: Bool = false { didSet {
+        guard !(_dedicatedExternalDisplayConfig.suppressible && suppressINIWrites) else { return }
+        _dedicatedExternalDisplayConfig.writer(
+            _dedicatedExternalDisplayConfig.section,
+            _dedicatedExternalDisplayConfig.key,
+            dedicatedExternalDisplayEnabled)
+        _dedicatedExternalDisplayConfig.onSet?(dedicatedExternalDisplayEnabled)
+    }}
     let _pcrtcOffsetsConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "pcrtc_offsets", default: false,
         suppressible: false,
@@ -2009,6 +2021,8 @@ final class SettingsStore {
         upscaler = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "Upscaler", defaultValue: 0))
         gsBoolHacks = Self.loadGSBoolHacks()
         // Screen / PCRTC
+        dedicatedExternalDisplayEnabled = ARMSX2Bridge.getINIBool(
+            "ARMSX2iOS/UI", key: "DedicatedExternalDisplay", defaultValue: false)
         pcrtcOffsets = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "pcrtc_offsets", defaultValue: false)
         pcrtcOverscan = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "pcrtc_overscan", defaultValue: false)
         pcrtcAntiBlur = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "pcrtc_antiblur", defaultValue: true)
@@ -2257,6 +2271,8 @@ final class SettingsStore {
         upscaler = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "Upscaler", defaultValue: 0))
         gsBoolHacks = Self.loadGSBoolHacks()
         // Screen / PCRTC
+        dedicatedExternalDisplayEnabled = ARMSX2Bridge.getINIBool(
+            "ARMSX2iOS/UI", key: "DedicatedExternalDisplay", defaultValue: false)
         pcrtcOffsets = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "pcrtc_offsets", defaultValue: false)
         pcrtcOverscan = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "pcrtc_overscan", defaultValue: false)
         pcrtcAntiBlur = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "pcrtc_antiblur", defaultValue: true)
@@ -2778,6 +2794,7 @@ final class SettingsStore {
             setGSBoolHack(option.key, false)
         }
         // Screen / PCRTC and Shade Boost
+        dedicatedExternalDisplayEnabled = false
         pcrtcOffsets = false
         pcrtcOverscan = false
         pcrtcAntiBlur = true

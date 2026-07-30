@@ -6,6 +6,7 @@
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/GSCapture.h"
 #include "GS/GSDump.h"
+#include "GS/GS.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -376,14 +377,41 @@ static float GetCurrentAspectRatioFloat(bool is_progressive)
 	}
 }
 
+AspectRatioType GSResolveDisplayAspectRatio(AspectRatioType configured, bool prevent_stretch)
+{
+	return (prevent_stretch && configured == AspectRatioType::Stretch) ?
+		AspectRatioType::RAuto4_3_3_2 : configured;
+}
+
+GSDisplayFit GSCalculateDisplayFit(
+	s32 window_width, s32 window_height, float target_aspect, float crop_adjust, float stretch_y)
+{
+	const float width = static_cast<float>(window_width);
+	const float height = static_cast<float>(window_height);
+	const double ratio = (target_aspect * crop_adjust) / (width / height);
+
+	GSDisplayFit fit{width, height};
+	if (ratio < 1.0)
+		fit.width = std::floor(width * ratio + 0.5);
+	else if (ratio > 1.0)
+		fit.height = std::floor(height / ratio + 0.5);
+
+	fit.height *= stretch_y / 100.0f;
+	return fit;
+}
+
 static GSVector4 CalculateDrawDstRect(s32 window_width, s32 window_height, const GSVector4i& src_rect, const GSVector2i& src_size, GSDisplayAlignment alignment, bool flip_y, bool is_progressive)
 {
 	const float f_width = static_cast<float>(window_width);
 	const float f_height = static_cast<float>(window_height);
-	const float clientAr = f_width / f_height;
+	const bool dedicated_external = GSIsDedicatedExternalDisplayActive();
+	const AspectRatioType aspect =
+		GSResolveDisplayAspectRatio(EmuConfig.CurrentAspectRatio, dedicated_external);
+	if (dedicated_external)
+		alignment = GSDisplayAlignment::Center;
 
-	float targetAr = clientAr;
-	if (EmuConfig.CurrentAspectRatio == AspectRatioType::RAuto4_3_3_2)
+	float targetAr = f_width / f_height;
+	if (aspect == AspectRatioType::RAuto4_3_3_2)
 	{
 		if (is_progressive)
 			targetAr = 3.0f / 2.0f;
@@ -393,19 +421,19 @@ static GSVector4 CalculateDrawDstRect(s32 window_width, s32 window_height, const
 		if (EmuConfig.CurrentCustomAspectRatio > 0.f)
 			targetAr = EmuConfig.CurrentCustomAspectRatio;
 	}
-	else if (EmuConfig.CurrentAspectRatio == AspectRatioType::R4_3)
+	else if (aspect == AspectRatioType::R4_3)
 	{
 		targetAr = 4.0f / 3.0f;
 	}
-	else if (EmuConfig.CurrentAspectRatio == AspectRatioType::R16_9)
+	else if (aspect == AspectRatioType::R16_9)
 	{
 		targetAr = 16.0f / 9.0f;
 	}
-	else if (EmuConfig.CurrentAspectRatio == AspectRatioType::R10_7)
+	else if (aspect == AspectRatioType::R10_7)
 	{
 		targetAr = 10.0f / 7.0f;
 	}
-	else if (EmuConfig.CurrentAspectRatio == AspectRatioType::R21_9)
+	else if (aspect == AspectRatioType::R21_9)
 	{
 		targetAr = 21.0f / 9.0f;
 	}
@@ -413,15 +441,10 @@ static GSVector4 CalculateDrawDstRect(s32 window_width, s32 window_height, const
 	const float crop_adjust = (static_cast<float>(src_rect.width()) / static_cast<float>(src_size.x)) /
 		(static_cast<float>(src_rect.height()) / static_cast<float>(src_size.y));
 
-	const double arr = (targetAr * crop_adjust) / clientAr;
-	float target_width = f_width;
-	float target_height = f_height;
-	if (arr < 1)
-		target_width = std::floor(f_width * arr + 0.5f);
-	else if (arr > 1)
-		target_height = std::floor(f_height / arr + 0.5f);
-
-	target_height *= GSConfig.StretchY / 100.0f;
+	const GSDisplayFit fit = GSCalculateDisplayFit(window_width, window_height, targetAr, crop_adjust,
+		dedicated_external ? 100.0f : GSConfig.StretchY);
+	float target_width = fit.width;
+	float target_height = fit.height;
 
 	if (GSConfig.IntegerScaling)
 	{
@@ -487,7 +510,7 @@ static GSVector4 CalculateDrawDstRect(s32 window_width, s32 window_height, const
 		// Android #375: top-align the render in a PORTRAIT window (bottom stays free for
 		// touch controls). Vertical only — horizontal alignment (target_x) is unchanged.
 		GSDisplayAlignment v_align = alignment;
-		if (s_portrait_render_top && window_height > window_width)
+		if (!dedicated_external && s_portrait_render_top && window_height > window_width)
 			v_align = GSDisplayAlignment::LeftOrTop;
 		switch (v_align)
 		{
@@ -502,7 +525,7 @@ static GSVector4 CalculateDrawDstRect(s32 window_width, s32 window_height, const
 				// Push clear of a notch/punch-hole camera when the host asked for it. Only applies
 				// to the top-align case; this branch already knows the render is shorter than the
 				// window, so shifting it down cannot clip the bottom.
-				target_y = (s_portrait_render_top && window_height > window_width)
+				target_y = (!dedicated_external && s_portrait_render_top && window_height > window_width)
 					? static_cast<float>(s_portrait_render_top_inset)
 					: 0.0f;
 				break;
@@ -650,8 +673,11 @@ void GSRenderer::EndPresentFrame()
 	if (GSDumpReplayer::IsReplayingDump())
 		GSDumpReplayer::RenderUI();
 
-	FullscreenUI::Render();
-	ImGuiManager::RenderOSD();
+	if (!GSIsDedicatedExternalDisplayActive())
+	{
+		FullscreenUI::Render();
+		ImGuiManager::RenderOSD();
+	}
 	g_gs_device->EndPresent();
 	ImGuiManager::NewFrame();
 }

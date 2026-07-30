@@ -8,6 +8,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_vertex_tests.cpp
 	gs_backqueue_tests.cpp
 	gs_draw_staging_tests.cpp
+	external_display_aspect_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE

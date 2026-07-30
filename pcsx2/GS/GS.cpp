@@ -65,6 +65,7 @@
 Pcsx2Config::GSOptions GSConfig;
 
 static GSRendererType GSCurrentRenderer;
+static std::atomic_bool s_dedicated_external_display_active{false};
 
 GSRendererType GSGetCurrentRenderer()
 {
@@ -75,6 +76,16 @@ bool GSIsHardwareRenderer()
 {
 	// Null gets flagged as hw.
 	return (GSCurrentRenderer != GSRendererType::SW);
+}
+
+void GSSetDedicatedExternalDisplayActive(bool active)
+{
+	s_dedicated_external_display_active.store(active, std::memory_order_release);
+}
+
+bool GSIsDedicatedExternalDisplayActive()
+{
+	return s_dedicated_external_display_active.load(std::memory_order_acquire);
 }
 
 std::string GetDefaultAdapter()
@@ -779,7 +790,7 @@ bool GSWantsExclusiveFullscreen()
 
 std::optional<float> GSGetHostRefreshRate()
 {
-	if (!g_gs_device)
+	if (!g_gs_device || GSIsDedicatedExternalDisplayActive())
 		return std::nullopt;
 
 	const float surface_refresh_rate = g_gs_device->GetWindowInfo().surface_refresh_rate;

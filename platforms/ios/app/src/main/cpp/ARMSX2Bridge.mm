@@ -59,6 +59,8 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "common/ZipHelpers.h"
 #include "common/Error.h"
 #include "common/MRCHelpers.h"
+#include "IOS/IOSRuntime.h"
+#import "IOS/ARMSX2GameView.h"
 
 #include <algorithm>
 #include <array>
@@ -2347,12 +2349,15 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
 @implementation ARMSX2Bridge
 
 + (UIView *)gameRenderView {
-    extern UIView* g_gameRenderView;
     return g_gameRenderView;
 }
 
 + (void)prepareGameRenderViewForCurrentRenderer {
     ARMSX2_PrepareGameRenderViewForCurrentRenderer("swift_preboot");
+}
+
++ (void)setDedicatedExternalDisplayEnabled:(BOOL)enabled {
+    ARMSX2SetDedicatedExternalDisplayEnabled(enabled);
 }
 
 + (void)saveNVRAM {

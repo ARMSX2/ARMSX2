@@ -30,6 +30,7 @@
 #include "pcsx2/Config.h"             // EmuConfig, GSConfig
 #include "pcsx2/Counters.h"           // g_FrameCount
 #include "pcsx2/GameList.h"
+#include "pcsx2/GS/GS.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/MTGS.h"
 #include "pcsx2/PerformanceMetrics.h"
@@ -62,6 +63,426 @@
 
 // Defined below, next to the VM worker state it reads.
 static bool ARMSX2JITWorkerBusy();
+
+// UISceneAccessory ships in the iOS 27 SDK. Keep every symbol behind a compile
+// guard so the iOS 26 SDK can still build the same source tree.
+#if defined(__IPHONE_27_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_27_0
+#define ARMSX2_HAS_IOS27_SCENE_ACCESSORY 1
+#else
+#define ARMSX2_HAS_IOS27_SCENE_ACCESSORY 0
+#endif
+
+// UIKit state below is main-thread-only. The external UIWindow is retained
+// explicitly until the GS-thread handoff has detached its CAMetalLayer.
+static bool s_dedicatedExternalDisplayEnabled = false;
+static bool s_externalDisplayVMRequested = false;
+static bool s_externalSceneDisconnectPending = false;
+static unsigned long long s_externalSceneStateGeneration = 0;
+static UIWindowScene* s_externalWindowScene = nil; // owned while connected
+static UIWindow* s_externalWindow = nil;           // owned while active/retiring
+static ARMSX2GameView* s_externalGameRenderView = nil; // owned by s_externalWindow
+static PCSX2ExternalDisplaySceneDelegate* __unsafe_unretained s_externalSceneDelegate = nil;
+
+#if ARMSX2_HAS_IOS27_SCENE_ACCESSORY
+static UISceneAccessoryRegistration* s_externalSceneAccessoryRegistration = nil;
+static UIViewController* s_externalSceneAccessoryOwner = nil;
+#endif
+
+static bool ARMSX2ShouldPresentExternalDisplay()
+{
+    return s_dedicatedExternalDisplayEnabled && s_externalDisplayVMRequested &&
+           s_externalWindowScene != nil && !s_externalSceneDisconnectPending;
+}
+
+static void ARMSX2ConfigureExternalScreenMode(UIScreen* screen)
+{
+    if (!screen)
+        return;
+
+    // UIScreenMode exposes pixel dimensions, but not a per-mode refresh rate.
+    // Use UIKit's preferred mode and report the screen-wide maximum FPS; do not
+    // infer that one resolution is 30 Hz and another is 60 Hz.
+    UIScreenMode* preferredMode = screen.preferredMode;
+    if (preferredMode && screen.currentMode != preferredMode)
+        screen.currentMode = preferredMode;
+
+    UIScreenMode* selectedMode = screen.currentMode ?: preferredMode;
+    const CGSize size = selectedMode ? selectedMode.size : CGSizeZero;
+    Console.WriteLn("[ExternalDisplay] mode=automatic size=%.0fx%.0f max_fps=%ld",
+        size.width, size.height, static_cast<long>(screen.maximumFramesPerSecond));
+}
+
+static void ARMSX2FinishRetiredExternalWindow(UIWindow* window)
+{
+    pxAssert([NSThread isMainThread]);
+    if (!window)
+        return;
+
+    window.hidden = YES;
+    window.windowScene = nil;
+    [window release];
+}
+
+static void ARMSX2RetargetRendererOnCPUThread(UIWindow* retiredWindow)
+{
+    pxAssert(VMManager::Internal::IsOnCPUThread());
+
+    if (!MTGS::IsOpen())
+    {
+        if (retiredWindow)
+        {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                ARMSX2FinishRetiredExternalWindow(retiredWindow);
+            });
+        }
+        return;
+    }
+
+    // AcquireRenderWindow derives presentation policy from the exact view
+    // selected when this command executes, so rapid state changes cannot pair
+    // a stale queued flag with a newer CAMetalLayer.
+    MTGS::UpdateDisplayWindow();
+    if (retiredWindow)
+    {
+        MTGS::RunOnGSThread([retiredWindow]() {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                ARMSX2FinishRetiredExternalWindow(retiredWindow);
+            });
+        });
+    }
+}
+
+static void ARMSX2RetargetRenderer(UIWindow* retiredWindow)
+{
+    pxAssert([NSThread isMainThread]);
+
+    if (!MTGS::IsOpen())
+    {
+        ARMSX2FinishRetiredExternalWindow(retiredWindow);
+        return;
+    }
+
+    // UIKit callbacks run on the main thread, while the MTGS ring is produced
+    // by the CPU thread. Queue there first, then enqueue cleanup after the
+    // display-window update so a retired CAMetalLayer cannot be freed early.
+    Host::RunOnCPUThread([retiredWindow]() {
+        ARMSX2RetargetRendererOnCPUThread(retiredWindow);
+    }, false);
+}
+
+static bool ARMSX2DeactivateExternalDisplay(
+    bool retargetRenderer = true, UIWindow** retiredWindowOut = nullptr)
+{
+    pxAssert([NSThread isMainThread]);
+
+    UIWindow* retiredWindow = s_externalWindow;
+    if (!retiredWindow && ARMSX2GetActiveGameRenderView() == g_gameRenderView)
+        return false;
+
+    s_externalWindow = nil;
+    s_externalGameRenderView = nil;
+    if (s_externalSceneDelegate.window == retiredWindow)
+        s_externalSceneDelegate.window = nil;
+
+    ARMSX2SetActiveGameRenderView(g_gameRenderView);
+    Console.WriteLn("[ExternalDisplay] renderer target=iphone");
+    if (retiredWindowOut)
+        *retiredWindowOut = retiredWindow;
+    if (retargetRenderer)
+        ARMSX2RetargetRenderer(retiredWindow);
+    [g_gameRenderView setNeedsLayout];
+    [g_gameRenderView layoutIfNeeded];
+    return true;
+}
+
+static bool ARMSX2ActivateExternalDisplay(bool retargetRenderer = true)
+{
+    pxAssert([NSThread isMainThread]);
+    if (s_externalWindow || !s_externalWindowScene || !ARMSX2ShouldPresentExternalDisplay())
+        return false;
+
+    ARMSX2ConfigureExternalScreenMode(s_externalWindowScene.screen);
+
+    UIViewController* rootViewController = [[UIViewController alloc] init];
+    rootViewController.view.backgroundColor = [UIColor blackColor];
+
+    UIWindow* window = [[UIWindow alloc] initWithWindowScene:s_externalWindowScene];
+    window.backgroundColor = [UIColor blackColor];
+    window.rootViewController = rootViewController;
+    [rootViewController release];
+
+    ARMSX2GameView* renderView = [[ARMSX2GameView alloc] initWithFrame:window.rootViewController.view.bounds];
+    renderView.backgroundColor = [UIColor blackColor];
+    renderView.opaque = YES;
+    renderView.clipsToBounds = YES;
+    renderView.userInteractionEnabled = NO;
+    renderView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [window.rootViewController.view addSubview:renderView];
+    [renderView release];
+
+    s_externalWindow = window; // keep the alloc retain until GS detaches
+    s_externalGameRenderView = renderView;
+    s_externalSceneDelegate.window = window;
+    [window makeKeyAndVisible];
+    [window.rootViewController.view layoutIfNeeded];
+
+    ARMSX2SetActiveGameRenderView(renderView);
+    UIScreen* screen = s_externalWindowScene.screen;
+    Console.WriteLn("[ExternalDisplay] renderer target=external size=%.0fx%.0f max_fps=%ld",
+        window.bounds.size.width, window.bounds.size.height,
+        static_cast<long>(screen.maximumFramesPerSecond));
+    if (retargetRenderer)
+        ARMSX2RetargetRenderer(nil);
+    return true;
+}
+
+static bool ARMSX2ApplyExternalDisplayState(
+    bool retargetRenderer = true, UIWindow** retiredWindowOut = nullptr);
+
+static void ARMSX2UpdateExternalSceneAccessory()
+{
+#if ARMSX2_HAS_IOS27_SCENE_ACCESSORY
+    if (@available(iOS 27.0, *))
+    {
+        if (s_externalSceneAccessoryRegistration)
+        {
+            const bool enabled =
+                s_dedicatedExternalDisplayEnabled && s_externalDisplayVMRequested;
+            if (!enabled && s_externalWindowScene)
+            {
+                s_externalSceneDisconnectPending = true;
+                s_externalSceneStateGeneration++;
+            }
+            [s_externalSceneAccessoryRegistration setEnabled:enabled];
+
+            // UIKit may cancel or defer a disconnect when the switch flips
+            // false->true quickly. Reconcile on the next run-loop turn and
+            // reuse only a scene which is still attached.
+            if (enabled && s_externalSceneDisconnectPending && s_externalWindowScene)
+            {
+                const unsigned long long generation = ++s_externalSceneStateGeneration;
+                UIWindowScene* pendingScene = s_externalWindowScene;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (generation != s_externalSceneStateGeneration ||
+                        !s_dedicatedExternalDisplayEnabled || !s_externalDisplayVMRequested ||
+                        !s_externalSceneDisconnectPending ||
+                        s_externalWindowScene != pendingScene)
+                    {
+                        return;
+                    }
+
+                    if (pendingScene.activationState == UISceneActivationStateUnattached)
+                    {
+                        ARMSX2DeactivateExternalDisplay();
+                        s_externalSceneDelegate.window = nil;
+                        s_externalSceneDelegate = nil;
+                        [s_externalWindowScene release];
+                        s_externalWindowScene = nil;
+                    }
+                    s_externalSceneDisconnectPending = false;
+                    s_externalSceneStateGeneration++;
+                    ARMSX2ApplyExternalDisplayState();
+                });
+            }
+        }
+    }
+#endif
+}
+
+static void ARMSX2UnregisterExternalDisplayAccessory()
+{
+#if ARMSX2_HAS_IOS27_SCENE_ACCESSORY
+    if (@available(iOS 27.0, *))
+    {
+        if (s_externalWindowScene)
+            s_externalSceneDisconnectPending = true;
+        s_externalSceneStateGeneration++;
+
+        // Clear globals before UIKit callbacks. setEnabled/unregister may
+        // synchronously disconnect the external scene and re-enter this state.
+        UISceneAccessoryRegistration* registration = s_externalSceneAccessoryRegistration;
+        UIViewController* owner = s_externalSceneAccessoryOwner;
+        s_externalSceneAccessoryRegistration = nil;
+        s_externalSceneAccessoryOwner = nil;
+
+        if (registration && owner)
+        {
+            [registration setEnabled:NO];
+            [owner unregisterSceneAccessory:registration];
+        }
+        [registration release];
+        [owner release];
+    }
+#endif
+}
+
+static bool ARMSX2ApplyExternalDisplayState(
+    bool retargetRenderer, UIWindow** retiredWindowOut)
+{
+    pxAssert([NSThread isMainThread]);
+    ARMSX2UpdateExternalSceneAccessory();
+    if (ARMSX2ShouldPresentExternalDisplay())
+        return ARMSX2ActivateExternalDisplay(retargetRenderer);
+
+    return ARMSX2DeactivateExternalDisplay(retargetRenderer, retiredWindowOut);
+}
+
+static void ARMSX2RunExternalDisplayStateChangeOnMain(dispatch_block_t block)
+{
+    if ([NSThread isMainThread])
+        block();
+    else
+        dispatch_sync(dispatch_get_main_queue(), block);
+}
+
+void ARMSX2SetDedicatedExternalDisplayEnabled(bool enabled)
+{
+    ARMSX2RunExternalDisplayStateChangeOnMain(^{
+        if (s_dedicatedExternalDisplayEnabled == enabled)
+            return;
+        s_dedicatedExternalDisplayEnabled = enabled;
+        Console.WriteLn("[ExternalDisplay] dedicated_output=%d", enabled ? 1 : 0);
+        ARMSX2ApplyExternalDisplayState();
+    });
+}
+
+bool ARMSX2IsDedicatedExternalDisplayEnabled()
+{
+    __block bool enabled = false;
+    ARMSX2RunExternalDisplayStateChangeOnMain(^{
+        enabled = s_dedicatedExternalDisplayEnabled;
+    });
+    return enabled;
+}
+
+bool ARMSX2IsDedicatedExternalDisplayActive()
+{
+    return GSIsDedicatedExternalDisplayActive();
+}
+
+void ARMSX2SetExternalDisplayVMRequested(bool requested)
+{
+    const bool calledOnCPUThread = VMManager::Internal::IsOnCPUThread();
+    __block bool retargetRenderer = false;
+    __block UIWindow* retiredWindow = nil;
+    ARMSX2RunExternalDisplayStateChangeOnMain(^{
+        if (s_externalDisplayVMRequested == requested)
+            return;
+        s_externalDisplayVMRequested = requested;
+        Console.WriteLn("[ExternalDisplay] vm_requested=%d", requested ? 1 : 0);
+        retargetRenderer = ARMSX2ApplyExternalDisplayState(
+            !calledOnCPUThread, calledOnCPUThread ? &retiredWindow : nullptr);
+    });
+
+    // Host VM lifecycle callbacks already run on the CPU thread. Queue the
+    // MTGS handoff here after the synchronous UIKit state change returns,
+    // rather than enqueuing back to a CPU queue which may stop draining during
+    // VM teardown.
+    if (calledOnCPUThread && retargetRenderer)
+        ARMSX2RetargetRendererOnCPUThread(retiredWindow);
+}
+
+void ARMSX2RegisterExternalDisplayAccessoryIfNeeded(UIViewController* rootViewController)
+{
+    pxAssert([NSThread isMainThread]);
+#if ARMSX2_HAS_IOS27_SCENE_ACCESSORY
+    if (@available(iOS 27.0, *))
+    {
+        if (!rootViewController)
+            return;
+        if (s_externalSceneAccessoryRegistration &&
+            s_externalSceneAccessoryOwner == rootViewController)
+        {
+            return;
+        }
+
+        ARMSX2UnregisterExternalDisplayAccessory();
+
+        UISceneConfiguration* configuration = [[[UISceneConfiguration alloc] init] autorelease];
+        configuration.delegateClass = [PCSX2ExternalDisplaySceneDelegate class];
+        UISceneAccessory* accessory =
+            [UISceneAccessory externalNonInteractiveSceneAccessoryWithConfiguration:configuration];
+        UISceneAccessoryRegistration* registration =
+            [rootViewController registerSceneAccessory:accessory];
+        if (!registration)
+            return;
+
+        s_externalSceneAccessoryOwner = [rootViewController retain];
+        s_externalSceneAccessoryRegistration = [registration retain];
+        ARMSX2UpdateExternalSceneAccessory();
+        Console.WriteLn("[ExternalDisplay] lifecycle=scene_accessory ios=27+");
+        return;
+    }
+#endif
+    Console.WriteLn("[ExternalDisplay] lifecycle=automatic_external_scene ios<=26");
+}
+
+@implementation PCSX2ExternalDisplaySceneDelegate
+
+- (void)scene:(UIScene*)scene
+    willConnectToSession:(UISceneSession*)session
+                 options:(UISceneConnectionOptions*)connectionOptions
+{
+    if (![scene isKindOfClass:[UIWindowScene class]] ||
+        ![session.role isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive])
+    {
+        return;
+    }
+
+    UIWindowScene* windowScene = (UIWindowScene*)scene;
+    if (s_externalWindowScene && s_externalWindowScene != windowScene)
+    {
+        Console.WriteLn("[ExternalDisplay] replacing stale external scene");
+        s_externalSceneStateGeneration++;
+        ARMSX2DeactivateExternalDisplay();
+        [s_externalWindowScene release];
+        s_externalWindowScene = nil;
+        s_externalSceneDelegate = nil;
+    }
+
+    s_externalSceneDelegate = self;
+    if (s_externalWindowScene != windowScene)
+        s_externalWindowScene = [windowScene retain];
+    s_externalSceneDisconnectPending = false;
+    s_externalSceneStateGeneration++;
+    Console.WriteLn("[ExternalDisplay] scene connected");
+    ARMSX2ApplyExternalDisplayState();
+}
+
+- (void)sceneDidDisconnect:(UIScene*)scene
+{
+    if (scene != s_externalWindowScene)
+    {
+        self.window = nil;
+        return;
+    }
+
+    Console.WriteLn("[ExternalDisplay] scene disconnected");
+    ARMSX2DeactivateExternalDisplay();
+    self.window = nil;
+    s_externalSceneDelegate = nil;
+    [s_externalWindowScene release];
+    s_externalWindowScene = nil;
+    s_externalSceneDisconnectPending = false;
+    s_externalSceneStateGeneration++;
+    ARMSX2ApplyExternalDisplayState();
+}
+
+- (void)windowScene:(UIWindowScene*)windowScene
+    didUpdateCoordinateSpace:(id<UICoordinateSpace>)previousCoordinateSpace
+       interfaceOrientation:(UIInterfaceOrientation)previousInterfaceOrientation
+            traitCollection:(UITraitCollection*)previousTraitCollection
+{
+    if (windowScene != s_externalWindowScene || !s_externalWindow)
+        return;
+
+    [s_externalWindow.rootViewController.view setNeedsLayout];
+    [s_externalWindow.rootViewController.view layoutIfNeeded];
+    [s_externalGameRenderView setNeedsLayout];
+    [s_externalGameRenderView layoutIfNeeded];
+}
+
+@end
 
 @implementation PCSX2SceneDelegate
 
@@ -157,6 +578,11 @@ static bool ARMSX2JITWorkerBusy();
             s_buttonMap[i] = val;
         }
     }
+    // Swift property observers do not run while SettingsStore is initialized,
+    // so native lifecycle state must be seeded directly from the persisted INI.
+    ARMSX2SetDedicatedExternalDisplayEnabled(
+        s_settings_interface->GetBoolValue(
+            "ARMSX2iOS/UI", "DedicatedExternalDisplay", false));
     ARMSX2RepairIOSARM64JITSettings(s_settings_interface, "scene-connect");
     ARMSX2MigrateJITScriptProtocolForIOS(s_settings_interface, "scene-connect");
     // One-time migration for existing INI (runs once, then conditions are false)
@@ -227,6 +653,7 @@ static bool ARMSX2JITWorkerBusy();
         self.window = uiWindow;
         self.window.backgroundColor = [UIColor systemGroupedBackgroundColor];
         [self.window makeKeyAndVisible];
+        ARMSX2RegisterExternalDisplayAccessoryIfNeeded(self.window.rootViewController);
 
         // ProMotion (120 Hz) unlock is just CADisableMinimumFrameDurationOnPhone
         // in Info.plist. Don't pin preferredFrameRateRange via
@@ -234,9 +661,7 @@ static bool ARMSX2JITWorkerBusy();
         // crashes on cold launch.
 
 // Create game render view — SwiftUI MetalGameView (UIViewRepresentable) manages placement
-        g_gameRenderView = [[ARMSX2GameView alloc] initWithFrame:CGRectZero];
-        g_gameRenderView.backgroundColor = [UIColor blackColor];
-        g_gameRenderView.clipsToBounds = YES;
+        ARMSX2_PrepareGameRenderViewForCurrentRenderer("scene-connect");
         // Do NOT addSubview here — SwiftUI's MetalGameView handles view hierarchy
         Console.WriteLn("[Layout] Game render view created (SwiftUI-managed)");
         
@@ -950,7 +1375,10 @@ static void ARMSX2StartJITKeepalive()
                     std::fprintf(stderr, "@@BOOT_THREAD_WAIT@@ waiting=1\n");
                     std::fflush(stderr);
                     Console.WriteLn("[VM] VM Thread: waiting for boot request...");
-                    s_vmCV.wait(lk, [] { return s_requestVMBoot.load() || s_vmThreadShouldExit.load(); });
+                    s_vmCV.wait(lk, [] {
+                        return s_requestVMBoot.load() || s_vmThreadShouldExit.load() ||
+                               ARMSX2HasPendingCPUThreadTasks();
+                    });
                     if (s_vmThreadShouldExit.load(std::memory_order_relaxed))
                     {
                         s_vmThreadShouldExit.store(false, std::memory_order_relaxed);
@@ -963,6 +1391,13 @@ static void ARMSX2StartJITKeepalive()
                         // without duplicating the ~161MB SysMemory reservation.
                         VMManager::Internal::CPUThreadShutdown();
                         break; // exit the while(true) loop — thread ends
+                    }
+                    if (!s_requestVMBoot.load(std::memory_order_relaxed) &&
+                        ARMSX2HasPendingCPUThreadTasks())
+                    {
+                        lk.unlock();
+                        ARMSX2DrainCPUThreadTasks();
+                        continue;
                     }
                 }
                 s_requestVMBoot.store(false);
@@ -1223,6 +1658,8 @@ static void ARMSX2StartJITKeepalive()
 
 #pragma mark - Scene lifecycle
 - (void)sceneDidDisconnect:(UIScene *)scene {
+    ARMSX2UnregisterExternalDisplayAccessory();
+    ARMSX2DeactivateExternalDisplay();
 }
 
 - (void)sceneDidBecomeActive:(UIScene *)scene {

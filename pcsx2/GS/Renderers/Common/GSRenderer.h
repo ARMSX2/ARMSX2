@@ -7,6 +7,17 @@
 #include <memory>
 #include <string>
 
+struct GSDisplayFit
+{
+	float width;
+	float height;
+};
+
+// Small pure helpers shared with the aspect-ratio regression check.
+AspectRatioType GSResolveDisplayAspectRatio(AspectRatioType configured, bool prevent_stretch);
+GSDisplayFit GSCalculateDisplayFit(
+	s32 window_width, s32 window_height, float target_aspect, float crop_adjust, float stretch_y);
+
 class GSRenderer : public GSState
 {
 private:

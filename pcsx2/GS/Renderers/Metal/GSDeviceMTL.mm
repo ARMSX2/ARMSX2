@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Host.h"
+#include "GS/GS.h"
 #include "GS/GSGL.h"
 #include "GS/Renderers/Metal/GSMetalCPPAccessible.h"
 #include "GS/Renderers/Metal/GSDeviceMTL.h"
@@ -1622,7 +1623,8 @@ void GSDeviceMTL::EndPresent()
 { @autoreleasepool {
 	pxAssertMsg(m_current_render.encoder && m_current_render_cmdbuf, "DoBeginPresent cmdbuf was destroyed");
 	ImGui::Render();
-	RenderImGui(ImGui::GetDrawData());
+	if (!GSIsDedicatedExternalDisplayActive())
+		RenderImGui(ImGui::GetDrawData());
 	EndRenderPass();
 	if (m_current_drawable)
 	{

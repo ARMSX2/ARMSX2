@@ -311,11 +311,31 @@ void ARMSX2ConfigureImGuiFonts(const char* reason)
         return;
 
     CGFloat scale = self.contentScaleFactor;
+    CGSize drawableSize = CGSizeMake(self.bounds.size.width * scale,
+                                     self.bounds.size.height * scale);
+    if (ARMSX2IsActiveGameRenderView(self) && self != g_gameRenderView)
+    {
+        const CGSize modeSize = self.window.windowScene.screen.currentMode.size;
+        if (modeSize.width > 0.0 && modeSize.height > 0.0)
+        {
+            const bool boundsLandscape = self.bounds.size.width >= self.bounds.size.height;
+            const bool modeLandscape = modeSize.width >= modeSize.height;
+            drawableSize = (boundsLandscape == modeLandscape) ?
+                modeSize : CGSizeMake(modeSize.height, modeSize.width);
+            scale = drawableSize.width / self.bounds.size.width;
+        }
+    }
     CAMetalLayer *mtl = (CAMetalLayer *)self.layer;
-    mtl.drawableSize = CGSizeMake(self.bounds.size.width * scale,
-                                   self.bounds.size.height * scale);
-    int w = std::max(1, (int)(self.bounds.size.width * scale + 0.5));
-    int h = std::max(1, (int)(self.bounds.size.height * scale + 0.5));
+    mtl.drawableSize = drawableSize;
+
+    // Both the phone and external views may receive UIKit layout callbacks.
+    // Only the view currently owned by GS may resize the renderer or change
+    // its safe area.
+    if (!ARMSX2IsActiveGameRenderView(self))
+        return;
+
+    int w = std::max(1, (int)(drawableSize.width + 0.5));
+    int h = std::max(1, (int)(drawableSize.height + 0.5));
     float s = (float)scale;
 
     // Keep corner-anchored OSD out of the notch, the Dynamic Island and the home indicator. UIKit
@@ -338,8 +358,25 @@ void ARMSX2ConfigureImGuiFonts(const char* reason)
 
 #pragma mark - Statics & device stats
 ARMSX2GameView* g_gameRenderView = nil;  // non-static: accessed from ARMSX2Bridge.mm
+static ARMSX2GameView* s_activeGameRenderView = nil; // main-thread-only, non-owning
 INISettingsInterface* s_settings_interface = nullptr;
 INISettingsInterface* s_secrets_settings_interface = nullptr;
+
+ARMSX2GameView* ARMSX2GetActiveGameRenderView()
+{
+    return s_activeGameRenderView ?: g_gameRenderView;
+}
+
+void ARMSX2SetActiveGameRenderView(ARMSX2GameView* view)
+{
+    pxAssert([NSThread isMainThread]);
+    s_activeGameRenderView = view ?: g_gameRenderView;
+}
+
+bool ARMSX2IsActiveGameRenderView(ARMSX2GameView* view)
+{
+    return (view != nil && view == ARMSX2GetActiveGameRenderView());
+}
 
 bool ARMSX2GetConfiguredFastBoot()
 {
@@ -948,6 +985,12 @@ std::atomic<unsigned long long> s_cpuTaskNextId{1};
 std::mutex s_cpuTaskMutex;
 std::deque<std::shared_ptr<CPUThreadTask>> s_cpuTasks;
 
+bool ARMSX2HasPendingCPUThreadTasks()
+{
+    std::lock_guard<std::mutex> lock(s_cpuTaskMutex);
+    return !s_cpuTasks.empty();
+}
+
 void ARMSX2DrainCPUThreadTasks()
 {
     for (;;) {
@@ -1043,6 +1086,8 @@ static void ARMSX2EnsureGameRenderViewOnMain(const char* reason) {
     g_gameRenderView = [[ARMSX2GameView alloc] initWithFrame:CGRectZero];
     g_gameRenderView.backgroundColor = [UIColor blackColor];
     g_gameRenderView.clipsToBounds = YES;
+    if (!s_activeGameRenderView)
+        s_activeGameRenderView = g_gameRenderView;
     [g_gameRenderView setNeedsLayout];
     Console.WriteLn("[Layout] Game render view prepared for SwiftUI (reason=%s)",
         reason ? reason : "unknown");

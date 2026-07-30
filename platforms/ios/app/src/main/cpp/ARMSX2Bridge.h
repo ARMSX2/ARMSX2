@@ -72,6 +72,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // Game render view (for UIViewRepresentable)
 + (nonnull UIView *)gameRenderView;
 + (void)prepareGameRenderViewForCurrentRenderer;
++ (void)setDedicatedExternalDisplayEnabled:(BOOL)enabled;
 
 // Lifecycle
 + (void)saveNVRAM;
