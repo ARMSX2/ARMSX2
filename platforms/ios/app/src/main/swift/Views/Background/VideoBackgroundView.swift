@@ -123,7 +123,7 @@ private final class LoopingVideoView: UIView {
                 }
             }
         } else {
-            adaptToPowerState()
+            applyPowerState()
         }
     }
 
@@ -214,7 +214,21 @@ private final class LoopingVideoView: UIView {
         }
     }
 
-    @objc private func adaptToPowerState() {
+    // Every other notification here is a UIKit lifecycle one and arrives on the main
+    // thread. This one does not: Foundation posts the power-state change from whatever
+    // queue it likes, and the body below touches UIKit and the player. The class is a
+    // UIView so it is main-actor isolated, which under Swift 6 means the @objc entry
+    // point checks the executor and traps before the body even runs. So take the hit
+    // off the main thread and hop, the way the seek handler above already does.
+    @objc private nonisolated func adaptToPowerState() {
+        Task { @MainActor [weak self] in
+            self?.applyPowerState()
+        }
+    }
+
+    // Weakly, because a strong capture could leave the last release on that Task's
+    // thread, and deinit assumes it is on main.
+    private func applyPowerState() {
         if ProcessInfo.processInfo.isLowPowerModeEnabled {
             pause()
         } else {
