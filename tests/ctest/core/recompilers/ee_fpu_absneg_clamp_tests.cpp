@@ -37,7 +37,7 @@ using namespace mips::ee;
 
 namespace {
 
-constexpr u32 kFd = 4, kFs = 5;
+constexpr u32 kFd = 4, kFs = 5, kFt = 6;
 
 struct Operand
 {
@@ -110,6 +110,26 @@ u32 RunOne(u32 insn, u32 fs_bits, bool jit, Mode mode)
 	if (mode == MODE_EXTRA)
 		h.EnableFpuExtraOverflow();
 	h.SetFprBits(kFs, fs_bits);
+	h.LoadProgram({insn});
+	if (jit)
+		h.RunJitNoDiff();
+	else
+		h.RunInterpOnly();
+	return jit ? h.GetFprBitsJit(kFd) : h.GetFprBitsInterp(kFd);
+}
+
+// Two-operand form, for the liveness witness below. RunOne cannot express it
+// because it only ever loads Fs.
+u32 RunTwo(u32 insn, u32 fs_bits, u32 ft_bits, bool jit, Mode mode)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	if (mode == MODE_CLAMP0)
+		h.DisableFpuOverflow();
+	if (mode == MODE_EXTRA)
+		h.EnableFpuExtraOverflow();
+	h.SetFprBits(kFs, fs_bits);
+	h.SetFprBits(kFt, ft_bits);
 	h.LoadProgram({insn});
 	if (jit)
 		h.RunJitNoDiff();
@@ -200,24 +220,42 @@ TEST(EeFpuAbsNegClamp, JitIgnoresEeClampModeForAbsAndNeg)
 // ---------------------------------------------------------------------------
 // Liveness witness for the harness knob itself. DisableFpuOverflow() is
 // observationally a no-op on ABS.S/NEG.S (they ignore the mode), so without
-// this the switch would ship with nothing proving it reaches the emitter.
+// this the switch would ship with nothing proving it reaches the emitter, and
+// every clamp0 leg in this file would be measuring the default mode twice.
 //
-// SQRT.S is the op that *does* gate its operand clamp on CHECK_FPU_OVERFLOW
-// (iFPU-arm64.cpp), so it is the correct discriminator.
+// This used to ride on SQRT.S, which gated its operand clamp on
+// CHECK_FPU_OVERFLOW. SQRT.S no longer clamps that operand at all -- exponent
+// 255 is an ordinary binade on the EE, so it scales by a power of two and gets
+// the console's answer in every mode (see recSQRT_S_xmm in iFPU-arm64.cpp and
+// EeFpuOverflowConsole.SqrtMatchesConsoleOnEveryExponent255Operand). That left
+// MAX.S / MIN.S as the only remaining CHECK_FPU_OVERFLOW-gated emitter path
+// (fpuClampMinMaxOperand, iFPU-arm64.cpp), so the witness moved there.
+//
+// recMAX_S_xmm is a bare Fmaxnm over two optionally-clamped operands with no
+// result clamp behind it, so the knob is directly observable: clamped, +2^128
+// arrives as +FLT_MAX and loses to nothing; unclamped it arrives as a host
+// +Inf and survives Fmaxnm intact.
+//
+// Neither value is asserted as correct -- MAX.S has its own console divergence
+// (it is an integer op on silicon; see fp_max in FPU.cpp). All this test claims
+// is that the two modes are distinguishable.
 // ---------------------------------------------------------------------------
 TEST(EeFpuAbsNegClamp, DisableFpuOverflowReachesTheEmitter)
 {
-	constexpr u32 kExp255 = 0x7F800000u; // +2^128
+	constexpr u32 kExp255 = 0x7F800000u; // +2^128, a host +Inf
+	constexpr u32 kOne = 0x3F800000u;
 
-	const u32 clamped = RunOne(SQRT_S(kFd, kFs), kExp255, true, MODE_DEFAULT);
-	const u32 unclamped = RunOne(SQRT_S(kFd, kFs), kExp255, true, MODE_CLAMP0);
+	const u32 clamped = RunTwo(MAX_S(kFd, kFs, kFt), kExp255, kOne, true, MODE_DEFAULT);
+	const u32 unclamped = RunTwo(MAX_S(kFd, kFs, kFt), kExp255, kOne, true, MODE_CLAMP0);
 
 	EXPECT_NE(clamped, unclamped)
 		<< "DisableFpuOverflow() changed nothing -- the knob is not reaching "
-		   "the SQRT.S operand clamp, so every clamp0 leg in this file is "
+		   "the MAX.S operand clamp, so every clamp0 leg in this file is "
 		   "measuring the default mode twice";
-	EXPECT_EQ(clamped, 0x5F7FFFFFu)
-		<< "[clamp on] the operand is pulled to +FLT_MAX before the sqrt";
+	EXPECT_EQ(clamped, 0x7F7FFFFFu)
+		<< "[clamp on] fpuClampMinMaxOperand pulls +2^128 down to +FLT_MAX";
+	EXPECT_EQ(unclamped, kExp255)
+		<< "[clamp off] the raw operand reaches Fmaxnm and wins";
 }
 
 // ---------------------------------------------------------------------------

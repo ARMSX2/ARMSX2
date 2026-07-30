@@ -372,12 +372,43 @@ void SQRT_S() {
 		_ContVal_ |= FPUflagI | FPUflagSI;
 
 	if ( ( _FtValUl_ & 0x7F800000 ) == 0 ) // If Ft = +/-0 (denormals included)
+	{
 		_FdValUl_ = 0;                     // +0: the EE drops the sign here, and
 		                                   // both recompilers already do (they
 		                                   // take |Ft| before the sqrt). See
 		                                   // EeRecFpu.SqrtSOfNegativeZeroIsPositiveZero.
+	}
+	else if ( ( _FtValUl_ & 0x7F800000 ) == 0x7F800000 )
+	{
+		// Exponent 255 is an ORDINARY binade on the EE -- no Inf, no NaN, and
+		// the representable max is 0x7FFFFFFF, not FLT_MAX. So fpuDouble()'s
+		// clamp is not a rounding of this operand, it is a different operand,
+		// and the answer lands two binades low: sqrt(2^128) came back as
+		// 0x5F7FFFFF where the console gives 0x5F800000, and sqrt(+EEMAX) as
+		// 0x5F7FFFFF against 0x5FB504F3.
+		//
+		// Square-root |Ft|/4 and double it. sqrt halves exponents, so the
+		// scaled operand (exponent field 253) and the doubled result are both
+		// ordinary representable singles -- no wider format is needed. 4 is an
+		// even power of two, so its own square root is exact and the identity
+		// contributes no rounding: the sqrt below is the only rounding step,
+		// exactly as on the untouched path. Same power-of-two prescale that
+		// ToDouble() uses to carry these operands into FULL mode
+		// (iFPUd-arm64.cpp), with the factor picked to suit sqrt so it can stay
+		// in single precision. The arm64 fast path emits the same two steps --
+		// see recSQRT_S_xmm in iFPU-arm64.cpp.
+		//
+		// RSQRT_S deliberately does NOT get this. Its two clamped operands
+		// currently cancel on rsqrt(2^128, 2^128); unclamping only the sqrt
+		// breaks that row. It is all-or-nothing and is a separate change.
+		FPRreg quarter;
+		quarter.UL = ( _FtValUl_ & 0x7FFFFFFF ) - 0x01000000; // |Ft| / 4
+		_FdValf_ = 2.0 * sqrt( (double)quarter.f );
+	}
 	else
+	{
 		_FdValf_ = sqrt( fabs( fpuDouble( _FtValUl_ ) ) ); // sqrt of |Ft|
+	}
 }
 
 void SUB_S() {
