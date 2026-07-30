@@ -54,10 +54,27 @@ object PauseMusic {
 
     private var player: MediaPlayer? = null
 
+    // True only while the activity is in the foreground. Guards start() so NO path can begin playback
+    // behind a backgrounded app — in particular the LaunchedEffect that fires as onPause opens the
+    // pause overlay (setting overlayVisible = true) would otherwise start the track on the OS home
+    // screen. A MediaPlayer with USAGE_MEDIA is not auto-paused by the system on background, so the
+    // gate has to be ours.
+    @Volatile private var foreground = true
+
     // Drives the volume ramps. Main.immediate so setVolume lands on the same thread the player lives
     // on; SupervisorJob so one cancelled ramp never tears the scope down.
     private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
     private var fadeJob: Job? = null
+
+    /**
+     * Foreground state, from the activity's onResume (true) / onPause (false). Backgrounding also
+     * pauses any current playback immediately; the guard in [start] then keeps it from being
+     * restarted by a late effect firing while we are still in the background.
+     */
+    fun setForeground(fg: Boolean) {
+        foreground = fg
+        if (!fg) pause()
+    }
 
     private fun gain(): Float = (volumePercent.value.coerceIn(0, 100)) / 100f
 
@@ -140,7 +157,7 @@ object PauseMusic {
      * ignored — and those attributes are what make Android treat this as media.
      */
     fun start(context: Context) {
-        if (!enabled.value) return
+        if (!enabled.value || !foreground) return
         if (player != null) {
             // Already have a player — paused in the background, or a fade-out we're interrupting by
             // reopening the menu. Cancel any ramp, make sure it's running, and go straight to full

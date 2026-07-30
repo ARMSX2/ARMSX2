@@ -4598,6 +4598,11 @@ open class MainActivityRuntime : ComponentActivity() {
             com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.SLEEP)
         }
         com.armsx2.navigation.UiNavigator.drawerOpen.value = false
+        // Mark backgrounded BEFORE opening the overlay below. open() sets overlayVisible = true,
+        // which re-fires the pause-music LaunchedEffect — and without this flag already false, that
+        // effect would call start() and play the track on the OS home screen. setForeground(false)
+        // also pauses whatever is currently playing.
+        com.armsx2.PauseMusic.setForeground(false)
         // Leaving the app (home / recents / slide-out) while a game is running:
         // open the pause OVERLAY instead of a silent pause. A bare pause left
         // users staring at a frozen game with no obvious way back — they had to
@@ -4618,9 +4623,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // like the emulator ignoring the home button. Paused, not stopped, so returning
         // to the library picks it back up.
         com.armsx2.LibraryMusic.pause()
-        // Same for the pause-menu track: leaving the menu open and pressing home must not leave
-        // music playing behind a backgrounded app. Paused, not stopped, so coming back resumes it.
-        com.armsx2.PauseMusic.pause()
+        // Pause-menu track was already paused by setForeground(false) at the top of onPause.
         super.onPause()
     }
 
@@ -4647,10 +4650,10 @@ open class MainActivityRuntime : ComponentActivity() {
         // still just un-pauses a merely-paused one — while its own guards keep it a no-op
         // when the setting is off, a VM is running, or that other app is still playing.
         com.armsx2.LibraryMusic.start(this)
-        // The pause-menu track can't rely on its LaunchedEffect here: the overlay states didn't
-        // change while we were backgrounded, so the effect never re-runs. Restart explicitly when
-        // we come back to a still-open menu (start() rebuilds a released player and no-ops when the
-        // setting is off or another app owns the audio).
+        // Back in the foreground: clear the background guard first, THEN restart the pause track if a
+        // menu is still up. The LaunchedEffect won't do it — the overlay states didn't change while
+        // we were away, so it never re-runs — and start() no-ops until foreground is true again.
+        com.armsx2.PauseMusic.setForeground(true)
         if (WindowImpl.overlayVisible.value || WindowImpl.inGameScreen.value != null) {
             com.armsx2.PauseMusic.start(this)
         }
