@@ -640,6 +640,20 @@ void EeRecTestHarness::SeedVu0Microprogram(u32 byte_offset, std::initializer_lis
 		std::memcpy(vu.Micro + ((base + 4) & mask), &p.upper, 4);
 		base += 8;
 	}
+
+	// Architectural E-bit cleanup executes one more pair after the E-bit
+	// pair. Micro mem is shared, never-reset global state, so leaving that
+	// delay slot unseeded executes whatever pair a previous test left there
+	// — order-dependent poison under --gtest_shuffle, and invisible to the
+	// JIT-vs-interp diff because both engines faithfully run the same stale
+	// word and agree. Mirror VuTestHarness::LoadProgram: when the caller's
+	// final pair ends the program, seed the delay slot with a NOP pair.
+	if (pairs.size() != 0 && ((pairs.end() - 1)->upper & vu::bits::E))
+	{
+		const vu::VuOp nop = vu::NopPair();
+		std::memcpy(vu.Micro + ((base + 0) & mask), &nop.lower, 4);
+		std::memcpy(vu.Micro + ((base + 4) & mask), &nop.upper, 4);
+	}
 }
 
 namespace {
