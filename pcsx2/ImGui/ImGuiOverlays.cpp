@@ -81,6 +81,15 @@ SmallString s_gpu_stats_line;
 SmallString s_speed_icon;
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 SmallString s_ios_device_stats_line;
+
+// Set by the iOS CMakeLists alongside the bundle version, so the overlay and
+// the About screen cannot disagree. "dev" only shows up in a build that came
+// from somewhere else.
+#if defined(ARMSX2_VERSION_STR)
+#define ARMSX2_IOS_OSD_VERSION ARMSX2_VERSION_STR
+#else
+#define ARMSX2_IOS_OSD_VERSION "dev"
+#endif
 #endif
 
 // Shrink-to-fit for the performance overlay. Only ever comes down, and only far enough for the widest
@@ -508,6 +517,11 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 					s_speed_line.append_format("{}ARMSX2-MacOS 2.1 | Core: {}",
 						s_speed_line.empty() ? "" : " | ", BuildVersion::GitRev);
 				}
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+				// Version comes from the one place it is set, so this cannot drift
+				// the way the two branches either side of it have.
+				s_speed_line.append_format("{}ARMSX2 " ARMSX2_IOS_OSD_VERSION " | Core: {}",
+					s_speed_line.empty() ? "" : " | ", BuildVersion::GitRev);
 #elif defined(__ANDROID__)
 				s_speed_line.append_format("{}ARMSX2 2.7", s_speed_line.empty() ? "" : " | ");
 #else
