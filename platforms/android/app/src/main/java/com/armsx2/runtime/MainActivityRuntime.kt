@@ -189,6 +189,19 @@ open class MainActivityRuntime : ComponentActivity() {
         private val eScope = CoroutineScope(eDispatcher)
 
         /**
+         * Scope for boot-time synthetic input that must run WHILE the VM is booting.
+         *
+         * It cannot be [eScope]: [eDispatcher] is a single thread, and start()'s `invoke { }` block
+         * occupies it with the BLOCKING `NativeApp.runVMThread()` for the entire game session.
+         * Coroutine dispatch is cooperative, so a job launched on [eScope] during boot is starved
+         * until the game EXITS and the thread frees — which is exactly why the Auto-Progressive-Scan
+         * Triangle+Cross hold never fired for anyone (it "released" 15 s after a long-dead VM). Run it
+         * on an independent pool instead — the same shape EmuCoreX uses (`Dispatchers.Default`). Every
+         * JNI it touches (setPadButton/hasActiveVM/getGameCRC) is already thread-safe.
+         */
+        private val auxScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
+
+        /**
          * Resolve the user-chosen system folder (a SAF tree URI persisted
          * as `systemDir`) to a POSIX path emucore can use as
          * `EmuFolders::DataRoot`. Memcards / savestates / configs land
@@ -535,8 +548,10 @@ open class MainActivityRuntime : ComponentActivity() {
 
         private const val AUTO_PROGRESSIVE_REASSERT_MS = 200L
         /// Keep holding this long after the game's ELF starts, then let go — the 480p prompt is
-        /// checked at game start, and holding into the menus would fight the player.
-        private const val AUTO_PROGRESSIVE_POST_ELF_MS = 4_000L
+        /// checked at game start, and holding into the menus would fight the player. 8 s (up from 4)
+        /// gives margin for titles that probe a few seconds into the ELF, once past the intro logos;
+        /// a continuously-held button presents no fresh press edge, so it won't drive early menus.
+        private const val AUTO_PROGRESSIVE_POST_ELF_MS = 8_000L
 
         /** Pad writes are dropped while no VM exists (applyPadButton bails on !HasValidVM), so
          *  wait for boot rather than pressing into the void. Bounded so a failed boot can't spin. */
@@ -546,7 +561,11 @@ open class MainActivityRuntime : ComponentActivity() {
 
         private fun startAutoProgressiveScanHold() {
             stopAutoProgressiveScanHold()
-            autoProgressiveScanJob = eScope.launch {
+            // ★ auxScope, NOT eScope. The old eScope.launch was the whole bug: eScope's single thread
+            // is held by the blocking runVMThread() for the entire session, so this coroutine never
+            // got to run during boot — it did nothing for anyone (the "fix" that added re-assertion
+            // couldn't run either). On the independent auxScope it runs alongside the booting VM.
+            autoProgressiveScanJob = auxScope.launch {
                 var held = false
                 try {
                     var waited = 0L
@@ -557,13 +576,10 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (!NativeApp.hasActiveVM())
                         return@launch
                     held = true
-                    // ★ RE-ASSERT, don't set once. setPadButton writes the button state a single
-                    // time, but the pad is (re)initialised during boot — "Pad: DS2 Config Finished"
-                    // lands well after the VM goes active — and that wipes the state we set before
-                    // it existed. So the hold silently evaporated before the game ever sampled it,
-                    // which is exactly the Tekken 4 report: holding Triangle+Cross by hand works,
-                    // the automatic hold does nothing. Re-pressing on a short interval survives any
-                    // number of pad resets.
+                    // Re-assert on a short interval rather than pressing once. The state itself
+                    // persists (Pad::SetControllerState), so a single press would mostly work — but
+                    // re-pressing cheaply survives the pad (re)init during boot ("Pad: DS2 Config
+                    // Finished" lands after the VM goes active) with no gap for the game to sample.
                     //
                     // Release shortly after the game's own ELF starts rather than blocking for the
                     // full timeout: the 480p prompt is checked at game start, and continuing to jam
@@ -3372,6 +3388,83 @@ open class MainActivityRuntime : ComponentActivity() {
             )
         }
         android.widget.Toast.makeText(this, "Resolution ${next}x", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    // Corrects the Samsung QHD on-screen-touch offset before the event is dispatched (a strict no-op
+    // on every other device — see maybeCorrectTouchScale). ALWAYS returns super, so it can never
+    // block or consume a tap.
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        maybeCorrectTouchScale(ev)
+        return super.dispatchTouchEvent(ev)
+    }
+
+    // Empirically-learned touch-coordinate extent (largest x/y ever delivered), plus the last window
+    // size so a stale extent is dropped on resize. Drives maybeCorrectTouchScale — see there.
+    private var touchPeakX = 0f
+    private var touchPeakY = 0f
+    private var lastDecorW = 0
+    private var lastDecorH = 0
+
+    /** Un-scaled physical display size in the current rotation. Only a SEED for the touch-space
+     *  estimate below, never trusted alone: Samsung's QHD game-downscale reports this DOWNSCALED too
+     *  (observed 1080 at QHD+), so the observed touch extent is the ground truth. */
+    @Suppress("DEPRECATION")
+    private fun realPanelMetrics(): android.util.DisplayMetrics? = runCatching {
+        val dm = android.util.DisplayMetrics()
+        val disp = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R)
+            display else windowManager.defaultDisplay
+        disp?.getRealMetrics(dm)
+        dm.takeIf { it.widthPixels > 0 && it.heightPixels > 0 }
+    }.getOrNull()
+
+    /**
+     * Correct the Samsung QHD touch-offset bug (#Nomad, S24 Ultra @ QHD+) — self-contained, trusting
+     * NO resolution API. On that device at QHD every one of them (decorView, maximumWindowMetrics,
+     * getRealMetrics) reports the DOWNSCALED ~1080 while the digitizer still delivers touch in the
+     * physical ~1440 space, so the on-screen controls (laid out in the ~1080 window) sit up-and-left
+     * of where the finger must press, the error growing with distance (a pure ≈1.33 scale). It works
+     * at FHD+ (everything is a consistent 1080) and breaks only at QHD.
+     *
+     * Ground truth is the touches themselves: in this broken state a press near a far control lands
+     * OUTSIDE the window. That never happens on a normal device or in split-screen/multi-window (the
+     * OS descales touch to fit the window there), so this is self-gating — a strict no-op except the
+     * exact bug. We learn the true touch extent from where fingers actually reach (seeded by
+     * getRealMetrics when it happens to read larger) and rescale pointers back into the window:
+     * precise from the first far press when the seed is right, else converging within a touch or two.
+     */
+    private fun maybeCorrectTouchScale(ev: MotionEvent) {
+        runCatching {
+            val decorW = window.decorView.width
+            val decorH = window.decorView.height
+            if (decorW <= 0 || decorH <= 0) return
+            val slop = 8f
+            // Drop the learned extent when the window size changes (rotation, or Samsung's game-mode
+            // resolution switch), so a stale peak from a previous mode can't mis-scale the new one.
+            if (decorW != lastDecorW || decorH != lastDecorH) {
+                touchPeakX = 0f; touchPeakY = 0f
+                lastDecorW = decorW; lastDecorH = decorH
+            }
+            // Grow the observed extent from THIS event's pointers (raw, before any correction),
+            // capped at 2x the window so one spurious out-of-range sample can't over-shrink touch.
+            val capX = decorW * 2f
+            val capY = decorH * 2f
+            for (i in 0 until ev.pointerCount) {
+                if (ev.getX(i) > touchPeakX) touchPeakX = minOf(ev.getX(i), capX)
+                if (ev.getY(i) > touchPeakY) touchPeakY = minOf(ev.getY(i), capY)
+            }
+            // Engage ONLY once a touch has escaped the window (proof the touch space exceeds the
+            // layout space). True extent = the larger of the observed peak and a physical-panel
+            // reading that ALSO exceeds the window; scale the window back onto it (clamped so a stray
+            // reading can't invert the axis or shrink past 2x).
+            val real = realPanelMetrics()
+            val spaceW = maxOf(touchPeakX, (real?.widthPixels ?: 0).let { if (it > decorW) it.toFloat() else 0f })
+            val spaceH = maxOf(touchPeakY, (real?.heightPixels ?: 0).let { if (it > decorH) it.toFloat() else 0f })
+            val sx = if (touchPeakX > decorW + slop) (decorW / spaceW).coerceIn(0.5f, 1f) else 1f
+            val sy = if (touchPeakY > decorH + slop) (decorH / spaceH).coerceIn(0.5f, 1f) else 1f
+            if (sx != 1f || sy != 1f) {
+                ev.transform(android.graphics.Matrix().apply { setScale(sx, sy) })
+            }
+        }
     }
 
     override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
