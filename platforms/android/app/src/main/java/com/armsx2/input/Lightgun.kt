@@ -69,6 +69,25 @@ object Lightgun {
         if (enabled.value) push()
     }
 
+    /**
+     * Called when [UsbDevices] changes a port, so aiming follows the device rather than a stale
+     * pref. Without this, picking a drum kit on the gun's port would leave the aim layer live and
+     * every touch would be swallowed as a shot at a device that isn't there.
+     */
+    fun syncFromPort(changedPort: Int, type: String) {
+        val isGun = type == "guncon2"
+        if (isGun) {
+            port.value = changedPort
+            enabled.value = true
+        } else if (changedPort == port.value) {
+            enabled.value = false
+        }
+        MainActivityRuntime.prefs.edit()
+            .putBoolean(KEY_ENABLED, enabled.value)
+            .putInt(KEY_PORT, port.value)
+            .apply()
+    }
+
     // ---- runtime input -------------------------------------------------------
 
     private var triggerDown = false

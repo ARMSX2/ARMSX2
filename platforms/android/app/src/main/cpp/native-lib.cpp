@@ -869,6 +869,73 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setPadVibration(JNIEnv *env, jclass clazz,
 // (all input is serial on the UI thread) except for the brief enablePad2 window.
 static std::mutex s_pad_mutex;
 
+// ---- USB device <- pad bridge -----------------------------------------------------------------
+//
+// Every emulated USB device (Buzz, Rock Band kit, Keyboardmania, BeatMania, GunCon 2, ...) takes its
+// buttons through InputManager BINDINGS, which on desktop are mapped to a keyboard or pad in the
+// bindings UI. Android has no such UI and no InputManager sources, so an attached device would sit
+// there inert.
+//
+// Bridge it instead of building a second binding editor: every InputBindingInfo carries a
+// generic_mapping (Cross, DPadUp, L1, ...), so on attach we build GenericInputBinding -> bind_index
+// for the device and forward each pad press to the matching bind. The player's existing controls —
+// physical pad, on-screen buttons, macros, everything that funnels through applyPadButton — drive
+// the USB device with no extra setup. A device whose binding has no generic mapping (Gametrak axes,
+// the printer) simply gets nothing, which is correct: there is no sensible pad button for it.
+static s32 s_usb_generic_binds[2][static_cast<size_t>(GenericInputBinding::Count)];
+
+static void RebuildUsbGenericBinds(u32 port) {
+    if (port > 1)
+        return;
+    for (size_t i = 0; i < static_cast<size_t>(GenericInputBinding::Count); i++)
+        s_usb_generic_binds[port][i] = -1;
+
+    auto lock = Host::GetSettingsLock();
+    SettingsInterface* si = Host::Internal::GetBaseSettingsLayer();
+    if (!si)
+        return;
+    const std::string dev = USB::GetConfigDevice(*si, port);
+    if (dev.empty() || dev == "None")
+        return;
+    const u32 subtype = USB::GetConfigSubType(*si, port, dev);
+    for (const InputBindingInfo& bi : USB::GetDeviceBindings(dev, subtype))
+    {
+        if (bi.generic_mapping == GenericInputBinding::Unknown)
+            continue;
+        // Buttons and half-axes only: a Pointer/Motor bind is not a pad button press.
+        if (bi.bind_type != InputBindingInfo::Type::Button &&
+            bi.bind_type != InputBindingInfo::Type::HalfAxis)
+        {
+            continue;
+        }
+        s_usb_generic_binds[port][static_cast<size_t>(bi.generic_mapping)] = static_cast<s32>(bi.bind_index);
+    }
+    Console.WriteLnFmt("@@ANDROID_USB@@ bridged '{}' subtype={} on port {}", dev, subtype, port + 1);
+}
+
+/// Our pad keycode -> the generic binding it represents, or Unknown when it has no equivalent.
+static GenericInputBinding PadKeyToGeneric(jint key) {
+    switch (key) {
+        case 19:  return GenericInputBinding::DPadUp;
+        case 22:  return GenericInputBinding::DPadRight;
+        case 20:  return GenericInputBinding::DPadDown;
+        case 21:  return GenericInputBinding::DPadLeft;
+        case 100: return GenericInputBinding::Triangle;
+        case 97:  return GenericInputBinding::Circle;
+        case 96:  return GenericInputBinding::Cross;
+        case 99:  return GenericInputBinding::Square;
+        case 109: return GenericInputBinding::Select;
+        case 108: return GenericInputBinding::Start;
+        case 102: return GenericInputBinding::L1;
+        case 104: return GenericInputBinding::L2;
+        case 103: return GenericInputBinding::R1;
+        case 105: return GenericInputBinding::R2;
+        case 106: return GenericInputBinding::L3;
+        case 107: return GenericInputBinding::R3;
+        default:  return GenericInputBinding::Unknown;
+    }
+}
+
 static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPressed) {
     PadDualshock2::Inputs _key;
     switch (p_key) {
@@ -913,6 +980,19 @@ static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPre
     // release when it first composes in the library) — the pads don't exist yet, so drop it.
     if (!VMManager::HasValidVM())
         return;
+    // Mirror to an attached USB device when this button has a generic equivalent (see
+    // RebuildUsbGenericBinds). Harmless when nothing is attached — the table is all -1.
+    if (port <= 1)
+    {
+        const GenericInputBinding generic = PadKeyToGeneric(p_key);
+        if (generic != GenericInputBinding::Unknown)
+        {
+            const s32 bind = s_usb_generic_binds[port][static_cast<size_t>(generic)];
+            if (bind >= 0)
+                USB::SetDeviceBindValue(port, static_cast<u32>(bind), state);
+        }
+    }
+
     std::lock_guard<std::mutex> lk(s_pad_mutex);
     Pad::SetControllerState(port, static_cast<u32>(_key), state);
 }
@@ -1852,6 +1932,56 @@ Java_kr_co_iefriends_pcsx2_NativeApp_usbSetDeviceType(JNIEnv* env, jclass, jint 
     const s32 index = USB::DeviceTypeNameToIndex(type);
     EmuConfig.USB.Ports[port].DeviceType = index;
     Console.WriteLnFmt("@@ANDROID_USB@@ port={} type={} index={}", port + 1, type, index);
+    lock.unlock();
+    RebuildUsbGenericBinds(static_cast<u32>(port));
+}
+
+// Available device types, as "typeName\x1fDisplay Name\x1fsub1\x1fsub2..." joined by \x1e.
+// Enumerated from RegisterDevice rather than hardcoded, so the list cannot drift from the core.
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_usbDeviceTypes(JNIEnv* env, jclass) {
+    std::string out;
+    for (s32 i = 0;; i++)
+    {
+        const char* name = USB::DeviceTypeIndexToName(i);
+        if (!name || !*name || std::strcmp(name, "None") == 0)
+        {
+            if (i > 0)
+                break;
+            continue;
+        }
+        if (!out.empty())
+            out.push_back('\x1e');
+        out += name;
+        out.push_back('\x1f');
+        out += USB::GetDeviceName(name);
+        for (const char* sub : USB::GetDeviceSubtypes(name))
+        {
+            out.push_back('\x1f');
+            out += sub;
+        }
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_usbSetDeviceSubtype(JNIEnv* env, jclass, jint port,
+                                                         jint subtype) {
+    if (port < 0 || port > 1)
+        return;
+    auto lock = Host::GetSettingsLock();
+    SettingsInterface* si = Host::Internal::GetBaseSettingsLayer();
+    if (!si)
+        return;
+    const std::string dev = USB::GetConfigDevice(*si, static_cast<u32>(port));
+    if (dev.empty() || dev == "None")
+        return;
+    USB::SetConfigSubType(*si, static_cast<u32>(port), dev, static_cast<u32>(subtype));
+    si->Save();
+    lock.unlock();
+    RebuildUsbGenericBinds(static_cast<u32>(port));
 }
 
 extern "C"

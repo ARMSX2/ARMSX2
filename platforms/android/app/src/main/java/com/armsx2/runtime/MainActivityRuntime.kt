@@ -1775,7 +1775,11 @@ open class MainActivityRuntime : ComponentActivity() {
             // re-runs the now-complete purge for anyone who already took v1.
             // Lightgun: read the pref and re-assert the USB device type. The ini is
             // authoritative, but this covers a first run that has no USB section yet.
-            runCatching { com.armsx2.input.Lightgun.load(); com.armsx2.input.Lightgun.applyAtBoot() }
+            runCatching {
+                com.armsx2.input.UsbDevices.load()
+                com.armsx2.input.Lightgun.load()
+                com.armsx2.input.UsbDevices.applyAtBoot()
+            }
 
             if (!prefs.getBoolean("patchEnableListsPurged.v2", false)) {
                 runCatching { NativeApp.purgeGlobalPatchEnableLists() }

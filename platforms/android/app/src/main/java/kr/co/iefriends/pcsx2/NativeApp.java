@@ -207,6 +207,16 @@ public class NativeApp {
 	 */
 	public static native void usbSetDeviceType(int port, String type);
 
+	/**
+	 * Every USB device the core can emulate. Records are separated by U+001E, and each record is
+	 * {@code typeName} U+001F {@code displayName} then one U+001F-separated entry per subtype.
+	 * Enumerated from the core's own registry, so the list cannot drift from what it supports.
+	 */
+	public static native String usbDeviceTypes();
+
+	/** Pick a subtype for whatever device is in {@code port}; devices without subtypes ignore it. */
+	public static native void usbSetDeviceSubtype(int port, int subtype);
+
 	/** Aim, in WINDOW PIXELS (our SurfaceView is the whole window, so raw touch x/y). */
 	public static native void usbLightgunAim(float x, float y);
 

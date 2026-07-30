@@ -648,41 +648,91 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             SettingsDivider()
             GestureControlSection(refreshToken)
             SettingsDivider()
-            LightgunSection(refreshToken)
+            UsbDeviceSection(refreshToken)
         }
     }
 }
 
 /**
- * GunCon 2 lightgun, aimed with the touchscreen.
+ * Emulated USB devices, one per port.
  *
- * The device type is a USB port setting, so it is restart-required — the game probes the port at
- * boot and caches what it found. Said plainly in the description rather than left to be discovered.
+ * The list comes from the core's own registry (18 devices — Buzz, Rock Band kit, Keyboardmania,
+ * DJ turntable, Printer, EyeToy, GunCon 2, ...) so it cannot drift from what this build supports.
+ * Buttons need no extra mapping: native mirrors each pad press onto the attached device via the
+ * generic binding it declares. Restart-required, and said so plainly.
  */
 @Composable
-private fun LightgunSection(refreshToken: MutableState<Int>) {
+private fun UsbDeviceSection(refreshToken: MutableState<Int>) {
     @Suppress("UNUSED_EXPRESSION")
     refreshToken.value
-    CollapsibleSection(str("pad.lightgun.section"), initiallyExpanded = false) {
-        ToggleRow(
-            str("pad.lightgun.enable.label"),
-            com.armsx2.input.Lightgun.enabled.value,
-            description = str("pad.lightgun.enable.description"),
-        ) { com.armsx2.input.Lightgun.setEnabled(it); refreshToken.value++ }
-
-        if (!com.armsx2.input.Lightgun.enabled.value) return@CollapsibleSection
-
-        SettingsDivider()
-        SegmentedRow(
-            label = str("pad.lightgun.port.label"),
-            options = listOf(str("pad.lightgun.port1"), str("pad.lightgun.port2")),
-            selectedIndex = com.armsx2.input.Lightgun.port.value,
-            description = str("pad.lightgun.port.description"),
-            onChange = { com.armsx2.input.Lightgun.setPort(it); refreshToken.value++ },
-        )
-        HelpText(str("pad.lightgun.help"))
+    val devices = remember { com.armsx2.input.UsbDevices.available() }
+    CollapsibleSection(str("pad.usb.section"), initiallyExpanded = false) {
+        HelpText(str("pad.usb.help"))
+        for (port in 0..1) {
+            SettingsDivider()
+            val current = com.armsx2.input.UsbDevices.portType[port].value
+            // A plain list of rows rather than a segmented strip: 19 entries would be unusable as
+            // chips, and this mirrors the radio list other emulators use for the same choice.
+            Text(
+                "${str("pad.usb.port")} ${port + 1}  ·  ${com.armsx2.input.UsbDevices.displayName(current)}",
+                style = MaterialTheme.typography.labelMedium,
+                color = Colors.pasx2_blue,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 6.dp, bottom = 2.dp),
+            )
+            UsbDeviceRow(str("pad.usb.none"), current == com.armsx2.input.UsbDevices.NONE) {
+                com.armsx2.input.UsbDevices.setType(port, com.armsx2.input.UsbDevices.NONE)
+                refreshToken.value++
+            }
+            devices.forEach { d ->
+                UsbDeviceRow(d.display, current == d.type) {
+                    com.armsx2.input.UsbDevices.setType(port, d.type)
+                    refreshToken.value++
+                }
+            }
+            // Subtypes only exist for a few devices (different wheels, different turntables).
+            val subs = devices.firstOrNull { it.type == current }?.subtypes.orEmpty()
+            if (subs.size > 1) {
+                SegmentedRow(
+                    label = str("pad.usb.subtype"),
+                    options = subs,
+                    selectedIndex = com.armsx2.input.UsbDevices.portSubtype[port].value.coerceIn(0, subs.lastIndex),
+                    onChange = { com.armsx2.input.UsbDevices.setSubtype(port, it); refreshToken.value++ },
+                )
+            }
+            // Aiming is the one thing a button bridge cannot provide, so the gun gets its own note.
+            if (current == "guncon2") HelpText(str("pad.lightgun.help"))
+        }
     }
 }
+
+/** One device choice. Radio-style: exactly one device per port. */
+@Composable
+private fun UsbDeviceRow(label: String, selected: Boolean, onPick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onPick)
+            .controllerFocusable("usb.dev.$label", onConfirm = onPick)
+            .padding(vertical = 7.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            if (selected) "\u25c9" else "\u25cb",
+            color = if (selected) Colors.pasx2_blue else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 15.sp,
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
 
 /**
  * Gesture control (PPSSPP-style): swipes and a double-tap on EMPTY screen area fire PS2 buttons.
