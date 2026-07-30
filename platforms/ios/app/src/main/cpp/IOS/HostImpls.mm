@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -490,6 +489,11 @@ namespace Host
     void OnAchievementsLoginSuccess(char const*, u32, u32, u32) { ARMSX2_PostRetroAchievementsStateChanged(); }
     void OnPerformanceMetricsUpdated()
     {
+        if (!ARMSX2IOSRuntimeTelemetryEnabled())
+            return;
+
+        static std::atomic<uint> s_last_metrics_frame{0};
+        const uint frame = ::g_FrameCount;
         const float fps = PerformanceMetrics::GetFPS();
         const float internal_fps = PerformanceMetrics::GetInternalFPS();
         const float speed = PerformanceMetrics::GetSpeed();
@@ -497,12 +501,6 @@ namespace Host
         const float vu_usage = PerformanceMetrics::GetVUThreadUsage();
         const float gs_usage = PerformanceMetrics::GetGSThreadUsage();
         const float gpu_usage = PerformanceMetrics::GetGPUUsage();
-
-        if (!ARMSX2IOSRuntimeTelemetryEnabled())
-            return;
-
-        static std::atomic<uint> s_last_metrics_frame{0};
-        const uint frame = ::g_FrameCount;
         const bool hot_sample =
             (frame > 300 && fps < 58.0f) ||
             cpu_usage >= 85.0f ||

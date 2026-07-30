@@ -61,8 +61,8 @@ ARMSX2GameView* ARMSX2GetActiveGameRenderView();
 void ARMSX2SetActiveGameRenderView(ARMSX2GameView* view);
 bool ARMSX2IsActiveGameRenderView(ARMSX2GameView* view);
 
-// Native lifecycle hooks. Step 2 wires the first function to the persistent
-// SwiftUI setting; it intentionally defaults to disabled until then.
+// Native external-display lifecycle hooks. The feature defaults to disabled
+// and is enabled live by the persistent SwiftUI setting.
 void ARMSX2SetDedicatedExternalDisplayEnabled(bool enabled);
 bool ARMSX2IsDedicatedExternalDisplayEnabled();
 bool ARMSX2IsDedicatedExternalDisplayActive();

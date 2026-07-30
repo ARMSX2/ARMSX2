@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Host.h"
-#include "GS/GS.h"
 #include "GS/GSGL.h"
 #include "GS/Renderers/Metal/GSMetalCPPAccessible.h"
 #include "GS/Renderers/Metal/GSDeviceMTL.h"
