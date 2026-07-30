@@ -20,6 +20,7 @@
 #include "imgui.h"
 
 #include <algorithm>
+#include <cmath>
 #include <ostream>
 #include <fstream>
 #include <atomic>
@@ -970,9 +971,82 @@ void GSDevice::DoStretchRectWithAssertions(GSTexture* sTex, const GSVector4& sRe
 	DoStretchRect(sTex, sRect, dTex, dRect, shader, filter);
 }
 
+// Resolves a StretchRect edge onto the texel grid. Both coordinate spaces reach us as integer
+// rects that were divided and re-multiplied by a texture dimension along the way, so the value
+// we see is the intended integer plus a few ULPs of round-trip error. Anything further off the
+// grid than that is a deliberate offset -- a half-texel inset, say -- and has to keep going
+// through the shader, which is why the tolerance is far below the smallest offset anyone means.
+static bool SnapStretchRectEdgeToTexel(float v, s32& out)
+{
+	constexpr float tolerance = 1.0f / 512.0f;
+	const float rounded = std::round(v);
+	out = static_cast<s32>(rounded);
+	return std::abs(v - rounded) <= tolerance;
+}
+
+bool GSDevice::TryStretchRectAsCopy(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex,
+	const GSVector4& dRect, ShaderConvertSelector shader)
+{
+	// Only a plain copy is equivalent. Anything that reformats, rewrites channels or moves
+	// colour into depth needs the shader that was asked for.
+	const ShaderConvert sh = shader.Shader();
+	if ((sh != ShaderConvert::COPY && sh != ShaderConvert::DEPTH_COPY) || shader.Mask() != 0xf)
+		return false;
+
+	if (!sTex || !dTex || sTex == dTex || sTex->GetFormat() != dTex->GetFormat())
+		return false;
+
+	// Copies are per-aspect, so a colour-usage texture and a depth-usage one can't be copied
+	// between even when their formats agree.
+	if (sTex->IsDepthStencil() != dTex->IsDepthStencil())
+		return false;
+
+	// A source that is a pending clear or is invalidated has no contents to copy, and the two
+	// paths resolve that from opposite ends -- the draw path carries the clear into the
+	// destination's load op, the copy path commits it to the source first. Neither is what this
+	// exists for, so leave them where they already work.
+	if (sTex->GetState() != GSTexture::State::Dirty)
+		return false;
+
+	const GSVector2i ssize = sTex->GetSize();
+	const GSVector2i dsize = dTex->GetSize();
+
+	// Source coordinates arrive normalized, destination coordinates in pixels.
+	s32 sx, sy, sz, sw, dx, dy, dz, dw;
+	if (!SnapStretchRectEdgeToTexel(sRect.x * static_cast<float>(ssize.x), sx) ||
+		!SnapStretchRectEdgeToTexel(sRect.y * static_cast<float>(ssize.y), sy) ||
+		!SnapStretchRectEdgeToTexel(sRect.z * static_cast<float>(ssize.x), sz) ||
+		!SnapStretchRectEdgeToTexel(sRect.w * static_cast<float>(ssize.y), sw) ||
+		!SnapStretchRectEdgeToTexel(dRect.x, dx) || !SnapStretchRectEdgeToTexel(dRect.y, dy) ||
+		!SnapStretchRectEdgeToTexel(dRect.z, dz) || !SnapStretchRectEdgeToTexel(dRect.w, dw))
+	{
+		return false;
+	}
+
+	// 1:1 only -- a scaled copy is a resample, and then the filter the caller asked for matters.
+	// At 1:1 every sample lands dead centre on its texel, so Nearest and Biln agree with each
+	// other and with the copy, which is why the filter isn't consulted here.
+	if ((sz - sx) != (dz - dx) || (sw - sy) != (dw - dy) || sz <= sx || sw <= sy)
+		return false;
+
+	// The draw path scissors an out-of-bounds destination and clamps out-of-bounds source
+	// coordinates to the edge texel. A copy can do neither, so those stay with the shader.
+	if (sx < 0 || sy < 0 || sz > ssize.x || sw > ssize.y || dx < 0 || dy < 0 || dz > dsize.x || dw > dsize.y)
+		return false;
+
+	GL_INS("StretchRect(%s) served as copy: {%d,%d} %dx%d -> {%d,%d}", ShaderConvertName(sh), sx, sy, sz - sx,
+		sw - sy, dx, dy);
+
+	CopyRect(sTex, dTex, GSVector4i(sx, sy, sz, sw), static_cast<u32>(dx), static_cast<u32>(dy));
+	return true;
+}
+
 void GSDevice::StretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 	ShaderConvertSelector shader, Filter filter)
 {
+	if (TryStretchRectAsCopy(sTex, sRect, dTex, dRect, shader))
+		return;
+
 	DoStretchRectWithAssertions(sTex, sRect, dTex, dRect, shader, filter);
 }
 
