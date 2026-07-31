@@ -1039,10 +1039,14 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 			if (GSConfig.UserHacks_ReadTCOnClose)
 				ReadbackTextureCache();
 
+			// The dump replays from this state forward, so it has to be the state a
+			// savestate would record here: parse registers from the front object under
+			// the split, local memory from the back. m_parse_target->Freeze() is the
+			// same call GSfreeze makes, and it drains before serializing.
 			freezeData fd = {0, nullptr};
-			Freeze(&fd, true);
+			m_parse_target->Freeze(&fd, true);
 			fd.data = new u8[fd.size];
-			Freeze(&fd, false);
+			m_parse_target->Freeze(&fd, false);
 
 			// keep the screenshot relatively small so we don't bloat the dump
 			static constexpr u32 DUMP_SCREENSHOT_WIDTH = 640;

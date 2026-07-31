@@ -369,7 +369,7 @@ namespace PINEServer
 			"\"tc_source_hit\":{:.1f},\"tc_source_miss\":{:.1f},"
 			"\"tc_target_hit\":{:.1f},\"tc_target_miss\":{:.1f},"
 			"\"hash_cache_hit\":{:.1f},\"hash_cache_miss\":{:.1f},"
-			"\"gs_memory\":\"{}\",\"frame_number\":{},"
+			"\"gs_memory\":\"{}\",\"frame_number\":{},\"gs_front_parser\":{},"
 			"\"renderer\":\"{}\",\"device_name\":\"{}\",\"driver_info\":\"{}\""
 			"}}",
 			PerformanceMetrics::GetFPS(), PerformanceMetrics::GetInternalFPS(), PerformanceMetrics::GetSpeed(),
@@ -391,7 +391,10 @@ namespace PINEServer
 			counter(GSPerfMon::TCSourceHit), counter(GSPerfMon::TCSourceMiss),
 			counter(GSPerfMon::TCTargetHit), counter(GSPerfMon::TCTargetMiss),
 			counter(GSPerfMon::HashCacheHit), counter(GSPerfMon::HashCacheMiss),
-			gs_memory.view(), PerformanceMetrics::GetFrameNumber(),
+			// Whether the two-object split actually engaged, which the BackThreadMode setting
+			// alone does not tell you -- it downgrades to lockstep on an unsupported config.
+			// True is also what makes gs_back_thread_* worth reading next to gs_thread_*.
+			gs_memory.view(), PerformanceMetrics::GetFrameNumber(), GSHasFrontParser() ? "true" : "false",
 			Pcsx2Config::GSOptions::GetRendererName(EmuConfig.GS.Renderer), device_name, driver_info);
 	}
 
@@ -464,7 +467,7 @@ namespace PINEServer
 			}
 		}
 
-		bool queued = false, stopped = false, incomplete = false;
+		bool queued = false, stopped = false;
 		std::string base;
 		const char* dump_ext = "";
 		const char* reason = "";
@@ -509,18 +512,15 @@ namespace PINEServer
 							dump_ext = ".gs.zst";
 							break;
 					}
-
-					incomplete = GSHasFrontParser();
 				});
 				MTGS::WaitGS(false);
 			},
 			true);
 
 		*reply = fmt::format(
-			"{{\"queued\":{},\"stopped\":{},\"frames\":{},\"path\":\"{}\","
-			"\"pipelined_incomplete\":{},\"reason\":\"{}\"}}",
+			"{{\"queued\":{},\"stopped\":{},\"frames\":{},\"path\":\"{}\",\"reason\":\"{}\"}}",
 			queued ? "true" : "false", stopped ? "true" : "false", frames,
-			queued ? JsonEscape(base + dump_ext) : std::string(), incomplete ? "true" : "false", reason);
+			queued ? JsonEscape(base + dump_ext) : std::string(), reason);
 		return true;
 	}
 } // namespace PINEServer

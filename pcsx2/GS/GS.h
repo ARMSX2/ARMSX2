@@ -95,8 +95,7 @@ bool GSQueueSnapshot(const std::string& path, u32 gsdump_frames = 0);
 bool GSIsDumpRecording();
 // True when the two-object split is live: a pipelined back thread with its own front parser.
 // Not the same question as the BackThreadMode setting, which downgrades to lockstep when the
-// split is unsupported. GS dumps recorded in this mode are incomplete -- the transfer hook
-// sits on the parse path, so the front's transfers never reach the dump.
+// split is unsupported, so this is the only way to tell whether the mode really engaged.
 bool GSHasFrontParser();
 void GSStopGSDump();
 bool GSBeginCapture(std::string filename);

@@ -217,6 +217,7 @@ GSFrontState::GSFrontState(GSState* back)
 {
 	m_mem_target = back;
 	back->m_split_back = true;
+	back->m_parse_target = this;
 }
 
 GSFrontState::~GSFrontState()
@@ -224,6 +225,7 @@ GSFrontState::~GSFrontState()
 	// Pool nodes referenced by in-flight records belong to the back's channel
 	// and outlive us, but drain anyway so teardown never depends on ordering.
 	DrainBackQueue();
+	m_back->m_parse_target = m_back;
 }
 
 void GSFrontState::Draw()
@@ -4090,8 +4092,8 @@ void GSState::ReadFIFO(u8* mem, int size)
 
 	Read(mem, size);
 
-	if (m_dump)
-		m_dump->ReadFIFO(size / 16);
+	if (GSDumpBase* dump = GetDumpSink())
+		dump->ReadFIFO(size / 16);
 }
 
 void GSState::ReadLocalMemoryUnsync(u8* mem, int qwc, GIFRegBITBLTBUF BITBLTBUF, GIFRegTRXPOS TRXPOS, GIFRegTRXREG TRXREG)
@@ -4402,8 +4404,11 @@ void GSState::Transfer(const u8* mem, u32 size)
 		}
 	}
 
-	if (m_dump && mem > start)
-		m_dump->Transfer(index, start, mem - start);
+	if (mem > start)
+	{
+		if (GSDumpBase* dump = GetDumpSink())
+			dump->Transfer(index, start, mem - start);
+	}
 
 	if (index == 0)
 	{
