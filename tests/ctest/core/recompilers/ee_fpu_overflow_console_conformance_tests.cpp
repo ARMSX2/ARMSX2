@@ -29,18 +29,31 @@
 // column below. ABS.S likewise (ee_fpu_absneg_clamp_tests.cpp). The arithmetic
 // ops cannot follow: their results do exceed what a host single can hold.
 //
-// The measured console divergences, all shared by both engines and all
-// deliberate, for the record:
-//   * 17 rows differ in VALUE only -- the +/-FLT_MAX saturation compromise.
-//     DO NOT "fix" posFmax (pcsx2/FPU.cpp:14) globally; that pushes host
+// The measured console divergences, for the record:
+//   * 32 rows differ in VALUE only -- the +/-FLT_MAX saturation compromise.
+//     DO NOT "fix" posFmax (pcsx2/FPU.cpp) globally; that pushes host
 //     exponent-255 patterns through every downstream op in the clamp mode
 //     nearly every game runs in. ee_fpu_zero_divisor_console_tests.cpp carries
 //     the same warning and the serial list behind it.
-//   * 3 rows differ in FLAGS only -- underflow U|SU, which needs FZ off. Owned
-//     by DISABLED_UnderflowFlagsNeedFzOff in the FCR conformance file.
-//   * 15 rows differ in both, the overflow rows, for the binade reason above.
-//     Owned by DISABLED_ExceptionFlagsInProductionFpEnvMissOverflow.
-//   * 22 rows match exactly.
+//   * 25 rows match exactly.
+//   * 0 rows differ in FLAGS, on either engine. FCR31's O and U used to be
+//     wrong on 18 of the 57 -- 15 overflow rows and 3 underflow -- because
+//     checkOverflow()/checkUnderflow() inferred them from a host infinity and
+//     a host denormal, neither of which the EE's own FP environment (chop, FZ)
+//     ever produces. They are magnitude questions now: eeToDouble() and
+//     kEeFpuMax in pcsx2/FPU.cpp.
+//
+// Where the tiers sit over these 57 rows, as asserted below:
+//   * fpuFullMode: 57/57 exact, value and flags. It is the reference.
+//   * interpreter: 57/57 on FCR31, 32 value divergences (the compromise).
+//   * fast path:   57/57 on value where the value is representable at all, and
+//     it clears O and U but raises neither. A raise needs the magnitude of the
+//     exact result, and a saturating single has thrown that away by the time
+//     the emitter could look; buying it back means the double arithmetic
+//     fpuFullMode already pays for (ToPS2FPU_Full, iFPUd-arm64.cpp).
+//     EnginesAgreeExceptOnTheDocumentedRows pins the shape of the remaining
+//     gap: the fast path's FCR31 must equal the interpreter's with exactly the
+//     O|U|SO|SU raise bits removed, and nothing else.
 
 #include "autocases_fpuovf.h"
 #include "harness/EeRecTestHarness.h"
@@ -61,6 +74,9 @@ namespace {
 constexpr u32 kFd = 4, kFs = 5, kFt = 6;
 
 constexpr u32 kFlagO = 0x00008000u;
+constexpr u32 kFlagU = 0x00004000u;
+constexpr u32 kFlagSO = 0x00000010u;
+constexpr u32 kFlagSU = 0x00000008u;
 constexpr u32 kFcr31FixedOnes = 0x01000001u;
 constexpr u32 kFastPathMax = 0x7F7FFFFFu;
 
@@ -96,12 +112,15 @@ bool ReadsAcc(FpuOvfOp op)
 	return op == FO_MADD || op == FO_MSUB || op == FO_MADDA || op == FO_MSUBA;
 }
 
-Observed RunCase(const FpuOvfCase& c, bool jit, bool extra_overflow = false)
+Observed RunCase(const FpuOvfCase& c, bool jit, bool extra_overflow = false,
+	bool full_mode = false)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
 	if (extra_overflow)
 		h.EnableFpuExtraOverflow();
+	if (full_mode)
+		h.EnableFpuFullMode();
 	// The console reached every row through `ctc1 $0, $31`, which reads back as
 	// the fixed-ones pattern, so seed that rather than a bare zero -- otherwise
 	// every row reports a flag mismatch that is only the harness writing the
@@ -191,6 +210,12 @@ const EngineDivergence* FindDivergence(int row)
 // ---------------------------------------------------------------------------
 TEST(EeFpuOverflowConsole, EnginesAgreeExceptOnTheDocumentedRows)
 {
+	// The one FCR31 difference the fast path is allowed, from the tier note at
+	// the top of this file. Any other difference, in either direction, is a
+	// defect.
+	constexpr u32 kRaiseBits = kFlagO | kFlagU | kFlagSO | kFlagSU;
+	int raise_rows = 0;
+
 	for (int i = 0; i < kCaseCount; ++i)
 	{
 		const FpuOvfCase& c = kCases[i];
@@ -199,18 +224,34 @@ TEST(EeFpuOverflowConsole, EnginesAgreeExceptOnTheDocumentedRows)
 		const Observed ji = RunCase(c, true);
 		const EngineDivergence* d = FindDivergence(i);
 
-		if (d == nullptr)
-		{
-			EXPECT_EQ(in.result, ji.result) << "result diverges between engines";
-			EXPECT_EQ(in.fcr31, ji.fcr31) << "FCR31 diverges between engines";
-		}
-		else
+		if (d != nullptr)
 		{
 			EXPECT_FALSE(Agree(in, ji))
 				<< "row " << i << " is listed as an engine divergence (" << d->why
 				<< ") but the engines now agree -- delete the entry";
+			continue;
+		}
+
+		EXPECT_EQ(in.result, ji.result) << "result diverges between engines";
+		if ((in.fcr31 & kRaiseBits) != 0)
+		{
+			++raise_rows;
+			EXPECT_EQ(ji.fcr31, in.fcr31 & ~kRaiseBits)
+				<< "the fast path's FCR31 must be the interpreter's minus the "
+				   "O|U|SO|SU raise bits. If it now MATCHES the interpreter the "
+				   "fast path learned to raise: delete this branch and assert "
+				   "plain equality on every row.";
+		}
+		else
+		{
+			EXPECT_EQ(in.fcr31, ji.fcr31) << "FCR31 diverges between engines";
 		}
 	}
+
+	EXPECT_GT(raise_rows, 0)
+		<< "anti-vacuity: no row in the capture raises O or U on the "
+		   "interpreter any more, so the branch above is never taken and this "
+		   "test cannot see the fast path's gap at all";
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +315,82 @@ TEST(EeFpuOverflowConsole, DefaultClampModeSaturatesToFltMaxOnBothEngines)
 	}
 	EXPECT_GT(checked, 10) << "the console overflow rows vanished from the "
 							  "capture; this test would pass vacuously";
+}
+
+// ---------------------------------------------------------------------------
+// ENABLED. Regression test: the interpreter's FCR31 against the console on
+// every row, in the production FP environment (no ScopedFpEnv -- chop, DAZ, FZ,
+// which is what a game gets). 18 of these 57 rows used to read back with O or U
+// clear where the console raised them, which is what
+// DISABLED_ExceptionFlagsInProductionFpEnvMissOverflow said before it was
+// deleted.
+//
+// The value is not asserted here: 32 rows still come back +/-FLT_MAX where the
+// console returns its own top binade, which is the saturation compromise
+// DefaultClampModeSaturatesToFltMaxOnBothEngines pins. Keeping this test to the
+// flag means a later attempt at the value cannot take the flag with it.
+//
+// The row counts below are the anti-vacuity clause: this capture was built
+// around overflow and underflow, and if either class empties out the test
+// passes without meaning anything.
+// ---------------------------------------------------------------------------
+TEST(EeFpuOverflowConsole, InterpreterRaisesOverflowAndUnderflowLikeTheConsole)
+{
+	int overflow_rows = 0, underflow_rows = 0, quiet_rows = 0;
+	for (int i = 0; i < kCaseCount; ++i)
+	{
+		const FpuOvfCase& c = kCases[i];
+		SCOPED_TRACE(::testing::Message() << "row " << i << ": " << c.what);
+		EXPECT_EQ(RunCase(c, false).fcr31, c.fcr31) << "[interp] FCR31";
+
+		if (c.fcr31 & kFlagO)
+			++overflow_rows;
+		else if (c.fcr31 & kFlagU)
+			++underflow_rows;
+		else
+			++quiet_rows;
+	}
+	EXPECT_GE(overflow_rows, 10) << "anti-vacuity: the console overflow rows "
+									"are gone from the capture";
+	EXPECT_GE(underflow_rows, 3) << "anti-vacuity: the console underflow rows "
+									"are gone from the capture";
+	EXPECT_GE(quiet_rows, 20)
+		<< "anti-vacuity: without rows the console leaves quiet, an "
+		   "implementation that raised O on everything would pass this";
+}
+
+// ---------------------------------------------------------------------------
+// ENABLED. The FULL path against the console on every row, value and flags.
+// The tier note at the top of this file rests on it: fpuFullMode carries every
+// intermediate as a PS2-widened double (ToPS2FPU_Full, iFPUd-arm64.cpp), so it
+// holds the EE's top binade and still has the magnitude of the exact result to
+// hand when the flag decision is made. If this test fails the reference column
+// moved and that note is stale.
+// ---------------------------------------------------------------------------
+TEST(EeFpuOverflowConsole, FullModeMatchesConsoleOnEveryRow)
+{
+	int exact_top_binade = 0, raised = 0;
+	for (int i = 0; i < kCaseCount; ++i)
+	{
+		const FpuOvfCase& c = kCases[i];
+		SCOPED_TRACE(::testing::Message() << "row " << i << ": " << c.what);
+		const Observed o = RunCase(c, true, /*extra_overflow=*/false,
+			/*full_mode=*/true);
+		EXPECT_EQ(o.result, c.result) << "[jit, fpuFullMode] result";
+		EXPECT_EQ(o.fcr31, c.fcr31) << "[jit, fpuFullMode] FCR31";
+
+		// A result in the EE's top binade is one the fast path cannot return,
+		// so these rows are what separates the tiers.
+		if ((c.result & 0x7F800000u) == 0x7F800000u &&
+			(c.result & 0x007FFFFFu) != 0)
+			++exact_top_binade;
+		if (c.fcr31 & (kFlagO | kFlagU))
+			++raised;
+	}
+	EXPECT_GE(exact_top_binade, 10)
+		<< "anti-vacuity: no row returns a value outside host single range any "
+		   "more, so this no longer distinguishes FULL from the fast path";
+	EXPECT_GE(raised, 10) << "anti-vacuity: no row raises O or U";
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +568,7 @@ TEST(EeFpuOverflowConsole, DISABLED_DumpConsoleComparison)
 		const Observed in = RunCase(c, false);
 		const Observed ji = RunCase(c, true);
 		const Observed jx = RunCase(c, true, /*extra_overflow=*/true);
+		const Observed jf = RunCase(c, true, false, /*full_mode=*/true);
 		const bool vbad = (in.result != c.result);
 		const bool fbad = (in.fcr31 != c.fcr31);
 		const bool split = !Agree(in, ji);
@@ -467,9 +585,10 @@ TEST(EeFpuOverflowConsole, DISABLED_DumpConsoleComparison)
 			++flag_only;
 
 		printf("%-3d %-34s console %08x/%08x  interp %08x/%08x  jit %08x/%08x  "
-			   "jit+xovf %08x/%08x %s%s%s%s\n",
+			   "jit+xovf %08x/%08x  jit+full %08x/%08x %s%s%s%s\n",
 			i, c.what, c.result, c.fcr31, in.result, in.fcr31, ji.result, ji.fcr31,
-			jx.result, jx.fcr31, vbad ? "VAL " : "", fbad ? "FLAG " : "",
+			jx.result, jx.fcr31, jf.result, jf.fcr31,
+			vbad ? "VAL " : "", fbad ? "FLAG " : "",
 			split ? "ENGINE-SPLIT " : "", (split && !split_x) ? "(healed by xovf)" : "");
 	}
 	printf("\n%d rows: %d match console, %d value-only, %d flag-only, %d both\n",

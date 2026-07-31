@@ -8,6 +8,7 @@
 
 #include <cfloat>
 #include <cmath>
+#include <cstring>
 
 // Helper Macros
 //****************************************************************
@@ -64,33 +65,111 @@
 
 //****************************************************************
 
-// If we have an infinity value, then Overflow has occured.
-bool checkOverflow(u32& xReg, u32 cFlagsToSet)
-{
-	if ((xReg & ~0x80000000) == PosInfinity) {
-		/*Console.Warning( "FPU OVERFLOW!: Changing to +/-Fmax!!!!!!!!!!!!\n" );*/
-		xReg = (xReg & 0x80000000) | posFmax;
-		_ContVal_ |= (cFlagsToSet);
-		return true;
-	}
-	else if (cFlagsToSet & FPUflagO)
-		_ContVal_ &= ~FPUflagO;
+/*	The EE value of a raw FPR word, exactly, as a double.
 
-	return false;
+	Nothing is clamped, unlike fpuDouble(): a double holds the whole EE range,
+	so exponent 255 stays an ordinary binade and 0x7F800000 is 2^128. The O/U
+	decision is about the exact result, so it must not inherit the operand
+	clamp a host single forces on fpuDouble().
+
+	Denormal operands flush to signed zero; the EE has none. U is raised only
+	when the result computed from the flushed operands is nonzero and below the
+	smallest normal -- "mul 1.0, MIN_DENORM" returns +0 with FCR31 untouched
+	(autocases_fpuovf.h).
+*/
+static double eeToDouble(u32 f)
+{
+	const u32 exp = (f >> 23) & 0xFF;
+	u64 bits = static_cast<u64>(f & 0x80000000u) << 32;
+	if (exp != 0)
+	{
+		bits |= (static_cast<u64>(exp) + (1023 - 127)) << 52;
+		bits |= static_cast<u64>(f & 0x007FFFFFu) << 29;
+	}
+	double d;
+	std::memcpy(&d, &bits, sizeof(d));
+	return d;
 }
 
-// If we have a denormal value, then Underflow has occured.
-bool checkUnderflow(u32& xReg, u32 cFlagsToSet) {
-	if ( ( (xReg & 0x7F800000) == 0 ) && ( (xReg & 0x007FFFFF) != 0 ) ) {
-		/*Console.Warning( "FPU UNDERFLOW!: Changing to +/-0!!!!!!!!!!!!\n" );*/
-		xReg &= 0x80000000;
-		_ContVal_ |= (cFlagsToSet);
-		return true;
-	}
-	else if (cFlagsToSet & FPUflagU)
-		_ContVal_ &= ~FPUflagU;
+/*	The ends of the EE's representable range.
+	  0x7FFFFFFF == (2 - 2^-23) * 2^128, one binade above IEEE single's max,
+	  because exponent 255 is an ordinary exponent on this FPU.
+	  0x00800000 == 2^-126, the smallest normal; there is nothing below it.
+*/
+static constexpr double kEeFpuMax = 0x1.fffffep+128;
+static constexpr double kEeMinNormal = 0x1p-126;
 
-	return false;
+/*	Fold a result the host produced into something the EE could hold: an
+	infinity to +/-fMax, a denormal to signed zero. This is what
+	checkOverflow()/checkUnderflow() did to the value, unchanged; the +/-FLT_MAX
+	saturation compromise in it is pinned by
+	EeFpuOverflowConsole.DefaultClampModeSaturatesToFltMaxOnBothEngines.
+
+	DIV.S, SQRT.S and RSQRT.S call this and no flag helper: they touch I and D
+	but must leave O and U as they found them.
+*/
+static void clampToEeRange(u32& xReg)
+{
+	if ((xReg & ~0x80000000) == PosInfinity)
+		xReg = (xReg & 0x80000000) | posFmax;
+	else if (((xReg & 0x7F800000) == 0) && ((xReg & 0x007FFFFF) != 0))
+		xReg &= 0x80000000;
+}
+
+/*	One rounding step's worth of FCR31 O/U maintenance, from the magnitude of
+	the exact result. `exact` is the step's result recomputed through
+	eeToDouble(), where nothing was clamped, rounded away or flushed.
+
+	checkOverflow()/checkUnderflow() used to ask instead whether xReg had come
+	back as a host infinity or a host denormal. Neither ever appears in the FP
+	environment the EE actually runs in: rounding toward zero makes an
+	overflowing multiply saturate to FLT_MAX, and FZ flushes an underflowing one
+	to zero. Both are the shipping default (Pcsx2Config.cpp), so O and U were
+	raised only under a rounding mode no game selects.
+
+	Both causes are cleared before either is set, so an overflow clears U, which
+	the old early-return structure did not: silicon returns O|SO|SU, U clear,
+	for MUL.S of +FLT_MAX by itself with U preset.
+
+	This rule and the two-step rule below reproduce O/U/SO/SU on all 674
+	arithmetic cases of the FP matrix corpus's console column.
+*/
+static void raiseOrClearOU(double exact)
+{
+	_ContVal_ &= ~(FPUflagO | FPUflagU);
+	if (std::fabs(exact) > kEeFpuMax)
+		_ContVal_ |= FPUflagO | FPUflagSO;
+	else if (exact != 0.0 && std::fabs(exact) < kEeMinNormal)
+		_ContVal_ |= FPUflagU | FPUflagSU;
+}
+
+/*	The multiply-accumulates round twice, so they raise twice: once on the
+	intermediate product, once on the accumulate. These two predicates are what
+	the product hands on to the second step.
+
+	An underflowing product is flushed to signed zero before the accumulate, so
+	the accumulate sees ACC and clears the cause U again, leaving the sticky SU
+	up. 68 cases in the capture come back with SU set and U clear; all are
+	multiply-accumulates and no plain MUL/MULA ever does, which is what says two
+	steps rather than one.
+
+	An overflowing product ends the instruction. Silicon saturates there and the
+	accumulate cannot bring it back: MADD of 2^128 by 2.0 onto an ACC of -2^128
+	returns +0x7FFFFFFF with O|SO, not the 2^128 the arithmetic says.
+	eeMulAccumulate() applies the same test to the value. The fast path has no
+	such test -- recMADD_S_xmm accumulates the raw product in the default clamp
+	mode -- so that corner is an engine divergence by design.
+*/
+static bool madAccumulandOverflowed(double product)
+{
+	return std::fabs(product) > kEeFpuMax;
+}
+
+static double madFlushedProduct(double product)
+{
+	if (product != 0.0 && std::fabs(product) < kEeMinNormal)
+		return std::copysign(0.0, product);
+	return product;
 }
 
 __fi u32 fp_max(u32 a, u32 b)
@@ -325,16 +404,21 @@ void ABS_S() {
 	clearFPUFlags( FPUflagO | FPUflagU );
 }
 
+/*	Every op below computes `exact` before writing its destination: fd may alias
+	fs or ft, and the accumulator forms read the ACC they are about to write.
+*/
 void ADD_S() {
+	const double exact = eeToDouble( _FsValUl_ ) + eeToDouble( _FtValUl_ );
 	_FdValf_  = fpuDouble( _FsValUl_ ) + fpuDouble( _FtValUl_ );
-	if (checkOverflow( _FdValUl_, FPUflagO | FPUflagSO)) return;
-	checkUnderflow( _FdValUl_, FPUflagU | FPUflagSU);
+	clampToEeRange( _FdValUl_ );
+	raiseOrClearOU( exact );
 }
 
 void ADDA_S() {
+	const double exact = eeToDouble( _FsValUl_ ) + eeToDouble( _FtValUl_ );
 	_FAValf_  = fpuDouble( _FsValUl_ ) + fpuDouble( _FtValUl_ );
-	if (checkOverflow( _FAValUl_, FPUflagO | FPUflagSO)) return;
-	checkUnderflow( _FAValUl_, FPUflagU | FPUflagSU);
+	clampToEeRange( _FAValUl_ );
+	raiseOrClearOU( exact );
 }
 
 void BC1F() {
@@ -400,28 +484,43 @@ void DIV_S() {
 	const ScopedDivRoundMode div_round;
 	if (checkDivideByZero( _FdValUl_, _FtValUl_, _FsValUl_, FPUflagD | FPUflagSD, FPUflagI | FPUflagSI)) return;
 	_FdValf_ = fpuDouble( _FsValUl_ ) / fpuDouble( _FtValUl_ );
-	if (checkOverflow( _FdValUl_, 0)) return;
-	checkUnderflow( _FdValUl_, 0);
+	clampToEeRange( _FdValUl_ );
 }
 
 /*	The Instruction Set manual has an overly complicated way of
 	determining the flags that are set. Hopefully this shorter
 	method provides a similar outcome and is faster. (cottonvibes)
 */
+/*	The product is its own named double, so -ffp-contract cannot fuse away the
+	two roundings the PS2 ISA mandates and each flag step has its own value to
+	look at.
+
+	The A-forms read the accumulator raw (`_FAValf_ +=`) where the d-forms route
+	it through fpuDouble; the flag path uses the architectural value in both.
+	That value-path inconsistency is pre-existing.
+*/
 void MADD_S() {
 	FPRreg temp;
+	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
+	const double acc = eeToDouble( _FAValUl_ );
 	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
 	_FdValf_  = fpuDouble( _FAValUl_ ) + fpuDouble( temp.UL );
-	if (checkOverflow( _FdValUl_, FPUflagO | FPUflagSO)) return;
-	checkUnderflow( _FdValUl_, FPUflagU | FPUflagSU);
+	clampToEeRange( _FdValUl_ );
+	raiseOrClearOU( product );
+	if (madAccumulandOverflowed( product )) return;
+	raiseOrClearOU( acc + madFlushedProduct( product ) );
 }
 
 void MADDA_S() {
 	FPRreg temp;
+	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
+	const double acc = eeToDouble( _FAValUl_ );
 	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
 	_FAValf_ += temp.f;
-	if (checkOverflow( _FAValUl_, FPUflagO | FPUflagSO)) return;
-	checkUnderflow( _FAValUl_, FPUflagU | FPUflagSU);
+	clampToEeRange( _FAValUl_ );
+	raiseOrClearOU( product );
+	if (madAccumulandOverflowed( product )) return;
+	raiseOrClearOU( acc + madFlushedProduct( product ) );
 }
 
 void MAX_S() {
@@ -445,18 +544,26 @@ void MOV_S() {
 
 void MSUB_S() {
 	FPRreg temp;
+	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
+	const double acc = eeToDouble( _FAValUl_ );
 	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
 	_FdValf_  = fpuDouble( _FAValUl_ ) - fpuDouble( temp.UL );
-	if (checkOverflow( _FdValUl_, FPUflagO | FPUflagSO)) return;
-	checkUnderflow( _FdValUl_, FPUflagU | FPUflagSU);
+	clampToEeRange( _FdValUl_ );
+	raiseOrClearOU( product );
+	if (madAccumulandOverflowed( product )) return;
+	raiseOrClearOU( acc - madFlushedProduct( product ) );
 }
 
 void MSUBA_S() {
 	FPRreg temp;
+	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
+	const double acc = eeToDouble( _FAValUl_ );
 	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
 	_FAValf_ -= temp.f;
-	if (checkOverflow( _FAValUl_, FPUflagO | FPUflagSO)) return;
-	checkUnderflow( _FAValUl_, FPUflagU | FPUflagSU);
+	clampToEeRange( _FAValUl_ );
+	raiseOrClearOU( product );
+	if (madAccumulandOverflowed( product )) return;
+	raiseOrClearOU( acc - madFlushedProduct( product ) );
 }
 
 void MTC1() {
@@ -464,15 +571,17 @@ void MTC1() {
 }
 
 void MUL_S() {
+	const double exact = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
 	_FdValUl_ = eeMulProduct( _FsValUl_, _FtValUl_ );
-	if (checkOverflow( _FdValUl_, FPUflagO | FPUflagSO)) return;
-	checkUnderflow( _FdValUl_, FPUflagU | FPUflagSU);
+	clampToEeRange( _FdValUl_ );
+	raiseOrClearOU( exact );
 }
 
 void MULA_S() {
+	const double exact = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
 	_FAValUl_ = eeMulProduct( _FsValUl_, _FtValUl_ );
-	if (checkOverflow( _FAValUl_, FPUflagO | FPUflagSO)) return;
-	checkUnderflow( _FAValUl_, FPUflagU | FPUflagSU);
+	clampToEeRange( _FAValUl_ );
+	raiseOrClearOU( exact );
 }
 
 void NEG_S() {
@@ -503,8 +612,7 @@ void RSQRT_S() {
 	temp.f = sqrt( fabs( fpuDouble( _FtValUl_ ) ) );
 	_FdValf_ = fpuDouble( _FsValUl_ ) / fpuDouble( temp.UL );
 
-	if (checkOverflow( _FdValUl_, 0)) return;
-	checkUnderflow( _FdValUl_, 0);
+	clampToEeRange( _FdValUl_ );
 }
 
 void SQRT_S() {
@@ -554,15 +662,17 @@ void SQRT_S() {
 }
 
 void SUB_S() {
+	const double exact = eeToDouble( _FsValUl_ ) - eeToDouble( _FtValUl_ );
 	_FdValf_  = fpuDouble( _FsValUl_ ) - fpuDouble( _FtValUl_ );
-	if (checkOverflow( _FdValUl_, FPUflagO | FPUflagSO)) return;
-	checkUnderflow( _FdValUl_, FPUflagU | FPUflagSU);
+	clampToEeRange( _FdValUl_ );
+	raiseOrClearOU( exact );
 }
 
 void SUBA_S() {
+	const double exact = eeToDouble( _FsValUl_ ) - eeToDouble( _FtValUl_ );
 	_FAValf_  = fpuDouble( _FsValUl_ ) - fpuDouble( _FtValUl_ );
-	if (checkOverflow( _FAValUl_, FPUflagO | FPUflagSO)) return;
-	checkUnderflow( _FAValUl_, FPUflagU | FPUflagSU);
+	clampToEeRange( _FAValUl_ );
+	raiseOrClearOU( exact );
 }
 
 }	// End Namespace COP1

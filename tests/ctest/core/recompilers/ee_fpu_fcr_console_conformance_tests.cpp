@@ -32,6 +32,7 @@
 #include "harness/MipsEncode.h"
 #include "harness/RecompilerTestEnvironment.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -218,25 +219,21 @@ struct FlagSituation
 	u32 fcr31;
 	bool check_fd;
 	u32 fd;
-	// Rows where the fast path does not reproduce the console word. "NAN
-	// math" diverges only at the default clamp mode; see
-	// DISABLED_NanMathOverflowIsAnOperandClampModeDifference.
-	bool bad_jit;
 };
 constexpr FlagSituation kFlagSituations[] = {
 	// sqrt(-1) is 1.0 on the PS2, not NaN: SQRT takes the magnitude. Both the
 	// invalid sticky flag (bit 6) and its cause bit (17) come up.
-	{"sqrt(-1)", FO_SQRT, 0xBF800000, 0xBF800000, 0x01020041, true, 0x3F800000, false},
-	{"Divide zero by zero", FO_DIV, 0x00000000, 0x00000000, 0x01020041, false, 0, false},
-	{"Divide one by zero", FO_DIV, 0x3F800000, 0x00000000, 0x01010021, false, 0, false},
-	{"NAN math", FO_ADD, 0x7F800001, 0x7F800001, 0x01008011, false, 0, true},
-	{"Overflow", FO_MUL, 0x7F7FFFFF, 0x7F7FFFFF, 0x01008011, false, 0, false},
+	{"sqrt(-1)", FO_SQRT, 0xBF800000, 0xBF800000, 0x01020041, true, 0x3F800000},
+	{"Divide zero by zero", FO_DIV, 0x00000000, 0x00000000, 0x01020041, false, 0},
+	{"Divide one by zero", FO_DIV, 0x3F800000, 0x00000000, 0x01010021, false, 0},
+	{"NAN math", FO_ADD, 0x7F800001, 0x7F800001, 0x01008011, false, 0},
+	{"Overflow", FO_MUL, 0x7F7FFFFF, 0x7F7FFFFF, 0x01008011, false, 0},
 	// FLT_MIN/3 is a denormal, which the PS2 flushes to zero — and raises
 	// nothing doing it.
-	{"Underflow", FO_DIV, 0x00800000, 0x40400000, 0x01000001, true, 0x00000000, false},
+	{"Underflow", FO_DIV, 0x00800000, 0x40400000, 0x01000001, true, 0x00000000},
 	// 1 / 3.0155 — an ordinary inexact result. The EE has no inexact flag,
 	// which is the same fact bit 2 being unwritable shows above.
-	{"Inexact", FO_DIV, 0x3F800000, 0x4040FFFF, 0x01000001, false, 0, false},
+	{"Inexact", FO_DIV, 0x3F800000, 0x4040FFFF, 0x01000001, false, 0},
 };
 constexpr int kFlagSituationCount =
 	static_cast<int>(sizeof(kFlagSituations) / sizeof(kFlagSituations[0]));
@@ -254,104 +251,100 @@ u32 FlagOpWord(const FlagSituation& s)
 }
 } // namespace
 
-// Cross-engine agreement on FCR31, independent of the console column. Run at
-// round-to-nearest, which is where the flags are visible at all:
-// DISABLED_ExceptionFlagsInProductionFpEnvMissOverflow shows the production
-// ChopZero environment hiding them from both engines.
+// The seven console rows, both engines, in both FP environments.
 //
-// One row is left, and it is not about the missing O/SO: "NAN math" hands
-// ADD.S two raw exp-255 words, so the engines compute different things before
-// any flag logic runs. DISABLED_NanMathOverflowIsAnOperandClampModeDifference
-// attributes it.
-constexpr const char* kFcrEngineDivergences[] = {
-	"NAN math",
-};
-
-// TRIPWIRE -- the arm64 FPU fast path raises no FCR31 O/SO, so this test and
-// the four below it are disabled.
+// This used to be four DISABLED tests and a divergence list, all premised on
+// PCSX2 reproducing these flags only at round-to-nearest. The interpreter
+// decides from the magnitude of the exact result now (eeToDouble/kEeFpuMax in
+// FPU.cpp), so it matches the console on all seven rows in either environment,
+// which is what the two legs below assert.
 //
-// The emitter that raised them was reverted. It detected overflow as
-// `fabs(result) > FLT_MAX`, i.e. from a host infinity, which makes an
-// architectural flag a function of eeRoundMode: it never raised under the
-// shipping ChopZero default, and under eeRoundMode 1/2 it raised for one sign
-// only, because directed rounding gives 0x7f7fffff on one side and 0xff800000
-// on the other. It also fired on operations that are not overflows (mul 2^128
-// by 1.0 or 0.5, add 2^128 + 0), contradicting the console on rows the JIT had
-// got right, and it cost +8 host instructions on every arithmetic op -- MUL.S
-// went 3 -> 11 -- for a flag x86 does not maintain at all (every O/U write in
-// pcsx2/x86/iFPU.cpp is commented out).
+// That settles "NAN math" too, the last listed engine divergence, which was
+// attributed to the operand-clamp axis: ADD.S on two raw exp-255 words, which
+// the interpreter clamped through fpuDouble into an Inf sum while the fast
+// path got a host NaN. eeToDouble does not clamp -- 0x7F800001 is
+// (1 + 2^-23) * 2^128 -- so the interpreter reaches O by magnitude, the way it
+// does on every other overflow row.
 //
-// A redesign should derive O from the operands and the operation, the way
-// iFPUd-arm64.cpp's ToPS2FPU_Full does with its 2^128/2^129 magnitude
-// thresholds, which are round-mode and FZ independent, rather than from the
-// host result register. Enable these tests when it does.
-TEST(EeFpuFcrConsoleConformance, DISABLED_EnginesAgreeExceptOnTheOverflowFlags)
+// The fast path's remaining gap is described in
+// ee_fpu_overflow_console_conformance_tests.cpp.
+TEST(EeFpuFcrConsoleConformance, ExceptionFlagsMatchConsoleExceptTheFastPathRaise)
 {
-	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
-	int diverged = 0;
-	for (int i = 0; i < kFlagSituationCount; ++i)
+	constexpr u32 kRaiseBits = 0x00008000u | 0x00004000u | 0x00000010u | 0x00000008u;
+
+	// leg 0 = production FP environment (ChopZero + DAZ/FZ, what a game gets),
+	// leg 1 = FlushNearest, the round-to-nearest environment the old model
+	// needed. The flag decision must not depend on which one is in force.
+	for (int leg = 0; leg < 2; ++leg)
 	{
-		const FlagSituation& s = kFlagSituations[i];
-		const u32 word = FlagOpWord(s);
-		ASSERT_NE(word, 0u) << s.what;
+		std::optional<ScopedFpEnv> fp_env;
+		if (leg == 1)
+			fp_env.emplace(ScopedFpEnv::FlushNearest);
 
-		u32 got[2];
-		for (int jit = 0; jit < 2; ++jit)
+		int raise_rows = 0;
+		for (int i = 0; i < kFlagSituationCount; ++i)
 		{
-			EeRecTestHarness h;
-			h.EnableCop1();
-			h.SetFcr31(kFcr31FixedOnes);
-			h.SetFprBits(kFd, 0x00001337);
-			h.SetFprBits(kFs, s.fs);
-			h.SetFprBits(kFt, s.ft);
-			h.SetGpr128(kRd, 0, 0);
-			h.LoadProgram({word, CFC1(kRd, 31)});
-			if (jit)
-				h.RunJitNoDiff();
+			const FlagSituation& s = kFlagSituations[i];
+			const u32 word = FlagOpWord(s);
+			ASSERT_NE(word, 0u) << s.what;
+
+			u32 got[2], fd[2];
+			for (int jit = 0; jit < 2; ++jit)
+			{
+				EeRecTestHarness h;
+				h.EnableCop1();
+				h.SetFcr31(kFcr31FixedOnes);
+				h.SetFprBits(kFd, 0x00001337);
+				h.SetFprBits(kFs, s.fs);
+				h.SetFprBits(kFt, s.ft);
+				h.SetGpr128(kRd, 0, 0);
+				h.LoadProgram({word, CFC1(kRd, 31)});
+				if (jit)
+					h.RunJitNoDiff();
+				else
+					h.RunInterpOnly();
+				got[jit] = jit ? h.GetGprJit(kRd) : h.GetGprInterp(kRd);
+				fd[jit] = jit ? h.GetFprBitsJit(kFd) : h.GetFprBitsInterp(kFd);
+			}
+
+			SCOPED_TRACE(::testing::Message()
+			             << s.what
+			             << (leg ? " (FlushNearest)" : " (production FP env)"));
+			EXPECT_EQ(got[0], s.fcr31) << "[interp] vs console";
+			if ((s.fcr31 & kRaiseBits) != 0)
+			{
+				++raise_rows;
+				EXPECT_EQ(got[1], s.fcr31 & ~kRaiseBits)
+					<< "[jit] must be the console word minus O|U|SO|SU. If it "
+					   "now MATCHES the console the fast path learned to raise: "
+					   "assert plain equality on every row and delete this "
+					   "branch.";
+			}
 			else
-				h.RunInterpOnly();
-			got[jit] = jit ? h.GetGprJit(kRd) : h.GetGprInterp(kRd);
+			{
+				EXPECT_EQ(got[1], s.fcr31) << "[jit] vs console";
+			}
+			if (s.check_fd)
+			{
+				EXPECT_EQ(fd[0], s.fd) << "[interp] result";
+				EXPECT_EQ(fd[1], s.fd) << "[jit] result";
+			}
 		}
-
-		bool known = false;
-		for (const char* k : kFcrEngineDivergences)
-			known = known || (std::string(s.what) == k);
-
-		SCOPED_TRACE(::testing::Message() << s.what);
-		if (!known)
-		{
-			EXPECT_EQ(got[1], got[0]) << "engines disagree on FCR31";
-			continue;
-		}
-		++diverged;
-		EXPECT_NE(got[1], got[0])
-			<< "the engines now AGREE. If the JIT started clamping its operands "
-			   "at the default clamp mode, drop this row from "
-			   "kFcrEngineDivergences.";
-		// Pin which side is right, so a future "fix" that aligns them by
-		// removing the interpreter's flags fails here instead of passing.
-		EXPECT_EQ(got[0], s.fcr31)
-			<< "[interp] must stay the console-matching side";
-		EXPECT_EQ(got[0] & ~got[1], 0x00008010u)
-			<< "the gap must still be exactly O|SO";
+		EXPECT_GE(raise_rows, 2)
+			<< "anti-vacuity: no row in this table raises O or U any more, so "
+			   "the allowance branch is never taken";
 	}
-	EXPECT_EQ(diverged, static_cast<int>(std::size(kFcrEngineDivergences)));
 }
 
-// The one FCR31 row where the engines disagree, and why.
+// The control for the "NAN math" paragraph above. Three legs: interpreter,
+// fast path, and fast path with CHECK_FPU_EXTRA_OVERFLOW (GameDB eeClampMode
+// >= 2) so it clamps its operands to +/-fMax the way fpuDouble used to. The
+// clamped leg must still come back without O; if it ever closes the gap, the
+// divergence really was the clamp axis.
 //
-// "NAN math" is ADD.S on two raw exp-255 words. The interpreter routes every
-// operand through fpuDouble, which turns exp-255 into ±fMax, so it adds
-// fMax+fMax, gets Inf and raises O|SO. The fast path clamps source operands
-// only under CHECK_FPU_EXTRA_OVERFLOW (GameDB eeClampMode >= 2, the same
-// option x86 gates fpuFloat2 on), so at the default mode it hands the raw
-// words to the host, gets a NaN, and does not call that an overflow. Both land
-// on 0x7F7FFFFF, because fpuClampResult folds NaN to +fMax.
-//
-// Turning the clamp on aligns the row, which is why it stays in
-// kFcrEngineDivergences: it is the clamp-mode axis, not a missing flag.
-// TRIPWIRE -- see the O/SO revert note above.
-TEST(EeFpuFcrConsoleConformance, DISABLED_NanMathOverflowIsAnOperandClampModeDifference)
+// The value is identical in all three legs, which is why this stayed invisible
+// until FCR31 was read back.
+TEST(EeFpuFcrConsoleConformance, NanMathOverflowIsNotAnOperandClampModeDifference)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
 	constexpr u32 kRawNan = 0x7F800001;
@@ -379,18 +372,15 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_NanMathOverflowIsAnOperandClampModeDif
 		res[leg] = (leg == 0) ? h.GetFprBitsInterp(kFd) : h.GetFprBitsJit(kFd);
 	}
 
-	EXPECT_EQ(fcr[0], kConsole) << "[interp] is the console-matching side";
-	EXPECT_NE(fcr[1], fcr[0])
-		<< "the default clamp mode now agrees -- drop \"NAN math\" from "
-		   "kFcrEngineDivergences and from bad_jit";
+	EXPECT_EQ(fcr[0], kConsole) << "[interp] is the console-matching side, and "
+	                               "reaches O by magnitude, not by clamping the "
+	                               "operands into a host infinity";
 	EXPECT_EQ(fcr[1], kFcr31FixedOnes)
-		<< "[jit, default clamp] a NaN result must not be called an overflow";
-	EXPECT_EQ(fcr[2], fcr[0])
-		<< "[jit, CHECK_FPU_EXTRA_OVERFLOW] clamping the operands the way "
-		   "fpuDouble does must reproduce the interpreter's O|SO exactly -- if "
-		   "this fails the divergence is NOT the operand-clamp axis and the "
-		   "attribution above is wrong";
-	// The value is identical in all three legs; only FCR31 moves.
+		<< "[jit, default clamp] the fast path raises nothing";
+	EXPECT_EQ(fcr[2], kFcr31FixedOnes)
+		<< "[jit, CHECK_FPU_EXTRA_OVERFLOW] the operand clamp must NOT close "
+		   "this row -- if it does, the missing piece is the clamp after all "
+		   "and the attribution above is wrong";
 	EXPECT_EQ(res[0], 0x7F7FFFFFu);
 	EXPECT_EQ(res[1], res[0]);
 	EXPECT_EQ(res[2], res[0]);
@@ -399,17 +389,40 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_NanMathOverflowIsAnOperandClampModeDif
 // ---------------------------------------------------------------------------
 // The O/U class, engine against engine.
 //
-// The console rows above are one window into a family: the FCR31 overflow and
-// underflow maintenance pcsx2/FPU.cpp performs on every arithmetic op and the
-// recompilers perform on none. It needs no capture, because the interpreter is
-// the reference side; the three behaviours it implements are the three groups
-// of kFamCases below.
+// The two console rows above are one window into a whole family: FCR31's
+// overflow and underflow maintenance, which pcsx2/FPU.cpp performs on EVERY
+// arithmetic op and the recompilers performed on none. Three distinct
+// behaviours live in the interpreter and all three are testable without a
+// capture, because the interpreter is the reference side here:
 //
-// Only the overflow half is exercised. FZ is set in every FP environment PCSX2
-// runs the EE under -- DAZ+FTZ+ChopZero is the shipping default and both
-// ScopedFpEnv kinds this file uses keep FZ on -- so no denormal result can
-// reach checkUnderflow and U is only ever cleared.
-// DISABLED_UnderflowFlagsNeedFzOff pins the FZ-off half.
+//   1. the ten ops that call raiseOrClearOU() -- ADD/SUB/MUL, the A-forms
+//      ADDA/SUBA/MULA, and the multiply-accumulates MADD/MSUB/MADDA/MSUBA.
+//      Each clears both causes and then raises whichever the magnitude of the
+//      exact result calls for, so an overflow brings a preset U down. The four
+//      multiply-accumulates do it twice, once per rounding step.
+//   2. ABS/NEG/MAX/MIN, which clearFPUFlags(O|U) and nothing else.
+//   3. DIV/SQRT/RSQRT, which touch I and D but must leave O and U alone.
+//      These are the negative controls, and they are live ones: rows 1 and 2
+//      in the same table prove the probe can see an FCR31 change at all, so
+//      "unchanged" here means preserved rather than unobserved.
+//
+// The clear in (1) and (2) is observable on its own -- preset O and U through
+// ctc1 (both are in the writable mask) and run a non-overflowing op. That is
+// why the pre-state below is 0x0100C001 rather than the bare fixed-ones word:
+// it makes set, clear and preserve three distinguishable outcomes instead of
+// two. The fast path now performs that clear on all fourteen emitters.
+//
+// Why the table below no longer says what it did: it used to call all ten
+// +/-FLT_MAX rows overflows, because the old detection asked the host whether
+// the single had reached Inf and 2 * FLT_MAX does. It is asked of the exact
+// result in double now, so those rows moved to the clear class, where silicon
+// has always had them.
+//
+// The underflow half of (1) is exercised now, and does not need FZ off: FZ
+// destroys the host's denormal, but `exact` is computed in double where the
+// operands were only flushed, not the result. What still needs FZ off is the
+// denormal-result question (the engines disagree on the value there) --
+// a separate work item, pinned by DISABLED_UnderflowFlagsNeedFzOff below.
 namespace
 {
 enum FamOp
@@ -424,9 +437,10 @@ enum FamOp
 constexpr u32 kFMax = 0x7F7FFFFF, kNegFMax = 0xFF7FFFFF;
 constexpr u32 kOne = 0x3F800000, kNegOne = 0xBF800000;
 constexpr u32 kTwo = 0x40000000, kFour = 0x40800000;
+constexpr u32 kMinNormal = 0x00800000;
 
 constexpr u32 kFlagO = 0x00008000, kFlagU = 0x00004000;
-constexpr u32 kFlagSO = 0x00000010;
+constexpr u32 kFlagSO = 0x00000010, kFlagSU = 0x00000008;
 
 // Pre-state: the always-one bits plus O and U already raised, so a row that
 // clears them is distinguishable from a row that leaves them alone.
@@ -440,6 +454,15 @@ struct FamCase
 	// What pcsx2/FPU.cpp produces, derived from the source and confirmed by
 	// running the interpreter leg below.
 	u32 want_fcr31;
+	// true == this exact operand triple appears in the first-party console
+	// capture (autocases_fpuovf.h) and silicon agrees on which of O/U the op
+	// raises. It does not witness the clear: that capture always starts from
+	// the fixed-ones word, so it cannot tell "cleared" from "never set". The
+	// clear is witnessed instead by the FCR31-seeded rows of the FP matrix
+	// capture, which cover ABS, NEG, ADD, ADDA, MADD, MSUB, MUL, MULA, MAX and
+	// MIN -- and not SUB, SUBA, MADDA or MSUBA, which are here on the
+	// interpreter's authority alone.
+	bool console_agrees_on_raise;
 };
 
 // No row here overflows the intermediate product of a multiply-accumulate:
@@ -453,43 +476,61 @@ struct FamCase
 // add/sub below has an operand exponent difference of 0 or 1 -- so the JIT and
 // the interpreter compute the same result and only the flags are under test.
 constexpr FamCase kFamCases[] = {
-	// (1) Overflow: set O|SO, and leave U alone (checkOverflow returns early).
-	{"ADD.S overflow",    FA_ADD,   0,        kFMax, kFMax,    kOuPreset | kFlagSO},
-	{"SUB.S overflow",    FA_SUB,   0,        kFMax, kNegFMax, kOuPreset | kFlagSO},
-	{"MUL.S overflow",    FA_MUL,   0,        kFMax, kFMax,    kOuPreset | kFlagSO},
-	{"ADDA.S overflow",   FA_ADDA,  0,        kFMax, kFMax,    kOuPreset | kFlagSO},
-	{"SUBA.S overflow",   FA_SUBA,  0,        kFMax, kNegFMax, kOuPreset | kFlagSO},
-	{"MULA.S overflow",   FA_MULA,  0,        kFMax, kFMax,    kOuPreset | kFlagSO},
-	{"MADD.S overflow",   FA_MADD,  kFMax,    kFMax, kOne,     kOuPreset | kFlagSO},
-	{"MSUB.S overflow",   FA_MSUB,  kFMax,    kFMax, kNegOne,  kOuPreset | kFlagSO},
-	{"MADDA.S overflow",  FA_MADDA, kFMax,    kFMax, kOne,     kOuPreset | kFlagSO},
-	{"MSUBA.S overflow",  FA_MSUBA, kFMax,    kFMax, kNegOne,  kOuPreset | kFlagSO},
+	// (1a) Clear: an in-range op must bring O and U back down. Fourteen rows,
+	// one per emitter that owes the clear -- this is the whole of what the fast
+	// path is expected to do with these two bits, so every op is listed rather
+	// than a representative few.
+	{"ADD.S in range",    FA_ADD,   kOne, kOne, kTwo, kFcr31FixedOnes, true},
+	{"SUB.S in range",    FA_SUB,   kOne, kOne, kTwo, kFcr31FixedOnes, false},
+	{"MUL.S in range",    FA_MUL,   kOne, kTwo, kTwo, kFcr31FixedOnes, true},
+	{"ADDA.S in range",   FA_ADDA,  kOne, kOne, kTwo, kFcr31FixedOnes, true},
+	{"SUBA.S in range",   FA_SUBA,  kOne, kFour, kOne, kFcr31FixedOnes, true},
+	{"MULA.S in range",   FA_MULA,  kOne, kTwo, kTwo, kFcr31FixedOnes, true},
+	{"MADD.S in range",   FA_MADD,  kOne, kTwo, kTwo, kFcr31FixedOnes, true},
+	{"MSUB.S in range",   FA_MSUB,  kOne, kTwo, kTwo, kFcr31FixedOnes, true},
+	{"MADDA.S in range",  FA_MADDA, kOne, kTwo, kTwo, kFcr31FixedOnes, true},
+	{"MSUBA.S in range",  FA_MSUBA, kOne, kTwo, kTwo, kFcr31FixedOnes, true},
+	// (2) clearFPUFlags(O|U) and nothing else -- same obligation, no arithmetic.
+	{"ABS.S clears O|U",  FA_ABS,   0, kNegOne, 0,    kFcr31FixedOnes, false},
+	{"NEG.S clears O|U",  FA_NEG,   0, kOne,    0,    kFcr31FixedOnes, false},
+	{"MAX.S clears O|U",  FA_MAX,   0, kOne,    kTwo, kFcr31FixedOnes, false},
+	{"MIN.S clears O|U",  FA_MIN,   0, kOne,    kTwo, kFcr31FixedOnes, false},
 
-	// (1) No overflow: clear O, then clear U.
-	{"ADD.S in range",    FA_ADD,   kOne, kOne, kTwo, kFcr31FixedOnes},
-	{"SUB.S in range",    FA_SUB,   kOne, kOne, kTwo, kFcr31FixedOnes},
-	{"MUL.S in range",    FA_MUL,   kOne, kOne, kTwo, kFcr31FixedOnes},
-	{"ADDA.S in range",   FA_ADDA,  kOne, kOne, kTwo, kFcr31FixedOnes},
-	{"SUBA.S in range",   FA_SUBA,  kOne, kOne, kTwo, kFcr31FixedOnes},
-	{"MULA.S in range",   FA_MULA,  kOne, kOne, kTwo, kFcr31FixedOnes},
-	{"MADD.S in range",   FA_MADD,  kOne, kOne, kTwo, kFcr31FixedOnes},
-	{"MSUB.S in range",   FA_MSUB,  kOne, kOne, kTwo, kFcr31FixedOnes},
-	{"MADDA.S in range",  FA_MADDA, kOne, kOne, kTwo, kFcr31FixedOnes},
-	{"MSUBA.S in range",  FA_MSUBA, kOne, kOne, kTwo, kFcr31FixedOnes},
+	// (1b) Clear, at the boundary. +FLT_MAX + +FLT_MAX is exactly 0x7FFFFFFF,
+	// the largest EE single -- representable, so not an overflow, and silicon
+	// returns it with FCR31 untouched. These four rows are here because they
+	// are the ones an implementation that tests for a host infinity gets wrong,
+	// and because ADD/SUB/ADDA/SUBA have no overflow row at all: no pair of
+	// host-representable operands can push their result past the maximum.
+	{"ADD.S lands on EEMAX",   FA_ADD,  0, kFMax, kFMax,    kFcr31FixedOnes, true},
+	{"SUB.S lands on EEMAX",   FA_SUB,  0, kFMax, kNegFMax, kFcr31FixedOnes, true},
+	{"ADDA.S lands on EEMAX",  FA_ADDA, 0, kFMax, kFMax,    kFcr31FixedOnes, true},
+	{"SUBA.S lands on EEMAX",  FA_SUBA, 0, kFMax, kNegFMax, kFcr31FixedOnes, true},
 
-	// (2) clearFPUFlags(O|U) and nothing else.
-	{"ABS.S clears O|U",  FA_ABS,   0, kNegOne, 0,    kFcr31FixedOnes},
-	{"NEG.S clears O|U",  FA_NEG,   0, kOne,    0,    kFcr31FixedOnes},
-	{"MAX.S clears O|U",  FA_MAX,   0, kOne,    kTwo, kFcr31FixedOnes},
-	{"MIN.S clears O|U",  FA_MIN,   0, kOne,    kTwo, kFcr31FixedOnes},
+	// (1c) Raise, overflow: both causes are cleared and then O|SO go up, so a
+	// preset U comes down on an overflow, which the old early-return structure
+	// did not do. Only the multiplies can get here.
+	{"MUL.S overflow",    FA_MUL,   0,        kFMax, kFMax, kFcr31FixedOnes | kFlagO | kFlagSO, true},
+	{"MULA.S overflow",   FA_MULA,  0,        kFMax, kFMax, kFcr31FixedOnes | kFlagO | kFlagSO, true},
+	{"MADD.S overflow",   FA_MADD,  kFMax,    kFMax, kFMax, kFcr31FixedOnes | kFlagO | kFlagSO, true},
+	{"MSUB.S overflow",   FA_MSUB,  kNegFMax, kFMax, kFMax, kFcr31FixedOnes | kFlagO | kFlagSO, true},
+	{"MADDA.S overflow",  FA_MADDA, kFMax,    kFMax, kFMax, kFcr31FixedOnes | kFlagO | kFlagSO, true},
+	{"MSUBA.S overflow",  FA_MSUBA, kNegFMax, kFMax, kFMax, kFcr31FixedOnes | kFlagO | kFlagSO, true},
 
-	// (3) Negative controls -- the divide unit passes 0 to checkOverflow, so
-	// O and U must come out exactly as they went in. Groups (1) and (2) above
-	// move the same bits from the same pre-state, so "unchanged" here means
-	// preserved rather than unobserved.
-	{"DIV.S preserves",   FA_DIV,   0, kOne, kTwo,  kOuPreset},
-	{"SQRT.S preserves",  FA_SQRT,  0, 0,    kFour, kOuPreset},
-	{"RSQRT.S preserves", FA_RSQRT, 0, kOne, kFour, kOuPreset},
+	// (1d) Raise, underflow: O is cleared first, then U|SU go up. The result is
+	// nonzero and below 2^-126 in exact arithmetic even though FZ has already
+	// flushed the host's single to +0, which is why the decision comes from
+	// `exact` rather than from the result register.
+	{"MUL.S underflow",   FA_MUL,   0, kMinNormal, kMinNormal,
+		kFcr31FixedOnes | kFlagU | kFlagSU, true},
+	{"MULA.S underflow",  FA_MULA,  0, kMinNormal, kMinNormal,
+		kFcr31FixedOnes | kFlagU | kFlagSU, false},
+
+	// (3) Negative controls -- the divide unit must leave O and U alone, so
+	// they come out exactly as they went in.
+	{"DIV.S preserves",   FA_DIV,   0, kOne, kTwo,  kOuPreset, false},
+	{"SQRT.S preserves",  FA_SQRT,  0, 0,    kFour, kOuPreset, false},
+	{"RSQRT.S preserves", FA_RSQRT, 0, kOne, kFour, kOuPreset, false},
 };
 constexpr int kFamCaseCount = static_cast<int>(std::size(kFamCases));
 
@@ -547,11 +588,20 @@ u32 RunFamCase(const FamCase& c, bool jit, u32* result)
 }
 } // namespace
 
-// TRIPWIRE -- see the O/SO revert note above.
-TEST(EeFpuFcrConsoleConformance, DISABLED_EnginesAgreeOnOverflowFlagsAcrossTheArithmeticFamily)
+// The O/U class across the whole family, engine against engine.
+//
+// The interpreter is the reference side: it matches the console's FCR31 on
+// every row of the capture
+// (EeFpuOverflowConsole.InterpreterRaisesOverflowAndUnderflowLikeTheConsole).
+// So it is pinned to the model, and the fast path to the interpreter's word
+// minus the four raise bits -- a mask rather than a row list, so a fast path
+// that dropped a clear or raised a bit the interpreter did not still fails.
+TEST(EeFpuFcrConsoleConformance, EnginesAgreeOnTheOverflowFlagClear)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
-	int checked = 0;
+	constexpr u32 kRaiseBits = kFlagO | kFlagU | kFlagSO | kFlagSU;
+	int checked = 0, cleared = 0, raised = 0, witnessed = 0;
+
 	for (int i = 0; i < kFamCaseCount; ++i)
 	{
 		const FamCase& c = kFamCases[i];
@@ -563,24 +613,56 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_EnginesAgreeOnOverflowFlagsAcrossTheAr
 		const u32 jit = RunFamCase(c, true, &res[1]);
 
 		SCOPED_TRACE(::testing::Message() << c.what);
-		// Pin the interpreter to what FPU.cpp's checkOverflow/clearFPUFlags
-		// model says it must produce.
-		EXPECT_EQ(interp, c.want_fcr31) << "[interp] no longer matches the "
-		                                   "checkOverflow model in FPU.cpp";
-		EXPECT_EQ(jit, interp) << "engines disagree on FCR31 O/U";
+		EXPECT_EQ(interp, c.want_fcr31)
+			<< "[interp] no longer matches the raiseOrClearOU model in FPU.cpp";
+
+		// A row is a raise row iff the interpreter ends with a raise bit the
+		// preset did not already carry: O|U come in preset, so SO|SU are the
+		// tell, and the underflow rows clear O on the way and cannot be
+		// confused with a preserve.
+		const bool raises = (c.want_fcr31 & (kFlagSO | kFlagSU)) != 0;
+		if (raises)
+		{
+			++raised;
+			EXPECT_EQ(jit, interp & ~kRaiseBits)
+				<< "[jit] must be the interpreter's word minus O|U|SO|SU. If it "
+				   "now EQUALS the interpreter, the fast path learned to raise: "
+				   "collapse this branch into a plain equality and retire the "
+				   "tier note above.";
+		}
+		else
+		{
+			EXPECT_EQ(jit, interp) << "engines disagree on FCR31 O/U";
+			if (c.want_fcr31 == kFcr31FixedOnes)
+				++cleared;
+		}
+
 		EXPECT_EQ(res[1], res[0]) << "engines disagree on the RESULT, so this "
 		                             "row no longer isolates the flag write";
+		witnessed += c.console_agrees_on_raise ? 1 : 0;
 		++checked;
 	}
+
 	EXPECT_EQ(checked, kFamCaseCount);
+	// Anti-vacuity. The clear count is the one that matters for the fast path:
+	// it was 0 before the emitters got fpuClearOUFlags(), then 2 (ABS/NEG).
+	EXPECT_GE(cleared, 14) << "fewer clear rows than emitters that owe the "
+	                          "clear -- an op lost its coverage";
+	EXPECT_GE(raised, 8) << "anti-vacuity: no raise rows left, so the "
+	                        "allowance branch is never exercised";
+	EXPECT_GE(witnessed, 20) << "anti-vacuity: most of this table must stay "
+	                            "silicon-witnessed on the raise";
 }
 
-// Several flag writers in one block, where the recompiler's FCR31 block
-// residency (GE-12) has to hold the model together: the arithmetic family
-// read-modify-writes the same allocator-resident FCR31 that C.cond writes the
-// condition bit into, so a bad mask would either eat C or make SO non-sticky.
-// TRIPWIRE -- see the O/SO revert note above.
-TEST(EeFpuFcrConsoleConformance, DISABLED_OverflowFlagsComposeAcrossOneBlock)
+// Several flag writers in one block, which is where the recompiler's FCR31
+// block residency (GE-12) has to hold the whole model together: the
+// arithmetic family now read-modify-writes the same allocator-resident FCR31
+// that C.cond writes the condition bit into, so a bad mask would either eat C
+// or make SO non-sticky. Both orderings are checked because they exercise
+// different halves: O has to come back down when a later op does not overflow,
+// and it has to stay up when the last one does. The sticky SO stays up through
+// both, and neither ordering may disturb C.
+TEST(EeFpuFcrConsoleConformance, OverflowFlagsComposeAcrossOneBlock)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
 	constexpr u32 kA = 7, kB = 8;   // compare operands, 1.0 and 2.0
@@ -622,134 +704,52 @@ TEST(EeFpuFcrConsoleConformance, DISABLED_OverflowFlagsComposeAcrossOneBlock)
 				h.RunInterpOnly();
 			got[jit] = jit ? h.GetGprJit(kRd) : h.GetGprInterp(kRd);
 		}
+		constexpr u32 kRaiseBits = kFlagO | kFlagU | kFlagSO | kFlagSU;
 		SCOPED_TRACE(::testing::Message() << o.what);
 		EXPECT_EQ(got[0], o.want) << "[interp]";
-		EXPECT_EQ(got[1], got[0]) << "engines disagree";
+		EXPECT_EQ(got[1], o.want & ~kRaiseBits)
+			<< "[jit] must be the interpreter's word minus O|U|SO|SU -- it does "
+			   "the clear in both orderings and the raise in neither";
 		EXPECT_EQ(got[1] & kC, kC)
 			<< "[jit] the condition bit did not survive the flag RMWs";
 	}
 }
 
-// The underflow half of checkUnderflow(result, U|SU), which needs a denormal
-// result and therefore needs FZ off. DISABLED because it is the denormal-
-// operand work item, not this one: with FZ off the two engines also disagree
-// on the value (the interpreter flushes the denormal to signed zero inside
-// checkUnderflow, the recompilers keep it), and pinning the flag without the
-// value would assert half a behaviour. Force-enable to see the current state.
+// The denormal-result question, with FZ off.
+//
+// The flag half no longer belongs to this test: U|SU come from the magnitude of
+// the exact result, so the interpreter raises them with FZ on or off, and
+// "MUL.S underflow" in kFamCases covers that in the environment a game runs in.
+// What is left here is the value -- with FZ off the host produces a real
+// denormal, the interpreter flushes it to signed zero (clampToEeRange) and the
+// recompilers keep it.
+//
+// It stays DISABLED because pinning either side would be picking a winner
+// without silicon: the capture has no FZ-off row, and it cannot have one, since
+// the console's own FPU has no denormal results to capture. Force-enable to see
+// the current state.
 TEST(EeFpuFcrConsoleConformance, DISABLED_UnderflowFlagsNeedFzOff)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::IeeeNearest};
 	// FLT_MIN * 2^-2 is a denormal; the interpreter should set U|SU and flush
 	// the result to +0, and clear O on the way.
 	FamCase c = {"MUL.S underflow", FA_MUL, 0, 0x00800000, 0x3E800000,
-	             kFcr31FixedOnes | kFlagU | 0x00000008};
+	             kFcr31FixedOnes | kFlagU | kFlagSU, false};
 	u32 res[2] = {};
 	const u32 interp = RunFamCase(c, false, &res[0]);
 	const u32 jit = RunFamCase(c, true, &res[1]);
 	EXPECT_EQ(interp, c.want_fcr31) << "[interp]";
-	EXPECT_EQ(jit, interp) << "engines disagree on FCR31 U/SU";
 	EXPECT_EQ(res[0], 0x00000000u) << "[interp] must flush the denormal";
-	EXPECT_EQ(res[1], res[0]) << "engines disagree on the denormal result";
+	EXPECT_EQ(jit, interp) << "engines disagree on FCR31 U/SU -- the fast path "
+	                          "raise, same gap as everywhere else";
+	EXPECT_EQ(res[1], res[0]) << "engines disagree on the denormal result -- "
+	                             "this is the part that is actually open";
 }
 
-// The seven capture rows at round-to-nearest; the same table under the
-// production environment is DISABLED_ExceptionFlagsInProductionFpEnvMissOverflow
-// below.
-// TRIPWIRE -- see the O/SO revert note above.
-TEST(EeFpuFcrConsoleConformance, DISABLED_ExceptionFlagsMatchConsole)
-{
-	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
-	int checked = 0;
-	for (int i = 0; i < kFlagSituationCount; ++i)
-	{
-		const FlagSituation& s = kFlagSituations[i];
-		const u32 word = FlagOpWord(s);
-		ASSERT_NE(word, 0u) << s.what;
-
-		for (int jit = 0; jit < 2; ++jit)
-		{
-			EeRecTestHarness h;
-			h.EnableCop1();
-			h.SetFcr31(kFcr31FixedOnes);
-			h.SetFprBits(kFd, 0x00001337);
-			h.SetFprBits(kFs, s.fs);
-			h.SetFprBits(kFt, s.ft);
-			h.SetGpr128(kRd, 0, 0);
-			h.LoadProgram({word, CFC1(kRd, 31)});
-			if (jit)
-				h.RunJitNoDiff();
-			else
-				h.RunInterpOnly();
-
-			const u32 got = jit ? h.GetGprJit(kRd) : h.GetGprInterp(kRd);
-			if (jit && s.bad_jit)
-			{
-				EXPECT_NE(got, s.fcr31)
-					<< s.what
-					<< " [jit] now matches silicon; the recompiler must have "
-					   "gained O/SO handling — drop bad_jit for this row.";
-				continue;
-			}
-
-			SCOPED_TRACE(::testing::Message()
-			             << s.what << (jit ? " [jit]" : " [interp]"));
-			EXPECT_EQ(got, s.fcr31);
-			if (s.check_fd)
-			{
-				EXPECT_EQ(jit ? h.GetFprBitsJit(kFd) : h.GetFprBitsInterp(kFd),
-				          s.fd);
-			}
-		}
-		++checked;
-	}
-	EXPECT_EQ(checked, kFlagSituationCount);
-}
-
-// The same table, in the environment a game actually runs in: no ScopedFpEnv,
-// so ChopZero is in force. Every overflow saturates to +/-FLT_MAX instead of
-// reaching Inf, and PCSX2's overflow detection -- which looks for Inf, in both
-// engines -- cannot fire. Measured: the Overflow and NAN-math rows read FCR31
-// 0x1000001 where the console says 0x1008011, i.e. O and SO missing.
-//
-// DISABLED because it is a statement about PCSX2, not a regression: the fix is
-// to stop inferring overflow from Inf, and until someone does that this is the
-// production truth. Force-enable it to see the current row-by-row state.
-//
-// The open hardware question is what "overflow" means on the EE FPU, since the
-// unit truncates: does silicon raise O from the magnitude of the exact result,
-// independently of rounding? A capture of FCR31 after an overflowing ADD.S/MUL.S
-// would settle it -- and the same answer decides the VU O flag (work-order
-// item 6 / the FP-environment section).
-TEST(EeFpuFcrConsoleConformance, DISABLED_ExceptionFlagsInProductionFpEnvMissOverflow)
-{
-	for (int i = 0; i < kFlagSituationCount; ++i)
-	{
-		const FlagSituation& s = kFlagSituations[i];
-		const u32 word = FlagOpWord(s);
-		ASSERT_NE(word, 0u) << s.what;
-
-		for (int jit = 0; jit < 2; ++jit)
-		{
-			EeRecTestHarness h;
-			h.EnableCop1();
-			h.SetFcr31(kFcr31FixedOnes);
-			h.SetFprBits(kFd, 0x00001337);
-			h.SetFprBits(kFs, s.fs);
-			h.SetFprBits(kFt, s.ft);
-			h.SetGpr128(kRd, 0, 0);
-			h.LoadProgram({word, CFC1(kRd, 31)});
-			if (jit)
-				h.RunJitNoDiff();
-			else
-				h.RunInterpOnly();
-
-			SCOPED_TRACE(::testing::Message()
-			             << s.what << (jit ? " [jit]" : " [interp]")
-			             << " (production FP environment)");
-			EXPECT_EQ(jit ? h.GetGprJit(kRd) : h.GetGprInterp(kRd), s.fcr31);
-		}
-	}
-}
+// DISABLED_ExceptionFlagsMatchConsole and
+// DISABLED_ExceptionFlagsInProductionFpEnvMissOverflow used to sit here, one
+// per FP environment. ExceptionFlagsMatchConsoleExceptTheFastPathRaise above
+// asserts the one table in both.
 
 // Both engines model the hardware: every control-register index aliases onto
 // FCR0/FCR31 and every FCR31 write comes back through the mask model.
