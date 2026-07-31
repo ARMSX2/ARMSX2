@@ -457,26 +457,6 @@ static a64::VRegister fpuClampInput(const a64::VRegister& src, const a64::VRegis
 	return scratch;
 }
 
-// Source-operand clamp for MAX.S / MIN.S. Identical sign-preserving inf/NaN ->
-// ±fMax to fpuClampInput, but gated on CHECK_FPU_OVERFLOW (eeClampMode >= 1)
-// instead of CHECK_FPU_EXTRA_OVERFLOW (>= 2). x86 routes MAX/MIN through
-// recCommutativeOp with op>=2, whose gate `CHECK_FPU_EXTRA_OVERFLOW || (op>=2)`
-// is always true, so it fpuFloat2-clamps both operands whenever CHECK_FPU_OVERFLOW
-// — a strictly lower threshold than the arithmetic ops. AetherSX2's shipped arm64
-// rec gates the same MAX/MIN clamp on fpuOverflow (options bit 8) vs ADD/SUB's
-// bit 8+9 (verified by disassembly of the 3606 build). Without it a raw Inf/NaN
-// operand (via MOV.S/LWC1/MTC1) survives the NaN-eating Fmaxnm/Fminnm as the
-// wrong finite value — the True Crime: New York City rainbow. Off (mode 0)
-// returns the source reg and emits nothing.
-static a64::VRegister fpuClampMinMaxOperand(const a64::VRegister& src, const a64::VRegister& scratch)
-{
-	if (!CHECK_FPU_OVERFLOW)
-		return src;
-	armAsm->Fmov(scratch, src);
-	fpuClampCompareOperand(scratch);
-	return scratch;
-}
-
 // PS2 add/sub guard-bit emulation for the single-precision fast path.
 //
 // A compliant IEEE FPU keeps "guard" bits to the right of the mantissa during
@@ -1234,33 +1214,76 @@ void recRSQRT_S()
 		XMMINFO_WRITED | XMMINFO_READS | XMMINFO_READT);
 }
 
-// PS2 FPU has no NaN concept. At eeClampMode >= 1 the operands are first
-// clamped to ±fMax (sign-preserving, via fpuClampMinMaxOperand — matching x86
-// recCommutativeOp's always-firing op>=2 clamp and AetherSX2's arm64 rec), so a
-// raw Inf/NaN operand cannot reach the max/min. The result never needs clamping
-// (max/min of two finite ±fMax-bounded inputs stays in range). Fmaxnm/Fminnm
-// (not Fmax/Fmin, which IEEE-propagate NaN) give MAXSS/MINSS NaN-eating for the
-// unclamped mode-0 case.
-static void recMAX_S_xmm(int info)
+// MAX.S / MIN.S are bit SELECTION, not arithmetic. The console orders the two
+// raw words by (sign, magnitude) and writes the winner's word through
+// unchanged — that is `fp_max`/`fp_min` in FPU.cpp, a pure integer compare, and
+// it is exactly what the DOUBLE tier already does (DOUBLE::recMINMAX, the port
+// of x86 iFPUd.cpp recMINMAX: "FPU's MAX/MIN work with all numbers (including
+// denormals)"). Because there is no arithmetic in the op, the single/double
+// split has nothing to say about it and both tiers owe the same answer.
+//
+// The fast path used to compute it with Fmaxnm/Fminnm over ±fMax-clamped
+// operands (the x86 iFPU.cpp fast tier still does, via recCommutativeOp op>=2).
+// Two whole operand classes come back wrong that way, and both are visible in
+// the SCPH-90000 capture — 38 of 66 MAX cases and 16 of 66 MIN cases:
+//
+//   denormals   Fmaxnm/Fminnm are arithmetic, so FPCR.FZ flushes the operand
+//               and the winner's word is lost: max(0x00000001, 0) reads back
+//               0x00000000 where the console says 0x00000001. (30 MAX, 14 MIN.)
+//   exponent255 the ±fMax operand clamp folds every top-binade word onto
+//               0x7F7FFFFF: max(0x7F7FFFFF, 0x7FFFFFFF) reads back 0x7F7FFFFF
+//               where the console says 0x7FFFFFFF. Exponent 255 is an ordinary
+//               binade on the EE and 0x7FFFFFFF is the largest number there is
+//               — the same defect ABS.S/NEG.S carried until cbf04acba1.
+//               (8 MAX, 2 MIN.)
+//
+// Dropping the clamp does not reopen the True Crime: New York City rainbow that
+// motivated it (a raw Inf/NaN operand being eaten by Fmaxnm and losing to the
+// small operand): the integer ordering has no NaN concept to eat, so a
+// pseudo-inf operand wins the max as the huge number the console treats it as.
+//
+// Ordering key: k(x) = x ^ ((x >>s 31) >>u 1) flips the low 31 bits of a
+// negative word and leaves a positive one alone, so a SIGNED compare of the
+// keys is the console's total order. It is an involution, but there is no need
+// to invert it — Csel picks between the untouched originals.
+//
+// ⚠️ Same GPR scratch contract as fpuEmitGuardedAddSub: w0/w1/w8 and the
+// non-allocatable w9 only. Never x2-x7/x14/x15, where a resident FCR31 lives.
+// fpuClearOUFlags() runs first, so any allocator eviction it emits lands before
+// the raw scratch goes live.
+static void recMINMAX(int info, bool ismin)
 {
 	fpuClearOUFlags();
-	const a64::VRegister s = fpuClampMinMaxOperand(armSRegister(EEREC_S), RSSCRATCH);
-	const a64::VRegister t = fpuClampMinMaxOperand(armSRegister(EEREC_T), RSSCRATCH2);
-	armAsm->Fmaxnm(armSRegister(EEREC_D), s, t);
+
+	const a64::Register sbits = RWARG1, tbits = RWARG2;
+	const a64::Register skey = RWSCRATCH, tkey = a64::w9;
+
+	armAsm->Fmov(sbits, armSRegister(EEREC_S));
+	armAsm->Fmov(tbits, armSRegister(EEREC_T));
+	armAsm->Asr(skey, sbits, 31);
+	armAsm->Eor(skey, sbits, a64::Operand(skey, a64::LSR, 1));
+	armAsm->Asr(tkey, tbits, 31);
+	armAsm->Eor(tkey, tbits, a64::Operand(tkey, a64::LSR, 1));
+	armAsm->Cmp(skey, tkey);
+	// Equal keys mean identical words, so either arm is correct there.
+	armAsm->Csel(sbits, sbits, tbits, ismin ? a64::le : a64::ge);
+	armAsm->Fmov(armSRegister(EEREC_D), sbits);
 }
 
+static void recMAX_S_xmm(int info) { recMINMAX(info, false); }
+static void recMIN_S_xmm(int info) { recMINMAX(info, true); }
+
+// FULL mode keeps dispatching to DOUBLE::recMINMAX rather than sharing this
+// body. The two are semantically identical (both are fp_max/fp_min) and the
+// capture scores the DOUBLE one 66/66 on both ops in all 1024 grid cells, so
+// there is nothing to gain by moving it — and the tiers deliberately differ on
+// FCR31 residency: fpuTryAllocFCR31 returns -1 under CHECK_FPU_FULL because the
+// DOUBLE bodies RMW fprc[31] through memory (GE-12 comment at the top of this
+// file). Keeping the split keeps that invariant local to each tier.
 void recMAX_S()
 {
 	eeFPURecompileCode(CHECK_FPU_FULL ? DOUBLE::recMAX_S_xmm : recMAX_S_xmm, Interp::MAX_S,
 		XMMINFO_WRITED | XMMINFO_READS | XMMINFO_READT);
-}
-
-static void recMIN_S_xmm(int info)
-{
-	fpuClearOUFlags();
-	const a64::VRegister s = fpuClampMinMaxOperand(armSRegister(EEREC_S), RSSCRATCH);
-	const a64::VRegister t = fpuClampMinMaxOperand(armSRegister(EEREC_T), RSSCRATCH2);
-	armAsm->Fminnm(armSRegister(EEREC_D), s, t);
 }
 
 void recMIN_S()

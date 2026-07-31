@@ -1011,91 +1011,66 @@ TEST(EeRecFpu, SqrtSNegativeArgumentReturnsAbsRoot)
 	h.ExpectFpr(3, FloatBits(5.0f));
 }
 
-// ----- MAX.S / MIN.S operand clamp (eeClampMode >= 1) ----------------------
+// ----- MAX.S / MIN.S do not clamp their operands, in any mode ---------------
 //
-// x86 recCommutativeOp clamps MAX/MIN operands (sign-preserving inf/NaN ->
-// ±fMax via fpuFloat2) whenever CHECK_FPU_OVERFLOW — the op>=2 argument makes
-// the gate always fire, so mode >= 1, a strictly LOWER threshold than ADD/SUB's
-// mode >= 2 operand clamp. AetherSX2's shipped arm64 rec gates the identical
-// clamp on fpuOverflow (options bit 8), confirmed by disassembly. Our port
-// emitted bare Fmaxnm/Fminnm with no operand clamp, so a raw Inf/NaN FPR
-// (reachable via MOV.S/LWC1/MTC1) survived as the wrong finite value — Fmaxnm/
-// Fminnm are NaN-eating and return the *other* operand — which is the True
-// Crime: New York City rainbow (a min(max(uv,0),size) UV-clamp idiom feeding a
-// corrupt palette index). These pin the x86/AetherSX2 behavior.
+// This block used to assert the opposite, and the reversal is worth recording.
 //
-// The interpreter's fp_max/fp_min run on raw bits with NO operand clamp, so the
-// (correct) JIT legitimately diverges from interp here — interp is not the
-// FPU-clamp oracle, the x86 JIT is. Hence RunJitNoDiff + GetFprBitsJit rather
-// than the auto-diffing Run()/ExpectFpr.
-TEST(EeRecFpu, MaxSClampsInfOperandAtClampMode2)
+// The claim was that x86 recCommutativeOp clamps MAX/MIN operands
+// (sign-preserving inf/NaN -> ±fMax via fpuFloat2) whenever CHECK_FPU_OVERFLOW,
+// that AetherSX2's arm64 rec gates the same clamp on fpuOverflow, and that a
+// raw Inf/NaN FPR (reachable via MOV.S/LWC1/MTC1) otherwise survived the
+// NaN-eating Fmaxnm/Fminnm as the wrong finite value — the True Crime: New York
+// City rainbow. All of that is accurate about those two emulators. It is not
+// accurate about the console, and the tests here concluded from it that "interp
+// is not the FPU-clamp oracle, the x86 JIT is".
+//
+// The SCPH-90000 capture says otherwise, on all 132 of its MAX/MIN cases:
+// MAX.S/MIN.S are bit SELECTION. The console orders the two raw words by
+// (sign, magnitude) and writes the winner through untouched — exactly the
+// interpreter's fp_max/fp_min, and exactly what the DOUBLE tier already did.
+// Exponent 255 is an ordinary binade there, so +2^128 is a real number that
+// wins a max rather than something to be clamped away.
+//
+// So the clamp came out (recMINMAX, iFPU-arm64.cpp) and the JIT now agrees with
+// the interpreter and with silicon in every clamp mode. The True Crime idiom is
+// still safe: min(max(uv,0),size) with a pseudo-inf uv now yields the pseudo-inf
+// out of the max, which is what the console yields.
+//
+// Full coverage — the 54 distinct console triples, the aliased register forms,
+// and all four clamp modes — lives in ee_fpu_minmax_console_tests.cpp. What is
+// kept here is the mode axis of the old claim, inverted: the answer is the same
+// in modes 0, 1 and 2, so no clamp fires in any of them.
+TEST(EeRecFpu, MaxMinDoNotClampOperandsInAnyClampMode)
 {
-	FpuClampModeGuard guard(2);
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFprBits(1, 0x7F800000u); // +Inf raw bits (poisoned fpr)
-	h.SetFpr(2, 3.0f);
-	h.LoadProgram({ee::MAX_S(3, 1, 2)});
-	h.RunJitNoDiff();
-	// clamp(+Inf) = +fMax, MAX(+fMax, 3) = +fMax. Bare Fmaxnm gives +Inf.
-	EXPECT_EQ(h.GetFprBitsJit(3), 0x7F7FFFFFu);
-}
+	struct Row { u32 insn; u32 fs_bits; float ft; u32 want; const char* what; };
+	const Row rows[] = {
+		{ee::MAX_S(3, 1, 2), 0x7F800000u,  3.0f, 0x7F800000u, "max(+2^128, 3)"},
+		{ee::MAX_S(3, 1, 2), 0x7FC00000u, -5.0f, 0x7FC00000u, "max(exp255 qNaN pattern, -5)"},
+		{ee::MIN_S(3, 1, 2), 0xFFC00000u,  5.0f, 0xFFC00000u, "min(-exp255 qNaN pattern, 5)"},
+		{ee::MIN_S(3, 1, 2), 0x7F800000u,  3.0f, 0x40400000u, "min(+2^128, 3) = 3"},
+	};
 
-TEST(EeRecFpu, MaxSClampsNanOperandToPosFmax)
-{
-	FpuClampModeGuard guard(2);
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFprBits(1, 0x7FC00000u); // +NaN raw bits
-	h.SetFpr(2, -5.0f);
-	h.LoadProgram({ee::MAX_S(3, 1, 2)});
-	h.RunJitNoDiff();
-	// clamp(+NaN) = +fMax, MAX(+fMax, -5) = +fMax. Bare Fmaxnm NaN-eats -> -5.0.
-	EXPECT_EQ(h.GetFprBitsJit(3), 0x7F7FFFFFu);
-}
-
-TEST(EeRecFpu, MinSClampsNegNanOperandToNegFmax)
-{
-	FpuClampModeGuard guard(2);
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFprBits(1, 0xFFC00000u); // -NaN raw bits
-	h.SetFpr(2, 5.0f);
-	h.LoadProgram({ee::MIN_S(3, 1, 2)});
-	h.RunJitNoDiff();
-	// clamp(-NaN) = -fMax, MIN(-fMax, 5) = -fMax. Bare Fminnm NaN-eats -> 5.0.
-	EXPECT_EQ(h.GetFprBitsJit(3), 0xFF7FFFFFu);
-}
-
-// The gate is fpuOverflow (mode >= 1), NOT fpuExtraOverflow (mode >= 2): the
-// clamp must still fire at mode 1. A "fix" that reused fpuClampInput (which is
-// gated on mode >= 2) would pass the mode-2 tests above but fail this one.
-TEST(EeRecFpu, MaxSClampsInfOperandAtClampMode1)
-{
-	FpuClampModeGuard guard(1);
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFprBits(1, 0x7F800000u); // +Inf
-	h.SetFpr(2, 3.0f);
-	h.LoadProgram({ee::MAX_S(3, 1, 2)});
-	h.RunJitNoDiff();
-	EXPECT_EQ(h.GetFprBitsJit(3), 0x7F7FFFFFu);
-}
-
-// Lower bound: at mode 0 x86 skips the operand clamp (fpuFloat2 is a no-op when
-// !CHECK_FPU_OVERFLOW), so +Inf passes through unclamped. Guards against the fix
-// over-clamping (making the clamp unconditional). +Inf, not NaN, is used here:
-// mode-0 MAXSS-vs-Fmaxnm NaN handling is a separate pre-existing divergence.
-TEST(EeRecFpu, MaxSDoesNotClampAtClampMode0)
-{
-	FpuClampModeGuard guard(0);
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFprBits(1, 0x7F800000u); // +Inf
-	h.SetFpr(2, 3.0f);
-	h.LoadProgram({ee::MAX_S(3, 1, 2)});
-	h.RunJitNoDiff();
-	EXPECT_EQ(h.GetFprBitsJit(3), 0x7F800000u); // +Inf, unclamped
+	int checked = 0;
+	for (int mode = 0; mode <= 2; ++mode)
+	{
+		FpuClampModeGuard guard(mode);
+		for (const Row& r : rows)
+		{
+			SCOPED_TRACE(testing::Message() << r.what << " [eeClampMode " << mode << "]");
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.SetFprBits(1, r.fs_bits);
+			h.SetFpr(2, r.ft);
+			h.LoadProgram({r.insn});
+			// The interpreter agrees on every row, so this could use the
+			// auto-diffing Run(); RunJitNoDiff is kept so a future interpreter
+			// regression cannot mask a JIT one.
+			h.RunJitNoDiff();
+			EXPECT_EQ(h.GetFprBitsJit(3), r.want);
+			++checked;
+		}
+	}
+	EXPECT_EQ(checked, 3 * 4) << "anti-vacuity";
 }
 
 // ===========================================================================

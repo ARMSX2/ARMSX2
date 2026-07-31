@@ -78,10 +78,16 @@ public:
 	void EnableFpuExtraOverflow();
 
 	// Turns OFF the (default-ON) fpuOverflow Recompiler option — GameDB
-	// eeClampMode 0, CHECK_FPU_OVERFLOW — the mode in which the JIT emits no
-	// clamping at all for the ops that gate on the LOWER threshold (SQRT.S's
-	// operand clamp, MAX.S/MIN.S's operands, and on x86 ABS.S's result). The
-	// interpreter has no equivalent switch. Restored in the dtor.
+	// eeClampMode 0, CHECK_FPU_OVERFLOW.
+	//
+	// On arm64 this currently changes NO emitted code: the three paths that used
+	// to gate on the lower threshold (SQRT.S's operand clamp, MAX.S/MIN.S's
+	// operands, ABS.S's result on x86) have each been shown against the console
+	// to be wrong in every mode and removed. It is still live in the x86
+	// recompiler and still set from the GameDB, so the switch stays; see the
+	// retired liveness witness at the foot of ee_fpu_absneg_clamp_tests.cpp
+	// before relying on a clamp0 leg to distinguish anything. The interpreter
+	// has no equivalent switch. Restored in the dtor.
 	void DisableFpuOverflow();
 
 	// Turns OFF the (default-ON) fpuGuardedAddSub Recompiler option so the JIT
