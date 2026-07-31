@@ -26,7 +26,12 @@ final class GameEventHaptics {
         guard now.timeIntervalSince(lastFire) > 0.05 else { return }
         lastFire = now
 
-        let intensity = max(Float(large), Float(small)) / Float(UInt16.max)
+        // The heavy motor is the only one with a speed. The PS2 buzzer is on or off,
+        // so taking the larger of the two used to pin this to full every time a game
+        // so much as touched it.
+        let intensity = large > 0
+            ? Float(large) / Float(UInt16.max)
+            : 0.55
         // Heavy motor (large) dominates; fall back to medium for small-only rumble.
         let generator: UIImpactFeedbackGenerator
         if large > 0 {
