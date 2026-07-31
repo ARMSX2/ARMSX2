@@ -24,18 +24,26 @@
 // engine-vs-engine divergence is not. The console column is therefore carried
 // as data and asserted only by the DISABLED tripwire at the bottom.
 //
-// SQRT.S has left this compromise: both engines scale instead of clamping and
-// match the console, which is what moved rows 44 and 45 out of the value-only
-// column below. ABS.S likewise (ee_fpu_absneg_clamp_tests.cpp). The arithmetic
-// ops cannot follow: their results do exceed what a host single can hold.
+// SQRT.S was the first op to leave this compromise and the arithmetic ops have
+// now followed: their operands never needed saturating, so SQRT computes
+// sqrt(|Ft|/4)*2 and the rest go through eeToDouble() and eeRoundToSingle().
+// That is what moved rows 44/45 and then most of the value-only column out of
+// it.
 //
-// The measured console divergences, for the record:
-//   * 32 rows differ in VALUE only -- the +/-FLT_MAX saturation compromise.
-//     DO NOT "fix" posFmax (pcsx2/FPU.cpp) globally; that pushes host
-//     exponent-255 patterns through every downstream op in the clamp mode
-//     nearly every game runs in. ee_fpu_zero_divisor_console_tests.cpp carries
-//     the same warning and the serial list behind it.
-//   * 25 rows match exactly.
+// Do not do the same to the fast path by changing posFmax globally. It computes
+// in host singles, so handing it exponent-255 words pushes host Inf/NaN patterns
+// through every downstream op in the clamp mode nearly every game runs in.
+// ee_fpu_zero_divisor_console_tests.cpp carries the same warning and the serial
+// list behind it.
+//
+// The measured console divergences, for the record (re-measured 2026-07-31 with
+// DISABLED_DumpConsoleComparison; the numbers before that change are in
+// parentheses):
+//   * 51 rows match exactly (was 25).
+//   * 6 rows differ in VALUE only, all of them DIV or RSQRT (was 32, every op).
+//     Those two still read their operands through fpuDouble and still saturate
+//     through checkDivideByZero's posFmax, so they are the last members of this
+//     class. See EeFpuTopBinadeConsole for the ops that left it.
 //   * 0 rows differ in FLAGS, on either engine. FCR31's O and U used to be
 //     wrong on 18 of the 57 -- 15 overflow rows and 3 underflow -- because
 //     checkOverflow()/checkUnderflow() inferred them from a host infinity and
@@ -45,15 +53,16 @@
 //
 // Where the tiers sit over these 57 rows, as asserted below:
 //   * fpuFullMode: 57/57 exact, value and flags. It is the reference.
-//   * interpreter: 57/57 on FCR31, 32 value divergences (the compromise).
-//   * fast path:   57/57 on value where the value is representable at all, and
-//     it clears O and U but raises neither. A raise needs the magnitude of the
+//   * interpreter: 57/57 on FCR31, 51/57 on value, the 6 being DIV and RSQRT.
+//   * fast path:   +/-FLT_MAX wherever the console is in the top binade, and it
+//     clears O and U but raises neither. A raise needs the magnitude of the
 //     exact result, and a saturating single has thrown that away by the time
 //     the emitter could look; buying it back means the double arithmetic
-//     fpuFullMode already pays for (ToPS2FPU_Full, iFPUd-arm64.cpp).
+//     fpuFullMode already pays for.
 //     EnginesAgreeExceptOnTheDocumentedRows pins the shape of the remaining
 //     gap: the fast path's FCR31 must equal the interpreter's with exactly the
-//     O|U|SO|SU raise bits removed, and nothing else.
+//     O|U|SO|SU raise bits removed, and its value may differ only by being
+//     sign|FLT_MAX where the interpreter is in the top binade.
 
 #include "autocases_fpuovf.h"
 #include "harness/EeRecTestHarness.h"
@@ -161,15 +170,26 @@ struct EngineDivergence
 };
 
 constexpr EngineDivergence kEngineDivergences[] = {
-	// CLASS 1 -- the operand-clamp mode axis, not a defect. The interpreter
-	// always clamps its sources through fpuDouble; the fast path only does so
-	// under CHECK_FPU_EXTRA_OVERFLOW (GameDB eeClampMode >= 2). Every row here
-	// feeds the op a raw exponent-255 word, so the two engines are not being
-	// asked the same question until the clamp is on. Same axis as the "NAN
-	// math" row in ee_fpu_fcr_console_conformance_tests.cpp.
+	// CLASS 1 -- the operand-clamp mode axis, not a defect. The fast path clamps
+	// its sources only under CHECK_FPU_EXTRA_OVERFLOW (GameDB eeClampMode >= 2).
+	// Every row here feeds the op a raw exponent-255 word, so the two engines
+	// are not being asked the same question until the clamp is on. Same axis as
+	// the "NAN math" row in ee_fpu_fcr_console_conformance_tests.cpp.
+	//
+	// This class used to cover every op, because the interpreter clamped its
+	// sources unconditionally and turning the fast path's clamp on made the two
+	// agree. Now the clamp heals a row only where the interpreter still goes
+	// through fpuDouble -- DIV and RSQRT. Row 14 just below is the one that
+	// moved.
 	{12, true, "div +EEMAX, +EEMAX -- interp gets 1.0, JIT divides Inf by Inf"},
-	{14, true, "mul 2^128, 0.5 -- same"},
-	{17, true, "sub 2^128, 2^128 -- interp gets 0, JIT gets Inf-Inf"},
+	{17, true, "sub 2^128, 2^128 -- both reach 0, from different operands"},
+
+	// CLASS 1b -- was CLASS 1 until 2026-07-31. mul 2^128 by 0.5 is 2^127,
+	// which the EE and the host both hold exactly and the interpreter now
+	// returns. Turning the fast path's operand clamp on leaves it computing
+	// FLT_MAX*0.5, so the clamp opens this gap rather than closing it.
+	{14, false, "mul 2^128, 0.5 -- interp is console-exact at 2^127; the fast "
+				"path's operand clamp cannot reach it and makes it worse"},
 
 	// Rows 3, 11 and 16 used to be listed here and are not divergences any
 	// more. They were never the operand-clamp axis: their RESULT words were
@@ -214,7 +234,7 @@ TEST(EeFpuOverflowConsole, EnginesAgreeExceptOnTheDocumentedRows)
 	// the top of this file. Any other difference, in either direction, is a
 	// defect.
 	constexpr u32 kRaiseBits = kFlagO | kFlagU | kFlagSO | kFlagSU;
-	int raise_rows = 0;
+	int raise_rows = 0, saturation_rows = 0;
 
 	for (int i = 0; i < kCaseCount; ++i)
 	{
@@ -232,7 +252,22 @@ TEST(EeFpuOverflowConsole, EnginesAgreeExceptOnTheDocumentedRows)
 			continue;
 		}
 
-		EXPECT_EQ(in.result, ji.result) << "result diverges between engines";
+		// The one value difference the fast path is allowed, and only in this
+		// exact shape: the interpreter's answer is in the EE's top binade and
+		// the fast path's is sign|FLT_MAX, because it folds the whole binade
+		// to FLT_MAX computing in host singles.
+		//
+		// Written as a property of the two values rather than as a row list, so
+		// any other disagreement -- a one-ULP difference, a sign difference, a
+		// fast path that lands somewhere else in the binade -- still fails.
+		const bool top_binade_tier_gap =
+			(in.result & 0x7F800000u) == 0x7F800000u &&
+			(ji.result & 0x7FFFFFFFu) == 0x7F7FFFFFu &&
+			(in.result & 0x80000000u) == (ji.result & 0x80000000u);
+		if (top_binade_tier_gap)
+			++saturation_rows;
+		else
+			EXPECT_EQ(in.result, ji.result) << "result diverges between engines";
 		if ((in.fcr31 & kRaiseBits) != 0)
 		{
 			++raise_rows;
@@ -252,6 +287,10 @@ TEST(EeFpuOverflowConsole, EnginesAgreeExceptOnTheDocumentedRows)
 		<< "anti-vacuity: no row in the capture raises O or U on the "
 		   "interpreter any more, so the branch above is never taken and this "
 		   "test cannot see the fast path's gap at all";
+	EXPECT_GT(saturation_rows, 0)
+		<< "anti-vacuity for the saturation allowance. If this went to zero "
+		   "because the FAST PATH learned to saturate at the EE maximum, delete "
+		   "the allowance rather than relaxing this.";
 }
 
 // ---------------------------------------------------------------------------
@@ -286,20 +325,26 @@ TEST(EeFpuOverflowConsole, OperandClampHealsEveryDocumentedDivergence)
 }
 
 // ---------------------------------------------------------------------------
-// ENABLED. The compromise, pinned. On every row the console overflowed, both
-// engines must produce sign|0x7F7FFFFF -- the NON-console value. This exists so
-// that an attempt at the console tripwire below cannot quietly change what the
-// default clamp mode produces.
+// ENABLED. The compromise, pinned on the fast path, the only tier that still
+// makes it. On every row the console overflowed, the fast path must produce
+// sign|0x7F7FFFFF, the non-console value, because it saturates in host singles
+// and a host single stops a binade below the EE's maximum.
 //
-// If you are here because this failed: you changed the fast path's saturation.
-// Scope the change to the FULL path instead.
+// The interpreter used to be pinned here too and no longer is: it computes the
+// exact result and saturates at sign|0x7FFFFFFF, the console's answer. What is
+// left keeps an attempt at the console tripwire below from quietly changing
+// what the default clamp mode produces for games.
+//
+// If you are here because the JIT leg failed: you changed the fast path's
+// saturation. That is game-visible, and the place to make it is the FULL path,
+// which is already console-exact (FullModeMatchesConsoleOnEveryRow).
 // ---------------------------------------------------------------------------
-TEST(EeFpuOverflowConsole, DefaultClampModeSaturatesToFltMaxOnBothEngines)
+TEST(EeFpuOverflowConsole, DefaultClampModeSaturatesToFltMaxOnTheFastPath)
 {
 	ASSERT_FALSE(EmuConfig.Cpu.Recompiler.fpuFullMode)
 		<< "this test describes the NON-full path; something enabled FULL mode";
 
-	int checked = 0;
+	int checked = 0, interp_exact = 0;
 	for (int i = 0; i < kCaseCount; ++i)
 	{
 		const FpuOvfCase& c = kCases[i];
@@ -308,13 +353,20 @@ TEST(EeFpuOverflowConsole, DefaultClampModeSaturatesToFltMaxOnBothEngines)
 		if (FindDivergence(i) != nullptr)
 			continue; // covered by the divergence list instead
 		++checked;
-		const u32 want = (c.result & 0x80000000u) | kFastPathMax;
 		SCOPED_TRACE(::testing::Message() << "row " << i << ": " << c.what);
-		EXPECT_EQ(RunCase(c, false).result, want) << "interp";
-		EXPECT_EQ(RunCase(c, true).result, want) << "jit";
+		EXPECT_EQ(RunCase(c, true).result, (c.result & 0x80000000u) | kFastPathMax)
+			<< "jit -- the fast path's saturation must not move";
+		if (RunCase(c, false).result == c.result)
+			++interp_exact;
 	}
 	EXPECT_GT(checked, 10) << "the console overflow rows vanished from the "
 							  "capture; this test would pass vacuously";
+	// The interpreter's half, stated as a count rather than row by row so that
+	// the DIV/RSQRT rows it has not reached yet do not have to be listed here.
+	EXPECT_EQ(interp_exact, checked)
+		<< "the interpreter reached the console on " << interp_exact << " of "
+		<< checked << " overflow rows; it was 0 before the operand clamp came "
+		   "out and it must not go back down";
 }
 
 // ---------------------------------------------------------------------------

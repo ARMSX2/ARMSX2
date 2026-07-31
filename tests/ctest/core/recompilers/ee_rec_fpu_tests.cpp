@@ -900,32 +900,67 @@ TEST(EeRecFpu, MsubaSSubtractsProductFromAccumulator)
 // behaviour these tests exist to rule out, so their subject genuinely does not
 // exist there. Tagged rather than deleted because the extra-overflow clamp mode
 // they contrast with is still live code.
+// The two engines therefore land a binade apart, +-0x7FFFFFFF against +-fMax,
+// which Run()'s auto-diff cannot express -- hence the separate legs. Both are
+// asserted: the fast path's is what games see, the interpreter's is the
+// console's (capture rows 549 and 563).
 TEST(EeRecFpu, MaddaSDoesNotClampIntermediateProduct)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetAccBits(0xFF7FFFFFu); // ACC = -fMax
-	h.SetFpr(1, 1e20f);
-	h.SetFpr(2, 1e20f);        // fs*ft overflows single precision
-	h.LoadProgram({ee::MADDA_S(1, 2)});
-	h.Run();
-	// interp: -fMax + overflow -> +fMax. with product clamped: -fMax + (+fMax) = 0.
-	h.ExpectAcc(0x7F7FFFFFu);
+	u32 jit_acc, interp_acc;
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0xFF7FFFFFu); // ACC = -fMax
+		h.SetFpr(1, 1e20f);
+		h.SetFpr(2, 1e20f);        // fs*ft overflows single precision
+		h.LoadProgram({ee::MADDA_S(1, 2)});
+		h.RunJitNoDiff();
+		jit_acc = h.GetAccBitsJit();
+	}
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0xFF7FFFFFu);
+		h.SetFpr(1, 1e20f);
+		h.SetFpr(2, 1e20f);
+		h.LoadProgram({ee::MADDA_S(1, 2)});
+		h.RunInterpOnly();
+		interp_acc = h.GetAccBitsInterp();
+	}
+	// JIT: -fMax + overflow -> +fMax. With the product clamped it would be
+	// -fMax + (+fMax) = 0, which is what this test exists to rule out.
+	EXPECT_EQ(jit_acc, 0x7F7FFFFFu) << "the fast path clamped the product";
+	EXPECT_EQ(interp_acc, 0x7FFFFFFFu) << "the interpreter must saturate at EEMAX";
 }
 
 TEST(EeRecFpu, MsubaSDoesNotClampIntermediateProduct)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest}; // see MaddaSDoesNotClampIntermediateProduct
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetAccBits(0x7F7FFFFFu); // ACC = +fMax
-	h.SetFpr(1, 1e20f);
-	h.SetFpr(2, 1e20f);        // fs*ft overflows single precision
-	h.LoadProgram({ee::MSUBA_S(1, 2)});
-	h.Run();
-	// interp: +fMax - overflow -> -fMax. with product clamped: +fMax - (+fMax) = 0.
-	h.ExpectAcc(0xFF7FFFFFu);
+	u32 jit_acc, interp_acc;
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0x7F7FFFFFu); // ACC = +fMax
+		h.SetFpr(1, 1e20f);
+		h.SetFpr(2, 1e20f);        // fs*ft overflows single precision
+		h.LoadProgram({ee::MSUBA_S(1, 2)});
+		h.RunJitNoDiff();
+		jit_acc = h.GetAccBitsJit();
+	}
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0x7F7FFFFFu);
+		h.SetFpr(1, 1e20f);
+		h.SetFpr(2, 1e20f);
+		h.LoadProgram({ee::MSUBA_S(1, 2)});
+		h.RunInterpOnly();
+		interp_acc = h.GetAccBitsInterp();
+	}
+	// JIT: +fMax - overflow -> -fMax. With the product clamped: +fMax - fMax = 0.
+	EXPECT_EQ(jit_acc, 0xFF7FFFFFu) << "the fast path clamped the product";
+	EXPECT_EQ(interp_acc, 0xFFFFFFFFu) << "the interpreter must saturate at -EEMAX";
 }
 
 // ----- CHECK_FPU_EXTRA_OVERFLOW source clamp --------------------------
@@ -1339,7 +1374,7 @@ TEST(EeRecFpu, MulSFpuMulHackOffStillReachesTheConsoleValueOnInterp)
 	// compares fs and ft against their own constants and so does not fire
 	// reversed, exactly as the console behaves.
 	//
-	// The interpreter models the deficit itself (eeMulProduct in FPU.cpp), so it
+	// The interpreter models the deficit itself (eeMulRound in FPU.cpp), so it
 	// lands on the console value with the gamefix off. The single-precision fast
 	// path does not, so the two legitimately diverge here and this cannot be a
 	// Run() diff -- and RunJitNoDiff() never runs the interpreter at all, so
@@ -1378,20 +1413,19 @@ TEST(EeRecFpu, MulSMultiplierDeficitMatchesSilicon)
 {
 	// Rows measured directly on SCPH-90000. Each is a case where the exact
 	// product is representable with nothing below the ULP, so the sub-ULP
-	// deficit reaches the result.
-	//
-	// Every row's operands and product stay inside the IEEE single range on
-	// purpose. The interpreter multiplies fpuDouble()'d floats, so it cannot
-	// carry a row whose operand or product needs the EE's exponent-0xff binade
-	// -- 2.0 * FLT_MAX (corpus cases 857/1) lands on 0x7FFFFFFF on silicon and
-	// on +Inf here. That gap belongs to fpuDouble, not to the multiplier.
+	// deficit reaches the result. Corpus cases 857/1 are the 2.0 * FLT_MAX
+	// pair -- 0x7FFFFFFF is an ordinary number on the EE and the exact product
+	// lands on it, so that is a one-ULP defect and not saturation.
 	struct Row { u32 fs, ft, want; };
 	static const Row rows[] = {
 		{0x3f800000u, 0x7f7fffffu, 0x7f7ffffeu}, // 1.0 * FLT_MAX  -> one ULP low
 		{0x7f7fffffu, 0x3f800000u, 0x7f7fffffu}, // reversed       -> exact
+		{0x40000000u, 0x7f7fffffu, 0x7ffffffeu}, // corpus case 857
+		{0x7f7fffffu, 0x40000000u, 0x7fffffffu}, // corpus case 1
 		{0x3f800000u, 0x3fc00000u, 0x3fc00000u}, // ft mantissa 0x400000: exact
 		{0x3f800000u, 0x3f800001u, 0x3f800001u}, // ft mantissa 0x000001: exact
 		{0x3f800000u, 0x3fbfffffu, 0x3fbffffeu}, // ft mantissa 0x3fffff: low
+		{0x00800000u, 0x7f800001u, 0x40800001u}, // corpus case 876: exact
 		{0x3e800000u, 0x40490fdbu, 0x3f490fdau}, // the FpuMulHack pair
 		{0x40490fdbu, 0x3e800000u, 0x3f490fdbu}, // reversed       -> exact
 	};
@@ -1410,9 +1444,10 @@ TEST(EeRecFpu, MulSMultiplierDeficitMatchesSilicon)
 
 TEST(EeRecFpu, MultiplierDeficitReachesTheWholeMultiplyFamily)
 {
-	// MUL/MULA and the four multiply-accumulates all route their product
-	// through eeMulProduct. ACC = +0 (or the MADD/MSUB accumuland) so what
-	// lands in the destination is the rounded product alone.
+	// MUL/MULA round their product through eeMulRound and the four
+	// multiply-accumulates reach the same helper through eeMulAccumulate.
+	// ACC = +0 (or the MADD/MSUB accumuland) so what lands in the destination
+	// is the rounded product alone.
 	constexpr u32 kFs = 0x3f800000u; // 1.0: the product is ft, tail always zero
 	constexpr u32 kFt = 0x3fbfffffu; // Booth fires
 	constexpr u32 kWant = 0x3fbffffeu;
@@ -1561,18 +1596,21 @@ TEST(EeRecFpu, DivSZeroOverZeroAliasedDest)
 // x86 recMADDtemp/recMSUBtemp clamp the fs*ft product (and pre-add ACC) only
 // under CHECK_FPU_EXTRA_OVERFLOW; in the default clamp mode the raw product
 // rides to the accumulate as Inf and only the final result clamp applies.
-// The interpreter ALWAYS clamps MADD/MSUB's product (fpuDouble temp,
-// FPU.cpp:271-277) — so on the product-overflow + opposite-sign-ACC corner,
-// default-mode JIT = ±fMax while interp = 0. That divergence is BY DESIGN and
-// shared with x86 (same class as the mVU broadcast-FMAC divergence); games are
-// tuned against the x86 JIT. MADDA/MSUBA get the same extra-mode product clamp
-// from the shared x86 recMADDtemp — there interp diverges in the OTHER
-// direction (interp never clamps the A-form product).
+//
+// The interpreter changed on 2026-07-31: it used to clamp the product to
+// +-fMax, so an overflowing one cancelled against an opposite-signed ACC and
+// the corner came back 0. It now ends the instruction at the EE's own maximum,
+// so the corner comes back +-0x7FFFFFFF -- the console's answer, on capture
+// rows 521, 526, 535, 549, 554 and 563.
+//
+// The divergence below is by design: games are tuned against the fast path, and
+// the fast path's value is the one that must not move.
 
 TEST(EeRecFpu, MaddSProductOverflowDefaultModeMatchesX86Jit)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest}; // needs Inf -- see MaddaSDoesNotClampIntermediateProduct
-	// Interp leg: product clamped to +fMax → -fMax + fMax = 0.
+	// Interp leg: the product overflows, saturates at the EE maximum and ends
+	// the instruction. The console agrees (capture row 521 and friends).
 	{
 		EeRecTestHarness h;
 		h.EnableCop1();
@@ -1581,7 +1619,9 @@ TEST(EeRecFpu, MaddSProductOverflowDefaultModeMatchesX86Jit)
 		h.SetFprBits(2, 0x7F000000u);
 		h.LoadProgram({ee::MADD_S(3, 1, 2)});
 		h.RunInterpOnly();
-		EXPECT_EQ(h.GetFprBitsInterp(3), 0x00000000u);
+		EXPECT_EQ(h.GetFprBitsInterp(3), 0x7FFFFFFFu)
+			<< "the interpreter must saturate at the EE maximum, not at FLT_MAX "
+			   "and not at the 0 an accumulated +fMax used to give";
 	}
 	// JIT leg (x86 parity): raw product +Inf → -fMax + Inf = +Inf → final
 	// result clamp → +fMax. Intentionally != interp.
@@ -1593,7 +1633,8 @@ TEST(EeRecFpu, MaddSProductOverflowDefaultModeMatchesX86Jit)
 		h.SetFprBits(2, 0x7F000000u);
 		h.LoadProgram({ee::MADD_S(3, 1, 2)});
 		h.RunJitNoDiff();
-		EXPECT_EQ(h.GetFprBitsJit(3), 0x7F7FFFFFu);
+		EXPECT_EQ(h.GetFprBitsJit(3), 0x7F7FFFFFu)
+			<< "the fast path's saturation compromise must not move";
 	}
 }
 
@@ -1614,17 +1655,37 @@ TEST(EeRecFpu, MsubSProductOverflowDefaultModeMatchesX86Jit)
 
 TEST(EeRecFpu, MaddSProductOverflowExtraModeClampsProduct)
 {
-	// Extra mode: x86 clamps the product pre-add → -fMax + fMax = 0, which
-	// matches interp — auto-diffing Run() pins both sides at once.
+	// Extra mode: x86 clamps the product pre-add → -fMax + fMax = 0. That used
+	// to match the interpreter and Run() pinned both at once; the interpreter
+	// now saturates at the EE maximum and ends the instruction there, so the
+	// two legs are asserted separately. The JIT value is the subject: it is what
+	// the extra-overflow gate exists to produce.
 	FpuExtraOverflowGuard guard;
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetAccBits(0xFF7FFFFFu);
-	h.SetFprBits(1, 0x7F000000u);
-	h.SetFprBits(2, 0x7F000000u);
-	h.LoadProgram({ee::MADD_S(3, 1, 2)});
-	h.Run();
-	h.ExpectFpr(3, 0x00000000u);
+	u32 jit_bits, interp_bits;
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0xFF7FFFFFu);
+		h.SetFprBits(1, 0x7F000000u);
+		h.SetFprBits(2, 0x7F000000u);
+		h.LoadProgram({ee::MADD_S(3, 1, 2)});
+		h.RunJitNoDiff();
+		jit_bits = h.GetFprBitsJit(3);
+	}
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0xFF7FFFFFu);
+		h.SetFprBits(1, 0x7F000000u);
+		h.SetFprBits(2, 0x7F000000u);
+		h.LoadProgram({ee::MADD_S(3, 1, 2)});
+		h.RunInterpOnly();
+		interp_bits = h.GetFprBitsInterp(3);
+	}
+	EXPECT_EQ(jit_bits, 0x00000000u)
+		<< "extra mode must clamp the product pre-add, cancelling against -fMax";
+	EXPECT_EQ(interp_bits, 0x7FFFFFFFu)
+		<< "the interpreter does not have a product clamp to gate any more";
 }
 
 TEST(EeRecFpu, MaddaSProductOverflowExtraModeClampsProduct)

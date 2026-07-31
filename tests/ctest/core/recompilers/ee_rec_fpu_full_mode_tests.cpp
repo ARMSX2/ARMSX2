@@ -1194,7 +1194,7 @@ TEST(EeRecFpuFull, MulDefectDropsTheBoundaryTermTheInterpreterModels)
 // ---------------------------------------------------------------------------
 // Randomised differential: mode 3 against the interpreter, which models the
 // same multiply law independently and in completely different code (FPU.cpp
-// eeMulProduct, an integer tail test on the 48-bit significand product; iFPUd
+// eeMulRound, an integer tail test on the 48-bit significand product; iFPUd
 // lets the narrowing perform the tail test on a double). Agreement across a
 // wide operand space is what says the emitter implements the law rather than
 // the handful of rows above.
@@ -1208,21 +1208,14 @@ TEST(EeRecFpuFull, MulDefectDropsTheBoundaryTermTheInterpreterModels)
 // recMaddsub's multiply stage, reached with ACC = +0 so the accumulate is a
 // no-op on the product's bits).
 //
-// Three divergences are licensed, and each is counted so the sweep cannot pass
-// by never reaching them:
-//
-//   1. the boundary term iFPUd drops, one ULP further from zero;
-//   2. an operand in the exponent-0xff binade. fpuDouble() clamps it to
-//      +/-Fmax before multiplying, so the two engines multiply different
-//      numbers and the row says nothing about the multiplier;
-//   3. a product above FLT_MAX. The interpreter saturates there, mode 3 at the
-//      EE's own 0x7FFFFFFF, a whole binade higher.
-//
-// 2 and 3 are the same pre-existing gap seen from two sides: this branch's
-// interpreter has no exponent-0xff binade at all. They are recognised from the
-// operands and the exact product, never from the results, so a wrong result
-// cannot license itself. Anything else -- a wrong predicate, a decrement
-// escaping into a non-zero tail, a zero product turned into a NaN -- fails.
+// One divergence is licensed, and it is counted so the sweep cannot pass by
+// never reaching it: the boundary term iFPUd drops, which leaves the emitter
+// one ULP further from zero than the interpreter. It is recognised from ft
+// alone, never from the results, so a wrong result cannot license itself. Both
+// engines now read the top binade and saturate at the same 0x7FFFFFFF, so the
+// two operand-range carve-outs this sweep used to need are gone. Anything else
+// -- a wrong predicate, a decrement escaping into a non-zero tail, a zero
+// product turned into a NaN -- fails.
 TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 {
 	auto splitmix = [](u64& state) {
@@ -1256,25 +1249,8 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 		return ((m >> 11) & 1u) != ((h >= 8u && h <= 13u) ? 1u : 0u);
 	};
 
-	// The two engine gaps this branch has outside the multiplier, both decided
-	// from the inputs alone. fpuDouble() clamps an exponent-0xff operand to
-	// +/-Fmax, and the interpreter's product saturates at FLT_MAX where mode 3
-	// goes on to 0x7FFFFFFF; either way the row is not about the multiply array.
-	auto clamped = [](u32 x) { return (x & 0x7F800000u) == 0x7F800000u; };
-	auto overflows = [](u32 fs, u32 ft) {
-		auto val = [](u32 x) {
-			if ((x & 0x7F800000u) == 0) x &= 0x80000000u;              // fpuDouble
-			else if ((x & 0x7F800000u) == 0x7F800000u) x = (x & 0x80000000u) | 0x7F7FFFFFu;
-			float f;
-			std::memcpy(&f, &x, sizeof(f));
-			return static_cast<double>(f);
-		};
-		return !(std::fabs(val(fs) * val(ft)) <= FLT_MAX);
-	};
-
 	u64 state = 0x1234567890ABCDEFull;
 	int rows = 0, boundary_gap[4] = {0, 0, 0, 0};
-	int clamp_gap = 0, saturation_gap = 0;
 	for (int i = 0; i < 40000; i++)
 	{
 		const int cs = static_cast<int>(splitmix(state) % 6);
@@ -1315,9 +1291,6 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 		if (jit == interp)
 			continue;
 
-		if (clamped(fs) || clamped(ft)) { clamp_gap++; continue; }
-		if (overflows(fs, ft)) { saturation_gap++; continue; }
-
 		const bool boundary_only = !booth(ft) && full(ft);
 		ASSERT_TRUE(boundary_only && jit == interp + 1u)
 			<< "unlicensed divergence: form=" << form << " cs=" << cs << " ct=" << ct
@@ -1331,8 +1304,6 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 	// reached the emitter would report, so each licensed one must actually be
 	// observed -- the boundary term at both emit sites, since they narrow
 	// through different code.
-	EXPECT_GT(clamp_gap, 0) << "no exponent-0xff operand reached the sweep";
-	EXPECT_GT(saturation_gap, 0) << "no product overflowed FLT_MAX in the sweep";
 	EXPECT_GT(boundary_gap[0] + boundary_gap[1] + boundary_gap[2], 0)
 		<< "recMULop never reached the boundary-term class: the sweep is vacuous";
 	EXPECT_GT(boundary_gap[3], 0)

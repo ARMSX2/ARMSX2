@@ -381,9 +381,17 @@ TEST(EeFpuFcrConsoleConformance, NanMathOverflowIsNotAnOperandClampModeDifferenc
 		<< "[jit, CHECK_FPU_EXTRA_OVERFLOW] the operand clamp must NOT close "
 		   "this row -- if it does, the missing piece is the clamp after all "
 		   "and the attribution above is wrong";
-	EXPECT_EQ(res[0], 0x7F7FFFFFu);
-	EXPECT_EQ(res[1], res[0]);
-	EXPECT_EQ(res[2], res[0]);
+	// The value was identical in all three legs when this was written, which is
+	// why the FCR31 defect above stayed invisible. It no longer is: both
+	// operands are exponent-255 and their sum is past the EE maximum, so the
+	// interpreter saturates there and the fast path a binade below. That is the
+	// tier gap, not the clamp-mode axis this test is about.
+	EXPECT_EQ(res[0], 0x7FFFFFFFu)
+		<< "[interp] saturates at the EE maximum";
+	EXPECT_EQ(res[1], 0x7F7FFFFFu)
+		<< "[jit, default clamp] saturates at FLT_MAX";
+	EXPECT_EQ(res[2], res[1])
+		<< "the operand clamp mode must not move the fast path's value either";
 }
 
 // ---------------------------------------------------------------------------
@@ -600,7 +608,7 @@ TEST(EeFpuFcrConsoleConformance, EnginesAgreeOnTheOverflowFlagClear)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
 	constexpr u32 kRaiseBits = kFlagO | kFlagU | kFlagSO | kFlagSU;
-	int checked = 0, cleared = 0, raised = 0, witnessed = 0;
+	int checked = 0, cleared = 0, raised = 0, witnessed = 0, saturation_rows = 0;
 
 	for (int i = 0; i < kFamCaseCount; ++i)
 	{
@@ -637,8 +645,22 @@ TEST(EeFpuFcrConsoleConformance, EnginesAgreeOnTheOverflowFlagClear)
 				++cleared;
 		}
 
-		EXPECT_EQ(res[1], res[0]) << "engines disagree on the RESULT, so this "
-		                             "row no longer isolates the flag write";
+		// Only the flags are supposed to be under test -- if the arithmetic
+		// diverged too, the row is measuring the wrong thing. One shape is
+		// allowed: a saturating row, where the interpreter stops at the EE's
+		// own maximum and the fast path a binade below at FLT_MAX. See
+		// EnginesAgreeExceptOnTheDocumentedRows in
+		// ee_fpu_overflow_console_conformance_tests.cpp, which makes the same
+		// allowance and says why it is a value pair and not a row list.
+		const bool saturation_tier_gap =
+			(res[0] & 0x7FFFFFFFu) == 0x7FFFFFFFu &&
+			(res[1] & 0x7FFFFFFFu) == 0x7F7FFFFFu &&
+			(res[0] & 0x80000000u) == (res[1] & 0x80000000u);
+		if (saturation_tier_gap)
+			++saturation_rows;
+		else
+			EXPECT_EQ(res[1], res[0]) << "engines disagree on the RESULT, so this "
+			                             "row no longer isolates the flag write";
 		witnessed += c.console_agrees_on_raise ? 1 : 0;
 		++checked;
 	}
@@ -650,6 +672,11 @@ TEST(EeFpuFcrConsoleConformance, EnginesAgreeOnTheOverflowFlagClear)
 	                          "clear -- an op lost its coverage";
 	EXPECT_GE(raised, 8) << "anti-vacuity: no raise rows left, so the "
 	                        "allowance branch is never exercised";
+	EXPECT_GE(saturation_rows, 4)
+		<< "anti-vacuity for the saturation allowance: if no row saturates any "
+		   "more, the allowance is dead code hiding a future divergence. If it "
+		   "dropped to zero because the FAST PATH learned to saturate at the EE "
+		   "maximum, delete the allowance instead of lowering this floor.";
 	EXPECT_GE(witnessed, 20) << "anti-vacuity: most of this table must stay "
 	                            "silicon-witnessed on the raise";
 }

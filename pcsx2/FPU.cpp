@@ -6,7 +6,6 @@
 
 #include "common/FPControl.h"
 
-#include <cfloat>
 #include <cmath>
 #include <cstring>
 
@@ -248,11 +247,16 @@ namespace COP1 {
 // FPU Opcodes
 //****************************************************************
 
-/*	The operand model as bits: exponent 0 is zero on this FPU -- there are no
-	denormals -- and exponent 255 is clamped away, for the reason at eeToDouble().
-	fpuDouble() is this same mapping read back as a float; the guard-bit adder
-	below needs it as bits.
-*/
+/*	The operand model as bits. Exponent 0 is zero on this FPU -- there are no
+	denormals -- and exponent 255 folds to +-0x7F7FFFFF, since a host single
+	cannot hold the EE's top binade at all. fpuDouble() is this same mapping read
+	back as a float.
+
+	The arithmetic ops no longer use either: the fold destroys the operand
+	before they see it, so they read eeToDouble() and round through
+	eeRoundToSingle(). Still the model for the compare ops (C.EQ and friends),
+	which only part from the unfolded operands where both are in the top binade,
+	and those rows pass against the capture. */
 static u32 fpuOperandBits(u32 f)
 {
 	switch (f & 0x7f800000)
@@ -268,6 +272,53 @@ float fpuDouble(u32 f)
 	FPRreg r;
 	r.UL = fpuOperandBits(f);
 	return r.f;
+}
+
+/*	Round an exact result into the EE encoding. This is the only rounding step
+	the arithmetic ops below perform.
+
+	Three things a bare (float) cast does not do:
+
+	  * Saturation is at the EE's maximum, 0x7FFFFFFF, not at FLT_MAX. On
+	    silicon, add.s of +2^128 to itself is 2^129, out of range, and comes
+	    back 0x7FFFFFFF; add.s of 0x7F7FFFFF to itself is exactly 0x7FFFFFFF and
+	    comes back unrounded. Folding either to 0x7F7FFFFF, which is what
+	    clampToEeRange did to a host infinity, is a whole binade short.
+	  * The top binade has no host single. Anything at or above 2^126 is rounded
+	    through a scaled-down copy and its exponent put back afterwards. Scaling
+	    by a power of two is exact and leaves the mantissa alone, so the rounding
+	    decision is bit-identical to the one the host would have made if float
+	    had the range.
+	  * Denormal results flush to signed zero, written out rather than left to
+	    the ambient FPCR's FZ.
+
+	The (float) casts round under the host FPCR, so the EE's rounding mode is
+	honoured here without naming it -- including the divide/sqrt unit's separate
+	mode, which its callers scope in.
+*/
+static u32 eeRoundToSingle(double exact)
+{
+	const double mag = std::fabs(exact);
+
+	if (mag > kEeFpuMax)
+		return (std::signbit(exact) ? 0x80000000u : 0u) | 0x7FFFFFFFu;
+
+	FPRreg r;
+	if (mag >= 0x1p126)
+	{
+		/*	Scale down by 2^4, round there, then add the 4 exponents back. The
+			scaled exponent field is at most 251, so the +4 cannot carry into
+			the sign, and the >= 2^126 floor keeps the scaled value normal, so
+			nothing is flushed on the way through. */
+		r.f = static_cast<float>(exact * 0x1p-4);
+		r.UL += 4u << 23;
+		return r.UL;
+	}
+
+	r.f = static_cast<float>(exact);
+	if ((r.UL & 0x7F800000) == 0)
+		r.UL &= 0x80000000; // denormal or zero -- the EE has only the zero
+	return r.UL;
 }
 
 /*	The EE FPU's adder carries no guard bits to the right of the mantissa. A
@@ -297,7 +348,7 @@ float fpuDouble(u32 f)
 	The console rows this reproduces, with their corpus ordinals, are tabulated in
 	tests/ctest/core/recompilers/ee_fpu_guarded_addsub_console_tests.cpp.
 */
-static float fpuAddSubGuarded(u32 a, u32 b, bool issub)
+static void fpuGuardMask(u32& a, u32& b)
 {
 	const s32 diff = (s32)((a >> 23) & 0xFF) - (s32)((b >> 23) & 0xFF);
 
@@ -309,106 +360,23 @@ static float fpuAddSubGuarded(u32 a, u32 b, bool issub)
 		a &= 0x80000000;
 	else if (diff <= -2)
 		a &= 0xffffffffu << (-diff - 1);
-
-	FPRreg fa, fb;
-	fa.UL = a;
-	fb.UL = b;
-	return issub ? (fa.f - fb.f) : (fa.f + fb.f);
 }
 
-/*	The EE multiplier's one-ULP deficit.
+/*	The EE's adder: mask the guard bits away, add exactly, round once.
 
-	The console's multiply array is not a correctly-rounding multiplier: it
-	comes back exactly one step closer to zero on a large fraction of operands,
-	and which operands depends on operand order. Upstream states the rule in a
-	comment (pcsx2/x86/iFPU.cpp:500) and never tests it; FpuMulHack is a
-	one-point sample of it.
+	The mask is what makes the add exact. Within 24 exponents the sum needs 48
+	bits of the double's 53; beyond that the mask has already reduced the
+	smaller operand to +-0. So eeRoundToSingle() below is the only rounding, as
+	on the hardware.
 
-	Measured on SCPH-90000 (FCR0 0x2e40), captures/fpmul/, 25M probes:
-
-	  * mul.s(1.0, x) was measured for every one of the 2^23 significands.
-	    8257536 come back one ULP low and 131072 exact -- and nothing ever came
-	    back high, or two ULP low, in 16.8M probes.
-	  * mul.s(x, 1.0) is exact for all 2^23. The asymmetry is total, not
-	    statistical: the predicate reads ft and never fs, which is exactly why
-	    the operation is not commutative.
-	  * Unchanged across twelve exponent-field pairs from (1,254) to (254,1),
-	    so it is a significand-domain effect with no exponent term.
-
-	Bits 1,3,5,7,9 of ft's mantissa are the sign bits of the five lowest
-	radix-4 Booth digits, which is what identifies the mechanism: ft is the
-	recoded operand and the array's low columns are not built, so each low
-	negative digit's two's-complement correction is dropped. The bit-11 term is
-	a boundary effect at the truncation column; it is written as measured, not
-	derived.
-
-	What this does not model: the deficit is smaller than one ULP -- at most
-	~27308 against an ULP of 2^23 -- so it only reaches the result when the
-	exact product has nothing below the ULP to absorb it. That is the tail test
-	below, and it is the whole of the modelled class. When the tail is non-zero
-	the console is one ULP low iff the tail is smaller than the deficit, and the
-	deficit is not identifiable from mul.s observations: the instruction only
-	ever exposes the one comparison it performs. That residual is ~0.1% of
-	random operand pairs.
-*/
-static bool eeMulDefectiveFt(u32 ft)
+	Subtraction is addition of the negated operand, as IEEE defines it: that gets
+	the zero signs right, including for a masked +-0. */
+static u32 eeGuardedAddSub(u32 a, u32 b, bool issub)
 {
-	const u32 m = ft & 0x7FFFFF;
-	if (m & 0x2AA) // a negative Booth digit among 0..4
-		return true;
-	const u32 h = (m >> 12) & 0xF;
-	return ((m >> 11) & 1u) != ((h >= 8 && h <= 13) ? 1u : 0u);
-}
-
-static bool eeMulOneUlpLow(u32 fs, u32 ft)
-{
-	if ((fs & 0x7F800000) == 0 || (ft & 0x7F800000) == 0)
-		return false; // a zero operand (denormals are zero): the product is zero
-
-	const u64 a = 0x800000u | (fs & 0x7FFFFF);
-	const u64 b = 0x800000u | (ft & 0x7FFFFF);
-	const u64 prod = a * b; // 47 or 48 significant bits, exact in 64
-	const int k = (prod >> 47) ? 24 : 23;
-	if (prod & ((1ull << k) - 1u))
-		return false; // the tail below the ULP absorbs the deficit
-
-	return eeMulDefectiveFt(ft);
-}
-
-/*	fpuDouble() both operands, multiply, apply the deficit.
-
-	The predicate is fed the operands as multiplied, not the guest registers:
-	fpuDouble() clamps an exponent-0xff operand down to +/-Fmax, and that
-	changes ft's mantissa. (Clamping there is a separate and known gap against
-	silicon, which treats exponent 0xff as an ordinary binade; this models the
-	multiplier on top of whatever fpuDouble hands it, rather than smuggling in a
-	second change.)
-
-	Applied only where it was measured. A saturating result, a flushed one, and
-	a decrement that would walk the exponent field out of the normals are all
-	left alone.
-*/
-static u32 eeMulProduct(u32 fs, u32 ft)
-{
-	FPRreg s, t, p;
-	s.f = fpuDouble( fs );
-	t.f = fpuDouble( ft );
-	p.f = s.f * t.f;
-
-	// A saturated result is not a rounded one. Testing p.f for an infinity is
-	// not enough: under round-toward-zero an overflowing product comes back as
-	// Fmax, so checkOverflow() never sees it and the bit pattern is
-	// indistinguishable from a product that genuinely landed on Fmax -- which
-	// silicon does decrement (1.0 * FLT_MAX -> 0x7F7FFFFE). float x float is
-	// exact in double, so ask the exact product instead.
-	if (!(std::fabs( static_cast<double>(s.f) * static_cast<double>(t.f) ) <= FLT_MAX))
-		return p.UL;
-	if ((p.UL & 0x7F800000) == 0) // flushed, zero, or a denormal on its way out
-		return p.UL;
-	if ((p.UL & 0x7FFFFFFF) == 0x00800000) // a decrement would leave the normals
-		return p.UL;
-
-	return eeMulOneUlpLow( s.UL, t.UL ) ? p.UL - 1u : p.UL;
+	fpuGuardMask(a, b);
+	if (issub)
+		b ^= 0x80000000;
+	return eeRoundToSingle(eeToDouble(a) + eeToDouble(b));
 }
 
 /*	The EE's divide/square-root unit rounds to nearest even when the rest of the
@@ -460,15 +428,13 @@ void ABS_S() {
 */
 void ADD_S() {
 	const double exact = eeToDouble( _FsValUl_ ) + eeToDouble( _FtValUl_ );
-	_FdValf_  = fpuAddSubGuarded( fpuOperandBits( _FsValUl_ ), fpuOperandBits( _FtValUl_ ), false );
-	clampToEeRange( _FdValUl_ );
+	_FdValUl_ = eeGuardedAddSub( _FsValUl_, _FtValUl_, false );
 	raiseOrClearOU( exact );
 }
 
 void ADDA_S() {
 	const double exact = eeToDouble( _FsValUl_ ) + eeToDouble( _FtValUl_ );
-	_FAValf_  = fpuAddSubGuarded( fpuOperandBits( _FsValUl_ ), fpuOperandBits( _FtValUl_ ), false );
-	clampToEeRange( _FAValUl_ );
+	_FAValUl_ = eeGuardedAddSub( _FsValUl_, _FtValUl_, false );
 	raiseOrClearOU( exact );
 }
 
@@ -538,6 +504,86 @@ void DIV_S() {
 	clampToEeRange( _FdValUl_ );
 }
 
+/*	The EE multiplier's one-ULP deficit.
+
+	The console's multiply array is not a correctly-rounding multiplier: it
+	comes back exactly one step closer to zero on a large fraction of operands,
+	and which operands depends on operand order. Upstream states the rule in a
+	comment (`pcsx2/x86/iFPU.cpp:500`) and never tests it; FpuMulHack is a
+	one-point sample of it.
+
+	Measured on SCPH-90000 (FCR0 0x2e40), captures/fpmul/ in the session
+	archive, 25M probes over three runs:
+
+	  * `mul.s(1.0, x)` was measured for all 2^23 significands. 8257536 of them
+	    come back one ULP low and 131072 exact -- and nothing ever came back
+	    high, or two ULP low, in 16.8M probes.
+	  * `mul.s(x, 1.0)` is exact for all 2^23. The asymmetry is total, not
+	    statistical: the predicate reads ft and never fs, which is exactly why
+	    the operation is not commutative.
+	  * Unchanged across twelve exponent-field pairs from (1,254) to (254,1),
+	    so it is a significand-domain effect with no exponent term.
+
+	Bits 1,3,5,7,9 of ft's mantissa are the sign bits of the five lowest
+	radix-4 Booth digits, which is what identifies the mechanism: ft is the
+	recoded operand and the array's low columns are not built, so each low
+	negative digit's two's-complement correction is dropped. The bit-11 term
+	does not follow from that mechanism; it is what the capture shows at the
+	truncation column. In Booth form the same predicate reads "exact iff digits
+	0..4 are non-negative and (d5<0) == (d7<0)", which was checked equivalent
+	over the whole 2^23 space.
+
+	What this does not model: the deficit is smaller than one ULP -- at most
+	~27308 against an ULP of 2^23 -- so it only reaches the result when the
+	exact product has nothing below the ULP to absorb it. That is the `tail`
+	test below, and it is the whole of the modelled class. When the tail is
+	non-zero the console is one ULP low iff the tail is smaller than the
+	deficit, and the deficit is not identifiable from mul.s observations: it is
+	only ever visible through the single comparison the instruction performs.
+	That residual is ~0.1% of random operand pairs and 0 rows of the console
+	corpus.
+
+	Applied only where it was measured; the three guards are in eeMulRound().
+*/
+static bool eeMulDefectiveFt(u32 ft)
+{
+	const u32 m = ft & 0x7FFFFF;
+	if (m & 0x2AA) // a negative Booth digit among 0..4
+		return true;
+	const u32 h = (m >> 12) & 0xF;
+	return ((m >> 11) & 1u) != ((h >= 8 && h <= 13) ? 1u : 0u);
+}
+
+static bool eeMulOneUlpLow(u32 fs, u32 ft)
+{
+	if ((fs & 0x7F800000) == 0 || (ft & 0x7F800000) == 0)
+		return false; // a zero operand (denormals are zero): the product is zero
+
+	const u64 a = 0x800000u | (fs & 0x7FFFFF);
+	const u64 b = 0x800000u | (ft & 0x7FFFFF);
+	const u64 prod = a * b; // 47 or 48 significant bits, exact in 64
+	const int k = (prod >> 47) ? 24 : 23;
+	if (prod & ((1ull << k) - 1u))
+		return false; // the tail below the ULP absorbs the deficit
+
+	return eeMulDefectiveFt(ft);
+}
+
+/*	eeRoundToSingle() for a product, plus the multiplier defect. */
+static u32 eeMulRound(u32 fs, u32 ft, double exact)
+{
+	const u32 w = eeRoundToSingle(exact);
+
+	if (std::fabs(exact) > kEeFpuMax) // saturated: never measured, leave it
+		return w;
+	if ((w & 0x7F800000) == 0) // flushed to zero
+		return w;
+	if ((w & 0x7FFFFFFF) == 0x00800000) // a decrement would leave the normals
+		return w;
+
+	return eeMulOneUlpLow(fs, ft) ? w - 1u : w;
+}
+
 /*	The Instruction Set manual has an overly complicated way of
 	determining the flags that are set. Hopefully this shorter
 	method provides a similar outcome and is faster. (cottonvibes)
@@ -558,25 +604,34 @@ void DIV_S() {
 	fpuDouble; the flag path uses the architectural value in both. That
 	inconsistency in the value path is pre-existing and left alone.
 */
+/*	fd = ACC +/- fs * ft, in the two rounding steps the ISA mandates: the product
+	lands in an EE single before the accumulate sees it, and an overflowing one
+	ends the instruction there rather than being accumulated. That is the test
+	madAccumulandOverflowed() has always made for the flag; the value follows it
+	now too.
+*/
+static u32 eeMulAccumulate(u32 fs, u32 ft, u32 accbits, bool issub)
+{
+	const double product = eeToDouble( fs ) * eeToDouble( ft );
+	const u32 rounded = eeMulRound( fs, ft, product ) ^ (issub ? 0x80000000u : 0u);
+	if (madAccumulandOverflowed( product ))
+		return rounded;
+	return eeGuardedAddSub( accbits, rounded, false );
+}
+
 void MADD_S() {
-	FPRreg temp;
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
 	const double acc = eeToDouble( _FAValUl_ );
-	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
-	_FdValf_  = fpuAddSubGuarded( fpuOperandBits( _FAValUl_ ), fpuOperandBits( temp.UL ), false );
-	clampToEeRange( _FdValUl_ );
+	_FdValUl_ = eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, false );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
 	raiseOrClearOU( acc + madFlushedProduct( product ) );
 }
 
 void MADDA_S() {
-	FPRreg temp;
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
 	const double acc = eeToDouble( _FAValUl_ );
-	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
-	_FAValf_ = fpuAddSubGuarded( _FAValUl_, temp.UL, false );
-	clampToEeRange( _FAValUl_ );
+	_FAValUl_ = eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, false );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
 	raiseOrClearOU( acc + madFlushedProduct( product ) );
@@ -602,24 +657,18 @@ void MOV_S() {
 }
 
 void MSUB_S() {
-	FPRreg temp;
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
 	const double acc = eeToDouble( _FAValUl_ );
-	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
-	_FdValf_  = fpuAddSubGuarded( fpuOperandBits( _FAValUl_ ), fpuOperandBits( temp.UL ), true );
-	clampToEeRange( _FdValUl_ );
+	_FdValUl_ = eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, true );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
 	raiseOrClearOU( acc - madFlushedProduct( product ) );
 }
 
 void MSUBA_S() {
-	FPRreg temp;
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
 	const double acc = eeToDouble( _FAValUl_ );
-	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
-	_FAValf_ = fpuAddSubGuarded( _FAValUl_, temp.UL, true );
-	clampToEeRange( _FAValUl_ );
+	_FAValUl_ = eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, true );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
 	raiseOrClearOU( acc - madFlushedProduct( product ) );
@@ -629,17 +678,21 @@ void MTC1() {
 	_FsValUl_ = cpuRegs.GPR.r[_Rt_].UL[0];
 }
 
+/*	The product of two EE singles is 48 significand bits, so a double holds it
+	exactly at any exponent and eeRoundToSingle() does the only rounding. The
+	multiplier's own one-ULP deficit rides on top, in eeMulRound(); what it
+	models and what it does not is at eeMulDefectiveFt. The flags stay on the
+	exact product, per raiseOrClearOU().
+*/
 void MUL_S() {
 	const double exact = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
-	_FdValUl_ = eeMulProduct( _FsValUl_, _FtValUl_ );
-	clampToEeRange( _FdValUl_ );
+	_FdValUl_ = eeMulRound( _FsValUl_, _FtValUl_, exact );
 	raiseOrClearOU( exact );
 }
 
 void MULA_S() {
 	const double exact = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
-	_FAValUl_ = eeMulProduct( _FsValUl_, _FtValUl_ );
-	clampToEeRange( _FAValUl_ );
+	_FAValUl_ = eeMulRound( _FsValUl_, _FtValUl_, exact );
 	raiseOrClearOU( exact );
 }
 
@@ -722,15 +775,13 @@ void SQRT_S() {
 
 void SUB_S() {
 	const double exact = eeToDouble( _FsValUl_ ) - eeToDouble( _FtValUl_ );
-	_FdValf_  = fpuAddSubGuarded( fpuOperandBits( _FsValUl_ ), fpuOperandBits( _FtValUl_ ), true );
-	clampToEeRange( _FdValUl_ );
+	_FdValUl_ = eeGuardedAddSub( _FsValUl_, _FtValUl_, true );
 	raiseOrClearOU( exact );
 }
 
 void SUBA_S() {
 	const double exact = eeToDouble( _FsValUl_ ) - eeToDouble( _FtValUl_ );
-	_FAValf_  = fpuAddSubGuarded( fpuOperandBits( _FsValUl_ ), fpuOperandBits( _FtValUl_ ), true );
-	clampToEeRange( _FAValUl_ );
+	_FAValUl_ = eeGuardedAddSub( _FsValUl_, _FtValUl_, true );
 	raiseOrClearOU( exact );
 }
 
