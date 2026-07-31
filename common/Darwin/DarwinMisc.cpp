@@ -779,19 +779,24 @@ bool DarwinMisc::ValidateJITAlive()
 		return false;
 	}
 
-	// Check activity before inspecting mapping state. The platform drains any
-	// canary which passed this check before allowing JIT execution to resume.
+	// A canceled dispatch timer may already be inside its event handler.
+	// Hold the same lock used by MunmapCodeDualMap so the code page remains
+	// mapped until this validation completes.
+	std::lock_guard<std::mutex> validation_lock(s_jit_validation_mutex);
+
+	// Read activity under the lock rather than before taking it.
+	// WaitForJITValidation only drains a handler that already holds the lock, so
+	// a check out here leaves a gap where the VM goes active between the check
+	// and the acquire, and the canary below then flips protection on a page the
+	// EE thread is running out of. Inside the lock there are only two orderings
+	// and both are safe: finish before the drain returns, or take the lock after
+	// it and see the VM is busy.
 	if (s_jit_activity_query && s_jit_activity_query())
 	{
 		std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=1 cs_debugged=1 canary=skipped-vm-active\n");
 		std::fflush(stderr);
 		return true;
 	}
-
-	// A canceled dispatch timer may already be inside its event handler.
-	// Hold the same lock used by MunmapCodeDualMap so the code page remains
-	// mapped until this validation completes.
-	std::lock_guard<std::mutex> validation_lock(s_jit_validation_mutex);
 
 	// Check 2: JIT code memory still writable? Write a canary, read it back.
 	// Interpreter sessions have no code mapping and never start the idle timer;
