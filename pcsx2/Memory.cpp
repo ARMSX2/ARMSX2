@@ -148,19 +148,20 @@ bool SysMemory::AllocateMemoryMap()
 	// intCpu::Reserve() never touches s_code_memory.
 	if (!DarwinMisc::iPSX2_FORCE_EE_INTERP)
 	{
-		if ((s_code_memory = static_cast<u8*>(DarwinMisc::MmapCodeDualMap(HostMemoryMap::CodeSize))) == nullptr)
+		s_code_memory = static_cast<u8*>(DarwinMisc::MmapCodeDualMap(HostMemoryMap::CodeSize));
+		if (!s_code_memory)
 		{
-			std::fprintf(stderr, "@@BOOT_FAIL@@ reason=ios_code_alloc_failed stage=code_dualmap\n");
+			DarwinMisc::iPSX2_FORCE_EE_INTERP = 1;
+			Console.Warning("iOS executable code-memory allocation failed; continuing with interpreter providers");
+			std::fprintf(stderr, "@@JIT_FALLBACK@@ reason=ios_code_alloc_failed backend=interpreter\n");
 			std::fflush(stderr);
-			Host::ReportErrorAsync("Error",
-				"Failed to allocate iOS executable code memory. "
-				"Try Settings \u2192 Emulator \u2192 JIT Script \u2192 Legacy, or relaunch via StikDebug.");
-			ReleaseMemoryMap();
-			return false;
 		}
-		Console.WriteLn("@@P43_OFFSET@@ g_code_rw_offset=%ld rw_base=%p size=%zu",
-			(long)DarwinMisc::g_code_rw_offset, reinterpret_cast<void*>(DarwinMisc::g_code_rw_base),
-			static_cast<size_t>(DarwinMisc::g_code_rw_size));
+		else
+		{
+			Console.WriteLn("@@P43_OFFSET@@ g_code_rw_offset=%ld rw_base=%p size=%zu",
+				(long)DarwinMisc::g_code_rw_offset, reinterpret_cast<void*>(DarwinMisc::g_code_rw_base),
+				static_cast<size_t>(DarwinMisc::g_code_rw_size));
+		}
 	}
 	else
 	{
@@ -174,8 +175,14 @@ bool SysMemory::AllocateMemoryMap()
 	// != 0) so the recompiler test suite exercises every RW-alias write path
 	// without an iOS device. Production macOS takes the SharedMemoryMappingArea
 	// MAP_JIT path below, unchanged.
+	const bool skip_code_memory = DarwinMisc::iPSX2_FORCE_EE_INTERP;
 	const char* const force_dual_map = std::getenv("ARMSX2_FORCE_DUAL_MAP");
-	if (force_dual_map && std::atoi(force_dual_map) == 1)
+	if (skip_code_memory)
+	{
+		Console.WriteLn("[Apple] Skipping code-memory allocation — interpreter-only mode");
+		s_code_memory = nullptr;
+	}
+	else if (force_dual_map && std::atoi(force_dual_map) == 1)
 	{
 		if ((s_code_memory = static_cast<u8*>(DarwinMisc::MmapCodeDualMap(HostMemoryMap::CodeSize))) == nullptr)
 		{
@@ -245,15 +252,21 @@ void SysMemory::DumpMemoryMap()
 	DUMP_REGION("VTLB Virtual Map", s_data_memory, HostMemoryMap::VTLBVirtualMapOffset, HostMemoryMap::VTLBVirtualMapSize);
 	DUMP_REGION("VTLB Address Map", s_data_memory, HostMemoryMap::VTLBAddressMapOffset, HostMemoryMap::VTLBAddressMapSize);
 
-	DUMP_REGION("R5900 Recompiler Cache", s_code_memory, HostMemoryMap::EErecOffset, HostMemoryMap::EErecSize);
-	DUMP_REGION("R3000A Recompiler Cache", s_code_memory, HostMemoryMap::IOPrecOffset, HostMemoryMap::IOPrecSize);
-	DUMP_REGION("Micro VU0 Recompiler Cache", s_code_memory, HostMemoryMap::mVU0recOffset, HostMemoryMap::mVU0recSize);
-	DUMP_REGION("Micro VU1 Recompiler Cache", s_code_memory, HostMemoryMap::mVU1recOffset, HostMemoryMap::mVU1recSize);
-	DUMP_REGION("VIF0 Unpack Recompiler Cache", s_code_memory, HostMemoryMap::VIF0recOffset, HostMemoryMap::VIF0recSize);
-	DUMP_REGION("VIF1 Unpack Recompiler Cache", s_code_memory, HostMemoryMap::VIF1recOffset, HostMemoryMap::VIF1recSize);
-	DUMP_REGION("VIF Unpack Recompiler Cache", s_code_memory, HostMemoryMap::VIFUnpackRecOffset, HostMemoryMap::VIFUnpackRecSize);
-	DUMP_REGION("GS Software Renderer", s_code_memory, HostMemoryMap::SWrecOffset, HostMemoryMap::SWrecSize);
-
+	if (HasCodeMemory())
+	{
+		DUMP_REGION("R5900 Recompiler Cache", s_code_memory, HostMemoryMap::EErecOffset, HostMemoryMap::EErecSize);
+		DUMP_REGION("R3000A Recompiler Cache", s_code_memory, HostMemoryMap::IOPrecOffset, HostMemoryMap::IOPrecSize);
+		DUMP_REGION("Micro VU0 Recompiler Cache", s_code_memory, HostMemoryMap::mVU0recOffset, HostMemoryMap::mVU0recSize);
+		DUMP_REGION("Micro VU1 Recompiler Cache", s_code_memory, HostMemoryMap::mVU1recOffset, HostMemoryMap::mVU1recSize);
+		DUMP_REGION("VIF0 Unpack Recompiler Cache", s_code_memory, HostMemoryMap::VIF0recOffset, HostMemoryMap::VIF0recSize);
+		DUMP_REGION("VIF1 Unpack Recompiler Cache", s_code_memory, HostMemoryMap::VIF1recOffset, HostMemoryMap::VIF1recSize);
+		DUMP_REGION("VIF Unpack Recompiler Cache", s_code_memory, HostMemoryMap::VIFUnpackRecOffset, HostMemoryMap::VIFUnpackRecSize);
+		DUMP_REGION("GS Software Renderer", s_code_memory, HostMemoryMap::SWrecOffset, HostMemoryMap::SWrecSize);
+	}
+	else
+	{
+		DevCon.WriteLn(Color_Gray, "  Executable code caches unavailable (interpreter-only mode)");
+	}
 
 #undef DUMP_REGION
 }
@@ -276,6 +289,9 @@ void SysMemory::ReleaseMemoryMap()
 		s_code_memory = nullptr;
 	}
 	s_code_mapping_area.reset();
+#ifdef __APPLE__
+	DarwinMisc::SetJitRange(nullptr, 0);
+#endif
 
 	if (s_data_memory)
 	{
@@ -351,6 +367,16 @@ void SysMemory::Release()
 	ReleaseMemoryMap();
 }
 
+bool SysMemory::IsAllocated()
+{
+	return s_data_memory != nullptr;
+}
+
+bool SysMemory::HasCodeMemory()
+{
+	return s_code_memory != nullptr;
+}
+
 u8* SysMemory::GetDataPtr(size_t offset)
 {
 	pxAssert(offset <= HostMemoryMap::MainSize);
@@ -360,7 +386,7 @@ u8* SysMemory::GetDataPtr(size_t offset)
 u8* SysMemory::GetCodePtr(size_t offset)
 {
 	pxAssert(offset <= HostMemoryMap::CodeSize);
-	return s_code_memory + offset;
+	return s_code_memory ? (s_code_memory + offset) : nullptr;
 }
 
 void* SysMemory::GetDataFileHandle()

@@ -172,6 +172,13 @@ bool ARMSX2RepairIOSARM64JITSettings(SettingsInterface* si, const char* reason)
 {
     if (!si)
         return false;
+    if (DarwinMisc::iPSX2_FORCE_EE_INTERP) {
+        std::fprintf(stderr,
+            "@@IOS_JIT_POLICY@@ reason=%s forced_interp=1 action=skip_recompiler_repair\n",
+            reason ? reason : "unknown");
+        std::fflush(stderr);
+        return false;
+    }
 
     const int coreType = si->GetIntValue("EmuCore/CPU", "CoreType", 2);
     const bool useArm64 = si->GetBoolValue("EmuCore/CPU", "UseArm64Dynarec", coreType == 2);

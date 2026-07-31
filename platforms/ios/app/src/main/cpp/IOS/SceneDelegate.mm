@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mach-o/dyld.h>
+#include <mutex>
 #include <string>
 #include <sys/stat.h>
 #include <thread>
@@ -32,6 +33,7 @@
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/MTGS.h"
+#include "pcsx2/Memory.h"
 #include "pcsx2/PerformanceMetrics.h"
 #include "pcsx2/R5900.h"              // cpuRegs
 #include "pcsx2/VMManager.h"
@@ -619,6 +621,7 @@ static bool ARMSX2JITWorkerBusy();
 // notification so the UI can react before the next boot attempt.
 // ---------------------------------------------------------------------------
 static dispatch_source_t s_jitKeepaliveTimer = nil;
+static std::mutex s_jitKeepaliveMutex;
 static std::atomic<bool> s_jitExpired{false};
 
 // VM init watchdog (Component 4a) and re-boot thread-exit signal (Component 5).
@@ -637,12 +640,12 @@ static std::atomic<bool> s_idleVMPrewarmResolved{false};
 // live CPU thread is an instant Instruction Abort.
 static bool ARMSX2JITWorkerBusy()
 {
-    if (s_vmThreadActive.load(std::memory_order_relaxed))
+    if (s_vmThreadActive.load(std::memory_order_acquire))
         return true;
     // Before the worker exists the arena doesn't either (the canary is
     // already skipped on g_code_rw_base==0), so "init not complete" only
     // bites while CPUThreadInitialize is actually in flight.
-    return !s_vmInitComplete.load(std::memory_order_relaxed);
+    return !s_vmInitComplete.load(std::memory_order_acquire);
 }
 
 static void ARMSX2ResolveIdleVMPrewarm()
@@ -666,8 +669,14 @@ extern "C" bool ARMSX2_IsIdleVMPrewarmResolved()
 #endif
 }
 
+// The code-generation capability is fixed for the lifetime of a CPU thread.
+// Switching between JIT and interpreter therefore requires a complete
+// CPUThreadShutdown/CPUThreadInitialize cycle.
+static bool s_vmThreadUsesJIT = false; // guarded by s_vmMutex
+
 static void ARMSX2StopJITKeepalive()
 {
+    std::lock_guard<std::mutex> lock(s_jitKeepaliveMutex);
     if (s_jitKeepaliveTimer)
     {
         dispatch_source_cancel(s_jitKeepaliveTimer);
@@ -678,6 +687,11 @@ static void ARMSX2StopJITKeepalive()
 
 static void ARMSX2StartJITKeepalive()
 {
+    // Interpreter-only sessions do not own executable mappings and have no JIT
+    // grant to preserve.
+    if (DarwinMisc::iPSX2_FORCE_EE_INTERP || !SysMemory::HasCodeMemory())
+        return;
+    std::lock_guard<std::mutex> lock(s_jitKeepaliveMutex);
     if (s_jitKeepaliveTimer) return;
     dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0);
     s_jitKeepaliveTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
@@ -708,6 +722,12 @@ static void ARMSX2StartJITKeepalive()
 // dual-map, or legacy mprotect depending on what iOS/LiveContainer permits.
 - (void)checkJITAndStartVM {
 #if !TARGET_OS_SIMULATOR
+    // Do not change the process-wide backend request underneath an active VM.
+    if (s_vmThreadActive.load(std::memory_order_acquire)) {
+        [self startVMThread];
+        return;
+    }
+
     ARMSX2ApplyJITScriptProtocol("jit-gate");
 
     // Re-validate JIT even if it was available at launch. iOS can revoke
@@ -719,16 +739,6 @@ static void ARMSX2StartJITKeepalive()
         std::fflush(stderr);
         Console.WriteLn("@@JIT_GATE@@ JIT channel available; starting VM");
         DarwinMisc::iPSX2_FORCE_EE_INTERP = 0;
-        // Restore recompiler settings if we previously forced interpreter.
-        // Restore fastmem too (it was disabled during interpreter fallback).
-        // The sticky vtlb_FastmemAreaUnavailable() check in the pre-VM-sync logic
-        // will re-disable it if the 4GB reservation can't be made.
-        s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableEE", true);
-        s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableIOP", true);
-        s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU0", true);
-        s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", true);
-        s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableFastmem", true);
-        s_settings_interface->Save();
         [self startVMThread];
         return;
     }
@@ -738,12 +748,6 @@ static void ARMSX2StartJITKeepalive()
     std::fflush(stderr);
 
     DarwinMisc::iPSX2_FORCE_EE_INTERP = 1;
-    s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableEE", false);
-    s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableIOP", false);
-    s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU0", false);
-    s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", false);
-    s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableFastmem", false);
-    s_settings_interface->Save();
 
     Host::AddIconOSDMessage("JITExpired", ICON_FA_TRIANGLE_EXCLAMATION,
         "JIT session expired — booting in interpreter mode (much slower). "
@@ -780,13 +784,19 @@ static void ARMSX2StartJITKeepalive()
 }
 
 - (void)startVMThreadRequestingBoot:(BOOL)requestBoot {
-    ARMSX2ApplyJITScriptProtocol("start-vm-thread");
-    // Set inside the lock below when the JIT-dead re-boot path tears the old
-    // thread down; consumed after the lock is released so the 200ms sleep does
-    // NOT happen while holding s_vmMutex.
-    bool needRebootAfterJITTeardown = false;
+#if TARGET_OS_SIMULATOR
+    // Test-only simulator hook for exercising the physical-device no-JIT
+    // provider path. It is unavailable in device builds.
+    if (const char* forceNoJIT = std::getenv("ARMSX2_FORCE_NO_JIT");
+        forceNoJIT && std::atoi(forceNoJIT) != 0)
     {
-        std::lock_guard<std::mutex> lk(s_vmMutex);
+        DarwinMisc::iPSX2_FORCE_EE_INTERP = 1;
+    }
+#endif
+    ARMSX2ApplyJITScriptProtocol("start-vm-thread");
+    bool requestedJIT = !DarwinMisc::iPSX2_FORCE_EE_INTERP;
+    {
+        std::unique_lock<std::mutex> lk(s_vmMutex);
         if (s_vmThreadActive.load()) {
             std::fprintf(stderr, "@@BOOT_START_THREAD@@ active=1 action=ignored\n");
             std::fflush(stderr);
@@ -814,63 +824,49 @@ static void ARMSX2StartJITKeepalive()
             // The persistent thread bypasses CPUThreadInitialize, so it reuses
             // the JIT memory allocated at first boot. If iOS revoked the grant,
             // that memory is dead and the recompiler would write into a void.
-            if (!DarwinMisc::iPSX2_FORCE_EE_INTERP && !DarwinMisc::ValidateJITAlive())
+            if (requestedJIT && !DarwinMisc::ValidateJITAlive())
             {
                 std::fprintf(stderr, "@@BOOT_JIT_GATE@@ revalidate=0 fallback=interpreter\n");
                 std::fflush(stderr);
                 DarwinMisc::iPSX2_FORCE_EE_INTERP = 1;
-                s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableEE", false);
-                s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableIOP", false);
-                s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU0", false);
-                s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", false);
-                s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableFastmem", false);
-                s_settings_interface->Save();
+                requestedJIT = false;
 
                 Host::AddIconOSDMessage("JITExpired", ICON_FA_TRIANGLE_EXCLAMATION,
                     "JIT session expired — booting in interpreter mode (much slower). "
                     "Relaunch the app to re-enable JIT.",
                     15.0f);
 
-                // Tell the old thread to exit, then fall through to create a new one.
-                // We deliberately do NOT sleep here: std::condition_variable::wait
-                // re-acquires the mutex before evaluating its predicate, so the old
-                // thread cannot observe s_vmThreadShouldExit until this scope ends and
-                // s_vmMutex is released. Sleeping under the lock would serialize the
-                // 200ms and defeat the whole point of the grace period. Record the need
-                // to sleep + respawn and perform it outside the lock below.
-                s_vmThreadShouldExit.store(true);
-                s_vmCV.notify_one(); // wake the old thread so it can check and exit
-                needRebootAfterJITTeardown = true;
-                // Fall out of this scope — do NOT return.
             }
-            else
+
+            if (s_vmThreadUsesJIT == requestedJIT)
             {
-                // JIT is alive — normal re-boot path
+                s_requestVMBoot.store(true);
+                s_requestVMStop.store(false);
                 std::fprintf(stderr, "@@BOOT_START_THREAD@@ active=0 created=1 action=signal\n");
                 std::fflush(stderr);
                 Console.WriteLn("[VM] startVMThread: signaling existing VM thread");
                 s_vmCV.notify_one();
                 return;
             }
+
+            // An interpreter thread has no executable mapping, while a JIT
+            // thread owns live code caches. Wait for full teardown before
+            // constructing the other backend; a timed sleep can overlap both.
+            std::fprintf(stderr, "@@BOOT_START_THREAD@@ backend_switch=%s_to_%s action=wait_for_exit\n",
+                s_vmThreadUsesJIT ? "jit" : "interpreter",
+                requestedJIT ? "jit" : "interpreter");
+            std::fflush(stderr);
+            s_requestVMBoot.store(false);
+            s_vmThreadShouldExit.store(true);
+            s_vmCV.notify_one();
+            s_vmCV.wait(lk, [] { return !s_vmThreadCreated; });
         }
-    }
-    // <-- s_vmMutex is released here.
 
-    if (needRebootAfterJITTeardown) {
-        // Now that the lock is released, the old thread can wake, re-acquire
-        // s_vmMutex, observe s_vmThreadShouldExit, clear it, and break out of
-        // its wait loop. Give it a brief grace period to exit before we spawn a
-        // replacement.
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    }
-
-    // Ensure s_vmThreadCreated is set for the thread we're about to create.
-    // First call: flips false->true. Re-boot after JIT teardown: it may already
-    // be true (the old thread does not clear it on exit) -- that's fine; this
-    // just lets the first-call and re-boot paths share the same tail.
-    {
-        std::lock_guard<std::mutex> lk(s_vmMutex);
+        s_requestVMBoot.store(requestBoot);
+        s_requestVMStop.store(false);
+        s_vmThreadShouldExit.store(false);
         s_vmThreadCreated = true;
+        s_vmThreadUsesJIT = requestedJIT;
     }
 
     std::fprintf(stderr, "@@BOOT_START_THREAD@@ active=0 created=0 action=create request_boot=%d\n",
@@ -884,19 +880,29 @@ static void ARMSX2StartJITKeepalive()
         std::fprintf(stderr, "@@BOOT_THREAD_INIT@@ begin=1\n");
         std::fflush(stderr);
         ARMSX2ConfigureImGuiFonts("vm-thread");
+        if (!DarwinMisc::iPSX2_FORCE_EE_INTERP)
+        {
+            // CPUThreadInitialize allocates fastmem before its full settings
+            // reload. Restore this allocation-time input when recreating a JIT
+            // backend after an interpreter-only session.
+            EmuConfig.Cpu.Recompiler.EnableFastmem =
+                s_settings_interface->GetBoolValue(
+                    "EmuCore/CPU/Recompiler", "EnableFastmem",
+                    EmuConfig.Cpu.Recompiler.EnableFastmem);
+        }
         Console.WriteLn("[VM] VM Thread: CPUThreadInitialize (once)...");
         // VM init watchdog (Component 4a): if CPUThreadInitialize hangs (e.g. a
         // Universal TXM prepare that never traps), surface an error and return
         // to the menu instead of hanging on a permanent black screen.
-        s_vmInitComplete.store(false, std::memory_order_relaxed);
+        s_vmInitComplete.store(false, std::memory_order_release);
         std::thread watchdog([]() {
             for (int i = 0; i < 150; i++) // 15 seconds at 100ms intervals
             {
-                if (s_vmInitComplete.load(std::memory_order_relaxed))
+                if (s_vmInitComplete.load(std::memory_order_acquire))
                     return;
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
-            if (!s_vmInitComplete.load(std::memory_order_relaxed))
+            if (!s_vmInitComplete.load(std::memory_order_acquire))
             {
                 std::fprintf(stderr, "@@BOOT_FAIL@@ reason=vm_init_timeout stage=cpu_thread_initialize\n");
                 std::fflush(stderr);
@@ -914,7 +920,7 @@ static void ARMSX2StartJITKeepalive()
         });
         watchdog.detach();
         const bool cpuInitOk = VMManager::Internal::CPUThreadInitialize();
-        s_vmInitComplete.store(true, std::memory_order_relaxed);
+        s_vmInitComplete.store(true, std::memory_order_release);
         ARMSX2ResolveIdleVMPrewarm();
         // NOTE (Issue 2, benign race): there is a TOCTOU window here. If the
         // watchdog fires between CPUThreadInitialize() completing and this point,
@@ -930,10 +936,16 @@ static void ARMSX2StartJITKeepalive()
             Console.Error("VM Thread: CPUThreadInitialize failed.");
             std::lock_guard<std::mutex> lk(s_vmMutex);
             s_vmThreadCreated = false;
+            s_vmThreadUsesJIT = false;
+            s_vmCV.notify_all();
             return;
         }
         std::fprintf(stderr, "@@BOOT_THREAD_INIT@@ ok=1\n");
         std::fflush(stderr);
+        {
+            std::lock_guard<std::mutex> lk(s_vmMutex);
+            s_vmThreadUsesJIT = !DarwinMisc::iPSX2_FORCE_EE_INTERP;
+        }
         ARMSX2StartJITKeepalive(); // JIT acquired — start idle-period validation
 
         // === PERSISTENT BOOT LOOP ===
@@ -961,7 +973,13 @@ static void ARMSX2StartJITKeepalive()
                         // When we tear down to create a new thread (e.g. for interpreter fallback),
                         // we must pair the init with a shutdown so the new thread can re-allocate
                         // without duplicating the ~161MB SysMemory reservation.
+                        s_vmInitComplete.store(false, std::memory_order_release);
+                        ARMSX2StopJITKeepalive();
+                        DarwinMisc::WaitForJITValidation();
                         VMManager::Internal::CPUThreadShutdown();
+                        s_vmThreadCreated = false;
+                        s_vmThreadUsesJIT = false;
+                        s_vmCV.notify_all();
                         break; // exit the while(true) loop — thread ends
                     }
                 }
@@ -971,7 +989,12 @@ static void ARMSX2StartJITKeepalive()
             std::fprintf(stderr, "@@BOOT_THREAD_SIGNAL@@ received=1\n");
             std::fflush(stderr);
             Console.WriteLn("[VM] VM Thread: boot signal received, preparing boot params...");
-            s_vmThreadActive.store(true);
+            // Block new canaries, cancel periodic validation, then wait for a
+            // callback which already passed the busy check. JIT execution may
+            // begin only after that callback has restored the probed code byte.
+            s_vmThreadActive.store(true, std::memory_order_release);
+            ARMSX2StopJITKeepalive();
+            DarwinMisc::WaitForJITValidation();
             const unsigned int heartbeat_generation =
                 s_vmHeartbeatGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
 
@@ -1083,6 +1106,18 @@ static void ARMSX2StartJITKeepalive()
                 s_settings_interface->GetBoolValue("EmuCore/Speedhacks", "vuThread", EmuConfig.Speedhacks.vuThread);
             EmuConfig.Cpu.Recompiler.EnableFastmem =
                 s_settings_interface->GetBoolValue("EmuCore/CPU/Recompiler", "EnableFastmem", EmuConfig.Cpu.Recompiler.EnableFastmem);
+            if (DarwinMisc::iPSX2_FORCE_EE_INTERP)
+            {
+                // Per-game settings are loaded after the JIT gate. Keep the
+                // no-JIT capability as a boot-scoped runtime override without
+                // rewriting the user's saved preferences.
+                EmuConfig.Cpu.Recompiler.EnableEE = false;
+                EmuConfig.Cpu.Recompiler.EnableIOP = false;
+                EmuConfig.Cpu.Recompiler.EnableVU0 = false;
+                EmuConfig.Cpu.Recompiler.EnableVU1 = false;
+                EmuConfig.Cpu.Recompiler.EnableFastmem = false;
+                EmuConfig.Speedhacks.vuThread = false;
+            }
             // Re-apply the sticky fastmem-area-unavailable disable. The INI read above
             // can re-enable fastmem (the default is true), but if the 4 GB reservation
             // failed at boot the recompiler would emit load/store against fastmem_base=0
@@ -1117,8 +1152,6 @@ static void ARMSX2StartJITKeepalive()
             ARMSX2ApplyJITScriptProtocol("pre-vm-initialize");
 
             // --- Initialize & Execute VM ---
-            // VM about to run — JIT is in active use, keepalive not needed.
-            ARMSX2StopJITKeepalive();
             Error bootError;
             const VMBootResult bootResult = VMManager::Initialize(boot_params, &bootError);
             const std::string bootErrorText = bootError.GetDescription();

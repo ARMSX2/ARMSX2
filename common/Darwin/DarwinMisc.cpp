@@ -626,6 +626,9 @@ volatile int DarwinMisc::g_rec_stage = 0;
 ptrdiff_t DarwinMisc::g_code_rw_offset = 0;
 uintptr_t DarwinMisc::g_code_rw_base = 0;
 size_t DarwinMisc::g_code_rw_size = 0;
+// Serializes idle canary access with code-memory release. Dispatch-source
+// cancellation does not wait for an event handler which is already running.
+static std::mutex s_jit_validation_mutex;
 
 void DarwinMisc::SetCrashLogFD(int fd)
 {
@@ -635,7 +638,11 @@ void DarwinMisc::SetCrashLogFD(int fd)
 void DarwinMisc::SetJitRange(void* base, size_t size)
 {
 	if (!base || size == 0)
-		return; // interpreter-only mode: no code region
+	{
+		s_jit_base = 0;
+		s_jit_end = 0;
+		return;
+	}
 	s_jit_base = reinterpret_cast<uintptr_t>(base);
 	s_jit_end = s_jit_base + size;
 }
@@ -772,71 +779,81 @@ bool DarwinMisc::ValidateJITAlive()
 		return false;
 	}
 
+	// Check activity before inspecting mapping state. The platform drains any
+	// canary which passed this check before allowing JIT execution to resume.
+	if (s_jit_activity_query && s_jit_activity_query())
+	{
+		std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=1 cs_debugged=1 canary=skipped-vm-active\n");
+		std::fflush(stderr);
+		return true;
+	}
+
+	// A canceled dispatch timer may already be inside its event handler.
+	// Hold the same lock used by MunmapCodeDualMap so the code page remains
+	// mapped until this validation completes.
+	std::lock_guard<std::mutex> validation_lock(s_jit_validation_mutex);
+
 	// Check 2: JIT code memory still writable? Write a canary, read it back.
+	// Interpreter sessions have no code mapping and never start the idle timer;
+	// synchronous preflight checks safely stop after CS_DEBUGGED in that state.
+	if (g_code_rw_base == 0 || g_code_rw_size == 0)
+	{
+		std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=1 cs_debugged=1 canary=skipped-no-code-memory\n");
+		std::fflush(stderr);
+		return true;
+	}
+
 	// Under a dual-mapping the base is the RW alias and a dead alias is exactly
 	// what this detects. Under an identity mapping it is the live RX dispatcher
 	// page, so Legacy flips just that page RW and back via mprotect, treating a
 	// failed flip as "grant died" (alive=0) instead of letting the store SIGBUS;
 	// the MAP_JIT toggle mode uses the per-thread Begin/EndCodeWrite.
-	if (g_code_rw_base != 0 && g_code_rw_size > 0)
-	{
-		// Never touch a page a JIT thread might be executing: the Legacy flip
-		// drops execute on the dispatcher page, and the store rewrites its
-		// first instruction in every mode. A running VM is proof enough that
-		// the grant works, so skip the probe and say so in the log.
-		if (s_jit_activity_query && s_jit_activity_query())
-		{
-			std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=1 cs_debugged=1 canary=skipped-vm-active\n");
-			std::fflush(stderr);
-			return true;
-		}
 
-		volatile u8* canary = reinterpret_cast<volatile u8*>(g_code_rw_base);
+	volatile u8* canary = reinterpret_cast<volatile u8*>(g_code_rw_base);
 #ifdef ARCH_ARM64
-		const bool identity = (g_code_rw_offset == 0);
-		const bool legacy_scope = identity && GetJitMode() == JitMode::Legacy && s_legacy_code_base;
-		if (legacy_scope)
+	const bool identity = (g_code_rw_offset == 0);
+	const bool legacy_scope = identity && GetJitMode() == JitMode::Legacy && s_legacy_code_base;
+	if (legacy_scope)
+	{
+		if (!LegacyProtectCodeRange(reinterpret_cast<void*>(g_code_rw_base), 1,
+				PROT_READ | PROT_WRITE, "keepalive_rw"))
 		{
-			if (!LegacyProtectCodeRange(reinterpret_cast<void*>(g_code_rw_base), 1,
-					PROT_READ | PROT_WRITE, "keepalive_rw"))
-			{
-				std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=legacy_mprotect_rw_failed\n");
-				std::fflush(stderr);
-				return false;
-			}
-		}
-		else if (identity)
-			HostSys::BeginCodeWrite();
-#endif
-		const u8 saved = *canary;
-		*canary = 0x42;
-		const u8 readback = *canary;
-		*canary = saved; // restore so we don't corrupt the first code byte
-#ifdef ARCH_ARM64
-		bool reprotect_ok = true;
-		if (legacy_scope)
-		{
-			reprotect_ok = LegacyProtectCodeRange(reinterpret_cast<void*>(g_code_rw_base), 1,
-				PROT_READ | PROT_EXEC, "keepalive_rx");
-		}
-		else if (identity)
-			HostSys::EndCodeWrite();
-#endif
-		if (readback != 0x42)
-		{
-			std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=rw_alias_dead readback=0x%02x\n", readback);
+			std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=legacy_mprotect_rw_failed\n");
 			std::fflush(stderr);
 			return false;
 		}
-#ifdef ARCH_ARM64
-		if (!reprotect_ok)
-		{
-			std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=legacy_mprotect_rx_failed\n");
-			std::fflush(stderr);
-			return false;
-		}
-#endif
 	}
+	else if (identity)
+		HostSys::BeginCodeWrite();
+#endif
+	const u8 saved = *canary;
+	*canary = 0x42;
+	const u8 readback = *canary;
+	*canary = saved;
+#ifdef ARCH_ARM64
+	bool reprotect_ok = true;
+	if (legacy_scope)
+	{
+		reprotect_ok = LegacyProtectCodeRange(reinterpret_cast<void*>(g_code_rw_base), 1,
+			PROT_READ | PROT_EXEC, "keepalive_rx");
+	}
+	else if (identity)
+		HostSys::EndCodeWrite();
+#endif
+	if (readback != 0x42)
+	{
+		std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=rw_alias_dead readback=0x%02x\n", readback);
+		std::fflush(stderr);
+		return false;
+	}
+#ifdef ARCH_ARM64
+	if (!reprotect_ok)
+	{
+		std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=legacy_mprotect_rx_failed\n");
+		std::fflush(stderr);
+		return false;
+	}
+#endif
 
 	std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=1 cs_debugged=1 canary=ok\n");
 	std::fflush(stderr);
@@ -844,6 +861,11 @@ bool DarwinMisc::ValidateJITAlive()
 #else
 	return true; // macOS and Simulator always have JIT
 #endif
+}
+
+void DarwinMisc::WaitForJITValidation()
+{
+	std::lock_guard<std::mutex> validation_lock(s_jit_validation_mutex);
 }
 
 DarwinMisc::JitMode DarwinMisc::DetectJitMode()
@@ -940,9 +962,12 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
 			return nullptr;
 		}
 
-		g_code_rw_offset = reinterpret_cast<u8*>(rw_region) - static_cast<u8*>(rx_ptr);
-		g_code_rw_base = static_cast<uintptr_t>(rw_region);
-		g_code_rw_size = size;
+		{
+			std::lock_guard<std::mutex> validation_lock(s_jit_validation_mutex);
+			g_code_rw_offset = reinterpret_cast<u8*>(rw_region) - static_cast<u8*>(rx_ptr);
+			g_code_rw_base = static_cast<uintptr_t>(rw_region);
+			g_code_rw_size = size;
+		}
 		std::fprintf(stderr, "@@JIT_ALLOC@@ macos_forced_dualmap_ok rx=%p rw=%p offset=%td size=0x%zx\n",
 			rx_ptr, reinterpret_cast<void*>(rw_region), g_code_rw_offset, size);
 		std::fflush(stderr);
@@ -958,9 +983,12 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
 		return nullptr;
 	}
 
-	g_code_rw_offset = 0;
-	g_code_rw_base = reinterpret_cast<uintptr_t>(ptr);
-	g_code_rw_size = size;
+	{
+		std::lock_guard<std::mutex> validation_lock(s_jit_validation_mutex);
+		g_code_rw_offset = 0;
+		g_code_rw_base = reinterpret_cast<uintptr_t>(ptr);
+		g_code_rw_size = size;
+	}
 	std::fprintf(stderr, "@@JIT_ALLOC@@ map_jit_ok rx=%p rw=%p offset=0 size=0x%zx mode=%s\n",
 		ptr, ptr, size, JitModeName(JitMode::Simulator));
 	std::fflush(stderr);
@@ -974,9 +1002,12 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
 	{
 		s_jit_mode = JitMode::Simulator;
 		s_jit_mode_detected = true;
-		g_code_rw_offset = 0;
-		g_code_rw_base = reinterpret_cast<uintptr_t>(jit_ptr);
-		g_code_rw_size = size;
+		{
+			std::lock_guard<std::mutex> validation_lock(s_jit_validation_mutex);
+			g_code_rw_offset = 0;
+			g_code_rw_base = reinterpret_cast<uintptr_t>(jit_ptr);
+			g_code_rw_size = size;
+		}
 		std::fprintf(stderr, "@@JIT_ALLOC@@ map_jit_ok rx=%p rw=%p offset=0 size=0x%zx mode=%s\n",
 			jit_ptr, jit_ptr, size, JitModeName(s_jit_mode));
 		std::fflush(stderr);
@@ -1000,13 +1031,16 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
 			return nullptr;
 		}
 
-		g_code_rw_offset = 0;
-		g_code_rw_base = reinterpret_cast<uintptr_t>(ptr);
-		g_code_rw_size = size;
-		s_legacy_code_base = ptr;
-		s_legacy_code_size = size;
-		s_legacy_is_writable = true;
-		s_legacy_range_log_done = false;
+		{
+			std::lock_guard<std::mutex> validation_lock(s_jit_validation_mutex);
+			g_code_rw_offset = 0;
+			g_code_rw_base = reinterpret_cast<uintptr_t>(ptr);
+			g_code_rw_size = size;
+			s_legacy_code_base = ptr;
+			s_legacy_code_size = size;
+			s_legacy_is_writable = true;
+			s_legacy_range_log_done = false;
+		}
 
 		std::fprintf(stderr, "@@JIT_ALLOC@@ legacy_wx_toggle_ok rx=%p rw=%p offset=0 size=0x%zx\n",
 			ptr, ptr, size);
@@ -1180,9 +1214,12 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
 		return nullptr;
 	}
 
-	g_code_rw_offset = rw_ptr - static_cast<u8*>(rx_ptr);
-	g_code_rw_base = reinterpret_cast<uintptr_t>(rw_ptr);
-	g_code_rw_size = size;
+	{
+		std::lock_guard<std::mutex> validation_lock(s_jit_validation_mutex);
+		g_code_rw_offset = rw_ptr - static_cast<u8*>(rx_ptr);
+		g_code_rw_base = reinterpret_cast<uintptr_t>(rw_ptr);
+		g_code_rw_size = size;
+	}
 	std::fprintf(stderr, "@@JIT_ALLOC@@ dualmap_ok rx=%p rw=%p offset=%td size=0x%zx mode=%s\n",
 		rx_ptr, rw_ptr, g_code_rw_offset, size, JitModeName(mode));
 	std::fflush(stderr);
@@ -1194,13 +1231,19 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
 
 void DarwinMisc::MunmapCodeDualMap(void* rx_ptr, size_t size)
 {
-	if (g_code_rw_base && g_code_rw_offset != 0)
-		vm_deallocate(mach_task_self(), static_cast<vm_address_t>(g_code_rw_base), static_cast<vm_size_t>(g_code_rw_size));
-	if (rx_ptr)
-		munmap(rx_ptr, size);
+	// Wait for any already-running idle validation before invalidating either
+	// the RW alias or executable mapping.
+	std::lock_guard<std::mutex> validation_lock(s_jit_validation_mutex);
+	const uintptr_t rw_base = g_code_rw_base;
+	const size_t rw_size = g_code_rw_size;
+	const ptrdiff_t rw_offset = g_code_rw_offset;
 	g_code_rw_offset = 0;
 	g_code_rw_base = 0;
 	g_code_rw_size = 0;
+	if (rw_base && rw_offset != 0)
+		vm_deallocate(mach_task_self(), static_cast<vm_address_t>(rw_base), static_cast<vm_size_t>(rw_size));
+	if (rx_ptr)
+		munmap(rx_ptr, size);
 #if TARGET_OS_IPHONE
 	s_legacy_code_base = nullptr;
 	s_legacy_code_size = 0;
