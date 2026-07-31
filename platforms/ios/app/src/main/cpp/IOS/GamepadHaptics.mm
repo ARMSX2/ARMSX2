@@ -44,28 +44,44 @@ static constexpr double ARMSX2_GAMEPAD_RUMBLE_FORCE_STOP_SECONDS = 0.30;
 static constexpr u16 ARMSX2_GAMEPAD_RUMBLE_MAX_INTENSITY = 0x7000;
 
 // The two PS2 motors feel nothing alike, so the phone plays them as two channels
-// rather than flattening them into one number. Taptic Engine sharpness runs 80 Hz
-// at 0.0 up to 230 Hz at 1.0, hitting hardest around 0.73, so the heavy motor sits
-// below that and the buzzer above it.
+// rather than flattening them into one number. Core Haptics describes low
+// sharpness as rounded/organic and high sharpness as crisp/mechanical, which maps
+// naturally to the heavy motor and the small buzzer respectively.
 enum : u32
 {
     ARMSX2_RUMBLE_CHANNEL_LARGE = 0,
     ARMSX2_RUMBLE_CHANNEL_SMALL = 1,
     ARMSX2_RUMBLE_CHANNEL_COUNT = 2,
 };
-static constexpr float ARMSX2_RUMBLE_CHANNEL_SHARPNESS[ARMSX2_RUMBLE_CHANNEL_COUNT] = { 0.35f, 0.85f };
+static constexpr float ARMSX2_RUMBLE_CHANNEL_SHARPNESS[ARMSX2_RUMBLE_CHANNEL_COUNT] = { 0.18f, 0.82f };
 // The PS2 small motor has one speed and no analog control at all, so "on" is just
 // a level we pick. Matching the real pad means it does not vary.
-static constexpr float ARMSX2_SMALL_MOTOR_LEVEL = 0.55f;
-// Down at the bottom of the range the engine barely moves, so a faint rumble reads
-// as nothing at all. Lift the floor without touching the top.
-static constexpr float ARMSX2_RUMBLE_FLOOR = 0.12f;
+static constexpr float ARMSX2_SMALL_MOTOR_LEVEL = 0.52f;
+static constexpr double ARMSX2_RUMBLE_LARGE_ATTACK_SECONDS = 0.065;
+static constexpr double ARMSX2_RUMBLE_SMALL_ATTACK_SECONDS = 0.028;
+static constexpr double ARMSX2_RUMBLE_LARGE_RELEASE_SECONDS = 0.120;
+static constexpr double ARMSX2_RUMBLE_SMALL_RELEASE_SECONDS = 0.060;
+static constexpr double ARMSX2_RUMBLE_CROSSFADE_SECONDS = 0.045;
+
+struct ARMSX2RumbleEnvelope
+{
+    float start_level = 0.0f;
+    float target_level = 0.0f;
+    double start_time = 0.0;
+    double duration = 0.0;
+};
 
 static CHHapticEngine* s_nativePulseHapticEngine[ARMSX2_MAX_IOS_GAMEPADS] = {};
 static std::atomic<u32> s_nativePulseHapticStopGeneration[ARMSX2_MAX_IOS_GAMEPADS];
 static std::atomic<u32> s_loggedNativePulseHapticEvents{0};
 static CHHapticEngine* s_nativeHapticEngine = nil;
 static id<CHHapticAdvancedPatternPlayer> s_nativeHapticPlayer[ARMSX2_RUMBLE_CHANNEL_COUNT] = {};
+static ARMSX2RumbleEnvelope s_nativeHapticEnvelope[ARMSX2_RUMBLE_CHANNEL_COUNT];
+static u32 s_nativeHapticStopGeneration[ARMSX2_RUMBLE_CHANNEL_COUNT] = {};
+static bool s_nativeHapticEngineRunning = false;
+static std::atomic<int> s_nativeHapticSourceGamepad{-1};
+static std::atomic<u32> s_nativeHapticResyncSlotMask{0};
+static double s_nativeHapticLastTransientTime = 0.0;
 static u32 s_nativeAppliedGamepadRumble = 0;
 static bool s_nativeAppliedGamepadRumbleValid = false;
 static bool s_loggedNativeGamepadRumbleReady = false;
@@ -539,15 +555,23 @@ extern "C" void ARMSX2_iOSUpdatePadVibration(u32 pad_index, float large_intensit
 
 static void ARMSX2StopRumbleChannelOnMain(u32 channel)
 {
-    if (channel >= ARMSX2_RUMBLE_CHANNEL_COUNT || !s_nativeHapticPlayer[channel])
+    if (channel >= ARMSX2_RUMBLE_CHANNEL_COUNT)
         return;
 
-    NSError* error = nil;
-    [s_nativeHapticPlayer[channel] stopAtTime:CHHapticTimeImmediate error:&error];
-    if (error)
-        Console.WriteLn("[ARMSX2 iOS Gamepad] Device rumble stop failed: %s", error.localizedDescription.UTF8String ?: "unknown");
-    [s_nativeHapticPlayer[channel] release];
-    s_nativeHapticPlayer[channel] = nil;
+    // Any delayed release already queued for this channel becomes stale as soon
+    // as its generation changes. This keeps a previous fade-out from stopping a
+    // newly restarted rumble.
+    s_nativeHapticStopGeneration[channel]++;
+    if (s_nativeHapticPlayer[channel]) {
+        NSError* error = nil;
+        [s_nativeHapticPlayer[channel] stopAtTime:CHHapticTimeImmediate error:&error];
+        if (error)
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Device rumble stop failed: %s", error.localizedDescription.UTF8String ?: "unknown");
+        [s_nativeHapticPlayer[channel] release];
+        s_nativeHapticPlayer[channel] = nil;
+    }
+
+    s_nativeHapticEnvelope[channel] = {};
 }
 
 static void ARMSX2StopNativeGamepadRumbleOnMain()
@@ -564,6 +588,10 @@ static void ARMSX2ResetNativeGamepadRumbleOnMain()
         [s_nativeHapticEngine release];
         s_nativeHapticEngine = nil;
     }
+    s_nativeHapticEngineRunning = false;
+    s_nativeHapticSourceGamepad.store(-1, std::memory_order_relaxed);
+    s_nativeHapticResyncSlotMask.store(0, std::memory_order_release);
+    s_nativeHapticLastTransientTime = 0.0;
     s_nativeAppliedGamepadRumble = 0;
     s_nativeAppliedGamepadRumbleValid = false;
     s_loggedNativeGamepadRumbleReady = false;
@@ -629,21 +657,32 @@ static bool ARMSX2EnsureNativeRumbleEngineOnMain()
         // release races the main thread still using them.
         s_nativeHapticEngine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) {
             dispatch_async(dispatch_get_main_queue(), ^{
+                s_nativeHapticEngineRunning = false;
                 ARMSX2StopNativeGamepadRumbleOnMain();
                 s_nativeAppliedGamepadRumble = 0;
                 s_nativeAppliedGamepadRumbleValid = false;
+                const int source = s_nativeHapticSourceGamepad.load(std::memory_order_relaxed);
+                if (source >= 0 && source < static_cast<int>(ARMSX2_MAX_IOS_GAMEPADS))
+                    s_nativeHapticResyncSlotMask.fetch_or(1u << source, std::memory_order_release);
             });
             Console.WriteLn("[ARMSX2 iOS Gamepad] Device haptic engine stopped reason=%ld", static_cast<long>(reason));
         };
         s_nativeHapticEngine.resetHandler = ^{
             dispatch_async(dispatch_get_main_queue(), ^{
+                s_nativeHapticEngineRunning = false;
                 ARMSX2StopNativeGamepadRumbleOnMain();
                 s_nativeAppliedGamepadRumble = 0;
                 s_nativeAppliedGamepadRumbleValid = false;
+                const int source = s_nativeHapticSourceGamepad.load(std::memory_order_relaxed);
+                if (source >= 0 && source < static_cast<int>(ARMSX2_MAX_IOS_GAMEPADS))
+                    s_nativeHapticResyncSlotMask.fetch_or(1u << source, std::memory_order_release);
             });
             Console.WriteLn("[ARMSX2 iOS Gamepad] Device haptic engine reset");
         };
     }
+
+    if (s_nativeHapticEngineRunning)
+        return true;
 
     NSError* error = nil;
     if (![s_nativeHapticEngine startAndReturnError:&error]) {
@@ -651,6 +690,7 @@ static bool ARMSX2EnsureNativeRumbleEngineOnMain()
         return false;
     }
 
+    s_nativeHapticEngineRunning = true;
     return true;
 }
 
@@ -673,7 +713,16 @@ static bool ARMSX2EnsureRumbleChannelOnMain(u32 channel)
                                                           parameters:params
                                                         relativeTime:0.0
                                                              duration:1.0] autorelease];
-    CHHapticPattern* pattern = [[[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error] autorelease];
+    // A looping event has a full 1.0 base because IntensityControl multiplies it.
+    // Its initial control value must be zero, however, or starting the player emits
+    // a full-power click before the requested envelope reaches Core Haptics.
+    CHHapticDynamicParameter* silentStart = [[[CHHapticDynamicParameter alloc]
+        initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
+                      value:0.0f
+               relativeTime:0.0] autorelease];
+    CHHapticPattern* pattern = [[[CHHapticPattern alloc] initWithEvents:@[event]
+                                                                  parameters:@[silentStart]
+                                                                       error:&error] autorelease];
     if (!pattern) {
         Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pattern failed: %s", error.localizedDescription.UTF8String ?: "unknown");
         return false;
@@ -694,6 +743,9 @@ static bool ARMSX2EnsureRumbleChannelOnMain(u32 channel)
         return false;
     }
 
+    s_nativeHapticStopGeneration[channel]++;
+    s_nativeHapticEnvelope[channel] = {};
+
     if (!s_loggedNativeGamepadRumbleReady) {
         Console.WriteLn("[ARMSX2 iOS Gamepad] Device rumble active (continuous haptics)");
         s_loggedNativeGamepadRumbleReady = true;
@@ -702,34 +754,130 @@ static bool ARMSX2EnsureRumbleChannelOnMain(u32 channel)
     return true;
 }
 
-// Expects the engine to already be up, which is the caller's job.
+static double ARMSX2HapticUptime()
+{
+    return NSProcessInfo.processInfo.systemUptime;
+}
+
+static float ARMSX2CurrentRumbleLevel(u32 channel, double now)
+{
+    const ARMSX2RumbleEnvelope& envelope = s_nativeHapticEnvelope[channel];
+    if (envelope.duration <= 0.0)
+        return envelope.target_level;
+
+    const double progress = std::clamp((now - envelope.start_time) / envelope.duration, 0.0, 1.0);
+    return std::clamp(envelope.start_level +
+        ((envelope.target_level - envelope.start_level) * static_cast<float>(progress)), 0.0f, 1.0f);
+}
+
+static double ARMSX2RumbleTransitionDuration(u32 channel, float current, float target)
+{
+    double base_duration;
+    if (target <= 0.001f) {
+        base_duration = (channel == ARMSX2_RUMBLE_CHANNEL_LARGE)
+            ? ARMSX2_RUMBLE_LARGE_RELEASE_SECONDS
+            : ARMSX2_RUMBLE_SMALL_RELEASE_SECONDS;
+    } else if (current <= 0.001f) {
+        base_duration = (channel == ARMSX2_RUMBLE_CHANNEL_LARGE)
+            ? ARMSX2_RUMBLE_LARGE_ATTACK_SECONDS
+            : ARMSX2_RUMBLE_SMALL_ATTACK_SECONDS;
+    } else {
+        base_duration = ARMSX2_RUMBLE_CROSSFADE_SECONDS;
+    }
+
+    // Small corrections should settle faster than a full stop-to-maximum change.
+    const double distance_scale = 0.55 + (0.45 * std::abs(target - current));
+    return base_duration * distance_scale;
+}
+
+// Expects the engine to already be up, which is the caller's job. Curves model
+// the inertia of a physical eccentric motor while retaining immediate response.
 static bool ARMSX2SetRumbleChannelOnMain(u32 channel, float level)
 {
     if (channel >= ARMSX2_RUMBLE_CHANNEL_COUNT)
         return false;
 
-    if (level <= 0.01f) {
-        ARMSX2StopRumbleChannelOnMain(channel);
+    const float target = std::clamp(level, 0.0f, 1.0f);
+    if (target > 0.001f && !ARMSX2EnsureRumbleChannelOnMain(channel))
+        return false;
+
+    if (!s_nativeHapticPlayer[channel]) {
+        s_nativeHapticEnvelope[channel] = {};
         return true;
     }
 
-    if (!ARMSX2EnsureRumbleChannelOnMain(channel))
-        return false;
+    const double now = ARMSX2HapticUptime();
+    const float current = ARMSX2CurrentRumbleLevel(channel, now);
+    if (std::abs(current - target) < 0.002f &&
+        std::abs(s_nativeHapticEnvelope[channel].target_level - target) < 0.002f)
+        return true;
 
-    const float intensity = std::clamp(level, 0.0f, 1.0f);
+    const double duration = ARMSX2RumbleTransitionDuration(channel, current, target);
     NSError* error = nil;
-    NSArray<CHHapticDynamicParameter*>* dynamicParams = @[
-        [[[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
-                                                         value:intensity relativeTime:0.0] autorelease]
+    NSArray<CHHapticParameterCurveControlPoint*>* controlPoints = @[
+        [[[CHHapticParameterCurveControlPoint alloc] initWithRelativeTime:0.0 value:current] autorelease],
+        [[[CHHapticParameterCurveControlPoint alloc] initWithRelativeTime:duration value:target] autorelease]
     ];
+    CHHapticParameterCurve* curve = [[[CHHapticParameterCurve alloc]
+        initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
+              controlPoints:controlPoints
+               relativeTime:0.0] autorelease];
 
-    if (![s_nativeHapticPlayer[channel] sendParameters:dynamicParams atTime:CHHapticTimeImmediate error:&error]) {
-        Console.WriteLn("[ARMSX2 iOS Gamepad] Device haptic update failed: %s", error.localizedDescription.UTF8String ?: "unknown");
+    if (![s_nativeHapticPlayer[channel] scheduleParameterCurve:curve atTime:CHHapticTimeImmediate error:&error]) {
+        Console.WriteLn("[ARMSX2 iOS Gamepad] Device haptic curve failed: %s", error.localizedDescription.UTF8String ?: "unknown");
         ARMSX2StopRumbleChannelOnMain(channel);
         return false;
     }
 
+    s_nativeHapticEnvelope[channel] = { current, target, now, duration };
+    const u32 generation = ++s_nativeHapticStopGeneration[channel];
+    if (target <= 0.001f) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                           static_cast<int64_t>((duration + 0.015) * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+                if (s_nativeHapticStopGeneration[channel] == generation)
+                    ARMSX2StopRumbleChannelOnMain(channel);
+            });
+    }
+
     return true;
+}
+
+// Short transients give binary small-motor changes and fast game pulses a crisp
+// onset. The sustained players then carry the weight and texture without a busy
+// timer or a stream of individually allocated pulse patterns.
+static void ARMSX2PlayRumbleTransientOnMain(float large, float small)
+{
+    const double now = ARMSX2HapticUptime();
+    if ((now - s_nativeHapticLastTransientTime) < 0.025)
+        return;
+
+    const float combined = std::max(large * 0.58f, small * 0.82f);
+    if (combined <= 0.02f)
+        return;
+
+    const float weight = large + small;
+    const float sharpness = (weight > 0.001f)
+        ? std::clamp(((large * 0.18f) + (small * 0.92f)) / weight, 0.0f, 1.0f)
+        : 0.5f;
+    const float intensity = std::clamp(combined, 0.08f, 0.82f);
+    NSError* error = nil;
+    NSArray<CHHapticEventParameter*>* params = @[
+        [[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity
+                                                       value:intensity] autorelease],
+        [[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness
+                                                       value:sharpness] autorelease]
+    ];
+    CHHapticEvent* event = [[[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticTransient
+                                                          parameters:params
+                                                        relativeTime:0.0] autorelease];
+    CHHapticPattern* pattern = [[[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error] autorelease];
+    if (!pattern)
+        return;
+
+    id<CHHapticPatternPlayer> player = [s_nativeHapticEngine createPlayerWithPattern:pattern error:&error];
+    if (player && [player startAtTime:CHHapticTimeImmediate error:&error])
+        s_nativeHapticLastTransientTime = now;
 }
 
 static void ARMSX2ApplyNativeGamepadRumbleOnMain(u32 packed)
@@ -743,20 +891,29 @@ static void ARMSX2ApplyNativeGamepadRumbleOnMain(u32 packed)
     const float strength = s_settings_interface
         ? std::clamp(s_settings_interface->GetFloatValue("ARMSX2iOS/UI", "PhoneRumbleStrength", 1.0f), 0.0f, 1.0f)
         : 1.0f;
-    // The heavy motor carries everything the game varies, so it drives its own
-    // channel and keeps its range. The buzzer is on or off on a real pad, so it gets
-    // a fixed level. Maxing the two together, which is what used to happen here,
-    // meant one touch of the buzzer pinned the lot to full and buried the heavy motor.
+    // Preserve low-amplitude detail without imposing a hard floor. The sublinear
+    // curve compensates for the phone actuator's less perceptible lower range while
+    // keeping the original analog ordering from the PS2 heavy motor.
     const float large_raw = ARMSX2RumbleLargeIntensity(packed);
-    // Lift the game's value clear of the floor before the slider scales it, so a
-    // faint rumble is felt as faint while the slider can still take it to nothing.
     const float large = (large_raw > 0.01f)
-        ? (ARMSX2_RUMBLE_FLOOR + ((1.0f - ARMSX2_RUMBLE_FLOOR) * large_raw)) * strength
+        ? std::pow(large_raw, 0.78f) * strength
         : 0.0f;
-    const float small = (ARMSX2RumbleSmallIntensity(packed) > 0.01f) ? (ARMSX2_SMALL_MOTOR_LEVEL * strength) : 0.0f;
+    const float small_raw = ARMSX2RumbleSmallIntensity(packed);
+    const float small = (small_raw > 0.01f) ? (ARMSX2_SMALL_MOTOR_LEVEL * strength) : 0.0f;
 
     if ((large > 0.01f || small > 0.01f) && !ARMSX2EnsureNativeRumbleEngineOnMain())
         return;
+
+    const float previous_large = s_nativeAppliedGamepadRumbleValid
+        ? ARMSX2RumbleLargeIntensity(s_nativeAppliedGamepadRumble)
+        : 0.0f;
+    const float previous_small = s_nativeAppliedGamepadRumbleValid
+        ? ARMSX2RumbleSmallIntensity(s_nativeAppliedGamepadRumble)
+        : 0.0f;
+    const bool large_started = large_raw > 0.01f && previous_large <= 0.01f;
+    const bool small_started = small_raw > 0.01f && previous_small <= 0.01f;
+    if (large_started || small_started)
+        ARMSX2PlayRumbleTransientOnMain(large_started ? large : 0.0f, small_started ? small : 0.0f);
 
     const bool large_ok = ARMSX2SetRumbleChannelOnMain(ARMSX2_RUMBLE_CHANNEL_LARGE, large);
     const bool small_ok = ARMSX2SetRumbleChannelOnMain(ARMSX2_RUMBLE_CHANNEL_SMALL, small);
@@ -1044,7 +1201,11 @@ void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
     }
 
     const u32 packed = s_pendingGamepadRumble[gamepad_index].load(std::memory_order_relaxed);
-    if (s_appliedGamepadRumbleValid[gamepad_index] && packed == s_appliedGamepadRumble[gamepad_index])
+    const u32 slot_bit = 1u << gamepad_index;
+    const bool native_resync =
+        (s_nativeHapticResyncSlotMask.fetch_and(~slot_bit, std::memory_order_acq_rel) & slot_bit) != 0;
+    if (s_appliedGamepadRumbleValid[gamepad_index] &&
+        packed == s_appliedGamepadRumble[gamepad_index] && !native_resync)
         return;
 
     const u16 large = std::min<u16>(static_cast<u16>((packed >> 16) & 0xffffu), ARMSX2_GAMEPAD_RUMBLE_MAX_INTENSITY);
@@ -1133,6 +1294,7 @@ void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
         if (!ARMSX2FindNativeHapticController()) {
             if (ARMSX2DeviceSupportsHaptics()) {
                 const u32 native_packed_device = packed;
+                s_nativeHapticSourceGamepad.store(static_cast<int>(gamepad_index), std::memory_order_relaxed);
                 dispatch_async(dispatch_get_main_queue(), ^{
                     ARMSX2ApplyNativeGamepadRumbleOnMain(native_packed_device);
                 });
