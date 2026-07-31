@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "Memory.h"
 #include "Vif.h"
 #include "Vif_HashBucket.h"
 #include "VU.h"
@@ -44,3 +45,12 @@ alignas(16) extern nVifCall nVifUpk[(2 * 2 * 16) * 4]; // ([USN][Masking][Unpack
 alignas(16) extern u32      nVifMask[3][4][4];         // [MaskNumber][CycleNumber][Vector]
 
 static constexpr bool newVifDynaRec = 1; // Use code in Vif_Dynarec.inl
+
+/// Generated VIF unpackers share the VM executable-code allocation.  The
+/// interpreter-only iOS path deliberately leaves that allocation absent, so
+/// every VIF dispatch site must use this capability check before touching a
+/// generated unpacker or its cache.
+inline bool CanUseVifDynarec()
+{
+	return newVifDynaRec && SysMemory::HasCodeMemory();
+}

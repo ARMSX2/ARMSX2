@@ -7,6 +7,7 @@
 #include "Elfheader.h"
 #include "Cache.h"
 #include "ee_divtrace.h"
+#include "no-jit-improvements.h"
 
 #include "DebugTools/Breakpoints.h"
 
@@ -238,6 +239,26 @@ static void execI()
 	if (ee_divtrace::g_enabled.load(std::memory_order_relaxed))
 		ee_divtrace::RecordSample(cpuRegs.pc);
 #endif
+}
+
+static bool execCachedI(u32 pc, u32 code, const OPCODE& opcode)
+{
+	// A previous instruction can redirect execution without using an opcode
+	// marked as a branch (for example, an exception). Stop at that boundary.
+	if (cpuRegs.pc != pc)
+		return false;
+
+	cpuRegs.pc = pc + 4;
+	cpuRegs.code = code;
+	cpuBlockCycles += opcode.cycles * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
+	opcode.interpret();
+
+#ifdef PCSX2_RECOMPILER_TESTS
+	if (ee_divtrace::g_enabled.load(std::memory_order_relaxed))
+		ee_divtrace::RecordSample(cpuRegs.pc);
+#endif
+
+	return (opcode.flags & IS_BRANCH) == 0 && cpuRegs.pc == (pc + 4);
 }
 
 static __fi void _doBranch_shared(u32 tar)
@@ -575,6 +596,7 @@ static void intReset()
 {
 	cpuRegs.branch = 0;
 	branch2 = 0;
+	NoJITImprovements::ResetEEBlockCache();
 }
 
 void intEventTest()
@@ -676,7 +698,10 @@ static void intExecute()
 		else
 		{
 			while (true)
-				execI();
+			{
+				if (!NoJITImprovements::ExecuteEEBlock(cpuRegs.pc, execCachedI))
+					execI();
+			}
 		}
 	}
 }
@@ -696,9 +721,11 @@ static void intStep()
 
 static void intClear(u32 Addr, u32 Size)
 {
+	NoJITImprovements::InvalidateEEBlockCache(Addr, Size);
 }
 
 static void intShutdown() {
+	NoJITImprovements::ResetEEBlockCache();
 }
 
 R5900cpu intCpu =

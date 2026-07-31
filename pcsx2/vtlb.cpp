@@ -94,7 +94,13 @@ static std::vector<u32> s_fastmem_faulting_pcs; // sorted; lookups via binary se
 // Process-lifetime flag so LoadSettings's config reload can't silently re-enable
 // fastmem against a null base and crash the EE rec on its first load/store.
 static bool s_fastmem_area_unavailable = false;
-bool vtlb_FastmemAreaUnavailable() { return s_fastmem_area_unavailable; }
+bool vtlb_FastmemAreaUnavailable()
+{
+	// Settings can be reloaded after allocation. Treat any allocated VM without
+	// a reservation as unavailable so fastmem cannot be re-enabled against a
+	// null base, whether allocation failed or the area was intentionally omitted.
+	return s_fastmem_area_unavailable || (SysMemory::IsAllocated() && !s_fastmem_area);
+}
 
 vtlb_private::VTLBPhysical vtlb_private::VTLBPhysical::fromPointer(sptr ptr)
 {
@@ -1388,21 +1394,32 @@ bool vtlb_Core_Alloc()
 	vtlbdata.vmap = reinterpret_cast<VTLBVirtual*>(SysMemory::GetVTLBVirtualMap());
 
 	pxAssert(!s_fastmem_area);
-	s_fastmem_area = SharedMemoryMappingArea::Create(FASTMEM_AREA_SIZE);
-	if (!s_fastmem_area)
+	if (!SysMemory::HasCodeMemory())
 	{
-		// 4 GB virtual reservation can fail on devices with limited VA space
-		// (e.g. iPhone SE 2 with 4 GB RAM under LiveContainer). On iOS we
-		// continue without fastmem instead of aborting boot.
-#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-		Console.Warning("Fastmem disabled: 4 GB virtual-address reservation failed; continuing without fastmem");
+		// Interpreter execution never emits fastmem accesses. Avoid reserving a
+		// 4 GB virtual address range that cannot improve the no-JIT backend.
 		vtlbdata.fastmem_base = 0;
 		EmuConfig.Cpu.Recompiler.EnableFastmem = false;
-		s_fastmem_area_unavailable = true;
+		Console.WriteLn("Fastmem disabled: executable code memory is unavailable");
+	}
+	else
+	{
+		s_fastmem_area = SharedMemoryMappingArea::Create(FASTMEM_AREA_SIZE);
+		if (!s_fastmem_area)
+		{
+			// 4 GB virtual reservation can fail on devices with limited VA space
+			// (e.g. iPhone SE 2 with 4 GB RAM under LiveContainer). On iOS we
+			// continue without fastmem instead of aborting boot.
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+			Console.Warning("Fastmem disabled: 4 GB virtual-address reservation failed; continuing without fastmem");
+			vtlbdata.fastmem_base = 0;
+			EmuConfig.Cpu.Recompiler.EnableFastmem = false;
+			s_fastmem_area_unavailable = true;
 #else
-		Host::ReportErrorAsync("Error", "Failed to allocate fastmem area");
-		return false;
+			Host::ReportErrorAsync("Error", "Failed to allocate fastmem area");
+			return false;
 #endif
+		}
 	}
 
 	// Force-disable fastmem if explicitly requested via env var or INI.

@@ -94,6 +94,7 @@ namespace VMManager
 	static void InitializeCPUProviders();
 	static void ShutdownCPUProviders();
 	static void UpdateCPUImplementations();
+	static void ClampRuntimeConfigToAvailableCPUProviders();
 
 	static void ApplyGameFixes();
 	static bool UpdateGameSettingsLayer();
@@ -170,6 +171,7 @@ static std::atomic_bool s_boot_patches_applied{false};
 static std::atomic_bool s_texture_replacement_startup_complete{false};
 static std::atomic_bool s_emulation_only_startup_notification_posted{false};
 static bool s_cpu_implementation_changed = false;
+static bool s_cpu_providers_initialized = false;
 static Threading::ThreadHandle s_vm_thread_handle;
 
 static bool ArePatchesDisabledByEmulationOnlyMode()
@@ -457,6 +459,15 @@ bool VMManager::Internal::CPUThreadInitialize()
 	// We want settings loaded so we choose the correct renderer for big picture mode.
 	// This also sorts out input sources.
 	LoadSettings();
+	Console.WriteLn(
+		"@@CPU_BACKEND@@ code_generation=%d ee_rec=%d iop_rec=%d vu0_rec=%d vu1_rec=%d fastmem=%d mtvu=%d",
+		SysMemory::HasCodeMemory() ? 1 : 0,
+		EmuConfig.Cpu.Recompiler.EnableEE ? 1 : 0,
+		EmuConfig.Cpu.Recompiler.EnableIOP ? 1 : 0,
+		EmuConfig.Cpu.Recompiler.EnableVU0 ? 1 : 0,
+		EmuConfig.Cpu.Recompiler.EnableVU1 ? 1 : 0,
+		EmuConfig.Cpu.Recompiler.EnableFastmem ? 1 : 0,
+		EmuConfig.Speedhacks.vuThread ? 1 : 0);
 
 	if (EmuConfig.Achievements.Enabled && !Achievements::IsActive())
 		Achievements::Initialize();
@@ -751,6 +762,8 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 			Console.Warning("Fastmem re-disabled after settings reload (area allocation previously failed)");
 		}
 	}
+
+	ClampRuntimeConfigToAvailableCPUProviders();
 }
 
 void VMManager::LoadInputBindings(SettingsInterface& si, std::unique_lock<std::mutex>& lock)
@@ -2851,6 +2864,13 @@ void VMManager::LogCPUCapabilities()
 
 void VMManager::InitializeCPUProviders()
 {
+	pxAssert(!s_cpu_providers_initialized);
+	if (!SysMemory::HasCodeMemory())
+	{
+		Console.Warning("Executable code memory is unavailable; skipping recompiler provider initialization");
+		return;
+	}
+
 	recCpu.Reserve();
 	psxRec.Reserve();
 
@@ -2858,10 +2878,14 @@ void VMManager::InitializeCPUProviders()
 	CpuMicroVU1.Reserve();
 
 	VifUnpackSSE_Init();
+	s_cpu_providers_initialized = true;
 }
 
 void VMManager::ShutdownCPUProviders()
 {
+	if (!s_cpu_providers_initialized)
+		return;
+
 	if (newVifDynaRec)
 	{
 		dVifRelease(1);
@@ -2873,6 +2897,8 @@ void VMManager::ShutdownCPUProviders()
 
 	psxRec.Shutdown();
 	recCpu.Shutdown();
+
+	s_cpu_providers_initialized = false;
 }
 
 void VMManager::UpdateCPUImplementations()
@@ -2880,6 +2906,15 @@ void VMManager::UpdateCPUImplementations()
 	if (GSDumpReplayer::IsReplayingDump())
 	{
 		Cpu = &GSDumpReplayerCpu;
+		psxCpu = &psxInt;
+		CpuVU0 = &CpuIntVU0;
+		CpuVU1 = &CpuIntVU1;
+		return;
+	}
+
+	if (!SysMemory::HasCodeMemory())
+	{
+		Cpu = &intCpu;
 		psxCpu = &psxInt;
 		CpuVU0 = &CpuIntVU0;
 		CpuVU1 = &CpuIntVU1;
@@ -2898,17 +2933,50 @@ void VMManager::Internal::ClearCPUExecutionCaches()
 	Cpu->Reset();
 	psxCpu->Reset();
 
-	// mVU's VU0 needs to be properly initialized for macro mode even if it's not used for micro mode!
-	if (CHECK_EEREC && !EmuConfig.Cpu.Recompiler.EnableVU0)
-		CpuMicroVU0.Reset();
+	if (s_cpu_providers_initialized)
+	{
+		// mVU's VU0 needs to be properly initialized for macro mode even if it's not used for micro mode!
+		if (CHECK_EEREC && !EmuConfig.Cpu.Recompiler.EnableVU0)
+			CpuMicroVU0.Reset();
+
+		if constexpr (newVifDynaRec)
+		{
+			dVifReset(0);
+			dVifReset(1);
+		}
+	}
 
 	CpuVU0->Reset();
 	CpuVU1->Reset();
+}
 
-	if constexpr (newVifDynaRec)
+void VMManager::ClampRuntimeConfigToAvailableCPUProviders()
+{
+	// LoadCoreSettings also runs during app startup, before CPUThreadInitialize
+	// establishes the VM memory capability. Do not interpret that unallocated
+	// state as an interpreter-only session.
+	if (!SysMemory::IsAllocated() || SysMemory::HasCodeMemory())
+		return;
+
+	const bool was_using_recompiler =
+		EmuConfig.Cpu.Recompiler.EnableEE ||
+		EmuConfig.Cpu.Recompiler.EnableIOP ||
+		EmuConfig.Cpu.Recompiler.EnableVU0 ||
+		EmuConfig.Cpu.Recompiler.EnableVU1 ||
+		EmuConfig.Cpu.Recompiler.EnableFastmem ||
+		EmuConfig.Speedhacks.vuThread;
+
+	EmuConfig.Cpu.Recompiler.EnableEE = false;
+	EmuConfig.Cpu.Recompiler.EnableIOP = false;
+	EmuConfig.Cpu.Recompiler.EnableVU0 = false;
+	EmuConfig.Cpu.Recompiler.EnableVU1 = false;
+	EmuConfig.Cpu.Recompiler.EnableFastmem = false;
+	EmuConfig.Speedhacks.vuThread = false;
+
+	if (was_using_recompiler)
 	{
-		dVifReset(0);
-		dVifReset(1);
+		Console.Warning(
+			"Executable code memory is unavailable; using EE, IOP, VU0, and VU1 interpreters with fastmem and MTVU disabled");
 	}
 }
 

@@ -313,7 +313,7 @@ void resetNewVif(int idx)
 	nVif[idx].bSize = 0;
 	std::memset(nVif[idx].buffer, 0, sizeof(nVif[idx].buffer));
 
-	if (newVifDynaRec)
+	if (CanUseVifDynarec())
 		dVifReset(idx);
 }
 
@@ -355,7 +355,7 @@ _vifT int nVifUnpack(const u8* data)
 
 		if (!idx || !THREAD_VU1)
 		{
-			if (newVifDynaRec)
+			if (CanUseVifDynarec())
 				dVifUnpack<idx>(data, isFill);
 			else
 				_nVifUnpack(idx, data, vifRegs.mode, isFill);
@@ -464,7 +464,11 @@ __ri void _nVifUnpackLoop(const u8* data)
 
 	//DevCon.WriteLn("[%d][%d][%d][num=%d][upk=%d][cl=%d][bl=%d][skip=%d]", isFill, doMask, doMode, vifRegs.num, upkNum, vif.cl, blockSize, skipSize);
 
-	if (!doMode && (vif.cmd & 0x10))
+	// Mode 0 historically used the generated interpreter-unpack table while
+	// modes 1-3 used VIFfuncTable.  Without executable code memory that table
+	// is not initialized, so mode 0 must use the same precompiled C path too.
+	const bool useGeneratedModeZero = !doMode && CanUseVifDynarec();
+	if (useGeneratedModeZero && (vif.cmd & 0x10))
 		setMasks(vif, vifRegs);
 
 	const int usn    = !!vif.usn;
@@ -474,7 +478,8 @@ __ri void _nVifUnpackLoop(const u8* data)
 	//uint vn = (vif.cmd >> 2) & 0x3;
 	//uint vSize = ((32 >> vl) * (vn+1)) / 8;		// size of data (in bytes) used for each write cycle
 
-	const nVifCall* fnbase = &nVifUpk[((usn * 2 * 16) + upkNum) * (4 * 1)];
+	const nVifCall* fnbase = useGeneratedModeZero ?
+		&nVifUpk[((usn * 2 * 16) + upkNum) * (4 * 1)] : nullptr;
 	const UNPACKFUNCTYPE ft = VIFfuncTable[idx][doMode ? vifRegs.mode : 0][((usn * 2 * 16) + upkNum)];
 
 	pxAssume(vif.cl == 0);
@@ -484,14 +489,12 @@ __ri void _nVifUnpackLoop(const u8* data)
 	{
 		u8* dest = getVUptr(idx, vif.tag.addr);
 
-		if (doMode)
+		if (!useGeneratedModeZero)
 		{
-			//if (1) {
 			ft(dest, data);
 		}
 		else
 		{
-			//DevCon.WriteLn("SSE Unpack!");
 			uint cl3 = std::min(vif.cl, 3);
 			fnbase[cl3](dest, data);
 		}

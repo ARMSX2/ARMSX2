@@ -47,12 +47,9 @@ extern void vtlb_Shutdown();
 extern void vtlb_Reset();
 extern void vtlb_ResetFastmem();
 
-// True once the 4 GB fastmem area allocation has failed on this device. Stays
-// set for the process lifetime so callers that re-read EnableFastmem from the
-// INI (e.g. LoadSettings on settings reload) can re-apply the disable instead
-// of re-enabling fastmem against a null base and crashing on the first EE
-// load/store. On low-VA devices (e.g. iPhone SE 2, 4 GB RAM) the 4 GB
-// PROT_NONE reservation can fail with ENOMEM.
+// True when the active VM has no 4 GB fastmem reservation, or once reserving
+// it has failed on this device. Callers use this after settings reloads to
+// prevent enabling fastmem against a null base.
 extern bool vtlb_FastmemAreaUnavailable();
 
 extern vtlbHandler vtlb_NewHandler();

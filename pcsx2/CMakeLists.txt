@@ -96,6 +96,7 @@ set(pcsx2Sources
 	MMI.cpp
 	MTGS.cpp
 	MTVU.cpp
+	no-jit-improvements.cpp
 	Patch.cpp
 	Pcsx2Config.cpp
 	PerformanceMetrics.cpp
@@ -181,6 +182,7 @@ set(pcsx2Headers
 	MTVU.h
 	Memory.h
 	MemoryTypes.h
+	no-jit-improvements.h
 	Patch.h
 	PerformanceMetrics.h
 	PrecompiledHeader.h

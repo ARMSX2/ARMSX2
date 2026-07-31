@@ -12,9 +12,8 @@
 namespace DarwinMisc {
     extern int iPSX2_CRASH_DIAG;
     extern int iPSX2_REC_DIAG;
-    // [V34] Internal flag — no longer env-driven. Set to 1 only by ios_main.mm
-    // JIT entitlement fallback (CS_DEBUGGED check fail). Consumed by Vif_Unpack /
-    // VMManager dVifReset gates to disable newVifDynaRec when JIT unavailable.
+    // Boot-scoped iOS capability override. When set, all CPU/VU/VIF/GS native
+    // code generators are bypassed and the interpreter providers are selected.
     extern int iPSX2_FORCE_EE_INTERP;
     extern int iPSX2_FORCE_JIT_VERIFY;
     extern int iPSX2_CALL_TGT_X9;
@@ -116,6 +115,10 @@ struct CPUClass {
     /// executing or emitting JIT code; ValidateJITAlive skips its arena canary
     /// while that holds, since the probe touches the live dispatcher page.
     void SetJITActivityQuery(bool (*query)());
+
+    /// Waits for an in-flight code-memory canary to finish. Call after marking
+    /// JIT execution busy or before dismantling code-generation providers.
+    void WaitForJITValidation();
 
     // [P43] iOS 26 Dual-Mapping JIT
     enum class JitMode {
