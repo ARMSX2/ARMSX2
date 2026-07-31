@@ -129,6 +129,7 @@ add_pcsx2_test(recompiler_tests
 	ee_fpu_overflow_console_conformance_tests.cpp
 	ee_fpu_absneg_clamp_tests.cpp
 	ee_fpu_minmax_console_tests.cpp
+	ee_fpu_cascade_console_tests.cpp
 	ee_fpu_guarded_addsub_console_tests.cpp
 	ee_fpu_top_binade_console_tests.cpp
 	ee_fpu_zero_divisor_console_tests.cpp
