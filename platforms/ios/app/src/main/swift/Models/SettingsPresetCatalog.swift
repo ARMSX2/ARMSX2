@@ -33,9 +33,9 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .defaultPreset:
-            return "Default disables Fast Boot, PNACH Cheats, Widescreen Patches, Fast CDVD, FXAA, CAS Sharpening, OPH Flag Hack, Emulation-Only Mode, and the background in Settings; restores Internal Resolution to 1x Native, Aspect Ratio to Auto, and Queue Size to 8; and selects the White Colored Virtual Pad skin."
+            return "Default disables Fast Boot, PNACH Cheats, Widescreen Patches, Fast CDVD, FXAA, CAS Sharpening, OPH Flag Hack, Emulation-Only Mode, and the background in Settings; restores Internal Resolution to 1x Native and Queue Size to 8; and selects the White Colored Virtual Pad skin."
         case .ultraQuality:
-            return "Ultra Quality enables Fast Boot, PNACH Cheats, Widescreen Patches, Fast CDVD, FXAA, CAS Sharpening, and the background in Settings; sets Internal Resolution to 2x (1024x896), Aspect Ratio to Stretch to Window, and Queue Size to 2. OPH Flag Hack and Emulation-Only Mode are disabled. The selected Virtual Pad skin is preserved."
+            return "Ultra Quality enables Fast Boot, PNACH Cheats, Widescreen Patches, Fast CDVD, FXAA, CAS Sharpening, and the background in Settings; sets Internal Resolution to 2x (1024x896) and Queue Size to 2. OPH Flag Hack and Emulation-Only Mode are disabled. The selected Virtual Pad skin is preserved."
         case .highQuality:
             return "High Quality uses the Ultra Quality settings, including the background in Settings, with Internal Resolution set to 1x Native (512x448). The selected Virtual Pad skin is preserved."
         case .highQuality30FPS:
@@ -63,7 +63,6 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
             settings.fastCDVD == configuration.fastCDVD &&
             settings.fxaa == configuration.fxaa &&
             (settings.casMode > 0) == configuration.casSharpening &&
-            settings.aspectRatio == configuration.aspectRatio &&
             settings.vsyncQueueSize == configuration.vsyncQueueSize &&
             settings.upscaleMultiplier == configuration.upscaleMultiplier &&
             settings.gameFixEnabled("OPHFlagHack") == configuration.ophFlagHack &&
@@ -87,7 +86,6 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
         settings.fastCDVD = configuration.fastCDVD
         settings.fxaa = configuration.fxaa
         settings.casMode = configuration.casSharpening ? 1 : 0
-        settings.aspectRatio = configuration.aspectRatio
         settings.vsyncQueueSize = configuration.vsyncQueueSize
         settings.upscaleMultiplier = configuration.upscaleMultiplier
         settings.setGameFix("OPHFlagHack", configuration.ophFlagHack)
@@ -109,7 +107,6 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
                 fastCDVD: false,
                 fxaa: false,
                 casSharpening: false,
-                aspectRatio: 1,
                 vsyncQueueSize: 8,
                 upscaleMultiplier: 1,
                 ophFlagHack: false,
@@ -154,7 +151,6 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
             fastCDVD: true,
             fxaa: true,
             casSharpening: true,
-            aspectRatio: 0,
             vsyncQueueSize: 2,
             upscaleMultiplier: upscaleMultiplier,
             ophFlagHack: false,
@@ -169,7 +165,6 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
         var fastCDVD: Bool
         var fxaa: Bool
         var casSharpening: Bool
-        var aspectRatio: Int
         var vsyncQueueSize: Int
         var upscaleMultiplier: Float
         var ophFlagHack: Bool
