@@ -87,7 +87,7 @@ SCAJ-20141:
     vu0ClampMode: 3
 SCAJ-20162:
   gsHWFixes:
-    autoFlush: 2
+    autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
     nativeScaling: 2
@@ -249,7 +249,7 @@ SCES-54041:
     texturePreloading: 1
 SCES-54552:
   gsHWFixes:
-    autoFlush: 2
+    autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
     nativeScaling: 2
@@ -363,7 +363,7 @@ SCPS-15095:
     vu0ClampMode: 3
 SCPS-15102:
   gsHWFixes:
-    autoFlush: 2
+    autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
     nativeScaling: 2
@@ -374,7 +374,7 @@ SCPS-15119:
     preloadFrameData: 1
 SCPS-17013:
   gsHWFixes:
-    autoFlush: 2
+    autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
     nativeScaling: 2
@@ -382,7 +382,7 @@ SCPS-17013:
     roundSprite: 1
 SCPS-19254:
   gsHWFixes:
-    autoFlush: 2
+    autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
     nativeScaling: 2
@@ -589,7 +589,7 @@ SCUS-97487:
   - FullVU0SyncHack
 SCUS-97490:
   gsHWFixes:
-    autoFlush: 2
+    autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
     nativeScaling: 2
@@ -635,7 +635,7 @@ SCUS-97518:
     recommendedBlendingLevel: 3
 SCUS-97572:
   gsHWFixes:
-    autoFlush: 2
+    autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
     nativeScaling: 2
