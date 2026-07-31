@@ -66,12 +66,18 @@
 
 /*	The EE value of a raw FPR word, exactly, as a double.
 
-	Nothing is clamped, unlike fpuDouble(): a double holds the whole EE range,
-	so exponent 255 stays an ordinary binade and 0x7F800000 is 2^128. The O/U
-	decision is about the exact result, so it must not inherit the operand
-	clamp a host single forces on fpuDouble().
+	The only way an operand enters this file: every arithmetic op, every flag
+	decision and every compare reads through here. Here 0x7F800000 is 2^128, an
+	ordinary number, and 0x7FFFFFFF is the largest one; a double holds the whole
+	EE range, so nothing is rewritten on the way in.
 
-	Denormal operands flush to signed zero; the EE has none. U is raised only
+	fpuDouble()/fpuOperandBits(), which this replaced, folded exponent 255 to
+	+-0x7F7FFFFF to fit a host single, so the op ran on a different operand than
+	the one it was given; 368 of the 1147 captured cases touch the top binade.
+	The arithmetic stopped reading them in ccae642180 and 4ce2b543cb, the
+	compares last.
+
+	Denormal operands flush to signed zero. The EE has none, and U is raised only
 	when the result computed from the flushed operands is nonzero and below the
 	smallest normal -- "mul 1.0, MIN_DENORM" returns +0 with FCR31 untouched
 	(autocases_fpuovf.h).
@@ -221,9 +227,20 @@ bool checkDivideByZero(u32& xReg, u32 yDivisorReg, u32 zDividendReg, u32 cFlagsT
 					( _ContVal_ & ~FPUflagC );  \
 	}
 #else
-// Used for Comparing; This compares if the floats are exactly the same.
+/*	Used for Comparing; This compares if the floats are exactly the same.
+
+	In doubles, which hold every EE value exactly. Host singles cannot be used
+	here: 0x7FFFFFFF is the EE's largest number and the same bits are a NaN to
+	the host, unordered against everything.
+
+	Both operands used to come through fpuDouble(), whose fold collapsed the
+	whole top binade onto one value: every operand from 0x7F800000 up compared
+	equal to 0x7F7FFFFF and less than nothing. Console rows 432/434 (c.eq.s of
+	0x7F7FFFFF and 0x7F800000 against 0x7FFFFFFF, both false on silicon) and
+	452/454 (the c.lt.s of the same pairs, both true) are the four the clamp
+	lost. */
 	#define C_cond_S(cond) {  \
-	   _ContVal_ = ( fpuDouble(_FsValUl_) cond fpuDouble(_FtValUl_) ) ?  \
+	   _ContVal_ = ( eeToDouble(_FsValUl_) cond eeToDouble(_FtValUl_) ) ?  \
 				   ( _ContVal_ | FPUflagC ) :  \
 				   ( _ContVal_ & ~FPUflagC );  \
 	}
@@ -250,32 +267,26 @@ namespace COP1 {
 // FPU Opcodes
 //****************************************************************
 
-/*	The operand model as bits. Exponent 0 is zero on this FPU -- there are no
-	denormals -- and exponent 255 folds to +-0x7F7FFFFF, since a host single
-	cannot hold the EE's top binade at all. fpuDouble() is this same mapping read
-	back as a float.
+/*	fpuDouble() and fpuOperandBits() lived here.
 
-	The arithmetic ops no longer use either: the fold destroys the operand
-	before they see it, so they read eeToDouble() and round through
-	eeRoundToSingle(). Still the model for the compare ops (C.EQ and friends),
-	which only part from the unfolded operands where both are in the top binade,
-	and those rows pass against the capture. */
-static u32 fpuOperandBits(u32 f)
-{
-	switch (f & 0x7f800000)
-	{
-		case 0x0:        return f & 0x80000000;
-		case 0x7f800000: return (f & 0x80000000) | 0x7f7fffff;
-		default:         return f;
-	}
-}
+	They were the operand model: exponent 0 to signed zero, which is right,
+	this FPU has no denormals; and exponent 255 folded to +-0x7F7FFFFF, which
+	was the largest single source of divergence from the console in the whole
+	capture. On the EE exponent 255 is an ordinary binade: 0x7F800000 is 2^128
+	and 0x7FFFFFFF is the largest number there is. Folding those operands
+	destroyed information before the op ever ran; 368 of the 1147 captured cases
+	touch the top binade.
 
-float fpuDouble(u32 f)
-{
-	FPRreg r;
-	r.UL = fpuOperandBits(f);
-	return r.f;
-}
+	The clamp came off the arithmetic first (ccae642180, 4ce2b543cb), which left
+	the compares as its last user on the grounds that clamped and unclamped
+	compares agree except where both operands are in the top binade. One is
+	enough: it only has to collide with an unclamped 0x7F7FFFFF, and four
+	captured rows do. See C_cond_S above. The arithmetic reads eeToDouble(),
+	which clamps nothing, and rounds once through eeRoundToSingle().
+
+	SQRT_S was the other caller with work to do on exponent 255, and does it
+	itself now: eeSqrtBits() works in integers, so nothing has to be clamped to
+	keep the operand in a host single. */
 
 /*	Round an exact result into the EE encoding. This is the only rounding step
 	the arithmetic ops below perform.
@@ -661,16 +672,15 @@ static u32 eeMulRound(u32 fs, u32 ft, double exact)
 	something separate to look at. See raiseOrClearOU/madFlushedProduct.
 
 	The A-forms name their single-precision product too, because the guarded adder
-	needs its bits, and naming it takes the accumulate out of a contracting
-	compiler's reach: `_FAValf_ += fs * ft` is one expression it can turn into a
-	single-rounded FMA, with only the -ffp-contract=off line in
+	needs its bits, and that takes the accumulate out of the compiler's reach as
+	well: `_FAValf_ += fs * ft` is one expression a contracting compiler can turn
+	into a single-rounded FMA, with only the -ffp-contract=off line in
 	pcsx2/CMakeLists.txt between it and that. On corpus cases 567 and 1130 the
 	fused value is the console's, so a contracting build hid the guard-bit defect
 	on MSUBA.
 
-	The A-forms read the accumulator raw where the d-forms route it through
-	fpuDouble; the flag path uses the architectural value in both. That
-	inconsistency in the value path is pre-existing and left alone.
+	Both forms read the accumulator through eeToDouble, so the value path and
+	the flag path see the same accumulator.
 */
 /*	fd = ACC +/- fs * ft, in the two rounding steps the ISA mandates: the product
 	lands in an EE single before the accumulate sees it, and an overflowing one
@@ -825,25 +835,35 @@ void SQRT_S() {
 	}
 	else if ( ( _FtValUl_ & 0x7F800000 ) == 0x7F800000 )
 	{
-		// Exponent 255 is an ordinary binade on the EE -- the representable max
-		// is 0x7FFFFFFF, not FLT_MAX -- so fpuDouble()'s clamp hands sqrt a
-		// different operand rather than a rounded one: sqrt(0x7FFFFFFF) came
-		// back 0x5F7FFFFF where the console gives 0x5FB504F3. Square-root
-		// |Ft|/4 and double it instead. 4 is an even power of two, so its own
-		// square root is exact and the sqrt below stays the only rounding step.
-		// recSQRT_S_xmm (iFPU-arm64.cpp) emits the same two steps and carries
-		// the rest of the argument.
+		// Exponent 255 is an ordinary binade on the EE -- no Inf, no NaN, and
+		// the representable max is 0x7FFFFFFF, not FLT_MAX. The fpuDouble()
+		// clamp that used to stand here therefore handed sqrt a different
+		// operand rather than a rounded one, and the answer landed two binades
+		// low: sqrt(2^128) came back as 0x5F7FFFFF where the console gives
+		// 0x5F800000, and sqrt(+EEMAX) as 0x5F7FFFFF against 0x5FB504F3.
 		//
-		// RSQRT_S does not get this: its two clamped operands cancel on
-		// rsqrt(2^128, 2^128), so unclamping only the sqrt breaks that row.
-		// It is all-or-nothing and is a separate change.
+		// Square-root |Ft|/4 and double it. sqrt halves exponents, so the
+		// scaled operand (exponent field 253) and the doubled result are both
+		// ordinary singles and no wider format is needed. 4 is an even power of
+		// two, so its own square root is exact and the sqrt below stays the
+		// only rounding step. It is the power-of-two prescale ToDouble() uses
+		// to carry these operands into FULL mode (iFPUd-arm64.cpp), with the
+		// factor picked to suit sqrt so it can stay in single precision.
+		// recSQRT_S_xmm (iFPU-arm64.cpp) emits the same two steps.
+		//
+		// RSQRT_S does not get this, deliberately: its two clamped operands
+		// currently cancel on rsqrt(2^128, 2^128), so unclamping only the sqrt
+		// breaks that row. It is all-or-nothing and is a separate change.
 		FPRreg quarter;
 		quarter.UL = ( _FtValUl_ & 0x7FFFFFFF ) - 0x01000000; // |Ft| / 4
 		_FdValf_ = 2.0 * sqrt( (double)quarter.f );
 	}
 	else
 	{
-		_FdValf_ = sqrt( fabs( fpuDouble( _FtValUl_ ) ) ); // sqrt of |Ft|
+		// Exponent 1..254 here: zero and the top binade are taken by the
+		// branches above, so this leg needs no operand rewrite and can stay in
+		// single precision.
+		_FdValf_ = sqrt( fabs( _FtValf_ ) ); // sqrt of |Ft|
 	}
 }
 

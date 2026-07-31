@@ -672,66 +672,76 @@ TEST(EeRecFpu, CEqSFalseClearsCc)
 
 // ----- compare-operand clamping --------------------------------------
 //
-// The PS2 FPU has no Inf/NaN: C.cond.S clamps both operands to ±FLT_MAX
-// (sign-preserving) before comparing, matching interp fpuDouble and the
-// x86 JIT's fpuFloat3 (PMIN.SD vs 0x7f7fffff, PMIN.UD vs 0xff7fffff).
-// A raw Fcmp on unclamped bit patterns makes the compare unordered on a
-// NaN operand (all-false) where the PS2 wants an ordered compare against
-// ±FLT_MAX. Inject raw Inf/NaN via SetFprBits (MTC1/LWC1 bit-copies bypass
-// the arithmetic clamp in real games).
+// The PS2 FPU has no Inf and no NaN, so those bit patterns are ordinary numbers
+// to it: 0x7F800000 is 2^128, 0x7FC00000 is 1.5*2^128, 0x7FFFFFFF is the
+// largest number the machine has. The two tiers answer differently, by design:
+// the interpreter compares the real values and matches silicon on all 86
+// compare rows of the capture, the arm64 fast path clamps both operands to
+// +-FLT_MAX, sign-preserving, and misses four of them. All 86 rows and all
+// three tiers are in ee_fpu_compare_console_tests.cpp.
 //
-// Run()'s internal JIT-vs-interp diff catches the divergence; the explicit
-// assert pins the PS2 spec value. The -NaN case validates *sign* preservation
-// (fpuClampResult / Fminnm would wrongly fold -NaN to +FLT_MAX).
+// Inject raw Inf/NaN via SetFprBits (MTC1/LWC1 bit-copies bypass the arithmetic
+// clamp in real games). Run()'s auto-diff does not gate on fprc[31], so each
+// test asserts the two snapshots separately.
 
-// Assert on the JIT snapshot directly: the bug is JIT-side, and Run()'s
-// auto-diff does not gate on fprc[31]. Without the operand clamp the raw Fcmp
-// goes unordered on a NaN operand and leaves CC clear.
-// Sign preservation: 0 < -NaN. The PS2 clamps -NaN to -FLT_MAX, so
-// 0 < -FLT_MAX is FALSE (CC clear). A raw Fcmp on the NaN goes unordered,
-// where ARM's "lt" (N!=V) is TRUE — so without the clamp CC is wrongly set.
-// A sign-STRIPPING clamp (-NaN -> +FLT_MAX) would also wrongly set CC
-// (0 < +FLT_MAX), so this case pins the sign-preserving SMIN/UMIN path.
+// Both tiers agree here for different reasons: 0xFFC00000 is -1.5*2^128 to the
+// interpreter and -FLT_MAX to the fast path, and 0 is greater than both.
+// Sign preservation is the fast path's part: a raw Fcmp on the NaN goes
+// unordered, where ARM's "lt" (N!=V) is true, so without the clamp CC is
+// wrongly set. A sign-stripping clamp (-NaN -> +FLT_MAX, which fpuClampResult
+// or Fminnm would give) would also wrongly set CC (0 < +FLT_MAX), so this case
+// pins the sign-preserving SMIN/UMIN path. Console rows 446/456 are the same
+// shape with representable operands.
 TEST(EeRecFpu, CLtSZeroVsNegativeNaNIsFalse)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.SetFpr(2, 0.0f);
-	h.SetFprBits(1, 0xFFC00000u);   // -NaN -> -FLT_MAX
+	h.SetFprBits(1, 0xFFC00000u);   // -1.5*2^128 (interp) / -FLT_MAX (fast path)
 	h.LoadProgram({
-		ee::C_LT_S(2, 1),           // 0 < -FLT_MAX -> CC clear
+		ee::C_LT_S(2, 1),           // 0 < a large negative -> CC clear
 	});
 	h.Run();
 	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & (1u << 23), 0u);
 	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & (1u << 23), 0u);
 }
 
-TEST(EeRecFpu, CEqSPositiveNaNBothClampToMax)
+// Equal bit patterns are equal on every tier and on silicon: console row 437
+// (`ceq QNAN, QNAN`) is this pair and says CC set. It would pass with the clamp
+// gone too, so it pins nothing about clamping.
+TEST(EeRecFpu, CEqSPositiveNaNIsEqualToItself)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
-	h.SetFprBits(1, 0x7FC00000u);   // +NaN -> +FLT_MAX
-	h.SetFprBits(2, 0x7FC00000u);   // +NaN -> +FLT_MAX
+	h.SetFprBits(1, 0x7FC00000u);   // 1.5*2^128
+	h.SetFprBits(2, 0x7FC00000u);
 	h.LoadProgram({
-		ee::C_EQ_S(1, 2),           // +FLT_MAX == +FLT_MAX -> CC set
+		ee::C_EQ_S(1, 2),           // [fpm] case 437 -- CC set on silicon
 	});
 	h.Run();
 	EXPECT_NE(h.JitSnapshot().fprs.fprc[31] & (1u << 23), 0u);
 	EXPECT_NE(h.InterpSnapshot().fprs.fprc[31] & (1u << 23), 0u);
 }
 
-TEST(EeRecFpu, CEqSInfinityClampsToMax)
+// Where the two tiers part company. Console row 434 is these operands and says
+// the condition is false: 2^128 and 0x7FFFFFFF are different numbers on a
+// machine whose exponent 255 is an ordinary binade. The fast path's CC set is
+// asserted rather than fixed, for the reason in the block comment above.
+TEST(EeRecFpu, CEqSTopBinadeSplitsTheInterpFromTheFastPath)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
-	h.SetFprBits(1, 0x7F800000u);   // +Inf -> +FLT_MAX
-	h.SetFprBits(2, 0x7F7FFFFFu);   // +FLT_MAX (finite)
+	h.SetFprBits(1, 0x7F800000u);   // 2^128
+	h.SetFprBits(2, 0x7FFFFFFFu);   // the EE's largest number
 	h.LoadProgram({
-		ee::C_EQ_S(1, 2),           // +FLT_MAX == +FLT_MAX -> CC set
+		ee::C_EQ_S(1, 2),           // [fpm] case 434 -- CC clear on silicon
 	});
 	h.Run();
-	EXPECT_NE(h.JitSnapshot().fprs.fprc[31] & (1u << 23), 0u);
-	EXPECT_NE(h.InterpSnapshot().fprs.fprc[31] & (1u << 23), 0u);
+	EXPECT_NE(h.JitSnapshot().fprs.fprc[31] & (1u << 23), 0u)
+		<< "the fast path stopped clamping; if that was deliberate, this test "
+		   "and ee_fpu_compare_console_tests.cpp both want updating";
+	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & (1u << 23), 0u)
+		<< "the interpreter must give the console's answer, not the clamp's";
 }
 
 TEST(EeRecFpu, Bc1tTakenWhenCcSet)
