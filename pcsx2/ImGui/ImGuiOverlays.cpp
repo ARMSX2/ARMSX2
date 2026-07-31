@@ -72,6 +72,7 @@ SmallString s_hardware_info_gpu_line;
 SmallString s_cpu_jit_line;
 SmallString s_cpu_usage_ee_line;
 SmallString s_cpu_usage_gs_line;
+SmallString s_cpu_usage_gs_back_line;
 SmallString s_cpu_usage_vu_line;
 std::vector<SmallString> s_software_thread_lines;
 SmallString s_capture_line;
@@ -638,6 +639,16 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 				FormatProcessorStat(s_cpu_usage_gs_line, PerformanceMetrics::GetGSThreadUsage(), PerformanceMetrics::GetGSThreadAverageTime());
 				DRAW_LINE(osd_font, font_size, s_cpu_usage_gs_line.c_str(), OsdTextColor());
 
+				// Only exists under GSBackThreadMode >= Lockstep. The line above is the MTGS
+				// thread alone, so without this one the split's second half is invisible.
+				if (PerformanceMetrics::HasGSBackThread())
+				{
+					s_cpu_usage_gs_back_line.assign("GSB: ");
+					FormatProcessorStat(s_cpu_usage_gs_back_line, PerformanceMetrics::GetGSBackThreadUsage(),
+						PerformanceMetrics::GetGSBackThreadAverageTime());
+					DRAW_LINE(osd_font, font_size, s_cpu_usage_gs_back_line.c_str(), OsdTextColor());
+				}
+
 				if (THREAD_VU1)
 				{
 					s_cpu_usage_vu_line.assign("VU: ");
@@ -742,6 +753,8 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 #endif
 				DRAW_LINE(osd_font, font_size, s_cpu_usage_ee_line.c_str(), OsdTextColor());
 				DRAW_LINE(osd_font, font_size, s_cpu_usage_gs_line.c_str(), OsdTextColor());
+				if (PerformanceMetrics::HasGSBackThread())
+					DRAW_LINE(osd_font, font_size, s_cpu_usage_gs_back_line.c_str(), OsdTextColor());
 				if (THREAD_VU1)
 					DRAW_LINE(osd_font, font_size, s_cpu_usage_vu_line.c_str(), OsdTextColor());
 

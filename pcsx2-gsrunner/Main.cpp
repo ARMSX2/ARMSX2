@@ -182,6 +182,11 @@ static float s_perf_sum_cpu_thread_usage = 0.0f;
 static float s_perf_sum_cpu_thread_time = 0.0f;
 static float s_perf_sum_gs_thread_usage = 0.0f;
 static float s_perf_sum_gs_thread_time = 0.0f;
+static float s_perf_sum_gs_back_thread_usage = 0.0f;
+static float s_perf_sum_gs_back_thread_time = 0.0f;
+// Latched during the run: DumpStats() runs after VMManager::Shutdown(), by which point the
+// back thread has joined and PerformanceMetrics would report it as never having existed.
+static bool s_perf_saw_gs_back_thread = false;
 static float s_perf_sum_gpu_time = 0.0f;
 static float s_perf_sum_gpu_usage = 0.0f;
 
@@ -460,6 +465,9 @@ void Host::OnPerformanceMetricsUpdated()
 		s_perf_sum_cpu_thread_time += PerformanceMetrics::GetCPUThreadAverageTime();
 		s_perf_sum_gs_thread_usage += PerformanceMetrics::GetGSThreadUsage();
 		s_perf_sum_gs_thread_time += PerformanceMetrics::GetGSThreadAverageTime();
+		s_perf_sum_gs_back_thread_usage += PerformanceMetrics::GetGSBackThreadUsage();
+		s_perf_sum_gs_back_thread_time += PerformanceMetrics::GetGSBackThreadAverageTime();
+		s_perf_saw_gs_back_thread |= PerformanceMetrics::HasGSBackThread();
 		s_perf_sum_gpu_time += PerformanceMetrics::GetGPUAverageTime();
 		s_perf_sum_gpu_usage += PerformanceMetrics::GetGPUUsage();
 	}
@@ -1309,9 +1317,16 @@ void GSRunner::DumpStats()
 		Console.WriteLn(fmt::format("@HWSTAT@ Maximum Frame Time: {:.3f} ms ({:.3f} FPS)", PerformanceMetrics::GetMaximumFrameTime(), 1000.0f / PerformanceMetrics::GetMaximumFrameTime()));
 		Console.WriteLn(fmt::format("@HWSTAT@ CPU Thread Usage: {:.3f} %", s_perf_sum_cpu_thread_usage / s_perf_updates));
 		Console.WriteLn(fmt::format("@HWSTAT@ GS Thread Usage: {:.3f} %", s_perf_sum_gs_thread_usage / s_perf_updates));
+		// Only emitted under GSBackThreadMode >= Lockstep. Omitted rather than reported as a
+		// flat zero, so a comparison across the two configurations doesn't read as a GS win
+		// that is really work moved onto an unlisted thread.
+		if (s_perf_saw_gs_back_thread)
+			Console.WriteLn(fmt::format("@HWSTAT@ GS Back Thread Usage: {:.3f} %", s_perf_sum_gs_back_thread_usage / s_perf_updates));
 		Console.WriteLn(fmt::format("@HWSTAT@ GPU Usage: {:.3f} %", s_perf_sum_gpu_usage / s_perf_updates));
 		Console.WriteLn(fmt::format("@HWSTAT@ Average CPU Thread Time: {:.3f} ms", s_perf_sum_cpu_thread_time / s_perf_updates));
 		Console.WriteLn(fmt::format("@HWSTAT@ Average GS Thread Time: {:.3f} ms", s_perf_sum_gs_thread_time / s_perf_updates));
+		if (s_perf_saw_gs_back_thread)
+			Console.WriteLn(fmt::format("@HWSTAT@ Average GS Back Thread Time: {:.3f} ms", s_perf_sum_gs_back_thread_time / s_perf_updates));
 		Console.WriteLn(fmt::format("@HWSTAT@ Average GPU Time: {:.3f} ms", s_perf_sum_gpu_time / s_perf_updates));
 	}
 	if (!s_stats_json_path.empty())

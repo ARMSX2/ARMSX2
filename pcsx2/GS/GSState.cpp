@@ -7,6 +7,7 @@
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
 #include "GS/GSVertexKick.h"
+#include "PerformanceMetrics.h"
 
 #include "common/Console.h"
 #include "common/BitUtils.h"
@@ -678,6 +679,7 @@ void GSState::StopBackThread()
 	m_back_thread_exit.store(true, std::memory_order_release);
 	m_chan->sema.NotifyOfWork();
 	m_back_thread.join();
+	PerformanceMetrics::SetGSBackThread({});
 	m_chan->consumer_running = false;
 	m_back_queued = false;
 }
@@ -694,13 +696,20 @@ void GSState::BackThreadLoop()
 {
 	Threading::SetNameOfCurrentThread("GS Back");
 
+	Threading::ThreadHandle handle(Threading::ThreadHandle::GetForCallingThread());
+
 	// A new thread inherits the spawner's affinity mask, and the spawner here is
 	// the MTGS thread — which EnableThreadPinning may have pinned to a single
 	// core (always the case when the back thread is respawned via GSreopen).
 	// Sharing that one core would time-slice front and back and silently
 	// re-serialize the split, so clear to all cores. VMManager owns any future
 	// explicit pinning policy for this thread.
-	Threading::ThreadHandle::GetForCallingThread().SetAffinity(0);
+	handle.SetAffinity(0);
+
+	// Half the GS work runs here under the split, and the OSD's "GS" figure is the MTGS
+	// thread alone — so without this the mode reads as a large GS saving that is really
+	// just work moved off the measured thread.
+	PerformanceMetrics::SetGSBackThread(std::move(handle));
 
 	for (;;)
 	{

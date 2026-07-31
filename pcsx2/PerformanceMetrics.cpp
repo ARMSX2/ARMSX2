@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include <chrono>
+#include <cstdio>
+#include <mutex>
 #include <vector>
 
 #include "common/Console.h"
@@ -61,9 +63,30 @@ static u32 s_gs_privileged_register_writes_since_last_update = 0;
 static Threading::ThreadHandle s_cpu_thread_handle;
 static u64 s_last_cpu_time = 0;
 static u64 s_last_gs_time = 0;
+static u64 s_last_gs_back_time = 0;
 static u64 s_last_vu_time = 0;
 static u64 s_last_capture_time = 0;
 static u64 s_last_ticks = 0;
+
+// The GS back thread registers itself from its own entry point and is cleared from the MTGS
+// thread after the join, so unlike every other handle here this one is written by a thread
+// other than the one sampling it. Handle and running total are therefore both owned by the
+// mutex, which is taken twice a second at most.
+static std::mutex s_gs_back_thread_mutex;
+static Threading::ThreadHandle s_gs_back_thread_handle;
+
+/// CPU time consumed by the back thread since the last call, in Threading tick units.
+/// A thread that started or stopped inside the window contributes only the part of it that
+/// the handle was installed for; the alternative is a u64 subtraction that wraps into a
+/// nonsense percentage on the first window after a GSreopen.
+static u64 SampleGSBackThreadCPUTime()
+{
+	std::unique_lock lock(s_gs_back_thread_mutex);
+	const u64 now = s_gs_back_thread_handle ? s_gs_back_thread_handle.GetCPUTime() : s_last_gs_back_time;
+	const u64 delta = (now > s_last_gs_back_time) ? (now - s_last_gs_back_time) : 0;
+	s_last_gs_back_time = now;
+	return delta;
+}
 
 #if defined(__ANDROID__)
 // ---- Android ADPF (PerformanceHintManager) ---------------------------------
@@ -166,6 +189,8 @@ static double s_cpu_thread_usage = 0.0f;
 static double s_cpu_thread_time = 0.0f;
 static float s_gs_thread_usage = 0.0f;
 static float s_gs_thread_time = 0.0f;
+static float s_gs_back_thread_usage = 0.0f;
+static float s_gs_back_thread_time = 0.0f;
 static float s_vu_thread_usage = 0.0f;
 static float s_vu_thread_time = 0.0f;
 static float s_capture_thread_usage = 0.0f;
@@ -208,6 +233,8 @@ void PerformanceMetrics::Clear()
 	s_cpu_thread_time = 0.0f;
 	s_gs_thread_usage = 0.0f;
 	s_gs_thread_time = 0.0f;
+	s_gs_back_thread_usage = 0.0f;
+	s_gs_back_thread_time = 0.0f;
 	s_vu_thread_usage = 0.0f;
 	s_vu_thread_time = 0.0f;
 	s_capture_thread_usage = 0.0f;
@@ -255,6 +282,7 @@ void PerformanceMetrics::Reset()
 
 	s_last_cpu_time = s_cpu_thread_handle.GetCPUTime();
 	s_last_gs_time = MTGS::GetThreadHandle().GetCPUTime();
+	SampleGSBackThreadCPUTime(); // rebases the running total; the delta is deliberately dropped
 	s_last_vu_time = THREAD_VU1 ? vu1Thread.GetThreadHandle().GetCPUTime() : 0;
 	s_last_ticks = GetCPUTicks();
 	s_last_capture_time = GSCapture::IsCapturing() ? GSCapture::GetEncoderThreadHandle().GetCPUTime() : 0;
@@ -332,6 +360,7 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 
 	const u64 cpu_time = s_cpu_thread_handle.GetCPUTime();
 	const u64 gs_time = MTGS::GetThreadHandle().GetCPUTime();
+	const u64 gs_back_delta = SampleGSBackThreadCPUTime();
 	const u64 vu_time = THREAD_VU1 ? vu1Thread.GetThreadHandle().GetCPUTime() : 0;
 	const u64 capture_time = GSCapture::IsCapturing() ? GSCapture::GetEncoderThreadHandle().GetCPUTime() : 0;
 
@@ -346,10 +375,12 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 
 	s_cpu_thread_usage = static_cast<double>(cpu_delta) * pct_divider;
 	s_gs_thread_usage = static_cast<double>(gs_delta) * pct_divider;
+	s_gs_back_thread_usage = static_cast<double>(gs_back_delta) * pct_divider;
 	s_vu_thread_usage = static_cast<double>(vu_delta) * pct_divider;
 	s_capture_thread_usage = static_cast<double>(capture_delta) * pct_divider;
 	s_cpu_thread_time = static_cast<double>(cpu_delta) * time_divider;
 	s_gs_thread_time = static_cast<double>(gs_delta) * time_divider;
+	s_gs_back_thread_time = static_cast<double>(gs_back_delta) * time_divider;
 	s_vu_thread_time = static_cast<double>(vu_delta) * time_divider;
 	s_capture_thread_time = static_cast<double>(capture_delta) * time_divider;
 
@@ -367,9 +398,15 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 	s_log_accum_frames += s_frames_since_last_update;
 	if (s_log_accum_time >= LOG_INTERVAL)
 	{
-		Console.WriteLn("PerfLog: %.1f fps | EE %.0f%% GS %.0f%% VU %.0f%% GPU %.0f%% | frame %llu",
+		// The back thread only exists under GSBackThreadMode >= Lockstep, so the field is
+		// omitted rather than logged as a permanent 0% in the default configuration.
+		char gs_back[32] = {};
+		if (HasGSBackThread())
+			std::snprintf(gs_back, sizeof(gs_back), " GSB %.0f%%", s_gs_back_thread_usage);
+
+		Console.WriteLn("PerfLog: %.1f fps | EE %.0f%% GS %.0f%%%s VU %.0f%% GPU %.0f%% | frame %llu",
 			static_cast<float>(s_log_accum_frames) / s_log_accum_time, s_cpu_thread_usage,
-			s_gs_thread_usage, s_vu_thread_usage, s_gpu_usage,
+			s_gs_thread_usage, gs_back, s_vu_thread_usage, s_gpu_usage,
 			static_cast<unsigned long long>(s_frame_number));
 		s_log_accum_time = 0.0f;
 		s_log_accum_frames = 0;
@@ -530,6 +567,15 @@ void PerformanceMetrics::SetGSSWThread(u32 index, Threading::ThreadHandle thread
 	s_gs_sw_threads[index].handle = std::move(thread);
 }
 
+void PerformanceMetrics::SetGSBackThread(Threading::ThreadHandle thread)
+{
+	std::unique_lock lock(s_gs_back_thread_mutex);
+	// Rebase off the incoming handle, so the first window after a GSreopen respawn measures
+	// this thread's time rather than its difference against the retired thread's total.
+	s_last_gs_back_time = thread ? thread.GetCPUTime() : 0;
+	s_gs_back_thread_handle = std::move(thread);
+}
+
 u64 PerformanceMetrics::GetFrameNumber()
 {
 	return s_frame_number;
@@ -593,6 +639,22 @@ float PerformanceMetrics::GetGSThreadUsage()
 float PerformanceMetrics::GetGSThreadAverageTime()
 {
 	return s_gs_thread_time;
+}
+
+bool PerformanceMetrics::HasGSBackThread()
+{
+	std::unique_lock lock(s_gs_back_thread_mutex);
+	return static_cast<bool>(s_gs_back_thread_handle);
+}
+
+float PerformanceMetrics::GetGSBackThreadUsage()
+{
+	return s_gs_back_thread_usage;
+}
+
+float PerformanceMetrics::GetGSBackThreadAverageTime()
+{
+	return s_gs_back_thread_time;
 }
 
 float PerformanceMetrics::GetVUThreadUsage()

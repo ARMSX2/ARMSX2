@@ -358,6 +358,7 @@ namespace PINEServer
 			"\"frame_ms_avg\":{:.3f},\"frame_ms_min\":{:.3f},\"frame_ms_max\":{:.3f},"
 			"\"cpu_thread_pct\":{:.3f},\"cpu_thread_ms\":{:.3f},"
 			"\"gs_thread_pct\":{:.3f},\"gs_thread_ms\":{:.3f},"
+			"\"gs_back_thread_pct\":{:.3f},\"gs_back_thread_ms\":{:.3f},"
 			"\"vu_thread_pct\":{:.3f},\"vu_thread_ms\":{:.3f},"
 			"\"gpu_pct\":{:.3f},\"gpu_ms_avg\":{:.3f},\"gpu_ms_last\":{:.3f},"
 			"\"gpu_vs_invocations\":{:.0f},\"gpu_ps_invocations\":{:.0f},"
@@ -376,6 +377,9 @@ namespace PINEServer
 			PerformanceMetrics::GetMaximumFrameTime(),
 			PerformanceMetrics::GetCPUThreadUsage(), PerformanceMetrics::GetCPUThreadAverageTime(),
 			PerformanceMetrics::GetGSThreadUsage(), PerformanceMetrics::GetGSThreadAverageTime(),
+			// Zero unless GSBackThreadMode >= Lockstep. gs_thread_* is the MTGS thread only,
+			// so under the split the two have to be read together to see the GS cost.
+			PerformanceMetrics::GetGSBackThreadUsage(), PerformanceMetrics::GetGSBackThreadAverageTime(),
 			PerformanceMetrics::GetVUThreadUsage(), PerformanceMetrics::GetVUThreadAverageTime(),
 			PerformanceMetrics::GetGPUUsage(), PerformanceMetrics::GetGPUAverageTime(),
 			PerformanceMetrics::GetLastGPUTime(),
