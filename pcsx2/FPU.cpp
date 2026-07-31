@@ -803,11 +803,17 @@ void RSQRT_S() {
 	// gives 0x3F5105EB.
 	//
 
-	//
 	// Neither operand is clamped any more, and it has to be both: with the clamp
 	// left on the sqrt alone, rsqrt(2^128, 2^128) came out right only because
-	// the two clamps cancelled. Still 1 ULP out at rsqrt(EEMAX, EEMAX), from the
-	// two-step rounding above rather than the operand model.
+	// the two clamps cancelled. Unclamping both fixed that row and 13 others,
+	// taking RSQRT.S from 17/32 to 31/32 against the console.
+	//
+	// rsqrt(EEMAX, EEMAX) is still 1 ULP out, and it is not the two-step
+	// rounding it was filed as: silicon composes the two steps exactly as
+	// below, with a plain 24-bit single in between, and it is the divide/
+	// square-root unit itself that is not correctly rounded. This computes the
+	// correctly-rounded answer; ee_fpu_divunit_console_tests.cpp has the
+	// capture and how far silicon sits from it.
 	_FdValUl_ = eeDivide( _FsValUl_, eeSqrtBits( _FtValUl_ ) );
 }
 
