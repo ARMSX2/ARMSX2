@@ -20,9 +20,17 @@
 #import "ARMSX2Bridge.h"
 
 #pragma mark - Gamepad state
+// Touched only by the CPU thread, from inside the pump. Anything that used to
+// reach in here from the main queue now works off the caches below instead, so
+// a controller can be closed without a queued block finding freed memory.
 SDL_Gamepad* s_gamepads[ARMSX2_MAX_IOS_GAMEPADS] = {};
 static std::atomic<u32> s_pendingGamepadRumble[ARMSX2_MAX_IOS_GAMEPADS];
-static std::atomic<u32> s_gamepadRumbleStopGeneration[ARMSX2_MAX_IOS_GAMEPADS];
+// SDL_GetTicks value after which the slot gets a stop, or 0 for nothing pending.
+static std::atomic<u64> s_gamepadRumbleStopDeadlineMs[ARMSX2_MAX_IOS_GAMEPADS];
+// Worked out once when the pad is opened, so the name lookup does not have to
+// happen on whichever thread is asking.
+static std::atomic<bool> s_gamepadIsJoyCon[ARMSX2_MAX_IOS_GAMEPADS];
+static std::atomic<bool> s_gamepadRumbleTestRequested{false};
 static u32 s_appliedGamepadRumble[ARMSX2_MAX_IOS_GAMEPADS] = {};
 static bool s_appliedGamepadRumbleValid[ARMSX2_MAX_IOS_GAMEPADS] = {};
 static bool s_loggedGamepadRumbleFailure = false;
@@ -778,39 +786,25 @@ static void ARMSX2StopNativeGamepadRumblePulseOnMain(u32 slot)
 	}
 }
 
+// Only ever the controller sitting in this slot. There used to be a couple of
+// fallbacks here, one for a single connected controller and one that took any
+// controller with haptics, and both of them answered for slots that have no
+// controller at all. That put player 2's rumble in player 1's hands, and it let
+// one Joy-Con make every slot test positive and kill rumble for everybody.
 static GCController* ARMSX2FindNativeHapticControllerForSlot(u32 slot)
 {
 	NSArray<GCController*>* controllers = [GCController controllers];
-	if (slot < controllers.count) {
-		GCController* controller = controllers[slot];
-		if (controller.haptics)
-			return controller;
-	}
+	if (slot >= controllers.count)
+		return nil;
 
-	if (controllers.count == 1) {
-		GCController* controller = controllers.firstObject;
-		if (controller.haptics)
-			return controller;
-	}
-
-	for (GCController* controller in controllers) {
-		if (controller.haptics)
-			return controller;
-	}
-
-	return nil;
+	GCController* controller = controllers[slot];
+	return controller.haptics ? controller : nil;
 }
 
 static GCController* ARMSX2FindNativeControllerForSlot(u32 slot)
 {
 	NSArray<GCController*>* controllers = [GCController controllers];
-	if (slot < controllers.count)
-		return controllers[slot];
-
-	if (controllers.count == 1)
-		return controllers.firstObject;
-
-	return nil;
+	return (slot < controllers.count) ? controllers[slot] : nil;
 }
 
 static bool ARMSX2NativeControllerLooksLikeJoyCon(GCController* controller)
@@ -859,7 +853,9 @@ static bool ARMSX2GamepadSlotLooksLikeJoyCon(u32 slot)
 	if (ARMSX2NativeControllerSlotLooksLikeJoyCon(slot))
 		return true;
 
-	return slot < ARMSX2_MAX_IOS_GAMEPADS && ARMSX2SDLGamepadLooksLikeJoyCon(s_gamepads[slot]);
+	// Cached rather than read off s_gamepads, because this gets asked from the
+	// main queue and the pad it would be naming can be closed at any moment.
+	return slot < ARMSX2_MAX_IOS_GAMEPADS && s_gamepadIsJoyCon[slot].load(std::memory_order_relaxed);
 }
 
 static bool ARMSX2ApplyNativeGamepadRumblePulseOnMain(u32 slot, u32 packed, const char* reason)
@@ -942,15 +938,18 @@ static bool ARMSX2ApplyNativeGamepadRumblePulseOnMain(u32 slot, u32 packed, cons
 
 	const float intensity = std::clamp(raw_intensity, 0.10f, 0.55f);
 	const float sharpness = std::clamp(0.25f + (small * 0.45f), 0.20f, 0.65f);
+	// All four of these were leaking. This file is MRC and a rumbling game comes
+	// through here on every change of value, so it was a steady drip for as long
+	// as a controller was connected.
 	NSArray<CHHapticEventParameter*>* params = @[
-		[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:intensity],
-		[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:sharpness]
+		[[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:intensity] autorelease],
+		[[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:sharpness] autorelease]
 	];
-	CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
-	                                                     parameters:params
-	                                                   relativeTime:0.0
-	                                                        duration:0.18];
-	CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
+	CHHapticEvent* event = [[[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
+	                                                      parameters:params
+	                                                    relativeTime:0.0
+	                                                         duration:0.18] autorelease];
+	CHHapticPattern* pattern = [[[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error] autorelease];
 	if (!pattern) {
 		Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse pattern failed slot=%u: %s",
 			slot + 1, error.localizedDescription.UTF8String ?: "unknown");
@@ -1027,6 +1026,23 @@ void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
 	if (gamepad_index >= ARMSX2_MAX_IOS_GAMEPADS)
 		return;
 
+    // Ahead of the unchanged-value bail below, so a held rumble still gets its
+    // stop. This used to be a dispatch_after onto the main queue holding an
+    // SDL_Gamepad pointer for 300 ms, which is a long time to hope nobody
+    // unplugs anything. The pump runs every frame, so a deadline covers it.
+    const u64 stop_deadline = s_gamepadRumbleStopDeadlineMs[gamepad_index].load(std::memory_order_relaxed);
+    if (stop_deadline != 0 && SDL_GetTicks() >= stop_deadline) {
+        s_gamepadRumbleStopDeadlineMs[gamepad_index].store(0, std::memory_order_relaxed);
+        if (s_gamepads[gamepad_index]) {
+            SDL_RumbleGamepad(s_gamepads[gamepad_index], 0, 0, 0);
+            SDL_RumbleGamepadTriggers(s_gamepads[gamepad_index], 0, 0, 0);
+        }
+        if (!s_loggedSDLGamepadRumbleForceStop) {
+            Console.WriteLn("[ARMSX2 iOS Gamepad] SDL controller rumble force-stopped");
+            s_loggedSDLGamepadRumbleForceStop = true;
+        }
+    }
+
     const u32 packed = s_pendingGamepadRumble[gamepad_index].load(std::memory_order_relaxed);
     if (s_appliedGamepadRumbleValid[gamepad_index] && packed == s_appliedGamepadRumble[gamepad_index])
         return;
@@ -1034,9 +1050,11 @@ void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
     const u16 large = std::min<u16>(static_cast<u16>((packed >> 16) & 0xffffu), ARMSX2_GAMEPAD_RUMBLE_MAX_INTENSITY);
     const u16 small = std::min<u16>(static_cast<u16>(packed & 0xffffu), ARMSX2_GAMEPAD_RUMBLE_MAX_INTENSITY);
     const bool wants_rumble = (large != 0 || small != 0);
-    const u32 stop_generation = s_gamepadRumbleStopGeneration[gamepad_index].fetch_add(1, std::memory_order_relaxed) + 1;
 
     if (!wants_rumble) {
+        // The zero goes out through the normal path below, so the deadline has
+        // nothing left to catch.
+        s_gamepadRumbleStopDeadlineMs[gamepad_index].store(0, std::memory_order_relaxed);
         const u32 slot = gamepad_index;
         const u32 native_packed_stop = packed;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1081,22 +1099,13 @@ void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
                 });
             }
             if (wants_rumble) {
-                const u32 slot = gamepad_index;
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(ARMSX2_GAMEPAD_RUMBLE_FORCE_STOP_SECONDS * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    if (slot >= ARMSX2_MAX_IOS_GAMEPADS ||
-                        s_gamepadRumbleStopGeneration[slot].load(std::memory_order_relaxed) != stop_generation)
-                        return;
-
-                    if (s_gamepads[slot]) {
-                        SDL_RumbleGamepad(s_gamepads[slot], 0, 0, 0);
-                        SDL_RumbleGamepadTriggers(s_gamepads[slot], 0, 0, 0);
-                    }
-                    ARMSX2StopNativeGamepadRumblePulseOnMain(slot);
-                    if (!s_loggedSDLGamepadRumbleForceStop) {
-                        Console.WriteLn("[ARMSX2 iOS Gamepad] SDL controller rumble force-stopped");
-                        s_loggedSDLGamepadRumbleForceStop = true;
-                    }
-                });
+                // Each new value pushes the deadline out, so a game holding a
+                // rumble keeps it and a game that goes quiet gets stopped. The
+                // CoreHaptics pulse that used to be torn down alongside this
+                // already schedules its own guarded stop, so it is left to it.
+                s_gamepadRumbleStopDeadlineMs[gamepad_index].store(
+                    SDL_GetTicks() + static_cast<u64>(ARMSX2_GAMEPAD_RUMBLE_FORCE_STOP_SECONDS * 1000.0),
+                    std::memory_order_relaxed);
             }
         } else {
             if (!s_loggedGamepadRumbleFailure) {
@@ -1140,7 +1149,7 @@ void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
     s_appliedGamepadRumbleValid[gamepad_index] = true;
 }
 
-extern "C" void ARMSX2_iOSTestGamepadRumble(void)
+static void ARMSX2ServiceGamepadRumbleTest()
 {
     Console.WriteLn("[ARMSX2 iOS Gamepad] Test controller rumble requested");
 
@@ -1164,6 +1173,8 @@ extern "C" void ARMSX2_iOSTestGamepadRumble(void)
             for (u32 slot = 0; slot < ARMSX2_MAX_IOS_GAMEPADS; slot++) {
                 if (!s_gamepads[slot]) {
                     s_gamepads[slot] = SDL_OpenGamepad(ids[id_index]);
+                    if (s_gamepads[slot])
+                        s_gamepadIsJoyCon[slot].store(ARMSX2SDLGamepadLooksLikeJoyCon(s_gamepads[slot]), std::memory_order_relaxed);
                     Console.WriteLn("[ARMSX2 iOS Gamepad] Test SDL open slot=%u id=%d result=%s",
                         slot + 1, ids[id_index],
                         s_gamepads[slot] ? (SDL_GetGamepadName(s_gamepads[slot]) ?: "unknown") : SDL_GetError());
@@ -1248,18 +1259,38 @@ extern "C" void ARMSX2_iOSTestGamepadRumble(void)
 
     Console.WriteLn("[ARMSX2 iOS Gamepad] Native CoreHaptics pulse fallback %s", anyNativeFallback ? "queued when needed" : "not queued");
 
+    // The SDL half of the stop rides the same deadline the pump already checks,
+    // so nothing off this thread ends up holding a gamepad pointer. The
+    // CoreHaptics half has to be on main, and touches no SDL.
+    const u64 deadline = SDL_GetTicks() + 300;
+    for (u32 slot = 0; slot < ARMSX2_MAX_IOS_GAMEPADS; slot++)
+        s_gamepadRumbleStopDeadlineMs[slot].store(deadline, std::memory_order_relaxed);
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(0.30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        for (u32 slot = 0; slot < ARMSX2_MAX_IOS_GAMEPADS; slot++) {
-            if (s_gamepads[slot]) {
-                SDL_RumbleGamepad(s_gamepads[slot], 0, 0, 0);
-                SDL_RumbleGamepadTriggers(s_gamepads[slot], 0, 0, 0);
-            }
+        for (u32 slot = 0; slot < ARMSX2_MAX_IOS_GAMEPADS; slot++)
             ARMSX2StopNativeGamepadRumblePulseOnMain(slot);
-            s_pendingGamepadRumble[slot].store(0, std::memory_order_relaxed);
-            s_appliedGamepadRumble[slot] = 0;
-            s_appliedGamepadRumbleValid[slot] = false;
-        }
         Console.WriteLn("[ARMSX2 iOS Gamepad] Test controller rumble stopped");
+    });
+}
+
+extern "C" void ARMSX2_iOSTestGamepadRumble(void)
+{
+    // Called from SwiftUI, so this is the main thread. The pump owns s_gamepads
+    // and will happily close a pad while we are opening one, so hand the work
+    // over when it is running. With no VM there is no pump and nothing to race,
+    // and waiting for one that will never come would just break the button.
+    if (!s_vmThreadActive.load(std::memory_order_relaxed)) {
+        ARMSX2ServiceGamepadRumbleTest();
+        return;
+    }
+
+    s_gamepadRumbleTestRequested.store(true, std::memory_order_relaxed);
+    // A paused VM may not be pumping, and settings is reachable from the pause
+    // menu, so do not let the button quietly do nothing. If the flag is still
+    // sitting there a moment later, nobody is coming for it.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (s_gamepadRumbleTestRequested.exchange(false, std::memory_order_relaxed))
+            ARMSX2ServiceGamepadRumbleTest();
     });
 }
 
@@ -1270,6 +1301,9 @@ void ARMSX2RefreshIOSGamepads()
     SDL_UpdateGamepads();
     ARMSX2PollNativeGamepadDpadMasks("sdl-refresh");
 
+    if (s_gamepadRumbleTestRequested.exchange(false, std::memory_order_relaxed))
+        ARMSX2ServiceGamepadRumbleTest();
+
     for (u32 slot = 0; slot < ARMSX2_MAX_IOS_GAMEPADS; slot++) {
         SDL_Gamepad* gamepad = s_gamepads[slot];
         if (!gamepad)
@@ -1278,7 +1312,8 @@ void ARMSX2RefreshIOSGamepads()
         if (!SDL_GamepadConnected(gamepad)) {
             Console.WriteLn("[Files] MFi gamepad %u disconnected", slot + 1);
             s_pendingGamepadRumble[slot].store(0, std::memory_order_relaxed);
-            s_gamepadRumbleStopGeneration[slot].fetch_add(1, std::memory_order_relaxed);
+            s_gamepadRumbleStopDeadlineMs[slot].store(0, std::memory_order_relaxed);
+            s_gamepadIsJoyCon[slot].store(false, std::memory_order_relaxed);
             s_appliedGamepadRumble[slot] = 0;
             s_appliedGamepadRumbleValid[slot] = false;
             s_nativeGamepadDpadMask[slot].store(0, std::memory_order_relaxed);
@@ -1321,6 +1356,7 @@ void ARMSX2RefreshIOSGamepads()
 
             s_gamepads[slot] = SDL_OpenGamepad(ids[id_index]);
             if (s_gamepads[slot]) {
+                s_gamepadIsJoyCon[slot].store(ARMSX2SDLGamepadLooksLikeJoyCon(s_gamepads[slot]), std::memory_order_relaxed);
                 dispatch_async(dispatch_get_main_queue(), ^{
                     ARMSX2RefreshNativeGamepadDpadHandlersOnMain("sdl-open");
                 });
