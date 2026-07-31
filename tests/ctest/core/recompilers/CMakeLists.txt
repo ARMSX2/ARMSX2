@@ -134,6 +134,7 @@ add_pcsx2_test(recompiler_tests
 	ee_fpu_zero_divisor_console_tests.cpp
 	ee_lsu_console_conformance_tests.cpp
 	vu0_macro_console_conformance_tests.cpp
+	vu_madd_contract_console_tests.cpp
 	vu1_efu_console_conformance_tests.cpp
 	vu_sticky_console_conformance_tests.cpp
 	vu_branch_console_conformance_tests.cpp
