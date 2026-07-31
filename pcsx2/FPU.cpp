@@ -248,21 +248,72 @@ namespace COP1 {
 // FPU Opcodes
 //****************************************************************
 
+/*	The operand model as bits: exponent 0 is zero on this FPU -- there are no
+	denormals -- and exponent 255 is clamped away, for the reason at eeToDouble().
+	fpuDouble() is this same mapping read back as a float; the guard-bit adder
+	below needs it as bits.
+*/
+static u32 fpuOperandBits(u32 f)
+{
+	switch (f & 0x7f800000)
+	{
+		case 0x0:        return f & 0x80000000;
+		case 0x7f800000: return (f & 0x80000000) | 0x7f7fffff;
+		default:         return f;
+	}
+}
+
 float fpuDouble(u32 f)
 {
-	switch(f & 0x7f800000){
-		case 0x0:
-			f &= 0x80000000;
-			return *(float*)&f;
-			break;
-		case 0x7f800000:
-			f = (f & 0x80000000)|0x7f7fffff;
-			return *(float*)&f;
-			break;
-		default:
-			return *(float*)&f;
-			break;
-	}
+	FPRreg r;
+	r.UL = fpuOperandBits(f);
+	return r.f;
+}
+
+/*	The EE FPU's adder carries no guard bits to the right of the mantissa. A
+	compliant adder shifts the smaller operand right into extra bits it keeps for
+	the rounding decision; whatever shifts past this one's mantissa is gone.
+	Subtraction -- and addition of unlike signs -- can then renormalise left and
+	pull the hole up into the result, landing one ULP toward zero from the IEEE
+	answer:
+
+	    sub.s  0x00800000, 0x3F000000  ->  console BF000000, plain IEEE BEFFFFFF
+
+	The model is the exponent difference, which is how far the smaller operand
+	gets shifted: it loses its low (|diff| - 1) mantissa bits, and past 24 it has
+	nothing left but its sign. |diff| <= 1 masks nothing.
+
+	Ported from x86 FPU_ADD_SUB (x86/iFPU.cpp) and, on arm64, fpuEmitGuardedAddSub
+	(iFPU-arm64.cpp, the single-precision fast path) and FPU_ADD_SUB
+	(iFPUd-arm64.cpp, the Full-clamp DOUBLE path).
+
+	Both recompilers gate the masking on CHECK_FPU_GUARDED, the fpuGuardedAddSub
+	INI bool, so an EE-FPU-heavy title can buy back one op per ADD.S/SUB.S. The
+	interpreter does not read it: its target is the console, not the recompiler's
+	speed. With fpuGuardedAddSub=false the engines therefore disagree on exactly
+	these cases, which EeRecFpuGuardBit.GuardOffDivergesFromInterpreterByDesign
+	pins.
+
+	The console rows this reproduces, with their corpus ordinals, are tabulated in
+	tests/ctest/core/recompilers/ee_fpu_guarded_addsub_console_tests.cpp.
+*/
+static float fpuAddSubGuarded(u32 a, u32 b, bool issub)
+{
+	const s32 diff = (s32)((a >> 23) & 0xFF) - (s32)((b >> 23) & 0xFF);
+
+	if (diff >= 25)
+		b &= 0x80000000;
+	else if (diff >= 2)
+		b &= 0xffffffffu << (diff - 1);
+	else if (diff <= -25)
+		a &= 0x80000000;
+	else if (diff <= -2)
+		a &= 0xffffffffu << (-diff - 1);
+
+	FPRreg fa, fb;
+	fa.UL = a;
+	fb.UL = b;
+	return issub ? (fa.f - fb.f) : (fa.f + fb.f);
 }
 
 /*	The EE multiplier's one-ULP deficit.
@@ -409,14 +460,14 @@ void ABS_S() {
 */
 void ADD_S() {
 	const double exact = eeToDouble( _FsValUl_ ) + eeToDouble( _FtValUl_ );
-	_FdValf_  = fpuDouble( _FsValUl_ ) + fpuDouble( _FtValUl_ );
+	_FdValf_  = fpuAddSubGuarded( fpuOperandBits( _FsValUl_ ), fpuOperandBits( _FtValUl_ ), false );
 	clampToEeRange( _FdValUl_ );
 	raiseOrClearOU( exact );
 }
 
 void ADDA_S() {
 	const double exact = eeToDouble( _FsValUl_ ) + eeToDouble( _FtValUl_ );
-	_FAValf_  = fpuDouble( _FsValUl_ ) + fpuDouble( _FtValUl_ );
+	_FAValf_  = fpuAddSubGuarded( fpuOperandBits( _FsValUl_ ), fpuOperandBits( _FtValUl_ ), false );
 	clampToEeRange( _FAValUl_ );
 	raiseOrClearOU( exact );
 }
@@ -492,19 +543,27 @@ void DIV_S() {
 	method provides a similar outcome and is faster. (cottonvibes)
 */
 /*	The product is its own named double, so -ffp-contract cannot fuse away the
-	two roundings the PS2 ISA mandates and each flag step has its own value to
-	look at.
+	two roundings the PS2 ISA mandates -- and so the two flag steps below have
+	something separate to look at. See raiseOrClearOU/madFlushedProduct.
 
-	The A-forms read the accumulator raw (`_FAValf_ +=`) where the d-forms route
-	it through fpuDouble; the flag path uses the architectural value in both.
-	That value-path inconsistency is pre-existing.
+	The A-forms name their single-precision product too, because the guarded adder
+	needs its bits, and naming it takes the accumulate out of a contracting
+	compiler's reach: `_FAValf_ += fs * ft` is one expression it can turn into a
+	single-rounded FMA, with only the -ffp-contract=off line in
+	pcsx2/CMakeLists.txt between it and that. On corpus cases 567 and 1130 the
+	fused value is the console's, so a contracting build hid the guard-bit defect
+	on MSUBA.
+
+	The A-forms read the accumulator raw where the d-forms route it through
+	fpuDouble; the flag path uses the architectural value in both. That
+	inconsistency in the value path is pre-existing and left alone.
 */
 void MADD_S() {
 	FPRreg temp;
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
 	const double acc = eeToDouble( _FAValUl_ );
 	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
-	_FdValf_  = fpuDouble( _FAValUl_ ) + fpuDouble( temp.UL );
+	_FdValf_  = fpuAddSubGuarded( fpuOperandBits( _FAValUl_ ), fpuOperandBits( temp.UL ), false );
 	clampToEeRange( _FdValUl_ );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
@@ -516,7 +575,7 @@ void MADDA_S() {
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
 	const double acc = eeToDouble( _FAValUl_ );
 	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
-	_FAValf_ += temp.f;
+	_FAValf_ = fpuAddSubGuarded( _FAValUl_, temp.UL, false );
 	clampToEeRange( _FAValUl_ );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
@@ -547,7 +606,7 @@ void MSUB_S() {
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
 	const double acc = eeToDouble( _FAValUl_ );
 	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
-	_FdValf_  = fpuDouble( _FAValUl_ ) - fpuDouble( temp.UL );
+	_FdValf_  = fpuAddSubGuarded( fpuOperandBits( _FAValUl_ ), fpuOperandBits( temp.UL ), true );
 	clampToEeRange( _FdValUl_ );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
@@ -559,7 +618,7 @@ void MSUBA_S() {
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
 	const double acc = eeToDouble( _FAValUl_ );
 	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
-	_FAValf_ -= temp.f;
+	_FAValf_ = fpuAddSubGuarded( _FAValUl_, temp.UL, true );
 	clampToEeRange( _FAValUl_ );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
@@ -663,14 +722,14 @@ void SQRT_S() {
 
 void SUB_S() {
 	const double exact = eeToDouble( _FsValUl_ ) - eeToDouble( _FtValUl_ );
-	_FdValf_  = fpuDouble( _FsValUl_ ) - fpuDouble( _FtValUl_ );
+	_FdValf_  = fpuAddSubGuarded( fpuOperandBits( _FsValUl_ ), fpuOperandBits( _FtValUl_ ), true );
 	clampToEeRange( _FdValUl_ );
 	raiseOrClearOU( exact );
 }
 
 void SUBA_S() {
 	const double exact = eeToDouble( _FsValUl_ ) - eeToDouble( _FtValUl_ );
-	_FAValf_  = fpuDouble( _FsValUl_ ) - fpuDouble( _FtValUl_ );
+	_FAValf_  = fpuAddSubGuarded( fpuOperandBits( _FsValUl_ ), fpuOperandBits( _FtValUl_ ), true );
 	clampToEeRange( _FAValUl_ );
 	raiseOrClearOU( exact );
 }

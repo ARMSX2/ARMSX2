@@ -16,14 +16,11 @@
 // don't need it. These tests run under the default (on);
 // DisableEmitsPlainOpMatchingInterp at the bottom pins the opt-out path.
 //
-// THESE ARE JIT-ONLY TESTS. The shared interpreter's ADD_S/SUB_S (FPU.cpp) is a
-// plain host float + float (fpuDouble() returns float and does no masking),
-// so for guard-bit-sensitive inputs the interpreter produces the *bare* IEEE
-// result, which is LESS hardware-accurate than the masked JIT result. The JIT
-// therefore deliberately diverges from the interp here (like the DOUBLE-mode and
-// FpuMulHack tests), so these use RunJitNoDiff() and assert GetFprBitsJit()
-// against the masked value. Each test notes the bare (unpatched / interp) value
-// it must NOT equal.
+// The interpreter guards too (fpuAddSubGuarded, FPU.cpp), so in the default
+// configuration the two engines agree on every guard-sensitive input and the
+// tests below can use Run()'s JIT-vs-interp auto-diff rather than
+// RunJitNoDiff(). They part company only on the opt-out, which the interpreter
+// does not read.
 //
 // Expected values were computed two independent ways and cross-checked (see the
 // session scratchpad guardbit.c / vectors.c): the masking is a ~1 ULP effect,
@@ -215,23 +212,60 @@ TEST(EeRecFpuGuardBit, RandomizedMatchesX86Model)
 	EXPECT_GT(checked, 1500) << "too many pairs skipped; the test is not exercising the mask";
 }
 
-// Opt-out path (guard OFF): the default-ON fpuGuardedAddSub option can be turned
-// off globally for EE-heavy titles that don't need guard-bit accuracy. With it
-// off, a guard-sensitive subtraction must emit a plain fsub — no masking — which
-// makes the JIT bit-identical to the single-precision interpreter (interp never
-// masked). This pins that the toggle actually gates AND that the fast path
-// matches interp, so Run()'s JIT-vs-interp auto-diff holds. Same operands as
-// SubMasksOneGuardBit, which (guard ON) asserts the masked 0x403fffff; here the
-// bare/interp value 0x403ffffe is the result.
-TEST(EeRecFpuGuardBit, DisableEmitsPlainOpMatchingInterp)
+// Opt-out path (guard off): with fpuGuardedAddSub off the JIT emits a plain fsub
+// for a guard-sensitive subtraction and the interpreter still guards, so both
+// values are asserted here. Same operands as SubMasksOneGuardBit, which makes
+// the JIT leg the gate check too: if DisableFpuGuarded() stopped gating, the JIT
+// would come back 0x403fffff.
+//
+// Two harnesses, because Run() would fail on the divergence this test exists to
+// state and RunJitNoDiff() never executes the interpreter -- its
+// GetFprBitsInterp reports the JIT's value. Both legs keep DisableFpuGuarded()
+// set: the claim is that the interpreter ignores the option, not that it never
+// sees it.
+TEST(EeRecFpuGuardBit, GuardOffDivergesFromInterpreterByDesign)
+{
+	u32 jit_bits, interp_bits;
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.DisableFpuGuarded();
+		h.SetFprBits(1, 0x40800000u); // 4.0
+		h.SetFprBits(2, 0x3f800003u); // 1.0 + 3ulp
+		h.LoadProgram({ee::SUB_S(3, 1, 2)});
+		h.RunJitNoDiff();
+		jit_bits = h.GetFprBitsJit(3);
+	}
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.DisableFpuGuarded();
+		h.SetFprBits(1, 0x40800000u);
+		h.SetFprBits(2, 0x3f800003u);
+		h.LoadProgram({ee::SUB_S(3, 1, 2)});
+		h.RunInterpOnly();
+		interp_bits = h.GetFprBitsInterp(3);
+	}
+
+	EXPECT_EQ(jit_bits, 0x403ffffeu)    // guard off: bare IEEE
+		<< "the fpuGuardedAddSub opt-out stopped gating the emitter";
+	EXPECT_EQ(interp_bits, 0x403fffffu) // interp guards regardless
+		<< "the interpreter must not inherit the recompiler's speed opt-out";
+	EXPECT_NE(jit_bits, interp_bits)
+		<< "with the guard off these engines are supposed to disagree";
+}
+
+// The same program in the default configuration (guard on), where both engines
+// mask: Run() auto-diffs them and ExpectFpr pins the shared value to the
+// console's.
+TEST(EeRecFpuGuardBit, DefaultConfigJitAndInterpAgreeOnTheMaskedValue)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
-	h.DisableFpuGuarded();
 	h.SetFprBits(1, 0x40800000u); // 4.0
 	h.SetFprBits(2, 0x3f800003u); // 1.0 + 3ulp
 	h.LoadProgram({ee::SUB_S(3, 1, 2)});
 	h.Run();
-	h.ExpectFpr(3, 0x403ffffeu); // bare == interp; masked (guard on) would be 0x403fffff
+	h.ExpectFpr(3, 0x403fffffu); // masked on both engines; bare would be 0x403ffffe
 }
 
