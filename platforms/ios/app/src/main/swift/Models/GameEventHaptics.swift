@@ -11,7 +11,6 @@ final class GameEventHaptics {
     private var mediumGenerator: UIImpactFeedbackGenerator?
     private var lastFire = Date.distantPast
     private var hapticsEnabled = true
-    private var releasedForEmulationOnlyMode = false
 
     private init() {
         hapticsEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HapticFeedback", defaultValue: true)
@@ -20,7 +19,7 @@ final class GameEventHaptics {
     /// Called from the bridge (game rumble path) when no rumble-capable controller is connected.
     /// Respects the user's HapticFeedback setting and throttles to avoid motor fatigue.
     func trigger(large: UInt16, small: UInt16) {
-        guard hapticsEnabled, !releasedForEmulationOnlyMode else { return }
+        guard hapticsEnabled else { return }
         guard large > 0 || small > 0 else { return }
         let now = Date()
         // Throttle to ~20 Hz so sustained rumble does not peg the haptic engine.
@@ -45,16 +44,19 @@ final class GameEventHaptics {
             mediumGenerator = created
             generator = created
         }
-        generator.impactOccurred(intensity: CGFloat(max(0.3, min(1.0, intensity))))
+        // No floor. It used to be 0.3, which flattened every weak rumble onto the same
+        // knock as a medium one. This path is only reached on hardware with no taptic
+        // engine to run the continuous one, so it is a fallback rather than the norm.
+        generator.impactOccurred(intensity: CGFloat(min(1.0, intensity)))
     }
 
     func prepareForGameplaySession() {
-        releasedForEmulationOnlyMode = false
         refreshEnabled()
     }
 
+    /// Drops the cached generators. trigger() builds them again on demand, so this is a
+    /// resource release and not an off switch: rumble after this still gets through.
     func releaseForEmulationOnlyMode() {
-        releasedForEmulationOnlyMode = true
         heavyGenerator = nil
         mediumGenerator = nil
         lastFire = .distantPast

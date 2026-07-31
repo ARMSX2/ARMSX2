@@ -136,7 +136,7 @@ private:
 	void GIFRegHandlerTRXDIR(const GIFReg* RESTRICT r);
 	void GIFRegHandlerHWREG(const GIFReg* RESTRICT r);
 
-	template<bool auto_flush> void SetPrimHandlers();
+	template<bool auto_flush, bool sprites_only> void SetPrimHandlers();
 
 	struct GSTransferBuffer
 	{
@@ -208,6 +208,14 @@ protected:
 
 	GSIndexBuff* m_index;
 
+	// Draw-time staging snapshot of the live vertex/index arrays, for the draws
+	// that must read the vertices while the backend also writes them. Contents are
+	// write-then-consume: fully overwritten before every use, so they are never
+	// preserved across a reallocation. Their capacity is deliberately NOT tied to
+	// m_vertex/m_index — on the pipelined split m_vertex points at pooled node
+	// arrays grown by the *front* object, which can be far larger than anything
+	// this object ever allocated — so EnsureDrawStaging sizes them at the point of
+	// use, from what is actually about to be staged, and only ever upwards.
 	GSVertexBuff m_draw_vertex = {};
 
 	struct
@@ -215,6 +223,13 @@ protected:
 		u16* buff;
 		u32 tail;
 	} m_draw_index = {};
+
+	// Allocated element counts of the two staging arrays above (0 = not allocated;
+	// they stay unallocated in sessions that never stage a draw).
+	u32 m_draw_vertex_alloc = 0;
+	u32 m_draw_index_alloc = 0;
+
+	void EnsureDrawStaging(u32 vertex_count, u32 index_count);
 
 	struct GSDrawBufferEnv
 	{
@@ -426,7 +441,12 @@ public:
 	const GSDrawingEnvironment* m_draw_env = &m_env;
 	GSDrawingContext* m_context = nullptr;
 	GSVector4i temp_draw_rect;
+	// Owned by the renderer, which opens and closes it on the present path. The transfer
+	// and ReadFIFO packets that fill it are produced on the parse path, which is the front
+	// object under the split — hence GetDumpSink() rather than a bare m_dump read. Both
+	// paths run on the MTGS thread, so the front writes straight into the back's dump.
 	std::unique_ptr<GSDumpBase> m_dump;
+	GSDumpBase* GetDumpSink() const { return m_mem_target->m_dump.get(); }
 	bool m_scissor_invalid = false;
 	bool m_quad_check_valid = false;
 	bool m_quad_check_valid_shuffle = false;
@@ -625,6 +645,12 @@ public:
 	// itself (on a single object FlushDraw owns that aiming, and the front's
 	// carry-over rebuild depends on FlushDraw's restore happening after).
 	bool m_split_back = false;
+
+	// The inverse of m_mem_target: the object holding the authoritative parse
+	// state (env, vertex, transfer cursor). On the back renderer under the split
+	// it points at the front; everywhere else it is this. Used where the back
+	// needs the state a savestate would record — the GS dump's initial freeze.
+	GSState* m_parse_target = this;
 
 	// GV7-1c: draw-node pool. Acquire is front-side (free ring first, then arena
 	// growth up to the ring capacity, then backpressure); Release is the consume

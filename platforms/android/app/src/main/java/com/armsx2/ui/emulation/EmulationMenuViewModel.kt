@@ -225,7 +225,7 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
         NativeApp.renderUpscalemultiplier(normalized)
     }
 
-    fun setAspectRatio(value: Int) = updateSettings { it.copy(aspectRatio = value.coerceIn(0, 5)) }
+    fun setAspectRatio(value: Int) = updateSettings { it.copy(aspectRatio = value.coerceIn(0, 8)) }
 
     fun setTextureFiltering(value: Int) = updateSettings { it.copy(textureFiltering = value.coerceIn(0, 3)) }
 

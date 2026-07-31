@@ -66,6 +66,12 @@ namespace ImGuiManager
 	/// Renders any on-screen display elements.
 	void RenderOSD();
 
+	/// True when there is OSD/notification content that must be drawn this frame — an OSD message
+	/// (pending or on screen), an open FullscreenUI window, or a toast notification. A frame that
+	/// would otherwise be skipped (e.g. a startup blank before the first GS output) must still be
+	/// presented when this is true, or that content is queued but never actually drawn. GS-thread.
+	bool HasPresentableOverlayContent();
+
 	/// Returns the scale of all on-screen elements.
 	float GetGlobalScale();
 

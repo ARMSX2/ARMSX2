@@ -869,6 +869,73 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setPadVibration(JNIEnv *env, jclass clazz,
 // (all input is serial on the UI thread) except for the brief enablePad2 window.
 static std::mutex s_pad_mutex;
 
+// ---- USB device <- pad bridge -----------------------------------------------------------------
+//
+// Every emulated USB device (Buzz, Rock Band kit, Keyboardmania, BeatMania, GunCon 2, ...) takes its
+// buttons through InputManager BINDINGS, which on desktop are mapped to a keyboard or pad in the
+// bindings UI. Android has no such UI and no InputManager sources, so an attached device would sit
+// there inert.
+//
+// Bridge it instead of building a second binding editor: every InputBindingInfo carries a
+// generic_mapping (Cross, DPadUp, L1, ...), so on attach we build GenericInputBinding -> bind_index
+// for the device and forward each pad press to the matching bind. The player's existing controls —
+// physical pad, on-screen buttons, macros, everything that funnels through applyPadButton — drive
+// the USB device with no extra setup. A device whose binding has no generic mapping (Gametrak axes,
+// the printer) simply gets nothing, which is correct: there is no sensible pad button for it.
+static s32 s_usb_generic_binds[2][static_cast<size_t>(GenericInputBinding::Count)];
+
+static void RebuildUsbGenericBinds(u32 port) {
+    if (port > 1)
+        return;
+    for (size_t i = 0; i < static_cast<size_t>(GenericInputBinding::Count); i++)
+        s_usb_generic_binds[port][i] = -1;
+
+    auto lock = Host::GetSettingsLock();
+    SettingsInterface* si = Host::Internal::GetBaseSettingsLayer();
+    if (!si)
+        return;
+    const std::string dev = USB::GetConfigDevice(*si, port);
+    if (dev.empty() || dev == "None")
+        return;
+    const u32 subtype = USB::GetConfigSubType(*si, port, dev);
+    for (const InputBindingInfo& bi : USB::GetDeviceBindings(dev, subtype))
+    {
+        if (bi.generic_mapping == GenericInputBinding::Unknown)
+            continue;
+        // Buttons and half-axes only: a Pointer/Motor bind is not a pad button press.
+        if (bi.bind_type != InputBindingInfo::Type::Button &&
+            bi.bind_type != InputBindingInfo::Type::HalfAxis)
+        {
+            continue;
+        }
+        s_usb_generic_binds[port][static_cast<size_t>(bi.generic_mapping)] = static_cast<s32>(bi.bind_index);
+    }
+    Console.WriteLnFmt("@@ANDROID_USB@@ bridged '{}' subtype={} on port {}", dev, subtype, port + 1);
+}
+
+/// Our pad keycode -> the generic binding it represents, or Unknown when it has no equivalent.
+static GenericInputBinding PadKeyToGeneric(jint key) {
+    switch (key) {
+        case 19:  return GenericInputBinding::DPadUp;
+        case 22:  return GenericInputBinding::DPadRight;
+        case 20:  return GenericInputBinding::DPadDown;
+        case 21:  return GenericInputBinding::DPadLeft;
+        case 100: return GenericInputBinding::Triangle;
+        case 97:  return GenericInputBinding::Circle;
+        case 96:  return GenericInputBinding::Cross;
+        case 99:  return GenericInputBinding::Square;
+        case 109: return GenericInputBinding::Select;
+        case 108: return GenericInputBinding::Start;
+        case 102: return GenericInputBinding::L1;
+        case 104: return GenericInputBinding::L2;
+        case 103: return GenericInputBinding::R1;
+        case 105: return GenericInputBinding::R2;
+        case 106: return GenericInputBinding::L3;
+        case 107: return GenericInputBinding::R3;
+        default:  return GenericInputBinding::Unknown;
+    }
+}
+
 static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPressed) {
     PadDualshock2::Inputs _key;
     switch (p_key) {
@@ -913,6 +980,19 @@ static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPre
     // release when it first composes in the library) — the pads don't exist yet, so drop it.
     if (!VMManager::HasValidVM())
         return;
+    // Mirror to an attached USB device when this button has a generic equivalent (see
+    // RebuildUsbGenericBinds). Harmless when nothing is attached — the table is all -1.
+    if (port <= 1)
+    {
+        const GenericInputBinding generic = PadKeyToGeneric(p_key);
+        if (generic != GenericInputBinding::Unknown)
+        {
+            const s32 bind = s_usb_generic_binds[port][static_cast<size_t>(generic)];
+            if (bind >= 0)
+                USB::SetDeviceBindValue(port, static_cast<u32>(bind), state);
+        }
+    }
+
     std::lock_guard<std::mutex> lk(s_pad_mutex);
     Pad::SetControllerState(port, static_cast<u32>(_key), state);
 }
@@ -960,7 +1040,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAspectRatio(JNIEnv *env, jclass clazz,
 // FMV Aspect Ratio override — applied only while an FMV/MPEG is playing (Counters.cpp
 // swaps EmuConfig.CurrentAspectRatio to this on FMV state transitions, restoring the
 // generic AspectRatio when the FMV ends). 0 Off (use the generic aspect) · 1 Auto
-// 4:3/3:2 · 2 4:3 · 3 16:9 · 4 10:7 · 5 21:9. Mirrors setAspectRatio; updates EmuConfig.GS live
+// 4:3/3:2 · 2 4:3 · 3 16:9 · 4 10:7 · 5 21:9 · 6 20:9 · 7 19.5:9. Mirrors setAspectRatio; updates EmuConfig.GS live
 // so the next FMV transition honours a change made mid-session.
 extern "C"
 JNIEXPORT void JNICALL
@@ -1800,6 +1880,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setEnabledPatches(
 
     // No VM / no CRC (Patch Manager opened from the library): base layer, which is what the
     // pre-boot browser has always targeted.
+    //
+    // KNOWN LIMITATION: the base list is matched BY NAME against every game, so a name enabled
+    // here arms the identically-named group in any bundled pnach. Tolerable only because it now
+    // takes a deliberate toggle to get here — the bulk auto-sync that used to fill this list just
+    // by opening the Patch Manager is gone (see PatchManagerViewModel.refresh). Scoping this to
+    // the pnach's own serial+CRC is the real fix and wants a serial/CRC parameter.
     SettingsInterface* si = Host::Internal::GetBaseSettingsLayer();
     if (!si)
         return;
@@ -1808,6 +1894,178 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setEnabledPatches(
     for (const auto& n : enabled)
         si->AddToStringList(section, "Enable", n.c_str());
     si->Save();
+}
+
+// ---- USB lightgun (GunCon 2) ---------------------------------------------------------------
+//
+// The core already implements the device (usb_lightgun::GunCon2Device, DEVTYPE_GUNCON2). What was
+// missing on Android is the three things that feed it, because our input path is bespoke rather
+// than InputManager/SDL:
+//   * device selection  -> USB{n}/Type in the settings ini
+//   * aiming            -> InputManager::UpdatePointerAbsolutePosition, which is what
+//                          GunCon2State reads via GetPointerAbsolutePosition(0) when it has no
+//                          relative binds. Coordinates are WINDOW PIXELS; our SurfaceView is the
+//                          whole window, so raw touch x/y goes straight through.
+//   * buttons           -> USB::SetDeviceBindValue(port, BID_*, 0/1)
+// BID_* values are guncon2.cpp's binding ids, mirrored in NativeApp for the Kotlin side.
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_usbSetDeviceType(JNIEnv* env, jclass, jint port,
+                                                      jstring j_type) {
+    if (port < 0 || port > 1)
+        return;
+    const char* raw = j_type ? env->GetStringUTFChars(j_type, nullptr) : nullptr;
+    const std::string type = raw ? raw : "None";
+    if (raw)
+        env->ReleaseStringUTFChars(j_type, raw);
+
+    auto lock = Host::GetSettingsLock();
+    SettingsInterface* si = Host::Internal::GetBaseSettingsLayer();
+    if (!si)
+        return;
+    USB::SetConfigDevice(*si, static_cast<u32>(port), type.c_str());
+    si->Save();
+    // Mirror into EmuConfig so a running VM sees it without a full ApplySettings; USB reattaches
+    // the port on the next CheckForConfigChanges. Device changes are restart-recommended anyway —
+    // hot-swapping a USB device mid-game is the emulated equivalent of yanking the plug.
+    const s32 index = USB::DeviceTypeNameToIndex(type);
+    EmuConfig.USB.Ports[port].DeviceType = index;
+    Console.WriteLnFmt("@@ANDROID_USB@@ port={} type={} index={}", port + 1, type, index);
+    lock.unlock();
+    RebuildUsbGenericBinds(static_cast<u32>(port));
+}
+
+// Available device types, as "typeName\x1fDisplay Name\x1fsub1\x1fsub2..." joined by \x1e.
+// Enumerated from RegisterDevice rather than hardcoded, so the list cannot drift from the core.
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_usbDeviceTypes(JNIEnv* env, jclass) {
+    std::string out;
+    for (s32 i = 0;; i++)
+    {
+        const char* name = USB::DeviceTypeIndexToName(i);
+        if (!name || !*name || std::strcmp(name, "None") == 0)
+        {
+            if (i > 0)
+                break;
+            continue;
+        }
+        if (!out.empty())
+            out.push_back('\x1e');
+        out += name;
+        out.push_back('\x1f');
+        out += USB::GetDeviceName(name);
+        for (const char* sub : USB::GetDeviceSubtypes(name))
+        {
+            out.push_back('\x1f');
+            out += sub;
+        }
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_usbSetDeviceSubtype(JNIEnv* env, jclass, jint port,
+                                                         jint subtype) {
+    if (port < 0 || port > 1)
+        return;
+    auto lock = Host::GetSettingsLock();
+    SettingsInterface* si = Host::Internal::GetBaseSettingsLayer();
+    if (!si)
+        return;
+    const std::string dev = USB::GetConfigDevice(*si, static_cast<u32>(port));
+    if (dev.empty() || dev == "None")
+        return;
+    USB::SetConfigSubType(*si, static_cast<u32>(port), dev, static_cast<u32>(subtype));
+    si->Save();
+    lock.unlock();
+    RebuildUsbGenericBinds(static_cast<u32>(port));
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_usbLightgunAim(JNIEnv*, jclass, jfloat x, jfloat y) {
+    if (!VMManager::HasValidVM())
+        return;
+    // Pointer 0: GunCon2State::GetAbsolutePosition reads index 0 specifically.
+    InputManager::UpdatePointerAbsolutePosition(0, static_cast<float>(x), static_cast<float>(y));
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_usbLightgunButton(JNIEnv*, jclass, jint port, jint bind,
+                                                       jboolean pressed) {
+    if (!VMManager::HasValidVM() || port < 0 || port > 1)
+        return;
+    USB::SetDeviceBindValue(static_cast<u32>(port), static_cast<u32>(bind),
+        (pressed == JNI_TRUE) ? 1.0f : 0.0f);
+}
+
+// One-time repair for enable lists poisoned by the old bulk auto-sync.
+//
+// Until this release, opening the Patch Manager persisted every uncommented group of every .pnach
+// on disk into the [Patches]/[Cheats] Enable lists. Because patches are enabled by NAME, those
+// entries then armed the same-named group in any of the ~4000 bundled pnach files — for games the
+// user had never opened the screen for. Removing the auto-sync stops new poisoning but cannot
+// un-poison what users are already carrying, and there is no way to tell an auto-added name from a
+// deliberate one. So drop the lists wholesale: erring toward "no patches applied" is the only safe
+// direction, and re-enabling a patch is one tap.
+//
+// ★ PER-GAME INIs MUST BE INCLUDED. The first version cleared only the base layer, on the
+// assumption that a per-game list could only come from an explicit toggle. That was wrong: the old
+// sync wrote to the GAME layer whenever a VM was running (see setEnabledPatches above, which takes
+// the game-ini path as soon as AndroidGameSettingsPath() is non-empty). And because
+// LayeredSettingsInterface::GetStringList returns the FIRST NON-EMPTY layer with the game layer
+// ahead of base, a stale per-game entry SHADOWS the cleaned base list entirely — which is exactly
+// how "GOW2 reports 1 game patch active with every patch setting off" survived the base-only purge.
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_purgeGlobalPatchEnableLists(JNIEnv*, jclass) {
+    auto lock = Host::GetSettingsLock();
+
+    if (SettingsInterface* si = Host::Internal::GetBaseSettingsLayer())
+    {
+        si->DeleteValue("Patches", "Enable");
+        si->DeleteValue("Cheats", "Enable");
+        si->Save();
+    }
+
+    // Every per-game INI. Load-then-modify (never regenerate): these files also carry the user's
+    // per-game EmuCore overrides and gamefixes, which must survive untouched.
+    u32 cleaned = 0;
+    FileSystem::FindResultsArray files;
+    FileSystem::FindFiles(EmuFolders::GameSettings.c_str(), "*.ini",
+        FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES, &files);
+    for (const FILESYSTEM_FIND_DATA& fd : files)
+    {
+        INISettingsInterface ini(fd.FileName);
+        if (!ini.Load())
+            continue;
+        // Only rewrite when there is something to remove, so this doesn't churn every file's mtime.
+        if (ini.GetStringList("Patches", "Enable").empty() &&
+            ini.GetStringList("Cheats", "Enable").empty())
+        {
+            continue;
+        }
+        ini.DeleteValue("Patches", "Enable");
+        ini.DeleteValue("Cheats", "Enable");
+        Error error;
+        if (ini.Save(&error))
+            cleaned++;
+        else
+            Console.ErrorFmt("@@ANDROID_PNACH@@ purge failed for {}: {}", fd.FileName, error.GetDescription());
+    }
+
+    // Drop the live game layer's copy too, or the running game keeps the patch for this session.
+    if (SettingsInterface* gsi = Host::Internal::GetGameSettingsLayer())
+    {
+        gsi->DeleteValue("Patches", "Enable");
+        gsi->DeleteValue("Cheats", "Enable");
+    }
+
+    Console.WriteLnFmt("@@ANDROID_PNACH@@ purged [Patches]/[Cheats] Enable lists (base + {} per-game INIs)", cleaned);
 }
 
 extern "C"

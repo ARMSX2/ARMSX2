@@ -189,6 +189,19 @@ open class MainActivityRuntime : ComponentActivity() {
         private val eScope = CoroutineScope(eDispatcher)
 
         /**
+         * Scope for boot-time synthetic input that must run WHILE the VM is booting.
+         *
+         * It cannot be [eScope]: [eDispatcher] is a single thread, and start()'s `invoke { }` block
+         * occupies it with the BLOCKING `NativeApp.runVMThread()` for the entire game session.
+         * Coroutine dispatch is cooperative, so a job launched on [eScope] during boot is starved
+         * until the game EXITS and the thread frees — which is exactly why the Auto-Progressive-Scan
+         * Triangle+Cross hold never fired for anyone (it "released" 15 s after a long-dead VM). Run it
+         * on an independent pool instead — the same shape EmuCoreX uses (`Dispatchers.Default`). Every
+         * JNI it touches (setPadButton/hasActiveVM/getGameCRC) is already thread-safe.
+         */
+        private val auxScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
+
+        /**
          * Resolve the user-chosen system folder (a SAF tree URI persisted
          * as `systemDir`) to a POSIX path emucore can use as
          * `EmuFolders::DataRoot`. Memcards / savestates / configs land
@@ -371,6 +384,13 @@ open class MainActivityRuntime : ComponentActivity() {
         // stick, so the physical stick is left driving on its own.
         val gyroActive = mutableStateOf(true)
 
+        // Bridge to the live AndroidGyroscopeInput's recenter(). The sensor instance is
+        // remembered inside TouchControlsOverlay, so the runtime (which owns hotkey
+        // dispatch) has no other handle on it. Set while a gyro session is registered and
+        // nulled on dispose, so GYRO_RECENTER can tell "no motion running" from a real
+        // recenter instead of silently doing nothing.
+        @Volatile var gyroRecenterHook: (() -> Unit)? = null
+
         // #254: whether the emulated USB keyboard is attached for the running
         // game (resolved Settings.usbKeyboard, cached at launch in
         // applyRendererPrefs). Read hot in dispatchKeyEvent to decide whether a
@@ -528,8 +548,10 @@ open class MainActivityRuntime : ComponentActivity() {
 
         private const val AUTO_PROGRESSIVE_REASSERT_MS = 200L
         /// Keep holding this long after the game's ELF starts, then let go — the 480p prompt is
-        /// checked at game start, and holding into the menus would fight the player.
-        private const val AUTO_PROGRESSIVE_POST_ELF_MS = 4_000L
+        /// checked at game start, and holding into the menus would fight the player. 8 s (up from 4)
+        /// gives margin for titles that probe a few seconds into the ELF, once past the intro logos;
+        /// a continuously-held button presents no fresh press edge, so it won't drive early menus.
+        private const val AUTO_PROGRESSIVE_POST_ELF_MS = 8_000L
 
         /** Pad writes are dropped while no VM exists (applyPadButton bails on !HasValidVM), so
          *  wait for boot rather than pressing into the void. Bounded so a failed boot can't spin. */
@@ -539,7 +561,11 @@ open class MainActivityRuntime : ComponentActivity() {
 
         private fun startAutoProgressiveScanHold() {
             stopAutoProgressiveScanHold()
-            autoProgressiveScanJob = eScope.launch {
+            // ★ auxScope, NOT eScope. The old eScope.launch was the whole bug: eScope's single thread
+            // is held by the blocking runVMThread() for the entire session, so this coroutine never
+            // got to run during boot — it did nothing for anyone (the "fix" that added re-assertion
+            // couldn't run either). On the independent auxScope it runs alongside the booting VM.
+            autoProgressiveScanJob = auxScope.launch {
                 var held = false
                 try {
                     var waited = 0L
@@ -550,13 +576,10 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (!NativeApp.hasActiveVM())
                         return@launch
                     held = true
-                    // ★ RE-ASSERT, don't set once. setPadButton writes the button state a single
-                    // time, but the pad is (re)initialised during boot — "Pad: DS2 Config Finished"
-                    // lands well after the VM goes active — and that wipes the state we set before
-                    // it existed. So the hold silently evaporated before the game ever sampled it,
-                    // which is exactly the Tekken 4 report: holding Triangle+Cross by hand works,
-                    // the automatic hold does nothing. Re-pressing on a short interval survives any
-                    // number of pad resets.
+                    // Re-assert on a short interval rather than pressing once. The state itself
+                    // persists (Pad::SetControllerState), so a single press would mostly work — but
+                    // re-pressing cheaply survives the pad (re)init during boot ("Pad: DS2 Config
+                    // Finished" lands after the VM goes active) with no gap for the game to sample.
                     //
                     // Release shortly after the game's own ELF starts rather than blocking for the
                     // full timeout: the 480p prompt is checked at game start, and continuing to jam
@@ -1417,6 +1440,25 @@ open class MainActivityRuntime : ComponentActivity() {
         private var lastInitDataRoot: String? = null
         fun currentInitDataRoot(): String? = lastInitDataRoot
 
+        /**
+         * Factory-reset every app SETTING and cold-restart.
+         *
+         * Wipes all preferences (settings, controls, hotkeys, touch layouts, per-game overrides,
+         * library cache, recents, onboarding state) plus the on-disk settings layers that would
+         * otherwise re-seed them — see [ConfigStore.purgeAllSettingsFiles], which is what stops
+         * the reset being silently undone on the next launch.
+         *
+         * Deliberately does NOT delete content: games, BIOS, saves, memory cards, save states,
+         * covers, texture packs and shaders all survive. Setup runs again afterwards because the
+         * chosen data root is a preference; pointing it at the same folder restores everything.
+         */
+        fun resetAppToDefaults(context: Context) {
+            // Files first — clearing prefs drops the data-root pref that locates them.
+            runCatching { com.armsx2.config.ConfigStore.purgeAllSettingsFiles() }
+            runCatching { prefs.edit { clear() } }
+            restartApp(context)
+        }
+
         /** Cold-restart the app so native re-runs initialize() with the newly
          *  chosen data root. Used after the user moves app data between Internal
          *  and SD in the setup wizard. */
@@ -1737,6 +1779,29 @@ open class MainActivityRuntime : ComponentActivity() {
             NativeApp.initializeOnce(applicationContext)
             nativeReady.value = true
 
+            // One-time repair of globally-armed patches. Older builds filled the global
+            // [Patches]/[Cheats] Enable lists just by opening the Patch Manager, and since
+            // patches are matched BY NAME those entries armed the same-named group in the
+            // bundled archive for every game — the "60fps/16:9 with every patch setting off,
+            // and it won't turn off" reports. The auto-sync is gone, but existing installs
+            // still carry the poisoned lists, so clear them once. Must run after
+            // initializeOnce (the base settings layer has to exist).
+            // Key is versioned: v1 cleared only the base layer, which a stale PER-GAME list then
+            // shadowed (GOW2 still reported "1 game patch active" with everything off). Bumping it
+            // re-runs the now-complete purge for anyone who already took v1.
+            // Lightgun: read the pref and re-assert the USB device type. The ini is
+            // authoritative, but this covers a first run that has no USB section yet.
+            runCatching {
+                com.armsx2.input.UsbDevices.load()
+                com.armsx2.input.Lightgun.load()
+                com.armsx2.input.UsbDevices.applyAtBoot()
+            }
+
+            if (!prefs.getBoolean("patchEnableListsPurged.v2", false)) {
+                runCatching { NativeApp.purgeGlobalPatchEnableLists() }
+                    .onSuccess { prefs.edit { putBoolean("patchEnableListsPurged.v2", true) } }
+            }
+
             // Pin Filenames/BIOS to the file the setup wizard copied —
             // deferred to here because Host::SetBaseStringSettingValue
             // null-derefs when called before initializeOnce installs the
@@ -1997,6 +2062,7 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.ui.theme.LauncherOrientationPreferences.load()
         com.armsx2.ui.theme.LibraryBackgroundColorPreferences.load()
         com.armsx2.LibraryMusic.load()
+        com.armsx2.PauseMusic.load()
         com.armsx2.MenuSfx.load(applicationContext)
         com.armsx2.ControllerSkinStore.load(applicationContext)
         startAutosaveIntervalJob()
@@ -2267,6 +2333,31 @@ open class MainActivityRuntime : ComponentActivity() {
                         }
                     } else {
                         com.armsx2.LibraryMusic.stop(this@MainActivityRuntime)
+                    }
+                }
+                // In-game pause music: the mirror image of the above — it plays only while a
+                // frontend surface covers a running game, and goes quiet the moment the game
+                // resumes. Both the pause menu AND the in-game manager screens count, because
+                // openInGameScreen() closes the menu as it opens Settings/Achievements/etc., and
+                // sitting in those is exactly the long silence this exists to fill.
+                //
+                // Driven off the same states the overlay itself is drawn from rather than from
+                // InGameOverlay.open()/close(), for the reason the comment above gives: many paths
+                // reach each state (back button, menu button, hotkey, dismissInGameScreen, a boot
+                // that force-closes the overlay) and hooking them individually always misses one.
+                val pauseMenuUp = WindowImpl.overlayVisible.value || WindowImpl.inGameScreen.value != null
+                androidx.compose.runtime.LaunchedEffect(pauseMenuUp, com.armsx2.PauseMusic.enabled.value) {
+                    if (pauseMenuUp) {
+                        // start() plays immediately now (no active-audio deference — the game's own
+                        // stream stays open-but-silent behind the overlay). A couple of light
+                        // retries only cover a transient MediaPlayer prepare hiccup.
+                        repeat(3) {
+                            com.armsx2.PauseMusic.start(this@MainActivityRuntime)
+                            if (com.armsx2.PauseMusic.isPlaying()) return@LaunchedEffect
+                            kotlinx.coroutines.delay(250)
+                        }
+                    } else {
+                        com.armsx2.PauseMusic.stop()
                     }
                 }
                 // Screen orientation follows whichever tier is live: a running game's per-game
@@ -3027,6 +3118,10 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (down && event.repeatCount == 0) toggleGyro()
                     return true
                 }
+                ControllerMappings.SysHotkey.GYRO_RECENTER -> {
+                    if (down && event.repeatCount == 0) recenterGyro()
+                    return true
+                }
                 ControllerMappings.SysHotkey.TOGGLE_KEYBOARD -> {
                     if (down && event.repeatCount == 0) toggleSoftKeyboard()
                     return true
@@ -3199,6 +3294,19 @@ open class MainActivityRuntime : ComponentActivity() {
         hotkeyToast(if (on) "Gyro ON" else "Gyro OFF")
     }
 
+    /** Re-zero the motion neutral. Routed through [gyroRecenterHook] because the sensor
+     *  instance is owned by the touch overlay composable, not the runtime. No-op (with a
+     *  toast either way) when no gyro session is live, so the binding never feels dead. */
+    private fun recenterGyro() {
+        val hook = gyroRecenterHook
+        if (hook == null) {
+            hotkeyToast("Motion not active")
+            return
+        }
+        hook()
+        hotkeyToast("Motion recentered")
+    }
+
     fun toggleFastForward() {
         fastForwardToggleActive = !fastForwardToggleActive
         val on = fastForwardToggleActive
@@ -3280,6 +3388,83 @@ open class MainActivityRuntime : ComponentActivity() {
             )
         }
         android.widget.Toast.makeText(this, "Resolution ${next}x", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    // Corrects the Samsung QHD on-screen-touch offset before the event is dispatched (a strict no-op
+    // on every other device — see maybeCorrectTouchScale). ALWAYS returns super, so it can never
+    // block or consume a tap.
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        maybeCorrectTouchScale(ev)
+        return super.dispatchTouchEvent(ev)
+    }
+
+    // Empirically-learned touch-coordinate extent (largest x/y ever delivered), plus the last window
+    // size so a stale extent is dropped on resize. Drives maybeCorrectTouchScale — see there.
+    private var touchPeakX = 0f
+    private var touchPeakY = 0f
+    private var lastDecorW = 0
+    private var lastDecorH = 0
+
+    /** Un-scaled physical display size in the current rotation. Only a SEED for the touch-space
+     *  estimate below, never trusted alone: Samsung's QHD game-downscale reports this DOWNSCALED too
+     *  (observed 1080 at QHD+), so the observed touch extent is the ground truth. */
+    @Suppress("DEPRECATION")
+    private fun realPanelMetrics(): android.util.DisplayMetrics? = runCatching {
+        val dm = android.util.DisplayMetrics()
+        val disp = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R)
+            display else windowManager.defaultDisplay
+        disp?.getRealMetrics(dm)
+        dm.takeIf { it.widthPixels > 0 && it.heightPixels > 0 }
+    }.getOrNull()
+
+    /**
+     * Correct the Samsung QHD touch-offset bug (#Nomad, S24 Ultra @ QHD+) — self-contained, trusting
+     * NO resolution API. On that device at QHD every one of them (decorView, maximumWindowMetrics,
+     * getRealMetrics) reports the DOWNSCALED ~1080 while the digitizer still delivers touch in the
+     * physical ~1440 space, so the on-screen controls (laid out in the ~1080 window) sit up-and-left
+     * of where the finger must press, the error growing with distance (a pure ≈1.33 scale). It works
+     * at FHD+ (everything is a consistent 1080) and breaks only at QHD.
+     *
+     * Ground truth is the touches themselves: in this broken state a press near a far control lands
+     * OUTSIDE the window. That never happens on a normal device or in split-screen/multi-window (the
+     * OS descales touch to fit the window there), so this is self-gating — a strict no-op except the
+     * exact bug. We learn the true touch extent from where fingers actually reach (seeded by
+     * getRealMetrics when it happens to read larger) and rescale pointers back into the window:
+     * precise from the first far press when the seed is right, else converging within a touch or two.
+     */
+    private fun maybeCorrectTouchScale(ev: MotionEvent) {
+        runCatching {
+            val decorW = window.decorView.width
+            val decorH = window.decorView.height
+            if (decorW <= 0 || decorH <= 0) return
+            val slop = 8f
+            // Drop the learned extent when the window size changes (rotation, or Samsung's game-mode
+            // resolution switch), so a stale peak from a previous mode can't mis-scale the new one.
+            if (decorW != lastDecorW || decorH != lastDecorH) {
+                touchPeakX = 0f; touchPeakY = 0f
+                lastDecorW = decorW; lastDecorH = decorH
+            }
+            // Grow the observed extent from THIS event's pointers (raw, before any correction),
+            // capped at 2x the window so one spurious out-of-range sample can't over-shrink touch.
+            val capX = decorW * 2f
+            val capY = decorH * 2f
+            for (i in 0 until ev.pointerCount) {
+                if (ev.getX(i) > touchPeakX) touchPeakX = minOf(ev.getX(i), capX)
+                if (ev.getY(i) > touchPeakY) touchPeakY = minOf(ev.getY(i), capY)
+            }
+            // Engage ONLY once a touch has escaped the window (proof the touch space exceeds the
+            // layout space). True extent = the larger of the observed peak and a physical-panel
+            // reading that ALSO exceeds the window; scale the window back onto it (clamped so a stray
+            // reading can't invert the axis or shrink past 2x).
+            val real = realPanelMetrics()
+            val spaceW = maxOf(touchPeakX, (real?.widthPixels ?: 0).let { if (it > decorW) it.toFloat() else 0f })
+            val spaceH = maxOf(touchPeakY, (real?.heightPixels ?: 0).let { if (it > decorH) it.toFloat() else 0f })
+            val sx = if (touchPeakX > decorW + slop) (decorW / spaceW).coerceIn(0.5f, 1f) else 1f
+            val sy = if (touchPeakY > decorH + slop) (decorH / spaceH).coerceIn(0.5f, 1f) else 1f
+            if (sx != 1f || sy != 1f) {
+                ev.transform(android.graphics.Matrix().apply { setScale(sx, sy) })
+            }
+        }
     }
 
     override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
@@ -4264,6 +4449,7 @@ open class MainActivityRuntime : ComponentActivity() {
             // directions / combos) doesn't provide — behave as a toggle here rather than
             // latching gyro on with no release.
             ControllerMappings.SysHotkey.GYRO_HOLD -> toggleGyro()
+            ControllerMappings.SysHotkey.GYRO_RECENTER -> recenterGyro()
             ControllerMappings.SysHotkey.RES_UP -> stepResolution(1)
             ControllerMappings.SysHotkey.RES_DOWN -> stepResolution(-1)
             ControllerMappings.SysHotkey.ACHIEVEMENTS -> com.armsx2.ui.emulation.EmulationMenuInputController.open(com.armsx2.ui.emulation.EmulationMenuTab.Options)
@@ -4505,6 +4691,11 @@ open class MainActivityRuntime : ComponentActivity() {
             com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.SLEEP)
         }
         com.armsx2.navigation.UiNavigator.drawerOpen.value = false
+        // Mark backgrounded BEFORE opening the overlay below. open() sets overlayVisible = true,
+        // which re-fires the pause-music LaunchedEffect — and without this flag already false, that
+        // effect would call start() and play the track on the OS home screen. setForeground(false)
+        // also pauses whatever is currently playing.
+        com.armsx2.PauseMusic.setForeground(false)
         // Leaving the app (home / recents / slide-out) while a game is running:
         // open the pause OVERLAY instead of a silent pause. A bare pause left
         // users staring at a frozen game with no obvious way back — they had to
@@ -4525,6 +4716,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // like the emulator ignoring the home button. Paused, not stopped, so returning
         // to the library picks it back up.
         com.armsx2.LibraryMusic.pause()
+        // Pause-menu track was already paused by setForeground(false) at the top of onPause.
         super.onPause()
     }
 
@@ -4551,6 +4743,13 @@ open class MainActivityRuntime : ComponentActivity() {
         // still just un-pauses a merely-paused one — while its own guards keep it a no-op
         // when the setting is off, a VM is running, or that other app is still playing.
         com.armsx2.LibraryMusic.start(this)
+        // Back in the foreground: clear the background guard first, THEN restart the pause track if a
+        // menu is still up. The LaunchedEffect won't do it — the overlay states didn't change while
+        // we were away, so it never re-runs — and start() no-ops until foreground is true again.
+        com.armsx2.PauseMusic.setForeground(true)
+        if (WindowImpl.overlayVisible.value || WindowImpl.inGameScreen.value != null) {
+            com.armsx2.PauseMusic.start(this)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

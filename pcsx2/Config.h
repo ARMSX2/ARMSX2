@@ -233,6 +233,17 @@ enum class AspectRatioType : u8
 	// and tablet users, DeX, and phones driving a 21:9 display, who otherwise had to use
 	// Stretch and accept the distortion.
 	R21_9,
+	// 20:9 is the real panel ratio of most modern phones, which 21:9 only approximates -- close
+	// enough to leave thin black bars. Appended rather than slotted in next to R21_9 on purpose:
+	// these values are persisted as raw ints in the ini and in the Android prefs, so inserting
+	// mid-enum would silently repoint every saved 21:9 config at a different ratio.
+	R20_9,
+	// 19.5:9 — the other common modern phone ratio (many Xiaomi/Samsung panels). Appended, not
+	// slotted next to R20_9, for the same persisted-raw-int reason documented above.
+	R19_5_9,
+	// User-entered ratio (GSOptions::CustomAspectRatio). Last on purpose: it is the catch-all for
+	// panels none of the fixed entries match, and appending keeps every persisted index stable.
+	Custom,
 	MaxCount
 };
 
@@ -248,6 +259,10 @@ enum class FMVAspectRatioSwitchType : u8
 	// and tablet users, DeX, and phones driving a 21:9 display, who otherwise had to use
 	// Stretch and accept the distortion.
 	R21_9,
+	// See AspectRatioType::R20_9 -- appended for the same persisted-index reason.
+	R20_9,
+	R19_5_9,
+	Custom,
 	MaxCount
 };
 
@@ -516,6 +531,28 @@ enum class GSNativeScaling : u8
 	Aggressive,
 	NormalUpscaled,
 	AggressiveUpscaled,
+	MaxCount
+};
+
+// A hack the player set on purpose. Normally the GameDB gets the last word on these
+// unless manual hacks are on, which is all or nothing: switching one hack off throws
+// away every automatic fix the game had. Pinning one keeps the rest.
+enum class GSUserHackOverride : u8
+{
+	AlignSprite,
+	MergeSprite,
+	RoundSprite,
+	HalfPixelOffset,
+	ForceEvenSpritePosition,
+	NativeScaling,
+	NativePaletteDraw,
+	BilinearHack,
+	TextureOffsetX,
+	AutoFlush,
+	TextureInsideRt,
+	// Appended rather than slotted in next to X, so a mask already written to an INI keeps
+	// meaning what it meant.
+	TextureOffsetY,
 	MaxCount
 };
 
@@ -941,6 +978,9 @@ struct Pcsx2Config
 		GSPostBilinearMode LinearPresent = DEFAULT_BILINEAR_FILTERING_MODE;
 
 		float StretchY = 100.0f;
+		/// Width/height for AspectRatioType::Custom. Stored as a ratio, not W and H separately, so
+		/// anything can be expressed (2.1666 for 19.5:9, 1.85 for a film ratio) without a second key.
+		float CustomAspectRatio = 16.0f / 9.0f;
 		int Crop[4] = {};
 
 		float OsdScale = DEFAULT_OSD_SCALE;
@@ -1033,12 +1073,30 @@ struct Pcsx2Config
 		std::string HWDumpDirectory;
 		std::string SWDumpDirectory;
 
+		/// Hacks the player set deliberately, one bit per GSUserHackOverride. Kept out of
+		/// the bitfield union above on purpose: that packing is what OptionsAreEqual
+		/// compares wholesale, and this is not a hack value, it is who owns one.
+		u32 UserHackOverrides = 0;
+
 		GSOptions();
 
 		void LoadSave(SettingsWrapper& wrap);
 
-		/// Sets user hack values to defaults when user hacks are not enabled.
-		void MaskUserHacks();
+		bool IsUserHackPinned(GSUserHackOverride hack) const
+		{
+			return (UserHackOverrides & (1u << static_cast<u32>(hack))) != 0;
+		}
+
+		void SetUserHackPinned(GSUserHackOverride hack, bool pinned)
+		{
+			const u32 bit = 1u << static_cast<u32>(hack);
+			UserHackOverrides = pinned ? (UserHackOverrides | bit) : (UserHackOverrides & ~bit);
+		}
+
+		/// Sets user hack values to defaults when user hacks are not enabled. Hacks the
+		/// player claimed survive, unless the caller is stripping for safety rather than
+		/// preference, in which case pass false.
+		void MaskUserHacks(bool respect_claims = true);
 
 		/// Sets user hack values to defaults when upscaling is not enabled.
 		void MaskUpscalingHacks();

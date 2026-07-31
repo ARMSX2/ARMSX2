@@ -460,6 +460,13 @@ fun FixesTab(state: MutableState<Settings>) {
             HelpText(str("perf.gamedbFixes.help"))
             ToggleRow(str("perf.fix.skipBios"), s.enableFastBoot, description = str("perf.fix.skipBios.desc")) { apply(s.copy(enableFastBoot = it)) }
             ToggleRow(str("perf.fix.gamedbFixes"), s.enableGameFixes, description = str("perf.fix.gamedbFixes.desc")) { apply(s.copy(enableGameFixes = it)) }
+            // Compatibility patches sat in the Patches screen under the name "Enable Patches",
+            // where nothing said they were the per-game COMPATIBILITY set PCSX2 ships — users
+            // read it as "turn patches on/off" and switched it off, or blamed it for a
+            // widescreen hack it never controlled. It is the same class of thing as the GameDB
+            // fixes above, so it belongs beside them. Widescreen / cheats / no-interlacing stay
+            // in the Patches screen; those really are patch choices.
+            ToggleRow(str("perf.fix.compatPatches"), s.enablePatches, description = str("perf.fix.compatPatches.desc")) { apply(s.copy(enablePatches = it)) }
             ToggleRow(str("perf.fix.skipMpeg"), s.gamefixSkipMpeg, description = str("perf.fix.skipMpeg.desc")) { apply(s.copy(enableGameFixes = true, gamefixSkipMpeg = it)) }
             if (s.gamefixSkipMpeg) HelpText(str("perf.fix.skipMpeg.warning"))
             ToggleRow(str("perf.fix.fmvSoftware"), s.gamefixSoftwareRendererFmv, description = str("perf.fix.fmvSoftware.desc")) { apply(s.copy(enableGameFixes = true, gamefixSoftwareRendererFmv = it)) }

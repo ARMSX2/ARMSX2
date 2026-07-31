@@ -41,6 +41,15 @@ public:
 
 	VALUE operator[](KEY key)
 	{
+		return Lookup(key, true);
+	}
+
+	// allow_compile false makes this a probe: report the miss rather than
+	// generate. A caller whose generated code is being run by other threads
+	// uses it to find out that it is about to compile, so it can get them
+	// out of the way first.
+	VALUE Lookup(KEY key, bool allow_compile)
+	{
 		m_active = NULL;
 
 		auto it = m_map_active.find(key);
@@ -48,23 +57,42 @@ public:
 		if (it != m_map_active.end())
 		{
 			m_active = it->second;
-		}
-		else
-		{
-			ActivePtr* p = new ActivePtr();
-
-			memset(p, 0, sizeof(*p));
-
-			p->frame = (u64)-1;
-
-			p->f = GetDefaultFunction(key);
-
-			m_map_active[key] = p;
-
-			m_active = p;
+			return m_active->f;
 		}
 
-		return m_active->f;
+		if (!allow_compile)
+			return nullptr;
+
+		VALUE f = GetDefaultFunction(key);
+
+		// Out of code space. Don't remember the miss: the caller resets the
+		// cache and asks again, and an entry cached here would outlive that
+		// reset and keep answering null forever.
+		if (!f)
+			return nullptr;
+
+		ActivePtr* p = new ActivePtr();
+
+		memset(p, 0, sizeof(*p));
+
+		p->frame = (u64)-1;
+
+		p->f = f;
+
+		m_map_active[key] = p;
+
+		m_active = p;
+
+		return f;
+	}
+
+	void ClearActive()
+	{
+		for (auto& i : m_map_active)
+			delete i.second;
+
+		m_map_active.clear();
+		m_active = NULL;
 	}
 
 	void UpdateStats(u64 frame, u64 ticks, int actual, int total, int prims)
@@ -166,6 +194,10 @@ public:
 	void Clear()
 	{
 		m_cgmap.clear();
+
+		// The active map points into the code we are about to hand out
+		// again, so it has to go with it.
+		this->ClearActive();
 	}
 
 	VALUE GetDefaultFunction(KEY key)
@@ -180,9 +212,17 @@ public:
 		}
 		else
 		{
-			HostSys::BeginCodeWrite();
-
+			// Page-granular window. This runs on the GS thread, and an
+			// arena-wide Begin/EndCodeWrite in Legacy mode is one mprotect
+			// over every recompiler, so the EE thread lost execute on its
+			// dispatcher mid-fetch. ReserveMemory only reads the bump
+			// pointer, so it is safe to take the address first.
 			u8* code_ptr = GSCodeReserve::ReserveMemory(MAX_SIZE);
+			if (!code_ptr)
+				return nullptr;
+
+			HostSys::BeginCodeWriteRange(code_ptr, MAX_SIZE);
+
 			CG cg(key, code_ptr, MAX_SIZE);
 			cg.Generate();
 			pxAssert(cg.GetSize() < MAX_SIZE);
@@ -196,7 +236,7 @@ public:
 			const u32 size = static_cast<u32>(cg.GetSize());
 			GSCodeReserve::CommitMemory(size);
 
-			HostSys::EndCodeWrite();
+			HostSys::EndCodeWriteRange(code_ptr, MAX_SIZE);
 			HostSys::FlushInstructionCache(code_ptr, static_cast<u32>(size));
 
 			ret = (VALUE)cg.GetCode();

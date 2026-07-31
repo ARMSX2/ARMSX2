@@ -16,7 +16,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kr.co.iefriends.pcsx2.NativeApp
 
-data class TexturePackItem(val serial: String, val directory: File, val fileCount: Int, val size: Long)
+data class TexturePackItem(
+    val serial: String,
+    val directory: File,
+    val fileCount: Int,
+    val size: Long,
+    /** Resolved from the library scan cache so the row can say "Guitar Hero II" and not just
+     *  "SLUS-21447". Null when the pack's serial isn't in the library (installed for a game the
+     *  user doesn't have, or an .ELF-named folder), in which case the serial is all we can show. */
+    val gameTitle: String? = null,
+)
 
 data class TextureManagerUiState(
     val settings: Settings = Settings(),
@@ -46,18 +55,28 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
         viewModelScope.launch {
             val scanned = withContext(Dispatchers.IO) {
                 val root = textureRoot().apply { mkdirs() }
-                val packs = root.listFiles().orEmpty().filter(File::isDirectory).mapNotNull { serialDir ->
+                val serialDirs = root.listFiles().orEmpty().filter(File::isDirectory)
+                val packs = serialDirs.mapNotNull { serialDir ->
                     val replacements = File(serialDir, "replacements")
                     if (!replacements.isDirectory) return@mapNotNull null
-                    // Count and total in one pass without materialising the file list — the list
-                    // itself was thousands of File objects built only to be measured.
-                    var count = 0
-                    var bytes = 0L
-                    replacements.walkTopDown().forEach { f ->
-                        if (f.isFile) { count++; bytes += f.length() }
+                    // Sizes come from a CACHE, not a fresh walk. Walking every pack's tree on every
+                    // open is what made this screen hang: a real pack is thousands of files (DBZ
+                    // BT3: 4277), so ~60 installed packs is a quarter of a million stat() calls
+                    // before the first frame — reported as "opening the texture packs menu freezes
+                    // the app, sometimes I have to close it". The cache is keyed on the folder's
+                    // mtime, so a pack that changed is re-measured and everything else is free.
+                    val cached = PackSizeCache.get(serialDir.name, replacements.lastModified())
+                    val (count, bytes) = cached ?: run {
+                        var c = 0
+                        var b = 0L
+                        replacements.walkTopDown().forEach { f ->
+                            if (f.isFile) { c++; b += f.length() }
+                        }
+                        PackSizeCache.put(serialDir.name, replacements.lastModified(), c, b)
+                        c to b
                     }
                     TexturePackItem(serialDir.name, replacements, count, bytes)
-                }.sortedBy { it.serial }
+                }
 
                 // The install record is a JSON file that can drift from the filesystem: deleting a
                 // pack in a file manager, or a delete that only partly succeeded, used to leave the
@@ -70,15 +89,28 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
                 // storage. Without this the catalogue's "your games" grouping only knew about games
                 // that already had a pack or had been launched this session, so an owned game sat
                 // under "Other games" until you played it once (reported by Beep).
-                val library = runCatching {
-                    GameLibraryRepository(getApplication())
-                        .loadCached()
-                        .games
-                        .mapNotNull { it.serial?.takeIf(String::isNotBlank)?.uppercase() }
-                        .toSet()
-                }.getOrDefault(emptySet())
+                // Titles come off the same cached list, so naming the packs costs nothing extra.
+                val cachedGames = runCatching {
+                    GameLibraryRepository(getApplication()).loadCached().games
+                }.getOrDefault(emptyList())
+                val library = cachedGames
+                    .mapNotNull { it.serial?.takeIf(String::isNotBlank)?.uppercase() }
+                    .toSet()
+                // displayTitle, not title — so a game the user renamed shows the name they gave it,
+                // matching the library list rather than contradicting it.
+                val forceEn = com.armsx2.EnglishTitles.enabled.value
+                val titles = cachedGames.mapNotNull { g ->
+                    val s = g.serial?.takeIf(String::isNotBlank)?.uppercase() ?: return@mapNotNull null
+                    g.displayTitle(forceEn).takeIf(String::isNotBlank)?.let { s to it }
+                }.toMap()
 
-                Triple(packs, settings, library)
+                // Sort by game name so packs read like the library does, falling back to the serial
+                // for anything the library can't name (which also keeps the order stable).
+                val named = packs
+                    .map { it.copy(gameTitle = titles[it.serial.uppercase()]) }
+                    .sortedBy { (it.gameTitle ?: it.serial).lowercase() }
+
+                Triple(named, settings, library)
             }
             state.value = state.value.copy(
                 settings = scanned.second,
@@ -189,7 +221,12 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
             } else {
                 state.value.copy(busy = false, error = "Unable to delete ${pack.serial}.")
             }
-            if (deleted) com.armsx2.TexturePackInstallState.forgetSerial(pack.serial)
+            if (deleted) {
+                com.armsx2.TexturePackInstallState.forgetSerial(pack.serial)
+                // Drop the cached size too, or a reinstall of the same serial could be measured
+                // against the deleted pack's mtime and report stale counts.
+                PackSizeCache.forget(pack.serial)
+            }
             if (deleted && pack.serial.equals(state.value.activeSerial, true)) reloadCore()
             refresh()
         }
@@ -247,5 +284,51 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
     private fun reloadCore() {
         if (!MainActivityRuntime.nativeReady.value) return
         runCatching { NativeApp.reloadTextureReplacements() }
+    }
+}
+
+/**
+ * Remembers each pack's file count and byte total so the Texture Manager doesn't re-walk every
+ * pack's tree every time it opens.
+ *
+ * Keyed on the `replacements` folder's mtime: install, delete or overwrite touches the directory,
+ * so a changed pack misses the cache and is re-measured while untouched ones cost nothing. Backed
+ * by SharedPreferences (a few dozen short entries) so it also survives a restart — the first open
+ * after a cold start was the worst case.
+ */
+private object PackSizeCache {
+    private const val KEY = "textures.sizeCache"
+
+    private fun load(): org.json.JSONObject = runCatching {
+        MainActivityRuntime.prefs.getString(KEY, null)?.let { org.json.JSONObject(it) }
+    }.getOrNull() ?: org.json.JSONObject()
+
+    fun get(serial: String, mtime: Long): Pair<Int, Long>? {
+        val o = load().optJSONObject(serial) ?: return null
+        // Stale mtime => the pack changed on disk; force a re-measure.
+        if (o.optLong("m", -1L) != mtime) return null
+        val c = o.optInt("c", -1)
+        val b = o.optLong("b", -1L)
+        return if (c >= 0 && b >= 0) c to b else null
+    }
+
+    fun put(serial: String, mtime: Long, count: Int, bytes: Long) {
+        runCatching {
+            val root = load()
+            root.put(serial, org.json.JSONObject().apply {
+                put("m", mtime); put("c", count); put("b", bytes)
+            })
+            MainActivityRuntime.prefs.edit().putString(KEY, root.toString()).apply()
+        }
+    }
+
+    /** Drop one pack's entry, so the next scan re-measures it. */
+    fun forget(serial: String) {
+        runCatching {
+            val root = load()
+            if (!root.has(serial)) return
+            root.remove(serial)
+            MainActivityRuntime.prefs.edit().putString(KEY, root.toString()).apply()
+        }
     }
 }

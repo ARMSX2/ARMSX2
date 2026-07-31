@@ -55,6 +55,13 @@ namespace PerformanceMetrics
 	void SetGSSWThreadCount(u32 count);
 	void SetGSSWThread(u32 index, Threading::ThreadHandle thread);
 
+	/// Sets the timer for the GS back thread (GSBackThreadMode >= Lockstep). Registered by
+	/// the back thread itself at entry and cleared once it has joined; an empty handle means
+	/// no such thread exists, which is the default configuration. Under the pipelined split
+	/// the GS work is roughly halved between this thread and the MTGS thread, so the plain
+	/// "GS" figure alone reads as a ~50% drop in GS cost that never happened.
+	void SetGSBackThread(Threading::ThreadHandle thread);
+
 	u64 GetFrameNumber();
 
 	InternalFPSMethod GetInternalFPSMethod();
@@ -71,6 +78,10 @@ namespace PerformanceMetrics
 	double GetCPUThreadAverageTime();
 	float GetGSThreadUsage();
 	float GetGSThreadAverageTime();
+	/// True while a GS back thread is registered. Both figures below read zero when it is not.
+	bool HasGSBackThread();
+	float GetGSBackThreadUsage();
+	float GetGSBackThreadAverageTime();
 	float GetVUThreadUsage();
 	float GetVUThreadAverageTime();
 	float GetCaptureThreadUsage();

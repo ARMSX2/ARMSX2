@@ -93,6 +93,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalDensity
@@ -117,6 +118,7 @@ import com.armsx2.ui.common.RoundAction
 import com.armsx2.ui.common.SearchField
 import com.armsx2.ui.common.SectionTitle
 import com.armsx2.ui.common.StatusChip
+import com.armsx2.ui.settings.controllerFocusable
 import kotlin.math.abs
 
 private val LocalCustomCoverMap = staticCompositionLocalOf<Map<String, java.io.File>> { emptyMap() }
@@ -138,6 +140,7 @@ fun HomeScreen(
     var overflowMenu by remember { mutableStateOf(false) }
     var showExitConfirm by remember { mutableStateOf(false) }
     var menuGame by remember { mutableStateOf<GameInfo?>(null) }
+    var showClearRecentsConfirm by remember { mutableStateOf(false) }
     // #9 custom library background — inert until the user picks an image.
     LaunchedEffect(Unit) { LibraryBackground.ensureLoaded(); CoverArtStyle.load() }
     val backgroundPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
@@ -171,30 +174,33 @@ fun HomeScreen(
             if (libraryBg == null) {
                 // Default: the live PS3-XMB wave (XmbGlView — a GLES3 port of linkev's
                 // grid-displacement mesh, matching iOS). When GL can't init — older Mali without
-                // float-texture filtering, or any EGL failure — we fall back to a looping GIF
-                // instead of a frozen still. The bundled still is the cheap floor shown during GL
-                // startup (and, once the wave is up, sits hidden behind it), so capable devices
-                // never decode the heavy GIF. Custom backgrounds below override all of this.
-                var xmbGlState by remember { mutableStateOf<Boolean?>(null) } // null=starting, true=up, false=failed
-                if (xmbGlState == false) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(context).data(R.raw.library_fallback).build(),
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                    )
+                // float-texture filtering, or any EGL failure — we fall back to LibraryWaveBackground,
+                // a procedural PPSSPP-style animated background drawn on the hardware 2D Canvas (no
+                // GLES3, runs anywhere) that reads the SAME colour prefs as the GL wave, so Mali users
+                // finally get an animated, recolourable backdrop instead of the old fixed GIF. The
+                // bundled still is the cheap floor shown during GL startup (and, once the wave is up,
+                // sits hidden behind it). Custom backgrounds below override all of this.
+                if (LibraryBackground.animated2D.value) {
+                    // User opted into the lightweight 2D animated wave everywhere (#Luminz) — the same
+                    // backdrop GL-fail devices get; skip the GLES3 XmbGlView entirely.
+                    LibraryWaveBackground(Modifier.fillMaxSize())
                 } else {
-                    Image(
-                        painter = painterResource(R.drawable.library_bg_xmb),
-                        contentDescription = null,
+                    var xmbGlState by remember { mutableStateOf<Boolean?>(null) } // null=starting, true=up, false=failed
+                    if (xmbGlState == false) {
+                        LibraryWaveBackground(Modifier.fillMaxSize())
+                    } else {
+                        Image(
+                            painter = painterResource(R.drawable.library_bg_xmb),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop,
+                        )
+                    }
+                    AndroidView(
+                        factory = { XmbGlView(it).apply { onGlStatus = { ok -> xmbGlState = ok } } },
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
                     )
                 }
-                AndroidView(
-                    factory = { XmbGlView(it).apply { onGlStatus = { ok -> xmbGlState = ok } } },
-                    modifier = Modifier.fillMaxSize(),
-                )
             } else {
                 // User-picked still image / GIF (Coil handles both).
                 AsyncImage(
@@ -362,6 +368,18 @@ fun HomeScreen(
                         )
                     },
                     actions = {
+                        // Clock + battery, ahead of the buttons so it reads as status rather than
+                        // as another control. Deliberately NOT controllerFocusable — it isn't
+                        // interactive, and registering it would put a dead stop in the pad's path
+                        // through the toolbar.
+                        com.armsx2.ui.common.LibraryStatusCluster(
+                            // align(): the title block makes the bar taller than this two-line
+                            // cluster, so without it the pair sits high relative to the buttons.
+                            Modifier.align(Alignment.CenterVertically).padding(end = 6.dp),
+                            // Portrait: single compact row so the narrow bar doesn't cram it.
+                            compact = LocalConfiguration.current.orientation ==
+                                android.content.res.Configuration.ORIENTATION_PORTRAIT,
+                        )
                         RoundAction(
                             "↻",
                             str("games.card.refresh"),
@@ -466,14 +484,35 @@ fun HomeScreen(
                     val recentSel = if (recentsSelected) HomeInputController.recentIndex.intValue else -1
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         Column {
-                            // In shelf view nudge the header right so it lines up with
-                            // the first cover's left edge (the shelf's 12dp inset).
-                            SectionTitle(
-                                str("games.section.recentlyPlayed"),
-                                modifier = Modifier.padding(
-                                    start = if (state.layout == LibraryLayout.Shelf) 4.dp else 0.dp,
-                                ),
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // In shelf view nudge the header right so it lines up with
+                                // the first cover's left edge (the shelf's 12dp inset).
+                                SectionTitle(
+                                    str("games.section.recentlyPlayed"),
+                                    modifier = Modifier.padding(
+                                        start = if (state.layout == LibraryLayout.Shelf) 4.dp else 0.dp,
+                                    ),
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                val clearAll = { showClearRecentsConfirm = true }
+                                Surface(
+                                    onClick = clearAll,
+                                    modifier = Modifier.controllerFocusable(
+                                        controllerId = "home.recents.clearAll",
+                                        shape = RoundedCornerShape(12.dp),
+                                        onConfirm = clearAll,
+                                    ),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                                ) {
+                                    Text(
+                                        str("games.recent.clearAll"),
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                             Spacer(Modifier.height(9.dp))
                             if (state.layout == LibraryLayout.Shelf) {
                                 // Same frosted-glass plank as All Games (bagas: one
@@ -638,6 +677,23 @@ fun HomeScreen(
         // well would draw it twice, and a per-screen host is what made it invisible from
         // Settings (a nav destination that unmounts this screen).
     }
+    }
+
+    // Sits outside the grid so it draws over the whole library. Not an AlertDialog — a Compose
+    // dialog is its own window and would swallow the D-pad, and this has to be pad-navigable.
+    if (showClearRecentsConfirm) {
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str("games.recent.clearAll.title"),
+            message = str("games.recent.clearAll.message"),
+            confirmLabel = str("games.recent.clearAll"),
+            destructive = true,
+            idPrefix = "clear-recents",
+            onConfirm = {
+                viewModel.clearRecent()
+                showClearRecentsConfirm = false
+            },
+            onDismiss = { showClearRecentsConfirm = false },
+        )
     }
 
     menuGame?.let { game ->

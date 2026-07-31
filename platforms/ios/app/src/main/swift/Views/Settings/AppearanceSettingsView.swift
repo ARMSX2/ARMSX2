@@ -122,13 +122,16 @@ struct AppearanceSettingsView: View {
                 Toggle(isOn: $settings.clearLiquidGlassUI) {
                     Label(settings.localized("Clear Liquid Glass UI"), systemImage: "rectangle.on.rectangle")
                 }
+                Toggle(isOn: $settings.clearLiquidGlassUIQuickMenu) {
+                    Label(settings.localized("Clear Liquid Glass UI Quick Menu"), systemImage: "pause.rectangle")
+                }
                 Toggle(isOn: $settings.gameCardZoomAnimationEnabled) {
                     Label(settings.localized("Game-Card Zoom Animation"), systemImage: "rectangle.inset.filled.and.person.filled")
                 }
             } header: {
                 Text(settings.localized("Interface"))
             } footer: {
-                Text(settings.localized("Uses the clear Liquid Glass style for menu cards and controls. Turn this off to use the more opaque regular Liquid Glass style."))
+                Text(settings.localized("Choose the clear Liquid Glass style independently for the main interface and Quick Menu. Disabled options use the more opaque regular Liquid Glass style."))
             }
         }
         .navigationTitle(settings.localized("Appearance"))

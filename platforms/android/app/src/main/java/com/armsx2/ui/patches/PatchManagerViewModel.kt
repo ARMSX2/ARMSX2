@@ -42,6 +42,14 @@ data class PatchManagerUiState(
     val bundledEntry: String = "",
     val bundledCheats: List<PatchRepo.LocalCheat> = emptyList(),
     val bundledUnlabelled: Int = 0,
+    // Raw .pnach text editor (#hanafuda: "add the cheat editor back so I can paste codes I grabbed
+    // from the web"). Null path = closed. editorNew distinguishes "create" from "edit" so Save
+    // knows whether it has to invent a filename.
+    val editorPath: String? = null,
+    val editorName: String = "",
+    val editorText: String = "",
+    val editorNew: Boolean = false,
+    val editorLoading: Boolean = false,
     val message: String? = null,
     val error: String? = null,
 )
@@ -83,10 +91,18 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
         }.distinctBy { it.absolutePath }.sortedBy { it.name.lowercase() }
         state.value = state.value.copy(settings = scopedSettings(), files = files)
         loadBundled(serial, crc, files.isNotEmpty())
-        // Reflect every file's on-disk enabled cheats into the native Enable list so
-        // labelled cheats apply even for imported/pre-enabled files the user never
-        // toggled in-app (see syncAllEnableLists / pushEnableList).
-        syncAllEnableLists(files)
+        // NOTHING IS ENABLED HERE. This used to call syncAllEnableLists(files), which walked every
+        // .pnach on disk and persisted every uncommented group in it as "enabled" — so merely
+        // OPENING this screen armed patches the user had never touched. Community pnach files ship
+        // with their patch= lines uncommented, so that meant names like "60 FPS" and
+        // "Widescreen 16:9" went into the enable list wholesale; and because the core matches
+        // enabled patches purely BY NAME, those names then armed the identically-named group in
+        // any of the ~4000 bundled pnach files, for games the user had never opened this screen
+        // for. That is the "patches apply with all patch settings off, and won't turn off" bug
+        // (KH2's bundled [60 FPS], and 16:9 appearing uninvited).
+        //
+        // Import still registers its own file (see import's syncEnableListForFile call), which was
+        // the only legitimate reason this existed. Reading a screen must never persist state.
     }
 
     /**
@@ -266,9 +282,26 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun delete(file: File) {
+        // Disarm before deleting. The enable list is a list of NAMES, not of files, so deleting the
+        // file left its names armed forever — and the core would then satisfy them from the
+        // identically-named bundled group, meaning "I deleted the patch and it still applies".
+        // Read the names off disk while the file still exists.
+        val names = runCatching {
+            PatchRepo.parseInstalled(file.readText(), file.parentFile?.name ?: "cheats").second
+                .mapNotNull { it.name.takeIf(String::isNotBlank) }.distinct()
+        }.getOrDefault(emptyList())
         val success = runCatching { file.delete() }.getOrDefault(false)
         state.value = if (success) state.value.copy(message = "Deleted ${file.name}.") else state.value.copy(error = "Unable to delete ${file.name}.")
-        if (success) reloadCore()
+        if (success) {
+            if (names.isNotEmpty() && MainActivityRuntime.nativeReady.value) {
+                val cheatsSection = file.parentFile?.name == "cheats"
+                // all = the names to drop, enabled = nothing to re-add.
+                runCatching {
+                    NativeApp.setEnabledPatches(cheatsSection, names.toTypedArray(), emptyArray())
+                }
+            }
+            reloadCore()
+        }
         refresh()
     }
 
@@ -665,6 +698,132 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    // ---- Raw .pnach text editor ------------------------------------------
+    //
+    // Requested by hanafuda: codes found on the web are raw `patch=` lines, and without an editor
+    // the only way in was to write the file on a PC and side-load it. Editing the FILE (rather
+    // than offering some structured code-entry form) is deliberate — pnach is the format people
+    // copy, comments and section headers included, so anything that re-serialised it would mangle
+    // what they pasted.
+
+    /** Open an existing .pnach for editing. */
+    fun openEditor(file: File) {
+        state.value = state.value.copy(
+            editorPath = file.absolutePath,
+            editorName = file.name,
+            editorText = "",
+            editorNew = false,
+            editorLoading = true,
+        )
+        viewModelScope.launch {
+            val text = withContext(Dispatchers.IO) {
+                runCatching { file.readText() }.getOrDefault("")
+            }
+            if (state.value.editorPath == file.absolutePath) {
+                state.value = state.value.copy(editorText = text, editorLoading = false)
+            }
+        }
+    }
+
+    /**
+     * Start a new .pnach for the game in context.
+     *
+     * Named `<SERIAL>_<CRC>.pnach` because that is the only shape the core loads. When the CRC
+     * isn't known yet the name still gets created, and [saveEditor] reports that it won't load —
+     * better than refusing to let someone paste their codes.
+     */
+    fun newEditor() {
+        state.value = state.value.copy(
+            editorPath = "",
+            editorName = "",
+            editorText = "",
+            editorNew = true,
+            editorLoading = true,
+        )
+        viewModelScope.launch {
+            // liveCrc() can read the disc, so keep it off the main thread.
+            val (serial, crc) = withContext(Dispatchers.IO) { bestSerial() to liveCrc() }
+            val name = when {
+                serial != null && crc != null -> "${serial}_$crc.pnach"
+                serial != null -> "$serial.pnach"
+                else -> "patch.pnach"
+            }
+            if (state.value.editorNew) {
+                state.value = state.value.copy(
+                    editorName = name,
+                    editorLoading = false,
+                    // A skeleton, so the format is obvious to someone pasting for the first time.
+                    // The group header matters: an UNLABELLED patch auto-applies, a labelled one
+                    // has to be switched on, and people pasting raw codes expect them to work.
+                    editorText = "gametitle=${MainActivityRuntime.contextGame.value?.title.orEmpty()}\n" +
+                        "\n" +
+                        "// Paste codes below. Lines look like:\n" +
+                        "//   patch=1,EE,00000000,extended,00000000\n",
+                )
+            }
+        }
+    }
+
+    fun updateEditorText(text: String) {
+        state.value = state.value.copy(editorText = text)
+    }
+
+    fun closeEditor() {
+        state.value = state.value.copy(
+            editorPath = null, editorName = "", editorText = "", editorNew = false, editorLoading = false,
+        )
+    }
+
+    /**
+     * Write the editor buffer to disk and reload the core.
+     *
+     * Does NOT touch the enable list. A pasted file's groups arm only when the user switches them
+     * on in the list below — auto-arming whatever a file happens to contain is exactly the bug
+     * that made patches apply with every patch setting off.
+     */
+    fun saveEditor() {
+        val snapshot = state.value
+        val path = snapshot.editorPath ?: return
+        val text = snapshot.editorText
+        val name = snapshot.editorName.trim().ifBlank { "patch.pnach" }
+            .let { if (it.endsWith(".pnach", true)) it else "$it.pnach" }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val target = if (snapshot.editorNew) {
+                        // Cheats folder: that's where the manager's own installs land, and it is
+                        // the section the core reads user cheats from.
+                        val dir = patchDirectories().first().apply { mkdirs() }
+                        uniqueFile(dir, name)
+                    } else {
+                        File(path)
+                    }
+                    target.parentFile?.mkdirs()
+                    target.writeText(text)
+                    target
+                }
+            }
+            state.value = result.fold(
+                onSuccess = { f ->
+                    val loadable = Regex("^[A-Z]{4}-\\d{5}_[0-9A-F]{8}", RegexOption.IGNORE_CASE)
+                        .containsMatchIn(f.name) ||
+                        Regex("^[0-9A-F]{8}([^0-9A-F]|$)", RegexOption.IGNORE_CASE).containsMatchIn(f.name)
+                    state.value.copy(
+                        editorPath = null, editorName = "", editorText = "", editorNew = false,
+                        message = if (loadable) "Saved ${f.name}."
+                        else "Saved ${f.name}, but the core only loads <SERIAL>_<CRC>.pnach — " +
+                            "launch this game once, then rename or re-save.",
+                    )
+                },
+                onFailure = { state.value.copy(error = "Could not save the patch file.") },
+            )
+            if (result.isSuccess) {
+                reloadCore()
+                refresh()
+            }
+        }
+    }
+
     private fun patchDirectories(): List<File> {
         val root = File(MainActivityRuntime.assetCopyRoot(getApplication()))
         return listOf(File(root, "cheats"), File(root, "patches"), File(root, "cheats_ws"))
@@ -718,14 +877,7 @@ class PatchManagerViewModel(application: Application) : AndroidViewModel(applica
         runCatching { NativeApp.setEnabledPatches(cheatsSection, all, enabled) }
     }
 
-    /** Reflect every installed file's on-disk body state into the native Enable lists
-     *  (off-thread — parses each pnach). The file body stays the persistent source of
-     *  truth; this reconciles the runtime list PCSX2 requires for labelled groups so
-     *  imported/pre-enabled cheats apply without an in-app toggle. */
-    private fun syncAllEnableLists(files: List<File>) {
-        if (!MainActivityRuntime.nativeReady.value || files.isEmpty()) return
-        kotlin.concurrent.thread(name = "armsx2-cheat-enable-sync") {
-            runCatching { for (file in files) syncEnableListForFile(file) }
-        }
-    }
+    // syncAllEnableLists() was removed deliberately — see the note in refresh(). Reflecting every
+    // on-disk file's body into the enable list is only ever correct for a file the user just
+    // imported, which import does for itself. Don't reintroduce a bulk variant.
 }

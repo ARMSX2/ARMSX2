@@ -192,6 +192,11 @@ object WindowImpl {
                 // Transient top-left "Welcome Back!" banner (and any future brief note) — hosted
                 // here for the same reason as the keyboard: reachable above every surface.
                 com.armsx2.ui.WelcomeBannerOverlay(this)
+
+                // App-wide confirmation prompts. Hosted last so the scrim covers everything,
+                // and here rather than at the call site because a prompt raised from inside a
+                // scrolling settings tab would clip to that tab and scroll away with it.
+                com.armsx2.ui.common.GlobalConfirm.Host()
             }
         }
     }

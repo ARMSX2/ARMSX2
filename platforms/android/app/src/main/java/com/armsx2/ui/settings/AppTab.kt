@@ -207,6 +207,15 @@ fun AppTab() {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // Opt into the lightweight 2D animated backdrop everywhere (the same one older Mali /
+            // GL-fail devices already get) instead of the GLES3 XMB wave. The colour options below
+            // apply to it too. No effect if a custom background image is set.
+            ToggleRow(
+                label = str("app.bg.simple"),
+                value = com.armsx2.ui.home.LibraryBackground.animated2D.value,
+                description = str("app.bg.simple.desc"),
+                onChange = { com.armsx2.ui.home.LibraryBackground.setAnimated2D(it) },
+            )
             // Continuous RGB hue-cycle — same idea as the theme's RGB mode. While on, the fixed
             // color (presets + sliders) doesn't apply, so it's hidden.
             ToggleRow(
@@ -383,6 +392,60 @@ fun AppTab() {
                         onClick = reset,
                         modifier = Modifier.controllerFocusable("app.libraryMusic.reset", onConfirm = reset),
                     ) { Text(str("app.libraryMusic.reset")) }
+                }
+            }
+        }
+
+        // In-game pause music. Separate track and separate toggle from the library's: the pause
+        // menu was silent, and people sit in it browsing settings mid-game. Off by default —
+        // audio starting when you open a menu is startling if you didn't ask for it.
+        ToggleRow(
+            label = str("app.pauseMusic"),
+            value = com.armsx2.PauseMusic.enabled.value,
+            description = str("app.pauseMusic.desc"),
+            onChange = { com.armsx2.PauseMusic.set(appContext, it) },
+        )
+        if (com.armsx2.PauseMusic.enabled.value) {
+            IntSliderRow(
+                label = str("app.pauseMusic.volume"),
+                value = com.armsx2.PauseMusic.volumePercent.value,
+                min = 0,
+                max = 100,
+                valueFormatter = { "$it%" },
+                onChange = { com.armsx2.PauseMusic.setVolume(it) },
+            )
+            val pausePicker = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument()
+            ) { uri ->
+                if (uri != null) {
+                    val name = androidx.documentfile.provider.DocumentFile
+                        .fromSingleUri(appContext, uri)?.name ?: "Custom track"
+                    com.armsx2.PauseMusic.setCustomTrack(appContext, uri, name)
+                }
+            }
+            val pauseCustom = com.armsx2.PauseMusic.customName.value
+            Text(
+                if (pauseCustom != null) str("app.pauseMusic.current").format(pauseCustom)
+                else str("app.pauseMusic.default"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val pickPause = { pausePicker.launch(arrayOf("audio/*")) }
+                OutlinedButton(
+                    onClick = pickPause,
+                    modifier = Modifier.controllerFocusable("app.pauseMusic.choose", onConfirm = pickPause),
+                ) { Text(str("app.pauseMusic.choose")) }
+                if (pauseCustom != null) {
+                    val resetPause = { com.armsx2.PauseMusic.clearCustomTrack(appContext) }
+                    OutlinedButton(
+                        onClick = resetPause,
+                        modifier = Modifier.controllerFocusable("app.pauseMusic.reset", onConfirm = resetPause),
+                    ) { Text(str("app.pauseMusic.reset")) }
                 }
             }
         }
@@ -636,6 +699,21 @@ private fun BackupRestoreRows() {
 
     BackupActionRow("💾", "app.backup.export", "app.backup.export.desc", status, busy, doExport)
     BackupActionRow("📥", "app.backup.import", "app.backup.import.desc", "", busy, doImport)
+
+    // Factory reset. Sits with Backup/Restore because Export is the thing to do first — the
+    // prompt says so. Routed through GlobalConfirm rather than a local overlay: this row is
+    // inside a scrolling tab, so a scrim drawn here would clip to the row's bounds.
+    val doReset = {
+        if (!busy) {
+            com.armsx2.ui.common.GlobalConfirm.ask(
+                title = I18n.get("app.reset.title"),
+                message = I18n.get("app.reset.message"),
+                confirmLabel = I18n.get("app.reset.confirm"),
+                destructive = true,
+            ) { MainActivityRuntime.resetAppToDefaults(context) }
+        }
+    }
+    BackupActionRow("♻️", "app.reset", "app.reset.desc", "", busy, doReset)
 }
 
 @Composable

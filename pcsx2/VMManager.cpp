@@ -226,7 +226,7 @@ extern R5900cpu GSDumpReplayerCpu;
 
 bool VMManager::PerformEarlyHardwareChecks(const char** error)
 {
-#define COMMON_DOWNLOAD_MESSAGE "PCSX2 builds can be downloaded from https://pcsx2.net/downloads/"
+#define COMMON_DOWNLOAD_MESSAGE "ARMSX2 builds can be downloaded from https://armsx2.net/"
 
 #if defined(ARCH_X86)
 	// On Windows, this gets called as a global object constructor, before any of our objects are constructed.
@@ -457,18 +457,6 @@ bool VMManager::Internal::CPUThreadInitialize()
 	// We want settings loaded so we choose the correct renderer for big picture mode.
 	// This also sorts out input sources.
 	LoadSettings();
-
-	// LoadSettings() re-reads EnableFastmem from the INI, clobbering the runtime
-	// disable that vtlb_Core_Alloc applied when the 4 GB fastmem area failed to
-	// allocate on low-VA devices (e.g. iPhone SE 2). Re-apply the disable from
-	// the sticky flag so the EE recompiler does not emit fastmem load/store
-	// against a null base. The flag is process-lifetime: once the area fails,
-	// it stays failed.
-	if (vtlb_FastmemAreaUnavailable() && EmuConfig.Cpu.Recompiler.EnableFastmem)
-	{
-		EmuConfig.Cpu.Recompiler.EnableFastmem = false;
-		Console.Warning("Fastmem re-disabled after settings reload (area allocation previously failed)");
-	}
 
 	if (EmuConfig.Achievements.Enabled && !Achievements::IsActive())
 		Achievements::Initialize();
@@ -746,6 +734,23 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 	static const bool s_mvu_diff_env = (std::getenv("MVU_DIFF") != nullptr);
 	if (s_mvu_diff_env)
 		EmuConfig.Speedhacks.vuThread = false;
+
+	// The 4 GB fastmem reservation can fail outright on a low VA device, and the
+	// INI still says fastmem is on, so every reload from here turns it back on
+	// against a base that was never mapped. The flag is sticky for the life of
+	// the process. It belongs here rather than at the call sites: it used to be
+	// re-applied by hand after each load, and the ELF change path was missed.
+	if (vtlb_FastmemAreaUnavailable() && EmuConfig.Cpu.Recompiler.EnableFastmem)
+	{
+		EmuConfig.Cpu.Recompiler.EnableFastmem = false;
+
+		static bool s_warned_fastmem_reload = false;
+		if (!s_warned_fastmem_reload)
+		{
+			s_warned_fastmem_reload = true;
+			Console.Warning("Fastmem re-disabled after settings reload (area allocation previously failed)");
+		}
+	}
 }
 
 void VMManager::LoadInputBindings(SettingsInterface& si, std::unique_lock<std::mutex>& lock)
@@ -815,7 +820,13 @@ void VMManager::ApplyGameFixes()
 		EmuConfig.Gamefixes.InstantDMAHack = true;
 
 		// Disable user's manual hardware fixes, it might be problematic.
+		// LoadCoreSettings() already masked with the flag still set, so clearing it here
+		// isn't enough on its own — the hacks it was meant to strip are still in EmuConfig.
+		// Claims don't get a say either: whether a hack is safe on the BIOS has nothing to
+		// do with whether the player asked for it.
 		EmuConfig.GS.ManualUserHacks = false;
+		EmuConfig.GS.MaskUserHacks(false);
+		EmuConfig.GS.MaskUpscalingHacks();
 		return;
 	}
 
@@ -862,9 +873,6 @@ void VMManager::ApplySettings()
 	EmuConfig = Pcsx2Config();
 	EmuConfig.CopyRuntimeConfig(old_config);
 	LoadSettings();
-	// Re-apply the sticky fastmem-area-unavailable disable (see CPUThreadInitialize).
-	if (vtlb_FastmemAreaUnavailable() && EmuConfig.Cpu.Recompiler.EnableFastmem)
-		EmuConfig.Cpu.Recompiler.EnableFastmem = false;
 	CheckForConfigChanges(old_config);
 	if (s_emulation_only_mode.load(std::memory_order_acquire))
 		ReleaseNonEssentialRuntimeResources(s_emulation_only_release_flags.load(std::memory_order_acquire));
@@ -1041,6 +1049,20 @@ void VMManager::RequestDisplaySize(float scale /*= 0.0f*/)
 			break;
 		case AspectRatioType::R10_7:
 			x_scale = (10.0f / 7.0f) / (static_cast<float>(iwidth) / static_cast<float>(iheight));
+			break;
+		// These two were missing, so requesting a display size under an ultrawide ratio fell
+		// through to the Stretch case and asked for an unscaled (4:3-shaped) window.
+		case AspectRatioType::R21_9:
+			x_scale = (21.0f / 9.0f) / (static_cast<float>(iwidth) / static_cast<float>(iheight));
+			break;
+		case AspectRatioType::R20_9:
+			x_scale = (20.0f / 9.0f) / (static_cast<float>(iwidth) / static_cast<float>(iheight));
+			break;
+		case AspectRatioType::R19_5_9:
+			x_scale = (19.5f / 9.0f) / (static_cast<float>(iwidth) / static_cast<float>(iheight));
+			break;
+		case AspectRatioType::Custom:
+			x_scale = std::clamp(GSConfig.CustomAspectRatio, 0.5f, 5.0f) / (static_cast<float>(iwidth) / static_cast<float>(iheight));
 			break;
 		case AspectRatioType::Stretch:
 		default:

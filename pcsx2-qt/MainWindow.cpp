@@ -537,11 +537,8 @@ void MainWindow::connectSignals()
 	connect(m_ui.actionViewSystemDisplay, &QAction::triggered, this, &MainWindow::onViewSystemDisplayTriggered);
 	connect(m_ui.actionViewGameProperties, &QAction::triggered, this, &MainWindow::onViewGamePropertiesActionTriggered);
 	connect(m_ui.actionGitHubRepository, &QAction::triggered, this, &MainWindow::onGitHubRepositoryActionTriggered);
-	connect(m_ui.actionWiki, &QAction::triggered, this, &MainWindow::onWikiActionTriggered);
-	connect(m_ui.actionDocumentation, &QAction::triggered, this, &MainWindow::onDocumentationActionTriggered);
-	connect(m_ui.actionAboutQt, &QAction::triggered, qApp, &QApplication::aboutQt);
+	connect(m_ui.actionWebsite, &QAction::triggered, this, &MainWindow::onWebsiteActionTriggered);
 	connect(m_ui.actionAbout, &QAction::triggered, this, &MainWindow::onAboutActionTriggered);
-	connect(m_ui.actionCheckForUpdates, &QAction::triggered, this, [this]() { checkForUpdates(true, true); });
 	connect(m_ui.actionOpenDataDirectory, &QAction::triggered, this, &MainWindow::onToolsOpenDataDirectoryTriggered);
 	connect(m_ui.actionCoverDownloader, &QAction::triggered, this, &MainWindow::onToolsCoverDownloaderTriggered);
 	connect(m_ui.actionGridViewShowTitles, &QAction::triggered, m_game_list_widget, &GameListWidget::setShowCoverTitles);
@@ -871,7 +868,7 @@ void MainWindow::onShowAdvancedSettingsToggled(bool checked)
 					  "even corrupted save files. "
 					  "We do not recommend changing advanced settings unless you know what you are doing, and the implications of changing "
 					  "each setting.\n\n"
-					  "The PCSX2 team will not provide any support for configurations that modify these settings, you are on your own.\n\n"
+					  "The ARMSX2 team will not provide any support for configurations that modify these settings, you are on your own.\n\n"
 					  "Are you sure you want to continue?"));
 		mb.setIcon(QMessageBox::Warning);
 		mb.addButton(QMessageBox::Yes);
@@ -2060,14 +2057,9 @@ void MainWindow::onGitHubRepositoryActionTriggered()
 	QtUtils::OpenURL(this, AboutDialog::getGitHubRepositoryUrl());
 }
 
-void MainWindow::onWikiActionTriggered()
+void MainWindow::onWebsiteActionTriggered()
 {
-	QtUtils::OpenURL(this, AboutDialog::getWikiUrl());
-}
-
-void MainWindow::onDocumentationActionTriggered()
-{
-	QtUtils::OpenURL(this, AboutDialog::getDocumentationUrl());
+	QtUtils::OpenURL(this, AboutDialog::getWebsiteUrl());
 }
 
 void MainWindow::onAboutActionTriggered()
@@ -2089,10 +2081,10 @@ void MainWindow::checkForUpdates(bool display_message, bool force_check)
 
 			QString message;
 #ifdef _WIN32
-			message = tr("<p>Sorry, you are trying to update a PCSX2 version which is not an official GitHub release. To "
+			message = tr("<p>Sorry, you are trying to update an ARMSX2 version which is not an official GitHub release. To "
 						 "prevent incompatibilities, the auto-updater is only enabled on official builds.</p>"
 						 "<p>To obtain an official build, please download from the link below:</p>"
-						 "<p><a href=\"https://pcsx2.net/downloads/\">https://pcsx2.net/downloads/</a></p>");
+						 "<p><a href=\"https://armsx2.net/\">https://armsx2.net/</a></p>");
 #else
 			message = tr("Automatic updating is not supported on the current platform.");
 #endif

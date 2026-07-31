@@ -1011,6 +1011,11 @@ void EmuThread::updatePerformanceMetrics(bool force)
 				              .arg(PerformanceMetrics::GetCPUThreadUsage(), 0, 'f', 0)
 				              .arg(PerformanceMetrics::GetGSThreadUsage(), 0, 'f', 0);
 			}
+
+			// The GS figure above is the MTGS thread alone; under GSBackThreadMode >= Lockstep
+			// roughly half the GS work runs on a second thread this line would otherwise hide.
+			if (PerformanceMetrics::HasGSBackThread())
+				gs_stat += tr(" | GSB: %1%").arg(PerformanceMetrics::GetGSBackThreadUsage(), 0, 'f', 0);
 		}
 
 		QMetaObject::invokeMethod(g_main_window, "setStatusVerboseText", Qt::QueuedConnection, Q_ARG(const QString&, gs_stat));

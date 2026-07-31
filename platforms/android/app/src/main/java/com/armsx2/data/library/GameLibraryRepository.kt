@@ -134,6 +134,17 @@ class GameLibraryRepository(private val context: Context) {
     }
 
     /**
+     * Empty Recently Played. Same contract as [removeFromRecent], just for every entry: the
+     * library and the "Show Recently Played" toggle are untouched, and games reappear as they
+     * are launched again. The public export is refreshed so the shelf doesn't come back from
+     * the exported copy.
+     */
+    fun clearRecent() {
+        MainActivityRuntime.prefs.edit { remove("recentGameUris") }
+        exportScope.launch { exportRecentGamesPublic(emptyList()) }
+    }
+
+    /**
      * Mirrors the recently-played list to a plain `recent_games.json` under the app's data
      * root (the shared-storage folder the user picked, next to gamesettings/ and memcards/;
      * or the app-private externalFilesDir when none was chosen). `recentGameUris` lives in

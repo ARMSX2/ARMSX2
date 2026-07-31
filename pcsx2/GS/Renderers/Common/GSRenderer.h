@@ -29,6 +29,12 @@ private:
 	u64 m_last_draw_n = 0;
 	u64 m_last_transfer_n = 0;
 
+	/// Length of the current run of blank (nothing-to-merge) frames, reset by the first frame that
+	/// produces output. Feeds ShouldSkipAndroidBlankFrame — a lone alternating blank is an
+	/// interlaced-field artefact, while a RUN of them is a real fade the game is drawing. GS thread
+	/// only. Ported alongside the presentation policy from sashkinbro/EmuCoreX.
+	u32 m_consecutive_blank_frames = 0;
+
 protected:
 	GSVector2i m_real_size{0, 0};
 
@@ -61,7 +67,11 @@ public:
 	bool SaveSnapshotToMemory(u32 window_width, u32 window_height, bool apply_aspect, bool crop_borders,
 		u32* width, u32* height, std::vector<u32>* pixels);
 
-	void QueueSnapshot(const std::string& path, const u32 gsdump_frames);
+	// False if a snapshot is already queued and this request was dropped.
+	bool QueueSnapshot(const std::string& path, const u32 gsdump_frames);
+	// True while a dump is open and taking frames. A queued snapshot does not count: the
+	// dump is not created until the VSync that services it.
+	bool IsDumpRecording() const { return static_cast<bool>(m_dump); }
 	void StopGSDump();
 	void PresentCurrentFrame();
 	bool BeginCapture(std::string filename, const GSVector2i& size = GSVector2i(0, 0));

@@ -213,9 +213,9 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
         @Suppress("UNUSED_EXPRESSION") TouchControls.macroBindTick.value
         @Suppress("UNUSED_EXPRESSION")
         refreshToken.intValue
-        // Also recompose when the mappings change externally (e.g. the global
-        // "Reset to defaults" calls ControllerMappings.resetTunables, which bumps this)
-        // so the feel sliders / stick modes refresh without re-opening the tab.
+        // Also recompose when the mappings change externally (the Controls tab's Reset calls
+        // ControllerMappings.resetAllControls, which bumps this) so the feel sliders / stick
+        // modes refresh without re-opening the tab.
         @Suppress("UNUSED_EXPRESSION")
         ControllerMappings.stickBindTick.value
         // Macros section — extracted so the in-game Controls tab can reuse it. Here in the
@@ -645,8 +645,167 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             // D-Pad key spacing lives in the Touch Layout editor now: open the editor,
             // tap the D-Pad to select it, and use the "D-Pad spacing" slider to spread
             // the four directions apart (NetherSX2-style) with a live preview.
+            SettingsDivider()
+            GestureControlSection(refreshToken)
+            SettingsDivider()
+            UsbDeviceSection(refreshToken)
         }
     }
+}
+
+/**
+ * Emulated USB devices, one per port.
+ *
+ * The list comes from the core's own registry (18 devices — Buzz, Rock Band kit, Keyboardmania,
+ * DJ turntable, Printer, EyeToy, GunCon 2, ...) so it cannot drift from what this build supports.
+ * Buttons need no extra mapping: native mirrors each pad press onto the attached device via the
+ * generic binding it declares. Restart-required, and said so plainly.
+ */
+@Composable
+private fun UsbDeviceSection(refreshToken: MutableState<Int>) {
+    @Suppress("UNUSED_EXPRESSION")
+    refreshToken.value
+    val devices = remember { com.armsx2.input.UsbDevices.available() }
+    CollapsibleSection(str("pad.usb.section"), initiallyExpanded = false) {
+        HelpText(str("pad.usb.help"))
+        for (port in 0..1) {
+            SettingsDivider()
+            val current = com.armsx2.input.UsbDevices.portType[port].value
+            // A plain list of rows rather than a segmented strip: 19 entries would be unusable as
+            // chips, and this mirrors the radio list other emulators use for the same choice.
+            Text(
+                "${str("pad.usb.port")} ${port + 1}  ·  ${com.armsx2.input.UsbDevices.displayName(current)}",
+                style = MaterialTheme.typography.labelMedium,
+                color = Colors.pasx2_blue,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 6.dp, bottom = 2.dp),
+            )
+            UsbDeviceRow(str("pad.usb.none"), current == com.armsx2.input.UsbDevices.NONE) {
+                com.armsx2.input.UsbDevices.setType(port, com.armsx2.input.UsbDevices.NONE)
+                refreshToken.value++
+            }
+            devices.forEach { d ->
+                UsbDeviceRow(d.display, current == d.type) {
+                    com.armsx2.input.UsbDevices.setType(port, d.type)
+                    refreshToken.value++
+                }
+            }
+            // Subtypes only exist for a few devices (different wheels, different turntables).
+            val subs = devices.firstOrNull { it.type == current }?.subtypes.orEmpty()
+            if (subs.size > 1) {
+                SegmentedRow(
+                    label = str("pad.usb.subtype"),
+                    options = subs,
+                    selectedIndex = com.armsx2.input.UsbDevices.portSubtype[port].value.coerceIn(0, subs.lastIndex),
+                    onChange = { com.armsx2.input.UsbDevices.setSubtype(port, it); refreshToken.value++ },
+                )
+            }
+            // Aiming is the one thing a button bridge cannot provide, so the gun gets its own note.
+            if (current == "guncon2") HelpText(str("pad.lightgun.help"))
+        }
+    }
+}
+
+/** One device choice. Radio-style: exactly one device per port. */
+@Composable
+private fun UsbDeviceRow(label: String, selected: Boolean, onPick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onPick)
+            .controllerFocusable("usb.dev.$label", onConfirm = onPick)
+            .padding(vertical = 7.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            if (selected) "\u25c9" else "\u25cb",
+            color = if (selected) Colors.pasx2_blue else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 15.sp,
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+
+/**
+ * Gesture control (PPSSPP-style): swipes and a double-tap on EMPTY screen area fire PS2 buttons.
+ *
+ * Only fires where no control is — a finger that lands on a button, stick or d-pad belongs to that
+ * widget (see GestureLayer). Off by default, so nothing changes unless someone opts in.
+ */
+@Composable
+private fun GestureControlSection(refreshToken: MutableState<Int>) {
+    @Suppress("UNUSED_EXPRESSION")
+    refreshToken.value
+    CollapsibleSection(str("pad.gesture.section"), initiallyExpanded = false) {
+        ToggleRow(
+            str("pad.gesture.enable.label"),
+            TouchControls.gestureEnabled.value,
+            description = str("pad.gesture.enable.description"),
+        ) { TouchControls.setGestureEnabled(it); refreshToken.value++ }
+
+        if (!TouchControls.gestureEnabled.value) return@CollapsibleSection
+
+        SettingsDivider()
+        // Each direction picks a PS2 button (or None). Same code space as the on-screen buttons.
+        GestureButtonRow("pad.gesture.up", TouchControls.gestureSwipeUp.intValue) {
+            TouchControls.setGestureSwipe(0, it); refreshToken.value++
+        }
+        GestureButtonRow("pad.gesture.down", TouchControls.gestureSwipeDown.intValue) {
+            TouchControls.setGestureSwipe(1, it); refreshToken.value++
+        }
+        GestureButtonRow("pad.gesture.left", TouchControls.gestureSwipeLeft.intValue) {
+            TouchControls.setGestureSwipe(2, it); refreshToken.value++
+        }
+        GestureButtonRow("pad.gesture.right", TouchControls.gestureSwipeRight.intValue) {
+            TouchControls.setGestureSwipe(3, it); refreshToken.value++
+        }
+        SettingsDivider()
+        IntSliderRow(
+            label = str("pad.gesture.sensitivity.label"),
+            // Percent of the shorter screen edge the finger must travel.
+            value = (TouchControls.gestureSwipeSensitivity.floatValue * 100f).toInt(),
+            min = 5,
+            max = 60,
+            description = str("pad.gesture.sensitivity.description"),
+            valueFormatter = { "${it}%" },
+            onChange = { TouchControls.setGestureSensitivity(it / 100f); refreshToken.value++ },
+        )
+        SettingsDivider()
+        GestureButtonRow("pad.gesture.doubleTap", TouchControls.gestureDoubleTap.intValue) {
+            TouchControls.setGestureDoubleTap(it); refreshToken.value++
+        }
+        // The tap-vs-hold choice SNAKEATER specifically asked for: Tap suits a one-shot (NFS
+        // nitro), Hold suits something you want to stay on (ARPG camera lock).
+        SegmentedRow(
+            label = str("pad.gesture.doubleTapMode.label"),
+            options = listOf(str("pad.gesture.doubleTapMode.tap"), str("pad.gesture.doubleTapMode.hold")),
+            selectedIndex = if (TouchControls.gestureDoubleTapHold.value) 1 else 0,
+            description = str("pad.gesture.doubleTapMode.description"),
+            onChange = { TouchControls.setGestureDoubleTapHold(it == 1); refreshToken.value++ },
+        )
+    }
+}
+
+/** PS2-button chooser for one gesture, including a None entry. */
+@Composable
+private fun GestureButtonRow(labelKey: String, current: Int, onPick: (Int) -> Unit) {
+    val choices = TouchControls.gestureAssignableButtons()
+    val labels = listOf(str("pad.gesture.none")) + choices.map { it.second }
+    val codes = listOf(0) + choices.map { it.first }
+    SegmentedRow(
+        label = str(labelKey),
+        options = labels,
+        selectedIndex = codes.indexOf(current).coerceAtLeast(0),
+        onChange = { onPick(codes.getOrElse(it) { 0 }) },
+    )
 }
 
 /** The five stick-FEEL sliders (deadzone / outer / anti-deadzone / sensitivity /
@@ -918,12 +1077,25 @@ internal fun GyroSection(
                 },
             )
         }
-        // Warn when the picked mode's sensor is missing on this device (aim needs a
-        // gyroscope, steering the game rotation vector). The manifest declares the
-        // feature not-required, so such devices still install.
-        if (gyroMode != 0 &&
-            !com.armsx2.input.AndroidGyroscopeInput.isModeAvailable(ctx, gyroMode)) {
-            HelpText(str("pad.gyro.unavailable"))
+        // Report which sensor the mode will actually use. Aim prefers a real gyroscope and
+        // steering the game rotation vector, but both fall back to the accelerometer, which
+        // essentially every device has — so "unavailable" is now genuinely rare. Say when
+        // we're on the fallback, because tilt behaves differently from a gyro (absolute
+        // angle rather than turn rate, and no yaw at all). The manifest declares the
+        // gyroscope feature not-required, so gyro-less devices still install.
+        if (gyroMode != 0) {
+            when (com.armsx2.input.AndroidGyroscopeInput.resolveKind(ctx, gyroMode)) {
+                com.armsx2.input.AndroidGyroscopeInput.KIND_NONE ->
+                    HelpText(str("pad.gyro.unavailable"))
+                com.armsx2.input.AndroidGyroscopeInput.KIND_TILT ->
+                    HelpText(
+                        if (gyroMode == ControllerMappings.GYRO_AIM)
+                            str("pad.gyro.tiltFallback.aim")
+                        else
+                            str("pad.gyro.tiltFallback.steering")
+                    )
+                else -> Unit
+            }
         }
         SettingsDivider()
         IntSliderRow(

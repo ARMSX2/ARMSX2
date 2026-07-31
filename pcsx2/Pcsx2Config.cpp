@@ -651,6 +651,9 @@ const char* Pcsx2Config::GSOptions::AspectRatioNames[(size_t)AspectRatioType::Ma
 	"16:9",
 	"10:7",
 	"21:9",
+	"20:9",
+	"19.5:9",
+	"Custom",
 	nullptr};
 
 const char* Pcsx2Config::GSOptions::FMVAspectRatioSwitchNames[(size_t)FMVAspectRatioSwitchType::MaxCount + 1] = {
@@ -660,6 +663,9 @@ const char* Pcsx2Config::GSOptions::FMVAspectRatioSwitchNames[(size_t)FMVAspectR
 	"16:9",
 	"10:7",
 	"21:9",
+	"20:9",
+	"19.5:9",
+	"Custom",
 	nullptr};
 
 const char* Pcsx2Config::GSOptions::DisplayRotationNames[(size_t)DisplayRotation::MaxCount + 1] = {
@@ -832,11 +838,15 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 	return (
 		OpEqu(bitsets[0]) &&
 		OpEqu(bitsets[1]) &&
+		// Pinning or unpinning changes what the GameDB is allowed to write, so it has to
+		// count as a settings change even when no hack value moved with it.
+		OpEqu(UserHackOverrides) &&
 
 		OpEqu(InterlaceMode) &&
 		OpEqu(LinearPresent) &&
 
 		OpEqu(StretchY) &&
+		OpEqu(CustomAspectRatio) &&
 		OpEqu(Crop[0]) &&
 		OpEqu(Crop[1]) &&
 		OpEqu(Crop[2]) &&
@@ -1017,6 +1027,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBoolEx(OrganizeSnapshotsByGame, "OrganizeScreenshotsByGame");
 	SettingsWrapBitBoolEx(OrganizeVideoCaptureByGame, "OrganizeVideoCaptureByGame");
 	SettingsWrapEntry(StretchY);
+	SettingsWrapEntry(CustomAspectRatio);
 	SettingsWrapEntryEx(Crop[0], "CropLeft");
 	SettingsWrapEntryEx(Crop[1], "CropTop");
 	SettingsWrapEntryEx(Crop[2], "CropRight");
@@ -1068,6 +1079,9 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBoolEx(PreloadFrameWithGSData, "preload_frame_with_gs_data");
 	SettingsWrapBitBoolEx(Mipmap, "mipmap");
 	SettingsWrapBitBoolEx(ManualUserHacks, "UserHacks");
+	// Bit per GSUserHackOverride. Written by the frontend when someone changes one hack
+	// on purpose, not something to hand-edit.
+	SettingsWrapEntryEx(UserHackOverrides, "UserHackOverrides");
 	SettingsWrapBitBoolEx(UserHacks_AlignSpriteX, "UserHacks_align_sprite_X");
 	SettingsWrapIntEnumEx(UserHacks_AutoFlush, "UserHacks_AutoFlushLevel");
 	SettingsWrapBitBoolEx(UserHacks_CPUFBConversion, "UserHacks_CPU_FB_Conversion");
@@ -1213,38 +1227,57 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	}
 }
 
-void Pcsx2Config::GSOptions::MaskUserHacks()
+void Pcsx2Config::GSOptions::MaskUserHacks(bool respect_claims)
 {
 	if (ManualUserHacks)
 		return;
 
-	UserHacks_AlignSpriteX = false;
-	UserHacks_MergePPSprite = false;
-	UserHacks_ForceEvenSpritePosition = false;
-	UserHacks_NativePaletteDraw = false;
+	// A pinned hack is the player's answer for this one setting, so it survives here and
+	// past the GameDB. Everything they didn't touch still goes back to automatic.
+	const auto keep = [this, respect_claims](GSUserHackOverride hack) {
+		return respect_claims && IsUserHackPinned(hack);
+	};
+
+	if (!keep(GSUserHackOverride::AlignSprite))
+		UserHacks_AlignSpriteX = false;
+	if (!keep(GSUserHackOverride::MergeSprite))
+		UserHacks_MergePPSprite = false;
+	if (!keep(GSUserHackOverride::ForceEvenSpritePosition))
+		UserHacks_ForceEvenSpritePosition = false;
+	if (!keep(GSUserHackOverride::NativePaletteDraw))
+		UserHacks_NativePaletteDraw = false;
+	if (!keep(GSUserHackOverride::HalfPixelOffset))
+		UserHacks_HalfPixelOffset = GSHalfPixelOffset::Off;
+	if (!keep(GSUserHackOverride::RoundSprite))
+		UserHacks_RoundSprite = 0;
+	if (!keep(GSUserHackOverride::NativeScaling))
+		UserHacks_NativeScaling = GSNativeScaling::Off;
+	if (!keep(GSUserHackOverride::AutoFlush))
+		UserHacks_AutoFlush = GSHWAutoFlushLevel::Disabled;
+	if (!keep(GSUserHackOverride::TextureInsideRt))
+		UserHacks_TextureInsideRt = GSTextureInRtMode::Disabled;
+	if (!keep(GSUserHackOverride::BilinearHack))
+		UserHacks_BilinearHack = GSBilinearDirtyMode::Automatic;
+	if (!keep(GSUserHackOverride::TextureOffsetX))
+		UserHacks_TCOffsetX = 0;
+	if (!keep(GSUserHackOverride::TextureOffsetY))
+		UserHacks_TCOffsetY = 0;
+
 	UserHacks_DisableSafeFeatures = false;
 	UserHacks_DisableRenderFixes = false;
-	UserHacks_HalfPixelOffset = GSHalfPixelOffset::Off;
-	UserHacks_RoundSprite = 0;
-	UserHacks_NativeScaling = GSNativeScaling::Off;
-	UserHacks_AutoFlush = GSHWAutoFlushLevel::Disabled;
 	GPUPaletteConversion = false;
 	PreloadFrameWithGSData = false;
 	UserHacks_DisablePartialInvalidation = false;
 	UserHacks_DisableDepthSupport = false;
 	UserHacks_CPUFBConversion = false;
 	UserHacks_ReadTCOnClose = false;
-	UserHacks_TextureInsideRt = GSTextureInRtMode::Disabled;
 	UserHacks_Limit24BitDepth = GSLimit24BitDepth::Disabled;
 	UserHacks_EstimateTextureRegion = false;
 	UserHacks_DrawBuffering = false;
-	UserHacks_TCOffsetX = 0;
-	UserHacks_TCOffsetY = 0;
 	UserHacks_CPUSpriteRenderBW = 0;
 	UserHacks_CPUSpriteRenderLevel = 0;
 	UserHacks_CPUCLUTRender = 0;
 	UserHacks_GPUTargetCLUTMode = GSGPUTargetCLUTMode::Disabled;
-	UserHacks_BilinearHack = GSBilinearDirtyMode::Automatic;
 	SkipDrawStart = 0;
 	SkipDrawEnd = 0;
 }
@@ -1253,6 +1286,10 @@ void Pcsx2Config::GSOptions::MaskUpscalingHacks()
 {
 	if (UpscaleMultiplier > 1.0f)
 		return;
+
+	// Pins deliberately don't count here. At native res the renderer skips these anyway
+	// (GSRendererHW::Draw wants rt->GetScale() > 1), so honouring a pin would only leave
+	// GSConfig and the settings overlay claiming something that never runs.
 
 	UserHacks_AlignSpriteX = false;
 	UserHacks_MergePPSprite = false;

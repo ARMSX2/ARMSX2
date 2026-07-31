@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -148,13 +149,19 @@ fun ArmsTopBar(
 ) {
     val statusBarPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    // Also clear a top/centre display cutout (punch-hole camera). In portrait on a tall panel the
+    // status bar can be hidden or shorter than the camera, so statusBars alone leaves the pill riding
+    // up under the lens; take the larger of the two so the top bar always sits clear of it.
+    // (#Isshin — S24 Ultra portrait.) Landscape/no-cutout devices see no change (cutout top is 0).
+    val cutoutTop = WindowInsets.displayCutout.asPaddingValues().calculateTopPadding()
+    val topInset = maxOf(statusBarPadding, cutoutTop)
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(
                 start = horizontalPadding,
                 end = horizontalPadding,
-                top = if (bottomEdge) 4.dp else statusBarPadding + 8.dp,
+                top = if (bottomEdge) 4.dp else topInset + 8.dp,
                 bottom = if (bottomEdge) navBarPadding + 8.dp else 4.dp,
             ),
         shape = RoundedCornerShape(26.dp),

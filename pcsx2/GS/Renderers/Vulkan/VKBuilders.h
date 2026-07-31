@@ -143,6 +143,11 @@ namespace Vulkan
 
 		void SetProvokingVertex(VkProvokingVertexModeEXT mode);
 
+		/// OR bits into VkGraphicsPipelineCreateInfo::flags. Needed for the attachment
+		/// feedback-loop bits, which the spec requires on any pipeline used while its
+		/// attachments sit in FEEDBACK_LOOP_OPTIMAL. Ported from sashkinbro/EmuCoreX.
+		void AddPipelineFlags(VkPipelineCreateFlags flags);
+
 	private:
 		VkGraphicsPipelineCreateInfo m_ci;
 		std::array<VkPipelineShaderStageCreateInfo, MAX_SHADER_STAGES> m_shader_stages;

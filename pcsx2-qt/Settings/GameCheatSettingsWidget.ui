@@ -26,7 +26,7 @@
    <item>
     <widget class="QLabel" name="label">
      <property name="text">
-      <string>Activating cheats can cause unpredictable behavior, crashing, soft-locks, or broken saved games. Use cheats at your own risk, the PCSX2 team will provide no support for users who have enabled cheats.</string>
+      <string>Activating cheats can cause unpredictable behavior, crashing, soft-locks, or broken saved games. Use cheats at your own risk, the ARMSX2 team will provide no support for users who have enabled cheats.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>

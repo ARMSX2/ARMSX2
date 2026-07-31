@@ -91,6 +91,14 @@ namespace GSDrawLog
 		s_open_record = s_records.size() - 1;
 	}
 
+	void NoteSelfRead(SelfRead resolution)
+	{
+		if (s_open_record == SIZE_MAX)
+			return;
+
+		s_records[s_open_record].self_read = static_cast<u8>(resolution);
+	}
+
 	void EndDraw(const GSHWDrawConfig& config)
 	{
 		if (s_open_record == SIZE_MAX)
@@ -114,6 +122,23 @@ namespace GSDrawLog
 		s_open_record = SIZE_MAX;
 	}
 
+	static const char* GetSelfReadName(u8 resolution)
+	{
+		switch (resolution)
+		{
+			case SelfReadTexIsFb:
+				return "TEX_IS_FB";
+			case SelfReadBarrier:
+				return "BARRIER";
+			case SelfReadDepthDirect:
+				return "DEPTH_DIRECT";
+			case SelfReadCopy:
+				return "COPY";
+			default:
+				return "";
+		}
+	}
+
 	bool WriteCSV(const std::string& path)
 	{
 		auto fp = FileSystem::OpenManagedCFile(path.c_str(), "wb");
@@ -129,7 +154,7 @@ namespace GSDrawLog
 			"z_addr,z_psm,z_test,z_mask,"
 			"tex_addr,tex_psm,tex_bw,tex_w,tex_h,"
 			"blend,alpha_a,alpha_b,alpha_c,alpha_d,"
-			"atst,afail,date,datm,"
+			"atst,afail,date,datm,self_read,"
 			"topology,barrier,tex_hazard,destination_alpha,colormask,"
 			"area_x,area_y,area_w,area_h\n");
 
@@ -181,7 +206,7 @@ namespace GSDrawLog
 			else
 				std::fprintf(fp.get(), ",,");
 
-			std::fprintf(fp.get(), "%d,%u,", (r.flags & FlagDate) ? 1 : 0, r.datm);
+			std::fprintf(fp.get(), "%d,%u,%s,", (r.flags & FlagDate) ? 1 : 0, r.datm, GetSelfReadName(r.self_read));
 
 			if (submitted)
 			{

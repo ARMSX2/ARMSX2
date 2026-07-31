@@ -596,6 +596,13 @@ void Vulkan::GraphicsPipelineBuilder::SetProvokingVertex(VkProvokingVertexModeEX
 	m_provoking_vertex.provokingVertexMode = mode;
 }
 
+void Vulkan::GraphicsPipelineBuilder::AddPipelineFlags(VkPipelineCreateFlags flags)
+{
+	// OR, not assign: callers add the colour and depth feedback-loop bits independently, and a
+	// draw can be in both loops at once.
+	m_ci.flags |= flags;
+}
+
 Vulkan::ComputePipelineBuilder::ComputePipelineBuilder()
 {
 	Clear();

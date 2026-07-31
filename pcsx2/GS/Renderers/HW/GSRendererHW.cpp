@@ -5658,6 +5658,8 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 
 					if (req_vert_backup)
 					{
+						EnsureDrawStaging(m_vertex->next, m_index->tail);
+
 						memcpy(m_draw_vertex.buff, m_vertex->buff, sizeof(GSVertex) * m_vertex->next);
 						memcpy(m_draw_index.buff, m_index->buff, sizeof(u16) * m_index->tail);
 
@@ -5722,6 +5724,8 @@ void GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 
 	if (req_vert_backup)
 	{
+		EnsureDrawStaging(m_vertex->next, m_index->tail);
+
 		memcpy(m_draw_vertex.buff, m_vertex->buff, sizeof(GSVertex) * m_vertex->next);
 		memcpy(m_draw_index.buff, m_index->buff, sizeof(u16) * m_index->tail);
 
@@ -8508,6 +8512,18 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 	const int tex_diff = tex->m_from_target ? static_cast<int>(m_cached_ctx.TEX0.TBP0 - tex->m_from_target->m_TEX0.TBP0) : static_cast<int>(m_cached_ctx.TEX0.TBP0 - tex->m_TEX0.TBP0);
 	const int frame_diff = rt ? static_cast<int>(m_cached_ctx.FRAME.Block() - rt->m_TEX0.TBP0) : 0;
 
+	// Whether the source aliases this draw's own render target or depth buffer. Everything
+	// below rewrites m_conf to resolve that, so it is not recoverable afterwards -- hence
+	// the ledger is told here, pessimistically, and each road that avoids the copy corrects
+	// it on the way out.
+	const bool log_self_read =
+		GSDrawLog::IsActive() && ((rt && m_conf.tex == m_conf.rt) || (ds && m_conf.tex == m_conf.ds));
+	auto NoteResolution = [&](GSDrawLog::SelfRead resolution) {
+		if (log_self_read) [[unlikely]]
+			GSDrawLog::NoteSelfRead(resolution);
+	};
+	NoteResolution(GSDrawLog::SelfReadCopy);
+
 	// Needs to be called everywhere we return early except tex is fb, or read only depth.
 	auto HandleBarrierHazard = [&](bool src_empty) -> bool {
 		// Feedback loops conditions explained:
@@ -8571,6 +8587,7 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 				else
 					m_conf.require_full_barrier = true;
 
+				NoteResolution(GSDrawLog::SelfReadTexIsFb);
 				unscaled_size = rt->GetUnscaledSize();
 				scale = rt->GetScale();
 				return;
@@ -8586,6 +8603,7 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 				{
 					if (HandleBarrierHazard(true))
 					{
+						NoteResolution(GSDrawLog::SelfReadBarrier);
 						unscaled_size = rt->GetUnscaledSize();
 						scale = rt->GetScale();
 						return;
@@ -8606,6 +8624,9 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 				{
 					// Safe to read!
 					GL_CACHE("HW: Source is depth buffer, not writing, safe to read.");
+					NoteResolution(m_conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_DEPTH ?
+									   GSDrawLog::SelfReadBarrier :
+									   GSDrawLog::SelfReadDepthDirect);
 					unscaled_size = ds->GetUnscaledSize();
 					scale = ds->GetScale();
 					return;
@@ -8622,6 +8643,9 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 				{
 					if (HandleBarrierHazard(true))
 					{
+						NoteResolution(m_conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_DEPTH ?
+										   GSDrawLog::SelfReadBarrier :
+										   GSDrawLog::SelfReadDepthDirect);
 						unscaled_size = ds->GetUnscaledSize();
 						scale = ds->GetScale();
 						return;
@@ -8696,6 +8720,7 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 
 			if (HandleBarrierHazard(false) || (rt != tex->m_from_target && ds != tex->m_from_target))
 			{
+				NoteResolution(GSDrawLog::SelfReadBarrier);
 				m_conf.cb_ps.ChannelShuffleOffset = GSVector2((horizontal_offset - m_r.x) * tex->GetScale(), (vertical_offset - m_r.y) * tex->GetScale());
 				target_region = false;
 				source_region.bits = 0;

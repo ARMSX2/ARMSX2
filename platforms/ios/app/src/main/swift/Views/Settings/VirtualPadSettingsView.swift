@@ -62,6 +62,9 @@ struct VirtualPadSettingsView: View {
     @State private var showLayoutImportAlert = false
     @State private var layoutImportMessage = ""
     @State private var layoutExportItem: ShareSheetItem?
+    @State private var layoutPendingRename: PadLayoutPreset?
+    @State private var layoutRenameDraft = ""
+    @State private var layoutPendingDelete: PadLayoutPreset?
     @State private var skinPendingDelete: VPadSkinDescriptor?
     @State private var skinPendingRename: VPadSkinDescriptor?
     @State private var skinRenameDraft = ""
@@ -199,6 +202,14 @@ struct VirtualPadSettingsView: View {
 
             Section(settings.localized("Feedback")) {
                 Toggle(settings.localized("Haptic Feedback"), isOn: $settings.hapticFeedback)
+
+                VStack(alignment: .leading) {
+                    Text("\(settings.localized("Phone Rumble Strength")): \(Int(settings.phoneRumbleStrength * 100))%")
+                    Slider(value: $settings.phoneRumbleStrength, in: 0.0...1.0, step: 0.05)
+                }
+                Text(settings.localized("How hard the phone itself rumbles when no controller is connected. Has no effect on a controller's own motors."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section(settings.localized("Layout")) {
@@ -236,13 +247,38 @@ struct VirtualPadSettingsView: View {
                             Text(preset.displayName)
                                 .lineLimit(1)
                             Spacer()
-                            Button {
-                                exportLayout(preset)
+                            Menu {
+                                Button {
+                                    layoutPendingRename = preset
+                                    layoutRenameDraft = preset.displayName
+                                } label: {
+                                    Label(
+                                        settings.localized("Rename Layout"),
+                                        systemImage: "pencil"
+                                    )
+                                }
+                                Button {
+                                    exportLayout(preset)
+                                } label: {
+                                    Label(
+                                        settings.localized("Share Layout"),
+                                        systemImage: "square.and.arrow.up"
+                                    )
+                                }
+                                Button(role: .destructive) {
+                                    layoutPendingDelete = preset
+                                } label: {
+                                    Label(
+                                        settings.localized("Delete Layout"),
+                                        systemImage: "trash"
+                                    )
+                                }
                             } label: {
-                                Image(systemName: "square.and.arrow.up")
+                                Image(systemName: "ellipsis.circle")
                             }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Export \(preset.displayName)")
+                            .accessibilityLabel(
+                                settings.localized("Layout Options") + " \(preset.displayName)"
+                            )
                         }
                     }
                 }
@@ -280,7 +316,7 @@ struct VirtualPadSettingsView: View {
             } header: {
                 Text(settings.localized("Dynamic Control Presets"))
             } footer: {
-                Text(settings.localized("Selecting a preset changes only the listed Dynamic Control options. All sensitivity, button assignments, and other Virtual Pad settings are preserved."))
+                Text(settings.localized("Each preset applies its listed Dynamic Control configuration. Unrelated Virtual Pad appearance and controller-layout settings are preserved."))
                     .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -306,6 +342,82 @@ struct VirtualPadSettingsView: View {
                 Text(settings.localized("Dynamic Controls"))
             } footer: {
                 Text(settings.localized("Legacy and Dynamic Thumbsticks are mutually exclusive. Dynamic sticks appear where each touch begins. Swipe Camera replaces the right touch stick, while Gyroscope Camera augments the active right-side control."))
+            }
+
+            Section {
+                Toggle(
+                    settings.localized("Left Thumbstick Instant Deadzone"),
+                    isOn: $dynamicSettings.leftInstantDeadzoneEnabled
+                )
+                if dynamicSettings.leftInstantDeadzoneEnabled {
+                    DynamicControlSlider(
+                        title: settings.localized("Left Negative Deadzone"),
+                        value: $dynamicSettings.leftNegativeDeadzone,
+                        range: -0.25...0,
+                        step: 0.01,
+                        valueLabel: negativeDeadzoneLabel
+                    )
+                }
+
+                Toggle(
+                    settings.localized("Right Thumbstick Instant Deadzone"),
+                    isOn: $dynamicSettings.rightInstantDeadzoneEnabled
+                )
+                if dynamicSettings.rightInstantDeadzoneEnabled {
+                    DynamicControlSlider(
+                        title: settings.localized("Right Negative Deadzone"),
+                        value: $dynamicSettings.rightNegativeDeadzone,
+                        range: -0.25...0,
+                        step: 0.01,
+                        valueLabel: negativeDeadzoneLabel
+                    )
+                }
+
+                DynamicControlSlider(
+                    title: settings.localized("Left Thumbstick Movement Area"),
+                    value: $dynamicSettings.leftThumbstickAreaScale,
+                    range: 1...5,
+                    step: 0.25,
+                    valueLabel: thumbstickAreaScaleLabel
+                )
+                DynamicControlSlider(
+                    title: settings.localized("Right Thumbstick Movement Area"),
+                    value: $dynamicSettings.rightThumbstickAreaScale,
+                    range: 1...5,
+                    step: 0.25,
+                    valueLabel: thumbstickAreaScaleLabel
+                )
+
+                Toggle(
+                    settings.localized("Convert Swipe to Dynamic Joystick"),
+                    isOn: $dynamicSettings.convertSwipeToDynamicJoystick
+                )
+                if dynamicSettings.convertSwipeToDynamicJoystick {
+                    DynamicControlSlider(
+                        title: settings.localized("Convert Into Dynamic Thumbstick"),
+                        value: Binding(
+                            get: { dynamicSettings.convertIntoDynamicThumbstickThreshold },
+                            set: { dynamicSettings.setConvertIntoDynamicThumbstickThreshold($0) }
+                        ),
+                        range: 0.01...3,
+                        step: 0.01,
+                        valueLabel: percentageLabel
+                    )
+                    DynamicControlSlider(
+                        title: settings.localized("Pulling Back Distance"),
+                        value: Binding(
+                            get: { dynamicSettings.pullingBackDistance },
+                            set: { dynamicSettings.setPullingBackDistance($0) }
+                        ),
+                        range: 0.01...1,
+                        step: 0.01,
+                        valueLabel: percentageLabel
+                    )
+                }
+            } header: {
+                Text(settings.localized("Instant Movement & Aiming"))
+            } footer: {
+                Text(settings.localized("Instant deadzones add the selected minimum output only after real movement, while preserving the progressive Dynamic Thumbstick deadzone. Movement areas default to 3× without enlarging the visible controls. Swipe conversion enters Dynamic Thumbstick mode at the selected outward distance. Pulling back by the selected distance returns to Swipe Camera and temporarily rebases the next outward conversion point until the screen is released."))
             }
 
             controlSensitivitySection
@@ -338,6 +450,23 @@ struct VirtualPadSettingsView: View {
                     isOn: $dynamicSettings.dynamicCrosshairEnabled
                 )
                 if dynamicSettings.dynamicCrosshairEnabled {
+                    Toggle(
+                        settings.localized("Show Crosshair While Holding Swipe"),
+                        isOn: $dynamicSettings.showCrosshairWhileHoldingSwipe
+                    )
+                    .disabled(!dynamicSettings.swipeCamera)
+
+                    if dynamicSettings.showCrosshairWhileHoldingSwipe {
+                        DynamicControlSlider(
+                            title: settings.localized("Crosshair Hide Delay"),
+                            value: $dynamicSettings.swipeCrosshairHideDelay,
+                            range: 0...3,
+                            step: 0.1,
+                            valueLabel: durationLabel
+                        )
+                        .disabled(!dynamicSettings.swipeCamera)
+                    }
+
                     DynamicControlSlider(
                         title: settings.localized("Crosshair Size"),
                         value: $dynamicSettings.dynamicCrosshairSize,
@@ -372,7 +501,7 @@ struct VirtualPadSettingsView: View {
             } header: {
                 Text(settings.localized("Dynamic Crosshair"))
             } footer: {
-                Text(settings.localized("The crosshair appears only while Aim Mode is active. Every animation follows live swipe, thumbstick, and gyroscope direction and speed, then reacts separately to single shots and automatic fire."))
+                Text(settings.localized("The crosshair appears while Aim Mode is active and can remain visible while holding Swipe Camera. The hide delay controls how long it stays after the swipe ends. Every animation follows live swipe, thumbstick, and gyroscope direction and speed, then reacts separately to single shots and automatic fire."))
             }
 
             if dynamicSettings.dynamicThumbsticks {
@@ -470,6 +599,18 @@ struct VirtualPadSettingsView: View {
                 (dynamicSettings.dynamicThumbsticks &&
                     (dynamicSettings.leftThumbstickActionsEnabled || dynamicSettings.rightThumbstickActionsEnabled)) {
                 Section {
+                    if dynamicSettings.swipeCamera {
+                        Picker(
+                            settings.localized("Trigger Button When Un-holding Swipe"),
+                            selection: $dynamicSettings.triggerButtonWhenUnholdingSwipe
+                        ) {
+                            Text(settings.localized("Off")).tag(-1)
+                            ForEach(VirtualPadActionButton.allCases) { button in
+                                Text(settings.localized(button.title)).tag(button.rawValue)
+                            }
+                        }
+                    }
+
                     Toggle(
                         dynamicActionTitle("Hold Aim While Touching Camera", role: .aim),
                         isOn: Binding(
@@ -644,6 +785,66 @@ struct VirtualPadSettingsView: View {
             Button(settings.localized("OK"), role: .cancel) {}
         } message: {
             Text(layoutImportMessage)
+        }
+        .alert(
+            settings.localized("Rename Layout"),
+            isPresented: Binding<Bool>(
+                get: { layoutPendingRename != nil },
+                set: { if !$0 { layoutPendingRename = nil } }
+            )
+        ) {
+            TextField(settings.localized("Name"), text: $layoutRenameDraft)
+            Button(settings.localized("Rename")) {
+                if let preset = layoutPendingRename {
+                    do {
+                        try layoutPresets.renamePreset(
+                            id: preset.id,
+                            to: layoutRenameDraft
+                        )
+                    } catch {
+                        layoutImportMessage =
+                            "Layout rename failed: \(error.localizedDescription)"
+                        showLayoutImportAlert = true
+                    }
+                }
+                layoutPendingRename = nil
+            }
+            Button(settings.localized("Cancel"), role: .cancel) {
+                layoutPendingRename = nil
+            }
+        } message: {
+            Text(settings.localized("Choose a new name for this layout."))
+        }
+        .confirmationDialog(
+            settings.localized("Delete Layout?"),
+            isPresented: Binding<Bool>(
+                get: { layoutPendingDelete != nil },
+                set: { if !$0 { layoutPendingDelete = nil } }
+            ),
+            presenting: layoutPendingDelete
+        ) { preset in
+            Button(
+                "\(settings.localized("Delete")) \(preset.displayName)",
+                role: .destructive
+            ) {
+                do {
+                    try layoutPresets.deletePreset(id: preset.id)
+                } catch {
+                    layoutImportMessage =
+                        "Layout deletion failed: \(error.localizedDescription)"
+                    showLayoutImportAlert = true
+                }
+                layoutPendingDelete = nil
+            }
+            Button(settings.localized("Cancel"), role: .cancel) {
+                layoutPendingDelete = nil
+            }
+        } message: { _ in
+            Text(
+                settings.localized(
+                    "Games using this layout will fall back to their next available layout."
+                )
+            )
         }
         .sheet(isPresented: $showSkinImporter) {
             ImportDocumentPicker(
@@ -1066,6 +1267,14 @@ struct VirtualPadSettingsView: View {
 
     private func percentageLabel(_ value: Double) -> String {
         "\(Int((value * 100).rounded()))%"
+    }
+
+    private func negativeDeadzoneLabel(_ value: Double) -> String {
+        "\(Int((value * 100).rounded()))% \(settings.localized("Deadzone"))"
+    }
+
+    private func thumbstickAreaScaleLabel(_ value: Double) -> String {
+        String(format: "%.2fx", value)
     }
 
     private func durationLabel(_ value: Double) -> String {

@@ -155,10 +155,18 @@ fun TouchControlsOverlay() {
                 ControllerMappings.gyroSmoothing(),
                 ControllerMappings.gyroInvertX(),
                 ControllerMappings.gyroInvertY())
+            // Hand the runtime a handle on recenter() — it owns hotkey dispatch but not the
+            // sensor. Only published while a session is actually registered so GYRO_RECENTER
+            // can report "not active" rather than appearing to work.
+            MainActivityRuntime.gyroRecenterHook = { gyro.recenter() }
         } else {
+            MainActivityRuntime.gyroRecenterHook = null
             gyro.stop()
         }
-        onDispose { gyro.stop() }
+        onDispose {
+            MainActivityRuntime.gyroRecenterHook = null
+            gyro.stop()
+        }
     }
     val edit = TouchControls.editMode.value
     val running = MainActivityRuntime.eState.value == EmuState.RUNNING ||
@@ -325,6 +333,19 @@ fun TouchControlsOverlay() {
                 onPressedChange = { unifiedPressed = it },
             )
         }
+        // Lightgun aiming, when a GunCon 2 is attached. Below the widgets (so gun buttons and
+        // pause win a finger that starts on them) but it DOES consume otherwise: with a gun
+        // attached, a touch on empty screen IS the shot.
+        if (!edit) {
+            LightgunLayer(widthPx = widthPx, heightPx = heightPx)
+        }
+        // Gesture layer (swipes / double-tap on empty area). Composed here — below every visual
+        // widget — for the same reason as the layers around it: a finger that starts on a control
+        // is claimed by that control and never reaches the gesture handler. It also never consumes,
+        // so it cannot swallow a press even if this ordering changes later.
+        if (!edit) {
+            GestureLayer(widthPx = widthPx, heightPx = heightPx)
+        }
         // Full-half invisible analog sticks: an invisible layer owning each screen half, composed
         // z-BELOW the visual widgets so a finger starting on a button drives the button, not a stick.
         if (!edit && TouchControls.fullHalfSticks.value) {
@@ -406,6 +427,12 @@ fun TouchControlsOverlay() {
                     EditToolbar()
                 }
             }
+        }
+
+        // Gun buttons LAST, so they sit above LightgunLayer: pressing A/B/C/Cal must be a button
+        // press, not a shot at that corner of the screen. They consume their own pointer.
+        if (!edit) {
+            LightgunButtons()
         }
 
         if (TouchControls.profileDialogOpen.value) {

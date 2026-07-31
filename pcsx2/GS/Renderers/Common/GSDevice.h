@@ -1590,6 +1590,12 @@ protected:
 	void DoStretchRectWithAssertions(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 		ShaderConvertSelector shader, Filter filter);
 
+	/// Serves a StretchRect through CopyRect when the two are equivalent, returning whether it did.
+	/// A stretch is a draw, so it needs a render pass of its own and the pass it interrupted has to
+	/// be restarted afterwards -- two pass boundaries where an image copy costs one.
+	bool TryStretchRectAsCopy(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
+		ShaderConvertSelector shader);
+
 	/// Backend entry points for work that reads or writes texture contents. These are
 	/// reached only through the public non-virtual wrappers of the same name, which run
 	/// FlushDeferredDraws() first — see that function for why the indirection exists.

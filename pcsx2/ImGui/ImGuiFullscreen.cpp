@@ -3180,6 +3180,11 @@ void ImGuiFullscreen::ClearNotifications()
 	s_notifications.clear();
 }
 
+bool ImGuiFullscreen::HasActiveNotifications()
+{
+	return !s_notifications.empty();
+}
+
 void ImGuiFullscreen::DrawNotifications(ImVec2& position, float spacing)
 {
 	if (s_notifications.empty())

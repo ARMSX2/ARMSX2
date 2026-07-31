@@ -4,6 +4,8 @@
 #include "ImGui/FullscreenUI.h"
 #include "ImGui/ImGuiManager.h"
 #include "GS/Renderers/Common/GSRenderer.h"
+#include "GS/Renderers/Common/GSInterlaceModePolicy.h"
+#include "GS/Renderers/Common/GSPresentationPolicy.h"
 #include "GS/GSCapture.h"
 #include "GS/GSDump.h"
 #include "GS/GSGL.h"
@@ -179,16 +181,19 @@ bool GSRenderer::Merge(int field)
 
 	// Use offset for bob deinterlacing always, extra offset added later for FFMD mode.
 	const bool scanmask_frame = m_scanmask_used && abs(PCRTCDisplays.PCRTCDisplays[0].displayRect.y - PCRTCDisplays.PCRTCDisplays[1].displayRect.y) != 1;
-	int field2 = 0;
-	int mode = 3; // If the game is manually deinterlacing then we need to bob (if we want to get away with no deinterlacing).
-	bool is_bob = GSConfig.InterlaceMode == GSInterlaceMode::BobTFF || GSConfig.InterlaceMode == GSInterlaceMode::BobBFF;
-
 	// FFMD (half frames) requires blend deinterlacing, so automatically use that. Same when SCANMSK is used but not blended in the merge circuit (Alpine Racer 3).
-	if (GSConfig.InterlaceMode != GSInterlaceMode::Automatic || (!game_deinterlacing && !m_regs->SMODE2.FFMD && !scanmask_frame))
-	{
-		field2 = ((static_cast<int>(GSConfig.InterlaceMode) - 2) & 1);
-		mode = ((static_cast<int>(GSConfig.InterlaceMode) - 2) >> 1);
-	}
+	// Centralised in GSInterlaceModePolicy.h so the progressive pass-through case (shader_mode -1)
+	// is pinned by static_assert and unit tests rather than resting on the sign behaviour of a
+	// shift. Ported from sashkinbro/EmuCoreX.
+	const GSInterlaceModeSelection interlace_selection = SelectGSInterlaceMode(
+		static_cast<int>(GSConfig.InterlaceMode),
+		GSConfig.InterlaceMode == GSInterlaceMode::Automatic,
+		game_deinterlacing,
+		m_regs->SMODE2.FFMD,
+		scanmask_frame);
+	const int field2 = interlace_selection.field_offset;
+	int mode = interlace_selection.shader_mode;
+	bool is_bob = GSConfig.InterlaceMode == GSInterlaceMode::BobTFF || GSConfig.InterlaceMode == GSInterlaceMode::BobBFF;
 
 	// FastMAD (mode 3) stores four fields in a two-bank history target. Older Mali-G57 Vulkan drivers
 	// can expose stale/alternating banks during reconstruction; Bob isn't a safe fallback (its
@@ -373,6 +378,13 @@ static float GetCurrentAspectRatioFloat(bool is_progressive)
 			return 10.0f / 7.0f;
 		case AspectRatioType::R21_9:
 			return 21.0f / 9.0f;
+		case AspectRatioType::R20_9:
+			return 20.0f / 9.0f;
+		case AspectRatioType::R19_5_9:
+			return 19.5f / 9.0f;
+		case AspectRatioType::Custom:
+			// Clamped, not trusted: a 0 or negative would divide by zero downstream.
+			return std::clamp(GSConfig.CustomAspectRatio, 0.5f, 5.0f);
 	}
 }
 
@@ -408,6 +420,18 @@ static GSVector4 CalculateDrawDstRect(s32 window_width, s32 window_height, const
 	else if (EmuConfig.CurrentAspectRatio == AspectRatioType::R21_9)
 	{
 		targetAr = 21.0f / 9.0f;
+	}
+	else if (EmuConfig.CurrentAspectRatio == AspectRatioType::R20_9)
+	{
+		targetAr = 20.0f / 9.0f;
+	}
+	else if (EmuConfig.CurrentAspectRatio == AspectRatioType::R19_5_9)
+	{
+		targetAr = 19.5f / 9.0f;
+	}
+	else if (EmuConfig.CurrentAspectRatio == AspectRatioType::Custom)
+	{
+		targetAr = std::clamp(GSConfig.CustomAspectRatio, 0.5f, 5.0f);
 	}
 
 	const float crop_adjust = (static_cast<float>(src_rect.width()) / static_cast<float>(src_size.x)) /
@@ -785,6 +809,10 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 	}
 
 	const bool blank_frame = !Merge(field);
+	// Run length, not just "was blank": the policy below distinguishes a single alternating blank
+	// (an interlaced-field artefact, safe to drop) from a run of them (a fade the game is actually
+	// drawing, which must be presented).
+	m_consecutive_blank_frames = blank_frame ? (m_consecutive_blank_frames + 1) : 0;
 
 	// ★ @@ANDROID_STALEFRAMES@@ — diagnostic for "the picture freezes but emulation keeps running".
 	// Measured on a Retroid Pocket 6: SurfaceFlinger presents steadily at 120 Hz straight through
@@ -844,8 +872,32 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 	if (!idle_frame)
 		g_gs_device->AgePool();
 
+#ifdef __ANDROID__
+	// Suppress only startup blanks, before the GS has produced any output. Mid-game blank/fade
+	// frames must take the normal present path: explicit APIs such as Vulkan need that path to
+	// submit the recorded command buffer and finalize texture state for the following frame.
+	// See GSPresentationPolicy.h. Ported from sashkinbro/EmuCoreX.
+	//
+	// ...but never suppress a blank that has an OSD message or a toast on top of it. With Skip BIOS
+	// on there is no boot animation, so the game shows a black screen with no GS output for a while,
+	// and the RetroAchievements "achievements loaded" toast posts into exactly that window. Skipping
+	// the present means EndPresentFrame() — and with it the OSD/notification draw — never runs, so
+	// the toast is queued but invisible until something forces a real present (opening the pause
+	// menu, which is why it appears there and vanishes on back-out). Presenting a blank with content
+	// on it is precisely what the pause menu already does here, and is safe: the swapchain image is
+	// acquired and ImGui draws over black.
+	const bool skip_blank = ShouldSkipAndroidBlankFrame(
+		blank_frame,
+		g_gs_device->GetCurrent() != nullptr,
+		g_gs_device->GetRenderAPI() == RenderAPI::Vulkan,
+		m_consecutive_blank_frames) &&
+		!ImGuiManager::HasPresentableOverlayContent();
+#else
+	constexpr bool skip_blank = false;
+#endif
+
 	// Skip presentation when running uncapped while vsync is on.
-	if (skip_frame || g_gs_device->ShouldSkipPresentingFrame())
+	if (skip_frame || skip_blank || g_gs_device->ShouldSkipPresentingFrame())
 	{
 		if (BeginPresentFrame(true))
 			EndPresentFrame();
@@ -987,10 +1039,14 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 			if (GSConfig.UserHacks_ReadTCOnClose)
 				ReadbackTextureCache();
 
+			// The dump replays from this state forward, so it has to be the state a
+			// savestate would record here: parse registers from the front object under
+			// the split, local memory from the back. m_parse_target->Freeze() is the
+			// same call GSfreeze makes, and it drains before serializing.
 			freezeData fd = {0, nullptr};
-			Freeze(&fd, true);
+			m_parse_target->Freeze(&fd, true);
 			fd.data = new u8[fd.size];
-			Freeze(&fd, false);
+			m_parse_target->Freeze(&fd, false);
 
 			// keep the screenshot relatively small so we don't bloat the dump
 			static constexpr u32 DUMP_SCREENSHOT_WIDTH = 640;
@@ -1105,10 +1161,10 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 		DumpTransferImages();
 }
 
-void GSRenderer::QueueSnapshot(const std::string& path, const u32 gsdump_frames)
+bool GSRenderer::QueueSnapshot(const std::string& path, const u32 gsdump_frames)
 {
 	if (!m_snapshot.empty())
-		return;
+		return false;
 
 	// Allows for providing a complete path
 	if (path.size() > 4 && StringUtil::EndsWithNoCase(path, ".png"))
@@ -1118,6 +1174,7 @@ void GSRenderer::QueueSnapshot(const std::string& path, const u32 gsdump_frames)
 
 	// this is really gross, but wx we get the snapshot request after shift...
 	m_dump_frames = gsdump_frames;
+	return true;
 }
 
 static std::string GSGetBaseFilename()

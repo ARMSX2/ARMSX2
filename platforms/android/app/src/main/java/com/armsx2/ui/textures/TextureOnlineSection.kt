@@ -44,6 +44,7 @@ import com.armsx2.ui.common.GlassPanel
 import com.armsx2.ui.common.SearchField
 import com.armsx2.ui.common.SectionTitle
 import com.armsx2.ui.home.LibraryKeyboard
+import com.armsx2.ui.settings.SegmentedRow
 import com.armsx2.ui.settings.controllerFocusable
 
 /**
@@ -57,6 +58,10 @@ import com.armsx2.ui.settings.controllerFocusable
  */
 /** The catalog repo: where the packs live and where contributions go. */
 private const val CATALOG_REPO_URL = "https://github.com/sashkinbro/EmuCoreX-Textures"
+
+/** Rows composed per page in the online catalogue. Small enough that the first frame is cheap,
+ *  large enough to fill a phone screen without immediately needing 'Show more'. */
+private const val ONLINE_PAGE = 20
 
 @Composable
 fun TextureOnlineSection(
@@ -84,6 +89,13 @@ fun TextureOnlineSection(
     // Saveable, so it survives rotation and does not spring back open.
     var listOpen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
     var query by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
+    // 0 = game title, 1 = serial. The catalog arrives in contribution order, which scatters a
+    // game's packs across the list when several authors cover the same title — so sorting is
+    // what actually groups them, and the sort key decides which grouping you get.
+    var sortMode by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(0) }
+    // How many of the long 'Other games' tail are composed. Reset whenever the filter changes, so
+    // a new search starts cheap instead of inheriting a big window from the previous one.
+    var othersShown by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(ONLINE_PAGE) }
 
     val installRevision = TexturePackInstallState.revision.value
     val installed = remember(installRevision) { TexturePackInstallState.all() }
@@ -156,6 +168,7 @@ fun TextureOnlineSection(
                         placeholder = str("textures.online.search"),
                         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                     )
+                    androidx.compose.runtime.LaunchedEffect(query, sortMode) { othersShown = ONLINE_PAGE }
                     val needle = query.trim().lowercase()
                     val packs = if (needle.isEmpty()) packs else packs.filter { p ->
                         p.name.lowercase().contains(needle) ||
@@ -164,13 +177,45 @@ fun TextureOnlineSection(
                             p.authors.any { it.lowercase().contains(needle) }
                     }
 
+                    SegmentedRow(
+                        label = str("textures.online.sort.label"),
+                        options = listOf(
+                            str("textures.online.sort.game"),
+                            str("textures.online.sort.serial"),
+                        ),
+                        selectedIndex = sortMode,
+                        onChange = { sortMode = it },
+                    )
+
+                    // Group every pack for one game together, then order authors' packs within a
+                    // game by pack name so the grouping is stable rather than catalog-order luck.
+                    // Serial mode keys on the pack's first serial (sorted, so a multi-region pack
+                    // lands in a predictable place instead of wherever the YAML happened to list).
+                    // Keys are lower-cased rather than passing CASE_INSENSITIVE_ORDER, so "Zelda"
+                    // doesn't sort before "ape escape".
+                    val byGame = compareBy<TextureCatalog.Pack>(
+                        { it.gameTitle.lowercase() },
+                        { it.serials.minOrNull().orEmpty().lowercase() },
+                        { it.name.lowercase() },
+                    )
+                    val bySerial = compareBy<TextureCatalog.Pack>(
+                        { it.serials.minOrNull().orEmpty().lowercase() },
+                        { it.gameTitle.lowercase() },
+                        { it.name.lowercase() },
+                    )
+                    val comparator = if (sortMode == 1) bySerial else byGame
+
                     // Ordering only: the game in context first, then anything in the library, then
                     // the rest of the catalog. Nothing is hidden — a pack you cannot use today is
                     // still a pack you may want tomorrow.
-                    val (owned, others) = packs.partition { p ->
+                    val (owned, others0) = packs.partition { p ->
                         p.matchesSerial(serial) || p.serials.any { librarySerials.contains(it.uppercase()) }
                     }
-                    val ordered = owned.sortedByDescending { it.matchesSerial(serial) }
+                    // Current game still wins outright; the chosen sort orders everything under it.
+                    val ordered = owned.sortedWith(
+                        compareByDescending<TextureCatalog.Pack> { it.matchesSerial(serial) }.then(comparator)
+                    )
+                    val others = others0.sortedWith(comparator)
 
                     val startInstall: (TextureCatalog.Pack, String) -> Unit = { pack, targetSerial ->
                         busyPackId = pack.id
@@ -225,6 +270,14 @@ fun TextureOnlineSection(
                         )
                     }
 
+                    // PAGINATED, not a full render. This whole screen sits inside a
+                    // verticalScroll(), which rules out a LazyColumn (nested scrollables in the
+                    // same axis have unbounded height), so every row used to compose up front —
+                    // the catalogue is 113 packs and growing, and that is what "the entire texture
+                    // pack tab just lags the app" is. Compose a windowful and extend on demand.
+                    //
+                    // "Your games" is never truncated: it is short by construction and it is what
+                    // someone came here for. Only the long "Other games" tail pages.
                     ordered.forEach { pack ->
                         PackRow(pack, installed[pack.id], busyPackId, progressText,
                             progressFraction, uriHandler::openUri,
@@ -242,11 +295,23 @@ fun TextureOnlineSection(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(Modifier.height(4.dp))
-                        others.forEach { pack ->
+                        val shown = others.take(othersShown)
+                        shown.forEach { pack ->
                             PackRow(pack, installed[pack.id], busyPackId, progressText,
                                 progressFraction, uriHandler::openUri,
                                 onGet = { startInstall(pack, pack.serials.first()) },
                                 onCancel = { cancelRequested = true })
+                        }
+                        val remaining = others.size - shown.size
+                        if (remaining > 0) {
+                            Spacer(Modifier.height(6.dp))
+                            val more = { othersShown += ONLINE_PAGE }
+                            // Says how many are left, so the cap never reads as "that's all there
+                            // is" — a silent truncation here would look like a missing pack.
+                            TextButton(
+                                onClick = more,
+                                modifier = Modifier.controllerFocusable("tex.showMore", onConfirm = more),
+                            ) { Text(str("textures.online.showMore").replace("%d", remaining.toString())) }
                         }
                     }
 

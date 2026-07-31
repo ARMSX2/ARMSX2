@@ -653,22 +653,25 @@ int GSfreeze(FreezeAction mode, freezeData* data)
 	}
 }
 
-void GSQueueSnapshot(const std::string& path, u32 gsdump_frames)
+bool GSQueueSnapshot(const std::string& path, u32 gsdump_frames)
 {
-	// GV7-1d-ii known gap: the GSDump transfer hook sits on the parse path, so
-	// under the two-object split the front's transfers would be missing from
-	// the dump (GV7-2 item). Warn rather than write a corrupt dump silently.
-	if (g_gs_front)
-		Console.Warning("GS: dump recording under GSBackThreadMode=Pipelined is not yet supported; expect an incomplete dump.");
-
-	if (g_gs_renderer)
-		g_gs_renderer->QueueSnapshot(path, gsdump_frames);
+	return g_gs_renderer && g_gs_renderer->QueueSnapshot(path, gsdump_frames);
 }
 
 void GSStopGSDump()
 {
 	if (g_gs_renderer)
 		g_gs_renderer->StopGSDump();
+}
+
+bool GSIsDumpRecording()
+{
+	return g_gs_renderer && g_gs_renderer->IsDumpRecording();
+}
+
+bool GSHasFrontParser()
+{
+	return static_cast<bool>(g_gs_front);
 }
 
 bool GSBeginCapture(std::string filename)
@@ -1067,10 +1070,21 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 		GSConfig.UserHacks_CPUSpriteRenderBW != old_config.UserHacks_CPUSpriteRenderBW ||
 		GSConfig.UserHacks_CPUCLUTRender != old_config.UserHacks_CPUCLUTRender ||
 		GSConfig.UserHacks_GPUTargetCLUTMode != old_config.UserHacks_GPUTargetCLUTMode ||
-		// Native scaling is the one geometry hack that outlives the draw: it swaps a
-		// target's texture for a downscaled one and pins m_scale to 1. Those targets
-		// stay downscaled after it's switched off, so they have to go.
-		GSConfig.UserHacks_NativeScaling != old_config.UserHacks_NativeScaling)
+		// The geometry hacks below all outlive the draw, because what they move ends up
+		// baked into a cached target: native scaling swaps a target's texture for a
+		// downscaled one and pins m_scale to 1, the rest shift vertices or texture
+		// coordinates on the way in. Switch one off and a target the game doesn't redraw
+		// keeps the old pixels — that's the ghosting people report as a stuck setting.
+		GSConfig.UserHacks_NativeScaling != old_config.UserHacks_NativeScaling ||
+		GSConfig.UserHacks_AlignSpriteX != old_config.UserHacks_AlignSpriteX ||
+		GSConfig.UserHacks_MergePPSprite != old_config.UserHacks_MergePPSprite ||
+		GSConfig.UserHacks_RoundSprite != old_config.UserHacks_RoundSprite ||
+		GSConfig.UserHacks_HalfPixelOffset != old_config.UserHacks_HalfPixelOffset ||
+		GSConfig.UserHacks_ForceEvenSpritePosition != old_config.UserHacks_ForceEvenSpritePosition ||
+		GSConfig.UserHacks_NativePaletteDraw != old_config.UserHacks_NativePaletteDraw ||
+		GSConfig.UserHacks_BilinearHack != old_config.UserHacks_BilinearHack ||
+		GSConfig.UserHacks_TCOffsetX != old_config.UserHacks_TCOffsetX ||
+		GSConfig.UserHacks_TCOffsetY != old_config.UserHacks_TCOffsetY)
 	{
 		if (GSConfig.UserHacks_ReadTCOnClose)
 			g_gs_renderer->ReadbackTextureCache();

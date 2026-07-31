@@ -7,6 +7,7 @@
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
 #include "GS/GSVertexKick.h"
+#include "PerformanceMetrics.h"
 
 #include "common/Console.h"
 #include "common/BitUtils.h"
@@ -216,6 +217,7 @@ GSFrontState::GSFrontState(GSState* back)
 {
 	m_mem_target = back;
 	back->m_split_back = true;
+	back->m_parse_target = this;
 }
 
 GSFrontState::~GSFrontState()
@@ -223,6 +225,7 @@ GSFrontState::~GSFrontState()
 	// Pool nodes referenced by in-flight records belong to the back's channel
 	// and outlive us, but drain anyway so teardown never depends on ordering.
 	DrainBackQueue();
+	m_back->m_parse_target = m_back;
 }
 
 void GSFrontState::Draw()
@@ -349,9 +352,27 @@ void GSState::Reset(bool hardware_reset)
 	m_perfmon_frame.Reset();
 }
 
-template<bool auto_flush>
+template<bool auto_flush, bool sprites_only>
 void GSState::SetPrimHandlers()
 {
+	// The auto_flush instantiations exist to feed HandleAutoFlush, which reads the
+	// incoming vertex out of m_v -- so they stage every vertex through m_v instead of
+	// keeping it in registers. At SpritesOnly that is wasted on everything that is not
+	// a sprite: IsAutoFlushDraw early-outs on the prim before it looks at anything, so
+	// the staged vertex is written, read once, and discarded. Give those prims the
+	// fused direct kick.
+	//
+	// Measured on Dragon Quest VIII (SLUS-21207, 240 frames). It renders identically at
+	// levels 1 and 2 -- same draws, passes and copies -- so level 2 is an exact staged
+	// control for level 1's direct path, with no rendering difference to confound it:
+	// GS-thread cycles 2043.2M staged against 1947.4M direct over 3 runs each, ranges
+	// disjoint. That is -4.7% of GS-thread time in a title spending 8% of it in this one
+	// handler, and 581 GameDB entries ship autoFlush: 1.
+	//
+	// Mirrors IsAutoFlushDraw's early-out exactly, which keys on the level alone and
+	// not on the renderer, so the software path narrows in step with it.
+	constexpr bool non_sprite_af = auto_flush && !sprites_only;
+
 #define SetHandlerXYZ(P, auto_flush) \
 	m_fpGIFPackedRegHandlerXYZ[P][0] = &GSState::GIFPackedRegHandlerXYZF2<P, 0, auto_flush>; \
 	m_fpGIFPackedRegHandlerXYZ[P][1] = &GSState::GIFPackedRegHandlerXYZF2<P, 1, auto_flush>; \
@@ -365,13 +386,13 @@ void GSState::SetPrimHandlers()
 	m_fpGIFPackedRegHandlerSTQRGBAXYZ2[P] = &GSState::GIFPackedRegHandlerSTQRGBAXYZ2<P, auto_flush>;
 
 	SetHandlerXYZ(GS_POINTLIST, true);
-	SetHandlerXYZ(GS_LINELIST, auto_flush);
-	SetHandlerXYZ(GS_LINESTRIP, auto_flush);
-	SetHandlerXYZ(GS_TRIANGLELIST, auto_flush);
-	SetHandlerXYZ(GS_TRIANGLESTRIP, auto_flush);
-	SetHandlerXYZ(GS_TRIANGLEFAN, auto_flush);
+	SetHandlerXYZ(GS_LINELIST, non_sprite_af);
+	SetHandlerXYZ(GS_LINESTRIP, non_sprite_af);
+	SetHandlerXYZ(GS_TRIANGLELIST, non_sprite_af);
+	SetHandlerXYZ(GS_TRIANGLESTRIP, non_sprite_af);
+	SetHandlerXYZ(GS_TRIANGLEFAN, non_sprite_af);
 	SetHandlerXYZ(GS_SPRITE, auto_flush);
-	SetHandlerXYZ(GS_INVALID, auto_flush);
+	SetHandlerXYZ(GS_INVALID, non_sprite_af);
 
 #undef SetHandlerXYZ
 }
@@ -660,6 +681,7 @@ void GSState::StopBackThread()
 	m_back_thread_exit.store(true, std::memory_order_release);
 	m_chan->sema.NotifyOfWork();
 	m_back_thread.join();
+	PerformanceMetrics::SetGSBackThread({});
 	m_chan->consumer_running = false;
 	m_back_queued = false;
 }
@@ -676,13 +698,20 @@ void GSState::BackThreadLoop()
 {
 	Threading::SetNameOfCurrentThread("GS Back");
 
+	Threading::ThreadHandle handle(Threading::ThreadHandle::GetForCallingThread());
+
 	// A new thread inherits the spawner's affinity mask, and the spawner here is
 	// the MTGS thread — which EnableThreadPinning may have pinned to a single
 	// core (always the case when the back thread is respawned via GSreopen).
 	// Sharing that one core would time-slice front and back and silently
 	// re-serialize the split, so clear to all cores. VMManager owns any future
 	// explicit pinning policy for this thread.
-	Threading::ThreadHandle::GetForCallingThread().SetAffinity(0);
+	handle.SetAffinity(0);
+
+	// Half the GS work runs here under the split, and the OSD's "GS" figure is the MTGS
+	// thread alone — so without this the mode reads as a large GS saving that is really
+	// just work moved off the measured thread.
+	PerformanceMetrics::SetGSBackThread(std::move(handle));
 
 	for (;;)
 	{
@@ -1088,9 +1117,16 @@ void GSState::ResetHandlers()
 	m_fpGIFPackedRegHandlers[GIF_REG_NOP] = &GSState::GIFPackedRegHandlerNOP;
 
 	if (IsAutoFlushEnabled())
-		SetPrimHandlers<true>();
+	{
+		if (GSConfig.UserHacks_AutoFlush == GSHWAutoFlushLevel::SpritesOnly)
+			SetPrimHandlers<true, true>();
+		else
+			SetPrimHandlers<true, false>();
+	}
 	else
-		SetPrimHandlers<false>();
+	{
+		SetPrimHandlers<false, false>();
+	}
 
 	std::fill(std::begin(m_fpGIFRegHandlers), std::end(m_fpGIFRegHandlers), &GSState::GIFRegHandlerNull);
 
@@ -1241,7 +1277,7 @@ float GSState::GetTvRefreshRate()
 		case GSVideoMode::HDTV_1080I:
 			return 60;
 		default:
-			Console.Error("GS: Unknown video mode. Please report: https://github.com/PCSX2/pcsx2/issues");
+			Console.Error("GS: Unknown video mode. Please report: https://github.com/ARMSX2/ARMSX2/issues");
 			return 0;
 	}
 
@@ -4056,8 +4092,8 @@ void GSState::ReadFIFO(u8* mem, int size)
 
 	Read(mem, size);
 
-	if (m_dump)
-		m_dump->ReadFIFO(size / 16);
+	if (GSDumpBase* dump = GetDumpSink())
+		dump->ReadFIFO(size / 16);
 }
 
 void GSState::ReadLocalMemoryUnsync(u8* mem, int qwc, GIFRegBITBLTBUF BITBLTBUF, GIFRegTRXPOS TRXPOS, GIFRegTRXREG TRXREG)
@@ -4368,8 +4404,11 @@ void GSState::Transfer(const u8* mem, u32 size)
 		}
 	}
 
-	if (m_dump && mem > start)
-		m_dump->Transfer(index, start, mem - start);
+	if (mem > start)
+	{
+		if (GSDumpBase* dump = GetDumpSink())
+			dump->Transfer(index, start, mem - start);
+	}
 
 	if (index == 0)
 	{
@@ -4769,13 +4808,15 @@ void GSState::GrowVertexBuffer()
 		u32 old_size;
 		u32 new_size;
 	};
-	const std::array<AllocDesc, 5> alloc_desc = {{
+	// m_draw_vertex/m_draw_index are deliberately absent: they are staging arrays
+	// owned by EnsureDrawStaging, not parallel copies of these buffers. Sizing them
+	// here would both preserve dead contents and use m_vertex->tail as the copy
+	// length for an array whose allocation has nothing to do with m_vertex.
+	const std::array<AllocDesc, 3> alloc_desc = {{
 		{reinterpret_cast<void**>(&m_vertex->buff),      old_vertex_size, new_vertex_size},
 		// discard contents of buff_copy by setting old_size = 0
 		{reinterpret_cast<void**>(&m_vertex->buff_copy), 0,               new_vertex_size},
-		{reinterpret_cast<void**>(&m_draw_vertex.buff), old_vertex_size, new_vertex_size},
-		{reinterpret_cast<void**>(&m_index->buff),       old_index_size,  new_index_size},
-		{reinterpret_cast<void**>(&m_draw_index.buff),  old_index_size,  new_index_size}
+		{reinterpret_cast<void**>(&m_index->buff),       old_index_size,  new_index_size}
 	}};
 
 	// For logging
@@ -4804,6 +4845,44 @@ void GSState::GrowVertexBuffer()
 	}
 
 	m_vertex->maxcount = maxcount - 3; // -3 to have some space at the end of the buffer before DrawingKick can grow it
+}
+
+void GSState::EnsureDrawStaging(u32 vertex_count, u32 index_count)
+{
+	// Grow-only, and sized from the caller's live counts rather than from
+	// m_vertex/m_index capacity: the arrays being staged are the pooled node
+	// arrays the front object grew, so this object's own buffers are no bound on
+	// them. Contents are not preserved — every caller overwrites the full range it
+	// asked for before reading it back.
+	if (vertex_count > m_draw_vertex_alloc)
+	{
+		if (m_draw_vertex.buff)
+			_aligned_free(m_draw_vertex.buff);
+
+		m_draw_vertex.buff = static_cast<GSVertex*>(_aligned_malloc(sizeof(GSVertex) * vertex_count, 32));
+		if (!m_draw_vertex.buff)
+		{
+			m_draw_vertex_alloc = 0;
+			Console.Error("GS: failed to allocate %zu bytes for draw staging vertices.", sizeof(GSVertex) * vertex_count);
+			pxFailRel("Memory allocation failed");
+		}
+		m_draw_vertex_alloc = vertex_count;
+	}
+
+	if (index_count > m_draw_index_alloc)
+	{
+		if (m_draw_index.buff)
+			_aligned_free(m_draw_index.buff);
+
+		m_draw_index.buff = static_cast<u16*>(_aligned_malloc(sizeof(u16) * index_count, 32));
+		if (!m_draw_index.buff)
+		{
+			m_draw_index_alloc = 0;
+			Console.Error("GS: failed to allocate %zu bytes for draw staging indices.", sizeof(u16) * index_count);
+			pxFailRel("Memory allocation failed");
+		}
+		m_draw_index_alloc = index_count;
+	}
 }
 
 // For returning order of vertices to form a right triangle
@@ -7926,7 +8005,7 @@ GIFRegTEX0 GSState::GetTex0Layer(u32 lod)
 			TEX0.TBW = m_context->MIPTBP2.TBW6;
 			break;
 		default:
-			Console.Error("GS: Invalid guest lod setting. Please report: https://github.com/PCSX2/pcsx2/issues");
+			Console.Error("GS: Invalid guest lod setting. Please report: https://github.com/ARMSX2/ARMSX2/issues");
 	}
 
 	// Correct the texture size

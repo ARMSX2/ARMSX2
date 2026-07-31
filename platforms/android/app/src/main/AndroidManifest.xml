@@ -70,7 +70,7 @@
             android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|uiMode|screenSize|smallestScreenSize"
             android:hardwareAccelerated="true"
             android:exported="true"
-            android:resizeableActivity="false"
+            android:resizeableActivity="true"
             android:theme="@style/Theme.ARMSX2.Boot">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -89,10 +89,10 @@
         <activity
             android:name=".Main"
             android:launchMode="singleTop"
-            android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|uiMode|screenSize|smallestScreenSize"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|density"
             android:hardwareAccelerated="true"
             android:exported="true"
-            android:resizeableActivity="false">
+            android:resizeableActivity="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

@@ -31,6 +31,7 @@
 #include "pcsx2/Counters.h"           // g_FrameCount
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
+#include "pcsx2/MTGS.h"
 #include "pcsx2/PerformanceMetrics.h"
 #include "pcsx2/R5900.h"              // cpuRegs
 #include "pcsx2/VMManager.h"
@@ -1131,6 +1132,12 @@ static void ARMSX2StartJITKeepalive()
                     static_cast<int>(VMManager::GetState()), ::g_FrameCount);
                 std::fflush(stderr);
                 ARMSX2ApplyIOSOsdPresetFromConfig("post-vm-initialize");
+                // The only one of the three OSD apply points that runs with the GS already
+                // open, so the overlay position needs pushing rather than just being left in
+                // EmuConfig. Safe here and nowhere else: this is the VM thread, which is what
+                // MTGS::RunOnGSThread asserts on.
+                if (MTGS::IsOpen())
+                    MTGS::ApplySettings();
                 std::fprintf(stderr, "@@BOOT_POST_INIT@@ stage=after_osd state=%d frame=%u\n",
                     static_cast<int>(VMManager::GetState()), ::g_FrameCount);
                 std::fflush(stderr);

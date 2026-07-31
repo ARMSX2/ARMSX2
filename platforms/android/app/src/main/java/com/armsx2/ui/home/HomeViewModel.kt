@@ -148,6 +148,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         state.value = buildState(state.value)
     }
 
+    /** Empty Recently Played. Games return as they're launched again; the library is untouched. */
+    fun clearRecent() {
+        repository.clearRecent()
+        state.value = buildState(state.value)
+    }
+
     private fun buildState(base: HomeUiState): HomeUiState {
         val recents = repository.recentGames(base.allGames)
         val recentOrder = recents.mapIndexed { index, game -> game.uri.toString() to index }.toMap()

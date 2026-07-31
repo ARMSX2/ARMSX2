@@ -118,12 +118,8 @@
      <string>&amp;Help</string>
     </property>
     <addaction name="actionGitHubRepository"/>
-    <addaction name="actionWiki"/>
-    <addaction name="actionDocumentation"/>
+    <addaction name="actionWebsite"/>
     <addaction name="separator"/>
-    <addaction name="actionCheckForUpdates"/>
-    <addaction name="separator"/>
-    <addaction name="actionAboutQt"/>
     <addaction name="actionAbout"/>
    </widget>
    <widget class="QMenu" name="menuDebug">
@@ -518,37 +514,12 @@
     <string>&amp;GitHub Repository...</string>
    </property>
   </action>
-  <action name="actionWiki">
+  <action name="actionWebsite">
    <property name="icon">
-    <iconset theme="book"/>
+    <iconset theme="global-line"/>
    </property>
    <property name="text">
-    <string>PCSX2 &amp;Wiki...</string>
-   </property>
-  </action>
-  <action name="actionDocumentation">
-   <property name="icon">
-    <iconset theme="booklet"/>
-   </property>
-   <property name="text">
-    <string>D&amp;ocumentation...</string>
-   </property>
-  </action>
-  <action name="actionCheckForUpdates">
-   <property name="icon">
-    <iconset theme="download-2-line"/>
-   </property>
-   <property name="text">
-    <string>Check for &amp;Updates...</string>
-   </property>
-  </action>
-  <action name="actionAboutQt">
-   <property name="icon">
-    <iconset resource="resources/resources.qrc">
-     <normaloff>:/icons/QT.png</normaloff>:/icons/QT.png</iconset>
-   </property>
-   <property name="text">
-    <string>About &amp;Qt...</string>
+    <string>ARMSX2 &amp;Website...</string>
    </property>
   </action>
   <action name="actionAbout">

@@ -121,12 +121,12 @@ void GSDrawScanline::ResetCodeCache()
 	GSCodeReserve::ResetMemory();
 }
 
-bool GSDrawScanline::SetupDraw(GSRasterizerData& data)
+bool GSDrawScanline::SetupDraw(GSRasterizerData& data, bool allow_compile)
 {
 	const GSScanlineGlobalData& global = data.global;
 
 #ifdef ENABLE_JIT_RASTERIZER
-	data.draw_scanline = m_ds_map[global.sel];
+	data.draw_scanline = m_ds_map.Lookup(global.sel, allow_compile);
 	if (!data.draw_scanline) [[unlikely]]
 		return false;
 
@@ -138,7 +138,7 @@ bool GSDrawScanline::SetupDraw(GSRasterizerData& data)
 		sel.zwrite = 0;
 		sel.edge = 1;
 
-		data.draw_edge = m_ds_map[sel];
+		data.draw_edge = m_ds_map.Lookup(sel, allow_compile);
 		if (!data.draw_edge) [[unlikely]]
 			return false;
 	}
@@ -165,7 +165,7 @@ bool GSDrawScanline::SetupDraw(GSRasterizerData& data)
 	sel.zequal = global.sel.zequal;
 	sel.notest = global.sel.notest;
 
-	return (data.setup_prim = m_sp_map[sel]) != nullptr;
+	return (data.setup_prim = m_sp_map.Lookup(sel, allow_compile)) != nullptr;
 #else
 	data.setup_prim = &GSDrawScanline::CSetupPrim;
 	data.draw_scanline = &GSDrawScanline::CDrawScanline;

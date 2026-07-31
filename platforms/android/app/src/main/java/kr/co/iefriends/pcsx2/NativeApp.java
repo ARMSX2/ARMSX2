@@ -175,6 +175,53 @@ public class NativeApp {
 	 * enough — a patch is inert unless its name is enabled here.
 	 */
 	public static native void setEnabledPatches(boolean cheats, String[] allNames, String[] enabledNames);
+	/**
+	 * One-time repair: drop the GLOBAL [Patches]/[Cheats] "Enable" lists.
+	 * <p>
+	 * Older builds filled these automatically just by opening the Patch Manager, and because
+	 * patches are enabled by NAME those entries armed the same-named group in the bundled pnach
+	 * archive for every game. Per-game lists are left alone. Call once, gated on a pref.
+	 */
+	public static native void purgeGlobalPatchEnableLists();
+
+	// ---- USB lightgun (GunCon 2) ----------------------------------------------
+	/** GunCon2 binding ids, from pcsx2/USB/usb-lightgun/guncon2.cpp. */
+	public static final int GUNCON_C = 1;
+	public static final int GUNCON_B = 2;
+	public static final int GUNCON_A = 3;
+	public static final int GUNCON_DPAD_UP = 4;
+	public static final int GUNCON_DPAD_RIGHT = 5;
+	public static final int GUNCON_DPAD_DOWN = 6;
+	public static final int GUNCON_DPAD_LEFT = 7;
+	public static final int GUNCON_TRIGGER = 13;
+	public static final int GUNCON_SELECT = 14;
+	public static final int GUNCON_START = 15;
+	/** Fires a deliberately off-screen shot — how these games are reloaded. */
+	public static final int GUNCON_SHOOT_OFFSCREEN = 16;
+	public static final int GUNCON_RECALIBRATE = 17;
+
+	/**
+	 * Set the emulated device in a USB port. {@code type} is a core type name
+	 * ("guncon2", "None", ...); port is 0 or 1. Restart recommended — swapping a USB
+	 * device on a running VM is the emulated equivalent of unplugging it.
+	 */
+	public static native void usbSetDeviceType(int port, String type);
+
+	/**
+	 * Every USB device the core can emulate. Records are separated by U+001E, and each record is
+	 * {@code typeName} U+001F {@code displayName} then one U+001F-separated entry per subtype.
+	 * Enumerated from the core's own registry, so the list cannot drift from what it supports.
+	 */
+	public static native String usbDeviceTypes();
+
+	/** Pick a subtype for whatever device is in {@code port}; devices without subtypes ignore it. */
+	public static native void usbSetDeviceSubtype(int port, int subtype);
+
+	/** Aim, in WINDOW PIXELS (our SurfaceView is the whole window, so raw touch x/y). */
+	public static native void usbLightgunAim(float x, float y);
+
+	/** Press/release one GUNCON_* binding on a port. */
+	public static native void usbLightgunButton(int port, int bind, boolean pressed);
 	public static native String getGameTitle(String path);
 	public static native String getGameSerial();
 	public static native String getGameCRC();
