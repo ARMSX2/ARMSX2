@@ -88,7 +88,16 @@ bool GSGetPresentCapSuspended();
 int GSfreeze(FreezeAction mode, freezeData* data);
 std::string GSGetBaseSnapshotFilename();
 std::string GSGetBaseVideoFilename();
-void GSQueueSnapshot(const std::string& path, u32 gsdump_frames = 0);
+// False if there is no renderer, or a snapshot is already queued and this request was dropped.
+bool GSQueueSnapshot(const std::string& path, u32 gsdump_frames = 0);
+// True while a dump is open and taking frames. Queueing a snapshot over one of these does not
+// start a second dump -- it overwrites the remaining frame count and cuts the recording short.
+bool GSIsDumpRecording();
+// True when the two-object split is live: a pipelined back thread with its own front parser.
+// Not the same question as the BackThreadMode setting, which downgrades to lockstep when the
+// split is unsupported. GS dumps recorded in this mode are incomplete -- the transfer hook
+// sits on the parse path, so the front's transfers never reach the dump.
+bool GSHasFrontParser();
 void GSStopGSDump();
 bool GSBeginCapture(std::string filename);
 void GSEndCapture();

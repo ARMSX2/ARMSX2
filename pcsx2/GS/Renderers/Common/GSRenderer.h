@@ -67,7 +67,11 @@ public:
 	bool SaveSnapshotToMemory(u32 window_width, u32 window_height, bool apply_aspect, bool crop_borders,
 		u32* width, u32* height, std::vector<u32>* pixels);
 
-	void QueueSnapshot(const std::string& path, const u32 gsdump_frames);
+	// False if a snapshot is already queued and this request was dropped.
+	bool QueueSnapshot(const std::string& path, const u32 gsdump_frames);
+	// True while a dump is open and taking frames. A queued snapshot does not count: the
+	// dump is not created until the VSync that services it.
+	bool IsDumpRecording() const { return static_cast<bool>(m_dump); }
 	void StopGSDump();
 	void PresentCurrentFrame();
 	bool BeginCapture(std::string filename, const GSVector2i& size = GSVector2i(0, 0));

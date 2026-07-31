@@ -1157,10 +1157,10 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 		DumpTransferImages();
 }
 
-void GSRenderer::QueueSnapshot(const std::string& path, const u32 gsdump_frames)
+bool GSRenderer::QueueSnapshot(const std::string& path, const u32 gsdump_frames)
 {
 	if (!m_snapshot.empty())
-		return;
+		return false;
 
 	// Allows for providing a complete path
 	if (path.size() > 4 && StringUtil::EndsWithNoCase(path, ".png"))
@@ -1170,6 +1170,7 @@ void GSRenderer::QueueSnapshot(const std::string& path, const u32 gsdump_frames)
 
 	// this is really gross, but wx we get the snapshot request after shift...
 	m_dump_frames = gsdump_frames;
+	return true;
 }
 
 static std::string GSGetBaseFilename()

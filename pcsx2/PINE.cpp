@@ -172,6 +172,7 @@ namespace PINEServer
 		MsgGetSetting = 0x11, /**< Reads a setting by section/key. */
 		MsgSetSetting = 0x12, /**< Writes a setting by section/key and applies it. */
 		MsgFrameAdvance = 0x13, /**< Advances a paused VM by one frame. */
+		MsgGSDump = 0x14, /**< Records a GS dump of the next N frames. */
 
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
@@ -388,6 +389,135 @@ namespace PINEServer
 			counter(GSPerfMon::HashCacheHit), counter(GSPerfMon::HashCacheMiss),
 			gs_memory.view(), PerformanceMetrics::GetFrameNumber(),
 			Pcsx2Config::GSOptions::GetRendererName(EmuConfig.GS.Renderer), device_name, driver_info);
+	}
+
+	/**
+	 * Escapes a string for embedding in a JSON string literal. Only paths go through this
+	 * -- a Windows path is full of backslashes, which would otherwise leave the reply
+	 * unparseable. BuildStatsJson's sanitizer is a different job: it flattens driver blurb
+	 * that is allowed to lose fidelity, whereas a path the client is about to open is not.
+	 */
+	static std::string JsonEscape(const std::string_view str)
+	{
+		std::string out;
+		out.reserve(str.size());
+		for (const char c : str)
+		{
+			if (c == '"' || c == '\\')
+				out.push_back('\\');
+			out.push_back(c);
+		}
+		return out;
+	}
+
+	/**
+	 * Queues a GS dump of the next `frames` frames, or stops a dump already recording when
+	 * `frames` is zero -- the same pair of actions the GSDumpMultiFrame hotkey binds to press
+	 * and release. `path` may be empty for the usual auto-named file under the snapshots
+	 * folder. Returns false only if there is no GS to dump, which fails the command.
+	 *
+	 * Marshalled the same way as BuildStatsJson and for the same reason: the MTGS ring is
+	 * single-producer and the PINE thread is not that producer, so pushing a packet from
+	 * here races the EE thread's own writes and can deadlock the two of them. Hop to the CPU
+	 * thread, push from there, and block until the GS thread has taken the request.
+	 *
+	 * The reply describes the request, not a finished file. The dump is opened on the next
+	 * VSync and a multi-frame dump is closed some frames after that, so a client that waits
+	 * for the file has to keep the VM running or step it with MsgFrameAdvance -- a paused VM
+	 * never reaches the VSync that writes anything. A screenshot lands next to the dump too;
+	 * that is inherent to the snapshot path, not something this command adds.
+	 *
+	 * `queued` false carries a `reason`, because both ways a request can be turned away are
+	 * served commands that quietly did nothing rather than socket-level failures. The reasons
+	 * are not symmetric: "snapshot pending" is a request that arrived between another one and
+	 * the VSync servicing it, and retrying a frame later works. "already recording" is a
+	 * refusal -- the snapshot path creates a dump only when none exists, so a second request
+	 * would take a screenshot, write no dump, and overwrite the frame counter of the dump
+	 * already running, cutting it short. Handing back a path for a file that will never appear
+	 * is the worst of the available answers, so stop the running dump first if you mean to.
+	 */
+	static bool QueueGSDump(u32 frames, std::string path, std::string* reply)
+	{
+		if (!MTGS::IsOpen())
+			return false;
+
+		// QueueSnapshot honours a caller-supplied path only when it ends in .png, which it
+		// strips to get the base name shared by the screenshot and the dump; anything else is
+		// silently discarded in favour of an auto-named file in the snapshots folder. Silence
+		// is the wrong failure for a scripted client -- it writes somewhere the script never
+		// looks -- so meet that contract here instead. Drop a dump or image suffix if the
+		// caller spelled one out, so naming the file you want does not earn you a doubled
+		// extension, and let what is left be the base name.
+		if (!path.empty())
+		{
+			for (const std::string_view suffix : {".gs.zst", ".gs.xz", ".gs", ".png"})
+			{
+				if (StringUtil::EndsWithNoCase(path, suffix))
+				{
+					path.erase(path.size() - suffix.size());
+					break;
+				}
+			}
+		}
+
+		bool queued = false, stopped = false, incomplete = false;
+		std::string base;
+		const char* dump_ext = "";
+		const char* reason = "";
+
+		Host::RunOnCPUThread(
+			[&]() {
+				MTGS::RunOnGSThread([&]() {
+					if (frames == 0)
+					{
+						GSStopGSDump();
+						stopped = true;
+						return;
+					}
+
+					if (GSIsDumpRecording())
+					{
+						reason = "already recording";
+						return;
+					}
+
+					// Resolve the auto-name here rather than leaving it to QueueSnapshot, so the
+					// reply can name the exact file the client is about to wait for.
+					base = path.empty() ? GSGetBaseSnapshotFilename() : path;
+					queued = GSQueueSnapshot(base + ".png", frames);
+					if (!queued)
+					{
+						reason = "snapshot pending";
+						return;
+					}
+
+					// GSConfig is the GS thread's copy of the config, so read the compression
+					// method here -- it decides the extension the dump writer will append.
+					switch (GSConfig.GSDumpCompression)
+					{
+						case GSDumpCompressionMethod::Uncompressed:
+							dump_ext = ".gs";
+							break;
+						case GSDumpCompressionMethod::LZMA:
+							dump_ext = ".gs.xz";
+							break;
+						default:
+							dump_ext = ".gs.zst";
+							break;
+					}
+
+					incomplete = GSHasFrontParser();
+				});
+				MTGS::WaitGS(false);
+			},
+			true);
+
+		*reply = fmt::format(
+			"{{\"queued\":{},\"stopped\":{},\"frames\":{},\"path\":\"{}\","
+			"\"pipelined_incomplete\":{},\"reason\":\"{}\"}}",
+			queued ? "true" : "false", stopped ? "true" : "false", frames,
+			queued ? JsonEscape(base + dump_ext) : std::string(), incomplete ? "true" : "false", reason);
+		return true;
 	}
 } // namespace PINEServer
 
@@ -948,6 +1078,35 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 				if (!SafetyChecks(buf_cnt, 0, ret_cnt, 0, buf_size)) [[unlikely]]
 					goto error;
 				Host::RunOnCPUThread([]() { VMManager::FrameAdvance(1); });
+				break;
+			}
+			case MsgGSDump:
+			{
+				// [u32 frames][u32 path_len][path_len bytes]. frames == 0 stops a dump that is
+				// already recording; UINT32_MAX records until something stops it.
+				if (!VMManager::HasValidVM())
+					goto error;
+				if (!SafetyChecks(buf_cnt, 4, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+
+				const u32 frames = FromSpan<u32>(buf, buf_cnt);
+				buf_cnt += 4;
+
+				std::string path;
+				if (!ReadLengthPrefixedString(buf, buf_cnt, buf_size, &path)) [[unlikely]]
+					goto error;
+
+				std::string reply;
+				if (!QueueGSDump(frames, std::move(path), &reply)) [[unlikely]]
+					goto error;
+
+				const u32 size = reply.size() + 1;
+				if (!SafetyChecks(buf_cnt, 0, ret_cnt, size + 4, buf_size)) [[unlikely]]
+					goto error;
+				ToResultVector(ret_buffer, size, ret_cnt);
+				ret_cnt += 4;
+				memcpy(&ret_buffer[ret_cnt], reply.c_str(), size);
+				ret_cnt += size;
 				break;
 			}
 			default:
