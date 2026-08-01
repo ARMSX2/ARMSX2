@@ -929,6 +929,37 @@ static NSString* ARMSX2ResolveISOPath(NSString* isoName)
     return nil;
 }
 
+static BOOL ARMSX2PerGameIdentityForCurrentGame(std::string* serial, u32* crc);
+
+// There is one process-wide InputIsoFile, shared between the running VM and every
+// metadata scan, so scanning the disc a game is playing from closes it out from
+// under the game. GameList.h says as much above PopulateEntryFromPath: do not call
+// it while the system is running. Everything after that reads zero blocks and the
+// game starves while the emulator carries on at full speed, which is a miserable
+// thing to debug from a bug report.
+static bool ARMSX2PathIsRunningDisc(NSString* resolvedPath)
+{
+    if (resolvedPath.length == 0 || !VMManager::HasValidVM())
+        return false;
+
+    const std::string running = VMManager::GetDiscPath();
+    return !running.empty() && running == resolvedPath.UTF8String;
+}
+
+static void ARMSX2NoteRunningDiscScan(NSString* path)
+{
+    // Once is enough. This went unnoticed for a long time precisely because it was
+    // silent; if something finds a new way in, it should show up in an ordinary log
+    // rather than needing a special build with a backtrace in it.
+    static bool warned = false;
+    if (warned)
+        return;
+
+    warned = true;
+    Console.Warning("Not scanning '%s' while a VM is running; using the game list cache instead.",
+        path.UTF8String);
+}
+
 static BOOL ARMSX2PopulateGameListEntryForISO(NSString* isoName, GameList::Entry* entry, NSString** resolvedPath)
 {
     NSString* path = ARMSX2ResolveISOPath(isoName);
@@ -937,6 +968,25 @@ static BOOL ARMSX2PopulateGameListEntryForISO(NSString* isoName, GameList::Entry
 
     if (path.length == 0 || !entry)
         return NO;
+
+    // Any VM, not just one playing this particular file. InputIsoFile::Open closes
+    // whatever is already open before it opens anything, so scanning some unrelated
+    // image while a game is running kills that game's disc just the same.
+    if (VMManager::HasValidVM())
+    {
+        ARMSX2NoteRunningDiscScan(path);
+
+        // Cache only, and a miss fails rather than falling through to a scan. The
+        // worst case is a missing cover or title while a game is up; the
+        // alternative is killing the disc out from under it.
+        const auto lock = GameList::GetLock();
+        const GameList::Entry* cached = GameList::GetEntryForPath(path.UTF8String);
+        if (!cached)
+            return NO;
+
+        *entry = *cached;
+        return YES;
+    }
 
     return GameList::PopulateEntryFromPath(path.UTF8String, entry) ? YES : NO;
 }
@@ -2165,6 +2215,13 @@ static void ARMSX2SetPatchEnableListForIdentity(NSArray<NSString*>* values, cons
 // game-settings writer.
 static BOOL ARMSX2PerGameIdentityForISO(NSString* isoName, std::string* serial, u32* crc)
 {
+    // The VM already knows what it booted, so asking the disc is both slower and,
+    // until this check existed, destructive. Taking it here rather than relying on
+    // the cache below also means this keeps working when the game list has no
+    // entry for the running game.
+    if (ARMSX2PathIsRunningDisc(ARMSX2ResolveISOPath(isoName)))
+        return ARMSX2PerGameIdentityForCurrentGame(serial, crc);
+
     GameList::Entry entry;
     NSString* resolvedPath = nil;
     if (!ARMSX2PopulateGameListEntryForISO(isoName, &entry, &resolvedPath) || entry.crc == 0)
