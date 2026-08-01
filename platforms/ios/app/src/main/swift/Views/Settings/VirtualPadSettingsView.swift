@@ -207,9 +207,13 @@ struct VirtualPadSettingsView: View {
                     Text("\(settings.localized("Phone Rumble Strength")): \(Int(settings.phoneRumbleStrength * 100))%")
                     Slider(value: $settings.phoneRumbleStrength, in: 0.0...1.0, step: 0.05)
                 }
-                Text(settings.localized("How hard the phone itself rumbles when no controller is connected. Has no effect on a controller's own motors."))
+                Text(settings.localized("Controls the iPhone Taptic Engine when no controller is connected. 25% preserves the original Core Haptics intensity; 100% applies up to 3x gain, and 0% disables phone rumble. Has no effect on a controller's own motors."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Toggle(
+                    settings.localized("Increase Duration of Rumble and Interpolation"),
+                    isOn: $settings.increaseRumbleDurationAndInterpolation)
             }
 
             Section(settings.localized("Layout")) {
