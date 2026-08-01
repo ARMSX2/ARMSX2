@@ -62,6 +62,7 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -3973,6 +3974,30 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     return si.GetBoolValue(section.UTF8String, key.UTF8String, def);
 }
 
+// The per-game panel writes every field it owns when you press Save, and each write
+// used to queue a reload of its own. One tap came out the other side as seventy-odd
+// full config reloads, each re-reading the INI, re-running GameDB and rebuilding the
+// GS config. Let the last write in a burst be the one that reloads.
+static void ARMSX2RequestPerGameSettingsReload()
+{
+    static std::atomic<uint64_t> s_generation{0};
+    const uint64_t mine = s_generation.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(0.05 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            // Someone wrote after us, so they own the reload.
+            if (s_generation.load(std::memory_order_relaxed) != mine)
+                return;
+
+            // EmuConfig and the MTGS ring are the CPU thread's; this runs on the UI thread.
+            Host::RunOnCPUThread([]() {
+                VMManager::ReloadGameSettings();
+                if (MTGS::IsOpen())
+                    MTGS::ApplySettings();
+            });
+        });
+}
+
 + (void)setPerGameINIInt:(nonnull NSString *)section key:(nonnull NSString *)key value:(int)value forISO:(nonnull NSString *)isoName {
     std::string serial;
     u32 crc = 0;
@@ -4054,12 +4079,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     si.SetIntValue(section.UTF8String, key.UTF8String, value);
     Error error;
     si.Save(&error);
-    // EmuConfig and the MTGS ring are the CPU thread's; this runs on the UI thread.
-    Host::RunOnCPUThread([]() {
-        VMManager::ReloadGameSettings();
-        if (MTGS::IsOpen())
-            MTGS::ApplySettings();
-    });
+    ARMSX2RequestPerGameSettingsReload();
 }
 
 + (void)setPerGameINIBoolForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(BOOL)value {
@@ -4072,12 +4092,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     si.SetBoolValue(section.UTF8String, key.UTF8String, value);
     Error error;
     si.Save(&error);
-    // EmuConfig and the MTGS ring are the CPU thread's; this runs on the UI thread.
-    Host::RunOnCPUThread([]() {
-        VMManager::ReloadGameSettings();
-        if (MTGS::IsOpen())
-            MTGS::ApplySettings();
-    });
+    ARMSX2RequestPerGameSettingsReload();
 }
 
 + (float)getPerGameINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(float)def forISO:(nonnull NSString *)isoName {
@@ -4124,12 +4139,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     si.SetFloatValue(section.UTF8String, key.UTF8String, value);
     Error error;
     si.Save(&error);
-    // EmuConfig and the MTGS ring are the CPU thread's; this runs on the UI thread.
-    Host::RunOnCPUThread([]() {
-        VMManager::ReloadGameSettings();
-        if (MTGS::IsOpen())
-            MTGS::ApplySettings();
-    });
+    ARMSX2RequestPerGameSettingsReload();
 }
 
 + (void)deletePerGameINIValueForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key {
@@ -4144,12 +4154,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     si.RemoveEmptySections();
     Error error;
     si.Save(&error);
-    // EmuConfig and the MTGS ring are the CPU thread's; this runs on the UI thread.
-    Host::RunOnCPUThread([]() {
-        VMManager::ReloadGameSettings();
-        if (MTGS::IsOpen())
-            MTGS::ApplySettings();
-    });
+    ARMSX2RequestPerGameSettingsReload();
 }
 
 + (nonnull NSString *)perGameIdentityKeyForCurrentGame {
