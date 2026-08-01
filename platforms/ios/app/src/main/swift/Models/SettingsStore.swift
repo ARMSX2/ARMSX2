@@ -1506,13 +1506,25 @@ final class SettingsStore {
         _padOpacityConfig.onSet?(padOpacity)
     }}
     let _phoneRumbleStrengthConfig = Setting<Float>(
-        section: "ARMSX2iOS/UI", key: "PhoneRumbleStrength", default: 1.0,
+        section: "ARMSX2iOS/UI", key: "PhoneRumbleStrength", default: 0.25,
         suppressible: false,
         writer: ARMSX2Bridge.setINIFloat)
-    var phoneRumbleStrength: Float = 1.0 { didSet {
+    var phoneRumbleStrength: Float = 0.25 { didSet {
         guard !(_phoneRumbleStrengthConfig.suppressible && suppressINIWrites) else { return }
         _phoneRumbleStrengthConfig.writer(_phoneRumbleStrengthConfig.section, _phoneRumbleStrengthConfig.key, phoneRumbleStrength)
         _phoneRumbleStrengthConfig.onSet?(phoneRumbleStrength)
+    }}
+    let _increaseRumbleDurationAndInterpolationConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "IncreaseRumbleDurationAndInterpolation", default: true,
+        suppressible: false,
+        writer: ARMSX2Bridge.setINIBool)
+    var increaseRumbleDurationAndInterpolation: Bool = true { didSet {
+        guard !(_increaseRumbleDurationAndInterpolationConfig.suppressible && suppressINIWrites) else { return }
+        _increaseRumbleDurationAndInterpolationConfig.writer(
+            _increaseRumbleDurationAndInterpolationConfig.section,
+            _increaseRumbleDurationAndInterpolationConfig.key,
+            increaseRumbleDurationAndInterpolation)
+        _increaseRumbleDurationAndInterpolationConfig.onSet?(increaseRumbleDurationAndInterpolation)
     }}
     let _hapticFeedbackConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "HapticFeedback", default: true,
@@ -2062,7 +2074,8 @@ final class SettingsStore {
         // UI
         padOpacity = ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "PadOpacity", defaultValue: 0.6)
         hapticFeedback = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HapticFeedback", defaultValue: true)
-        phoneRumbleStrength = ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "PhoneRumbleStrength", defaultValue: 1.0)
+        phoneRumbleStrength = ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "PhoneRumbleStrength", defaultValue: 0.25)
+        increaseRumbleDurationAndInterpolation = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "IncreaseRumbleDurationAndInterpolation", defaultValue: true)
         dpadDiagonalsEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "DpadDiagonalsEnabled", defaultValue: true)
         faceComboZonesEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "FaceComboZonesEnabled", defaultValue: true)
         virtualPadSkin = VirtualPadSkin(rawValue: Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/UI", key: "VirtualPadSkin", defaultValue: 0))) ?? .armsx2Refresh
@@ -2308,7 +2321,8 @@ final class SettingsStore {
         osdShowDeviceStats = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "OsdShowDeviceStats", defaultValue: osdPreset != .off)
         padOpacity = ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "PadOpacity", defaultValue: 0.6)
         hapticFeedback = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HapticFeedback", defaultValue: true)
-        phoneRumbleStrength = ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "PhoneRumbleStrength", defaultValue: 1.0)
+        phoneRumbleStrength = ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "PhoneRumbleStrength", defaultValue: 0.25)
+        increaseRumbleDurationAndInterpolation = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "IncreaseRumbleDurationAndInterpolation", defaultValue: true)
         dpadDiagonalsEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "DpadDiagonalsEnabled", defaultValue: true)
         faceComboZonesEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "FaceComboZonesEnabled", defaultValue: true)
         virtualPadSkin = VirtualPadSkin(rawValue: Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/UI", key: "VirtualPadSkin", defaultValue: 0))) ?? .armsx2Refresh
@@ -2803,4 +2817,5 @@ final class SettingsStore {
         shadeBoostGamma = 50
         // Texture pack and dump toggles are intentionally preserved.
     }
+
 }

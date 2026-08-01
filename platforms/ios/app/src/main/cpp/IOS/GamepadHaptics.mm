@@ -62,12 +62,24 @@ static constexpr double ARMSX2_RUMBLE_SMALL_ATTACK_SECONDS = 0.028;
 static constexpr double ARMSX2_RUMBLE_LARGE_RELEASE_SECONDS = 0.120;
 static constexpr double ARMSX2_RUMBLE_SMALL_RELEASE_SECONDS = 0.060;
 static constexpr double ARMSX2_RUMBLE_CROSSFADE_SECONDS = 0.045;
+static constexpr float ARMSX2_PHONE_RUMBLE_BASELINE_SETTING = 0.25f;
+static constexpr float ARMSX2_PHONE_RUMBLE_MAX_GAIN = 3.0f;
+static constexpr float ARMSX2_PHONE_RUMBLE_MEDIUM_THRESHOLD = 0.34f;
+static constexpr float ARMSX2_PHONE_RUMBLE_HARD_THRESHOLD = 0.67f;
+
+enum class ARMSX2PhoneRumbleClass : u8
+{
+    Weak,
+    Medium,
+    Hard,
+};
 
 struct ARMSX2RumbleEnvelope
 {
     float start_level = 0.0f;
     float target_level = 0.0f;
     double start_time = 0.0;
+    double hold_duration = 0.0;
     double duration = 0.0;
 };
 
@@ -77,6 +89,7 @@ static std::atomic<u32> s_loggedNativePulseHapticEvents{0};
 static CHHapticEngine* s_nativeHapticEngine = nil;
 static id<CHHapticAdvancedPatternPlayer> s_nativeHapticPlayer[ARMSX2_RUMBLE_CHANNEL_COUNT] = {};
 static ARMSX2RumbleEnvelope s_nativeHapticEnvelope[ARMSX2_RUMBLE_CHANNEL_COUNT];
+static float s_nativeHapticReleaseScale[ARMSX2_RUMBLE_CHANNEL_COUNT] = { 1.0f, 1.0f };
 static u32 s_nativeHapticStopGeneration[ARMSX2_RUMBLE_CHANNEL_COUNT] = {};
 static bool s_nativeHapticEngineRunning = false;
 static std::atomic<int> s_nativeHapticSourceGamepad{-1};
@@ -572,6 +585,7 @@ static void ARMSX2StopRumbleChannelOnMain(u32 channel)
     }
 
     s_nativeHapticEnvelope[channel] = {};
+    s_nativeHapticReleaseScale[channel] = 1.0f;
 }
 
 static void ARMSX2StopNativeGamepadRumbleOnMain()
@@ -765,7 +779,16 @@ static float ARMSX2CurrentRumbleLevel(u32 channel, double now)
     if (envelope.duration <= 0.0)
         return envelope.target_level;
 
-    const double progress = std::clamp((now - envelope.start_time) / envelope.duration, 0.0, 1.0);
+    const double elapsed = now - envelope.start_time;
+    if (elapsed <= envelope.hold_duration)
+        return envelope.start_level;
+
+    const double fade_duration = envelope.duration - envelope.hold_duration;
+    if (fade_duration <= 0.0)
+        return envelope.target_level;
+
+    const double progress = std::clamp(
+        (elapsed - envelope.hold_duration) / fade_duration, 0.0, 1.0);
     return std::clamp(envelope.start_level +
         ((envelope.target_level - envelope.start_level) * static_cast<float>(progress)), 0.0f, 1.0f);
 }
@@ -790,14 +813,18 @@ static double ARMSX2RumbleTransitionDuration(u32 channel, float current, float t
     return base_duration * distance_scale;
 }
 
-// Expects the engine to already be up, which is the caller's job. Curves model
-// the inertia of a physical eccentric motor while retaining immediate response.
-static bool ARMSX2SetRumbleChannelOnMain(u32 channel, float level)
+// Expects the engine to already be up, which is the caller's job. Extended
+// releases hold their current force first, then use the normal 1x fade duration.
+// This keeps the additional duration perceptible instead of stretching one weak,
+// slow fade across the entire envelope.
+static bool ARMSX2SetRumbleChannelOnMain(u32 channel, float level, float release_scale)
 {
     if (channel >= ARMSX2_RUMBLE_CHANNEL_COUNT)
         return false;
 
     const float target = std::clamp(level, 0.0f, 1.0f);
+    if (target > 0.001f)
+        s_nativeHapticReleaseScale[channel] = std::clamp(release_scale, 1.0f, 3.0f);
     if (target > 0.001f && !ARMSX2EnsureRumbleChannelOnMain(channel))
         return false;
 
@@ -812,12 +839,20 @@ static bool ARMSX2SetRumbleChannelOnMain(u32 channel, float level)
         std::abs(s_nativeHapticEnvelope[channel].target_level - target) < 0.002f)
         return true;
 
-    const double duration = ARMSX2RumbleTransitionDuration(channel, current, target);
+    const double fade_duration = ARMSX2RumbleTransitionDuration(channel, current, target);
+    const double hold_duration = (target <= 0.001f)
+        ? fade_duration * (static_cast<double>(s_nativeHapticReleaseScale[channel]) - 1.0)
+        : 0.0;
+    const double duration = hold_duration + fade_duration;
     NSError* error = nil;
-    NSArray<CHHapticParameterCurveControlPoint*>* controlPoints = @[
-        [[[CHHapticParameterCurveControlPoint alloc] initWithRelativeTime:0.0 value:current] autorelease],
-        [[[CHHapticParameterCurveControlPoint alloc] initWithRelativeTime:duration value:target] autorelease]
-    ];
+    NSMutableArray<CHHapticParameterCurveControlPoint*>* controlPoints = [NSMutableArray arrayWithObject:
+        [[[CHHapticParameterCurveControlPoint alloc] initWithRelativeTime:0.0 value:current] autorelease]];
+    if (hold_duration > 0.0005) {
+        [controlPoints addObject:[[[CHHapticParameterCurveControlPoint alloc]
+            initWithRelativeTime:hold_duration value:current] autorelease]];
+    }
+    [controlPoints addObject:[[[CHHapticParameterCurveControlPoint alloc]
+        initWithRelativeTime:duration value:target] autorelease]];
     CHHapticParameterCurve* curve = [[[CHHapticParameterCurve alloc]
         initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
               controlPoints:controlPoints
@@ -829,7 +864,7 @@ static bool ARMSX2SetRumbleChannelOnMain(u32 channel, float level)
         return false;
     }
 
-    s_nativeHapticEnvelope[channel] = { current, target, now, duration };
+    s_nativeHapticEnvelope[channel] = { current, target, now, hold_duration, duration };
     const u32 generation = ++s_nativeHapticStopGeneration[channel];
     if (target <= 0.001f) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
@@ -880,6 +915,61 @@ static void ARMSX2PlayRumbleTransientOnMain(float large, float small)
         s_nativeHapticLastTransientTime = now;
 }
 
+static float ARMSX2PhoneRumbleGain(float setting)
+{
+    const float clamped = std::clamp(setting, 0.0f, 1.0f);
+    if (clamped <= ARMSX2_PHONE_RUMBLE_BASELINE_SETTING)
+        return clamped / ARMSX2_PHONE_RUMBLE_BASELINE_SETTING;
+
+    // The original synthesis becomes the 25% baseline. The upper three quarters
+    // of the slider add gain linearly until 100% reaches three times that baseline.
+    const float normalized = (clamped - ARMSX2_PHONE_RUMBLE_BASELINE_SETTING) /
+        (1.0f - ARMSX2_PHONE_RUMBLE_BASELINE_SETTING);
+    return 1.0f + (normalized * (ARMSX2_PHONE_RUMBLE_MAX_GAIN - 1.0f));
+}
+
+static ARMSX2PhoneRumbleClass ARMSX2ClassifyPhoneRumble(float large, float small)
+{
+    const float source_level = std::max(large, small);
+    if (source_level >= ARMSX2_PHONE_RUMBLE_HARD_THRESHOLD)
+        return ARMSX2PhoneRumbleClass::Hard;
+    if (source_level >= ARMSX2_PHONE_RUMBLE_MEDIUM_THRESHOLD)
+        return ARMSX2PhoneRumbleClass::Medium;
+    return ARMSX2PhoneRumbleClass::Weak;
+}
+
+static float ARMSX2PhoneRumbleReleaseScale(float setting, ARMSX2PhoneRumbleClass rumble_class)
+{
+    const float clamped = std::clamp(setting, ARMSX2_PHONE_RUMBLE_BASELINE_SETTING, 1.0f);
+    switch (rumble_class) {
+        case ARMSX2PhoneRumbleClass::Hard:
+            // Hard effects begin gaining inertia above 50%, reach 2x at 75%,
+            // and finish at a 3x release envelope at maximum strength.
+            return (clamped > 0.50f) ? (1.0f + ((clamped - 0.50f) * 4.0f)) : 1.0f;
+        case ARMSX2PhoneRumbleClass::Medium:
+            // Medium effects retain their original timing through 75%, then
+            // smoothly grow to a 2x release envelope.
+            return (clamped > 0.75f) ? (1.0f + ((clamped - 0.75f) * 4.0f)) : 1.0f;
+        case ARMSX2PhoneRumbleClass::Weak:
+            return 1.0f;
+    }
+
+    return 1.0f;
+}
+
+static float ARMSX2PromoteWeakPhoneRumble(float level, float setting, ARMSX2PhoneRumbleClass rumble_class)
+{
+    if (rumble_class != ARMSX2PhoneRumbleClass::Weak || setting <= 0.75f)
+        return level;
+
+    // The final quarter progressively turns subtle feedback into a normal hard
+    // tap. Its release scale remains 1x, so promotion adds presence, not a long tail.
+    const float promotion = std::clamp((setting - 0.75f) * 4.0f, 0.0f, 1.0f);
+    const float hard_level = std::pow(ARMSX2_PHONE_RUMBLE_HARD_THRESHOLD, 0.78f);
+    const float promoted_level = std::max(level, hard_level);
+    return level + ((promoted_level - level) * promotion);
+}
+
 static void ARMSX2ApplyNativeGamepadRumbleOnMain(u32 packed)
 {
 	if (s_nativeAppliedGamepadRumbleValid && packed == s_nativeAppliedGamepadRumble)
@@ -888,18 +978,41 @@ static void ARMSX2ApplyNativeGamepadRumbleOnMain(u32 packed)
     // Straight off the packed value, so the phone gets the whole 0..1 motor range
     // rather than the 0x7000 ceiling the controller motors are held to. Read every
     // time so dragging the slider is felt on the next rumble instead of next launch.
-    const float strength = s_settings_interface
-        ? std::clamp(s_settings_interface->GetFloatValue("ARMSX2iOS/UI", "PhoneRumbleStrength", 1.0f), 0.0f, 1.0f)
-        : 1.0f;
+    const float strength_setting = s_settings_interface
+        ? s_settings_interface->GetFloatValue(
+              "ARMSX2iOS/UI", "PhoneRumbleStrength", ARMSX2_PHONE_RUMBLE_BASELINE_SETTING)
+        : ARMSX2_PHONE_RUMBLE_BASELINE_SETTING;
+    const bool increase_duration = s_settings_interface
+        ? s_settings_interface->GetBoolValue(
+              "ARMSX2iOS/UI", "IncreaseRumbleDurationAndInterpolation", true)
+        : true;
+    const float strength = ARMSX2PhoneRumbleGain(strength_setting);
     // Preserve low-amplitude detail without imposing a hard floor. The sublinear
     // curve compensates for the phone actuator's less perceptible lower range while
     // keeping the original analog ordering from the PS2 heavy motor.
     const float large_raw = ARMSX2RumbleLargeIntensity(packed);
-    const float large = (large_raw > 0.01f)
+    float large = (large_raw > 0.01f)
         ? std::pow(large_raw, 0.78f) * strength
         : 0.0f;
     const float small_raw = ARMSX2RumbleSmallIntensity(packed);
-    const float small = (small_raw > 0.01f) ? (ARMSX2_SMALL_MOTOR_LEVEL * strength) : 0.0f;
+    const ARMSX2PhoneRumbleClass rumble_class = ARMSX2ClassifyPhoneRumble(large_raw, small_raw);
+    const float release_scale = increase_duration
+        ? ARMSX2PhoneRumbleReleaseScale(strength_setting, rumble_class)
+        : 1.0f;
+    large = (increase_duration && large_raw > 0.01f)
+        ? ARMSX2PromoteWeakPhoneRumble(large, strength_setting, rumble_class)
+        : large;
+    float small = (small_raw > 0.01f) ? (ARMSX2_SMALL_MOTOR_LEVEL * strength) : 0.0f;
+    small = (increase_duration && small_raw > 0.01f)
+        ? ARMSX2PromoteWeakPhoneRumble(small, strength_setting, rumble_class)
+        : small;
+
+    // Turning the extension off also cancels a scale retained by the previous
+    // active effect, so its next stop uses the original 1x release immediately.
+    if (!increase_duration) {
+        for (u32 channel = 0; channel < ARMSX2_RUMBLE_CHANNEL_COUNT; channel++)
+            s_nativeHapticReleaseScale[channel] = 1.0f;
+    }
 
     if ((large > 0.01f || small > 0.01f) && !ARMSX2EnsureNativeRumbleEngineOnMain())
         return;
@@ -915,8 +1028,10 @@ static void ARMSX2ApplyNativeGamepadRumbleOnMain(u32 packed)
     if (large_started || small_started)
         ARMSX2PlayRumbleTransientOnMain(large_started ? large : 0.0f, small_started ? small : 0.0f);
 
-    const bool large_ok = ARMSX2SetRumbleChannelOnMain(ARMSX2_RUMBLE_CHANNEL_LARGE, large);
-    const bool small_ok = ARMSX2SetRumbleChannelOnMain(ARMSX2_RUMBLE_CHANNEL_SMALL, small);
+    const bool large_ok = ARMSX2SetRumbleChannelOnMain(
+        ARMSX2_RUMBLE_CHANNEL_LARGE, large, release_scale);
+    const bool small_ok = ARMSX2SetRumbleChannelOnMain(
+        ARMSX2_RUMBLE_CHANNEL_SMALL, small, release_scale);
     if (large_ok && small_ok) {
         s_nativeAppliedGamepadRumble = packed;
         s_nativeAppliedGamepadRumbleValid = true;
