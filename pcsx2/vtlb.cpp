@@ -1556,8 +1556,19 @@ void mmap_MarkCountedRamPage(u32 paddr)
 
 	paddr &= ~__pagemask;
 
+	// Same story as the fault handler: anything PSM resolves outside main RAM is
+	// ROM or VU memory, which is never under EE write protection, so there is
+	// nothing here to mark. Bounded the way mmap_GetRamPageInfo already does it.
+	// The old int also went negative for a pointer below Main and indexed
+	// backwards out of the array. No caller reaches either case today, they all
+	// come through mmap_GetRamPageInfo first, but it is a nasty thing to leave
+	// lying around for the next one.
 	uptr ptr = (uptr)PSM(paddr);
-	int rampage = (ptr - (uptr)eeMem->Main) >> __pageshift;
+	uptr rampage = ptr - (uptr)eeMem->Main;
+	if (!ptr || rampage >= Ps2MemSize::ExposedRam)
+		return;
+
+	rampage >>= __pageshift;
 
 	// Important: Update the ReverseRamMap here because TLB changes could alter the paddr
 	// mapping into eeMem->Main.
@@ -1574,7 +1585,8 @@ void mmap_MarkCountedRamPage(u32 paddr)
 
 	m_PageProtectInfo[rampage].Mode = ProtMode_Write;
 	HostSys::MemProtect(&eeMem->Main[rampage << __pageshift], __pagesize, PageAccess_ReadOnly());
-	vtlb_UpdateFastmemProtection(rampage << __pageshift, __pagesize, PageAccess_ReadOnly());
+	// Narrowing is safe, the bound above keeps this under ExposedRam.
+	vtlb_UpdateFastmemProtection(static_cast<u32>(rampage << __pageshift), __pagesize, PageAccess_ReadOnly());
 }
 
 // offset - offset of address relative to psM.
@@ -1607,9 +1619,16 @@ PageFaultHandler::HandlerResult PageFaultHandler::HandlePageFault(void* exceptio
 		// this was inside the fastmem area. check if it's a code page
 		// fprintf(stderr, "Fault on fastmem %p vaddr %08X\n", info.addr, vaddr);
 
+		// PSM resolves the whole physical map, not just main RAM, so a fault on
+		// VU memory or ROM arrives here with an offset way past the end of the
+		// table. Reading it is out of bounds, and if the aliased value happens to
+		// match ProtMode_Write we walk into mmap_ClearCpuBlock and write a
+		// ProtMode over whatever follows the array. The branch below has always
+		// had this check; this one never did.
 		uptr ptr = (uptr)PSM(vaddr);
 		uptr offset = (ptr - (uptr)eeMem->Main);
-		if (ptr && m_PageProtectInfo[offset >> __pageshift].Mode == ProtMode_Write)
+		if (ptr && offset < Ps2MemSize::ExposedRam &&
+			m_PageProtectInfo[offset >> __pageshift].Mode == ProtMode_Write)
 		{
 			// fprintf(stderr, "Not backpatching code write at %08X\n", vaddr);
 			mmap_ClearCpuBlock(offset);
