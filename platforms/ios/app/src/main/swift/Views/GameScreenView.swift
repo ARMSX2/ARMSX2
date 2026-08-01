@@ -313,6 +313,11 @@ struct GameScreenView: View {
                     onBackToMenu: {
                         appState.returnToMenu()
                     },
+                    onStop: {
+                        if settings.hapticFeedback { HapticManager.medium.impactOccurred() }
+                        overlayRoute = .hidden
+                        ARMSX2Bridge.requestVMStop()
+                    },
                     onResume: {
                         if settings.hapticFeedback { HapticManager.light.impactOccurred() }
                         overlayRoute = .hidden
