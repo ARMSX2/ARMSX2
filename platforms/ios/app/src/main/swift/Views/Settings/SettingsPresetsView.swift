@@ -94,6 +94,7 @@ struct SettingsPresetsView: View {
     @State private var folderAccess = InitialContentBootstrap.shared
     @State private var presentedSheet: SettingsPresetsSheet?
     @State private var message: SettingsPresetsMessage?
+    @State private var isResetSettingsConfirmationPresented = false
     @State private var exportDocument = SettingsPresetDocument(data: Data())
     @State private var isExportingPreset = false
 
@@ -148,6 +149,20 @@ struct SettingsPresetsView: View {
                 message: Text(settings.localized(message.text)),
                 dismissButton: .default(Text(settings.localized("OK")))
             )
+        }
+        .alert(
+            settings.localized("Reset Settings?"),
+            isPresented: $isResetSettingsConfirmationPresented
+        ) {
+            Button(settings.localized("Cancel"), role: .cancel) {}
+            Button(settings.localized("Reset Settings"), role: .destructive) {
+                BuiltInSettingsPreset.defaultPreset.apply(
+                    settings: settings,
+                    skinLibrary: skinLibrary
+                )
+            }
+        } message: {
+            Text(settings.localized("This will reset all settings to it's original values."))
         }
     }
 
@@ -213,7 +228,11 @@ struct SettingsPresetsView: View {
         Section {
             ForEach(BuiltInSettingsPreset.allCases) { preset in
                 Button {
-                    preset.apply(settings: settings, skinLibrary: skinLibrary)
+                    if preset == .defaultPreset {
+                        isResetSettingsConfirmationPresented = true
+                    } else {
+                        preset.apply(settings: settings, skinLibrary: skinLibrary)
+                    }
                 } label: {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 5) {
@@ -250,7 +269,7 @@ struct SettingsPresetsView: View {
         } header: {
             Text(settings.localized("Device Presets"))
         } footer: {
-            Text(settings.localized(BuiltInSettingsPreset.allCases.map(\.detail).joined(separator: "\n\n") + " Selecting a preset changes only these listed settings."))
+            Text(settings.localized(BuiltInSettingsPreset.allCases.map(\.detail).joined(separator: "\n\n") + " Default restores global settings; other presets change only their listed settings."))
                 .lineLimit(nil)
                 .fixedSize(horizontal: false, vertical: true)
         }
