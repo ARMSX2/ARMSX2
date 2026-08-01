@@ -16,7 +16,7 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
     var summary: String {
         switch self {
         case .defaultPreset:
-            return "Restores the graphics and emulation options managed by quality presets to the ARMSX2 defaults."
+            return "Restores ARMSX2 settings to their original defaults."
         case .ultraQuality:
             return "Uses 2x internal resolution with FXAA and CAS Sharpening for maximum image quality."
         case .highQuality:
@@ -33,7 +33,7 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .defaultPreset:
-            return "Default disables Fast Boot, PNACH Cheats, Widescreen Patches, Fast CDVD, FXAA, CAS Sharpening, OPH Flag Hack, Emulation-Only Mode, and the background in Settings; restores Internal Resolution to 1x Native and Queue Size to 8; and selects the White Colored Virtual Pad skin."
+            return "Default restores emulator, graphics, audio, frame pacing, overlay, controller, Virtual Pad, layout, network, appearance, and Dynamic Control settings. Imported games, BIOS files, memory cards, skins, presets, and account data are preserved."
         case .ultraQuality:
             return "Ultra Quality enables Fast Boot, PNACH Cheats, Widescreen Patches, Fast CDVD, FXAA, CAS Sharpening, and the background in Settings; sets Internal Resolution to 2x (1024x896) and Queue Size to 2. OPH Flag Hack and Emulation-Only Mode are disabled. The selected Virtual Pad skin is preserved."
         case .highQuality:
@@ -79,6 +79,14 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
         settings: SettingsStore = .shared,
         skinLibrary: VPadSkinLibraryStore = .shared
     ) {
+        if self == .defaultPreset {
+            settings.resetAllDefaults()
+            skinLibrary.selectSkin(id: VirtualPadSkin.armsx2Refresh.descriptorID)
+            settings.virtualPadSkin = .armsx2Refresh
+            ARMSX2Bridge.flushINISettings()
+            return
+        }
+
         let configuration = self.configuration
         settings.fastBoot = configuration.fastBoot
         settings.enableCheats = configuration.enableCheats
@@ -91,10 +99,6 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
         settings.setGameFix("OPHFlagHack", configuration.ophFlagHack)
         settings.emulationOnlyModeEnabled = configuration.emulationOnlyMode
         settings.backgroundEnabledInSettings = configuration.showBackgroundInSettings
-        if self == .defaultPreset {
-            skinLibrary.selectSkin(id: VirtualPadSkin.armsx2Refresh.descriptorID)
-            settings.virtualPadSkin = .armsx2Refresh
-        }
     }
 
     private var configuration: Configuration {

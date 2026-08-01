@@ -2818,4 +2818,86 @@ final class SettingsStore {
         // Texture pack and dump toggles are intentionally preserved.
     }
 
+    /// Restores application configuration without deleting imported content,
+    /// user-created presets, memory cards, skins, or account credentials.
+    func resetAllDefaults() {
+        resetEmulatorDefaults()
+        resetGraphicsDefaults()
+
+        // Texture replacement settings are intentionally preserved by the
+        // graphics-only reset, but a full reset returns them to fresh-install values.
+        loadTextureReplacements = false
+        loadTextureReplacementsAsync = true
+        precacheTextureReplacements = false
+        texturePreloading = 2
+        dumpReplaceableTextures = false
+        dumpReplaceableMipmaps = false
+        dumpTexturesWithFMVActive = false
+        dumpDirectTextures = true
+        dumpPaletteTextures = true
+
+        framePacingPreset = .optimal
+        adaptiveResolutionEnabled = false
+
+        osdPreset = .off
+        lastActiveOsdPreset = .simple
+        osdPerformancePosition = Self.defaultOsdPerformancePosition
+        osdShowMessages = true
+        osdShowTextureReplacements = false
+        snapshotCustomOsd()
+
+        padOpacity = 0.6
+        phoneRumbleStrength = 0.25
+        increaseRumbleDurationAndInterpolation = true
+        hapticFeedback = true
+        dpadDiagonalsEnabled = true
+        faceComboZonesEnabled = true
+        autoHideVirtualPadWhenControllerConnected = true
+        autoFullscreen = true
+        hideMenuButton = false
+        analogStickScale = 1.0
+        invertLeftStickX = false
+        invertLeftStickY = false
+        invertRightStickX = false
+        invertRightStickY = false
+        appLanguage = .system
+        controllerMultitapMode = 0
+        autoOpenStikDebug = false
+        jitScriptProtocol = .defaultValue
+
+        dev9HddEnabled = false
+        dev9HddFile = "DEV9hdd.raw"
+        dev9EthernetEnabled = false
+        dev9EthDevice = "Auto"
+        dev9InterceptDHCP = false
+        dev9EthLogDHCP = false
+        dev9EthLogDNS = false
+        dev9DNS1Mode = "Auto"
+        dev9DNS1 = "0.0.0.0"
+        dev9DNS2Mode = "Auto"
+        dev9DNS2 = "0.0.0.0"
+
+        dynamicBackgroundsEnabled = true
+        dynamicAppearancePreferences = .standard
+        clearLiquidGlassUI = true
+        clearLiquidGlassUIQuickMenu = false
+        gameCardZoomAnimationEnabled = true
+        backgroundPrimaryAsset = nil
+        backgroundLandscapeAsset = nil
+        backgroundFitMode = .fill
+        backgroundLandscapeFitMode = .fill
+        backgroundVideoMuted = true
+        backgroundDim = 0.0
+        backgroundEnabledInBIOS = true
+        backgroundEnabledInHelp = true
+        backgroundEnabledInSettings = true
+
+        DynamicThumbstickSettings.shared.restoreDefaults()
+        let padLayout = PadLayoutStore.shared
+        padLayout.resetAll()
+        padLayout.resetControlVisibility()
+        padLayout.save()
+        ARMSX2Bridge.resetButtonMappings()
+        ARMSX2Bridge.flushINISettings()
+    }
 }
