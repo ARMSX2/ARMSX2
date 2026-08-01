@@ -339,20 +339,42 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 
 	target_compile_options(ARMSX2iOS PRIVATE $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-pipe>)
 
-	execute_process(
-		COMMAND git rev-parse --short HEAD
-		WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-		OUTPUT_VARIABLE ARMSX2_GIT_HASH
-		OUTPUT_STRIP_TRAILING_WHITESPACE
-		ERROR_QUIET
+	# The hash used to be resolved here, which meant it stuck at whatever cmake
+	# last saw and a build after a commit reported the wrong revision. Resolve it
+	# into a header on every build instead. The version stays a define because it
+	# lives in this file, so touching it always reconfigures anyway.
+	set(ARMSX2_GIT_HASH_HEADER "${CMAKE_CURRENT_BINARY_DIR}/armsx2_git_hash.h")
+	# Seed it now so the header exists even before the target below has run once.
+	execute_process(COMMAND ${CMAKE_COMMAND}
+		-DGIT_WORKING_DIR=${CMAKE_SOURCE_DIR}
+		-DOUTPUT_FILE=${ARMSX2_GIT_HASH_HEADER}
+		-P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteGitHash.cmake)
+	add_custom_target(armsx2_git_hash ALL
+		BYPRODUCTS "${ARMSX2_GIT_HASH_HEADER}"
+		COMMAND ${CMAKE_COMMAND}
+			-DGIT_WORKING_DIR=${CMAKE_SOURCE_DIR}
+			-DOUTPUT_FILE=${ARMSX2_GIT_HASH_HEADER}
+			-P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteGitHash.cmake
+		COMMENT "Resolving git hash"
 	)
-	if(NOT ARMSX2_GIT_HASH)
-		set(ARMSX2_GIT_HASH "unknown")
-	endif()
+	add_dependencies(ARMSX2iOS armsx2_git_hash)
+
+	# Same treatment for the core's own banner, which comes from svnrev.h and was
+	# stale for the same reason. Upstream still writes it at configure time up in
+	# write_svnrev_h; this only refreshes it, and produces identical bytes.
+	add_custom_target(armsx2_svnrev ALL
+		BYPRODUCTS "${CMAKE_BINARY_DIR}/common/include/svnrev.h"
+		COMMAND ${CMAKE_COMMAND}
+			-DGIT_WORKING_DIR=${PROJECT_SOURCE_DIR}
+			-DOUTPUT_FILE=${CMAKE_BINARY_DIR}/common/include/svnrev.h
+			-P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteSvnRev.cmake
+		COMMENT "Resolving core git revision"
+	)
+	add_dependencies(PCSX2 armsx2_svnrev)
+	add_dependencies(ARMSX2iOS armsx2_svnrev)
 
 	target_compile_definitions(ARMSX2iOS PRIVATE
 		PCSX2_NO_PCAP=1
-		ARMSX2_GIT_HASH="${ARMSX2_GIT_HASH}"
 		ARMSX2_VERSION_STR="${ARMSX2_VERSION}"
 	)
 	if(ARMSX2_MAC_CATALYST)
@@ -360,6 +382,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	endif()
 
 	target_include_directories(ARMSX2iOS PRIVATE
+		${CMAKE_CURRENT_BINARY_DIR}
 		${CMAKE_SOURCE_DIR}
 		${ARMSX2_ROOT}
 		${ARMSX2_ROOT}/common

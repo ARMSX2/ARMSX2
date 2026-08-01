@@ -24,6 +24,9 @@
 #import "IOS/PCSX2AppDelegate.h"
 #import "IOS/PCSX2SceneDelegate.h"
 
+// Written fresh on every build, see cmake/WriteGitHash.cmake.
+#include "armsx2_git_hash.h"
+
 #pragma mark - SetupIOSDirectories
 static void SetupIOSDirectories(const std::string& dataRoot)
 {
@@ -98,9 +101,6 @@ static void SetupIOSDirectories(const std::string& dataRoot)
     fprintf(stderr, "@@BUNDLE_ID@@ %s\n", bundleID ? [bundleID UTF8String] : "(null)");
 #ifndef ARMSX2_VERSION_STR
 #define ARMSX2_VERSION_STR "dev"
-#endif
-#ifndef ARMSX2_GIT_HASH
-#define ARMSX2_GIT_HASH "unknown"
 #endif
 #ifndef ARMSX2_ENABLE_EE_HOTPATH_DIAGNOSTICS
 #define ARMSX2_ENABLE_EE_HOTPATH_DIAGNOSTICS 0
