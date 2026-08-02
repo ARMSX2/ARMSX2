@@ -29,24 +29,22 @@ struct FramePacingSettingsView: View {
             Section {
                 frameLimiterRows
 
-                Stepper("\(settings.localized("Queue Size")): \(settings.vsyncQueueSize)",
-                        value: $settings.vsyncQueueSize,
-                        in: SettingsStore.vsyncQueueRange)
+                NumberRow("Queue Size", value: $settings.vsyncQueueSize,
+                          in: SettingsStore.vsyncQueueRange, style: .stepper,
+                          settings: settings)
 
                 Toggle(settings.localized("Sync to Host Refresh"), isOn: $settings.syncToHostRefresh)
                 Text(settings.localized("Sync to Host Refresh needs a restart to take effect."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                // Same two keys the Audio screen shows, so use the same control. Stepping
-                // from 10 to 200 a tap at a time was never a serious way to set these.
-                IntSliderRow("Buffer Size", value: $settings.audioBufferMs,
-                             range: SettingsStore.audioBufferMsRange,
-                             suffix: " ms", defaultValue: 50, settings: settings)
+                NumberRow("Buffer Size", value: $settings.audioBufferMs,
+                          in: SettingsStore.audioBufferMsRange, format: .milliseconds,
+                          default: 50, settings: settings)
 
-                IntSliderRow("Output Latency", value: $settings.audioOutputLatencyMs,
-                             range: SettingsStore.audioOutputLatencyMsRange,
-                             suffix: " ms", defaultValue: 20, settings: settings)
+                NumberRow("Output Latency", value: $settings.audioOutputLatencyMs,
+                          in: SettingsStore.audioOutputLatencyMsRange, format: .milliseconds,
+                          default: 20, settings: settings)
             } header: {
                 Text(settings.localized("Individual Settings"))
             }
@@ -97,25 +95,14 @@ struct FramePacingSettingsView: View {
 
         if settings.frameLimiterEnabled {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text(settings.localized("FPS Target"))
-                    Spacer()
-                    Text(Self.formatFPS(settings.targetFPS))
-                        .foregroundStyle(.secondary)
-                        .font(.callout.monospacedDigit())
-                }
-
-                Slider(
-                    value: Binding(
-                        get: { settings.targetFPS },
-                        set: { value in
-                            settings.targetFPS = value
-                            enforceHardcoreSpeedFloorIfNeeded()
-                        }
-                    ),
-                    in: SettingsStore.minTargetFPS...SettingsStore.maxTargetFPS,
-                    step: 1.0
-                )
+                NumberRow("FPS Target", value: Binding(
+                    get: { settings.targetFPS },
+                    set: { value in
+                        settings.targetFPS = value
+                        enforceHardcoreSpeedFloorIfNeeded()
+                    }
+                ), in: SettingsStore.minTargetFPS...SettingsStore.maxTargetFPS,
+                   format: .framesPerSecond, step: 1, settings: settings)
 
                 HStack {
                     quickTargetButton(30)
@@ -187,10 +174,6 @@ struct FramePacingSettingsView: View {
         .disabled(hardcoreActive && fps < settings.ntscFramerate)
         .buttonStyle(.bordered)
         .font(.caption.monospacedDigit())
-    }
-
-    private static func formatFPS(_ value: Float) -> String {
-        String(format: "%.0f FPS", value)
     }
 
     private static func formatCompactFPS(_ value: Float) -> String {
