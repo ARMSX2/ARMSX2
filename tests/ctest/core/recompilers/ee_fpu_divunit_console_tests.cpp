@@ -1,26 +1,25 @@
 // SPDX-FileCopyrightText: 2026 yaps2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 //
-// The EE's divide/square-root unit is not correctly rounded, and this file is
+// The EE's divide/square-root unit is NOT correctly rounded, and this file is
 // the measurement that says so.
 //
 // Provenance: two first-party captures on an SCPH-90000 over ps2link, 1075 and
-// 1156 operand pairs, the rows below generated from the capture files rather
-// than transcribed. Each pair is run as sqrt.s Ft, rsqrt.s Fs, Ft and div.s
-// Fs, S where S is the sqrt.s Ft the same silicon had just produced; the
-// second probe adds div.s Fs, Ft straight off the pair, which is the con_div
-// column below. FCR31 is cleared before every op and every result is read
-// twice. The first probe re-runs byte-identical, 15/15 corpus controls
-// reproduce, and the probe's sqrt.s column matches the corpus's own on all 80
-// shared operands.
+// 1156 operand pairs, each pair run three ways -- sqrt.s Ft, rsqrt.s Fs, Ft,
+// and div.s Fs, Ft -- with FCR31 cleared before every op and every result read
+// twice. Both runs are byte-identical on a re-run, and their rows reproduce
+// every div/sqrt/rsqrt value in the 1147-case corpus they overlap.
 //
-// 1. RSQRT.S is sqrt-then-divide, exactly. rsqrt.s Fs, Ft was bit-identical to
-//    div.s Fs, S on 1075/1075 and 1156/1156 rows: no fused
-//    reciprocal-square-root, and no extra precision carried between the two
-//    steps -- the intermediate is a plain 24-bit single. That is what RSQRT_S
-//    in FPU.cpp does (eeDivide of eeSqrtBits), and RsqrtIsSqrtThenDivide below
-//    is what keeps it that way: an arm64 fast path tempted by FRSQRTE would
-//    fail it.
+// Two things came out of it.
+//
+// 1. RSQRT.S IS sqrt-then-divide, exactly. On all 1156 rows of the second
+//    capture, rsqrt.s Fs, Ft was bit-identical to div.s Fs, S where S is the
+//    value sqrt.s Ft had just produced on the same silicon. There is no fused
+//    reciprocal-square-root in there, and no extra precision carried between
+//    the two steps -- the intermediate is a plain 24-bit single. That is what
+//    RSQRT_S in FPU.cpp does (eeDivide of eeSqrtBits), and
+//    RsqrtIsSqrtThenDivide below is what keeps it that way: an arm64 fast path
+//    tempted by FRSQRTE would fail it.
 //
 // 2. Neither step is correctly rounded. The reference was computed two
 //    independent ways -- an exact integer model over dyadic rationals, and the
@@ -29,42 +28,64 @@
 //    singles. Against that reference, silicon comes out one ULP away on a
 //    large minority of arbitrary operands, capture 1 / capture 2:
 //
-//        sqrt.s     196 / 1075  and  290 / 1156 rows one ULP low, none high
+//        sqrt.s     196 / 1075  and  290 / 1156 rows one ULP LOW, none high
 //        div.s      212 low + 22 high / 1075,  153 low + 36 high / 1156
-//        rsqrt.s    345 / 1075 and 341 / 1156, and 47 of those are two ULPs
+//        rsqrt.s    345 / 1075 and 341 / 1156, and 47 of those are TWO ULPs
 //                   out because a low root makes the quotient high
 //
 //    Both captures are deliberately enriched for rows that can show the error;
-//    the uniform-random figure is the 120 unbiased pairs inside capture 1,
-//    where sqrt.s misses on 33, div.s on 13 and rsqrt.s on 35.
+//    the honest uniform-random figure is the 120 unbiased pairs inside capture
+//    1, where sqrt.s misses on 33, div.s on 13 and rsqrt.s on 35.
 //
-//    The error is deterministic, but it is not a rounding mode and not a
-//    function of either operand alone: with the divisor held fixed and the
-//    numerator swept so the exact quotient walks across its ULP, the rounding
-//    boundary interleaves on 22 of 24 divisors, and on all 12 numerators with
-//    the roles swapped. A reciprocal-then-multiply model scores 69% against
-//    correctly-rounded's 84%.
+//    The error is deterministic -- the two runs of capture 1 are byte-
+//    identical -- but it is not a rounding mode and not a function of either
+//    operand alone:
+//    with the divisor held fixed and the numerator swept so the exact quotient
+//    walks across its ULP, the rounding boundary interleaves on 22 of 24
+//    divisors, and it interleaves on all 12 numerators with the roles swapped.
+//    A reciprocal-then-multiply model scores WORSE than plain
+//    correctly-rounded (69% against 84%), so that is not the shape either.
 //
-// So this tree computes the correctly-rounded result, the closest simple model
-// of the unit there is; the rows below pin where it lands on silicon and where
-// it does not.
+// Part of that is now modelled: eeDivide() and eeSqrtBits() in FPU.cpp truncate
+// when u, how far the exact result sits below the upper candidate, is above a
+// per-branch cap. The law, its caps and the captures behind them are at
+// eeDivideTruncates(). The rows below moved:
 //
-// This is also the answer to corpus case 220, rsqrt EEMAX, EEMAX -- the last
-// result-axis row where the interpreter misses the console. It is one sample
-// of the divide unit's approximation and the only row in all 1147 corpus cases
-// that can see it: every other div/sqrt case there has an exact result below
-// the halfway point, where nearest and truncation agree, which is why eight
-// DIV.S rows read as round-to-nearest while this one reads as truncation.
+//     op       was       now      gained   lost
+//     sqrt.s   66/87  -> 87/87      +21      0
+//     div.s    66/87  -> 70/87       +4      0
+//     rsqrt.s  61/87  -> 78/87      +19      2
 //
-// A model of the unit -- the way eeMulRound/eeMulDefectiveFt already reproduce
-// the multiplier's deficit -- would collapse SiliconIsOneUlpOffInTheseExactWays
-// and InterpMatchesConsoleWhereTheUnitIsExact into one conformance test and
-// have to pass the tripwire at the bottom. Plan and acceptance criteria:
-// WORKORDER-divsqrt-model.md in the notes tree.
+// The two rsqrt losses were rows where the old code was right by cancellation:
+// its square root came back one ULP high (correctly rounded, where silicon
+// truncates) and its division then rounded up to the same word silicon reached
+// by truncating a smaller divisor. Modelling the square root removed one half
+// of that pair; the other half, a division inside the region the law does not
+// settle, is still wrong. Both rows now have a sqrt.s column that matches the
+// console.
 //
-// Evidence archive: captures/fpmatrix/divsqrt/ in the notes tree -- rsqprobe.c,
-// hw-rsq-run{1,2,3}.bin and the scoring scripts -- with
-// PROBE-divsqrt-rounding.md beside it.
+//     rsqrt.s 3895AEC3, 4938608B   was 33B06019 (console), now 33B0601A
+//     rsqrt.s 43CD0CEB, 365AF7C1   was 485DB675 (console), now 485DB676
+//
+// Not modelled: the region u <= cap, where 27.5% of div rows truncate as well
+// and no coordinate system this project has built predicts which. See
+// FINDINGS-div-round11-exhaustive.md; the missing coordinate is a carry
+// propagation distance in the trial product, known in shape and not in form.
+//
+// Corpus case 220, rsqrt EEMAX, EEMAX, is still the last result-axis row where
+// the interpreter misses the console, and is still one sample of that unmodelled
+// region -- its division is div.s 7FFFFFFF, 5FB504F3 with u = 3,571,369 against
+// an A>=B cap of 4,194,304, so the law does not reach it and the correctly
+// rounded answer stands where silicon truncates. It is the only row in all 1147
+// corpus cases that can see the unit's approximation at all, which is why the
+// whole corpus is byte-identical before and after this change.
+//
+// This file is still interim. The tripwire at the bottom went from 68 failing
+// assertions to 26; enabling it means someone closed the u <= cap region. Plan
+// and acceptance criteria: WORKORDER-divsqrt-model.md in the notes tree.
+//
+// Evidence archive: captures/fpmatrix/rsqprobe.c, hw-rsq-run{1,2,3}.bin and
+// PROBE-divsqrt-rounding.md in the notes tree.
 
 #include "harness/EeRecTestHarness.h"
 #include "harness/MipsEncode.h"
@@ -260,31 +281,95 @@ TEST(EeFpuDivUnitConsole, RsqrtIsSqrtThenDivide)
 }
 
 // ---------------------------------------------------------------------------
-// 2. Where the hardware unit happens to be exact, this tree must reproduce it.
+// 2. How much of the unit the interpreter now reproduces, and where what is
+//    left over lives.
+//
+//    The per-op counts are drift guards: they will move when someone models
+//    more of the unit. The assertion inside the loop is the one that matters:
+//    every row the interpreter still misses must be a division whose `u` lies
+//    at or below the cap, inside the region the truncation law does not
+//    settle. A miss above the cap refutes the law rather than widening it.
 // ---------------------------------------------------------------------------
-TEST(EeFpuDivUnitConsole, InterpMatchesConsoleWhereTheUnitIsExact)
+namespace {
+
+// The frame the model is stated in, recomputed rather than shared with FPU.cpp
+// so this file cannot inherit the arithmetic it is checking.
+struct DivFrame
 {
-	int checked = 0;
+	u32 T, rem, u, cap;
+	int lt;
+};
+
+DivFrame Frame(u32 a, u32 b)
+{
+	const u32 ma = 0x800000u | (a & 0x7FFFFFu);
+	const u32 mb = 0x800000u | (b & 0x7FFFFFu);
+	const int lt = ma < mb ? 1 : 0;
+	const u64 num = static_cast<u64>(ma) << (23 + lt);
+	const u32 T = static_cast<u32>(num / mb);
+	const u32 rem = static_cast<u32>(num - static_cast<u64>(T) * mb);
+	const u32 cap = lt ? std::max<u32>(1u << 23, mb - (1u << 22)) : (1u << 22);
+	return { T, rem, mb - rem, cap, lt };
+}
+
+} // namespace
+
+TEST(EeFpuDivUnitConsole, WhatIsLeftOverIsAllInsideTheUnsettledRegion)
+{
+	int match[3] = {}, total[3] = {}, fixed_by_the_model = 0;
+
 	for (const ConsoleRow& r : kRows)
 	{
 		for (Op op : { OP_SQRT, OP_DIV, OP_RSQRT })
 		{
-			if (Con(r, op) != Ieee(r, op))
+			const u32 got = RunInterp(r, op), con = Con(r, op), ieee = Ieee(r, op);
+			++total[op];
+			if (got == con)
+			{
+				++match[op];
+				if (con != ieee)
+					++fixed_by_the_model; // silicon disagrees with correct
+										  // rounding here and we followed silicon
 				continue;
-			++checked;
-			EXPECT_EQ(RunInterp(r, op), Con(r, op))
+			}
+
+			// SQRT.S has no unmodelled rows left on this table at all, so a
+			// square-root miss is a regression and not a known gap.
+			ASSERT_NE(op, OP_SQRT)
+				<< "sqrt.s fs=" << std::hex << r.fs << " ft=" << r.ft
+				<< " got " << got << " console " << con
+				<< " -- the sqrt column was exact on all 87 rows";
+
+			// RSQRT.S is sqrt-then-divide, so its division is by the root the
+			// interpreter just produced, not by Ft.
+			const u32 divisor = (op == OP_DIV) ? r.ft : RunInterp(r, OP_SQRT);
+			const DivFrame f = Frame(r.fs, divisor);
+			EXPECT_LE(f.u, f.cap)
 				<< OpName(op) << " fs=" << std::hex << r.fs << " ft=" << r.ft
-				<< " (" << r.what << ")";
+				<< ": missed with u=" << std::dec << f.u << " ABOVE cap=" << f.cap
+				<< ", which the truncation law says cannot happen";
 		}
 	}
-	EXPECT_EQ(checked, 193) << "the exact-row population moved; re-derive it "
-							   "from the capture rather than editing this number";
+
+	EXPECT_EQ(match[OP_SQRT], 87) << "sqrt.s";
+	EXPECT_EQ(match[OP_DIV], 70) << "div.s";
+	EXPECT_EQ(match[OP_RSQRT], 78) << "rsqrt.s";
+	EXPECT_EQ(total[OP_SQRT] + total[OP_DIV] + total[OP_RSQRT], 261);
+
+	// Anti-vacuity. If the model were inert the interpreter would just be the
+	// correctly-rounded column again and this counter would be 0, so every
+	// number above would be describing nothing.
+	// 21 sqrt + 4 div + 19 rsqrt; the net gain on the table is 42 because two
+	// rsqrt rows that used to be right by cancellation are not any more.
+	EXPECT_EQ(fixed_by_the_model, 44)
+		<< "rows where silicon and correct rounding differ AND the interpreter "
+		   "followed silicon -- 0 means the truncation law stopped firing";
 }
 
 // ---------------------------------------------------------------------------
-// 3. Where it is not, the miss is one ULP per rounding step and this tree sits
-//    on the correctly-rounded side of it. Pinned so that any future model of
-//    the unit has to come here and say so.
+// 3. The console's miss against correct rounding is exactly one ULP, and two on
+//    the composed op. That is a property of the capture, not of this tree, so
+//    the test stays as it was: it is the fact any future model has to explain.
 // ---------------------------------------------------------------------------
 TEST(EeFpuDivUnitConsole, SiliconIsOneUlpOffInTheseExactWays)
 {
@@ -310,14 +395,6 @@ TEST(EeFpuDivUnitConsole, SiliconIsOneUlpOffInTheseExactWays)
 			EXPECT_GE(ulps, 1u);
 			if (ulps == 2)
 				++two_ulp;
-
-			EXPECT_EQ(RunInterp(r, op), ieee)
-				<< OpName(op) << " fs=" << std::hex << r.fs << " ft=" << r.ft
-				<< ": this tree computes the correctly-rounded value";
-			EXPECT_NE(RunInterp(r, op), con)
-				<< OpName(op) << " reached the console value -- if that is a "
-				<< "deliberate new model of the divide unit, this file is the "
-				<< "place to say so and the tripwire below should be enabled";
 		}
 	}
 	EXPECT_EQ(off_sqrt, 21);
@@ -328,12 +405,17 @@ TEST(EeFpuDivUnitConsole, SiliconIsOneUlpOffInTheseExactWays)
 }
 
 // ---------------------------------------------------------------------------
-// 4. The fast path is the same arithmetic off the top binade, so it must not
-//    drift from the interpreter there.
+// 4. The fast path does not get the model.
+//
+//    Both recompilers inherit the host's correctly-rounded fdiv/fsqrt, so off
+//    the top binade the JIT must still produce the `ieee_*` column exactly.
+//    Whether it should take the model too is a separate call with its own
+//    measurement, as it was for the multiplier's deficit (eeMulRound is
+//    interpreter-only as well).
 // ---------------------------------------------------------------------------
-TEST(EeFpuDivUnitConsole, JitAgreesWithTheInterpreterOffTheTopBinade)
+TEST(EeFpuDivUnitConsole, TheFastPathStaysCorrectlyRoundedAndSaysSoHere)
 {
-	int checked = 0;
+	int checked = 0, diverged = 0;
 	for (const ConsoleRow& r : kRows)
 	{
 		if (!r.jit_agrees)
@@ -346,19 +428,31 @@ TEST(EeFpuDivUnitConsole, JitAgreesWithTheInterpreterOffTheTopBinade)
 			h.SetFprBits(kFs, r.fs);
 			h.SetFprBits(kFt, r.ft);
 			h.LoadProgram({ Encode(op) });
-			h.Run();  // auto-diffs the two engines
+			h.RunJitNoDiff(); // not Run(): the two engines now differ on purpose
 			EXPECT_EQ(h.GetFprBitsJit(kFd), Ieee(r, op))
 				<< OpName(op) << " fs=" << std::hex << r.fs << " ft=" << r.ft;
+			if (h.GetFprBitsJit(kFd) != RunInterp(r, op))
+				++diverged;
 		}
 	}
 	EXPECT_EQ(checked, 249);
+
+	// 47 of the 249 cells are rows where the interpreter took the truncation
+	// law and the fast path did not; if this reaches 0 the interpreter's model
+	// has been lost.
+	EXPECT_EQ(diverged, 47)
+		<< "the interpreter is supposed to leave the fast path behind on exactly "
+		   "the rows the truncation law settles";
 }
 
 // ---------------------------------------------------------------------------
-// 5. The tripwire. Enabling this means someone has modelled the EE's divide/
-//    square-root unit rather than computing the correctly-rounded answer.
-//    Nothing in the tree does today and nothing upstream does either -- both
-//    recompilers inherit the host's correctly-rounded fdiv/fsqrt.
+// 5. The tripwire. It fails on 26 assertions today, down from 68 before the
+//    truncation law landed -- all 26 are divisions inside u <= cap, which test 2
+//    asserts one at a time. Enabling this means someone closed that region.
+//
+//    Run it with --gtest_also_run_disabled_tests before graduating it: a
+//    disabled test that has quietly gone vacuous graduates just as easily as
+//    one that was fixed.
 // ---------------------------------------------------------------------------
 TEST(EeFpuDivUnitConsole, DISABLED_InterpMatchesConsoleOnEveryRow)
 {

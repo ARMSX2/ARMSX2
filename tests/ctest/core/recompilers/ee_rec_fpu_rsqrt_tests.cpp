@@ -99,10 +99,33 @@ static bool IsTopBinadeTierGap(u32 interp, u32 jit)
 	       (interp & 0x80000000u) == (jit & 0x80000000u);
 }
 
+// The second allowance, and a wider one, because RSQRT.S is composed.
+//
+// The interpreter models the divide unit's truncation law (FPU.cpp,
+// eeDivideTruncates / eeSqrtBits) and the emitters still take the host's
+// correctly-rounded fsqrt/fdiv, so the interpreter applies the law twice --
+// once to the root, once to the quotient. The two do not pull the same way: a
+// root that comes back one ULP lower makes the quotient larger, so unlike DIV.S
+// and SQRT.S the interpreter can land on either side of the fast path here.
+// The compounding is silicon's own -- the console capture has 26 rsqrt.s rows
+// one ULP off correct rounding and 2 of them two ULP -- and it is bounded at
+// two ULP of magnitude, with the sign never in question.
+//
+// EeFpuDivUnitConsole owns the law itself, the per-op scoreboard, and the check
+// that every remaining console miss lives inside the region the law does not
+// settle.
+static bool IsDivUnitModelGap(u32 interp, u32 jit)
+{
+	if ((interp & 0x80000000u) != (jit & 0x80000000u))
+		return false;
+	const u32 a = interp & 0x7FFFFFFFu, b = jit & 0x7FFFFFFFu;
+	return (a > b ? a - b : b - a) <= 2u;
+}
+
 TEST(EeRecFpuRsqrt, DifferentialFuzzZeroAndNegativeDivisor)
 {
 	Lcg r{0x123456789ABCDEF0ull};
-	int checked = 0, tier_gaps = 0;
+	int checked = 0, tier_gaps = 0, model_gaps = 0;
 	for (u32 iter = 0; iter < 3000; ++iter)
 	{
 		const u32 fsBits = fuzzOperand(r);
@@ -142,9 +165,16 @@ TEST(EeRecFpuRsqrt, DifferentialFuzzZeroAndNegativeDivisor)
 		}
 
 		if (IsTopBinadeTierGap(res[0], res[1]))
+		{
 			++tier_gaps;
-		else
-			EXPECT_EQ(res[1], res[0]) << "engines disagree on the result";
+		}
+		else if (res[0] != res[1])
+		{
+			++model_gaps;
+			EXPECT_TRUE(IsDivUnitModelGap(res[0], res[1]))
+				<< "the engines disagree by more than the divide unit model can "
+				   "produce; interp=" << std::hex << res[0] << " jit=" << res[1];
+		}
 		EXPECT_EQ(fcr[1] & kStickyMask, fcr[0] & kStickyMask);
 		++checked;
 		if (::testing::Test::HasFailure())
@@ -154,17 +184,25 @@ TEST(EeRecFpuRsqrt, DifferentialFuzzZeroAndNegativeDivisor)
 	EXPECT_GT(tier_gaps, 0) << "anti-vacuity: the pool stopped producing "
 							   "saturating results, so the allowance is dead "
 							   "code that could hide a real divergence";
+	EXPECT_GT(model_gaps, 0) << "anti-vacuity: no pair reached the truncation law, "
+								"so the model allowance is dead code too";
 }
 
 // ---------------------------------------------------------------------------
-// Positive-divisor fuzzer. An exact differential like every other case in this
-// file now that both engines are single-precision and share a rounding mode:
-// Run()'s auto-diff checks the value, the flags are diffed on top.
+// Positive-divisor fuzzer.
+//
+// Bounded rather than exact, because the interpreter models the divide unit and
+// the fast path does not; the bound is two-sided and sign-checked.
+//
+// It also checks the composition on 3000 random pairs: silicon's rsqrt.s is
+// div.s(Fs, sqrt.s(Ft)) with a plain 24-bit single in between, and the
+// interpreter has to keep being that now that both steps carry the model.
+// EeFpuDivUnitConsole.RsqrtIsSqrtThenDivide has the console rows.
 // ---------------------------------------------------------------------------
 TEST(EeRecFpuRsqrt, PositiveDivisorMatchesInterpExactly)
 {
 	Lcg r{0x0F0E0D0C0B0A0908ull};
-	int checked = 0, tier_gaps = 0;
+	int checked = 0, tier_gaps = 0, model_gaps = 0;
 	for (u32 iter = 0; iter < 3000; ++iter)
 	{
 		// Positive nonzero divisor: clear sign, force a normal exponent.
@@ -201,10 +239,42 @@ TEST(EeRecFpuRsqrt, PositiveDivisorMatchesInterpExactly)
 		}
 
 		if (IsTopBinadeTierGap(res[0], res[1]))
+		{
 			++tier_gaps;
-		else
-			EXPECT_EQ(res[1], res[0]) << "engines disagree on the result";
+		}
+		else if (res[0] != res[1])
+		{
+			++model_gaps;
+			EXPECT_TRUE(IsDivUnitModelGap(res[0], res[1]))
+				<< "the engines disagree by more than the divide unit model can "
+				   "produce; interp=" << std::hex << res[0] << " jit=" << res[1];
+		}
 		EXPECT_EQ(fcr[1] & kStickyMask, fcr[0] & kStickyMask);
+
+		// The composition, on the interpreter alone: sqrt.s Ft, then div.s by
+		// whatever word that produced. Both steps carry the model, so this fails
+		// if either one is applied inconsistently between RSQRT_S and the two
+		// standalone ops.
+		{
+			EeRecTestHarness hs;
+			hs.EnableCop1();
+			hs.SetFprBits(2, ftBits);
+			hs.LoadProgram({ee::SQRT_S(4, 2)});
+			hs.RunInterpOnly();
+			const u32 root = hs.GetFprBitsInterp(4);
+
+			EeRecTestHarness hd;
+			hd.EnableCop1();
+			hd.SetFprBits(1, fsBits);
+			hd.SetFprBits(4, root);
+			hd.LoadProgram({ee::DIV_S(3, 1, 4)});
+			hd.RunInterpOnly();
+			EXPECT_EQ(hd.GetFprBitsInterp(3), res[0])
+				<< "rsqrt.s must stay div.s(Fs, sqrt.s(Ft)) with a plain single in "
+				   "between, which is what silicon does on every measured row; "
+				   "root=" << std::hex << root;
+		}
+
 		++checked;
 		if (::testing::Test::HasFailure())
 			return;
@@ -213,6 +283,8 @@ TEST(EeRecFpuRsqrt, PositiveDivisorMatchesInterpExactly)
 	EXPECT_GT(tier_gaps, 0) << "anti-vacuity: the positive-divisor pool stopped "
 							   "producing saturating results, so the allowance "
 							   "is dead code that could hide a real divergence";
+	EXPECT_GT(model_gaps, 0) << "anti-vacuity: no pair reached the truncation law, "
+								"so the model allowance is dead code too";
 }
 
 // ---- Exact-result differential cases (value + flags both diffed) -----------

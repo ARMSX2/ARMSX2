@@ -31,6 +31,9 @@
 #include "Config.h"
 #include "common/FPControl.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include <gtest/gtest.h>
 
 using namespace recompiler_tests;
@@ -116,11 +119,58 @@ static bool IsTopBinadeTierGap(u32 interp, u32 jit)
 	       (interp & 0x80000000u) == (jit & 0x80000000u);
 }
 
-TEST(EeRecFpuDivUnitRounding, DivSMatchesInterpAtInexactQuotients)
+// The second divergence: the interpreter now models the divide unit's
+// truncation law (FPU.cpp, eeDivideTruncates / eeSqrtBits) while the emitters
+// still take the host's correctly-rounded fdiv/fsqrt. The tests below stop
+// asserting that the engines agree and assert instead the shape they may differ
+// in: only where the law fires (u > cap), only by one ULP, and only with the
+// interpreter on the closer-to-zero side.
+//
+// The predicates are recomputed here rather than exported from FPU.cpp: a
+// differential that imports the implementation's arithmetic cannot catch the
+// implementation's arithmetic being wrong.
+static bool BothNormalOperands(u32 fs, u32 ft)
+{
+	return ((fs >> 23) & 0xFFu) != 0 && ((ft >> 23) & 0xFFu) != 0;
+}
+
+static bool DivideTruncates(u32 fs, u32 ft)
+{
+	const u32 ma = 0x800000u | (fs & 0x7FFFFFu);
+	const u32 mb = 0x800000u | (ft & 0x7FFFFFu);
+	const int lt = ma < mb ? 1 : 0;
+	const u64 num = static_cast<u64>(ma) << (23 + lt);
+	const u32 rem = static_cast<u32>(num % mb);
+	const u32 cap = lt ? std::max<u32>(1u << 23, mb - (1u << 22)) : (1u << 22);
+	return (mb - rem) > cap;
+}
+
+static bool SqrtTruncates(u32 ft)
+{
+	const u32 E = (ft >> 23) & 0xFFu;
+	if (E == 0)
+		return false;
+	const u64 X = static_cast<u64>(0x800000u | (ft & 0x7FFFFFu)) << ((E & 1u) ? 23 : 24);
+	u64 R = static_cast<u64>(std::sqrt(static_cast<double>(X)));
+	while (R > 0 && R * R > X)
+		--R;
+	while ((R + 1) * (R + 1) <= X)
+		++R;
+	return (2 * R + 1 - (X - R * R)) > (1u << 23);
+}
+
+// The interpreter's word is the JIT's with one unit taken off the magnitude.
+static bool IsOneUlpTowardZero(u32 interp, u32 jit)
+{
+	return (jit & 0x7FFFFFFFu) != 0 &&
+	       interp == ((jit & 0x80000000u) | ((jit & 0x7FFFFFFFu) - 1u));
+}
+
+TEST(EeRecFpuDivUnitRounding, DivSMatchesInterpExceptWhereTheTruncationLawFires)
 {
 	RequireDistinctDivideRoundingMode();
 	Lcg r{0xD1F5D1F5A5A5A5A5ull};
-	int checked = 0, tier_gaps = 0;
+	int checked = 0, tier_gaps = 0, law_gaps = 0;
 	for (u32 iter = 0; iter < 3000; ++iter)
 	{
 		const u32 fsBits = fuzzOperand(r);
@@ -156,9 +206,21 @@ TEST(EeRecFpuDivUnitRounding, DivSMatchesInterpAtInexactQuotients)
 		}
 
 		if (IsTopBinadeTierGap(res[0], res[1]))
+		{
 			++tier_gaps;
-		else
-			EXPECT_EQ(res[1], res[0]) << "engines disagree on the quotient";
+		}
+		else if (res[0] != res[1])
+		{
+			++law_gaps;
+			EXPECT_TRUE(BothNormalOperands(fsBits, ftBits) &&
+						DivideTruncates(fsBits, ftBits))
+				<< "the engines parted company where the truncation law does NOT "
+				   "fire -- that is a plain quotient disagreement, not the "
+				   "modelled one";
+			EXPECT_TRUE(IsOneUlpTowardZero(res[0], res[1]))
+				<< "the interpreter's model can only ever take the LOWER of the two "
+				   "candidates; interp=" << std::hex << res[0] << " jit=" << res[1];
+		}
 		EXPECT_EQ(fcr[1] & kStickyMask, fcr[0] & kStickyMask);
 		++checked;
 		if (::testing::Test::HasFailure())
@@ -168,6 +230,9 @@ TEST(EeRecFpuDivUnitRounding, DivSMatchesInterpAtInexactQuotients)
 	EXPECT_GT(tier_gaps, 0) << "anti-vacuity: the operand pool stopped producing "
 							   "saturating quotients, so the allowance above is "
 							   "dead code that could hide a real divergence";
+	EXPECT_GT(law_gaps, 0) << "anti-vacuity: no operand pair reached the truncation "
+							  "law, so this test is asserting engine agreement under "
+							  "a different name";
 }
 
 // A named witness alongside the fuzzer: 1.0 / 3.0 is one ULP apart between the
@@ -199,10 +264,11 @@ TEST(EeRecFpuDivUnitRounding, DivSOneOverThreeRoundsToNearest)
 // ---------------------------------------------------------------------------
 // SQRT.S
 // ---------------------------------------------------------------------------
-TEST(EeRecFpuDivUnitRounding, SqrtSMatchesInterpAtInexactRoots)
+TEST(EeRecFpuDivUnitRounding, SqrtSMatchesInterpExceptWhereTheTruncationLawFires)
 {
 	RequireDistinctDivideRoundingMode();
 	Lcg r{0x5011EE5011EE1234ull};
+	int law_gaps = 0;
 	for (u32 iter = 0; iter < 3000; ++iter)
 	{
 		// Both signs: SQRT.S takes |Ft| on the negative path and raises I|SI.
@@ -212,18 +278,47 @@ TEST(EeRecFpuDivUnitRounding, SqrtSMatchesInterpAtInexactRoots)
 		SCOPED_TRACE(::testing::Message()
 			<< "iter=" << iter << " Ft=" << std::hex << ftBits << " pre=" << pre);
 
-		EeRecTestHarness h;
-		h.EnableCop1();
-		h.SetFprBits(1, ftBits);
-		h.SetFcr31(pre);
-		h.LoadProgram({ee::SQRT_S(2, 1)});
-		h.Run();
+		// Two harnesses, not Run(): the engines now differ on purpose, and
+		// Run()'s auto-diff cannot express "differ in exactly this shape".
+		u32 res[2] = {}, fcr[2] = {};
+		for (int jit = 0; jit < 2; ++jit)
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.SetFprBits(1, ftBits);
+			h.SetFcr31(pre);
+			h.LoadProgram({ee::SQRT_S(2, 1)});
+			if (jit)
+			{
+				h.RunJitNoDiff();
+				res[1] = h.GetFprBitsJit(2);
+				fcr[1] = h.JitSnapshot().fprs.fprc[31];
+			}
+			else
+			{
+				h.RunInterpOnly();
+				res[0] = h.GetFprBitsInterp(2);
+				fcr[0] = h.InterpSnapshot().fprs.fprc[31];
+			}
+		}
 
-		EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & kStickyMask,
-			h.InterpSnapshot().fprs.fprc[31] & kStickyMask);
+		if (res[0] != res[1])
+		{
+			++law_gaps;
+			EXPECT_TRUE(SqrtTruncates(ftBits))
+				<< "the engines parted company on a root the truncation law does "
+				   "NOT settle";
+			EXPECT_TRUE(IsOneUlpTowardZero(res[0], res[1]))
+				<< "silicon's square root is one ULP LOW or exact, never high; "
+				   "interp=" << std::hex << res[0] << " jit=" << res[1];
+		}
+		EXPECT_EQ(fcr[1] & kStickyMask, fcr[0] & kStickyMask);
 		if (::testing::Test::HasFailure())
 			return;
 	}
+	EXPECT_GT(law_gaps, 0) << "anti-vacuity: no operand reached the truncation law, "
+							  "so this test is asserting engine agreement under a "
+							  "different name";
 }
 
 // sqrt(5): 0x400F1BBD to nearest, 0x400F1BBC chopped.
