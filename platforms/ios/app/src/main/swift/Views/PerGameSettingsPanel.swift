@@ -47,6 +47,8 @@ struct PerGameSettingsPanel: View {
     }
 
     private static let useGlobalSentinel = -1
+    private static let upscaleUseGlobalSentinel: Float = -1.0
+    private static let aspectUseGlobalSentinel = ""
     private static let trilinearUseGlobalSentinel = Int(Int32.min)
     private static let eeCycleRateUseGlobalSentinel = Int(Int32.min)
     private static let fastBootUseGlobalSentinel = -1
@@ -61,7 +63,8 @@ struct PerGameSettingsPanel: View {
     @State private var upscaleMultiplier: Float
     @State private var aspectRatio: String
     @State private var textureFiltering: Int
-    @State private var hardwareMipmapping: Bool
+    /// Tri-state: useGlobalSentinel, 0 off, 1 on. Was a Bool, which had no room to say "inherit".
+    @State private var hardwareMipmapping: Int
     @State private var blendingAccuracy: Int
     @State private var interlaceMode: Int
     @State private var trilinearFiltering: Int
@@ -188,12 +191,14 @@ struct PerGameSettingsPanel: View {
             crc: (info["crc"] as? String) ?? game.metadata["crc"]
         ))
         _hasGameSettingsIdentity = State(initialValue: !PadLayoutGameIdentity.normalizedCRC((info["crc"] as? String) ?? game.metadata["crc"]).isEmpty)
-        _upscaleMultiplier = State(initialValue: Self.floatValue(info["upscaleMultiplier"], defaultValue: 1.0))
-        _aspectRatio = State(initialValue: Self.normalizedAspect(info["aspectRatio"] as? String))
-        _textureFiltering = State(initialValue: Self.intValue(info["textureFiltering"], defaultValue: 2))
-        _hardwareMipmapping = State(initialValue: Self.boolValue(info["hardwareMipmapping"], defaultValue: true))
-        _blendingAccuracy = State(initialValue: Self.intValue(info["blendingAccuracy"], defaultValue: 1))
-        _interlaceMode = State(initialValue: Self.intValue(info["interlaceMode"], defaultValue: 7))
+        // Sentinel unless the file actually carries the key, so opening and saving the panel
+        // cannot invent an override.
+        _upscaleMultiplier = State(initialValue: Self.boolValue(info["hasUpscaleMultiplierOverride"], defaultValue: false) ? Self.floatValue(info["upscaleMultiplier"], defaultValue: 1.0) : Self.upscaleUseGlobalSentinel)
+        _aspectRatio = State(initialValue: Self.boolValue(info["hasAspectRatioOverride"], defaultValue: false) ? Self.normalizedAspect(info["aspectRatio"] as? String) : Self.aspectUseGlobalSentinel)
+        _textureFiltering = State(initialValue: Self.boolValue(info["hasTextureFilteringOverride"], defaultValue: false) ? Self.intValue(info["textureFiltering"], defaultValue: 2) : Self.useGlobalSentinel)
+        _hardwareMipmapping = State(initialValue: Self.boolValue(info["hasHardwareMipmappingOverride"], defaultValue: false) ? (Self.boolValue(info["hardwareMipmapping"], defaultValue: true) ? 1 : 0) : Self.useGlobalSentinel)
+        _blendingAccuracy = State(initialValue: Self.boolValue(info["hasBlendingAccuracyOverride"], defaultValue: false) ? Self.intValue(info["blendingAccuracy"], defaultValue: 1) : Self.useGlobalSentinel)
+        _interlaceMode = State(initialValue: Self.boolValue(info["hasInterlaceModeOverride"], defaultValue: false) ? Self.intValue(info["interlaceMode"], defaultValue: 0) : Self.useGlobalSentinel)
         _trilinearFiltering = State(initialValue: Self.boolValue(info["hasTrilinearFilteringOverride"], defaultValue: false) ? Self.intValue(info["trilinearFiltering"], defaultValue: -1) : Self.trilinearUseGlobalSentinel)
         _halfPixelOffset = State(initialValue: Self.boolValue(info["hasHalfPixelOffsetOverride"], defaultValue: false) ? Self.intValue(info["halfPixelOffset"], defaultValue: 0) : Self.useGlobalSentinel)
         _roundSprite = State(initialValue: Self.boolValue(info["hasRoundSpriteOverride"], defaultValue: false) ? Self.intValue(info["roundSprite"], defaultValue: 0) : Self.useGlobalSentinel)
@@ -1116,7 +1121,7 @@ struct PerGameSettingsPanel: View {
                 upscaleMultiplier: upscaleMultiplier,
                 aspectRatio: aspectRatio,
                 textureFiltering: Int32(textureFiltering),
-                hardwareMipmapping: hardwareMipmapping,
+                hardwareMipmapping: Int32(hardwareMipmapping),
                 blendingAccuracy: Int32(blendingAccuracy),
                 interlaceMode: Int32(interlaceMode),
                 trilinearFiltering: Int32(trilinearFiltering),
@@ -1156,7 +1161,7 @@ struct PerGameSettingsPanel: View {
                 upscaleMultiplier: upscaleMultiplier,
                 aspectRatio: aspectRatio,
                 textureFiltering: Int32(textureFiltering),
-                hardwareMipmapping: hardwareMipmapping,
+                hardwareMipmapping: Int32(hardwareMipmapping),
                 blendingAccuracy: Int32(blendingAccuracy),
                 interlaceMode: Int32(interlaceMode),
                 trilinearFiltering: Int32(trilinearFiltering),

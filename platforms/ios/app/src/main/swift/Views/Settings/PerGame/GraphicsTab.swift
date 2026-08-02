@@ -10,11 +10,12 @@ struct GraphicsTab: View {
     let trilinearUseGlobalSentinel: Int
     let ophFlagHackEffective: Bool
 
-    // Core graphics overrides.
+    // Core graphics overrides. Each carries a use-global sentinel so an untouched setting is not
+    // written to the per-game file at all, plus the global value to label what it inherits.
     @Binding var upscaleMultiplier: Float
     @Binding var aspectRatio: String
     @Binding var textureFiltering: Int
-    @Binding var hardwareMipmapping: Bool
+    @Binding var hardwareMipmapping: Int
     @Binding var blendingAccuracy: Int
     @Binding var interlaceMode: Int
 
@@ -76,17 +77,24 @@ struct GraphicsTab: View {
     }
 
     private static let useGlobalSentinel = -1
+    private static let upscaleUseGlobalSentinel: Float = -1.0
+    private static let aspectUseGlobalSentinel = ""
     private static let trilinearUseGlobalSentinelLocal = Int(Int32.min)
 
+    // Tags are GSInterlaceMode values (Config.h). The old table was shifted by one from index 1 up,
+    // so every label named the mode below it and Adaptive was unreachable. Worse, "Adaptive
+    // (Default)" was really Blend BFF, which is how it ended up as the per-game fallback.
     private static let deinterlaceOptions = [
-        PickerOption(id: 0, title: "None"),
-        PickerOption(id: 1, title: "Weave (TFF)"),
-        PickerOption(id: 2, title: "Weave (BFF)"),
-        PickerOption(id: 3, title: "Bob (TFF)"),
-        PickerOption(id: 4, title: "Bob (BFF)"),
-        PickerOption(id: 5, title: "Blend (TFF)"),
-        PickerOption(id: 6, title: "Blend (BFF)"),
-        PickerOption(id: 7, title: "Adaptive (Default)")
+        PickerOption(id: 0, title: "Automatic (Default)"),
+        PickerOption(id: 1, title: "Off (No Deinterlacing)"),
+        PickerOption(id: 2, title: "Weave (TFF)"),
+        PickerOption(id: 3, title: "Weave (BFF)"),
+        PickerOption(id: 4, title: "Bob (TFF)"),
+        PickerOption(id: 5, title: "Bob (BFF)"),
+        PickerOption(id: 6, title: "Blend (TFF)"),
+        PickerOption(id: 7, title: "Blend (BFF)"),
+        PickerOption(id: 8, title: "Adaptive (TFF)"),
+        PickerOption(id: 9, title: "Adaptive (BFF)")
     ]
     private static let trilinearFilteringOptions = [
         PickerOption(id: trilinearUseGlobalSentinelLocal, title: "Use Global"),
@@ -142,7 +150,7 @@ struct GraphicsTab: View {
     @ViewBuilder
     private var graphicsContent: some View {
         Section(settings.localized("Graphics")) {
-            EnumPicker(UpscaleOptions.all, selection: $upscaleMultiplier) {
+            EnumPicker([(id: Self.upscaleUseGlobalSentinel, title: settings.localized("Use Global"))] + UpscaleOptions.all, selection: $upscaleMultiplier) {
                 Text(settings.localized("Internal Resolution"))
             }
             .disabled(!enabled)
@@ -162,28 +170,33 @@ struct GraphicsTab: View {
                 .disabled(!enabled)
             }
 
-            EnumPicker(Self.aspectRatioOptions, selection: $aspectRatio) {
+            EnumPicker([(id: Self.aspectUseGlobalSentinel, title: settings.localized("Use Global"))] + Self.aspectRatioOptions, selection: $aspectRatio) {
                 Text(settings.localized("Aspect Ratio"))
             }
             .disabled(!enabled)
 
-            EnumPicker(Self.textureFilteringOptionsEnum, selection: $textureFiltering) {
+            EnumPicker([(id: Self.useGlobalSentinel, title: settings.localized("Use Global"))] + Self.textureFilteringOptionsEnum, selection: $textureFiltering) {
                 Text(settings.localized("Texture Filtering"))
             }
             .disabled(!enabled)
 
-            Toggle(settings.localized("Hardware Mipmapping"), isOn: $hardwareMipmapping)
-                .disabled(!enabled)
+            Picker(settings.localized("Hardware Mipmapping"), selection: $hardwareMipmapping) {
+                Text(settings.localized("Use Global")).tag(Self.useGlobalSentinel)
+                Text(settings.localized("Off")).tag(0)
+                Text(settings.localized("On")).tag(1)
+            }
+            .disabled(!enabled)
             Text(settings.localized("Turn this off only for games with mipmap-related texture stripes, shimmer, or bad LOD. " + (savesToRunningGame ? "Applies when you save." : "Applies on next boot.")))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            EnumPicker(Self.blendingAccuracyOptions, selection: $blendingAccuracy) {
+            EnumPicker([(id: Self.useGlobalSentinel, title: settings.localized("Use Global"))] + Self.blendingAccuracyOptions, selection: $blendingAccuracy) {
                 Text(settings.localized("Blending Accuracy"))
             }
             .disabled(!enabled)
 
             Picker(settings.localized("Deinterlace"), selection: $interlaceMode) {
+                Text(settings.localized("Use Global")).tag(Self.useGlobalSentinel)
                 ForEach(Self.deinterlaceOptions) { option in
                     Text(settings.localized(option.title)).tag(option.id)
                 }
