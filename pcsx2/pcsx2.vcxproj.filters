@@ -425,6 +425,9 @@
     <ClCompile Include="SaveState.cpp">
       <Filter>System</Filter>
     </ClCompile>
+    <ClCompile Include="SaveStateLegacy.cpp">
+      <Filter>System</Filter>
+    </ClCompile>
     <ClCompile Include="SourceLog.cpp">
       <Filter>System</Filter>
     </ClCompile>
@@ -1491,6 +1494,9 @@
       <Filter>System\Include</Filter>
     </ClInclude>
     <ClInclude Include="SaveState.h">
+      <Filter>System\Include</Filter>
+    </ClInclude>
+    <ClInclude Include="SaveStateLegacy.h">
       <Filter>System\Include</Filter>
     </ClInclude>
     <ClInclude Include="Dmac.h">

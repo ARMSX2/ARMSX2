@@ -104,6 +104,11 @@ public:
 	bool FreezeBios();
 	bool FreezeInternals(Error* error);
 
+	// Load-only reader for legacy-format internal-structures blobs (the
+	// AetherSX2/NetherSX2-era majors accepted by
+	// SaveStateLegacy::IsSupportedVersion). Implemented in SaveStateLegacy.cpp.
+	bool FreezeInternalsLegacy(Error* error);
+
 	// Loads or saves an arbitrary data type.  Usable on atomic types, structs, and arrays.
 	// For dynamically allocated pointers use FreezeMem instead.
 	template<typename T>
@@ -121,6 +126,14 @@ public:
 	}
 
 	void PrepBlock( int size );
+
+	// Skips over bytes that have no destination (legacy-format fields that
+	// were removed, or removed-era padding). Bounds-checked via PrepBlock.
+	void FreezeSkip( int size )
+	{
+		PrepBlock( size );
+		CommitBlock( size );
+	}
 
 	template <typename T>
 	void FreezeDeque(std::deque<T>& q)
