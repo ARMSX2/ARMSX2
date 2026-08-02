@@ -121,9 +121,24 @@ static void ToPS2FPU_Full(int idx, bool flags, int /*absidx*/, bool acc, bool ad
 	armAsm->B(&end);
 
 	armAsm->Bind(&toComplex);
-	armAsm->Mov(RXARG2, static_cast<u64>(1152) << 52);   // dbl_ps2_overflow (2^129)
+	// Saturate above the EE MAXIMUM, not above 2^129.
+	//
+	// x86 iFPUd.cpp uses dbl_ps2_overflow == 2^129 here, but the largest number
+	// this FPU has is 0x7FFFFFFF == (2 - 2^-23) * 2^128, a whole binade below
+	// it. Everything in (that max, 2^129) therefore fell into the halving arm
+	// below, and under the divide unit's round-to-NEAREST FPCR that arm's
+	// +0x00800000 carried out of the exponent field into the SIGN BIT
+	// (0x7f800000 + 0x00800000 == 0x80000000): the largest magnitude the FPU can
+	// produce came back as negative zero. Only RSQRT can land in the band; see
+	// EeRecFpuFull.RsqrtAboveEeMaxSaturatesInsteadOfWrappingToNegativeZero for
+	// why DIV and SQRT cannot.
+	//
+	// `hi`, not `hs`: the EE maximum ITSELF is representable and belongs to the
+	// halving arm, which handles it exactly (halved it is +FLT_MAX, and
+	// 0x7f7fffff + 0x00800000 == 0x7fffffff).
+	armAsm->Mov(RXARG2, UINT64_C(0x47FFFFFFE0000000)); // (2 - 2^-23) * 2^128
 	armAsm->Cmp(RXARG1, RXARG2);
-	armAsm->B(&toOverflow, a64::hs);
+	armAsm->B(&toOverflow, a64::hi);
 
 	// Large but PS2-representable (exp-0xff range): lower double exp, narrow,
 	// raise single exp — the inverse of ToDouble's complex path.

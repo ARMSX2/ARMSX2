@@ -612,6 +612,92 @@ TEST(EeRecFpuFull, RsqrtDivByZeroSignedMaxFromDividend)
 	EXPECT_EQ(h.GetGpr64Jit(reg::v0) & 0x00010020u, 0x00010020u) << "D|SD not set";
 }
 
+// ToPS2FPU_Full's "large but PS2-representable" arm must not be entered by a
+// value ABOVE the EE maximum.
+//
+// That arm (iFPUd-arm64.cpp) halves the double, narrows, and adds 0x00800000
+// back to the single. Its guard was |x| >= 2^129 — but the largest number this
+// FPU has is 0x7FFFFFFF == (2 - 2^-23) * 2^128, which is BELOW 2^129, so the
+// band (EE max, 2^129) was routed into the halving arm instead of
+// saturating. Halved, such a value sits just under 2^128; under the divide
+// unit's round-to-NEAREST FPCR the narrow rounds it up to a host infinity
+// (0x7f800000) and the +0x00800000 carries out of the exponent field into the
+// SIGN BIT:
+//
+//     0x7f800000 + 0x00800000 == 0x80000000
+//
+// so the largest magnitude the FPU can produce came back as negative zero.
+// Under the arithmetic FPCR (ChopZero) the narrow chops to 0x7f7fffff instead
+// and the arm is correct, which is why only the ops that swap to FPUDivFPCR
+// could see it.
+//
+// The interpreter cannot wrap this way: it narrows through the host FPU and
+// saturates at ±FLT_MAX (checkOverflow, FPU.cpp), so it never adds into the
+// exponent field at all. It also stops a binade below the console's
+// 0x7FFFFFFF there — a separate, known gap in the interpreter, not this bug.
+//
+// ONLY RSQRT REACHES THE BAND. A DIV quotient cannot: for 24-bit significands
+// with a < b, a/b <= 1 - 2^-24 strictly, and the band's relative width is
+// exactly 2^-24 (a sweep of the four reachable exponent differences found no
+// hits, and DIV.S(0x7FFFFFFF, 0x3F7FFFFF) lands on 2^129 *exactly*, which the
+// >= arm already handled). SQRT halves exponents and cannot get near. RSQRT
+// divides by a 53-bit sqrt result, so the argument does not apply.
+//
+// The operand pairs below were found by solving fs / sqrt(ft) for the band.
+// The console saturates at 0x7FFFFFFF, and FULL mode now does the same. The
+// interpreter column is pinned too, at its own saturation bound of
+// ±FLT_MAX (0x7F7FFFFF) — a binade low against silicon, but positive and
+// stable: the point here is that neither engine wraps to negative zero.
+TEST(EeRecFpuFull, RsqrtAboveEeMaxSaturatesInsteadOfWrappingToNegativeZero)
+{
+	static const u32 kPairs[][2] = {
+		{0x608073EEu, 0x0080E845u}, {0x60814231u, 0x0082878Du},
+		{0x6081A669u, 0x00835244u}, {0x6081B3B0u, 0x00836D2Bu},
+		{0x6081F74Du, 0x0083F655u},
+	};
+	for (const auto& p : kPairs)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.EnableFpuFullMode();
+		h.SetFprBits(0, p[0]);
+		h.SetFprBits(1, p[1]);
+		h.LoadProgram({RSQRT_S(2, 0, 1)});
+		h.RunJitNoDiff();
+
+		// RunJitNoDiff does not run the interpreter, and GetFprBitsInterp would
+		// then hand back the JIT's own value — the reference needs its own run.
+		EeRecTestHarness i;
+		i.EnableCop1();
+		i.SetFprBits(0, p[0]);
+		i.SetFprBits(1, p[1]);
+		i.LoadProgram({RSQRT_S(2, 0, 1)});
+		i.RunInterpOnly();
+
+		EXPECT_EQ(h.GetFprBitsJit(2), 0x7FFFFFFFu)
+			<< "fs=" << p[0] << " ft=" << p[1] << " wrapped";
+		EXPECT_EQ(i.GetFprBitsInterp(2), 0x7F7FFFFFu)
+			<< "interpreter reference moved";
+	}
+}
+
+// Liveness for the test above: the halving arm must still be REACHABLE and
+// exact for the top binade proper. 1.5*2^128 / 1.0 is in the arm's range and
+// below the EE maximum, so it must come back unrounded. Tightening the overflow
+// guard too far (down to 2^128) would saturate this to 0x7FFFFFFF and turn the
+// test above green for the wrong reason.
+TEST(EeRecFpuFull, DivKeepsTopBinadeResultsBelowTheEeMaximum)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	h.EnableFpuFullMode();
+	h.SetFprBits(0, 0x7FC00000u); // 1.5 * 2^128
+	h.SetFprBits(1, FloatBits(1.0f));
+	h.LoadProgram({DIV_S(2, 0, 1)});
+	h.RunJitNoDiff();
+	EXPECT_EQ(h.GetFprBitsJit(2), 0x7FC00000u);
+}
+
 // GE-M2 residency coherence: FPU-full (DOUBLE-mode) ops hand-emit integer scratch
 // for the guard-bit alignment (FPU_ADD_SUB) and the min/max bit-pattern build
 // (recMINMAX). Those temps were RWARG3/RWARG4 (w2/w3) — EE-allocatable pool
