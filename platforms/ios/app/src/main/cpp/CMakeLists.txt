@@ -363,7 +363,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	# stale for the same reason. Upstream still writes it at configure time up in
 	# write_svnrev_h; this only refreshes it, and produces identical bytes.
 	add_custom_target(armsx2_svnrev ALL
-		BYPRODUCTS "${CMAKE_BINARY_DIR}/common/include/svnrev.h"
 		COMMAND ${CMAKE_COMMAND}
 			-DGIT_WORKING_DIR=${PROJECT_SOURCE_DIR}
 			-DOUTPUT_FILE=${CMAKE_BINARY_DIR}/common/include/svnrev.h
