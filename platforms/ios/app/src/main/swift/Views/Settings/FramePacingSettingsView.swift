@@ -38,13 +38,15 @@ struct FramePacingSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Stepper("\(settings.localized("Audio Buffer")): \(settings.audioBufferMs) ms",
-                        value: $settings.audioBufferMs,
-                        in: SettingsStore.audioBufferMsRange)
+                // Same two keys the Audio screen shows, so use the same control. Stepping
+                // from 10 to 200 a tap at a time was never a serious way to set these.
+                IntSliderRow("Buffer Size", value: $settings.audioBufferMs,
+                             range: SettingsStore.audioBufferMsRange,
+                             suffix: " ms", defaultValue: 50, settings: settings)
 
-                Stepper("\(settings.localized("Output Latency")): \(settings.audioOutputLatencyMs) ms",
-                        value: $settings.audioOutputLatencyMs,
-                        in: SettingsStore.audioOutputLatencyMsRange)
+                IntSliderRow("Output Latency", value: $settings.audioOutputLatencyMs,
+                             range: SettingsStore.audioOutputLatencyMsRange,
+                             suffix: " ms", defaultValue: 20, settings: settings)
             } header: {
                 Text(settings.localized("Individual Settings"))
             }
