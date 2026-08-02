@@ -5,6 +5,11 @@ import Foundation
 extension AppLanguage {
     static let translations: [AppLanguage: [String: String]] = [
         .simplifiedChinese: [
+            "Reset %@": "重置%@",
+            "Use the global value for %@": "对%@使用全局值",
+            "Double tap to type a value.": "双击可输入数值。",
+            "%@ taps": "%@ 次点击",
+            "%@ s": "%@ 秒",
             "System Default": "跟随系统",
             "Language": "语言",
             "Interface Language": "界面语言",
@@ -125,6 +130,11 @@ extension AppLanguage {
             "PCSX2 database": "PCSX2 database"
         ],
         .arabic: [
+            "Reset %@": "إعادة تعيين %@",
+            "Use the global value for %@": "استخدام القيمة العامة لـ %@",
+            "Double tap to type a value.": "انقر مرتين لإدخال قيمة.",
+            "%@ taps": "%@ نقرات",
+            "%@ s": "%@ ثانية",
             "System Default": "حسب النظام",
             "Language": "اللغة",
             "Interface Language": "لغة الواجهة",
@@ -250,6 +260,10 @@ extension AppLanguage {
             "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off."
         ],
         .spanish: [
+            "Reset %@": "Restablecer %@",
+            "Use the global value for %@": "Usar el valor global para %@",
+            "Double tap to type a value.": "Toca dos veces para escribir un valor.",
+            "%@ taps": "%@ toques",
             "System Default": "Predeterminado del sistema",
             "Language": "Idioma",
             "Interface Language": "Idioma de la interfaz",
@@ -370,6 +384,10 @@ extension AppLanguage {
             "PCSX2 database": "PCSX2 database"
         ],
         .french: [
+            "Reset %@": "Réinitialiser %@",
+            "Use the global value for %@": "Utiliser la valeur globale pour %@",
+            "Double tap to type a value.": "Appuyez deux fois pour saisir une valeur.",
+            "%@ taps": "%@ appuis",
             "System Default": "Langue du système",
             "Language": "Langue",
             "Interface Language": "Langue de l'interface",
@@ -468,6 +486,10 @@ extension AppLanguage {
             "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off."
         ],
         .german: [
+            "Reset %@": "%@ zurücksetzen",
+            "Use the global value for %@": "Globalen Wert für %@ verwenden",
+            "Double tap to type a value.": "Doppeltippen, um einen Wert einzugeben.",
+            "%@ taps": "%@ Taps",
             "System Default": "Systemstandard",
             "Language": "Sprache",
             "Interface Language": "Sprache der Oberfläche",
@@ -588,6 +610,10 @@ extension AppLanguage {
             "PCSX2 database": "PCSX2 database"
         ],
         .italian: [
+            "Reset %@": "Reimposta %@",
+            "Use the global value for %@": "Usa il valore globale per %@",
+            "Double tap to type a value.": "Tocca due volte per inserire un valore.",
+            "%@ taps": "%@ tocchi",
             "System Default": "Predefinito di sistema",
             "Language": "Lingua",
             "Interface Language": "Lingua dell'interfaccia",
@@ -708,6 +734,10 @@ extension AppLanguage {
             "PCSX2 database": "PCSX2 database"
         ],
         .portuguese: [
+            "Reset %@": "Redefinir %@",
+            "Use the global value for %@": "Usar o valor global para %@",
+            "Double tap to type a value.": "Toque duas vezes para digitar um valor.",
+            "%@ taps": "%@ toques",
             "System Default": "Padrão do sistema",
             "Language": "Idioma",
             "Interface Language": "Idioma da interface",
@@ -801,6 +831,11 @@ extension AppLanguage {
             "PCSX2 database": "PCSX2 database"
         ],
         .japanese: [
+            "Reset %@": "%@をリセット",
+            "Use the global value for %@": "%@にグローバル値を使用",
+            "Double tap to type a value.": "ダブルタップで数値を入力できます。",
+            "%@ taps": "%@ 回タップ",
+            "%@ s": "%@ 秒",
             "System Default": "システム設定",
             "Language": "言語",
             "Interface Language": "インターフェース言語",
@@ -899,6 +934,11 @@ extension AppLanguage {
             "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off.": "Enable RetroAchievements to On enables achievements for this game even if the global toggle is off."
         ],
         .korean: [
+            "Reset %@": "%@ 재설정",
+            "Use the global value for %@": "%@에 전역 값 사용",
+            "Double tap to type a value.": "두 번 탭하여 값을 입력하세요.",
+            "%@ taps": "%@ 회 탭",
+            "%@ s": "%@ 초",
             "System Default": "시스템 기본값",
             "Language": "언어",
             "Interface Language": "인터페이스 언어",
