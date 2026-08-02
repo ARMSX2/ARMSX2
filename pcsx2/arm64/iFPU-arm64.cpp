@@ -593,12 +593,24 @@ static void fpuEmitGuardedAddSub(const a64::VRegister& dst,
 
 // FpuMulHack (Tales of Destiny Remake gamefix, EmuConfig.Gamefixes.FpuMulHack).
 // x86 routes every FPU multiply (MUL/MULA/MADD/MSUB) through FPU_MUL, which —
-// when the gamefix is on — patches the single specific product 0.25 * (π/2)
-// (0x3e800000 * 0x40490fdb) to 0x3f490fda so the game stops hanging in one
-// late-game room. Emit `dst = (hit) ? 0x3f490fda : s*t`; callers clamp/accumulate
-// dst as they normally would (the magic value is an ordinary small float, so a
-// following fpuClampResult is a no-op). In the default config (gamefix off) this
-// is a bare Fmul — zero added cost.
+// when the gamefix is on — patches the single specific product 0.25 * π
+// (0x3e800000 * 0x40490fdb) from the correctly-rounded 0x3f490fdb to 0x3f490fda
+// so the game stops hanging in one late-game room. Emit
+// `dst = (hit) ? 0x3f490fda : s*t`; callers clamp/accumulate dst as they normally
+// would (the magic value is an ordinary small float, so a following
+// fpuClampResult is a no-op). In the default config (gamefix off) this is a bare
+// Fmul — zero added cost.
+//
+// The patched value is not arbitrary: 0x3f490fda is π/4 one ULP low, which is
+// what the EE's multiplier actually returns. Its Booth recoding drops one ULP
+// when ft's significand has an odd digit pair (ft & 0x2AA) and the exact product
+// has no tail below the single ULP — here fs = 2^-2, so the product is exact and
+// the deficit reaches the result. The general model reproduces this pair (and
+// leaves the swapped operand order alone, exactly as the check below does).
+// It is NOT generalized here: in this fast path it costs ~9 instructions on every
+// multiply in every game, against 1 today. Its home is iFPUd-arm64.cpp, where the
+// double product already exists and it costs 4 — extending it to this path needs
+// its own measured case.
 static void emitFpuMul(const a64::VRegister& dst, const a64::VRegister& s, const a64::VRegister& t)
 {
 	if (!CHECK_FPUMULHACK)
