@@ -586,7 +586,12 @@ static u32 eeSqrtBits(u32 t)
 	// host FPCR because this arithmetic is integer. sqrt's result is always
 	// positive, so toward-negative-infinity is the same as toward zero and
 	// toward-positive-infinity is "up whenever the root is inexact". The
-	// truncation law sits on top: it can only take the increment away.
+	// truncation law sits on top: it can only take the increment away, so under
+	// toward-positive-infinity it suppresses a round-up the mode asked for.
+	// That is deliberate -- the law is what the console does, the non-nearest
+	// modes are a compatibility knob for behaviour it does not have. All four
+	// modes are pinned by
+	// EeRecFpuDivUnitRounding.SqrtSHonoursEveryDivideUnitRoundingMode.
 	bool round_up;
 	switch (EmuConfig.Cpu.FPUDivFPCR.GetRoundMode())
 	{

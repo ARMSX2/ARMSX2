@@ -91,6 +91,25 @@ struct ScopedAmbientRoundMode
 	ScopedAmbientRoundMode& operator=(const ScopedAmbientRoundMode&) = delete;
 };
 
+// The twin of the above for the divide unit's register.
+struct ScopedDivideRoundMode
+{
+	FPControlRegister saved_cfg, saved_host;
+	explicit ScopedDivideRoundMode(FPRoundMode mode)
+		: saved_cfg(EmuConfig.Cpu.FPUDivFPCR)
+		, saved_host(FPControlRegister::GetCurrent())
+	{
+		EmuConfig.Cpu.FPUDivFPCR.SetRoundMode(mode);
+	}
+	~ScopedDivideRoundMode()
+	{
+		EmuConfig.Cpu.FPUDivFPCR = saved_cfg;
+		FPControlRegister::SetCurrent(saved_host);
+	}
+	ScopedDivideRoundMode(const ScopedDivideRoundMode&) = delete;
+	ScopedDivideRoundMode& operator=(const ScopedDivideRoundMode&) = delete;
+};
+
 // The premise every test here rests on.
 void RequireDistinctDivideRoundingMode()
 {
@@ -342,6 +361,73 @@ TEST(EeRecFpuDivUnitRounding, SqrtSOfFiveRoundsToNearest)
 	EXPECT_EQ(hj.GetFprBitsJit(2), 0x400F1BBDu) << "[jit] round-to-nearest, matches console";
 	EXPECT_EQ(hi.GetFprBitsInterp(2), 0x400F1BBDu)
 		<< "[interp] 0x400F1BBC means the FPUDivFPCR swap was lost again";
+}
+
+// ---------------------------------------------------------------------------
+// All four divide-unit rounding modes on SQRT.S. eeSqrtBits() reads FPUDivFPCR
+// itself now that it is integer arithmetic.
+//
+// One operand per case the truncation law and the mode can land in:
+//
+//   3F80092E  u = 1,380,625 -- the law is silent, so the mode decides
+//   3F802734  u = 8,393,073 -- the law fires, and wins even under
+//                              toward-positive-infinity
+//   3F802001  u = 2^23 exactly -- one unit below where the law fires, so the
+//                              mode is still live right at the boundary
+//   3F800000  an exact root -- every mode must agree, or the mode is doing
+//                              something other than breaking ties
+//
+// The expected words were computed in a separate script from the frame
+// eeSqrtBits() documents, not read off the engine.
+// ---------------------------------------------------------------------------
+TEST(EeRecFpuDivUnitRounding, SqrtSHonoursEveryDivideUnitRoundingMode)
+{
+	struct Case
+	{
+		u32 ft;
+		u32 nearest, neg_inf, pos_inf, chop;
+		const char* what;
+	};
+	static constexpr Case kCases[] = {
+		{0x3F80092Eu, 0x3F800497u, 0x3F800496u, 0x3F800497u, 0x3F800496u, "law silent"},
+		{0x3F802734u, 0x3F801398u, 0x3F801398u, 0x3F801398u, 0x3F801398u, "law fires"},
+		{0x3F802001u, 0x3F801000u, 0x3F800FFFu, 0x3F801000u, 0x3F800FFFu, "u == 2^23"},
+		{0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u, "exact root"},
+	};
+
+	const auto run = [](u32 ft) {
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetFprBits(1, ft);
+		h.SetFcr31(0);
+		h.LoadProgram({ee::SQRT_S(2, 1)});
+		h.RunInterpOnly();
+		return h.GetFprBitsInterp(2);
+	};
+
+	int mode_sensitive = 0;
+	for (const Case& c : kCases)
+	{
+		SCOPED_TRACE(::testing::Message() << std::hex << "ft=" << c.ft << " (" << c.what << ")");
+		u32 got[4];
+		{ const ScopedDivideRoundMode m{FPRoundMode::Nearest};          got[0] = run(c.ft); }
+		{ const ScopedDivideRoundMode m{FPRoundMode::NegativeInfinity}; got[1] = run(c.ft); }
+		{ const ScopedDivideRoundMode m{FPRoundMode::PositiveInfinity}; got[2] = run(c.ft); }
+		{ const ScopedDivideRoundMode m{FPRoundMode::ChopZero};         got[3] = run(c.ft); }
+		EXPECT_EQ(got[0], c.nearest) << "nearest";
+		EXPECT_EQ(got[1], c.neg_inf) << "toward -inf";
+		EXPECT_EQ(got[2], c.pos_inf) << "toward +inf";
+		EXPECT_EQ(got[3], c.chop) << "toward zero";
+		if (got[0] != got[1] || got[0] != got[2] || got[0] != got[3])
+			++mode_sensitive;
+	}
+
+	// Anti-vacuity. If the integer path stopped reading FPUDivFPCR, every row
+	// would still pass its nearest column and the other three would collapse
+	// onto it.
+	EXPECT_EQ(mode_sensitive, 2)
+		<< "the operand table must contain rows the divide unit's rounding mode "
+		   "actually moves, or this test cannot tell a live knob from a dead one";
 }
 
 // ---------------------------------------------------------------------------
