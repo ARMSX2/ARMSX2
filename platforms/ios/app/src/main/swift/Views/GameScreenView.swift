@@ -1894,19 +1894,11 @@ private struct SpeedControlPanel: View {
                     ))
 
                     VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text(settings.localized("Fast Forward Speed"))
-                            Spacer()
-                            Text(Self.formatPercent(settings.fastForwardScalar))
-                                .foregroundStyle(.secondary)
-                                .font(.callout.monospacedDigit())
-                        }
-
-                        Slider(
-                            value: $settings.fastForwardScalar,
-                            in: SettingsStore.minFastForwardScalar...SettingsStore.maxFastForwardScalar,
-                            step: 0.25
-                        )
+                        NumberRow("Fast Forward Speed", value: $settings.fastForwardScalar,
+                                  in: SettingsStore.minFastForwardScalar...SettingsStore.maxFastForwardScalar,
+                                  format: .unitPercent, step: 0.25,
+                                  default: SettingsStore.defaultFastForwardScalar,
+                                  settings: settings)
 
                         HStack {
                             quickFastForwardButton(1.5)
