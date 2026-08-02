@@ -31,7 +31,7 @@ struct FramePacingSettingsView: View {
 
                 Stepper("\(settings.localized("Queue Size")): \(settings.vsyncQueueSize)",
                         value: $settings.vsyncQueueSize,
-                        in: 2...16)
+                        in: SettingsStore.vsyncQueueRange)
 
                 Toggle(settings.localized("Sync to Host Refresh"), isOn: $settings.syncToHostRefresh)
                 Text(settings.localized("Sync to Host Refresh needs a restart to take effect."))
@@ -40,11 +40,11 @@ struct FramePacingSettingsView: View {
 
                 Stepper("\(settings.localized("Audio Buffer")): \(settings.audioBufferMs) ms",
                         value: $settings.audioBufferMs,
-                        in: 10...200)
+                        in: SettingsStore.audioBufferMsRange)
 
                 Stepper("\(settings.localized("Output Latency")): \(settings.audioOutputLatencyMs) ms",
                         value: $settings.audioOutputLatencyMs,
-                        in: 5...200)
+                        in: SettingsStore.audioOutputLatencyMsRange)
             } header: {
                 Text(settings.localized("Individual Settings"))
             }
