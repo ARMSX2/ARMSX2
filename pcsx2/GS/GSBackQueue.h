@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <memory>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -373,6 +374,15 @@ namespace GSBackQueue
 		// Set while the back thread is running. Read/written only on the MTGS
 		// thread (start/stop/drain all happen there), so a plain bool is enough.
 		bool consumer_running = false;
+
+		// The one thread allowed to wait on `sema` for empty. WorkSema supports a
+		// SINGLE empty-waiter — a second one blocks on m_empty_sema forever,
+		// because the worker posts exactly once per transition to idle and then
+		// sleeps with the flag already cleared. That is a silent hang in Release,
+		// where the pxAssertMsg guarding it inside WaitForEmpty is compiled out,
+		// so record the owner at start and check it on every drain instead.
+		// Written before the consumer starts, read-only afterwards.
+		std::thread::id drain_thread;
 
 		// Draw-node pool: the producer acquires (free ring first, then arena
 		// growth up to the cap, then backpressure), the consumer releases after
