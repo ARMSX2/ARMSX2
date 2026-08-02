@@ -35,10 +35,9 @@ struct FixesTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Picker(settings.localized("Texture Inside RT"), selection: $perGameTextureInsideRt) {
-                    Text(settings.localized("Use Global")).tag(-1)
-                    Text(settings.localized("Off")).tag(0)
-                    Text(settings.localized("Inside Targets")).tag(1)
-                    Text(settings.localized("Merge Targets")).tag(2)
+                    ForEach(SettingsOptions.withUseGlobal(SettingsOptions.textureInsideRT), id: \.id) { option in
+                        Text(settings.localized(option.title)).tag(option.id)
+                    }
                 }
                 .disabled(!enabled)
                 Text(settings.localized("Fixes games that render into areas of the framebuffer they later read back as textures (common half-screen or garbled-graphics fixes). " + (savesToRunningGame ? "Applies when you save." : "Applies on next boot.")))

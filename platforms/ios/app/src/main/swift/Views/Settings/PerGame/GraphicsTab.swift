@@ -158,12 +158,9 @@ struct GraphicsTab: View {
             }
             .disabled(!enabled)
 
-            Picker(settings.localized("Deinterlace"), selection: $interlaceMode) {
-                ForEach(SettingsOptions.withUseGlobal(SettingsOptions.deinterlace), id: \.id) { option in
-                    Text(settings.localized(option.title)).tag(option.id)
-                }
-            }
-            .disabled(!enabled)
+            sharedPicker("Deinterlace", selection: $interlaceMode,
+                         SettingsOptions.withUseGlobal(SettingsOptions.deinterlace))
+                .disabled(!enabled)
 
             Picker(settings.localized("FXAA"), selection: $perGameFXAA) {
                 Text(settings.localized("Use Global")).tag(-1)
@@ -194,12 +191,9 @@ struct GraphicsTab: View {
             }
             .disabled(!enabled)
 
-            Picker(settings.localized("TV/CRT Shader"), selection: $perGameTVShader) {
-                ForEach(SettingsOptions.withUseGlobal(SettingsOptions.tvShader), id: \.id) { option in
-                    Text(settings.localized(option.title)).tag(option.id)
-                }
-            }
-            .disabled(!enabled)
+            sharedPicker("TV/CRT Shader", selection: $perGameTVShader,
+                         SettingsOptions.withUseGlobal(SettingsOptions.tvShader))
+                .disabled(!enabled)
             Text(settings.localized("Scanline and CRT effects are subtle on high-resolution displays and are more visible at a lower Internal Resolution."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -211,15 +205,9 @@ struct GraphicsTab: View {
             }
             .disabled(!enabled)
 
-            Picker(settings.localized("Max Anisotropy"), selection: $perGameMaxAnisotropy) {
-                Text(settings.localized("Use Global")).tag(-1)
-                Text(settings.localized("Off")).tag(0)
-                Text("2x").tag(2)
-                Text("4x").tag(4)
-                Text("8x").tag(8)
-                Text("16x").tag(16)
-            }
-            .disabled(!enabled)
+            sharedPicker("Max Anisotropy", selection: $perGameMaxAnisotropy,
+                         SettingsOptions.withUseGlobal(SettingsOptions.maxAnisotropy))
+                .disabled(!enabled)
 
             Picker(settings.localized("CAS Sharpness"), selection: $perGameCASSharpness) {
                 Text(settings.localized("Use Global")).tag(-1)
@@ -285,12 +273,9 @@ struct GraphicsTab: View {
                     .foregroundStyle(.orange)
             }
 
-            Picker(settings.localized("Trilinear Filtering"), selection: $trilinearFiltering) {
-                ForEach(Self.trilinearFilteringOptions, id: \.id) { option in
-                    Text(settings.localized(option.title)).tag(option.id)
-                }
-            }
-            .disabled(!enabled)
+            sharedPicker("Trilinear Filtering", selection: $trilinearFiltering,
+                         Self.trilinearFilteringOptions)
+                .disabled(!enabled)
 
             if trilinearFiltering != trilinearUseGlobalSentinel && trilinearFiltering != -1 {
                 Text(settings.localized("Non-automatic trilinear filtering may break textures in some games."))
@@ -298,19 +283,13 @@ struct GraphicsTab: View {
                     .foregroundStyle(.orange)
             }
 
-            Picker(settings.localized("Half-pixel Offset"), selection: $halfPixelOffset) {
-                ForEach(Self.halfPixelOffsetOptions, id: \.id) { option in
-                    Text(settings.localized(option.title)).tag(option.id)
-                }
-            }
-            .disabled(!manualAdvancedHacksEnabled)
+            sharedPicker("Half-pixel Offset", selection: $halfPixelOffset,
+                         Self.halfPixelOffsetOptions)
+                .disabled(!manualAdvancedHacksEnabled)
 
-            Picker(settings.localized("Round Sprite"), selection: $roundSprite) {
-                ForEach(Self.roundSpriteOptions, id: \.id) { option in
-                    Text(settings.localized(option.title)).tag(option.id)
-                }
-            }
-            .disabled(!manualAdvancedHacksEnabled)
+            sharedPicker("Round Sprite", selection: $roundSprite,
+                         Self.roundSpriteOptions)
+                .disabled(!manualAdvancedHacksEnabled)
 
             Toggle(settings.localized("Override Align Sprite"), isOn: $alignSpriteOverride)
                 .disabled(!manualAdvancedHacksEnabled)
@@ -364,32 +343,18 @@ struct GraphicsTab: View {
         }
 
         Section(settings.localized("Hardware Fixes & Display")) {
-            Picker(settings.localized("Hardware Download Mode"), selection: $perGameHWDownloadMode) {
-                Text(settings.localized("Use Global")).tag(-1)
-                Text(settings.localized("Enabled")).tag(0)
-                Text(settings.localized("Force Full")).tag(1)
-                Text(settings.localized("No Readbacks")).tag(2)
-                Text(settings.localized("Unsynchronized")).tag(3)
-                Text(settings.localized("Disabled")).tag(4)
-            }
-            .disabled(!enabled)
-            Picker(settings.localized("CPU CLUT Render"), selection: $perGameCPUCLUT) {
-                Text(settings.localized("Use Global")).tag(-1)
-                Text(settings.localized("Disabled")).tag(0)
-                Text(settings.localized("Normal")).tag(1)
-                Text(settings.localized("Aggressive")).tag(2)
-            }
-            .disabled(!enabled)
-            Picker(settings.localized("GPU Target CLUT"), selection: $perGameGPUTargetCLUT) {
-                Text(settings.localized("Use Global")).tag(-1)
-                Text(settings.localized("Off")).tag(0)
-                Text(settings.localized("Enabled (Exact)")).tag(1)
-                Text(settings.localized("Enabled (Inside Target)")).tag(2)
-            }
-            .disabled(!enabled)
+            sharedPicker("Hardware Download Mode", selection: $perGameHWDownloadMode,
+                         SettingsOptions.withUseGlobal(SettingsOptions.hardwareDownloadMode))
+                .disabled(!enabled)
+            sharedPicker("CPU CLUT Render", selection: $perGameCPUCLUT,
+                         SettingsOptions.withUseGlobal(SettingsOptions.cpuClutRender))
+                .disabled(!enabled)
+            sharedPicker("GPU Target CLUT", selection: $perGameGPUTargetCLUT,
+                         SettingsOptions.withUseGlobal(SettingsOptions.gpuTargetClut))
+                .disabled(!enabled)
             Picker(settings.localized("VSync Queue Size"), selection: $perGameVsyncQueue) {
                 Text(settings.localized("Use Global")).tag(-1)
-                ForEach([2, 3, 4, 5, 6, 8, 10, 12, 16], id: \.self) { Text("\($0)").tag($0) }
+                ForEach(SettingsOptions.vsyncQueue, id: \.self) { Text("\($0)").tag($0) }
             }
             .disabled(!enabled)
             Picker(settings.localized("Sync to Host Refresh"), selection: $perGameSyncToHostRefresh) {
@@ -425,6 +390,17 @@ struct GraphicsTab: View {
             Text(settings.localized("Texture replacement needs a restart to take effect."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Picker over a shared option table, localized the way the global screen's own
+    /// helper does. The caller adds `.disabled(...)`, since the gate differs per row.
+    private func sharedPicker(_ title: String, selection: Binding<Int>,
+                              _ options: [(id: Int, title: String)]) -> some View {
+        Picker(settings.localized(title), selection: selection) {
+            ForEach(options, id: \.id) { option in
+                Text(settings.localized(option.title)).tag(option.id)
+            }
         }
     }
 

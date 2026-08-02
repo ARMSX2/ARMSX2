@@ -67,17 +67,17 @@ struct AudioTab: View {
 
                 Picker(settings.localized("Fast-Forward Volume"), selection: $perGameFastForwardVolume) {
                     Text(settings.localized("Use Global")).tag(-1)
-                    ForEach([0, 50, 100, 150, 200], id: \.self) { Text("\($0)%").tag($0) }
+                    ForEach(SettingsOptions.fastForwardVolume, id: \.self) { Text("\($0)%").tag($0) }
                 }
                 .disabled(!enabled)
                 Picker(settings.localized("Buffer Size"), selection: $perGameBufferMS) {
                     Text(settings.localized("Use Global")).tag(-1)
-                    ForEach([10, 25, 50, 75, 100, 150, 200], id: \.self) { Text("\($0) ms").tag($0) }
+                    ForEach(SettingsOptions.audioBufferMs, id: \.self) { Text("\($0) ms").tag($0) }
                 }
                 .disabled(!enabled)
                 Picker(settings.localized("Output Latency"), selection: $perGameOutputLatencyMS) {
                     Text(settings.localized("Use Global")).tag(-1)
-                    ForEach([5, 10, 20, 30, 50, 100, 200], id: \.self) { Text("\($0) ms").tag($0) }
+                    ForEach(SettingsOptions.audioOutputLatencyMs, id: \.self) { Text("\($0) ms").tag($0) }
                 }
                 .disabled(!enabled)
             }

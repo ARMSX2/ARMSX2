@@ -79,4 +79,13 @@ enum SettingsOptions {
     static let roundSprite: [(id: Int, title: String)] = [
         (0, "Off"), (1, "Half"), (2, "Full")
     ]
+
+    /// Numeric steps for the pacing and audio pickers. Plain values, since the call sites
+    /// format them differently (bare, " ms", "%"). The global screens offer the same
+    /// settings as steppers over a continuous range, so these are the per-game lists only.
+    static let vsyncQueue = [2, 3, 4, 5, 6, 8, 10, 12, 16]
+    static let targetFPS = [30, 45, 60, 90, 120]
+    static let audioBufferMs = [10, 25, 50, 75, 100, 150, 200]
+    static let audioOutputLatencyMs = [5, 10, 20, 30, 50, 100, 200]
+    static let fastForwardVolume = [0, 50, 100, 150, 200]
 }
