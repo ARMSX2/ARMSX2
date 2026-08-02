@@ -3,6 +3,9 @@
 
 import SwiftUI
 
+/// Landscape shows these three sections as their own category; portrait puts them at the
+/// top of the panel's root form above the category links. Same content either way, so the
+/// sections live here once. They used to be written out twice and had already drifted.
 struct GeneralTab: View {
     @Binding var enabled: Bool
     @Binding var hasGameSettingsIdentity: Bool
@@ -17,14 +20,35 @@ struct GeneralTab: View {
 
     var body: some View {
         PerGameTab(title: settings.localized("General")) {
-            identitySection
-            overridesSection
-            statusSection
+            PerGameIdentitySection(
+                enabled: enabled,
+                displayName: displayName,
+                hasPendingChanges: hasPendingChanges,
+                savesToRunningGame: savesToRunningGame,
+                game: game,
+                settings: settings
+            )
+            PerGameOverridesSection(
+                enabled: $enabled,
+                showResetAllConfirmation: $showResetAllConfirmation,
+                hasGameSettingsIdentity: hasGameSettingsIdentity,
+                savesToRunningGame: savesToRunningGame,
+                settings: settings
+            )
+            PerGameStatusSection(statusMessage: statusMessage, settings: settings)
         }
     }
+}
 
-    @ViewBuilder
-    private var identitySection: some View {
+struct PerGameIdentitySection: View {
+    let enabled: Bool
+    let displayName: String
+    let hasPendingChanges: Bool
+    let savesToRunningGame: Bool
+    let game: ISOEntry
+    let settings: SettingsStore
+
+    var body: some View {
         Section {
             HStack(spacing: 12) {
                 Image(systemName: enabled ? "slider.horizontal.3" : "power")
@@ -43,11 +67,7 @@ struct GeneralTab: View {
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
-                    Text(hasPendingChanges
-                         ? (savesToRunningGame
-                            ? settings.localized("Unsaved changes — tap Save to apply now.")
-                            : settings.localized("Unsaved changes — Save to apply on next boot."))
-                         : settings.localized("No pending changes."))
+                    Text(pendingChangesCaption)
                         .font(.caption)
                         .foregroundStyle(hasPendingChanges ? Color.accentColor : Color.secondary)
                 }
@@ -56,8 +76,23 @@ struct GeneralTab: View {
         }
     }
 
-    @ViewBuilder
-    private var overridesSection: some View {
+    private var pendingChangesCaption: String {
+        guard hasPendingChanges else { return settings.localized("No pending changes.") }
+        return savesToRunningGame
+            ? settings.localized("Unsaved changes — tap Save to apply now.")
+            : settings.localized("Unsaved changes — Save to apply on next boot.")
+    }
+}
+
+struct PerGameOverridesSection: View {
+    @Binding var enabled: Bool
+    @Binding var showResetAllConfirmation: Bool
+
+    let hasGameSettingsIdentity: Bool
+    let savesToRunningGame: Bool
+    let settings: SettingsStore
+
+    var body: some View {
         Section {
             Toggle(settings.localized("Use Per-Game Overrides"), isOn: $enabled)
             Text(settings.localized(savesToRunningGame
@@ -66,9 +101,9 @@ struct GeneralTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if !hasGameSettingsIdentity {
-                Text("Start this game once before saving its settings.")
+                Text(settings.localized("Start this game once before saving its settings."))
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(OverlayTheme.warm)
             }
             Button(role: .destructive) {
                 showResetAllConfirmation = true
@@ -78,9 +113,13 @@ struct GeneralTab: View {
             .disabled(!hasGameSettingsIdentity)
         }
     }
+}
 
-    @ViewBuilder
-    private var statusSection: some View {
+struct PerGameStatusSection: View {
+    let statusMessage: String?
+    let settings: SettingsStore
+
+    var body: some View {
         if let statusMessage {
             Section {
                 Text(statusMessage)
