@@ -150,7 +150,8 @@ static void ToPS2FPU_Full(int idx, bool flags, int /*absidx*/, bool acc, bool ad
 	//
 	// `hi`, not `hs`: kEeFpuMax itself is representable and belongs to the
 	// halving arm, which handles it exactly (halved it is +FLT_MAX, and
-	// 0x7f7fffff + 0x00800000 == 0x7fffffff).
+	// 0x7f7fffff + 0x00800000 == 0x7fffffff). This is the same bound the
+	// interpreter's eeRoundToSingle saturates at (FPU.cpp).
 	armAsm->Mov(RXARG2, UINT64_C(0x47FFFFFFE0000000)); // (2 - 2^-23) * 2^128
 	armAsm->Cmp(RXARG1, RXARG2);
 	armAsm->B(&toOverflow, a64::hi);

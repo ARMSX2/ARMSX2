@@ -624,7 +624,7 @@ TEST(EeRecFpuFull, RsqrtDivByZeroSignedMaxFromDividend)
 // That arm (iFPUd-arm64.cpp) halves the double, narrows, and adds 0x00800000
 // back to the single. Its guard was |x| >= 2^129 — but the largest number this
 // FPU has is 0x7FFFFFFF == (2 - 2^-23) * 2^128, which is BELOW 2^129, so the
-// band (EE max, 2^129) was routed into the halving arm instead of
+// band (kEeFpuMax, 2^129) was routed into the halving arm instead of
 // saturating. Halved, such a value sits just under 2^128; under the divide
 // unit's round-to-NEAREST FPCR the narrow rounds it up to a host infinity
 // (0x7f800000) and the +0x00800000 carries out of the exponent field into the
@@ -637,10 +637,8 @@ TEST(EeRecFpuFull, RsqrtDivByZeroSignedMaxFromDividend)
 // and the arm is correct, which is why only the ops that swap to FPUDivFPCR
 // could see it.
 //
-// The interpreter cannot wrap this way: it narrows through the host FPU and
-// saturates at ±FLT_MAX (checkOverflow, FPU.cpp), so it never adds into the
-// exponent field at all. It also stops a binade below the console's
-// 0x7FFFFFFF there — a separate, known gap in the interpreter, not this bug.
+// eeRoundToSingle (FPU.cpp) cannot wrap this way: it scales by 2^-4, so the
+// exponent it adds back can never carry into the sign.
 //
 // ONLY RSQRT REACHES THE BAND. A DIV quotient cannot: for 24-bit significands
 // with a < b, a/b <= 1 - 2^-24 strictly, and the band's relative width is
@@ -650,10 +648,8 @@ TEST(EeRecFpuFull, RsqrtDivByZeroSignedMaxFromDividend)
 // divides by a 53-bit sqrt result, so the argument does not apply.
 //
 // The operand pairs below were found by solving fs / sqrt(ft) for the band.
-// The console saturates at 0x7FFFFFFF, and FULL mode now does the same. The
-// interpreter column is pinned too, at its own saturation bound of
-// ±FLT_MAX (0x7F7FFFFF) — a binade low against silicon, but positive and
-// stable: the point here is that neither engine wraps to negative zero.
+// Interpreter column is the reference; its saturate-at-0x7FFFFFFF rule is what
+// EeFpuOverflowConsole pins against the console capture.
 TEST(EeRecFpuFull, RsqrtAboveEeMaxSaturatesInsteadOfWrappingToNegativeZero)
 {
 	static const u32 kPairs[][2] = {
@@ -682,7 +678,7 @@ TEST(EeRecFpuFull, RsqrtAboveEeMaxSaturatesInsteadOfWrappingToNegativeZero)
 
 		EXPECT_EQ(h.GetFprBitsJit(2), 0x7FFFFFFFu)
 			<< "fs=" << p[0] << " ft=" << p[1] << " wrapped";
-		EXPECT_EQ(i.GetFprBitsInterp(2), 0x7F7FFFFFu)
+		EXPECT_EQ(i.GetFprBitsInterp(2), 0x7FFFFFFFu)
 			<< "interpreter reference moved";
 	}
 }

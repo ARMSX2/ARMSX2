@@ -233,69 +233,95 @@ TEST(EeRecFpu, DivSNegativeQuotientExact)
 	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0u);
 }
 
+// ---- divide saturation: the two tiers stop in different places -------------
+//
+// The interpreter saturates a divide at the EE's own maximum and the fast path
+// a binade below at FLT_MAX; the console says the interpreter is the correct
+// side, and EeFpuTopBinadeConsole has the rest. Run()'s auto-diff cannot
+// express a deliberate divergence, so these run the two legs separately.
+//
+// The signs are unchanged: xor of both operands for DIV.S, Fs alone for
+// RSQRT.S.
+namespace {
+
+struct DivTiers
+{
+	u32 jit, interp;
+	u32 jit_fcr, interp_fcr;
+};
+
+DivTiers RunDivBothTiers(u32 word, u32 fs, u32 ft)
+{
+	DivTiers t{};
+	for (int jit = 0; jit < 2; ++jit)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetFcr31(0);
+		h.SetFprBits(1, fs);
+		h.SetFprBits(2, ft);
+		h.LoadProgram({word});
+		if (jit)
+		{
+			h.RunJitNoDiff();
+			t.jit = h.GetFprBitsJit(3);
+			t.jit_fcr = h.JitSnapshot().fprs.fprc[31];
+		}
+		else
+		{
+			h.RunInterpOnly();
+			t.interp = h.GetFprBitsInterp(3);
+			t.interp_fcr = h.InterpSnapshot().fprs.fprc[31];
+		}
+	}
+	return t;
+}
+
+} // namespace
+
 TEST(EeRecFpu, DivSByZeroSetsDenormFlagsAndMax)
 {
-	// 4 / +0 = +posFmax, with D|SD raised (x/0).
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFcr31(0);
-	h.SetFpr(1, 4.0f);
-	h.SetFprBits(2, 0x00000000u); // +0
-	h.LoadProgram({ee::DIV_S(3, 1, 2)});
-	h.Run();
-	h.ExpectFpr(3, 0x7F7FFFFFu);
+	// 4 / +0, with D|SD raised (x/0).
+	const DivTiers t = RunDivBothTiers(ee::DIV_S(3, 1, 2), 0x40800000u, 0x00000000u);
+	EXPECT_EQ(t.jit, 0x7F7FFFFFu)    << "fast path saturates at FLT_MAX";
+	EXPECT_EQ(t.interp, 0x7FFFFFFFu) << "interp saturates at the EE maximum";
 	const u32 mask = 0x20000u | 0x10000u | 0x40u | 0x20u; // I|D|SI|SD
-	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask,    0x10000u | 0x20u); // D|SD
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0x10000u | 0x20u);
+	EXPECT_EQ(t.jit_fcr & mask,    0x10000u | 0x20u); // D|SD
+	EXPECT_EQ(t.interp_fcr & mask, 0x10000u | 0x20u);
 }
 
 TEST(EeRecFpu, DivSByZeroNegativeDividendSignedMax)
 {
-	// -4 / +0 : sign(Fs^Ft) is negative -> -posFmax (0xff7fffff), D|SD.
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFcr31(0);
-	h.SetFpr(1, -4.0f);
-	h.SetFprBits(2, 0x00000000u); // +0
-	h.LoadProgram({ee::DIV_S(3, 1, 2)});
-	h.Run();
-	h.ExpectFpr(3, 0xFF7FFFFFu);
+	// -4 / +0 : sign(Fs^Ft) is negative.
+	const DivTiers t = RunDivBothTiers(ee::DIV_S(3, 1, 2), 0xC0800000u, 0x00000000u);
+	EXPECT_EQ(t.jit, 0xFF7FFFFFu);
+	EXPECT_EQ(t.interp, 0xFFFFFFFFu);
 	const u32 mask = 0x10000u | 0x20u; // D|SD
-	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask,    0x10000u | 0x20u);
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0x10000u | 0x20u);
+	EXPECT_EQ(t.jit_fcr & mask,    0x10000u | 0x20u);
+	EXPECT_EQ(t.interp_fcr & mask, 0x10000u | 0x20u);
 }
 
 TEST(EeRecFpu, DivSByNegativeZeroDivisorSign)
 {
-	// 8 / -0 : divisor is -0 (caught by the float==0 compare under FtZ); sign is
-	// driven by the divisor -> -posFmax, D|SD.
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFcr31(0);
-	h.SetFpr(1, 8.0f);
-	h.SetFprBits(2, 0x80000000u); // -0
-	h.LoadProgram({ee::DIV_S(3, 1, 2)});
-	h.Run();
-	h.ExpectFpr(3, 0xFF7FFFFFu);
+	// 8 / -0 : divisor is -0 (caught by the float==0 compare under FtZ); the
+	// sign comes from the divisor.
+	const DivTiers t = RunDivBothTiers(ee::DIV_S(3, 1, 2), 0x41000000u, 0x80000000u);
+	EXPECT_EQ(t.jit, 0xFF7FFFFFu);
+	EXPECT_EQ(t.interp, 0xFFFFFFFFu);
 	const u32 mask = 0x10000u | 0x20u; // D|SD
-	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask,    0x10000u | 0x20u);
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0x10000u | 0x20u);
+	EXPECT_EQ(t.jit_fcr & mask,    0x10000u | 0x20u);
+	EXPECT_EQ(t.interp_fcr & mask, 0x10000u | 0x20u);
 }
 
 TEST(EeRecFpu, DivSZeroByZeroSetsInvalidFlags)
 {
-	// 0 / 0 -> +posFmax with I|SI raised (invalid), not D|SD.
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFcr31(0);
-	h.SetFprBits(1, 0x00000000u); // +0
-	h.SetFprBits(2, 0x00000000u); // +0
-	h.LoadProgram({ee::DIV_S(3, 1, 2)});
-	h.Run();
-	h.ExpectFpr(3, 0x7F7FFFFFu);
+	// 0 / 0 raises I|SI (invalid), not D|SD.
+	const DivTiers t = RunDivBothTiers(ee::DIV_S(3, 1, 2), 0x00000000u, 0x00000000u);
+	EXPECT_EQ(t.jit, 0x7F7FFFFFu);
+	EXPECT_EQ(t.interp, 0x7FFFFFFFu);
 	const u32 mask = 0x20000u | 0x10000u | 0x40u | 0x20u; // I|D|SI|SD
-	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask,    0x20000u | 0x40u); // I|SI
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0x20000u | 0x40u);
+	EXPECT_EQ(t.jit_fcr & mask,    0x20000u | 0x40u); // I|SI
+	EXPECT_EQ(t.interp_fcr & mask, 0x20000u | 0x40u);
 }
 
 TEST(EeRecFpu, NegSFlipsSignBit)
@@ -586,18 +612,14 @@ TEST(EeRecFpu, SqrtSRoundsToNearestUnderChopFpcr)
 // doesn't diff fprc[31]). Broad coverage lives in ee_rec_fpu_rsqrt_tests.cpp.
 TEST(EeRecFpu, RsqrtSZeroDivisorSetsDenormFlags)
 {
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFpr(1, 1.0f);             // fs (dividend)
-	h.SetFprBits(2, 0x00000000u);  // ft (divisor) = +0
-	h.LoadProgram({
-		ee::RSQRT_S(3, 1, 2),     // fd=3, fs=1, ft=2
-	});
-	h.Run();
-	h.ExpectFpr(3, 0x7F7FFFFFu);   // +posFmax (zero-divisor result)
+	// fs = 1.0, ft = +0. The two tiers saturate differently -- see
+	// RunDivBothTiers above -- so the legs run separately.
+	const DivTiers t = RunDivBothTiers(ee::RSQRT_S(3, 1, 2), 0x3F800000u, 0x00000000u);
+	EXPECT_EQ(t.jit, 0x7F7FFFFFu)    << "fast path saturates at FLT_MAX";
+	EXPECT_EQ(t.interp, 0x7FFFFFFFu) << "interp saturates at the EE maximum";
 	const u32 mask = 0x20000u | 0x10000u | 0x40u | 0x20u;   // I | D | SI | SD
-	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask,    0x10000u | 0x20u);  // D|SD set
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0x10000u | 0x20u);
+	EXPECT_EQ(t.jit_fcr & mask,    0x10000u | 0x20u);  // D|SD set
+	EXPECT_EQ(t.interp_fcr & mask, 0x10000u | 0x20u);
 }
 
 TEST(EeRecFpu, RsqrtSNegativeDivisorSetsInvalidFlags)
@@ -1575,9 +1597,9 @@ TEST(EeRecFpu, DivSByZeroAliasedDestSignFromBothOperands)
 	h.EnableCop1();
 	h.SetFprBits(1, 0xC1200000u); // -10.0f
 	h.SetFprBits(2, 0x80000000u); // -0.0f
-	h.LoadProgram({ee::DIV_S(2, 1, 2), ee::MFC1(reg::v0, 2)}); // -10/-0 → +fMax
-	h.Run();
-	EXPECT_EQ(h.GetGpr64Interp(reg::v0) & 0xFFFFFFFFull, 0x7F7FFFFFull);
+	h.LoadProgram({ee::DIV_S(2, 1, 2), ee::MFC1(reg::v0, 2)}); // -10/-0 -> +max
+	h.RunInterpOnly(); // the tiers saturate differently; the sign is the subject
+	EXPECT_EQ(h.GetGpr64Interp(reg::v0) & 0xFFFFFFFFull, 0x7FFFFFFFull);
 }
 
 TEST(EeRecFpu, DivSZeroOverZeroAliasedDest)
@@ -1586,9 +1608,9 @@ TEST(EeRecFpu, DivSZeroOverZeroAliasedDest)
 	h.EnableCop1();
 	h.SetFprBits(1, 0x00000000u); // +0.0f
 	h.SetFprBits(2, 0x80000000u); // -0.0f
-	h.LoadProgram({ee::DIV_S(1, 1, 2), ee::MFC1(reg::v0, 1)}); // 0/0 → -fMax (sign fs^ft)
-	h.Run();
-	EXPECT_EQ(h.GetGpr64Interp(reg::v0) & 0xFFFFFFFFull, 0xFF7FFFFFull);
+	h.LoadProgram({ee::DIV_S(1, 1, 2), ee::MFC1(reg::v0, 1)}); // 0/0 -> -max (sign fs^ft)
+	h.RunInterpOnly(); // the tiers saturate differently; the sign is the subject
+	EXPECT_EQ(h.GetGpr64Interp(reg::v0) & 0xFFFFFFFFull, 0xFFFFFFFFull);
 }
 
 // ---- GE-19: MADD/MSUB-family intermediate-product clamp mirrors the x86 JIT -
@@ -1882,12 +1904,13 @@ TEST(EeRecFpu, Ctc1ThenDivByZeroAccumulatesStickyFlags)
 	h.SetFprBits(2, 0x00000000u);           // +0.0f divisor
 	h.LoadProgram({
 		ee::CTC1(reg::a0, 31),
-		ee::DIV_S(3, 1, 2),                 // x/0 → D|SD
+		ee::DIV_S(3, 1, 2),                 // x/0 -> D|SD
 	});
-	h.Run();
+	// JIT-only: the flag writeback is the subject, and Run()'s auto-diff would
+	// trip on the divide's saturation.
+	h.RunJitNoDiff();
 	const u32 mask = 0x00030060u;           // I|D|SI|SD
 	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask,    0x10000u | 0x20u | 0x40u); // D|SD + kept SI
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0x10000u | 0x20u | 0x40u);
 }
 
 TEST(EeRecFpu, ComparePreservesStickyFlagBits)

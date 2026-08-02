@@ -190,7 +190,10 @@ bool checkDivideByZero(u32& xReg, u32 yDivisorReg, u32 zDividendReg, u32 cFlagsT
 
 	if ( (yDivisorReg & 0x7F800000) == 0 ) {
 		_ContVal_ |= ( (zDividendReg & 0x7F800000) == 0 ) ? cFlagsToSet2 : cFlagsToSet1;
-		xReg = ( (yDivisorReg ^ zDividendReg) & 0x80000000 ) | posFmax;
+		// Rows 38-43 of the overflow capture are all divide-by-zero: all
+		// 0x7FFFFFFF, the EE's maximum, and all signed with the xor of the two
+		// operands.
+		xReg = ( (yDivisorReg ^ zDividendReg) & 0x80000000 ) | 0x7FFFFFFF;
 		return true;
 	}
 
@@ -379,6 +382,72 @@ static u32 eeGuardedAddSub(u32 a, u32 b, bool issub)
 	return eeRoundToSingle(eeToDouble(a) + eeToDouble(b));
 }
 
+/*	Divide two EE singles with exactly one rounding.
+
+	Not through eeToDouble(), the way the adder and the multiplier go: their
+	results are exact in a double and a quotient is not, so widening and then
+	narrowing rounds twice. Chopping would forgive that, but the divide unit
+	rounds to nearest (FPUDivFPCR, scoped in by the callers), where the second
+	rounding can land a ULP away.
+
+	So rescale instead of widening. Both operands are forced to exponent 127, so
+	the division happens between two significands in [1,2) where nothing can
+	overflow or underflow and the host performs the EE's single rounding; the
+	exponents are added back onto the quotient afterwards. Scaling by a power of
+	two leaves a significand alone, so the quotient's significand and its
+	rounding do not depend on where the operands sat in the range -- only the
+	reassembled exponent does, and that is integer arithmetic.
+
+	The divisor must already be known nonzero: a zero divisor is a flag question
+	the callers answer first.
+*/
+static u32 eeDivide(u32 a, u32 b)
+{
+	const s32 ea = (s32)((a >> 23) & 0xFF);
+	const s32 eb = (s32)((b >> 23) & 0xFF);
+
+	if (ea == 0)
+		return (a ^ b) & 0x80000000; // zero dividend, sign from both operands
+
+	FPRreg ma, mb, q;
+	ma.UL = (a & 0x807FFFFFu) | (127u << 23);
+	mb.UL = (b & 0x807FFFFFu) | (127u << 23);
+	q.f = ma.f / mb.f;
+
+	// |q| is in (0.5, 2], so its exponent field carries 126, 127 or -- if the
+	// rounding pushed it to exactly 2.0 -- 128.
+	const s32 e = (s32)((q.UL >> 23) & 0xFF) + ea - eb;
+	if (e > 255)
+		return (q.UL & 0x80000000u) | 0x7FFFFFFFu;
+	if (e < 1)
+		return q.UL & 0x80000000u; // the EE has no denormals to underflow into
+	return (q.UL & 0x807FFFFFu) | ((u32)e << 23);
+}
+
+/*	sqrt(|Ft|) as EE bits, including the top binade. The exponent-255 arm is the
+	same |Ft|/4 prescale SQRT.S does inline below, where the reason for it is. */
+static u32 eeSqrtBits(u32 t)
+{
+	FPRreg r;
+	if ((t & 0x7F800000) == 0)
+	{
+		r.UL = 0; // +/-0 and the denormals: the EE drops the sign here
+	}
+	else if ((t & 0x7F800000) == 0x7F800000)
+	{
+		FPRreg quarter;
+		quarter.UL = (t & 0x7FFFFFFF) - 0x01000000; // |Ft| / 4
+		r.f = 2.0 * sqrt((double)quarter.f);
+	}
+	else
+	{
+		FPRreg mag;
+		mag.UL = t & 0x7FFFFFFF;
+		r.f = sqrt(mag.f);
+	}
+	return r.UL;
+}
+
 /*	The EE's divide/square-root unit rounds to nearest even when the rest of the
 	FPU is chopping toward zero, which is why PCSX2 carries a second control
 	register, FPUDivFPCR, whose only difference from FPUFPCR is the rounding
@@ -500,8 +569,7 @@ void CVT_W() {
 void DIV_S() {
 	const ScopedDivRoundMode div_round;
 	if (checkDivideByZero( _FdValUl_, _FtValUl_, _FsValUl_, FPUflagD | FPUflagSD, FPUflagI | FPUflagSI)) return;
-	_FdValf_ = fpuDouble( _FsValUl_ ) / fpuDouble( _FtValUl_ );
-	clampToEeRange( _FdValUl_ );
+	_FdValUl_ = eeDivide( _FsValUl_, _FtValUl_ );
 }
 
 /*	The EE multiplier's one-ULP deficit.
@@ -703,12 +771,16 @@ void NEG_S() {
 
 void RSQRT_S() {
 	const ScopedDivRoundMode div_round;
-	FPRreg temp;
 	clearFPUFlags(FPUflagD | FPUflagI);
 
 	if ( ( _FtValUl_ & 0x7F800000 ) == 0 ) { // Ft is zero (Denormals are Zero)
 		_ContVal_ |= FPUflagD | FPUflagSD;
-		_FdValUl_ = ( _FsValUl_ & 0x80000000 ) | posFmax;
+		// The EE maximum, and the sign of Fs alone -- no xor, unlike DIV.S:
+		// rsqrt takes |Ft|, so the divisor has no sign left to contribute by the
+		// time the division happens. Console rows 59 and 63: rsqrt(+0, -0) is
+		// +0x7FFFFFFF and rsqrt(-0, -0) is -0x7FFFFFFF, and an xor rule flips
+		// both.
+		_FdValUl_ = ( _FsValUl_ & 0x80000000 ) | 0x7FFFFFFF;
 		return;
 	}
 	else if ( _FtValUl_ & 0x80000000 ) // Ft is negative
@@ -721,10 +793,12 @@ void RSQRT_S() {
 	// gives 0x3F5105EB.
 	//
 
-	temp.f = sqrt( fabs( fpuDouble( _FtValUl_ ) ) );
-	_FdValf_ = fpuDouble( _FsValUl_ ) / fpuDouble( temp.UL );
-
-	clampToEeRange( _FdValUl_ );
+	//
+	// Neither operand is clamped any more, and it has to be both: with the clamp
+	// left on the sqrt alone, rsqrt(2^128, 2^128) came out right only because
+	// the two clamps cancelled. Still 1 ULP out at rsqrt(EEMAX, EEMAX), from the
+	// two-step rounding above rather than the operand model.
+	_FdValUl_ = eeDivide( _FsValUl_, eeSqrtBits( _FtValUl_ ) );
 }
 
 void SQRT_S() {

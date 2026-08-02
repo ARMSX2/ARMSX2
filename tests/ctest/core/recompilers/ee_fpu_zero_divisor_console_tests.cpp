@@ -98,12 +98,12 @@ constexpr ZeroDivisorRow kRows[] = {
 };
 constexpr int kRowCount = static_cast<int>(sizeof(kRows) / sizeof(kRows[0]));
 
-// What the fast path produces instead: +FLT_MAX, and RSQRT's sign off Ft.
+// What the fast path produces instead: the console's sign, and a magnitude a
+// binade low at FLT_MAX because it saturates in host singles. Both engines take
+// RSQRT's sign from Fs now, so there is no rule left to recompute here.
 u32 FastPathValue(const ZeroDivisorRow& r)
 {
-	const u32 sign = r.rsqrt ? (r.ft & 0x80000000u)
-	                         : ((r.fs ^ r.ft) & 0x80000000u);
-	return sign | 0x7F7FFFFFu;
+	return (r.console & 0x80000000u) | 0x7F7FFFFFu;
 }
 
 // Runs one row on one engine and returns the result register.
@@ -127,17 +127,19 @@ u32 RunRow(const ZeroDivisorRow& r, bool jit, bool full_mode)
 } // namespace
 
 // ---------------------------------------------------------------------------
-// The compromise, pinned: both engines, default clamp mode, +/-FLT_MAX with
-// RSQRT's sign off Ft. Asserting the non-console value is the point -- it stops
-// a later attempt at the tripwires below from changing the mode nearly every
-// game runs in.
+// The compromise, pinned on the fast path, which is the only tier that still
+// makes it: default clamp mode saturates at +/-FLT_MAX, a binade below the
+// console. Asserting the non-console value on purpose, so a later change cannot
+// quietly move what the mode nearly every game runs in produces. The
+// interpreter is out of that compromise and matches the console on every row
+// here, which is asserted alongside so the two tiers cannot swap roles
+// unnoticed.
 //
-// Disabled for now: the interpreter still reads DIV/RSQRT operands through
-// fpuDouble() and saturates at FLT_MAX, so it cannot agree with the fast path
-// on this row yet. Re-enabled by "Fix: DIV.S and RSQRT.S, the last two ops
-// holding the operand clamp".
+// If you are here because the [jit] leg failed: you changed the fast path, which
+// is the thing the clamp modes exist to avoid. Scope the change to the FULL path
+// instead.
 // ---------------------------------------------------------------------------
-TEST(EeFpuZeroDivisorConsole, DISABLED_DefaultClampModeSaturatesToFltMaxOnBothEngines)
+TEST(EeFpuZeroDivisorConsole, DefaultClampModeSaturatesToFltMaxOnTheFastPath)
 {
 	ASSERT_FALSE(EmuConfig.Cpu.Recompiler.fpuFullMode)
 		<< "this test describes the NON-full path; something enabled FULL mode";
@@ -145,12 +147,11 @@ TEST(EeFpuZeroDivisorConsole, DISABLED_DefaultClampModeSaturatesToFltMaxOnBothEn
 	for (int i = 0; i < kRowCount; ++i)
 	{
 		const ZeroDivisorRow& r = kRows[i];
-		for (int jit = 0; jit < 2; ++jit)
-		{
-			SCOPED_TRACE(::testing::Message()
-				<< r.what << (jit ? " [jit]" : " [interp]"));
-			EXPECT_EQ(RunRow(r, jit != 0, /*full_mode=*/false), FastPathValue(r));
-		}
+		SCOPED_TRACE(::testing::Message() << r.what);
+		EXPECT_EQ(RunRow(r, /*jit=*/true, /*full_mode=*/false), FastPathValue(r))
+			<< "[jit] the fast path's saturation moved";
+		EXPECT_EQ(RunRow(r, /*jit=*/false, /*full_mode=*/false), r.console)
+			<< "[interp] must match the console, sign and magnitude";
 	}
 }
 
@@ -172,17 +173,18 @@ TEST(EeFpuZeroDivisorConsole, FullClampModeJitMatchesConsoleExactly)
 }
 
 // ---------------------------------------------------------------------------
-// Tripwire 1 of 2, magnitude. The console saturates to 0x7FFFFFFF; the
-// interpreter saturates to 0x7F7FFFFF in every mode, including the FULL mode
-// where the JIT beside it produces the console value. Sign is masked off;
-// tripwire 2 owns that.
+// MAGNITUDE. The console saturates to 0x7FFFFFFF, and in FULL mode both engines
+// now do too. Sign is masked off deliberately: the test below owns that, and
+// neither should fail for the other's reason.
 //
-// Force-enable to see the current state. Expected today: all ten [jit] rows
-// pass, all ten [interp] rows fail with 7f7fffff against 7fffffff.
-//
-// Graduating it means giving the interpreter a FULL path, not changing posFmax.
+// A tripwire until 2026-07-31, expecting the fix to be a FULL path for the
+// interpreter. What happened instead is that the interpreter stopped doing its
+// arithmetic in host singles at all, so the header's warning about pushing an
+// exponent-255 word into a downstream op no longer reaches it. It still reaches
+// the fast path: posFmax is unchanged, and
+// DefaultClampModeSaturatesToFltMaxOnTheFastPath above holds that line.
 // ---------------------------------------------------------------------------
-TEST(EeFpuZeroDivisorConsole, DISABLED_FullClampModeInterpMissesConsoleSaturation)
+TEST(EeFpuZeroDivisorConsole, FullClampModeBothEnginesMatchConsoleMagnitude)
 {
 	for (int i = 0; i < kRowCount; ++i)
 	{
@@ -198,20 +200,25 @@ TEST(EeFpuZeroDivisorConsole, DISABLED_FullClampModeInterpMissesConsoleSaturatio
 }
 
 // ---------------------------------------------------------------------------
-// Tripwire 2 of 2, sign. RSQRT's zero-divisor result takes its sign from Fs on
-// the console; both engines' fast path takes it from Ft, and the JIT's FULL
-// path gets it right. Magnitude is masked off; tripwire 1 owns that.
+// SIGN. RSQRT's zero-divisor result takes its sign from Fs on the console; the
+// header has the rule and the rows it came off. Magnitude is masked off; the
+// test above owns that.
 //
-// The DIV rows ride along as a control: DIV's sign(Fs ^ Ft) is already correct
-// in both engines and both modes, and these two ops sit next to each other in
-// every emitter and share checkDivideByZero in the interpreter, so a DIV row
-// failing here means the fix broke something that worked.
+// A tripwire until 2026-07-31, and it took two fixes rather than the one it
+// expected: the interpreter now reads Fs's sign, and so does the arm64 fast
+// path, which was reading Ft's and was alone in it -- upstream x86
+// recRSQRThelper1 already took Fs's. Capture case 59, rsqrt(+0, -0), is the row
+// that separates the two rules;
+// EeRecFpuRsqrt.ZeroDivisorSignComesFromTheDividend pins it as well.
 //
-// Force-enable to see the current state. Expected today: all five DIV rows pass
-// on both engines, all five [jit] RSQRT rows pass, and the two [interp] RSQRT
-// rows whose Fs and Ft signs differ fail -- +0/sqrt(-0) and -0/sqrt(+0).
+// The DIV rows are carried along as a control. DIV's sign(Fs ^ Ft) is already
+// correct in both engines and both modes, and it must stay that way -- these
+// two ops sit next to each other in every emitter and share a helper in the
+// interpreter (checkDivideByZero), so a fix aimed at RSQRT that also moves DIV
+// has broken something that was right. If a DIV row fails here, the fix is
+// wrong regardless of what the RSQRT rows do.
 // ---------------------------------------------------------------------------
-TEST(EeFpuZeroDivisorConsole, DISABLED_FullClampModeInterpRsqrtSignFollowsFtNotFs)
+TEST(EeFpuZeroDivisorConsole, FullClampModeBothEnginesMatchConsoleSign)
 {
 	for (int i = 0; i < kRowCount; ++i)
 	{

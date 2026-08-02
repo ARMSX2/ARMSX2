@@ -104,10 +104,23 @@ void RequireDistinctDivideRoundingMode()
 // ---------------------------------------------------------------------------
 // DIV.S
 // ---------------------------------------------------------------------------
+// The one value divergence this fuzzer must tolerate: the interpreter saturates
+// at the EE's own maximum where the fast path stops at FLT_MAX -- see
+// EeFpuTopBinadeConsole. Written as a property of the two words rather than as
+// an operand filter, so the fuzzer keeps generating saturating pairs and any
+// other disagreement on them still fails.
+static bool IsTopBinadeTierGap(u32 interp, u32 jit)
+{
+	return (interp & 0x7F800000u) == 0x7F800000u &&
+	       (jit & 0x7FFFFFFFu) == 0x7F7FFFFFu &&
+	       (interp & 0x80000000u) == (jit & 0x80000000u);
+}
+
 TEST(EeRecFpuDivUnitRounding, DivSMatchesInterpAtInexactQuotients)
 {
 	RequireDistinctDivideRoundingMode();
 	Lcg r{0xD1F5D1F5A5A5A5A5ull};
+	int checked = 0, tier_gaps = 0;
 	for (u32 iter = 0; iter < 3000; ++iter)
 	{
 		const u32 fsBits = fuzzOperand(r);
@@ -117,19 +130,44 @@ TEST(EeRecFpuDivUnitRounding, DivSMatchesInterpAtInexactQuotients)
 		SCOPED_TRACE(::testing::Message()
 			<< "iter=" << iter << " Fs=" << std::hex << fsBits << " Ft=" << ftBits << " pre=" << pre);
 
-		EeRecTestHarness h;
-		h.EnableCop1();
-		h.SetFprBits(1, fsBits);
-		h.SetFprBits(2, ftBits);
-		h.SetFcr31(pre);
-		h.LoadProgram({ee::DIV_S(3, 1, 2)});
-		h.Run(); // auto-diffs the result value
+		// Two harnesses rather than Run()'s auto-diff: the tiers are allowed to
+		// disagree on saturation and Run() cannot express that.
+		u32 res[2] = {}, fcr[2] = {};
+		for (int jit = 0; jit < 2; ++jit)
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.SetFprBits(1, fsBits);
+			h.SetFprBits(2, ftBits);
+			h.SetFcr31(pre);
+			h.LoadProgram({ee::DIV_S(3, 1, 2)});
+			if (jit)
+			{
+				h.RunJitNoDiff();
+				res[1] = h.GetFprBitsJit(3);
+				fcr[1] = h.JitSnapshot().fprs.fprc[31];
+			}
+			else
+			{
+				h.RunInterpOnly();
+				res[0] = h.GetFprBitsInterp(3);
+				fcr[0] = h.InterpSnapshot().fprs.fprc[31];
+			}
+		}
 
-		EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & kStickyMask,
-			h.InterpSnapshot().fprs.fprc[31] & kStickyMask);
+		if (IsTopBinadeTierGap(res[0], res[1]))
+			++tier_gaps;
+		else
+			EXPECT_EQ(res[1], res[0]) << "engines disagree on the quotient";
+		EXPECT_EQ(fcr[1] & kStickyMask, fcr[0] & kStickyMask);
+		++checked;
 		if (::testing::Test::HasFailure())
 			return; // first failing case is enough for a clean repro
 	}
+	EXPECT_EQ(checked, 3000);
+	EXPECT_GT(tier_gaps, 0) << "anti-vacuity: the operand pool stopped producing "
+							   "saturating quotients, so the allowance above is "
+							   "dead code that could hide a real divergence";
 }
 
 // A named witness alongside the fuzzer: 1.0 / 3.0 is one ULP apart between the
