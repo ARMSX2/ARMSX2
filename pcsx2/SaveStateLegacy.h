@@ -20,7 +20,7 @@ namespace SaveStateLegacy
 	// Widens a wrapping 32-bit cycle counter to 64 bits relative to a domain
 	// base: the signed 32-bit delta to the old base is preserved against the
 	// new base. Correct across u32 wraps, which zero-extension is not.
-	__fi u64 WidenCycle(u32 old_value, u32 old_base, u64 new_base)
+	inline constexpr u64 WidenCycle(u32 old_value, u32 old_base, u64 new_base)
 	{
 		return new_base + static_cast<s64>(static_cast<s32>(old_value - old_base));
 	}
