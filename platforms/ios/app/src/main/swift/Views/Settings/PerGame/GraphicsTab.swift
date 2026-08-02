@@ -71,53 +71,16 @@ struct GraphicsTab: View {
 
     // MARK: Static option tables (moved from the panel)
 
-    private struct PickerOption: Identifiable {
-        let id: Int
-        let title: String
-    }
-
     private static let useGlobalSentinel = -1
     private static let upscaleUseGlobalSentinel: Float = -1.0
     private static let aspectUseGlobalSentinel = ""
     private static let trilinearUseGlobalSentinelLocal = Int(Int32.min)
 
-    // Tags are GSInterlaceMode values (Config.h). The old table was shifted by one from index 1 up,
-    // so every label named the mode below it and Adaptive was unreachable. Worse, "Adaptive
-    // (Default)" was really Blend BFF, which is how it ended up as the per-game fallback.
-    private static let deinterlaceOptions = [
-        PickerOption(id: 0, title: "Automatic (Default)"),
-        PickerOption(id: 1, title: "Off (No Deinterlacing)"),
-        PickerOption(id: 2, title: "Weave (TFF)"),
-        PickerOption(id: 3, title: "Weave (BFF)"),
-        PickerOption(id: 4, title: "Bob (TFF)"),
-        PickerOption(id: 5, title: "Bob (BFF)"),
-        PickerOption(id: 6, title: "Blend (TFF)"),
-        PickerOption(id: 7, title: "Blend (BFF)"),
-        PickerOption(id: 8, title: "Adaptive (TFF)"),
-        PickerOption(id: 9, title: "Adaptive (BFF)")
-    ]
-    private static let trilinearFilteringOptions = [
-        PickerOption(id: trilinearUseGlobalSentinelLocal, title: "Use Global"),
-        PickerOption(id: -1, title: "Automatic / Default"),
-        PickerOption(id: 0, title: "Off"),
-        PickerOption(id: 1, title: "PS2"),
-        PickerOption(id: 2, title: "Forced")
-    ]
-    private static let halfPixelOffsetOptions = [
-        PickerOption(id: useGlobalSentinel, title: "Use Global"),
-        PickerOption(id: 0, title: "Off"),
-        PickerOption(id: 1, title: "Normal / Vertex"),
-        PickerOption(id: 2, title: "Special / Texture"),
-        PickerOption(id: 3, title: "Special / Texture Aggressive"),
-        PickerOption(id: 4, title: "Align to Native"),
-        PickerOption(id: 5, title: "Align to Native + Texture Offset")
-    ]
-    private static let roundSpriteOptions = [
-        PickerOption(id: useGlobalSentinel, title: "Use Global"),
-        PickerOption(id: 0, title: "Off"),
-        PickerOption(id: 1, title: "Half"),
-        PickerOption(id: 2, title: "Full")
-    ]
+    // Trilinear needs Int32.min rather than -1, because -1 is a real TriFiltering value.
+    private static let trilinearFilteringOptions =
+        [(id: trilinearUseGlobalSentinelLocal, title: "Use Global")] + SettingsOptions.trilinearFiltering
+    private static let halfPixelOffsetOptions = SettingsOptions.withUseGlobal(SettingsOptions.halfPixelOffset)
+    private static let roundSpriteOptions = SettingsOptions.withUseGlobal(SettingsOptions.roundSprite)
 
     private static let aspectRatioOptions: [(id: String, title: String)] = [
         ("Auto 4:3/3:2", "Auto 4:3 / 3:2"),
@@ -196,8 +159,7 @@ struct GraphicsTab: View {
             .disabled(!enabled)
 
             Picker(settings.localized("Deinterlace"), selection: $interlaceMode) {
-                Text(settings.localized("Use Global")).tag(Self.useGlobalSentinel)
-                ForEach(Self.deinterlaceOptions) { option in
+                ForEach(SettingsOptions.withUseGlobal(SettingsOptions.deinterlace), id: \.id) { option in
                     Text(settings.localized(option.title)).tag(option.id)
                 }
             }
@@ -233,13 +195,9 @@ struct GraphicsTab: View {
             .disabled(!enabled)
 
             Picker(settings.localized("TV/CRT Shader"), selection: $perGameTVShader) {
-                Text(settings.localized("Use Global")).tag(-1)
-                Text(settings.localized("Off")).tag(0)
-                Text(settings.localized("Scanline")).tag(1)
-                Text(settings.localized("Diagonal")).tag(2)
-                Text(settings.localized("Tri")).tag(3)
-                Text(settings.localized("Wave")).tag(4)
-                Text(settings.localized("Lottes")).tag(5)
+                ForEach(SettingsOptions.withUseGlobal(SettingsOptions.tvShader), id: \.id) { option in
+                    Text(settings.localized(option.title)).tag(option.id)
+                }
             }
             .disabled(!enabled)
             Text(settings.localized("Scanline and CRT effects are subtle on high-resolution displays and are more visible at a lower Internal Resolution."))
@@ -328,7 +286,7 @@ struct GraphicsTab: View {
             }
 
             Picker(settings.localized("Trilinear Filtering"), selection: $trilinearFiltering) {
-                ForEach(Self.trilinearFilteringOptions) { option in
+                ForEach(Self.trilinearFilteringOptions, id: \.id) { option in
                     Text(settings.localized(option.title)).tag(option.id)
                 }
             }
@@ -341,14 +299,14 @@ struct GraphicsTab: View {
             }
 
             Picker(settings.localized("Half-pixel Offset"), selection: $halfPixelOffset) {
-                ForEach(Self.halfPixelOffsetOptions) { option in
+                ForEach(Self.halfPixelOffsetOptions, id: \.id) { option in
                     Text(settings.localized(option.title)).tag(option.id)
                 }
             }
             .disabled(!manualAdvancedHacksEnabled)
 
             Picker(settings.localized("Round Sprite"), selection: $roundSprite) {
-                ForEach(Self.roundSpriteOptions) { option in
+                ForEach(Self.roundSpriteOptions, id: \.id) { option in
                     Text(settings.localized(option.title)).tag(option.id)
                 }
             }

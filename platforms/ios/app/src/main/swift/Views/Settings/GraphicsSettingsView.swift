@@ -114,11 +114,9 @@ struct GraphicsSettingsView: View {
 
             Section(settings.localized("Renderer")) {
                 Picker(settings.localized("Renderer"), selection: $settings.renderer) {
-                    Text(settings.localized("Metal (Hardware)")).tag(17)
-#if !targetEnvironment(macCatalyst)
-                    Text(settings.localized("Software")).tag(13)
-                    Text(settings.localized("Null (No Output)")).tag(11)
-#endif
+                    ForEach(SettingsOptions.renderer, id: \.id) { option in
+                        Text(settings.localized(option.title)).tag(option.id)
+                    }
                 }
                 .disabled(gameIsLoaded)
                 if gameIsLoaded {
@@ -372,35 +370,23 @@ struct GraphicsSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                intPicker("Texture Inside RT", selection: $settings.textureInsideRt, options: [
-                    ("Off", 0), ("Inside Targets", 1), ("Merge Targets", 2)
-                ])
+                intPicker("Texture Inside RT", selection: $settings.textureInsideRt, shared: SettingsOptions.textureInsideRT)
                 intPicker("Limit 24-Bit Depth", selection: $settings.limit24BitDepth, options: [
                     ("Off", 0), ("Prioritise Upper Bits", 1), ("Prioritise Lower Bits", 2)
                 ])
                 intPicker("Native Scaling", selection: $settings.nativeScaling, options: [
                     ("Off", 0), ("Normal", 1), ("Aggressive", 2), ("Normal (Maintain Upscale)", 3), ("Aggressive (Maintain Upscale)", 4)
                 ])
-                intPicker("CPU CLUT Render", selection: $settings.cpuClutRender, options: [
-                    ("Disabled", 0), ("Normal", 1), ("Aggressive", 2)
-                ])
-                intPicker("GPU Target CLUT", selection: $settings.gpuTargetClut, options: [
-                    ("Off", 0), ("Enabled (Exact Match)", 1), ("Enabled (Inside Target)", 2)
-                ])
+                intPicker("CPU CLUT Render", selection: $settings.cpuClutRender, shared: SettingsOptions.cpuClutRender)
+                intPicker("GPU Target CLUT", selection: $settings.gpuTargetClut, shared: SettingsOptions.gpuTargetClut)
                 intPicker("Bilinear Upscale", selection: $settings.bilinearUpscaleHack, options: [
                     ("Automatic", 0), ("Force Bilinear", 1), ("Force Nearest", 2)
                 ])
                 ClampedIntField(title: settings.localized("CPU Sprite Render BW"), value: $settings.cpuSpriteRenderBw, range: 0...10)
                 ClampedIntField(title: settings.localized("CPU Sprite Render Level"), value: $settings.cpuSpriteRenderLevel, range: 0...2)
-                intPicker("Max Anisotropy", selection: $settings.maxAnisotropy, options: [
-                    ("Off", 0), ("2x", 2), ("4x", 4), ("8x", 8), ("16x", 16)
-                ])
-                intPicker("Hardware Download Mode", selection: $settings.hardwareDownloadMode, options: [
-                    ("Enabled", 0), ("Force Full", 1), ("No Readbacks", 2), ("Unsynchronized", 3), ("Disabled", 4)
-                ])
-                intPicker("TV/CRT Shader", selection: $settings.tvShader, options: [
-                    ("Off", 0), ("Scanline", 1), ("Diagonal", 2), ("Tri", 3), ("Wave", 4), ("Lottes", 5), ("4xRGSS", 6), ("NxAGSS", 7)
-                ])
+                intPicker("Max Anisotropy", selection: $settings.maxAnisotropy, shared: SettingsOptions.maxAnisotropy)
+                intPicker("Hardware Download Mode", selection: $settings.hardwareDownloadMode, shared: SettingsOptions.hardwareDownloadMode)
+                intPicker("TV/CRT Shader", selection: $settings.tvShader, shared: SettingsOptions.tvShader)
 
                 ForEach(SettingsStore.gsBoolHackOptions) { option in
                     Toggle(settings.localized(option.label), isOn: Binding(
@@ -536,6 +522,11 @@ struct GraphicsSettingsView: View {
                 Text(settings.localized(option.0)).tag(option.1)
             }
         }
+    }
+
+    /// Same picker over a shared `SettingsOptions` list, which the per-game tabs read too.
+    private func intPicker(_ title: String, selection: Binding<Int>, shared: [(id: Int, title: String)]) -> some View {
+        intPicker(title, selection: selection, options: shared.map { ($0.title, $0.id) })
     }
 
     /// Labeled 1–100 percent slider used by Shade Boost.
