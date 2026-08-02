@@ -202,6 +202,11 @@ final class AppState: @unchecked Sendable {
         return true
     }
 
+    /// Drops a queued reboot, so stopping mid Reset ROM quits instead of booting the game again.
+    func cancelPendingBoot() {
+        pendingBootAction = nil
+    }
+
     func returnToMenu() {
         if ARMSX2Bridge.isVMRunning() {
             ARMSX2Bridge.setVMPaused(true)
