@@ -1410,6 +1410,18 @@ static bool SaveState_UnzipFromZip(zip_t* zf_raw, const std::string& filename, E
 	}
 
 	PostLoadPrep();
+
+	if (legacy)
+	{
+		// Nothing writes this format any more, so say so once per load: saving
+		// again is what converts the state, and the parts we could not carry
+		// over are worth knowing about before the player wonders.
+		Host::AddIconOSDMessage("LoadStateLegacy", ICON_FA_FLOPPY_DISK,
+			TRANSLATE_STR("SaveState", "Imported an AetherSX2 save state. Save a new state to convert it. "
+									   "Audio restarts from silence, and controllers keep their current settings."),
+			Host::OSD_INFO_DURATION);
+	}
+
 	return true;
 }
 
