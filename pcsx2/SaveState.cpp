@@ -1136,7 +1136,7 @@ bool SaveState_ReadScreenshot(const std::string& filename, u32* out_width, u32* 
 	return SaveState_ReadScreenshot(zf.get(), out_width, out_height, out_pixels);
 }
 
-static bool CheckVersion(const std::string& filename, zip_t* zf, Error* error)
+static bool CheckVersion(const std::string& filename, zip_t* zf, u32* out_savever, Error* error)
 {
 	u32 savever;
 
@@ -1146,6 +1146,8 @@ static bool CheckVersion(const std::string& filename, zip_t* zf, Error* error)
 		Error::SetString(error, "Savestate file does not contain version indicator.");
 		return false;
 	}
+
+	*out_savever = savever;
 
 	char version_string[STATE_PCSX2_VERSION_SIZE];
 	if (zip_fread(zff.get(), version_string, STATE_PCSX2_VERSION_SIZE) == STATE_PCSX2_VERSION_SIZE)
@@ -1192,7 +1194,7 @@ static zip_int64_t CheckFileExistsInState(zip_t* zf, const char* name, bool requ
 	return index;
 }
 
-static bool LoadInternalStructuresState(zip_t* zf, s64 index, Error* error)
+static bool LoadInternalStructuresState(zip_t* zf, s64 index, u32 savever, Error* error)
 {
 	zip_stat_t zst;
 	if (zip_stat_index(zf, index, 0, &zst) != 0 || zst.size > std::numeric_limits<int>::max())
@@ -1208,9 +1210,10 @@ static bool LoadInternalStructuresState(zip_t* zf, s64 index, Error* error)
 		return false;
 
 	memLoadingState state(buffer);
+	state.SetVersion(savever);
 	if (!state.FreezeBios())
 		return false;
-	
+
 	if (!state.FreezeInternals(error))
 		return false;
 
@@ -1266,7 +1269,8 @@ static bool SaveState_UnzipFromZip(zip_t* zf_raw, const std::string& filename, E
 	} zf{zf_raw};
 
 	// look for version and screenshot information in the zip stream:
-	if (!CheckVersion(filename, zf.get(), error))
+	u32 savever = 0;
+	if (!CheckVersion(filename, zf.get(), &savever, error))
 		return false;
 
 	// check that all parts are included
@@ -1293,7 +1297,7 @@ static bool SaveState_UnzipFromZip(zip_t* zf_raw, const std::string& filename, E
 
 	PreLoadPrep();
 
-	if (!LoadInternalStructuresState(zf.get(), internal_index, error))
+	if (!LoadInternalStructuresState(zf.get(), internal_index, savever, error))
 	{
 		if (!error->IsValid())
 			Error::SetString(error, "Save state corruption in internal structures.");

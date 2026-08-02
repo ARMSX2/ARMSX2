@@ -98,6 +98,9 @@ public:
 		return (m_version & 0xffff);
 	}
 
+	// Overrides the version with the one read from the state file being loaded.
+	__fi void SetVersion(u32 version) { m_version = version; }
+
 	bool FreezeBios();
 	bool FreezeInternals(Error* error);
 
