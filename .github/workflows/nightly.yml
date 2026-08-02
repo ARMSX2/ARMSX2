@@ -227,6 +227,13 @@ jobs:
       - name: Fetch shaderc third-party deps
         run: python3 app/src/main/cpp/3rdparty/shaderc/utils/git-sync-deps
 
+      # librashader is built by cargo for the Android target; the runner's
+      # rustup only ships the host std, so the cargo step dies with
+      # "error[E0463]: can't find crate for `core`" without this. Mirrors the
+      # same step in build-all.yml (10fab243e7).
+      - name: Install Rust Android target
+        run: rustup target add aarch64-linux-android
+
       # Dual-core (4k + 16k page size) + PGO nightly. A stock `assembleRelease`
       # ships ONLY the 4k core and cannot load its native core on 16k-page
       # devices (Android 15+ handhelds). This compiles the core at both page
