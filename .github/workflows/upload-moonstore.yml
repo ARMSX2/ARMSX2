@@ -1,0 +1,183 @@
+name: Upload to MoonStore
+
+on:
+  workflow_run:
+    workflows: ["Build All Platforms"]
+    types: [completed]
+
+concurrency:
+  group: moonstore-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  upload-to-moonstore:
+    name: Upload to MoonStore
+    if: >-
+      github.repository == 'ARMSX2/ARMSX2' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MOONSTORE_API: https://moon-store.app/api/developer/v1
+      MOONSTORE_APP_ID: come.nanodata.armsx2
+      MOONSTORE_API_KEY: ${{ secrets.MOONSTORE_API_KEY }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      RUN_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
+      MAX_ARTIFACT_BYTES: "100000000"
+
+    steps:
+      - name: Download completed platform builds
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          path: artifacts
+
+      - name: Prepare and validate release
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$MOONSTORE_API_KEY"
+
+          one_file() {
+            local label="$1"
+            shift
+            local -a matches=()
+            mapfile -d '' matches < <(find "$@" -print0)
+            if [ "${#matches[@]}" -ne 1 ]; then
+              printf 'Expected exactly one %s artifact, found %s\n' "$label" "${#matches[@]}" >&2
+              printf '  %s\n' "${matches[@]:-none}" >&2
+              exit 1
+            fi
+            printf '%s' "${matches[0]}"
+          }
+
+          ANDROID="$(one_file 'Android GitHub APK' artifacts -type f -path '*/github/*' -iname '*.apk')"
+          IOS="$(one_file 'iOS IPA' artifacts -type f -iname '*.ipa')"
+          MACOS="$(one_file 'macOS archive' artifacts -type f -iname '*.tar.xz')"
+          LINUX="$(one_file 'Linux 4K AppImage' artifacts -type f -path '*linux-arm64-4k*' -iname '*.AppImage')"
+
+          mapfile -d '' WINDOWS_DIRS < <(
+            find artifacts -mindepth 1 -maxdepth 1 -type d -name 'armsx2-windows-arm64-*' -print0
+          )
+          if [ "${#WINDOWS_DIRS[@]}" -ne 1 ]; then
+            printf 'Expected exactly one Windows artifact directory, found %s\n' "${#WINDOWS_DIRS[@]}" >&2
+            exit 1
+          fi
+
+          START_DAY="${RUN_STARTED_AT%%T*}"
+          START_DAY="${START_DAY//-/}"
+          SHORT_SHA="${HEAD_SHA:0:8}"
+          VERSION="build-${START_DAY}-${SHORT_SHA}"
+          WINDOWS="$RUNNER_TEMP/ARMSX2-${VERSION}-Windows-arm64.zip"
+          (
+            cd "${WINDOWS_DIRS[0]}"
+            zip -q -r "$WINDOWS" .
+          )
+
+          mkdir -p prepared
+          cp "$ANDROID" "prepared/ARMSX2-${VERSION}-Android-arm64.apk"
+          cp "$IOS" "prepared/ARMSX2-${VERSION}-iOS-arm64.ipa"
+          cp "$MACOS" "prepared/ARMSX2-${VERSION}-macOS-arm64.tar.xz"
+          cp "$LINUX" "prepared/ARMSX2-${VERSION}-Linux-arm64-4K.AppImage"
+          cp "$WINDOWS" "prepared/ARMSX2-${VERSION}-Windows-arm64.zip"
+
+
+          while IFS= read -r -d '' file; do
+            bytes="$(stat -c '%s' "$file")"
+            if [ "$bytes" -ge "$MAX_ARTIFACT_BYTES" ]; then
+              printf '%s is %s bytes; MoonStore upload limit is below %s bytes\n' \
+                "$file" "$bytes" "$MAX_ARTIFACT_BYTES" >&2
+              exit 1
+            fi
+            printf '%s  %s bytes  %s\n' "$(sha256sum "$file" | cut -d' ' -f1)" "$bytes" "$file"
+          done < <(find prepared -type f -print0 | sort -z)
+
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Upload verified artifacts
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p responses
+
+          upload() {
+            local platform="$1"
+            local file="$2"
+            local response="responses/${platform}.json"
+            curl --fail-with-body --silent --show-error \
+              --retry 3 --retry-all-errors --connect-timeout 20 --max-time 1800 \
+              -X POST \
+              -H "Authorization: Bearer $MOONSTORE_API_KEY" \
+              -H "X-File-Name: $(basename "$file")" \
+              --data-binary "@$file" \
+              "$MOONSTORE_API/artifacts?platform=${platform}&architecture=arm64" \
+              > "$response"
+            jq -e '.binary | type == "object"' "$response" >/dev/null
+            printf 'Uploaded %s: %s\n' "$platform" "$(jq -r '.binary.ref' "$response")"
+          }
+
+          upload android "prepared/ARMSX2-${VERSION}-Android-arm64.apk"
+          upload ios "prepared/ARMSX2-${VERSION}-iOS-arm64.ipa"
+          upload macos "prepared/ARMSX2-${VERSION}-macOS-arm64.tar.xz"
+          upload windows "prepared/ARMSX2-${VERSION}-Windows-arm64.zip"
+          upload linux "prepared/ARMSX2-${VERSION}-Linux-arm64-4K.AppImage"
+
+      - name: Publish the MoonStore update
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          NOTES="Automated build from ${HEAD_SHA:0:8}. Source: https://github.com/${GITHUB_REPOSITORY}/commit/${HEAD_SHA}"
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "$NOTES" \
+            --slurpfile android responses/android.json \
+            --slurpfile ios responses/ios.json \
+            --slurpfile macos responses/macos.json \
+            --slurpfile windows responses/windows.json \
+            --slurpfile linux responses/linux.json \
+            '{
+              version: $version,
+              notes: $notes,
+              platforms: ["android", "ios", "macos", "windows", "linux"],
+              binaries: {
+                android: $android[0].binary,
+                ios: $ios[0].binary,
+                macos: $macos[0].binary,
+                windows: $windows[0].binary,
+                linux: $linux[0].binary
+              },
+              publishOnApproval: true
+            }' > release.json
+
+          curl --fail-with-body --silent --show-error \
+            --retry 3 --retry-all-errors --connect-timeout 20 --max-time 1800 \
+            -X POST \
+            -H "Authorization: Bearer $MOONSTORE_API_KEY" \
+            -H "Content-Type: application/json" \
+            --data @release.json \
+            "$MOONSTORE_API/apps/$MOONSTORE_APP_ID/releases" \
+            > release-response.json
+
+          jq -e '.release.status == "released"' release-response.json >/dev/null || {
+            printf 'MoonStore accepted the release but did not publish it automatically:\n' >&2
+            jq '{requestId, release: {id: .release.id, version: .release.version, status: .release.status}}' \
+              release-response.json >&2
+            exit 1
+          }
+          jq '{requestId, release: {id: .release.id, version: .release.version, status: .release.status, platforms: .release.platforms}}' \
+            release-response.json
