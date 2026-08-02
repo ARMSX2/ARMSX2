@@ -649,11 +649,9 @@ struct PerGameSettingsPanel: View {
             perGameHWDownloadMode: $perGameHWDownloadMode,
             perGameCPUCLUT: $perGameCPUCLUT,
             perGameGPUTargetCLUT: $perGameGPUTargetCLUT,
-            perGameVsyncQueue: $perGameVsyncQueue,
             perGameLoadTextureReplacements: $perGameLoadTextureReplacements,
             perGameLoadTextureReplacementsAsync: $perGameLoadTextureReplacementsAsync,
             perGamePrecacheTextureReplacements: $perGamePrecacheTextureReplacements,
-            perGameSyncToHostRefresh: $perGameSyncToHostRefresh,
             savesToRunningGame: savesToRunningGame,
             settings: settings
         )
@@ -666,8 +664,6 @@ struct PerGameSettingsPanel: View {
             volumePercent: $volumePercent,
             globalVolumePercent: $globalVolumePercent,
             perGameFastForwardVolume: $perGameFastForwardVolume,
-            perGameBufferMS: $perGameBufferMS,
-            perGameOutputLatencyMS: $perGameOutputLatencyMS,
             settings: settings
         )
     }

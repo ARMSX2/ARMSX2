@@ -9,8 +9,6 @@ struct AudioTab: View {
     @Binding var volumePercent: Int
     @Binding var globalVolumePercent: Int
     @Binding var perGameFastForwardVolume: Int
-    @Binding var perGameBufferMS: Int
-    @Binding var perGameOutputLatencyMS: Int
 
     let settings: SettingsStore
 
@@ -70,16 +68,9 @@ struct AudioTab: View {
                     ForEach(SettingsOptions.fastForwardVolume, id: \.self) { Text("\($0)%").tag($0) }
                 }
                 .disabled(!enabled)
-                Picker(settings.localized("Buffer Size"), selection: $perGameBufferMS) {
-                    Text(settings.localized("Use Global")).tag(-1)
-                    ForEach(SettingsOptions.audioBufferMs, id: \.self) { Text("\($0) ms").tag($0) }
-                }
-                .disabled(!enabled)
-                Picker(settings.localized("Output Latency"), selection: $perGameOutputLatencyMS) {
-                    Text(settings.localized("Use Global")).tag(-1)
-                    ForEach(SettingsOptions.audioOutputLatencyMs, id: \.self) { Text("\($0) ms").tag($0) }
-                }
-                .disabled(!enabled)
+                Text(settings.localized("Buffer Size and Output Latency are on the Frame Pacing tab."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
