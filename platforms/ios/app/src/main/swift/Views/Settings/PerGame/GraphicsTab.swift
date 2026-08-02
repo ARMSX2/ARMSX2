@@ -219,15 +219,11 @@ struct GraphicsTab: View {
                          SettingsOptions.withUseGlobal(SettingsOptions.maxAnisotropy))
                 .disabled(!enabled)
 
-            Picker(settings.localized("CAS Sharpness"), selection: $perGameCASSharpness) {
-                Text(settings.localized("Use Global")).tag(-1)
-                Text("0").tag(0)
-                Text("25").tag(25)
-                Text("50").tag(50)
-                Text("75").tag(75)
-                Text("100").tag(100)
-            }
-            .disabled(!enabled)
+            NumberOverrideRow("CAS Sharpness", value: $perGameCASSharpness,
+                              global: settings.casSharpness,
+                              range: SettingsStore.casSharpnessRange, suffix: "%",
+                              settings: settings)
+                .disabled(!enabled)
 
             Picker(settings.localized("Screen Offsets"), selection: $perGamePCRTCOffsets) {
                 Text(settings.localized("Use Global")).tag(-1)

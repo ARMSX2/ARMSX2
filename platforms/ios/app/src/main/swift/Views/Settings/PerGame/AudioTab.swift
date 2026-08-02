@@ -63,11 +63,11 @@ struct AudioTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Picker(settings.localized("Fast-Forward Volume"), selection: $perGameFastForwardVolume) {
-                    Text(settings.localized("Use Global")).tag(-1)
-                    ForEach(SettingsOptions.fastForwardVolume, id: \.self) { Text("\($0)%").tag($0) }
-                }
-                .disabled(!enabled)
+                NumberOverrideRow("Fast-Forward Volume", value: $perGameFastForwardVolume,
+                                  global: settings.audioFastForwardVolume,
+                                  range: SettingsStore.fastForwardVolumeRange, suffix: "%",
+                                  settings: settings)
+                    .disabled(!enabled)
                 Text(settings.localized("Buffer Size and Output Latency are on the Frame Pacing tab."))
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -118,6 +118,7 @@ final class SettingsStore {
     static let audioOutputLatencyMsRange = 5...200
     static let fastForwardVolumeRange = 0...200
     static let shadeBoostRange = 1...100
+    static let casSharpnessRange = 0...100
     static let targetFPSRange = Int(minTargetFPS)...Int(maxTargetFPS)
     static let defaultOsdPerformancePosition = 3
     static let emulationOnlyModeDelayRange = 0...15
