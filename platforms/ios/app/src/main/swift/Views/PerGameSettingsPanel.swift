@@ -539,7 +539,7 @@ struct PerGameSettingsPanel: View {
                     } label: {
                         HStack(spacing: 10) {
                             Image(systemName: category.systemImage)
-                                .frame(width: 22)
+                                .frame(width: OverlayTheme.rowIconWidth)
                                 .foregroundStyle(selected ? OverlayTheme.accent : OverlayTheme.textSecondary)
                             Text(settings.localized(category.titleKey))
                                 .font(.callout)
@@ -768,68 +768,25 @@ struct PerGameSettingsPanel: View {
 
     private var rootForm: some View {
         Form {
-            identitySection
-            overridesSection
+            PerGameIdentitySection(
+                enabled: enabled,
+                displayName: displayName,
+                hasPendingChanges: hasPendingChanges,
+                savesToRunningGame: savesToRunningGame,
+                game: game,
+                settings: settings
+            )
+            PerGameOverridesSection(
+                enabled: $enabled,
+                showResetAllConfirmation: $showResetAllConfirmation,
+                hasGameSettingsIdentity: hasGameSettingsIdentity,
+                savesToRunningGame: savesToRunningGame,
+                settings: settings
+            )
             categoryLinksSection
-            statusSection
+            PerGameStatusSection(statusMessage: statusMessage, settings: settings)
         }
         .scrollContentBackground(.hidden)
-    }
-
-    @ViewBuilder
-    private var identitySection: some View {
-        Section {
-            HStack(spacing: 12) {
-                Image(systemName: enabled ? "slider.horizontal.3" : "power")
-                    .font(.title3)
-                    .foregroundStyle(enabled ? Color.accentColor : Color.secondary)
-                    .frame(width: 32, height: 32)
-                    .background(Color.accentColor.opacity(enabled ? 0.14 : 0), in: Circle())
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(displayName)
-                        .font(.headline)
-                        .lineLimit(2)
-                    if let serial = game.metadata["serial"], !serial.isEmpty {
-                        Text("\(serial)  ·  CRC \(PadLayoutGameIdentity.normalizedCRC(game.metadata["crc"] ?? ""))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                    Text(hasPendingChanges
-                         ? (savesToRunningGame
-                            ? settings.localized("Unsaved changes — tap Save to apply now.")
-                            : settings.localized("Unsaved changes — Save to apply on next boot."))
-                         : settings.localized("No pending changes."))
-                        .font(.caption)
-                        .foregroundStyle(hasPendingChanges ? Color.accentColor : Color.secondary)
-                }
-            }
-            .padding(.vertical, 4)
-        }
-    }
-
-    @ViewBuilder
-    private var overridesSection: some View {
-        Section {
-            Toggle(settings.localized("Use Per-Game Overrides"), isOn: $enabled)
-            Text(settings.localized(savesToRunningGame
-                ? "Overrides are saved for this game only and apply when you save, while the game runs."
-                : "Overrides are saved for this game only and apply on the next boot of this title."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if !hasGameSettingsIdentity {
-                Text(settings.localized("Start this game once before saving its settings."))
-                    .font(.caption)
-                    .foregroundStyle(OverlayTheme.warm)
-            }
-            Button(role: .destructive) {
-                showResetAllConfirmation = true
-            } label: {
-                Label(settings.localized("Reset All Overrides"), systemImage: "arrow.counterclockwise")
-            }
-            .disabled(!hasGameSettingsIdentity)
-        }
     }
 
     @ViewBuilder
@@ -874,17 +831,6 @@ struct PerGameSettingsPanel: View {
                 retroAchievementsTab
             } label: {
                 Label(settings.localized("RetroAchievements"), systemImage: "trophy")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var statusSection: some View {
-        if let statusMessage {
-            Section {
-                Text(statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
     }
