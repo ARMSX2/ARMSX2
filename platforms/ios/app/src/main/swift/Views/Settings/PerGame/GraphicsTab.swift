@@ -60,11 +60,9 @@ struct GraphicsTab: View {
     @Binding var perGameHWDownloadMode: Int
     @Binding var perGameCPUCLUT: Int
     @Binding var perGameGPUTargetCLUT: Int
-    @Binding var perGameVsyncQueue: Int
     @Binding var perGameLoadTextureReplacements: Int
     @Binding var perGameLoadTextureReplacementsAsync: Int
     @Binding var perGamePrecacheTextureReplacements: Int
-    @Binding var perGameSyncToHostRefresh: Int
 
     let savesToRunningGame: Bool
     let settings: SettingsStore
@@ -352,20 +350,6 @@ struct GraphicsTab: View {
             sharedPicker("GPU Target CLUT", selection: $perGameGPUTargetCLUT,
                          SettingsOptions.withUseGlobal(SettingsOptions.gpuTargetClut))
                 .disabled(!enabled)
-            Picker(settings.localized("VSync Queue Size"), selection: $perGameVsyncQueue) {
-                Text(settings.localized("Use Global")).tag(-1)
-                ForEach(SettingsOptions.vsyncQueue, id: \.self) { Text("\($0)").tag($0) }
-            }
-            .disabled(!enabled)
-            Picker(settings.localized("Sync to Host Refresh"), selection: $perGameSyncToHostRefresh) {
-                Text(settings.localized("Use Global")).tag(-1)
-                Text(settings.localized("Off")).tag(0)
-                Text(settings.localized("On")).tag(1)
-            }
-            .disabled(!enabled)
-            Text(settings.localized("Sync to Host Refresh needs a restart to take effect."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
 
         Section(settings.localized("Texture Replacement")) {
