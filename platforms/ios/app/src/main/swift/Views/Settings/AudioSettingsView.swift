@@ -57,9 +57,9 @@ struct AudioSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                intSliderRow("Buffer Size", value: $settings.audioBufferMs, range: 10...200, suffix: " ms", defaultValue: 50)
-                intSliderRow("Output Latency", value: $settings.audioOutputLatencyMs, range: 5...200, suffix: " ms", defaultValue: 20)
-                intSliderRow("Fast-Forward Volume", value: $settings.audioFastForwardVolume, range: 0...200, suffix: "%", defaultValue: 100)
+                intSliderRow("Buffer Size", value: $settings.audioBufferMs, range: SettingsStore.audioBufferMsRange, suffix: " ms", defaultValue: 50)
+                intSliderRow("Output Latency", value: $settings.audioOutputLatencyMs, range: SettingsStore.audioOutputLatencyMsRange, suffix: " ms", defaultValue: 20)
+                intSliderRow("Fast-Forward Volume", value: $settings.audioFastForwardVolume, range: SettingsStore.fastForwardVolumeRange, suffix: "%", defaultValue: 100)
 
                 Text(settings.localized("Lower buffer or latency reduces lag but can cause crackling. Fast-forward volume is a percentage of normal volume used while fast-forwarding."))
                     .font(.caption)

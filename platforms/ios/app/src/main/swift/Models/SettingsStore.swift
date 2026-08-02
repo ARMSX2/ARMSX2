@@ -111,6 +111,13 @@ final class SettingsStore {
     static let defaultEmulatorVolumePercent = 100
     static let textureOffsetRange = -4096...4096
     static let skipDrawRange = 0...5000
+    // Named so the global screen and the per-game row cannot disagree about the bounds. The
+    // numbers were already spelled out in both places, which is how they drift.
+    static let vsyncQueueRange = 2...16
+    static let audioBufferMsRange = 10...200
+    static let audioOutputLatencyMsRange = 5...200
+    static let fastForwardVolumeRange = 0...200
+    static let shadeBoostRange = 1...100
     static let defaultOsdPerformancePosition = 3
     static let emulationOnlyModeDelayRange = 0...15
     static let defaultEmulationOnlyModeDelaySeconds = 5
@@ -435,7 +442,7 @@ final class SettingsStore {
     }}
     let _audioBufferMsConfig = Setting<Int>(
         section: "SPU2/Output", key: "BufferMS", default: 50,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 10...200))) })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: SettingsStore.audioBufferMsRange))) })
     var audioBufferMs: Int = 50 { didSet {
         guard !(_audioBufferMsConfig.suppressible && suppressINIWrites) else { return }
         _audioBufferMsConfig.writer(_audioBufferMsConfig.section, _audioBufferMsConfig.key, audioBufferMs)
@@ -444,7 +451,7 @@ final class SettingsStore {
     }}
     let _audioOutputLatencyMsConfig = Setting<Int>(
         section: "SPU2/Output", key: "OutputLatencyMS", default: 20,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 5...200))) })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: SettingsStore.audioOutputLatencyMsRange))) })
     var audioOutputLatencyMs: Int = 20 { didSet {
         guard !(_audioOutputLatencyMsConfig.suppressible && suppressINIWrites) else { return }
         _audioOutputLatencyMsConfig.writer(_audioOutputLatencyMsConfig.section, _audioOutputLatencyMsConfig.key, audioOutputLatencyMs)
@@ -453,7 +460,7 @@ final class SettingsStore {
     }}
     let _audioFastForwardVolumeConfig = Setting<Int>(
         section: "SPU2/Output", key: "FastForwardVolume", default: 100,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 0...200))) })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: SettingsStore.fastForwardVolumeRange))) })
     var audioFastForwardVolume: Int = 100 { didSet {
         guard !(_audioFastForwardVolumeConfig.suppressible && suppressINIWrites) else { return }
         _audioFastForwardVolumeConfig.writer(_audioFastForwardVolumeConfig.section, _audioFastForwardVolumeConfig.key, audioFastForwardVolume)
@@ -1229,7 +1236,7 @@ final class SettingsStore {
     let _shadeBoostBrightnessConfig = Setting<Int>(
         section: "EmuCore/GS", key: "ShadeBoost_Brightness", default: 50,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: SettingsStore.shadeBoostRange))) })
     var shadeBoostBrightness: Int = 50 { didSet {
         guard !(_shadeBoostBrightnessConfig.suppressible && suppressINIWrites) else { return }
         _shadeBoostBrightnessConfig.writer(_shadeBoostBrightnessConfig.section, _shadeBoostBrightnessConfig.key, shadeBoostBrightness)
@@ -1238,7 +1245,7 @@ final class SettingsStore {
     let _shadeBoostContrastConfig = Setting<Int>(
         section: "EmuCore/GS", key: "ShadeBoost_Contrast", default: 50,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: SettingsStore.shadeBoostRange))) })
     var shadeBoostContrast: Int = 50 { didSet {
         guard !(_shadeBoostContrastConfig.suppressible && suppressINIWrites) else { return }
         _shadeBoostContrastConfig.writer(_shadeBoostContrastConfig.section, _shadeBoostContrastConfig.key, shadeBoostContrast)
@@ -1247,7 +1254,7 @@ final class SettingsStore {
     let _shadeBoostSaturationConfig = Setting<Int>(
         section: "EmuCore/GS", key: "ShadeBoost_Saturation", default: 50,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: SettingsStore.shadeBoostRange))) })
     var shadeBoostSaturation: Int = 50 { didSet {
         guard !(_shadeBoostSaturationConfig.suppressible && suppressINIWrites) else { return }
         _shadeBoostSaturationConfig.writer(_shadeBoostSaturationConfig.section, _shadeBoostSaturationConfig.key, shadeBoostSaturation)
@@ -1256,7 +1263,7 @@ final class SettingsStore {
     let _shadeBoostGammaConfig = Setting<Int>(
         section: "EmuCore/GS", key: "ShadeBoost_Gamma", default: 50,
         suppressible: false,
-        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: 1...100))) })
+        writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(SettingsStore.clamped(v, to: SettingsStore.shadeBoostRange))) })
     var shadeBoostGamma: Int = 50 { didSet {
         guard !(_shadeBoostGammaConfig.suppressible && suppressINIWrites) else { return }
         _shadeBoostGammaConfig.writer(_shadeBoostGammaConfig.section, _shadeBoostGammaConfig.key, shadeBoostGamma)
@@ -1952,9 +1959,9 @@ final class SettingsStore {
         fastForwardScalar = Self.clampedSpeedScalar(ARMSX2Bridge.getINIFloat("Framerate", key: "TurboScalar", defaultValue: Self.defaultFastForwardScalar))
         emulatorVolumePercent = Self.clampedEmulatorVolumePercent(Int(ARMSX2Bridge.emulatorVolumePercent()))
         audioTimeStretch = ARMSX2Bridge.getINIString("SPU2/Output", key: "SyncMode", defaultValue: "TimeStretch") != "Disabled"
-        audioBufferMs = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "BufferMS", defaultValue: 50)), to: 10...200)
-        audioOutputLatencyMs = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "OutputLatencyMS", defaultValue: 20)), to: 5...200)
-        audioFastForwardVolume = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "FastForwardVolume", defaultValue: 100)), to: 0...200)
+        audioBufferMs = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "BufferMS", defaultValue: 50)), to: Self.audioBufferMsRange)
+        audioOutputLatencyMs = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "OutputLatencyMS", defaultValue: 20)), to: Self.audioOutputLatencyMsRange)
+        audioFastForwardVolume = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "FastForwardVolume", defaultValue: 100)), to: Self.fastForwardVolumeRange)
         audioSwapChannels = ARMSX2Bridge.getINIBool("SPU2/Output", key: "SwapChannels", defaultValue: false)
         // Boot
         fastCDVD = ARMSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "fastCDVD", defaultValue: false)
@@ -2043,10 +2050,10 @@ final class SettingsStore {
         integerScaling = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "IntegerScaling", defaultValue: false)
         // Shade Boost
         shadeBoost = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "ShadeBoost", defaultValue: false)
-        shadeBoostBrightness = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Brightness", defaultValue: 50)), to: 1...100)
-        shadeBoostContrast = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Contrast", defaultValue: 50)), to: 1...100)
-        shadeBoostSaturation = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Saturation", defaultValue: 50)), to: 1...100)
-        shadeBoostGamma = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Gamma", defaultValue: 50)), to: 1...100)
+        shadeBoostBrightness = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Brightness", defaultValue: 50)), to: Self.shadeBoostRange)
+        shadeBoostContrast = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Contrast", defaultValue: 50)), to: Self.shadeBoostRange)
+        shadeBoostSaturation = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Saturation", defaultValue: 50)), to: Self.shadeBoostRange)
+        shadeBoostGamma = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Gamma", defaultValue: 50)), to: Self.shadeBoostRange)
         // OSD
         let loadedOsdPreset = OsdPreset(rawValue: Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/UI", key: "OsdPreset", defaultValue: 0))) ?? .off
         osdPreset = loadedOsdPreset
@@ -2206,9 +2213,9 @@ final class SettingsStore {
         fastForwardScalar = Self.clampedSpeedScalar(ARMSX2Bridge.getINIFloat("Framerate", key: "TurboScalar", defaultValue: Self.defaultFastForwardScalar))
         emulatorVolumePercent = Self.clampedEmulatorVolumePercent(Int(ARMSX2Bridge.emulatorVolumePercent()))
         audioTimeStretch = ARMSX2Bridge.getINIString("SPU2/Output", key: "SyncMode", defaultValue: "TimeStretch") != "Disabled"
-        audioBufferMs = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "BufferMS", defaultValue: 50)), to: 10...200)
-        audioOutputLatencyMs = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "OutputLatencyMS", defaultValue: 20)), to: 5...200)
-        audioFastForwardVolume = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "FastForwardVolume", defaultValue: 100)), to: 0...200)
+        audioBufferMs = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "BufferMS", defaultValue: 50)), to: Self.audioBufferMsRange)
+        audioOutputLatencyMs = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "OutputLatencyMS", defaultValue: 20)), to: Self.audioOutputLatencyMsRange)
+        audioFastForwardVolume = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "FastForwardVolume", defaultValue: 100)), to: Self.fastForwardVolumeRange)
         audioSwapChannels = ARMSX2Bridge.getINIBool("SPU2/Output", key: "SwapChannels", defaultValue: false)
         fastCDVD = ARMSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "fastCDVD", defaultValue: false)
         eeCycleRate = Int(ARMSX2Bridge.getINIInt("EmuCore/Speedhacks", key: "EECycleRate", defaultValue: 0))
@@ -2293,10 +2300,10 @@ final class SettingsStore {
         integerScaling = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "IntegerScaling", defaultValue: false)
         // Shade Boost
         shadeBoost = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "ShadeBoost", defaultValue: false)
-        shadeBoostBrightness = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Brightness", defaultValue: 50)), to: 1...100)
-        shadeBoostContrast = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Contrast", defaultValue: 50)), to: 1...100)
-        shadeBoostSaturation = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Saturation", defaultValue: 50)), to: 1...100)
-        shadeBoostGamma = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Gamma", defaultValue: 50)), to: 1...100)
+        shadeBoostBrightness = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Brightness", defaultValue: 50)), to: Self.shadeBoostRange)
+        shadeBoostContrast = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Contrast", defaultValue: 50)), to: Self.shadeBoostRange)
+        shadeBoostSaturation = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Saturation", defaultValue: 50)), to: Self.shadeBoostRange)
+        shadeBoostGamma = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Gamma", defaultValue: 50)), to: Self.shadeBoostRange)
         osdPreset = OsdPreset(rawValue: Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/UI", key: "OsdPreset", defaultValue: 0))) ?? .off
         let loadedLastActiveOsdPresetRaw = ARMSX2Bridge.getINIInt("ARMSX2iOS/UI", key: "LastActiveOsdPreset", defaultValue: -1)
         if loadedLastActiveOsdPresetRaw >= 0 {
