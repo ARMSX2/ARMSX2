@@ -55,7 +55,10 @@ struct NumberFormat {
         NumberFormat(unit: unit, decimals: decimals, scale: scale, showsSign: true)
     }
 
+    /// An opaque readout is a string somebody else built, so it cannot be labelled onto the
+    /// bounds and it cannot be read back off the keyboard either.
     var labelsBounds: Bool { literal == nil }
+    var isTypeable: Bool { literal == nil }
 
     /// Digits only. This is what the keyboard edits and what goes into the unit template.
     func digits(_ value: Double, locale: Locale) -> String {
@@ -379,7 +382,7 @@ struct NumberRow: View {
                         Button(settings.localized("Done")) { fieldFocused = false }
                     }
                 }
-        } else if rowStyle.allowsTypedEntry {
+        } else if rowStyle.allowsTypedEntry && format.isTypeable {
             Text(displayText)
                 .font(rowStyle.valueFont)
                 .foregroundStyle(.secondary)

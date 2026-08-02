@@ -1245,9 +1245,11 @@ struct ThemePaletteEditor: View {
       .opacity(1 - backgroundPreviewOpacity)
       .allowsHitTesting(!isShowingBackgroundOnly || activeSliderTitle != nil)
       .environment(
-        \.dynamicSettingsSliderActivity,
-        DynamicSettingsSliderActivity(update: updateSliderActivity)
+        \.numberRowActivity,
+        NumberRowActivity(update: updateSliderActivity)
       )
+      // The editor packs a few hundred rows into a sheet; Form metrics would double its height.
+      .numberRowStyle(.compact)
     )
   }
 
