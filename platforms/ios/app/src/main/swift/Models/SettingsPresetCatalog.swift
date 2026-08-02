@@ -104,6 +104,8 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
     private var configuration: Configuration {
         switch self {
         case .defaultPreset:
+            // Only isActive reads this; apply() short-circuits into resetAllDefaults. So it has to
+            // describe what that reset actually leaves behind, and it had drifted on two counts.
             return Configuration(
                 fastBoot: false,
                 enableCheats: false,
@@ -111,10 +113,11 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
                 fastCDVD: false,
                 fxaa: false,
                 casSharpening: false,
-                vsyncQueueSize: 8,
+                vsyncQueueSize: 4,
                 upscaleMultiplier: 1,
                 ophFlagHack: false,
-                emulationOnlyMode: false
+                emulationOnlyMode: false,
+                showBackgroundInSettings: true
             )
         case .ultraQuality:
             var configuration = qualityConfiguration(upscaleMultiplier: 2)
