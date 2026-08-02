@@ -60,7 +60,11 @@ class DiscordAuthActivity : Activity() {
         // System.loadLibrary's the SDK and runs its JNI_OnLoad — a path that ABORTS the process on
         // failure rather than throwing, so runCatching cannot save us. Doing it here means the
         // blast radius is this helper process, never the emulator.
-        runCatching { com.discord.socialsdk.DiscordSocialSdkInit.setEngineActivity(this) }
+        runCatching {
+            Class.forName("com.discord.socialsdk.DiscordSocialSdkInit")
+                .getMethod("setEngineActivity", Activity::class.java)
+                .invoke(null, this)
+        }
             .onFailure { Log.w("ARMSX2DiscordSvc", "setEngineActivity failed: ${it.message}") }
 
         runCatching { DiscordNative.authorize() }
