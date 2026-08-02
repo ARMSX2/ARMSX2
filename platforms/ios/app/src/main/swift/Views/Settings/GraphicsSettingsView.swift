@@ -228,14 +228,18 @@ struct GraphicsSettingsView: View {
 
             Section(settings.localized("Display")) {
                 Picker(settings.localized("Deinterlace"), selection: $settings.interlaceMode) {
-                    Text(settings.localized("None")).tag(0)
-                    Text(settings.localized("Weave (TFF)")).tag(1)
-                    Text(settings.localized("Weave (BFF)")).tag(2)
-                    Text(settings.localized("Bob (TFF)")).tag(3)
-                    Text(settings.localized("Bob (BFF)")).tag(4)
-                    Text(settings.localized("Blend (TFF)")).tag(5)
-                    Text(settings.localized("Blend (BFF)")).tag(6)
-                    Text(settings.localized("Adaptive (Default)")).tag(7)
+                    // Tags are GSInterlaceMode values. This list used to be shifted by one, so
+                    // every label from Weave down named the mode below it.
+                    Text(settings.localized("Automatic (Default)")).tag(0)
+                    Text(settings.localized("Off (No Deinterlacing)")).tag(1)
+                    Text(settings.localized("Weave (TFF)")).tag(2)
+                    Text(settings.localized("Weave (BFF)")).tag(3)
+                    Text(settings.localized("Bob (TFF)")).tag(4)
+                    Text(settings.localized("Bob (BFF)")).tag(5)
+                    Text(settings.localized("Blend (TFF)")).tag(6)
+                    Text(settings.localized("Blend (BFF)")).tag(7)
+                    Text(settings.localized("Adaptive (TFF)")).tag(8)
+                    Text(settings.localized("Adaptive (BFF)")).tag(9)
                 }
 
                 Picker(settings.localized("Aspect Ratio"), selection: $settings.aspectRatio) {

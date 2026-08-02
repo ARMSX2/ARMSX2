@@ -128,6 +128,8 @@ inline constexpr bool ARMSX2IOSRetroAchievementsHardcoreAvailable = true;
 class SettingsInterface;
 void ARMSX2EnsureIOSSpeedhackDefaults(SettingsInterface* si, const char* reason);
 bool ARMSX2RepairIOSARM64JITSettings(SettingsInterface* si, const char* reason);
+// Clears the blend deinterlace that older builds stamped into per-game files. Runs once.
+void ARMSX2MigratePerGameDeinterlaceBlend(SettingsInterface* si);
 void ARMSX2MigrateJITScriptProtocolForIOS(SettingsInterface* si, const char* reason);
 void ARMSX2IOSSanitizeFolderSettings(SettingsInterface* si, const std::string& dataRoot,
                                      const char* reason);

@@ -733,10 +733,10 @@ final class SettingsStore {
         _casSharpnessConfig.onSet?(casSharpness)
     }}
     let _interlaceModeConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "deinterlace_mode", default: 7,
+        section: "EmuCore/GS", key: "deinterlace_mode", default: 0,
         suppressible: false,
         writer: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
-    var interlaceMode: Int = 7 { didSet {
+    var interlaceMode: Int = 0 { didSet {
         guard !(_interlaceModeConfig.suppressible && suppressINIWrites) else { return }
         _interlaceModeConfig.writer(_interlaceModeConfig.section, _interlaceModeConfig.key, interlaceMode)
         _interlaceModeConfig.onSet?(interlaceMode)
@@ -1989,7 +1989,7 @@ final class SettingsStore {
         fxaa = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "fxaa", defaultValue: false)
         casMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "CASMode", defaultValue: 0))
         casSharpness = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "CASSharpness", defaultValue: 50))
-        interlaceMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "deinterlace_mode", defaultValue: 7))
+        interlaceMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "deinterlace_mode", defaultValue: 0))
         aspectRatio = Self.aspectRatioValue(from: ARMSX2Bridge.getINIString("EmuCore/GS", key: "AspectRatio", defaultValue: "Auto 4:3/3:2"))
         blendingAccuracy = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "accurate_blending_unit", defaultValue: 1))
         dithering = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "dithering_ps2", defaultValue: 2))
@@ -2239,7 +2239,7 @@ final class SettingsStore {
         fxaa = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "fxaa", defaultValue: false)
         casMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "CASMode", defaultValue: 0))
         casSharpness = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "CASSharpness", defaultValue: 50))
-        interlaceMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "deinterlace_mode", defaultValue: 7))
+        interlaceMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "deinterlace_mode", defaultValue: 0))
         aspectRatio = Self.aspectRatioValue(from: ARMSX2Bridge.getINIString("EmuCore/GS", key: "AspectRatio", defaultValue: "Auto 4:3/3:2"))
         blendingAccuracy = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "accurate_blending_unit", defaultValue: 1))
         dithering = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "dithering_ps2", defaultValue: 2))
@@ -2773,7 +2773,7 @@ final class SettingsStore {
         fxaa = false
         casMode = 0             // Disabled
         casSharpness = 50
-        interlaceMode = 7       // Adaptive
+        interlaceMode = 0       // GSInterlaceMode::Automatic
         aspectRatio = 1         // Auto 4:3/3:2
         blendingAccuracy = 1    // Basic
         dithering = 2           // Scaled

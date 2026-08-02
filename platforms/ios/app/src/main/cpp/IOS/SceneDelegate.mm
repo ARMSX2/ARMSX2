@@ -161,6 +161,7 @@ static bool ARMSX2JITWorkerBusy();
     }
     ARMSX2RepairIOSARM64JITSettings(s_settings_interface, "scene-connect");
     ARMSX2MigrateJITScriptProtocolForIOS(s_settings_interface, "scene-connect");
+    ARMSX2MigratePerGameDeinterlaceBlend(s_settings_interface);
     // One-time migration for existing INI (runs once, then conditions are false)
     if (!s_settings_interface->ContainsValue("SPU2/Output", "Backend")) {
         s_settings_interface->SetStringValue("SPU2/Output", "Backend", "SDL");
