@@ -1903,6 +1903,8 @@ final class SettingsStore {
         // read so the values below are authoritative. Writes the INI directly
         // — can't touch SettingsStore.shared mid-init (swift_once deadlock).
         Self.migrateFramePacingOptimalDefaultV1()
+        // Same deal: the phone rumble slider changed meaning without changing key.
+        Self.migratePhoneRumbleStrengthRescaleV1()
 
         // CPU
         eeCoreType = Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "CoreType", defaultValue: 2))

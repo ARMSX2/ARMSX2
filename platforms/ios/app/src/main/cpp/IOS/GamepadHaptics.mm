@@ -928,12 +928,13 @@ static float ARMSX2PhoneRumbleGain(float setting)
     return 1.0f + (normalized * (ARMSX2_PHONE_RUMBLE_MAX_GAIN - 1.0f));
 }
 
-static ARMSX2PhoneRumbleClass ARMSX2ClassifyPhoneRumble(float large, float small)
+// Per channel. The small motor is on or off with nothing between, so classifying off both at once
+// let any buzz pin the heavy motor to Hard and give it a tail it never asked for.
+static ARMSX2PhoneRumbleClass ARMSX2ClassifyPhoneRumble(float level)
 {
-    const float source_level = std::max(large, small);
-    if (source_level >= ARMSX2_PHONE_RUMBLE_HARD_THRESHOLD)
+    if (level >= ARMSX2_PHONE_RUMBLE_HARD_THRESHOLD)
         return ARMSX2PhoneRumbleClass::Hard;
-    if (source_level >= ARMSX2_PHONE_RUMBLE_MEDIUM_THRESHOLD)
+    if (level >= ARMSX2_PHONE_RUMBLE_MEDIUM_THRESHOLD)
         return ARMSX2PhoneRumbleClass::Medium;
     return ARMSX2PhoneRumbleClass::Weak;
 }
@@ -987,24 +988,27 @@ static void ARMSX2ApplyNativeGamepadRumbleOnMain(u32 packed)
               "ARMSX2iOS/UI", "IncreaseRumbleDurationAndInterpolation", true)
         : true;
     const float strength = ARMSX2PhoneRumbleGain(strength_setting);
-    // Preserve low-amplitude detail without imposing a hard floor. The sublinear
-    // curve compensates for the phone actuator's less perceptible lower range while
-    // keeping the original analog ordering from the PS2 heavy motor.
+    // Sublinear curve for the actuator's weak low end. Ordering holds at the 25% baseline; above
+    // that the gain pushes the top of the range into the clamp, trading ordering for force.
     const float large_raw = ARMSX2RumbleLargeIntensity(packed);
     float large = (large_raw > 0.01f)
         ? std::pow(large_raw, 0.78f) * strength
         : 0.0f;
     const float small_raw = ARMSX2RumbleSmallIntensity(packed);
-    const ARMSX2PhoneRumbleClass rumble_class = ARMSX2ClassifyPhoneRumble(large_raw, small_raw);
-    const float release_scale = increase_duration
-        ? ARMSX2PhoneRumbleReleaseScale(strength_setting, rumble_class)
+    const ARMSX2PhoneRumbleClass large_class = ARMSX2ClassifyPhoneRumble(large_raw);
+    const ARMSX2PhoneRumbleClass small_class = ARMSX2ClassifyPhoneRumble(small_raw);
+    const float large_release = increase_duration
+        ? ARMSX2PhoneRumbleReleaseScale(strength_setting, large_class)
+        : 1.0f;
+    const float small_release = increase_duration
+        ? ARMSX2PhoneRumbleReleaseScale(strength_setting, small_class)
         : 1.0f;
     large = (increase_duration && large_raw > 0.01f)
-        ? ARMSX2PromoteWeakPhoneRumble(large, strength_setting, rumble_class)
+        ? ARMSX2PromoteWeakPhoneRumble(large, strength_setting, large_class)
         : large;
     float small = (small_raw > 0.01f) ? (ARMSX2_SMALL_MOTOR_LEVEL * strength) : 0.0f;
     small = (increase_duration && small_raw > 0.01f)
-        ? ARMSX2PromoteWeakPhoneRumble(small, strength_setting, rumble_class)
+        ? ARMSX2PromoteWeakPhoneRumble(small, strength_setting, small_class)
         : small;
 
     // Turning the extension off also cancels a scale retained by the previous
@@ -1029,9 +1033,9 @@ static void ARMSX2ApplyNativeGamepadRumbleOnMain(u32 packed)
         ARMSX2PlayRumbleTransientOnMain(large_started ? large : 0.0f, small_started ? small : 0.0f);
 
     const bool large_ok = ARMSX2SetRumbleChannelOnMain(
-        ARMSX2_RUMBLE_CHANNEL_LARGE, large, release_scale);
+        ARMSX2_RUMBLE_CHANNEL_LARGE, large, large_release);
     const bool small_ok = ARMSX2SetRumbleChannelOnMain(
-        ARMSX2_RUMBLE_CHANNEL_SMALL, small, release_scale);
+        ARMSX2_RUMBLE_CHANNEL_SMALL, small, small_release);
     if (large_ok && small_ok) {
         s_nativeAppliedGamepadRumble = packed;
         s_nativeAppliedGamepadRumbleValid = true;
