@@ -53,17 +53,17 @@ struct FramePacingTab: View {
                 }
                 .disabled(!enabled)
 
-                Picker(settings.localized("FPS Target"), selection: $perGameTargetFPS) {
-                    Text(settings.localized("Use Global")).tag(-1)
-                    ForEach(SettingsOptions.targetFPS, id: \.self) { Text("\($0)").tag($0) }
-                }
-                .disabled(perGameFrameLimiter == 0 || !enabled)
+                NumberOverrideRow("FPS Target", value: $perGameTargetFPS,
+                                  global: Int(settings.targetFPS.rounded()),
+                                  range: SettingsStore.targetFPSRange, suffix: " FPS",
+                                  settings: settings)
+                    .disabled(perGameFrameLimiter == 0 || !enabled)
 
-                Picker(settings.localized("VSync Queue Size"), selection: $perGameVsyncQueue) {
-                    Text(settings.localized("Use Global")).tag(-1)
-                    ForEach(SettingsOptions.vsyncQueue, id: \.self) { Text("\($0)").tag($0) }
-                }
-                .disabled(!enabled)
+                NumberOverrideRow("VSync Queue Size", value: $perGameVsyncQueue,
+                                  global: settings.vsyncQueueSize,
+                                  range: SettingsStore.vsyncQueueRange, style: .stepper,
+                                  settings: settings)
+                    .disabled(!enabled)
 
                 Picker(settings.localized("Sync to Host Refresh"), selection: $perGameSyncToHostRefresh) {
                     Text(settings.localized("Use Global")).tag(-1)
@@ -75,17 +75,17 @@ struct FramePacingTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Picker(settings.localized("Buffer Size"), selection: $perGameBufferMS) {
-                    Text(settings.localized("Use Global")).tag(-1)
-                    ForEach(SettingsOptions.audioBufferMs, id: \.self) { Text("\($0) ms").tag($0) }
-                }
-                .disabled(!enabled)
+                NumberOverrideRow("Buffer Size", value: $perGameBufferMS,
+                                  global: settings.audioBufferMs,
+                                  range: SettingsStore.audioBufferMsRange, suffix: " ms",
+                                  settings: settings)
+                    .disabled(!enabled)
 
-                Picker(settings.localized("Output Latency"), selection: $perGameOutputLatencyMS) {
-                    Text(settings.localized("Use Global")).tag(-1)
-                    ForEach(SettingsOptions.audioOutputLatencyMs, id: \.self) { Text("\($0) ms").tag($0) }
-                }
-                .disabled(!enabled)
+                NumberOverrideRow("Output Latency", value: $perGameOutputLatencyMS,
+                                  global: settings.audioOutputLatencyMs,
+                                  range: SettingsStore.audioOutputLatencyMsRange, suffix: " ms",
+                                  settings: settings)
+                    .disabled(!enabled)
             } header: {
                 Text(settings.localized("Individual Settings"))
             }

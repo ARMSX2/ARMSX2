@@ -321,13 +321,13 @@ struct PerGameSettingsPanel: View {
         _perGameHWDownloadMode = State(initialValue: Self.loadedPerGameInt("EmuCore/GS", "HWDownloadMode", globalDefault: 0, useCurrent: useCurrent, iso: perGameISO))
         _perGameCPUCLUT = State(initialValue: Self.loadedPerGameInt("EmuCore/GS", "UserHacks_CPUCLUTRender", globalDefault: 0, useCurrent: useCurrent, iso: perGameISO))
         _perGameGPUTargetCLUT = State(initialValue: Self.loadedPerGameInt("EmuCore/GS", "UserHacks_GPUTargetCLUTMode", globalDefault: 0, useCurrent: useCurrent, iso: perGameISO))
-        _perGameVsyncQueue = State(initialValue: Self.loadedPerGameInt("EmuCore/GS", "VsyncQueueSize", globalDefault: 8, useCurrent: useCurrent, iso: perGameISO))
+        _perGameVsyncQueue = State(initialValue: Self.clampedPerGameInt(Self.loadedPerGameInt("EmuCore/GS", "VsyncQueueSize", globalDefault: 8, useCurrent: useCurrent, iso: perGameISO), to: SettingsStore.vsyncQueueRange))
         _perGameLoadTextureReplacements = State(initialValue: Self.loadedPerGameBool("EmuCore/GS", "LoadTextureReplacements", useCurrent: useCurrent, iso: perGameISO))
         _perGameLoadTextureReplacementsAsync = State(initialValue: Self.loadedPerGameBool("EmuCore/GS", "LoadTextureReplacementsAsync", useCurrent: useCurrent, iso: perGameISO))
         _perGamePrecacheTextureReplacements = State(initialValue: Self.loadedPerGameBool("EmuCore/GS", "PrecacheTextureReplacements", useCurrent: useCurrent, iso: perGameISO))
         _perGameSyncToHostRefresh = State(initialValue: Self.loadedPerGameBool("EmuCore/GS", "SyncToHostRefreshRate", useCurrent: useCurrent, iso: perGameISO))
-        _perGameBufferMS = State(initialValue: Self.loadedPerGameInt("SPU2/Output", "BufferMS", globalDefault: 50, useCurrent: useCurrent, iso: perGameISO))
-        _perGameOutputLatencyMS = State(initialValue: Self.loadedPerGameInt("SPU2/Output", "OutputLatencyMS", globalDefault: 20, useCurrent: useCurrent, iso: perGameISO))
+        _perGameBufferMS = State(initialValue: Self.clampedPerGameInt(Self.loadedPerGameInt("SPU2/Output", "BufferMS", globalDefault: 50, useCurrent: useCurrent, iso: perGameISO), to: SettingsStore.audioBufferMsRange))
+        _perGameOutputLatencyMS = State(initialValue: Self.clampedPerGameInt(Self.loadedPerGameInt("SPU2/Output", "OutputLatencyMS", globalDefault: 20, useCurrent: useCurrent, iso: perGameISO), to: SettingsStore.audioOutputLatencyMsRange))
         let _globalFramePacingPreset = Int32(SettingsStore.shared.framePacingPreset.rawValue)
         _perGameFramePacingPreset = State(initialValue: Self.loadedPerGameInt("ARMSX2iOS/FramePacing", "Preset", globalDefault: _globalFramePacingPreset, useCurrent: useCurrent, iso: perGameISO))
         let _fpLimiter = Self.loadedPerGameFrameLimiter(useCurrent: useCurrent, iso: perGameISO)
@@ -913,6 +913,12 @@ struct PerGameSettingsPanel: View {
         }
         guard ARMSX2Bridge.hasPerGameINIValue(section, key: key, forISO: iso) else { return -1 }
         return Int(ARMSX2Bridge.getPerGameINIInt(section, key: key, defaultValue: globalDefault, forISO: iso))
+    }
+
+    /// Pin a loaded value to what its control can show. The sentinel is not a value, so it is
+    /// left alone; anything else has to fit or the stepper and the stored number disagree.
+    private static func clampedPerGameInt(_ value: Int, to range: ClosedRange<Int>) -> Int {
+        value == useGlobalSentinel ? value : SettingsStore.clamped(value, to: range)
     }
 
     /// Reads a per-game bool override; returns -1 ("use global"), 0 (off), or 1 (on).
