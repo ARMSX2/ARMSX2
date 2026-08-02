@@ -505,7 +505,11 @@ static bool CheckLegacyIdentity(const StagedRegs& st, Error* error)
 		return false;
 	}
 
-	if (st.elfCRC != current_crc)
+	// The ELF CRC only means anything once the VM has actually booted an ELF.
+	// Loading a state at startup resets the VM first, which clears the CRC, so
+	// an unknown CRC here is the normal case and is not a mismatch — the disc
+	// serial checked above is what identifies the game.
+	if (current_crc != 0 && st.elfCRC != current_crc)
 	{
 		Error::SetStringFmt(error, TRANSLATE_FS("SaveState", "This AetherSX2 save state is for CRC {0:08X}, but the running game is CRC {1:08X}."),
 			st.elfCRC, current_crc);
