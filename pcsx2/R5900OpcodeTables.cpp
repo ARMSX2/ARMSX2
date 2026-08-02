@@ -467,6 +467,34 @@ namespace R5900
 		MakeOpcode1( MAX_S, CopDefault, 0 );
 		MakeOpcode1( MIN_S, CopDefault, 0 );
 
+		// The FPU's real timings, measured on silicon rather than inferred.
+		// Method: COP0 Count around loops of k copies of one instruction, k in
+		// {1,2,4,8}, so the loop overhead falls out as the intercept and the
+		// per-instruction cost is the slope.  Taken on an SCPH-90000 (FCR0
+		// 0x2E40) over four runs; three produce byte-identical tables.
+		//
+		//     MUL.S     latency 4, issue interval 1   (pipelined)
+		//     DIV.S     7, and latency == issue interval
+		//     SQRT.S    7, identical to DIV.S
+		//     RSQRT.S   13
+		//
+		// DIV.S and SQRT.S are ONE shared, non-pipelined unit.  Equal latency
+		// alone would not say that -- what does is the mix: interleaved
+		// div.s/sqrt.s costs the SUM (14 per pair), while div.s/add.s and
+		// div.s/mul.s cost the divide ALONE (7 per pair), because the FMAC runs
+		// concurrently and hides inside the divide entirely.  RSQRT.S at
+		// 7 + 7 - 1 is two passes through that unit, which agrees with its value
+		// identity (rsqrt == sqrt then divide, see FPU.cpp's RSQRT_S).  The
+		// latency is identical on every operand class tried -- exact and
+		// non-terminating quotients, denormals, zero, divide by zero, overflow
+		// to the EE maximum -- so there is no early termination anywhere.
+		//
+		// The three entries below say 6, 6 and 8.  They are LEFT AS THEY ARE
+		// deliberately: this is a compatibility-sensitive timing table, not a
+		// correctness one, and nothing has measured what moving it does to
+		// games.  The numbers above are recorded here so that the next person to
+		// wonder does not have to take the console run again.  (FPU_Mult's 4
+		// does match the measured multiply latency.)
 		MakeOpcode1( MUL_S, FPU_Mult, 0 );
 		MakeOpcode1( DIV_S, 6*8, 0 );
 		MakeOpcode1( SQRT_S, 6*8, 0 );
