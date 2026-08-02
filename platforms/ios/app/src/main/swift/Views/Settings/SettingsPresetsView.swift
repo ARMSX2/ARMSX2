@@ -162,7 +162,7 @@ struct SettingsPresetsView: View {
                 )
             }
         } message: {
-            Text(settings.localized("This will reset all settings to it's original values."))
+            Text(settings.localized("This will reset all settings to their original values."))
         }
     }
 
