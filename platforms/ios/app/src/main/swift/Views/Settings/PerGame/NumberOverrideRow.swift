@@ -21,19 +21,19 @@ struct NumberOverrideRow: View {
     @Binding var value: Int
     let global: Int
     let range: ClosedRange<Int>
-    var suffix: String = ""
+    var format: NumberFormat = .plain
     var style: Style = .slider
     var sentinel: Int = SettingsOptions.useGlobalID
     let settings: SettingsStore
 
     init(_ title: String, value: Binding<Int>, global: Int, range: ClosedRange<Int>,
-         suffix: String = "", style: Style = .slider,
+         format: NumberFormat = .plain, style: Style = .slider,
          sentinel: Int = SettingsOptions.useGlobalID, settings: SettingsStore) {
         self.title = title
         self._value = value
         self.global = global
         self.range = range
-        self.suffix = suffix
+        self.format = format
         self.style = style
         self.sentinel = sentinel
         self.settings = settings
@@ -43,10 +43,14 @@ struct NumberOverrideRow: View {
         if value == sentinel {
             inheritRow
         } else {
-            switch style {
-            case .stepper: stepperRow
-            case .slider: sliderRow
-            }
+            NumberRow(title, value: $value, in: range, format: format,
+                      style: style == .stepper ? .stepper : .slider,
+                      accessory: NumberRowAccessory(
+                          systemImage: "arrow.uturn.backward",
+                          label: "Use the global value for %@",
+                          isVisible: true,
+                          action: { value = sentinel }),
+                      settings: settings)
         }
     }
 
@@ -67,43 +71,7 @@ struct NumberOverrideRow: View {
         }
     }
 
-    private var stepperRow: some View {
-        HStack {
-            Stepper(value: $value, in: range) { titleAndValue }
-            inheritButton
-        }
-    }
-
-    private var sliderRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                titleAndValue
-                inheritButton
-            }
-            Slider(value: Binding(
-                get: { Double(value) },
-                set: { value = Int($0.rounded()) }
-            ), in: Double(range.lowerBound)...Double(range.upperBound))
-        }
-    }
-
-    private var titleAndValue: some View {
-        HStack {
-            Text(settings.localized(title))
-            Spacer()
-            Text(formatted(value))
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var inheritButton: some View {
-        Button(settings.localized("Global")) { value = sentinel }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-    }
-
     private func formatted(_ value: Int) -> String {
-        "\(value)\(suffix)"
+        format.text(Double(value), settings: settings)
     }
 }

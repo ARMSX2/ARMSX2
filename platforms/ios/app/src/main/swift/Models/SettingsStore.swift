@@ -120,6 +120,8 @@ final class SettingsStore {
     static let emulatorVolumeRange = 0...150
     static let shadeBoostRange = 1...100
     static let casSharpnessRange = 0...100
+    static let cpuSpriteRenderBwRange = 0...10
+    static let cpuSpriteRenderLevelRange = 0...2
     static let targetFPSRange = Int(minTargetFPS)...Int(maxTargetFPS)
     static let defaultOsdPerformancePosition = 3
     static let emulationOnlyModeDelayRange = 0...15
