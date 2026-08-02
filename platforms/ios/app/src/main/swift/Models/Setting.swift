@@ -6,11 +6,13 @@ import Foundation
 /// Configuration-only: holds the INI section/key/writer for a setting. The
 /// @Observable macro owns the stored property; didSet consults this config.
 ///
-/// `onSet` runs from each property's `didSet`. Swift suppresses property
-/// observers during `init()`, so `onSet` is not reached while
-/// `SettingsStore.init()` is running; the graphics-pipeline closures still go
-/// through `requestGraphicsApplyGuarded()` (which no-ops while INI is loading)
-/// as a guard, should that ever change.
+/// `onSet` runs from each property's `didSet`, including during
+/// `SettingsStore.init()`. Swift only suppresses observers on stored
+/// properties, and @Observable rewrites these into computed ones, so the
+/// setter body runs on every assignment. `suppressible` settings bail on the
+/// guard while the INI loads; the 88 that are not suppressible reach `onSet`
+/// mid-init, and `requestGraphicsApplyGuarded()` no-opping while INI is
+/// loading is what actually keeps that harmless.
 ///
 /// Every `EmuCore/GS` setting gets that apply hook by default. Opting in per
 /// setting is how the sprite hacks, the user hacks and the OSD flags ended up
