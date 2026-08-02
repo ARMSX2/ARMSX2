@@ -9,40 +9,11 @@ struct AudioSettingsView: View {
     var body: some View {
         Form {
             Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(settings.localized("Emulator Volume"))
-                        Spacer()
-                        Text(Self.formatPercent(settings.emulatorVolumePercent))
-                            .foregroundStyle(.secondary)
-                            .font(.callout.monospacedDigit())
-                    }
-
-                    Slider(
-                        value: Binding(
-                            get: { Double(settings.emulatorVolumePercent) },
-                            set: { settings.emulatorVolumePercent = Int($0.rounded()) }
-                        ),
-                        in: 0...150,
-                        step: 1
-                    )
-                    .accessibilityLabel(settings.localized("Emulator Volume"))
-                    .accessibilityValue(Self.formatPercent(settings.emulatorVolumePercent))
-                    .accessibilityHint(settings.localized("Adjusts emulator game audio without changing iOS system volume or other apps."))
-
-                    HStack {
-                        Text("0%")
-                        Spacer()
-                        Button(settings.localized("Reset")) {
-                            settings.emulatorVolumePercent = SettingsStore.defaultEmulatorVolumePercent
-                        }
-                        .buttonStyle(.borderless)
-                        Spacer()
-                        Text("150%")
-                    }
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                }
+                NumberRow("Emulator Volume", value: $settings.emulatorVolumePercent,
+                          in: SettingsStore.emulatorVolumeRange, format: .percent,
+                          default: SettingsStore.defaultEmulatorVolumePercent,
+                          hint: "Adjusts emulator game audio without changing iOS system volume or other apps.",
+                          settings: settings)
 
                 Text(settings.localized("Controls emulator and game audio only. iOS system volume and other apps stay separate."))
                     .font(.caption)
@@ -57,9 +28,15 @@ struct AudioSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                IntSliderRow("Buffer Size", value: $settings.audioBufferMs, range: SettingsStore.audioBufferMsRange, suffix: " ms", defaultValue: 50, settings: settings)
-                IntSliderRow("Output Latency", value: $settings.audioOutputLatencyMs, range: SettingsStore.audioOutputLatencyMsRange, suffix: " ms", defaultValue: 20, settings: settings)
-                IntSliderRow("Fast-Forward Volume", value: $settings.audioFastForwardVolume, range: SettingsStore.fastForwardVolumeRange, suffix: "%", defaultValue: 100, settings: settings)
+                NumberRow("Buffer Size", value: $settings.audioBufferMs,
+                          in: SettingsStore.audioBufferMsRange, format: .milliseconds,
+                          default: 50, settings: settings)
+                NumberRow("Output Latency", value: $settings.audioOutputLatencyMs,
+                          in: SettingsStore.audioOutputLatencyMsRange, format: .milliseconds,
+                          default: 20, settings: settings)
+                NumberRow("Fast-Forward Volume", value: $settings.audioFastForwardVolume,
+                          in: SettingsStore.fastForwardVolumeRange, format: .percent,
+                          default: 100, settings: settings)
 
                 Text(settings.localized("Lower buffer or latency reduces lag but can cause crackling. Fast-forward volume is a percentage of normal volume used while fast-forwarding."))
                     .font(.caption)
@@ -81,9 +58,5 @@ struct AudioSettingsView: View {
         }
         .navigationTitle(settings.localized("Audio"))
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private static func formatPercent(_ value: Int) -> String {
-        "\(SettingsStore.clampedEmulatorVolumePercent(value))%"
     }
 }
