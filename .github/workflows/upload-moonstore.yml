@@ -4,9 +4,15 @@ on:
   workflow_run:
     workflows: ["Build All Platforms"]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Build All Platforms run ID
+        required: true
+        type: string
 
 concurrency:
-  group: moonstore-${{ github.event.workflow_run.id }}
+  group: moonstore-${{ github.event.workflow_run.id || inputs.run_id }}
   cancel-in-progress: false
 
 permissions:
@@ -18,32 +24,52 @@ jobs:
     name: Upload to MoonStore
     if: >-
       github.repository == 'ARMSX2/ARMSX2' &&
-      github.event.workflow_run.conclusion == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'master'
+      github.event.workflow_run.head_branch == 'master'))
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       MOONSTORE_API: https://moon-store.app/api/developer/v1
       MOONSTORE_APP_ID: come.nanodata.armsx2
       MOONSTORE_API_KEY: ${{ secrets.MOONSTORE_API_KEY }}
-      RUN_ID: ${{ github.event.workflow_run.id }}
-      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-      RUN_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
+      REQUESTED_RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
       MAX_ARTIFACT_BYTES: "100000000"
 
     steps:
+      - name: Resolve source run
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REQUESTED_RUN_ID" > source-run.json
+          jq -e '
+            .name == "Build All Platforms" and
+            .event == "push" and
+            .head_branch == "master" and
+            .conclusion == "success"
+          ' source-run.json >/dev/null
+          printf 'run_id=%s\n' "$(jq -r '.id' source-run.json)" >> "$GITHUB_OUTPUT"
+          printf 'head_sha=%s\n' "$(jq -r '.head_sha' source-run.json)" >> "$GITHUB_OUTPUT"
+          printf 'run_started_at=%s\n' "$(jq -r '.run_started_at' source-run.json)" >> "$GITHUB_OUTPUT"
+
       - name: Download completed platform builds
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ steps.source.outputs.run_id }}
           path: artifacts
 
       - name: Prepare and validate release
         id: release
         shell: bash
+        env:
+          HEAD_SHA: ${{ steps.source.outputs.head_sha }}
+          RUN_STARTED_AT: ${{ steps.source.outputs.run_started_at }}
         run: |
           set -euo pipefail
           test -n "$MOONSTORE_API_KEY"
@@ -116,15 +142,45 @@ jobs:
             local platform="$1"
             local file="$2"
             local response="responses/${platform}.json"
-            curl --fail-with-body --silent --show-error \
-              --retry 3 --retry-all-errors --connect-timeout 20 --max-time 1800 \
+            local status
+            local -a headers=(
+              -H "Authorization: Bearer $MOONSTORE_API_KEY"
+              -H "X-File-Name: $(basename "$file")"
+            )
+            if [ "$platform" = "windows" ]; then
+              headers+=(-H "X-MoonStore-Windows-Signature-Review: requested")
+            fi
+            if ! status="$(curl --silent --show-error \
+              --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 1800 \
               -X POST \
-              -H "Authorization: Bearer $MOONSTORE_API_KEY" \
-              -H "X-File-Name: $(basename "$file")" \
+              "${headers[@]}" \
               --data-binary "@$file" \
               "$MOONSTORE_API/artifacts?platform=${platform}&architecture=arm64" \
-              > "$response"
+              -o "$response" -w '%{http_code}')"; then
+              test ! -s "$response" || jq . "$response" >&2
+              return 1
+            fi
+            if [[ "$status" != 2?? ]]; then
+              printf 'MoonStore rejected the %s artifact with HTTP %s:\n' "$platform" "$status" >&2
+              jq . "$response" >&2 || sed -n '1,120p' "$response" >&2
+              return 1
+            fi
             jq -e '.binary | type == "object"' "$response" >/dev/null
+            if [ "$platform" = "windows" ]; then
+              jq '
+                if .binary.launch then .
+                else
+                  ((.launch.candidates // []) |
+                    map(select(.type == "executable" and (.path | ascii_downcase) == "armsx2.exe"))) as $matches |
+                  if ($matches | length) == 1 then
+                    .binary.launch = {kind: "portable", entry: $matches[0].path}
+                  else
+                    error("ARMSX2.exe launcher was not found uniquely")
+                  end
+                end
+              ' "$response" > "${response}.tmp"
+              mv "${response}.tmp" "$response"
+            fi
             printf 'Uploaded %s: %s\n' "$platform" "$(jq -r '.binary.ref' "$response")"
           }
 
@@ -138,6 +194,7 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ steps.release.outputs.version }}
+          HEAD_SHA: ${{ steps.source.outputs.head_sha }}
         run: |
           set -euo pipefail
           NOTES="Automated build from ${HEAD_SHA:0:8}. Source: https://github.com/${GITHUB_REPOSITORY}/commit/${HEAD_SHA}"
@@ -164,14 +221,19 @@ jobs:
               publishOnApproval: true
             }' > release.json
 
-          curl --fail-with-body --silent --show-error \
-            --retry 3 --retry-all-errors --connect-timeout 20 --max-time 1800 \
+          status="$(curl --silent --show-error \
+            --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 1800 \
             -X POST \
             -H "Authorization: Bearer $MOONSTORE_API_KEY" \
             -H "Content-Type: application/json" \
             --data @release.json \
             "$MOONSTORE_API/apps/$MOONSTORE_APP_ID/releases" \
-            > release-response.json
+            -o release-response.json -w '%{http_code}')"
+          if [[ "$status" != 2?? ]]; then
+            printf 'MoonStore rejected the release with HTTP %s:\n' "$status" >&2
+            jq . release-response.json >&2 || sed -n '1,120p' release-response.json >&2
+            exit 1
+          fi
 
           jq -e '.release.status == "released"' release-response.json >/dev/null || {
             printf 'MoonStore accepted the release but did not publish it automatically:\n' >&2
