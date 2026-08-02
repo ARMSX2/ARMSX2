@@ -55,7 +55,7 @@ struct FramePacingTab: View {
 
                 NumberOverrideRow("FPS Target", value: $perGameTargetFPS,
                                   global: Int(settings.targetFPS.rounded()),
-                                  range: SettingsStore.targetFPSRange, suffix: " FPS",
+                                  range: SettingsStore.targetFPSRange, format: .framesPerSecond,
                                   settings: settings)
                     .disabled(perGameFrameLimiter == 0 || !enabled)
 
@@ -77,13 +77,13 @@ struct FramePacingTab: View {
 
                 NumberOverrideRow("Buffer Size", value: $perGameBufferMS,
                                   global: settings.audioBufferMs,
-                                  range: SettingsStore.audioBufferMsRange, suffix: " ms",
+                                  range: SettingsStore.audioBufferMsRange, format: .milliseconds,
                                   settings: settings)
                     .disabled(!enabled)
 
                 NumberOverrideRow("Output Latency", value: $perGameOutputLatencyMS,
                                   global: settings.audioOutputLatencyMs,
-                                  range: SettingsStore.audioOutputLatencyMsRange, suffix: " ms",
+                                  range: SettingsStore.audioOutputLatencyMsRange, format: .milliseconds,
                                   settings: settings)
                     .disabled(!enabled)
             } header: {
