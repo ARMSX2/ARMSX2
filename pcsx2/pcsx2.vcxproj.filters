@@ -812,6 +812,9 @@
     <ClCompile Include="SPU2\spu2freeze.cpp">
       <Filter>System\Ps2\SPU2</Filter>
     </ClCompile>
+    <ClCompile Include="SPU2\spu2freeze-legacy.cpp">
+      <Filter>System\Ps2\SPU2</Filter>
+    </ClCompile>
     <ClCompile Include="SPU2\spu2sys.cpp">
       <Filter>System\Ps2\SPU2</Filter>
     </ClCompile>

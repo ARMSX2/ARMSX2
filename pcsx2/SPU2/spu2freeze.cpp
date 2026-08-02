@@ -4,9 +4,6 @@
 #include "SPU2/defs.h"
 #include "SPU2/spu2.h" // hopefully temporary, until I resolve lClocks depdendency
 #include "IopMem.h"
-#include "R3000A.h"
-
-#include "common/Console.h"
 
 #include <cstring>
 
@@ -166,58 +163,4 @@ s32 SPU2Savestate::ThawIt(DataBlock& spud)
 s32 SPU2Savestate::SizeIt()
 {
 	return sizeof(DataBlock);
-}
-
-s32 SPU2freezeLegacy(const void* data, size_t size)
-{
-	using namespace SPU2Savestate;
-
-	// The head of the block is era-invariant: the save id, 64KB of raw
-	// register memory, 2MB of sample memory, then the self-version. Only the
-	// tail (V_Core/V_Voice, and the mixer scalars after it) has been re-laid
-	// out upstream, repeatedly, without the self-version ever being bumped —
-	// so the self-version cannot arbitrate the tail and ThawIt must never see
-	// one of these blocks.
-	//
-	// Restored: register and sample memory. Not restored: the decoded core and
-	// voice state, which is reset instead. Voices restart silent and pick the
-	// game's state back up as it writes registers; a mid-note load loses the
-	// note. Replaying the old core layout is a fidelity pass we have not done.
-	static constexpr size_t LEGACY_UNKREGS_OFFSET = 4;
-	static constexpr size_t LEGACY_MEM_OFFSET = 0x10004;
-	static constexpr size_t LEGACY_VERSION_OFFSET = 0x210004;
-	static constexpr size_t LEGACY_HEAD_SIZE = 0x210008;
-	// The self-version in every AetherSX2/NetherSX2-written block. Spelled out
-	// rather than compared against SAVE_VERSION so that bumping ours does not
-	// silently start rejecting legacy files.
-	static constexpr u32 LEGACY_SAVE_VERSION = 0x000e;
-
-	if (size < LEGACY_HEAD_SIZE)
-	{
-		Console.Error("(LegacyState) SPU2 block is %zu bytes, too short to hold register and sample memory.", size);
-		return -1;
-	}
-
-	const u8* const block = static_cast<const u8*>(data);
-	u32 id, version;
-	std::memcpy(&id, block, sizeof(id));
-	std::memcpy(&version, block + LEGACY_VERSION_OFFSET, sizeof(version));
-
-	if (id != SAVE_ID || version != LEGACY_SAVE_VERSION)
-	{
-		Console.Error("(LegacyState) SPU2 block is not an AetherSX2-era block (id %08X, version %X).", id, version);
-		return -1;
-	}
-
-	// Wipes the register and sample memory and re-inits both cores, so it has
-	// to happen before the memory is copied back in.
-	SPU2::Reset(false);
-
-	std::memcpy(spu2regs, block + LEGACY_UNKREGS_OFFSET, 0x10000);
-	std::memcpy(_spu2mem, block + LEGACY_MEM_OFFSET, 0x200000);
-
-	wipe_the_cache();
-	lClocks = psxRegs.cycle;
-
-	return 0;
 }

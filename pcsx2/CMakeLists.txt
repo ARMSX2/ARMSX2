@@ -268,6 +268,7 @@ set(pcsx2SPU2Sources
 	SPU2/RegTable.cpp
 	SPU2/Reverb.cpp
 	SPU2/spu2freeze.cpp
+	SPU2/spu2freeze-legacy.cpp
 	SPU2/spu2sys.cpp
 	SPU2/Wavedump_wav.cpp
 )
