@@ -425,6 +425,9 @@
     <ClCompile Include="SaveState.cpp">
       <Filter>System</Filter>
     </ClCompile>
+    <ClCompile Include="SaveStateLegacy.cpp">
+      <Filter>System</Filter>
+    </ClCompile>
     <ClCompile Include="SourceLog.cpp">
       <Filter>System</Filter>
     </ClCompile>
@@ -807,6 +810,9 @@
       <Filter>System\Ps2\SPU2</Filter>
     </ClCompile>
     <ClCompile Include="SPU2\spu2freeze.cpp">
+      <Filter>System\Ps2\SPU2</Filter>
+    </ClCompile>
+    <ClCompile Include="SPU2\spu2freeze-legacy.cpp">
       <Filter>System\Ps2\SPU2</Filter>
     </ClCompile>
     <ClCompile Include="SPU2\spu2sys.cpp">
@@ -1491,6 +1497,9 @@
       <Filter>System\Include</Filter>
     </ClInclude>
     <ClInclude Include="SaveState.h">
+      <Filter>System\Include</Filter>
+    </ClInclude>
+    <ClInclude Include="SaveStateLegacy.h">
       <Filter>System\Include</Filter>
     </ClInclude>
     <ClInclude Include="Dmac.h">

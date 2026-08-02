@@ -170,6 +170,9 @@ extern void cdvdLoadNVRAM();
 extern void cdvdSaveNVRAM();
 extern void cdvdReset();
 extern void cdvdVsync();
+// Recomputes cdvd.RotSpeed for the current disc type; used when restoring
+// state that predates the field (legacy savestates).
+extern void cdvdRecalculateRotSpeed();
 extern void cdvdActionInterrupt();
 extern void cdvdSectorReady();
 extern void cdvdReadInterrupt();

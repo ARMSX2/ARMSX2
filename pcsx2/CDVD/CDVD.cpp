@@ -871,6 +871,11 @@ static u32 cdvdRotationTime(CDVD_MODE_TYPE mode)
 	}
 }
 
+void cdvdRecalculateRotSpeed()
+{
+	cdvd.RotSpeed = cdvdRotationTime(static_cast<CDVD_MODE_TYPE>(cdvdIsDVD()));
+}
+
 static uint cdvdBlockReadTime(CDVD_MODE_TYPE mode) noexcept
 {
 	// CAV Read speed is roughly 41% in the centre full speed on outer edge. I imagine it's more logarithmic than this

@@ -310,6 +310,7 @@
     <ClCompile Include="SPU2\wavedump_wav.cpp" />
     <ClCompile Include="SPU2\RegTable.cpp" />
     <ClCompile Include="SPU2\spu2freeze.cpp" />
+    <ClCompile Include="SPU2\spu2freeze-legacy.cpp" />
     <ClCompile Include="SPU2\spu2sys.cpp" />
     <ClCompile Include="SPU2\ADSR.cpp" />
     <ClCompile Include="SPU2\Mixer.cpp" />
@@ -421,6 +422,7 @@
     <ClCompile Include="windows\Optimus.cpp" />
     <ClCompile Include="Pcsx2Config.cpp" />
     <ClCompile Include="SaveState.cpp" />
+    <ClCompile Include="SaveStateLegacy.cpp" />
     <ClCompile Include="SourceLog.cpp" />
     <ClCompile Include="Elfheader.cpp" />
     <ClCompile Include="CDVD\InputIsoFile.cpp" />
@@ -884,6 +886,7 @@
     <ClInclude Include="Common.h" />
     <ClInclude Include="Config.h" />
     <ClInclude Include="SaveState.h" />
+    <ClInclude Include="SaveStateLegacy.h" />
     <ClInclude Include="Counters.h" />
     <ClInclude Include="Dmac.h" />
     <ClInclude Include="Hardware.h" />

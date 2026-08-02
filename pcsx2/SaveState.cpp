@@ -25,6 +25,7 @@
 #include "SIO/Sio2.h"
 #include "SPU2/spu2.h"
 #include "SaveState.h"
+#include "SaveStateLegacy.h"
 #include "StateWrapper.h"
 #include "USB/USB.h"
 #include "VMManager.h"
@@ -357,16 +358,28 @@ static int SysState_MTGSFreeze(FreezeAction mode, freezeData* fP)
 static constexpr SysState_Component SPU2_{ "SPU2", SPU2freeze };
 static constexpr SysState_Component GS{ "GS", SysState_MTGSFreeze };
 
-static bool SysState_ComponentFreezeIn(zip_file_t* zf, SysState_Component comp)
+// `entry_size`, when non-zero, sizes the read from the state file's entry
+// rather than from the component. That is what a legacy block needs: it is
+// whatever size its era wrote, and the component's own version check is what
+// arbitrates it.
+static bool SysState_ComponentFreezeIn(zip_file_t* zf, SysState_Component comp, u32 entry_size = 0)
 {
 	if (!zf)
 		return true;
 
 	freezeData fP = { 0, nullptr };
-	if (comp.freeze(FreezeAction::Size, &fP) != 0)
-		fP.size = 0;
+	if (entry_size > 0)
+	{
+		fP.size = static_cast<int>(entry_size);
+		Console.WriteLn("  Loading %s (legacy format, %d bytes)", comp.name, fP.size);
+	}
+	else
+	{
+		if (comp.freeze(FreezeAction::Size, &fP) != 0)
+			fP.size = 0;
 
-	Console.WriteLn("  Loading %s", comp.name);
+		Console.WriteLn("  Loading %s", comp.name);
+	}
 
 	std::unique_ptr<u8[]> data;
 	if (fP.size > 0)
@@ -469,6 +482,15 @@ public:
 	virtual bool FreezeIn(zip_file_t* zf) const = 0;
 	virtual bool FreezeOut(SaveStateBase& writer) const = 0;
 	virtual bool IsRequired() const = 0;
+
+	// Whether this entry can be carried over from a legacy-format
+	// (AetherSX2-era) save state. When it cannot, the component keeps the
+	// state it booted with, and the entry is not required to be present.
+	virtual bool SupportsLegacy() const { return true; }
+
+	// Loads the entry from a legacy-format state. `size` is the entry's actual
+	// size, which for components whose block changed size is not today's.
+	virtual bool FreezeInLegacy(zip_file_t* zf, u32 size) const { return FreezeIn(zf); }
 };
 
 class MemorySavestateEntry : public BaseSavestateEntry
@@ -619,6 +641,20 @@ public:
 	bool FreezeIn(zip_file_t* zf) const override { return SysState_ComponentFreezeIn(zf, SPU2_); }
 	bool FreezeOut(SaveStateBase& writer) const override { return SysState_ComponentFreezeOut(writer, SPU2_); }
 	bool IsRequired() const override { return true; }
+
+	// The block's self-version never moved while its tail was re-laid-out, so
+	// it cannot go through the normal reader; SPU2freezeLegacy maps that era's
+	// layout across instead. It is read whole, because the layout is a fixed
+	// size that the mapper checks for itself.
+	bool FreezeInLegacy(zip_file_t* zf, u32 /*size*/) const override
+	{
+		const std::optional<std::vector<u8>> data(ReadBinaryFileInZip(zf));
+		if (!data.has_value())
+			return false;
+
+		Console.WriteLn("  Loading SPU2 (legacy format, %zu bytes)", data->size());
+		return SPU2freezeLegacy(data->data(), data->size()) == 0;
+	}
 };
 
 class SavestateEntry_USB final : public BaseSavestateEntry
@@ -630,6 +666,9 @@ public:
 	bool FreezeIn(zip_file_t* zf) const override { return SysState_ComponentFreezeInNew(zf, "USB", &USB::DoState); }
 	bool FreezeOut(SaveStateBase& writer) const override { return SysState_ComponentFreezeOutNew(writer, "USB", 16 * 1024, &USB::DoState); }
 	bool IsRequired() const override { return false; }
+
+	// Legacy states predate the StateWrapper stream this reads.
+	bool SupportsLegacy() const override { return false; }
 };
 
 class SavestateEntry_PAD final : public BaseSavestateEntry
@@ -641,17 +680,25 @@ public:
 	bool FreezeIn(zip_file_t* zf) const override { return SysState_ComponentFreezeInNew(zf, "PAD", &Pad::Freeze); }
 	bool FreezeOut(SaveStateBase& writer) const override { return SysState_ComponentFreezeOutNew(writer, "PAD", 16 * 1024, &Pad::Freeze); }
 	bool IsRequired() const override { return true; }
+
+	// Legacy states hold a raw struct that predates the StateWrapper stream
+	// this reads; the pads keep the type and mode they booted with.
+	bool SupportsLegacy() const override { return false; }
 };
 
 class SavestateEntry_GS final : public BaseSavestateEntry
 {
 public:
-	~SavestateEntry_GS() = default;
+	~SavestateEntry_GS() override = default;
 
-	const char* GetFilename() const { return "GS.bin"; }
-	bool FreezeIn(zip_file_t* zf) const { return SysState_ComponentFreezeIn(zf, GS); }
-	bool FreezeOut(SaveStateBase& writer) const { return SysState_ComponentFreezeOut(writer, GS); }
-	bool IsRequired() const { return true; }
+	const char* GetFilename() const override { return "GS.bin"; }
+	bool FreezeIn(zip_file_t* zf) const override { return SysState_ComponentFreezeIn(zf, GS); }
+	bool FreezeOut(SaveStateBase& writer) const override { return SysState_ComponentFreezeOut(writer, GS); }
+	bool IsRequired() const override { return true; }
+
+	// GS blocks carry their own version, which Defrost still understands back
+	// through the legacy eras; only the size has to come from the entry.
+	bool FreezeInLegacy(zip_file_t* zf, u32 size) const override { return SysState_ComponentFreezeIn(zf, GS, size); }
 };
 
 class SaveStateEntry_Achievements final : public BaseSavestateEntry
@@ -686,6 +733,9 @@ class SaveStateEntry_Achievements final : public BaseSavestateEntry
 	}
 
 	bool IsRequired() const override { return false; }
+
+	// No legacy-era state file carries achievement data.
+	bool SupportsLegacy() const override { return false; }
 };
 
 // (cpuRegs, iopRegs, VPU/GIF/DMAC structures should all remain as part of a larger unified
@@ -1136,7 +1186,7 @@ bool SaveState_ReadScreenshot(const std::string& filename, u32* out_width, u32* 
 	return SaveState_ReadScreenshot(zf.get(), out_width, out_height, out_pixels);
 }
 
-static bool CheckVersion(const std::string& filename, zip_t* zf, Error* error)
+static bool CheckVersion(const std::string& filename, zip_t* zf, u32* out_savever, Error* error)
 {
 	u32 savever;
 
@@ -1146,6 +1196,8 @@ static bool CheckVersion(const std::string& filename, zip_t* zf, Error* error)
 		Error::SetString(error, "Savestate file does not contain version indicator.");
 		return false;
 	}
+
+	*out_savever = savever;
 
 	char version_string[STATE_PCSX2_VERSION_SIZE];
 	if (zip_fread(zff.get(), version_string, STATE_PCSX2_VERSION_SIZE) == STATE_PCSX2_VERSION_SIZE)
@@ -1157,7 +1209,7 @@ static bool CheckVersion(const std::string& filename, zip_t* zf, Error* error)
 	// was removed entirely.
 	// check for a "minor" version incompatibility; which happens if the savestate being loaded is a newer version
 	// than the emulator recognizes.  99% chance that trying to load it will just corrupt emulation or crash.
-	if (savever > g_SaveVersion || (savever >> 16) != (g_SaveVersion >> 16))
+	if ((savever > g_SaveVersion || (savever >> 16) != (g_SaveVersion >> 16)) && !SaveStateLegacy::IsSupportedVersion(savever))
 	{
 		std::string current_emulator_version = BuildVersion::GitTag;
 		if (current_emulator_version.empty())
@@ -1192,7 +1244,7 @@ static zip_int64_t CheckFileExistsInState(zip_t* zf, const char* name, bool requ
 	return index;
 }
 
-static bool LoadInternalStructuresState(zip_t* zf, s64 index, Error* error)
+static bool LoadInternalStructuresState(zip_t* zf, s64 index, u32 savever, Error* error)
 {
 	zip_stat_t zst;
 	if (zip_stat_index(zf, index, 0, &zst) != 0 || zst.size > std::numeric_limits<int>::max())
@@ -1208,11 +1260,22 @@ static bool LoadInternalStructuresState(zip_t* zf, s64 index, Error* error)
 		return false;
 
 	memLoadingState state(buffer);
+	state.SetVersion(savever);
+
+	// FreezeBios() is layout-identical in every era we accept, so it runs
+	// before the reader is chosen.
 	if (!state.FreezeBios())
 		return false;
-	
-	if (!state.FreezeInternals(error))
+
+	if (SaveStateLegacy::IsSupportedVersion(savever))
+	{
+		if (!state.FreezeInternalsLegacy(error))
+			return false;
+	}
+	else if (!state.FreezeInternals(error))
+	{
 		return false;
+	}
 
 	return true;
 }
@@ -1266,8 +1329,11 @@ static bool SaveState_UnzipFromZip(zip_t* zf_raw, const std::string& filename, E
 	} zf{zf_raw};
 
 	// look for version and screenshot information in the zip stream:
-	if (!CheckVersion(filename, zf.get(), error))
+	u32 savever = 0;
+	if (!CheckVersion(filename, zf.get(), &savever, error))
 		return false;
+
+	const bool legacy = SaveStateLegacy::IsSupportedVersion(savever);
 
 	// check that all parts are included
 	const s64 internal_index = CheckFileExistsInState(zf.get(), EntryFilename_InternalStructures, true);
@@ -1277,7 +1343,10 @@ static bool SaveState_UnzipFromZip(zip_t* zf_raw, const std::string& filename, E
 	bool allPresent = (internal_index >= 0);
 	for (u32 i = 0; i < std::size(SavestateEntries); i++)
 	{
-		const bool required = SavestateEntries[i]->IsRequired();
+		// An entry that cannot be carried over from a legacy state is not
+		// required to be there, since it would be discarded either way.
+		const bool skipped = legacy && !SavestateEntries[i]->SupportsLegacy();
+		const bool required = SavestateEntries[i]->IsRequired() && !skipped;
 		entryIndices[i] = CheckFileExistsInState(zf.get(), SavestateEntries[i]->GetFilename(), required);
 		if (entryIndices[i] < 0 && required)
 		{
@@ -1293,7 +1362,7 @@ static bool SaveState_UnzipFromZip(zip_t* zf_raw, const std::string& filename, E
 
 	PreLoadPrep();
 
-	if (!LoadInternalStructuresState(zf.get(), internal_index, error))
+	if (!LoadInternalStructuresState(zf.get(), internal_index, savever, error))
 	{
 		if (!error->IsValid())
 			Error::SetString(error, "Save state corruption in internal structures.");
@@ -1304,6 +1373,13 @@ static bool SaveState_UnzipFromZip(zip_t* zf_raw, const std::string& filename, E
 
 	for (u32 i = 0; i < std::size(SavestateEntries); ++i)
 	{
+		if (legacy && !SavestateEntries[i]->SupportsLegacy())
+		{
+			Console.WriteLn(Color_Yellow, "  Skipping %s: not readable from a legacy save state, keeping the current state.",
+				SavestateEntries[i]->GetFilename());
+			continue;
+		}
+
 		if (entryIndices[i] < 0)
 		{
 			SavestateEntries[i]->FreezeIn(nullptr);
@@ -1311,7 +1387,21 @@ static bool SaveState_UnzipFromZip(zip_t* zf_raw, const std::string& filename, E
 		}
 
 		auto zff = zip_fopen_index_managed(zf.get(), entryIndices[i], 0);
-		if (!zff || !SavestateEntries[i]->FreezeIn(zff.get()))
+		bool okay = false;
+		if (zff && !legacy)
+		{
+			okay = SavestateEntries[i]->FreezeIn(zff.get());
+		}
+		else if (zff)
+		{
+			// Legacy blocks are whatever size their era wrote, so they are read
+			// against the entry's own size rather than the component's.
+			zip_stat_t zst = {};
+			if (zip_stat_index(zf.get(), entryIndices[i], 0, &zst) == 0 && zst.size <= std::numeric_limits<u32>::max())
+				okay = SavestateEntries[i]->FreezeInLegacy(zff.get(), static_cast<u32>(zst.size));
+		}
+
+		if (!okay)
 		{
 			Error::SetString(error, fmt::format("Save state corruption in {}.", SavestateEntries[i]->GetFilename()));
 			VMManager::Reset();
@@ -1320,6 +1410,18 @@ static bool SaveState_UnzipFromZip(zip_t* zf_raw, const std::string& filename, E
 	}
 
 	PostLoadPrep();
+
+	if (legacy)
+	{
+		// Nothing writes this format any more, so say so once per load: saving
+		// again is what converts the state, and the parts we could not carry
+		// over are worth knowing about before the player wonders.
+		Host::AddIconOSDMessage("LoadStateLegacy", ICON_FA_FLOPPY_DISK,
+			TRANSLATE_STR("SaveState", "Imported an AetherSX2 save state. Save a new state to convert it. "
+									   "Controllers keep their current settings."),
+			Host::OSD_INFO_DURATION);
+	}
+
 	return true;
 }
 
