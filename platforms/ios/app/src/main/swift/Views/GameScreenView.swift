@@ -316,6 +316,11 @@ struct GameScreenView: View {
                     onStop: {
                         if settings.hapticFeedback { HapticManager.medium.impactOccurred() }
                         overlayRoute = .hidden
+                        // Leave now rather than waiting on the shutdown notification, so nobody
+                        // watches live gameplay through the card and NVRAM flush.
+                        appState.cancelPendingBoot()
+                        appState.returnToMenu()
+                        appState.runningGameName = nil
                         ARMSX2Bridge.requestVMStop()
                     },
                     onResume: {

@@ -266,7 +266,7 @@ struct QuickMenuView: View {
             OverlayActionRow(label: settings.localized("Clear Current Game Cache"), systemImage: "trash.slash", action: onClearCache)
         }
         OverlayActionRow(label: settings.localized("Back to Menu"), systemImage: "list.bullet", action: onBackToMenu)
-            .accessibilityHint(settings.localized("Quits this game and returns to the library"))
+            .accessibilityHint(settings.localized("Leaves the game paused and returns to the library"))
     }
 
     /// Hosts an injected SwiftUI `Menu` (controller skin / change disc) as a row matching the
