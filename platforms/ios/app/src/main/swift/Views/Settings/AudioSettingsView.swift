@@ -57,9 +57,9 @@ struct AudioSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                intSliderRow("Buffer Size", value: $settings.audioBufferMs, range: SettingsStore.audioBufferMsRange, suffix: " ms", defaultValue: 50)
-                intSliderRow("Output Latency", value: $settings.audioOutputLatencyMs, range: SettingsStore.audioOutputLatencyMsRange, suffix: " ms", defaultValue: 20)
-                intSliderRow("Fast-Forward Volume", value: $settings.audioFastForwardVolume, range: SettingsStore.fastForwardVolumeRange, suffix: "%", defaultValue: 100)
+                IntSliderRow("Buffer Size", value: $settings.audioBufferMs, range: SettingsStore.audioBufferMsRange, suffix: " ms", defaultValue: 50, settings: settings)
+                IntSliderRow("Output Latency", value: $settings.audioOutputLatencyMs, range: SettingsStore.audioOutputLatencyMsRange, suffix: " ms", defaultValue: 20, settings: settings)
+                IntSliderRow("Fast-Forward Volume", value: $settings.audioFastForwardVolume, range: SettingsStore.fastForwardVolumeRange, suffix: "%", defaultValue: 100, settings: settings)
 
                 Text(settings.localized("Lower buffer or latency reduces lag but can cause crackling. Fast-forward volume is a percentage of normal volume used while fast-forwarding."))
                     .font(.caption)
@@ -85,33 +85,5 @@ struct AudioSettingsView: View {
 
     private static func formatPercent(_ value: Int) -> String {
         "\(SettingsStore.clampedEmulatorVolumePercent(value))%"
-    }
-
-    /// Labeled integer slider with displayed value, range labels, and a reset button.
-    @ViewBuilder
-    private func intSliderRow(_ title: String, value: Binding<Int>, range: ClosedRange<Int>, suffix: String, defaultValue: Int) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(settings.localized(title))
-                Spacer()
-                Text("\(value.wrappedValue)\(suffix)")
-                    .foregroundStyle(.secondary)
-                    .font(.callout.monospacedDigit())
-            }
-            Slider(value: Binding(
-                get: { Double(value.wrappedValue) },
-                set: { value.wrappedValue = Int($0.rounded()) }
-            ), in: Double(range.lowerBound)...Double(range.upperBound))
-            HStack {
-                Text("\(range.lowerBound)\(suffix)")
-                Spacer()
-                Button(settings.localized("Reset")) { value.wrappedValue = defaultValue }
-                    .buttonStyle(.borderless)
-                Spacer()
-                Text("\(range.upperBound)\(suffix)")
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-        }
     }
 }
