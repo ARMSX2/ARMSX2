@@ -75,7 +75,7 @@ private let helpData: [HelpSection] = [
         ),
         HelpItem(
             question: "VSync Queue Size",
-            answer: "Number of pre-rendered frames. Higher values reduce frame drops but increase input latency. Default: 8."
+            answer: "Number of pre-rendered frames. Higher values reduce frame drops but increase input latency. Default: 4."
         ),
     ]),
     HelpSection(title: "Overlay", icon: "speedometer", items: [
