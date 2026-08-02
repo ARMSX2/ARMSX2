@@ -1062,13 +1062,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_speedhackLimitermode(JNIEnv *env, jclass cl
                                                           jint p_value) {
     // Enum values match LimiterModeType (Config.h:267):
     //   0 Nominal, 1 Turbo, 2 Slomo, 3 Unlimited.
-    // Called from the in-game overlay's Frame Limit toggle (0 vs 3).
-    // SetLimiterMode is a small atomic update + UpdateTargetSpeed —
-    // safe to call from the JNI thread without RunOnCPUThread (the
-    // Android port doesn't have one wired anyway). No-op when no VM
-    // is running so we don't poke stale state.
-    if (!VMManager::HasValidVM())
-        return;
+    // Called from Android UI/input threads. SetLimiterMode updates VM timing state and
+    // notifies MTGS/SPU2, so it must run on the CPU thread. Queue the validity check too:
+    // the VM may stop between this JNI call and execution of the queued work.
     LimiterModeType mode;
     switch (p_value) {
         case 0: mode = LimiterModeType::Nominal; break;
@@ -1077,18 +1073,24 @@ Java_kr_co_iefriends_pcsx2_NativeApp_speedhackLimitermode(JNIEnv *env, jclass cl
         case 3: mode = LimiterModeType::Unlimited; break;
         default: return;
     }
-    // RetroAchievements hardcore forbids slow motion. This JNI bypasses
-    // VMManager::ApplySettings (so EnforceAchievementsChallengeModeSettings
-    // never runs), so guard Slomo here. Turbo/Unlimited (fast-forward) stay
-    // allowed — RA only bans slowdown.
-    if (mode == LimiterModeType::Slomo && Achievements::IsHardcoreModeActive())
-        mode = LimiterModeType::Nominal;
-    VMManager::SetLimiterMode(mode);
-    // Suspend the Android present-FPS cap while fast-forwarding (Turbo) so the
-    // speed-up is visible instead of being held at the cap. Unlimited (the
-    // frame-limit-off steady state) keeps the cap — there the user still wants a
-    // bounded DISPLAY rate over uncapped emulation. Re-engages on Nominal.
-    GSSetPresentCapSuspended(mode == LimiterModeType::Turbo);
+    Host::RunOnCPUThread([mode]() mutable {
+        if (!VMManager::HasValidVM())
+            return;
+
+        // RetroAchievements hardcore forbids slow motion. This JNI bypasses
+        // VMManager::ApplySettings (so EnforceAchievementsChallengeModeSettings
+        // never runs), so guard Slomo here. Turbo/Unlimited (fast-forward) stay
+        // allowed — RA only bans slowdown.
+        if (mode == LimiterModeType::Slomo && Achievements::IsHardcoreModeActive())
+            mode = LimiterModeType::Nominal;
+
+        VMManager::SetLimiterMode(mode);
+        // Suspend the Android present-FPS cap while fast-forwarding (Turbo) so the
+        // speed-up is visible instead of being held at the cap. Unlimited (the
+        // frame-limit-off steady state) keeps the cap — there the user still wants a
+        // bounded DISPLAY rate over uncapped emulation. Re-engages on Nominal.
+        GSSetPresentCapSuspended(mode == LimiterModeType::Turbo);
+    });
 }
 
 extern "C"
@@ -1099,7 +1101,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setTurboScalar(JNIEnv *env, jclass clazz, j
     // (mode 3) instead. Clamp mirrors EmulationSpeedOptions::ClampSpeed (0.05-10.0). SetLimiterMode
     // reads TurboScalar when it recomputes the target speed, so setting this then re-issuing Turbo
     // applies the new speed live.
-    EmuConfig.EmulationSpeed.TurboScalar = std::clamp(static_cast<float>(p_scalar), 0.05f, 10.0f);
+    const float scalar = std::clamp(static_cast<float>(p_scalar), 0.05f, 10.0f);
+    Host::RunOnCPUThread([scalar]() {
+        if (VMManager::HasValidVM())
+            EmuConfig.EmulationSpeed.TurboScalar = scalar;
+    });
 }
 
 extern "C"
