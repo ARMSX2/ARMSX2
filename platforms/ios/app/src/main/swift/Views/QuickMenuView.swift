@@ -193,7 +193,7 @@ struct QuickMenuView: View {
                 .font(.caption)
                 .foregroundStyle(OverlayTheme.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 34)
+                .padding(.leading, OverlayTheme.rowLabelInset)
                 .padding(.bottom, 4)
         }
 
@@ -269,12 +269,13 @@ struct QuickMenuView: View {
             .accessibilityHint(settings.localized("Quits this game and returns to the library"))
     }
 
-    /// Hosts an injected SwiftUI `Menu` (controller skin / change disc) as a row that matches the
-    /// action rows as closely as an opaque AnyView allows. The menu's own action
-    /// semantics are untouched.
+    /// Hosts an injected SwiftUI `Menu` (controller skin / change disc) as a row matching the
+    /// action rows. Their labels are plain `Label`s, so without the style they sit on `Label`'s own
+    /// icon column and land short of everything else in the card.
     @ViewBuilder
     private func injectedMenuRow(_ menu: AnyView) -> some View {
         menu
+            .labelStyle(OverlayRowLabelStyle())
             .foregroundStyle(OverlayTheme.textPrimary)
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
     }
