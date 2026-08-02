@@ -17,9 +17,9 @@ struct FixesTab: View {
         PerGameTab(title: settings.localized("Fixes & Compatibility")) {
             Section {
                 Picker(settings.localized("Renderer"), selection: $perGameRenderer) {
-                    Text(settings.localized("Use Global")).tag(-1)
-                    Text(settings.localized("Metal (Hardware)")).tag(17)
-                    Text(settings.localized("Software")).tag(13)
+                    ForEach(SettingsOptions.withUseGlobal(SettingsOptions.renderer), id: \.id) { option in
+                        Text(settings.localized(option.title)).tag(option.id)
+                    }
                 }
                 .disabled(!enabled)
                 Text(settings.localized("Software Renderer is much slower but can fix games that break on Metal. It applies the next time this game boots."))
