@@ -2704,8 +2704,6 @@ final class SettingsStore {
         fastForwardScalar = Self.defaultFastForwardScalar
         emulatorVolumePercent = Self.defaultEmulatorVolumePercent
         audioTimeStretch = true
-        audioBufferMs = 50
-        audioOutputLatencyMs = 20
         audioFastForwardVolume = 100
         audioSwapChannels = false
         ntscFramerate = 59.94
@@ -2768,7 +2766,6 @@ final class SettingsStore {
         ARMSX2Bridge.setINIInt("EmuCore/GS", key: "UserHackOverrides", value: 0)
         renderer = 17           // Metal
         upscaleMultiplier = 1.0 // Native PS2
-        vsyncQueueSize = 8
         textureFiltering = 2    // Bilinear (PS2)
         backThreadMode = 0            // Disabled
         hardwareMipmapping = true
@@ -2812,7 +2809,6 @@ final class SettingsStore {
         pcrtcAntiBlur = true
         disableInterlaceOffset = false
         skipDuplicateFrames = true
-        syncToHostRefresh = false
         integerScaling = false
         shadeBoost = false
         shadeBoostBrightness = 50
@@ -2840,6 +2836,10 @@ final class SettingsStore {
         dumpDirectTextures = true
         dumpPaletteTextures = true
 
+        // The graphics and emulator resets no longer touch the pacing keys, so this is the only
+        // thing restoring them. Apply the values first, the way the Frame Pacing screen's own
+        // reset does, rather than leaning on the preset's didSet to do it.
+        applyFramePacingPreset(.optimal)
         framePacingPreset = .optimal
         adaptiveResolutionEnabled = false
 
