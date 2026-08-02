@@ -134,13 +134,21 @@ final class SettingsStore {
     @ObservationIgnored private var frameLimiterDisabledForFastForward = false
     @ObservationIgnored private var graphicsApplyWorkItem: DispatchWorkItem?
     @ObservationIgnored private var visualSliderDragCount = 0
+    @ObservationIgnored private var graphicsApplyDeferred = false
+    @ObservationIgnored private var visualSliderWatchdog: DispatchWorkItem?
 
     /// Coalesces live applies of visual settings so rapid changes reload GS settings
     /// at most once per short window. It is a no-op while a visual slider is being
     /// dragged; the slider's editing-ended handler triggers the apply on release so a
     /// drag does not fire one apply per tick.
     func requestGraphicsApply() {
-        guard visualSliderDragCount == 0 else { return }
+        guard visualSliderDragCount == 0 else {
+            // Remember that something graphics-shaped moved, so the release knows whether
+            // it has anything to apply. Every slider brackets now, including the audio and
+            // virtual pad ones that never touch GS.
+            graphicsApplyDeferred = true
+            return
+        }
         graphicsApplyWorkItem?.cancel()
         let workItem = DispatchWorkItem { ARMSX2Bridge.applyGraphicsSettingsNow() }
         graphicsApplyWorkItem = workItem
@@ -160,13 +168,37 @@ final class SettingsStore {
     /// Marks the start of a visual slider drag so per-tick value changes do not each
     /// trigger a graphics reload. Balanced by endVisualSliderEdit(), which fires a
     /// single coalesced apply when the last drag ends.
+    ///
+    /// The watchdog is the safety net. This used to be two call sites on one screen; it is
+    /// now every slider in the app, and a drag that is torn down without its editing-ended
+    /// handler would otherwise leave the count raised and live apply off for the session.
     func beginVisualSliderEdit() {
         visualSliderDragCount += 1
+        visualSliderWatchdog?.cancel()
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self, self.visualSliderDragCount > 0 else { return }
+            NSLog("[ARMSX2 iOS Settings] Visual slider bracket timed out, releasing")
+            self.visualSliderDragCount = 0
+            self.finishVisualSliderEdits()
+        }
+        visualSliderWatchdog = watchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: watchdog)
     }
 
     func endVisualSliderEdit() {
         if visualSliderDragCount > 0 { visualSliderDragCount -= 1 }
-        if visualSliderDragCount == 0 { requestGraphicsApply() }
+        guard visualSliderDragCount == 0 else { return }
+        finishVisualSliderEdits()
+    }
+
+    /// Only reload if a graphics key actually moved while the bracket was up. Dragging an
+    /// audio or virtual pad slider raises the same count and has nothing to apply.
+    private func finishVisualSliderEdits() {
+        visualSliderWatchdog?.cancel()
+        visualSliderWatchdog = nil
+        guard graphicsApplyDeferred else { return }
+        graphicsApplyDeferred = false
+        requestGraphicsApply()
     }
 
     // ── Emulator / CPU ──
