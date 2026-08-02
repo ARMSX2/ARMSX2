@@ -173,13 +173,25 @@ struct GraphicsTab: View {
                 Text(settings.localized("On")).tag(1)
             }
             .disabled(!enabled)
-            shadeBoostSlider(settings.localized("Shade Boost Brightness"), value: $perGameShadeBoostBrightness)
+            NumberOverrideRow("Shade Boost Brightness", value: $perGameShadeBoostBrightness,
+                              global: settings.shadeBoostBrightness,
+                              range: SettingsStore.shadeBoostRange, suffix: "%",
+                              settings: settings)
                 .disabled(!enabled)
-            shadeBoostSlider(settings.localized("Shade Boost Contrast"), value: $perGameShadeBoostContrast)
+            NumberOverrideRow("Shade Boost Contrast", value: $perGameShadeBoostContrast,
+                              global: settings.shadeBoostContrast,
+                              range: SettingsStore.shadeBoostRange, suffix: "%",
+                              settings: settings)
                 .disabled(!enabled)
-            shadeBoostSlider(settings.localized("Shade Boost Saturation"), value: $perGameShadeBoostSaturation)
+            NumberOverrideRow("Shade Boost Saturation", value: $perGameShadeBoostSaturation,
+                              global: settings.shadeBoostSaturation,
+                              range: SettingsStore.shadeBoostRange, suffix: "%",
+                              settings: settings)
                 .disabled(!enabled)
-            shadeBoostSlider(settings.localized("Shade Boost Gamma"), value: $perGameShadeBoostGamma)
+            NumberOverrideRow("Shade Boost Gamma", value: $perGameShadeBoostGamma,
+                              global: settings.shadeBoostGamma,
+                              range: SettingsStore.shadeBoostRange, suffix: "%",
+                              settings: settings)
                 .disabled(!enabled)
             Picker(settings.localized("Dithering"), selection: $perGameDithering) {
                 Text(settings.localized("Use Global")).tag(-1)
@@ -447,41 +459,5 @@ struct GraphicsTab: View {
             return clampedEnd
         }
         return SettingsStore.normalizedSkipDrawEnd(start: start, end: clampedEnd)
-    }
-
-    /// A 1...100 Shade Boost parameter row. -1 means "Use Global": the slider is hidden
-    /// and a button restores the per-game override at the inherited global default so the
-    /// user can dial in any value (the previous picker only offered 25/50/75/100).
-    @ViewBuilder
-    private func shadeBoostSlider(_ title: String, value: Binding<Int>) -> some View {
-        if value.wrappedValue == -1 {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(settings.localized("Use Global"))
-                    .foregroundStyle(.secondary)
-                Button(settings.localized("Override")) {
-                    value.wrappedValue = 50
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-        } else {
-            HStack {
-                Text(title)
-                Slider(value: Binding(
-                    get: { Double(value.wrappedValue) },
-                    set: { value.wrappedValue = Int($0.rounded()) }
-                ), in: 1...100)
-                Text("\(value.wrappedValue)%")
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 44, alignment: .trailing)
-                Button(settings.localized("Global")) {
-                    value.wrappedValue = -1
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-        }
     }
 }
