@@ -55,13 +55,13 @@ struct FramePacingTab: View {
 
                 Picker(settings.localized("FPS Target"), selection: $perGameTargetFPS) {
                     Text(settings.localized("Use Global")).tag(-1)
-                    ForEach([30, 45, 60, 90, 120], id: \.self) { Text("\($0)").tag($0) }
+                    ForEach(SettingsOptions.targetFPS, id: \.self) { Text("\($0)").tag($0) }
                 }
                 .disabled(perGameFrameLimiter == 0 || !enabled)
 
                 Picker(settings.localized("VSync Queue Size"), selection: $perGameVsyncQueue) {
                     Text(settings.localized("Use Global")).tag(-1)
-                    ForEach([2, 3, 4, 5, 6, 8, 10, 12, 16], id: \.self) { Text("\($0)").tag($0) }
+                    ForEach(SettingsOptions.vsyncQueue, id: \.self) { Text("\($0)").tag($0) }
                 }
                 .disabled(!enabled)
 
@@ -77,13 +77,13 @@ struct FramePacingTab: View {
 
                 Picker(settings.localized("Buffer Size"), selection: $perGameBufferMS) {
                     Text(settings.localized("Use Global")).tag(-1)
-                    ForEach([10, 25, 50, 75, 100, 150, 200], id: \.self) { Text("\($0) ms").tag($0) }
+                    ForEach(SettingsOptions.audioBufferMs, id: \.self) { Text("\($0) ms").tag($0) }
                 }
                 .disabled(!enabled)
 
                 Picker(settings.localized("Output Latency"), selection: $perGameOutputLatencyMS) {
                     Text(settings.localized("Use Global")).tag(-1)
-                    ForEach([5, 10, 20, 30, 50, 100, 200], id: \.self) { Text("\($0) ms").tag($0) }
+                    ForEach(SettingsOptions.audioOutputLatencyMs, id: \.self) { Text("\($0) ms").tag($0) }
                 }
                 .disabled(!enabled)
             } header: {
