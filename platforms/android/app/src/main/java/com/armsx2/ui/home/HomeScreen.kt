@@ -56,7 +56,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -428,21 +427,16 @@ fun HomeScreen(
                                 onExitApp = { showExitConfirm = true },
                             )
                             if (showExitConfirm) {
-                                AlertDialog(
-                                    onDismissRequest = { showExitConfirm = false },
-                                    title = { Text(str("games.exit.title")) },
-                                    text = { Text(str("games.exit.message")) },
-                                    confirmButton = {
-                                        TextButton(onClick = {
-                                            showExitConfirm = false
-                                            MainActivityRuntime.exitApp()
-                                        }) { Text(str("games.toolbar.exit")) }
+                                com.armsx2.ui.common.ConfirmOverlay(
+                                    title = str("games.exit.title"),
+                                    message = str("games.exit.message"),
+                                    confirmLabel = str("games.toolbar.exit"),
+                                    idPrefix = "library-exit",
+                                    onConfirm = {
+                                        showExitConfirm = false
+                                        MainActivityRuntime.exitApp()
                                     },
-                                    dismissButton = {
-                                        TextButton(onClick = { showExitConfirm = false }) {
-                                            Text(str("action.cancel"))
-                                        }
-                                    },
+                                    onDismiss = { showExitConfirm = false },
                                 )
                             }
                         }

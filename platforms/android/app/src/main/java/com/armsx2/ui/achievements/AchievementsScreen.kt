@@ -28,7 +28,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -141,16 +140,13 @@ fun AchievementsScreen(onBack: () -> Unit, viewModel: AchievementsViewModel = vi
             com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_OPEN)
             onDispose { com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_CLOSE) }
         }
-        AlertDialog(
-            onDismissRequest = viewModel::cancelToggleHardcore,
-            title = { Text(str(if (enabling) "ra.hardcore.enable.title" else "ra.hardcore.disable.title")) },
-            text = { Text(str(if (enabling) "ra.hardcore.enable.body" else "ra.hardcore.disable.body")) },
-            confirmButton = {
-                TextButton(onClick = viewModel::confirmToggleHardcore) {
-                    Text(str(if (enabling) "ra.hardcore.enable.confirm" else "ra.hardcore.disable.confirm"))
-                }
-            },
-            dismissButton = { TextButton(onClick = viewModel::cancelToggleHardcore) { Text(str("action.cancel")) } },
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str(if (enabling) "ra.hardcore.enable.title" else "ra.hardcore.disable.title"),
+            message = str(if (enabling) "ra.hardcore.enable.body" else "ra.hardcore.disable.body"),
+            confirmLabel = str(if (enabling) "ra.hardcore.enable.confirm" else "ra.hardcore.disable.confirm"),
+            idPrefix = "ra-hardcore",
+            onConfirm = viewModel::confirmToggleHardcore,
+            onDismiss = viewModel::cancelToggleHardcore,
         )
     }
 }

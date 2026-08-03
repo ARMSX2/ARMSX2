@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -134,16 +133,14 @@ fun BiosManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Bio
     }
 
     deleteTarget?.let { item ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text(str("action.delete")) },
-            text = { Text(item.file.name) },
-            confirmButton = {
-                TextButton(onClick = { viewModel.delete(item); deleteTarget = null }) {
-                    Text(str("action.delete"), color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text(str("action.cancel")) } },
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str("action.delete"),
+            message = item.file.name,
+            confirmLabel = str("action.delete"),
+            destructive = true,
+            idPrefix = "bios-delete",
+            onConfirm = { viewModel.delete(item); deleteTarget = null },
+            onDismiss = { deleteTarget = null },
         )
     }
     state.error?.let { error ->

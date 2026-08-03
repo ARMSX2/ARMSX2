@@ -122,12 +122,14 @@ fun MemoryCardScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Memo
         )
     }
     deleteTarget?.let { item ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text(str("memcard.delete.confirm")) },
-            text = { Text(str("memcard.delete.body").format(item.file.name)) },
-            confirmButton = { TextButton(onClick = { viewModel.delete(item); deleteTarget = null }, modifier = Modifier.controllerFocusable("memcard.delete.confirm", onConfirm = { viewModel.delete(item); deleteTarget = null })) { Text(str("action.delete"), color = MaterialTheme.colorScheme.error) } },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }, modifier = Modifier.controllerFocusable("memcard.delete.cancel", onConfirm = { deleteTarget = null })) { Text(str("action.cancel")) } },
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str("memcard.delete.confirm"),
+            message = str("memcard.delete.body").format(item.file.name),
+            confirmLabel = str("action.delete"),
+            destructive = true,
+            idPrefix = "memcard-delete",
+            onConfirm = { viewModel.delete(item); deleteTarget = null },
+            onDismiss = { deleteTarget = null },
         )
     }
     (state.error ?: state.message)?.let { message ->
