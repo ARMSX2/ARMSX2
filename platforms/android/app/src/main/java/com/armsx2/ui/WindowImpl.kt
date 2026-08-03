@@ -48,6 +48,9 @@ object WindowImpl {
         get() = overlayVisible.value ||
             inGameScreen.value != null ||
             showLibrary.value ||
+            // A modal (PadModal) can be raised over a running game with nothing else up, and
+            // it needs the D-pad the game surface would otherwise be holding.
+            com.armsx2.ui.common.PadModals.visible ||
             // The shader editor can be opened from the pause menu, which CLOSES as it
             // opens — without this the game would take focus back mid-edit and eat the
             // D-pad the editor runs on.

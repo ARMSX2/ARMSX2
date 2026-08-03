@@ -2706,6 +2706,41 @@ open class MainActivityRuntime : ComponentActivity() {
             // so Compose's binder and the in-game lookup both see the same real key.
             return super.dispatchKeyEvent(event)
         }
+        // A modal is up (PadModal). It owns the pad outright and swallows everything else.
+        //
+        // Placed HIGH on purpose — above the L1/R1 settings-tab flick and the hold-BACK-to-exit
+        // block below, and far above the library cover grid — because those are precisely the
+        // things that must not act behind a scrim. Making that a matter of PRECEDENCE kills the
+        // whole class of "the tabs behind the prompt changed while it was up" bug structurally,
+        // rather than adding a modal term to three separate blocks that then have to stay
+        // correct independently as each one is edited.
+        //
+        // The on-screen keyboard is the one surface that outranks a modal: a modal with a text
+        // field hands entry over to it, and it must keep input until it closes. Its own block
+        // sits BELOW this one, so that exception has to be spelled out here. (The motion ladder
+        // needs no such guard — see fireNavMove.)
+        if (com.armsx2.ui.common.PadModals.visible &&
+            !com.armsx2.ui.home.LibraryKeyboard.visible.value
+        ) {
+            val firstDown = event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0
+            when (kc) {
+                KeyEvent.KEYCODE_DPAD_UP -> if (firstDown) modalNavMove(0, -1)
+                KeyEvent.KEYCODE_DPAD_DOWN -> if (firstDown) modalNavMove(0, 1)
+                KeyEvent.KEYCODE_DPAD_LEFT -> if (firstDown) modalNavMove(-1, 0)
+                KeyEvent.KEYCODE_DPAD_RIGHT -> if (firstDown) modalNavMove(1, 0)
+                KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER ->
+                    if (firstDown) com.armsx2.ui.settings.SettingsControllerNav.confirm()
+                KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BACK -> if (firstDown) {
+                    com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.BACK)
+                    com.armsx2.ui.common.PadModals.dismissTop()
+                }
+            }
+            // Swallow EVERYTHING, not only what was handled. Face buttons and shoulders exist
+            // ONLY on this path, so this is the sole place they can be absorbed — a stray Y or
+            // L1 leaking past a modal lands on the screen behind it.
+            return true
+        }
         // L1/R1 flick between settings tabs (as the old Refresh UI did). Handled here, not in
         // Compose, because a shoulder button never reaches a Composable — the overlay nav
         // further down consumes gamepad keys first (same reason the capture handlers above
@@ -3710,6 +3745,11 @@ open class MainActivityRuntime : ComponentActivity() {
         WindowImpl.overlayVisible.value ||
             WindowImpl.inGameScreen.value != null ||
             WindowImpl.showLibrary.value ||
+            // A modal can be raised over a RUNNING game with none of the above up. Without
+            // this the motion ladder is never even entered (its caller gates on this
+            // predicate), so the modal would answer a D-pad and ignore a stick — and the
+            // gameplay hotkeys below would keep firing behind the scrim.
+            com.armsx2.ui.common.PadModals.visible ||
             eState.value != EmuState.RUNNING
 
     // B / BACK from any frontend surface EXCEPT the pause overlay and the library
@@ -3750,6 +3790,24 @@ open class MainActivityRuntime : ComponentActivity() {
         else -> 0
     }
 
+    /** The one place a modal's directional input is interpreted, called from BOTH ladders.
+     *  Shared on purpose: the key path and the motion path have drifted apart before, and a
+     *  modal that walks on a D-pad but not on a stick — or that adjusts a value on one and
+     *  moves the selection on the other — is exactly the failure this rung exists to prevent.
+     *
+     *  Horizontal adjusts the focused control first (stepper −/+, toggle off/on) and only moves
+     *  when that control has no adjust action; vertical always moves. Same semantics the
+     *  registry already uses on the base screens, so a widget behaves identically inside a
+     *  modal and outside one. */
+    private fun modalNavMove(dx: Int, dy: Int) {
+        val nav = com.armsx2.ui.settings.SettingsControllerNav
+        if (dx != 0 && dy == 0) {
+            if (!nav.adjust(dx)) nav.moveSpatial(dx, 0)
+        } else {
+            nav.moveSpatial(dx, dy)
+        }
+    }
+
     private fun fireNavMove(dx: Int, dy: Int) {
         // Mirror the key-event routing priority so the analog stick drives every
         // surface the D-pad does.
@@ -3758,6 +3816,14 @@ open class MainActivityRuntime : ComponentActivity() {
                 // Controller search keyboard owns the stick/HAT/D-pad while it's up
                 // (this is the RP6 path — its D-pad arrives here as a HAT axis).
                 com.armsx2.ui.home.LibraryKeyboard.move(dx, dy)
+            }
+            com.armsx2.ui.common.PadModals.visible -> {
+                // A modal owns the stick and the HAT, mirroring the key rung near the top of
+                // dispatchKeyEvent. Note the asymmetry with that rung, which is deliberate: it
+                // needs an explicit keyboard exception because the keyboard's block sits below
+                // it, whereas this `when` is ordered and terminal, so the keyboard branch above
+                // already wins here for free.
+                modalNavMove(dx, dy)
             }
             com.armsx2.ui.settingshub.SettingsSearch.visible.value -> {
                 // Settings-search result browse (keyboard dismissed): vertical list nav.
