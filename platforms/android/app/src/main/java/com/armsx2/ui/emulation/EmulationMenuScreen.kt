@@ -40,7 +40,6 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -160,16 +159,17 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
             com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_OPEN)
             onDispose { com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_CLOSE) }
         }
-        AlertDialog(
-            onDismissRequest = viewModel::cancelToggleHardcore,
-            title = { Text(str(if (enabling) "ra.hardcore.enable.title" else "ra.hardcore.disable.title")) },
-            text = { Text(str(if (enabling) "ra.hardcore.enable.body" else "ra.hardcore.disable.body")) },
-            confirmButton = {
-                TextButton(onClick = viewModel::confirmToggleHardcore) {
-                    Text(str(if (enabling) "ra.hardcore.enable.confirm" else "ra.hardcore.disable.confirm"))
-                }
-            },
-            dismissButton = { TextButton(onClick = viewModel::cancelToggleHardcore) { Text(str("action.cancel")) } },
+        // Was an AlertDialog, which is its own focused Android window and so consumed the pad
+        // before the Activity dispatcher that owns every D-pad route in this app could see it.
+        // The prompt sat on top of the pause menu, which IS pad-navigable, so it read as the
+        // controller having gone dead the moment the confirmation appeared.
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str(if (enabling) "ra.hardcore.enable.title" else "ra.hardcore.disable.title"),
+            message = str(if (enabling) "ra.hardcore.enable.body" else "ra.hardcore.disable.body"),
+            confirmLabel = str(if (enabling) "ra.hardcore.enable.confirm" else "ra.hardcore.disable.confirm"),
+            idPrefix = "hardcore",
+            onConfirm = viewModel::confirmToggleHardcore,
+            onDismiss = viewModel::cancelToggleHardcore,
         )
     }
 
