@@ -47,6 +47,7 @@ struct RootView: View {
     @State private var settings = SettingsStore.shared
     @State private var fileImporter = FileImportHandler.shared
     @State private var showBootSplash = true
+    @State private var showNoJITFinalConfirmation = false
     // The background layer observes renderer state directly. Keeping only the
     // host reference here prevents snapshot/visibility publications from
     // invalidating the complete menu hierarchy.
@@ -176,19 +177,53 @@ struct RootView: View {
         .alert(
             "⚠️ \(settings.localized("JIT Access Not Detected"))",
             isPresented: Binding(
-                get: { appState.pendingJITGameBoot != nil },
-                set: { if !$0 { appState.cancelPendingJITGameBoot() } }
+                get: {
+                    appState.pendingJITGameBoot != nil && !showNoJITFinalConfirmation
+                },
+                set: { isPresented in
+                    if !isPresented && !showNoJITFinalConfirmation {
+                        appState.cancelPendingJITGameBoot()
+                    }
+                }
             )
         ) {
             Button(settings.localized("Cancel"), role: .cancel) {
                 appState.cancelPendingJITGameBoot()
             }
-            Button(settings.localized("Continue")) {
-                appState.continuePendingJITGameBoot()
+            Button(settings.localized("Continue"), role: .destructive) {
+                showNoJITFinalConfirmation = true
             }
         } message: {
             Text(settings.localized(
                 "JIT access is not available. Match the StikDebug script to the JIT Script setting in Emulator settings."
+            ))
+        }
+        .alert(
+            "⚠️ \(settings.localized("JIT Access Not Detected"))",
+            isPresented: Binding(
+                get: {
+                    showNoJITFinalConfirmation && appState.pendingJITGameBoot != nil
+                },
+                set: { isPresented in
+                    guard !isPresented else { return }
+                    showNoJITFinalConfirmation = false
+                    if appState.pendingJITGameBoot != nil {
+                        appState.cancelPendingJITGameBoot()
+                    }
+                }
+            )
+        ) {
+            Button(settings.localized("Cancel"), role: .cancel) {
+                showNoJITFinalConfirmation = false
+                appState.cancelPendingJITGameBoot()
+            }
+            Button(settings.localized("Continue"), role: .destructive) {
+                appState.continuePendingJITGameBoot()
+                showNoJITFinalConfirmation = false
+            }
+        } message: {
+            Text(settings.localized(
+                "Are you sure you want to continue?\nJIT access is required for 60 FPS.\n\nEXPECT TOO LOW PERFORMANCE.\nPROCEED AT YOUR OWN RISK!"
             ))
         }
     }
