@@ -113,13 +113,20 @@ internal object SettingsControllerNav {
         val layer: String? = null,
     )
 
-    // Exclusive input layer. When non-null (e.g. the nav drawer is open), only
-    // items registered with that layer participate in nav — otherwise the drawer
-    // selection could "escape" into the still-composed screen behind it.
+    // Exclusive input layer. When non-null, only items registered with that layer
+    // participate in nav, so a modal's selection cannot "escape" into the screen
+    // still composed behind its scrim. Set only by the confirmation overlay today.
     val activeLayer = mutableStateOf<String?>(null)
 
-    private fun inActiveLayer(id: String): Boolean =
-        registry[id]?.layer == activeLayer.value
+    // An UNREGISTERED id is in no layer at all. Spelling that out matters: the map
+    // lookup yields null for both "not registered" and "registered at the base
+    // layer", so the old one-line form answered TRUE for an unknown id whenever no
+    // layer was active — which is exactly the case the callers below have to
+    // distinguish.
+    private fun inActiveLayer(id: String): Boolean {
+        val item = registry[id] ?: return false
+        return item.layer == activeLayer.value
+    }
 
     private var scopeKey: String = ""
     // Persistent registry keyed by row id. Each row UPSERTS its latest closures
@@ -261,10 +268,8 @@ internal object SettingsControllerNav {
     fun hasSelection(): Boolean =
         selectedId.value?.let { registry.containsKey(it) && inActiveLayer(it) } == true
 
-    /** Number of registered focusable items in the current scope. Used by the
-     *  achievements panel nav to know when Down off the last control above the
-     *  list should release focus back to the scrollable list. */
-    fun count(): Int = registry.size
+    /** Number of registered focusable items in the active layer. */
+    fun count(): Int = registry.keys.count { inActiveLayer(it) }
 
     fun move(delta: Int): Boolean {
         val ids = orderedIds()
@@ -281,24 +286,46 @@ internal object SettingsControllerNav {
         return true
     }
 
-    /** 2D spatial navigation using captured on-screen positions: move to the
-     *  nearest focusable in the (dx, dy) direction. Used by the memory-card dialog
-     *  so Left/Right move between a card's Slot 1 / Slot 2 buttons and Up/Down move
-     *  between rows — the 1D [move] made the 2-button card rows feel stuck on Slot 1
-     *  (any direction just stepped the flat list). Falls back to [move] when nothing
-     *  is selected yet. positions[id] = (y, x). */
+    /** Highlight the first (or last) item of the ACTIVE LAYER in visual order. Used when a
+     *  direction arrives with nothing selected yet — travelling down or right lands on the
+     *  first item, up or left on the last, which is what makes the very first press after a
+     *  surface appears feel like it entered from the edge you pushed from. */
+    private fun selectEdgeOfLayer(first: Boolean): Boolean {
+        val ids = orderedIds()
+        if (ids.isEmpty()) return false
+        val next = if (first) 0 else ids.lastIndex
+        val changed = selectedId.value != ids[next]
+        selectedId.value = ids[next]
+        selectedIndex.intValue = next
+        if (changed) com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.NAV)
+        return true
+    }
+
+    /** 2D spatial navigation over the captured on-screen positions: move to the nearest
+     *  focusable in the (dx, dy) direction. Rows of side-by-side controls need this — a flat
+     *  1D step makes a two-button row feel stuck on its first button, because every direction
+     *  just walks the list. Vertical steps exactly one row and then lands on the item in that
+     *  row nearest the current x; horizontal takes the nearest item in that direction on
+     *  (roughly) the same row. Confined to the active layer. positions[id] = (y, x). */
     fun moveSpatial(dx: Int, dy: Int): Boolean {
         if (dx == 0 && dy == 0) return false
         val curId = selectedId.value
         val cur = curId?.let { positions[it] }
-        if (cur == null) {
-            val moved = move(if (dx < 0 || dy < 0) -1 else 1)
-            android.util.Log.d("ARMSX2_MCNAV", "moveSpatial dx=$dx dy=$dy cur=$curId NO_POS -> fallback move=$moved")
-            return moved
-        }
+        if (cur == null) return selectEdgeOfLayer(first = dx > 0 || dy > 0)
         val cy = cur.first
         val cx = cur.second
         val rowTol = 28f // px; items within this |dy| count as the same visual row
+
+        // Candidates come from orderedIds(), NOT from the raw positions map. Two things
+        // ride on that. It confines the move to the ACTIVE LAYER — this function used to
+        // scan every measured item on screen, so a modal's selection could step straight
+        // out through its own scrim onto a row behind it, defeating the one mechanism
+        // built to prevent that. And it makes the scan deterministic: positions is a
+        // HashMap, so the old iteration order was arbitrary, and any tie between two
+        // equally-good candidates was settled differently from run to run.
+        val candidates = orderedIds().mapNotNull { id ->
+            if (id == curId) null else positions[id]?.let { id to it }
+        }
 
         val target: String? = if (dy != 0) {
             // Vertical: step exactly ONE row in the travel direction, then land on the
@@ -307,8 +334,7 @@ internal object SettingsControllerNav {
             // a row or pick a far diagonal item — the old score could make Up land
             // nowhere useful on the card grid.
             var rowY: Float? = null
-            for ((id, p) in positions) {
-                if (id == curId || registry[id] == null) continue
+            for ((_, p) in candidates) {
                 val py = p.first
                 if (dy < 0 && py >= cy - rowTol) continue   // need a row strictly above
                 if (dy > 0 && py <= cy + rowTol) continue   // need a row strictly below
@@ -322,8 +348,7 @@ internal object SettingsControllerNav {
             if (ry == null) null else {
                 var bestId: String? = null
                 var bestDx = Float.MAX_VALUE
-                for ((id, p) in positions) {
-                    if (id == curId || registry[id] == null) continue
+                for ((id, p) in candidates) {
                     if (abs(p.first - ry) > rowTol) continue
                     val d = abs(p.second - cx)
                     if (d < bestDx) { bestDx = d; bestId = id }
@@ -334,8 +359,7 @@ internal object SettingsControllerNav {
             // Horizontal: nearest focusable in the dx direction on (roughly) the same row.
             var bestId: String? = null
             var bestScore = Float.MAX_VALUE
-            for ((id, p) in positions) {
-                if (id == curId || registry[id] == null) continue
+            for ((id, p) in candidates) {
                 val ddx = p.second - cx
                 val ddy = p.first - cy
                 val inDir = if (dx > 0) ddx > 1f && abs(ddy) < rowTol
@@ -347,8 +371,6 @@ internal object SettingsControllerNav {
             bestId
         }
 
-        android.util.Log.d("ARMSX2_MCNAV",
-            "moveSpatial dx=$dx dy=$dy cur=$curId curY=$cy curX=$cx n=${positions.size} -> $target")
         if (target == null) return false
         selectedId.value = target
         selectedIndex.intValue = orderedIds().indexOf(target)
@@ -382,13 +404,22 @@ internal object SettingsControllerNav {
         return true
     }
 
-    fun isSelected(id: String): Boolean = selectedId.value == id
+    /** Whether this control draws the focus ring. Layer-gated, so a row on a screen sitting
+     *  behind a modal goes dark for as long as the modal owns input instead of leaving a
+     *  second ring lit on top of the modal's own — two rings on screen at once, with only
+     *  one of them answering the pad, is the exact symptom this whole mechanism exists to
+     *  prevent. */
+    fun isSelected(id: String): Boolean = selectedId.value == id && inActiveLayer(id)
 
+    /** The item a value-adjust or an activation should act on. Falls back to the first item
+     *  of the active layer when the selection is missing or belongs to a suspended layer —
+     *  the fallback is what stops a stale selection from firing a control the user can no
+     *  longer see, which is how Left/Right and A used to reach through a scrim. */
     private fun selectedItem(): Item? {
         val ids = orderedIds()
         if (ids.isEmpty()) return null
         val id = selectedId.value
-        if (id == null || !registry.containsKey(id)) {
+        if (id == null || !inActiveLayer(id)) {
             val first = ids.first()
             selectedId.value = first
             selectedIndex.intValue = 0
