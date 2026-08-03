@@ -49,32 +49,46 @@ namespace DOUBLE {
 // widen exactly, then raise the exponent by one in the double domain. Mirrors
 // x86 ToDouble (xPSUB.D one_exp / xCVTSS2SD / xPADD.Q dbl_one_exp).
 //
-// Operates in place on temp NEON reg `idx`: reads the S lane, writes the D lane.
-static void ToDouble(int idx)
+// Reads `srcidx`'s S lane, writes `dstidx`'s D lane, and never writes the
+// source. The two may be the same register (that is ToDouble below).
+//
+// The source is allowed to be an allocator-resident guest FPR or the ACC, which
+// is the point: the complex arm needs somewhere to put the exponent-lowered
+// single before Fcvt, and it uses the destination's S lane — a temp the caller
+// owns — instead of scribbling on the source. Every widening site used to pay a
+// `copySrc` Fmov purely to make that scribble legal.
+static void ToDoubleFrom(int dstidx, int srcidx)
 {
-	const a64::VRegister s = armSRegister(idx);
-	const a64::VRegister d = armDRegister(idx);
+	const a64::VRegister ss = armSRegister(srcidx);
+	const a64::VRegister sd = armSRegister(dstidx);
+	const a64::VRegister dd = armDRegister(dstidx);
 
 	a64::Label simple, done;
-	armAsm->Fmov(RWSCRATCH, s);
+	armAsm->Fmov(RWSCRATCH, ss);
 	armAsm->And(RWARG1, RWSCRATCH, 0x7f800000);
 	armAsm->Cmp(RWARG1, 0x7f800000);
 	armAsm->B(&simple, a64::ne);
 
 	// Complex: exp field == 0xff (Inf/NaN to IEEE, finite to PS2).
 	armAsm->Sub(RWSCRATCH, RWSCRATCH, 0x00800000);   // lower exponent by one (single)
-	armAsm->Fmov(s, RWSCRATCH);
-	armAsm->Fcvt(d, s);                              // cvtss2sd (now finite)
-	armAsm->Fmov(RXSCRATCH, d);
+	armAsm->Fmov(sd, RWSCRATCH);
+	armAsm->Fcvt(dd, sd);                            // cvtss2sd (now finite)
+	armAsm->Fmov(RXSCRATCH, dd);
 	armAsm->Mov(RXARG1, static_cast<u64>(1) << 52);  // dbl_one_exp
 	armAsm->Add(RXSCRATCH, RXSCRATCH, RXARG1);       // raise exponent by one (double)
-	armAsm->Fmov(d, RXSCRATCH);
+	armAsm->Fmov(dd, RXSCRATCH);
 	armAsm->B(&done);
 
 	armAsm->Bind(&simple);
-	armAsm->Fcvt(d, s);
+	armAsm->Fcvt(dd, ss);
 
 	armAsm->Bind(&done);
+}
+
+// In-place form: widen temp NEON reg `idx` from its own S lane.
+static void ToDouble(int idx)
+{
+	ToDoubleFrom(idx, idx);
 }
 
 // ---- IEEE double -> PS2 single (full overflow/underflow/flag handling) -----
@@ -434,7 +448,11 @@ static void FPU_ADD_SUB_D(int idxd, int idxt)
 // ---- Op cores --------------------------------------------------------------
 
 // Copy an allocator-resident FP source (EEREC_S/EEREC_T) into a fresh temp so
-// ToDouble can mutate it without corrupting the guest fpr slot.
+// the emitter can mutate it without corrupting the guest fpr slot.
+//
+// Only the paths that mutate the operand in the single domain still need this:
+// recFPUOp's FPU_ADD_SUB guard mask, and the Fabs in SQRT/RSQRT. A site that
+// only widens uses ToDoubleFrom(temp, EEREC_x) instead and pays no copy.
 static int copySrc(int eerec)
 {
 	const int idx = _allocTempNEONreg();
@@ -468,11 +486,13 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // Destiny gamefix — is intentionally not folded in here; default off.)
 static void recMULop(int info, int eeRecDst, bool acc)
 {
-	const int sreg = copySrc(EEREC_S);
-	const int treg = copySrc(EEREC_T);
+	// Both temps before any emit: _allocTempNEONreg can evict, and an eviction's
+	// writeback must not land between an operand's copy and its use.
+	const int sreg = _allocTempNEONreg();
+	const int treg = _allocTempNEONreg();
 
-	ToDouble(sreg);
-	ToDouble(treg);
+	ToDoubleFrom(sreg, EEREC_S);
+	ToDoubleFrom(treg, EEREC_T);
 	armAsm->Fmul(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
 
 	ToPS2FPU_Full(sreg, true, treg, acc, false);
@@ -504,8 +524,8 @@ static void recMULop(int info, int eeRecDst, bool acc)
 // has no single a narrowing could reach.
 static void recMaddsub(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 {
-	const int sreg = copySrc(EEREC_S);
-	const int treg = copySrc(EEREC_T);
+	const int sreg = _allocTempNEONreg();
+	const int treg = _allocTempNEONreg();
 
 	// --- multiply stage: sreg = ToPS2FPU(ToDouble(s) * ToDouble(t)). Sets O on
 	//     product overflow; never touches ACCflag here. ---
@@ -515,15 +535,14 @@ static void recMaddsub(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 	// emitter -- the guard mask, the SUB sign flip, the accumulate -- wants the
 	// wide form back, and narrowing here only to re-widen 13 instructions later
 	// was the round trip this shape exists to remove.
-	ToDouble(sreg);
-	ToDouble(treg);
+	ToDoubleFrom(sreg, EEREC_S);
+	ToDoubleFrom(treg, EEREC_T);
 	armAsm->Fmul(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
 	ToPS2FPU_Wide(sreg);
 
-	// --- reload ACC (allocator-resident, still narrow) into treg and widen it,
+	// --- widen the (allocator-resident, still narrow) ACC straight into treg,
 	//     then guard-mask it against the product in the wide domain. ---
-	armAsm->Fmov(armSRegister(treg), armSRegister(EEREC_ACC));
-	ToDouble(treg);
+	ToDoubleFrom(treg, EEREC_ACC);
 	FPU_ADD_SUB_D(treg, sreg);
 
 	a64::Label mulovf, accovf, operation, skipall;
@@ -679,10 +698,10 @@ void recMIN_S_xmm(int info) { recMINMAX(info, true); }
 // compare is always ordered and the lt/le/eq condition reads are exact.
 static void recCMP(int info)
 {
-	const int sreg = copySrc(EEREC_S);
-	const int treg = copySrc(EEREC_T);
-	ToDouble(sreg);
-	ToDouble(treg);
+	const int sreg = _allocTempNEONreg();
+	const int treg = _allocTempNEONreg();
+	ToDoubleFrom(sreg, EEREC_S);
+	ToDoubleFrom(treg, EEREC_T);
 	armAsm->Fcmp(armDRegister(sreg), armDRegister(treg));
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
@@ -755,23 +774,25 @@ static void SetMaxValueS(int idx)
 
 // x86 recDIVhelper1 (FPU_FLAGS_ID == 1 unconditionally): divide-by-zero
 // flag/result shape in the single domain, otherwise divide in double.
-// sreg/treg are temp copies (mutated); the result lands in sreg's S lane.
+// sreg/treg are write-only temps and srcS/srcT the allocator-resident operands,
+// which are only ever read; the result lands in sreg (S lane on the zero-divisor
+// arm, S lane after ToPS2FPU_Full on the normal one).
 // The Fcmp-with-zero runs under the EE FPCR whose FZ bit flushes denormal
 // inputs — same divisor-is-zero net as x86's DAZ'd CMPEQ.SS. The double
 // quotient of two in-range PS2 values is always finite (max magnitude
 // ~2^255), so ToPS2FPU_Full's finite-only contract holds.
-static void recDIVhelper1(int sreg, int treg)
+static void recDIVhelper1(int sreg, int treg, int srcS, int srcT)
 {
 	ClearIDFlags();
 
 	a64::Label normal, xOverZero, setDone, done;
-	armAsm->Fcmp(armSRegister(treg), 0.0);
+	armAsm->Fcmp(armSRegister(srcT), 0.0);
 	armAsm->B(&normal, a64::ne);
 
 	// Divisor is ±0: pick the flag pair, then result = (fs ^ ft) | 0x7fffffff
 	// (x86 SetMaxValue under FPU_RESULT — see SetMaxValueS above; masking the
 	// XOR down to its sign bit first is equivalent, the OR sets bits 0..30).
-	armAsm->Fcmp(armSRegister(sreg), 0.0);
+	armAsm->Fcmp(armSRegister(srcS), 0.0);
 	armAsm->B(&xOverZero, a64::ne);
 	SetFprcOr(FPUflagI | FPUflagSI); // 0/0
 	armAsm->B(&setDone);
@@ -779,8 +800,8 @@ static void recDIVhelper1(int sreg, int treg)
 	SetFprcOr(FPUflagD | FPUflagSD); // x/0
 	armAsm->Bind(&setDone);
 
-	armAsm->Fmov(RWSCRATCH, armSRegister(sreg));
-	armAsm->Fmov(RWARG1, armSRegister(treg));
+	armAsm->Fmov(RWSCRATCH, armSRegister(srcS));
+	armAsm->Fmov(RWARG1, armSRegister(srcT));
 	armAsm->Eor(RWSCRATCH, RWSCRATCH, RWARG1);
 	armAsm->And(RWSCRATCH, RWSCRATCH, 0x80000000);
 	armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x7fffffff);
@@ -788,8 +809,8 @@ static void recDIVhelper1(int sreg, int treg)
 	armAsm->B(&done);
 
 	armAsm->Bind(&normal);
-	ToDouble(sreg);
-	ToDouble(treg);
+	ToDoubleFrom(sreg, srcS);
+	ToDoubleFrom(treg, srcT);
 	armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
 	ToPS2FPU_Full(sreg, false, treg, false, false);
 
@@ -803,9 +824,9 @@ void recDIV_S_xmm(int info)
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUDivFPCR.bitmask);
 
-	const int sreg = copySrc(EEREC_S);
-	const int treg = copySrc(EEREC_T);
-	recDIVhelper1(sreg, treg);
+	const int sreg = _allocTempNEONreg();
+	const int treg = _allocTempNEONreg();
+	recDIVhelper1(sreg, treg, EEREC_S, EEREC_T);
 	armAsm->Fmov(armSRegister(EEREC_D), armSRegister(sreg));
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
