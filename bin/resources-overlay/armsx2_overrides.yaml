@@ -90,6 +90,7 @@ SCAJ-20162:
     autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
+    hwDownloadMode: 5
     nativeScaling: 2
     recommendedBlendingLevel: 4
     roundSprite: 1
@@ -252,6 +253,7 @@ SCES-54552:
     autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
+    hwDownloadMode: 5
     nativeScaling: 2
     recommendedBlendingLevel: 4
     roundSprite: 1
@@ -366,6 +368,7 @@ SCPS-15102:
     autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
+    hwDownloadMode: 5
     nativeScaling: 2
     recommendedBlendingLevel: 4
     roundSprite: 1
@@ -377,6 +380,7 @@ SCPS-17013:
     autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
+    hwDownloadMode: 5
     nativeScaling: 2
     recommendedBlendingLevel: 4
     roundSprite: 1
@@ -385,6 +389,7 @@ SCPS-19254:
     autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
+    hwDownloadMode: 5
     nativeScaling: 2
     recommendedBlendingLevel: 4
     roundSprite: 1
@@ -592,6 +597,7 @@ SCUS-97490:
     autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
+    hwDownloadMode: 5
     nativeScaling: 2
     recommendedBlendingLevel: 4
     roundSprite: 1
@@ -638,6 +644,7 @@ SCUS-97572:
     autoFlush: 0
     disablePartialInvalidation: 1
     halfPixelOffset: 2
+    hwDownloadMode: 5
     nativeScaling: 2
     recommendedBlendingLevel: 4
     roundSprite: 1
