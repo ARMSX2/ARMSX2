@@ -10,6 +10,7 @@ struct EmulatorSettingsView: View {
     // Cached rather than asked per redraw: the lookup takes the achievements lock, and
     // this sits in a Form that rebuilds on every other row.
     @State private var hardcoreBlocksCheats = false
+    @State private var hardcoreActive = false
 
     /// Hardcore only clears EnableCheats in the running config, so the INI this row reads
     /// still says on and the row lies. The write is dropped further down as well, without
@@ -147,34 +148,15 @@ struct EmulatorSettingsView: View {
                 Toggle(settings.localized("Frame Limiter"), isOn: $settings.frameLimiterEnabled)
 
                 if settings.frameLimiterEnabled {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(settings.localized("FPS Target"))
-                            Spacer()
-                            Text(Self.formatFPS(settings.targetFPS))
-                                .foregroundStyle(.secondary)
-                                .font(.callout.monospacedDigit())
+                    // Same control as Frame Pacing, so it has to hold the same floor under
+                    // hardcore. It looked identical and quietly let you drop under speed.
+                    NumberRow(.targetFPS, value: Binding(
+                        get: { settings.targetFPS },
+                        set: { value in
+                            settings.targetFPS = value
+                            enforceHardcoreSpeedFloorIfNeeded()
                         }
-
-                        Slider(
-                            value: $settings.targetFPS,
-                            in: SettingsStore.minTargetFPS...SettingsStore.maxTargetFPS,
-                            step: 1.0
-                        )
-
-                        HStack {
-                            Text(Self.formatFPS(SettingsStore.minTargetFPS))
-                            Spacer()
-                            Button(settings.localized("60 FPS")) {
-                                settings.targetFPS = SettingsStore.defaultTargetFPS
-                            }
-                            .buttonStyle(.borderless)
-                            Spacer()
-                            Text(Self.formatFPS(SettingsStore.maxTargetFPS))
-                        }
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    }
+                    ), settings: settings)
                 } else {
                     HStack {
                         Text(settings.localized("Speed Target"))
@@ -213,26 +195,8 @@ struct EmulatorSettingsView: View {
                     .foregroundStyle(.secondary)
 
                 Group {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(settings.localized("Emulation-Only Mode Timer"))
-                            Spacer()
-                            Text("\(settings.emulationOnlyModeDelaySeconds)s")
-                                .foregroundStyle(.secondary)
-                                .font(.callout.monospacedDigit())
-                        }
-                        Slider(
-                            value: emulationOnlyModeDelayBinding,
-                            in: Double(SettingsStore.emulationOnlyModeDelayRange.lowerBound)...Double(SettingsStore.emulationOnlyModeDelayRange.upperBound),
-                            step: 1
-                        ) {
-                            Text(settings.localized("Emulation-Only Mode Timer"))
-                        } minimumValueLabel: {
-                            Text("0s")
-                        } maximumValueLabel: {
-                            Text("15s")
-                        }
-                    }
+                    NumberRow(.emulationOnlyModeTimer,
+                              value: $settings.emulationOnlyModeDelaySeconds, settings: settings)
 
                     Toggle(
                         settings.localized("Disable Cheats, Widescreen and Dynamic Patches"),
@@ -365,9 +329,21 @@ struct EmulatorSettingsView: View {
         .navigationTitle(settings.localized("Emulator"))
         .navigationBarTitleDisplayMode(.inline)
         .dynamicTypeSize(...DynamicTypeSize.accessibility3)
-        .onAppear { hardcoreBlocksCheats = PatchStore.hardcoreBlocksPnachContent() }
+        .onAppear {
+            hardcoreBlocksCheats = PatchStore.hardcoreBlocksPnachContent()
+            hardcoreActive = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
             hardcoreBlocksCheats = PatchStore.hardcoreBlocksPnachContent()
+            hardcoreActive = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
+        }
+    }
+
+    private func enforceHardcoreSpeedFloorIfNeeded() {
+        guard hardcoreActive else { return }
+        let minimumFPS = settings.ntscFramerate
+        if settings.frameLimiterEnabled && settings.targetFPS < minimumFPS {
+            settings.targetFPS = minimumFPS
         }
     }
 
@@ -375,12 +351,6 @@ struct EmulatorSettingsView: View {
         String(format: "%.2f FPS", value)
     }
 
-    private var emulationOnlyModeDelayBinding: Binding<Double> {
-        Binding(
-            get: { Double(settings.emulationOnlyModeDelaySeconds) },
-            set: { settings.emulationOnlyModeDelaySeconds = Int($0.rounded()) }
-        )
-    }
 
     /// Compact labeled picker over a fixed ordered option list (round/clamp modes).
     @ViewBuilder

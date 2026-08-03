@@ -167,32 +167,6 @@ struct GraphicsTab: View {
             }
             .disabled(!enabled)
 
-            Picker(settings.localized("Shade Boost"), selection: $perGameShadeBoost) {
-                Text(settings.localized("Use Global")).tag(-1)
-                Text(settings.localized("Off")).tag(0)
-                Text(settings.localized("On")).tag(1)
-            }
-            .disabled(!enabled)
-            NumberOverrideRow("Shade Boost Brightness", value: $perGameShadeBoostBrightness,
-                              global: settings.shadeBoostBrightness,
-                              range: SettingsStore.shadeBoostRange, suffix: "%",
-                              settings: settings)
-                .disabled(!enabled)
-            NumberOverrideRow("Shade Boost Contrast", value: $perGameShadeBoostContrast,
-                              global: settings.shadeBoostContrast,
-                              range: SettingsStore.shadeBoostRange, suffix: "%",
-                              settings: settings)
-                .disabled(!enabled)
-            NumberOverrideRow("Shade Boost Saturation", value: $perGameShadeBoostSaturation,
-                              global: settings.shadeBoostSaturation,
-                              range: SettingsStore.shadeBoostRange, suffix: "%",
-                              settings: settings)
-                .disabled(!enabled)
-            NumberOverrideRow("Shade Boost Gamma", value: $perGameShadeBoostGamma,
-                              global: settings.shadeBoostGamma,
-                              range: SettingsStore.shadeBoostRange, suffix: "%",
-                              settings: settings)
-                .disabled(!enabled)
             Picker(settings.localized("Dithering"), selection: $perGameDithering) {
                 Text(settings.localized("Use Global")).tag(-1)
                 Text(settings.localized("Off")).tag(0)
@@ -219,9 +193,8 @@ struct GraphicsTab: View {
                          SettingsOptions.withUseGlobal(SettingsOptions.maxAnisotropy))
                 .disabled(!enabled)
 
-            NumberOverrideRow("CAS Sharpness", value: $perGameCASSharpness,
+            NumberOverrideRow(.casSharpness, value: $perGameCASSharpness,
                               global: settings.casSharpness,
-                              range: SettingsStore.casSharpnessRange, suffix: "%",
                               settings: settings)
                 .disabled(!enabled)
 
@@ -266,6 +239,34 @@ struct GraphicsTab: View {
                 Text(settings.localized("On")).tag(1)
             }
             .disabled(!enabled)
+        }
+
+        // Its own section, the way the global screen has it. The header is what lets the four rows
+        // be called Brightness and Contrast rather than repeating Shade Boost four times.
+        Section(settings.localized("Shade Boost")) {
+            Picker(settings.localized("Shade Boost"), selection: $perGameShadeBoost) {
+                Text(settings.localized("Use Global")).tag(-1)
+                Text(settings.localized("Off")).tag(0)
+                Text(settings.localized("On")).tag(1)
+            }
+            .disabled(!enabled)
+
+            NumberOverrideRow(.shadeBoostBrightness, value: $perGameShadeBoostBrightness,
+                              global: settings.shadeBoostBrightness,
+                              settings: settings)
+                .disabled(!enabled)
+            NumberOverrideRow(.shadeBoostContrast, value: $perGameShadeBoostContrast,
+                              global: settings.shadeBoostContrast,
+                              settings: settings)
+                .disabled(!enabled)
+            NumberOverrideRow(.shadeBoostSaturation, value: $perGameShadeBoostSaturation,
+                              global: settings.shadeBoostSaturation,
+                              settings: settings)
+                .disabled(!enabled)
+            NumberOverrideRow(.shadeBoostGamma, value: $perGameShadeBoostGamma,
+                              global: settings.shadeBoostGamma,
+                              settings: settings)
+                .disabled(!enabled)
         }
 
         Section(settings.localized("Advanced Upscaling Hacks")) {
@@ -321,25 +322,29 @@ struct GraphicsTab: View {
             Toggle(settings.localized("Override Texture Offset X"), isOn: $textureOffsetXOverride)
                 .disabled(!manualAdvancedHacksEnabled)
             if textureOffsetXOverride {
-                ClampedIntField(title: settings.localized("Texture Offset X"), value: $textureOffsetX, range: SettingsStore.textureOffsetRange, isEnabled: manualAdvancedHacksEnabled)
+                NumberRow(.textureOffsetX, value: $textureOffsetX, settings: settings)
+                    .disabled(!manualAdvancedHacksEnabled)
             }
 
             Toggle(settings.localized("Override Texture Offset Y"), isOn: $textureOffsetYOverride)
                 .disabled(!manualAdvancedHacksEnabled)
             if textureOffsetYOverride {
-                ClampedIntField(title: settings.localized("Texture Offset Y"), value: $textureOffsetY, range: SettingsStore.textureOffsetRange, isEnabled: manualAdvancedHacksEnabled)
+                NumberRow(.textureOffsetY, value: $textureOffsetY, settings: settings)
+                    .disabled(!manualAdvancedHacksEnabled)
             }
 
             Toggle(settings.localized("Override Skipdraw Start"), isOn: $skipDrawStartOverride)
                 .disabled(!manualAdvancedHacksEnabled)
             if skipDrawStartOverride {
-                ClampedIntField(title: settings.localized("Skipdraw Start"), value: skipDrawStartBinding, range: SettingsStore.skipDrawRange, isEnabled: manualAdvancedHacksEnabled)
+                NumberRow(.skipDrawStart, value: skipDrawStartBinding, settings: settings)
+                    .disabled(!manualAdvancedHacksEnabled)
             }
 
             Toggle(settings.localized("Override Skipdraw End"), isOn: $skipDrawEndOverride)
                 .disabled(!manualAdvancedHacksEnabled)
             if skipDrawEndOverride {
-                ClampedIntField(title: settings.localized("Skipdraw End"), value: skipDrawEndBinding, range: SettingsStore.skipDrawRange, isEnabled: manualAdvancedHacksEnabled)
+                NumberRow(.skipDrawEnd, value: skipDrawEndBinding, settings: settings)
+                    .disabled(!manualAdvancedHacksEnabled)
             }
             if skipDrawStartOverride || skipDrawEndOverride {
                 Text(settings.localized("For Skipdraw 1, use Start 1 and End 1. " + (savesToRunningGame ? "Changes apply when you save." : "Changes apply on next boot.")))

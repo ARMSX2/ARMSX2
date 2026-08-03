@@ -1893,29 +1893,8 @@ private struct SpeedControlPanel: View {
                         }
                     ))
 
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text(settings.localized("Fast Forward Speed"))
-                            Spacer()
-                            Text(Self.formatPercent(settings.fastForwardScalar))
-                                .foregroundStyle(.secondary)
-                                .font(.callout.monospacedDigit())
-                        }
-
-                        Slider(
-                            value: $settings.fastForwardScalar,
-                            in: SettingsStore.minFastForwardScalar...SettingsStore.maxFastForwardScalar,
-                            step: 0.25
-                        )
-
-                        HStack {
-                            quickFastForwardButton(1.5)
-                            quickFastForwardButton(2.0)
-                            quickFastForwardButton(3.0)
-                            quickFastForwardButton(5.0)
-                            quickFastForwardButton(10.0)
-                        }
-                    }
+                    NumberRow(.fastForwardSpeed, value: $settings.fastForwardScalar,
+                              settings: settings)
                 }
 
                 if hardcoreActive {
@@ -1969,14 +1948,6 @@ private struct SpeedControlPanel: View {
         if settings.frameLimiterEnabled && settings.targetFPS < minimumFPS {
             settings.targetFPS = minimumFPS
         }
-    }
-
-    private func quickFastForwardButton(_ scalar: Float) -> some View {
-        Button(Self.formatPercent(scalar)) {
-            settings.fastForwardScalar = scalar
-        }
-        .buttonStyle(.bordered)
-        .font(.caption.monospacedDigit())
     }
 
     private static func formatPercent(_ scalar: Float) -> String {
