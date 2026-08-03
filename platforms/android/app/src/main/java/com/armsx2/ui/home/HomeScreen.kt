@@ -1,5 +1,7 @@
 package com.armsx2.ui.home
 
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.foundation.layout.heightIn
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -50,7 +52,6 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -397,7 +398,19 @@ fun HomeScreen(
                             selected = tb && tbi == 2,
                             framed = false,
                         )
-                        Box {
+                        var overflowAnchor by remember {
+                            mutableStateOf(androidx.compose.ui.geometry.Offset.Zero)
+                        }
+                        Box(
+                            Modifier.onGloballyPositioned {
+                                // Bottom-left of the button: the panel hangs below it, the way
+                                // the dropdown it replaces did.
+                                val p = it.positionInRoot()
+                                overflowAnchor = androidx.compose.ui.geometry.Offset(
+                                    p.x, p.y + it.size.height,
+                                )
+                            },
+                        ) {
                             RoundAction(
                                 "⋮",
                                 str("games.toolbar.more"),
@@ -425,6 +438,7 @@ fun HomeScreen(
                                 onChooseBackground = { backgroundPicker.launch(arrayOf("image/*")) },
                                 onClearBackground = LibraryBackground::clear,
                                 onExitApp = { showExitConfirm = true },
+                                anchor = overflowAnchor,
                             )
                             if (showExitConfirm) {
                                 com.armsx2.ui.common.ConfirmOverlay(
@@ -832,22 +846,34 @@ private fun LibraryOverflowMenu(
     onChooseBackground: () -> Unit,
     onClearBackground: () -> Unit,
     onExitApp: () -> Unit,
+    anchor: androidx.compose.ui.geometry.Offset,
 ) {
     fun closeThen(action: () -> Unit) {
         onDismiss()
         action()
     }
 
-    DropdownMenu(
-        expanded = expanded,
-        onDismissRequest = onDismiss,
+    if (!expanded) return
+    // Anchored under its own ⋮ button, so it still reads as that button's menu rather than a
+    // prompt about the whole screen. Was a DropdownMenu, which is its own focused Android
+    // window and therefore had no controller route to any of these rows.
+    com.armsx2.ui.common.PadModal(
+        key = "library-overflow",
+        onDismiss = onDismiss,
+        anchor = anchor,
+        // A menu belonging to one button should not black out the library behind it.
+        scrimAlpha = 0.32f,
+    ) {
+      Surface(
         modifier = Modifier.widthIn(min = 320.dp, max = 380.dp),
         shape = RoundedCornerShape(22.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        color = MaterialTheme.colorScheme.surface,
         tonalElevation = 8.dp,
         shadowElevation = 14.dp,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
-    ) {
+      ) {
+        // Plain Column, never Lazy — the registry only sees composed rows.
+        Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
         Text(
             text = str("games.section.library"),
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
@@ -926,6 +952,8 @@ private fun LibraryOverflowMenu(
         ) {
             closeThen(onExitApp)
         }
+        }
+      }
     }
 }
 
@@ -991,7 +1019,15 @@ private fun LibraryOverflowItem(
                 trailing != null -> Text(trailing, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
             }
         },
-        modifier = Modifier.padding(horizontal = 6.dp),
+        modifier = Modifier
+            .padding(horizontal = 6.dp)
+            // Labels are unique within this menu, so they make stable ids without threading an
+            // extra argument through all twelve call sites.
+            .controllerFocusable(
+                controllerId = "library-overflow:$label",
+                shape = RoundedCornerShape(12.dp),
+                onConfirm = onClick,
+            ),
     )
 }
 

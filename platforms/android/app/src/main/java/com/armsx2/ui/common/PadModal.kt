@@ -5,19 +5,29 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import kotlin.math.roundToInt
 import com.armsx2.ui.settings.LocalNavLayer
 import com.armsx2.ui.settings.SettingsControllerNav
 
@@ -66,6 +76,7 @@ object PadModals {
         internal val onDismiss: State<(() -> Unit)?>,
         internal val initialFocusId: State<String?>,
         internal val scrollState: State<ScrollState?>,
+        internal val anchor: State<Offset?>,
     ) {
         // Deliberately a plain var and not state: it must survive every recomposition of the
         // content without causing one. Focus is claimed once per open, then the pad owns it.
@@ -131,6 +142,8 @@ object PadModals {
  * @param scrollState the body's scroll state, when the content can outgrow the panel. Up/Down
  *   scroll it once the selection has nowhere left to move, which is the only way a pad can read
  *   a panel that has just one focusable in it.
+ * @param anchor root-space position to pin the panel's top-left to, clamped to stay on screen.
+ *   For a menu belonging to a specific button; [alignment] is ignored when it is set.
  */
 @Composable
 fun PadModal(
@@ -140,6 +153,7 @@ fun PadModal(
     scrimAlpha: Float = 0.62f,
     initialFocusId: String? = null,
     scrollState: ScrollState? = null,
+    anchor: Offset? = null,
     content: @Composable () -> Unit,
 ) {
     // Re-published on EVERY recomposition, so a closure can never go stale. The nav registry
@@ -151,10 +165,11 @@ fun PadModal(
     val dismissState = rememberUpdatedState(onDismiss)
     val focusState = rememberUpdatedState(initialFocusId)
     val scrollStateHolder = rememberUpdatedState(scrollState)
+    val anchorState = rememberUpdatedState(anchor)
     val entry = remember(key) {
         PadModals.Entry(
             key, contentState, alignmentState, scrimState, dismissState, focusState,
-            scrollStateHolder,
+            scrollStateHolder, anchorState,
         )
     }
     DisposableEffect(entry) {
@@ -202,18 +217,43 @@ fun PadModalHost() {
         )
         for (entry in entries) {
             key(entry.key) {
-                Box(Modifier.fillMaxSize(), contentAlignment = entry.alignment.value) {
+                val anchor = entry.anchor.value
+                // Absorb taps on the panel itself, or the scrim's dismiss fires through it and
+                // the modal closes as you press its own buttons.
+                val absorbTaps = @Composable { inner: @Composable () -> Unit ->
                     Box(
                         Modifier.clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                            // Absorb taps on the panel itself, or the scrim's dismiss fires
-                            // through it and the modal closes as you press its own buttons.
                             onClick = {},
                         ),
                     ) {
-                        CompositionLocalProvider(LocalNavLayer provides entry.key) {
-                            entry.content.value()
+                        CompositionLocalProvider(LocalNavLayer provides entry.key) { inner() }
+                    }
+                }
+                if (anchor == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = entry.alignment.value) {
+                        absorbTaps { entry.content.value() }
+                    }
+                } else {
+                    // Anchored to its trigger — the ⋮ menus, which have to keep reading as
+                    // "this button's menu" rather than a prompt about the whole screen.
+                    BoxWithConstraints(Modifier.fillMaxSize()) {
+                        var size by remember { mutableStateOf(IntSize.Zero) }
+                        // Clamp so a panel opened from a trigger near the right or bottom edge
+                        // stays fully on screen instead of running off it. Before it has been
+                        // measured the clamp is a no-op, which is harmless: the anchor is a
+                        // point on screen by construction.
+                        val x = anchor.x.roundToInt()
+                            .coerceIn(0, (constraints.maxWidth - size.width).coerceAtLeast(0))
+                        val y = anchor.y.roundToInt()
+                            .coerceIn(0, (constraints.maxHeight - size.height).coerceAtLeast(0))
+                        Box(
+                            Modifier
+                                .offset { IntOffset(x, y) }
+                                .onSizeChanged { size = it },
+                        ) {
+                            absorbTaps { entry.content.value() }
                         }
                     }
                 }
