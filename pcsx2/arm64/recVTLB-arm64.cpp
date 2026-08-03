@@ -503,7 +503,16 @@ static bool recLoadConstPaddrMMIOShortcut(u32 bits, bool sign, bool forceEventTe
 		}
 		else
 		{
-			armAsm->Uxtw(a64::x0, a64::w0);
+			// Both operands X, unlike the Sxt* above. Those lower to sbfm, which
+			// takes a narrow source; uxtw lowers to ubfm, whose only 64-bit form
+			// is UBFM Xd,Xn,#0,#31 — there is no W-source encoding for it to
+			// select, so the width is carried by the destination alone. A W
+			// source encodes identically (the field holds the register number,
+			// and sf comes from Rd) but trips vixl's equal-width assert, which
+			// is live in every Debug build and compiled out of Release: correct
+			// code that aborts on the first unsigned MMIO-page load whenever
+			// asserts are on.
+			armAsm->Uxtw(a64::x0, a64::x0);
 		}
 	}
 

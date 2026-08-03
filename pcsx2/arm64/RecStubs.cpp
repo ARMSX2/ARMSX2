@@ -245,7 +245,10 @@ void vtlb_DynBackpatchLoadStore(uptr code_address, u32 code_size, u32 guest_pc, 
 			}
 			else
 			{
-				armAsm->Uxtw(a64::x0, a64::w0);
+				// Both operands X: uxtw is ubfm, whose only 64-bit form is
+				// UBFM Xd,Xn — there is no W-source encoding to select. See
+				// recVTLB-arm64.cpp for the full note.
+				armAsm->Uxtw(a64::x0, a64::x0);
 			}
 		}
 
