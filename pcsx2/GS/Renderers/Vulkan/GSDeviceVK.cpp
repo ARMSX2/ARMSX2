@@ -3955,15 +3955,27 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 			BeginRenderPassForStretchRect(
 				dTexVK, dst_rect, GSVector4i(destX, destY, destX + r.width(), destY + r.height()));
 
-			// so use an attachment clear
+			// so use an attachment clear. VkClearValue is a union, so only the aspect we are
+			// actually clearing may be written -- filling both destroys the colour's red and
+			// green with the depth and the stencil.
 			VkClearAttachment ca;
 			ca.aspectMask = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-			GSVector4::store<false>(ca.clearValue.color.float32, sTexVK->GetClearForFormat());
-			ca.clearValue.depthStencil.depth = sTexVK->GetClearDepth();
-			ca.clearValue.depthStencil.stencil = 0;
 			ca.colorAttachment = 0;
+			if (depth)
+			{
+				ca.clearValue.depthStencil.depth = sTexVK->GetClearDepth();
+				ca.clearValue.depthStencil.stencil = 0;
+			}
+			else
+			{
+				GSVector4::store<false>(ca.clearValue.color.float32, sTexVK->GetClearForFormat());
+			}
 
-			const VkClearRect cr = {{{0, 0}, {static_cast<u32>(r.width()), static_cast<u32>(r.height())}}, 0u, 1u};
+			// The clear rect is in framebuffer coordinates and the framebuffer is the whole
+			// destination, so it has to carry the copy's destination offset.
+			const VkClearRect cr = {{{static_cast<s32>(destX), static_cast<s32>(destY)},
+										{static_cast<u32>(r.width()), static_cast<u32>(r.height())}},
+				0u, 1u};
 			vkCmdClearAttachments(GetCurrentCommandBuffer(), 1, &ca, 1, &cr);
 
 			return;

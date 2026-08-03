@@ -1715,19 +1715,26 @@ void GSDevice12::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 			// Do an attachment clear.
 			EndRenderPass();
 
+			// We are only overwriting part of the destination, so a clear it still owes has
+			// to land first -- the partial clear below would otherwise discard it.
+			dTex12->CommitClear();
 			dTex12->SetState(GSTexture::State::Dirty);
+
+			// Only the copy's destination rect, not the whole target.
+			const D3D12_RECT clear_rc = {static_cast<LONG>(destX), static_cast<LONG>(destY),
+				static_cast<LONG>(destX + r.width()), static_cast<LONG>(destY + r.height())};
 
 			if (!dTex12->IsDepthStencil())
 			{
 				dTex12->TransitionToState(GSTexture12::ResourceState::RenderTarget);
 				GetCommandList().list4->ClearRenderTargetView(
-					dTex12->GetWriteDescriptor(), sTex12->GetClearForFormat().v, 0, nullptr);
+					dTex12->GetWriteDescriptor(), sTex12->GetClearForFormat().v, 1, &clear_rc);
 			}
 			else
 			{
 				dTex12->TransitionToState(GSTexture12::ResourceState::DepthWriteStencil);
 				GetCommandList().list4->ClearDepthStencilView(
-					dTex12->GetWriteDescriptor(), D3D12_CLEAR_FLAG_DEPTH, sTex12->GetClearDepth(), 0, 0, nullptr);
+					dTex12->GetWriteDescriptor(), D3D12_CLEAR_FLAG_DEPTH, sTex12->GetClearDepth(), 0, 1, &clear_rc);
 			}
 
 			return;
