@@ -176,26 +176,10 @@ object WindowImpl {
                 // instead of a block inside a scrolling pane.
                 com.armsx2.ui.common.ShaderParamsEditorHost()
 
-                // THE modal host — exactly one, and every modal in the app draws through it.
-                // Above the shader editor because a prompt can be raised from inside it; BELOW
-                // the on-screen keyboard because a modal that takes text entry hands over to
-                // the keyboard and must not draw on top of it.
-                com.armsx2.ui.common.PadModalHost()
-
-                // THE on-screen keyboard host — exactly one, here, above everything.
-                //
-                // It used to be hosted per-screen (library + shader editor). That breaks the
-                // moment a caller isn't one of those: Settings is a NAVIGATION DESTINATION
-                // (AppNavigation: AppRoute.Settings), a sibling of AppRoute.Home, so opening it
-                // unmounts HomeScreen and takes its host with it. A keyboard opened from the
-                // per-game Info tab therefore had nothing rendering it, and only appeared once
-                // the user backed out to Home and remounted the host — which is exactly how the
-                // bug read: "the keyboard shows when I exit the settings menu".
-                //
-                // Hosting it once at the top of the Box every surface passes through makes it
-                // reachable from any screen, and placing it AFTER the shader editor keeps it
-                // above the one other full-screen layer that opens it.
-                com.armsx2.ui.home.LibraryKeyboard.Overlay(this)
+                // The modal host and the on-screen keyboard host used to sit here. Both moved UP
+                // to setContent — see the comment there. Short version: this Box is one arm of
+                // an `if` whose other arm is the setup wizard, so anything hosted here does not
+                // exist during setup, and the wizard's own prompt had nothing to render it.
 
                 // Transient top-left "Welcome Back!" banner (and any future brief note) — hosted
                 // here for the same reason as the keyboard: reachable above every surface.

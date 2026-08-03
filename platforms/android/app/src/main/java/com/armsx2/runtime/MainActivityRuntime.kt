@@ -2563,6 +2563,28 @@ open class MainActivityRuntime : ComponentActivity() {
                 }
             }
 
+            // THE modal host and THE on-screen keyboard host — exactly one of each, at the
+            // Compose root, above every surface in either arm of the branch above.
+            //
+            // Both used to live inside WindowImpl.Window. That is one arm of an `if` whose other
+            // arm is the setup wizard, so nothing hosted in there exists during setup at all —
+            // and the wizard raises its own prompt. Hosting per-surface is the same mistake the
+            // keyboard already made once, when it lived inside HomeScreen and vanished the
+            // moment the user navigated to Settings (a sibling destination, so HomeScreen and
+            // its host both unmounted). One level up from the last place it broke is not a
+            // rule; the Compose root is.
+            //
+            // Keyboard AFTER the modal host, so a modal that hands text entry over to the
+            // keyboard cannot draw on top of it. ScaledUi is reapplied because these are no
+            // longer inside Window's copy of it, and an overlay that ignored the UI Size setting
+            // while every screen behind it honoured it would read as a rendering bug.
+            com.armsx2.ui.ScaledUi {
+                androidx.compose.foundation.layout.Box(Modifier.fillMaxSize()) {
+                    com.armsx2.ui.common.PadModalHost()
+                    com.armsx2.ui.home.LibraryKeyboard.Overlay(this)
+                }
+            }
+
             // "<friend> is now online", over whatever is on screen.
             //
             // At the Compose root rather than inside the library's nav host, because in a game
