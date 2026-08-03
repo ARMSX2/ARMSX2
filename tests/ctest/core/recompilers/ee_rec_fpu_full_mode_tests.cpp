@@ -27,6 +27,8 @@
 
 #include "Config.h"
 
+#include <cfloat>
+#include <cmath>
 #include <cstring>
 #include <gtest/gtest.h>
 
@@ -808,77 +810,92 @@ void RunMaddRow(const MaddRow& r, u32* out_val, u32* out_fcr31)
 // exponent difference -- the only axis the guard mask reads -- is directly
 // controllable. The 72 rows span differences -23..+23, covering both the arm
 // that masks the product and the arm that masks the ACC.
+//
+// Expected values come from the interpreter, not from this emitter. fs = 1.0 is
+// a power of two, so every row's product has a zero tail and the multiplier
+// deficit reaches all 72 of them; when it landed in iFPUd, 35 rows moved one ULP
+// toward zero. Re-pinning them against the emitter that moved them would assert
+// nothing, so each value below was re-derived by running the same row through
+// FPU.cpp, which models the deficit independently (eeMulRound) -- 71 of 72 agree
+// exactly.
+//
+// The 72nd is row 53 (ft = 0x48b65815), and it is the documented cost of the
+// cheap Booth predicate: its mantissa 0x365815 has no bit of 0x2AA set, so only
+// the dropped boundary term fires. The interpreter returns 0xc8b65805, this
+// emitter 0xc8b65806. MulDefectDropsTheBoundaryTermTheInterpreterModels holds
+// that pair on its own, so closing the gap in iFPUd trips a test that names the
+// reason rather than silently re-pinning a number here.
 constexpr MaddRow kGuardMaskWitnesses[] = {
 	{0x3fb38acau, 0x3f800000u, 0xbacc0111u, 0, 0x3fb357cau, 0u},
-	{0x3ab20dd7u, 0x3f800000u, 0xc4195bd9u, 0, 0xc4195bc3u, 0u},
+	{0x3ab20dd7u, 0x3f800000u, 0xc4195bd9u, 0, 0xc4195bc2u, 0u},
 	{0xbe953636u, 0x3f800000u, 0x398a99a5u, 0, 0xbe951390u, 0u},
 	{0x33f55005u, 0x3f800000u, 0xac49b3b5u, 0, 0x33f54e72u, 0u},
-	{0x3b6825c7u, 0x3f800000u, 0xc2caa569u, 0, 0xc2caa399u, 0u},
+	{0x3b6825c7u, 0x3f800000u, 0xc2caa569u, 0, 0xc2caa398u, 0u},
 	{0x42c7b709u, 0x3f800000u, 0x3c50ef1au, 1, 0x42c7b082u, 0u},
 	{0xc481068au, 0x3f800000u, 0xc291ec04u, 1, 0xc46fcf94u, 0u},
-	{0x3924ba1bu, 0x3f800000u, 0xbc28556cu, 0, 0xbc25c284u, 0u},
-	{0xb5219112u, 0x3f800000u, 0x40c46022u, 0, 0x40c46021u, 0u},
-	{0xc36b6e95u, 0x3f800000u, 0xc42bd5ffu, 1, 0x43e1f4b4u, 0u},
+	{0x3924ba1bu, 0x3f800000u, 0xbc28556cu, 0, 0xbc25c283u, 0u},
+	{0xb5219112u, 0x3f800000u, 0x40c46022u, 0, 0x40c46020u, 0u},
+	{0xc36b6e95u, 0x3f800000u, 0xc42bd5ffu, 1, 0x43e1f4b2u, 0u},
 	{0xb29a5453u, 0x3f800000u, 0x29324d8au, 0, 0xb29a543du, 0u},
 	{0xbdc2a958u, 0x3f800000u, 0x329bcd66u, 0, 0xbdc2a956u, 0u},
 	{0xb35354cbu, 0x3f800000u, 0xa9db297eu, 1, 0xb35354b0u, 0u},
-	{0xc2074068u, 0x3f800000u, 0xca66524du, 1, 0x4a6651c6u, 0u},
+	{0xc2074068u, 0x3f800000u, 0xca66524du, 1, 0x4a6651c5u, 0u},
 	{0xbc0f2a31u, 0x3f800000u, 0x384f5a7cu, 0, 0xbc0e5ad7u, 0u},
 	{0xc3d2b83cu, 0x3f800000u, 0xced89810u, 1, 0x4ed8980du, 0u},
 	{0xb5af16b1u, 0x3f800000u, 0xafd2374cu, 1, 0xb5af098eu, 0u},
-	{0x3b2d84c4u, 0x3f800000u, 0xc106f1efu, 0, 0xc106e717u, 0u},
+	{0x3b2d84c4u, 0x3f800000u, 0xc106f1efu, 0, 0xc106e716u, 0u},
 	{0x35f587a4u, 0x3f800000u, 0xb4cf4ba1u, 0, 0x35c1b4bcu, 0u},
-	{0x41f0dbb2u, 0x3f800000u, 0xc8e14376u, 0, 0xc8e13fb3u, 0u},
+	{0x41f0dbb2u, 0x3f800000u, 0xc8e14376u, 0, 0xc8e13fb2u, 0u},
 	{0xb362649cu, 0x3f800000u, 0xa9f35cf9u, 1, 0xb362647eu, 0u},
-	{0xb2fa917bu, 0x3f800000u, 0x39d9d803u, 0, 0x39d9d419u, 0u},
+	{0xb2fa917bu, 0x3f800000u, 0x39d9d803u, 0, 0x39d9d418u, 0u},
 	{0x370518f8u, 0x3f800000u, 0x334e4a63u, 1, 0x37044aaeu, 0u},
-	{0xc11469c2u, 0x3f800000u, 0x462a42d6u, 0, 0x462a1dbcu, 0u},
-	{0x3649cec6u, 0x3f800000u, 0xbf2b2cabu, 0, 0xbf2b2c79u, 0u},
+	{0xc11469c2u, 0x3f800000u, 0x462a42d6u, 0, 0x462a1dbbu, 0u},
+	{0x3649cec6u, 0x3f800000u, 0xbf2b2cabu, 0, 0xbf2b2c78u, 0u},
 	{0xb9e9f9d2u, 0x3f800000u, 0xb833060bu, 1, 0xb9d39911u, 0u},
 	{0x32ea9db1u, 0x3f800000u, 0xadb7adb2u, 0, 0x32ea6fc6u, 0u},
 	{0x3fbcf544u, 0x3f800000u, 0xbc85569au, 0, 0x3fbadfeau, 0u},
-	{0xbaa0f0b0u, 0x3f800000u, 0x3f761279u, 0, 0x3f75c201u, 0u},
+	{0xbaa0f0b0u, 0x3f800000u, 0x3f761279u, 0, 0x3f75c200u, 0u},
 	{0x3be79b92u, 0x3f800000u, 0xb6c52501u, 0, 0x3be76a49u, 0u},
 	{0x32dce714u, 0x3f800000u, 0x2869f708u, 1, 0x32dce70du, 0u},
-	{0xbb7b2e3au, 0x3f800000u, 0x42b93816u, 0, 0x42b93620u, 0u},
-	{0x3baf0f6cu, 0x3f800000u, 0xbff04b54u, 0, 0xbfef9c45u, 0u},
-	{0xbab47c74u, 0x3f800000u, 0x448b789fu, 0, 0x448b7894u, 0u},
-	{0xc3de412bu, 0x3f800000u, 0x4579985cu, 0, 0x455dd037u, 0u},
+	{0xbb7b2e3au, 0x3f800000u, 0x42b93816u, 0, 0x42b9361fu, 0u},
+	{0x3baf0f6cu, 0x3f800000u, 0xbff04b54u, 0, 0xbfef9c44u, 0u},
+	{0xbab47c74u, 0x3f800000u, 0x448b789fu, 0, 0x448b7893u, 0u},
+	{0xc3de412bu, 0x3f800000u, 0x4579985cu, 0, 0x455dd036u, 0u},
 	{0xb2fa7f73u, 0x3f800000u, 0xa912c471u, 1, 0xb2fa7f61u, 0u},
 	{0x4260d9d0u, 0x3f800000u, 0xb9d4bf54u, 0, 0x4260d966u, 0u},
-	{0x3292dea1u, 0x3f800000u, 0xbdaacd0bu, 0, 0xbdaacd09u, 0u},
-	{0x3c6a6437u, 0x3f800000u, 0x3e339b27u, 1, 0xbe24f4e4u, 0u},
-	{0xc1306401u, 0x3f800000u, 0x492f0ebdu, 0, 0x492f0e0du, 0u},
+	{0x3292dea1u, 0x3f800000u, 0xbdaacd0bu, 0, 0xbdaacd08u, 0u},
+	{0x3c6a6437u, 0x3f800000u, 0x3e339b27u, 1, 0xbe24f4e3u, 0u},
+	{0xc1306401u, 0x3f800000u, 0x492f0ebdu, 0, 0x492f0e0cu, 0u},
 	{0x3635b3f4u, 0x3f800000u, 0x343227f4u, 1, 0x362a9175u, 0u},
-	{0xb400e647u, 0x3f800000u, 0x3cb12651u, 0, 0x3cb12611u, 0u},
-	{0x39907517u, 0x3f800000u, 0xbba223b7u, 0, 0xbb991c66u, 0u},
-	{0x330ea9edu, 0x3f800000u, 0xbae904eau, 0, 0xbae903cdu, 0u},
-	{0xbf6ee4e6u, 0x3f800000u, 0xc1054588u, 1, 0x40ecae74u, 0u},
-	{0xc405bbb4u, 0x3f800000u, 0x4627619cu, 0, 0x461f05e1u, 0u},
-	{0xb7fa0949u, 0x3f800000u, 0xb8ab876du, 1, 0x385a0a36u, 0u},
+	{0xb400e647u, 0x3f800000u, 0x3cb12651u, 0, 0x3cb12610u, 0u},
+	{0x39907517u, 0x3f800000u, 0xbba223b7u, 0, 0xbb991c65u, 0u},
+	{0x330ea9edu, 0x3f800000u, 0xbae904eau, 0, 0xbae903ccu, 0u},
+	{0xbf6ee4e6u, 0x3f800000u, 0xc1054588u, 1, 0x40ecae72u, 0u},
+	{0xc405bbb4u, 0x3f800000u, 0x4627619cu, 0, 0x461f05e0u, 0u},
+	{0xb7fa0949u, 0x3f800000u, 0xb8ab876du, 1, 0x385a0a34u, 0u},
 	{0x3b48dad0u, 0x3f800000u, 0xb60bbdb1u, 0, 0x3b48b7e1u, 0u},
-	{0x418eac80u, 0x3f800000u, 0x4a25b350u, 1, 0xca25b309u, 0u},
+	{0x418eac80u, 0x3f800000u, 0x4a25b350u, 1, 0xca25b308u, 0u},
 	{0x35935179u, 0x3f800000u, 0xb3508e2fu, 0, 0x358ccd08u, 0u},
-	{0x452ecb68u, 0x3f800000u, 0xc914f502u, 0, 0xc9144637u, 0u},
-	{0x3ef73c56u, 0x3f800000u, 0x48b65815u, 1, 0xc8b65806u, 0u},
+	{0x452ecb68u, 0x3f800000u, 0xc914f502u, 0, 0xc9144636u, 0u},
+	{0x3ef73c56u, 0x3f800000u, 0x48b65815u, 1, 0xc8b65806u, 0u},  // boundary term: interp says c8b65805
 	{0x3ec3ca47u, 0x3f800000u, 0x33267262u, 1, 0x3ec3ca46u, 0u},
 	{0x332a2e5bu, 0x3f800000u, 0xaa055622u, 0, 0x332a2e3au, 0u},
-	{0x45855769u, 0x3f800000u, 0xc6cac295u, 0, 0xc6a96cbbu, 0u},
+	{0x45855769u, 0x3f800000u, 0xc6cac295u, 0, 0xc6a96cbau, 0u},
 	{0x45393be5u, 0x3f800000u, 0x4266ee5au, 1, 0x4535a02cu, 0u},
 	{0xb5a78404u, 0x3f800000u, 0xaf843707u, 1, 0xb5a77bc1u, 0u},
 	{0x4324653fu, 0x3f800000u, 0xbddf42d3u, 0, 0x43244957u, 0u},
-	{0xc494cb38u, 0x3f800000u, 0xcff0bf3du, 1, 0x4ff0bf3bu, 0u},
-	{0xb95aee1bu, 0x3f800000u, 0x3a201cdau, 0, 0x39d2c2a7u, 0u},
-	{0x42cc503du, 0x3f800000u, 0x463f3294u, 1, 0xc63d99f4u, 0u},
-	{0xb9bd2a07u, 0x3f800000u, 0x451ddb2eu, 0, 0x451ddb2du, 0u},
-	{0xc2cfc0efu, 0x3f800000u, 0xc5730a69u, 1, 0x456c8c62u, 0u},
+	{0xc494cb38u, 0x3f800000u, 0xcff0bf3du, 1, 0x4ff0bf3au, 0u},
+	{0xb95aee1bu, 0x3f800000u, 0x3a201cdau, 0, 0x39d2c2a5u, 0u},
+	{0x42cc503du, 0x3f800000u, 0x463f3294u, 1, 0xc63d99f3u, 0u},
+	{0xb9bd2a07u, 0x3f800000u, 0x451ddb2eu, 0, 0x451ddb2cu, 0u},
+	{0xc2cfc0efu, 0x3f800000u, 0xc5730a69u, 1, 0x456c8c61u, 0u},
 	{0xbaaeb833u, 0x3f800000u, 0x3563ab35u, 0, 0xbaae9bbeu, 0u},
 	{0xb556d230u, 0x3f800000u, 0xa9b57d1cu, 1, 0xb556d22fu, 0u},
 	{0xbfe9553bu, 0x3f800000u, 0x34dcabf8u, 0, 0xbfe95538u, 0u},
-	{0x3a2ce961u, 0x3f800000u, 0x4585376eu, 1, 0xc585376du, 0u},
+	{0x3a2ce961u, 0x3f800000u, 0x4585376eu, 1, 0xc585376cu, 0u},
 	{0xc058aa2eu, 0x3f800000u, 0x38a9a118u, 0, 0xc058a8dbu, 0u},
 	{0x3daca0f3u, 0x3f800000u, 0x33a45aa6u, 1, 0x3daca0e9u, 0u},
-	{0x45f4ede4u, 0x3f800000u, 0xc7fb950bu, 0, 0xc7ec462du, 0u},
+	{0x45f4ede4u, 0x3f800000u, 0xc7fb950bu, 0, 0xc7ec462cu, 0u},
 	{0xbcfcd10eu, 0x3f800000u, 0x3560a544u, 0, 0xbcfccf4du, 0u},
 	{0xc2b750c8u, 0x3f800000u, 0xb7943082u, 1, 0xc2b750c6u, 0u},
 };
@@ -953,4 +970,372 @@ TEST(EeRecFpuFull, MaddWideRoundArms)
 			<< "acc=" << std::hex << r.acc << " fs=" << r.fs << " ft=" << r.ft
 			<< " op=" << std::dec << r.op;
 	}
+}
+
+
+// ---------------------------------------------------------------------------
+// The EE multiplier's one-ULP deficit, in mode 3.
+//
+// The console's multiply array is not correctly rounding: when the exact
+// product has nothing below the single's ULP to absorb it, the result comes
+// back exactly one step closer to zero -- and whether it does is decided by
+// ft's mantissa alone, so mul.s is not commutative. Measured exhaustively on
+// SCPH-90000 (captures/fpmul/): mul.s(1.0, x) is one ULP low for 8257536 of the
+// 2^23 significands, mul.s(x, 1.0) is exact for all of them, and nothing ever
+// came back high or two ULPs low in 16.8M probes.
+//
+// FpuMulHack is a one-point sample of this rule, which is why it compares fs
+// and ft against their own constants and so does not fire with the operands
+// reversed -- exactly what silicon does. iFPUd never had the gamefix; it has
+// the general law instead, which subsumes it (the QTR/PIO2 row below is the
+// gamefix's pair, reached with the gamefix off).
+//
+// The interpreter models the same law in FPU.cpp; these rows are the mode-3
+// codegen of it, at both multiply sites -- recMULop for MUL/MULA and
+// recMaddsub's multiply stage for MADD/MSUB/MADDA/MSUBA, which round through
+// different helpers (ToPS2FPU_Full vs ToPS2FPU_Wide) and so are two separate
+// narrowings of the same decrement.
+namespace {
+struct MulRow { const char* name; u32 fs, ft, want; };
+
+// Every `want` below was measured on an SCPH-90000, FCR0 0x2e40.
+constexpr MulRow kSiliconMulRows[] = {
+	{"1.0 * FLT_MAX",            0x3f800000u, 0x7f7fffffu, 0x7f7ffffeu}, // one ULP low
+	{"FLT_MAX * 1.0 (reversed)", 0x7f7fffffu, 0x3f800000u, 0x7f7fffffu}, // exact: ft mantissa 0
+	{"2.0 * FLT_MAX",            0x40000000u, 0x7f7fffffu, 0x7ffffffeu}, // corpus case 857
+	{"FLT_MAX * 2.0 (reversed)", 0x7f7fffffu, 0x40000000u, 0x7fffffffu}, // corpus case 1
+	{"ft mantissa 0x400000",     0x3f800000u, 0x3fc00000u, 0x3fc00000u}, // exact
+	{"ft mantissa 0x000001",     0x3f800000u, 0x3f800001u, 0x3f800001u}, // exact
+	{"ft mantissa 0x3fffff",     0x3f800000u, 0x3fbfffffu, 0x3fbffffeu}, // low
+	{"2^-126 * pseudo-inf",      0x00800000u, 0x7f800001u, 0x40800001u}, // corpus case 876
+	{"QTR * PIO2 (FpuMulHack)",  0x3e800000u, 0x40490fdbu, 0x3f490fdau},
+	{"PIO2 * QTR (reversed)",    0x40490fdbu, 0x3e800000u, 0x3f490fdbu},
+};
+} // namespace
+
+TEST(EeRecFpuFull, MulDefectMatchesSiliconInRecMulop)
+{
+	for (const MulRow& r : kSiliconMulRows)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.EnableFpuFullMode();
+		h.SetFprBits(0, r.fs);
+		h.SetFprBits(1, r.ft);
+		h.LoadProgram({MUL_S(2, 0, 1)});
+		h.RunJitNoDiff();
+		EXPECT_EQ(h.GetFprBitsJit(2), r.want) << "MUL.S " << r.name;
+
+		EeRecTestHarness ha;
+		ha.EnableCop1();
+		ha.EnableFpuFullMode();
+		ha.SetFprBits(0, r.fs);
+		ha.SetFprBits(1, r.ft);
+		ha.LoadProgram({MULA_S(0, 1)});
+		ha.RunJitNoDiff();
+		EXPECT_EQ(ha.GetAccBitsJit(), r.want) << "MULA.S " << r.name;
+	}
+}
+
+TEST(EeRecFpuFull, MulDefectMatchesSiliconInRecMaddsub)
+{
+	// ACC = +0 so the accumulate is a no-op on the product's bits: the guard
+	// mask reduces a zero operand to its sign and the add leaves the other
+	// operand alone, so what lands in fd is the rounded product and nothing
+	// else. That is what makes this a test of the multiply stage.
+	for (const MulRow& r : kSiliconMulRows)
+	{
+		const u32 neg = r.want ^ 0x80000000u;
+		struct { u32 word; bool is_acc; u32 want; const char* op; } forms[] = {
+			{MADD_S(2, 0, 1),  false, r.want, "MADD.S "},
+			{MSUB_S(2, 0, 1),  false, neg,    "MSUB.S "},
+			{MADDA_S(0, 1),    true,  r.want, "MADDA.S "},
+			{MSUBA_S(0, 1),    true,  neg,    "MSUBA.S "},
+		};
+		for (const auto& f : forms)
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.EnableFpuFullMode();
+			h.SetAccBits(0x00000000u);
+			h.SetFprBits(0, r.fs);
+			h.SetFprBits(1, r.ft);
+			h.LoadProgram({f.word});
+			h.RunJitNoDiff();
+			const u32 got = f.is_acc ? h.GetAccBitsJit() : h.GetFprBitsJit(2);
+			EXPECT_EQ(got, f.want) << f.op << r.name;
+		}
+	}
+}
+
+// The tail test is performed by the rounding, not by an integer tail extract:
+// the emitter decrements the double product's bit pattern unconditionally once
+// the predicate fires, and one double ULP is strictly below one single ULP, so
+// only a product that was exactly representable moves. These rows are the two
+// sides of that -- same ft (predicate on for both), fs chosen so the product's
+// tail is zero in one row and non-zero in the next. If the decrement ever
+// reached a non-zero-tail product it would show up here as an off-by-one.
+TEST(EeRecFpuFull, MulDefectOnlyReachesProductsWithAZeroTail)
+{
+	struct Row { const char* name; u32 fs, ft, want; };
+	static const Row kRows[] = {
+		// ft = 0x3fbfffff (mantissa 0x3fffff, predicate on).
+		{"fs = 2^0,  tail 0",   0x3f800000u, 0x3fbfffffu, 0x3fbffffeu},
+		{"fs = 2^-4, tail 0",   0x3d800000u, 0x3fbfffffu, 0x3dbffffeu},
+		{"fs = 1+2^-23, tail!=0", 0x3f800001u, 0x3fbfffffu, 0x3fc00000u},
+		{"fs = 3.0,  tail!=0",  0x40400000u, 0x3fbfffffu, 0x408fffffu},
+	};
+	for (const Row& r : kRows)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.EnableFpuFullMode();
+		h.SetFprBits(0, r.fs);
+		h.SetFprBits(1, r.ft);
+		h.LoadProgram({MUL_S(2, 0, 1)});
+		h.RunJitNoDiff();
+		EXPECT_EQ(h.GetFprBitsJit(2), r.want) << r.name;
+	}
+}
+
+// A zero product must never be decremented. Under FZ a zero or denormal operand
+// widens to +/-0, the product is exactly +/-0, and 0x0000000000000000 - 1 is
+// 0xFFFFFFFFFFFFFFFF -- a NaN, which would then narrow to garbage. The Fcmeq
+// against the product is the guard, and it covers the interpreter's "zero
+// operand" and "flushed result" cases at once, because a product of two EE
+// normals is at least ~2^-252 and so is never exactly zero.
+//
+// The ft values here all have the Booth predicate set, so the guard is the only
+// thing standing between these rows and a NaN.
+//
+// Liveness: unlike the rest of this block this test also passed before the
+// deficit landed -- nothing decremented, so nothing could corrupt a zero -- so
+// its bidirectional witness is the guard, not the feature. Deleting the
+// Fcmeq/Bic pair from emitDefectiveFmul and rebuilding was checked to fail it:
+// +0 comes back 0xFFFFFFFF and -0 comes back 0x7FFFFFFF, which is the NaN
+// narrowing this pins.
+TEST(EeRecFpuFull, MulDefectNeverDecrementsAZeroProduct)
+{
+	struct Row { const char* name; u32 fs, ft, want; };
+	static const Row kRows[] = {
+		{"+0 * predicate-on",       0x00000000u, 0x3fbfffffu, 0x00000000u},
+		{"-0 * predicate-on",       0x80000000u, 0x3fbfffffu, 0x80000000u},
+		{"predicate-on * +0",       0x3fbfffffu, 0x00000000u, 0x00000000u},
+		{"denormal ft (flushed)",   0x3f800000u, 0x000002aau, 0x00000000u},
+		{"denormal fs (flushed)",   0x000002aau, 0x3fbfffffu, 0x00000000u},
+		{"underflow to zero",       0x00800000u, 0x00bfffffu, 0x00000000u},
+	};
+	for (const Row& r : kRows)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.EnableFpuFullMode();
+		h.SetFprBits(0, r.fs);
+		h.SetFprBits(1, r.ft);
+		h.LoadProgram({MUL_S(2, 0, 1)});
+		h.RunJitNoDiff();
+		EXPECT_EQ(h.GetFprBitsJit(2), r.want) << r.name;
+	}
+}
+
+
+
+// ---------------------------------------------------------------------------
+// The one thing this emitter knowingly does not model, held on its own so that
+// closing it trips a test that says why.
+//
+// The measured predicate has two terms: the Booth term `mant & 0x2AA` (bits
+// 1,3,5,7,9 -- the sign bits of the five lowest radix-4 Booth digits) and a
+// boundary term at the truncation column,
+// `bit11 != (8 <= (mant >> 12 & 0xF) <= 13)`. iFPUd emits only the first: the
+// second needs a bitfield extract NEON does not have, about eight more
+// instructions on every multiply, and it can only change the answer where the
+// product's tail is already zero.
+//
+// ft = 0x48b65815 is a witness. Its mantissa 0x365815 has no bit of 0x2AA set,
+// bit 11 is 1, and (0x365815 >> 12) & 0xF is 5, so the boundary term is the
+// only one that fires. The interpreter (FPU.cpp eeMulDefectiveFt) models both
+// and returns the decremented product; iFPUd returns the IEEE one.
+//
+// If iFPUd ever grows the boundary term, this test fails and the fix is to
+// delete it -- along with the carve-out in kGuardMaskWitnesses row 53.
+TEST(EeRecFpuFull, MulDefectDropsTheBoundaryTermTheInterpreterModels)
+{
+	constexpr u32 kFs = 0x3f800000u; // 1.0: the product is ft, tail always zero
+	constexpr u32 kFt = 0x48b65815u;
+
+	EeRecTestHarness hi;
+	hi.EnableCop1();
+	hi.SetFprBits(0, kFs);
+	hi.SetFprBits(1, kFt);
+	hi.LoadProgram({MUL_S(2, 0, 1)});
+	hi.RunInterpOnly();
+	EXPECT_EQ(hi.GetFprBitsInterp(2), 0x48b65814u) << "interp models the boundary term";
+
+	EeRecTestHarness h;
+	h.EnableCop1();
+	h.EnableFpuFullMode();
+	h.SetFprBits(0, kFs);
+	h.SetFprBits(1, kFt);
+	h.LoadProgram({MUL_S(2, 0, 1)});
+	h.RunJitNoDiff();
+	EXPECT_EQ(h.GetFprBitsJit(2), 0x48b65815u) << "iFPUd drops it: one ULP high";
+
+	// The Booth term alone, for contrast: same shape, and here they agree.
+	EeRecTestHarness hb;
+	hb.EnableCop1();
+	hb.EnableFpuFullMode();
+	hb.SetFprBits(0, kFs);
+	hb.SetFprBits(1, 0x48b65a15u); // mantissa 0x365a15: 0x2AA hits bit 9
+	hb.LoadProgram({MUL_S(2, 0, 1)});
+	hb.RunJitNoDiff();
+	EXPECT_EQ(hb.GetFprBitsJit(2), 0x48b65a14u);
+}
+
+// ---------------------------------------------------------------------------
+// Randomised differential: mode 3 against the interpreter, which models the
+// same multiply law independently and in completely different code (FPU.cpp
+// eeMulProduct, an integer tail test on the 48-bit significand product; iFPUd
+// lets the narrowing perform the tail test on a double). Agreement across a
+// wide operand space is what says the emitter implements the law rather than
+// the handful of rows above.
+//
+// Dimensions varied and crossed: six operand classes on each side (arbitrary
+// words, random normals, powers of two -- which force a zero tail and so make
+// the predicate decide every row, the top binade where exp == 0xff is an
+// ordinary EE number, the minimum-normal binade, and denormal/zero), operand
+// order (the law is not commutative, and both sides draw from the same classes),
+// register aliasing (fd == fs and fd == ft), and both emit sites (recMULop and
+// recMaddsub's multiply stage, reached with ACC = +0 so the accumulate is a
+// no-op on the product's bits).
+//
+// Three divergences are licensed, and each is counted so the sweep cannot pass
+// by never reaching them:
+//
+//   1. the boundary term iFPUd drops, one ULP further from zero;
+//   2. an operand in the exponent-0xff binade. fpuDouble() clamps it to
+//      +/-Fmax before multiplying, so the two engines multiply different
+//      numbers and the row says nothing about the multiplier;
+//   3. a product above FLT_MAX. The interpreter saturates there, mode 3 at the
+//      EE's own 0x7FFFFFFF, a whole binade higher.
+//
+// 2 and 3 are the same pre-existing gap seen from two sides: this branch's
+// interpreter has no exponent-0xff binade at all. They are recognised from the
+// operands and the exact product, never from the results, so a wrong result
+// cannot license itself. Anything else -- a wrong predicate, a decrement
+// escaping into a non-zero tail, a zero product turned into a NaN -- fails.
+TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
+{
+	auto splitmix = [](u64& state) {
+		u64 z = (state += 0x9E3779B97F4A7C15ull);
+		z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+		z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+		return z ^ (z >> 31);
+	};
+	auto pick = [&splitmix](u64& state, int cls) -> u32 {
+		const u64 r = splitmix(state);
+		const u32 sign = (r >> 63) ? 0x80000000u : 0u;
+		const u32 mant = static_cast<u32>(r) & 0x7FFFFFu;
+		switch (cls)
+		{
+			case 0: return static_cast<u32>(r);                                    // anything
+			case 1: return sign | ((static_cast<u32>(r >> 32) % 254u + 1u) << 23) | mant; // normal
+			case 2: return sign | ((static_cast<u32>(r >> 32) % 254u + 1u) << 23); // power of two
+			case 3: return sign | 0x7f800000u | mant;                              // top binade
+			case 4: return sign | (1u << 23) | mant;                               // min normal
+			default: return sign | mant;                                           // denormal/zero
+		}
+	};
+	// Both terms of the measured predicate, so a divergence can be classified
+	// rather than merely counted.
+	auto booth = [](u32 ft) { return (ft & 0x2AAu) != 0; };
+	auto full = [](u32 ft) {
+		const u32 m = ft & 0x7FFFFFu;
+		if (m & 0x2AAu)
+			return true;
+		const u32 h = (m >> 12) & 0xFu;
+		return ((m >> 11) & 1u) != ((h >= 8u && h <= 13u) ? 1u : 0u);
+	};
+
+	// The two engine gaps this branch has outside the multiplier, both decided
+	// from the inputs alone. fpuDouble() clamps an exponent-0xff operand to
+	// +/-Fmax, and the interpreter's product saturates at FLT_MAX where mode 3
+	// goes on to 0x7FFFFFFF; either way the row is not about the multiply array.
+	auto clamped = [](u32 x) { return (x & 0x7F800000u) == 0x7F800000u; };
+	auto overflows = [](u32 fs, u32 ft) {
+		auto val = [](u32 x) {
+			if ((x & 0x7F800000u) == 0) x &= 0x80000000u;              // fpuDouble
+			else if ((x & 0x7F800000u) == 0x7F800000u) x = (x & 0x80000000u) | 0x7F7FFFFFu;
+			float f;
+			std::memcpy(&f, &x, sizeof(f));
+			return static_cast<double>(f);
+		};
+		return !(std::fabs(val(fs) * val(ft)) <= FLT_MAX);
+	};
+
+	u64 state = 0x1234567890ABCDEFull;
+	int rows = 0, boundary_gap[4] = {0, 0, 0, 0};
+	int clamp_gap = 0, saturation_gap = 0;
+	for (int i = 0; i < 40000; i++)
+	{
+		const int cs = static_cast<int>(splitmix(state) % 6);
+		const int ct = static_cast<int>(splitmix(state) % 6);
+		const u32 fs = pick(state, cs), ft = pick(state, ct);
+
+		const int form = i % 4;
+		u32 word = 0;
+		int dst = 2;
+		switch (form)
+		{
+			case 0: word = MUL_S(2, 0, 1); dst = 2; break;   // recMULop, distinct fd
+			case 1: word = MUL_S(0, 0, 1); dst = 0; break;   // recMULop, fd == fs
+			case 2: word = MUL_S(1, 0, 1); dst = 1; break;   // recMULop, fd == ft
+			default: word = MADD_S(2, 0, 1); dst = 2; break; // recMaddsub multiply stage
+		}
+
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.EnableFpuFullMode();
+		h.SetAccBits(0);
+		h.SetFprBits(0, fs);
+		h.SetFprBits(1, ft);
+		h.LoadProgram({word});
+		h.RunJitNoDiff();
+		const u32 jit = h.GetFprBitsJit(dst);
+
+		EeRecTestHarness hi;
+		hi.EnableCop1();
+		hi.SetAccBits(0);
+		hi.SetFprBits(0, fs);
+		hi.SetFprBits(1, ft);
+		hi.LoadProgram({word});
+		hi.RunInterpOnly();
+		const u32 interp = hi.GetFprBitsInterp(dst);
+
+		rows++;
+		if (jit == interp)
+			continue;
+
+		if (clamped(fs) || clamped(ft)) { clamp_gap++; continue; }
+		if (overflows(fs, ft)) { saturation_gap++; continue; }
+
+		const bool boundary_only = !booth(ft) && full(ft);
+		ASSERT_TRUE(boundary_only && jit == interp + 1u)
+			<< "unlicensed divergence: form=" << form << " cs=" << cs << " ct=" << ct
+			<< std::hex << " fs=" << fs << " ft=" << ft
+			<< " jit=" << jit << " interp=" << interp;
+		boundary_gap[form]++;
+	}
+
+	EXPECT_EQ(rows, 40000);
+	// Liveness. "No unlicensed divergence" is also what a harness that never
+	// reached the emitter would report, so each licensed one must actually be
+	// observed -- the boundary term at both emit sites, since they narrow
+	// through different code.
+	EXPECT_GT(clamp_gap, 0) << "no exponent-0xff operand reached the sweep";
+	EXPECT_GT(saturation_gap, 0) << "no product overflowed FLT_MAX in the sweep";
+	EXPECT_GT(boundary_gap[0] + boundary_gap[1] + boundary_gap[2], 0)
+		<< "recMULop never reached the boundary-term class: the sweep is vacuous";
+	EXPECT_GT(boundary_gap[3], 0)
+		<< "recMaddsub never reached the boundary-term class: the sweep is vacuous";
 }
