@@ -279,6 +279,7 @@ TEST(EeFpuGuardedAddSubConsole, RandomisedAddSubMatchesTheModelOnBothEngines)
 	std::uniform_int_distribution<u32> pick(0, 1);
 
 	int checked = 0, masked_rows = 0, cliff_rows = 0, boundary_rows = 0;
+	int underflow_rows = 0;
 	for (int i = 0; i < 3000; ++i)
 	{
 		const int ea = exp_dist(rng);
@@ -295,6 +296,15 @@ TEST(EeFpuGuardedAddSubConsole, RandomisedAddSubMatchesTheModelOnBothEngines)
 		// dominates and the guard mask is unobservable.
 		if ((want_add & 0x7F800000u) >= 0x7F800000u || (want_sub & 0x7F800000u) >= 0x7F800000u)
 			continue;
+		// Same at the bottom: below 2^-126 the console keeps an add/sub result's
+		// mantissa bits instead of flushing (EeFpuUnderflowConsole), and the
+		// model above computes in host floats, which FZ has already flushed.
+		// Counted, see the bound below.
+		if ((want_add & 0x7F800000u) == 0 || (want_sub & 0x7F800000u) == 0)
+		{
+			++underflow_rows;
+			continue;
+		}
 
 		SCOPED_TRACE(testing::Message() << std::hex << "a=" << a << " b=" << b
 			<< std::dec << " diff=" << (ea - eb));
@@ -325,6 +335,10 @@ TEST(EeFpuGuardedAddSubConsole, RandomisedAddSubMatchesTheModelOnBothEngines)
 	EXPECT_GT(checked, 100) << "anti-vacuity: on no pair did the guard change the "
 							   "answer, so this test would pass with the masking "
 							   "deleted";
+	// If the skip swallows more than a handful of the 3000 pairs, the
+	// generator's exponent distribution moved.
+	EXPECT_LT(underflow_rows, 100) << "the underflow skip swallowed " << underflow_rows
+								   << " pairs; it is meant to be a handful";
 }
 
 // ---------------------------------------------------------------------------

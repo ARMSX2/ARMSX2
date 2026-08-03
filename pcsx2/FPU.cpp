@@ -302,20 +302,47 @@ namespace COP1 {
 	    through a scaled-down copy and its exponent put back afterwards. Scaling
 	    by a power of two is exact and leaves the mantissa alone, so the rounding
 	    decision is bit-identical to the one the host would have made if float
-	    had the range.
-	  * Denormal results flush to signed zero, written out rather than left to
-	    the ambient FPCR's FZ.
+	    had the range -- the same reason SQRT.S can compute sqrt(|Ft|/4)*2.
+	  * Underflowing results are not all flushed; `addsub` picks the rule. See
+	    the block below.
 
 	The (float) casts round under the host FPCR, so the EE's rounding mode is
 	honoured here without naming it -- including the divide/sqrt unit's separate
 	mode, which its callers scope in.
 */
-static u32 eeRoundToSingle(double exact)
+/*	Underflow: a result strictly below 2^-126 and not zero is not always
+	flushed. The add/sub family leaves the mantissa bits where normalisation put
+	them and forces the exponent field to 0; MUL and DIV clear them and return
+	signed zero. That is the raw output of an adder with no denormal path:
+	`exact` is a double 1.m * 2^E, and what comes out is m's top 23 bits, i.e.
+	bits [51:29] of the double, with the exponent thrown away. It is not the
+	arithmetic answer, only its bits, and no rounding mode produces it.
+
+	The console rows this reproduces, how they were sampled and how they rule
+	out flushing and the true denormal value, are in
+	tests/ctest/core/recompilers/ee_fpu_underflow_console_tests.cpp.
+*/
+static u32 eeRoundToSingle(double exact, bool addsub = false)
 {
 	const double mag = std::fabs(exact);
 
 	if (mag > kEeFpuMax)
 		return (std::signbit(exact) ? 0x80000000u : 0u) | 0x7FFFFFFFu;
+
+	if (mag < kEeMinNormal)
+	{
+		/*	Ahead of the (float) cast, so the answer does not depend on the
+			ambient FPCR having FZ set and nothing can round up out of the
+			region -- the console returns +0 for a product of 2^-126 - 2^-150,
+			which is nearer 2^-126 than to zero. */
+		const u32 sign = std::signbit(exact) ? 0x80000000u : 0u;
+		if (!addsub || exact == 0.0)
+			return sign;
+
+		u64 bits;
+		std::memcpy(&bits, &exact, sizeof(bits));
+		return sign | static_cast<u32>((bits >> 29) & 0x7FFFFFu);
+	}
 
 	FPRreg r;
 	if (mag >= 0x1p126)
@@ -330,8 +357,6 @@ static u32 eeRoundToSingle(double exact)
 	}
 
 	r.f = static_cast<float>(exact);
-	if ((r.UL & 0x7F800000) == 0)
-		r.UL &= 0x80000000; // denormal or zero -- the EE has only the zero
 	return r.UL;
 }
 
@@ -390,7 +415,7 @@ static u32 eeGuardedAddSub(u32 a, u32 b, bool issub)
 	fpuGuardMask(a, b);
 	if (issub)
 		b ^= 0x80000000;
-	return eeRoundToSingle(eeToDouble(a) + eeToDouble(b));
+	return eeRoundToSingle(eeToDouble(a) + eeToDouble(b), true);
 }
 
 /*	Divide two EE singles with exactly one rounding.

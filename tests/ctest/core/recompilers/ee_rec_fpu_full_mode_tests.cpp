@@ -1611,28 +1611,36 @@ TEST(EeRecFpuFull, MulDefectBoundaryTermGapAlsoExistsInTheUpperBinade)
 }
 
 // ---------------------------------------------------------------------------
-// ADD/SUB-family underflow: full mode keeps the mantissa bits.
+// ADD/SUB-family underflow: FULL mode keeps the mantissa bits.
 //
-// A full-mode ADD/SUB/ADDA/SUBA/MADD/MSUB/MADDA/MSUBA result that lands below
-// 2^-126 without being zero goes through ToPS2FPU_Full's `addsub` arm, which
-// rebuilds a PS2 denormal out of the double's mantissa bits instead of
-// flushing. It is a bit model, not a value conversion: 0x00800003 + 0x80800000
-// is exactly 3*2^-149 and the model returns 0x00400000 == 2^-127, six orders
-// of magnitude larger. x86 iFPUd.cpp:214 does the same and calls it not
-// thoroughly tested.
+// When a full-mode ADD/SUB/ADDA/SUBA/MADD/MSUB/MADDA/MSUBA result lands below
+// 2^-126 but is not zero, ToPS2FPU_Full's `addsub` arm does NOT flush it: it
+// copies the double result's mantissa bits [51:29] into the single's [22:0]
+// with an exponent field of 0, keeping the sign. x86 iFPUd.cpp does the same
+// and says why:
 //
-// Only this path implements it:
+//     //On ADD/SUB, the PS2 simply leaves the mantissa bits as they are
+//     //(after normalization)
+//     //IEEE either clears them (FtZ) or returns the denormalized result.
+//     //not thoroughly tested : other operations such as MUL and DIV seem to
+//     //clear all mantissa bits?
 //
-//   engine                 result    FCR31
-//   full mode (this path)  00400000  U|SU
-//   arm64 fast path        00000000  0     flushes, and raises no O/U at all
-//                                          (fpuClearOUFlags in iFPU-arm64.cpp)
-//   interpreter (FPU.cpp)  00000000  U|SU  clampToEeRange flushes denormal
-//                                          results to signed zero
+// So this is a deliberate model of the EE's adder -- not a rounding artifact.
+// It is NOT a value conversion: 0x00800003 + 0x80800000 is exactly 3*2^-149,
+// and the model returns 0x00400000 == 2^-127, six orders of magnitude larger.
+// The bits, not the value, are what it claims to reproduce.
 //
-// The hardware corpus cannot referee it: no arithmetic op in the 1147 v3 cases
-// has a denormal result on hardware or on either engine. These rows pin what
-// mode 3 does today, not what silicon does.
+// The console says this path is right: EeFpuUnderflowConsole
+// (ee_fpu_underflow_console_tests.cpp) carries the hardware rows and scores all
+// three engines against them. Mode 3 was the only engine that had it; the
+// interpreter has since been fixed and the fast path is pinned there as a
+// divergence.
+//
+// These rows stay here as the mode-3 pin: the format-churn work moves values
+// between the single and double domains and must not flatten this on the way.
+//
+// MUL/MULA are the negative control: addsub=false, so they flush to signed zero
+// on all three engines and their rows must NOT show a mantissa.
 TEST(EeRecFpuFull, AddSubUnderflowKeepsTheMantissaBits)
 {
 	struct Row { const char* name; u32 acc, fs, ft; u32 word; bool is_acc; u32 expected; };
