@@ -10,10 +10,18 @@ sitting on a savestate.
 
 Requires `EmuCore/EnablePINE = true` in the INI (or the Big Picture UI toggle).
 
+`get` reports what the emulator is ACTUALLY running, not what the INI says. On any
+game carrying GameDB hardware fixes those differ, because the fixes are applied to
+the live config after the settings load and never written to the file. That gap is
+also why a settings A/B can measure the same thing in both arms while reporting two
+different settings — `get` now says so on stderr when it sees one. Use --persisted
+for the on-disk value.
+
 Examples:
     gsctl.py stats
     gsctl.py stats --watch 1.0
     gsctl.py get EmuCore/GS accurate_blending_unit
+    gsctl.py get EmuCore/GS UserHacks_AutoFlushLevel --json
     gsctl.py set EmuCore/GS accurate_blending_unit 3
     gsctl.py loadstate 2
     gsctl.py frameadvance
@@ -40,6 +48,7 @@ MSG_GET_STATS = 0x10
 MSG_GET_SETTING = 0x11
 MSG_SET_SETTING = 0x12
 MSG_FRAME_ADVANCE = 0x13
+MSG_GET_EFFECTIVE_SETTING = 0x15
 
 IPC_OK = 0
 STATUS_NAMES = {0: "running", 1: "paused", 2: "shutdown"}
@@ -133,8 +142,27 @@ class Pine:
         return STATUS_NAMES.get(raw, "unknown(%d)" % raw)
 
     def get_setting(self, section, key):
+        """The PERSISTED value, straight from the INI layer stack.
+
+        This is not necessarily what the emulator is running -- see
+        get_effective_setting. Kept because "what is on disk" is a real question,
+        just rarely the one being asked.
+        """
         return self._read_string(
             self.request(MSG_GET_SETTING, lp_string(section) + lp_string(key))
+        )
+
+    def get_effective_setting(self, section, key):
+        """What the setting is actually running as, plus the persisted value.
+
+        Returns section, key, effective, persisted, known, differs. `known` is
+        False for keys outside Pcsx2Config, where the persisted value is all there
+        is. `differs` compares the two strings and makes no claim about the cause.
+        """
+        return json.loads(
+            self._read_string(
+                self.request(MSG_GET_EFFECTIVE_SETTING, lp_string(section) + lp_string(key))
+            )
         )
 
     def set_setting(self, section, key, value):
@@ -172,9 +200,13 @@ def main():
     sub.add_parser("title", help="current game title")
     sub.add_parser("frameadvance", help="advance a paused VM by one frame")
 
-    p = sub.add_parser("get", help="read a setting")
+    p = sub.add_parser("get", help="read what a setting is actually running as")
     p.add_argument("section")
     p.add_argument("key", nargs="?")
+    p.add_argument("--persisted", action="store_true",
+                   help="read the INI instead of the live config (what 'get' used to do)")
+    p.add_argument("--json", action="store_true",
+                   help="print the full record: effective, persisted, known, differs")
 
     p = sub.add_parser("set", help="write a setting and apply it")
     p.add_argument("section")
@@ -207,7 +239,26 @@ def main():
             elif args.cmd == "get":
                 # Accept both 'get EmuCore/GS Key' and 'get EmuCore/GS/Key'.
                 section, key = (args.section, args.key) if args.key else split_section_key(args.section)
-                print(pine.get_setting(section, key))
+                if args.persisted:
+                    print(pine.get_setting(section, key))
+                else:
+                    record = pine.get_effective_setting(section, key)
+                    if args.json:
+                        print(json.dumps(record))
+                    else:
+                        # stdout stays a bare value so this still composes in a pipeline;
+                        # the discrepancy goes to stderr, where a human cannot miss it and
+                        # a script does not have to care.
+                        print(record["effective"] if record["known"] else record["persisted"])
+                        if record["differs"]:
+                            print(
+                                "note: %s/%s is running as '%s' but the INI says '%s' — something "
+                                "changed it after load (GameDB fix, safe-mode masking, or a settings "
+                                "layer this query does not read). An A/B that writes this key will "
+                                "measure the running value in BOTH arms."
+                                % (section, key, record["effective"], record["persisted"]),
+                                file=sys.stderr,
+                            )
             elif args.cmd == "set":
                 if args.value is None:
                     section, key = split_section_key(args.section)
