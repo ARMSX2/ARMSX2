@@ -3411,22 +3411,37 @@ bool GSDeviceVK::CheckFeatures()
 	// input attachment and the feedback-loop-layout texelFetch sampler. Reading a separate copy of
 	// the target is the only reliable form.
 	//
-	// ⚠️ Narrowed to replacement textures deliberately. Device A/B on Turnip/Adreno 650:
-	//   - TotA + HD pack, in-tile: text layer gone at 4x AND at 1x (so it is not tile-size related)
-	//   - TotA + HD pack, RT copy: correct
-	//   - NFS Underground, no pack, 608 barrier draws/frame through the same in-tile self-read:
-	//     renders correctly
-	// So the self-read is fine for ordinary blending and only fails when the draw also samples a
-	// replacement. Applying the copy unconditionally cost +38%/+40% frame time at 3x/4x on the
-	// NFSU dump (copies 5 -> 348 per frame, render passes 62 -> 391) for no correctness gain,
-	// which is far too much to charge every Adreno user for a bug none of them can hit without a
-	// texture pack. Pack users pay it and get correct output; everyone else keeps the fast path.
+	// This was originally narrowed to replacement textures, on the evidence that Tales of the
+	// Abyss + an HD pack lost its whole 2D text layer in-tile (at 1x as well as 4x, so not
+	// tile-size related) while NFS Underground pushed 608 barrier draws per frame through the same
+	// in-tile self-read with no pack and rendered correctly. That read the pattern backwards: the
+	// self-read is not reliable for ordinary blending either, it just fails subtly enough there to
+	// look fine. OutRun 2006 has no pack and renders its sea as high-contrast two-tone speckle -
+	// 4.0% of the frame differs from the software renderer by more than 16 levels in-tile, and
+	// 0.13% through the RT copy (Turnip/Adreno 650, water dump, 2026-08-02). Both in-pass shapes
+	// are byte-identical wrong, which is what says driver rather than draw.
 	//
-	// If a title is ever reported losing draws WITHOUT a pack, widen this to unconditional — the
-	// underlying driver defect is not replacement-specific, only our evidence is.
+	// So it applies to every draw on an affected driver now. The cost is real and scales with
+	// upscale - measured on device, RT copy vs in-tile, median frame time over two runs each:
+	//
+	//              1x      3x      4x
+	//   FlatOut 2  +7.5%  +10.5%  +24.6%   (copies/frame 23 -> 477, render passes 100 -> 538)
+	//   OutRun    +20.5%   +9.9%   +0.5%
+	//   GoW II     -3.2%   +2.9%
+	//   RG lamps   -1.5%   +9.3%
+	//
+	// The old note recorded +38%/+40% at 3x/4x on NFSU. Nothing here reproduces that on the titles
+	// available now; FlatOut 2 makes a bigger structural change (more copies, more render passes)
+	// for a third of the cost at 3x. Treat the old figure as an upper bound on a build we can no
+	// longer run, not as a contradiction.
+	//
+	// What would make this cheap is knowing WHICH draws the driver gets wrong - OutRun's sea fails
+	// while FlatOut's several hundred feedback draws do not, and nobody has isolated the
+	// difference. Until someone does, correctness for everyone beats speed for everyone, and
+	// OverrideTextureBarriers = 1 is the documented way out for anyone who would rather have the
+	// frames.
 	const bool rt_self_read_is_broken =
-		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback) &&
-		GSConfig.LoadTextureReplacements;
+		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback);
 
 	// framebuffer_fetch: the tiler-native ordered Cd read (ROAA / subpassLoad in tile
 	// memory). It lets DetermineBarriers() (GSRendererHW.cpp) drop every per-primitive
@@ -3553,8 +3568,8 @@ bool GSDeviceVK::CheckFeatures()
 	// revision that fixes the read; an explicit 0 already lands here anyway.
 	if (rt_self_read_is_broken && GSConfig.OverrideTextureBarriers < 0)
 	{
-		Console.WriteLn("VK: texture replacements active on a driver with an unreliable in-pass "
-						"render-target self-read — forcing the RT-copy blend path.");
+		Console.WriteLn("VK: driver has an unreliable in-pass render-target self-read — forcing the "
+						"RT-copy blend path.");
 		m_features.texture_barrier = false;
 	}
 	// Mali r44p1: the attachment-feedback-loop-layout disable in CreateDevice only swapped the
