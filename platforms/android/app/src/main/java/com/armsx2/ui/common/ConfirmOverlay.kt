@@ -1,15 +1,10 @@
 package com.armsx2.ui.common
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -20,33 +15,24 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.withFrameNanos
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.armsx2.i18n.str
-import com.armsx2.ui.settings.SettingsControllerNav
 import com.armsx2.ui.settings.controllerFocusable
 
 /**
  * A yes/no confirmation that a controller can actually drive.
  *
- * NOT a Compose `Dialog`/`AlertDialog` on purpose. A Compose dialog is its own Android window and
- * grabs input focus, so controller KeyEvents are consumed there and never reach the Activity's
- * dispatchKeyEvent — which is where this app's D-pad navigation lives. A dialog therefore renders
- * a confirmation unreachable by pad (the same trap that made the old button-bind popup dead).
- * This draws inline in the caller's own Compose tree instead.
- *
- * While shown it claims [SettingsControllerNav.activeLayer], so only its own two buttons take
- * D-pad input and the selection can't escape into the screen behind the scrim.
+ * Thin content on top of [PadModal] — that file carries the reasoning, including why this is
+ * never a Compose `AlertDialog`. Everything this one adds is the card: title, message, and a
+ * Cancel/Confirm pair with Cancel pre-focused, so the safe option is the one already under the
+ * cursor on a destructive prompt.
  *
  * @param destructive tints Confirm as an error action — for irreversible things like a reset.
+ * @param idPrefix distinguishes concurrent prompts' nav ids and layer.
  */
 @Composable
 fun ConfirmOverlay(
@@ -57,57 +43,18 @@ fun ConfirmOverlay(
     confirmLabel: String = str("action.ok"),
     dismissLabel: String = str("action.cancel"),
     destructive: Boolean = false,
-    /** Distinguishes concurrent overlays' nav ids. Only matters if two can ever be composed at once. */
     idPrefix: String = "confirm",
 ) {
     val layer = "confirm-overlay:$idPrefix"
-    DisposableEffect(layer) {
-        val previous = SettingsControllerNav.activeLayer.value
-        SettingsControllerNav.activeLayer.value = layer
-        // Drop the outside selection: that row is un-navigable now and would look stuck.
-        SettingsControllerNav.clearSelection()
-        onDispose {
-            SettingsControllerNav.activeLayer.value = previous
-            SettingsControllerNav.clearSelection()
-        }
-    }
-    // Then take a selection of our own, once our buttons have registered (they register during
-    // this composition, so it cannot happen in the DisposableEffect above). Required, not
-    // cosmetic: the home screen routes the D-pad to the cover grid unless this registry reports
-    // a selection, so without this the first press would move the library behind the scrim.
-    // Cancel, so the safe option is pre-focused on a destructive prompt.
-    LaunchedEffect(layer) {
-        var attempts = 0
-        while (!SettingsControllerNav.selectById("$layer.cancel") && attempts < 10) {
-            attempts++
-            withFrameNanos {}
-        }
-    }
-
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.62f))
-            // Swallow taps on the scrim so they can't reach the screen behind, and treat a tap
-            // outside the card as Cancel. indication = null: a ripple across the whole scrim
-            // looks like a bug.
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onDismiss,
-            ),
-        contentAlignment = Alignment.Center,
+    PadModal(
+        key = layer,
+        onDismiss = onDismiss,
+        initialFocusId = "$layer.cancel",
     ) {
         Surface(
             modifier = Modifier
                 .padding(24.dp)
-                .widthIn(max = 420.dp)
-                // Absorb taps on the card itself, or the scrim's dismiss fires through it.
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = {},
-                ),
+                .widthIn(max = 420.dp),
             shape = RoundedCornerShape(20.dp),
             color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
@@ -135,7 +82,6 @@ fun ConfirmOverlay(
                     ConfirmButton(
                         label = dismissLabel,
                         id = "$layer.cancel",
-                        layer = layer,
                         onClick = onDismiss,
                         container = MaterialTheme.colorScheme.surfaceVariant,
                         content = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -144,7 +90,6 @@ fun ConfirmOverlay(
                     ConfirmButton(
                         label = confirmLabel,
                         id = "$layer.confirm",
-                        layer = layer,
                         onClick = onConfirm,
                         container = if (destructive) MaterialTheme.colorScheme.errorContainer
                         else MaterialTheme.colorScheme.primaryContainer,
@@ -158,11 +103,11 @@ fun ConfirmOverlay(
 }
 
 /**
- * App-wide confirmation host, for prompts raised from somewhere that cannot draw a full-screen
- * overlay itself — a row inside a scrolling settings tab would clip the scrim to its own bounds
- * and scroll away with the list.
+ * App-wide confirmation host, for prompts raised from code that has no composition of its own to
+ * put a [ConfirmOverlay] in — a click handler deep in a view model, say.
  *
- * Call [ask] from anywhere; [Host] (mounted once in WindowImpl, above every surface) renders it.
+ * Call [ask] from anywhere; [Host] (composed once in WindowImpl) authors the prompt, and the
+ * shared modal host renders it.
  */
 object GlobalConfirm {
     data class Request(
@@ -213,7 +158,6 @@ object GlobalConfirm {
 private fun ConfirmButton(
     label: String,
     id: String,
-    layer: String,
     onClick: () -> Unit,
     container: Color,
     content: Color,
@@ -224,7 +168,6 @@ private fun ConfirmButton(
             controllerId = id,
             shape = RoundedCornerShape(14.dp),
             onConfirm = onClick,
-            layer = layer,
         ),
         shape = RoundedCornerShape(14.dp),
         color = container,

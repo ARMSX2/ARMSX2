@@ -173,6 +173,12 @@ object WindowImpl {
                 // instead of a block inside a scrolling pane.
                 com.armsx2.ui.common.ShaderParamsEditorHost()
 
+                // THE modal host — exactly one, and every modal in the app draws through it.
+                // Above the shader editor because a prompt can be raised from inside it; BELOW
+                // the on-screen keyboard because a modal that takes text entry hands over to
+                // the keyboard and must not draw on top of it.
+                com.armsx2.ui.common.PadModalHost()
+
                 // THE on-screen keyboard host — exactly one, here, above everything.
                 //
                 // It used to be hosted per-screen (library + shader editor). That breaks the
@@ -192,9 +198,8 @@ object WindowImpl {
                 // here for the same reason as the keyboard: reachable above every surface.
                 com.armsx2.ui.WelcomeBannerOverlay(this)
 
-                // App-wide confirmation prompts. Hosted last so the scrim covers everything,
-                // and here rather than at the call site because a prompt raised from inside a
-                // scrolling settings tab would clip to that tab and scroll away with it.
+                // Authors the app-wide confirmation prompt (GlobalConfirm.ask). It is composed
+                // here, but drawn by PadModalHost above — this call renders nothing itself.
                 com.armsx2.ui.common.GlobalConfirm.Host()
             }
         }

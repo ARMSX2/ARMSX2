@@ -41,6 +41,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -95,6 +96,15 @@ private val focusBlue = Color(0xFF3DA5FF)
 
 val LocalSettingsScrollState = staticCompositionLocalOf<ScrollState?> { null }
 
+/** The exclusive input layer the surrounding content belongs to — null on a base screen, a
+ *  modal's key inside PadModal's host, which is the only thing that ever provides it.
+ *
+ *  Ambient rather than a parameter on [controllerFocusable] because every shared widget has to
+ *  layer correctly the moment it is placed inside a modal, and a per-widget argument is a rule
+ *  forty call sites have to remember. Position in the tree is the one spelling of "which layer
+ *  am I in" that cannot be got wrong. */
+internal val LocalNavLayer = staticCompositionLocalOf<String?> { null }
+
 @Composable
 fun settingsScrollState(): ScrollState = LocalSettingsScrollState.current ?: remember { ScrollState(0) }
 
@@ -113,10 +123,24 @@ internal object SettingsControllerNav {
         val layer: String? = null,
     )
 
-    // Exclusive input layer. When non-null, only items registered with that layer
-    // participate in nav, so a modal's selection cannot "escape" into the screen
-    // still composed behind its scrim. Set only by the confirmation overlay today.
-    val activeLayer = mutableStateOf<String?>(null)
+    /** One entry per modal currently claiming input. [restoreId] is the selection that was
+     *  live when it opened, so closing it can put the user back where they were. */
+    private class Layer(val key: String, val restoreId: String?)
+
+    // Exclusive input layers. Only items registered with the TOP layer participate in nav, so
+    // a modal's selection cannot "escape" into the screen still composed behind its scrim.
+    //
+    // A stack rather than the single slot this started as, for two reasons. Modals nest (the
+    // library's exit confirm is raised from inside the overflow panel), and the save-the-
+    // previous-value/restore-on-close idiom that a single slot forces is wrong whenever two
+    // sibling subtrees dispose in the order Compose happens to pick: the survivor is left
+    // holding a layer that is no longer active, so it looks fine and answers nothing.
+    //
+    // Written only by PadModal, via pushLayer/popLayer. Everything else reads.
+    private val layers = mutableStateListOf<Layer>()
+
+    /** The layer that currently owns input; null when the base screen does. */
+    val activeLayer: String? get() = layers.lastOrNull()?.key
 
     // An UNREGISTERED id is in no layer at all. Spelling that out matters: the map
     // lookup yields null for both "not registered" and "registered at the base
@@ -125,7 +149,32 @@ internal object SettingsControllerNav {
     // distinguish.
     private fun inActiveLayer(id: String): Boolean {
         val item = registry[id] ?: return false
-        return item.layer == activeLayer.value
+        return item.layer == activeLayer
+    }
+
+    /** Claim [key] as the exclusive input layer and park the outside selection — that row is
+     *  un-navigable now, and a ring left lit on it reads as stuck. */
+    fun pushLayer(key: String) {
+        layers.add(Layer(key, selectedId.value))
+        selectedId.value = null
+        selectedIndex.intValue = -1
+        scrollVelocity.floatValue = 0f
+    }
+
+    /** Release [key]. Removed BY KEY, never "drop the top" — see the note on [layers].
+     *  Restores the selection the layer interrupted, so closing a row's info panel returns
+     *  you to that row rather than to the top of the pane, which reads as a scroll bug and is
+     *  really a nav bug. */
+    fun popLayer(key: String) {
+        val index = layers.indexOfLast { it.key == key }
+        if (index < 0) return
+        val gone = layers.removeAt(index)
+        // Only the layer that was actually on top hands the selection back; a layer buried
+        // under a still-open modal must not disturb what that modal has focused.
+        if (index != layers.size) return
+        selectedId.value = gone.restoreId?.takeIf { inActiveLayer(it) }
+        selectedIndex.intValue = orderedIds().indexOf(selectedId.value)
+        scrollVelocity.floatValue = 0f
     }
 
     private var scopeKey: String = ""
@@ -262,6 +311,13 @@ internal object SettingsControllerNav {
         return true
     }
 
+    /** Highlight the first item of the active layer, silently. The fallback a modal takes when
+     *  it names no initial focus, or names one that never registered — so a modal can only be
+     *  left with nothing selected if it contains nothing focusable at all. Silent because this
+     *  fires as the modal appears, and a nav click there sounds like a press the user didn't
+     *  make. */
+    fun selectFirstInLayer(): Boolean = selectEdgeOfLayer(first = true, sfx = false)
+
     /** True when a registered item in the active layer is currently highlighted —
      *  i.e. the registry "lane" owns D-pad focus (used by the home screen to split
      *  input between the cover grid and the toolbar/recents lane). */
@@ -290,14 +346,14 @@ internal object SettingsControllerNav {
      *  direction arrives with nothing selected yet — travelling down or right lands on the
      *  first item, up or left on the last, which is what makes the very first press after a
      *  surface appears feel like it entered from the edge you pushed from. */
-    private fun selectEdgeOfLayer(first: Boolean): Boolean {
+    private fun selectEdgeOfLayer(first: Boolean, sfx: Boolean = true): Boolean {
         val ids = orderedIds()
         if (ids.isEmpty()) return false
         val next = if (first) 0 else ids.lastIndex
         val changed = selectedId.value != ids[next]
         selectedId.value = ids[next]
         selectedIndex.intValue = next
-        if (changed) com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.NAV)
+        if (changed && sfx) com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.NAV)
         return true
     }
 
@@ -458,8 +514,11 @@ internal fun Modifier.controllerFocusable(
     onConfirm: (() -> Unit)? = null,
     onLeft: (() -> Unit)? = null,
     onRight: (() -> Unit)? = null,
-    layer: String? = null,
 ): Modifier = composed {
+    // Which layer this control belongs to is decided by WHERE IT SITS, not by an argument the
+    // call site has to remember to pass. That is what lets an unmodified ToggleRow or slider be
+    // dropped inside a modal and layer correctly with no plumbing at all.
+    val navLayer = LocalNavLayer.current
     var focused by remember { mutableStateOf(false) }
     val bringIntoView = remember { BringIntoViewRequester() }
     if (controllerId != null) {
@@ -473,7 +532,7 @@ internal fun Modifier.controllerFocusable(
                 onConfirm = onConfirm,
                 onLeft = onLeft,
                 onRight = onRight,
-                layer = layer,
+                layer = navLayer,
             )
         }
         DisposableEffect(controllerId) {
