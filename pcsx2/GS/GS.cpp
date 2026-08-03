@@ -281,15 +281,31 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 
 	// GV7-1d-ii: instantiate the front parser only when the back thread really
 	// engaged (the renderer ctor falls back to inline records on a non-Vulkan
-	// HW device). Unsynchronized HW downloads read local memory from the EE
-	// thread with no drain — that session runs single-object (lockstep).
+	// HW device). An EE-thread read of *live* local memory forces single-object
+	// (lockstep) — see below for why that is not every EE-thread read.
 	if (GSConfig.BackThreadMode == GSBackThreadMode::Pipelined && g_gs_renderer->IsBackThreadRunning())
 	{
-		// Asynchronous joins Unsynchronized here: both read GS local memory from the EE thread
-		// with no drain point, so neither can run against a separate front parser object.
-		if (IsHardwareDownloadEEThreadRead(GSConfig.HWDownloadMode) && GSConfig.UseHardwareRenderer())
+		// Which thread performs the readback is the wrong question here; what it reads is the
+		// right one. Unsynchronized takes GS local memory directly, with no lock and no drain,
+		// so a queued back thread leaves it arbitrarily far behind what the EE expects.
+		// Asynchronous instead takes the CPU shadow under m_async_readback_mutex, and that
+		// mutex is the synchronization point: the shadow only moves when the GS thread
+		// publishes a completed GPU download, never when a record is queued or executed. Queue
+		// depth therefore cannot change what the EE sees, and every shadow accessor already
+		// routes through m_mem_target, so a front object reaches the back's authoritative copy.
+		//
+		// The one exception is a shadow that never came up — ReadLocalMemoryUnsync then falls
+		// back to live local memory, which is exactly the Unsynchronized hazard, now against a
+		// concurrently drawing back thread. The renderer is already constructed at this point,
+		// so its shadow state is the thing to ask.
+		const bool ee_thread_reads_live_memory =
+			GSConfig.HWDownloadMode == GSHardwareDownloadMode::Unsynchronized ||
+			(GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous &&
+				!g_gs_renderer->IsAsyncReadbackReady());
+
+		if (ee_thread_reads_live_memory && GSConfig.UseHardwareRenderer())
 		{
-			Console.Warning("GS: pipelined mode is unsupported with EE-thread HW downloads — running lockstep.");
+			Console.Warning("GS: pipelined mode is unsupported with EE-thread reads of live GS memory — running lockstep.");
 		}
 		else
 		{

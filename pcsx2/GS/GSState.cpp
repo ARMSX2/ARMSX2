@@ -94,7 +94,7 @@ constexpr int GSState::GetSaveStateSize(int version)
 	return size;
 }
 
-GSState::GSState(GSBackQueue::Channel* shared_chan)
+GSState::GSState(GSBackQueue::Channel* shared_chan, bool is_front_parser)
 	: m_vt(this)
 {
 	// m_nativeres seems to be a hack. Unfortunately it impacts draw call number which make debug painful in the replayer.
@@ -151,8 +151,13 @@ GSState::GSState(GSBackQueue::Channel* shared_chan)
 
 	// Hardware renderers only: the SW renderer never issues GPU downloads, so there is
 	// nothing to shadow and MTGS::InitAndReadFIFO keeps taking the synchronizing path.
-	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && GSConfig.UseHardwareRenderer())
+	// The front parser object is skipped as well — it borrows the back's shadow through
+	// m_mem_target, so allocating one here would cost a GS-memory-sized copy nobody reads.
+	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && GSConfig.UseHardwareRenderer() &&
+		!is_front_parser)
+	{
 		EnsureAsyncReadbackMemory();
+	}
 
 	m_v.RGBAQ.Q = 1.0f;
 
@@ -212,7 +217,7 @@ GSState::~GSState()
 }
 
 GSFrontState::GSFrontState(GSState* back)
-	: GSState(back->GetBackChannel())
+	: GSState(back->GetBackChannel(), true)
 	, m_back(back)
 {
 	m_mem_target = back;
@@ -1209,16 +1214,22 @@ void GSState::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 {
 	m_mipmap = GSConfig.Mipmap;
 
-	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && GSConfig.UseHardwareRenderer())
+	// Only the object owning local memory owns the shadow. UpdateSettings runs on both halves
+	// of the pipelined split (GS.cpp), and the front's accessors all resolve to the back, so
+	// letting it through here would re-seed a copy nobody reads on every settings change.
+	if (m_mem_target == this)
 	{
-		if (old_config.HWDownloadMode != GSHardwareDownloadMode::Asynchronous || !m_async_readback_mem)
-			EnsureAsyncReadbackMemory();
-	}
-	else if (old_config.HWDownloadMode == GSHardwareDownloadMode::Asynchronous)
-	{
-		// The allocation is deliberately kept (the EE thread may be mid-read), but stop
-		// publishing into it so a later re-enable always re-seeds from live memory.
-		m_async_readback_ready.store(false, std::memory_order_release);
+		if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && GSConfig.UseHardwareRenderer())
+		{
+			if (old_config.HWDownloadMode != GSHardwareDownloadMode::Asynchronous || !m_async_readback_mem)
+				EnsureAsyncReadbackMemory();
+		}
+		else if (old_config.HWDownloadMode == GSHardwareDownloadMode::Asynchronous)
+		{
+			// The allocation is deliberately kept (the EE thread may be mid-read), but stop
+			// publishing into it so a later re-enable always re-seeds from live memory.
+			m_async_readback_ready.store(false, std::memory_order_release);
+		}
 	}
 
 	if (

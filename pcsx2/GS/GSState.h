@@ -42,7 +42,11 @@ public:
 	// front parser object of the two-object split passes the back object's
 	// channel so its records land in the consumed ring. Default (nullptr) uses
 	// this object's own channel storage, exactly as before.
-	GSState(GSBackQueue::Channel* shared_chan = nullptr);
+	/// `is_front_parser` suppresses the asynchronous-readback shadow allocation: the front
+	/// object of the pipelined split reaches the back's shadow through m_mem_target, so its
+	/// own copy would be written once and never read. It cannot be inferred here — the
+	/// derived constructor only repoints m_mem_target after this one returns.
+	GSState(GSBackQueue::Channel* shared_chan = nullptr, bool is_front_parser = false);
 	virtual ~GSState();
 
 	// GV7-1d-ii: channel/back-thread visibility for the front-object lifecycle
