@@ -147,11 +147,11 @@ fun BiosManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Bio
         )
     }
     state.error?.let { error ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissError,
-            title = { Text(str("setup.page.bios.title")) },
-            text = { Text(error) },
-            confirmButton = { TextButton(onClick = viewModel::dismissError) { Text(str("action.ok")) } },
+        com.armsx2.ui.common.NotifyOverlay(
+            title = str("setup.page.bios.title"),
+            message = error,
+            onDismiss = viewModel::dismissError,
+            idPrefix = "bios.error",
         )
     }
 }

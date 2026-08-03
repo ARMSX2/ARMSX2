@@ -1,12 +1,15 @@
 package com.armsx2.ui.common
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -95,6 +98,71 @@ fun ConfirmOverlay(
                         else MaterialTheme.colorScheme.primaryContainer,
                         content = if (destructive) MaterialTheme.colorScheme.onErrorContainer
                         else MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A one-button acknowledgement — an error, a result, an explanation. The other half of the pair
+ * with [ConfirmOverlay]: same card, no choice to make.
+ *
+ * The body scrolls and is height-capped, and the modal declares that scroll state, so a message
+ * longer than the panel can be read with the pad's Up/Down once the selection has nowhere left to
+ * go. Every window dialog this replaces simply clipped long text with no way to reach the rest.
+ *
+ * @param idPrefix distinguishes concurrent notices' nav ids and layer.
+ */
+@Composable
+fun NotifyOverlay(
+    title: String,
+    message: String,
+    onDismiss: () -> Unit,
+    buttonLabel: String = str("action.ok"),
+    idPrefix: String = "notify",
+) {
+    val layer = "notify-overlay:$idPrefix"
+    val bodyScroll = rememberScrollState()
+    PadModal(
+        key = layer,
+        onDismiss = onDismiss,
+        initialFocusId = "$layer.ok",
+        scrollState = bodyScroll,
+    ) {
+        Surface(
+            modifier = Modifier
+                .padding(24.dp)
+                .widthIn(max = 420.dp),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+            tonalElevation = 6.dp,
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .heightIn(max = 340.dp)
+                        .verticalScroll(bodyScroll),
+                )
+                Spacer(Modifier.height(18.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    ConfirmButton(
+                        label = buttonLabel,
+                        id = "$layer.ok",
+                        onClick = onDismiss,
+                        container = MaterialTheme.colorScheme.primaryContainer,
+                        content = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                 }
             }

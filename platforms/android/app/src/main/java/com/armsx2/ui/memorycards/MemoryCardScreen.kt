@@ -131,11 +131,11 @@ fun MemoryCardScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Memo
         )
     }
     (state.error ?: state.message)?.let { message ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissMessage,
-            title = { Text(if (state.error != null) str("memcard.title") else str("action.ok")) },
-            text = { Text(message) },
-            confirmButton = { TextButton(onClick = viewModel::dismissMessage, modifier = Modifier.controllerFocusable("memcard.message.ok", onConfirm = viewModel::dismissMessage)) { Text(str("action.ok")) } },
+        com.armsx2.ui.common.NotifyOverlay(
+            title = if (state.error != null) str("memcard.title") else str("action.ok"),
+            message = message,
+            onDismiss = viewModel::dismissMessage,
+            idPrefix = "memcard.message",
         )
     }
 }

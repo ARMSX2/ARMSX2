@@ -1272,67 +1272,15 @@ internal fun InfoHint(title: String, message: String) {
             com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_OPEN)
             onDispose { com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_CLOSE) }
         }
-        val layer = "info-hint:$title"
-        val bodyScroll = rememberScrollState()
-        com.armsx2.ui.common.PadModal(
-            key = layer,
+        // The shared acknowledgement panel: same card, same scrolling body, so a setting
+        // description behaves exactly like an error notice and neither can drift from the other.
+        com.armsx2.ui.common.NotifyOverlay(
+            title = title,
+            message = message,
             onDismiss = { open = false },
-            // Every setting description is a candidate for being longer than the panel, so the
-            // pad needs Up/Down to read it — Close is the only thing here to select.
-            scrollState = bodyScroll,
-        ) {
-            Surface(
-                modifier = Modifier
-                    .padding(24.dp)
-                    .widthIn(max = 420.dp),
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
-                tonalElevation = 6.dp,
-            ) {
-                Column(Modifier.padding(20.dp)) {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    // Cap the height and scroll INSIDE it. AlertDialog did not scroll its text
-                    // slot at all, so a description longer than the slot was CLIPPED mid-sentence
-                    // with no way to reach the rest — which is most of the longer setting
-                    // explanations (reported against Low Latency Mode, cut off at "...turning
-                    // back off if the frame pacing").
-                    Text(
-                        message,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .heightIn(max = 340.dp)
-                            .verticalScroll(bodyScroll),
-                    )
-                    Spacer(Modifier.height(18.dp))
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        Surface(
-                            onClick = { open = false },
-                            modifier = Modifier.controllerFocusable(
-                                controllerId = "$layer.close",
-                                shape = RoundedCornerShape(14.dp),
-                                onConfirm = { open = false },
-                            ),
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                        ) {
-                            Text(
-                                str("action.close"),
-                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            )
-                        }
-                    }
-                }
-            }
-        }
+            buttonLabel = str("action.close"),
+            idPrefix = "info:$title",
+        )
     }
 }
 

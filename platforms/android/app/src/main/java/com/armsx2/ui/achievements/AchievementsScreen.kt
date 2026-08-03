@@ -128,11 +128,11 @@ fun AchievementsScreen(onBack: () -> Unit, viewModel: AchievementsViewModel = vi
     }
 
     state.error?.let { error ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissError,
-            title = { Text("RetroAchievements") },
-            text = { Text(error) },
-            confirmButton = { TextButton(onClick = viewModel::dismissError) { Text(str("action.ok")) } },
+        com.armsx2.ui.common.NotifyOverlay(
+            title = "RetroAchievements",
+            message = error,
+            onDismiss = viewModel::dismissError,
+            idPrefix = "ra.error",
         )
     }
 
