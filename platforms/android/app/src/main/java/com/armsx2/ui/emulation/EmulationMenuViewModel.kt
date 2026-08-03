@@ -306,13 +306,27 @@ object EmulationMenuInputController {
     private var owner: EmulationMenuViewModel? = null
     private var pendingTab: EmulationMenuTab? = null
 
-    // Two-zone nav. The pause menu is a vertical TAB column on the left and a
-    // CONTENT pane on the right. `inContent` = false means the D-pad walks the tab
-    // column (Up/Down between tabs, which switches the shown pane); Right (or A)
-    // steps into the content pane, where every control is a SettingsControllerNav
-    // registry item and the router drives it (Up/Down move, Left/Right adjust, A
-    // confirm). B (or Left off the first control) returns to the tab column.
+    // Two-zone nav. `inContent` = false means the D-pad walks the TAB STRIP, where moving
+    // switches the shown pane outright; stepping off it towards the content enters the
+    // CONTENT pane, in which every control is a SettingsControllerNav registry item and the
+    // router drives it (move, adjust, A confirm). B — or stepping back off the near edge —
+    // returns to the strip.
+    //
+    // WHICH WAY each of those is depends on the layout, so it is [tabsHorizontal] that says,
+    // never a constant here.
     val inContent = androidx.compose.runtime.mutableStateOf(false)
+
+    /**
+     * True when the tab strip runs left-to-right above the content (the compact layout, which
+     * is every handheld), false when it is the vertical rail to the RIGHT of it.
+     *
+     * Set by the screen from the same `compact` it lays itself out with, because a hardcoded
+     * axis is precisely the bug this replaces: the strip moved from a left-hand column to a
+     * top row and a right-hand rail, and the D-pad kept walking the column that no longer
+     * existed — Up/Down cycling tabs laid out horizontally, and Right stepping "into" content
+     * that was below or to the left.
+     */
+    val tabsHorizontal = androidx.compose.runtime.mutableStateOf(true)
     private val nav get() = com.armsx2.ui.settings.SettingsControllerNav
 
     // Set by a modal panel drawn OVER the menu (Friends) for as long as it is open; the lambda
@@ -363,20 +377,35 @@ object EmulationMenuInputController {
             return true
         }
         val viewModel = owner ?: return false
+        val horizontal = tabsHorizontal.value
         if (!inContent.value) {
-            // Tab column (vertical): Up/Down switch tabs; Right steps into content.
+            // Walk the strip along its OWN axis, and step into the content in the direction the
+            // content actually lies: below a top row, left of a right-hand rail.
             when {
-                dy < 0 -> viewModel.cycleTab(-1)
-                dy > 0 -> viewModel.cycleTab(1)
-                dx > 0 -> enterContent()
+                horizontal && dx < 0 -> viewModel.cycleTab(-1)
+                horizontal && dx > 0 -> viewModel.cycleTab(1)
+                horizontal && dy > 0 -> enterContent()
+                !horizontal && dy < 0 -> viewModel.cycleTab(-1)
+                !horizontal && dy > 0 -> viewModel.cycleTab(1)
+                !horizontal && dx < 0 -> enterContent()
             }
             return true
         }
-        // Content pane: registry-driven.
-        when {
-            dy != 0 -> nav.moveSpatial(0, dy)
-            dx < 0 -> if (!nav.adjust(-1) && !nav.moveSpatial(-1, 0)) exitContent()
-            dx > 0 -> if (!nav.adjust(1)) nav.moveSpatial(1, 0)
+        // Content pane: registry-driven. Leaving it is always "step off the edge nearest the
+        // strip", so which axis carries the exit is the mirror of the one that walks the strip
+        // — and the other axis is free to adjust values, as it is everywhere else.
+        if (horizontal) {
+            when {
+                dy < 0 -> if (!nav.moveSpatial(0, -1)) exitContent()
+                dy > 0 -> nav.moveSpatial(0, 1)
+                dx != 0 -> if (!nav.adjust(dx)) nav.moveSpatial(dx, 0)
+            }
+        } else {
+            when {
+                dy != 0 -> nav.moveSpatial(0, dy)
+                dx > 0 -> if (!nav.adjust(1) && !nav.moveSpatial(1, 0)) exitContent()
+                dx < 0 -> if (!nav.adjust(-1)) nav.moveSpatial(-1, 0)
+            }
         }
         return true
     }

@@ -175,6 +175,13 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val compact = maxWidth < 700.dp
+        // The one place the layout is chosen is the one place that tells the pad which way it
+        // runs — compact puts the tabs in a Row above the content, wide puts them in a rail to
+        // its right, and the D-pad axis follows from here rather than from a constant that can
+        // fall out of step with the UI (which is exactly what it had done).
+        androidx.compose.runtime.SideEffect {
+            EmulationMenuInputController.tabsHorizontal.value = compact
+        }
         AnimatedVisibility(
             visible = shown,
             enter = fadeIn(tween(190, easing = EaseOut)),
