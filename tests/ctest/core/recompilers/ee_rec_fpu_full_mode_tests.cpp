@@ -752,3 +752,205 @@ TEST(EeRecFpuFull, DoubleModeScratchPreservesLiveGuestScalars)
 	// Sanity: the double-mode ADD result is still correct (normal-range round-trip).
 	EXPECT_EQ(h.GetFprBitsJit(2), FloatBits(3.75f));
 }
+
+// ---- Guard mask and rounding for the MADD family (recMaddsub) --------------
+//
+// recMaddsub keeps the product wide between its two roundings: the multiply
+// stage rounds it to PS2 precision in the double domain (ToPS2FPU_Wide) instead
+// of narrowing to a single and widening straight back, and the guard mask then
+// runs on doubles (FPU_ADD_SUB_D). Both tests below pin behaviour that predates
+// that change -- they pass identically on the narrow implementation.
+//
+// Why these inputs and not rounder ones: a 1067-row grid built by sweeping the
+// ACC/product exponent difference from -32..+32 with all-ones mantissas cannot
+// see the guard mask at all (breaking the mask shift by one moved 0 of its
+// rows). The masked bits sit strictly below half an ULP of the sum, so they
+// only survive the truncation when the exact sum lands within that band of an
+// ULP boundary -- which all-ones mantissas never do. The rows below were found
+// by searching for that condition against an independent C model of the
+// pipeline, which is also where their expected values come from. Breaking the
+// mask shift by one moves every one of them by exactly 1 ULP.
+
+namespace {
+
+struct MaddRow
+{
+	u32 acc, fs, ft;
+	int op; // 0=MADD 1=MSUB 2=MADDA 3=MSUBA
+	u32 expected;
+	u32 expected_fcr31;
+};
+
+// Runs one row and returns the destination register's bits (Fd for MADD/MSUB,
+// ACC for MADDA/MSUBA) plus FCR31.
+void RunMaddRow(const MaddRow& r, u32* out_val, u32* out_fcr31)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	h.EnableFpuFullMode();
+	h.SetFcr31(0);
+	h.SetAccBits(r.acc);
+	h.SetFprBits(0, r.fs);
+	h.SetFprBits(1, r.ft);
+	switch (r.op)
+	{
+		case 0: h.LoadProgram({MADD_S(2, 0, 1)}); break;
+		case 1: h.LoadProgram({MSUB_S(2, 0, 1)}); break;
+		case 2: h.LoadProgram({MADDA_S(0, 1)}); break;
+		default: h.LoadProgram({MSUBA_S(0, 1)}); break;
+	}
+	h.RunJitNoDiff();
+	*out_val = (r.op < 2) ? h.GetFprBitsJit(2) : h.GetAccBitsJit();
+	*out_fcr31 = h.JitSnapshot().fprs.fprc[31];
+}
+
+// fs is 1.0 throughout, so the rounded product is ft and the ACC/product
+// exponent difference -- the only axis the guard mask reads -- is directly
+// controllable. The 72 rows span differences -23..+23, covering both the arm
+// that masks the product and the arm that masks the ACC.
+constexpr MaddRow kGuardMaskWitnesses[] = {
+	{0x3fb38acau, 0x3f800000u, 0xbacc0111u, 0, 0x3fb357cau, 0u},
+	{0x3ab20dd7u, 0x3f800000u, 0xc4195bd9u, 0, 0xc4195bc3u, 0u},
+	{0xbe953636u, 0x3f800000u, 0x398a99a5u, 0, 0xbe951390u, 0u},
+	{0x33f55005u, 0x3f800000u, 0xac49b3b5u, 0, 0x33f54e72u, 0u},
+	{0x3b6825c7u, 0x3f800000u, 0xc2caa569u, 0, 0xc2caa399u, 0u},
+	{0x42c7b709u, 0x3f800000u, 0x3c50ef1au, 1, 0x42c7b082u, 0u},
+	{0xc481068au, 0x3f800000u, 0xc291ec04u, 1, 0xc46fcf94u, 0u},
+	{0x3924ba1bu, 0x3f800000u, 0xbc28556cu, 0, 0xbc25c284u, 0u},
+	{0xb5219112u, 0x3f800000u, 0x40c46022u, 0, 0x40c46021u, 0u},
+	{0xc36b6e95u, 0x3f800000u, 0xc42bd5ffu, 1, 0x43e1f4b4u, 0u},
+	{0xb29a5453u, 0x3f800000u, 0x29324d8au, 0, 0xb29a543du, 0u},
+	{0xbdc2a958u, 0x3f800000u, 0x329bcd66u, 0, 0xbdc2a956u, 0u},
+	{0xb35354cbu, 0x3f800000u, 0xa9db297eu, 1, 0xb35354b0u, 0u},
+	{0xc2074068u, 0x3f800000u, 0xca66524du, 1, 0x4a6651c6u, 0u},
+	{0xbc0f2a31u, 0x3f800000u, 0x384f5a7cu, 0, 0xbc0e5ad7u, 0u},
+	{0xc3d2b83cu, 0x3f800000u, 0xced89810u, 1, 0x4ed8980du, 0u},
+	{0xb5af16b1u, 0x3f800000u, 0xafd2374cu, 1, 0xb5af098eu, 0u},
+	{0x3b2d84c4u, 0x3f800000u, 0xc106f1efu, 0, 0xc106e717u, 0u},
+	{0x35f587a4u, 0x3f800000u, 0xb4cf4ba1u, 0, 0x35c1b4bcu, 0u},
+	{0x41f0dbb2u, 0x3f800000u, 0xc8e14376u, 0, 0xc8e13fb3u, 0u},
+	{0xb362649cu, 0x3f800000u, 0xa9f35cf9u, 1, 0xb362647eu, 0u},
+	{0xb2fa917bu, 0x3f800000u, 0x39d9d803u, 0, 0x39d9d419u, 0u},
+	{0x370518f8u, 0x3f800000u, 0x334e4a63u, 1, 0x37044aaeu, 0u},
+	{0xc11469c2u, 0x3f800000u, 0x462a42d6u, 0, 0x462a1dbcu, 0u},
+	{0x3649cec6u, 0x3f800000u, 0xbf2b2cabu, 0, 0xbf2b2c79u, 0u},
+	{0xb9e9f9d2u, 0x3f800000u, 0xb833060bu, 1, 0xb9d39911u, 0u},
+	{0x32ea9db1u, 0x3f800000u, 0xadb7adb2u, 0, 0x32ea6fc6u, 0u},
+	{0x3fbcf544u, 0x3f800000u, 0xbc85569au, 0, 0x3fbadfeau, 0u},
+	{0xbaa0f0b0u, 0x3f800000u, 0x3f761279u, 0, 0x3f75c201u, 0u},
+	{0x3be79b92u, 0x3f800000u, 0xb6c52501u, 0, 0x3be76a49u, 0u},
+	{0x32dce714u, 0x3f800000u, 0x2869f708u, 1, 0x32dce70du, 0u},
+	{0xbb7b2e3au, 0x3f800000u, 0x42b93816u, 0, 0x42b93620u, 0u},
+	{0x3baf0f6cu, 0x3f800000u, 0xbff04b54u, 0, 0xbfef9c45u, 0u},
+	{0xbab47c74u, 0x3f800000u, 0x448b789fu, 0, 0x448b7894u, 0u},
+	{0xc3de412bu, 0x3f800000u, 0x4579985cu, 0, 0x455dd037u, 0u},
+	{0xb2fa7f73u, 0x3f800000u, 0xa912c471u, 1, 0xb2fa7f61u, 0u},
+	{0x4260d9d0u, 0x3f800000u, 0xb9d4bf54u, 0, 0x4260d966u, 0u},
+	{0x3292dea1u, 0x3f800000u, 0xbdaacd0bu, 0, 0xbdaacd09u, 0u},
+	{0x3c6a6437u, 0x3f800000u, 0x3e339b27u, 1, 0xbe24f4e4u, 0u},
+	{0xc1306401u, 0x3f800000u, 0x492f0ebdu, 0, 0x492f0e0du, 0u},
+	{0x3635b3f4u, 0x3f800000u, 0x343227f4u, 1, 0x362a9175u, 0u},
+	{0xb400e647u, 0x3f800000u, 0x3cb12651u, 0, 0x3cb12611u, 0u},
+	{0x39907517u, 0x3f800000u, 0xbba223b7u, 0, 0xbb991c66u, 0u},
+	{0x330ea9edu, 0x3f800000u, 0xbae904eau, 0, 0xbae903cdu, 0u},
+	{0xbf6ee4e6u, 0x3f800000u, 0xc1054588u, 1, 0x40ecae74u, 0u},
+	{0xc405bbb4u, 0x3f800000u, 0x4627619cu, 0, 0x461f05e1u, 0u},
+	{0xb7fa0949u, 0x3f800000u, 0xb8ab876du, 1, 0x385a0a36u, 0u},
+	{0x3b48dad0u, 0x3f800000u, 0xb60bbdb1u, 0, 0x3b48b7e1u, 0u},
+	{0x418eac80u, 0x3f800000u, 0x4a25b350u, 1, 0xca25b309u, 0u},
+	{0x35935179u, 0x3f800000u, 0xb3508e2fu, 0, 0x358ccd08u, 0u},
+	{0x452ecb68u, 0x3f800000u, 0xc914f502u, 0, 0xc9144637u, 0u},
+	{0x3ef73c56u, 0x3f800000u, 0x48b65815u, 1, 0xc8b65806u, 0u},
+	{0x3ec3ca47u, 0x3f800000u, 0x33267262u, 1, 0x3ec3ca46u, 0u},
+	{0x332a2e5bu, 0x3f800000u, 0xaa055622u, 0, 0x332a2e3au, 0u},
+	{0x45855769u, 0x3f800000u, 0xc6cac295u, 0, 0xc6a96cbbu, 0u},
+	{0x45393be5u, 0x3f800000u, 0x4266ee5au, 1, 0x4535a02cu, 0u},
+	{0xb5a78404u, 0x3f800000u, 0xaf843707u, 1, 0xb5a77bc1u, 0u},
+	{0x4324653fu, 0x3f800000u, 0xbddf42d3u, 0, 0x43244957u, 0u},
+	{0xc494cb38u, 0x3f800000u, 0xcff0bf3du, 1, 0x4ff0bf3bu, 0u},
+	{0xb95aee1bu, 0x3f800000u, 0x3a201cdau, 0, 0x39d2c2a7u, 0u},
+	{0x42cc503du, 0x3f800000u, 0x463f3294u, 1, 0xc63d99f4u, 0u},
+	{0xb9bd2a07u, 0x3f800000u, 0x451ddb2eu, 0, 0x451ddb2du, 0u},
+	{0xc2cfc0efu, 0x3f800000u, 0xc5730a69u, 1, 0x456c8c62u, 0u},
+	{0xbaaeb833u, 0x3f800000u, 0x3563ab35u, 0, 0xbaae9bbeu, 0u},
+	{0xb556d230u, 0x3f800000u, 0xa9b57d1cu, 1, 0xb556d22fu, 0u},
+	{0xbfe9553bu, 0x3f800000u, 0x34dcabf8u, 0, 0xbfe95538u, 0u},
+	{0x3a2ce961u, 0x3f800000u, 0x4585376eu, 1, 0xc585376du, 0u},
+	{0xc058aa2eu, 0x3f800000u, 0x38a9a118u, 0, 0xc058a8dbu, 0u},
+	{0x3daca0f3u, 0x3f800000u, 0x33a45aa6u, 1, 0x3daca0e9u, 0u},
+	{0x45f4ede4u, 0x3f800000u, 0xc7fb950bu, 0, 0xc7ec462du, 0u},
+	{0xbcfcd10eu, 0x3f800000u, 0x3560a544u, 0, 0xbcfccf4du, 0u},
+	{0xc2b750c8u, 0x3f800000u, 0xb7943082u, 1, 0xc2b750c6u, 0u},
+};
+
+} // namespace
+
+TEST(EeRecFpuFull, MaddGuardMaskAcrossExponentDifferences)
+{
+	for (const MaddRow& r : kGuardMaskWitnesses)
+	{
+		u32 val = 0, fcr31 = 0;
+		RunMaddRow(r, &val, &fcr31);
+		EXPECT_EQ(val, r.expected)
+			<< "acc=" << std::hex << r.acc << " fs=" << r.fs << " ft=" << r.ft
+			<< " op=" << std::dec << r.op;
+	}
+}
+
+// ToPS2FPU_Wide's arms: saturation at the PS2 maximum, the exponent-0xff band
+// (whose halve/narrow/re-raise arm the wide form deletes outright -- up there a
+// PS2 single is just an ordinary double, so it is a plain chop), the underflow
+// flush with its U|SU flags, and signed zero. Expected values are pinned from
+// the narrow implementation these replaced.
+TEST(EeRecFpuFull, MaddWideRoundArms)
+{
+	static const MaddRow kRows[] = {
+		// product == the EE maximum exactly (FLT_MAX * 2): in range, no O.
+		{0x3f800000u, 0x7f7fffffu, 0x40000000u, 0, 0x7fffffffu, 0x00000000u},
+		{0x3f800000u, 0x7f7fffffu, 0x40000000u, 1, 0xffffffffu, 0x00000000u},
+		{0x3f800000u, 0xff7fffffu, 0x40000000u, 0, 0xffffffffu, 0x00000000u},
+		{0x3f800000u, 0xff7fffffu, 0x40000000u, 1, 0x7fffffffu, 0x00000000u},
+		// product above the EE maximum: the mulovf arm, O|SO raised.
+		{0x3f800000u, 0x7f7fffffu, 0x40000001u, 0, 0x7fffffffu, 0x00008010u},
+		{0x3f800000u, 0x7f7fffffu, 0x40000001u, 1, 0xffffffffu, 0x00008010u},
+		{0x3f800000u, 0xff7fffffu, 0x40000001u, 1, 0x7fffffffu, 0x00008010u},
+		{0x3f800000u, 0x7f7fffffu, 0x40000001u, 2, 0x7fffffffu, 0x00008010u},
+		{0x3f800000u, 0x7f7fffffu, 0x40000001u, 3, 0xffffffffu, 0x00008010u},
+		// exponent-0xff band: 2^128 exactly, and a product needing a real chop.
+		{0x3f800000u, 0x7f000000u, 0x40000000u, 0, 0x7f800000u, 0x00000000u},
+		{0x3f800000u, 0x7f000001u, 0x40000001u, 0, 0x7f800002u, 0x00000000u},
+		{0x3f800000u, 0x7f000001u, 0x40000001u, 1, 0xff800002u, 0x00000000u},
+		{0x3f800000u, 0xff000001u, 0x40000001u, 0, 0xff800002u, 0x00000000u},
+		{0x3f800000u, 0x7ffffffeu, 0x3f800000u, 0, 0x7ffffffeu, 0x00000000u},
+		{0x3f800000u, 0x7fffffffu, 0x3f800000u, 0, 0x7fffffffu, 0x00000000u},
+		// underflow: product below 2^-126 flushes to signed zero, U|SU raised.
+		{0x00000000u, 0x00800000u, 0x3f000000u, 0, 0x00000000u, 0x00000008u},
+		{0x00000000u, 0x80800000u, 0x3f000000u, 0, 0x00000000u, 0x00000008u},
+		{0x3f800000u, 0x00800000u, 0x3f000000u, 0, 0x3f800000u, 0x00000008u},
+		// exact zeros and denormal operands (ToDouble flushes under FZ).
+		{0x00000000u, 0x00000000u, 0x3f800000u, 0, 0x00000000u, 0x00000000u},
+		{0x00000000u, 0x80000000u, 0x3f800000u, 0, 0x00000000u, 0x00000000u},
+		{0x3f800000u, 0x00000001u, 0x00000001u, 0, 0x3f800000u, 0x00000000u},
+		{0x00000001u, 0x3f800000u, 0x3f800000u, 0, 0x3f800000u, 0x00000000u},
+		{0x807fffffu, 0x3f800000u, 0x3f800000u, 0, 0x3f800000u, 0x00000000u},
+		{0x807fffffu, 0x3f800000u, 0x3f800000u, 1, 0xbf800000u, 0x00000000u},
+		// ACC already at the PS2 maximum; and the accumulate itself overflowing.
+		{0x7fffffffu, 0x3f800000u, 0x3f800000u, 0, 0x7fffffffu, 0x00000000u},
+		{0xffffffffu, 0x3f800000u, 0x3f800000u, 0, 0xffffffffu, 0x00000000u},
+		{0x7f800000u, 0x7f800000u, 0x3f800000u, 0, 0x7fffffffu, 0x00008010u},
+		{0x7f800000u, 0x7f800000u, 0x3f800000u, 1, 0x00000000u, 0x00000000u},
+		{0x7fffffffu, 0x7f7fffffu, 0x40000000u, 0, 0x7fffffffu, 0x00008010u},
+		{0xffffffffu, 0x7f7fffffu, 0x40000000u, 1, 0xffffffffu, 0x00008010u},
+	};
+	for (const MaddRow& r : kRows)
+	{
+		u32 val = 0, fcr31 = 0;
+		RunMaddRow(r, &val, &fcr31);
+		EXPECT_EQ(val, r.expected)
+			<< "acc=" << std::hex << r.acc << " fs=" << r.fs << " ft=" << r.ft
+			<< " op=" << std::dec << r.op;
+		EXPECT_EQ(fcr31, r.expected_fcr31)
+			<< "acc=" << std::hex << r.acc << " fs=" << r.fs << " ft=" << r.ft
+			<< " op=" << std::dec << r.op;
+	}
+}
