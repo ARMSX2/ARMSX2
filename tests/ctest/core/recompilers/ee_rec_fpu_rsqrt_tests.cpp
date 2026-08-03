@@ -11,7 +11,7 @@
 //   - FCR31 flags (I|D|SI|SD): match the interpreter on every input, so they
 //     are always diffed. I|D are cleared each op; SI|SD are sticky.
 //   - Zero divisor (Ft exponent field == 0, denormals included): exact
-//     sign(Ft) | 0x7f7fffff, D|SD raised. Matches interp exactly.
+//     sign(Fs) | 0x7f7fffff, D|SD raised. Matches interp exactly.
 //   - Negative nonzero divisor: interp rounds sqrt(|Ft|) into a float temp
 //     before dividing, so its divide is single-precision and matches native
 //     bit-for-bit. I|SI raised.
@@ -252,7 +252,8 @@ TEST(EeRecFpuRsqrt, SourceAliasesDivisor)
 TEST(EeRecFpuRsqrt, DenormalDivisorTreatedAsZero)
 {
 	// A denormal Ft (exp field 0, mantissa nonzero) is "zero" for RSQRT: result
-	// is sign(Ft) | 0x7f7fffff with D|SD, exactly like +/-0. Negative denormal.
+	// is sign(FS) | 0x7f7fffff with D|SD, exactly like +/-0. The divisor's sign
+	// is irrelevant -- see ZeroDivisorSignComesFromTheDividend below.
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.SetFcr31(0);
@@ -260,9 +261,48 @@ TEST(EeRecFpuRsqrt, DenormalDivisorTreatedAsZero)
 	h.SetFprBits(2, 0x807FFFFFu);   // largest negative denormal
 	h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
 	h.Run();
-	h.ExpectFpr(3, 0xFF7FFFFFu);    // sign(Ft)=neg -> -fMax
+	h.ExpectFpr(3, 0x7F7FFFFFu);    // sign(Fs)=pos -> +fMax
 	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & kStickyMask, kD | kSD);
 	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & kStickyMask, kD | kSD);
+}
+
+// RSQRT.S's zero-divisor result takes the DIVIDEND's sign alone -- not the
+// xor DIV.S uses, and not Ft's. The op divides by sqrt(|Ft|), so the divisor
+// has no sign left to contribute by the time the division happens. Console
+// witnesses: rsqrt(+0, -0) is positive and rsqrt(-0, -0) is negative; an xor
+// rule, or Ft's sign (which both engines used to take), flips both. x86
+// recRSQRThelper1 (iFPU.cpp) has always taken Fs's sign. The magnitude stays
+// at the fast tier's +/-fMax saturation -- silicon says 0x7FFFFFFF, which is
+// the top-binade compromise, not the sign rule.
+TEST(EeRecFpuRsqrt, ZeroDivisorSignComesFromTheDividend)
+{
+	struct Row
+	{
+		u32 fs, ft, want;
+	};
+	static const Row kRows[] = {
+		{0x00000000u, 0x80000000u, 0x7F7FFFFFu}, // rsqrt(+0, -0) -> +fMax
+		{0x80000000u, 0x00000000u, 0xFF7FFFFFu}, // rsqrt(-0, +0) -> -fMax
+		{0x80000000u, 0x80000000u, 0xFF7FFFFFu}, // rsqrt(-0, -0) -> -fMax
+		{0x00000000u, 0x00000000u, 0x7F7FFFFFu}, // rsqrt(+0, +0) -> +fMax
+		{0x40A00000u, 0x80000000u, 0x7F7FFFFFu}, // rsqrt(+5, -0) -> +fMax
+		{0xC0A00000u, 0x00000000u, 0xFF7FFFFFu}, // rsqrt(-5, +0) -> -fMax
+	};
+	for (const Row& r : kRows)
+	{
+		SCOPED_TRACE(::testing::Message() << std::hex << "fs=" << r.fs
+										  << " ft=" << r.ft);
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetFcr31(0);
+		h.SetFprBits(1, r.fs);
+		h.SetFprBits(2, r.ft);
+		h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
+		h.Run(); // exact on the zero path: auto-diffs the engines
+		h.ExpectFpr(3, r.want);
+		EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & kStickyMask, kD | kSD);
+		EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & kStickyMask, kD | kSD);
+	}
 }
 
 // ---- FCR31 sticky-bit contract: clear I|D each op, preserve SI|SD -----------

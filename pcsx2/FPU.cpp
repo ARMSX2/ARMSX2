@@ -343,7 +343,15 @@ void RSQRT_S() {
 
 	if ( ( _FtValUl_ & 0x7F800000 ) == 0 ) { // Ft is zero (Denormals are Zero)
 		_ContVal_ |= FPUflagD | FPUflagSD;
-		_FdValUl_ = ( _FtValUl_ & 0x80000000 ) | posFmax;
+		// The sign of FS ALONE. Unlike DIV.S there is no xor here: rsqrt
+		// divides by sqrt(|Ft|), so the divisor has no sign left to contribute
+		// by the time the division happens. Console rows witness it --
+		// rsqrt(+0, -0) is positive and rsqrt(-0, -0) is negative, and an xor
+		// rule (or Ft's sign, which this used) flips both. x86 recRSQRThelper1
+		// has always taken Fs's sign. The magnitude stays at posFmax, the
+		// shared saturation compromise -- silicon says 0x7FFFFFFF there, which
+		// is the top-binade question, not the sign question.
+		_FdValUl_ = ( _FsValUl_ & 0x80000000 ) | posFmax;
 		return;
 	}
 	else if ( _FtValUl_ & 0x80000000 ) { // Ft is negative

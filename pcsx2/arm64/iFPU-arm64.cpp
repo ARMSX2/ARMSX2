@@ -1164,13 +1164,26 @@ static void recRSQRT_S_xmm(int info)
 	armAsm->Tst(RWARG1, 0x7F800000);
 	armAsm->B(&notZero, a64::ne);
 
-	// Zero divisor: set D|SD; result = sign(Ft) | 0x7f7fffff.
+	// Zero divisor: set D|SD; result = sign(FS) | 0x7f7fffff.
+	//
+	// FS, not FT. This op divides by sqrt(|Ft|), so by the time the division
+	// happens the divisor has no sign left to contribute -- only the dividend
+	// does. This emitter used Ft's sign and was alone in doing so: x86
+	// recRSQRThelper1 (iFPU.cpp) takes Fs's, and so does the console.
+	// rsqrt(+0, -0) is the row that separates them, and it is in the capture --
+	// console +0x7FFFFFFF, upstream x86 JIT +0x7F7FFFFF, this emitter
+	// -0x7F7FFFFF. Pinned by EeRecFpuRsqrt.ZeroDivisorSignComesFromTheDividend.
+	//
+	// The MAGNITUDE stays at FLT_MAX rather than the console's 0x7FFFFFFF: this
+	// tier saturates in host singles throughout and cannot hold the EE's top
+	// binade. That is the standing fast-path compromise, not this fix.
 	armLoadEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
 	armAsm->Orr(RWSCRATCH, RWSCRATCH, FPUflagD | FPUflagSD);
 	armStoreEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
-	armAsm->And(RWARG1, RWARG1, 0x80000000);
-	armAsm->Orr(RWARG1, RWARG1, 0x7f7fffff);
-	armAsm->Fmov(armSRegister(EEREC_D), RWARG1);
+	armAsm->Fmov(RWARG2, armSRegister(dreg)); // raw Fs bits, saved before any write
+	armAsm->And(RWARG2, RWARG2, 0x80000000);
+	armAsm->Orr(RWARG2, RWARG2, 0x7f7fffff);
+	armAsm->Fmov(armSRegister(EEREC_D), RWARG2);
 	armAsm->B(&end);
 
 	armAsm->Bind(&notZero);
