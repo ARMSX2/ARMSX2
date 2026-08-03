@@ -272,6 +272,62 @@ tasks.named("clean") {
     dependsOn("cleanCxx")
 }
 
+// Fail the build on any window-based modal in the Compose UI.
+//
+// A Compose Dialog / AlertDialog / DropdownMenu / ModalBottomSheet is its own FOCUSED ANDROID
+// WINDOW. It consumes gamepad KeyEvents before they reach MainActivity.dispatchKeyEvent, which is
+// where every D-pad route in this app lives — so anything built on one is unreachable with a
+// controller no matter what is inside it. It fails silently and only on hardware the author
+// probably does not have: flawless on a touchscreen, completely dead on a handheld.
+//
+// That is not hypothetical. It is the 2.6.0 "can't remap buttons" bug, and by the time this check
+// was written it had been reintroduced at two dozen separate call sites, several of which had
+// carefully registered controller ids INSIDE the dialog window — code that looks like it works and
+// cannot. Use PadModal instead (ui/common/PadModal.kt), which is authored at the call site and
+// drawn by one host above every surface.
+//
+// A check rather than a test because CI runs an assemble and never runs tests, so a unit test here
+// would need a workflow change and would still be skippable locally.
+//
+// Escape hatch, if a genuine exception ever turns up: add the file's path to `allowed` below, with
+// a comment saying why the pad does not need to reach it.
+val checkNoWindowModals by tasks.registering {
+    val sources = layout.projectDirectory.dir("src/main/java/com/armsx2")
+    inputs.dir(sources)
+    outputs.upToDateWhen { true }
+    doLast {
+        val banned = Regex("""\b(AlertDialog|ModalBottomSheet|DropdownMenu)\s*\(|\bandroidx\.compose\.(material3|ui\.window)\.(AlertDialog|ModalBottomSheet|DropdownMenu|Dialog)\b""")
+        val allowed = setOf<String>(
+            // (empty — every modal in the app goes through PadModal)
+        )
+        val hits = mutableListOf<String>()
+        sources.asFile.walkTopDown().filter { it.isFile && it.extension == "kt" }.forEach { f ->
+            val rel = f.relativeTo(sources.asFile).path
+            if (rel in allowed) return@forEach
+            f.readLines().forEachIndexed { i, line ->
+                val code = line.substringBefore("//")
+                if (banned.containsMatchIn(code)) hits += "$rel:${i + 1}: ${line.trim()}"
+            }
+        }
+        if (hits.isNotEmpty()) {
+            throw GradleException(
+                buildString {
+                    appendLine("Window-based modal found — a controller cannot reach it.")
+                    appendLine()
+                    appendLine("A Compose dialog/menu/sheet is its own focused Android window, so it eats gamepad")
+                    appendLine("keys before MainActivity.dispatchKeyEvent — where all D-pad navigation lives. It")
+                    appendLine("will look perfect on a touchscreen and be completely dead on a handheld.")
+                    appendLine()
+                    appendLine("Use PadModal / ConfirmOverlay / NotifyOverlay (ui/common/PadModal.kt) instead.")
+                    appendLine()
+                    hits.forEach { appendLine("  $it") }
+                },
+            )
+        }
+    }
+}
+tasks.named("preBuild") { dependsOn(checkNoWindowModals) }
+
 dependencies {
     // Discord Social SDK, staged by hand rather than consumed as an .aar. The .aar's manifest
     // declares RECORD_AUDIO plus four foreground-service permissions and Bluetooth, all for its

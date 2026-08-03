@@ -77,7 +77,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.armsx2.ui.settings.SettingsControllerNav.move
 import com.armsx2.i18n.str
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -177,7 +176,6 @@ internal object SettingsControllerNav {
         scrollVelocity.floatValue = 0f
     }
 
-    private var scopeKey: String = ""
     // Persistent registry keyed by row id. Each row UPSERTS its latest closures
     // on every composition (via SideEffect in controllerFocusable) and removes
     // itself on dispose. This is the fix for adjust skipping / getting stuck:
@@ -234,16 +232,6 @@ internal object SettingsControllerNav {
         )
     }
 
-    fun begin(scope: String) {
-        if (scopeKey != scope) {
-            // Switched tab: drop the old selection. The new tab's rows register
-            // during this composition and stale ids are pruned by onDispose.
-            scopeKey = scope
-            selectedId.value = null
-            selectedIndex.intValue = -1
-        }
-    }
-
     fun register(
         id: String,
         onConfirm: (() -> Unit)? = null,
@@ -266,18 +254,11 @@ internal object SettingsControllerNav {
         selectedIndex.intValue = orderedIds().indexOf(selectedId.value)
     }
 
-    fun end() {
-        // Keep the highlighted index in sync with the current order.
-        selectedIndex.intValue = orderedIds().indexOf(selectedId.value)
-    }
-
     fun clearSelection() {
         selectedId.value = null
         selectedIndex.intValue = -1
         scrollVelocity.floatValue = 0f
     }
-
-    fun hasItems(): Boolean = registry.keys.any { inActiveLayer(it) }
 
     /** Highlight + scroll to the row whose id derives from [label] — used by settings search
      *  to jump to a specific control after switching tabs. The shared row widgets register
@@ -316,31 +297,13 @@ internal object SettingsControllerNav {
      *  left with nothing selected if it contains nothing focusable at all. Silent because this
      *  fires as the modal appears, and a nav click there sounds like a press the user didn't
      *  make. */
-    fun selectFirstInLayer(): Boolean = selectEdgeOfLayer(first = true, sfx = false)
+    fun selectFirstInLayer(sfx: Boolean = false): Boolean = selectEdgeOfLayer(first = true, sfx = sfx)
 
     /** True when a registered item in the active layer is currently highlighted —
      *  i.e. the registry "lane" owns D-pad focus (used by the home screen to split
      *  input between the cover grid and the toolbar/recents lane). */
     fun hasSelection(): Boolean =
         selectedId.value?.let { registry.containsKey(it) && inActiveLayer(it) } == true
-
-    /** Number of registered focusable items in the active layer. */
-    fun count(): Int = registry.keys.count { inActiveLayer(it) }
-
-    fun move(delta: Int): Boolean {
-        val ids = orderedIds()
-        if (ids.isEmpty() || delta == 0) return false
-        val cur = ids.indexOf(selectedId.value)
-        val next = if (cur < 0) {
-            if (delta < 0) ids.lastIndex else 0
-        } else {
-            (cur + delta).coerceIn(0, ids.lastIndex)
-        }
-        selectedId.value = ids[next]
-        selectedIndex.intValue = next
-        if (next != cur) com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.NAV)
-        return true
-    }
 
     /** Highlight the first (or last) item of the ACTIVE LAYER in visual order. Used when a
      *  direction arrives with nothing selected yet — travelling down or right lands on the
@@ -570,9 +533,8 @@ internal fun Modifier.controllerFocusable(
                 // dropdown prev/next) when this row has an adjust handler. Consumed
                 // only when a handler exists, so plain nav rows still let Left/Right
                 // move focus. This is what makes sliders/steppers adjustable with a
-                // controller when the row is driven by Compose focus (the settings
-                // hub) rather than the registry's own adjust() path (the memcard
-                // dialog, which consumes these keys upstream in the router).
+                // controller when the row is driven by Compose focus, rather than by
+                // the registry's own adjust() path, which the router calls upstream.
                 AndroidKeyEvent.KEYCODE_DPAD_LEFT -> {
                     onLeft?.invoke()
                     onLeft != null

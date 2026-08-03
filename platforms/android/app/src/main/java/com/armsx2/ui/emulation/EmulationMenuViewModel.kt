@@ -345,7 +345,7 @@ object EmulationMenuInputController {
     private fun enterContent() {
         inContent.value = true
         nav.clearSelection()
-        nav.move(1) // select the first content control so the highlight appears
+        nav.selectFirstInLayer(sfx = true) // highlight the first content control
     }
 
     private fun exitContent() {

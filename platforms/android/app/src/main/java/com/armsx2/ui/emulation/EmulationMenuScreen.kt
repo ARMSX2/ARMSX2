@@ -146,7 +146,7 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
     LaunchedEffect(friendsOpen) {
         if (friendsOpen) {
             delay(260)
-            if (friendsOpen) com.armsx2.ui.settings.SettingsControllerNav.move(1)
+            if (friendsOpen) com.armsx2.ui.settings.SettingsControllerNav.selectFirstInLayer()
         }
     }
     // Back closes the friends overlay first when it is up. Without this, opening Friends and
