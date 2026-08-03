@@ -72,6 +72,7 @@ namespace GSDrawLog
 		u8 colormask;
 		u8 barrier; // 0 none, 1 one-barrier, 2 full-barrier
 		u8 self_read; // SelfRead enum, filled during hazard handling
+		u8 prim_overlap; // GSState::PRIM_OVERLAP -- whether the draw's own primitives overlap
 
 		s16 area_x;
 		s16 area_y;
@@ -105,6 +106,7 @@ namespace GSDrawLog
 		FlagZTest = 1 << 4,
 		FlagZMask = 1 << 5,
 		FlagSubmitted = 1 << 6, ///< reached the backend; absent means the draw was skipped
+		FlagFeedbackLoopRT = 1 << 7, ///< the pixel shader reads the render target (any reason)
 	};
 
 	/// Whether recording is currently active. Cheap enough to test per draw.
@@ -126,8 +128,9 @@ namespace GSDrawLog
 	void NoteSelfRead(SelfRead resolution);
 
 	/// Completes the row opened by BeginDraw with the backend view. No-op if BeginDraw
-	/// did not record one (inactive, or arena full).
-	void EndDraw(const GSHWDrawConfig& config);
+	/// did not record one (inactive, or arena full). prim_overlap is GSState::PRIM_OVERLAP,
+	/// passed in because it lives on the renderer rather than the draw config.
+	void EndDraw(const GSHWDrawConfig& config, u8 prim_overlap);
 
 	/// Closes any row left open by a draw that returned before submit, so skipped draws
 	/// still appear. Called on every exit from GSRendererHW::Draw.

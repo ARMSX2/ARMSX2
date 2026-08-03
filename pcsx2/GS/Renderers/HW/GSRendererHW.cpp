@@ -9758,7 +9758,7 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 
 	// Completes the row opened at the top of Draw() with the backend view, which only
 	// exists here.
-	GSDrawLog::EndDraw(m_conf);
+	GSDrawLog::EndDraw(m_conf, static_cast<u8>(m_prim_overlap));
 
 	if (!m_channel_shuffle_width)
 		g_gs_device->RenderHW(m_conf);

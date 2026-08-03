@@ -3,6 +3,7 @@
 
 #include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/GSExtra.h"
+#include "GS/GSState.h"
 #include "GS/GSUtil.h"
 
 #include "common/Console.h"
@@ -99,13 +100,16 @@ namespace GSDrawLog
 		s_records[s_open_record].self_read = static_cast<u8>(resolution);
 	}
 
-	void EndDraw(const GSHWDrawConfig& config)
+	void EndDraw(const GSHWDrawConfig& config, u8 prim_overlap)
 	{
 		if (s_open_record == SIZE_MAX)
 			return;
 
 		Record& rec = s_records[s_open_record];
 		rec.flags |= FlagSubmitted;
+		rec.prim_overlap = prim_overlap;
+		if (config.IsFeedbackLoopRT(config.ps) || config.IsFeedbackLoopRT(config.alpha_second_pass.ps))
+			rec.flags |= FlagFeedbackLoopRT;
 		rec.topology = static_cast<u8>(config.topology);
 		rec.tex_hazard = static_cast<u8>(config.tex_hazard);
 		rec.destination_alpha = static_cast<u8>(config.destination_alpha);
@@ -139,6 +143,19 @@ namespace GSDrawLog
 		}
 	}
 
+	static const char* GetPrimOverlapName(u8 overlap)
+	{
+		switch (overlap)
+		{
+			case GSState::PRIM_OVERLAP_YES:
+				return "YES";
+			case GSState::PRIM_OVERLAP_NO:
+				return "NO";
+			default:
+				return "UNKNOWN";
+		}
+	}
+
 	bool WriteCSV(const std::string& path)
 	{
 		auto fp = FileSystem::OpenManagedCFile(path.c_str(), "wb");
@@ -155,7 +172,7 @@ namespace GSDrawLog
 			"tex_addr,tex_psm,tex_bw,tex_w,tex_h,"
 			"blend,alpha_a,alpha_b,alpha_c,alpha_d,"
 			"atst,afail,date,datm,self_read,"
-			"topology,barrier,tex_hazard,destination_alpha,colormask,"
+			"topology,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
 			"area_x,area_y,area_w,area_h\n");
 
 		for (const Record& r : s_records)
@@ -210,15 +227,16 @@ namespace GSDrawLog
 
 			if (submitted)
 			{
-				std::fprintf(fp.get(), "%s,%u,%s,%s,%x,%d,%d,%d,%d\n",
+				std::fprintf(fp.get(), "%s,%u,%d,%s,%s,%s,%x,%d,%d,%d,%d\n",
 					GSGetTopologyName(static_cast<GSHWDrawConfig::Topology>(r.topology)), r.barrier,
-					GSGetTexHazardName(r.tex_hazard),
+					(r.flags & FlagFeedbackLoopRT) ? 1 : 0,
+					GetPrimOverlapName(r.prim_overlap), GSGetTexHazardName(r.tex_hazard),
 					GSGetDestinationAlphaModeName(static_cast<GSHWDrawConfig::DestinationAlphaMode>(r.destination_alpha)),
 					r.colormask, r.area_x, r.area_y, r.area_z - r.area_x, r.area_w - r.area_y);
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,,,\n");
+				std::fprintf(fp.get(), ",,,,,,,,,,\n");
 			}
 		}
 
