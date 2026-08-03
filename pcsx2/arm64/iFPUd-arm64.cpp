@@ -561,21 +561,34 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // The resulting interpreter divergence is pinned by
 // EeRecFpuFull.MulDefectDropsTheBoundaryTermTheInterpreterModels.
 //
-// ft is read narrow, out of the allocator-resident guest register: the
-// single-domain mask 0x2AA is one MOVZ where the double-domain 0x2AA << 29 is
-// two, and Cmtst on the 64-bit lane only looks at bits 0..9 -- the single's
-// mantissa bits 0..9, whatever the register's upper half happens to hold.
+// ft is read narrow, out of the allocator-resident guest register: Cmtst on the
+// 64-bit lane only looks at bits 0..9 -- the single's mantissa bits 0..9,
+// whatever the register's upper half happens to hold -- so the mask is the
+// single-domain 0x2AA and not the double-domain 0x2AA << 29.
+//
+// The mask is not materialized here: it is parked in d10 for the whole JIT
+// session by _DynGen_EnterRecompiledCode, next to the s8/s9 clamp constants and
+// under the same AAPCS64 argument: the low 64 bits of d8-d15 are callee-saved,
+// so the constant survives every C call without compile-time liveness tracking.
+// That is what took this from six instructions to four, and it applies to the
+// first multiply in a block as much as the tenth -- a liveness flag in a
+// caller-saved register would still have paid mov+fmov to open every span, and
+// would have had to be invalidated at C-call seams, branch forks, superblock
+// side-exit bodies (recEmitColdSideExits emits several per emission session,
+// each reachable only through its own island) and backpatched fastmem thunks,
+// where a single missed seam is a silent one-ULP error the corpus cannot see.
+// The register costs one slot out of the callee-saved allocator range; the full
+// contract, including why microVU needs no pool gate for it, is on
+// NEON_RESERVED_FPU_MULMASK in iCore-arm64.h.
 //
 // `dstidx` holds ToDouble(fs) on entry and the product on exit, `tidx` holds
 // ToDouble(ft), `ftnarrowidx` is the untouched guest ft. RQSCRATCH/RQSCRATCH2
 // (q30/q31) are outside the allocator pool, so no temp aliases them.
 //
 // What comes out, decoded from the code buffer (the Fmul was already there, so
-// six of these seven are the cost):
+// four of these five are the cost):
 //
-//     mov   x8, #0x2aa
-//     fmov  d30, x8
-//     cmtst d30, d10, d30            ; d10 == EEREC_T, the narrow guest ft
+//     cmtst d30, d11, d10            ; d11 == EEREC_T (narrow guest ft), d10 == the parked mask
 //     fmul  d0, d0, d1
 //     fcmeq d31, d0, #0.0
 //     bic   v30.8b, v30.8b, v31.8b
@@ -585,9 +598,7 @@ static void emitDefectiveFmul(int dstidx, int tidx, int ftnarrowidx)
 	const a64::VRegister prod = armDRegister(dstidx);
 
 	// Hoisted above the Fmul: the predicate is not on its dependency chain.
-	armAsm->Mov(RXSCRATCH, UINT64_C(0x2AA));
-	armAsm->Fmov(RDSCRATCH, RXSCRATCH);
-	armAsm->Cmtst(RDSCRATCH, armDRegister(ftnarrowidx), RDSCRATCH);
+	armAsm->Cmtst(RDSCRATCH, armDRegister(ftnarrowidx), a64::VRegister(NEON_RESERVED_FPU_MULMASK, 64));
 
 	armAsm->Fmul(prod, prod, armDRegister(tidx));
 

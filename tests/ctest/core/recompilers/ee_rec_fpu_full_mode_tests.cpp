@@ -1339,3 +1339,171 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 	EXPECT_GT(boundary_gap[3], 0)
 		<< "recMaddsub never reached the boundary-term class: the sweep is vacuous";
 }
+
+
+// ---------------------------------------------------------------------------
+// Residency of the predicate mask (d10, NEON_RESERVED_FPU_MULMASK).
+//
+// The mask is not materialized per multiply. It is parked once per JIT entry by
+// _DynGen_EnterRecompiledCode, which is what makes emitDefectiveFmul four
+// instructions instead of six -- see the comment on the constant in
+// iCore-arm64.h for the contract. These tests pin the two things that contract
+// rests on: that no C-call seam, VU dispatch or inline macro-mode emit destroys
+// the parked value, and that the allocator never hands q10 out.
+//
+// Both failures are silent -- no crash, no corrupt value, just a wrong rounding
+// decision on a fraction of multiplies -- and they fail in opposite directions,
+// which is why every test below checks both polarities:
+//
+//   mask zeroed        -> Cmtst never fires -> every product correctly rounded
+//                         (one ULP high wherever silicon is short)
+//   mask overwritten    -> Cmtst fires on operands it must not -> products one
+//     with a live value    ULP low where silicon is exact
+//
+// A test using only predicate-on operands sees the first and is blind to the
+// second, because a garbage mask with any of bits 0..9 set gives the same
+// answer as the correct mask on exactly those rows. That is not hypothetical:
+// removing q10 from _isReservedNEONreg makes the allocator home a guest FPR
+// there, and the observed break is the second kind, on the rows where ft's
+// mantissa is 0.
+//
+// The 1147-case hardware corpus cannot see any of this: its cases are single
+// ops, so every multiply in it is the first multiply after the entry that
+// parked the mask.
+namespace {
+// Two rows from kSiliconMulRows above, chosen as a matched pair on one pair of
+// registers -- f0 = 1.0, f1 = +FLT_MAX -- so a single block can ask the
+// question both ways just by swapping the operand order:
+//
+//   MUL_S(d, 0, 1)   ft = f1, mantissa 0x7fffff  -> predicate on,  0x7f7ffffe
+//   MUL_S(d, 1, 0)   ft = f0, mantissa 0         -> predicate off, 0x7f7fffff
+//
+// Both measured on an SCPH-90000; this is the non-commutativity of mul.s, which
+// is the sharpest available probe of the mask because the two answers differ by
+// exactly the decrement the mask controls.
+constexpr u32 kMaskFprOne    = 0x3f800000u; // f0 = 1.0
+constexpr u32 kMaskFprMax    = 0x7f7fffffu; // f1 = +FLT_MAX
+constexpr u32 kMaskOnWant    = 0x7f7ffffeu; // 1.0 * FLT_MAX: silicon is one ULP low
+constexpr u32 kMaskOffWant   = 0x7f7fffffu; // FLT_MAX * 1.0: silicon is exact
+
+// Seed f0/f1 and assert the matched pair in fd_on / fd_off, at both emit sites.
+void ExpectMaskLive(EeRecTestHarness& h, u32 fd_on, u32 fd_off, const char* where)
+{
+	EXPECT_EQ(h.GetFprBitsJit(fd_on), kMaskOnWant)
+		<< where << ": predicate did not fire -- the parked mask read as zero";
+	EXPECT_EQ(h.GetFprBitsJit(fd_off), kMaskOffWant)
+		<< where << ": predicate fired on ft mantissa 0 -- the parked mask holds garbage";
+}
+} // namespace
+
+// A VCALLMS in the middle of the block is both runtime hazards at once: it is a
+// real in-block C-call seam (the callee may clobber any caller-saved register),
+// and it dispatches a VU0 microprogram, whose blocks allocate NEON slots q0-q27
+// freely. d10 survives the first because AAPCS64 preserves the low 64 bits of
+// d8-d15, and the second because mVUdispatcherAB's prologue Stp/Ldp-saves
+// d8-d15 around the dispatch -- the same protection the s8/s9 clamp scalars get
+// (see the VE-04 note in microVU-arm64.cpp).
+//
+// A compile-time liveness flag in a caller-saved register would have had to
+// invalidate at this seam and re-materialize after it; this is the assertion
+// that the parked register needs no seam handling at all, at both emit sites.
+TEST(EeRecFpuFull, MulDefectMaskSurvivesAnInBlockCallSeam)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	h.EnableFpuFullMode();
+	h.EnableVu0Capture();
+	h.SeedVu0Vi(REG_VPU_STAT, 0);
+	// Trivial immediate-E micro: the VCALLMS is here purely as the seam.
+	h.SeedVu0Microprogram(0, {vu::EBitNopPair(), vu::NopPair()});
+	h.SetAccBits(0x00000000u);
+	h.SetFprBits(0, kMaskFprOne);
+	h.SetFprBits(1, kMaskFprMax);
+	h.LoadProgram({
+		MUL_S(2, 0, 1),
+		MUL_S(3, 1, 0),
+		VCALLMS(0),
+		MUL_S(4, 0, 1),  // recMULop, post-seam
+		MUL_S(5, 1, 0),
+		VCALLMS(0),
+		MADD_S(6, 0, 1), // recMaddsub's multiply stage, post-seam (ACC = +0)
+		MADD_S(7, 1, 0),
+	});
+	h.RunJitNoDiff();
+
+	ExpectMaskLive(h, 2, 3, "pre-seam MUL.S");
+	ExpectMaskLive(h, 4, 5, "post-seam MUL.S");
+	ExpectMaskLive(h, 6, 7, "post-seam MADD.S");
+	// Liveness: the two expectations above discriminate only because the two
+	// answers differ. If this ever fires the rows stopped being a matched pair
+	// and the test is vacuous whatever it reports.
+	ASSERT_NE(kMaskOnWant, kMaskOffWant);
+}
+
+// COP2 macro mode is the one context that emits mVU code inline in an EE block,
+// with no dispatcher save around it. It is safe for d10 for a structural reason
+// rather than an ABI one: macro emit is bounded to NEON slots 0-3 by
+// kMacroVFEvictHighWater, which mVUmacroEmitEpilogue asserts on every macro op.
+// That is why d10 needs no microVU pool gate, unlike SL-13's q25/q26 -- and
+// this is the end-to-end check on it, with two macro FMACs between the
+// multiplies to give the mVU allocator something to spend registers on.
+TEST(EeRecFpuFull, MulDefectMaskSurvivesInlineCop2MacroMode)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	h.EnableFpuFullMode();
+	h.EnableVu0Capture();
+	h.SeedVu0Vi(REG_VPU_STAT, 0);
+	h.SeedVu0Vf(1, 1.0f, 2.0f, 3.0f, 4.0f);
+	h.SeedVu0Vf(2, 5.0f, 6.0f, 7.0f, 8.0f);
+	h.SetFprBits(0, kMaskFprOne);
+	h.SetFprBits(1, kMaskFprMax);
+	h.LoadProgram({
+		MUL_S(2, 0, 1),
+		MUL_S(3, 1, 0),
+		VMUL_C2(0xf, 3, 1, 2),
+		VADD_C2(0xf, 4, 1, 2),
+		MUL_S(4, 0, 1), // post-macro
+		MUL_S(5, 1, 0),
+	});
+	h.RunJitNoDiff();
+
+	ExpectMaskLive(h, 2, 3, "pre-macro MUL.S");
+	ExpectMaskLive(h, 4, 5, "MUL.S after inline COP2 macro emit");
+	ASSERT_NE(kMaskOnWant, kMaskOffWant);
+}
+
+// The other half of the contract: nothing in EE codegen may be handed q10.
+// EeVu0Cop2ClampResidency.EeAllocatorReservesClampRegs pins the reservation at
+// the predicate; this pins it through the allocator, with enough simultaneously
+// live FP values to drive allocation into the callee-saved range where the mask
+// sits. That range is not a last resort -- the FPR class prefers it (GE-15,
+// _getFreeArm64NEONInRangeNoEvict(NEON_CALLEE_SAVED_START, ...)), so q10 is one
+// of the first homes an unreserved pool would reach for, not one of the last.
+TEST(EeRecFpuFull, MulDefectMaskSurvivesHeavyFprPressure)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	h.EnableFpuFullMode();
+	h.SetFprBits(0, kMaskFprOne);
+	h.SetFprBits(1, kMaskFprMax);
+
+	std::vector<u32> prog;
+	for (u32 r = 6; r < 22; r++)
+	{
+		h.SetFprBits(r, 0x3f800000u + r);
+		prog.push_back(ADD_S(r, r, 0)); // touch it: r = r + 1.0
+	}
+	prog.push_back(MUL_S(2, 0, 1));
+	prog.push_back(MUL_S(3, 1, 0));
+	for (u32 r = 6; r < 22; r++)
+		prog.push_back(ADD_S(r, r, 0)); // keep every one live past the multiplies
+	prog.push_back(MUL_S(4, 0, 1));
+	prog.push_back(MUL_S(5, 1, 0));
+	h.LoadProgram(prog);
+	h.RunJitNoDiff();
+
+	ExpectMaskLive(h, 2, 3, "MUL.S under FPR pressure");
+	ExpectMaskLive(h, 4, 5, "MUL.S after 16 live FPRs");
+	ASSERT_NE(kMaskOnWant, kMaskOffWant);
+}
