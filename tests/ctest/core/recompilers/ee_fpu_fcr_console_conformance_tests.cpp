@@ -197,6 +197,87 @@ TEST(EeFpuFcrConsoleConformance, Fcr31WriteMaskMatchesConsole)
 	EXPECT_EQ(checked, kFcr31WriteCount);
 }
 
+// The O and U CAUSE bits clear on every op that can raise them, whether or not
+// it does -- the sticky SO/SU and C survive. On silicon a seeded FCR31 of
+// 0x0183C079 reads back 0x01830079 after any of the fourteen: ADD, SUB, MUL,
+// the four A-forms, the four multiply-accumulates, MAX, MIN, ABS and NEG (the
+// last ten witnessed on FCR31-seeded capture rows; SUB, SUBA, MADDA and MSUBA
+// on the interpreter's authority -- checkOverflow/checkUnderflow and
+// clearFPUFlags clear the pair on all fourteen). DIV, SQRT, RSQRT and MOV
+// must leave O and U ALONE, and are the controls.
+//
+// The fast path used to clear none of them, so an O or U raised earlier in a
+// block stayed visible to every later cfc1. RAISING O/U is a separate,
+// harder obligation -- a correct raise needs the exact result magnitude,
+// which a saturating single cannot carry -- and stays with the FULL tier and
+// the DISABLED tripwires below.
+TEST(EeFpuFcrConsoleConformance, EnginesAgreeOnTheOverflowFlagClear)
+{
+	constexpr u32 kCauseOU = 0x0000C000u;
+	// All four causes + all four stickies + C, the capture's seeded word.
+	constexpr u32 kSeedFull = 0x0183C079u;
+	// O|U causes + stickies + C only: the div-family controls clear I|D on
+	// their own account, which is not the property under test.
+	constexpr u32 kSeedOU = 0x0180C079u;
+
+	struct ClearCase
+	{
+		const char* what;
+		u32 op;
+		bool clears;
+	};
+	const ClearCase kCases[] = {
+		{"ADD.S", ADD_S(kFd, kFs, kFt), true},
+		{"SUB.S", SUB_S(kFd, kFs, kFt), true},
+		{"MUL.S", MUL_S(kFd, kFs, kFt), true},
+		{"ADDA.S", ADDA_S(kFs, kFt), true},
+		{"SUBA.S", SUBA_S(kFs, kFt), true},
+		{"MULA.S", MULA_S(kFs, kFt), true},
+		{"MADD.S", MADD_S(kFd, kFs, kFt), true},
+		{"MSUB.S", MSUB_S(kFd, kFs, kFt), true},
+		{"MADDA.S", MADDA_S(kFs, kFt), true},
+		{"MSUBA.S", MSUBA_S(kFs, kFt), true},
+		{"MAX.S", MAX_S(kFd, kFs, kFt), true},
+		{"MIN.S", MIN_S(kFd, kFs, kFt), true},
+		{"ABS.S", ABS_S(kFd, kFs), true},
+		{"NEG.S", NEG_S(kFd, kFs), true},
+		{"DIV.S (control)", DIV_S(kFd, kFs, kFt), false},
+		{"SQRT.S (control)", SQRT_S(kFd, kFt), false},
+		{"RSQRT.S (control)", RSQRT_S(kFd, kFs, kFt), false},
+		{"MOV.S (control)", MOV_S(kFd, kFs), false},
+	};
+
+	int cleared = 0, controls = 0;
+	for (const ClearCase& c : kCases)
+	{
+		SCOPED_TRACE(c.what);
+		const u32 seed = c.clears ? kSeedFull : kSeedOU;
+		const u32 want = c.clears ? (kSeedFull & ~kCauseOU) : kSeedOU;
+
+		u32 got[2];
+		for (int jit = 0; jit < 2; ++jit)
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.SetFcr31(seed);
+			h.SetFpr(kFs, 2.5f); // benign operands: nothing raises, so what
+			h.SetFpr(kFt, 1.5f); // remains set afterwards is what SURVIVED
+			h.LoadProgram({static_cast<u32>(c.op), CFC1(kRd, 31)});
+			if (jit)
+				h.RunJitNoDiff();
+			else
+				h.RunInterpOnly();
+			got[jit] = jit ? h.GetGprJit(kRd) : h.GetGprInterp(kRd);
+			SCOPED_TRACE(jit ? "[jit]" : "[interp]");
+			EXPECT_EQ(got[jit], want);
+		}
+		EXPECT_EQ(got[0], got[1]) << "engines disagree on the flag clear";
+		(c.clears ? cleared : controls)++;
+	}
+	EXPECT_EQ(cleared, 14);
+	EXPECT_EQ(controls, 4);
+}
+
 // Which flags the arithmetic raises. Each capture line clears FCR31, runs one
 // exceptional operation and prints FCR31. Reproduced with FCR31 preset to
 // 0x01000001 (what a `ctc1 $0` write leaves on silicon) rather than to zero,

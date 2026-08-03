@@ -367,11 +367,36 @@ static void fpuClampResult(const a64::VRegister& fpr)
 // corruption. Both interpreters and the console pass them through untouched.
 // See EeFpuAbsNegClamp and EeFpuOverflowConsole.SqrtMatchesConsoleOnEvery*.
 
-// Clear the O and U cause flags. ABS.S / NEG.S do this unconditionally — interp
-// ABS_S/NEG_S call clearFPUFlags(FPUflagO | FPUflagU) (FPU.cpp) and the FULL
-// path's ClearOUFlags does the same (iFPUd-arm64.cpp) — but the fast path never
-// did, so an O or U left over from a previous op survived an ABS.S that should
-// have cleared it. Pinned by EeFpuAbsNegClamp.AbsAndNegClearOverflowFlags.
+// Clear the O and U cause flags.
+//
+// This is a whole-family obligation, not an ABS/NEG one. The EE clears the two
+// CAUSE bits (the sticky SO/SU survive) on every op that can raise them: the
+// ten raiseOrClearOU ops in FPU.cpp — ADD, SUB, MUL and the A-forms, plus the
+// four multiply-accumulates — and MAX/MIN/ABS/NEG, which clearFPUFlags(O|U)
+// and do nothing else. DIV, SQRT, RSQRT, MOV, CVT and the compares must leave
+// both alone, and do not call this.
+//
+// The fast path cleared none of them, so an O or U raised by an earlier
+// instruction stayed visible to the next cfc1 for the rest of the block.
+// Measured against silicon on the FCR31-seeded capture rows: ABS, NEG, ADD,
+// ADDA, MADD, MSUB, MUL, MULA, MAX and MIN all read back 0x0183C079 where the
+// console gives 0x01830079. SUB, SUBA, MADDA and MSUBA have no seeded row and
+// are fixed on the interpreter's authority alone (raiseOrClearOU clears both
+// causes on every one of the ten). x86 iFPU.cpp has the identical defect —
+// the same line is commented out at 13 sites.
+//
+// It goes FIRST in each emitter, before the op writes anything. The fast path
+// raises neither flag today so the order is not yet observable, but the
+// interpreter and the FULL path both clear-then-set, and an emitter that
+// learns to raise O must not have its flag wiped by a clear placed after it.
+//
+// The clear is free; RAISING O/U is not, and that asymmetry is the tier line.
+// A correct raise needs the exact magnitude of the result, which a saturating
+// single cannot carry — see ToPS2FPU_Full (iFPUd-arm64.cpp), which gets it
+// only because fpuFullMode already pays for double arithmetic.
+//
+// Pinned by EeFpuAbsNegClamp.AbsAndNegClearOverflowFlags and
+// EeFpuFcrConsoleConformance.EnginesAgreeOnTheOverflowFlagClear.
 //
 // GE-12: honour a register-allocated FCR31 rather than going through memory,
 // same shape as recSQRT_S_xmm's flag RMW.
@@ -851,6 +876,7 @@ void recC_LE()
 
 static void recADD_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	const a64::VRegister s = fpuClampInput(armSRegister(EEREC_S), RSSCRATCH);
 	const a64::VRegister t = fpuClampInput(armSRegister(EEREC_T), RSSCRATCH2);
 	fpuEmitGuardedAddSub(armSRegister(EEREC_D), s, t, false);
@@ -865,6 +891,7 @@ void recADD_S()
 
 static void recSUB_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	const a64::VRegister s = fpuClampInput(armSRegister(EEREC_S), RSSCRATCH);
 	const a64::VRegister t = fpuClampInput(armSRegister(EEREC_T), RSSCRATCH2);
 	fpuEmitGuardedAddSub(armSRegister(EEREC_D), s, t, true);
@@ -879,6 +906,7 @@ void recSUB_S()
 
 static void recMUL_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	const a64::VRegister s = fpuClampInput(armSRegister(EEREC_S), RSSCRATCH);
 	const a64::VRegister t = fpuClampInput(armSRegister(EEREC_T), RSSCRATCH2);
 	emitFpuMul(armSRegister(EEREC_D), s, t);
@@ -1215,6 +1243,7 @@ void recRSQRT_S()
 // unclamped mode-0 case.
 static void recMAX_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	const a64::VRegister s = fpuClampMinMaxOperand(armSRegister(EEREC_S), RSSCRATCH);
 	const a64::VRegister t = fpuClampMinMaxOperand(armSRegister(EEREC_T), RSSCRATCH2);
 	armAsm->Fmaxnm(armSRegister(EEREC_D), s, t);
@@ -1228,6 +1257,7 @@ void recMAX_S()
 
 static void recMIN_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	const a64::VRegister s = fpuClampMinMaxOperand(armSRegister(EEREC_S), RSSCRATCH);
 	const a64::VRegister t = fpuClampMinMaxOperand(armSRegister(EEREC_T), RSSCRATCH2);
 	armAsm->Fminnm(armSRegister(EEREC_D), s, t);
@@ -1245,6 +1275,7 @@ void recMIN_S()
 
 static void recADDA_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	const a64::VRegister s = fpuClampInput(armSRegister(EEREC_S), RSSCRATCH);
 	const a64::VRegister t = fpuClampInput(armSRegister(EEREC_T), RSSCRATCH2);
 	fpuEmitGuardedAddSub(armSRegister(EEREC_ACC), s, t, false);
@@ -1259,6 +1290,7 @@ void recADDA_S()
 
 static void recSUBA_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	const a64::VRegister s = fpuClampInput(armSRegister(EEREC_S), RSSCRATCH);
 	const a64::VRegister t = fpuClampInput(armSRegister(EEREC_T), RSSCRATCH2);
 	fpuEmitGuardedAddSub(armSRegister(EEREC_ACC), s, t, true);
@@ -1273,6 +1305,7 @@ void recSUBA_S()
 
 static void recMULA_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	const a64::VRegister s = fpuClampInput(armSRegister(EEREC_S), RSSCRATCH);
 	const a64::VRegister t = fpuClampInput(armSRegister(EEREC_T), RSSCRATCH2);
 	emitFpuMul(armSRegister(EEREC_ACC), s, t);
@@ -1290,6 +1323,7 @@ void recMULA_S()
 // for the intermediate product — leaves EEREC_S/T allocator-resident.
 static void recMADD_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	const a64::VRegister s = fpuClampInput(armSRegister(EEREC_S), RSSCRATCH);
 	const a64::VRegister t = fpuClampInput(armSRegister(EEREC_T), RSSCRATCH2);
 	emitFpuMul(RSSCRATCH, s, t);
@@ -1318,6 +1352,7 @@ void recMADD_S()
 // fd = ACC - fs * ft
 static void recMSUB_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	const a64::VRegister s = fpuClampInput(armSRegister(EEREC_S), RSSCRATCH);
 	const a64::VRegister t = fpuClampInput(armSRegister(EEREC_T), RSSCRATCH2);
 	emitFpuMul(RSSCRATCH, s, t);
@@ -1344,6 +1379,7 @@ void recMSUB_S()
 // the other way by never clamping the A-form product).
 static void recMADDA_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	const a64::VRegister s = fpuClampInput(armSRegister(EEREC_S), RSSCRATCH);
 	const a64::VRegister t = fpuClampInput(armSRegister(EEREC_T), RSSCRATCH2);
 	emitFpuMul(RSSCRATCH, s, t);
@@ -1363,6 +1399,7 @@ void recMADDA_S()
 // extra-gated product clamp for x86-JIT parity (GE-19).
 static void recMSUBA_S_xmm(int info)
 {
+	fpuClearOUFlags();
 	const a64::VRegister s = fpuClampInput(armSRegister(EEREC_S), RSSCRATCH);
 	const a64::VRegister t = fpuClampInput(armSRegister(EEREC_T), RSSCRATCH2);
 	emitFpuMul(RSSCRATCH, s, t);
