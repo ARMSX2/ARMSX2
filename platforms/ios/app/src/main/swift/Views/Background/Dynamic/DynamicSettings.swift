@@ -546,21 +546,6 @@ struct DynamicAppearancePreferences: Codable, Equatable {
 
 // MARK: - PlayStationBackgroundSettingsControls
 
-struct DynamicSettingsSliderActivity: @unchecked Sendable {
-  let update: (_ title: String, _ value: String, _ isEditing: Bool) -> Void
-}
-
-private struct DynamicSettingsSliderActivityKey: EnvironmentKey {
-  static let defaultValue = DynamicSettingsSliderActivity { _, _, _ in }
-}
-
-extension EnvironmentValues {
-  var dynamicSettingsSliderActivity: DynamicSettingsSliderActivity {
-    get { self[DynamicSettingsSliderActivityKey.self] }
-    set { self[DynamicSettingsSliderActivityKey.self] = newValue }
-  }
-}
-
 struct BackgroundSettingsResetHeader: View {
   let action: () -> Void
 
@@ -625,6 +610,11 @@ struct BackgroundControlSection<Content: View>: View {
   }
 }
 
+/// A shim over NumberRow for the background rows that still build their own readout string. The
+/// initialiser is the one every call site already spells, so it stays.
+///
+/// The title stays raw here. Two switches downstream match on the English string to find a reset
+/// value and a section icon, and NumberRow localises late enough not to break them.
 struct DynamicSettingsValueSlider: View {
   let title: String
   @Binding var value: Double
@@ -633,52 +623,16 @@ struct DynamicSettingsValueSlider: View {
   let formattedValue: String
   let resetValue: Double?
 
-  @Environment(\.dynamicSettingsSliderActivity) private var sliderActivity
-  @State private var isEditing = false
-
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack {
-        Text(title)
-        Spacer()
-        Text(formattedValue)
-          .foregroundStyle(.white.opacity(0.62))
-
-        if let resetValue {
-          DynamicSettingsResetButton(title: title) {
-            value = resetValue
-          }
-        }
-      }
-      .font(.caption.weight(.semibold))
-
-      Group {
-        if let step {
-          Slider(
-            value: $value,
-            in: range,
-            step: step,
-            onEditingChanged: updateEditingState
-          )
-        } else {
-          Slider(
-            value: $value,
-            in: range,
-            onEditingChanged: updateEditingState
-          )
-        }
-      }
-      .onChange(of: value) { _, _ in
-        guard isEditing else { return }
-        sliderActivity.update(title, formattedValue, true)
-      }
-    }
-  }
-
-  private func updateEditingState(_ editing: Bool) {
-    guard editing != isEditing else { return }
-    isEditing = editing
-    sliderActivity.update(title, formattedValue, editing)
+    NumberRow(
+      title,
+      value: $value,
+      in: range,
+      format: .opaque(formattedValue),
+      step: step,
+      default: resetValue,
+      settings: SettingsStore.shared
+    )
   }
 }
 
@@ -698,21 +652,25 @@ struct BackgroundControlToggle: View {
   }
 }
 
+/// No stops: these are live preview art controls where every value in the range is a legitimate
+/// one. They do snap to the precision they print, though, because a row that reads 50% while
+/// storing 0.4973 is lying to the reset arrow as well as to the reader.
 @MainActor
 func controlSlider(
   _ title: String,
   value: Binding<Double>,
   range: ClosedRange<Double>,
   defaultValue: Double,
-  format: @escaping (Double) -> String
+  format: NumberFormat
 ) -> some View {
-  DynamicSettingsValueSlider(
-    title: title,
+  NumberRow(
+    title,
     value: value,
-    range: range,
-    step: nil,
-    formattedValue: format(value.wrappedValue),
-    resetValue: defaultValue
+    in: range,
+    format: format,
+    step: format.displayStep,
+    default: defaultValue,
+    settings: SettingsStore.shared
   )
 }
 
@@ -773,26 +731,6 @@ func controlToggle(
     value: value,
     defaultValue: defaultValue
   )
-}
-
-func count(_ value: Double) -> String {
-  String(format: "%.0f", value)
-}
-
-func percent(_ value: Double) -> String {
-  "\(Int(value * 100))%"
-}
-
-func signedPercent(_ value: Double) -> String {
-  String(format: "%+.0f%%", value * 100)
-}
-
-func multiplier(_ value: Double) -> String {
-  String(format: "%.2fx", value)
-}
-
-func points(_ value: Double) -> String {
-  String(format: "%.1f pt", value)
 }
 
 // MARK: - DynamicBackgroundSettingsControls
@@ -866,6 +804,7 @@ struct DynamicBackgroundSettingsControls: View {
           "Orbit angle",
           value: $particleSettings.backgrounds.playStation2MenuOrbitDegrees,
           range: 0...45,
+          step: 1,
           formattedValue: String(
             format: "%.0f°",
             particleSettings.backgrounds.playStation2MenuOrbitDegrees
@@ -876,6 +815,7 @@ struct DynamicBackgroundSettingsControls: View {
           "Yaw speed",
           value: $particleSettings.backgrounds.playStation2MenuYawSpeed,
           range: 0...10,
+          step: 0.1,
           formattedValue: String(
             format: "%.1fx",
             particleSettings.backgrounds.playStation2MenuYawSpeed
@@ -886,6 +826,7 @@ struct DynamicBackgroundSettingsControls: View {
           "Roll speed",
           value: $particleSettings.backgrounds.playStation2MenuRollSpeed,
           range: 0...12,
+          step: 0.1,
           formattedValue: String(
             format: "%.1fx",
             particleSettings.backgrounds.playStation2MenuRollSpeed
@@ -1013,6 +954,7 @@ struct DynamicBackgroundSettingsControls: View {
       "Motion speed",
       value: value,
       range: 0.1...4,
+      step: 0.1,
       formattedValue: String(format: "%.1fx", value.wrappedValue),
       resetValue: defaultValue
     )
@@ -1103,6 +1045,7 @@ struct DynamicParticleSettingsControls: View {
         "See background preview before applying",
         value: $particleSettings.backgroundPreviewBeforeApplyingDuration,
         range: 0.0...3.0,
+        step: 0.1,
         formattedValue: String(
           format: "%.1fs",
           particleSettings.backgroundPreviewBeforeApplyingDuration
@@ -1114,6 +1057,7 @@ struct DynamicParticleSettingsControls: View {
         "See background preview after applying",
         value: $particleSettings.backgroundPreviewAfterApplyingDuration,
         range: 0.0...3.0,
+        step: 0.1,
         formattedValue: String(
           format: "%.1fs",
           particleSettings.backgroundPreviewAfterApplyingDuration
@@ -1163,18 +1107,21 @@ struct DynamicParticleSettingsControls: View {
         "Amount",
         value: $particleSettings.amount,
         range: 0.2...3.0,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.amount * 100))%"
       )
       particleSlider(
         "Speed",
         value: $particleSettings.speed,
         range: 0.1...3.0,
+        step: 0.1,
         formattedValue: String(format: "%.1fx", particleSettings.speed)
       )
       particleSlider(
         "Direction of speed",
         value: $particleSettings.speedDirection,
         range: -1.0...1.0,
+        step: 0.01,
         formattedValue: String(
           format: "%+.0f%%",
           particleSettings.speedDirection * 100
@@ -1184,66 +1131,77 @@ struct DynamicParticleSettingsControls: View {
         "Dispersion",
         value: $particleSettings.dispersion,
         range: 0.25...1.8,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.dispersion * 100))%"
       )
       particleSlider(
         "Y-axis spread",
         value: $particleSettings.verticalSpread,
         range: 0.25...3.0,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.verticalSpread * 100))%"
       )
       particleSlider(
         "Y-axis density",
         value: $particleSettings.verticalDensity,
         range: 0.25...3.0,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.verticalDensity * 100))%"
       )
       particleSlider(
         "Outer top/bottom dispersion",
         value: $particleSettings.outerDispersion,
         range: 0.0...2.5,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.outerDispersion * 100))%"
       )
       particleSlider(
         "Vertical level",
         value: $particleSettings.verticalLevel,
         range: 0.18...0.82,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.verticalLevel * 100))%"
       )
       particleSlider(
         "Size",
         value: $particleSettings.size,
         range: 0.4...2.4,
+        step: 0.1,
         formattedValue: String(format: "%.1fx", particleSettings.size)
       )
       particleSlider(
         "Brightness",
         value: $particleSettings.brightness,
         range: 0.15...1.35,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.brightness * 100))%"
       )
       particleSlider(
         "Particle opacity",
         value: $particleSettings.opacity,
         range: 0.05...1.5,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.opacity * 100))%"
       )
       particleSlider(
         "Depth variation",
         value: $particleSettings.depthVariation,
         range: 0.0...1.5,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.depthVariation * 100))%"
       )
       particleSlider(
         "Twinkle",
         value: $particleSettings.twinkle,
         range: 0.0...1.5,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.twinkle * 100))%"
       )
       particleSlider(
         "Drift",
         value: $particleSettings.drift,
         range: 0.0...1.5,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.drift * 100))%"
       )
 
@@ -1256,18 +1214,21 @@ struct DynamicParticleSettingsControls: View {
         "Color speed",
         value: $particleSettings.multiColorAnimationSpeed,
         range: 0.1...4.0,
+        step: 0.1,
         formattedValue: String(format: "%.1fx", particleSettings.multiColorAnimationSpeed)
       )
       particleSlider(
         "Color smoothness",
         value: $particleSettings.multiColorAnimationSmoothness,
         range: 0.0...1.0,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.multiColorAnimationSmoothness * 100))%"
       )
       particleSlider(
         "Color wave",
         value: $particleSettings.multiColorAnimationSpread,
         range: 0.0...1.2,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.multiColorAnimationSpread * 100))%"
       )
     }
@@ -1287,42 +1248,49 @@ struct DynamicParticleSettingsControls: View {
         "Face Buttons amount",
         value: $particleSettings.faceButtonAmount,
         range: 0.15...2.5,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.faceButtonAmount * 100))%"
       )
       particleSlider(
         "Face Buttons speed",
         value: $particleSettings.faceButtonSpeed,
         range: 0.05...1.25,
+        step: 0.01,
         formattedValue: String(format: "%.2fx", particleSettings.faceButtonSpeed)
       )
       particleSlider(
         "Face Buttons dispersion",
         value: $particleSettings.faceButtonDispersion,
         range: 0.25...2.2,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.faceButtonDispersion * 100))%"
       )
       particleSlider(
         "Face Buttons size",
         value: $particleSettings.faceButtonSize,
         range: 0.35...2.4,
+        step: 0.1,
         formattedValue: String(format: "%.1fx", particleSettings.faceButtonSize)
       )
       particleSlider(
         "Face Buttons opacity",
         value: $particleSettings.faceButtonOpacity,
         range: 0.1...1.4,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.faceButtonOpacity * 100))%"
       )
       particleSlider(
         "Face Buttons rotation",
         value: $particleSettings.faceButtonRotation,
         range: 0.0...2.0,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.faceButtonRotation * 100))%"
       )
       particleSlider(
         "Face Buttons pulse",
         value: $particleSettings.faceButtonPulse,
         range: 0.0...1.6,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.faceButtonPulse * 100))%"
       )
     }
@@ -1423,67 +1391,67 @@ struct PlayStation3SplinesSettingsControls: View {
     BackgroundControlSection("Spline geometry") {
       controlSlider(
         "Strand count", value: $settings.strandCount, range: 1...30,
-        defaultValue: defaults.strandCount, format: count)
+        defaultValue: defaults.strandCount, format: .plain)
       controlSlider(
         "Vertical position", value: $settings.verticalPosition, range: 0.2...0.9,
-        defaultValue: defaults.verticalPosition, format: percent)
+        defaultValue: defaults.verticalPosition, format: .unitPercent)
       controlSlider(
         "Strand spacing", value: $settings.strandSpacing, range: 0...3,
-        defaultValue: defaults.strandSpacing, format: multiplier)
+        defaultValue: defaults.strandSpacing, format: .multiplier)
       controlSlider(
         "Wave amplitude", value: $settings.waveAmplitude, range: 0...3,
-        defaultValue: defaults.waveAmplitude, format: multiplier)
+        defaultValue: defaults.waveAmplitude, format: .multiplier)
       controlSlider(
         "Detail amplitude", value: $settings.detailAmplitude, range: 0...3,
-        defaultValue: defaults.detailAmplitude, format: multiplier)
+        defaultValue: defaults.detailAmplitude, format: .multiplier)
       controlSlider(
         "Phase spread", value: $settings.phaseSpread, range: 0...3,
-        defaultValue: defaults.phaseSpread, format: multiplier)
+        defaultValue: defaults.phaseSpread, format: .multiplier)
     }
     BackgroundControlSection("Spline material") {
       controlSlider(
         "Glow opacity", value: $settings.glowOpacity, range: 0...3,
-        defaultValue: defaults.glowOpacity, format: percent)
+        defaultValue: defaults.glowOpacity, format: .unitPercent)
       controlSlider(
         "Core opacity", value: $settings.coreOpacity, range: 0...3,
-        defaultValue: defaults.coreOpacity, format: percent)
+        defaultValue: defaults.coreOpacity, format: .unitPercent)
       controlSlider(
         "Glow width", value: $settings.glowWidth, range: 0.1...3, defaultValue: defaults.glowWidth,
-        format: multiplier)
+        format: .multiplier)
       controlSlider(
         "Core width", value: $settings.coreWidth, range: 0.1...4, defaultValue: defaults.coreWidth,
-        format: multiplier)
+        format: .multiplier)
       controlSlider(
         "Glow blur", value: $settings.glowBlur, range: 0...3, defaultValue: defaults.glowBlur,
-        format: multiplier)
+        format: .multiplier)
     }
     BackgroundControlSection("Native particles") {
       controlSlider(
         "Particle count", value: $settings.particleCount, range: 0...600,
-        defaultValue: defaults.particleCount, format: count)
+        defaultValue: defaults.particleCount, format: .plain)
       controlSlider(
         "Particle speed", value: $settings.particleSpeed, range: 0...4,
-        defaultValue: defaults.particleSpeed, format: multiplier)
+        defaultValue: defaults.particleSpeed, format: .multiplier)
       controlSlider(
         "Particle spread", value: $settings.particleSpread, range: 0...3,
-        defaultValue: defaults.particleSpread, format: multiplier)
+        defaultValue: defaults.particleSpread, format: .multiplier)
       controlSlider(
         "Particle size", value: $settings.particleSize, range: 0.1...5,
-        defaultValue: defaults.particleSize, format: multiplier)
+        defaultValue: defaults.particleSize, format: .multiplier)
       controlSlider(
         "Particle opacity", value: $settings.particleOpacity, range: 0...3,
-        defaultValue: defaults.particleOpacity, format: percent)
+        defaultValue: defaults.particleOpacity, format: .unitPercent)
       controlSlider(
         "Twinkle speed", value: $settings.particleTwinkle, range: 0...4,
-        defaultValue: defaults.particleTwinkle, format: multiplier)
+        defaultValue: defaults.particleTwinkle, format: .multiplier)
     }
     BackgroundControlSection("Environment") {
       controlSlider(
         "Background intensity", value: $settings.backgroundIntensity, range: 0...2,
-        defaultValue: defaults.backgroundIntensity, format: percent)
+        defaultValue: defaults.backgroundIntensity, format: .unitPercent)
       controlSlider(
         "Vignette intensity", value: $settings.vignetteIntensity, range: 0...3,
-        defaultValue: defaults.vignetteIntensity, format: percent)
+        defaultValue: defaults.vignetteIntensity, format: .unitPercent)
     }
   }
 }
@@ -1511,70 +1479,70 @@ struct PlayStation4ParticlesSettingsControls: View {
     BackgroundControlSection("Native particles") {
       controlSlider(
         "Particle count", value: $settings.particleCount, range: 0...700,
-        defaultValue: defaults.particleCount, format: count)
+        defaultValue: defaults.particleCount, format: .plain)
       controlSlider(
         "Particle speed", value: $settings.particleSpeed, range: 0...4,
-        defaultValue: defaults.particleSpeed, format: multiplier)
+        defaultValue: defaults.particleSpeed, format: .multiplier)
       controlSlider(
         "Particle height", value: $settings.particleVerticalPosition, range: 0...1,
-        defaultValue: defaults.particleVerticalPosition, format: percent)
+        defaultValue: defaults.particleVerticalPosition, format: .unitPercent)
       controlSlider(
         "Particle spread", value: $settings.particleSpread, range: 0...3,
-        defaultValue: defaults.particleSpread, format: multiplier)
+        defaultValue: defaults.particleSpread, format: .multiplier)
       controlSlider(
         "Particle size", value: $settings.particleSize, range: 0.1...5,
-        defaultValue: defaults.particleSize, format: multiplier)
+        defaultValue: defaults.particleSize, format: .multiplier)
       controlSlider(
         "Particle opacity", value: $settings.particleOpacity, range: 0...3,
-        defaultValue: defaults.particleOpacity, format: percent)
+        defaultValue: defaults.particleOpacity, format: .unitPercent)
       controlSlider(
         "Twinkle speed", value: $settings.particleTwinkle, range: 0...4,
-        defaultValue: defaults.particleTwinkle, format: multiplier)
+        defaultValue: defaults.particleTwinkle, format: .multiplier)
     }
     BackgroundControlSection("Wave geometry") {
       controlSlider(
         "Wave count", value: $settings.waveCount, range: 1...16, defaultValue: defaults.waveCount,
-        format: count)
+        format: .plain)
       controlSlider(
         "Wave height", value: $settings.waveVerticalPosition, range: 0...1,
-        defaultValue: defaults.waveVerticalPosition, format: percent)
+        defaultValue: defaults.waveVerticalPosition, format: .unitPercent)
       controlSlider(
         "Wave spacing", value: $settings.waveSpacing, range: 0...3,
-        defaultValue: defaults.waveSpacing, format: multiplier)
+        defaultValue: defaults.waveSpacing, format: .multiplier)
       controlSlider(
         "Wave amplitude", value: $settings.waveAmplitude, range: 0...3,
-        defaultValue: defaults.waveAmplitude, format: multiplier)
+        defaultValue: defaults.waveAmplitude, format: .multiplier)
       controlSlider(
         "Wave curvature", value: $settings.waveCurvature, range: 0...3,
-        defaultValue: defaults.waveCurvature, format: multiplier)
+        defaultValue: defaults.waveCurvature, format: .multiplier)
       controlSlider(
         "Phase spread", value: $settings.phaseSpread, range: 0...3,
-        defaultValue: defaults.phaseSpread, format: multiplier)
+        defaultValue: defaults.phaseSpread, format: .multiplier)
     }
     BackgroundControlSection("Wave material") {
       controlSlider(
         "Glow blur", value: $settings.glowBlur, range: 0...50, defaultValue: defaults.glowBlur,
-        format: points)
+        format: .points.decimals(1))
       controlSlider(
         "Glow width", value: $settings.glowWidth, range: 0.1...3, defaultValue: defaults.glowWidth,
-        format: multiplier)
+        format: .multiplier)
       controlSlider(
         "Glow opacity", value: $settings.glowOpacity, range: 0...3,
-        defaultValue: defaults.glowOpacity, format: percent)
+        defaultValue: defaults.glowOpacity, format: .unitPercent)
       controlSlider(
         "Core width", value: $settings.coreWidth, range: 0.1...4, defaultValue: defaults.coreWidth,
-        format: multiplier)
+        format: .multiplier)
       controlSlider(
         "Core opacity", value: $settings.coreOpacity, range: 0...3,
-        defaultValue: defaults.coreOpacity, format: percent)
+        defaultValue: defaults.coreOpacity, format: .unitPercent)
     }
     BackgroundControlSection("Environment") {
       controlSlider(
         "Background intensity", value: $settings.backgroundIntensity, range: 0...2,
-        defaultValue: defaults.backgroundIntensity, format: percent)
+        defaultValue: defaults.backgroundIntensity, format: .unitPercent)
       controlSlider(
         "Vignette intensity", value: $settings.vignetteIntensity, range: 0...3,
-        defaultValue: defaults.vignetteIntensity, format: percent)
+        defaultValue: defaults.vignetteIntensity, format: .unitPercent)
     }
   }
 }
@@ -1604,67 +1572,67 @@ struct PlayStation4WavesSettingsControls: View {
     BackgroundControlSection("Native particles") {
       controlSlider(
         "Particle count", value: $settings.particleCount, range: 0...300,
-        defaultValue: defaults.particleCount, format: count)
+        defaultValue: defaults.particleCount, format: .plain)
       controlSlider(
         "Particle speed", value: $settings.particleSpeed, range: 0...4,
-        defaultValue: defaults.particleSpeed, format: multiplier)
+        defaultValue: defaults.particleSpeed, format: .multiplier)
       controlSlider(
         "Particle spread", value: $settings.particleSpread, range: 0...3,
-        defaultValue: defaults.particleSpread, format: multiplier)
+        defaultValue: defaults.particleSpread, format: .multiplier)
       controlSlider(
         "Particle size", value: $settings.particleSize, range: 0.1...5,
-        defaultValue: defaults.particleSize, format: multiplier)
+        defaultValue: defaults.particleSize, format: .multiplier)
       controlSlider(
         "Particle opacity", value: $settings.particleOpacity, range: 0...3,
-        defaultValue: defaults.particleOpacity, format: percent)
+        defaultValue: defaults.particleOpacity, format: .unitPercent)
     }
     BackgroundControlSection("Wave geometry") {
       controlSlider(
         "Wave count", value: $settings.waveCount, range: 1...16, defaultValue: defaults.waveCount,
-        format: count)
+        format: .plain)
       controlSlider(
         "Wave height", value: $settings.waveVerticalPosition, range: 0...1,
-        defaultValue: defaults.waveVerticalPosition, format: percent)
+        defaultValue: defaults.waveVerticalPosition, format: .unitPercent)
       controlSlider(
         "Wave spacing", value: $settings.waveSpacing, range: 0...3,
-        defaultValue: defaults.waveSpacing, format: multiplier)
+        defaultValue: defaults.waveSpacing, format: .multiplier)
       controlSlider(
         "Wave amplitude", value: $settings.waveAmplitude, range: 0...3,
-        defaultValue: defaults.waveAmplitude, format: multiplier)
+        defaultValue: defaults.waveAmplitude, format: .multiplier)
       controlSlider(
         "Wave curvature", value: $settings.waveCurvature, range: 0...3,
-        defaultValue: defaults.waveCurvature, format: multiplier)
+        defaultValue: defaults.waveCurvature, format: .multiplier)
       controlSlider(
         "Phase spread", value: $settings.phaseSpread, range: 0...3,
-        defaultValue: defaults.phaseSpread, format: multiplier)
+        defaultValue: defaults.phaseSpread, format: .multiplier)
     }
     BackgroundControlSection("Wave material") {
       controlSlider(
         "Glow blur", value: $settings.glowBlur, range: 0...50, defaultValue: defaults.glowBlur,
-        format: points)
+        format: .points.decimals(1))
       controlSlider(
         "Glow width", value: $settings.glowWidth, range: 0.1...3, defaultValue: defaults.glowWidth,
-        format: multiplier)
+        format: .multiplier)
       controlSlider(
         "Glow opacity", value: $settings.glowOpacity, range: 0...3,
-        defaultValue: defaults.glowOpacity, format: percent)
+        defaultValue: defaults.glowOpacity, format: .unitPercent)
       controlSlider(
         "Core width", value: $settings.coreWidth, range: 0.1...4, defaultValue: defaults.coreWidth,
-        format: multiplier)
+        format: .multiplier)
       controlSlider(
         "Core opacity", value: $settings.coreOpacity, range: 0...3,
-        defaultValue: defaults.coreOpacity, format: percent)
+        defaultValue: defaults.coreOpacity, format: .unitPercent)
     }
     BackgroundControlSection("Environment") {
       controlSlider(
         "Ambient glow scale", value: $settings.ambientGlowScale, range: 0.1...3,
-        defaultValue: defaults.ambientGlowScale, format: multiplier)
+        defaultValue: defaults.ambientGlowScale, format: .multiplier)
       controlSlider(
         "Ambient glow intensity", value: $settings.ambientGlowIntensity, range: 0...3,
-        defaultValue: defaults.ambientGlowIntensity, format: percent)
+        defaultValue: defaults.ambientGlowIntensity, format: .unitPercent)
       controlSlider(
         "Vignette intensity", value: $settings.vignetteIntensity, range: 0...3,
-        defaultValue: defaults.vignetteIntensity, format: percent)
+        defaultValue: defaults.vignetteIntensity, format: .unitPercent)
     }
   }
 }
@@ -1692,73 +1660,73 @@ struct PlayStationRibbonsSettingsControls: View {
     BackgroundControlSection("Panel geometry") {
       controlSlider(
         "Panel count", value: $settings.panelCount, range: 1...12,
-        defaultValue: defaults.panelCount, format: count)
+        defaultValue: defaults.panelCount, format: .plain)
       controlSlider(
         "Panel height", value: $settings.panelVerticalPosition, range: -0.2...0.8,
-        defaultValue: defaults.panelVerticalPosition, format: percent)
+        defaultValue: defaults.panelVerticalPosition, format: .unitPercent)
       controlSlider(
         "Panel spacing", value: $settings.panelSpacing, range: 0...2,
-        defaultValue: defaults.panelSpacing, format: multiplier)
+        defaultValue: defaults.panelSpacing, format: .multiplier)
       controlSlider(
         "Panel amplitude", value: $settings.panelAmplitude, range: 0...3,
-        defaultValue: defaults.panelAmplitude, format: multiplier)
+        defaultValue: defaults.panelAmplitude, format: .multiplier)
       controlSlider(
         "Panel thickness", value: $settings.panelThickness, range: 0.1...4,
-        defaultValue: defaults.panelThickness, format: multiplier)
+        defaultValue: defaults.panelThickness, format: .multiplier)
       controlSlider(
         "Panel curvature", value: $settings.panelCurvature, range: 0...3,
-        defaultValue: defaults.panelCurvature, format: multiplier)
+        defaultValue: defaults.panelCurvature, format: .multiplier)
       controlSlider(
         "Phase spread", value: $settings.phaseSpread, range: 0...3,
-        defaultValue: defaults.phaseSpread, format: multiplier)
+        defaultValue: defaults.phaseSpread, format: .multiplier)
     }
     BackgroundControlSection("Panel material") {
       controlSlider(
         "Fill opacity", value: $settings.panelFillOpacity, range: 0...3,
-        defaultValue: defaults.panelFillOpacity, format: percent)
+        defaultValue: defaults.panelFillOpacity, format: .unitPercent)
       controlSlider(
         "Glow opacity", value: $settings.panelGlowOpacity, range: 0...3,
-        defaultValue: defaults.panelGlowOpacity, format: percent)
+        defaultValue: defaults.panelGlowOpacity, format: .unitPercent)
       controlSlider(
         "Glow blur", value: $settings.panelGlowBlur, range: 0...3,
-        defaultValue: defaults.panelGlowBlur, format: multiplier)
+        defaultValue: defaults.panelGlowBlur, format: .multiplier)
       controlSlider(
         "Edge opacity", value: $settings.panelEdgeOpacity, range: 0...3,
-        defaultValue: defaults.panelEdgeOpacity, format: percent)
+        defaultValue: defaults.panelEdgeOpacity, format: .unitPercent)
       controlSlider(
         "Edge width", value: $settings.panelEdgeWidth, range: 0.1...4,
-        defaultValue: defaults.panelEdgeWidth, format: multiplier)
+        defaultValue: defaults.panelEdgeWidth, format: .multiplier)
     }
     BackgroundControlSection("Native particles") {
       controlSlider(
         "Particle count", value: $settings.particleCount, range: 0...500,
-        defaultValue: defaults.particleCount, format: count)
+        defaultValue: defaults.particleCount, format: .plain)
       controlSlider(
         "Particle speed", value: $settings.particleSpeed, range: 0...4,
-        defaultValue: defaults.particleSpeed, format: multiplier)
+        defaultValue: defaults.particleSpeed, format: .multiplier)
       controlSlider(
         "Particle drift", value: $settings.particleDrift, range: 0...4,
-        defaultValue: defaults.particleDrift, format: multiplier)
+        defaultValue: defaults.particleDrift, format: .multiplier)
       controlSlider(
         "Vertical spread", value: $settings.particleVerticalSpread, range: 0...3,
-        defaultValue: defaults.particleVerticalSpread, format: multiplier)
+        defaultValue: defaults.particleVerticalSpread, format: .multiplier)
       controlSlider(
         "Particle size", value: $settings.particleSize, range: 0.1...5,
-        defaultValue: defaults.particleSize, format: multiplier)
+        defaultValue: defaults.particleSize, format: .multiplier)
       controlSlider(
         "Particle opacity", value: $settings.particleOpacity, range: 0...3,
-        defaultValue: defaults.particleOpacity, format: percent)
+        defaultValue: defaults.particleOpacity, format: .unitPercent)
     }
     BackgroundControlSection("Environment") {
       controlSlider(
         "Ambient glow scale", value: $settings.ambientGlowScale, range: 0.1...3,
-        defaultValue: defaults.ambientGlowScale, format: multiplier)
+        defaultValue: defaults.ambientGlowScale, format: .multiplier)
       controlSlider(
         "Ambient glow intensity", value: $settings.ambientGlowIntensity, range: 0...3,
-        defaultValue: defaults.ambientGlowIntensity, format: percent)
+        defaultValue: defaults.ambientGlowIntensity, format: .unitPercent)
       controlSlider(
         "Vignette intensity", value: $settings.vignetteIntensity, range: 0...3,
-        defaultValue: defaults.vignetteIntensity, format: percent)
+        defaultValue: defaults.vignetteIntensity, format: .unitPercent)
     }
   }
 }
@@ -1786,53 +1754,53 @@ struct PlayStationPortableBlurSettingsControls: View {
     BackgroundControlSection("Ribbon geometry") {
       controlSlider(
         "Ribbon count", value: $settings.ribbonCount, range: 1...14,
-        defaultValue: defaults.ribbonCount, format: count)
+        defaultValue: defaults.ribbonCount, format: .plain)
       controlSlider(
         "Vertical offset", value: $settings.verticalOffset, range: -0.6...0.6,
-        defaultValue: defaults.verticalOffset, format: signedPercent)
+        defaultValue: defaults.verticalOffset, format: .unitPercent.signed)
       controlSlider(
         "Wave amplitude", value: $settings.waveAmplitude, range: 0...3,
-        defaultValue: defaults.waveAmplitude, format: multiplier)
+        defaultValue: defaults.waveAmplitude, format: .multiplier)
       controlSlider(
         "Detail amplitude", value: $settings.detailAmplitude, range: 0...3,
-        defaultValue: defaults.detailAmplitude, format: multiplier)
+        defaultValue: defaults.detailAmplitude, format: .multiplier)
       controlSlider(
         "Phase spread", value: $settings.phaseSpread, range: 0...3,
-        defaultValue: defaults.phaseSpread, format: multiplier)
+        defaultValue: defaults.phaseSpread, format: .multiplier)
     }
     BackgroundControlSection("Ribbon material") {
       controlSlider(
         "Broad width", value: $settings.broadWidth, range: 0.1...4,
-        defaultValue: defaults.broadWidth, format: multiplier)
+        defaultValue: defaults.broadWidth, format: .multiplier)
       controlSlider(
         "Glow blur", value: $settings.glowBlur, range: 0...3, defaultValue: defaults.glowBlur,
-        format: multiplier)
+        format: .multiplier)
       controlSlider(
         "Glow opacity", value: $settings.glowOpacity, range: 0...3,
-        defaultValue: defaults.glowOpacity, format: percent)
+        defaultValue: defaults.glowOpacity, format: .unitPercent)
       controlSlider(
         "Core width", value: $settings.coreWidth, range: 0.1...4, defaultValue: defaults.coreWidth,
-        format: multiplier)
+        format: .multiplier)
       controlSlider(
         "Core blur", value: $settings.coreBlur, range: 0...3, defaultValue: defaults.coreBlur,
-        format: multiplier)
+        format: .multiplier)
       controlSlider(
         "Core opacity", value: $settings.coreOpacity, range: 0...3,
-        defaultValue: defaults.coreOpacity, format: percent)
+        defaultValue: defaults.coreOpacity, format: .unitPercent)
     }
     BackgroundControlSection("Environment") {
       controlSlider(
         "Background intensity", value: $settings.backgroundIntensity, range: 0...2,
-        defaultValue: defaults.backgroundIntensity, format: percent)
+        defaultValue: defaults.backgroundIntensity, format: .unitPercent)
       controlSlider(
         "Ambient glow scale", value: $settings.ambientGlowScale, range: 0.1...3,
-        defaultValue: defaults.ambientGlowScale, format: multiplier)
+        defaultValue: defaults.ambientGlowScale, format: .multiplier)
       controlSlider(
         "Ambient glow intensity", value: $settings.ambientGlowIntensity, range: 0...3,
-        defaultValue: defaults.ambientGlowIntensity, format: percent)
+        defaultValue: defaults.ambientGlowIntensity, format: .unitPercent)
       controlSlider(
         "Vignette intensity", value: $settings.vignetteIntensity, range: 0...3,
-        defaultValue: defaults.vignetteIntensity, format: percent)
+        defaultValue: defaults.vignetteIntensity, format: .unitPercent)
     }
   }
 }
@@ -1883,30 +1851,35 @@ struct PlayStation3XMBMartSettingsControls: View {
           "Color red",
           value: $settings.colorR,
           range: 0...255,
+          step: 1,
           formattedValue: String(format: "%.0f", settings.colorR)
         )
         particleSlider(
           "Color green",
           value: $settings.colorG,
           range: 0...255,
+          step: 1,
           formattedValue: String(format: "%.0f", settings.colorG)
         )
         particleSlider(
           "Color blue",
           value: $settings.colorB,
           range: 0...255,
+          step: 1,
           formattedValue: String(format: "%.0f", settings.colorB)
         )
         particleSlider(
           "Gradient top multiplier",
           value: $settings.gradientTopMul,
           range: 0...0.3,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.gradientTopMul)
         )
         particleSlider(
           "Gradient bottom multiplier",
           value: $settings.gradientBotMul,
           range: 0.2...1.2,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.gradientBotMul)
         )
       }
@@ -1916,36 +1889,42 @@ struct PlayStation3XMBMartSettingsControls: View {
           "Count",
           value: $settings.particleCount,
           range: 10...4000,
+          step: 1,
           formattedValue: String(format: "%.0f", settings.particleCount)
         )
         particleSlider(
           "Opacity",
           value: $settings.particleOpacity,
           range: 0...1,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.particleOpacity)
         )
         particleSlider(
           "Base size",
           value: $settings.particleSizeBase,
           range: 1...40,
+          step: 0.1,
           formattedValue: String(format: "%.1f", settings.particleSizeBase)
         )
         particleSlider(
           "Size variance",
           value: $settings.particleSizeVariance,
           range: 0...50,
+          step: 0.1,
           formattedValue: String(format: "%.1f", settings.particleSizeVariance)
         )
         particleSlider(
           "Particle flow speed",
           value: $settings.particleFlowSpeed,
           range: 0...3,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.particleFlowSpeed)
         )
         particleSlider(
           "Y-axis spread",
           value: $settings.particleVerticalSpread,
           range: 0.25...3.0,
+          step: 0.01,
           formattedValue: "\(Int(settings.particleVerticalSpread * 100))%",
           resetValue: defaults.particleVerticalSpread
         )
@@ -1953,6 +1932,7 @@ struct PlayStation3XMBMartSettingsControls: View {
           "Y-axis density",
           value: $settings.particleVerticalDensity,
           range: 0.25...3.0,
+          step: 0.01,
           formattedValue: "\(Int(settings.particleVerticalDensity * 100))%",
           resetValue: defaults.particleVerticalDensity
         )
@@ -1960,6 +1940,7 @@ struct PlayStation3XMBMartSettingsControls: View {
           "Outer top/bottom dispersion",
           value: $settings.particleOuterDispersion,
           range: 0.0...2.5,
+          step: 0.01,
           formattedValue: "\(Int(settings.particleOuterDispersion * 100))%",
           resetValue: defaults.particleOuterDispersion
         )
@@ -1967,6 +1948,7 @@ struct PlayStation3XMBMartSettingsControls: View {
           "Depth variation",
           value: $settings.particleDepthVariation,
           range: 0.0...1.5,
+          step: 0.01,
           formattedValue: "\(Int(settings.particleDepthVariation * 100))%",
           resetValue: defaults.particleDepthVariation
         )
@@ -1987,36 +1969,42 @@ struct PlayStation3XMBMartSettingsControls: View {
           "Flow speed",
           value: $settings.flowSpeed,
           range: 0...1.2,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.flowSpeed)
         )
         particleSlider(
           "Tension",
           value: $settings.tension,
           range: 0...0.5,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.tension)
         )
         particleSlider(
           "Damping",
           value: $settings.damping,
           range: 0...0.002,
+          step: 0.00001,
           formattedValue: String(format: "%.5f", settings.damping)
         )
         particleSlider(
           "Length",
           value: $settings.length,
           range: 0.05...1.2,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.length)
         )
         particleSlider(
           "Spacing",
           value: $settings.spacing,
           range: 10...800,
+          step: 1,
           formattedValue: String(format: "%.0f", settings.spacing)
         )
         particleSlider(
           "Time step",
           value: $settings.timeStep,
           range: 0.1...4,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.timeStep)
         )
       }
@@ -2026,42 +2014,49 @@ struct PlayStation3XMBMartSettingsControls: View {
           "Band amplitude",
           value: $settings.bandAmplitude,
           range: 0...0.6,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.bandAmplitude)
         )
         particleSlider(
           "Secondary frequency",
           value: $settings.bandSecondaryFrequency,
           range: 0.5...16,
+          step: 0.1,
           formattedValue: String(format: "%.1f", settings.bandSecondaryFrequency)
         )
         particleSlider(
           "Secondary amplitude",
           value: $settings.bandSecondaryAmplitude,
           range: 0...0.12,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.bandSecondaryAmplitude)
         )
         particleSlider(
           "Travel speed 1",
           value: $settings.travelSpeed1,
           range: 0...1.5,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.travelSpeed1)
         )
         particleSlider(
           "Travel amplitude 1",
           value: $settings.travelAmplitude1,
           range: 0...0.08,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.travelAmplitude1)
         )
         particleSlider(
           "Travel speed 2",
           value: $settings.travelSpeed2,
           range: 0...1.5,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.travelSpeed2)
         )
         particleSlider(
           "Travel amplitude 2",
           value: $settings.travelAmplitude2,
           range: 0...0.08,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.travelAmplitude2)
         )
       }
@@ -2071,36 +2066,42 @@ struct PlayStation3XMBMartSettingsControls: View {
           "Perturbation",
           value: $settings.perturbation,
           range: 0...0.3,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.perturbation)
         )
         particleSlider(
           "Perturbation scale",
           value: $settings.perturbationScale,
           range: 0...0.3,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.perturbationScale)
         )
         particleSlider(
           "Cosine amplitude",
           value: $settings.waveCosineAmplitude,
           range: 0...0.3,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.waveCosineAmplitude)
         )
         particleSlider(
           "Wave bias",
           value: $settings.waveBias,
           range: -0.3...0.3,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.waveBias)
         )
         particleSlider(
           "Height scale",
           value: $settings.waveHeightScale,
           range: 0...1,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.waveHeightScale)
         )
         particleSlider(
           "Soft clip",
           value: $settings.waveSoftClip,
           range: 0.05...0.5,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.waveSoftClip)
         )
       }
@@ -2110,54 +2111,63 @@ struct PlayStation3XMBMartSettingsControls: View {
           "Pipeline blend",
           value: $settings.reversePipelineBlend,
           range: 0...1,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.reversePipelineBlend)
         )
         particleSlider(
           "Descriptor strength",
           value: $settings.reverseDescriptorStrength,
           range: 0...2,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.reverseDescriptorStrength)
         )
         particleSlider(
           "Descriptor seed",
           value: $settings.reverseSyntheticDescriptorSeed,
           range: 0...100_000,
+          step: 1,
           formattedValue: String(format: "%.0f", settings.reverseSyntheticDescriptorSeed)
         )
         particleSlider(
           "Descriptor motion",
           value: $settings.reverseSyntheticDescriptorMotion,
           range: 0...5,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.reverseSyntheticDescriptorMotion)
         )
         particleSlider(
           "Kernel gain",
           value: $settings.reverseKernelGain,
           range: 0...1,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.reverseKernelGain)
         )
         particleSlider(
           "Normalize gain",
           value: $settings.reverseNormalizeGain,
           range: 0...2,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.reverseNormalizeGain)
         )
         particleSlider(
           "Kernel phase step",
           value: $settings.reverseKernelPhaseStep,
           range: 0...8,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.reverseKernelPhaseStep)
         )
         particleSlider(
           "Index jitter",
           value: $settings.reverseIndexJitter,
           range: 0...0.5,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.reverseIndexJitter)
         )
         particleSlider(
           "Temporal smoothing",
           value: $settings.reverseTemporalSmooth,
           range: 0...0.98,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.reverseTemporalSmooth)
         )
       }
@@ -2167,30 +2177,35 @@ struct PlayStation3XMBMartSettingsControls: View {
           "Fresnel power",
           value: $settings.fresnelPower,
           range: 0.2...8,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.fresnelPower)
         )
         particleSlider(
           "Fresnel scale",
           value: $settings.fresnelScale,
           range: 0...2,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.fresnelScale)
         )
         particleSlider(
           "Wave opacity",
           value: $settings.opacity,
           range: 0...1,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.opacity)
         )
         particleSlider(
           "Spline brightness",
           value: $settings.brightness,
           range: 0...2,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.brightness)
         )
         particleSlider(
           "Z detail scale",
           value: $settings.zDetailScale,
           range: 0...0.25,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.zDetailScale)
         )
       }
@@ -2200,66 +2215,77 @@ struct PlayStation3XMBMartSettingsControls: View {
           "Scale 1 X",
           value: $settings.ffdScale1X,
           range: 0...8,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.ffdScale1X)
         )
         particleSlider(
           "Scale 1 Y",
           value: $settings.ffdScale1Y,
           range: 0...3,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.ffdScale1Y)
         )
         particleSlider(
           "Scale 1 Z",
           value: $settings.ffdScale1Z,
           range: 0...3,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.ffdScale1Z)
         )
         particleSlider(
           "Scale 2 X",
           value: $settings.ffdScale2X,
           range: 0...8,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.ffdScale2X)
         )
         particleSlider(
           "Scale 2 Y",
           value: $settings.ffdScale2Y,
           range: 0...3,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.ffdScale2Y)
         )
         particleSlider(
           "Scale 2 Z",
           value: $settings.ffdScale2Z,
           range: 0...6,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.ffdScale2Z)
         )
         particleSlider(
           "Offset X",
           value: $settings.ffdOffsetX,
           range: -2...2,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.ffdOffsetX)
         )
         particleSlider(
           "Offset Y",
           value: $settings.ffdOffsetY,
           range: -2...2,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.ffdOffsetY)
         )
         particleSlider(
           "Offset Z",
           value: $settings.ffdOffsetZ,
           range: -2...2,
+          step: 0.01,
           formattedValue: String(format: "%.2f", settings.ffdOffsetZ)
         )
         particleSlider(
           "Y amplitude",
           value: $settings.ffdYAmplitude,
           range: 0...0.3,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.ffdYAmplitude)
         )
         particleSlider(
           "Z amplitude",
           value: $settings.ffdZAmplitude,
           range: 0...0.3,
+          step: 0.001,
           formattedValue: String(format: "%.3f", settings.ffdZAmplitude)
         )
       }
