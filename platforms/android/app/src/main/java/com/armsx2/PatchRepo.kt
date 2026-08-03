@@ -56,6 +56,10 @@ object PatchRepo {
             "https://raw.githubusercontent.com/xs1l3n7x/pcsx2_cheats_collection/main",
             "https://api.github.com/repos/xs1l3n7x/pcsx2_cheats_collection/git/trees/main?recursive=1",
         ),
+        CheatSource(
+            "https://raw.githubusercontent.com/XDiaoXuanX/PCSX2-CheatDB/main",
+            "https://api.github.com/repos/XDiaoXuanX/PCSX2-CheatDB/git/trees/main?recursive=1",
+        ),
     )
     private val cheatTreeCache = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
     private val CRC_RE = Regex("^[0-9A-Fa-f]{8}$")
