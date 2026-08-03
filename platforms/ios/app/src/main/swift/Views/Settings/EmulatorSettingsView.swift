@@ -201,7 +201,7 @@ struct EmulatorSettingsView: View {
                         .font(.callout.monospacedDigit())
                 }
 
-                Text(settings.localized("FPS Target maps to PCSX2 Normal Speed: 60 FPS is normal NTSC timing, 30 FPS is about 50% speed, and higher values fast-forward. Turning the limiter OFF unlocks speed and can increase heat and battery drain."))
+                Text(settings.localized("FPS Target limits display presentation while emulation remains at 100% speed. Turning the limiter OFF presents every available frame and can increase heat and battery drain."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -10,6 +10,14 @@
 class GSRenderer : public GSState
 {
 private:
+	enum class MergeMode
+	{
+		Full,
+		SkipFinalComposition,
+		InterlaceHistoryOnly,
+	};
+
+	template <MergeMode mode>
 	bool Merge(int field);
 	bool BeginPresentFrame(bool frame_skip);
 	void EndPresentFrame();
@@ -24,7 +32,6 @@ private:
 	/// Accumulator pacer for the max-presented-FPS cap: the tick deadline at which the next
 	/// present is due. 0 = not started/disabled. GS thread only.
 	u64 m_next_present_deadline = 0;
-
 	// Tracking draw counters for idle frame detection.
 	u64 m_last_draw_n = 0;
 	u64 m_last_transfer_n = 0;

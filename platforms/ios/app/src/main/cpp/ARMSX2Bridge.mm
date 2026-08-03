@@ -46,6 +46,7 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "SIO/Memcard/MemoryCardFile.h"
 #include "SIO/Sio.h"
 #include "Counters.h"
+#include "GS/GS.h"
 #include "GS/GSState.h"
 #include "SPU2/spu2.h"
 #include "GameList.h"
@@ -80,6 +81,7 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 extern INISettingsInterface* g_p44_settings_interface;
 extern "C" void ARMSX2_PrepareGameRenderViewForCurrentRenderer(const char* reason);
 extern "C" void ARMSX2_PostRuntimeMenuStateChanged(void);
+extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void);
 extern "C" void ARMSX2_iOSTestGamepadRumble(void);
 extern "C" bool ARMSX2_IsIdleVMPrewarmResolved(void);
 
@@ -4089,6 +4091,7 @@ static void ARMSX2RequestPerGameSettingsReload()
             // EmuConfig and the MTGS ring are the CPU thread's; this runs on the UI thread.
             Host::RunOnCPUThread([]() {
                 VMManager::ReloadGameSettings();
+                ARMSX2_ApplyEffectivePresentFPSCap();
                 if (MTGS::IsOpen())
                     MTGS::ApplySettings();
             });
@@ -4315,6 +4318,11 @@ static void ARMSX2RequestPerGameSettingsReload()
         const LimiterModeType previousMode = VMManager::GetLimiterMode();
         VMManager::SetLimiterMode(limiterMode);
         const LimiterModeType appliedMode = VMManager::GetLimiterMode();
+        // Update cap suspension after the VM mode changes on the same CPU-thread
+        // task. This avoids a settings reload racing Turbo and restoring a cap
+        // using the previous limiter mode.
+        GSSetPresentCapSuspended(
+            appliedMode == LimiterModeType::Turbo && GSGetMaxPresentInterval() != 0);
         std::fprintf(stderr,
             "@@LIMITER_MODE@@ before=%d after=%d target=%.3f nominal=%.3f turbo=%.3f slomo=%.3f\n",
             static_cast<int>(previousMode), static_cast<int>(appliedMode), VMManager::GetTargetSpeed(),
@@ -4322,6 +4330,106 @@ static void ARMSX2RequestPerGameSettingsReload()
             EmuConfig.EmulationSpeed.SlomoScalar);
         std::fflush(stderr);
     }, false);
+}
+
+static void ARMSX2SetPresentFPSCapValue(double fps)
+{
+    const double requestedFPS = std::isfinite(fps) ? std::clamp(static_cast<double>(fps), 0.0, 1000.0) : 0.0;
+    const u32 requestedMilliFPS = requestedFPS > 0.0 ?
+        static_cast<u32>(std::llround(requestedFPS * 1000.0)) : 0u;
+
+    // 60 FPS and higher use the native/default path rather than a custom
+    // presentation cap. Publishing a zero interval preserves master's original
+    // VM pacing, rendering, and submission behavior. Fractional rates below 60,
+    // such as 59.970, remain explicit caps.
+    const bool customCapActive = requestedMilliFPS != 0 && requestedMilliFPS < 60000;
+    const u32 displayFPS = customCapActive ? static_cast<u32>(std::lround(requestedFPS)) : 0u;
+    const u32 milliFPS = customCapActive ? requestedMilliFPS : 0u;
+    const u64 interval = customCapActive
+        ? static_cast<u64>(std::llround(static_cast<double>(GetTickFrequency()) / requestedFPS))
+        : 0u;
+
+    GSSetMaxPresentFps(displayFPS, interval, milliFPS);
+    GSSetPresentCapRenderSkip(customCapActive);
+    GSSetPresentCapSuspended(customCapActive && VMManager::HasValidVM() &&
+        VMManager::GetLimiterMode() == LimiterModeType::Turbo);
+}
+
+// Older iOS per-game profiles encoded their presentation target in
+// Framerate/NominalScalar. Convert the active profile once so loading it no
+// longer slows CPU/audio timing, while retaining the selected display cadence.
+// This runs on the CPU thread before the effective cap is read.
+static bool ARMSX2MigrateLegacyPerGamePresentFPSCap()
+{
+    if (!VMManager::HasValidVM())
+        return false;
+
+    bool migrated = false;
+    {
+        auto lock = Host::GetSettingsLock();
+        SettingsInterface* const game_layer = Host::Internal::GetGameSettingsLayer();
+        if (!game_layer ||
+            !game_layer->ContainsValue("Framerate", "NominalScalar") ||
+            game_layer->ContainsValue("ARMSX2iOS/FramePacing", "TargetFPS"))
+        {
+            return false;
+        }
+
+        const float scalar = game_layer->GetFloatValue("Framerate", "NominalScalar", 1.0f);
+        if (!std::isfinite(scalar) || scalar >= 5.0f || std::abs(scalar - 1.0f) < 0.002f)
+            return false;
+
+        SettingsInterface* const layered = Host::GetSettingsInterface();
+        const float base_fps = layered ?
+            layered->GetFloatValue("EmuCore/GS", "FramerateNTSC", 59.94f) : 59.94f;
+        const float target_fps = std::clamp(scalar * std::max(base_fps, 1.0f), 15.0f, 120.0f);
+
+        game_layer->SetFloatValue("ARMSX2iOS/FramePacing", "TargetFPS", target_fps);
+        game_layer->SetFloatValue("Framerate", "NominalScalar", 1.0f);
+        Error error;
+        if (!game_layer->Save(&error))
+        {
+            Console.Error("Failed to migrate per-game presentation FPS cap: %s", error.GetDescription().c_str());
+            return false;
+        }
+        migrated = true;
+    }
+
+    if (migrated)
+        VMManager::ReloadGameSettings();
+    return migrated;
+}
+
+extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
+{
+    ARMSX2MigrateLegacyPerGamePresentFPSCap();
+
+    float nominalScalar = 1.0f;
+    float targetFPS = 60.0f;
+    {
+        auto lock = Host::GetSettingsLock();
+        SettingsInterface* const si = Host::GetSettingsInterface();
+        if (si)
+        {
+            nominalScalar = si->GetFloatValue("Framerate", "NominalScalar", 1.0f);
+            targetFPS = si->GetFloatValue("ARMSX2iOS/FramePacing", "TargetFPS", 60.0f);
+        }
+    }
+
+    const bool limiterEnabled = !std::isfinite(nominalScalar) || nominalScalar < 5.0f;
+    ARMSX2SetPresentFPSCapValue(limiterEnabled ? (std::isfinite(targetFPS) ? targetFPS : 60.0f) : 0.0f);
+    if (!VMManager::HasValidVM())
+        GSSetPresentCapSuspended(false);
+}
+
++ (void)setPresentFPSCap:(float)fps
+{
+    // With a running VM the layered settings interface is authoritative: a
+    // per-game TargetFPS must continue to win when the global value changes.
+    if (VMManager::HasValidVM())
+        Host::RunOnCPUThread([]() { ARMSX2_ApplyEffectivePresentFPSCap(); }, false);
+    else
+        ARMSX2SetPresentFPSCapValue(fps);
 }
 
 #pragma mark - Compatibility Lab

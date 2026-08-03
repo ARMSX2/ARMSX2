@@ -567,32 +567,43 @@ u32 GSGetManualFrameSkip()
 	return s_manual_frameskip.load(std::memory_order_relaxed);
 }
 
-// Max presented-FPS cap (Android). Caps the DISPLAY frame rate without slowing
-// emulation — read on the GS thread in GSRenderer::VSync, which drops a present
-// only when ahead of the target interval (adaptive, no over-skip). 0 = off.
-// s_max_present_fps is the cap value (for the OSD label); s_max_present_interval
-// is the vsync-aligned minimum present spacing in CPU ticks, computed in
-// native-lib setFpsCap where the native refresh is known, so display rates snap
-// to whole vsync multiples (60/30/20/15…) and hold steady at the boundary.
+// Caps display presentation without slowing emulation. The interval controls the
+// exact cadence while milli-FPS preserves fractional targets for the OSD.
 static std::atomic<u32> s_max_present_fps{0};
+static std::atomic<u32> s_max_present_milli_fps{0};
 static std::atomic<u64> s_max_present_interval{0};
+static std::atomic<bool> s_present_cap_render_skip{false};
 // Fast-forward (Turbo) bypasses the present cap so the speed-up is visible. Set
 // from the limiter-mode JNI (Turbo → true, anything else → false) and read on
 // the GS thread in GSRenderer::VSync. Unlimited (frame-limit-off steady state)
 // deliberately does NOT set this — there the present cap is still wanted.
 static std::atomic<bool> s_present_cap_suspended{false};
-void GSSetMaxPresentFps(u32 fps, u64 present_interval)
+void GSSetMaxPresentFps(u32 fps, u64 present_interval, u32 milli_fps)
 {
 	s_max_present_fps.store(fps, std::memory_order_relaxed);
+	s_max_present_milli_fps.store(present_interval == 0 ? 0 : (milli_fps != 0 ? milli_fps : fps * 1000),
+		std::memory_order_relaxed);
 	s_max_present_interval.store(present_interval, std::memory_order_relaxed);
 }
 u32 GSGetMaxPresentFps()
 {
 	return s_max_present_fps.load(std::memory_order_relaxed);
 }
+u32 GSGetMaxPresentMilliFps()
+{
+	return s_max_present_milli_fps.load(std::memory_order_relaxed);
+}
 u64 GSGetMaxPresentInterval()
 {
 	return s_max_present_interval.load(std::memory_order_relaxed);
+}
+void GSSetPresentCapRenderSkip(bool enabled)
+{
+	s_present_cap_render_skip.store(enabled, std::memory_order_relaxed);
+}
+bool GSGetPresentCapRenderSkip()
+{
+	return s_present_cap_render_skip.load(std::memory_order_relaxed);
 }
 void GSSetPresentCapSuspended(bool suspended)
 {

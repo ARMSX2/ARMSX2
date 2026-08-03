@@ -59,7 +59,7 @@ private let helpData: [HelpSection] = [
         ),
         HelpItem(
             question: "Frame Limiter",
-            answer: "Keeps gameplay near the selected FPS target by changing PCSX2 Normal Speed. 60 FPS is normal NTSC timing, 30 FPS is about 50% speed, and turning it off unlocks speed for testing at the cost of heat and battery."
+            answer: "Limits display presentation to the selected FPS target while CPU, audio, and game timing remain at 100%. Turning it off presents every available frame and can increase heat and battery use."
         ),
         HelpItem(
             question: "Patches and cheats",
