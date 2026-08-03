@@ -1288,6 +1288,38 @@ void Pcsx2Config::GSOptions::MaskUpscalingHacks()
 	// (GSRendererHW::Draw wants rt->GetScale() > 1), so honouring a pin would only leave
 	// GSConfig and the settings overlay claiming something that never runs.
 
+	// Say what gets turned off. The GameDB apply has already announced several of these as
+	// "Enabled GS Hardware Fix", and until this line existed nothing ever contradicted it --
+	// so a log read at face value overstated what was in force, and did exactly that during
+	// the Rogue Galaxy work. Naming only the fixes that were really on keeps repeat calls
+	// quiet too: after the first pass there is nothing left to clear, so a settings re-apply
+	// adds no noise. Fix names match the GameDB ones so the two lines can be read together.
+	std::string cleared;
+	const auto note = [&cleared](const char* name) {
+		fmt::format_to(std::back_inserter(cleared), "{}{}", cleared.empty() ? "" : ", ", name);
+	};
+
+	if (UserHacks_AlignSpriteX)
+		note("alignSprite");
+	if (UserHacks_MergePPSprite)
+		note("mergeSprite");
+	if (UserHacks_ForceEvenSpritePosition)
+		note("forceEvenSpritePosition");
+	if (UserHacks_BilinearHack != GSBilinearDirtyMode::Automatic)
+		note("bilinearUpscale");
+	if (UserHacks_NativePaletteDraw)
+		note("nativePaletteDraw");
+	if (UserHacks_HalfPixelOffset != GSHalfPixelOffset::Off)
+		note("halfPixelOffset");
+	if (UserHacks_RoundSprite != 0)
+		note("roundSprite");
+	if (UserHacks_NativeScaling != GSNativeScaling::Off)
+		note("nativeScaling");
+	if (UserHacks_TCOffsetX != 0)
+		note("textureOffsetX");
+	if (UserHacks_TCOffsetY != 0)
+		note("textureOffsetY");
+
 	UserHacks_AlignSpriteX = false;
 	UserHacks_MergePPSprite = false;
 	UserHacks_ForceEvenSpritePosition = false;
@@ -1298,6 +1330,9 @@ void Pcsx2Config::GSOptions::MaskUpscalingHacks()
 	UserHacks_NativeScaling = GSNativeScaling::Off;
 	UserHacks_TCOffsetX = 0;
 	UserHacks_TCOffsetY = 0;
+
+	if (!cleared.empty())
+		Console.WriteLn("GS: Native resolution, so these upscaling-only fixes do not apply and were turned off: %s", cleared.c_str());
 }
 
 bool Pcsx2Config::GSOptions::UseHardwareRenderer() const
