@@ -2491,9 +2491,9 @@ open class MainActivityRuntime : ComponentActivity() {
                         AndroidView(factory = { surface.value!! }, modifier = Modifier
                             // Drop the surface from the focus system while ANY
                             // Compose frontend surface (pause overlay, in-game
-                            // manager/Save-Load screen, memcard dialog, library) is
-                            // open, or while no game is running, so it can't hold or
-                            // steal focus away from that surface's controller nav.
+                            // manager/Save-Load screen, library) is open, or while
+                            // no game is running, so it can't hold or steal focus
+                            // away from that surface's controller nav.
                             .focusable(!frontendOwnsFocus)
                             .focusRequester(focusRequester)
                             .fillMaxSize()
@@ -2854,48 +2854,6 @@ open class MainActivityRuntime : ComponentActivity() {
                 else -> return true
             }
         }
-        // Memory-card dialog (opened from the library). Touch mode blocks Compose
-        // D-pad focus, so it's driven by the manual nav model (same as the
-        // settings tabs). Any direction steps the control list; A activates; B closes.
-        if (com.armsx2.ui.MemoryCardManager.visible.value) {
-            val nav = com.armsx2.ui.settings.SettingsControllerNav
-            if (event.action == KeyEvent.ACTION_DOWN)
-                android.util.Log.d("ARMSX2_MCNAV", "key kc=$kc (${KeyEvent.keyCodeToString(kc)}) repeat=${event.repeatCount}")
-            when (kc) {
-                KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BACK -> {
-                    if (event.action == KeyEvent.ACTION_DOWN)
-                        com.armsx2.ui.MemoryCardManager.visible.value = false
-                    return true
-                }
-                KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_DPAD_CENTER,
-                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
-                        nav.confirm()
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
-                        nav.moveSpatial(0, -1)
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
-                        nav.moveSpatial(0, 1)
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
-                        nav.moveSpatial(-1, 0)
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
-                        nav.moveSpatial(1, 0)
-                    return true
-                }
-                else -> return super.dispatchKeyEvent(event)
-            }
-        }
         if (WindowImpl.overlayVisible.value) {
             // Pause menu two-zone nav (EmulationMenuInputController): the left tab
             // column is walked with Up/Down (Right steps into the content pane); the
@@ -3250,7 +3208,6 @@ open class MainActivityRuntime : ComponentActivity() {
         // Don't steal keys the frontend/menus need for navigation, or while
         // (re)binding a pad button / hotkey.
         if (controllerDrivesFrontend()) return false
-        if (com.armsx2.ui.MemoryCardManager.visible.value) return false
         if (ControllerMappings.padCapturing.value ||
             ControllerMappings.captureHotkey.value != null) return false
         // Must be a real keyboard key. SOURCE_KEYBOARD is set for hardware/BT
@@ -3492,10 +3449,6 @@ open class MainActivityRuntime : ComponentActivity() {
             // direction would satisfy combo-modifier checks forever after.
             heldKeys.removeAll(captureHeldSynth)
             captureHeldSynth.clear()
-        }
-        if (com.armsx2.ui.MemoryCardManager.visible.value) {
-            handleMemcardControllerMotion(ev)
-            return true
         }
         if (controllerDrivesFrontend() && handleControllerUiMotion(ev)) {
             return true
@@ -3748,20 +3701,19 @@ open class MainActivityRuntime : ComponentActivity() {
 
     // True whenever a Compose frontend surface is drawn over (or instead of) the
     // game and should own the gamepad. Every navigable surface must be listed
-    // here or its D-pad/A/B never reach Compose. The four explicit surfaces cover
-    // the in-game overlays (pause menu, Save/Load & manager screens, memcard
-    // dialog, the library shown over a running game); when NO game is RUNNING the
-    // whole app IS the frontend (root library + every manager/settings sub-screen
-    // reached from the drawer), so the pad drives it unconditionally.
+    // here or its D-pad/A/B never reach Compose. The three explicit surfaces cover
+    // the in-game overlays (pause menu, Save/Load & manager screens, the library
+    // shown over a running game); when NO game is RUNNING the whole app IS the
+    // frontend (root library + every manager/settings sub-screen reached from the
+    // drawer), so the pad drives it unconditionally.
     private fun controllerDrivesFrontend(): Boolean =
         WindowImpl.overlayVisible.value ||
             WindowImpl.inGameScreen.value != null ||
             WindowImpl.showLibrary.value ||
-            com.armsx2.ui.MemoryCardManager.visible.value ||
             eState.value != EmuState.RUNNING
 
-    // B / BACK from any frontend surface EXCEPT the pause overlay, the memcard
-    // dialog and the library cover grid (each consumes its own B earlier). Peels
+    // B / BACK from any frontend surface EXCEPT the pause overlay and the library
+    // cover grid (each consumes its own B earlier). Peels
     // the topmost layer: modal dialog > nav drawer > in-game manager screen >
     // library sub-route (Settings/Bios/... reached inside the in-game library) >
     // the library overlay itself > a root sub-route > (root Home) open the drawer.
@@ -3818,12 +3770,6 @@ open class MainActivityRuntime : ComponentActivity() {
                 // Rides the shared hold-repeat, so a held direction walks the list and
                 // sweeps a value.
                 com.armsx2.ui.common.ShaderParamsEditor.move(dx, dy)
-            }
-            com.armsx2.ui.MemoryCardManager.visible.value -> {
-                // Memcard dialog: 2D spatial nav (Slot 1 / Slot 2 / Delete across,
-                // cards down). Driven by the hold-repeat job so a held direction
-                // keeps moving.
-                com.armsx2.ui.settings.SettingsControllerNav.moveSpatial(dx, dy)
             }
             WindowImpl.overlayVisible.value -> {
                 // Pause menu — two-zone controller handles both the tab column and
@@ -3964,46 +3910,6 @@ open class MainActivityRuntime : ComponentActivity() {
             }
         }
         return true
-    }
-
-    private var memcardAxisX = 0
-    private var memcardAxisY = 0
-
-    /** Routes the controller stick / D-pad (HAT) to the memory-card dialog's
-     *  manual nav (SettingsControllerNav). Touch mode kills Compose D-pad focus,
-     *  so the dialog uses the same state-driven model as the settings tabs. Any
-     *  direction steps the flat control list; edge-triggered (one move per push). */
-    private fun handleMemcardControllerMotion(ev: MotionEvent) {
-        val (stickDx, stickDy) = uiDominantStickDirection(
-            ev.getAxisValue(MotionEvent.AXIS_X),
-            ev.getAxisValue(MotionEvent.AXIS_Y),
-        )
-        val dirX = uiHatDirection(ev.getAxisValue(MotionEvent.AXIS_HAT_X))
-            .let { if (it != 0) it else stickDx }
-        val dirY = uiHatDirection(ev.getAxisValue(MotionEvent.AXIS_HAT_Y))
-            .let { if (it != 0) it else stickDy }
-        android.util.Log.d("ARMSX2_MCNAV",
-            "motion hatX=${ev.getAxisValue(MotionEvent.AXIS_HAT_X)} hatY=${ev.getAxisValue(MotionEvent.AXIS_HAT_Y)} " +
-                "stickX=${ev.getAxisValue(MotionEvent.AXIS_X)} stickY=${ev.getAxisValue(MotionEvent.AXIS_Y)} -> dirX=$dirX dirY=$dirY")
-        // Hold-to-repeat 2D nav (one repeat job; vertical wins a diagonal tie),
-        // mirroring the overlay so the card grid navigates freely in every direction.
-        when {
-            dirY != 0 -> {
-                if (dirY != memcardAxisY || memcardAxisX != 0) startNavRepeat(0, dirY)
-                memcardAxisY = dirY
-                memcardAxisX = 0
-            }
-            dirX != 0 -> {
-                if (dirX != memcardAxisX || memcardAxisY != 0) startNavRepeat(dirX, 0)
-                memcardAxisX = dirX
-                memcardAxisY = 0
-            }
-            else -> {
-                if (memcardAxisX != 0 || memcardAxisY != 0) stopNavRepeat()
-                memcardAxisX = 0
-                memcardAxisY = 0
-            }
-        }
     }
 
     private fun handleControllerUiScroll(velocityY: Float) {

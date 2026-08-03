@@ -39,16 +39,15 @@ object WindowImpl {
     val inGameScreen = mutableStateOf<InGameScreen?>(null)
 
     /** True whenever a Compose frontend surface is drawn on top of a running
-     *  game (pause menu, an in-game manager/settings/Save-Load screen, the memory
-     *  card dialog, or the library). While any of these is up the embedded game
-     *  SurfaceView must release Android focus so Compose can receive the
-     *  controller D-pad/A/B (see the focus-release effect in MainActivityRuntime).
+     *  game (pause menu, an in-game manager/settings/Save-Load screen, or the
+     *  library). While any of these is up the embedded game SurfaceView must
+     *  release Android focus so Compose can receive the controller D-pad/A/B
+     *  (see the focus-release effect in MainActivityRuntime).
      *  Read from composable/effect scopes so recomposition tracks the states. */
     val frontendCovers: Boolean
         get() = overlayVisible.value ||
             inGameScreen.value != null ||
             showLibrary.value ||
-            com.armsx2.ui.MemoryCardManager.visible.value ||
             // The shader editor can be opened from the pause menu, which CLOSES as it
             // opens — without this the game would take focus back mid-edit and eat the
             // D-pad the editor runs on.
