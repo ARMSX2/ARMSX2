@@ -6,6 +6,7 @@
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSInterlaceModePolicy.h"
 #include "GS/Renderers/Common/GSPresentationPolicy.h"
+#include "GS/Renderers/Common/GSSnapshotPolicy.h"
 #include "GS/GSCapture.h"
 #include "GS/GSDump.h"
 #include "GS/GSGL.h"
@@ -1115,6 +1116,9 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 	}
 
 	// snapshot
+	const GSSnapshotAction snapshot_action =
+		SelectGSSnapshotAction(!m_snapshot.empty(), m_snapshot_dump_frames, static_cast<bool>(m_dump), m_dump_frames);
+
 	if (!m_snapshot.empty())
 	{
 		u32 screenshot_width, screenshot_height;
@@ -1129,8 +1133,19 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				g_gs_device->Resize(internal_res.x, internal_res.y);
 		}
 
-		if (!m_dump && m_dump_frames > 0)
+		if (snapshot_action.refuse_dump)
 		{
+			// The screenshot below still gets written -- it is the part of the request that can
+			// be served. Saying so beats leaving the caller to wonder where the dump went.
+			Host::AddKeyedOSDMessage("GSDump",
+				TRANSLATE_STR("GS", "A GS dump is already recording; only a screenshot was saved."),
+				Host::OSD_WARNING_DURATION);
+		}
+
+		if (snapshot_action.open_dump)
+		{
+			m_dump_frames = m_snapshot_dump_frames;
+
 			if (GSConfig.UserHacks_ReadTCOnClose)
 				ReadbackTextureCache();
 
@@ -1200,18 +1215,21 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 		}
 
 		m_snapshot = {};
+		m_snapshot_dump_frames = 0;
 	}
-	else if (m_dump)
+
+	// Independent of the request above: a recording takes this frame whether or not a snapshot
+	// landed on it. Making these two alternatives is what dropped the frame boundary.
+	if (snapshot_action.record_vsync)
 	{
-		const bool last = (m_dump_frames == 0);
-		if (m_dump->VSync(field, last, m_regs))
+		if (m_dump->VSync(field, snapshot_action.dump_is_last, m_regs))
 		{
 			Host::AddKeyedOSDMessage("GSDump",
 				fmt::format(TRANSLATE_FS("GS", "Saved GS dump to '{}'."), Path::GetFileName(m_dump->GetPath())),
 				Host::OSD_INFO_DURATION);
 			m_dump.reset();
 		}
-		else if (!last)
+		else if (!snapshot_action.dump_is_last)
 		{
 			m_dump_frames--;
 		}
@@ -1268,7 +1286,7 @@ bool GSRenderer::QueueSnapshot(const std::string& path, const u32 gsdump_frames)
 		m_snapshot = GSGetBaseSnapshotFilename();
 
 	// this is really gross, but wx we get the snapshot request after shift...
-	m_dump_frames = gsdump_frames;
+	m_snapshot_dump_frames = gsdump_frames;
 	return true;
 }
 
@@ -1363,6 +1381,7 @@ std::string GSGetBaseVideoFilename()
 void GSRenderer::StopGSDump()
 {
 	m_snapshot = {};
+	m_snapshot_dump_frames = 0;
 	m_dump_frames = 0;
 }
 

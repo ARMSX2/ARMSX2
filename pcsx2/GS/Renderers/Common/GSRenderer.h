@@ -25,6 +25,10 @@ private:
 	u64 m_shader_time_start = 0;
 
 	std::string m_snapshot;
+	/// What the queued request asked for, 0 for a screenshot only. Distinct from m_dump_frames on
+	/// purpose: a request must never reach into a recording that is already running.
+	u32 m_snapshot_dump_frames = 0;
+	/// Frames the open dump still owes. Owned by the recording, set once when it is created.
 	u32 m_dump_frames = 0;
 	u32 m_skipped_duplicate_frames = 0;
 	/// Manual frame-skip phase counter (Android "Frame Skip" 0..5). GS thread only.

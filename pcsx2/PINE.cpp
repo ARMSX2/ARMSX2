@@ -543,9 +543,12 @@ namespace PINEServer
 	 * are not symmetric: "snapshot pending" is a request that arrived between another one and
 	 * the VSync servicing it, and retrying a frame later works. "already recording" is a
 	 * refusal -- the snapshot path creates a dump only when none exists, so a second request
-	 * would take a screenshot, write no dump, and overwrite the frame counter of the dump
-	 * already running, cutting it short. Handing back a path for a file that will never appear
-	 * is the worst of the available answers, so stop the running dump first if you mean to.
+	 * would take a screenshot and write no dump. Handing back a path for a file that will never
+	 * appear is the worst of the available answers, so stop the running dump first if you mean
+	 * to. (Refusing here also predates the fix for the truncation that used to follow: the
+	 * request and the recording shared a frame counter, so a second one cut the first short.
+	 * They are separate fields now -- see GSSnapshotPolicy.h -- and the refusal stands on the
+	 * unanswerable-path argument alone.)
 	 */
 	static bool QueueGSDump(u32 frames, std::string path, std::string* reply)
 	{
