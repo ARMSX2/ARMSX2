@@ -3003,9 +3003,23 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz, 
     const ScopedVMPause pause_guard;
     if (!pause_guard.parked())
         return fail("cpu_thread_not_parked");
+    // Parking stops the EE, but it does not make THIS thread the CPU thread — and a save is not
+    // merely a read of VM state. SaveState_DownloadState freezes the GS through MTGS::Freeze, and
+    // the screenshot goes through MTGS::RunOnGSThread; both push to the MTGS ring, whose write
+    // position is single-producer and owned by the CPU thread. Pushing from JNI races whatever the
+    // CPU thread posts from its own paused idle loop, which keeps calling
+    // Host::PumpMessagesOnCPUThread() every 16 ms — a live GS-settings apply or a window resize
+    // queued from the UI lands there and pushes to the same ring. RunOnGSThread asserts exactly
+    // this, which is how it surfaced: an assert-enabled build aborts on the screenshot every time.
+    //
+    // So marshal, the way commitSettings and changeDisc above already do. The park stays: it stops
+    // the EE for the inline zip (zip_on_thread=false) and holds the audio pause the picker is built
+    // around. It is thread identity, not the park, that makes the ring pushes legal.
     std::string save_error;
-    VMManager::SaveStateToSlot(p_slot, /*zip_on_thread=*/false,
-        [&save_error](const std::string& error) { save_error = error; });
+    Host::RunOnCPUThread([p_slot, &save_error]() {
+        VMManager::SaveStateToSlot(p_slot, /*zip_on_thread=*/false,
+            [&save_error](const std::string& error) { save_error = error; });
+    }, /*block=*/true);
     if (!save_error.empty()) {
         Console.Error("saveStateToSlot: %s", save_error.c_str());
         return fail("save_error");
@@ -3051,16 +3065,23 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromSlot(JNIEnv *env, jclass clazz
     const ScopedVMPause pause_guard;
     if (!pause_guard.parked())
         return fail("cpu_thread_not_parked");
-    const bool loaded = VMManager::LoadStateFromSlot(p_slot);
+    // Marshalled for the same reason as saveStateToSlot: a load pushes to the single-producer MTGS
+    // ring (MTGS::Freeze) and resets the recompiler code caches, both of which belong to the CPU
+    // thread. No assert fires on this one only because Freeze pushes its packet directly instead of
+    // going through RunOnGSThread — the violation is identical, it is just unpoliced.
+    //
     // A normal LoadState does not present (only the input-recording path does), so the restored
     // frame isn't shown until the game draws its next frame. When the game is already running
     // that's the next vsync (imperceptible), but a load early in boot — before the present loop
-    // is flowing — otherwise leaves a black screen. Force the restored frame to display now.
-    // PresentCurrentFrame posts to the MTGS ring, so it goes through the CPU thread even though
-    // the park above has the EE stopped — MTGS.h says as much ("Should only be called from the
-    // CPU thread"). Not blocking: this is a cosmetic nudge, and the load itself already landed.
-    if (loaded)
-        Host::RunOnCPUThread([]() { MTGS::PresentCurrentFrame(); });
+    // is flowing — otherwise leaves a black screen. Force the restored frame to display now, in
+    // this same task: it is one more ring push, so it wants the same thread, and running it here
+    // rather than as a second queued job also stops it racing the resume in the pause guard's dtor.
+    bool loaded = false;
+    Host::RunOnCPUThread([p_slot, &loaded]() {
+        loaded = VMManager::LoadStateFromSlot(p_slot);
+        if (loaded)
+            MTGS::PresentCurrentFrame();
+    }, /*block=*/true);
     return loaded;
 }
 
