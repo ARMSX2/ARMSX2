@@ -5,6 +5,6 @@ import Foundation
 
 extension SettingsStore {
     static func clampedEmulatorVolumePercent(_ value: Int) -> Int {
-        clamped(value, to: emulatorVolumeRange)
+        min(max(value, 0), 150)
     }
 }
