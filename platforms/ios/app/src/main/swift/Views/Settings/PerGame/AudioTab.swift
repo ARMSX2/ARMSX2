@@ -19,21 +19,36 @@ struct AudioTab: View {
                     .disabled(!enabled)
 
                 if volumeOverride {
-                    // Full global range, not 0 to 100. The clamp always allowed 150, so the old
-                    // slider could not reach values the setting accepts.
-                    NumberRow("Emulator Volume", value: volumeBinding,
-                              in: SettingsStore.emulatorVolumeRange, format: .percent,
-                              accessory: NumberRowAccessory(
-                                  systemImage: "arrow.uturn.backward",
-                                  label: "Use the global value for %@",
-                                  isVisible: true,
-                                  action: {
-                                      volumeOverride = false
-                                      volumePercent = globalVolumePercent
-                                  }),
-                              hint: "Adjusts emulator audio for this game without changing iOS system volume or other apps.",
-                              settings: settings)
-                        .disabled(!enabled)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(settings.localized("Emulator Volume"))
+                            Spacer()
+                            Text(Self.formatPercent(volumePercent))
+                                .foregroundStyle(.secondary)
+                                .font(.callout.monospacedDigit())
+                        }
+
+                        Slider(value: volumeSliderBinding, in: 0...100, step: 1)
+                            .disabled(!enabled)
+                            .accessibilityLabel(settings.localized("Per-Game Emulator Volume"))
+                            .accessibilityValue(Self.formatPercent(volumePercent))
+                            .accessibilityHint(settings.localized("Adjusts emulator audio for this game without changing iOS system volume or other apps."))
+
+                        HStack {
+                            Text("0%")
+                            Spacer()
+                            Button(settings.localized("Reset to Global")) {
+                                volumeOverride = false
+                                volumePercent = globalVolumePercent
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(!enabled)
+                            Spacer()
+                            Text("100%")
+                        }
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
                 } else {
                     HStack {
                         Text(settings.localized("Using Global"))
@@ -50,7 +65,7 @@ struct AudioTab: View {
 
                 NumberOverrideRow("Fast-Forward Volume", value: $perGameFastForwardVolume,
                                   global: settings.audioFastForwardVolume,
-                                  range: SettingsStore.fastForwardVolumeRange, format: .percent,
+                                  range: SettingsStore.fastForwardVolumeRange, suffix: "%",
                                   settings: settings)
                     .disabled(!enabled)
                 Text(settings.localized("Buffer Size and Output Latency are on the Frame Pacing tab."))
@@ -70,10 +85,10 @@ struct AudioTab: View {
         )
     }
 
-    private var volumeBinding: Binding<Int> {
+    private var volumeSliderBinding: Binding<Double> {
         Binding(
-            get: { volumePercent },
-            set: { volumePercent = Self.clampedVolume($0) }
+            get: { Double(volumePercent) },
+            set: { volumePercent = Self.clampedVolume(Int($0.rounded())) }
         )
     }
 
