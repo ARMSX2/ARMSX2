@@ -147,10 +147,34 @@ struct EmulatorSettingsView: View {
                 Toggle(settings.localized("Frame Limiter"), isOn: $settings.frameLimiterEnabled)
 
                 if settings.frameLimiterEnabled {
-                    NumberRow("FPS Target", value: $settings.targetFPS,
-                              in: SettingsStore.minTargetFPS...SettingsStore.maxTargetFPS,
-                              format: .framesPerSecond, step: 1,
-                              default: SettingsStore.defaultTargetFPS, settings: settings)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(settings.localized("FPS Target"))
+                            Spacer()
+                            Text(Self.formatFPS(settings.targetFPS))
+                                .foregroundStyle(.secondary)
+                                .font(.callout.monospacedDigit())
+                        }
+
+                        Slider(
+                            value: $settings.targetFPS,
+                            in: SettingsStore.minTargetFPS...SettingsStore.maxTargetFPS,
+                            step: 1.0
+                        )
+
+                        HStack {
+                            Text(Self.formatFPS(SettingsStore.minTargetFPS))
+                            Spacer()
+                            Button(settings.localized("60 FPS")) {
+                                settings.targetFPS = SettingsStore.defaultTargetFPS
+                            }
+                            .buttonStyle(.borderless)
+                            Spacer()
+                            Text(Self.formatFPS(SettingsStore.maxTargetFPS))
+                        }
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
                 } else {
                     HStack {
                         Text(settings.localized("Speed Target"))
@@ -189,10 +213,26 @@ struct EmulatorSettingsView: View {
                     .foregroundStyle(.secondary)
 
                 Group {
-                    NumberRow("Emulation-Only Mode Timer",
-                              value: $settings.emulationOnlyModeDelaySeconds,
-                              in: SettingsStore.emulationOnlyModeDelayRange,
-                              format: .seconds.decimals(0), settings: settings)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(settings.localized("Emulation-Only Mode Timer"))
+                            Spacer()
+                            Text("\(settings.emulationOnlyModeDelaySeconds)s")
+                                .foregroundStyle(.secondary)
+                                .font(.callout.monospacedDigit())
+                        }
+                        Slider(
+                            value: emulationOnlyModeDelayBinding,
+                            in: Double(SettingsStore.emulationOnlyModeDelayRange.lowerBound)...Double(SettingsStore.emulationOnlyModeDelayRange.upperBound),
+                            step: 1
+                        ) {
+                            Text(settings.localized("Emulation-Only Mode Timer"))
+                        } minimumValueLabel: {
+                            Text("0s")
+                        } maximumValueLabel: {
+                            Text("15s")
+                        }
+                    }
 
                     Toggle(
                         settings.localized("Disable Cheats, Widescreen and Dynamic Patches"),
@@ -335,6 +375,12 @@ struct EmulatorSettingsView: View {
         String(format: "%.2f FPS", value)
     }
 
+    private var emulationOnlyModeDelayBinding: Binding<Double> {
+        Binding(
+            get: { Double(settings.emulationOnlyModeDelaySeconds) },
+            set: { settings.emulationOnlyModeDelaySeconds = Int($0.rounded()) }
+        )
+    }
 
     /// Compact labeled picker over a fixed ordered option list (round/clamp modes).
     @ViewBuilder
