@@ -3450,25 +3450,38 @@ bool GSDeviceVK::CheckFeatures()
 	// target, they read it for the destination-alpha test and the write mask, so "self-read"
 	// understates what the workaround protects.
 	//
-	// Two distinct mechanisms, and only one of them is about ordering between draws:
+	// Two symptoms, one behaviour (per-draw bisect + Turnip source reading, 2026-08-03): an
+	// in-pass read returns render-pass-START content — stale across the pass's earlier DRAWS, and
+	// stale across the earlier PRIMITIVES of its own draw (God of War II's ~10.9k-primitive
+	// accumulation strip collapses to exactly one layer: error = -(k-1) on a pixel covered by k
+	// layers, i.e. every fragment reads the pre-draw value). The explicit vkCmdPipelineBarrier
+	// self-dependency changes nothing, and neither does forcing rasterization-order access on
+	// every pipeline (TU_DEBUG=rast_order, byte-identical) — the read simply does not observe
+	// unresolved tile writes.
 	//
-	//   1. An in-pass read does not observe writes made by EARLIER DRAWS in the same render
-	//      pass. Ending the pass before such a draw - read still in-pass, no copy - makes
-	//      OutRun, FlatOut, Katamari and NFSU pixel-identical to the copy path.
-	//   2. God of War II is not fixed by a pass boundary, and the oracle says the copy is the
-	//      correct one. Its first failing draw is a 10740-primitive overlapping triangle strip
-	//      whose own primitives read what their predecessors wrote - a hazard inside a single
-	//      draw, which no pass boundary can separate.
+	// ⚠️ DO NOT ATTEMPT TO REPLACE THE COPY WITH A PASS BREAK. It was fully built and validated
+	// (2026-08-03): break the pass before each one-barrier feedback draw and sample the live
+	// attachment, so the stale read returns exactly the pre-draw snapshot the copy provides. It
+	// IS byte-exact — but only in shapes that cost 2-5x whole-frame. The complete map, every cell
+	// measured on the SD865:
 	//
-	// The driver also ignores the in-pass barrier outright: forcing the explicit
-	// vkCmdPipelineBarrier self-dependency path, with the barrier landing on exactly the affected
-	// draws, produces byte-identical wrong output to the coherent ROAA read.
+	//   - This workload's speed lives in Turnip's untiled sysmem NO_FLUSH mode: the bandwidth
+	//     autotuner renders most of these small single-draw passes untiled, and the shipped COPY
+	//     path depends on it too (TU_DEBUG=gmem: Katamari 4.2 -> 10.0 ms, NFSU 10.8 -> 48 ms).
+	//   - A live self-read under sysmem NO_FLUSH is a data race: nondeterministic frames
+	//     run-to-run, byte-compare passes by luck. Every fix abandons NO_FLUSH: declaring the
+	//     loop via an input-attachment reference triggers feedback_invalidate (replayed per
+	//     tile); the rasterization-order pipeline flag makes sysmem execution
+	//     FLUSH_PER_OVERLAP_AND_OVERWRITE (per-overlap pipeline flush — these draws overlap
+	//     heavily); pinning gmem pays the gmem tax directly. All land at 2x Katamari / 5x NFSU.
+	//   - The copy is the unique shape that is correct, deterministic, AND compatible with
+	//     sysmem NO_FLUSH — the shader reads a separate texture, so the driver owes it nothing.
+	//     That is WHY the copy path is also the fastest: its measured "cost" (0.6 ms/frame on
+	//     Katamari vs no read at all) cannot be recovered by removing the copy, because removing
+	//     the copy removes the rendering mode.
 	//
-	// So the pass boundary is a partial fix rather than a cheaper one - it leaves mechanism 2
-	// broken, and it would re-admit full-barrier draws this driver cannot order. It did measure
-	// ~7% faster than the copy on FlatOut at 1x, and no different on OutRun. Correctness for
-	// everyone beats speed for everyone, and OverrideTextureBarriers = 1 is the documented way
-	// out for anyone who would rather have the frames.
+	// OverrideTextureBarriers = 1 remains the documented way back to the in-tile path for A/B
+	// work and for a future driver revision that fixes the read.
 	const bool rt_self_read_is_broken =
 		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback);
 
