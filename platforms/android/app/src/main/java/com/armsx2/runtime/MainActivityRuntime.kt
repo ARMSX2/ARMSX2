@@ -3801,11 +3801,16 @@ open class MainActivityRuntime : ComponentActivity() {
      *  modal and outside one. */
     private fun modalNavMove(dx: Int, dy: Int) {
         val nav = com.armsx2.ui.settings.SettingsControllerNav
-        if (dx != 0 && dy == 0) {
-            if (!nav.adjust(dx)) nav.moveSpatial(dx, 0)
+        val acted = if (dx != 0 && dy == 0) {
+            nav.adjust(dx) || nav.moveSpatial(dx, 0)
         } else {
             nav.moveSpatial(dx, dy)
         }
+        // Nowhere left to move: scroll the panel body instead. A modal whose only focusable is
+        // its Close button — an info panel, an error notice — would otherwise show a long
+        // message with no way to read past the fold, which is the same defect as the window
+        // dialog it replaced. Silently does nothing when the modal declared no scrollable body.
+        if (!acted && dy != 0) com.armsx2.ui.common.PadModals.scrollTop(dy)
     }
 
     private fun fireNavMove(dx: Int, dy: Int) {

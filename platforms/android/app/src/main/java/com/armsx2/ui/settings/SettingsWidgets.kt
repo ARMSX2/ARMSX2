@@ -1,5 +1,6 @@
 package com.armsx2.ui.settings
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -29,11 +31,9 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -1254,7 +1254,7 @@ private fun Int.floorMod(modulus: Int): Int =
     if (modulus <= 0) 0 else ((this % modulus) + modulus) % modulus
 
 @Composable
-private fun InfoHint(title: String, message: String) {
+internal fun InfoHint(title: String, message: String) {
     var open by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
@@ -1272,25 +1272,67 @@ private fun InfoHint(title: String, message: String) {
             com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_OPEN)
             onDispose { com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_CLOSE) }
         }
-        AlertDialog(
-            onDismissRequest = { open = false },
-            title = { Text(title) },
-            // AlertDialog does NOT scroll its text slot: a description longer than the slot was
-            // simply CLIPPED mid-sentence with no way to reach the rest, which is most of the
-            // longer setting explanations (reported against Low Latency Mode, which cuts off at
-            // "...turning back off if the frame pacing"). Cap the height and scroll inside it.
-            text = {
-                Text(
-                    message,
-                    modifier = Modifier
-                        .heightIn(max = 340.dp)
-                        .verticalScroll(rememberScrollState()),
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { open = false }) { Text(str("action.close")) }
-            },
-        )
+        val layer = "info-hint:$title"
+        val bodyScroll = rememberScrollState()
+        com.armsx2.ui.common.PadModal(
+            key = layer,
+            onDismiss = { open = false },
+            // Every setting description is a candidate for being longer than the panel, so the
+            // pad needs Up/Down to read it — Close is the only thing here to select.
+            scrollState = bodyScroll,
+        ) {
+            Surface(
+                modifier = Modifier
+                    .padding(24.dp)
+                    .widthIn(max = 420.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+                tonalElevation = 6.dp,
+            ) {
+                Column(Modifier.padding(20.dp)) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    // Cap the height and scroll INSIDE it. AlertDialog did not scroll its text
+                    // slot at all, so a description longer than the slot was CLIPPED mid-sentence
+                    // with no way to reach the rest — which is most of the longer setting
+                    // explanations (reported against Low Latency Mode, cut off at "...turning
+                    // back off if the frame pacing").
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .heightIn(max = 340.dp)
+                            .verticalScroll(bodyScroll),
+                    )
+                    Spacer(Modifier.height(18.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Surface(
+                            onClick = { open = false },
+                            modifier = Modifier.controllerFocusable(
+                                controllerId = "$layer.close",
+                                shape = RoundedCornerShape(14.dp),
+                                onConfirm = { open = false },
+                            ),
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                        ) {
+                            Text(
+                                str("action.close"),
+                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

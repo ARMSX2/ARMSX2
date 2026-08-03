@@ -1,5 +1,6 @@
 package com.armsx2.ui.common
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -64,6 +65,7 @@ object PadModals {
         internal val scrimAlpha: State<Float>,
         internal val onDismiss: State<(() -> Unit)?>,
         internal val initialFocusId: State<String?>,
+        internal val scrollState: State<ScrollState?>,
     ) {
         // Deliberately a plain var and not state: it must survive every recomposition of the
         // content without causing one. Focus is claimed once per open, then the pad owns it.
@@ -101,6 +103,20 @@ object PadModals {
         top.onDismiss.value?.invoke()
         return true
     }
+
+    /** Scroll the topmost modal's body. The router calls this when a direction has nowhere to
+     *  move — a modal whose only focusable is its Close button would otherwise leave long text
+     *  unreachable on a pad, which is precisely the defect the window dialogs had. Returns false
+     *  when the top modal declared no scrollable body, so the press can be swallowed either way. */
+    fun scrollTop(dy: Int): Boolean {
+        val scroll = entries.lastOrNull()?.scrollState?.value ?: return false
+        scroll.dispatchRawDelta(dy * SCROLL_STEP_PX)
+        return true
+    }
+
+    // Roughly two lines of body text per press: small enough to land on the line you wanted,
+    // large enough that a long description doesn't take twenty presses to read.
+    private const val SCROLL_STEP_PX = 120f
 }
 
 /**
@@ -112,6 +128,9 @@ object PadModals {
  *   the press, it just does not close.
  * @param initialFocusId the row to focus on open. Falls back to the first row in the layer, so
  *   a modal is never left with nothing selected.
+ * @param scrollState the body's scroll state, when the content can outgrow the panel. Up/Down
+ *   scroll it once the selection has nowhere left to move, which is the only way a pad can read
+ *   a panel that has just one focusable in it.
  */
 @Composable
 fun PadModal(
@@ -120,6 +139,7 @@ fun PadModal(
     alignment: Alignment = Alignment.Center,
     scrimAlpha: Float = 0.62f,
     initialFocusId: String? = null,
+    scrollState: ScrollState? = null,
     content: @Composable () -> Unit,
 ) {
     // Re-published on EVERY recomposition, so a closure can never go stale. The nav registry
@@ -130,8 +150,12 @@ fun PadModal(
     val scrimState = rememberUpdatedState(scrimAlpha)
     val dismissState = rememberUpdatedState(onDismiss)
     val focusState = rememberUpdatedState(initialFocusId)
+    val scrollStateHolder = rememberUpdatedState(scrollState)
     val entry = remember(key) {
-        PadModals.Entry(key, contentState, alignmentState, scrimState, dismissState, focusState)
+        PadModals.Entry(
+            key, contentState, alignmentState, scrimState, dismissState, focusState,
+            scrollStateHolder,
+        )
     }
     DisposableEffect(entry) {
         PadModals.push(entry)
