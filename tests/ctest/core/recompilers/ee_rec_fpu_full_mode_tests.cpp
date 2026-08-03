@@ -29,6 +29,7 @@
 
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <gtest/gtest.h>
 
@@ -46,6 +47,8 @@ u32 FloatBits(float f)
 
 constexpr u32 kFPUflagO  = 0x00008000;
 constexpr u32 kFPUflagSO = 0x00000010;
+constexpr u32 kFPUflagU  = 0x00004000;
+constexpr u32 kFPUflagSU = 0x00000008;
 
 // A PS2 single with exponent field 0xff is a valid finite number (1.0 * 2^128),
 // not an IEEE infinity. Full mode must preserve it through an arithmetic op.
@@ -1604,5 +1607,76 @@ TEST(EeRecFpuFull, MulDefectBoundaryTermGapAlsoExistsInTheUpperBinade)
 		hi.RunInterpOnly();
 		EXPECT_EQ(hi.GetFprBitsInterp(2), r.want)
 			<< "interp models the boundary term in the upper binade too";
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ADD/SUB-family underflow: full mode keeps the mantissa bits.
+//
+// A full-mode ADD/SUB/ADDA/SUBA/MADD/MSUB/MADDA/MSUBA result that lands below
+// 2^-126 without being zero goes through ToPS2FPU_Full's `addsub` arm, which
+// rebuilds a PS2 denormal out of the double's mantissa bits instead of
+// flushing. It is a bit model, not a value conversion: 0x00800003 + 0x80800000
+// is exactly 3*2^-149 and the model returns 0x00400000 == 2^-127, six orders
+// of magnitude larger. x86 iFPUd.cpp:214 does the same and calls it not
+// thoroughly tested.
+//
+// Only this path implements it:
+//
+//   engine                 result    FCR31
+//   full mode (this path)  00400000  U|SU
+//   arm64 fast path        00000000  0     flushes, and raises no O/U at all
+//                                          (fpuClearOUFlags in iFPU-arm64.cpp)
+//   interpreter (FPU.cpp)  00000000  U|SU  clampToEeRange flushes denormal
+//                                          results to signed zero
+//
+// The hardware corpus cannot referee it: no arithmetic op in the 1147 v3 cases
+// has a denormal result on hardware or on either engine. These rows pin what
+// mode 3 does today, not what silicon does.
+TEST(EeRecFpuFull, AddSubUnderflowKeepsTheMantissaBits)
+{
+	struct Row { const char* name; u32 acc, fs, ft; u32 word; bool is_acc; u32 expected; };
+	// Every operand pair below is two normal singles whose exact result is a few
+	// ULPs of 2^-149: 0x00800003 == (1 + 3*2^-23) * 2^-126, so subtracting
+	// 2^-126 leaves 3*2^-149, whose double form is 1.1b * 2^-148 -- mantissa
+	// bit 51 set, everything under it clear, hence 0x00400000. The 0x00FFFFFF
+	// row is the top of the range: the exact sum is 0x7FFFFF*2^-149 and the
+	// model returns 0x007FFFFE, one ULP low.
+	static const Row kRows[] = {
+		{"ADD.S   3*2^-149",          0, 0x00800003u, 0x80800000u, ADD_S(2, 0, 1),   false, 0x00400000u},
+		{"ADD.S   -3*2^-149",         0, 0x80800003u, 0x00800000u, ADD_S(2, 0, 1),   false, 0x80400000u},
+		{"ADD.S   1*2^-149 (mant 0)", 0, 0x00800001u, 0x80800000u, ADD_S(2, 0, 1),   false, 0x00000000u},
+		{"ADD.S   0x7FFFFF*2^-149",   0, 0x00FFFFFFu, 0x80800000u, ADD_S(2, 0, 1),   false, 0x007FFFFEu},
+		{"SUB.S   3*2^-149",          0, 0x00800003u, 0x00800000u, SUB_S(2, 0, 1),   false, 0x00400000u},
+		{"SUB.S   -3*2^-149",         0, 0x80800003u, 0x80800000u, SUB_S(2, 0, 1),   false, 0x80400000u},
+		{"ADDA.S  3*2^-149",          0, 0x00800003u, 0x80800000u, ADDA_S(0, 1),     true,  0x00400000u},
+		{"SUBA.S  3*2^-149",          0, 0x00800003u, 0x00800000u, SUBA_S(0, 1),     true,  0x00400000u},
+		{"MADD.S  3*2^-149",  0x80800000u, 0x00800003u, 0x3f800000u, MADD_S(2, 0, 1),  false, 0x00400000u},
+		{"MSUB.S  -3*2^-149", 0x00800000u, 0x00800003u, 0x3f800000u, MSUB_S(2, 0, 1),  false, 0x80400000u},
+		{"MADDA.S 3*2^-149",  0x80800000u, 0x00800003u, 0x3f800000u, MADDA_S(0, 1),    true,  0x00400000u},
+		{"MSUBA.S -3*2^-149", 0x00800000u, 0x00800003u, 0x3f800000u, MSUBA_S(0, 1),    true,  0x80400000u},
+		// Negative controls: the multiplies take addsub=false and must flush.
+		{"MUL.S   2^-252",            0, 0x00800000u, 0x00800000u, MUL_S(2, 0, 1),   false, 0x00000000u},
+		{"MULA.S  2^-252",            0, 0x00800000u, 0x00800000u, MULA_S(0, 1),     true,  0x00000000u},
+		{"MUL.S   ~2^-251",           0, 0x00FFFFFFu, 0x00800000u, MUL_S(2, 0, 1),   false, 0x00000000u},
+	};
+
+	for (const Row& r : kRows)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.EnableFpuFullMode();
+		h.SetFcr31(0);
+		h.SetAccBits(r.acc);
+		h.SetFprBits(0, r.fs);
+		h.SetFprBits(1, r.ft);
+		h.LoadProgram({r.word});
+		h.RunJitNoDiff();
+
+		const u32 got = r.is_acc ? h.GetAccBitsJit() : h.GetFprBitsJit(2);
+		EXPECT_EQ(got, r.expected) << r.name;
+		// Every row underflows to a nonzero double, so U|SU is raised even on
+		// the rows whose reconstructed mantissa happens to be zero.
+		EXPECT_EQ(h.JitSnapshot().fprs.fprc[31], kFPUflagU | kFPUflagSU) << r.name;
 	}
 }
