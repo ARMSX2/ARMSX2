@@ -38,6 +38,7 @@ struct NumberFormat {
     static let framesPerSecond = NumberFormat(unit: "%@ FPS")
     static let taps = NumberFormat(unit: "%@ taps")
     static let multiplier = NumberFormat(unit: "%@x", decimals: 2)
+    static let degrees = NumberFormat(unit: "%@°", showsSign: true)
     static let radiansPerSecond = NumberFormat(unit: "%@ rad/s", decimals: 2)
 
     /// A row built around a string it formatted itself. It still slides, clamps, brackets and
@@ -80,26 +81,17 @@ struct NumberFormat {
     }
 
     /// Undoes `scale`, so typing 70 into a 0...1 opacity row gets you 0.7.
-    ///
-    /// German groups on "." and points on ",", so stripping the grouping separator first turned
-    /// a typed "0.5" into "05". Only treat "." as grouping when the text also holds a real
-    /// decimal separator; otherwise a lone "." or "," is the point the user meant.
     func parse(_ text: String, locale: Locale) -> Double? {
-        var cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let decimal = locale.decimalSeparator, cleaned.contains(decimal) {
-            if let grouping = locale.groupingSeparator {
-                cleaned = cleaned.replacingOccurrences(of: grouping, with: "")
-            }
-            cleaned = cleaned.replacingOccurrences(of: decimal, with: ".")
-        } else {
-            cleaned = cleaned.replacingOccurrences(of: ",", with: ".")
-        }
+        let cleaned = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: locale.groupingSeparator ?? ",", with: "")
+            .replacingOccurrences(of: locale.decimalSeparator ?? ".", with: ".")
         guard let shown = Double(cleaned), shown.isFinite else { return nil }
         return shown / scale
     }
 }
 
-/// Set once per surface, so the call sites do not each carry fonts and padding.
+/// Set once per surface, so 275 call sites do not each carry fonts and padding.
 struct NumberRowStyle {
     var titleFont: Font = .body
     var valueFont: Font = .callout.monospacedDigit()
@@ -163,7 +155,9 @@ extension View {
     }
 }
 
-/// Every numeric setting in the app.
+/// Every numeric setting in the app. Replaces IntSliderRow, ClampedIntField, the two private
+/// slider structs and the dozen hand rolled VStack-plus-Slider rows that each formatted, clamped
+/// and mostly failed to label themselves differently.
 ///
 /// Colours are semantic on purpose. The global Form is light or dark and the per-game panel and
 /// background editor both force dark, so .primary and .secondary land correctly in all three and
@@ -191,7 +185,6 @@ struct NumberRow: View {
     @State private var isDragging = false
     @State private var isTyping = false
     @State private var draft = ""
-    @State private var seededDraft = ""
     @FocusState private var fieldFocused: Bool
 
     init(_ title: String,
@@ -282,7 +275,6 @@ struct NumberRow: View {
                 guard isDragging else { return }
                 activity.update(localizedTitle, displayText, true)
             }
-            .onChange(of: draft) { _, _ in draftChanged() }
             .onChange(of: fieldFocused) { _, focused in
                 if !focused { commit() }
             }
@@ -462,25 +454,10 @@ struct NumberRow: View {
 
     /// Two steps on purpose. Focus cannot land on a field that does not exist yet, and setting
     /// both in one update is where the keyboard appears and immediately vanishes.
-    /// The field always edits in Latin digits. Arabic reads as Arabic-Indic, which Double cannot
-    /// parse back, so a localized field would have been impossible to type into at all.
-    private static let editingLocale = Locale(identifier: "en_US_POSIX")
-
     private func beginTyping() {
-        draft = format.digits(clamped(store.wrappedValue), locale: Self.editingLocale)
-        seededDraft = draft
+        draft = format.digits(clamped(store.wrappedValue), locale: settings.numberLocale)
         isTyping = true
         DispatchQueue.main.async { fieldFocused = true }
-    }
-
-    /// Commit as they type, but only once the number is inside the range. A panel that reads its
-    /// staged value on Save cannot see a draft still sitting in the keyboard, and half typed
-    /// digits would otherwise clamp to the nearest bound on the way past.
-    private func draftChanged() {
-        guard isTyping, draft != seededDraft else { return }
-        guard let parsed = format.parse(draft, locale: Self.editingLocale),
-              range.contains(parsed) else { return }
-        store.wrappedValue = parsed
     }
 
     /// Nothing unparseable is written and nothing out of range is written; the row snaps back to
@@ -489,11 +466,7 @@ struct NumberRow: View {
     /// No bracketing here. That exists to stop a reload per drag tick, and this is one write.
     private func commit() {
         isTyping = false
-        // Opening the keyboard and closing it again must not change anything. The draft starts
-        // as the rounded readout, so writing it back would quietly drop whatever precision the
-        // stored value had beyond the decimals on show.
-        guard draft != seededDraft else { return }
-        guard let parsed = format.parse(draft, locale: Self.editingLocale) else { return }
+        guard let parsed = format.parse(draft, locale: settings.numberLocale) else { return }
         let next = clamped(parsed)
         guard next != store.wrappedValue else { return }
         store.wrappedValue = next

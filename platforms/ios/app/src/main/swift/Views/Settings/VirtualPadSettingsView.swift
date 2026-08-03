@@ -1308,9 +1308,7 @@ private struct DynamicSwipeSensitivityControl: View {
             if showsEnableToggle {
                 Toggle(settings.localized(title), isOn: $isEnabled)
             }
-            // When the toggle above is already carrying the name, the row underneath is just the
-            // amount, so it says so rather than printing the same words twice.
-            NumberRow(showsEnableToggle ? "Sensitivity" : title,
+            NumberRow(title,
                       value: $value,
                       in: 0.08...0.75,
                       format: .opaque(String(format: "%.2f°/pt", value)),
