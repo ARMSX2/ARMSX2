@@ -3435,11 +3435,40 @@ bool GSDeviceVK::CheckFeatures()
 	// for a third of the cost at 3x. Treat the old figure as an upper bound on a build we can no
 	// longer run, not as a contradiction.
 	//
-	// What would make this cheap is knowing WHICH draws the driver gets wrong - OutRun's sea fails
-	// while FlatOut's several hundred feedback draws do not, and nobody has isolated the
-	// difference. Until someone does, correctness for everyone beats speed for everyone, and
-	// OverrideTextureBarriers = 1 is the documented way out for anyone who would rather have the
-	// frames.
+	// WHICH draws does it get wrong? All of them, on every affected title, and worse than it
+	// looks. Scored per frame against the software renderer, in-tile (Turnip/Adreno 650,
+	// 2026-08-02):
+	//
+	//   FlatOut 2   31.3% of the frame wrong by >16 levels   <- worst measured, once read as clean
+	//   Katamari     7.5%
+	//   OutRun       4.6%   (a separate scoring run from the 4.0% above, different frames)
+	//   NFSU         0.00% by >16 levels, but ~40% of pixels off by 1-16
+	//
+	// NFSU is the whole lesson: corrupt everywhere and invisible, which is exactly what made
+	// "only titles with a texture pack" look like a real gate. There is no title-level
+	// discriminator to find. Nor a useful draw-level one - most corrupted draws never sample the
+	// target, they read it for the destination-alpha test and the write mask, so "self-read"
+	// understates what the workaround protects.
+	//
+	// Two distinct mechanisms, and only one of them is about ordering between draws:
+	//
+	//   1. An in-pass read does not observe writes made by EARLIER DRAWS in the same render
+	//      pass. Ending the pass before such a draw - read still in-pass, no copy - makes
+	//      OutRun, FlatOut, Katamari and NFSU pixel-identical to the copy path.
+	//   2. God of War II is not fixed by a pass boundary, and the oracle says the copy is the
+	//      correct one. Its first failing draw is a 10740-primitive overlapping triangle strip
+	//      whose own primitives read what their predecessors wrote - a hazard inside a single
+	//      draw, which no pass boundary can separate.
+	//
+	// The driver also ignores the in-pass barrier outright: forcing the explicit
+	// vkCmdPipelineBarrier self-dependency path, with the barrier landing on exactly the affected
+	// draws, produces byte-identical wrong output to the coherent ROAA read.
+	//
+	// So the pass boundary is a partial fix rather than a cheaper one - it leaves mechanism 2
+	// broken, and it would re-admit full-barrier draws this driver cannot order. It did measure
+	// ~7% faster than the copy on FlatOut at 1x, and no different on OutRun. Correctness for
+	// everyone beats speed for everyone, and OverrideTextureBarriers = 1 is the documented way
+	// out for anyone who would rather have the frames.
 	const bool rt_self_read_is_broken =
 		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback);
 
