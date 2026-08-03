@@ -69,6 +69,24 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         resolved == .arabic ? .rightToLeft : .leftToRight
     }
 
+    /// Numbers follow the chosen UI language rather than the device region: someone who picked
+    /// German expects 1,5x whatever their region says. System means whatever iOS is already doing.
+    var numberLocale: Locale {
+        guard self != .system else { return .autoupdatingCurrent }
+        switch resolved {
+        case .simplifiedChinese: return Locale(identifier: "zh_Hans")
+        case .arabic: return Locale(identifier: "ar")
+        case .spanish: return Locale(identifier: "es")
+        case .french: return Locale(identifier: "fr")
+        case .german: return Locale(identifier: "de")
+        case .italian: return Locale(identifier: "it")
+        case .portuguese: return Locale(identifier: "pt")
+        case .japanese: return Locale(identifier: "ja")
+        case .korean: return Locale(identifier: "ko")
+        case .system, .english: return Locale(identifier: "en_US_POSIX")
+        }
+    }
+
     func localized(_ key: String) -> String {
         guard let translated = Self.translations[resolved]?[key] else {
             return Self.commonTranslations[resolved]?[key] ?? Self.uiSupplementTranslations[resolved]?[key] ?? key

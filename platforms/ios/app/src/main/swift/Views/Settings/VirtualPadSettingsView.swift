@@ -88,10 +88,7 @@ struct VirtualPadSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                VStack(alignment: .leading) {
-                    Text("\(settings.localized("Opacity")): \(Int(settings.padOpacity * 100))%")
-                    Slider(value: $settings.padOpacity, in: 0.1...1.0, step: 0.05)
-                }
+                NumberRow(.padOpacity, value: $settings.padOpacity, settings: settings)
             }
 
             Section(settings.localized("Gameplay")) {
@@ -113,22 +110,7 @@ struct VirtualPadSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(settings.localized("Analog Stick Size"))
-                        Spacer()
-                        Text("\(Int((settings.analogStickScale * 100).rounded()))%")
-                            .foregroundStyle(.secondary)
-                    }
-                    Slider(
-                        value: Binding(
-                            get: { Double(settings.analogStickScale) },
-                            set: { settings.analogStickScale = Float($0) }
-                        ),
-                        in: 0.8...1.6,
-                        step: 0.05
-                    )
-                }
+                NumberRow(.analogStickSize, value: $settings.analogStickScale, settings: settings)
 
                 Text(settings.localized("Double-tap empty gameplay space to show the menu button again."))
                     .font(.caption)
@@ -203,10 +185,8 @@ struct VirtualPadSettingsView: View {
             Section(settings.localized("Feedback")) {
                 Toggle(settings.localized("Haptic Feedback"), isOn: $settings.hapticFeedback)
 
-                VStack(alignment: .leading) {
-                    Text("\(settings.localized("Phone Rumble Strength")): \(Int(settings.phoneRumbleStrength * 100))%")
-                    Slider(value: $settings.phoneRumbleStrength, in: 0.0...1.0, step: 0.05)
-                }
+                NumberRow(.phoneRumbleStrength, value: $settings.phoneRumbleStrength,
+                          settings: settings)
                 Text(settings.localized("Controls the iPhone Taptic Engine when no controller is connected. 25% preserves the original Core Haptics intensity; 100% applies up to 3x gain, and 0% disables phone rumble. Has no effect on a controller's own motors."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -355,11 +335,11 @@ struct VirtualPadSettingsView: View {
                 )
                 if dynamicSettings.leftInstantDeadzoneEnabled {
                     DynamicControlSlider(
-                        title: settings.localized("Left Negative Deadzone"),
+                        title: "Left Negative Deadzone",
                         value: $dynamicSettings.leftNegativeDeadzone,
                         range: -0.25...0,
                         step: 0.01,
-                        valueLabel: negativeDeadzoneLabel
+                        format: .unitPercent
                     )
                 }
 
@@ -369,27 +349,27 @@ struct VirtualPadSettingsView: View {
                 )
                 if dynamicSettings.rightInstantDeadzoneEnabled {
                     DynamicControlSlider(
-                        title: settings.localized("Right Negative Deadzone"),
+                        title: "Right Negative Deadzone",
                         value: $dynamicSettings.rightNegativeDeadzone,
                         range: -0.25...0,
                         step: 0.01,
-                        valueLabel: negativeDeadzoneLabel
+                        format: .unitPercent
                     )
                 }
 
                 DynamicControlSlider(
-                    title: settings.localized("Left Thumbstick Movement Area"),
+                    title: "Left Thumbstick Movement Area",
                     value: $dynamicSettings.leftThumbstickAreaScale,
                     range: 1...5,
                     step: 0.25,
-                    valueLabel: thumbstickAreaScaleLabel
+                    format: .multiplier
                 )
                 DynamicControlSlider(
-                    title: settings.localized("Right Thumbstick Movement Area"),
+                    title: "Right Thumbstick Movement Area",
                     value: $dynamicSettings.rightThumbstickAreaScale,
                     range: 1...5,
                     step: 0.25,
-                    valueLabel: thumbstickAreaScaleLabel
+                    format: .multiplier
                 )
 
                 Toggle(
@@ -398,24 +378,24 @@ struct VirtualPadSettingsView: View {
                 )
                 if dynamicSettings.convertSwipeToDynamicJoystick {
                     DynamicControlSlider(
-                        title: settings.localized("Convert Into Dynamic Thumbstick"),
+                        title: "Convert Into Dynamic Thumbstick",
                         value: Binding(
                             get: { dynamicSettings.convertIntoDynamicThumbstickThreshold },
                             set: { dynamicSettings.setConvertIntoDynamicThumbstickThreshold($0) }
                         ),
                         range: 0.01...3,
                         step: 0.01,
-                        valueLabel: percentageLabel
+                        format: .unitPercent
                     )
                     DynamicControlSlider(
-                        title: settings.localized("Pulling Back Distance"),
+                        title: "Pulling Back Distance",
                         value: Binding(
                             get: { dynamicSettings.pullingBackDistance },
                             set: { dynamicSettings.setPullingBackDistance($0) }
                         ),
                         range: 0.01...1,
                         step: 0.01,
-                        valueLabel: percentageLabel
+                        format: .unitPercent
                     )
                 }
             } header: {
@@ -462,28 +442,28 @@ struct VirtualPadSettingsView: View {
 
                     if dynamicSettings.showCrosshairWhileHoldingSwipe {
                         DynamicControlSlider(
-                            title: settings.localized("Crosshair Hide Delay"),
+                            title: "Crosshair Hide Delay",
                             value: $dynamicSettings.swipeCrosshairHideDelay,
                             range: 0...3,
                             step: 0.1,
-                            valueLabel: durationLabel
+                            format: .seconds
                         )
                         .disabled(!dynamicSettings.swipeCamera)
                     }
 
                     DynamicControlSlider(
-                        title: settings.localized("Crosshair Size"),
+                        title: "Crosshair Size",
                         value: $dynamicSettings.dynamicCrosshairSize,
                         range: 12...120,
                         step: 1,
-                        valueLabel: { "\(Int($0)) pt" }
+                        format: .points
                     )
                     DynamicControlSlider(
-                        title: settings.localized("Crosshair Opacity"),
+                        title: "Crosshair Opacity",
                         value: $dynamicSettings.dynamicCrosshairOpacity,
                         range: 0.10...1,
                         step: 0.05,
-                        valueLabel: percentageLabel
+                        format: .unitPercent
                     )
                     Picker(
                         settings.localized("Crosshair Type"),
@@ -511,39 +491,39 @@ struct VirtualPadSettingsView: View {
             if dynamicSettings.dynamicThumbsticks {
                 Section {
                     DynamicControlSlider(
-                        title: settings.localized("Maximum Radius"),
+                        title: "Maximum Radius",
                         value: $dynamicSettings.thumbstickRadius,
                         range: 40...60,
                         step: 1,
-                        valueLabel: { "\(Int($0)) pt" }
+                        format: .points
                     )
                     DynamicControlSlider(
-                        title: settings.localized("Dead Zone"),
+                        title: "Dead Zone",
                         value: $dynamicSettings.deadZone,
                         range: 0...0.25,
                         step: 0.01,
-                        valueLabel: percentageLabel
+                        format: .unitPercent
                     )
                     DynamicControlSlider(
-                        title: settings.localized("Thumbstick Opacity"),
+                        title: "Thumbstick Opacity",
                         value: $dynamicSettings.thumbstickOpacity,
                         range: 0...1,
                         step: 0.01,
-                        valueLabel: percentageLabel
+                        format: .unitPercent
                     )
                     DynamicControlSlider(
-                        title: settings.localized("Base Opacity"),
+                        title: "Base Opacity",
                         value: $dynamicSettings.baseOpacity,
                         range: 0...1,
                         step: 0.01,
-                        valueLabel: percentageLabel
+                        format: .unitPercent
                     )
                     DynamicControlSlider(
-                        title: settings.localized("Trail Opacity"),
+                        title: "Trail Opacity",
                         value: $dynamicSettings.trailOpacity,
                         range: 0...1,
                         step: 0.01,
-                        valueLabel: percentageLabel
+                        format: .unitPercent
                     )
                     Toggle(settings.localized("Activation Haptics"), isOn: $dynamicSettings.activationHaptics)
                 } header: {
@@ -556,39 +536,39 @@ struct VirtualPadSettingsView: View {
             if dynamicSettings.gyroscopeCamera {
                 Section {
                     DynamicControlSlider(
-                        title: settings.localized("Gyro Sensitivity"),
+                        title: "Gyro Sensitivity",
                         value: $dynamicSettings.gyroSensitivity,
                         range: 0.5...4.0,
                         step: 0.1,
-                        valueLabel: { String(format: "%.1fx", $0) }
+                        format: .multiplier.decimals(1)
                     )
                     DynamicControlSlider(
-                        title: settings.localized("Gyro Acceleration"),
+                        title: "Gyro Acceleration",
                         value: $dynamicSettings.gyroAcceleration,
                         range: 0...2,
                         step: 0.05,
-                        valueLabel: percentageLabel
+                        format: .unitPercent
                     )
                     DynamicControlSlider(
-                        title: settings.localized("Gyro Smoothing"),
+                        title: "Gyro Smoothing",
                         value: $dynamicSettings.gyroSmoothing,
                         range: 0...0.95,
                         step: 0.05,
-                        valueLabel: percentageLabel
+                        format: .unitPercent
                     )
                     DynamicControlSlider(
-                        title: settings.localized("Gyro Dead Zone"),
+                        title: "Gyro Dead Zone",
                         value: $dynamicSettings.gyroDeadZone,
                         range: 0...0.25,
                         step: 0.01,
-                        valueLabel: { String(format: "%.2f rad/s", $0) }
+                        format: .radiansPerSecond
                     )
                     DynamicControlSlider(
-                        title: settings.localized("Maximum Gyro Rate"),
+                        title: "Maximum Gyro Rate",
                         value: $dynamicSettings.gyroMaximumRate,
                         range: 1...12,
                         step: 0.5,
-                        valueLabel: { String(format: "%.1f rad/s", $0) }
+                        format: .radiansPerSecond.decimals(1)
                     )
                     Toggle(settings.localized("Invert Gyro Horizontal"), isOn: $dynamicSettings.invertGyroHorizontal)
                     Toggle(settings.localized("Invert Gyro Vertical"), isOn: $dynamicSettings.invertGyroVertical)
@@ -652,7 +632,7 @@ struct VirtualPadSettingsView: View {
                         value: $dynamicSettings.aimReleaseDelay,
                         range: 0...2,
                         step: 0.05,
-                        valueLabel: durationLabel
+                        format: .seconds
                     )
                     .disabled(!dynamicSettings.holdAimWhileSwipe && !dynamicSettings.doubleTapToHoldAim)
                     DynamicControlSlider(
@@ -660,7 +640,7 @@ struct VirtualPadSettingsView: View {
                         value: $dynamicSettings.doubleTapWindow,
                         range: 0.15...0.60,
                         step: 0.01,
-                        valueLabel: durationLabel
+                        format: .seconds
                     )
                     .disabled(!dynamicSettings.doubleTapToHoldAim)
                     Toggle(
@@ -672,14 +652,14 @@ struct VirtualPadSettingsView: View {
                         value: $dynamicSettings.tapMaximumDuration,
                         range: 0.10...0.60,
                         step: 0.01,
-                        valueLabel: durationLabel
+                        format: .seconds
                     )
                     DynamicControlSlider(
                         title: dynamicActionTitle("Single-Shot Travel Tolerance", role: .fire),
                         value: $dynamicSettings.tapTravelTolerance,
                         range: 4...30,
                         step: 1,
-                        valueLabel: { "\(Int($0)) pt" }
+                        format: .points
                     )
                     Toggle(
                         dynamicActionTitle("Multiple Taps Enable Automatic Fire", role: .holdFire),
@@ -700,7 +680,7 @@ struct VirtualPadSettingsView: View {
                         value: $dynamicSettings.rapidTapWindow,
                         range: 0.10...0.80,
                         step: 0.01,
-                        valueLabel: durationLabel
+                        format: .seconds
                     )
                     .disabled(automaticFireControlsDisabled)
                     DynamicControlSlider(
@@ -711,7 +691,7 @@ struct VirtualPadSettingsView: View {
                         ),
                         range: 2...5,
                         step: 1,
-                        valueLabel: { "\(Int($0)) taps" }
+                        format: .taps
                     )
                     .disabled(automaticFireControlsDisabled)
                     DynamicControlSlider(
@@ -719,7 +699,7 @@ struct VirtualPadSettingsView: View {
                         value: $dynamicSettings.automaticFireInterval,
                         range: 0.06...0.50,
                         step: 0.01,
-                        valueLabel: durationLabel
+                        format: .seconds
                     )
                     .disabled(automaticFireControlsDisabled)
                     Toggle(
@@ -737,7 +717,7 @@ struct VirtualPadSettingsView: View {
                         value: $dynamicSettings.fireReleaseDelay,
                         range: 0...1,
                         step: 0.05,
-                        valueLabel: durationLabel
+                        format: .seconds
                     )
                     .disabled(
                         automaticFireControlsDisabled ||
@@ -1158,21 +1138,21 @@ struct VirtualPadSettingsView: View {
     private var controlSensitivitySection: some View {
         Section {
             DynamicControlSlider(
-                title: settings.localized("Movement Sensitivity"),
+                title: "Movement Sensitivity",
                 value: $dynamicSettings.movementSensitivity,
                 range: 0.33...2.0,
                 step: 0.01,
-                valueLabel: percentageLabel
+                format: .unitPercent
             )
             DynamicControlSlider(
-                title: settings.localized("Look Sensitivity"),
+                title: "Look Sensitivity",
                 value: $dynamicSettings.lookSensitivity,
                 range: 0.43...1.71,
                 step: 0.01,
-                valueLabel: percentageLabel
+                format: .unitPercent
             )
             DynamicSwipeSensitivityControl(
-                title: settings.localized("Swipe Sensitivity"),
+                title: "Swipe Sensitivity",
                 showsEnableToggle: false,
                 isEnabled: .constant(true),
                 value: $dynamicSettings.swipeSensitivity,
@@ -1181,7 +1161,7 @@ struct VirtualPadSettingsView: View {
             )
             .disabled(!dynamicSettings.swipeCamera)
             DynamicSwipeSensitivityControl(
-                title: settings.localized("Sensitivity While on Aim Mode"),
+                title: "Sensitivity While on Aim Mode",
                 showsEnableToggle: true,
                 isEnabled: $dynamicSettings.swipeSensitivityWhileAimingEnabled,
                 value: $dynamicSettings.swipeSensitivityWhileAiming,
@@ -1190,7 +1170,7 @@ struct VirtualPadSettingsView: View {
             )
             .disabled(!dynamicSettings.swipeCamera)
             DynamicSwipeSensitivityControl(
-                title: settings.localized("Sensitivity While Not Aiming"),
+                title: "Sensitivity While Not Aiming",
                 showsEnableToggle: true,
                 isEnabled: $dynamicSettings.swipeSensitivityWhileNotAimingEnabled,
                 value: $dynamicSettings.swipeSensitivityWhileNotAiming,
@@ -1269,22 +1249,7 @@ struct VirtualPadSettingsView: View {
         }
     }
 
-    private func percentageLabel(_ value: Double) -> String {
-        "\(Int((value * 100).rounded()))%"
-    }
-
-    private func negativeDeadzoneLabel(_ value: Double) -> String {
-        "\(Int((value * 100).rounded()))% \(settings.localized("Deadzone"))"
-    }
-
-    private func thumbstickAreaScaleLabel(_ value: Double) -> String {
-        String(format: "%.2fx", value)
-    }
-
-    private func durationLabel(_ value: Double) -> String {
-        String(format: "%.2f s", value)
-    }
-
+    /// The last readout that is a phrase rather than a number in a unit, so it stays a closure.
     private var automaticFireControlsDisabled: Bool {
         automaticFireBlockedByHardcore || !dynamicSettings.rapidTapFireEnabled
     }
@@ -1294,29 +1259,37 @@ struct VirtualPadSettingsView: View {
     }
 }
 
+/// A NumberRow that always steps. Kept as a name of its own because this screen has thirty of
+/// them and the argument order reads better than five labelled arguments repeated thirty times.
+///
+/// These are the only rows left that describe themselves at the call site, and they can: each one
+/// is on this screen and nowhere else, so there is nothing for it to disagree with.
 private struct DynamicControlSlider: View {
     let title: String
     @Binding var value: Double
     let range: ClosedRange<Double>
     let step: Double
-    let valueLabel: (Double) -> String
+    /// Always a real format, never a prebuilt string: a row that hands over a finished readout
+    /// cannot label its bounds or be typed into, and it ends up the odd one out in the stack.
+    var format: NumberFormat = .plain
+
+    private var settings: SettingsStore { SettingsStore.shared }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(valueLabel(value))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-            Slider(value: $value, in: range, step: step)
-        }
-        .accessibilityElement(children: .combine)
+        NumberRow(title,
+                  value: $value,
+                  in: range,
+                  format: format,
+                  step: step,
+                  detents: NumberRow.stops(in: range, step: step),
+                  settings: settings)
     }
 }
 
 private struct DynamicSwipeSensitivityControl: View {
+    private static let sensitivityRange: ClosedRange<Double> = 0.08...0.75
+    private static let sensitivityStep = 0.01
+
     let title: String
     let showsEnableToggle: Bool
     @Binding var isEnabled: Bool
@@ -1324,24 +1297,32 @@ private struct DynamicSwipeSensitivityControl: View {
     @Binding var horizontalSensitivity: Double
     @Binding var verticalSensitivity: Double
 
+    private var settings: SettingsStore { SettingsStore.shared }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // The toggle used to carry the readout too. It moved down onto the row that actually
+            // changes it, which is also the only way the slider gets an announced value.
             if showsEnableToggle {
-                Toggle(isOn: $isEnabled) {
-                    sensitivityLabel
-                }
-            } else {
-                sensitivityLabel
+                Toggle(settings.localized(title), isOn: $isEnabled)
             }
-            Slider(value: $value, in: 0.08...0.75, step: 0.01)
+            // When the toggle above is already carrying the name, the row underneath is just the
+            // amount, so it says so rather than printing the same words twice.
+            NumberRow(showsEnableToggle ? "Sensitivity" : title,
+                      value: $value,
+                      in: Self.sensitivityRange,
+                      format: .degreesPerPoint,
+                      step: Self.sensitivityStep,
+                      detents: NumberRow.stops(in: Self.sensitivityRange,
+                                               step: Self.sensitivityStep),
+                      settings: settings)
                 .disabled(!isEnabled)
-                .accessibilityLabel(title)
             DynamicControlSlider(
                 title: "Horizontal Swipe Sensitivity",
                 value: $horizontalSensitivity,
                 range: 0.25...2,
                 step: 0.01,
-                valueLabel: percentageLabel
+                format: .unitPercent
             )
             .disabled(!isEnabled)
             DynamicControlSlider(
@@ -1349,23 +1330,9 @@ private struct DynamicSwipeSensitivityControl: View {
                 value: $verticalSensitivity,
                 range: 0.25...2,
                 step: 0.01,
-                valueLabel: percentageLabel
+                format: .unitPercent
             )
             .disabled(!isEnabled)
         }
-    }
-
-    private var sensitivityLabel: some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(String(format: "%.2f°/pt", value))
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-        }
-    }
-
-    private func percentageLabel(_ value: Double) -> String {
-        "\(Int((value * 100).rounded()))%"
     }
 }

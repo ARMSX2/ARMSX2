@@ -98,6 +98,104 @@ enum StickSide: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Every numeric setting a screen can show, described once, next to the ranges below that most of
+/// them are built from. A call site names the setting and hands over its binding; it has nothing
+/// left to spell differently, which is how the FPS target ended up with two sets of bounds, the
+/// queue size and the sharpness with two names each, and the four shade boost rows with two more.
+///
+/// Stops sit where the useful values are rather than spread evenly over the range — a linear track
+/// put 15 ms at five percent of its width and 60 fps at forty-three — and every list contains the
+/// default, so the reset arrow always lands on one. Typing still reaches anything in between.
+@MainActor
+extension NumberSetting {
+    static let targetFPS = NumberSetting(
+        "FPS Target", in: SettingsStore.targetFPSRange, format: .framesPerSecond,
+        detents: [15, 30, 45, 60, 90, 120], default: Int(SettingsStore.defaultTargetFPS))
+
+    static let fastForwardSpeed = NumberSetting(
+        "Fast Forward Speed",
+        in: Double(SettingsStore.minFastForwardScalar)...Double(SettingsStore.maxFastForwardScalar),
+        format: .unitPercent, detents: [1.25, 1.5, 2, 3, 5, 10],
+        default: Double(SettingsStore.defaultFastForwardScalar))
+
+    /// A stepper: fifteen contiguous values, and people come here wanting an exact one rather than
+    /// somewhere in the region of one.
+    static let vsyncQueueSize = NumberSetting(
+        "Queue Size", in: SettingsStore.vsyncQueueRange, style: .stepper, default: 8)
+
+    static let audioBufferMs = NumberSetting(
+        "Buffer Size", in: SettingsStore.audioBufferMsRange, format: .milliseconds,
+        detents: [10, 20, 30, 50, 75, 100, 150, 200], default: 50)
+
+    static let audioOutputLatencyMs = NumberSetting(
+        "Output Latency", in: SettingsStore.audioOutputLatencyMsRange, format: .milliseconds,
+        detents: [5, 10, 15, 20, 30, 50, 100, 200], default: 20)
+
+    static let emulatorVolume = NumberSetting(
+        "Emulator Volume", in: SettingsStore.emulatorVolumeRange, format: .percent,
+        detents: [0, 25, 50, 75, 100, 125, 150],
+        default: SettingsStore.defaultEmulatorVolumePercent,
+        hint: "Adjusts emulator game audio without changing iOS system volume or other apps.")
+
+    static let fastForwardVolume = NumberSetting(
+        "Fast-Forward Volume", in: SettingsStore.fastForwardVolumeRange, format: .percent,
+        detents: [0, 25, 50, 75, 100, 150, 200], default: 100)
+
+    /// Stored as a percentage. Driving it from a 0-to-1 slider truncated it on every drag tick.
+    static let casSharpness = NumberSetting(
+        "CAS Sharpness", in: SettingsStore.casSharpnessRange, format: .percent,
+        detents: [0, 25, 50, 75, 100], default: 50)
+
+    static let shadeBoostBrightness = shadeBoost("Brightness")
+    static let shadeBoostContrast = shadeBoost("Contrast")
+    static let shadeBoostSaturation = shadeBoost("Saturation")
+    static let shadeBoostGamma = shadeBoost("Gamma")
+
+    /// Four settings that differ only in name. Both screens that show them put them under a Shade
+    /// Boost header, which is what lets the names stay this short.
+    private static func shadeBoost(_ title: String) -> NumberSetting {
+        NumberSetting(title, in: SettingsStore.shadeBoostRange, format: .percent,
+                      detents: [1, 25, 50, 75, 100], default: 50)
+    }
+
+    static let emulationOnlyModeTimer = NumberSetting(
+        "Emulation-Only Mode Timer", in: SettingsStore.emulationOnlyModeDelayRange,
+        format: .seconds.decimals(0), detents: [0, 2, 5, 10, 15],
+        default: SettingsStore.defaultEmulationOnlyModeDelaySeconds)
+
+    /// Tenths rather than quarters like its neighbours: this is the one control you set by eye
+    /// against your own wallpaper, and a quarter of the way is a huge jump in how dark the thing is.
+    static let backgroundDim = NumberSetting(
+        "Background Dim", in: 0...1, format: .unitPercent,
+        detents: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+        default: 0, icon: "circle.lefthalf.filled")
+
+    static let padOpacity = NumberSetting(
+        "Opacity", in: 0.1...1, format: .unitPercent,
+        detents: [0.1, 0.25, 0.4, 0.6, 0.8, 1], default: 0.6)
+
+    static let analogStickSize = NumberSetting(
+        "Analog Stick Size", in: 0.8...1.6, format: .unitPercent,
+        detents: [0.8, 0.9, 1, 1.2, 1.4, 1.6], default: 1)
+
+    static let phoneRumbleStrength = NumberSetting(
+        "Phone Rumble Strength", in: 0...1, format: .unitPercent,
+        detents: [0, 0.25, 0.5, 0.75, 1], default: 0.25)
+
+    // Typed fields, not sliders: these get copied verbatim off a compatibility list, so reaching
+    // an exact number matters and dragging towards one does not.
+    static let textureOffsetX = NumberSetting(
+        "Texture Offset X", in: SettingsStore.textureOffsetRange, style: .field)
+    static let textureOffsetY = NumberSetting(
+        "Texture Offset Y", in: SettingsStore.textureOffsetRange, style: .field)
+    static let skipDrawStart = NumberSetting(
+        "Skipdraw Start", in: SettingsStore.skipDrawRange, style: .field)
+    static let skipDrawEnd = NumberSetting(
+        "Skipdraw End", in: SettingsStore.skipDrawRange, style: .field)
+    static let cpuSpriteRenderBw = NumberSetting(
+        "CPU Sprite Render BW", in: SettingsStore.cpuSpriteRenderBwRange, style: .field)
+}
+
 @MainActor
 @Observable
 final class SettingsStore {
@@ -111,14 +209,16 @@ final class SettingsStore {
     static let defaultEmulatorVolumePercent = 100
     static let textureOffsetRange = -4096...4096
     static let skipDrawRange = 0...5000
-    // Named so the global screen and the per-game row cannot disagree about the bounds. The
-    // numbers were already spelled out in both places, which is how they drift.
+    // Named so the loader, the writer's clamp and the descriptor above all agree about the bounds.
+    // The numbers were already spelled out in each place, which is how they drift.
     static let vsyncQueueRange = 2...16
     static let audioBufferMsRange = 10...200
     static let audioOutputLatencyMsRange = 5...200
     static let fastForwardVolumeRange = 0...200
+    static let emulatorVolumeRange = 0...150
     static let shadeBoostRange = 1...100
     static let casSharpnessRange = 0...100
+    static let cpuSpriteRenderBwRange = 0...10
     static let targetFPSRange = Int(minTargetFPS)...Int(maxTargetFPS)
     static let defaultOsdPerformancePosition = 3
     static let emulationOnlyModeDelayRange = 0...15
@@ -134,13 +234,21 @@ final class SettingsStore {
     @ObservationIgnored private var frameLimiterDisabledForFastForward = false
     @ObservationIgnored private var graphicsApplyWorkItem: DispatchWorkItem?
     @ObservationIgnored private var visualSliderDragCount = 0
+    @ObservationIgnored private var graphicsApplyDeferred = false
+    @ObservationIgnored private var visualSliderWatchdog: DispatchWorkItem?
 
     /// Coalesces live applies of visual settings so rapid changes reload GS settings
     /// at most once per short window. It is a no-op while a visual slider is being
     /// dragged; the slider's editing-ended handler triggers the apply on release so a
     /// drag does not fire one apply per tick.
     func requestGraphicsApply() {
-        guard visualSliderDragCount == 0 else { return }
+        guard visualSliderDragCount == 0 else {
+            // Remember that something graphics-shaped moved, so the release knows whether
+            // it has anything to apply. Every slider brackets now, including the audio and
+            // virtual pad ones that never touch GS.
+            graphicsApplyDeferred = true
+            return
+        }
         graphicsApplyWorkItem?.cancel()
         let workItem = DispatchWorkItem { ARMSX2Bridge.applyGraphicsSettingsNow() }
         graphicsApplyWorkItem = workItem
@@ -160,13 +268,37 @@ final class SettingsStore {
     /// Marks the start of a visual slider drag so per-tick value changes do not each
     /// trigger a graphics reload. Balanced by endVisualSliderEdit(), which fires a
     /// single coalesced apply when the last drag ends.
+    ///
+    /// The watchdog is the safety net. This used to be two call sites on one screen; it is
+    /// now every slider in the app, and a drag that is torn down without its editing-ended
+    /// handler would otherwise leave the count raised and live apply off for the session.
     func beginVisualSliderEdit() {
         visualSliderDragCount += 1
+        visualSliderWatchdog?.cancel()
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self, self.visualSliderDragCount > 0 else { return }
+            NSLog("[ARMSX2 iOS Settings] Visual slider bracket timed out, releasing")
+            self.visualSliderDragCount = 0
+            self.finishVisualSliderEdits()
+        }
+        visualSliderWatchdog = watchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: watchdog)
     }
 
     func endVisualSliderEdit() {
         if visualSliderDragCount > 0 { visualSliderDragCount -= 1 }
-        if visualSliderDragCount == 0 { requestGraphicsApply() }
+        guard visualSliderDragCount == 0 else { return }
+        finishVisualSliderEdits()
+    }
+
+    /// Only reload if a graphics key actually moved while the bracket was up. Dragging an
+    /// audio or virtual pad slider raises the same count and has nothing to apply.
+    private func finishVisualSliderEdits() {
+        visualSliderWatchdog?.cancel()
+        visualSliderWatchdog = nil
+        guard graphicsApplyDeferred else { return }
+        graphicsApplyDeferred = false
+        requestGraphicsApply()
     }
 
     // ── Emulator / CPU ──

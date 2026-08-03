@@ -64,6 +64,11 @@ enum SettingsOptions {
         (0, "Off"), (1, "Inside Targets"), (2, "Merge Targets")
     ]
 
+    // Wording from pcsx2-qt, which is where the compatibility advice people follow is written.
+    static let cpuSpriteRenderLevel: [(id: Int, title: String)] = [
+        (0, "Sprites Only"), (1, "Sprites/Triangles"), (2, "Blended Sprites/Triangles")
+    ]
+
     // -1 is a real TriFiltering value (Automatic), which is why the per-game "use global" marker for
     // this one has to be Int32.min rather than the usual -1.
     static let trilinearFiltering: [(id: Int, title: String)] = [

@@ -53,15 +53,13 @@ struct FramePacingTab: View {
                 }
                 .disabled(!enabled)
 
-                NumberOverrideRow("FPS Target", value: $perGameTargetFPS,
+                NumberOverrideRow(.targetFPS, value: $perGameTargetFPS,
                                   global: Int(settings.targetFPS.rounded()),
-                                  range: SettingsStore.targetFPSRange, suffix: " FPS",
                                   settings: settings)
                     .disabled(perGameFrameLimiter == 0 || !enabled)
 
-                NumberOverrideRow("VSync Queue Size", value: $perGameVsyncQueue,
+                NumberOverrideRow(.vsyncQueueSize, value: $perGameVsyncQueue,
                                   global: settings.vsyncQueueSize,
-                                  range: SettingsStore.vsyncQueueRange, style: .stepper,
                                   settings: settings)
                     .disabled(!enabled)
 
@@ -75,15 +73,13 @@ struct FramePacingTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                NumberOverrideRow("Buffer Size", value: $perGameBufferMS,
+                NumberOverrideRow(.audioBufferMs, value: $perGameBufferMS,
                                   global: settings.audioBufferMs,
-                                  range: SettingsStore.audioBufferMsRange, suffix: " ms",
                                   settings: settings)
                     .disabled(!enabled)
 
-                NumberOverrideRow("Output Latency", value: $perGameOutputLatencyMS,
+                NumberOverrideRow(.audioOutputLatencyMs, value: $perGameOutputLatencyMS,
                                   global: settings.audioOutputLatencyMs,
-                                  range: SettingsStore.audioOutputLatencyMsRange, suffix: " ms",
                                   settings: settings)
                     .disabled(!enabled)
             } header: {
