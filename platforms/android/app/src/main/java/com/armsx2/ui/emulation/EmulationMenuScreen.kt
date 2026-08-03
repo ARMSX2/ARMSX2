@@ -639,8 +639,6 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
                 MainActivityRuntime.closeGame()
             },
         ),
-        selected = state.selectedAction,
-        onSelect = viewModel::selectAction,
     )
     // On-screen display — a single universal on/off (old-UI style); the per-stat
     // toggles live in All Settings. Plus a frame-limit switch so fast-forward is one
@@ -692,8 +690,9 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
         Spacer(Modifier.height(6.dp))
         // OSD colour, cycled in place. Shares the palette with the All Settings picker rather
         // than carrying its own copy. Safe to add here: this card's rows are plain switches with
-        // their own callbacks — SessionPane's selectedAction indexes the action GRID above, not
-        // these, so inserting a row can't shift the controller dispatch.
+        // their own callbacks, and every control on this pane — grid rows included — now
+        // registers its own id with the nav registry, so inserting a row cannot shift what any
+        // other row does.
         val osdColorIndex = com.armsx2.ui.settings.OSD_COLORS
             .indexOf(state.settings.osdColor).coerceAtLeast(0)
         MenuCycleRow(
@@ -1340,15 +1339,20 @@ private data class MenuAction(
 )
 
 @Composable
-private fun ActionGrid(actions: List<MenuAction>, selected: Int, onSelect: (Int) -> Unit) {
+private fun ActionGrid(actions: List<MenuAction>) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         actions.forEachIndexed { index, item ->
-            val active = index == selected
+            val id = "pause.action.$index"
+            // The registry is the ONE source of truth for which row is selected. The tint used
+            // to come from a separate index in the view model that advanced only when a row was
+            // ACTIVATED, while the D-pad moved the registry — so the menu drew one selection and
+            // moved another, and the row you were pointing at was never the one lit up.
+            val active = com.armsx2.ui.settings.SettingsControllerNav.isSelected(id)
             Surface(
-                onClick = { onSelect(index); item.action() },
+                onClick = item.action,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .controllerFocusable("pause.action.$index", onConfirm = { onSelect(index); item.action() }),
+                    .controllerFocusable(id, onConfirm = item.action),
                 shape = RoundedCornerShape(16.dp),
                 color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
                 else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
