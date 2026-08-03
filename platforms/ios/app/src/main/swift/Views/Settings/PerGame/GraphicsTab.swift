@@ -175,22 +175,22 @@ struct GraphicsTab: View {
             .disabled(!enabled)
             NumberOverrideRow("Shade Boost Brightness", value: $perGameShadeBoostBrightness,
                               global: settings.shadeBoostBrightness,
-                              range: SettingsStore.shadeBoostRange, format: .percent,
+                              range: SettingsStore.shadeBoostRange, suffix: "%",
                               settings: settings)
                 .disabled(!enabled)
             NumberOverrideRow("Shade Boost Contrast", value: $perGameShadeBoostContrast,
                               global: settings.shadeBoostContrast,
-                              range: SettingsStore.shadeBoostRange, format: .percent,
+                              range: SettingsStore.shadeBoostRange, suffix: "%",
                               settings: settings)
                 .disabled(!enabled)
             NumberOverrideRow("Shade Boost Saturation", value: $perGameShadeBoostSaturation,
                               global: settings.shadeBoostSaturation,
-                              range: SettingsStore.shadeBoostRange, format: .percent,
+                              range: SettingsStore.shadeBoostRange, suffix: "%",
                               settings: settings)
                 .disabled(!enabled)
             NumberOverrideRow("Shade Boost Gamma", value: $perGameShadeBoostGamma,
                               global: settings.shadeBoostGamma,
-                              range: SettingsStore.shadeBoostRange, format: .percent,
+                              range: SettingsStore.shadeBoostRange, suffix: "%",
                               settings: settings)
                 .disabled(!enabled)
             Picker(settings.localized("Dithering"), selection: $perGameDithering) {
@@ -221,7 +221,7 @@ struct GraphicsTab: View {
 
             NumberOverrideRow("CAS Sharpness", value: $perGameCASSharpness,
                               global: settings.casSharpness,
-                              range: SettingsStore.casSharpnessRange, format: .percent,
+                              range: SettingsStore.casSharpnessRange, suffix: "%",
                               settings: settings)
                 .disabled(!enabled)
 
@@ -321,33 +321,25 @@ struct GraphicsTab: View {
             Toggle(settings.localized("Override Texture Offset X"), isOn: $textureOffsetXOverride)
                 .disabled(!manualAdvancedHacksEnabled)
             if textureOffsetXOverride {
-                NumberRow("Texture Offset X", value: $textureOffsetX,
-                          in: SettingsStore.textureOffsetRange, style: .field, settings: settings)
-                    .disabled(!manualAdvancedHacksEnabled)
+                ClampedIntField(title: settings.localized("Texture Offset X"), value: $textureOffsetX, range: SettingsStore.textureOffsetRange, isEnabled: manualAdvancedHacksEnabled)
             }
 
             Toggle(settings.localized("Override Texture Offset Y"), isOn: $textureOffsetYOverride)
                 .disabled(!manualAdvancedHacksEnabled)
             if textureOffsetYOverride {
-                NumberRow("Texture Offset Y", value: $textureOffsetY,
-                          in: SettingsStore.textureOffsetRange, style: .field, settings: settings)
-                    .disabled(!manualAdvancedHacksEnabled)
+                ClampedIntField(title: settings.localized("Texture Offset Y"), value: $textureOffsetY, range: SettingsStore.textureOffsetRange, isEnabled: manualAdvancedHacksEnabled)
             }
 
             Toggle(settings.localized("Override Skipdraw Start"), isOn: $skipDrawStartOverride)
                 .disabled(!manualAdvancedHacksEnabled)
             if skipDrawStartOverride {
-                NumberRow("Skipdraw Start", value: skipDrawStartBinding,
-                          in: SettingsStore.skipDrawRange, style: .field, settings: settings)
-                    .disabled(!manualAdvancedHacksEnabled)
+                ClampedIntField(title: settings.localized("Skipdraw Start"), value: skipDrawStartBinding, range: SettingsStore.skipDrawRange, isEnabled: manualAdvancedHacksEnabled)
             }
 
             Toggle(settings.localized("Override Skipdraw End"), isOn: $skipDrawEndOverride)
                 .disabled(!manualAdvancedHacksEnabled)
             if skipDrawEndOverride {
-                NumberRow("Skipdraw End", value: skipDrawEndBinding,
-                          in: SettingsStore.skipDrawRange, style: .field, settings: settings)
-                    .disabled(!manualAdvancedHacksEnabled)
+                ClampedIntField(title: settings.localized("Skipdraw End"), value: skipDrawEndBinding, range: SettingsStore.skipDrawRange, isEnabled: manualAdvancedHacksEnabled)
             }
             if skipDrawStartOverride || skipDrawEndOverride {
                 Text(settings.localized("For Skipdraw 1, use Start 1 and End 1. " + (savesToRunningGame ? "Changes apply when you save." : "Changes apply on next boot.")))
