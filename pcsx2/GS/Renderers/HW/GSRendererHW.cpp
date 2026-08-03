@@ -6231,6 +6231,26 @@ void GSRendererHW::EmulateDATEGetConfig(DATEOptions& date_options, bool scale_rt
 		m_conf.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Full;
 	else if (features.stencil_buffer)
 		m_conf.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Stencil;
+	else
+	{
+		// Read-only stencil is the fallback every branch above leans on, and it needs a stencil
+		// attachment. Adreno has none: depth is created as plain D32F because any stencil-bearing
+		// depth buffer trips the A6xx hangcheck. Upstream never reaches here — it only clears
+		// stencil_buffer alongside framebuffer fetch, which is selected much earlier — so without
+		// this branch the draw left this function with destination_alpha never assigned, i.e. still
+		// holding whatever the PREVIOUS draw picked. m_conf is a member and is not cleared per draw.
+		//
+		// Sampling destination alpha in the shader answers the same question a read-only stencil
+		// pre-pass does: both test the target as it stood before the draw, so this is a like-for-like
+		// substitution, not a downgrade. One barrier is what makes that snapshot available — with
+		// texture barriers the backend inserts a real barrier, without them it copies the target and
+		// binds the copy. DATE >= 5 is already part of PSSelector::IsFeedbackLoopRT, so the copy
+		// happens with no backend change.
+		GL_PERF("DATE: Accurate with one barrier (no stencil buffer)");
+		date_options.barrier = true;
+		m_conf.require_one_barrier = true;
+		m_conf.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Full;
+	}
 
 	if (scale_rt_alpha)
 		m_conf.datm = static_cast<SetDATM>(m_cached_ctx.TEST.DATM + 2);
