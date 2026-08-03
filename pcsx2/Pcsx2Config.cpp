@@ -1257,12 +1257,14 @@ void Pcsx2Config::GSOptions::MaskUserHacks(bool respect_claims)
 		UserHacks_TCOffsetX = 0;
 	if (!keep(GSUserHackOverride::TextureOffsetY))
 		UserHacks_TCOffsetY = 0;
+	if (!keep(GSUserHackOverride::PreloadFrameData))
+		PreloadFrameWithGSData = false;
+	if (!keep(GSUserHackOverride::DisablePartialInvalidation))
+		UserHacks_DisablePartialInvalidation = false;
 
 	UserHacks_DisableSafeFeatures = false;
 	UserHacks_DisableRenderFixes = false;
 	GPUPaletteConversion = false;
-	PreloadFrameWithGSData = false;
-	UserHacks_DisablePartialInvalidation = false;
 	UserHacks_DisableDepthSupport = false;
 	UserHacks_CPUFBConversion = false;
 	UserHacks_ReadTCOnClose = false;

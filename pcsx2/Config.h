@@ -551,8 +551,10 @@ enum class GSUserHackOverride : u8
 	AutoFlush,
 	TextureInsideRt,
 	// Appended rather than slotted in next to X, so a mask already written to an INI keeps
-	// meaning what it meant.
+	// meaning what it meant. Everything below follows the same rule: append only.
 	TextureOffsetY,
+	PreloadFrameData,
+	DisablePartialInvalidation,
 	MaxCount
 };
 

@@ -510,6 +510,10 @@ static std::optional<GSUserHackOverride> UserHackOverrideForHWFix(GameDatabaseSc
 			return GSUserHackOverride::AutoFlush;
 		case GameDatabaseSchema::GSHWFixId::TextureInsideRT:
 			return GSUserHackOverride::TextureInsideRt;
+		case GameDatabaseSchema::GSHWFixId::PreloadFrameData:
+			return GSUserHackOverride::PreloadFrameData;
+		case GameDatabaseSchema::GSHWFixId::DisablePartialInvalidation:
+			return GSUserHackOverride::DisablePartialInvalidation;
 		default:
 			return std::nullopt;
 	}
