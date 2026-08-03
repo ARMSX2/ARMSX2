@@ -99,6 +99,24 @@ fun SaveStatePickerScreen(mode: SaveMode, onBack: () -> Unit) {
     }
     // i18n KEY of the last slot-tap failure, shown in place of silently closing the picker.
     var failure by remember { mutableStateOf<String?>(null) }
+    // Import an external save-state file into this game's next free slot. A green success line +
+    // a refresh bump so the slot tiles re-probe and show the imported save immediately.
+    var notice by remember { mutableStateOf<String?>(null) }
+    var refreshKey by remember { mutableStateOf(0) }
+    val importContext = androidx.compose.ui.platform.LocalContext.current
+    val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) scope.launch {
+            val slot = withContext(Dispatchers.IO) { importSaveStateToNextFreeSlot(importContext, uri) }
+            when {
+                slot >= 0 -> { failure = null; notice = "${com.armsx2.i18n.I18n.get("savestate.import")} · ${slot + 1}"; refreshKey++ }
+                slot == SS_IMPORT_NO_GAME -> { notice = null; failure = "savestate.import.needsGame" }
+                slot == SS_IMPORT_SLOTS_FULL -> { notice = null; failure = "savestate.import.slotsFull" }
+                else -> { notice = null; failure = "savestate.import.failed" }
+            }
+        }
+    }
 
     ArmsBackdrop {
         Column(Modifier.fillMaxSize()) {
@@ -106,11 +124,20 @@ fun SaveStatePickerScreen(mode: SaveMode, onBack: () -> Unit) {
                 title = if (mode == SaveMode.Save) str("savestate.title.save")
                 else str("savestate.title.loadManage"),
                 leading = { RoundAction("←", str("action.back"), onBack) },
+                actions = { RoundAction("⤓", str("savestate.import"), onClick = { importLauncher.launch(arrayOf("*/*")) }) },
             )
             failure?.let { key ->
                 Text(
                     str(key),
                     color = Color(0xFFFFB4A2),
+                    fontSize = 13.sp,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
+            notice?.let { text ->
+                Text(
+                    text,
+                    color = Color(0xFF9BE29B),
                     fontSize = 13.sp,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 )
@@ -150,7 +177,7 @@ fun SaveStatePickerScreen(mode: SaveMode, onBack: () -> Unit) {
                     }
                 }
                     items((0 until SLOTS).toList(), key = { "slot_$it" }) { slot ->
-                        SlotTile(slot, mode) { selected ->
+                        SlotTile(slot, mode, refreshKey) { selected ->
                             scope.launch(Dispatchers.IO) {
                                 // The result used to be discarded and onBack() called either way, so
                                 // a refused save closed the picker looking exactly like a successful
@@ -301,11 +328,11 @@ private fun AutosaveTile(onPick: () -> Unit) {
 }
 
 @Composable
-private fun SlotTile(slot: Int, mode: SaveMode, onPick: (Int) -> Unit) {
-    val gamePath by produceState<String?>(initialValue = null, slot) {
+private fun SlotTile(slot: Int, mode: SaveMode, refreshKey: Int = 0, onPick: (Int) -> Unit) {
+    val gamePath by produceState<String?>(initialValue = null, slot, refreshKey) {
         value = withContext(Dispatchers.IO) { runCatching { NativeApp.getGamePathSlot(slot) }.getOrNull() }
     }
-    val image by produceState<android.graphics.Bitmap?>(initialValue = null, slot) {
+    val image by produceState<android.graphics.Bitmap?>(initialValue = null, slot, refreshKey) {
         value = withContext(Dispatchers.IO) {
             runCatching {
                 val bytes = NativeApp.getImageSlot(slot) ?: return@runCatching null

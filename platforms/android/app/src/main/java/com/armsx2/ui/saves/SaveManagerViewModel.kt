@@ -114,6 +114,29 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    /**
+     * Import an external save-state file (e.g. an AetherSX2 / NetherSX2 state, or a .p2s from another
+     * install) into the ACTIVE game's next free slot. The bytes are copied verbatim to the slot's
+     * on-disk path — the native loader detects the format by content on load (see the legacy
+     * save-state reader), so the .p2s extension of the destination doesn't have to match the source.
+     *
+     * A save state belongs to one specific game, so this needs an active game to target; from the
+     * global manager with nothing running it reports that. Slots are chosen automatically (first
+     * free of 0..9) so it never silently overwrites an existing save.
+     */
+    fun importState(uri: android.net.Uri) {
+        viewModelScope.launch {
+            val slot = withContext(Dispatchers.IO) { importSaveStateToNextFreeSlot(getApplication(), uri) }
+            state.value = when {
+                slot >= 0 -> state.value.copy(message = "${I18n.get("savestate.import")} · ${slot + 1}")
+                slot == SS_IMPORT_NO_GAME -> state.value.copy(error = I18n.get("savestate.import.needsGame"))
+                slot == SS_IMPORT_SLOTS_FULL -> state.value.copy(error = I18n.get("savestate.import.slotsFull"))
+                else -> state.value.copy(error = I18n.get("savestate.import.failed"))
+            }
+            refresh()
+        }
+    }
+
     fun dismissMessage() {
         state.value = state.value.copy(message = null, error = null)
     }
@@ -187,4 +210,35 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
         const val SLOT_COUNT = 10
         val SLOT_PATTERN = Regex("\\.([0-9]{2})\\.p2s$", RegexOption.IGNORE_CASE)
     }
+}
+
+// Negative sentinels returned by importSaveStateToNextFreeSlot (a slot index >= 0 means success).
+internal const val SS_IMPORT_SLOTS_FULL = -1
+internal const val SS_IMPORT_FAILED = -2
+internal const val SS_IMPORT_NO_GAME = -3
+
+/**
+ * Copy an external save-state file [uri] into the ACTIVE game's next free slot (0..9). BLOCKING —
+ * call inside withContext(Dispatchers.IO). Returns the slot index on success, or a negative sentinel
+ * above. Shared by [SaveManagerViewModel] (library manager) and the in-game SaveStatePicker so both
+ * import identically: bytes are copied verbatim to the slot's on-disk path and the native loader
+ * detects the format (p2s / AetherSX2 / NetherSX2) by content on load.
+ */
+internal fun importSaveStateToNextFreeSlot(context: android.content.Context, uri: android.net.Uri): Int {
+    val active = MainActivityRuntime.currentGame.value
+    if (active == null || active.serial.isNullOrBlank()) return SS_IMPORT_NO_GAME
+    return runCatching {
+        val free = (0 until 10).firstOrNull { s ->
+            val p = NativeApp.getGamePathSlot(s)
+            p.isNullOrBlank() || !File(p).exists()
+        } ?: return@runCatching SS_IMPORT_SLOTS_FULL
+        val destPath = NativeApp.getGamePathSlot(free)?.takeIf(String::isNotBlank) ?: return@runCatching SS_IMPORT_FAILED
+        val dest = File(destPath)
+        dest.parentFile?.mkdirs()
+        val ok = context.contentResolver.openInputStream(uri)?.use { input ->
+            dest.outputStream().use { output -> input.copyTo(output) }
+            true
+        } ?: false
+        if (ok) free else SS_IMPORT_FAILED
+    }.getOrDefault(SS_IMPORT_FAILED)
 }

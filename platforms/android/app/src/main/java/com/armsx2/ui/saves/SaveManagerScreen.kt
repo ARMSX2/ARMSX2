@@ -49,6 +49,12 @@ import com.armsx2.ui.settings.controllerFocusable
 fun SaveManagerScreen(onBack: () -> Unit, viewModel: SaveManagerViewModel = viewModel()) {
     val state = viewModel.state.value
     LaunchedEffect(Unit) { viewModel.refresh() }
+    // Import an external save-state file (AetherSX2 / NetherSX2 / another install's .p2s) into the
+    // active game's next free slot. OpenDocument with "*/*" because save states have no single MIME
+    // and formats vary; the native loader detects the format by content.
+    val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let(viewModel::importState) }
 
     ArmsBackdrop {
         LazyColumn(
@@ -61,6 +67,7 @@ fun SaveManagerScreen(onBack: () -> Unit, viewModel: SaveManagerViewModel = view
                     title = str("savestate.title.loadManage"),
                     leading = { RoundAction("←", str("action.back"), onBack) },
                     actions = {
+                        RoundAction("⤓", str("savestate.import"), onClick = { importLauncher.launch(arrayOf("*/*")) })
                         if (state.saves.isNotEmpty()) {
                             RoundAction("▣", str("savestate.backup"), viewModel::backupAll)
                         }
