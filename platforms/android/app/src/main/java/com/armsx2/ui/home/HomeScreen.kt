@@ -1,5 +1,6 @@
 package com.armsx2.ui.home
 
+import androidx.compose.foundation.layout.heightIn
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -54,7 +55,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -159,7 +159,7 @@ fun HomeScreen(
     }
     LaunchedEffect(directories, nativeReady) { viewModel.load(directories, nativeReady) }
     DisposableEffect(viewModel, onOpenMenu) {
-        HomeInputController.bind(viewModel, onOpenMenu)
+        HomeInputController.bind(viewModel, onOpenMenu, onOpenGameMenu = { menuGame = it })
         onDispose { HomeInputController.unbind(viewModel) }
     }
 
@@ -697,11 +697,34 @@ fun HomeScreen(
         val menuCRC by androidx.compose.runtime.produceState<String?>(initialValue = null, game.uri) {
             value = com.armsx2.DiscIdentity.resolve(game.uri, game.serial) ?: ""
         }
-        ModalBottomSheet(onDismissRequest = { menuGame = null }) {
+        // A bottom-aligned panel rather than a ModalBottomSheet: that is its own focused
+        // Android window, so every row in here was unreachable by pad. Same look — it still
+        // rises from the bottom edge, full width, rounded at the top. Swipe-to-dismiss is the
+        // one thing lost; B and a tap on the scrim both close it.
+        com.armsx2.ui.common.PadModal(
+            key = "game-menu",
+            onDismiss = { menuGame = null },
+            alignment = Alignment.BottomCenter,
+        ) {
+          Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp,
+          ) {
             Column(
-                Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 8.dp, end = 8.dp, bottom = 20.dp),
+                Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()).padding(start = 8.dp, end = 8.dp, bottom = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // Keeps the sheet's grab-handle silhouette now that the real one is gone.
+                Box(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp), contentAlignment = Alignment.Center) {
+                    Box(
+                        Modifier
+                            .size(width = 32.dp, height = 4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)),
+                    )
+                }
                 Text(
                     game.displayTitle(EnglishTitles.enabled.value),
                     style = MaterialTheme.typography.titleLarge,
@@ -724,17 +747,17 @@ fun HomeScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 8.dp),
                 )
-                GameMenuAction("▶", str("action.play")) {
+                GameMenuAction("▶", str("action.play"), "game-menu.play") {
                     menuGame = null
                     viewModel.launch(game)
                 }
-                GameMenuAction("⚙", str("action.settings")) {
+                GameMenuAction("⚙", str("action.settings"), "game-menu.settings") {
                     menuGame = null
                     onOpenGameSettings(game)
                 }
                 // Per-game BIOS: open the BIOS manager scoped to THIS game (no need to load it),
                 // since the BIOS manager isn't reachable from the in-game menu.
-                GameMenuAction("📀", str("bios.perGame.menu")) {
+                GameMenuAction("📀", str("bios.perGame.menu"), "game-menu.bios") {
                     menuGame = null
                     com.armsx2.navigation.UiNavigator.navigate(com.armsx2.navigation.AppRoute.BiosManager(game))
                 }
@@ -742,7 +765,7 @@ fun HomeScreen(
                 // rebuilt, leaving HomeShortcuts with no call site at all (issue #335).
                 // pin() returns false only when the launcher can't pin — surface that.
                 val addToHomeFailed = str("games.addToHome.unsupported")
-                GameMenuAction("📌", str("games.addToHome")) {
+                GameMenuAction("📌", str("games.addToHome"), "game-menu.pin") {
                     menuGame = null
                     if (!com.armsx2.HomeShortcuts.pin(context, game))
                         Toast.makeText(context, addToHomeFailed, Toast.LENGTH_LONG).show()
@@ -750,26 +773,29 @@ fun HomeScreen(
                 // Only offered when the game is actually in Recently Played — this drops
                 // just this one entry, unlike the library-wide "Show Recently Played" toggle.
                 if (state.recentGames.any { it.uri == game.uri }) {
-                    GameMenuAction("🕐", str("games.removeRecent")) {
+                    GameMenuAction("🕐", str("games.removeRecent"), "game-menu.recent") {
                         viewModel.removeFromRecent(game)
                         menuGame = null
                     }
                 }
                 val hidden = com.armsx2.HiddenGames.isHidden(game)
-                GameMenuAction(if (hidden) "◍" else "🚫", str(if (hidden) "games.unhide" else "games.hide")) {
+                GameMenuAction(if (hidden) "◍" else "🚫", str(if (hidden) "games.unhide" else "games.hide"), "game-menu.hide") {
                     viewModel.setHidden(game, !hidden)
                     menuGame = null
                 }
             }
+          }
         }
     }
 }
 
 @Composable
-private fun GameMenuAction(glyph: String, label: String, onClick: () -> Unit) {
+private fun GameMenuAction(glyph: String, label: String, id: String, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .controllerFocusable(controllerId = id, shape = RoundedCornerShape(18.dp), onConfirm = onClick),
         shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
@@ -1265,7 +1291,12 @@ object HomeInputController {
      *  time the library (re)opens it starts at the top again. */
     var userNavigated = false
 
-    fun bind(viewModel: HomeViewModel, onOpenMenu: () -> Unit) {
+    /** Opens the per-game menu for a cover. Registered by HomeScreen because the menu's
+     *  visibility is its own composable state, not something this object can hold. */
+    private var openGameMenu: ((GameInfo) -> Unit)? = null
+
+    fun bind(viewModel: HomeViewModel, onOpenMenu: () -> Unit, onOpenGameMenu: (GameInfo) -> Unit) {
+        openGameMenu = onOpenGameMenu
         owner = viewModel
         openMenu = onOpenMenu
         userNavigated = false
@@ -1275,6 +1306,7 @@ object HomeInputController {
         if (owner === viewModel) {
             owner = null
             openMenu = null
+            openGameMenu = null
             scrollVelocity.floatValue = 0f
             zone.value = HomeZone.Grid
         }
@@ -1399,9 +1431,15 @@ object HomeInputController {
         return true
     }
 
-    fun openSelectedSettings(): Boolean {
+    /** X (Square) on the highlighted cover: open its menu — the controller equivalent of a
+     *  long-press, and the same menu touch gets. It replaced a direct jump to that game's
+     *  settings, which reached exactly one of the menu's rows and hid the other five (per-game
+     *  BIOS, pin to launcher, hide, drop from Recents, play) from anyone without a touchscreen.
+     *  Settings is still one press away, as the second row. */
+    fun openSelectedGameMenu(): Boolean {
         val game = owner?.selectedGame() ?: return false
-        com.armsx2.navigation.UiNavigator.navigate(com.armsx2.navigation.AppRoute.Settings(game = game))
+        val open = openGameMenu ?: return false
+        open(game)
         return true
     }
 

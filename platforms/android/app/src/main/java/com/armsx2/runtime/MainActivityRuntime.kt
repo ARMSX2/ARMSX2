@@ -2947,13 +2947,16 @@ open class MainActivityRuntime : ComponentActivity() {
                 !com.armsx2.navigation.UiNavigator.drawerOpen.value &&
                 com.armsx2.ui.home.HomeInputController.active()
             ) {
-                // Square button (or the Menu hotkey) opens settings for the
-                // highlighted cover — the controller equivalent of long-press.
+                // Square button (or the Menu hotkey) opens the per-game MENU for the
+                // highlighted cover — the controller equivalent of long-press, and the same
+                // menu a touch user gets. It used to jump straight to that game's settings,
+                // which is one of the menu's six rows; the other five had no controller route
+                // at all while the menu was a bottom sheet.
                 if (ControllerMappings.hotkeyFor(kc) == ControllerMappings.SysHotkey.MENU ||
                     kc == KeyEvent.KEYCODE_BUTTON_X
                 ) {
                     if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
-                        com.armsx2.ui.home.HomeInputController.openSelectedSettings()
+                        com.armsx2.ui.home.HomeInputController.openSelectedGameMenu()
                     return true
                 }
                 // #267: Y (Triangle) opens the library SEARCH — the requested
