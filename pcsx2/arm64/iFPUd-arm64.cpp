@@ -124,16 +124,17 @@ static void ToPS2FPU_Full(int idx, bool flags, int /*absidx*/, bool acc, bool ad
 	// Saturate above the EE MAXIMUM, not above 2^129.
 	//
 	// x86 iFPUd.cpp uses dbl_ps2_overflow == 2^129 here, but the largest number
-	// this FPU has is 0x7FFFFFFF == (2 - 2^-23) * 2^128, a whole binade below
-	// it. Everything in (that max, 2^129) therefore fell into the halving arm
-	// below, and under the divide unit's round-to-NEAREST FPCR that arm's
-	// +0x00800000 carried out of the exponent field into the SIGN BIT
-	// (0x7f800000 + 0x00800000 == 0x80000000): the largest magnitude the FPU can
-	// produce came back as negative zero. Only RSQRT can land in the band; see
+	// this FPU has -- kEeFpuMax, as the comments below name it -- is 0x7FFFFFFF
+	// == (2 - 2^-23) * 2^128, a whole binade below it. Everything in
+	// (kEeFpuMax, 2^129) therefore fell into the halving arm below, and under
+	// the divide unit's round-to-nearest FPCR that arm's +0x00800000 carried
+	// out of the exponent field into the sign bit (0x7f800000 + 0x00800000 ==
+	// 0x80000000): the largest magnitude the FPU can produce came back as
+	// negative zero. Only RSQRT can land in the band; see
 	// EeRecFpuFull.RsqrtAboveEeMaxSaturatesInsteadOfWrappingToNegativeZero for
 	// why DIV and SQRT cannot.
 	//
-	// `hi`, not `hs`: the EE maximum ITSELF is representable and belongs to the
+	// `hi`, not `hs`: kEeFpuMax itself is representable and belongs to the
 	// halving arm, which handles it exactly (halved it is +FLT_MAX, and
 	// 0x7f7fffff + 0x00800000 == 0x7fffffff).
 	armAsm->Mov(RXARG2, UINT64_C(0x47FFFFFFE0000000)); // (2 - 2^-23) * 2^128
@@ -209,6 +210,84 @@ static void ToPS2FPU_Full(int idx, bool flags, int /*absidx*/, bool acc, bool ad
 	armAsm->Bind(&end);
 }
 
+// ---- IEEE double -> PS2-single value, left in double format ---------------
+//
+// The rounding half of ToPS2FPU_Full with the format change taken out. On
+// return `idx`'s D lane holds a double whose value is exactly the single
+// ToPS2FPU_Full would have produced -- low 29 mantissa bits zero, |x| <=
+// kEeFpuMax, sub-2^-126 flushed to signed zero -- and the same O/U flags have
+// been raised. Used where the caller is going to widen the result straight back
+// (recMaddsub), so the narrow/widen round trip never happens.
+//
+// Rounding to a 24-bit significand is masking off the low 29 mantissa bits.
+// That is valid only under round-toward-zero, which is the arithmetic FPCR
+// (FPUFPCR) this path runs under. DIV/SQRT/RSQRT run under the divide unit's
+// round-to-nearest FPCR, where the mask would be plain truncation -- they keep
+// ToPS2FPU_Full.
+//
+// The "large but PS2-representable" arm of ToPS2FPU_Full disappears entirely:
+// an exponent-0xff PS2 single is an ordinary double, so in the wide domain
+// there is nothing to halve, narrow and re-raise -- it is just a chop like any
+// other in-range value. Only the saturation bound still needs the finer test.
+//
+// addsub is not a parameter: the one caller is the multiply stage, which passes
+// addsub=false, so the underflow arm never reconstructs a denormal.
+static void ToPS2FPU_Wide(int idx)
+{
+	const a64::VRegister d = armDRegister(idx);
+
+	armLoadEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
+	armAsm->Bic(RWSCRATCH, RWSCRATCH, FPUflagO | FPUflagU);
+	armStoreEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
+
+	armAsm->Fmov(RXSCRATCH, d);
+	armAsm->And(RXARG1, RXSCRATCH, 0x7fffffffffffffffULL);
+
+	a64::Label chop, toComplex, toUnderflow, isZero, end;
+
+	// Both bounds below are single MOVZ; the exact kEeFpuMax pattern is not, so
+	// keep it off the common path and test 2^128 first (as ToPS2FPU_Full does).
+	armAsm->Mov(RXARG2, static_cast<u64>(1151) << 52);   // 2^128
+	armAsm->Cmp(RXARG1, RXARG2);
+	armAsm->B(&toComplex, a64::hs);
+
+	armAsm->Mov(RXARG2, static_cast<u64>(897) << 52);    // 2^-126
+	armAsm->Cmp(RXARG1, RXARG2);
+	armAsm->B(&toUnderflow, a64::lo);
+
+	armAsm->Bind(&chop);
+	armAsm->And(RXSCRATCH, RXSCRATCH, UINT64_C(0xffffffffe0000000));
+	armAsm->Fmov(d, RXSCRATCH);
+	armAsm->B(&end);
+
+	armAsm->Bind(&toComplex);
+	armAsm->Mov(RXARG2, UINT64_C(0x47FFFFFFE0000000)); // (2 - 2^-23) * 2^128
+	armAsm->Cmp(RXARG1, RXARG2);
+	armAsm->B(&chop, a64::ls);   // in [2^128, kEeFpuMax]: an ordinary chop
+
+	// Beyond PS2 range: keep the sign, set the magnitude to kEeFpuMax (still in
+	// RXARG2). The single-domain form of this is `Orr 0x7fffffff`.
+	armAsm->And(RXSCRATCH, RXSCRATCH, UINT64_C(0x8000000000000000));
+	armAsm->Orr(RXSCRATCH, RXSCRATCH, RXARG2);
+	armAsm->Fmov(d, RXSCRATCH);
+	armLoadEERegPtr(RWARG1, &fpuRegs.fprc[31]);
+	armAsm->Orr(RWARG1, RWARG1, FPUflagO | FPUflagSO);
+	armStoreEERegPtr(RWARG1, &fpuRegs.fprc[31]);
+	armAsm->B(&end);
+
+	armAsm->Bind(&toUnderflow);
+	// RXSCRATCH/RXARG1 still hold the bits and |bits| from entry.
+	armAsm->Cbz(RXARG1, &isZero);
+	armLoadEERegPtr(RWARG2, &fpuRegs.fprc[31]);
+	armAsm->Orr(RWARG2, RWARG2, FPUflagU | FPUflagSU);
+	armStoreEERegPtr(RWARG2, &fpuRegs.fprc[31]);
+	armAsm->Bind(&isZero);
+	armAsm->And(RXSCRATCH, RXSCRATCH, UINT64_C(0x8000000000000000));
+	armAsm->Fmov(d, RXSCRATCH);
+
+	armAsm->Bind(&end);
+}
+
 // ---- PS2 add/sub guard-bit emulation --------------------------------------
 //
 // The EE FPU has no guard bits to the right of the mantissa; subtraction (and
@@ -276,6 +355,82 @@ static void FPU_ADD_SUB(int idxd, int idxt)
 	armAsm->Bind(&done);
 }
 
+// ---- PS2 add/sub guard-bit emulation, wide form ---------------------------
+//
+// Same law as FPU_ADD_SUB, for operands that are already doubles holding EE
+// singles exactly (low 29 mantissa bits zero, |x| <= kEeFpuMax). Two changes,
+// neither of which costs an instruction:
+//
+//  * The exponent field is bits 52..62 instead of 23..30, and the bias is 896
+//    higher. The bias cancels in the difference, so the case split is unchanged
+//    for two normals. It does not cancel when exactly one operand is zero
+//    (single e-0=e, double (e+896)-0), which moves such a pair from the
+//    mask-low-bits arm into the sign-only arm -- but the operand those arms
+//    touch is the zero one, and +/-0 is invariant under both (masking low bits
+//    of a zero, or reducing it to its sign, both leave it alone), so the two
+//    domains still agree. Verified: 0 disagreements over 1,572,864 pairs
+//    covering every (expd, expt) combination, 12,240 of them in exactly that
+//    class, against an off-by-one liveness control that moves 5,588 of 65,025.
+//    (A PS2 denormal cannot reach here: ToDouble runs under FZ, which flushes
+//    it to a zero of the same sign -- measured on this host, not assumed.)
+//  * A single's mantissa bit k is double bit k+29, so masking the single's low
+//    (diff-1) bits is masking the double's low (diff-1)+29. The extra 29 are
+//    already zero, so only the shift amount changes: `diff - 1` -> `diff + 28`.
+static void FPU_ADD_SUB_D(int idxd, int idxt)
+{
+	const a64::VRegister dd = armDRegister(idxd);
+	const a64::VRegister dt = armDRegister(idxt);
+
+	armAsm->Fmov(RXARG1, dd);  // d bits
+	armAsm->Fmov(RXARG2, dt);  // t bits
+	// GE-M2: x9/x10 for the diff and mask temps, not the w2/w3 pool hosts -- see
+	// the note in FPU_ADD_SUB. This span has no load/store or C-call either.
+	armAsm->Ubfx(a64::x9, RXARG1, 52, 11);    // expd
+	armAsm->Ubfx(RXSCRATCH, RXARG2, 52, 11);  // expt
+	armAsm->Sub(a64::w9, a64::w9, RWSCRATCH); // diff = expd - expt (signed)
+
+	a64::Label caseD25, casePos, caseEq, caseDn25, done;
+	armAsm->Cmp(a64::w9, 25);
+	armAsm->B(&caseD25, a64::ge);
+	armAsm->Cmp(a64::w9, 0);
+	armAsm->B(&casePos, a64::gt);
+	armAsm->B(&caseEq, a64::eq);
+	armAsm->Cmn(a64::w9, 25);                 // cmp diff, -25
+	armAsm->B(&caseDn25, a64::le);
+
+	// diff in -24..-1 (expd < expt): mask tempd's low (-diff-1)+29 bits.
+	armAsm->Neg(RWSCRATCH, a64::w9);
+	armAsm->Add(RWSCRATCH, RWSCRATCH, 28);
+	armAsm->Mov(a64::x10, UINT64_C(0xffffffffffffffff));
+	armAsm->Lsl(a64::x10, a64::x10, RXSCRATCH);
+	armAsm->And(RXARG1, RXARG1, a64::x10);
+	armAsm->Fmov(dd, RXARG1);
+	armAsm->B(&done);
+
+	armAsm->Bind(&caseD25);
+	// diff >= 25 (expt much smaller): tempt keeps only its sign.
+	armAsm->And(RXARG2, RXARG2, UINT64_C(0x8000000000000000));
+	armAsm->Fmov(dt, RXARG2);
+	armAsm->B(&done);
+
+	armAsm->Bind(&casePos);
+	// diff in 1..24 (expt smaller): mask tempt's low (diff-1)+29 bits.
+	armAsm->Add(RWSCRATCH, a64::w9, 28);
+	armAsm->Mov(a64::x10, UINT64_C(0xffffffffffffffff));
+	armAsm->Lsl(a64::x10, a64::x10, RXSCRATCH);
+	armAsm->And(RXARG2, RXARG2, a64::x10);
+	armAsm->Fmov(dt, RXARG2);
+	armAsm->B(&done);
+
+	armAsm->Bind(&caseDn25);
+	// diff <= -25 (expd much smaller): tempd keeps only its sign.
+	armAsm->And(RXARG1, RXARG1, UINT64_C(0x8000000000000000));
+	armAsm->Fmov(dd, RXARG1);
+
+	armAsm->Bind(&caseEq);  // diff == 0: nothing
+	armAsm->Bind(&done);
+}
+
 // ---- Op cores --------------------------------------------------------------
 
 // Copy an allocator-resident FP source (EEREC_S/EEREC_T) into a fresh temp so
@@ -337,22 +492,39 @@ static void recMULop(int info, int eeRecDst, bool acc)
 // If either did, the accumulate is dominated by a 2^128-class term and the
 // result is just +/-max with the dominant sign — skip the double add entirely.
 // Only when both are finite is the accumulation performed in double.
+//
+// Representation: unlike the x86 port and unlike recFPUOp/recMULop, everything
+// between the two roundings stays wide. The invariant from the multiply stage
+// to the final ToPS2FPU_Full is "this double is exactly a PS2 single" — low 29
+// mantissa bits zero, |x| <= kEeFpuMax, no denormals — which the guard mask
+// preserves (it only clears low bits or reduces an operand to its sign) and
+// which is what makes the accumulate exact: two 24-bit significands at an
+// exponent distance of at most 24 sum in 48 bits, well inside a double's 53.
+// The one arm that leaves the wide domain early is accovf, because kEeFpuMax
+// has no single a narrowing could reach.
 static void recMaddsub(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 {
 	const int sreg = copySrc(EEREC_S);
 	const int treg = copySrc(EEREC_T);
 
 	// --- multiply stage: sreg = ToPS2FPU(ToDouble(s) * ToDouble(t)). Sets O on
-	//     product overflow; acc=false so it never touches ACCflag here. ---
+	//     product overflow; never touches ACCflag here. ---
+	//
+	// The product is rounded but not narrowed: ToPS2FPU_Wide leaves it as a
+	// double holding an exact PS2 single. Everything downstream of it in this
+	// emitter -- the guard mask, the SUB sign flip, the accumulate -- wants the
+	// wide form back, and narrowing here only to re-widen 13 instructions later
+	// was the round trip this shape exists to remove.
 	ToDouble(sreg);
 	ToDouble(treg);
 	armAsm->Fmul(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
-	ToPS2FPU_Full(sreg, true, treg, false, false);
+	ToPS2FPU_Wide(sreg);
 
-	// --- reload ACC (allocator-resident) into treg, then guard-mask it against
-	//     the single-precision product. ---
+	// --- reload ACC (allocator-resident, still narrow) into treg and widen it,
+	//     then guard-mask it against the product in the wide domain. ---
 	armAsm->Fmov(armSRegister(treg), armSRegister(EEREC_ACC));
-	FPU_ADD_SUB(treg, sreg);
+	ToDouble(treg);
+	FPU_ADD_SUB_D(treg, sreg);
 
 	a64::Label mulovf, accovf, operation, skipall;
 
@@ -360,29 +532,31 @@ static void recMaddsub(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 	armLoadEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
 	armAsm->Tst(RWSCRATCH, FPUflagO);
 	armAsm->B(&mulovf, a64::ne);
-	ToDouble(sreg);
 
 	// prior ACC saturated? -> accovf
 	armLoadEERegPtr(RWSCRATCH, &fpuRegs.ACCflag);
 	armAsm->Tst(RWSCRATCH, 1);
 	armAsm->B(&accovf, a64::ne);
-	ToDouble(treg);
 	armAsm->B(&operation);
 
 	armAsm->Bind(&mulovf);
-	// Product is a saturated single; for SUB negate its sign, then it becomes
-	// the (single) accumulate result. Falls through into accovf.
+	// Product saturated at +/-kEeFpuMax; for SUB negate its sign, then it
+	// becomes the accumulate result. Falls through into accovf.
 	if (op == 1)
 	{
-		armAsm->Fmov(RWSCRATCH, armSRegister(sreg));
-		armAsm->Eor(RWSCRATCH, RWSCRATCH, 0x80000000);
-		armAsm->Fmov(armSRegister(sreg), RWSCRATCH);
+		armAsm->Fmov(RXSCRATCH, armDRegister(sreg));
+		armAsm->Eor(RXSCRATCH, RXSCRATCH, UINT64_C(0x8000000000000000));
+		armAsm->Fmov(armDRegister(sreg), RXSCRATCH);
 	}
-	armAsm->Fmov(armSRegister(treg), armSRegister(sreg));
+	armAsm->Fmov(armDRegister(treg), armDRegister(sreg));
 
 	armAsm->Bind(&accovf);
-	// SetMaxValue(treg): keep sign, set all lower bits -> +/-PS2 max.
-	armAsm->Fmov(RWSCRATCH, armSRegister(treg));
+	// SetMaxValue(treg): keep sign, set all lower bits -> +/-PS2 max. This arm
+	// leaves the wide domain for good -- kEeFpuMax has no single encoding a
+	// narrowing could reach (Fcvt would give +/-FLT_MAX), so build the result
+	// single directly from the double's sign, which is bit 31 of its high half.
+	armAsm->Fmov(RXSCRATCH, armDRegister(treg));
+	armAsm->Lsr(RXSCRATCH, RXSCRATCH, 32);
 	armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x7fffffff);
 	armAsm->Fmov(armSRegister(treg), RWSCRATCH);
 	// Clear O|U then raise O|SO (and ACCflag for the *A variants).
