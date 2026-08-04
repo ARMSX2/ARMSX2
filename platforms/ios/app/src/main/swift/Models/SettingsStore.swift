@@ -231,7 +231,6 @@ final class SettingsStore {
     @ObservationIgnored private var isAutoMarkingCustom = false
     @ObservationIgnored private var isProgrammaticFramePacingFlagChange = false
     @ObservationIgnored private var isAutoMarkingFramePacingCustom = false
-    @ObservationIgnored private var frameLimiterDisabledForFastForward = false
     @ObservationIgnored private var graphicsApplyWorkItem: DispatchWorkItem?
     @ObservationIgnored private var visualSliderDragCount = 0
     @ObservationIgnored private var graphicsApplyDeferred = false
@@ -1456,6 +1455,9 @@ final class SettingsStore {
         guard !(_adaptiveResolutionEnabledConfig.suppressible && suppressINIWrites) else { return }
         _adaptiveResolutionEnabledConfig.writer(_adaptiveResolutionEnabledConfig.section, _adaptiveResolutionEnabledConfig.key, adaptiveResolutionEnabled)
         _adaptiveResolutionEnabledConfig.onSet?(adaptiveResolutionEnabled)
+        // Not while the INI is loading: setEnabled reads SettingsStore.shared, and we are inside
+        // that very initializer. init starts the controller itself once it has finished.
+        guard !suppressINIWrites else { return }
         FrameTimeDynamicResolutionController.shared.setEnabled(adaptiveResolutionEnabled)
     }}
     let _lastActiveOsdPresetConfig = Setting<OsdPreset>(
@@ -2239,10 +2241,9 @@ final class SettingsStore {
         // The migration above already wrote the post-migration INI values;
         // these reads pick them up.
         framePacingPreset = FramePacingPreset(rawValue: Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/FramePacing", key: "Preset", defaultValue: Int32(FramePacingPreset.optimal.rawValue)))) ?? .optimal
-        // Adaptive Resolution: read back so a persisted ON state at boot starts
-        // the controller. The didSet is suppressINIWrites-guarded so this
-        // reassignment does not write back; setEnabled is called explicitly
-        // below to sync the controller to the persisted value.
+        // Adaptive Resolution: read back so a persisted ON state at boot starts the controller.
+        // This one is not suppressible, so the didSet does write back here; what it no longer does
+        // is start the controller, which is deferred to the bottom of this init.
         let _initialAdaptiveResolution = ARMSX2Bridge.getINIBool("ARMSX2iOS/FramePacing", key: "DynamicResolution", defaultValue: false)
         adaptiveResolutionEnabled = _initialAdaptiveResolution
         dev9HddEnabled = ARMSX2Bridge.getINIBool("DEV9/Hdd", key: "HddEnable", defaultValue: false)
@@ -2299,226 +2300,6 @@ final class SettingsStore {
         DispatchQueue.main.async { [self] in
             FrameTimeDynamicResolutionController.shared.setEnabled(self.adaptiveResolutionEnabled)
         }
-    }
-
-    /// Reload ALL settings from INI (call on VM start/stop)
-    func reload() {
-        suppressINIWrites = true
-        defer { suppressINIWrites = false }
-
-        eeCoreType = Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "CoreType", defaultValue: 2))
-        iopRecompiler = ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "EnableIOP", defaultValue: true)
-        vu0Recompiler = ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "EnableVU0", defaultValue: true)
-        vu1Recompiler = ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "EnableVU1", defaultValue: true)
-        fastBoot = Self.loadedFastBoot()
-        fastmem = ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "EnableFastmem", defaultValue: true)
-        emulationOnlyModeEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "EmulationOnlyMode", defaultValue: false)
-        emulationOnlyDisablePatches = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "EmulationOnlyDisablePatches", defaultValue: true)
-        emulationOnlyDisablePINE = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "EmulationOnlyDisablePINE", defaultValue: true)
-        emulationOnlyDisableRetroAchievements = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "EmulationOnlyDisableRetroAchievements", defaultValue: true)
-        emulationOnlyDisableInputRecording = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "EmulationOnlyDisableInputRecording", defaultValue: true)
-        emulationOnlyDisableOSD = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "EmulationOnlyDisableOSD", defaultValue: true)
-        emulationOnlyDisableFramePacing = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "EmulationOnlyDisableFramePacing", defaultValue: true)
-        emulationOnlyDisableVirtualControls = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "EmulationOnlyDisableVirtualControls", defaultValue: true)
-        emulationOnlyDisableQuickMenu = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "EmulationOnlyDisableQuickMenu", defaultValue: true)
-        emulationOnlyClearNetworkCache = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "EmulationOnlyClearNetworkCache", defaultValue: true)
-        emulationOnlyModeDelaySeconds = Self.clamped(
-            Int(ARMSX2Bridge.getINIInt(
-                "ARMSX2iOS/UI", key: "EmulationOnlyModeDelaySeconds",
-                defaultValue: Int32(Self.defaultEmulationOnlyModeDelaySeconds))),
-            to: Self.emulationOnlyModeDelayRange)
-        eeFpuRoundMode = Self.clampedRoundMode(Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "FPU.Roundmode", defaultValue: 3)))
-        vu0RoundMode = Self.clampedRoundMode(Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "VU0.Roundmode", defaultValue: 3)))
-        vu1RoundMode = Self.clampedRoundMode(Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "VU1.Roundmode", defaultValue: 3)))
-        eeClampMode = Self.eeClampModeFromBools(
-            ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "fpuOverflow", defaultValue: true),
-            ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "fpuExtraOverflow", defaultValue: false),
-            ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "fpuFullMode", defaultValue: false))
-        vuClampMode = Self.vuClampModeFromBools(
-            ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "vu0Overflow", defaultValue: true),
-            ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "vu0ExtraOverflow", defaultValue: false),
-            ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "vu0SignOverflow", defaultValue: false))
-        ntscFramerate = ARMSX2Bridge.getINIFloat("EmuCore/GS", key: "FramerateNTSC", defaultValue: 59.94)
-        palFramerate = ARMSX2Bridge.getINIFloat("EmuCore/GS", key: "FrameratePAL", defaultValue: 50.0)
-        let nominalScalar = ARMSX2Bridge.getINIFloat("Framerate", key: "NominalScalar", defaultValue: 1.0)
-        frameLimiterEnabled = Self.frameLimiterEnabled(fromNominalScalar: nominalScalar)
-        targetFPS = Self.targetFPS(fromNominalScalar: nominalScalar, baseFramerate: ntscFramerate)
-        Self.sanitizeNominalScalarIfNeeded(nominalScalar)
-        fastForwardScalar = Self.clampedSpeedScalar(ARMSX2Bridge.getINIFloat("Framerate", key: "TurboScalar", defaultValue: Self.defaultFastForwardScalar))
-        emulatorVolumePercent = Self.clampedEmulatorVolumePercent(Int(ARMSX2Bridge.emulatorVolumePercent()))
-        audioTimeStretch = ARMSX2Bridge.getINIString("SPU2/Output", key: "SyncMode", defaultValue: "TimeStretch") != "Disabled"
-        audioBufferMs = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "BufferMS", defaultValue: 50)), to: Self.audioBufferMsRange)
-        audioOutputLatencyMs = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "OutputLatencyMS", defaultValue: 20)), to: Self.audioOutputLatencyMsRange)
-        audioFastForwardVolume = Self.clamped(Int(ARMSX2Bridge.getINIInt("SPU2/Output", key: "FastForwardVolume", defaultValue: 100)), to: Self.fastForwardVolumeRange)
-        audioSwapChannels = ARMSX2Bridge.getINIBool("SPU2/Output", key: "SwapChannels", defaultValue: false)
-        fastCDVD = ARMSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "fastCDVD", defaultValue: false)
-        eeCycleRate = Int(ARMSX2Bridge.getINIInt("EmuCore/Speedhacks", key: "EECycleRate", defaultValue: 0))
-        vu1Instant = ARMSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "vu1Instant", defaultValue: true)
-        mtvu = ARMSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "vuThread", defaultValue: true)
-        waitLoop = ARMSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "WaitLoop", defaultValue: true)
-        intcStat = ARMSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "IntcStat", defaultValue: true)
-        eeCycleSkip = Self.clampedCycleSkip(Int(ARMSX2Bridge.getINIInt("EmuCore/Speedhacks", key: "EECycleSkip", defaultValue: 0)))
-        vuFlagHack = ARMSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "vuFlagHack", defaultValue: true)
-        enableCheats = ARMSX2Bridge.getINIBool("EmuCore", key: "EnableCheats", defaultValue: false)
-        enablePatches = ARMSX2Bridge.getINIBool("EmuCore", key: "EnablePatches", defaultValue: true)
-        enableGameFixes = ARMSX2Bridge.getINIBool("EmuCore", key: "EnableGameFixes", defaultValue: true)
-        enableGameDBHardwareFixes = !ARMSX2Bridge.getINIBool("EmuCore/GS", key: "UserHacks", defaultValue: false)
-        enableWidescreenPatches = ARMSX2Bridge.getINIBool("EmuCore", key: "EnableWideScreenPatches", defaultValue: false)
-        enableNoInterlacingPatches = ARMSX2Bridge.getINIBool("EmuCore", key: "EnableNoInterlacingPatches", defaultValue: false)
-        hostFilesystem = ARMSX2Bridge.getINIBool("EmuCore", key: "HostFs", defaultValue: false)
-        gameFixes = Self.loadGameFixes()
-#if targetEnvironment(macCatalyst)
-        renderer = 17
-        ARMSX2Bridge.setINIInt("EmuCore/GS", key: "Renderer", value: Int32(17))
-#else
-        renderer = Self.supportedIOSRenderer(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "Renderer", defaultValue: 17)))
-        ARMSX2Bridge.setINIInt("EmuCore/GS", key: "Renderer", value: Int32(renderer))
-#endif
-        upscaleMultiplier = ARMSX2Bridge.getINIFloat("EmuCore/GS", key: "upscale_multiplier", defaultValue: 1.0)
-        vsyncQueueSize = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "VsyncQueueSize", defaultValue: 8))
-        textureFiltering = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "filter", defaultValue: 2))
-        backThreadMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "GSBackThreadMode", defaultValue: 0))
-        hardwareMipmapping = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "hw_mipmap", defaultValue: true)
-        fxaa = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "fxaa", defaultValue: false)
-        casMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "CASMode", defaultValue: 0))
-        casSharpness = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "CASSharpness", defaultValue: 50))
-        interlaceMode = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "deinterlace_mode", defaultValue: 0))
-        aspectRatio = Self.aspectRatioValue(from: ARMSX2Bridge.getINIString("EmuCore/GS", key: "AspectRatio", defaultValue: "Auto 4:3/3:2"))
-        blendingAccuracy = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "accurate_blending_unit", defaultValue: 1))
-        dithering = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "dithering_ps2", defaultValue: 2))
-        trilinearFiltering = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "TriFilter", defaultValue: -1))
-        halfPixelOffset = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_HalfPixelOffset", defaultValue: 0))
-        roundSprite = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_round_sprite_offset", defaultValue: 0))
-        alignSprite = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "UserHacks_align_sprite_X", defaultValue: false)
-        mergeSprite = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "UserHacks_merge_pp_sprite", defaultValue: false)
-        wildArmsOffset = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "UserHacks_ForceEvenSpritePosition", defaultValue: false)
-        textureOffsetX = Self.clampedTextureOffset(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_TCOffsetX", defaultValue: 0)))
-        textureOffsetY = Self.clampedTextureOffset(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_TCOffsetY", defaultValue: 0)))
-        let loadedSkipDrawStart = Self.clampedSkipDraw(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_SkipDraw_Start", defaultValue: 0)))
-        skipDrawStart = loadedSkipDrawStart
-        skipDrawEnd = Self.normalizedSkipDrawEnd(
-            start: loadedSkipDrawStart,
-            end: Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_SkipDraw_End", defaultValue: 0))
-        )
-        loadTextureReplacements = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "LoadTextureReplacements", defaultValue: false)
-        loadTextureReplacementsAsync = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "LoadTextureReplacementsAsync", defaultValue: true)
-        precacheTextureReplacements = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "PrecacheTextureReplacements", defaultValue: false)
-        texturePreloading = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "texture_preloading", defaultValue: 2))
-        dumpReplaceableTextures = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "DumpReplaceableTextures", defaultValue: false)
-        dumpReplaceableMipmaps = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "DumpReplaceableMipmaps", defaultValue: false)
-        dumpTexturesWithFMVActive = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "DumpTexturesWithFMVActive", defaultValue: false)
-        dumpDirectTextures = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "DumpDirectTextures", defaultValue: true)
-        dumpPaletteTextures = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "DumpPaletteTextures", defaultValue: true)
-        // GS Hardware Fixes
-        hwAccurateAlphaTest = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "HWAccurateAlphaTest", defaultValue: false)
-        textureInsideRt = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_TextureInsideRt", defaultValue: 0)), to: 0...2)
-        limit24BitDepth = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_Limit24BitDepth", defaultValue: 0)), to: 0...2)
-        nativeScaling = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_native_scaling", defaultValue: 0)), to: 0...4)
-        cpuClutRender = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_CPUCLUTRender", defaultValue: 0)), to: 0...2)
-        cpuSpriteRenderBw = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_CPUSpriteRenderBW", defaultValue: 0)), to: 0...10)
-        cpuSpriteRenderLevel = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_CPUSpriteRenderLevel", defaultValue: 0)), to: 0...2)
-        gpuTargetClut = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_GPUTargetCLUTMode", defaultValue: 0)), to: 0...2)
-        bilinearUpscaleHack = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_BilinearHack", defaultValue: 0)), to: 0...2)
-        maxAnisotropy = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "MaxAnisotropy", defaultValue: 0)), to: 0...16)
-        hardwareDownloadMode = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "HWDownloadMode", defaultValue: 0)), to: 0...4)
-        tvShader = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "TVShader", defaultValue: 0)), to: 0...7)
-        upscaler = Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "Upscaler", defaultValue: 0))
-        gsBoolHacks = Self.loadGSBoolHacks()
-        // Screen / PCRTC
-        pcrtcOffsets = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "pcrtc_offsets", defaultValue: false)
-        pcrtcOverscan = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "pcrtc_overscan", defaultValue: false)
-        pcrtcAntiBlur = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "pcrtc_antiblur", defaultValue: true)
-        disableInterlaceOffset = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "disable_interlace_offset", defaultValue: false)
-        skipDuplicateFrames = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "SkipDuplicateFrames", defaultValue: true)
-        syncToHostRefresh = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "SyncToHostRefreshRate", defaultValue: false)
-        integerScaling = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "IntegerScaling", defaultValue: false)
-        // Shade Boost
-        shadeBoost = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "ShadeBoost", defaultValue: false)
-        shadeBoostBrightness = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Brightness", defaultValue: 50)), to: Self.shadeBoostRange)
-        shadeBoostContrast = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Contrast", defaultValue: 50)), to: Self.shadeBoostRange)
-        shadeBoostSaturation = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Saturation", defaultValue: 50)), to: Self.shadeBoostRange)
-        shadeBoostGamma = Self.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "ShadeBoost_Gamma", defaultValue: 50)), to: Self.shadeBoostRange)
-        osdPreset = OsdPreset(rawValue: Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/UI", key: "OsdPreset", defaultValue: 0))) ?? .off
-        let loadedLastActiveOsdPresetRaw = ARMSX2Bridge.getINIInt("ARMSX2iOS/UI", key: "LastActiveOsdPreset", defaultValue: -1)
-        if loadedLastActiveOsdPresetRaw >= 0 {
-            lastActiveOsdPreset = OsdPreset(rawValue: Int(loadedLastActiveOsdPresetRaw)) ?? .simple
-        } else {
-            lastActiveOsdPreset = osdPreset != .off ? osdPreset : .simple
-        }
-        osdPerformancePosition = Self.normalizedOsdPerformancePosition(
-            Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "OsdPerformancePos", defaultValue: Int32(Self.defaultOsdPerformancePosition)))
-        )
-        osdShowMessages = ARMSX2Bridge.getINIInt("EmuCore/GS", key: "OsdMessagesPos", defaultValue: 1) != 0
-        osdShowFPS = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowFPS", defaultValue: false)
-        osdShowVPS = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowVPS", defaultValue: false)
-        osdShowSpeed = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowSpeed", defaultValue: false)
-        osdShowCPU = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowCPU", defaultValue: false)
-        osdShowGPU = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowGPU", defaultValue: false)
-        osdShowResolution = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowResolution", defaultValue: false)
-        osdShowGSStats = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowGSStats", defaultValue: false)
-        osdShowIndicators = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowIndicators", defaultValue: false)
-        osdShowSettings = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowSettings", defaultValue: false)
-        osdShowInputs = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowInputs", defaultValue: false)
-        osdShowFrameTimes = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowFrameTimes", defaultValue: false)
-        osdShowVersion = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowVersion", defaultValue: false)
-        osdShowHardwareInfo = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowHardwareInfo", defaultValue: false)
-        osdShowTextureReplacements = ARMSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowTextureReplacements", defaultValue: false)
-        osdShowDeviceStats = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "OsdShowDeviceStats", defaultValue: osdPreset != .off)
-        padOpacity = ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "PadOpacity", defaultValue: 0.6)
-        hapticFeedback = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HapticFeedback", defaultValue: true)
-        phoneRumbleStrength = ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "PhoneRumbleStrength", defaultValue: 0.25)
-        increaseRumbleDurationAndInterpolation = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "IncreaseRumbleDurationAndInterpolation", defaultValue: true)
-        dpadDiagonalsEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "DpadDiagonalsEnabled", defaultValue: true)
-        faceComboZonesEnabled = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "FaceComboZonesEnabled", defaultValue: true)
-        virtualPadSkin = VirtualPadSkin(rawValue: Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/UI", key: "VirtualPadSkin", defaultValue: 0))) ?? .armsx2Refresh
-        autoHideVirtualPadWhenControllerConnected = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "AutoHideVirtualPadWhenControllerConnected", defaultValue: true)
-        autoFullscreen = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "AutoFullscreen", defaultValue: true)
-        hideMenuButton = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "HideMenuButton", defaultValue: false)
-        analogStickScale = Self.clampedAnalogStickScale(ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", defaultValue: 1.0))
-        invertLeftStickX = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertLeftStickX", defaultValue: false)
-        invertLeftStickY = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertLeftStickY", defaultValue: false)
-        invertRightStickX = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertRightStickX", defaultValue: false)
-        invertRightStickY = ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "InvertRightStickY", defaultValue: false)
-        appLanguage = AppLanguage(rawValue: ARMSX2Bridge.getINIString("ARMSX2iOS/UI", key: "AppLanguage", defaultValue: AppLanguage.system.rawValue)) ?? .system
-        controllerMultitapMode = Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/Gamepad", key: "MultitapMode", defaultValue: 0))
-        autoOpenStikDebug = ARMSX2Bridge.getINIBool("ARMSX2iOS/JIT", key: "AutoOpenStikDebug", defaultValue: false)
-        jitScriptProtocol = Self.loadedJITScriptProtocol()
-        dev9HddEnabled = ARMSX2Bridge.getINIBool("DEV9/Hdd", key: "HddEnable", defaultValue: false)
-        dev9HddFile = ARMSX2Bridge.getINIString("DEV9/Hdd", key: "HddFile", defaultValue: "DEV9hdd.raw")
-        if dev9HddEnabled { excludeHddImageFromBackup() }
-        dev9EthernetEnabled = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "EthEnable", defaultValue: false)
-        dev9EthDevice = ARMSX2Bridge.getINIString("DEV9/Eth", key: "EthDevice", defaultValue: "Auto")
-        dev9InterceptDHCP = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "InterceptDHCP", defaultValue: false)
-        dev9EthLogDHCP = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "EthLogDHCP", defaultValue: false)
-        dev9EthLogDNS = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "EthLogDNS", defaultValue: false)
-        dev9DNS1Mode = ARMSX2Bridge.getINIString("DEV9/Eth", key: "ModeDNS1", defaultValue: "Auto")
-        dev9DNS1 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS1", defaultValue: "0.0.0.0")
-        dev9DNS2Mode = ARMSX2Bridge.getINIString("DEV9/Eth", key: "ModeDNS2", defaultValue: "Auto")
-        dev9DNS2 = ARMSX2Bridge.getINIString("DEV9/Eth", key: "DNS2", defaultValue: "0.0.0.0")
-        dynamicBackgroundsEnabled = UserDefaults.standard.object(
-            forKey: "ARMSX2iOSDynamicBackgroundsEnabled"
-        ) as? Bool ?? true
-        dynamicAppearancePreferences = DynamicAppearancePreferences.load() ?? .standard
-        clearLiquidGlassUI = UserDefaults.standard.object(
-            forKey: "ARMSX2iOSClearLiquidGlassUI"
-        ) as? Bool ?? true
-        clearLiquidGlassUIQuickMenu = UserDefaults.standard.object(
-            forKey: "ARMSX2iOSClearLiquidGlassUIQuickMenu"
-        ) as? Bool ?? false
-        gameCardZoomAnimationEnabled = UserDefaults.standard.object(
-            forKey: "ARMSX2iOSGameCardZoomAnimationEnabled"
-        ) as? Bool ?? true
-        backgroundPrimaryAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundPrimaryAsset")
-        backgroundLandscapeAsset = Self.loadBackgroundAsset(forKey: "ARMSX2iOSBackgroundLandscapeAsset")
-        backgroundFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundFitMode") ?? "") ?? .fill
-        backgroundLandscapeFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundLandscapeFitMode") ?? "") ?? .fill
-        backgroundVideoMuted = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundVideoMuted") as? Bool ?? true
-        backgroundDim = Self.clampedBackgroundDim(UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundDim") as? Double ?? 0.0)
-        backgroundEnabledInBIOS = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInBIOS") as? Bool ?? true
-        backgroundEnabledInHelp = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInHelp") as? Bool ?? true
-        backgroundEnabledInSettings = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInSettings") as? Bool ?? true
-        normalizeDEV9Settings()
-        VPadSkinLibraryStore.shared.adoptLegacySelection(virtualPadSkin)
     }
 
     static func frameLimiterEnabled(fromNominalScalar scalar: Float) -> Bool {
@@ -2663,7 +2444,6 @@ final class SettingsStore {
             ARMSX2Bridge.setLimiterMode(1)
         } else {
             NSLog("@@FF_UI@@ enabled=0 targetFPS=%.0f", targetFPS)
-            frameLimiterDisabledForFastForward = false
             ARMSX2Bridge.setLimiterMode(0)
         }
     }
@@ -2759,38 +2539,14 @@ final class SettingsStore {
         guard preset != .custom else { return }
         isProgrammaticFramePacingFlagChange = true
         defer { isProgrammaticFramePacingFlagChange = false }
-        switch preset {
-        case .optimal:
-            vsyncQueueSize = 4
-            audioOutputLatencyMs = 15
-            audioBufferMs = 50
-            syncToHostRefresh = false
-            frameLimiterEnabled = true
-            targetFPS = 60
-        case .smooth:
-            vsyncQueueSize = 8
-            audioOutputLatencyMs = 20
-            audioBufferMs = 75
-            syncToHostRefresh = false
-            frameLimiterEnabled = true
-            targetFPS = 60
-        case .lowLatency:
-            vsyncQueueSize = 2
-            audioOutputLatencyMs = 10
-            audioBufferMs = 30
-            syncToHostRefresh = false
-            frameLimiterEnabled = true
-            targetFPS = 60
-        case .batterySaver:
-            vsyncQueueSize = 8
-            audioOutputLatencyMs = 30
-            audioBufferMs = 100
-            syncToHostRefresh = false
-            frameLimiterEnabled = true
-            targetFPS = 45
-        case .custom:
-            break
-        }
+        guard let values = Self.framePacingPresetTable[preset] else { return }
+        // Spelled out rather than looped, because the order above is the point.
+        vsyncQueueSize = values.vsyncQueueSize
+        audioOutputLatencyMs = values.audioOutputLatencyMs
+        audioBufferMs = values.audioBufferMs
+        syncToHostRefresh = values.syncToHostRefresh
+        frameLimiterEnabled = values.frameLimiterEnabled
+        targetFPS = Float(values.targetFPS)
     }
 
     /// Hook for restoring individual pacing values when cycling back to
@@ -2841,7 +2597,6 @@ final class SettingsStore {
         targetFPS = Self.defaultTargetFPS
         frameLimiterEnabled = true
         fastForwardRuntimeEnabled = false
-        frameLimiterDisabledForFastForward = false
         fastForwardScalar = Self.defaultFastForwardScalar
         emulatorVolumePercent = Self.defaultEmulatorVolumePercent
         audioTimeStretch = true
