@@ -1507,3 +1507,136 @@ TEST(EeRecFpuFull, MulDefectMaskSurvivesHeavyFprPressure)
 	ExpectMaskLive(h, 4, 5, "MUL.S after 16 live FPRs");
 	ASSERT_NE(kMaskOnWant, kMaskOffWant);
 }
+
+// ---------------------------------------------------------------------------
+// The deficit in the upper binade, and with fs not a power of two.
+//
+// Runs 1 and 2 swept four fs significands and established the law, but look at
+// which cells they actually populated. The predicate can only change a result
+// when the exact product has nothing below the ULP (T == 0), and across all
+// 33,554,432 of their rows:
+//
+//     product <  2^47 (lower binade), T == 0   8,388,608 rows, all at fs = 2^23
+//     product >= 2^47 (upper binade), T == 0           0 rows
+//
+// So the region where this emitter's decrement actually fires when the product
+// lands in the upper binade had never been observed on hardware -- and it is
+// not exotic: fs = 1.5 puts 1,398,101 of 2^23 ft values there. It mattered
+// because the truncation column moves one bit between the binades, so a
+// predicate keyed to fixed bit positions of ft has no a-priori reason to
+// survive the shift.
+//
+// Settled from the fpmul3 capture (8 further fs sweeps, SCPH-90000, FCR0
+// 0x2e40), which had been taken for a different question and never analysed by
+// binade. Pooled over its 7,196,506 T == 0 rows -- 3,354,792 of them in the
+// upper binade, at six fs values with odd parts 3, 5, 7, 9, 15 and 255:
+//
+//     emitted Booth-only predicate   6,738,214 correct   229,142 missed   0 wrong
+//     interpreter's full predicate   6,967,356 correct           0 missed 0 wrong
+//
+// Zero wrong in either binade: the emitter never claims a deficit where silicon
+// is exact, which is the one direction that would be a regression. The rows
+// below are three witnesses per fs, generated from that capture rather than
+// typed, so provenance is mechanical.
+namespace {
+struct BinadeRow { u32 fs, ft, want; };
+
+// Upper binade, T == 0, Booth fires -> silicon is one ULP low. The emitter must
+// reproduce every one of these.
+constexpr BinadeRow kTopBinadeFires[] = {
+	{0x3fc00000u, 0x3faaaaacu, 0x40000000u}, // fs 1.5:    M = 2^47 + 2^24 exactly
+	{0x3fe00000u, 0x3f924928u, 0x40000002u}, // fs 1.75
+	{0x3fa00000u, 0x3fccccd0u, 0x40000001u}, // fs 1.25
+	{0x3f900000u, 0x3fe38e40u, 0x40000003u}, // fs 1.125
+	{0x3ff00000u, 0x3f888890u, 0x40000006u}, // fs 1.875
+	{0x3fff0000u, 0x3f808200u, 0x4000017du}, // fs ~1.996
+};
+
+// Upper binade, T == 0, neither term of the predicate fires -> silicon is
+// exact. This is the anti-regression direction: a predicate that over-fires in
+// the upper binade would move these one ULP away from hardware.
+constexpr BinadeRow kTopBinadeSilent[] = {
+	{0x3fc00000u, 0x3faaac00u, 0x40000100u},
+	{0x3fe00000u, 0x3f925000u, 0x40000600u},
+	{0x3fa00000u, 0x3fcccd00u, 0x40000020u},
+	{0x3f900000u, 0x3fe39800u, 0x40000580u},
+	{0x3ff00000u, 0x3f888900u, 0x40000070u},
+	{0x3fff0000u, 0x3f808800u, 0x40000778u},
+};
+
+// Upper binade, T == 0, only the dropped boundary term fires -> silicon is one
+// ULP low and this emitter is one ULP high. `want` is the silicon value, so
+// the emitter is asserted at want + 1: the licensed divergence, in the binade
+// where it had never been measured.
+constexpr BinadeRow kTopBinadeBoundary[] = {
+	{0x3fc00000u, 0x3faab000u, 0x400003ffu},
+	{0x3fe00000u, 0x3f924940u, 0x40000017u},
+	{0x3fa00000u, 0x3fccd000u, 0x400001ffu},
+	{0x3f900000u, 0x3fe39000u, 0x400000ffu},
+	{0x3ff00000u, 0x3f889000u, 0x400006ffu},
+	{0x3fff0000u, 0x3f808100u, 0x4000007eu},
+};
+
+// Both emit sites: recMULop narrows with ToPS2FPU_Full's Fcvt, recMaddsub's
+// multiply stage with ToPS2FPU_Wide's mask-off-the-low-29. Those two land on
+// different sides of the mantissa boundary that the binade shifts, so the
+// upper binade has to be checked through both.
+void ExpectBothSites(const BinadeRow& r, u32 want, const char* what)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	h.EnableFpuFullMode();
+	h.SetFprBits(0, r.fs);
+	h.SetFprBits(1, r.ft);
+	h.LoadProgram({MUL_S(2, 0, 1)});
+	h.RunJitNoDiff();
+	EXPECT_EQ(h.GetFprBitsJit(2), want)
+		<< what << " MUL.S fs=" << std::hex << r.fs << " ft=" << r.ft;
+
+	EeRecTestHarness hm;
+	hm.EnableCop1();
+	hm.EnableFpuFullMode();
+	hm.SetAccBits(0x00000000u); // ACC = +0 -> fd is the rounded product alone
+	hm.SetFprBits(0, r.fs);
+	hm.SetFprBits(1, r.ft);
+	hm.LoadProgram({MADD_S(2, 0, 1)});
+	hm.RunJitNoDiff();
+	EXPECT_EQ(hm.GetFprBitsJit(2), want)
+		<< what << " MADD.S fs=" << std::hex << r.fs << " ft=" << r.ft;
+}
+} // namespace
+
+TEST(EeRecFpuFull, MulDefectFiresInTheUpperBinade)
+{
+	for (const BinadeRow& r : kTopBinadeFires)
+		ExpectBothSites(r, r.want, "upper-binade deficit");
+}
+
+// The direction that would be a regression, and the reason this capture was
+// analysed at all: 3,092,991 upper-binade rows where the emitter fires, 0 of
+// them wrong. These pin the complement -- it must stay silent where silicon is.
+TEST(EeRecFpuFull, MulDefectStaysSilentInTheUpperBinadeWhereSiliconIsExact)
+{
+	for (const BinadeRow& r : kTopBinadeSilent)
+		ExpectBothSites(r, r.want, "upper-binade exact");
+}
+
+// The dropped boundary term reaches the upper binade too, at the same 1/64 of
+// significands. Asserting emitter == silicon + 1 keeps the gap measured rather
+// than latent: closing it in iFPUd trips this and names the reason.
+TEST(EeRecFpuFull, MulDefectBoundaryTermGapAlsoExistsInTheUpperBinade)
+{
+	for (const BinadeRow& r : kTopBinadeBoundary)
+	{
+		ExpectBothSites(r, r.want + 1u, "upper-binade boundary term");
+
+		EeRecTestHarness hi;
+		hi.EnableCop1();
+		hi.SetFprBits(0, r.fs);
+		hi.SetFprBits(1, r.ft);
+		hi.LoadProgram({MUL_S(2, 0, 1)});
+		hi.RunInterpOnly();
+		EXPECT_EQ(hi.GetFprBitsInterp(2), r.want)
+			<< "interp models the boundary term in the upper binade too";
+	}
+}

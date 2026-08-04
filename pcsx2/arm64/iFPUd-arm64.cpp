@@ -555,7 +555,14 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // one's 100 / 99.8421 / 99.8482 / 99.8091.
 // The other three rows are not evidence that the term buys nothing elsewhere:
 // their fs values have a zero tail on 1 or 2 rows out of 2^23, so the term
-// cannot show in them at all. The term needs a bitfield extract
+// cannot show in them at all. The fpmul3 sweeps, whose fs values have trailing
+// zeros, do populate that cell: at fs = 1.5 there are 2,796,203 zero-tail rows
+// and the term decides 65,536 of them (2.34%). Pooled over fpmul3's 7,196,506
+// zero-tail rows the full predicate is exactly hardware -- 0 missed, 0 wrong --
+// while this one misses 229,142 and is likewise never wrong. So the gap is a
+// real 3.3% of the reachable class; what makes it acceptable is that it is
+// one-directional (it can only miss a deficit, never invent one) and rare in
+// general operand space, per the count above. The term needs a bitfield extract
 // NEON has no equivalent for, so it has to go through GPRs and come back --
 // sketched at ten instructions against this predicate's three.
 // The resulting interpreter divergence is pinned by
