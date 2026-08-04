@@ -1,22 +1,17 @@
-// Setting.swift — where one INI-backed setting lives and how it travels
+// Setting.swift — the section, key and default behind one INI-backed setting
 // SPDX-License-Identifier: GPL-3.0+
 
 import Foundation
 
-/// Section, key, default and codec for one setting. The @Observable macro owns
-/// the stored property; `didSet` consults this config.
+/// One INI-backed setting. The @Observable macro owns the stored property;
+/// `didSet` hands the value to `commit`.
 ///
-/// `suppressible` does much less than it looks like. Swift skips property
-/// observers inside a class's own initializer, so none of these didSets run
-/// while `init()` loads the INI, and that window is the only time
-/// `suppressINIWrites` is ever true. Measured on a launch: zero commits. What
-/// the flag still catches is assignments made by helpers `init()` calls, which
-/// are ordinary method calls and do fire their observers.
-///
-/// So the 88 settings marked `suppressible: false` do not write our defaults
-/// into the INI at startup, whatever the folklore says. They write nothing at
-/// startup. Left alone here because deciding what each one ought to be is its
-/// own job, not part of moving the write path.
+/// `suppressible` catches nothing today, and is still worth keeping. init()'s
+/// own assignments do not run their observers, so a launch reaches `commit`
+/// zero times either way. That is measured, with a control in the same run,
+/// not read off the language reference. Leave the flag alone rather than tidy
+/// it away: it is what would catch a setting assigned from a helper `init()`
+/// calls, where the observers do fire, and it costs one `&&`.
 ///
 /// Every `EmuCore/GS` setting nudges the running VM after it is written. That
 /// used to be an opt-in closure, which is how the sprite hacks, the user hacks
@@ -45,12 +40,14 @@ struct Setting<Value> {
         self.codec = codec
     }
 
-    /// What the INI currently holds, or our default if it holds nothing.
-    @MainActor func load() -> Value { codec.read(section, key, defaultValue) }
-
-    /// Same, for the odd setting whose fresh-install value depends on something
-    /// only `init()` knows. Spelled out so the disagreement is greppable.
-    @MainActor func load(default override: Value) -> Value {
-        codec.read(section, key, override)
+    /// What the INI currently holds, or our default if it holds nothing. The
+    /// overload is for the odd setting whose fresh-install value depends on
+    /// something only `init()` knows; spelled out so it stays greppable.
+    @MainActor func load() -> Value { load(default: defaultValue) }
+    @MainActor func load(default fallback: Value) -> Value {
+        codec.read(section, key, fallback)
     }
+
+    /// For where `init()` has to correct the INI rather than read it.
+    @MainActor func write(_ value: Value) { codec.write(section, key, value) }
 }
