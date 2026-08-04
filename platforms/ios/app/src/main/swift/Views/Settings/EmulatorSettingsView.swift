@@ -10,7 +10,6 @@ struct EmulatorSettingsView: View {
     // Cached rather than asked per redraw: the lookup takes the achievements lock, and
     // this sits in a Form that rebuilds on every other row.
     @State private var hardcoreBlocksCheats = false
-    @State private var hardcoreActive = false
 
     /// Hardcore only clears EnableCheats in the running config, so the INI this row reads
     /// still says on and the row lies. The write is dropped further down as well, without
@@ -148,15 +147,7 @@ struct EmulatorSettingsView: View {
                 Toggle(settings.localized("Frame Limiter"), isOn: $settings.frameLimiterEnabled)
 
                 if settings.frameLimiterEnabled {
-                    // Same control as Frame Pacing, so it has to hold the same floor under
-                    // hardcore. It looked identical and quietly let you drop under speed.
-                    NumberRow(.targetFPS, value: Binding(
-                        get: { settings.targetFPS },
-                        set: { value in
-                            settings.targetFPS = value
-                            enforceHardcoreSpeedFloorIfNeeded()
-                        }
-                    ), settings: settings)
+                    NumberRow(.targetFPS, value: $settings.targetFPS, settings: settings)
                 } else {
                     HStack {
                         Text(settings.localized("Speed Target"))
@@ -183,7 +174,7 @@ struct EmulatorSettingsView: View {
                         .font(.callout.monospacedDigit())
                 }
 
-                Text(settings.localized("FPS Target maps to PCSX2 Normal Speed: 60 FPS is normal NTSC timing, 30 FPS is about 50% speed, and higher values fast-forward. Turning the limiter OFF unlocks speed and can increase heat and battery drain."))
+                Text(settings.localized("The FPS Target changes display presentation without slowing CPU, audio, or game timing. Fast Forward remains a separate emulation-speed control."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -331,19 +322,9 @@ struct EmulatorSettingsView: View {
         .dynamicTypeSize(...DynamicTypeSize.accessibility3)
         .onAppear {
             hardcoreBlocksCheats = PatchStore.hardcoreBlocksPnachContent()
-            hardcoreActive = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
             hardcoreBlocksCheats = PatchStore.hardcoreBlocksPnachContent()
-            hardcoreActive = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
-        }
-    }
-
-    private func enforceHardcoreSpeedFloorIfNeeded() {
-        guard hardcoreActive else { return }
-        let minimumFPS = settings.ntscFramerate
-        if settings.frameLimiterEnabled && settings.targetFPS < minimumFPS {
-            settings.targetFPS = minimumFPS
         }
     }
 

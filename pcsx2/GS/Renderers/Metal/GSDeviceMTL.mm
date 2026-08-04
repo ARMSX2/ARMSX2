@@ -11,6 +11,7 @@
 
 #include "common/Console.h"
 #include "common/HostSys.h"
+#include "common/Timer.h"
 
 #include "cpuinfo.h"
 #include "imgui.h"
@@ -283,6 +284,12 @@ void GSDeviceMTL::DrawCommandBufferFinished(u64 draw, id<MTLCommandBuffer> buffe
 
 void GSDeviceMTL::FlushEncoders()
 {
+	// A flush ends any batch accumulated across presentation-capped frames.
+	// Reset centrally so normal presents, readbacks, and upload-only flushes
+	// cannot leave stale age/frame bounds attached to the next batch.
+	m_skipped_present_frames_since_submit = 0;
+	m_deferred_submit_started = 0;
+
 	bool needs_submit = m_current_render_cmdbuf;
 	if (needs_submit)
 	{
@@ -1598,6 +1605,42 @@ GSDevice::PresentResult GSDeviceMTL::DoBeginPresent(bool frame_skip)
 	if (frame_skip || m_window_info.type == WindowInfo::Type::Surfaceless || !g_gs_device)
 	{
 		ImGui::EndFrame();
+		if (frame_skip && GSGetPresentCapRenderSkip() && !GSGetPresentCapSuspended())
+		{
+			// Keep compatible work in one command buffer across capped frames. This
+			// reduces submission and tile load/store overhead at 20/15/12 FPS while
+			// bounding retained work by frame count, wall time, and encoder count.
+			const bool has_pending_work = m_current_render_cmdbuf || m_texture_upload_cmdbuf ||
+				m_vertex_upload_cmdbuf;
+			if (!has_pending_work)
+			{
+				m_skipped_present_frames_since_submit = 0;
+				m_deferred_submit_started = 0;
+			}
+			else
+			{
+				constexpr u32 MAX_DEFERRED_SKIPPED_FRAMES = 4;
+				constexpr u32 MAX_DEFERRED_ENCODERS = 256;
+				constexpr double MAX_DEFERRED_SUBMIT_MS = 75.0;
+
+				const u64 now = Common::Timer::GetCurrentValue();
+				if (m_skipped_present_frames_since_submit++ == 0)
+					m_deferred_submit_started = now;
+
+				const bool too_many_frames =
+					m_skipped_present_frames_since_submit >= MAX_DEFERRED_SKIPPED_FRAMES;
+				const bool too_many_encoders = m_current_render_cmdbuf &&
+					m_encoders_in_current_cmdbuf >= MAX_DEFERRED_ENCODERS;
+				const bool too_old = Common::Timer::ConvertValueToMilliseconds(
+					now - m_deferred_submit_started) >= MAX_DEFERRED_SUBMIT_MS;
+				if (too_many_frames || too_many_encoders || too_old)
+				{
+					m_skipped_present_frames_since_submit = 0;
+					m_deferred_submit_started = 0;
+					FlushEncoders();
+				}
+			}
+		}
 		return PresentResult::FrameSkipped;
 	}
 	id<MTLCommandBuffer> buf = GetRenderCmdBuf();

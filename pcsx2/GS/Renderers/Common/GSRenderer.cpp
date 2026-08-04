@@ -101,6 +101,7 @@ void GSRenderer::UpdateRenderFixes()
 {
 }
 
+template <GSRenderer::MergeMode merge_mode>
 bool GSRenderer::Merge(int field)
 {
 	GSVector2i fs(0, 0);
@@ -175,6 +176,16 @@ bool GSRenderer::Merge(int field)
 	}
 
 	s_n++;
+
+	// Progressive frames have no temporal deinterlacing state to preserve. Once the active
+	// outputs have been resolved, a frame which will not be presented can therefore omit the
+	// display merge and all following post-processing without affecting emulated GS memory.
+	if constexpr (merge_mode == MergeMode::SkipFinalComposition)
+	{
+		if (m_scanmask_used)
+			m_scanmask_used--;
+		return true;
+	}
 
 	GSVector4 src_gs_read[2];
 	GSVector4 dst[3];
@@ -277,6 +288,15 @@ bool GSRenderer::Merge(int field)
 		const float offset = is_bob ? (tex[1] ? tex_scale[1] : tex_scale[0]) : 0.0f;
 
 		g_gs_device->Interlace(fs, field ^ field2, mode, offset);
+	}
+
+	// Adaptive deinterlacing consumes prior fields. A skipped interlaced frame must update that
+	// history, but it does not need optional visual filters or output-size shader work.
+	if constexpr (merge_mode == MergeMode::InterlaceHistoryOnly)
+	{
+		if (m_scanmask_used)
+			m_scanmask_used--;
+		return true;
 	}
 
 	if (GSConfig.ShadeBoost)
@@ -758,11 +778,12 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 	// FPS cap silently did nothing. The GS.cpp comments named this exact function as the reader, so
 	// the consumer was lost rather than never written. Restored here.
 	//
-	// Both skip only the PRESENT: Merge() and the rest of the frame still run below, so emulation
-	// and GS state are untouched and only display rate changes.
+	// Manual skipping omits presentation only. Platform-opted FPS caps may additionally omit final
+	// composition after Merge() has verified the current outputs; emulation and GS writes still run.
 	// Set when the user ASKED for a dropped present, so the stale-frame diagnostic below doesn't
 	// report their own frame-skip/FPS-cap settings as a fault.
 	bool deliberate_present_skip = false;
+	bool fps_cap_present_skip = false;
 	{
 		const u32 manual_skip = GSGetManualFrameSkip();
 		if (manual_skip > 0)
@@ -780,39 +801,78 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 			m_manual_frameskip_phase = 0;
 		}
 	}
-	if (!skip_frame && !GSGetPresentCapSuspended())
+	if (!skip_frame)
 	{
-		// Accumulator pacer, not a simple "too soon?" test: advancing the deadline by exactly one
-		// interval holds the requested AVERAGE rate even when it isn't a whole division of the
-		// source (47 or 55 fps work, not just 30/20/15). Resynchronise when we fall more than one
-		// interval behind, so a hitch can't bank credit and then burst.
-		const u64 interval = GSGetMaxPresentInterval();
-		if (interval > 0)
+		if (!GSGetPresentCapSuspended())
 		{
-			const u64 now = GetCPUTicks();
-			if (m_next_present_deadline == 0 || now + interval < m_next_present_deadline)
-				m_next_present_deadline = now; // first frame, or the clock jumped backwards
-			if (now < m_next_present_deadline)
+			// Accumulator pacer, not a simple "too soon?" test: advancing the deadline by exactly one
+			// interval holds the requested AVERAGE rate even when it isn't a whole division of the
+			// source (47 or 55 fps work, not just 30/20/15). Resynchronise when we fall more than one
+			// interval behind, so a hitch can't bank credit and then burst.
+			const u64 interval = GSGetMaxPresentInterval();
+			if (interval > 0)
 			{
-				skip_frame = true;
-				deliberate_present_skip = true;
+				const u64 now = GetCPUTicks();
+				if (m_next_present_deadline == 0 || now + interval < m_next_present_deadline)
+					m_next_present_deadline = now; // first frame, or the clock jumped backwards
+				if (now < m_next_present_deadline)
+				{
+					skip_frame = true;
+					deliberate_present_skip = true;
+					fps_cap_present_skip = true;
+				}
+				else if ((now - m_next_present_deadline) > interval)
+					m_next_present_deadline = now + interval; // far behind: restart the cadence
+				else
+					m_next_present_deadline += interval;
 			}
-			else if ((now - m_next_present_deadline) > interval)
-				m_next_present_deadline = now + interval; // far behind: restart the cadence
 			else
-				m_next_present_deadline += interval;
+			{
+				m_next_present_deadline = 0;
+			}
 		}
 		else
 		{
+			// Turbo owns presentation cadence while a custom cap is active. Re-prime
+			// from the next normal frame instead of carrying a stale deadline forward.
 			m_next_present_deadline = 0;
 		}
 	}
 
-	const bool blank_frame = !Merge(field);
+	// The GS has already processed draw commands and framebuffer writes before VSync. A cap-skipped
+	// frame can omit display-only work when no image consumer is active.
+	// Interlaced frames take a separate history-only path below so temporal deinterlacing remains
+	// correct. Requiring an actual cap-created skip keeps duplicate/manual skips on master's
+	// original full-render path when the default 60 FPS mode is selected.
+	const bool request_skipped_final_render =
+		fps_cap_present_skip && GSGetPresentCapRenderSkip() &&
+		GSIsHardwareRenderer() &&
+		m_regs->EXTWRITE.WRITE == 0 &&
+		m_snapshot.empty() && !m_dump && m_dump_frames == 0 && !GSCapture::IsCapturingVideo() &&
+		!GSConfig.ShouldDump(s_n, g_perfmon.GetFrame()) && g_gs_device->GetCurrent() != nullptr;
+
+	bool merged_frame;
+	if (!request_skipped_final_render)
+	{
+		// Compile-time specialization leaves the default 60 FPS path with the same
+		// full Merge() work and no per-frame merge-mode checks.
+		merged_frame = Merge<MergeMode::Full>(field);
+	}
+	else if (isReallyInterlaced() && GSConfig.InterlaceMode != GSInterlaceMode::Off)
+	{
+		merged_frame = Merge<MergeMode::InterlaceHistoryOnly>(field);
+	}
+	else
+	{
+		merged_frame = Merge<MergeMode::SkipFinalComposition>(field);
+	}
+	const bool skipped_final_render = request_skipped_final_render && merged_frame;
+	const bool blank_frame = !merged_frame;
 	// Run length, not just "was blank": the policy below distinguishes a single alternating blank
 	// (an interlaced-field artefact, safe to drop) from a run of them (a fade the game is actually
 	// drawing, which must be presented).
-	m_consecutive_blank_frames = blank_frame ? (m_consecutive_blank_frames + 1) : 0;
+	if (!skipped_final_render)
+		m_consecutive_blank_frames = blank_frame ? (m_consecutive_blank_frames + 1) : 0;
 
 	// ★ @@ANDROID_STALEFRAMES@@ — diagnostic for "the picture freezes but emulation keeps running".
 	// Measured on a Retroid Pocket 6: SurfaceFlinger presents steadily at 120 Hz straight through
@@ -856,21 +916,15 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 	m_last_draw_n = s_n;
 	m_last_transfer_n = s_transfer_n;
 
-	// ★ Age the texture pool on EVERY frame, including skipped presents. AgePool() is what trims
-	// stale textures and it is the ONLY place GSDevice::m_frame advances, so parking it on the skip
-	// path had two compounding costs:
-	//   - the pool stops being trimmed and grows to its limit, at which point FetchSurface starts
-	//     handing back textures recycled in the current frame instead of fresh ones;
-	//   - m_frame freezes, so every texture recycled during the run looks "used this frame" and the
-	//     fallback above is taken even more often.
-	// Reported as "the game runs slow in some scenes, and changing ANY on-screen-display option
-	// makes it full speed again" — that is not the OSD, it is the settings apply calling
-	// g_gs_device->PurgePool() (GS.cpp:334/:1029) and emptying the bloated pool. With
-	// SkipDuplicateFrames on by default, plus the frame-skip and FPS-cap paths above, skipped
-	// presents are common, so the pool could go a long time without aging. Aging is about texture
-	// lifetime, not presentation, so it belongs on both paths.
+	// Only cap-created skips may defer the maintenance scan. Native 60 FPS,
+	// duplicate-frame skips, and manual skips retain master's AgePool() behavior.
 	if (!idle_frame)
-		g_gs_device->AgePool();
+	{
+		if (fps_cap_present_skip && GSGetPresentCapRenderSkip())
+			g_gs_device->AgePoolAfterPresentCapSkip();
+		else
+			g_gs_device->AgePool();
+	}
 
 #ifdef __ANDROID__
 	// Suppress only startup blanks, before the GS has produced any output. Mid-game blank/fade

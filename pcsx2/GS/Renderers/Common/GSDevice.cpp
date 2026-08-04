@@ -879,9 +879,41 @@ void GSDevice::AgePool()
 	}
 }
 
+void GSDevice::AgePoolAfterPresentCapSkip()
+{
+	FlushDeferredDraws();
+	m_frame++;
+
+	// Frame age and deferred draw ordering remain per-frame. Only the deletion
+	// scan is amortized, and its four-frame bound prevents retained pool growth.
+	static constexpr u32 MAX_CLEANUP_DEFERRAL = 4;
+	if (++m_frames_since_pool_cleanup < MAX_CLEANUP_DEFERRAL)
+		return;
+	m_frames_since_pool_cleanup = 0;
+
+	// Toss out textures when they're not too-recently used.
+	for (u32 pool_idx = 0; pool_idx < m_pool.size(); pool_idx++)
+	{
+		const u32 max_age = GetPoolMaxAge(pool_idx == 0);
+		FastList<GSTexture*>& pool = m_pool[pool_idx];
+		while (!pool.empty())
+		{
+			GSTexture* back = pool.back();
+			if ((m_frame - back->GetLastFrameUsed()) < max_age)
+				break;
+
+			m_pool_memory_usage -= back->GetMemUsage();
+			delete back;
+
+			pool.pop_back();
+		}
+	}
+}
+
 void GSDevice::PurgePool()
 {
 	FlushDeferredDraws();
+	m_frames_since_pool_cleanup = 0;
 	for (FastList<GSTexture*>& pool : m_pool)
 	{
 		for (GSTexture* t : pool)

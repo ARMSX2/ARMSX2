@@ -15,15 +15,18 @@ struct NumberFormat {
     /// Shown = stored * scale. 100 is what turns a 0...1 opacity into a percentage.
     let scale: Double
     let showsSign: Bool
+    let trimsTrailingZeros: Bool
     /// Set by `opaque`, for rows still handing us a readout they built themselves.
     let literal: String?
 
     init(unit: String = "", decimals: Int = 0, scale: Double = 1,
-         showsSign: Bool = false, literal: String? = nil) {
+         showsSign: Bool = false, trimsTrailingZeros: Bool = false,
+         literal: String? = nil) {
         self.unit = unit
         self.decimals = decimals
         self.scale = scale
         self.showsSign = showsSign
+        self.trimsTrailingZeros = trimsTrailingZeros
         self.literal = literal
     }
 
@@ -48,11 +51,18 @@ struct NumberFormat {
     }
 
     func decimals(_ count: Int) -> NumberFormat {
-        NumberFormat(unit: unit, decimals: count, scale: scale, showsSign: showsSign)
+        NumberFormat(unit: unit, decimals: count, scale: scale, showsSign: showsSign,
+                     trimsTrailingZeros: trimsTrailingZeros)
+    }
+
+    func compactDecimals(_ count: Int) -> NumberFormat {
+        NumberFormat(unit: unit, decimals: count, scale: scale, showsSign: showsSign,
+                     trimsTrailingZeros: true)
     }
 
     var signed: NumberFormat {
-        NumberFormat(unit: unit, decimals: decimals, scale: scale, showsSign: true)
+        NumberFormat(unit: unit, decimals: decimals, scale: scale, showsSign: true,
+                     trimsTrailingZeros: trimsTrailingZeros)
     }
 
     /// An opaque readout is a string somebody else built, so it cannot be labelled onto the
@@ -66,13 +76,21 @@ struct NumberFormat {
 
     /// Digits only. This is what the keyboard edits and what goes into the unit template.
     ///
-    /// Exactly that many decimals, never fewer. Dropping the trailing zeros looks tidier on any one
-    /// value and is wrong in motion: the stops are coarser than the step, so a readout that trims
-    /// changes width on every stop you drag past, and the decimal points stop lining up between the
-    /// rows in a section that are there to be compared. A row whose stops really are coarser than
-    /// its format should say so with `.decimals`.
+    /// Normally exactly that many decimals, never fewer, so readouts stay aligned while moving.
+    /// Formats with compact decimals retain only meaningful fractional digits; FPS uses this for
+    /// exact television cadences alongside whole-number targets.
     func digits(_ value: Double, locale: Locale) -> String {
-        (value * scale).formatted(
+        if trimsTrailingZeros {
+            return (value * scale).formatted(
+                .number
+                    .precision(.fractionLength(0...decimals))
+                    .rounded(rule: .toNearestOrAwayFromZero)
+                    .sign(strategy: showsSign ? .always(includingZero: false) : .automatic)
+                    .grouping(.never)
+                    .locale(locale)
+            )
+        }
+        return (value * scale).formatted(
             .number
                 .precision(.fractionLength(decimals))
                 .rounded(rule: .toNearestOrAwayFromZero)
