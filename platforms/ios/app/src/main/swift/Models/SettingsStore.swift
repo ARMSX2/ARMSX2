@@ -670,9 +670,13 @@ final class SettingsStore {
         suppressible: false,
         codec: .int)
     var textureFiltering: Int = 2 { didSet { commit(_textureFilteringConfig, textureFiltering) } }
+    // Boot-only for the same reason as the renderer above: the core counts this in
+    // RestartOptionsAreEqual, so applying it live goes down GSreopen and tears the
+    // Metal device down under the running game. The picker says "Requires restart".
     let _backThreadModeConfig = Setting<Int>(
         section: "EmuCore/GS", key: "GSBackThreadMode", default: 0,
         suppressible: false,
+        bootOnly: true,
         codec: .int)
     var backThreadMode: Int = 0 { didSet { commit(_backThreadModeConfig, backThreadMode) } }
     let _hardwareMipmappingConfig = Setting<Bool>(
