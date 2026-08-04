@@ -109,8 +109,11 @@ enum StickSide: String, CaseIterable, Identifiable {
 @MainActor
 extension NumberSetting {
     static let targetFPS = NumberSetting(
-        "FPS Target", in: SettingsStore.targetFPSRange, format: .framesPerSecond,
-        detents: [15, 30, 45, 60, 90, 120], default: Int(SettingsStore.defaultTargetFPS))
+        "FPS Target",
+        in: Double(SettingsStore.minTargetFPS)...Double(SettingsStore.maxTargetFPS),
+        format: .framesPerSecond.compactDecimals(3),
+        detents: [15, 23.976, 29.94, 30, 45, 59.97, 60, 90, 120],
+        default: Double(SettingsStore.defaultTargetFPS))
 
     static let fastForwardSpeed = NumberSetting(
         "Fast Forward Speed",
@@ -1571,7 +1574,10 @@ final class SettingsStore {
         // up: in a helper they are ordinary assignments, the observers fire, and
         // every non-suppressible setting writes itself to disk on each launch.
         suppressINIWrites = true
-        defer { suppressINIWrites = false }
+        defer {
+            suppressINIWrites = false
+            applyFrameLimiterSettings()
+        }
 
         // Frame Pacing default migration. Runs before any stored property is
         // read so the values below are authoritative. Writes the INI directly
@@ -1615,7 +1621,7 @@ final class SettingsStore {
         palFramerate = _palFramerateConfig.load()
         let nominalScalar = ARMSX2Bridge.getINIFloat("Framerate", key: "NominalScalar", defaultValue: 1.0)
         frameLimiterEnabled = Self.frameLimiterEnabled(fromNominalScalar: nominalScalar)
-        targetFPS = Self.targetFPS(fromNominalScalar: nominalScalar, baseFramerate: loadedNTSCFramerate)
+        targetFPS = Self.loadedTargetFPS(fromNominalScalar: nominalScalar, baseFramerate: loadedNTSCFramerate)
         Self.sanitizeNominalScalarIfNeeded(nominalScalar)
         fastForwardScalar = Self.clampedSpeedScalar(ARMSX2Bridge.getINIFloat("Framerate", key: "TurboScalar", defaultValue: Self.defaultFastForwardScalar))
         emulatorVolumePercent = Self.clampedEmulatorVolumePercent(Int(ARMSX2Bridge.emulatorVolumePercent()))
@@ -1829,7 +1835,7 @@ final class SettingsStore {
     }
 
     static func frameLimiterEnabled(fromNominalScalar scalar: Float) -> Bool {
-        scalar < 5.0
+        !scalar.isFinite || scalar < 5.0
     }
 
     private static func sanitizedNominalScalar(_ scalar: Float) -> Float {
@@ -1839,7 +1845,8 @@ final class SettingsStore {
 
     private static func clampedTargetFPS(_ fps: Float) -> Float {
         guard fps.isFinite else { return defaultTargetFPS }
-        return min(max(fps.rounded(), minTargetFPS), maxTargetFPS)
+        let millisecondPrecision = (fps * 1_000.0).rounded() / 1_000.0
+        return min(max(millisecondPrecision, minTargetFPS), maxTargetFPS)
     }
 
     private static func clampedSpeedScalar(_ scalar: Float) -> Float {
@@ -1918,6 +1925,32 @@ final class SettingsStore {
         return clampedTargetFPS(sanitizedNominalScalar(scalar) * max(baseFramerate, 1.0))
     }
 
+    static func normalSpeedScalar(frameLimiterEnabled: Bool) -> Float {
+        frameLimiterEnabled ? 1.0 : 10.0
+    }
+
+    private static func loadedTargetFPS(fromNominalScalar scalar: Float, baseFramerate: Float) -> Float {
+        let normalizedScalar = sanitizedNominalScalar(scalar)
+        let derivedTarget = abs(normalizedScalar - 1.0) < 0.002
+            ? defaultTargetFPS
+            : targetFPS(fromNominalScalar: scalar, baseFramerate: baseFramerate)
+        let rawStoredTarget = ARMSX2Bridge.getINIFloat(
+            "ARMSX2iOS/FramePacing", key: "TargetFPS", defaultValue: -1.0)
+        let hasStoredTarget = rawStoredTarget.isFinite && rawStoredTarget >= minTargetFPS
+        let target = hasStoredTarget ? clampedTargetFPS(rawStoredTarget) : derivedTarget
+
+        // Older iOS builds encoded the presentation cadence in NominalScalar,
+        // slowing CPU and audio timing together with video. Move that cadence
+        // to its dedicated key and restore normal emulation speed.
+        if frameLimiterEnabled(fromNominalScalar: scalar) && abs(normalizedScalar - 1.0) >= 0.002 {
+            NSLog("[ARMSX2 iOS Settings] Migrating global presentation cap %.3f FPS; restoring NominalScalar=1.0", target)
+            ARMSX2Bridge.setINIFloat("ARMSX2iOS/FramePacing", key: "TargetFPS", value: target)
+            ARMSX2Bridge.setINIFloat("Framerate", key: "NominalScalar", value: 1.0)
+        }
+
+        return target
+    }
+
     private static func sanitizeNominalScalarIfNeeded(_ scalar: Float) {
         let sanitized = sanitizedNominalScalar(scalar)
         guard abs(scalar - sanitized) > 0.001 else { return }
@@ -1941,19 +1974,18 @@ final class SettingsStore {
 
     private func applyFrameLimiterSettings() {
         guard !suppressINIWrites else { return }
-        var scalar: Float = Self.nominalScalarForFrameLimiter(enabled: frameLimiterEnabled, targetFPS: targetFPS, baseFramerate: ntscFramerate)
-        if ARMSX2Bridge.isRetroAchievementsHardcoreActive(), scalar < 1.0 {
-            scalar = 1.0
-        }
-        NSLog("[ARMSX2 iOS Settings] Frame limiter %@ targetFPS=%.0f NominalScalar=%.3f",
+        let scalar = Self.normalSpeedScalar(frameLimiterEnabled: frameLimiterEnabled)
+        NSLog("[ARMSX2 iOS Settings] Frame limiter %@ targetFPS=%.3f NominalScalar=%.3f",
               frameLimiterEnabled ? "ON" : "OFF", targetFPS, scalar)
+        ARMSX2Bridge.setINIFloat("ARMSX2iOS/FramePacing", key: "TargetFPS", value: targetFPS)
         ARMSX2Bridge.setINIFloat("Framerate", key: "NominalScalar", value: scalar)
+        ARMSX2Bridge.setPresentFPSCap(frameLimiterEnabled ? targetFPS : 0.0)
     }
 
-    /// Encode the frame limiter as Framerate/NominalScalar: targetFPS/base when
-    /// on, or 10.0 to disable. Shared by the global setter and per-game save.
-    static func nominalScalarForFrameLimiter(enabled: Bool, targetFPS: Float, baseFramerate: Float) -> Float {
-        enabled ? sanitizedNominalScalar(targetFPS / max(baseFramerate, 1.0)) : 10.0
+    /// Frame targets control presentation cadence rather than VM speed. The
+    /// selected cadence is stored separately while NominalScalar remains 1.0.
+    static func nominalScalarForFrameLimiter(enabled: Bool) -> Float {
+        enabled ? 1.0 : 10.0
     }
 
     func setRuntimeFastForwardEnabled(_ enabled: Bool) {

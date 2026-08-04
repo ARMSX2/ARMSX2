@@ -152,12 +152,11 @@ struct PerGameSettingsPanel: View {
     @State private var perGameSyncToHostRefresh: Int
     @State private var perGameBufferMS: Int
     @State private var perGameOutputLatencyMS: Int
-    // Frame Pacing per-game overrides (-1 = use global). Preset raw value is 0..4.
-    // FrameLimiter is -1/0/1; TargetFPS is -1 or a whole FPS. Both map to the
-    // single Framerate/NominalScalar key (see savePerGameFrameLimiter).
+    // Frame Pacing per-game overrides (-1 = use global). Limiter state remains
+    // in Framerate/NominalScalar while presentation cadence has its own key.
     @State private var perGameFramePacingPreset: Int
     @State private var perGameFrameLimiter: Int
-    @State private var perGameTargetFPS: Int
+    @State private var perGameTargetFPS: Float
     @State private var statusMessage: String?
     @State private var showCheatsManager = false
     @State private var showResetAllConfirmation = false
@@ -955,46 +954,62 @@ struct PerGameSettingsPanel: View {
         }
     }
 
-    /// Reads the per-game frame limiter from Framerate/NominalScalar. Returns
-    /// (-1, -1) when unset (use global); otherwise (limiter 0/1, targetFPS).
-    private static func loadedPerGameFrameLimiter(useCurrent: Bool, iso: String) -> (limiter: Int, fps: Int) {
-        let section = "Framerate"
-        let key = "NominalScalar"
-        let present: Bool
+    /// Reads independent per-game limiter and presentation-cadence overrides.
+    /// Legacy files are interpreted correctly until the native runtime or Save
+    /// migrates their encoded target into the dedicated cadence key.
+    private static func loadedPerGameFrameLimiter(useCurrent: Bool, iso: String) -> (limiter: Int, fps: Float) {
+        let scalarPresent: Bool
         let scalar: Float
+        let targetPresent: Bool
+        let storedTarget: Float
         if useCurrent {
-            present = ARMSX2Bridge.hasPerGameINIValueForCurrentGame(section, key: key)
-            scalar = present ? ARMSX2Bridge.getPerGameINIFloatForCurrentGame(section, key: key, defaultValue: 1.0) : 1.0
+            scalarPresent = ARMSX2Bridge.hasPerGameINIValueForCurrentGame("Framerate", key: "NominalScalar")
+            scalar = scalarPresent ? ARMSX2Bridge.getPerGameINIFloatForCurrentGame("Framerate", key: "NominalScalar", defaultValue: 1.0) : 1.0
+            targetPresent = ARMSX2Bridge.hasPerGameINIValueForCurrentGame("ARMSX2iOS/FramePacing", key: "TargetFPS")
+            storedTarget = targetPresent ? ARMSX2Bridge.getPerGameINIFloatForCurrentGame("ARMSX2iOS/FramePacing", key: "TargetFPS", defaultValue: SettingsStore.defaultTargetFPS) : SettingsStore.defaultTargetFPS
         } else {
-            present = ARMSX2Bridge.hasPerGameINIValue(section, key: key, forISO: iso)
-            scalar = present ? ARMSX2Bridge.getPerGameINIFloat(section, key: key, defaultValue: 1.0, forISO: iso) : 1.0
+            scalarPresent = ARMSX2Bridge.hasPerGameINIValue("Framerate", key: "NominalScalar", forISO: iso)
+            scalar = scalarPresent ? ARMSX2Bridge.getPerGameINIFloat("Framerate", key: "NominalScalar", defaultValue: 1.0, forISO: iso) : 1.0
+            targetPresent = ARMSX2Bridge.hasPerGameINIValue("ARMSX2iOS/FramePacing", key: "TargetFPS", forISO: iso)
+            storedTarget = targetPresent ? ARMSX2Bridge.getPerGameINIFloat("ARMSX2iOS/FramePacing", key: "TargetFPS", defaultValue: SettingsStore.defaultTargetFPS, forISO: iso) : SettingsStore.defaultTargetFPS
         }
-        guard present else { return (-1, -1) }
-        let base = SettingsStore.shared.ntscFramerate
-        let limiter = SettingsStore.frameLimiterEnabled(fromNominalScalar: scalar) ? 1 : 0
-        let fps = Int(SettingsStore.targetFPS(fromNominalScalar: scalar, baseFramerate: base).rounded())
-        return (limiter, max(fps, Int(SettingsStore.minTargetFPS)))
+
+        let limiter = scalarPresent ? (SettingsStore.frameLimiterEnabled(fromNominalScalar: scalar) ? 1 : 0) : -1
+        if targetPresent {
+            let fps = min(
+                max((storedTarget * 1_000.0).rounded() / 1_000.0, SettingsStore.minTargetFPS),
+                SettingsStore.maxTargetFPS)
+            return (limiter, fps)
+        }
+
+        // Older per-game files stored target/base directly in NominalScalar.
+        if scalarPresent, limiter == 1, abs(scalar - 1.0) >= 0.002 {
+            let legacyFPS = SettingsStore.targetFPS(
+                fromNominalScalar: scalar,
+                baseFramerate: SettingsStore.shared.ntscFramerate)
+            return (limiter, max(legacyFPS, SettingsStore.minTargetFPS))
+        }
+        return (limiter, -1.0)
     }
 
-    /// Writes Framerate/NominalScalar for the per-game frame limiter. A named
-    /// preset forces its own profile; otherwise the individual pickers apply
-    /// (falling back to global for "Use Global"). Clears the key when nothing
-    /// is overridden so the global value wins.
-    private static func savePerGameFrameLimiter(preset: Int, limiter: Int, targetFPS: Int, enabled: Bool, useCurrent: Bool, iso: String) {
-        let g = SettingsStore.shared
-        let base = g.ntscFramerate
+    /// Writes limiter state and presentation cadence independently so either
+    /// picker can continue inheriting its global value.
+    private static func savePerGameFrameLimiter(preset: Int, limiter: Int, targetFPS: Float, enabled: Bool, useCurrent: Bool, iso: String) {
         if enabled, let named = FramePacingPreset(rawValue: preset), let v = SettingsStore.framePacingPresetTable[named] {
-            let scalar = SettingsStore.nominalScalarForFrameLimiter(enabled: v.frameLimiterEnabled, targetFPS: Float(v.targetFPS), baseFramerate: base)
-            setPerGameFloatValue("Framerate", "NominalScalar", scalar, useCurrent: useCurrent, iso: iso)
+            setPerGameFloatValue("Framerate", "NominalScalar", SettingsStore.nominalScalarForFrameLimiter(enabled: v.frameLimiterEnabled), useCurrent: useCurrent, iso: iso)
+            setPerGameFloatValue("ARMSX2iOS/FramePacing", "TargetFPS", Float(v.targetFPS), useCurrent: useCurrent, iso: iso)
             return
         }
-        if enabled && (limiter != -1 || targetFPS != -1) {
-            let effLimiter = limiter == -1 ? g.frameLimiterEnabled : (limiter == 1)
-            let effFPS = targetFPS == -1 ? Int(g.targetFPS) : targetFPS
-            let scalar = SettingsStore.nominalScalarForFrameLimiter(enabled: effLimiter, targetFPS: Float(effFPS), baseFramerate: base)
-            setPerGameFloatValue("Framerate", "NominalScalar", scalar, useCurrent: useCurrent, iso: iso)
+
+        if enabled, limiter != -1 {
+            setPerGameFloatValue("Framerate", "NominalScalar", SettingsStore.nominalScalarForFrameLimiter(enabled: limiter == 1), useCurrent: useCurrent, iso: iso)
         } else {
             clearPerGameValue("Framerate", "NominalScalar", useCurrent: useCurrent, iso: iso)
+        }
+        if enabled, targetFPS >= SettingsStore.minTargetFPS {
+            setPerGameFloatValue("ARMSX2iOS/FramePacing", "TargetFPS", targetFPS, useCurrent: useCurrent, iso: iso)
+        } else {
+            clearPerGameValue("ARMSX2iOS/FramePacing", "TargetFPS", useCurrent: useCurrent, iso: iso)
         }
     }
 
@@ -1371,7 +1386,7 @@ struct PerGameSettingsPanel: View {
             Self.setPerGameIntValue("SPU2/Output", "BufferMS", values.audioBufferMs, useCurrent: useCurrent, iso: iso)
             Self.setPerGameBoolValue("EmuCore/GS", "SyncToHostRefreshRate", values.syncToHostRefresh, useCurrent: useCurrent, iso: iso)
         }
-        // Frame limiter + FPS target both encode into Framerate/NominalScalar.
+        // Limiter state and presentation cadence are independent per-game overrides.
         Self.savePerGameFrameLimiter(preset: perGameFramePacingPreset, limiter: perGameFrameLimiter, targetFPS: perGameTargetFPS, enabled: enabled, useCurrent: useCurrent, iso: iso)
         if enabled && eeCycleSkip != -1 {
             Self.setPerGameIntValue("EmuCore/Speedhacks", "EECycleSkip", eeCycleSkip, useCurrent: useCurrent, iso: iso)

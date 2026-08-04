@@ -1492,6 +1492,7 @@ protected:
 	} m_index = {};
 
 	u32 m_frame = 0; // for ageing the pool
+	u32 m_frames_since_pool_cleanup = 0;
 
 private:
 	std::array<FastList<GSTexture*>, 2> m_pool; // [texture, target]
@@ -1980,6 +1981,7 @@ public:
 	bool ResizeRenderTarget(GSTexture** t, int w, int h, bool preserve_contents, bool recycle);
 
 	void AgePool();
+	void AgePoolAfterPresentCapSkip();
 	void PurgePool();
 
 	__fi static constexpr bool IsDualSourceBlendFactor(u8 factor)

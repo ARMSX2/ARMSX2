@@ -11,7 +11,7 @@ struct FramePacingTab: View {
 
     // Per-game individual-control bindings shared with GraphicsTab / AudioTab.
     @Binding var perGameFrameLimiter: Int
-    @Binding var perGameTargetFPS: Int
+    @Binding var perGameTargetFPS: Float
     @Binding var perGameVsyncQueue: Int
     @Binding var perGameSyncToHostRefresh: Int
     @Binding var perGameBufferMS: Int
@@ -53,9 +53,9 @@ struct FramePacingTab: View {
                 }
                 .disabled(!enabled)
 
-                NumberOverrideRow(.targetFPS, value: $perGameTargetFPS,
-                                  global: Int(settings.targetFPS.rounded()),
-                                  settings: settings)
+                FloatOverrideRow(.targetFPS, value: $perGameTargetFPS,
+                                 global: settings.targetFPS,
+                                 settings: settings)
                     .disabled(perGameFrameLimiter == 0 || !enabled)
 
                 NumberOverrideRow(.vsyncQueueSize, value: $perGameVsyncQueue,

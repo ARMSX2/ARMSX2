@@ -1906,14 +1906,15 @@ private struct SpeedControlPanel: View {
                 }
 
                 Section(settings.localized("How It Works")) {
-                    Text(settings.localized("This controls PCSX2 Normal Speed. On NTSC games, 60 FPS is normal speed and 30 FPS is about 50% speed. It is safe to change while a game is running."))
+                    Text(settings.localized("The FPS Target changes display presentation without slowing CPU, audio, or game timing. Fast Forward remains a separate emulation-speed control."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
                     HStack {
                         Text(settings.localized("Normal Speed"))
                         Spacer()
-                        Text(Self.formatPercent(settings.targetFPS / max(settings.ntscFramerate, 1.0)))
+                        Text(Self.formatPercent(SettingsStore.normalSpeedScalar(
+                            frameLimiterEnabled: settings.frameLimiterEnabled)))
                             .foregroundStyle(.secondary)
                             .font(.callout.monospacedDigit())
                     }
@@ -1939,15 +1940,6 @@ private struct SpeedControlPanel: View {
     private func refreshRuntimeState() {
         settings.fastForwardRuntimeEnabled = ARMSX2Bridge.limiterMode() == 1
         hardcoreActive = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
-        enforceHardcoreSpeedFloorIfNeeded()
-    }
-
-    private func enforceHardcoreSpeedFloorIfNeeded() {
-        guard hardcoreActive else { return }
-        let minimumFPS = settings.ntscFramerate
-        if settings.frameLimiterEnabled && settings.targetFPS < minimumFPS {
-            settings.targetFPS = minimumFPS
-        }
     }
 
     private static func formatPercent(_ scalar: Float) -> String {

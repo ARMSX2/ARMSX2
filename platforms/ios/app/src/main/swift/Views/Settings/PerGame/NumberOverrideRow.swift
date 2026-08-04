@@ -60,3 +60,52 @@ struct NumberOverrideRow: View {
         setting.format.text(Double(value), settings: settings)
     }
 }
+
+/// Floating-point counterpart used by frame cadence. It renders the same
+/// NumberSetting as the global screen while retaining the per-game inherit state.
+struct FloatOverrideRow: View {
+    let setting: NumberSetting
+    @Binding var value: Float
+    let global: Float
+    var sentinel: Float = -1.0
+    let settings: SettingsStore
+
+    init(_ setting: NumberSetting, value: Binding<Float>, global: Float,
+         sentinel: Float = -1.0, settings: SettingsStore) {
+        self.setting = setting
+        self._value = value
+        self.global = global
+        self.sentinel = sentinel
+        self.settings = settings
+    }
+
+    var body: some View {
+        if value == sentinel {
+            HStack {
+                Text(settings.localized(setting.title))
+                Spacer()
+                Text(String(format: settings.localized("Global Default (%@)"), formatted(global)))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Button(settings.localized("Override")) {
+                    value = Float(min(max(Double(global), setting.range.lowerBound),
+                                      setting.range.upperBound))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        } else {
+            NumberRow(setting, value: $value,
+                      accessory: NumberRowAccessory(
+                          systemImage: "arrow.uturn.backward",
+                          label: "Use the global value for %@",
+                          isVisible: true,
+                          action: { value = sentinel }),
+                      settings: settings)
+        }
+    }
+
+    private func formatted(_ value: Float) -> String {
+        setting.format.text(Double(value), settings: settings)
+    }
+}
