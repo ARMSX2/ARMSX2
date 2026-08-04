@@ -227,6 +227,7 @@ struct GameScreenView: View {
     @State private var menuButtonHidden = false
     @State private var vmMenuAvailable = false
     @State private var gameMenuAvailable = false
+    @State private var noJITFallbackActive = false
     // MARK: Overlay Route
     // The pause card + every screen launched from it are driven by one FSM. Opening a child
     // transitions `.paused -> .pausedPresenting(child)` without tearing the card down; the child
@@ -402,7 +403,7 @@ struct GameScreenView: View {
                     }
                     .overlay(alignment: .topTrailing) {
                         if !menuButtonHidden {
-                            menuButton()
+                            menuButtonCluster()
                                 .padding(.top, 8)
                                 .padding(.trailing, 4)
                                 .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
@@ -614,7 +615,7 @@ struct GameScreenView: View {
             VStack {
                 HStack {
                     Spacer()
-                    menuButton()
+                    menuButtonCluster()
                 }
                 .padding(.top, isLandscape ? 8 : 4)
                 .padding(.trailing, isLandscape ? 8 : 4)
@@ -632,6 +633,21 @@ struct GameScreenView: View {
         }
         .accessibilityLabel(settings.localized("Pause Menu"))
         .accessibilityHint(settings.localized("Opens the pause menu"))
+    }
+
+    private func menuButtonCluster() -> some View {
+        HStack(spacing: 6) {
+            if noJITFallbackActive {
+                Text(settings.localized("No JIT"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.40), in: Capsule())
+                    .accessibilityLabel(settings.localized("No JIT mode"))
+            }
+            menuButton()
+        }
     }
 
     @MainActor
@@ -1072,11 +1088,15 @@ struct GameScreenView: View {
     private func refreshRuntimeMenuState() {
         let vmRunning = ARMSX2Bridge.isVMRunning()
         let gameReady = ARMSX2Bridge.hasValidSaveStateGame()
+        let noJITActive = ARMSX2Bridge.isNoJITFallbackActive()
         if vmMenuAvailable != vmRunning {
             vmMenuAvailable = vmRunning
         }
         if gameMenuAvailable != gameReady {
             gameMenuAvailable = gameReady
+        }
+        if noJITFallbackActive != noJITActive {
+            noJITFallbackActive = noJITActive
         }
         let identity = gameReady ? runtimePadLayoutIdentityForCurrentGame() : nil
         if runtimePadLayoutIdentity != identity {
