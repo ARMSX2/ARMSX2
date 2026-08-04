@@ -109,7 +109,7 @@ struct GraphicsSettingsView: View {
             } header: {
                 Text(settings.localized("Performance"))
             } footer: {
-                Text(settings.localized("Pipelined splits GS emulation across two threads on multi-core systems and competes for cores with EE/VU threads. The debug modes are much slower — do not use them for play."))
+                Text(settings.localized("Pipelined splits GS emulation across two threads on multi-core systems and competes for cores with EE/VU threads. The debug modes are much slower — do not use them for play. Requires restart."))
             }
 
             Section(settings.localized("Renderer")) {
