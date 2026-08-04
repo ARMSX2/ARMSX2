@@ -1352,7 +1352,8 @@ final class SettingsStore {
         codec: .bool)
     var autoOpenStikDebug: Bool = false { didSet { commit(_autoOpenStikDebugConfig, autoOpenStikDebug) } }
     let _jitScriptProtocolConfig = Setting<JITScriptProtocol>(
-        section: "ARMSX2iOS/JIT", key: "ScriptProtocol", default: .legacy,
+        // Which protocol is right depends on the iOS version, so ask rather than assume.
+        section: "ARMSX2iOS/JIT", key: "ScriptProtocol", default: JITScriptProtocol.defaultValue,
         codec: .rawString)
     var jitScriptProtocol: JITScriptProtocol = .legacy { didSet { commit(_jitScriptProtocolConfig, jitScriptProtocol) } }
 
