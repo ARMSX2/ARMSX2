@@ -1352,17 +1352,118 @@ TEST(EeRecFpu, MulSFpuMulHackPatchesMagicProduct)
 	EXPECT_EQ(h.GetFprBitsJit(2), 0x3f490fdau);
 }
 
-TEST(EeRecFpu, MulSFpuMulHackOffGivesNativeProduct)
+TEST(EeRecFpu, MulSFpuMulHackOffStillReachesTheConsoleValueOnInterp)
 {
-	// Gamefix off (default): the same operands produce the ordinary product,
-	// which JIT and interp agree on (Run diff), and which is NOT the patch value.
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFprBits(0, 0x3e800000u);
-	h.SetFprBits(1, 0x40490fdbu);
-	h.LoadProgram({ee::MUL_S(2, 0, 1)});
-	h.Run();
-	EXPECT_NE(h.GetFprBitsJit(2), 0x3f490fdau);
+	// This test used to assert the opposite -- that with the gamefix off the
+	// "ordinary" product comes out, and that JIT and interp agree on it. Its
+	// premise was that the IEEE product is the console's. It is not.
+	//
+	// Measured on SCPH-90000 (captures/fpmul/): mul.s of 0x3E800000 by
+	// 0x40490FDB returns 0x3F490FDA, and the same two words in the reverse
+	// operand order return 0x3F490FDB. FpuMulHack is a one-point sample of the
+	// multiplier's own one-ULP deficit, not a game kludge -- which is why it
+	// compares fs and ft against their own constants and so does not fire
+	// reversed, exactly as the console behaves.
+	//
+	// The interpreter models the deficit itself (eeMulProduct in FPU.cpp), so it
+	// lands on the console value with the gamefix off. The single-precision fast
+	// path does not, so the two legitimately diverge here and this cannot be a
+	// Run() diff -- and RunJitNoDiff() never runs the interpreter at all, so
+	// each engine needs its own harness.
+	EeRecTestHarness hi;
+	hi.EnableCop1();
+	hi.SetFprBits(0, 0x3e800000u);
+	hi.SetFprBits(1, 0x40490fdbu);
+	hi.LoadProgram({ee::MUL_S(2, 0, 1)});
+	hi.RunInterpOnly();
+	EXPECT_EQ(hi.GetFprBitsInterp(2), 0x3f490fdau) << "interp should reach silicon unaided";
+
+	// Reversed: the console returns the un-decremented product, because the
+	// predicate reads ft alone. This is the half that pins it as an operand
+	// order effect rather than a constant fudge.
+	EeRecTestHarness hr;
+	hr.EnableCop1();
+	hr.SetFprBits(0, 0x40490fdbu);
+	hr.SetFprBits(1, 0x3e800000u);
+	hr.LoadProgram({ee::MUL_S(2, 0, 1)});
+	hr.RunInterpOnly();
+	EXPECT_EQ(hr.GetFprBitsInterp(2), 0x3f490fdbu) << "reversed operands: no deficit";
+
+	// The fast path, gamefix off, still produces the IEEE product. Recorded so
+	// the divergence is pinned rather than discovered later as a surprise.
+	EeRecTestHarness hj;
+	hj.EnableCop1();
+	hj.SetFprBits(0, 0x3e800000u);
+	hj.SetFprBits(1, 0x40490fdbu);
+	hj.LoadProgram({ee::MUL_S(2, 0, 1)});
+	hj.RunJitNoDiff();
+	EXPECT_EQ(hj.GetFprBitsJit(2), 0x3f490fdbu);
+}
+
+TEST(EeRecFpu, MulSMultiplierDeficitMatchesSilicon)
+{
+	// Rows measured directly on SCPH-90000. Each is a case where the exact
+	// product is representable with nothing below the ULP, so the sub-ULP
+	// deficit reaches the result.
+	//
+	// Every row's operands and product stay inside the IEEE single range on
+	// purpose. The interpreter multiplies fpuDouble()'d floats, so it cannot
+	// carry a row whose operand or product needs the EE's exponent-0xff binade
+	// -- 2.0 * FLT_MAX (corpus cases 857/1) lands on 0x7FFFFFFF on silicon and
+	// on +Inf here. That gap belongs to fpuDouble, not to the multiplier.
+	struct Row { u32 fs, ft, want; };
+	static const Row rows[] = {
+		{0x3f800000u, 0x7f7fffffu, 0x7f7ffffeu}, // 1.0 * FLT_MAX  -> one ULP low
+		{0x7f7fffffu, 0x3f800000u, 0x7f7fffffu}, // reversed       -> exact
+		{0x3f800000u, 0x3fc00000u, 0x3fc00000u}, // ft mantissa 0x400000: exact
+		{0x3f800000u, 0x3f800001u, 0x3f800001u}, // ft mantissa 0x000001: exact
+		{0x3f800000u, 0x3fbfffffu, 0x3fbffffeu}, // ft mantissa 0x3fffff: low
+		{0x3e800000u, 0x40490fdbu, 0x3f490fdau}, // the FpuMulHack pair
+		{0x40490fdbu, 0x3e800000u, 0x3f490fdbu}, // reversed       -> exact
+	};
+	for (const Row& r : rows)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetFprBits(0, r.fs);
+		h.SetFprBits(1, r.ft);
+		h.LoadProgram({ee::MUL_S(2, 0, 1)});
+		h.RunInterpOnly();
+		EXPECT_EQ(h.GetFprBitsInterp(2), r.want)
+			<< "mul.s fs=" << std::hex << r.fs << " ft=" << r.ft;
+	}
+}
+
+TEST(EeRecFpu, MultiplierDeficitReachesTheWholeMultiplyFamily)
+{
+	// MUL/MULA and the four multiply-accumulates all route their product
+	// through eeMulProduct. ACC = +0 (or the MADD/MSUB accumuland) so what
+	// lands in the destination is the rounded product alone.
+	constexpr u32 kFs = 0x3f800000u; // 1.0: the product is ft, tail always zero
+	constexpr u32 kFt = 0x3fbfffffu; // Booth fires
+	constexpr u32 kWant = 0x3fbffffeu;
+
+	struct Form { u32 word; bool is_acc; u32 want; const char* name; };
+	static const Form forms[] = {
+		{ee::MUL_S(2, 0, 1),  false, kWant,                 "MUL.S"},
+		{ee::MULA_S(0, 1),    true,  kWant,                 "MULA.S"},
+		{ee::MADD_S(2, 0, 1), false, kWant,                 "MADD.S"},
+		{ee::MSUB_S(2, 0, 1), false, kWant ^ 0x80000000u,   "MSUB.S"},
+		{ee::MADDA_S(0, 1),   true,  kWant,                 "MADDA.S"},
+		{ee::MSUBA_S(0, 1),   true,  kWant ^ 0x80000000u,   "MSUBA.S"},
+	};
+	for (const Form& f : forms)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0x00000000u);
+		h.SetFprBits(0, kFs);
+		h.SetFprBits(1, kFt);
+		h.LoadProgram({f.word});
+		h.RunInterpOnly();
+		const u32 got = f.is_acc ? h.GetAccBitsInterp() : h.GetFprBitsInterp(2);
+		EXPECT_EQ(got, f.want) << f.name;
+	}
 }
 
 TEST(EeRecFpu, MaddSFpuMulHackAppliesToProduct)

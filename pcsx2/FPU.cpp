@@ -3,6 +3,7 @@
 
 #include "Common.h"
 
+#include <cfloat>
 #include <cmath>
 
 // Helper Macros
@@ -182,6 +183,101 @@ float fpuDouble(u32 f)
 	}
 }
 
+/*	The EE multiplier's one-ULP deficit.
+
+	The console's multiply array is not a correctly-rounding multiplier: it
+	comes back exactly one step closer to zero on a large fraction of operands,
+	and which operands depends on operand order. Upstream states the rule in a
+	comment (pcsx2/x86/iFPU.cpp:500) and never tests it; FpuMulHack is a
+	one-point sample of it.
+
+	Measured on SCPH-90000 (FCR0 0x2e40), captures/fpmul/, 25M probes:
+
+	  * mul.s(1.0, x) was measured for every one of the 2^23 significands.
+	    8257536 come back one ULP low and 131072 exact -- and nothing ever came
+	    back high, or two ULP low, in 16.8M probes.
+	  * mul.s(x, 1.0) is exact for all 2^23. The asymmetry is total, not
+	    statistical: the predicate reads ft and never fs, which is exactly why
+	    the operation is not commutative.
+	  * Unchanged across twelve exponent-field pairs from (1,254) to (254,1),
+	    so it is a significand-domain effect with no exponent term.
+
+	Bits 1,3,5,7,9 of ft's mantissa are the sign bits of the five lowest
+	radix-4 Booth digits, which is what identifies the mechanism: ft is the
+	recoded operand and the array's low columns are not built, so each low
+	negative digit's two's-complement correction is dropped. The bit-11 term is
+	a boundary effect at the truncation column; it is written as measured, not
+	derived.
+
+	What this does not model: the deficit is smaller than one ULP -- at most
+	~27308 against an ULP of 2^23 -- so it only reaches the result when the
+	exact product has nothing below the ULP to absorb it. That is the tail test
+	below, and it is the whole of the modelled class. When the tail is non-zero
+	the console is one ULP low iff the tail is smaller than the deficit, and the
+	deficit is not identifiable from mul.s observations: the instruction only
+	ever exposes the one comparison it performs. That residual is ~0.1% of
+	random operand pairs.
+*/
+static bool eeMulDefectiveFt(u32 ft)
+{
+	const u32 m = ft & 0x7FFFFF;
+	if (m & 0x2AA) // a negative Booth digit among 0..4
+		return true;
+	const u32 h = (m >> 12) & 0xF;
+	return ((m >> 11) & 1u) != ((h >= 8 && h <= 13) ? 1u : 0u);
+}
+
+static bool eeMulOneUlpLow(u32 fs, u32 ft)
+{
+	if ((fs & 0x7F800000) == 0 || (ft & 0x7F800000) == 0)
+		return false; // a zero operand (denormals are zero): the product is zero
+
+	const u64 a = 0x800000u | (fs & 0x7FFFFF);
+	const u64 b = 0x800000u | (ft & 0x7FFFFF);
+	const u64 prod = a * b; // 47 or 48 significant bits, exact in 64
+	const int k = (prod >> 47) ? 24 : 23;
+	if (prod & ((1ull << k) - 1u))
+		return false; // the tail below the ULP absorbs the deficit
+
+	return eeMulDefectiveFt(ft);
+}
+
+/*	fpuDouble() both operands, multiply, apply the deficit.
+
+	The predicate is fed the operands as multiplied, not the guest registers:
+	fpuDouble() clamps an exponent-0xff operand down to +/-Fmax, and that
+	changes ft's mantissa. (Clamping there is a separate and known gap against
+	silicon, which treats exponent 0xff as an ordinary binade; this models the
+	multiplier on top of whatever fpuDouble hands it, rather than smuggling in a
+	second change.)
+
+	Applied only where it was measured. A saturating result, a flushed one, and
+	a decrement that would walk the exponent field out of the normals are all
+	left alone.
+*/
+static u32 eeMulProduct(u32 fs, u32 ft)
+{
+	FPRreg s, t, p;
+	s.f = fpuDouble( fs );
+	t.f = fpuDouble( ft );
+	p.f = s.f * t.f;
+
+	// A saturated result is not a rounded one. Testing p.f for an infinity is
+	// not enough: under round-toward-zero an overflowing product comes back as
+	// Fmax, so checkOverflow() never sees it and the bit pattern is
+	// indistinguishable from a product that genuinely landed on Fmax -- which
+	// silicon does decrement (1.0 * FLT_MAX -> 0x7F7FFFFE). float x float is
+	// exact in double, so ask the exact product instead.
+	if (!(std::fabs( static_cast<double>(s.f) * static_cast<double>(t.f) ) <= FLT_MAX))
+		return p.UL;
+	if ((p.UL & 0x7F800000) == 0) // flushed, zero, or a denormal on its way out
+		return p.UL;
+	if ((p.UL & 0x7FFFFFFF) == 0x00800000) // a decrement would leave the normals
+		return p.UL;
+
+	return eeMulOneUlpLow( s.UL, t.UL ) ? p.UL - 1u : p.UL;
+}
+
 void ABS_S() {
 	_FdValUl_ = _FsValUl_ & 0x7fffffff;
 	clearFPUFlags( FPUflagO | FPUflagU );
@@ -271,14 +367,16 @@ void DIV_S() {
 */
 void MADD_S() {
 	FPRreg temp;
-	temp.f = fpuDouble( _FsValUl_ ) * fpuDouble( _FtValUl_ );
+	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
 	_FdValf_  = fpuDouble( _FAValUl_ ) + fpuDouble( temp.UL );
 	if (checkOverflow( _FdValUl_, FPUflagO | FPUflagSO)) return;
 	checkUnderflow( _FdValUl_, FPUflagU | FPUflagSU);
 }
 
 void MADDA_S() {
-	_FAValf_ += fpuDouble( _FsValUl_ ) * fpuDouble( _FtValUl_ );
+	FPRreg temp;
+	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
+	_FAValf_ += temp.f;
 	if (checkOverflow( _FAValUl_, FPUflagO | FPUflagSO)) return;
 	checkUnderflow( _FAValUl_, FPUflagU | FPUflagSU);
 }
@@ -304,14 +402,16 @@ void MOV_S() {
 
 void MSUB_S() {
 	FPRreg temp;
-	temp.f = fpuDouble( _FsValUl_ ) * fpuDouble( _FtValUl_ );
+	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
 	_FdValf_  = fpuDouble( _FAValUl_ ) - fpuDouble( temp.UL );
 	if (checkOverflow( _FdValUl_, FPUflagO | FPUflagSO)) return;
 	checkUnderflow( _FdValUl_, FPUflagU | FPUflagSU);
 }
 
 void MSUBA_S() {
-	_FAValf_ -= fpuDouble( _FsValUl_ ) * fpuDouble( _FtValUl_ );
+	FPRreg temp;
+	temp.UL = eeMulProduct( _FsValUl_, _FtValUl_ );
+	_FAValf_ -= temp.f;
 	if (checkOverflow( _FAValUl_, FPUflagO | FPUflagSO)) return;
 	checkUnderflow( _FAValUl_, FPUflagU | FPUflagSU);
 }
@@ -321,13 +421,13 @@ void MTC1() {
 }
 
 void MUL_S() {
-	_FdValf_  = fpuDouble( _FsValUl_ ) * fpuDouble( _FtValUl_ );
+	_FdValUl_ = eeMulProduct( _FsValUl_, _FtValUl_ );
 	if (checkOverflow( _FdValUl_, FPUflagO | FPUflagSO)) return;
 	checkUnderflow( _FdValUl_, FPUflagU | FPUflagSU);
 }
 
 void MULA_S() {
-	_FAValf_  = fpuDouble( _FsValUl_ ) * fpuDouble( _FtValUl_ );
+	_FAValUl_ = eeMulProduct( _FsValUl_, _FtValUl_ );
 	if (checkOverflow( _FAValUl_, FPUflagO | FPUflagSO)) return;
 	checkUnderflow( _FAValUl_, FPUflagU | FPUflagSU);
 }
