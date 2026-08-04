@@ -209,8 +209,9 @@ final class SettingsStore {
     static let defaultEmulatorVolumePercent = 100
     static let textureOffsetRange = -4096...4096
     static let skipDrawRange = 0...5000
-    // Named so the loader, the writer's clamp and the descriptor above all agree about the bounds.
-    // The numbers were already spelled out in each place, which is how they drift.
+    // Named so the stepper and the per-game panel agree about the bounds. Neither
+    // this one nor casSharpnessRange is on its global descriptor's codec, so a
+    // hand-edited INI still gets through. A gap rather than a decision.
     static let vsyncQueueRange = 2...16
     static let audioBufferMsRange = 10...200
     static let audioOutputLatencyMsRange = 5...200
@@ -254,19 +255,14 @@ final class SettingsStore {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
     }
 
-    /// The whole write path for one setting: hold off while the INI is loading,
-    /// persist, then nudge the running VM if it is a graphics key.
     private func commit<T>(_ setting: Setting<T>, _ value: T) {
         guard !(setting.suppressible && suppressINIWrites) else { return }
         setting.codec.write(setting.section, setting.key, value)
         if setting.appliesGraphics { requestGraphicsApplyGuarded() }
     }
 
-    /// Used by every graphics writer: `commit`, the few keys written from a plain
-    /// `didSet`, and `setGSBoolHack`. Swift skips property
-    /// observers during init, so they don't fire while loading from the INI;
-    /// this no-ops while `suppressINIWrites` is true as a guard against that
-    /// ever changing.
+    /// Nothing should reach this while the INI is loading, but it checks anyway:
+    /// a reload there would throw away the values init has just read.
     func requestGraphicsApplyGuarded() {
         guard !suppressINIWrites else { return }
         requestGraphicsApply()
@@ -352,41 +348,59 @@ final class SettingsStore {
     let _emulationOnlyDisablePatchesConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "EmulationOnlyDisablePatches", default: true,
         codec: .bool)
-    var emulationOnlyDisablePatches: Bool = true { didSet { commit(_emulationOnlyDisablePatchesConfig, emulationOnlyDisablePatches) } }
+    var emulationOnlyDisablePatches: Bool = true {
+        didSet { commit(_emulationOnlyDisablePatchesConfig, emulationOnlyDisablePatches) }
+    }
     // Discord presence is always released by Emulation-Only Mode.
     let emulationOnlyDisableDiscordPresence = true
     let _emulationOnlyDisablePINEConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "EmulationOnlyDisablePINE", default: true,
         codec: .bool)
-    var emulationOnlyDisablePINE: Bool = true { didSet { commit(_emulationOnlyDisablePINEConfig, emulationOnlyDisablePINE) } }
+    var emulationOnlyDisablePINE: Bool = true {
+        didSet { commit(_emulationOnlyDisablePINEConfig, emulationOnlyDisablePINE) }
+    }
     let _emulationOnlyDisableRetroAchievementsConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "EmulationOnlyDisableRetroAchievements", default: true,
         codec: .bool)
-    var emulationOnlyDisableRetroAchievements: Bool = true { didSet { commit(_emulationOnlyDisableRetroAchievementsConfig, emulationOnlyDisableRetroAchievements) } }
+    var emulationOnlyDisableRetroAchievements: Bool = true {
+        didSet { commit(_emulationOnlyDisableRetroAchievementsConfig, emulationOnlyDisableRetroAchievements) }
+    }
     let _emulationOnlyDisableInputRecordingConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "EmulationOnlyDisableInputRecording", default: true,
         codec: .bool)
-    var emulationOnlyDisableInputRecording: Bool = true { didSet { commit(_emulationOnlyDisableInputRecordingConfig, emulationOnlyDisableInputRecording) } }
+    var emulationOnlyDisableInputRecording: Bool = true {
+        didSet { commit(_emulationOnlyDisableInputRecordingConfig, emulationOnlyDisableInputRecording) }
+    }
     let _emulationOnlyDisableOSDConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "EmulationOnlyDisableOSD", default: true,
         codec: .bool)
-    var emulationOnlyDisableOSD: Bool = true { didSet { commit(_emulationOnlyDisableOSDConfig, emulationOnlyDisableOSD) } }
+    var emulationOnlyDisableOSD: Bool = true {
+        didSet { commit(_emulationOnlyDisableOSDConfig, emulationOnlyDisableOSD) }
+    }
     let _emulationOnlyDisableFramePacingConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "EmulationOnlyDisableFramePacing", default: true,
         codec: .bool)
-    var emulationOnlyDisableFramePacing: Bool = true { didSet { commit(_emulationOnlyDisableFramePacingConfig, emulationOnlyDisableFramePacing) } }
+    var emulationOnlyDisableFramePacing: Bool = true {
+        didSet { commit(_emulationOnlyDisableFramePacingConfig, emulationOnlyDisableFramePacing) }
+    }
     let _emulationOnlyDisableVirtualControlsConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "EmulationOnlyDisableVirtualControls", default: true,
         codec: .bool)
-    var emulationOnlyDisableVirtualControls: Bool = true { didSet { commit(_emulationOnlyDisableVirtualControlsConfig, emulationOnlyDisableVirtualControls) } }
+    var emulationOnlyDisableVirtualControls: Bool = true {
+        didSet { commit(_emulationOnlyDisableVirtualControlsConfig, emulationOnlyDisableVirtualControls) }
+    }
     let _emulationOnlyDisableQuickMenuConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "EmulationOnlyDisableQuickMenu", default: true,
         codec: .bool)
-    var emulationOnlyDisableQuickMenu: Bool = true { didSet { commit(_emulationOnlyDisableQuickMenuConfig, emulationOnlyDisableQuickMenu) } }
+    var emulationOnlyDisableQuickMenu: Bool = true {
+        didSet { commit(_emulationOnlyDisableQuickMenuConfig, emulationOnlyDisableQuickMenu) }
+    }
     let _emulationOnlyClearNetworkCacheConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "EmulationOnlyClearNetworkCache", default: true,
         codec: .bool)
-    var emulationOnlyClearNetworkCache: Bool = true { didSet { commit(_emulationOnlyClearNetworkCacheConfig, emulationOnlyClearNetworkCache) } }
+    var emulationOnlyClearNetworkCache: Bool = true {
+        didSet { commit(_emulationOnlyClearNetworkCacheConfig, emulationOnlyClearNetworkCache) }
+    }
     let _emulationOnlyModeDelayConfig = Setting<Int>(
         section: "ARMSX2iOS/UI", key: "EmulationOnlyModeDelaySeconds",
         default: SettingsStore.defaultEmulationOnlyModeDelaySeconds,
@@ -574,17 +588,23 @@ final class SettingsStore {
         section: "EmuCore/GS", key: "UserHacks", default: true,
         suppressible: false,
         codec: .inverted)
-    var enableGameDBHardwareFixes: Bool = true { didSet { commit(_enableGameDBHardwareFixesConfig, enableGameDBHardwareFixes) } }
+    var enableGameDBHardwareFixes: Bool = true {
+        didSet { commit(_enableGameDBHardwareFixesConfig, enableGameDBHardwareFixes) }
+    }
     let _enableWidescreenPatchesConfig = Setting<Bool>(
         section: "EmuCore", key: "EnableWideScreenPatches", default: false,
         suppressible: false,
         codec: .bool)
-    var enableWidescreenPatches: Bool = false { didSet { commit(_enableWidescreenPatchesConfig, enableWidescreenPatches) } }
+    var enableWidescreenPatches: Bool = false {
+        didSet { commit(_enableWidescreenPatchesConfig, enableWidescreenPatches) }
+    }
     let _enableNoInterlacingPatchesConfig = Setting<Bool>(
         section: "EmuCore", key: "EnableNoInterlacingPatches", default: false,
         suppressible: false,
         codec: .bool)
-    var enableNoInterlacingPatches: Bool = false { didSet { commit(_enableNoInterlacingPatchesConfig, enableNoInterlacingPatches) } }
+    var enableNoInterlacingPatches: Bool = false {
+        didSet { commit(_enableNoInterlacingPatchesConfig, enableNoInterlacingPatches) }
+    }
     let _hostFilesystemConfig = Setting<Bool>(
         section: "EmuCore", key: "HostFs", default: false,
         suppressible: false,
@@ -777,17 +797,23 @@ final class SettingsStore {
         section: "EmuCore/GS", key: "LoadTextureReplacements", default: false,
         suppressible: false,
         codec: .bool)
-    var loadTextureReplacements: Bool = false { didSet { commit(_loadTextureReplacementsConfig, loadTextureReplacements) } }
+    var loadTextureReplacements: Bool = false {
+        didSet { commit(_loadTextureReplacementsConfig, loadTextureReplacements) }
+    }
     let _loadTextureReplacementsAsyncConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "LoadTextureReplacementsAsync", default: true,
         suppressible: false,
         codec: .bool)
-    var loadTextureReplacementsAsync: Bool = true { didSet { commit(_loadTextureReplacementsAsyncConfig, loadTextureReplacementsAsync) } }
+    var loadTextureReplacementsAsync: Bool = true {
+        didSet { commit(_loadTextureReplacementsAsyncConfig, loadTextureReplacementsAsync) }
+    }
     let _precacheTextureReplacementsConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "PrecacheTextureReplacements", default: false,
         suppressible: false,
         codec: .bool)
-    var precacheTextureReplacements: Bool = false { didSet { commit(_precacheTextureReplacementsConfig, precacheTextureReplacements) } }
+    var precacheTextureReplacements: Bool = false {
+        didSet { commit(_precacheTextureReplacementsConfig, precacheTextureReplacements) }
+    }
     let _texturePreloadingConfig = Setting<Int>(
         section: "EmuCore/GS", key: "texture_preloading", default: 2,
         suppressible: false,
@@ -797,17 +823,23 @@ final class SettingsStore {
         section: "EmuCore/GS", key: "DumpReplaceableTextures", default: false,
         suppressible: false,
         codec: .bool)
-    var dumpReplaceableTextures: Bool = false { didSet { commit(_dumpReplaceableTexturesConfig, dumpReplaceableTextures) } }
+    var dumpReplaceableTextures: Bool = false {
+        didSet { commit(_dumpReplaceableTexturesConfig, dumpReplaceableTextures) }
+    }
     let _dumpReplaceableMipmapsConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "DumpReplaceableMipmaps", default: false,
         suppressible: false,
         codec: .bool)
-    var dumpReplaceableMipmaps: Bool = false { didSet { commit(_dumpReplaceableMipmapsConfig, dumpReplaceableMipmaps) } }
+    var dumpReplaceableMipmaps: Bool = false {
+        didSet { commit(_dumpReplaceableMipmapsConfig, dumpReplaceableMipmaps) }
+    }
     let _dumpTexturesWithFMVActiveConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "DumpTexturesWithFMVActive", default: false,
         suppressible: false,
         codec: .bool)
-    var dumpTexturesWithFMVActive: Bool = false { didSet { commit(_dumpTexturesWithFMVActiveConfig, dumpTexturesWithFMVActive) } }
+    var dumpTexturesWithFMVActive: Bool = false {
+        didSet { commit(_dumpTexturesWithFMVActiveConfig, dumpTexturesWithFMVActive) }
+    }
     let _dumpDirectTexturesConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "DumpDirectTextures", default: true,
         suppressible: false,
@@ -851,7 +883,7 @@ final class SettingsStore {
     let _cpuSpriteRenderBwConfig = Setting<Int>(
         section: "EmuCore/GS", key: "UserHacks_CPUSpriteRenderBW", default: 0,
         suppressible: false,
-        codec: .int(in: 0...10))
+        codec: .int(in: SettingsStore.cpuSpriteRenderBwRange))
     var cpuSpriteRenderBw: Int = 0 { didSet { commit(_cpuSpriteRenderBwConfig, cpuSpriteRenderBw) } }
     let _cpuSpriteRenderLevelConfig = Setting<Int>(
         section: "EmuCore/GS", key: "UserHacks_CPUSpriteRenderLevel", default: 0,
@@ -983,7 +1015,9 @@ final class SettingsStore {
         section: "EmuCore/GS", key: "disable_interlace_offset", default: false,
         suppressible: false,
         codec: .bool)
-    var disableInterlaceOffset: Bool = false { didSet { commit(_disableInterlaceOffsetConfig, disableInterlaceOffset) } }
+    var disableInterlaceOffset: Bool = false {
+        didSet { commit(_disableInterlaceOffsetConfig, disableInterlaceOffset) }
+    }
     let _skipDuplicateFramesConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "SkipDuplicateFrames", default: true,
         suppressible: false,
@@ -1091,10 +1125,13 @@ final class SettingsStore {
         codec: .rawInt)
     var lastActiveOsdPreset: OsdPreset = .simple { didSet { commit(_lastActiveOsdPresetConfig, lastActiveOsdPreset) } }
     let _osdPerformancePositionConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "OsdPerformancePos", default: 3,
+        section: "EmuCore/GS", key: "OsdPerformancePos",
+        default: SettingsStore.defaultOsdPerformancePosition,
         suppressible: false,
         codec: .int)
-    var osdPerformancePosition: Int = 3 { didSet { commit(_osdPerformancePositionConfig, osdPerformancePosition) } }
+    var osdPerformancePosition = SettingsStore.defaultOsdPerformancePosition {
+        didSet { commit(_osdPerformancePositionConfig, osdPerformancePosition) }
+    }
     /// Suppresses transient on-screen messages (shader compilation, save state,
     /// settings-applied). Critical SwiftUI alerts are unaffected. Backed by the
     /// core's OsdMessagesPos (1 = TopLeft default, 0 = None).
@@ -1211,7 +1248,9 @@ final class SettingsStore {
         section: "EmuCore/GS", key: "OsdShowTextureReplacements", default: false,
         suppressible: false,
         codec: .bool)
-    var osdShowTextureReplacements: Bool = false { didSet { commit(_osdShowTextureReplacementsConfig, osdShowTextureReplacements) } }
+    var osdShowTextureReplacements: Bool = false {
+        didSet { commit(_osdShowTextureReplacementsConfig, osdShowTextureReplacements) }
+    }
     let _osdShowDeviceStatsConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "OsdShowDeviceStats", default: false,
         suppressible: false,
@@ -1236,7 +1275,9 @@ final class SettingsStore {
         section: "ARMSX2iOS/UI", key: "IncreaseRumbleDurationAndInterpolation", default: true,
         suppressible: false,
         codec: .bool)
-    var increaseRumbleDurationAndInterpolation: Bool = true { didSet { commit(_increaseRumbleDurationAndInterpolationConfig, increaseRumbleDurationAndInterpolation) } }
+    var increaseRumbleDurationAndInterpolation: Bool = true {
+        didSet { commit(_increaseRumbleDurationAndInterpolationConfig, increaseRumbleDurationAndInterpolation) }
+    }
     let _hapticFeedbackConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "HapticFeedback", default: true,
         suppressible: false,
@@ -1260,7 +1301,9 @@ final class SettingsStore {
     let _autoHideVirtualPadWhenControllerConnectedConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "AutoHideVirtualPadWhenControllerConnected", default: true,
         codec: .bool)
-    var autoHideVirtualPadWhenControllerConnected: Bool = true { didSet { commit(_autoHideVirtualPadWhenControllerConnectedConfig, autoHideVirtualPadWhenControllerConnected) } }
+    var autoHideVirtualPadWhenControllerConnected: Bool = true {
+        didSet { commit(_autoHideVirtualPadWhenControllerConnectedConfig, autoHideVirtualPadWhenControllerConnected) }
+    }
     let _autoFullscreenConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "AutoFullscreen", default: true,
         codec: .bool)
@@ -1352,10 +1395,13 @@ final class SettingsStore {
         codec: .bool)
     var autoOpenStikDebug: Bool = false { didSet { commit(_autoOpenStikDebugConfig, autoOpenStikDebug) } }
     let _jitScriptProtocolConfig = Setting<JITScriptProtocol>(
-        // Which protocol is right depends on the iOS version, so ask rather than assume.
-        section: "ARMSX2iOS/JIT", key: "ScriptProtocol", default: JITScriptProtocol.defaultValue,
+        section: "ARMSX2iOS/JIT", key: "ScriptProtocol",
+        // Which one is right depends on the iOS version, so ask rather than assume.
+        default: JITScriptProtocol.defaultValue,
         codec: .rawString)
-    var jitScriptProtocol: JITScriptProtocol = .legacy { didSet { commit(_jitScriptProtocolConfig, jitScriptProtocol) } }
+    var jitScriptProtocol = JITScriptProtocol.defaultValue {
+        didSet { commit(_jitScriptProtocolConfig, jitScriptProtocol) }
+    }
 
     // DEV9 / Network
     // writes HddEnable + HddFile (+ excludes HDD image from backup on enable)
@@ -1517,9 +1563,11 @@ final class SettingsStore {
 
     // ── Init from INI ──
     private init() {
-        // The wrapped properties now have inline default values, so assignments
-        // here fire their didSet. Suppress INI writes during initialization so
-        // reading from INI does not also write back. Matches reload()'s pattern.
+        // Assignments here do not fire their didSet. Swift skips property observers
+        // inside a class's own init and @Observable does not change that, so nothing
+        // below writes back while the INI loads. Worth knowing before you split this
+        // up: in a helper they are ordinary assignments, the observers fire, and
+        // every non-suppressible setting writes itself to disk on each launch.
         suppressINIWrites = true
         defer { suppressINIWrites = false }
 
@@ -1596,11 +1644,11 @@ final class SettingsStore {
         // Not load(): the INI can name a desktop renderer, so we correct it on disk too.
 #if targetEnvironment(macCatalyst)
         renderer = 17
-        ARMSX2Bridge.setINIInt("EmuCore/GS", key: "Renderer", value: Int32(17))
+        _rendererConfig.write(17)
 #else
         let initialRenderer = Self.supportedIOSRenderer(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "Renderer", defaultValue: 17)))
         renderer = initialRenderer
-        ARMSX2Bridge.setINIInt("EmuCore/GS", key: "Renderer", value: Int32(initialRenderer))
+        _rendererConfig.write(initialRenderer)
 #endif
         upscaleMultiplier = _upscaleMultiplierConfig.load()
         vsyncQueueSize = _vsyncQueueSizeConfig.load()
@@ -1758,7 +1806,7 @@ final class SettingsStore {
         backgroundEnabledInSettings = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInSettings") as? Bool ?? true
         normalizeDEV9Settings()
         VPadSkinLibraryStore.shared.adoptLegacySelection(virtualPadSkin)
-        ARMSX2Bridge.setINIString("EmuCore/GS", key: "AspectRatio", value: Self.aspectRatioName(for: aspectRatio))
+        _aspectRatioConfig.write(aspectRatio)
         // Do NOT re-apply the OSD preset here. The saved per-item OSD flags are the
         // source of truth and are pushed into the live GSConfig natively by
         // ARMSX2ApplyIOSOsdPresetFromConfig() at scene startup. Calling
@@ -2239,7 +2287,7 @@ final class SettingsStore {
         appLanguage = .system
         controllerMultitapMode = 0
         autoOpenStikDebug = false
-        jitScriptProtocol = .defaultValue
+        jitScriptProtocol = JITScriptProtocol.defaultValue
 
         dev9HddEnabled = false
         dev9HddFile = "DEV9hdd.raw"

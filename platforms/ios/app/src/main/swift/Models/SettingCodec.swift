@@ -3,17 +3,11 @@
 
 import Foundation
 
-/// Reading and writing a setting, kept together in one value.
-///
-/// These used to be two hand-written halves: a `writer` closure on the
-/// descriptor, and a matching `getINI` call a thousand lines away in `init()`.
-/// Nothing made the two agree. Pairing them is what stops the next one drifting.
+/// The INI read and write for one setting, so the two cannot drift apart.
 struct SettingCodec<Value> {
     let read: @MainActor (_ section: String, _ key: String, _ fallback: Value) -> Value
     let write: @MainActor (_ section: String, _ key: String, _ value: Value) -> Void
 }
-
-// MARK: - The straightforward ones
 
 @MainActor
 extension SettingCodec where Value == Bool {
@@ -37,7 +31,7 @@ extension SettingCodec where Value == Int {
         read: { s, k, d in Int(ARMSX2Bridge.getINIInt(s, key: k, defaultValue: Int32(d))) },
         write: { s, k, v in ARMSX2Bridge.setINIInt(s, key: k, value: Int32(v)) })
 
-    /// Same, but a value from outside the range is pulled back in rather than trusted.
+    /// Clamps on the way in and out.
     static func int(in range: ClosedRange<Int>) -> Self {
         Self(clampedBy: { SettingsStore.clamped($0, to: range) })
     }
@@ -53,11 +47,9 @@ extension SettingCodec where Value == Int {
     }
 }
 
-// MARK: - Enums
-
 @MainActor
 extension SettingCodec where Value: RawRepresentable, Value.RawValue == Int {
-    /// Stored as its raw number. An unknown number falls back to the default.
+    // var, not let: the type is still generic here, so it gets no static storage.
     static var rawInt: Self {
         Self(read: { s, k, d in
                 Value(rawValue: Int(ARMSX2Bridge.getINIInt(s, key: k, defaultValue: Int32(d.rawValue)))) ?? d },
@@ -67,14 +59,13 @@ extension SettingCodec where Value: RawRepresentable, Value.RawValue == Int {
 
 @MainActor
 extension SettingCodec where Value: RawRepresentable, Value.RawValue == String {
-    /// Stored as its raw name. An unknown name falls back to the default.
     static var rawString: Self {
         Self(read: { s, k, d in Value(rawValue: ARMSX2Bridge.getINIString(s, key: k, defaultValue: d.rawValue)) ?? d },
              write: { s, k, v in ARMSX2Bridge.setINIString(s, key: k, value: v.rawValue) })
     }
 }
 
-// MARK: - The awkward handful
+// MARK: - The ones that need their own spelling
 
 @MainActor
 extension SettingCodec where Value == Bool {
