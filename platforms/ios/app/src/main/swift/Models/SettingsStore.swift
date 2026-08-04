@@ -209,9 +209,7 @@ final class SettingsStore {
     static let defaultEmulatorVolumePercent = 100
     static let textureOffsetRange = -4096...4096
     static let skipDrawRange = 0...5000
-    // Named so the stepper and the per-game panel agree about the bounds. Neither
-    // this one nor casSharpnessRange is on its global descriptor's codec, so a
-    // hand-edited INI still gets through. A gap rather than a decision.
+    // Named so the stepper, the per-game panel and the global codec all agree.
     static let vsyncQueueRange = 2...16
     static let audioBufferMsRange = 10...200
     static let audioOutputLatencyMsRange = 5...200
@@ -660,7 +658,7 @@ final class SettingsStore {
     let _vsyncQueueSizeConfig = Setting<Int>(
         section: "EmuCore/GS", key: "VsyncQueueSize", default: 8,
         suppressible: false,
-        codec: .int)
+        codec: .int(in: SettingsStore.vsyncQueueRange))
     var vsyncQueueSize: Int = 8 { didSet {
         commit(_vsyncQueueSizeConfig, vsyncQueueSize)
         if vsyncQueueSize != oldValue { markFramePacingCustom() }
@@ -697,7 +695,7 @@ final class SettingsStore {
     let _casSharpnessConfig = Setting<Int>(
         section: "EmuCore/GS", key: "CASSharpness", default: 50,
         suppressible: false,
-        codec: .int)
+        codec: .int(in: SettingsStore.casSharpnessRange))
     var casSharpness: Int = 50 { didSet { commit(_casSharpnessConfig, casSharpness) } }
     let _interlaceModeConfig = Setting<Int>(
         section: "EmuCore/GS", key: "deinterlace_mode", default: 0,
