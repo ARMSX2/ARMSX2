@@ -1115,8 +1115,11 @@ void ps_fbmask(inout float4 C, float2 pos_xy)
 {
 	if (PS_FBMASK)
 	{
-		float multi = PS_COLCLIP_HW ? 65535.0f : 255.0f;
-		float4 RT = trunc(RtLoad(int2(pos_xy)) * multi + 0.1f);
+		float multi_rgb = PS_COLCLIP_HW ? 65535.0f : 255.0f;
+		float multi_a = PS_RTA_CORRECTION ? 128.0f : 255.0f;
+		float4 RT = RtLoad(int2(pos_xy));
+		RT.rgb = trunc(RT.rgb * multi_rgb + 0.1f);
+		RT.a = round(RT.a * multi_a);
 		C = (float4)((quantize_color(C) & ~FbMask) | ((uint4)RT & FbMask));
 	}
 	else if (PS_QUANTIZE_COLOR || PS_SUBSTITUTE_ALPHA)
@@ -1621,7 +1624,6 @@ if (bad)
 		output.c1 = o_col1;
 	#endif
 #elif PS_RETURN_COLOR_ROV
-	o_col0 = (FbMask == 0xFFu) ? RtLoad(input.p.xy) : o_col0; // channel masking
 	if (!rov_discard_color)
 		RtWrite(input.p.xy, o_col0);
 #endif
