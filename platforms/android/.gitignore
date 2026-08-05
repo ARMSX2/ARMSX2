@@ -58,3 +58,7 @@ app/src/main/cpp/3rdparty/shaderc/third_party/spirv-tools/
 
 # CI PGO profile for the dual-core nightly (build-release recipe uses this)
 !pgo/armsx2.profdata
+
+# Staged by tools/build-play-aab.sh for the dual-core bundle trick; a build
+# intermediate, never a source. Left behind if the build is interrupted.
+app/src/main/jniLibs/arm64-v8a/libemucore_*.so
