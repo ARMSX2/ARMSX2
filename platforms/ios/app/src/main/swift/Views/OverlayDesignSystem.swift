@@ -115,10 +115,21 @@ private struct OverlayCompactKey: EnvironmentKey {
     static let defaultValue: Bool = false
 }
 
+private struct OverlayKeyboardOverlapKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
 extension EnvironmentValues {
     var overlayCompact: Bool {
         get { self[OverlayCompactKey.self] }
         set { self[OverlayCompactKey.self] = newValue }
+    }
+
+    /// How much of the overlay card the keyboard covers. The panel insets itself by this,
+    /// since an inset applied out here would shrink the box it measures itself in.
+    var overlayKeyboardOverlap: CGFloat {
+        get { self[OverlayKeyboardOverlapKey.self] }
+        set { self[OverlayKeyboardOverlapKey.self] = newValue }
     }
 }
 

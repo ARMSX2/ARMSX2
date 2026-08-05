@@ -128,12 +128,18 @@ struct EmulationOnlyGameView: View {
 
     private var retainedGameplayView: some View {
         GeometryReader { geometry in
-            let isLandscape = geometry.size.width > geometry.size.height
+            // Same screen-not-safe-region measurement as the full game screen, same reason.
+            let screen = CGSize(
+                width: geometry.size.width + geometry.safeAreaInsets.leading + geometry.safeAreaInsets.trailing,
+                height: geometry.size.height + geometry.safeAreaInsets.top + geometry.safeAreaInsets.bottom
+            )
+            let isLandscape = screen.width > screen.height
 
             Group {
                 if appState.emulationOnlyPresentation.showsVirtualControls && !isLandscape {
                     VStack(spacing: 0) {
-                        let gameHeight = min(geometry.size.width * 3 / 4, geometry.size.height * 0.6)
+                        let deckHeight = screen.height - geometry.safeAreaInsets.top
+                        let gameHeight = min(geometry.size.width * 3 / 4, deckHeight * 0.6)
                         accessibleMetalSurface
                             .frame(height: gameHeight)
                             .clipped()
@@ -145,7 +151,7 @@ struct EmulationOnlyGameView: View {
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    .ignoresSafeArea(.container, edges: .bottom)
+                    .ignoresSafeArea([.container, .keyboard], edges: .bottom)
                     // Same top safe-area strip as the full game screen, same reason.
                     .background(Color.black.ignoresSafeArea())
                 } else {
@@ -256,9 +262,7 @@ struct GameScreenView: View {
     // from SDL/core. Started when the menu is hidden during gameplay, stopped on restore.
     @State private var menuRestorePollTimer: Timer?
     @State private var lastControllerInputActive = false
-    // Orientation, read from the body GeometryReader. The overlay containers
-    // (pause menu, per-game settings) aren't re-measured on rotation, so we
-    // key them on this to force a fresh layout on a flip.
+    // Only the pause menu is keyed on this. The per-game panel holds unsaved edits.
     @State private var screenIsLandscape = true
     @State private var emulationOnlyTransitionTask: Task<Void, Never>?
     @State private var emulationOnlyActivationInFlight = false
@@ -337,7 +341,12 @@ struct GameScreenView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let isLandscape = geo.size.width > geo.size.height
+            // The window. A keyboard shrinks the safe region until iPad portrait reads wide.
+            let screen = CGSize(
+                width: geo.size.width + geo.safeAreaInsets.leading + geo.safeAreaInsets.trailing,
+                height: geo.size.height + geo.safeAreaInsets.top + geo.safeAreaInsets.bottom
+            )
+            let isLandscape = screen.width > screen.height
 
             Group {
                 if isLandscape {
@@ -370,7 +379,9 @@ struct GameScreenView: View {
                     // Game respects the top safe area so OSD stays below the Dynamic Island.
                     // Controller ignores the bottom safe area so buttons remain usable near the home indicator.
                     VStack(spacing: 0) {
-                        let gameHeight = min(geo.size.width * 3 / 4, geo.size.height * 0.6)
+                        // The deck ignores the bottom inset, so it runs to the foot of the window.
+                        let deckHeight = screen.height - geo.safeAreaInsets.top
+                        let gameHeight = min(geo.size.width * 3 / 4, deckHeight * 0.6)
                         MetalGameView()
                             .frame(height: gameHeight)
                             .clipped()
@@ -409,24 +420,24 @@ struct GameScreenView: View {
                                 .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
                         }
                     }
-                    .ignoresSafeArea(.container, edges: .bottom)
+                    // `.keyboard` too: gameplay must not move when an overlay raises one.
+                    .ignoresSafeArea([.container, .keyboard], edges: .bottom)
                     // The game stays out of the top safe area on purpose, so something has
                     // to fill it. Black rather than leaving it to whatever is behind: the
                     // root controller is only black because a boot notification made it so.
                     .background(Color.black.ignoresSafeArea())
                 }
             }
-            .preference(key: GameScreenSizePreferenceKey.self, value: geo.size)
+            .preference(key: GameScreenSizePreferenceKey.self, value: screen)
+            // Off the safe region, not the preference: the status bar moves one, not the other.
+            .onChange(of: geo.size) { _, _ in syncFullscreenStateFromWindow() }
         }
         .onPreferenceChange(GameScreenSizePreferenceKey.self) { size in
-            // The body GeometryReader is re-measured on rotation; the overlay
-            // subtrees aren't, so track orientation here and .id() the overlay
-            // containers off it to rebuild them with the new size.
+            // The window, so only a real rotation reaches this.
             let landscape = size.width > size.height
             if screenIsLandscape != landscape {
                 screenIsLandscape = landscape
             }
-            syncFullscreenStateFromWindow()
         }
         .sheet(isPresented: childPresentedBinding(.saveStates)) {
             SaveStatesPanel { message, isImportant in
@@ -472,14 +483,11 @@ struct GameScreenView: View {
         }
         .overlay {
             if case .pausedPresenting(.perGame) = overlayRoute {
-                // Presented through the same overlay shell as the pause menu so it stays
-                // integrated with gameplay (no system sheet chrome / status bar / Dynamic
-                // Island leak). The panel dismisses via Save/Cancel, so the backdrop does
-                // not tap-to-dismiss.
+                // Same shell as the pause menu, so no sheet chrome leaks over gameplay, and
+                // no `.id` unlike below: a rebuild would drop unsaved edits.
                 GameOverlayContainer(frameMode: .landscapePanel) { _ in
                     runtimePerGameSettingsContent
                 }
-                .id(screenIsLandscape)
             }
         }
         .overlay {
