@@ -3480,6 +3480,16 @@ bool GSDeviceVK::CheckFeatures()
 	//     Katamari vs no read at all) cannot be recovered by removing the copy, because removing
 	//     the copy removes the rendering mode.
 	//
+	// ⚠️ Reusing the clone ACROSS draws was also fully built and refuted (2026-08-05): a snapshot
+	// cache keyed on "no pass end since the copy" with per-draw written-area tracking, verified
+	// byte-exact on ten dumps — and it hit 0 times in ~4,800 feedback draws across the corpus.
+	// The reads are byte-dependent on the writes: these draws read the RT at (or overlapping) the
+	// destination pixels of the PREVIOUS feedback draw (blend/fbmask/tex-is-fb chains), so the
+	// snapshot is stale by construction the moment it could be reused. That geometry is GS-state,
+	// not GPU behaviour, so no driver revision changes it. Batching several copies into one pass
+	// break fails on the same dependency: copy N is only valid after draw N-1 has executed. The
+	// per-feedback-draw break+copy bracket is structural for this workload.
+	//
 	// OverrideTextureBarriers = 1 remains the documented way back to the in-tile path for A/B
 	// work and for a future driver revision that fixes the read.
 	const bool rt_self_read_is_broken =
