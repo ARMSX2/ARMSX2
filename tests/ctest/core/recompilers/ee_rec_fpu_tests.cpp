@@ -1507,6 +1507,53 @@ TEST(EeRecFpu, MultiplierDeficitReachesTheWholeMultiplyFamily)
 	}
 }
 
+TEST(EeRecFpu, MulSMultiplierDeficitReachesResultsWithANonZeroTail)
+{
+	// The class the zero-tail closed form could not reach: the exact product has
+	// a tail below the single ULP, but one smaller than the 2^15 the array loses,
+	// so the borrow still crosses. Rows measured directly on SCPH-90000
+	// (captures/fpmul/, the fs = 0x800001 / 0x800002 / 0xFFFFFF / 0xBFFFFF /
+	// 0xD2B4C1 sweeps, every one of the 2^23 ft significands).
+	//
+	// All four polarities are present. A model that widened the tail test to
+	// 2^15 and kept reading ft passes the first group and fails the next two;
+	// the old zero-tail form fails the first two and passes the last two. The
+	// corpus contains no row in any of them.
+	struct Row { u32 fs, ft, want; };
+	static const Row rows[] = {
+		// One ULP low with a non-zero tail: the old ft-only form said "exact"
+		// here because it required a zero tail.
+		{0x3F800001u, 0x3F800002u, 0x3F800002u}, // tail 0x2
+		{0x3F800002u, 0x3F800002u, 0x3F800003u}, // tail 0x4
+		{0x3FFFFFFFu, 0x3FFF9155u, 0x407F9153u}, // tail 0x6EAB
+
+		// Same, with the ft term clear: fs is what decides these.
+		{0x3FFFFFFFu, 0x3FFF8D55u, 0x407F8D53u}, // tail 0x72AB
+		{0x3FBFFFFFu, 0x3FBF8D55u, 0x400FA9FEu}, // tail 0x72AB
+		{0x3FD2B4C1u, 0x3F803415u, 0x3FD30A7Cu}, // tail 0x7D5
+
+		// Inside the gate and exact: the array is what decides, not the tail.
+		{0x3F800001u, 0x3F800001u, 0x3F800002u}, // tail 0x1
+		{0x3F800002u, 0x3F800001u, 0x3F800003u}, // tail 0x2
+		{0x3FFFFFFFu, 0x3FFF8001u, 0x407F8000u}, // tail 0x7FFF
+
+		// Tail large enough to absorb the borrow: exact despite the ft term.
+		{0x3F800001u, 0x3F808000u, 0x3F808001u}, // tail 0x8000
+		{0x3F800002u, 0x3F804002u, 0x3F804004u}, // tail 0x8004
+	};
+	for (const Row& r : rows)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetFprBits(0, r.fs);
+		h.SetFprBits(1, r.ft);
+		h.LoadProgram({ee::MUL_S(2, 0, 1)});
+		h.RunInterpOnly();
+		EXPECT_EQ(h.GetFprBitsInterp(2), r.want)
+			<< "mul.s fs=" << std::hex << r.fs << " ft=" << r.ft;
+	}
+}
+
 TEST(EeRecFpu, MaddSFpuMulHackAppliesToProduct)
 {
 	// MADD routes its multiply through the same helper: ACC=0 + hack(Fs*Ft) ->

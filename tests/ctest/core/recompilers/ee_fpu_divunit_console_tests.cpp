@@ -46,10 +46,17 @@
 //    A reciprocal-then-multiply model scores WORSE than plain
 //    correctly-rounded (69% against 84%), so that is not the shape either.
 //
-// Part of that is now modelled: eeDivide() and eeSqrtBits() in FPU.cpp truncate
-// when u, how far the exact result sits below the upper candidate, is above a
-// per-branch cap. The law, its caps and the captures behind them are at
-// eeDivideTruncates(). The rows below moved:
+// Part of that is now modelled. eeDivide() and eeSqrtBits() in FPU.cpp apply
+// the one rule the captures settle, in the shape eeMulRound already uses for
+// the multiplier's deficit:
+//
+//     u > cap  =>  the unit truncates
+//
+// where u is how far the exact result sits below the upper candidate and
+// cap is 2^22 (div, A>=B), max(2^23, mb-2^22) (div, A<B) or 2^23 (sqrt) --
+// in each case half the minimum span. The implication runs one way only, with
+// zero measured exceptions in 199,794,412 div rows and 16,777,216 sqrt rows, so
+// it can only move a result onto silicon. The rows below moved:
 //
 //     op       was       now      gained   lost
 //     sqrt.s   66/87  -> 87/87      +21      0

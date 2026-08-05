@@ -764,49 +764,134 @@ void DIV_S() {
 	The console's multiply array is not a correctly-rounding multiplier: it
 	comes back exactly one step closer to zero on a large fraction of operands,
 	and which operands depends on operand order. Upstream states the rule in a
-	comment (`pcsx2/x86/iFPU.cpp:500`) and never tests it; FpuMulHack is a
-	one-point sample of it.
+	comment (the note above FPU_MUL in `pcsx2/x86/iFPU.cpp`) and never tests it;
+	FpuMulHack is a one-point sample of it.
 
 	Measured on SCPH-90000 (FCR0 0x2e40), captures/fpmul/ in the session
-	archive, 25M probes over three runs:
+	archive. Runs 2 and 3 sweep all 2^23 ft significands at each of twelve fs
+	significands, 100663296 rows, and every one of them is either exact or one
+	ULP low -- nothing ever came back high, or two ULP low:
 
-	  * `mul.s(1.0, x)` was measured for all 2^23 significands. 8257536 of them
-	    come back one ULP low and 131072 exact -- and nothing ever came back
-	    high, or two ULP low, in 16.8M probes.
+	  * `mul.s(1.0, x)` was measured for every one of the 2^23 significands.
+	    8257536 of them come back one ULP low and 131072 exact.
 	  * `mul.s(x, 1.0)` is exact for all 2^23. The asymmetry is total, not
-	    statistical: the predicate reads ft and never fs, which is exactly why
-	    the operation is not commutative.
+	    statistical: only ft is recoded, so only ft can contribute a negative
+	    digit whose correction the truncated columns drop, which is why the
+	    operation is not commutative.
 	  * Unchanged across twelve exponent-field pairs from (1,254) to (254,1),
 	    so it is a significand-domain effect with no exponent term.
 
-	Bits 1,3,5,7,9 of ft's mantissa are the sign bits of the five lowest
-	radix-4 Booth digits, which is what identifies the mechanism: ft is the
-	recoded operand and the array's low columns are not built, so each low
-	negative digit's two's-complement correction is dropped. The bit-11 term
-	does not follow from that mechanism; it is what the capture shows at the
-	truncation column. In Booth form the same predicate reads "exact iff digits
-	0..4 are non-negative and (d5<0) == (d7<0)", which was checked equivalent
-	over the whole 2^23 space.
+	The mechanism: ft is the Booth-recoded operand and the array's low columns
+	are not built, so the low partial products arrive at the summation tree
+	missing their bottom bits and each low negative digit's two's-complement
+	correction is dropped. eeMulArray() reconstructs that truncated low half and
+	compares its column 15 against the exact product's. Where the two disagree
+	the array lost exactly 2^15 there, and the loss reaches the result only if
+	borrowing it crosses the single ULP.
 
-	What this does not model: the deficit is smaller than one ULP -- at most
-	~27308 against an ULP of 2^23 -- so it only reaches the result when the
-	exact product has nothing below the ULP to absorb it. That is the `tail`
-	test below, and it is the whole of the modelled class. When the tail is
-	non-zero the console is one ULP low iff the tail is smaller than the
-	deficit, and the deficit is not identifiable from mul.s observations: it is
-	only ever visible through the single comparison the instruction performs.
-	That residual is ~0.1% of random operand pairs and 0 rows of the console
-	corpus.
+	The reconstruction is not ours. It is the multiplier out of a proposed PCSX2
+	soft-float series -- GitHubProUser67, "Core/EE: Implements Soft-Floats for
+	the interpreters", 2025-04-20, crediting Gregory Gaines' write-up, the
+	PS2FloatLibrary in MultiServer3 and Goatman13's accurate_int_add_sub branch.
+	It is unmerged and still moving: PCSX2 master has no PS2Float, and the
+	pcsx2-reliquary fork that carries it as pcsx2/PS2Float.inl has revised it
+	since. The shape below is that routine, MulMantissa(), with its two small
+	structs unpacked. Bit-exact on all 100663296 measured rows, 15283477 of
+	them one ULP low.
 
-	Applied only where it was measured; the three guards are in eeMulRound().
+	What this replaced: on the 15585118 rows whose product is exactly
+	representable the decision collapses to a closed form in ft's mantissa alone
+	-- one ULP low iff a negative Booth digit appears among digits 0..4
+	(`m & 0x2AA`), or bit 11 disagrees with a boundary term on bits 12..15 --
+	the same column-15 test specialised to a zero tail. It is exact there and
+	short on 58585 of the remaining rows, where the decision needs fs and so no
+	predicate over ft can reach it. The arm64 emitters still implement a cut of
+	it, which is cheap where this is not; see iFPUd-arm64.cpp.
+
+	The gate below is exact: a borrow of 2^15 crosses a multiple of 2^k only
+	where the tail beneath it is already smaller than 2^15. It leaves the array
+	running on 0.27% of random operand pairs.
+
+	Applied only where it was measured: a saturating or flushed result, and a
+	decrement that would walk the exponent field to zero, are left alone.
 */
-static bool eeMulDefectiveFt(u32 ft)
+/*	The 3-bit window that selects what digit `bit` of b contributes: 0 and 7
+	select zero, 1 and 2 select +a, 3 selects +2a, 4 selects -2a, 5 and 6
+	select -a. */
+static u32 eeBoothWindow(u32 b, u32 bit)
 {
-	const u32 m = ft & 0x7FFFFF;
-	if (m & 0x2AA) // a negative Booth digit among 0..4
-		return true;
-	const u32 h = (m >> 12) & 0xF;
-	return ((m >> 11) & 1u) != ((h >= 8 && h <= 13) ? 1u : 0u);
+	return (bit ? b >> (bit * 2 - 1) : b << 1) & 7;
+}
+
+/*	That digit's partial product of a. 32-bit on purpose: no column above 31 can
+	reach a decision taken at column 15, and letting the shift overflow is what
+	discards them. A negative digit is left as a one's complement here -- the
+	`+1` that would complete the negation is eeBoothCorrection() below. */
+static u32 eeBoothPartial(u32 a, u32 b, u32 bit)
+{
+	const u32 window = eeBoothWindow(b, bit);
+	a <<= bit * 2;
+	a += (window == 3 || window == 4) ? a : 0;
+	if (window >= 4 && window <= 6)
+		a ^= 0u - (1u << (bit * 2));
+	return (window >= 1 && window <= 6) ? a : 0;
+}
+
+/*	The `+1` a negative digit owes, at that digit's own weight. Digits 0..4
+	never receive theirs -- their columns are not built, which is the whole
+	defect -- so only 5..7 get one. */
+static u32 eeBoothCorrection(u32 b, u32 bit)
+{
+	const u32 window = eeBoothWindow(b, bit);
+	return (window >= 4 && window <= 6) ? (1u << (bit * 2)) : 0;
+}
+
+/*	One 3:2 carry-save row: returns the sum bits, writes the carry bits. */
+static u32 eeCarrySaveAdd(u32 a, u32 b, u32 c, u32& carry)
+{
+	const u32 u = a ^ b;
+	carry = ((u & c) | (a & b)) << 1;
+	return u ^ c;
+}
+
+/*	The 48-bit significand product as the console's array computes it: the exact
+	product, less 2^15 where the truncated low columns come up short there. The
+	masks are the columns silicon does not build. */
+static u64 eeMulArray(u32 a, u32 b)
+{
+	const u64 full = static_cast<u64>(a) * static_cast<u64>(b);
+
+	const u32 p0 = eeBoothPartial(a, b, 0);
+	const u32 p1 = eeBoothPartial(a, b, 1);
+	const u32 p2 = eeBoothPartial(a, b, 2);
+	const u32 p3 = eeBoothPartial(a, b, 3);
+	const u32 p4 = eeBoothPartial(a, b, 4);
+	const u32 p5 = eeBoothPartial(a, b, 5);
+	const u32 p6 = eeBoothPartial(a, b, 6);
+	const u32 p7 = eeBoothPartial(a, b, 7);
+
+	/*	The tree below is four carry-save levels deep and each lifts a bit by one
+		column, so nothing under bit 11 can reach the decision at column 15.
+		Digit 4's mask is exactly that boundary -- widening it changes no output,
+		narrowing it by one does. Digit 5's sits one higher because its bits 10
+		and 11 do not travel through the tree; they are re-injected below. */
+	u32 carry0, carry1, carry2, carry3, carry4, carry5;
+	const u32 sum0 = eeCarrySaveAdd(p1, p2, p3, carry0);
+	const u32 sum1 = eeCarrySaveAdd(p4 & ~0x7ffu, p5 & ~0xfffu, p6, carry1);
+
+	// Digit 5's two surviving product bits, and the corrections digits 5 and 6
+	// still receive, ride on rows they did not originate in.
+	const u32 hi1 = carry1 | eeBoothCorrection(b, 6) | (p5 & 0x800);
+	const u32 row7 = p7 | ((p5 & 0x400) + eeBoothCorrection(b, 5));
+
+	const u32 sum2 = eeCarrySaveAdd(p0, sum0, carry0, carry2);
+	const u32 sum3 = eeCarrySaveAdd(row7, sum1, hi1, carry3);
+	const u32 sum4 = eeCarrySaveAdd(carry2, sum3, carry3, carry4);
+	const u32 sum5 = eeCarrySaveAdd(sum2, sum4, carry4, carry5);
+
+	const u32 lo = sum5 & ~0x7fffu;
+	const u32 hi = (carry5 + eeBoothCorrection(b, 7)) & ~0x7fffu;
+	return full - (((lo + hi) ^ full) & 0x8000);
 }
 
 static bool eeMulOneUlpLow(u32 fs, u32 ft)
@@ -814,14 +899,14 @@ static bool eeMulOneUlpLow(u32 fs, u32 ft)
 	if ((fs & 0x7F800000) == 0 || (ft & 0x7F800000) == 0)
 		return false; // a zero operand (denormals are zero): the product is zero
 
-	const u64 a = 0x800000u | (fs & 0x7FFFFF);
-	const u64 b = 0x800000u | (ft & 0x7FFFFF);
-	const u64 prod = a * b; // 47 or 48 significant bits, exact in 64
+	const u32 a = 0x800000u | (fs & 0x7FFFFF);
+	const u32 b = 0x800000u | (ft & 0x7FFFFF);
+	const u64 prod = static_cast<u64>(a) * static_cast<u64>(b); // exact in 64
 	const int k = (prod >> 47) ? 24 : 23;
-	if (prod & ((1ull << k) - 1u))
-		return false; // the tail below the ULP absorbs the deficit
+	if ((prod & ((1ull << k) - 1u)) >= 0x8000u)
+		return false; // the tail below the ULP absorbs the whole borrow
 
-	return eeMulDefectiveFt(ft);
+	return (prod >> k) != (eeMulArray(a, b) >> k);
 }
 
 /*	eeRoundToSingle() for a product, plus the multiplier defect. */
@@ -933,10 +1018,12 @@ void MTC1() {
 }
 
 /*	The product of two EE singles is 48 significand bits, so a double holds it
-	exactly at any exponent and eeRoundToSingle() does the only rounding. The
-	multiplier's own one-ULP deficit rides on top, in eeMulRound(); what it
-	models and what it does not is at eeMulDefectiveFt. The flags stay on the
-	exact product, per raiseOrClearOU().
+	exactly at any exponent and eeRoundToSingle() does the only rounding.
+
+	The multiplier's own one-ULP deficit rides on top of that, in eeMulRound --
+	see the block comment above eeMulArray for what the array loses and where
+	the loss reaches the result. The flag path stays on the exact product: O/U
+	is a magnitude test on the exact result and a one-ULP move cannot change it.
 */
 void MUL_S() {
 	const double exact = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );

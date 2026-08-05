@@ -27,8 +27,6 @@
 
 #include "Config.h"
 
-#include <cfloat>
-#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <gtest/gtest.h>
@@ -1152,8 +1150,8 @@ TEST(EeRecFpuFull, MulDefectNeverDecrementsAZeroProduct)
 //
 // ft = 0x48b65815 is a witness. Its mantissa 0x365815 has no bit of 0x2AA set,
 // bit 11 is 1, and (0x365815 >> 12) & 0xF is 5, so the boundary term is the
-// only one that fires. The interpreter (FPU.cpp eeMulDefectiveFt) models both
-// and returns the decremented product; iFPUd returns the IEEE one.
+// only one that fires. The interpreter (FPU.cpp eeMulArray) models both and
+// returns the decremented product; iFPUd returns the IEEE one.
 //
 // If iFPUd ever grows the boundary term, this test fails and the fix is to
 // delete it -- along with the carve-out in kGuardMaskWitnesses row 53.
@@ -1191,12 +1189,12 @@ TEST(EeRecFpuFull, MulDefectDropsTheBoundaryTermTheInterpreterModels)
 }
 
 // ---------------------------------------------------------------------------
-// Randomised differential: mode 3 against the interpreter, which models the
-// same multiply law independently and in completely different code (FPU.cpp
-// eeMulRound, an integer tail test on the 48-bit significand product; iFPUd
-// lets the narrowing perform the tail test on a double). Agreement across a
-// wide operand space is what says the emitter implements the law rather than
-// the handful of rows above.
+// Randomised differential: mode 3 against the interpreter, which reaches the
+// same answers independently and in completely different code (FPU.cpp
+// eeMulArray reconstructs the array's truncated low columns in integers; iFPUd
+// tests ft's Booth digits and lets the narrowing decide whether the decrement
+// survives). Agreement across a wide operand space is what says the emitter
+// implements the law rather than the handful of rows above.
 //
 // Dimensions varied and crossed: six operand classes on each side (arbitrary
 // words, random normals, powers of two -- which force a zero tail and so make
@@ -1207,14 +1205,20 @@ TEST(EeRecFpuFull, MulDefectDropsTheBoundaryTermTheInterpreterModels)
 // recMaddsub's multiply stage, reached with ACC = +0 so the accumulate is a
 // no-op on the product's bits).
 //
-// One divergence is licensed, and it is counted so the sweep cannot pass by
-// never reaching it: the boundary term iFPUd drops, which leaves the emitter
-// one ULP further from zero than the interpreter. It is recognised from ft
-// alone, never from the results, so a wrong result cannot license itself. Both
-// engines now read the top binade and saturate at the same 0x7FFFFFFF, so the
-// two operand-range carve-outs this sweep used to need are gone. Anything else
-// -- a wrong predicate, a decrement escaping into a non-zero tail, a zero
-// product turned into a NaN -- fails.
+// Two divergences are licensed, both with the interpreter one ULP nearer zero:
+//
+//   1. the dropped boundary term, on rows whose product is exactly
+//      representable; and
+//   2. rows whose tail is non-zero but smaller than the array's 2^15 borrow.
+//      The interpreter reconstructs the array and so sees these; iFPUd decides
+//      on a double, where one integer ULP is 2^-29 of a single ULP, so its
+//      decrement is absorbed by the narrowing and the row comes back IEEE.
+//
+// Rows are classified by the tail below the single ULP, taken from the exact
+// 48-bit significand product, so a bug in eeMulArray cannot license itself.
+// Anything else -- a wrong predicate, a decrement escaping into a tail large
+// enough to absorb it, a zero product turned into a NaN, a saturation or
+// top-binade case the decrement walked across -- fails here.
 TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 {
 	auto splitmix = [](u64& state) {
@@ -1237,7 +1241,7 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 			default: return sign | mant;                                           // denormal/zero
 		}
 	};
-	// Both terms of the measured predicate, so a divergence can be classified
+	// Both terms of the zero-tail closed form, so a divergence can be classified
 	// rather than merely counted.
 	auto booth = [](u32 ft) { return (ft & 0x2AAu) != 0; };
 	auto full = [](u32 ft) {
@@ -1247,9 +1251,19 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 		const u32 h = (m >> 12) & 0xFu;
 		return ((m >> 11) & 1u) != ((h >= 8u && h <= 13u) ? 1u : 0u);
 	};
+	// The tail below the single ULP, from the exact 48-bit significand product.
+	// A zero operand contributes none: the product is zero.
+	auto tailBelowUlp = [](u32 fs, u32 ft) -> u64 {
+		if ((fs & 0x7F800000u) == 0 || (ft & 0x7F800000u) == 0)
+			return 0;
+		const u64 a = 0x800000u | (fs & 0x7FFFFFu);
+		const u64 b = 0x800000u | (ft & 0x7FFFFFu);
+		const u64 p = a * b;
+		return p & ((1ull << ((p >> 47) ? 24 : 23)) - 1u);
+	};
 
 	u64 state = 0x1234567890ABCDEFull;
-	int rows = 0, boundary_gap[4] = {0, 0, 0, 0};
+	int rows = 0, boundary_gap[4] = {0, 0, 0, 0}, subulp_gap = 0;
 	for (int i = 0; i < 40000; i++)
 	{
 		const int cs = static_cast<int>(splitmix(state) % 6);
@@ -1290,12 +1304,17 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 		if (jit == interp)
 			continue;
 
-		const bool boundary_only = !booth(ft) && full(ft);
-		ASSERT_TRUE(boundary_only && jit == interp + 1u)
+		const u64 tail = tailBelowUlp(fs, ft);
+		const bool boundary_only = tail == 0 && !booth(ft) && full(ft);
+		const bool sub_ulp_tail = tail != 0 && tail < 0x8000u;
+		ASSERT_TRUE((boundary_only || sub_ulp_tail) && jit == interp + 1u)
 			<< "unlicensed divergence: form=" << form << " cs=" << cs << " ct=" << ct
-			<< std::hex << " fs=" << fs << " ft=" << ft
+			<< std::hex << " fs=" << fs << " ft=" << ft << " tail=" << tail
 			<< " jit=" << jit << " interp=" << interp;
-		boundary_gap[form]++;
+		if (boundary_only)
+			boundary_gap[form]++;
+		else
+			subulp_gap++;
 	}
 
 	EXPECT_EQ(rows, 40000);
@@ -1307,6 +1326,9 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 		<< "recMULop never reached the boundary-term class: the sweep is vacuous";
 	EXPECT_GT(boundary_gap[3], 0)
 		<< "recMaddsub never reached the boundary-term class: the sweep is vacuous";
+	EXPECT_GT(subulp_gap, 0)
+		<< "the sweep never reached a non-zero tail below the borrow: the "
+		   "second carve-out is vacuous and would hide a regression";
 }
 
 

@@ -497,8 +497,10 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 //      mul.s(1.0, x) is one ULP low for 8257536 of the 2^23 significands while
 //      mul.s(x, 1.0) is exact for all of them.
 //
-// The interpreter models the same law (FPU.cpp eeMulRound / eeMulOneUlpLow /
-// eeMulDefectiveFt); this is its mode-3 codegen. FpuMulHack is a one-point
+// The interpreter models a superset (FPU.cpp eeMulRound / eeMulOneUlpLow /
+// eeMulArray): it reconstructs the array's truncated low half, so it also
+// catches the rows where the tail is non-zero but smaller than the borrow.
+// This is the mode-3 codegen for the zero-tail law. FpuMulHack is a one-point
 // sample of the same rule and this subsumes it, including the asymmetry -- it
 // is not folded in here because iFPUd never had it.
 //
