@@ -1404,9 +1404,12 @@ data class TouchLayout(val buttons: List<TouchButtonCfg>) {
                 TouchButtonCfg(TouchButtonId.MACRO2, 0.48f, 0.36f, 42f, enabled = false),
                 TouchButtonCfg(TouchButtonId.MACRO3, 0.56f, 0.36f, 42f, enabled = false),
                 TouchButtonCfg(TouchButtonId.MACRO4, 0.64f, 0.36f, 42f, enabled = false),
-                // Extra analog button above the portrait left stick (0.19, 0.62, 150dp). Portrait is
-                // much taller, so the same physical gap is a far smaller fraction than in landscape.
-                TouchButtonCfg(TouchButtonId.ANALOG_EXTRA, 0.19f, 0.49f, 48f),
+                // Extra analog button. Portrait cannot copy the landscape placement: here the stick
+                // sits directly ABOVE the D-pad and the shoulders above that, so the whole left
+                // column is taken and "above the D-pad" would land inside the stick. Park it just
+                // clear of the D-pad's right edge (which reaches x 0.40) instead, still an easy left
+                // thumb reach and in open space. Drag it wherever you like — it is a normal widget.
+                TouchButtonCfg(TouchButtonId.ANALOG_EXTRA, 0.44f, 0.72f, 48f),
             ).let { placed ->
                 // Splice in anything the landscape default has that this list does not (pause,
                 // pressure, save/load-state buttons...) so a new widget never goes missing in
@@ -1457,11 +1460,14 @@ data class TouchLayout(val buttons: List<TouchButtonCfg>) {
                 TouchButtonCfg(TouchButtonId.SAVE_STATE, 0.30f, 0.54f, 44f, enabled = false),
                 TouchButtonCfg(TouchButtonId.LOAD_STATE, 0.38f, 0.54f, 44f, enabled = false),
                 TouchButtonCfg(TouchButtonId.SCREENSHOT, 0.46f, 0.54f, 44f, enabled = false),
-                // Extra analog button, parked directly above the left stick (0.28, 0.80): a 130dp
-                // stick plus a 48dp button needs ~0.22 of a landscape height to clear. Visibility is
-                // owned by the Pad-settings toggle, not this flag, so it is `enabled` here — see the
-                // ANALOG_EXTRA gate in the overlay's widget loop.
-                TouchButtonCfg(TouchButtonId.ANALOG_EXTRA, 0.28f, 0.58f, 48f),
+                // Extra analog button, parked directly above the D-PAD (0.10, 0.55) — not above the
+                // left stick, which is where it first went. The button is for sprint/jump held while
+                // you keep moving, so it belongs above whichever control the thumb is already on,
+                // and it sits in the gap between the shoulder column and the D-pad rather than out
+                // in the middle of the screen. Visibility is owned by the Pad-settings toggle, not
+                // this flag, so it is `enabled` here — see the ANALOG_EXTRA gate in the overlay's
+                // widget loop.
+                TouchButtonCfg(TouchButtonId.ANALOG_EXTRA, 0.10f, 0.34f, 48f),
                 // Analog sticks — bottom inside, between DPad/face cluster
                 // and the center, so thumb travel is short.
                 TouchButtonCfg(TouchButtonId.L_STICK,  0.28f, 0.80f, 130f),

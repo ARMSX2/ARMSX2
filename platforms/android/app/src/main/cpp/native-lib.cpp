@@ -2626,10 +2626,22 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
         return false;
     }
 
-    // fast_boot : (false:bios->game, true:game)
     VMBootParameters boot_params;
     boot_params.filename = _szPath;
-    boot_params.fast_boot = Host::GetBaseBoolSettingValue("EmuCore", "EnableFastBoot", false);
+    // fast_boot is deliberately left UNSET so VMManager::Initialize falls back to
+    // EmuConfig.EnableFastBoot, which it reads late and on purpose ("Read fast boot setting
+    // late so it can be overridden per-game").
+    //
+    // This used to force it from Host::GetBaseBoolSettingValue("EmuCore", "EnableFastBoot",
+    // false), which was wrong twice over:
+    //   * the fallback was FALSE while every other layer defaults it TRUE (Settings.kt's
+    //     enableFastBoot, and VMManager::SetDefaultSettings). Any time the key was not yet in
+    //     settings.ini -- notably right after an update, before the Kotlin settings have been
+    //     pushed down -- the app showed "Skip BIOS: on" and full-booted anyway. Toggling the
+    //     switch off and on wrote the key and "fixed" it, which is exactly what users reported.
+    //   * it read only the BASE layer, so a per-game Skip BIOS override was ignored outright.
+    // Letting the resolved config decide fixes both, and there is no Android-specific reason
+    // to override the boot mode per launch.
     Console.WriteLnFmt("@@ANDROID_RUNVM_PATH@@ empty={} path={}",
         _szPath.empty() ? 1 : 0, _szPath);
     Console.Error("Loading %s", _szPath.c_str());
@@ -2679,7 +2691,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
         {
             const std::string nvm_path = Path::ReplaceExtension(BiosPath, "nvm");
             Console.WriteLnFmt("@@ANDROID_BOOTSHAPE@@ fastboot={} src={} disctype=0x{:02X} nvm={} bios={}",
-                boot_params.fast_boot.value_or(false) ? 1 : 0,
+                +EmuConfig.EnableFastBoot,
                 static_cast<int>(CDVDsys_GetSourceType()),
                 cdvd.DiscType,
                 FileSystem::FileExists(nvm_path.c_str()) ? 1 : 0,
