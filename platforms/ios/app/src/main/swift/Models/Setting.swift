@@ -3,21 +3,12 @@
 
 import Foundation
 
-/// One INI-backed setting. The @Observable macro owns the stored property;
-/// `didSet` hands the value to `commit`.
+/// One INI-backed setting. The @Observable macro owns the stored property, `didSet`
+/// hands the value to `commit`, and every `EmuCore/GS` key nudges the running VM
+/// after it is written unless it is boot only.
 ///
-/// `suppressible` catches nothing today, and is still worth keeping. init()'s
-/// own assignments do not run their observers, so a launch reaches `commit`
-/// zero times either way. That is measured, with a control in the same run,
-/// not read off the language reference. Leave the flag alone rather than tidy
-/// it away: it is what would catch a setting assigned from a helper `init()`
-/// calls, where the observers do fire, and it costs one `&&`.
-///
-/// Every `EmuCore/GS` setting nudges the running VM after it is written. That
-/// used to be an opt-in closure, which is how the sprite hacks, the user hacks
-/// and the OSD flags ended up writing the INI and never reaching the running
-/// VM: a new setting inherited whatever the one above it happened to declare.
-/// Boot-only keys opt out.
+/// `suppressible` catches nothing today. Keep it: it would catch a setting assigned
+/// from a helper `init()` calls, where the observers do fire, and it costs one `&&`.
 struct Setting<Value> {
     let section: String
     let key: String
