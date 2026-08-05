@@ -582,6 +582,8 @@ private fun PressureButtonWidget(cfg: TouchButtonCfg, edit: Boolean) {
                         val change = ev.changes.firstOrNull() ?: continue
                         if (!change.pressed) continue
                         TouchControls.pressureModifierHeld.value = true
+                        // Soften buttons already held (MGS2: hold Square, then ease off).
+                        TouchControls.reapplyPressureToHeldButtons()
                         TouchControls.noteTouchInteraction()
                         while (true) {
                             val next = awaitPointerEvent()
@@ -589,6 +591,7 @@ private fun PressureButtonWidget(cfg: TouchButtonCfg, edit: Boolean) {
                             if (nc == null || !nc.pressed) break
                         }
                         TouchControls.pressureModifierHeld.value = false
+                        TouchControls.reapplyPressureToHeldButtons()
                     }
                 }
             }
@@ -1261,6 +1264,8 @@ private fun StickWidget(cfg: TouchButtonCfg, edit: Boolean) {
     val origin = remember(cfg.id) { mutableStateOf<Offset?>(null) }
     val baseShift = remember(cfg.id) { mutableStateOf(Offset.Zero) }
     val lastEmit = remember(cfg.id) { mutableStateOf(StickEmit()) }
+    // Extra stick button (left stick): currently held? Drives both the emit and its visual.
+    val extraHeld = remember(cfg.id) { mutableStateOf(false) }
     val opacity = TouchControls.opacity.floatValue
     val density = LocalDensity.current
 
@@ -1302,6 +1307,11 @@ private fun StickWidget(cfg: TouchButtonCfg, edit: Boolean) {
                             if (lastEmit.value.any()) {
                                 releaseStick(codes, lastEmit.value)
                                 lastEmit.value = StickEmit()
+                            }
+                            // Lifting off always drops the extra button too.
+                            if (extraHeld.value) {
+                                sendDigital(TouchControls.analogExtraKeycode.intValue, false)
+                                extraHeld.value = false
                             }
                         }
                         continue
@@ -1352,6 +1362,24 @@ private fun StickWidget(cfg: TouchButtonCfg, edit: Boolean) {
                         applyStickDiff(codes, lastEmit.value, emit)
                         lastEmit.value = emit
                     }
+                    // Extra stick button (left stick only): a circular zone directly ABOVE the
+                    // stick. Hit-tested HERE, inside the stick's own gesture, which is the whole
+                    // point — the pointer is locked to this handler, so a finger that glides up
+                    // out of the stick still reports here and can latch the button. Deflection
+                    // keeps being emitted above, so "run forward + sprint" is one thumb motion.
+                    if (leftStick && TouchControls.analogExtraEnabled.value) {
+                        val zoneR = capPx * 0.62f
+                        // Centre: straight up from the stick's ORIGIN (so a floating stick's
+                        // button follows the grab point), one radius plus the chosen gap away.
+                        val zoneCy = o.y - capPx - TouchControls.analogExtraDistance.floatValue * capPx
+                        val zdx = tracked.position.x - o.x
+                        val zdy = tracked.position.y - zoneCy
+                        val inZone = (zdx * zdx + zdy * zdy) <= zoneR * zoneR
+                        if (inZone != extraHeld.value) {
+                            sendDigital(TouchControls.analogExtraKeycode.intValue, inZone)
+                            extraHeld.value = inZone
+                        }
+                    }
                 }
             }
         }
@@ -1401,6 +1429,43 @@ private fun StickWidget(cfg: TouchButtonCfg, edit: Boolean) {
                 )
                 .size(thumbSizeDp.dp),
         )
+        // Extra stick button, drawn ABOVE the stick (the outer Box is deliberately unclipped, so
+        // this renders outside the widget's own bounds). Purely visual — the hit test lives in the
+        // stick's gesture loop, because only that handler receives a finger which glides up off
+        // the stick. Follows a floating stick's captured origin via baseShift.
+        if (TouchControls.analogExtraEnabled.value && cfg.id == TouchButtonId.L_STICK) {
+            val extraSizeDp = cfg.sizeDp * 0.62f
+            // Mirrors the zone maths: one cap-radius up, plus the configured gap.
+            val gapDp = (cfg.sizeDp / 2f) * 0.62f * (1f + TouchControls.analogExtraDistance.floatValue)
+            val label = TouchControls.macroTargetFor(TouchControls.analogExtraKeycode.intValue)?.label
+                ?: "?"
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset(
+                        x = with(density) { baseShift.value.x.toDp() },
+                        y = with(density) { baseShift.value.y.toDp() } - gapDp.dp,
+                    )
+                    .size(extraSizeDp.dp)
+                    .clip(CircleShape)
+                    .background(
+                        Color.Black.copy(alpha = (if (extraHeld.value) 0.55f else 0.30f) * opacity),
+                    )
+                    .border(
+                        1.dp,
+                        Color.White.copy(alpha = (if (extraHeld.value) 0.85f else 0.35f) * opacity),
+                        CircleShape,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    color = Color.White.copy(alpha = legibleAlpha(opacity, 0.35f)),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
         if (edit) EditAdornment(cfg.id)
     }
 }
@@ -1546,6 +1611,10 @@ private fun sendDigital(keycode: Int, pressed: Boolean) {
     // while the modifier is held; 0 (full press) otherwise. native-lib.cpp's
     // setPadButton turns the range into a 0..1 pressure value.
     val range = if (pressed) TouchControls.pressureRangeFor(keycode) else 0
+    // Track the held state so the modifier can be applied LIVE to a button already down
+    // (MGS2: hold Square to aim, then ease off to cancel the shot). Port 0 — the on-screen
+    // pad always drives P1.
+    TouchControls.notePressureKeyState(0, keycode, pressed)
     NativeApp.setPadButton(keycode, range, pressed)
     // Touch haptics (#247): a short vibration tick when a button goes DOWN. Press-only
     // (release stays silent); gated by the Touch Haptics setting (default on).

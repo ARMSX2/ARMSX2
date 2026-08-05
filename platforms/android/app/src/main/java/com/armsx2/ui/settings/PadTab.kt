@@ -332,6 +332,47 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             SettingsDivider()
         }
         CollapsibleSection(str("pad.section.analogSticks"), initiallyExpanded = false) {
+            // Extra button on the ON-SCREEN left stick: a sprint/jump button just above it that
+            // you can reach by GLIDING the same thumb up off the stick, without lifting off and
+            // losing your heading (GTA / Silent Hill sprint, GoW / KH jump).
+            ToggleRow(
+                str("pad.analogExtra.label"),
+                com.armsx2.ui.touch.TouchControls.analogExtraEnabled.value,
+                description = str("pad.analogExtra.description"),
+            ) { com.armsx2.ui.touch.TouchControls.setAnalogExtraEnabled(it) }
+            if (com.armsx2.ui.touch.TouchControls.analogExtraEnabled.value) {
+                run {
+                    // Reuse the macro target table — it is exactly "every PS2 button a control may
+                    // fire", already ordered for display and already translated.
+                    val targets = com.armsx2.ui.touch.TouchControls.macroAssignableTargets
+                        .filter { it.code in 0..199 }
+                    val idx = targets.indexOfFirst {
+                        it.code == com.armsx2.ui.touch.TouchControls.analogExtraKeycode.intValue
+                    }.coerceAtLeast(0)
+                    SegmentedGridRow(
+                        label = str("pad.analogExtra.button"),
+                        options = targets.map { it.label },
+                        selectedIndex = idx,
+                        columns = 4,
+                        description = str("pad.analogExtra.button.description"),
+                        onChange = {
+                            com.armsx2.ui.touch.TouchControls.setAnalogExtraKeycode(targets[it].code)
+                        },
+                    )
+                    SettingsDivider()
+                    IntSliderRow(
+                        label = str("pad.analogExtra.distance"),
+                        value = (com.armsx2.ui.touch.TouchControls.analogExtraDistance.floatValue * 100f).toInt(),
+                        min = 10,
+                        max = 150,
+                        description = str("pad.analogExtra.distance.description"),
+                        valueFormatter = { "$it%" },
+                        onReset = { com.armsx2.ui.touch.TouchControls.setAnalogExtraDistance(0.35f) },
+                        onChange = { com.armsx2.ui.touch.TouchControls.setAnalogExtraDistance(it / 100f) },
+                    )
+                }
+                SettingsDivider()
+            }
             // Analog stick remapping — make a physical stick act as the D-pad or the
             // face buttons (great for fighting games on analog-centric controllers).
             run {

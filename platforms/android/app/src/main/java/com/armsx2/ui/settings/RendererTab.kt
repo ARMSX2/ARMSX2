@@ -50,6 +50,7 @@ import java.io.BufferedInputStream
 import java.io.File
 import java.util.zip.ZipInputStream
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * Renderer section of the in-game settings overlay.
@@ -127,22 +128,43 @@ fun RendererTab(state: MutableState<Settings>) {
                 apply(s.copy(gsBackThreadMode = if (it) 3 else 0))
             }
             SettingsDivider()
-            val upscaleIndex = UPSCALE_OPTIONS
-                .indexOfFirst { abs(it.value - s.upscaleFloat) < 0.01f }
-                .takeIf { it >= 0 } ?: 0
+            // A value that matches no preset is a CUSTOM one (set below, per-game, or from an INI).
+            // It used to fall back to index 0, which displayed 0.25x while the GS ran something
+            // else entirely — so the row lied about the active resolution.
+            val presetIndex = UPSCALE_OPTIONS.indexOfFirst { abs(it.value - s.upscaleFloat) < 0.01f }
+            val customIndex = UPSCALE_OPTIONS.size
+            val upscaleIndex = if (presetIndex >= 0) presetIndex else customIndex
             SegmentedGridRow(
                 label = str("renderer.upscale.label"),
-                options = UPSCALE_OPTIONS.map { it.label },
+                options = UPSCALE_OPTIONS.map { it.label } + str("renderer.upscale.custom"),
                 selectedIndex = upscaleIndex,
                 columns = 4,
                 description = str("renderer.upscale.description"),
                 onChange = { index ->
-                    val mult = UPSCALE_OPTIONS[index].value
+                    // Picking Custom keeps the current value and just reveals the slider below —
+                    // jumping to some arbitrary default would throw away what they already had.
+                    val mult = UPSCALE_OPTIONS.getOrNull(index)?.value ?: s.upscaleFloat
                     // Persist scope-aware (per-game when the overlay scope is Game);
                     // the live GS apply happens in InGameOverlay's settings delta.
                     if (abs(s.upscaleFloat - mult) >= 0.01f) apply(s.copy(upscaleFloat = mult))
                 },
             )
+            // Custom resolution scale, as a PERCENTAGE of native — the Dolphin-style numeric
+            // control people ask for when a preset step is too coarse. The GS multiplier is a
+            // float, so e.g. 107% turns 512x448 into a true 480p-height render without paying for
+            // a full 2x. Only shown on Custom, so the preset grid stays uncluttered.
+            if (upscaleIndex == customIndex) {
+                IntSliderRow(
+                    label = str("renderer.upscale.customScale"),
+                    value = (s.upscaleFloat * 100f).roundToInt().coerceIn(25, 800),
+                    min = 25,
+                    max = 800,
+                    description = str("renderer.upscale.customScale.description"),
+                    valueFormatter = { "$it%" },
+                    onReset = { apply(s.copy(upscaleFloat = 1.0f)) },
+                    onChange = { pct -> apply(s.copy(upscaleFloat = pct / 100f)) },
+                )
+            }
             SettingsDivider()
             SegmentedRow(
                 label = str("renderer.displayMode.label"),
@@ -213,6 +235,17 @@ fun RendererTab(state: MutableState<Settings>) {
                 selectedIndex = if (s.portraitRenderTop) 0 else 1,
                 description = str("renderer.portraitPosition.description"),
                 onChange = { apply(s.copy(portraitRenderTop = it == 0)) },
+            )
+            SettingsDivider()
+            // Where the render sits in a LANDSCAPE window. Center is the default; Top suits
+            // foldables and clamshell controllers, whose screens open downward so a centred
+            // image reads as sitting too low. Live via NativeApp.setLandscapeRenderTop.
+            SegmentedRow(
+                label = str("renderer.landscapePosition.label"),
+                options = listOf(str("renderer.landscapePosition.center"), str("renderer.landscapePosition.top")),
+                selectedIndex = if (s.landscapeRenderTop) 1 else 0,
+                description = str("renderer.landscapePosition.description"),
+                onChange = { apply(s.copy(landscapeRenderTop = it == 1)) },
             )
             SettingsDivider()
             // Auto Progressive Scan — holds Triangle+Cross through boot, the combo some titles
@@ -392,6 +425,8 @@ fun RendererTab(state: MutableState<Settings>) {
             // <dataroot>/shaders/, which is the folder ShaderChainSection's picker scans —
             // so it takes no tier and needs no apply(), same as DriverManagerSection.
             com.armsx2.ui.common.ShaderManagerSection()
+            SettingsDivider()
+            OverlayArtSection()
         }
         SettingsDivider()
         CollapsibleSection(str("renderer.section.texturePacks")) {
@@ -650,6 +685,82 @@ private fun TexturePackImportRow() {
                 fontWeight = FontWeight.SemiBold,
             )
         }
+    }
+}
+
+/**
+ * RetroArch overlay artwork (bezel / border): import a pack, pick one, set its opacity.
+ *
+ * Separate from the shader chain on purpose — an RA overlay is just an image, so it composites
+ * for free and can be layered WITH a shader preset, which is what was asked for. Only the image
+ * half of the .cfg is used; ARMSX2 has its own touch layout, so the format's input hitboxes are
+ * deliberately ignored rather than fighting it.
+ */
+@Composable
+private fun OverlayArtSection() {
+    val context = LocalContext.current
+    val refresh = remember { mutableStateOf(0) }
+    val entries = remember(refresh.value) { com.armsx2.OverlayRepo.list(context) }
+    val importer = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            val name = runCatching {
+                context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                    val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+                }
+            }.getOrNull()
+            com.armsx2.OverlayRepo.importFrom(context, uri, name)
+            refresh.value++
+        }
+    }
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(rowAura())
+            .clickable { importer.launch(arrayOf("application/zip", "image/*", "*/*")) }
+            .padding(horizontal = 6.dp, vertical = 5.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Text(
+            str("renderer.overlayArt.import"),
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+    SettingsDivider()
+    // "None" first so turning it off is always one tap away, even with a long pack list.
+    val options = listOf(str("renderer.overlayArt.none")) + entries.map { it.name }
+    val selected = entries.indexOfFirst { it.imagePath == com.armsx2.OverlayRepo.activePath.value }
+        .let { if (it >= 0) it + 1 else 0 }
+    SegmentedGridRow(
+        label = str("renderer.overlayArt.label"),
+        options = options,
+        selectedIndex = selected,
+        columns = 2,
+        description = str("renderer.overlayArt.description"),
+        onChange = { idx ->
+            com.armsx2.OverlayRepo.setActive(
+                if (idx == 0) "" else entries.getOrNull(idx - 1)?.imagePath.orEmpty(),
+            )
+        },
+    )
+    if (com.armsx2.OverlayRepo.activePath.value.isNotBlank()) {
+        SettingsDivider()
+        IntSliderRow(
+            label = str("renderer.overlayArt.opacity"),
+            value = (com.armsx2.OverlayRepo.opacity.floatValue * 100f).roundToInt(),
+            min = 5,
+            max = 100,
+            description = str("renderer.overlayArt.opacity.description"),
+            valueFormatter = { "$it%" },
+            onReset = { com.armsx2.OverlayRepo.setOpacity(1f) },
+            onChange = { com.armsx2.OverlayRepo.setOpacity(it / 100f) },
+        )
     }
 }
 

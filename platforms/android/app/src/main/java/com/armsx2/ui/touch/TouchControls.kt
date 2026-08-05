@@ -67,6 +67,9 @@ object TouchControls {
     private const val KEY_DPAD_SPACING = "touch.dpadSpacing"
     private const val KEY_FLOATING_STICK = "touch.floatingStick"
     private const val KEY_FULL_HALF_STICKS = "touch.fullHalfSticks"
+    private const val KEY_ANALOG_EXTRA = "touch.analogExtra"
+    private const val KEY_ANALOG_EXTRA_CODE = "touch.analogExtraCode"
+    private const val KEY_ANALOG_EXTRA_DIST = "touch.analogExtraDist"
     private const val KEY_GRID_SNAP = "touch.gridSnap"
     private const val KEY_VIS_MODE = "touch.visibilityMode"
     // One-shot 2.4.7 defaults migration for EXISTING users (saved prefs/layouts
@@ -228,6 +231,44 @@ object TouchControls {
     // Global; persisted under KEY_GRID_SNAP.
     val gridSnap = mutableStateOf(false)
 
+    // ---- Extra button attached to the LEFT stick (SNAKEATER) ---------------------------------
+    // A sprint/jump button sitting just ABOVE the left analog. The point of it is the GESTURE:
+    // you steer with the stick and then GLIDE the same thumb up onto the button — sprint in
+    // GTA / Silent Hill, jump in God of War / Kingdom Hearts — without lifting off and losing
+    // your direction.
+    //
+    // ★ It is deliberately owned by the STICK, not drawn as an independent widget. A separate
+    // widget could never do this: the stick locks the gesture onto the pointer that started on
+    // it (see StickWidget), so a finger sliding off it never reaches another widget's handler.
+    // The stick therefore hit-tests this zone itself and keeps emitting deflection at the same
+    // time — and because the zone sits ABOVE the stick, reaching it naturally means full
+    // forward, which is exactly the "run forward" the request describes.
+    val analogExtraEnabled = mutableStateOf(false)
+
+    /** PS2 button the extra stick button fires. Defaults to Cross — sprint in GTA, jump in
+     *  God of War / Kingdom Hearts, the case the request names. */
+    val analogExtraKeycode = mutableIntStateOf(96)
+
+    /** Gap between the stick's edge and the button, as a fraction of the stick's radius.
+     *  "Near" (0.35) sits within an easy thumb roll; "Far" (0.9) needs a deliberate reach. */
+    val analogExtraDistance = mutableFloatStateOf(0.35f)
+
+    fun setAnalogExtraEnabled(v: Boolean) {
+        analogExtraEnabled.value = v
+        runCatching { MainActivityRuntime.prefs.edit().putBoolean(KEY_ANALOG_EXTRA, v).apply() }
+    }
+
+    fun setAnalogExtraKeycode(code: Int) {
+        analogExtraKeycode.intValue = code
+        runCatching { MainActivityRuntime.prefs.edit().putInt(KEY_ANALOG_EXTRA_CODE, code).apply() }
+    }
+
+    fun setAnalogExtraDistance(frac: Float) {
+        val c = frac.coerceIn(0.1f, 1.5f)
+        analogExtraDistance.floatValue = c
+        runCatching { MainActivityRuntime.prefs.edit().putFloat(KEY_ANALOG_EXTRA_DIST, c).apply() }
+    }
+
     // Editor panel (EditToolbar) placement — SESSION ONLY, and PER-ORIENTATION. Portrait and
     // landscape keep SEPARATE placements (like the touch layout itself): the panel lives at very
     // different screen coordinates in each, so a portrait offset applied in landscape would shove it
@@ -291,6 +332,43 @@ object TouchControls {
         if (pressureModifierHeld.value && keycode in PRESSURE_KEYCODES)
             (PRESSURE_FULL_RANGE * pressurePercent.intValue / 100).coerceAtLeast(1)
         else 0
+
+    /** Pressure-capable buttons currently held down, per port, so the modifier can be applied
+     *  LIVE to a button that is ALREADY down. [pressureRangeFor] is only consulted when a press
+     *  is emitted, so without this the modifier did nothing unless it was held BEFORE the button
+     *  — while the gesture these games actually want is the opposite: hold to aim, then ease off
+     *  to soften. That is the reported MGS2 "can't cancel my shots" (a half-press on Square is
+     *  how MGS2 lowers the weapon without firing). Guarded by its own lock: touch emits on the
+     *  UI thread, physical keys on the input thread. */
+    private val heldPressureKeys = HashMap<Int, MutableSet<Int>>()
+
+    /** Record/forget a pressure-capable button so [reapplyPressureToHeldButtons] can re-emit it. */
+    fun notePressureKeyState(port: Int, keycode: Int, pressed: Boolean) {
+        if (keycode !in PRESSURE_KEYCODES) return
+        synchronized(heldPressureKeys) {
+            val set = heldPressureKeys.getOrPut(port) { mutableSetOf() }
+            if (pressed) set.add(keycode) else set.remove(keycode)
+        }
+    }
+
+    /** Re-send every currently-held pressure-capable button at the CURRENT modifier strength.
+     *  Called when the modifier is pressed or released, so easing on/off changes the pressure of
+     *  buttons the player is already holding. */
+    fun reapplyPressureToHeldButtons() {
+        val snapshot = synchronized(heldPressureKeys) { heldPressureKeys.mapValues { it.value.toList() } }
+        for ((port, keys) in snapshot) {
+            for (kc in keys) {
+                runCatching {
+                    kr.co.iefriends.pcsx2.NativeApp.setPadButtonForPort(port, kc, pressureRangeFor(kc), true)
+                }
+            }
+        }
+    }
+
+    /** Drop all held-pressure bookkeeping (VM stop / pad reset), so a stale key can't be re-emitted. */
+    fun clearHeldPressureKeys() {
+        synchronized(heldPressureKeys) { heldPressureKeys.clear() }
+    }
 
     /** On-screen touch controls visibility. 0 = Never show (for physical-
      *  controls devices like the RP6 — also hides the settings cog so nothing
@@ -434,6 +512,11 @@ object TouchControls {
      *  toggle runs ~17% fast. Not worth chasing the live refresh rate for a turbo. */
     private const val MACRO_FRAME_MS = 1000.0 / 60.0
 
+    /** Shortest time a macro may hold a pad state. The emulated pad is sampled on the VM's own
+     *  schedule (~1 frame), so anything briefer can fall between samples and vanish — see the
+     *  same ~24ms floor used for synthesized keyboard/pad input elsewhere. */
+    private const val MACRO_MIN_STATE_MS = 24L
+
     private val macroHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val macroRunnables = HashMap<String, Runnable>()
 
@@ -475,7 +558,12 @@ object TouchControls {
         }
         // Key auto-repeat re-delivers DOWN while held; the first one owns the toggle.
         if (macroRunnables.containsKey(runKey)) return
-        val periodMs = (frames * MACRO_FRAME_MS).toLong().coerceAtLeast(16L)
+        // ★ The floor is a SAMPLING limit, not a rounding nicety. The VM samples the pad on its
+        // own schedule, so a state held shorter than ~24ms can land entirely between two samples
+        // and never register — the turbo then looks dead rather than fast (reported against
+        // NetherSX2, whose fast frequencies do fire). 16ms was below that threshold, so the
+        // quickest settings emitted presses the emulated pad never saw.
+        val periodMs = (frames * MACRO_FRAME_MS).toLong().coerceAtLeast(MACRO_MIN_STATE_MS)
         var pressed = false
         val runnable = object : Runnable {
             override fun run() {
@@ -575,6 +663,10 @@ object TouchControls {
         dpadSpacing.floatValue = MainActivityRuntime.prefs.getFloat(KEY_DPAD_SPACING, 0.0f).coerceIn(0.0f, 0.35f)
         floatingStick.value = MainActivityRuntime.prefs.getBoolean(KEY_FLOATING_STICK, false)
         fullHalfSticks.value = MainActivityRuntime.prefs.getBoolean(KEY_FULL_HALF_STICKS, false)
+        analogExtraEnabled.value = MainActivityRuntime.prefs.getBoolean(KEY_ANALOG_EXTRA, false)
+        analogExtraKeycode.intValue = MainActivityRuntime.prefs.getInt(KEY_ANALOG_EXTRA_CODE, 96)
+        analogExtraDistance.floatValue =
+            MainActivityRuntime.prefs.getFloat(KEY_ANALOG_EXTRA_DIST, 0.35f).coerceIn(0.1f, 1.5f)
         gridSnap.value = MainActivityRuntime.prefs.getBoolean(KEY_GRID_SNAP, false)
         visibilityMode.intValue = MainActivityRuntime.prefs.getInt(KEY_VIS_MODE, 11).coerceIn(0, 11)
         if (visibilityMode.intValue == 0) visible.value = false

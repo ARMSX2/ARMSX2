@@ -1236,6 +1236,15 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setPortraitRenderTopInset(JNIEnv*, jclass, 
 
 extern "C"
 JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setLandscapeRenderTop(JNIEnv*, jclass, jboolean top) {
+    // Top-align the render in a LANDSCAPE window instead of vertical-centering. Foldables and
+    // clamshell controllers open the screen downward, so a centred image sits too low. Same GS
+    // static shape as the portrait flag: read live per-present, safe with or without a VM.
+    GSSetLandscapeRenderTopAlign(top == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setFrameSkip(JNIEnv *env, jclass clazz,
                                                   jint p_skip) {
     // Manual frameskip for low-end devices: present 1 of every (skip+1) frames.

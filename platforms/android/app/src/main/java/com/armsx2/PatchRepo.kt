@@ -56,6 +56,13 @@ object PatchRepo {
             "https://raw.githubusercontent.com/xs1l3n7x/pcsx2_cheats_collection/main",
             "https://api.github.com/repos/xs1l3n7x/pcsx2_cheats_collection/git/trees/main?recursive=1",
         ),
+        // PCSX2 CheatsDB (~20k pnach files). Contributed as XDiaoXuanX/PCSX2-CheatDB; that repo is
+        // gone (404) and the author moved it here, so this is the live URL — don't restore the old
+        // one, a dead source costs an API call and a failed fetch on every lookup miss.
+        CheatSource(
+            "https://raw.githubusercontent.com/XiGuanChi/PCSX2-CheatsDB/main",
+            "https://api.github.com/repos/XiGuanChi/PCSX2-CheatsDB/git/trees/main?recursive=1",
+        ),
     )
     private val cheatTreeCache = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
     private val CRC_RE = Regex("^[0-9A-Fa-f]{8}$")

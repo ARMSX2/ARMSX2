@@ -663,6 +663,9 @@ public class NativeApp {
 	/** GitHub #375: top-align the render in portrait (true) vs vertical-center (false). */
 	public static native void setPortraitRenderTop(boolean top);
 
+	/** Top-align the render in a LANDSCAPE window (foldables / clamshell controllers). */
+	public static native void setLandscapeRenderTop(boolean top);
+
 	/** Pixels to keep clear at the top of a PORTRAIT render for a punch-hole/notch camera. Taken
 	 *  from the window's display cutout; 0 on devices without one. Only affects portrait
 	 *  top-aligned output. */

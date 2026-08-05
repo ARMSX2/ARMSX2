@@ -344,6 +344,20 @@ fun AppTab() {
         )
 
         ToggleRow(
+            label = str("secondScreen.label"),
+            value = com.armsx2.SecondScreen.enabled.value,
+            description = str("secondScreen.desc"),
+            onChange = { com.armsx2.SecondScreen.set(appContext, it) },
+        )
+
+        ToggleRow(
+            label = str("app.batteryWarnings"),
+            value = com.armsx2.BatteryWatcher.enabled.value,
+            description = str("app.batteryWarnings.desc"),
+            onChange = { com.armsx2.BatteryWatcher.set(it) },
+        )
+
+        ToggleRow(
             label = str("app.libraryMusic"),
             value = com.armsx2.LibraryMusic.enabled.value,
             description = str("app.libraryMusic.desc"),

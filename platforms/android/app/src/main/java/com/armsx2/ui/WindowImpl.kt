@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
@@ -88,6 +89,20 @@ object WindowImpl {
         ScaledUi {
             Box(Modifier.fillMaxSize().background(Color.Black)) {
                 content()
+
+                // RetroArch overlay artwork (bezel / border), drawn OVER the game frame but UNDER
+                // the touch controls — so it can frame the picture without ever covering a button.
+                // Free to composite (it's one image), which is the point: it stacks with a shader
+                // preset instead of competing with one.
+                com.armsx2.OverlayRepo.activeBitmap()?.let { art ->
+                    androidx.compose.foundation.Image(
+                        bitmap = art.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = androidx.compose.ui.layout.ContentScale.FillBounds,
+                        alpha = com.armsx2.OverlayRepo.opacity.floatValue,
+                    )
+                }
 
                 // The touch controls keep the REAL density. Their size and position come
                 // from the user's own touch layout, so rescaling them would drag the

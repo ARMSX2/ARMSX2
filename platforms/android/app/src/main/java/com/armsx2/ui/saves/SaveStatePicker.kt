@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -103,6 +104,8 @@ fun SaveStatePickerScreen(mode: SaveMode, onBack: () -> Unit) {
     // a refresh bump so the slot tiles re-probe and show the imported save immediately.
     var notice by remember { mutableStateOf<String?>(null) }
     var refreshKey by remember { mutableStateOf(0) }
+    // Slot pending deletion (long-press), confirmed before anything is removed.
+    var deleteSlot by remember { mutableStateOf<Int?>(null) }
     val importContext = androidx.compose.ui.platform.LocalContext.current
     val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
@@ -177,7 +180,7 @@ fun SaveStatePickerScreen(mode: SaveMode, onBack: () -> Unit) {
                     }
                 }
                     items((0 until SLOTS).toList(), key = { "slot_$it" }) { slot ->
-                        SlotTile(slot, mode, refreshKey) { selected ->
+                        SlotTile(slot, mode, refreshKey, onDelete = { deleteSlot = it }) { selected ->
                             scope.launch(Dispatchers.IO) {
                                 // The result used to be discarded and onBack() called either way, so
                                 // a refused save closed the picker looking exactly like a successful
@@ -217,6 +220,39 @@ fun SaveStatePickerScreen(mode: SaveMode, onBack: () -> Unit) {
                 }
             }
         }
+    }
+
+    // Delete confirmation for a long-pressed slot. ConfirmOverlay (not a Dialog) so the pad can
+    // reach it; the file is removed directly because there is no delete JNI — the slot path from
+    // getGamePathSlot is the same file the manager deletes.
+    deleteSlot?.let { slot ->
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str("savestate.delete.title"),
+            message = str("savestate.delete.body").format(slot + 1),
+            confirmLabel = str("action.delete"),
+            destructive = true,
+            idPrefix = "savestate.delete",
+            onDismiss = { deleteSlot = null },
+            onConfirm = {
+                deleteSlot = null
+                scope.launch(Dispatchers.IO) {
+                    val ok = runCatching {
+                        val path = NativeApp.getGamePathSlot(slot)
+                        !path.isNullOrBlank() && java.io.File(path).delete()
+                    }.getOrDefault(false)
+                    withContext(Dispatchers.Main) {
+                        if (ok) {
+                            failure = null
+                            notice = "${com.armsx2.i18n.I18n.get("action.delete")} · ${slot + 1}"
+                            refreshKey++
+                        } else {
+                            notice = null
+                            failure = "savestate.delete.failed"
+                        }
+                    }
+                }
+            },
+        )
     }
 }
 
@@ -328,7 +364,13 @@ private fun AutosaveTile(onPick: () -> Unit) {
 }
 
 @Composable
-private fun SlotTile(slot: Int, mode: SaveMode, refreshKey: Int = 0, onPick: (Int) -> Unit) {
+private fun SlotTile(
+    slot: Int,
+    mode: SaveMode,
+    refreshKey: Int = 0,
+    onDelete: ((Int) -> Unit)? = null,
+    onPick: (Int) -> Unit,
+) {
     val gamePath by produceState<String?>(initialValue = null, slot, refreshKey) {
         value = withContext(Dispatchers.IO) { runCatching { NativeApp.getGamePathSlot(slot) }.getOrNull() }
     }
@@ -349,6 +391,9 @@ private fun SlotTile(slot: Int, mode: SaveMode, refreshKey: Int = 0, onPick: (In
         backgroundColor = MaterialTheme.colorScheme.surfaceVariant,
         enabled = enabled,
         onClick = { onPick(slot) },
+        // Long-press an OCCUPIED slot to delete it — the reported gap ("tap and hold does
+        // nothing", and deleting otherwise meant digging through a file manager).
+        onLongClick = if (!empty && onDelete != null) ({ onDelete(slot) }) else null,
     ) {
         image?.let {
             Image(it.asImageBitmap(), "Slot ${slot + 1}",
@@ -373,6 +418,7 @@ private fun TileFrame(
     backgroundColor: Color,
     enabled: Boolean = true,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     Box(
@@ -383,7 +429,11 @@ private fun TileFrame(
             .clip(RoundedCornerShape(12.dp))
             .background(backgroundColor)
             .border(1.dp, borderColor, RoundedCornerShape(12.dp))
-            .clickable(enabled = enabled, onClick = onClick),
+            .combinedClickable(
+                enabled = enabled || onLongClick != null,
+                onClick = { if (enabled) onClick() },
+                onLongClick = onLongClick,
+            ),
         content = content,
     )
 }

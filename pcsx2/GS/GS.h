@@ -107,6 +107,8 @@ void GSSetDisplayAlignment(GSDisplayAlignment alignment);
 void GSSetPortraitRenderTopAlign(bool enabled);
 /// Pixels kept clear at the top of a portrait window (display cutout / camera).
 void GSSetPortraitRenderTopInset(int pixels);
+/// Top-align the render in a LANDSCAPE window (foldables / clamshell controllers).
+void GSSetLandscapeRenderTopAlign(bool enabled);
 bool GSHasDisplayWindow();
 void GSResizeDisplayWindow(u32 width, u32 height, float scale);
 void GSUpdateDisplayWindow();

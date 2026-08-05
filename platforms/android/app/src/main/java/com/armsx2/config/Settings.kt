@@ -375,6 +375,10 @@ data class Settings(
      *  centering (false), so the bottom is free for touch controls. Applied live via
      *  NativeApp.setPortraitRenderTop; only affects a portrait window. */
     val portraitRenderTop: Boolean = true,
+    /** In LANDSCAPE, top-align the render instead of vertical-centering (default). Foldables and
+     *  clamshell controllers (Backbone-style) open the screen downward, so a centred image sits
+     *  too low. Applied live via NativeApp.setLandscapeRenderTop; only affects a landscape window. */
+    val landscapeRenderTop: Boolean = false,
     /** Auto Progressive Scan: hold Triangle+Cross on port 1 through the boot sequence, which is
      *  the real-console combo a number of PS2 titles probe to offer 480p progressive output
      *  (Tekken 4, several Criterion games). Purely a synthetic pad hold — no core setting — so it
@@ -768,6 +772,7 @@ data class Settings(
         // GS-thread global, applied live; no persisted EmuCore key needed.
         if (emitSink == null) NativeApp.setFrameSkip(frameSkip.coerceIn(0, 5))
         if (emitSink == null) NativeApp.setPortraitRenderTop(portraitRenderTop)
+        if (emitSink == null) NativeApp.setLandscapeRenderTop(landscapeRenderTop)
         // Audio (SPU2). Volume/mute are live native setters; the rest are written
         // to the base layer and applied on commit (SPU2 stream reconfigure).
         if (emitSink == null) NativeApp.setAudioVolume(audioVolume.coerceIn(0, 200))
@@ -1589,6 +1594,7 @@ data class Settings(
         put("customDriverId", customDriverId)
         put("orientation", orientation)
         put("portraitRenderTop", portraitRenderTop)
+        put("landscapeRenderTop", landscapeRenderTop)
         put("autoProgressiveScan", autoProgressiveScan)
         put("affinityMode", affinityMode)
         put("framerateNtsc", framerateNtsc.toDouble())
@@ -1849,6 +1855,7 @@ data class Settings(
                 customDriverId = json.optString("customDriverId", def.customDriverId),
                 orientation = json.optInt("orientation", def.orientation),
                 portraitRenderTop = json.optBoolean("portraitRenderTop", def.portraitRenderTop),
+                landscapeRenderTop = json.optBoolean("landscapeRenderTop", def.landscapeRenderTop),
                 autoProgressiveScan = json.optBoolean("autoProgressiveScan", def.autoProgressiveScan),
                 affinityMode = json.optInt("affinityMode", def.affinityMode),
                 framerateNtsc = json.optDouble("framerateNtsc", def.framerateNtsc.toDouble()).toFloat(),
@@ -2095,6 +2102,7 @@ data class Settings(
             if (current.customDriverId != base.customDriverId) j.put("customDriverId", current.customDriverId)
             if (current.orientation != base.orientation) j.put("orientation", current.orientation)
             if (current.portraitRenderTop != base.portraitRenderTop) j.put("portraitRenderTop", current.portraitRenderTop)
+            if (current.landscapeRenderTop != base.landscapeRenderTop) j.put("landscapeRenderTop", current.landscapeRenderTop)
             if (current.autoProgressiveScan != base.autoProgressiveScan) j.put("autoProgressiveScan", current.autoProgressiveScan)
             if (current.affinityMode != base.affinityMode) j.put("affinityMode", current.affinityMode)
             if (current.framerateNtsc != base.framerateNtsc) j.put("framerateNtsc", current.framerateNtsc.toDouble())
@@ -2322,6 +2330,7 @@ data class Settings(
             customDriverId = if (overrides.has("customDriverId")) overrides.getString("customDriverId") else base.customDriverId,
             orientation = if (overrides.has("orientation")) overrides.getInt("orientation") else base.orientation,
             portraitRenderTop = if (overrides.has("portraitRenderTop")) overrides.getBoolean("portraitRenderTop") else base.portraitRenderTop,
+            landscapeRenderTop = if (overrides.has("landscapeRenderTop")) overrides.getBoolean("landscapeRenderTop") else base.landscapeRenderTop,
             autoProgressiveScan = if (overrides.has("autoProgressiveScan")) overrides.getBoolean("autoProgressiveScan") else base.autoProgressiveScan,
             affinityMode = if (overrides.has("affinityMode")) overrides.getInt("affinityMode") else base.affinityMode,
             framerateNtsc = if (overrides.has("framerateNtsc")) overrides.getDouble("framerateNtsc").toFloat() else base.framerateNtsc,

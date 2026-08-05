@@ -523,6 +523,10 @@ open class MainActivityRuntime : ComponentActivity() {
             // Never leave the device pinned once the game is gone (#425).
             com.armsx2.ui.ScreenPinning.stop()
             stopAutoProgressiveScanHold()
+            // Drop pressure-modifier bookkeeping: a button still held when the game exits would
+            // otherwise stay in the set and be re-emitted into the NEXT session.
+            com.armsx2.ui.touch.TouchControls.clearHeldPressureKeys()
+            com.armsx2.BatteryWatcher.resetForNewSession()
             instance?.runOnUiThread { instance?.applyEmulationOrientation() }
         }
 
@@ -1931,10 +1935,13 @@ open class MainActivityRuntime : ComponentActivity() {
             // merge layer so a stick MOTION event can't release it mid-hold.
             if (p_keycode in 110..123 && port in analogKeyHeld.indices)
                 analogKeyHeld[port][p_keycode] = pad_force / 32767f
+            // Track for the LIVE pressure modifier (see TouchControls.notePressureKeyState).
+            com.armsx2.ui.touch.TouchControls.notePressureKeyState(port, p_keycode, true)
             NativeApp.setPadButtonForPort(port, p_keycode, pad_force, true)
         } else if (p_action == KeyEventType.KeyUp || p_action == KeyEventType.Unknown) {
             if (p_keycode in 110..123 && port in analogKeyHeld.indices)
                 analogKeyHeld[port].remove(p_keycode)
+            com.armsx2.ui.touch.TouchControls.notePressureKeyState(port, p_keycode, false)
             NativeApp.setPadButtonForPort(port, p_keycode, 0, false)
         }
     }
@@ -2065,6 +2072,14 @@ open class MainActivityRuntime : ComponentActivity() {
         com.armsx2.PauseMusic.load()
         com.armsx2.MenuSfx.load(applicationContext)
         com.armsx2.ControllerSkinStore.load(applicationContext)
+        // Low-battery / high-temperature banners. Registers for the sticky battery broadcast, so
+        // there is no polling; the toggle lives in App settings.
+        com.armsx2.OverlayRepo.load()
+        // Second-display utility panel (Ayn Thor / Retroid dual screen). No-op with one display.
+        com.armsx2.SecondScreen.load()
+        com.armsx2.SecondScreen.attach(applicationContext)
+        com.armsx2.BatteryWatcher.load()
+        com.armsx2.BatteryWatcher.start(applicationContext)
         startAutosaveIntervalJob()
         // Restore the saved rumble master toggle into the native gate (NativeApp.onPadRumble).
         NativeApp.sRumbleEnabled = ControllerMappings.rumbleEnabled()
@@ -2779,6 +2794,9 @@ open class MainActivityRuntime : ComponentActivity() {
                     KeyEvent.ACTION_DOWN -> com.armsx2.ui.touch.TouchControls.pressureModifierHeld.value = true
                     KeyEvent.ACTION_UP -> com.armsx2.ui.touch.TouchControls.pressureModifierHeld.value = false
                 }
+                // Apply the change to buttons ALREADY held, so easing on/off works mid-hold
+                // instead of only for presses started after the modifier (the MGS2 case).
+                com.armsx2.ui.touch.TouchControls.reapplyPressureToHeldButtons()
                 return true
             }
         }
@@ -4769,6 +4787,9 @@ open class MainActivityRuntime : ComponentActivity() {
             super.onDestroy()
             return
         }
+        // Real finish only — a configuration recreate must NOT tear the second-display panel
+        // down (it would flicker away and rebuild on every rotation/density change).
+        runCatching { com.armsx2.SecondScreen.release(applicationContext) }
         NativeApp.shutdown()
         super.onDestroy()
 
