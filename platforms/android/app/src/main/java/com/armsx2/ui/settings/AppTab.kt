@@ -216,6 +216,51 @@ fun AppTab() {
                 description = str("app.bg.simple.desc"),
                 onChange = { com.armsx2.ui.home.LibraryBackground.setAnimated2D(it) },
             )
+            // Colour of the BAR itself (the rounded header pill), as opposed to the animated
+            // backdrop the rest of this section controls. Requested because the background picker
+            // is labelled "Library Bar Color" but recolours the background — so there was no way to
+            // colour the actual bar. "Default" hands it back to the theme.
+            run {
+                val barArgb = com.armsx2.ui.theme.LibraryChromePreferences.barColor.value
+                Spacer(Modifier.height(10.dp))
+                Text(str("app.barColor"), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    str("app.barColor.desc"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    val clearBar = { com.armsx2.ui.theme.LibraryChromePreferences.setBarColor(0) }
+                    FilterChip(
+                        selected = barArgb == 0,
+                        onClick = clearBar,
+                        label = { Text(str("app.barColor.default")) },
+                        shape = RoundedCornerShape(11.dp),
+                        modifier = Modifier.controllerFocusable(
+                            "app.barColor.default", RoundedCornerShape(11.dp), onConfirm = clearBar,
+                        ),
+                    )
+                    com.armsx2.ui.theme.LibraryChromePreferences.BAR_PRESETS.forEach { preset ->
+                        val pick = { com.armsx2.ui.theme.LibraryChromePreferences.setBarColor(preset) }
+                        val selected = barArgb == preset
+                        Surface(
+                            onClick = pick,
+                            modifier = Modifier.size(34.dp)
+                                .controllerFocusable("app.barColor.$preset", RoundedCornerShape(9.dp), onConfirm = pick),
+                            shape = RoundedCornerShape(9.dp),
+                            color = Color(preset),
+                            border = BorderStroke(
+                                if (selected) 3.dp else 1.dp,
+                                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                            ),
+                        ) {}
+                    }
+                }
+            }
             // Continuous RGB hue-cycle — same idea as the theme's RGB mode. While on, the fixed
             // color (presets + sliders) doesn't apply, so it's hidden.
             ToggleRow(
@@ -349,6 +394,15 @@ fun AppTab() {
             description = str("secondScreen.desc"),
             onChange = { com.armsx2.SecondScreen.set(appContext, it) },
         )
+
+        if (com.armsx2.SecondScreen.enabled.value) {
+            ToggleRow(
+                label = str("secondScreen.moveOsd"),
+                value = com.armsx2.SecondScreen.moveOsd.value,
+                description = str("secondScreen.moveOsd.desc"),
+                onChange = { com.armsx2.SecondScreen.setMoveOsd(it) },
+            )
+        }
 
         ToggleRow(
             label = str("app.batteryWarnings"),

@@ -140,7 +140,17 @@ fun SettingsScreen(
     // navigable element), snap the whole page back to the top so the title bar +
     // chips are fully visible — per-row bringIntoView otherwise leaves the header
     // scrolled off after diving deep into a tab and coming back up.
+    // ★ Skip the FIRST run. A LaunchedEffect also fires on initial composition, and on open the
+    // selected item IS the chip row (index 0) — so this snapped straight back to the top and threw
+    // away the offset SettingsScrollMemory had just restored. That is the reported "menu reopens at
+    // the topmost setting instead of where you left it" (confirmed by bmdhacks). Only an actual
+    // selection CHANGE, once the screen is up, should pull the header back into view.
+    val chipSnapArmed = remember { mutableStateOf(false) }
     LaunchedEffect(com.armsx2.ui.settings.SettingsControllerNav.selectedIndex.intValue) {
+        if (!chipSnapArmed.value) {
+            chipSnapArmed.value = true
+            return@LaunchedEffect
+        }
         if (com.armsx2.ui.settings.SettingsControllerNav.currentSelectedId()?.startsWith("settings.chip.") == true) {
             screenScroll.animateScrollTo(0)
         }

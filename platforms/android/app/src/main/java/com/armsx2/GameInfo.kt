@@ -273,7 +273,19 @@ data class GameInfo(
         titleSort.isNotEmpty() -> titleSort
         else -> title
     }
-    val coverUrl: String? get() = serial?.let { s ->
+    val coverUrl: String? get() = serial?.let { rawSerial ->
+        // Cover Region: swap in the equivalent release's serial when the user asked for another
+        // region's artwork. Falls back to this disc's own serial whenever there's no counterpart,
+        // so an unmatched game looks exactly as it does today.
+        coverUrlFor(CoverRegionIndex.coverSerialFor(rawSerial) ?: rawSerial)
+    }
+
+    /** This disc's OWN cover, ignoring the Cover Region choice. The card falls back to it when the
+     *  regional cover 404s — not every game has art for every region in the cover repo, and losing
+     *  a cover you previously had is worse than simply not getting the regional one. */
+    val discCoverUrl: String? get() = serial?.let { coverUrlFor(it) }
+
+    private fun coverUrlFor(s: String): String {
         val repo = when (platform) {
             GamePlatform.PS2 -> "ps2-covers"
             GamePlatform.PS1 -> "psx-covers"
@@ -281,7 +293,7 @@ data class GameInfo(
         // 3D cases live under covers/3d/*.png; flat 2D scans under
         // covers/default/*.jpg. Coil decodes by content, so the extension
         // mismatch on the cached file is fine.
-        if (CoverArtStyle.use3d.value)
+        return if (CoverArtStyle.use3d.value)
             "https://raw.githubusercontent.com/xlenore/$repo/main/covers/3d/$s.png"
         else
             "https://raw.githubusercontent.com/xlenore/$repo/main/covers/default/$s.jpg"

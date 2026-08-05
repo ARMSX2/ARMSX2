@@ -114,7 +114,46 @@ object OverlayRepo {
         return bmp
     }
 
-    /** Import a folder of overlay files, or a .zip, into [root]. Returns how many files landed. */
+    /**
+     * Import a whole overlay FOLDER (SAF tree) — the shape RetroArch packs actually come in.
+     *
+     * ★ This is the one that matters for a `.cfg`. A single-document import can only ever copy the
+     * one file the picker returned, so importing a lone .cfg brought the config across and left the
+     * PNG it points at behind; [list] then resolved `overlay0_overlay` to a file that wasn't there,
+     * dropped the entry, and the import looked like it did nothing at all. A tree URI can read the
+     * siblings, so the cfg and its images arrive together.
+     *
+     * Returns how many files landed.
+     */
+    fun importTree(context: Context, treeUri: android.net.Uri): Int {
+        val doc = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, treeUri) ?: return 0
+        val dest = File(root(context), (doc.name ?: "overlay").replace(Regex("[^A-Za-z0-9._-]"), "_"))
+            .apply { mkdirs() }
+        var n = 0
+        fun copyInto(dir: androidx.documentfile.provider.DocumentFile, into: File) {
+            dir.listFiles().forEach { child ->
+                val name = child.name ?: return@forEach
+                if (child.isDirectory) {
+                    // Packs are often one folder deep (an "img" subfolder next to the cfg).
+                    copyInto(child, File(into, name.replace(Regex("[^A-Za-z0-9._-]"), "_")).apply { mkdirs() })
+                    return@forEach
+                }
+                val ext = name.substringAfterLast('.', "").lowercase()
+                if (ext != "cfg" && ext !in IMAGE_EXTS) return@forEach
+                runCatching {
+                    val target = File(into, name)
+                    context.contentResolver.openInputStream(child.uri)?.use { input ->
+                        target.outputStream().use { input.copyTo(it) }
+                    }
+                    n++
+                }
+            }
+        }
+        copyInto(doc, dest)
+        return n
+    }
+
+    /** Import a single file (.zip, or a bare image) into [root]. Returns how many files landed. */
     fun importFrom(context: Context, uri: android.net.Uri, displayName: String?): Int {
         val base = root(context)
         val isZip = displayName?.endsWith(".zip", true) == true
@@ -150,4 +189,97 @@ object OverlayRepo {
     }
 
     private val IMAGE_EXTS = setOf("png", "jpg", "jpeg", "webp")
+
+    // ---- In-app downloader -------------------------------------------------------------------
+    // Importing by hand is fiddly (a .cfg is useless without the image it points at), so overlays
+    // can be pulled straight from libretro's own collection instead. Same shape as the shader
+    // downloader: browse a list, tap one, it lands ready to use.
+
+    /** libretro's overlay collection — the canonical source RetroArch itself ships. */
+    private const val OVERLAY_REPO_RAW = "https://raw.githubusercontent.com/libretro/common-overlays/master"
+    private const val OVERLAY_REPO_TREE =
+        "https://api.github.com/repos/libretro/common-overlays/git/trees/master?recursive=1"
+
+    /** Folders worth offering for a PS2: full-screen borders and CRT/scanline effects. The
+     *  console-specific gamepad/keyboard overlays in the same repo are for on-screen controls,
+     *  which ARMSX2 has its own editor for, so they are deliberately not listed. */
+    private val CATALOG_DIRS = listOf("borders/", "effects/")
+
+    data class CatalogEntry(val name: String, val path: String)
+
+    @Volatile private var catalogCache: List<CatalogEntry>? = null
+
+    /** List the downloadable overlays. BLOCKING — call from a worker. Cached for the session. */
+    fun fetchCatalog(): List<CatalogEntry> {
+        catalogCache?.let { return it }
+        val body = httpText(OVERLAY_REPO_TREE) ?: return emptyList()
+        // The tree JSON is one flat "path" list; a regex beats pulling in a JSON parse for this.
+        val out = Regex("\"path\"\\s*:\\s*\"([^\"]+\\.cfg)\"").findAll(body)
+            .map { it.groupValues[1] }
+            .filter { p -> CATALOG_DIRS.any { p.startsWith(it) } }
+            .map { p ->
+                // "effects/crt-bezels/foo.cfg" -> "crt-bezels / foo"
+                val pretty = p.removeSuffix(".cfg").split('/').drop(1).joinToString(" / ")
+                CatalogEntry(pretty.ifBlank { p.removeSuffix(".cfg") }, p)
+            }
+            .distinctBy { it.path }
+            .sortedBy { it.name.lowercase() }
+            .toList()
+        if (out.isNotEmpty()) catalogCache = out
+        return out
+    }
+
+    /**
+     * Download one catalog overlay: its .cfg AND the image the cfg points at.
+     *
+     * The image reference is RELATIVE to the cfg ("img/tv-integer.png"), so the same relative
+     * layout is recreated on disk — that is exactly what [list]'s resolver expects, which is why
+     * a downloaded overlay works immediately while a hand-imported lone cfg could not.
+     *
+     * Returns the number of files written (0 = failed).
+     */
+    fun downloadFromCatalog(context: Context, entry: CatalogEntry): Int {
+        val cfgText = httpText("$OVERLAY_REPO_RAW/${entry.path}") ?: return 0
+        val folder = File(root(context), entry.name.replace(Regex("[^A-Za-z0-9._-]"), "_")).apply { mkdirs() }
+        var n = 0
+        runCatching {
+            File(folder, entry.path.substringAfterLast('/')).writeText(cfgText)
+            n++
+        }
+        // Pull every image the cfg references (overlay0_overlay, overlay1_overlay, ...).
+        Regex("(?m)^\\s*overlay\\d+_overlay\\s*=\\s*\"?([^\"\\r\\n#]+)\"?").findAll(cfgText).forEach { m ->
+            val rel = m.groupValues[1].trim()
+            if (rel.isEmpty()) return@forEach
+            val remoteDir = entry.path.substringBeforeLast('/', "")
+            val target = File(folder, rel)
+            target.parentFile?.mkdirs()
+            if (httpFile("$OVERLAY_REPO_RAW/$remoteDir/$rel", target)) n++
+        }
+        return n
+    }
+
+    private fun httpText(url: String): String? = runCatching {
+        val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 20_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "ARMSX2")
+        }
+        if (conn.responseCode != java.net.HttpURLConnection.HTTP_OK) return@runCatching null
+        conn.inputStream.bufferedReader().use { it.readText() }
+    }.getOrNull()
+
+    private fun httpFile(url: String, dest: File): Boolean = runCatching {
+        val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 20_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "ARMSX2")
+        }
+        if (conn.responseCode != java.net.HttpURLConnection.HTTP_OK) return@runCatching false
+        conn.inputStream.use { input -> dest.outputStream().use { input.copyTo(it) } }
+        dest.length() > 0
+    }.getOrDefault(false)
 }

@@ -132,9 +132,31 @@ object LibraryChromePreferences {
     private const val SearchKey = "ui.library.showSearch"
     private const val RecentsKey = "ui.library.showRecents"
     private const val OpacityKey = "ui.library.opacity"
+    private const val BarColorKey = "ui.library.barColor"
 
     val showSearch = mutableStateOf(false)
     val showRecents = mutableStateOf(true)
+
+    /** Custom colour for the top BAR itself (the rounded pill every screen's header sits in).
+     *  0 = follow the theme, which is the default and what it always did.
+     *
+     *  Distinct from [LibraryBackgroundColorPreferences], which recolours the animated backdrop
+     *  BEHIND the library — the two were easy to confuse because the background picker was labelled
+     *  "Library Bar Color" while colouring the background, so asking for a bar colour got you the
+     *  wrong control. This is the bar. */
+    val barColor = mutableStateOf(0)
+
+    /** Same XMB-ish quick picks the background offers, so the two read as one palette. */
+    val BAR_PRESETS: List<Int> = listOf(
+        0xFF2E75F5.toInt(), 0xFF16A3C8.toInt(), 0xFF19B36B.toInt(), 0xFF12907E.toInt(),
+        0xFFA05BD0.toInt(), 0xFFE8458F.toInt(), 0xFFE8503A.toInt(), 0xFFF0A31E.toInt(),
+        0xFFF5D020.toInt(), 0xFFB4652A.toInt(), 0xFFAFBAC0.toInt(), 0xFF33475B.toInt(),
+    )
+
+    fun setBarColor(argb: Int) {
+        barColor.value = argb
+        MainActivityRuntime.prefs.edit { putInt(BarColorKey, argb) }
+    }
     // Card/list translucency over the wallpaper, as a percent (20–100). 100 = the old
     // fully-opaque look; lower lets the library background show through the game rows.
     val libraryOpacity = mutableStateOf(100)
@@ -143,6 +165,7 @@ object LibraryChromePreferences {
         showSearch.value = MainActivityRuntime.prefs.getBoolean(SearchKey, false)
         showRecents.value = MainActivityRuntime.prefs.getBoolean(RecentsKey, true)
         libraryOpacity.value = MainActivityRuntime.prefs.getInt(OpacityKey, 100).coerceIn(20, 100)
+        barColor.value = MainActivityRuntime.prefs.getInt(BarColorKey, 0)
     }
 
     fun setShowSearch(value: Boolean) {

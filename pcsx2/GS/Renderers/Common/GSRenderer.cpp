@@ -507,15 +507,25 @@ static GSVector4 CalculateDrawDstRect(s32 window_width, s32 window_height, const
 				break;
 		}
 	}
+	const bool is_portrait_window_outer = window_height > window_width;
 	if (target_height >= f_height)
 	{
-		target_y = -((target_height - f_height) * 0.5f);
+		// The render is TALLER than the window, so the overflow is normally split evenly and the
+		// image is cropped at both edges. Top-align instead when asked: anchor the top edge and let
+		// the crop fall entirely at the bottom.
+		//
+		// ★ This branch is the one landscape actually takes. A 4:3 game on a wide phone fills the
+		// height and pillarboxes the sides, so there is no vertical slack and the `else` below never
+		// runs — which is exactly why the landscape setting appeared to do nothing at first.
+		target_y = (s_landscape_render_top && !is_portrait_window_outer)
+			? 0.0f
+			: -((target_height - f_height) * 0.5f);
 	}
 	else
 	{
 		// Android #375: top-align the render in a PORTRAIT window (bottom stays free for
 		// touch controls). Vertical only — horizontal alignment (target_x) is unchanged.
-		const bool is_portrait_window = window_height > window_width;
+		const bool is_portrait_window = is_portrait_window_outer;
 		GSDisplayAlignment v_align = alignment;
 		if ((s_portrait_render_top && is_portrait_window) ||
 			(s_landscape_render_top && !is_portrait_window))

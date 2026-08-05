@@ -168,12 +168,19 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     /**
-     * Copy a BIOS's .mec / .nvm companions in alongside it.
+     * Copy a BIOS's companion files in alongside it (.mec / .nvm / .rom1 / .rom2 / .erom).
      *
      * These are not BIOS images, so importFile rejects them — getBiosInfoFromFd fails and they were
      * silently dropped, which is why importing a folder brought the .bin and left the console's
      * NVRAM behind. The core looks for them beside the BIOS under the SAME stem, so they are
      * renamed to follow whatever the imported BIOS ended up called. Requested by Rei Ayanami.
+     *
+     * ★ ROM1/ROM2/EROM matter as much as mec/nvm and used to be dropped here (issue #540). The
+     * Chinese SCPH-50009 keeps its font data in ROM2, so without it the core logs
+     * "BIOS rom2 module not found, skipping..." and Chinese titles boot to a black screen — the
+     * reporter had every file on disk and no way to get them in. BiosTools' LoadExtraRom looks for
+     * "<stem>.rom1"/"<stem>.rom2" (and the "<name>.bin.rom1" form) right next to the BIOS, which is
+     * exactly what renaming to the imported stem produces.
      *
      * Only reachable from a folder import: a single-document URI gives no access to its siblings.
      */
@@ -187,7 +194,7 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
         children.forEach { child ->
             val name = child.name ?: return@forEach
             val ext = name.substringAfterLast('.', "").lowercase()
-            if (ext != "mec" && ext != "nvm") return@forEach
+            if (ext !in BIOS_COMPANION_EXTS) return@forEach
             val stem = importedStems[name.substringBeforeLast('.').lowercase()] ?: return@forEach
             runCatching {
                 val target = File(directory, "$stem.$ext")
@@ -201,6 +208,19 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
     private fun importFile(uri: Uri): Result<File> = runCatching {
         val context = getApplication<Application>()
         val name = DocumentFile.fromSingleUri(context, uri)?.name?.takeIf(String::isNotBlank) ?: "bios.bin"
+        // A companion (.mec/.nvm/.rom1/.rom2/.erom) is NOT a BIOS image, so the validation below
+        // would reject it — which left anyone whose ROM2 didn't come across in a folder import with
+        // no way to add it at all (#540). Accept it on its extension and copy it in verbatim; the
+        // core finds it by the stem it already carries, so it must keep its exact name.
+        val companionExt = name.substringAfterLast('.', "").lowercase()
+        if (companionExt in BIOS_COMPANION_EXTS) {
+            val dir = MainActivityRuntime.internalBiosDir(context).apply { mkdirs() }
+            val dest = File(dir, name.replace(Regex("[^A-Za-z0-9._-]"), "_"))
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                dest.outputStream().use(input::copyTo)
+            } ?: error("Unable to read the file.")
+            return@runCatching dest
+        }
         val descriptor = context.contentResolver.openFileDescriptor(uri, "r") ?: error("Unable to open the file.")
         NativeApp.getBiosInfoFromFd(descriptor.detachFd()) ?: error("Not a valid PlayStation 2 BIOS.")
         val directory = MainActivityRuntime.internalBiosDir(context).apply { mkdirs() }
@@ -237,5 +257,12 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
     override fun onCleared() {
         scope.cancel()
         super.onCleared()
+    }
+
+    private companion object {
+        /** Files the core expects to sit beside a BIOS, under the same stem. mec/nvm hold the
+         *  console's clock and NVRAM; rom1/rom2/erom are extra ROM regions — rom2 is where the
+         *  Chinese SCPH-50009 keeps its fonts, without which those titles black-screen (#540). */
+        val BIOS_COMPANION_EXTS = setOf("mec", "nvm", "rom1", "rom2", "erom")
     }
 }

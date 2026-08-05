@@ -3813,6 +3813,13 @@ bool GSDeviceVK::CheckFeatures()
 	m_features.dxt_textures = m_device_features.textureCompressionBC;
 	m_features.bptc_textures = m_device_features.textureCompressionBC;
 
+	// The "no stencil buffer or texture barrier" warning is deliberately NOT shown on Android.
+	// UseRenderTargetCopyForFeedback turns texture barriers off by design on the mobile drivers
+	// this ships to (see the feedback notes above), so the condition is the NORMAL configuration
+	// here rather than a fault — every affected user got a scary "this will break some graphical
+	// effects" toast on every boot about a path we chose on purpose. It stays on desktop, where it
+	// really does indicate a deficient driver.
+#ifndef __ANDROID__
 	if (!m_features.texture_barrier && !m_features.stencil_buffer)
 	{
 		Host::AddKeyedOSDMessage("GSDeviceVK_NoTextureBarrierOrStencilBuffer",
@@ -3820,6 +3827,7 @@ bool GSDeviceVK::CheckFeatures()
 				"Stencil buffers and texture barriers are both unavailable, this will break some graphical effects."),
 			Host::OSD_WARNING_DURATION);
 	}
+#endif
 
 	m_max_texture_size = m_device_properties.limits.maxImageDimension2D;
 	m_max_framebuffer_width = m_device_properties.limits.maxFramebufferWidth;

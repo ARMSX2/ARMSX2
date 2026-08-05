@@ -83,6 +83,7 @@ import com.armsx2.ui.theme.Success
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 @Composable
 fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
@@ -799,6 +800,19 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         selected = settings.upscaleFloat,
         onSelect = viewModel::setUpscale,
     )
+    // Custom internal resolution, same control as the settings tab — the quick menu only offered
+    // the preset steps, so a value between them (or set per-game) could be neither seen nor
+    // changed from in-game. Percentage of native: 107% is roughly true 480p height.
+    com.armsx2.ui.settings.IntSliderRow(
+        label = str("renderer.upscale.customScale"),
+        value = (settings.upscaleFloat * 100f).roundToInt().coerceIn(25, 800),
+        min = 25,
+        max = 800,
+        description = str("renderer.upscale.customScale.description"),
+        valueFormatter = { "$it%" },
+        onReset = { viewModel.setUpscale(1.0f) },
+        onChange = { pct -> viewModel.setUpscale(pct / 100f) },
+    )
     HorizontalOptions(
         title = str("renderer.displayMode.label"),
         options = listOf(
@@ -815,6 +829,31 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         selected = settings.aspectRatio,
         onSelect = viewModel::setAspectRatio,
     )
+    // Overlay artwork, switchable from in-game — trying bezels means seeing them ON the game, and
+    // having to leave for All Settings each time made that unusable. Import still lives in the
+    // settings tab (it opens a file picker); this is the picker for what is already imported.
+    run {
+        val overlayCtx = androidx.compose.ui.platform.LocalContext.current
+        val entries = remember { com.armsx2.OverlayRepo.list(overlayCtx) }
+        // Shown even with nothing imported. Hiding it when the list was empty is why this looked
+        // absent from the in-game menu entirely — with no overlays there was no row to find, and
+        // no hint that the feature existed or where to add one.
+        HorizontalOptions(
+            title = str("renderer.overlayArt.label"),
+            options = listOf("" to str("renderer.overlayArt.none")) +
+                entries.map { it.imagePath to it.name },
+            selected = com.armsx2.OverlayRepo.activePath.value,
+            onSelect = { com.armsx2.OverlayRepo.setActive(it) },
+        )
+        if (entries.isEmpty()) {
+            Text(
+                str("renderer.overlayArt.emptyHint"),
+                color = Color(0xFF9AA0A6),
+                fontSize = 12.sp,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
+    }
     HorizontalOptions(
         title = str("renderer.blendingAccuracy.label"),
         options = listOf("Minimum", "Basic", "Medium", "High", str("fixes.opt.full"), str("fixes.opt.max")).mapIndexed { index, label -> index to label },

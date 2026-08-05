@@ -70,6 +70,7 @@ object TouchControls {
     private const val KEY_ANALOG_EXTRA = "touch.analogExtra"
     private const val KEY_ANALOG_EXTRA_CODE = "touch.analogExtraCode"
     private const val KEY_ANALOG_EXTRA_DIST = "touch.analogExtraDist"
+    private const val KEY_ANALOG_EXTRA_ANGLE = "touch.analogExtraAngle"
     private const val KEY_GRID_SNAP = "touch.gridSnap"
     private const val KEY_VIS_MODE = "touch.visibilityMode"
     // One-shot 2.4.7 defaults migration for EXISTING users (saved prefs/layouts
@@ -267,6 +268,30 @@ object TouchControls {
         val c = frac.coerceIn(0.1f, 1.5f)
         analogExtraDistance.floatValue = c
         runCatching { MainActivityRuntime.prefs.edit().putFloat(KEY_ANALOG_EXTRA_DIST, c).apply() }
+    }
+
+    /* ---- Extra analog button: shared held state -------------------------------------------
+     * TWO independent gestures can hold this button — a finger that presses the widget
+     * directly, and a finger that glides up off the left stick into it — and both may be down
+     * at once. A plain boolean would let whichever lifted FIRST release the button under the
+     * other, so the holders are counted and the key is emitted only on 0 <-> 1 transitions.
+     */
+
+    /** True while any gesture holds the extra button; drives its pressed visual. */
+    val analogExtraHeld = mutableStateOf(false)
+
+    private var analogExtraHolders = 0
+
+    /** Report one holder's transition. Returns true when the AGGREGATE state flipped, i.e.
+     *  when the caller should actually emit the key down/up. */
+    @Synchronized
+    fun noteAnalogExtraHold(down: Boolean): Boolean {
+        val before = analogExtraHolders
+        analogExtraHolders = (if (down) before + 1 else before - 1).coerceAtLeast(0)
+        val nowHeld = analogExtraHolders > 0
+        if (nowHeld == (before > 0)) return false
+        analogExtraHeld.value = nowHeld
+        return true
     }
 
     // Editor panel (EditToolbar) placement — SESSION ONLY, and PER-ORIENTATION. Portrait and
@@ -1256,9 +1281,18 @@ enum class TouchButtonId(val label: String, val keycode: Int, val kind: Kind) {
     // Pressure-sensitivity modifier. Emits no PS2 keycode; while held it sets
     // TouchControls.pressureModifierHeld so pressure-capable buttons report a
     // soft (~50%) press. Rendered by PressureButtonWidget.
-    PRESSURE("P½", 0, Kind.PRESSURE);
+    PRESSURE("P½", 0, Kind.PRESSURE),
 
-    enum class Kind { FACE, SHOULDER, MENU, DPAD, STICK, PAUSE, PRESSURE, FASTFORWARD, MACRO, STATEACTION }
+    // Extra button that rides with the left analog stick (sprint / jump / glide).
+    // It is a FULL layout widget — dragged and resized in the touch editor like any
+    // other control — rather than a satellite positioned by angle/distance sliders,
+    // which is what it used to be and which nobody could find or adjust. The stick
+    // additionally hit-tests this widget's own circle so a thumb that glides up off
+    // the stick latches it without lifting; see StickWidget. Its keycode is chosen in
+    // Pad settings (analogExtraKeycode), so the enum entry carries none.
+    ANALOG_EXTRA("Extra", 0, Kind.ANALOGEXTRA);
+
+    enum class Kind { FACE, SHOULDER, MENU, DPAD, STICK, PAUSE, PRESSURE, FASTFORWARD, MACRO, STATEACTION, ANALOGEXTRA }
 }
 
 /** Position + size for a single widget. xFrac / yFrac are anchor-point
@@ -1370,6 +1404,9 @@ data class TouchLayout(val buttons: List<TouchButtonCfg>) {
                 TouchButtonCfg(TouchButtonId.MACRO2, 0.48f, 0.36f, 42f, enabled = false),
                 TouchButtonCfg(TouchButtonId.MACRO3, 0.56f, 0.36f, 42f, enabled = false),
                 TouchButtonCfg(TouchButtonId.MACRO4, 0.64f, 0.36f, 42f, enabled = false),
+                // Extra analog button above the portrait left stick (0.19, 0.62, 150dp). Portrait is
+                // much taller, so the same physical gap is a far smaller fraction than in landscape.
+                TouchButtonCfg(TouchButtonId.ANALOG_EXTRA, 0.19f, 0.49f, 48f),
             ).let { placed ->
                 // Splice in anything the landscape default has that this list does not (pause,
                 // pressure, save/load-state buttons...) so a new widget never goes missing in
@@ -1420,6 +1457,11 @@ data class TouchLayout(val buttons: List<TouchButtonCfg>) {
                 TouchButtonCfg(TouchButtonId.SAVE_STATE, 0.30f, 0.54f, 44f, enabled = false),
                 TouchButtonCfg(TouchButtonId.LOAD_STATE, 0.38f, 0.54f, 44f, enabled = false),
                 TouchButtonCfg(TouchButtonId.SCREENSHOT, 0.46f, 0.54f, 44f, enabled = false),
+                // Extra analog button, parked directly above the left stick (0.28, 0.80): a 130dp
+                // stick plus a 48dp button needs ~0.22 of a landscape height to clear. Visibility is
+                // owned by the Pad-settings toggle, not this flag, so it is `enabled` here — see the
+                // ANALOG_EXTRA gate in the overlay's widget loop.
+                TouchButtonCfg(TouchButtonId.ANALOG_EXTRA, 0.28f, 0.58f, 48f),
                 // Analog sticks — bottom inside, between DPad/face cluster
                 // and the center, so thumb travel is short.
                 TouchButtonCfg(TouchButtonId.L_STICK,  0.28f, 0.80f, 130f),

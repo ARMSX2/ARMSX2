@@ -40,7 +40,24 @@ fun GameCoverArt(game: GameInfo, modifier: Modifier = Modifier) {
         modifier = modifier.clip(RoundedCornerShape(14.dp)),
         contentScale = ContentScale.Crop,
         loading = { GameCoverPlaceholder(game.title, game.serial) },
-        error = { GameCoverPlaceholder(game.title, game.serial) },
+        error = {
+            // Cover Region can point at a release the art repo has no cover for; falling straight
+            // to the placeholder would BLANK a cover the user already had (reported for the in-game
+            // menu, which uses this component). Retry with this disc's own serial first.
+            val discUrl = if (customCover == null) game.discCoverUrl else null
+            if (discUrl != null && discUrl != game.coverUrl) {
+                SubcomposeAsyncImage(
+                    model = discUrl,
+                    contentDescription = game.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                    loading = { GameCoverPlaceholder(game.title, game.serial) },
+                    error = { GameCoverPlaceholder(game.title, game.serial) },
+                )
+            } else {
+                GameCoverPlaceholder(game.title, game.serial)
+            }
+        },
     )
 }
 

@@ -46,6 +46,17 @@ static constexpr u8 cdvdParamLength[16] = { 0, 0, 0, 0, 0, 4, 11, 11, 11, 1, 255
 static constexpr size_t NVRAM_SIZE = 1024;
 static u8 s_nvram[NVRAM_SIZE];
 
+// Set whenever the BIOS writes NVRAM (clock, language, timezone — its first-boot setup), cleared
+// by cdvdSaveNVRAM. cdvdVsync flushes on it once a second.
+//
+// The NVM used to reach disk only on a clean VMManager::Shutdown. On a handheld that is the
+// exception, not the rule: the app gets backgrounded and killed, and on the very first full boot
+// the BIOS parks you in the Browser after its setup (a real PS2 does the same — it wants a power
+// cycle before it will boot the disc). Kill the app there and the config you just entered was
+// never written, so the NEXT full boot ran setup again and parked in the Browser again, forever.
+// Autosaving breaks that loop: the second full boot boots the game, as on hardware.
+static bool s_nvram_dirty = false;
+
 static constexpr u32 DEFAULT_MECHA_VERSION = 0x00020603;
 static u32 s_mecha_version = 0;
 
@@ -206,6 +217,10 @@ void cdvdLoadNVRAM()
 
 void cdvdSaveNVRAM()
 {
+	// Cleared up front, not on success: a failing path (unwritable BIOS folder) would otherwise
+	// retry the full read-compare-write every single second for the rest of the session.
+	s_nvram_dirty = false;
+
 	Error error;
 	const std::string nvmfile = cdvdGetNVRAMPath();
 	auto fp = FileSystem::OpenManagedCFileTryIgnoreCase(nvmfile.c_str(), "r+b", &error);
@@ -263,7 +278,10 @@ static void cdvdWriteNVM(const u8* src, int offset, int bytes)
 	}
 
 	if (to_write > 0) [[likely]]
+	{
 		std::memcpy(&s_nvram[offset], src, to_write);
+		s_nvram_dirty = true;
+	}
 }
 
 static void cdvdReadConsoleID(u8* id)
@@ -1646,6 +1664,12 @@ void cdvdVsync()
 	cdvd.RTCcount -= verticalFrequency;
 
 	cdvdUpdateTrayState();
+
+	// Flush BIOS NVRAM within a second of the BIOS changing it, instead of only on a clean
+	// shutdown — see s_nvram_dirty. Costs a 1KB read+compare, and only in the second after the
+	// user actually changes something in the BIOS config.
+	if (s_nvram_dirty)
+		cdvdSaveNVRAM();
 
 	// FolderMemoryCard needs information on how much time has passed since the last write
 	// Call it every second.

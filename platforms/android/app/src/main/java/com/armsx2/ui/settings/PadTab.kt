@@ -359,17 +359,6 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                             com.armsx2.ui.touch.TouchControls.setAnalogExtraKeycode(targets[it].code)
                         },
                     )
-                    SettingsDivider()
-                    IntSliderRow(
-                        label = str("pad.analogExtra.distance"),
-                        value = (com.armsx2.ui.touch.TouchControls.analogExtraDistance.floatValue * 100f).toInt(),
-                        min = 10,
-                        max = 150,
-                        description = str("pad.analogExtra.distance.description"),
-                        valueFormatter = { "$it%" },
-                        onReset = { com.armsx2.ui.touch.TouchControls.setAnalogExtraDistance(0.35f) },
-                        onChange = { com.armsx2.ui.touch.TouchControls.setAnalogExtraDistance(it / 100f) },
-                    )
                 }
                 SettingsDivider()
             }

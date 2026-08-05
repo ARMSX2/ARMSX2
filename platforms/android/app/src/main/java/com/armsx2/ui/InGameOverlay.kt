@@ -109,6 +109,14 @@ object InGameOverlay {
                         ConfigStore.resolveForGame(serial).writeGameSettingsIni(ConfigStore.loadGlobal())
                     }
                 }
+                // ★ Re-assert the OSD MODE after the commit. The Minimal/Full/Off modes are a
+                // LIVE-only flag apply (deliberately not persisted, so they don't overwrite the
+                // user's per-stat selection) — but VMManager::ApplySettings re-derives all of
+                // EmuConfig.GS from the layered config on every commit, which wiped that live
+                // override. That is the reported "OSD still says Minimal but it's off after
+                // changing upscale" (confirmed by bmdhacks). Re-pushing the current mode restores
+                // exactly what the user had, without touching any saved setting.
+                runCatching { reapplyOsdMode() }
             }
         }
 
@@ -163,6 +171,11 @@ object InGameOverlay {
         setOsdMode(next)
         return "OSD: " + osdModeLabel(next)
     }
+
+    /** Re-push the CURRENT osd mode to native. Used when something suppressed the OSD live (the
+     *  second-display panel routing it to the other screen) and needs to hand it back exactly as
+     *  the user had it, without touching any saved setting. */
+    fun reapplyOsdMode() = applyOsdMode(osdMode.value)
 
     private fun applyOsdMode(mode: OsdMode) {
         osdMode.value = mode

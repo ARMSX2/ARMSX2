@@ -864,6 +864,31 @@ private fun LibraryOverflowMenu(
         ) {
             closeThen(onToggleCustomNames)
         }
+        // Cover region: show another region's box art. Cycles Disc -> USA -> Europe -> Japan.
+        // The lookup needs the GameDB index, so building it is kicked off the first time anyone
+        // leaves "Disc" — a user who never touches this never pays for the parse.
+        run {
+            val regionCtx = androidx.compose.ui.platform.LocalContext.current
+            val r = com.armsx2.CoverRegionIndex.region.intValue
+            LibraryOverflowItem(
+                glyph = "A/あ",
+                label = str("games.overflow.coverRegion"),
+                trailing = str(
+                    when (r) {
+                        1 -> "games.overflow.coverRegion.usa"
+                        2 -> "games.overflow.coverRegion.eur"
+                        3 -> "games.overflow.coverRegion.jpn"
+                        else -> "games.overflow.coverRegion.disc"
+                    },
+                ),
+            ) {
+                closeThen {
+                    val next = (r + 1) % 4
+                    com.armsx2.CoverRegionIndex.set(next)
+                    if (next != 0) com.armsx2.CoverRegionIndex.ensureBuilt(regionCtx)
+                }
+            }
+        }
         LibraryOverflowItem(
             glyph = "A/あ",
             label = str("games.overflow.englishTitles"),
@@ -1195,7 +1220,24 @@ private fun GameCover(
                 modifier = Modifier.fillMaxSize(),
                 contentScale = contentScale,
                 loading = { CoverPlaceholder(game.displayTitle(EnglishTitles.enabled.value), game.serial, showText = placeholderText) },
-                error = { CoverPlaceholder(game.displayTitle(EnglishTitles.enabled.value), game.serial, showText = placeholderText) },
+                error = {
+                    // A regional cover that isn't in the art repo would otherwise blank a cover the
+                    // user already had — reported as "some games lose their covers when switching
+                    // regions". Retry with this disc's own serial before giving up.
+                    val discUrl = custom?.let { null } ?: game.discCoverUrl
+                    if (discUrl != null && discUrl != model) {
+                        SubcomposeAsyncImage(
+                            model = discUrl,
+                            contentDescription = game.displayTitle(EnglishTitles.enabled.value),
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = contentScale,
+                            loading = { CoverPlaceholder(game.displayTitle(EnglishTitles.enabled.value), game.serial, showText = placeholderText) },
+                            error = { CoverPlaceholder(game.displayTitle(EnglishTitles.enabled.value), game.serial, showText = placeholderText) },
+                        )
+                    } else {
+                        CoverPlaceholder(game.displayTitle(EnglishTitles.enabled.value), game.serial, showText = placeholderText)
+                    }
+                },
             )
         }
     }

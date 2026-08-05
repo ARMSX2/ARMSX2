@@ -372,6 +372,10 @@ open class MainActivityRuntime : ComponentActivity() {
         // Reset to false whenever a game starts.
         @Volatile var fastForwardToggleActive = false
 
+        /** Read-only view of the fast-forward latch, for UI that only needs to DISPLAY it (the
+         *  second-display panel shows a ▶▶ marker while carrying the OSD). */
+        fun isFastForwardActive(): Boolean = fastForwardToggleActive
+
         // Latched state for the "Slow Down (toggle)" hotkey (LimiterModeType::Slomo).
         // Mutually exclusive with the fast-forward latch; blocked in RA hardcore.
         @Volatile var slowDownToggleActive = false
@@ -2075,6 +2079,10 @@ open class MainActivityRuntime : ComponentActivity() {
         // Low-battery / high-temperature banners. Registers for the sticky battery broadcast, so
         // there is no polling; the toggle lives in App settings.
         com.armsx2.OverlayRepo.load()
+        com.armsx2.CoverRegionIndex.load()
+        // Only parses the 2.6MB GameDB when a non-default cover region is actually in use.
+        if (com.armsx2.CoverRegionIndex.region.intValue != 0)
+            com.armsx2.CoverRegionIndex.ensureBuilt(applicationContext)
         // Second-display utility panel (Ayn Thor / Retroid dual screen). No-op with one display.
         com.armsx2.SecondScreen.load()
         com.armsx2.SecondScreen.attach(applicationContext)
@@ -3365,12 +3373,32 @@ open class MainActivityRuntime : ComponentActivity() {
 
     /** Quick save / load to the active slot — shared by the SAVE_STATE/LOAD_STATE
      *  hotkeys and the on-screen Save/Load State touch buttons. Runs off the UI thread. */
+    /**
+     * RetroAchievements hardcore forbids save states — enforced HERE so every entry point is
+     * covered at once.
+     *
+     * The slot picker checked it, but these direct quick-save/load helpers did not, so anything
+     * bypassing the picker (the second-display panel, the on-screen state buttons, the hotkeys)
+     * could still load a state in hardcore — precisely the cheat the mode exists to prevent.
+     */
+    private fun blockedByHardcore(): Boolean {
+        val hardcore = runCatching { NativeApp.isHardcoreMode() }.getOrDefault(false)
+        if (hardcore) {
+            runOnUiThread {
+                com.armsx2.ui.WelcomeBanner.show(com.armsx2.i18n.I18n.get("savestate.error.hardcore"))
+            }
+        }
+        return hardcore
+    }
+
     fun saveState() {
+        if (blockedByHardcore()) return
         val slot = currentSaveSlot.value
         kotlin.concurrent.thread { runCatching { NativeApp.saveStateToSlot(slot) } }
     }
 
     fun loadState(onLoaded: (() -> Unit)? = null) {
+        if (blockedByHardcore()) return
         val slot = currentSaveSlot.value
         kotlin.concurrent.thread {
             runCatching { NativeApp.loadStateFromSlot(slot) }
@@ -4701,6 +4729,10 @@ open class MainActivityRuntime : ComponentActivity() {
     }
 
     override fun onPause() {
+        // Take the second-display panel down with the app. A Presentation is not torn down by the
+        // activity stopping, so it otherwise stayed on the external screen while the user was off
+        // doing something else (reported).
+        runCatching { com.armsx2.SecondScreen.setForeground(applicationContext, false) }
         // DS-lid-style chime when the SCREEN is going off (device sleeping) — gated on isInteractive
         // so a plain background (home / recents, screen still on) stays silent. Fires before we pause
         // audio below so the blip is heard as the device sleeps.
@@ -4740,6 +4772,7 @@ open class MainActivityRuntime : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        runCatching { com.armsx2.SecondScreen.setForeground(applicationContext, true) }
         // Woke from a real sleep (paired with the onPause sleep chime): play the wake chime + a brief
         // top-left "Welcome Back!". A plain background return never set wasAsleep, so this only fires
         // after an actual screen-off sleep.
