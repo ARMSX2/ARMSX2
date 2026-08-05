@@ -229,6 +229,8 @@ static bool ARMSX2JITWorkerBusy();
         uiWindow.windowScene = windowScene;
         self.window = uiWindow;
         self.window.backgroundColor = [UIColor systemGroupedBackgroundColor];
+        // Before the window is on screen, so there is no wrong first frame.
+        [self syncRootViewToWindow];
         [self.window makeKeyAndVisible];
 
         // ProMotion (120 Hz) unlock is just CADisableMinimumFrameDurationOnPhone
@@ -285,6 +287,7 @@ static bool ARMSX2JITWorkerBusy();
                 g_logView.hidden = YES;
                 g_logView.userInteractionEnabled = NO;
             }
+            [self syncRootViewToWindow];
             Console.WriteLn("[UI] SwiftUI menu attached (screen: %.0fx%.0f)",
                 rootVC.view.bounds.size.width, rootVC.view.bounds.size.height);
 
@@ -1259,27 +1262,23 @@ static void ARMSX2StartJITKeepalive()
 - (void)sceneDidDisconnect:(UIScene *)scene {
 }
 
-- (void)sceneDidBecomeActive:(UIScene *)scene {
-    // Under host containers that resolve the scene's orientation after
-    // scene:willConnectTo: created the SDL window and its rootViewController,
-    // rootVC.view keeps its portrait bounds and nothing re-evaluates it, so
-    // the SwiftUI menu (pinned to rootVC.view via Auto Layout) renders in a
-    // portrait square inside a landscape window. When rootVC.view and the
-    // window disagree on orientation, snap the view to the window bounds and
-    // let Auto Layout propagate to the menu. No-op on the normal launch path.
+/// A host container connects the scene while the app is still backgrounded, where
+/// UIKit has no interface orientation to resolve, so the window takes the real
+/// landscape bounds while its root view controller starts portrait. The menu is
+/// pinned to that view and inherits the mismatch. No-op when the two agree.
+- (void)syncRootViewToWindow {
     UIViewController *rootVC = s_rootVC ?: self.window.rootViewController;
     UIWindow *win = self.window;
     if (rootVC == nil || win == nil) return;
+    if (CGSizeEqualToSize(rootVC.view.bounds.size, win.bounds.size)) return;
 
-    const CGSize winSize = win.bounds.size;
-    const CGSize vcSize = rootVC.view.bounds.size;
-    const BOOL winLandscape = (winSize.width >= winSize.height && winSize.height > 0);
-    const BOOL vcLandscape = (vcSize.width >= vcSize.height && vcSize.height > 0);
-    if (winLandscape != vcLandscape) {
-        rootVC.view.frame = win.bounds;
-        [rootVC.view setNeedsLayout];
-        [rootVC.view layoutIfNeeded];
-    }
+    rootVC.view.frame = win.bounds;
+    [rootVC.view setNeedsLayout];
+    [rootVC.view layoutIfNeeded];
+}
+
+- (void)sceneDidBecomeActive:(UIScene *)scene {
+    [self syncRootViewToWindow];
 
     // Prepare the persistent CPU/JIT worker while the launch-time JIT grant is
     // fresh, but leave it waiting without a VM boot request. Running this from
@@ -1302,6 +1301,8 @@ static void ARMSX2StartJITKeepalive()
 }
 
 - (void)sceneWillEnterForeground:(UIScene *)scene {
+    // Runs before the first frame of the return, unlike sceneDidBecomeActive.
+    [self syncRootViewToWindow];
 }
 
 - (void)sceneDidEnterBackground:(UIScene *)scene {
