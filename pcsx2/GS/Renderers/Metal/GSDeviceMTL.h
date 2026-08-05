@@ -259,7 +259,7 @@ public:
 
 	// Spinning
 	ReadbackSpinManager m_spin_manager;
-	u32 m_encoders_in_current_cmdbuf;
+	u32 m_encoders_in_current_cmdbuf = 0;
 	u32 m_spin_timer = 0;
 	MRCOwned<id<MTLComputePipelineState>> m_spin_pipeline;
 	MRCOwned<id<MTLBuffer>> m_spin_buffer;
@@ -320,6 +320,8 @@ public:
 
 	// MARK: Ephemeral resources
 	MRCOwned<id<MTLCommandBuffer>> m_current_render_cmdbuf;
+	u32 m_skipped_present_frames_since_submit = 0;
+	u64 m_deferred_submit_started = 0;
 	struct MainRenderEncoder
 	{
 		MRCOwned<id<MTLRenderCommandEncoder>> encoder;

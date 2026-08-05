@@ -181,12 +181,13 @@ namespace Host
     void SetMouseMode(bool, bool) {}
     void OnGameChanged(const std::string&, const std::string&, const std::string&, const std::string&, unsigned int, unsigned int)
     {
+        ARMSX2_ApplyEffectivePresentFPSCap();
         ARMSX2_PostRuntimeMenuStateChanged();
         // The GameDB's hardware fixes only land once the serial is known, so this is the
         // first point where the effective hack values mean anything.
         ARMSX2_CaptureGraphicsHackState();
     }
-    void OnVMDestroyed() {}
+    void OnVMDestroyed() { ARMSX2_ApplyEffectivePresentFPSCap(); }
     void SetFullscreen(bool) {}
     void BeginTextInput() {}
     bool ConfirmMessage(std::string_view, std::string_view) { return true; }

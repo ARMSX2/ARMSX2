@@ -11,7 +11,7 @@ struct FramePacingTab: View {
 
     // Per-game individual-control bindings shared with GraphicsTab / AudioTab.
     @Binding var perGameFrameLimiter: Int
-    @Binding var perGameTargetFPS: Int
+    @Binding var perGameTargetFPS: Float
     @Binding var perGameVsyncQueue: Int
     @Binding var perGameSyncToHostRefresh: Int
     @Binding var perGameBufferMS: Int
@@ -53,15 +53,13 @@ struct FramePacingTab: View {
                 }
                 .disabled(!enabled)
 
-                NumberOverrideRow("FPS Target", value: $perGameTargetFPS,
-                                  global: Int(settings.targetFPS.rounded()),
-                                  range: SettingsStore.targetFPSRange, suffix: " FPS",
-                                  settings: settings)
+                FloatOverrideRow(.targetFPS, value: $perGameTargetFPS,
+                                 global: settings.targetFPS,
+                                 settings: settings)
                     .disabled(perGameFrameLimiter == 0 || !enabled)
 
-                NumberOverrideRow("VSync Queue Size", value: $perGameVsyncQueue,
+                NumberOverrideRow(.vsyncQueueSize, value: $perGameVsyncQueue,
                                   global: settings.vsyncQueueSize,
-                                  range: SettingsStore.vsyncQueueRange, style: .stepper,
                                   settings: settings)
                     .disabled(!enabled)
 
@@ -75,15 +73,13 @@ struct FramePacingTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                NumberOverrideRow("Buffer Size", value: $perGameBufferMS,
+                NumberOverrideRow(.audioBufferMs, value: $perGameBufferMS,
                                   global: settings.audioBufferMs,
-                                  range: SettingsStore.audioBufferMsRange, suffix: " ms",
                                   settings: settings)
                     .disabled(!enabled)
 
-                NumberOverrideRow("Output Latency", value: $perGameOutputLatencyMS,
+                NumberOverrideRow(.audioOutputLatencyMs, value: $perGameOutputLatencyMS,
                                   global: settings.audioOutputLatencyMs,
-                                  range: SettingsStore.audioOutputLatencyMsRange, suffix: " ms",
                                   settings: settings)
                     .disabled(!enabled)
             } header: {

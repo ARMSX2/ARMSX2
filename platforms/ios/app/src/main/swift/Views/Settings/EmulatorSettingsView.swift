@@ -147,34 +147,7 @@ struct EmulatorSettingsView: View {
                 Toggle(settings.localized("Frame Limiter"), isOn: $settings.frameLimiterEnabled)
 
                 if settings.frameLimiterEnabled {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(settings.localized("FPS Target"))
-                            Spacer()
-                            Text(Self.formatFPS(settings.targetFPS))
-                                .foregroundStyle(.secondary)
-                                .font(.callout.monospacedDigit())
-                        }
-
-                        Slider(
-                            value: $settings.targetFPS,
-                            in: SettingsStore.minTargetFPS...SettingsStore.maxTargetFPS,
-                            step: 1.0
-                        )
-
-                        HStack {
-                            Text(Self.formatFPS(SettingsStore.minTargetFPS))
-                            Spacer()
-                            Button(settings.localized("60 FPS")) {
-                                settings.targetFPS = SettingsStore.defaultTargetFPS
-                            }
-                            .buttonStyle(.borderless)
-                            Spacer()
-                            Text(Self.formatFPS(SettingsStore.maxTargetFPS))
-                        }
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    }
+                    NumberRow(.targetFPS, value: $settings.targetFPS, settings: settings)
                 } else {
                     HStack {
                         Text(settings.localized("Speed Target"))
@@ -201,7 +174,7 @@ struct EmulatorSettingsView: View {
                         .font(.callout.monospacedDigit())
                 }
 
-                Text(settings.localized("FPS Target maps to PCSX2 Normal Speed: 60 FPS is normal NTSC timing, 30 FPS is about 50% speed, and higher values fast-forward. Turning the limiter OFF unlocks speed and can increase heat and battery drain."))
+                Text(settings.localized("The FPS Target changes display presentation without slowing CPU, audio, or game timing. Fast Forward remains a separate emulation-speed control."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -213,26 +186,8 @@ struct EmulatorSettingsView: View {
                     .foregroundStyle(.secondary)
 
                 Group {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(settings.localized("Emulation-Only Mode Timer"))
-                            Spacer()
-                            Text("\(settings.emulationOnlyModeDelaySeconds)s")
-                                .foregroundStyle(.secondary)
-                                .font(.callout.monospacedDigit())
-                        }
-                        Slider(
-                            value: emulationOnlyModeDelayBinding,
-                            in: Double(SettingsStore.emulationOnlyModeDelayRange.lowerBound)...Double(SettingsStore.emulationOnlyModeDelayRange.upperBound),
-                            step: 1
-                        ) {
-                            Text(settings.localized("Emulation-Only Mode Timer"))
-                        } minimumValueLabel: {
-                            Text("0s")
-                        } maximumValueLabel: {
-                            Text("15s")
-                        }
-                    }
+                    NumberRow(.emulationOnlyModeTimer,
+                              value: $settings.emulationOnlyModeDelaySeconds, settings: settings)
 
                     Toggle(
                         settings.localized("Disable Cheats, Widescreen and Dynamic Patches"),
@@ -365,7 +320,9 @@ struct EmulatorSettingsView: View {
         .navigationTitle(settings.localized("Emulator"))
         .navigationBarTitleDisplayMode(.inline)
         .dynamicTypeSize(...DynamicTypeSize.accessibility3)
-        .onAppear { hardcoreBlocksCheats = PatchStore.hardcoreBlocksPnachContent() }
+        .onAppear {
+            hardcoreBlocksCheats = PatchStore.hardcoreBlocksPnachContent()
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
             hardcoreBlocksCheats = PatchStore.hardcoreBlocksPnachContent()
         }
@@ -375,12 +332,6 @@ struct EmulatorSettingsView: View {
         String(format: "%.2f FPS", value)
     }
 
-    private var emulationOnlyModeDelayBinding: Binding<Double> {
-        Binding(
-            get: { Double(settings.emulationOnlyModeDelaySeconds) },
-            set: { settings.emulationOnlyModeDelaySeconds = Int($0.rounded()) }
-        )
-    }
 
     /// Compact labeled picker over a fixed ordered option list (round/clamp modes).
     @ViewBuilder

@@ -109,7 +109,7 @@ struct GraphicsSettingsView: View {
             } header: {
                 Text(settings.localized("Performance"))
             } footer: {
-                Text(settings.localized("Pipelined splits GS emulation across two threads on multi-core systems and competes for cores with EE/VU threads. The debug modes are much slower — do not use them for play."))
+                Text(settings.localized("Pipelined splits GS emulation across two threads on multi-core systems and competes for cores with EE/VU threads. The debug modes are much slower — do not use them for play. Requires restart."))
             }
 
             Section(settings.localized("Renderer")) {
@@ -206,18 +206,7 @@ struct GraphicsSettingsView: View {
                     set: { settings.casMode = $0 ? 1 : 0 }
                 ))
                 if settings.casMode > 0 {
-                    HStack {
-                        Text(settings.localized("Sharpness"))
-                        Slider(value: Binding(
-                            get: { Float(settings.casSharpness) / 100.0 },
-                            set: { settings.casSharpness = Int($0 * 100) }
-                        ), in: 0...1, onEditingChanged: { editing in
-                            if editing { settings.beginVisualSliderEdit() } else { settings.endVisualSliderEdit() }
-                        })
-                        Text("\(settings.casSharpness)%")
-                            .font(.caption)
-                            .frame(width: 40)
-                    }
+                    NumberRow(.casSharpness, value: $settings.casSharpness, settings: settings)
                 }
                 Text(settings.localized("Contrast Adaptive Sharpening via Metal. Sharpens the image after rendering."))
                     .font(.caption)
@@ -285,10 +274,14 @@ struct GraphicsSettingsView: View {
             Section {
                 Toggle(settings.localized("Shade Boost"), isOn: $settings.shadeBoost)
                 if settings.shadeBoost {
-                    percentSlider("Brightness", value: $settings.shadeBoostBrightness)
-                    percentSlider("Contrast", value: $settings.shadeBoostContrast)
-                    percentSlider("Saturation", value: $settings.shadeBoostSaturation)
-                    percentSlider("Gamma", value: $settings.shadeBoostGamma)
+                    NumberRow(.shadeBoostBrightness, value: $settings.shadeBoostBrightness,
+                              settings: settings)
+                    NumberRow(.shadeBoostContrast, value: $settings.shadeBoostContrast,
+                              settings: settings)
+                    NumberRow(.shadeBoostSaturation, value: $settings.shadeBoostSaturation,
+                              settings: settings)
+                    NumberRow(.shadeBoostGamma, value: $settings.shadeBoostGamma,
+                              settings: settings)
                 }
             } header: {
                 Text(settings.localized("Shade Boost"))
@@ -351,14 +344,20 @@ struct GraphicsSettingsView: View {
                 Toggle(settings.localized("Wild Arms Offset"), isOn: claiming("UserHacks_ForceEvenSpritePosition", $settings.wildArmsOffset))
                 hackNote("UserHacks_ForceEvenSpritePosition", shown: settings.wildArmsOffset ? 1 : 0)
 
-                ClampedIntField(title: settings.localized("Texture Offset X"), value: claiming("UserHacks_TCOffsetX", $settings.textureOffsetX), range: SettingsStore.textureOffsetRange)
-                ClampedIntField(title: settings.localized("Texture Offset Y"), value: claiming("UserHacks_TCOffsetY", $settings.textureOffsetY), range: SettingsStore.textureOffsetRange)
+                NumberRow(.textureOffsetX,
+                          value: claiming("UserHacks_TCOffsetX", $settings.textureOffsetX),
+                          settings: settings)
+                NumberRow(.textureOffsetY,
+                          value: claiming("UserHacks_TCOffsetY", $settings.textureOffsetY),
+                          settings: settings)
                 Text(settings.localized("Texture offsets are advanced troubleshooting values. Type a value and clamp to range. Default is 0."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                ClampedIntField(title: settings.localized("Skipdraw Start"), value: skipDrawStartBinding, range: SettingsStore.skipDrawRange, isEnabled: manualAdvancedHacks)
-                ClampedIntField(title: settings.localized("Skipdraw End"), value: skipDrawEndBinding, range: SettingsStore.skipDrawRange, isEnabled: manualAdvancedHacks)
+                NumberRow(.skipDrawStart, value: skipDrawStartBinding, settings: settings)
+                    .disabled(!manualAdvancedHacks)
+                NumberRow(.skipDrawEnd, value: skipDrawEndBinding, settings: settings)
+                    .disabled(!manualAdvancedHacks)
                 Text(settings.localized("For Skipdraw 1, use Start 1 and End 1. Applies immediately."))
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -382,8 +381,10 @@ struct GraphicsSettingsView: View {
                 intPicker("Bilinear Upscale", selection: $settings.bilinearUpscaleHack, options: [
                     ("Automatic", 0), ("Force Bilinear", 1), ("Force Nearest", 2)
                 ])
-                ClampedIntField(title: settings.localized("CPU Sprite Render BW"), value: $settings.cpuSpriteRenderBw, range: 0...10)
-                ClampedIntField(title: settings.localized("CPU Sprite Render Level"), value: $settings.cpuSpriteRenderLevel, range: 0...2)
+                NumberRow(.cpuSpriteRenderBw, value: $settings.cpuSpriteRenderBw,
+                          settings: settings)
+                intPicker("CPU Sprite Render Level", selection: $settings.cpuSpriteRenderLevel,
+                          shared: SettingsOptions.cpuSpriteRenderLevel)
                 intPicker("Max Anisotropy", selection: $settings.maxAnisotropy, shared: SettingsOptions.maxAnisotropy)
                 intPicker("Hardware Download Mode", selection: $settings.hardwareDownloadMode, shared: SettingsOptions.hardwareDownloadMode)
                 intPicker("TV/CRT Shader", selection: $settings.tvShader, shared: SettingsOptions.tvShader)
@@ -527,62 +528,5 @@ struct GraphicsSettingsView: View {
     /// Same picker over a shared `SettingsOptions` list, which the per-game tabs read too.
     private func intPicker(_ title: String, selection: Binding<Int>, shared: [(id: Int, title: String)]) -> some View {
         intPicker(title, selection: selection, options: shared.map { ($0.title, $0.id) })
-    }
-
-    /// Labeled 1–100 percent slider used by Shade Boost.
-    @ViewBuilder
-    private func percentSlider(_ title: String, value: Binding<Int>) -> some View {
-        HStack {
-            Text(settings.localized(title))
-            Slider(value: Binding(
-                get: { Double(value.wrappedValue) },
-                set: { value.wrappedValue = Int($0.rounded()) }
-            ), in: 1...100, onEditingChanged: { editing in
-                if editing { settings.beginVisualSliderEdit() } else { settings.endVisualSliderEdit() }
-            })
-            Text("\(value.wrappedValue)%")
-                .font(.caption.monospacedDigit())
-                .frame(width: 44, alignment: .trailing)
-        }
-    }
-}
-
-/// A typeable integer field for advanced/manual hack values. Text is committed when
-/// editing ends: valid input is clamped to `range`, and invalid input reverts to the
-/// last good value so a bad string can never be written or crash the field.
-struct ClampedIntField: View {
-    let title: String
-    @Binding var value: Int
-    let range: ClosedRange<Int>
-    var isEnabled: Bool = true
-
-    @State private var text: String = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        HStack {
-            Text(title)
-            Spacer()
-            TextField("0", text: $text)
-                .keyboardType(.numbersAndPunctuation)
-                .multilineTextAlignment(.trailing)
-                .frame(maxWidth: 110)
-                .focused($focused)
-                .disabled(!isEnabled)
-        }
-        .onAppear { text = String(value) }
-        .onChange(of: value) { _, newValue in
-            if !focused { text = String(newValue) }
-        }
-        .onChange(of: focused) { _, isFocused in
-            if !isFocused { commit() }
-        }
-    }
-
-    private func commit() {
-        if let parsed = Int(text.trimmingCharacters(in: .whitespaces)) {
-            value = min(max(parsed, range.lowerBound), range.upperBound)
-        }
-        text = String(value)
     }
 }

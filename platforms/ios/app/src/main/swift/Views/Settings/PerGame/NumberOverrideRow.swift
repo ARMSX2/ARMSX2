@@ -10,31 +10,17 @@ import SwiftUI
 /// Replaces the per-game pickers that offered a handful of values while the global screen took
 /// any of them, which is why an off-list value from a preset used to render as a blank row.
 struct NumberOverrideRow: View {
-    /// Narrow ranges get the stepper. Queue size is fifteen values and you usually want a
-    /// specific one; nobody is dragging a slider to land on exactly 6.
-    enum Style {
-        case stepper
-        case slider
-    }
-
-    let title: String
+    let setting: NumberSetting
     @Binding var value: Int
     let global: Int
-    let range: ClosedRange<Int>
-    var suffix: String = ""
-    var style: Style = .slider
     var sentinel: Int = SettingsOptions.useGlobalID
     let settings: SettingsStore
 
-    init(_ title: String, value: Binding<Int>, global: Int, range: ClosedRange<Int>,
-         suffix: String = "", style: Style = .slider,
+    init(_ setting: NumberSetting, value: Binding<Int>, global: Int,
          sentinel: Int = SettingsOptions.useGlobalID, settings: SettingsStore) {
-        self.title = title
+        self.setting = setting
         self._value = value
         self.global = global
-        self.range = range
-        self.suffix = suffix
-        self.style = style
         self.sentinel = sentinel
         self.settings = settings
     }
@@ -43,16 +29,19 @@ struct NumberOverrideRow: View {
         if value == sentinel {
             inheritRow
         } else {
-            switch style {
-            case .stepper: stepperRow
-            case .slider: sliderRow
-            }
+            NumberRow(setting, value: $value,
+                      accessory: NumberRowAccessory(
+                          systemImage: "arrow.uturn.backward",
+                          label: "Use the global value for %@",
+                          isVisible: true,
+                          action: { value = sentinel }),
+                      settings: settings)
         }
     }
 
     private var inheritRow: some View {
         HStack {
-            Text(settings.localized(title))
+            Text(settings.localized(setting.title))
             Spacer()
             Text(String(format: settings.localized("Global Default (%@)"), formatted(global)))
                 .font(.callout.monospacedDigit())
@@ -60,50 +49,63 @@ struct NumberOverrideRow: View {
             // Seeded from the global, clamped because the global keys are not all bounded on
             // load and a hand-edited INI could hand us something outside this control's range.
             Button(settings.localized("Override")) {
-                value = SettingsStore.clamped(global, to: range)
+                value = SettingsStore.clamped(global, to: setting.intRange)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
         }
-    }
-
-    private var stepperRow: some View {
-        HStack {
-            Stepper(value: $value, in: range) { titleAndValue }
-            inheritButton
-        }
-    }
-
-    private var sliderRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                titleAndValue
-                inheritButton
-            }
-            Slider(value: Binding(
-                get: { Double(value) },
-                set: { value = Int($0.rounded()) }
-            ), in: Double(range.lowerBound)...Double(range.upperBound))
-        }
-    }
-
-    private var titleAndValue: some View {
-        HStack {
-            Text(settings.localized(title))
-            Spacer()
-            Text(formatted(value))
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var inheritButton: some View {
-        Button(settings.localized("Global")) { value = sentinel }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
     }
 
     private func formatted(_ value: Int) -> String {
-        "\(value)\(suffix)"
+        setting.format.text(Double(value), settings: settings)
+    }
+}
+
+/// Floating-point counterpart used by frame cadence. It renders the same
+/// NumberSetting as the global screen while retaining the per-game inherit state.
+struct FloatOverrideRow: View {
+    let setting: NumberSetting
+    @Binding var value: Float
+    let global: Float
+    var sentinel: Float = -1.0
+    let settings: SettingsStore
+
+    init(_ setting: NumberSetting, value: Binding<Float>, global: Float,
+         sentinel: Float = -1.0, settings: SettingsStore) {
+        self.setting = setting
+        self._value = value
+        self.global = global
+        self.sentinel = sentinel
+        self.settings = settings
+    }
+
+    var body: some View {
+        if value == sentinel {
+            HStack {
+                Text(settings.localized(setting.title))
+                Spacer()
+                Text(String(format: settings.localized("Global Default (%@)"), formatted(global)))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Button(settings.localized("Override")) {
+                    value = Float(min(max(Double(global), setting.range.lowerBound),
+                                      setting.range.upperBound))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        } else {
+            NumberRow(setting, value: $value,
+                      accessory: NumberRowAccessory(
+                          systemImage: "arrow.uturn.backward",
+                          label: "Use the global value for %@",
+                          isVisible: true,
+                          action: { value = sentinel }),
+                      settings: settings)
+        }
+    }
+
+    private func formatted(_ value: Float) -> String {
+        setting.format.text(Double(value), settings: settings)
     }
 }

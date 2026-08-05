@@ -12,4 +12,8 @@ extension SettingsStore {
     var localizedLayoutDirection: LayoutDirection {
         appLanguage.layoutDirection
     }
+
+    var numberLocale: Locale {
+        appLanguage.numberLocale
+    }
 }

@@ -7,7 +7,6 @@ struct FramePacingSettingsView: View {
     @State private var settings = SettingsStore.shared
     @State private var presetDetailsTarget: FramePacingPreset?
     @State private var showResetConfirmation = false
-    @State private var hardcoreActive = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
 
     var body: some View {
         Form {
@@ -29,24 +28,17 @@ struct FramePacingSettingsView: View {
             Section {
                 frameLimiterRows
 
-                Stepper("\(settings.localized("Queue Size")): \(settings.vsyncQueueSize)",
-                        value: $settings.vsyncQueueSize,
-                        in: SettingsStore.vsyncQueueRange)
+                NumberRow(.vsyncQueueSize, value: $settings.vsyncQueueSize, settings: settings)
 
                 Toggle(settings.localized("Sync to Host Refresh"), isOn: $settings.syncToHostRefresh)
                 Text(settings.localized("Sync to Host Refresh needs a restart to take effect."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                // Same two keys the Audio screen shows, so use the same control. Stepping
-                // from 10 to 200 a tap at a time was never a serious way to set these.
-                IntSliderRow("Buffer Size", value: $settings.audioBufferMs,
-                             range: SettingsStore.audioBufferMsRange,
-                             suffix: " ms", defaultValue: 50, settings: settings)
+                NumberRow(.audioBufferMs, value: $settings.audioBufferMs, settings: settings)
 
-                IntSliderRow("Output Latency", value: $settings.audioOutputLatencyMs,
-                             range: SettingsStore.audioOutputLatencyMsRange,
-                             suffix: " ms", defaultValue: 20, settings: settings)
+                NumberRow(.audioOutputLatencyMs, value: $settings.audioOutputLatencyMs,
+                          settings: settings)
             } header: {
                 Text(settings.localized("Individual Settings"))
             }
@@ -77,54 +69,14 @@ struct FramePacingSettingsView: View {
         } message: {
             Text(settings.localized("This restores the Optimal preset values. Your individual pacing changes are replaced."))
         }
-        .onAppear {
-            hardcoreActive = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
-            hardcoreActive = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
-        }
     }
 
     @ViewBuilder
     private var frameLimiterRows: some View {
-        Toggle(settings.localized("Enable Limiter"), isOn: Binding(
-            get: { settings.frameLimiterEnabled },
-            set: { enabled in
-                settings.frameLimiterEnabled = enabled
-                enforceHardcoreSpeedFloorIfNeeded()
-            }
-        ))
+        Toggle(settings.localized("Enable Limiter"), isOn: $settings.frameLimiterEnabled)
 
         if settings.frameLimiterEnabled {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text(settings.localized("FPS Target"))
-                    Spacer()
-                    Text(Self.formatFPS(settings.targetFPS))
-                        .foregroundStyle(.secondary)
-                        .font(.callout.monospacedDigit())
-                }
-
-                Slider(
-                    value: Binding(
-                        get: { settings.targetFPS },
-                        set: { value in
-                            settings.targetFPS = value
-                            enforceHardcoreSpeedFloorIfNeeded()
-                        }
-                    ),
-                    in: SettingsStore.minTargetFPS...SettingsStore.maxTargetFPS,
-                    step: 1.0
-                )
-
-                HStack {
-                    quickTargetButton(30)
-                    quickTargetButton(45)
-                    quickTargetButton(60)
-                    quickTargetButton(90)
-                    quickTargetButton(120)
-                }
-            }
+            NumberRow(.targetFPS, value: $settings.targetFPS, settings: settings)
         } else {
             Text(settings.localized("Limiter is OFF. Games can run above normal speed and may draw more power."))
                 .font(.caption)
@@ -170,32 +122,6 @@ struct FramePacingSettingsView: View {
         .buttonStyle(.plain)
     }
 
-    private func enforceHardcoreSpeedFloorIfNeeded() {
-        guard hardcoreActive else { return }
-        let minimumFPS = settings.ntscFramerate
-        if settings.frameLimiterEnabled && settings.targetFPS < minimumFPS {
-            settings.targetFPS = minimumFPS
-        }
-    }
-
-    private func quickTargetButton(_ fps: Float) -> some View {
-        Button(Self.formatCompactFPS(fps)) {
-            settings.frameLimiterEnabled = true
-            settings.targetFPS = fps
-            enforceHardcoreSpeedFloorIfNeeded()
-        }
-        .disabled(hardcoreActive && fps < settings.ntscFramerate)
-        .buttonStyle(.bordered)
-        .font(.caption.monospacedDigit())
-    }
-
-    private static func formatFPS(_ value: Float) -> String {
-        String(format: "%.0f FPS", value)
-    }
-
-    private static func formatCompactFPS(_ value: Float) -> String {
-        String(format: "%.0f", value)
-    }
 }
 
 private struct PresetDetailsSheet: View {
@@ -227,7 +153,7 @@ private extension FramePacingPreset {
         case .lowLatency:
             return "Tighter audio and the smallest safe queue. Controls feel snappier; may stutter on heavy games."
         case .batterySaver:
-            return "Caps the target FPS to stretch battery. Slower games feel fine; fast games run under speed."
+            return "Caps presentation FPS to stretch battery. Game timing stays at 100%, while fast action looks less smooth."
         case .custom:
             return "Your individual pacing settings. Changing any control switches you here."
         }
@@ -242,7 +168,7 @@ private extension FramePacingPreset {
         case .lowLatency:
             return "Shrinks the vsync queue and audio latency so button presses land as fast as possible on iOS. Demanding games may stutter; switch back to Optimal if they do."
         case .batterySaver:
-            return "Lowers the target FPS so the emulator does less work and the device draws less power. Best for slow-paced or turn-based games on long trips. Fast action games will feel slower than intended."
+            return "Lowers presentation FPS while CPU, audio, and game timing stay at 100%. Eligible skipped frames avoid final composition and post-processing, reducing display-side work, power use, and heat."
         case .custom:
             return "You have changed individual pacing settings. They stay exactly as you set them until you pick a preset again."
         }

@@ -620,6 +620,7 @@ struct ThemePaletteControls: View {
         "Dark gradient strength",
         value: $particleSettings.paletteDarkEffectIntensity,
         range: 0...2,
+        step: 0.01,
         formattedValue: "\(Int(particleSettings.paletteDarkEffectIntensity * 100))%",
         resetValue: 1
       )
@@ -636,6 +637,7 @@ struct ThemePaletteControls: View {
           "Palette tilt gradient",
           value: $particleSettings.sharedPaletteGradientTilt,
           range: -180...180,
+          step: 1,
           formattedValue: gradientTiltDescription(
             particleSettings.sharedPaletteGradientTilt
           ),
@@ -646,6 +648,7 @@ struct ThemePaletteControls: View {
           "Y-Axis gradient",
           value: $particleSettings.sharedPaletteGradientOffsetY,
           range: -1...1,
+          step: 0.01,
           formattedValue: gradientOffsetDescription(
             particleSettings.sharedPaletteGradientOffsetY
           ),
@@ -656,6 +659,7 @@ struct ThemePaletteControls: View {
           "X-Axis gradient",
           value: $particleSettings.sharedPaletteGradientOffsetX,
           range: -1...1,
+          step: 0.01,
           formattedValue: gradientOffsetDescription(
             particleSettings.sharedPaletteGradientOffsetX
           ),
@@ -666,6 +670,7 @@ struct ThemePaletteControls: View {
           "Gradient width",
           value: $particleSettings.sharedPaletteGradientWidth,
           range: 0.25...3,
+          step: 0.01,
           formattedValue: String(
             format: "%.2fx",
             particleSettings.sharedPaletteGradientWidth
@@ -677,6 +682,7 @@ struct ThemePaletteControls: View {
           "Gradient curvature",
           value: $particleSettings.sharedPaletteGradientCurvature,
           range: -1...1,
+          step: 0.01,
           formattedValue: gradientOffsetDescription(
             particleSettings.sharedPaletteGradientCurvature
           ),
@@ -766,6 +772,7 @@ struct ThemePaletteControls: View {
     _ title: String,
     value: Binding<Double>,
     range: ClosedRange<Double>,
+    step: Double? = nil,
     formattedValue: String,
     resetValue: Double
   ) -> some View {
@@ -773,7 +780,7 @@ struct ThemePaletteControls: View {
       title: title,
       value: value,
       range: range,
-      step: nil,
+      step: step,
       formattedValue: formattedValue,
       resetValue: resetValue
     )
@@ -1245,9 +1252,11 @@ struct ThemePaletteEditor: View {
       .opacity(1 - backgroundPreviewOpacity)
       .allowsHitTesting(!isShowingBackgroundOnly || activeSliderTitle != nil)
       .environment(
-        \.dynamicSettingsSliderActivity,
-        DynamicSettingsSliderActivity(update: updateSliderActivity)
+        \.numberRowActivity,
+        NumberRowActivity(update: updateSliderActivity)
       )
+      // The editor packs a few hundred rows into a sheet; Form metrics would double its height.
+      .numberRowStyle(.compact)
     )
   }
 

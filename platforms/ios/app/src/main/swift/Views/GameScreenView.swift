@@ -227,6 +227,7 @@ struct GameScreenView: View {
     @State private var menuButtonHidden = false
     @State private var vmMenuAvailable = false
     @State private var gameMenuAvailable = false
+    @State private var noJITFallbackActive = false
     // MARK: Overlay Route
     // The pause card + every screen launched from it are driven by one FSM. Opening a child
     // transitions `.paused -> .pausedPresenting(child)` without tearing the card down; the child
@@ -402,7 +403,7 @@ struct GameScreenView: View {
                     }
                     .overlay(alignment: .topTrailing) {
                         if !menuButtonHidden {
-                            menuButton()
+                            menuButtonCluster()
                                 .padding(.top, 8)
                                 .padding(.trailing, 4)
                                 .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
@@ -614,7 +615,7 @@ struct GameScreenView: View {
             VStack {
                 HStack {
                     Spacer()
-                    menuButton()
+                    menuButtonCluster()
                 }
                 .padding(.top, isLandscape ? 8 : 4)
                 .padding(.trailing, isLandscape ? 8 : 4)
@@ -632,6 +633,21 @@ struct GameScreenView: View {
         }
         .accessibilityLabel(settings.localized("Pause Menu"))
         .accessibilityHint(settings.localized("Opens the pause menu"))
+    }
+
+    private func menuButtonCluster() -> some View {
+        HStack(spacing: 6) {
+            if noJITFallbackActive {
+                Text(settings.localized("No JIT"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.40), in: Capsule())
+                    .accessibilityLabel(settings.localized("No JIT mode"))
+            }
+            menuButton()
+        }
     }
 
     @MainActor
@@ -1072,11 +1088,15 @@ struct GameScreenView: View {
     private func refreshRuntimeMenuState() {
         let vmRunning = ARMSX2Bridge.isVMRunning()
         let gameReady = ARMSX2Bridge.hasValidSaveStateGame()
+        let noJITActive = ARMSX2Bridge.isNoJITFallbackActive()
         if vmMenuAvailable != vmRunning {
             vmMenuAvailable = vmRunning
         }
         if gameMenuAvailable != gameReady {
             gameMenuAvailable = gameReady
+        }
+        if noJITFallbackActive != noJITActive {
+            noJITFallbackActive = noJITActive
         }
         let identity = gameReady ? runtimePadLayoutIdentityForCurrentGame() : nil
         if runtimePadLayoutIdentity != identity {
@@ -1893,29 +1913,8 @@ private struct SpeedControlPanel: View {
                         }
                     ))
 
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text(settings.localized("Fast Forward Speed"))
-                            Spacer()
-                            Text(Self.formatPercent(settings.fastForwardScalar))
-                                .foregroundStyle(.secondary)
-                                .font(.callout.monospacedDigit())
-                        }
-
-                        Slider(
-                            value: $settings.fastForwardScalar,
-                            in: SettingsStore.minFastForwardScalar...SettingsStore.maxFastForwardScalar,
-                            step: 0.25
-                        )
-
-                        HStack {
-                            quickFastForwardButton(1.5)
-                            quickFastForwardButton(2.0)
-                            quickFastForwardButton(3.0)
-                            quickFastForwardButton(5.0)
-                            quickFastForwardButton(10.0)
-                        }
-                    }
+                    NumberRow(.fastForwardSpeed, value: $settings.fastForwardScalar,
+                              settings: settings)
                 }
 
                 if hardcoreActive {
@@ -1927,14 +1926,15 @@ private struct SpeedControlPanel: View {
                 }
 
                 Section(settings.localized("How It Works")) {
-                    Text(settings.localized("This controls PCSX2 Normal Speed. On NTSC games, 60 FPS is normal speed and 30 FPS is about 50% speed. It is safe to change while a game is running."))
+                    Text(settings.localized("The FPS Target changes display presentation without slowing CPU, audio, or game timing. Fast Forward remains a separate emulation-speed control."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
                     HStack {
                         Text(settings.localized("Normal Speed"))
                         Spacer()
-                        Text(Self.formatPercent(settings.targetFPS / max(settings.ntscFramerate, 1.0)))
+                        Text(Self.formatPercent(SettingsStore.normalSpeedScalar(
+                            frameLimiterEnabled: settings.frameLimiterEnabled)))
                             .foregroundStyle(.secondary)
                             .font(.callout.monospacedDigit())
                     }
@@ -1960,23 +1960,6 @@ private struct SpeedControlPanel: View {
     private func refreshRuntimeState() {
         settings.fastForwardRuntimeEnabled = ARMSX2Bridge.limiterMode() == 1
         hardcoreActive = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
-        enforceHardcoreSpeedFloorIfNeeded()
-    }
-
-    private func enforceHardcoreSpeedFloorIfNeeded() {
-        guard hardcoreActive else { return }
-        let minimumFPS = settings.ntscFramerate
-        if settings.frameLimiterEnabled && settings.targetFPS < minimumFPS {
-            settings.targetFPS = minimumFPS
-        }
-    }
-
-    private func quickFastForwardButton(_ scalar: Float) -> some View {
-        Button(Self.formatPercent(scalar)) {
-            settings.fastForwardScalar = scalar
-        }
-        .buttonStyle(.bordered)
-        .font(.caption.monospacedDigit())
     }
 
     private static func formatPercent(_ scalar: Float) -> String {

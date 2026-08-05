@@ -89,20 +89,7 @@ struct AppearanceSettingsView: View {
                     Label(settings.localized("Mute Video"), systemImage: settings.backgroundVideoMuted ? "speaker.slash" : "speaker.wave.2")
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Label(settings.localized("Background Dim"), systemImage: "circle.lefthalf.filled")
-                        Spacer()
-                        Text(String(format: "%d%%", Int(settings.backgroundDim * 100)))
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                    Slider(value: $settings.backgroundDim, in: 0.0...1.0, step: 0.05) {
-                        Text(settings.localized("Background Dim"))
-                    }
-                    .accessibilityValue(String(format: "%d%%", Int(settings.backgroundDim * 100)))
-                }
-                .padding(.vertical, 4)
+                NumberRow(.backgroundDim, value: $settings.backgroundDim, settings: settings)
             }
 
             Section {
