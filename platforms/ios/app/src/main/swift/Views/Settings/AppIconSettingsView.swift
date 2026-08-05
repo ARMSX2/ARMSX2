@@ -4,27 +4,23 @@
 import SwiftUI
 import UIKit
 
-// A selectable app icon. `id` is the value passed to
-// UIApplication.setAlternateIconName(_:); nil selects the primary icon.
 struct AppIconOption: Identifiable, Hashable {
+    // nil selects the primary icon, anything else is a CFBundleAlternateIcons key
     let id: String?
     let displayName: String
     let previewName: String
 
     var isDefault: Bool { id == nil }
 
-    // Bundled resource used when exporting a full-resolution icon image for a
-    // Home Screen shortcut. Default reuses the primary marketing icon.
+    // The primary icon has no -export twin, so the marketing render stands in
     var exportResourceName: String {
-        isDefault ? "icon-1024" : "\(id ?? "")-export"
+        guard let id else { return "icon-1024" }
+        return "\(id)-export"
     }
 }
 
 extension AppIconOption {
-    // Default plus the eight bundled alternate designs. The preview names point
-    // at decoupled thumbnail PNGs (the primary "icon-180" for Default, and one
-    // stable preview per alternate) so the picker never depends on runtime icon
-    // file naming.
+    // Separate preview files keep the picker off runtime icon file naming
     static let allOptions: [AppIconOption] = [
         AppIconOption(id: nil, displayName: "Default", previewName: "icon-180"),
         AppIconOption(id: "appicon-synthwave", displayName: "Synthwave", previewName: "appicon-synthwave"),
@@ -40,49 +36,29 @@ extension AppIconOption {
     ]
 }
 
-// Thin @MainActor wrapper around the iOS alternate-icon API. The system stores
-// the active selection, so nothing is persisted on our side.
-@MainActor
-enum AppIconManager {
-    static var supportsAlternates: Bool {
-        UIApplication.shared.supportsAlternateIcons
+private enum AppIconPreview {
+    static func image(for option: AppIconOption) -> UIImage? {
+        loaded[option.previewName]
     }
 
-    static var currentAlternateIconName: String? {
-        UIApplication.shared.alternateIconName
-    }
-
-    // Returns the error from setAlternateIconName, or nil on success.
-    // withCheckedContinuation runs its body synchronously on the main actor,
-    // so wrapping the UIKit call in MainActor.assumeIsolated is safe here.
-    static func setAlternateIcon(_ name: String?) async -> Error? {
-        await withCheckedContinuation { continuation in
-            MainActor.assumeIsolated {
-                UIApplication.shared.setAlternateIconName(name) { error in
-                    continuation.resume(returning: error)
-                }
-            }
-        }
+    // Loaded once, or a Form pass reopens every PNG per row
+    private static let loaded: [String: UIImage] = AppIconOption.allOptions.reduce(into: [:]) { images, option in
+        guard let url = Bundle.main.url(forResource: option.previewName, withExtension: "png"),
+              let image = UIImage(contentsOfFile: url.path) else { return }
+        images[option.previewName] = image
     }
 }
 
-// Best-effort detection of a host-container / LiveContainer-style install.
-// Such installs relocate the app bundle under the host’s Documents/Applications
-// folder; there the Home Screen icon belongs to the host, not ARMSX2, so native
-// alternate-icon switching does not apply. This is advisory only — normal
-// installs are never flagged, and a missed detection still falls back to the
-// clearer failure alert below.
+// A host container such as LiveContainer relocates the bundle and owns the Home
+// Screen icon, so switching cannot work there. A miss still lands on the alert.
 private enum AppInstallEnvironment {
-    static var isLikelyExternalContainer: Bool {
-        Bundle.main.bundlePath
-            .range(of: "/Documents/Applications/", options: .caseInsensitive) != nil
-    }
+    static let isLikelyExternalContainer = Bundle.main.bundlePath
+        .range(of: "/Documents/Applications/", options: .caseInsensitive) != nil
 }
 
 struct AppIconSettingsView: View {
     @State private var settings = SettingsStore.shared
-    @State private var currentIcon: String? = AppIconManager.currentAlternateIconName
-    @State private var showError = false
+    @State private var currentIcon: String? = UIApplication.shared.alternateIconName
     @State private var pendingExport: AppIconOption?
     @State private var shareItem: ShareSheetItem?
     @State private var showExportError = false
@@ -93,30 +69,17 @@ struct AppIconSettingsView: View {
         Form {
             if inExportMode {
                 Section {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(settings.localized("External container install detected"))
-                            .font(.subheadline.weight(.semibold))
-                        Text(settings.localized("Apps running inside a host container such as LiveContainer can’t change their Home Screen icon directly — the icon belongs to the host, not ARMSX2. Export an icon and set it as your LiveContainer Home Screen shortcut icon."))
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 2)
+                    externalContainerNotice
                 }
 
                 Section {
-                    ForEach(AppIconOption.allOptions) { option in
-                        appIconRow(option)
-                    }
+                    iconRows
                 } footer: {
                     Text(settings.localized("How to use this icon: save the exported image, then create or edit a LiveContainer Home Screen shortcut and choose it as the shortcut’s icon. The App Switcher may still show LiveContainer."))
                 }
-            } else if AppIconManager.supportsAlternates {
+            } else if UIApplication.shared.supportsAlternateIcons {
                 Section {
-                    ForEach(AppIconOption.allOptions) { option in
-                        appIconRow(option)
-                    }
-                } header: {
-                    Text(settings.localized("App Icon"))
+                    iconRows
                 } footer: {
                     Text(settings.localized("The Home Screen icon updates after switching. iOS may take a moment to refresh."))
                 }
@@ -129,18 +92,19 @@ struct AppIconSettingsView: View {
             }
         }
         .navigationTitle(settings.localized("App Icon"))
-        .alert(settings.localized("Couldn’t change the app icon."), isPresented: $showError) {
-            if let option = pendingExport {
-                Button(settings.localized("Export Icon")) {
-                    pendingExport = nil
-                    exportIcon(option)
-                }
-            }
-            Button(settings.localized("OK"), role: .cancel) { pendingExport = nil }
-        } message: {
-            Text(settings.localized(inExportMode
-                ? "This install method can’t change the Home Screen icon directly. Export an icon and use it for a LiveContainer Home Screen shortcut instead."
-                : "iOS rejected the icon change. This can happen when ARMSX2 runs inside another app’s container. The icons are bundled — you can export one instead."))
+        .navigationBarTitleDisplayMode(.inline)
+        .alert(
+            settings.localized("Couldn’t change the app icon."),
+            isPresented: Binding(
+                get: { pendingExport != nil },
+                set: { if !$0 { pendingExport = nil } }
+            ),
+            presenting: pendingExport
+        ) { option in
+            Button(settings.localized("Export Icon")) { exportIcon(option) }
+            Button(settings.localized("OK"), role: .cancel) {}
+        } message: { _ in
+            Text(settings.localized("iOS rejected the icon change. This can happen when ARMSX2 runs inside another app’s container. The icons are bundled — you can export one instead."))
         }
         .alert(settings.localized("Couldn’t export the icon."), isPresented: $showExportError) {
             Button(settings.localized("OK"), role: .cancel) {}
@@ -152,14 +116,29 @@ struct AppIconSettingsView: View {
         }
     }
 
-    @ViewBuilder
+    private var iconRows: some View {
+        ForEach(AppIconOption.allOptions) { option in
+            appIconRow(option)
+        }
+    }
+
+    private var externalContainerNotice: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(settings.localized("External container install detected"))
+                .font(.subheadline.weight(.semibold))
+            Text(settings.localized("Apps running inside a host container such as LiveContainer can’t change their Home Screen icon directly — the icon belongs to the host, not ARMSX2. Export an icon and set it as your LiveContainer Home Screen shortcut icon."))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+
     private func appIconRow(_ option: AppIconOption) -> some View {
         Button {
             rowTapped(option)
         } label: {
             HStack(spacing: 14) {
                 previewThumbnail(for: option)
-                    .frame(width: 60, height: 60)
 
                 Text(rowTitle(option))
                     .foregroundStyle(.primary)
@@ -191,22 +170,26 @@ struct AppIconSettingsView: View {
         }
     }
 
-    @ViewBuilder
     private func previewThumbnail(for option: AppIconOption) -> some View {
-        if let image = previewImage(named: option.previewName) {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        } else {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(.secondarySystemBackground))
-                .overlay(
+        previewShape
+            .fill(Color(.tertiarySystemFill))
+            .frame(width: 60, height: 60)
+            .overlay {
+                if let image = AppIconPreview.image(for: option) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
                     Image(systemName: "app")
                         .font(.title2)
                         .foregroundStyle(.secondary)
-                )
-        }
+                }
+            }
+            .clipShape(previewShape)
+    }
+
+    private var previewShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
     }
 
     private func rowTitle(_ option: AppIconOption) -> String {
@@ -222,15 +205,15 @@ struct AppIconSettingsView: View {
     }
 
     private func applyIcon(_ option: AppIconOption) {
-        // Skip when the chosen icon is already active to avoid a redundant prompt.
+        // iOS prompts on every applied change, and re-applying the active name can throw
         guard currentIcon != option.id else { return }
-        Task { @MainActor in
-            if let error = await AppIconManager.setAlternateIcon(option.id) {
+        Task {
+            do {
+                try await UIApplication.shared.setAlternateIconName(option.id)
+                currentIcon = UIApplication.shared.alternateIconName
+            } catch {
                 NSLog("[ARMSX2 iOS AppIcon] setAlternateIconName failed: %@", error.localizedDescription)
                 pendingExport = option
-                showError = true
-            } else {
-                currentIcon = AppIconManager.currentAlternateIconName
             }
         }
     }
@@ -243,9 +226,7 @@ struct AppIconSettingsView: View {
         shareItem = ShareSheetItem(url: url)
     }
 
-    // Copies the bundled full-resolution icon PNG to a temp file with a friendly
-    // name so the share sheet offers a clean, savable file (Save Image / Files /
-    // AirDrop). No Photos permission is requested.
+    // Copied under a readable name so the share sheet offers a clean save target
     private func preparedExportURL(for option: AppIconOption) -> URL? {
         guard let source = Bundle.main.url(forResource: option.exportResourceName, withExtension: "png") else {
             return nil
@@ -262,10 +243,5 @@ struct AppIconSettingsView: View {
             NSLog("[ARMSX2 iOS AppIcon] export prepare failed: %@", error.localizedDescription)
             return nil
         }
-    }
-
-    private func previewImage(named name: String) -> UIImage? {
-        guard let url = Bundle.main.url(forResource: name, withExtension: "png") else { return nil }
-        return UIImage(contentsOfFile: url.path)
     }
 }
