@@ -13,6 +13,7 @@ private enum SettingsStaticInfo {
 private enum SettingsPane: String, CaseIterable, Identifiable {
     case language
     case appearance
+    case appIcon
     case emulator
     case graphics
     case framePacing
@@ -38,6 +39,8 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
             return "Language"
         case .appearance:
             return "Appearance"
+        case .appIcon:
+            return "App Icon"
         case .emulator:
             return "Emulator"
         case .graphics:
@@ -79,6 +82,8 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
             return "globe"
         case .appearance:
             return "paintpalette"
+        case .appIcon:
+            return "app.badge"
         case .emulator:
             return "cpu"
         case .graphics:
@@ -190,6 +195,10 @@ struct SettingsRootView: View {
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink(value: SettingsPane.appearance) {
                     Label(settings.localized("Appearance"), systemImage: "paintpalette")
+                }
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
+                NavigationLink(value: SettingsPane.appIcon) {
+                    Label(settings.localized("App Icon"), systemImage: "app.badge")
                 }
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
             } header: {
@@ -450,6 +459,8 @@ struct SettingsRootView: View {
             LanguageSettingsView()
         case .appearance:
             AppearanceSettingsView()
+        case .appIcon:
+            AppIconSettingsView()
         case .emulator:
             EmulatorSettingsView()
         case .graphics:
