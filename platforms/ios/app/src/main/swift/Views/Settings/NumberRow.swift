@@ -497,13 +497,9 @@ struct NumberRow: View {
         HStack(spacing: rowStyle.horizontalSpacing) {
             label
             Spacer(minLength: rowStyle.horizontalSpacing)
-            // Inboard of the number on purpose. The number is then the last thing in every row: the
-            // same column as a hand-written value row, and the same column as the track's own upper
-            // bound directly underneath, which it used to sit thirty-six points inside of.
-            //
-            // Still kept in the layout when hidden, because the reset arrow appears and disappears
-            // as you drag past the default and the value must not jump when it does. Here that
-            // costs nothing, since the reserved space falls inside the gap.
+            // Inboard of the number, so the number stays the last thing in every row and lines
+            // up with the track's upper bound underneath. Kept in the layout when hidden, or the
+            // value jumps as the reset arrow comes and goes while you drag past the default.
             if let accessory {
                 accessoryButton(accessory)
                     .opacity(accessory.isVisible ? 1 : 0)

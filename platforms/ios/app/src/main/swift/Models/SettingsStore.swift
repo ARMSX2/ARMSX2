@@ -98,14 +98,12 @@ enum StickSide: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// Every numeric setting a screen can show, described once, next to the ranges below that most of
-/// them are built from. A call site names the setting and hands over its binding; it has nothing
-/// left to spell differently, which is how the FPS target ended up with two sets of bounds, the
-/// queue size and the sharpness with two names each, and the four shade boost rows with two more.
+/// Every numeric setting a screen can show, described once next to the ranges below. A
+/// call site names the setting and hands over its binding, so there is nothing left for
+/// it to spell differently.
 ///
-/// Stops sit where the useful values are rather than spread evenly over the range — a linear track
-/// put 15 ms at five percent of its width and 60 fps at forty-three — and every list contains the
-/// default, so the reset arrow always lands on one. Typing still reaches anything in between.
+/// Stops sit where the useful values are rather than spread evenly, and every list holds
+/// the default so the reset arrow lands on one. Typing reaches anything in between.
 @MainActor
 extension NumberSetting {
     static let targetFPS = NumberSetting(
