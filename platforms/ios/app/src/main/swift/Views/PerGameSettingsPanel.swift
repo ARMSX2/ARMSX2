@@ -12,10 +12,13 @@ struct PerGameSettingsPanel: View {
     @State private var layoutPresets = PadLayoutPresetStore.shared
     @State private var skinLibrary = VPadSkinLibraryStore.shared
 
-    private enum PerGameSettingsCategory: CaseIterable, Identifiable {
+    private enum PerGameSettingsCategory: CaseIterable, Identifiable, Hashable {
         case general, graphics, framePacing, audio, cpu, pad, fixes, cheats, retroAchievements
 
         var id: Self { self }
+
+        /// Everything the root form links to. General is the root, so it is not a link.
+        static var linked: [PerGameSettingsCategory] { allCases.filter { $0 != .general } }
 
         var titleKey: String {
             switch self {
@@ -58,6 +61,9 @@ struct PerGameSettingsPanel: View {
     let game: ISOEntry
     let onDone: (() -> Void)?
     let savesToRunningGame: Bool
+
+    /// Zero in the library, where this is a sheet and the system does its own avoidance.
+    @Environment(\.overlayKeyboardOverlap) private var keyboardOverlap
 
     @State private var enabled: Bool
     @State private var upscaleMultiplier: Float
@@ -163,7 +169,9 @@ struct PerGameSettingsPanel: View {
     @State private var showDiscardConfirmation = false
     @State private var showFramePacingResetConfirmation = false
     @State private var savedFingerprint: String = ""
-    @State private var landscapeCategory: PerGameSettingsCategory = .general
+    /// Which section is open, shared by both layouts so rotating keeps your place. The
+    /// rail sets it directly, the portrait form through its path, where `.general` is root.
+    @State private var openCategory: PerGameSettingsCategory = .general
     @State private var raEnabledOverride: Int
     @State private var raHardcoreOverride: Int
 
@@ -397,17 +405,16 @@ struct PerGameSettingsPanel: View {
 
     var body: some View {
         GeometryReader { geo in
-            // Use the landscape workbench (category rail + detail pane) whenever the
-            // overlay card is wider than it is tall. This covers both iPhone landscape
-            // (short, wide card) and iPad landscape (large, wide card). The previous
-            // `height < 500` guard kept iPad landscape on the portrait root form; that
-            // guard is removed so iPads get the same rail/detail workbench as iPhone
-            // landscape. Portrait cards (taller than wide) keep the NavigationStack form.
+            // Rail and detail pane on a wide card, NavigationStack form on a tall one.
             let useCompactSettingsLayout = geo.size.width > geo.size.height
             VStack(spacing: 0) {
                 settingsContent(useCompactLayout: useCompactSettingsLayout, availableWidth: geo.size.width)
                     .frame(maxHeight: .infinity)
                 saveCancelFooter(compact: useCompactSettingsLayout)
+            }
+            // Inside the reader, so a keyboard cannot flip the layout picked above.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Color.clear.frame(height: keyboardOverlap)
             }
         }
         .background(OverlayFrostBackground())
@@ -465,13 +472,22 @@ struct PerGameSettingsPanel: View {
         }
     }
 
+    /// The stack holds at most one page, so the path is `openCategory` as a list.
+    private var navigationPath: Binding<[PerGameSettingsCategory]> {
+        Binding(
+            get: { openCategory == .general ? [] : [openCategory] },
+            set: { openCategory = $0.last ?? .general }
+        )
+    }
+
     @ViewBuilder
     private func settingsContent(useCompactLayout: Bool, availableWidth: CGFloat = 0) -> some View {
         if useCompactLayout {
             landscapeSettingsSplit(availableWidth: availableWidth)
         } else {
-            NavigationStack {
+            NavigationStack(path: navigationPath) {
                 rootForm
+                    .navigationDestination(for: PerGameSettingsCategory.self, destination: detailContent)
                     .navigationTitle(settings.localized("Per-Game Settings"))
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbarBackground(OverlayTheme.shell, for: .navigationBar)
@@ -532,9 +548,9 @@ struct PerGameSettingsPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(PerGameSettingsCategory.allCases) { category in
-                    let selected = landscapeCategory == category
+                    let selected = openCategory == category
                     Button {
-                        landscapeCategory = category
+                        openCategory = category
                     } label: {
                         HStack(spacing: 10) {
                             Image(systemName: category.systemImage)
@@ -564,21 +580,22 @@ struct PerGameSettingsPanel: View {
 
     @ViewBuilder
     private var detailPane: some View {
-        detailContent(for: landscapeCategory)
+        detailContent(openCategory)
             .pickerStyle(.menu)
     }
 
-    private func detailContent(for category: PerGameSettingsCategory) -> AnyView {
+    @ViewBuilder
+    private func detailContent(_ category: PerGameSettingsCategory) -> some View {
         switch category {
-        case .general:  return AnyView(generalTab)
-        case .graphics: return AnyView(graphicsTab)
-        case .framePacing: return AnyView(framePacingTab)
-        case .audio:    return AnyView(audioTab)
-        case .cpu:      return AnyView(cpuTab)
-        case .pad:      return AnyView(padTab)
-        case .fixes:    return AnyView(fixesTab)
-        case .cheats:   return AnyView(cheatsTab)
-        case .retroAchievements: return AnyView(retroAchievementsTab)
+        case .general:  generalTab
+        case .graphics: graphicsTab
+        case .framePacing: framePacingTab
+        case .audio:    audioTab
+        case .cpu:      cpuTab
+        case .pad:      padTab
+        case .fixes:    fixesTab
+        case .cheats:   cheatsTab
+        case .retroAchievements: retroAchievementsTab
         }
     }
 
@@ -787,45 +804,11 @@ struct PerGameSettingsPanel: View {
     @ViewBuilder
     private var categoryLinksSection: some View {
         Section {
-            NavigationLink {
-                graphicsTab
-            } label: {
-                Label(settings.localized("Graphics"), systemImage: "paintbrush")
-            }
-            NavigationLink {
-                framePacingTab
-            } label: {
-                Label(settings.localized("Frame Pacing"), systemImage: "speedometer")
-            }
-            NavigationLink {
-                audioTab
-            } label: {
-                Label(settings.localized("Audio"), systemImage: "speaker.wave.2")
-            }
-            NavigationLink {
-                cpuTab
-            } label: {
-                Label(settings.localized("CPU & Speedhacks"), systemImage: "cpu")
-            }
-            NavigationLink {
-                padTab
-            } label: {
-                Label(settings.localized("Virtual Pad"), systemImage: "gamecontroller")
-            }
-            NavigationLink {
-                fixesTab
-            } label: {
-                Label(settings.localized("Fixes & Compatibility"), systemImage: "wrench.and.screwdriver")
-            }
-            NavigationLink {
-                cheatsTab
-            } label: {
-                Label(settings.localized("Cheats & Patches"), systemImage: "rectangle.stack.badge.plus")
-            }
-            NavigationLink {
-                retroAchievementsTab
-            } label: {
-                Label(settings.localized("RetroAchievements"), systemImage: "trophy")
+            // By value, so the path is the panel's own and the rail can agree with it.
+            ForEach(PerGameSettingsCategory.linked) { category in
+                NavigationLink(value: category) {
+                    Label(settings.localized(category.titleKey), systemImage: category.systemImage)
+                }
             }
         }
     }
