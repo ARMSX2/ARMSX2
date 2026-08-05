@@ -94,14 +94,24 @@ object WindowImpl {
                 // the touch controls — so it can frame the picture without ever covering a button.
                 // Free to composite (it's one image), which is the point: it stacks with a shader
                 // preset instead of competing with one.
-                com.armsx2.OverlayRepo.activeBitmap()?.let { art ->
-                    androidx.compose.foundation.Image(
-                        bitmap = art.asImageBitmap(),
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = androidx.compose.ui.layout.ContentScale.FillBounds,
-                        alpha = com.armsx2.OverlayRepo.opacity.floatValue,
-                    )
+                //
+                // Gated on a game actually being on screen. Window() is the ONE surface every
+                // frontend passes through — the game library included — so an ungated draw here
+                // painted the bezel over the library itself. Same RUNNING || PAUSED test the touch
+                // controls use, and suppressed while the library is pulled up over a running game,
+                // which is the other surface this Box hosts.
+                val gameOnScreen = MainActivityRuntime.eState.value == EmuState.RUNNING ||
+                    MainActivityRuntime.eState.value == EmuState.PAUSED
+                if (gameOnScreen && !showLibrary.value) {
+                    com.armsx2.OverlayRepo.activeBitmap()?.let { art ->
+                        androidx.compose.foundation.Image(
+                            bitmap = art.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = androidx.compose.ui.layout.ContentScale.FillBounds,
+                            alpha = com.armsx2.OverlayRepo.opacity.floatValue,
+                        )
+                    }
                 }
 
                 // The touch controls keep the REAL density. Their size and position come
