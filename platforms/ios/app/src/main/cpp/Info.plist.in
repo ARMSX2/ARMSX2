@@ -334,6 +334,8 @@
     <string>ARMSX2 uses device motion to control the emulated right analog stick when Gyroscope Camera is enabled.</string>
     <key>UILaunchScreen</key>
     <dict/>
+    <key>UIUserInterfaceStyle</key>
+    <string>Dark</string>
     <key>UIStatusBarStyle</key>
     <string>UIStatusBarStyleDefault</string>
     <key>UIApplicationSceneManifest</key>
