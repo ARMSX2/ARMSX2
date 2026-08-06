@@ -12,6 +12,7 @@ struct GraphicsTab: View {
 
     // Core graphics overrides. Each carries a use-global sentinel so an untouched setting is not
     // written to the per-game file at all, plus the global value to label what it inherits.
+    @Binding var perGameRenderer: Int
     @Binding var upscaleMultiplier: Float
     @Binding var aspectRatio: String
     @Binding var textureFiltering: Int
@@ -111,6 +112,14 @@ struct GraphicsTab: View {
     @ViewBuilder
     private var graphicsContent: some View {
         Section(settings.localized("Graphics")) {
+            sharedPicker("Renderer", selection: $perGameRenderer,
+                         SettingsOptions.withUseGlobal(SettingsOptions.renderer))
+                .disabled(!enabled)
+
+            Text(settings.localized("Software Renderer is much slower but can fix games that break on Metal. It applies the next time this game boots."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             EnumPicker([(id: Self.upscaleUseGlobalSentinel, title: settings.localized("Use Global"))] + UpscaleOptions.all, selection: $upscaleMultiplier) {
                 Text(settings.localized("Internal Resolution"))
             }

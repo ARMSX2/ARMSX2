@@ -621,6 +621,7 @@ struct PerGameSettingsPanel: View {
             enableGameDBHardwareFixes: $enableGameDBHardwareFixes,
             trilinearUseGlobalSentinel: Self.trilinearUseGlobalSentinel,
             ophFlagHackEffective: ophFlagHackEffective,
+            perGameRenderer: $perGameRenderer,
             upscaleMultiplier: $upscaleMultiplier,
             aspectRatio: $aspectRatio,
             textureFiltering: $textureFiltering,
@@ -747,7 +748,6 @@ struct PerGameSettingsPanel: View {
     private var fixesTab: some View {
         FixesTab(
             enabled: $enabled,
-            perGameRenderer: $perGameRenderer,
             perGameAAT: $perGameAAT,
             perGameTextureInsideRt: $perGameTextureInsideRt,
             perGameFixes: $perGameFixes,

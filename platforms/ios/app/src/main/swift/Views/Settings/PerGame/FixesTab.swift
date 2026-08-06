@@ -5,7 +5,6 @@ import SwiftUI
 
 struct FixesTab: View {
     @Binding var enabled: Bool
-    @Binding var perGameRenderer: Int
     @Binding var perGameAAT: Int
     @Binding var perGameTextureInsideRt: Int
     @Binding var perGameFixes: [String: Int]
@@ -16,15 +15,6 @@ struct FixesTab: View {
     var body: some View {
         PerGameTab(title: settings.localized("Fixes & Compatibility")) {
             Section {
-                Picker(settings.localized("Renderer"), selection: $perGameRenderer) {
-                    ForEach(SettingsOptions.withUseGlobal(SettingsOptions.renderer), id: \.id) { option in
-                        Text(settings.localized(option.title)).tag(option.id)
-                    }
-                }
-                .disabled(!enabled)
-                Text(settings.localized("Software Renderer is much slower but can fix games that break on Metal. It applies the next time this game boots."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Picker(settings.localized("Accurate Alpha Test"), selection: $perGameAAT) {
                     Text(settings.localized("Use Global")).tag(-1)
                     Text(settings.localized("Off")).tag(0)
@@ -62,7 +52,7 @@ struct FixesTab: View {
             } header: {
                 Text(settings.localized("Compatibility Overrides"))
             } footer: {
-                Text(settings.localized("Override global settings for this game only. Game fixes apply while per-game GameDB Core Fixes is on. " + (savesToRunningGame ? "Most changes apply when you save; the renderer needs a reset." : "Changes apply on next boot.")))
+                Text(settings.localized("Override global settings for this game only. Game fixes apply while per-game GameDB Core Fixes is on. " + (savesToRunningGame ? "Changes apply when you save." : "Changes apply on next boot.")))
             }
         }
     }
