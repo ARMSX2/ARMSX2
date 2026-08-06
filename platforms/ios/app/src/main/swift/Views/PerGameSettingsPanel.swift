@@ -1170,15 +1170,11 @@ struct PerGameSettingsPanel: View {
         } else {
             Self.clearPerGameValue("EmuCore/GS", "UserHacks_TextureInsideRt", useCurrent: useCurrent, iso: iso)
         }
-        // Renderer is a boot-time choice — switching Metal↔Software mid-game would
-        // require recreating the GS device, which PCSX2's GSreopen does support but
-        // not from the per-game INI write path. Write the file only (bypassing the
-        // live-apply ForCurrentGame variant) so it takes effect on next boot.
-        let rendererIso = game.bootName
+        // The core keeps a running game on its booted renderer, so this applies next boot.
         if enabled && perGameRenderer != -1 {
-            ARMSX2Bridge.setPerGameINIInt("EmuCore/GS", key: "Renderer", value: Int32(perGameRenderer), forISO: rendererIso)
+            Self.setPerGameIntValue("EmuCore/GS", "Renderer", perGameRenderer, useCurrent: useCurrent, iso: iso)
         } else {
-            ARMSX2Bridge.deletePerGameINIValue("EmuCore/GS", key: "Renderer", forISO: rendererIso)
+            Self.clearPerGameValue("EmuCore/GS", "Renderer", useCurrent: useCurrent, iso: iso)
         }
         if enabled && perGameFXAA != -1 {
             Self.setPerGameBoolValue("EmuCore/GS", "fxaa", perGameFXAA == 1, useCurrent: useCurrent, iso: iso)
