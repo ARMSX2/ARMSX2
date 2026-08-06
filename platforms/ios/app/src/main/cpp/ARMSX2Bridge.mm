@@ -2416,7 +2416,7 @@ struct ARMSX2GraphicsHackState
     bool pinned = false;
 };
 
-static constexpr std::array<ARMSX2GraphicsHackDescriptor, 9> s_graphics_hacks = {{
+static constexpr std::array<ARMSX2GraphicsHackDescriptor, 13> s_graphics_hacks = {{
     {"UserHacks_align_sprite_X", GSUserHackOverride::AlignSprite, GameDatabaseSchema::GSHWFixId::AlignSprite, true, true,
         [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_AlignSpriteX); }},
     {"UserHacks_merge_pp_sprite", GSUserHackOverride::MergeSprite, GameDatabaseSchema::GSHWFixId::MergeSprite, true, true,
@@ -2435,6 +2435,14 @@ static constexpr std::array<ARMSX2GraphicsHackDescriptor, 9> s_graphics_hacks = 
         [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_TCOffsetX); }},
     {"UserHacks_TCOffsetY", GSUserHackOverride::TextureOffsetY, GameDatabaseSchema::GSHWFixId::Count, true, false,
         [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_TCOffsetY); }},
+    {"UserHacks_TextureInsideRt", GSUserHackOverride::TextureInsideRt, GameDatabaseSchema::GSHWFixId::TextureInsideRT, false, false,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_TextureInsideRt); }},
+    {"UserHacks_BilinearHack", GSUserHackOverride::BilinearHack, GameDatabaseSchema::GSHWFixId::BilinearUpscale, true, false,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_BilinearHack); }},
+    {"preload_frame_with_gs_data", GSUserHackOverride::PreloadFrameData, GameDatabaseSchema::GSHWFixId::PreloadFrameData, false, true,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.PreloadFrameWithGSData); }},
+    {"UserHacks_DisablePartialInvalidation", GSUserHackOverride::DisablePartialInvalidation, GameDatabaseSchema::GSHWFixId::DisablePartialInvalidation, false, true,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_DisablePartialInvalidation); }},
 }};
 
 static std::mutex s_graphics_hack_mutex;

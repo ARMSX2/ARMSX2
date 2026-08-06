@@ -1001,10 +1001,20 @@ final class SettingsStore {
     /// The single write funnel for those hacks. They live in a dictionary rather
     /// than a Setting<T>, so the default EmuCore/GS apply hook cannot reach them;
     /// this is their equivalent. Everything that changes one goes through here.
+    // The three keys the GameDB also writes; the rest have no pin bit in the core.
+    private static let pinnableBoolHacks: Set<String> = [
+        "UserHacks_NativePaletteDraw",
+        "UserHacks_DisablePartialInvalidation",
+        "preload_frame_with_gs_data"
+    ]
+
     func setGSBoolHack(_ key: String, _ value: Bool) {
         gsBoolHacks[key] = value
         guard !suppressINIWrites else { return }
         ARMSX2Bridge.setINIBool("EmuCore/GS", key: key, value: value)
+        if Self.pinnableBoolHacks.contains(key) {
+            ARMSX2Bridge.setGraphicsHackPinned(key, pinned: true)
+        }
         requestGraphicsApplyGuarded()
     }
 
