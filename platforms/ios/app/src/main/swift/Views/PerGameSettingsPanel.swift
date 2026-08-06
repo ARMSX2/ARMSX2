@@ -76,12 +76,9 @@ struct PerGameSettingsPanel: View {
     @State private var trilinearFiltering: Int
     @State private var halfPixelOffset: Int
     @State private var roundSprite: Int
-    @State private var alignSpriteOverride: Bool
-    @State private var alignSprite: Bool
-    @State private var mergeSpriteOverride: Bool
-    @State private var mergeSprite: Bool
-    @State private var wildArmsOffsetOverride: Bool
-    @State private var wildArmsOffset: Bool
+    @State private var alignSprite: Int
+    @State private var mergeSprite: Int
+    @State private var wildArmsOffset: Int
     @State private var textureOffsetXOverride: Bool
     @State private var textureOffsetX: Int
     @State private var textureOffsetYOverride: Bool
@@ -209,12 +206,9 @@ struct PerGameSettingsPanel: View {
         _trilinearFiltering = State(initialValue: Self.boolValue(info["hasTrilinearFilteringOverride"], defaultValue: false) ? Self.intValue(info["trilinearFiltering"], defaultValue: -1) : Self.trilinearUseGlobalSentinel)
         _halfPixelOffset = State(initialValue: Self.boolValue(info["hasHalfPixelOffsetOverride"], defaultValue: false) ? Self.intValue(info["halfPixelOffset"], defaultValue: 0) : Self.useGlobalSentinel)
         _roundSprite = State(initialValue: Self.boolValue(info["hasRoundSpriteOverride"], defaultValue: false) ? Self.intValue(info["roundSprite"], defaultValue: 0) : Self.useGlobalSentinel)
-        _alignSpriteOverride = State(initialValue: Self.boolValue(info["hasAlignSpriteOverride"], defaultValue: false))
-        _alignSprite = State(initialValue: Self.boolValue(info["alignSprite"], defaultValue: false))
-        _mergeSpriteOverride = State(initialValue: Self.boolValue(info["hasMergeSpriteOverride"], defaultValue: false))
-        _mergeSprite = State(initialValue: Self.boolValue(info["mergeSprite"], defaultValue: false))
-        _wildArmsOffsetOverride = State(initialValue: Self.boolValue(info["hasWildArmsOffsetOverride"], defaultValue: false))
-        _wildArmsOffset = State(initialValue: Self.boolValue(info["wildArmsOffset"], defaultValue: false))
+        _alignSprite = State(initialValue: Self.boolValue(info["hasAlignSpriteOverride"], defaultValue: false) ? (Self.boolValue(info["alignSprite"], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel)
+        _mergeSprite = State(initialValue: Self.boolValue(info["hasMergeSpriteOverride"], defaultValue: false) ? (Self.boolValue(info["mergeSprite"], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel)
+        _wildArmsOffset = State(initialValue: Self.boolValue(info["hasWildArmsOffsetOverride"], defaultValue: false) ? (Self.boolValue(info["wildArmsOffset"], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel)
         _textureOffsetXOverride = State(initialValue: Self.boolValue(info["hasTextureOffsetXOverride"], defaultValue: false))
         _textureOffsetX = State(initialValue: Self.clampedTextureOffset(Self.intValue(info["textureOffsetX"], defaultValue: 0)))
         _textureOffsetYOverride = State(initialValue: Self.boolValue(info["hasTextureOffsetYOverride"], defaultValue: false))
@@ -350,7 +344,7 @@ struct PerGameSettingsPanel: View {
     /// there is never anything of its own left for Save to commit.
     private func perGameFingerprint() -> String {
         let fixes = SettingsStore.gameFixOptions.map { "\($0.key):\(perGameFixes[$0.key] ?? -1)" }.joined(separator: ",")
-        return "\(enabled)|\(upscaleMultiplier)|\(aspectRatio)|\(textureFiltering)|\(hardwareMipmapping)|\(blendingAccuracy)|\(interlaceMode)|\(trilinearFiltering)|\(halfPixelOffset)|\(roundSprite)|\(alignSpriteOverride)|\(alignSprite)|\(mergeSpriteOverride)|\(mergeSprite)|\(wildArmsOffsetOverride)|\(wildArmsOffset)|\(textureOffsetXOverride)|\(textureOffsetX)|\(textureOffsetYOverride)|\(textureOffsetY)|\(skipDrawStartOverride)|\(skipDrawStart)|\(skipDrawEndOverride)|\(skipDrawEnd)|\(volumeOverride)|\(volumePercent)|\(eeCoreType)|\(mtvu)|\(eeCycleRate)|\(eeCycleSkip)|\(fastBoot)|\(enableCheats)|\(enablePatches)|\(enableGameFixes)|\(enableGameDBHardwareFixes)|\(perGameAAT)|\(perGameTextureInsideRt)|\(perGameRenderer)|\(perGameFXAA)|\(perGameUpscaler)|\(perGameShadeBoost)|\(perGameTVShader)|\(perGameCASMode)|\(perGameMaxAnisotropy)|\(perGameCASSharpness)|\(perGamePCRTCOffsets)|\(perGameIntegerScaling)|\(perGameSkipDupFrames)|\(perGamePCRTCOverscan)|\(perGamePCRTCAntiBlur)|\(perGameDisableInterlaceOffset)|\(perGameWidescreen)|\(perGameNoInterlace)|\(perGameShadeBoostBrightness)|\(perGameShadeBoostContrast)|\(perGameShadeBoostSaturation)|\(perGameShadeBoostGamma)|\(perGameDithering)|\(perGameFastForwardVolume)|\(perGameIOP)|\(perGameVU0)|\(perGameVU1)|\(perGameHWDownloadMode)|\(perGameCPUCLUT)|\(perGameGPUTargetCLUT)|\(perGameVsyncQueue)|\(perGameLoadTextureReplacements)|\(perGameLoadTextureReplacementsAsync)|\(perGamePrecacheTextureReplacements)|\(perGameSyncToHostRefresh)|\(perGameBufferMS)|\(perGameOutputLatencyMS)|\(perGameEEFpuRound)|\(perGameVU0Round)|\(perGameVU1Round)|\(perGameEEClamp)|\(perGameVUClamp)|\(raEnabledOverride)|\(raHardcoreOverride)|\(perGameFramePacingPreset)|\(perGameFrameLimiter)|\(perGameTargetFPS)|\(fixes)"
+        return "\(enabled)|\(upscaleMultiplier)|\(aspectRatio)|\(textureFiltering)|\(hardwareMipmapping)|\(blendingAccuracy)|\(interlaceMode)|\(trilinearFiltering)|\(halfPixelOffset)|\(roundSprite)|\(alignSprite)|\(mergeSprite)|\(wildArmsOffset)|\(textureOffsetXOverride)|\(textureOffsetX)|\(textureOffsetYOverride)|\(textureOffsetY)|\(skipDrawStartOverride)|\(skipDrawStart)|\(skipDrawEndOverride)|\(skipDrawEnd)|\(volumeOverride)|\(volumePercent)|\(eeCoreType)|\(mtvu)|\(eeCycleRate)|\(eeCycleSkip)|\(fastBoot)|\(enableCheats)|\(enablePatches)|\(enableGameFixes)|\(enableGameDBHardwareFixes)|\(perGameAAT)|\(perGameTextureInsideRt)|\(perGameRenderer)|\(perGameFXAA)|\(perGameUpscaler)|\(perGameShadeBoost)|\(perGameTVShader)|\(perGameCASMode)|\(perGameMaxAnisotropy)|\(perGameCASSharpness)|\(perGamePCRTCOffsets)|\(perGameIntegerScaling)|\(perGameSkipDupFrames)|\(perGamePCRTCOverscan)|\(perGamePCRTCAntiBlur)|\(perGameDisableInterlaceOffset)|\(perGameWidescreen)|\(perGameNoInterlace)|\(perGameShadeBoostBrightness)|\(perGameShadeBoostContrast)|\(perGameShadeBoostSaturation)|\(perGameShadeBoostGamma)|\(perGameDithering)|\(perGameFastForwardVolume)|\(perGameIOP)|\(perGameVU0)|\(perGameVU1)|\(perGameHWDownloadMode)|\(perGameCPUCLUT)|\(perGameGPUTargetCLUT)|\(perGameVsyncQueue)|\(perGameLoadTextureReplacements)|\(perGameLoadTextureReplacementsAsync)|\(perGamePrecacheTextureReplacements)|\(perGameSyncToHostRefresh)|\(perGameBufferMS)|\(perGameOutputLatencyMS)|\(perGameEEFpuRound)|\(perGameVU0Round)|\(perGameVU1Round)|\(perGameEEClamp)|\(perGameVUClamp)|\(raEnabledOverride)|\(raHardcoreOverride)|\(perGameFramePacingPreset)|\(perGameFrameLimiter)|\(perGameTargetFPS)|\(fixes)"
     }
 
     private var hasPendingChanges: Bool {
@@ -631,11 +625,8 @@ struct PerGameSettingsPanel: View {
             trilinearFiltering: $trilinearFiltering,
             halfPixelOffset: $halfPixelOffset,
             roundSprite: $roundSprite,
-            alignSpriteOverride: $alignSpriteOverride,
             alignSprite: $alignSprite,
-            mergeSpriteOverride: $mergeSpriteOverride,
             mergeSprite: $mergeSprite,
-            wildArmsOffsetOverride: $wildArmsOffsetOverride,
             wildArmsOffset: $wildArmsOffset,
             textureOffsetXOverride: $textureOffsetXOverride,
             textureOffsetX: $textureOffsetX,
@@ -1073,12 +1064,9 @@ struct PerGameSettingsPanel: View {
                 trilinearFiltering: Int32(trilinearFiltering),
                 halfPixelOffset: Int32(halfPixelOffset),
                 roundSprite: Int32(roundSprite),
-                alignSpriteOverride: alignSpriteOverride,
-                alignSprite: alignSprite,
-                mergeSpriteOverride: mergeSpriteOverride,
-                mergeSprite: mergeSprite,
-                wildArmsOffsetOverride: wildArmsOffsetOverride,
-                wildArmsOffset: wildArmsOffset,
+                alignSprite: Int32(alignSprite),
+                mergeSprite: Int32(mergeSprite),
+                wildArmsOffset: Int32(wildArmsOffset),
                 textureOffsetXOverride: textureOffsetXOverride,
                 textureOffsetX: Int32(textureOffsetX),
                 textureOffsetYOverride: textureOffsetYOverride,
@@ -1113,12 +1101,9 @@ struct PerGameSettingsPanel: View {
                 trilinearFiltering: Int32(trilinearFiltering),
                 halfPixelOffset: Int32(halfPixelOffset),
                 roundSprite: Int32(roundSprite),
-                alignSpriteOverride: alignSpriteOverride,
-                alignSprite: alignSprite,
-                mergeSpriteOverride: mergeSpriteOverride,
-                mergeSprite: mergeSprite,
-                wildArmsOffsetOverride: wildArmsOffsetOverride,
-                wildArmsOffset: wildArmsOffset,
+                alignSprite: Int32(alignSprite),
+                mergeSprite: Int32(mergeSprite),
+                wildArmsOffset: Int32(wildArmsOffset),
                 textureOffsetXOverride: textureOffsetXOverride,
                 textureOffsetX: Int32(textureOffsetX),
                 textureOffsetYOverride: textureOffsetYOverride,
