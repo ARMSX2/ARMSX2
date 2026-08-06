@@ -559,6 +559,17 @@ enum class GSUserHackOverride : u8
 	TextureOffsetY,
 	PreloadFrameData,
 	DisablePartialInvalidation,
+	GPUPaletteConversion,
+	DisableDepthSupport,
+	CPUFBConversion,
+	ReadTCOnClose,
+	Limit24BitDepth,
+	EstimateTextureRegion,
+	DrawBuffering,
+	CPUSpriteRenderBW,
+	CPUSpriteRenderLevel,
+	CPUCLUTRender,
+	GPUTargetCLUT,
 	MaxCount
 };
 
