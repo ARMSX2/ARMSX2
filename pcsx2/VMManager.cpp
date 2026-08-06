@@ -727,6 +727,12 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 {
 	SettingsLoadWrapper slw(si);
 	EmuConfig.LoadSave(slw);
+
+	// A game file's UserHackOverrides replaces the base mask outright, and the
+	// player's global claims still stand for this game.
+	if (SettingsInterface* base = Host::Internal::GetBaseSettingsLayer(); base && base != &si)
+		EmuConfig.GS.UserHackOverrides |= static_cast<u32>(base->GetIntValue("EmuCore/GS", "UserHackOverrides", 0));
+
 	Patch::ApplyPatchSettingOverrides();
 
 	// Achievements hardcore mode disallows setting some configuration options.
