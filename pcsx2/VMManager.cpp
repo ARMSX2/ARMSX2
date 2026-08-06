@@ -3348,6 +3348,13 @@ void VMManager::CheckForMiscConfigChanges(const Pcsx2Config& old_config)
 
 void VMManager::CheckForConfigChanges(const Pcsx2Config& old_config)
 {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	// GSreopen would recreate the Metal device under the running game, so a
+	// renderer change brought in by a reload waits for the next boot.
+	if (MTGS::IsOpen())
+		EmuConfig.GS.Renderer = old_config.GS.Renderer;
+#endif
+
 	if (HasValidVM())
 	{
 		CheckForCPUConfigChanges(old_config);
