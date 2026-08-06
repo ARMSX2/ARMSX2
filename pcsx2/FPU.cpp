@@ -470,6 +470,24 @@ struct EeSrtRemainder
 	u32 sum, carry;
 };
 
+/*	The digit, in the form the recurrence consumes it: one all-ones mask per
+	sign, both zero for the digit 0. Both set never happens.
+
+	Every use of it inside the step is a select. As -1/0/+1 those are two
+	data-dependent branches per step, on a digit sequence nothing predicts, and
+	the mispredicts cost more than the step does. */
+struct EeSrtDigitMask
+{
+	u32 plus, minus;
+};
+
+/*	Back to -1/0/+1, for the quotient and the root. Nothing the next digit
+	depends on reads it. */
+static __fi u32 eeSrtDigitValue(EeSrtDigitMask d)
+{
+	return d.minus - d.plus;
+}
+
 static __fi EeSrtRemainder eeSrtCarrySave(u32 a, u32 b, u32 c)
 {
 	const u32 u = a ^ b;
@@ -486,21 +504,25 @@ static __fi EeSrtRemainder eeSrtCarrySave(u32 a, u32 b, u32 c)
 	+2^23 and -2^24, with the binary point between bits 24 and 25; that asymmetry
 	is what biases the unit toward truncation. The digit set is redundant, so the
 	last digit can still be -1 and the result reach T+1 on rows a truncation could
-	never reach. */
-static __fi s32 eeSrtDigit(EeSrtRemainder r)
+	never reach.
+
+	Its two comparisons are already the masks the next step selects with, so they
+	are what it returns. */
+static __fi EeSrtDigitMask eeSrtDigit(EeSrtRemainder r)
 {
 	constexpr u32 mask = (1u << 24) - 1u;
 	const s32 estimate = (s32)(((r.sum & ~mask) + r.carry) | (r.sum & mask));
-	return (estimate >= (1 << 23)) - (estimate < (s32)(~0u << 24));
+	return {(u32)0 - (u32)(estimate >= (1 << 23)),
+			(u32)0 - (u32)(estimate < (s32)(~0u << 24))};
 }
 
 /*	On a zero digit the next digit is selected from the un-recompressed pair
 	while the state advances with the recompressed one, so selection and state
 	see different splittings of the same value. Drop the distinction and the
 	model stops reproducing silicon. */
-static __fi EeSrtRemainder eeSrtSelect(EeSrtRemainder cur, EeSrtRemainder next, s32 digit)
+static __fi EeSrtRemainder eeSrtSelect(EeSrtRemainder cur, EeSrtRemainder next, EeSrtDigitMask d)
 {
-	const u32 m = 0u - (u32)(digit != 0);
+	const u32 m = d.plus | d.minus;
 	return {(cur.sum & ~m) | (next.sum & m), (cur.carry & ~m) | (next.carry & m)};
 }
 
@@ -513,21 +535,23 @@ static __fi EeSrtRemainder eeSrtSelect(EeSrtRemainder cur, EeSrtRemainder next, 
 static u32 eeDivideSignificand(u32 sma, u32 smb)
 {
 	const u32 divisor = smb << 2;
+	const u32 ndivisor = ~divisor;
 	EeSrtRemainder rem = {sma << 2, 0};
 	u32 quotient = 0;
-	s32 digit = 1;
+	EeSrtDigitMask digit = {~0u, 0}; // +1
 
 	for (int i = 0; i < 24; ++i)
 	{
-		quotient = (quotient << 1) + (u32)digit;
-		const u32 addend = (digit > 0) ? ~divisor : ((digit < 0) ? divisor : 0u);
-		rem.carry += (u32)(digit > 0);
-		const EeSrtRemainder next = eeSrtCarrySave(rem.sum, rem.carry, addend);
-		digit = eeSrtDigit(eeSrtSelect(rem, next, digit));
+		quotient = (quotient << 1) + eeSrtDigitValue(digit);
+		const u32 addend = (ndivisor & digit.plus) | (divisor & digit.minus);
+		// subtracting the mask is the +1 that goes with ~divisor
+		const EeSrtRemainder cur = {rem.sum, rem.carry - digit.plus};
+		const EeSrtRemainder next = eeSrtCarrySave(cur.sum, cur.carry, addend);
+		digit = eeSrtDigit(eeSrtSelect(cur, next, digit));
 		rem.sum = next.sum << 1;
 		rem.carry = next.carry << 1;
 	}
-	return (quotient << 1) + (u32)digit;
+	return (quotient << 1) + eeSrtDigitValue(digit);
 }
 
 static u32 eeDivide(u32 a, u32 b)
@@ -565,6 +589,8 @@ static u32 eeDivide(u32 a, u32 b)
 	in place of a fixed divisor: adding digit d at weight w to the root adds
 	d*(2*root + d*w) to its square, which is what has to leave the partial
 	remainder, so the addend is rebuilt each step instead of being a constant.
+	Neither candidate depends on which digit arrives, so both the addends and
+	the new roots are built before it does; a zero digit takes neither root.
 	Everything else -- the carry-save state, the selector, the zero-digit quirk,
 	the absence of any rounding step -- is shared, and so is the evidence: see
 	the block comment above eeSrtDigit().
@@ -579,22 +605,25 @@ static u32 eeSqrtSignificand(u32 m)
 {
 	EeSrtRemainder rem = {m, 0};
 	u32 root = 0;
-	s32 digit = 1;
+	EeSrtDigitMask digit = {~0u, 0}; // +1
 
 	for (int i = 0; i < 24; ++i)
 	{
-		const u32 addend_base = root + ((u32)digit << (24 - i));
-		root += (u32)digit << (25 - i);
-		const u32 addend = (digit > 0) ? ~addend_base : ((digit < 0) ? addend_base : 0u);
-		rem.carry += (u32)(digit > 0);
-		const EeSrtRemainder next = eeSrtCarrySave(rem.sum, rem.carry, addend);
-		digit = eeSrtDigit(eeSrtSelect(rem, next, digit));
+		const u32 w = 1u << (24 - i);
+		const u32 base_plus = root + w, base_minus = root - w;
+		const u32 root_plus = base_plus + w, root_minus = base_minus - w;
+		const u32 addend = (~base_plus & digit.plus) | (base_minus & digit.minus);
+		const u32 any = digit.plus | digit.minus;
+		root = (root_plus & digit.plus) | (root_minus & digit.minus) | (root & ~any);
+		const EeSrtRemainder cur = {rem.sum, rem.carry - digit.plus};
+		const EeSrtRemainder next = eeSrtCarrySave(cur.sum, cur.carry, addend);
+		digit = eeSrtDigit(eeSrtSelect(cur, next, digit));
 		rem.sum = next.sum << 1;
 		rem.carry = next.carry << 1;
 	}
 	// The last digit carries weight 2^1, below the root's least significant
 	// bit, so it only reaches the result by borrowing out of it.
-	root += (u32)digit << 1;
+	root += eeSrtDigitValue(digit) << 1;
 	return (root >> 2) & 0xFFFFFFu;
 }
 
