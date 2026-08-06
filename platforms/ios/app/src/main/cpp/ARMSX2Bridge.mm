@@ -1863,6 +1863,7 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
         si.ContainsValue("EmuCore/GS", "UserHacks_align_sprite_X") ||
         si.ContainsValue("EmuCore/GS", "UserHacks_merge_pp_sprite") ||
         si.ContainsValue("EmuCore/GS", "UserHacks_ForceEvenSpritePosition") ||
+        si.ContainsValue("EmuCore/GS", "UserHacks_DisableDepthSupport") ||
         si.ContainsValue("EmuCore/GS", "UserHacks_TCOffsetX") ||
         si.ContainsValue("EmuCore/GS", "UserHacks_TCOffsetY") ||
         si.ContainsValue("EmuCore/GS", "UserHacks_SkipDraw_Start") ||
@@ -1967,6 +1968,11 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
         result[@"hasPerGameTextureInsideRt"] = @(hasPerGameTextureInsideRt);
         result[@"perGameTextureInsideRt"] =
             @(hasPerGameTextureInsideRt ? si.GetIntValue("EmuCore/GS", "UserHacks_TextureInsideRt", 0) : 0);
+
+        const bool hasPerGameDisableDepth = si.ContainsValue("EmuCore/GS", "UserHacks_DisableDepthSupport");
+        result[@"hasPerGameDisableDepth"] = @(hasPerGameDisableDepth);
+        result[@"perGameDisableDepth"] =
+            @(hasPerGameDisableDepth ? si.GetBoolValue("EmuCore/GS", "UserHacks_DisableDepthSupport", false) : NO);
 
         const bool hasPerGameRenderer = si.ContainsValue("EmuCore/GS", "Renderer");
         result[@"hasPerGameRenderer"] = @(hasPerGameRenderer);
