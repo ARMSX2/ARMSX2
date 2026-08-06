@@ -101,19 +101,20 @@ static bool IsTopBinadeTierGap(u32 interp, u32 jit)
 
 // The second allowance, and a wider one, because RSQRT.S is composed.
 //
-// The interpreter models the divide unit's truncation law (FPU.cpp,
-// eeDivideTruncates / eeSqrtBits) and the emitters still take the host's
-// correctly-rounded fsqrt/fdiv, so the interpreter applies the law twice --
-// once to the root, once to the quotient. The two do not pull the same way: a
-// root that comes back one ULP lower makes the quotient larger, so unlike DIV.S
-// and SQRT.S the interpreter can land on either side of the fast path here.
-// The compounding is silicon's own -- the console capture has 26 rsqrt.s rows
+// The interpreter runs the divide unit's own digit recurrence (FPU.cpp,
+// eeSrtDigit and below) and the emitters still take the host's correctly-
+// rounded fsqrt/fdiv, so the interpreter runs the recurrence twice -- once for
+// the root, once for the quotient. The two do not pull the same way: a root
+// that comes back one ULP lower makes the quotient larger, so unlike DIV.S and
+// SQRT.S the interpreter can land on either side of the fast path here.
+// That compounding is silicon's own -- the console capture has 26 rsqrt.s rows
 // one ULP off correct rounding and 2 of them two ULP -- and it is bounded at
-// two ULP of magnitude, with the sign never in question.
+// two ULP of magnitude with the sign never in question, which is what this
+// asserts.
 //
-// EeFpuDivUnitConsole owns the law itself, the per-op scoreboard, and the check
-// that every remaining console miss lives inside the region the law does not
-// settle.
+// EeFpuDivUnitConsole owns the model itself and the per-op scoreboard against
+// silicon; EeRecFpuDivUnitRounding owns the shape of the divergence for the two
+// uncomposed ops.
 static bool IsDivUnitModelGap(u32 interp, u32 jit)
 {
 	if ((interp & 0x80000000u) != (jit & 0x80000000u))
@@ -184,7 +185,7 @@ TEST(EeRecFpuRsqrt, DifferentialFuzzZeroAndNegativeDivisor)
 	EXPECT_GT(tier_gaps, 0) << "anti-vacuity: the pool stopped producing "
 							   "saturating results, so the allowance is dead "
 							   "code that could hide a real divergence";
-	EXPECT_GT(model_gaps, 0) << "anti-vacuity: no pair reached the truncation law, "
+	EXPECT_GT(model_gaps, 0) << "anti-vacuity: no pair diverged at all, "
 								"so the model allowance is dead code too";
 }
 
@@ -283,7 +284,7 @@ TEST(EeRecFpuRsqrt, PositiveDivisorMatchesInterpExactly)
 	EXPECT_GT(tier_gaps, 0) << "anti-vacuity: the positive-divisor pool stopped "
 							   "producing saturating results, so the allowance "
 							   "is dead code that could hide a real divergence";
-	EXPECT_GT(model_gaps, 0) << "anti-vacuity: no pair reached the truncation law, "
+	EXPECT_GT(model_gaps, 0) << "anti-vacuity: no pair diverged at all, "
 								"so the model allowance is dead code too";
 }
 
@@ -501,5 +502,6 @@ TEST(EeRecFpuRsqrt, DivideUnitRoundsToNearestInProductionFpEnv)
 
 	EXPECT_EQ(hj.GetFprBitsJit(3), 0x3F5105EBu) << "[jit] round-to-nearest, matches console";
 	EXPECT_EQ(hi.GetFprBitsInterp(3), 0x3F5105EBu)
-		<< "[interp] 0x3F5105EC means the FPUDivFPCR swap was lost again";
+		<< "[interp] 0x3F5105EC is what a correctly rounded rsqrt gives; the console "
+		   "and the interpreter's digit recurrence both say 0x3F5105EB";
 }

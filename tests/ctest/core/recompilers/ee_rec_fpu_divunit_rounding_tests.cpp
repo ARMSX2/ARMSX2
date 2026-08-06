@@ -1,29 +1,35 @@
 // SPDX-FileCopyrightText: 2026 yaps2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 //
-// The EE's divide/square-root unit rounds to nearest even when the rest of the
-// FPU is chopping toward zero. Both recompilers model that by swapping
-// EmuConfig.Cpu.FPUDivFPCR in around the three ops that unit owns -- DIV.S,
-// SQRT.S and RSQRT.S. The interpreter did not, so it truncated where the
-// recompilers and the console round; ScopedDivRoundMode in pcsx2/FPU.cpp has
-// the mechanism.
+// The EE's divide/square-root unit is not correctly rounded, and the two
+// engines in this tree part company over that on purpose.
 //
-// Two things kept that off the differential. Every pre-existing DIV.S case used
-// an exactly-representable ratio -- 20/4, 6/-2, with comments saying "no
-// rounding divergence" -- and those are the operands at which the two rounding
-// modes agree. And the one test that did probe SQRT.S's rounding mode
-// (EeRecFpu.SqrtSRoundsToNearestUnderChopFpcr) asserted the JIT result alone,
-// because the old harness ran both engines under a nearest-rounding host FPCR
-// where the swap is a no-op; that stopped being true when the harness moved to
-// the production environment, and the test kept passing either way because it
-// never looked at the interpreter.
+// The interpreter runs the unit's own radix-2 SRT digit recurrence (FPU.cpp,
+// eeSrtDigit and below), which reproduces silicon bit for bit on every capture
+// this project has taken. Both recompilers take the host's fdiv/fsqrt under
+// EmuConfig.Cpu.FPUDivFPCR -- FPUFPCR with round-to-nearest, swapped in around
+// the three ops the unit owns; FPU.cpp names the emitters -- which makes them
+// the correctly rounded engine.
 //
-// So this file covers DIV.S and SQRT.S at inexact operands, randomized, in the
-// FP environment a game runs in. RSQRT.S is covered the same way in
-// ee_rec_fpu_rsqrt_tests.cpp.
+// So this file is the class-level regression test for the shape of that
+// divergence. Differing is not enough: the engines must differ by exactly one
+// ULP, only on the ops the divide unit owns, and only in the direction silicon
+// errs -- never above correct rounding on SQRT.S or on DIV.S's A>=B branch,
+// either way on DIV.S's A<B branch. Anything else is still a bug, which is the
+// property an "allow a mismatch" filter would throw away. The asymmetry is a
+// count over the exhaustive console sweeps: 0 rows above correct rounding in
+// 16,777,216 sqrt rows and in all 72,907,916 A>=B div rows, against 3,229,727
+// above and 7,197,471 below in the 78,087,028 A<B rows.
 //
-// The SQRT.S sweep also turned up an unrelated defect on its first run: the
-// interpreter returned -0.0 for sqrt(-0.0) where the EE returns +0.0, fixed
+// The premise guard below is what makes the fast path the correctly rounded
+// side of the comparison, and no ScopedFpEnv belongs here: where FPUFPCR and
+// FPUDivFPCR are equal the emitters' swap does nothing, the fast path chops,
+// and the divergence is a different one. The interpreter reads neither
+// register, which TheDivideUnitIgnoresItsRoundingModeKnob at the bottom
+// asserts.
+//
+// The SQRT.S sweep also turned up an unrelated defect on its first run -- the
+// interpreter returned -0.0 for sqrt(-0.0) where the EE returns +0.0 -- fixed
 // separately and pinned by EeRecFpu.SqrtSOfNegativeZeroIsPositiveZero.
 
 #include "harness/EeRecTestHarness.h"
@@ -91,7 +97,10 @@ struct ScopedAmbientRoundMode
 	ScopedAmbientRoundMode& operator=(const ScopedAmbientRoundMode&) = delete;
 };
 
-// The twin of the above for the divide unit's register.
+// The twin of the above for the DIVIDE unit's register, used by
+// TheDivideUnitIgnoresItsRoundingModeKnob at the bottom -- which needs to move
+// the knob for both engines: the interpreter must not respond to it and the
+// recompilers must.
 struct ScopedDivideRoundMode
 {
 	FPControlRegister saved_cfg, saved_host;
@@ -138,13 +147,6 @@ static bool IsTopBinadeTierGap(u32 interp, u32 jit)
 	       (interp & 0x80000000u) == (jit & 0x80000000u);
 }
 
-// The second divergence: the interpreter now models the divide unit's
-// truncation law (FPU.cpp, eeDivideTruncates / eeSqrtBits) while the emitters
-// still take the host's correctly-rounded fdiv/fsqrt. The tests below stop
-// asserting that the engines agree and assert instead the shape they may differ
-// in: only where the law fires (u > cap), only by one ULP, and only with the
-// interpreter on the closer-to-zero side.
-//
 // The predicates are recomputed here rather than exported from FPU.cpp: a
 // differential that imports the implementation's arithmetic cannot catch the
 // implementation's arithmetic being wrong.
@@ -153,29 +155,21 @@ static bool BothNormalOperands(u32 fs, u32 ft)
 	return ((fs >> 23) & 0xFFu) != 0 && ((ft >> 23) & 0xFFu) != 0;
 }
 
-static bool DivideTruncates(u32 fs, u32 ft)
+// Which branch of the recurrence a division takes. The two branches err
+// differently and the tests below hold them to different shapes.
+static bool DivideShiftsTheNumerator(u32 fs, u32 ft)
 {
-	const u32 ma = 0x800000u | (fs & 0x7FFFFFu);
-	const u32 mb = 0x800000u | (ft & 0x7FFFFFu);
-	const int lt = ma < mb ? 1 : 0;
-	const u64 num = static_cast<u64>(ma) << (23 + lt);
-	const u32 rem = static_cast<u32>(num % mb);
-	const u32 cap = lt ? std::max<u32>(1u << 23, mb - (1u << 22)) : (1u << 22);
-	return (mb - rem) > cap;
+	return (0x800000u | (fs & 0x7FFFFFu)) < (0x800000u | (ft & 0x7FFFFFu));
 }
 
-static bool SqrtTruncates(u32 ft)
+// The two candidates a digit recurrence can land on are adjacent words, so
+// "one ULP apart" is "one apart as magnitudes" -- true across a binade boundary
+// as well, since the float encoding is monotone in the magnitude.
+static bool IsOneUlpApart(u32 interp, u32 jit)
 {
-	const u32 E = (ft >> 23) & 0xFFu;
-	if (E == 0)
-		return false;
-	const u64 X = static_cast<u64>(0x800000u | (ft & 0x7FFFFFu)) << ((E & 1u) ? 23 : 24);
-	u64 R = static_cast<u64>(std::sqrt(static_cast<double>(X)));
-	while (R > 0 && R * R > X)
-		--R;
-	while ((R + 1) * (R + 1) <= X)
-		++R;
-	return (2 * R + 1 - (X - R * R)) > (1u << 23);
+	const u32 a = interp & 0x7FFFFFFFu, b = jit & 0x7FFFFFFFu;
+	return (interp & 0x80000000u) == (jit & 0x80000000u) &&
+	       (a > b ? a - b : b - a) == 1u;
 }
 
 // The interpreter's word is the JIT's with one unit taken off the magnitude.
@@ -185,11 +179,11 @@ static bool IsOneUlpTowardZero(u32 interp, u32 jit)
 	       interp == ((jit & 0x80000000u) | ((jit & 0x7FFFFFFFu) - 1u));
 }
 
-TEST(EeRecFpuDivUnitRounding, DivSMatchesInterpExceptWhereTheTruncationLawFires)
+TEST(EeRecFpuDivUnitRounding, DivSDivergesFromTheFastPathByOneUlpAndOnlyThat)
 {
 	RequireDistinctDivideRoundingMode();
 	Lcg r{0xD1F5D1F5A5A5A5A5ull};
-	int checked = 0, tier_gaps = 0, law_gaps = 0;
+	int checked = 0, tier_gaps = 0, gaps = 0, alb_low = 0, alb_high = 0;
 	for (u32 iter = 0; iter < 3000; ++iter)
 	{
 		const u32 fsBits = fuzzOperand(r);
@@ -230,15 +224,22 @@ TEST(EeRecFpuDivUnitRounding, DivSMatchesInterpExceptWhereTheTruncationLawFires)
 		}
 		else if (res[0] != res[1])
 		{
-			++law_gaps;
-			EXPECT_TRUE(BothNormalOperands(fsBits, ftBits) &&
-						DivideTruncates(fsBits, ftBits))
-				<< "the engines parted company where the truncation law does NOT "
-				   "fire -- that is a plain quotient disagreement, not the "
-				   "modelled one";
-			EXPECT_TRUE(IsOneUlpTowardZero(res[0], res[1]))
-				<< "the interpreter's model can only ever take the LOWER of the two "
-				   "candidates; interp=" << std::hex << res[0] << " jit=" << res[1];
+			++gaps;
+			EXPECT_TRUE(BothNormalOperands(fsBits, ftBits))
+				<< "the engines parted company on an operand pair the divide unit "
+				   "never sees the digits of -- a zero or denormal operand is a "
+				   "flag question both engines answer the same way";
+			EXPECT_TRUE(IsOneUlpApart(res[0], res[1]))
+				<< "the recurrence can only ever land on one of the two candidates "
+				   "the correctly rounded answer sits between; interp="
+				<< std::hex << res[0] << " jit=" << res[1];
+			if (DivideShiftsTheNumerator(fsBits, ftBits))
+				((res[0] & 0x7FFFFFFFu) < (res[1] & 0x7FFFFFFFu) ? alb_low : alb_high)++;
+			else
+				EXPECT_TRUE(IsOneUlpTowardZero(res[0], res[1]))
+					<< "on the A>=B branch silicon is one ULP LOW or exact and never "
+					   "high -- 0 exceptions in 72,907,916 measured rows; interp="
+					<< std::hex << res[0] << " jit=" << res[1];
 		}
 		EXPECT_EQ(fcr[1] & kStickyMask, fcr[0] & kStickyMask);
 		++checked;
@@ -249,13 +250,20 @@ TEST(EeRecFpuDivUnitRounding, DivSMatchesInterpExceptWhereTheTruncationLawFires)
 	EXPECT_GT(tier_gaps, 0) << "anti-vacuity: the operand pool stopped producing "
 							   "saturating quotients, so the allowance above is "
 							   "dead code that could hide a real divergence";
-	EXPECT_GT(law_gaps, 0) << "anti-vacuity: no operand pair reached the truncation "
-							  "law, so this test is asserting engine agreement under "
-							  "a different name";
+	EXPECT_GT(gaps, 0) << "anti-vacuity: the two engines agreed on every operand "
+						  "pair, so this test is asserting engine agreement under "
+						  "a different name";
+	// The A<B branch errs BOTH ways, and a pool that only ever produced one of
+	// them would let a one-directional bug through the shape check above.
+	EXPECT_GT(alb_low, 0) << "no A<B row came back below correct rounding";
+	EXPECT_GT(alb_high, 0) << "no A<B row came back above correct rounding";
 }
 
-// A named witness alongside the fuzzer: 1.0 / 3.0 is one ULP apart between the
-// two rounding modes.
+// A named witness alongside the fuzzer, so a regression reports a value a human
+// can check by hand rather than an LCG iteration number. 1.0 / 3.0 is one ULP
+// apart between chop and nearest, and the console lands on nearest here -- the
+// recurrence agrees with correct rounding on this operand, which is why both
+// engines are pinned to the same word.
 TEST(EeRecFpuDivUnitRounding, DivSOneOverThreeRoundsToNearest)
 {
 	RequireDistinctDivideRoundingMode();
@@ -277,17 +285,18 @@ TEST(EeRecFpuDivUnitRounding, DivSOneOverThreeRoundsToNearest)
 	// 1/3 = 0x3EAAAAAB to nearest, 0x3EAAAAAA chopped.
 	EXPECT_EQ(hj.GetFprBitsJit(3), 0x3EAAAAABu) << "[jit] round-to-nearest, matches console";
 	EXPECT_EQ(hi.GetFprBitsInterp(3), 0x3EAAAAABu)
-		<< "[interp] 0x3EAAAAAA means the FPUDivFPCR swap was lost again";
+		<< "[interp] 0x3EAAAAAA is the chopped value, which is neither what the "
+		   "console returns nor what the recurrence produces";
 }
 
 // ---------------------------------------------------------------------------
 // SQRT.S
 // ---------------------------------------------------------------------------
-TEST(EeRecFpuDivUnitRounding, SqrtSMatchesInterpExceptWhereTheTruncationLawFires)
+TEST(EeRecFpuDivUnitRounding, SqrtSDivergesFromTheFastPathOnlyDownward)
 {
 	RequireDistinctDivideRoundingMode();
 	Lcg r{0x5011EE5011EE1234ull};
-	int law_gaps = 0;
+	int gaps = 0;
 	for (u32 iter = 0; iter < 3000; ++iter)
 	{
 		// Both signs: SQRT.S takes |Ft| on the negative path and raises I|SI.
@@ -323,21 +332,19 @@ TEST(EeRecFpuDivUnitRounding, SqrtSMatchesInterpExceptWhereTheTruncationLawFires
 
 		if (res[0] != res[1])
 		{
-			++law_gaps;
-			EXPECT_TRUE(SqrtTruncates(ftBits))
-				<< "the engines parted company on a root the truncation law does "
-				   "NOT settle";
+			++gaps;
 			EXPECT_TRUE(IsOneUlpTowardZero(res[0], res[1]))
-				<< "silicon's square root is one ULP LOW or exact, never high; "
-				   "interp=" << std::hex << res[0] << " jit=" << res[1];
+				<< "silicon's square root is one ULP LOW or exact, never high -- 0 "
+				   "exceptions in 16,777,216 exhaustive rows; interp="
+				<< std::hex << res[0] << " jit=" << res[1];
 		}
 		EXPECT_EQ(fcr[1] & kStickyMask, fcr[0] & kStickyMask);
 		if (::testing::Test::HasFailure())
 			return;
 	}
-	EXPECT_GT(law_gaps, 0) << "anti-vacuity: no operand reached the truncation law, "
-							  "so this test is asserting engine agreement under a "
-							  "different name";
+	EXPECT_GT(gaps, 0) << "anti-vacuity: the two engines agreed on every operand, "
+						  "so this test is asserting engine agreement under a "
+						  "different name";
 }
 
 // sqrt(5): 0x400F1BBD to nearest, 0x400F1BBC chopped.
@@ -360,74 +367,100 @@ TEST(EeRecFpuDivUnitRounding, SqrtSOfFiveRoundsToNearest)
 
 	EXPECT_EQ(hj.GetFprBitsJit(2), 0x400F1BBDu) << "[jit] round-to-nearest, matches console";
 	EXPECT_EQ(hi.GetFprBitsInterp(2), 0x400F1BBDu)
-		<< "[interp] 0x400F1BBC means the FPUDivFPCR swap was lost again";
+		<< "[interp] 0x400F1BBC is the chopped value, which is neither what the "
+		   "console returns nor what the recurrence produces";
 }
 
 // ---------------------------------------------------------------------------
-// All four divide-unit rounding modes on SQRT.S. eeSqrtBits() reads FPUDivFPCR
-// itself now that it is integer arithmetic.
+// All four divide-unit rounding modes, and the interpreter answering none of
+// them. On console the result does not depend on FCR31's rounding mode, on any
+// flag, or on the operations before it; how that was sampled is in the block
+// above eeSrtDigit() in FPU.cpp.
 //
-// One operand per case the truncation law and the mode can land in:
+// So the interpreter must return the same word in all four modes, and the word
+// has to be the console's. Each operand below is a first-party console row
+// whose value differs from the correctly rounded one: an interpreter that went
+// back to rounding would still be mode-independent under chop-vs-chop but would
+// return the ieee column, and one that started reading the knob would return
+// three different words.
 //
-//   3F80092E  u = 1,380,625 -- the law is silent, so the mode decides
-//   3F802734  u = 8,393,073 -- the law fires, and wins even under
-//                              toward-positive-infinity
-//   3F802001  u = 2^23 exactly -- one unit below where the law fires, so the
-//                              mode is still live right at the boundary
-//   3F800000  an exact root -- every mode must agree, or the mode is doing
-//                              something other than breaking ties
-//
-// The expected words were computed in a separate script from the frame
-// eeSqrtBits() documents, not read off the engine.
+// The liveness clause is the fast path. The same knob moved across the same
+// operand must change what the recompilers produce, or "the interpreter ignores
+// it" would be a statement about a knob that reaches nothing at all.
 // ---------------------------------------------------------------------------
-TEST(EeRecFpuDivUnitRounding, SqrtSHonoursEveryDivideUnitRoundingMode)
+TEST(EeRecFpuDivUnitRounding, TheDivideUnitIgnoresItsRoundingModeKnob)
 {
+	enum Which { W_SQRT, W_DIV, W_RSQRT };
 	struct Case
 	{
-		u32 ft;
-		u32 nearest, neg_inf, pos_inf, chop;
+		Which op;
+		u32 fs, ft;
+		u32 console, ieee;
 		const char* what;
 	};
+	// From the SCPH-90000 captures in ee_fpu_divunit_console_tests.cpp, one row
+	// per op, each with silicon and correct rounding one ULP apart.
 	static constexpr Case kCases[] = {
-		{0x3F80092Eu, 0x3F800497u, 0x3F800496u, 0x3F800497u, 0x3F800496u, "law silent"},
-		{0x3F802734u, 0x3F801398u, 0x3F801398u, 0x3F801398u, 0x3F801398u, "law fires"},
-		{0x3F802001u, 0x3F801000u, 0x3F800FFFu, 0x3F801000u, 0x3F800FFFu, "u == 2^23"},
-		{0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u, "exact root"},
+		{W_SQRT,  0x00000000u, 0x45DAB6CDu, 0x42A75179u, 0x42A7517Au, "sqrt.s, silicon low"},
+		{W_DIV,   0x42C654F9u, 0x3C908E7Bu, 0x45AF9DC4u, 0x45AF9DC5u, "div.s, silicon low"},
+		{W_DIV,   0x44933C6Bu, 0x3ECD12D0u, 0x4537CCB1u, 0x4537CCB0u, "div.s, silicon high"},
+		{W_RSQRT, 0x343DA5A8u, 0x44A43E1Du, 0x31A76B9Bu, 0x31A76B9Cu, "rsqrt.s, silicon high"},
 	};
 
-	const auto run = [](u32 ft) {
+	const auto program = [](const Case& c) {
+		switch (c.op)
+		{
+			case W_SQRT: return ee::SQRT_S(2, 1);
+			case W_DIV:  return ee::DIV_S(2, 3, 1);
+			default:     return ee::RSQRT_S(2, 3, 1);
+		}
+	};
+	const auto run = [&](const Case& c, bool jit) {
 		EeRecTestHarness h;
 		h.EnableCop1();
-		h.SetFprBits(1, ft);
+		h.SetFprBits(1, c.ft);
+		h.SetFprBits(3, c.fs);
 		h.SetFcr31(0);
-		h.LoadProgram({ee::SQRT_S(2, 1)});
+		h.LoadProgram({program(c)});
+		if (jit)
+		{
+			h.RunJitNoDiff();
+			return h.GetFprBitsJit(2);
+		}
 		h.RunInterpOnly();
 		return h.GetFprBitsInterp(2);
 	};
 
-	int mode_sensitive = 0;
+	static constexpr FPRoundMode kModes[] = {FPRoundMode::Nearest, FPRoundMode::NegativeInfinity,
+											 FPRoundMode::PositiveInfinity, FPRoundMode::ChopZero};
+	static constexpr const char* kModeNames[] = {"nearest", "toward -inf", "toward +inf",
+												 "toward zero"};
+	int jit_moved = 0;
 	for (const Case& c : kCases)
 	{
-		SCOPED_TRACE(::testing::Message() << std::hex << "ft=" << c.ft << " (" << c.what << ")");
-		u32 got[4];
-		{ const ScopedDivideRoundMode m{FPRoundMode::Nearest};          got[0] = run(c.ft); }
-		{ const ScopedDivideRoundMode m{FPRoundMode::NegativeInfinity}; got[1] = run(c.ft); }
-		{ const ScopedDivideRoundMode m{FPRoundMode::PositiveInfinity}; got[2] = run(c.ft); }
-		{ const ScopedDivideRoundMode m{FPRoundMode::ChopZero};         got[3] = run(c.ft); }
-		EXPECT_EQ(got[0], c.nearest) << "nearest";
-		EXPECT_EQ(got[1], c.neg_inf) << "toward -inf";
-		EXPECT_EQ(got[2], c.pos_inf) << "toward +inf";
-		EXPECT_EQ(got[3], c.chop) << "toward zero";
-		if (got[0] != got[1] || got[0] != got[2] || got[0] != got[3])
-			++mode_sensitive;
+		SCOPED_TRACE(::testing::Message() << std::hex << "fs=" << c.fs << " ft=" << c.ft
+										  << " (" << c.what << ")");
+		ASSERT_NE(c.console, c.ieee) << "this row cannot tell the two engines apart";
+		u32 jit_first = 0;
+		for (int m = 0; m < 4; ++m)
+		{
+			const ScopedDivideRoundMode mode{kModes[m]};
+			EXPECT_EQ(run(c, false), c.console)
+				<< "[interp] under " << kModeNames[m]
+				<< ": the digit recurrence has no rounding step for a mode to reach, "
+				   "and the correctly rounded value here would be " << std::hex << c.ieee;
+			const u32 jit = run(c, true);
+			if (m == 0)
+				jit_first = jit;
+			else if (jit != jit_first)
+				++jit_moved;
+		}
 	}
 
-	// Anti-vacuity. If the integer path stopped reading FPUDivFPCR, every row
-	// would still pass its nearest column and the other three would collapse
-	// onto it.
-	EXPECT_EQ(mode_sensitive, 2)
-		<< "the operand table must contain rows the divide unit's rounding mode "
-		   "actually moves, or this test cannot tell a live knob from a dead one";
+	EXPECT_GT(jit_moved, 0)
+		<< "liveness: the fast path did not move under any of the four modes either, "
+		   "so this test cannot tell a knob the interpreter ignores from a knob that "
+		   "reaches nothing";
 }
 
 // ---------------------------------------------------------------------------

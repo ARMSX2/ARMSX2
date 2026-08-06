@@ -77,34 +77,29 @@
 //    an upper envelope -- not attained on two divisors, and not monotone in mb
 //    (TheAlbCapIsAnEnvelopeNotTheLaw).
 //
-// 6. What shipped is finding 3 and nothing else. FPU.cpp's
-//    eeDivide() and eeSqrtBits() now truncate when u exceeds the cap, and keep
-//    the correctly rounded answer everywhere else, because that implication is
-//    the only part of the unit with zero measured exceptions. The rows in
-//    kLawRows are its witnesses, re-measured individually on silicon by wit3.c
-//    (FCR0 00002E40, FCR31 cleared per op, 32-nop spacers, every result read
-//    twice, no read disagreed with itself) after being found in the bulk
-//    captures. Three groups, all needed:
+// 6. What shipped. FPU.cpp's eeDivide() and eeSqrtBits() run the unit's own
+//    radix-2 SRT digit recurrence (see eeSrtDigit there), which reproduces
+//    every row of every capture including all of the above, so the interpreter
+//    matches the console on all 21 rows of kRows. Facts 1 through 5 stay as
+//    bounds on a future fast path rather than on a future model.
 //
-//      * six div rows and four sqrt rows where the law changes the answer --
-//        without them the model is unpinned and could quietly stop firing;
-//      * two sqrt rows where u is exactly 2^23 and silicon still rounds up --
-//        without them `u > 2^23 => DOWN` would pass vacuously the moment the
-//        unit got more conservative;
-//      * two sqrt rows where the law is silent and silicon truncates anyway --
-//        the residual, kept so "still wrong here" has names.
+//    kLawRows are the witnesses of the one-way law the recurrence subsumed --
+//    u above the cap implies truncation -- re-measured individually on silicon
+//    by wit3.c (FCR0 00002E40, FCR31 cleared per op, 32-nop spacers, every
+//    result read twice, no read disagreed with itself) after being found in the
+//    bulk captures. Four groups: rows where the law changes the answer on
+//    DIV.S, the same on SQRT.S, rows where its bound is exactly attained, and
+//    rows where it stays silent and silicon truncates anyway. That last group
+//    was the residual and now carries a console expectation like every other
+//    row.
 //
 //    The tests below also state that the A<B half of the div cap never changes
 //    an answer: cap = max(2^23, mb-2^22) is always greater than mb/2, so
 //    u > cap already implies 2*rem < mb and correct rounding says DOWN by
 //    itself. Verified over all eighteen
 //    exhaustive divisors -- 18,878,960 A<B rows above the cap, every one of
-//    them a row correct rounding got right anyway. The A>=B half does all the
-//    work: 6,118,759 rows of the 150,994,944 change, and all of them improve.
-//
-// The interpreter expectations in kRows below are still the ieee column,
-// because every one of those rows sits inside u <= cap where nothing is
-// settled. The tripwire at the bottom is the acceptance test for the rest.
+//    them a row correct rounding got right anyway. The A>=B half did all the
+//    work: 6,118,759 rows of the 150,994,944 changed, and all of them improved.
 
 #include "harness/EeRecTestHarness.h"
 #include "harness/MipsEncode.h"
@@ -403,17 +398,17 @@ TEST(EeFpuDivUnitExhaustive, TheErrorSpansNearlyAWholeUlpBothWays)
 	// returns T+1.
 	const Frame hi = Decode(0x3F800000u, 0x3F800001u);
 	EXPECT_EQ(hi.rem, 2u);
-	EXPECT_EQ(RunDiv(0x3F800000u, 0x3F800001u), 0x3F7FFFFEu)
-		<< "this tree rounds to nearest, which is T here";
 	EXPECT_EQ(0x3F7FFFFFu, hi.down + 1u) << "the console value is T+1";
+	EXPECT_EQ(RunDiv(0x3F800000u, 0x3F800001u), 0x3F7FFFFFu)
+		<< "round-to-nearest gives T here, and this tree does not round";
 
 	// and on the SAME divisor, a row where the exact quotient is 0.96 of the
 	// way to T+1 and silicon returns T.
 	const Frame lo = Decode(0x3F852B38u, 0x3F800001u);
 	EXPECT_EQ(lo.u, 338743u);
 	EXPECT_EQ(0x3F852B36u, lo.down) << "the console value is T";
-	EXPECT_EQ(RunDiv(0x3F852B38u, 0x3F800001u), 0x3F852B37u)
-		<< "this tree rounds to nearest, which is T+1 here";
+	EXPECT_EQ(RunDiv(0x3F852B38u, 0x3F800001u), 0x3F852B36u)
+		<< "round-to-nearest gives T+1 here, and this tree does not round";
 
 	// The signed error in ULP: returning T costs -rem/mb, returning T+1 gains
 	// +u/mb. Round-to-nearest is confined to [-1/2, +1/2] and a directed mode
@@ -703,11 +698,12 @@ TEST(EeFpuDivUnitExhaustive, InterpMatchesConsoleWhereTheUnitIsExact)
 }
 
 // ---------------------------------------------------------------------------
-// 7. Where they disagree, the miss is one ULP and this tree sits on the
-//    correctly-rounded side. Reaching the console value here is not a failure,
-//    it is the model landing -- and then the tripwire below is what to enable.
+// 7. Where they disagree, the miss is one ULP and this tree takes the console's
+//    side. These 13 rows used to be out of reach and are the whole of what the
+//    digit recurrence bought on this table, so a build that went back to
+//    rounding fails here as well as on test 8.
 // ---------------------------------------------------------------------------
-TEST(EeFpuDivUnitExhaustive, SiliconIsOneUlpOffOnTheseRows)
+TEST(EeFpuDivUnitExhaustive, SiliconIsOneUlpOffAndTheInterpreterFollowsIt)
 {
 	int off = 0;
 	for (const DivRow& r : kRows)
@@ -717,24 +713,31 @@ TEST(EeFpuDivUnitExhaustive, SiliconIsOneUlpOffOnTheseRows)
 		++off;
 		const u32 a = r.con_div & 0x7FFFFFFFu, b = r.ieee_div & 0x7FFFFFFFu;
 		EXPECT_EQ(a > b ? a - b : b - a, 1u) << std::hex << "fs=" << r.fs << " ft=" << r.ft;
-		EXPECT_EQ(RunDiv(r.fs, r.ft), r.ieee_div)
+		EXPECT_EQ(RunDiv(r.fs, r.ft), r.con_div)
 			<< std::hex << "fs=" << r.fs << " ft=" << r.ft
-			<< ": this tree computes the correctly-rounded value";
+			<< ": this tree returned the correctly-rounded value " << r.ieee_div
+			<< " where silicon does not round";
 	}
 	EXPECT_EQ(off, 13);
 }
 
 // ---------------------------------------------------------------------------
-// 7b. The law that shipped, and the three things it needs pinned: that it
-//     fires, that its bound is attained, and that where it stays silent the
-//     tree is still on the correctly-rounded side.
+// 7b. The cap law's own witnesses, kept after the recurrence subsumed it.
+//
+//     Each row still asserts where it sits relative to the cap -- above it,
+//     exactly on it, below it -- and then asserts the console value, which the
+//     interpreter now reaches on all four groups rather than on three of them.
+//     Two reasons to keep the geometry: it is the measurement that says the
+//     bound is attained and not a free inequality, and any fast path that
+//     answers `u > cap` rows without running the digits has to agree with the
+//     recurrence exactly here, including on the rows one unit below the bound.
 //
 //     The frame is recomputed from the operand bits for every row, so the
 //     annotated `u` cannot drift away from the arithmetic, and a mistyped
 //     operand shows up as a frame mismatch rather than as a mysterious value
 //     failure.
 // ---------------------------------------------------------------------------
-TEST(EeFpuDivUnitExhaustive, TheTruncationLawFiresAndTheInterpreterFollowsSilicon)
+TEST(EeFpuDivUnitExhaustive, TheCapWitnessesAllReachTheConsole)
 {
 	int fires_div = 0, fires_sqrt = 0, tight = 0, silent = 0;
 
@@ -755,7 +758,7 @@ TEST(EeFpuDivUnitExhaustive, TheTruncationLawFiresAndTheInterpreterFollowsSilico
 			EXPECT_EQ(r.console, f.down) << "silicon must be the TRUNCATED candidate";
 			EXPECT_EQ(r.ieee, f.down + 1u);
 			EXPECT_EQ(RunDiv(r.fs, r.ft), r.console)
-				<< "the interpreter stopped applying the truncation law to DIV.S";
+				<< "the interpreter's DIV.S stopped reaching silicon above the cap";
 		}
 		else
 		{
@@ -770,7 +773,7 @@ TEST(EeFpuDivUnitExhaustive, TheTruncationLawFiresAndTheInterpreterFollowsSilico
 					<< "correct rounding already says R, so this row cannot show the law";
 				EXPECT_NE(r.console, r.ieee);
 				EXPECT_EQ(RunSqrt(r.ft), r.console)
-					<< "the interpreter stopped applying the truncation law to SQRT.S";
+					<< "the interpreter's SQRT.S stopped reaching silicon above the bound";
 			}
 			else if (r.kind == LAW_SQRT_TIGHT)
 			{
@@ -790,11 +793,11 @@ TEST(EeFpuDivUnitExhaustive, TheTruncationLawFiresAndTheInterpreterFollowsSilico
 				EXPECT_LE(f.u, 1u << 23) << "this row exists BELOW the bound";
 				EXPECT_TRUE(f.ieee_rounds_up);
 				EXPECT_NE(r.console, r.ieee) << "silicon truncates here even though the "
-												"law is silent -- that is the residual";
-				EXPECT_EQ(RunSqrt(r.ft), r.ieee)
-					<< "where the law says nothing the tree stays correctly rounded; "
-					   "reaching the console value means someone modelled more of the "
-					   "unit, and this row should move to LAW_SQRT_FIRES";
+												"cap law is silent -- these two rows were "
+												"the residual it could not reach";
+				EXPECT_EQ(RunSqrt(r.ft), r.console)
+					<< "the recurrence closed exactly this group; the correctly rounded "
+					   "value here is " << r.ieee;
 			}
 		}
 	}
@@ -847,10 +850,14 @@ TEST(EeFpuDivUnitExhaustive, TheAlbHalfOfTheCapCannotChangeAnAnswer)
 }
 
 // ---------------------------------------------------------------------------
-// 8. The tripwire. Enabling it means someone modelled the unit. Any model that
-//    passes it has to satisfy tests 1-4 above, which is the point of them.
+// 8. The acceptance test, disabled for as long as the unit was unmodelled: all
+//    three ops, all 21 rows, against silicon. It was run with
+//    --gtest_also_run_disabled_tests before being graduated, because a disabled
+//    test that has quietly gone vacuous graduates just as easily as one that
+//    was fixed. Tests 1 and 2 above assert that these rows disagree with every
+//    rounding rule, so passing here takes reproducing silicon.
 // ---------------------------------------------------------------------------
-TEST(EeFpuDivUnitExhaustive, DISABLED_InterpMatchesConsoleOnEveryRow)
+TEST(EeFpuDivUnitExhaustive, InterpMatchesConsoleOnEveryRow)
 {
 	for (const DivRow& r : kRows)
 	{

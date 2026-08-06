@@ -503,19 +503,28 @@ TEST(EeFpuOverflowConsole, SqrtMatchesConsoleOnEveryCapturedOperand)
 }
 
 // ---------------------------------------------------------------------------
-// The same property over the whole exponent-255 class rather than the three
-// patterns the capture happens to contain. As host bit patterns those words
-// are infinities, quiet NaNs and signalling NaNs; to the EE they are all large
-// finite floats, so the pool carries every shape. The signalling ones are the
-// half a host-NaN-aware implementation gets wrong -- see recSQRT_S_xmm
-// (iFPU-arm64.cpp) for why the clamp they replaced had to be an integer Umin
-// rather than an Fminnm.
+// The same property as above, over the whole exponent-255 class rather than the
+// three patterns the capture happens to contain.
 //
-// The wanted values are correctly-rounded square roots computed by exact
-// integer arithmetic (math.isqrt on the significand, round-to-nearest-even,
-// the divide unit's mode) rather than by a host float. The six marked `true`
-// were read off silicon; the other three are computed only, for class
-// coverage.
+// The class splits on an axis the capture cannot see: as host bit patterns,
+// exponent-255 words are infinities, quiet NaNs and signalling NaNs, while to
+// the EE they are all large finite floats. The old arm64 clamp had to be an
+// integer Umin rather than an Fminnm because of that split -- Fminnm prefers
+// the number only against a quiet NaN, and a signalling operand comes back
+// merely quieted, so half the mantissa space (4194303 of the 8388608 positive
+// patterns) would have passed through a clamp that was supposed to catch it.
+// Testing the exponent field, as both engines now do, never asks the host what
+// kind of NaN it thinks it is holding; the pool below covers every shape either
+// way.
+//
+// Expected values are correctly-rounded square roots computed by exact integer
+// arithmetic (math.isqrt on the significand, round-to-nearest-even) rather than
+// by a host float, so they cannot inherit the behaviour under test. The divide
+// unit does not round in general -- see eeSrtDigit in FPU.cpp -- but correct
+// rounding is what it returns on these operands: the model was checked against
+// the six the capture does witness, marked `true` below, and agreed on all six,
+// including the exponent-254 control. The other three rows are computed, not
+// read off silicon, and are here for class coverage.
 // ---------------------------------------------------------------------------
 TEST(EeFpuOverflowConsole, SqrtMatchesConsoleOnEveryExponent255Operand)
 {

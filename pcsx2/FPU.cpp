@@ -418,181 +418,186 @@ static u32 eeGuardedAddSub(u32 a, u32 b, bool issub)
 	return eeRoundToSingle(eeToDouble(a) + eeToDouble(b), true);
 }
 
-/*	Divide two EE singles with exactly one rounding.
+/*	The EE's divide/square-root unit, digit by digit.
 
-	Not through eeToDouble(), the way the adder and the multiplier go: their
-	results are exact in a double and a quotient is not, so widening and then
-	narrowing rounds twice. Chopping would forgive that, but the divide unit
-	rounds to nearest (FPUDivFPCR, scoped in by the callers), where the second
-	rounding can land a ULP away.
+	It is not a correctly rounding divider, and no rounding mode makes it one.
+	The exact quotient lies between two singles and silicon returns one of them,
+	but which one is decided by where a digit recurrence lands, not by how far the
+	exact value sits from either end. So the error reaches nearly a whole ULP in
+	both directions on the same divisor, and two operand pairs agreeing in every
+	coordinate a rounding rule can see -- branch, divisor, remainder, the exact
+	fraction -- can still go opposite ways.
 
-	So rescale instead of widening. Both operands are forced to exponent 127, so
-	the division happens between two significands in [1,2) where nothing can
-	overflow or underflow and the host performs the EE's single rounding; the
-	exponents are added back onto the quotient afterwards. Scaling by a power of
-	two leaves a significand alone, so the quotient's significand and its
-	rounding do not depend on where the operands sat in the range -- only the
-	reassembled exponent does, and that is integer arithmetic.
+	It is a radix-2 SRT digit recurrence over the signed digit set {-1, 0, +1},
+	partial remainder carried in redundant carry-save form, 24 selections
+	producing 25 digits, and no rounding step anywhere in it: no round bit, no
+	sticky, no final correction. SQRT.S is the same recurrence with the root so
+	far fed back in place of the divisor, and RSQRT.S is SQRT.S followed by DIV.S
+	with an ordinary 24-bit single in between, which is what silicon does.
 
-	The divisor must already be known nonzero: a zero divisor is a flag question
-	the callers answer first.
+	The model is the selection function eeSrtDigit() below.
 
-	The console does not round to nearest; eeDivideTruncates() below covers the
-	part of the difference that is settled.
+	  * DIV.S -- 150,994,944 rows. Eighteen divisors swept exhaustively, every
+	    one of the 2^23 numerator significands at each, both branches, including
+	    the seven degenerate divisors that broke every earlier frame. Zero
+	    result-word disagreements, and zero rows where the recurrence lands
+	    outside {T, T+1}. Through the same scorer, truncation gets 52,434,906 of
+	    those rows wrong and round-to-nearest 29,430,553.
+	  * SQRT.S -- 16,777,216 rows, every significand at both exponent parities.
+	    Zero disagreements; truncation 3,994,228 and round-to-nearest 4,395,034.
+	  * A 3000-operand holdout (seed 0x243F6A88, captured before any of this was
+	    modelled): 2000 div and 1000 sqrt, zero disagreements. 229 of the div
+	    rows saturate or flush, which the exhaustive sweeps cannot see: they hold
+	    both exponents at 127.
+
+	Nothing else moves the result. FCR31 has no rounding-mode field on this FPU
+	-- bit 0 reads 1 whatever is written and bit 1 never sticks -- and the answer
+	is unchanged when the preceding instruction is varied or the case list
+	reversed. What that leaves EmuConfig.Cpu.FPUDivFPCR to do is in the block
+	below eeSqrtBits().
+
+	This is PS2Float.cpp's Div() and Sqrt() from the proposed PCSX2 soft-float
+	series (GitHubProUser67), whose only documentation is M. Prabhu and
+	G. Zyner, "167 MHz radix-8 divide and square root using overlapped
+	radix-2 stages", DOI 10.1109/ARITH.1995.465363.
 */
 
-/*	The EE divider's truncation law.
-
-	The divide/square-root unit is not correctly rounded: the exact quotient
-	lies between two singles and the unit returns one of them, not always the
-	nearer, and which one it returns depends on the operands rather than on a
-	rounding mode. This is the part of that choice the captures settle.
-
-	Write the exact division of the two significands (hidden bit restored) as
-
-	    lt   = ma < mb                 the branch: does the quotient need a shift
-	    num  = ma << (23 + lt)
-	    T    = num / mb                the truncated 24-bit significand
-	    rem  = num - T*mb              0 <= rem < mb
-	    u    = mb - rem                how far the exact quotient sits below T+1
-
-	so the unit returns T or T+1 and correct rounding would take T+1 exactly
-	when 2*rem >= mb. The unit rounds up only when u is small:
-
-	    u > cap  =>  the unit truncates      cap = 2^22                on A>=B
-	                                         cap = max(2^23, mb-2^22)  on A<B
-
-	Evidence, all of it first-party captures from SCPH-90000 (FCR0 0x2E40) in
-	captures/fpmatrix/divsqrt/ in the session archive:
-
-	  * 150,994,944 rows over eighteen divisors swept exhaustively -- every one
-	    of the 2^23 numerator significands at each -- of which 57,612,965 have
-	    u > cap. Not one of them rounds up.
-	  * 48,799,468 further rows of scattered, band and transverse captures:
-	    6,937,248 distinct divisor significands, divisor exponent fields 110
-	    through 145. Again not one violation.
-
-	Rows with u <= cap are unsettled -- 27.5% of them truncate as well, and no
-	model this project has built predicts which -- so they keep the correctly
-	rounded answer, which is also what both recompilers produce. The implication
-	runs one way, so applying the law can only turn a wrong row right.
-
-	Only the A>=B half of the cap ever changes a result: on A<B, u > cap already
-	implies correct rounding truncates. The branch is kept because it is the law
-	the captures give, and
-	EeFpuDivUnitExhaustive.TheAlbHalfOfTheCapCannotChangeAnAnswer holds its
-	shape so a tightened cap cannot silently become live.
-
-	Over the exhaustive set this takes the interpreter from 19.49% of quotients
-	off by a ULP to 15.44%, and over the scattered set from 13.98% to 9.51%, at
-	the price of disagreeing with both recompilers on those rows.
-	EeRecFpuDivUnitRounding pins the divergence to this class.
-*/
-static bool eeDivideTruncates(u32 mb, u32 lt, u32 rem)
+/*	The partial remainder, in the redundant form the recurrence carries it in.
+	No step propagates a carry across the width of the operand, which is why the
+	selector below cannot see the true remainder. */
+struct EeSrtRemainder
 {
-	const u32 cap = lt ? ((mb > (3u << 22)) ? mb - (1u << 22) : (1u << 23)) : (1u << 22);
-	return (mb - rem) > cap;
+	u32 sum, carry;
+};
+
+static __fi EeSrtRemainder eeSrtCarrySave(u32 a, u32 b, u32 c)
+{
+	const u32 u = a ^ b;
+	const u32 h = (a & b) | (u & c);
+	return {u ^ c, h << 1};
+}
+
+/*	The selection function: which of -1, 0, +1 the next digit takes.
+
+	It assimilates the redundant remainder only partially -- the carry word is
+	added in above bit 23 while the low 24 bits of the sum are OR-ed back rather
+	than added -- so it decides on something other than the remainder, and picks a
+	different digit from the one an exact comparison would. The thresholds are
+	+2^23 and -2^24, with the binary point between bits 24 and 25; that asymmetry
+	is what biases the unit toward truncation. The digit set is redundant, so the
+	last digit can still be -1 and the result reach T+1 on rows a truncation could
+	never reach. */
+static __fi s32 eeSrtDigit(EeSrtRemainder r)
+{
+	constexpr u32 mask = (1u << 24) - 1u;
+	const s32 estimate = (s32)(((r.sum & ~mask) + r.carry) | (r.sum & mask));
+	return (estimate >= (1 << 23)) - (estimate < (s32)(~0u << 24));
+}
+
+/*	On a zero digit the next digit is selected from the un-recompressed pair
+	while the state advances with the recompressed one, so selection and state
+	see different splittings of the same value. Drop the distinction and the
+	model stops reproducing silicon. */
+static __fi EeSrtRemainder eeSrtSelect(EeSrtRemainder cur, EeSrtRemainder next, s32 digit)
+{
+	const u32 m = 0u - (u32)(digit != 0);
+	return {(cur.sum & ~m) | (next.sum & m), (cur.carry & ~m) | (next.carry & m)};
+}
+
+/*	The quotient of two 24-bit significands as 25 digits, weights 2^24 down to
+	2^0. A positive digit subtracts the divisor as ~divisor with the +1 fed into
+	the carry word, which the selector then sees -- that is one of the places
+	the estimate and the state come apart. The value returned is 25 bits when
+	sma >= smb and 24 bits when it is not; the caller normalises, and the digit
+	that falls off the bottom there is simply dropped. */
+static u32 eeDivideSignificand(u32 sma, u32 smb)
+{
+	const u32 divisor = smb << 2;
+	EeSrtRemainder rem = {sma << 2, 0};
+	u32 quotient = 0;
+	s32 digit = 1;
+
+	for (int i = 0; i < 24; ++i)
+	{
+		quotient = (quotient << 1) + (u32)digit;
+		const u32 addend = (digit > 0) ? ~divisor : ((digit < 0) ? divisor : 0u);
+		rem.carry += (u32)(digit > 0);
+		const EeSrtRemainder next = eeSrtCarrySave(rem.sum, rem.carry, addend);
+		digit = eeSrtDigit(eeSrtSelect(rem, next, digit));
+		rem.sum = next.sum << 1;
+		rem.carry = next.carry << 1;
+	}
+	return (quotient << 1) + (u32)digit;
 }
 
 static u32 eeDivide(u32 a, u32 b)
 {
 	const s32 ea = (s32)((a >> 23) & 0xFF);
 	const s32 eb = (s32)((b >> 23) & 0xFF);
+	const u32 sign = (a ^ b) & 0x80000000u;
 
 	if (ea == 0)
-		return (a ^ b) & 0x80000000; // zero dividend, sign from both operands
+		return sign; // zero dividend (denormals are zero), sign from both operands
 
-	// The exact frame, in integers, so the decision below owes nothing to the
-	// host's rounding mode. Exponent 255 is an ordinary binade on this FPU, so
-	// every finite operand reaches here and the hidden bit is always present.
+	// Exponent 255 is an ordinary binade on this FPU, so every finite operand
+	// reaches here and the hidden bit is always present. The divisor is already
+	// known nonzero: that is a flag question the callers answer first.
+	u32 quotient = eeDivideSignificand(0x800000u | (a & 0x7FFFFFu), 0x800000u | (b & 0x7FFFFFu));
+	s32 e = ea - eb + 126;
+	if (quotient >= (1u << 24))
 	{
-		const u32 sma = 0x800000u | (a & 0x7FFFFFu);
-		const u32 smb = 0x800000u | (b & 0x7FFFFFu);
-		const u32 lt = (sma < smb) ? 1u : 0u;
-		const u64 num = (u64)sma << (23 + lt);
-		const u32 T = (u32)(num / smb);
-		const u32 rem = (u32)(num - (u64)T * smb);
-
-		if (eeDivideTruncates(smb, lt, rem))
-		{
-			// T is already normalised into [2^23, 2^24), so nothing carries out
-			// of the significand and the exponent is pure integer. A quotient
-			// that only reaches the next binade by rounding up therefore does
-			// not reach it here, as on the console.
-			const s32 e = ea - eb + 127 - (s32)lt;
-			const u32 sign = (a ^ b) & 0x80000000u;
-			if (e > 255)
-				return sign | 0x7FFFFFFFu; // the EE's maximum, not FLT_MAX
-			if (e < 1)
-				return sign; // the EE has no denormals to underflow into
-			return sign | ((u32)e << 23) | (T - 0x800000u);
-		}
+		quotient >>= 1;
+		++e;
 	}
 
-	FPRreg ma, mb, q;
-	ma.UL = (a & 0x807FFFFFu) | (127u << 23);
-	mb.UL = (b & 0x807FFFFFu) | (127u << 23);
-	q.f = ma.f / mb.f;
-
-	// |q| is in (0.5, 2], so its exponent field carries 126, 127 or -- if the
-	// rounding pushed it to exactly 2.0 -- 128.
-	const s32 e = (s32)((q.UL >> 23) & 0xFF) + ea - eb;
+	// No carry out of the significand is possible below this point -- there is
+	// no rounding step left that could walk the quotient into the next binade.
 	if (e > 255)
-		return (q.UL & 0x80000000u) | 0x7FFFFFFFu;
+		return sign | 0x7FFFFFFFu; // the EE's maximum, not FLT_MAX
 	if (e < 1)
-		return q.UL & 0x80000000u; // the EE has no denormals to underflow into
-	return (q.UL & 0x807FFFFFu) | ((u32)e << 23);
-}
-
-/*	floor(sqrt(x)) for x < 2^48, exactly. The host sqrt only seeds it: x is
-	under 53 bits, so it converts to a double without loss and lands within one
-	of the answer, and the fixup loops run unconditionally, so the result does
-	not depend on the host's rounding mode. */
-static u32 eeISqrt48(u64 x)
-{
-	u64 r = (u64)std::sqrt((double)x);
-	while (r > 0 && r * r > x)
-		--r;
-	while ((r + 1) * (r + 1) <= x)
-		++r;
-	return (u32)r;
+		return sign; // the EE has no denormals to underflow into
+	return sign | ((u32)e << 23) | (quotient & 0x7FFFFFu);
 }
 
 /*	sqrt(|Ft|) as EE bits, including the top binade.
 
-	Integer, for the same reason eeDivide is: the square-root unit is the divide
-	unit, and it misses the correctly rounded answer under the same law.
+	The same recurrence as eeDivideSignificand(), with the root so far fed back
+	in place of a fixed divisor: adding digit d at weight w to the root adds
+	d*(2*root + d*w) to its square, which is what has to leave the partial
+	remainder, so the addend is rebuilt each step instead of being a constant.
+	Everything else -- the carry-save state, the selector, the zero-digit quirk,
+	the absence of any rounding step -- is shared, and so is the evidence: see
+	the block comment above eeSrtDigit().
 
-	Put the operand's significand where the root is a 24-bit integer. With E the
-	exponent field and m the significand with its hidden bit,
+	The radicand is placed so the root is a 24-bit integer. With E the exponent
+	field, the significand's hidden bit restored, and the result's exponent
+	(E + 127) / 2 rounded down, the operand's own exponent parity decides how far
+	to shift: one place when E is odd, two when it is even. The top binade needs
+	no special case: in integers it is just another odd E.
+*/
+static u32 eeSqrtSignificand(u32 m)
+{
+	EeSrtRemainder rem = {m, 0};
+	u32 root = 0;
+	s32 digit = 1;
 
-	    k = 23 if E is odd, 24 if E is even        (|Ft| = X * 2^(E-150-k))
-	    X = m << k                                  2^46 <= X < 2^48
-	    R = floor(sqrt(X))                          2^23 <= R < 2^24
-	    rem = X - R*R,   u = (R+1)^2 - X = 2R+1-rem
+	for (int i = 0; i < 24; ++i)
+	{
+		const u32 addend_base = root + ((u32)digit << (24 - i));
+		root += (u32)digit << (25 - i);
+		const u32 addend = (digit > 0) ? ~addend_base : ((digit < 0) ? addend_base : 0u);
+		rem.carry += (u32)(digit > 0);
+		const EeSrtRemainder next = eeSrtCarrySave(rem.sum, rem.carry, addend);
+		digit = eeSrtDigit(eeSrtSelect(rem, next, digit));
+		rem.sum = next.sum << 1;
+		rem.carry = next.carry << 1;
+	}
+	// The last digit carries weight 2^1, below the root's least significant
+	// bit, so it only reaches the result by borrowing out of it.
+	root += (u32)digit << 1;
+	return (root >> 2) & 0xFFFFFFu;
+}
 
-	so the unit returns R or R+1, correct rounding takes R+1 exactly when
-	X > (R+0.5)^2 -- i.e. rem > R, with no ties possible since (R+0.5)^2 is
-	never an integer -- and E-150-k is even by construction, so the result's
-	exponent field 150 + (E-150-k)/2 is exact integer arithmetic.
-
-	The truncation law is the one eeDivideTruncates() applies, with the constant
-	that goes with it:
-
-	    u > 2^23  =>  the unit truncates
-
-	2^23 is half of sqrt's minimum span 2R+1 >= 2^24 + 1, as 2^22 is half of
-	div's minimum span mb >= 2^23. Measured by
-	captures/fpmatrix/divsqrt/scatter/sqgain.c over the two exhaustive console
-	sweeps (16,777,216 rows, every significand at both exponent parities,
-	SCPH-90000, FCR0 0x2E40):
-
-	  * 10,845,747 rows have u > 2^23. Not one of them rounds up.
-	  * An odd-exponent row rounds up at u = 2^23 exactly, so the bound is
-	    attained.
-
-	It takes sqrt from 26.20% of roots off by a ULP to 11.55%. The rest is the
-	same unsolved region as div's, and keeps the correctly rounded answer. */
 static u32 eeSqrtBits(u32 t)
 {
 	const u32 E = (t >> 23) & 0xFFu;
@@ -601,78 +606,21 @@ static u32 eeSqrtBits(u32 t)
 		          // do both recompilers (they take |Ft| first). See
 		          // EeRecFpu.SqrtSOfNegativeZeroIsPositiveZero.
 
-	const int k = (E & 1u) ? 23 : 24;
-	const u64 X = (u64)(0x800000u | (t & 0x7FFFFFu)) << k;
-	const u32 R = eeISqrt48(X);
-	const u64 rem = X - (u64)R * R;
-	const u32 u = (u32)(2ull * R + 1ull - rem);
-
-	// The mode the divide unit runs in, honoured here rather than through the
-	// host FPCR because this arithmetic is integer. sqrt's result is always
-	// positive, so toward-negative-infinity is the same as toward zero and
-	// toward-positive-infinity is "up whenever the root is inexact". The
-	// truncation law sits on top: it can only take the increment away, so under
-	// toward-positive-infinity it suppresses a round-up the mode asked for.
-	// That is deliberate -- the law is what the console does, the non-nearest
-	// modes are a compatibility knob for behaviour it does not have. All four
-	// modes are pinned by
-	// EeRecFpuDivUnitRounding.SqrtSHonoursEveryDivideUnitRoundingMode.
-	bool round_up;
-	switch (EmuConfig.Cpu.FPUDivFPCR.GetRoundMode())
-	{
-		case FPRoundMode::Nearest:          round_up = rem > (u64)R; break;
-		case FPRoundMode::PositiveInfinity: round_up = rem != 0; break;
-		default:                            round_up = false; break;
-	}
-
-	u32 sig = (round_up && u <= (1u << 23)) ? R + 1u : R;
-	s32 e = 150 + (((s32)E - 150 - k) / 2); // the numerator is always even
-	if (sig == 0x1000000u)                  // rounded out of the binade
-	{
-		sig = 0x800000u;
-		++e;
-	}
-	return ((u32)e << 23) | (sig - 0x800000u);
+	const u32 m = (0x800000u | (t & 0x7FFFFFu)) << ((E & 1u) ? 1 : 2);
+	return (((E + 127u) >> 1) << 23) | (eeSqrtSignificand(m) & 0x7FFFFFu);
 }
 
-/*	The EE's divide/square-root unit rounds to nearest even when the rest of the
-	FPU is chopping toward zero, which is why PCSX2 carries a second control
-	register, FPUDivFPCR, whose only difference from FPUFPCR is the rounding
-	mode. Both recompilers swap the host rounding mode around DIV/SQRT/RSQRT
+/*	Nothing in the interpreter swaps EmuConfig.Cpu.FPUDivFPCR into the host FPCR
+	any more: DIV.S, SQRT.S and RSQRT.S are integer arithmetic now, and no
+	rounding mode reaches a digit recurrence. That register is PCSX2's surrogate
+	for the divide unit rounding to nearest while the rest of the FPU chops, and
+	both recompilers still swap it in, because they run these ops on host singles
 	(arm64 recDIV_S_xmm / recSQRT_S_xmm / recRSQRT_S_xmm in iFPU-arm64.cpp and
-	the DOUBLE:: twins in iFPUd-arm64.cpp; x86 iFPU.cpp / iFPUd.cpp do the same
-	with xLDMXCSR). The interpreter never did, so those three ops came out one
-	ULP low against both recompilers and the console whenever a game is in the
-	default chop mode.
-
-	Gated the way the emitters gate it: where the two registers already agree
-	there is nothing to swap.
+	the DOUBLE:: twins in iFPUd-arm64.cpp; x86 iFPU.cpp / iFPUd.cpp with
+	xLDMXCSR): 1.0 rsqrt 1.5 is 0x3F5105EB on the console and 0x3F5105EC without
+	the swap. So the two engines part company on every operand silicon is not
+	correctly rounded on, which EeRecFpuDivUnitRounding and EeRecFpuRsqrt pin.
 */
-class ScopedDivRoundMode
-{
-public:
-	__fi ScopedDivRoundMode()
-		: m_swap(EmuConfig.Cpu.FPUFPCR.bitmask != EmuConfig.Cpu.FPUDivFPCR.bitmask)
-	{
-		if (m_swap)
-		{
-			m_prev = FPControlRegister::GetCurrent();
-			FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUDivFPCR);
-		}
-	}
-	__fi ~ScopedDivRoundMode()
-	{
-		if (m_swap)
-			FPControlRegister::SetCurrent(m_prev);
-	}
-
-	ScopedDivRoundMode(const ScopedDivRoundMode&) = delete;
-	ScopedDivRoundMode& operator=(const ScopedDivRoundMode&) = delete;
-
-private:
-	FPControlRegister m_prev;
-	bool m_swap;
-};
 
 void ABS_S() {
 	_FdValUl_ = _FsValUl_ & 0x7fffffff;
@@ -754,7 +702,6 @@ void CVT_W() {
 }
 
 void DIV_S() {
-	const ScopedDivRoundMode div_round;
 	if (checkDivideByZero( _FdValUl_, _FtValUl_, _FsValUl_, FPUflagD | FPUflagSD, FPUflagI | FPUflagSI)) return;
 	_FdValUl_ = eeDivide( _FsValUl_, _FtValUl_ );
 }
@@ -1043,7 +990,6 @@ void NEG_S() {
 }
 
 void RSQRT_S() {
-	const ScopedDivRoundMode div_round;
 	clearFPUFlags(FPUflagD | FPUflagI);
 
 	if ( ( _FtValUl_ & 0x7F800000 ) == 0 ) { // Ft is zero (Denormals are Zero)
@@ -1066,23 +1012,20 @@ void RSQRT_S() {
 	// gives 0x3F5105EB.
 	//
 
-	// Neither operand is clamped any more, and it has to be both: with the clamp
-	// left on the sqrt alone, rsqrt(2^128, 2^128) came out right only because
-	// the two clamps cancelled. Unclamping both fixed that row and 13 others,
-	// taking RSQRT.S from 17/32 to 31/32 against the console.
+	// Neither operand is clamped any more, which is all-or-nothing by design:
+	// unclamping only the sqrt used to break rsqrt(2^128, 2^128), which came out
+	// right solely because its two clamps cancelled. Unclamping both fixes that
+	// row and 13 others. Scored against the console over the corpus, RSQRT.S
+	// went 17/32 to 31/32.
 	//
-	// rsqrt(EEMAX, EEMAX) is still 1 ULP out, and it is not the two-step
-	// rounding it was filed as: silicon composes the two steps exactly as
-	// below, with a plain 24-bit single in between, and it is the divide/
-	// square-root unit itself that is not correctly rounded. This computes the
-	// correctly-rounded answer; ee_fpu_divunit_console_tests.cpp has the
-	// capture and how far silicon sits from it.
+	// The composition itself comes from a dedicated console capture: 2231
+	// operand pairs over two probes, each pair run as sqrt.s, rsqrt.s and
+	// div.s, and rsqrt.s equals div.s(Fs, sqrt.s(Ft)) on every row, with a
+	// plain 24-bit single in between. See ee_fpu_divunit_console_tests.cpp.
 	_FdValUl_ = eeDivide( _FsValUl_, eeSqrtBits( _FtValUl_ ) );
 }
 
 void SQRT_S() {
-	// No ScopedDivRoundMode: eeSqrtBits() reads FPUDivFPCR's rounding mode
-	// itself. DIV.S and RSQRT.S still need it for eeDivide()'s host division.
 	clearFPUFlags(FPUflagI | FPUflagD);
 
 	// Invalid-operation keys off the SIGN BIT ALONE. -0 and the negative
