@@ -356,6 +356,7 @@ struct GameScreenView: View {
                             .accessibilityLabel("Game display")
                             .accessibilityAddTraits(.isImage)
                             .accessibilityHint("VoiceOver image recognition can read on-screen text.")
+                            .overlay { menuRevealTapCatcher }
                         AccessibilityHUDMirror()
                         if effectiveVirtualPadVisible {
                             VirtualControllerView(
@@ -390,6 +391,7 @@ struct GameScreenView: View {
                             .accessibilityHint("VoiceOver image recognition can read on-screen text.")
                             .overlay {
                                 ZStack {
+                                    menuRevealTapCatcher
                                     AccessibilityHUDMirror()
                                     dynamicCrosshairOverlay
                                 }
@@ -594,6 +596,9 @@ struct GameScreenView: View {
             padRebuildToken &+= 1
             overlayRoute = .paused
         }
+        .onReceive(NotificationCenter.default.publisher(for: gameplaySurfaceTapNotification)) { _ in
+            revealMenuButtonBriefly()
+        }
         .onReceive(NotificationCenter.default.publisher(for: retroAchievementsToastNotification)) { _ in
             consumePendingRetroAchievementsToast()
         }
@@ -791,6 +796,14 @@ struct GameScreenView: View {
             rightRuntime: touchActionSession.right.crosshairState
         )
         .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
+    }
+
+    // The render view is non-interactive on iOS 27, so the reveal tap needs a SwiftUI surface.
+    private var menuRevealTapCatcher: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onTapGesture { revealMenuButtonBriefly() }
+            .accessibilityHidden(true)
     }
 
     @ViewBuilder

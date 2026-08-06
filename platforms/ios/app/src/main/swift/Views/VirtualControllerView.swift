@@ -4,6 +4,10 @@
 import SwiftUI
 import UIKit
 
+// Posted when a dynamic input zone classifies a touch as a tap, so the game
+// screen can reveal a hidden menu button the zones would otherwise swallow.
+let gameplaySurfaceTapNotification = Notification.Name("ARMSX2iOSGameplaySurfaceTap")
+
 // Lazily-created haptic generators reused for button presses and explicitly releasable
 // when the gameplay UI is removed.
 @MainActor
@@ -567,6 +571,7 @@ struct VirtualControllerView: View {
                         }
                     },
                     onTap: {
+                        NotificationCenter.default.post(name: gameplaySurfaceTapNotification, object: nil)
                         if dynamicSettings.rightThumbstickActionsEnabled {
                             activeTouchActionSession.right.interactionTapped()
                         }
@@ -644,7 +649,8 @@ struct VirtualControllerView: View {
             onInteractionBegan: { actionController.interactionBegan() },
             onInteractionActivity: { actionController.interactionActivity() },
             onInteractionTap: { actionController.interactionTapped() },
-            onInteractionEnded: { actionController.interactionEnded() }
+            onInteractionEnded: { actionController.interactionEnded() },
+            onAnyTap: { NotificationCenter.default.post(name: gameplaySurfaceTapNotification, object: nil) }
         )
     }
 
