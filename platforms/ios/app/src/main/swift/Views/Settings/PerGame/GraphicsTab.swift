@@ -24,12 +24,9 @@ struct GraphicsTab: View {
     @Binding var trilinearFiltering: Int
     @Binding var halfPixelOffset: Int
     @Binding var roundSprite: Int
-    @Binding var alignSpriteOverride: Bool
-    @Binding var alignSprite: Bool
-    @Binding var mergeSpriteOverride: Bool
-    @Binding var mergeSprite: Bool
-    @Binding var wildArmsOffsetOverride: Bool
-    @Binding var wildArmsOffset: Bool
+    @Binding var alignSprite: Int
+    @Binding var mergeSprite: Int
+    @Binding var wildArmsOffset: Int
     @Binding var textureOffsetXOverride: Bool
     @Binding var textureOffsetX: Int
     @Binding var textureOffsetYOverride: Bool
@@ -307,26 +304,26 @@ struct GraphicsTab: View {
                          Self.roundSpriteOptions)
                 .disabled(!manualAdvancedHacksEnabled)
 
-            Toggle(settings.localized("Override Align Sprite"), isOn: $alignSpriteOverride)
-                .disabled(!manualAdvancedHacksEnabled)
-            if alignSpriteOverride {
-                Toggle(settings.localized("Align Sprite"), isOn: $alignSprite)
-                    .disabled(!manualAdvancedHacksEnabled)
+            Picker(settings.localized("Align Sprite"), selection: $alignSprite) {
+                Text(settings.localized("Use Global")).tag(Self.useGlobalSentinel)
+                Text(settings.localized("Off")).tag(0)
+                Text(settings.localized("On")).tag(1)
             }
+            .disabled(!manualAdvancedHacksEnabled)
 
-            Toggle(settings.localized("Override Merge Sprite"), isOn: $mergeSpriteOverride)
-                .disabled(!manualAdvancedHacksEnabled)
-            if mergeSpriteOverride {
-                Toggle(settings.localized("Merge Sprite"), isOn: $mergeSprite)
-                    .disabled(!manualAdvancedHacksEnabled)
+            Picker(settings.localized("Merge Sprite"), selection: $mergeSprite) {
+                Text(settings.localized("Use Global")).tag(Self.useGlobalSentinel)
+                Text(settings.localized("Off")).tag(0)
+                Text(settings.localized("On")).tag(1)
             }
+            .disabled(!manualAdvancedHacksEnabled)
 
-            Toggle(settings.localized("Override Wild Arms Offset"), isOn: $wildArmsOffsetOverride)
-                .disabled(!manualAdvancedHacksEnabled)
-            if wildArmsOffsetOverride {
-                Toggle(settings.localized("Wild Arms Offset"), isOn: $wildArmsOffset)
-                    .disabled(!manualAdvancedHacksEnabled)
+            Picker(settings.localized("Wild Arms Offset"), selection: $wildArmsOffset) {
+                Text(settings.localized("Use Global")).tag(Self.useGlobalSentinel)
+                Text(settings.localized("Off")).tag(0)
+                Text(settings.localized("On")).tag(1)
             }
+            .disabled(!manualAdvancedHacksEnabled)
 
             Toggle(settings.localized("Override Texture Offset X"), isOn: $textureOffsetXOverride)
                 .disabled(!manualAdvancedHacksEnabled)

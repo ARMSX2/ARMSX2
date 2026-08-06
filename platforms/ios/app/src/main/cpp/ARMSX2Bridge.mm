@@ -1789,6 +1789,19 @@ static void ARMSX2StoreDerivedPerGameHackClaims(INISettingsInterface& si)
         si.DeleteValue("EmuCore/GS", "UserHackOverrides");
 }
 
+// The generic per-game helpers write hack keys too, so they keep the mask in step.
+static void ARMSX2SyncClaimsIfPinnedHackKey(INISettingsInterface& si, NSString* section, NSString* key)
+{
+    if (![section isEqualToString:@"EmuCore/GS"])
+        return;
+    for (const auto& entry : s_pinned_hack_keys) {
+        if ([key isEqualToString:@(entry.key)]) {
+            ARMSX2StoreDerivedPerGameHackClaims(si);
+            return;
+        }
+    }
+}
+
 static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, id>* result, const std::string& serial, u32 crc)
 {
     const std::string settingsPath = VMManager::GetGameSettingsPath(serial, crc);
@@ -2050,12 +2063,9 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
                                                 int trilinearFiltering,
                                                 int halfPixelOffset,
                                                 int roundSprite,
-                                                BOOL alignSpriteOverride,
-                                                BOOL alignSprite,
-                                                BOOL mergeSpriteOverride,
-                                                BOOL mergeSprite,
-                                                BOOL wildArmsOffsetOverride,
-                                                BOOL wildArmsOffset,
+                                                int alignSprite,
+                                                int mergeSprite,
+                                                int wildArmsOffset,
                                                 BOOL textureOffsetXOverride,
                                                 int textureOffsetX,
                                                 BOOL textureOffsetYOverride,
@@ -2130,20 +2140,20 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         else
             si.SetIntValue("EmuCore/GS", "UserHacks_round_sprite_offset", ARMSX2ClampInt(roundSprite, 0, 2));
 
-        if (alignSpriteOverride)
-            si.SetBoolValue("EmuCore/GS", "UserHacks_align_sprite_X", alignSprite);
-        else
+        if (alignSprite == ARMSX2UseGlobalIntSentinel)
             si.DeleteValue("EmuCore/GS", "UserHacks_align_sprite_X");
-
-        if (mergeSpriteOverride)
-            si.SetBoolValue("EmuCore/GS", "UserHacks_merge_pp_sprite", mergeSprite);
         else
+            si.SetBoolValue("EmuCore/GS", "UserHacks_align_sprite_X", alignSprite != 0);
+
+        if (mergeSprite == ARMSX2UseGlobalIntSentinel)
             si.DeleteValue("EmuCore/GS", "UserHacks_merge_pp_sprite");
-
-        if (wildArmsOffsetOverride)
-            si.SetBoolValue("EmuCore/GS", "UserHacks_ForceEvenSpritePosition", wildArmsOffset);
         else
+            si.SetBoolValue("EmuCore/GS", "UserHacks_merge_pp_sprite", mergeSprite != 0);
+
+        if (wildArmsOffset == ARMSX2UseGlobalIntSentinel)
             si.DeleteValue("EmuCore/GS", "UserHacks_ForceEvenSpritePosition");
+        else
+            si.SetBoolValue("EmuCore/GS", "UserHacks_ForceEvenSpritePosition", wildArmsOffset != 0);
 
         if (textureOffsetXOverride)
             si.SetIntValue("EmuCore/GS", "UserHacks_TCOffsetX", ARMSX2ClampInt(textureOffsetX, -4096, 4096));
@@ -3289,12 +3299,9 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
         trilinearFiltering:(int)trilinearFiltering
           halfPixelOffset:(int)halfPixelOffset
               roundSprite:(int)roundSprite
-      alignSpriteOverride:(BOOL)alignSpriteOverride
-              alignSprite:(BOOL)alignSprite
-      mergeSpriteOverride:(BOOL)mergeSpriteOverride
-              mergeSprite:(BOOL)mergeSprite
-    wildArmsOffsetOverride:(BOOL)wildArmsOffsetOverride
-           wildArmsOffset:(BOOL)wildArmsOffset
+              alignSprite:(int)alignSprite
+              mergeSprite:(int)mergeSprite
+           wildArmsOffset:(int)wildArmsOffset
     textureOffsetXOverride:(BOOL)textureOffsetXOverride
            textureOffsetX:(int)textureOffsetX
     textureOffsetYOverride:(BOOL)textureOffsetYOverride
@@ -3325,9 +3332,8 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     const std::string settingsSerial = (entry.type == GameList::EntryType::ELF) ? std::string() : entry.serial;
     ARMSX2WriteGameSettingsForIdentity(settingsSerial, entry.crc, enabled, upscaleMultiplier, aspectRatio,
                                         textureFiltering, hardwareMipmapping, blendingAccuracy, interlaceMode,
-                                        trilinearFiltering, halfPixelOffset, roundSprite, alignSpriteOverride,
-                                        alignSprite, mergeSpriteOverride, mergeSprite, wildArmsOffsetOverride,
-                                        wildArmsOffset, textureOffsetXOverride, textureOffsetX,
+                                        trilinearFiltering, halfPixelOffset, roundSprite, alignSprite,
+                                        mergeSprite, wildArmsOffset, textureOffsetXOverride, textureOffsetX,
                                         textureOffsetYOverride, textureOffsetY, skipDrawStartOverride,
                                         skipDrawStart, skipDrawEndOverride, skipDrawEnd,
                                         volumeOverride, volumePercent, eeCoreType, mtvu,
@@ -3345,12 +3351,9 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
                               trilinearFiltering:(int)trilinearFiltering
                                  halfPixelOffset:(int)halfPixelOffset
                                      roundSprite:(int)roundSprite
-                             alignSpriteOverride:(BOOL)alignSpriteOverride
-                                     alignSprite:(BOOL)alignSprite
-                             mergeSpriteOverride:(BOOL)mergeSpriteOverride
-                                     mergeSprite:(BOOL)mergeSprite
-                           wildArmsOffsetOverride:(BOOL)wildArmsOffsetOverride
-                                  wildArmsOffset:(BOOL)wildArmsOffset
+                                     alignSprite:(int)alignSprite
+                                     mergeSprite:(int)mergeSprite
+                                  wildArmsOffset:(int)wildArmsOffset
                            textureOffsetXOverride:(BOOL)textureOffsetXOverride
                                   textureOffsetX:(int)textureOffsetX
                            textureOffsetYOverride:(BOOL)textureOffsetYOverride
@@ -3386,9 +3389,8 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
 
     ARMSX2WriteGameSettingsForIdentity(serial, crc, enabled, upscaleMultiplier, aspectRatio,
                                         textureFiltering, hardwareMipmapping, blendingAccuracy, interlaceMode,
-                                        trilinearFiltering, halfPixelOffset, roundSprite, alignSpriteOverride,
-                                        alignSprite, mergeSpriteOverride, mergeSprite, wildArmsOffsetOverride,
-                                        wildArmsOffset, textureOffsetXOverride, textureOffsetX,
+                                        trilinearFiltering, halfPixelOffset, roundSprite, alignSprite,
+                                        mergeSprite, wildArmsOffset, textureOffsetXOverride, textureOffsetX,
                                         textureOffsetYOverride, textureOffsetY, skipDrawStartOverride,
                                         skipDrawStart, skipDrawEndOverride, skipDrawEnd,
                                         volumeOverride, volumePercent, eeCoreType, mtvu,
@@ -4133,6 +4135,7 @@ static void ARMSX2RequestPerGameSettingsReload()
     INISettingsInterface si(ARMSX2PerGameSettingsPath(serial, crc));
     si.Load();
     si.SetIntValue(section.UTF8String, key.UTF8String, value);
+    ARMSX2SyncClaimsIfPinnedHackKey(si, section, key);
     Error error;
     si.Save(&error);
 }
@@ -4145,6 +4148,7 @@ static void ARMSX2RequestPerGameSettingsReload()
     INISettingsInterface si(ARMSX2PerGameSettingsPath(serial, crc));
     si.Load();
     si.SetBoolValue(section.UTF8String, key.UTF8String, value);
+    ARMSX2SyncClaimsIfPinnedHackKey(si, section, key);
     Error error;
     si.Save(&error);
 }
@@ -4159,6 +4163,7 @@ static void ARMSX2RequestPerGameSettingsReload()
         return;
     si.DeleteValue(section.UTF8String, key.UTF8String);
     si.RemoveEmptySections();
+    ARMSX2SyncClaimsIfPinnedHackKey(si, section, key);
     Error error;
     si.Save(&error);
 }
@@ -4204,6 +4209,7 @@ static void ARMSX2RequestPerGameSettingsReload()
     INISettingsInterface si(ARMSX2PerGameSettingsPath(serial, crc));
     si.Load();
     si.SetIntValue(section.UTF8String, key.UTF8String, value);
+    ARMSX2SyncClaimsIfPinnedHackKey(si, section, key);
     Error error;
     si.Save(&error);
     ARMSX2RequestPerGameSettingsReload();
@@ -4217,6 +4223,7 @@ static void ARMSX2RequestPerGameSettingsReload()
     INISettingsInterface si(ARMSX2PerGameSettingsPath(serial, crc));
     si.Load();
     si.SetBoolValue(section.UTF8String, key.UTF8String, value);
+    ARMSX2SyncClaimsIfPinnedHackKey(si, section, key);
     Error error;
     si.Save(&error);
     ARMSX2RequestPerGameSettingsReload();
@@ -4241,6 +4248,7 @@ static void ARMSX2RequestPerGameSettingsReload()
     INISettingsInterface si(ARMSX2PerGameSettingsPath(serial, crc));
     si.Load();
     si.SetFloatValue(section.UTF8String, key.UTF8String, value);
+    ARMSX2SyncClaimsIfPinnedHackKey(si, section, key);
     Error error;
     si.Save(&error);
 }
@@ -4264,6 +4272,7 @@ static void ARMSX2RequestPerGameSettingsReload()
     INISettingsInterface si(ARMSX2PerGameSettingsPath(serial, crc));
     si.Load();
     si.SetFloatValue(section.UTF8String, key.UTF8String, value);
+    ARMSX2SyncClaimsIfPinnedHackKey(si, section, key);
     Error error;
     si.Save(&error);
     ARMSX2RequestPerGameSettingsReload();
@@ -4279,6 +4288,7 @@ static void ARMSX2RequestPerGameSettingsReload()
         return;
     si.DeleteValue(section.UTF8String, key.UTF8String);
     si.RemoveEmptySections();
+    ARMSX2SyncClaimsIfPinnedHackKey(si, section, key);
     Error error;
     si.Save(&error);
     ARMSX2RequestPerGameSettingsReload();
