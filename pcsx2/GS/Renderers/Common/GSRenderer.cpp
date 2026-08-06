@@ -891,45 +891,6 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 	if (!skipped_final_render)
 		m_consecutive_blank_frames = blank_frame ? (m_consecutive_blank_frames + 1) : 0;
 
-	// ★ @@ANDROID_STALEFRAMES@@ — diagnostic for "the picture freezes but emulation keeps running".
-	// Measured on a Retroid Pocket 6: SurfaceFlinger presents steadily at 120 Hz straight through
-	// the freeze (worst present gap across a whole session was 142 ms, frame count never dipped),
-	// so frame DELIVERY is healthy and a stale image can only come from frame PRODUCTION here.
-	// There are exactly three ways this function fails to put something new on screen: the
-	// duplicate-frame skip above, the device's present throttle, and Merge() yielding nothing.
-	// Logged only when a RUN of such frames ends, and only if it was long enough to be visible, so
-	// a healthy frame costs one branch. GS thread only, hence plain statics.
-	{
-		const bool stale = !deliberate_present_skip &&
-			(skip_frame || blank_frame || g_gs_device->ShouldSkipPresentingFrame());
-		static u32 s_stale_run = 0, s_stale_skipdup = 0, s_stale_blank = 0, s_stale_throttle = 0;
-		if (stale)
-		{
-			s_stale_run++;
-			if (skip_frame)
-				s_stale_skipdup++;
-			if (blank_frame)
-				s_stale_blank++;
-			if (g_gs_device->ShouldSkipPresentingFrame())
-				s_stale_throttle++;
-		}
-		else
-		{
-			// ~10 frames is the shortest run a person could notice; below that it is normal churn.
-			if (s_stale_run >= 10)
-			{
-				Console.Warning("@@ANDROID_STALEFRAMES@@ run=%u frames (skipdup=%u blank=%u "
-								"throttle=%u) fpsmethod=%d",
-					s_stale_run, s_stale_skipdup, s_stale_blank, s_stale_throttle,
-					static_cast<int>(PerformanceMetrics::GetInternalFPSMethod()));
-			}
-			s_stale_run = 0;
-			s_stale_skipdup = 0;
-			s_stale_blank = 0;
-			s_stale_throttle = 0;
-		}
-	}
-
 	m_last_draw_n = s_n;
 	m_last_transfer_n = s_transfer_n;
 
@@ -967,8 +928,58 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 	constexpr bool skip_blank = false;
 #endif
 
+	// ShouldSkipPresentingFrame() is stateful: when it answers "present" it consumes the
+	// present-throttle credit (m_last_frame_displayed_time), so it must be queried at most
+	// once per vsync. The stale-frame diagnostic below used to make up to two extra calls,
+	// eating the credit before the present decision ever saw it — with FIFO + throttle
+	// (fast forward with vsync on; Metal coerces Mailbox to FIFO) the real present was then
+	// skipped every frame and the picture froze while emulation kept running. Frames already
+	// being skipped bypass the query so they don't consume credit, preserving the original
+	// short-circuit behaviour.
+	const bool device_present_throttled =
+		!skip_frame && !skip_blank && g_gs_device->ShouldSkipPresentingFrame();
+
+	// ★ @@ANDROID_STALEFRAMES@@ — diagnostic for "the picture freezes but emulation keeps running".
+	// Measured on a Retroid Pocket 6: SurfaceFlinger presents steadily at 120 Hz straight through
+	// the freeze (worst present gap across a whole session was 142 ms, frame count never dipped),
+	// so frame DELIVERY is healthy and a stale image can only come from frame PRODUCTION here.
+	// There are exactly three ways this function fails to put something new on screen: the
+	// duplicate-frame skip above, the device's present throttle, and Merge() yielding nothing.
+	// Logged only when a RUN of such frames ends, and only if it was long enough to be visible, so
+	// a healthy frame costs one branch. GS thread only, hence plain statics.
+	{
+		const bool stale = !deliberate_present_skip &&
+			(skip_frame || blank_frame || device_present_throttled);
+		static u32 s_stale_run = 0, s_stale_skipdup = 0, s_stale_blank = 0, s_stale_throttle = 0;
+		if (stale)
+		{
+			s_stale_run++;
+			if (skip_frame)
+				s_stale_skipdup++;
+			if (blank_frame)
+				s_stale_blank++;
+			if (device_present_throttled)
+				s_stale_throttle++;
+		}
+		else
+		{
+			// ~10 frames is the shortest run a person could notice; below that it is normal churn.
+			if (s_stale_run >= 10)
+			{
+				Console.Warning("@@ANDROID_STALEFRAMES@@ run=%u frames (skipdup=%u blank=%u "
+								"throttle=%u) fpsmethod=%d",
+					s_stale_run, s_stale_skipdup, s_stale_blank, s_stale_throttle,
+					static_cast<int>(PerformanceMetrics::GetInternalFPSMethod()));
+			}
+			s_stale_run = 0;
+			s_stale_skipdup = 0;
+			s_stale_blank = 0;
+			s_stale_throttle = 0;
+		}
+	}
+
 	// Skip presentation when running uncapped while vsync is on.
-	if (skip_frame || skip_blank || g_gs_device->ShouldSkipPresentingFrame())
+	if (skip_frame || skip_blank || device_present_throttled)
 	{
 		if (BeginPresentFrame(true))
 			EndPresentFrame();
