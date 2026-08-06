@@ -1227,8 +1227,7 @@ void Pcsx2Config::GSOptions::MaskUserHacks(bool respect_claims)
 	if (ManualUserHacks)
 		return;
 
-	// A pinned hack is the player's answer for this one setting, so it survives here and
-	// past the GameDB. Everything they didn't touch still goes back to automatic.
+	// A pinned hack is the player's answer, so it survives here and past the GameDB.
 	const auto keep = [this, respect_claims](GSUserHackOverride hack) {
 		return respect_claims && IsUserHackPinned(hack);
 	};
@@ -1262,19 +1261,32 @@ void Pcsx2Config::GSOptions::MaskUserHacks(bool respect_claims)
 	if (!keep(GSUserHackOverride::DisablePartialInvalidation))
 		UserHacks_DisablePartialInvalidation = false;
 
+	if (!keep(GSUserHackOverride::GPUPaletteConversion))
+		GPUPaletteConversion = false;
+	if (!keep(GSUserHackOverride::DisableDepthSupport))
+		UserHacks_DisableDepthSupport = false;
+	if (!keep(GSUserHackOverride::CPUFBConversion))
+		UserHacks_CPUFBConversion = false;
+	if (!keep(GSUserHackOverride::ReadTCOnClose))
+		UserHacks_ReadTCOnClose = false;
+	if (!keep(GSUserHackOverride::Limit24BitDepth))
+		UserHacks_Limit24BitDepth = GSLimit24BitDepth::Disabled;
+	if (!keep(GSUserHackOverride::EstimateTextureRegion))
+		UserHacks_EstimateTextureRegion = false;
+	if (!keep(GSUserHackOverride::DrawBuffering))
+		UserHacks_DrawBuffering = false;
+	if (!keep(GSUserHackOverride::CPUSpriteRenderBW))
+		UserHacks_CPUSpriteRenderBW = 0;
+	if (!keep(GSUserHackOverride::CPUSpriteRenderLevel))
+		UserHacks_CPUSpriteRenderLevel = 0;
+	if (!keep(GSUserHackOverride::CPUCLUTRender))
+		UserHacks_CPUCLUTRender = 0;
+	if (!keep(GSUserHackOverride::GPUTargetCLUT))
+		UserHacks_GPUTargetCLUTMode = GSGPUTargetCLUTMode::Disabled;
+
+	// No UI reaches these two, so there is nothing for a player to claim.
 	UserHacks_DisableSafeFeatures = false;
 	UserHacks_DisableRenderFixes = false;
-	GPUPaletteConversion = false;
-	UserHacks_DisableDepthSupport = false;
-	UserHacks_CPUFBConversion = false;
-	UserHacks_ReadTCOnClose = false;
-	UserHacks_Limit24BitDepth = GSLimit24BitDepth::Disabled;
-	UserHacks_EstimateTextureRegion = false;
-	UserHacks_DrawBuffering = false;
-	UserHacks_CPUSpriteRenderBW = 0;
-	UserHacks_CPUSpriteRenderLevel = 0;
-	UserHacks_CPUCLUTRender = 0;
-	UserHacks_GPUTargetCLUTMode = GSGPUTargetCLUTMode::Disabled;
 	SkipDrawStart = 0;
 	SkipDrawEnd = 0;
 }

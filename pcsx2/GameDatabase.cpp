@@ -514,6 +514,26 @@ static std::optional<GSUserHackOverride> UserHackOverrideForHWFix(GameDatabaseSc
 			return GSUserHackOverride::PreloadFrameData;
 		case GameDatabaseSchema::GSHWFixId::DisablePartialInvalidation:
 			return GSUserHackOverride::DisablePartialInvalidation;
+		case GameDatabaseSchema::GSHWFixId::GPUPaletteConversion:
+			return GSUserHackOverride::GPUPaletteConversion;
+		case GameDatabaseSchema::GSHWFixId::DisableDepthSupport:
+			return GSUserHackOverride::DisableDepthSupport;
+		case GameDatabaseSchema::GSHWFixId::CPUFramebufferConversion:
+			return GSUserHackOverride::CPUFBConversion;
+		case GameDatabaseSchema::GSHWFixId::Limit24BitDepth:
+			return GSUserHackOverride::Limit24BitDepth;
+		case GameDatabaseSchema::GSHWFixId::EstimateTextureRegion:
+			return GSUserHackOverride::EstimateTextureRegion;
+		case GameDatabaseSchema::GSHWFixId::DrawBuffering:
+			return GSUserHackOverride::DrawBuffering;
+		case GameDatabaseSchema::GSHWFixId::CPUSpriteRenderBW:
+			return GSUserHackOverride::CPUSpriteRenderBW;
+		case GameDatabaseSchema::GSHWFixId::CPUSpriteRenderLevel:
+			return GSUserHackOverride::CPUSpriteRenderLevel;
+		case GameDatabaseSchema::GSHWFixId::CPUCLUTRender:
+			return GSUserHackOverride::CPUCLUTRender;
+		case GameDatabaseSchema::GSHWFixId::GPUTargetCLUT:
+			return GSUserHackOverride::GPUTargetCLUT;
 		default:
 			return std::nullopt;
 	}
