@@ -1749,6 +1749,46 @@ static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult()
 // Overlays per-game INI overrides for the given serial/crc onto a globals-seeded result.
 // Sourcing serial/crc from the caller avoids re-scanning the disc image (which is unsafe
 // while the VM is actively reading the same disc).
+// Every pin-backed hack key, paired with its claim bit. A per-game file's claim
+// mask is derivable from which of these keys it holds, so the mask is never
+// stored ahead of the keys.
+static constexpr struct { const char* key; GSUserHackOverride hack; } s_pinned_hack_keys[] = {
+    {"UserHacks_align_sprite_X", GSUserHackOverride::AlignSprite},
+    {"UserHacks_merge_pp_sprite", GSUserHackOverride::MergeSprite},
+    {"UserHacks_round_sprite_offset", GSUserHackOverride::RoundSprite},
+    {"UserHacks_HalfPixelOffset", GSUserHackOverride::HalfPixelOffset},
+    {"UserHacks_ForceEvenSpritePosition", GSUserHackOverride::ForceEvenSpritePosition},
+    {"UserHacks_native_scaling", GSUserHackOverride::NativeScaling},
+    {"UserHacks_NativePaletteDraw", GSUserHackOverride::NativePaletteDraw},
+    {"UserHacks_BilinearHack", GSUserHackOverride::BilinearHack},
+    {"UserHacks_TCOffsetX", GSUserHackOverride::TextureOffsetX},
+    {"UserHacks_AutoFlushLevel", GSUserHackOverride::AutoFlush},
+    {"UserHacks_TextureInsideRt", GSUserHackOverride::TextureInsideRt},
+    {"UserHacks_TCOffsetY", GSUserHackOverride::TextureOffsetY},
+    {"preload_frame_with_gs_data", GSUserHackOverride::PreloadFrameData},
+    {"UserHacks_DisablePartialInvalidation", GSUserHackOverride::DisablePartialInvalidation},
+};
+
+static u32 ARMSX2DerivePerGameHackClaims(INISettingsInterface& si)
+{
+    u32 claims = 0;
+    for (const auto& entry : s_pinned_hack_keys) {
+        if (si.ContainsValue("EmuCore/GS", entry.key))
+            claims |= 1u << static_cast<u32>(entry.hack);
+    }
+    return claims;
+}
+
+// Writes the derived mask, or removes it when nothing claims anything.
+static void ARMSX2StoreDerivedPerGameHackClaims(INISettingsInterface& si)
+{
+    const u32 claims = ARMSX2DerivePerGameHackClaims(si);
+    if (claims != 0)
+        si.SetIntValue("EmuCore/GS", "UserHackOverrides", static_cast<int>(claims));
+    else
+        si.DeleteValue("EmuCore/GS", "UserHackOverrides");
+}
+
 static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, id>* result, const std::string& serial, u32 crc)
 {
     const std::string settingsPath = VMManager::GetGameSettingsPath(serial, crc);
@@ -1771,6 +1811,19 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
         const bool saved = si.Save(&saveError);
         std::fprintf(stderr, "@@IOS_PERGAME_MTVU_REPAIR@@ file=\"%s\" ui_read=1 removed_stale_false=1 saved=%d error=\"%s\"\n",
             settingsPath.c_str(), saved ? 1 : 0, saveError.GetDescription().c_str());
+        std::fflush(stderr);
+    }
+
+    // Older saves froze the global claim mask into this file, where it went stale.
+    const u32 derivedClaims = ARMSX2DerivePerGameHackClaims(si);
+    const u32 storedClaims = static_cast<u32>(si.GetIntValue("EmuCore/GS", "UserHackOverrides", 0));
+    if (storedClaims != derivedClaims) {
+        ARMSX2StoreDerivedPerGameHackClaims(si);
+        si.RemoveEmptySections();
+        Error claimError;
+        const bool saved = si.Save(&claimError);
+        std::fprintf(stderr, "@@IOS_PERGAME_CLAIM_REPAIR@@ file=\"%s\" stored=%u derived=%u saved=%d\n",
+            settingsPath.c_str(), storedClaims, derivedClaims, saved ? 1 : 0);
         std::fflush(stderr);
     }
 
@@ -2103,37 +2156,9 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
             si.DeleteValue("EmuCore/GS", "UserHacks_TCOffsetY");
 
         // Overriding a hack for one game only counts if the GameDB stops writing that
-        // hack for that game, so the claim goes in this file too.
-        u32 perGameClaims = 0;
-        const auto claim = [&perGameClaims](GSUserHackOverride hack) {
-            perGameClaims |= 1u << static_cast<u32>(hack);
-        };
-        if (halfPixelOffset != ARMSX2UseGlobalIntSentinel)
-            claim(GSUserHackOverride::HalfPixelOffset);
-        if (roundSprite != ARMSX2UseGlobalIntSentinel)
-            claim(GSUserHackOverride::RoundSprite);
-        if (alignSpriteOverride)
-            claim(GSUserHackOverride::AlignSprite);
-        if (mergeSpriteOverride)
-            claim(GSUserHackOverride::MergeSprite);
-        if (wildArmsOffsetOverride)
-            claim(GSUserHackOverride::ForceEvenSpritePosition);
-        if (textureOffsetXOverride)
-            claim(GSUserHackOverride::TextureOffsetX);
-        if (textureOffsetYOverride)
-            claim(GSUserHackOverride::TextureOffsetY);
-
-        // The per-game layer replaces this key rather than merging into it, so the global
-        // claims have to be carried across or they vanish for any game with its own file,
-        // and the database takes those hacks straight back.
-        const u32 globalClaims = g_p44_settings_interface ?
-            static_cast<u32>(g_p44_settings_interface->GetIntValue("EmuCore/GS", "UserHackOverrides", 0)) : 0;
-        const u32 combinedClaims = globalClaims | perGameClaims;
-
-        if (combinedClaims != 0)
-            si.SetIntValue("EmuCore/GS", "UserHackOverrides", static_cast<int>(combinedClaims));
-        else
-            si.DeleteValue("EmuCore/GS", "UserHackOverrides");
+        // hack for that game, so the claim mask goes in this file too. Derived from the
+        // keys just written; the core folds the global claims back in at load.
+        ARMSX2StoreDerivedPerGameHackClaims(si);
 
         if (skipDrawStartOverride)
             si.SetIntValue("EmuCore/GS", "UserHacks_SkipDraw_Start", ARMSX2ClampInt(skipDrawStart, 0, 5000));
