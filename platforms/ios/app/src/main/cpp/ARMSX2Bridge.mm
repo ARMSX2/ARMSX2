@@ -3402,6 +3402,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
         VMManager::ReloadGameSettings();
         if (MTGS::IsOpen())
             MTGS::ApplySettings();
+        ARMSX2_CaptureGraphicsHackState();
     });
 }
 
@@ -4119,6 +4120,7 @@ static void ARMSX2RequestPerGameSettingsReload()
                 ARMSX2_ApplyEffectivePresentFPSCap();
                 if (MTGS::IsOpen())
                     MTGS::ApplySettings();
+                ARMSX2_CaptureGraphicsHackState();
             });
         });
 }
