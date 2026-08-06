@@ -973,6 +973,24 @@ final class SettingsStore {
         requestGraphicsApplyGuarded()
     }
 
+    /// Unpinning hands the hack back to the automatics, so the stored value goes back
+    /// to its default too, or the row keeps showing a value the core will discard.
+    func resetGraphicsHackValue(_ key: String) {
+        switch key {
+        case "UserHacks_align_sprite_X": alignSprite = false
+        case "UserHacks_merge_pp_sprite": mergeSprite = false
+        case "UserHacks_round_sprite_offset": roundSprite = 0
+        case "UserHacks_HalfPixelOffset": halfPixelOffset = 0
+        case "UserHacks_ForceEvenSpritePosition": wildArmsOffset = false
+        case "UserHacks_native_scaling": nativeScaling = 0
+        case "UserHacks_TCOffsetX": textureOffsetX = 0
+        case "UserHacks_TCOffsetY": textureOffsetY = 0
+        case "UserHacks_TextureInsideRt": textureInsideRt = 0
+        case "UserHacks_BilinearHack": bilinearUpscaleHack = 0
+        default: setGSBoolHack(key, false)
+        }
+    }
+
     /// Homogeneous bool GS hacks — see SettingsStore+Graphics.swift for the option list.
     var gsBoolHacks: [String: Bool] = [:]
 

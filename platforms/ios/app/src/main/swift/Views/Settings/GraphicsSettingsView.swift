@@ -46,6 +46,7 @@ struct GraphicsSettingsView: View {
             }
             if status.pinned {
                 Button(settings.localized("Use the game database value")) {
+                    settings.resetGraphicsHackValue(key)
                     settings.setGraphicsHackPinned(key, false)
                 }
                 .font(.caption)
