@@ -204,14 +204,14 @@ struct QuickMenuView: View {
             label: settings.localized("Hide Menu Button"),
             systemImage: "eye.slash",
             isOn: Binding(
-                get: { menuButtonHidden || settings.hideMenuButton },
+                get: { settings.hideMenuButton },
                 set: { newValue in
                     menuButtonHidden = newValue
                     settings.hideMenuButton = newValue
                 }
             )
         )
-        .accessibilityHint(settings.localized("Tap the game area or press any controller button to show it again"))
+        .accessibilityHint(settings.localized("Tap the game area to show it briefly"))
 
         if vmMenuAvailable {
             OverlayActionRow(label: settings.localized("Speed / Fast Forward"), systemImage: "forward.fill") {

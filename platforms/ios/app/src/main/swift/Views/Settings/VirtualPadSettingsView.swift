@@ -99,6 +99,9 @@ struct VirtualPadSettingsView: View {
 
                 Toggle(settings.localized("Auto Full Screen"), isOn: $settings.autoFullscreen)
                 Toggle(settings.localized("Hide Menu Button"), isOn: $settings.hideMenuButton)
+                Text(settings.localized("Hides the in-game menu button. Tap the game area to show it for a few seconds."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 Toggle(settings.localized("D-pad Diagonals"), isOn: $settings.dpadDiagonalsEnabled)
                 Text(settings.localized("Allows one-finger diagonal and quarter-circle motions on the virtual D-pad."))
