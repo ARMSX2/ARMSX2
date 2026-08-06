@@ -118,6 +118,8 @@ struct DynamicThumbstickView: View {
     var onInteractionActivity: () -> Void = {}
     var onInteractionTap: () -> Void = {}
     var onInteractionEnded: () -> Void = {}
+    // Fires on every classified tap, unlike onInteractionTap which needs tap actions on.
+    var onAnyTap: () -> Void = {}
 
     @State private var origin = CGPoint.zero
     @State private var dragOffset = CGSize.zero
@@ -194,6 +196,7 @@ struct DynamicThumbstickView: View {
                 let duration = value.time.timeIntervalSince(gestureStartedAt ?? value.time)
                 let travel = max(maximumTravel, hypot(value.translation.width, value.translation.height))
                 if duration <= maximumTapDuration && travel <= tapTravelTolerance {
+                    onAnyTap()
                     if tapActionsEnabled {
                         onInteractionTap()
                     } else {
