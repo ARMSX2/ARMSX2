@@ -526,6 +526,37 @@ static __fi EeSrtRemainder eeSrtSelect(EeSrtRemainder cur, EeSrtRemainder next, 
 	return {(cur.sum & ~m) | (next.sum & m), (cur.carry & ~m) | (next.carry & m)};
 }
 
+/*	The digits the unit does not have to run.
+
+	The recurrence returns T or T+1, T being the truncated quotient of the two
+	significands, and on a large share of operands the remainder alone says
+	which:
+
+	    lt  = ma < mb              does the quotient need a shift
+	    num = ma << (23 + lt)
+	    T   = num / mb             the truncated 24-bit significand
+	    rem = num - T*mb           0 <= rem < mb
+	    u   = mb - rem             how far the exact quotient sits below T+1
+
+	    u > cap  =>  T       cap = 2^22 on A>=B, max(2^23, mb-2^22) on A<B
+
+	Square root is the same shape with the root in place of the quotient: with X
+	the placed radicand, R = floor(sqrt(X)) and rem = X - R*R, u is 2R + 1 - rem
+	and the cap is 2^23. So one integer division answers 44% of arbitrary
+	divides and one integer square root 65% of square roots without a digit
+	being run; the rest fall through to the recurrence.
+
+	The caps came out of console captures, not out of the recurrence, so this is
+	only ever a shortcut: what it returns has to be what the recurrence would
+	have returned. The implication is one-way -- rows below the cap are not
+	settled and must fall through -- so a narrowed cap costs only digits, while a
+	widened one can change results. EeFpuDivUnitExhaustive and
+	EeFpuDivUnitConsole hold the rows it fires on against the console. */
+static __fi u32 eeDivideCap(u32 mb, u32 lt)
+{
+	return lt ? ((mb > (3u << 22)) ? mb - (1u << 22) : (1u << 23)) : (1u << 22);
+}
+
 /*	The quotient of two 24-bit significands as 25 digits, weights 2^24 down to
 	2^0. A positive digit subtracts the divisor as ~divisor with the +1 fed into
 	the carry word, which the selector then sees -- that is one of the places
@@ -534,6 +565,21 @@ static __fi EeSrtRemainder eeSrtSelect(EeSrtRemainder cur, EeSrtRemainder next, 
 	that falls off the bottom there is simply dropped. */
 static u32 eeDivideSignificand(u32 sma, u32 smb)
 {
+	{
+		const u32 lt = (sma < smb) ? 1u : 0u;
+		const u64 num = (u64)sma << (23 + lt);
+		const u32 T = (u32)(num / smb);
+		const u32 rem = (u32)(num - (u64)T * smb);
+		if ((smb - rem) > eeDivideCap(smb, lt))
+		{
+			// Only the 24 bits the caller keeps are the answer. On A>=B the
+			// recurrence's own last digit is as often 1 as 0 and is dropped
+			// there, so this arm supplies a 0 for it rather than reproducing
+			// it -- do not compare the two below that bit.
+			return lt ? T : (T << 1);
+		}
+	}
+
 	const u32 divisor = smb << 2;
 	const u32 ndivisor = ~divisor;
 	EeSrtRemainder rem = {sma << 2, 0};
@@ -601,8 +647,31 @@ static u32 eeDivide(u32 a, u32 b)
 	to shift: one place when E is odd, two when it is even. The top binade needs
 	no special case: in integers it is just another odd E.
 */
+/*	floor(sqrt(x)) for x below 2^48, exactly. The double is a seed only: x
+	converts to it exactly and its square root is correctly rounded, so the true
+	root is within one of the truncation under any host rounding mode, and the
+	two corrections run unconditionally. */
+static u32 eeISqrt48(u64 x)
+{
+	u64 r = (u64)std::sqrt((double)x);
+	while (r > 0 && r * r > x)
+		--r;
+	while ((r + 1) * (r + 1) <= x)
+		++r;
+	return (u32)r;
+}
+
 static u32 eeSqrtSignificand(u32 m)
 {
+	{
+		// The radicand in the law's frame, which places it 22 bits further up
+		// than the recurrence does. See the comment above eeDivideCap().
+		const u64 x = (u64)m << 22;
+		const u32 root = eeISqrt48(x);
+		if ((2ull * root + 1ull - (x - (u64)root * root)) > (1u << 23))
+			return root;
+	}
+
 	EeSrtRemainder rem = {m, 0};
 	u32 root = 0;
 	EeSrtDigitMask digit = {~0u, 0}; // +1
