@@ -103,6 +103,64 @@ u32 ShortSpin()
 	return time;
 }
 
+#if defined(ARCH_ARM64) && !defined(_MSC_VER)
+// Stop executing until another core stores to `word`, using the local exclusive
+// monitor as the watchpoint: LDAXR arms it, and the store that clears it raises
+// the event WFE is waiting on. A store landing between the LDAXR and the WFE
+// clears the monitor too, so the wake cannot be missed.
+//
+// WFE is not a yield or a kernel block: the thread stays runnable, so a
+// co-resident thread is preempted exactly as it was against the isb spin
+// (measured: it keeps ~50% of its throughput either way, against 100% when
+// the waiter blocks in a futex instead).
+//
+// The SEVL/WFE pair comes first because the event register is one sticky bit:
+// anything that cleared the monitor earlier leaves it set, and the WFE below
+// would then return without parking. SEVL sets it, the first WFE consumes it.
+//
+// Nothing clears the monitor on the way out, deliberately. Clearing it is
+// itself a wake-up event, so a CLREX here would set the event register for the
+// next iteration and the loop would stop parking altogether — on a Cortex-A78C
+// waiting on a poster 100µs away, 3.5 wake-ups per wait as written against 6708
+// with a CLREX added. Linux's arm64 __cmpwait omits it for the same reason.
+//
+// A monitor that never fires is a latency cost, not a hang: WFE also wakes on
+// the periodic event stream, every ~33µs on this host.
+static void MonitoredWait(const std::atomic<s32>& word, s32 expected)
+{
+	s32 seen;
+	__asm__ __volatile__(
+		"sevl\n"
+		"wfe\n"
+		"ldaxr %w0, [%1]\n"
+		"cmp   %w0, %w2\n"
+		"b.ne  1f\n"
+		"wfe\n"
+		"1:\n"
+		: "=&r"(seen)
+		: "r"(&word), "r"(expected)
+		: "cc", "memory");
+	(void)seen;
+}
+#endif
+
+u32 ShortSpinOn(const std::atomic<s32>& word, s32 expected)
+{
+#if defined(ARCH_ARM64) && !defined(_MSC_VER)
+	const u64 start = GetCPUTicks();
+	MonitoredWait(word, expected);
+	// Charge unmeasurably short waits as one tick, not zero: the caller
+	// accumulates this against SPIN_TIME_NS, and a zero would stall that count
+	// forever.
+	const u64 elapsed = std::max<u64>(GetCPUTicks() - start, 1);
+	return static_cast<u32>((elapsed * 1000000000) / GetTickFrequency());
+#else
+	(void)word;
+	(void)expected;
+	return ShortSpin();
+#endif
+}
+
 static u32 GetSpinTime()
 {
 	if (char* req = getenv("WAIT_SPIN_MICROSECONDS"))

@@ -186,6 +186,16 @@ extern u64 GetAvailablePhysicalMemory();
 /// Spin for a short period of time (call while spinning waiting for a lock)
 /// Returns the approximate number of ns that passed
 extern u32 ShortSpin();
+/// ShortSpin() for a wait whose entire predicate is one atomic word that another
+/// thread stores to. Where the host can watch an address, this parks the core
+/// until that store lands; `expected` is the value already seen, and the wait
+/// ends once `word` no longer holds it. Returns the approximate number of ns
+/// that passed.
+///
+/// May return early for no reason: re-check the predicate in a loop, exactly
+/// as around ShortSpin(). Splitting the wait across two locations parks on a
+/// store to neither — `word` must carry it alone.
+extern u32 ShortSpinOn(const std::atomic<s32>& word, s32 expected);
 /// Number of ns to spin for before sleeping a thread
 extern const u32 SPIN_TIME_NS;
 /// Like C abort() but adds the given message to the crashlog
