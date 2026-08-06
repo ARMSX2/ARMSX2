@@ -1337,12 +1337,9 @@ struct PerGameSettingsPanel: View {
         } else {
             Self.clearPerGameValue("ARMSX2iOS/FramePacing", "Preset", useCurrent: useCurrent, iso: iso)
         }
-        // Cascade the preset's individual keys when a named preset is picked
-        // per-game (raw values 0...3). FramePacingPreset(rawValue:) returns nil
-        // for Use Global (-1); framePacingPresetTable[preset] returns nil for
-        // .custom (raw 4 — not in the table). Placed after the individual-key
-        // writes above so the named preset's curated profile wins over stale
-        // per-game Picker state.
+        // Cascade a named preset's own keys. Use Global and .custom both miss the
+        // table and fall through. After the individual writes on purpose, so the
+        // preset's profile wins over stale per-game picker state.
         if enabled, let preset = FramePacingPreset(rawValue: perGameFramePacingPreset),
            let values = SettingsStore.framePacingPresetTable[preset] {
             Self.setPerGameIntValue("EmuCore/GS", "VsyncQueueSize", values.vsyncQueueSize, useCurrent: useCurrent, iso: iso)

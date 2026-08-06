@@ -1841,13 +1841,9 @@ final class SettingsStore {
         normalizeDEV9Settings()
         VPadSkinLibraryStore.shared.adoptLegacySelection(virtualPadSkin)
         _aspectRatioConfig.write(aspectRatio)
-        // Do NOT re-apply the OSD preset here. The saved per-item OSD flags are the
-        // source of truth and are pushed into the live GSConfig natively by
-        // ARMSX2ApplyIOSOsdPresetFromConfig() at scene startup. Calling
-        // applyOsdPreset(preset) at load rewrote every flag from the preset and
-        // discarded the user settings.
-        // Seed the Custom OSD snapshot once from the loaded flags so cycling to Custom
-        // before any manual edit shows the current set rather than an empty overlay.
+        // The saved per-item flags are the source of truth, so applying the preset here
+        // would rewrite every one of them. Seed the Custom snapshot once instead, or
+        // cycling to Custom shows an empty overlay.
         if !ARMSX2Bridge.getINIBool("ARMSX2iOS/UI", key: "OsdCustomSeeded", defaultValue: false) {
             snapshotCustomOsd()
             ARMSX2Bridge.setINIBool("ARMSX2iOS/UI", key: "OsdCustomSeeded", value: true)
@@ -2016,13 +2012,9 @@ final class SettingsStore {
 
     func setRuntimeFastForwardEnabled(_ enabled: Bool) {
         fastForwardRuntimeEnabled = enabled
-        // Fast forward is purely a limiter-mode switch (Nominal <-> Turbo). The
-        // previous implementation also flipped frameLimiterEnabled, whose didSet
-        // writes NominalScalar=10 to the INI — that made the OSD report T: 1000%
-        // (the Nominal scalar) while the real turbo target was the FF scalar, and
-        // churned the INI on every toggle. Turbo mode alone is sufficient: the
-        // core computes the target from TurboScalar while in Turbo, and switching
-        // back to Nominal restores the user's normal target (T: 100%).
+        // Purely a limiter mode switch. Touching frameLimiterEnabled as well writes
+        // NominalScalar=10, which makes the OSD report the nominal scalar rather than
+        // the turbo target and churns the INI on every toggle.
         if enabled {
             NSLog("@@FF_UI@@ enabled=1 turbo=%.3f", fastForwardScalar)
             ARMSX2Bridge.setLimiterMode(1)

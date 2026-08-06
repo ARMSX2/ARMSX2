@@ -217,8 +217,7 @@ struct GraphicsSettingsView: View {
 
             Section(settings.localized("Display")) {
                 Picker(settings.localized("Deinterlace"), selection: $settings.interlaceMode) {
-                    // Tags are GSInterlaceMode values. This list used to be shifted by one, so
-                    // every label from Weave down named the mode below it.
+                    // Tags are GSInterlaceMode values; a shift by one renames every mode.
                     Text(settings.localized("Automatic (Default)")).tag(0)
                     Text(settings.localized("Off (No Deinterlacing)")).tag(1)
                     Text(settings.localized("Weave (TFF)")).tag(2)

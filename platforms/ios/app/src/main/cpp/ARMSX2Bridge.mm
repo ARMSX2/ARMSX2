@@ -1749,9 +1749,8 @@ static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult()
 // Overlays per-game INI overrides for the given serial/crc onto a globals-seeded result.
 // Sourcing serial/crc from the caller avoids re-scanning the disc image (which is unsafe
 // while the VM is actively reading the same disc).
-// Every pin-backed hack key, paired with its claim bit. A per-game file's claim
-// mask is derivable from which of these keys it holds, so the mask is never
-// stored ahead of the keys.
+// Every pin-backed hack key with its claim bit, so a file's mask is derivable
+// from which of these keys it holds rather than stored ahead of them.
 static constexpr struct { const char* key; GSUserHackOverride hack; } s_pinned_hack_keys[] = {
     {"UserHacks_align_sprite_X", GSUserHackOverride::AlignSprite},
     {"UserHacks_merge_pp_sprite", GSUserHackOverride::MergeSprite},
@@ -1779,7 +1778,6 @@ static u32 ARMSX2DerivePerGameHackClaims(INISettingsInterface& si)
     return claims;
 }
 
-// Writes the derived mask, or removes it when nothing claims anything.
 static void ARMSX2StoreDerivedPerGameHackClaims(INISettingsInterface& si)
 {
     const u32 claims = ARMSX2DerivePerGameHackClaims(si);
@@ -2165,9 +2163,8 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
         else
             si.DeleteValue("EmuCore/GS", "UserHacks_TCOffsetY");
 
-        // Overriding a hack for one game only counts if the GameDB stops writing that
-        // hack for that game, so the claim mask goes in this file too. Derived from the
-        // keys just written; the core folds the global claims back in at load.
+        // Derived from the keys just written, so the GameDB stops writing them for
+        // this game. The core folds the global claims back in at load.
         ARMSX2StoreDerivedPerGameHackClaims(si);
 
         if (skipDrawStartOverride)
