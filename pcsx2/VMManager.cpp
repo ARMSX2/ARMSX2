@@ -729,7 +729,7 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 	EmuConfig.LoadSave(slw);
 
 	// A game file's UserHackOverrides replaces the base mask outright, and the
-	// player's global claims still stand for this game.
+	// player's global claims still stand here.
 	if (SettingsInterface* base = Host::Internal::GetBaseSettingsLayer(); base && base != &si)
 		EmuConfig.GS.UserHackOverrides |= static_cast<u32>(base->GetIntValue("EmuCore/GS", "UserHackOverrides", 0));
 

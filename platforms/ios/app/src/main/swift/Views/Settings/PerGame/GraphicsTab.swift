@@ -247,8 +247,7 @@ struct GraphicsTab: View {
             .disabled(!enabled)
         }
 
-        // Its own section, the way the global screen has it. The header is what lets the four rows
-        // be called Brightness and Contrast rather than repeating Shade Boost four times.
+        // Its own section, as on the global screen, so the four rows can be named plainly.
         Section(settings.localized("Shade Boost")) {
             Picker(settings.localized("Shade Boost"), selection: $perGameShadeBoost) {
                 Text(settings.localized("Use Global")).tag(-1)
