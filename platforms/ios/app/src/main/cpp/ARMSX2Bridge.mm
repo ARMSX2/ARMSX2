@@ -1766,6 +1766,17 @@ static constexpr struct { const char* key; GSUserHackOverride hack; } s_pinned_h
     {"UserHacks_TCOffsetY", GSUserHackOverride::TextureOffsetY},
     {"preload_frame_with_gs_data", GSUserHackOverride::PreloadFrameData},
     {"UserHacks_DisablePartialInvalidation", GSUserHackOverride::DisablePartialInvalidation},
+    {"paltex", GSUserHackOverride::GPUPaletteConversion},
+    {"UserHacks_DisableDepthSupport", GSUserHackOverride::DisableDepthSupport},
+    {"UserHacks_CPU_FB_Conversion", GSUserHackOverride::CPUFBConversion},
+    {"UserHacks_ReadTCOnClose", GSUserHackOverride::ReadTCOnClose},
+    {"UserHacks_Limit24BitDepth", GSUserHackOverride::Limit24BitDepth},
+    {"UserHacks_EstimateTextureRegion", GSUserHackOverride::EstimateTextureRegion},
+    {"UserHacks_DrawBuffering", GSUserHackOverride::DrawBuffering},
+    {"UserHacks_CPUSpriteRenderBW", GSUserHackOverride::CPUSpriteRenderBW},
+    {"UserHacks_CPUSpriteRenderLevel", GSUserHackOverride::CPUSpriteRenderLevel},
+    {"UserHacks_CPUCLUTRender", GSUserHackOverride::CPUCLUTRender},
+    {"UserHacks_GPUTargetCLUTMode", GSUserHackOverride::GPUTargetCLUT},
 };
 
 static u32 ARMSX2DerivePerGameHackClaims(INISettingsInterface& si)
@@ -2413,7 +2424,7 @@ struct ARMSX2GraphicsHackState
     bool pinned = false;
 };
 
-static constexpr std::array<ARMSX2GraphicsHackDescriptor, 13> s_graphics_hacks = {{
+static constexpr std::array<ARMSX2GraphicsHackDescriptor, 24> s_graphics_hacks = {{
     {"UserHacks_align_sprite_X", GSUserHackOverride::AlignSprite, GameDatabaseSchema::GSHWFixId::AlignSprite, true, true,
         [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_AlignSpriteX); }},
     {"UserHacks_merge_pp_sprite", GSUserHackOverride::MergeSprite, GameDatabaseSchema::GSHWFixId::MergeSprite, true, true,
@@ -2440,6 +2451,28 @@ static constexpr std::array<ARMSX2GraphicsHackDescriptor, 13> s_graphics_hacks =
         [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.PreloadFrameWithGSData); }},
     {"UserHacks_DisablePartialInvalidation", GSUserHackOverride::DisablePartialInvalidation, GameDatabaseSchema::GSHWFixId::DisablePartialInvalidation, false, true,
         [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_DisablePartialInvalidation); }},
+    {"paltex", GSUserHackOverride::GPUPaletteConversion, GameDatabaseSchema::GSHWFixId::GPUPaletteConversion, false, true,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.GPUPaletteConversion); }},
+    {"UserHacks_DisableDepthSupport", GSUserHackOverride::DisableDepthSupport, GameDatabaseSchema::GSHWFixId::DisableDepthSupport, false, true,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_DisableDepthSupport); }},
+    {"UserHacks_CPU_FB_Conversion", GSUserHackOverride::CPUFBConversion, GameDatabaseSchema::GSHWFixId::CPUFramebufferConversion, false, true,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_CPUFBConversion); }},
+    {"UserHacks_ReadTCOnClose", GSUserHackOverride::ReadTCOnClose, GameDatabaseSchema::GSHWFixId::Count, false, true,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_ReadTCOnClose); }},
+    {"UserHacks_EstimateTextureRegion", GSUserHackOverride::EstimateTextureRegion, GameDatabaseSchema::GSHWFixId::EstimateTextureRegion, false, true,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_EstimateTextureRegion); }},
+    {"UserHacks_DrawBuffering", GSUserHackOverride::DrawBuffering, GameDatabaseSchema::GSHWFixId::DrawBuffering, false, true,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_DrawBuffering); }},
+    {"UserHacks_Limit24BitDepth", GSUserHackOverride::Limit24BitDepth, GameDatabaseSchema::GSHWFixId::Limit24BitDepth, false, false,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_Limit24BitDepth); }},
+    {"UserHacks_CPUSpriteRenderBW", GSUserHackOverride::CPUSpriteRenderBW, GameDatabaseSchema::GSHWFixId::CPUSpriteRenderBW, false, false,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_CPUSpriteRenderBW); }},
+    {"UserHacks_CPUSpriteRenderLevel", GSUserHackOverride::CPUSpriteRenderLevel, GameDatabaseSchema::GSHWFixId::CPUSpriteRenderLevel, false, false,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_CPUSpriteRenderLevel); }},
+    {"UserHacks_CPUCLUTRender", GSUserHackOverride::CPUCLUTRender, GameDatabaseSchema::GSHWFixId::CPUCLUTRender, false, false,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_CPUCLUTRender); }},
+    {"UserHacks_GPUTargetCLUTMode", GSUserHackOverride::GPUTargetCLUT, GameDatabaseSchema::GSHWFixId::GPUTargetCLUT, false, false,
+        [](const Pcsx2Config::GSOptions& gs) { return static_cast<int>(gs.UserHacks_GPUTargetCLUTMode); }},
 }};
 
 static std::mutex s_graphics_hack_mutex;

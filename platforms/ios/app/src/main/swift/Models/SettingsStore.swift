@@ -414,10 +414,8 @@ final class SettingsStore {
     }}
 
     // ── CPU Rounding & Clamping ──
-    // FPU/VU rounding and clamping improve accuracy/compatibility for specific games.
-    // Clamp modes are stored as a single 0–3 level and unpacked to the three
-    // (EE) / six (VU0+VU1) boolean keys the PCSX2 recompiler reads, matching the
-    // Android refresh UI and the upstream PCSX2 GUI. Changes take effect on next boot.
+    // Clamp modes are one 0-3 level here, unpacked to the three (EE) or six (VU0+VU1)
+    // boolean keys the recompiler reads. Changes take effect on next boot.
     let _eeFpuRoundModeConfig = Setting<Int>(
         section: "EmuCore/CPU", key: "FPU.Roundmode", default: 3,
         codec: .roundMode)
@@ -987,6 +985,11 @@ final class SettingsStore {
         case "UserHacks_TCOffsetY": textureOffsetY = 0
         case "UserHacks_TextureInsideRt": textureInsideRt = 0
         case "UserHacks_BilinearHack": bilinearUpscaleHack = 0
+        case "UserHacks_Limit24BitDepth": limit24BitDepth = 0
+        case "UserHacks_CPUSpriteRenderBW": cpuSpriteRenderBw = 0
+        case "UserHacks_CPUSpriteRenderLevel": cpuSpriteRenderLevel = 0
+        case "UserHacks_CPUCLUTRender": cpuClutRender = 0
+        case "UserHacks_GPUTargetCLUTMode": gpuTargetClut = 0
         default: setGSBoolHack(key, false)
         }
     }
@@ -1001,20 +1004,11 @@ final class SettingsStore {
     /// The single write funnel for those hacks. They live in a dictionary rather
     /// than a Setting<T>, so the default EmuCore/GS apply hook cannot reach them;
     /// this is their equivalent. Everything that changes one goes through here.
-    // The three keys the GameDB also writes; the rest have no pin bit in the core.
-    private static let pinnableBoolHacks: Set<String> = [
-        "UserHacks_NativePaletteDraw",
-        "UserHacks_DisablePartialInvalidation",
-        "preload_frame_with_gs_data"
-    ]
-
     func setGSBoolHack(_ key: String, _ value: Bool) {
         gsBoolHacks[key] = value
         guard !suppressINIWrites else { return }
         ARMSX2Bridge.setINIBool("EmuCore/GS", key: key, value: value)
-        if Self.pinnableBoolHacks.contains(key) {
-            ARMSX2Bridge.setGraphicsHackPinned(key, pinned: true)
-        }
+        ARMSX2Bridge.setGraphicsHackPinned(key, pinned: true)
         requestGraphicsApplyGuarded()
     }
 
@@ -2272,8 +2266,10 @@ final class SettingsStore {
         hardwareDownloadMode = 0
         tvShader = 0
         upscaler = 0
+        // Defaults hand the hacks back to the game database, so the claim goes with them.
         for option in Self.gsBoolHackOptions {
             setGSBoolHack(option.key, false)
+            setGraphicsHackPinned(option.key, false)
         }
         // Screen / PCRTC and Shade Boost
         pcrtcOffsets = false
