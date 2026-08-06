@@ -56,6 +56,7 @@ struct GraphicsTab: View {
     @Binding var perGamePCRTCAntiBlur: Int
     @Binding var perGameDisableInterlaceOffset: Int
     @Binding var perGameHWDownloadMode: Int
+    @Binding var perGameDisableDepth: Int
     @Binding var perGameCPUCLUT: Int
     @Binding var perGameGPUTargetCLUT: Int
     @Binding var perGameLoadTextureReplacements: Int
@@ -362,6 +363,12 @@ struct GraphicsTab: View {
             sharedPicker("Hardware Download Mode", selection: $perGameHWDownloadMode,
                          SettingsOptions.withUseGlobal(SettingsOptions.hardwareDownloadMode))
                 .disabled(!enabled)
+            Picker(settings.localized("Disable Depth Emulation"), selection: $perGameDisableDepth) {
+                Text(settings.localized("Use Global")).tag(Self.useGlobalSentinel)
+                Text(settings.localized("Off")).tag(0)
+                Text(settings.localized("On")).tag(1)
+            }
+            .disabled(!enabled)
             sharedPicker("CPU CLUT Render", selection: $perGameCPUCLUT,
                          SettingsOptions.withUseGlobal(SettingsOptions.cpuClutRender))
                 .disabled(!enabled)

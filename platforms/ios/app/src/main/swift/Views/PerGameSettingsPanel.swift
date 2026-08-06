@@ -110,6 +110,7 @@ struct PerGameSettingsPanel: View {
     @State private var perGameFixes: [String: Int]
     @State private var perGameAAT: Int
     @State private var perGameTextureInsideRt: Int
+    @State private var perGameDisableDepth: Int
     @State private var perGameRenderer: Int
     @State private var perGameFXAA: Int
     @State private var perGameUpscaler: Int
@@ -258,6 +259,7 @@ struct PerGameSettingsPanel: View {
         _perGameAAT = State(initialValue: hasPerGameAAT ? Self.intValue(info["perGameAAT"], defaultValue: 0) : -1)
         let hasPerGameTextureInsideRt = Self.boolValue(info["hasPerGameTextureInsideRt"], defaultValue: false)
         _perGameTextureInsideRt = State(initialValue: hasPerGameTextureInsideRt ? Self.intValue(info["perGameTextureInsideRt"], defaultValue: 0) : -1)
+        _perGameDisableDepth = State(initialValue: Self.boolValue(info["hasPerGameDisableDepth"], defaultValue: false) ? (Self.boolValue(info["perGameDisableDepth"], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel)
         let hasPerGameRenderer = Self.boolValue(info["hasPerGameRenderer"], defaultValue: false)
         _perGameRenderer = State(initialValue: hasPerGameRenderer ? Self.intValue(info["perGameRenderer"], defaultValue: 17) : -1)
         let hasPerGameFXAA = Self.boolValue(info["hasPerGameFXAA"], defaultValue: false)
@@ -344,7 +346,7 @@ struct PerGameSettingsPanel: View {
     /// there is never anything of its own left for Save to commit.
     private func perGameFingerprint() -> String {
         let fixes = SettingsStore.gameFixOptions.map { "\($0.key):\(perGameFixes[$0.key] ?? -1)" }.joined(separator: ",")
-        return "\(enabled)|\(upscaleMultiplier)|\(aspectRatio)|\(textureFiltering)|\(hardwareMipmapping)|\(blendingAccuracy)|\(interlaceMode)|\(trilinearFiltering)|\(halfPixelOffset)|\(roundSprite)|\(alignSprite)|\(mergeSprite)|\(wildArmsOffset)|\(textureOffsetXOverride)|\(textureOffsetX)|\(textureOffsetYOverride)|\(textureOffsetY)|\(skipDrawStartOverride)|\(skipDrawStart)|\(skipDrawEndOverride)|\(skipDrawEnd)|\(volumeOverride)|\(volumePercent)|\(eeCoreType)|\(mtvu)|\(eeCycleRate)|\(eeCycleSkip)|\(fastBoot)|\(enableCheats)|\(enablePatches)|\(enableGameFixes)|\(enableGameDBHardwareFixes)|\(perGameAAT)|\(perGameTextureInsideRt)|\(perGameRenderer)|\(perGameFXAA)|\(perGameUpscaler)|\(perGameShadeBoost)|\(perGameTVShader)|\(perGameCASMode)|\(perGameMaxAnisotropy)|\(perGameCASSharpness)|\(perGamePCRTCOffsets)|\(perGameIntegerScaling)|\(perGameSkipDupFrames)|\(perGamePCRTCOverscan)|\(perGamePCRTCAntiBlur)|\(perGameDisableInterlaceOffset)|\(perGameWidescreen)|\(perGameNoInterlace)|\(perGameShadeBoostBrightness)|\(perGameShadeBoostContrast)|\(perGameShadeBoostSaturation)|\(perGameShadeBoostGamma)|\(perGameDithering)|\(perGameFastForwardVolume)|\(perGameIOP)|\(perGameVU0)|\(perGameVU1)|\(perGameHWDownloadMode)|\(perGameCPUCLUT)|\(perGameGPUTargetCLUT)|\(perGameVsyncQueue)|\(perGameLoadTextureReplacements)|\(perGameLoadTextureReplacementsAsync)|\(perGamePrecacheTextureReplacements)|\(perGameSyncToHostRefresh)|\(perGameBufferMS)|\(perGameOutputLatencyMS)|\(perGameEEFpuRound)|\(perGameVU0Round)|\(perGameVU1Round)|\(perGameEEClamp)|\(perGameVUClamp)|\(raEnabledOverride)|\(raHardcoreOverride)|\(perGameFramePacingPreset)|\(perGameFrameLimiter)|\(perGameTargetFPS)|\(fixes)"
+        return "\(enabled)|\(upscaleMultiplier)|\(aspectRatio)|\(textureFiltering)|\(hardwareMipmapping)|\(blendingAccuracy)|\(interlaceMode)|\(trilinearFiltering)|\(halfPixelOffset)|\(roundSprite)|\(alignSprite)|\(mergeSprite)|\(wildArmsOffset)|\(textureOffsetXOverride)|\(textureOffsetX)|\(textureOffsetYOverride)|\(textureOffsetY)|\(skipDrawStartOverride)|\(skipDrawStart)|\(skipDrawEndOverride)|\(skipDrawEnd)|\(volumeOverride)|\(volumePercent)|\(eeCoreType)|\(mtvu)|\(eeCycleRate)|\(eeCycleSkip)|\(fastBoot)|\(enableCheats)|\(enablePatches)|\(enableGameFixes)|\(enableGameDBHardwareFixes)|\(perGameAAT)|\(perGameTextureInsideRt)|\(perGameDisableDepth)|\(perGameRenderer)|\(perGameFXAA)|\(perGameUpscaler)|\(perGameShadeBoost)|\(perGameTVShader)|\(perGameCASMode)|\(perGameMaxAnisotropy)|\(perGameCASSharpness)|\(perGamePCRTCOffsets)|\(perGameIntegerScaling)|\(perGameSkipDupFrames)|\(perGamePCRTCOverscan)|\(perGamePCRTCAntiBlur)|\(perGameDisableInterlaceOffset)|\(perGameWidescreen)|\(perGameNoInterlace)|\(perGameShadeBoostBrightness)|\(perGameShadeBoostContrast)|\(perGameShadeBoostSaturation)|\(perGameShadeBoostGamma)|\(perGameDithering)|\(perGameFastForwardVolume)|\(perGameIOP)|\(perGameVU0)|\(perGameVU1)|\(perGameHWDownloadMode)|\(perGameCPUCLUT)|\(perGameGPUTargetCLUT)|\(perGameVsyncQueue)|\(perGameLoadTextureReplacements)|\(perGameLoadTextureReplacementsAsync)|\(perGamePrecacheTextureReplacements)|\(perGameSyncToHostRefresh)|\(perGameBufferMS)|\(perGameOutputLatencyMS)|\(perGameEEFpuRound)|\(perGameVU0Round)|\(perGameVU1Round)|\(perGameEEClamp)|\(perGameVUClamp)|\(raEnabledOverride)|\(raHardcoreOverride)|\(perGameFramePacingPreset)|\(perGameFrameLimiter)|\(perGameTargetFPS)|\(fixes)"
     }
 
     private var hasPendingChanges: Bool {
@@ -655,6 +657,7 @@ struct PerGameSettingsPanel: View {
             perGamePCRTCAntiBlur: $perGamePCRTCAntiBlur,
             perGameDisableInterlaceOffset: $perGameDisableInterlaceOffset,
             perGameHWDownloadMode: $perGameHWDownloadMode,
+            perGameDisableDepth: $perGameDisableDepth,
             perGameCPUCLUT: $perGameCPUCLUT,
             perGameGPUTargetCLUT: $perGameGPUTargetCLUT,
             perGameLoadTextureReplacements: $perGameLoadTextureReplacements,
@@ -1154,6 +1157,11 @@ struct PerGameSettingsPanel: View {
             Self.setPerGameIntValue("EmuCore/GS", "UserHacks_TextureInsideRt", perGameTextureInsideRt, useCurrent: useCurrent, iso: iso)
         } else {
             Self.clearPerGameValue("EmuCore/GS", "UserHacks_TextureInsideRt", useCurrent: useCurrent, iso: iso)
+        }
+        if enabled && perGameDisableDepth != -1 {
+            Self.setPerGameBoolValue("EmuCore/GS", "UserHacks_DisableDepthSupport", perGameDisableDepth == 1, useCurrent: useCurrent, iso: iso)
+        } else {
+            Self.clearPerGameValue("EmuCore/GS", "UserHacks_DisableDepthSupport", useCurrent: useCurrent, iso: iso)
         }
         // The core keeps a running game on its booted renderer, so this applies next boot.
         if enabled && perGameRenderer != -1 {
