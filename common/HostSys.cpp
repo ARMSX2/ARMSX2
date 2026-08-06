@@ -52,10 +52,10 @@ static void MultiPause()
 
 static u32 MeasurePauseTime()
 {
-	// GetCPUTicks may have resolution as low as 1µs
-	// One call to MultiPause could take anywhere from 20ns (fast Haswell) to 400ns (slow Skylake)
-	// We want a measurement of reasonable resolution, but don't want to take too long
-	// So start at a fairly small number and increase it if it's too fast
+	// A tick isn't a fixed time unit (see GetCPUTicks()), so this loop works in raw
+	// ticks and only converts to ns once it has enough. One MultiPause takes 20ns on
+	// a fast Haswell, 400ns on a slow Skylake, 83ns for the eight isb on a Cortex-A78C.
+	// Start small and double the batch until the tick delta clears 100.
 	for (int testcnt = 64; true; testcnt *= 2)
 	{
 		u64 start = GetCPUTicks();
