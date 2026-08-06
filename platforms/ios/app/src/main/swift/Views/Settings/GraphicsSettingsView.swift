@@ -372,23 +372,28 @@ struct GraphicsSettingsView: View {
 
                 intPicker("Texture Inside RT", selection: claiming("UserHacks_TextureInsideRt", $settings.textureInsideRt), shared: SettingsOptions.textureInsideRT)
                 hackNote("UserHacks_TextureInsideRt", shown: settings.textureInsideRt)
-                intPicker("Limit 24-Bit Depth", selection: $settings.limit24BitDepth, options: [
+                intPicker("Limit 24-Bit Depth", selection: claiming("UserHacks_Limit24BitDepth", $settings.limit24BitDepth), options: [
                     ("Off", 0), ("Prioritise Upper Bits", 1), ("Prioritise Lower Bits", 2)
                 ])
+                hackNote("UserHacks_Limit24BitDepth", shown: settings.limit24BitDepth)
                 intPicker("Native Scaling", selection: claiming("UserHacks_native_scaling", $settings.nativeScaling), options: [
                     ("Off", 0), ("Normal", 1), ("Aggressive", 2), ("Normal (Maintain Upscale)", 3), ("Aggressive (Maintain Upscale)", 4)
                 ])
                 hackNote("UserHacks_native_scaling", shown: settings.nativeScaling)
-                intPicker("CPU CLUT Render", selection: $settings.cpuClutRender, shared: SettingsOptions.cpuClutRender)
-                intPicker("GPU Target CLUT", selection: $settings.gpuTargetClut, shared: SettingsOptions.gpuTargetClut)
+                intPicker("CPU CLUT Render", selection: claiming("UserHacks_CPUCLUTRender", $settings.cpuClutRender), shared: SettingsOptions.cpuClutRender)
+                hackNote("UserHacks_CPUCLUTRender", shown: settings.cpuClutRender)
+                intPicker("GPU Target CLUT", selection: claiming("UserHacks_GPUTargetCLUTMode", $settings.gpuTargetClut), shared: SettingsOptions.gpuTargetClut)
+                hackNote("UserHacks_GPUTargetCLUTMode", shown: settings.gpuTargetClut)
                 intPicker("Bilinear Upscale", selection: claiming("UserHacks_BilinearHack", $settings.bilinearUpscaleHack), options: [
                     ("Automatic", 0), ("Force Bilinear", 1), ("Force Nearest", 2)
                 ])
                 hackNote("UserHacks_BilinearHack", shown: settings.bilinearUpscaleHack)
-                NumberRow(.cpuSpriteRenderBw, value: $settings.cpuSpriteRenderBw,
+                NumberRow(.cpuSpriteRenderBw, value: claiming("UserHacks_CPUSpriteRenderBW", $settings.cpuSpriteRenderBw),
                           settings: settings)
-                intPicker("CPU Sprite Render Level", selection: $settings.cpuSpriteRenderLevel,
+                hackNote("UserHacks_CPUSpriteRenderBW", shown: settings.cpuSpriteRenderBw)
+                intPicker("CPU Sprite Render Level", selection: claiming("UserHacks_CPUSpriteRenderLevel", $settings.cpuSpriteRenderLevel),
                           shared: SettingsOptions.cpuSpriteRenderLevel)
+                hackNote("UserHacks_CPUSpriteRenderLevel", shown: settings.cpuSpriteRenderLevel)
                 intPicker("Max Anisotropy", selection: $settings.maxAnisotropy, shared: SettingsOptions.maxAnisotropy)
                 intPicker("Hardware Download Mode", selection: $settings.hardwareDownloadMode, shared: SettingsOptions.hardwareDownloadMode)
                 intPicker("TV/CRT Shader", selection: $settings.tvShader, shared: SettingsOptions.tvShader)
