@@ -256,12 +256,10 @@ struct GameScreenView: View {
     // rebuilt from scratch (fresh UIKit press surfaces) instead of diffed. This avoids
     // stale UIControl/hosting-controller state left behind by visibility edits.
     @State private var padRebuildToken = 0
-    // Polls external controllers for any button/stick activity while the menu button is
-    // hidden, so external-controller-only users are never softlocked out of pause. The
-    // poll reads GCController state snapshots only (no handlers), so it cannot steal input
-    // from SDL/core. Started when the menu is hidden during gameplay, stopped on restore.
-    @State private var menuRestorePollTimer: Timer?
-    @State private var lastControllerInputActive = false
+    // A tap on the game view shows the hidden menu button for a moment. The
+    // setting itself only changes from the quick menu or settings.
+    @State private var menuButtonRevealed = false
+    @State private var menuRevealTask: Task<Void, Never>?
     // Only the pause menu is keyed on this. The per-game panel holds unsaved edits.
     @State private var screenIsLandscape = true
     @State private var emulationOnlyTransitionTask: Task<Void, Never>?
@@ -353,7 +351,7 @@ struct GameScreenView: View {
                     // Landscape: full-screen layout so pad coordinates match the layout editor.
                     ZStack {
                         MetalGameView()
-                            .onTapGesture { restoreMenuButtonIfHidden() }
+                            .onTapGesture { revealMenuButtonBriefly() }
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel("Game display")
                             .accessibilityAddTraits(.isImage)
@@ -385,7 +383,7 @@ struct GameScreenView: View {
                         MetalGameView()
                             .frame(height: gameHeight)
                             .clipped()
-                            .onTapGesture { restoreMenuButtonIfHidden() }
+                            .onTapGesture { revealMenuButtonBriefly() }
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel("Game display")
                             .accessibilityAddTraits(.isImage)
@@ -413,7 +411,7 @@ struct GameScreenView: View {
                         }
                     }
                     .overlay(alignment: .topTrailing) {
-                        if !menuButtonHidden {
+                        if !menuButtonHidden || menuButtonRevealed {
                             menuButtonCluster()
                                 .padding(.top, 8)
                                 .padding(.trailing, 4)
@@ -522,14 +520,13 @@ struct GameScreenView: View {
             refreshExternalControllerConnectionState()
             refreshRuntimeMenuState()
             consumePendingRetroAchievementsToast()
-            startMenuRestorePollingIfNeeded()
             enterEmulationOnlyModeIfReady()
         }
         .onDisappear {
             cancelEmulationOnlyTransition()
             statusBanner.cancelDismiss()
             achievementsBanner.cancelDismiss()
-            stopMenuRestorePolling()
+            cancelMenuButtonReveal()
             leaveGameplaySystemChromeMode()
         }
         // Single chokepoint for runtime pause: VM pause derives only from `overlayRoute`
@@ -538,11 +535,6 @@ struct GameScreenView: View {
         // observers that existed for the old independent booleans.
         .onChange(of: overlayRoute) { _, _ in
             updateRuntimeOverlayPause()
-            if overlayRoute != .hidden {
-                stopMenuRestorePolling()
-            } else {
-                startMenuRestorePollingIfNeeded()
-            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
@@ -566,11 +558,7 @@ struct GameScreenView: View {
             if menuButtonHidden != isHidden {
                 menuButtonHidden = isHidden
             }
-            if isHidden {
-                startMenuRestorePollingIfNeeded()
-            } else {
-                stopMenuRestorePolling()
-            }
+            cancelMenuButtonReveal()
         }
         .onChange(of: settings.emulationOnlyModeEnabled) { _, isEnabled in
             if isEnabled {
@@ -619,7 +607,7 @@ struct GameScreenView: View {
 
     @ViewBuilder
     private func menuButtonOverlay(isLandscape: Bool) -> some View {
-        if !menuButtonHidden {
+        if !menuButtonHidden || menuButtonRevealed {
             VStack {
                 HStack {
                     Spacer()
@@ -756,7 +744,7 @@ struct GameScreenView: View {
         }
         statusBanner.cancelDismiss()
         achievementsBanner.cancelDismiss()
-        stopMenuRestorePolling()
+        cancelMenuButtonReveal()
 
         runtimePerGameSettingsEntry = nil
         runtimePerGameSettings = nil
@@ -967,82 +955,21 @@ struct GameScreenView: View {
         }
     }
 
-    private func restoreMenuButtonIfHidden() {
+    private func revealMenuButtonBriefly() {
         guard menuButtonHidden else { return }
-
-        menuButtonHidden = false
-        settings.hideMenuButton = false
-        stopMenuRestorePolling()
-        presentStatusMessage(settings.localized("Menu button shown"))
-    }
-
-    /// Starts polling external controllers for any input while the menu button is hidden
-    /// and gameplay is active, so a hidden menu can be restored without a screen tap.
-    private func startMenuRestorePollingIfNeeded() {
-        guard menuButtonHidden, overlayRoute == .hidden, menuRestorePollTimer == nil else { return }
-        lastControllerInputActive = controllerInputActive()
-        menuRestorePollTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-            Task { @MainActor in
-                guard menuButtonHidden, overlayRoute == .hidden else {
-                    stopMenuRestorePolling()
-                    return
-                }
-                let active = controllerInputActive()
-                if active && !lastControllerInputActive {
-                    restoreMenuButtonIfHidden()
-                }
-                lastControllerInputActive = active
-            }
+        menuRevealTask?.cancel()
+        withAnimation(.easeOut(duration: 0.18)) { menuButtonRevealed = true }
+        menuRevealTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeIn(duration: 0.18)) { menuButtonRevealed = false }
         }
     }
 
-    private func stopMenuRestorePolling() {
-        menuRestorePollTimer?.invalidate()
-        menuRestorePollTimer = nil
-        lastControllerInputActive = false
-    }
-
-    /// Reads a non-destructive snapshot of every external controller's input state. Returns
-    /// true if any face button, shoulder, trigger, d-pad direction, thumbstick, or the
-    /// menu/options/L3/R3 buttons are currently active. Setting valueChangedHandler would
-    /// conflict with SDL; reading these snapshot properties does not.
-    private func controllerInputActive() -> Bool {
-        for controller in GCController.controllers() {
-            guard let gamepad = controller.extendedGamepad else { continue }
-            if gamepad.buttonA.isPressed || gamepad.buttonB.isPressed
-                || gamepad.buttonX.isPressed || gamepad.buttonY.isPressed {
-                return true
-            }
-            if gamepad.leftShoulder.isPressed || gamepad.rightShoulder.isPressed {
-                return true
-            }
-            if gamepad.leftTrigger.value > 0.1 || gamepad.rightTrigger.value > 0.1 {
-                return true
-            }
-            let dpad = gamepad.dpad
-            if dpad.up.isPressed || dpad.down.isPressed || dpad.left.isPressed || dpad.right.isPressed {
-                return true
-            }
-            if abs(gamepad.leftThumbstick.xAxis.value) > 0.1 || abs(gamepad.leftThumbstick.yAxis.value) > 0.1 {
-                return true
-            }
-            if abs(gamepad.rightThumbstick.xAxis.value) > 0.1 || abs(gamepad.rightThumbstick.yAxis.value) > 0.1 {
-                return true
-            }
-            if gamepad.buttonMenu.isPressed {
-                return true
-            }
-            if #available(iOS 13, *), let options = gamepad.buttonOptions, options.isPressed {
-                return true
-            }
-            if #available(iOS 14, *), let l3 = gamepad.leftThumbstickButton, l3.isPressed {
-                return true
-            }
-            if #available(iOS 14, *), let r3 = gamepad.rightThumbstickButton, r3.isPressed {
-                return true
-            }
-        }
-        return false
+    private func cancelMenuButtonReveal() {
+        menuRevealTask?.cancel()
+        menuRevealTask = nil
+        menuButtonRevealed = false
     }
 
     private func updateRuntimeOverlayPause() {
