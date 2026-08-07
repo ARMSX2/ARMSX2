@@ -68,13 +68,19 @@ void recJR()
 {
 	const u32 rs = _Rs_;
 
+	// A delay slot that neither writes rs nor needs the branch's own ordering
+	// is emitted ahead of the jump instead, which takes it out of the window
+	// the capture below has to survive.
+	const bool swapped = !EmuConfig.Gamefixes.GoemonTlbHack && TrySwapDelaySlot(rs, 0, 0, true);
+
 	// Capture the jump target before the delay slot, which MIPS lets write rs,
 	// into an ARM64TYPE_PCWRITEBACK slot -- see SetBranchReg for how it's read
 	// back.
 	const int wbreg = _allocArm64GPR(ARM64TYPE_PCWRITEBACK, 0, MODE_WRITE);
 	_eeMoveGPRtoR(armWRegister(wbreg), rs);
 
-	recompileNextInstruction(true, false);
+	if (!swapped)
+		recompileNextInstruction(true, false);
 
 	// JR $ra is the ABI return idiom — pop the call-ret ring and RET so the
 	// hardware RAS (pushed by the paired call-site BL) predicts the target.
@@ -91,7 +97,15 @@ void recJALR()
 {
 	const u32 rs = _Rs_;
 	const u32 rd = _Rd_;
-	const u32 newpc = pc + 4;
+	const u32 newpc = pc + 4; // captured before a swap can advance pc past the slot
+
+	// See recJR. rd joins rs in the safety check because the link is written
+	// before the delay slot runs, so a slot that reads or writes rd cannot be
+	// hoisted past that write. The rd == rs term is x86's, kept for parity: it
+	// is what stops x86's swapped arm from reading rs after the link write
+	// (iR5900Jump.cpp:174).
+	const bool swapped = !EmuConfig.Gamefixes.GoemonTlbHack && rd != rs &&
+		TrySwapDelaySlot(rs, 0, rd, true);
 
 	// Capture the jump target before the delay slot; see recJR. Ordered ahead
 	// of the rd write below because rd may be rs, and the capture has to see
@@ -116,7 +130,8 @@ void recJALR()
 		}
 	}
 
-	recompileNextInstruction(true, false);
+	if (!swapped)
+		recompileNextInstruction(true, false);
 
 	// JALR linking into $ra is the ABI indirect-call idiom — push a call-ret
 	// frame and transfer via BL so the callee's return RETs to our landing.
