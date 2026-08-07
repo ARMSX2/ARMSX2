@@ -68,12 +68,11 @@ void recJR()
 {
 	const u32 rs = _Rs_;
 
-	// Save jump target to memory BEFORE delay slot, so it can't be lost
-	// if the delay slot evicts registers. A pinned/allocator-resident rs is
-	// stored directly (WS-C5) — _deleteEEreg(rs, 1) flushed first, so the
-	// pin is coherent (post-flush contract of _eeGetGPRSourceReg).
-	_deleteEEreg(rs, 1); // flush rs to memory
-	armStoreEERegPtr(_eeGetGPRSourceReg(RWSCRATCH, rs), &cpuRegs.pcWriteback);
+	// Capture the jump target before the delay slot, which MIPS lets write rs,
+	// into an ARM64TYPE_PCWRITEBACK slot -- see SetBranchReg for how it's read
+	// back.
+	const int wbreg = _allocArm64GPR(ARM64TYPE_PCWRITEBACK, 0, MODE_WRITE);
+	_eeMoveGPRtoR(armWRegister(wbreg), rs);
 
 	recompileNextInstruction(true, false);
 
@@ -82,9 +81,9 @@ void recJR()
 	// Emit-gated off under GoemonTlbHack: SetBranchReg compares V2P-translated
 	// targets there, which can never match the virtual frame RAs.
 	if (rs == 31 && !EmuConfig.Gamefixes.GoemonTlbHack)
-		SetBranchReg(EEBranchRegMode::Return);
+		SetBranchReg(EEBranchRegMode::Return, 0, wbreg);
 	else
-		SetBranchReg();
+		SetBranchReg(EEBranchRegMode::Jump, 0, wbreg);
 }
 
 //// JALR — jump to rs, link in rd
@@ -94,12 +93,11 @@ void recJALR()
 	const u32 rd = _Rd_;
 	const u32 newpc = pc + 4;
 
-	// Save jump target to memory BEFORE delay slot.
-	// Must read rs before writing rd in case rd == rs — the Str below
-	// captures the target into pcWriteback before the rd write can refresh
-	// a shared pin. (WS-C5; post-flush pin coherence via _deleteEEreg.)
-	_deleteEEreg(rs, 1); // flush rs to memory
-	armStoreEERegPtr(_eeGetGPRSourceReg(RWSCRATCH, rs), &cpuRegs.pcWriteback);
+	// Capture the jump target before the delay slot; see recJR. Ordered ahead
+	// of the rd write below because rd may be rs, and the capture has to see
+	// the pre-link value.
+	const int wbreg = _allocArm64GPR(ARM64TYPE_PCWRITEBACK, 0, MODE_WRITE);
+	_eeMoveGPRtoR(armWRegister(wbreg), rs);
 
 	// Write link address to rd
 	if (rd)
@@ -125,9 +123,9 @@ void recJALR()
 	// Other link registers don't pair with the JR-$ra pop, so they take the
 	// plain jump (their returns just compare-miss if the callee uses jr $ra).
 	if (rd == 31 && !EmuConfig.Gamefixes.GoemonTlbHack)
-		SetBranchReg(EEBranchRegMode::Call, newpc);
+		SetBranchReg(EEBranchRegMode::Call, newpc, wbreg);
 	else
-		SetBranchReg();
+		SetBranchReg(EEBranchRegMode::Jump, 0, wbreg);
 }
 
 

@@ -1106,18 +1106,43 @@ static void emitCycleUpdateAndEventCheck()
 	armEmitCondBranch(a64::ge, DispatcherEvent);
 }
 
-void SetBranchReg(EEBranchRegMode mode, u32 call_return_pc)
+void SetBranchReg(EEBranchRegMode mode, u32 call_return_pc, int wbreg)
 {
 	const Cop2VfCacheScope vfCacheScope; // fork tail: preserve compile-time cache state
 	g_branch = 1;
+
+	// Where the target is. recJR/recJALR park it in an ARM64TYPE_PCWRITEBACK
+	// slot, whose allocator home is cpuRegs.pcWriteback — so a delay slot that
+	// took the register back has already spilled the value there, and one that
+	// left it alone means the register is still the newest copy. Dropping
+	// MODE_WRITE tells the flush below to release the slot without emitting
+	// that spill.
+	const bool parked = wbreg >= 0 && arm64gprs[wbreg].inuse &&
+		arm64gprs[wbreg].type == ARM64TYPE_PCWRITEBACK;
+	if (parked)
+		arm64gprs[wbreg].mode &= ~MODE_WRITE;
 
 	// Flush all GPR/NEON/constant allocations FIRST, while host registers
 	// still hold correct guest values. iFlushCall writes back delay slot
 	// results (like addiu sp) before the branch target is loaded into w0.
 	iFlushCall(FLUSH_EVERYTHING);
 
-	// Now load branch target from pcWriteback (saved by recJR/recJALR)
-	armLoadEERegPtr(a64::w0, &cpuRegs.pcWriteback);
+	// The tail reads the target wherever it already is — the parked register or
+	// w0 — rather than funnelling it through w0 first. Nothing below writes an
+	// allocatable register before it's read: the ring and event-check code use
+	// x8/x9/x10/x17, all carved out of the allocator pool.
+	if (parked)
+	{
+		// iFlushCall allocates no registers, so the released slot still holds
+		// the target.
+		pxAssert(!arm64gprs[wbreg].inuse);
+	}
+	else
+	{
+		armLoadEERegPtr(a64::w0, &cpuRegs.pcWriteback);
+	}
+	const a64::Register target_w = parked ? armWRegister(wbreg) : a64::w0;
+	const a64::Register target_x = parked ? armXRegister(wbreg) : a64::x0;
 
 	// GoemonTlbHack: recJR/recJALR store the raw virtual register target; the
 	// JIT dispatches in physical space, so translate it before use. Mirrors
@@ -1133,18 +1158,21 @@ void SetBranchReg(EEBranchRegMode mode, u32 call_return_pc)
 	{
 		pxAssert(mode == EEBranchRegMode::Jump);
 		armFlushEEClobberedPins(); // lazy-dirty seam: pairs with the reload below
+		armAsm->Mov(a64::w0, target_w); // RWARG1: the virtual target in, the paddr out
 		armEmitCall((void*)vtlb_V2P);
 		// vtlb_V2P writes no guest GPRs but clobbers the caller-saved pins;
 		// the DispatcherReg jump below can cache-hit straight into a block.
 		armReloadEEClobberedPins();
 	}
+	const a64::Register& branch_w = EmuConfig.Gamefixes.GoemonTlbHack ? a64::w0 : target_w;
+	const a64::Register& branch_x = EmuConfig.Gamefixes.GoemonTlbHack ? a64::x0 : target_x;
 
 	// Store to cpuRegs.pc
-	armAsm->Str(a64::w0, armCpuRegMem(&cpuRegs.pc));
+	armAsm->Str(branch_w, armCpuRegMem(&cpuRegs.pc));
 
 	// Alignment check
 	a64::Label unaligned;
-	armAsm->Tst(a64::w0, 3);
+	armAsm->Tst(branch_w, 3);
 	armAsm->B(&unaligned, a64::ne);
 
 	if (mode == EEBranchRegMode::Return)
@@ -1170,7 +1198,7 @@ void SetBranchReg(EEBranchRegMode mode, u32 call_return_pc)
 		// and desync every subsequent return (the FEX detail our first
 		// sketch got wrong).
 		a64::Label miss;
-		armAsm->Cmp(RXSCRATCH, a64::x0);
+		armAsm->Cmp(RXSCRATCH, branch_x);
 		armAsm->B(&miss, a64::ne);
 		armAsm->Ret(RSCRATCHADDR);
 
