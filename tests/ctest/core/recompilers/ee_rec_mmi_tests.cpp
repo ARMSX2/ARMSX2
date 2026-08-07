@@ -299,11 +299,11 @@ TEST(EeRecMmi, QfsrvNonAdjacentSource)
 	h.ExpectMmiPair(reg::v0, 0xAABBCCDDEEFF0011ull, 0xBBCCDD1122334499ull);
 }
 
-TEST(EeRecMmi, QfsrvAdjacentRtZeroUsesTempBuffer)
+TEST(EeRecMmi, QfsrvAdjacentRtZeroUsesGeneralPath)
 {
 	// Rt == r0 with Rs == Rt+1 (at == zero+1): the contiguous path is gated off
 	// (it would depend on GPR.r[0] memory holding zero), so this must fall to
-	// the temp-buffer path which zero-fills r0 explicitly. sa = 4 bytes.
+	// the general path, which materializes r0 as zero itself. sa = 4 bytes.
 	EeRecTestHarness h;
 	h.SetMmiPair(reg::at, 0xAABBCCDD11223344ull, 0x5566778899AABBCCull); // Rs (at == reg 1)
 	h.LoadProgram({ee::MTSAB(reg::zero, 4), ee::QFSRV(reg::v0, reg::at, reg::zero)});
@@ -314,14 +314,16 @@ TEST(EeRecMmi, QfsrvAdjacentRtZeroUsesTempBuffer)
 // ===========================================================================
 //  QFSRV with an oversized sa (AX-03). MTSA is architecturally a full 32-bit
 //  copy (3c381989e, matching the interp), so cpuRegs.sa can legitimately hold
-//  >= 16 when QFSRV consumes it. recQFSRV indexes host memory with sa (fast
-//  path off &GPR.r[Rt], slow path off the 32-byte temp buffer), so an
-//  unmasked sa walks the 128-bit load out of bounds — a guest-controlled
-//  host OOB read. The rec must clamp sa & 0xf at consumption (equivalent to
-//  x86, which masks in recMTSA). The interp's own sa>=16 behavior is
-//  shift-by->=64 UB (host-dependent mod-64), so these are JIT-only
-//  assertions against the sa&0xf funnel result; MTSA itself stays a full
-//  copy (MFSA round-trip below runs the normal auto-diff).
+//  >= 16 when QFSRV consumes it. The adjacent-source fast path indexes host
+//  memory with sa (off &GPR.r[Rt]), so an unmasked sa walks its 128-bit load
+//  out of bounds — a guest-controlled host OOB read. The general path's TBL
+//  cannot go out of bounds (see the comment at recQFSRV), so its clamp is for
+//  guest semantics only. Both paths clamp sa & 0xf at consumption (equivalent
+//  to x86, which masks in recMTSA), so both get an assertion below. The
+//  interp's own sa>=16 behavior is shift-by->=64 UB (host-dependent mod-64),
+//  so these are JIT-only assertions against the sa&0xf funnel result; MTSA
+//  itself stays a full copy (MFSA round-trip below runs the normal
+//  auto-diff).
 // ===========================================================================
 
 TEST(EeRecMmi, QfsrvOversizedSaClampedOnFastPath)
@@ -338,7 +340,7 @@ TEST(EeRecMmi, QfsrvOversizedSaClampedOnFastPath)
 	EXPECT_EQ(h.JitSnapshot().regs.GPR.r[reg::v0].UD[1], 0x22334499AABBCCDDull);
 }
 
-TEST(EeRecMmi, QfsrvOversizedSaClampedOnTempBufferPath)
+TEST(EeRecMmi, QfsrvOversizedSaClampedOnGeneralPath)
 {
 	EeRecTestHarness h;
 	h.SetMmiPair(reg::a0, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull); // Rt
@@ -347,7 +349,8 @@ TEST(EeRecMmi, QfsrvOversizedSaClampedOnTempBufferPath)
 	h.LoadProgram({ee::MTSA(reg::a3), ee::QFSRV(reg::v0, reg::a2, reg::a0)});
 	h.RunJitNoDiff();
 	// Funnel by 7 bytes (same values as QfsrvNonAdjacentSource). Unclamped,
-	// the load at temp+23 runs 7 bytes past the 32-byte buffer.
+	// the TBL indices run 23..38 against a 32-byte table, so the top seven
+	// result bytes would come back zero instead of wrapping to 7.
 	EXPECT_EQ(h.JitSnapshot().regs.GPR.r[reg::v0].UD[0], 0xAABBCCDDEEFF0011ull);
 	EXPECT_EQ(h.JitSnapshot().regs.GPR.r[reg::v0].UD[1], 0xBBCCDD1122334499ull);
 }

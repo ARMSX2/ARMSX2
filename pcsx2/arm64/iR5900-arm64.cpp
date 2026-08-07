@@ -3001,6 +3001,11 @@ static void recResetRaw()
 	// ([RSTATE, #imm]) — (re)write them before any block compiles.
 	cop2RecWritePackConstants();
 
+	// recQFSRV reads this ramp as its TBL index base ([RSTATE, #imm]); rewrite
+	// it here for the same reason as cop2RecWritePackConstants above.
+	for (u8 i = 0; i < 16; i++)
+		_cpuRegistersPack.byteRamp[i] = i;
+
 	// Full reset regenerates every block and dispatcher, so nothing can
 	// reference old pool content — drop it. Required since FX-03a: the
 	// manual-check snapshot blobs are not dedup'd, so without this the pool

@@ -1306,10 +1306,26 @@ void recPMSUBH()
 // QFSRV: Rd = {Rs, Rt} >> (sa * 8), truncated to 128 bits.
 // cpuRegs.sa is in bytes (0-15). Concatenate Rt (low) and Rs (high)
 // into a 256-bit value, shift right by sa bytes, take lower 128 bits.
-// Implementation: store {Rt, Rs} to adjacent memory, unaligned load at offset sa.
-// Matches x86 approach using tempqw buffer.
-alignas(16) static u8 s_qfsrvTemp[32];
-
+//
+// TBL over a two-register table is exactly this operation: the table is 32
+// bytes with Rt at 0-15 and Rs at 16-31, and byte i of the result is
+// table[sa + i]. The index vector is a {0..15} ramp plus a broadcast sa, so
+// the largest index a legal sa can produce is 15 + 15 = 30 and the table
+// always covers it.
+//
+// SSE has no cross-register variable byte shift, so the x86 emitter spills
+// both operands to a static buffer and reloads 128 bits at offset sa. This
+// did the same until the table form replaced it. The reload was the
+// expensive part: a 16-byte load is forwarded from the two stores only when
+// it is 8-byte aligned, so fourteen of the sixteen sa values drained the
+// store buffer instead.
+//
+// The other consequence is on the And below. An out-of-range index cannot
+// name a host address here — TBL answers zero for one — so that mask now
+// keeps the guest semantics (sa is a byte count mod 16) rather than standing
+// between a guest-written sa and a host out-of-bounds read. The
+// adjacent-source path above still indexes host memory and still needs it for
+// the original reason.
 void recQFSRV()
 {
 	if (!_Rd_) return;
@@ -1354,26 +1370,23 @@ void recQFSRV()
 		return;
 	}
 
-	// Store Rt at temp[0:15], Rs at temp[16:31]
-	mmiLoadReg(RQSCRATCH, _Rt_);
-	armMoveAddressToReg(RSCRATCHADDR, &s_qfsrvTemp[0]);
-	armAsm->Str(RQSCRATCH, a64::MemOperand(RSCRATCHADDR));
-
-	mmiLoadReg(RQSCRATCH, _Rs_);
-	armMoveAddressToReg(RSCRATCHADDR, &s_qfsrvTemp[16]);
-	armAsm->Str(RQSCRATCH, a64::MemOperand(RSCRATCHADDR));
-
-	// Load sa (byte offset), clamped to 0..15 — see the fast path above
+	// index = sa + {0..15}, built in RQSCRATCH3 before the operands land so
+	// the broadcast can borrow RQSCRATCH.
+	armAsm->Ldr(RQSCRATCH3, armCpuRegMem(&_cpuRegistersPack.byteRamp));
 	armLoadEERegPtr(RWSCRATCH, &cpuRegs.sa);
 	armAsm->And(RWSCRATCH, RWSCRATCH, 0xf);
+	armAsm->Dup(RQSCRATCH.V16B(), RWSCRATCH);
+	armAsm->Add(RQSCRATCH3.V16B(), RQSCRATCH3.V16B(), RQSCRATCH.V16B());
 
-	// Unaligned 128-bit load from temp + sa
-	armMoveAddressToReg(RSCRATCHADDR, &s_qfsrvTemp[0]);
-	armAsm->Add(RSCRATCHADDR, RSCRATCHADDR, RXSCRATCH); // addr = temp + sa
-	armAsm->Ldr(RQSCRATCH, a64::MemOperand(RSCRATCHADDR));
+	// The table has to be a consecutive pair, which q30/q31 are. Emitted
+	// directly rather than through armEmitVTBL, whose assert rejects
+	// RQSCRATCH/RQSCRATCH2 as sources: it reserves them for the copy it makes
+	// when the pair is not consecutive, the one case this cannot hit.
+	mmiLoadReg(RQSCRATCH, _Rt_);  // table bytes 0..15
+	mmiLoadReg(RQSCRATCH2, _Rs_); // table bytes 16..31
+	armAsm->Tbl(RQSCRATCH3.V16B(), RQSCRATCH.V16B(), RQSCRATCH2.V16B(), RQSCRATCH3.V16B());
 
-	// Store result to Rd
-	armStoreEEGPRQuad(RQSCRATCH, _Rd_);
+	armStoreEEGPRQuad(RQSCRATCH3, _Rd_);
 }
 
 // ============================================================================
