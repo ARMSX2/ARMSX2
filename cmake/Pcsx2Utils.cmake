@@ -84,6 +84,10 @@ function(get_git_version_info)
 			OUTPUT_VARIABLE PCSX2_GIT_DATE
 			OUTPUT_STRIP_TRAILING_WHITESPACE
 			ERROR_QUIET)
+	elseif (ARMSX2_VERSION)
+		# Version for builds without a git checkout.
+		set(PCSX2_GIT_REV "${ARMSX2_VERSION}")
+		set(PCSX2_GIT_TAG "${ARMSX2_VERSION}")
 	endif()
 	if (NOT PCSX2_GIT_REV)
 		EXECUTE_PROCESS(WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD

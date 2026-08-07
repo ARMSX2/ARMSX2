@@ -21,6 +21,7 @@ option(USE_VTUNE "Plug VTUNE to profile GS JIT.")
 option(USE_PERF_JITDUMP "Emit Linux perf jitdump (jit-<pid>.dump) for recompiled JIT blocks; use with perf record/inject." OFF)
 option(USE_PERF_MAP "Emit simple /tmp/perf-<pid>.map symbol table for recompiled JIT blocks." OFF)
 option(PACKAGE_MODE "Use this option to ease packaging of PCSX2 (developer/distribution option)")
+set(ARMSX2_VERSION "" CACHE STRING "Reported version for builds without a git checkout")
 option(BUNDLE_EMOJI_FONT "Bundles Noto Color Emoji for systems whose system emoji font isn't usable by freetype" ON)
 option(POSITION_INDEPENDENT_CODE "Generate position-independent code. It is recommended that you leave this on." ON)
 
