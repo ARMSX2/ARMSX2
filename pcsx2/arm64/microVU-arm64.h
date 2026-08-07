@@ -96,7 +96,9 @@
 //       chains, and folds AND_XYZW/SHIFT_XYZW into that vector. Every
 //       flag-writing FMAC changes shape, and the emitted [x25, #imm] weight
 //       offsets only exist in mVUglob layouts carrying macWeights.
-static constexpr u32 kMvuCompilerAbiVersion = 16;
+//  17 — MADD/MSUB and the A-forms drop the mVUclamp3 on the product ahead
+//       of the accumulate; only shapes compiled under vuClampMode:2 change.
+static constexpr u32 kMvuCompilerAbiVersion = 17;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

@@ -11,59 +11,68 @@
 // NEON Arithmetic Functions
 //------------------------------------------------------------------
 
-static void NEON_ADDPS(mV, const a64::VRegister& to, const a64::VRegister& from)
+// An operand the caller already left inside +/-fMax, so its mVUclamp3 is
+// dropped. MADD/MSUB and the A-forms set this for the product, which
+// mVUclamp4 clamped to the same bounds one emitter call earlier.
+enum
 {
-	mVUclamp3(mVU, to, RQSCRATCH3, _X_Y_Z_W);
-	mVUclamp3(mVU, from, RQSCRATCH3, _X_Y_Z_W);
+	preClampTo   = 1,
+	preClampFrom = 2,
+};
+
+static void NEON_ADDPS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
+{
+	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, _X_Y_Z_W);
+	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, _X_Y_Z_W);
 	armAsm->Fadd(to.V4S(), to.V4S(), from.V4S());
 	mVUclamp4(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 }
 
-static void NEON_SUBPS(mV, const a64::VRegister& to, const a64::VRegister& from)
+static void NEON_SUBPS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
-	mVUclamp3(mVU, to, RQSCRATCH3, _X_Y_Z_W);
-	mVUclamp3(mVU, from, RQSCRATCH3, _X_Y_Z_W);
+	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, _X_Y_Z_W);
+	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, _X_Y_Z_W);
 	armAsm->Fsub(to.V4S(), to.V4S(), from.V4S());
 	mVUclamp4(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 }
 
-static void NEON_MULPS(mV, const a64::VRegister& to, const a64::VRegister& from)
+static void NEON_MULPS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
-	mVUclamp3(mVU, to, RQSCRATCH3, _X_Y_Z_W);
-	mVUclamp3(mVU, from, RQSCRATCH3, _X_Y_Z_W);
+	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, _X_Y_Z_W);
+	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, _X_Y_Z_W);
 	armAsm->Fmul(to.V4S(), to.V4S(), from.V4S());
 	mVUclamp4(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 }
 
-static void NEON_ADDSS(mV, const a64::VRegister& to, const a64::VRegister& from)
+static void NEON_ADDSS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
-	mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
-	mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
+	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
+	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
 	armAsm->Fadd(a64::SRegister(to.GetCode()), a64::SRegister(to.GetCode()), a64::SRegister(from.GetCode()));
 	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
 }
 
-static void NEON_SUBSS(mV, const a64::VRegister& to, const a64::VRegister& from)
+static void NEON_SUBSS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
-	mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
-	mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
+	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
+	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
 	armAsm->Fsub(a64::SRegister(to.GetCode()), a64::SRegister(to.GetCode()), a64::SRegister(from.GetCode()));
 	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
 }
 
-static void NEON_MULSS(mV, const a64::VRegister& to, const a64::VRegister& from)
+static void NEON_MULSS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
-	mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
-	mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
+	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
+	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
 	armAsm->Fmul(a64::SRegister(to.GetCode()), a64::SRegister(to.GetCode()), a64::SRegister(from.GetCode()));
 	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
 }
 
 // ADD2 variants — ADDi (opType 5). The PS form needs no special handling; the
 // SS form implements the tri-ace VuAddSubHack when the gamefix is enabled.
-static void NEON_ADD2PS(mV, const a64::VRegister& to, const a64::VRegister& from)
+static void NEON_ADD2PS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
-	NEON_ADDPS(mVU, to, from);
+	NEON_ADDPS(mVU, to, from, preClamped);
 }
 
 // Port of x86 ADD_SS_TriAceHack (microVU_Misc.inl). Tri-ace games need ADDi to be
@@ -71,7 +80,7 @@ static void NEON_ADD2PS(mV, const a64::VRegister& to, const a64::VRegister& from
 // flushed to a signed zero (sign bit kept, exponent+mantissa of lane 0 cleared —
 // the x86 PAND against {0x80000000, ~0, ~0, ~0}) before the scalar add. Unclamped,
 // matching x86. Without the gamefix this is a plain scalar add.
-static void NEON_ADD2SS(mV, const a64::VRegister& to, const a64::VRegister& from)
+static void NEON_ADD2SS(mV, const a64::VRegister& to, const a64::VRegister& from, int /*preClamped*/ = 0)
 {
 	if (!CHECK_VUADDSUBHACK)
 	{
@@ -116,7 +125,7 @@ static void NEON_ADD2SS(mV, const a64::VRegister& to, const a64::VRegister& from
 // For each lane: t = (val >> 31) ? (val ^ 0x7fffffff) : val
 // Then CMGT.4S selects the correct operand.
 
-static void NEON_MAXPS(mV, const a64::VRegister& to, const a64::VRegister& from)
+static void NEON_MAXPS(mV, const a64::VRegister& to, const a64::VRegister& from, int /*preClamped*/ = 0)
 {
 	const a64::VRegister& t1 = mVU.regAlloc->allocReg();
 	const a64::VRegister& t2 = mVU.regAlloc->allocReg();
@@ -140,7 +149,7 @@ static void NEON_MAXPS(mV, const a64::VRegister& to, const a64::VRegister& from)
 	mVU.regAlloc->clearNeeded(t2);
 }
 
-static void NEON_MINPS(mV, const a64::VRegister& to, const a64::VRegister& from)
+static void NEON_MINPS(mV, const a64::VRegister& to, const a64::VRegister& from, int /*preClamped*/ = 0)
 {
 	const a64::VRegister& t1 = mVU.regAlloc->allocReg();
 	const a64::VRegister& t2 = mVU.regAlloc->allocReg();
@@ -164,7 +173,7 @@ static void NEON_MINPS(mV, const a64::VRegister& to, const a64::VRegister& from)
 	mVU.regAlloc->clearNeeded(t2);
 }
 
-static void NEON_MAXSS(mV, const a64::VRegister& to, const a64::VRegister& from)
+static void NEON_MAXSS(mV, const a64::VRegister& to, const a64::VRegister& from, int /*preClamped*/ = 0)
 {
 	const a64::VRegister& t1 = mVU.regAlloc->allocReg();
 
@@ -189,7 +198,7 @@ static void NEON_MAXSS(mV, const a64::VRegister& to, const a64::VRegister& from)
 	mVU.regAlloc->clearNeeded(t1);
 }
 
-static void NEON_MINSS(mV, const a64::VRegister& to, const a64::VRegister& from)
+static void NEON_MINSS(mV, const a64::VRegister& to, const a64::VRegister& from, int /*preClamped*/ = 0)
 {
 	const a64::VRegister& t1 = mVU.regAlloc->allocReg();
 
@@ -217,7 +226,7 @@ static void NEON_MINSS(mV, const a64::VRegister& to, const a64::VRegister& from)
 //------------------------------------------------------------------
 // opType: 0=ADD, 1=SUB, 2=MUL, 3=MAX, 4=MIN, 5=ADD2
 
-typedef void (*NEONarithPS)(microVU&, const a64::VRegister&, const a64::VRegister&);
+typedef void (*NEONarithPS)(microVU&, const a64::VRegister&, const a64::VRegister&, int);
 
 static NEONarithPS const NEON_PS[] = {
 	NEON_ADDPS,  // 0
@@ -428,8 +437,8 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 		// vm's scalar format, and a V4S vm silently selects the half-precision
 		// opcode once Devel strips the VIXL_ASSERT.
 		if (bcLane >= 0)   armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane);
-		else if (_XYZW_SS) NEON_SS[opType](mVU, Fs, Ft);
-		else               NEON_PS[opType](mVU, Fs, Ft);
+		else if (_XYZW_SS) NEON_SS[opType](mVU, Fs, Ft, 0);
+		else               NEON_PS[opType](mVU, Fs, Ft, 0);
 
 		if (isACC)
 		{
@@ -485,10 +494,14 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 		if ((clampType & cFt) && bcLane < 0) mVUclamp2(mVU, Ft, a64::NoVReg, _X_Y_Z_W);
 		if (clampType & cFs)                 mVUclamp2(mVU, Fs, a64::NoVReg, _X_Y_Z_W);
 
+		// mVUclamp4 does not run behind the AX-14 lane fold, which replaces
+		// NEON_*[2], nor in the sign-preserving mode, which clamps operands only.
+		const bool prodClamped = (bcLane < 0) && !CHECK_VU_SIGN_OVERFLOW(mVU.index);
+
 		// Step 1: Multiply Fs * Ft
 		if (bcLane >= 0)   armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane); // AX-14 fold
-		else if (_XYZW_SS) NEON_SS[2](mVU, Fs, Ft);
-		else               NEON_PS[2](mVU, Fs, Ft);
+		else if (_XYZW_SS) NEON_SS[2](mVU, Fs, Ft, 0);
+		else               NEON_PS[2](mVU, Fs, Ft, 0);
 
 		// Step 2: ADD/SUB the product to/from ACC
 		if (_XYZW_SS || _X_Y_Z_W == 0xf)
@@ -503,13 +516,13 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 				// mirroring the load+Ins pattern mVU_FMACa uses for its ACC.
 				const a64::VRegister& accSS = mVU.regAlloc->allocReg();
 				armAsm->Mov(accSS.V16B(), ACC.V16B());
-				NEON_SS[opType](mVU, accSS, Fs);
+				NEON_SS[opType](mVU, accSS, Fs, prodClamped ? preClampFrom : 0);
 				armAsm->Ins(ACC.V4S(), 0, accSS.V4S(), 0);
 				mVU.regAlloc->clearNeeded(accSS);
 			}
 			else
 			{
-				NEON_PS[opType](mVU, ACC, Fs);
+				NEON_PS[opType](mVU, ACC, Fs, prodClamped ? preClampFrom : 0);
 			}
 			mVUupdateFlags(mVU, ACC, Fs, tempFt);
 			if (_XYZW_SS && _X_Y_Z_W != 8)
@@ -519,7 +532,7 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 		{
 			const a64::VRegister& tempACC = mVU.regAlloc->allocReg();
 			armAsm->Mov(tempACC.V16B(), ACC.V16B());
-			NEON_PS[opType](mVU, tempACC, Fs);
+			NEON_PS[opType](mVU, tempACC, Fs, prodClamped ? preClampFrom : 0);
 			mVUmergeRegs(ACC, tempACC, _X_Y_Z_W);
 			mVUupdateFlags(mVU, ACC, Fs, tempFt);
 			mVU.regAlloc->clearNeeded(tempACC);
@@ -562,14 +575,16 @@ static void mVU_FMACc(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 		if (clampType & cFs)                 mVUclamp2(mVU, Fs,  a64::NoVReg, _X_Y_Z_W);
 		if (clampType & cACC)                mVUclamp2(mVU, ACC, a64::NoVReg, _X_Y_Z_W);
 
+		const bool prodClamped = (bcLane < 0) && !CHECK_VU_SIGN_OVERFLOW(mVU.index);
+
 		// Step 1: Fs = Fs * Ft
 		// Step 2: Fs = Fs + ACC
-		if (_XYZW_SS) { NEON_SS[2](mVU, Fs, Ft); NEON_SS[0](mVU, Fs, ACC); }
+		if (_XYZW_SS) { NEON_SS[2](mVU, Fs, Ft, 0); NEON_SS[0](mVU, Fs, ACC, prodClamped ? preClampTo : 0); }
 		else
 		{
 			if (bcLane >= 0) armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane); // AX-14 fold
-			else             NEON_PS[2](mVU, Fs, Ft);
-			NEON_PS[0](mVU, Fs, ACC);
+			else             NEON_PS[2](mVU, Fs, Ft, 0);
+			NEON_PS[0](mVU, Fs, ACC, prodClamped ? preClampTo : 0);
 		}
 
 		if (_XYZW_SS2)
@@ -610,14 +625,16 @@ static void mVU_FMACd(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 		if (clampType & cFs)                 mVUclamp2(mVU, Fs, a64::NoVReg, _X_Y_Z_W);
 		if (clampType & cACC)                mVUclamp2(mVU, Fd, a64::NoVReg, _X_Y_Z_W);
 
+		const bool prodClamped = (bcLane < 0) && !CHECK_VU_SIGN_OVERFLOW(mVU.index);
+
 		// Step 1: Fs = Fs * Ft
 		// Step 2: Fd = Fd - Fs  (Fd starts as ACC)
-		if (_XYZW_SS) { NEON_SS[2](mVU, Fs, Ft); NEON_SS[1](mVU, Fd, Fs); }
+		if (_XYZW_SS) { NEON_SS[2](mVU, Fs, Ft, 0); NEON_SS[1](mVU, Fd, Fs, prodClamped ? preClampFrom : 0); }
 		else
 		{
 			if (bcLane >= 0) armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane); // AX-14 fold
-			else             NEON_PS[2](mVU, Fs, Ft);
-			NEON_PS[1](mVU, Fd, Fs);
+			else             NEON_PS[2](mVU, Fs, Ft, 0);
+			NEON_PS[1](mVU, Fd, Fs, prodClamped ? preClampFrom : 0);
 		}
 
 		mVUupdateFlags(mVU, Fd, Fs, tempFt);
