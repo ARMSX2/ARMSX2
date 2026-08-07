@@ -7,5 +7,5 @@
 ### Suggested Testing Steps
 <!-- If applicable, including examples you've already tested with / recommendations for how to test further is very helpful! -->
 
-### Did you use AI to help find, test, or implement this issue or feature?
-<!-- Answer yes or no. If you answer yes, please provide a brief explanation as to how you used it. Please see the Large Language Model (LLM) Usage Policy for more information: https://pcsx2.net/docs/contributing/#large-language-model-llm-usage-policy -->
+### AI Assistance (optional)
+<!-- AI-assisted contributions are welcome here — we use these tools ourselves, and this is not a gate on your PR. If AI did a meaningful share of the work, a line on where it helped lets reviewers focus their attention. What we ask regardless of how the patch was written: you understand the change, you can explain why it is correct, and you have built and tested it. We review the code, not the toolchain. -->
