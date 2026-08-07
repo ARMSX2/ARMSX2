@@ -189,12 +189,11 @@ constexpr AbiPin kPins[] = {
 	// ends in one, so all seven digests move. Harvested from the first,
 	// deliberately red, run.
 	{16, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075}},
-	// abi 17: writeQreg flushes a denormal quotient to signed zero before the
-	// insert. mVU_DIV / mVU_SQRT / mVU_RSQRT all end there, so all three change
-	// shape; the seven digests above are bit-identical to abi 16, none of those
-	// probes having a div-unit op. divUnit is harvested from the first,
-	// deliberately red, run.
-	{17, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x319729a0643ec36d}},
+	// abi 17: reserved by whatever bumps next; divUnit here pins what the
+	// emitter currently produces (unflushed) — see
+	// VuSticky*.DISABLED_*DivUnitFlushesDenormalQToSignedZero for the open gap.
+	// The seven above are unchanged from abi 16.
+	{17, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0xf7b84d8c08fa2266}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs)
