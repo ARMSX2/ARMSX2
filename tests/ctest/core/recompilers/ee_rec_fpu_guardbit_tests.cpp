@@ -16,7 +16,7 @@
 // don't need it. These tests run under the default (on);
 // DisableEmitsPlainOpMatchingInterp at the bottom pins the opt-out path.
 //
-// The interpreter guards too (fpuAddSubGuarded, FPU.cpp), so in the default
+// The interpreter guards too (eeGuardedAddSub, FPU.cpp), so in the default
 // configuration the two engines agree on every guard-sensitive input and the
 // tests below can use Run()'s JIT-vs-interp auto-diff rather than
 // RunJitNoDiff(). They part company only on the opt-out, which the interpreter

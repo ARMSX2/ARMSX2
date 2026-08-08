@@ -6,7 +6,7 @@
 // The EE adder keeps no guard bits, so a cancelling subtraction (or mixed-sign
 // add) renormalises left over the lost bits and lands one ULP toward zero from
 // the IEEE answer. The mechanism, the mask and the emitters it was ported from
-// are at fpuAddSubGuarded in FPU.cpp. This file is the console pin for the
+// are at eeGuardedAddSub in FPU.cpp. This file is the console pin for the
 // class; EeRecFpuGuardBit (ee_rec_fpu_guardbit_tests.cpp) covers the emitted
 // code and the fpuGuardedAddSub opt-out.
 //
@@ -157,7 +157,7 @@ struct ScopedEeFpEnv
 };
 
 // The reference model, transcribed from x86 FPU_ADD_SUB (iFPU.cpp); the rule it
-// implements is stated at fpuAddSubGuarded in FPU.cpp.
+// implements is stated at eeGuardedAddSub in FPU.cpp.
 //
 // __noinline: several callers below pass compile-time constants, and an inlined
 // body would let the compiler fold the arithmetic at build time, under the
@@ -206,7 +206,7 @@ __noinline u32 ModelPlainAddSub(u32 a, u32 b, bool issub)
 } // namespace
 
 // ---------------------------------------------------------------------------
-// The interpreter failed all thirteen of these before fpuAddSubGuarded().
+// The interpreter failed all thirteen of these before eeGuardedAddSub().
 // ---------------------------------------------------------------------------
 TEST(EeFpuGuardedAddSubConsole, InterpMatchesConsoleOnEveryGuardBitRow)
 {
