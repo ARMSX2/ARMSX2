@@ -33,7 +33,11 @@
 //   Ft, which agrees with the console on the two rows where Fs and Ft share a
 //   sign and is inverted on the two where they differ.
 //
-// Neither is simply a bug to fix. The EE clamp modes (GameDB eeClampMode,
+// The FCR31 axis is a third rule, and unlike those two it is not a tradeoff:
+// the dividend decides which cause bit a zero divisor raises.
+// ZeroDividendRaisesInvalidNotDivideByZero owns it.
+//
+// Neither of the first two is simply a bug to fix. The EE clamp modes (GameDB eeClampMode,
 // EmuConfig.Cpu.Recompiler fpuOverflow/fpuExtraOverflow/fpuFullMode) trade
 // console exactness for speed and host sanity, and they are what users run.
 // Measured here, all four modes, both engines:
@@ -72,29 +76,41 @@ namespace {
 
 constexpr u32 kFd = 4, kFs = 5, kFt = 6;
 
+constexpr u32 kI = 0x00020000u, kD = 0x00010000u, kSI = 0x40u, kSD = 0x20u;
+constexpr u32 kCauseSticky = kI | kD | kSI | kSD;
+
+// The writable half of FCR31. The always-set 0x01000001 is outside it, so a
+// raw fprc[31] read masked with this is directly comparable to the console word
+// the capture quotes minus those two bits.
+constexpr u32 kFcr31Writable = 0x0083C078u;
+
 // One capture row. `console` is the full 32-bit hardware result; the tests
 // below split it into sign and magnitude so each defect is asserted alone.
+// `flags` is the console's FCR31 cause and sticky bits for the same row, from
+// the SCPH-90000 run of corpus v4 rather than from ps2autotests, whose capture
+// did not record FCR31.
 struct ZeroDivisorRow
 {
 	u32 fs, ft;
 	bool rsqrt;
 	u32 console;
+	u32 flags;
 	const char* what;
 };
 
 constexpr ZeroDivisorRow kRows[] = {
 	// muldiv.expected -- DIV.S, sign(Fs ^ Ft)
-	{0x3F800000u, 0x00000000u, false, 0x7FFFFFFFu, "div  1.0 / +0"},
-	{0x00000000u, 0x00000000u, false, 0x7FFFFFFFu, "div  +0  / +0"},
-	{0x00000000u, 0x80000000u, false, 0xFFFFFFFFu, "div  +0  / -0"},
-	{0x80000000u, 0x00000000u, false, 0xFFFFFFFFu, "div  -0  / +0"},
-	{0x80000000u, 0x80000000u, false, 0x7FFFFFFFu, "div  -0  / -0"},
+	{0x3F800000u, 0x00000000u, false, 0x7FFFFFFFu, kD | kSD, "div  1.0 / +0"},
+	{0x00000000u, 0x00000000u, false, 0x7FFFFFFFu, kI | kSI, "div  +0  / +0"},
+	{0x00000000u, 0x80000000u, false, 0xFFFFFFFFu, kI | kSI, "div  +0  / -0"},
+	{0x80000000u, 0x00000000u, false, 0xFFFFFFFFu, kI | kSI, "div  -0  / +0"},
+	{0x80000000u, 0x80000000u, false, 0x7FFFFFFFu, kI | kSI, "div  -0  / -0"},
 	// sqrt.expected -- RSQRT.S, sign(Fs) alone
-	{0x3F800000u, 0x00000000u, true,  0x7FFFFFFFu, "rsqrt 1.0 / sqrt(+0)"},
-	{0x00000000u, 0x00000000u, true,  0x7FFFFFFFu, "rsqrt +0  / sqrt(+0)"},
-	{0x00000000u, 0x80000000u, true,  0x7FFFFFFFu, "rsqrt +0  / sqrt(-0)"},
-	{0x80000000u, 0x00000000u, true,  0xFFFFFFFFu, "rsqrt -0  / sqrt(+0)"},
-	{0x80000000u, 0x80000000u, true,  0xFFFFFFFFu, "rsqrt -0  / sqrt(-0)"},
+	{0x3F800000u, 0x00000000u, true,  0x7FFFFFFFu, kD | kSD, "rsqrt 1.0 / sqrt(+0)"},
+	{0x00000000u, 0x00000000u, true,  0x7FFFFFFFu, kI | kSI, "rsqrt +0  / sqrt(+0)"},
+	{0x00000000u, 0x80000000u, true,  0x7FFFFFFFu, kI | kSI, "rsqrt +0  / sqrt(-0)"},
+	{0x80000000u, 0x00000000u, true,  0xFFFFFFFFu, kI | kSI, "rsqrt -0  / sqrt(+0)"},
+	{0x80000000u, 0x80000000u, true,  0xFFFFFFFFu, kI | kSI, "rsqrt -0  / sqrt(-0)"},
 };
 constexpr int kRowCount = static_cast<int>(sizeof(kRows) / sizeof(kRows[0]));
 
@@ -106,14 +122,16 @@ u32 FastPathValue(const ZeroDivisorRow& r)
 	return (r.console & 0x80000000u) | 0x7F7FFFFFu;
 }
 
-// Runs one row on one engine and returns the result register.
-u32 RunRow(const ZeroDivisorRow& r, bool jit, bool full_mode)
+// Runs one row on one engine and returns the result register. `fcr31`, when
+// given, receives the raw post-state of the control register, and `pre` its
+// pre-state -- both raw, so the caller masks.
+u32 RunRow(const ZeroDivisorRow& r, bool jit, bool full_mode, u32* fcr31 = nullptr, u32 pre = 0)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
 	if (full_mode)
 		h.EnableFpuFullMode();
-	h.SetFcr31(0);
+	h.SetFcr31(pre);
 	h.SetFprBits(kFs, r.fs);
 	h.SetFprBits(kFt, r.ft);
 	h.LoadProgram({r.rsqrt ? RSQRT_S(kFd, kFs, kFt) : DIV_S(kFd, kFs, kFt)});
@@ -121,6 +139,8 @@ u32 RunRow(const ZeroDivisorRow& r, bool jit, bool full_mode)
 		h.RunJitNoDiff();
 	else
 		h.RunInterpOnly();
+	if (fcr31)
+		*fcr31 = jit ? h.JitSnapshot().fprs.fprc[31] : h.InterpSnapshot().fprs.fprc[31];
 	return jit ? h.GetFprBitsJit(kFd) : h.GetFprBitsInterp(kFd);
 }
 
@@ -230,6 +250,90 @@ TEST(EeFpuZeroDivisorConsole, FullClampModeBothEnginesMatchConsoleSign)
 				<< (r.rsqrt ? "" : "  (DIV control: must not regress)"));
 			EXPECT_EQ(RunRow(r, jit != 0, /*full_mode=*/true) >> 31,
 				r.console >> 31);
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Flags: the dividend decides the cause, whatever the opcode and whatever the
+// signs. DIV.S has made that split since checkDivideByZero was written and
+// DOUBLE::recRSQRT_S_xmm always had it, so those legs are controls; RSQRT.S in
+// both single-precision tiers raised D|SD unconditionally.
+//
+// The interpreter runs both mode legs because it has no FULL path: its two
+// answers must agree, which is what says the clamp modes do not reach it.
+// ---------------------------------------------------------------------------
+TEST(EeFpuZeroDivisorConsole, ZeroDividendRaisesInvalidNotDivideByZero)
+{
+	for (int i = 0; i < kRowCount; ++i)
+	{
+		const ZeroDivisorRow& r = kRows[i];
+		for (int full = 0; full < 2; ++full)
+		{
+			for (int jit = 0; jit < 2; ++jit)
+			{
+				SCOPED_TRACE(::testing::Message()
+					<< r.what << (jit ? " [jit]" : " [interp]")
+					<< (full ? " FULL" : " fast") << ", flags only");
+				u32 fcr31 = 0;
+				RunRow(r, jit != 0, full != 0, &fcr31);
+				EXPECT_EQ(fcr31 & kCauseSticky, r.flags);
+			}
+		}
+	}
+}
+
+// The same rule with a denormal dividend, which the exponent-field test counts
+// as zero. DIV only: no capture row divides a denormal by a zero divisor
+// through RSQRT.S, so the console has not said what that one does.
+TEST(EeFpuZeroDivisorConsole, DenormalDividendCountsAsZero)
+{
+	constexpr ZeroDivisorRow kDenormalRows[] = {
+		{0x007FFFFFu, 0x00000001u, false, 0x7FFFFFFFu, kI | kSI, "[fpm 185] div denormal / denormal"},
+		{0x00001337u, 0x00001337u, false, 0x7FFFFFFFu, kI | kSI, "[fpm 202] div denormal / itself"},
+	};
+	for (const ZeroDivisorRow& r : kDenormalRows)
+	{
+		for (int full = 0; full < 2; ++full)
+		{
+			for (int jit = 0; jit < 2; ++jit)
+			{
+				SCOPED_TRACE(::testing::Message()
+					<< r.what << (jit ? " [jit]" : " [interp]")
+					<< (full ? " FULL" : " fast"));
+				u32 fcr31 = 0;
+				RunRow(r, jit != 0, full != 0, &fcr31);
+				EXPECT_EQ(fcr31 & kCauseSticky, r.flags);
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DIV.S clears both causes before it raises anything, the way SQRT.S and
+// RSQRT.S already did. The whole writable half of the word is asserted rather
+// than the two bits under test: O, U, the four sticky bits and C all survive a
+// divide, so a clear that reaches further than it should fails here too.
+// ---------------------------------------------------------------------------
+TEST(EeFpuZeroDivisorConsole, DivClearsBothCauseBitsBeforeRaising)
+{
+	struct PreStateRow
+	{
+		ZeroDivisorRow row;
+		u32 console_fcr31;
+	};
+	constexpr PreStateRow kPreRows[] = {
+		{{0x3F800000u, 0x00000000u, false, 0x7FFFFFFFu, kD | kSD, "[fpm 723] div 1.0 / +0"}, 0x0181C079u},
+		{{0x3F800000u, 0x40400000u, false, 0x3EAAAAABu, 0u, "[fpm 724] div 1.0 / 3.0"}, 0x0180C079u},
+	};
+	for (const PreStateRow& p : kPreRows)
+	{
+		for (int jit = 0; jit < 2; ++jit)
+		{
+			SCOPED_TRACE(::testing::Message() << p.row.what << (jit ? " [jit]" : " [interp]"));
+			u32 fcr31 = 0;
+			RunRow(p.row, jit != 0, /*full_mode=*/false, &fcr31, /*pre=*/kFcr31Writable);
+			EXPECT_EQ(fcr31 & kFcr31Writable, p.console_fcr31 & kFcr31Writable);
 		}
 	}
 }
