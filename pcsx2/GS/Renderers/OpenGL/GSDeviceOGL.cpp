@@ -4,6 +4,7 @@
 #include "GS/Renderers/OpenGL/GLContext.h"
 #include "GS/Renderers/OpenGL/GSDeviceOGL.h"
 #include "GS/Renderers/OpenGL/GLState.h"
+#include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSGPUProfile.h"
 #include "GS/GSState.h"
 #include "GS/Renderers/Common/GSRenderer.h"
@@ -1050,28 +1051,32 @@ bool GSDeviceOGL::CheckFeatures()
 	m_features.dual_source_blend =
 		!m_is_gles || GLAD_GL_EXT_blend_func_extended || GLAD_GL_ARB_blend_func_extended;
 
-	m_features.framebuffer_fetch = (GLAD_GL_ARM_shader_framebuffer_fetch || GLAD_GL_EXT_shader_framebuffer_fetch);
-
+	// The framebuffer-fetch decision is made ONCE, here, by DecideGLFramebufferFetch (see
+	// GSFramebufferFetchPolicy.h for why it is a separate pure function). Nothing below may write
+	// m_features.framebuffer_fetch -- read `fbfetch` instead if you need to know what was decided.
+	//
 	// The Mali r44p1 blob loses the rendering context under the in-tile framebuffer-fetch blend path,
 	// exactly as it loses the Vulkan device under attachment-feedback-loop (VK_ERROR_DEVICE_LOST on
 	// effectively every game -- Mali-G615 r44p1). Mirror the Vulkan-side r44p1 gate (see GSDeviceVK.cpp)
 	// and drop this one blob to the non-fetch (copy) blend path. Narrow by driver version, not vendor,
 	// so other (working) Mali blobs keep the fast path. GL_VERSION reads e.g. "OpenGL ES 3.2 v1.r44p1-...".
-	if (m_features.framebuffer_fetch)
-	{
-		const char* gl_version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
-		if (gl_version && std::strstr(gl_version, "r44p1"))
-		{
-			Console.WriteLn("Mali r44p1: disabling framebuffer fetch (GL context-lost workaround; matches the Vulkan gate).");
-			m_features.framebuffer_fetch = false;
-		}
-	}
+	const bool fbfetch_driver_blocklisted = (std::strstr(gl_version_str, "r44p1") != nullptr);
+	const GSFramebufferFetchDecision fbfetch = DecideGLFramebufferFetch(GLAD_GL_ARM_shader_framebuffer_fetch,
+		GLAD_GL_EXT_shader_framebuffer_fetch, GLAD_GL_EXT_shader_pixel_local_storage, fbfetch_driver_blocklisted,
+		GSConfig.DisableFramebufferFetch, use_mali_profile);
+	m_features.framebuffer_fetch = fbfetch.enabled;
 
-	if (m_features.framebuffer_fetch && GSConfig.DisableFramebufferFetch)
+	switch (fbfetch.veto)
 	{
-		Host::AddOSDMessage(
-			"Framebuffer fetch was found but is disabled. This will reduce performance.", Host::OSD_ERROR_DURATION);
-		m_features.framebuffer_fetch = false;
+		case GSFramebufferFetchVeto::DriverBlocklist:
+			Console.WriteLn("Mali r44p1: disabling framebuffer fetch (GL context-lost workaround; matches the Vulkan gate).");
+			break;
+		case GSFramebufferFetchVeto::UserSetting:
+			Host::AddOSDMessage(
+				"Framebuffer fetch was found but is disabled. This will reduce performance.", Host::OSD_ERROR_DURATION);
+			break;
+		default:
+			break;
 	}
 
 	if (GSConfig.OverrideTextureBarriers == 0)
@@ -1160,15 +1165,23 @@ bool GSDeviceOGL::CheckFeatures()
 		// device was force-overridden to Mali but lacks ARM fbfetch (rare but
 		// possible), demote to PowerVR profile which uses the same EXT/PLS path the
 		// catch-all default uses.
-		if (GLAD_GL_ARM_shader_framebuffer_fetch)
+		//
+		// ⚠️ This block must NOT re-enable framebuffer fetch, and nothing here may write
+		// m_features.framebuffer_fetch. It used to set it unconditionally true off the raw
+		// GLAD_GL_ARM_shader_framebuffer_fetch extension rather than the decision made ~100 lines
+		// above, which resurrected fetch after both the r44p1 driver guard and the user's
+		// DisableFramebufferFetch setting -- so on Mali GL there was no way to turn fetch off at
+		// all. Demotion stays keyed on the extension because that is what it has always meant (a
+		// Mali profile that cannot reach the ARM shader path is on the wrong profile), but fetch
+		// being switched off is a blend-path choice, not a reason to change profile.
+		if (!fbfetch.demote_mali_to_powervr)
 		{
 			Console.WriteLn(Color_Yellow, "GL: Applying Mali-specific optimizations for tile-based rendering.");
-			m_features.framebuffer_fetch = true;
-			if (GSConfig.OverrideTextureBarriers == -1)
-			{
-				m_features.texture_barrier = m_features.framebuffer_fetch;
+			// texture_barrier already reflects the fetch decision: on GLES the ARB/NV barrier
+			// extensions are absent, so the Auto branch above resolves to exactly
+			// framebuffer_fetch. Nothing left to override here -- only to report.
+			if (m_features.framebuffer_fetch && GSConfig.OverrideTextureBarriers == -1)
 				Console.WriteLn("GL: Mali optimization - using ARM framebuffer fetch over texture barriers.");
-			}
 		}
 		else
 		{
@@ -1223,29 +1236,25 @@ bool GSDeviceOGL::CheckFeatures()
 	}
 
 	{
-		const bool has_arm_fetch = GLAD_GL_ARM_shader_framebuffer_fetch;
-		const bool has_ext_fetch = GLAD_GL_EXT_shader_framebuffer_fetch;
-		const bool has_pls_fetch = GLAD_GL_EXT_shader_pixel_local_storage;
 		Console.WriteLn("GL: Framebuffer fetch extension caps: arm=%d ext=%d pls=%d.",
-			has_arm_fetch ? 1 : 0, has_ext_fetch ? 1 : 0, has_pls_fetch ? 1 : 0);
+			GLAD_GL_ARM_shader_framebuffer_fetch ? 1 : 0, GLAD_GL_EXT_shader_framebuffer_fetch ? 1 : 0,
+			GLAD_GL_EXT_shader_pixel_local_storage ? 1 : 0);
 
 		const char* active_profile_name = use_mali_profile ? "Mali" :
 			(use_powervr_profile ? "PowerVR" :
 			(use_adreno_profile ? "Adreno" : "Generic"));
-		const char* active_fetch_backend = "None";
-		if (m_features.framebuffer_fetch)
-		{
-			if (use_mali_profile)
-				active_fetch_backend = "ARM";
-			else if (has_ext_fetch || has_pls_fetch)
-				active_fetch_backend = "EXT/PLS";
-			else if (has_arm_fetch)
-				active_fetch_backend = "ARM";
-		}
-		Console.WriteLn("GL: Active framebuffer fetch backend (%s profile): %s.", active_profile_name, active_fetch_backend);
-
-		if (use_mali_profile && !has_arm_fetch)
-			Console.Warning("GL: Mali profile selected but ARM framebuffer fetch is unavailable; using non-fetch fallback.");
+		const char* active_fetch_backend =
+			(fbfetch.backend == GSFramebufferFetchBackend::ARM) ? "ARM" :
+			((fbfetch.backend == GSFramebufferFetchBackend::EXT) ? "EXT/PLS" : "None");
+		// The reason rides on the same line as the verdict, deliberately: the resurrection bug
+		// this policy replaced printed "disabling framebuffer fetch" and "backend: ARM" a tenth of
+		// a millisecond apart, and neither line said what had decided it.
+		const char* fetch_veto_reason =
+			(fbfetch.veto == GSFramebufferFetchVeto::NoExtension) ? " (no fetch extension)" :
+			((fbfetch.veto == GSFramebufferFetchVeto::DriverBlocklist) ? " (blocked for this driver build)" :
+			((fbfetch.veto == GSFramebufferFetchVeto::UserSetting) ? " (disabled in settings)" : ""));
+		Console.WriteLn("GL: Active framebuffer fetch backend (%s profile): %s%s.", active_profile_name,
+			active_fetch_backend, fetch_veto_reason);
 	}
 
 	if (GLAD_GL_ARB_shader_storage_buffer_object)
