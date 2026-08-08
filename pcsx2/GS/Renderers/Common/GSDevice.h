@@ -1791,6 +1791,11 @@ public:
 	virtual std::vector<std::string> GetExtendedStats() const { return {}; }
 
 	/// Returns true if not enough time has passed for present to not block.
+	/// ⚠️ Not a pure query: answering "present" books this frame as the one that was displayed,
+	/// so the next call within the same throttle period answers "skip". Ask exactly once per
+	/// vsync, at the point the decision is acted on. A second caller — even a diagnostic that
+	/// only reads the result — spends the credit and freezes the picture for as long as the
+	/// throttle is armed.
 	bool ShouldSkipPresentingFrame();
 
 	/// Sleeps to the time the next frame can be displayed.
