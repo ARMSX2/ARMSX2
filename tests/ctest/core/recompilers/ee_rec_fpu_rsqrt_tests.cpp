@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 #include <gtest/gtest.h>
 
 using namespace recompiler_tests;
@@ -458,6 +459,62 @@ TEST(EeRecFpuRsqrt, ClearsIDPreservesStickyOnPositive)
 	h.ExpectFpr(3, FprBits(3.0f));
 	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & kStickyMask, kSI | kSD);    // I|D cleared
 	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & kStickyMask, kSI | kSD);
+}
+
+// ---- FCR31 residency (GE-12) -----------------------------------------------
+//
+// Every row here is also covered by a test above that runs the op on its own,
+// and the op on its own was always right. What this adds is an instruction in
+// front of it: a CTC1 parks FCR31 in a GPR for the rest of the block
+// (fpuTryAllocFCR31), and a flag write that goes to memory instead is then
+// overwritten by the slot's writeback at the block seam. Both the I|D clear
+// and the raise disappeared that way.
+//
+// Each row runs both polarities of the residency predicate -- with the CTC1 in
+// front, and with the same seed applied directly to memory -- because the
+// memory leg passes either way and would sign off on the defect alone.
+TEST(EeRecFpuRsqrt, FlagWritesSurviveAPrecedingCtc1)
+{
+	struct Row { u32 seed, fs, ft, want; const char* what; };
+	const Row rows[] = {
+		{kI | kD | kSI | kSD, FprBits(6.0f), FprBits(4.0f),  kSI | kSD, "positive divisor: I|D cleared"},
+		{kI | kD,             FprBits(6.0f), FprBits(-4.0f), kI | kSI,  "negative divisor: I|SI"},
+		{kI | kD,             FprBits(6.0f), 0x00000000u,    kD | kSD,  "x/0: D|SD"},
+		{kI | kD,             0x00000000u,   0x00000000u,    kI | kSI,  "0/0: I|SI"},
+	};
+	for (const Row& r : rows)
+	{
+		SCOPED_TRACE(r.what);
+		for (int resident = 0; resident < 2; ++resident)
+		{
+			SCOPED_TRACE(resident ? "ctc1 in front: FCR31 resident" : "no ctc1: FCR31 in memory");
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.SetFprBits(1, r.fs);
+			h.SetFprBits(2, r.ft);
+
+			std::vector<u32> prog;
+			if (resident)
+			{
+				prog.push_back(LUI(reg::t0, static_cast<u16>(r.seed >> 16)));
+				prog.push_back(ORI(reg::t0, reg::t0, static_cast<u16>(r.seed)));
+				prog.push_back(ee::CTC1(reg::t0, 31));
+			}
+			else
+			{
+				h.SetFcr31(r.seed);
+			}
+			prog.push_back(ee::RSQRT_S(3, 1, 2));
+			h.LoadProgram(prog);
+
+			// JIT-only: the zero-divisor rows saturate one binade apart between
+			// the tiers (EeFpuTopBinadeConsole), which Run()'s value diff would
+			// report instead of the flags. The interpreter reaches fprc[31]
+			// through C either way and is pinned by the tests above.
+			h.RunJitNoDiff();
+			EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & kStickyMask, r.want);
+		}
+	}
 }
 
 // ---- Positive-path single-precision value (x86 / hardware parity) ----------
