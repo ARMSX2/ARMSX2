@@ -170,15 +170,18 @@ TEST(EeRecFpuGuardBit, RandomizedMatchesX86Model)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
 	std::mt19937 rng(0xC0FFEE);
-	std::uniform_int_distribution<u32> exp_dist(1, 254);
-	std::uniform_int_distribution<u32> mant_dist(0, 0x7fffff);
-	std::uniform_int_distribution<u32> sign_dist(0, 1);
+	// std::uniform_int_distribution is not specified down to the bit, so the same
+	// seed gives different operands on libstdc++ and libc++. Drawn by hand, one
+	// per line, since the operands of | are not sequenced either.
+	const auto draw = [&rng](u32 n) { return static_cast<u32>(rng() % n); };
 
 	int checked = 0;
 	for (int i = 0; i < 2000; i++)
 	{
-		const u32 a = (sign_dist(rng) << 31) | (exp_dist(rng) << 23) | mant_dist(rng);
-		const u32 b = (sign_dist(rng) << 31) | (exp_dist(rng) << 23) | mant_dist(rng);
+		const u32 sa = draw(2), ea = draw(254) + 1, ma = draw(0x800000);
+		const u32 sb = draw(2), eb = draw(254) + 1, mb = draw(0x800000);
+		const u32 a = (sa << 31) | (ea << 23) | ma;
+		const u32 b = (sb << 31) | (eb << 23) | mb;
 
 		// Skip operand pairs whose *result* leaves the PS2 range: the result clamp
 		// (fpuClampResult) then dominates and the guard mask is unobservable.

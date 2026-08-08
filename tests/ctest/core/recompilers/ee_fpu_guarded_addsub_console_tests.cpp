@@ -279,25 +279,27 @@ TEST(EeFpuGuardedAddSubConsole, RandomisedAddSubMatchesTheModelOnBothEngines)
 {
 	const ScopedEeFpEnv fp_env;
 	std::mt19937 rng(0x6A5D5EED);
-	std::uniform_int_distribution<u32> mant_dist(0, 0x7FFFFF);
-	std::uniform_int_distribution<u32> sign_dist(0, 1);
-	std::uniform_int_distribution<int> exp_dist(1, 254);
-	// Deliberately oversample small differences: |diff| 0..3 is where the mask
-	// switches on, and a uniform exponent pair almost never lands there.
-	std::uniform_int_distribution<int> near_dist(-4, 4);
-	std::uniform_int_distribution<u32> pick(0, 1);
+	// std::uniform_int_distribution is not specified down to the bit, so the same
+	// seed gives different operands on libstdc++ and libc++. Drawn by hand, one
+	// per line, since the operands of | are not sequenced either.
+	const auto draw = [&rng](u32 n) { return static_cast<u32>(rng() % n); };
 
 	int checked = 0, masked_rows = 0, cliff_rows = 0, boundary_rows = 0;
 	int underflow_rows = 0, overflow_rows = 0;
 	for (int i = 0; i < 3000; ++i)
 	{
-		const int ea = exp_dist(rng);
-		int eb = pick(rng) ? ea + near_dist(rng) : exp_dist(rng);
+		const int ea = static_cast<int>(draw(254)) + 1;
+		// Deliberately oversample small differences: |diff| 0..3 is where the
+		// mask switches on, and a uniform exponent pair almost never lands there.
+		const int eb = draw(2) ? ea + (static_cast<int>(draw(9)) - 4)
+							   : static_cast<int>(draw(254)) + 1;
 		if (eb < 1 || eb > 254)
 			continue;
 
-		const u32 a = (sign_dist(rng) << 31) | (static_cast<u32>(ea) << 23) | mant_dist(rng);
-		const u32 b = (sign_dist(rng) << 31) | (static_cast<u32>(eb) << 23) | mant_dist(rng);
+		const u32 sa = draw(2), ma = draw(0x800000);
+		const u32 sb = draw(2), mb = draw(0x800000);
+		const u32 a = (sa << 31) | (static_cast<u32>(ea) << 23) | ma;
+		const u32 b = (sb << 31) | (static_cast<u32>(eb) << 23) | mb;
 
 		const u32 want_add = ModelGuardedAddSub(a, b, false);
 		const u32 want_sub = ModelGuardedAddSub(a, b, true);
