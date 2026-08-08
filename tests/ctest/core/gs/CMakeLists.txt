@@ -4,13 +4,14 @@
 # must pass the same suite bit-for-bit. See
 # scratchpad/mq65-gs-2026-07-18/GIFPACKED-VERTEX-DESIGN.md for the campaign.
 #
-# gs_interlace_policy_tests.cpp rides this target rather than adding one: the two policies are
-# header-only constexpr, so they need no extra linkage.
+# gs_interlace_policy_tests.cpp and gs_framebuffer_fetch_policy_tests.cpp ride this target rather
+# than adding one: those policies are header-only constexpr, so they need no extra linkage.
 add_pcsx2_test(gs_vertex_tests
 	${CMAKE_CURRENT_SOURCE_DIR}/../StubHost.cpp
 	gs_vertex_tests.cpp
 	gs_backqueue_tests.cpp
 	gs_interlace_policy_tests.cpp
+	gs_framebuffer_fetch_policy_tests.cpp
 	gs_draw_staging_tests.cpp
 )
 
