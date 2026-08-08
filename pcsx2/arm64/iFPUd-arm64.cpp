@@ -567,7 +567,7 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // one-directional (it can only miss a deficit, never invent one) and rare in
 // general operand space, per the count above. The term needs a bitfield extract
 // NEON has no equivalent for, so it has to go through GPRs and come back --
-// sketched at ten instructions against this predicate's three.
+// sketched at ten instructions against this predicate's one.
 // The resulting interpreter divergence is pinned by
 // EeRecFpuFull.MulDefectDropsTheBoundaryTermTheInterpreterModels.
 //
