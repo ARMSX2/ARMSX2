@@ -1155,13 +1155,29 @@ static void recRSQRT_S_xmm(int info)
 	armAsm->Bic(RWSCRATCH, RWSCRATCH, FPUflagI | FPUflagD);
 	armStoreEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
 
-	a64::Label notZero, doDiv, end;
+	a64::Label notZero, xOverZero, flagsDone, doDiv, end;
 
 	// Ft is treated as zero when its exponent field is 0 (denormals included).
 	armAsm->Tst(RWARG1, 0x7F800000);
 	armAsm->B(&notZero, a64::ne);
 
-	// Zero divisor: set D|SD; result = sign(FS) | 0x7f7fffff.
+	armAsm->Fmov(RWARG2, armSRegister(dreg)); // raw Fs bits, saved before any write
+
+	// The dividend decides the cause: 0/0 raises I|SI, x/0 raises D|SD. Same
+	// split as recDIV_S_xmm above and DOUBLE::recRSQRT_S_xmm in
+	// iFPUd-arm64.cpp. Tested on the exponent field, like the divisor above,
+	// so FPCR.FZ does not decide whether a denormal dividend counts as zero.
+	armLoadEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
+	armAsm->Tst(RWARG2, 0x7F800000);
+	armAsm->B(&xOverZero, a64::ne);
+	armAsm->Orr(RWSCRATCH, RWSCRATCH, FPUflagI | FPUflagSI); // 0/0
+	armAsm->B(&flagsDone);
+	armAsm->Bind(&xOverZero);
+	armAsm->Orr(RWSCRATCH, RWSCRATCH, FPUflagD | FPUflagSD); // x/0
+	armAsm->Bind(&flagsDone);
+	armStoreEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
+
+	// Result = sign(FS) | 0x7f7fffff.
 	//
 	// FS, not FT. This op divides by sqrt(|Ft|), so by the time the division
 	// happens the divisor has no sign left to contribute -- only the dividend
@@ -1174,10 +1190,6 @@ static void recRSQRT_S_xmm(int info)
 	// The MAGNITUDE stays at FLT_MAX rather than the console's 0x7FFFFFFF: this
 	// tier saturates in host singles throughout and cannot hold the EE's top
 	// binade. That is the standing fast-path compromise, not this fix.
-	armLoadEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
-	armAsm->Orr(RWSCRATCH, RWSCRATCH, FPUflagD | FPUflagSD);
-	armStoreEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
-	armAsm->Fmov(RWARG2, armSRegister(dreg)); // raw Fs bits, saved before any write
 	armAsm->And(RWARG2, RWARG2, 0x80000000);
 	armAsm->Orr(RWARG2, RWARG2, 0x7f7fffff);
 	armAsm->Fmov(armSRegister(EEREC_D), RWARG2);

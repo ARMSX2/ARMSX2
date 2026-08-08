@@ -1091,7 +1091,11 @@ void RSQRT_S() {
 	clearFPUFlags(FPUflagD | FPUflagI);
 
 	if ( ( _FtValUl_ & 0x7F800000 ) == 0 ) { // Ft is zero (Denormals are Zero)
-		_ContVal_ |= FPUflagD | FPUflagSD;
+		// The dividend decides the cause: zero over zero is invalid, anything
+		// else over zero is a divide by zero. Same test checkDivideByZero
+		// makes, so a denormal Fs counts as zero here too.
+		_ContVal_ |= ( ( _FsValUl_ & 0x7F800000 ) == 0 ) ? ( FPUflagI | FPUflagSI )
+		                                                 : ( FPUflagD | FPUflagSD );
 		// The EE maximum, and the sign of Fs alone -- no xor, unlike DIV.S:
 		// rsqrt takes |Ft|, so the divisor has no sign left to contribute by the
 		// time the division happens. Console rows 59 and 63: rsqrt(+0, -0) is
