@@ -183,6 +183,15 @@ __noinline u32 ModelGuardedAddSub(u32 a, u32 b, bool issub)
 	return rb;
 }
 
+// Host singles stop one binade below the EE, and chop rounding saturates rather
+// than overflowing, so a result at or above 2^128 comes back +-0x7F7FFFFF. Both
+// engines carry such a result further -- the interpreter into the top binade,
+// the fast path to +-FLT_MAX -- which is EeFpuTopBinadeConsole's subject.
+bool OutsideTheModelsRange(u32 want)
+{
+	return (want & 0x7FFFFFFFu) >= 0x7F7FFFFFu;
+}
+
 __noinline u32 ModelPlainAddSub(u32 a, u32 b, bool issub)
 {
 	float fa, fb;
@@ -279,7 +288,7 @@ TEST(EeFpuGuardedAddSubConsole, RandomisedAddSubMatchesTheModelOnBothEngines)
 	std::uniform_int_distribution<u32> pick(0, 1);
 
 	int checked = 0, masked_rows = 0, cliff_rows = 0, boundary_rows = 0;
-	int underflow_rows = 0;
+	int underflow_rows = 0, overflow_rows = 0;
 	for (int i = 0; i < 3000; ++i)
 	{
 		const int ea = exp_dist(rng);
@@ -292,10 +301,12 @@ TEST(EeFpuGuardedAddSubConsole, RandomisedAddSubMatchesTheModelOnBothEngines)
 
 		const u32 want_add = ModelGuardedAddSub(a, b, false);
 		const u32 want_sub = ModelGuardedAddSub(a, b, true);
-		// Skip pairs whose result leaves the EE's range: the result clamp then
-		// dominates and the guard mask is unobservable.
-		if ((want_add & 0x7F800000u) >= 0x7F800000u || (want_sub & 0x7F800000u) >= 0x7F800000u)
+		// Counted, see the bound below.
+		if (OutsideTheModelsRange(want_add) || OutsideTheModelsRange(want_sub))
+		{
+			++overflow_rows;
 			continue;
+		}
 		// Same at the bottom: below 2^-126 the console keeps an add/sub result's
 		// mantissa bits instead of flushing (EeFpuUnderflowConsole), and the
 		// model above computes in host floats, which FZ has already flushed.
@@ -335,10 +346,36 @@ TEST(EeFpuGuardedAddSubConsole, RandomisedAddSubMatchesTheModelOnBothEngines)
 	EXPECT_GT(checked, 100) << "anti-vacuity: on no pair did the guard change the "
 							   "answer, so this test would pass with the masking "
 							   "deleted";
-	// If the skip swallows more than a handful of the 3000 pairs, the
+	// If either skip swallows more than a handful of the 3000 pairs, the
 	// generator's exponent distribution moved.
 	EXPECT_LT(underflow_rows, 100) << "the underflow skip swallowed " << underflow_rows
 								   << " pairs; it is meant to be a handful";
+	EXPECT_LT(overflow_rows, 100) << "the out-of-range skip swallowed " << overflow_rows
+								  << " pairs; it is meant to be a handful";
+}
+
+// ---------------------------------------------------------------------------
+// The skip's own row. sub.s of these two is 0x1.1c1bac8p+128, above every host
+// single, so the model saturates where the interpreter encodes the top binade.
+// |diff| is 1, so nothing is masked: the row is outside the model, not a
+// guard-bit case.
+// ---------------------------------------------------------------------------
+TEST(EeFpuGuardedAddSubConsole, ResultsAboveTheHostSingleRangeAreSkipped)
+{
+	const ScopedEeFpEnv fp_env;
+	constexpr u32 kA = 0x7ED69A1Du; // exponent 253
+	constexpr u32 kB = 0xFF30CE9Eu; // exponent 254, negative
+
+	float fa, fb;
+	std::memcpy(&fa, &kA, 4);
+	std::memcpy(&fb, &kB, 4);
+	EXPECT_GT(static_cast<double>(fa) - static_cast<double>(fb), 0x1.fffffep127);
+
+	const u32 want = ModelGuardedAddSub(kA, kB, true);
+	EXPECT_EQ(want, 0x7F7FFFFFu);
+	EXPECT_TRUE(OutsideTheModelsRange(want));
+	EXPECT_EQ(RunOne(FORM_SUB, kA, kB, 0, false), 0x7F8E0DD6u) << "interp: top binade";
+	EXPECT_EQ(RunOne(FORM_SUB, kA, kB, 0, true), 0x7F7FFFFFu) << "jit: saturates";
 }
 
 // ---------------------------------------------------------------------------
