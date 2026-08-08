@@ -7451,7 +7451,7 @@ GSTexture* GSTextureCache::LookupPaletteSource(u32 CBP, u32 CPSM, u32 CBW, GSVec
 		else if (GSConfig.UserHacks_GPUTargetCLUTMode == GSGPUTargetCLUTMode::InsideTarget &&
 				 t->m_TEX0.TBP0 < CBP && t->m_end_block >= CBP)
 		{
-			// Somewhere within this target, can we find it?
+			// If it's more than one group of 4 blocks, it's probably going to fail, horribly.
 			const GSVector4i rc(0, 0, size.x, size.y);
 			SurfaceOffset so = ComputeSurfaceOffset(CBP, std::max<u32>(CBW, 0), CPSM, rc, t);
 			if (!so.is_valid)
@@ -7463,7 +7463,7 @@ GSTexture* GSTextureCache::LookupPaletteSource(u32 CBP, u32 CPSM, u32 CBW, GSVec
 		}
 		else
 		{
-			// Not inside this target, skip.
+			// Not inside this target or not aligned, skip.
 			continue;
 		}
 
