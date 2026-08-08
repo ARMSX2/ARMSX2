@@ -800,6 +800,10 @@ void CVT_W() {
 }
 
 void DIV_S() {
+	// checkDivideByZero only ORs, so the causes are cleared here, as in SQRT.S
+	// and RSQRT.S.
+	clearFPUFlags(FPUflagI | FPUflagD);
+
 	if (checkDivideByZero( _FdValUl_, _FtValUl_, _FsValUl_, FPUflagD | FPUflagSD, FPUflagI | FPUflagSI)) return;
 	_FdValUl_ = eeDivide( _FsValUl_, _FtValUl_ );
 }
