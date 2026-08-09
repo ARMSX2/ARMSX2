@@ -143,6 +143,8 @@ add_pcsx2_test(recompiler_tests
 	vu_madd_contract_console_tests.cpp
 	vu1_efu_console_conformance_tests.cpp
 	vu_sticky_console_conformance_tests.cpp
+	vu_rsqrt_divisor_sign_tests.cpp
+	vu_divunit_console_conformance_tests.cpp
 	vu_branch_console_conformance_tests.cpp
 	vu_pipeline_console_conformance_tests.cpp
 	vu_memory_xgkick_console_conformance_tests.cpp
