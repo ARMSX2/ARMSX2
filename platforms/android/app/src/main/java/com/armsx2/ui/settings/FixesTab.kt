@@ -488,7 +488,33 @@ fun FixesTab(state: MutableState<Settings>) {
         }
         SettingsDivider()
         RecompilerSection(state)
+        SettingsDivider()
+        PineSection(state)
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+/** PINE, the IPC server external tools drive the emulator through. Lives beside the recompiler
+ *  switches because it is the same class of control: a developer tool that a player has no reason
+ *  to find, next to the other things you turn on to diagnose rather than to play.
+ *
+ *  The port is shown rather than edited. Changing it only matters when two emulators share a
+ *  machine, which does not happen on a handheld, and stating it is the part that is actually
+ *  needed — the listener is on loopback, so it does nothing until it is forwarded, and you cannot
+ *  forward a port you were not told. */
+@Composable
+private fun PineSection(state: MutableState<Settings>) {
+    val s = state.value
+    fun apply(updated: Settings) = InGameOverlay.saveSettings(updated)
+
+    CollapsibleSection(str("fixes.section.pine")) {
+        HelpText(str("fixes.section.pine.help"))
+        ToggleRow(
+            str("fixes.pine.enable"),
+            s.pineEnabled,
+            description = "${str("fixes.pine.enable.desc")} (127.0.0.1:${s.pineSlot})",
+        ) { apply(s.copy(pineEnabled = it)) }
+        if (s.pineEnabled) HelpText("adb forward tcp:${s.pineSlot} tcp:${s.pineSlot}")
     }
 }
 

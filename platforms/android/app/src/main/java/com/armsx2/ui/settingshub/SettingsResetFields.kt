@@ -68,7 +68,7 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
     // FixesTab.kt — also owns the GameDB fixes and the recompiler toggles, which moved here
     // from Performance and from the retired Recompiler tab.
     SettingsCategory.Advanced to listOf(
-        "enableFastBoot", "enableGameFixes",
+        "enableFastBoot", "enableGameFixes", "pineEnabled", "pineSlot",
         "gamefixBlitInternalFps", "gamefixDmaBusy", "gamefixEETiming", "gamefixFpuMul",
         "gamefixFullVu0Sync", "gamefixGifFifo", "gamefixGoemonTlb", "gamefixIbit",
         "gamefixInstantDma", "gamefixOphFlag", "gamefixSkipMpeg",

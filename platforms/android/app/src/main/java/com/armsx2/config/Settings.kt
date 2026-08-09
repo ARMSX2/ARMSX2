@@ -177,6 +177,18 @@ data class Settings(
     /** EmuCore/HostFs — host: filesystem access in the VM, for ELF/homebrew and mods
      *  (e.g. modded Persona 3 FES). Per-game capable; applies on the next game boot. */
     val hostFs: Boolean = false,
+    /** EmuCore/EnablePINE — the IPC server external tools drive the emulator through
+     *  (read/write guest memory, savestates, GS dumps). On Android it listens on loopback
+     *  TCP, so it is reachable from a workstation only after `adb forward`; nothing outside
+     *  the device can see it. Off by default: it is a debugging tool, and a listening socket
+     *  a player did not ask for should not exist. */
+    val pineEnabled: Boolean = false,
+    /** EmuCore/PINESlot — the port [pineEnabled] listens on. Deliberately has no UI row: the
+     *  only reason to move it is running two emulators at once, which does not happen on a
+     *  handheld, and a free-entry port field is a support burden for a knob nobody turns.
+     *  Kept in the model anyway so the toggle's description can state the real port rather
+     *  than assuming the default. Editable in the INI for the rare case that needs it. */
+    val pineSlot: Int = 28011,
     /** EmuCore/EnableGameFixes — master switch that lets the GameDB apply each game's
      *  curated compatibility gamefixes (e.g. VuAddSubHack, SkipMPEGHack). Defaults TRUE
      *  to match upstream PCSX2 (Pcsx2Config.cpp EnableGameFixes = true) and trak's Mac:
@@ -799,6 +811,10 @@ data class Settings(
         put("EmuCore", "EnableNoInterlacingPatches", "bool", enableNoInterlacingPatches.toString())
         put("EmuCore", "EnableFastBoot", "bool", enableFastBoot.toString())
         put("EmuCore", "HostFs", "bool", hostFs.toString())
+        // VMManager::ReloadPINE compares these against the live server and starts, stops or
+        // rebinds it, so a commit is enough — no game restart.
+        put("EmuCore", "EnablePINE", "bool", pineEnabled.toString())
+        put("EmuCore", "PINESlot", "int", pineSlot.toString())
         put("EmuCore", "EnableGameFixes", "bool", enableGameFixes.toString())
         put("EmuCore/Gamefixes", "SoftwareRendererFMVHack", "bool", gamefixSoftwareRendererFmv.toString())
         put("EmuCore/Gamefixes", "SkipMPEGHack", "bool", gamefixSkipMpeg.toString())
@@ -1014,6 +1030,8 @@ data class Settings(
             enableNoInterlacingPatches = boolAt("EmuCore/EnableNoInterlacingPatches") ?: this.enableNoInterlacingPatches,
             enableFastBoot = boolAt("EmuCore/EnableFastBoot") ?: this.enableFastBoot,
             hostFs = boolAt("EmuCore/HostFs") ?: this.hostFs,
+            pineEnabled = boolAt("EmuCore/EnablePINE") ?: this.pineEnabled,
+            pineSlot = intAt("EmuCore/PINESlot") ?: this.pineSlot,
             enableGameFixes = boolAt("EmuCore/EnableGameFixes") ?: this.enableGameFixes,
             // ---- EmuCore/Gamefixes ----
             gamefixSoftwareRendererFmv = boolAt("EmuCore/Gamefixes/SoftwareRendererFMVHack") ?: this.gamefixSoftwareRendererFmv,
@@ -1605,6 +1623,8 @@ data class Settings(
         put("enableNoInterlacingPatches", enableNoInterlacingPatches)
         put("enableFastBoot", enableFastBoot)
         put("hostFs", hostFs)
+        put("pineEnabled", pineEnabled)
+        put("pineSlot", pineSlot)
         put("enableGameFixes", enableGameFixes)
         put("gamefixSoftwareRendererFmv", gamefixSoftwareRendererFmv)
         put("gamefixSkipMpeg", gamefixSkipMpeg)
@@ -1866,6 +1886,8 @@ data class Settings(
                 enableNoInterlacingPatches = json.optBoolean("enableNoInterlacingPatches", def.enableNoInterlacingPatches),
                 enableFastBoot = json.optBoolean("enableFastBoot", def.enableFastBoot),
                 hostFs = json.optBoolean("hostFs", def.hostFs),
+                pineEnabled = json.optBoolean("pineEnabled", def.pineEnabled),
+                pineSlot = json.optInt("pineSlot", def.pineSlot),
                 enableGameFixes = json.optBoolean("enableGameFixes", def.enableGameFixes),
                 gamefixSoftwareRendererFmv = json.optBoolean("gamefixSoftwareRendererFmv", def.gamefixSoftwareRendererFmv),
                 gamefixSkipMpeg = json.optBoolean("gamefixSkipMpeg", def.gamefixSkipMpeg),
@@ -2341,6 +2363,13 @@ data class Settings(
             enableNoInterlacingPatches = if (overrides.has("enableNoInterlacingPatches")) overrides.getBoolean("enableNoInterlacingPatches") else base.enableNoInterlacingPatches,
             enableFastBoot = if (overrides.has("enableFastBoot")) overrides.getBoolean("enableFastBoot") else base.enableFastBoot,
             hostFs = if (overrides.has("hostFs")) overrides.getBoolean("hostFs") else base.hostFs,
+            // Always the global value: PINE is one server for the process, so "this game runs
+            // with PINE on" is not a thing that can be true. Deliberately absent from the diff
+            // above too, so a per-game file never acquires the key -- but it still has to be
+            // listed HERE, because this is a full constructor and an omitted field silently
+            // resets to the default rather than inheriting from base.
+            pineEnabled = base.pineEnabled,
+            pineSlot = base.pineSlot,
             enableGameFixes = if (overrides.has("enableGameFixes")) overrides.getBoolean("enableGameFixes") else base.enableGameFixes,
             gamefixSoftwareRendererFmv = if (overrides.has("gamefixSoftwareRendererFmv")) overrides.getBoolean("gamefixSoftwareRendererFmv") else base.gamefixSoftwareRendererFmv,
             gamefixSkipMpeg = if (overrides.has("gamefixSkipMpeg")) overrides.getBoolean("gamefixSkipMpeg") else base.gamefixSkipMpeg,

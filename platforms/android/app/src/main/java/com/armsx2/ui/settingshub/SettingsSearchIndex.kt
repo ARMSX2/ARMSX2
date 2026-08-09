@@ -254,6 +254,8 @@ internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("VU0", false, SettingsCategory.Advanced),
     SettingsSearchEntry("VU1", false, SettingsCategory.Advanced),
     SettingsSearchEntry("Fastmem", false, SettingsCategory.Advanced),
+    SettingsSearchEntry("fixes.section.pine", true, SettingsCategory.Advanced),
+    SettingsSearchEntry("fixes.pine.enable", true, SettingsCategory.Advanced),
     SettingsSearchEntry("patches.enablePatches.label", true, SettingsCategory.Patches),
     SettingsSearchEntry("patches.cheats.label", true, SettingsCategory.Patches),
     SettingsSearchEntry("patches.widescreen.label", true, SettingsCategory.Patches),
