@@ -3209,9 +3209,13 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveAutosaveState(JNIEnv *env, jclass clazz
         Console.Error("saveAutosaveState: CPU thread failed to park, refusing to save");
         return false;
     }
+    // Marshalled for the same reason as saveStateToSlot: the park stops the EE, but the freeze
+    // pushes to the single-producer MTGS ring, whose write position is owned by the CPU thread.
     std::string save_error;
-    VMManager::SaveStateToSlot(VMManager::SAVESTATE_SLOT_AUTOSAVE, /*zip_on_thread=*/false,
-        [&save_error](const std::string& error) { save_error = error; });
+    Host::RunOnCPUThread([&save_error]() {
+        VMManager::SaveStateToSlot(VMManager::SAVESTATE_SLOT_AUTOSAVE, /*zip_on_thread=*/false,
+            [&save_error](const std::string& error) { save_error = error; });
+    }, /*block=*/true);
     if (!save_error.empty()) {
         Console.Error("saveAutosaveState: %s", save_error.c_str());
         return false;
@@ -3238,15 +3242,19 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadAutosaveState(JNIEnv *env, jclass clazz
         Console.Error("loadAutosaveState: CPU thread failed to park, refusing to load");
         return false;
     }
-    const bool loaded = VMManager::LoadStateFromSlot(VMManager::SAVESTATE_SLOT_AUTOSAVE);
-    // Force the restored frame to display — this load fires during boot (auto-load / Save+Quit
-    // resume), before the game has drawn its first frame, so without an explicit present the
-    // screen stays black until the game happens to redraw. See loadStateFromSlot.
-    // PresentCurrentFrame posts to the MTGS ring, so it goes through the CPU thread even though
-    // the park above has the EE stopped — MTGS.h says as much ("Should only be called from the
-    // CPU thread"). Not blocking: this is a cosmetic nudge, and the load itself already landed.
-    if (loaded)
-        Host::RunOnCPUThread([]() { MTGS::PresentCurrentFrame(); });
+    // Marshalled for the same reason as loadStateFromSlot: the load pushes MTGS::Freeze to the
+    // single-producer MTGS ring and mtvuFreeze's thaw path pushes micro/data memory into the MTVU
+    // ring, both owned by the CPU thread — the park alone does not confer that identity.
+    //
+    // The present is forced because this load fires during boot (auto-load / Save+Quit resume),
+    // before the game has drawn its first frame; without it the screen stays black until the game
+    // happens to redraw. Run in the same task so it cannot race the resume in the guard's dtor.
+    bool loaded = false;
+    Host::RunOnCPUThread([&loaded]() {
+        loaded = VMManager::LoadStateFromSlot(VMManager::SAVESTATE_SLOT_AUTOSAVE);
+        if (loaded)
+            MTGS::PresentCurrentFrame();
+    }, /*block=*/true);
     return loaded;
 }
 
