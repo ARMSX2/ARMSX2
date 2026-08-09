@@ -213,11 +213,15 @@ def main():
     p.add_argument("key")
     p.add_argument("value", nargs="?")
 
+    # dest must NOT be "slot": that is the global --slot (the PINE socket slot),
+    # and a same-named positional overwrites it in the shared namespace, so
+    # `gsctl.py loadstate 1` would dial socket pcsx2.sock.1 instead of the
+    # emulator's and always fail to connect.
     p = sub.add_parser("loadstate", help="load a savestate slot")
-    p.add_argument("slot", type=int)
+    p.add_argument("state_slot", type=int, metavar="slot")
 
     p = sub.add_parser("savestate", help="save to a savestate slot")
-    p.add_argument("slot", type=int)
+    p.add_argument("state_slot", type=int, metavar="slot")
 
     args = ap.parse_args()
 
@@ -270,9 +274,9 @@ def main():
                 if result.get("restart_required"):
                     print("note: this key forces a GS device reopen", file=sys.stderr)
             elif args.cmd == "loadstate":
-                pine.load_state(args.slot)
+                pine.load_state(args.state_slot)
             elif args.cmd == "savestate":
-                pine.save_state(args.slot)
+                pine.save_state(args.state_slot)
     except KeyboardInterrupt:
         pass
     except (PineError, OSError) as e:
