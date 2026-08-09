@@ -78,6 +78,40 @@
 
 #define PINE_EMULATOR_NAME "pcsx2"
 
+// Which socket family PINE listens on is a property of the host, not of the protocol: the wire
+// format below is identical either way, and reference clients already speak both because Windows
+// has always needed TCP.
+//
+// Android joins Windows on the TCP side for a different reason. A Unix socket needs a path both
+// sides can name, and Android gives us nowhere to put one: there is no /tmp, XDG_RUNTIME_DIR is
+// unset, so the existing code would fall back to binding "/tmp/pcsx2.sock" and simply fail. The
+// writable directories that do exist are all app-private, and every plausible client -- adb, a
+// shell, another app -- runs under a different uid, so a socket placed there binds successfully
+// and then admits nobody. Loopback TCP is the transport Android actually supports reaching into:
+// "adb forward" bridges a device port to the workstation, which is what makes a handheld
+// debuggable from a desk at all.
+#if defined(_WIN32) || defined(__ANDROID__)
+#define PINE_TCP_TRANSPORT 1
+#endif
+
+// sockaddr_in and htons()/htonl(). Windows already has them via WinSock2.h above; the POSIX
+// spelling lives in headers the Unix-socket path never needed, so it is pulled in only here.
+#if defined(PINE_TCP_TRANSPORT) && !defined(_WIN32)
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#endif
+
+// The TCP setup below is now shared, so its failure comparisons have to be too. Winsock spells
+// these as named constants and POSIX returns -1 from both socket() and bind(); neither name
+// exists on the other platform.
+#ifdef _WIN32
+#define PINE_INVALID_SOCKET INVALID_SOCKET
+#define PINE_SOCKET_ERROR SOCKET_ERROR
+#else
+#define PINE_INVALID_SOCKET (-1)
+#define PINE_SOCKET_ERROR (-1)
+#endif
+
 #ifdef _WIN32
 
 static bool InitializeWinsock()
@@ -102,6 +136,10 @@ namespace PINEServer
 	static std::thread s_thread;
 	static int s_slot;
 
+	// Two independent splits meet here, which is why the guards differ. The socket HANDLE type is
+	// a Windows API question -- SOCKET is an opaque handle there, a file descriptor everywhere
+	// else -- while the socket NAME only exists when the transport is a Unix socket, and Android
+	// is POSIX with no socket name at all.
 #ifdef _WIN32
 	// windows claim to have support for AF_UNIX sockets but that is a blatant lie,
 	// their SDK won't even run their own examples, so we go on TCP sockets.
@@ -109,11 +147,14 @@ namespace PINEServer
 	// the message socket used in thread's accept().
 	static SOCKET s_msgsock = INVALID_SOCKET;
 #else
-	// absolute path of the socket. Stored in XDG_RUNTIME_DIR, if unset /tmp
-	static std::string s_socket_name;
 	static int s_sock = -1;
 	// the message socket used in thread's accept().
 	static int s_msgsock = -1;
+#endif
+
+#ifndef PINE_TCP_TRANSPORT
+	// absolute path of the socket. Stored in XDG_RUNTIME_DIR, if unset /tmp
+	static std::string s_socket_name;
 #endif
 
 	// Whether the socket processing thread should stop executing/is stopped.
@@ -600,26 +641,49 @@ bool PINEServer::Initialize(int slot)
 		Deinitialize();
 		return false;
 	}
+#endif
 
+#ifdef PINE_TCP_TRANSPORT
 	s_sock = socket(AF_INET, SOCK_STREAM, 0);
-	if ((s_sock == INVALID_SOCKET) || slot > 65536)
+	if ((s_sock == PINE_INVALID_SOCKET) || slot > 65536)
 	{
 		Console.WriteLn(Color_Red, "PINE: Cannot open socket! Shutting down...");
 		Deinitialize();
 		return false;
 	}
 
+	// A listener that survives its own process is worse than one that fails to start: the port
+	// sits in TIME_WAIT after a crash or a fast restart, bind() refuses, and PINE looks broken
+	// for a minute or so for reasons nothing reports. This matters far more on a handheld than
+	// on a desktop, because killing and relaunching the app is the normal debugging loop there.
+#ifndef _WIN32
+	const int reuse = 1;
+	setsockopt(s_sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+#endif
+
 	sockaddr_in server = {};
 	server.sin_family = AF_INET;
 	server.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // localhost only
 	server.sin_port = htons(slot);
 
-	if (bind(s_sock, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR)
+	if (bind(s_sock, (struct sockaddr*)&server, sizeof(server)) == PINE_SOCKET_ERROR)
 	{
 		Console.WriteLn(Color_Red, "PINE: Error while binding to socket! Shutting down...");
 		Deinitialize();
 		return false;
 	}
+
+	// Loopback is not reachable from another machine, so on a handheld the port is useless until
+	// something bridges it. Name the bridge in the log rather than leaving the reader to work it
+	// out: on Android this line is the entire setup instruction for driving the device from a
+	// workstation. Desktop hosts get the address only -- there the client is already local, and
+	// telling a Windows user to run adb would just be wrong.
+#ifdef __ANDROID__
+	Console.WriteLnFmt("PINE: Listening on 127.0.0.1:{} -- bridge it with: adb forward tcp:{} tcp:{}",
+		slot, slot, slot);
+#else
+	Console.WriteLnFmt("PINE: Listening on 127.0.0.1:{}.", slot);
+#endif
 
 #else
 	char* runtime_dir = nullptr;
@@ -812,7 +876,9 @@ void PINEServer::Deinitialize()
 {
 	s_end.store(true, std::memory_order_release);
 
-#ifndef _WIN32
+	// Removing the socket file is about the Unix-socket transport, not about being POSIX: a TCP
+	// listener has no filesystem entry to clean up, and Android has no s_socket_name to read.
+#ifndef PINE_TCP_TRANSPORT
 	if (!s_socket_name.empty())
 	{
 		unlink(s_socket_name.c_str());
