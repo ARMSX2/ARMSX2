@@ -21,6 +21,7 @@
 #include "pcsx2/Config.h"
 #include "VMManager.h"
 
+#include "common/Console.h"
 #include "common/FileSystem.h"
 #include "common/Image.h"
 #include "common/Path.h"
@@ -661,6 +662,59 @@ void GSJoinSnapshotThreads()
 	}
 }
 
+// What was live when the GPU died, as one greppable block for the emulog.
+//
+// A lost device is almost always the driver refusing something we asked it to do, and the ask is
+// visible in the feature set rather than in the crash. The Mali r44p1 blob is the worked example:
+// it loses the Vulkan device under attachment-feedback-loop and mishandles in-tile framebuffer
+// fetch on GL, both of which are the accurate-blending destination read. Neither is deducible from
+// "host GPU lost" -- and nothing else in the log says which blend path the device had picked,
+// because that decision is made from driver strings at startup and never restated.
+//
+// So this exists to make the report actionable rather than to change behaviour: a user who says
+// "it crashed on my handheld" now hands us the driver build and the exact blend configuration that
+// killed it. Keep it to facts we can act on -- identity, the destination-read path, and the
+// settings that steer it.
+static std::string DescribeDeviceForLossReport()
+{
+	static constexpr const char* blend_level_names[] = {
+		"Minimum", "Basic", "Medium", "High", "Full", "Maximum"};
+
+	const GSDevice::FeatureSupport& f = g_gs_device->Features();
+
+	// The destination read is the thing most likely to have killed us, so name the path in words
+	// rather than making a reader reconstruct it from three booleans.
+	const char* blend_path;
+	if (f.framebuffer_fetch)
+		blend_path = f.framebuffer_fetch_orders_overlap ? "in-tile framebuffer fetch (orders overlap)" :
+														 "in-tile framebuffer fetch (barrier still taken on overlap)";
+	else if (f.texture_barrier)
+		blend_path = "texture barrier";
+	else if (f.multidraw_fb_copy)
+		blend_path = "render-target copy per primitive group";
+	else
+		blend_path = "render-target copy per draw";
+
+	const u8 blend_level = static_cast<u8>(GSConfig.AccurateBlendingUnit);
+
+	// Every backend's driver info is several lines (the GL version string, the Vulkan driver and
+	// conformance versions, the device name), and the driver build is the single most useful field
+	// in here -- it is what identifies r44p1. Indent its continuation lines so the block stays one
+	// visually contiguous report instead of three lines that look like unrelated log output.
+	const std::string driver_info = StringUtil::ReplaceAll(g_gs_device->GetDriverInfo(), "\n", "\n  ");
+
+	return fmt::format(
+		"  Renderer: {}\n"
+		"  {}\n"
+		"  Destination read: {}\n"
+		"  framebuffer_fetch={} texture_barrier={} multidraw_fb_copy={} depth_feedback={}\n"
+		"  Blending accuracy: {}, DisableFramebufferFetch={}, OverrideTextureBarriers={}",
+		Pcsx2Config::GSOptions::GetRendererName(GSGetCurrentRenderer()), driver_info, blend_path,
+		f.framebuffer_fetch, f.texture_barrier, f.multidraw_fb_copy, f.depth_feedback,
+		(blend_level < std::size(blend_level_names)) ? blend_level_names[blend_level] : "?",
+		static_cast<bool>(GSConfig.DisableFramebufferFetch), static_cast<int>(GSConfig.OverrideTextureBarriers));
+}
+
 bool GSRenderer::BeginPresentFrame(bool frame_skip)
 {
 	Host::BeginPresentFrame();
@@ -679,14 +733,28 @@ bool GSRenderer::BeginPresentFrame(bool frame_skip)
 		return true;
 	}
 
+	// Describe the device BEFORE anything below touches it. The abort path never returns and the
+	// recovery path destroys the device, so this is the last point at which the driver identity and
+	// the feature set that caused the loss can still be read.
+	const std::string device_description = DescribeDeviceForLossReport();
+	Console.Error(fmt::format("Host GPU device lost. Configuration in use at the time:\n{}", device_description));
+
 	// If we're constantly crashing on something in particular, we don't want to end up in an
 	// endless reset loop.. that'd probably end up leaking memory and/or crashing us for other
 	// reasons. So just abort in such case.
+	//
+	// A configuration the driver cannot survive reaches this deterministically: the recovery below
+	// rebuilds the identical device, so the second loss follows the first within a frame or two.
+	// That makes this the normal end state for such a device rather than the rare one, and it fires
+	// before the OSD warning further down -- so from the user's side it is an unexplained crash and
+	// this message is the whole bug report. Say what died.
 	const Common::Timer::Value current_time = Common::Timer::GetCurrentValue();
 	if (s_last_gpu_reset_time != 0 &&
 		Common::Timer::ConvertValueToSeconds(current_time - s_last_gpu_reset_time) < 15.0f)
 	{
-		pxFailRel("Host GPU lost too many times, device is probably completely wedged.");
+		pxFailRel(fmt::format("Host GPU lost too many times, device is probably completely wedged.\n{}",
+			device_description)
+					  .c_str());
 	}
 	s_last_gpu_reset_time = current_time;
 
@@ -694,7 +762,8 @@ bool GSRenderer::BeginPresentFrame(bool frame_skip)
 	// Let's just toss out everything, and try to hobble on.
 	if (!GSreopen(true, false, GSGetCurrentRenderer(), std::nullopt))
 	{
-		pxFailRel("Failed to recreate GS device after loss.");
+		pxFailRel(
+			fmt::format("Failed to recreate GS device after loss.\n{}", device_description).c_str());
 		return false;
 	}
 
