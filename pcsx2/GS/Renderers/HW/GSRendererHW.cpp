@@ -7062,19 +7062,29 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	// Replace Ad with As, blend flags will be used from As since we are chaging the blend_index value.
 	// Must be done before index calculation, after blending equation optimizations
 	const bool blend_ad = m_conf.ps.blend_c == 1;
-	// This path forces an RT feedback read per Ad-masked draw. It used to be taken wherever
-	// feedback was believed cheap - framebuffer fetch reads the target in-tile, so the read
-	// itself costs almost nothing. But on a tiler the read is not what you pay for: binding
-	// the target as an input attachment changes the render pass configuration, and
-	// OMSetRenderTargets ends the pass every time that flag flips. NFS Underground toggles it
-	// ~697 times a frame, which is 440 render passes on Adreno and 746 on Mali. Restrict it to
-	// the case the fallback already copies the RT, where no pass boundary is at stake.
+	// This path VOLUNTARILY adds an RT feedback read to a draw that did not need one, so that an
+	// Ad blend can be substituted and run in hardware. It is only worth taking where that read
+	// costs nothing structural. It used to be taken wherever the read itself was believed cheap -
+	// framebuffer fetch reads the target in-tile, so the read costs almost nothing. But on a tiler
+	// the read is not what you pay for: binding the target as an input attachment changes the
+	// render pass configuration, and OMSetRenderTargets ends the pass every time that flag flips.
+	// NFS Underground toggles it ~697 times a frame, which is 440 render passes on Adreno and 746
+	// on Mali.
+	//
+	// ⚠️ `!texture_barrier` is NOT that test, though it was written as one, meaning "D3D11, where
+	// the fallback copy costs nothing structural". It is equally true of every driver carrying
+	// UseRenderTargetCopyForFeedback, where the fallback is a per-draw copy bracketed by a
+	// render-pass break - the most expensive feedback read we have. When that workaround went
+	// unconditional on Adreno, this line silently handed those drivers the whole optimization in
+	// its worst form: NFSU replays with 14 RT-reading draws per frame with barriers on and 610
+	// with them off, and on the copy path every one of the extra 596 pays a pass boundary.
+	// Ask for the property being asserted instead.
 	//
 	// Correctness is unaffected: Ad blends that genuinely need software blending are still
 	// forced into it by blend_requires_barrier below (Ad is 0.5 not 1 for 128). Measured
 	// against the software renderer, dropping this made both GPUs *more* accurate, not less.
 	// Ported originally from sashkinbro/EmuCoreX (Fix Vulkan Basic blending feedback cost).
-	const bool fast_ad_alpha_masked_feedback = !features.texture_barrier;
+	const bool fast_ad_alpha_masked_feedback = !features.texture_barrier && features.cheap_rt_feedback_read;
 	bool blend_ad_alpha_masked = blend_ad && !m_conf.colormask.wa && fast_ad_alpha_masked_feedback;
 	const bool is_basic_blend = GSConfig.AccurateBlendingUnit != AccBlendLevel::Minimum;
 	if (blend_ad_alpha_masked && ((is_basic_blend || (COLCLAMP.CLAMP == 0) || m_conf.require_one_barrier)))
