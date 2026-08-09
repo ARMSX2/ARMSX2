@@ -31,7 +31,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -241,11 +240,11 @@ fun OnboardingScreen(viewModel: OnboardingViewModel = viewModel()) {
     }
 
     state.error?.let { message ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissError,
-            title = { Text(str("setup.welcome.heading")) },
-            text = { Text(message) },
-            confirmButton = { TextButton(onClick = viewModel::dismissError) { Text(str("action.ok")) } },
+        com.armsx2.ui.common.NotifyOverlay(
+            title = str("setup.welcome.heading"),
+            message = message,
+            onDismiss = viewModel::dismissError,
+            idPrefix = "setup.error",
         )
     }
 }

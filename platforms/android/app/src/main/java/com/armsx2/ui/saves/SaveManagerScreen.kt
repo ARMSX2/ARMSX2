@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -106,13 +105,11 @@ fun SaveManagerScreen(onBack: () -> Unit, viewModel: SaveManagerViewModel = view
     }
 
     (state.error ?: state.message)?.let { message ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissMessage,
-            title = { Text(str("savestate.title.loadManage")) },
-            text = { Text(message) },
-            confirmButton = {
-                TextButton(onClick = viewModel::dismissMessage) { Text(str("action.ok")) }
-            },
+        com.armsx2.ui.common.NotifyOverlay(
+            title = str("savestate.title.loadManage"),
+            message = message,
+            onDismiss = viewModel::dismissMessage,
+            idPrefix = "saves.message",
         )
     }
 }

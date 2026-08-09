@@ -1,5 +1,7 @@
 package com.armsx2.ui.memorycards
 
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.text.font.FontWeight
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -18,11 +20,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -122,20 +122,22 @@ fun MemoryCardScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Memo
         )
     }
     deleteTarget?.let { item ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text(str("memcard.delete.confirm")) },
-            text = { Text(str("memcard.delete.body").format(item.file.name)) },
-            confirmButton = { TextButton(onClick = { viewModel.delete(item); deleteTarget = null }, modifier = Modifier.controllerFocusable("memcard.delete.confirm", onConfirm = { viewModel.delete(item); deleteTarget = null })) { Text(str("action.delete"), color = MaterialTheme.colorScheme.error) } },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }, modifier = Modifier.controllerFocusable("memcard.delete.cancel", onConfirm = { deleteTarget = null })) { Text(str("action.cancel")) } },
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str("memcard.delete.confirm"),
+            message = str("memcard.delete.body").format(item.file.name),
+            confirmLabel = str("action.delete"),
+            destructive = true,
+            idPrefix = "memcard-delete",
+            onConfirm = { viewModel.delete(item); deleteTarget = null },
+            onDismiss = { deleteTarget = null },
         )
     }
     (state.error ?: state.message)?.let { message ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissMessage,
-            title = { Text(if (state.error != null) str("memcard.title") else str("action.ok")) },
-            text = { Text(message) },
-            confirmButton = { TextButton(onClick = viewModel::dismissMessage, modifier = Modifier.controllerFocusable("memcard.message.ok", onConfirm = viewModel::dismissMessage)) { Text(str("action.ok")) } },
+        com.armsx2.ui.common.NotifyOverlay(
+            title = if (state.error != null) str("memcard.title") else str("action.ok"),
+            message = message,
+            onDismiss = viewModel::dismissMessage,
+            idPrefix = "memcard.message",
         )
     }
 }
@@ -203,12 +205,44 @@ private fun CreateCardDialog(onDismiss: () -> Unit, onCreate: (String, Int, Int)
     var name by remember { mutableStateOf("MemoryCard") }
     var size by remember { mutableIntStateOf(1) }
     var type by remember { mutableIntStateOf(1) } // 1 = File, 2 = Folder
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(str("memcard.newCard.title")) },
-        text = {
-            Column {
-                OutlinedTextField(name, { name = it }, label = { Text(str("memcard.cardName.label")) }, singleLine = true)
+    val nameLabel = str("memcard.cardName.label")
+    // Live update, not "closing the keyboard is the done signal": this panel outlives the
+    // keyboard, so the draft name has to be visible on the row behind it while you type.
+    val editName = { com.armsx2.ui.home.LibraryKeyboard.open(name, { name = it }, nameLabel) }
+    com.armsx2.ui.common.PadModal(
+        key = "memcard-create",
+        onDismiss = onDismiss,
+        initialFocusId = "memcard.create.name",
+    ) {
+      Surface(
+        modifier = Modifier
+            .padding(24.dp)
+            .widthIn(max = 420.dp),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+        tonalElevation = 6.dp,
+      ) {
+        Column(Modifier.padding(20.dp)) {
+                Text(
+                    str("memcard.newCard.title"),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(12.dp))
+                Surface(
+                    onClick = editName,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .controllerFocusable("memcard.create.name", RoundedCornerShape(12.dp), onConfirm = editName),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                        Text(nameLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(name, style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
                 Text(str("memcard.type.label"))
                 Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -228,11 +262,15 @@ private fun CreateCardDialog(onDismiss: () -> Unit, onCreate: (String, Int, Int)
                         }
                     }
                 }
-            }
-        },
-        confirmButton = { Button(onClick = { onCreate(name, type, size) }, modifier = Modifier.controllerFocusable("memcard.create", onConfirm = { onCreate(name, type, size) })) { Text(str("memcard.create")) } },
-        dismissButton = { TextButton(onClick = onDismiss, modifier = Modifier.controllerFocusable("memcard.create.cancel", onConfirm = onDismiss)) { Text(str("action.cancel")) } },
-    )
+                Spacer(Modifier.height(18.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss, modifier = Modifier.controllerFocusable("memcard.create.cancel", onConfirm = onDismiss)) { Text(str("action.cancel")) }
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = { onCreate(name, type, size) }, modifier = Modifier.controllerFocusable("memcard.create", onConfirm = { onCreate(name, type, size) })) { Text(str("memcard.create")) }
+                }
+        }
+      }
+    }
 }
 
 private fun humanSize(bytes: Long): String = if (bytes >= 1024L * 1024L) "%.1f MB".format(bytes / (1024f * 1024f)) else "${bytes / 1024L} KB"

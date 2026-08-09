@@ -24,7 +24,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -114,11 +113,11 @@ fun PatchManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Pa
             com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_OPEN)
             onDispose { com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_CLOSE) }
         }
-        AlertDialog(
-            onDismissRequest = viewModel::dismissMessage,
-            title = { Text(if (state.error == null) str("action.ok") else str("patches.dialog.patchesAndCheats")) },
-            text = { Text(message) },
-            confirmButton = { TextButton(onClick = viewModel::dismissMessage) { Text(str("action.ok")) } },
+        com.armsx2.ui.common.NotifyOverlay(
+            title = if (state.error == null) str("action.ok") else str("patches.dialog.patchesAndCheats"),
+            message = message,
+            onDismiss = viewModel::dismissMessage,
+            idPrefix = "patches.message",
         )
     }
 }
@@ -269,11 +268,11 @@ fun PatchesSettingsTab(game: GameInfo? = null, viewModel: PatchManagerViewModel 
             com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_OPEN)
             onDispose { com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_CLOSE) }
         }
-        AlertDialog(
-            onDismissRequest = viewModel::dismissMessage,
-            title = { Text(if (state.error == null) str("action.ok") else str("patches.dialog.patchesAndCheats")) },
-            text = { Text(message) },
-            confirmButton = { TextButton(onClick = viewModel::dismissMessage) { Text(str("action.ok")) } },
+        com.armsx2.ui.common.NotifyOverlay(
+            title = if (state.error == null) str("action.ok") else str("patches.dialog.patchesAndCheats"),
+            message = message,
+            onDismiss = viewModel::dismissMessage,
+            idPrefix = "patches.message",
         )
     }
 }

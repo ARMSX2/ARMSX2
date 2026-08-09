@@ -40,7 +40,6 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -148,7 +147,7 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
     LaunchedEffect(friendsOpen) {
         if (friendsOpen) {
             delay(260)
-            if (friendsOpen) com.armsx2.ui.settings.SettingsControllerNav.move(1)
+            if (friendsOpen) com.armsx2.ui.settings.SettingsControllerNav.selectFirstInLayer()
         }
     }
     // Back closes the friends overlay first when it is up. Without this, opening Friends and
@@ -161,21 +160,29 @@ fun EmulationMenuScreen(viewModel: EmulationMenuViewModel = viewModel()) {
             com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_OPEN)
             onDispose { com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_CLOSE) }
         }
-        AlertDialog(
-            onDismissRequest = viewModel::cancelToggleHardcore,
-            title = { Text(str(if (enabling) "ra.hardcore.enable.title" else "ra.hardcore.disable.title")) },
-            text = { Text(str(if (enabling) "ra.hardcore.enable.body" else "ra.hardcore.disable.body")) },
-            confirmButton = {
-                TextButton(onClick = viewModel::confirmToggleHardcore) {
-                    Text(str(if (enabling) "ra.hardcore.enable.confirm" else "ra.hardcore.disable.confirm"))
-                }
-            },
-            dismissButton = { TextButton(onClick = viewModel::cancelToggleHardcore) { Text(str("action.cancel")) } },
+        // Was an AlertDialog, which is its own focused Android window and so consumed the pad
+        // before the Activity dispatcher that owns every D-pad route in this app could see it.
+        // The prompt sat on top of the pause menu, which IS pad-navigable, so it read as the
+        // controller having gone dead the moment the confirmation appeared.
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str(if (enabling) "ra.hardcore.enable.title" else "ra.hardcore.disable.title"),
+            message = str(if (enabling) "ra.hardcore.enable.body" else "ra.hardcore.disable.body"),
+            confirmLabel = str(if (enabling) "ra.hardcore.enable.confirm" else "ra.hardcore.disable.confirm"),
+            idPrefix = "hardcore",
+            onConfirm = viewModel::confirmToggleHardcore,
+            onDismiss = viewModel::cancelToggleHardcore,
         )
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val compact = maxWidth < 700.dp
+        // The one place the layout is chosen is the one place that tells the pad which way it
+        // runs — compact puts the tabs in a Row above the content, wide puts them in a rail to
+        // its right, and the D-pad axis follows from here rather than from a constant that can
+        // fall out of step with the UI (which is exactly what it had done).
+        androidx.compose.runtime.SideEffect {
+            EmulationMenuInputController.tabsHorizontal.value = compact
+        }
         AnimatedVisibility(
             visible = shown,
             enter = fadeIn(tween(190, easing = EaseOut)),
@@ -640,8 +647,6 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
                 MainActivityRuntime.closeGame()
             },
         ),
-        selected = state.selectedAction,
-        onSelect = viewModel::selectAction,
     )
     // On-screen display — a single universal on/off (old-UI style); the per-stat
     // toggles live in All Settings. Plus a frame-limit switch so fast-forward is one
@@ -693,8 +698,9 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
         Spacer(Modifier.height(6.dp))
         // OSD colour, cycled in place. Shares the palette with the All Settings picker rather
         // than carrying its own copy. Safe to add here: this card's rows are plain switches with
-        // their own callbacks — SessionPane's selectedAction indexes the action GRID above, not
-        // these, so inserting a row can't shift the controller dispatch.
+        // their own callbacks, and every control on this pane — grid rows included — now
+        // registers its own id with the nav registry, so inserting a row cannot shift what any
+        // other row does.
         val osdColorIndex = com.armsx2.ui.settings.OSD_COLORS
             .indexOf(state.settings.osdColor).coerceAtLeast(0)
         MenuCycleRow(
@@ -1379,15 +1385,20 @@ private data class MenuAction(
 )
 
 @Composable
-private fun ActionGrid(actions: List<MenuAction>, selected: Int, onSelect: (Int) -> Unit) {
+private fun ActionGrid(actions: List<MenuAction>) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         actions.forEachIndexed { index, item ->
-            val active = index == selected
+            val id = "pause.action.$index"
+            // The registry is the ONE source of truth for which row is selected. The tint used
+            // to come from a separate index in the view model that advanced only when a row was
+            // ACTIVATED, while the D-pad moved the registry — so the menu drew one selection and
+            // moved another, and the row you were pointing at was never the one lit up.
+            val active = com.armsx2.ui.settings.SettingsControllerNav.isSelected(id)
             Surface(
-                onClick = { onSelect(index); item.action() },
+                onClick = item.action,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .controllerFocusable("pause.action.$index", onConfirm = { onSelect(index); item.action() }),
+                    .controllerFocusable(id, onConfirm = item.action),
                 shape = RoundedCornerShape(16.dp),
                 color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
                 else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),

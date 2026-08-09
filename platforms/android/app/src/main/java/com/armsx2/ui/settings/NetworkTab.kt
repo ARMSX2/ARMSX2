@@ -11,9 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -550,29 +548,15 @@ private fun LocalLinkRow(
 
 @Composable
 private fun EditableTextRow(label: String, value: String, onChange: (String) -> Unit) {
-    var editing by remember(label) { mutableStateOf(false) }
-    var draft by remember(label, value) { mutableStateOf(value.ifEmpty { "0.0.0.0" }) }
-    if (editing) {
-        AlertDialog(
-            onDismissRequest = { editing = false },
-            title = { Text(label) },
-            text = {
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    singleLine = true,
-                    label = { Text(str("network.address")) },
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    onChange(draft.trim())
-                    editing = false
-                }) { Text(str("action.save")) }
-            },
-            dismissButton = {
-                TextButton(onClick = { editing = false }) { Text(str("action.cancel")) }
-            },
+    // No modal at all. Text entry goes through LibraryKeyboard, exactly like LocalLinkRow above
+    // — and these rows needed the change twice over: the dialog swallowed the pad, AND the row
+    // carried no registry registration, so it could not be reached to open it in the first place.
+    val fieldLabel = str("network.address")
+    val edit = {
+        com.armsx2.ui.home.LibraryKeyboard.open(
+            value.ifEmpty { "0.0.0.0" },
+            { onChange(it.trim()) },
+            fieldLabel,
         )
     }
     Row(
@@ -581,7 +565,8 @@ private fun EditableTextRow(label: String, value: String, onChange: (String) -> 
             .height(64.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(rowAura())
-            .clickable { editing = true }
+            .clickable(onClick = edit)
+            .controllerFocusable("network.field:$label", onConfirm = edit)
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -641,45 +626,19 @@ private fun DeviceChooser(
 
 @Composable
 private fun HddFileRow(fileName: String, onChange: (String) -> Unit, onReset: () -> Unit) {
-    var editing by remember { mutableStateOf(false) }
-    var draft by remember(fileName) { mutableStateOf(fileName) }
-    if (editing) {
-        AlertDialog(
-            onDismissRequest = { editing = false },
-            title = { Text(str("network.hddImage.title")) },
-            text = {
-                Column {
-                    Text(
-                        str("network.hddImage.dialogHint"),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(bottom = 6.dp),
-                    )
-                    OutlinedTextField(
-                        value = draft,
-                        onValueChange = { draft = it },
-                        singleLine = true,
-                        label = { Text(str("network.hddImage.fieldLabel")) },
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    onChange(draft.trim())
-                    editing = false
-                }) { Text(str("action.save")) }
-            },
-            dismissButton = {
-                TextButton(onClick = { editing = false }) { Text(str("action.cancel")) }
-            },
-        )
+    // Same treatment as EditableTextRow: the keyboard, not a dialog. D-pad Left resets, matching
+    // how every other row in this app uses left/right on the focused control.
+    val fieldLabel = str("network.hddImage.fieldLabel")
+    val edit = {
+        com.armsx2.ui.home.LibraryKeyboard.open(fileName, { onChange(it.trim()) }, fieldLabel)
     }
     Box(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(rowAura())
-            .clickable { draft = fileName; editing = true }
+            .clickable(onClick = edit)
+            .controllerFocusable("network.hddImage", onConfirm = edit, onLeft = onReset)
             .padding(horizontal = 6.dp, vertical = 4.dp),
         contentAlignment = Alignment.CenterStart,
     ) {

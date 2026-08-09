@@ -1,6 +1,10 @@
 package com.armsx2.ui.settings
 
-import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.Surface
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
@@ -14,12 +18,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -1005,46 +1007,84 @@ private fun StickTargetPickerDialog(
     onPick: (Int?) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surface,
-        titleContentColor = MaterialTheme.colorScheme.onSurface,
-        textContentColor = MaterialTheme.colorScheme.onSurface,
-        title = { Text(title, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(Modifier.verticalScroll(remember { ScrollState(0) })) {
-                Text(
-                    str("pad.stickTarget.intro"),
-                    color = Color(0xFFBBBBBB), fontSize = 15.sp,
-                )
+    val layer = "stick-target-picker"
+    // A plain scrolling Column, NOT a LazyColumn: the nav registry only knows about rows that
+    // are actually composed, so a lazy list hides everything past the viewport from the pad.
+    // This list is bounded (a fixed button set plus the hotkey enum), so composing it all is fine.
+    com.armsx2.ui.common.PadModal(key = layer, onDismiss = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .padding(24.dp)
+                .widthIn(max = 420.dp),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+            tonalElevation = 6.dp,
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                Text(title, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
-                StickPickItem(str("pad.stickTarget.analogDefault"), current in 110..123) { onPick(null) }
-                Spacer(Modifier.height(6.dp))
-                Text(str("pad.stickTarget.ps2Buttons"), color = Colors.pasx2_blue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                ControllerMappings.stickTargets.forEach { t ->
-                    StickPickItem(t.label, current == t.code) { onPick(t.code) }
+                Column(
+                    Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text(
+                        str("pad.stickTarget.intro"),
+                        color = Color(0xFFBBBBBB), fontSize = 15.sp,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    StickPickItem(str("pad.stickTarget.analogDefault"), current in 110..123, "$layer.analog") { onPick(null) }
+                    Spacer(Modifier.height(6.dp))
+                    Text(str("pad.stickTarget.ps2Buttons"), color = Colors.pasx2_blue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    ControllerMappings.stickTargets.forEach { t ->
+                        StickPickItem(t.label, current == t.code, "$layer.btn.${t.code}") { onPick(t.code) }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(str("pad.stickTarget.hotkeys"), color = Colors.pasx2_blue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    ControllerMappings.SysHotkey.entries.forEach { h ->
+                        val hc = ControllerMappings.stickCodeForHotkey(h)
+                        StickPickItem("Hotkey: ${h.label}", current == hc, "$layer.hk.${h.name}") { onPick(hc) }
+                    }
                 }
-                Spacer(Modifier.height(6.dp))
-                Text(str("pad.stickTarget.hotkeys"), color = Colors.pasx2_blue, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                ControllerMappings.SysHotkey.entries.forEach { h ->
-                    val hc = ControllerMappings.stickCodeForHotkey(h)
-                    StickPickItem("Hotkey: ${h.label}", current == hc) { onPick(hc) }
+                Spacer(Modifier.height(14.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    PickerButton(str("action.cancel"), "$layer.cancel", onDismiss)
                 }
             }
-        },
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text(str("action.cancel"), color = Colors.pasx2_blue) }
-        },
-    )
+        }
+    }
+}
+
+/** Shared footer button for the two pickers below. */
+@Composable
+private fun PickerButton(label: String, id: String, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.controllerFocusable(
+            controllerId = id,
+            shape = RoundedCornerShape(14.dp),
+            onConfirm = onClick,
+        ),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable
-private fun StickPickItem(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun StickPickItem(label: String, selected: Boolean, id: String, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
             .clickable { onClick() }
+            .controllerFocusable(controllerId = id, shape = RoundedCornerShape(10.dp), onConfirm = onClick)
             .padding(vertical = 8.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1298,49 +1338,79 @@ private fun MacroConfigDialog(
     val selected = remember(macroId) {
         mutableStateListOf<Int>().apply { addAll(TouchControls.macroCodes(macroId)) }
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surface,
-        titleContentColor = MaterialTheme.colorScheme.onSurface,
-        textContentColor = MaterialTheme.colorScheme.onSurface,
-        title = { Text("${str("pad.action.edit")}: ${macroId.label}", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(Modifier.verticalScroll(remember { ScrollState(0) })) {
+    val layer = "macro-config:${macroId.name}"
+    val save = {
+        TouchControls.setMacroCodes(macroId, selected.toList())
+        onSaved()
+        onDismiss()
+    }
+    com.armsx2.ui.common.PadModal(key = layer, onDismiss = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .padding(24.dp)
+                .widthIn(max = 420.dp),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+            tonalElevation = 6.dp,
+        ) {
+            Column(Modifier.padding(20.dp)) {
                 Text(
-                    str("pad.macroConfig.intro"),
-                    color = Color(0xFFBBBBBB), fontSize = 15.sp,
+                    "${str("pad.action.edit")}: ${macroId.label}",
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Bold,
                 )
                 Spacer(Modifier.height(8.dp))
-                TouchControls.macroAssignableTargets.forEach { t ->
-                    val on = t.code in selected
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(52.dp)
-                            .clickable { if (on) selected.remove(t.code) else selected.add(t.code) }
-                            .padding(horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            if (on) "☑" else "☐",
-                            color = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 16.sp,
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Text(t.label, color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp)
+                // Plain Column, not Lazy — see the note on the stick picker.
+                Column(
+                    Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text(
+                        str("pad.macroConfig.intro"),
+                        color = Color(0xFFBBBBBB), fontSize = 15.sp,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    TouchControls.macroAssignableTargets.forEach { t ->
+                        val on = t.code in selected
+                        val toggle = { if (on) selected.remove(t.code) else selected.add(t.code); Unit }
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .clickable { toggle() }
+                                // Left/Right clear and set, matching every other toggle in the app,
+                                // so the row behaves the same inside this panel as outside it.
+                                .controllerFocusable(
+                                    controllerId = "$layer.${t.code}",
+                                    shape = RoundedCornerShape(10.dp),
+                                    onConfirm = toggle,
+                                    onLeft = { if (on) selected.remove(t.code) },
+                                    onRight = { if (!on) selected.add(t.code) },
+                                )
+                                .padding(horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                if (on) "☑" else "☐",
+                                color = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 16.sp,
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Text(t.label, color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp)
+                        }
                     }
                 }
+                Spacer(Modifier.height(14.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    PickerButton(str("action.cancel"), "$layer.cancel", onDismiss)
+                    Spacer(Modifier.width(10.dp))
+                    PickerButton(str("action.save"), "$layer.save", save)
+                }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                TouchControls.setMacroCodes(macroId, selected.toList())
-                onSaved()
-                onDismiss()
-            }) { Text(str("action.save")) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(str("action.cancel")) } },
-    )
+        }
+    }
 }
 
 @Composable

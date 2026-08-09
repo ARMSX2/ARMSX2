@@ -40,16 +40,18 @@ object WindowImpl {
     val inGameScreen = mutableStateOf<InGameScreen?>(null)
 
     /** True whenever a Compose frontend surface is drawn on top of a running
-     *  game (pause menu, an in-game manager/settings/Save-Load screen, the memory
-     *  card dialog, or the library). While any of these is up the embedded game
-     *  SurfaceView must release Android focus so Compose can receive the
-     *  controller D-pad/A/B (see the focus-release effect in MainActivityRuntime).
+     *  game (pause menu, an in-game manager/settings/Save-Load screen, or the
+     *  library). While any of these is up the embedded game SurfaceView must
+     *  release Android focus so Compose can receive the controller D-pad/A/B
+     *  (see the focus-release effect in MainActivityRuntime).
      *  Read from composable/effect scopes so recomposition tracks the states. */
     val frontendCovers: Boolean
         get() = overlayVisible.value ||
             inGameScreen.value != null ||
             showLibrary.value ||
-            com.armsx2.ui.MemoryCardManager.visible.value ||
+            // A modal (PadModal) can be raised over a running game with nothing else up, and
+            // it needs the D-pad the game surface would otherwise be holding.
+            com.armsx2.ui.common.PadModals.visible ||
             // The shader editor can be opened from the pause menu, which CLOSES as it
             // opens — without this the game would take focus back mid-edit and eat the
             // D-pad the editor runs on.
@@ -199,28 +201,17 @@ object WindowImpl {
                 // instead of a block inside a scrolling pane.
                 com.armsx2.ui.common.ShaderParamsEditorHost()
 
-                // THE on-screen keyboard host — exactly one, here, above everything.
-                //
-                // It used to be hosted per-screen (library + shader editor). That breaks the
-                // moment a caller isn't one of those: Settings is a NAVIGATION DESTINATION
-                // (AppNavigation: AppRoute.Settings), a sibling of AppRoute.Home, so opening it
-                // unmounts HomeScreen and takes its host with it. A keyboard opened from the
-                // per-game Info tab therefore had nothing rendering it, and only appeared once
-                // the user backed out to Home and remounted the host — which is exactly how the
-                // bug read: "the keyboard shows when I exit the settings menu".
-                //
-                // Hosting it once at the top of the Box every surface passes through makes it
-                // reachable from any screen, and placing it AFTER the shader editor keeps it
-                // above the one other full-screen layer that opens it.
-                com.armsx2.ui.home.LibraryKeyboard.Overlay(this)
+                // The modal host and the on-screen keyboard host used to sit here. Both moved UP
+                // to setContent — see the comment there. Short version: this Box is one arm of
+                // an `if` whose other arm is the setup wizard, so anything hosted here does not
+                // exist during setup, and the wizard's own prompt had nothing to render it.
 
                 // Transient top-left "Welcome Back!" banner (and any future brief note) — hosted
                 // here for the same reason as the keyboard: reachable above every surface.
                 com.armsx2.ui.WelcomeBannerOverlay(this)
 
-                // App-wide confirmation prompts. Hosted last so the scrim covers everything,
-                // and here rather than at the call site because a prompt raised from inside a
-                // scrolling settings tab would clip to that tab and scroll away with it.
+                // Authors the app-wide confirmation prompt (GlobalConfirm.ask). It is composed
+                // here, but drawn by PadModalHost above — this call renders nothing itself.
                 com.armsx2.ui.common.GlobalConfirm.Host()
             }
         }

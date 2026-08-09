@@ -1,5 +1,6 @@
 package com.armsx2.ui.settings
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -29,11 +31,9 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -41,6 +41,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -76,7 +77,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.armsx2.ui.settings.SettingsControllerNav.move
 import com.armsx2.i18n.str
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -94,6 +94,15 @@ import androidx.core.content.edit
 private val focusBlue = Color(0xFF3DA5FF)
 
 val LocalSettingsScrollState = staticCompositionLocalOf<ScrollState?> { null }
+
+/** The exclusive input layer the surrounding content belongs to — null on a base screen, a
+ *  modal's key inside PadModal's host, which is the only thing that ever provides it.
+ *
+ *  Ambient rather than a parameter on [controllerFocusable] because every shared widget has to
+ *  layer correctly the moment it is placed inside a modal, and a per-widget argument is a rule
+ *  forty call sites have to remember. Position in the tree is the one spelling of "which layer
+ *  am I in" that cannot be got wrong. */
+internal val LocalNavLayer = staticCompositionLocalOf<String?> { null }
 
 @Composable
 fun settingsScrollState(): ScrollState = LocalSettingsScrollState.current ?: remember { ScrollState(0) }
@@ -113,15 +122,60 @@ internal object SettingsControllerNav {
         val layer: String? = null,
     )
 
-    // Exclusive input layer. When non-null (e.g. the nav drawer is open), only
-    // items registered with that layer participate in nav — otherwise the drawer
-    // selection could "escape" into the still-composed screen behind it.
-    val activeLayer = mutableStateOf<String?>(null)
+    /** One entry per modal currently claiming input. [restoreId] is the selection that was
+     *  live when it opened, so closing it can put the user back where they were. */
+    private class Layer(val key: String, val restoreId: String?)
 
-    private fun inActiveLayer(id: String): Boolean =
-        registry[id]?.layer == activeLayer.value
+    // Exclusive input layers. Only items registered with the TOP layer participate in nav, so
+    // a modal's selection cannot "escape" into the screen still composed behind its scrim.
+    //
+    // A stack rather than the single slot this started as, for two reasons. Modals nest (the
+    // library's exit confirm is raised from inside the overflow panel), and the save-the-
+    // previous-value/restore-on-close idiom that a single slot forces is wrong whenever two
+    // sibling subtrees dispose in the order Compose happens to pick: the survivor is left
+    // holding a layer that is no longer active, so it looks fine and answers nothing.
+    //
+    // Written only by PadModal, via pushLayer/popLayer. Everything else reads.
+    private val layers = mutableStateListOf<Layer>()
 
-    private var scopeKey: String = ""
+    /** The layer that currently owns input; null when the base screen does. */
+    val activeLayer: String? get() = layers.lastOrNull()?.key
+
+    // An UNREGISTERED id is in no layer at all. Spelling that out matters: the map
+    // lookup yields null for both "not registered" and "registered at the base
+    // layer", so the old one-line form answered TRUE for an unknown id whenever no
+    // layer was active — which is exactly the case the callers below have to
+    // distinguish.
+    private fun inActiveLayer(id: String): Boolean {
+        val item = registry[id] ?: return false
+        return item.layer == activeLayer
+    }
+
+    /** Claim [key] as the exclusive input layer and park the outside selection — that row is
+     *  un-navigable now, and a ring left lit on it reads as stuck. */
+    fun pushLayer(key: String) {
+        layers.add(Layer(key, selectedId.value))
+        selectedId.value = null
+        selectedIndex.intValue = -1
+        scrollVelocity.floatValue = 0f
+    }
+
+    /** Release [key]. Removed BY KEY, never "drop the top" — see the note on [layers].
+     *  Restores the selection the layer interrupted, so closing a row's info panel returns
+     *  you to that row rather than to the top of the pane, which reads as a scroll bug and is
+     *  really a nav bug. */
+    fun popLayer(key: String) {
+        val index = layers.indexOfLast { it.key == key }
+        if (index < 0) return
+        val gone = layers.removeAt(index)
+        // Only the layer that was actually on top hands the selection back; a layer buried
+        // under a still-open modal must not disturb what that modal has focused.
+        if (index != layers.size) return
+        selectedId.value = gone.restoreId?.takeIf { inActiveLayer(it) }
+        selectedIndex.intValue = orderedIds().indexOf(selectedId.value)
+        scrollVelocity.floatValue = 0f
+    }
+
     // Persistent registry keyed by row id. Each row UPSERTS its latest closures
     // on every composition (via SideEffect in controllerFocusable) and removes
     // itself on dispose. This is the fix for adjust skipping / getting stuck:
@@ -178,16 +232,6 @@ internal object SettingsControllerNav {
         )
     }
 
-    fun begin(scope: String) {
-        if (scopeKey != scope) {
-            // Switched tab: drop the old selection. The new tab's rows register
-            // during this composition and stale ids are pruned by onDispose.
-            scopeKey = scope
-            selectedId.value = null
-            selectedIndex.intValue = -1
-        }
-    }
-
     fun register(
         id: String,
         onConfirm: (() -> Unit)? = null,
@@ -210,18 +254,11 @@ internal object SettingsControllerNav {
         selectedIndex.intValue = orderedIds().indexOf(selectedId.value)
     }
 
-    fun end() {
-        // Keep the highlighted index in sync with the current order.
-        selectedIndex.intValue = orderedIds().indexOf(selectedId.value)
-    }
-
     fun clearSelection() {
         selectedId.value = null
         selectedIndex.intValue = -1
         scrollVelocity.floatValue = 0f
     }
-
-    fun hasItems(): Boolean = registry.keys.any { inActiveLayer(it) }
 
     /** Highlight + scroll to the row whose id derives from [label] — used by settings search
      *  to jump to a specific control after switching tabs. The shared row widgets register
@@ -255,50 +292,59 @@ internal object SettingsControllerNav {
         return true
     }
 
+    /** Highlight the first item of the active layer, silently. The fallback a modal takes when
+     *  it names no initial focus, or names one that never registered — so a modal can only be
+     *  left with nothing selected if it contains nothing focusable at all. Silent because this
+     *  fires as the modal appears, and a nav click there sounds like a press the user didn't
+     *  make. */
+    fun selectFirstInLayer(sfx: Boolean = false): Boolean = selectEdgeOfLayer(first = true, sfx = sfx)
+
     /** True when a registered item in the active layer is currently highlighted —
      *  i.e. the registry "lane" owns D-pad focus (used by the home screen to split
      *  input between the cover grid and the toolbar/recents lane). */
     fun hasSelection(): Boolean =
         selectedId.value?.let { registry.containsKey(it) && inActiveLayer(it) } == true
 
-    /** Number of registered focusable items in the current scope. Used by the
-     *  achievements panel nav to know when Down off the last control above the
-     *  list should release focus back to the scrollable list. */
-    fun count(): Int = registry.size
-
-    fun move(delta: Int): Boolean {
+    /** Highlight the first (or last) item of the ACTIVE LAYER in visual order. Used when a
+     *  direction arrives with nothing selected yet — travelling down or right lands on the
+     *  first item, up or left on the last, which is what makes the very first press after a
+     *  surface appears feel like it entered from the edge you pushed from. */
+    private fun selectEdgeOfLayer(first: Boolean, sfx: Boolean = true): Boolean {
         val ids = orderedIds()
-        if (ids.isEmpty() || delta == 0) return false
-        val cur = ids.indexOf(selectedId.value)
-        val next = if (cur < 0) {
-            if (delta < 0) ids.lastIndex else 0
-        } else {
-            (cur + delta).coerceIn(0, ids.lastIndex)
-        }
+        if (ids.isEmpty()) return false
+        val next = if (first) 0 else ids.lastIndex
+        val changed = selectedId.value != ids[next]
         selectedId.value = ids[next]
         selectedIndex.intValue = next
-        if (next != cur) com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.NAV)
+        if (changed && sfx) com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.NAV)
         return true
     }
 
-    /** 2D spatial navigation using captured on-screen positions: move to the
-     *  nearest focusable in the (dx, dy) direction. Used by the memory-card dialog
-     *  so Left/Right move between a card's Slot 1 / Slot 2 buttons and Up/Down move
-     *  between rows — the 1D [move] made the 2-button card rows feel stuck on Slot 1
-     *  (any direction just stepped the flat list). Falls back to [move] when nothing
-     *  is selected yet. positions[id] = (y, x). */
+    /** 2D spatial navigation over the captured on-screen positions: move to the nearest
+     *  focusable in the (dx, dy) direction. Rows of side-by-side controls need this — a flat
+     *  1D step makes a two-button row feel stuck on its first button, because every direction
+     *  just walks the list. Vertical steps exactly one row and then lands on the item in that
+     *  row nearest the current x; horizontal takes the nearest item in that direction on
+     *  (roughly) the same row. Confined to the active layer. positions[id] = (y, x). */
     fun moveSpatial(dx: Int, dy: Int): Boolean {
         if (dx == 0 && dy == 0) return false
         val curId = selectedId.value
         val cur = curId?.let { positions[it] }
-        if (cur == null) {
-            val moved = move(if (dx < 0 || dy < 0) -1 else 1)
-            android.util.Log.d("ARMSX2_MCNAV", "moveSpatial dx=$dx dy=$dy cur=$curId NO_POS -> fallback move=$moved")
-            return moved
-        }
+        if (cur == null) return selectEdgeOfLayer(first = dx > 0 || dy > 0)
         val cy = cur.first
         val cx = cur.second
         val rowTol = 28f // px; items within this |dy| count as the same visual row
+
+        // Candidates come from orderedIds(), NOT from the raw positions map. Two things
+        // ride on that. It confines the move to the ACTIVE LAYER — this function used to
+        // scan every measured item on screen, so a modal's selection could step straight
+        // out through its own scrim onto a row behind it, defeating the one mechanism
+        // built to prevent that. And it makes the scan deterministic: positions is a
+        // HashMap, so the old iteration order was arbitrary, and any tie between two
+        // equally-good candidates was settled differently from run to run.
+        val candidates = orderedIds().mapNotNull { id ->
+            if (id == curId) null else positions[id]?.let { id to it }
+        }
 
         val target: String? = if (dy != 0) {
             // Vertical: step exactly ONE row in the travel direction, then land on the
@@ -307,8 +353,7 @@ internal object SettingsControllerNav {
             // a row or pick a far diagonal item — the old score could make Up land
             // nowhere useful on the card grid.
             var rowY: Float? = null
-            for ((id, p) in positions) {
-                if (id == curId || registry[id] == null) continue
+            for ((_, p) in candidates) {
                 val py = p.first
                 if (dy < 0 && py >= cy - rowTol) continue   // need a row strictly above
                 if (dy > 0 && py <= cy + rowTol) continue   // need a row strictly below
@@ -322,8 +367,7 @@ internal object SettingsControllerNav {
             if (ry == null) null else {
                 var bestId: String? = null
                 var bestDx = Float.MAX_VALUE
-                for ((id, p) in positions) {
-                    if (id == curId || registry[id] == null) continue
+                for ((id, p) in candidates) {
                     if (abs(p.first - ry) > rowTol) continue
                     val d = abs(p.second - cx)
                     if (d < bestDx) { bestDx = d; bestId = id }
@@ -334,8 +378,7 @@ internal object SettingsControllerNav {
             // Horizontal: nearest focusable in the dx direction on (roughly) the same row.
             var bestId: String? = null
             var bestScore = Float.MAX_VALUE
-            for ((id, p) in positions) {
-                if (id == curId || registry[id] == null) continue
+            for ((id, p) in candidates) {
                 val ddx = p.second - cx
                 val ddy = p.first - cy
                 val inDir = if (dx > 0) ddx > 1f && abs(ddy) < rowTol
@@ -347,8 +390,6 @@ internal object SettingsControllerNav {
             bestId
         }
 
-        android.util.Log.d("ARMSX2_MCNAV",
-            "moveSpatial dx=$dx dy=$dy cur=$curId curY=$cy curX=$cx n=${positions.size} -> $target")
         if (target == null) return false
         selectedId.value = target
         selectedIndex.intValue = orderedIds().indexOf(target)
@@ -382,13 +423,22 @@ internal object SettingsControllerNav {
         return true
     }
 
-    fun isSelected(id: String): Boolean = selectedId.value == id
+    /** Whether this control draws the focus ring. Layer-gated, so a row on a screen sitting
+     *  behind a modal goes dark for as long as the modal owns input instead of leaving a
+     *  second ring lit on top of the modal's own — two rings on screen at once, with only
+     *  one of them answering the pad, is the exact symptom this whole mechanism exists to
+     *  prevent. */
+    fun isSelected(id: String): Boolean = selectedId.value == id && inActiveLayer(id)
 
+    /** The item a value-adjust or an activation should act on. Falls back to the first item
+     *  of the active layer when the selection is missing or belongs to a suspended layer —
+     *  the fallback is what stops a stale selection from firing a control the user can no
+     *  longer see, which is how Left/Right and A used to reach through a scrim. */
     private fun selectedItem(): Item? {
         val ids = orderedIds()
         if (ids.isEmpty()) return null
         val id = selectedId.value
-        if (id == null || !registry.containsKey(id)) {
+        if (id == null || !inActiveLayer(id)) {
             val first = ids.first()
             selectedId.value = first
             selectedIndex.intValue = 0
@@ -427,8 +477,11 @@ internal fun Modifier.controllerFocusable(
     onConfirm: (() -> Unit)? = null,
     onLeft: (() -> Unit)? = null,
     onRight: (() -> Unit)? = null,
-    layer: String? = null,
 ): Modifier = composed {
+    // Which layer this control belongs to is decided by WHERE IT SITS, not by an argument the
+    // call site has to remember to pass. That is what lets an unmodified ToggleRow or slider be
+    // dropped inside a modal and layer correctly with no plumbing at all.
+    val navLayer = LocalNavLayer.current
     var focused by remember { mutableStateOf(false) }
     val bringIntoView = remember { BringIntoViewRequester() }
     if (controllerId != null) {
@@ -442,7 +495,7 @@ internal fun Modifier.controllerFocusable(
                 onConfirm = onConfirm,
                 onLeft = onLeft,
                 onRight = onRight,
-                layer = layer,
+                layer = navLayer,
             )
         }
         DisposableEffect(controllerId) {
@@ -480,9 +533,8 @@ internal fun Modifier.controllerFocusable(
                 // dropdown prev/next) when this row has an adjust handler. Consumed
                 // only when a handler exists, so plain nav rows still let Left/Right
                 // move focus. This is what makes sliders/steppers adjustable with a
-                // controller when the row is driven by Compose focus (the settings
-                // hub) rather than the registry's own adjust() path (the memcard
-                // dialog, which consumes these keys upstream in the router).
+                // controller when the row is driven by Compose focus, rather than by
+                // the registry's own adjust() path, which the router calls upstream.
                 AndroidKeyEvent.KEYCODE_DPAD_LEFT -> {
                     onLeft?.invoke()
                     onLeft != null
@@ -1164,7 +1216,7 @@ private fun Int.floorMod(modulus: Int): Int =
     if (modulus <= 0) 0 else ((this % modulus) + modulus) % modulus
 
 @Composable
-private fun InfoHint(title: String, message: String) {
+internal fun InfoHint(title: String, message: String) {
     var open by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
@@ -1182,24 +1234,14 @@ private fun InfoHint(title: String, message: String) {
             com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_OPEN)
             onDispose { com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.POPUP_CLOSE) }
         }
-        AlertDialog(
-            onDismissRequest = { open = false },
-            title = { Text(title) },
-            // AlertDialog does NOT scroll its text slot: a description longer than the slot was
-            // simply CLIPPED mid-sentence with no way to reach the rest, which is most of the
-            // longer setting explanations (reported against Low Latency Mode, which cuts off at
-            // "...turning back off if the frame pacing"). Cap the height and scroll inside it.
-            text = {
-                Text(
-                    message,
-                    modifier = Modifier
-                        .heightIn(max = 340.dp)
-                        .verticalScroll(rememberScrollState()),
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { open = false }) { Text(str("action.close")) }
-            },
+        // The shared acknowledgement panel: same card, same scrolling body, so a setting
+        // description behaves exactly like an error notice and neither can drift from the other.
+        com.armsx2.ui.common.NotifyOverlay(
+            title = title,
+            message = message,
+            onDismiss = { open = false },
+            buttonLabel = str("action.close"),
+            idPrefix = "info:$title",
         )
     }
 }

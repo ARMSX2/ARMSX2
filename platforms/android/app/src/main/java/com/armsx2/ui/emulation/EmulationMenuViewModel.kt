@@ -25,7 +25,6 @@ enum class EmulationMenuTab(val titleKey: String) {
 
 data class EmulationMenuUiState(
     val tab: EmulationMenuTab = EmulationMenuTab.Session,
-    val selectedAction: Int = 0,
     val saveSlot: Int = 0,
     val settings: Settings = Settings(),
     val touchControlsVisible: Boolean = true,
@@ -76,7 +75,6 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
         }
         state.value = state.value.copy(
             tab = initialTab ?: state.value.tab,
-            selectedAction = 0,
             saveSlot = MainActivityRuntime.currentSaveSlot.value,
             settings = settings,
             touchControlsVisible = com.armsx2.ui.touch.TouchControls.visible.value,
@@ -97,64 +95,13 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
     fun selectTab(tab: EmulationMenuTab) {
         // Nav tick when flipping to a different in-game menu tab (bumpers via cycleTab, or a tap).
         if (tab != state.value.tab) com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.NAV)
-        state.value = state.value.copy(tab = tab, selectedAction = 0)
+        state.value = state.value.copy(tab = tab)
     }
 
     fun cycleTab(delta: Int) {
         val tabs = EmulationMenuTab.entries
         val current = tabs.indexOf(state.value.tab)
         selectTab(tabs[(current + delta).floorMod(tabs.size)])
-    }
-
-    fun moveSelection(delta: Int) {
-        val max = actionCount(state.value.tab) - 1
-        val before = state.value.selectedAction
-        val next = (before + delta).coerceIn(0, max.coerceAtLeast(0))
-        if (next != before) com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.NAV)
-        state.value = state.value.copy(selectedAction = next)
-    }
-
-    fun selectAction(index: Int) {
-        state.value = state.value.copy(selectedAction = index)
-    }
-
-    fun activateSelection() {
-        when (state.value.tab) {
-            EmulationMenuTab.Session -> when (state.value.selectedAction) {
-                0 -> resume()
-                1 -> MainActivityRuntime.restart()
-                2 -> MainActivityRuntime.promptSwapDisc()
-                3 -> MainActivityRuntime.closeGame()
-            }
-            EmulationMenuTab.Graphics -> when (state.value.selectedAction) {
-                0 -> setRenderer("auto")
-                1 -> setRenderer("vulkan")
-                2 -> setRenderer("opengl")
-                3 -> setRenderer("software")
-            }
-            // Fixes is a registry-driven pane (its controls self-navigate), so it has
-            // no discrete action grid — nothing to activate here.
-            EmulationMenuTab.Fixes -> Unit
-            EmulationMenuTab.Performance -> when (state.value.selectedAction) {
-                0 -> updateSettings { it.copy(frameLimitEnable = !it.frameLimitEnable) }
-                1 -> setSpeed(it = state.value.settings.nominalSpeedPercent + 5)
-                2 -> setFrameSkip((state.value.settings.frameSkip + 1) % 6)
-            }
-            EmulationMenuTab.Controls -> when (state.value.selectedAction) {
-                0 -> editTouchControls()
-                1 -> toggleTouchControls()
-            }
-            EmulationMenuTab.Options -> when (state.value.selectedAction) {
-                0 -> updateSettings { it.copy(enablePatches = !it.enablePatches) }
-                1 -> updateSettings { it.copy(enableCheats = !it.enableCheats) }
-                2 -> updateSettings { it.copy(enableWideScreenPatches = !it.enableWideScreenPatches) }
-                3 -> updateSettings { it.copy(enableNoInterlacingPatches = !it.enableNoInterlacingPatches) }
-            }
-            EmulationMenuTab.Achievements -> when (state.value.selectedAction) {
-                0 -> requestToggleHardcore()
-                1 -> openAchievements()
-            }
-        }
     }
 
     fun resume() {
@@ -352,18 +299,6 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
         state.value = state.value.copy(settings = updated)
     }
 
-    private fun actionCount(tab: EmulationMenuTab): Int = when (tab) {
-        // MUST match SessionPane's action list length. This was 4 against a list of 5, so the pad
-        // could never reach Close at all.
-        EmulationMenuTab.Session -> 5
-        EmulationMenuTab.Graphics -> 4
-        EmulationMenuTab.Fixes -> 0
-        EmulationMenuTab.Performance -> 3
-        EmulationMenuTab.Controls -> 2
-        EmulationMenuTab.Options -> 5
-        EmulationMenuTab.Achievements -> 2
-    }
-
     private fun Int.floorMod(modulus: Int): Int = ((this % modulus) + modulus) % modulus
 }
 
@@ -371,13 +306,27 @@ object EmulationMenuInputController {
     private var owner: EmulationMenuViewModel? = null
     private var pendingTab: EmulationMenuTab? = null
 
-    // Two-zone nav. The pause menu is a vertical TAB column on the left and a
-    // CONTENT pane on the right. `inContent` = false means the D-pad walks the tab
-    // column (Up/Down between tabs, which switches the shown pane); Right (or A)
-    // steps into the content pane, where every control is a SettingsControllerNav
-    // registry item and the router drives it (Up/Down move, Left/Right adjust, A
-    // confirm). B (or Left off the first control) returns to the tab column.
+    // Two-zone nav. `inContent` = false means the D-pad walks the TAB STRIP, where moving
+    // switches the shown pane outright; stepping off it towards the content enters the
+    // CONTENT pane, in which every control is a SettingsControllerNav registry item and the
+    // router drives it (move, adjust, A confirm). B — or stepping back off the near edge —
+    // returns to the strip.
+    //
+    // WHICH WAY each of those is depends on the layout, so it is [tabsHorizontal] that says,
+    // never a constant here.
     val inContent = androidx.compose.runtime.mutableStateOf(false)
+
+    /**
+     * True when the tab strip runs left-to-right above the content (the compact layout, which
+     * is every handheld), false when it is the vertical rail to the RIGHT of it.
+     *
+     * Set by the screen from the same `compact` it lays itself out with, because a hardcoded
+     * axis is precisely the bug this replaces: the strip moved from a left-hand column to a
+     * top row and a right-hand rail, and the D-pad kept walking the column that no longer
+     * existed — Up/Down cycling tabs laid out horizontally, and Right stepping "into" content
+     * that was below or to the left.
+     */
+    val tabsHorizontal = androidx.compose.runtime.mutableStateOf(true)
     private val nav get() = com.armsx2.ui.settings.SettingsControllerNav
 
     // Set by a modal panel drawn OVER the menu (Friends) for as long as it is open; the lambda
@@ -410,7 +359,7 @@ object EmulationMenuInputController {
     private fun enterContent() {
         inContent.value = true
         nav.clearSelection()
-        nav.move(1) // select the first content control so the highlight appears
+        nav.selectFirstInLayer(sfx = true) // highlight the first content control
     }
 
     private fun exitContent() {
@@ -428,20 +377,35 @@ object EmulationMenuInputController {
             return true
         }
         val viewModel = owner ?: return false
+        val horizontal = tabsHorizontal.value
         if (!inContent.value) {
-            // Tab column (vertical): Up/Down switch tabs; Right steps into content.
+            // Walk the strip along its OWN axis, and step into the content in the direction the
+            // content actually lies: below a top row, left of a right-hand rail.
             when {
-                dy < 0 -> viewModel.cycleTab(-1)
-                dy > 0 -> viewModel.cycleTab(1)
-                dx > 0 -> enterContent()
+                horizontal && dx < 0 -> viewModel.cycleTab(-1)
+                horizontal && dx > 0 -> viewModel.cycleTab(1)
+                horizontal && dy > 0 -> enterContent()
+                !horizontal && dy < 0 -> viewModel.cycleTab(-1)
+                !horizontal && dy > 0 -> viewModel.cycleTab(1)
+                !horizontal && dx < 0 -> enterContent()
             }
             return true
         }
-        // Content pane: registry-driven.
-        when {
-            dy != 0 -> nav.moveSpatial(0, dy)
-            dx < 0 -> if (!nav.adjust(-1) && !nav.moveSpatial(-1, 0)) exitContent()
-            dx > 0 -> if (!nav.adjust(1)) nav.moveSpatial(1, 0)
+        // Content pane: registry-driven. Leaving it is always "step off the edge nearest the
+        // strip", so which axis carries the exit is the mirror of the one that walks the strip
+        // — and the other axis is free to adjust values, as it is everywhere else.
+        if (horizontal) {
+            when {
+                dy < 0 -> if (!nav.moveSpatial(0, -1)) exitContent()
+                dy > 0 -> nav.moveSpatial(0, 1)
+                dx != 0 -> if (!nav.adjust(dx)) nav.moveSpatial(dx, 0)
+            }
+        } else {
+            when {
+                dy != 0 -> nav.moveSpatial(0, dy)
+                dx > 0 -> if (!nav.adjust(1) && !nav.moveSpatial(1, 0)) exitContent()
+                dx < 0 -> if (!nav.adjust(-1)) nav.moveSpatial(-1, 0)
+            }
         }
         return true
     }

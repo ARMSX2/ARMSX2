@@ -174,21 +174,16 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
     // point of the row — quitting mid-session without one loses whatever is not saved.
     val exitConfirm = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     if (exitConfirm.value) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { exitConfirm.value = false },
-            title = { androidx.compose.material3.Text(str("games.exit.title")) },
-            text = { androidx.compose.material3.Text(str("games.exit.message")) },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    exitConfirm.value = false
-                    MainActivityRuntime.exitApp()
-                }) { androidx.compose.material3.Text(str("games.toolbar.exit")) }
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str("games.exit.title"),
+            message = str("games.exit.message"),
+            confirmLabel = str("games.toolbar.exit"),
+            idPrefix = "drawer-exit",
+            onConfirm = {
+                exitConfirm.value = false
+                MainActivityRuntime.exitApp()
             },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { exitConfirm.value = false }) {
-                    androidx.compose.material3.Text(str("action.cancel"))
-                }
-            },
+            onDismiss = { exitConfirm.value = false },
         )
     }
     // Intuitive glyphs that read as what they do — matching the in-game overlay's emoji-icon style

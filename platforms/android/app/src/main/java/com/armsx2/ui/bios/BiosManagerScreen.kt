@@ -1,5 +1,7 @@
 package com.armsx2.ui.bios
 
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -19,9 +21,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -84,7 +84,19 @@ fun BiosManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Bio
                 title = str("setup.page.bios.title"),
                 leading = { RoundAction("←", str("action.back"), onBack) },
                 actions = {
-                    Box {
+                    var actionsAnchor by remember {
+                        mutableStateOf(androidx.compose.ui.geometry.Offset.Zero)
+                    }
+                    Box(
+                        Modifier.onGloballyPositioned {
+                            // Bottom-left of the button, so the panel hangs below it as the
+                            // dropdown it replaces did.
+                            val p = it.positionInRoot()
+                            actionsAnchor = androidx.compose.ui.geometry.Offset(
+                                p.x, p.y + it.size.height,
+                            )
+                        },
+                    ) {
                         RoundAction(
                             glyph = "⋮",
                             description = str("games.toolbar.more"),
@@ -97,6 +109,7 @@ fun BiosManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Bio
                             onImportFile = { picker.launch(arrayOf("application/octet-stream", "*/*")) },
                             onImportFolder = { folderPicker.launch(null) },
                             onRefresh = viewModel::refresh,
+                            anchor = actionsAnchor,
                         )
                     }
                 },
@@ -134,24 +147,22 @@ fun BiosManagerScreen(onBack: () -> Unit, game: GameInfo? = null, viewModel: Bio
     }
 
     deleteTarget?.let { item ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text(str("action.delete")) },
-            text = { Text(item.file.name) },
-            confirmButton = {
-                TextButton(onClick = { viewModel.delete(item); deleteTarget = null }) {
-                    Text(str("action.delete"), color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text(str("action.cancel")) } },
+        com.armsx2.ui.common.ConfirmOverlay(
+            title = str("action.delete"),
+            message = item.file.name,
+            confirmLabel = str("action.delete"),
+            destructive = true,
+            idPrefix = "bios-delete",
+            onConfirm = { viewModel.delete(item); deleteTarget = null },
+            onDismiss = { deleteTarget = null },
         )
     }
     state.error?.let { error ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissError,
-            title = { Text(str("setup.page.bios.title")) },
-            text = { Text(error) },
-            confirmButton = { TextButton(onClick = viewModel::dismissError) { Text(str("action.ok")) } },
+        com.armsx2.ui.common.NotifyOverlay(
+            title = str("setup.page.bios.title"),
+            message = error,
+            onDismiss = viewModel::dismissError,
+            idPrefix = "bios.error",
         )
     }
 }
@@ -163,38 +174,53 @@ private fun BiosActionsMenu(
     onImportFile: () -> Unit,
     onImportFolder: () -> Unit,
     onRefresh: () -> Unit,
+    anchor: androidx.compose.ui.geometry.Offset,
 ) {
     fun closeThen(action: () -> Unit) {
         onDismiss()
         action()
     }
 
-    DropdownMenu(
-        expanded = expanded,
-        onDismissRequest = onDismiss,
-        modifier = Modifier.widthIn(min = 280.dp, max = 340.dp),
-        shape = RoundedCornerShape(22.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
-        tonalElevation = 8.dp,
-        shadowElevation = 14.dp,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
+    if (!expanded) return
+    // Anchored under its own ⋮ button — see the library's overflow menu for the reasoning.
+    com.armsx2.ui.common.PadModal(
+        key = "bios-actions",
+        onDismiss = onDismiss,
+        anchor = anchor,
+        scrimAlpha = 0.32f,
     ) {
-        Text(
-            text = str("setup.page.bios.title"),
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            fontWeight = FontWeight.Bold,
-        )
-        BiosActionMenuItem("＋", str("action.import")) { closeThen(onImportFile) }
-        BiosActionMenuItem("▣", str("action.importFolder")) { closeThen(onImportFolder) }
-        BiosActionMenuItem("↻", str("games.card.refresh")) { closeThen(onRefresh) }
+        Surface(
+            modifier = Modifier.widthIn(min = 280.dp, max = 340.dp),
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 8.dp,
+            shadowElevation = 14.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
+        ) {
+            Column {
+                Text(
+                    text = str("setup.page.bios.title"),
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold,
+                )
+                BiosActionMenuItem("＋", str("action.import")) { closeThen(onImportFile) }
+                BiosActionMenuItem("▣", str("action.importFolder")) { closeThen(onImportFolder) }
+                BiosActionMenuItem("↻", str("games.card.refresh")) { closeThen(onRefresh) }
+            }
+        }
     }
 }
 
 @Composable
 private fun BiosActionMenuItem(glyph: String, label: String, onClick: () -> Unit) {
     DropdownMenuItem(
+        modifier = Modifier.controllerFocusable(
+            controllerId = "bios-actions:$label",
+            shape = RoundedCornerShape(12.dp),
+            onConfirm = onClick,
+        ),
         text = {
             Text(
                 text = label,
