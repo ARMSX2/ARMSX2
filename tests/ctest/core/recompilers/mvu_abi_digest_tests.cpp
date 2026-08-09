@@ -93,9 +93,11 @@ struct DigestSet
 	// DIV / SQRT / RSQRT, the only div-unit probe (added at ABI v17); why it
 	// exists is at its build site. 0 in a pin row = probe absent.
 	u64 divUnit;
-	// MADD under vuClampMode:2, the only clampE probe (added at ABI v17); why it
-	// exists is at its build site. 0 in a pin row = probe absent.
+	// MADDA/MADD under vuClampMode:2 (added at ABI v17); why it exists is at its
+	// build site. 0 in a pin row = probe absent.
 	u64 maddClampE;
+	// MSUBA/MSUB, the other half of that pair (added at abi 18).
+	u64 msubClampE;
 };
 
 struct AbiPin
@@ -202,9 +204,10 @@ constexpr AbiPin kPins[] = {
 	{17, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0xf7b84d8c08fa2266, 0xde92be2516a10fbb}},
 	// v18: RSQRT's zero path ORs into divFlag rather than assigning, so the
 	// preceding sign test's I survives a -0 divisor. divUnit is the only field
-	// that moves -- DIV and SQRT keep their shapes, and the other eight probes
-	// never reach an RSQRT.
-	{18, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x3c5065e7ab8cf631, 0xde92be2516a10fbb}},
+	// that moves -- DIV and SQRT keep their shapes, and the other nine probes
+	// never reach an RSQRT. msubClampE is new here; a probe changes no emitted
+	// code, so it needs no bump of its own.
+	{18, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x3c5065e7ab8cf631, 0xde92be2516a10fbb, 0x1270eee2b9725c68}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs)
@@ -345,19 +348,22 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		UpperOnly(bits::E | VADDq_U(mask::xyzw, vf::vf3, vf::vf1)),
 	});
 
-	// MADDA then MADD under vuClampMode:2 — mVU_FMACb and mVU_FMACc, both
-	// operand positions the accumulate step can find the product in. Every probe
-	// above compiles at the default clamp mode, where mVUclamp3 and mVUclamp4
-	// never emit -- a quarter of emitted VU code that was invisible to this
-	// backstop until now.
+	// The two-step FMACs under vuClampMode:2 -- MADDA/MSUBA are mVU_FMACb's two
+	// opTypes, MADD is mVU_FMACc, MSUB is mVU_FMACd. Every probe above compiles
+	// at the default clamp mode, where mVUclamp3 and mVUclamp4 never emit -- a
+	// quarter of emitted VU code that was invisible to this backstop until now.
 	//
-	// Two ops, not three: CompileAndDigest forces vuFlagHack on to match
-	// production, and a chain of three flag-writing FMACs drops the
-	// interpreter's sticky-sign write (STATUS 0x41 against 0xc1) under the hack,
+	// Two ops per program, not one longer chain: CompileAndDigest forces
+	// vuFlagHack on to match production, and a chain of three flag-writing FMACs
+	// drops the interpreter's sticky-sign write (STATUS 0x41 against 0xc1),
 	// firing Run()'s engine diff on the speedhack instead of on emitted shape.
 	actual.maddClampE = CompileAndDigestClampE({
 		UpperOnly(VMADDA_U(mask::xyzw, vf::vf1, vf::vf2)),
 		UpperOnly(bits::E | VMADD_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
+	});
+	actual.msubClampE = CompileAndDigestClampE({
+		UpperOnly(VMSUBA_U(mask::xyzw, vf::vf1, vf::vf2)),
+		UpperOnly(bits::E | VMSUB_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
 	});
 
 	// VU1 counterpart of branchBothArms: both arms reach a program end, which is
@@ -381,6 +387,7 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.vu1BranchToEbit, 0u);
 	ASSERT_NE(actual.divUnit, 0u);
 	ASSERT_NE(actual.maddClampE, 0u);
+	ASSERT_NE(actual.msubClampE, 0u);
 
 #if !(defined(__linux__) && !defined(__ANDROID__) && defined(__GLIBCXX__))
 	// The pinned values embed guest-state field offsets baked into the emitted
@@ -414,7 +421,8 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.spinLoop
 		<< ", 0x" << actual.vu1BranchToEbit
 		<< ", 0x" << actual.divUnit
-		<< ", 0x" << actual.maddClampE << "}";
+		<< ", 0x" << actual.maddClampE
+		<< ", 0x" << actual.msubClampE << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -460,6 +468,11 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	{
 		EXPECT_EQ(actual.maddClampE, pin->digests.maddClampE)
 			<< explain("maddClampE", actual.maddClampE, pin->digests.maddClampE);
+	}
+	if (pin->digests.msubClampE != 0) // probe added at abi 18; older rows unpinned
+	{
+		EXPECT_EQ(actual.msubClampE, pin->digests.msubClampE)
+			<< explain("msubClampE", actual.msubClampE, pin->digests.msubClampE);
 	}
 	ASSERT_NE(actual.spinLoop, 0u);
 }
