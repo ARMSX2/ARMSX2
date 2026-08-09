@@ -121,6 +121,45 @@ constexpr bool FbFetchDropsDrawBarriers(
 	return fetch_orders_overlapping_prims || !prims_may_overlap;
 }
 
+// Which shape the OpenGL backend's blend fallback takes when it has no texture barrier.
+//
+// Two different fallbacks exist and the flag picks between them. With multidraw_fb_copy set, the
+// backend copies the render target once per PRIMITIVE GROUP inside a full-barrier draw, which buys
+// the per-primitive blend ordering a real barrier would have given. With it clear, GSRendererHW
+// sees no feedback loop at all, drops require_full_barrier, and the backend takes a single
+// render-target copy per DRAW -- the same shape Vulkan, D3D12 and Metal already use, since none of
+// them sets the flag.
+//
+// The per-primitive copy is affordable on an immediate-mode desktop GPU, where a blit is a blit. On
+// a tiler it is not a copy at all: reading back the render target forces the current tile's work to
+// flush and resolve to main memory, so a draw with a few hundred primitive groups pays a few
+// hundred full-screen flushes. Measured on an Anbernic RG 477V (Mali-G615 r44p1) with MGS3, that is
+// the difference between 0.33 fps and full speed -- the same game on the same device runs at ~30
+// fps on Vulkan, which reaches the identical copy-based concept only without this flag.
+//
+// So the trade is not accuracy-versus-speed in any useful sense: 0.33 fps is not a mode anyone
+// runs, and the per-draw fallback is what every other backend has always shipped.
+//
+// `tile_based_gpu` is the caller's detection. GLES is the proxy the OpenGL backend uses, which also
+// classifies ANGLE as a tiler -- correct by accident, since ANGLE's per-primitive copy is no cheaper.
+constexpr bool GLUsesPerPrimitiveFbCopy(bool has_texture_barrier, bool tile_based_gpu)
+{
+	// With a barrier in hand the copy path is never entered, so the flag is inert. Report it off
+	// anyway: several call sites read it as "copies are happening", and a set-but-unused flag is
+	// how a reader concludes the wrong thing about which path a device is on.
+	if (has_texture_barrier)
+		return false;
+
+	return !tile_based_gpu;
+}
+
+// A tiler with no barrier takes the per-draw copy; an immediate-mode GPU keeps the per-primitive one.
+static_assert(!GLUsesPerPrimitiveFbCopy(false, true));
+static_assert(GLUsesPerPrimitiveFbCopy(false, false));
+// A barrier means the copy path is unreachable either way.
+static_assert(!GLUsesPerPrimitiveFbCopy(true, true));
+static_assert(!GLUsesPerPrimitiveFbCopy(true, false));
+
 // The regression: GL fetch does not order overlapping primitives, so an overlapping draw keeps its
 // barrier. Everything else about the old unconditional drop is preserved.
 static_assert(!FbFetchDropsDrawBarriers(false, true, false));

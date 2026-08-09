@@ -235,3 +235,62 @@ TEST(GSFramebufferFetchPolicy, DroppingBarriersNeverDependsOnOverlapAloneWithout
 		EXPECT_EQ(FbFetchDropsDrawBarriers(false, overlap, false), !overlap);
 	}
 }
+
+// The blend-fallback shape (GLUsesPerPrimitiveFbCopy).
+//
+// Third face of the same coupling. Turning fetch off answers "how do we read the destination?" but
+// not "how often do we copy it", and the two were decided ~100 lines apart: the copy flag is set
+// early, from the absence of a texture-barrier extension, and the fetch veto that makes it
+// load-bearing happens much later. A blocklisted Mali device therefore came out with no fetch, no
+// barrier, and a render-target copy per primitive group -- 0.33 fps in MGS3 on the RG 477V, against
+// ~30 fps for the same game on Vulkan, which reaches the same copy-based concept per draw instead.
+
+TEST(GSFramebufferFetchPolicy, TilerWithoutABarrierTakesThePerDrawCopy)
+{
+	// The regression. This is the blocklisted-Mali configuration: no fetch, so no barrier, on a
+	// tile-based GPU where reading the render target back flushes and resolves the tile.
+	EXPECT_FALSE(GLUsesPerPrimitiveFbCopy(false, true));
+}
+
+TEST(GSFramebufferFetchPolicy, ImmediateModeGPUKeepsThePerPrimitiveCopy)
+{
+	// Desktop GL only reaches the no-barrier case on pre-4.5 hardware without ARB or NV texture
+	// barrier. A blit there is just a blit, and the per-primitive copy buys real blend ordering, so
+	// nothing about this fix applies to it.
+	EXPECT_TRUE(GLUsesPerPrimitiveFbCopy(false, false));
+}
+
+TEST(GSFramebufferFetchPolicy, ABarrierMakesTheCopyFlagInertOnEveryGPU)
+{
+	// Every consumer of the flag is guarded by !texture_barrier, so its value cannot matter here.
+	// Pinned because a set-but-unreachable flag reads as "this device copies per primitive" to
+	// anyone auditing the log or the feature dump, which is how the wrong path gets blamed.
+	for (bool tiler : {false, true})
+	{
+		SCOPED_TRACE(testing::Message() << "tiler=" << tiler);
+		EXPECT_FALSE(GLUsesPerPrimitiveFbCopy(true, tiler));
+	}
+}
+
+TEST(GSFramebufferFetchPolicy, NoVetoedFetchLeavesATilerOnThePerPrimitiveCopy)
+{
+	// The invariant that ties the two halves together: whichever way fetch is lost -- the driver
+	// blocklist, the user's setting, or no extension at all -- a tiler must not be left copying per
+	// primitive. Swept over the fetch policy's own inputs so a new veto cannot miss this.
+	for (bool arm : {false, true})
+	{
+		for (bool blocklisted : {false, true})
+		{
+			for (bool user_disabled : {false, true})
+			{
+				const GSFramebufferFetchDecision d = Decide({.arm = arm,
+					.blocklisted = blocklisted, .user_disabled = user_disabled, .mali_profile = true});
+				SCOPED_TRACE(testing::Message() << "arm=" << arm << " blocklisted=" << blocklisted
+												<< " user_disabled=" << user_disabled);
+
+				// GLES: the texture barrier is fetch and nothing else.
+				EXPECT_FALSE(GLUsesPerPrimitiveFbCopy(d.enabled, /*tile_based_gpu=*/true));
+			}
+		}
+	}
+}

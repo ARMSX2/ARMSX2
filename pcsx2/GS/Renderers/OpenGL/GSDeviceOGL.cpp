@@ -1102,7 +1102,27 @@ bool GSDeviceOGL::CheckFeatures()
 		m_features.multidraw_fb_copy = false;
 	}
 	else
+	{
 		m_features.texture_barrier = m_features.framebuffer_fetch || GLAD_GL_ARB_texture_barrier || GLAD_GL_NV_texture_barrier;
+
+		// Pick the blend fallback's shape now that we know whether there is a barrier. GLES always
+		// arrives here with multidraw_fb_copy set (there is no ARB/NV texture barrier), and on a
+		// device where fetch is also off -- the r44p1 blocklist, the user's setting, or simply no
+		// fetch extension -- that leaves the per-primitive render-target copy as the blend path,
+		// which on a tiler means a tile flush and resolve per primitive group. See
+		// GLUsesPerPrimitiveFbCopy for the measurement; the short version is 0.33 fps.
+		//
+		// Only the auto path decides this. Both OverrideTextureBarriers branches above already
+		// clear the flag themselves, and Force Disabled in particular must keep clearing it on
+		// desktop too -- the user asked for no barriers, not for a different kind of copy.
+		m_features.multidraw_fb_copy = GLUsesPerPrimitiveFbCopy(m_features.texture_barrier, m_is_gles);
+		if (!m_features.texture_barrier && !m_features.multidraw_fb_copy)
+		{
+			Console.WriteLn("GL: no texture barrier and no framebuffer fetch — accurate blending reads the "
+							"render target from a per-draw copy (the per-primitive copy costs a tile flush "
+							"per primitive on a tiler).");
+		}
+	}
 
 	m_features.provoking_vertex_last = true;
 	m_features.dxt_textures = GLAD_GL_EXT_texture_compression_s3tc;
