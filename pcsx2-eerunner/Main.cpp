@@ -999,6 +999,15 @@ void EERunner::SettingsOverride()
 	}
 	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "vuThread", live_mtvu);
 
+	// EERUNNER_EECYCLESKIP / EERUNNER_EECYCLERATE: apply the EE cycle
+	// speedhacks. The Android Low-End preset ships EECycleSkip=1 and handheld
+	// users add underclock on top; timing-poison triage needs the handheld's
+	// clock shape reproducible on the desk.
+	if (const char* e = std::getenv("EERUNNER_EECYCLESKIP"))
+		s_settings_interface.SetIntValue("EmuCore/Speedhacks", "EECycleSkip", std::atoi(e));
+	if (const char* e = std::getenv("EERUNNER_EECYCLERATE"))
+		s_settings_interface.SetIntValue("EmuCore/Speedhacks", "EECycleRate", std::atoi(e));
+
 	// EE recompiler ON by default for LiveRun; gate on EERUNNER_EE=interp (or 0) to
 	// run the clean EE-interpreter control pass — for jit-vs-interp comparison of the
 	// SAME live hang (interp clean, jit hangs). Diff modes leave EnableEE untouched.
@@ -4108,6 +4117,32 @@ static int RunLiveRun()
 		}
 	});
 
+	// EERUNNER_EXITSTORM=<period_us>: fire Cpu->ExitExecution() from a foreign
+	// thread at randomized intervals averaging ~period_us, mimicking the Android
+	// JNI pause/suspend churn (native-lib pause() calls ExitExecution cross-thread
+	// against a running EE). Hunts clock corruption at the delta-pinning seams:
+	// recSafeExitExecution writes cpuRegs.nextEventCycle=0 while JIT blocks hold
+	// RECCYCLE = cycle - nextEventCycle, so a mid-chain hit skews the next flush.
+	std::atomic<bool> storm_stop{false};
+	std::thread stormthread;
+	u32 storm_period = 0;
+	if (const char* e = std::getenv("EERUNNER_EXITSTORM"))
+		storm_period = static_cast<u32>(strtoul(e, nullptr, 0));
+	if (storm_period)
+	{
+		Console.WriteLn(fmt::format("LIVERUN: EXITSTORM armed, ~{}us between cross-thread ExitExecution calls", storm_period));
+		stormthread = std::thread([&storm_stop, storm_period]() {
+			u32 lcg = 0x12345678;
+			while (!storm_stop.load(std::memory_order_relaxed))
+			{
+				lcg = lcg * 1664525u + 1013904223u;
+				std::this_thread::sleep_for(std::chrono::microseconds(storm_period / 2 + (lcg % storm_period)));
+				if (Cpu)
+					Cpu->ExitExecution();
+			}
+		});
+	}
+
 	// Soft-freeze probe: the frame-count watchdog can't see this hang, because the EE
 	// keeps ticking vblank so frames KEEP completing (frozen frames). Instead watch a
 	// guest EE-RAM word (EERUNNER_WATCH_ADDR) that should keep changing during normal
@@ -4200,6 +4235,9 @@ static int RunLiveRun()
 	}
 
 	s_liverun_done.store(true, std::memory_order_relaxed);
+	storm_stop.store(true, std::memory_order_relaxed);
+	if (stormthread.joinable())
+		stormthread.join();
 	watchdog.join();
 
 	// Per-frame GS stats (averaged over g_perfmon's last 32-frame window): draws, render
