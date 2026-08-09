@@ -1403,6 +1403,7 @@ public:
 		bool dxt_textures         : 1; ///< Supports DXTn texture compression, i.e. S3TC and BC1-3.
 		bool bptc_textures        : 1; ///< Supports BC6/7 texture compression.
 		bool framebuffer_fetch    : 1; ///< Can sample from the framebuffer without texture barriers.
+		bool framebuffer_fetch_orders_overlap : 1; ///< Framebuffer fetch also orders overlapping primitives *within* a single draw, so a full barrier is redundant. Vulkan's rasterization-order attachment access and Metal's programmable blending guarantee this; the GL fetch extensions do not deliver it in practice.
 		bool stencil_buffer       : 1; ///< Supports stencil buffer, and can use for DATE.
 		bool cas_sharpening       : 1; ///< Supports sufficient functionality for contrast adaptive sharpening.
 		bool test_and_sample_depth: 1; ///< Supports concurrently binding the depth-stencil buffer for sampling and depth testing.

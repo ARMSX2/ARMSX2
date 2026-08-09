@@ -89,6 +89,49 @@ constexpr GSFramebufferFetchDecision DecideGLFramebufferFetch(bool has_arm_fetch
 	return decision;
 }
 
+// Whether a draw may drop its barrier requirement because framebuffer fetch is available.
+//
+// Fetch replaces the destination READ. Whether it also orders overlapping primitives WITHIN one
+// draw depends on which spelling of it the backend has, and that distinction is load-bearing:
+// GSRendererHW switches an overlapping draw to software blending *because* fetch is available
+// ("on fbfetch, one barrier is like full barrier") and asks for a full barrier to get the
+// per-primitive ordering that path needs. Dropping the barrier on the same reasoning removed the
+// mechanism that supplied the ordering, so a primitive blended against a destination its
+// predecessor had not written yet. It raced: on Mesa 25.3.6 / Apple M2, a 640x480 MGS3 frame came
+// out 101x further from the software rasteriser than the RT-copy path (76872 pixels wrong by >=8
+// against 759), and 18% of the frame changed between identical replays.
+//
+// Vulkan's rasterization-order attachment access and Metal's programmable blending guarantee the
+// ordering by contract, so they still drop the barrier and keep their render passes intact. The
+// GL fetch extensions do not deliver it in practice. Where the draw's own primitives do not
+// overlap the question is moot -- a live in-tile read and a pre-draw snapshot are the same value --
+// so the barrier is dropped there on every backend, which covered 76 of the 84 affected draws in
+// that frame.
+//
+// `prims_may_overlap` must be true when overlap is merely unknown; guessing "no" is what costs
+// correctness, and guessing "yes" costs only a split draw.
+constexpr bool FbFetchDropsDrawBarriers(
+	bool fetch_orders_overlapping_prims, bool prims_may_overlap, bool needs_barriers_for_depth)
+{
+	// Depth feedback reads through a texture, not the colour attachment, so fetch says nothing
+	// about it and its barriers stand regardless.
+	if (needs_barriers_for_depth)
+		return false;
+
+	return fetch_orders_overlapping_prims || !prims_may_overlap;
+}
+
+// The regression: GL fetch does not order overlapping primitives, so an overlapping draw keeps its
+// barrier. Everything else about the old unconditional drop is preserved.
+static_assert(!FbFetchDropsDrawBarriers(false, true, false));
+static_assert(FbFetchDropsDrawBarriers(false, false, false));
+// Backends whose fetch *is* an ordering guarantee keep the barrier-free fast path, overlap or not.
+static_assert(FbFetchDropsDrawBarriers(true, true, false));
+static_assert(FbFetchDropsDrawBarriers(true, false, false));
+// Depth feedback outranks all of it.
+static_assert(!FbFetchDropsDrawBarriers(true, false, true));
+static_assert(!FbFetchDropsDrawBarriers(false, false, true));
+
 // The regression itself: a blocklisted driver, or the user's setting, must survive the Mali
 // profile -- and must not drag the profile to PowerVR on the way.
 static_assert(!DecideGLFramebufferFetch(true, true, true, true, false, true).enabled);

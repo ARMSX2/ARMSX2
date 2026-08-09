@@ -177,3 +177,61 @@ TEST(GSFramebufferFetchPolicy, ProfileDemotionIgnoresTheVetoInputs)
 		}
 	}
 }
+
+// The barrier half of the same policy (FbFetchDropsDrawBarriers).
+//
+// Same class of bug as the one above, in the opposite direction: not a decision re-made in three
+// places, but one decision standing in for two different questions. "Can I read the destination
+// without a barrier?" and "are overlapping primitives ordered against each other?" were both
+// answered by features.framebuffer_fetch, and only the first of them is what fetch actually
+// guarantees on GL. The blending path asks for a full barrier so overlapping primitives observe
+// each other; DetermineBarriers then deleted it because fetch was available. Measured on the GL
+// arm, that cost 101x the per-pixel error of the RT-copy path and made the frame nondeterministic.
+
+TEST(GSFramebufferFetchPolicy, GLFetchKeepsTheBarrierWhenPrimitivesOverlap)
+{
+	// The regression. GL's fetch orders nothing, so an overlapping draw must keep its barrier --
+	// the software blend path enabled for it reads a destination its own predecessor writes.
+	EXPECT_FALSE(FbFetchDropsDrawBarriers(false, true, false));
+}
+
+TEST(GSFramebufferFetchPolicy, NonOverlappingDrawsDropTheBarrierOnEveryBackend)
+{
+	// With no overlap, a live in-tile read and a pre-draw snapshot are the same value, so the
+	// barrier buys nothing. This is the common case and the reason the fix is nearly free.
+	EXPECT_TRUE(FbFetchDropsDrawBarriers(false, false, false));
+	EXPECT_TRUE(FbFetchDropsDrawBarriers(true, false, false));
+}
+
+TEST(GSFramebufferFetchPolicy, OrderingBackendsKeepTheBarrierFreeFastPath)
+{
+	// Vulkan's rasterization-order attachment access and Metal's programmable blending order
+	// overlapping fragments by contract. Making them pay for a barrier would reintroduce exactly
+	// the render-pass breaks the fetch path exists to remove, for no correctness gain.
+	EXPECT_TRUE(FbFetchDropsDrawBarriers(true, true, false));
+}
+
+TEST(GSFramebufferFetchPolicy, DepthFeedbackBarriersSurviveEveryFetchCapability)
+{
+	// Depth feedback reads through a texture rather than the colour attachment, so no colour-fetch
+	// capability says anything about it.
+	for (bool orders : {false, true})
+	{
+		for (bool overlap : {false, true})
+		{
+			SCOPED_TRACE(testing::Message() << "orders=" << orders << " overlap=" << overlap);
+			EXPECT_FALSE(FbFetchDropsDrawBarriers(orders, overlap, true));
+		}
+	}
+}
+
+TEST(GSFramebufferFetchPolicy, DroppingBarriersNeverDependsOnOverlapAloneWithoutAnOrderingGuarantee)
+{
+	// The invariant that fails if someone reinstates the unconditional drop: without an ordering
+	// guarantee, the answer must track overlap exactly.
+	for (bool overlap : {false, true})
+	{
+		SCOPED_TRACE(testing::Message() << "overlap=" << overlap);
+		EXPECT_EQ(FbFetchDropsDrawBarriers(false, overlap, false), !overlap);
+	}
+}

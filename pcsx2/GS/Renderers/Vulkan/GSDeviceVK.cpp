@@ -3602,6 +3602,11 @@ bool GSDeviceVK::CheckFeatures()
 		(is_mali_vk || is_adreno || GSConfig.EnableAdrenoFramebufferFetch) && !is_xclipse_vk;
 	m_features.framebuffer_fetch = vendor_allows_fbfetch &&
 		m_optional_extensions.vk_ext_rasterization_order_attachment_access && !GSConfig.DisableFramebufferFetch;
+	// The Vulkan spelling of framebuffer fetch *is* rasterization-order attachment access, whose
+	// contract is that overlapping fragments in one draw observe each other in primitive order.
+	// So the ordering a full barrier would provide is already guaranteed, and keeping the barrier
+	// would only reintroduce the render-pass breaks this path exists to avoid.
+	m_features.framebuffer_fetch_orders_overlap = m_features.framebuffer_fetch;
 	m_features.texture_barrier = GSConfig.OverrideTextureBarriers != 0;
 	// No working in-pass render-target self-read (ARMSX2 #442, Qualcomm/Turnip). Force the RT-COPY
 	// path: with texture barriers off, GSRendererHW reads Cd from a separate copy of the target

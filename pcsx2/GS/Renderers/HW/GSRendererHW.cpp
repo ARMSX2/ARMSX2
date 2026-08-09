@@ -5,6 +5,7 @@
 #include "GS/Renderers/HW/GSHwHack.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
+#include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -6407,9 +6408,13 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 		// If we use depth-as-color feedback, then FB fetch can be used for depth also.
 		const bool need_barriers_for_depth = m_conf.ps.IsFeedbackLoopDepth() && features.depth_feedback;
 
-		if (!need_barriers_for_depth)
+		// Fetch replaces the destination read; whether it also orders overlapping primitives
+		// within the draw is a per-backend property, and the software blend path enabled above
+		// depends on that ordering. See FbFetchDropsDrawBarriers for the full reasoning.
+		// PRIM_OVERLAP_UNKNOWN counts as overlapping.
+		if (FbFetchDropsDrawBarriers(features.framebuffer_fetch_orders_overlap,
+				m_prim_overlap != PRIM_OVERLAP_NO, need_barriers_for_depth))
 		{
-			// Barriers aren't needed with fbfetch
 			m_conf.require_one_barrier = false;
 			m_conf.require_full_barrier = false;
 		}

@@ -1201,6 +1201,9 @@ bool GSDeviceMTL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	m_features.dxt_textures = true;
 	m_features.bptc_textures = true;
 	m_features.framebuffer_fetch = m_dev.features.framebuffer_fetch && !GSConfig.DisableFramebufferFetch;
+	// Apple's programmable blending reads the tile in rasterization order, so overlapping
+	// primitives in one draw already observe each other and a full barrier adds nothing.
+	m_features.framebuffer_fetch_orders_overlap = m_features.framebuffer_fetch;
 	m_features.stencil_buffer = true;
 	m_features.cas_sharpening = true;
 	m_features.test_and_sample_depth = true;
