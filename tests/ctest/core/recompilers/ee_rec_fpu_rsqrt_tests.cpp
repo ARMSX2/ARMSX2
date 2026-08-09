@@ -562,3 +562,129 @@ TEST(EeRecFpuRsqrt, DivideUnitRoundsToNearestInProductionFpEnv)
 		<< "[interp] 0x3F5105EC is what a correctly rounded rsqrt gives; the console "
 		   "and the interpreter's digit recurrence both say 0x3F5105EB";
 }
+
+// ---- Exponent-255 divisors --------------------------------------------------
+// Rows from the same first-party capture as EeFpuDivunitConsole. The fourth
+// column is the fast path's answer, up to 1 ULP off the console's: it rounds
+// the root correctly and the divide/sqrt unit does not, and eeSrtDigit (in
+// pcsx2/FPU.cpp) models that for the interpreter only. So the interpreter is
+// asserted against the console exactly and the JIT against the fourth column.
+TEST(EeRecFpuRsqrt, Exponent255DivisorMatchesConsole)
+{
+	struct Row
+	{
+		u32 fs, ft, console, want_fast;
+	};
+	static constexpr Row kRows[] = {
+		{0x3F800000u, 0x7F800000u, 0x1F800000u, 0x1F800000u}, // +Inf   as a host word
+		{0x7F208A2Au, 0x7F91756Eu, 0x5F1698F2u, 0x5F1698F2u}, // +sNaN
+		{0x652D2AE1u, 0x7FC6AC37u, 0x450AFEF9u, 0x450AFEF9u}, // +qNaN
+		{0x7EFA12AEu, 0x7FE68EADu, 0x5EBA546Du, 0x5EBA546Cu}, // +qNaN, 1 ulp
+		{0xFD7BB4BDu, 0xFFA1E9F2u, 0xDD5FCC56u, 0xDD5FCC57u}, // -sNaN, 1 ulp
+		{0x7F5FD762u, 0xFFF0F0CBu, 0x5F2326B6u, 0x5F2326B6u}, // -qNaN
+		{0xB73F5561u, 0x7F814D77u, 0x973E5E09u, 0x973E5E0Au}, // +sNaN, 1 ulp
+		{0x7CB82C8Du, 0xFFB81B1Bu, 0x5C99914Du, 0x5C99914Du}, // -sNaN
+		{0xFBC42E8Au, 0x7FF141AAu, 0xDB8EE5B8u, 0xDB8EE5B9u}, // +qNaN, 1 ulp
+		{0x7CF2844Du, 0xFFF8FB98u, 0x5CADE290u, 0x5CADE291u}, // -qNaN, 1 ulp
+		{0xAFD35605u, 0xFFD96260u, 0x8FA22AF0u, 0x8FA22AF0u}, // -qNaN
+		// Controls: exponent-254 divisors, below the prescale branch.
+		{0x7F7FFFFFu, 0x7F7FFFFFu, 0x5F800000u, 0x5F800000u},
+		{0x642606B6u, 0x7F6CED78u, 0x442C9450u, 0x442C9450u},
+	};
+
+	const auto key = [](u32 x) {
+		return (x & 0x80000000u) ? -static_cast<s64>(x & 0x7FFFFFFFu) : static_cast<s64>(x);
+	};
+
+	int exp255 = 0, controls = 0, signalling = 0, infinities = 0, exact = 0;
+	for (const Row& r : kRows)
+	{
+		SCOPED_TRACE(::testing::Message() << std::hex << "rsqrt fs=" << r.fs << " ft=" << r.ft);
+		const auto build = [&r](EeRecTestHarness& h) {
+			h.EnableCop1();
+			h.SetFcr31(0);
+			h.SetFprBits(1, r.fs);
+			h.SetFprBits(2, r.ft);
+			h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
+		};
+		EeRecTestHarness hj;
+		build(hj);
+		hj.RunJitNoDiff();
+		EeRecTestHarness hi;
+		build(hi);
+		hi.RunInterpOnly();
+
+		EXPECT_EQ(hi.GetFprBitsInterp(3), r.console) << "[interp] vs console";
+		EXPECT_EQ(hj.GetFprBitsJit(3), r.want_fast) << "[jit] vs the fast path's value";
+		EXPECT_LE(std::abs(key(r.want_fast) - key(r.console)), 1)
+			<< "the fast path's value has drifted more than the divide unit's own "
+			   "rounding accounts for";
+
+		// The divisor's sign reaches FCR31 and nothing else: sqrt takes |Ft|.
+		const u32 want_flags = (r.ft & 0x80000000u) ? (kI | kSI) : 0u;
+		EXPECT_EQ(hj.JitSnapshot().fprs.fprc[31] & kStickyMask, want_flags) << "[jit] flags";
+		EXPECT_EQ(hi.InterpSnapshot().fprs.fprc[31] & kStickyMask, want_flags) << "[interp] flags";
+
+		if ((r.ft & 0x7F800000u) != 0x7F800000u)
+		{
+			++controls;
+			continue;
+		}
+		++exp255;
+		if (r.want_fast == r.console)
+			++exact;
+		const u32 mant = r.ft & 0x7FFFFFu;
+		if (mant == 0)
+			++infinities;
+		else if ((mant & 0x400000u) == 0)
+			++signalling;
+	}
+
+	EXPECT_GT(controls, 0)
+		<< "anti-vacuity: without an exponent <= 254 divisor nothing here would notice "
+		   "the prescale being applied unconditionally";
+	EXPECT_GT(infinities, 0) << "anti-vacuity: the +Inf host word is the shape that used to "
+								"divide by infinity and return zero";
+	EXPECT_GE(signalling, 3)
+		<< "anti-vacuity: signalling patterns are half the exponent-255 mantissa space and "
+		   "the shapes an Fminnm-based clamp would have let through";
+	EXPECT_GE(exact, 5) << "anti-vacuity: if no row is exact this is not measuring the value";
+	EXPECT_GE(exp255, 8);
+}
+
+// The class the rows above sample: RSQRT.S divides by the square root SQRT.S
+// computes, both rounded to a single under FPUDivFPCR, so the one-op form and
+// the two-op one must agree across the whole exponent-255 divisor space.
+TEST(EeRecFpuRsqrt, Exponent255DivisorAgreesWithSqrtThenDiv)
+{
+	Lcg rng{0x5170A17E5170A17Eull};
+	int rows = 0, disagreements = 0;
+	for (int i = 0; i < 512; ++i)
+	{
+		const u32 ft = (rng.next() & 0x80000000u) | 0x7F800000u | (rng.next() & 0x7FFFFFu);
+		const u32 fs = (rng.next() & 0x80000000u) | ((1u + (rng.next() % 254u)) << 23) |
+					   (rng.next() & 0x7FFFFFu);
+
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetFcr31(0);
+		h.SetFprBits(1, fs);
+		h.SetFprBits(2, ft);
+		h.LoadProgram({ee::SQRT_S(4, 2), ee::DIV_S(5, 1, 4), ee::RSQRT_S(3, 1, 2)});
+		h.RunJitNoDiff();
+
+		++rows;
+		if (h.GetFprBitsJit(3) != h.GetFprBitsJit(5))
+		{
+			++disagreements;
+			if (disagreements <= 4)
+			{
+				ADD_FAILURE() << std::hex << "fs=" << fs << " ft=" << ft << ": rsqrt gives "
+							  << h.GetFprBitsJit(3) << ", sqrt-then-div gives "
+							  << h.GetFprBitsJit(5);
+			}
+		}
+	}
+	EXPECT_EQ(disagreements, 0);
+	EXPECT_EQ(rows, 512);
+}
