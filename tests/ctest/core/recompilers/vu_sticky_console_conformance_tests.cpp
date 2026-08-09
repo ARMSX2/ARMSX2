@@ -234,12 +234,6 @@ constexpr Divergence kMacroStatusDivergences[] = {
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
 	{"VUSTICKY_THREE_EVENTS_ONE_ACCUMULATION", 3, false, true,
 	 "arm64 cop2EmitFlagUpdate extracts sign and zero only -- no U/O, no underflow flush"},
-	{"VUSTICKY_CLEAN_DIV_KEEPS_STICKY_DI", 1, true, true,
-	 "vrsqrt of -0 raises only D; hardware raises D and I"},
-	{"VUSTICKY_CLEAN_DIV_KEEPS_STICKY_DI", 2, true, true,
-	 "fallout of slot 1: the I the interpreter never raised cannot be sticky here"},
-	{"VUSTICKY_CLEAN_DIV_KEEPS_STICKY_DI", 3, true, true,
-	 "fallout of slot 1: the I the interpreter never raised cannot be sticky here"},
 };
 
 // MAC is scored on its own table for the same reason STATUS is: a mask defect
@@ -302,10 +296,6 @@ constexpr Divergence kMicroDivergences[] = {
 	{"VUSTICKY_MICRO_FMAC_ZSUO_ACCUMULATE", 3, true, true,
 	 "micro FMAC loses U (VU_MAC_UPDATE's ~0x1100 clears U on a flush-to-zero) "
 	 "and O (the configured clamp mode saturates below exp 255)"},
-	{"VUSTICKY_MICRO_CLEAN_DIV_KEEPS_STICKY_DI", 3, true, true,
-	 "vrsqrt of -0 raises only D where hardware raises D and I, so sticky I is "
-	 "never set -- both engines read back C00 as 800. Not the sticky-"
-	 "accumulation gap (VU_STICKY_DI fixed that); this is the cause bit itself"},
 	{"VUSTICKY_MICRO_SURVIVES_SILENT_FMAC", 3, true, true,
 	 "micro FMAC loses U on the flush-to-zero underflow, as above"},
 };

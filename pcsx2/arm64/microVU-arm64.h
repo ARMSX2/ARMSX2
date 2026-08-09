@@ -98,7 +98,9 @@
 //       offsets only exist in mVUglob layouts carrying macWeights.
 //  17 — MADD/MSUB and the A-forms drop the mVUclamp3 on the product ahead
 //       of the accumulate; only shapes compiled under vuClampMode:2 change.
-static constexpr u32 kMvuCompilerAbiVersion = 17;
+//  18 — RSQRT's zero path ORs its D/I into divFlag instead of assigning over
+//       it, so the sign test's I survives. Only RSQRT changes shape.
+static constexpr u32 kMvuCompilerAbiVersion = 18;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

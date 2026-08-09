@@ -2564,9 +2564,15 @@ void recCOP2_VRSQRT()
 	const int fsf = _Fsf_cop2;
 	const int ftf = _Ftf_cop2;
 
-	// Clear D/I flags
+	// Clear D/I, then take I from the divisor's sign bit, before the zero test
+	// below and independently of it. See _vuRSQRT.
 	armAsm->Ldr(RWSCRATCH, armVU0Mem(&VU0.statusflag));
 	armAsm->Mov(RWARG1, 0x30); armAsm->Bic(RWSCRATCH, RWSCRATCH, RWARG1); // clear D/I bits
+	armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
+	a64::Label ftPositive;
+	armAsm->Tbz(a64::w1, 31, &ftPositive);
+	armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x10);
+	armAsm->Bind(&ftPositive);
 	armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
 
 	// Load ft scalar
@@ -2580,61 +2586,32 @@ void recCOP2_VRSQRT()
 	armAsm->Fcmp(RSSCRATCH2, 0.0);
 	armAsm->B(a64::ne, &ftNonZero);
 
-	// ft == 0: set div-by-zero flag (0x20), Q based on signs
+	// ft == 0: divide by zero, or invalid when the dividend is zero too. Q
+	// saturates with the dividend's sign alone -- no xor, unlike VDIV.
 	{
+		armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x20);
+		armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
+		armAsm->And(a64::w2, a64::w1, 0x80000000);
+
+		a64::Label fsNonZero, zeroQReady;
 		armAsm->Fcmp(RSSCRATCH, 0.0);
-
-		// fs == 0: set invalid flag too (0x10), Q = ±0
-		a64::Label fsNonZero;
 		armAsm->B(a64::ne, &fsNonZero);
-		{
-			// D/I flags: 0x30 (both invalid and div-by-zero)
-			armAsm->Ldr(RWSCRATCH, armVU0Mem(&VU0.statusflag));
-			armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x30);
-			armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
+		armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x10);
+		armAsm->B(&zeroQReady);
 
-			// Q = sign(fs) XOR sign(ft) ? -0 : +0
-			armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
-			armAsm->Ldr(a64::w2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
-			armAsm->Eor(a64::w1, a64::w1, a64::w2);
-			armAsm->And(RWSCRATCH, a64::w1, 0x80000000); // just sign bit, or 0
-			armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.q));
-			armAsm->B(&done);
-		}
-
-		// fs != 0: Q = ±FLT_MAX
 		armAsm->Bind(&fsNonZero);
-		{
-			armAsm->Ldr(RWSCRATCH, armVU0Mem(&VU0.statusflag));
-			armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x20);
-			armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
+		armAsm->Mov(a64::w3, 0x7F7FFFFF);
+		armAsm->Orr(a64::w2, a64::w2, a64::w3);
 
-			armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
-			armAsm->Ldr(a64::w2, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
-			armAsm->Eor(a64::w1, a64::w1, a64::w2);
-			armAsm->Mov(a64::w2, 0x7F7FFFFF);
-			armAsm->Mov(a64::w3, 0xFF7FFFFF);
-			armAsm->Tst(a64::w1, 0x80000000);
-			armAsm->Csel(RWSCRATCH, a64::w3, a64::w2, a64::ne);
-			armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.q));
-			armAsm->B(&done);
-		}
+		armAsm->Bind(&zeroQReady);
+		armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
+		armAsm->Str(a64::w2, armVU0Mem(&VU0.q));
 	}
+	armAsm->B(&done);
 
 	// ft != 0: normal path
 	armAsm->Bind(&ftNonZero);
 	{
-		// If ft < 0, set invalid flag
-		a64::Label notNeg;
-		armAsm->Fcmp(RSSCRATCH2, 0.0);
-		armAsm->B(a64::ge, &notNeg);
-		{
-			armAsm->Ldr(RWSCRATCH, armVU0Mem(&VU0.statusflag));
-			armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x10);
-			armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
-		}
-		armAsm->Bind(&notNeg);
-
 		// Q = fs / sqrt(|ft|)
 		armAsm->Fabs(RSSCRATCH2, RSSCRATCH2);
 		armAsm->Fsqrt(RSSCRATCH2, RSSCRATCH2);

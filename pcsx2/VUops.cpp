@@ -996,36 +996,26 @@ static __fi void _vuRSQRT(VURegs* VU)
 
 	VU->statusflag &= ~0x30;
 
+	// RSQRT is a square root then a divide, so I comes from the divisor's sign
+	// bit before the zero test and independently of it: -0 raises I for the
+	// root and D below for the division.
+	if (VU->VF[_Ft_].UL[_Ftf_] & 0x80000000)
+		VU->statusflag |= 0x10;
+
 	if (ft == 0.0)
 	{
 		VU->statusflag |= 0x20;
 
-		if (fs != 0)
-		{
-			if ((VU->VF[_Ft_].UL[_Ftf_] & 0x80000000) ^
-				(VU->VF[_Fs_].UL[_Fsf_] & 0x80000000))
-				VU->q.UL = 0xFF7FFFFF;
-			else
-				VU->q.UL = 0x7F7FFFFF;
-		}
-		else
-		{
-			if ((VU->VF[_Ft_].UL[_Ftf_] & 0x80000000) ^
-				(VU->VF[_Fs_].UL[_Fsf_] & 0x80000000))
-				VU->q.UL = 0x80000000;
-			else
-				VU->q.UL = 0;
+		// Sign of the dividend alone -- the divisor is a root, never negative.
+		VU->q.UL = VU->VF[_Fs_].UL[_Fsf_] & 0x80000000;
 
+		if (fs != 0)
+			VU->q.UL |= 0x7F7FFFFF;
+		else
 			VU->statusflag |= 0x10;
-		}
 	}
 	else
 	{
-		if (ft < 0.0)
-		{
-			VU->statusflag |= 0x10;
-		}
-
 		temp = sqrt(fabs(ft));
 		VU->q.F = fs / temp;
 		VU->q.F = vuDouble(VU->q.UL);

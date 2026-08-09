@@ -200,6 +200,11 @@ constexpr AbiPin kPins[] = {
 	// which is the open defect VuSticky*.DISABLED_*DivUnitFlushesDenormalQToSignedZero
 	// record. Whichever bump lands that flush re-pins this field.
 	{17, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0xf7b84d8c08fa2266, 0xde92be2516a10fbb}},
+	// v18: RSQRT's zero path ORs into divFlag rather than assigning, so the
+	// preceding sign test's I survives a -0 divisor. divUnit is the only field
+	// that moves -- DIV and SQRT keep their shapes, and the other eight probes
+	// never reach an RSQRT.
+	{18, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x3c5065e7ab8cf631, 0xde92be2516a10fbb}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs)

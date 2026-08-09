@@ -170,17 +170,19 @@ mVUop(mVU_RSQRT)
 		a64::Label fsNotZero2;
 		armAsm->B(&fsNotZero2, a64::ne);
 
-		// 0/0 => Invalid
-		armAsm->Mov(gprT1.W(), divI);
-		mVUstrField(mVU, gprT1, &mVU.divFlag);
+		// 0/0 => Invalid, anything else over zero => divide by zero. OR rather
+		// than assign: the sign test above set I and it has to survive this.
+		armAsm->Mov(gprT2.W(), divI);
 		a64::Label afterFlag2;
 		armAsm->B(&afterFlag2);
 
 		armAsm->Bind(&fsNotZero2);
-		armAsm->Mov(gprT1.W(), divD);
-		mVUstrField(mVU, gprT1, &mVU.divFlag);
+		armAsm->Mov(gprT2.W(), divD);
 
 		armAsm->Bind(&afterFlag2);
+		mVUldrField(mVU, gprT1, &mVU.divFlag);
+		armAsm->Orr(gprT1.W(), gprT1.W(), gprT2.W());
+		mVUstrField(mVU, gprT1, &mVU.divFlag);
 		// Result = sign(Fs) | fmax
 		armAsm->Ldr(t1, mVUglobMem(&mVUglob.signbit[0]));
 		armAsm->And(Fs.V16B(), Fs.V16B(), t1.V16B());
