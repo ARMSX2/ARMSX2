@@ -91,7 +91,15 @@ static void psxRcntSync(int cntidx)
 
 	if (psxRcntCanCount(cntidx) && psxCounters[cntidx].rate != PSXHBLANK)
 	{
-		const u32 change = (psxRegs.cycle - psxCounters[cntidx].startCycle) / psxCounters[cntidx].rate;
+		// Same underflow hazard as the EE-side rcntSyncCounter: a baseline transiently
+		// ahead of psxRegs.cycle turned the old u32 `change` into count += 0xFFFFFFFF
+		// and startCycle += 2^32 - rate (116.5 s of dead counter at IOP clock), a scar
+		// that then rode along in savestates. Skip; the counter resumes when cycle
+		// catches up, at most one tick later.
+		if ((s64)(psxRegs.cycle - psxCounters[cntidx].startCycle) < 0)
+			return;
+
+		const u64 change = (psxRegs.cycle - psxCounters[cntidx].startCycle) / psxCounters[cntidx].rate;
 		if (change > 0)
 		{
 			psxCounters[cntidx].count += change;
@@ -805,7 +813,22 @@ bool SaveStateBase::psxRcntFreeze()
 		return false;
 
 	if (IsLoading())
+	{
+		// Repair states poisoned by the old u32 psxRcntSync blowup (baseline one full
+		// 2^32 epoch in the future): snap the baseline back to now, or the counter
+		// stays dead until psxRegs.cycle crosses the bogus baseline (116.5 s). The
+		// count is left alone — IOP counts are u64 and several counters legitimately
+		// run wider than 16 bits.
+		for (int i = 0; i < NUM_COUNTERS; i++)
+		{
+			if ((s64)(psxRegs.cycle - psxCounters[i].startCycle) >= 0)
+				continue;
+			Console.Warning("psxRcntFreeze: counter %d baseline %llu is ahead of cycle %llu; repairing poisoned state",
+				i, psxCounters[i].startCycle, psxRegs.cycle);
+			psxCounters[i].startCycle = psxRegs.cycle & ~((u64)psxCounters[i].rate - 1);
+		}
 		psxRcntUpdate();
+	}
 
 	return true;
 }
