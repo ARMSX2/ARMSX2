@@ -76,6 +76,15 @@
 #include "pcsx2/VMManager.h"
 #include "pcsx2/VUmicro.h"
 
+// --statereport decode targets
+#include "pcsx2/CDVD/CDVD.h"
+#include "pcsx2/Counters.h"
+#include "pcsx2/Gif_Unit.h"
+#include "pcsx2/IopCounters.h"
+#include "pcsx2/MTVU.h"
+#include "pcsx2/R3000A.h"
+#include "pcsx2/Vif_Dma.h"
+
 #include "pcsx2/ee_divtrace.h"
 
 #if defined(ARCH_ARM64)
@@ -104,6 +113,7 @@ enum class RunMode
 	SpeedhackDiff,
 	LiveRun,
 	Disasm,
+	StateReport,
 	TwinDump,
 	TwinCompare,
 	DumpConfig,
@@ -569,6 +579,10 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --gsdump-at <frame>: frame after which --gsdump starts recording (default 30).\n");
 	std::fprintf(stderr, "  --renderer <null|vk|ogl|sw>: GS renderer (default null). Use vk on Intel GPUs / boxes where\n");
 	std::fprintf(stderr, "               the auto-check declines Vulkan and the surfaceless GL path fails to open GS.\n");
+	std::fprintf(stderr, "  --statereport: load the savestate, print a field-level decode of every serialized timebase\n");
+	std::fprintf(stderr, "               (EE cycle/COP0 Count pair, rcnt bases, vsync phase, EE<->IOP skew, IOP counters,\n");
+	std::fprintf(stderr, "               CDVD RTC, GIF paths, VIF, DMA regs, MTVU) and exit. Diff two states with:\n");
+	std::fprintf(stderr, "               diff <(... --statereport --savestate A) <(... --statereport --savestate B)\n");
 	std::fprintf(stderr, "  --savestate <file>: Savestate to load after Initialize (required).\n");
 	std::fprintf(stderr, "  --frames N: Number of frames to run (default 300).\n");
 	std::fprintf(stderr, "  --iso <file>: Game ISO/disc to mount (required so the savestate has its disc).\n");
@@ -714,6 +728,13 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// [EERUNNER_DIS_LO, EERUNNER_DIS_HI] with the correct R5900 disassembler
 				// (generic MIPS disassemblers garble R5900 COP2/MMI opcodes). No run.
 				s_mode = RunMode::Disasm;
+				continue;
+			}
+			else if (CHECK_ARG("--statereport"))
+			{
+				// --statereport: load the savestate and print a field-level decode of
+				// every serialized timebase and transfer-engine state. No run.
+				s_mode = RunMode::StateReport;
 				continue;
 			}
 			else if (CHECK_ARG("--vu0-interp"))
@@ -3730,6 +3751,152 @@ static int RunDisasm()
 	return EXIT_SUCCESS;
 }
 
+// --statereport: load the savestate and print a legible, field-level decode of every
+// serialized timebase and transfer-engine state, then exit without running a frame.
+// Built for A/B-diffing a poisoned state against a clean one:
+//   diff <(eerunner --statereport --savestate A ...) <(eerunner --statereport --savestate B ...)
+// A stuck-timer bug lives in the RELATIONSHIP between clocks that normally advance in
+// lockstep (cycle vs lastCOP0Cycle, rcnt startCycle bases, EE vs IOP, vsync phase), so
+// every line prints the stored baseline AND the value derived the way the guest would
+// read it. Decoding goes through the emulator's own thaw path (VMManager::LoadState),
+// so this report can never drift from the on-disk format.
+static int RunStateReport()
+{
+	Error error;
+	if (!VMManager::LoadState(s_savestate_path.c_str(), &error))
+	{
+		Console.ErrorFmt("statereport: load failed: {}", error.GetDescription());
+		return EXIT_FAILURE;
+	}
+
+	constexpr double EE_HZ = 294912000.0;
+	constexpr double IOP_HZ = 36864000.0;
+	const u64 cyc = cpuRegs.cycle;
+
+	Console.WriteLn(fmt::format("== STATE REPORT: {} ==", Path::GetFileName(s_savestate_path)));
+
+	Console.WriteLn(fmt::format(
+		"[ee]      pc={:#010x} cycle={} ({:.6f}s) nextEvent=+{} lastEvent={} interrupt={:#010x} branch={}",
+		cpuRegs.pc, cyc, cyc / EE_HZ, (s64)(cpuRegs.nextEventCycle - cyc),
+		(s64)(cpuRegs.lastEventCycle - cyc), cpuRegs.interrupt, cpuRegs.branch));
+
+	// The guest-visible COP0 Count is CP0.Count + (cycle - lastCOP0Cycle) at the moment
+	// of the MFC0 (COP0.cpp) — a stale lastCOP0Cycle in a state file therefore warps the
+	// game's realtime clock even though Count itself looks plausible.
+	Console.WriteLn(fmt::format(
+		"[ee.cop0] Count={} lastCOP0Cycle={} (lag={}) mfc0_now={} Compare={} Status={:#010x} Cause={:#010x}",
+		(u32)cpuRegs.CP0.n.Count, cpuRegs.lastCOP0Cycle, (s64)(cyc - cpuRegs.lastCOP0Cycle),
+		(u32)(cpuRegs.CP0.n.Count + (u32)(cyc - cpuRegs.lastCOP0Cycle)),
+		(u32)cpuRegs.CP0.n.Compare, cpuRegs.CP0.n.Status.val, cpuRegs.CP0.n.Cause));
+
+	Console.WriteLn(fmt::format(
+		"[ee.intc] STAT={:#010x} MASK={:#010x} pending&unmasked={:#010x} | DMAC STAT={:#06x} MASK={:#06x}",
+		psHu32(INTC_STAT), psHu32(INTC_MASK), psHu32(INTC_STAT) & psHu32(INTC_MASK),
+		psHu16(0xe012), psHu16(0xe010)));
+
+	for (int n = 0; n < 32; n++)
+	{
+		if (!(cpuRegs.interrupt & (1u << n)))
+			continue;
+		const u64 deadline = cpuRegs.sCycle[n] + cpuRegs.eCycle[n];
+		Console.WriteLn(fmt::format("[ee.int{:02d}] sCycle={} eCycle={} deadline={} ({})",
+			n, cpuRegs.sCycle[n], cpuRegs.eCycle[n], deadline,
+			(s64)(deadline - cyc) <= 0 ? std::string("DUE") : fmt::format("+{}", (s64)(deadline - cyc))));
+	}
+
+	// EE hardware counters: eff~ is derived the way rcntRcount derives it, i.e. what the
+	// game would read back, not just the stored baseline.
+	for (int i = 0; i < 4; i++)
+	{
+		const Counter& c = counters[i];
+		const u64 age = cyc - c.startCycle;
+		const u64 eff = c.mode.IsCounting ? (c.count + (c.rate ? (age / c.rate) : 0)) : c.count;
+		Console.WriteLn(fmt::format(
+			"[rcnt{}]   mode={:#06x} src={} counting={} gate={}/{} count={} target={} hold={} rate={} startCycle={} age={} eff~{} ({:.6f}s)",
+			i, c.modeval & 0xffff, (u32)c.mode.ClockSource, (u32)c.mode.IsCounting,
+			(u32)c.mode.EnableGate, (u32)c.mode.GateMode,
+			c.count, c.target, c.hold, c.rate, c.startCycle, age, eff,
+			(eff * (double)c.rate) / EE_HZ));
+	}
+
+	Console.WriteLn(fmt::format(
+		"[vsync]   mode={} startCycle={} (age={}) delta={} | hsync mode={} startCycle={} (age={}) delta={}",
+		vsyncCounter.Mode, vsyncCounter.startCycle, (s64)(cyc - vsyncCounter.startCycle), vsyncCounter.deltaCycles,
+		hsyncCounter.Mode, hsyncCounter.startCycle, (s64)(cyc - hsyncCounter.startCycle), hsyncCounter.deltaCycles));
+	Console.WriteLn(fmt::format(
+		"[sched]   nextDeltaCounter={} nextStartCounter={} fires_at={} ({})",
+		nextDeltaCounter, nextStartCounter, nextStartCounter + (u64)nextDeltaCounter,
+		((s64)(nextStartCounter + (u64)nextDeltaCounter - cyc) <= 0) ? "DUE" : "future"));
+
+	// EE<->IOP: the two cores nominally hold cycle_EE == 8 * cycle_IOP; skew is the drift
+	// a poisoned state would carry between the two serialized clock domains.
+	Console.WriteLn(fmt::format(
+		"[ee-iop]  EEsCycle={} EEoCycle={} iop.cycle={} ee/8={} skew={} | ee={:.6f}s iop={:.6f}s d={:+.6f}s",
+		EEsCycle, EEoCycle, psxRegs.cycle, cyc / 8, (s64)(cyc / 8 - psxRegs.cycle),
+		cyc / EE_HZ, psxRegs.cycle / IOP_HZ, cyc / EE_HZ - psxRegs.cycle / IOP_HZ));
+
+	Console.WriteLn(fmt::format(
+		"[iop]     pc={:#010x} cycle={} interrupt={:#010x} psxNextDelta={} psxNextStart={}",
+		psxRegs.pc, psxRegs.cycle, psxRegs.interrupt, psxNextDeltaCounter, psxNextStartCounter));
+
+	for (int i = 0; i < NUM_COUNTERS; i++)
+	{
+		const psxCounter& c = psxCounters[i];
+		const u64 age = psxRegs.cycle - c.startCycle;
+		const u64 eff = c.count + (c.rate ? (age / c.rate) : 0);
+		Console.WriteLn(fmt::format(
+			"[iop.rc{}] mode={:#06x} count={} target={} rate={} startCycle={} age={} delta={} eff~{}",
+			i, c.mode.modeval & 0xffff, c.count, c.target, c.rate, c.startCycle, age, c.deltaCycles, eff));
+	}
+
+	// RTC bytes are stored raw (BCD-ish, cdvd.cpp itob/btoi) — print hex, don't interpret.
+	Console.WriteLn(fmt::format(
+		"[cdvd]    rtc={:02x}-{:02x}-{:02x} {:02x}:{:02x}:{:02x} status={:#04x}",
+		cdvd.RTC.year, cdvd.RTC.month, cdvd.RTC.day,
+		cdvd.RTC.hour, cdvd.RTC.minute, cdvd.RTC.second, cdvd.RTC.status));
+
+	for (int i = 0; i < 3; i++)
+	{
+		Gif_Path& p = gifUnit.gifPath[i];
+		Console.WriteLn(fmt::format(
+			"[gif.p{}]  state={} curSize={} curOffset={} readAmount={} done={}",
+			i + 1, (int)p.state, p.curSize, p.curOffset, p.readAmount.load(), p.isDone() ? 1 : 0));
+	}
+	Console.WriteLn(fmt::format(
+		"[gif]     GIF_STAT={:#010x} signal.queued={} finish fired={} pending={}",
+		psHu32(0x3020), gifUnit.gsSIGNAL.queued ? 1 : 0,
+		gifUnit.gsFINISH.gsFINISHFired ? 1 : 0, gifUnit.gsFINISH.gsFINISHPending ? 1 : 0));
+
+	for (int i = 0; i < 2; i++)
+	{
+		const vifStruct& v = (i == 0) ? vif0 : vif1;
+		Console.WriteLn(fmt::format(
+			"[vif{}]    cmd={:#04x} done={} waitforvu={} inprogress={} dmamode={} irq={} queued_program={} queued_pc={}",
+			i, (u32)v.cmd & 0xff, v.done ? 1 : 0, v.waitforvu ? 1 : 0, v.inprogress, v.dmamode,
+			v.irq, v.queued_program ? 1 : 0, v.queued_pc));
+	}
+
+	static constexpr struct { const char* name; u32 base; } kDmaCh[] = {
+		{"vif0", 0x8000}, {"vif1", 0x9000}, {"gif", 0xa000}, {"ipu0", 0xb000}, {"ipu1", 0xb400},
+		{"sif0", 0xc000}, {"sif1", 0xc400}, {"sif2", 0xc800}, {"spr0", 0xd000}, {"spr1", 0xd400}};
+	for (const auto& ch : kDmaCh)
+	{
+		Console.WriteLn(fmt::format(
+			"[dma.{:<4}] chcr={:#010x} madr={:#010x} qwc={} tadr={:#010x}",
+			ch.name, psHu32(ch.base), psHu32(ch.base + 0x10),
+			psHu32(ch.base + 0x20) & 0xffff, psHu32(ch.base + 0x30)));
+	}
+
+	Console.WriteLn(fmt::format(
+		"[mtvu]    vuCycles=[{},{},{},{}] idx={} interrupts={:#x} gsSignal={:#x} gsLabel={:#x}",
+		vu1Thread.vuCycles[0].load(), vu1Thread.vuCycles[1].load(),
+		vu1Thread.vuCycles[2].load(), vu1Thread.vuCycles[3].load(),
+		vu1Thread.vuCycleIdx, vu1Thread.mtvuInterrupts.load(),
+		vu1Thread.gsSignal.load(), vu1Thread.gsLabel.load()));
+
+	return EXIT_SUCCESS;
+}
+
 static std::atomic<uint32_t> s_liverun_frame{0};
 static std::atomic<bool>     s_liverun_done{false};
 
@@ -4179,6 +4346,10 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 
 				case RunMode::Disasm:
 					code = RunDisasm();
+					break;
+
+				case RunMode::StateReport:
+					code = RunStateReport();
 					break;
 
 				default:
