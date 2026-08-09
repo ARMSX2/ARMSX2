@@ -980,7 +980,9 @@ static __fi void _vuSQRT(VURegs* VU)
 
 	VU->statusflag &= ~0x30;
 
-	if (ft < 0.0)
+	// Sign bit, not `ft < 0.0`: -0 raises I, and so do the denormals vuDouble
+	// has already flushed to it.
+	if (VU->VF[_Ft_].UL[_Ftf_] & 0x80000000)
 		VU->statusflag |= 0x10;
 	VU->q.F = sqrt(fabs(ft));
 	VU->q.F = vuDouble(VU->q.UL);

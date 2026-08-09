@@ -2524,24 +2524,19 @@ void recCOP2_VSQRT()
 
 	const int ftf = _Ftf_cop2;
 
-	// Clear D/I flags
+	// Clear D/I, then take I from the sign bit: a compare against zero misses
+	// -0 and reads an unordered result as negative.
 	armAsm->Ldr(RWSCRATCH, armVU0Mem(&VU0.statusflag));
 	armAsm->Mov(RWARG1, 0x30); armAsm->Bic(RWSCRATCH, RWSCRATCH, RWARG1); // clear D/I bits
+	armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
+	a64::Label ftPositive;
+	armAsm->Tbz(a64::w1, 31, &ftPositive);
+	armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x10);
+	armAsm->Bind(&ftPositive);
 	armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
 
 	// Load ft scalar
 	armAsm->Ldr(RSSCRATCH, armVU0Mem(&VU0.VF[_Ft_cop2].UL[ftf]));
-
-	// If ft < 0, set invalid flag (D flag = 0x10)
-	a64::Label notNeg;
-	armAsm->Fcmp(RSSCRATCH, 0.0);
-	armAsm->B(a64::ge, &notNeg);
-	{
-		armAsm->Ldr(RWSCRATCH, armVU0Mem(&VU0.statusflag));
-		armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x10);
-		armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
-	}
-	armAsm->Bind(&notNeg);
 
 	// Q = sqrt(|ft|)
 	armAsm->Fabs(RSSCRATCH, RSSCRATCH);
