@@ -1094,6 +1094,11 @@ void NEG_S() {
 void RSQRT_S() {
 	clearFPUFlags(FPUflagD | FPUflagI);
 
+	// The sign bit alone, and before the zero test: -0 and the negative
+	// denormals raise I here and D below, the only case where both stand.
+	if ( _FtValUl_ & 0x80000000 )
+		_ContVal_ |= FPUflagI | FPUflagSI;
+
 	if ( ( _FtValUl_ & 0x7F800000 ) == 0 ) { // Ft is zero (Denormals are Zero)
 		// The dividend decides the cause: zero over zero is invalid, anything
 		// else over zero is a divide by zero. Same test checkDivideByZero
@@ -1108,8 +1113,6 @@ void RSQRT_S() {
 		_FdValUl_ = ( _FsValUl_ & 0x80000000 ) | 0x7FFFFFFF;
 		return;
 	}
-	else if ( _FtValUl_ & 0x80000000 ) // Ft is negative
-		_ContVal_ |= FPUflagI | FPUflagSI;
 
 	// Both paths divide by a sqrt rounded to single. Dividing by the unrounded
 	// double instead lands 1 ULP from the EE FPU and from both recompilers,

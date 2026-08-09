@@ -11,7 +11,8 @@
 //   - FCR31 flags (I|D|SI|SD): match the interpreter on every input, so they
 //     are always diffed. I|D are cleared each op; SI|SD are sticky.
 //   - Zero divisor (Ft exponent field == 0, denormals included): exact
-//     sign(Fs) | 0x7f7fffff, D|SD raised. Matches interp exactly.
+//     sign(Fs) | 0x7f7fffff, D|SD raised, plus I|SI when it is negative.
+//     Matches interp exactly.
 //   - Every divisor class -- zero, negative, positive -- now matches the
 //     interpreter bit-for-bit, in any FP environment, so every case here is
 //     differential. Getting there took two independent fixes that this file
@@ -370,10 +371,13 @@ TEST(EeRecFpuRsqrt, SourceAliasesDivisor)
 TEST(EeRecFpuRsqrt, DenormalDivisorTreatedAsZero)
 {
 	// A denormal Ft (exp field 0, mantissa nonzero) is "zero" for RSQRT, exactly
-	// like +/-0: D|SD, and a saturated result.
+	// like +/-0: a divide by zero, and a saturated result.
 	//
-	// Fs is +5.0 here and Ft is a negative denormal, so sign(Fs) and sign(Ft)
-	// disagree and this row picks between them: the console says positive, per
+	// Ft is negative, so I comes from the root and D from the division;
+	// EeFpuRsqrtSignConsole carries the console rows for that pair.
+	//
+	// Fs is +5.0 and Ft is negative, so sign(Fs) and sign(Ft) disagree and this
+	// row picks between them: the console says positive, per
 	// ZeroDivisorSignComesFromTheDividend below. The magnitude still differs by
 	// tier, so the legs run separately.
 	u32 res[2] = {}, fcr[2] = {};
@@ -400,8 +404,8 @@ TEST(EeRecFpuRsqrt, DenormalDivisorTreatedAsZero)
 	}
 	EXPECT_EQ(res[0], 0x7FFFFFFFu) << "interp: sign(Fs)=+, EE maximum";
 	EXPECT_EQ(res[1], 0x7F7FFFFFu) << "fast path: sign(Fs)=+, FLT_MAX";
-	EXPECT_EQ(fcr[0] & kStickyMask, kD | kSD);
-	EXPECT_EQ(fcr[1] & kStickyMask, kD | kSD);
+	EXPECT_EQ(fcr[0] & kStickyMask, kI | kD | kSI | kSD);
+	EXPECT_EQ(fcr[1] & kStickyMask, kI | kD | kSI | kSD);
 }
 
 // The row that separates sign(Fs) from sign(Ft), asserted on its own so a
@@ -481,6 +485,8 @@ TEST(EeRecFpuRsqrt, FlagWritesSurviveAPrecedingCtc1)
 		{kI | kD,             FprBits(6.0f), FprBits(-4.0f), kI | kSI,  "negative divisor: I|SI"},
 		{kI | kD,             FprBits(6.0f), 0x00000000u,    kD | kSD,  "x/0: D|SD"},
 		{kI | kD,             0x00000000u,   0x00000000u,    kI | kSI,  "0/0: I|SI"},
+		// Both causes at once, which the resident slot has to carry.
+		{kI | kD, FprBits(6.0f), 0x80000000u, kI | kD | kSI | kSD, "x/-0: I|D|SI|SD"},
 	};
 	for (const Row& r : rows)
 	{

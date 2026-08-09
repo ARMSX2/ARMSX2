@@ -1157,14 +1157,18 @@ static void recRSQRT_S_xmm(int info)
 	// Raw Ft bits drive the zero/negative branch and the +/-fMax result sign.
 	armAsm->Fmov(RWARG1, armSRegister(EEREC_T));
 
-	// Clear I|D (sticky SI|SD are left intact).
+	a64::Label notZero, xOverZero, flagsDone, ftPositive, end;
+
+	// Clear I|D (sticky SI|SD are left intact), then I from the divisor's sign
+	// bit, before the zero test -- see RSQRT_S in FPU.cpp for why the order.
 	if (fl < 0)
 		armLoadEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
 	armAsm->Bic(flagReg, flagReg, FPUflagI | FPUflagD);
+	armAsm->Tbz(RWARG1, 31, &ftPositive);
+	armAsm->Orr(flagReg, flagReg, FPUflagI | FPUflagSI);
+	armAsm->Bind(&ftPositive);
 	if (fl < 0)
 		armStoreEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
-
-	a64::Label notZero, xOverZero, flagsDone, doDiv, end;
 
 	// Ft is treated as zero when its exponent field is 0 (denormals included).
 	armAsm->Tst(RWARG1, 0x7F800000);
@@ -1207,15 +1211,6 @@ static void recRSQRT_S_xmm(int info)
 	armAsm->B(&end);
 
 	armAsm->Bind(&notZero);
-	// Negative divisor (exp nonzero, sign set): set I|SI. sqrt still takes |Ft|.
-	armAsm->Tbz(RWARG1, 31, &doDiv);
-	if (fl < 0)
-		armLoadEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
-	armAsm->Orr(flagReg, flagReg, FPUflagI | FPUflagSI);
-	if (fl < 0)
-		armStoreEERegPtr(RWSCRATCH, &fpuRegs.fprc[31]);
-
-	armAsm->Bind(&doDiv);
 	armAsm->Fabs(armSRegister(treg), armSRegister(treg)); // |Ft| (no-op if positive)
 	if (CHECK_FPU_EXTRA_OVERFLOW)
 	{
