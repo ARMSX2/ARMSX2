@@ -274,23 +274,23 @@ TEST(EeRecMmi, PexcwAliasedRdEqualsRt)
 //  Run() auto-diffs JIT vs interp; ExpectMmiPair pins the concrete result.
 // ===========================================================================
 
-TEST(EeRecMmi, QfsrvAdjacentSourceContiguous)
+// Adjacent sources, non-adjacent, and Rt == r0. A dirty-pinned source is in
+// ee_rec_mmi_coherence_tests.cpp.
+
+TEST(EeRecMmi, QfsrvAdjacentSource)
 {
-	// Rs == Rt+1 (a1 == a0+1) hits the contiguous-memory path that reads the
-	// two source registers directly instead of going through the general
-	// path's TBL. sa = 4 bytes.
+	// Rs == Rt+1 (a3 == a2+1). sa = 4 bytes.
 	EeRecTestHarness h;
-	h.SetMmiPair(reg::a0, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull); // Rt
-	h.SetMmiPair(reg::a1, 0xAABBCCDD11223344ull, 0x5566778899AABBCCull); // Rs
-	h.LoadProgram({ee::MTSAB(reg::zero, 4), ee::QFSRV(reg::v0, reg::a1, reg::a0)});
+	h.SetMmiPair(reg::a2, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull); // Rt
+	h.SetMmiPair(reg::a3, 0xAABBCCDD11223344ull, 0x5566778899AABBCCull); // Rs
+	h.LoadProgram({ee::MTSAB(reg::zero, 4), ee::QFSRV(reg::v0, reg::a3, reg::a2)});
 	h.Run();
 	h.ExpectMmiPair(reg::v0, 0xDDEEFF0011223344ull, 0x1122334499AABBCCull);
 }
 
 TEST(EeRecMmi, QfsrvNonAdjacentSource)
 {
-	// Rs != Rt+1 (a2 != a0+1) takes the general TBL path. Same Rt/Rs values,
-	// sa = 7 bytes.
+	// Rs != Rt+1 (a2 != a0+1). Same Rt/Rs values, sa = 7 bytes.
 	EeRecTestHarness h;
 	h.SetMmiPair(reg::a0, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull); // Rt
 	h.SetMmiPair(reg::a2, 0xAABBCCDD11223344ull, 0x5566778899AABBCCull); // Rs
@@ -299,11 +299,10 @@ TEST(EeRecMmi, QfsrvNonAdjacentSource)
 	h.ExpectMmiPair(reg::v0, 0xAABBCCDDEEFF0011ull, 0xBBCCDD1122334499ull);
 }
 
-TEST(EeRecMmi, QfsrvAdjacentRtZeroUsesGeneralPath)
+TEST(EeRecMmi, QfsrvRtZeroMaterializesZero)
 {
-	// Rt == r0 with Rs == Rt+1 (at == zero+1): the contiguous path is gated off
-	// (it would depend on GPR.r[0] memory holding zero), so this must fall to
-	// the general path, which materializes r0 as zero itself. sa = 4 bytes.
+	// Rt == r0: mmiLoadReg Movi's the table's low half rather than reading
+	// GPR.r[0] out of memory. sa = 4 bytes.
 	EeRecTestHarness h;
 	h.SetMmiPair(reg::at, 0xAABBCCDD11223344ull, 0x5566778899AABBCCull); // Rs (at == reg 1)
 	h.LoadProgram({ee::MTSAB(reg::zero, 4), ee::QFSRV(reg::v0, reg::at, reg::zero)});
@@ -312,47 +311,22 @@ TEST(EeRecMmi, QfsrvAdjacentRtZeroUsesGeneralPath)
 }
 
 // ===========================================================================
-//  QFSRV with an oversized sa (AX-03). MTSA is architecturally a full 32-bit
-//  copy (3c381989e, matching the interp), so cpuRegs.sa can legitimately hold
-//  >= 16 when QFSRV consumes it. The adjacent-source fast path indexes host
-//  memory with sa (off &GPR.r[Rt]), so an unmasked sa walks its 128-bit load
-//  out of bounds — a guest-controlled host OOB read. The general path's TBL
-//  cannot go out of bounds (see the comment at recQFSRV), so its clamp is for
-//  guest semantics only. Both paths clamp sa & 0xf at consumption (equivalent
-//  to x86, which masks in recMTSA), so both get an assertion below. The
-//  interp's own sa>=16 behavior is shift-by->=64 UB (host-dependent mod-64),
-//  so these are JIT-only assertions against the sa&0xf funnel result; MTSA
-//  itself stays a full copy (MFSA round-trip below runs the normal
-//  auto-diff).
+//  QFSRV fed an oversized MTSA operand. MTSA keeps four bits of its source
+//  register (R5900OpcodeImpl.cpp, recMTSA in iR5900Misc-arm64.cpp), as do
+//  MTSAB/MTSAH, so sa is already in range by the time QFSRV masks it again.
+//  Deleting either mask leaves the test green.
 // ===========================================================================
 
-TEST(EeRecMmi, QfsrvOversizedSaClampedOnFastPath)
+TEST(EeRecMmi, QfsrvMtsaKeepsOnlyTheLowNibble)
 {
 	EeRecTestHarness h;
 	h.SetMmiPair(reg::a0, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull); // Rt
-	h.SetMmiPair(reg::a1, 0xAABBCCDD11223344ull, 0x5566778899AABBCCull); // Rs = Rt+1
-	h.SetGpr64(reg::a3, 0x13); // MTSA full copy: sa = 19; QFSRV must use 19 & 0xf = 3
-	h.LoadProgram({ee::MTSA(reg::a3), ee::QFSRV(reg::v0, reg::a1, reg::a0)});
-	h.RunJitNoDiff();
-	// Funnel {Rs:Rt} >> 3 bytes. Unclamped, the fast path reads
-	// &GPR.r[a0] + 19 — bytes of a2 (host OOB relative to the two sources).
-	EXPECT_EQ(h.JitSnapshot().regs.GPR.r[reg::v0].UD[0], 0xEEFF001122334455ull);
-	EXPECT_EQ(h.JitSnapshot().regs.GPR.r[reg::v0].UD[1], 0x22334499AABBCCDDull);
-}
-
-TEST(EeRecMmi, QfsrvOversizedSaClampedOnGeneralPath)
-{
-	EeRecTestHarness h;
-	h.SetMmiPair(reg::a0, 0x1122334455667788ull, 0x99AABBCCDDEEFF00ull); // Rt
-	h.SetMmiPair(reg::a2, 0xAABBCCDD11223344ull, 0x5566778899AABBCCull); // Rs != Rt+1
-	h.SetGpr64(reg::a3, 0x17); // sa = 23; QFSRV must use 23 & 0xf = 7
+	h.SetMmiPair(reg::a2, 0xAABBCCDD11223344ull, 0x5566778899AABBCCull); // Rs
+	h.SetGpr64(reg::a3, 0x17); // sa = 23; QFSRV funnels by 23 & 0xf = 7
 	h.LoadProgram({ee::MTSA(reg::a3), ee::QFSRV(reg::v0, reg::a2, reg::a0)});
-	h.RunJitNoDiff();
-	// Funnel by 7 bytes (same values as QfsrvNonAdjacentSource). Unclamped,
-	// the TBL indices run 23..38 against a 32-byte table, so the top seven
-	// result bytes would come back zero instead of wrapping to 7.
-	EXPECT_EQ(h.JitSnapshot().regs.GPR.r[reg::v0].UD[0], 0xAABBCCDDEEFF0011ull);
-	EXPECT_EQ(h.JitSnapshot().regs.GPR.r[reg::v0].UD[1], 0xBBCCDD1122334499ull);
+	h.Run();
+	// Same values and funnel as QfsrvNonAdjacentSource.
+	h.ExpectMmiPair(reg::v0, 0xAABBCCDDEEFF0011ull, 0xBBCCDD1122334499ull);
 }
 
 TEST(EeRecMmi, QfsrvMtsaInRangeSaAutoDiffsAndMfsaRoundTrips)
