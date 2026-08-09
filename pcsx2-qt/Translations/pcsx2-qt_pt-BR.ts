@@ -19543,7 +19543,10 @@ Você deseja carregar este estado ou iniciar a partir de uma uma nova inicializa
     <message numerus="yes">
       <location filename="../MainWindow.cpp" line="3238" />
       <source>%n save states deleted.</source>
-      <translation>%n estados salvos excluídos.</translation>
+      <translation>
+        <numerusform>%n estado salvo excluído.</numerusform>
+        <numerusform>%n estados salvos excluídos.</numerusform>
+      </translation>
     </message>
     <message>
       <location filename="../MainWindow.cpp" line="3250" />
