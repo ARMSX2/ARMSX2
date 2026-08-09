@@ -1055,12 +1055,19 @@ bool GSDeviceOGL::CheckFeatures()
 	// GSFramebufferFetchPolicy.h for why it is a separate pure function). Nothing below may write
 	// m_features.framebuffer_fetch -- read `fbfetch` instead if you need to know what was decided.
 	//
-	// The Mali r44p1 blob loses the rendering context under the in-tile framebuffer-fetch blend path,
-	// exactly as it loses the Vulkan device under attachment-feedback-loop (VK_ERROR_DEVICE_LOST on
-	// effectively every game -- Mali-G615 r44p1). Mirror the Vulkan-side r44p1 gate (see GSDeviceVK.cpp)
-	// and drop this one blob to the non-fetch (copy) blend path. Narrow by driver version, not vendor,
-	// so other (working) Mali blobs keep the fast path. GL_VERSION reads e.g. "OpenGL ES 3.2 v1.r44p1-...".
-	const bool fbfetch_driver_blocklisted = (std::strstr(gl_version_str, "r44p1") != nullptr);
+	// Which drivers cannot survive the in-tile read is a fact about the DRIVER, so it lives in the
+	// driver-bug database with the rest of them (rule gl-arm-r44p1-attachment-self-read) rather than
+	// in a substring test here. UseRenderTargetCopyForFeedback is the same workaround the Vulkan
+	// backend keys its RT-copy fallback on -- fetch and the texture barrier are two spellings of one
+	// in-tile read, so a driver that fails the read fails both, and one bit answers for both APIs.
+	//
+	// This replaced a hand-rolled search for "r44p1" in GL_VERSION. The database matches a PARSED
+	// driver revision instead, which is what lets a rule say "exactly r44p1" rather than "contains
+	// r44p1" -- and what would let the next bad blob be a table row. gs_gpu_driver_profile_tests
+	// pins the real device string through the resolver, because a rule that silently matches
+	// nothing would put the device straight back on the faulting path with no diagnostic.
+	const bool fbfetch_driver_blocklisted =
+		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback);
 	const GSFramebufferFetchDecision fbfetch = DecideGLFramebufferFetch(GLAD_GL_ARM_shader_framebuffer_fetch,
 		GLAD_GL_EXT_shader_framebuffer_fetch, GLAD_GL_EXT_shader_pixel_local_storage, fbfetch_driver_blocklisted,
 		GSConfig.DisableFramebufferFetch, use_mali_profile);

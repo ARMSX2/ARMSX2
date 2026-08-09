@@ -3624,21 +3624,12 @@ bool GSDeviceVK::CheckFeatures()
 						"RT-copy blend path.");
 		m_features.texture_barrier = false;
 	}
-	// Mali r44p1: the attachment-feedback-loop-layout disable in CreateDevice only swapped the
-	// RT-as-texture LAYOUT/descriptor — it never removed the in-tile RT self-read itself, so Maximum
-	// blending kept sampling the colour attachment IN-TILE (fbfetch/ROAA subpassLoad OR the
-	// texture-barrier feedback loop; both lower to the same faulting tile-feedback silicon) and the
-	// device kept dying (VK_ERROR_DEVICE_LOST at vkWaitForFences, Rogue Galaxy). Force texture_barrier
-	// off so accurate blending routes through the RT-COPY path (draw_rt_clone) instead — the
-	// "fbfetch needs barriers" line below (framebuffer_fetch &= texture_barrier) then also turns
-	// fbfetch off, so the RT is only ever read from a SEPARATE copy, never in-tile. Slower but stable,
-	// and strictly r44p1-only (no other GPU, not even other Mali-G615 units, is touched).
-	if (is_mali_vk && m_optional_extensions.vk_khr_driver_properties &&
-		std::string_view(m_device_driver_properties.driverInfo).find("r44p1") != std::string_view::npos)
-	{
-		Console.WriteLn("Mali r44p1: forcing RT-copy blend path (texture_barrier off) — in-tile self-read faults.");
-		m_features.texture_barrier = false;
-	}
+	// (Mali r44p1 used to get its own copy of the block above, testing driverInfo for "r44p1" and
+	// clearing texture_barrier a second time. It is now rule vk-arm-r44p1-attachment-self-read in
+	// the driver-bug database, so rt_self_read_is_broken already covers it and the duplicate is
+	// gone. One difference, deliberate: the table-driven path respects OverrideTextureBarriers,
+	// which the hand-rolled test ignored -- and the comment above documents forcing barriers on as
+	// the way back to the in-tile path for A/B work, so honouring it is the intent.)
 	m_features.multidraw_fb_copy = false;
 	m_features.broken_point_sampler = false;
 

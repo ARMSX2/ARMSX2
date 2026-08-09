@@ -12,6 +12,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_backqueue_tests.cpp
 	gs_interlace_policy_tests.cpp
 	gs_framebuffer_fetch_policy_tests.cpp
+	gs_gpu_driver_profile_tests.cpp
 	gs_draw_staging_tests.cpp
 )
 
