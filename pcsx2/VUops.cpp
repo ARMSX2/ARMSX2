@@ -1006,15 +1006,11 @@ static __fi void _vuRSQRT(VURegs* VU)
 
 	if (ft == 0.0)
 	{
-		VU->statusflag |= 0x20;
+		// Exclusive, as in DIV: 0/0 is invalid, x/0 is a divide by zero.
+		VU->statusflag |= (fs == 0.0) ? 0x10 : 0x20;
 
 		// Sign of the dividend alone -- the divisor is a root, never negative.
-		VU->q.UL = VU->VF[_Fs_].UL[_Fsf_] & 0x80000000;
-
-		if (fs != 0)
-			VU->q.UL |= 0x7F7FFFFF;
-		else
-			VU->statusflag |= 0x10;
+		VU->q.UL = (VU->VF[_Fs_].UL[_Fsf_] & 0x80000000) | 0x7F7FFFFF;
 	}
 	else
 	{

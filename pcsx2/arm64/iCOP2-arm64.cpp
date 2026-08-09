@@ -2581,24 +2581,20 @@ void recCOP2_VRSQRT()
 	armAsm->Fcmp(RSSCRATCH2, 0.0);
 	armAsm->B(a64::ne, &ftNonZero);
 
-	// ft == 0: divide by zero, or invalid when the dividend is zero too. Q
-	// saturates with the dividend's sign alone -- no xor, unlike VDIV.
+	// ft == 0: 0/0 is invalid, x/0 is a divide by zero, exclusively. Q
+	// saturates either way, signed by the dividend -- no xor, unlike VDIV.
 	{
-		armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x20);
 		armAsm->Ldr(a64::w1, armVU0Mem(&VU0.VF[_Fs_cop2].UL[fsf]));
 		armAsm->And(a64::w2, a64::w1, 0x80000000);
-
-		a64::Label fsNonZero, zeroQReady;
-		armAsm->Fcmp(RSSCRATCH, 0.0);
-		armAsm->B(a64::ne, &fsNonZero);
-		armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x10);
-		armAsm->B(&zeroQReady);
-
-		armAsm->Bind(&fsNonZero);
 		armAsm->Mov(a64::w3, 0x7F7FFFFF);
 		armAsm->Orr(a64::w2, a64::w2, a64::w3);
 
-		armAsm->Bind(&zeroQReady);
+		armAsm->Fcmp(RSSCRATCH, 0.0);
+		armAsm->Mov(a64::w1, 0x10);
+		armAsm->Mov(a64::w3, 0x20);
+		armAsm->Csel(a64::w1, a64::w1, a64::w3, a64::eq);
+		armAsm->Orr(RWSCRATCH, RWSCRATCH, a64::w1);
+
 		armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.statusflag));
 		armAsm->Str(a64::w2, armVU0Mem(&VU0.q));
 	}
