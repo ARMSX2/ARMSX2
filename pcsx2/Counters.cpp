@@ -1114,11 +1114,18 @@ bool SaveStateBase::rcntFreeze()
 
 	if (IsLoading())
 	{
+		// DELETEME after 2026-12-01: transitional repair for old poisoned states.
 		// Repair states poisoned by the old u32 rcntSyncCounter blowup (baseline one
 		// full 2^32 epoch in the future, count far outside the 16-bit domain): snap
 		// the baseline back to now and re-fold the count, or the counter stays dead
 		// until cycle crosses the bogus baseline. cpuRegs is thawed before us, so
 		// cpuRegs.cycle is the loaded state's own clock here.
+		//
+		// The trigger (cross-thread ExitExecution warping the EE clock backwards)
+		// was fixed 2026-08-09, so no new state can carry this scar; this block
+		// only heals .p2s files saved by builds older than that. Once those have
+		// aged out (a few months of releases), delete the loop below — the guard
+		// in rcntSyncCounter stays.
 		for (int i = 0; i < 4; i++)
 		{
 			bool repaired = false;
