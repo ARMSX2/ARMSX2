@@ -97,7 +97,13 @@ static void psxRcntSync(int cntidx)
 		// that then rode along in savestates. Skip; the counter resumes when cycle
 		// catches up, at most one tick later.
 		if ((s64)(psxRegs.cycle - psxCounters[cntidx].startCycle) < 0)
+		{
+			// Unreachable unless the IOP clock moved backwards — see the EE-side
+			// note in rcntSyncCounter. Loud on purpose.
+			Console.Warning("psxRcntSync: counter %d baseline ahead of cycle by %lld — IOP clock went backwards?",
+				cntidx, (long long)(psxCounters[cntidx].startCycle - psxRegs.cycle));
 			return;
+		}
 
 		const u64 change = (psxRegs.cycle - psxCounters[cntidx].startCycle) / psxCounters[cntidx].rate;
 		if (change > 0)

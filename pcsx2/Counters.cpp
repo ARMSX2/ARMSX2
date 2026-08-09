@@ -758,7 +758,15 @@ __fi void rcntSyncCounter(int i)
 		// in every savestate taken meanwhile. Skip the sync instead; the counter
 		// resumes when cycle catches up, at most one tick later.
 		if ((s64)(cpuRegs.cycle - counters[i].startCycle) < 0)
+		{
+			// Post-fix this should be unreachable for ungated counters: every
+			// baseline writer rounds down from cpuRegs.cycle. A fire means the
+			// EE clock moved backwards — that is how the cross-thread
+			// nextEventCycle poke poisoned GoW2 savestates. Loud on purpose.
+			Console.Warning("rcntSyncCounter: counter %d baseline ahead of cycle by %lld — EE clock went backwards?",
+				i, (long long)(counters[i].startCycle - cpuRegs.cycle));
 			return;
+		}
 
 		const u64 change = (cpuRegs.cycle - counters[i].startCycle) / counters[i].rate;
 		counters[i].startCycle += change * counters[i].rate;
