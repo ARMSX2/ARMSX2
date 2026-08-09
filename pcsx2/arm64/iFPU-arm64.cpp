@@ -1222,7 +1222,31 @@ static void recRSQRT_S_xmm(int info)
 		fpuClampCompareOperand(armSRegister(dreg));
 		fpuClampCompareOperand(armSRegister(treg));
 	}
-	armAsm->Fsqrt(armSRegister(treg), armSRegister(treg));
+
+	// Exponent-255 divisor: recSQRT_S_xmm's prescale, applied to the square
+	// root this op does inline. Rebuilt from the raw Ft word so the operand
+	// clamp above cannot get in front of it. The dividend keeps the fast
+	// path's saturation.
+	{
+		a64::Label ordinaryDivisor, sqrtDone;
+		armAsm->Ubfx(RWARG2, RWARG1, 23, 8);
+		armAsm->Cmp(RWARG2, 0xff);
+		armAsm->B(&ordinaryDivisor, a64::ne);
+
+		armAsm->And(RWARG2, RWARG1, 0x7fffffff);     // |Ft|
+		armAsm->Sub(RWARG2, RWARG2, 0x00800000);     // /4 — 0x01000000 is not an
+		armAsm->Sub(RWARG2, RWARG2, 0x00800000);     // add/sub immediate
+		armAsm->Fmov(armSRegister(treg), RWARG2);
+		armAsm->Fsqrt(armSRegister(treg), armSRegister(treg));
+		armAsm->Fadd(armSRegister(treg), armSRegister(treg), armSRegister(treg));
+		armAsm->B(&sqrtDone);
+
+		armAsm->Bind(&ordinaryDivisor);
+		armAsm->Fsqrt(armSRegister(treg), armSRegister(treg));
+
+		armAsm->Bind(&sqrtDone);
+	}
+
 	armAsm->Fdiv(armSRegister(EEREC_D), armSRegister(dreg), armSRegister(treg));
 	fpuClampResult(armSRegister(EEREC_D));
 
