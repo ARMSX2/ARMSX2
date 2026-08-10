@@ -1009,13 +1009,15 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 			push_descriptor_properties.maxPushDescriptors, NUM_TFX_TEXTURES);
 		m_use_push_descriptors = false;
 	}
-	// Mali (ARM, vendorID 0x13B5): never use push descriptors. The old justification here
-	// ("advertises but null-derefs in vkCmdPushDescriptorSetKHR") is wrong for current blobs —
-	// r44p1 does not advertise VK_KHR_push_descriptor at all, so on such devices this gate is
-	// moot and the null-deref story pointed past investigations at the wrong layer. The gate
-	// stays because it is still the right call where the extension IS present: a Mali
-	// descriptor-set bind containing no dynamic descriptors is constant-time regardless of set
-	// size, so push descriptors have nothing to buy there.
+	// Mali (ARM, vendorID 0x13B5): never use push descriptors. Two driver generations
+	// justify the one gate, for different reasons. Older blobs really do advertise
+	// VK_KHR_push_descriptor and then null-deref inside vkCmdPushDescriptorSetKHR on the
+	// first textured draw — observed on a Mali-G52 MP2 running r29p0 (bmdhacks). Newer blobs
+	// (r44p1) do not advertise the extension at all, so the gate is moot there — do not read
+	// the null-deref story as applying to them when investigating that generation. Where the
+	// extension is present and working, the gate is still the right call: a Mali
+	// descriptor-set bind containing no dynamic descriptors is constant-time regardless of
+	// set size, so push descriptors have nothing to buy there.
 	if (m_use_push_descriptors && properties2.properties.vendorID == 0x13B5u)
 		m_use_push_descriptors = false;
 	// Adreno (Qualcomm, 0x5143): the pre-transplant backend measured a per-draw TFX
