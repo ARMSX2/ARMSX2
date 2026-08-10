@@ -412,13 +412,32 @@ static constexpr std::array<DriverRule, 28> s_driver_rules = {{
 	{"vk-arm-extended-dynamic-before-r44p1", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {44, 1, 0},
 		0, 0, true, Bug(DriverBug::BrokenExtendedDynamicState), 0},
-	{"vk-arm-dynamic-rendering-before-r52", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
-		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {52, 0, 0},
+	// Narrowed 2026-08-10 from "before r52". That window was compiled from public bug databases
+	// with no cited defect and no measured boundary, and it overreached: r44p1 reports Vulkan
+	// 1.3, where dynamicRendering is a mandatory, CTS-exercised core feature. Nothing consumes
+	// this bit in the classic backend (it runs render-pass objects everywhere); the Tile
+	// renderer's per-device cost model does, and a false "broken" here would silently veto its
+	// dynamic-rendering A/B on the RG 477V (r44p1), the one Mali device on the bench. The flag
+	// survives only below r44p1, where there is no 1.3 conformance claim to lean on and no
+	// hardware here to check.
+	{"vk-arm-dynamic-rendering-before-r44p1", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
+		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {44, 1, 0},
 		0, 0, true, Bug(DriverBug::BrokenDynamicRendering), 0},
 	// The Vulkan half of gl-arm-r44p1-attachment-self-read above — same driver, same defect, and
-	// the API is a rule field so it takes two entries. Disabling the feedback-loop LAYOUT alone was
-	// tried first and did not stop the device loss: the path it falls back to lowers to the same
-	// in-tile silicon, so nothing short of reading a separate copy survives.
+	// the API is a rule field so it takes two entries.
+	//
+	// Two corrections to the original account of this rule (2026-08-10). First, the early
+	// "disable the feedback-loop layout" experiment was vacuous, not merely insufficient:
+	// r44p1 does not advertise VK_EXT_attachment_feedback_loop_layout at all, so there was
+	// nothing to turn off and the DEVICE_LOST predictably survived. The bug bit stays listed
+	// defensively for any r44p1 build that does expose the extension. Second, the likeliest
+	// failure mechanism is not "the in-tile silicon faults": the driver decides per attachment
+	// format whether a render-target self-read may ride the tile buffer, and when it declines
+	// it silently degrades the read to an ordinary memory fetch. Inside a live feedback loop
+	// that unsynchronized fetch races the tile write, and on this revision the race takes the
+	// whole device down. Reading a separate copy is the only realization that never asks for
+	// the tile slot, which is why UseRenderTargetCopyForFeedback is the one workaround that
+	// held.
 	{"vk-arm-r44p1-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {44, 1, 0}, {44, 2, 0},
 		0, 0, false,

@@ -417,6 +417,11 @@ GSDeviceVK::GPUList GSDeviceVK::EnumerateGPUs()
 	return gpus;
 }
 
+// Standing rule: gate optional functionality on the advertised-extension list resolved here,
+// never on vkGetDeviceProcAddr returning non-NULL. Drivers ship stub entry points for
+// extensions they do not advertise (Mali r44p1 resolves a vkCmdPushDescriptorSetKHR whose call
+// is a plain no-op return), and the spec only defines behaviour for entry points of extensions
+// that were actually enabled at device creation.
 bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enable_surface)
 {
 	u32 extension_count = 0;
@@ -983,10 +988,13 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 	if (m_device_properties.vendorID == 0x13B5u && m_optional_extensions.vk_khr_driver_properties &&
 		std::string_view(m_device_driver_properties.driverInfo).find("r44p1") != std::string_view::npos)
 	{
-		// NOTE: this layout disable alone did NOT stop the DEVICE_LOST — the per-primitive barrier /
-		// fbfetch path it falls back to lowers to the same faulting in-tile silicon. The real fix
-		// forces r44p1 onto the RT-copy blend path by ALSO disabling texture_barrier; see the matching
-		// "Mali r44p1:" block where m_features.texture_barrier is resolved.
+		// NOTE: this layout disable alone did NOT stop the DEVICE_LOST, and the reason is that it
+		// was vacuous — r44p1 does not advertise VK_EXT_attachment_feedback_loop_layout, so the
+		// bit below was already false and nothing changed. It stays as defence for any r44p1
+		// build that does expose the extension. The real fix forces r44p1 onto the RT-copy blend
+		// path by ALSO disabling texture_barrier; see the matching "Mali r44p1:" block where
+		// m_features.texture_barrier is resolved, and the mechanism account on rule
+		// vk-arm-r44p1-attachment-self-read in GSGPUDriverProfile.cpp.
 		Console.WriteLn("Mali r44p1: disabling attachment-feedback-loop blend path (DEVICE_LOST workaround).");
 		m_optional_extensions.vk_ext_attachment_feedback_loop_layout = false;
 	}
@@ -1001,9 +1009,13 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 			push_descriptor_properties.maxPushDescriptors, NUM_TFX_TEXTURES);
 		m_use_push_descriptors = false;
 	}
-	// Mali (ARM, vendorID 0x13B5) advertises VK_KHR_push_descriptor but its driver
-	// null-derefs inside vkCmdPushDescriptorSetKHR on the first textured draw, so
-	// never use it there even when present.
+	// Mali (ARM, vendorID 0x13B5): never use push descriptors. The old justification here
+	// ("advertises but null-derefs in vkCmdPushDescriptorSetKHR") is wrong for current blobs —
+	// r44p1 does not advertise VK_KHR_push_descriptor at all, so on such devices this gate is
+	// moot and the null-deref story pointed past investigations at the wrong layer. The gate
+	// stays because it is still the right call where the extension IS present: a Mali
+	// descriptor-set bind containing no dynamic descriptors is constant-time regardless of set
+	// size, so push descriptors have nothing to buy there.
 	if (m_use_push_descriptors && properties2.properties.vendorID == 0x13B5u)
 		m_use_push_descriptors = false;
 	// Adreno (Qualcomm, 0x5143): the pre-transplant backend measured a per-draw TFX
@@ -1795,6 +1807,9 @@ void GSDeviceVK::ActivateCommandBuffer(u32 index)
 	}
 
 	// Enable commands to be recorded to the two buffers again.
+	// ONE_TIME_SUBMIT is load-bearing on Mali: without it (SIMULTANEOUS_USE) the blob switches
+	// primary command buffers from direct backend dispatch to record-then-replay through an
+	// internal arena, roughly doubling per-draw CPU. Every begin in this backend keeps this flag.
 	VkCommandBufferBeginInfo begin_info = {
 		VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
 	res = vkBeginCommandBuffer(resources.command_buffers[1], &begin_info);

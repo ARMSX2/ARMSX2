@@ -113,3 +113,21 @@ TEST(GSGpuDriverProfile, OtherMaliOpenGLRevisionsKeepTheInTileRead)
 	EXPECT_FALSE(TakesTheRenderTargetCopyPath(
 		ResolveGL("ARM", "Mali-G57 MC2", "OpenGL ES 3.2 v1.r32p1-01eac0.deadbeefdeadbeefdeadbeefdeadbeef")));
 }
+
+// The old "dynamic rendering broken before r52" window was compiled from public bug databases
+// with no cited defect and no measured boundary, and it overreached: r44p1 reports Vulkan 1.3,
+// where dynamicRendering is a mandatory, CTS-exercised core feature. Nothing consumes the bit in
+// the classic backend (it runs render-pass objects everywhere), but the Tile renderer's per-device
+// cost model will, and a false "broken" on r44p1 would silently veto its dynamic-rendering A/B on
+// the one Mali device on the bench. The flag survives only below r44p1, where there is no 1.3
+// conformance claim to lean on and no hardware here to check.
+TEST(GSGpuDriverProfile, MaliR44p1DynamicRenderingIsNotFlaggedBroken)
+{
+	EXPECT_FALSE(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0))
+					 .driver.HasBug(DriverBug::BrokenDynamicRendering));
+	// The narrowed window still holds below r44p1, and r52+ was never flagged.
+	EXPECT_TRUE(ResolveMaliVK("Mali-G610", PackVulkanVersion(38, 1, 0))
+					.driver.HasBug(DriverBug::BrokenDynamicRendering));
+	EXPECT_FALSE(ResolveMaliVK("Mali-G715", PackVulkanVersion(52, 0, 0))
+					 .driver.HasBug(DriverBug::BrokenDynamicRendering));
+}
