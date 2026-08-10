@@ -497,18 +497,41 @@ TEST(EeCache2Console, DxstgWriteBackTargetsTheTaggedGuestPage)
 
 // A DXSTG naming a page that does not resolve to plain guest memory leaves the
 // line unbacked, so the write-back declines rather than dereferencing anything.
-// 0x1FC00000-and-up is BIOS/unmapped territory at the top of the physical map.
+//
+// 0x60129000 is past the end of the physical map, and it is the page with
+// teeth: the lookup used to keep only the low 29 bits of the tag, so this page
+// folded onto 0x00129000 -- ordinary main RAM -- and wrote sixty-four bytes
+// there. The witness turns "we did not fault" into "we did not write somewhere
+// the guest never named". An SCPH-30001 agrees on that much: an eviction
+// steered above the end of RAM puts nothing into RAM.
+//
+// This check used to name 0x1FFFF000, calling it unmapped. That is the last
+// page of the 4 MB BIOS ROM at 0x1FC00000, so it is real backing memory and the
+// declining branch never ran at all.
 TEST(EeCache2Console, DxstgOnAnUnresolvablePageDeclinesTheWriteBack)
 {
+	constexpr u32 kUnresolvablePage = 0x60129000u;
+	constexpr u32 kWitness = 0x00129000u + kSetIndex * 64;
+
 	EeRecTestHarness h;
 	resetCache();
+	memWrite32(kWitness, 0xA5A5A5A5u);
 	writeCache32(kProbeLine, 0x5A5A0009u);
-	cpuRegs.CP0.n.TagLo = 0x1FFFF000u | kFlagDirty | kFlagValid;
+	cpuRegs.CP0.n.TagLo = kUnresolvablePage | kFlagDirty | kFlagValid;
 	RunCacheOp(0x12, kProbeLine); // DXSTG
 	RunCacheOp(0x14, kProbeLine); // DXWBIN -- must be a no-op, not a store
-	// Reaching here without a fault is the assertion; the flags still round-trip.
+
+	EXPECT_EQ(memRead32(kWitness), 0xA5A5A5A5u)
+		<< "the write-back reached guest memory the tag never named";
 	EXPECT_EQ(ReadTag(kProbeLine) & (kFlagValid | kFlagDirty), 0u);
 }
+
+// Deliberately unpinned: where an eviction goes when the tag names one of the
+// emulator's main-RAM mirrors at 0x20000000 or 0x30000000. Those are our
+// physical map's mirrors, not the console's -- a console has no RAM at those
+// physical addresses, and an eviction aimed there reached nothing on the
+// SCPH-30001. Any assertion here would freeze an emulator-specific answer to a
+// question no game asks, so leave it undefined.
 
 // ---------------------------------------------------------------------------
 // Tripwires. DxstgDirtyStaysInsideGuestMemory has graduated and holds; the rest
