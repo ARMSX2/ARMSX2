@@ -68,23 +68,28 @@ void recJR()
 {
 	const u32 rs = _Rs_;
 
-	// Save jump target to memory BEFORE delay slot, so it can't be lost
-	// if the delay slot evicts registers. A pinned/allocator-resident rs is
-	// stored directly (WS-C5) — _deleteEEreg(rs, 1) flushed first, so the
-	// pin is coherent (post-flush contract of _eeGetGPRSourceReg).
-	_deleteEEreg(rs, 1); // flush rs to memory
-	armStoreEERegPtr(_eeGetGPRSourceReg(RWSCRATCH, rs), &cpuRegs.pcWriteback);
+	// A delay slot that neither writes rs nor needs the branch's own ordering
+	// is emitted ahead of the jump instead, which takes it out of the window
+	// the capture below has to survive.
+	const bool swapped = !EmuConfig.Gamefixes.GoemonTlbHack && TrySwapDelaySlot(rs, 0, 0, true);
 
-	recompileNextInstruction(true, false);
+	// Capture the jump target before the delay slot, which MIPS lets write rs,
+	// into an ARM64TYPE_PCWRITEBACK slot -- see SetBranchReg for how it's read
+	// back.
+	const int wbreg = _allocArm64GPR(ARM64TYPE_PCWRITEBACK, 0, MODE_WRITE);
+	_eeMoveGPRtoR(armWRegister(wbreg), rs);
+
+	if (!swapped)
+		recompileNextInstruction(true, false);
 
 	// JR $ra is the ABI return idiom — pop the call-ret ring and RET so the
 	// hardware RAS (pushed by the paired call-site BL) predicts the target.
 	// Emit-gated off under GoemonTlbHack: SetBranchReg compares V2P-translated
 	// targets there, which can never match the virtual frame RAs.
 	if (rs == 31 && !EmuConfig.Gamefixes.GoemonTlbHack)
-		SetBranchReg(EEBranchRegMode::Return);
+		SetBranchReg(EEBranchRegMode::Return, 0, wbreg);
 	else
-		SetBranchReg();
+		SetBranchReg(EEBranchRegMode::Jump, 0, wbreg);
 }
 
 //// JALR — jump to rs, link in rd
@@ -92,14 +97,21 @@ void recJALR()
 {
 	const u32 rs = _Rs_;
 	const u32 rd = _Rd_;
-	const u32 newpc = pc + 4;
+	const u32 newpc = pc + 4; // captured before a swap can advance pc past the slot
 
-	// Save jump target to memory BEFORE delay slot.
-	// Must read rs before writing rd in case rd == rs — the Str below
-	// captures the target into pcWriteback before the rd write can refresh
-	// a shared pin. (WS-C5; post-flush pin coherence via _deleteEEreg.)
-	_deleteEEreg(rs, 1); // flush rs to memory
-	armStoreEERegPtr(_eeGetGPRSourceReg(RWSCRATCH, rs), &cpuRegs.pcWriteback);
+	// See recJR. rd joins rs in the safety check because the link is written
+	// before the delay slot runs, so a slot that reads or writes rd cannot be
+	// hoisted past that write. The rd == rs term is x86's, kept for parity: it
+	// is what stops x86's swapped arm from reading rs after the link write
+	// (iR5900Jump.cpp:174).
+	const bool swapped = !EmuConfig.Gamefixes.GoemonTlbHack && rd != rs &&
+		TrySwapDelaySlot(rs, 0, rd, true);
+
+	// Capture the jump target before the delay slot; see recJR. Ordered ahead
+	// of the rd write below because rd may be rs, and the capture has to see
+	// the pre-link value.
+	const int wbreg = _allocArm64GPR(ARM64TYPE_PCWRITEBACK, 0, MODE_WRITE);
+	_eeMoveGPRtoR(armWRegister(wbreg), rs);
 
 	// Write link address to rd
 	if (rd)
@@ -118,16 +130,17 @@ void recJALR()
 		}
 	}
 
-	recompileNextInstruction(true, false);
+	if (!swapped)
+		recompileNextInstruction(true, false);
 
 	// JALR linking into $ra is the ABI indirect-call idiom — push a call-ret
 	// frame and transfer via BL so the callee's return RETs to our landing.
 	// Other link registers don't pair with the JR-$ra pop, so they take the
 	// plain jump (their returns just compare-miss if the callee uses jr $ra).
 	if (rd == 31 && !EmuConfig.Gamefixes.GoemonTlbHack)
-		SetBranchReg(EEBranchRegMode::Call, newpc);
+		SetBranchReg(EEBranchRegMode::Call, newpc, wbreg);
 	else
-		SetBranchReg();
+		SetBranchReg(EEBranchRegMode::Jump, 0, wbreg);
 }
 
 

@@ -25,6 +25,10 @@
 #include "harness/EeRecTestHarness.h"
 #include "harness/RecompilerTestEnvironment.h"
 
+// armEEPinForGPR: the QFSRV section at the bottom is only a test while the
+// registers it writes are pinned.
+#include "arm64/iR5900-arm64.h"
+
 #include "vtlb.h"
 
 #include <gtest/gtest.h>
@@ -1230,16 +1234,26 @@ TEST(EeRecMmiCoherence, SqFaultPathStoresResidentQuad)
 // through armMergeEEResidentIntoQuad) or armLoadEERegPtr (which substitutes the
 // pin), reads a stale lower half.
 //
-// recQFSRV's adjacent-source fast path (Rs == Rt+1) is exactly that: it takes
-// &GPR.r[Rt] and Ldr's 128 unaligned bits across the two registers. Four
-// adjacent pairs are BOTH pinned — ($at,$v0) ($v0,$v1) ($v1,$a0) ($a0,$a1) —
-// and eight more have one pinned operand, which is precisely the register range
-// a funnel-shift memcpy loop uses.
+// recQFSRV is where that used to bite: a second path for adjacent sources
+// (Rs == Rt+1) took &GPR.r[Rt] and Ldr'd 128 unaligned bits across the two
+// registers. Twelve of the adjacent pairs have a pinned source — four
+// both-pinned, ($at,$v0) ($v0,$v1) ($v1,$a0) ($a0,$a1), eight with one — and
+// that is the register range a funnel-shift memcpy loop uses. QFSRV loads each
+// operand through mmiLoadReg now, so the merge covers all three cases below.
+
+// Unpinned, the write reaches memory and there is nothing stale to catch.
+void RequirePinned(u32 gpr, const char* which)
+{
+	ASSERT_NE(armEEPinForGPR(static_cast<int>(gpr)), nullptr)
+		<< which << " is no longer in kEEPinTable, so the write below lands in "
+		<< "canonical memory and this test has nothing stale to catch";
+}
 
 // Rt is pinned ($a0 → x27) and written earlier in the same block, so its
-// canonical memory slot is stale when QFSRV's fast path reads it.
-TEST(EeRecMmiCoherence, QfsrvAdjacentFastPathSeesDirtyPinnedRt)
+// canonical memory slot is stale by the time QFSRV reads its sources.
+TEST(EeRecMmiCoherence, QfsrvAdjacentDirtyPinnedRtIsMerged)
 {
+	ASSERT_NO_FATAL_FAILURE(RequirePinned(reg::a0, "$a0"));
 	EeRecTestHarness h;
 	h.SetMmiPair(reg::a0, 0x1122'3344'5566'7788ull, 0x99AA'BBCC'DDEE'FF00ull); // Rt
 	h.SetMmiPair(reg::a1, 0xAABB'CCDD'1122'3344ull, 0x5566'7788'99AA'BBCCull); // Rs == Rt+1
@@ -1255,10 +1269,12 @@ TEST(EeRecMmiCoherence, QfsrvAdjacentFastPathSeesDirtyPinnedRt)
 	// A stale read yields the pre-write Rt bytes: UD[0] == 0xDDEEFF0011223344.
 }
 
-// Same defect through the other operand: Rs is pinned ($a1 → x21) and dirty,
-// so the upper half of the funnel result comes from stale memory.
-TEST(EeRecMmiCoherence, QfsrvAdjacentFastPathSeesDirtyPinnedRs)
+// Same defect through the other operand: Rs is pinned ($a1 → x21) and dirty, so
+// a raw window read would take the upper half of the funnel result from stale
+// memory.
+TEST(EeRecMmiCoherence, QfsrvAdjacentDirtyPinnedRsIsMerged)
 {
+	ASSERT_NO_FATAL_FAILURE(RequirePinned(reg::a1, "$a1"));
 	EeRecTestHarness h;
 	h.SetMmiPair(reg::a0, 0x1122'3344'5566'7788ull, 0x99AA'BBCC'DDEE'FF00ull); // Rt
 	h.SetMmiPair(reg::a1, 0xAABB'CCDD'1122'3344ull, 0x5566'7788'99AA'BBCCull); // Rs == Rt+1
@@ -1273,10 +1289,7 @@ TEST(EeRecMmiCoherence, QfsrvAdjacentFastPathSeesDirtyPinnedRs)
 	// A stale read yields the pre-write Rs bytes: UD[1] == 0x1122334499AABBCC.
 }
 
-// Green control: identical dirty-pin setup, but Rs != Rt+1 so the temp-buffer
-// path runs. That path loads through mmiLoadReg, which merges the dirty pin —
-// it must stay correct both before and after the fast path is gated, proving
-// the divergence above belongs to the fast path and not to the expectations.
+// The same through a non-adjacent pair.
 TEST(EeRecMmiCoherence, QfsrvNonAdjacentPathMergesDirtyPin)
 {
 	EeRecTestHarness h;

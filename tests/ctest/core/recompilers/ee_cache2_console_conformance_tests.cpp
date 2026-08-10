@@ -41,32 +41,24 @@
 // `tag page | index << 6`, and a hit op through a second cached mapping of the
 // same physical line hits.
 //
-// What it gets wrong is one defect, and it is worse than a wrong number.
+// Round 2's finding was one defect, and it was worse than a wrong number.
 // PCSX2's tag holds a *host* pointer where hardware holds a guest physical
-// address, and DXSTG copies a guest-supplied 32-bit word straight into it
-// (Cache.cpp, the DXSTG case). writeBackIfNeeded then dereferences that word.
-// Pcsx2DxstgRedirectsAHostWrite maps a page at the address the guest asked
-// for and watches 64 bytes land in it. Unmapped -- the normal case, since
-// setAddr zeroes the top 32 bits so the target is always below 4 GiB -- it is
-// an emulator crash instead.
+// address, and DXSTG copied a guest-supplied 32-bit word straight into it, so
+// writeBackIfNeeded dereferenced that word. It now translates the tag page and
+// takes isValidPFN from the same translation (Cache.cpp, the DXSTG case); the
+// write-back precondition that moves with it is at
+// DxstgWriteBackTargetsTheTaggedGuestPage.
 //
-// What bounds it is EnableEECache, which PCSX2 ships off -- but indirectly,
-// and the distinction matters when reading the tests. CHECK_CACHE gates only
-// vtlb.cpp's guest load and store paths; the CACHE opcode itself and the cache
-// entry points run whatever it is set to. The redirect needs isValidPFN (tag
-// bit 11) set when the DXSTG lands, DXSTG's own mask (ALL_FLAGS = 0x7FF)
-// cannot reach that bit and clear() drops it, so only a real fill can set it
-// -- and a fill is what EnableEECache gates. With it off a guest's cache op
-// still writes the host-pointer field and writeBackIfNeeded still declines,
-// which is the precondition the never-filled and invalidated blocks of that
-// test pin.
+// EnableEECache, which PCSX2 ships off, bounded the old defect but only
+// indirectly, and the distinction still matters when reading the tests.
+// CHECK_CACHE gates only vtlb.cpp's guest load and store paths; the CACHE
+// opcode itself and the cache entry points run whatever it is set to. The
+// tests below therefore do not read the setting. They drive the model through
+// its own entry points -- readCache32/writeCache32 and the interpreter's
+// CACHE -- so everything here reproduces with EnableEECache at its default
+// false.
 //
-// The tests below therefore do NOT read the setting. They drive the model
-// through its own entry points -- readCache32/writeCache32 and the
-// interpreter's CACHE -- so everything here, this defect included, reproduces
-// with EnableEECache at its default false.
-//
-// Nothing here is fixed. Divergences are recorded from the real run.
+// Everything else here is unfixed. Divergences are recorded from the real run.
 
 #include <gtest/gtest.h>
 
@@ -288,21 +280,21 @@ TEST(EeCache2Console, DxstgSetsTheDirtyBitOnConsole)
 //
 // So the bit is measured by its consequence instead. The write-back below
 // happens if and only if D survived the DXSTG, and it is the same sequence
-// Pcsx2DxstgRedirectsAHostWrite uses -- with no DXLTG anywhere between the
-// store and the eviction.
+// DxstgWriteBackTargetsTheTaggedGuestPage uses -- with no DXLTG anywhere
+// between the store and the eviction.
 TEST(EeCache2Console, Pcsx2AcceptsDirtyFromDxstgButCannotReportIt)
 {
-	u32 page = 0;
-	void* p = MapAt(&page);
-	if (!p)
-		GTEST_SKIP() << "could not map a page at any candidate host address";
+	// The consequence is observed in guest memory, at the physical page the tag
+	// names, which is where DXSTG now steers the write-back.
+	constexpr u32 kTargetPage = 0x00129000;
+	constexpr u32 kTarget = kTargetPage + kSetIndex * 64;
 
 	// Asking destroys it.
 	{
 		EeRecTestHarness h;
 		resetCache();
 		RunCacheOp(0x16, kProbeLine); // DXIN way 0, so no write-back can fire
-		cpuRegs.CP0.n.TagLo = page | kFlagDirty | kFlagValid;
+		cpuRegs.CP0.n.TagLo = kTargetPage | kFlagDirty | kFlagValid;
 		RunCacheOp(0x12, kProbeLine); // DXSTG
 		EXPECT_EQ(ReadTag(kProbeLine) & kFlagDirty, 0u)
 			<< "PCSX2's DXLTG now reports D; the console's 0x" << std::hex
@@ -310,32 +302,29 @@ TEST(EeCache2Console, Pcsx2AcceptsDirtyFromDxstgButCannotReportIt)
 	}
 
 	// Not asking shows it was there: the eviction only writes if D is set.
-	std::memset(p, 0xEE, 0x1000);
-	const u32* target = reinterpret_cast<const u32*>(
-		static_cast<uptr>(page) + kSetIndex * 64);
 	{
 		EeRecTestHarness h;
 		resetCache();
+		memWrite32(kTarget, 0xEEEEEEEEu);
 		writeCache32(kProbeLine, 0x5A5A0009u);
-		cpuRegs.CP0.n.TagLo = page | kFlagDirty | kFlagValid;
+		cpuRegs.CP0.n.TagLo = kTargetPage | kFlagDirty | kFlagValid;
 		RunCacheOp(0x12, kProbeLine); // DXSTG, D set
 		RunCacheOp(0x14, kProbeLine); // DXWBIN
-		EXPECT_EQ(target[0], 0x5A5A0009u) << "D did not survive the DXSTG";
+		EXPECT_EQ(memRead32(kTarget), 0x5A5A0009u) << "D did not survive the DXSTG";
 	}
 
 	// The control: the same sequence with D clear moves nothing, so the write
 	// above is attributable to the bit and not to DXWBIN writing regardless.
-	std::memset(p, 0xEE, 0x1000);
 	{
 		EeRecTestHarness h;
 		resetCache();
+		memWrite32(kTarget, 0xEEEEEEEEu);
 		writeCache32(kProbeLine, 0x5A5A0009u);
-		cpuRegs.CP0.n.TagLo = page | kFlagValid; // no D
+		cpuRegs.CP0.n.TagLo = kTargetPage | kFlagValid; // no D
 		RunCacheOp(0x12, kProbeLine);
 		RunCacheOp(0x14, kProbeLine);
-		EXPECT_EQ(target[0], 0xEEEEEEEEu) << "DXWBIN wrote back a clean line";
+		EXPECT_EQ(memRead32(kTarget), 0xEEEEEEEEu) << "DXWBIN wrote back a clean line";
 	}
-	munmap(p, 0x1000);
 }
 
 // The write-back target is the tag's page with the *set index* supplying the
@@ -434,77 +423,98 @@ TEST(EeCache2Console, Pcsx2HasNoInstructionCacheGeometry)
 }
 
 // ---------------------------------------------------------------------------
-// DEFECT. Hardware's tag holds a guest physical address, so a write-back
-// steered by DXSTG can only ever reach guest memory. PCSX2's tag holds a host
-// pointer (CacheLine::load stores `ppf`), and DXSTG copies a guest word into it
-// unmasked, so writeBackIfNeeded dereferences a guest-chosen host address.
+// Hardware's tag holds a guest physical address, so a write-back steered by
+// DXSTG can only ever reach guest memory. PCSX2's now does too (Cache.cpp, the
+// DXSTG case).
 //
-// The precondition is exactly "the line is resident when the DXSTG lands":
-// isValidPFN is bit 11 of the same word, DXSTG's mask (ALL_FLAGS = 0x7FF) does
-// not reach it, and clear() drops it. Both halves are checked below, because
-// "a guest can do this at will" and "a guest must first touch the line" are
-// different findings and only one of them is true.
-TEST(EeCache2Console, Pcsx2DxstgRedirectsAHostWrite)
+// The old write-back precondition was "the line is resident when the DXSTG
+// lands": isValidPFN is bit 11 of the same word, DXSTG's mask (ALL_FLAGS =
+// 0x7FF) could not reach it, and clear() dropped it. isValidPFN now moves with
+// the address, so a DXSTG naming a resolvable page arms the line whether or not
+// it was ever filled. All three histories are exercised below.
+TEST(EeCache2Console, DxstgWriteBackTargetsTheTaggedGuestPage)
 {
+	// A physical page in main RAM, chosen to equal one of MapAt's candidates so
+	// the host page of the same number can be held open as a negative control.
+	constexpr u32 kTargetPage = 0x00129000;
+	constexpr u32 kTarget = kTargetPage + kSetIndex * 64;
+
 	u32 page = 0;
 	void* p = MapAt(&page);
 	if (!p)
 		GTEST_SKIP() << "could not map a page at any candidate host address";
+	ASSERT_EQ(page, kTargetPage) << "the control page moved; re-point kTargetPage";
 	std::memset(p, 0xEE, 0x1000);
-
-	const u32* target = reinterpret_cast<const u32*>(
+	const u32* host = reinterpret_cast<const u32*>(
 		static_cast<uptr>(page) + kSetIndex * 64);
 
 	{
 		EeRecTestHarness h;
 		resetCache();
+		memWrite32(kTarget, 0u);
+		memWrite32(kTarget + 4, 0u);
 		writeCache32(kProbeLine, 0x5A5A0009u);
 		writeCache32(kProbeLine + 4, 0xDEADBEEFu);
 
-		cpuRegs.CP0.n.TagLo = page | kFlagDirty | kFlagValid;
+		cpuRegs.CP0.n.TagLo = kTargetPage | kFlagDirty | kFlagValid;
 		RunCacheOp(0x12, kProbeLine); // DXSTG
 		RunCacheOp(0x14, kProbeLine); // DXWBIN
 
-		// 64 bytes of guest cache line, written to a host address the guest
-		// picked. On hardware this is a store to guest physical memory.
-		EXPECT_EQ(target[0], 0x5A5A0009u)
-			<< "PCSX2 no longer redirects the write; record the new behaviour";
-		EXPECT_EQ(target[1], 0xDEADBEEFu);
+		// 64 bytes of guest cache line, at the guest physical page the tag names.
+		EXPECT_EQ(memRead32(kTarget), 0x5A5A0009u);
+		EXPECT_EQ(memRead32(kTarget + 4), 0xDEADBEEFu);
+		EXPECT_EQ(host[0], 0xEEEEEEEEu) << "the write-back still reaches a host address";
 	}
 
-	// Never filled: bit 11 is clear and writeBackIfNeeded declines.
-	std::memset(p, 0xEE, 0x1000);
+	// Never filled, and filled-then-invalidated. Both used to be declined
+	// because bit 11 was clear; both now write back, carrying the cleared line.
+	for (const bool invalidate_first : {false, true})
 	{
+		SCOPED_TRACE(invalidate_first ? "filled then invalidated" : "never filled");
+		std::memset(p, 0xEE, 0x1000);
 		EeRecTestHarness h;
 		resetCache();
-		RunCacheOp(0x16, kProbeLine); // DXIN
-		cpuRegs.CP0.n.TagLo = page | kFlagDirty | kFlagValid;
+		memWrite32(kTarget, 0xA5A5A5A5u);
+		if (invalidate_first)
+		{
+			writeCache32(kProbeLine, 0xABCD1234u);
+			RunCacheOp(0x14, kProbeLine); // DXWBIN: writes back, then clears
+		}
+		else
+		{
+			RunCacheOp(0x16, kProbeLine); // DXIN
+		}
+		memWrite32(kTarget, 0xA5A5A5A5u);
+		cpuRegs.CP0.n.TagLo = kTargetPage | kFlagDirty | kFlagValid;
 		RunCacheOp(0x12, kProbeLine);
 		RunCacheOp(0x14, kProbeLine);
-		EXPECT_EQ(target[0], 0xEEEEEEEEu) << "an unfilled line also redirects";
-	}
-
-	// Filled and then invalidated: clear() drops bit 11 too.
-	std::memset(p, 0xEE, 0x1000);
-	{
-		EeRecTestHarness h;
-		resetCache();
-		writeCache32(kProbeLine, 0xABCD1234u);
-		RunCacheOp(0x14, kProbeLine); // DXWBIN: writes back, then clears
-		cpuRegs.CP0.n.TagLo = page | kFlagDirty | kFlagValid;
-		RunCacheOp(0x12, kProbeLine);
-		RunCacheOp(0x14, kProbeLine);
-		EXPECT_EQ(target[0], 0xEEEEEEEEu) << "an invalidated line also redirects";
+		EXPECT_EQ(memRead32(kTarget), 0u) << "the cleared line did not write back";
+		EXPECT_EQ(host[0], 0xEEEEEEEEu) << "the write-back still reaches a host address";
 	}
 
 	munmap(p, 0x1000);
 }
 
-// ---------------------------------------------------------------------------
-// Tripwires. Each fails today and turns green when the defect above is fixed
-// or the missing model appears.
+// A DXSTG naming a page that does not resolve to plain guest memory leaves the
+// line unbacked, so the write-back declines rather than dereferencing anything.
+// 0x1FC00000-and-up is BIOS/unmapped territory at the top of the physical map.
+TEST(EeCache2Console, DxstgOnAnUnresolvablePageDeclinesTheWriteBack)
+{
+	EeRecTestHarness h;
+	resetCache();
+	writeCache32(kProbeLine, 0x5A5A0009u);
+	cpuRegs.CP0.n.TagLo = 0x1FFFF000u | kFlagDirty | kFlagValid;
+	RunCacheOp(0x12, kProbeLine); // DXSTG
+	RunCacheOp(0x14, kProbeLine); // DXWBIN -- must be a no-op, not a store
+	// Reaching here without a fault is the assertion; the flags still round-trip.
+	EXPECT_EQ(ReadTag(kProbeLine) & (kFlagValid | kFlagDirty), 0u);
+}
 
-TEST(EeCache2Console, DISABLED_DxstgDirtyStaysInsideGuestMemory)
+// ---------------------------------------------------------------------------
+// Tripwires. DxstgDirtyStaysInsideGuestMemory has graduated and holds; the rest
+// fail today and turn green when the missing model appears.
+
+TEST(EeCache2Console, DxstgDirtyStaysInsideGuestMemory)
 {
 	u32 page = 0;
 	void* p = MapAt(&page);
@@ -546,7 +556,8 @@ TEST(EeCache2Console, DISABLED_InstructionCacheGeometryIsModelled)
 TEST(EeCache2Console, DISABLED_AllEeCache2MatchesConsole)
 {
 	// Graduation: everything above that is currently recorded as a divergence
-	// has to hold at once.
+	// has to hold at once. The DXSTG half already does; the instruction cache
+	// is what keeps this disabled.
 	u32 page = 0;
 	void* p = MapAt(&page);
 	if (!p)

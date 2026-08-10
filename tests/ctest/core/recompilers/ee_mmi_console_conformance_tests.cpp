@@ -96,6 +96,40 @@ u32 EncodeHl(const AutoHlCase& c)
 }
 } // namespace
 
+// Cross-engine agreement, which the per-capture scoring below does not cover.
+// No recorded divergences: every rd-writing case agrees.
+TEST(EeMmiConsoleConformance, EnginesAgreeOnEveryRdCase)
+{
+	int checked = 0;
+	for (int i = 0; i < kAutoCaseCount; ++i)
+	{
+		const AutoCase& c = kAutoCases[i];
+		const u32 word = EncodeRd(c);
+		ASSERT_NE(word, 0u) << "no encoder for " << c.op;
+
+		u64 lo[2], hi[2];
+		for (int jit = 0; jit < 2; ++jit)
+		{
+			EeRecTestHarness h;
+			h.SetGpr128(kRs, Lo64(c.rs), Hi64(c.rs));
+			h.SetGpr128(kRt, Lo64(c.rt), Hi64(c.rt));
+			h.SetGpr128(kRd, Lo64(c.rd_pre), Hi64(c.rd_pre));
+			h.LoadProgram({word});
+			if (jit)
+				h.RunJitNoDiff();
+			else
+				h.RunInterpOnly();
+			lo[jit] = jit ? h.GetGpr64Jit(kRd) : h.GetGpr64Interp(kRd);
+			hi[jit] = jit ? h.GetGprUpper64Jit(kRd) : h.GetGprUpper64Interp(kRd);
+		}
+		++checked;
+		SCOPED_TRACE(::testing::Message() << c.op << " " << c.label);
+		EXPECT_EQ(lo[1], lo[0]) << "engines disagree on the low 64 bits";
+		EXPECT_EQ(hi[1], hi[0]) << "engines disagree on the high 64 bits";
+	}
+	EXPECT_EQ(checked, kAutoCaseCount);
+}
+
 TEST(EeMmiConsoleConformance, RdWritingOpsMatchConsole)
 {
 	int checked = 0;

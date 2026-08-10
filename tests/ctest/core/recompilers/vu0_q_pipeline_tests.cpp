@@ -305,17 +305,14 @@ TEST(Vu0Qpipe, VrsqrtByZeroNonZeroNumeratorMagicQ)
 	EXPECT_EQ(h.GetViJit(REG_Q), kQPlusInfMagic);
 }
 
-TEST(Vu0Qpipe, VrsqrtByZeroZeroNumeratorSpecialQ)
+TEST(Vu0Qpipe, VrsqrtByZeroZeroNumeratorSaturatesAndRaisesInvalidOnly)
 {
-	// _vuRSQRT (interp): ft==0, fs==0, signs match → q = 0 (positive), bits I+D set.
-	// The mVU recompiler emits sign(Fs)|maxvals for the ENTIRE divide-by-zero
-	// path, including 0/0, while only the interpreter special-cases 0/0 → 0. This
-	// is a known JIT-vs-interp divergence where matching the recompiler is the
-	// correct behavior, so REG_Q (and STATUS) are opted out of the JIT-vs-interp
-	// diff and the architectural intent is asserted via the interp.
+	// 0/0 takes the same saturated quotient every other zero divisor takes, and
+	// raises I without D -- the dividend decides the division's cause and the
+	// two are exclusive, as they are for VDIV. The interpreter used to return a
+	// signed zero here and raise both, which put it at odds with mVU_RSQRT;
+	// autocases_vurs.h holds the console rows that settled it.
 	VuTestHarness h(0);
-	h.IgnoreViInDiff(REG_STATUS_FLAG);
-	h.IgnoreViInDiff(REG_Q);
 	h.SetVf(1, 0.0f, 0, 0, 0);
 	h.SetVf(2, 0, 0.0f, 0, 0);
 	h.LoadProgram({
@@ -324,8 +321,8 @@ TEST(Vu0Qpipe, VrsqrtByZeroZeroNumeratorSpecialQ)
 		EBitNopPair(),
 	});
 	h.Run();
-	EXPECT_EQ(h.GetViInterp(REG_Q), 0u);
-	EXPECT_NE(h.GetViInterp(REG_STATUS_FLAG) & 0x30, 0u);
+	EXPECT_EQ(h.GetViInterp(REG_Q), kQPlusInfMagic);
+	EXPECT_EQ(h.GetViInterp(REG_STATUS_FLAG) & 0x30, 0x10u);
 }
 
 // -------- VDIV → VWAITQ → VADDq broadcast (Q observable after wait) --------

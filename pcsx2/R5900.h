@@ -290,6 +290,11 @@ struct cpuRegistersPack
 	// use (the JIT cache is too far from the data segment for adrp to reach).
 	// x86 builds carry the bytes and never touch them.
 	alignas(16) EeCop2RecState cop2Rec;
+
+	// {0,1,...,15}. QFSRV's TBL index is this ramp plus a broadcast sa, and
+	// it is here rather than in a literal for the same reason as the block
+	// above: one load against RSTATE instead of a per-site literal.
+	alignas(16) u8 byteRamp[16];
 };
 
 alignas(16) extern cpuRegistersPack _cpuRegistersPack;

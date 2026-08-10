@@ -84,7 +84,7 @@ void Threading::WorkSema::WaitForWorkWithSpin()
 			m_sema.Wait();
 			break;
 		}
-		waited += ShortSpin();
+		waited += ShortSpinOn(m_state, value);
 		value = m_state.load(std::memory_order_relaxed);
 	}
 	// Clear back to STATE_RUNNING_0 (but preserve waiting empty flag)
@@ -117,7 +117,7 @@ bool Threading::WorkSema::WaitForEmptyWithSpin()
 			return !IsDead(value); // STATE_SLEEPING or STATE_SPINNING, queue is empty!
 		if (waited > SPIN_TIME_NS && m_state.compare_exchange_weak(value, value | STATE_FLAG_WAITING_EMPTY, std::memory_order_acquire))
 			break;
-		waited += ShortSpin();
+		waited += ShortSpinOn(m_state, value);
 		value = m_state.load(std::memory_order_acquire);
 	}
 	pxAssertMsg(!(value & STATE_FLAG_WAITING_EMPTY), "Multiple threads attempted to wait for empty (not currently supported)");
@@ -156,7 +156,7 @@ void Threading::UserspaceSemaphore::WaitWithSpin()
 		}
 		if (waited >= SPIN_TIME_NS)
 			break;
-		waited += ShortSpin();
+		waited += ShortSpinOn(m_counter, counter);
 		counter = m_counter.load(std::memory_order_relaxed);
 	}
 	// Spin window expired — block in the kernel (same as plain Wait()).

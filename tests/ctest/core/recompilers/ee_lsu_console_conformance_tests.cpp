@@ -148,6 +148,26 @@ bool RunLoadCase(const LoadCase& c, bool jit, u64& lo, u64& hi)
 }
 } // namespace
 
+// Cross-engine agreement. The comment on LoadsMatchConsole below reserves the
+// right for the engines to disagree; no load case does.
+TEST(EeLsuConsoleConformance, EnginesAgreeOnEveryLoadCase)
+{
+	int checked = 0;
+	for (int i = 0; i < kLoadCaseCount; ++i)
+	{
+		const LoadCase& c = kLoadCases[i];
+		u64 jl = 0, jh = 0, il = 0, ih = 0;
+		if (!RunLoadCase(c, true, jl, jh))
+			continue;
+		ASSERT_TRUE(RunLoadCase(c, false, il, ih)) << c.label;
+		++checked;
+		SCOPED_TRACE(::testing::Message() << c.label);
+		EXPECT_EQ(jl, il) << "engines disagree on the low 64 bits";
+		EXPECT_EQ(jh, ih) << "engines disagree on the high 64 bits";
+	}
+	EXPECT_GT(checked, 70) << "the load-case table shrank or stopped encoding";
+}
+
 // The engines legitimately might disagree here, so each is scored against the
 // console independently rather than against the other.
 TEST(EeLsuConsoleConformance, LoadsMatchConsole)

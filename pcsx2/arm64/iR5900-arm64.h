@@ -329,19 +329,6 @@ static __fi void armFlushEEGPRPins()
 		armAsm->Str(pin.host, armCpuRegMem(&cpuRegs.GPR.r[pin.gpr].UD[0]));
 }
 
-// Flush ONE pin mirror back to canonical memory. Not a dirty-subset heuristic
-// (see the note above) — this is for the emitter that reads a STATICALLY KNOWN
-// guest-GPR memory window raw, where neither of the two normal coherence tools
-// applies: pin substitution (armLoadEERegPtr) can't serve an unaligned read,
-// and the post-load lane merge (armMergeEEResidentIntoQuad) can't fix a quad
-// that straddles two guest registers. The caller must name every register its
-// window covers. Emits nothing when gpr is not pinned.
-static __fi void armFlushEEGPRPin(int gpr)
-{
-	if (const vixl::aarch64::Register* pin = armEEPinForGPR(gpr))
-		armAsm->Str(*pin, armCpuRegMem(&cpuRegs.GPR.r[gpr].UD[0]));
-}
-
 // Flush only the CALLER-saved pins. Required before any C call that is
 // followed by armReloadEEClobberedPins: the reload reads canonical memory,
 // which under lazy-dirty is stale until flushed — the pair would otherwise
@@ -685,7 +672,8 @@ enum class EEBranchRegMode
 	Return,
 	Call,
 };
-void SetBranchReg(EEBranchRegMode mode = EEBranchRegMode::Jump, u32 call_return_pc = 0);
+// wbreg is the register recJR/recJALR captured the target in, or -1 without one.
+void SetBranchReg(EEBranchRegMode mode = EEBranchRegMode::Jump, u32 call_return_pc = 0, int wbreg = -1);
 void SetBranchImm(u32 imm);
 // recJAL tail: SetBranchImm plus a call-ret frame push and a BL-form link
 // to the callee (falls back to SetBranchImm for WaitLoop-FF-shaped blocks).

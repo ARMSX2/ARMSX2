@@ -483,6 +483,40 @@ TEST(EeSaPerfConsoleConformance, PccrMaskIsTheDocumentedLayout)
 	EXPECT_EQ(kPccrWriteMask & 0x80000000u, 0x80000000u); // CTE
 }
 
+// Cross-engine agreement over all three families. No recorded divergences.
+TEST(EeSaPerfConsoleConformance, EnginesAgreeOnEveryCase)
+{
+	for (int i = 0; i < kSaCaseCount; ++i)
+	{
+		const SaCase& c = kSaCases[i];
+		SCOPED_TRACE(::testing::Message() << "mfsa " << c.label);
+		EXPECT_EQ(RunMfsa(c, true), RunMfsa(c, false));
+	}
+	for (int i = 0; i < kBranchCaseCount; ++i)
+	{
+		const BranchCase& c = kBranchCases[i];
+		SCOPED_TRACE(::testing::Message() << "branch " << c.label);
+		u32 jt = 0, jd = 0, nt = 0, nd = 0;
+		u64 jl = 0, nl = 0;
+		RunBranch(c, true, jt, jd, jl);
+		RunBranch(c, false, nt, nd, nl);
+		EXPECT_EQ(jt, nt) << "engines disagree on whether the branch was taken";
+		EXPECT_EQ(jd, nd) << "engines disagree on whether the delay slot ran";
+		EXPECT_EQ(jl, nl) << "engines disagree on the link value";
+	}
+	for (int i = 0; i < kPerfCaseCount; ++i)
+	{
+		const PerfCase& c = kPerfCases[i];
+		for (int which = 0; which < 3; ++which)
+		{
+			SCOPED_TRACE(::testing::Message()
+			             << "pccr " << c.written << " reg " << which);
+			EXPECT_EQ(RunPerf(c.written, which, true),
+			          RunPerf(c.written, which, false));
+		}
+	}
+}
+
 // Graduation tripwire: flip this on once the recorded divergences are fixed.
 TEST(EeSaPerfConsoleConformance, DISABLED_AllSaPerfMatchesConsole)
 {

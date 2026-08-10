@@ -47,6 +47,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_callret_tests.cpp
 	ee_rec_cop0_tests.cpp
 	ee_rec_fpu_tests.cpp
+	ee_rec_fpu_divunit_rounding_tests.cpp
 	ee_rec_fpu_full_mode_tests.cpp
 	ee_rec_fpu_guardbit_tests.cpp
 	ee_rec_fpu_rsqrt_tests.cpp
@@ -128,10 +129,25 @@ add_pcsx2_test(recompiler_tests
 	ee_fpu_overflow_console_conformance_tests.cpp
 	ee_fpu_absneg_clamp_tests.cpp
 	ee_fpu_minmax_console_tests.cpp
+	ee_fpu_cascade_console_tests.cpp
+	ee_fpu_compare_console_tests.cpp
+	ee_fpu_divunit_console_tests.cpp
+	ee_fpu_divunit_exhaustive_tests.cpp
+	ee_fpu_guarded_addsub_console_tests.cpp
+	ee_fpu_underflow_console_tests.cpp
+	ee_fpu_top_binade_console_tests.cpp
+	ee_fpu_zero_divisor_console_tests.cpp
+	ee_fpu_rsqrt_sign_console_tests.cpp
 	ee_lsu_console_conformance_tests.cpp
 	vu0_macro_console_conformance_tests.cpp
+	vu_madd_contract_console_tests.cpp
 	vu1_efu_console_conformance_tests.cpp
 	vu_sticky_console_conformance_tests.cpp
+	vu_rsqrt_divisor_sign_tests.cpp
+	vu_divunit_console_conformance_tests.cpp
+	vu_branch_console_conformance_tests.cpp
+	vu_pipeline_console_conformance_tests.cpp
+	vu_memory_xgkick_console_conformance_tests.cpp
 	ee_sa_perf_console_conformance_tests.cpp
 	ee_cache_console_conformance_tests.cpp
 	ee_cache2_console_conformance_tests.cpp

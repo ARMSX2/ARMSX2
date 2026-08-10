@@ -234,3 +234,54 @@ TEST(EeRecJump, JalrDelaySlotReadingLinkSeesNewValue)
 	h.Run();
 	h.ExpectGpr64(reg::v0, static_cast<u64>(kProgramPc + 8 + 4));
 }
+
+namespace {
+// A landing pad the jump has to actually reach: sets v0 to a marker, then
+// parks. Asserting the marker distinguishes "did not fall through" from
+// "landed where the target said", which a lost target would fail.
+constexpr u32 kLandingPc = kProgramPc + 0x100;
+constexpr u64 kLandingMarker = 0x5A;
+
+void PlantLandingPad(EeRecTestHarness& h)
+{
+	h.WriteU32(kLandingPc + 0, J(kPark));
+	h.WriteU32(kLandingPc + 4, ADDIU(reg::v0, reg::zero, kLandingMarker)); // delay slot
+}
+} // namespace
+
+TEST(EeRecJump, JrTargetSurvivesDelaySlotCSeam)
+{
+	// Forces the parked target (see recJR) into its spill arm: MFC0 from the
+	// performance counters (CP0 r25) is the cheapest instruction that drops to
+	// the interpreter, whose iFlushCall evicts it to cpuRegs.pcWriteback for
+	// SetBranchReg to read back.
+	//
+	// Ordinary blocks never take this arm — a census over recompiler_tests
+	// found 64539 register-resident tails against 1 spilled one.
+	EeRecTestHarness h;
+	PlantLandingPad(h);
+	h.SetGpr64(reg::t0, kLandingPc);
+	h.LoadProgramNoTerm({
+		JR(reg::t0),
+		MFPS(reg::v1),                 // delay slot: interpreter seam
+		ADDIU(reg::v0, reg::zero, 99), // skipped
+	});
+	h.Run();
+	h.ExpectGpr64(reg::v0, kLandingMarker);
+}
+
+TEST(EeRecJump, JalrTargetSurvivesDelaySlotCSeam)
+{
+	// JALR's half of the spill path above, with the link write in between.
+	EeRecTestHarness h;
+	PlantLandingPad(h);
+	h.SetGpr64(reg::t0, kLandingPc);
+	h.LoadProgramNoTerm({
+		JALR(reg::ra, reg::t0),
+		MFPS(reg::v1),                 // delay slot: interpreter seam
+		ADDIU(reg::v0, reg::zero, 99), // skipped
+	});
+	h.Run();
+	h.ExpectGpr64(reg::v0, kLandingMarker);
+	h.ExpectGpr64(reg::ra, static_cast<u64>(kProgramPc + 8));
+}

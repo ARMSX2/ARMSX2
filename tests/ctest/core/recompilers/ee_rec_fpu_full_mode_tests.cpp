@@ -27,8 +27,7 @@
 
 #include "Config.h"
 
-#include <cfloat>
-#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <gtest/gtest.h>
 
@@ -46,6 +45,8 @@ u32 FloatBits(float f)
 
 constexpr u32 kFPUflagO  = 0x00008000;
 constexpr u32 kFPUflagSO = 0x00000010;
+constexpr u32 kFPUflagU  = 0x00004000;
+constexpr u32 kFPUflagSU = 0x00000008;
 
 // A PS2 single with exponent field 0xff is a valid finite number (1.0 * 2^128),
 // not an IEEE infinity. Full mode must preserve it through an arithmetic op.
@@ -563,11 +564,10 @@ TEST(EeRecFpuFull, SqrtPseudoInfExact)
 	h.SetFprBits(1, kPs2HugePos);
 	h.LoadProgram({SQRT_S(2, 1)});
 	h.RunJitNoDiff();
-	// Discriminator: ToDouble carries exponent 255 across exactly, so FULL gets
-	// the true sqrt(2^128). The single-precision fast body clamps the operand
-	// to +FLT_MAX first (recSQRT_S_xmm's CHECK_FPU_OVERFLOW xMIN, matching x86)
-	// and lands one ULP low at 0x5f7fffff — measured in
-	// EeFpuOverflowConsole.SqrtClampsItsOperandLikeTheRestOfTheFamily.
+	// ToDouble carries exponent 255 across exactly, so FULL gets the true
+	// sqrt(2^128). This no longer discriminates against the fast body: its
+	// operand clamp is gone and it scales too, pinned against the console by
+	// EeFpuOverflowConsole.SqrtMatchesConsoleOnEveryExponent255Operand.
 	EXPECT_EQ(h.GetFprBitsJit(2), 0x5f800000u);
 }
 
@@ -625,7 +625,7 @@ TEST(EeRecFpuFull, RsqrtDivByZeroSignedMaxFromDividend)
 // That arm (iFPUd-arm64.cpp) halves the double, narrows, and adds 0x00800000
 // back to the single. Its guard was |x| >= 2^129 — but the largest number this
 // FPU has is 0x7FFFFFFF == (2 - 2^-23) * 2^128, which is BELOW 2^129, so the
-// band (EE max, 2^129) was routed into the halving arm instead of
+// band (kEeFpuMax, 2^129) was routed into the halving arm instead of
 // saturating. Halved, such a value sits just under 2^128; under the divide
 // unit's round-to-NEAREST FPCR the narrow rounds it up to a host infinity
 // (0x7f800000) and the +0x00800000 carries out of the exponent field into the
@@ -638,10 +638,8 @@ TEST(EeRecFpuFull, RsqrtDivByZeroSignedMaxFromDividend)
 // and the arm is correct, which is why only the ops that swap to FPUDivFPCR
 // could see it.
 //
-// The interpreter cannot wrap this way: it narrows through the host FPU and
-// saturates at ±FLT_MAX (checkOverflow, FPU.cpp), so it never adds into the
-// exponent field at all. It also stops a binade below the console's
-// 0x7FFFFFFF there — a separate, known gap in the interpreter, not this bug.
+// eeRoundToSingle (FPU.cpp) cannot wrap this way: it scales by 2^-4, so the
+// exponent it adds back can never carry into the sign.
 //
 // ONLY RSQRT REACHES THE BAND. A DIV quotient cannot: for 24-bit significands
 // with a < b, a/b <= 1 - 2^-24 strictly, and the band's relative width is
@@ -651,10 +649,8 @@ TEST(EeRecFpuFull, RsqrtDivByZeroSignedMaxFromDividend)
 // divides by a 53-bit sqrt result, so the argument does not apply.
 //
 // The operand pairs below were found by solving fs / sqrt(ft) for the band.
-// The console saturates at 0x7FFFFFFF, and FULL mode now does the same. The
-// interpreter column is pinned too, at its own saturation bound of
-// ±FLT_MAX (0x7F7FFFFF) — a binade low against silicon, but positive and
-// stable: the point here is that neither engine wraps to negative zero.
+// Interpreter column is the reference; its saturate-at-0x7FFFFFFF rule is what
+// EeFpuOverflowConsole pins against the console capture.
 TEST(EeRecFpuFull, RsqrtAboveEeMaxSaturatesInsteadOfWrappingToNegativeZero)
 {
 	static const u32 kPairs[][2] = {
@@ -683,7 +679,7 @@ TEST(EeRecFpuFull, RsqrtAboveEeMaxSaturatesInsteadOfWrappingToNegativeZero)
 
 		EXPECT_EQ(h.GetFprBitsJit(2), 0x7FFFFFFFu)
 			<< "fs=" << p[0] << " ft=" << p[1] << " wrapped";
-		EXPECT_EQ(i.GetFprBitsInterp(2), 0x7F7FFFFFu)
+		EXPECT_EQ(i.GetFprBitsInterp(2), 0x7FFFFFFFu)
 			<< "interpreter reference moved";
 	}
 }
@@ -1154,8 +1150,8 @@ TEST(EeRecFpuFull, MulDefectNeverDecrementsAZeroProduct)
 //
 // ft = 0x48b65815 is a witness. Its mantissa 0x365815 has no bit of 0x2AA set,
 // bit 11 is 1, and (0x365815 >> 12) & 0xF is 5, so the boundary term is the
-// only one that fires. The interpreter (FPU.cpp eeMulDefectiveFt) models both
-// and returns the decremented product; iFPUd returns the IEEE one.
+// only one that fires. The interpreter (FPU.cpp eeMulArray) models both and
+// returns the decremented product; iFPUd returns the IEEE one.
 //
 // If iFPUd ever grows the boundary term, this test fails and the fix is to
 // delete it -- along with the carve-out in kGuardMaskWitnesses row 53.
@@ -1193,12 +1189,12 @@ TEST(EeRecFpuFull, MulDefectDropsTheBoundaryTermTheInterpreterModels)
 }
 
 // ---------------------------------------------------------------------------
-// Randomised differential: mode 3 against the interpreter, which models the
-// same multiply law independently and in completely different code (FPU.cpp
-// eeMulProduct, an integer tail test on the 48-bit significand product; iFPUd
-// lets the narrowing perform the tail test on a double). Agreement across a
-// wide operand space is what says the emitter implements the law rather than
-// the handful of rows above.
+// Randomised differential: mode 3 against the interpreter, which reaches the
+// same answers independently and in completely different code (FPU.cpp
+// eeMulArray reconstructs the array's truncated low columns in integers; iFPUd
+// tests ft's Booth digits and lets the narrowing decide whether the decrement
+// survives). Agreement across a wide operand space is what says the emitter
+// implements the law rather than the handful of rows above.
 //
 // Dimensions varied and crossed: six operand classes on each side (arbitrary
 // words, random normals, powers of two -- which force a zero tail and so make
@@ -1209,21 +1205,20 @@ TEST(EeRecFpuFull, MulDefectDropsTheBoundaryTermTheInterpreterModels)
 // recMaddsub's multiply stage, reached with ACC = +0 so the accumulate is a
 // no-op on the product's bits).
 //
-// Three divergences are licensed, and each is counted so the sweep cannot pass
-// by never reaching them:
+// Two divergences are licensed, both with the interpreter one ULP nearer zero:
 //
-//   1. the boundary term iFPUd drops, one ULP further from zero;
-//   2. an operand in the exponent-0xff binade. fpuDouble() clamps it to
-//      +/-Fmax before multiplying, so the two engines multiply different
-//      numbers and the row says nothing about the multiplier;
-//   3. a product above FLT_MAX. The interpreter saturates there, mode 3 at the
-//      EE's own 0x7FFFFFFF, a whole binade higher.
+//   1. the dropped boundary term, on rows whose product is exactly
+//      representable; and
+//   2. rows whose tail is non-zero but smaller than the array's 2^15 borrow.
+//      The interpreter reconstructs the array and so sees these; iFPUd decides
+//      on a double, where one integer ULP is 2^-29 of a single ULP, so its
+//      decrement is absorbed by the narrowing and the row comes back IEEE.
 //
-// 2 and 3 are the same pre-existing gap seen from two sides: this branch's
-// interpreter has no exponent-0xff binade at all. They are recognised from the
-// operands and the exact product, never from the results, so a wrong result
-// cannot license itself. Anything else -- a wrong predicate, a decrement
-// escaping into a non-zero tail, a zero product turned into a NaN -- fails.
+// Rows are classified by the tail below the single ULP, taken from the exact
+// 48-bit significand product, so a bug in eeMulArray cannot license itself.
+// Anything else -- a wrong predicate, a decrement escaping into a tail large
+// enough to absorb it, a zero product turned into a NaN, a saturation or
+// top-binade case the decrement walked across -- fails here.
 TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 {
 	auto splitmix = [](u64& state) {
@@ -1246,7 +1241,7 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 			default: return sign | mant;                                           // denormal/zero
 		}
 	};
-	// Both terms of the measured predicate, so a divergence can be classified
+	// Both terms of the zero-tail closed form, so a divergence can be classified
 	// rather than merely counted.
 	auto booth = [](u32 ft) { return (ft & 0x2AAu) != 0; };
 	auto full = [](u32 ft) {
@@ -1256,26 +1251,19 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 		const u32 h = (m >> 12) & 0xFu;
 		return ((m >> 11) & 1u) != ((h >= 8u && h <= 13u) ? 1u : 0u);
 	};
-
-	// The two engine gaps this branch has outside the multiplier, both decided
-	// from the inputs alone. fpuDouble() clamps an exponent-0xff operand to
-	// +/-Fmax, and the interpreter's product saturates at FLT_MAX where mode 3
-	// goes on to 0x7FFFFFFF; either way the row is not about the multiply array.
-	auto clamped = [](u32 x) { return (x & 0x7F800000u) == 0x7F800000u; };
-	auto overflows = [](u32 fs, u32 ft) {
-		auto val = [](u32 x) {
-			if ((x & 0x7F800000u) == 0) x &= 0x80000000u;              // fpuDouble
-			else if ((x & 0x7F800000u) == 0x7F800000u) x = (x & 0x80000000u) | 0x7F7FFFFFu;
-			float f;
-			std::memcpy(&f, &x, sizeof(f));
-			return static_cast<double>(f);
-		};
-		return !(std::fabs(val(fs) * val(ft)) <= FLT_MAX);
+	// The tail below the single ULP, from the exact 48-bit significand product.
+	// A zero operand contributes none: the product is zero.
+	auto tailBelowUlp = [](u32 fs, u32 ft) -> u64 {
+		if ((fs & 0x7F800000u) == 0 || (ft & 0x7F800000u) == 0)
+			return 0;
+		const u64 a = 0x800000u | (fs & 0x7FFFFFu);
+		const u64 b = 0x800000u | (ft & 0x7FFFFFu);
+		const u64 p = a * b;
+		return p & ((1ull << ((p >> 47) ? 24 : 23)) - 1u);
 	};
 
 	u64 state = 0x1234567890ABCDEFull;
-	int rows = 0, boundary_gap[4] = {0, 0, 0, 0};
-	int clamp_gap = 0, saturation_gap = 0;
+	int rows = 0, boundary_gap[4] = {0, 0, 0, 0}, subulp_gap = 0;
 	for (int i = 0; i < 40000; i++)
 	{
 		const int cs = static_cast<int>(splitmix(state) % 6);
@@ -1316,15 +1304,17 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 		if (jit == interp)
 			continue;
 
-		if (clamped(fs) || clamped(ft)) { clamp_gap++; continue; }
-		if (overflows(fs, ft)) { saturation_gap++; continue; }
-
-		const bool boundary_only = !booth(ft) && full(ft);
-		ASSERT_TRUE(boundary_only && jit == interp + 1u)
+		const u64 tail = tailBelowUlp(fs, ft);
+		const bool boundary_only = tail == 0 && !booth(ft) && full(ft);
+		const bool sub_ulp_tail = tail != 0 && tail < 0x8000u;
+		ASSERT_TRUE((boundary_only || sub_ulp_tail) && jit == interp + 1u)
 			<< "unlicensed divergence: form=" << form << " cs=" << cs << " ct=" << ct
-			<< std::hex << " fs=" << fs << " ft=" << ft
+			<< std::hex << " fs=" << fs << " ft=" << ft << " tail=" << tail
 			<< " jit=" << jit << " interp=" << interp;
-		boundary_gap[form]++;
+		if (boundary_only)
+			boundary_gap[form]++;
+		else
+			subulp_gap++;
 	}
 
 	EXPECT_EQ(rows, 40000);
@@ -1332,12 +1322,13 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 	// reached the emitter would report, so each licensed one must actually be
 	// observed -- the boundary term at both emit sites, since they narrow
 	// through different code.
-	EXPECT_GT(clamp_gap, 0) << "no exponent-0xff operand reached the sweep";
-	EXPECT_GT(saturation_gap, 0) << "no product overflowed FLT_MAX in the sweep";
 	EXPECT_GT(boundary_gap[0] + boundary_gap[1] + boundary_gap[2], 0)
 		<< "recMULop never reached the boundary-term class: the sweep is vacuous";
 	EXPECT_GT(boundary_gap[3], 0)
 		<< "recMaddsub never reached the boundary-term class: the sweep is vacuous";
+	EXPECT_GT(subulp_gap, 0)
+		<< "the sweep never reached a non-zero tail below the borrow: the "
+		   "second carve-out is vacuous and would hide a regression";
 }
 
 
@@ -1638,5 +1629,84 @@ TEST(EeRecFpuFull, MulDefectBoundaryTermGapAlsoExistsInTheUpperBinade)
 		hi.RunInterpOnly();
 		EXPECT_EQ(hi.GetFprBitsInterp(2), r.want)
 			<< "interp models the boundary term in the upper binade too";
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ADD/SUB-family underflow: FULL mode keeps the mantissa bits.
+//
+// When a full-mode ADD/SUB/ADDA/SUBA/MADD/MSUB/MADDA/MSUBA result lands below
+// 2^-126 but is not zero, ToPS2FPU_Full's `addsub` arm does NOT flush it: it
+// copies the double result's mantissa bits [51:29] into the single's [22:0]
+// with an exponent field of 0, keeping the sign. x86 iFPUd.cpp does the same
+// and says why:
+//
+//     //On ADD/SUB, the PS2 simply leaves the mantissa bits as they are
+//     //(after normalization)
+//     //IEEE either clears them (FtZ) or returns the denormalized result.
+//     //not thoroughly tested : other operations such as MUL and DIV seem to
+//     //clear all mantissa bits?
+//
+// So this is a deliberate model of the EE's adder -- not a rounding artifact.
+// It is NOT a value conversion: 0x00800003 + 0x80800000 is exactly 3*2^-149,
+// and the model returns 0x00400000 == 2^-127, six orders of magnitude larger.
+// The bits, not the value, are what it claims to reproduce.
+//
+// The console says this path is right: EeFpuUnderflowConsole
+// (ee_fpu_underflow_console_tests.cpp) carries the hardware rows and scores all
+// three engines against them. Mode 3 was the only engine that had it; the
+// interpreter has since been fixed and the fast path is pinned there as a
+// divergence.
+//
+// These rows stay here as the mode-3 pin: the format-churn work moves values
+// between the single and double domains and must not flatten this on the way.
+//
+// MUL/MULA are the negative control: addsub=false, so they flush to signed zero
+// on all three engines and their rows must NOT show a mantissa.
+TEST(EeRecFpuFull, AddSubUnderflowKeepsTheMantissaBits)
+{
+	struct Row { const char* name; u32 acc, fs, ft; u32 word; bool is_acc; u32 expected; };
+	// Every operand pair below is two normal singles whose exact result is a few
+	// ULPs of 2^-149: 0x00800003 == (1 + 3*2^-23) * 2^-126, so subtracting
+	// 2^-126 leaves 3*2^-149, whose double form is 1.1b * 2^-148 -- mantissa
+	// bit 51 set, everything under it clear, hence 0x00400000. The 0x00FFFFFF
+	// row is the top of the range: the exact sum is 0x7FFFFF*2^-149 and the
+	// model returns 0x007FFFFE, one ULP low.
+	static const Row kRows[] = {
+		{"ADD.S   3*2^-149",          0, 0x00800003u, 0x80800000u, ADD_S(2, 0, 1),   false, 0x00400000u},
+		{"ADD.S   -3*2^-149",         0, 0x80800003u, 0x00800000u, ADD_S(2, 0, 1),   false, 0x80400000u},
+		{"ADD.S   1*2^-149 (mant 0)", 0, 0x00800001u, 0x80800000u, ADD_S(2, 0, 1),   false, 0x00000000u},
+		{"ADD.S   0x7FFFFF*2^-149",   0, 0x00FFFFFFu, 0x80800000u, ADD_S(2, 0, 1),   false, 0x007FFFFEu},
+		{"SUB.S   3*2^-149",          0, 0x00800003u, 0x00800000u, SUB_S(2, 0, 1),   false, 0x00400000u},
+		{"SUB.S   -3*2^-149",         0, 0x80800003u, 0x80800000u, SUB_S(2, 0, 1),   false, 0x80400000u},
+		{"ADDA.S  3*2^-149",          0, 0x00800003u, 0x80800000u, ADDA_S(0, 1),     true,  0x00400000u},
+		{"SUBA.S  3*2^-149",          0, 0x00800003u, 0x00800000u, SUBA_S(0, 1),     true,  0x00400000u},
+		{"MADD.S  3*2^-149",  0x80800000u, 0x00800003u, 0x3f800000u, MADD_S(2, 0, 1),  false, 0x00400000u},
+		{"MSUB.S  -3*2^-149", 0x00800000u, 0x00800003u, 0x3f800000u, MSUB_S(2, 0, 1),  false, 0x80400000u},
+		{"MADDA.S 3*2^-149",  0x80800000u, 0x00800003u, 0x3f800000u, MADDA_S(0, 1),    true,  0x00400000u},
+		{"MSUBA.S -3*2^-149", 0x00800000u, 0x00800003u, 0x3f800000u, MSUBA_S(0, 1),    true,  0x80400000u},
+		// Negative controls: the multiplies take addsub=false and must flush.
+		{"MUL.S   2^-252",            0, 0x00800000u, 0x00800000u, MUL_S(2, 0, 1),   false, 0x00000000u},
+		{"MULA.S  2^-252",            0, 0x00800000u, 0x00800000u, MULA_S(0, 1),     true,  0x00000000u},
+		{"MUL.S   ~2^-251",           0, 0x00FFFFFFu, 0x00800000u, MUL_S(2, 0, 1),   false, 0x00000000u},
+	};
+
+	for (const Row& r : kRows)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.EnableFpuFullMode();
+		h.SetFcr31(0);
+		h.SetAccBits(r.acc);
+		h.SetFprBits(0, r.fs);
+		h.SetFprBits(1, r.ft);
+		h.LoadProgram({r.word});
+		h.RunJitNoDiff();
+
+		const u32 got = r.is_acc ? h.GetAccBitsJit() : h.GetFprBitsJit(2);
+		EXPECT_EQ(got, r.expected) << r.name;
+		// Every row underflows to a nonzero double, so U|SU is raised even on
+		// the rows whose reconstructed mantissa happens to be zero.
+		EXPECT_EQ(h.JitSnapshot().fprs.fprc[31], kFPUflagU | kFPUflagSU) << r.name;
 	}
 }

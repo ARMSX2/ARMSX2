@@ -2480,7 +2480,8 @@ void VMManager::Internal::Throttle()
 		return;
 	}
 
-	// Conversion of delta from CPU ticks (microseconds) to milliseconds
+	// Conversion of delta from CPU ticks to milliseconds; a tick's time value is
+	// host-defined, so this has to divide by GetTickFrequency() rather than scale by a constant.
 	const s32 msec = static_cast<s32>((sDeltaTime * -1000) / static_cast<s64>(GetTickFrequency()));
 
 	// If any integer value of milliseconds exists, sleep it off.

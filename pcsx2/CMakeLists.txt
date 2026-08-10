@@ -1380,14 +1380,23 @@ target_include_directories(PCSX2_FLAGS INTERFACE
 set_source_files_properties(PrecompiledHeader.cpp PROPERTIES HEADER_FILE_ONLY TRUE)
 
 # VUops.cpp (VU interp) and FPU.cpp (EE COP1 interp) must produce bit-exact
-# results matching PS2 hardware (which has no FMA). The project-wide
-# -ffp-contract=fast is fine on x86 (no FMA emitted without -mfma) but on aarch64
-# it lets the compiler contract `acc + fs * ft` to `fmadd` (single-rounded),
-# breaking bit-exactness vs the recompilers (separate fmul + fadd). In VUops.cpp
-# this would produce 1-ULP MADDA divergences. FPU.cpp has the identical hazard in
-# MADDA_S/MSUBA_S (`_FAValf_ += fs*ft` / `-= fs*ft` are single-expression
-# accumulates that fuse on aarch64 while the EE FPU rec emits two roundings) — a
-# +1-ULP float drift vs the rec.
+# results matching PS2 hardware, which does not fuse. The project-wide
+# -ffp-contract=fast contracts `acc + fs * ft` into a single-rounded fmadd
+# where the recompilers emit two roundings, so every contraction diverges from
+# both the JIT and the console. The SCPH-90000 capture that settles which one
+# the console does, and the count of fused instructions this line removes from
+# VUops.cpp, are at the head of vu_madd_contract_console_tests.cpp.
+#
+# Not an aarch64-only hazard, so this line is not an ARCH_ARM64 candidate:
+# -march=native supplies FMA on any host that has it, and the default
+# non-multi-ISA build takes it (cmake/BuildParameters.cmake,
+# DISABLE_ADVANCE_SIMD=OFF) -- upstream's own amd64 dev build contracts
+# FPU.cpp's MADDA_S. Only multi-ISA (-msse4.1) and MSVC's x64 default arch
+# lack the instruction, hence the NOT MSVC guard.
+#
+# FPU.cpp has no fusion sites left: its COP1 arithmetic no longer runs through
+# host floats (eeMulAccumulate and friends). It stays on the list to keep that
+# true.
 if(NOT MSVC)
 	set_source_files_properties(VUops.cpp FPU.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endif()

@@ -233,69 +233,95 @@ TEST(EeRecFpu, DivSNegativeQuotientExact)
 	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0u);
 }
 
+// ---- divide saturation: the two tiers stop in different places -------------
+//
+// The interpreter saturates a divide at the EE's own maximum and the fast path
+// a binade below at FLT_MAX; the console says the interpreter is the correct
+// side, and EeFpuTopBinadeConsole has the rest. Run()'s auto-diff cannot
+// express a deliberate divergence, so these run the two legs separately.
+//
+// The signs are unchanged: xor of both operands for DIV.S, Fs alone for
+// RSQRT.S.
+namespace {
+
+struct DivTiers
+{
+	u32 jit, interp;
+	u32 jit_fcr, interp_fcr;
+};
+
+DivTiers RunDivBothTiers(u32 word, u32 fs, u32 ft)
+{
+	DivTiers t{};
+	for (int jit = 0; jit < 2; ++jit)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetFcr31(0);
+		h.SetFprBits(1, fs);
+		h.SetFprBits(2, ft);
+		h.LoadProgram({word});
+		if (jit)
+		{
+			h.RunJitNoDiff();
+			t.jit = h.GetFprBitsJit(3);
+			t.jit_fcr = h.JitSnapshot().fprs.fprc[31];
+		}
+		else
+		{
+			h.RunInterpOnly();
+			t.interp = h.GetFprBitsInterp(3);
+			t.interp_fcr = h.InterpSnapshot().fprs.fprc[31];
+		}
+	}
+	return t;
+}
+
+} // namespace
+
 TEST(EeRecFpu, DivSByZeroSetsDenormFlagsAndMax)
 {
-	// 4 / +0 = +posFmax, with D|SD raised (x/0).
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFcr31(0);
-	h.SetFpr(1, 4.0f);
-	h.SetFprBits(2, 0x00000000u); // +0
-	h.LoadProgram({ee::DIV_S(3, 1, 2)});
-	h.Run();
-	h.ExpectFpr(3, 0x7F7FFFFFu);
+	// 4 / +0, with D|SD raised (x/0).
+	const DivTiers t = RunDivBothTiers(ee::DIV_S(3, 1, 2), 0x40800000u, 0x00000000u);
+	EXPECT_EQ(t.jit, 0x7F7FFFFFu)    << "fast path saturates at FLT_MAX";
+	EXPECT_EQ(t.interp, 0x7FFFFFFFu) << "interp saturates at the EE maximum";
 	const u32 mask = 0x20000u | 0x10000u | 0x40u | 0x20u; // I|D|SI|SD
-	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask,    0x10000u | 0x20u); // D|SD
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0x10000u | 0x20u);
+	EXPECT_EQ(t.jit_fcr & mask,    0x10000u | 0x20u); // D|SD
+	EXPECT_EQ(t.interp_fcr & mask, 0x10000u | 0x20u);
 }
 
 TEST(EeRecFpu, DivSByZeroNegativeDividendSignedMax)
 {
-	// -4 / +0 : sign(Fs^Ft) is negative -> -posFmax (0xff7fffff), D|SD.
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFcr31(0);
-	h.SetFpr(1, -4.0f);
-	h.SetFprBits(2, 0x00000000u); // +0
-	h.LoadProgram({ee::DIV_S(3, 1, 2)});
-	h.Run();
-	h.ExpectFpr(3, 0xFF7FFFFFu);
+	// -4 / +0 : sign(Fs^Ft) is negative.
+	const DivTiers t = RunDivBothTiers(ee::DIV_S(3, 1, 2), 0xC0800000u, 0x00000000u);
+	EXPECT_EQ(t.jit, 0xFF7FFFFFu);
+	EXPECT_EQ(t.interp, 0xFFFFFFFFu);
 	const u32 mask = 0x10000u | 0x20u; // D|SD
-	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask,    0x10000u | 0x20u);
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0x10000u | 0x20u);
+	EXPECT_EQ(t.jit_fcr & mask,    0x10000u | 0x20u);
+	EXPECT_EQ(t.interp_fcr & mask, 0x10000u | 0x20u);
 }
 
 TEST(EeRecFpu, DivSByNegativeZeroDivisorSign)
 {
-	// 8 / -0 : divisor is -0 (caught by the float==0 compare under FtZ); sign is
-	// driven by the divisor -> -posFmax, D|SD.
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFcr31(0);
-	h.SetFpr(1, 8.0f);
-	h.SetFprBits(2, 0x80000000u); // -0
-	h.LoadProgram({ee::DIV_S(3, 1, 2)});
-	h.Run();
-	h.ExpectFpr(3, 0xFF7FFFFFu);
+	// 8 / -0 : divisor is -0 (caught by the float==0 compare under FtZ); the
+	// sign comes from the divisor.
+	const DivTiers t = RunDivBothTiers(ee::DIV_S(3, 1, 2), 0x41000000u, 0x80000000u);
+	EXPECT_EQ(t.jit, 0xFF7FFFFFu);
+	EXPECT_EQ(t.interp, 0xFFFFFFFFu);
 	const u32 mask = 0x10000u | 0x20u; // D|SD
-	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask,    0x10000u | 0x20u);
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0x10000u | 0x20u);
+	EXPECT_EQ(t.jit_fcr & mask,    0x10000u | 0x20u);
+	EXPECT_EQ(t.interp_fcr & mask, 0x10000u | 0x20u);
 }
 
 TEST(EeRecFpu, DivSZeroByZeroSetsInvalidFlags)
 {
-	// 0 / 0 -> +posFmax with I|SI raised (invalid), not D|SD.
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFcr31(0);
-	h.SetFprBits(1, 0x00000000u); // +0
-	h.SetFprBits(2, 0x00000000u); // +0
-	h.LoadProgram({ee::DIV_S(3, 1, 2)});
-	h.Run();
-	h.ExpectFpr(3, 0x7F7FFFFFu);
+	// 0 / 0 raises I|SI (invalid), not D|SD.
+	const DivTiers t = RunDivBothTiers(ee::DIV_S(3, 1, 2), 0x00000000u, 0x00000000u);
+	EXPECT_EQ(t.jit, 0x7F7FFFFFu);
+	EXPECT_EQ(t.interp, 0x7FFFFFFFu);
 	const u32 mask = 0x20000u | 0x10000u | 0x40u | 0x20u; // I|D|SI|SD
-	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask,    0x20000u | 0x40u); // I|SI
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0x20000u | 0x40u);
+	EXPECT_EQ(t.jit_fcr & mask,    0x20000u | 0x40u); // I|SI
+	EXPECT_EQ(t.interp_fcr & mask, 0x20000u | 0x40u);
 }
 
 TEST(EeRecFpu, NegSFlipsSignBit)
@@ -429,8 +455,8 @@ TEST(EeRecFpu, CvtWNegativeNanSaturatesToIntMin)
 
 // ----- SQRT.S sticky-flag handling -----------------------------------
 //
-// PS2 SQRT.S clears the I|D cause flags unconditionally and sets I|SI when
-// Ft is negative non-zero (interp SQRT_S, FPU.cpp; CHECK_FPU_EXTRA_FLAGS is
+// PS2 SQRT.S clears the I|D cause flags unconditionally and sets I|SI whenever
+// Ft's sign bit is set (interp SQRT_S, FPU.cpp; CHECK_FPU_EXTRA_FLAGS is
 // hardcoded on). Run()'s auto-diff does not gate on fprc[31], so assert the
 // flag bits directly on both snapshots (they must agree — the JIT matches
 // interp). Result value (sqrt(|Ft|)) is unchanged and stays in the auto-diff.
@@ -478,13 +504,11 @@ TEST(EeRecFpu, SqrtSPositiveClearsStaleIDFlags)
 // Found by a randomized SQRT.S differential, which is why a case this small
 // went unnoticed: every hand-written SQRT.S test above uses +/-4.0.
 //
-// The FLAG half of this used to be asserted here as "no I|SI, the zero path is
-// not the negative path", on nothing but the two engines agreeing. That was
-// wrong: ps2autotests' sqrt.expected prints results only, never FCR31, so it
-// could not have said either way. A first-party capture that does record FCR31
-// (fpmatrix cases 226/227) shows the console raising I|SI here. It now lives
-// in SqrtSInvalidFlagFollowsTheSignBitAlone below, which owns the whole rule;
-// this test keeps the value and asserts only that D stays clear.
+// The flag half used to be asserted here as "no I|SI", on nothing but the two
+// engines agreeing; ps2autotests' sqrt.expected prints results only, never
+// FCR31. The console does raise I|SI on -0, and the rule now lives in
+// SqrtSInvalidFlagFollowsTheSignBitAlone below. This test keeps the value and
+// asserts only that D stays clear.
 TEST(EeRecFpu, SqrtSOfNegativeZeroIsPositiveZero)
 {
 	EeRecTestHarness h;
@@ -500,16 +524,12 @@ TEST(EeRecFpu, SqrtSOfNegativeZeroIsPositiveZero)
 }
 
 // ----- SQRT.S's I flag keys off the sign bit, not the exponent --------
-// The rule, from a first-party PS2 capture that records FCR31 alongside the
-// result (~/.claude/projects/.../captures/fpmatrix, corpus 62dd6882, the 38
-// SQRT.S cases):
-//
-//     SQRT.S raises I|SI whenever Ft's SIGN BIT is set. Full stop. The
-//     exponent field plays no part.
-//
-// So -0.0 and the negative denormals -- which are flushed to -0 before the op
-// and produce +0, a perfectly ordinary result -- still raise invalid-operation.
-// Every capture row agrees; the ten below are the sign x exponent matrix:
+// From a first-party PS2 capture that records FCR31 alongside the result
+// (corpus 62dd6882, the 38 SQRT.S cases): SQRT.S raises I|SI whenever Ft's
+// sign bit is set, whatever the
+// exponent. So -0.0 and the negative denormals, flushed to -0 before the op
+// and producing an ordinary +0, still raise invalid-operation. Every capture
+// row agrees; the ten below are the sign x exponent matrix:
 //
 //     case 226  sqrt 00000000  ->  00000000/01000001    +0
 //     case 227  sqrt 80000000  ->  00000000/01020041    -0          <- I|SI
@@ -523,23 +543,9 @@ TEST(EeRecFpu, SqrtSOfNegativeZeroIsPositiveZero)
 //     case 241  sqrt 80800000  ->  20000000/01020041    -MIN_NORMAL <- I|SI
 //
 // 0x01020041 is I|SI plus FCR31's two always-set bits (0x01000001); 0x01000001
-// is those two bits alone. The positive rows are CONTROLS and they are why this
-// is a matrix rather than two rows: the fix is a deletion (a gate on the
-// exponent field comes out of the flag test), and a deletion that went too far
-// -- dropping the sign test as well -- would raise I on every SQRT.S. Nothing
-// but the positive rows would notice.
-//
-// Those controls are live, not decorative, and that was measured rather than
-// assumed: with the sign test also deleted from both engines, all six positive
-// rows fail on both and the four negative rows still pass. The two -0/-denormal
-// rows were likewise seen failing before the fix (0x01000001 against
-// 0x01020041, both engines) and passing after.
-//
-// Both engines used to gate the flag on `exp != 0 && sign`, so both missed
-// exactly the two rows where the sign is set and the exponent is zero. x86's
-// recSQRT_S_xmm (iFPU.cpp) has always tested MOVMSKPS's sign bit alone, as has
-// the FULL-mode DOUBLE path in iFPUd-arm64.cpp -- upstream's x86 JIT is the
-// only column in the capture that got these two rows right.
+// is those two bits alone. The positive rows are controls: a deletion that took
+// the sign test out along with the exponent gate would raise I on every SQRT.S,
+// and nothing but those rows would catch it.
 namespace {
 struct SqrtFlagRow { u32 ft, result, fcr31; const char* what; };
 constexpr SqrtFlagRow kSqrtFlagRows[] = {
@@ -579,26 +585,22 @@ TEST(EeRecFpu, SqrtSInvalidFlagFollowsTheSignBitAlone)
 
 // ----- SQRT.S rounds to nearest regardless of FCR31 mode -------------
 // PS2 SQRT.S (like DIV.S) always rounds to nearest, independent of the
-// configured EE rounding mode. The EE rec runs under host FPCR = FPUFPCR
-// (ChopZero by default), so recSQRT_S must swap to the nearest-rounding
-// FPUDivFPCR around the Fsqrt. This is not observable via Run()'s JIT-vs-interp
-// auto-diff (the harness runs both under the host-default nearest FPCR, where
-// the swap is a no-op). Instead replicate the real EE thread: set host FPCR to
-// FPUFPCR (chop) and assert the JIT result directly. sqrt(5) is rounding-
-// sensitive — nearest 0x400F1BBD vs round-toward-zero 0x400F1BBC. Without the
-// in-op swap the Fsqrt would round under the ambient chop and produce
-// 0x400F1BBC; with it the result is the PS2-correct nearest value.
+// configured EE rounding mode, so recSQRT_S swaps to the nearest-rounding
+// FPUDivFPCR around the Fsqrt. sqrt(5) is rounding-sensitive: nearest
+// 0x400F1BBD vs round-toward-zero 0x400F1BBC.
+//
+// The manual host-FPCR swap this used to carry is gone: the harness runs in the
+// production environment, so Run() diffs the interpreter against the JIT here
+// instead of leaving it unasserted. The randomized version, and DIV.S, are in
+// ee_rec_fpu_divunit_rounding_tests.cpp.
 TEST(EeRecFpu, SqrtSRoundsToNearestUnderChopFpcr)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.SetFprSingle(1, 5.0f);
 	h.LoadProgram({ee::SQRT_S(2, 1)});
-	const FPControlRegister saved = FPControlRegister::GetCurrent();
-	FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUFPCR); // EE-thread ambient (chop)
-	h.RunJitNoDiff();
-	FPControlRegister::SetCurrent(saved);
-	EXPECT_EQ(h.GetFprBitsJit(2), 0x400F1BBDu); // nearest-rounded sqrt(5)
+	h.Run();                            // auto-diff, in the production FP env
+	h.ExpectFpr(2, 0x400F1BBDu);        // nearest-rounded sqrt(5)
 }
 
 // ----- RSQRT.S sticky flags (native) ----------------------------------
@@ -610,18 +612,14 @@ TEST(EeRecFpu, SqrtSRoundsToNearestUnderChopFpcr)
 // doesn't diff fprc[31]). Broad coverage lives in ee_rec_fpu_rsqrt_tests.cpp.
 TEST(EeRecFpu, RsqrtSZeroDivisorSetsDenormFlags)
 {
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFpr(1, 1.0f);             // fs (dividend)
-	h.SetFprBits(2, 0x00000000u);  // ft (divisor) = +0
-	h.LoadProgram({
-		ee::RSQRT_S(3, 1, 2),     // fd=3, fs=1, ft=2
-	});
-	h.Run();
-	h.ExpectFpr(3, 0x7F7FFFFFu);   // +posFmax (zero-divisor result)
+	// fs = 1.0, ft = +0. The two tiers saturate differently -- see
+	// RunDivBothTiers above -- so the legs run separately.
+	const DivTiers t = RunDivBothTiers(ee::RSQRT_S(3, 1, 2), 0x3F800000u, 0x00000000u);
+	EXPECT_EQ(t.jit, 0x7F7FFFFFu)    << "fast path saturates at FLT_MAX";
+	EXPECT_EQ(t.interp, 0x7FFFFFFFu) << "interp saturates at the EE maximum";
 	const u32 mask = 0x20000u | 0x10000u | 0x40u | 0x20u;   // I | D | SI | SD
-	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask,    0x10000u | 0x20u);  // D|SD set
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0x10000u | 0x20u);
+	EXPECT_EQ(t.jit_fcr & mask,    0x10000u | 0x20u);  // D|SD set
+	EXPECT_EQ(t.interp_fcr & mask, 0x10000u | 0x20u);
 }
 
 TEST(EeRecFpu, RsqrtSNegativeDivisorSetsInvalidFlags)
@@ -674,66 +672,76 @@ TEST(EeRecFpu, CEqSFalseClearsCc)
 
 // ----- compare-operand clamping --------------------------------------
 //
-// The PS2 FPU has no Inf/NaN: C.cond.S clamps both operands to ±FLT_MAX
-// (sign-preserving) before comparing, matching interp fpuDouble and the
-// x86 JIT's fpuFloat3 (PMIN.SD vs 0x7f7fffff, PMIN.UD vs 0xff7fffff).
-// A raw Fcmp on unclamped bit patterns makes the compare unordered on a
-// NaN operand (all-false) where the PS2 wants an ordered compare against
-// ±FLT_MAX. Inject raw Inf/NaN via SetFprBits (MTC1/LWC1 bit-copies bypass
-// the arithmetic clamp in real games).
+// The PS2 FPU has no Inf and no NaN, so those bit patterns are ordinary numbers
+// to it: 0x7F800000 is 2^128, 0x7FC00000 is 1.5*2^128, 0x7FFFFFFF is the
+// largest number the machine has. The two tiers answer differently, by design:
+// the interpreter compares the real values and matches silicon on all 86
+// compare rows of the capture, the arm64 fast path clamps both operands to
+// +-FLT_MAX, sign-preserving, and misses four of them. All 86 rows and all
+// three tiers are in ee_fpu_compare_console_tests.cpp.
 //
-// Run()'s internal JIT-vs-interp diff catches the divergence; the explicit
-// assert pins the PS2 spec value. The -NaN case validates *sign* preservation
-// (fpuClampResult / Fminnm would wrongly fold -NaN to +FLT_MAX).
+// Inject raw Inf/NaN via SetFprBits (MTC1/LWC1 bit-copies bypass the arithmetic
+// clamp in real games). Run()'s auto-diff does not gate on fprc[31], so each
+// test asserts the two snapshots separately.
 
-// Assert on the JIT snapshot directly: the bug is JIT-side, and Run()'s
-// auto-diff does not gate on fprc[31]. Without the operand clamp the raw Fcmp
-// goes unordered on a NaN operand and leaves CC clear.
-// Sign preservation: 0 < -NaN. The PS2 clamps -NaN to -FLT_MAX, so
-// 0 < -FLT_MAX is FALSE (CC clear). A raw Fcmp on the NaN goes unordered,
-// where ARM's "lt" (N!=V) is TRUE — so without the clamp CC is wrongly set.
-// A sign-STRIPPING clamp (-NaN -> +FLT_MAX) would also wrongly set CC
-// (0 < +FLT_MAX), so this case pins the sign-preserving SMIN/UMIN path.
+// Both tiers agree here for different reasons: 0xFFC00000 is -1.5*2^128 to the
+// interpreter and -FLT_MAX to the fast path, and 0 is greater than both.
+// Sign preservation is the fast path's part: a raw Fcmp on the NaN goes
+// unordered, where ARM's "lt" (N!=V) is true, so without the clamp CC is
+// wrongly set. A sign-stripping clamp (-NaN -> +FLT_MAX, which fpuClampResult
+// or Fminnm would give) would also wrongly set CC (0 < +FLT_MAX), so this case
+// pins the sign-preserving SMIN/UMIN path. Console rows 446/456 are the same
+// shape with representable operands.
 TEST(EeRecFpu, CLtSZeroVsNegativeNaNIsFalse)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.SetFpr(2, 0.0f);
-	h.SetFprBits(1, 0xFFC00000u);   // -NaN -> -FLT_MAX
+	h.SetFprBits(1, 0xFFC00000u);   // -1.5*2^128 (interp) / -FLT_MAX (fast path)
 	h.LoadProgram({
-		ee::C_LT_S(2, 1),           // 0 < -FLT_MAX -> CC clear
+		ee::C_LT_S(2, 1),           // 0 < a large negative -> CC clear
 	});
 	h.Run();
 	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & (1u << 23), 0u);
 	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & (1u << 23), 0u);
 }
 
-TEST(EeRecFpu, CEqSPositiveNaNBothClampToMax)
+// Equal bit patterns are equal on every tier and on silicon: console row 437
+// (`ceq QNAN, QNAN`) is this pair and says CC set. It would pass with the clamp
+// gone too, so it pins nothing about clamping.
+TEST(EeRecFpu, CEqSPositiveNaNIsEqualToItself)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
-	h.SetFprBits(1, 0x7FC00000u);   // +NaN -> +FLT_MAX
-	h.SetFprBits(2, 0x7FC00000u);   // +NaN -> +FLT_MAX
+	h.SetFprBits(1, 0x7FC00000u);   // 1.5*2^128
+	h.SetFprBits(2, 0x7FC00000u);
 	h.LoadProgram({
-		ee::C_EQ_S(1, 2),           // +FLT_MAX == +FLT_MAX -> CC set
+		ee::C_EQ_S(1, 2),           // [fpm] case 437 -- CC set on silicon
 	});
 	h.Run();
 	EXPECT_NE(h.JitSnapshot().fprs.fprc[31] & (1u << 23), 0u);
 	EXPECT_NE(h.InterpSnapshot().fprs.fprc[31] & (1u << 23), 0u);
 }
 
-TEST(EeRecFpu, CEqSInfinityClampsToMax)
+// Where the two tiers part company. Console row 434 is these operands and says
+// the condition is false: 2^128 and 0x7FFFFFFF are different numbers on a
+// machine whose exponent 255 is an ordinary binade. The fast path's CC set is
+// asserted rather than fixed, for the reason in the block comment above.
+TEST(EeRecFpu, CEqSTopBinadeSplitsTheInterpFromTheFastPath)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
-	h.SetFprBits(1, 0x7F800000u);   // +Inf -> +FLT_MAX
-	h.SetFprBits(2, 0x7F7FFFFFu);   // +FLT_MAX (finite)
+	h.SetFprBits(1, 0x7F800000u);   // 2^128
+	h.SetFprBits(2, 0x7FFFFFFFu);   // the EE's largest number
 	h.LoadProgram({
-		ee::C_EQ_S(1, 2),           // +FLT_MAX == +FLT_MAX -> CC set
+		ee::C_EQ_S(1, 2),           // [fpm] case 434 -- CC clear on silicon
 	});
 	h.Run();
-	EXPECT_NE(h.JitSnapshot().fprs.fprc[31] & (1u << 23), 0u);
-	EXPECT_NE(h.InterpSnapshot().fprs.fprc[31] & (1u << 23), 0u);
+	EXPECT_NE(h.JitSnapshot().fprs.fprc[31] & (1u << 23), 0u)
+		<< "the fast path stopped clamping; if that was deliberate, this test "
+		   "and ee_fpu_compare_console_tests.cpp both want updating";
+	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & (1u << 23), 0u)
+		<< "the interpreter must give the console's answer, not the clamp's";
 }
 
 TEST(EeRecFpu, Bc1tTakenWhenCcSet)
@@ -912,13 +920,11 @@ TEST(EeRecFpu, MsubaSSubtractsProductFromAccumulator)
 
 // ----- MADDA/MSUBA must NOT clamp the intermediate product -----------
 //
-// Interp MADD_S/MSUB_S route the fs*ft product through fpuDouble (clamping it
-// to +-fMax) before the accumulate, but MADDA_S/MSUBA_S (FPU.cpp) add the raw
-// product directly and overflow-check only the final ACC. Clamping the product
-// in all four ops diverges when fs*ft overflows: an overflowing product
-// clamped to +fMax cancels against an opposite-signed ACC (-> 0) instead of
-// overflowing the accumulate (-> +-fMax). Run()'s auto-diff compares ACC, and
-// these cases are chosen so JIT and interp agree only without the product clamp.
+// A product clamped to +-fMax cancels against an opposite-signed ACC (-> 0)
+// instead of overflowing the accumulate (-> +-fMax), and these cases are chosen
+// so that only the unclamped behaviour survives. Neither engine clamps it any
+// more; the interpreter rounds the product to an EE single and stops there if
+// it overflowed (eeMulAccumulate).
 // The next four all turn on the raw product reaching the accumulator as Inf,
 // which only happens at round-to-nearest: round-toward-zero, the production
 // mode, rounds an overflowing product to +/-FLT_MAX instead. Under that mode
@@ -926,32 +932,67 @@ TEST(EeRecFpu, MsubaSSubtractsProductFromAccumulator)
 // behaviour these tests exist to rule out, so their subject genuinely does not
 // exist there. Tagged rather than deleted because the extra-overflow clamp mode
 // they contrast with is still live code.
+// The two engines therefore land a binade apart, +-0x7FFFFFFF against +-fMax,
+// which Run()'s auto-diff cannot express -- hence the separate legs. Both are
+// asserted: the fast path's is what games see, the interpreter's is the
+// console's (capture rows 549 and 563).
 TEST(EeRecFpu, MaddaSDoesNotClampIntermediateProduct)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetAccBits(0xFF7FFFFFu); // ACC = -fMax
-	h.SetFpr(1, 1e20f);
-	h.SetFpr(2, 1e20f);        // fs*ft overflows single precision
-	h.LoadProgram({ee::MADDA_S(1, 2)});
-	h.Run();
-	// interp: -fMax + overflow -> +fMax. with product clamped: -fMax + (+fMax) = 0.
-	h.ExpectAcc(0x7F7FFFFFu);
+	u32 jit_acc, interp_acc;
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0xFF7FFFFFu); // ACC = -fMax
+		h.SetFpr(1, 1e20f);
+		h.SetFpr(2, 1e20f);        // fs*ft overflows single precision
+		h.LoadProgram({ee::MADDA_S(1, 2)});
+		h.RunJitNoDiff();
+		jit_acc = h.GetAccBitsJit();
+	}
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0xFF7FFFFFu);
+		h.SetFpr(1, 1e20f);
+		h.SetFpr(2, 1e20f);
+		h.LoadProgram({ee::MADDA_S(1, 2)});
+		h.RunInterpOnly();
+		interp_acc = h.GetAccBitsInterp();
+	}
+	// JIT: -fMax + overflow -> +fMax. With the product clamped it would be
+	// -fMax + (+fMax) = 0, which is what this test exists to rule out.
+	EXPECT_EQ(jit_acc, 0x7F7FFFFFu) << "the fast path clamped the product";
+	EXPECT_EQ(interp_acc, 0x7FFFFFFFu) << "the interpreter must saturate at EEMAX";
 }
 
 TEST(EeRecFpu, MsubaSDoesNotClampIntermediateProduct)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest}; // see MaddaSDoesNotClampIntermediateProduct
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetAccBits(0x7F7FFFFFu); // ACC = +fMax
-	h.SetFpr(1, 1e20f);
-	h.SetFpr(2, 1e20f);        // fs*ft overflows single precision
-	h.LoadProgram({ee::MSUBA_S(1, 2)});
-	h.Run();
-	// interp: +fMax - overflow -> -fMax. with product clamped: +fMax - (+fMax) = 0.
-	h.ExpectAcc(0xFF7FFFFFu);
+	u32 jit_acc, interp_acc;
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0x7F7FFFFFu); // ACC = +fMax
+		h.SetFpr(1, 1e20f);
+		h.SetFpr(2, 1e20f);        // fs*ft overflows single precision
+		h.LoadProgram({ee::MSUBA_S(1, 2)});
+		h.RunJitNoDiff();
+		jit_acc = h.GetAccBitsJit();
+	}
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0x7F7FFFFFu);
+		h.SetFpr(1, 1e20f);
+		h.SetFpr(2, 1e20f);
+		h.LoadProgram({ee::MSUBA_S(1, 2)});
+		h.RunInterpOnly();
+		interp_acc = h.GetAccBitsInterp();
+	}
+	// JIT: +fMax - overflow -> -fMax. With the product clamped: +fMax - fMax = 0.
+	EXPECT_EQ(jit_acc, 0xFF7FFFFFu) << "the fast path clamped the product";
+	EXPECT_EQ(interp_acc, 0xFFFFFFFFu) << "the interpreter must saturate at -EEMAX";
 }
 
 // ----- CHECK_FPU_EXTRA_OVERFLOW source clamp --------------------------
@@ -1365,7 +1406,7 @@ TEST(EeRecFpu, MulSFpuMulHackOffStillReachesTheConsoleValueOnInterp)
 	// compares fs and ft against their own constants and so does not fire
 	// reversed, exactly as the console behaves.
 	//
-	// The interpreter models the deficit itself (eeMulProduct in FPU.cpp), so it
+	// The interpreter models the deficit itself (eeMulRound in FPU.cpp), so it
 	// lands on the console value with the gamefix off. The single-precision fast
 	// path does not, so the two legitimately diverge here and this cannot be a
 	// Run() diff -- and RunJitNoDiff() never runs the interpreter at all, so
@@ -1404,20 +1445,19 @@ TEST(EeRecFpu, MulSMultiplierDeficitMatchesSilicon)
 {
 	// Rows measured directly on SCPH-90000. Each is a case where the exact
 	// product is representable with nothing below the ULP, so the sub-ULP
-	// deficit reaches the result.
-	//
-	// Every row's operands and product stay inside the IEEE single range on
-	// purpose. The interpreter multiplies fpuDouble()'d floats, so it cannot
-	// carry a row whose operand or product needs the EE's exponent-0xff binade
-	// -- 2.0 * FLT_MAX (corpus cases 857/1) lands on 0x7FFFFFFF on silicon and
-	// on +Inf here. That gap belongs to fpuDouble, not to the multiplier.
+	// deficit reaches the result. Corpus cases 857/1 are the 2.0 * FLT_MAX
+	// pair -- 0x7FFFFFFF is an ordinary number on the EE and the exact product
+	// lands on it, so that is a one-ULP defect and not saturation.
 	struct Row { u32 fs, ft, want; };
 	static const Row rows[] = {
 		{0x3f800000u, 0x7f7fffffu, 0x7f7ffffeu}, // 1.0 * FLT_MAX  -> one ULP low
 		{0x7f7fffffu, 0x3f800000u, 0x7f7fffffu}, // reversed       -> exact
+		{0x40000000u, 0x7f7fffffu, 0x7ffffffeu}, // corpus case 857
+		{0x7f7fffffu, 0x40000000u, 0x7fffffffu}, // corpus case 1
 		{0x3f800000u, 0x3fc00000u, 0x3fc00000u}, // ft mantissa 0x400000: exact
 		{0x3f800000u, 0x3f800001u, 0x3f800001u}, // ft mantissa 0x000001: exact
 		{0x3f800000u, 0x3fbfffffu, 0x3fbffffeu}, // ft mantissa 0x3fffff: low
+		{0x00800000u, 0x7f800001u, 0x40800001u}, // corpus case 876: exact
 		{0x3e800000u, 0x40490fdbu, 0x3f490fdau}, // the FpuMulHack pair
 		{0x40490fdbu, 0x3e800000u, 0x3f490fdbu}, // reversed       -> exact
 	};
@@ -1436,9 +1476,10 @@ TEST(EeRecFpu, MulSMultiplierDeficitMatchesSilicon)
 
 TEST(EeRecFpu, MultiplierDeficitReachesTheWholeMultiplyFamily)
 {
-	// MUL/MULA and the four multiply-accumulates all route their product
-	// through eeMulProduct. ACC = +0 (or the MADD/MSUB accumuland) so what
-	// lands in the destination is the rounded product alone.
+	// MUL/MULA round their product through eeMulRound and the four
+	// multiply-accumulates reach the same helper through eeMulAccumulate.
+	// ACC = +0 (or the MADD/MSUB accumuland) so what lands in the destination
+	// is the rounded product alone.
 	constexpr u32 kFs = 0x3f800000u; // 1.0: the product is ft, tail always zero
 	constexpr u32 kFt = 0x3fbfffffu; // Booth fires
 	constexpr u32 kWant = 0x3fbffffeu;
@@ -1463,6 +1504,53 @@ TEST(EeRecFpu, MultiplierDeficitReachesTheWholeMultiplyFamily)
 		h.RunInterpOnly();
 		const u32 got = f.is_acc ? h.GetAccBitsInterp() : h.GetFprBitsInterp(2);
 		EXPECT_EQ(got, f.want) << f.name;
+	}
+}
+
+TEST(EeRecFpu, MulSMultiplierDeficitReachesResultsWithANonZeroTail)
+{
+	// The class the zero-tail closed form could not reach: the exact product has
+	// a tail below the single ULP, but one smaller than the 2^15 the array loses,
+	// so the borrow still crosses. Rows measured directly on SCPH-90000
+	// (captures/fpmul/, the fs = 0x800001 / 0x800002 / 0xFFFFFF / 0xBFFFFF /
+	// 0xD2B4C1 sweeps, every one of the 2^23 ft significands).
+	//
+	// All four polarities are present. A model that widened the tail test to
+	// 2^15 and kept reading ft passes the first group and fails the next two;
+	// the old zero-tail form fails the first two and passes the last two. The
+	// corpus contains no row in any of them.
+	struct Row { u32 fs, ft, want; };
+	static const Row rows[] = {
+		// One ULP low with a non-zero tail: the old ft-only form said "exact"
+		// here because it required a zero tail.
+		{0x3F800001u, 0x3F800002u, 0x3F800002u}, // tail 0x2
+		{0x3F800002u, 0x3F800002u, 0x3F800003u}, // tail 0x4
+		{0x3FFFFFFFu, 0x3FFF9155u, 0x407F9153u}, // tail 0x6EAB
+
+		// Same, with the ft term clear: fs is what decides these.
+		{0x3FFFFFFFu, 0x3FFF8D55u, 0x407F8D53u}, // tail 0x72AB
+		{0x3FBFFFFFu, 0x3FBF8D55u, 0x400FA9FEu}, // tail 0x72AB
+		{0x3FD2B4C1u, 0x3F803415u, 0x3FD30A7Cu}, // tail 0x7D5
+
+		// Inside the gate and exact: the array is what decides, not the tail.
+		{0x3F800001u, 0x3F800001u, 0x3F800002u}, // tail 0x1
+		{0x3F800002u, 0x3F800001u, 0x3F800003u}, // tail 0x2
+		{0x3FFFFFFFu, 0x3FFF8001u, 0x407F8000u}, // tail 0x7FFF
+
+		// Tail large enough to absorb the borrow: exact despite the ft term.
+		{0x3F800001u, 0x3F808000u, 0x3F808001u}, // tail 0x8000
+		{0x3F800002u, 0x3F804002u, 0x3F804004u}, // tail 0x8004
+	};
+	for (const Row& r : rows)
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetFprBits(0, r.fs);
+		h.SetFprBits(1, r.ft);
+		h.LoadProgram({ee::MUL_S(2, 0, 1)});
+		h.RunInterpOnly();
+		EXPECT_EQ(h.GetFprBitsInterp(2), r.want)
+			<< "mul.s fs=" << std::hex << r.fs << " ft=" << r.ft;
 	}
 }
 
@@ -1566,9 +1654,9 @@ TEST(EeRecFpu, DivSByZeroAliasedDestSignFromBothOperands)
 	h.EnableCop1();
 	h.SetFprBits(1, 0xC1200000u); // -10.0f
 	h.SetFprBits(2, 0x80000000u); // -0.0f
-	h.LoadProgram({ee::DIV_S(2, 1, 2), ee::MFC1(reg::v0, 2)}); // -10/-0 → +fMax
-	h.Run();
-	EXPECT_EQ(h.GetGpr64Interp(reg::v0) & 0xFFFFFFFFull, 0x7F7FFFFFull);
+	h.LoadProgram({ee::DIV_S(2, 1, 2), ee::MFC1(reg::v0, 2)}); // -10/-0 -> +max
+	h.RunInterpOnly(); // the tiers saturate differently; the sign is the subject
+	EXPECT_EQ(h.GetGpr64Interp(reg::v0) & 0xFFFFFFFFull, 0x7FFFFFFFull);
 }
 
 TEST(EeRecFpu, DivSZeroOverZeroAliasedDest)
@@ -1577,9 +1665,9 @@ TEST(EeRecFpu, DivSZeroOverZeroAliasedDest)
 	h.EnableCop1();
 	h.SetFprBits(1, 0x00000000u); // +0.0f
 	h.SetFprBits(2, 0x80000000u); // -0.0f
-	h.LoadProgram({ee::DIV_S(1, 1, 2), ee::MFC1(reg::v0, 1)}); // 0/0 → -fMax (sign fs^ft)
-	h.Run();
-	EXPECT_EQ(h.GetGpr64Interp(reg::v0) & 0xFFFFFFFFull, 0xFF7FFFFFull);
+	h.LoadProgram({ee::DIV_S(1, 1, 2), ee::MFC1(reg::v0, 1)}); // 0/0 -> -max (sign fs^ft)
+	h.RunInterpOnly(); // the tiers saturate differently; the sign is the subject
+	EXPECT_EQ(h.GetGpr64Interp(reg::v0) & 0xFFFFFFFFull, 0xFFFFFFFFull);
 }
 
 // ---- GE-19: MADD/MSUB-family intermediate-product clamp mirrors the x86 JIT -
@@ -1587,18 +1675,21 @@ TEST(EeRecFpu, DivSZeroOverZeroAliasedDest)
 // x86 recMADDtemp/recMSUBtemp clamp the fs*ft product (and pre-add ACC) only
 // under CHECK_FPU_EXTRA_OVERFLOW; in the default clamp mode the raw product
 // rides to the accumulate as Inf and only the final result clamp applies.
-// The interpreter ALWAYS clamps MADD/MSUB's product (fpuDouble temp,
-// FPU.cpp:271-277) — so on the product-overflow + opposite-sign-ACC corner,
-// default-mode JIT = ±fMax while interp = 0. That divergence is BY DESIGN and
-// shared with x86 (same class as the mVU broadcast-FMAC divergence); games are
-// tuned against the x86 JIT. MADDA/MSUBA get the same extra-mode product clamp
-// from the shared x86 recMADDtemp — there interp diverges in the OTHER
-// direction (interp never clamps the A-form product).
+//
+// The interpreter changed on 2026-07-31: it used to clamp the product to
+// +-fMax, so an overflowing one cancelled against an opposite-signed ACC and
+// the corner came back 0. It now ends the instruction at the EE's own maximum,
+// so the corner comes back +-0x7FFFFFFF -- the console's answer, on capture
+// rows 521, 526, 535, 549, 554 and 563.
+//
+// The divergence below is by design: games are tuned against the fast path, and
+// the fast path's value is the one that must not move.
 
 TEST(EeRecFpu, MaddSProductOverflowDefaultModeMatchesX86Jit)
 {
 	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest}; // needs Inf -- see MaddaSDoesNotClampIntermediateProduct
-	// Interp leg: product clamped to +fMax → -fMax + fMax = 0.
+	// Interp leg: the product overflows, saturates at the EE maximum and ends
+	// the instruction. The console agrees (capture row 521 and friends).
 	{
 		EeRecTestHarness h;
 		h.EnableCop1();
@@ -1607,7 +1698,9 @@ TEST(EeRecFpu, MaddSProductOverflowDefaultModeMatchesX86Jit)
 		h.SetFprBits(2, 0x7F000000u);
 		h.LoadProgram({ee::MADD_S(3, 1, 2)});
 		h.RunInterpOnly();
-		EXPECT_EQ(h.GetFprBitsInterp(3), 0x00000000u);
+		EXPECT_EQ(h.GetFprBitsInterp(3), 0x7FFFFFFFu)
+			<< "the interpreter must saturate at the EE maximum, not at FLT_MAX "
+			   "and not at the 0 an accumulated +fMax used to give";
 	}
 	// JIT leg (x86 parity): raw product +Inf → -fMax + Inf = +Inf → final
 	// result clamp → +fMax. Intentionally != interp.
@@ -1619,7 +1712,8 @@ TEST(EeRecFpu, MaddSProductOverflowDefaultModeMatchesX86Jit)
 		h.SetFprBits(2, 0x7F000000u);
 		h.LoadProgram({ee::MADD_S(3, 1, 2)});
 		h.RunJitNoDiff();
-		EXPECT_EQ(h.GetFprBitsJit(3), 0x7F7FFFFFu);
+		EXPECT_EQ(h.GetFprBitsJit(3), 0x7F7FFFFFu)
+			<< "the fast path's saturation compromise must not move";
 	}
 }
 
@@ -1640,17 +1734,37 @@ TEST(EeRecFpu, MsubSProductOverflowDefaultModeMatchesX86Jit)
 
 TEST(EeRecFpu, MaddSProductOverflowExtraModeClampsProduct)
 {
-	// Extra mode: x86 clamps the product pre-add → -fMax + fMax = 0, which
-	// matches interp — auto-diffing Run() pins both sides at once.
+	// Extra mode: x86 clamps the product pre-add → -fMax + fMax = 0. That used
+	// to match the interpreter and Run() pinned both at once; the interpreter
+	// now saturates at the EE maximum and ends the instruction there, so the
+	// two legs are asserted separately. The JIT value is the subject: it is what
+	// the extra-overflow gate exists to produce.
 	FpuExtraOverflowGuard guard;
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetAccBits(0xFF7FFFFFu);
-	h.SetFprBits(1, 0x7F000000u);
-	h.SetFprBits(2, 0x7F000000u);
-	h.LoadProgram({ee::MADD_S(3, 1, 2)});
-	h.Run();
-	h.ExpectFpr(3, 0x00000000u);
+	u32 jit_bits, interp_bits;
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0xFF7FFFFFu);
+		h.SetFprBits(1, 0x7F000000u);
+		h.SetFprBits(2, 0x7F000000u);
+		h.LoadProgram({ee::MADD_S(3, 1, 2)});
+		h.RunJitNoDiff();
+		jit_bits = h.GetFprBitsJit(3);
+	}
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetAccBits(0xFF7FFFFFu);
+		h.SetFprBits(1, 0x7F000000u);
+		h.SetFprBits(2, 0x7F000000u);
+		h.LoadProgram({ee::MADD_S(3, 1, 2)});
+		h.RunInterpOnly();
+		interp_bits = h.GetFprBitsInterp(3);
+	}
+	EXPECT_EQ(jit_bits, 0x00000000u)
+		<< "extra mode must clamp the product pre-add, cancelling against -fMax";
+	EXPECT_EQ(interp_bits, 0x7FFFFFFFu)
+		<< "the interpreter does not have a product clamp to gate any more";
 }
 
 TEST(EeRecFpu, MaddaSProductOverflowExtraModeClampsProduct)
@@ -1847,12 +1961,13 @@ TEST(EeRecFpu, Ctc1ThenDivByZeroAccumulatesStickyFlags)
 	h.SetFprBits(2, 0x00000000u);           // +0.0f divisor
 	h.LoadProgram({
 		ee::CTC1(reg::a0, 31),
-		ee::DIV_S(3, 1, 2),                 // x/0 → D|SD
+		ee::DIV_S(3, 1, 2),                 // x/0 -> D|SD
 	});
-	h.Run();
+	// JIT-only: the flag writeback is the subject, and Run()'s auto-diff would
+	// trip on the divide's saturation.
+	h.RunJitNoDiff();
 	const u32 mask = 0x00030060u;           // I|D|SI|SD
 	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & mask,    0x10000u | 0x20u | 0x40u); // D|SD + kept SI
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & mask, 0x10000u | 0x20u | 0x40u);
 }
 
 TEST(EeRecFpu, ComparePreservesStickyFlagBits)

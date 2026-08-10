@@ -150,7 +150,8 @@ static void ToPS2FPU_Full(int idx, bool flags, int /*absidx*/, bool acc, bool ad
 	//
 	// `hi`, not `hs`: kEeFpuMax itself is representable and belongs to the
 	// halving arm, which handles it exactly (halved it is +FLT_MAX, and
-	// 0x7f7fffff + 0x00800000 == 0x7fffffff).
+	// 0x7f7fffff + 0x00800000 == 0x7fffffff). This is the same bound the
+	// interpreter's eeRoundToSingle saturates at (FPU.cpp).
 	armAsm->Mov(RXARG2, UINT64_C(0x47FFFFFFE0000000)); // (2 - 2^-23) * 2^128
 	armAsm->Cmp(RXARG1, RXARG2);
 	armAsm->B(&toOverflow, a64::hi);
@@ -496,8 +497,10 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 //      mul.s(1.0, x) is one ULP low for 8257536 of the 2^23 significands while
 //      mul.s(x, 1.0) is exact for all of them.
 //
-// The interpreter models the same law (FPU.cpp eeMulRound / eeMulOneUlpLow /
-// eeMulDefectiveFt); this is its mode-3 codegen. FpuMulHack is a one-point
+// The interpreter models a superset (FPU.cpp eeMulRound / eeMulOneUlpLow /
+// eeMulArray): it reconstructs the array's truncated low half, so it also
+// catches the rows where the tail is non-zero but smaller than the borrow.
+// This is the mode-3 codegen for the zero-tail law. FpuMulHack is a one-point
 // sample of the same rule and this subsumes it, including the asymmetry -- it
 // is not folded in here because iFPUd never had it.
 //
@@ -564,7 +567,7 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // one-directional (it can only miss a deficit, never invent one) and rare in
 // general operand space, per the count above. The term needs a bitfield extract
 // NEON has no equivalent for, so it has to go through GPRs and come back --
-// sketched at ten instructions against this predicate's three.
+// sketched at ten instructions against this predicate's one.
 // The resulting interpreter divergence is pinned by
 // EeRecFpuFull.MulDefectDropsTheBoundaryTermTheInterpreterModels.
 //

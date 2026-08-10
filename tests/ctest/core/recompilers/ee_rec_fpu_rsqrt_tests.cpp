@@ -11,17 +11,18 @@
 //   - FCR31 flags (I|D|SI|SD): match the interpreter on every input, so they
 //     are always diffed. I|D are cleared each op; SI|SD are sticky.
 //   - Zero divisor (Ft exponent field == 0, denormals included): exact
-//     sign(Fs) | 0x7f7fffff, D|SD raised. Matches interp exactly.
-//   - Negative nonzero divisor: interp rounds sqrt(|Ft|) into a float temp
-//     before dividing, so its divide is single-precision and matches native
-//     bit-for-bit. I|SI raised.
-//   - Positive nonzero divisor: interp computes Fs / sqrt(Ft) in DOUBLE (bare
-//     libm sqrt returns double, so the divide promotes) then rounds to float,
-//     while native/x86/hardware stay single-precision. The results disagree by
-//     exactly <=1 ULP on inexact quotients (~10% of random positive-Ft inputs).
-//     Native reproduces the single-precision EE FPU / x86 result, so those
-//     values are asserted JIT-only; the interp double-rounding divergence is
-//     pinned as a DISABLED tripwire (RsqrtSPositivePathDivergesFromInterp).
+//     sign(Fs) | 0x7f7fffff, D|SD raised, plus I|SI when it is negative.
+//     Matches interp exactly.
+//   - Every divisor class -- zero, negative, positive -- now matches the
+//     interpreter bit-for-bit, in any FP environment, so every case here is
+//     differential. Getting there took two independent fixes that this file
+//     once pinned as tripwires: the interpreter divided by an unrounded
+//     double-precision sqrt (bare libm sqrt returns double), and it never
+//     modelled the divide/sqrt unit's own round-to-nearest. Both landed on
+//     1.0 rsqrt 1.5 as 0x3F5105EC against hardware's 0x3F5105EB, which made
+//     two defects look like one; RSQRT_S in pcsx2/FPU.cpp has both at the
+//     divide they share. The same rounding mode over DIV.S and SQRT.S is in
+//     ee_rec_fpu_divunit_rounding_tests.cpp.
 
 #include "harness/EeRecTestHarness.h"
 
@@ -31,6 +32,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 #include <gtest/gtest.h>
 
 using namespace recompiler_tests;
@@ -81,18 +83,52 @@ u32 fuzzOperand(Lcg& r)
 // ---------------------------------------------------------------------------
 // Differential fuzzer over the exactly-matching domain: zero and negative
 // divisors (interp and native both stay single-precision there). Any Fs.
-// Run()'s auto-diff checks the result value; the sticky flags are diffed too.
+// The result value and the sticky flags are both diffed.
 // ---------------------------------------------------------------------------
-// These three ran green only because the old harness rounded to nearest. Under
-// the production environment the interpreter's double-rounded RSQRT lands one
-// ULP above the JIT and the differential fails -- which is work-order item 1,
-// not a new bug, and is pinned in the production environment by
-// DISABLED_RsqrtSPositivePathDivergesInProductionFpEnv below. Fixing item 1
-// retires the tag as well as the tripwire.
+// No ScopedFpEnv anywhere in this file: tagging these FlushNearest makes
+// FPUFPCR and FPUDivFPCR equal, which is the one environment where the divide
+// unit's rounding mode cannot be seen.
+//
+// The one value divergence these differentials must tolerate: the interpreter
+// saturates at the EE's own maximum where the fast path stops at FLT_MAX -- see
+// EeFpuTopBinadeConsole. Written as a property of the two words rather than as
+// an operand filter, so the fuzzers keep generating saturating pairs and any
+// other disagreement still fails.
+static bool IsTopBinadeTierGap(u32 interp, u32 jit)
+{
+	return (interp & 0x7F800000u) == 0x7F800000u &&
+	       (jit & 0x7FFFFFFFu) == 0x7F7FFFFFu &&
+	       (interp & 0x80000000u) == (jit & 0x80000000u);
+}
+
+// The second allowance, and a wider one, because RSQRT.S is composed.
+//
+// The interpreter runs the divide unit's own digit recurrence (FPU.cpp,
+// eeSrtDigit and below) and the emitters still take the host's correctly-
+// rounded fsqrt/fdiv, so the interpreter runs the recurrence twice -- once for
+// the root, once for the quotient. The two do not pull the same way: a root
+// that comes back one ULP lower makes the quotient larger, so unlike DIV.S and
+// SQRT.S the interpreter can land on either side of the fast path here.
+// That compounding is silicon's own -- the console capture has 26 rsqrt.s rows
+// one ULP off correct rounding and 2 of them two ULP -- and it is bounded at
+// two ULP of magnitude with the sign never in question, which is what this
+// asserts.
+//
+// EeFpuDivUnitConsole owns the model itself and the per-op scoreboard against
+// silicon; EeRecFpuDivUnitRounding owns the shape of the divergence for the two
+// uncomposed ops.
+static bool IsDivUnitModelGap(u32 interp, u32 jit)
+{
+	if ((interp & 0x80000000u) != (jit & 0x80000000u))
+		return false;
+	const u32 a = interp & 0x7FFFFFFFu, b = jit & 0x7FFFFFFFu;
+	return (a > b ? a - b : b - a) <= 2u;
+}
+
 TEST(EeRecFpuRsqrt, DifferentialFuzzZeroAndNegativeDivisor)
 {
-	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest};
 	Lcg r{0x123456789ABCDEF0ull};
+	int checked = 0, tier_gaps = 0, model_gaps = 0;
 	for (u32 iter = 0; iter < 3000; ++iter)
 	{
 		const u32 fsBits = fuzzOperand(r);
@@ -106,32 +142,70 @@ TEST(EeRecFpuRsqrt, DifferentialFuzzZeroAndNegativeDivisor)
 		SCOPED_TRACE(::testing::Message()
 			<< "iter=" << iter << " Fs=" << std::hex << fsBits << " Ft=" << ftBits << " pre=" << pre);
 
-		EeRecTestHarness h;
-		h.EnableCop1();
-		h.SetFprBits(1, fsBits);
-		h.SetFprBits(2, ftBits);
-		h.SetFcr31(pre);
-		h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
-		h.Run(); // auto-diffs the result value
+		// Two harnesses rather than Run()'s auto-diff: the tiers are allowed to
+		// disagree on saturation and Run() cannot express that.
+		u32 res[2] = {}, fcr[2] = {};
+		for (int jit = 0; jit < 2; ++jit)
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.SetFprBits(1, fsBits);
+			h.SetFprBits(2, ftBits);
+			h.SetFcr31(pre);
+			h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
+			if (jit)
+			{
+				h.RunJitNoDiff();
+				res[1] = h.GetFprBitsJit(3);
+				fcr[1] = h.JitSnapshot().fprs.fprc[31];
+			}
+			else
+			{
+				h.RunInterpOnly();
+				res[0] = h.GetFprBitsInterp(3);
+				fcr[0] = h.InterpSnapshot().fprs.fprc[31];
+			}
+		}
 
-		EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & kStickyMask,
-			h.InterpSnapshot().fprs.fprc[31] & kStickyMask);
+		if (IsTopBinadeTierGap(res[0], res[1]))
+		{
+			++tier_gaps;
+		}
+		else if (res[0] != res[1])
+		{
+			++model_gaps;
+			EXPECT_TRUE(IsDivUnitModelGap(res[0], res[1]))
+				<< "the engines disagree by more than the divide unit model can "
+				   "produce; interp=" << std::hex << res[0] << " jit=" << res[1];
+		}
+		EXPECT_EQ(fcr[1] & kStickyMask, fcr[0] & kStickyMask);
+		++checked;
 		if (::testing::Test::HasFailure())
 			return; // first failing case is enough for a clean repro
 	}
+	EXPECT_EQ(checked, 3000);
+	EXPECT_GT(tier_gaps, 0) << "anti-vacuity: the pool stopped producing "
+							   "saturating results, so the allowance is dead "
+							   "code that could hide a real divergence";
+	EXPECT_GT(model_gaps, 0) << "anti-vacuity: no pair diverged at all, "
+								"so the model allowance is dead code too";
 }
 
 // ---------------------------------------------------------------------------
-// Positive-divisor fuzzer. The interp divides by a double-precision sqrt and
-// native stays single-precision, so Run()'s exact auto-diff cannot be used;
-// run JIT and interp on separate harnesses and assert the result is within the
-// proven <=1 ULP bound (a native bug producing a larger error would trip this)
-// and that the flags match exactly.
+// Positive-divisor fuzzer.
+//
+// Bounded rather than exact, because the interpreter models the divide unit and
+// the fast path does not; the bound is two-sided and sign-checked.
+//
+// It also checks the composition on 3000 random pairs: silicon's rsqrt.s is
+// div.s(Fs, sqrt.s(Ft)) with a plain 24-bit single in between, and the
+// interpreter has to keep being that now that both steps carry the model.
+// EeFpuDivUnitConsole.RsqrtIsSqrtThenDivide has the console rows.
 // ---------------------------------------------------------------------------
-TEST(EeRecFpuRsqrt, PositiveDivisorWithinOneUlp)
+TEST(EeRecFpuRsqrt, PositiveDivisorMatchesInterpExactly)
 {
-	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest}; // see DifferentialFuzzZeroAndNegativeDivisor
 	Lcg r{0x0F0E0D0C0B0A0908ull};
+	int checked = 0, tier_gaps = 0, model_gaps = 0;
 	for (u32 iter = 0; iter < 3000; ++iter)
 	{
 		// Positive nonzero divisor: clear sign, force a normal exponent.
@@ -144,31 +218,76 @@ TEST(EeRecFpuRsqrt, PositiveDivisorWithinOneUlp)
 		SCOPED_TRACE(::testing::Message()
 			<< "iter=" << iter << " Fs=" << std::hex << fsBits << " Ft=" << ftBits << " pre=" << pre);
 
-		EeRecTestHarness hj;
-		hj.EnableCop1();
-		hj.SetFprBits(1, fsBits);
-		hj.SetFprBits(2, ftBits);
-		hj.SetFcr31(pre);
-		hj.LoadProgram({ee::RSQRT_S(3, 1, 2)});
-		hj.RunJitNoDiff();
+		u32 res[2] = {}, fcr[2] = {};
+		for (int jit = 0; jit < 2; ++jit)
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.SetFprBits(1, fsBits);
+			h.SetFprBits(2, ftBits);
+			h.SetFcr31(pre);
+			h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
+			if (jit)
+			{
+				h.RunJitNoDiff();
+				res[1] = h.GetFprBitsJit(3);
+				fcr[1] = h.JitSnapshot().fprs.fprc[31];
+			}
+			else
+			{
+				h.RunInterpOnly();
+				res[0] = h.GetFprBitsInterp(3);
+				fcr[0] = h.InterpSnapshot().fprs.fprc[31];
+			}
+		}
 
-		EeRecTestHarness hi;
-		hi.EnableCop1();
-		hi.SetFprBits(1, fsBits);
-		hi.SetFprBits(2, ftBits);
-		hi.SetFcr31(pre);
-		hi.LoadProgram({ee::RSQRT_S(3, 1, 2)});
-		hi.RunInterpOnly();
+		if (IsTopBinadeTierGap(res[0], res[1]))
+		{
+			++tier_gaps;
+		}
+		else if (res[0] != res[1])
+		{
+			++model_gaps;
+			EXPECT_TRUE(IsDivUnitModelGap(res[0], res[1]))
+				<< "the engines disagree by more than the divide unit model can "
+				   "produce; interp=" << std::hex << res[0] << " jit=" << res[1];
+		}
+		EXPECT_EQ(fcr[1] & kStickyMask, fcr[0] & kStickyMask);
 
-		const u32 jv = hj.GetFprBitsJit(3);
-		const u32 iv = hi.GetFprBitsInterp(3);
-		EXPECT_LE(std::llabs(static_cast<s64>(jv) - static_cast<s64>(iv)), 1)
-			<< "positive-path diff exceeds 1 ULP jit=" << std::hex << jv << " interp=" << iv;
-		EXPECT_EQ(hj.JitSnapshot().fprs.fprc[31] & kStickyMask,
-			hi.InterpSnapshot().fprs.fprc[31] & kStickyMask);
+		// The composition, on the interpreter alone: sqrt.s Ft, then div.s by
+		// whatever word that produced. Both steps carry the model, so this fails
+		// if either one is applied inconsistently between RSQRT_S and the two
+		// standalone ops.
+		{
+			EeRecTestHarness hs;
+			hs.EnableCop1();
+			hs.SetFprBits(2, ftBits);
+			hs.LoadProgram({ee::SQRT_S(4, 2)});
+			hs.RunInterpOnly();
+			const u32 root = hs.GetFprBitsInterp(4);
+
+			EeRecTestHarness hd;
+			hd.EnableCop1();
+			hd.SetFprBits(1, fsBits);
+			hd.SetFprBits(4, root);
+			hd.LoadProgram({ee::DIV_S(3, 1, 4)});
+			hd.RunInterpOnly();
+			EXPECT_EQ(hd.GetFprBitsInterp(3), res[0])
+				<< "rsqrt.s must stay div.s(Fs, sqrt.s(Ft)) with a plain single in "
+				   "between, which is what silicon does on every measured row; "
+				   "root=" << std::hex << root;
+		}
+
+		++checked;
 		if (::testing::Test::HasFailure())
 			return;
 	}
+	EXPECT_EQ(checked, 3000);
+	EXPECT_GT(tier_gaps, 0) << "anti-vacuity: the positive-divisor pool stopped "
+							   "producing saturating results, so the allowance "
+							   "is dead code that could hide a real divergence";
+	EXPECT_GT(model_gaps, 0) << "anti-vacuity: no pair diverged at all, "
+								"so the model allowance is dead code too";
 }
 
 // ---- Exact-result differential cases (value + flags both diffed) -----------
@@ -251,57 +370,81 @@ TEST(EeRecFpuRsqrt, SourceAliasesDivisor)
 
 TEST(EeRecFpuRsqrt, DenormalDivisorTreatedAsZero)
 {
-	// A denormal Ft (exp field 0, mantissa nonzero) is "zero" for RSQRT: result
-	// is sign(FS) | 0x7f7fffff with D|SD, exactly like +/-0. The divisor's sign
-	// is irrelevant -- see ZeroDivisorSignComesFromTheDividend below.
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFcr31(0);
-	h.SetFpr(1, 5.0f);
-	h.SetFprBits(2, 0x807FFFFFu);   // largest negative denormal
-	h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
-	h.Run();
-	h.ExpectFpr(3, 0x7F7FFFFFu);    // sign(Fs)=pos -> +fMax
-	EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & kStickyMask, kD | kSD);
-	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & kStickyMask, kD | kSD);
-}
-
-// RSQRT.S's zero-divisor result takes the DIVIDEND's sign alone -- not the
-// xor DIV.S uses, and not Ft's. The op divides by sqrt(|Ft|), so the divisor
-// has no sign left to contribute by the time the division happens. Console
-// witnesses: rsqrt(+0, -0) is positive and rsqrt(-0, -0) is negative; an xor
-// rule, or Ft's sign (which both engines used to take), flips both. x86
-// recRSQRThelper1 (iFPU.cpp) has always taken Fs's sign. The magnitude stays
-// at the fast tier's +/-fMax saturation -- silicon says 0x7FFFFFFF, which is
-// the top-binade compromise, not the sign rule.
-TEST(EeRecFpuRsqrt, ZeroDivisorSignComesFromTheDividend)
-{
-	struct Row
+	// A denormal Ft (exp field 0, mantissa nonzero) is "zero" for RSQRT, exactly
+	// like +/-0: a divide by zero, and a saturated result.
+	//
+	// Ft is negative, so I comes from the root and D from the division;
+	// EeFpuRsqrtSignConsole carries the console rows for that pair.
+	//
+	// Fs is +5.0 and Ft is negative, so sign(Fs) and sign(Ft) disagree and this
+	// row picks between them: the console says positive, per
+	// ZeroDivisorSignComesFromTheDividend below. The magnitude still differs by
+	// tier, so the legs run separately.
+	u32 res[2] = {}, fcr[2] = {};
+	for (int jit = 0; jit < 2; ++jit)
 	{
-		u32 fs, ft, want;
-	};
-	static const Row kRows[] = {
-		{0x00000000u, 0x80000000u, 0x7F7FFFFFu}, // rsqrt(+0, -0) -> +fMax
-		{0x80000000u, 0x00000000u, 0xFF7FFFFFu}, // rsqrt(-0, +0) -> -fMax
-		{0x80000000u, 0x80000000u, 0xFF7FFFFFu}, // rsqrt(-0, -0) -> -fMax
-		{0x00000000u, 0x00000000u, 0x7F7FFFFFu}, // rsqrt(+0, +0) -> +fMax
-		{0x40A00000u, 0x80000000u, 0x7F7FFFFFu}, // rsqrt(+5, -0) -> +fMax
-		{0xC0A00000u, 0x00000000u, 0xFF7FFFFFu}, // rsqrt(-5, +0) -> -fMax
-	};
-	for (const Row& r : kRows)
-	{
-		SCOPED_TRACE(::testing::Message() << std::hex << "fs=" << r.fs
-										  << " ft=" << r.ft);
 		EeRecTestHarness h;
 		h.EnableCop1();
 		h.SetFcr31(0);
-		h.SetFprBits(1, r.fs);
-		h.SetFprBits(2, r.ft);
+		h.SetFpr(1, 5.0f);
+		h.SetFprBits(2, 0x807FFFFFu);   // largest negative denormal
 		h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
-		h.Run(); // exact on the zero path: auto-diffs the engines
-		h.ExpectFpr(3, r.want);
-		EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & kStickyMask, kD | kSD);
-		EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & kStickyMask, kD | kSD);
+		if (jit)
+		{
+			h.RunJitNoDiff();
+			res[1] = h.GetFprBitsJit(3);
+			fcr[1] = h.JitSnapshot().fprs.fprc[31];
+		}
+		else
+		{
+			h.RunInterpOnly();
+			res[0] = h.GetFprBitsInterp(3);
+			fcr[0] = h.InterpSnapshot().fprs.fprc[31];
+		}
+	}
+	EXPECT_EQ(res[0], 0x7FFFFFFFu) << "interp: sign(Fs)=+, EE maximum";
+	EXPECT_EQ(res[1], 0x7F7FFFFFu) << "fast path: sign(Fs)=+, FLT_MAX";
+	EXPECT_EQ(fcr[0] & kStickyMask, kI | kD | kSI | kSD);
+	EXPECT_EQ(fcr[1] & kStickyMask, kI | kD | kSI | kSD);
+}
+
+// The row that separates sign(Fs) from sign(Ft), asserted on its own so a
+// regression names the rule rather than an operand pool. rsqrt(+0, -0): the
+// dividend is positive and the divisor negative, so the two candidate rules give
+// opposite answers and the console picks the dividend's. The arm64 emitter used
+// the divisor's sign and was alone in it -- upstream x86 recRSQRThelper1 already
+// took the dividend's.
+TEST(EeRecFpuRsqrt, ZeroDivisorSignComesFromTheDividend)
+{
+	struct Row { u32 fs, ft; u32 want_interp, want_fast; const char* what; };
+	const Row rows[] = {
+		{0x00000000u, 0x80000000u, 0x7FFFFFFFu, 0x7F7FFFFFu, "[fpm 59] rsqrt(+0, -0) is POSITIVE"},
+		{0x80000000u, 0x80000000u, 0xFFFFFFFFu, 0xFF7FFFFFu, "[fpm 63] rsqrt(-0, -0) is negative"},
+		{0x80000000u, 0x00000000u, 0xFFFFFFFFu, 0xFF7FFFFFu, "rsqrt(-0, +0) is negative"},
+		{0x00000000u, 0x00000000u, 0x7FFFFFFFu, 0x7F7FFFFFu, "rsqrt(+0, +0) is positive"},
+	};
+	for (const Row& r : rows)
+	{
+		SCOPED_TRACE(r.what);
+		for (int jit = 0; jit < 2; ++jit)
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.SetFcr31(0);
+			h.SetFprBits(1, r.fs);
+			h.SetFprBits(2, r.ft);
+			h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
+			if (jit)
+			{
+				h.RunJitNoDiff();
+				EXPECT_EQ(h.GetFprBitsJit(3), r.want_fast) << "fast path";
+			}
+			else
+			{
+				h.RunInterpOnly();
+				EXPECT_EQ(h.GetFprBitsInterp(3), r.want_interp) << "interp";
+			}
+		}
 	}
 }
 
@@ -322,59 +465,88 @@ TEST(EeRecFpuRsqrt, ClearsIDPreservesStickyOnPositive)
 	EXPECT_EQ(h.InterpSnapshot().fprs.fprc[31] & kStickyMask, kSI | kSD);
 }
 
-// ---- Positive-path single-precision value (x86 / hardware parity) ----------
-// JIT-only: the interpreter computes this quotient in double and lands 1 ULP
-// away (see the DISABLED tripwire), so Run()'s auto-diff cannot be used.
-TEST(EeRecFpuRsqrt, PositivePathSinglePrecisionValue)
+// ---- FCR31 residency (GE-12) -----------------------------------------------
+//
+// Every row here is also covered by a test above that runs the op on its own,
+// and the op on its own was always right. What this adds is an instruction in
+// front of it: a CTC1 parks FCR31 in a GPR for the rest of the block
+// (fpuTryAllocFCR31), and a flag write that goes to memory instead is then
+// overwritten by the slot's writeback at the block seam. Both the I|D clear
+// and the raise disappeared that way.
+//
+// Each row runs both polarities of the residency predicate -- with the CTC1 in
+// front, and with the same seed applied directly to memory -- because the
+// memory leg passes either way and would sign off on the defect alone.
+TEST(EeRecFpuRsqrt, FlagWritesSurviveAPrecedingCtc1)
 {
-	const ScopedFpEnv fp_env{ScopedFpEnv::FlushNearest}; // see DifferentialFuzzZeroAndNegativeDivisor
-	// 1 / sqrt(1.5): single = 0x3f5105eb, interp double-rounds to 0x3f5105ec.
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.SetFpr(1, 1.0f);
-	h.SetFpr(2, 1.5f);
-	h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
-	h.RunJitNoDiff();
-	EXPECT_EQ(h.GetFprBitsJit(3), 0x3F5105EBu); // single-precision (matches x86)
+	struct Row { u32 seed, fs, ft, want; const char* what; };
+	const Row rows[] = {
+		{kI | kD | kSI | kSD, FprBits(6.0f), FprBits(4.0f),  kSI | kSD, "positive divisor: I|D cleared"},
+		{kI | kD,             FprBits(6.0f), FprBits(-4.0f), kI | kSI,  "negative divisor: I|SI"},
+		{kI | kD,             FprBits(6.0f), 0x00000000u,    kD | kSD,  "x/0: D|SD"},
+		{kI | kD,             0x00000000u,   0x00000000u,    kI | kSI,  "0/0: I|SI"},
+		// Both causes at once, which the resident slot has to carry.
+		{kI | kD, FprBits(6.0f), 0x80000000u, kI | kD | kSI | kSD, "x/-0: I|D|SI|SD"},
+	};
+	for (const Row& r : rows)
+	{
+		SCOPED_TRACE(r.what);
+		for (int resident = 0; resident < 2; ++resident)
+		{
+			SCOPED_TRACE(resident ? "ctc1 in front: FCR31 resident" : "no ctc1: FCR31 in memory");
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.SetFprBits(1, r.fs);
+			h.SetFprBits(2, r.ft);
+
+			std::vector<u32> prog;
+			if (resident)
+			{
+				prog.push_back(LUI(reg::t0, static_cast<u16>(r.seed >> 16)));
+				prog.push_back(ORI(reg::t0, reg::t0, static_cast<u16>(r.seed)));
+				prog.push_back(ee::CTC1(reg::t0, 31));
+			}
+			else
+			{
+				h.SetFcr31(r.seed);
+			}
+			prog.push_back(ee::RSQRT_S(3, 1, 2));
+			h.LoadProgram(prog);
+
+			// JIT-only: the zero-divisor rows saturate one binade apart between
+			// the tiers (EeFpuTopBinadeConsole), which Run()'s value diff would
+			// report instead of the flags. The interpreter reaches fprc[31]
+			// through C either way and is pinned by the tests above.
+			h.RunJitNoDiff();
+			EXPECT_EQ(h.JitSnapshot().fprs.fprc[31] & kStickyMask, r.want);
+		}
+	}
 }
 
-// Known divergence (accepted, not a bug): on the positive-divisor path the
-// interpreter divides by a double-precision sqrt result, so its output is 1 ULP
-// off from the single-precision EE FPU / x86 / native result. Enabling this
-// asserts the JIT equals the interp and will fail, documenting the gap.
-// Mirrors the DISABLED-tripwire convention for known interp divergences.
-TEST(EeRecFpuRsqrt, DISABLED_RsqrtSPositivePathDivergesFromInterp)
+// ---- Positive-path single-precision value (x86 / hardware parity) ----------
+// Both engines round the sqrt to single before dividing, so Run()'s auto-diff
+// applies here. A double-precision divide lands 1 ULP high, at 0x3F5105EC.
+TEST(EeRecFpuRsqrt, PositivePathSinglePrecisionValue)
 {
+	// 1 / sqrt(1.5) = 0x3f5105eb in single precision.
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.SetFpr(1, 1.0f);
 	h.SetFpr(2, 1.5f);
 	h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
 	h.Run();
-	// Would require GetFprBitsJit == GetFprBitsInterp; native=0x3f5105eb,
-	// interp=0x3f5105ec. Left disabled as the pin for this known 1-ULP gap.
-	EXPECT_EQ(h.GetFprBitsJit(3), h.GetFprBitsInterp(3));
+	h.ExpectFpr(3, 0x3F5105EBu); // single-precision (matches x86 and hardware)
 }
 
-// The single-rounding fix above holds at round-to-nearest and NOT under the
-// production rounding mode, which is why the test that proves it now has to ask
-// for FlushNearest. `RSQRT_S` (pcsx2/FPU.cpp) rounds the sqrt to single but
-// still performs the DIVIDE in double and rounds the quotient afterwards:
+// ---- The divide/sqrt unit's own rounding mode -------------------------------
+// Graduated tripwire for the second of the two fixes in the file header: the
+// interpreter truncated where the console rounds and produced 0x3F5105EC for
+// this pair, the same value the earlier unrounded-sqrt defect produced.
 //
-//     temp.f  = sqrt(fabs(fpuDouble(_FtValUl_)));   // rounded to single: fixed
-//     _FdValf_ = fpuDouble(_FsValUl_) / fpuDouble(temp.UL);  // double divide
-//
-// Double-rounding a quotient is benign often enough to disappear at nearest.
-// Truncation is far less forgiving, so at ChopZero the interpreter lands one
-// ULP above the JIT again -- the identical 0x3F5105EC/0x3F5105EB pair the
-// original defect produced, and the randomized differential reproduces it at
-// many other operands too.
-//
-// So work-order item 1 is half-fixed: the sqrt rounds, the divide does not.
-// The remaining fix is to do the divide in single as well.
-TEST(EeRecFpuRsqrt, DISABLED_RsqrtSPositivePathDivergesInProductionFpEnv)
+// Separate JIT and interp runs rather than Run()'s auto-diff, so a failure
+// names which engine moved.
+TEST(EeRecFpuRsqrt, DivideUnitRoundsToNearestInProductionFpEnv)
 {
-	// No ScopedFpEnv: this is the environment a game runs in.
 	const auto build = [](EeRecTestHarness& h) {
 		h.EnableCop1();
 		h.SetFpr(1, 1.0f);
@@ -388,7 +560,137 @@ TEST(EeRecFpuRsqrt, DISABLED_RsqrtSPositivePathDivergesInProductionFpEnv)
 	build(hi);
 	hi.RunInterpOnly();
 
-	EXPECT_EQ(hj.GetFprBitsJit(3), 0x3F5105EBu) << "[jit] single-precision, correct";
+	ASSERT_NE(EmuConfig.Cpu.FPUFPCR.bitmask, EmuConfig.Cpu.FPUDivFPCR.bitmask)
+		<< "the production environment must have a distinct divide rounding mode";
+
+	EXPECT_EQ(hj.GetFprBitsJit(3), 0x3F5105EBu) << "[jit] round-to-nearest, matches console";
 	EXPECT_EQ(hi.GetFprBitsInterp(3), 0x3F5105EBu)
-		<< "[interp] double-rounded: expect 0x3F5105EC until the divide is single";
+		<< "[interp] 0x3F5105EC is what a correctly rounded rsqrt gives; the console "
+		   "and the interpreter's digit recurrence both say 0x3F5105EB";
+}
+
+// ---- Exponent-255 divisors --------------------------------------------------
+// Rows from the same first-party capture as EeFpuDivunitConsole. The fourth
+// column is the fast path's answer, up to 1 ULP off the console's: it rounds
+// the root correctly and the divide/sqrt unit does not, and eeSrtDigit (in
+// pcsx2/FPU.cpp) models that for the interpreter only. So the interpreter is
+// asserted against the console exactly and the JIT against the fourth column.
+TEST(EeRecFpuRsqrt, Exponent255DivisorMatchesConsole)
+{
+	struct Row
+	{
+		u32 fs, ft, console, want_fast;
+	};
+	static constexpr Row kRows[] = {
+		{0x3F800000u, 0x7F800000u, 0x1F800000u, 0x1F800000u}, // +Inf   as a host word
+		{0x7F208A2Au, 0x7F91756Eu, 0x5F1698F2u, 0x5F1698F2u}, // +sNaN
+		{0x652D2AE1u, 0x7FC6AC37u, 0x450AFEF9u, 0x450AFEF9u}, // +qNaN
+		{0x7EFA12AEu, 0x7FE68EADu, 0x5EBA546Du, 0x5EBA546Cu}, // +qNaN, 1 ulp
+		{0xFD7BB4BDu, 0xFFA1E9F2u, 0xDD5FCC56u, 0xDD5FCC57u}, // -sNaN, 1 ulp
+		{0x7F5FD762u, 0xFFF0F0CBu, 0x5F2326B6u, 0x5F2326B6u}, // -qNaN
+		{0xB73F5561u, 0x7F814D77u, 0x973E5E09u, 0x973E5E0Au}, // +sNaN, 1 ulp
+		{0x7CB82C8Du, 0xFFB81B1Bu, 0x5C99914Du, 0x5C99914Du}, // -sNaN
+		{0xFBC42E8Au, 0x7FF141AAu, 0xDB8EE5B8u, 0xDB8EE5B9u}, // +qNaN, 1 ulp
+		{0x7CF2844Du, 0xFFF8FB98u, 0x5CADE290u, 0x5CADE291u}, // -qNaN, 1 ulp
+		{0xAFD35605u, 0xFFD96260u, 0x8FA22AF0u, 0x8FA22AF0u}, // -qNaN
+		// Controls: exponent-254 divisors, below the prescale branch.
+		{0x7F7FFFFFu, 0x7F7FFFFFu, 0x5F800000u, 0x5F800000u},
+		{0x642606B6u, 0x7F6CED78u, 0x442C9450u, 0x442C9450u},
+	};
+
+	const auto key = [](u32 x) {
+		return (x & 0x80000000u) ? -static_cast<s64>(x & 0x7FFFFFFFu) : static_cast<s64>(x);
+	};
+
+	int exp255 = 0, controls = 0, signalling = 0, infinities = 0, exact = 0;
+	for (const Row& r : kRows)
+	{
+		SCOPED_TRACE(::testing::Message() << std::hex << "rsqrt fs=" << r.fs << " ft=" << r.ft);
+		const auto build = [&r](EeRecTestHarness& h) {
+			h.EnableCop1();
+			h.SetFcr31(0);
+			h.SetFprBits(1, r.fs);
+			h.SetFprBits(2, r.ft);
+			h.LoadProgram({ee::RSQRT_S(3, 1, 2)});
+		};
+		EeRecTestHarness hj;
+		build(hj);
+		hj.RunJitNoDiff();
+		EeRecTestHarness hi;
+		build(hi);
+		hi.RunInterpOnly();
+
+		EXPECT_EQ(hi.GetFprBitsInterp(3), r.console) << "[interp] vs console";
+		EXPECT_EQ(hj.GetFprBitsJit(3), r.want_fast) << "[jit] vs the fast path's value";
+		EXPECT_LE(std::abs(key(r.want_fast) - key(r.console)), 1)
+			<< "the fast path's value has drifted more than the divide unit's own "
+			   "rounding accounts for";
+
+		// The divisor's sign reaches FCR31 and nothing else: sqrt takes |Ft|.
+		const u32 want_flags = (r.ft & 0x80000000u) ? (kI | kSI) : 0u;
+		EXPECT_EQ(hj.JitSnapshot().fprs.fprc[31] & kStickyMask, want_flags) << "[jit] flags";
+		EXPECT_EQ(hi.InterpSnapshot().fprs.fprc[31] & kStickyMask, want_flags) << "[interp] flags";
+
+		if ((r.ft & 0x7F800000u) != 0x7F800000u)
+		{
+			++controls;
+			continue;
+		}
+		++exp255;
+		if (r.want_fast == r.console)
+			++exact;
+		const u32 mant = r.ft & 0x7FFFFFu;
+		if (mant == 0)
+			++infinities;
+		else if ((mant & 0x400000u) == 0)
+			++signalling;
+	}
+
+	EXPECT_GT(controls, 0)
+		<< "anti-vacuity: without an exponent <= 254 divisor nothing here would notice "
+		   "the prescale being applied unconditionally";
+	EXPECT_GT(infinities, 0) << "anti-vacuity: the +Inf host word is the shape that used to "
+								"divide by infinity and return zero";
+	EXPECT_GE(signalling, 3)
+		<< "anti-vacuity: signalling patterns are half the exponent-255 mantissa space and "
+		   "the shapes an Fminnm-based clamp would have let through";
+	EXPECT_GE(exact, 5) << "anti-vacuity: if no row is exact this is not measuring the value";
+	EXPECT_GE(exp255, 8);
+}
+
+// The class the rows above sample: RSQRT.S divides by the square root SQRT.S
+// computes, both rounded to a single under FPUDivFPCR, so the one-op form and
+// the two-op one must agree across the whole exponent-255 divisor space.
+TEST(EeRecFpuRsqrt, Exponent255DivisorAgreesWithSqrtThenDiv)
+{
+	Lcg rng{0x5170A17E5170A17Eull};
+	int rows = 0, disagreements = 0;
+	for (int i = 0; i < 512; ++i)
+	{
+		const u32 ft = (rng.next() & 0x80000000u) | 0x7F800000u | (rng.next() & 0x7FFFFFu);
+		const u32 fs = (rng.next() & 0x80000000u) | ((1u + (rng.next() % 254u)) << 23) |
+					   (rng.next() & 0x7FFFFFu);
+
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.SetFcr31(0);
+		h.SetFprBits(1, fs);
+		h.SetFprBits(2, ft);
+		h.LoadProgram({ee::SQRT_S(4, 2), ee::DIV_S(5, 1, 4), ee::RSQRT_S(3, 1, 2)});
+		h.RunJitNoDiff();
+
+		++rows;
+		if (h.GetFprBitsJit(3) != h.GetFprBitsJit(5))
+		{
+			++disagreements;
+			if (disagreements <= 4)
+			{
+				ADD_FAILURE() << std::hex << "fs=" << fs << " ft=" << ft << ": rsqrt gives "
+							  << h.GetFprBitsJit(3) << ", sqrt-then-div gives "
+							  << h.GetFprBitsJit(5);
+			}
+		}
+	}
+	EXPECT_EQ(disagreements, 0);
+	EXPECT_EQ(rows, 512);
 }

@@ -980,7 +980,9 @@ static __fi void _vuSQRT(VURegs* VU)
 
 	VU->statusflag &= ~0x30;
 
-	if (ft < 0.0)
+	// Sign bit, not `ft < 0.0`: -0 raises I, and so do the denormals vuDouble
+	// has already flushed to it.
+	if (VU->VF[_Ft_].UL[_Ftf_] & 0x80000000)
 		VU->statusflag |= 0x10;
 	VU->q.F = sqrt(fabs(ft));
 	VU->q.F = vuDouble(VU->q.UL);
@@ -996,36 +998,22 @@ static __fi void _vuRSQRT(VURegs* VU)
 
 	VU->statusflag &= ~0x30;
 
+	// RSQRT is a square root then a divide, so I comes from the divisor's sign
+	// bit before the zero test and independently of it: -0 raises I for the
+	// root and D below for the division.
+	if (VU->VF[_Ft_].UL[_Ftf_] & 0x80000000)
+		VU->statusflag |= 0x10;
+
 	if (ft == 0.0)
 	{
-		VU->statusflag |= 0x20;
+		// Exclusive, as in DIV: 0/0 is invalid, x/0 is a divide by zero.
+		VU->statusflag |= (fs == 0.0) ? 0x10 : 0x20;
 
-		if (fs != 0)
-		{
-			if ((VU->VF[_Ft_].UL[_Ftf_] & 0x80000000) ^
-				(VU->VF[_Fs_].UL[_Fsf_] & 0x80000000))
-				VU->q.UL = 0xFF7FFFFF;
-			else
-				VU->q.UL = 0x7F7FFFFF;
-		}
-		else
-		{
-			if ((VU->VF[_Ft_].UL[_Ftf_] & 0x80000000) ^
-				(VU->VF[_Fs_].UL[_Fsf_] & 0x80000000))
-				VU->q.UL = 0x80000000;
-			else
-				VU->q.UL = 0;
-
-			VU->statusflag |= 0x10;
-		}
+		// Sign of the dividend alone -- the divisor is a root, never negative.
+		VU->q.UL = (VU->VF[_Fs_].UL[_Fsf_] & 0x80000000) | 0x7F7FFFFF;
 	}
 	else
 	{
-		if (ft < 0.0)
-		{
-			VU->statusflag |= 0x10;
-		}
-
 		temp = sqrt(fabs(ft));
 		VU->q.F = fs / temp;
 		VU->q.F = vuDouble(VU->q.UL);

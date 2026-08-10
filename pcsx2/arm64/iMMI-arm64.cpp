@@ -1306,10 +1306,26 @@ void recPMSUBH()
 // QFSRV: Rd = {Rs, Rt} >> (sa * 8), truncated to 128 bits.
 // cpuRegs.sa is in bytes (0-15). Concatenate Rt (low) and Rs (high)
 // into a 256-bit value, shift right by sa bytes, take lower 128 bits.
-// Implementation: store {Rt, Rs} to adjacent memory, unaligned load at offset sa.
-// Matches x86 approach using tempqw buffer.
-alignas(16) static u8 s_qfsrvTemp[32];
-
+//
+// TBL over a two-register table is exactly this operation: the table is 32
+// bytes with Rt at 0-15 and Rs at 16-31, and byte i of the result is
+// table[sa + i]. The index vector is a {0..15} ramp plus a broadcast sa, so
+// the largest index a legal sa can produce is 15 + 15 = 30 and the table
+// always covers it.
+//
+// SSE has no cross-register variable byte shift, so the x86 emitter spills
+// both operands to a static buffer and reloads 128 bits at offset sa. This
+// did the same until the table form replaced it. The reload was the
+// expensive part: a 16-byte load is forwarded from the two stores only when
+// it is 8-byte aligned, so fourteen of the sixteen sa values drained the
+// store buffer instead.
+//
+// The other consequence is on the And below. An out-of-range index cannot
+// name a host address here — TBL answers zero for one — so that mask now
+// keeps the guest semantics (sa is a byte count mod 16) rather than standing
+// between a guest-written sa and a host out-of-bounds read. The
+// adjacent-source path above still indexes host memory and still needs it for
+// the original reason.
 void recQFSRV()
 {
 	if (!_Rd_) return;
@@ -1318,62 +1334,34 @@ void recQFSRV()
 	mmiFlushReg(_Rt_);
 	mmiInvalidateDest(_Rd_);
 
-	// Adjacent-source fast path: when Rs == Rt+1 the 256-bit
-	// {Rt:Rs} window already exists contiguously in the GPR array
-	// (GPR.r[Rt] immediately precedes GPR.r[Rt+1]==GPR.r[Rs], 32 bytes).
-	// Read the unaligned 128 bits directly at &GPR.r[Rt] + sa and skip the two
-	// temp stores. sa is 0..15 so the load stays within the two registers' 32
-	// bytes. Gate on Rt != 0 to avoid depending on GPR.r[0] holding zero in
-	// memory (the slow path Movi's it).
-	if (_Rt_ != 0 && _Rs_ == _Rt_ + 1)
-	{
-		// The flushes above do NOT make this window memory-coherent: mmiFlushReg
-		// is _deleteEEreg, which reconciles const-prop and the scalar/NEON slots
-		// and never touches the pins. Under lazy-dirty the pin is authoritative
-		// for UD[0] and armStoreEERegPtrRaw elides the canonical store, so a
-		// pinned source's lower half in memory is routinely stale here. Unlike
-		// every other raw quad-load site we cannot merge after the load — the
-		// read straddles two guest registers — so flush the two pins the window
-		// actually covers. It covers exactly r[Rt] and r[Rt+1]: sa <= 15 over
-		// their 32 bytes. Four adjacent pairs are both-pinned — ($at,$v0)
-		// ($v0,$v1) ($v1,$a0) ($a0,$a1) — and eight more have one pinned
-		// operand, which is the register range a funnel-shift memcpy uses. (SM-010)
-		armFlushEEGPRPin(_Rt_);
-		armFlushEEGPRPin(_Rs_);
+	// Adjacent sources (Rs == Rt+1) are contiguous in the GPR array, so a
+	// 16-byte read at &GPR.r[Rt] + sa funnels them without a TBL. That shortcut
+	// was removed: it built a host address out of sa, and a pinned source —
+	// twelve of the adjacent pairs have one — had to be flushed into the window
+	// first, an 8-byte store under a 16-byte load that drains the store buffer
+	// at 13.1 cycles instead of forwarding. Unpinned it ran 2.38 against this
+	// sequence's 2.13 (A78C) and 2.34 against 2.00 (X1C).
 
-		armLoadEERegPtr(RWSCRATCH, &cpuRegs.sa);
-		// Clamp sa to 0..15 before indexing host memory. MTSA masks at the
-		// write, cpuRegs.sa can't hold >= 16 and this is belt-and-braces.
-		// An unmasked sa would walk this 128-bit load out of the two
-		// registers' 32 bytes, a guest-controlled host OOB read. (AX-03)
-		armAsm->And(RWSCRATCH, RWSCRATCH, 0xf);
-		armMoveAddressToReg(RSCRATCHADDR, &cpuRegs.GPR.r[_Rt_]);
-		armAsm->Add(RSCRATCHADDR, RSCRATCHADDR, RXSCRATCH);
-		armAsm->Ldr(RQSCRATCH, a64::MemOperand(RSCRATCHADDR));
-		armStoreEEGPRQuad(RQSCRATCH, _Rd_);
-		return;
-	}
-
-	// Store Rt at temp[0:15], Rs at temp[16:31]
-	mmiLoadReg(RQSCRATCH, _Rt_);
-	armMoveAddressToReg(RSCRATCHADDR, &s_qfsrvTemp[0]);
-	armAsm->Str(RQSCRATCH, a64::MemOperand(RSCRATCHADDR));
-
-	mmiLoadReg(RQSCRATCH, _Rs_);
-	armMoveAddressToReg(RSCRATCHADDR, &s_qfsrvTemp[16]);
-	armAsm->Str(RQSCRATCH, a64::MemOperand(RSCRATCHADDR));
-
-	// Load sa (byte offset), clamped to 0..15 — see the fast path above
+	// index = sa + {0..15}, built in RQSCRATCH3 before the operands land so
+	// the broadcast can borrow RQSCRATCH.
+	armAsm->Ldr(RQSCRATCH3, armCpuRegMem(&_cpuRegistersPack.byteRamp));
 	armLoadEERegPtr(RWSCRATCH, &cpuRegs.sa);
+	// SA is 4 bits and MTSA/MTSAB/MTSAH all mask at the write, so this is
+	// belt-and-braces. A TBL index past the 32-byte table answers zero, so no
+	// host address depends on it.
 	armAsm->And(RWSCRATCH, RWSCRATCH, 0xf);
+	armAsm->Dup(RQSCRATCH.V16B(), RWSCRATCH);
+	armAsm->Add(RQSCRATCH3.V16B(), RQSCRATCH3.V16B(), RQSCRATCH.V16B());
 
-	// Unaligned 128-bit load from temp + sa
-	armMoveAddressToReg(RSCRATCHADDR, &s_qfsrvTemp[0]);
-	armAsm->Add(RSCRATCHADDR, RSCRATCHADDR, RXSCRATCH); // addr = temp + sa
-	armAsm->Ldr(RQSCRATCH, a64::MemOperand(RSCRATCHADDR));
+	// The table has to be a consecutive pair, which q30/q31 are. Emitted
+	// directly rather than through armEmitVTBL, whose assert rejects
+	// RQSCRATCH/RQSCRATCH2 as sources: it reserves them for the copy it makes
+	// when the pair is not consecutive, the one case this cannot hit.
+	mmiLoadReg(RQSCRATCH, _Rt_);  // table bytes 0..15
+	mmiLoadReg(RQSCRATCH2, _Rs_); // table bytes 16..31
+	armAsm->Tbl(RQSCRATCH3.V16B(), RQSCRATCH.V16B(), RQSCRATCH2.V16B(), RQSCRATCH3.V16B());
 
-	// Store result to Rd
-	armStoreEEGPRQuad(RQSCRATCH, _Rd_);
+	armStoreEEGPRQuad(RQSCRATCH3, _Rd_);
 }
 
 // ============================================================================
