@@ -765,6 +765,7 @@ struct alignas(16) GSHWDrawConfig
 				u32 pabe           : 1;
 				u32 no_color       : 1; // disables color output entirely (depth only)
 				u32 no_color1      : 1; // disables second color output (when unnecessary)
+				u32 blend_factor_in_alpha : 1; // writes the blend factor to the first output's alpha instead of the second output (no dual-source blend)
 
 				// Others ways to fetch the texture
 				u32 channel : 3;

@@ -1412,7 +1412,11 @@ void ps_main()
 #endif
 
 #if !PS_NO_COLOR
-	#if PS_RTA_CORRECTION
+	#if PS_BLEND_FACTOR_IN_ALPHA
+		// No dual-source blend unit here. Nothing is keeping this pass's alpha, so hand the
+		// blend factor to fixed-function SRC_ALPHA through it instead of a second output.
+		C.a = alpha_blend.a;
+	#elif PS_RTA_CORRECTION
 		C.a = C.a / 128.0f;
 	#else
 		C.a = C.a / 255.0f;

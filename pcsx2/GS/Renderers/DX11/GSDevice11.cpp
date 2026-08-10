@@ -2079,6 +2079,7 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 		sm.AddMacro("PS_TEX_IS_FB", sel.tex_is_fb);
 		sm.AddMacro("PS_NO_COLOR", sel.no_color);
 		sm.AddMacro("PS_NO_COLOR1", sel.no_color1);
+		sm.AddMacro("PS_BLEND_FACTOR_IN_ALPHA", sel.blend_factor_in_alpha);
 		sm.AddMacro("PS_ZTST", sel.ztst);
 		sm.AddMacro("PS_AA1", static_cast<u32>(sel.aa1));
 		sm.AddMacro("PS_ABE", sel.abe);

@@ -94,6 +94,7 @@
 #define PS_COLCLIP_HW 0
 #define PS_RTA_CORRECTION 0
 #define PS_RTA_SRC_CORRECTION 0
+#define PS_BLEND_FACTOR_IN_ALPHA 0
 #define PS_COLCLIP 0
 #define PS_BLEND_A 0
 #define PS_BLEND_B 0
@@ -1548,7 +1549,9 @@ if (bad)
 
 	// Output color scaling
 #if !PS_NO_COLOR
-	o_col0.a = PS_RTA_CORRECTION ? C.a / 128.0f : C.a / 255.0f;
+	// PS_BLEND_FACTOR_IN_ALPHA: no dual-source blend unit, so the blend factor rides in the first
+	// output's alpha. Unreachable on D3D, which always has one, but the selector bit is shared.
+	o_col0.a = PS_BLEND_FACTOR_IN_ALPHA ? alpha_blend.a : (PS_RTA_CORRECTION ? C.a / 128.0f : C.a / 255.0f);
 	o_col0.rgb = PS_COLCLIP_HW ? float3(C.rgb / 65535.0f) : C.rgb / 255.0f;
 #if !PS_NO_COLOR1
 	o_col1 = alpha_blend;
