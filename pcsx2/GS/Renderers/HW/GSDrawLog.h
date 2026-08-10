@@ -78,6 +78,19 @@ namespace GSDrawLog
 		s16 area_y;
 		s16 area_z;
 		s16 area_w;
+
+		// Tile-renderer view (NoteTileDraw). The columns exist ahead of the machinery
+		// they will measure, deliberately: the memoization hit rate and per-draw record
+		// cost are load-bearing bets of the Tile design, and the instrument has to
+		// predate the bet so the numbers exist the day the machinery lands. Rows from
+		// the Classic renderer leave all of this zero and serialise it as empty cells.
+		// Tile rows never carry the backend view above (their draws do not go through
+		// GSHWDrawConfig), so they serialise as submitted=0 with the tile cells filled.
+		u32 pass_id; // pass-graph instance the draw landed in; 0 until the graph exists
+		u32 record_ns; // Tile bookkeeping cost for this draw (key hash, probes, page sets) -- never draw execution
+		u8 tile; // row came from the Tile renderer
+		u8 memo_hit; // draw-key memoization hit
+		u8 fallback_reason; // TileFallback enum
 	};
 
 	/// How a draw whose texture aliased the render target or depth buffer was resolved.
@@ -95,6 +108,17 @@ namespace GSDrawLog
 		SelfReadBarrier, ///< sampled the live attachment under a barrier
 		SelfReadDepthDirect, ///< sampled the depth buffer directly, no barrier needed
 		SelfReadCopy, ///< copied the target and sampled the copy
+	};
+
+	/// Why a Tile-renderer draw took the SW-fallback floor instead of a native
+	/// realization. The per-title distribution of this column is the primary health
+	/// metric of the Tile renderer: promotion work is aimed at whatever reason
+	/// dominates. Reasons are appended as the native path grows; Floor means the
+	/// native path does not exist yet and every draw spills by construction.
+	enum TileFallback : u8
+	{
+		TileFallbackNone = 0, ///< realized natively (no fallback)
+		TileFallbackFloor, ///< unconditional floor -- no native path exists yet
 	};
 
 	enum Flags : u8
@@ -131,6 +155,11 @@ namespace GSDrawLog
 	/// did not record one (inactive, or arena full). prim_overlap is GSState::PRIM_OVERLAP,
 	/// passed in because it lives on the renderer rather than the draw config.
 	void EndDraw(const GSHWDrawConfig& config, u8 prim_overlap);
+
+	/// Completes the row opened by BeginDraw with the Tile-renderer view instead of the
+	/// backend view. record_ns is the draw's Tile bookkeeping cost only; pass_id is 0
+	/// until the pass graph exists. No-op if BeginDraw did not record a row.
+	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback);
 
 	/// Closes any row left open by a draw that returned before submit, so skipped draws
 	/// still appear. Called on every exit from GSRendererHW::Draw.

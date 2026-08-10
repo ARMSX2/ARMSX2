@@ -22,6 +22,11 @@ class GSRendererTile final : public GSRendererSW
 {
 public:
 	GSRendererTile(int threads);
+
+	void Draw() override;
+
+private:
+	void RecordFloorDrawLogEntry() const;
 };
 
 MULTI_ISA_UNSHARED_END

@@ -121,6 +121,19 @@ namespace GSDrawLog
 		rec.area_w = static_cast<s16>(config.drawarea.w);
 	}
 
+	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback)
+	{
+		if (s_open_record == SIZE_MAX)
+			return;
+
+		Record& rec = s_records[s_open_record];
+		rec.tile = 1;
+		rec.memo_hit = memo_hit ? 1 : 0;
+		rec.record_ns = record_ns;
+		rec.pass_id = pass_id;
+		rec.fallback_reason = static_cast<u8>(fallback);
+	}
+
 	void FinishDraw()
 	{
 		s_open_record = SIZE_MAX;
@@ -138,6 +151,17 @@ namespace GSDrawLog
 				return "DEPTH_DIRECT";
 			case SelfReadCopy:
 				return "COPY";
+			default:
+				return "";
+		}
+	}
+
+	static const char* GetTileFallbackName(u8 reason)
+	{
+		switch (reason)
+		{
+			case TileFallbackFloor:
+				return "FLOOR";
 			default:
 				return "";
 		}
@@ -173,7 +197,8 @@ namespace GSDrawLog
 			"blend,alpha_a,alpha_b,alpha_c,alpha_d,"
 			"atst,afail,date,datm,self_read,"
 			"topology,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
-			"area_x,area_y,area_w,area_h\n");
+			"area_x,area_y,area_w,area_h,"
+			"memo_hit,record_ns,pass_id,fallback\n");
 
 		for (const Record& r : s_records)
 		{
@@ -227,7 +252,7 @@ namespace GSDrawLog
 
 			if (submitted)
 			{
-				std::fprintf(fp.get(), "%s,%u,%d,%s,%s,%s,%x,%d,%d,%d,%d\n",
+				std::fprintf(fp.get(), "%s,%u,%d,%s,%s,%s,%x,%d,%d,%d,%d,",
 					GSGetTopologyName(static_cast<GSHWDrawConfig::Topology>(r.topology)), r.barrier,
 					(r.flags & FlagFeedbackLoopRT) ? 1 : 0,
 					GetPrimOverlapName(r.prim_overlap), GSGetTexHazardName(r.tex_hazard),
@@ -236,7 +261,17 @@ namespace GSDrawLog
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,,,,,\n");
+				std::fprintf(fp.get(), ",,,,,,,,,,,");
+			}
+
+			if (r.tile)
+			{
+				std::fprintf(fp.get(), "%u,%u,%u,%s\n", r.memo_hit, r.record_ns, r.pass_id,
+					GetTileFallbackName(r.fallback_reason));
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,,\n");
 			}
 		}
 
