@@ -1209,6 +1209,7 @@ struct alignas(16) GSHWDrawConfig
 		FEEDBACK,
 		SIMPLE_FB_ONLY,
 		SIMPLE_RGB_ONLY,
+		SPLIT_RGB_ONLY,
 		PASS_THEN_FAIL,
 		NEVER,
 		ABORT_DRAW
@@ -1218,6 +1219,7 @@ struct alignas(16) GSHWDrawConfig
 	{
 		return method == AlphaTestMode::SIMPLE_FB_ONLY ||
 		       method == AlphaTestMode::SIMPLE_RGB_ONLY ||
+		       method == AlphaTestMode::SPLIT_RGB_ONLY ||
 		       method == AlphaTestMode::PASS_THEN_FAIL ||
 		       method == AlphaTestMode::NEVER;
 	}

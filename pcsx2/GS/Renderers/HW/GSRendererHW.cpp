@@ -9203,6 +9203,13 @@ void GSRendererHW::EmulateAlphaTest(DATEOptions& date_options)
 	// hardware dual-source blending. Without it (e.g. Mali), fall to the full path. Per sashkinbro/EmuCoreX.
 	const bool simple_rgb_only =
 		(afail == AFAIL_RGB_ONLY) && independent_z && independent_rgb && features.dual_source_blend;
+	// Without dual source, the same result comes from splitting the draw by *channel* instead of by
+	// fragment. Under RGB_ONLY every fragment writes RGB and only the passing ones write A and Z, so
+	// one pass with the test off writing RGB, then one with the test on writing A and Z, is exact.
+	// It is strictly better than pass/fail, which splits RGB across two passes and so composites
+	// overlapping primitives out of order.
+	const bool split_rgb_only =
+		(afail == AFAIL_RGB_ONLY) && independent_z && independent_rgb && !features.dual_source_blend;
 	const bool simple_zb_only = (afail == AFAIL_ZB_ONLY) && independent_z;
 
 	// Determine where RT and/or depth are needed for the feedback methods.
@@ -9234,7 +9241,7 @@ void GSRendererHW::EmulateAlphaTest(DATEOptions& date_options)
 	// The simple cases can be handle accurately in two passes so no point
 	// in requiring barriers if they are not already required.
 	const bool prefer_two_pass = !(free_fbfetch_feedback || free_barrier_feedback) &&
-	                             (simple_fb_only || simple_rgb_only || simple_zb_only);
+	                             (simple_fb_only || simple_rgb_only || split_rgb_only || simple_zb_only);
 	
 	if (prefer_feedback && !prefer_two_pass && !avoid_feedback)
 	{
@@ -9302,6 +9309,28 @@ void GSRendererHW::EmulateAlphaTest(DATEOptions& date_options)
 		// The actual blend setup will be done later after determining blending.
 
 		m_conf.alpha_test = GSHWDrawConfig::AlphaTestMode::SIMPLE_RGB_ONLY;
+	}
+	else if (split_rgb_only)
+	{
+		// First pass writes RGB for every fragment; second pass writes A and Z for the passing ones.
+		GL_INS("Alpha test: RGB for all fragments, then A and Z for passing ones (accurate)");
+
+		// No test on the first pass - under RGB_ONLY, passing and failing fragments write the same RGB.
+		m_conf.ps.atst = PS_ATST::NONE;
+		m_conf.ps.afail = PS_AFAIL::KEEP;
+
+		// Swap stencil DATE for PrimID DATE, for both Z on and off cases.
+		// Because we're making some pixels pass, but not updating A, the stencil won't be synced.
+		if (date_options.enabled && !date_options.barrier && features.primitive_id)
+		{
+			if (!date_options.primid)
+				GL_INS("Alpha test: Swap stencil DATE for PrimID, due to AFAIL");
+
+			date_options.stencil_one = false;
+			date_options.primid = true;
+		}
+
+		m_conf.alpha_test = GSHWDrawConfig::AlphaTestMode::SPLIT_RGB_ONLY;
 	}
 	else
 	{
@@ -9380,6 +9409,25 @@ void GSRendererHW::EmulateAlphaTestSecondPass()
 					m_conf.blend.dst_factor_alpha = GSDevice::INV_SRC1_ALPHA;
 				}
 			}
+		}
+	}
+	else if (m_conf.alpha_test == GSHWDrawConfig::AlphaTestMode::SPLIT_RGB_ONLY)
+	{
+		// Split by channel: the first pass already wrote RGB for every fragment, so all that is left
+		// is what only a passing fragment may write.
+		m_conf.colormask.wa = 0;
+		m_conf.depth.zwe = false;
+
+		m_conf.alpha_second_pass.colormask.wrgba &= 0x8; // Alpha only on second pass
+
+		if (m_conf.alpha_second_pass.colormask.wrgba || m_conf.alpha_second_pass.depth.zwe)
+		{
+			// Enable alpha test and discard failing fragments on second pass.
+			GetAlphaTestConfigPS(atst, aref, false, ps_atst, ps_aref);
+			m_conf.alpha_second_pass.enable = true;
+			m_conf.alpha_second_pass.ps.atst = ps_atst;
+			m_conf.alpha_second_pass.ps_aref = ps_aref;
+			m_conf.alpha_second_pass.ps.afail = PS_AFAIL::KEEP;
 		}
 	}
 	else
