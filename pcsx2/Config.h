@@ -318,6 +318,19 @@ enum class GSRendererType : s8
 	DX12 = 15,
 };
 
+// Which hardware-renderer implementation a Vulkan device runs: the classic desktop-shaped
+// GSRendererHW, or the tiler-native Tile renderer. Deliberately orthogonal to GSRendererType:
+// a new renderer-type integer would be silently dropped by the Android settings-recovery
+// whitelist, would turn every switch into a full device teardown (RestartOptionsAreEqual keys
+// on Renderer), and would break GSIsHardwareRenderer() call sites. As a variant, a switch is
+// the cheap renderer-only GSreopen. Selection: GS/Renderers/Common/GSTileSelectionPolicy.h.
+enum class GSHWRendererVariant : u8
+{
+	Auto = 0,
+	Classic = 1,
+	Tile = 2,
+};
+
 enum class GSVSyncMode : u8
 {
 	Disabled,
@@ -1010,6 +1023,7 @@ struct Pcsx2Config
 		OsdOverlayPos OsdPerformancePos = DEFAULT_OSD_PERFORMANCE_POS;
 
 		GSRendererType Renderer = DEFAULT_HW_RENDERER;
+		GSHWRendererVariant HWRendererVariant = GSHWRendererVariant::Auto;
 		float UpscaleMultiplier = DEFAULT_UPSCALE_MULTIPLIER;
 
 		AccBlendLevel AccurateBlendingUnit = DEFAULT_BLENDING_ACCURACY;

@@ -860,6 +860,7 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(OsdPerformancePos) &&
 
 		OpEqu(Renderer) &&
+		OpEqu(HWRendererVariant) &&
 		OpEqu(UpscaleMultiplier) &&
 
 		OpEqu(AccurateBlendingUnit) &&
@@ -1131,6 +1132,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapIntEnumEx(OsdPerformancePos, "OsdPerformancePos");
 
 	SettingsWrapIntEnumEx(Renderer, "Renderer");
+	SettingsWrapIntEnumEx(HWRendererVariant, "HWRendererVariant");
 	SettingsWrapEntryEx(UpscaleMultiplier, "upscale_multiplier");
 
 	SettingsWrapBitBoolEx(HWMipmap, "hw_mipmap");

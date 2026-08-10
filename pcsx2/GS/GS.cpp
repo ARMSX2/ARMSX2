@@ -1060,8 +1060,12 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 	GSClampUpscaleMultiplier(GSConfig);
 
 	// Options which aren't using the global struct yet, so we need to recreate all GS objects.
+	// The HW variant rides the same renderer-only reopen: it picks the hardware renderer
+	// implementation at construction, and never needs the device recreated — which is the
+	// point of it not being a GSRendererType.
 	if (GSConfig.SWExtraThreads != old_config.SWExtraThreads ||
-		GSConfig.SWExtraThreadsHeight != old_config.SWExtraThreadsHeight)
+		GSConfig.SWExtraThreadsHeight != old_config.SWExtraThreadsHeight ||
+		GSConfig.HWRendererVariant != old_config.HWRendererVariant)
 	{
 		if (!GSreopen(false, true, GSConfig.Renderer, &old_config))
 			pxFailRel("Failed to do quick GS reopen");

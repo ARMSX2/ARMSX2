@@ -595,6 +595,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSShaderEnums.h
 	GS/Renderers/Common/GSSnapshotPolicy.h
 	GS/Renderers/Common/GSTexture.h
+	GS/Renderers/Common/GSTileSelectionPolicy.h
 	GS/Renderers/Common/GSVertex.h
 	GS/Renderers/Common/GSVertexTrace.h
 	GS/Renderers/Null/GSDeviceNone.h
