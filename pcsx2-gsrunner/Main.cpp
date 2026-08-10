@@ -146,6 +146,7 @@ struct FrameSample
 	u64 tc_target_miss;
 	u64 hash_cache_hit;
 	u64 hash_cache_miss;
+	u64 pipeline_switches;
 };
 // Work posted from other threads (the PINE server) to run on the CPU thread.
 static std::mutex s_cpu_thread_tasks_mutex;
@@ -165,6 +166,8 @@ static double s_last_tc_target_hit = 0;
 static double s_last_tc_target_miss = 0;
 static double s_last_hash_cache_hit = 0;
 static double s_last_hash_cache_miss = 0;
+static double s_last_pipeline_switches = 0;
+static u64 s_total_pipeline_switches = 0;
 static u64 s_total_prims = 0;
 static u64 s_total_tc_source_hit = 0;
 static u64 s_total_tc_source_miss = 0;
@@ -400,6 +403,7 @@ void Host::BeginPresentFrame()
 		sample.tc_target_miss = update_stat(GSPerfMon::TCTargetMiss, s_total_tc_target_miss, s_last_tc_target_miss);
 		sample.hash_cache_hit = update_stat(GSPerfMon::HashCacheHit, s_total_hash_cache_hit, s_last_hash_cache_hit);
 		sample.hash_cache_miss = update_stat(GSPerfMon::HashCacheMiss, s_total_hash_cache_miss, s_last_hash_cache_miss);
+		sample.pipeline_switches = update_stat(GSPerfMon::PipelineSwitches, s_total_pipeline_switches, s_last_pipeline_switches);
 
 		const bool idle_frame = s_total_frames && (last_draws == s_total_internal_draws && last_uploads == s_total_uploads);
 
@@ -1257,6 +1261,7 @@ static void WriteStatsJson(const std::string& path)
 		s_total_tc_target_hit, s_total_tc_target_miss);
 	std::fprintf(fp.get(), "    \"hash_cache_hit\": %" PRIu64 ",\n    \"hash_cache_miss\": %" PRIu64 ",\n",
 		s_total_hash_cache_hit, s_total_hash_cache_miss);
+	std::fprintf(fp.get(), "    \"pipeline_switches\": %" PRIu64 ",\n", s_total_pipeline_switches);
 	std::fprintf(fp.get(), "    \"frame_ms_p50\": %.3f,\n    \"frame_ms_p95\": %.3f,\n    \"frame_ms_p99\": %.3f,\n",
 		Percentile(frame_times, 0.50), Percentile(frame_times, 0.95), Percentile(frame_times, 0.99));
 	std::fprintf(fp.get(), "    \"frame_ms_worst\": %.3f,\n    \"frame_worst_index\": %u\n  },\n", worst_ms, worst_frame);
@@ -1273,7 +1278,8 @@ static void WriteStatsJson(const std::string& path)
 			"\"copies_rov\":%" PRIu64 ",\"draw_calls_rov\":%" PRIu64 ",\"barriers_rov\":%" PRIu64 ","
 			"\"tc_source_hit\":%" PRIu64 ",\"tc_source_miss\":%" PRIu64 ","
 			"\"tc_target_hit\":%" PRIu64 ",\"tc_target_miss\":%" PRIu64 ","
-			"\"hash_cache_hit\":%" PRIu64 ",\"hash_cache_miss\":%" PRIu64 "}%s\n",
+			"\"hash_cache_hit\":%" PRIu64 ",\"hash_cache_miss\":%" PRIu64 ","
+			"\"pipeline_switches\":%" PRIu64 "}%s\n",
 			s.frame, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms,
 			s.prims, s.draws, s.draw_calls,
 			s.render_passes, s.barriers, s.copies,
@@ -1282,6 +1288,7 @@ static void WriteStatsJson(const std::string& path)
 			s.tc_source_hit, s.tc_source_miss,
 			s.tc_target_hit, s.tc_target_miss,
 			s.hash_cache_hit, s.hash_cache_miss,
+			s.pipeline_switches,
 			(i + 1 < s_frame_samples.size()) ? "," : "");
 	}
 	std::fprintf(fp.get(), "  ]\n}\n");
@@ -1297,6 +1304,7 @@ void GSRunner::DumpStats()
 	Console.WriteLn(fmt::format("@HWSTAT@ Draws: {} (avg {})", s_total_internal_draws, static_cast<u64>(std::ceil(s_total_internal_draws / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Draw Calls: {} (avg {})", s_total_draws, static_cast<u64>(std::ceil(s_total_draws / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Render Passes: {} (avg {})", s_total_render_passes, static_cast<u64>(std::ceil(s_total_render_passes / static_cast<double>(s_total_drawn_frames)))));
+	Console.WriteLn(fmt::format("@HWSTAT@ Pipeline Switches: {} (avg {})", s_total_pipeline_switches, static_cast<u64>(std::ceil(s_total_pipeline_switches / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Barriers: {} (avg {})", s_total_barriers, static_cast<u64>(std::ceil(s_total_barriers / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Copies: {} (avg {})", s_total_copies, static_cast<u64>(std::ceil(s_total_copies / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Uploads: {} (avg {})", s_total_uploads, static_cast<u64>(std::ceil(s_total_uploads / static_cast<double>(s_total_drawn_frames)))));
