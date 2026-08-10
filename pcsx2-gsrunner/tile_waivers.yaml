@@ -1,0 +1,21 @@
+# Reviewed quality-trade waivers for the Tile renderer's oracle gate (gs_oracle.py).
+#
+# A waiver is an explicit, reviewed decision that a scored divergence from the SW
+# oracle is an accepted quality trade -- never a way to silence an unexplained diff.
+# Every entry must say what the trade buys and who reviewed it. The total waiver
+# count is itself a tracked risk signal: a growing list means the renderer is
+# drifting from the oracle faster than trades are being won.
+#
+# Waivers apply to the tile arm only; gs_oracle.py ignores this file for the
+# classic and sw arms, so a Classic regression can never hide behind one.
+#
+# Entry schema:
+#   - dump: <gsname>            # dump basename without .gs[.xz|.zst]
+#     frames: [3, 4]            # frame indices, or the string "all"
+#     threshold: 1              # levels; the waiver allows pixels wrong by MORE than
+#     max_pct: 0.5              # this, up to max_pct percent of the frame
+#     reason: "why this trade is acceptable and what it buys"
+#     author: <who reviewed it>
+#     date: YYYY-MM-DD
+
+waivers: []
