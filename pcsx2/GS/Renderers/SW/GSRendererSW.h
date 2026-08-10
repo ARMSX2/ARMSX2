@@ -86,6 +86,7 @@ protected:
 	void RewriteVerticesIfSTOverflow();
 
 	bool IsCoverageAlphaSupported() override;
+	GSHWAutoFlushLevel GetAutoFlushLevel() const override;
 public:
 	GSRendererSW(int threads);
 	~GSRendererSW() override;

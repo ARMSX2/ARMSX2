@@ -377,6 +377,14 @@ protected:
 	bool IsCoverageAlpha();
 	bool IsCoverageAlphaFixedOne();
 	virtual bool IsCoverageAlphaSupported();
+	// Which auto-flush rule ResetHandlers arms. The decision belongs to the renderer's DRAW
+	// ENGINE, not the process's renderer type: GSRendererTile runs the SW engine as its
+	// fallback floor under a hardware GSCurrentRenderer, and the two flush shapes produce
+	// different pixels on self-texturing draws. ⚠️ ResetHandlers runs from the GSState
+	// constructor, where this virtual resolves to the base — an override is inert until the
+	// derived constructor calls ResetHandlers() again (GSRendererSW does). A future front
+	// parser (GSFrontState) fronting a SW-engine renderer needs the same override.
+	virtual GSHWAutoFlushLevel GetAutoFlushLevel() const;
 	// GV7-1d-ii: back-half of the split front's kick-time coverage-alpha query
 	// (HW only): cached-ctx/alpha-minmax from this object's last executed draw,
 	// the caller's live ALPHA passed in.

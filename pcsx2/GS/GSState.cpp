@@ -23,9 +23,13 @@
 #include <thread>
 
 
-static __fi bool IsAutoFlushEnabled()
+GSHWAutoFlushLevel GSState::GetAutoFlushLevel() const
 {
-	return GSIsHardwareRenderer() ? (GSConfig.UserHacks_AutoFlush != GSHWAutoFlushLevel::Disabled) : GSConfig.AutoFlushSW;
+	// Default follows the process renderer type, matching the historical global gate; the SW
+	// renderer (and with it the Tile floor) overrides with the SW rule.
+	return GSIsHardwareRenderer() ?
+			   GSConfig.UserHacks_AutoFlush :
+			   (GSConfig.AutoFlushSW ? GSHWAutoFlushLevel::Enabled : GSHWAutoFlushLevel::Disabled);
 }
 
 constexpr int GSState::GetSaveStateSize(int version)
@@ -1133,9 +1137,10 @@ void GSState::ResetHandlers()
 	m_fpGIFPackedRegHandlers[GIF_REG_A_D] = &GSState::GIFPackedRegHandlerA_D;
 	m_fpGIFPackedRegHandlers[GIF_REG_NOP] = &GSState::GIFPackedRegHandlerNOP;
 
-	if (IsAutoFlushEnabled())
+	const GSHWAutoFlushLevel autoflush_level = GetAutoFlushLevel();
+	if (autoflush_level != GSHWAutoFlushLevel::Disabled)
 	{
-		if (GSConfig.UserHacks_AutoFlush == GSHWAutoFlushLevel::SpritesOnly)
+		if (autoflush_level == GSHWAutoFlushLevel::SpritesOnly)
 			SetPrimHandlers<true, true>();
 		else
 			SetPrimHandlers<true, false>();
