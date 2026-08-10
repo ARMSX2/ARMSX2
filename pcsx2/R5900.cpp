@@ -40,7 +40,7 @@ cachedTlbs_t cachedTlbs;
 
 R5900cpu *Cpu = NULL;
 
-static constexpr uint eeWaitCycles = 3072;
+static constexpr uint eeWaitCycles = 4096;
 
 bool eeEventTestIsActive = false;
 EE_intProcessStatus eeRunInterruptScan = INT_NOT_RUNNING;
