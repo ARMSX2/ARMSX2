@@ -77,6 +77,7 @@ extern const ProcessorFeatures g_cpu;
 
 class GSRenderer;
 MULTI_ISA_DEF(GSRenderer* makeGSRendererSW(int threads);)
+MULTI_ISA_DEF(GSRenderer* makeGSRendererTile(int threads);)
 
 namespace MultiISAFunctions
 {

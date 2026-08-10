@@ -65,6 +65,21 @@ constexpr GSTileSelectionDecision DecideHWRendererVariant(
 	return decision;
 }
 
+constexpr const char* GSHWRendererVariantName(GSHWRendererVariant variant)
+{
+	switch (variant)
+	{
+		case GSHWRendererVariant::Auto:
+			return "auto";
+		case GSHWRendererVariant::Classic:
+			return "classic";
+		case GSHWRendererVariant::Tile:
+			return "tile";
+			// no default: a new variant must fail to compile until it is named here
+	}
+	return "unknown";
+}
+
 constexpr const char* GSTileSelectionReasonName(GSTileSelectionReason reason)
 {
 	switch (reason)

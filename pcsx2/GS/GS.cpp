@@ -19,6 +19,8 @@
 #include "pcsx2/GS.h"
 #include "GS/Renderers/Null/GSDeviceNone.h"
 #include "GS/Renderers/Null/GSRendererNull.h"
+#include "GS/Renderers/Common/GSGPUProfile.h"
+#include "GS/Renderers/Common/GSTileSelectionPolicy.h"
 #include "GS/Renderers/HW/GSRendererHW.h"
 #include "GS/Renderers/HW/GSHwHack.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
@@ -267,8 +269,39 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 	}
 	else if (renderer != GSRendererType::SW)
 	{
-		GSClampUpscaleMultiplier(GSConfig);
-		g_gs_renderer = std::make_unique<GSRendererHW>();
+		// The hardware-renderer variant decision (GSTileSelectionPolicy.h) needs the device's
+		// resolved GPU profile, which is why it lives here, after OpenGSDevice. The GameDB
+		// recommendation input lands with the per-title promotion mechanism; until then Auto
+		// always resolves Classic.
+		const RuntimeGpuProfile gpu_profile =
+			g_gs_device ? g_gs_device->GetRuntimeGPUProfile() : RuntimeGpuProfile::Unknown;
+		const bool mobile_tiler_profile =
+			gpu_profile == RuntimeGpuProfile::Mali || gpu_profile == RuntimeGpuProfile::Adreno ||
+			gpu_profile == RuntimeGpuProfile::PowerVR || gpu_profile == RuntimeGpuProfile::Xclipse;
+		const GSTileSelectionDecision tile_decision = DecideHWRendererVariant(GSConfig.HWRendererVariant,
+			renderer == GSRendererType::VK, /*gamedb_recommends_tile=*/false, mobile_tiler_profile);
+
+		if (tile_decision.use_tile)
+		{
+			// The oracle harness verifies-by-effect against this line; keep the format stable.
+			Console.WriteLn("GS: Tile renderer active (variant=%s, reason=%s, profile=%s)",
+				GSHWRendererVariantName(GSConfig.HWRendererVariant),
+				GSTileSelectionReasonName(tile_decision.reason),
+				GpuProfileDetector::RuntimeProfileToString(gpu_profile));
+			g_gs_renderer = std::unique_ptr<GSRenderer>(
+				MULTI_ISA_SELECT(makeGSRendererTile)(GSConfig.SWExtraThreads));
+		}
+		else
+		{
+			if (GSConfig.HWRendererVariant != GSHWRendererVariant::Classic)
+			{
+				Console.WriteLn("GS: Classic renderer active (variant=%s, reason=%s)",
+					GSHWRendererVariantName(GSConfig.HWRendererVariant),
+					GSTileSelectionReasonName(tile_decision.reason));
+			}
+			GSClampUpscaleMultiplier(GSConfig);
+			g_gs_renderer = std::make_unique<GSRendererHW>();
+		}
 	}
 	else
 	{

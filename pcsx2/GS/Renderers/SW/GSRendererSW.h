@@ -10,7 +10,10 @@
 
 MULTI_ISA_UNSHARED_START
 
-class GSRendererSW final : public GSRenderer
+// Not final on purpose: GSRendererTile derives from it. The SW draw path is the Tile
+// renderer's permanent fallback floor, and inheriting it keeps the floor byte-identical to
+// this renderer by construction rather than by re-implementation.
+class GSRendererSW : public GSRenderer
 {
 public:
 	class SharedData : public GSRasterizerData

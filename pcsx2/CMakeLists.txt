@@ -495,6 +495,7 @@ set(pcsx2GSSourcesUnshared
 	GS/Renderers/SW/GSDrawScanline.cpp
 	GS/Renderers/SW/GSRasterizer.cpp
 	GS/Renderers/SW/GSRendererSW.cpp
+	GS/Renderers/Tile/GSRendererTile.cpp
 )
 
 if(ARCH_X86)
@@ -615,6 +616,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/SW/GSSetupPrimCodeGenerator.all.h
 	GS/Renderers/SW/GSTextureCacheSW.h
 	GS/Renderers/SW/GSVertexSW.h
+	GS/Renderers/Tile/GSRendererTile.h
 	)
 
 if(ARCH_X86)

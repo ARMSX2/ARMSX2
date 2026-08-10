@@ -187,6 +187,9 @@
     <Filter Include="System\Ps2\GS\Renderers\Software">
       <UniqueIdentifier>{8a0a142d-a4e0-4e8d-afbf-955fe1697eca}</UniqueIdentifier>
     </Filter>
+    <Filter Include="System\Ps2\GS\Renderers\Tile">
+      <UniqueIdentifier>{fd628b32-7750-4af8-93b0-02d27f427c76}</UniqueIdentifier>
+    </Filter>
     <Filter Include="System\Ps2\GS\Renderers\OpenGL">
       <UniqueIdentifier>{c140280a-87c6-4433-b877-f0bf8cca9345}</UniqueIdentifier>
     </Filter>
@@ -1051,6 +1054,9 @@
     </ClCompile>
     <ClCompile Include="GS\Renderers\SW\GSRendererSW.cpp">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\Renderers\Tile\GSRendererTile.cpp">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClCompile>
     <ClCompile Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.cpp">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
@@ -2014,6 +2020,9 @@
     </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSRendererTile.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
