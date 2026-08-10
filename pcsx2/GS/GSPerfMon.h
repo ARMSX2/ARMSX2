@@ -36,6 +36,11 @@ public:
 		HashCacheHit,
 		HashCacheMiss,
 
+		// Actual pipeline binds emitted to the device (post-dedupe), not requests. On
+		// tiler drivers a bind re-dirties far more than the pipeline, so this is the
+		// per-draw CPU proxy the mobile renderer work steers by.
+		PipelineSwitches,
+
 		CounterLast,
 
 		// Reused counters for HW.

@@ -7698,7 +7698,13 @@ __ri void GSDeviceVK::ApplyBaseState(u32 flags, VkCommandBuffer cmdbuf)
 		vkCmdBindIndexBuffer(cmdbuf, m_index_buffer, 0, VK_INDEX_TYPE_UINT16);
 
 	if (flags & DIRTY_FLAG_PIPELINE)
+	{
+		// Counted here, at the emitted bind, rather than in SetPipeline: SetPipeline
+		// dedupes same-pipeline requests, and the cost being tracked is the command
+		// actually reaching the driver.
+		g_perfmon.Put(GSPerfMon::PipelineSwitches, 1);
 		vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_current_pipeline);
+	}
 
 	if (flags & DIRTY_FLAG_VIEWPORT)
 		vkCmdSetViewport(cmdbuf, 0, 1, &m_viewport);
