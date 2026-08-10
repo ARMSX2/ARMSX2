@@ -60,7 +60,13 @@ REL_KEY_PASS="${RELEASE_KEY_PASS:-$(prop keyPassword)}"
 for kv in "REL_KS:$REL_KS" "REL_KS_PASS:$REL_KS_PASS" "REL_KEY_ALIAS:$REL_KEY_ALIAS" "REL_KEY_PASS:$REL_KEY_PASS"; do
 	[[ -n "${kv#*:}" ]] || { echo "error: missing ${kv%%:*} (add armsx2_keystore.properties or set RELEASE_* env)" >&2; exit 1; }
 done
-for f in "$PROF" "$DEBUG_KS" "$REL_KS" "$LINEAGE" "$ZIPALIGN" "$APKSIGNER"; do
+# PROF is only read in optimize mode. Requiring it unconditionally made a regen
+# impossible: PGO_MODE=generate produces the instrumented APK you play to CREATE a
+# profile, so demanding one up front is a chicken-and-egg that fails instantly with
+# "FATAL missing" naming a file the run does not use.
+REQUIRED_FILES=("$DEBUG_KS" "$REL_KS" "$LINEAGE" "$ZIPALIGN" "$APKSIGNER")
+[[ "${PGO_MODE:-optimize}" == "optimize" ]] && REQUIRED_FILES+=("$PROF")
+for f in "${REQUIRED_FILES[@]}"; do
 	[[ -e "$f" ]] || { echo "FATAL missing: $f" >&2; exit 1; }
 done
 
