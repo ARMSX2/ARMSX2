@@ -21,6 +21,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_tile_lowering_tests.cpp
 	gs_sw_scanline_date_tests.cpp
 	gs_local_memory_move_tests.cpp
+	gs_clut_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE
