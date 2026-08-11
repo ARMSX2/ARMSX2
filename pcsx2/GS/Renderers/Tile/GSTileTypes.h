@@ -42,6 +42,29 @@ constexpr u8 gsTilePlanesFromChannelMask(u32 chan_mask)
 						   ((chan_mask & 0x8) ? kGSTilePlanesAlpha : 0));
 }
 
+/// Planes a CPU-side write in format psm invalidates on the pages it covers. This is
+/// BYTE coverage, not meaning: color and depth planes alias the same physical bytes,
+/// so a CT32 write kills a Z surface's truth on the page even though it "writes
+/// color". The only exemptions are formats that leave whole bytes untouched — 24-bit
+/// writes never touch the alpha byte, and the byte-3 palette views never touch bytes
+/// 0-2. The Z plane appears in every set because a depth reading of the cell overlaps
+/// every byte any write can touch.
+constexpr u8 gsTilePlanesInvalidatedByWrite(u32 psm)
+{
+	switch (psm)
+	{
+		case PSMCT24:
+		case PSMZ24:
+			return GSTilePlaneRGB | GSTilePlaneZ;
+		case PSMT8H:
+		case PSMT4HL:
+		case PSMT4HH:
+			return kGSTilePlanesAlpha | GSTilePlaneZ;
+		default:
+			return kGSTilePlanesAll;
+	}
+}
+
 // Whether a surface holds color or depth data — the two swizzle universes of GS
 // memory, and on the GPU side the two attachment types.
 enum class GSTileSurfaceKind : u8
