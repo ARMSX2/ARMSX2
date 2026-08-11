@@ -1343,6 +1343,79 @@ vec4 sample_color(vec2 st)
 	return trunc(t * 255.0f + 0.05f);
 }
 
+#if PS_TILE_LTF
+
+// The Tile renderer's bilinear: the console's filter, integer-exact (gs-texture
+// capture, SCPH-30001). The coordinate snaps to 1/16 texel by truncation, the
+// weight is the 4-bit fraction, and the two axes are nested truncating lerps
+// a + (((b-a)*f)>>4) on the post-palette 8-bit channels — never a float blend, and
+// no sampler state can express it (Classic's sampler path scores 67.45% on the
+// capture grid with every miss a filtering miss). Texels are fetched raw — the
+// source texture is plain RGBA8, palette and TEXA already applied CPU-side — and
+// filtered in integer arithmetic, mirroring the SW scanline (GSDrawScanline sel.ltf).
+
+ivec4 fetch_texel_tile(ivec2 xy)
+{
+	// Bounds safety for texelFetch. The SW scanline addresses a flat buffer, so a
+	// REGION_REPEAT OR-bit past the texture width walks into the next texel row;
+	// here a coordinate escaping the texture reads the edge texel instead. No
+	// corpus draw does this; the probe gate would surface one that mattered.
+	xy = clamp(xy, ivec2(0), ivec2(WH.xy) - 1);
+	return ivec4(texelFetch(Texture, xy, 0) * 255.0f + 0.5f);
+}
+
+ivec2 wrap_tile(ivec2 xy)
+{
+	// Per-axis wrap on the texel index, one corner at a time — the SW scanline's
+	// exact setup: REPEAT masks with size-1; CLAMP saturates to the texture;
+	// REGION_CLAMP saturates to the window (both bounds pre-clamped CPU-side);
+	// REGION_REPEAT is (u & MINU) | MAXU with MINU pre-masked and MAXU raw
+	// (console-confirmed formula). Region bounds arrive bit-cast in MinMax.
+	#if PS_WMS == 0
+		xy.x &= int(WH.x) - 1;
+	#elif PS_WMS == 1
+		xy.x = clamp(xy.x, 0, int(WH.x) - 1);
+	#elif PS_WMS == 2
+		xy.x = clamp(xy.x, floatBitsToInt(MinMax.x), floatBitsToInt(MinMax.z));
+	#else
+		xy.x = (xy.x & floatBitsToInt(MinMax.x)) | floatBitsToInt(MinMax.z);
+	#endif
+	#if PS_WMT == 0
+		xy.y &= int(WH.y) - 1;
+	#elif PS_WMT == 1
+		xy.y = clamp(xy.y, 0, int(WH.y) - 1);
+	#elif PS_WMT == 2
+		xy.y = clamp(xy.y, floatBitsToInt(MinMax.y), floatBitsToInt(MinMax.w));
+	#else
+		xy.y = (xy.y & floatBitsToInt(MinMax.y)) | floatBitsToInt(MinMax.w);
+	#endif
+	return xy;
+}
+
+vec4 sample_color_tile_ltf(vec2 st_int)
+{
+	// st_int is the coordinate in 1/16-texel units — the GS's 12.4 fixed-point
+	// space, exact for UV and the truncating snap for sprite STQ. Half a texel
+	// back (the scanline's u -= 0x8000), then the texel index and 4-bit weight
+	// fall out of the fixed-point value.
+	ivec2 uv16 = ivec2(floor(st_int)) - 8;
+	ivec2 f = uv16 & 15;
+	ivec2 t0 = uv16 >> 4;
+
+	ivec2 lo = wrap_tile(t0);
+	ivec2 hi = wrap_tile(t0 + 1);
+	ivec4 c00 = fetch_texel_tile(lo);
+	ivec4 c01 = fetch_texel_tile(ivec2(hi.x, lo.y));
+	ivec4 c10 = fetch_texel_tile(ivec2(lo.x, hi.y));
+	ivec4 c11 = fetch_texel_tile(hi);
+
+	ivec4 h0 = c00 + (((c01 - c00) * f.x) >> 4);
+	ivec4 h1 = c10 + (((c11 - c10) * f.x) >> 4);
+	return vec4(h0 + (((h1 - h0) * f.y) >> 4));
+}
+
+#endif // PS_TILE_LTF
+
 #endif // NEEDS_TEX
 
 vec4 tfx(vec4 T, vec4 C)
@@ -1438,6 +1511,8 @@ vec4 ps_color()
 	vec4 T = fetch_gXbY(ivec2(gl_FragCoord.xy + ChannelShuffleOffset));
 #elif PS_DEPTH_FMT > 0
 	vec4 T = sample_depth(st_int, ivec2(gl_FragCoord.xy));
+#elif PS_TILE_LTF
+	vec4 T = sample_color_tile_ltf(st_int);
 #else
 	vec4 T = sample_color(st);
 #endif

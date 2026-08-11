@@ -63,10 +63,10 @@ enum class GSTileFloorReason : u8
 	FrameZOverlap, ///< FRAME and ZBUF footprints share pages
 	ResourceFailure, ///< target pool allocation failed
 	// M3b texture gates (register-predicate):
-	TextureFiltered, ///< sampler filters somewhere — in-shader integer filter awaits gs-grad
-	TextureMip, ///< mip levels active — LOD selection awaits gs-grad
+	TextureFiltered, ///< retired at M3g slice 1 (in-shader integer bilinear); kept so old ledgers still decode
+	TextureMip, ///< mip levels active — LOD selection to the gs-grad rules is unimplemented
 	TexturePsm, ///< texture format the source builder does not serve (PSGPU24)
-	TexturePerspective, ///< STQ triangle — the GPU interpolator flips texels vs the SW DDA (measured); awaits gs-grad
+	TexturePerspective, ///< STQ triangle — the GPU interpolator flips texels vs the SW DDA (measured); awaits gs-grad's truncated-reciprocal divide in-shader
 	// M3b geometry reason:
 	TextureFeedback, ///< texture pages intersect the draw's own write footprint (M4)
 	Count
@@ -243,25 +243,27 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		return floored(GSTileFloorReason::PrimClass);
 	if (in.prim_class == GS_SPRITE_CLASS && !in.vs_expand)
 		return floored(GSTileFloorReason::SpriteExpandUnavailable);
-	// The M3b texture envelope: nearest sampling only, through the GPU sampler —
-	// console-exact (gs-texture capture), with palette and TEXA expansion applied
-	// CPU-side by the source builder, so every rtx-served format qualifies. The
-	// filter and mip gates wait on the gs-grad capture (coordinate quantisation
-	// point and LOD selection are unmeasured); mip outranks filter so the ledger
-	// attributes trilinear draws to the mip question.
+	// The texture envelope (M3b nearest, M3g bilinear): nearest sampling goes
+	// through the GPU sampler — console-exact (gs-texture capture) — and bilinear
+	// through the in-shader integer filter reproducing the SW scanline (1/16-texel
+	// truncating snap, 4-bit weight, nested truncating lerps — the same capture's
+	// measured mechanism, which no sampler setting expresses). Palette and TEXA
+	// expansion are applied CPU-side by the source builder, so every rtx-served
+	// format qualifies. Mip still floors (LOD selection to the gs-grad rules is
+	// unimplemented), and it outranks the coordinate gate so the ledger attributes
+	// trilinear draws to the mip question.
 	if (in.tme)
 	{
 		if (in.tex_psm == PSGPU24)
 			return floored(GSTileFloorReason::TexturePsm);
 		if (in.tex_mip)
 			return floored(GSTileFloorReason::TextureMip);
-		if (in.tex_linear)
-			return floored(GSTileFloorReason::TextureFiltered);
 		// Only affine-exact coordinate walks go native: UV in any prim class, STQ
 		// on sprites (Q constant per primitive — the gs-texture probe's measured
 		// shape). An STQ triangle is a true perspective gradient, and the corpus
 		// showed the GPU interpolator flipping texels against the SW DDA there
-		// even at nearest (OutRun: 12 draws, 0.63% of pixels off by >2 levels).
+		// even at nearest (OutRun: 12 draws, 0.63% of pixels off by >2 levels);
+		// native perspective awaits gs-grad's truncated-reciprocal divide in-shader.
 		if (!in.tex_fst && in.prim_class == GS_TRIANGLE_CLASS)
 			return floored(GSTileFloorReason::TexturePerspective);
 	}

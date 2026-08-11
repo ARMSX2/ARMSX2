@@ -738,6 +738,8 @@ struct alignas(16) GSHWDrawConfig
 				u32 adjs : 1;
 				u32 adjt : 1;
 				u32 ltf : 1;
+				u32 tile_ltf : 1; // Tile renderer: PS2-exact integer bilinear (1/16 snap, 4-bit nested truncating lerps) via texelFetch
+
 				// Shuffle and fbmask effect
 				u32 shuffle  : 1;
 				u32 shuffle_same : 1;

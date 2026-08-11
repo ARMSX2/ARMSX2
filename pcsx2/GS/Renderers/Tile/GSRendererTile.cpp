@@ -790,25 +790,19 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 
 	if (tex)
 	{
-		// The nearest-sampled plain-color source: the backend's "index and AEM
-		// expansion already done by the CPU" leg, sampled through the GPU sampler —
+		// The plain-color source: the backend's "index and AEM expansion already
+		// done by the CPU" leg. Nearest draws sample it through the GPU sampler —
 		// the exact configuration the gs-texture capture scored 128/128 on nearest
-		// cells in every arm. No palette, no aem, no ltf; region modes go through
-		// the shader with the console-confirmed REGION_REPEAT mask formula.
+		// cells in every arm. Bilinear draws filter in-shader (PS_TILE_LTF): the
+		// same capture measured the console's filter as a 1/16-texel truncating
+		// snap with 4-bit nested truncating lerps, which no sampler expresses.
 		conf.tex = tex;
 		conf.vs.tme = 1;
 		conf.vs.fst = PRIM->FST;
 		conf.ps.fst = PRIM->FST;
 		conf.ps.tfx = ctx->TEX0.TFX;
 		conf.ps.tcc = ctx->TEX0.TCC;
-
-		const u8 wms = static_cast<u8>(ctx->CLAMP.WMS);
-		const u8 wmt = static_cast<u8>(ctx->CLAMP.WMT);
-		conf.ps.wms = (wms & 2) ? wms : 0;
-		conf.ps.wmt = (wmt & 2) ? wmt : 0;
-		conf.sampler.tau = (wms == CLAMP_REPEAT);
-		conf.sampler.tav = (wmt == CLAMP_REPEAT);
-		conf.sampler.biln = 0; // nearest by envelope; filtering floors until gs-grad
+		conf.sampler.biln = 0; // the GPU sampler stays nearest-only in every mode
 
 		const float tw = static_cast<float>(1 << std::min<u32>(ctx->TEX0.TW, 10));
 		const float th = static_cast<float>(1 << std::min<u32>(ctx->TEX0.TH, 10));
@@ -818,23 +812,71 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 		conf.cb_ps.STScale = GSVector2(1.0f, 1.0f);
 		conf.cb_vs.texture_scale = GSVector2((1.0f / 16.0f) / tw, (1.0f / 16.0f) / th);
 
-		if ((wms | wmt) & 2)
+		const u8 wms = static_cast<u8>(ctx->CLAMP.WMS);
+		const u8 wmt = static_cast<u8>(ctx->CLAMP.WMT);
+		if (m_vt.IsLinear())
 		{
-			// Region modes at native scale: the clamp bound sits half a texel inside
-			// the last texel (inclusive bound, exclusive size); repeat passes the raw
-			// mask/fix words through bit-cast floats. Same recipe as Classic at 1x.
-			const GSVector4i clamp(ctx->CLAMP.MINU, ctx->CLAMP.MINV, ctx->CLAMP.MAXU, ctx->CLAMP.MAXV);
-			const GSVector4 region_repeat = GSVector4::cast(clamp);
-			const GSVector4 region_clamp = (GSVector4(clamp) + GSVector4::cxpr(0.5f, 0.5f, 0.1f, 0.1f)) / WH.xyxy();
-			if (wms >= CLAMP_REGION_CLAMP)
+			// texelFetch bypasses the sampler, so every wrap mode runs in the
+			// shader on integer texel indices, one filter corner at a time. Region
+			// bounds travel bit-cast as ints, pre-cooked exactly as the SW
+			// scanline's setup cooks them: REGION_CLAMP bounds clamped into the
+			// texture, REGION_REPEAT's MINU pre-masked and MAXU raw. The lowering
+			// floors perspective triangles, so the coordinate being filtered is
+			// affine-exact by construction.
+			conf.ps.tile_ltf = 1;
+			conf.ps.wms = wms;
+			conf.ps.wmt = wmt;
+
+			const int tw_i = static_cast<int>(tw);
+			const int th_i = static_cast<int>(th);
+			GSVector4i bounds = GSVector4i::zero();
+			if (wms == CLAMP_REGION_CLAMP)
 			{
-				conf.cb_ps.MinMax.x = (wms == CLAMP_REGION_CLAMP) ? region_clamp.x : region_repeat.x;
-				conf.cb_ps.MinMax.z = (wms == CLAMP_REGION_CLAMP) ? region_clamp.z : region_repeat.z;
+				bounds.x = std::min(static_cast<int>(ctx->CLAMP.MINU), tw_i - 1);
+				bounds.z = std::min(static_cast<int>(ctx->CLAMP.MAXU), tw_i - 1);
 			}
-			if (wmt >= CLAMP_REGION_CLAMP)
+			else if (wms == CLAMP_REGION_REPEAT)
 			{
-				conf.cb_ps.MinMax.y = (wmt == CLAMP_REGION_CLAMP) ? region_clamp.y : region_repeat.y;
-				conf.cb_ps.MinMax.w = (wmt == CLAMP_REGION_CLAMP) ? region_clamp.w : region_repeat.w;
+				bounds.x = static_cast<int>(ctx->CLAMP.MINU) & (tw_i - 1);
+				bounds.z = static_cast<int>(ctx->CLAMP.MAXU);
+			}
+			if (wmt == CLAMP_REGION_CLAMP)
+			{
+				bounds.y = std::min(static_cast<int>(ctx->CLAMP.MINV), th_i - 1);
+				bounds.w = std::min(static_cast<int>(ctx->CLAMP.MAXV), th_i - 1);
+			}
+			else if (wmt == CLAMP_REGION_REPEAT)
+			{
+				bounds.y = static_cast<int>(ctx->CLAMP.MINV) & (th_i - 1);
+				bounds.w = static_cast<int>(ctx->CLAMP.MAXV);
+			}
+			conf.cb_ps.MinMax = GSVector4::cast(bounds);
+		}
+		else
+		{
+			conf.ps.wms = (wms & 2) ? wms : 0;
+			conf.ps.wmt = (wmt & 2) ? wmt : 0;
+			conf.sampler.tau = (wms == CLAMP_REPEAT);
+			conf.sampler.tav = (wmt == CLAMP_REPEAT);
+
+			if ((wms | wmt) & 2)
+			{
+				// Region modes at native scale: the clamp bound sits half a texel inside
+				// the last texel (inclusive bound, exclusive size); repeat passes the raw
+				// mask/fix words through bit-cast floats. Same recipe as Classic at 1x.
+				const GSVector4i clamp(ctx->CLAMP.MINU, ctx->CLAMP.MINV, ctx->CLAMP.MAXU, ctx->CLAMP.MAXV);
+				const GSVector4 region_repeat = GSVector4::cast(clamp);
+				const GSVector4 region_clamp = (GSVector4(clamp) + GSVector4::cxpr(0.5f, 0.5f, 0.1f, 0.1f)) / WH.xyxy();
+				if (wms >= CLAMP_REGION_CLAMP)
+				{
+					conf.cb_ps.MinMax.x = (wms == CLAMP_REGION_CLAMP) ? region_clamp.x : region_repeat.x;
+					conf.cb_ps.MinMax.z = (wms == CLAMP_REGION_CLAMP) ? region_clamp.z : region_repeat.z;
+				}
+				if (wmt >= CLAMP_REGION_CLAMP)
+				{
+					conf.cb_ps.MinMax.y = (wmt == CLAMP_REGION_CLAMP) ? region_clamp.y : region_repeat.y;
+					conf.cb_ps.MinMax.w = (wmt == CLAMP_REGION_CLAMP) ? region_clamp.w : region_repeat.w;
+				}
 			}
 		}
 	}

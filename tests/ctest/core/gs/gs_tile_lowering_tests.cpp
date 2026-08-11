@@ -62,13 +62,6 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 				in.vs_expand = false;
 			},
 			GSTileFloorReason::SpriteExpandUnavailable},
-		{"textured with a filtering sampler",
-			[](GSTileDrawInput& in) {
-				in.tme = true;
-				in.tex_fst = true;
-				in.tex_linear = true;
-			},
-			GSTileFloorReason::TextureFiltered},
 		{"textured with mipmapping",
 			[](GSTileDrawInput& in) {
 				in.tme = true;
@@ -129,8 +122,8 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 // GPU sampler is console-exact (gs-texture capture: all 128 nearest cells right in
 // every arm), so a nearest-sampled draw goes native in any rtx-served format —
 // including palettised, whose palette and TEXA expansion the source builder applies
-// CPU-side. Filtering and mip selection stay floored until the gs-grad capture
-// answers the coordinate-quantisation and LOD questions.
+// CPU-side. Mip selection stays floored until LOD selection is implemented to the
+// gs-grad capture's rules.
 TEST(GSTileLowering, NearestSampledTexturingIsNative)
 {
 	static const u32 servable[] = {PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8, PSMT4,
@@ -147,12 +140,13 @@ TEST(GSTileLowering, NearestSampledTexturingIsNative)
 	}
 }
 
-// Coordinate modes: only affine-exact coordinate walks go native before gs-grad.
-// UV (FST=1) interpolates linearly at w=1 in any prim class; an STQ sprite has
-// constant Q per primitive (the gs-texture probe's own measured shape); an STQ
-// triangle runs a true perspective gradient, and the corpus showed the GPU's
-// interpolator flipping texels against the SW DDA there even at nearest (OutRun,
-// 12 draws, 0.63% of pixels off by >2 levels). Floored until measured.
+// Coordinate modes: only affine-exact coordinate walks go native. UV (FST=1)
+// interpolates linearly at w=1 in any prim class; an STQ sprite has constant Q per
+// primitive (the gs-texture probe's own measured shape); an STQ triangle runs a
+// true perspective gradient, and the corpus showed the GPU's interpolator flipping
+// texels against the SW DDA there even at nearest (OutRun, 12 draws, 0.63% of
+// pixels off by >2 levels). Floored until the in-shader coordinate math lands —
+// the gs-grad capture's truncated ~13-bit reciprocal, not the GPU's exact divide.
 TEST(GSTileLowering, PerspectiveTrianglesFloorUntilMeasured)
 {
 	GSTileDrawInput in = BaseInput();
@@ -162,10 +156,45 @@ TEST(GSTileLowering, PerspectiveTrianglesFloorUntilMeasured)
 	EXPECT_FALSE(p.native);
 	EXPECT_EQ(p.reason, GSTileFloorReason::TexturePerspective);
 
+	// The perspective floor is about the coordinate walk, not the filter: it holds
+	// identically for a bilinear STQ triangle.
+	in.tex_linear = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TexturePerspective);
+
+	in.tex_linear = false;
 	in.prim_class = GS_SPRITE_CLASS;
 	const GSTileDrawPlan sprite = gsTileLowerDraw(in);
 	EXPECT_TRUE(sprite.native);
 	EXPECT_EQ(sprite.reason, GSTileFloorReason::None);
+}
+
+// M3g slice 1: bilinear over affine coordinates goes native. The gs-texture capture
+// measured the filter itself (1/16-texel truncating snap, 4-bit weight, two nested
+// truncating lerps on the post-palette bytes), and the affine classes are the ones
+// whose coordinate walk the GPU already reproduces (probe + corpus, M3b). The shader
+// reproduces the SW scanline's integer filter — the GPU sampler stays nearest-only.
+TEST(GSTileLowering, BilinearAffineSampledTexturingIsNative)
+{
+	// UV triangles.
+	GSTileDrawInput in = BaseInput();
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_linear = true;
+	const GSTileDrawPlan tri = gsTileLowerDraw(in);
+	EXPECT_TRUE(tri.native);
+	EXPECT_EQ(tri.reason, GSTileFloorReason::None);
+
+	// UV sprites — the census's 371-draw slice, all MMAG=1 sprites.
+	in.prim_class = GS_SPRITE_CLASS;
+	const GSTileDrawPlan uv_sprite = gsTileLowerDraw(in);
+	EXPECT_TRUE(uv_sprite.native);
+	EXPECT_EQ(uv_sprite.reason, GSTileFloorReason::None);
+
+	// STQ sprites — the gs-texture probe's own filtered cells.
+	in.tex_fst = false;
+	const GSTileDrawPlan stq_sprite = gsTileLowerDraw(in);
+	EXPECT_TRUE(stq_sprite.native);
+	EXPECT_EQ(stq_sprite.reason, GSTileFloorReason::None);
 }
 
 TEST(GSTileLowering, TexturedDrawStillFloorsOnTheOtherGates)
