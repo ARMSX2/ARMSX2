@@ -54,6 +54,34 @@
 
 #include "svnrev.h"
 
+#ifdef __ANDROID__
+// The core expects the frontend to provide these JNI bridges (native-lib.cpp
+// does in the APK). A bare NDK executable has no JVM: the Java-backed paths
+// (scoped-storage fallbacks, content:// fds, Java sound, pad rumble) cannot
+// trigger under adb shell on plain filesystem paths, so they stub to failure.
+namespace Common
+{
+	bool PlaySoundAsync(const char* path) { return false; }
+}
+namespace FileSystem
+{
+	int OpenFDFileContent(const char* filename) { return -1; }
+	bool CreateDirectoryViaJava(const char* path) { return false; }
+	bool CreateFileViaJava(const char* path) { return false; }
+}
+namespace Native
+{
+	void onPadRumble(int pad, int largeMotor, int smallMotor) {}
+}
+
+// Android renderer-Auto steering (GSUtil.cpp; the APK sets it from the
+// GL_RENDERER string). This frontend is headless: the SW renderer's host
+// present device must come up without a window system, which Vulkan
+// surfaceless does and an EGL context under adb shell does not.
+extern bool g_gs_android_prefer_vk;
+static const bool s_android_prefer_vk_init = []() { g_gs_android_prefer_vk = true; return true; }();
+#endif
+
 // Down here because X11 has a lot of defines that can conflict
 #if defined(__linux__) && defined(X11_API)
 #include <X11/Xlib.h>

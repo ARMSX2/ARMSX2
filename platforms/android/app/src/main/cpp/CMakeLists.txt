@@ -206,6 +206,11 @@ target_link_libraries(savers log GLESv2 m)
 
 add_subdirectory(3rdparty/adrenotools)
 
+# pcsx2-gsrunner as an on-demand NDK executable (adb-shell oracle/CI runs on
+# Android devices — the gs_oracle.py device protocol). EXCLUDE_FROM_ALL keeps
+# every APK build unchanged; build it explicitly with --target pcsx2-gsrunner.
+add_subdirectory("${ARMSX2_ROOT}/pcsx2-gsrunner" "${CMAKE_BINARY_DIR}/pcsx2-gsrunner" EXCLUDE_FROM_ALL)
+
 # librashader: RetroArch (.slangp) shader chains for the GS post-process path, for BOTH
 # the Vulkan and OpenGL(ES) renderers. Rust-built and fetched at configure time from a
 # pinned commit (see the subdir's CMakeLists for why it can't be vendored). OPTIONAL:

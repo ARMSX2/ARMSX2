@@ -16,6 +16,13 @@ if(UNIX)
 	target_link_libraries(pcsx2-gsrunner PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
+if(ANDROID)
+	# The core leaves android/log/shaderc to the final link (emucore does the
+	# same in the Android entry CMakeLists); a bare NDK executable has to say so
+	# itself. shaderc is direct-linked on Android where desktop dlopens it.
+	target_link_libraries(pcsx2-gsrunner PRIVATE android log shaderc)
+endif()
+
 target_include_directories(pcsx2-gsrunner PRIVATE
 	"${CMAKE_BINARY_DIR}/common/include"
 	"${CMAKE_SOURCE_DIR}/pcsx2"

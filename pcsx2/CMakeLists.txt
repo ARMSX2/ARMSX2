@@ -1249,6 +1249,7 @@ if(ANDROID)
 		GS/Renderers/OpenGL/GLContextEGL.h
 		GS/Renderers/OpenGL/GLContextEGLAndroid.h)
 	list(APPEND pcsx2Sources
+		Android/AndroidHostStubs.cpp
 		Android/AndroidStubs.cpp
 		Android/AndroidPcapStubs.cpp)
 	# Oboe is the Android audio backend consumed by Host/OboeAudioStream.cpp.
