@@ -5,6 +5,7 @@
 #include "GS/GSLocalMemory.h"
 #include "GS/GSExtra.h"
 #include "GS/GSPng.h"
+#include <algorithm>
 #include <unordered_set>
 
 template <typename Fn>
@@ -539,40 +540,28 @@ bool GSLocalMemory::HasOverlap(const u32 src_bp, const u32 src_bw, const u32 src
 
 void GSLocalMemory::Move(const GIFRegBITBLTBUF& BITBLTBUF, const GIFRegTRXPOS& TRXPOS, const GIFRegTRXREG& TRXREG)
 {
-	int sx = TRXPOS.SSAX;
-	int sy = TRXPOS.SSAY;
-	int dx = TRXPOS.DSAX;
-	int dy = TRXPOS.DSAY;
+	// Measured on silicon (SCPH-30001, gs-mem hardware capture 2026-08-11): the GS
+	// stages a local-to-local transfer through a 128-PIXEL buffer -- it reads 128
+	// pixels in walk order, writes them, then reads the next 128. Overlap inside a
+	// chunk therefore behaves like a snapshot, and overlap across a chunk boundary
+	// smears by exactly one chunk. The buffer is 128 pixels at every pixel depth
+	// (512/256/128 bytes at 32/16/8 bpp -- pixels, not bytes), TRXPOS.DIR is
+	// honoured literally in both axes, and a cross-format copy moves the low
+	// min(src,dst) bits of each pixel, leaving the rest of the destination pixel
+	// untouched (a 16->32 copy keeps the destination's top sixteen bits). One
+	// parameter explains all 163,840 words of the capture's local-to-local section;
+	// the previous scan-order heuristics were 5,800 words wrong on its six
+	// overlapping copies.
 
 	const int w = TRXREG.RRW;
 	const int h = TRXREG.RRH;
 
-	const bool overlaps = BITBLTBUF.SBP == BITBLTBUF.DBP;
-	const bool intersect = overlaps && !(GSVector4i(sx, sy, sx + w, sy + h).rintersect(GSVector4i(dx, dy, dx + w, dy + h)).rempty());
-
-	int xinc = 1;
-	int yinc = 1;
-
-	if (TRXPOS.DIRX)
-	{
-		// Only allow it to reverse if the destination is behind the source.
-		if (!intersect || sx < dx)
-		{
-			sx += w - 1;
-			dx += w - 1;
-			xinc = -1;
-		}
-	}
-	if (TRXPOS.DIRY)
-	{
-		// Only allow it to reverse if the destination is behind the source.
-		if (!intersect || sy < dy)
-		{
-			sy += h - 1;
-			dy += h - 1;
-			yinc = -1;
-		}
-	}
+	const int xinc = TRXPOS.DIRX ? -1 : 1;
+	const int yinc = TRXPOS.DIRY ? -1 : 1;
+	const int sx = TRXPOS.DIRX ? (TRXPOS.SSAX + w - 1) : TRXPOS.SSAX;
+	const int dx = TRXPOS.DIRX ? (TRXPOS.DSAX + w - 1) : TRXPOS.DSAX;
+	const int sy = TRXPOS.DIRY ? (TRXPOS.SSAY + h - 1) : TRXPOS.SSAY;
+	const int dy = TRXPOS.DIRY ? (TRXPOS.DSAY + h - 1) : TRXPOS.DSAY;
 
 	const psm_t& spsm = m_psm[BITBLTBUF.SPSM];
 	const psm_t& dpsm = m_psm[BITBLTBUF.DPSM];
@@ -584,81 +573,36 @@ void GSLocalMemory::Move(const GIFRegBITBLTBUF& BITBLTBUF, const GIFRegTRXPOS& T
 	const GSOffset spo = GetOffset(sbp, sbw, BITBLTBUF.SPSM);
 	const GSOffset dpo = GetOffset(dbp, dbw, BITBLTBUF.DPSM);
 
-	auto copy = [this, &BITBLTBUF, sbp, dbp, sx, sy, dx, dy, w, h, yinc, xinc, intersect](const GSOffset& dpo, const GSOffset& spo, auto&& pxCopyFn)
+	// The chunked walk. Source values and destination addresses are gathered for
+	// up to 128 pixels before any store happens, which is what makes in-chunk
+	// overlap read pre-copy data while later chunks see earlier chunks' stores.
+	// Chunks run straight across row boundaries; only the pixel count matters.
+	static constexpr int kChunkPixels = 128;
+	const auto copy = [sx, sy, dx, dy, w, h, xinc, yinc](const GSOffset& dpo, const GSOffset& spo, auto&& readPx, auto&& writePx)
 	{
-		int _sy = sy, _dy = dy; // Faster with local copied variables, compiler optimizations are dumb
-		if (xinc > 0)
+		u32 vals[kChunkPixels];
+		u32 daddr[kChunkPixels];
+		int n = 0;
+		int _sy = sy, _dy = dy;
+		for (int y = 0; y < h; y++, _sy += yinc, _dy += yinc)
 		{
-			const int page_width = m_psm[BITBLTBUF.DPSM].pgs.x;
-			const int page_height = m_psm[BITBLTBUF.DPSM].pgs.y;
-			const int xpage = sx & ~(page_width - 1);
-			const int ypage = _sy & ~(page_height - 1);
-			// Copying from itself to itself (rotating textures) used in Gitaroo Man stage 8
-			// What probably happens is because the copy is buffered, the source stays just ahead of the destination.
-			// No need to do all this if the copy source/destination don't intersect, however.
-			if (intersect && sbp == dbp && (((_sy < _dy) && ((ypage + page_height) > _dy)) || ((sx < dx) && ((xpage + page_width) > dx))))
+			GSOffset::PAHelper s = spo.paMulti(0, _sy);
+			GSOffset::PAHelper d = dpo.paMulti(0, _dy);
+			int _sx = sx, _dx = dx;
+			for (int x = 0; x < w; x++, _sx += xinc, _dx += xinc)
 			{
-				int starty = (yinc > 0) ? 0 : h - 1;
-				int endy = (yinc > 0) ? h : -1;
-				int y_inc = yinc;
-
-				if (((_sy < _dy) && ((ypage + page_height) > _dy)) && yinc > 0)
+				vals[n] = readPx(s.value(_sx & 2047));
+				daddr[n] = d.value(_dx & 2047);
+				if (++n == kChunkPixels)
 				{
-					_sy += h - 1;
-					_dy += h - 1;
-					starty = h - 1;
-					endy = -1;
-					y_inc = -y_inc;
-				}
-
-				for (int y = starty; y != endy; y += y_inc, _sy += y_inc, _dy += y_inc)
-				{
-					GSOffset::PAHelper s = spo.paMulti(0, _sy);
-					GSOffset::PAHelper d = dpo.paMulti(0, _dy);
-
-					if (((sx < dx) && ((xpage + page_width) > dx)))
-					{
-						for (int x = w - 1; x >= 0; x--)
-						{
-							pxCopyFn(d.value((dx + x) & 2047), s.value((sx + x) & 2047));
-						}
-					}
-					else
-					{
-						for (int x = 0; x < w; x++)
-						{
-							pxCopyFn(d.value((dx + x) & 2047), s.value((sx + x) & 2047));
-						}
-					}
-				}
-			}
-			else
-			{
-				for (int y = 0; y < h; y++, _sy += yinc, _dy += yinc)
-				{
-					GSOffset::PAHelper s = spo.paMulti(0, _sy);
-					GSOffset::PAHelper d = dpo.paMulti(0, _dy);
-
-					for (int x = 0; x < w; x++)
-					{
-						pxCopyFn(d.value((dx + x) & 2047), s.value((sx + x) & 2047));
-					}
+					for (int i = 0; i < n; i++)
+						writePx(daddr[i], vals[i]);
+					n = 0;
 				}
 			}
 		}
-		else
-		{
-			for (int y = 0; y < h; y++, _sy += yinc, _dy += yinc)
-			{
-				GSOffset::PAHelper s = spo.paMulti(0, _sy);
-				GSOffset::PAHelper d = dpo.paMulti(0, _dy);
-
-				for (int x = 0; x < w; x++)
-				{
-					pxCopyFn(d.value((dx - x) & 2047), s.value((sx - x) & 2047));
-				}
-			}
-		}
+		for (int i = 0; i < n; i++)
+			writePx(daddr[i], vals[i]);
 	};
 
 	if (spsm.trbpp == dpsm.trbpp && spsm.trbpp >= 16)
@@ -666,49 +610,48 @@ void GSLocalMemory::Move(const GIFRegBITBLTBUF& BITBLTBUF, const GIFRegTRXPOS& T
 		if (spsm.trbpp == 32)
 		{
 			u32* vm = vm32();
-			copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32), [vm](u32 doff, u32 soff)
-			{
-				vm[doff] = vm[soff];
-			});
+			copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32),
+				[vm](u32 soff) { return vm[soff]; },
+				[vm](u32 doff, u32 v) { vm[doff] = v; });
 		}
 		else if (spsm.trbpp == 24)
 		{
 			u32* vm = vm32();
-			copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32), [vm](u32 doff, u32 soff)
-			{
-				vm[doff] = (vm[doff] & 0xff000000) | (vm[soff] & 0x00ffffff);
-			});
+			copy(dpo.assertSizesMatch(GSLocalMemory::swizzle32), spo.assertSizesMatch(GSLocalMemory::swizzle32),
+				[vm](u32 soff) { return vm[soff]; },
+				[vm](u32 doff, u32 v) { vm[doff] = (vm[doff] & 0xff000000) | (v & 0x00ffffff); });
 		}
 		else // if (spsm.trbpp == 16)
 		{
 			u16* vm = vm16();
-			copy(dpo.assertSizesMatch(GSLocalMemory::swizzle16), spo.assertSizesMatch(GSLocalMemory::swizzle16), [vm](u32 doff, u32 soff)
-			{
-				vm[doff] = vm[soff];
-			});
+			copy(dpo.assertSizesMatch(GSLocalMemory::swizzle16), spo.assertSizesMatch(GSLocalMemory::swizzle16),
+				[vm](u32 soff) -> u32 { return vm[soff]; },
+				[vm](u32 doff, u32 v) { vm[doff] = static_cast<u16>(v); });
 		}
 	}
 	else if (BITBLTBUF.SPSM == PSMT8 && BITBLTBUF.DPSM == PSMT8)
 	{
 		u8* vm = m_vm8;
-		copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT8), GSOffset::fromKnownPSM(sbp, sbw, PSMT8), [vm](u32 doff, u32 soff)
-		{
-			vm[doff] = vm[soff];
-		});
+		copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT8), GSOffset::fromKnownPSM(sbp, sbw, PSMT8),
+			[vm](u32 soff) -> u32 { return vm[soff]; },
+			[vm](u32 doff, u32 v) { vm[doff] = static_cast<u8>(v); });
 	}
 	else if (BITBLTBUF.SPSM == PSMT4 && BITBLTBUF.DPSM == PSMT4)
 	{
-		copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT4), GSOffset::fromKnownPSM(sbp, sbw, PSMT4), [this](u32 doff, u32 soff)
-		{
-			WritePixel4(doff, ReadPixel4(soff));
-		});
+		copy(GSOffset::fromKnownPSM(dbp, dbw, PSMT4), GSOffset::fromKnownPSM(sbp, sbw, PSMT4),
+			[this](u32 soff) { return ReadPixel4(soff); },
+			[this](u32 doff, u32 v) { WritePixel4(doff, v); });
 	}
 	else
 	{
-		copy(dpo, spo, [this, &dpsm, &spsm](u32 doff, u32 soff)
-		{
-			(this->*dpsm.wpa)(doff, (this->*spsm.rpa)(soff));
-		});
+		// Cross-format: only the low min(src,dst) bits of each pixel move; the
+		// destination pixel keeps its remaining bits (console-measured -- a
+		// narrower source does NOT zero-extend into a wider destination).
+		const u32 move_bits = std::min(spsm.trbpp, dpsm.trbpp);
+		const u32 mask = (move_bits >= 32) ? 0xffffffffu : ((1u << move_bits) - 1);
+		copy(dpo, spo,
+			[this, &spsm, mask](u32 soff) { return (this->*spsm.rpa)(soff) & mask; },
+			[this, &dpsm, mask](u32 doff, u32 v) { (this->*dpsm.wpa)(doff, ((this->*dpsm.rpa)(doff) & ~mask) | v); });
 	}
 }
 
