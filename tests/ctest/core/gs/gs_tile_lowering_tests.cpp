@@ -66,7 +66,7 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 		{"blend", [](GSTileDrawInput& in) { in.abe = true; }, GSTileFloorReason::Blend},
 		{"aa1 triangle", [](GSTileDrawInput& in) { in.aa1 = true; }, GSTileFloorReason::CoverageAA1},
 		{"fog", [](GSTileDrawInput& in) { in.fge = true; }, GSTileFloorReason::Fog},
-		{"fba", [](GSTileDrawInput& in) { in.fba = true; }, GSTileFloorReason::Fba},
+		{"fba on ct32", [](GSTileDrawInput& in) { in.fba = true; }, GSTileFloorReason::Fba},
 		{"scanmsk", [](GSTileDrawInput& in) { in.scanmsk = 2; }, GSTileFloorReason::ScanMask},
 		{"dynamic alpha test",
 			[](GSTileDrawInput& in) {
@@ -88,6 +88,10 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 			GSTileFloorReason::NothingWritten},
 		{"ct16 frame", [](GSTileDrawInput& in) { in.FRAME.PSM = PSMCT16; }, GSTileFloorReason::FramePsm},
 		{"z32 depth", [](GSTileDrawInput& in) { in.ZBUF.PSM = PSMZ32; }, GSTileFloorReason::ZbufPsm},
+		{"z16 depth under a 32-bit frame",
+			[](GSTileDrawInput& in) { in.ZBUF.PSM = PSMZ16; }, GSTileFloorReason::FrameZPairing},
+		{"z16s depth under a 32-bit frame",
+			[](GSTileDrawInput& in) { in.ZBUF.PSM = PSMZ16S; }, GSTileFloorReason::FrameZPairing},
 		{"stride zero", [](GSTileDrawInput& in) { in.FRAME.FBW = 0; }, GSTileFloorReason::StrideZero},
 	};
 
@@ -103,8 +107,9 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 
 TEST(GSTileLowering, AlwaysPassingTestsStayNative)
 {
-	// ATE with ATST ALWAYS is not a test; DATE on a 24-bit frame has no destination
-	// alpha to test; AA1 on sprites has no effect.
+	// ATE with ATST ALWAYS is not a test; FBA on a 24-bit frame has no alpha byte to
+	// set (console-measured, gs-test capture: no effect on any of its five separating
+	// cases); AA1 on sprites has no effect.
 	GSTileDrawInput in = BaseInput();
 	in.TEST.ATE = 1;
 	in.TEST.ATST = ATST_ALWAYS;
@@ -112,13 +117,31 @@ TEST(GSTileLowering, AlwaysPassingTestsStayNative)
 
 	in = BaseInput();
 	in.FRAME.PSM = PSMCT24;
-	in.TEST.DATE = 1;
+	in.fba = true;
 	EXPECT_TRUE(gsTileLowerDraw(in).native);
 
 	in = BaseInput();
 	in.prim_class = GS_SPRITE_CLASS;
 	in.aa1 = true;
 	EXPECT_TRUE(gsTileLowerDraw(in).native);
+}
+
+TEST(GSTileLowering, DateOn24BitFrameFailsEverything)
+{
+	// Console-measured (gs-test capture): DATE on a 24-bit frame FAILS every pixel —
+	// it does not pass-through as "no alpha to test", even when a real alpha byte is
+	// physically present in memory — and a failing DATE stops the depth write too.
+	// The whole draw is a provable no-op; GSRendererSW returns early the same way.
+	GSTileDrawInput in = BaseInput();
+	in.FRAME.PSM = PSMCT24;
+	in.TEST.DATE = 1;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	EXPECT_FALSE(p.native);
+	EXPECT_EQ(p.reason, GSTileFloorReason::NothingWritten);
+	EXPECT_EQ(p.colormask, 0);
+	EXPECT_FALSE(p.z_write);
+	EXPECT_EQ(p.fb_claims, 0);
+	EXPECT_EQ(p.z_claims, 0);
 }
 
 TEST(GSTileLowering, ZteZeroDisablesWriteAndTest)
@@ -146,11 +169,33 @@ TEST(GSTileLowering, ZMaskedTestOnlyStillNeedsExactDepthFormat)
 	EXPECT_FALSE(p.native); // still tests against Z32 contents
 	EXPECT_EQ(p.reason, GSTileFloorReason::ZbufPsm);
 
+	// A masked-but-live test also still needs the hardware frame/Z pairing.
 	in.ZBUF.PSM = PSMZ16;
 	const GSTileDrawPlan p16 = gsTileLowerDraw(in);
-	EXPECT_TRUE(p16.native);
+	EXPECT_FALSE(p16.native);
+	EXPECT_EQ(p16.reason, GSTileFloorReason::FrameZPairing);
 	EXPECT_FALSE(p16.z_write);
 	EXPECT_TRUE(p16.z_test);
+}
+
+TEST(GSTileLowering, FrameZPairingFollowsPixelSize)
+{
+	// Console-measured (gs-test capture): FRAME and ZBUF layouts pair by pixel size —
+	// a 16-bit depth buffer under a 32-bit frame lands writes at coordinates neither
+	// layout agrees on. The native path serves only measured pairings: with the M2
+	// frames (32-bit words) that means Z24. A draw touching a single surface has no
+	// pairing to violate: depth-only draws keep their 16-bit depth formats.
+	GSTileDrawInput in = BaseInput();
+	in.ZBUF.PSM = PSMZ16S;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	EXPECT_FALSE(p.native);
+	EXPECT_EQ(p.reason, GSTileFloorReason::FrameZPairing);
+
+	in.FRAME.FBMSK = 0xFFFFFFFFu; // depth-only: no colour write, no pairing
+	const GSTileDrawPlan pd = gsTileLowerDraw(in);
+	EXPECT_TRUE(pd.native);
+	EXPECT_EQ(pd.colormask, 0);
+	EXPECT_TRUE(pd.z_write);
 }
 
 TEST(GSTileLowering, WholeByteMaskMapsToColormaskAndClaims)
@@ -262,9 +307,17 @@ TEST(GSTileLowering, ProvablyFailingAlphaTestBecomesAfailMaskEdit)
 
 TEST(GSTileLowering, ZClaimsFollowByteCoverage)
 {
+	// Depth-only, so the Z16 stays native (see FrameZPairingFollowsPixelSize).
 	GSTileDrawInput in = BaseInput();
+	in.FRAME.FBMSK = 0xFFFFFFFFu;
 	in.ZBUF.PSM = PSMZ16;
 	const GSTileDrawPlan p = gsTileLowerDraw(in);
 	EXPECT_TRUE(p.native);
 	EXPECT_EQ(p.z_claims, kGSTilePlanesAll); // 16-bit cells cover every plane's bytes
+
+	// The claim facts stay valid on the floored path too — the floor consults them.
+	in.FRAME.FBMSK = 0;
+	const GSTileDrawPlan pf = gsTileLowerDraw(in);
+	EXPECT_FALSE(pf.native);
+	EXPECT_EQ(pf.z_claims, kGSTilePlanesAll);
 }

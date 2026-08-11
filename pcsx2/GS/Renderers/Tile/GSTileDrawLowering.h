@@ -13,12 +13,22 @@
 //
 // The M2 native envelope is opaque untextured draws: triangles and sprites, no
 // blending, no texture, no per-pixel test that survives to the pixel (alpha test
-// off-or-ALWAYS, DATE on formats where the GS itself has no destination alpha), frame
-// formats whose cells upload and read back losslessly (CT32/CT24), depth formats that
-// round-trip exactly through a float32 depth buffer (Z24/Z16/Z16S — a 24-bit integer
-// is exact in float32, Z32 is not and floors). Everything else takes the SW floor,
-// tagged with the first reason that disqualified it; the per-title distribution of
-// that tag is the renderer's primary health metric.
+// off-or-ALWAYS, or provable from the vertex-trace alpha range), frame formats whose
+// cells upload and read back losslessly (CT32/CT24), depth formats that round-trip
+// exactly through a float32 depth buffer AND pair with the frame's pixel size (Z24
+// under the 32-bit frames; Z32 floors on float32 storage, Z16/Z16S floor on pairing
+// unless the draw is depth-only). Everything else takes the SW floor, tagged with the
+// first reason that disqualified it; the per-title distribution of that tag is the
+// renderer's primary health metric.
+//
+// Console-measured test-stage rules baked in here (gs-test capture, SCPH-30001):
+//   - DATE on a 24-bit frame FAILS every pixel (it does not pass-through as "no
+//     alpha to test"), and a failing DATE stops the depth write — the draw is a
+//     provable no-op. GSRendererSW returns early the same way.
+//   - AFAIL=RGB_ONLY degrades to FB_ONLY off 32-bit frames (GetAFAIL, confirmed).
+//   - FBA reaches only destinations that store alpha; on a 24-bit frame it is inert.
+//   - FRAME and ZBUF layouts pair by pixel size; crossing them lands writes at
+//     coordinates neither layout agrees on, so mismatched pairings never go native.
 //
 // Two facts here are semantic, not convenience, and are pinned by the unit suite:
 //   - ZTE=0 disables the z write as well as the z test (GSRendererSW derives
@@ -46,6 +56,7 @@ enum class GSTileFloorReason : u8
 	NothingWritten, ///< every channel masked and no z write
 	FramePsm, ///< frame format outside CT32/CT24
 	ZbufPsm, ///< depth format that cannot round-trip through float32 (Z32)
+	FrameZPairing, ///< frame and depth pixel sizes differ — unmeasured hardware territory
 	StrideZero, ///< FBW=0 — degenerate stride
 	// Geometry reasons (decided by the route, which knows the footprints):
 	FootprintExtent, ///< draw wider than the stride or deep enough to wrap page space
@@ -186,6 +197,16 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		}
 	}
 
+	// DATE on a 24-bit frame fails every pixel and stops the depth write with it
+	// (console-measured; a physically-present alpha byte in memory changes nothing).
+	// The predicate mirrors GSRendererSW's early return: (PSM & 0xF) catches the
+	// Z-swizzle 24-bit frame layout too.
+	if (in.TEST.DATE && (in.FRAME.PSM & 0xF) == PSMCT24)
+	{
+		cm = 0;
+		p.z_write = false;
+	}
+
 	p.colormask = cm;
 	u8 fb_claims = 0;
 	if (cm & 0x7)
@@ -215,15 +236,18 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		return floored(GSTileFloorReason::CoverageAA1);
 	if (in.fge)
 		return floored(GSTileFloorReason::Fog);
-	if (in.fba)
+	// FBA sets the stored alpha's top bit — a destination with no alpha storage makes
+	// it inert (console-measured on 24-bit frames; 16-bit frames DO store the bit).
+	if (in.fba && (in.FRAME.PSM & 0xF) != PSMCT24)
 		return floored(GSTileFloorReason::Fba);
 	if (in.scanmsk != 0)
 		return floored(GSTileFloorReason::ScanMask);
 	if (atst_dynamic)
 		return floored(GSTileFloorReason::AlphaTest);
-	// The GS has no destination alpha on a 24-bit frame; both existing renderers
-	// treat DATE there as disabled, so it stays native.
-	if (in.TEST.DATE && in.FRAME.PSM != PSMCT24)
+	// DATE with real destination alpha is a genuinely dynamic test — M4 work. The
+	// 24-bit case never reaches here: it zeroed every write above and falls to
+	// NothingWritten.
+	if (in.TEST.DATE && (in.FRAME.PSM & 0xF) != PSMCT24)
 		return floored(GSTileFloorReason::DateTest);
 	if (in.TEST.ZTE && in.TEST.ZTST == ZTST_NEVER)
 		return floored(GSTileFloorReason::ZTestNever);
@@ -236,6 +260,13 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	if ((p.z_write || p.z_test) &&
 		in.ZBUF.PSM != PSMZ24 && in.ZBUF.PSM != PSMZ16 && in.ZBUF.PSM != PSMZ16S)
 		return floored(GSTileFloorReason::ZbufPsm);
+	// Hardware pairs the FRAME and ZBUF layouts by pixel size (console-measured:
+	// crossing them scatters writes to coordinates neither layout agrees on). The
+	// native frames are 32-bit-word formats, so a draw with both surfaces live must
+	// pair with Z24; the 16-bit depth formats go native only alongside their matching
+	// 16-bit frames (M3+). A single-surface draw has no pairing to violate.
+	if (p.colormask != 0 && (p.z_write || p.z_test) && in.ZBUF.PSM != PSMZ24)
+		return floored(GSTileFloorReason::FrameZPairing);
 	if (in.FRAME.FBW == 0)
 		return floored(GSTileFloorReason::StrideZero);
 

@@ -192,6 +192,8 @@ namespace GSDrawLog
 				return "FRAME_PSM";
 			case TileFallbackZbufPsm:
 				return "ZBUF_PSM";
+			case TileFallbackFrameZPairing:
+				return "FRAME_Z_PAIRING";
 			case TileFallbackStrideZero:
 				return "STRIDE_ZERO";
 			case TileFallbackFootprintExtent:

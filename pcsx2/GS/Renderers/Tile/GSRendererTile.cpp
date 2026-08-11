@@ -109,6 +109,8 @@ GSDrawLog::TileFallback MapFallbackReason(GSTileFloorReason reason)
 			return GSDrawLog::TileFallbackFramePsm;
 		case GSTileFloorReason::ZbufPsm:
 			return GSDrawLog::TileFallbackZbufPsm;
+		case GSTileFloorReason::FrameZPairing:
+			return GSDrawLog::TileFallbackFrameZPairing;
 		case GSTileFloorReason::StrideZero:
 			return GSDrawLog::TileFallbackStrideZero;
 		case GSTileFloorReason::FootprintExtent:

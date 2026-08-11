@@ -135,6 +135,7 @@ namespace GSDrawLog
 		TileFallbackNothingWritten,
 		TileFallbackFramePsm,
 		TileFallbackZbufPsm,
+		TileFallbackFrameZPairing,
 		TileFallbackStrideZero,
 		// Geometry/resource reasons (decided by the draw route):
 		TileFallbackFootprintExtent,
