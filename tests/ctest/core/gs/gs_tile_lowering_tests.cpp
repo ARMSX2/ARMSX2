@@ -140,14 +140,16 @@ TEST(GSTileLowering, NearestSampledTexturingIsNative)
 	}
 }
 
-// Coordinate modes: only affine-exact coordinate walks go native. UV (FST=1)
-// interpolates linearly at w=1 in any prim class; an STQ sprite has constant Q per
-// primitive (the gs-texture probe's own measured shape); an STQ triangle runs a
-// true perspective gradient, and the corpus showed the GPU's interpolator flipping
-// texels against the SW DDA there even at nearest (OutRun, 12 draws, 0.63% of
-// pixels off by >2 levels). Floored until the in-shader coordinate math lands —
-// the gs-grad capture's truncated ~13-bit reciprocal, not the GPU's exact divide.
-TEST(GSTileLowering, PerspectiveTrianglesFloorUntilMeasured)
+// M3g slice 2: STQ sprites run the in-shader coordinate walk natively (the
+// scanline's per-pixel trunc(s/q) into 16.16, GLSL divide tightened to IEEE
+// rounding). Perspective TRIANGLES still floor — not for the coordinate walk
+// (the gs-grad probe scores it 99.9% word-identical to SW), but for Z/coverage
+// parity: OutRun's strips ladder overlapping sub-pixel triangles at consecutive
+// Z, and interpolated-Z truncation ties resolve differently in the GPU float
+// pipeline than in the scanline's double-precision DDA (~10.6k px/frame,
+// invariant to the sampling mechanism). Until a Z-exact native path exists the
+// floor stands, at either filter.
+TEST(GSTileLowering, PerspectiveTrianglesFloorOnZCoverageParity)
 {
 	GSTileDrawInput in = BaseInput();
 	in.tme = true;
@@ -156,8 +158,6 @@ TEST(GSTileLowering, PerspectiveTrianglesFloorUntilMeasured)
 	EXPECT_FALSE(p.native);
 	EXPECT_EQ(p.reason, GSTileFloorReason::TexturePerspective);
 
-	// The perspective floor is about the coordinate walk, not the filter: it holds
-	// identically for a bilinear STQ triangle.
 	in.tex_linear = true;
 	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TexturePerspective);
 
@@ -166,6 +166,40 @@ TEST(GSTileLowering, PerspectiveTrianglesFloorUntilMeasured)
 	const GSTileDrawPlan sprite = gsTileLowerDraw(in);
 	EXPECT_TRUE(sprite.native);
 	EXPECT_EQ(sprite.reason, GSTileFloorReason::None);
+}
+
+TEST(GSTileLowering, UnsafeStqCoordinatesFloor)
+{
+	// The range guard: coordinates the scanline's 16.16 format cannot hold (SW
+	// rewrites or host-saturates those), or a Q whose sign the trace cannot pin —
+	// the route computes the verdict from the vertex trace. Sprites divide per
+	// pixel in the shader, so the guard floors them too; triangles attribute to
+	// the perspective floor first; UV coordinates never consult it.
+	GSTileDrawInput in = BaseInput();
+	in.tme = true;
+	in.tex_fst = false;
+	in.tex_stq_unsafe = true;
+	in.prim_class = GS_SPRITE_CLASS;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureStqOverflow);
+
+	in.tex_linear = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureStqOverflow);
+
+	in.prim_class = GS_TRIANGLE_CLASS;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TexturePerspective);
+
+	in.prim_class = GS_SPRITE_CLASS;
+	in.tex_fst = true;
+	in.tex_linear = false;
+	const GSTileDrawPlan uv = gsTileLowerDraw(in);
+	EXPECT_TRUE(uv.native);
+	EXPECT_EQ(uv.reason, GSTileFloorReason::None);
+
+	// Mip still outranks the range guard, so trilinear draws keep attributing to
+	// the mip question.
+	in.tex_fst = false;
+	in.tex_mip = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureMip);
 }
 
 // M3g slice 1: bilinear over affine coordinates goes native. The gs-texture capture

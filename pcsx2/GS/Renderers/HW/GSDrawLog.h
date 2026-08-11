@@ -157,6 +157,7 @@ namespace GSDrawLog
 		TileFallbackTexturePsm,
 		TileFallbackTextureFeedback,
 		TileFallbackTexturePerspective,
+		TileFallbackTextureStqOverflow,
 	};
 
 	enum Flags : u8

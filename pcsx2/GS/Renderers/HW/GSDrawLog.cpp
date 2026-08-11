@@ -218,6 +218,8 @@ namespace GSDrawLog
 				return "TEX_FEEDBACK";
 			case TileFallbackTexturePerspective:
 				return "TEX_PERSPECTIVE";
+			case TileFallbackTextureStqOverflow:
+				return "TEX_STQ_OVERFLOW";
 			default:
 				return "";
 		}

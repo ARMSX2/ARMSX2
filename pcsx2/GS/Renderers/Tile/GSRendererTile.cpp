@@ -129,6 +129,8 @@ GSDrawLog::TileFallback MapFallbackReason(GSTileFloorReason reason)
 			return GSDrawLog::TileFallbackTextureFeedback;
 		case GSTileFloorReason::TexturePerspective:
 			return GSDrawLog::TileFallbackTexturePerspective;
+		case GSTileFloorReason::TextureStqOverflow:
+			return GSDrawLog::TileFallbackTextureStqOverflow;
 		default:
 			return GSDrawLog::TileFallbackFloor;
 	}
@@ -277,6 +279,30 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 		in.tex_mip = IsMipMapActive();
 		in.tex_fst = PRIM->FST;
 		in.tex_psm = static_cast<u8>(m_context->TEX0.PSM);
+		if (!PRIM->FST)
+		{
+			// The scanline's 16.16 STQ envelope. The trace's !fst t.xy are the
+			// PER-VERTEX quotients S/Q, T/Q (FindMinMax divides), so for a draw
+			// whose Q never reaches zero they bound every pixel's quotient — an
+			// interpolated s/q is a positively-weighted mediant of the vertex
+			// ratios. Floor when any STQ component is NaN, when Q can reach or
+			// cross zero (a pole makes the interpolated quotient unbounded), when
+			// the quotient hull in texels leaves the format that the scanline
+			// stores (SW rewrites CLAMP-mode draws and host-saturates the rest),
+			// or when TW/TH exceed the native source's 1024 clamp (the scanline
+			// scales its numerator by the raw shift there).
+			constexpr float limit = 32766.0f;
+			const GSVector4 tmin = m_vt.m_min.t;
+			const GSVector4 tmax = m_vt.m_max.t;
+			const float tw_f = static_cast<float>(1u << m_context->TEX0.TW);
+			const float th_f = static_cast<float>(1u << m_context->TEX0.TH);
+			const float hull_u = std::max(std::abs(tmin.x), std::abs(tmax.x)) * tw_f;
+			const float hull_v = std::max(std::abs(tmin.y), std::abs(tmax.y)) * th_f;
+			const bool q_spans_zero = !(tmin.z > 0.0f || tmax.z < 0.0f);
+			in.tex_stq_unsafe = m_vt.nan.value != 0 || q_spans_zero ||
+				!(hull_u < limit) || !(hull_v < limit) ||
+				m_context->TEX0.TW > 10 || m_context->TEX0.TH > 10;
+		}
 	}
 	return gsTileLowerDraw(in);
 }
@@ -613,14 +639,25 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// The texture window's footprint. A window overlapping the draw's own write
 	// pages is feedback — M4 territory. (A zero TBW over-claims every page through
 	// PagesForTargetRect and floors here too; safe, if mislabeled.)
+	//
+	// The size the native path samples is the SIZE-FIXED TEX0, not the register
+	// claim: GSRendererSW builds its cached texture and cooks its wrap tables from
+	// GetSizeFixedTEX0 (shrinking oversized claims to the coordinate range,
+	// extending for region windows), and an out-of-range coordinate wraps at THAT
+	// size. Sampling at the register size reads different memory texels wherever
+	// the two disagree — OutRun's roadside strips measured exactly that. The
+	// coordinate NUMERATOR keeps the register scale (ConvertVertexBuffer scales by
+	// the raw claim); only storage and wrap follow the fixed size, mirroring SW.
 	const bool textured = PRIM->TME;
+	GIFRegTEX0 fixed_tex0 = {};
 	GSPageBitmap tex_pages;
 	if (textured)
 	{
+		fixed_tex0 = ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), false);
 		const GSTileSurfaceLayout tex_l{ctx->TEX0.TBP0, static_cast<u8>(ctx->TEX0.TBW),
 			static_cast<u8>(ctx->TEX0.PSM), KindForPsm(ctx->TEX0.PSM)};
-		const int tw = 1 << std::min<u32>(ctx->TEX0.TW, 10);
-		const int th = 1 << std::min<u32>(ctx->TEX0.TH, 10);
+		const int tw = 1 << std::min<u32>(fixed_tex0.TW, 10);
+		const int th = 1 << std::min<u32>(fixed_tex0.TH, 10);
 		tex_pages = PagesForTargetRect(tex_l, GSVector4i(0, 0, tw, th));
 		if (tex_pages.intersects(fb_pages) || tex_pages.intersects(z_pages))
 		{
@@ -703,7 +740,7 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 			m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
 			pal_gen = m_mem.m_clut.GetWriteGeneration();
 		}
-		tex = m_tex_source.Lookup(m_mem, m_vram_model, ctx->TEX0, m_draw_env->TEXA, tex_pages, pal_gen);
+		tex = m_tex_source.Lookup(m_mem, m_vram_model, fixed_tex0, m_draw_env->TEXA, tex_pages, pal_gen);
 		if (!tex)
 		{
 			reason = GSTileFloorReason::ResourceFailure;
@@ -711,7 +748,7 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		}
 	}
 
-	SubmitNativeDraw(plan, r,
+	SubmitNativeDraw(plan, r, fixed_tex0,
 		want_rt ? m_target_pool.GetTexture(fb_handle) : nullptr,
 		want_ds ? m_target_pool.GetTexture(z_handle) : nullptr,
 		tex);
@@ -768,8 +805,8 @@ void GSRendererTile::FlattenProvokingColor()
 	}
 }
 
-void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTexture* rt, GSTexture* ds,
-	GSTexture* tex)
+void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, const GIFRegTEX0& fixed_tex0,
+	GSTexture* rt, GSTexture* ds, GSTexture* tex)
 {
 	const GSDrawingContext* ctx = m_context;
 	GSHWDrawConfig conf = {};
@@ -804,8 +841,15 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 		conf.ps.tcc = ctx->TEX0.TCC;
 		conf.sampler.biln = 0; // the GPU sampler stays nearest-only in every mode
 
-		const float tw = static_cast<float>(1 << std::min<u32>(ctx->TEX0.TW, 10));
-		const float th = static_cast<float>(1 << std::min<u32>(ctx->TEX0.TH, 10));
+		// Storage and wrap live at the SIZE-FIXED dimensions (what the source
+		// builder deswizzled and what the SW scanline wraps at); the STQ
+		// coordinate NUMERATOR keeps the register claim's scale, exactly the
+		// split the SW renderer runs (ConvertVertexBuffer scales by the raw
+		// claim, the wrap tables come from the fixed TEX0).
+		const float tw = static_cast<float>(1 << std::min<u32>(fixed_tex0.TW, 10));
+		const float th = static_cast<float>(1 << std::min<u32>(fixed_tex0.TH, 10));
+		const float reg_tw = static_cast<float>(1u << ctx->TEX0.TW);
+		const float reg_th = static_cast<float>(1u << ctx->TEX0.TH);
 		const GSVector4 WH(tw, th, tw, th);
 		conf.cb_ps.WH = WH;
 		conf.cb_ps.HalfTexel = GSVector4(-0.5f, 0.5f).xxyy() / WH.zwzw();
@@ -814,18 +858,29 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 
 		const u8 wms = static_cast<u8>(ctx->CLAMP.WMS);
 		const u8 wmt = static_cast<u8>(ctx->CLAMP.WMT);
-		if (m_vt.IsLinear())
+		// The in-shader coordinate walk serves every bilinear draw and every
+		// perspective STQ triangle (either filter): the GPU interpolator's own
+		// divide measurably flips texels against the scanline's, so the fragment
+		// path recomputes trunc(s/q) at the scanline's rounding. Affine nearest
+		// stays on the GPU sampler, which the gs-texture capture proved exact.
+		const bool stq_walk = !PRIM->FST && m_vt.m_primclass == GS_TRIANGLE_CLASS;
+		if (m_vt.IsLinear() || stq_walk)
 		{
 			// texelFetch bypasses the sampler, so every wrap mode runs in the
 			// shader on integer texel indices, one filter corner at a time. Region
 			// bounds travel bit-cast as ints, pre-cooked exactly as the SW
 			// scanline's setup cooks them: REGION_CLAMP bounds clamped into the
-			// texture, REGION_REPEAT's MINU pre-masked and MAXU raw. The lowering
-			// floors perspective triangles, so the coordinate being filtered is
-			// affine-exact by construction.
-			conf.ps.tile_ltf = 1;
+			// texture, REGION_REPEAT's MINU pre-masked and MAXU raw.
+			conf.ps.tile_ltf = m_vt.IsLinear();
+			conf.ps.tile_nn = !m_vt.IsLinear();
 			conf.ps.wms = wms;
 			conf.ps.wmt = wmt;
+			if (!PRIM->FST)
+			{
+				// ti.zw feeds the in-shader quotient: SW's numerator space is the
+				// register claim × 65536, so the varying carries S·16·reg_tw.
+				conf.cb_vs.texture_scale = GSVector2((1.0f / 16.0f) / reg_tw, (1.0f / 16.0f) / reg_th);
+			}
 
 			const int tw_i = static_cast<int>(tw);
 			const int th_i = static_cast<int>(th);
@@ -858,6 +913,12 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 			conf.ps.wmt = (wmt & 2) ? wmt : 0;
 			conf.sampler.tau = (wms == CLAMP_REPEAT);
 			conf.sampler.tav = (wmt == CLAMP_REPEAT);
+			if (!PRIM->FST)
+			{
+				// The sampler leg's st is normalized to the register claim; rescale
+				// into the fixed-size source the sampler actually addresses.
+				conf.cb_ps.STScale = GSVector2(reg_tw / tw, reg_th / th);
+			}
 
 			if ((wms | wmt) & 2)
 			{

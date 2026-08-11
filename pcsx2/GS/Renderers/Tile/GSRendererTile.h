@@ -46,8 +46,8 @@ private:
 
 	// The native route.
 	bool TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTileFloorReason& reason);
-	void SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTexture* rt, GSTexture* ds,
-		GSTexture* tex);
+	void SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, const GIFRegTEX0& fixed_tex0,
+		GSTexture* rt, GSTexture* ds, GSTexture* tex);
 	void FlattenProvokingColor();
 	GSTileSurfaceId EnsureSurface(const GSTileSurfaceLayout& layout, const GSVector4i& rect, const GSPageBitmap& pages, bool& ok);
 	GSPageBitmap PagesNeedingUpload(GSTileSurfaceId id, const GSPageBitmap& pages, u8 relevant_planes) const;

@@ -1343,16 +1343,17 @@ vec4 sample_color(vec2 st)
 	return trunc(t * 255.0f + 0.05f);
 }
 
-#if PS_TILE_LTF
+#if PS_TILE_LTF || PS_TILE_NN
 
-// The Tile renderer's bilinear: the console's filter, integer-exact (gs-texture
-// capture, SCPH-30001). The coordinate snaps to 1/16 texel by truncation, the
-// weight is the 4-bit fraction, and the two axes are nested truncating lerps
-// a + (((b-a)*f)>>4) on the post-palette 8-bit channels — never a float blend, and
-// no sampler state can express it (Classic's sampler path scores 67.45% on the
-// capture grid with every miss a filtering miss). Texels are fetched raw — the
-// source texture is plain RGBA8, palette and TEXA already applied CPU-side — and
-// filtered in integer arithmetic, mirroring the SW scanline (GSDrawScanline sel.ltf).
+// The Tile renderer's in-shader coordinate walk and filter: the console's
+// arithmetic, integer-exact (gs-texture capture, SCPH-30001). The coordinate
+// snaps to 1/16 texel by truncation, the bilinear weight is the 4-bit fraction,
+// and the two axes are nested truncating lerps a + (((b-a)*f)>>4) on the
+// post-palette 8-bit channels — never a float blend, and no sampler state can
+// express it (Classic's sampler path scores 67.45% on the capture grid with
+// every miss a filtering miss). Texels are fetched raw — the source texture is
+// plain RGBA8, palette and TEXA already applied CPU-side — and filtered in
+// integer arithmetic, mirroring the SW scanline (GSDrawScanline sel.ltf).
 
 ivec4 fetch_texel_tile(ivec2 xy)
 {
@@ -1392,15 +1393,45 @@ ivec2 wrap_tile(ivec2 xy)
 	return xy;
 }
 
+#if PS_FST == 0
+// SW-scanline parity for a perspective coordinate (GSDrawScanline's !fst leg):
+// the quotient s/q truncates into the GS's 16.16 texel space, and everything
+// downstream reads integer bits of that value. The GLSL divide is only
+// required to be within 2.5 ULP while the scanline divides at IEEE 0.5 — and a
+// texel index is one truncation away from the quotient — so a Newton step on
+// the reciprocal and a fused residual correction on the quotient land on the
+// correctly-rounded result the scanline computes. gs-grad measured silicon
+// coarser still (a ~13-bit truncated reciprocal), but the M3 bar is SW-parity:
+// the scanline is the model here, not the console.
+ivec2 tile_stq_uv(void)
+{
+	precise float y = 1.0f / vsIn.t.w;
+	y = fma(fma(-vsIn.t.w, y, 1.0f), y, y);
+	precise vec2 q0 = vsIn.ti.zw * y;
+	precise vec2 quot = fma(fma(vec2(-vsIn.t.w), q0, vsIn.ti.zw), vec2(y), q0);
+	// ti.zw carries 1/16-texel units; a power-of-two scale is exact in float,
+	// so this truncation is the scanline's trunc(s / q) on its 16.16 value.
+	return ivec2(quot * 4096.0f);
+}
+#endif
+
+#if PS_TILE_LTF
 vec4 sample_color_tile_ltf(vec2 st_int)
 {
+#if PS_FST == 0
+	// The scanline's bilinear shift is half a texel on the 16.16 integer
+	// (u -= 0x8000); the weight is bits 12..15 and the texel index the top half.
+	ivec2 uv = tile_stq_uv() - 0x8000;
+	ivec2 f = (uv >> 12) & 15;
+	ivec2 t0 = uv >> 16;
+#else
 	// st_int is the coordinate in 1/16-texel units — the GS's 12.4 fixed-point
-	// space, exact for UV and the truncating snap for sprite STQ. Half a texel
-	// back (the scanline's u -= 0x8000), then the texel index and 4-bit weight
-	// fall out of the fixed-point value.
+	// space, exact for UV. Half a texel back, then the texel index and 4-bit
+	// weight fall out of the fixed-point value.
 	ivec2 uv16 = ivec2(floor(st_int)) - 8;
 	ivec2 f = uv16 & 15;
 	ivec2 t0 = uv16 >> 4;
+#endif
 
 	ivec2 lo = wrap_tile(t0);
 	ivec2 hi = wrap_tile(t0 + 1);
@@ -1413,8 +1444,24 @@ vec4 sample_color_tile_ltf(vec2 st_int)
 	ivec4 h1 = c10 + (((c11 - c10) * f.x) >> 4);
 	return vec4(h0 + (((h1 - h0) * f.y) >> 4));
 }
-
 #endif // PS_TILE_LTF
+
+#if PS_TILE_NN
+// The nearest leg of the same coordinate walk (perspective triangles whose
+// filter is nearest): no half-texel shift and no weight — the texel index is
+// the quotient's top half, wrapped once.
+vec4 sample_color_tile_nn(vec2 st_int)
+{
+#if PS_FST == 0
+	ivec2 t0 = tile_stq_uv() >> 16;
+#else
+	ivec2 t0 = ivec2(floor(st_int)) >> 4;
+#endif
+	return vec4(fetch_texel_tile(wrap_tile(t0)));
+}
+#endif // PS_TILE_NN
+
+#endif // PS_TILE_LTF || PS_TILE_NN
 
 #endif // NEEDS_TEX
 
@@ -1513,6 +1560,8 @@ vec4 ps_color()
 	vec4 T = sample_depth(st_int, ivec2(gl_FragCoord.xy));
 #elif PS_TILE_LTF
 	vec4 T = sample_color_tile_ltf(st_int);
+#elif PS_TILE_NN
+	vec4 T = sample_color_tile_nn(st_int);
 #else
 	vec4 T = sample_color(st);
 #endif
