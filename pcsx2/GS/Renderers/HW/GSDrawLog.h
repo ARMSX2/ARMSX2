@@ -118,7 +118,28 @@ namespace GSDrawLog
 	enum TileFallback : u8
 	{
 		TileFallbackNone = 0, ///< realized natively (no fallback)
-		TileFallbackFloor, ///< unconditional floor -- no native path exists yet
+		TileFallbackFloor, ///< unconditional floor (kept for pre-native-path ledgers)
+		// Register-predicate reasons (GSTileDrawLowering):
+		TileFallbackPrimClass,
+		TileFallbackSpriteExpand,
+		TileFallbackTextured,
+		TileFallbackBlend,
+		TileFallbackCoverageAA1,
+		TileFallbackFog,
+		TileFallbackFba,
+		TileFallbackScanMask,
+		TileFallbackAlphaTest,
+		TileFallbackDateTest,
+		TileFallbackZTestNever,
+		TileFallbackFrameMaskPartial,
+		TileFallbackNothingWritten,
+		TileFallbackFramePsm,
+		TileFallbackZbufPsm,
+		TileFallbackStrideZero,
+		// Geometry/resource reasons (decided by the draw route):
+		TileFallbackFootprintExtent,
+		TileFallbackFrameZOverlap,
+		TileFallbackResourceFailure,
 	};
 
 	enum Flags : u8

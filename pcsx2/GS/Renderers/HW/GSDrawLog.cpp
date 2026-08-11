@@ -162,6 +162,44 @@ namespace GSDrawLog
 		{
 			case TileFallbackFloor:
 				return "FLOOR";
+			case TileFallbackPrimClass:
+				return "PRIM_CLASS";
+			case TileFallbackSpriteExpand:
+				return "SPRITE_EXPAND";
+			case TileFallbackTextured:
+				return "TEXTURED";
+			case TileFallbackBlend:
+				return "BLEND";
+			case TileFallbackCoverageAA1:
+				return "AA1";
+			case TileFallbackFog:
+				return "FOG";
+			case TileFallbackFba:
+				return "FBA";
+			case TileFallbackScanMask:
+				return "SCANMSK";
+			case TileFallbackAlphaTest:
+				return "ALPHA_TEST";
+			case TileFallbackDateTest:
+				return "DATE";
+			case TileFallbackZTestNever:
+				return "ZTST_NEVER";
+			case TileFallbackFrameMaskPartial:
+				return "FBMSK_PARTIAL";
+			case TileFallbackNothingWritten:
+				return "NOTHING_WRITTEN";
+			case TileFallbackFramePsm:
+				return "FRAME_PSM";
+			case TileFallbackZbufPsm:
+				return "ZBUF_PSM";
+			case TileFallbackStrideZero:
+				return "STRIDE_ZERO";
+			case TileFallbackFootprintExtent:
+				return "FOOTPRINT_EXTENT";
+			case TileFallbackFrameZOverlap:
+				return "FRAME_Z_OVERLAP";
+			case TileFallbackResourceFailure:
+				return "RESOURCE_FAILURE";
 			default:
 				return "";
 		}
