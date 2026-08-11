@@ -3366,10 +3366,11 @@ bool GSDeviceVK::CheckFeatures()
 	// UsesWorkaround(), and every such query is an explicit, per-defect decision.
 	//
 	// The MOBILE-SPECIFIC consequences below stay Android-only on purpose:
-	//   - SetRuntimeGPUProfile(): off Android the GL detector classifies every non-Mali GPU as
-	//     Adreno, so publishing the runtime profile here would hand desktop callers a wrong answer.
 	//   - GS tuning / GPU identity: their only consumers are themselves __ANDROID__-gated, and
 	//     changing desktop texture-pool sizing is not this code's business.
+	// The runtime profile itself is NOT one of them (see below): the Vulkan resolve classifies
+	// by device-name/driver match and answers Unknown for desktop GPUs, unlike the GL detector
+	// (which calls every non-Mali GPU Adreno and genuinely must stay Android-only).
 	MobileDriverContext driver_context;
 	driver_context.api = MobileGpuApi::Vulkan;
 	driver_context.vendor_id = m_device_properties.vendorID;
@@ -3387,20 +3388,23 @@ bool GSDeviceVK::CheckFeatures()
 		GSConfig.AndroidGpuProfileOverride, std::string_view(), m_device_properties.deviceName,
 		driver_context);
 	SetMobileDriverProfile(mobile_profile.driver);
+	// Published on every platform for the same reason the driver-DB resolve is: the ARM Linux
+	// handhelds run the same Turnip/blob stacks as the phones, and an Android-only gate here
+	// left GetRuntimeGPUProfile() answering Unknown for the entire Vulkan lifetime on exactly
+	// those devices — the renderer-variant selection reads it, so Auto could never see a
+	// tiler there. Desktop GPUs still resolve Unknown (name-keyed match, see above).
+	SetRuntimeGPUProfile(mobile_profile.runtime_profile);
 #if defined(__ANDROID__)
 	// MediaTek (Dimensity/Helio) Mali Vulkan stacks return zero/stale destination color
 	// through ROAA (black / missing textures) across GPU generations, so detect the SoC
 	// here and disable fbfetch below. Ported from sashkinbro/EmuCoreX. Detection reads the
 	// ro.soc.* props already folded into the profile hints (no new JNI needed).
 	//
-	// ★ Vulkan resolved mobile_profile and pushed every OTHER piece of it into the device
-	// (MediaTek SoC, GPU identity, GS tuning) but never the runtime profile itself, so
-	// IsMaliGPUProfile()/IsAdrenoGPUProfile() answered from the default for the entire Vulkan
-	// lifetime. Consequence: ApplyAndroidGameDBOverrides()'s `IsMaliGPUProfile() && IsMediaTekSoC()`
-	// gate could never pass, so the Tekken 5 duplicated-framebuffer fix was dead on the renderer we
-	// default to on Android, and the profile printed in VK logs was whatever the default happened
-	// to be rather than the detected GPU.
-	SetRuntimeGPUProfile(mobile_profile.runtime_profile);
+	// (The runtime profile itself is published above, unconditionally: it once lived only in
+	// this Android block, which kept IsMaliGPUProfile()/IsAdrenoGPUProfile() answering the
+	// default for the entire Vulkan lifetime — first noticed on Android where it killed the
+	// Tekken 5 MediaTek override, then again on ARM Linux where it hid the GPU profile from
+	// the renderer-variant selection.)
 	SetMediaTekSoC(mobile_profile.is_mediatek_soc);
 	force_xclipse_profile = (mobile_profile.override_mode == GpuProfileOverride::Xclipse) ||
 		(mobile_profile.runtime_profile == RuntimeGpuProfile::Xclipse);

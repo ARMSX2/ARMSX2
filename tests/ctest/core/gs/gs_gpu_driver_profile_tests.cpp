@@ -131,3 +131,49 @@ TEST(GSGpuDriverProfile, MaliR44p1DynamicRenderingIsNotFlaggedBroken)
 	EXPECT_FALSE(ResolveMaliVK("Mali-G715", PackVulkanVersion(52, 0, 0))
 					 .driver.HasBug(DriverBug::BrokenDynamicRendering));
 }
+
+// The Vulkan device publishes the resolved runtime profile on EVERY platform, not just
+// Android: the ARM Linux handhelds run the same Turnip/blob stacks as the phones, and the
+// renderer-variant selection reads the profile (an Android-only publish left it Unknown for
+// the whole Vulkan lifetime on the SD865 rig -- observed as "profile=Unknown" in the Tile
+// identity line on Rocknix). What makes the unconditional publish safe is this property of
+// the VK classification: mobile tilers match by name, and desktop GPUs stay strictly
+// Unknown -- unlike the GL detector, which calls every non-Mali GPU Adreno and must remain
+// Android-only. Strings below are from real emulogs (SD865 Rocknix rig, M2 Asahi dev box).
+TEST(GSGpuDriverProfile, VulkanRuntimeProfileClassifiesTilersAndLeavesDesktopUnknown)
+{
+	const auto resolve_vk = [](const char* device_name, const char* driver_name, u32 vendor_id,
+							    u32 driver_id) {
+		MobileDriverContext context;
+		context.api = MobileGpuApi::Vulkan;
+		context.vendor_id = vendor_id;
+		context.driver_id = driver_id;
+		context.driver_name = driver_name;
+		return GpuProfileDetector::Resolve("auto", std::string_view(), device_name, context);
+	};
+
+	// Turnip on the SD865 rig (VK_DRIVER_ID_MESA_TURNIP = 18, Qualcomm vendor 0x5143).
+	EXPECT_EQ(resolve_vk("Turnip Adreno (TM) 650", "turnip", 0x5143u, 18).runtime_profile,
+		RuntimeGpuProfile::Adreno);
+	// The proprietary blob names the GPU the same way (VK_DRIVER_ID_QUALCOMM_PROPRIETARY = 7).
+	EXPECT_EQ(resolve_vk("Adreno (TM) 650", "Qualcomm Technologies Inc. Adreno Vulkan Driver",
+				  0x5143u, 7)
+				  .runtime_profile,
+		RuntimeGpuProfile::Adreno);
+	// The Mali blob on the RG477V (VK_DRIVER_ID_ARM_PROPRIETARY = 9).
+	EXPECT_EQ(resolve_vk("Mali-G615 MC6", "ARM proprietary", 0x13B5u, 9).runtime_profile,
+		RuntimeGpuProfile::Mali);
+
+	// Desktop and dev-box GPUs must resolve Unknown -- a wrong tiler answer here would feed
+	// the variant Auto policy and the per-vendor GS tuning a desktop GPU.
+	EXPECT_EQ(resolve_vk("NVIDIA GeForce RTX 4080", "NVIDIA", 0x10DEu, 4).runtime_profile,
+		RuntimeGpuProfile::Unknown);
+	EXPECT_EQ(resolve_vk("AMD Radeon RX 7900 XTX (RADV NAVI31)", "radv", 0x1002u, 3).runtime_profile,
+		RuntimeGpuProfile::Unknown);
+	EXPECT_EQ(resolve_vk("Intel(R) Arc(tm) A770 Graphics (DG2)", "Intel open-source Mesa driver",
+				  0x8086u, 6)
+				  .runtime_profile,
+		RuntimeGpuProfile::Unknown);
+	EXPECT_EQ(resolve_vk("Apple M2 Max (G14C B1)", "Honeykrisp", 0x106Bu, 0).runtime_profile,
+		RuntimeGpuProfile::Unknown);
+}
