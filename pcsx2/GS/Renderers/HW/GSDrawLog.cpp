@@ -121,7 +121,7 @@ namespace GSDrawLog
 		rec.area_w = static_cast<s16>(config.drawarea.w);
 	}
 
-	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback)
+	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback, const GSVector4i& rect)
 	{
 		if (s_open_record == SIZE_MAX)
 			return;
@@ -132,6 +132,12 @@ namespace GSDrawLog
 		rec.record_ns = record_ns;
 		rec.pass_id = pass_id;
 		rec.fallback_reason = static_cast<u8>(fallback);
+		// The draw rect (bbox ∩ scissor) — the tile rows' equivalent of the backend
+		// drawarea, and the column that localizes a wrong pixel to its draw.
+		rec.area_x = static_cast<s16>(std::clamp(rect.x, -32768, 32767));
+		rec.area_y = static_cast<s16>(std::clamp(rect.y, -32768, 32767));
+		rec.area_z = static_cast<s16>(std::clamp(rect.z, -32768, 32767));
+		rec.area_w = static_cast<s16>(std::clamp(rect.w, -32768, 32767));
 	}
 
 	void FinishDraw()
@@ -303,17 +309,24 @@ namespace GSDrawLog
 
 			if (submitted)
 			{
-				std::fprintf(fp.get(), "%s,%u,%d,%s,%s,%s,%x,%d,%d,%d,%d,",
+				std::fprintf(fp.get(), "%s,%u,%d,%s,%s,%s,%x,",
 					GSGetTopologyName(static_cast<GSHWDrawConfig::Topology>(r.topology)), r.barrier,
 					(r.flags & FlagFeedbackLoopRT) ? 1 : 0,
 					GetPrimOverlapName(r.prim_overlap), GSGetTexHazardName(r.tex_hazard),
 					GSGetDestinationAlphaModeName(static_cast<GSHWDrawConfig::DestinationAlphaMode>(r.destination_alpha)),
-					r.colormask, r.area_x, r.area_y, r.area_z - r.area_x, r.area_w - r.area_y);
+					r.colormask);
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,,,,,,");
+				std::fprintf(fp.get(), ",,,,,,,");
 			}
+
+			// Tile rows carry the draw rect (bbox ∩ scissor) here; Classic rows the
+			// backend drawarea. Same columns, same meaning: where the draw landed.
+			if (submitted || r.tile)
+				std::fprintf(fp.get(), "%d,%d,%d,%d,", r.area_x, r.area_y, r.area_z - r.area_x, r.area_w - r.area_y);
+			else
+				std::fprintf(fp.get(), ",,,,");
 
 			if (r.tile)
 			{

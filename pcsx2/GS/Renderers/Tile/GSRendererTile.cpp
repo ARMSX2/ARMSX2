@@ -1003,7 +1003,7 @@ void GSRendererTile::Draw()
 
 	if (log) [[unlikely]]
 	{
-		GSDrawLog::NoteTileDraw(/*memo_hit=*/false, record_ns, /*pass_id=*/0, MapFallbackReason(reason));
+		GSDrawLog::NoteTileDraw(/*memo_hit=*/false, record_ns, /*pass_id=*/0, MapFallbackReason(reason), r);
 		GSDrawLog::FinishDraw();
 	}
 }

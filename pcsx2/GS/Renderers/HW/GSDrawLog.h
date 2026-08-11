@@ -197,7 +197,7 @@ namespace GSDrawLog
 	/// Completes the row opened by BeginDraw with the Tile-renderer view instead of the
 	/// backend view. record_ns is the draw's Tile bookkeeping cost only; pass_id is 0
 	/// until the pass graph exists. No-op if BeginDraw did not record a row.
-	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback);
+	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback, const GSVector4i& rect);
 
 	/// Closes any row left open by a draw that returned before submit, so skipped draws
 	/// still appear. Called on every exit from GSRendererHW::Draw.
