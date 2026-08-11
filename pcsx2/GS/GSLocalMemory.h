@@ -1119,6 +1119,10 @@ public:
 		m_readImageX(*this, tx, ty, dst, len, BITBLTBUF, TRXPOS, TRXREG);
 	}
 
+	// The local-to-local transfer engine (TRXDIR=2): moves RRW x RRH pixels from the
+	// source rectangle to the destination rectangle inside this local memory.
+	void Move(const GIFRegBITBLTBUF& BITBLTBUF, const GIFRegTRXPOS& TRXPOS, const GIFRegTRXREG& TRXREG);
+
 	void ReadTexture(const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
 
 	//
