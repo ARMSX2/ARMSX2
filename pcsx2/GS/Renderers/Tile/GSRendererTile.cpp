@@ -119,6 +119,16 @@ GSDrawLog::TileFallback MapFallbackReason(GSTileFloorReason reason)
 			return GSDrawLog::TileFallbackFrameZOverlap;
 		case GSTileFloorReason::ResourceFailure:
 			return GSDrawLog::TileFallbackResourceFailure;
+		case GSTileFloorReason::TextureFiltered:
+			return GSDrawLog::TileFallbackTextureFiltered;
+		case GSTileFloorReason::TextureMip:
+			return GSDrawLog::TileFallbackTextureMip;
+		case GSTileFloorReason::TexturePsm:
+			return GSDrawLog::TileFallbackTexturePsm;
+		case GSTileFloorReason::TextureFeedback:
+			return GSDrawLog::TileFallbackTextureFeedback;
+		case GSTileFloorReason::TexturePerspective:
+			return GSDrawLog::TileFallbackTexturePerspective;
 		default:
 			return GSDrawLog::TileFallbackFloor;
 	}
@@ -132,6 +142,7 @@ GSRendererTile::GSRendererTile(int threads)
 
 void GSRendererTile::Destroy()
 {
+	m_tex_source.Clear();
 	m_target_pool.ReleaseAll();
 	GSRendererSW::Destroy();
 }
@@ -140,6 +151,7 @@ void GSRendererTile::Reset(bool hardware_reset)
 {
 	GSRendererSW::Reset(hardware_reset);
 	// Everything falls back to CPU-newest; surface textures die with the reset.
+	m_tex_source.Clear();
 	m_target_pool.ReleaseAll();
 	m_vram_model.Reset();
 }
@@ -257,6 +269,15 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 	in.fge = PRIM->FGE;
 	in.fba = m_context->FBA.FBA;
 	in.vs_expand = g_gs_device->Features().vs_expand;
+	if (PRIM->TME)
+	{
+		// The same criteria the SW scanline uses to choose its filter and mip state,
+		// so the native path and the floor agree on which draws do what.
+		in.tex_linear = m_vt.IsLinear();
+		in.tex_mip = IsMipMapActive();
+		in.tex_fst = PRIM->FST;
+		in.tex_psm = static_cast<u8>(m_context->TEX0.PSM);
+	}
 	return gsTileLowerDraw(in);
 }
 
@@ -589,6 +610,25 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		return false;
 	}
 
+	// The texture window's footprint. A window overlapping the draw's own write
+	// pages is feedback — M4 territory. (A zero TBW over-claims every page through
+	// PagesForTargetRect and floors here too; safe, if mislabeled.)
+	const bool textured = PRIM->TME;
+	GSPageBitmap tex_pages;
+	if (textured)
+	{
+		const GSTileSurfaceLayout tex_l{ctx->TEX0.TBP0, static_cast<u8>(ctx->TEX0.TBW),
+			static_cast<u8>(ctx->TEX0.PSM), KindForPsm(ctx->TEX0.PSM)};
+		const int tw = 1 << std::min<u32>(ctx->TEX0.TW, 10);
+		const int th = 1 << std::min<u32>(ctx->TEX0.TH, 10);
+		tex_pages = PagesForTargetRect(tex_l, GSVector4i(0, 0, tw, th));
+		if (tex_pages.intersects(fb_pages) || tex_pages.intersects(z_pages))
+		{
+			reason = GSTileFloorReason::TextureFeedback;
+			return false;
+		}
+	}
+
 	bool ok = true;
 	GSTileSurfaceId fb_id = kGSTileNoSurface;
 	GSTileSurfaceId z_id = kGSTileNoSurface;
@@ -636,6 +676,8 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		sync_set |= m_vram_model.SpillBeforeNativeDraw(fb_id, fb_pages, plan.fb_claims);
 	if (plan.z_write)
 		sync_set |= m_vram_model.SpillBeforeNativeDraw(z_id, z_pages, plan.z_claims);
+	if (textured)
+		sync_set |= m_vram_model.ReadbackNeeded(tex_pages, kGSTilePlanesAll);
 
 	if (!ReadbackModelPages(sync_set) ||
 		(want_rt && !m_target_pool.UploadPages(m_mem, fb_handle, fb_l, up_fb)) ||
@@ -647,9 +689,32 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		return false;
 	}
 
+	// The texture source, built from (now-current) CPU local memory with palette and
+	// TEXA expansion applied by the readers. The CLUT read buffer refreshes the same
+	// way the SW rasterizer's would have. (Standing M2 gap: the palette itself was
+	// loaded from CPU bytes at TEX0-write time, before any draw-side seam ran — a
+	// GPU-rendered palette would be read stale; the oracle gate is the detector.)
+	GSTexture* tex = nullptr;
+	if (textured)
+	{
+		u32 pal_gen = 0;
+		if (GSLocalMemory::m_psm[ctx->TEX0.PSM].pal > 0)
+		{
+			m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
+			pal_gen = m_mem.m_clut.GetWriteGeneration();
+		}
+		tex = m_tex_source.Lookup(m_mem, m_vram_model, ctx->TEX0, m_draw_env->TEXA, tex_pages, pal_gen);
+		if (!tex)
+		{
+			reason = GSTileFloorReason::ResourceFailure;
+			return false;
+		}
+	}
+
 	SubmitNativeDraw(plan, r,
 		want_rt ? m_target_pool.GetTexture(fb_handle) : nullptr,
-		want_ds ? m_target_pool.GetTexture(z_handle) : nullptr);
+		want_ds ? m_target_pool.GetTexture(z_handle) : nullptr,
+		tex);
 
 	if (want_rt)
 		m_vram_model.OnNativeDraw(fb_id, fb_pages, plan.fb_claims);
@@ -703,7 +768,8 @@ void GSRendererTile::FlattenProvokingColor()
 	}
 }
 
-void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTexture* rt, GSTexture* ds)
+void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTexture* rt, GSTexture* ds,
+	GSTexture* tex)
 {
 	const GSDrawingContext* ctx = m_context;
 	GSHWDrawConfig conf = {};
@@ -721,6 +787,57 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	conf.colormask = GSHWDrawConfig::ColorMaskSelector(plan.colormask);
 	if (!rt)
 		conf.ps.DisableColorOutput();
+
+	if (tex)
+	{
+		// The nearest-sampled plain-color source: the backend's "index and AEM
+		// expansion already done by the CPU" leg, sampled through the GPU sampler —
+		// the exact configuration the gs-texture capture scored 128/128 on nearest
+		// cells in every arm. No palette, no aem, no ltf; region modes go through
+		// the shader with the console-confirmed REGION_REPEAT mask formula.
+		conf.tex = tex;
+		conf.vs.tme = 1;
+		conf.vs.fst = PRIM->FST;
+		conf.ps.fst = PRIM->FST;
+		conf.ps.tfx = ctx->TEX0.TFX;
+		conf.ps.tcc = ctx->TEX0.TCC;
+
+		const u8 wms = static_cast<u8>(ctx->CLAMP.WMS);
+		const u8 wmt = static_cast<u8>(ctx->CLAMP.WMT);
+		conf.ps.wms = (wms & 2) ? wms : 0;
+		conf.ps.wmt = (wmt & 2) ? wmt : 0;
+		conf.sampler.tau = (wms == CLAMP_REPEAT);
+		conf.sampler.tav = (wmt == CLAMP_REPEAT);
+		conf.sampler.biln = 0; // nearest by envelope; filtering floors until gs-grad
+
+		const float tw = static_cast<float>(1 << std::min<u32>(ctx->TEX0.TW, 10));
+		const float th = static_cast<float>(1 << std::min<u32>(ctx->TEX0.TH, 10));
+		const GSVector4 WH(tw, th, tw, th);
+		conf.cb_ps.WH = WH;
+		conf.cb_ps.HalfTexel = GSVector4(-0.5f, 0.5f).xxyy() / WH.zwzw();
+		conf.cb_ps.STScale = GSVector2(1.0f, 1.0f);
+		conf.cb_vs.texture_scale = GSVector2((1.0f / 16.0f) / tw, (1.0f / 16.0f) / th);
+
+		if ((wms | wmt) & 2)
+		{
+			// Region modes at native scale: the clamp bound sits half a texel inside
+			// the last texel (inclusive bound, exclusive size); repeat passes the raw
+			// mask/fix words through bit-cast floats. Same recipe as Classic at 1x.
+			const GSVector4i clamp(ctx->CLAMP.MINU, ctx->CLAMP.MINV, ctx->CLAMP.MAXU, ctx->CLAMP.MAXV);
+			const GSVector4 region_repeat = GSVector4::cast(clamp);
+			const GSVector4 region_clamp = (GSVector4(clamp) + GSVector4::cxpr(0.5f, 0.5f, 0.1f, 0.1f)) / WH.xyxy();
+			if (wms >= CLAMP_REGION_CLAMP)
+			{
+				conf.cb_ps.MinMax.x = (wms == CLAMP_REGION_CLAMP) ? region_clamp.x : region_repeat.x;
+				conf.cb_ps.MinMax.z = (wms == CLAMP_REGION_CLAMP) ? region_clamp.z : region_repeat.z;
+			}
+			if (wmt >= CLAMP_REGION_CLAMP)
+			{
+				conf.cb_ps.MinMax.y = (wmt == CLAMP_REGION_CLAMP) ? region_clamp.y : region_repeat.y;
+				conf.cb_ps.MinMax.w = (wmt == CLAMP_REGION_CLAMP) ? region_clamp.w : region_repeat.w;
+			}
+		}
+	}
 
 	// Depth state + the PS2 z pipeline (EmulateZbuffer's recipe: clamp to the
 	// format's max after rasterization, floor the interpolated z to an integer where

@@ -555,6 +555,7 @@ set(pcsx2GSSources
 	GS/Renderers/HW/GSTextureReplacements.cpp
 	GS/Renderers/SW/GSTextureCacheSW.cpp
 	GS/Renderers/Tile/GSTileTargetPool.cpp
+	GS/Renderers/Tile/GSTileTextureSource.cpp
 	)
 
 # GS headers
@@ -622,6 +623,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Tile/GSRendererTile.h
 	GS/Renderers/Tile/GSTileDrawLowering.h
 	GS/Renderers/Tile/GSTileTargetPool.h
+	GS/Renderers/Tile/GSTileTextureSource.h
 	GS/Renderers/Tile/GSTileTypes.h
 	GS/Renderers/Tile/GSVramModel.h
 	)

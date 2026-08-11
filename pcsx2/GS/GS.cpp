@@ -535,6 +535,12 @@ void GSclose()
 	if (GSCapture::IsCapturing())
 		GSCapture::EndCapture();
 
+	// A ledger left running at shutdown still gets written: batch/ELF runs have no
+	// config edge to flush on (the runner path passes its own file; this is the
+	// qt path's only exit).
+	if (GSDrawLog::IsActive() && GSDrawLog::GetRecordCount() > 0)
+		GSDrawLog::WriteCSV(Path::Combine(EmuFolders::Logs, "gs_drawlog.csv"));
+
 	CloseGSRenderer();
 	CloseGSDevice(true);
 	Host::ReleaseRenderWindow();

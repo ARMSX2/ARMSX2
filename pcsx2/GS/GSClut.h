@@ -53,6 +53,7 @@ class alignas(32) GSClut final : public GSAlignedClass<32>
 	GSVector2i m_gpu_clut_last_offset = 0;
 	u64 m_gpu_clut_draw = 0;
 	bool m_gpu_clut_dirty = true;
+	u32 m_write_generation = 0;
 
 	typedef void (GSClut::*writeCLUT)(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 
@@ -122,6 +123,10 @@ public:
 	// and the palette load from local memory (back-executable).
 	void WriteDecision(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 	void WriteLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
+	/// Bumped on every palette load from local memory. Together with the read-side
+	/// registers (CPSM/CSA/TEXA) this identifies the expanded palette content, which
+	/// is what consumers caching depalettised textures key on.
+	__fi u32 GetWriteGeneration() const { return m_write_generation; }
 	//void Read(const GIFRegTEX0& TEX0);
 	void Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA);
 	void GetAlphaMinMax32(int& amin, int& amax);

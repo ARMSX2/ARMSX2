@@ -150,6 +150,13 @@ namespace GSDrawLog
 		TileFallbackFootprintExtent,
 		TileFallbackFrameZOverlap,
 		TileFallbackResourceFailure,
+		// M3b texture gates (TileFallbackTextured retired with them — kept so old
+		// ledgers still decode):
+		TileFallbackTextureFiltered,
+		TileFallbackTextureMip,
+		TileFallbackTexturePsm,
+		TileFallbackTextureFeedback,
+		TileFallbackTexturePerspective,
 	};
 
 	enum Flags : u8

@@ -62,7 +62,27 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 				in.vs_expand = false;
 			},
 			GSTileFloorReason::SpriteExpandUnavailable},
-		{"textured", [](GSTileDrawInput& in) { in.tme = true; }, GSTileFloorReason::Textured},
+		{"textured with a filtering sampler",
+			[](GSTileDrawInput& in) {
+				in.tme = true;
+				in.tex_fst = true;
+				in.tex_linear = true;
+			},
+			GSTileFloorReason::TextureFiltered},
+		{"textured with mipmapping",
+			[](GSTileDrawInput& in) {
+				in.tme = true;
+				in.tex_fst = true;
+				in.tex_mip = true;
+			},
+			GSTileFloorReason::TextureMip},
+		{"textured from the GPU24 layout",
+			[](GSTileDrawInput& in) {
+				in.tme = true;
+				in.tex_fst = true;
+				in.tex_psm = PSGPU24;
+			},
+			GSTileFloorReason::TexturePsm},
 		{"blend", [](GSTileDrawInput& in) { in.abe = true; }, GSTileFloorReason::Blend},
 		{"aa1 triangle", [](GSTileDrawInput& in) { in.aa1 = true; }, GSTileFloorReason::CoverageAA1},
 		{"fog", [](GSTileDrawInput& in) { in.fge = true; }, GSTileFloorReason::Fog},
@@ -103,6 +123,69 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 		EXPECT_FALSE(p.native) << c.name;
 		EXPECT_EQ(p.reason, c.reason) << c.name;
 	}
+}
+
+// M3b: the texture gate is per-mechanism, not per-tme. Nearest sampling through the
+// GPU sampler is console-exact (gs-texture capture: all 128 nearest cells right in
+// every arm), so a nearest-sampled draw goes native in any rtx-served format —
+// including palettised, whose palette and TEXA expansion the source builder applies
+// CPU-side. Filtering and mip selection stay floored until the gs-grad capture
+// answers the coordinate-quantisation and LOD questions.
+TEST(GSTileLowering, NearestSampledTexturingIsNative)
+{
+	static const u32 servable[] = {PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8, PSMT4,
+		PSMT8H, PSMT4HL, PSMT4HH, PSMZ32, PSMZ24, PSMZ16, PSMZ16S};
+	for (const u32 psm : servable)
+	{
+		GSTileDrawInput in = BaseInput();
+		in.tme = true;
+		in.tex_fst = true;
+		in.tex_psm = static_cast<u8>(psm);
+		const GSTileDrawPlan p = gsTileLowerDraw(in);
+		EXPECT_TRUE(p.native) << "tex psm " << psm;
+		EXPECT_EQ(p.reason, GSTileFloorReason::None) << "tex psm " << psm;
+	}
+}
+
+// Coordinate modes: only affine-exact coordinate walks go native before gs-grad.
+// UV (FST=1) interpolates linearly at w=1 in any prim class; an STQ sprite has
+// constant Q per primitive (the gs-texture probe's own measured shape); an STQ
+// triangle runs a true perspective gradient, and the corpus showed the GPU's
+// interpolator flipping texels against the SW DDA there even at nearest (OutRun,
+// 12 draws, 0.63% of pixels off by >2 levels). Floored until measured.
+TEST(GSTileLowering, PerspectiveTrianglesFloorUntilMeasured)
+{
+	GSTileDrawInput in = BaseInput();
+	in.tme = true;
+	in.tex_fst = false;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	EXPECT_FALSE(p.native);
+	EXPECT_EQ(p.reason, GSTileFloorReason::TexturePerspective);
+
+	in.prim_class = GS_SPRITE_CLASS;
+	const GSTileDrawPlan sprite = gsTileLowerDraw(in);
+	EXPECT_TRUE(sprite.native);
+	EXPECT_EQ(sprite.reason, GSTileFloorReason::None);
+}
+
+TEST(GSTileLowering, TexturedDrawStillFloorsOnTheOtherGates)
+{
+	// A nearest texture passes the texture gates and then floors on whatever else
+	// disqualifies — blend here, so the reason distribution keeps meaning "the first
+	// mechanism we lack", not "it was textured".
+	GSTileDrawInput in = BaseInput();
+	in.tme = true;
+	in.tex_fst = true;
+	in.abe = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// Mip outranks filtering: a trilinear draw reads as mip work, not filter work.
+	in = BaseInput();
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_mip = true;
+	in.tex_linear = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureMip);
 }
 
 TEST(GSTileLowering, AlwaysPassingTestsStayNative)

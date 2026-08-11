@@ -202,6 +202,16 @@ namespace GSDrawLog
 				return "FRAME_Z_OVERLAP";
 			case TileFallbackResourceFailure:
 				return "RESOURCE_FAILURE";
+			case TileFallbackTextureFiltered:
+				return "TEX_FILTERED";
+			case TileFallbackTextureMip:
+				return "TEX_MIP";
+			case TileFallbackTexturePsm:
+				return "TEX_PSM";
+			case TileFallbackTextureFeedback:
+				return "TEX_FEEDBACK";
+			case TileFallbackTexturePerspective:
+				return "TEX_PERSPECTIVE";
 			default:
 				return "";
 		}

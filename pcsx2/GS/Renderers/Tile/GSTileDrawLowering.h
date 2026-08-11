@@ -43,7 +43,7 @@ enum class GSTileFloorReason : u8
 	// Register-predicate reasons (decided by gsTileLowerDraw):
 	PrimClass, ///< points/lines — not in the M2 envelope
 	SpriteExpandUnavailable, ///< sprite draw without VS expand support
-	Textured,
+	Textured, ///< retired at M3b (kept so old ledgers still decode); tme now gates per-mechanism below
 	Blend,
 	CoverageAA1,
 	Fog,
@@ -62,6 +62,13 @@ enum class GSTileFloorReason : u8
 	FootprintExtent, ///< draw wider than the stride or deep enough to wrap page space
 	FrameZOverlap, ///< FRAME and ZBUF footprints share pages
 	ResourceFailure, ///< target pool allocation failed
+	// M3b texture gates (register-predicate):
+	TextureFiltered, ///< sampler filters somewhere — in-shader integer filter awaits gs-grad
+	TextureMip, ///< mip levels active — LOD selection awaits gs-grad
+	TexturePsm, ///< texture format the source builder does not serve (PSGPU24)
+	TexturePerspective, ///< STQ triangle — the GPU interpolator flips texels vs the SW DDA (measured); awaits gs-grad
+	// M3b geometry reason:
+	TextureFeedback, ///< texture pages intersect the draw's own write footprint (M4)
 	Count
 };
 
@@ -83,6 +90,14 @@ struct GSTileDrawInput
 	bool fge;
 	bool fba;
 	bool vs_expand; ///< device supports VS sprite expansion
+	// Texture gates (meaningful only when tme). tex_linear is the vertex trace's
+	// IsLinear — the same criterion the SW scanline uses to pick its filter, so the
+	// native path and the floor agree on which draws filter by construction.
+	// tex_mip is the state's IsMipMapActive; tex_fst is PRIM.FST.
+	bool tex_linear;
+	bool tex_mip;
+	bool tex_fst;
+	u8 tex_psm;
 };
 
 struct GSTileDrawPlan
@@ -228,8 +243,28 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		return floored(GSTileFloorReason::PrimClass);
 	if (in.prim_class == GS_SPRITE_CLASS && !in.vs_expand)
 		return floored(GSTileFloorReason::SpriteExpandUnavailable);
+	// The M3b texture envelope: nearest sampling only, through the GPU sampler —
+	// console-exact (gs-texture capture), with palette and TEXA expansion applied
+	// CPU-side by the source builder, so every rtx-served format qualifies. The
+	// filter and mip gates wait on the gs-grad capture (coordinate quantisation
+	// point and LOD selection are unmeasured); mip outranks filter so the ledger
+	// attributes trilinear draws to the mip question.
 	if (in.tme)
-		return floored(GSTileFloorReason::Textured);
+	{
+		if (in.tex_psm == PSGPU24)
+			return floored(GSTileFloorReason::TexturePsm);
+		if (in.tex_mip)
+			return floored(GSTileFloorReason::TextureMip);
+		if (in.tex_linear)
+			return floored(GSTileFloorReason::TextureFiltered);
+		// Only affine-exact coordinate walks go native: UV in any prim class, STQ
+		// on sprites (Q constant per primitive — the gs-texture probe's measured
+		// shape). An STQ triangle is a true perspective gradient, and the corpus
+		// showed the GPU interpolator flipping texels against the SW DDA there
+		// even at nearest (OutRun: 12 draws, 0.63% of pixels off by >2 levels).
+		if (!in.tex_fst && in.prim_class == GS_TRIANGLE_CLASS)
+			return floored(GSTileFloorReason::TexturePerspective);
+	}
 	if (in.abe)
 		return floored(GSTileFloorReason::Blend);
 	if (in.aa1 && in.prim_class == GS_TRIANGLE_CLASS)

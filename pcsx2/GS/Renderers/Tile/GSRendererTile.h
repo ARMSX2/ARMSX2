@@ -6,6 +6,7 @@
 #include "GS/Renderers/SW/GSRendererSW.h"
 #include "GS/Renderers/Tile/GSTileDrawLowering.h"
 #include "GS/Renderers/Tile/GSTileTargetPool.h"
+#include "GS/Renderers/Tile/GSTileTextureSource.h"
 #include "GS/Renderers/Tile/GSVramModel.h"
 
 MULTI_ISA_UNSHARED_START
@@ -45,7 +46,8 @@ private:
 
 	// The native route.
 	bool TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTileFloorReason& reason);
-	void SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTexture* rt, GSTexture* ds);
+	void SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTexture* rt, GSTexture* ds,
+		GSTexture* tex);
 	void FlattenProvokingColor();
 	GSTileSurfaceId EnsureSurface(const GSTileSurfaceLayout& layout, const GSVector4i& rect, const GSPageBitmap& pages, bool& ok);
 	GSPageBitmap PagesNeedingUpload(GSTileSurfaceId id, const GSPageBitmap& pages, u8 relevant_planes) const;
@@ -59,6 +61,7 @@ private:
 
 	GSVramModel m_vram_model;
 	GSTileTargetPool m_target_pool;
+	GSTileTextureSource m_tex_source;
 	GSVramModel::RectFootprint m_rect_fp; // scratch for transfer/move footprints
 };
 
