@@ -5,17 +5,12 @@
 
 #include "PrecompiledHeader.h"
 
-#include "Input/InputManager.h"
 #include "CDVD/CDVDdiscReader.h"
 
-// g_host_hotkeys - normally defined in pcsx2-qt
-BEGIN_HOTKEY_LIST(g_host_hotkeys)
-END_HOTKEY_LIST()
-
-// Host::SetMouseLock - no mouse lock on Android
-void Host::SetMouseLock(bool state)
-{
-}
+// g_host_hotkeys / Host::SetMouseLock moved to AndroidHostStubs.cpp: they are
+// FRONTEND definitions (emucore's JNI frontend has none; pcsx2-gsrunner has its
+// own), and keeping them in this member made every Android frontend that links
+// libpcsx2.a collide with them when this object was pulled for the disc stubs.
 
 // HTTPDownloader::Create is now provided by common/HTTPDownloaderAndroid.cpp,
 // which bridges to java.net.HttpURLConnection via JNI. The stub that

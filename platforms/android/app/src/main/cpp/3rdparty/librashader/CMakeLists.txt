@@ -24,6 +24,18 @@
 set(LIBRASHADER_PIN "87e8a97b50516d997defeaa168173dcd185d4022"
     CACHE STRING "Pinned librashader commit. Bump deliberately — never track a branch.")
 
+# Explicit opt-out, for builds that must stay single-libc++: the capi cdylib links
+# libc++_shared, while ANDROID_STL=c++_static builds link libc++ statically, and a
+# bare NDK EXECUTABLE with both copies in-process aborts with std::bad_cast out of
+# locale::use_facet at startup (two sets of locale/facet statics; observed on the
+# RG477V, Android 14). Headless pcsx2-gsrunner builds pass
+# -DARMSX2_DISABLE_LIBRASHADER=ON and compile the shader chain out instead.
+if(ARMSX2_DISABLE_LIBRASHADER)
+	message(STATUS "librashader: explicitly disabled (ARMSX2_DISABLE_LIBRASHADER)")
+	set(ARMSX2_HAVE_LIBRASHADER OFF PARENT_SCOPE)
+	return()
+endif()
+
 # ---- Rust toolchain (optional) ---------------------------------------------------
 find_program(CARGO_EXECUTABLE cargo HINTS "$ENV{HOME}/.cargo/bin" "$ENV{CARGO_HOME}/bin")
 if(NOT CARGO_EXECUTABLE)
