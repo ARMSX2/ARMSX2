@@ -111,6 +111,8 @@ public:
 	u32 psm() const { return m_psm; }
 	int blockShiftX() const { return m_blockShiftX; }
 	int blockShiftY() const { return m_blockShiftY; }
+	int pageShiftX() const { return m_pageShiftX; }
+	int pageShiftY() const { return m_pageShiftY; }
 
 	/// Helper class for efficiently getting the numbers of multiple blocks in a scanning pattern (increment x then y)
 	class BNHelper

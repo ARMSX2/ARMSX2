@@ -496,6 +496,7 @@ set(pcsx2GSSourcesUnshared
 	GS/Renderers/SW/GSRasterizer.cpp
 	GS/Renderers/SW/GSRendererSW.cpp
 	GS/Renderers/Tile/GSRendererTile.cpp
+	GS/Renderers/Tile/GSVramModel.cpp
 )
 
 if(ARCH_X86)
@@ -618,6 +619,8 @@ set(pcsx2GSHeaders
 	GS/Renderers/SW/GSVertexSW.h
 	GS/Renderers/Tile/GSPageBitmap.h
 	GS/Renderers/Tile/GSRendererTile.h
+	GS/Renderers/Tile/GSTileTypes.h
+	GS/Renderers/Tile/GSVramModel.h
 	)
 
 if(ARCH_X86)
