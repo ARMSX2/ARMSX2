@@ -587,7 +587,7 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 					const CPUInfo& info = GetCPUInfo();
 					const bool has_small = info.num_small_cores > 0;
 					const bool has_smt = info.num_threads != info.num_big_cores + info.num_small_cores;
-					s_hardware_info_cpu_line.format("CPU: {}", info.name);
+					s_hardware_info_cpu_line.format("CPU: {}", !info.name.empty() ? info.name : "Unknown");
 					if (has_smt && has_small)
 						s_hardware_info_cpu_line.append_format(" ({}P/{}E/{}T)", info.num_big_cores, info.num_small_cores, info.num_threads);
 					else if (has_small)
@@ -600,12 +600,16 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 
 				// GPU
 				const char* gpu_suffix = "";
-				if (GSConfig.UseDebugDevice && GSConfig.HWROV)
-					gpu_suffix = " (Debug & ROV)";
-				else if (GSConfig.UseDebugDevice)
-					gpu_suffix = " (Debug)";
-				else if (GSConfig.HWROV)
-					gpu_suffix = " (ROV)";
+
+				if (GSConfig.Renderer != GSRendererType::SW)
+				{
+					if (GSConfig.UseDebugDevice && GSConfig.HWROV)
+						gpu_suffix = " (Debug & ROV)";
+					else if (GSConfig.UseDebugDevice)
+						gpu_suffix = " (Debug)";
+					else if (GSConfig.HWROV)
+						gpu_suffix = " (ROV)";
+				}
 
 				s_hardware_info_gpu_line.format(
 					"GPU: {}{}",
@@ -1849,8 +1853,8 @@ void SaveStateSelectorUI::Draw()
 			ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoTitleBar |
 				ImGuiWindowFlags_NoScrollbar))
 	{
-		// Leave 2 lines for the legend
-		const float legend_margin = ImGui::GetFontSize() * 3.0f + ImGui::GetStyle().ItemSpacing.y * 3.0f;
+		// Leave room for the legend.
+		const float legend_margin = ImGui::GetTextLineHeightWithSpacing() * 4.0f;
 		const float padding = 10.0f * scale;
 
 		ImGui::BeginChild("##item_list", ImVec2(0, -legend_margin), false,
