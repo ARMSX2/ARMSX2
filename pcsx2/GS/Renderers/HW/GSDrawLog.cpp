@@ -238,7 +238,8 @@ namespace GSDrawLog
 			"atst,afail,date,datm,self_read,"
 			"topology,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
 			"area_x,area_y,area_w,area_h,"
-			"memo_hit,record_ns,pass_id,fallback\n");
+			"memo_hit,record_ns,pass_id,fallback,"
+			"mmag,mmin,mxl,tcc,tfx,fge,fst,aa1,colclamp,pabe\n");
 
 		for (const Record& r : s_records)
 		{
@@ -306,13 +307,26 @@ namespace GSDrawLog
 
 			if (r.tile)
 			{
-				std::fprintf(fp.get(), "%u,%u,%u,%s\n", r.memo_hit, r.record_ns, r.pass_id,
+				std::fprintf(fp.get(), "%u,%u,%u,%s,", r.memo_hit, r.record_ns, r.pass_id,
 					GetTileFallbackName(r.fallback_reason));
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,\n");
+				std::fprintf(fp.get(), ",,,,");
 			}
+
+			if (textured)
+			{
+				std::fprintf(fp.get(), "%u,%u,%u,%u,%u,", r.tex_filter & 1, (r.tex_filter >> 1) & 7,
+					(r.tex_filter >> 4) & 7, (r.env >> 2) & 1, (r.env >> 3) & 3);
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,,,,");
+			}
+
+			std::fprintf(fp.get(), "%u,%u,%u,%u,%u\n", r.env & 1, (r.env >> 1) & 1, (r.env >> 7) & 1,
+				(r.env >> 5) & 1, (r.env >> 6) & 1);
 		}
 
 		Console.WriteLn(fmt::format("GSDrawLog: wrote {} draws to {}{}", s_records.size(), path,

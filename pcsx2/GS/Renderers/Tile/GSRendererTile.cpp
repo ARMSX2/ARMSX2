@@ -835,6 +835,13 @@ void GSRendererTile::RecordDrawLogEntry() const
 								(TEST.ZTE ? GSDrawLog::FlagZTest : 0) |
 								(m_context->ZBUF.ZMSK ? GSDrawLog::FlagZMask : 0));
 
+	const GIFRegTEX1& TEX1 = m_context->TEX1;
+	rec.tex_filter = static_cast<u8>((TEX1.MMAG & 1) | ((TEX1.MMIN & 7) << 1) | ((TEX1.MXL & 7) << 4));
+	rec.env = static_cast<u8>((PRIM->FGE ? 1 : 0) | (PRIM->FST ? 2 : 0) |
+							  ((m_context->TEX0.TCC & 1) << 2) | ((m_context->TEX0.TFX & 3) << 3) |
+							  ((m_env.COLCLAMP.CLAMP & 1) << 5) | ((m_env.PABE.PABE & 1) << 6) |
+							  (PRIM->AA1 ? 0x80 : 0));
+
 	GSDrawLog::BeginDraw(rec);
 }
 

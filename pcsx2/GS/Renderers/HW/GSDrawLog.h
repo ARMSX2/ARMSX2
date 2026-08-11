@@ -65,6 +65,15 @@ namespace GSDrawLog
 		u8 datm;
 		u8 flags;
 
+		// Sampler + environment census bits. tex_filter is only meaningful on textured
+		// draws: bit 0 MMAG, bits 1-3 MMIN, bits 4-6 MXL. env is always valid: bit 0
+		// FGE, bit 1 FST, bit 2 TCC, bits 3-4 TFX, bit 5 COLCLAMP.CLAMP, bit 6 PABE,
+		// bit 7 AA1. These order the Tile envelope work (nearest vs filtered vs mip
+		// splits of the textured floor) and carry the wrap-mode frequency census the
+		// blend capture said it could not weight itself.
+		u8 tex_filter;
+		u8 env;
+
 		// Backend view, filled at submit. Zeroed if the draw returned early.
 		u8 topology;
 		u8 tex_hazard;
