@@ -16,6 +16,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_draw_staging_tests.cpp
 	gs_snapshot_policy_tests.cpp
 	gs_tile_selection_policy_tests.cpp
+	gs_page_bitmap_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE

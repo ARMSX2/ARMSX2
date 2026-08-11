@@ -616,6 +616,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/SW/GSSetupPrimCodeGenerator.all.h
 	GS/Renderers/SW/GSTextureCacheSW.h
 	GS/Renderers/SW/GSVertexSW.h
+	GS/Renderers/Tile/GSPageBitmap.h
 	GS/Renderers/Tile/GSRendererTile.h
 	)
 
