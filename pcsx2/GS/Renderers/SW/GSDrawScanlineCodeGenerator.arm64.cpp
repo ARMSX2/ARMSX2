@@ -1715,10 +1715,9 @@ void GSDrawScanlineCodeGenerator::TestDestAlpha()
 	{
 		if (m_sel.fpsm == 2)
 		{
-			armAsm->Movi(v0.V4S(), 0);
 			armAsm->Shl(v1.V4S(), _fd.V4S(), 16);
 			armAsm->Ushr(v1.V4S(), v1.V4S(), 31);
-			armAsm->Cmeq(v1.V4S(), v0.V4S(), 0);
+			armAsm->Cmeq(v1.V4S(), v1.V4S(), 0);
 		}
 		else
 		{
