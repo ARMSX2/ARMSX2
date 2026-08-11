@@ -471,7 +471,9 @@ __ri static bool TestAlpha(T& test, T& fm, T& zm, const T& ga, const GSScanlineG
 
 		case AFAIL_RGB_ONLY:
 			zm |= t;
-			fm |= t & T::xff000000(); // fpsm 16 bit => & 0xffff8000?
+			// Only reachable with a 32-bit frame: GetAFAIL degrades RGB_ONLY to
+			// FB_ONLY on every other format (console-measured, gs-test capture).
+			fm |= t & T::xff000000();
 			break;
 
 		default:
