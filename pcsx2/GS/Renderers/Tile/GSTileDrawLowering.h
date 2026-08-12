@@ -378,14 +378,34 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	// trunc(s/q) into 16.16 with the GLSL divide tightened to IEEE rounding —
 	// sprites run it natively; TRIANGLES still floor, and the blocker is NOT the
 	// coordinate walk (gs-grad probe: 99.9% word-identical to SW on the
-	// perspective sections through this path). It is Z/coverage parity: OutRun's
-	// road and roadside strips ladder overlapping sub-pixel triangles at
-	// consecutive Z with GEQUAL, and interpolated-Z truncation ties plus
-	// shared-edge coverage resolve differently in the GPU's float pipeline than
-	// in the scanline's double-precision DDA — measured ~10.6k px/frame there,
-	// invariant to every sampling mechanism including the GPU sampler, with
-	// Classic showing the same structural class in the same region. Until a
-	// Z-exact native path exists, perspective triangles stay on the floor.
+	// perspective sections through this path). It is depth parity, on OutRun's road
+	// and roadside strips, which ladder overlapping triangles at consecutive Z under
+	// GEQUAL so a one-unit disagreement decides whole pixels.
+	//
+	// Most of what was recorded here has since been root-caused and fixed: the bulk
+	// was the vertex shader's 1/320-pixel boundary nudge dragging interpolated depth
+	// along its own gradient (5 to 16 units, one-sided), not the truncating
+	// interpolator, and not coverage — see the VS_NONUDGE comment in
+	// GSRendererTile::SubmitNativeDraw. The comparator is not involved either:
+	// gs-decide measured it as the plain unsigned rule, GEQUAL passing the tie, at
+	// 100.00% over 30,720 readings including a ladder built for this question.
+	//
+	// What is left is the genuine interpolator difference. The GPU evaluates the
+	// depth plane in float32 and we floor it; the scanline walks a float64 DDA and
+	// floors that. Where the exact value lands on an integer — which Z-laddered art
+	// produces systematically — the two floors part by one. Measured with the floor
+	// lifted: the corpus goes 9/9 to 7/9, OutRun 0.64% of pixels differing (0.55% by
+	// more than two levels, worst 184) and Dirge 0.002%, for 1.7% to 8.2% of corpus
+	// draws going native. Closing it needs the depth plane evaluated in integer
+	// arithmetic per primitive, which is also what silicon's own rule wants (the
+	// exact gradient truncated onto a 2^-10 grid, gs-interp): the same machinery
+	// serves both, and the console rule is the cheaper of the two to evaluate. Until
+	// then perspective triangles stay on the floor.
+	//
+	// Note for whoever lifts it: TEX_PERSPECTIVE masks what is underneath. With it
+	// lifted the census re-sorts to BLEND 45.7% and TEX_STQ_OVERFLOW 34.0% — the
+	// range guard below, which reads as 0.2% today only because this floor outranks
+	// it. Neither is a depth question, and both are larger.
 	// Palette and TEXA expansion are applied CPU-side by the source builder, so
 	// every rtx-served format qualifies. Mip goes native for the classes below
 	// (M3g mip slice): the fragment path reproduces the scanline JIT's LOD
