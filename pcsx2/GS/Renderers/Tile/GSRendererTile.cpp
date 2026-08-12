@@ -97,6 +97,8 @@ GSDrawLog::TileFallback MapFallbackReason(GSTileFloorReason reason)
 			return GSDrawLog::TileFallbackFba;
 		case GSTileFloorReason::ScanMask:
 			return GSDrawLog::TileFallbackScanMask;
+		case GSTileFloorReason::Dither:
+			return GSDrawLog::TileFallbackDither;
 		case GSTileFloorReason::AlphaTest:
 			return GSDrawLog::TileFallbackAlphaTest;
 		case GSTileFloorReason::DateTest:
@@ -272,6 +274,7 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 	in.aa1 = PRIM->AA1;
 	in.fge = PRIM->FGE;
 	in.fba = m_context->FBA.FBA;
+	in.dthe = m_draw_env->DTHE.DTHE;
 	in.vs_expand = g_gs_device->Features().vs_expand;
 	if (PRIM->TME)
 	{

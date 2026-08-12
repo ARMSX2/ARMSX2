@@ -82,6 +82,10 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 		{"fog", [](GSTileDrawInput& in) { in.fge = true; }, GSTileFloorReason::Fog},
 		{"fba on ct32", [](GSTileDrawInput& in) { in.fba = true; }, GSTileFloorReason::Fba},
 		{"scanmsk", [](GSTileDrawInput& in) { in.scanmsk = 2; }, GSTileFloorReason::ScanMask},
+		// Dither reaches CT32 and CT24 on silicon, so it reaches the whole native
+		// envelope, and the native path writes no matrix. Before the SW renderer was
+		// fixed to dither those formats the two arms agreed by both being wrong.
+		{"dither", [](GSTileDrawInput& in) { in.dthe = true; }, GSTileFloorReason::Dither},
 		{"dynamic alpha test",
 			[](GSTileDrawInput& in) {
 				in.TEST.ATE = 1;

@@ -158,6 +158,8 @@ namespace GSDrawLog
 		TileFallbackTextureFeedback,
 		TileFallbackTexturePerspective,
 		TileFallbackTextureStqOverflow,
+		// gs-dither gate: the native path writes no dither matrix.
+		TileFallbackDither,
 	};
 
 	enum Flags : u8

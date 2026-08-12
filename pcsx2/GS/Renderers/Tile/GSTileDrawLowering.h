@@ -49,6 +49,7 @@ enum class GSTileFloorReason : u8
 	Fog,
 	Fba,
 	ScanMask,
+	Dither, ///< DTHE — the native path writes no dither matrix (see the gate)
 	AlphaTest, ///< ATE with an effective test (anything but ALWAYS)
 	DateTest, ///< DATE on a format with real destination alpha
 	ZTestNever, ///< draw can write nothing — let the floor no-op it
@@ -91,6 +92,7 @@ struct GSTileDrawInput
 	bool aa1;
 	bool fge;
 	bool fba;
+	bool dthe; ///< DTHE.DTHE — dither enable, an environment register
 	bool vs_expand; ///< device supports VS sprite expansion
 	// Texture gates (meaningful only when tme). tex_linear is the vertex trace's
 	// IsLinear — the same criterion the SW scanline uses to pick its filter, so the
@@ -307,6 +309,18 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		return floored(GSTileFloorReason::Fba);
 	if (in.scanmsk != 0)
 		return floored(GSTileFloorReason::ScanMask);
+	// Dither reaches every colour destination on silicon, so it reaches the whole
+	// native envelope -- CT32 and CT24 both (gs-dither, SCPH-30001, 2026-08-11:
+	// 4080 of 4096 pixels move on each). The scanline adds DM[y & 3][x & 3] to the
+	// eight-bit colour; the native path writes no matrix at all.
+	//
+	// This gate is what keeps the floor honest rather than lucky. Before the SW
+	// renderer was fixed to dither those formats, a native dithered draw agreed
+	// with the floor by both being wrong, and the capture scored the two arms
+	// identically at 50%. Fixing SW turned that into a real divergence -- visible
+	// in the probe, invisible in the corpus, which contains no such draw.
+	if (in.dthe)
+		return floored(GSTileFloorReason::Dither);
 	if (atst_dynamic)
 		return floored(GSTileFloorReason::AlphaTest);
 	// DATE with real destination alpha is a genuinely dynamic test — M4 work. The
