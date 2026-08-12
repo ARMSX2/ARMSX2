@@ -858,6 +858,14 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	conf.ps.iip = iip;
 	conf.ps.tfx = 4;
 	conf.ps.no_color1 = 1;
+	// The vertex colour reaches the texture function on the SW scanline's own grid:
+	// fixed point with seven fractional bits, truncated. Without this the GPU keeps
+	// the interpolator's full precision and the UNORM8 store ROUNDS, which is half a
+	// level of systematic bias on every Gouraud gradient — measured against the
+	// gs-interp console capture, where the tile arm fitted `exact/round` on 99.5% of
+	// readings while the scanline fitted a truncating ten-bit DDA. Flat draws are
+	// unaffected: their colour is already an integer, so the truncation is identity.
+	conf.ps.tile_vcolor = 1;
 	conf.ps.dst_fmt = GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt;
 	conf.colormask = GSHWDrawConfig::ColorMaskSelector(plan.pass[0].colormask);
 	if (!rt)

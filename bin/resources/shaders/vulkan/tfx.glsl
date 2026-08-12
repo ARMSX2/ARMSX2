@@ -1617,6 +1617,19 @@ vec4 sample_color_tile_nn(vec2 st_int)
 
 vec4 tfx(vec4 T, vec4 C)
 {
+#if PS_TILE_VCOLOR
+	// The SW scanline carries the interpolated vertex colour as a fixed-point value
+	// with SEVEN fractional bits, and truncates it to eight bits only where the
+	// colour is used AS a colour; the texture-function multiplies consume all
+	// fifteen (GSDrawScanline: modulate16<1> against the fixed value, srl16<7>
+	// everywhere else). Reproduce both, or a native draw rounds where the scanline
+	// truncates — a systematic half-level bias on every Gouraud gradient.
+	C = trunc(C * 128.0f) / 128.0f;
+	vec4 Cc = trunc(C);
+#else
+	vec4 Cc = C;
+#endif
+
 	vec4 C_out;
 	vec4 FxT = trunc((C * T) / 128.0f);
 
@@ -1625,17 +1638,17 @@ vec4 tfx(vec4 T, vec4 C)
 #elif (PS_TFX == 1)
 	C_out = T;
 #elif (PS_TFX == 2)
-	C_out.rgb = FxT.rgb + C.a;
-	C_out.a = T.a + C.a;
+	C_out.rgb = FxT.rgb + Cc.a;
+	C_out.a = T.a + Cc.a;
 #elif (PS_TFX == 3)
-	C_out.rgb = FxT.rgb + C.a;
+	C_out.rgb = FxT.rgb + Cc.a;
 	C_out.a = T.a;
 #else
-	C_out = C;
+	C_out = Cc;
 #endif
 
 #if (PS_TCC == 0)
-	C_out.a = C.a;
+	C_out.a = Cc.a;
 #endif
 
 #if (PS_TFX == 0) || (PS_TFX == 2) || (PS_TFX == 3)
