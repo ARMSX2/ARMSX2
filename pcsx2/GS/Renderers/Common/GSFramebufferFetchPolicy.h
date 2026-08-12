@@ -89,6 +89,38 @@ constexpr GSFramebufferFetchDecision DecideGLFramebufferFetch(bool has_arm_fetch
 	return decision;
 }
 
+// Whether a GL framebuffer-fetch backend also orders overlapping primitives within one draw.
+//
+// This is a per-EXTENSION property, not a per-API one, and conflating the two cost every Mali
+// device a large amount of performance in 2.6.6.5.
+//
+// ARM_shader_framebuffer_fetch is the coherent spelling. Its spec is explicit: "when an individual
+// sample is covered by multiple primitives, rendering for that sample is performed sequentially in
+// the order in which the primitives were submitted", and a read of gl_LastFragColorARM "must wait
+// for the processing of all previous fragments destined for the current pixel to complete". That
+// is the same contract Vulkan's rasterization-order attachment access and Metal's programmable
+// blending provide, so the ARM path earns the same barrier-free treatment they get. It is also
+// what the hardware does anyway -- a tiler blends in tile memory in primitive order.
+//
+// EXT_shader_framebuffer_fetch does not earn it. Measured on Mesa 25.3.6 / Apple M2 through the
+// EXT path, a 640x480 MGS3 frame came out 101x further from the software rasteriser than the
+// RT-copy path (76872 pixels wrong by >=8 against 759), and 18% of the frame changed between
+// identical replays -- the nondeterminism is what identified it as an ordering failure rather than
+// an arithmetic one. So EXT keeps its barrier.
+//
+// ⚠️ The measurement above was taken on ONE driver through the EXT extension, and the conclusion
+// drawn from it was applied to all of GL, including ARM's extension, which guarantees the opposite.
+// A driver that violates the ARM guarantee is a driver bug and belongs in the driver-bug database
+// as a fetch blocklist entry (see UseRenderTargetCopyForFeedback), not in a blanket rule here --
+// that is the mechanism r44p1 already uses.
+constexpr bool FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend backend)
+{
+	return backend == GSFramebufferFetchBackend::ARM;
+}
+static_assert(FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::ARM));
+static_assert(!FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::EXT));
+static_assert(!FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::None));
+
 // Whether a draw may drop its barrier requirement because framebuffer fetch is available.
 //
 // Fetch replaces the destination READ. Whether it also orders overlapping primitives WITHIN one
@@ -97,16 +129,14 @@ constexpr GSFramebufferFetchDecision DecideGLFramebufferFetch(bool has_arm_fetch
 // ("on fbfetch, one barrier is like full barrier") and asks for a full barrier to get the
 // per-primitive ordering that path needs. Dropping the barrier on the same reasoning removed the
 // mechanism that supplied the ordering, so a primitive blended against a destination its
-// predecessor had not written yet. It raced: on Mesa 25.3.6 / Apple M2, a 640x480 MGS3 frame came
-// out 101x further from the software rasteriser than the RT-copy path (76872 pixels wrong by >=8
-// against 759), and 18% of the frame changed between identical replays.
+// predecessor had not written yet.
 //
-// Vulkan's rasterization-order attachment access and Metal's programmable blending guarantee the
-// ordering by contract, so they still drop the barrier and keep their render passes intact. The
-// GL fetch extensions do not deliver it in practice. Where the draw's own primitives do not
-// overlap the question is moot -- a live in-tile read and a pre-draw snapshot are the same value --
-// so the barrier is dropped there on every backend, which covered 76 of the 84 affected draws in
-// that frame.
+// Vulkan's rasterization-order attachment access, Metal's programmable blending and GL's ARM
+// extension all guarantee the ordering by contract, so they drop the barrier and keep their render
+// passes intact; the GL EXT path does not (see FbFetchOrdersOverlappingPrims). Where the draw's own
+// primitives do not overlap the question is moot -- a live in-tile read and a pre-draw snapshot are
+// the same value -- so the barrier is dropped there on every backend, which covered 76 of the 84
+// affected draws in that frame.
 //
 // `prims_may_overlap` must be true when overlap is merely unknown; guessing "no" is what costs
 // correctness, and guessing "yes" costs only a split draw.

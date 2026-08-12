@@ -1072,11 +1072,11 @@ bool GSDeviceOGL::CheckFeatures()
 		GLAD_GL_EXT_shader_framebuffer_fetch, GLAD_GL_EXT_shader_pixel_local_storage, fbfetch_driver_blocklisted,
 		GSConfig.DisableFramebufferFetch, use_mali_profile);
 	m_features.framebuffer_fetch = fbfetch.enabled;
-	// GL fetch replaces the destination read but does NOT order overlapping primitives within one
-	// draw, so an overlapping draw keeps its full barrier (see FbFetchDropsDrawBarriers). Stated
-	// explicitly rather than left to the FeatureSupport memset: Vulkan and Metal both assign this
-	// bit, and a backend that stays silent reads as an oversight rather than as the answer.
-	m_features.framebuffer_fetch_orders_overlap = false;
+	// Whether fetch also orders overlapping primitives within one draw is a property of the
+	// extension, not of the API: ARM's guarantees it by spec and EXT's does not (see
+	// FbFetchOrdersOverlappingPrims). Blanket-false here is what put every Mali device on a
+	// per-primitive split draw for overlapping blends in 2.6.6.5.
+	m_features.framebuffer_fetch_orders_overlap = FbFetchOrdersOverlappingPrims(fbfetch.backend);
 
 	switch (fbfetch.veto)
 	{

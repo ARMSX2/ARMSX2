@@ -236,6 +236,55 @@ TEST(GSFramebufferFetchPolicy, DroppingBarriersNeverDependsOnOverlapAloneWithout
 	}
 }
 
+// Which GL fetch extension orders overlapping primitives (FbFetchOrdersOverlappingPrims).
+//
+// The regression these pin: the ordering question was answered "no" for the whole GL API, on a
+// measurement taken through the EXT extension on one desktop driver. ARM's extension guarantees
+// the opposite in its spec, and every Mali device on Android takes the ARM path, so the blanket
+// answer put the entire Mali install base on a split draw -- one draw call per primitive group --
+// for every overlapping blended draw. That is the 2.6.6.5 slowdown.
+
+TEST(GSFramebufferFetchPolicy, ArmFetchOrdersOverlappingPrimitives)
+{
+	// ARM_shader_framebuffer_fetch spec: "when an individual sample is covered by multiple
+	// primitives, rendering for that sample is performed sequentially in the order in which the
+	// primitives were submitted", and a gl_LastFragColorARM read "must wait for the processing of
+	// all previous fragments destined for the current pixel to complete". That is the same
+	// contract Vulkan and Metal provide, so it earns the same barrier-free path.
+	EXPECT_TRUE(FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::ARM));
+	EXPECT_TRUE(FbFetchDropsDrawBarriers(
+		FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::ARM), /*prims_may_overlap=*/true, false));
+}
+
+TEST(GSFramebufferFetchPolicy, ExtFetchDoesNotOrderOverlappingPrimitives)
+{
+	// The EXT path is where the reordering was actually measured (Mesa 25.3.6 / Apple M2: 18% of an
+	// MGS3 frame changing between identical replays). It keeps its barrier.
+	EXPECT_FALSE(FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::EXT));
+	EXPECT_FALSE(FbFetchDropsDrawBarriers(
+		FbFetchOrdersOverlappingPrims(GSFramebufferFetchBackend::EXT), /*prims_may_overlap=*/true, false));
+}
+
+TEST(GSFramebufferFetchPolicy, AVetoedFetchNeverClaimsAnOrderingGuarantee)
+{
+	// A device that lost fetch has no in-tile read at all, so it cannot be claiming to order
+	// anything with one. Swept over the policy's own vetoes so a new one cannot miss this: the
+	// r44p1 blocklist is exactly a driver that violates the ARM guarantee, and the database entry
+	// is where that belongs -- not a blanket rule that also penalises every healthy Mali.
+	for (bool blocklisted : {false, true})
+	{
+		for (bool user_disabled : {false, true})
+		{
+			const GSFramebufferFetchDecision d = Decide({.arm = true, .ext = true,
+				.blocklisted = blocklisted, .user_disabled = user_disabled, .mali_profile = true});
+			SCOPED_TRACE(testing::Message() << "blocklisted=" << blocklisted
+											<< " user_disabled=" << user_disabled);
+
+			EXPECT_EQ(FbFetchOrdersOverlappingPrims(d.backend), d.enabled);
+		}
+	}
+}
+
 // The blend-fallback shape (GLUsesPerPrimitiveFbCopy).
 //
 // Third face of the same coupling. Turning fetch off answers "how do we read the destination?" but
