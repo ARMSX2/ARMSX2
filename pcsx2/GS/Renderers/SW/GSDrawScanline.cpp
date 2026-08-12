@@ -1083,6 +1083,14 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						if (sel.lcm)
 							lodf = global.lod.f;
 
+						// The console blends two mip levels on a FOUR-BIT weight, so a
+						// trilinear blend has sixteen steps. Measured directly: across one
+						// level boundary silicon returns exactly 32 distinct values over two
+						// level pairs 36 apart, which is 36/16 per step. Blending on the full
+						// 16-bit fraction gives about 250 and is visibly finer than hardware.
+						// Truncate to the top four bits before the fraction becomes a weight.
+						lodf = lodf.srl16<12>().sll16<12>();
+
 						lodf = lodf.srl16<1>();
 
 						rb = rb.lerp16<0>(rb2, lodf);
