@@ -57,6 +57,14 @@ union GSScanlineSelector
 		// TODO: 1D texture flag? could save 2 texture reads and 4 lerps with bilinear, and also the texture coordinate clamp/wrap code in one direction
 		u32 zequal : 1; // 56
 		u32 breakpoint : 1; // Insert a trap to stop the program, helpful to stop debugger on a program
+
+		// The GS chooses between MMAG and MMIN PER PIXEL, from that pixel's own level
+		// of detail -- the filter can change part way along a single primitive, and on
+		// silicon it does. These two say "this primitive straddles the crossing, so
+		// decide per pixel": ltfx runs the bilinear path with the weight forced to zero
+		// wherever the nearest filter wins, and ltfx_ge picks which side that is.
+		u32 ltfx    : 1;
+		u32 ltfx_ge : 1;
 	};
 
 	struct
@@ -144,6 +152,7 @@ struct alignas(32) GSScanlineGlobalData // per batch variables, this is like a p
 	GSVector8 mxl;
 	GSVector8 k; // TEX1.K * 0x10000
 	GSVector8 l; // TEX1.L * -0x10000
+	GSVector8 ltfx_q; // the Q at which the level crosses zero; sel.ltfx
 	struct { GSVector8i i, f; } lod; // lcm == 1
 
 #else
@@ -153,6 +162,7 @@ struct alignas(32) GSScanlineGlobalData // per batch variables, this is like a p
 	GSVector4 mxl;
 	GSVector4 k; // TEX1.K * 0x10000
 	GSVector4 l; // TEX1.L * -0x10000
+	GSVector4 ltfx_q; // the Q at which the level crosses zero; sel.ltfx
 	struct { GSVector4i i, f; } lod; // lcm == 1
 
 #endif

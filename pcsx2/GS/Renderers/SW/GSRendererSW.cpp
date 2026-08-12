@@ -1365,6 +1365,31 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 				// Note: the 'q' division was done in GSRendererSW::ConvertVertexBuffer
 				gd.sel.fst |= (m_vt.m_eq.q || primclass == GS_SPRITE_CLASS);
 
+				// The console chooses MMAG versus MMIN per pixel, from that pixel's own
+				// level. When this primitive straddles the crossing and the two filters
+				// differ, hand the scanline the Q at which the level reaches zero and let
+				// it decide per pixel. Only meaningful where Q actually varies -- a
+				// constant-Q primitive has one level throughout and cannot straddle.
+				//
+				// lod = -log2(Q) * 2^L + K, so lod > 0 is exactly Q < 2^(K / 2^L),
+				// which is one constant. No logarithm is needed in the inner loop.
+				//
+				// Gated to ARM64 because only that scanline codegen implements it. The
+				// C++ reference scanline implements it on every host, so leaving x86
+				// ungated would make an x86 build's JIT and its own fallback disagree --
+				// a worse failure than the per-primitive approximation. This fork builds
+				// and ships ARM64 only; the rule to copy is in GSDrawScanline.cpp.
+#ifdef ARCH_ARM64
+				if (m_vt.IsFilterCrossover() && !gd.sel.fst)
+				{
+					const float K = static_cast<float>(context->TEX1.K) / 16;
+
+					gd.sel.ltfx = 1;
+					gd.sel.ltfx_ge = m_vt.IsCrossoverLinearOnMag();
+					gd.ltfx_q = GSVector4(std::exp2(K / static_cast<float>(1 << context->TEX1.L)));
+				}
+#endif
+
 				if (gd.sel.ltf && gd.sel.fst)
 				{
 					// if q is constant we can do the half pel shift for bilinear sampling on the vertices
