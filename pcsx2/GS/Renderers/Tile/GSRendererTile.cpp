@@ -269,6 +269,15 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 		in.alpha_min = 0;
 		in.alpha_max = 255;
 	}
+	// What the alpha-test pass split needs to know about fragment ordering. Both are
+	// only consulted when the split would otherwise reorder depth writes, and
+	// PrimitiveOverlap walks the vertex list, so ask for it only then.
+	in.z_constant = m_vt.m_eq.z;
+	if (m_context->TEST.ATE && m_context->TEST.ATST != ATST_ALWAYS && m_context->TEST.ATST != ATST_NEVER &&
+		m_context->TEST.ZTE && !m_context->ZBUF.ZMSK && !m_vt.m_eq.z)
+	{
+		in.prim_overlap_none = PrimitiveOverlap() == PRIM_OVERLAP_NO;
+	}
 	in.tme = PRIM->TME;
 	in.abe = PRIM->ABE;
 	in.aa1 = PRIM->AA1;
@@ -850,7 +859,7 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	conf.ps.tfx = 4;
 	conf.ps.no_color1 = 1;
 	conf.ps.dst_fmt = GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt;
-	conf.colormask = GSHWDrawConfig::ColorMaskSelector(plan.colormask);
+	conf.colormask = GSHWDrawConfig::ColorMaskSelector(plan.pass[0].colormask);
 	if (!rt)
 		conf.ps.DisableColorOutput();
 
@@ -1022,7 +1031,7 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	// format's max after rasterization, floor the interpolated z to an integer where
 	// one z unit is finer than a float32 ULP).
 	conf.depth.ztst = ds ? plan.ztst : static_cast<u8>(ZTST_ALWAYS);
-	conf.depth.zwe = plan.z_write;
+	conf.depth.zwe = plan.pass[0].z_write;
 	conf.cb_vs.max_depth = 0xFFFFFFFFu;
 	if (ds)
 	{
@@ -1044,6 +1053,44 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 				conf.ps.zclamp = 1;
 			}
 		}
+	}
+
+	// The alpha test, as the lowering realized it. A pass that carries a comparison
+	// discards its failing fragments outright (PS_AFAIL::KEEP) — the shader's other
+	// AFAIL modes all read the destination, which is M4 machinery; the lowering
+	// expresses the AFAIL write edits as the second pass's masks instead.
+	if (plan.pass[0].atst != ATST_ALWAYS)
+	{
+		GSHWDrawConfig::PS_ATST ps_atst = GSHWDrawConfig::PS_ATST::NONE;
+		float ps_aref = 0.0f;
+		GSHWDrawConfig::GetAlphaTestPS(plan.pass[0].atst, plan.pass[0].aref, false, ps_atst, ps_aref);
+		conf.ps.atst = ps_atst;
+		conf.cb_ps.FogColor_AREF.a = ps_aref;
+		conf.ps.afail = GSHWDrawConfig::PS_AFAIL::KEEP;
+	}
+	if (plan.pass_count > 1)
+	{
+		conf.alpha_second_pass.ps = conf.ps;
+		conf.alpha_second_pass.colormask = GSHWDrawConfig::ColorMaskSelector(plan.pass[1].colormask);
+		conf.alpha_second_pass.depth = conf.depth;
+		conf.alpha_second_pass.depth.zwe = plan.pass[1].z_write;
+		conf.alpha_second_pass.ps_aref = conf.cb_ps.FogColor_AREF.a;
+		if (plan.pass[1].atst != ATST_ALWAYS)
+		{
+			GSHWDrawConfig::PS_ATST ps_atst = GSHWDrawConfig::PS_ATST::NONE;
+			float ps_aref = 0.0f;
+			GSHWDrawConfig::GetAlphaTestPS(plan.pass[1].atst, plan.pass[1].aref, false, ps_atst, ps_aref);
+			conf.alpha_second_pass.ps.atst = ps_atst;
+			conf.alpha_second_pass.ps_aref = ps_aref;
+			conf.alpha_second_pass.ps.afail = GSHWDrawConfig::PS_AFAIL::KEEP;
+		}
+		else
+		{
+			conf.alpha_second_pass.ps.atst = GSHWDrawConfig::PS_ATST::NONE;
+		}
+		if (plan.pass[1].colormask == 0)
+			conf.alpha_second_pass.ps.DisableColorOutput();
+		conf.alpha_second_pass.enable = true;
 	}
 
 	switch (m_vt.m_primclass)

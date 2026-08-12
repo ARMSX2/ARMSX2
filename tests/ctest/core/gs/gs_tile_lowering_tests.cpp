@@ -86,11 +86,16 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 		// envelope, and the native path writes no matrix. Before the SW renderer was
 		// fixed to dither those formats the two arms agreed by both being wrong.
 		{"dither", [](GSTileDrawInput& in) { in.dthe = true; }, GSTileFloorReason::Dither},
-		{"dynamic alpha test",
+		// A dynamic test only floors when its pass split would reorder the draw's own
+		// depth writes: failing fragments still write color here, so color and depth
+		// land in different passes, and under GEQUAL with varying depth and possibly
+		// overlapping primitives the order of those writes decides the outcome.
+		{"dynamic alpha test whose split would reorder depth",
 			[](GSTileDrawInput& in) {
 				in.TEST.ATE = 1;
 				in.TEST.ATST = ATST_GEQUAL;
 				in.TEST.AREF = 128; // straddles the [0,255] alpha range
+				in.TEST.AFAIL = AFAIL_FB_ONLY;
 			},
 			GSTileFloorReason::AlphaTest},
 		{"date on ct32", [](GSTileDrawInput& in) { in.TEST.DATE = 1; }, GSTileFloorReason::DateTest},
@@ -486,6 +491,187 @@ TEST(GSTileLowering, ProvablyFailingAlphaTestBecomesAfailMaskEdit)
 	const GSTileDrawPlan pg = gsTileLowerDraw(ing);
 	EXPECT_TRUE(pg.native);
 	EXPECT_FALSE(pg.z_write);
+}
+
+namespace
+{
+// A dynamic test: the alpha range straddles AREF, so neither outcome is provable.
+GSTileDrawInput DynamicAlphaInput(u32 afail)
+{
+	GSTileDrawInput in = BaseInput();
+	in.TEST.ATE = 1;
+	in.TEST.ATST = ATST_GEQUAL;
+	in.TEST.AREF = 128;
+	in.TEST.AFAIL = afail;
+	return in;
+}
+} // namespace
+
+TEST(GSTileLowering, DynamicAlphaTestWritingNothingOnFailIsOnePassDiscard)
+{
+	// AFAIL=KEEP: the failing fragments write nothing, which is exactly what the
+	// shader's discard does. No split, and the pass carries the comparison.
+	const GSTileDrawPlan p = gsTileLowerDraw(DynamicAlphaInput(AFAIL_KEEP));
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass_count, 1);
+	EXPECT_EQ(p.pass[0].colormask, 0xF);
+	EXPECT_TRUE(p.pass[0].z_write);
+	EXPECT_EQ(p.pass[0].atst, ATST_GEQUAL);
+	EXPECT_EQ(p.pass[0].aref, 128);
+	// The union still describes what a passing fragment writes.
+	EXPECT_EQ(p.colormask, 0xF);
+	EXPECT_TRUE(p.z_write);
+}
+
+TEST(GSTileLowering, DynamicAlphaTestThatEditsNothingDisappears)
+{
+	// AFAIL=FB_ONLY suppresses the depth write, but this draw does not write depth,
+	// so passing and failing fragments write the same channels. There is no test.
+	GSTileDrawInput in = DynamicAlphaInput(AFAIL_FB_ONLY);
+	in.ZBUF.ZMSK = 1;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass_count, 1);
+	EXPECT_EQ(p.pass[0].atst, ATST_ALWAYS);
+	EXPECT_EQ(p.pass[0].colormask, 0xF);
+
+	// The mirror: AFAIL=ZB_ONLY suppresses the color write on a depth-only draw.
+	GSTileDrawInput iz = DynamicAlphaInput(AFAIL_ZB_ONLY);
+	iz.FRAME.FBMSK = 0xFFFFFFFFu;
+	const GSTileDrawPlan pz = gsTileLowerDraw(iz);
+	ASSERT_TRUE(pz.native);
+	EXPECT_EQ(pz.pass_count, 1);
+	EXPECT_EQ(pz.pass[0].atst, ATST_ALWAYS);
+	EXPECT_TRUE(pz.pass[0].z_write);
+}
+
+TEST(GSTileLowering, DynamicAlphaTestCollapsesToDiscardWhenTheEditRemovesEverything)
+{
+	// AFAIL=ZB_ONLY on a draw that writes no depth leaves the failing fragments with
+	// nothing to write, so it is a discard rather than a split.
+	GSTileDrawInput in = DynamicAlphaInput(AFAIL_ZB_ONLY);
+	in.ZBUF.ZMSK = 1;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass_count, 1);
+	EXPECT_EQ(p.pass[0].atst, ATST_GEQUAL);
+	EXPECT_EQ(p.pass[0].colormask, 0xF);
+	EXPECT_FALSE(p.pass[0].z_write);
+}
+
+TEST(GSTileLowering, FbOnlySplitsIntoColorThenDepth)
+{
+	// Every fragment writes color, only the passing ones write depth — so the first
+	// pass runs untested and the second adds depth for the fragments that pass.
+	// ZTST=ALWAYS makes the depth outcome independent of write order.
+	GSTileDrawInput in = DynamicAlphaInput(AFAIL_FB_ONLY);
+	in.TEST.ZTST = ZTST_ALWAYS;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	ASSERT_EQ(p.pass_count, 2);
+	EXPECT_EQ(p.pass[0].colormask, 0xF);
+	EXPECT_FALSE(p.pass[0].z_write);
+	EXPECT_EQ(p.pass[0].atst, ATST_ALWAYS);
+	EXPECT_EQ(p.pass[1].colormask, 0);
+	EXPECT_TRUE(p.pass[1].z_write);
+	EXPECT_EQ(p.pass[1].atst, ATST_GEQUAL);
+	// The union is unchanged, so the memory-model claims are unaffected by the split.
+	EXPECT_EQ(p.colormask, 0xF);
+	EXPECT_TRUE(p.z_write);
+}
+
+TEST(GSTileLowering, RgbOnlySplitsByChannelNotByFragment)
+{
+	// RGB_ONLY: every fragment writes RGB, only the passing ones write A and depth.
+	// Splitting by channel keeps RGB in one pass; splitting by fragment would put it
+	// in both and composite overlapping primitives out of order.
+	GSTileDrawInput in = DynamicAlphaInput(AFAIL_RGB_ONLY);
+	in.TEST.ZTST = ZTST_ALWAYS;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	ASSERT_EQ(p.pass_count, 2);
+	EXPECT_EQ(p.pass[0].colormask, 0x7);
+	EXPECT_FALSE(p.pass[0].z_write);
+	EXPECT_EQ(p.pass[0].atst, ATST_ALWAYS);
+	EXPECT_EQ(p.pass[1].colormask, 0x8);
+	EXPECT_TRUE(p.pass[1].z_write);
+	EXPECT_EQ(p.pass[1].atst, ATST_GEQUAL);
+
+	// Off a 32-bit frame RGB_ONLY degrades to FB_ONLY, and with no alpha channel to
+	// withhold the split is the color-then-depth one.
+	in.FRAME.PSM = PSMCT24;
+	in.ZBUF.PSM = PSMZ24;
+	const GSTileDrawPlan p24 = gsTileLowerDraw(in);
+	ASSERT_TRUE(p24.native);
+	ASSERT_EQ(p24.pass_count, 2);
+	EXPECT_EQ(p24.pass[0].colormask, 0x7);
+	EXPECT_EQ(p24.pass[1].colormask, 0);
+	EXPECT_TRUE(p24.pass[1].z_write);
+}
+
+TEST(GSTileLowering, ZbOnlySplitsByFragmentWithTheInvertedTest)
+{
+	// ZB_ONLY is the one case a channel split cannot serve: depth written first is
+	// what the color pass would then test against. So the passing fragments go
+	// first with everything, and the failing ones follow with depth alone.
+	GSTileDrawInput in = DynamicAlphaInput(AFAIL_ZB_ONLY);
+	in.TEST.ZTST = ZTST_ALWAYS;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	ASSERT_EQ(p.pass_count, 2);
+	EXPECT_EQ(p.pass[0].colormask, 0xF);
+	EXPECT_TRUE(p.pass[0].z_write);
+	EXPECT_EQ(p.pass[0].atst, ATST_GEQUAL);
+	EXPECT_EQ(p.pass[1].colormask, 0);
+	EXPECT_TRUE(p.pass[1].z_write);
+	EXPECT_EQ(p.pass[1].atst, ATST_LESS); // the complement of GEQUAL
+	EXPECT_EQ(p.pass[1].aref, 128);
+}
+
+TEST(GSTileLowering, ASplitNeedsTheDepthOutcomeToBeOrderIndependent)
+{
+	// GEQUAL with varying depth and primitives that may overlap: the scanline walks
+	// fragments in primitive order and each depth write can change what the next
+	// fragment's test sees, which no two-pass split reproduces.
+	GSTileDrawInput in = DynamicAlphaInput(AFAIL_FB_ONLY);
+	const GSTileDrawPlan floored = gsTileLowerDraw(in);
+	EXPECT_FALSE(floored.native);
+	EXPECT_EQ(floored.reason, GSTileFloorReason::AlphaTest);
+
+	// One depth for the whole draw: rewriting a pixel with the depth it already
+	// holds still passes GEQUAL, so the order cannot matter.
+	GSTileDrawInput flat = in;
+	flat.z_constant = true;
+	EXPECT_TRUE(gsTileLowerDraw(flat).native);
+
+	// Or the draw's own primitives never touch a pixel twice.
+	GSTileDrawInput disjoint = in;
+	disjoint.prim_overlap_none = true;
+	EXPECT_TRUE(gsTileLowerDraw(disjoint).native);
+
+	// GREATER is not GEQUAL: a second fragment at the same depth is rejected once
+	// the first has written, so a flat draw does not rescue it.
+	GSTileDrawInput greater = in;
+	greater.TEST.ZTST = ZTST_GREATER;
+	greater.z_constant = true;
+	const GSTileDrawPlan pg = gsTileLowerDraw(greater);
+	EXPECT_FALSE(pg.native);
+	EXPECT_EQ(pg.reason, GSTileFloorReason::AlphaTest);
+}
+
+TEST(GSTileLowering, RgbOnlyWithoutAnAlphaWriteIsFbOnly)
+{
+	// FBMSK masks the alpha byte, so RGB_ONLY's "withhold alpha" edit is not an edit
+	// and the draw takes the color-then-depth split.
+	GSTileDrawInput in = DynamicAlphaInput(AFAIL_RGB_ONLY);
+	in.TEST.ZTST = ZTST_ALWAYS;
+	in.FRAME.FBMSK = 0xFF000000u;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	ASSERT_EQ(p.pass_count, 2);
+	EXPECT_EQ(p.pass[0].colormask, 0x7);
+	EXPECT_EQ(p.pass[1].colormask, 0);
+	EXPECT_TRUE(p.pass[1].z_write);
 }
 
 TEST(GSTileLowering, ZClaimsFollowByteCoverage)

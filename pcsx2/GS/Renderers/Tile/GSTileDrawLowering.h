@@ -12,8 +12,8 @@
 // function over PODs — no GS state, no device — so the predicate sweeps in ctest.
 //
 // The M2 native envelope is opaque untextured draws: triangles and sprites, no
-// blending, no texture, no per-pixel test that survives to the pixel (alpha test
-// off-or-ALWAYS, or provable from the vertex-trace alpha range), frame formats whose
+// blending, no texture, and — since M3c — an alpha test that is either provable from
+// the vertex-trace alpha range or realizable as a one- or two-pass split, frame formats whose
 // cells upload and read back losslessly (CT32/CT24), depth formats that round-trip
 // exactly through a float32 depth buffer AND pair with the frame's pixel size (Z24
 // under the 32-bit frames; Z32 floors on float32 storage, Z16/Z16S floor on pairing
@@ -50,7 +50,7 @@ enum class GSTileFloorReason : u8
 	Fba,
 	ScanMask,
 	Dither, ///< DTHE — the native path writes no dither matrix (see the gate)
-	AlphaTest, ///< ATE with an effective test (anything but ALWAYS)
+	AlphaTest, ///< dynamic ATE whose pass split would reorder the draw's own depth writes
 	DateTest, ///< DATE on a format with real destination alpha
 	ZTestNever, ///< draw can write nothing — let the floor no-op it
 	FrameMaskPartial, ///< FBMSK masks part of a byte — needs the fbmask shader
@@ -114,6 +114,26 @@ struct GSTileDrawInput
 	// rewrites overflowing CLAMP-mode vertices and saturates the rest with
 	// host-dependent conversions; flooring keeps that arithmetic the authority.
 	bool tex_stq_unsafe;
+	// Vertex-trace facts the alpha-test split needs. z_constant is m_vt.m_eq.z (every
+	// vertex at the same depth); prim_overlap_none is GSState::PrimitiveOverlap()
+	// returning NO, i.e. no two of the draw's own primitives touch a pixel twice.
+	// Callers without the facts leave both false, which only costs coverage.
+	bool z_constant;
+	bool prim_overlap_none;
+};
+
+/// One realized pass of a native draw, in submission order.
+///
+/// A draw is one pass unless a dynamic alpha test makes the failing fragments write
+/// a different set of channels from the passing ones — then it is two, each with its
+/// own write mask and its own comparison. atst is a PS2 ATST value; ALWAYS means the
+/// pass applies no test.
+struct GSTileDrawPass
+{
+	u8 colormask = 0;
+	bool z_write = false;
+	u8 atst = ATST_ALWAYS;
+	u8 aref = 0;
 };
 
 struct GSTileDrawPlan
@@ -122,13 +142,18 @@ struct GSTileDrawPlan
 	GSTileFloorReason reason = GSTileFloorReason::None;
 
 	// Effective write facts. Valid whenever the register combination is coherent,
-	// so the floor path may consult them too.
+	// so the floor path may consult them too. colormask and z_write are the UNION
+	// over the passes below — AFAIL only ever removes writes, so the union is what
+	// a passing fragment writes, and that is what the memory-model claims need.
 	u8 colormask = 0; ///< wrgba after whole-byte FBMSK exemptions
 	u8 fb_claims = 0; ///< planes a native draw claims on FRAME pages (byte coverage)
 	u8 z_claims = 0; ///< planes claimed on ZBUF pages when z_write
 	bool z_write = false;
 	bool z_test = false; ///< fixed-function test does something (ZTST > ALWAYS)
 	u8 ztst = ZTST_ALWAYS;
+
+	GSTileDrawPass pass[2];
+	u8 pass_count = 1;
 };
 
 inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
@@ -155,13 +180,24 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	if (in.FRAME.PSM == PSMCT24)
 		cm &= 0x7; // no alpha byte in storage
 
+	// DATE on a 24-bit frame fails every pixel and stops the depth write with it
+	// (console-measured; a physically-present alpha byte in memory changes nothing).
+	// The predicate mirrors GSRendererSW's early return: (PSM & 0xF) catches the
+	// Z-swizzle 24-bit frame layout too. Settled before the alpha test, because a
+	// draw that writes nothing has no test to realize.
+	if (in.TEST.DATE && (in.FRAME.PSM & 0xF) == PSMCT24)
+	{
+		cm = 0;
+		p.z_write = false;
+	}
+
 	// An alpha test with a PROVABLE outcome is not a test. Provably passing, it
 	// disappears; provably failing, AFAIL is a deterministic write-mask edit (the
 	// GS idiom "ATST=NEVER, AFAIL=FB_ONLY" is how games write color without depth).
 	// The z TEST is untouched either way — AFAIL suppresses only the z write, and
 	// the surviving writes are still depth-gated (the SW scanline's fm/zm shape).
-	// Only a genuinely dynamic test floors.
 	bool atst_dynamic = false;
+	bool atst_split = false; ///< the dynamic test was realized into p.pass[]
 	if (in.TEST.ATE && in.TEST.ATST != ATST_ALWAYS)
 	{
 		enum class Outcome
@@ -224,18 +260,94 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		}
 		else if (outcome == Outcome::Dynamic)
 		{
-			atst_dynamic = true;
-		}
-	}
+			// A genuinely dynamic test. The native path never reads the destination
+			// to resolve one — that machinery is M4 — so the realization is a split
+			// of the draw into at most two passes, each with its own write mask.
+			//
+			// Which split is exact depends on what a FAILING fragment still writes,
+			// which is AFAIL after the RGB_ONLY degrade. Three simplifications come
+			// first, and they are pure register algebra: an AFAIL edit that removes
+			// a write the draw does not make is not an edit at all.
+			u32 afail = in.TEST.GetAFAIL(in.FRAME.PSM);
+			if (afail == AFAIL_RGB_ONLY && !(cm & 0x8))
+				afail = AFAIL_FB_ONLY; // no alpha write to suppress
+			const bool fail_writes_same =
+				(afail == AFAIL_FB_ONLY && !p.z_write) ||
+				(afail == AFAIL_ZB_ONLY && cm == 0);
+			const bool fail_writes_nothing =
+				afail == AFAIL_KEEP ||
+				(afail == AFAIL_FB_ONLY && cm == 0) ||
+				(afail == AFAIL_RGB_ONLY && !(cm & 0x7)) ||
+				(afail == AFAIL_ZB_ONLY && !p.z_write);
 
-	// DATE on a 24-bit frame fails every pixel and stops the depth write with it
-	// (console-measured; a physically-present alpha byte in memory changes nothing).
-	// The predicate mirrors GSRendererSW's early return: (PSM & 0xF) catches the
-	// Z-swizzle 24-bit frame layout too.
-	if (in.TEST.DATE && (in.FRAME.PSM & 0xF) == PSMCT24)
-	{
-		cm = 0;
-		p.z_write = false;
+			if (fail_writes_same)
+			{
+				// Passing and failing fragments write the same channels, so there is
+				// nothing for the test to decide. It disappears like a provable one.
+			}
+			else if (fail_writes_nothing)
+			{
+				// One pass, failing fragments discarded in the shader.
+				atst_split = true;
+				p.pass_count = 1;
+				p.pass[0] = {cm, p.z_write, static_cast<u8>(in.TEST.ATST), static_cast<u8>(aref)};
+			}
+			else
+			{
+				// The two write masks genuinely differ, so the draw splits. Every
+				// split below reorders the draw's own fragments relative to the SW
+				// scanline, which walks them in primitive order — so each is exact
+				// only while the depth outcome does not depend on that order. That
+				// is the same condition Classic calls independent_z, and it holds
+				// when nothing writes depth, when the test cannot fail, when every
+				// vertex sits at one depth under GEQUAL (rewriting a pixel with the
+				// depth it already holds still passes), or when the draw's own
+				// primitives never touch a pixel twice. Classic's companion
+				// independent_rgb is vacuous here: it guards RGB that depends on
+				// destination alpha through the blend unit, and blending floors.
+				const bool independent_z = !p.z_write || p.ztst == ZTST_ALWAYS ||
+					(p.ztst == ZTST_GEQUAL && in.z_constant) || in.prim_overlap_none;
+				if (independent_z)
+				{
+					atst_split = true;
+					p.pass_count = 2;
+					const u8 atst8 = static_cast<u8>(in.TEST.ATST);
+					const u8 aref8 = static_cast<u8>(aref);
+					if (afail == AFAIL_ZB_ONLY)
+					{
+						// Split by fragment: the passing ones write color and depth,
+						// the failing ones only depth. A channel split cannot serve
+						// this one — depth written first would be what the color
+						// pass then tests against.
+						static constexpr u8 inverted[] = {ATST_ALWAYS, ATST_NEVER, ATST_GEQUAL, ATST_GREATER,
+							ATST_NOTEQUAL, ATST_LESS, ATST_LEQUAL, ATST_EQUAL};
+						p.pass[0] = {cm, p.z_write, atst8, aref8};
+						p.pass[1] = {0, p.z_write, inverted[atst8 & 7], aref8};
+					}
+					else if (afail == AFAIL_RGB_ONLY)
+					{
+						// Split by channel: every fragment writes RGB, so pass one
+						// runs with no test at all and pass two adds what only a
+						// passing fragment may write. Strictly better than splitting
+						// by fragment, which would put RGB in both passes and so
+						// composite overlapping primitives out of order.
+						p.pass[0] = {static_cast<u8>(cm & 0x7), false, ATST_ALWAYS, 0};
+						p.pass[1] = {static_cast<u8>(cm & 0x8), p.z_write, atst8, aref8};
+					}
+					else // AFAIL_FB_ONLY
+					{
+						// Split by channel again: color for everyone, depth for the
+						// fragments that pass.
+						p.pass[0] = {cm, false, ATST_ALWAYS, 0};
+						p.pass[1] = {0, p.z_write, atst8, aref8};
+					}
+				}
+				else
+				{
+					atst_dynamic = true;
+				}
+			}
+		}
 	}
 
 	p.colormask = cm;
@@ -348,6 +460,13 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		return floored(GSTileFloorReason::FrameZPairing);
 	if (in.FRAME.FBW == 0)
 		return floored(GSTileFloorReason::StrideZero);
+
+	// Every draw the alpha test did not split is one pass writing what the plan says.
+	if (!atst_split)
+	{
+		p.pass_count = 1;
+		p.pass[0] = {p.colormask, p.z_write, ATST_ALWAYS, 0};
+	}
 
 	p.native = true;
 	return p;
