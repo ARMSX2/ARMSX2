@@ -73,11 +73,16 @@ namespace GSDrawLog
 		// blend capture said it could not weight itself.
 		u8 tex_filter;
 		u8 env;
-		// Continuation of env, which is full. bit 0 DTHE. The dither capture
+		// Continuation of env, which is full. bit 0 DTHE, bit 1 IIP. The dither capture
 		// measured two gaps whose cost is a frequency question this answers: how
 		// often a game enables dither at all decides whether the SW rasterizer's
 		// bulk rectangle fill (which cannot dither, so dithered draws now take the
 		// slower scanline) and the Tile floor for dithered draws cost anything.
+		// IIP separates gouraud from flat shading, which no other column reveals:
+		// every shading-sensitive defect is identity on a flat-shaded draw, so a
+		// corpus whose native draws are all flat is blind to a whole class of
+		// error and cannot say so. This column is what lets a candidate dump be
+		// scored for that coverage before it is adopted.
 		u8 env2;
 
 		// Backend view, filled at submit. Zeroed if the draw returned early.
