@@ -1688,7 +1688,19 @@ bool atst(vec4 C)
 
 vec4 fog(vec4 c, float f)
 {
-	#if PS_FOG
+	#if PS_TILE_FOG
+		// Console rule (gs-interp capture, SCPH-30001): the fogged colour is
+		// (Ct·F + Cfog·(256−F)) >> 8 on RGB and alpha is passed through untouched.
+		// The scanline carries F at the vertex colour's seven fractional bits and
+		// blends with a truncating shift, so the whole thing is integer arithmetic
+		// — a float mix rounds where the hardware discards.
+		//
+		// f arrives normalised (F/255); the multiply back is exact for all 256 fog
+		// bytes in single precision, and the 128 is free.
+		ivec3 cf = ivec3(FogColor);
+		int f15 = int(f * (255.0f * 128.0f));
+		c.rgb = vec3(cf + (((ivec3(c.rgb) - cf) * f15) >> 15));
+	#elif PS_FOG
 		c.rgb = trunc(mix(FogColor, c.rgb, (f * 255.0f) / 256.0f));
 	#endif
 

@@ -79,7 +79,6 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 			GSTileFloorReason::TexturePsm},
 		{"blend", [](GSTileDrawInput& in) { in.abe = true; }, GSTileFloorReason::Blend},
 		{"aa1 triangle", [](GSTileDrawInput& in) { in.aa1 = true; }, GSTileFloorReason::CoverageAA1},
-		{"fog", [](GSTileDrawInput& in) { in.fge = true; }, GSTileFloorReason::Fog},
 		{"fba on ct32", [](GSTileDrawInput& in) { in.fba = true; }, GSTileFloorReason::Fba},
 		{"scanmsk", [](GSTileDrawInput& in) { in.scanmsk = 2; }, GSTileFloorReason::ScanMask},
 		// Dither reaches CT32 and CT24 on silicon, so it reaches the whole native

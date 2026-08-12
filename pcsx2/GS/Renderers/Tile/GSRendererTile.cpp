@@ -281,7 +281,6 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 	in.tme = PRIM->TME;
 	in.abe = PRIM->ABE;
 	in.aa1 = PRIM->AA1;
-	in.fge = PRIM->FGE;
 	in.fba = m_context->FBA.FBA;
 	in.dthe = m_draw_env->DTHE.DTHE;
 	in.vs_expand = g_gs_device->Features().vs_expand;
@@ -1033,6 +1032,20 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 				}
 			}
 		}
+	}
+
+	// Fog, at the rule the console capture fitted on all 192 of its readings:
+	// (Ct·F + Cfog·(256−F)) >> 8 on the colour the texture function produced, alpha
+	// left alone. The factor rides the existing per-vertex fog varying — flat across
+	// a sprite (the expansion takes the second vertex, which is the one the scanline
+	// reads) and interpolated across a triangle even when the shading is flat, which
+	// is what the scanline does too.
+	if (PRIM->FGE)
+	{
+		conf.ps.fog = 1;
+		conf.ps.tile_fog = 1;
+		const GSVector4 fc = GSVector4::rgba32(m_draw_env->FOGCOL.U32[0]);
+		conf.cb_ps.FogColor_AREF = fc.blend32<8>(conf.cb_ps.FogColor_AREF);
 	}
 
 	// Depth state + the PS2 z pipeline (EmulateZbuffer's recipe: clamp to the

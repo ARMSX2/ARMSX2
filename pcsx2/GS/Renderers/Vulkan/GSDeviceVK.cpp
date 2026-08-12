@@ -6478,6 +6478,7 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_TILE_MIP", sel.tile_mip);
 	AddMacro(ss, "PS_TILE_LCM", sel.tile_lcm);
 	AddMacro(ss, "PS_TILE_VCOLOR", sel.tile_vcolor);
+	AddMacro(ss, "PS_TILE_FOG", sel.tile_fog);
 	AddMacro(ss, "PS_AUTOMATIC_LOD", sel.automatic_lod);
 	AddMacro(ss, "PS_MANUAL_LOD", sel.manual_lod);
 	AddMacro(ss, "PS_COLCLIP", sel.colclip);

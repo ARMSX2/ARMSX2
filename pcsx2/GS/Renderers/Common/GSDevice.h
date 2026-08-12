@@ -744,6 +744,7 @@ struct alignas(16) GSHWDrawConfig
 				u32 tile_mip : 2; // Tile renderer: mip mode per the SW scanline selector — 0 off, 1 round, 2 trilinear
 				u32 tile_lcm : 1; // Tile renderer: LOD is the constant packed in LODParams.w, not the per-pixel Q formula
 				u32 tile_vcolor : 1; // Tile renderer: the SW scanline's vertex-colour arithmetic (seven fractional bits, truncating)
+				u32 tile_fog : 1; // Tile renderer: integer fog blend at the console rule
 
 				// Shuffle and fbmask effect
 				u32 shuffle  : 1;

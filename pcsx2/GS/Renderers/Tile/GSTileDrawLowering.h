@@ -46,7 +46,7 @@ enum class GSTileFloorReason : u8
 	Textured, ///< retired at M3b (kept so old ledgers still decode); tme now gates per-mechanism below
 	Blend,
 	CoverageAA1,
-	Fog,
+	Fog, ///< retired at M3d (in-shader integer fog); kept so old ledgers still decode
 	Fba,
 	ScanMask,
 	Dither, ///< DTHE — the native path writes no dither matrix (see the gate)
@@ -90,7 +90,6 @@ struct GSTileDrawInput
 	bool tme;
 	bool abe;
 	bool aa1;
-	bool fge;
 	bool fba;
 	bool dthe; ///< DTHE.DTHE — dither enable, an environment register
 	bool vs_expand; ///< device supports VS sprite expansion
@@ -413,8 +412,11 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		return floored(GSTileFloorReason::Blend);
 	if (in.aa1 && in.prim_class == GS_TRIANGLE_CLASS)
 		return floored(GSTileFloorReason::CoverageAA1);
-	if (in.fge)
-		return floored(GSTileFloorReason::Fog);
+	// Fog goes native (M3d): the fragment path blends at the console's own rule,
+	// (Ct·F + Cfog·(256−F)) >> 8 with alpha untouched, in integer arithmetic on the
+	// scanline's seven-fractional-bit fog factor. Nothing about it constrains the
+	// envelope — it edits colour after the texture function and reads no
+	// destination — so there is no gate left here.
 	// FBA sets the stored alpha's top bit — a destination with no alpha storage makes
 	// it inert (console-measured on 24-bit frames; 16-bit frames DO store the bit).
 	if (in.fba && (in.FRAME.PSM & 0xF) != PSMCT24)
