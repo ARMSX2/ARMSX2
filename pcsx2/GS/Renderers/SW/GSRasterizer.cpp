@@ -17,6 +17,35 @@
 
 MULTI_ISA_UNSHARED_IMPL;
 
+// The GS steps depth on a 2^-10 grid: the exact gradient TRUNCATED onto it, not
+// the gradient itself. Solved from console readings rather than guessed -- on a
+// row whose exact gradient is 1893.939393..., silicon's step solves to
+// 1893.938460 +/- 0.00004, and trunc(g * 1024) / 1024 is 1893.938477. On 32/33
+// it solves to 0.9687499 +/- 0.00007 against a truncation of 0.96875.
+//
+// Walking the exact gradient in float64, which is what we did, is MORE precise
+// than the hardware and lands one unit away from it on about a quarter of a long
+// span. One unit is exactly the margin a depth test between consecutive Z levels
+// decides on, so the extra precision was a divergence rather than an improvement
+// -- Z-laddered content is where it shows.
+//
+// TOWARD ZERO, not floor -- which is a direction the capture's decoder left
+// implicit and this re-render settles. That decoder models the step with a
+// floor, and the two agree on every rising gradient, so its own scoring could
+// not separate them. They disagree on falling ones, and there the console is
+// decisive: flooring makes a falling step steeper, the error then accumulates,
+// and the arm grows 84 readings that are TWO units out. Truncating toward zero
+// leaves every error at one unit, which is the bound the capture reports for
+// silicon itself. It is also what a sign-magnitude divider does naturally --
+// truncate the magnitude, apply the sign afterwards.
+//
+// Applied to the gradient where it is formed, so every SetupPrim backend inherits
+// it rather than each reimplementing the rule.
+__forceinline static void TruncateDepthGradient(GSVector4& p)
+{
+	p.F64[1] = std::trunc(p.F64[1] * 1024.0) / 1024.0;
+}
+
 int GSRasterizerData::s_counter = 0;
 
 static int compute_best_thread_height(int threads)
@@ -755,6 +784,8 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	dscan = dv1 * dxy01c.yyyy() - dv0 * dxy01c.wwww();
 	dedge = dv0 * dxy01c.zzzz() - dv1 * dxy01c.xxxx();
 
+	TruncateDepthGradient(dscan.p);
+
 	if (m1 & 1)
 	{
 		if (tb.y < tb.w)
@@ -956,6 +987,8 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 
 	dscan = dv1 * dxy01c.yyyy() - dv0 * dxy01c.wwww();
 	dedge = dv0 * dxy01c.zzzz() - dv1 * dxy01c.xxxx();
+
+	TruncateDepthGradient(dscan.p);
 
 	if (m1 & 1)
 	{

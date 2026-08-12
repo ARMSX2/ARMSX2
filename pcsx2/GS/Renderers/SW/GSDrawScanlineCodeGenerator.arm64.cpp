@@ -697,10 +697,31 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 	VRegister ureg = _temp_s;
 	VRegister vreg = _temp_t;
 
+	// All-ones in every lane whose pixel takes the LINEAR filter. lod > 0 is exactly
+	// Q < the crossing constant, so the whole per-pixel MMAG/MMIN choice is one
+	// compare. Cheap enough to emit twice rather than tie up a register between the
+	// coordinate bias and the filter weights.
+	const auto emit_ltfx_mask = [this](const VRegister& dst) {
+		armAsm->Ldr(dst, _global(ltfx_q));
+		armAsm->Fcmgt(dst.V4S(), dst.V4S(), _temp_q.V4S());
+
+		if (m_sel.ltfx_ge)
+			armAsm->Mvn(dst.V16B(), dst.V16B());
+	};
+
 	if (!m_sel.fst)
 	{
-		armAsm->Fdiv(v2.V4S(), _temp_s.V4S(), _temp_q.V4S());
-		armAsm->Fdiv(v3.V4S(), _temp_t.V4S(), _temp_q.V4S());
+		// Silicon multiplies by a reciprocal truncated to thirteen fractional
+		// bits, it does not divide. Clearing the low ten bits of the float32
+		// mantissa is that grid; two BICs rather than a shift pair so the sign
+		// survives a negative Q. See GSDrawScanline.cpp for the measurement.
+		armAsm->Fmov(v0.V4S(), 1.0f);
+		armAsm->Fdiv(v0.V4S(), v0.V4S(), _temp_q.V4S());
+		armAsm->Bic(v0.V4S(), 0xff, 0);
+		armAsm->Bic(v0.V4S(), 0x03, 8);
+
+		armAsm->Fmul(v2.V4S(), _temp_s.V4S(), v0.V4S());
+		armAsm->Fmul(v3.V4S(), _temp_t.V4S(), v0.V4S());
 		ureg = v2;
 		vreg = v3;
 
@@ -713,6 +734,15 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 			// v -= 0x8000;
 
 			armAsm->Movi(v1.V4S(), 0x8000);
+
+			// The two filters do not sample the same point, so the half-texel bias
+			// belongs only to the pixels that actually filter linearly.
+			if (m_sel.ltfx)
+			{
+				emit_ltfx_mask(v0);
+				armAsm->And(v1.V16B(), v1.V16B(), v0.V16B());
+			}
+
 			armAsm->Sub(v2.V4S(), v2.V4S(), v1.V4S());
 			armAsm->Sub(v3.V4S(), v3.V4S(), v1.V4S());
 		}
@@ -731,6 +761,19 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 
 			armAsm->Trn1(vf.V8H(), vreg.V8H(), vreg.V8H());
 			armAsm->Ushr(vf.V8H(), vf.V8H(), 12);
+		}
+
+		// A zero weight collapses the four-tap blend onto the nearest tap, so the
+		// nearest side of the crossing needs no separate path.
+		if (m_sel.ltfx)
+		{
+			emit_ltfx_mask(v0);
+			armAsm->Trn1(v1.V8H(), v0.V8H(), v0.V8H());
+
+			armAsm->And(uf.V16B(), uf.V16B(), v1.V16B());
+
+			if (m_sel.prim != GS_SPRITE_CLASS)
+				armAsm->And(vf.V16B(), vf.V16B(), v1.V16B());
 		}
 	}
 
@@ -1014,8 +1057,14 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 
 	if (!m_sel.fst)
 	{
-		armAsm->Fdiv(local0.V4S(), _temp_s.V4S(), _temp_q.V4S());
-		armAsm->Fdiv(local1.V4S(), _temp_t.V4S(), _temp_q.V4S());
+		// Truncated reciprocal, as in SampleTexture above.
+		armAsm->Fmov(local2.V4S(), 1.0f);
+		armAsm->Fdiv(local2.V4S(), local2.V4S(), _temp_q.V4S());
+		armAsm->Bic(local2.V4S(), 0xff, 0);
+		armAsm->Bic(local2.V4S(), 0x03, 8);
+
+		armAsm->Fmul(local0.V4S(), _temp_s.V4S(), local2.V4S());
+		armAsm->Fmul(local1.V4S(), _temp_t.V4S(), local2.V4S());
 
 		armAsm->Fcvtzs(local0.V4S(), local0.V4S());
 		armAsm->Fcvtzs(local1.V4S(), local1.V4S());
@@ -1275,7 +1324,10 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		// v5: rb
 		// v6: ga
 
-		armAsm->Ushr(v0.V8H(), local2.V8H(), 1);
+		// Four-bit trilinear weight, truncated: (f & 0xf000) >> 1, which is the
+		// >> 1 the lerp wants folded into the quantisation. See GSDrawScanline.cpp.
+		armAsm->Ushr(v0.V8H(), local2.V8H(), 12);
+		armAsm->Shl(v0.V8H(), v0.V8H(), 11);
 
 		lerp16(v5, local0, v0, 0);
 		lerp16(v6, local1, v0, 0);

@@ -1211,8 +1211,17 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 
 	if (!m_sel.fst)
 	{
-		MOVE_IF_64(divps, xym2, _s, _q);
-		MOVE_IF_64(divps, xym3, _t, _q);
+		// Truncated reciprocal, not a divide: multiply by 1/q with the low ten
+		// mantissa bits cleared. See GSDrawScanline.cpp for the measurement.
+		mov(eax, 0x3f800000);
+		broadcastGPRToVec(xym0, eax);
+		MOVE_IF_64(divps, xym0, xym0, _q);
+		mov(eax, 0xfffffc00);
+		broadcastGPRToVec(xym1, eax);
+		pand(xym0, xym1);
+
+		MOVE_IF_64(mulps, xym2, _s, xym0);
+		MOVE_IF_64(mulps, xym3, _t, xym0);
 
 		cvttps2dq(xym2, xym2);
 		cvttps2dq(xym3, xym3);
@@ -1620,8 +1629,16 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 
 	if (!m_sel.fst)
 	{
-		MOVE_IF_64(divps, xym2, _s, xym4);
-		MOVE_IF_64(divps, xym3, _t, xym4);
+		// Truncated reciprocal, as in SampleTexture above.
+		mov(eax, 0x3f800000);
+		broadcastGPRToVec(xym0, eax);
+		MOVE_IF_64(divps, xym0, xym0, xym4);
+		mov(eax, 0xfffffc00);
+		broadcastGPRToVec(xym1, eax);
+		pand(xym0, xym1);
+
+		MOVE_IF_64(mulps, xym2, _s, xym0);
+		MOVE_IF_64(mulps, xym3, _t, xym0);
 
 		cvttps2dq(xym2, xym2);
 		cvttps2dq(xym3, xym3);
@@ -2011,7 +2028,10 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		// xym6: ga
 
 		movdqa(xym0, m_sel.lcm ? _rip_global(lod.f) : _rip_local(temp.lod.f));
-		psrlw(xym0, 1);
+		// Four-bit trilinear weight, truncated: (f & 0xf000) >> 1, which is the
+		// >> 1 the lerp wants folded into the quantisation. See GSDrawScanline.cpp.
+		psrlw(xym0, 12);
+		psllw(xym0, 11);
 
 		movdqa(xym2, _rip_local(temp.trb));
 		movdqa(xym3, _rip_local(temp.tga));

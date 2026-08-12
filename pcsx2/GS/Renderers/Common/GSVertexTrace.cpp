@@ -85,6 +85,7 @@ void GSVertexTrace::Update(const void* vertex, const u16* index, int v_count, in
 
 		m_filter.mmag = TEX1.IsMagLinear();
 		m_filter.mmin = TEX1.IsMinLinear();
+		m_filter.xover = 0;
 
 		if (TEX1.MXL == 0) // MXL == 0 => MMIN ignored, tested it on ps2
 		{
@@ -123,9 +124,23 @@ void GSVertexTrace::Update(const void* vertex, const u16* index, int v_count, in
 			}
 			else
 			{
+				// The primitive straddles the crossing. Silicon picks the filter per
+				// pixel from that pixel's own level, so when the two filters differ
+				// there is no single right answer for the whole primitive -- measured
+				// on an SCPH-30001, a band switches filter mid-primitive at the column
+				// where the level crosses zero. The OR below keeps the bilinear path
+				// compiled, which is what a per-pixel choice needs; the renderer is
+				// told about the straddle so it can force the weight to zero on the
+				// nearest side rather than filtering the whole band.
 				m_filter.linear = m_filter.mmag | m_filter.mmin;
+				m_filter.xover = (m_filter.mmag != m_filter.mmin);
 			}
 		}
+
+		// A user filtering override replaces the console's choice outright, so the
+		// per-pixel crossing stops being meaningful -- only the PS2 mode keeps it.
+		if (GSConfig.TextureFiltering != BiFiltering::PS2)
+			m_filter.xover = 0;
 
 		switch (GSConfig.TextureFiltering)
 		{

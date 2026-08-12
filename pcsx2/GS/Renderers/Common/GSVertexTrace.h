@@ -74,7 +74,7 @@ public:
 
 	union
 	{
-		struct { u32 mmag:1, mmin:1, linear:1, opt_linear:1; };
+		struct { u32 mmag:1, mmin:1, linear:1, opt_linear:1, xover:1; };
 	} m_filter = {};
 
 	GSVector2 m_lod = {}; // x = min, y = max
@@ -86,6 +86,17 @@ public:
 
 	bool IsLinear() const { return m_filter.opt_linear; }
 	bool IsRealLinear() const { return m_filter.linear; }
+
+	/// True when this primitive straddles the level-of-detail crossing AND the two
+	/// filters differ, so the console's per-pixel MMAG/MMIN choice is observable
+	/// inside it. `linear` is the OR of the two in that case, which is why a
+	/// renderer that trusts it alone filters the whole primitive the wrong way on
+	/// one side of the crossing.
+	bool IsFilterCrossover() const { return m_filter.xover; }
+
+	/// Which side of the crossing takes the LINEAR filter. Magnification is the
+	/// lod <= 0 side.
+	bool IsCrossoverLinearOnMag() const { return m_filter.mmag; }
 
 	void CorrectDepthTrace(const void* vertex, int count);
 };

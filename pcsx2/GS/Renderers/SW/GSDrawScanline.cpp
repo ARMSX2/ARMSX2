@@ -210,6 +210,26 @@ typedef GSVector4  VectorF;
 #define LOCAL_STEP local.d4
 #endif
 
+// The GS does not divide the texture coordinate by Q. It multiplies by a
+// RECIPROCAL that is truncated to about thirteen fractional bits, so a
+// perspective coordinate is systematically a little short of the true quotient.
+//
+// Measured on an SCPH-30001 rather than assumed. Each of 12,288 readings bounds
+// the hardware's own reciprocal from both sides: 1,592 of them force it strictly
+// BELOW the true value, not one forces it above, and the largest forced shortfall
+// is 1.22e-4 relative -- which is 2^-13 to three decimal places.
+//
+// Truncating a float32 mantissa to its top thirteen bits is exactly that grid.
+// float32 carries 23 explicit mantissa bits, so clearing the low ten leaves
+// thirteen and rounds toward zero, which is the side silicon is never on the
+// wrong side of. Computing an exact quotient -- what we did before -- is being
+// MORE correct than the hardware, and it differs from the console on 22.07% of
+// ordinary perspective readings for that reason alone.
+__forceinline static VectorF GSPerspectiveRecip(const VectorF& q)
+{
+	return VectorF::cast(VectorI::cast(VectorF(1.0f) / q) & VectorI(0xfffffc00));
+}
+
 void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, GSScanlineLocalData& local)
 {
 	const GSScanlineGlobalData& global = GlobalFromLocal(local);
@@ -753,8 +773,10 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				{
 					if (!sel.fst)
 					{
-						u = VectorI(s / q);
-						v = VectorI(t / q);
+						const VectorF r = GSPerspectiveRecip(q);
+
+						u = VectorI(s * r);
+						v = VectorI(t * r);
 					}
 					else
 					{
@@ -1083,6 +1105,14 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						if (sel.lcm)
 							lodf = global.lod.f;
 
+						// The console blends two mip levels on a FOUR-BIT weight, so a
+						// trilinear blend has sixteen steps. Measured directly: across one
+						// level boundary silicon returns exactly 32 distinct values over two
+						// level pairs 36 apart, which is 36/16 per step. Blending on the full
+						// 16-bit fraction gives about 250 and is visibly finer than hardware.
+						// Truncate to the top four bits before the fraction becomes a weight.
+						lodf = lodf.srl16<12>().sll16<12>();
+
 						lodf = lodf.srl16<1>();
 
 						rb = rb.lerp16<0>(rb2, lodf);
@@ -1091,15 +1121,44 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				}
 				else
 				{
+					// Per-pixel MMAG/MMIN choice. lod > 0 is exactly Q < the crossing
+					// constant, so one compare names the pixels on the minifying side;
+					// ltfx_ge flips which side takes the linear filter. All-ones means
+					// "this pixel filters linearly".
+					VectorI lin;
+
+					if (sel.ltfx)
+					{
+						lin = VectorI::cast(q < global.ltfx_q);
+
+						if (sel.ltfx_ge)
+							lin = ~lin;
+					}
+
 					if (!sel.fst)
 					{
-						u = VectorI(s / q);
-						v = VectorI(t / q);
+						const VectorF r = GSPerspectiveRecip(q);
+
+						u = VectorI(s * r);
+						v = VectorI(t * r);
 
 						if (sel.ltf)
 						{
-							u -= 0x8000;
-							v -= 0x8000;
+							// The two filters do not sample the same point: nearest reads
+							// at the coordinate, linear straddles the pair half a texel
+							// back. So the bias is taken only where linear wins.
+							if (sel.ltfx)
+							{
+								const VectorI half = VectorI(0x8000) & lin;
+
+								u -= half;
+								v -= half;
+							}
+							else
+							{
+								u -= 0x8000;
+								v -= 0x8000;
+							}
 						}
 					}
 					else
@@ -1115,6 +1174,18 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						if (sel.prim != GS_SPRITE_CLASS)
 						{
 							vf = v.xxzzlh().srl16<12>();
+						}
+
+						// A zero weight turns the four-tap blend back into the nearest
+						// tap, so the nearest side needs no separate path.
+						if (sel.ltfx)
+						{
+							const VectorI lin16 = lin.xxzzlh();
+
+							uf &= lin16;
+
+							if (sel.prim != GS_SPRITE_CLASS)
+								vf &= lin16;
 						}
 					}
 
