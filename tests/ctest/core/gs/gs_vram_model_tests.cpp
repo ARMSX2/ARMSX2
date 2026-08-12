@@ -233,6 +233,28 @@ TEST(GSTileTypes, PlaneMapping)
 	EXPECT_EQ(GSVramModel::PlaneIndex(GSTilePlaneZ), 3u);
 }
 
+// A native color draw takes the Z plane with whatever channels it writes, and Z spans
+// the whole 32-bit cell -- so the surface must already hold every color channel, not
+// just the written ones, or the claim republishes bytes the GPU never had. Gran Turismo
+// 4 measured this as 27.8% of the frame: an alpha-only sprite rendered into a surface
+// whose RGB was two draws stale, and the whole cell came back on the Z-plane readback.
+TEST(GSTileTypes, ClaimsSpanWholeCellWheneverZRidesAlong)
+{
+	// The lowering's own shape: any color write claims Z for byte coverage.
+	EXPECT_EQ(gsTileColorPlanesSpannedBy(kGSTilePlanesAlpha | GSTilePlaneZ), kGSTilePlanesColor);
+	EXPECT_EQ(gsTileColorPlanesSpannedBy(GSTilePlaneRGB | GSTilePlaneZ), kGSTilePlanesColor);
+	EXPECT_EQ(gsTileColorPlanesSpannedBy(kGSTilePlanesAll), kGSTilePlanesColor);
+
+	// Without the Z claim there is no widening: a plane spans only its own bytes.
+	EXPECT_EQ(gsTileColorPlanesSpannedBy(kGSTilePlanesAlpha), kGSTilePlanesAlpha);
+	EXPECT_EQ(gsTileColorPlanesSpannedBy(GSTilePlaneRGB), GSTilePlaneRGB);
+	EXPECT_EQ(gsTileColorPlanesSpannedBy(0), 0);
+
+	// Z alone still spans the cell: the answer is about bytes, not about which plane
+	// carried the claim.
+	EXPECT_EQ(gsTileColorPlanesSpannedBy(GSTilePlaneZ), kGSTilePlanesColor);
+}
+
 TEST(GSVramModel, FootprintMatchesBruteForce)
 {
 	std::mt19937_64 rng(0x67766f51); // fixed seed: deterministic suite

@@ -65,6 +65,21 @@ constexpr u8 gsTilePlanesInvalidatedByWrite(u32 psm)
 	}
 }
 
+/// The color planes whose BYTES any of `claims` covers — what a surface's texture must
+/// already hold correctly before a native draw may render into it and take those claims.
+///
+/// Claims and byte spans are not the same set, and the gap is load-bearing. A native
+/// color draw always claims the Z plane alongside the channels its colormask writes
+/// (byte coverage: written bytes invalidate any depth reading of them), and the Z plane
+/// spans the whole 32-bit cell. So the surface becomes the page's newest-bytes holder
+/// across every byte, while the GPU only wrote the masked-in channels — and a later
+/// Z-plane readback hands the entire cell back to CPU memory. Whatever the draw did not
+/// write must therefore have been current in the texture beforehand.
+constexpr u8 gsTileColorPlanesSpannedBy(u8 claims)
+{
+	return (claims & GSTilePlaneZ) ? kGSTilePlanesColor : static_cast<u8>(claims & kGSTilePlanesColor);
+}
+
 // Whether a surface holds color or depth data — the two swizzle universes of GS
 // memory, and on the GPU side the two attachment types.
 enum class GSTileSurfaceKind : u8

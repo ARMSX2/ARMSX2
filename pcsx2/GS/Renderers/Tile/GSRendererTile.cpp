@@ -782,10 +782,18 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// texture is already current for every relevant plane; before re-uploading, pull
 	// whatever GPU-newest truth sits on the upload pages (any plane, any owner), plus
 	// everything the claims will steal from other owners.
+	//
+	// "Relevant" is the BYTE SPAN of the claims, never the claims themselves -- see
+	// gsTileColorPlanesSpannedBy. A partially masked color write (alpha-only is the
+	// common one) renders channels it does not write straight out of whatever the
+	// texture already held, and then claims the whole cell on the page's behalf, so
+	// gating its upload on the written channels alone republishes stale bytes. The
+	// depth side needs no such widening: Z's own span IS the whole cell, so a current
+	// Z plane already implies a current cell.
 	GSPageBitmap up_fb;
 	GSPageBitmap up_z;
 	if (want_rt)
-		up_fb = PagesNeedingUpload(fb_id, fb_pages, plan.fb_claims & kGSTilePlanesColor);
+		up_fb = PagesNeedingUpload(fb_id, fb_pages, gsTileColorPlanesSpannedBy(plan.fb_claims));
 	if (want_ds)
 		up_z = PagesNeedingUpload(z_id, z_pages, GSTilePlaneZ);
 
