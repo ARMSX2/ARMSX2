@@ -25,6 +25,7 @@
 #include "GameList.h"
 #include "GameDatabase.h"
 #include "GS/GSPerfMon.h"
+#include "GS/GSUtil.h" // GSUtil::AndroidAutoPrefersVulkan (Auto renderer steering)
 #include "GS/Renderers/Common/GSDevice.h" // GSDevice::SetShaderChainParams (shader chain params)
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GSDumpReplayer.h"
@@ -2252,13 +2253,22 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderOpenGL(JNIEnv *env, jclass clazz) {
 }
 
 // Android renderer Auto steering: g_gs_android_prefer_vk (GSUtil.cpp) makes GetPreferredRenderer's
-// Auto resolution pick Vulkan HW on Adreno instead of OpenGL. The app sets it from GL_RENDERER
-// before the GS starts — a plain global (no settings interface), so it's safe to set at startup.
+// Auto resolution pick Vulkan HW instead of OpenGL. The app pushes the GL strings it probes at
+// startup and the decision is made natively, in GSUtil::AndroidAutoPrefersVulkan, so it can consult
+// the driver-bug database — the app cannot, and a device whose GL driver has no working in-tile
+// self-read must not be sent to OpenGL. Set before the GS starts; a plain global (no settings
+// interface), so it's safe to set at startup.
 extern bool g_gs_android_prefer_vk;
 extern "C"
 JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_setPreferVulkan(JNIEnv*, jclass, jboolean enabled) {
-    g_gs_android_prefer_vk = (enabled == JNI_TRUE);
+Java_kr_co_iefriends_pcsx2_NativeApp_setAutoRendererGpuStrings(
+    JNIEnv* env, jclass, jstring vendor, jstring renderer, jstring version) {
+    const std::string vendor_str = vendor ? GetJavaString(env, vendor) : std::string();
+    const std::string renderer_str = renderer ? GetJavaString(env, renderer) : std::string();
+    const std::string version_str = version ? GetJavaString(env, version) : std::string();
+    // Not logged here — this runs before the log file is open. GetPreferredRenderer prints the
+    // verdict and the strings behind it when the GS actually resolves Auto.
+    g_gs_android_prefer_vk = GSUtil::AndroidAutoPrefersVulkan(vendor_str, renderer_str, version_str);
 }
 
 // Affinity Control Mode (VMManager.cpp). 0 = Disabled/scheduler-decides (default), 1-6 = explicit

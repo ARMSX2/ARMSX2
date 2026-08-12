@@ -339,7 +339,7 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 // Sources and exact upstream revisions are mirrored in docs/gpu-driver-database.json. A known
 // driver bug is not automatically an active workaround: expensive renderer fallbacks stay disabled
 // until their PCSX2 integration has a bounded, tested condition.
-static constexpr std::array<DriverRule, 28> s_driver_rules = {{
+static constexpr std::array<DriverRule, 27> s_driver_rules = {{
 	{"gl-arm-buffer-stream", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenUnsynchronizedMapping) |
@@ -348,20 +348,27 @@ static constexpr std::array<DriverRule, 28> s_driver_rules = {{
 	{"gl-arm-g57-fifo", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 57, 57, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenVSync), Workaround(DriverWorkaround::ForceFifoPresent)},
-	// r44p1 faults on the in-tile render-target self-read, in BOTH APIs and in every spelling of
-	// it. On Vulkan it loses the device outright (VK_ERROR_DEVICE_LOST on effectively every game);
-	// on GL the same silicon corrupts the frame instead — milder symptom, same faulting hardware,
-	// established by lifting the gate on an Anbernic RG 477V and watching MGS3 come out wrong.
-	// Reading the RT from a separate copy is the only path that survives, which is exactly what
-	// UseRenderTargetCopyForFeedback means, so this needs no bug or workaround of its own.
+	// r44p1 and the in-tile render-target self-read, on GL: there is deliberately NO rule here,
+	// and that is a product decision made on field evidence, not an oversight — read this before
+	// "completing the pair" with the Vulkan rule below.
 	//
-	// Strictly r44p1: other Arm blobs, including other Mali-G615 units, run the in-tile read fine,
-	// so this is a version window and not a vendor or model rule.
-	{"gl-arm-r44p1-attachment-self-read", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
-		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {44, 1, 0}, {44, 2, 0},
-		0, 0, false,
-		Bug(DriverBug::BrokenSubpassFeedback) | Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout),
-		Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback)},
+	// A gl-arm-r44p1-attachment-self-read rule shipped in 2.6.6.5 (mirroring a hand-rolled gate
+	// that had existed since 2.6.6.3). Through 2.6.6.4 that gate was INERT: the Mali profile
+	// block re-enabled the ARM fetch backend moments after the gate turned it off (the
+	// contradiction GSFramebufferFetchPolicy.h documents), so the entire r44p1 user base shipped
+	// on GL + GL_ARM_shader_framebuffer_fetch. 2.6.6.5 fixed the contradiction, the gate finally
+	// engaged, and on GLES — where fetch and the texture barrier are one capability — every
+	// self-referential draw became an RT copy plus a tile flush: Shadow of the Colossus went
+	// 30 -> 7 fps on an Anbernic RG 477V and users downgraded to 2.6.6.4 en masse.
+	//
+	// The fetch path DOES corrupt some content on this blob (MGS3 was the observed case; the
+	// likely mechanism is the driver granting the tile-read slot per attachment format and
+	// silently degrading denied reads to memory fetches inside a live feedback loop). But that
+	// is the exact trade 2.6.6.4 shipped, the field overwhelmingly chose it, and Vulkan — where
+	// the RT-copy path costs an ordinary image copy instead of a tile flush — remains the
+	// correct-rendering choice for the affected games. Restored 2026-08-12, this time on
+	// purpose. If a rule is ever re-added here, it also flips Auto back to Vulkan for these
+	// devices via GSUtil::AndroidAutoPrefersVulkan, which asks this table.
 	{"gl-qualcomm-compiler", MobileGpuApi::OpenGL, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::QualcommProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenNegatedBoolean) |
@@ -415,10 +422,13 @@ static constexpr std::array<DriverRule, 28> s_driver_rules = {{
 	{"vk-arm-dynamic-rendering-before-r52", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {52, 0, 0},
 		0, 0, true, Bug(DriverBug::BrokenDynamicRendering), 0},
-	// The Vulkan half of gl-arm-r44p1-attachment-self-read above — same driver, same defect, and
-	// the API is a rule field so it takes two entries. Disabling the feedback-loop LAYOUT alone was
-	// tried first and did not stop the device loss: the path it falls back to lowers to the same
-	// in-tile silicon, so nothing short of reading a separate copy survives.
+	// r44p1 on Vulkan loses the device outright under the in-tile self-read (VK_ERROR_DEVICE_LOST
+	// at vkWaitForFences — Rogue Galaxy and others), so this rule is a crash gate, not a perf
+	// trade, and it stays even though its former GL twin was deliberately lifted (see the account
+	// above the GL rules). Disabling the feedback-loop LAYOUT alone was tried first and proved
+	// nothing: r44p1 never advertises VK_EXT_attachment_feedback_loop_layout, so the disable was
+	// vacuous — the read that kills the device is the ROAA/barrier one, and nothing short of
+	// reading a separate copy survives.
 	{"vk-arm-r44p1-attachment-self-read", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {44, 1, 0}, {44, 2, 0},
 		0, 0, false,

@@ -979,22 +979,10 @@ InputLayout ImGuiFullscreen::GetGamepadLayout()
 static InputLayout GetEffectiveGlyphLayout()
 {
 	const InputLayout preferred_layout = InputManager::GetGamepadIconPreference();
-	if (preferred_layout == InputLayout::Xbox || preferred_layout == InputLayout::Playstation || preferred_layout == InputLayout::Nintendo)
+	if (preferred_layout != InputLayout::Unknown)
 		return preferred_layout;
 
-	const InputLayout detected_layout = ImGuiFullscreen::GetGamepadLayout();
-	switch (detected_layout)
-	{
-		case InputLayout::Playstation:
-			return InputLayout::Playstation;
-		case InputLayout::Xbox:
-			return InputLayout::Xbox;
-		case InputLayout::Nintendo:
-			return InputLayout::Nintendo;
-		case InputLayout::Unknown:
-		default:
-			return InputLayout::Playstation;
-	}
+	return ImGuiFullscreen::GetGamepadLayout();
 }
 
 ImGuiFullscreen::GamepadGlyphs ImGuiFullscreen::GetGamepadGlyphs()
@@ -1002,16 +990,17 @@ ImGuiFullscreen::GamepadGlyphs ImGuiFullscreen::GetGamepadGlyphs()
 	const InputLayout layout = GetEffectiveGlyphLayout();
 	const bool xbox = (layout == InputLayout::Xbox);
 	const bool nintendo = (layout == InputLayout::Nintendo);
+	const bool unknown = (layout == InputLayout::Unknown || layout == InputLayout::Generic);
 	return {
-		nintendo ? ICON_PF_BUTTON_B : (xbox ? ICON_PF_BUTTON_A : ICON_PF_BUTTON_CROSS),
-		nintendo ? ICON_PF_BUTTON_A : (xbox ? ICON_PF_BUTTON_B : ICON_PF_BUTTON_CIRCLE),
-		nintendo ? ICON_PF_BUTTON_Y : (xbox ? ICON_PF_BUTTON_X : ICON_PF_BUTTON_SQUARE),
-		nintendo ? ICON_PF_BUTTON_X : (xbox ? ICON_PF_BUTTON_Y : ICON_PF_BUTTON_TRIANGLE),
+		unknown ? ICON_PF_BUTTON_DOWN_A : (nintendo ? ICON_PF_BUTTON_B : (xbox ? ICON_PF_BUTTON_A : ICON_PF_BUTTON_CROSS)),
+		unknown ? ICON_PF_BUTTON_RIGHT_B : (nintendo ? ICON_PF_BUTTON_A : (xbox ? ICON_PF_BUTTON_B : ICON_PF_BUTTON_CIRCLE)),
+		unknown ? ICON_PF_BUTTON_LEFT_X : (nintendo ? ICON_PF_BUTTON_Y : (xbox ? ICON_PF_BUTTON_X : ICON_PF_BUTTON_SQUARE)),
+		unknown ? ICON_PF_BUTTON_UP_Y : (nintendo ? ICON_PF_BUTTON_X : (xbox ? ICON_PF_BUTTON_Y : ICON_PF_BUTTON_TRIANGLE)),
 		xbox ? ICON_PF_XBOX_DPAD : ICON_PF_DPAD,
 		xbox ? ICON_PF_XBOX_DPAD_LEFT_RIGHT : ICON_PF_DPAD_LEFT_RIGHT,
 		xbox ? ICON_PF_XBOX_DPAD_UP_DOWN : ICON_PF_DPAD_UP_DOWN,
-		nintendo ? ICON_PF_MINUS : (xbox ? ICON_PF_SHARE_CAPTURE : ICON_PF_SELECT_SHARE),
-		nintendo ? ICON_PF_PLUS : (xbox ? ICON_PF_BURGER_MENU : ICON_PF_START),
+		nintendo ? ICON_PF_MINUS : ((xbox || unknown) ? ICON_PF_SHARE_CAPTURE : ICON_PF_SELECT_SHARE),
+		nintendo ? ICON_PF_PLUS : ((xbox || unknown) ? ICON_PF_BURGER_MENU : ICON_PF_START),
 	};
 }
 
@@ -3200,8 +3189,6 @@ void ImGuiFullscreen::DrawNotifications(ImVec2& position, float spacing)
 	const float badge_size = ImGuiFullscreen::LayoutScale(48.0f);
 	const float min_width = ImGuiFullscreen::LayoutScale(200.0f);
 	const float max_width = ImGuiFullscreen::LayoutScale(800.0f);
-	const float max_text_width = max_width - badge_size - (horizontal_padding * 2.0f) - horizontal_spacing;
-	const float min_height = (vertical_padding * 2.0f) + badge_size;
 	const float shadow_size = ImGuiFullscreen::LayoutScale(4.0f);
 	const float rounding = ImGuiFullscreen::LayoutScale(4.0f);
 
@@ -3232,13 +3219,19 @@ void ImGuiFullscreen::DrawNotifications(ImVec2& position, float spacing)
 			continue;
 		}
 
+		const bool has_badge = !notif.badge_path.empty();
+		const float effective_badge_size = has_badge ? badge_size : 0.0f;
+		const float effective_badge_spacing = has_badge ? horizontal_spacing : 0.0f;
+		const float max_text_width = max_width - effective_badge_size - (horizontal_padding * 2.0f) - effective_badge_spacing;
+		const float min_height = (vertical_padding * 2.0f) + effective_badge_size;
+
 		const ImVec2 title_size(title_font.first->CalcTextSizeA(title_font.second, max_text_width, max_text_width,
 			notif.title.c_str(), notif.title.c_str() + notif.title.size()));
 
 		const ImVec2 text_size(text_font.first->CalcTextSizeA(text_font.second, max_text_width, max_text_width,
 			notif.text.c_str(), notif.text.c_str() + notif.text.size()));
 
-		const float box_width = std::max((horizontal_padding * 2.0f) + badge_size + horizontal_spacing +
+		const float box_width = std::max((horizontal_padding * 2.0f) + effective_badge_size + effective_badge_spacing +
 											 ImCeil(std::max(title_size.x, text_size.x)),
 			min_width);
 		const float box_height =
@@ -3315,10 +3308,10 @@ void ImGuiFullscreen::DrawNotifications(ImVec2& position, float spacing)
 		dl->AddRect(box_min, box_max, border_color, rounding, ImDrawFlags_RoundCornersAll, ImGuiFullscreen::LayoutScale(1.0f));
 #endif
 
-		const ImVec2 badge_min(box_min.x + horizontal_padding, box_min.y + vertical_padding);
-		const ImVec2 badge_max(badge_min.x + badge_size, badge_min.y + badge_size);
-		if (!notif.badge_path.empty())
+		if (has_badge)
 		{
+			const ImVec2 badge_min(box_min.x + horizontal_padding, box_min.y + (box_height - badge_size) * 0.5f);
+			const ImVec2 badge_max(badge_min.x + badge_size, badge_min.y + badge_size);
 			GSTexture* tex = GetCachedTexture(notif.badge_path.c_str());
 			if (tex)
 			{
@@ -3327,14 +3320,14 @@ void ImGuiFullscreen::DrawNotifications(ImVec2& position, float spacing)
 			}
 		}
 
-		const ImVec2 title_min(badge_max.x + horizontal_spacing, box_min.y + vertical_padding);
+		const ImVec2 title_min(box_min.x + horizontal_padding + effective_badge_size + effective_badge_spacing, box_min.y + vertical_padding);
 		const ImVec2 title_max(title_min.x + title_size.x, title_min.y + title_size.y);
 		const u32 title_col = (toast_title_color & ~IM_COL32_A_MASK) | (opacity << IM_COL32_A_SHIFT);
 		const u32 text_shadow_col = IM_COL32(0, 0, 0, (64u * opacity) / 255u);
 		AddTextWithShadow(dl, title_font, title_min, title_col, notif.title.c_str(), notif.title.c_str() + notif.title.size(), max_text_width,
 			nullptr, text_shadow_col);
 
-		const ImVec2 text_min(badge_max.x + horizontal_spacing, title_max.y + vertical_spacing);
+		const ImVec2 text_min(title_min.x, title_max.y + vertical_spacing);
 		const ImVec2 text_max(text_min.x + text_size.x, text_min.y + text_size.y);
 		const u32 text_col = (toast_text_color & ~IM_COL32_A_MASK) | (opacity << IM_COL32_A_SHIFT);
 		AddTextWithShadow(dl, text_font, text_min, text_col, notif.text.c_str(), notif.text.c_str() + notif.text.size(), max_text_width,
@@ -3383,15 +3376,17 @@ void ImGuiFullscreen::DrawToast()
 	const float padding = LayoutScale(20.0f);
 	const float total_padding = padding * 2.0f;
 	const float margin = LayoutScale(20.0f + (s_fullscreen_footer_text.empty() ? 0.0f : LAYOUT_FOOTER_HEIGHT));
-	const float spacing = s_toast_title.empty() ? 0.0f : LayoutScale(10.0f);
+	const float spacing = (s_toast_title.empty() || s_toast_message.empty()) ? 0.0f : LayoutScale(10.0f);
 	const ImVec2 display_size(ImGui::GetIO().DisplaySize);
 	const ImVec2 title_size(s_toast_title.empty() ? ImVec2(0.0f, 0.0f) :
 													title_font.first->CalcTextSizeA(title_font.second, FLT_MAX, max_width,
 														s_toast_title.c_str(), s_toast_title.c_str() + s_toast_title.length()));
+	const float max_message_width = std::max(LayoutScale(100.0f), max_width - (s_toast_title.empty() ? 0.0f : (title_size.x + spacing)));
 	const ImVec2 message_size(s_toast_message.empty() ? ImVec2(0.0f, 0.0f) :
-														message_font.first->CalcTextSizeA(message_font.second, FLT_MAX, max_width,
+														message_font.first->CalcTextSizeA(message_font.second, FLT_MAX, max_message_width,
 															s_toast_message.c_str(), s_toast_message.c_str() + s_toast_message.length()));
-	const ImVec2 comb_size(std::max(title_size.x, message_size.x), title_size.y + spacing + message_size.y);
+	const ImVec2 comb_size(s_toast_title.empty() ? message_size.x : (title_size.x + spacing + message_size.x),
+		std::max(title_size.y, message_size.y));
 
 	const ImVec2 box_size(comb_size.x + total_padding, comb_size.y + total_padding);
 	const ImVec2 box_pos((display_size.x - box_size.x) * 0.5f, (display_size.y - margin - box_size.y));
@@ -3401,19 +3396,18 @@ void ImGuiFullscreen::DrawToast()
 	const u32 shadow_col = IM_COL32(0, 0, 0, static_cast<int>(64.0f * alpha));
 	if (!s_toast_title.empty())
 	{
-		const float offset = (comb_size.x - title_size.x) * 0.5f;
-		const ImVec2 title_pos = box_pos + ImVec2(offset + padding, padding);
+		const ImVec2 title_pos = box_pos + ImVec2(padding, padding + (comb_size.y - title_size.y) * 0.5f);
 		AddTextWithShadow(dl, title_font, title_pos,
 			ImGui::GetColorU32(ModAlpha(UIPrimaryTextColor, alpha)), s_toast_title.c_str(), s_toast_title.c_str() + s_toast_title.length(),
 			max_width, nullptr, shadow_col);
 	}
 	if (!s_toast_message.empty())
 	{
-		const float offset = (comb_size.x - message_size.x) * 0.5f;
-		const ImVec2 message_pos = box_pos + ImVec2(offset + padding, padding + spacing + title_size.y);
+		const float title_offset = s_toast_title.empty() ? 0.0f : (title_size.x + spacing);
+		const ImVec2 message_pos = box_pos + ImVec2(padding + title_offset, padding + (comb_size.y - message_size.y) * 0.5f);
 		AddTextWithShadow(dl, message_font, message_pos,
 			ImGui::GetColorU32(ModAlpha(UIPrimaryTextColor, alpha)), s_toast_message.c_str(),
-			s_toast_message.c_str() + s_toast_message.length(), max_width, nullptr, shadow_col);
+			s_toast_message.c_str() + s_toast_message.length(), max_message_width, nullptr, shadow_col);
 	}
 }
 

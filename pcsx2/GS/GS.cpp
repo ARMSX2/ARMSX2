@@ -180,7 +180,7 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
 
 	if (!g_gs_device->SetGPUTimingEnabled(true))
 		GSConfig.OsdShowGPU = false;
-	if (!g_gs_device->SetGPUPipelineStatisticsEnabled(true))
+	if (GSConfig.OsdShowGPUStats && !g_gs_device->SetGPUPipelineStatisticsEnabled(true))
 		GSConfig.OsdShowGPUStats = false;
 
 	Console.WriteLn(Color_StrongGreen, "%s Graphics Driver Info:", GSDevice::RenderAPIToString(new_api));
