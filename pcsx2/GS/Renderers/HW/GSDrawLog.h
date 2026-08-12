@@ -73,6 +73,12 @@ namespace GSDrawLog
 		// blend capture said it could not weight itself.
 		u8 tex_filter;
 		u8 env;
+		// Continuation of env, which is full. bit 0 DTHE. The dither capture
+		// measured two gaps whose cost is a frequency question this answers: how
+		// often a game enables dither at all decides whether the SW rasterizer's
+		// bulk rectangle fill (which cannot dither, so dithered draws now take the
+		// slower scanline) and the Tile floor for dithered draws cost anything.
+		u8 env2;
 
 		// Backend view, filled at submit. Zeroed if the draw returned early.
 		u8 topology;

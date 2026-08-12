@@ -257,7 +257,7 @@ namespace GSDrawLog
 			"topology,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
 			"area_x,area_y,area_w,area_h,"
 			"memo_hit,record_ns,pass_id,fallback,"
-			"mmag,mmin,mxl,tcc,tfx,fge,fst,aa1,colclamp,pabe\n");
+			"mmag,mmin,mxl,tcc,tfx,fge,fst,aa1,colclamp,pabe,dthe\n");
 
 		for (const Record& r : s_records)
 		{
@@ -350,8 +350,8 @@ namespace GSDrawLog
 				std::fprintf(fp.get(), ",,,,,");
 			}
 
-			std::fprintf(fp.get(), "%u,%u,%u,%u,%u\n", r.env & 1, (r.env >> 1) & 1, (r.env >> 7) & 1,
-				(r.env >> 5) & 1, (r.env >> 6) & 1);
+			std::fprintf(fp.get(), "%u,%u,%u,%u,%u,%u\n", r.env & 1, (r.env >> 1) & 1, (r.env >> 7) & 1,
+				(r.env >> 5) & 1, (r.env >> 6) & 1, r.env2 & 1);
 		}
 
 		Console.WriteLn(fmt::format("GSDrawLog: wrote {} draws to {}{}", s_records.size(), path,

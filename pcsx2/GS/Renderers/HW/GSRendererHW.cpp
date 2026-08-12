@@ -2853,6 +2853,7 @@ void GSRendererHW::RecordDrawLogEntry() const
 							  ((m_cached_ctx.TEX0.TCC & 1) << 2) | ((m_cached_ctx.TEX0.TFX & 3) << 3) |
 							  ((m_env.COLCLAMP.CLAMP & 1) << 5) | ((m_env.PABE.PABE & 1) << 6) |
 							  (PRIM->AA1 ? 0x80 : 0));
+	rec.env2 = static_cast<u8>(m_env.DTHE.DTHE & 1);
 
 	GSDrawLog::BeginDraw(rec);
 }
