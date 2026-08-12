@@ -336,10 +336,55 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 // plane's byte window; a page whose planes split across surfaces is pulled from each
 // owner under disjoint byte masks. Afterwards every truth plane on the pages is
 // synced, and the SW texture cache is told its cached deswizzles went stale.
+//
+// A page whose truth a CPU transfer has already shrunk block-wise takes the partial
+// path below instead: the pull is restricted to the blocks still owned by the GPU, or
+// it would write the texture's stale copy back over the bytes the transfer just gave
+// the CPU. That is the gs-sync ordering defect (an upload over a just-drawn region
+// came back 0 of 2048 fresh under Tile), and it bit both directions of travel — the
+// native draw path makes a partial page CPU-current through this same call before it
+// re-uploads the whole page.
 bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages)
 {
 	if (pages.empty())
 		return true;
+
+	// Split off the pages some plane holds only block-partially; the whole-page
+	// bucketing below stays the hot path for everything else.
+	GSPageBitmap partial_pages;
+	pages.forEachSetPage([&](u32 page) {
+		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+		{
+			if (!m_vram_model.Truth(pi).test(page) || m_vram_model.SyncedPages(pi).test(page))
+				continue;
+			if (m_vram_model.TruthMask(page, pi) != GSVramModel::kFullBlockMask)
+				partial_pages.set(page);
+		}
+	});
+
+	bool partial_ok = true;
+	partial_pages.forEachSetPage([&](u32 page) {
+		GSPageBitmap one;
+		one.set(page);
+		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+		{
+			if (!m_vram_model.Truth(pi).test(page) || m_vram_model.SyncedPages(pi).test(page))
+				continue;
+			const GSTileSurfaceId owner = m_vram_model.OwnerOf(page, pi);
+			pxAssert(owner != kGSTileNoSurface);
+			const GSVramModel::Surface& surf = m_vram_model.Get(owner);
+			partial_ok &= m_target_pool.ReadbackPages(m_mem, surf.pool_handle, surf.layout, one,
+				PlaneByteMask(pi, surf.layout), m_vram_model.TruthMask(page, pi));
+			InvalidateSwTexCache(surf.layout, one);
+		}
+	});
+
+	const GSPageBitmap full_pages = pages.andnot(partial_pages);
+	if (full_pages.empty())
+	{
+		m_vram_model.OnReadback(pages);
+		return partial_ok;
+	}
 
 	struct Bucket
 	{
@@ -352,7 +397,7 @@ bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages)
 	u32 num_buckets = 0;
 	bool overflowed = false;
 
-	pages.forEachSetPage([&](u32 page) {
+	full_pages.forEachSetPage([&](u32 page) {
 		// Gather this page's per-owner byte masks.
 		GSTileSurfaceId ids[kGSTilePlaneCount];
 		u32 masks[kGSTilePlaneCount];
@@ -409,8 +454,8 @@ bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages)
 		// More distinct (owner, mask) combinations than the fixed table holds; fall
 		// back to per-page pulls. Never observed in practice — counted implicitly by
 		// being slow, correct by construction.
-		bool ok = true;
-		pages.forEachSetPage([&](u32 page) {
+		bool ok = partial_ok;
+		full_pages.forEachSetPage([&](u32 page) {
 			GSPageBitmap one;
 			one.set(page);
 			for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
@@ -428,7 +473,7 @@ bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages)
 		return ok;
 	}
 
-	bool ok = true;
+	bool ok = partial_ok;
 	for (u32 b = 0; b < num_buckets; b++)
 	{
 		const GSVramModel::Surface& surf = m_vram_model.Get(buckets[b].id);

@@ -7,6 +7,7 @@
 #include "GS/Renderers/Common/GSTexture.h"
 #include "GS/Renderers/Tile/GSPageBitmap.h"
 #include "GS/Renderers/Tile/GSTileTypes.h"
+#include "GS/Renderers/Tile/GSVramModel.h" // kFullBlockMask: the pool moves what the model tracks
 
 #include <memory>
 #include <vector>
@@ -29,9 +30,11 @@ class GSLocalMemory;
 // converts with COPY, depth with the RGBA8_TO_DEPTH family — for Z24 the masked
 // 24-bit integer is exact in float32, which is precisely why Z32 is outside the M2
 // native envelope. Readbacks are the exact inverse of GSTextureCache::Read, masked
-// to the byte set the caller owns so bytes whose newest data lives elsewhere are
-// never clobbered. Everything is synchronous with the draw stream: M2 is sequential
-// passes, correctness first.
+// on BOTH axes the model tracks so bytes whose newest data lives elsewhere are never
+// clobbered: `write_mask` selects the bytes of a cell (the plane window) and
+// `block_mask` selects which of a page's 32 physical blocks travel (the sidecar's
+// truth, for a page a CPU transfer has partially overwritten). Everything is
+// synchronous with the draw stream: M2 is sequential passes, correctness first.
 class GSTileTargetPool
 {
 public:
@@ -62,9 +65,30 @@ public:
 	/// Deswizzle whole pages out of CPU local memory into the surface texture.
 	bool UploadPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout, const GSPageBitmap& pages);
 
-	/// Read whole pages back into CPU local memory. write_mask selects the bytes of
-	/// each 32-bit cell to write (16-bit formats write whole cells and ignore it).
-	bool ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout, const GSPageBitmap& pages, u32 write_mask);
+	/// Read pages back into CPU local memory. write_mask selects the bytes of each
+	/// 32-bit cell to write (16-bit formats write whole cells and ignore it);
+	/// block_mask selects which of each page's 32 physical blocks are pulled, so a
+	/// page whose truth a CPU transfer has already shrunk keeps its CPU-newest blocks.
+	bool ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout, const GSPageBitmap& pages,
+		u32 write_mask, u32 block_mask = GSVramModel::kFullBlockMask);
+
+	/// Pixel rects covering the set pages, refined to `block_mask`'s blocks within
+	/// each page (kFullBlockMask takes the whole-page run path). Pure: derived from
+	/// GSOffset's own shifts, so the unit suite runs it with no device and no
+	/// GSLocalMemory instance.
+	static u32 CollectRuns(const GSTileSurfaceLayout& layout, const GSPageBitmap& pages, u32 block_mask,
+		std::vector<GSVector4i>& runs);
+
+	/// Inverse of the format's block swizzle: index[row * cols + col] is the physical
+	/// in-page block number sitting at that block cell.
+	struct BlockGrid
+	{
+		GSVector2i bs; ///< block size in pixels
+		int cols;
+		int rows;
+		u8 index[GSVramModel::kBlocksPerPage];
+	};
+	static BlockGrid BlockGridFor(const GSTileSurfaceLayout& layout);
 
 private:
 	struct Slot
@@ -76,9 +100,6 @@ private:
 
 	Slot& GetSlot(u32 handle);
 	const Slot& GetSlot(u32 handle) const;
-
-	/// Consecutive same-page-row runs of the set pages, as pixel rects.
-	static u32 CollectRuns(const GSTileSurfaceLayout& layout, const GSPageBitmap& pages, std::vector<GSVector4i>& runs);
 
 	bool PrepareDownload(u32 width, u32 height, GSTexture::Format format, std::unique_ptr<GSDownloadTexture>* tex);
 	u8* GetScratch(u32 size);

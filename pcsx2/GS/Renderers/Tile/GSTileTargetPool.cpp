@@ -21,11 +21,41 @@ GSTileTargetPool::~GSTileTargetPool()
 
 GSTileTargetPool::Geometry GSTileTargetPool::GeometryFor(const GSTileSurfaceLayout& layout)
 {
-	const GSVector2i pgs = GSLocalMemory::m_psm[layout.psm].pgs;
+	// Geometry from the offset's own shifts rather than GSLocalMemory::m_psm: the
+	// latter is filled by a GSLocalMemory constructor, and the run builder below is
+	// pure so the unit suite can exercise it with no device and no local memory.
+	// Same discipline, same reason, as GSVramModel::FootprintForRect.
+	const GSOffset off = GSOffset::fromKnownPSM(layout.bp, layout.bw, static_cast<GS_PSM>(layout.psm));
+	const GSVector2i pgs(1 << off.pageShiftX(), 1 << off.pageShiftY());
 	// Every M2-native format (CT32/CT24, Z32 family, 16-bit families) has 64-pixel-wide
 	// pages, which is what makes ppr == bw. 8/4-bit layouts never reach the pool.
 	pxAssert(pgs.x == 64);
 	return Geometry{static_cast<int>(layout.bw), pgs};
+}
+
+// The in-page pixel position of each of a page's 32 physical blocks, for one format.
+// The GS block swizzle is page-periodic, so inverting one page's worth of bn() serves
+// every page of the layout.
+GSTileTargetPool::BlockGrid GSTileTargetPool::BlockGridFor(const GSTileSurfaceLayout& layout)
+{
+	const GSOffset off = GSOffset::fromKnownPSM(layout.bp, layout.bw, static_cast<GS_PSM>(layout.psm));
+	BlockGrid grid = {};
+	grid.bs = GSVector2i(1 << off.blockShiftX(), 1 << off.blockShiftY());
+	const GSVector2i pgs(1 << off.pageShiftX(), 1 << off.pageShiftY());
+	grid.cols = pgs.x / grid.bs.x;
+	grid.rows = pgs.y / grid.bs.y;
+	pxAssert(grid.cols * grid.rows == static_cast<int>(GSVramModel::kBlocksPerPage));
+
+	for (int by = 0; by < grid.rows; by++)
+	{
+		for (int bx = 0; bx < grid.cols; bx++)
+		{
+			// bn() folds bp in, and pool layouts are page-aligned, so the low five
+			// bits are the block's index within its own physical page.
+			grid.index[by * grid.cols + bx] = static_cast<u8>(off.bn(bx * grid.bs.x, by * grid.bs.y) & 31);
+		}
+	}
+	return grid;
 }
 
 int GSTileTargetPool::HeightForPages(const GSTileSurfaceLayout& layout, const GSPageBitmap& pages)
@@ -135,11 +165,51 @@ bool GSTileTargetPool::EnsureHeight(u32 handle, int height_px)
 	return true;
 }
 
-u32 GSTileTargetPool::CollectRuns(const GSTileSurfaceLayout& layout, const GSPageBitmap& pages, std::vector<GSVector4i>& runs)
+u32 GSTileTargetPool::CollectRuns(const GSTileSurfaceLayout& layout, const GSPageBitmap& pages, u32 block_mask,
+	std::vector<GSVector4i>& runs)
 {
 	runs.clear();
+	if (block_mask == 0)
+		return 0;
+
 	const Geometry g = GeometryFor(layout);
 	const u32 base = (layout.bp >> 5) & (GS_MAX_PAGES - 1);
+
+	// A page whose truth a CPU transfer has partially consumed contributes only its
+	// surviving blocks. Rare by design (whole-page draws, whole-page invalidations),
+	// so it takes the slow shape and leaves the whole-page path below untouched.
+	if (block_mask != GSVramModel::kFullBlockMask)
+	{
+		const BlockGrid grid = BlockGridFor(layout);
+		pages.forEachSetPage([&](u32 page) {
+			const u32 rel = (page + GS_MAX_PAGES - base) & (GS_MAX_PAGES - 1);
+			const int px0 = (static_cast<int>(rel) % g.ppr) * g.pgs.x;
+			const int py0 = (static_cast<int>(rel) / g.ppr) * g.pgs.y;
+			for (int by = 0; by < grid.rows; by++)
+			{
+				// Coalesce adjacent blocks along the row; the swizzle scatters block
+				// indices, so a contiguous pixel span is not a contiguous index span.
+				int span0 = -1;
+				for (int bx = 0; bx <= grid.cols; bx++)
+				{
+					const bool set = bx < grid.cols && (block_mask & (1u << grid.index[by * grid.cols + bx])) != 0;
+					if (set)
+					{
+						if (span0 < 0)
+							span0 = bx;
+						continue;
+					}
+					if (span0 >= 0)
+					{
+						runs.emplace_back(px0 + span0 * grid.bs.x, py0 + by * grid.bs.y, px0 + bx * grid.bs.x,
+							py0 + (by + 1) * grid.bs.y);
+						span0 = -1;
+					}
+				}
+			}
+		});
+		return static_cast<u32>(runs.size());
+	}
 
 	int run_row = -1;
 	int run_col0 = 0;
@@ -195,7 +265,11 @@ bool GSTileTargetPool::UploadPages(GSLocalMemory& mem, u32 handle, const GSTileS
 		return true;
 
 	Slot& s = GetSlot(handle);
-	if (CollectRuns(layout, pages, m_runs) == 0)
+	// Whole pages: an upload only ever runs after every GPU-newest block on the page
+	// has been pulled back (GSRendererTile::PagesNeedingUpload refuses a page whose
+	// truth mask is not full, and the caller spills it first), so CPU is current for
+	// the whole page and there is nothing on the texture worth preserving.
+	if (CollectRuns(layout, pages, GSVramModel::kFullBlockMask, m_runs) == 0)
 		return true;
 
 	GSVector4i bb = m_runs[0];
@@ -268,13 +342,14 @@ bool GSTileTargetPool::UploadPages(GSLocalMemory& mem, u32 handle, const GSTileS
 	return true;
 }
 
-bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout, const GSPageBitmap& pages, u32 write_mask)
+bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout,
+	const GSPageBitmap& pages, u32 write_mask, u32 block_mask)
 {
-	if (pages.empty() || write_mask == 0)
+	if (pages.empty() || write_mask == 0 || block_mask == 0)
 		return true;
 
 	Slot& s = GetSlot(handle);
-	if (CollectRuns(layout, pages, m_runs) == 0)
+	if (CollectRuns(layout, pages, block_mask, m_runs) == 0)
 		return true;
 
 	GSVector4i bb = m_runs[0];
