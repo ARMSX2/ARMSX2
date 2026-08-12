@@ -95,9 +95,19 @@ union GSScanlineSelector
 	operator u32() const { return lo; }
 	operator u64() const { return key; }
 
+	/// Whether the rasterizer can serve this draw as a bulk rectangle fill instead of
+	/// running the per-pixel scanline. Every condition listed here is one the fill
+	/// cannot reproduce, so each has to stay out of the fast path.
+	///
+	/// Dither belongs in that list and was missing from it: the fill writes one constant
+	/// colour, while the dither matrix is added per pixel in WriteFrame. A dithered flat
+	/// sprite therefore lost its dither entirely -- and games fill 16-bit targets with
+	/// flat sprites constantly. Measured against silicon (gs-dither, SCPH-30001): the
+	/// same grid drawn as sprites and as triangles is identical to the pixel on console,
+	/// where ours differed on 1116 of 4096.
 	bool IsSolidRect() const
 	{
-		return prim == GS_SPRITE_CLASS && iip == 0 && tfx == TFX_NONE && abe == 0 && ztst <= 1 && atst <= 1 && date == 0 && fge == 0;
+		return prim == GS_SPRITE_CLASS && iip == 0 && tfx == TFX_NONE && abe == 0 && ztst <= 1 && atst <= 1 && date == 0 && fge == 0 && dthe == 0;
 	}
 
 	std::string to_string() const
