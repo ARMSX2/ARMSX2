@@ -1121,6 +1121,20 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				}
 				else
 				{
+					// Per-pixel MMAG/MMIN choice. lod > 0 is exactly Q < the crossing
+					// constant, so one compare names the pixels on the minifying side;
+					// ltfx_ge flips which side takes the linear filter. All-ones means
+					// "this pixel filters linearly".
+					VectorI lin;
+
+					if (sel.ltfx)
+					{
+						lin = VectorI::cast(q < global.ltfx_q);
+
+						if (sel.ltfx_ge)
+							lin = ~lin;
+					}
+
 					if (!sel.fst)
 					{
 						const VectorF r = GSPerspectiveRecip(q);
@@ -1130,8 +1144,21 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 						if (sel.ltf)
 						{
-							u -= 0x8000;
-							v -= 0x8000;
+							// The two filters do not sample the same point: nearest reads
+							// at the coordinate, linear straddles the pair half a texel
+							// back. So the bias is taken only where linear wins.
+							if (sel.ltfx)
+							{
+								const VectorI half = VectorI(0x8000) & lin;
+
+								u -= half;
+								v -= half;
+							}
+							else
+							{
+								u -= 0x8000;
+								v -= 0x8000;
+							}
 						}
 					}
 					else
@@ -1147,6 +1174,18 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						if (sel.prim != GS_SPRITE_CLASS)
 						{
 							vf = v.xxzzlh().srl16<12>();
+						}
+
+						// A zero weight turns the four-tap blend back into the nearest
+						// tap, so the nearest side needs no separate path.
+						if (sel.ltfx)
+						{
+							const VectorI lin16 = lin.xxzzlh();
+
+							uf &= lin16;
+
+							if (sel.prim != GS_SPRITE_CLASS)
+								vf &= lin16;
 						}
 					}
 
