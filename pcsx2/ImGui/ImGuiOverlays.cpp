@@ -67,6 +67,7 @@ SmallString s_gs_stats_line;
 SmallString s_gs_memory_stats_line;
 SmallString s_gs_frame_times_line;
 SmallString s_resolution_line;
+SmallString s_viewport_line;
 SmallString s_hardware_info_cpu_line;
 SmallString s_hardware_info_gpu_line;
 SmallString s_cpu_jit_line;
@@ -196,9 +197,11 @@ ImVec2 CalculatePerformanceOverlayTextPosition(OsdOverlayPos position, float mar
 			break;
 	}
 
-	// A line wider than the window would otherwise start at negative x and run off the left edge,
-	// which is far worse than being clipped on the right.
-	return ImVec2(std::max(abs_margin, x_pos), position_y);
+	// Constrain regular-width rows to the actual viewport. This also protects the right-aligned
+	// performance block from stale or oversized safe-area margins during a 4K mode transition.
+	const float max_x = std::max(0.0f, window_width - text_size.x);
+	const float min_x = std::min(abs_margin, max_x);
+	return ImVec2(std::clamp(x_pos, min_x, max_x), position_y);
 }
 
 bool ShouldUseLeftAlignment(OsdOverlayPos position)
@@ -270,13 +273,23 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 		(static_cast<u32>(GSConfig.OsdShowCPU) << 4) | (static_cast<u32>(GSConfig.OsdShowGPU) << 5) |
 		(static_cast<u32>(GSConfig.OsdShowGSStats) << 6) | (static_cast<u32>(GSConfig.OsdShowFrameTimes) << 7) |
 		(static_cast<u32>(GSConfig.OsdShowHardwareInfo) << 8) | (static_cast<u32>(GSConfig.OsdShowVersion) << 9) |
-		(static_cast<u32>(GSConfig.OsdShowGPUStats) << 10);
+		(static_cast<u32>(GSConfig.OsdShowGPUStats) << 10) | (static_cast<u32>(GSConfig.OsdShowViewport) << 11);
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 	// A Custom preset with nothing but Device Stats ticked is reachable, and it lands here.
-	enabled_lines |= static_cast<u32>(ARMSX2_iOSShouldShowDeviceStatsOverlay()) << 11;
+	enabled_lines |= static_cast<u32>(ARMSX2_iOSShouldShowDeviceStatsOverlay()) << 12;
 #endif
 	if (enabled_lines == 0)
 		return;
+
+	if (GSConfig.OsdShowViewport)
+	{
+		const WindowInfo& wi = g_gs_device->GetWindowInfo();
+		const float rounded_refresh = std::round(wi.surface_refresh_rate);
+		if (std::abs(wi.surface_refresh_rate - rounded_refresh) < 0.05f)
+			s_viewport_line.format("Viewport: {}x{}-{:.0f}Hz", wi.surface_width, wi.surface_height, rounded_refresh);
+		else
+			s_viewport_line.format("Viewport: {}x{}-{:.2f}Hz", wi.surface_width, wi.surface_height, wi.surface_refresh_rate);
+	}
 
 	const float shadow_offset = std::ceil(scale);
 
@@ -576,6 +589,9 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 				DRAW_LINE(osd_font, font_size, s_resolution_line.c_str(), OsdTextColor());
 			}
 
+			if (GSConfig.OsdShowViewport)
+				DRAW_LINE(osd_font, font_size, s_viewport_line.c_str(), OsdTextColor());
+
 			if (GSConfig.OsdShowHardwareInfo)
 			{
 				// GPU can change on the fly with settings, but CPU change of any kind is a rare edge case.
@@ -736,6 +752,9 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 
 			if (GSConfig.OsdShowResolution)
 				DRAW_LINE(osd_font, font_size, s_resolution_line.c_str(), OsdTextColor());
+
+			if (GSConfig.OsdShowViewport)
+				DRAW_LINE(osd_font, font_size, s_viewport_line.c_str(), OsdTextColor());
 
 			if (GSConfig.OsdShowHardwareInfo)
 			{
@@ -2053,6 +2072,7 @@ void ImGuiManager::RenderOverlays()
 	// any VMManager::ApplySettings reload); honour that here when present, else fall back to
 	// EmuConfig.GS. Mirror every perf / settings-summary / inputs flag once, before any
 	// overlay draws, so the perf, settings and inputs overlays all honour their switches.
+	GSConfig.OsdShowViewport = EmuConfig.GS.OsdShowViewport;
 #ifdef __ANDROID__
 	if (s_android_osd_vis.valid)
 	{

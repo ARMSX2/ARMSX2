@@ -216,6 +216,16 @@ struct GraphicsSettingsView: View {
             }
 
             Section(settings.localized("Display")) {
+                Toggle(
+                    settings.localized("Dedicated HDMI Output (Beta)"),
+                    isOn: $settings.dedicatedExternalDisplayEnabled
+                )
+                Text(settings.localized(
+                    "Sends only the game image to a connected display. When unavailable or disabled, the iPhone uses normal display mirroring."
+                ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Picker(settings.localized("Deinterlace"), selection: $settings.interlaceMode) {
                     // Tags are GSInterlaceMode values; a shift by one renames every mode.
                     Text(settings.localized("Automatic (Default)")).tag(0)

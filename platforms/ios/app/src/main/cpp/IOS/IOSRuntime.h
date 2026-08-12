@@ -53,6 +53,21 @@ extern UITextView* g_logView;
 // Game render view (CAMetalLayer-backed ARMSX2GameView)
 // ---------------------------------------------------------------------------
 extern ARMSX2GameView* g_gameRenderView;
+extern "C" void ARMSX2_PrepareGameRenderViewForCurrentRenderer(const char* reason);
+
+// The SwiftUI-owned view remains stable. The active view changes between it
+// and the external-display view when the existing Metal surface is retargeted.
+ARMSX2GameView* ARMSX2GetActiveGameRenderView();
+void ARMSX2SetActiveGameRenderView(ARMSX2GameView* view);
+bool ARMSX2IsActiveGameRenderView(ARMSX2GameView* view);
+
+// Native external-display lifecycle hooks. The feature defaults to disabled
+// and is enabled live by the persistent SwiftUI setting.
+void ARMSX2SetDedicatedExternalDisplayEnabled(bool enabled);
+bool ARMSX2IsDedicatedExternalDisplayEnabled();
+bool ARMSX2IsDedicatedExternalDisplayActive();
+void ARMSX2SetExternalDisplayVMRequested(bool requested);
+void ARMSX2RegisterExternalDisplayAccessoryIfNeeded(UIViewController* rootViewController);
 
 // ---------------------------------------------------------------------------
 // VM thread / boot coordination
@@ -75,6 +90,7 @@ extern std::deque<std::shared_ptr<CPUThreadTask>> s_cpuTasks;
 
 // Drains the CPU task queue.
 void ARMSX2DrainCPUThreadTasks();
+bool ARMSX2HasPendingCPUThreadTasks();
 
 extern "C" void ARMSX2_PostRetroAchievementsStateChanged(void);
 // Posts a RetroAchievements toast to the SwiftUI layer. `duration` is the on-screen

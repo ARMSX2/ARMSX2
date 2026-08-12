@@ -906,6 +906,7 @@ struct Pcsx2Config
 					OsdShowFPS : 1,
 					OsdShowVPS : 1,
 					OsdShowResolution : 1,
+					OsdShowViewport : 1,
 					OsdShowGSStats : 1,
 					OsdShowCPU : 1,
 					OsdShowGPU : 1,

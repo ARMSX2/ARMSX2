@@ -39,6 +39,7 @@ struct OverlaySettingsView: View {
                 Toggle(settings.localized("Show CPU"), isOn: $settings.osdShowCPU)
                 Toggle(settings.localized("Show GPU"), isOn: $settings.osdShowGPU)
                 Toggle(settings.localized("Show Resolution"), isOn: $settings.osdShowResolution)
+                Toggle(settings.localized("Show Viewport"), isOn: $settings.osdShowViewport)
                 Toggle(settings.localized("Show GS Stats"), isOn: $settings.osdShowGSStats)
                 Toggle(settings.localized("Show Indicators"), isOn: $settings.osdShowIndicators)
                 Toggle(settings.localized("Show Settings"), isOn: $settings.osdShowSettings)

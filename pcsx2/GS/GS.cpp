@@ -65,6 +65,7 @@
 Pcsx2Config::GSOptions GSConfig;
 
 static GSRendererType GSCurrentRenderer;
+static std::atomic_bool s_dedicated_external_display_active{false};
 
 GSRendererType GSGetCurrentRenderer()
 {
@@ -75,6 +76,16 @@ bool GSIsHardwareRenderer()
 {
 	// Null gets flagged as hw.
 	return (GSCurrentRenderer != GSRendererType::SW);
+}
+
+void GSSetDedicatedExternalDisplayActive(bool active)
+{
+	s_dedicated_external_display_active.store(active, std::memory_order_release);
+}
+
+bool GSIsDedicatedExternalDisplayActive()
+{
+	return s_dedicated_external_display_active.load(std::memory_order_acquire);
 }
 
 std::string GetDefaultAdapter()
@@ -761,6 +772,43 @@ bool GSHasDisplayWindow()
 	return (g_gs_device->GetWindowInfo().type != WindowInfo::Type::Surfaceless);
 }
 
+float GSCalculateExternalDisplayOSDScale(u32 width, u32 height)
+{
+	const float short_edge = static_cast<float>(std::min(width, height));
+	if (short_edge <= 0.0f)
+		return 1.0f;
+
+	// Preserve the approved 1080p size, with explicit visual-size anchors for the
+	// external modes used by iPhone USB-C adapters and TVs.
+	struct ScaleAnchor
+	{
+		float pixels;
+		float scale;
+	};
+	static constexpr std::array<ScaleAnchor, 4> anchors = {{
+		{720.0f, 2.0f / 3.0f},
+		{1080.0f, 1.0f},
+		{1440.0f, 1.5f},
+		{2160.0f, 2.0f},
+	}};
+
+	if (short_edge <= anchors.front().pixels)
+		return std::max(0.5f, short_edge / 1080.0f);
+
+	for (size_t i = 1; i < anchors.size(); i++)
+	{
+		if (short_edge <= anchors[i].pixels)
+		{
+			const ScaleAnchor& lower = anchors[i - 1];
+			const ScaleAnchor& upper = anchors[i];
+			const float t = (short_edge - lower.pixels) / (upper.pixels - lower.pixels);
+			return lower.scale + ((upper.scale - lower.scale) * t);
+		}
+	}
+
+	return std::max(anchors.back().scale, short_edge / 1080.0f);
+}
+
 void GSResizeDisplayWindow(u32 width, u32 height, float scale)
 {
 	DrainBackQueueBeforeDeviceMutation();
@@ -809,7 +857,7 @@ bool GSWantsExclusiveFullscreen()
 
 std::optional<float> GSGetHostRefreshRate()
 {
-	if (!g_gs_device)
+	if (!g_gs_device || GSIsDedicatedExternalDisplayActive())
 		return std::nullopt;
 
 	const float surface_refresh_rate = g_gs_device->GetWindowInfo().surface_refresh_rate;
@@ -1436,8 +1484,9 @@ static bool s_osd_hotkey_forced_simple = false;
 static bool HasConfiguredOSD()
 {
 	return EmuConfig.GS.OsdShowSpeed || EmuConfig.GS.OsdShowFPS || EmuConfig.GS.OsdShowVPS ||
-		   EmuConfig.GS.OsdShowResolution || EmuConfig.GS.OsdShowGSStats || EmuConfig.GS.OsdShowCPU ||
-		   EmuConfig.GS.OsdShowGPU || EmuConfig.GS.OsdShowGPUDebug || EmuConfig.GS.OsdShowIndicators ||
+		   EmuConfig.GS.OsdShowResolution || EmuConfig.GS.OsdShowViewport || EmuConfig.GS.OsdShowGSStats ||
+		   EmuConfig.GS.OsdShowCPU || EmuConfig.GS.OsdShowGPU || EmuConfig.GS.OsdShowGPUDebug ||
+		   EmuConfig.GS.OsdShowIndicators ||
 		   EmuConfig.GS.OsdShowFrameTimes || EmuConfig.GS.OsdShowHardwareInfo || EmuConfig.GS.OsdShowVersion ||
 		   EmuConfig.GS.OsdShowSettings || EmuConfig.GS.OsdshowPatches || EmuConfig.GS.OsdShowInputs ||
 		   EmuConfig.GS.OsdShowInputRec || EmuConfig.GS.OsdShowVideoCapture || EmuConfig.GS.OsdShowTextureReplacements;

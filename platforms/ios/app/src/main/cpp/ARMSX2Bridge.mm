@@ -60,6 +60,8 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "common/ZipHelpers.h"
 #include "common/Error.h"
 #include "common/MRCHelpers.h"
+#include "IOS/IOSRuntime.h"
+#import "IOS/ARMSX2GameView.h"
 
 #include <algorithm>
 #include <array>
@@ -2583,12 +2585,19 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
 @implementation ARMSX2Bridge
 
 + (UIView *)gameRenderView {
-    extern UIView* g_gameRenderView;
     return g_gameRenderView;
 }
 
 + (void)prepareGameRenderViewForCurrentRenderer {
     ARMSX2_PrepareGameRenderViewForCurrentRenderer("swift_preboot");
+}
+
++ (void)setDedicatedExternalDisplayEnabled:(BOOL)enabled {
+    ARMSX2SetDedicatedExternalDisplayEnabled(enabled);
+}
+
++ (BOOL)isDedicatedExternalDisplayActive {
+    return ARMSX2IsDedicatedExternalDisplayActive();
 }
 
 + (void)saveNVRAM {
@@ -2680,6 +2689,43 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     g_touchPadState[PadDualshock2::Inputs::PAD_R_LEFT] = left > 0.01f;
     g_touchPadState[PadDualshock2::Inputs::PAD_R_DOWN] = down > 0.01f;
     g_touchPadState[PadDualshock2::Inputs::PAD_R_UP] = up > 0.01f;
+}
+
++ (void)resetVirtualPadInput {
+    auto* pad = static_cast<PadDualshock2*>(Pad::GetPad(0, 0));
+    extern bool g_touchPadState[64];
+    std::fill_n(g_touchPadState, 64, false);
+    if (!pad)
+        return;
+
+    static const u32 inputs[] = {
+        PadDualshock2::Inputs::PAD_UP,
+        PadDualshock2::Inputs::PAD_DOWN,
+        PadDualshock2::Inputs::PAD_LEFT,
+        PadDualshock2::Inputs::PAD_RIGHT,
+        PadDualshock2::Inputs::PAD_CROSS,
+        PadDualshock2::Inputs::PAD_CIRCLE,
+        PadDualshock2::Inputs::PAD_SQUARE,
+        PadDualshock2::Inputs::PAD_TRIANGLE,
+        PadDualshock2::Inputs::PAD_L1,
+        PadDualshock2::Inputs::PAD_R1,
+        PadDualshock2::Inputs::PAD_L2,
+        PadDualshock2::Inputs::PAD_R2,
+        PadDualshock2::Inputs::PAD_START,
+        PadDualshock2::Inputs::PAD_SELECT,
+        PadDualshock2::Inputs::PAD_L3,
+        PadDualshock2::Inputs::PAD_R3,
+        PadDualshock2::Inputs::PAD_L_RIGHT,
+        PadDualshock2::Inputs::PAD_L_LEFT,
+        PadDualshock2::Inputs::PAD_L_DOWN,
+        PadDualshock2::Inputs::PAD_L_UP,
+        PadDualshock2::Inputs::PAD_R_RIGHT,
+        PadDualshock2::Inputs::PAD_R_LEFT,
+        PadDualshock2::Inputs::PAD_R_DOWN,
+        PadDualshock2::Inputs::PAD_R_UP,
+    };
+    for (const u32 input : inputs)
+        pad->Set(input, 0.0f);
 }
 
 + (nonnull NSString *)biosName {
@@ -3746,6 +3792,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     const bool cpu = simple || detail || full;
     const bool gpu = detail || full;
     const bool resolution = detail || full;
+    const bool viewport = detail || full;
     const bool indicators = detail || full;
     const bool version = simple || detail || full;
     const bool gsStats = full;
@@ -3766,6 +3813,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
         EmuConfig.GS.OsdShowCPU = cpu;
         EmuConfig.GS.OsdShowGPU = gpu;
         EmuConfig.GS.OsdShowResolution = resolution;
+        EmuConfig.GS.OsdShowViewport = viewport;
         EmuConfig.GS.OsdShowGSStats = gsStats;
         EmuConfig.GS.OsdShowFrameTimes = frameTimes;
         EmuConfig.GS.OsdShowVersion = version;

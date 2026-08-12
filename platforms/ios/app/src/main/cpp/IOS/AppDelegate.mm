@@ -145,8 +145,18 @@ static void SetupIOSDirectories(const std::string& dataRoot)
 - (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession options:(UISceneConnectionOptions *)options {
     // Called when a new scene session is being created.
     // Use this method to select a configuration to create the new scene with.
-    UISceneConfiguration *config = [[UISceneConfiguration alloc] initWithName:@"Default Configuration" sessionRole:connectingSceneSession.role];
-    config.delegateClass = [PCSX2SceneDelegate class];
+    const BOOL isExternalDisplay =
+        [connectingSceneSession.role isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive];
+    UISceneConfiguration *config = [[UISceneConfiguration alloc]
+        initWithName:(isExternalDisplay ? @"External Display" : @"Default Configuration")
+         sessionRole:connectingSceneSession.role];
+    if (isExternalDisplay) {
+        // iOS 26 and earlier offer this role automatically. On iOS 27+ the
+        // UISceneAccessory registration supplies the same lightweight delegate.
+        config.delegateClass = [PCSX2ExternalDisplaySceneDelegate class];
+    } else {
+        config.delegateClass = [PCSX2SceneDelegate class];
+    }
     return config;
 }
 

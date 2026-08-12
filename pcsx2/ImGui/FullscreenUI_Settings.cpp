@@ -3464,6 +3464,8 @@ void FullscreenUI::DrawOSDSettingsPage()
 		FSUI_CSTR("Shows the number of Vsyncs performed per second by the system."), "EmuCore/GS", "OsdShowVPS", false);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_PF_MONITOR_CODE, "Show Resolution"),
 		FSUI_CSTR("Shows the internal resolution of the game."), "EmuCore/GS", "OsdShowResolution", false);
+	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_PF_MONITOR_CODE, "Show Viewport"),
+		FSUI_CSTR("Shows the active output viewport resolution and refresh rate."), "EmuCore/GS", "OsdShowViewport", false);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_COMPUTER, "Show Hardware Info"),
 		FSUI_CSTR("Shows the current system CPU and GPU information."), "EmuCore/GS", "OsdShowHardwareInfo", false);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_CHART_PIE, "Show GS Statistics"),
@@ -5977,6 +5979,7 @@ TRANSLATE_NOOP("FullscreenUI", "Shows the current emulation speed of the system 
 TRANSLATE_NOOP("FullscreenUI", "Shows the number of internal video frames displayed per second by the system.");
 TRANSLATE_NOOP("FullscreenUI", "Shows the number of Vsyncs performed per second by the system.");
 TRANSLATE_NOOP("FullscreenUI", "Shows the internal resolution of the game.");
+TRANSLATE_NOOP("FullscreenUI", "Shows the active output viewport resolution and refresh rate.");
 TRANSLATE_NOOP("FullscreenUI", "Shows the current system CPU and GPU information.");
 TRANSLATE_NOOP("FullscreenUI", "Shows statistics about the emulated GS such as primitives and draw calls.");
 TRANSLATE_NOOP("FullscreenUI", "Shows the host's CPU utilization based on threads.");
@@ -6563,6 +6566,7 @@ TRANSLATE_NOOP("FullscreenUI", "Show Speed");
 TRANSLATE_NOOP("FullscreenUI", "Show FPS");
 TRANSLATE_NOOP("FullscreenUI", "Show VPS");
 TRANSLATE_NOOP("FullscreenUI", "Show Resolution");
+TRANSLATE_NOOP("FullscreenUI", "Show Viewport");
 TRANSLATE_NOOP("FullscreenUI", "Show Hardware Info");
 TRANSLATE_NOOP("FullscreenUI", "Show GS Statistics");
 TRANSLATE_NOOP("FullscreenUI", "Show CPU Usage");

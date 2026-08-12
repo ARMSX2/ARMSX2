@@ -297,6 +297,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
             s_settings_interface->SetBoolValue("Logging", "EnableVerbose", false);
             s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowFPS", false);
             s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowResolution", false);
+            s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowViewport", false);
             s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowGSStats", false);
             s_settings_interface->SetIntValue("EmuCore/GS", "OsdPerformancePos", 0); 
             s_settings_interface->SetBoolValue("UI", "EnableFullscreenUI", false);
@@ -374,6 +375,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_reloadDataRoot(JNIEnv* env, jclass, jstring
         s_settings_interface->SetBoolValue("Logging", "EnableVerbose", false);
         s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowFPS", false);
         s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowResolution", false);
+        s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowViewport", false);
         s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowGSStats", false);
         s_settings_interface->SetIntValue("EmuCore/GS", "OsdPerformancePos", 0);
         s_settings_interface->SetBoolValue("UI", "EnableFullscreenUI", false);
