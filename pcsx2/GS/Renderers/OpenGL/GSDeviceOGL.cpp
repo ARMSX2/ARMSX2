@@ -1056,10 +1056,14 @@ bool GSDeviceOGL::CheckFeatures()
 	// m_features.framebuffer_fetch -- read `fbfetch` instead if you need to know what was decided.
 	//
 	// Which drivers cannot survive the in-tile read is a fact about the DRIVER, so it lives in the
-	// driver-bug database with the rest of them (rule gl-arm-r44p1-attachment-self-read) rather than
-	// in a substring test here. UseRenderTargetCopyForFeedback is the same workaround the Vulkan
-	// backend keys its RT-copy fallback on -- fetch and the texture barrier are two spellings of one
-	// in-tile read, so a driver that fails the read fails both, and one bit answers for both APIs.
+	// driver-bug database with the rest of them rather than in a substring test here.
+	// UseRenderTargetCopyForFeedback is the same workaround the Vulkan backend keys its RT-copy
+	// fallback on -- fetch and the texture barrier are two spellings of one in-tile read, so a
+	// driver that fails the read fails both, and one bit answers for both APIs. Note that no GL
+	// rule sets it today: the r44p1 GL rule was deliberately lifted (2.6.6.4 field evidence beat
+	// the MGS3 corruption report -- the full account sits above the GL rules in
+	// GSGPUDriverProfile.cpp), while r44p1's Vulkan rule remains because there the read is a
+	// device loss, and on Vulkan the RT copy is an ordinary image copy rather than a tile flush.
 	//
 	// This replaced a hand-rolled search for "r44p1" in GL_VERSION. The database matches a PARSED
 	// driver revision instead, which is what lets a rule say "exactly r44p1" rather than "contains
