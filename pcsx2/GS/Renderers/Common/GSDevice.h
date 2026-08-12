@@ -6,6 +6,7 @@
 #include "common/HashCombine.h"
 #include "common/WindowInfo.h"
 #include "GS/GS.h"
+#include "GS/GSRegs.h" // GetAlphaTestPS speaks in ATST_* register values
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSGPUProfile.h"
 #include "GS/Renderers/Common/GSShaderEnums.h"
@@ -1335,6 +1336,59 @@ struct alignas(16) GSHWDrawConfig
 	bool IsBlending()
 	{
 		return blend.enable || blend_multi_pass.enable || ps.IsSWBlending();
+	}
+
+	/// Maps a PS2 alpha test onto the four comparisons the shader implements.
+	///
+	/// The GS compares eight-bit integers, so the four missing comparisons come from
+	/// nudging AREF by half a step: LESS is LEQUAL against a reference a hair below,
+	/// GREATER is GEQUAL against one a hair below the next integer. The nudge is two
+	/// ULP at the top of the range, so it can never land between two representable
+	/// alphas. invert_test asks for the complement instead, which is what a second
+	/// pass over the failing fragments needs.
+	///
+	/// Shared by both hardware renderers: Classic reaches it from EmulateAlphaTest,
+	/// Tile from its draw lowering's pass split. One definition, because a drift
+	/// between them would be a silent one-level difference at the test boundary.
+	static void GetAlphaTestPS(u32 atst, u8 aref, bool invert_test, PS_ATST& ps_atst_out, float& aref_out)
+	{
+		static constexpr u32 inverted_atst[] = {
+			ATST_ALWAYS, ATST_NEVER, ATST_GEQUAL, ATST_GREATER, ATST_NOTEQUAL, ATST_LESS, ATST_LEQUAL, ATST_EQUAL};
+
+		constexpr float small_val = 0x100p-23f;
+
+		switch (invert_test ? inverted_atst[atst & 7] : atst)
+		{
+			case ATST_LESS:
+				aref_out = static_cast<float>(aref) - small_val;
+				ps_atst_out = PS_ATST::LEQUAL;
+				break;
+			case ATST_LEQUAL:
+				aref_out = static_cast<float>(aref) - small_val + 1.0f;
+				ps_atst_out = PS_ATST::LEQUAL;
+				break;
+			case ATST_GEQUAL:
+				aref_out = static_cast<float>(aref) - small_val;
+				ps_atst_out = PS_ATST::GEQUAL;
+				break;
+			case ATST_GREATER:
+				aref_out = static_cast<float>(aref) - small_val + 1.0f;
+				ps_atst_out = PS_ATST::GEQUAL;
+				break;
+			case ATST_EQUAL:
+				aref_out = static_cast<float>(aref);
+				ps_atst_out = PS_ATST::EQUAL;
+				break;
+			case ATST_NOTEQUAL:
+				aref_out = static_cast<float>(aref);
+				ps_atst_out = PS_ATST::NOTEQUAL;
+				break;
+			case ATST_NEVER:
+			case ATST_ALWAYS:
+			default:
+				ps_atst_out = PS_ATST::NONE;
+				break;
+		}
 	}
 
 	// Dumping

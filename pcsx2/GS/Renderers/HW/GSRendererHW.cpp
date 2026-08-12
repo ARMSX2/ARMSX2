@@ -8100,7 +8100,7 @@ void GSRendererHW::ConfigureROV(bool color_rov, bool depth_rov)
 
 			GSHWDrawConfig::PS_ATST ps_atst;
 			float ps_aref;
-			GetAlphaTestConfigPS(m_cached_ctx.TEST.ATST, m_cached_ctx.TEST.AREF, false, ps_atst, ps_aref);
+			GSHWDrawConfig::GetAlphaTestPS(m_cached_ctx.TEST.ATST, m_cached_ctx.TEST.AREF, false, ps_atst, ps_aref);
 			m_conf.ps.atst = ps_atst;
 			m_conf.ps.afail = static_cast<GSHWDrawConfig::PS_AFAIL>(m_cached_ctx.TEST.AFAIL);
 			if (m_cached_ctx.DepthWrite() && m_cached_ctx.TEST.AFAIL == AFAIL_RGB_ONLY)
@@ -9146,55 +9146,6 @@ bool GSRendererHW::CanUseTexIsFB(const GSTextureCache::Target* rt, const GSTextu
 	return false;
 }
 
-void GSRendererHW::GetAlphaTestConfigPS(const u32 atst, const u8 aref, const bool invert_test, PS_ATST& ps_atst_out, float& aref_out)
-{
-	static const u32 inverted_atst[] = {
-		ATST_ALWAYS,
-		ATST_NEVER,
-		ATST_GEQUAL,
-		ATST_GREATER,
-		ATST_NOTEQUAL,
-		ATST_LESS,
-		ATST_LEQUAL,
-		ATST_EQUAL
-	};
-
-	constexpr float small_val = 0x100p-23f;
-
-	switch (invert_test ? inverted_atst[atst] : atst)
-	{
-		case ATST_LESS:
-			aref_out = static_cast<float>(aref) - small_val;
-			ps_atst_out = PS_ATST::LEQUAL;
-			break;
-		case ATST_LEQUAL:
-			aref_out = static_cast<float>(aref) - small_val + 1.0f;
-			ps_atst_out = PS_ATST::LEQUAL;
-			break;
-		case ATST_GEQUAL:
-			aref_out = static_cast<float>(aref) - small_val;
-			ps_atst_out = PS_ATST::GEQUAL;
-			break;
-		case ATST_GREATER:
-			aref_out = static_cast<float>(aref) - small_val + 1.0f;
-			ps_atst_out = PS_ATST::GEQUAL;
-			break;
-		case ATST_EQUAL:
-			aref_out = static_cast<float>(aref);
-			ps_atst_out = PS_ATST::EQUAL;
-			break;
-		case ATST_NOTEQUAL:
-			aref_out = static_cast<float>(aref);
-			ps_atst_out = PS_ATST::NOTEQUAL;
-			break;
-		case ATST_NEVER:
-		case ATST_ALWAYS:
-		default:
-			ps_atst_out = PS_ATST::NONE;
-			break;
-	}
-}
-
 void GSRendererHW::EmulateAlphaTest(DATEOptions& date_options)
 {
 	const GSDevice::FeatureSupport& features = g_gs_device->Features();
@@ -9263,7 +9214,7 @@ void GSRendererHW::EmulateAlphaTest(DATEOptions& date_options)
 	{
 		// Accurate alpha test by discarding failing pixels.
 		GL_INS("Alpha test: AFAIL discard (accurate)");
-		GetAlphaTestConfigPS(atst, aref, false, ps_atst, ps_aref);
+		GSHWDrawConfig::GetAlphaTestPS(atst, aref, false, ps_atst, ps_aref);
 		m_conf.ps.atst = ps_atst;
 		m_conf.cb_ps.FogColor_AREF.a = ps_aref;
 		m_conf.ps.afail = PS_AFAIL::KEEP;
@@ -9335,7 +9286,7 @@ void GSRendererHW::EmulateAlphaTest(DATEOptions& date_options)
 	{
 		// Use RT and/or depth sampling for accurate AFAIL in the shader.
 		GL_INS("Alpha test with RT/depth feedback (accurate)");
-		GetAlphaTestConfigPS(atst, aref, false, ps_atst, ps_aref);
+		GSHWDrawConfig::GetAlphaTestPS(atst, aref, false, ps_atst, ps_aref);
 		m_conf.ps.atst = ps_atst;
 		m_conf.cb_ps.FogColor_AREF.a = ps_aref;
 		m_conf.ps.afail = static_cast<PS_AFAIL>(afail);
@@ -9377,7 +9328,7 @@ void GSRendererHW::EmulateAlphaTest(DATEOptions& date_options)
 		GL_INS("Alpha test: RGBA (A with dual-source blend), then Z (accurate)");
 
 		// Tells shader to use dual source blending AFAIL on first pass.
-		GetAlphaTestConfigPS(atst, aref, false, ps_atst, ps_aref);
+		GSHWDrawConfig::GetAlphaTestPS(atst, aref, false, ps_atst, ps_aref);
 		m_conf.ps.atst = ps_atst;
 		m_conf.cb_ps.FogColor_AREF.a = ps_aref;
 		m_conf.ps.afail = PS_AFAIL::RGB_ONLY_DSB;
@@ -9426,7 +9377,7 @@ void GSRendererHW::EmulateAlphaTest(DATEOptions& date_options)
 		GL_INS("Alpha test: Two pass with pass/fail");
 
 		// Enable alpha test and discard failing fragments on first pass.
-		GetAlphaTestConfigPS(atst, aref, false, ps_atst, ps_aref);
+		GSHWDrawConfig::GetAlphaTestPS(atst, aref, false, ps_atst, ps_aref);
 		m_conf.ps.atst = ps_atst;
 		m_conf.cb_ps.FogColor_AREF.a = ps_aref;
 		m_conf.ps.afail = PS_AFAIL::KEEP;
@@ -9468,7 +9419,7 @@ void GSRendererHW::EmulateAlphaTestSecondPass()
 		if (m_conf.alpha_second_pass.depth.zwe)
 		{
 			// Enable alpha test on second pass and discard failing fragments.
-			GetAlphaTestConfigPS(atst, aref, false, ps_atst, ps_aref);
+			GSHWDrawConfig::GetAlphaTestPS(atst, aref, false, ps_atst, ps_aref);
 			m_conf.alpha_second_pass.enable = true;
 			m_conf.alpha_second_pass.ps.atst = ps_atst;
 			m_conf.alpha_second_pass.ps_aref = ps_aref;
@@ -9511,7 +9462,7 @@ void GSRendererHW::EmulateAlphaTestSecondPass()
 		if (m_conf.alpha_second_pass.colormask.wrgba || m_conf.alpha_second_pass.depth.zwe)
 		{
 			// Enable alpha test and discard failing fragments on second pass.
-			GetAlphaTestConfigPS(atst, aref, false, ps_atst, ps_aref);
+			GSHWDrawConfig::GetAlphaTestPS(atst, aref, false, ps_atst, ps_aref);
 			m_conf.alpha_second_pass.enable = true;
 			m_conf.alpha_second_pass.ps.atst = ps_atst;
 			m_conf.alpha_second_pass.ps_aref = ps_aref;
@@ -9547,7 +9498,7 @@ void GSRendererHW::EmulateAlphaTestSecondPass()
 		if (m_conf.alpha_second_pass.colormask.wrgba || m_conf.alpha_second_pass.depth.zwe)
 		{
 			// Enable alpha test and discard passing fragments on second pass.
-			GetAlphaTestConfigPS(atst, aref, true, ps_atst, ps_aref);
+			GSHWDrawConfig::GetAlphaTestPS(atst, aref, true, ps_atst, ps_aref);
 			m_conf.alpha_second_pass.enable = true;
 			m_conf.alpha_second_pass.ps.atst = ps_atst;
 			m_conf.alpha_second_pass.ps_aref = ps_aref;

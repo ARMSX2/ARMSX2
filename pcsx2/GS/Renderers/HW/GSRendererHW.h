@@ -233,7 +233,6 @@ private:
 
 	void EmulateZbuffer(const GSTextureCache::Target* ds);
 	void EmulateAA1();
-	static void GetAlphaTestConfigPS(const u32 atst, const u8 aref, const bool invert_test, PS_ATST& ps_atst_out, float& aref_out);
 	void EmulateAlphaTest(DATEOptions& date_options);
 	void EmulateAlphaTestSecondPass();
 	void ConfigureDepthFeedback(bool rov_depth = false);
