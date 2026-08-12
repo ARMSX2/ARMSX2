@@ -1211,8 +1211,17 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 
 	if (!m_sel.fst)
 	{
-		MOVE_IF_64(divps, xym2, _s, _q);
-		MOVE_IF_64(divps, xym3, _t, _q);
+		// Truncated reciprocal, not a divide: multiply by 1/q with the low ten
+		// mantissa bits cleared. See GSDrawScanline.cpp for the measurement.
+		mov(eax, 0x3f800000);
+		broadcastGPRToVec(xym0, eax);
+		MOVE_IF_64(divps, xym0, xym0, _q);
+		mov(eax, 0xfffffc00);
+		broadcastGPRToVec(xym1, eax);
+		pand(xym0, xym1);
+
+		MOVE_IF_64(mulps, xym2, _s, xym0);
+		MOVE_IF_64(mulps, xym3, _t, xym0);
 
 		cvttps2dq(xym2, xym2);
 		cvttps2dq(xym3, xym3);
@@ -1620,8 +1629,16 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 
 	if (!m_sel.fst)
 	{
-		MOVE_IF_64(divps, xym2, _s, xym4);
-		MOVE_IF_64(divps, xym3, _t, xym4);
+		// Truncated reciprocal, as in SampleTexture above.
+		mov(eax, 0x3f800000);
+		broadcastGPRToVec(xym0, eax);
+		MOVE_IF_64(divps, xym0, xym0, xym4);
+		mov(eax, 0xfffffc00);
+		broadcastGPRToVec(xym1, eax);
+		pand(xym0, xym1);
+
+		MOVE_IF_64(mulps, xym2, _s, xym0);
+		MOVE_IF_64(mulps, xym3, _t, xym0);
 
 		cvttps2dq(xym2, xym2);
 		cvttps2dq(xym3, xym3);

@@ -697,8 +697,17 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 
 	if (!m_sel.fst)
 	{
-		armAsm->Fdiv(v2.V4S(), _temp_s.V4S(), _temp_q.V4S());
-		armAsm->Fdiv(v3.V4S(), _temp_t.V4S(), _temp_q.V4S());
+		// Silicon multiplies by a reciprocal truncated to thirteen fractional
+		// bits, it does not divide. Clearing the low ten bits of the float32
+		// mantissa is that grid; two BICs rather than a shift pair so the sign
+		// survives a negative Q. See GSDrawScanline.cpp for the measurement.
+		armAsm->Fmov(v0.V4S(), 1.0f);
+		armAsm->Fdiv(v0.V4S(), v0.V4S(), _temp_q.V4S());
+		armAsm->Bic(v0.V4S(), 0xff, 0);
+		armAsm->Bic(v0.V4S(), 0x03, 8);
+
+		armAsm->Fmul(v2.V4S(), _temp_s.V4S(), v0.V4S());
+		armAsm->Fmul(v3.V4S(), _temp_t.V4S(), v0.V4S());
 		ureg = v2;
 		vreg = v3;
 
@@ -1012,8 +1021,14 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 
 	if (!m_sel.fst)
 	{
-		armAsm->Fdiv(local0.V4S(), _temp_s.V4S(), _temp_q.V4S());
-		armAsm->Fdiv(local1.V4S(), _temp_t.V4S(), _temp_q.V4S());
+		// Truncated reciprocal, as in SampleTexture above.
+		armAsm->Fmov(local2.V4S(), 1.0f);
+		armAsm->Fdiv(local2.V4S(), local2.V4S(), _temp_q.V4S());
+		armAsm->Bic(local2.V4S(), 0xff, 0);
+		armAsm->Bic(local2.V4S(), 0x03, 8);
+
+		armAsm->Fmul(local0.V4S(), _temp_s.V4S(), local2.V4S());
+		armAsm->Fmul(local1.V4S(), _temp_t.V4S(), local2.V4S());
 
 		armAsm->Fcvtzs(local0.V4S(), local0.V4S());
 		armAsm->Fcvtzs(local1.V4S(), local1.V4S());
