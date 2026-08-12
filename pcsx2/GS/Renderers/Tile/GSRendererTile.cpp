@@ -313,17 +313,16 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 			// stores (SW rewrites CLAMP-mode draws and host-saturates the rest),
 			// or when TW/TH exceed the native source's 1024 clamp (the scanline
 			// scales its numerator by the raw shift there).
-			constexpr float limit = 32766.0f;
-			const GSVector4 tmin = m_vt.m_min.t;
-			const GSVector4 tmax = m_vt.m_max.t;
-			const float tw_f = static_cast<float>(1u << m_context->TEX0.TW);
-			const float th_f = static_cast<float>(1u << m_context->TEX0.TH);
-			const float hull_u = std::max(std::abs(tmin.x), std::abs(tmax.x)) * tw_f;
-			const float hull_v = std::max(std::abs(tmin.y), std::abs(tmax.y)) * th_f;
-			const bool q_spans_zero = !(tmin.z > 0.0f || tmax.z < 0.0f);
-			in.tex_stq_unsafe = m_vt.nan.value != 0 || q_spans_zero ||
-				!(hull_u < limit) || !(hull_v < limit) ||
-				m_context->TEX0.TW > 10 || m_context->TEX0.TH > 10;
+			//
+			// ⚠️ The hull is ALREADY IN TEXELS: for !fst the trace scales the
+			// quotients by (1 << TW, 1 << TH) as it finalises them, so scaling again
+			// here inflated it by the texture size and floored 11,631 of 34,199 corpus
+			// draws — a third of them — on coordinates the scanline considers
+			// ordinary. GSRendererSW's own overflow test is the authority on this
+			// envelope, and it compares the same trace values against the same 32766
+			// with no scaling at all.
+			in.tex_stq_guard = gsTileStqGuard(m_vt.m_min.t, m_vt.m_max.t, m_vt.nan.value,
+				m_context->TEX0.TW, m_context->TEX0.TH);
 		}
 	}
 	return gsTileLowerDraw(in);
@@ -1296,7 +1295,8 @@ void GSRendererTile::Draw()
 
 	if (log) [[unlikely]]
 	{
-		GSDrawLog::NoteTileDraw(/*memo_hit=*/false, record_ns, /*pass_id=*/0, MapFallbackReason(reason), r);
+		GSDrawLog::NoteTileDraw(/*memo_hit=*/false, record_ns, /*pass_id=*/0, MapFallbackReason(reason), r,
+			plan.stq_guard);
 		GSDrawLog::FinishDraw();
 	}
 }

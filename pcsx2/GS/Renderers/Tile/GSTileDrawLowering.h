@@ -7,6 +7,9 @@
 #include "GS/GSRegs.h"
 #include "GS/Renderers/Tile/GSTileTypes.h"
 
+#include <algorithm>
+#include <cmath>
+
 // The draw-lowering compiler's first rung: decide from the raw register snapshot
 // whether one draw can be realized natively, and if so under what write claims. Pure
 // function over PODs — no GS state, no device — so the predicate sweeps in ctest.
@@ -75,6 +78,50 @@ enum class GSTileFloorReason : u8
 	Count
 };
 
+/// Which clause of the STQ range guard fired on a non-FST textured draw.
+///
+/// A draw with any bit set floors as TextureStqOverflow. The mask is carried on the
+/// plan whatever reason actually floors the draw first, because TexturePerspective
+/// outranks this gate: without the mask the guard's real population is invisible in
+/// the ledger, and its clauses cannot be told apart when it does show.
+enum GSTileStqGuard : u8
+{
+	GSTileStqGuardNone = 0,
+	GSTileStqGuardNan = 1 << 0, ///< an S, T or Q coordinate is NaN
+	GSTileStqGuardQPole = 1 << 1, ///< Q reaches or crosses zero — the quotient is unbounded
+	GSTileStqGuardHullU = 1 << 2, ///< the |s/q| hull in texels leaves the scanline's 16.16 envelope
+	GSTileStqGuardHullV = 1 << 3, ///< the |t/q| hull in texels leaves it
+	GSTileStqGuardTexSize = 1 << 4, ///< TW or TH past the 1024-texel clamp
+};
+
+/// The STQ range guard, as a pure function of the vertex trace.
+///
+/// tmin/tmax are GSVertexTrace's m_min.t / m_max.t for a !FST draw and are ALREADY IN
+/// TEXELS — the trace finalises the per-vertex quotients scaled by (1 << TW, 1 << TH).
+/// Scaling them again is the bug this function exists to make untestable-by-eye no
+/// longer: it inflated the hull by the texture size and floored a third of the corpus.
+/// GSRendererSW's own overflow test is the authority on the envelope and compares the
+/// same values against the same 32766 with no scaling.
+///
+/// nan_mask is GSVertexTrace::nan.value (S/T/Q bits). tw/th are the raw TEX0 shifts.
+inline u8 gsTileStqGuard(const GSVector4& tmin, const GSVector4& tmax, u32 nan_mask, u32 tw, u32 th)
+{
+	// The rasterizer stores texture coordinates as 1.15.16 fixed point; two texels of
+	// slack keeps the bilinear neighbour inside it. Same constant as the SW renderer.
+	constexpr float limit = 32766.0f;
+	const float hull_u = std::max(std::abs(tmin.x), std::abs(tmax.x));
+	const float hull_v = std::max(std::abs(tmin.y), std::abs(tmax.y));
+	// A Q range that reaches zero has a pole in it, and then the vertex quotients stop
+	// bounding the interpolated ones. Written so a NaN bound answers "not provable".
+	const bool q_spans_zero = !(tmin.z > 0.0f || tmax.z < 0.0f);
+	return static_cast<u8>(
+		(nan_mask != 0 ? GSTileStqGuardNan : 0) |
+		(q_spans_zero ? GSTileStqGuardQPole : 0) |
+		(!(hull_u < limit) ? GSTileStqGuardHullU : 0) |
+		(!(hull_v < limit) ? GSTileStqGuardHullV : 0) |
+		((tw > 10 || th > 10) ? GSTileStqGuardTexSize : 0));
+}
+
 struct GSTileDrawInput
 {
 	u32 prim_class; ///< GS_PRIM_CLASS
@@ -112,7 +159,9 @@ struct GSTileDrawInput
 	// coordinate is NaN, or that Q is not provably positive. The SW renderer
 	// rewrites overflowing CLAMP-mode vertices and saturates the rest with
 	// host-dependent conversions; flooring keeps that arithmetic the authority.
-	bool tex_stq_unsafe;
+	// A GSTileStqGuard mask rather than a bool so the ledger can say WHICH clause
+	// fired — the clauses have very different costs to relax.
+	u8 tex_stq_guard;
 	// Vertex-trace facts the alpha-test split needs. z_constant is m_vt.m_eq.z (every
 	// vertex at the same depth); prim_overlap_none is GSState::PrimitiveOverlap()
 	// returning NO, i.e. no two of the draw's own primitives touch a pixel twice.
@@ -153,11 +202,20 @@ struct GSTileDrawPlan
 
 	GSTileDrawPass pass[2];
 	u8 pass_count = 1;
+
+	// Census only, never consulted by the route: the STQ guard clauses that fired,
+	// carried out even when an earlier reason floored the draw. Zero on FST and
+	// untextured draws.
+	u8 stq_guard = GSTileStqGuardNone;
 };
 
 inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 {
 	GSTileDrawPlan p;
+
+	// Census, set before any floor return so the guard's population survives being
+	// outranked by an earlier reason.
+	p.stq_guard = (in.tme && !in.tex_fst) ? in.tex_stq_guard : static_cast<u8>(GSTileStqGuardNone);
 
 	// SW-floor z semantics: ZTE=0 turns off the test AND the write.
 	p.z_write = in.TEST.ZTE && !in.ZBUF.ZMSK;
@@ -443,7 +501,7 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 			return floored(GSTileFloorReason::TexturePerspective);
 		if (in.tex_mip && !in.tex_mip_fit)
 			return floored(GSTileFloorReason::TextureMip);
-		if (!in.tex_fst && in.tex_stq_unsafe)
+		if (!in.tex_fst && in.tex_stq_guard != GSTileStqGuardNone)
 			return floored(GSTileFloorReason::TextureStqOverflow);
 	}
 	if (in.abe)

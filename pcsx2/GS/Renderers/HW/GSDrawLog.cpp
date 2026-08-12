@@ -121,7 +121,8 @@ namespace GSDrawLog
 		rec.area_w = static_cast<s16>(config.drawarea.w);
 	}
 
-	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback, const GSVector4i& rect)
+	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback, const GSVector4i& rect,
+		u8 stq_guard)
 	{
 		if (s_open_record == SIZE_MAX)
 			return;
@@ -132,6 +133,7 @@ namespace GSDrawLog
 		rec.record_ns = record_ns;
 		rec.pass_id = pass_id;
 		rec.fallback_reason = static_cast<u8>(fallback);
+		rec.stq_guard = stq_guard;
 		// The draw rect (bbox ∩ scissor) — the tile rows' equivalent of the backend
 		// drawarea, and the column that localizes a wrong pixel to its draw.
 		rec.area_x = static_cast<s16>(std::clamp(rect.x, -32768, 32767));
@@ -256,7 +258,7 @@ namespace GSDrawLog
 			"atst,afail,date,datm,self_read,"
 			"topology,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
 			"area_x,area_y,area_w,area_h,"
-			"memo_hit,record_ns,pass_id,fallback,"
+			"memo_hit,record_ns,pass_id,fallback,stq_guard,"
 			"mmag,mmin,mxl,tcc,tfx,fge,fst,aa1,colclamp,pabe,dthe\n");
 
 		for (const Record& r : s_records)
@@ -332,12 +334,12 @@ namespace GSDrawLog
 
 			if (r.tile)
 			{
-				std::fprintf(fp.get(), "%u,%u,%u,%s,", r.memo_hit, r.record_ns, r.pass_id,
-					GetTileFallbackName(r.fallback_reason));
+				std::fprintf(fp.get(), "%u,%u,%u,%s,%u,", r.memo_hit, r.record_ns, r.pass_id,
+					GetTileFallbackName(r.fallback_reason), r.stq_guard);
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,");
+				std::fprintf(fp.get(), ",,,,,");
 			}
 
 			if (textured)

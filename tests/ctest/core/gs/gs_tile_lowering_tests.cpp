@@ -176,6 +176,47 @@ TEST(GSTileLowering, PerspectiveTrianglesFloorOnZCoverageParity)
 	EXPECT_EQ(sprite.reason, GSTileFloorReason::None);
 }
 
+TEST(GSTileLowering, StqGuardReadsTheTraceInTexels)
+{
+	// The regression this test exists for: GSVertexTrace finalises a !FST draw's
+	// texture range ALREADY SCALED by (1 << TW, 1 << TH), so the guard must compare it
+	// against 32766 as it stands. Scaling by the texture size a second time inflated
+	// the hull by that factor and floored 11,631 of the 34,199 corpus draws — a third
+	// of them — none of which the software rasterizer considers out of range at all.
+	// A 1024-wide texture is the worst case for the confusion, so use one.
+	constexpr u32 tw = 10, th = 10;
+	const GSVector4 q_positive(0.0f, 0.0f, 1.0f, 1.0f);
+
+	// An ordinary draw: 900 texels of a 1024-texel texture. Doubly scaled this reads
+	// as 921,600 and floors.
+	EXPECT_EQ(gsTileStqGuard(GSVector4(0.0f, 0.0f, 1.0f, 1.0f), GSVector4(900.0f, 900.0f, 1.0f, 1.0f), 0, tw, th),
+		GSTileStqGuardNone);
+
+	// Right up to the edge of the 1.15.16 range, still in.
+	EXPECT_EQ(gsTileStqGuard(q_positive, GSVector4(32765.0f, 32765.0f, 1.0f, 1.0f), 0, tw, th),
+		GSTileStqGuardNone);
+
+	// And over it, per axis.
+	EXPECT_EQ(gsTileStqGuard(q_positive, GSVector4(32766.0f, 10.0f, 1.0f, 1.0f), 0, tw, th),
+		GSTileStqGuardHullU);
+	EXPECT_EQ(gsTileStqGuard(GSVector4(-40000.0f, 0.0f, 1.0f, 1.0f), GSVector4(10.0f, 40000.0f, 1.0f, 1.0f), 0, tw, th),
+		GSTileStqGuardHullU | GSTileStqGuardHullV);
+
+	// Q must be provably one-signed: the vertex quotients only bound the interpolated
+	// ones when no pole sits inside the primitive. Either sign alone is fine.
+	EXPECT_EQ(gsTileStqGuard(GSVector4(0.0f, 0.0f, -4.0f, 1.0f), GSVector4(1.0f, 1.0f, -1.0f, 1.0f), 0, tw, th),
+		GSTileStqGuardNone);
+	EXPECT_EQ(gsTileStqGuard(GSVector4(0.0f, 0.0f, 0.0f, 1.0f), GSVector4(1.0f, 1.0f, 4.0f, 1.0f), 0, tw, th),
+		GSTileStqGuardQPole);
+	EXPECT_EQ(gsTileStqGuard(GSVector4(0.0f, 0.0f, -1.0f, 1.0f), GSVector4(1.0f, 1.0f, 1.0f, 1.0f), 0, tw, th),
+		GSTileStqGuardQPole);
+
+	// Any NaN bit from the trace, and a texture past the 1024-texel clamp.
+	EXPECT_EQ(gsTileStqGuard(q_positive, GSVector4(1.0f, 1.0f, 1.0f, 1.0f), 8, tw, th), GSTileStqGuardNan);
+	EXPECT_EQ(gsTileStqGuard(q_positive, GSVector4(1.0f, 1.0f, 1.0f, 1.0f), 0, 11, th), GSTileStqGuardTexSize);
+	EXPECT_EQ(gsTileStqGuard(q_positive, GSVector4(1.0f, 1.0f, 1.0f, 1.0f), 0, tw, 11), GSTileStqGuardTexSize);
+}
+
 TEST(GSTileLowering, UnsafeStqCoordinatesFloor)
 {
 	// The range guard: coordinates the scanline's 16.16 format cannot hold (SW
@@ -186,7 +227,7 @@ TEST(GSTileLowering, UnsafeStqCoordinatesFloor)
 	GSTileDrawInput in = BaseInput();
 	in.tme = true;
 	in.tex_fst = false;
-	in.tex_stq_unsafe = true;
+	in.tex_stq_guard = GSTileStqGuardHullU;
 	in.prim_class = GS_SPRITE_CLASS;
 	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureStqOverflow);
 
@@ -194,7 +235,11 @@ TEST(GSTileLowering, UnsafeStqCoordinatesFloor)
 	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureStqOverflow);
 
 	in.prim_class = GS_TRIANGLE_CLASS;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TexturePerspective);
+	const GSTileDrawPlan tri = gsTileLowerDraw(in);
+	EXPECT_EQ(tri.reason, GSTileFloorReason::TexturePerspective);
+	// The census mask survives being outranked — that is what makes the guard's
+	// population measurable before the perspective floor lifts.
+	EXPECT_EQ(tri.stq_guard, GSTileStqGuardHullU);
 
 	in.prim_class = GS_SPRITE_CLASS;
 	in.tex_fst = true;

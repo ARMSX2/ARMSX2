@@ -106,6 +106,12 @@ namespace GSDrawLog
 		u8 tile; // row came from the Tile renderer
 		u8 memo_hit; // draw-key memoization hit
 		u8 fallback_reason; // TileFallback enum
+		// GSTileStqGuard mask, on non-FST textured Tile rows only. Recorded whatever
+		// reason actually floored the draw, because TEX_PERSPECTIVE outranks the STQ
+		// guard: without it the guard's population and its per-clause split are both
+		// invisible until the perspective floor lifts, which is exactly when the
+		// numbers are needed.
+		u8 stq_guard;
 	};
 
 	/// How a draw whose texture aliased the render target or depth buffer was resolved.
@@ -206,7 +212,8 @@ namespace GSDrawLog
 	/// Completes the row opened by BeginDraw with the Tile-renderer view instead of the
 	/// backend view. record_ns is the draw's Tile bookkeeping cost only; pass_id is 0
 	/// until the pass graph exists. No-op if BeginDraw did not record a row.
-	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback, const GSVector4i& rect);
+	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback, const GSVector4i& rect,
+		u8 stq_guard);
 
 	/// Closes any row left open by a draw that returned before submit, so skipped draws
 	/// still appear. Called on every exit from GSRendererHW::Draw.
