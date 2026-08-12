@@ -2011,7 +2011,10 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		// xym6: ga
 
 		movdqa(xym0, m_sel.lcm ? _rip_global(lod.f) : _rip_local(temp.lod.f));
-		psrlw(xym0, 1);
+		// Four-bit trilinear weight, truncated: (f & 0xf000) >> 1, which is the
+		// >> 1 the lerp wants folded into the quantisation. See GSDrawScanline.cpp.
+		psrlw(xym0, 12);
+		psllw(xym0, 11);
 
 		movdqa(xym2, _rip_local(temp.trb));
 		movdqa(xym3, _rip_local(temp.tga));

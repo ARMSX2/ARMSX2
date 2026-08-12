@@ -1273,7 +1273,10 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		// v5: rb
 		// v6: ga
 
-		armAsm->Ushr(v0.V8H(), local2.V8H(), 1);
+		// Four-bit trilinear weight, truncated: (f & 0xf000) >> 1, which is the
+		// >> 1 the lerp wants folded into the quantisation. See GSDrawScanline.cpp.
+		armAsm->Ushr(v0.V8H(), local2.V8H(), 12);
+		armAsm->Shl(v0.V8H(), v0.V8H(), 11);
 
 		lerp16(v5, local0, v0, 0);
 		lerp16(v6, local1, v0, 0);
