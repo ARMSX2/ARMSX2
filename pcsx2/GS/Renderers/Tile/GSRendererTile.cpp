@@ -10,6 +10,7 @@
 
 #include "common/Timer.h"
 
+#include <cmath>
 #include <cstring>
 
 MULTI_ISA_UNSHARED_IMPL;
@@ -1016,6 +1017,42 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 				// ti.zw feeds the in-shader quotient: SW's numerator space is the
 				// register claim × 65536, so the varying carries S·16·reg_tw.
 				conf.cb_vs.texture_scale = GSVector2((1.0f / 16.0f) / reg_tw, (1.0f / 16.0f) / reg_th);
+
+				// The console's truncated reciprocal belongs to the draws where the
+				// scanline actually divides per pixel. Outside a mipmapping draw the
+				// scanline treats a sprite — and any primitive whose Q is constant —
+				// as affine and divides once per vertex on the CPU, exactly
+				// (GetScanlineGlobalData's sel.fst |= m_eq.q || sprite). Truncating
+				// there would be console-accurate against a software renderer that
+				// is not, which costs the parity bar and buys nothing measurable.
+				const bool per_pixel_divide =
+					mip_draw || (!m_vt.m_eq.q && m_vt.m_primclass != GS_SPRITE_CLASS);
+				const u32 recip_mask = per_pixel_divide ? 0xfffffc00u : 0u;
+				std::memcpy(&conf.cb_ps.TileSTQRecip, &recip_mask, sizeof(recip_mask));
+
+				// Per-pixel MMAG/MMIN across the level-of-detail crossing, by the
+				// scanline's rule and on the scanline's draws (sel.ltfx): lod is
+				// -log2(Q)·2^L + K, so lod > 0 is exactly Q below one constant.
+				//
+				// Not inside a mipmapping draw. The scanline still resolves that
+				// crossing per primitive and carries a TODO saying so, and matching
+				// the software renderer is the bar — the console capture put its
+				// crossover cases in non-mip modes and has not been asked about the
+				// mip one, so going first here would be predicting, not measuring.
+				//
+				// ARM64-gated for the same reason the scanline is: only that codegen
+				// emits the per-pixel choice, so on any other host the software
+				// renderer decides per primitive and Tile has to agree with it.
+#ifdef ARCH_ARM64
+				if (!mip_draw && per_pixel_divide && m_vt.IsFilterCrossover())
+				{
+					const float K = static_cast<float>(ctx->TEX1.K) / 16.0f;
+
+					conf.ps.tile_ltfx = m_vt.IsCrossoverLinearOnMag() ? 2 : 1;
+					conf.cb_ps.TileLtfxQ =
+						std::exp2(K / static_cast<float>(1 << ctx->TEX1.L));
+				}
+#endif
 			}
 
 			const int tw_i = static_cast<int>(tw);

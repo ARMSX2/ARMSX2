@@ -743,6 +743,7 @@ struct alignas(16) GSHWDrawConfig
 				u32 tile_nn : 1; // Tile renderer: nearest through the in-shader coordinate walk (perspective STQ triangles)
 				u32 tile_mip : 2; // Tile renderer: mip mode per the SW scanline selector — 0 off, 1 round, 2 trilinear
 				u32 tile_lcm : 1; // Tile renderer: LOD is the constant packed in LODParams.w, not the per-pixel Q formula
+				u32 tile_ltfx : 2; // Tile renderer: per-pixel MMAG/MMIN across the LOD crossing — 0 off, 1 linear where minifying, 2 linear where magnifying
 				u32 tile_vcolor : 1; // Tile renderer: the SW scanline's vertex-colour arithmetic (seven fractional bits, truncating)
 				u32 tile_fog : 1; // Tile renderer: integer fog blend at the console rule
 
@@ -1137,9 +1138,17 @@ struct alignas(16) GSHWDrawConfig
 
 		GSVector4 ScaleFactor;
 		float LineCovScale;
+		// Tile renderer, both bit-cast into the float slot the way MinMax already
+		// carries its region bounds. TileSTQRecip is the AND mask applied to the
+		// reciprocal of Q before the perspective multiply: ~0x3ff reproduces the
+		// console's ~13-bit truncated reciprocal, 0 asks for the exact quotient
+		// instead (the classes where the software renderer divides once per vertex
+		// rather than once per pixel). TileLtfxQ is the Q at which the level of
+		// detail crosses zero, for the per-pixel MMAG/MMIN choice; it is read only
+		// when tile_ltfx is set.
+		float TileSTQRecip;
+		float TileLtfxQ;
 		float _pad0;
-		float _pad1;
-		float _pad2;
 
 		__fi PSConstantBuffer()
 		{

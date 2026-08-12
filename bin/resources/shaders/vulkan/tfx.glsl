@@ -639,9 +639,12 @@ layout(std140, set = 0, binding = 1) uniform cb1
 	float _pad0_cb1;
 	float _pad1_cb1;
 	float LineCovScale;
+	// Tile renderer, both bit-cast into their float slot the way MinMax carries
+	// its region bounds: the AND mask for the reciprocal of Q, and the Q at which
+	// the level of detail crosses zero.
+	float TileSTQRecip;
+	float TileLtfxQ;
 	float _pad2_cb1;
-	float _pad3_cb1;
-	float _pad4_cb1;
 };
 
 layout(location = 0) in VSOutput
@@ -1395,24 +1398,79 @@ ivec2 wrap_tile(ivec2 xy)
 
 #if PS_FST == 0
 // SW-scanline parity for a perspective coordinate (GSDrawScanline's !fst leg):
-// the quotient s/q truncates into the GS's 16.16 texel space, and everything
-// downstream reads integer bits of that value. The GLSL divide is only
-// required to be within 2.5 ULP while the scanline divides at IEEE 0.5 — and a
-// texel index is one truncation away from the quotient — so a Newton step on
-// the reciprocal and a fused residual correction on the quotient land on the
-// correctly-rounded result the scanline computes. gs-grad measured silicon
-// coarser still (a ~13-bit truncated reciprocal), but the M3 bar is SW-parity:
-// the scanline is the model here, not the console.
+// the quotient truncates into the GS's 16.16 texel space, and everything
+// downstream reads integer bits of that value.
+//
+// The scanline no longer divides. The console multiplies by a reciprocal
+// truncated to about thirteen fractional bits, so a perspective coordinate is
+// systematically a little short of the true quotient, and the scanline now does
+// the same (GSPerspectiveRecip in GSDrawScanline.cpp — measured on an
+// SCPH-30001, where 1,592 of 12,288 isolating readings force the hardware's
+// reciprocal strictly below the true value and not one forces it above).
+// Clearing the low ten mantissa bits of 1/Q is that grid; masking rather than
+// shifting so a negative Q keeps its sign.
+//
+// TileSTQRecip carries the mask because the two arms are NOT the same rule with
+// a different constant, and which one applies is a property of the draw rather
+// than of the pixel: the scanline only divides per pixel where Q varies across
+// the primitive. For a sprite, or any primitive whose Q is constant, the
+// software renderer divides once per vertex on the CPU and interpolates the
+// result, and that divide is exact. A truncated reciprocal is up to 2^-13
+// short, which at a 1024-texel coordinate is a whole sixteenth of a texel —
+// enough to land on a different texel — so applying it to those classes would
+// buy console accuracy at the cost of the parity bar we are actually held to.
+// A zero mask asks for the exact quotient and keeps them where they were.
+//
+// The Newton step stays either way, and under the mask it is load-bearing for a
+// new reason: the scanline's reciprocal is a correctly-rounded IEEE divide
+// before it is truncated, while a GLSL divide need only be within 2.5 ULP. Two
+// values that agree to 2.5 ULP straddle a mask boundary about one time in four
+// hundred, so refining first is what makes the truncation reproducible.
 ivec2 tile_stq_uv(void)
 {
 	precise float y = 1.0f / vsIn.t.w;
 	y = fma(fma(-vsIn.t.w, y, 1.0f), y, y);
-	precise vec2 q0 = vsIn.ti.zw * y;
-	precise vec2 quot = fma(fma(vec2(-vsIn.t.w), q0, vsIn.ti.zw), vec2(y), q0);
+
+	const int mask = floatBitsToInt(TileSTQRecip);
+	precise vec2 quot;
+
+	if (mask != 0)
+	{
+		quot = vsIn.ti.zw * intBitsToFloat(floatBitsToInt(y) & mask);
+	}
+	else
+	{
+		// A fused residual correction on the quotient, which lands on the
+		// correctly-rounded s / q the CPU-side divide produced.
+		precise vec2 q0 = vsIn.ti.zw * y;
+		quot = fma(fma(vec2(-vsIn.t.w), q0, vsIn.ti.zw), vec2(y), q0);
+	}
+
 	// ti.zw carries 1/16-texel units; a power-of-two scale is exact in float,
-	// so this truncation is the scanline's trunc(s / q) on its 16.16 value.
+	// so this truncation is the scanline's own truncation on its 16.16 value.
 	return ivec2(quot * 4096.0f);
 }
+
+#if PS_TILE_LTFX
+// The console chooses between MMAG and MMIN per pixel, from that pixel's own
+// level of detail, so the filter changes part way along a primitive that
+// straddles the crossing — measured on an SCPH-30001, where a band comes back
+// nearest for 352 pixels and linear for the remaining 160, switching at the
+// column where the level reaches zero. The crossing needs no logarithm here:
+// lod = -log2(Q) * 2^L + K, so lod > 0 is exactly Q below one constant, which
+// the renderer computes once per draw into TileLtfxQ.
+//
+// Returns all-ones for a pixel that filters linearly, which is the mask the
+// scanline builds; zero collapses the four-tap blend onto the nearest tap.
+int tile_ltfx_linear(void)
+{
+	bool lin = vsIn.t.w < TileLtfxQ;
+	#if PS_TILE_LTFX == 2
+		lin = !lin;
+	#endif
+	return lin ? -1 : 0;
+}
+#endif
 #endif
 
 #if PS_TILE_MIP
@@ -1428,10 +1486,14 @@ ivec2 tile_stq_uv(void)
 // the half-texel shift and 4-bit weight apply after the shift, and each level
 // is its own image level of the same source (the GS floors level sizes at one
 // texel exactly like a GPU chain). The trilinear mix is (diff·(lodf>>1))>>15 —
-// both JITs' modulate16 shape (Sqdmulh doubling ≡ x86's pre-shifted pmulhw),
-// NOT the console's 4-bit weight: gs-grad measured SW itself off silicon here
-// (~250-step weight, per-primitive filter choice), and the M3 bar is SW-parity;
-// moving to the console's rule is a golden-moving decision that changes SW too.
+// both JITs' modulate16 shape (Sqdmulh doubling ≡ x86's pre-shifted pmulhw) —
+// over a blend fraction first truncated to its top four bits, which is the
+// console's own weight width (gs-grad, SCPH-30001: across one level boundary
+// silicon returns exactly 32 distinct values over two level pairs 36 apart,
+// where the untruncated 16-bit fraction gives about 250). The scanline
+// truncates it in the same place, so this is SW-parity and console accuracy at
+// once. Only the WEIGHT is quantised; the level's own curve is bounded but not
+// fitted by that capture, and narrowing it would be guessing.
 
 ivec4 tile_mip_bounds(int lod)
 {
@@ -1552,6 +1614,12 @@ vec4 sample_color_tile_mip(vec2 st_int)
 	#endif
 #endif
 
+	// The console's four-bit blend weight: the top four bits of the fraction and
+	// nothing below them, truncated before the fraction ever becomes a weight
+	// (the scanline's srl16<12>().sll16<12>(), which applies to the constant-LOD
+	// fraction as well as the computed one).
+	lodf &= 0xf000;
+
 	ivec2 uvl = uv >> lodi;
 	ivec4 c = tile_mip_level(uvl, lodi);
 #if PS_TILE_MIP == 2
@@ -1571,8 +1639,20 @@ vec4 sample_color_tile_ltf(vec2 st_int)
 #if PS_FST == 0
 	// The scanline's bilinear shift is half a texel on the 16.16 integer
 	// (u -= 0x8000); the weight is bits 12..15 and the texel index the top half.
-	ivec2 uv = tile_stq_uv() - 0x8000;
-	ivec2 f = (uv >> 12) & 15;
+	ivec2 uv = tile_stq_uv();
+	#if PS_TILE_LTFX
+		// Per-pixel MMAG/MMIN. The two filters do not sample the same point —
+		// nearest reads at the coordinate, linear straddles the pair half a texel
+		// back — so the bias follows the choice rather than the primitive, and a
+		// zero weight turns the four-tap blend back into the nearest tap. Both
+		// are the scanline's own branchless form under one mask.
+		const int lin = tile_ltfx_linear();
+		uv -= 0x8000 & lin;
+		ivec2 f = ((uv >> 12) & 15) & lin;
+	#else
+		uv -= 0x8000;
+		ivec2 f = (uv >> 12) & 15;
+	#endif
 	ivec2 t0 = uv >> 16;
 #else
 	// st_int is the coordinate in 1/16-texel units — the GS's 12.4 fixed-point
