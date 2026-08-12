@@ -56,11 +56,17 @@ struct mVU_Globals
 	u32   exponent[4] = __four(0x7f800000);
 	u32   one     [4] = __four(0x3f800000);
 	u32   Pi4     [4] = __four(0x3f490fdb);
+	// EATAN's odd-power atan series, c1 c3 c5 ... c15. ⚠️ This table is a COPY of the
+	// one in x86/microVU_Misc.h and the two must stay name-for-name identical: the
+	// arm64 build reads this one, the x86 build reads that one, and mVU_EATAN_arm and
+	// mVU_EATAN_ index them by the SAME names. Upstream renamed T2..T5 there in
+	// aae9438f98 so the names finally ascend with the power; this copy is renamed to
+	// match. Values never moved -- only the labels -- so codegen is unchanged.
 	u32   T1      [4] = __four(0x3f7ffff5);
-	u32   T5      [4] = __four(0xbeaaa61c);
-	u32   T2      [4] = __four(0x3e4c40a6);
-	u32   T3      [4] = __four(0xbe0e6c63);
-	u32   T4      [4] = __four(0x3dc577df);
+	u32   T2      [4] = __four(0xbeaaa61c);
+	u32   T3      [4] = __four(0x3e4c40a6);
+	u32   T4      [4] = __four(0xbe0e6c63);
+	u32   T5      [4] = __four(0x3dc577df);
 	u32   T6      [4] = __four(0xbd6501c4);
 	u32   T7      [4] = __four(0x3cb31652);
 	u32   T8      [4] = __four(0xbb84d7e7);

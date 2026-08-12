@@ -603,7 +603,7 @@ bool GSDevice11::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	}
 
 	// 1x1 dummy texture.
-	const GSTexture::Usage null_usage = m_uav_texture ? GSTexture::ShaderWriteTarget : GSTexture::Feedback;
+	const GSTexture::Usage null_usage = m_uav_texture ? GSTexture::ShaderWriteTarget : GSTexture::FeedbackTarget;
 	m_null_texture = CreateSurface(null_usage, 1, 1, 1, GSTexture::Format::Color);
 	if (!m_null_texture)
 		return false;
@@ -1171,7 +1171,7 @@ void GSDevice11::DestroyTimestampQueries()
 	m_read_timestamp_query = 0;
 	m_write_timestamp_query = 0;
 	m_waiting_timestamp_queries = 0;
-	m_timestamp_query_started = 0;
+	m_timestamp_query_started = false;
 }
 
 void GSDevice11::PopTimestampQuery()
@@ -1290,13 +1290,13 @@ void GSDevice11::DestroyPipelineStatisticsQueries()
 		return;
 
 	if (m_pipeline_statistics_query_started)
-		m_ctx->End(m_pipeline_statistics_queries[m_write_timestamp_query].get());
+		m_ctx->End(m_pipeline_statistics_queries[m_write_pipeline_statistics_query].get());
 
-	m_timestamp_queries = {};
-	m_read_timestamp_query = 0;
-	m_write_timestamp_query = 0;
-	m_waiting_timestamp_queries = 0;
-	m_timestamp_query_started = 0;
+	m_pipeline_statistics_queries = {};
+	m_read_pipeline_statistics_query = 0;
+	m_write_pipeline_statistics_query = 0;
+	m_waiting_pipeline_statistics_queries = 0;
+	m_pipeline_statistics_query_started = false;
 }
 
 void GSDevice11::PopPipelineStatisticsQuery()

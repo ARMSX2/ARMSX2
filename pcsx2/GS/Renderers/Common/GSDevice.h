@@ -1827,6 +1827,8 @@ public:
 	virtual void PushDrawLabel(const std::string_view label) {}
 	virtual void PopDrawLabel() {}
 
+	GSTexture::Usage GetDepthStencilUsage() const;
+
 	GSTexture* FetchSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, bool clear, bool prefer_reuse);
 	GSTexture* FetchSurface(GSTexture::Usage usage, const GSVector2i& size, int levels, GSTexture::Format format, bool clear, bool prefer_reuse);
 	GSTexture* CreateRenderTarget(int w, int h, GSTexture::Format format, bool clear = true, bool prefer_reuse = true);
