@@ -42,6 +42,12 @@ layout(location = 0) out VSOutput
 	flat uint interior; // 1 for triangle interior; 0 for edge;
 } vsOut;
 
+#if VS_NONUDGE
+	#define NUDGE 0.0f
+#else
+	#define NUDGE 0.05f
+#endif
+
 #if VS_EXPAND == VS_EXPAND_NONE
 
 layout(location = 0) in vec2 a_st;
@@ -61,8 +67,18 @@ void main()
 	// example: ceil(afterseveralvertextransformations(y = 133)) => 134 => line 133 stays empty
 	// input granularity is 1/16 pixel, anything smaller than that won't step drawing up/left by one pixel
 	// example: 133.0625 (133 + 1/16) should start from line 134, ceil(133.0625 - 0.05) still above 133
+	//
+	// VS_NONUDGE drops it. The nudge translates the whole primitive, and interpolated
+	// depth rides along its own gradient: a surface receding to a horizon stores a
+	// depth several units high (measured 5 to 16 on OutRun's road, always the same
+	// way), which hands whole pixels to the wrong surface wherever consecutive
+	// surfaces sit a few units apart. Compensating after the fact does not work — the
+	// rasterizer snaps vertices to its sub-pixel grid, so the realized shift is
+	// quantised per vertex and is not the uniform translation a gradient correction
+	// assumes. The Tile renderer's native path therefore drops the nudge outright and
+	// the gs-coverage probe is the gate that says it may.
 
-	gl_Position = vec4(a_p, float(z), 1.0f) - vec4(0.05f, 0.05f, 0, 0);
+	gl_Position = vec4(a_p, float(z), 1.0f) - vec4(NUDGE, NUDGE, 0, 0);
 	gl_Position.xy = gl_Position.xy * vec2(VertexScale.x, -VertexScale.y) - vec2(VertexOffset.x, -VertexOffset.y);
 	gl_Position.z *= exp2(-32.0f);		// integer->float depth
 	gl_Position.y = -gl_Position.y;
@@ -166,7 +182,7 @@ ProcessedVertex load_vertex(uint index)
 	ProcessedVertex vtx;
 
 	uint z = min(a_z, MaxDepth);
-	vtx.p = vec4(a_p, float(z), 1.0f) - vec4(0.05f, 0.05f, 0, 0);
+	vtx.p = vec4(a_p, float(z), 1.0f) - vec4(NUDGE, NUDGE, 0, 0);
 	vtx.p.xy = vtx.p.xy * vec2(VertexScale.x, -VertexScale.y) - vec2(VertexOffset.x, -VertexOffset.y);
 	vtx.p.z *= exp2(-32.0f);		// integer->float depth
 	vtx.p.y = -vtx.p.y;

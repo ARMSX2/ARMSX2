@@ -689,7 +689,7 @@ struct alignas(16) GSHWDrawConfig
 				u8 iip : 1;
 				u8 point_size : 1;		///< Set when points need to be expanded without VS expanding.
 				VSExpand expand : 3;
-				u8 _free : 1;
+				u8 nonudge : 1; ///< Skip the 1/320-pixel position nudge (Tile: it perturbs interpolated depth).
 			};
 			u8 key;
 		};
