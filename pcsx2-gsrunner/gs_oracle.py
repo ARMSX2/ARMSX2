@@ -26,6 +26,21 @@ moves 1.5% and is the first thing an eye lands on. Its consumer is the waiver
 workflow, so a recorded quality trade is reviewed with severity in hand.
 `--no-perceptual` turns it off.
 
+⚠️ This harness compares PRESENTED frames -- the `*_frame*.png` that gsrunner writes
+when given `-dumpdir` alone. It does NOT compare `-dump f` output, which is the
+per-draw debugger writing internal render targets. Those targets are sized by each
+renderer's own allocation policy and legitimately differ between arms: on one
+letterboxed title the same frame dumps 640x415 under sw, 640x448 under tile, and
+641x800-varying under classic, none of which is a bug. Reaching for `-dump f` to
+investigate a score from here produces three arms that disagree about frame geometry
+and an inviting, wrong conclusion. The tell that you are off the rails is that
+`score_frame_arrays` reports a shape mismatch as an explicit error, so any run that
+produced real percentages was comparing equally-sized frames.
+
+Stated generally, because this harness has now paid for it twice: prove you are
+comparing the artifact you think you are, the same way you prove each arm really is
+the renderer it claims to be.
+
 Subcommands:
   golden    build/refresh golden frames + stability manifests for a corpus
   score     run one dump under an arm and score it against its golden
