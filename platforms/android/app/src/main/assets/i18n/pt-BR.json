@@ -23,7 +23,6 @@
  "app.theme": "Tema",
  "app.theme.system": "Sistema",
  "app.theme.light": "Claro",
- "app.theme.dark": "Escuro",
  "action.play": "Jogar",
  "action.resume": "Continuar",
  "action.settings": "Configurações",
@@ -1463,10 +1462,5 @@
  "touch.editor.fullHalfSticksOn": "Meia tela permanece ligada",
  "touch.editor.gridOff": "Grade desligada",
  "touch.editor.gridOn": "Grade ativada",
- "touch.stateAction.screenshot": "CAPTURA",
- "app.blockHome.desc": "Fixa a tela enquanto um jogo está em execução, impedindo que o botão Home ou Guide do controle minimize o aplicativo. O Android pedirá uma confirmação na primeira vez. Para sair, mantenha Voltar + Recentes pressionados — ou simplesmente volte para a biblioteca, que a tela será desafixada automaticamente.",
- "pad.pressureAmount.description": "Define a intensidade do modificador de pressão em jogos compatíveis com os botões sensíveis à pressão do DualShock 2 (Metal Gear Solid, GTA). Aplica-se ao botão PRESSÃO na tela e ao comando “Modificador de pressão (manter pressionado)”. Um valor menor corresponde a uma pressão mais suave.",
- "renderer.coalesceRenderPasses.description": "Agrupa desenhos consecutivos destinados ao mesmo alvo em uma única passagem de renderização. Isso melhora o desempenho em GPUs baseadas em blocos — como as GPUs de celulares — nas quais cada limite de passagem exige carregar e armazenar todos os blocos. O resultado da renderização não é alterado. Recurso novo, desativado por padrão.",
- "savestate.error.hardcore": "Os estados de salvamento ficam desativados enquanto o modo Hardcore do RetroAchievements está ativo. Desative o Hardcore nas configurações do RetroAchievements para usá-los (isso cancela os pontos Hardcore da sessão).",
- "savestate.error.memcardBusy": "O jogo ainda está gravando no cartão de memória, por isso o estado não foi salvo. Retome o jogo por um ou dois segundos e tente novamente — o cartão permanece ocupado enquanto o jogo estiver pausado."
+ "touch.stateAction.screenshot": "CAPTURA"
 }
