@@ -854,22 +854,6 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	const bool iip = !IsFlatShaded();
 	conf.vs.iip = iip;
 	conf.vs.fst = 1;
-	// Drop the shared vertex shader's 1/320-pixel position nudge. It exists to stop a
-	// vertex that lands exactly on a pixel boundary from rounding to the next row in
-	// the float32 transform, but it translates the whole primitive, and interpolated
-	// depth rides along its own gradient: a surface receding to a horizon stores a
-	// depth several units too far — measured at 5 to 16 units on OutRun's road, always
-	// the same way — which hands whole pixels to the wrong surface wherever
-	// consecutive surfaces sit a few units apart. That, and not the truncating
-	// interpolator, is what kept perspective triangles off the native path. Correcting
-	// it after interpolation does not work: the rasterizer snaps vertices to its
-	// sub-pixel grid, so the realized shift is quantised per vertex rather than the
-	// uniform translation a gradient correction assumes (a best-fit coefficient still
-	// left five times the residue that dropping the nudge leaves). The gs-coverage
-	// probe is the gate that says the nudge may go: it scores the console's own
-	// rasterization rule over 256 sub-pixel phases, which is exactly what the nudge
-	// was guarding.
-	conf.vs.nonudge = 1;
 	conf.ps.iip = iip;
 	conf.ps.tfx = 4;
 	conf.ps.no_color1 = 1;

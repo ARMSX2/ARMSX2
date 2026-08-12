@@ -382,15 +382,30 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	// and roadside strips, which ladder overlapping triangles at consecutive Z under
 	// GEQUAL so a one-unit disagreement decides whole pixels.
 	//
-	// Most of what was recorded here has since been root-caused and fixed: the bulk
-	// was the vertex shader's 1/320-pixel boundary nudge dragging interpolated depth
-	// along its own gradient (5 to 16 units, one-sided), not the truncating
-	// interpolator, and not coverage — see the VS_NONUDGE comment in
-	// GSRendererTile::SubmitNativeDraw. The comparator is not involved either:
-	// gs-decide measured it as the plain unsigned rule, GEQUAL passing the tie, at
-	// 100.00% over 30,720 readings including a ladder built for this question.
+	// Most of it has been root-caused, though not fixed. The bulk is the vertex
+	// shader's 1/320-pixel boundary nudge: it translates the whole primitive, so
+	// interpolated depth rides its own gradient and lands 5 to 16 units past the
+	// scanline, one-sided on 40,662 of 40,666 pixels of one OutRun draw. Not the
+	// truncating interpolator, and not coverage. The comparator is not involved
+	// either: gs-decide measured it as the plain unsigned rule, GEQUAL passing the
+	// tie, at 100.00% over 30,720 readings including a ladder built for the question.
 	//
-	// What is left is the genuine interpolator difference. The GPU evaluates the
+	// ⚠️ Dropping the nudge for native draws was tried and REVERTED by measurement.
+	// It does everything hoped for on depth (that draw's divergence falls to 3,182
+	// pixels at exactly one, balanced), takes the corpus 8/9 to 9/9, and leaves both
+	// gs-coverage arms byte-identical — but gs-interp says the nudge is load-bearing
+	// for GOURAUD COLOUR: with it, tile is byte-identical to the software renderer
+	// on that capture; without it, 22,760 bytes differ and the colour-gradient
+	// sections score measurably worse against the console (cgrad-sub 5,216 to 10,112
+	// readings differing). Two emulator runs are byte-identical, so that is real.
+	// The corpus cannot see it — its native draws are flat-shaded, where the colour
+	// truncation is identity. Whatever completes the pixel-corner sample point for
+	// colour is currently made up of the vertex conversion AND this nudge together;
+	// until that is understood, the nudge cannot move alone. **gs-coverage is the
+	// wrong gate for it** — that probe scores which pixels are covered, never what
+	// value is interpolated at them.
+	//
+	// The other half is the genuine interpolator difference. The GPU evaluates the
 	// depth plane in float32 and we floor it; the scanline walks a float64 DDA and
 	// floors that. Where the exact value lands on an integer — which Z-laddered art
 	// produces systematically — the two floors part by one. Measured with the floor
@@ -401,6 +416,9 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	// exact gradient truncated onto a 2^-10 grid, gs-interp): the same machinery
 	// serves both, and the console rule is the cheaper of the two to evaluate. Until
 	// then perspective triangles stay on the floor.
+	//
+	// Both halves are measured with the nudge still in place, so the 0.64% figure
+	// below is the cost of lifting the floor TODAY, not after the nudge is dealt with.
 	//
 	// Note for whoever lifts it: TEX_PERSPECTIVE masks what is underneath. With it
 	// lifted the census re-sorts to BLEND 45.7% and TEX_STQ_OVERFLOW 34.0% — the
