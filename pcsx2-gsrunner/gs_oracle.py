@@ -16,6 +16,16 @@ score run does the same for the arm under test, and only frames stable in BOTH a
 are compared. The stable fraction is itself a gated metric -- a drop in stability is
 triaged as a bug, because it usually is one.
 
+Every differing frame also carries a **perceptual severity profile** from
+`gs_perceptual.py` -- a named defect class ("GLOBAL TONE SHIFT", "THIN
+GEOMETRY", "LOCALISED DEFECT") beside the raw percentages. That channel is
+REPORTING ONLY and never touches `pass`: the level metric remains the gate. It
+exists because pixel counts do not rank the way people do -- a full-screen
+exposure shift moves 81% of pixels and reads as mild, while a dropped polygon
+moves 1.5% and is the first thing an eye lands on. Its consumer is the waiver
+workflow, so a recorded quality trade is reviewed with severity in hand.
+`--no-perceptual` turns it off.
+
 Subcommands:
   golden    build/refresh golden frames + stability manifests for a corpus
   score     run one dump under an arm and score it against its golden
@@ -286,6 +296,46 @@ def score_frame_arrays(golden, test):
     }
 
 
+def perceptual_profile(golden_path, test_path, ppd):
+    """Perceptual severity for one differing frame, or None if unavailable.
+
+    ⚠️ REPORTING ONLY. This never touches `pass` -- the gate stays the level
+    metric. Its consumer is the waiver workflow: a scored quality trade is
+    reviewed with a severity profile in hand, which is the difference between
+    "81.6% of pixels moved" and "one global gain of 1.06, no structural
+    residue". The eyeball ban is on eyes as the *gate*, not on informed
+    judgement over an explicitly recorded trade.
+
+    Never let this break a scoring run: it is commentary on a number that has
+    already been computed.
+    """
+    try:
+        if SCRIPT_DIR not in sys.path:
+            sys.path.insert(0, SCRIPT_DIR)  # works when imported, not just run
+        import gs_perceptual
+    except ImportError:
+        return None
+    try:
+        block = gs_perceptual.compare_files(golden_path, test_path, ppd=ppd)
+    except Exception as e:  # noqa: BLE001 - commentary must not fail the gate
+        return {"error": f"{type(e).__name__}: {e}"}
+    return {
+        "severity": block["severity"],
+        "verdict": block["verdict"],
+        "detail": block["detail"],
+        "flip_mean": block.get("flip_mean"),
+        "flip_weighted_median": block.get("flip_weighted_median"),
+        "de_p99_9": block.get("de_p99_9"),
+        "de_max": block.get("de_max"),
+        "above_jnd_pct": block.get("above_jnd_pct"),
+        "erosion_survival": block.get("erosion_survival"),
+        "largest_blob_px": block.get("largest_blob_px"),
+        "largest_blob_bbox": block.get("largest_blob_bbox"),
+        "affine_explained": block.get("affine_explained"),
+        "ppd": block.get("ppd"),
+    }
+
+
 def find_waiver(waivers, gsname, frame_idx):
     for w in waivers:
         if w.get("dump") != gsname:
@@ -298,7 +348,7 @@ def find_waiver(waivers, gsname, frame_idx):
 
 def score_against_golden(manifest, golden_frames_dir, test_runs, test_stability,
                          gate_threshold, gate_pct, min_stable_fraction, hash_only,
-                         waivers):
+                         waivers, perceptual=True, ppd=None):
     """Compare a test arm's stable frames against a golden manifest. Returns the
     per-dump scorecard dict (schema is the harness's public contract; bump
     'schema' on any incompatible change)."""
@@ -354,6 +404,11 @@ def score_against_golden(manifest, golden_frames_dir, test_runs, test_stability,
             entry["pass"] = False
         else:
             entry["pass"] = metrics["pct_gt"][str(gate_threshold)] <= gate_pct
+        # Attached after the verdict is already decided, so it cannot influence it.
+        if perceptual and "error" not in metrics:
+            p = perceptual_profile(golden_path, rep["frames"][idx], ppd)
+            if p is not None:
+                entry["perceptual"] = p
         diffed += 1
 
         if not entry["pass"]:
@@ -383,8 +438,21 @@ def score_against_golden(manifest, golden_frames_dir, test_runs, test_stability,
             if worst is None or f["pct_gt"]["0"] > worst["pct_gt"]["0"]:
                 worst = f
 
+    # The perceptually worst frame is often NOT the one with the most wrong
+    # pixels -- that divergence is the entire point of carrying both.
+    severity_rank = ["invisible", "subtle", "noticeable", "obvious", "gross"]
+    worst_perceptual = None
+    for f in frames_out:
+        p = f.get("perceptual")
+        if not p or "severity" not in p:
+            continue
+        if (worst_perceptual is None
+                or severity_rank.index(p["severity"])
+                > severity_rank.index(worst_perceptual["severity"])):
+            worst_perceptual = {"frame": f["frame"], **p}
+
     return {
-        "schema": 1,
+        "schema": 2,
         "gsname": gsname,
         "dump": manifest["dump"],
         "pass": failed == 0 and stability_ok,
@@ -406,6 +474,7 @@ def score_against_golden(manifest, golden_frames_dir, test_runs, test_stability,
             "stability_ok": stability_ok,
             "worst": ({"frame": worst["frame"], "pct_gt": worst["pct_gt"],
                        "max_diff": worst.get("max_diff")} if worst else None),
+            "worst_perceptual": worst_perceptual,
         },
     }
 
@@ -561,13 +630,15 @@ def score_one_dump(args, dump, waivers):
             hard_fail = msg
 
     if hard_fail is not None:
-        card = {"schema": 1, "gsname": gsname, "dump": dump, "pass": False,
+        card = {"schema": 2, "gsname": gsname, "dump": dump, "pass": False,
                 "error": hard_fail, "frames": [], "summary": None}
     else:
         card = score_against_golden(manifest, os.path.join(golden_dir, "frames"),
                                     runs, stability, args.gate_threshold,
                                     args.gate_pct, args.min_stable_fraction,
-                                    args.hash_only, waivers)
+                                    args.hash_only, waivers,
+                                    perceptual=not args.no_perceptual,
+                                    ppd=args.ppd)
 
     card["arm"] = args.arm
     card["runs"] = args.runs
@@ -601,6 +672,10 @@ def print_card_line(card):
     if s["missing"]:
         detail += f", {s['missing']} missing"
     log(f"  {status}  {name:<48} {detail}")
+    wp = s.get("worst_perceptual")
+    if wp:
+        log(f"        perceptual f{wp['frame']}: {wp['severity'].upper()} "
+            f"{wp['verdict']} -- {wp['detail']}")
 
 
 def cmd_score(args):
@@ -814,6 +889,14 @@ def add_score_args(p):
                         "(the cheap nightly mode)")
     p.add_argument("--waivers", default=os.path.join(SCRIPT_DIR, "tile_waivers.yaml"),
                    help="reviewed quality-trade waivers (applied to the tile arm only)")
+    p.add_argument("--no-perceptual", action="store_true",
+                   help="skip the perceptual severity profile on differing "
+                        "frames (it is reporting-only and never gates, but it "
+                        "costs ~0.2 s per differing frame)")
+    p.add_argument("--ppd", type=float, default=None,
+                   help="pixels-per-degree viewing model for the perceptual "
+                        "profile; default is the handheld geometry. Perceptual "
+                        "scores are only comparable at a fixed ppd.")
     p.add_argument("--workdir", default=None,
                    help="keep run output under this directory (default: temp, "
                         "deleted on pass)")
