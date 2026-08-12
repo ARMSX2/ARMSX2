@@ -740,6 +740,8 @@ struct alignas(16) GSHWDrawConfig
 				u32 ltf : 1;
 				u32 tile_ltf : 1; // Tile renderer: PS2-exact integer bilinear (1/16 snap, 4-bit nested truncating lerps) via texelFetch
 				u32 tile_nn : 1; // Tile renderer: nearest through the in-shader coordinate walk (perspective STQ triangles)
+				u32 tile_mip : 2; // Tile renderer: mip mode per the SW scanline selector — 0 off, 1 round, 2 trilinear
+				u32 tile_lcm : 1; // Tile renderer: LOD is the constant packed in LODParams.w, not the per-pixel Q formula
 
 				// Shuffle and fbmask effect
 				u32 shuffle  : 1;

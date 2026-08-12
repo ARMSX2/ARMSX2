@@ -62,11 +62,12 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 				in.vs_expand = false;
 			},
 			GSTileFloorReason::SpriteExpandUnavailable},
-		{"textured with mipmapping",
+		{"textured with mipmapping the GPU chain cannot express",
 			[](GSTileDrawInput& in) {
 				in.tme = true;
 				in.tex_fst = true;
 				in.tex_mip = true;
+				in.tex_mip_fit = false; // e.g. MXL 6 on a 32x32 base
 			},
 			GSTileFloorReason::TextureMip},
 		{"textured from the GPU24 layout",
@@ -122,8 +123,7 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 // GPU sampler is console-exact (gs-texture capture: all 128 nearest cells right in
 // every arm), so a nearest-sampled draw goes native in any rtx-served format —
 // including palettised, whose palette and TEXA expansion the source builder applies
-// CPU-side. Mip selection stays floored until LOD selection is implemented to the
-// gs-grad capture's rules.
+// CPU-side.
 TEST(GSTileLowering, NearestSampledTexturingIsNative)
 {
 	static const u32 servable[] = {PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8, PSMT4,
@@ -195,11 +195,12 @@ TEST(GSTileLowering, UnsafeStqCoordinatesFloor)
 	EXPECT_TRUE(uv.native);
 	EXPECT_EQ(uv.reason, GSTileFloorReason::None);
 
-	// Mip still outranks the range guard, so trilinear draws keep attributing to
-	// the mip question.
+	// A mip STQ sprite divides per pixel exactly like a plain one, so the range
+	// guard floors it the same way (the level shift happens after the divide).
 	in.tex_fst = false;
 	in.tex_mip = true;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureMip);
+	in.tex_mip_fit = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureStqOverflow);
 }
 
 // M3g slice 1: bilinear over affine coordinates goes native. The gs-texture capture
@@ -242,13 +243,45 @@ TEST(GSTileLowering, TexturedDrawStillFloorsOnTheOtherGates)
 	in.abe = true;
 	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
 
-	// Mip outranks filtering: a trilinear draw reads as mip work, not filter work.
+	// An inexpressible mip pyramid floors as mip work whatever the filter.
 	in = BaseInput();
 	in.tme = true;
 	in.tex_fst = true;
 	in.tex_mip = true;
+	in.tex_mip_fit = false;
 	in.tex_linear = true;
 	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureMip);
+}
+
+// M3g mip slice: mip draws whose level geometry fits a GPU chain go native for
+// the classes that already earned it — UV prims and STQ sprites. The fragment
+// path reproduces the scanline JIT's LOD machinery (fused-fma log2 polynomial
+// on Q, truncating convert, per-pixel level shift of coordinate and wrap
+// bounds, per-level fetches, (diff·(lodf>>1))>>15 trilinear mix). STQ
+// TRIANGLES keep flooring at the perspective gate: their blocker is Z/coverage
+// parity, and a mip texture does not change it — every corpus TEX_MIP draw is
+// such a triangle, so the ledger reattributes the class to TEX_PERSPECTIVE.
+TEST(GSTileLowering, MipSampledTexturingIsNative)
+{
+	// UV triangles and sprites, both filters.
+	GSTileDrawInput in = BaseInput();
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_mip = true;
+	in.tex_mip_fit = true;
+	EXPECT_TRUE(gsTileLowerDraw(in).native);
+	in.tex_linear = true;
+	EXPECT_TRUE(gsTileLowerDraw(in).native);
+	in.prim_class = GS_SPRITE_CLASS;
+	EXPECT_TRUE(gsTileLowerDraw(in).native);
+
+	// STQ sprites run the coordinate walk plus the per-pixel LOD formula.
+	in.tex_fst = false;
+	EXPECT_TRUE(gsTileLowerDraw(in).native);
+
+	// STQ triangles attribute to the perspective floor, not the mip question.
+	in.prim_class = GS_TRIANGLE_CLASS;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TexturePerspective);
 }
 
 TEST(GSTileLowering, AlwaysPassingTestsStayNative)

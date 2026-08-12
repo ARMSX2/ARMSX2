@@ -1415,6 +1415,156 @@ ivec2 tile_stq_uv(void)
 }
 #endif
 
+#if PS_TILE_MIP
+
+// Mip sampling at the scanline JIT's exact arithmetic (SampleTextureLOD in the
+// ARM64 SW rasterizer — the JIT is the authority; the C scanline differs from it
+// on the float→int conversion). Per pixel: the LOD in 16.16 comes from a
+// fused-fma cubic log2 polynomial on Q's mantissa/exponent split, scaled by
+// -(0x10000<<L) and offset by K<<12 (both ride LODParams), clamped NaN-free to
+// [0, mxl] and TRUNCATED to int. Round mode adds 0x8000 before taking the
+// integer level; trilinear keeps the low 16 bits as the blend fraction. The
+// 16.16 coordinate and the cooked wrap bounds both shift right by the level,
+// the half-texel shift and 4-bit weight apply after the shift, and each level
+// is its own image level of the same source (the GS floors level sizes at one
+// texel exactly like a GPU chain). The trilinear mix is (diff·(lodf>>1))>>15 —
+// both JITs' modulate16 shape (Sqdmulh doubling ≡ x86's pre-shifted pmulhw),
+// NOT the console's 4-bit weight: gs-grad measured SW itself off silicon here
+// (~250-step weight, per-primitive filter choice), and the M3 bar is SW-parity;
+// moving to the console's rule is a golden-moving decision that changes SW too.
+
+ivec4 tile_mip_bounds(int lod)
+{
+	// The cooked base bounds shifted per level — the JIT's per-lane logical
+	// shift of the 16-bit min/max words (repeat masks, clamp limits, and region
+	// windows all shift; the region-repeat OR-word shifts too).
+	ivec4 b;
+	#if PS_WMS == 0
+		b.x = (int(WH.x) - 1) >> lod;
+		b.z = 0;
+	#elif PS_WMS == 1
+		b.x = 0;
+		b.z = (int(WH.x) - 1) >> lod;
+	#else
+		b.x = floatBitsToInt(MinMax.x) >> lod;
+		b.z = floatBitsToInt(MinMax.z) >> lod;
+	#endif
+	#if PS_WMT == 0
+		b.y = (int(WH.y) - 1) >> lod;
+		b.w = 0;
+	#elif PS_WMT == 1
+		b.y = 0;
+		b.w = (int(WH.y) - 1) >> lod;
+	#else
+		b.y = floatBitsToInt(MinMax.y) >> lod;
+		b.w = floatBitsToInt(MinMax.w) >> lod;
+	#endif
+	return b;
+}
+
+ivec2 wrap_tile_mip(ivec2 xy, ivec4 b)
+{
+	// Repeat modes are (u & min) | max on the shifted words; clamp modes
+	// saturate between them — the same selector wrap_tile burns in, with the
+	// bounds a per-pixel value instead of a constant.
+	#if PS_WMS == 0 || PS_WMS == 3
+		xy.x = (xy.x & b.x) | b.z;
+	#else
+		xy.x = clamp(xy.x, b.x, b.z);
+	#endif
+	#if PS_WMT == 0 || PS_WMT == 3
+		xy.y = (xy.y & b.y) | b.w;
+	#else
+		xy.y = clamp(xy.y, b.y, b.w);
+	#endif
+	return xy;
+}
+
+ivec4 fetch_texel_tile_lod(ivec2 xy, int lod)
+{
+	// Same escape clamp as fetch_texel_tile, at the level's own dimensions.
+	xy = clamp(xy, ivec2(0), max(ivec2(WH.xy) >> lod, ivec2(1)) - 1);
+	return ivec4(texelFetch(Texture, xy, lod) * 255.0f + 0.5f);
+}
+
+ivec4 tile_mip_level(ivec2 uv, int lod)
+{
+	// One level's sample: uv arrives in 16.16 already shifted by the level, so
+	// the bilinear half-texel shift and 4-bit weight land on the shifted value
+	// (the scanline's order — shift first, filter second).
+	ivec4 b = tile_mip_bounds(lod);
+#if PS_TILE_LTF
+	uv -= 0x8000;
+	ivec2 f = (uv >> 12) & 15;
+	ivec2 t0 = uv >> 16;
+	ivec2 lo = wrap_tile_mip(t0, b);
+	ivec2 hi = wrap_tile_mip(t0 + 1, b);
+	ivec4 c00 = fetch_texel_tile_lod(lo, lod);
+	ivec4 c01 = fetch_texel_tile_lod(ivec2(hi.x, lo.y), lod);
+	ivec4 c10 = fetch_texel_tile_lod(ivec2(lo.x, hi.y), lod);
+	ivec4 c11 = fetch_texel_tile_lod(hi, lod);
+	ivec4 h0 = c00 + (((c01 - c00) * f.x) >> 4);
+	ivec4 h1 = c10 + (((c11 - c10) * f.x) >> 4);
+	return h0 + (((h1 - h0) * f.y) >> 4);
+#else
+	return fetch_texel_tile_lod(wrap_tile_mip(uv >> 16, b), lod);
+#endif
+}
+
+vec4 sample_color_tile_mip(vec2 st_int)
+{
+#if PS_FST == 0
+	ivec2 uv = tile_stq_uv();
+#else
+	// The 12.4 varying's integer bits into 16.16 — the affine convention the
+	// non-mip FST paths already run (sub-1/16 interpolation residue accepted
+	// there, and no fst mip draw exists in corpus or probe to sharpen it).
+	ivec2 uv = ivec2(floor(st_int)) << 12;
+#endif
+
+	int lodi;
+	int lodf = 0;
+#if PS_TILE_LCM
+	int lodw = floatBitsToInt(LODParams.w);
+	lodi = lodw >> 16;
+	lodf = lodw & 0xffff;
+#else
+	// (-log2(Q) * (1 << L) + K) * 0x10000, the JIT's emission: exponent and
+	// mantissa split bitwise (sign ignored), the minimax polynomial evaluated
+	// as a fused-fma chain, and the final scale-and-offset fused too. The
+	// float→int conversion truncates (Fcvtzs). Q can never produce a NaN here:
+	// the mantissa is forced onto [1,2) and every coefficient is finite.
+	int qi = floatBitsToInt(vsIn.t.w);
+	float e = float(int(uint(qi << 1) >> 24) - 127);
+	float m = intBitsToFloat((qi & 0x007FFFFF) | 0x3F800000);
+	precise float p = fma(m, 0.204446009836232697516f, -1.04913055217340124191f);
+	p = fma(p, m, 2.28330284476918490682f);
+	precise float lg = fma(m - 1.0f, p, e);
+	precise float lod16 = fma(lg, LODParams.x, LODParams.y);
+	lod16 = clamp(lod16, 0.0f, LODParams.z);
+	int lod = int(lod16);
+	#if PS_TILE_MIP == 1
+		lod += 0x8000;
+	#endif
+	lodi = lod >> 16;
+	#if PS_TILE_MIP == 2
+		lodf = lod & 0xffff;
+	#endif
+#endif
+
+	ivec2 uvl = uv >> lodi;
+	ivec4 c = tile_mip_level(uvl, lodi);
+#if PS_TILE_MIP == 2
+	// The next level from the pre-half-shift value, bounds one further right;
+	// the mxl cook guarantees lodi+1 exists (tri mode subtracts one 16.16 unit).
+	ivec4 c2 = tile_mip_level(uvl >> 1, lodi + 1);
+	c += ((c2 - c) * (lodf >> 1)) >> 15;
+#endif
+	return vec4(c);
+}
+
+#endif // PS_TILE_MIP
+
 #if PS_TILE_LTF
 vec4 sample_color_tile_ltf(vec2 st_int)
 {
@@ -1558,6 +1708,8 @@ vec4 ps_color()
 	vec4 T = fetch_gXbY(ivec2(gl_FragCoord.xy + ChannelShuffleOffset));
 #elif PS_DEPTH_FMT > 0
 	vec4 T = sample_depth(st_int, ivec2(gl_FragCoord.xy));
+#elif PS_TILE_MIP
+	vec4 T = sample_color_tile_mip(st_int);
 #elif PS_TILE_LTF
 	vec4 T = sample_color_tile_ltf(st_int);
 #elif PS_TILE_NN

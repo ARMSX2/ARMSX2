@@ -64,7 +64,7 @@ enum class GSTileFloorReason : u8
 	ResourceFailure, ///< target pool allocation failed
 	// M3b texture gates (register-predicate):
 	TextureFiltered, ///< retired at M3g slice 1 (in-shader integer bilinear); kept so old ledgers still decode
-	TextureMip, ///< mip levels active — LOD selection to the gs-grad rules is unimplemented
+	TextureMip, ///< mip levels the GPU chain cannot express (deeper than the base pyramid, or an oversized claim)
 	TexturePsm, ///< texture format the source builder does not serve (PSGPU24)
 	TexturePerspective, ///< STQ triangle — blocked on Z/coverage parity, not the coordinate walk (implemented at M3g slice 2, probe-proven; see the lowering comment)
 	// M3b geometry reason:
@@ -98,6 +98,12 @@ struct GSTileDrawInput
 	// tex_mip is the state's IsMipMapActive; tex_fst is PRIM.FST.
 	bool tex_linear;
 	bool tex_mip;
+	// Meaningful when tex_mip: the level geometry maps onto a GPU mip chain —
+	// min(MXL,6) ≤ max(TW,TH) so every addressed level exists (the GS floors level
+	// sizes at one texel exactly like a GPU chain: GetTex0Layer clamps TW/TH−lod at
+	// zero), and TW/TH ≤ 10 so the base is a real size (the scanline's oversize
+	// cook wraps at ONE texel — modelling that buys nothing). The route computes it.
+	bool tex_mip_fit;
 	bool tex_fst;
 	u8 tex_psm;
 	// STQ safety (meaningful when tme && !tex_fst): the route's vertex-trace
@@ -268,17 +274,24 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	// Classic showing the same structural class in the same region. Until a
 	// Z-exact native path exists, perspective triangles stay on the floor.
 	// Palette and TEXA expansion are applied CPU-side by the source builder, so
-	// every rtx-served format qualifies. Mip still floors (LOD selection to the
-	// gs-grad rules is unimplemented) and outranks the coordinate gates so the
-	// ledger attributes trilinear draws to the mip question.
+	// every rtx-served format qualifies. Mip goes native for the classes below
+	// (M3g mip slice): the fragment path reproduces the scanline JIT's LOD
+	// machinery — the fused-fma log2 polynomial on Q scaled by L and offset by K,
+	// truncating float→int, per-pixel level shift of both the coordinate and the
+	// cooked wrap bounds, per-level texelFetch, and the trilinear mix
+	// (diff·(lodf>>1))>>15. The perspective floor OUTRANKS mip now: a mip STQ
+	// triangle waits on the same Z/coverage parity as every other STQ triangle,
+	// and attributing it to the mip question would hide that. Every corpus
+	// TEX_MIP draw (15,847) is such a triangle, so this reorder moves the whole
+	// class to TEX_PERSPECTIVE in the ledger and no corpus draw changes path.
 	if (in.tme)
 	{
 		if (in.tex_psm == PSGPU24)
 			return floored(GSTileFloorReason::TexturePsm);
-		if (in.tex_mip)
-			return floored(GSTileFloorReason::TextureMip);
 		if (!in.tex_fst && in.prim_class == GS_TRIANGLE_CLASS)
 			return floored(GSTileFloorReason::TexturePerspective);
+		if (in.tex_mip && !in.tex_mip_fit)
+			return floored(GSTileFloorReason::TextureMip);
 		if (!in.tex_fst && in.tex_stq_unsafe)
 			return floored(GSTileFloorReason::TextureStqOverflow);
 	}

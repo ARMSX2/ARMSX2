@@ -44,8 +44,16 @@ public:
 	/// if absent or stale, or null on allocation failure. The caller has already
 	/// spilled GPU truth under the window and, for palettised formats, refreshed the
 	/// CLUT read buffer (GSClut::Read32) — pal_gen is the CLUT write generation.
+	///
+	/// For mip draws, level_tex0 carries min(MXL,6)+1 register views (level 0 first,
+	/// then GetTex0Layer's MIPTBP-derived views) and the built texture holds one GPU
+	/// mip level per entry — the GS floors level sizes at one texel exactly like a
+	/// GPU chain, so the geometries agree by construction (the route floors the rare
+	/// pyramid deeper than the base). `pages` must already union every level's
+	/// footprint, and the palette applies to all levels alike.
 	GSTexture* Lookup(GSLocalMemory& mem, const GSVramModel& model, const GIFRegTEX0& TEX0,
-		const GIFRegTEXA& TEXA, const GSPageBitmap& pages, u32 pal_gen);
+		const GIFRegTEXA& TEXA, const GSPageBitmap& pages, u32 pal_gen,
+		const GIFRegTEX0* level_tex0 = nullptr, u32 levels = 1);
 
 	/// Recycles every cached texture (reset / teardown / hot-switch).
 	void Clear();
@@ -60,6 +68,7 @@ private:
 	{
 		u64 reg_key = 0;
 		u64 aux_key = 0;
+		u64 mip_key[2] = {0, 0}; ///< exact pack of the level TBP0/TBW words + level count ({0,0} = single level)
 		u64 gen_stamp = 0;
 		u64 last_use = 0;
 		GSPageBitmap pages;
@@ -67,7 +76,7 @@ private:
 		bool alive = false;
 	};
 
-	bool BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA);
+	bool BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTEX0* level_tex0, u32 levels, const GIFRegTEXA& TEXA);
 	u8* GetScratch(u32 size);
 
 	std::array<Entry, kMaxEntries> m_entries;

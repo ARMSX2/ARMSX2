@@ -10,6 +10,8 @@
 
 #include "common/Timer.h"
 
+#include <cstring>
+
 MULTI_ISA_UNSHARED_IMPL;
 
 GSRenderer* CURRENT_ISA::makeGSRendererTile(int threads)
@@ -279,6 +281,15 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 		in.tex_mip = IsMipMapActive();
 		in.tex_fst = PRIM->FST;
 		in.tex_psm = static_cast<u8>(m_context->TEX0.PSM);
+		if (in.tex_mip)
+		{
+			// The level geometry maps onto a GPU mip chain when every addressed
+			// level exists: min(MXL,6) ≤ max(TW,TH) (the GS floors level sizes at
+			// one texel exactly like the chain does), on a real-sized base.
+			const u32 mxl = std::min<u32>(m_context->TEX1.MXL, 6);
+			in.tex_mip_fit = m_context->TEX0.TW <= 10 && m_context->TEX0.TH <= 10 &&
+							 mxl <= std::max<u32>(m_context->TEX0.TW, m_context->TEX0.TH);
+		}
 		if (!PRIM->FST)
 		{
 			// The scanline's 16.16 STQ envelope. The trace's !fst t.xy are the
@@ -649,16 +660,30 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// coordinate NUMERATOR keeps the register scale (ConvertVertexBuffer scales by
 	// the raw claim); only storage and wrap follow the fixed size, mirroring SW.
 	const bool textured = PRIM->TME;
+	const bool mip = textured && IsMipMapActive();
 	GIFRegTEX0 fixed_tex0 = {};
+	GIFRegTEX0 level_tex0[7] = {};
+	u32 mip_levels = 1;
 	GSPageBitmap tex_pages;
 	if (textured)
 	{
-		fixed_tex0 = ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), false);
-		const GSTileSurfaceLayout tex_l{ctx->TEX0.TBP0, static_cast<u8>(ctx->TEX0.TBW),
-			static_cast<u8>(ctx->TEX0.PSM), KindForPsm(ctx->TEX0.PSM)};
-		const int tw = 1 << std::min<u32>(fixed_tex0.TW, 10);
-		const int th = 1 << std::min<u32>(fixed_tex0.TH, 10);
-		tex_pages = PagesForTargetRect(tex_l, GSVector4i(0, 0, tw, th));
+		// Under mip the size fix is a no-op (GetSizeFixedTEX0 returns the register
+		// view), matching the SW renderer's own call — the register/fixed split
+		// collapses and every level keeps its GetTex0Layer geometry.
+		fixed_tex0 = ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mip);
+		level_tex0[0] = fixed_tex0;
+		if (mip)
+			mip_levels = std::min<u32>(ctx->TEX1.MXL, 6) + 1;
+		for (u32 i = 1; i < mip_levels; i++)
+			level_tex0[i] = GetTex0Layer(i);
+		for (u32 i = 0; i < mip_levels; i++)
+		{
+			const GSTileSurfaceLayout tex_l{level_tex0[i].TBP0, static_cast<u8>(level_tex0[i].TBW),
+				static_cast<u8>(level_tex0[i].PSM), KindForPsm(level_tex0[i].PSM)};
+			const int tw = 1 << std::min<u32>(level_tex0[i].TW, 10);
+			const int th = 1 << std::min<u32>(level_tex0[i].TH, 10);
+			tex_pages |= PagesForTargetRect(tex_l, GSVector4i(0, 0, tw, th));
+		}
 		if (tex_pages.intersects(fb_pages) || tex_pages.intersects(z_pages))
 		{
 			reason = GSTileFloorReason::TextureFeedback;
@@ -740,7 +765,8 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 			m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
 			pal_gen = m_mem.m_clut.GetWriteGeneration();
 		}
-		tex = m_tex_source.Lookup(m_mem, m_vram_model, fixed_tex0, m_draw_env->TEXA, tex_pages, pal_gen);
+		tex = m_tex_source.Lookup(m_mem, m_vram_model, fixed_tex0, m_draw_env->TEXA, tex_pages, pal_gen,
+			level_tex0, mip_levels);
 		if (!tex)
 		{
 			reason = GSTileFloorReason::ResourceFailure;
@@ -858,21 +884,68 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 
 		const u8 wms = static_cast<u8>(ctx->CLAMP.WMS);
 		const u8 wmt = static_cast<u8>(ctx->CLAMP.WMT);
-		// The in-shader coordinate walk serves every bilinear draw and every
-		// perspective STQ triangle (either filter): the GPU interpolator's own
-		// divide measurably flips texels against the scanline's, so the fragment
-		// path recomputes trunc(s/q) at the scanline's rounding. Affine nearest
+		// The in-shader coordinate walk serves every bilinear draw, every
+		// perspective STQ triangle (either filter), and every mip draw: the GPU
+		// interpolator's own divide measurably flips texels against the
+		// scanline's, so the fragment path recomputes trunc(s/q) at the
+		// scanline's rounding — and mip adds per-pixel level selection and
+		// bound shifts no sampler state expresses. Affine nearest without mip
 		// stays on the GPU sampler, which the gs-texture capture proved exact.
+		const bool mip_draw = IsMipMapActive();
 		const bool stq_walk = !PRIM->FST && m_vt.m_primclass == GS_TRIANGLE_CLASS;
-		if (m_vt.IsLinear() || stq_walk)
+		if (mip_draw || m_vt.IsLinear() || stq_walk)
 		{
 			// texelFetch bypasses the sampler, so every wrap mode runs in the
 			// shader on integer texel indices, one filter corner at a time. Region
 			// bounds travel bit-cast as ints, pre-cooked exactly as the SW
 			// scanline's setup cooks them: REGION_CLAMP bounds clamped into the
 			// texture, REGION_REPEAT's MINU pre-masked and MAXU raw.
-			conf.ps.tile_ltf = m_vt.IsLinear();
-			conf.ps.tile_nn = !m_vt.IsLinear();
+			bool ltf = m_vt.IsLinear();
+			if (mip_draw)
+			{
+				// GetScanlineGlobalData's mip selector, verbatim: the min filter's
+				// linear bit takes over when the whole draw minifies; round mode is
+				// MMIN's low bit clear, trilinear set; a draw already past MXL
+				// collapses to a constant max-level round-off; trilinear pulls the
+				// clamp one 16.16 unit under MXL so level+1 always exists; UV
+				// coordinates have no Q, so their LOD is the K constant.
+				if (m_vt.m_lod.x > 0)
+					ltf = (ctx->TEX1.MMIN >> 2) & 1;
+				u32 mmin = (ctx->TEX1.MMIN & 1) + 1;
+				u32 lcm = ctx->TEX1.LCM;
+				int mxl16 = std::min<int>(static_cast<int>(ctx->TEX1.MXL), 6) << 16;
+				int k16 = static_cast<int>(ctx->TEX1.K) << 12;
+				if (static_cast<int>(m_vt.m_lod.x) >= static_cast<int>(ctx->TEX1.MXL))
+				{
+					k16 = static_cast<int>(m_vt.m_lod.x) << 16;
+					lcm = 1;
+					mmin = 1;
+				}
+				if (mmin == 2)
+					mxl16--;
+				if (PRIM->FST)
+					lcm = 1;
+				conf.ps.tile_mip = mmin;
+				conf.ps.tile_lcm = lcm;
+				if (lcm)
+				{
+					int lod = std::clamp(k16, 0, mxl16);
+					if (mmin == 1)
+						lod = static_cast<int>(static_cast<u32>(lod + 0x8000) & 0xffff0000u);
+					// The packed constant IS the clamped 16.16 lod: the shader
+					// splits it back into (level, fraction) bit-identically.
+					const u32 lod_bits = static_cast<u32>(lod);
+					std::memcpy(&conf.cb_ps.LODParams.w, &lod_bits, sizeof(lod_bits));
+				}
+				else
+				{
+					conf.cb_ps.LODParams.x = static_cast<float>(-(0x10000 << ctx->TEX1.L));
+					conf.cb_ps.LODParams.y = static_cast<float>(k16);
+					conf.cb_ps.LODParams.z = static_cast<float>(mxl16);
+				}
+			}
+			conf.ps.tile_ltf = ltf;
+			conf.ps.tile_nn = !ltf;
 			conf.ps.wms = wms;
 			conf.ps.wmt = wmt;
 			if (!PRIM->FST)
