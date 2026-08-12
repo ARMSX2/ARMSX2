@@ -67,6 +67,7 @@
 Pcsx2Config::GSOptions GSConfig;
 
 static GSRendererType GSCurrentRenderer;
+static bool GSCurrentPresenterOffsetsRead;
 
 GSRendererType GSGetCurrentRenderer()
 {
@@ -77,6 +78,14 @@ bool GSIsHardwareRenderer()
 {
 	// Null gets flagged as hw.
 	return (GSCurrentRenderer != GSRendererType::SW);
+}
+
+bool GSPresenterOffsetsFramebufferRead()
+{
+	// Resolved per renderer instance in OpenGSRenderer, because the answer does not follow
+	// from the renderer type alone: the Tile variant is a hardware renderer that inherits
+	// the software output path, so it offsets the read while GSIsHardwareRenderer() says hw.
+	return GSCurrentPresenterOffsetsRead;
 }
 
 std::string GetDefaultAdapter()
@@ -261,6 +270,11 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 	// Must be done first, initialization routines in GSState use GSIsHardwareRenderer().
 	GSCurrentRenderer = renderer;
 
+	// Default for everything that reads the whole framebuffer and leaves the offset to the
+	// presenter; the Tile branch below raises it, since that renderer inherits GSRendererSW's
+	// output path. Set before any renderer is constructed, for the same reason as the above.
+	GSCurrentPresenterOffsetsRead = (renderer == GSRendererType::SW);
+
 	GSVertexSW::InitStatic();
 
 	if (renderer == GSRendererType::Null)
@@ -288,6 +302,9 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 				GSHWRendererVariantName(GSConfig.HWRendererVariant),
 				GSTileSelectionReasonName(tile_decision.reason),
 				GpuProfileDetector::RuntimeProfileToString(gpu_profile));
+			// Tile derives from GSRendererSW and does not override GetOutput, so the display
+			// offset is applied during the read exactly as it is in software mode.
+			GSCurrentPresenterOffsetsRead = true;
 			g_gs_renderer = std::unique_ptr<GSRenderer>(
 				MULTI_ISA_SELECT(makeGSRendererTile)(GSConfig.SWExtraThreads));
 		}
