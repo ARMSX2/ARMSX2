@@ -1251,7 +1251,13 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 					}
 
 					gd.lod.i = GSVector4i(lod >> 16);
-					gd.lod.f = GSVector4i(lod & 0xffff).xxxxl().xxzz();
+					// Every 16-bit lane must carry the fraction: the scanline blends
+					// [r,b]/[g,a] channel pairs of four pixels against these lanes.
+					// The previous xxxxl().xxzz() left lanes 5 and 7 zero (xxxxl
+					// passes the upper half through, and the scalar broadcast's
+					// upper 16 bits are zero there), so pixels 2 and 3 of every
+					// quad blended r/g but never b/a under a constant LOD.
+					gd.lod.f = GSVector4i(lod & 0xffff).xxxxlh();
 
 					// TODO: lot to optimize when lod is constant
 				}
