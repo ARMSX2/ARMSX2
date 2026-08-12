@@ -459,7 +459,9 @@ void GSDrawScanlineCodeGenerator::Init()
 		armAsm->Ldr(_global_mxl, _global(mxl));
 	}
 
-	if (m_sel.fpsm == 2 && m_sel.dthe)
+	// Every colour destination is dithered, not just 16-bit ones -- see the note
+	// in GSDrawScanline.cpp's WriteFrame. fmt 3 is not a frame-buffer format.
+	if (m_sel.dthe && m_sel.fpsm != 3)
 		armAsm->Ldr(_global_dimx, _global(dimx));
 }
 
@@ -2065,7 +2067,7 @@ void GSDrawScanlineCodeGenerator::WriteFrame()
 		return;
 	}
 
-	if (m_sel.fpsm == 2 && m_sel.dthe)
+	if (m_sel.dthe && m_sel.fpsm != 3)
 	{
 		armAsm->And(w5, _top, 3);
 		armAsm->Lsl(w5, w5, 5);

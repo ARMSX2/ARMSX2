@@ -1595,7 +1595,19 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 			if (sel.fwrite)
 			{
-				if (sel.fpsm == 2 && sel.dthe)
+				// Dither is not a 16-bit-only feature. Silicon adds DM[y & 3][x & 3]
+				// to the eight-bit colour on a 32-bit and on a 24-bit destination
+				// as well, with the same matrix and the same indexing -- 4080 of
+				// 4096 pixels move on each (gs-dither, SCPH-30001, 2026-08-11).
+				// The 16-bit gate was ours, not the hardware's.
+				//
+				// fmt 3 is not a frame-buffer format and the capture did not sweep
+				// one. The add lands before the colour clamp, which is where it
+				// already sat and where the capture puts it (1024/1024 against the
+				// alternative order), and after the blend (6144/6144).
+				//
+				// Mirrored in both scanline code generators; the three must agree.
+				if (sel.dthe && sel.fpsm != 3)
 				{
 					int y = (top & 3) << 1;
 

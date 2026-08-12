@@ -899,7 +899,7 @@ void GSDrawScanlineCodeGenerator::Init()
 		}
 	}
 
-	if (m_sel.fwrite && m_sel.fpsm == 2 && m_sel.dthe)
+	if (m_sel.fwrite && m_sel.dthe && m_sel.fpsm != 3)
 	{
 		// On linux, a2 is edx which will be used for fzm
 		// In all case, it will require a mov in dthe code, so let's keep the value on the stack
@@ -2905,7 +2905,9 @@ void GSDrawScanlineCodeGenerator::WriteFrame()
 
 	const XYm& tmp = xym15;
 
-	if (m_sel.fpsm == 2 && m_sel.dthe)
+	// Every colour destination is dithered, not just 16-bit ones -- see the note
+	// in GSDrawScanline.cpp's WriteFrame. fmt 3 is not a frame-buffer format.
+	if (m_sel.dthe && m_sel.fpsm != 3)
 	{
 		// y = (top & 3) << 5
 
