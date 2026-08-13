@@ -60,6 +60,30 @@ which is a user-facing cost/benefit question. Never to decide whether a
 divergence is worth *understanding*. A benign-looking score is often measuring a
 cancellation.
 
+⚠️ **The structure axis is an ATTRIBUTION instrument, and it stays valid exactly
+where the severity verdict does not** -- capture work included. "One coherent
+region, or scattered pixels" is a fact about which mechanism produced a
+difference, not a judgement about whether anyone minds it, so the ⚠️⚠️ above does
+not reach it. The two shapes have disjoint causes: scattered single pixels are a
+boundary condition sampled rarely -- a tie, a rounding edge, a filter crossover
+-- while coherent runs are a draw-level defect, a whole primitive served by the
+wrong path. Binding a number of the first shape to damage of the second is this
+campaign's most expensive recurring error, and refusing it costs one `profile()`
+call. Measured instance: the M3 perspective unlock's `gs-grad` divergence is ~1%
+of pixels, all of them off by exactly 1/16 texel, and it was attributed to
+Dirge's 22.78% corpus damage -- which is 91.3% in horizontal runs of eight or
+more, median error 25 levels, one row damaged across all 597 of its columns.
+Different shapes, therefore different mechanisms, and the attribution was wrong
+before any of the arithmetic was checked.
+
+**The companion method is ABLATION, and it outranks every statistic in this
+file.** When a number needs an owner, disable one candidate mechanism and
+re-score: the number moves or it does not, and no inference is required. That
+same Dirge figure fell 22.78% -> 6.46% the moment mipmapped perspective
+triangles were floored, naming 52 draws out of 1,943 native -- one run, and an
+answer no amount of profiling the diff image could have produced. Reach for the
+metrics here to *characterise* a difference; reach for ablation to *own* it.
+
 Usage:
   gs_perceptual.py REF.png TEST.png [--json OUT] [--ppd N]
   gs_perceptual.py --calibrate ROOT [ROOT ...]   # sweep known-invisible pairs
