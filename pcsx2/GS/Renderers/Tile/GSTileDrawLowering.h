@@ -417,6 +417,15 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		fb_claims |= kGSTilePlanesAlpha;
 	if (fb_claims != 0)
 		fb_claims |= GSTilePlaneZ; // byte coverage: written bytes invalidate any depth reading
+	// ...and the Z claim spans the whole 32-bit cell, so the surface ends up holding the
+	// newest bytes of every color plane, not just the channels the colormask let through.
+	// Claim what we span. The upload gate (gsTileColorPlanesSpannedBy, same rule) already
+	// made the texture current across that span before the draw, so the wider claim is
+	// exactly true -- and claiming LESS than we span is a page the surface can never own,
+	// which re-uploads the whole footprint on every later draw and, because the surface
+	// still holds unsynced truth there, downloads it back first. That round-trip was 93%
+	// of the Tile frame on GT4 (796 readback submits/frame, 250 ms of a 276 ms frame).
+	fb_claims |= gsTileColorPlanesSpannedBy(fb_claims);
 	p.fb_claims = fb_claims;
 	p.z_claims = p.z_write ? gsTilePlanesInvalidatedByWrite(in.ZBUF.PSM) : 0;
 

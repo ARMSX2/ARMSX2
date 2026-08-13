@@ -437,13 +437,41 @@ TEST(GSTileLowering, WholeByteMaskMapsToColormaskAndClaims)
 	const GSTileDrawPlan p = gsTileLowerDraw(in);
 	EXPECT_TRUE(p.native);
 	EXPECT_EQ(p.colormask, 0x7);
-	EXPECT_EQ(p.fb_claims, GSTilePlaneRGB | GSTilePlaneZ);
+	// The colormask says which channels the GPU writes; the claim says which planes the
+	// surface then holds the newest bytes of. They are not the same set, and the claim is
+	// the wider one: the Z claim rides along on byte coverage and spans the whole cell, so
+	// the unwritten alpha byte -- which the upload gate required to be current before the
+	// draw, and which the draw left alone -- is newest here too.
+	EXPECT_EQ(p.fb_claims, kGSTilePlanesAll);
 
 	in.FRAME.FBMSK = 0x00FFFFFFu; // RGB bytes fully masked
 	const GSTileDrawPlan pa = gsTileLowerDraw(in);
 	EXPECT_TRUE(pa.native);
 	EXPECT_EQ(pa.colormask, 0x8);
-	EXPECT_EQ(pa.fb_claims, kGSTilePlanesAlpha | GSTilePlaneZ);
+	EXPECT_EQ(pa.fb_claims, kGSTilePlanesAll);
+}
+
+// The invariant the two above are instances of, stated on its own because violating it
+// does not break a pixel -- it makes every later draw to the surface re-upload its
+// footprint, and download it back first. Silent, and it cost 45x on GT4.
+TEST(GSTileLowering, ColorClaimsCoverEveryPlaneTheySpan)
+{
+	for (const u32 psm : {static_cast<u32>(PSMCT32), static_cast<u32>(PSMCT24),
+			 static_cast<u32>(PSMCT16), static_cast<u32>(PSMCT16S)})
+	{
+		for (const u32 fbmsk : {0x00000000u, 0xFF000000u, 0x00FFFFFFu, 0x0000FFFFu})
+		{
+			GSTileDrawInput in = BaseInput();
+			in.FRAME.PSM = psm;
+			in.FRAME.FBMSK = fbmsk;
+			const GSTileDrawPlan p = gsTileLowerDraw(in);
+			if (p.fb_claims == 0)
+				continue; // writes no color at all: owns nothing, spans nothing
+			EXPECT_EQ(p.fb_claims & gsTileColorPlanesSpannedBy(p.fb_claims),
+				gsTileColorPlanesSpannedBy(p.fb_claims))
+				<< "psm=" << psm << " fbmsk=" << fbmsk;
+		}
+	}
 }
 
 TEST(GSTileLowering, Ct24HasNoAlphaChannel)
@@ -453,7 +481,10 @@ TEST(GSTileLowering, Ct24HasNoAlphaChannel)
 	const GSTileDrawPlan p = gsTileLowerDraw(in);
 	EXPECT_TRUE(p.native);
 	EXPECT_EQ(p.colormask, 0x7);
-	EXPECT_EQ(p.fb_claims, GSTilePlaneRGB | GSTilePlaneZ);
+	// No alpha CHANNEL to write, but the alpha BYTE is still part of the cell this
+	// surface now holds the newest copy of -- a Z24 reading or a byte-3 palette view of
+	// the same page reads it. Claim it, or every later draw re-uploads the page.
+	EXPECT_EQ(p.fb_claims, kGSTilePlanesAll);
 }
 
 TEST(GSTileLowering, DepthOnlyDrawIsNative)
