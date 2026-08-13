@@ -52,8 +52,27 @@ layout(location = 4) in uint a_z;
 layout(location = 5) in uvec2 a_uv;
 layout(location = 6) in vec4 a_f;
 
+#if VS_TILE_ZWALK
+// Tile depth walk: the fragment stage looks its primitive's depth plane up by a
+// flat ordinal. The draw is de-indexed (identity indices), so the ordinal is
+// the vertex index over three; BaseVertex arrives in the same push-constant
+// block the expansion path uses, because gl_VertexIndex includes the draw's
+// base vertex.
+layout(push_constant) uniform cb2
+{
+	uint BaseVertex;
+	uint BaseIndex;
+	uint pad_cb2_0;
+	uint pad_cb2_1;
+};
+layout(location = 7) flat out uint vsOut_zpid;
+#endif
+
 void main()
 {
+#if VS_TILE_ZWALK
+	vsOut_zpid = (uint(gl_VertexIndex) - BaseVertex) / 3u;
+#endif
 	// Clamp to max depth, gs doesn't wrap
 	uint z = min(a_z, MaxDepth);
 
@@ -606,7 +625,7 @@ void main()
 
 #define PS_FEEDBACK_LOOP_IS_NEEDED_RT (PS_TEX_IS_FB == 1 || AFAIL_NEEDS_RT || PS_FBMASK || SW_BLEND_NEEDS_RT || SW_AD_TO_HW || (PS_DATE >= 5))
 #define PS_FEEDBACK_LOOP_IS_NEEDED_DEPTH (AFAIL_NEEDS_DEPTH || ZTST_NEEDS_DEPTH || AA1_NEEDS_DEPTH)
-#define ZWRITE (PS_ZCLAMP || PS_ZFLOOR || SW_DEPTH || PS_FEEDBACK_LOOP_IS_NEEDED_DEPTH)
+#define ZWRITE (PS_ZCLAMP || PS_ZFLOOR || SW_DEPTH || PS_TILE_ZWALK || PS_FEEDBACK_LOOP_IS_NEEDED_DEPTH)
 
 #define PS_RETURN_COLOR_ROV (!PS_NO_COLOR && PS_ROV_COLOR)
 #define PS_RETURN_COLOR (!PS_NO_COLOR && !PS_ROV_COLOR)
@@ -639,12 +658,13 @@ layout(std140, set = 0, binding = 1) uniform cb1
 	float _pad0_cb1;
 	float _pad1_cb1;
 	float LineCovScale;
-	// Tile renderer, both bit-cast into their float slot the way MinMax carries
-	// its region bounds: the AND mask for the reciprocal of Q, and the Q at which
-	// the level of detail crosses zero.
+	// Tile renderer, all bit-cast into their float slot the way MinMax carries
+	// its region bounds: the AND mask for the reciprocal of Q, the Q at which
+	// the level of detail crosses zero, and the uvec4 element index of this
+	// draw's depth-walk payload in the vertex-stream storage buffer.
 	float TileSTQRecip;
 	float TileLtfxQ;
-	float _pad2_cb1;
+	float TileZBase;
 };
 
 layout(location = 0) in VSOutput
@@ -2126,9 +2146,475 @@ layout(early_fragment_tests) in;
 	#define DISCARD_DEPTH input_z = sample_from_depth()
 #endif
 
+#if PS_TILE_ZWALK
+
+// ============================ Tile depth walk ================================
+// The SW scanline interpolates depth in float64: a closed-form row seed
+// (GSRasterizer::DrawTriangleSection) and an accumulating X walk whose per-lane
+// offsets are fp32 products of the fp32-NARROWED gradient (the setup-prim
+// codegen). The GPU interpolator cannot reproduce any of it — gs-zgrad measured
+// a +1 rung everywhere the plane holds a fraction, ±1 at the truncated step's
+// integer landings, and 342 units on a steep gradient carried in fp32 — so this
+// path replays the walk itself: the CPU transports the plane exactly as
+// GSRasterizer's own compiled setup produced it (GSComputeTriangleZPlane), and
+// the fragment evaluates it with a soft-float kernel over 32-bit integer ops.
+//
+// ⚠️ The kernel below is a MECHANICAL TRANSLITERATION of the C++ mirror in
+// tests/ctest/core/gs/gs_tile_zwalk_tests.cpp, which is fuzzed against hardware
+// IEEE arithmetic (millions of cases, mutation-proven). Change them TOGETHER.
+//
+// Envelope (enforced by the Tile draw lowering): finite normals and zeros only,
+// walk values in [0, 2^31), |4M|·q under 2^53. Zero signs are not faithful; the
+// observable is a truncated integer, so they cannot matter.
+
+layout(location = 7) flat in uint vsIn_zpid;
+
+layout(std430, set = 0, binding = 2) readonly buffer TileZPlanes
+{
+	uvec4 zplane[];
+};
+
+// OR of all bits strictly below `pos` on the 160-bit spine.
+uint zw_sticky_below(uint S[5], int pos)
+{
+	if (pos <= 0)
+		return 0u;
+	if (pos >= 160)
+		pos = 160;
+	uint w = uint(pos) >> 5;
+	uint b = uint(pos) & 31u;
+	uint acc = 0u;
+	for (uint i = 0u; i < w; i++)
+		acc |= S[i];
+	if (b != 0u)
+		acc |= S[w] & ((1u << b) - 1u);
+	return (acc != 0u) ? 1u : 0u;
+}
+
+// round(a * b + c) with one IEEE round-to-nearest-even rounding; a, c float64
+// as (lo, hi) bit pairs, b float32.
+uvec2 zw_fma(uvec2 a, float b, uvec2 c)
+{
+	uint ea = (a.y >> 20) & 0x7FFu;
+	uint bb = floatBitsToUint(b);
+	uint eb = (bb >> 23) & 0xFFu;
+
+	// A zero product contributes nothing; the sum rounds to c exactly.
+	if (ea == 0u || eb == 0u)
+		return c;
+
+	uint sa = a.y >> 31;
+	uint sb = bb >> 31;
+	uint sp = sa ^ sb;
+
+	uint ma_lo = a.x;
+	uint ma_hi = (a.y & 0xFFFFFu) | 0x100000u; // 53-bit mantissa, high 21 bits
+	uint mb = (bb & 0x7FFFFFu) | 0x800000u;    // 24-bit mantissa
+
+	uint sc = c.y >> 31;
+	uint ec = (c.y >> 20) & 0x7FFu;
+	uint mc_lo = c.x;
+	uint mc_hi = (c.y & 0xFFFFFu) | ((ec != 0u) ? 0x100000u : 0u);
+
+	// P = ma * mb: 53 x 24 -> up to 77 bits, in three words.
+	uint p0h, p0l, p1h, p1l;
+	umulExtended(ma_lo, mb, p0h, p0l);
+	umulExtended(ma_hi, mb, p1h, p1l);
+	uint carry;
+	uint P0 = p0l;
+	uint P1 = uaddCarry(p0h, p1l, carry);
+	uint P2 = p1h + carry; // ma_hi*mb < 2^45, so no carry out of P2
+
+	// Scales: a = ma * 2^(ea-1075), b = mb * 2^(eb-150), c = mc * 2^(ec-1075).
+	int anchor = int(ea) + int(eb) - 1225;
+	int shift = (int(ec) - 1075) - anchor; // c's bit offset on the product's grid
+
+	// c so dominant the product is under half an ulp of c: the sum rounds to c
+	// exactly (strict inequality — no tie is reachable).
+	if (ec != 0u && shift >= 82)
+		return c;
+
+	// Product so dominant that c is far below the guard bit: c is pure sticky,
+	// and at an exact tie its SIGN decides the direction.
+	bool c_is_sticky = (shift <= -80);
+
+	// Build both terms on a 160-bit spine anchored at grid = anchor - up.
+	uint up = c_is_sticky ? 0u : uint((shift < 0) ? -shift : 0);
+	int grid = anchor - int(up);
+
+	uint SP[5] = uint[5](0u, 0u, 0u, 0u, 0u);
+	uint SC[5] = uint[5](0u, 0u, 0u, 0u, 0u);
+	{
+		// spine_or96(SP, P0, P1, P2, up)
+		uint w = up >> 5;
+		uint b = up & 31u;
+		if (b == 0u)
+		{
+			SP[w + 0u] |= P0;
+			SP[w + 1u] |= P1;
+			SP[w + 2u] |= P2;
+		}
+		else
+		{
+			SP[w + 0u] |= P0 << b;
+			SP[w + 1u] |= (P0 >> (32u - b)) | (P1 << b);
+			SP[w + 2u] |= (P1 >> (32u - b)) | (P2 << b);
+			SP[w + 3u] |= P2 >> (32u - b);
+		}
+	}
+	if (ec != 0u && !c_is_sticky)
+	{
+		// spine_or64(SC, mc_lo, mc_hi, max(shift, 0))
+		uint sh = uint((shift > 0) ? shift : 0);
+		uint w = sh >> 5;
+		uint b = sh & 31u;
+		if (b == 0u)
+		{
+			SC[w + 0u] |= mc_lo;
+			SC[w + 1u] |= mc_hi;
+		}
+		else
+		{
+			SC[w + 0u] |= mc_lo << b;
+			SC[w + 1u] |= (mc_lo >> (32u - b)) | (mc_hi << b);
+			SC[w + 2u] |= mc_hi >> (32u - b);
+		}
+	}
+
+	// Signed sum.
+	uint SUM[5];
+	uint ssign;
+	uint sticky_extra = 0u;
+	uint sticky_sign = 0u; // meaningful only with sticky_extra
+	if (c_is_sticky)
+	{
+		for (int i = 0; i < 5; i++)
+			SUM[i] = SP[i];
+		ssign = sp;
+		sticky_extra = (ec != 0u && (mc_lo | mc_hi) != 0u) ? 1u : 0u;
+		sticky_sign = (sc == sp) ? 0u : 1u; // 0: pushes away from zero, 1: toward zero
+	}
+	else if (sp == sc || ec == 0u)
+	{
+		uint cr = 0u, cr2 = 0u;
+		for (int i = 0; i < 5; i++)
+		{
+			uint s = uaddCarry(SP[i], SC[i], cr2);
+			SUM[i] = uaddCarry(s, cr, cr);
+			cr += cr2;
+		}
+		ssign = sp;
+	}
+	else
+	{
+		int cmp = 0;
+		for (int i = 4; i >= 0; i--)
+		{
+			if (SP[i] != SC[i])
+			{
+				cmp = (SP[i] < SC[i]) ? -1 : 1;
+				break;
+			}
+		}
+		if (cmp == 0)
+			return uvec2(0u, 0u); // exact cancellation: +0 (RNE)
+		uint borrow = 0u;
+		for (int i = 0; i < 5; i++)
+		{
+			uint xi = (cmp > 0) ? SP[i] : SC[i];
+			uint yi = (cmp > 0) ? SC[i] : SP[i];
+			uint t = xi - yi;
+			uint b1 = (xi < yi) ? 1u : 0u;
+			uint t2 = t - borrow;
+			uint b2 = (t < borrow) ? 1u : 0u;
+			SUM[i] = t2;
+			borrow = b1 + b2;
+		}
+		ssign = (cmp > 0) ? sp : sc;
+	}
+
+	// Normalize and round to 53 bits, RNE.
+	int msb = -1;
+	for (int i = 4; i >= 0; i--)
+	{
+		int m = findMSB(SUM[i]);
+		if (m >= 0)
+		{
+			msb = i * 32 + m;
+			break;
+		}
+	}
+	if (msb < 0)
+		return uvec2(0u, 0u);
+
+	uint mant_lo, mant_hi;
+	int e2; // result = mant * 2^e2, mant in [2^52, 2^53) after normalization
+	if (msb <= 52)
+	{
+		// Exact: 53 or fewer bits, no rounding. Shift up so the top bit lands
+		// at bit 52 for packing; the exponent absorbs the shift.
+		uint sh = uint(52 - msb);
+		uint w = sh >> 5;
+		uint bsh = sh & 31u;
+		uint lo = SUM[0], hi = SUM[1];
+		if (w == 1u)
+		{
+			hi = lo;
+			lo = 0u;
+		}
+		if (bsh != 0u)
+		{
+			hi = (hi << bsh) | (lo >> (32u - bsh));
+			lo = lo << bsh;
+		}
+		mant_lo = lo;
+		mant_hi = hi & 0x1FFFFFu;
+		e2 = grid - int(sh);
+	}
+	else
+	{
+		// spine_extract53: the window [msb-52, msb].
+		{
+			uint start = uint(msb - 52);
+			uint w = start >> 5;
+			uint b = start & 31u;
+			uint out_lo, out_hi;
+			if (b == 0u)
+			{
+				out_lo = SUM[w];
+				out_hi = (w + 1u < 5u) ? SUM[w + 1u] : 0u;
+			}
+			else
+			{
+				uint hi1 = (w + 1u < 5u) ? SUM[w + 1u] : 0u;
+				uint hi2 = (w + 2u < 5u) ? SUM[w + 2u] : 0u;
+				out_lo = (SUM[w] >> b) | (hi1 << (32u - b));
+				out_hi = (hi1 >> b) | (hi2 << (32u - b));
+			}
+			mant_lo = out_lo;
+			mant_hi = out_hi & 0x1FFFFFu;
+		}
+		e2 = grid + (msb - 52);
+		int gpos = msb - 53;
+		uint guard = (gpos >= 0) ? ((SUM[gpos >> 5] >> (uint(gpos) & 31u)) & 1u) : 0u;
+		uint sticky = zw_sticky_below(SUM, gpos) | sticky_extra;
+		uint round_up = 0u;
+		if (guard != 0u)
+		{
+			if (sticky != 0u)
+			{
+				// Above the tie — unless the sticky is an opposite-signed tail
+				// (c far below), which pulls the true value BELOW the tie.
+				round_up = (sticky_extra != 0u && sticky_sign != 0u &&
+				            zw_sticky_below(SUM, gpos) == 0u) ? 0u : 1u;
+			}
+			else
+			{
+				round_up = mant_lo & 1u; // exact tie: round to even
+			}
+		}
+		if (round_up != 0u)
+		{
+			uint cr;
+			mant_lo = uaddCarry(mant_lo, 1u, cr);
+			mant_hi += cr;
+			if (mant_hi == 0x200000u) // 2^53: renormalize
+			{
+				mant_hi = 0x100000u;
+				mant_lo = 0u;
+				e2 += 1;
+			}
+		}
+	}
+
+	// Pack: biased exponent = e2 + 52 + 1023.
+	int E = e2 + 1075;
+	if (E <= 0)
+		return uvec2(0u, ssign << 31); // envelope: unreachable; flush to zero
+	return uvec2(mant_lo, (ssign << 31) | (uint(E) << 20) | (mant_hi & 0xFFFFFu));
+}
+
+// Truncate toward zero to u32 (the scanline's store conversion for in-envelope
+// values; negatives are guarded out by the draw lowering).
+uint zw_trunc_u32(uvec2 z)
+{
+	uint s = z.y >> 31;
+	uint e = (z.y >> 20) & 0x7FFu;
+	if (s != 0u || e < 1023u)
+		return 0u;
+	if (e > 1054u)
+		return 0x7FFFFFFFu; // fcvtzs saturation; unreachable within the envelope
+	uint mant_hi = (z.y & 0xFFFFFu) | 0x100000u;
+	uint mant_lo = z.x;
+	uint sh = 1075u - e;
+	if (sh >= 32u)
+		return mant_hi >> (sh - 32u);
+	if (sh == 0u)
+		return mant_lo;
+	return (mant_lo >> sh) | (mant_hi << (32u - sh));
+}
+
+// Exact conversion of a signed 64-bit count of 2^scale units to float64.
+uvec2 zw_f64_from_i64(uint neg, uint mag_lo, uint mag_hi, int scale)
+{
+	if ((mag_lo | mag_hi) == 0u)
+		return uvec2(0u, 0u);
+	int msb = findMSB(mag_hi);
+	msb = (msb >= 0) ? msb + 32 : findMSB(mag_lo);
+	uint lo = mag_lo, hi = mag_hi;
+	if (msb < 52)
+	{
+		uint sh = uint(52 - msb);
+		if (sh >= 32u)
+		{
+			hi = lo << (sh - 32u);
+			lo = 0u;
+		}
+		else
+		{
+			hi = (hi << sh) | (lo >> (32u - sh));
+			lo = lo << sh;
+		}
+	}
+	int E = (scale + msb) + 1023;
+	return uvec2(lo, (neg << 31) | (uint(E) << 20) | (hi & 0xFFFFFu));
+}
+
+// f32 -> signed count of 2^-10 units, exact by construction (the input is a
+// lane offset, which lives on the 2^-10 grid — see the setup analysis in the
+// mirror suite).
+void zw_i64_units10_from_f32(float v, out uint neg, out uint mag_lo, out uint mag_hi)
+{
+	uint bb = floatBitsToUint(v);
+	neg = bb >> 31;
+	uint e = (bb >> 23) & 0xFFu;
+	if (e == 0u)
+	{
+		neg = 0u;
+		mag_lo = 0u;
+		mag_hi = 0u;
+		return;
+	}
+	uint m = (bb & 0x7FFFFFu) | 0x800000u;
+	int sh = int(e) - 140; // value = m * 2^(e-150); in 2^-10 units: m * 2^(e-140)
+	if (sh >= 0)
+	{
+		uint s = uint(sh);
+		if (s >= 32u)
+		{
+			mag_hi = m << (s - 32u);
+			mag_lo = 0u;
+		}
+		else if (s == 0u)
+		{
+			mag_lo = m;
+			mag_hi = 0u;
+		}
+		else
+		{
+			mag_lo = m << s;
+			mag_hi = m >> (32u - s);
+		}
+	}
+	else
+	{
+		uint s = uint(-sh);
+		mag_lo = (s < 32u) ? (m >> s) : 0u;
+		mag_hi = 0u;
+	}
+}
+
+// (neg, mag) signed 64-bit addition.
+void zw_i64_signed_add(uint na, uint alo, uint ahi, uint nb, uint blo, uint bhi,
+	out uint nr, out uint rlo, out uint rhi)
+{
+	if (na == nb)
+	{
+		uint carry;
+		rlo = uaddCarry(alo, blo, carry);
+		rhi = ahi + bhi + carry;
+		nr = na;
+		return;
+	}
+	bool a_ge_b = (ahi > bhi) || (ahi == bhi && alo >= blo);
+	uint xlo = a_ge_b ? alo : blo;
+	uint xhi = a_ge_b ? ahi : bhi;
+	uint ylo = a_ge_b ? blo : alo;
+	uint yhi = a_ge_b ? bhi : ahi;
+	uint borrow = (xlo < ylo) ? 1u : 0u;
+	rlo = xlo - ylo;
+	rhi = xhi - yhi - borrow;
+	nr = ((rlo | rhi) == 0u) ? 0u : (a_ge_b ? na : nb);
+}
+
+// Payload layout (see GSRendererTile::BuildZWalkPayload):
+//   [TileZBase]      header: {scissor_left f32, flags (bit0 zclamp), zmax, 0}
+//   [.. + 1 + p*5+0] section 0: {edge_x, dedge_x, p0x, p0y} f32 bits
+//   [.. + 1 + p*5+1] section 1: same
+//   [.. + 1 + p*5+2] {zseed0 u32, zseed1 u32, boundary u16 | prim_top u16 << 16, dz32 f32 bits}
+//   [.. + 1 + p*5+3] {dscan_z f64 lo, hi, |4M| u64 lo, hi}
+//   [.. + 1 + p*5+4] {dedge_z0 f64 lo, hi, dedge_z1 f64 lo, hi}
+float tile_zwalk_depth()
+{
+	int px = int(gl_FragCoord.x);
+	int py = int(gl_FragCoord.y);
+	uint base = floatBitsToUint(TileZBase);
+	uvec4 hdr = zplane[base];
+	uint pbase = base + 1u + vsIn_zpid * 5u;
+	uvec4 X2 = zplane[pbase + 2u];
+	bool s1 = py >= int(X2.z & 0xFFFFu);
+	uvec4 XS = zplane[pbase + (s1 ? 1u : 0u)];
+	uvec4 X3 = zplane[pbase + 3u];
+	uvec4 X4 = zplane[pbase + 4u];
+	uvec2 dedge_z = s1 ? X4.zw : X4.xy;
+	uint zseed = s1 ? X2.y : X2.x;
+
+	// The per-row seed at the scanline's own arithmetic: dy and prestep are
+	// fp32 with a FUSED edge walk (the compiled rasterizer uses fmla), the two
+	// f64 terms are single-rounded fmadds.
+	precise float dy = float(py) - uintBitsToFloat(XS.w);
+	precise float lraw = fma(uintBitsToFloat(XS.y), dy, uintBitsToFloat(XS.x));
+	precise float lx = max(ceil(lraw), uintBitsToFloat(hdr.x));
+	int left = int(lx);
+	precise float prestep = lx - uintBitsToFloat(XS.z);
+
+	uvec2 z = zw_fma(dedge_z, dy, zw_f64_from_i64(0u, zseed, 0u, 0));
+	z = zw_fma(X3.xy, prestep, z);
+
+	// The X walk, exact in 64-bit integer 2^-10 units: the fp32 lane offset the
+	// setup narrows once per primitive, plus whole quad steps of 4*dz.
+	int skip = left & 3;
+	int j = px & 3;
+	int q = (px >> 2) - (left >> 2);
+	precise float offf = uintBitsToFloat(X2.w) * float(j - skip);
+	uint oneg, olo, ohi;
+	zw_i64_units10_from_f32(offf, oneg, olo, ohi);
+	uint qmag = uint((q < 0) ? -q : q);
+	uint slo, shi, smulh, smull;
+	umulExtended(X3.z, qmag, smulh, smull);
+	slo = smull;
+	shi = smulh + X3.w * qmag;
+	uint sneg = ((X3.y >> 31) ^ ((q < 0) ? 1u : 0u)) & 1u;
+	uint wneg, wlo, whi;
+	zw_i64_signed_add(oneg, olo, ohi, sneg, slo, shi, wneg, wlo, whi);
+	z = zw_fma(zw_f64_from_i64(wneg, wlo, whi, -10), 1.0f, z);
+
+	uint zi = zw_trunc_u32(z);
+	if ((hdr.y & 1u) != 0u)
+		zi = min(zi, hdr.z);
+	return float(zi) * exp2(-32.0f);
+}
+
+#endif // PS_TILE_ZWALK
+
 void main()
 {
+#if PS_TILE_ZWALK
+	// The scanline's depth, not the interpolator's.
+	float input_z = tile_zwalk_depth();
+#else
 	float input_z = gl_FragCoord.z;
+#endif
 
 	// Must floor before depth testing.
 #if PS_ZFLOOR

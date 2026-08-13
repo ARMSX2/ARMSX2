@@ -177,6 +177,9 @@ namespace GSDrawLog
 		TileFallbackTextureStqOverflow,
 		// gs-dither gate: the native path writes no dither matrix.
 		TileFallbackDither,
+		// Depth transcription gate: a Z-gradient triangle draw outside the soft-float
+		// walk's envelope (z hull, gradient magnitude, or no VS expand support).
+		TileFallbackDepthWalkEnvelope,
 	};
 
 	enum Flags : u8

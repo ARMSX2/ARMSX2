@@ -38,6 +38,10 @@ struct GSTileZPlane
 	double dscan_z;  // z step per pixel, already truncated onto the 2^-10 grid
 	float dscan_z32; // the fp32 narrowing SetupPrim performs once per primitive for the lane offsets
 	int nsections;
+	int top_prim; // ceil(y) of the sorted top vertex, PRE-scissor: the primitive's geometric
+	              // first scanline (can be negative). The console's Y-bias gate keys on this,
+	              // never on a covered row — a scissor rejects pixels, it does not reseed an
+	              // interpolator (gs-ledger 4d7ebb194a).
 };
 
 /// Computes the depth plane for one triangle (three GSVertexSW, in kick order) through

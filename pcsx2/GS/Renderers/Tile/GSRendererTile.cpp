@@ -7,6 +7,7 @@
 #include "GS/GSPerfMon.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
+#include "GS/Renderers/SW/GSRasterizer.h"
 
 #include "common/Timer.h"
 
@@ -136,6 +137,8 @@ GSDrawLog::TileFallback MapFallbackReason(GSTileFloorReason reason)
 			return GSDrawLog::TileFallbackTexturePerspective;
 		case GSTileFloorReason::TextureStqOverflow:
 			return GSDrawLog::TileFallbackTextureStqOverflow;
+		case GSTileFloorReason::DepthWalkEnvelope:
+			return GSDrawLog::TileFallbackDepthWalkEnvelope;
 		default:
 			return GSDrawLog::TileFallbackFloor;
 	}
@@ -703,6 +706,21 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		return false;
 	}
 
+	// Depth transcription: a triangle draw with a live Z gradient must store and
+	// compare the SW scanline's WALK, not the GPU interpolator's plane — gs-zgrad
+	// measured the difference on 40 of its 47 cases (a +1 rung everywhere the plane
+	// holds a fraction, ±1 at the truncated 2^-10 step's integer landings, 342 units
+	// on a steep gradient carried in fp32). Build the per-primitive plane payload
+	// here, through GSRasterizer's own compiled setup; draws the walk cannot express
+	// floor rather than approximate. Flat-Z draws stay exact without it: their
+	// constant is an integer, which survives the float pipeline untouched.
+	m_zwalk_payload.clear();
+	if (want_ds && m_vt.m_primclass == GS_TRIANGLE_CLASS && !m_vt.m_eq.z)
+	{
+		if (!BuildZWalkPayload(reason))
+			return false;
+	}
+
 	// The texture window's footprint. A window overlapping the draw's own write
 	// pages is feedback — M4 territory. (A zero TBW over-claims every page through
 	// PagesForTargetRect and floors here too; safe, if mislabeled.)
@@ -851,6 +869,23 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	return true;
 }
 
+// De-index the current draw through the copy buffer, leaving the index buffer as the
+// identity mapping. Primitive ORDER is preserved, which is what the depth walk relies
+// on: after this, the vertex shader can derive the primitive ordinal from
+// gl_VertexIndex alone, and ordinal p still names the p-th kicked triangle.
+void GSRendererTile::DeindexVertices()
+{
+	while (m_vertex->maxcount < m_index->tail)
+		GrowVertexBuffer();
+	for (int i = static_cast<int>(m_index->tail) - 1; i >= 0; i--)
+	{
+		m_vertex->buff_copy[i] = m_vertex->buff[m_index->buff[i]];
+		m_index->buff[i] = static_cast<u16>(i);
+	}
+	std::swap(m_vertex->buff, m_vertex->buff_copy);
+	m_vertex->head = m_vertex->next = m_vertex->tail = m_index->tail;
+}
+
 // Port of GSRendererHW::HandleFlatShadedVertices for the one case the native
 // envelope can hit: flat-shaded triangles on a device without last-vertex provoking
 // convention. (Sprites resolve their flat color in the expansion shader, and AA1 —
@@ -878,21 +913,154 @@ void GSRendererTile::FlattenProvokingColor()
 
 	// De-index the vertices using the copy buffer, then give every vertex of each
 	// prim the provoking (last) vertex's color.
-	while (m_vertex->maxcount < m_index->tail)
-		GrowVertexBuffer();
-	for (int i = static_cast<int>(m_index->tail) - 1; i >= 0; i--)
-	{
-		m_vertex->buff_copy[i] = m_vertex->buff[m_index->buff[i]];
-		m_index->buff[i] = static_cast<u16>(i);
-	}
-	std::swap(m_vertex->buff, m_vertex->buff_copy);
-	m_vertex->head = m_vertex->next = m_vertex->tail = m_index->tail;
+	DeindexVertices();
 
 	for (u32 i = 0; i < m_index->tail; i += n)
 	{
 		for (int j = 0; j < n - 1; j++)
 			m_vertex->buff[i + j].RGBAQ.U32[0] = m_vertex->buff[i + n - 1].RGBAQ.U32[0];
 	}
+}
+
+// Build the per-primitive depth-plane payload for the soft-float walk
+// (PS_TILE_ZWALK): one header uvec4 (scissor left, zclamp flag, format max) plus five
+// uvec4 per triangle. Every plane value comes out of GSRasterizer's own compiled
+// setup (GSComputeTriangleZPlane), so it carries the software renderer's exact
+// roundings — the fp32 barycentric division, the compiler's fused multiply-adds, the
+// 2^-10 truncation of the scan gradient, and the fp32 narrowing the scanline's setup
+// applies to the lane-offset gradient. Returns false with `reason` set for draws
+// outside the walk's envelope; those floor.
+bool GSRendererTile::BuildZWalkPayload(GSTileFloorReason& reason)
+{
+	const auto envelope = [&reason](bool ok) {
+		if (!ok)
+			reason = GSTileFloorReason::DepthWalkEnvelope;
+		return ok;
+	};
+
+	// The ordinal varying needs gl_VertexIndex arithmetic (the expand push-constant
+	// block) and the payload rides the expand storage-buffer binding; both exist
+	// only when the device has VS expand.
+	if (!envelope(g_gs_device->Features().vs_expand))
+		return false;
+
+	// Hull guards. The truncated step and the fp32 lane offsets under-run the exact
+	// plane by at most a few units, so a floor of 8 keeps the walk out of negative
+	// territory — where the scanline's store semantics (saturating i32 conversion,
+	// unsigned clamp) are not worth transcribing. The high bound keeps every value
+	// clear of the zoverflow path (>= 2^31) with margin for overshoot.
+	const u32 zmin = static_cast<u32>(GSVector4i(m_vt.m_min.p).z);
+	const u32 zmax = static_cast<u32>(GSVector4i(m_vt.m_max.p).z);
+	if (!envelope(zmin >= 8 && zmax < 0x40000000u))
+		return false;
+
+	const GSDrawingContext* ctx = m_context;
+	const u32 fmt_max = 0xFFFFFFFFu >> (GSLocalMemory::m_psm[ctx->ZBUF.PSM].fmt * 8);
+	const int ofx = static_cast<int>(ctx->XYOFFSET.OFX);
+	const int ofy = static_cast<int>(ctx->XYOFFSET.OFY);
+	// The rasterizer's own scissor planes: data.scissor is scissor.in verbatim
+	// (GSRendererSW::Draw), and m_fscissor_y is its ywyw() float conversion.
+	const GSVector4 fscissor = GSVector4(ctx->scissor.in);
+	const GSVector4 fscissor_y = fscissor.ywyw();
+
+	const u32 nprims = m_index->tail / 3;
+	m_zwalk_payload.reserve(4 + nprims * 20);
+
+	const auto push_f32 = [this](float v) {
+		u32 b;
+		std::memcpy(&b, &v, 4);
+		m_zwalk_payload.push_back(b);
+	};
+	const auto push_f64 = [this](double v) {
+		u64 b;
+		std::memcpy(&b, &v, 8);
+		m_zwalk_payload.push_back(static_cast<u32>(b));
+		m_zwalk_payload.push_back(static_cast<u32>(b >> 32));
+	};
+
+	// Header.
+	push_f32(fscissor.x);
+	m_zwalk_payload.push_back((zmax > fmt_max) ? 1u : 0u); // sel.zclamp, the scanline's own gate
+	m_zwalk_payload.push_back(fmt_max);
+	m_zwalk_payload.push_back(0u);
+
+	for (u32 p = 0; p < nprims; p++)
+	{
+		GSVertexSW sw[3];
+		for (int k = 0; k < 3; k++)
+		{
+			const GSVertex& v = m_vertex->buff[m_index->buff[p * 3 + k]];
+			// ConvertVertexBuffer's triangle position, scalar and exact: integer
+			// subpixels minus the offset, to float (exact under 2^16 magnitude),
+			// times the exact 1/16; z widened to double untouched.
+			const int x = static_cast<int>(v.XYZ.X) - ofx;
+			const int y = static_cast<int>(v.XYZ.Y) - ofy;
+			sw[k].p = GSVector4(static_cast<float>(x) * (1.0f / 16.0f),
+				static_cast<float>(y) * (1.0f / 16.0f), 0.0f, 0.0f);
+			sw[k].p.F64[1] = static_cast<double>(v.XYZ.Z);
+			sw[k].t = GSVector4::zero();
+			sw[k].c = GSVector4::zero();
+		}
+
+		// A primitive the rasterizer would not draw (degenerate y-order or zero
+		// cross product) covers no fragments on the GPU either — the coverage
+		// capture certified the conversion — so a zeroed block is never read.
+		GSTileZPlane zp;
+		if (!GSComputeTriangleZPlane(sw, fscissor_y, zp) || zp.nsections == 0)
+		{
+			m_zwalk_payload.insert(m_zwalk_payload.end(), 20, 0u);
+			continue;
+		}
+
+		// Per-primitive envelope: the walk's integer arithmetic is exact only while
+		// |4M|·quads stays under 2^53; |M| <= 2^34 leaves comfortable margin. Seeds
+		// must be the exact vertex integers the analysis relies on.
+		const double m1024d = zp.dscan_z * 1024.0; // exact: dscan_z is already M/1024
+		if (!envelope(std::abs(m1024d) <= 17179869184.0 /* 2^34 */))
+			return false;
+		for (int n = 0; n < zp.nsections; n++)
+		{
+			const double zs = zp.sec[n].zseed;
+			if (!envelope(zs >= 0.0 && zs < 4294967296.0 && zs == std::trunc(zs)))
+				return false;
+		}
+
+		const s64 m1024 = static_cast<s64>(m1024d);
+		const u64 m4 = static_cast<u64>((m1024 < 0) ? -m1024 : m1024) * 4;
+		const GSTileZPlaneSection& s0 = zp.sec[0];
+		const GSTileZPlaneSection& s1 = zp.sec[(zp.nsections == 2) ? 1 : 0];
+		// Rows word: the second section's first row in the low half (0xFFFF when
+		// single-section, which no fragment row reaches), and the primitive's
+		// UNCLIPPED geometric top in the high half, signed and clamped so a wild
+		// coordinate saturates instead of wrapping into a row that exists. The top
+		// is reserved for the seed-bias mirror (gs-ledger b32224e8ed + 66476f27d9 +
+		// 4d7ebb194a): its Y half gates on the primitive's first scanline — the
+		// pre-scissor one, because a scissor rejects pixels, it does not reseed an
+		// interpolator.
+		const u32 boundary = (zp.nsections == 2) ? static_cast<u32>(s1.top) & 0xFFFFu : 0xFFFFu;
+		const s32 top_clamped = std::clamp(zp.top_prim, -32768, 32767);
+		const u32 rows_word = boundary | (static_cast<u32>(static_cast<u16>(top_clamped)) << 16);
+
+		push_f32(s0.edge_x);
+		push_f32(s0.dedge_x);
+		push_f32(s0.p0x);
+		push_f32(s0.p0y);
+		push_f32(s1.edge_x);
+		push_f32(s1.dedge_x);
+		push_f32(s1.p0x);
+		push_f32(s1.p0y);
+		m_zwalk_payload.push_back(static_cast<u32>(s0.zseed));
+		m_zwalk_payload.push_back(static_cast<u32>(s1.zseed));
+		m_zwalk_payload.push_back(rows_word);
+		push_f32(zp.dscan_z32);
+		push_f64(zp.dscan_z);
+		m_zwalk_payload.push_back(static_cast<u32>(m4));
+		m_zwalk_payload.push_back(static_cast<u32>(m4 >> 32));
+		push_f64(s0.dedge_z);
+		push_f64(s1.dedge_z);
+	}
+
+	return true;
 }
 
 void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, const GIFRegTEX0& fixed_tex0,
@@ -1137,13 +1305,27 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 		conf.cb_ps.FogColor_AREF = fc.blend32<8>(conf.cb_ps.FogColor_AREF);
 	}
 
-	// Depth state + the PS2 z pipeline (EmulateZbuffer's recipe: clamp to the
-	// format's max after rasterization, floor the interpolated z to an integer where
-	// one z unit is finer than a float32 ULP).
+	// Depth state. A draw carrying a walk payload stores and compares the SW
+	// scanline's depth, computed by the fragment from the per-primitive plane
+	// (PS_TILE_ZWALK) — that subsumes the zfloor/zclamp recipe (the walk truncates
+	// and clamps in integer arithmetic), and it takes depth off the interpolant
+	// entirely, so the 1/320-px coverage nudge in the vertex shader no longer
+	// touches it (the d586cb2c25 dilemma — nudge load-bearing for colour, poison
+	// for depth — dissolves here). Everything else keeps EmulateZbuffer's recipe:
+	// clamp to the format's max after rasterization, floor the interpolated z to
+	// an integer where one z unit is finer than a float32 ULP.
+	const bool zwalk = !m_zwalk_payload.empty();
 	conf.depth.ztst = ds ? plan.ztst : static_cast<u8>(ZTST_ALWAYS);
 	conf.depth.zwe = plan.pass[0].z_write;
 	conf.cb_vs.max_depth = 0xFFFFFFFFu;
-	if (ds)
+	if (ds && zwalk)
+	{
+		conf.vs.tile_zwalk = 1;
+		conf.ps.tile_zwalk = 1;
+		conf.tile_zwalk_payload = m_zwalk_payload.data();
+		conf.tile_zwalk_payload_size = static_cast<u32>(m_zwalk_payload.size() / 4);
+	}
+	else if (ds)
 	{
 		const u32 max_z = 0xFFFFFFFFu >> (GSLocalMemory::m_psm[ctx->ZBUF.PSM].fmt * 8);
 		const bool large_z = static_cast<u32>(GSVector4i(m_vt.m_max.p).z) > max_z;
@@ -1206,6 +1388,11 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	switch (m_vt.m_primclass)
 	{
 		case GS_TRIANGLE_CLASS:
+			// The walk's ordinal comes from gl_VertexIndex, so its indices must be
+			// the identity mapping. De-indexing preserves primitive order, which is
+			// what keeps ordinal p pointing at the p-th payload block.
+			if (zwalk)
+				DeindexVertices();
 			if (!iip)
 				FlattenProvokingColor();
 			conf.topology = GSHWDrawConfig::Topology::Triangle;

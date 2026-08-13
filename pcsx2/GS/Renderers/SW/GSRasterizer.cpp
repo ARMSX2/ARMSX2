@@ -940,6 +940,7 @@ struct GSTriangleSetup
 	int bottom[2];
 	int nsections;
 	int i[3];       // y-sorted vertex indices
+	int top_prim;   // ceil(y) of the sorted top vertex, before the scissor clamp
 	GSVector4 cross; // the (negated, broadcast) cross product, for the edge-AA orientation
 };
 
@@ -975,6 +976,8 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 	GSVector4 tbmax = tbf.max(fscissor_y);
 	GSVector4 tbmin = tbf.min(fscissor_y);
 	GSVector4i tb = GSVector4i(tbmax.xzyw(tbmin)); // max(y0, t) max(y1, t) min(y1, b) min(y2, b)
+
+	out.top_prim = GSVector4i(tbf).extract32<0>(); // geometric first scanline, pre-scissor
 
 	GSVertexSW dv0 = v1 - v0;
 	GSVertexSW dv1 = v2 - v0;
@@ -1087,6 +1090,7 @@ bool CURRENT_ISA::GSComputeTriangleZPlane(const GSVertexSW* vertex, const GSVect
 	// the scanline adds are fp32 products of THIS value, not of the double.
 	out.dscan_z32 = static_cast<float>(out.dscan_z);
 	out.nsections = s.nsections;
+	out.top_prim = s.top_prim;
 	for (int n = 0; n < s.nsections; n++)
 	{
 		out.sec[n].edge_x = s.edge[n].p.x;

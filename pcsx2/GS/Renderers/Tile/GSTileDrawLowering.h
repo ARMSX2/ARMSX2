@@ -75,6 +75,8 @@ enum class GSTileFloorReason : u8
 	TextureFeedback, ///< texture pages intersect the draw's own write footprint (M4)
 	// M3g slice 2 range reason:
 	TextureStqOverflow, ///< STQ coordinates outside the scanline's 16.16 envelope, or Q not provably positive — the floor's host arithmetic stays the authority
+	// Depth transcription reason (decided by the route, which builds the payload):
+	DepthWalkEnvelope, ///< Z-gradient triangle outside the soft-float walk's envelope (z hull, gradient magnitude, seed shape, or no VS expand)
 	Count
 };
 

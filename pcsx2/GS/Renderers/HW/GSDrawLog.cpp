@@ -222,6 +222,8 @@ namespace GSDrawLog
 				return "TEX_PERSPECTIVE";
 			case TileFallbackTextureStqOverflow:
 				return "TEX_STQ_OVERFLOW";
+			case TileFallbackDepthWalkEnvelope:
+				return "ZWALK_ENVELOPE";
 			default:
 				return "";
 		}

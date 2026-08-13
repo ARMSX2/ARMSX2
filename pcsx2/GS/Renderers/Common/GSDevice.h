@@ -689,7 +689,7 @@ struct alignas(16) GSHWDrawConfig
 				u8 iip : 1;
 				u8 point_size : 1;		///< Set when points need to be expanded without VS expanding.
 				VSExpand expand : 3;
-				u8 _free : 1;
+				u8 tile_zwalk : 1; ///< Tile renderer: emit the flat per-primitive ordinal for the depth walk (indices must be identity)
 			};
 			u8 key;
 		};
@@ -746,6 +746,7 @@ struct alignas(16) GSHWDrawConfig
 				u32 tile_ltfx : 2; // Tile renderer: per-pixel MMAG/MMIN across the LOD crossing — 0 off, 1 linear where minifying, 2 linear where magnifying
 				u32 tile_vcolor : 1; // Tile renderer: the SW scanline's vertex-colour arithmetic (seven fractional bits, truncating)
 				u32 tile_fog : 1; // Tile renderer: integer fog blend at the console rule
+				u32 tile_zwalk : 1; // Tile renderer: gl_FragDepth from the SW scanline's float64 depth walk, replayed in soft-float from the per-primitive plane payload
 
 				// Shuffle and fbmask effect
 				u32 shuffle  : 1;
@@ -1145,10 +1146,12 @@ struct alignas(16) GSHWDrawConfig
 		// instead (the classes where the software renderer divides once per vertex
 		// rather than once per pixel). TileLtfxQ is the Q at which the level of
 		// detail crosses zero, for the per-pixel MMAG/MMIN choice; it is read only
-		// when tile_ltfx is set.
+		// when tile_ltfx is set. TileZBase is the uvec4 element index of this
+		// draw's depth-walk payload in the vertex-stream storage buffer, stamped
+		// by the device at upload time; read only when tile_zwalk is set.
 		float TileSTQRecip;
 		float TileLtfxQ;
-		float _pad0;
+		float TileZBase;
 
 		__fi PSConstantBuffer()
 		{
@@ -1269,6 +1272,8 @@ struct alignas(16) GSHWDrawConfig
 	u32 nverts;            ///< Number of vertices
 	u32 nindices;          ///< Number of indices
 	u32 indices_per_prim;  ///< Number of indices that make up one primitive
+	const u32* tile_zwalk_payload; ///< Tile depth walk: header + per-prim plane blocks, streamed to the vertex SSBO (uvec4-aligned)
+	u32 tile_zwalk_payload_size;   ///< Size of the payload in uvec4 elements (0 = none)
 	const std::vector<size_t>* drawlist;          ///< For reducing barriers on sprites
 	const std::vector<GSVector4i>* drawlist_bbox; ///< For RT copy when barriers not available.
 	GSVector4i scissor; ///< Scissor rect
