@@ -752,6 +752,14 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	GSVector4 tbmin = tbf.min(m_fscissor_y);
 	GSVector4i tb = GSVector4i(tbmax.xzyw(tbmin)); // max(y0, t) max(y1, t) min(y1, b) min(y2, b)
 
+	// UNCLIPPED, deliberately: the depth walk's bias gate asks whether the walk
+	// has stepped off the primitive's first scanline, and the scissor rejects
+	// pixels rather than reseeding the interpolator. Taking tb.x here instead
+	// would make a pixel's stored depth depend on the scissor around it -- the
+	// same triangle under a tighter scissor would exempt whichever row happened
+	// to survive, one unit out from the same draw untrimmed.
+	const int prim_top = GSVector4i(tbf).x;
+
 	GSVertexSW2 dv0 = v1 - v0;
 	GSVertexSW2 dv1 = v2 - v0;
 	GSVertexSW2 dv2 = v2 - v1;
@@ -796,7 +804,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 			edge.p.y = vertex[i[m2]].p.x;
 			dedge.p = ddx[!m2 << 1].yzzw(dedge.p);
 
-			DrawTriangleSection(tb.x, tb.w, tb.x, edge, dedge, dscan, vertex[i[1 - m2]].p);
+			DrawTriangleSection(tb.x, tb.w, prim_top, edge, dedge, dscan, vertex[i[1 - m2]].p);
 		}
 	}
 	else
@@ -808,7 +816,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 			edge.p.y = edge.p.x;
 			dedge.p = ddx[m2].xyzw(dedge.p);
 
-			DrawTriangleSection(tb.x, tb.z, tb.x, edge, dedge, dscan, v0.p);
+			DrawTriangleSection(tb.x, tb.z, prim_top, edge, dedge, dscan, v0.p);
 		}
 
 		if (tb.y < tb.w)
@@ -818,7 +826,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 			edge.p = (v0.p.xxxx() + ddx[m2] * dv0.p.yyyy()).xyzw(edge.p);
 			dedge.p = ddx[!m2 << 1].yzzw(dedge.p);
 
-			DrawTriangleSection(tb.y, tb.w, tb.x, edge, dedge, dscan, v1.p);
+			DrawTriangleSection(tb.y, tb.w, prim_top, edge, dedge, dscan, v1.p);
 		}
 	}
 
@@ -979,6 +987,12 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 	GSVector4 tbmin = tbf.min(fscissor_y);
 	GSVector4i tb = GSVector4i(tbmax.xzyw(tbmin)); // max(y0, t) max(y1, t) min(y1, b) min(y2, b)
 
+	// UNCLIPPED, deliberately: the depth walk's bias gate asks whether the walk
+	// has stepped off the primitive's first scanline, and the scissor rejects
+	// pixels rather than reseeding the interpolator. Taking tb.x here instead
+	// would make a pixel's stored depth depend on the scissor around it -- the
+	// same triangle under a tighter scissor would exempt whichever row happened
+	// to survive, one unit out from the same draw untrimmed.
 	out.top_prim = GSVector4i(tbf).extract32<0>(); // geometric first scanline, pre-scissor
 
 	GSVertexSW dv0 = v1 - v0;
