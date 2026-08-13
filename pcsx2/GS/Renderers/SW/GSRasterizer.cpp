@@ -796,7 +796,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 			edge.p.y = vertex[i[m2]].p.x;
 			dedge.p = ddx[!m2 << 1].yzzw(dedge.p);
 
-			DrawTriangleSection(tb.x, tb.w, edge, dedge, dscan, vertex[i[1 - m2]].p);
+			DrawTriangleSection(tb.x, tb.w, tb.x, edge, dedge, dscan, vertex[i[1 - m2]].p);
 		}
 	}
 	else
@@ -808,7 +808,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 			edge.p.y = edge.p.x;
 			dedge.p = ddx[m2].xyzw(dedge.p);
 
-			DrawTriangleSection(tb.x, tb.z, edge, dedge, dscan, v0.p);
+			DrawTriangleSection(tb.x, tb.z, tb.x, edge, dedge, dscan, v0.p);
 		}
 
 		if (tb.y < tb.w)
@@ -818,7 +818,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 			edge.p = (v0.p.xxxx() + ddx[m2] * dv0.p.yyyy()).xyzw(edge.p);
 			dedge.p = ddx[!m2 << 1].yzzw(dedge.p);
 
-			DrawTriangleSection(tb.y, tb.w, edge, dedge, dscan, v1.p);
+			DrawTriangleSection(tb.y, tb.w, tb.x, edge, dedge, dscan, v1.p);
 		}
 	}
 
@@ -864,7 +864,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	}
 }
 
-void GSRasterizer::DrawTriangleSection(int top, int bottom, GSVertexSW2& RESTRICT edge, const GSVertexSW2& RESTRICT dedge, const GSVertexSW2& RESTRICT dscan, const GSVector4& RESTRICT p0)
+void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVertexSW2& RESTRICT edge, const GSVertexSW2& RESTRICT dedge, const GSVertexSW2& RESTRICT dscan, const GSVector4& RESTRICT p0)
 {
 	pxAssert(top < bottom);
 	pxAssert(edge.p.x <= edge.p.y);
@@ -898,7 +898,7 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, GSVertexSW2& RESTRIC
 			GSVector8 prestepv(prestep);
 
 			reinterpret_cast<GSVertexSW2*>(e)->p.F64[1] = edge.p.F64[1] + dedge.p.F64[1] * dy + dscan.p.F64[1] * prestep
-			                                             - GSDepthWalkBias(dscan.p.F64[1], dedge.p.F64[1], dy);
+			                                             - GSDepthWalkBias(dscan.p.F64[1], dedge.p.F64[1], top != prim_top);
 			reinterpret_cast<GSVertexSW2*>(e)->tc = edge.tc + dedge.tc * dyv + dscan.tc * prestepv;
 
 			AddScanlineInfo(e++, pixels, left, top);
@@ -1116,7 +1116,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		return;
 
 	for (int n = 0; n < s.nsections; n++)
-		DrawTriangleSection(s.top[n], s.bottom[n], s.edge[n], s.dedge[n], s.dscan, s.p0[n]);
+		DrawTriangleSection(s.top[n], s.bottom[n], s.top_prim, s.edge[n], s.dedge[n], s.dscan, s.p0[n]);
 
 	Flush(vertex, index, s.dscan);
 
@@ -1171,7 +1171,7 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	}
 }
 
-void GSRasterizer::DrawTriangleSection(int top, int bottom, GSVertexSW& RESTRICT edge, const GSVertexSW& RESTRICT dedge, const GSVertexSW& RESTRICT dscan, const GSVector4& RESTRICT p0)
+void GSRasterizer::DrawTriangleSection(int top, int bottom, int prim_top, GSVertexSW& RESTRICT edge, const GSVertexSW& RESTRICT dedge, const GSVertexSW& RESTRICT dscan, const GSVector4& RESTRICT p0)
 {
 	pxAssert(top < bottom);
 	pxAssert(edge.p.x <= edge.p.y);
@@ -1203,7 +1203,7 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, GSVertexSW& RESTRICT
 			const float prestep = l.x - p0.x;
 
 			e->p.F64[1] = edge.p.F64[1] + dedge.p.F64[1] * dy + dscan.p.F64[1] * prestep
-			              - GSDepthWalkBias(dscan.p.F64[1], dedge.p.F64[1], dy);
+			              - GSDepthWalkBias(dscan.p.F64[1], dedge.p.F64[1], top != prim_top);
 			e->t = edge.t + dedge.t * dy + dscan.t * prestep;
 			e->c = edge.c + dedge.c * dy + dscan.c * prestep;
 

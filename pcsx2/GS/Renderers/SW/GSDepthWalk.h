@@ -31,6 +31,15 @@
 //      points back toward the seed, so a FALLING gradient runs high. Signing
 //      this half took the ygrad section from 448 wrong pixels to zero.
 //
+// "Has stepped" means stepped off the PRIMITIVE's first scanline, not the
+// section's. A triangle without a flat edge is walked as two sections rebased
+// on the middle vertex, and silicon has no such split -- letting the second
+// section's first row take no bias would lay a one-unit depth discontinuity
+// along the middle vertex's row, which is a seam we would have invented. The
+// capture cannot see this either way: every triangle it draws is flat-topped
+// and therefore single-section, so this is mechanism, not measurement, and the
+// probe is byte-identical across the change.
+//
 // A flat triangle is exact on silicon -- 896 of 896 readings -- so the bias
 // belongs to the walk and not to the seed, and a primitive with no depth
 // gradient takes none of it. Sprites never come here: their depth is carried as
@@ -41,10 +50,10 @@
 
 static constexpr double kGSDepthWalkBias = 1.0 / 2048.0;
 
-__forceinline static double GSDepthWalkBias(double dscan_z, double dedge_z, double dy)
+__forceinline static double GSDepthWalkBias(double dscan_z, double dedge_z, bool stepped)
 {
 	double bias = dscan_z != 0.0 ? kGSDepthWalkBias : 0.0;
-	if (dedge_z != 0.0 && dy != 0.0)
+	if (dedge_z != 0.0 && stepped)
 		bias += dedge_z > 0.0 ? kGSDepthWalkBias : -kGSDepthWalkBias;
 	return bias;
 }
