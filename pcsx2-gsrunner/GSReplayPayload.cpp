@@ -480,6 +480,159 @@ namespace GSReplayPayload
 			records++;
 		}
 
+		// Where a ladder rung may be placed at all.
+		//
+		// ⚠️ A rung is a GIF packet of our own, spliced into the recorded stream at a
+		// packet boundary, and it starts a local-to-host transfer. If the GS is not
+		// quiescent when it arrives, our registers are consumed as the game's data and the
+		// game's following data as ours. It is deterministic, it is silent, and it does
+		// not read as corruption -- it reads as the console rendering something the
+		// emulator never did, which is the one thing the ladder exists to measure.
+		//
+		// Quiescent means two independent things, and checking only the first is what the
+		// first version of this did:
+		//
+		//   * the GIF holds no path open -- the last tag it saw had EOP set, and no
+		//     IMAGE payload ran past the packet's end; and
+		//   * no image transfer is outstanding. A texture upload is sized once by TRXREG
+		//     and then delivered as SEVERAL EOP-terminated IMAGE tags across several
+		//     packets. Between them the path is closed and the transfer is still live, so
+		//     an EOP check calls those boundaries safe and they are not. On GT4 the EOP
+		//     check alone moved three rungs and the console still starved a readback two
+		//     quadwords short -- the game's upload and our readback were sharing a
+		//     transfer.
+		//
+		// Measured on GT4: two rung-free console runs are byte-identical, and a run with
+		// rungs every 50 packets disagreed with them on 57% of the window by the end of
+		// frame one.
+		bool path_open = false;
+		u32 image_carry = 0; // qwords of IMAGE payload owed by the previous packet
+		u64 transfer_left = 0; // bytes of image data the live transfer still expects
+		u32 trxreg_w = 0, trxreg_h = 0, bitbltbuf_psm = 0;
+		u32 rungs_moved = 0;
+		u32 frames_on_open_path = 0;
+		bool ladder_deferred = false;
+
+		// Bits per pixel of a transfer format, for sizing an image transfer. Only the
+		// formats a transfer can name; anything else leaves the size unknown, which is
+		// treated as "not quiescent" rather than "zero".
+		const auto TransferBits = [](u32 psm) -> u32 {
+			switch (psm)
+			{
+				case 0x00: case 0x01: return 32; // PSMCT32, PSMCT24 (24 pads to 32 in transfer)
+				case 0x02: case 0x0A: return 16; // PSMCT16, PSMCT16S
+				case 0x13: case 0x1B: return 8;  // PSMT8, PSMT8H
+				case 0x14: case 0x24: case 0x2C: return 4; // PSMT4, PSMT4HL, PSMT4HH
+				case 0x30: case 0x31: return 32; // PSMZ32, PSMZ24
+				case 0x32: case 0x3A: return 16; // PSMZ16, PSMZ16S
+				default: return 0;
+			}
+		};
+
+		const auto TrackGifPath = [&](const u8* data, size_t length) {
+			const u8* p = data;
+			const u8* end = data + length;
+			if (image_carry)
+			{
+				const size_t skip = std::min<size_t>(static_cast<size_t>(image_carry) * 16,
+					static_cast<size_t>(end - p));
+				p += skip;
+				image_carry -= static_cast<u32>(skip / 16);
+				transfer_left -= std::min<u64>(transfer_left, skip);
+			}
+			while (p + 16 <= end)
+			{
+				const u8* const tag = p;
+				u64 lo, hi;
+				std::memcpy(&lo, p, sizeof(lo));
+				std::memcpy(&hi, p + 8, sizeof(hi));
+				p += 16;
+				const u32 nloop = static_cast<u32>(lo & 0x7FFF);
+				const u32 flg = static_cast<u32>((lo >> 58) & 3);
+				u32 nreg = static_cast<u32>((lo >> 60) & 0xF);
+				if (nreg == 0)
+					nreg = 16;
+				path_open = ((lo >> 15) & 1) == 0;
+
+				size_t payload = 0;
+				if (flg == 0) // PACKED
+					payload = static_cast<size_t>(nloop) * nreg * 16;
+				else if (flg == 1) // REGLIST, padded to a quadword
+					payload = ((static_cast<size_t>(nloop) * nreg * 8) + 15) & ~size_t(15);
+				else if (flg == 2) // IMAGE
+					payload = static_cast<size_t>(nloop) * 16;
+
+				// The transfer registers, so an outstanding upload can be sized. Only
+				// PACKED A+D carries them; a game that writes them through REGLIST would
+				// leave transfer_left stale, which errs toward "not quiescent".
+				if (flg == 0 && payload <= static_cast<size_t>(end - p))
+				{
+					const u8* q = p;
+					for (u32 i = 0; i < nloop; i++)
+					{
+						for (u32 j = 0; j < nreg; j++, q += 16)
+						{
+							if (((hi >> (4 * j)) & 0xF) != 0xE) // A+D
+								continue;
+							u64 value, addr;
+							std::memcpy(&value, q, sizeof(value));
+							std::memcpy(&addr, q + 8, sizeof(addr));
+							switch (addr & 0xFF)
+							{
+								case 0x50: // BITBLTBUF
+									bitbltbuf_psm = static_cast<u32>((value >> 56) & 0x3F);
+									break;
+								case 0x52: // TRXREG
+									trxreg_w = static_cast<u32>(value & 0xFFF);
+									trxreg_h = static_cast<u32>((value >> 32) & 0xFFF);
+									break;
+								case 0x53: // TRXDIR -- the kick
+								{
+									const u32 dir = static_cast<u32>(value & 3);
+									if (dir == 0 || dir == 2) // host-to-local, local-to-local
+									{
+										const u32 bits = TransferBits(bitbltbuf_psm);
+										transfer_left = bits ? (static_cast<u64>(trxreg_w) * trxreg_h * bits + 7) / 8
+															 : ~0ull; // unknown size: never quiescent
+									}
+									else
+									{
+										transfer_left = 0;
+									}
+									break;
+								}
+								default:
+									break;
+							}
+						}
+					}
+				}
+
+				const size_t have = static_cast<size_t>(end - p);
+				if (payload > have)
+				{
+					// Only IMAGE legitimately spans packets; anything else running past
+					// the end means the walk lost sync, and a rung must not be placed on
+					// a boundary this cannot vouch for.
+					image_carry = (flg == 2) ? static_cast<u32>((payload - have) / 16) : 0;
+					if (flg != 2)
+						path_open = true;
+					if (flg == 2)
+						transfer_left -= std::min<u64>(transfer_left, have);
+					p = end;
+				}
+				else
+				{
+					if (flg == 2)
+						transfer_left -= std::min<u64>(transfer_left, payload);
+					p += payload;
+				}
+				(void)tag;
+			}
+			if (image_carry)
+				path_open = true;
+		};
+
 		u32 packet_index = 0;
 		for (const GSDumpFile::GSData& packet : dump->GetPackets())
 		{
@@ -507,6 +660,8 @@ namespace GSReplayPayload
 							length = 16384;
 						data = packet.data + (16384 - length);
 					}
+
+					TrackGifPath(data, length);
 
 					PushRecord(stream, REC_GIF, static_cast<u32>(length),
 						static_cast<u32>(packet.path), 0);
@@ -547,6 +702,13 @@ namespace GSReplayPayload
 					PushRecord(stream, REC_VSYNC, 0, frames, 0);
 					records++;
 
+					// A frame checkpoint cannot be moved -- "end of frame" is the whole
+					// point of it -- so an open path here is reported instead. It has
+					// the same consequence as it does for a rung, and a frame capture
+					// taken across one is not an oracle.
+					if (path_open || transfer_left != 0)
+						frames_on_open_path++;
+
 					Checkpoint ck = rb;
 					ck.tag = frames;
 					PushRecord(stream, REC_CKPT, sizeof(Checkpoint), checkpoints, this_packet);
@@ -572,9 +734,23 @@ namespace GSReplayPayload
 			// the same order off the same dump.
 			//
 			// A vsync has already emitted one, so this does not double it.
-			if (opts.ladder_every != 0 && packet.id != GSDumpTypes::GSType::VSync &&
-				((this_packet + 1) % opts.ladder_every) == 0)
+			// A rung is due on the cadence, but it may only be placed where the GIF has
+			// closed every path it opened; otherwise it is deferred to the first boundary
+			// that qualifies. Deferring rather than dropping keeps the rung count roughly
+			// on cadence, and the rung still names the packet it actually follows, so the
+			// two arms join on a real index instead of an intended one.
+			const bool rung_due = (opts.ladder_every != 0 && packet.id != GSDumpTypes::GSType::VSync &&
+								   ((this_packet + 1) % opts.ladder_every) == 0);
+			const bool quiescent = !path_open && transfer_left == 0;
+			if (rung_due && !quiescent)
 			{
+				ladder_deferred = true;
+				rungs_moved++;
+			}
+			if ((rung_due || ladder_deferred) && quiescent &&
+				packet.id != GSDumpTypes::GSType::VSync)
+			{
+				ladder_deferred = false;
 				Checkpoint ck = rb;
 				ck.tag = 0x10000u + this_packet; // ladder rungs live above the frame tags
 				PushRecord(stream, REC_CKPT, sizeof(Checkpoint), checkpoints, this_packet);
@@ -642,6 +818,23 @@ namespace GSReplayPayload
 			static_cast<unsigned long long>(total >> 20));
 		RP_LOG("environment restore: %zu register writes.\n",
 			(environment.size() / 16) - 1);
+		if (rungs_moved)
+		{
+			RP_LOG("ladder: %u rungs moved off a packet that left a GIF path open. "
+				   "Reported rather than silent -- a rung placed there splices our "
+				   "registers into the game's transfer and the console then draws "
+				   "something the emulator never did.\n",
+				rungs_moved);
+		}
+		if (ladder_deferred)
+			RP_LOG("ladder: the stream ended with a rung still owed; it was dropped.\n");
+		if (frames_on_open_path)
+		{
+			RP_LOG("⚠️  %u of %u frame checkpoints sit on a packet that left a GIF path "
+				   "open. Those frames are not oracles -- the readback is spliced into a "
+				   "live transfer.\n",
+				frames_on_open_path, frames);
+		}
 
 		return true;
 	}
