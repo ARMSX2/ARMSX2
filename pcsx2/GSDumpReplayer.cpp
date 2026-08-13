@@ -3,6 +3,7 @@
 
 #include "GS.h"
 #include "GS/GSLzma.h"
+#include "GS/Renderers/HW/GSDrawLog.h"
 #include "GSDumpReplayer.h"
 #include "GameList.h"
 #include "Gif.h"
@@ -48,6 +49,7 @@ static u64 s_next_frame_time = 0;
 static bool s_is_dump_runner = false;
 static GSDumpReplayer::PacketHook s_packet_hook = nullptr;
 static GSDumpReplayer::InitialStateHook s_initial_state_hook = nullptr;
+static bool s_publish_packet_marks = false;
 
 R5900cpu GSDumpReplayerCpu = {
 	GSDumpReplayerCpuReserve,
@@ -195,6 +197,13 @@ void GSDumpReplayer::SetInitialStateHook(InitialStateHook hook)
 	s_initial_state_hook = hook;
 }
 
+void GSDumpReplayer::SetPublishPacketMarks(bool enabled)
+{
+	s_publish_packet_marks = enabled;
+	if (!enabled)
+		MTGS::RunOnGSThread([]() { GSDrawLog::MarkPacket(GSDrawLog::PacketNone); });
+}
+
 void GSDumpReplayerCpuReserve()
 {
 }
@@ -292,6 +301,11 @@ void GSDumpReplayerCpuStep()
 			s_dump_running = false;
 		}
 	}
+
+	// Ahead of the packet's own work, so a draw the packet produces is stamped with it
+	// rather than with its predecessor.
+	if (s_publish_packet_marks)
+		MTGS::RunOnGSThread([this_packet]() { GSDrawLog::MarkPacket(this_packet); });
 
 	switch (packet.id)
 	{
