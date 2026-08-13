@@ -218,6 +218,11 @@ namespace GSDrawLog
 	/// Whether recording is currently active. Cheap enough to test per draw.
 	bool IsActive();
 
+	/// Whether a row is open. The ledger holds one at a time, so a rasterization that can
+	/// run nested inside another draw -- the Tile renderer's SW floor -- asks this before
+	/// opening one of its own, and rides the caller's row when the answer is yes.
+	bool HasOpenDraw();
+
 	/// Names the dump packet whose work is about to reach the GS thread. Every row opened
 	/// after this call carries that index until the next one.
 	///
