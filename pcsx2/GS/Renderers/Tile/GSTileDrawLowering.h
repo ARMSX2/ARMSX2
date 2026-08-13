@@ -508,13 +508,43 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	//      implicated and not just the divide. The pre-existing tc-affine drift is
 	//      unchanged.
 	//
-	// Why a one-to-two-percent coordinate error reads as a catastrophe on the corpus:
-	// every newly-native draw is a palettised, bilinear, modulated triangle (Dirge
-	// 1,803 P8 + 132 P4; GT4 1,772 P4 + 46 P8). One texel off in a palettised source
-	// fetches an unrelated palette entry, so the capture's worst-16 (its texture is a
-	// step-16 ramp) becomes max 204 on Dirge and max 105 on GT4. Fix the coordinate
-	// and the large-magnitude class goes with it; the worst-one gouraud haze is what
-	// would remain. Corpus cost of lifting TODAY: 13/16 to 8/16.
+	// ⚠️ CORRECTION, same day: reason 2 does NOT explain the corpus, and the sentence
+	// that used to stand here — that a palettised source amplifies the coordinate
+	// error into Dirge's max-204 — was an inference, not a measurement. It is wrong.
+	//
+	// Reason 2 is real but it is SMALL and it is CONSOLE-NEUTRAL. Every differing
+	// pixel in gs-grad is off by exactly one sixteenth of a texel, never more, and the
+	// six constant-quotient cases fail at the SAME two pixels while their S differs —
+	// so it is Q, not S. Mechanism: the GPU's interpolated Q parts from the scanline's
+	// by a few ULPs, and the console's thirteen-bit truncated reciprocal turns that
+	// into a sixteenth-of-a-texel step wherever the exact coordinate sits on a filter
+	// boundary. It is not fixable by transcription — the ARM64 scanline JIT ACCUMULATES
+	// (q += d4.q per four-pixel block), and no fragment shader reproduces a sequential
+	// accumulation in closed form; both arms already wobble around an exact plane, in
+	// different places. It is also not worth fixing: scored against the console rather
+	// than against each other, the lifted arm is 19,273 differing words of 88,064
+	// against software's 19,260 — thirteen words, 0.015% — and on tc-persp itself the
+	// lifted arm is CLOSER to silicon (7,504 vs 7,512). Silicon's own divide moves a
+	// mathematically-constant coordinate on 78% of readings; software misses by holding
+	// still. Same structural class as reason 1: byte-identity to a sequential software
+	// DDA is not a bar a GPU can meet, and the plan's within-one-level tolerance for
+	// interpolated content is the honest gate.
+	//
+	// What DOES explain the corpus is a separate defect this floor also hides. Dirge
+	// lifted: 27.35% of pixels differ, 22.78% by more than two levels, and 91.3% of
+	// those live in horizontal runs of eight pixels or more (median error 25 levels,
+	// whole 597-pixel rows changing from warm brown to cold grey). A one-in-a-hundred
+	// boundary flip scatters as salt and pepper — 0.4% of these pixels are isolated.
+	// Splitting the lift by class: flooring the MIP STQ triangles alone takes Dirge
+	// from 22.78% to 6.46%, and there are only FIFTY-TWO of them among 1,943 natives.
+	// The mip path on STQ triangles has never been scored — gs-mip-sprites is
+	// sprites-only by construction, and gs-grad's mip content is all STQ triangles but
+	// was captured while they floored. The remaining 6.46% is the 1,883 palettised
+	// gouraud character triangles plus full-width rows they are far too small to have
+	// drawn, so at least part of it is a native/floor handoff, not sampling.
+	//
+	// So the unlock is gated on the MIP-ON-TRIANGLES defect and on that handoff — not
+	// on the coordinate. Corpus cost of lifting TODAY: 13/16 to 8/16.
 	//
 	// Note for whoever lifts it: TEX_PERSPECTIVE masks what is underneath. With it
 	// lifted the census re-sorts to BLEND — on GT4, 48.1% native becomes 81.7% and
