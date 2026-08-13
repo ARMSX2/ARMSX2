@@ -169,12 +169,18 @@ namespace GSLadder
 		s_descs.clear();
 		s_pixels.clear();
 
-		// Rung zero, before a single packet runs: the same post-restore control the
-		// console takes, and for the same reason. Here it says whether the dump's freeze
-		// landed; there it says whether the four-megabyte restore did. A rung that
-		// differs is only interesting once this one does not.
-		MTGS::RunOnGSThread([]() { CaptureOnGSThread(0, 0); });
-
+		// Rung zero: the same post-restore control the console takes, and for the same
+		// reason. Here it says whether the dump's freeze landed; there it says whether
+		// the four-megabyte restore did. A rung that differs is only interesting once
+		// this one does not.
+		//
+		// ⚠️ It has to be taken from the initial-state hook, not from here. Arming
+		// happens before the VM runs, and the freeze is applied on the first CPU step --
+		// so a capture queued here reads memory that has had *nothing* put in it, and
+		// then disagrees with the console at every rung for a reason that has nothing to
+		// do with either renderer. That is exactly what it did on the first run.
+		GSDumpReplayer::SetInitialStateHook(
+			[]() { MTGS::RunOnGSThread([]() { CaptureOnGSThread(0, 0); }); });
 		GSDumpReplayer::SetPacketHook(&OnPacket);
 
 		LADDER_LOG("armed: base block %u, buffer width %u, format %u, %ux%u at (%u,%u), every %u packets\n",
@@ -190,6 +196,7 @@ namespace GSLadder
 		s_armed = false;
 		s_recording = false;
 		GSDumpReplayer::SetPacketHook(nullptr);
+		GSDumpReplayer::SetInitialStateHook(nullptr);
 
 		// Every rung is queued behind the packets it follows, so the last of them may
 		// still be in flight; draining is what makes the file complete rather than
