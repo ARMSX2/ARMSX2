@@ -14,15 +14,22 @@
 // whether one draw can be realized natively, and if so under what write claims. Pure
 // function over PODs — no GS state, no device — so the predicate sweeps in ctest.
 //
-// The M2 native envelope is opaque untextured draws: triangles and sprites, no
-// blending, no texture, and — since M3c — an alpha test that is either provable from
-// the vertex-trace alpha range or realizable as a one- or two-pass split, frame formats whose
-// cells upload and read back losslessly (CT32/CT24), depth formats that round-trip
-// exactly through a float32 depth buffer AND pair with the frame's pixel size (Z24
-// under the 32-bit frames; Z32 floors on float32 storage, Z16/Z16S floor on pairing
-// unless the draw is depth-only). Everything else takes the SW floor, tagged with the
-// first reason that disqualified it; the per-title distribution of that tag is the
+// The native envelope: triangles and sprites, no blending; textures through the GPU
+// sampler for affine nearest and through the in-shader integer filter otherwise, with
+// STQ coordinates served on sprites and floored on triangles; an alpha test either
+// provable from the vertex-trace alpha range or realizable as a one- or two-pass
+// split; fog in-shader at the console's integer rule; frame formats whose cells upload
+// and read back losslessly (CT32/CT24); and depth formats that round-trip exactly
+// through a float32 depth buffer AND pair with the frame's pixel size (Z24 under the
+// 32-bit frames; Z32 floors on float32 storage, Z16/Z16S floor on pairing unless the
+// draw is depth-only). Everything else takes the SW floor, tagged with the first
+// reason that disqualified it; the per-title distribution of that tag is the
 // renderer's primary health metric.
+//
+// ⚠️ The floor is development scaffolding and a correctness backstop, never a shipping
+// path: each native/floor handoff on GPU-truth pages costs a synchronous readback, and
+// the measured cost curve is U-shaped in native coverage, so a promoted title runs its
+// benchmark scenes at zero floor invocations.
 //
 // Console-measured test-stage rules baked in here (gs-test capture, SCPH-30001):
 //   - DATE on a 24-bit frame FAILS every pixel (it does not pass-through as "no
@@ -46,10 +53,10 @@ enum class GSTileFloorReason : u8
 	// Register-predicate reasons (decided by gsTileLowerDraw):
 	PrimClass, ///< points/lines — not in the M2 envelope
 	SpriteExpandUnavailable, ///< sprite draw without VS expand support
-	Textured, ///< retired at M3b (kept so old ledgers still decode); tme now gates per-mechanism below
+	Textured, ///< unused — tme gates per-mechanism below; retained so old ledgers decode
 	Blend,
 	CoverageAA1,
-	Fog, ///< retired at M3d (in-shader integer fog); kept so old ledgers still decode
+	Fog, ///< unused — fog is in-shader integer; retained so old ledgers decode
 	Fba,
 	ScanMask,
 	Dither, ///< DTHE — the native path writes no dither matrix (see the gate)
@@ -66,14 +73,14 @@ enum class GSTileFloorReason : u8
 	FootprintExtent, ///< draw wider than the stride or deep enough to wrap page space
 	FrameZOverlap, ///< FRAME and ZBUF footprints share pages
 	ResourceFailure, ///< target pool allocation failed
-	// M3b texture gates (register-predicate):
-	TextureFiltered, ///< retired at M3g slice 1 (in-shader integer bilinear); kept so old ledgers still decode
+	// Texture gates (register-predicate):
+	TextureFiltered, ///< unused — bilinear is the in-shader integer filter; retained so old ledgers decode
 	TextureMip, ///< mip levels the GPU chain cannot express (deeper than the base pyramid, or an oversized claim)
 	TexturePsm, ///< texture format the source builder does not serve (PSGPU24)
-	TexturePerspective, ///< STQ triangle — blocked on Z/coverage parity, not the coordinate walk (implemented at M3g slice 2, probe-proven; see the lowering comment)
-	// M3b geometry reason:
+	TexturePerspective, ///< STQ triangle — the coordinate walk is implemented and probe-proven; this waits on depth parity (see the lowering comment)
+	// Texture geometry reason:
 	TextureFeedback, ///< texture pages intersect the draw's own write footprint (M4)
-	// M3g slice 2 range reason:
+	// STQ range reason:
 	TextureStqOverflow, ///< STQ coordinates outside the scanline's 16.16 envelope, or Q not provably positive — the floor's host arithmetic stays the authority
 	// Depth transcription reason (decided by the route, which builds the payload):
 	DepthWalkEnvelope, ///< Z-gradient triangle outside the soft-float walk's envelope (z hull, gradient magnitude, seed shape, or no VS expand)
@@ -439,128 +446,109 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		return floored(GSTileFloorReason::PrimClass);
 	if (in.prim_class == GS_SPRITE_CLASS && !in.vs_expand)
 		return floored(GSTileFloorReason::SpriteExpandUnavailable);
-	// The texture envelope (M3b nearest, M3g in-shader coordinates): affine
-	// nearest goes through the GPU sampler — console-exact (gs-texture capture) —
-	// and bilinear through the in-shader integer filter reproducing the SW
-	// scanline (1/16-texel truncating snap, 4-bit weight, nested truncating
-	// lerps). For STQ the fragment path recomputes the scanline's per-pixel
-	// trunc(s/q) into 16.16 with the GLSL divide tightened to IEEE rounding —
-	// sprites run it natively; TRIANGLES still floor, and the blocker is NOT the
-	// coordinate walk (gs-grad probe: 99.9% word-identical to SW on the
-	// perspective sections through this path). It is depth parity, on OutRun's road
-	// and roadside strips, which ladder overlapping triangles at consecutive Z under
-	// GEQUAL so a one-unit disagreement decides whole pixels.
+	// The texture envelope. Affine nearest goes through the GPU sampler, which the
+	// gs-texture capture measures console-exact; bilinear goes through the in-shader
+	// integer filter reproducing the SW scanline (1/16-texel truncating snap, 4-bit
+	// weight, nested truncating lerps); STQ draws recompute the scanline's per-pixel
+	// trunc(s/q) into 16.16 with the GLSL divide tightened to IEEE rounding. STQ
+	// SPRITES run all of it natively. STQ TRIANGLES floor here, and the blocker is
+	// depth parity — not the coordinate walk, which gs-grad scores 99.9%
+	// word-identical to software on the perspective sections through this same path.
 	//
-	// Most of it has been root-caused, though not fixed. The bulk is the vertex
-	// shader's 1/320-pixel boundary nudge: it translates the whole primitive, so
+	// Why depth parity: OutRun's road and roadside strips ladder overlapping triangles
+	// at consecutive Z under GEQUAL, so a one-unit disagreement decides whole pixels.
+	// The vertex shader's 1/320-pixel boundary nudge translates the whole primitive, so
 	// interpolated depth rides its own gradient and lands 5 to 16 units past the
-	// scanline, one-sided on 40,662 of 40,666 pixels of one OutRun draw. Not the
-	// truncating interpolator, and not coverage. The comparator is not involved
-	// either: gs-decide measured it as the plain unsigned rule, GEQUAL passing the
-	// tie, at 100.00% over 30,720 readings including a ladder built for the question.
+	// scanline, one-sided on 40,662 of 40,666 pixels of one such draw.
 	//
-	// ⚠️ Dropping the nudge for native draws was tried and REVERTED by measurement.
-	// It does everything hoped for on depth (that draw's divergence falls to 3,182
-	// pixels at exactly one, balanced), takes the corpus 8/9 to 9/9, and leaves both
-	// gs-coverage arms byte-identical — but gs-interp says the nudge is load-bearing
-	// for GOURAUD COLOUR: with it, tile is byte-identical to the software renderer
-	// on that capture; without it, 22,760 bytes differ and the colour-gradient
-	// sections score measurably worse against the console (cgrad-sub 5,216 to 10,112
-	// readings differing). Two emulator runs are byte-identical, so that is real.
-	// The corpus cannot see it — its native draws are flat-shaded, where the colour
-	// truncation is identity. Whatever completes the pixel-corner sample point for
-	// colour is currently made up of the vertex conversion AND this nudge together;
-	// until that is understood, the nudge cannot move alone. **gs-coverage is the
-	// wrong gate for it** — that probe scores which pixels are covered, never what
-	// value is interpolated at them.
+	// That nudge is load-bearing and cannot be dropped for native draws. Without it,
+	// depth does everything wanted (the same draw falls to 3,182 pixels off by exactly
+	// one, balanced), the corpus goes 8/9 to 9/9, and both gs-coverage arms stay
+	// byte-identical — but gs-interp shows the nudge is also what makes GOURAUD COLOUR
+	// match: with it tile is byte-identical to software on that capture, without it
+	// 22,760 bytes differ and the colour-gradient sections score worse against the
+	// console. The pixel-corner sample point for colour is currently made of the vertex
+	// conversion and the nudge together, so the nudge cannot move alone.
+	// ⚠️ gs-coverage is the wrong gate for any of this — it scores which pixels are
+	// covered, never what value is interpolated at them.
 	//
-	// ⚠️ 2026-08-13: THE DEPTH HALF ABOVE IS CLOSED, AND DEPTH IS NO LONGER WHY THIS
-	// FLOOR EXISTS. The second half used to read: the GPU evaluates the depth plane
-	// in float32 while the scanline walks a float64 DDA, so the two floors part by one
-	// wherever the exact value lands on an integer, and closing it needs the plane
-	// evaluated in integer arithmetic per primitive. That machinery LANDED (the
-	// soft-float walk built by BuildZWalkPayload out of GSComputeTriangleZPlane) and
-	// it works: with this floor lifted, gs-interp scores depth 0 of 29,164 readings
-	// differing from the software arm — zctrl, zgrad-x and zgrad-sub all exactly zero,
-	// same as the floored arm. gs-coverage is byte-identical to software under both
-	// arms too, so coverage is not involved either. Anyone re-reading this to plan the
-	// unlock should not go looking at depth or the sample point again.
+	// Settled, and not worth re-opening:
 	//
-	// What the floor is actually still holding back, measured the same day by running
-	// gs-interp / gs-grad / gs-coverage under floored-tile, lifted-tile and software:
+	//   - Depth transcription. The soft-float walk (BuildZWalkPayload over
+	//     GSComputeTriangleZPlane) reproduces the scanline: with this floor lifted,
+	//     gs-interp scores depth 0 of 29,164 readings differing from software.
+	//   - The depth comparator. gs-decide measures the plain unsigned rule with GEQUAL
+	//     passing the tie, 100.00% over 30,720 readings.
+	//   - Coverage. Byte-identical to software under both arms.
+	//   - Mip sampling on STQ triangles. With this floor lifted gs-grad's 31 mip
+	//     TRIANGLE cases go native (ledger: all 39 mipmapped draws, zero floored) and
+	//     score against software lod-select 100.00% of 19,456 words, lod-blend 100.00%
+	//     of 6,144, mip addressing 100.00%, lod-xover 99.92%. That spans level
+	//     selection at MXL 1/2/6 and the per-pixel trilinear blend — the case a
+	//     sprites-only probe structurally cannot reach. Forcing level 0 in the shader
+	//     takes those three sections to 0.00% / 25.75% / 68.75%, so the coverage
+	//     discriminates a level error rather than agreeing vacuously.
+	//     ⚠️ The bar met there is SW-PARITY, not console truth: both arms sit at
+	//     76.50% against silicon on lod-blend, so fixing SW's mip defects is a
+	//     Tile-gate event.
 	//
-	//   1. The GOURAUD residual, and it is a VISIBILITY problem, not a new defect.
-	//      The colour-gradient sections are identical between the two tile arms
-	//      (cgrad-x 5,198, cgrad-sub 8,116, cgrad-xy 1,034, worst one level) — the
-	//      residual is pre-existing and the lift does not touch it. What the lift
-	//      changes is who can see it: GT4 goes from 2,612 native draws with 28 gouraud
-	//      and ZERO perspective-textured, to 4,442 with 1,858 gouraud, every one of
-	//      the 1,830 new perspective draws gouraud-shaded. Flat natives are unchanged
-	//      at 2,584. So this floor is the only reason the corpus has ever been able to
-	//      claim byte-identity on shading — lift it and a worst-one haze appears
-	//      everywhere at once. That is GT4's 18.27% of pixels differing at only 1.99%
-	//      above two levels.
+	// What the floor still holds back, and the shape of each:
 	//
-	//   2. The perspective TEXTURE COORDINATE, which is the genuinely new defect and
-	//      the only section the lift moves in gs-interp: tc-persp 0 to 168 of 12,288,
-	//      worst 16. gs-grad agrees and localises it further — 4 differing words to
-	//      107, every new case tc-persp or tc-snap, so the 1/16-texel snap is
-	//      implicated and not just the divide. The pre-existing tc-affine drift is
-	//      unchanged.
+	//   1. The gouraud residual, which is a VISIBILITY problem rather than a new
+	//      defect. The colour-gradient sections are identical between the floored and
+	//      lifted tile arms (worst one level), so the lift does not create it — it
+	//      changes who can see it. GT4 goes from 2,612 native draws carrying 28 gouraud
+	//      and zero perspective-textured, to 4,442 carrying 1,858 gouraud, every one of
+	//      the 1,830 new perspective draws gouraud-shaded; flat natives are unchanged at
+	//      2,584. This floor is the only reason the corpus has ever claimed
+	//      byte-identity on shading, so lifting it surfaces a worst-one haze everywhere
+	//      at once — GT4's 18.27% of pixels differing at 1.99% above two levels.
 	//
-	// ⚠️ CORRECTION, same day: reason 2 does NOT explain the corpus, and the sentence
-	// that used to stand here — that a palettised source amplifies the coordinate
-	// error into Dirge's max-204 — was an inference, not a measurement. It is wrong.
+	//   2. The perspective coordinate, which is real but SMALL and CONSOLE-NEUTRAL.
+	//      Every differing pixel in gs-grad is off by exactly one sixteenth of a texel,
+	//      and the six constant-quotient cases fail at the SAME two pixels while their S
+	//      differs — so the driver is Q, not S. The GPU's interpolated Q parts from the
+	//      scanline's by a few ULPs, and the console's 13-bit truncated reciprocal turns
+	//      that into a 1/16-texel step wherever the exact coordinate sits on a filter
+	//      boundary. Transcription cannot close it: the ARM64 scanline ACCUMULATES
+	//      (q += d4.q per four-pixel block), no fragment shader reproduces a sequential
+	//      accumulation in closed form, and both arms wobble around an exact plane in
+	//      different places. Closing it also buys nothing — against the console the
+	//      lifted arm differs on 19,273 words of 88,064 where software differs on
+	//      19,260, and on tc-persp itself the lifted arm is CLOSER to silicon (7,504 vs
+	//      7,512). Silicon's own divide moves a mathematically-constant coordinate on
+	//      78% of readings; software misses by holding still. Byte-identity to a
+	//      sequential software DDA is not a bar a GPU can meet, and the plan's
+	//      within-one-level tolerance for interpolated content is the honest gate.
 	//
-	// Reason 2 is real but it is SMALL and it is CONSOLE-NEUTRAL. Every differing
-	// pixel in gs-grad is off by exactly one sixteenth of a texel, never more, and the
-	// six constant-quotient cases fail at the SAME two pixels while their S differs —
-	// so it is Q, not S. Mechanism: the GPU's interpolated Q parts from the scanline's
-	// by a few ULPs, and the console's thirteen-bit truncated reciprocal turns that
-	// into a sixteenth-of-a-texel step wherever the exact coordinate sits on a filter
-	// boundary. It is not fixable by transcription — the ARM64 scanline JIT ACCUMULATES
-	// (q += d4.q per four-pixel block), and no fragment shader reproduces a sequential
-	// accumulation in closed form; both arms already wobble around an exact plane, in
-	// different places. It is also not worth fixing: scored against the console rather
-	// than against each other, the lifted arm is 19,273 differing words of 88,064
-	// against software's 19,260 — thirteen words, 0.015% — and on tc-persp itself the
-	// lifted arm is CLOSER to silicon (7,504 vs 7,512). Silicon's own divide moves a
-	// mathematically-constant coordinate on 78% of readings; software misses by holding
-	// still. Same structural class as reason 1: byte-identity to a sequential software
-	// DDA is not a bar a GPU can meet, and the plan's within-one-level tolerance for
-	// interpolated content is the honest gate.
+	//   3. A native/floor HANDOFF defect, which is what actually explains the corpus.
+	//      Dirge lifted: 27.35% of pixels differ, 22.78% by more than two levels, and
+	//      91.3% of those live in horizontal runs of eight pixels or more (median error
+	//      25 levels, whole 597-pixel rows). A boundary flip scatters as salt and
+	//      pepper and only 0.4% of these pixels are isolated, so the damage is
+	//      draw-level, not sampling. Flooring the mip STQ triangles alone takes it from
+	//      22.78% to 6.46% across FIFTY-TWO draws of 1,943 natives — and since their
+	//      sampling is exact, what those draws do differently is claim PAGES: a mip
+	//      draw sources a whole level chain. Two sites walk those levels and must
+	//      agree — the readback path over levels 1..MXL off the MIPTBP registers, and
+	//      the source claim over 0..MXL through the layer accessor. The 6.46% remainder
+	//      is 1,883 palettised gouraud character triangles of 1x1 to 3x3 recorded area,
+	//      plus full-width rows they are far too small to have drawn, which is the same
+	//      signature. ⚠️ No capture can see this class: probe textures are uploaded once
+	//      and never aliased against a render target, which is what a real game does
+	//      constantly.
 	//
-	// What DOES explain the corpus is a separate defect this floor also hides. Dirge
-	// lifted: 27.35% of pixels differ, 22.78% by more than two levels, and 91.3% of
-	// those live in horizontal runs of eight pixels or more (median error 25 levels,
-	// whole 597-pixel rows changing from warm brown to cold grey). A one-in-a-hundred
-	// boundary flip scatters as salt and pepper — 0.4% of these pixels are isolated.
-	// Splitting the lift by class: flooring the MIP STQ triangles alone takes Dirge
-	// from 22.78% to 6.46%, and there are only FIFTY-TWO of them among 1,943 natives.
-	// The mip path on STQ triangles has never been scored — gs-mip-sprites is
-	// sprites-only by construction, and gs-grad's mip content is all STQ triangles but
-	// was captured while they floored. The remaining 6.46% is the 1,883 palettised
-	// gouraud character triangles plus full-width rows they are far too small to have
-	// drawn, so at least part of it is a native/floor handoff, not sampling.
+	// Lifting this floor re-sorts the census to BLEND: on GT4, 48.1% native becomes
+	// 81.7% with the entire remaining floor blending at 17.9%, and frame format, the
+	// z-walk envelope and prim class at a tenth of a percent each. Palette and TEXA
+	// expansion are applied CPU-side by the source builder, so every rtx-served format
+	// qualifies. Corpus cost of lifting as it stands: 13/16 to 8/16.
 	//
-	// So the unlock is gated on the MIP-ON-TRIANGLES defect and on that handoff — not
-	// on the coordinate. Corpus cost of lifting TODAY: 13/16 to 8/16.
-	//
-	// Note for whoever lifts it: TEX_PERSPECTIVE masks what is underneath. With it
-	// lifted the census re-sorts to BLEND — on GT4, 48.1% native becomes 81.7% and
-	// the entire remaining floor is blending at 17.9%, with frame format, the z-walk
-	// envelope and prim class at a tenth of a percent each. Not a depth question.
-	// Palette and TEXA expansion are applied CPU-side by the source builder, so
-	// every rtx-served format qualifies. Mip goes native for the classes below
-	// (M3g mip slice): the fragment path reproduces the scanline JIT's LOD
-	// machinery — the fused-fma log2 polynomial on Q scaled by L and offset by K,
-	// truncating float→int, per-pixel level shift of both the coordinate and the
-	// cooked wrap bounds, per-level texelFetch, and the trilinear mix
-	// (diff·(lodf>>1))>>15. The perspective floor OUTRANKS mip now: a mip STQ
-	// triangle waits on the same Z/coverage parity as every other STQ triangle,
-	// and attributing it to the mip question would hide that. Every corpus
-	// TEX_MIP draw (15,847) is such a triangle, so this reorder moves the whole
-	// class to TEX_PERSPECTIVE in the ledger and no corpus draw changes path.
+	// TexturePerspective outranks TextureMip: a mip STQ triangle waits on the same
+	// depth parity as every other STQ triangle, and ordering it the other way would
+	// attribute that wait to the mip question. All 15,847 corpus TEX_MIP draws are such
+	// triangles, so the ordering moves the whole class in the ledger and changes no
+	// draw's path. TextureMip itself floors only pyramids deeper than the base.
 	if (in.tme)
 	{
 		if (in.tex_psm == PSGPU24)
