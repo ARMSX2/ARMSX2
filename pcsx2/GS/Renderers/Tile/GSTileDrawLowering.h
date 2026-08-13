@@ -474,25 +474,52 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	// wrong gate for it** — that probe scores which pixels are covered, never what
 	// value is interpolated at them.
 	//
-	// The other half is the genuine interpolator difference. The GPU evaluates the
-	// depth plane in float32 and we floor it; the scanline walks a float64 DDA and
-	// floors that. Where the exact value lands on an integer — which Z-laddered art
-	// produces systematically — the two floors part by one. Measured with the floor
-	// lifted: the corpus goes 9/9 to 7/9, OutRun 0.64% of pixels differing (0.55% by
-	// more than two levels, worst 184) and Dirge 0.002%, for 1.7% to 8.2% of corpus
-	// draws going native. Closing it needs the depth plane evaluated in integer
-	// arithmetic per primitive, which is also what silicon's own rule wants (the
-	// exact gradient truncated onto a 2^-10 grid, gs-interp): the same machinery
-	// serves both, and the console rule is the cheaper of the two to evaluate. Until
-	// then perspective triangles stay on the floor.
+	// ⚠️ 2026-08-13: THE DEPTH HALF ABOVE IS CLOSED, AND DEPTH IS NO LONGER WHY THIS
+	// FLOOR EXISTS. The second half used to read: the GPU evaluates the depth plane
+	// in float32 while the scanline walks a float64 DDA, so the two floors part by one
+	// wherever the exact value lands on an integer, and closing it needs the plane
+	// evaluated in integer arithmetic per primitive. That machinery LANDED (the
+	// soft-float walk built by BuildZWalkPayload out of GSComputeTriangleZPlane) and
+	// it works: with this floor lifted, gs-interp scores depth 0 of 29,164 readings
+	// differing from the software arm — zctrl, zgrad-x and zgrad-sub all exactly zero,
+	// same as the floored arm. gs-coverage is byte-identical to software under both
+	// arms too, so coverage is not involved either. Anyone re-reading this to plan the
+	// unlock should not go looking at depth or the sample point again.
 	//
-	// Both halves are measured with the nudge still in place, so the 0.64% figure
-	// below is the cost of lifting the floor TODAY, not after the nudge is dealt with.
+	// What the floor is actually still holding back, measured the same day by running
+	// gs-interp / gs-grad / gs-coverage under floored-tile, lifted-tile and software:
+	//
+	//   1. The GOURAUD residual, and it is a VISIBILITY problem, not a new defect.
+	//      The colour-gradient sections are identical between the two tile arms
+	//      (cgrad-x 5,198, cgrad-sub 8,116, cgrad-xy 1,034, worst one level) — the
+	//      residual is pre-existing and the lift does not touch it. What the lift
+	//      changes is who can see it: GT4 goes from 2,612 native draws with 28 gouraud
+	//      and ZERO perspective-textured, to 4,442 with 1,858 gouraud, every one of
+	//      the 1,830 new perspective draws gouraud-shaded. Flat natives are unchanged
+	//      at 2,584. So this floor is the only reason the corpus has ever been able to
+	//      claim byte-identity on shading — lift it and a worst-one haze appears
+	//      everywhere at once. That is GT4's 18.27% of pixels differing at only 1.99%
+	//      above two levels.
+	//
+	//   2. The perspective TEXTURE COORDINATE, which is the genuinely new defect and
+	//      the only section the lift moves in gs-interp: tc-persp 0 to 168 of 12,288,
+	//      worst 16. gs-grad agrees and localises it further — 4 differing words to
+	//      107, every new case tc-persp or tc-snap, so the 1/16-texel snap is
+	//      implicated and not just the divide. The pre-existing tc-affine drift is
+	//      unchanged.
+	//
+	// Why a one-to-two-percent coordinate error reads as a catastrophe on the corpus:
+	// every newly-native draw is a palettised, bilinear, modulated triangle (Dirge
+	// 1,803 P8 + 132 P4; GT4 1,772 P4 + 46 P8). One texel off in a palettised source
+	// fetches an unrelated palette entry, so the capture's worst-16 (its texture is a
+	// step-16 ramp) becomes max 204 on Dirge and max 105 on GT4. Fix the coordinate
+	// and the large-magnitude class goes with it; the worst-one gouraud haze is what
+	// would remain. Corpus cost of lifting TODAY: 13/16 to 8/16.
 	//
 	// Note for whoever lifts it: TEX_PERSPECTIVE masks what is underneath. With it
-	// lifted the census re-sorts to BLEND 45.7% and TEX_STQ_OVERFLOW 34.0% — the
-	// range guard below, which reads as 0.2% today only because this floor outranks
-	// it. Neither is a depth question, and both are larger.
+	// lifted the census re-sorts to BLEND — on GT4, 48.1% native becomes 81.7% and
+	// the entire remaining floor is blending at 17.9%, with frame format, the z-walk
+	// envelope and prim class at a tenth of a percent each. Not a depth question.
 	// Palette and TEXA expansion are applied CPU-side by the source builder, so
 	// every rtx-served format qualifies. Mip goes native for the classes below
 	// (M3g mip slice): the fragment path reproduces the scanline JIT's LOD
