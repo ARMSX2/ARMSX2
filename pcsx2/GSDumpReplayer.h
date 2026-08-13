@@ -34,5 +34,12 @@ namespace GSDumpReplayer
 	using PacketHook = void (*)(u32 packet_index, bool is_vsync);
 	void SetPacketHook(PacketHook hook);
 
+	/// Called once, after the dump's freeze has been applied and before the first
+	/// packet runs. That instant is the local twin of the console replayer's
+	/// post-restore control, and it is not reachable from the packet hook: by the
+	/// time the first packet reports, its own effect is already in memory.
+	using InitialStateHook = void (*)();
+	void SetInitialStateHook(InitialStateHook hook);
+
 	void RenderUI();
 } // namespace GSDumpReplayer
