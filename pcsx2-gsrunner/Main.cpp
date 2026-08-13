@@ -50,6 +50,7 @@
 #include "pcsx2/PerformanceMetrics.h"
 #include "pcsx2/VMManager.h"
 
+#include "GSLadder.h"
 #include "GSReplayPayload.h"
 #include "RenderDocCapture.h"
 
@@ -213,6 +214,7 @@ static bool s_force_vsync = false;
 // something a PlayStation 2 can execute is close to a file transform.
 static bool s_emit_payload = false;
 static GSReplayPayload::Options s_payload_opts;
+static GSLadder::Options s_ladder_opts;
 static float s_perf_updates = 0.0f;
 static float s_perf_sum_fps = 0.0f;
 static float s_perf_sum_internal_fps = 0.0f;
@@ -1122,18 +1124,61 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// bp,bw,psm,w,h -- the region every checkpoint reads back. Left alone it
 				// comes from the freeze's context-0 FRAME, which is right for most dumps
 				// and wrong for any that render somewhere other than where they display.
+				// Five fields is the whole target; seven adds an origin and is the same
+				// shape as -ladder, so a window can be copied between the two arms
+				// verbatim rather than re-typed in a different order.
 				const std::vector<std::string_view> parts = StringUtil::SplitString(argv[++i], ',', true);
-				if (parts.size() != 5)
+				if (parts.size() != 5 && parts.size() != 7)
 				{
-					Console.Error("-payload-readback wants bp,bw,psm,w,h");
+					Console.Error("-payload-readback wants bp,bw,psm,w,h or bp,bw,psm,x,y,w,h");
 					return false;
 				}
 				s_payload_opts.rb_bp = StringUtil::FromChars<u32>(parts[0]).value_or(0);
 				s_payload_opts.rb_bw = StringUtil::FromChars<u32>(parts[1]).value_or(0);
 				s_payload_opts.rb_psm = StringUtil::FromChars<u32>(parts[2]).value_or(0);
-				s_payload_opts.rb_w = StringUtil::FromChars<u32>(parts[3]).value_or(0);
-				s_payload_opts.rb_h = StringUtil::FromChars<u32>(parts[4]).value_or(0);
+				if (parts.size() == 7)
+				{
+					s_payload_opts.rb_x = StringUtil::FromChars<u32>(parts[3]).value_or(0);
+					s_payload_opts.rb_y = StringUtil::FromChars<u32>(parts[4]).value_or(0);
+				}
+				s_payload_opts.rb_w = StringUtil::FromChars<u32>(parts[parts.size() - 2]).value_or(0);
+				s_payload_opts.rb_h = StringUtil::FromChars<u32>(parts[parts.size() - 1]).value_or(0);
 				s_payload_opts.rb_explicit = true;
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-payload-ladder"))
+			{
+				s_payload_opts.ladder_every = StringUtil::FromChars<u32>(argv[++i]).value_or(0);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-ladder"))
+			{
+				// bp,bw,psm,x,y,w,h -- the window read back at every rung. Small on
+				// purpose: a rung is only useful if hundreds of them fit, and the
+				// console's buffer is the binding constraint on both arms.
+				const std::vector<std::string_view> parts = StringUtil::SplitString(argv[++i], ',', true);
+				if (parts.size() != 7)
+				{
+					Console.Error("-ladder wants bp,bw,psm,x,y,w,h");
+					return false;
+				}
+				s_ladder_opts.bp = StringUtil::FromChars<u32>(parts[0]).value_or(0);
+				s_ladder_opts.bw = StringUtil::FromChars<u32>(parts[1]).value_or(0);
+				s_ladder_opts.psm = StringUtil::FromChars<u32>(parts[2]).value_or(0);
+				s_ladder_opts.x = StringUtil::FromChars<u32>(parts[3]).value_or(0);
+				s_ladder_opts.y = StringUtil::FromChars<u32>(parts[4]).value_or(0);
+				s_ladder_opts.w = StringUtil::FromChars<u32>(parts[5]).value_or(0);
+				s_ladder_opts.h = StringUtil::FromChars<u32>(parts[6]).value_or(0);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-ladder-every"))
+			{
+				s_ladder_opts.every = StringUtil::FromChars<u32>(argv[++i]).value_or(0);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-ladder-out"))
+			{
+				s_ladder_opts.output_path = StringUtil::StripWhitespace(argv[++i]);
 				continue;
 			}
 			else if (CHECK_ARG("-debugdevice"))
@@ -1448,6 +1493,9 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 		{
 			// run until end
 			GSDumpReplayer::SetLoopCount(s_loop_count);
+			// Armed before the first packet, so rung zero is the state the freeze left
+			// and every later rung is named by the packet it follows.
+			GSLadder::Begin(s_ladder_opts);
 			VMManager::SetState(VMState::Running);
 			// gsrunner is diagnostic-by-design; always collect extended stats so DumpStats has data.
 			if (g_gs_device)
@@ -1459,6 +1507,9 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			}
 			while (VMManager::GetState() == VMState::Running)
 				VMManager::Execute();
+			// Before Shutdown: the last rungs are still queued on the GS thread, and
+			// Finish drains them. After teardown there is no local memory to read.
+			GSLadder::Finish();
 			// Snapshot backend-specific stats before the GS device is destroyed.
 			if (g_gs_device)
 				s_extended_stats_snapshot = g_gs_device->GetExtendedStats();
