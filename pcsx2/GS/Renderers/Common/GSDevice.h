@@ -689,7 +689,7 @@ struct alignas(16) GSHWDrawConfig
 				u8 iip : 1;
 				u8 point_size : 1;		///< Set when points need to be expanded without VS expanding.
 				VSExpand expand : 3;
-				u8 tile_zwalk : 1; ///< Tile renderer: emit the flat per-primitive ordinal for the depth walk (indices must be identity)
+				u8 tile_prim_ord : 1; ///< Tile renderer: emit the flat per-primitive ordinal the fragment walks index their plane payload by (triangles must carry identity indices)
 			};
 			u8 key;
 		};
@@ -747,6 +747,7 @@ struct alignas(16) GSHWDrawConfig
 				u32 tile_vcolor : 1; // Tile renderer: the SW scanline's vertex-colour arithmetic (seven fractional bits, truncating)
 				u32 tile_fog : 1; // Tile renderer: integer fog blend at the console rule
 				u32 tile_zwalk : 1; // Tile renderer: gl_FragDepth from the SW scanline's float64 depth walk, replayed in soft-float from the per-primitive plane payload
+				u32 tile_stq : 1; // Tile renderer: the perspective texture coordinate from the per-primitive plane at the integer pixel index, not from the interpolator
 
 				// Shuffle and fbmask effect
 				u32 shuffle  : 1;
@@ -1146,12 +1147,15 @@ struct alignas(16) GSHWDrawConfig
 		// instead (the classes where the software renderer divides once per vertex
 		// rather than once per pixel). TileLtfxQ is the Q at which the level of
 		// detail crosses zero, for the per-pixel MMAG/MMIN choice; it is read only
-		// when tile_ltfx is set. TileZBase is the uvec4 element index of this
-		// draw's depth-walk payload in the vertex-stream storage buffer, stamped
-		// by the device at upload time; read only when tile_zwalk is set.
+		// when tile_ltfx is set. TileZBase and TileSTQBase are the uvec4 element
+		// indices of this draw's depth-walk and coordinate-plane blocks in the
+		// vertex-stream storage buffer, stamped by the device at upload time; each
+		// is read only when its own selector bit is set.
 		float TileSTQRecip;
 		float TileLtfxQ;
 		float TileZBase;
+		float TileSTQBase;
+		float _pad_tile[3];
 
 		__fi PSConstantBuffer()
 		{
@@ -1272,8 +1276,16 @@ struct alignas(16) GSHWDrawConfig
 	u32 nverts;            ///< Number of vertices
 	u32 nindices;          ///< Number of indices
 	u32 indices_per_prim;  ///< Number of indices that make up one primitive
-	const u32* tile_zwalk_payload; ///< Tile depth walk: header + per-prim plane blocks, streamed to the vertex SSBO (uvec4-aligned)
-	u32 tile_zwalk_payload_size;   ///< Size of the payload in uvec4 elements (0 = none)
+	/// Tile per-primitive plane payload: the depth walk's blocks and the coordinate
+	/// plane's blocks concatenated into ONE upload, because two reservations against
+	/// the streaming buffer can hit a mid-draw flush between them and strand the first
+	/// one's offset. The two `*_at` fields are uvec4 element offsets INTO the payload;
+	/// the device adds the upload's own base and stamps the results into the PS
+	/// constants. 0xFFFFFFFF means that walk has no blocks in this draw.
+	const u32* tile_payload;
+	u32 tile_payload_size; ///< Size of the whole payload in uvec4 elements (0 = none)
+	u32 tile_zwalk_at;
+	u32 tile_stq_at;
 	const std::vector<size_t>* drawlist;          ///< For reducing barriers on sprites
 	const std::vector<GSVector4i>* drawlist_bbox; ///< For RT copy when barriers not available.
 	GSVector4i scissor; ///< Scissor rect

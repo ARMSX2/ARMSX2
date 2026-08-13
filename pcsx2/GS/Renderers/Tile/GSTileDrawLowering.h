@@ -504,22 +504,32 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	//      byte-identity on shading, so lifting it surfaces a worst-one haze everywhere
 	//      at once — GT4's 18.27% of pixels differing at 1.99% above two levels.
 	//
-	//   2. The perspective coordinate, which is real but SMALL and CONSOLE-NEUTRAL.
-	//      Every differing pixel in gs-grad is off by exactly one sixteenth of a texel,
-	//      and the six constant-quotient cases fail at the SAME two pixels while their S
-	//      differs — so the driver is Q, not S. The GPU's interpolated Q parts from the
-	//      scanline's by a few ULPs, and the console's 13-bit truncated reciprocal turns
-	//      that into a 1/16-texel step wherever the exact coordinate sits on a filter
-	//      boundary. Transcription cannot close it: the ARM64 scanline ACCUMULATES
-	//      (q += d4.q per four-pixel block), no fragment shader reproduces a sequential
-	//      accumulation in closed form, and both arms wobble around an exact plane in
-	//      different places. Closing it also buys nothing — against the console the
-	//      lifted arm differs on 19,273 words of 88,064 where software differs on
-	//      19,260, and on tc-persp itself the lifted arm is CLOSER to silicon (7,504 vs
-	//      7,512). Silicon's own divide moves a mathematically-constant coordinate on
-	//      78% of readings; software misses by holding still. Byte-identity to a
-	//      sequential software DDA is not a bar a GPU can meet, and the plan's
-	//      within-one-level tolerance for interpolated content is the honest gate.
+	//   2. The perspective coordinate. ⚠️ MOSTLY CLOSED — the paragraph that stood here
+	//      argued it could not be, and the argument was wrong about which mechanism
+	//      dominated. It named the scanline's accumulating four-pixel step, which is
+	//      indeed not reproducible in closed form; the actual driver was the vertex
+	//      shader's coverage nudge, which is not an arithmetic problem at all. The
+	//      coordinate now comes off the primitive's own plane at the integer pixel index
+	//      (PS_TILE_STQ, BuildTilePayload), so nudged geometry decides coverage and never
+	//      reaches the coordinate. Measured on this corpus with this floor scratch-lifted,
+	//      plane off versus on: GT4 OPB 3.62% of pixels differing → 0.44% (2.72% → 0.34%
+	//      above two levels), GT4 retail 18.27% → 0.60%, OutRun 4.46% → 0.43%, Armored
+	//      Core 18.95% → 5.40%, FlatOut 2 to byte-identical, dumps passing 8/16 → 9/16.
+	//      The sprite half is byte-exact on its own instrument: gs-mip-sprites goes from
+	//      13,478 pixels across 29 of 85 cases to identical on all 85.
+	//
+	//      What is left of it IS the accumulating step, and that part of the old argument
+	//      stands: the ARM64 scanline walks q += d4.q per four-pixel block, no fragment
+	//      shader reproduces a sequential accumulation in closed form, and it is
+	//      console-neutral — against silicon the lifted arm differs on 19,273 words of
+	//      88,064 where software differs on 19,260, and on tc-persp the lifted arm is the
+	//      CLOSER of the two (7,504 vs 7,512). Silicon's own divide moves a
+	//      mathematically-constant coordinate on 78% of readings; software misses by
+	//      holding still. Byte-identity to a sequential software DDA is not a bar a GPU
+	//      can meet, and the plan's within-one-level tolerance is the honest gate there.
+	//      Generalise: a residual attributed to the mechanism you can name is not
+	//      thereby attributed — this one had two populations and the loud one was
+	//      geometric, not arithmetic.
 	//
 	//   3. A native/floor HANDOFF defect, which is what actually explains the corpus.
 	//      Dirge lifted: 27.35% of pixels differ, 22.78% by more than two levels, and

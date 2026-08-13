@@ -6434,7 +6434,7 @@ VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 	AddMacro(ss, "VS_IIP", sel.iip);
 	AddMacro(ss, "VS_POINT_SIZE", sel.point_size);
 	AddMacro(ss, "VS_EXPAND", static_cast<int>(sel.expand));
-	AddMacro(ss, "VS_TILE_ZWALK", sel.tile_zwalk);
+	AddMacro(ss, "VS_TILE_PRIM_ORD", sel.tile_prim_ord);
 	AddMacro(ss, "VS_PROVOKING_VERTEX_LAST", static_cast<int>(m_features.provoking_vertex_last));
 	ss << m_tfx_source;
 
@@ -6485,6 +6485,7 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_TILE_VCOLOR", sel.tile_vcolor);
 	AddMacro(ss, "PS_TILE_FOG", sel.tile_fog);
 	AddMacro(ss, "PS_TILE_ZWALK", sel.tile_zwalk);
+	AddMacro(ss, "PS_TILE_STQ", sel.tile_stq);
 	AddMacro(ss, "PS_AUTOMATIC_LOD", sel.automatic_lod);
 	AddMacro(ss, "PS_MANUAL_LOD", sel.manual_lod);
 	AddMacro(ss, "PS_COLCLIP", sel.colclip);
@@ -8268,29 +8269,42 @@ void GSDeviceVK::UploadHWDrawVerticesAndIndices(GSHWDrawConfig& config)
 		IASetIndexBuffer(config.indices, config.nindices);
 	}
 
-	if (config.vs.tile_zwalk && config.tile_zwalk_payload_size > 0)
+	if (config.vs.tile_prim_ord && config.tile_payload_size > 0)
 	{
-		// Tile depth walk: stream the per-primitive plane payload into the same
-		// buffer the expansion path reads as a storage buffer (set 0, binding 2).
+		// Tile per-primitive planes: stream the payload into the same buffer the
+		// expansion path reads as a storage buffer (set 0, binding 2). The two
+		// stages declare different blocks over it, which is legal because they are
+		// separate modules — a sprite draw has the vertex stage reading vertices
+		// there and the fragment stage reading planes, off one descriptor.
+		//
 		// The descriptor spans the whole buffer, so only the uvec4 element base
 		// travels — through the PS constant buffer, re-cached here because the
 		// caller stamped its copy before this offset existed. The vertex shader
 		// derives the primitive ordinal from gl_VertexIndex, which includes the
 		// draw's base vertex, so that is pushed the way the expansion path does.
-		const u32 size = config.tile_zwalk_payload_size * 16;
+		const u32 size = config.tile_payload_size * 16;
 		if (!m_vertex_stream_buffer.ReserveMemory(size, 16))
 		{
 			if (m_is_presenting)
-				ExecuteCommandBufferAndRestartPresent(false, "Uploading tile zwalk payload");
+				ExecuteCommandBufferAndRestartPresent(false, "Uploading tile plane payload");
 			else
-				ExecuteCommandBufferAndRestartRenderPass(false, "Uploading tile zwalk payload");
+				ExecuteCommandBufferAndRestartRenderPass(false, "Uploading tile plane payload");
 			if (!m_vertex_stream_buffer.ReserveMemory(size, 16))
-				pxFailRel("Failed to reserve space for tile zwalk payload");
+				pxFailRel("Failed to reserve space for tile plane payload");
 		}
 		const u32 base = m_vertex_stream_buffer.GetCurrentOffset() / 16;
-		std::memcpy(m_vertex_stream_buffer.GetCurrentHostPointer(), config.tile_zwalk_payload, size);
+		std::memcpy(m_vertex_stream_buffer.GetCurrentHostPointer(), config.tile_payload, size);
 		m_vertex_stream_buffer.CommitMemory(size);
-		std::memcpy(&config.cb_ps.TileZBase, &base, sizeof(base));
+		if (config.tile_zwalk_at != 0xFFFFFFFFu)
+		{
+			const u32 zbase = base + config.tile_zwalk_at;
+			std::memcpy(&config.cb_ps.TileZBase, &zbase, sizeof(zbase));
+		}
+		if (config.tile_stq_at != 0xFFFFFFFFu)
+		{
+			const u32 sbase = base + config.tile_stq_at;
+			std::memcpy(&config.cb_ps.TileSTQBase, &sbase, sizeof(sbase));
+		}
 		SetPSConstantBuffer(config.cb_ps);
 		SetVSPushConstants(static_cast<u32>(m_vertex.start));
 	}

@@ -52,12 +52,12 @@ layout(location = 4) in uint a_z;
 layout(location = 5) in uvec2 a_uv;
 layout(location = 6) in vec4 a_f;
 
-#if VS_TILE_ZWALK
-// Tile depth walk: the fragment stage looks its primitive's depth plane up by a
-// flat ordinal. The draw is de-indexed (identity indices), so the ordinal is
-// the vertex index over three; BaseVertex arrives in the same push-constant
-// block the expansion path uses, because gl_VertexIndex includes the draw's
-// base vertex.
+#if VS_TILE_PRIM_ORD
+// Tile per-primitive planes: the fragment stage looks its primitive's depth and
+// coordinate planes up by a flat ordinal. The draw is de-indexed (identity
+// indices), so the ordinal is the vertex index over three; BaseVertex arrives in
+// the same push-constant block the expansion path uses, because gl_VertexIndex
+// includes the draw's base vertex.
 layout(push_constant) uniform cb2
 {
 	uint BaseVertex;
@@ -65,13 +65,13 @@ layout(push_constant) uniform cb2
 	uint pad_cb2_0;
 	uint pad_cb2_1;
 };
-layout(location = 7) flat out uint vsOut_zpid;
+layout(location = 7) flat out uint vsOut_prim;
 #endif
 
 void main()
 {
-#if VS_TILE_ZWALK
-	vsOut_zpid = (uint(gl_VertexIndex) - BaseVertex) / 3u;
+#if VS_TILE_PRIM_ORD
+	vsOut_prim = (uint(gl_VertexIndex) - BaseVertex) / 3u;
 #endif
 	// Clamp to max depth, gs doesn't wrap
 	uint z = min(a_z, MaxDepth);
@@ -152,6 +152,15 @@ layout(std140, set = 0, binding = 2) readonly buffer VertexBuffer {
 layout(std430, set = 0, binding = 3) readonly buffer IndexBuffer {
 	uint index_buffer[];
 };
+
+#if VS_TILE_PRIM_ORD
+// The same flat ordinal the direct path emits, for the expanded classes. Sprite
+// expansion runs four vertices per primitive off a vertex PAIR, so the ordinal
+// is the vertex index over four — and unlike the direct path it needs no
+// BaseVertex, because the expansion indexes the vertex buffer itself and the
+// draw's own vertices start at zero.
+layout(location = 7) flat out uint vsOut_prim;
+#endif
 
 struct ProcessedVertex
 {
@@ -322,6 +331,12 @@ void main()
 {
 	ProcessedVertex vtx;
 	uint vid = uint(gl_VertexIndex);
+
+#if VS_TILE_PRIM_ORD
+	// Only the sprite expansion is in the Tile renderer's native envelope; the
+	// other expanded classes floor, so nothing reads this there.
+	vsOut_prim = vid >> 2;
+#endif
 
 #if VS_EXPAND == VS_EXPAND_POINT
 
@@ -665,6 +680,7 @@ layout(std140, set = 0, binding = 1) uniform cb1
 	float TileSTQRecip;
 	float TileLtfxQ;
 	float TileZBase;
+	float TileSTQBase;
 };
 
 layout(location = 0) in VSOutput
@@ -679,6 +695,86 @@ layout(location = 0) in VSOutput
 	float inv_cov; // We use the inverse to make it simpler to interpolate.
 	flat uint interior; // 1 for triangle interior; 0 for edge;
 } vsIn;
+
+#if PS_TILE_ZWALK || PS_TILE_STQ
+// The Tile renderer's per-primitive plane payload, and the flat ordinal that
+// indexes it. ONE declaration for both walks: two blocks over one binding is
+// not expressible in a single module, and the vertex stage's own view of this
+// binding (the expansion path's vertex array) is a separate module, so it does
+// not collide. Each walk's block base rides its own constant.
+layout(location = 7) flat in uint vsIn_prim;
+
+layout(std430, set = 0, binding = 2) readonly buffer TilePlanes
+{
+	uvec4 plane[];
+};
+#endif
+
+#if PS_TILE_STQ
+// ======================= Tile perspective coordinate =========================
+// The texture coordinate evaluated per fragment from the primitive's own plane
+// at the INTEGER pixel index, instead of read off the interpolator.
+//
+// Why not the interpolator. The shared vertex shader shifts every vertex by
+// 1/320 of a pixel so a vertex landing exactly on a boundary is not rounded up
+// a row; the rasterizer then snaps that shift onto its sub-pixel grid, and an
+// interpolated attribute rides its own gradient by the realized step. Measured
+// on GT4 with the perspective floor lifted, that single shift is 87% of the
+// coordinate damage — bilinear weights off by a sixteenth across whole
+// primitives.
+//
+// Why not cancel it downstream, which is cheaper and was measured to work: the
+// amount to cancel is the rasterizer's GRID STEP, not the 1/320 the shader
+// wrote, and Vulkan guarantees only four bits of sub-pixel precision. A
+// coefficient fitted to the eight bits this dev box and both target GPUs happen
+// to carry would be four times too small on a conforming device with fewer, and
+// nothing in the oracle would say so — every arm would simply be wrong
+// together. Reading the plane at the pixel index has no such dependence. The
+// perturbed geometry still decides coverage, which is the only thing it exists
+// for, and never reaches the coordinate.
+//
+// Payload block, three uvec4 per primitive (GSRendererTile::BuildTilePayload):
+//   [+0] {s, t, q at the reference vertex, p0x}
+//   [+1] {ds/dx, dt/dx, dq/dx, p0y}
+//   [+2] {ds/dy, dt/dy, dq/dy, unused}
+// s and t are the software renderer's own numerator scaled by 2^-12, which is
+// exact and lands them in the 1/16-texel space the varying carried, so every
+// consumer below this is unchanged.
+//
+// ⚠️ This is a PLANE, and the scanline is a WALK — a row seed plus an
+// accumulating four-pixel step, which no closed form reproduces. That residue
+// is a separate and much smaller population (few pixels, whole-texel amplitude)
+// and is tracked on its own; do not read this path as claiming walk parity.
+vec3 g_tile_stq;
+
+vec3 tile_stq_plane(void)
+{
+	uint b = floatBitsToUint(TileSTQBase) + vsIn_prim * 3u;
+	uvec4 A = plane[b];
+	uvec4 X = plane[b + 1u];
+	uvec4 Y = plane[b + 2u];
+
+	// gl_FragCoord sits at the pixel centre; its integer part is the pixel index,
+	// which is the coordinate the scanline steps in.
+	precise float fx = floor(gl_FragCoord.x) - uintBitsToFloat(A.w);
+	precise float fy = floor(gl_FragCoord.y) - uintBitsToFloat(X.w);
+
+	precise vec3 v = fma(uintBitsToFloat(X.xyz), vec3(fx), uintBitsToFloat(A.xyz));
+	v = fma(uintBitsToFloat(Y.xyz), vec3(fy), v);
+	return v;
+}
+#endif
+
+// The perspective coordinate's two halves, from the plane where the Tile
+// renderer transports one and from the interpolator otherwise. Everything that
+// reads a perspective S/T numerator or a Q goes through these.
+#if PS_TILE_STQ
+	#define STQ_NUM (g_tile_stq.xy)
+	#define STQ_Q   (g_tile_stq.z)
+#else
+	#define STQ_NUM (vsIn.ti.zw)
+	#define STQ_Q   (vsIn.t.w)
+#endif
 
 #if PS_RETURN_COLOR
 	#if !PS_NO_COLOR1
@@ -1448,22 +1544,24 @@ ivec2 wrap_tile(ivec2 xy)
 // hundred, so refining first is what makes the truncation reproducible.
 ivec2 tile_stq_uv(void)
 {
-	precise float y = 1.0f / vsIn.t.w;
-	y = fma(fma(-vsIn.t.w, y, 1.0f), y, y);
+	precise float q = STQ_Q;
+	precise vec2 num = STQ_NUM;
+	precise float y = 1.0f / q;
+	y = fma(fma(-q, y, 1.0f), y, y);
 
 	const int mask = floatBitsToInt(TileSTQRecip);
 	precise vec2 quot;
 
 	if (mask != 0)
 	{
-		quot = vsIn.ti.zw * intBitsToFloat(floatBitsToInt(y) & mask);
+		quot = num * intBitsToFloat(floatBitsToInt(y) & mask);
 	}
 	else
 	{
 		// A fused residual correction on the quotient, which lands on the
 		// correctly-rounded s / q the CPU-side divide produced.
-		precise vec2 q0 = vsIn.ti.zw * y;
-		quot = fma(fma(vec2(-vsIn.t.w), q0, vsIn.ti.zw), vec2(y), q0);
+		precise vec2 q0 = num * y;
+		quot = fma(fma(vec2(-q), q0, num), vec2(y), q0);
 	}
 
 	// ti.zw carries 1/16-texel units; a power-of-two scale is exact in float,
@@ -1484,7 +1582,7 @@ ivec2 tile_stq_uv(void)
 // scanline builds; zero collapses the four-tap blend onto the nearest tap.
 int tile_ltfx_linear(void)
 {
-	bool lin = vsIn.t.w < TileLtfxQ;
+	bool lin = STQ_Q < TileLtfxQ;
 	#if PS_TILE_LTFX == 2
 		lin = !lin;
 	#endif
@@ -1616,7 +1714,7 @@ vec4 sample_color_tile_mip(vec2 st_int)
 	// as a fused-fma chain, and the final scale-and-offset fused too. The
 	// float→int conversion truncates (Fcvtzs). Q can never produce a NaN here:
 	// the mantissa is forced onto [1,2) and every coefficient is finite.
-	int qi = floatBitsToInt(vsIn.t.w);
+	int qi = floatBitsToInt(STQ_Q);
 	float e = float(int(uint(qi << 1) >> 24) - 127);
 	float m = intBitsToFloat((qi & 0x007FFFFF) | 0x3F800000);
 	precise float p = fma(m, 0.204446009836232697516f, -1.04913055217340124191f);
@@ -2167,13 +2265,6 @@ layout(early_fragment_tests) in;
 // walk values in [0, 2^31), |4M|·q under 2^53. Zero signs are not faithful; the
 // observable is a truncated integer, so they cannot matter.
 
-layout(location = 7) flat in uint vsIn_zpid;
-
-layout(std430, set = 0, binding = 2) readonly buffer TileZPlanes
-{
-	uvec4 zplane[];
-};
-
 // OR of all bits strictly below `pos` on the 160-bit spine.
 uint zw_sticky_below(uint S[5], int pos)
 {
@@ -2547,7 +2638,7 @@ void zw_i64_signed_add(uint na, uint alo, uint ahi, uint nb, uint blo, uint bhi,
 	nr = ((rlo | rhi) == 0u) ? 0u : (a_ge_b ? na : nb);
 }
 
-// Payload layout (see GSRendererTile::BuildZWalkPayload):
+// Payload layout (see GSRendererTile::BuildTilePayload):
 //   [TileZBase]      header: {scissor_left f32, flags (bit0 zclamp), zmax, 0}
 //   [.. + 1 + p*5+0] section 0: {edge_x, dedge_x, p0x, p0y} f32 bits
 //   [.. + 1 + p*5+1] section 1: same
@@ -2559,13 +2650,13 @@ float tile_zwalk_depth()
 	int px = int(gl_FragCoord.x);
 	int py = int(gl_FragCoord.y);
 	uint base = floatBitsToUint(TileZBase);
-	uvec4 hdr = zplane[base];
-	uint pbase = base + 1u + vsIn_zpid * 5u;
-	uvec4 X2 = zplane[pbase + 2u];
+	uvec4 hdr = plane[base];
+	uint pbase = base + 1u + vsIn_prim * 5u;
+	uvec4 X2 = plane[pbase + 2u];
 	bool s1 = py >= int(X2.z & 0xFFFFu);
-	uvec4 XS = zplane[pbase + (s1 ? 1u : 0u)];
-	uvec4 X3 = zplane[pbase + 3u];
-	uvec4 X4 = zplane[pbase + 4u];
+	uvec4 XS = plane[pbase + (s1 ? 1u : 0u)];
+	uvec4 X3 = plane[pbase + 3u];
+	uvec4 X4 = plane[pbase + 4u];
 	uvec2 dedge_z = s1 ? X4.zw : X4.xy;
 	uint zseed = s1 ? X2.y : X2.x;
 
@@ -2640,6 +2731,13 @@ float tile_zwalk_depth()
 
 void main()
 {
+#if PS_TILE_STQ
+	// Once per fragment, before anything samples: the plane read is three loads
+	// off a flat index, and the coordinate is wanted by the quotient, the level
+	// of detail and the filter choice alike.
+	g_tile_stq = tile_stq_plane();
+#endif
+
 #if PS_TILE_ZWALK
 	// The scanline's depth, not the interpolator's.
 	float input_z = tile_zwalk_depth();

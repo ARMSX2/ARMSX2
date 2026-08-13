@@ -46,7 +46,7 @@ private:
 
 	// The native route.
 	bool TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTileFloorReason& reason);
-	bool BuildZWalkPayload(GSTileFloorReason& reason);
+	bool BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloorReason& reason);
 	void DeindexVertices();
 	void SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, const GIFRegTEX0& fixed_tex0,
 		GSTexture* rt, GSTexture* ds, GSTexture* tex);
@@ -65,9 +65,14 @@ private:
 	GSTileTargetPool m_target_pool;
 	GSTileTextureSource m_tex_source;
 
-	// Depth-walk payload for the current draw (header + 5 uvec4 per primitive),
-	// built per draw and consumed synchronously by RenderHW. Empty = no walk.
-	std::vector<u32> m_zwalk_payload;
+	// Per-primitive plane payload for the current draw: the depth walk's blocks
+	// and the coordinate plane's blocks concatenated into one upload, built per
+	// draw and consumed synchronously by RenderHW. Empty = neither walk. The two
+	// offsets are uvec4 element indices into it, or NoWalk.
+	static constexpr u32 NoWalk = 0xFFFFFFFFu;
+	std::vector<u32> m_tile_payload;
+	u32 m_zwalk_at = NoWalk;
+	u32 m_stq_at = NoWalk;
 	GSVramModel::RectFootprint m_rect_fp; // scratch for transfer/move footprints
 };
 

@@ -1101,6 +1101,9 @@ bool CURRENT_ISA::GSComputeTriangleZPlane(const GSVertexSW* vertex, const GSVect
 		return false;
 
 	out.dscan_z = s.dscan.p.F64[1];
+	out.tseed = s.edge[0].t;
+	out.dedge_t = s.dedge[0].t;
+	out.dscan_t = s.dscan.t;
 	// The fp32 narrowing GSSetupPrimCodeGenerator performs once per primitive when it
 	// builds the per-lane offset table (Fcvtn of the double gradient); the lane offsets
 	// the scanline adds are fp32 products of THIS value, not of the double.
