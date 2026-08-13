@@ -2581,6 +2581,37 @@ float tile_zwalk_depth()
 	uvec2 z = zw_fma(dedge_z, dy, zw_f64_from_i64(0u, zseed, 0u, 0));
 	z = zw_fma(X3.xy, prestep, z);
 
+	// An interpolated depth never quite reaches its plane on silicon, so the
+	// scanline runs the seed half a step of the 2^-10 grid short (GSDepthWalk.h
+	// — measured on an SCPH-30001, where every integer landing read one unit
+	// high and nothing between them differed at all). The two axes carry the
+	// shortfall differently, and both halves were measured rather than argued:
+	// the X half is present from the span's first pixel and does NOT follow the
+	// gradient's sign, while the Y half accumulates, does follow it, and is
+	// absent on the primitive's own first scanline. A primitive with no depth
+	// gradient takes none of it.
+	//
+	// prim_top is the UNCLIPPED first scanline, sign-extended out of the rows
+	// word: a scissor rejects pixels, it does not reseed an interpolator, so
+	// keying on the clipped top would make a pixel's depth depend on the
+	// scissor around it. It rides the payload for exactly this.
+	//
+	// Subtracted AFTER both fmadds and before the X walk, which is where the
+	// compiled rasterizer puts it — the two f64 terms contract into fmadds and
+	// the bias lands as a plain double subtract on the result.
+	int prim_top = int(X2.z) >> 16;
+	bool xgrad = (X3.x | (X3.y & 0x7FFFFFFFu)) != 0u;
+	bool ygrad = (dedge_z.x | (dedge_z.y & 0x7FFFFFFFu)) != 0u;
+	int bias = (xgrad ? 1 : 0);
+	if (ygrad && py != prim_top)
+		bias += ((dedge_z.y & 0x80000000u) != 0u) ? -1 : 1;
+	if (bias != 0)
+	{
+		// Whole 2^-11 units, negated: the seed loses the bias.
+		uint nb = (bias == 1) ? 0xBF400000u : ((bias == 2) ? 0xBF500000u : 0x3F400000u);
+		z = zw_fma(uvec2(0u, nb), 1.0f, z);
+	}
+
 	// The X walk, exact in 64-bit integer 2^-10 units: the fp32 lane offset the
 	// setup narrows once per primitive, plus whole quad steps of 4*dz.
 	int skip = left & 3;
