@@ -215,7 +215,12 @@ namespace GSLadder
 		oh.version = 1;
 		oh.checkpoints = static_cast<u32>(s_descs.size());
 		oh.pixel_bytes = static_cast<u32>(s_pixels.size());
-		oh.dump_crc = 0;
+		// The console arm stamps this from the payload and the decoder refuses to compare
+		// mismatched crcs. Writing zero here opted the local arm out of that check, so a
+		// local ladder could be compared against a console run of a different dump and
+		// nothing would say so -- an hour went into chasing content differences that
+		// would have been one line of output.
+		oh.dump_crc = GSDumpReplayer::GetDumpCRC();
 		oh.frame_count = s_frames;
 		oh.stalled = 0;
 
