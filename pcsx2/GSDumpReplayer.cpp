@@ -46,6 +46,8 @@ static bool s_needs_state_loaded = false;
 static u64 s_frame_ticks = 0;
 static u64 s_next_frame_time = 0;
 static bool s_is_dump_runner = false;
+static GSDumpReplayer::PacketHook s_packet_hook = nullptr;
+static GSDumpReplayer::InitialStateHook s_initial_state_hook = nullptr;
 
 R5900cpu GSDumpReplayerCpu = {
 	GSDumpReplayerCpuReserve,
@@ -183,6 +185,16 @@ u32 GSDumpReplayer::GetFrameNumber()
 	return s_dump_frame_number;
 }
 
+void GSDumpReplayer::SetPacketHook(PacketHook hook)
+{
+	s_packet_hook = hook;
+}
+
+void GSDumpReplayer::SetInitialStateHook(InitialStateHook hook)
+{
+	s_initial_state_hook = hook;
+}
+
 void GSDumpReplayerCpuReserve()
 {
 }
@@ -262,8 +274,11 @@ void GSDumpReplayerCpuStep()
 	{
 		GSDumpReplayerLoadInitialState();
 		s_needs_state_loaded = false;
+		if (s_initial_state_hook)
+			s_initial_state_hook();
 	}
 
+	const u32 this_packet = s_current_packet;
 	const GSDumpFile::GSData& packet = s_dump_file->GetPackets()[s_current_packet];
 	s_current_packet = (s_current_packet + 1) % static_cast<u32>(s_dump_file->GetPackets().size());
 	if (s_current_packet == 0)
@@ -343,6 +358,9 @@ void GSDumpReplayerCpuStep()
 		}
 		break;
 	}
+
+	if (s_packet_hook)
+		s_packet_hook(this_packet, packet.id == GSDumpTypes::GSType::VSync);
 }
 
 void GSDumpReplayerCpuExecute()

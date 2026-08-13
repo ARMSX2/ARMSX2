@@ -7,6 +7,10 @@ else()
 endif()
 
 target_sources(pcsx2-gsrunner PRIVATE
+	GSLadder.cpp
+	GSLadder.h
+	GSReplayPayload.cpp
+	GSReplayPayload.h
 	Main.cpp
 	RenderDocCapture.cpp
 	RenderDocCapture.h

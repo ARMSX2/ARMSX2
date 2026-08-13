@@ -27,5 +27,19 @@ namespace GSDumpReplayer
 
 	u32 GetFrameNumber();
 
+	/// Called on the CPU thread after each packet is dispatched, with that packet's
+	/// index in the dump and whether it was a vsync. Nothing in the core sets this;
+	/// gsrunner uses it to schedule a readback at an exact point in the stream, which
+	/// is what lets a hardware capture and a local run name the same rung.
+	using PacketHook = void (*)(u32 packet_index, bool is_vsync);
+	void SetPacketHook(PacketHook hook);
+
+	/// Called once, after the dump's freeze has been applied and before the first
+	/// packet runs. That instant is the local twin of the console replayer's
+	/// post-restore control, and it is not reachable from the packet hook: by the
+	/// time the first packet reports, its own effect is already in memory.
+	using InitialStateHook = void (*)();
+	void SetInitialStateHook(InitialStateHook hook);
+
 	void RenderUI();
 } // namespace GSDumpReplayer
