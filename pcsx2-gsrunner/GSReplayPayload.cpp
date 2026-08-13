@@ -441,6 +441,8 @@ namespace GSReplayPayload
 		rb.bp = opts.rb_explicit ? opts.rb_bp : (static_cast<u32>(frame0 & 0x1ff) * 32);
 		rb.bw = opts.rb_explicit ? opts.rb_bw : static_cast<u32>((frame0 >> 16) & 0x3f);
 		rb.psm = opts.rb_explicit ? opts.rb_psm : static_cast<u32>((frame0 >> 24) & 0x3f);
+		rb.x = opts.rb_x;
+		rb.y = opts.rb_y;
 		rb.w = opts.rb_explicit ? opts.rb_w : 640;
 		rb.h = opts.rb_explicit ? opts.rb_h : 448;
 		if (rb.bw == 0)
@@ -448,8 +450,9 @@ namespace GSReplayPayload
 		if (rb.w > rb.bw * 64)
 			rb.w = rb.bw * 64;
 
-		RP_LOG("readback: base block %u, buffer width %u, format %u, %ux%u%s",
-			rb.bp, rb.bw, rb.psm, rb.w, rb.h, opts.rb_explicit ? " (given)" : " (from context-0 FRAME)\n");
+		RP_LOG("readback: base block %u, buffer width %u, format %u, %ux%u at (%u,%u)%s\n",
+			rb.bp, rb.bw, rb.psm, rb.w, rb.h, rb.x, rb.y,
+			opts.rb_explicit ? " (given)" : " (from context-0 FRAME)");
 
 		// ---- stream --------------------------------------------------------------
 		std::vector<u8> stream;
@@ -477,8 +480,11 @@ namespace GSReplayPayload
 			records++;
 		}
 
+		u32 packet_index = 0;
 		for (const GSDumpFile::GSData& packet : dump->GetPackets())
 		{
+			const u32 this_packet = packet_index++;
+
 			switch (packet.id)
 			{
 				case GSDumpTypes::GSType::Transfer:
@@ -543,7 +549,7 @@ namespace GSReplayPayload
 
 					Checkpoint ck = rb;
 					ck.tag = frames;
-					PushRecord(stream, REC_CKPT, sizeof(Checkpoint), checkpoints, 0);
+					PushRecord(stream, REC_CKPT, sizeof(Checkpoint), checkpoints, this_packet);
 					PushPadded(stream, &ck, sizeof(ck));
 					checkpoints++;
 					records++;
@@ -558,6 +564,23 @@ namespace GSReplayPayload
 
 				default:
 					break;
+			}
+
+			// The ladder. A rung is named by the packet it follows, which is the one
+			// identity the console arm and a local gsrunner run can both compute
+			// without reading each other's file -- gsrunner counts the same packets in
+			// the same order off the same dump.
+			//
+			// A vsync has already emitted one, so this does not double it.
+			if (opts.ladder_every != 0 && packet.id != GSDumpTypes::GSType::VSync &&
+				((this_packet + 1) % opts.ladder_every) == 0)
+			{
+				Checkpoint ck = rb;
+				ck.tag = 0x10000u + this_packet; // ladder rungs live above the frame tags
+				PushRecord(stream, REC_CKPT, sizeof(Checkpoint), checkpoints, this_packet);
+				PushPadded(stream, &ck, sizeof(ck));
+				checkpoints++;
+				records++;
 			}
 
 			if (opts.frame_limit != 0 && frames >= opts.frame_limit)

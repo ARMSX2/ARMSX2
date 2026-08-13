@@ -42,9 +42,22 @@ namespace GSReplayPayload
 		u32 rb_bp = 0;
 		u32 rb_bw = 0;
 		u32 rb_psm = 0;
+		u32 rb_x = 0;
+		u32 rb_y = 0;
 		u32 rb_w = 0;
 		u32 rb_h = 0;
 		bool rb_explicit = false;
+
+		/// Also read after every Nth dump packet, not only at vsync. This is the
+		/// console half of the checkpoint ladder: gsrunner's `-ladder-every` names its
+		/// rungs by the same packet index, so the two arms line up without either side
+		/// interpreting the other's numbering.
+		///
+		/// ⚠️ Wants a *small* window. The console holds its whole capture in memory
+		/// before writing it, so a full frame buys ten rungs and a 64x64 window buys
+		/// hundreds -- and a ladder is only worth running when the rungs are dense
+		/// enough to name a draw rather than a frame.
+		u32 ladder_every = 0;
 	};
 
 	/// Emits `opts.output_path` from the dump at `dump_path`. Returns false and explains
