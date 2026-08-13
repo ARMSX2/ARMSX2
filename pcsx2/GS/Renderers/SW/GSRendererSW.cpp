@@ -453,12 +453,19 @@ void GSRendererSW::RecordDrawLogEntry() const
 	rec.z_ztst = static_cast<u8>(TEST.ZTST);
 
 	rec.tex_tbp0 = context->TEX0.TBP0;
+	rec.tex_cbp = context->TEX0.CBP;
+	rec.tex_clut_cfg = static_cast<u16>((context->TEX0.CPSM & 0xF) | ((context->TEX0.CSM & 1) << 4) |
+										((context->TEX0.CSA & 0x1F) << 5) | ((context->TEX0.CLD & 7) << 10));
 	rec.tex_psm = static_cast<u8>(context->TEX0.PSM);
 	rec.tex_tbw = static_cast<u8>(context->TEX0.TBW);
 	rec.tex_tw = static_cast<u8>(context->TEX0.TW);
 	rec.tex_th = static_cast<u8>(context->TEX0.TH);
 
 	rec.alpha = static_cast<u16>((ALPHA.A << 6) | (ALPHA.B << 4) | (ALPHA.C << 2) | ALPHA.D);
+	rec.alpha_fix = static_cast<u8>(ALPHA.FIX);
+	rec.vertex_rgba = static_cast<u32>((m_vt.m_min.c.I32[0] & 0xFF) | ((m_vt.m_min.c.I32[1] & 0xFF) << 8) |
+									   ((m_vt.m_min.c.I32[2] & 0xFF) << 16) | ((m_vt.m_min.c.I32[3] & 0xFF) << 24));
+	rec.vertex_rgba_eq = (m_vt.m_eq.rgba == 0xFFFF) ? 1 : 0;
 	rec.atst = static_cast<u8>(TEST.ATST);
 	rec.afail = static_cast<u8>(TEST.AFAIL);
 	rec.datm = static_cast<u8>(TEST.DATM);
@@ -1244,6 +1251,13 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 				gd.clut = (u32*)m_vertex_heap.alloc(sizeof(u32) * 256, VECTOR_ALIGNMENT); // FIXME: might address uninitialized data of the texture (0xCD) that is not in 0-15 range for 4-bpp formats
 
 				memcpy(gd.clut, (const u32*)m_mem.m_clut, sizeof(u32) * GSLocalMemory::m_psm[context->TEX0.PSM].pal);
+
+				// Recorded from here rather than at the top of the draw because this is
+				// the first point the expanded palette exists: the load, the CSA mapping
+				// and the TEXA expansion have all run, so this is what the rasterizer
+				// will actually read, not what the registers asked for.
+				if (GSDrawLog::IsActive()) [[unlikely]]
+					GSDrawLog::NoteClut(gd.clut, GSLocalMemory::m_psm[context->TEX0.PSM].pal);
 			}
 
 			gd.sel.wms = context->CLAMP.WMS;

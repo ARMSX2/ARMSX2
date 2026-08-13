@@ -60,8 +60,38 @@ namespace GSDrawLog
 		u32 z_block;
 		u32 tex_tbp0;
 
+		/// Identity of the expanded palette this draw sampled through, or 0 when it
+		/// sampled no palette. Filled by NoteClut.
+		///
+		/// The palette is the one part of a draw's input that the register state does not
+		/// name: TEX0's CBP says where the load came from, not what arrived, and a game
+		/// that repaints a screen through hundreds of palettes at one CBP produces
+		/// hundreds of identical-looking rows. Hashing what the sampler actually holds
+		/// separates them, and the contents go out beside the CSV so a row can be resolved
+		/// back to real colours.
+		u64 clut_hash;
+
+		/// TEX0's palette fields: CBP in block units, then CPSM/CSM/CSA/CLD packed as
+		/// CPSM bits 0-3, CSM bit 4, CSA bits 5-9, CLD bits 10-12. Valid on any row whose
+		/// texture format is palettised; zero elsewhere.
+		u32 tex_cbp;
+		u16 tex_clut_cfg;
+
+		/// The vertex colour every vertex of this draw carried, when they all carried
+		/// one; otherwise the minimum, with vertex_rgba_eq clear.
+		///
+		/// Without it a texture-function column says MODULATE and stops there, when
+		/// whether MODULATE is an identity or a truncating scale is decided entirely by
+		/// this value -- 0x80 is exact and anything else loses a level per draw. A pass
+		/// that accumulates several modulated draws turns that into several levels, which
+		/// is not recoverable from any other column.
+		u32 vertex_rgba;
+
 		u16 prim_count;
 		u16 alpha; // ALPHA A/B/C/D, 2 bits each
+
+		u8 alpha_fix; ///< ALPHA.FIX, the C=2 blend coefficient. Only meaningful when C is 2.
+		u8 vertex_rgba_eq; ///< every vertex carried vertex_rgba
 
 		u8 prim_type;
 		u8 frame_psm;
@@ -247,6 +277,18 @@ namespace GSDrawLog
 	/// hazard handling rather than at submit because the resolution is not recoverable
 	/// from the finished draw config -- see SelfRead.
 	void NoteSelfRead(SelfRead resolution);
+
+	/// Records the expanded palette the draw is about to sample through, on the open row.
+	/// `clut` is the post-TEXA 32-bit palette the rasterizer will read, `entries` its
+	/// length (16 or 256).
+	///
+	/// Content is interned by hash: the row carries only the hash, and each distinct
+	/// palette is written once beside the CSV. A hash alone says which rows shared a
+	/// palette, which is the cheap half; comparing a palettised draw against a console
+	/// capture needs the colours themselves, and reconstructing them afterwards from a
+	/// CBP means re-deriving the load, the CSA mapping and the TEXA expansion -- three
+	/// places our own model is known to be under measurement.
+	void NoteClut(const u32* clut, u32 entries);
 
 	/// Completes the row opened by BeginDraw with the backend view. No-op if BeginDraw
 	/// did not record one (inactive, or arena full). prim_overlap is GSState::PRIM_OVERLAP,

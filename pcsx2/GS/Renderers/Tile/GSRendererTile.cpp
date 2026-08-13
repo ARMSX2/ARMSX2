@@ -1458,12 +1458,19 @@ void GSRendererTile::RecordDrawLogEntry() const
 	rec.z_ztst = static_cast<u8>(TEST.ZTST);
 
 	rec.tex_tbp0 = m_context->TEX0.TBP0;
+	rec.tex_cbp = m_context->TEX0.CBP;
+	rec.tex_clut_cfg = static_cast<u16>((m_context->TEX0.CPSM & 0xF) | ((m_context->TEX0.CSM & 1) << 4) |
+										((m_context->TEX0.CSA & 0x1F) << 5) | ((m_context->TEX0.CLD & 7) << 10));
 	rec.tex_psm = static_cast<u8>(m_context->TEX0.PSM);
 	rec.tex_tbw = static_cast<u8>(m_context->TEX0.TBW);
 	rec.tex_tw = static_cast<u8>(m_context->TEX0.TW);
 	rec.tex_th = static_cast<u8>(m_context->TEX0.TH);
 
 	rec.alpha = static_cast<u16>((ALPHA.A << 6) | (ALPHA.B << 4) | (ALPHA.C << 2) | ALPHA.D);
+	rec.alpha_fix = static_cast<u8>(ALPHA.FIX);
+	rec.vertex_rgba = static_cast<u32>((m_vt.m_min.c.I32[0] & 0xFF) | ((m_vt.m_min.c.I32[1] & 0xFF) << 8) |
+									   ((m_vt.m_min.c.I32[2] & 0xFF) << 16) | ((m_vt.m_min.c.I32[3] & 0xFF) << 24));
+	rec.vertex_rgba_eq = (m_vt.m_eq.rgba == 0xFFFF) ? 1 : 0;
 	rec.atst = static_cast<u8>(TEST.ATST);
 	rec.afail = static_cast<u8>(TEST.AFAIL);
 	rec.datm = static_cast<u8>(TEST.DATM);
