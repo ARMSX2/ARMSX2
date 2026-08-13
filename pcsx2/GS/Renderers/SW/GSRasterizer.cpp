@@ -5,6 +5,7 @@
 
 #include "GS/Renderers/SW/GSRasterizer.h"
 #include "GS/Renderers/SW/GSDrawScanline.h"
+#include "GS/Renderers/SW/GSDepthWalk.h"
 #include "GS/GSExtra.h"
 #include "PerformanceMetrics.h"
 #include "VMManager.h"
@@ -901,7 +902,8 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, GSVertexSW2& RESTRIC
 			float prestep = l.x - p0.x;
 			GSVector8 prestepv(prestep);
 
-			reinterpret_cast<GSVertexSW2*>(e)->p.F64[1] = edge.p.F64[1] + dedge.p.F64[1] * dy + dscan.p.F64[1] * prestep;
+			reinterpret_cast<GSVertexSW2*>(e)->p.F64[1] = edge.p.F64[1] + dedge.p.F64[1] * dy + dscan.p.F64[1] * prestep
+			                                             - GSDepthWalkBias(dscan.p.F64[1], dedge.p.F64[1], dy);
 			reinterpret_cast<GSVertexSW2*>(e)->tc = edge.tc + dedge.tc * dyv + dscan.tc * prestepv;
 
 			AddScanlineInfo(e++, pixels, left, top);
@@ -1201,7 +1203,8 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, GSVertexSW& RESTRICT
 		{
 			const float prestep = l.x - p0.x;
 
-			e->p.F64[1] = edge.p.F64[1] + dedge.p.F64[1] * dy + dscan.p.F64[1] * prestep;
+			e->p.F64[1] = edge.p.F64[1] + dedge.p.F64[1] * dy + dscan.p.F64[1] * prestep
+			              - GSDepthWalkBias(dscan.p.F64[1], dedge.p.F64[1], dy);
 			e->t = edge.t + dedge.t * dy + dscan.t * prestep;
 			e->c = edge.c + dedge.c * dy + dscan.c * prestep;
 
