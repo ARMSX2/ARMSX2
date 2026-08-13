@@ -1496,6 +1496,9 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			// Armed before the first packet, so rung zero is the state the freeze left
 			// and every later rung is named by the packet it follows.
 			GSLadder::Begin(s_ladder_opts);
+			// The ledger's join key to the ladder. Only paid for when a ledger is being
+			// written, because it costs a queued store per packet.
+			GSDumpReplayer::SetPublishPacketMarks(!s_drawlog_path.empty());
 			VMManager::SetState(VMState::Running);
 			// gsrunner is diagnostic-by-design; always collect extended stats so DumpStats has data.
 			if (g_gs_device)

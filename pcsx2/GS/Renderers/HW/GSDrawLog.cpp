@@ -26,6 +26,8 @@ namespace GSDrawLog
 	static bool s_truncated = false;
 	// Index of the row opened by BeginDraw, or SIZE_MAX when no row is open.
 	static size_t s_open_record = SIZE_MAX;
+	// GS-thread-side dump packet mark; see MarkPacket.
+	static u32 s_packet_mark = PacketNone;
 
 	bool IsActive()
 	{
@@ -50,6 +52,11 @@ namespace GSDrawLog
 	{
 		s_active = false;
 		s_open_record = SIZE_MAX;
+	}
+
+	void MarkPacket(u32 packet_index)
+	{
+		s_packet_mark = packet_index;
 	}
 
 	void Reset()
@@ -90,6 +97,9 @@ namespace GSDrawLog
 
 		s_records.push_back(ps2_state);
 		s_open_record = s_records.size() - 1;
+		// Stamped here rather than by each renderer's row builder, so every arm carries
+		// the column and none of them can carry a different idea of what it means.
+		s_records[s_open_record].packet = s_packet_mark;
 	}
 
 	void NoteSelfRead(SelfRead resolution)
@@ -136,6 +146,19 @@ namespace GSDrawLog
 		rec.stq_guard = stq_guard;
 		// The draw rect (bbox ∩ scissor) — the tile rows' equivalent of the backend
 		// drawarea, and the column that localizes a wrong pixel to its draw.
+		rec.area_x = static_cast<s16>(std::clamp(rect.x, -32768, 32767));
+		rec.area_y = static_cast<s16>(std::clamp(rect.y, -32768, 32767));
+		rec.area_z = static_cast<s16>(std::clamp(rect.z, -32768, 32767));
+		rec.area_w = static_cast<s16>(std::clamp(rect.w, -32768, 32767));
+	}
+
+	void NoteSWDraw(const GSVector4i& rect)
+	{
+		if (s_open_record == SIZE_MAX)
+			return;
+
+		Record& rec = s_records[s_open_record];
+		rec.sw = 1;
 		rec.area_x = static_cast<s16>(std::clamp(rect.x, -32768, 32767));
 		rec.area_y = static_cast<s16>(std::clamp(rect.y, -32768, 32767));
 		rec.area_z = static_cast<s16>(std::clamp(rect.z, -32768, 32767));
@@ -252,7 +275,7 @@ namespace GSDrawLog
 		}
 
 		std::fprintf(fp.get(),
-			"frame,draw,prim,prim_count,submitted,"
+			"frame,draw,packet,arm,prim,prim_count,submitted,"
 			"fb_addr,fb_psm,fb_bw,fbmsk,"
 			"z_addr,z_psm,z_test,z_mask,"
 			"tex_addr,tex_psm,tex_bw,tex_w,tex_h,"
@@ -270,8 +293,13 @@ namespace GSDrawLog
 			const bool blended = (r.flags & FlagBlend) != 0;
 			const bool ztest = (r.flags & FlagZTest) != 0;
 
-			std::fprintf(fp.get(), "%u,%u,%s,%u,%d,", r.frame, r.draw, GSUtil::GetPrimName(r.prim_type),
-				r.prim_count, submitted ? 1 : 0);
+			if (r.packet != PacketNone)
+				std::fprintf(fp.get(), "%u,%u,%u,", r.frame, r.draw, r.packet);
+			else
+				std::fprintf(fp.get(), "%u,%u,,", r.frame, r.draw);
+
+			std::fprintf(fp.get(), "%s,%s,%u,%d,", r.tile ? "tile" : (r.sw ? "sw" : "hw"),
+				GSUtil::GetPrimName(r.prim_type), r.prim_count, submitted ? 1 : 0);
 
 			std::fprintf(fp.get(), "%05x,%s,%u,%08x,", r.frame_block, GSUtil::GetPSMName(r.frame_psm),
 				r.frame_fbw, r.frame_fbmsk);
@@ -327,9 +355,9 @@ namespace GSDrawLog
 				std::fprintf(fp.get(), ",,,,,,,");
 			}
 
-			// Tile rows carry the draw rect (bbox ∩ scissor) here; Classic rows the
-			// backend drawarea. Same columns, same meaning: where the draw landed.
-			if (submitted || r.tile)
+			// Tile and software rows carry the draw rect (bbox ∩ scissor) here; Classic
+			// rows the backend drawarea. Same columns, same meaning: where the draw landed.
+			if (submitted || r.tile || r.sw)
 				std::fprintf(fp.get(), "%d,%d,%d,%d,", r.area_x, r.area_y, r.area_z - r.area_x, r.area_w - r.area_y);
 			else
 				std::fprintf(fp.get(), ",,,,");
