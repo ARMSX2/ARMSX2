@@ -487,16 +487,28 @@ void GSRendererSW::Draw()
 {
 	const GSDrawingContext* context = m_context;
 
-	// Unconditional close, so a draw that returns before it is queued still leaves a row
-	// rather than leaking its open row onto the next draw's.
+	// Closed however the draw leaves, so one that returns before it is queued still
+	// leaves a row rather than leaking its open row onto the next draw's.
+	//
+	// ⚠️ Only when this rasterization owns the row. The Tile renderer's floor calls us
+	// from inside its own open row, and the ledger holds one row at a time: opening a
+	// second here gives a floored draw two rows -- doubling the denominator the
+	// 100%-native gate is read from -- and closing it strands the caller's, which is
+	// where that draw's arm and its floor reason are written. Silent both ways: the
+	// rows stay plausible and the floor simply reads empty.
 	struct ScopedDrawLogRow
 	{
-		~ScopedDrawLogRow() { GSDrawLog::FinishDraw(); }
+		bool owned;
+		~ScopedDrawLogRow()
+		{
+			if (owned)
+				GSDrawLog::FinishDraw();
+		}
 	};
-	const bool log_draw = GSDrawLog::IsActive();
+	const bool log_draw = GSDrawLog::IsActive() && !GSDrawLog::HasOpenDraw();
 	if (log_draw) [[unlikely]]
 		RecordDrawLogEntry();
-	const ScopedDrawLogRow drawlog_row;
+	const ScopedDrawLogRow drawlog_row{log_draw};
 
 	switch (m_vt.m_primclass)
 	{

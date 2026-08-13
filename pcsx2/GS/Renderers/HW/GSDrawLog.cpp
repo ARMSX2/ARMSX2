@@ -37,6 +37,11 @@ namespace GSDrawLog
 		return GSConfig.DumpDrawLog;
 	}
 
+	bool HasOpenDraw()
+	{
+		return s_open_record != SIZE_MAX;
+	}
+
 	void Start()
 	{
 		if (s_active)
