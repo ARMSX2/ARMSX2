@@ -755,6 +755,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	OsdShowFPS = false;
 	OsdShowVPS = false;
 	OsdShowResolution = false;
+	OsdShowViewport = false;
 	OsdShowGSStats = false;
 	OsdShowCPU = false;
 	OsdShowGPU = false;
@@ -1054,6 +1055,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(OsdShowGPUDebug);
 	SettingsWrapBitBool(OsdShowGPUStats);
 	SettingsWrapBitBool(OsdShowResolution);
+	SettingsWrapBitBool(OsdShowViewport);
 	SettingsWrapBitBool(OsdShowGSStats);
 	SettingsWrapBitBool(OsdShowIndicators);
 	SettingsWrapBitBool(OsdShowSettings);

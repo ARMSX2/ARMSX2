@@ -1021,6 +1021,14 @@ final class SettingsStore {
     }
 
     // ── Screen / PCRTC (EmuCore/GS) ── display-output options, applied live.
+    let _dedicatedExternalDisplayConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "DedicatedExternalDisplay", default: false,
+        codec: .bool)
+    var dedicatedExternalDisplayEnabled: Bool = false { didSet {
+        commit(_dedicatedExternalDisplayConfig, dedicatedExternalDisplayEnabled)
+        guard !suppressINIWrites else { return }
+        ARMSX2Bridge.setDedicatedExternalDisplayEnabled(dedicatedExternalDisplayEnabled)
+    }}
     let _pcrtcOffsetsConfig = Setting<Bool>(
         section: "EmuCore/GS", key: "pcrtc_offsets", default: false,
         suppressible: false,
@@ -1211,6 +1219,14 @@ final class SettingsStore {
         codec: .bool)
     var osdShowResolution: Bool = false { didSet {
         commit(_osdShowResolutionConfig, osdShowResolution)
+        markOsdCustom()
+    }}
+    let _osdShowViewportConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowViewport", default: false,
+        suppressible: false,
+        codec: .bool)
+    var osdShowViewport: Bool = false { didSet {
+        commit(_osdShowViewportConfig, osdShowViewport)
         markOsdCustom()
     }}
     let _osdShowGSStatsConfig = Setting<Bool>(
@@ -1729,6 +1745,7 @@ final class SettingsStore {
         upscaler = _upscalerConfig.load()
         gsBoolHacks = Self.loadGSBoolHacks()
         // Screen / PCRTC
+        dedicatedExternalDisplayEnabled = _dedicatedExternalDisplayConfig.load()
         pcrtcOffsets = _pcrtcOffsetsConfig.load()
         pcrtcOverscan = _pcrtcOverscanConfig.load()
         pcrtcAntiBlur = _pcrtcAntiBlurConfig.load()
@@ -1763,6 +1780,7 @@ final class SettingsStore {
         osdShowCPU = _osdShowCPUConfig.load()
         osdShowGPU = _osdShowGPUConfig.load()
         osdShowResolution = _osdShowResolutionConfig.load()
+        osdShowViewport = _osdShowViewportConfig.load()
         osdShowGSStats = _osdShowGSStatsConfig.load()
         osdShowIndicators = _osdShowIndicatorsConfig.load()
         osdShowSettings = _osdShowSettingsConfig.load()
@@ -2041,6 +2059,7 @@ final class SettingsStore {
         osdShowCPU = isSimple || isDetail || isFull
         osdShowGPU = isDetail || isFull
         osdShowResolution = isDetail || isFull
+        osdShowViewport = isDetail || isFull
         osdShowGSStats = isFull
         osdShowIndicators = isDetail || isFull
         osdShowSettings = isFull
@@ -2066,6 +2085,7 @@ final class SettingsStore {
         (\.osdShowCPU, "OsdCustomShowCPU"),
         (\.osdShowGPU, "OsdCustomShowGPU"),
         (\.osdShowResolution, "OsdCustomShowResolution"),
+        (\.osdShowViewport, "OsdCustomShowViewport"),
         (\.osdShowGSStats, "OsdCustomShowGSStats"),
         (\.osdShowIndicators, "OsdCustomShowIndicators"),
         (\.osdShowSettings, "OsdCustomShowSettings"),
@@ -2272,6 +2292,7 @@ final class SettingsStore {
             setGraphicsHackPinned(option.key, false)
         }
         // Screen / PCRTC and Shade Boost
+        dedicatedExternalDisplayEnabled = false
         pcrtcOffsets = false
         pcrtcOverscan = false
         pcrtcAntiBlur = true

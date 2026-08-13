@@ -26,6 +26,7 @@
 
 #include "pcsx2/Counters.h"          // g_FrameCount
 #include "pcsx2/Config.h"            // EmuConfig, GSConfig
+#include "pcsx2/GS/GS.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/Host/AudioStreamTypes.h"
 #include "pcsx2/MTGS.h" // Host::RunOnGSThread
@@ -45,6 +46,24 @@
 #import <UIKit/UIKit.h>
 
 #include "IOSRuntime.h"
+#import "IOS/ARMSX2GameView.h"
+
+namespace
+{
+    void ARMSX2PublishDedicatedExternalDisplayActive(bool active)
+    {
+        const bool changed = (GSIsDedicatedExternalDisplayActive() != active);
+        GSSetDedicatedExternalDisplayActive(active);
+        if (!changed)
+            return;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:@"ARMSX2iOSDedicatedExternalDisplayActiveChanged"
+                              object:nil];
+        });
+    }
+}
 
 #pragma mark - namespace Host
 namespace Host
@@ -116,27 +135,45 @@ namespace Host
     void LoadSettings(SettingsInterface&, std::unique_lock<std::mutex>&) {} 
     void RequestResetSettings(bool) {} 
     const char* GetTranslatedStringImpl(const char* key) { return key; }
-    u32 GetDisplayRefreshRate() { return 60; }
+    u32 GetDisplayRefreshRate() {
+        __block u32 refreshRate = 60;
+        dispatch_block_t query = ^{
+            ARMSX2GameView* renderView = ARMSX2GetActiveGameRenderView();
+            UIScreen* screen = renderView.window.windowScene.screen ?: UIScreen.mainScreen;
+            if (screen.maximumFramesPerSecond > 0)
+                refreshRate = static_cast<u32>(screen.maximumFramesPerSecond);
+        };
+        if ([NSThread isMainThread])
+            query();
+        else
+            dispatch_sync(dispatch_get_main_queue(), query);
+        return refreshRate;
+    }
     std::optional<WindowInfo> AcquireRenderWindow(bool recreate_window) {
         Console.WriteLn("Host::AcquireRenderWindow(recreate=%d) called.", recreate_window);
         if (!g_sdl_window) {
             Console.Error("Host::AcquireRenderWindow: g_sdl_window is NULL");
+            ARMSX2PublishDedicatedExternalDisplayActive(false);
             return std::nullopt;
         }
         
         __block WindowInfo wi = {};
+        __block bool dedicatedExternal = false;
         wi.type = WindowInfo::Type::MacOS;
         
-        // SDL calls that interact with UIKit must run on the main thread
-        dispatch_sync(dispatch_get_main_queue(), ^{
+        // SDL calls that interact with UIKit must run on the main thread.
+        dispatch_block_t acquire = ^{
             // SDL3 properties for UIKit
             SDL_PropertiesID props = SDL_GetWindowProperties(g_sdl_window);
             UIWindow* window = (__bridge UIWindow*)SDL_GetPointerProperty(props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, NULL);
-            
+
             if (window) {
-                // Use dedicated game render view if available (sized for portrait).
-                if (g_gameRenderView) {
-                    wi.window_handle = (__bridge void*)g_gameRenderView;
+                // The SwiftUI-owned phone view remains stable; only this active
+                // target changes when the external scene is presented.
+                ARMSX2GameView* activeRenderView = ARMSX2GetActiveGameRenderView();
+                if (activeRenderView) {
+                    wi.window_handle = (__bridge void*)activeRenderView;
+                    dedicatedExternal = (activeRenderView != g_gameRenderView);
                 } else {
                     wi.window_handle = (__bridge void*)[window rootViewController].view;
                 }
@@ -150,32 +187,61 @@ namespace Host
 
             // Get render size from the actual render view.
             UIView* renderView = (__bridge UIView*)wi.window_handle;
-            CGFloat scale = renderView.contentScaleFactor > 0.0 ? renderView.contentScaleFactor : UIScreen.mainScreen.nativeScale;
+            UIScreen* screen = renderView.window.windowScene.screen ?: window.windowScene.screen ?: UIScreen.mainScreen;
+            CGFloat scale = renderView.contentScaleFactor > 0.0 ? renderView.contentScaleFactor : screen.nativeScale;
             if (scale <= 0.0)
                 scale = 1.0;
-            wi.surface_width = static_cast<u32>(std::max<CGFloat>(1.0, renderView.bounds.size.width * scale));
-            wi.surface_height = static_cast<u32>(std::max<CGFloat>(1.0, renderView.bounds.size.height * scale));
-            wi.surface_scale = static_cast<float>(scale);
-            
-            SDL_DisplayID display = SDL_GetDisplayForWindow(g_sdl_window);
-            const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display);
-            if (mode)
-                wi.surface_refresh_rate = mode->refresh_rate;
-            else
-                wi.surface_refresh_rate = 60.0f;
-        });
+            CGSize surfaceSize = CGSizeMake(renderView.bounds.size.width * scale,
+                                            renderView.bounds.size.height * scale);
+            if (dedicatedExternal)
+            {
+                const CGSize modeSize = screen.currentMode.size;
+                if (modeSize.width > 0.0 && modeSize.height > 0.0)
+                {
+                    const bool boundsLandscape = renderView.bounds.size.width >= renderView.bounds.size.height;
+                    const bool modeLandscape = modeSize.width >= modeSize.height;
+                    surfaceSize = (boundsLandscape == modeLandscape) ?
+                        modeSize : CGSizeMake(modeSize.height, modeSize.width);
+                    scale = surfaceSize.width / std::max<CGFloat>(1.0, renderView.bounds.size.width);
+                }
+            }
+            wi.surface_width = static_cast<u32>(std::max<CGFloat>(1.0, surfaceSize.width));
+            wi.surface_height = static_cast<u32>(std::max<CGFloat>(1.0, surfaceSize.height));
+            wi.surface_scale = dedicatedExternal ?
+                GSCalculateExternalDisplayOSDScale(wi.surface_width, wi.surface_height) :
+                static_cast<float>(scale);
 
-        Console.WriteLn("Host::AcquireRenderWindow: Returning WindowInfo (Type=%d, View=%p, Size=%ux%u, Scale=%.2f)",
-            (int)wi.type, wi.window_handle, wi.surface_width, wi.surface_height, wi.surface_scale);
+            wi.surface_refresh_rate = screen.maximumFramesPerSecond > 0 ?
+                static_cast<float>(screen.maximumFramesPerSecond) : 60.0f;
+        };
+        if ([NSThread isMainThread])
+            acquire();
+        else
+            dispatch_sync(dispatch_get_main_queue(), acquire);
+
+        // This runs on the GS thread and describes the exact view captured
+        // above. It is the single source of truth for clean/aspect policy.
+        ARMSX2PublishDedicatedExternalDisplayActive(dedicatedExternal);
+
+        Console.WriteLn("Host::AcquireRenderWindow: Returning WindowInfo (Type=%d, View=%p, External=%d, Size=%ux%u, Scale=%.2f, Refresh=%.0f)",
+            (int)wi.type, wi.window_handle, dedicatedExternal ? 1 : 0,
+            wi.surface_width, wi.surface_height, wi.surface_scale,
+            wi.surface_refresh_rate);
 
         return wi;
     }
-    void ReleaseRenderWindow() {}
+    void ReleaseRenderWindow()
+    {
+        ARMSX2PublishDedicatedExternalDisplayActive(false);
+    }
     bool InNoGUIMode() { return false; }
     void OnVMPaused() {}
     void OnVMResumed() {}
     void OnVMStarted() {}
-    void OnVMStarting() {}
+    void OnVMStarting()
+    {
+        ARMSX2SetExternalDisplayVMRequested(true);
+    }
     void EndTextInput() {}
     bool IsFullscreen() { return true; }
     void SetMouseMode(bool, bool) {}
@@ -187,7 +253,11 @@ namespace Host
         // first point where the effective hack values mean anything.
         ARMSX2_CaptureGraphicsHackState();
     }
-    void OnVMDestroyed() { ARMSX2_ApplyEffectivePresentFPSCap(); }
+    void OnVMDestroyed()
+    {
+        ARMSX2SetExternalDisplayVMRequested(false);
+        ARMSX2_ApplyEffectivePresentFPSCap();
+    }
     void SetFullscreen(bool) {}
     void BeginTextInput() {}
     bool ConfirmMessage(std::string_view, std::string_view) { return true; }
@@ -201,7 +271,7 @@ namespace Host
             return;
         }
 
-        if (!s_vmThreadActive.load()) {
+        if (!s_vmThreadActive.load() && !MTGS::IsOpen()) {
             Console.Warning("[ARMSX2 iOS] CPU-thread task requested while VM is inactive; running inline");
             function();
             return;
@@ -214,6 +284,14 @@ namespace Host
         {
             std::lock_guard<std::mutex> lock(s_cpuTaskMutex);
             s_cpuTasks.push_back(task);
+        }
+        // The idle worker checks the task queue while holding s_vmMutex.
+        // Acquire that same mutex after publishing the task so notify cannot
+        // land between its predicate check and the atomic unlock-and-wait.
+        // s_cpuTaskMutex is already released, preserving vm -> task lock order.
+        {
+            std::lock_guard<std::mutex> lock(s_vmMutex);
+            s_vmCV.notify_one();
         }
 
         if (!block)

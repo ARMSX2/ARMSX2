@@ -2976,7 +2976,12 @@ void GSDeviceMTL::RenderImGui(ImDrawData* data)
 	[enc setVertexBuffer:map.gpu_buffer offset:map.gpu_offset atIndex:GSMTLBufferIndexVertices];
 	[enc setVertexBytes:&transform length:sizeof(transform) atIndex:GSMTLBufferIndexUniforms];
 
-	simd::uint4 last_scissor = simd::make_uint4(0, 0, GetWindowWidth(), GetWindowHeight());
+	id<MTLTexture> framebuffer_texture = [m_pass_desc colorAttachments][0].texture;
+	const u32 framebuffer_width = framebuffer_texture ?
+		static_cast<u32>([framebuffer_texture width]) : GetWindowWidth();
+	const u32 framebuffer_height = framebuffer_texture ?
+		static_cast<u32>([framebuffer_texture height]) : GetWindowHeight();
+	simd::uint4 last_scissor = simd::make_uint4(0, 0, framebuffer_width, framebuffer_height);
 	simd::float2 fb_size = simd_float(last_scissor.zw);
 	simd::float2 clip_off   = ToSimd(data->DisplayPos);       // (0,0) unless using multi-viewports
 	simd::float2 clip_scale = ToSimd(data->FramebufferScale); // (1,1) unless using retina display which are often (2,2)

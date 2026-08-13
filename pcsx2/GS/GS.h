@@ -116,12 +116,18 @@ void GSSetPortraitRenderTopInset(int pixels);
 /// Top-align the render in a LANDSCAPE window (foldables / clamshell controllers).
 void GSSetLandscapeRenderTopAlign(bool enabled);
 bool GSHasDisplayWindow();
+/// Returns the visual OSD scale for an external video mode. 1080p is the 100% baseline.
+float GSCalculateExternalDisplayOSDScale(u32 width, u32 height);
 void GSResizeDisplayWindow(u32 width, u32 height, float scale);
 void GSUpdateDisplayWindow();
 void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle);
 
 GSRendererType GSGetCurrentRenderer();
 bool GSIsHardwareRenderer();
+// Host presentation policy used by the iOS dedicated external-display path.
+// This never changes persisted GS settings or emulation timing.
+void GSSetDedicatedExternalDisplayActive(bool active);
+bool GSIsDedicatedExternalDisplayActive();
 std::string GetDefaultAdapter();
 bool GSWantsExclusiveFullscreen();
 std::optional<float> GSGetHostRefreshRate();

@@ -3487,6 +3487,7 @@ void VMManager::ReleaseNonEssentialRuntimeResources(u32 release_flags)
 		GSConfig.OsdShowFPS = false;
 		GSConfig.OsdShowVPS = false;
 		GSConfig.OsdShowResolution = false;
+		GSConfig.OsdShowViewport = false;
 		GSConfig.OsdShowGSStats = false;
 		GSConfig.OsdShowCPU = false;
 		GSConfig.OsdShowGPU = false;

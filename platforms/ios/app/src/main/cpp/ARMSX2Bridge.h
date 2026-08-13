@@ -72,6 +72,8 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // Game render view (for UIViewRepresentable)
 + (nonnull UIView *)gameRenderView;
 + (void)prepareGameRenderViewForCurrentRenderer;
++ (void)setDedicatedExternalDisplayEnabled:(BOOL)enabled;
++ (BOOL)isDedicatedExternalDisplayActive;
 
 // Lifecycle
 + (void)saveNVRAM;
@@ -83,6 +85,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)setPadButton:(ARMSX2PadButton)button pressed:(BOOL)pressed;
 + (void)setLeftStickX:(float)x Y:(float)y;
 + (void)setRightStickX:(float)x Y:(float)y;
++ (void)resetVirtualPadInput;
 
 // VM control
 + (void)requestVMStop;
