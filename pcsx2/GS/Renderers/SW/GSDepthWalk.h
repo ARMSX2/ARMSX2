@@ -32,13 +32,18 @@
 //      this half took the ygrad section from 448 wrong pixels to zero.
 //
 // "Has stepped" means stepped off the PRIMITIVE's first scanline, not the
-// section's. A triangle without a flat edge is walked as two sections rebased
-// on the middle vertex, and silicon has no such split -- letting the second
-// section's first row take no bias would lay a one-unit depth discontinuity
-// along the middle vertex's row, which is a seam we would have invented. The
-// capture cannot see this either way: every triangle it draws is flat-topped
-// and therefore single-section, so this is mechanism, not measurement, and the
-// probe is byte-identical across the change.
+// section's. That is two claims, and the capture reaches exactly one of them.
+//
+// That the exemption exists at all IS measured: dropping it lights three of
+// gs-zgrad's ygrad cases, one top row each. That it keys on the primitive
+// rather than on our section split is NOT -- every triangle the probe draws is
+// flat-topped and therefore single-section, so the probe is byte-identical
+// across that half. It is kept on the reasoning that a triangle without a flat
+// edge is walked as two sections rebased on the middle vertex, silicon has no
+// such split, and letting the second section's first row take no bias would lay
+// a one-unit depth discontinuity along the middle vertex's row -- a seam we
+// would have invented. Measuring it needs a subject with three distinct vertex
+// Ys and a Y gradient, which nothing we own draws today.
 //
 // A flat triangle is exact on silicon -- 896 of 896 readings -- so the bias
 // belongs to the walk and not to the seed, and a primitive with no depth

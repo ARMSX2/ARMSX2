@@ -60,11 +60,17 @@ TEST(GSDepthWalk, XGradientBiasDoesNotFollowItsSign)
 
 TEST(GSDepthWalk, YGradientIsExactOnTheVertexScanline)
 {
-	// The Y shortfall accumulates, so the seed row carries none of it. The
-	// caller passes "stepped off the PRIMITIVE's first scanline", not the
+	// The Y shortfall accumulates, so the seed row carries none of it. This half
+	// has a capture behind it: dropping the exemption lights three of gs-zgrad's
+	// ygrad cases, one top row each.
+	//
+	// The caller passes "stepped off the PRIMITIVE's first scanline", not the
 	// section's: a triangle with no flat edge is walked as two sections rebased
 	// on the middle vertex, and exempting the second one's first row would lay a
-	// one-unit depth discontinuity along that row. Silicon has no sections.
+	// one-unit depth discontinuity along that row. Silicon has no sections. That
+	// distinction is reasoning, not measurement -- every gs-zgrad subject is
+	// flat-topped, so no probe we own separates the two. Do not "simplify" it
+	// back to the section on the strength of a green capture.
 	EXPECT_EQ(GSDepthWalkBias(0.0, 0.5, false), 0.0);
 	EXPECT_EQ(GSDepthWalkBias(0.0, -0.5, false), 0.0);
 }
