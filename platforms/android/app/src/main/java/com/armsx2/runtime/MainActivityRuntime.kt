@@ -91,6 +91,11 @@ private const val STICK_DEAD = 0.15f
 // pads; the value is re-normalized past it (see sendTrigger) so pressure ramps smoothly
 // from 0 instead of flickering on/off at a hard threshold — the jitter those pads showed.
 private const val TRIGGER_DEAD = 0.06f
+// Travel past which a trigger counts as the L2/R2 BUTTON being held rather than a pressure
+// value — what the bind capture records, what fires a trigger-bound hotkey, and what makes a
+// held trigger a combo modifier. Well above TRIGGER_DEAD: pressure ramps from a brush, but
+// "pressed" should mean a deliberate press.
+private const val TRIGGER_DIGITAL_THRESHOLD = 0.5f
 // Threshold past which a stick remapped to D-pad / face buttons registers as a
 // digital press. Higher than STICK_DEAD so a resting/wobbling stick doesn't fire.
 private const val STICK_DIGITAL_THRESHOLD = 0.5f
@@ -3603,17 +3608,11 @@ open class MainActivityRuntime : ComponentActivity() {
             // D-pad never registered while face-button mapping (different codes)
             // worked fine.
             dispatchDpadCombined(ev, port)
-            // Analog triggers (L2/R2). Xbox / DualShock / most modern pads
-            // report these as 0..1 motion-axis values, not Key.ButtonL2/R2
-            // key events, so the direct key path never sees them.
-            // AXIS_LTRIGGER/RTRIGGER is the modern path; some controllers
-            // (older Moga, certain BT mappings) report via AXIS_BRAKE/GAS
-            // instead — take the max so we handle whichever the device
-            // actually emits without double-driving when both are present.
-            sendTrigger(ev, MotionEvent.AXIS_LTRIGGER, MotionEvent.AXIS_BRAKE,
-                KeyEvent.KEYCODE_BUTTON_L2, port)
-            sendTrigger(ev, MotionEvent.AXIS_RTRIGGER, MotionEvent.AXIS_GAS,
-                KeyEvent.KEYCODE_BUTTON_R2, port, axisC = rightTriggerExtraAxis(ev.deviceId))
+            // Analog triggers (L2/R2). Xbox / DualShock / most modern pads report these as
+            // 0..1 motion-axis values, not KEYCODE_BUTTON_L2/R2 key events, so the direct key
+            // path never sees them. Which axes that means per device is triggerAxes' job.
+            sendTrigger(ev, left = true, port = port)
+            sendTrigger(ev, left = false, port = port)
             // Physical STICK DIRECTIONS bound to a PS2 control via the "(send)"
             // rows — e.g. R-Stick Down bound to send Square. The analog "(send)"
             // targets contribute to the merge layer like every other writer.
@@ -3702,14 +3701,47 @@ open class MainActivityRuntime : ComponentActivity() {
         }
     }
 
-    // Extra RT axis for pads that report the right trigger on AXIS_RZ (AYANEO Xbox mode) instead of
-    // RTRIGGER/GAS. Only when RZ is a 0..1 range (a real stick-Y is -1..1), so standard pads are
-    // untouched. -1 = no such axis. Cached — InputDevice.getDevice is a binder call.
-    private val rightTriggerAxisCache = HashMap<Int, Int>()
-    private fun rightTriggerExtraAxis(deviceId: Int): Int = rightTriggerAxisCache.getOrPut(deviceId) {
-        val rz = runCatching { InputDevice.getDevice(deviceId)?.getMotionRange(MotionEvent.AXIS_RZ) }.getOrNull()
-        if (rz != null && rz.min >= 0f) MotionEvent.AXIS_RZ else -1
+    // Which axes carry the [left]/right trigger on this pad: LTRIGGER/RTRIGGER (modern),
+    // BRAKE/GAS (older Moga, some BT mappings), or plain Z/RZ when Android has no vendor key
+    // layout for the pad and passes raw HID through — AYANEO Xbox mode on the right (#394), a
+    // plain Xbox controller on BOTH. Only a 0..1 range qualifies (a stick axis spans -1..1), so
+    // a standard pad's right stick is never taken for a trigger; -1 = absent. The left side had
+    // no such fallback, so on those pads LT was read by nothing at all. One resolver for capture
+    // AND gameplay, so a bind can't capture an axis gameplay doesn't read. Cached:
+    // InputDevice.getDevice is a binder call and motion events are far too frequent for it.
+    private val triggerAxisCache = HashMap<Int, Triple<Int, Int, Int>>()
+    private fun triggerAxes(deviceId: Int, left: Boolean): Triple<Int, Int, Int> =
+        triggerAxisCache.getOrPut(deviceId * 2 + (if (left) 0 else 1)) {
+            val raw = if (left) MotionEvent.AXIS_Z else MotionEvent.AXIS_RZ
+            val range = runCatching { InputDevice.getDevice(deviceId)?.getMotionRange(raw) }.getOrNull()
+            Triple(
+                if (left) MotionEvent.AXIS_LTRIGGER else MotionEvent.AXIS_RTRIGGER,
+                if (left) MotionEvent.AXIS_BRAKE else MotionEvent.AXIS_GAS,
+                if (range != null && range.min >= 0f) raw else -1,
+            )
+        }
+
+    /** 0..1 travel on the [left]/right trigger — highest of the candidate axes, negatives
+     *  clamped (some pads idle an unused trigger axis at -1). Returns **-1 when the pad has no
+     *  trigger axis on that side**, which is not the same as one resting at zero: a Switch Pro
+     *  Controller sends L2/R2 as key events only, and reading its absent axes as 0.0 once wrote
+     *  "released" every motion event, cancelling a held R2 whenever the stick moved. */
+    private fun triggerTravel(ev: MotionEvent, left: Boolean): Float {
+        val (a, b, c) = triggerAxes(ev.deviceId, left)
+        if (!deviceHasAxis(ev.deviceId, a) && !deviceHasAxis(ev.deviceId, b) &&
+            !deviceHasAxis(ev.deviceId, c))
+            return -1f
+        return maxOf(
+            maxOf(ev.getAxisValue(a), ev.getAxisValue(b)),
+            if (c >= 0) ev.getAxisValue(c) else 0f,
+        ).coerceIn(0f, 1f)
     }
+
+    /** The keycode a trigger stands in for. The binding model is keyed on keycodes and most
+     *  pads give their triggers none, so every trigger path — capture and gameplay — refers to
+     *  them by the code a key-emitting pad would send. */
+    private fun triggerKeyCode(left: Boolean): Int =
+        if (left) KeyEvent.KEYCODE_BUTTON_L2 else KeyEvent.KEYCODE_BUTTON_R2
 
     private var lastStickProbeMs = 0L
     private fun debugStickProbe(ev: MotionEvent) {
@@ -4101,6 +4133,14 @@ open class MainActivityRuntime : ComponentActivity() {
         // here is why its directions could never be bound.
         val (capRightX, capRightY) = rightStickAxes(ev.deviceId)
         captureStickCode(ev, capRightX, capRightY, false).takeIf { it != 0 }?.let { want.add(it) }
+        // Analog TRIGGERS, same treatment: on a pad whose triggers are axis-only (an Xbox
+        // controller, and most modern pads) the capture saw nothing at all when one was pulled
+        // — and since this method consumes the motion, not even a UI twitch to explain why.
+        // Standing in the keycode a key-emitting pad would send makes the trigger an ordinary
+        // button downstream, and gameplay resolves that same code back (sendTrigger).
+        for (left in booleanArrayOf(true, false)) {
+            if (triggerTravel(ev, left) > TRIGGER_DIGITAL_THRESHOLD) want.add(triggerKeyCode(left))
+        }
         captureHatX = dx
         captureHatY = dy
         val now = SystemClock.uptimeMillis()
@@ -4457,7 +4497,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     // Edge: fire a hotkey with this direction as its MAIN key —
                     // combo-aware (e.g. "hold Select + push R-Stick Up"), falling
                     // back to a plain single-direction binding.
-                    ControllerMappings.matchHotkey(code, heldKeys)?.let { runStickHotkey(it) }
+                    ControllerMappings.matchHotkey(code, heldKeys)?.let { runEdgeHotkey(it) }
                 }
             } else {
                 heldKeys.remove(code)
@@ -4466,11 +4506,12 @@ open class MainActivityRuntime : ComponentActivity() {
         }
     }
 
-    /** Fire an ARMSX2 hotkey from a non-key source (a CUSTOM stick direction crossing
+    /** Fire an ARMSX2 hotkey from a non-key source (a stick direction or a trigger crossing
      *  its threshold — edge-triggered, treated as a single press). Hold-type hotkeys
-     *  (FAST_FORWARD hold, PRESSURE_MOD) are no-ops here — a stick edge has no hold
-     *  semantics; the rest mirror the one-shot actions in dispatchKeyEvent. */
-    private fun runStickHotkey(h: ControllerMappings.SysHotkey) {
+     *  (FAST_FORWARD hold, PRESSURE_MOD) are no-ops here: a stick edge has no hold semantics,
+     *  and sendTrigger handles them itself on both edges. The rest mirror the one-shot
+     *  actions in dispatchKeyEvent. */
+    private fun runEdgeHotkey(h: ControllerMappings.SysHotkey) {
         when (h) {
             ControllerMappings.SysHotkey.MENU -> InGameOverlay.toggle()
             ControllerMappings.SysHotkey.SCREENSHOT -> com.armsx2.Screenshots.capture(applicationContext)
@@ -4527,7 +4568,7 @@ open class MainActivityRuntime : ComponentActivity() {
         ControllerMappings.hotkeyForStickCode(code)?.let { hk ->
             val held = stickHotkeyHeld[port]
             if (mag > STICK_DIGITAL_THRESHOLD) {
-                if (held.add(code)) runStickHotkey(hk)
+                if (held.add(code)) runEdgeHotkey(hk)
             } else {
                 held.remove(code)
             }
@@ -4674,38 +4715,64 @@ open class MainActivityRuntime : ComponentActivity() {
         }
     }
 
-    private fun sendTrigger(event: MotionEvent, axisA: Int, axisB: Int, code: Int, port: Int, axisC: Int = -1) {
-        // A pad with NO analog trigger axis at all — a Nintendo Switch Pro Controller, or an
-        // 8BitDo Pro in Switch mode, which enumerates as one (vendor 0x057e) — delivers L2/R2
-        // ONLY as KEYCODE_BUTTON_L2/R2 key events. Its axis list is just X/Y, Z/RZ and the HAT.
-        //
-        // Reading the absent trigger axes yields 0.0, so the lines below wrote "trigger
-        // released" on EVERY motion event. Hold R2 and move the stick and the stick's own
-        // motion event cancelled the held trigger — "R2 and the stick can't be used at the
-        // same time", which kills racing games. Buttons were unaffected because nothing on the
-        // motion path writes them; only L2/R2 have a motion-side writer. Same shape as the
-        // D-pad "last write wins" bug handled in dispatchDpadCombined.
-        //
-        // When the device has none of these axes, leave the key path in sole charge.
-        if (!deviceHasAxis(event.deviceId, axisA) && !deviceHasAxis(event.deviceId, axisB) &&
-            !deviceHasAxis(event.deviceId, axisC))
-            return
+    // Triggers past TRIGGER_DIGITAL_THRESHOLD, per unified pad slot: edge state for
+    // trigger-bound hotkeys, so each press fires once and re-arms on release.
+    private val triggerHotkeyHeld = Array(8) { HashSet<Int>() }
 
-        // Pads report L2/R2 on AXIS_*TRIGGER or on AXIS_BRAKE/GAS — take the higher of
-        // the two, clamping negatives (some non-Xbox pads idle an unused trigger axis at
-        // -1). Then apply the SMALL trigger deadzone and re-normalize the remaining range
-        // to 0..1, so pressure ramps smoothly from zero to full instead of flicking on/off
-        // around the old hard 15% stick-deadzone boundary (the jitter non-Xbox pads showed)
-        // — and the low 15% of travel is no longer wasted.
+    private fun sendTrigger(event: MotionEvent, left: Boolean, port: Int) {
+        // -1 = no trigger axis on this side; its L2/R2 is a key event, key path owns it.
+        val raw = triggerTravel(event, left)
+        if (raw < 0f) return
+        val code = triggerKeyCode(left)
+        val held = triggerHotkeyHeld[port]
+        val pressed = raw > TRIGGER_DIGITAL_THRESHOLD
+
+        // Mirror into heldKeys so a held trigger can be a combo MODIFIER, exactly as it is on a
+        // pad whose triggers send key events. Cleared on OUR release edge only — a pad that
+        // reports its triggers both ways must not have the key path's hold wiped by a motion
+        // event that happens to read the axis low.
+        if (pressed) heldKeys.add(code)
+        if (pressed != held.contains(code)) {
+            if (pressed) held.add(code) else { held.remove(code); heldKeys.remove(code) }
+            // Triggers now reach the Hotkeys tab's capture like any other button, so they have
+            // to be able to fire one here. Hold-type hotkeys act on both edges (a trigger has a
+            // real release, unlike a stick edge); the rest fire on the press. Matching on
+            // release re-adds the code, as the key path does, so a combo still resolves.
+            ControllerMappings.matchHotkey(code, if (pressed) heldKeys else heldKeys + code)?.let { hk ->
+                when (hk) {
+                    ControllerMappings.SysHotkey.FAST_FORWARD -> {
+                        if (pressed) fastForwardToggleActive = false
+                        runCatching {
+                            NativeApp.speedhackLimitermode(if (pressed) ffLimiterMode() else baseLimiterMode())
+                        }
+                    }
+                    ControllerMappings.SysHotkey.PRESSURE_MOD ->
+                        com.armsx2.ui.touch.TouchControls.pressureModifierHeld.value = pressed
+                    ControllerMappings.SysHotkey.GYRO_HOLD -> gyroActive.value = pressed
+                    else -> if (pressed) runEdgeHotkey(hk)
+                }
+            }
+            // Macros are keyed on the physical code too, and the Pad tab now lets a trigger be
+            // captured for one. Same both-edges firing as dispatchGameplayKey.
+            com.armsx2.ui.touch.TouchControls.macroForPhysicalCode(code)?.let { macro ->
+                com.armsx2.ui.touch.TouchControls.fireMacro(macro, "pad$port", pressed) { c, p ->
+                    sendKeyAction(if (p) KeyEventType.KeyDown else KeyEventType.KeyUp, c, port)
+                }
+            }
+        }
+        // A trigger bound to a hotkey or a macro doesn't also drive the pad — the precedence
+        // the key path and emitCustom already apply. The hotkey match is combo-aware, so a
+        // trigger that is merely a MODIFIER keeps working as L2/R2.
+        if (ControllerMappings.matchHotkey(code, heldKeys) != null) return
+        if (com.armsx2.ui.touch.TouchControls.macroForPhysicalCode(code) != null) return
+
         // Honor the L2/R2 binding: triggers arrive as motion axes, never through the
         // keycode binding path, so clearing/remapping them in the Pad tab was ignored.
         // Resolve the physical trigger keycode to its mapped PS2 target — null = cleared,
         // so the trigger is disabled; otherwise drive the resolved (possibly remapped) code.
         val target = ControllerMappings.targetForPhysical(code, port) ?: return
-        val raw = maxOf(
-            maxOf(event.getAxisValue(axisA), event.getAxisValue(axisB)),
-            if (axisC >= 0) event.getAxisValue(axisC) else 0f,
-        ).coerceIn(0f, 1f)
+        // Deadzone off the bottom, re-normalized, so pressure ramps from zero instead of
+        // flicking on/off at a hard threshold (the jitter non-Xbox pads showed).
         val out = if (raw <= TRIGGER_DEAD) 0f else (raw - TRIGGER_DEAD) / (1f - TRIGGER_DEAD)
         if (target in 110..123) {
             // Trigger bound to a PS2 STICK direction ("(send)" rows): contribute the
