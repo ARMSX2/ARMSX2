@@ -913,26 +913,47 @@ void GSRasterizer::DrawTriangleSection(int top, int bottom, GSVertexSW2& RESTRIC
 	m_edge.count += e - &m_edge.buff[m_edge.count];
 }
 
+// The AVX2 rasterizer's setup runs GSVertexSW2/GSVector8 arithmetic, whose roundings
+// have never been validated against the Tile depth transcription (the parity bar is
+// the scalar/NEON pipeline). Report no plane; the Tile renderer floors instead.
+bool CURRENT_ISA::GSComputeTriangleZPlane(const GSVertexSW* vertex, const GSVector4& fscissor_y, GSTileZPlane& out)
+{
+	return false;
+}
+
 #else
 
-void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
+// The whole of DrawTriangle's setup, extracted so it exists exactly ONCE in the
+// binary: __noinline, called both by DrawTriangle below and by the Tile renderer's
+// depth-plane export (GSComputeTriangleZPlane). The z gradient's value is sensitive
+// to which multiply-adds the compiler contracts into fused ops — an ULP under an
+// on-grid gradient flips the truncated 2^-10 step by a whole unit — so two source
+// copies of this arithmetic in different translation units could legitimately
+// disagree. One compiled body cannot.
+struct GSTriangleSetup
 {
-	m_primcount++;
-
-	GSVertexSW edge;
-	GSVertexSW dedge;
+	GSVertexSW edge[2];
+	GSVertexSW dedge[2];
 	GSVertexSW dscan;
+	GSVector4 p0[2];
+	int top[2];
+	int bottom[2];
+	int nsections;
+	int i[3];       // y-sorted vertex indices
+	GSVector4 cross; // the (negated, broadcast) cross product, for the edge-AA orientation
+};
 
+__noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index, const GSVector4& fscissor_y, GSTriangleSetup& out)
+{
 	GSVector4 y0011 = vertex[index[0]].p.yyyy(vertex[index[1]].p);
 	GSVector4 y1221 = vertex[index[1]].p.yyyy(vertex[index[2]].p).xzzx();
 
 	int m1 = (y0011 > y1221).mask() & 7;
 
-	int i[3];
-
-	i[0] = index[s_ysort[m1][0]];
-	i[1] = index[s_ysort[m1][1]];
-	i[2] = index[s_ysort[m1][2]];
+	out.i[0] = index[s_ysort[m1][0]];
+	out.i[1] = index[s_ysort[m1][1]];
+	out.i[2] = index[s_ysort[m1][2]];
+	const int* i = out.i;
 
 	const GSVertexSW& v0 = vertex[i[0]];
 	const GSVertexSW& v1 = vertex[i[1]];
@@ -948,11 +969,11 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	// if (i == 4) => y0 < y1 == y2
 
 	if (m1 == 7)
-		return; // y0 == y1 == y2
+		return false; // y0 == y1 == y2
 
 	GSVector4 tbf = y0011.xzxz(y1221).ceil();
-	GSVector4 tbmax = tbf.max(m_fscissor_y);
-	GSVector4 tbmin = tbf.min(m_fscissor_y);
+	GSVector4 tbmax = tbf.max(fscissor_y);
+	GSVector4 tbmin = tbf.min(fscissor_y);
 	GSVector4i tb = GSVector4i(tbmax.xzyw(tbmin)); // max(y0, t) max(y1, t) min(y1, b) min(y2, b)
 
 	GSVertexSW dv0 = v1 - v0;
@@ -967,9 +988,11 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	int m2 = cross.upl(cross == GSVector4::zero()).mask();
 
 	if (m2 & 2)
-		return;
+		return false;
 
 	m2 &= 1;
+
+	out.cross = cross;
 
 	GSVector4 dxy01 = dv0.p.xyxy(dv1.p);
 
@@ -985,50 +1008,125 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	// Precision is important here. Don't use reciprocal, it will break Jak3/Xenosaga1
 	GSVector4 dxy01c = dxy01 / cross;
 
-	dscan = dv1 * dxy01c.yyyy() - dv0 * dxy01c.wwww();
-	dedge = dv0 * dxy01c.zzzz() - dv1 * dxy01c.xxxx();
+	out.dscan = dv1 * dxy01c.yyyy() - dv0 * dxy01c.wwww();
+	GSVertexSW dedge = dv0 * dxy01c.zzzz() - dv1 * dxy01c.xxxx();
 
-	TruncateDepthGradient(dscan.p);
+	TruncateDepthGradient(out.dscan.p);
+
+	out.nsections = 0;
 
 	if (m1 & 1)
 	{
 		if (tb.y < tb.w)
 		{
+			GSVertexSW& edge = out.edge[0];
+
 			edge = vertex[i[1 - m2]];
 
 			edge.p.y = vertex[i[m2]].p.x;
-			dedge.p = ddx[!m2 << 1].yzzw(dedge.p);
+			out.dedge[0] = dedge;
+			out.dedge[0].p = ddx[!m2 << 1].yzzw(dedge.p);
 
-			DrawTriangleSection(tb.x, tb.w, edge, dedge, dscan, vertex[i[1 - m2]].p);
+			out.p0[0] = vertex[i[1 - m2]].p;
+			out.top[0] = tb.x;
+			out.bottom[0] = tb.w;
+			out.nsections = 1;
 		}
 	}
 	else
 	{
 		if (tb.x < tb.z)
 		{
+			const int n = out.nsections;
+			GSVertexSW& edge = out.edge[n];
+
 			edge = v0;
 
 			edge.p.y = edge.p.x;
-			dedge.p = ddx[m2].xyzw(dedge.p);
+			out.dedge[n] = dedge;
+			out.dedge[n].p = ddx[m2].xyzw(dedge.p);
 
-			DrawTriangleSection(tb.x, tb.z, edge, dedge, dscan, v0.p);
+			out.p0[n] = v0.p;
+			out.top[n] = tb.x;
+			out.bottom[n] = tb.z;
+			out.nsections = n + 1;
 		}
 
 		if (tb.y < tb.w)
 		{
+			const int n = out.nsections;
+			GSVertexSW& edge = out.edge[n];
+
 			edge = v1;
 
 			edge.p = (v0.p.xxxx() + ddx[m2] * dv0.p.yyyy()).xyzw(edge.p);
-			dedge.p = ddx[!m2 << 1].yzzw(dedge.p);
+			out.dedge[n] = dedge;
+			out.dedge[n].p = ddx[!m2 << 1].yzzw(dedge.p);
 
-			DrawTriangleSection(tb.y, tb.w, edge, dedge, dscan, v1.p);
+			out.p0[n] = v1.p;
+			out.top[n] = tb.y;
+			out.bottom[n] = tb.w;
+			out.nsections = n + 1;
 		}
 	}
 
-	Flush(vertex, index, dscan);
+	return true;
+}
+
+bool CURRENT_ISA::GSComputeTriangleZPlane(const GSVertexSW* vertex, const GSVector4& fscissor_y, GSTileZPlane& out)
+{
+	static constexpr u16 index[3] = {0, 1, 2};
+
+	GSTriangleSetup s;
+	if (!SetupTriangle(vertex, index, fscissor_y, s))
+		return false;
+
+	out.dscan_z = s.dscan.p.F64[1];
+	// The fp32 narrowing GSSetupPrimCodeGenerator performs once per primitive when it
+	// builds the per-lane offset table (Fcvtn of the double gradient); the lane offsets
+	// the scanline adds are fp32 products of THIS value, not of the double.
+	out.dscan_z32 = static_cast<float>(out.dscan_z);
+	out.nsections = s.nsections;
+	for (int n = 0; n < s.nsections; n++)
+	{
+		out.sec[n].edge_x = s.edge[n].p.x;
+		out.sec[n].dedge_x = s.dedge[n].p.x;
+		out.sec[n].p0x = s.p0[n].x;
+		out.sec[n].p0y = s.p0[n].y;
+		out.sec[n].zseed = s.edge[n].p.F64[1];
+		out.sec[n].dedge_z = s.dedge[n].p.F64[1];
+		out.sec[n].top = s.top[n];
+		out.sec[n].bottom = s.bottom[n];
+	}
+	return true;
+}
+
+void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
+{
+	m_primcount++;
+
+	GSTriangleSetup s;
+	if (!SetupTriangle(vertex, index, m_fscissor_y, s))
+		return;
+
+	for (int n = 0; n < s.nsections; n++)
+		DrawTriangleSection(s.top[n], s.bottom[n], s.edge[n], s.dedge[n], s.dscan, s.p0[n]);
+
+	Flush(vertex, index, s.dscan);
 
 	if (HasEdge())
 	{
+		const GSVertexSW& v0 = vertex[s.i[0]];
+		const GSVertexSW& v1 = vertex[s.i[1]];
+		const GSVertexSW& v2 = vertex[s.i[2]];
+
+		// Plain single-op subtractions: safe to recompute (no contraction to diverge on).
+		const GSVertexSW dv0 = v1 - v0;
+		const GSVertexSW dv1 = v2 - v0;
+		const GSVertexSW dv2 = v2 - v1;
+
+		const GSVector4 cross = s.cross;
+
 		const bool clockwise = (cross < GSVector4::zero()).mask();
 
 		const bool tl0 = (v0.p.y == v1.p.y) || !clockwise;
