@@ -39,45 +39,49 @@ constexpr double kStep = 1.0 / 1024.0; // the grid the depth step is truncated o
 TEST(GSDepthWalk, FlatPrimitiveTakesNoBias)
 {
 	// Silicon stores a flat triangle's depth exactly: 896 of 896 readings.
-	EXPECT_EQ(GSDepthWalkBias(0.0, 0.0, 0.0), 0.0);
-	EXPECT_EQ(GSDepthWalkBias(0.0, 0.0, 17.0), 0.0);
+	EXPECT_EQ(GSDepthWalkBias(0.0, 0.0, false), 0.0);
+	EXPECT_EQ(GSDepthWalkBias(0.0, 0.0, true), 0.0);
 }
 
 TEST(GSDepthWalk, XGradientBiasesFromTheFirstScanline)
 {
 	// The X shortfall is there at the vertex itself, so it does not wait for dy.
-	EXPECT_EQ(GSDepthWalkBias(0.25, 0.0, 0.0), kGSDepthWalkBias);
-	EXPECT_EQ(GSDepthWalkBias(0.25, 0.0, 9.0), kGSDepthWalkBias);
+	EXPECT_EQ(GSDepthWalkBias(0.25, 0.0, false), kGSDepthWalkBias);
+	EXPECT_EQ(GSDepthWalkBias(0.25, 0.0, true), kGSDepthWalkBias);
 }
 
 TEST(GSDepthWalk, XGradientBiasDoesNotFollowItsSign)
 {
 	// A falling X gradient runs short in the same direction as a rising one.
 	// Signing this half doubled gs-zgrad's gridx miss count.
-	EXPECT_EQ(GSDepthWalkBias(-0.5, 0.0, 0.0), kGSDepthWalkBias);
-	EXPECT_EQ(GSDepthWalkBias(-8192.0, 0.0, 3.0), kGSDepthWalkBias);
+	EXPECT_EQ(GSDepthWalkBias(-0.5, 0.0, false), kGSDepthWalkBias);
+	EXPECT_EQ(GSDepthWalkBias(-8192.0, 0.0, true), kGSDepthWalkBias);
 }
 
 TEST(GSDepthWalk, YGradientIsExactOnTheVertexScanline)
 {
-	// The Y shortfall accumulates, so the seed row carries none of it.
-	EXPECT_EQ(GSDepthWalkBias(0.0, 0.5, 0.0), 0.0);
-	EXPECT_EQ(GSDepthWalkBias(0.0, -0.5, 0.0), 0.0);
+	// The Y shortfall accumulates, so the seed row carries none of it. The
+	// caller passes "stepped off the PRIMITIVE's first scanline", not the
+	// section's: a triangle with no flat edge is walked as two sections rebased
+	// on the middle vertex, and exempting the second one's first row would lay a
+	// one-unit depth discontinuity along that row. Silicon has no sections.
+	EXPECT_EQ(GSDepthWalkBias(0.0, 0.5, false), 0.0);
+	EXPECT_EQ(GSDepthWalkBias(0.0, -0.5, false), 0.0);
 }
 
 TEST(GSDepthWalk, YGradientBiasPointsBackTowardTheSeed)
 {
 	// Rising runs low, falling runs HIGH -- the shortfall is in the walk's
 	// own direction, which is what took the ygrad section to zero.
-	EXPECT_EQ(GSDepthWalkBias(0.0, 0.5, 1.0), kGSDepthWalkBias);
-	EXPECT_EQ(GSDepthWalkBias(0.0, -0.5, 1.0), -kGSDepthWalkBias);
+	EXPECT_EQ(GSDepthWalkBias(0.0, 0.5, true), kGSDepthWalkBias);
+	EXPECT_EQ(GSDepthWalkBias(0.0, -0.5, true), -kGSDepthWalkBias);
 }
 
 TEST(GSDepthWalk, AxesCompose)
 {
-	EXPECT_EQ(GSDepthWalkBias(0.25, 0.5, 4.0), 2.0 * kGSDepthWalkBias);
+	EXPECT_EQ(GSDepthWalkBias(0.25, 0.5, true), 2.0 * kGSDepthWalkBias);
 	// A falling Y under a rising X cancels rather than compounding.
-	EXPECT_EQ(GSDepthWalkBias(0.25, -0.5, 4.0), 0.0);
+	EXPECT_EQ(GSDepthWalkBias(0.25, -0.5, true), 0.0);
 }
 
 TEST(GSDepthWalk, BiasMovesIntegerLandingsAndNothingElse)
@@ -86,7 +90,7 @@ TEST(GSDepthWalk, BiasMovesIntegerLandingsAndNothingElse)
 	// integer drops below it, and a value even one step of the 2^-10 grid above
 	// that integer does not. This is what makes the bias safe to apply to the
 	// seed instead of testing every pixel at the store.
-	const double bias = GSDepthWalkBias(0.25, 0.0, 0.0);
+	const double bias = GSDepthWalkBias(0.25, 0.0, false);
 	for (const double z : {1.0, 2.0, 1024.0, 8388608.0})
 	{
 		EXPECT_LT(z - bias, z) << "an exact landing must fall below the integer";
