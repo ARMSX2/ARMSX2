@@ -50,6 +50,7 @@
 #include "pcsx2/PerformanceMetrics.h"
 #include "pcsx2/VMManager.h"
 
+#include "GSReplayPayload.h"
 #include "RenderDocCapture.h"
 
 #include "svnrev.h"
@@ -206,6 +207,12 @@ static u64 s_total_hash_cache_miss = 0;
 
 static bool s_perf_enable = false;
 static bool s_force_vsync = false;
+
+// Console replay payload emission. This runs and exits before any VM or GS device is
+// created -- the dump is a replay script rather than a recording, so turning one into
+// something a PlayStation 2 can execute is close to a file transform.
+static bool s_emit_payload = false;
+static GSReplayPayload::Options s_payload_opts;
 static float s_perf_updates = 0.0f;
 static float s_perf_sum_fps = 0.0f;
 static float s_perf_sum_internal_fps = 0.0f;
@@ -1099,6 +1106,36 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_settings_interface.SetIntValue("EmuCore/GS", "accurate_blending_unit", level.value());
 				continue;
 			}
+			else if (CHECK_ARG_PARAM("-emit-payload"))
+			{
+				s_payload_opts.output_path = StringUtil::StripWhitespace(argv[++i]);
+				s_emit_payload = true;
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-payload-frames"))
+			{
+				s_payload_opts.frame_limit = StringUtil::FromChars<u32>(argv[++i]).value_or(0);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-payload-readback"))
+			{
+				// bp,bw,psm,w,h -- the region every checkpoint reads back. Left alone it
+				// comes from the freeze's context-0 FRAME, which is right for most dumps
+				// and wrong for any that render somewhere other than where they display.
+				const std::vector<std::string_view> parts = StringUtil::SplitString(argv[++i], ',', true);
+				if (parts.size() != 5)
+				{
+					Console.Error("-payload-readback wants bp,bw,psm,w,h");
+					return false;
+				}
+				s_payload_opts.rb_bp = StringUtil::FromChars<u32>(parts[0]).value_or(0);
+				s_payload_opts.rb_bw = StringUtil::FromChars<u32>(parts[1]).value_or(0);
+				s_payload_opts.rb_psm = StringUtil::FromChars<u32>(parts[2]).value_or(0);
+				s_payload_opts.rb_w = StringUtil::FromChars<u32>(parts[3]).value_or(0);
+				s_payload_opts.rb_h = StringUtil::FromChars<u32>(parts[4]).value_or(0);
+				s_payload_opts.rb_explicit = true;
+				continue;
+			}
 			else if (CHECK_ARG("-debugdevice"))
 			{
 				Console.WriteLn("Enable debug device");
@@ -1460,6 +1497,12 @@ int main(int argc, char* argv[])
 	VMBootParameters params;
 	if (!GSRunner::ParseCommandLineArgs(argc, argv, params))
 		return EXIT_FAILURE;
+
+	// Emitting a console replay payload needs no VM, no GS device and no window: the
+	// dump already carries the freeze and the packet stream, so this is a transform on
+	// the file. Do it here and leave, before anything expensive is stood up.
+	if (s_emit_payload)
+		return GSReplayPayload::Emit(params.filename, s_payload_opts) ? EXIT_SUCCESS : EXIT_FAILURE;
 
 	// Must happen before the GS device is created on the CPU thread: RenderDoc
 	// installs its graphics-API hooks when its library loads, so a standalone run
