@@ -138,6 +138,35 @@ TEST(GSTileOracleCompare, DepthIsPricedAsOneUnsignedNumber)
 	EXPECT_EQ(big.max_delta, 0x00FF0000u);
 }
 
+TEST(GSTileOracleCompare, MagnitudeHistogramSeparatesResidueFromRealDamage)
+{
+	// The question a per-draw MAXIMUM cannot answer. Four pixels off by one level and a
+	// single pixel off by fifty share a maximum of fifty; only the histogram says the
+	// draw is 80% accepted residue.
+	const Tally t = Score(
+		/*pre*/ {0, 0, 0, 0, 0},
+		/*sw */ {0x10, 0x10, 0x10, 0x10, 0x10},
+		/*gpu*/ {0x11, 0x11, 0x11, 0x11, 0x42});
+	EXPECT_EQ(t.max_delta, 50u);
+	EXPECT_EQ(t.d1, 4u);
+	EXPECT_EQ(t.d16_127, 1u);
+	EXPECT_EQ(t.d2 + t.d3_15 + t.d128p, 0u);
+	EXPECT_EQ(t.d1 + t.d2 + t.d3_15 + t.d16_127 + t.d128p, t.differing());
+}
+
+TEST(GSTileOracleCompare, HistogramBucketBoundaries)
+{
+	auto one = [](u32 sw, u32 gpu) { return Score({0}, {sw}, {gpu}); };
+	EXPECT_EQ(one(0, 1).d1, 1u);
+	EXPECT_EQ(one(0, 2).d2, 1u);
+	EXPECT_EQ(one(0, 3).d3_15, 1u);
+	EXPECT_EQ(one(0, 15).d3_15, 1u);
+	EXPECT_EQ(one(0, 16).d16_127, 1u);
+	EXPECT_EQ(one(0, 127).d16_127, 1u);
+	EXPECT_EQ(one(0, 128).d128p, 1u);
+	EXPECT_EQ(one(0, 255).d128p, 1u);
+}
+
 TEST(GSTileOracleCompare, EmptyRectComparesNothing)
 {
 	const Tally t = Compare(nullptr, nullptr, nullptr, 0, 0, 0, 0, Metric::Rgba8);

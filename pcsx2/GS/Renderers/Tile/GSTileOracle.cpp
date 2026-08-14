@@ -138,6 +138,16 @@ namespace GSTileOracle
 						break;
 				}
 				t.max_delta = std::max(t.max_delta, delta);
+				if (delta == 1)
+					t.d1++;
+				else if (delta == 2)
+					t.d2++;
+				else if (delta < 16)
+					t.d3_15++;
+				else if (delta < 128)
+					t.d16_127++;
+				else
+					t.d128p++;
 
 				if (t.first_x < 0)
 				{
@@ -218,10 +228,11 @@ namespace GSTileOracle
 		s_detail_left = 0;
 	}
 
-	// Ten columns, no trailing separator -- the caller places it.
+	// Fifteen columns, no trailing separator -- the caller places it.
 	static void WriteTally(std::FILE* fp, const Tally& t)
 	{
 		std::fprintf(fp, "%u,%u,%u,%u,%u,", t.compared, t.sw_only, t.gpu_only, t.both, t.max_delta);
+		std::fprintf(fp, "%u,%u,%u,%u,%u,", t.d1, t.d2, t.d3_15, t.d16_127, t.d128p);
 		if (t.first_x >= 0)
 			std::fprintf(fp, "%d,%d,%08x,%08x,%08x", t.first_x, t.first_y, t.first_pre, t.first_sw, t.first_gpu);
 		else
@@ -264,8 +275,10 @@ namespace GSTileOracle
 			"z_addr,z_psm,z_write,z_test,"
 			"tme,iip,abe,fge,mip,fst,ate,date,tex_psm,"
 			"sync_pages,fp_pages,diff_pages,diff_bytes,"
-			"c_compared,c_sw_only,c_gpu_only,c_both,c_max_level,c_x,c_y,c_pre,c_sw,c_gpu,"
-			"z_compared,z_sw_only,z_gpu_only,z_both,z_max_delta,z_x,z_y,z_pre,z_sw,z_gpu\n");
+			"c_compared,c_sw_only,c_gpu_only,c_both,c_max_level,c_d1,c_d2,c_d3_15,c_d16_127,c_d128p,"
+			"c_x,c_y,c_pre,c_sw,c_gpu,"
+			"z_compared,z_sw_only,z_gpu_only,z_both,z_max_delta,z_d1,z_d2,z_d3_15,z_d16_127,z_d128p,"
+			"z_x,z_y,z_pre,z_sw,z_gpu\n");
 
 		for (const Row& r : s_rows)
 		{

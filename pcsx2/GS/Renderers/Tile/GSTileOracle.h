@@ -54,6 +54,16 @@ namespace GSTileOracle
 		u32 both = 0; ///< both moved it, to different values
 		u32 max_delta = 0; ///< worst gap between the arms, in the metric's units
 
+		/// How big the disagreements are, per pixel. A per-draw MAXIMUM cannot answer
+		/// the question this campaign keeps asking -- "is this the accepted one-level
+		/// residue, or something real?" -- because one loud pixel in a thousand quiet
+		/// ones sets the maximum for all of them. The histogram answers it directly.
+		u32 d1 = 0;      ///< off by exactly one level
+		u32 d2 = 0;      ///< two
+		u32 d3_15 = 0;   ///< three to fifteen
+		u32 d16_127 = 0; ///< sixteen to a hundred and twenty-seven
+		u32 d128p = 0;   ///< a hundred and twenty-eight or more
+
 		/// The first pixel the two arms disagree on, scanning rows then columns.
 		/// x is -1 when they agree everywhere.
 		s32 first_x = -1;
