@@ -39,6 +39,12 @@ GSTileDrawInput BaseInput()
 	// A benign colour floor so mix-rung admissions in tests clear the saturation
 	// guard; the guard's own tests zero it explicitly.
 	in.color_min_rgb = 32;
+	// prim_overlap_none stays FALSE here, and that is load-bearing for every blend
+	// test below: since M4c the read rung takes any equation the read-free rungs
+	// refuse, so the only thing left to floor such a row is the unproven overlap.
+	// An expectation of BlendOverlap therefore reads "no read-free rung would take
+	// this", which is exactly what those tests mean to pin — and the read rung's own
+	// test flips the fact on to show the same rows going native.
 	in.vs_expand = true;
 	return in;
 }
@@ -89,7 +95,7 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 				in.tex_psm = PSGPU24;
 			},
 			GSTileFloorReason::TexturePsm},
-		{"blend", [](GSTileDrawInput& in) { in.abe = true; }, GSTileFloorReason::Blend},
+		{"blend", [](GSTileDrawInput& in) { in.abe = true; }, GSTileFloorReason::BlendOverlap},
 		{"blend wrap",
 			[](GSTileDrawInput& in) {
 				in.abe = true;
@@ -312,7 +318,7 @@ TEST(GSTileLowering, TexturedDrawStillFloorsOnTheOtherGates)
 	in.tme = true;
 	in.tex_fst = true;
 	in.abe = true;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 
 	// An inexpressible mip pyramid floors as mip work whatever the filter.
 	in = BaseInput();
@@ -800,7 +806,7 @@ TEST(GSTileLowering, ColClipOutranksBlendAndRequiresBlending)
 	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::ColClip);
 
 	in.colclamp = true;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 
 	in.abe = false;
 	in.colclamp = false;
@@ -862,7 +868,7 @@ TEST(GSTileLowering, BlendCollapsesThatEliminateTheBlend)
 	// The same lerp with a genuinely variable alpha stays floored on Blend.
 	in.alpha_min = 0;
 	in.alpha_max = 255;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 
 	// The reverse lerp (Cd−Cs)·As + Cs with As 128 collapses to Cd: RGB writes
 	// nothing, alpha writes through, and the claims follow the narrowed mask.
@@ -982,11 +988,11 @@ TEST(GSTileLowering, RungThreeExactFixedFunctionRows)
 	// half is C-free (Cs·C + Cd) — the accumulation rung's territory, not the
 	// mix rung's. Floors from either carrier until accu lands.
 	in.ALPHA.FIX = 100;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 	in.ALPHA.C = 0;
 	in.alpha_min = 0;
 	in.alpha_max = 128;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 
 	// The alpha lerp with As constant 128 collapses to Cs before rung 3 ever sees
 	// it (rung 1, C==128 with B==D) — the realization stays eliminated.
@@ -998,12 +1004,14 @@ TEST(GSTileLowering, RungThreeExactFixedFunctionRows)
 	ASSERT_TRUE(p.native);
 	EXPECT_FALSE(p.pass[0].abe);
 
-	// Ad has no exact carrier: DST_ALPHA is 0..255 where the GS divides by 128.
+	// Ad has no exact FIXED-FUNCTION carrier: DST_ALPHA is 0..255 where the GS
+	// divides by 128. (The read rung has no such problem — it multiplies by the
+	// byte and shifts — so what floors this row here is the overlap fact.)
 	in = BaseInput();
 	in.abe = true;
 	in.ALPHA.B = 2;
 	in.ALPHA.C = 1;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 
 	// D==A at C==128 is Cs·2 — a coefficient past one, accumulation territory.
 	in = BaseInput();
@@ -1012,7 +1020,7 @@ TEST(GSTileLowering, RungThreeExactFixedFunctionRows)
 	in.alpha_max = 128;
 	in.ALPHA.B = 2;
 	in.ALPHA.D = 0;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 
 	// The always-zero results clamp to black in both arithmetics whatever C does:
 	// (0−Cs)·As + 0, alpha range fully variable. Zero at every C also means the
@@ -1104,16 +1112,18 @@ TEST(GSTileLowering, MixRungFractionalRows)
 	EXPECT_EQ(p.pass[0].blend_c, 2);
 	EXPECT_EQ(p.pass[0].afix, 64);
 
-	// A genuinely VARIABLE As floors even when bounded: its only read-free
-	// carriers are 8-bit colour channels (the SRC1 output, or the primary
-	// output's alpha), and the /128→/255 requantization is an up-to-half-level
-	// error scaled by Cd — measured integrating into OutRun's banding and
-	// Dirge's palette-amplified max-108 speckle. It waits for an exact carrier.
+	// A genuinely VARIABLE As is refused by this rung even when bounded: its only
+	// read-free carriers are 8-bit colour channels (the SRC1 output, or the
+	// primary output's alpha), and the /128→/255 requantization is an
+	// up-to-half-level error scaled by Cd — measured integrating into OutRun's
+	// banding and Dirge's palette-amplified max-108 speckle. Since M4c it falls
+	// through to the read rung, which carries it exactly over a paid read; here
+	// only the unproven overlap keeps it floored.
 	in = BaseInput();
 	in.abe = true;
 	in.alpha_min = 0;
 	in.alpha_max = 128;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 
 	// The other plain mix shapes, on the degenerate-constant carrier: (0,1,2)
 	// and (1,0,2) hand the ROP a ±C·Cd term through the map's subtract ops;
@@ -1147,11 +1157,11 @@ TEST(GSTileLowering, MixRungFractionalRows)
 	in.ALPHA.C = 2;
 	in.ALPHA.FIX = 64;
 	in.color_min_rgb = 0;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 	// color_min·C must reach 64 (the offset on the /128 product grid): 32·1 < 64.
 	in.color_min_rgb = 32;
 	in.ALPHA.FIX = 1;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 	// The reverse lerp's term is Cs·(1−C): a large C is the hazard there.
 	in = BaseInput();
 	in.abe = true;
@@ -1160,7 +1170,7 @@ TEST(GSTileLowering, MixRungFractionalRows)
 	in.ALPHA.D = 0;
 	in.alpha_min = 127;
 	in.alpha_max = 127;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 	// Fog edits the colour below any vertex bound; a texture function is
 	// unbounded below. Both refuse the proof.
 	in = BaseInput();
@@ -1168,19 +1178,19 @@ TEST(GSTileLowering, MixRungFractionalRows)
 	in.ALPHA.C = 2;
 	in.ALPHA.FIX = 64;
 	in.fge = true;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 	in.fge = false;
 	in.tme = true;
 	in.tex_fst = true;
 	in.tex_psm = PSMCT32;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 
 	// FIX above 128 floors (24 corpus draws; no rung is built FOR it).
 	in = BaseInput();
 	in.abe = true;
 	in.ALPHA.C = 2;
 	in.ALPHA.FIX = 200;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 
 	// D==A stacks the +1 onto the C-carrying operand — the A_MAX class floors.
 	in = BaseInput();
@@ -1188,18 +1198,18 @@ TEST(GSTileLowering, MixRungFractionalRows)
 	in.alpha_min = 64;
 	in.alpha_max = 64;
 	in.ALPHA.D = 0; // (0,1,0): Cs·(As+1) − Cd·As
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 	in.ALPHA.A = 1;
 	in.ALPHA.B = 0;
 	in.ALPHA.D = 1; // (1,0,1): Cd·(As+1) − Cs·As
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 
-	// Ad has no exact carrier here either — the scale mismatch does not care
-	// which rung asks.
+	// Ad has no exact fixed-function carrier here either — the scale mismatch does
+	// not care which read-free rung asks.
 	in = BaseInput();
 	in.abe = true;
 	in.ALPHA.C = 1;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 
 	// Wrap and PABE outrank the rung, as they outrank every other.
 	in = BaseInput();
@@ -1233,6 +1243,178 @@ TEST(GSTileLowering, MixRungFractionalRows)
 		EXPECT_EQ(p.pass[i].blend_c, 2) << "pass " << i;
 		EXPECT_EQ(p.pass[i].afix, 64) << "pass " << i;
 	}
+}
+
+// Rung 9, the read rung (M4c). Everything the read-free rungs refuse lands here
+// and goes native with the register's OWN equation carried to the shader — no
+// selector rewrite, no constant substitution, no carrier restriction — because
+// the realization is integer arithmetic over a destination the pass reads, where
+// As, Ad and FIX are equally exact and the /128 scale is a shift.
+//
+// The one fact that can still floor such a draw is its own primitive overlap:
+// the realization reads a single state of the target, so a pixel blended into
+// twice would take the pre-draw value the second time.
+TEST(GSTileLowering, ReadRungTakesWhatTheReadFreeRungsRefuse)
+{
+	// The corpus's dominant row, and the one every read-free rung refuses: the
+	// alpha lerp on a genuinely variable As.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 0;
+	in.alpha_max = 255;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
+
+	in.prim_overlap_none = true;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].abe);
+	EXPECT_TRUE(p.pass[0].rt_read);
+	EXPECT_FALSE(p.pass[0].blend_mix);
+	EXPECT_EQ(p.pass[0].blend_a, 0);
+	EXPECT_EQ(p.pass[0].blend_b, 1);
+	EXPECT_EQ(p.pass[0].blend_c, 0); // As stays As — no constant substitution
+	EXPECT_EQ(p.pass[0].blend_d, 1);
+
+	// Ad rides raw too. This is the row the scale mismatch keeps off the blend
+	// unit forever, and the rung that makes it exact rather than approximate.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 1;
+	in.prim_overlap_none = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].rt_read);
+	EXPECT_EQ(p.pass[0].blend_c, 1);
+
+	// FIX above 128 — the class fixed-function cannot carry as a constant at all.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 200;
+	in.prim_overlap_none = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].rt_read);
+	EXPECT_EQ(p.pass[0].blend_c, 2);
+	EXPECT_EQ(p.pass[0].afix, 200);
+
+	// The A_MAX shapes (D==A, coefficient C+1) that the mix rung refuses.
+	for (const u8 d : {static_cast<u8>(0), static_cast<u8>(1)})
+	{
+		in = BaseInput();
+		in.abe = true;
+		in.alpha_min = 64;
+		in.alpha_max = 64;
+		in.ALPHA.A = d;
+		in.ALPHA.B = static_cast<u32>(1 - d);
+		in.ALPHA.D = d;
+		in.prim_overlap_none = true;
+		p = gsTileLowerDraw(in);
+		ASSERT_TRUE(p.native) << "D==A shape " << int(d);
+		EXPECT_TRUE(p.pass[0].rt_read) << "D==A shape " << int(d);
+	}
+
+	// A texture function or fog refuses the mix rung's saturation proof; the read
+	// rung needs no such proof, because nothing saturates in integer arithmetic.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 64;
+	in.color_min_rgb = 0;
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_psm = PSMCT32;
+	in.prim_overlap_none = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].rt_read);
+
+	// The read-free rungs still win where they apply: a proven-128 carrier stays
+	// fixed-function even with overlap proven absent, and pays no read.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.B = 2;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 128;
+	in.prim_overlap_none = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].abe);
+	EXPECT_FALSE(p.pass[0].rt_read);
+
+	// ...and so does the mix rung, on the row it was narrowed to.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 64;
+	in.prim_overlap_none = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].blend_mix);
+	EXPECT_FALSE(p.pass[0].rt_read);
+
+	// ⚠️ The measured envelope, and the reason it is narrower than the equation:
+	// a TEXTURED draw with a PER-PIXEL factor renders wrong (M4c first light,
+	// four corpus ablations). A constant factor on a textured draw is exact, and
+	// a per-pixel factor on an untextured draw is exact; only the combination
+	// fails, and it fails for both variable carriers.
+	for (const u32 carrier : {0u, 1u})
+	{
+		in = BaseInput();
+		in.abe = true;
+		in.ALPHA.C = carrier;
+		in.alpha_min = 0;
+		in.alpha_max = 255;
+		in.tme = true;
+		in.tex_fst = true;
+		in.tex_psm = PSMCT32;
+		in.prim_overlap_none = true;
+		EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendTexAlpha)
+			<< "carrier " << carrier;
+		// The same draw with a constant carrier is admitted — the discriminator is
+		// the per-pixel factor, not the texture.
+		in.ALPHA.C = 2;
+		in.ALPHA.FIX = 100;
+		p = gsTileLowerDraw(in);
+		ASSERT_TRUE(p.native) << "carrier " << carrier;
+		EXPECT_TRUE(p.pass[0].rt_read) << "carrier " << carrier;
+	}
+
+	// Wrap and PABE still outrank the rung — both are M4c slices of their own.
+	in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 0;
+	in.alpha_max = 255;
+	in.prim_overlap_none = true;
+	in.colclamp = false;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::ColClip);
+	in.colclamp = true;
+	in.pabe = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// A split draw carries the read realization on both passes. Only one pass of
+	// any split writes RGB, which is what keeps the second pass's stale read
+	// harmless — see the independent_rgb note in the lowering.
+	in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 0;
+	in.alpha_max = 255;
+	in.TEST.ATE = 1;
+	in.TEST.ATST = ATST_GEQUAL;
+	in.TEST.AREF = 64;
+	in.TEST.AFAIL = AFAIL_RGB_ONLY;
+	in.prim_overlap_none = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	ASSERT_EQ(p.pass_count, 2);
+	for (u32 i = 0; i < p.pass_count; i++)
+	{
+		EXPECT_TRUE(p.pass[i].abe) << "pass " << i;
+		EXPECT_TRUE(p.pass[i].rt_read) << "pass " << i;
+		EXPECT_EQ(p.pass[i].blend_c, 0) << "pass " << i;
+	}
+	EXPECT_EQ(p.pass[0].colormask, 0x7);
+	EXPECT_EQ(p.pass[1].colormask, 0x8);
 }
 
 // The M4a guardrails outrank every collapse: a wrap draw floors ColClip and a

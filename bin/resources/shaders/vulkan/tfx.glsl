@@ -2116,7 +2116,86 @@ void ps_blend(inout vec4 Color, inout vec4 As_rgba)
 {
 	float As = As_rgba.a;
 
-	#if SW_BLEND
+	#if PS_TILE_BLEND
+
+		// ================= The console blend, in the console's arithmetic ============
+		//
+		// Cv = (((A − B) · C) >> 7) + D on eight-bit integers, per channel, with the
+		// shift ARITHMETIC. GSDrawScanline's AlphaBlend is the software half of this
+		// same rule and is byte-exact against silicon on all 32,768 gs-blend cases, so
+		// reproducing it exactly is reproducing the hardware.
+		//
+		// Two things separate it from the float form below, and both are one-sided:
+		//
+		//  * The GS FLOORS the product where trunc() rounds toward zero. They agree on
+		//    every non-negative product and differ by a whole level on every negative
+		//    fractional one — the subtract rows, and any lerp where the destination
+		//    outruns the source. Note also that the console truncates the product
+		//    BEFORE adding D, where the float form truncates the sum.
+		//  * C is the raw alpha BYTE and the shift carries the /128. A destination
+		//    alpha above 128 therefore scales past one exactly as the hardware does,
+		//    which is the whole reason DST_ALPHA cannot serve these rows through the
+		//    blend unit: that unit divides by 255. Here the mismatch does not exist.
+		//
+		// Clamp and wrap are left to ps_color_clamp_wrap, which already sits where the
+		// console puts them — after the blend, before the store (gs-dither settled the
+		// ordering against the alternatives).
+		#if PS_FEEDBACK_LOOP_IS_NEEDED_RT
+			vec4 RT = sample_from_rt();
+			ivec3 Cd = ivec3(trunc(RT.rgb * 255.0f + 0.1f));
+			int Ad = int(trunc(RT.a * 255.0f + 0.1f));
+		#else
+			// No operand reads the destination; the row is source-only arithmetic.
+			ivec3 Cd = ivec3(0);
+			int Ad = 0;
+		#endif
+
+		#if PS_DST_FMT == FMT_24
+			// A 24-bit destination stores no alpha and the hardware reads the factor
+			// as exactly one there — the software scanline skips the multiply outright
+			// on that pairing rather than reading whatever byte is in memory.
+			Ad = 128;
+		#endif
+
+		ivec3 Cs = ivec3(Color.rgb);
+
+		#if PS_BLEND_A == 0
+			ivec3 Ai = Cs;
+		#elif PS_BLEND_A == 1
+			ivec3 Ai = Cd;
+		#else
+			ivec3 Ai = ivec3(0);
+		#endif
+
+		#if PS_BLEND_B == 0
+			ivec3 Bi = Cs;
+		#elif PS_BLEND_B == 1
+			ivec3 Bi = Cd;
+		#else
+			ivec3 Bi = ivec3(0);
+		#endif
+
+		// As and Af arrive divided by 128 (the factor scale the fixed-function rungs
+		// need); the integer rule wants the byte back.
+		#if PS_BLEND_C == 0
+			int Ci = int(trunc(As * 128.0f + 0.1f));
+		#elif PS_BLEND_C == 1
+			int Ci = Ad;
+		#else
+			int Ci = int(trunc(Af * 128.0f + 0.1f));
+		#endif
+
+		#if PS_BLEND_D == 0
+			ivec3 Di = Cs;
+		#elif PS_BLEND_D == 1
+			ivec3 Di = Cd;
+		#else
+			ivec3 Di = ivec3(0);
+		#endif
+
+		Color.rgb = vec3((((Ai - Bi) * Ci) >> 7) + Di);
+
+	#elif SW_BLEND
 
 		// PABE
 		#if PS_PABE

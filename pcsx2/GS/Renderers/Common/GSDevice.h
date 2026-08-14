@@ -750,6 +750,7 @@ struct alignas(16) GSHWDrawConfig
 				u32 tile_stq : 1; // Tile renderer: the perspective texture coordinate from the per-primitive plane at the integer pixel index, not from the interpolator
 				u32 tile_tclag : 1; // Tile renderer: a non-sprite coordinate trails the exact plane by one 16.16 unit on each axis walking forward (gs-shade console rule)
 				u32 tile_blend_mix : 1; // Tile renderer: blend-mix offsets at the exact-floor constant (127/256) instead of Classic's reduced-precision-ROP compromise (124/256)
+				u32 tile_blend : 1; // Tile renderer: the whole blend equation in the console's integer arithmetic over a read destination — (((A−B)·C)>>7)+D, the shift ARITHMETIC
 
 				// Shuffle and fbmask effect
 				u32 shuffle  : 1;

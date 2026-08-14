@@ -293,6 +293,10 @@ namespace GSDrawLog
 				return "ZWALK_ENVELOPE";
 			case TileFallbackColClip:
 				return "COLCLIP";
+			case TileFallbackBlendOverlap:
+				return "BLEND_OVERLAP";
+			case TileFallbackBlendTexAlpha:
+				return "BLEND_TEX_ALPHA";
 			default:
 				return "";
 		}

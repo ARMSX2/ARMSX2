@@ -239,6 +239,13 @@ namespace GSDrawLog
 		// M4a blend guardrail: COLCLAMP=0 on a blended draw — wrap semantics need the
 		// in-shader blend over a read (M4c); fixed-function cannot express them.
 		TileFallbackColClip,
+		// M4c read rung: the equation is admissible in-shader, but the draw's own
+		// primitives may overlap, and one snapshot of the destination cannot serve a
+		// pixel that is blended into twice.
+		TileFallbackBlendOverlap,
+		// M4c read rung, OPEN DEFECT: textured draw whose blend factor is the source
+		// alpha. Bracketed by ablation to the texture function's alpha, not the blend.
+		TileFallbackBlendTexAlpha,
 	};
 
 	enum Flags : u8

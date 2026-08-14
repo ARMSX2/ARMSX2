@@ -141,6 +141,10 @@ GSDrawLog::TileFallback MapFallbackReason(GSTileFloorReason reason)
 			return GSDrawLog::TileFallbackDepthWalkEnvelope;
 		case GSTileFloorReason::ColClip:
 			return GSDrawLog::TileFallbackColClip;
+		case GSTileFloorReason::BlendOverlap:
+			return GSDrawLog::TileFallbackBlendOverlap;
+		case GSTileFloorReason::BlendTexAlpha:
+			return GSDrawLog::TileFallbackBlendTexAlpha;
 		default:
 			return GSDrawLog::TileFallbackFloor;
 	}
@@ -284,14 +288,22 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 		in.alpha_min = static_cast<u8>(std::clamp(alpha.min, 0, 255));
 		in.alpha_max = static_cast<u8>(std::clamp(alpha.max, 0, 255));
 	}
-	// What the alpha-test pass split needs to know about fragment ordering. Both are
-	// only consulted when the split would otherwise reorder depth writes, and
-	// PrimitiveOverlap walks the vertex list, so ask for it only then.
+	// What the lowering needs to know about fragment ordering. PrimitiveOverlap
+	// walks the vertex list, so ask only where an admission actually turns on the
+	// answer — two rungs do. The alpha-test split needs it when the split would
+	// otherwise reorder the draw's own depth writes; the read rung needs it on
+	// every blended draw, because its realization reads ONE state of the
+	// destination and that is the true destination only for a pixel blended into
+	// once.
 	in.z_constant = m_vt.m_eq.z;
-	if (m_context->TEST.ATE && m_context->TEST.ATST != ATST_ALWAYS && m_context->TEST.ATST != ATST_NEVER &&
-		m_context->TEST.ZTE && !m_context->ZBUF.ZMSK && !m_vt.m_eq.z)
+	const bool split_wants_overlap =
+		m_context->TEST.ATE && m_context->TEST.ATST != ATST_ALWAYS && m_context->TEST.ATST != ATST_NEVER &&
+		m_context->TEST.ZTE && !m_context->ZBUF.ZMSK && !m_vt.m_eq.z;
+	m_prim_overlap = PRIM_OVERLAP_UNKNOW;
+	if (split_wants_overlap || PRIM->ABE)
 	{
-		in.prim_overlap_none = PrimitiveOverlap() == PRIM_OVERLAP_NO;
+		m_prim_overlap = PrimitiveOverlap();
+		in.prim_overlap_none = m_prim_overlap == PRIM_OVERLAP_NO;
 	}
 	in.tme = PRIM->TME;
 	in.abe = PRIM->ABE;
@@ -740,7 +752,12 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// integrating into banding and palette-amplified speckle the day it went
 	// live. This stays as the backstop for any future arm that carries a
 	// genuinely variable As.
-	if (plan.pass[0].abe && plan.pass[0].blend_c == 0 &&
+	//
+	// The read rung is exempt and must be: it engages no blend unit, so its carrier
+	// never transits a colour channel and dual source is irrelevant to it. Letting
+	// this gate see it would floor the whole variable-As population on Mali for a
+	// mechanism that path does not use.
+	if (plan.pass[0].abe && !plan.pass[0].rt_read && plan.pass[0].blend_c == 0 &&
 		plan.pass[0].blend_a != plan.pass[0].blend_b && !g_gs_device->Features().dual_source_blend)
 	{
 		reason = GSTileFloorReason::Blend;
@@ -1275,7 +1292,30 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 		const u32 blend_index =
 			((static_cast<u32>(bp.blend_a) * 3 + bp.blend_b) * 3 + bp.blend_c) * 3 + bp.blend_d;
 		const HWBlend blend = GSDevice::GetBlend(blend_index);
-		if (bp.blend_mix)
+		if (bp.rt_read)
+		{
+			// Rung 9 — the read rung. No blend unit is engaged at all: the fragment
+			// shader is handed the register's own selectors and evaluates the console
+			// equation in integer arithmetic over a destination it reads, then writes
+			// the finished pixel. The backend supplies the destination from the
+			// selectors themselves (its feedback-loop predicate reads the same
+			// blend_a/b/c/d), as a texture barrier where the device has honest ones
+			// and a copy of the draw area where it does not — one of each per draw,
+			// which is why the lowering admits only draws whose own primitives cannot
+			// overlap.
+			//
+			// Every carrier rides raw, Ad included: the shader multiplies by the alpha
+			// BYTE and shifts by seven, so the /128 scale is exact where the blend
+			// unit's DST_ALPHA would divide by 255.
+			conf.ps.blend_a = bp.blend_a;
+			conf.ps.blend_b = bp.blend_b;
+			conf.ps.blend_c = bp.blend_c;
+			conf.ps.blend_d = bp.blend_d;
+			conf.ps.tile_blend = 1;
+			conf.cb_ps.TA_MaxDepth_Af.a = static_cast<float>(bp.afix) / 128.0f;
+			conf.require_one_barrier = true;
+		}
+		else if (bp.blend_mix)
 		{
 			// The mix realization, transcribed from the donor: the shader computes
 			// the Cs-side term — (A−B)·C + D with the selectors rewritten so only
@@ -1674,6 +1714,15 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 
 	conf.scissor = ctx->scissor.in.rintersect(GSVector4i(0, 0, ts.x, ts.y));
 	conf.drawarea = r;
+
+	// The submitted-config half of the ledger row. Tile had never filled it, so
+	// every column the writer gates on "submitted" — topology, barrier count, the
+	// feedback-loop flag, the overlap verdict — was blank on every tile row, and
+	// the read rung's arrival looked exactly like the read rung never running.
+	// NoteTileDraw runs after this and restores the tile rect over the drawarea,
+	// which is the area the tile rows are supposed to carry.
+	if (GSDrawLog::IsActive()) [[unlikely]]
+		GSDrawLog::EndDraw(conf, static_cast<u8>(m_prim_overlap));
 
 	g_gs_device->RenderHW(conf);
 }

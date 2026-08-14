@@ -86,6 +86,8 @@ enum class GSTileFloorReason : u8
 	DepthWalkEnvelope, ///< Z-gradient triangle outside the soft-float walk's envelope (z hull, gradient magnitude, seed shape, or no VS expand)
 	// Blend gates (M4a):
 	ColClip, ///< COLCLAMP=0 on a blended draw — wrap semantics need the in-shader blend (M4c)
+	BlendOverlap, ///< the read rung's equation is admissible but the draw's own primitives may overlap — one snapshot of the destination cannot serve them (M4c)
+	BlendTexAlpha, ///< read rung, textured draw whose blend factor is the source alpha — OPEN DEFECT, ablation-bracketed to the texture function's alpha (M4c)
 	Count
 };
 
@@ -324,6 +326,7 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	bool blend_active = in.abe;
 	bool blend_pass = false; ///< rung 3 or the mix rung admitted — the passes carry the realization
 	bool blend_mix = false; ///< the mix rung's realization (rung 6), not rung 3's exact rows
+	bool blend_read = false; ///< the read rung's realization (rung 9) — the whole equation in-shader
 	if (in.abe && in.colclamp && !in.pabe)
 	{
 		int c_value = -1; // the C factor's value when provable, else -1
@@ -458,9 +461,16 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 				// when nothing writes depth, when the test cannot fail, when every
 				// vertex sits at one depth under GEQUAL (rewriting a pixel with the
 				// depth it already holds still passes), or when the draw's own
-				// primitives never touch a pixel twice. Classic's companion
-				// independent_rgb is vacuous here: it guards RGB that depends on
-				// destination alpha through the blend unit, and blending floors.
+				// primitives never touch a pixel twice.
+				//
+				// Classic's companion independent_rgb guards RGB that depends on the
+				// destination ALPHA, which a channel split writes in the other pass.
+				// It needs no clause here even now that blending goes native: only
+				// one pass of any split writes RGB, and the only realization that can
+				// read destination alpha at all — the read rung — admits nothing
+				// whose primitives overlap. So the blending pass reads the pre-draw
+				// alpha, which is exactly what the console's single pass reads when
+				// each pixel is touched once.
 				const bool independent_z = !p.z_write || p.ztst == ZTST_ALWAYS ||
 					(p.ztst == ZTST_GEQUAL && in.z_constant) || in.prim_overlap_none;
 				if (independent_z)
@@ -789,8 +799,60 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 			const bool term_clears = !in.tme && !in.fge &&
 			                         static_cast<u32>(in.color_min_rgb) * eff_c >= 64;
 			if (!mix_row || cval == 0 || !term_clears)
-				return floored(GSTileFloorReason::Blend);
-			blend_mix = true;
+			{
+				// Rung 9 — the read rung, the one rung that pays and the reason the
+				// lattice is total. The fragment shader evaluates the register's own
+				// equation in the console's integer arithmetic over a destination the
+				// pass has read, so it is byte-exact by construction rather than by
+				// admission: every selector, every carrier, and the whole 0..255
+				// destination-alpha scale that keeps Ad out of the fixed-function
+				// rungs are all just integers here. Nothing about the EQUATION can
+				// disqualify a draw from this rung.
+				//
+				// What can disqualify it is the destination not standing still. The
+				// realization reads ONE state of the target — a barrier before the
+				// draw where the device has honest texture barriers, a copy of the
+				// draw area where it does not — so it is the true destination only
+				// while no two of the draw's own primitives touch the same pixel. An
+				// overlapping draw would blend its second primitive against the
+				// pre-draw value instead of against the first primitive's result,
+				// which is silent, plausible, and wrong. Those draws keep flooring
+				// under their own reason, so the census can size the class that an
+				// ordered in-tile read (or a per-primitive split) would buy — the
+				// mechanism question the M4c follow-on decides on measured numbers.
+				//
+				// The overlap fact is conservative in the same direction: the trace
+				// proves NO only for sprites it has walked and for single primitives,
+				// and answers UNKNOWN for multi-primitive triangle draws, which floor.
+				if (!in.prim_overlap_none)
+					return floored(GSTileFloorReason::BlendOverlap);
+				// ⚠️ OPEN DEFECT, measured 2026-08-14 at this rung's first light: a
+				// TEXTURED draw whose blend factor varies PER PIXEL renders wrong,
+				// and it does so for both variable carriers — the source alpha and
+				// the destination alpha alike. Four corpus runs bracket it, and the
+				// blend is in none of the brackets:
+				//   * whole rung off       → corpus exactly at the pinned baseline
+				//   * FIX carrier only     → exactly the baseline, textured included
+				//   * untextured only      → exactly the baseline, every carrier
+				//   * per-primitive barrier instead of one, overlap gate removed
+				//                          → strictly WORSE, so ordering is not it
+				// What survives is one cell: textured AND the factor is per-fragment.
+				// A constant factor on the same textured draws is byte-exact, which
+				// exercises the destination read and every line of the integer
+				// arithmetic — so neither of those is the fault — and an untextured
+				// draw with a per-pixel source alpha is byte-exact too.
+				//
+				// ⚠️ The gs-blend capture is STRUCTURALLY BLIND to this: all 32,768 of
+				// its cases are untextured, so it scores tile byte-identical to sw
+				// with the rung wide open and damaging nine corpus dumps. The capture
+				// that gates blending cannot gate this rung; the class needs an
+				// instrument of its own before the admission widens.
+				if (in.tme && bc != 2)
+					return floored(GSTileFloorReason::BlendTexAlpha);
+				blend_read = true;
+			}
+			else
+				blend_mix = true;
 		}
 		// Admission only — the fields land on the passes at the end of the
 		// function, after the single-pass fill that would otherwise reset them.
@@ -859,16 +921,19 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	// The admitted blend realization, on every pass — after the fills above so a
 	// single-pass rebuild cannot reset it. A/B/D are the register's own (rung 1
 	// either eliminated the blend entirely or left them untouched), and a pass
-	// that writes no colour carries them inertly. C is re-encoded: every admitted
-	// row is C-degenerate — C provably one (the 128 proof), C cancelled (A==B),
-	// or a result provably zero at every C — so a register that named a variable
-	// carrier (As, Ad) lands on the passes as the constant it proves, C=FIX at
-	// 128. The value never needed a carrier, and the As encoding must not reach
-	// the renderer: the blend map realizes it through dual-source (SRC1) factors,
-	// which the Mali blobs do not support (r44p1 reports no dual-source blending),
-	// and an encoding-only SRC1 dependency would floor these rows there — a
-	// readback event — for no arithmetic reason. The constant twin rows are
-	// factor-for-factor identical at the proven value on every device.
+	// that writes no colour carries them inertly.
+	//
+	// C is re-encoded on the FIXED-FUNCTION rungs and only there. Every row those
+	// rungs admit is C-degenerate — C provably one (the 128 proof), C cancelled
+	// (A==B), or a result provably zero at every C — so a register that named a
+	// variable carrier (As, Ad) lands on the passes as the constant it proves,
+	// C=FIX at 128. The value never needed a carrier, and the As encoding must not
+	// reach the renderer: the blend map realizes it through dual-source (SRC1)
+	// factors, which the Mali blobs do not support (r44p1 reports no dual-source
+	// blending), and an encoding-only SRC1 dependency would floor these rows there
+	// — a readback event — for no arithmetic reason. The constant twin rows are
+	// factor-for-factor identical at the proven value on every device. The read
+	// rung keeps its raw carrier, for the reason given at its leg below.
 	if (blend_pass)
 	{
 		// Rung 3's rows are C-degenerate and land as C=FIX at 128 (the #90 rule).
@@ -883,10 +948,21 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		{
 			p.pass[i].abe = true;
 			p.pass[i].blend_mix = blend_mix;
+			p.pass[i].rt_read = blend_read;
 			p.pass[i].blend_a = static_cast<u8>(in.ALPHA.A);
 			p.pass[i].blend_b = static_cast<u8>(in.ALPHA.B);
 			p.pass[i].blend_d = static_cast<u8>(in.ALPHA.D);
-			if (!blend_mix)
+			if (blend_read)
+			{
+				// Nothing is re-encoded on the read rung: the shader evaluates the
+				// register's own carrier in integer arithmetic, where As, Ad and FIX
+				// are all equally exact. The #90 constant rewrite exists to keep a
+				// fixed-function row off the dual-source unit; there is no unit here
+				// to keep it off, and rewriting Ad to a constant would be a lie.
+				p.pass[i].blend_c = static_cast<u8>(in.ALPHA.C);
+				p.pass[i].afix = static_cast<u8>(in.ALPHA.FIX);
+			}
+			else if (!blend_mix)
 			{
 				p.pass[i].blend_c = variable_carrier ? 2 : static_cast<u8>(in.ALPHA.C);
 				p.pass[i].afix = variable_carrier ? 128 : static_cast<u8>(in.ALPHA.FIX);
