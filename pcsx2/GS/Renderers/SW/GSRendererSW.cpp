@@ -459,8 +459,10 @@ void GSRendererSW::RecordDrawLogEntry() const
 	rec.tex_th = static_cast<u8>(context->TEX0.TH);
 
 	rec.alpha = static_cast<u16>((ALPHA.A << 6) | (ALPHA.B << 4) | (ALPHA.C << 2) | ALPHA.D);
+	rec.alpha_fix = static_cast<u8>(ALPHA.FIX);
 	rec.atst = static_cast<u8>(TEST.ATST);
 	rec.afail = static_cast<u8>(TEST.AFAIL);
+	rec.aref = static_cast<u8>(TEST.AREF);
 	rec.datm = static_cast<u8>(TEST.DATM);
 
 	rec.flags = static_cast<u8>((PRIM->TME ? GSDrawLog::FlagTextured : 0) |
@@ -478,7 +480,8 @@ void GSRendererSW::RecordDrawLogEntry() const
 							  ((context->TEX0.TCC & 1) << 2) | ((context->TEX0.TFX & 3) << 3) |
 							  ((m_draw_env->COLCLAMP.CLAMP & 1) << 5) | ((m_draw_env->PABE.PABE & 1) << 6) |
 							  (PRIM->AA1 ? 0x80 : 0));
-	rec.env2 = static_cast<u8>((m_draw_env->DTHE.DTHE & 1) | (PRIM->IIP ? 2 : 0));
+	rec.env2 = static_cast<u8>((m_draw_env->DTHE.DTHE & 1) | (PRIM->IIP ? 2 : 0) |
+							   ((context->FBA.FBA & 1) << 2));
 
 	GSDrawLog::BeginDraw(rec);
 }

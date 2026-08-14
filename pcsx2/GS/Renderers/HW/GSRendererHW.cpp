@@ -2836,8 +2836,10 @@ void GSRendererHW::RecordDrawLogEntry() const
 	rec.tex_th = static_cast<u8>(m_cached_ctx.TEX0.TH);
 
 	rec.alpha = static_cast<u16>((ALPHA.A << 6) | (ALPHA.B << 4) | (ALPHA.C << 2) | ALPHA.D);
+	rec.alpha_fix = static_cast<u8>(ALPHA.FIX);
 	rec.atst = static_cast<u8>(TEST.ATST);
 	rec.afail = static_cast<u8>(TEST.AFAIL);
+	rec.aref = static_cast<u8>(TEST.AREF);
 	rec.datm = static_cast<u8>(TEST.DATM);
 
 	rec.flags = static_cast<u8>((PRIM->TME ? GSDrawLog::FlagTextured : 0) |
@@ -2849,11 +2851,14 @@ void GSRendererHW::RecordDrawLogEntry() const
 
 	const GIFRegTEX1& TEX1 = m_context->TEX1;
 	rec.tex_filter = static_cast<u8>((TEX1.MMAG & 1) | ((TEX1.MMIN & 7) << 1) | ((TEX1.MXL & 7) << 4));
+	// m_draw_env, not m_env: under the split parser the front object has already run
+	// ahead, so m_env is a later frame's answer (the SW recorder's rule, shared here).
 	rec.env = static_cast<u8>((PRIM->FGE ? 1 : 0) | (PRIM->FST ? 2 : 0) |
 							  ((m_cached_ctx.TEX0.TCC & 1) << 2) | ((m_cached_ctx.TEX0.TFX & 3) << 3) |
-							  ((m_env.COLCLAMP.CLAMP & 1) << 5) | ((m_env.PABE.PABE & 1) << 6) |
+							  ((m_draw_env->COLCLAMP.CLAMP & 1) << 5) | ((m_draw_env->PABE.PABE & 1) << 6) |
 							  (PRIM->AA1 ? 0x80 : 0));
-	rec.env2 = static_cast<u8>((m_env.DTHE.DTHE & 1) | (PRIM->IIP ? 2 : 0));
+	rec.env2 = static_cast<u8>((m_draw_env->DTHE.DTHE & 1) | (PRIM->IIP ? 2 : 0) |
+							   ((m_context->FBA.FBA & 1) << 2));
 
 	GSDrawLog::BeginDraw(rec);
 }

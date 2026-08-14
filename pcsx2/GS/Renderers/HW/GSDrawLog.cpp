@@ -284,12 +284,12 @@ namespace GSDrawLog
 			"fb_addr,fb_psm,fb_bw,fbmsk,"
 			"z_addr,z_psm,z_test,z_mask,"
 			"tex_addr,tex_psm,tex_bw,tex_w,tex_h,"
-			"blend,alpha_a,alpha_b,alpha_c,alpha_d,"
-			"atst,afail,date,datm,self_read,"
+			"blend,alpha_a,alpha_b,alpha_c,alpha_d,alpha_fix,"
+			"atst,afail,aref,date,datm,self_read,"
 			"topology,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
 			"area_x,area_y,area_w,area_h,"
 			"memo_hit,record_ns,pass_id,fallback,stq_guard,"
-			"mmag,mmin,mxl,tcc,tfx,fge,fst,aa1,colclamp,pabe,dthe,iip\n");
+			"mmag,mmin,mxl,tcc,tfx,fge,fst,aa1,colclamp,pabe,fba,dthe,iip\n");
 
 		for (const Record& r : s_records)
 		{
@@ -331,18 +331,18 @@ namespace GSDrawLog
 
 			if (blended)
 			{
-				std::fprintf(fp.get(), "1,%u,%u,%u,%u,", (r.alpha >> 6) & 3, (r.alpha >> 4) & 3, (r.alpha >> 2) & 3,
-					r.alpha & 3);
+				std::fprintf(fp.get(), "1,%u,%u,%u,%u,%u,", (r.alpha >> 6) & 3, (r.alpha >> 4) & 3, (r.alpha >> 2) & 3,
+					r.alpha & 3, r.alpha_fix);
 			}
 			else
 			{
-				std::fprintf(fp.get(), "0,,,,,");
+				std::fprintf(fp.get(), "0,,,,,,");
 			}
 
 			if (r.flags & FlagAlphaTest)
-				std::fprintf(fp.get(), "%u,%u,", r.atst, r.afail);
+				std::fprintf(fp.get(), "%u,%u,%u,", r.atst, r.afail, r.aref);
 			else
-				std::fprintf(fp.get(), ",,");
+				std::fprintf(fp.get(), ",,,");
 
 			std::fprintf(fp.get(), "%d,%u,%s,", (r.flags & FlagDate) ? 1 : 0, r.datm, GetSelfReadName(r.self_read));
 
@@ -387,8 +387,8 @@ namespace GSDrawLog
 				std::fprintf(fp.get(), ",,,,,");
 			}
 
-			std::fprintf(fp.get(), "%u,%u,%u,%u,%u,%u,%u\n", r.env & 1, (r.env >> 1) & 1, (r.env >> 7) & 1,
-				(r.env >> 5) & 1, (r.env >> 6) & 1, r.env2 & 1, (r.env2 >> 1) & 1);
+			std::fprintf(fp.get(), "%u,%u,%u,%u,%u,%u,%u,%u\n", r.env & 1, (r.env >> 1) & 1, (r.env >> 7) & 1,
+				(r.env >> 5) & 1, (r.env >> 6) & 1, (r.env2 >> 2) & 1, r.env2 & 1, (r.env2 >> 1) & 1);
 		}
 
 		Console.WriteLn(fmt::format("GSDrawLog: wrote {} draws to {}{}", s_records.size(), path,

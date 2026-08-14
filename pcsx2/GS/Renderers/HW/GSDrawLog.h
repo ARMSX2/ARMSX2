@@ -63,6 +63,13 @@ namespace GSDrawLog
 		u16 prim_count;
 		u16 alpha; // ALPHA A/B/C/D, 2 bits each
 
+		// ALPHA.FIX and TEST.AREF, raw bytes. FIX is what separates a C=FIX blend that
+		// maps onto a hardware blend factor from one that needs shader arithmetic, and
+		// AREF is what decides whether a vertex-trace alpha range proves an alpha test —
+		// the M4 blend census cannot be sized without either.
+		u8 alpha_fix;
+		u8 aref;
+
 		u8 prim_type;
 		u8 frame_psm;
 		u8 frame_fbw;
@@ -85,7 +92,10 @@ namespace GSDrawLog
 		// blend capture said it could not weight itself.
 		u8 tex_filter;
 		u8 env;
-		// Continuation of env, which is full. bit 0 DTHE, bit 1 IIP. The dither capture
+		// Continuation of env, which is full. bit 0 DTHE, bit 1 IIP, bit 2 FBA (the
+		// context register that ORs bit 7 into stored alpha — the gs-alpha2 capture
+		// measured it applying at storage; its frequency decides how much the M4b
+		// in-shader FBA realization is worth). The dither capture
 		// measured two gaps whose cost is a frequency question this answers: how
 		// often a game enables dither at all decides whether the SW rasterizer's
 		// bulk rectangle fill (which cannot dither, so dithered draws now take the
