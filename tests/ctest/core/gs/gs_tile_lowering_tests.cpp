@@ -797,3 +797,32 @@ TEST(GSTileLowering, ColClipOutranksBlendAndRequiresBlending)
 	EXPECT_TRUE(p.native);
 	EXPECT_EQ(p.reason, GSTileFloorReason::None);
 }
+
+// M4 contract rewrite #1: the pass carries its blend realization. Until M4b's
+// lattice populates it, every blended draw floors before a plan reaches the route,
+// so on every native plan the blend fields must be inert — a pass that claims to
+// blend, wrap or read without the machinery behind it would corrupt the memo key
+// and the route's read gating silently. Both passes of a split are pinned.
+TEST(GSTileLowering, BlendFieldsAreInertUntilTheLatticePopulatesThem)
+{
+	GSTileDrawInput in = BaseInput();
+	in.TEST.ATE = 1;
+	in.TEST.ATST = ATST_GEQUAL;
+	in.TEST.AREF = 128;
+	in.TEST.AFAIL = AFAIL_RGB_ONLY; // channel split — two passes
+	in.prim_overlap_none = true;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	ASSERT_EQ(p.pass_count, 2);
+	for (u32 i = 0; i < p.pass_count; i++)
+	{
+		EXPECT_FALSE(p.pass[i].abe) << "pass " << i;
+		EXPECT_FALSE(p.pass[i].colclip_wrap) << "pass " << i;
+		EXPECT_FALSE(p.pass[i].rt_read) << "pass " << i;
+		EXPECT_EQ(p.pass[i].blend_a, 0) << "pass " << i;
+		EXPECT_EQ(p.pass[i].blend_b, 0) << "pass " << i;
+		EXPECT_EQ(p.pass[i].blend_c, 0) << "pass " << i;
+		EXPECT_EQ(p.pass[i].blend_d, 0) << "pass " << i;
+		EXPECT_EQ(p.pass[i].afix, 0) << "pass " << i;
+	}
+}

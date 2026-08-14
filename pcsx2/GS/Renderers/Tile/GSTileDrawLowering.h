@@ -194,12 +194,29 @@ struct GSTileDrawInput
 /// a different set of channels from the passing ones — then it is two, each with its
 /// own write mask and its own comparison. atst is a PS2 ATST value; ALWAYS means the
 /// pass applies no test.
+///
+/// M4 contract rewrite #1 of the budgeted two: the pass carries its blend
+/// realization. abe=false means the pass writes the shaded source untouched and
+/// every blend field below is meaningless. The selectors are POST-COLLAPSE values
+/// (rung 1 rewrites them before the plan is emitted), so two register states that
+/// collapse to the same equation produce identical passes — which is what the memo
+/// key needs. Populated from M4b; until then every blended draw floors before a
+/// plan reaches the route, and the suite pins the fields inert on native plans.
 struct GSTileDrawPass
 {
 	u8 colormask = 0;
 	bool z_write = false;
 	u8 atst = ATST_ALWAYS;
 	u8 aref = 0;
+	// Blend realization (M4). Cv = (((A − B) * C) >> 7) + D, console rule.
+	bool abe = false; ///< pass blends
+	bool colclip_wrap = false; ///< COLCLAMP=0 — the blend output wraps at 8 bits (M4c)
+	bool rt_read = false; ///< realization reads the destination (rung 9 — the paid path)
+	u8 blend_a = 0; ///< A selector, post-collapse (0 Cs, 1 Cd, 2 zero)
+	u8 blend_b = 0; ///< B selector, post-collapse
+	u8 blend_c = 0; ///< C selector, post-collapse (0 As, 1 Ad, 2 FIX)
+	u8 blend_d = 0; ///< D selector, post-collapse
+	u8 afix = 0; ///< ALPHA.FIX byte, meaningful when blend_c == 2
 };
 
 struct GSTileDrawPlan
