@@ -230,6 +230,25 @@ __forceinline static VectorF GSPerspectiveRecip(const VectorF& q)
 	return VectorF::cast(VectorI::cast(VectorF(1.0f) / q) & VectorI(0xfffffc00));
 }
 
+// The texture function multiplies the eight-bit vertex colour the GS STORES, not
+// the wider value its interpolator carries. Ours is fixed point with seven
+// fractional bits, and feeding all fifteen to the multiply is wrong by up to one
+// unit wherever the colour has a fraction -- which is everywhere on a gouraud
+// gradient, and invisible to a flat-shaded corpus.
+//
+// Measured on an SCPH-30001 with no model of either interpolator: the same colour
+// read back through four different multipliers brackets the value the hardware
+// holds, and that bracket excludes the product of the stored byte on 0 of 24,576
+// readings, where our own arms exclude it on about one reading in five.
+//
+// Drop the fraction for the multiply only. The DDA keeps it, or the gradient
+// stops stepping; the byte goes back on the seven-bit grid so modulate16<1> still
+// lines up.
+__forceinline static VectorI GSStoredVertexColor(const VectorI& c)
+{
+	return c.srl16<7>().sll16<7>();
+}
+
 void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, GSScanlineLocalData& local)
 {
 	const GSScanlineGlobalData& global = GlobalFromLocal(local);
@@ -311,6 +330,31 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 
 	if (has_t)
 	{
+		// The coordinate a triangle samples at trails the exact plane, by less than
+		// a sixteenth of a texel, in the direction the walk is going. Console-
+		// measured (gs-shade, SCPH-30001): where the exact coordinate lands ON a
+		// sixteenth and the walk is forward, silicon reports the sixteenth BELOW it
+		// -- 3,840 of 3,840 readings on a gradient of four sixteenths per pixel,
+		// and never the other way. Where the walk is backward the same lag puts
+		// silicon just above the boundary, which floors where we already do, and
+		// that section is identical to the console on every reading. A still
+		// coordinate is exact in both, which is what makes the lag attributable to
+		// the step rather than the seed.
+		//
+		// A sprite's coordinate is exact on silicon (gs-interp, 3,072 of 3,072,
+		// negative gradients included) and exact in ours, so sprites take nothing.
+		// Lines and points were not measured; they ride the triangle rule because
+		// it is the same walk, and a point has no gradient to lag anyway.
+		//
+		// Where the lag comes from in the hardware's walk is unfitted; one unit of
+		// our own 16.16 coordinate is the smallest bias that reproduces every
+		// reading, and it can only move a pixel that lands exactly on a boundary.
+		if (sel.prim != GS_SPRITE_CLASS)
+		{
+			local.tclag.u = VectorI(dscan.t.x > 0.0f ? 1 : 0);
+			local.tclag.v = VectorI(dscan.t.y > 0.0f ? 1 : 0);
+		}
+
 		if (sel.fst)
 		{
 			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(tstep));
@@ -784,6 +828,13 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						v = VectorI::cast(t);
 					}
 
+					// The DDA's lag, taken before the level shift divides it away.
+					if (sel.prim != GS_SPRITE_CLASS)
+					{
+						u -= local.tclag.u;
+						v -= local.tclag.v;
+					}
+
 					if (!sel.lcm)
 					{
 						VectorF tmp = q.log2(3) * global.l + global.k; // (-log2(Q) * (1 << L) + K) * 0x10000
@@ -1167,6 +1218,15 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						v = VectorI::cast(t);
 					}
 
+					// The DDA's lag. Zero on any axis that is not walking forward,
+					// so this only moves a coordinate that lands exactly on a
+					// sixteenth.
+					if (sel.prim != GS_SPRITE_CLASS)
+					{
+						u -= local.tclag.u;
+						v -= local.tclag.v;
+					}
+
 					if (sel.ltf)
 					{
 						uf = u.xxzzlh().srl16<12>();
@@ -1289,7 +1349,7 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				switch (sel.tfx)
 				{
 					case TFX_MODULATE:
-						ga = ga.modulate16<1>(gaf).clamp8();
+						ga = ga.modulate16<1>(GSStoredVertexColor(gaf)).clamp8();
 						if (!sel.tcc)
 							ga = ga.mix16(gaf.srl16<7>());
 						break;
@@ -1352,15 +1412,15 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				switch (sel.tfx)
 				{
 					case TFX_MODULATE:
-						rb = rb.modulate16<1>(rbf).clamp8();
+						rb = rb.modulate16<1>(GSStoredVertexColor(rbf)).clamp8();
 						break;
 					case TFX_DECAL:
 						break;
 					case TFX_HIGHLIGHT:
 					case TFX_HIGHLIGHT2:
 						af = gaf.yywwlh().srl16<7>();
-						rb = rb.modulate16<1>(rbf).add16(af).clamp8();
-						ga = ga.modulate16<1>(gaf).add16(af).clamp8().mix16(ga);
+						rb = rb.modulate16<1>(GSStoredVertexColor(rbf)).add16(af).clamp8();
+						ga = ga.modulate16<1>(GSStoredVertexColor(gaf)).add16(af).clamp8().mix16(ga);
 						break;
 					case TFX_NONE:
 						rb = sel.iip ? rbf.srl16<7>() : rbf;

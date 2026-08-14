@@ -1244,6 +1244,15 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 		movdqa(xym3, _t);
 	}
 
+	// The coordinate DDA's lag: one 16.16 unit on an axis that walks forward, zero
+	// on one that is still or walks back, so only a coordinate landing exactly on a
+	// sixteenth moves. See GSDrawScanline.cpp for the measurement.
+	if (m_sel.prim != GS_SPRITE_CLASS)
+	{
+		psubd(xym2, _rip_local(tclag.u));
+		psubd(xym3, _rip_local(tclag.v));
+	}
+
 	if (m_sel.ltf)
 	{
 		const XYm& vf = xym7;
@@ -1647,6 +1656,14 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 	{
 		movdqa(xym2, _s);
 		movdqa(xym3, _t);
+	}
+
+	// The coordinate DDA's lag, taken before the level shift divides it away. See
+	// SampleTexture above, and GSDrawScanline.cpp for the measurement.
+	if (m_sel.prim != GS_SPRITE_CLASS)
+	{
+		psubd(xym2, _rip_local(tclag.u));
+		psubd(xym3, _rip_local(tclag.v));
 	}
 
 	// xym2 = u
@@ -2178,9 +2195,16 @@ void GSDrawScanlineCodeGenerator::AlphaTFX()
 		case TFX_MODULATE:
 
 			// GSVector4i ga = iip ? gaf : m_local.c.ga;
-			// gat = gat.modulate16<1>(ga).clamp8();
+			// gat = gat.modulate16<1>(ga.srl16<7>().sll16<7>()).clamp8();
+			//
+			// The texture function multiplies the eight-bit colour the GS STORES,
+			// not the wider value the DDA carries. Console-measured;
+			// GSStoredVertexColor in GSDrawScanline.cpp carries the reasoning.
 
-			modulate16(_ga, f_ga, 1);
+			MOVE_IF_64(psrlw, tmpga, f_ga, 7);
+			psllw(tmpga, 7);
+
+			modulate16(_ga, tmpga, 1);
 
 			clamp16(_ga, tmp);
 
@@ -2400,10 +2424,16 @@ void GSDrawScanlineCodeGenerator::ColorTFX()
 	const XYm& f_ga  = _f_ga;
 	const XYm& tmpga = xym2;
 
-	auto modulate16_1_rb = [this]
+	// The texture function multiplies the eight-bit colour the GS STORES, not the
+	// wider value the DDA carries. Console-measured; GSStoredVertexColor in
+	// GSDrawScanline.cpp carries the reasoning.
+	auto modulate16_1_rb = [this](const XYm& tmp)
 	{
 		// GSVector4i rb = iip ? rbf : m_local.c.rb;
-		modulate16(_rb, _f_rb, 1);
+		// rbt = rbt.modulate16<1>(rb.srl16<7>().sll16<7>());
+		MOVE_IF_64(psrlw, tmp, _f_rb, 7);
+		psllw(tmp, 7);
+		modulate16(_rb, tmp, 1);
 	};
 
 	switch (m_sel.tfx)
@@ -2414,7 +2444,7 @@ void GSDrawScanlineCodeGenerator::ColorTFX()
 
 			// rbt = rbt.modulate16<1>(rb).clamp8();
 
-			modulate16_1_rb();
+			modulate16_1_rb(xym1);
 
 			clamp16(_rb, xym0);
 
@@ -2430,7 +2460,10 @@ void GSDrawScanlineCodeGenerator::ColorTFX()
 
 			movdqa(xym1, _ga);
 
-			modulate16(_ga, f_ga, 1);
+			MOVE_IF_64(psrlw, xym0, f_ga, 7);
+			psllw(xym0, 7);
+
+			modulate16(_ga, xym0, 1);
 
 			pshuflw(tmpga, f_ga, _MM_SHUFFLE(3, 3, 1, 1));
 			pshufhw(tmpga, tmpga, _MM_SHUFFLE(3, 3, 1, 1));
@@ -2443,8 +2476,9 @@ void GSDrawScanlineCodeGenerator::ColorTFX()
 			mix16(_ga, xym1, xym0);
 
 			// rbt = rbt.modulate16<1>(rb).add16(af).clamp8();
+			// xym1 held the pre-mix _ga and is dead from here; tmpga still holds af.
 
-			modulate16_1_rb();
+			modulate16_1_rb(xym1);
 
 			paddw(_rb, tmpga);
 

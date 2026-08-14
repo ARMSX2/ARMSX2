@@ -177,6 +177,26 @@ void GSSetupPrimCodeGenerator::Texture()
 	armAsm->Ldr(v0, MemOperand(_dscan, offsetof(GSVertexSW, t)));
 	armAsm->Fmul(v1.V4S(), v0.V4S(), v3.V4S());
 
+	// The coordinate a triangle samples at trails the exact plane in the direction
+	// the walk is going, by less than a sixteenth of a texel. Console-measured; the
+	// reasoning is on CSetupPrim in GSDrawScanline.cpp. Sprites take nothing.
+	//
+	// A float compare against zero leaves all-ones -- integer -1 -- in the lanes
+	// that walk forward, so negating it gives the one unit the scanline subtracts
+	// and leaves the still and backward axes at zero.
+	if (m_sel.prim != GS_SPRITE_CLASS)
+	{
+		armAsm->Dup(_vscratch.V4S(), v0.V4S(), 0);
+		armAsm->Fcmgt(_vscratch.V4S(), _vscratch.V4S(), 0.0);
+		armAsm->Neg(_vscratch.V4S(), _vscratch.V4S());
+		armAsm->Str(_vscratch, _local(tclag.u));
+
+		armAsm->Dup(_vscratch.V4S(), v0.V4S(), 1);
+		armAsm->Fcmgt(_vscratch.V4S(), _vscratch.V4S(), 0.0);
+		armAsm->Neg(_vscratch.V4S(), _vscratch.V4S());
+		armAsm->Str(_vscratch, _local(tclag.v));
+	}
+
 	if (m_sel.fst)
 	{
 		// m_local.d4.stq = GSVector4i(t * 4.0f);

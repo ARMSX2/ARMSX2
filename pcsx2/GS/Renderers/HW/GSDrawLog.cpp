@@ -11,7 +11,9 @@
 
 #include "fmt/format.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <unordered_map>
 #include <vector>
 
 namespace GSDrawLog
@@ -28,6 +30,15 @@ namespace GSDrawLog
 	static size_t s_open_record = SIZE_MAX;
 	// GS-thread-side dump packet mark; see MarkPacket.
 	static u32 s_packet_mark = PacketNone;
+
+	// Distinct expanded palettes seen this capture, keyed by the hash the rows carry.
+	// Interned rather than stored per row because a palette is a kilobyte and a row is
+	// tens of bytes, and the same palette is typically sampled by many draws.
+	static std::unordered_map<u64, std::vector<u32>> s_cluts;
+	// Two different palettes that hashed the same. Reported rather than merged, because
+	// silently serving one palette's colours under another's hash would make the side
+	// file lie about content while every count in it stayed plausible.
+	static u32 s_clut_hash_collisions = 0;
 
 	bool IsActive()
 	{
@@ -68,6 +79,8 @@ namespace GSDrawLog
 	{
 		s_records.clear();
 		s_records.shrink_to_fit();
+		s_cluts.clear();
+		s_clut_hash_collisions = 0;
 		s_truncated = false;
 		s_open_record = SIZE_MAX;
 	}
@@ -113,6 +126,32 @@ namespace GSDrawLog
 			return;
 
 		s_records[s_open_record].self_read = static_cast<u8>(resolution);
+	}
+
+	void NoteClut(const u32* clut, u32 entries)
+	{
+		if (s_open_record == SIZE_MAX || !clut || entries == 0)
+			return;
+
+		// FNV-1a over the palette words. 64 bits so the interning key can be treated as
+		// an identity without a content compare on every draw -- the compare happens
+		// once, on insert, and only to catch the case this width makes negligible.
+		u64 hash = 0xCBF29CE484222325ull;
+		for (u32 i = 0; i < entries; i++)
+		{
+			hash ^= clut[i];
+			hash *= 0x100000001B3ull;
+		}
+		// 0 is the row's "no palette" value, so a palette that hashes there takes 1.
+		hash |= (hash == 0) ? 1 : 0;
+
+		s_records[s_open_record].clut_hash = hash;
+
+		const auto it = s_cluts.find(hash);
+		if (it == s_cluts.end())
+			s_cluts.emplace(hash, std::vector<u32>(clut, clut + entries));
+		else if (it->second.size() != entries || !std::equal(it->second.begin(), it->second.end(), clut))
+			s_clut_hash_collisions++;
 	}
 
 	void EndDraw(const GSHWDrawConfig& config, u8 prim_overlap)
@@ -272,6 +311,37 @@ namespace GSDrawLog
 		}
 	}
 
+	// Every distinct palette the capture sampled through, one row of hex words per
+	// palette, keyed by the hash its draws carry. Written beside the CSV rather than
+	// into it because a palette is 16 or 256 words and would swamp a row.
+	static void WriteClutSidecar(const std::string& csv_path)
+	{
+		if (s_cluts.empty())
+			return;
+
+		const std::string path = csv_path + ".cluts.csv";
+		auto fp = FileSystem::OpenManagedCFile(path.c_str(), "wb");
+		if (!fp)
+		{
+			Console.Error(fmt::format("GSDrawLog: failed to open '{}' for writing", path));
+			return;
+		}
+
+		std::fprintf(fp.get(), "clut,entries,words\n");
+		for (const auto& [hash, words] : s_cluts)
+		{
+			std::fprintf(fp.get(), "%016llx,%zu,", static_cast<unsigned long long>(hash), words.size());
+			for (size_t i = 0; i < words.size(); i++)
+				std::fprintf(fp.get(), "%s%08x", i ? " " : "", words[i]);
+			std::fputc('\n', fp.get());
+		}
+
+		Console.WriteLn(fmt::format("GSDrawLog: wrote {} distinct palettes to {}{}", s_cluts.size(), path,
+			s_clut_hash_collisions
+				? fmt::format(" (⚠ {} hash collisions -- those rows name the WRONG palette)", s_clut_hash_collisions)
+				: ""));
+	}
+
 	bool WriteCSV(const std::string& path)
 	{
 		auto fp = FileSystem::OpenManagedCFile(path.c_str(), "wb");
@@ -286,7 +356,8 @@ namespace GSDrawLog
 			"fb_addr,fb_psm,fb_bw,fbmsk,"
 			"z_addr,z_psm,z_test,z_mask,"
 			"tex_addr,tex_psm,tex_bw,tex_w,tex_h,"
-			"blend,alpha_a,alpha_b,alpha_c,alpha_d,alpha_fix,"
+			"clut,clut_addr,clut_psm,clut_csm,clut_csa,clut_cld,"
+			"blend,alpha_a,alpha_b,alpha_c,alpha_d,alpha_fix,vertex_rgba,vertex_rgba_eq,"
 			"atst,afail,aref,date,datm,self_read,"
 			"topology,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
 			"area_x,area_y,area_w,area_h,"
@@ -331,6 +402,21 @@ namespace GSDrawLog
 				std::fprintf(fp.get(), ",,,,,");
 			}
 
+			// Palette identity, then the registers that produced it. The hash is what
+			// joins a row to the side file; CBP alone does not identify a palette, since
+			// a game can reload the same address hundreds of times in one frame.
+			if (r.clut_hash != 0)
+			{
+				std::fprintf(fp.get(), "%016llx,%05x,%s,%u,%u,%u,",
+					static_cast<unsigned long long>(r.clut_hash), r.tex_cbp,
+					GSUtil::GetPSMName(r.tex_clut_cfg & 0xF), (r.tex_clut_cfg >> 4) & 1,
+					(r.tex_clut_cfg >> 5) & 0x1F, (r.tex_clut_cfg >> 10) & 7);
+			}
+			else
+			{
+				std::fprintf(fp.get(), ",,,,,,");
+			}
+
 			if (blended)
 			{
 				std::fprintf(fp.get(), "1,%u,%u,%u,%u,%u,", (r.alpha >> 6) & 3, (r.alpha >> 4) & 3, (r.alpha >> 2) & 3,
@@ -340,6 +426,10 @@ namespace GSDrawLog
 			{
 				std::fprintf(fp.get(), "0,,,,,,");
 			}
+
+			// Always emitted: the vertex colour decides whether a texture function is an
+			// identity or a scale, on blended and unblended draws alike.
+			std::fprintf(fp.get(), "%08x,%u,", r.vertex_rgba, r.vertex_rgba_eq);
 
 			if (r.flags & FlagAlphaTest)
 				std::fprintf(fp.get(), "%u,%u,%u,", r.atst, r.afail, r.aref);
@@ -395,6 +485,8 @@ namespace GSDrawLog
 
 		Console.WriteLn(fmt::format("GSDrawLog: wrote {} draws to {}{}", s_records.size(), path,
 			s_truncated ? fmt::format(" (TRUNCATED at {} records -- later draws were dropped)", MAX_RECORDS) : ""));
+
+		WriteClutSidecar(path);
 		return true;
 	}
 } // namespace GSDrawLog
