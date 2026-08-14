@@ -784,11 +784,22 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// through the nudged interpolator an on-grid landing never reads as on-grid —
 	// measured on the capture, where the affine legs left every forward-walk
 	// boundary reading one sixteenth high while the plane-fed perspective legs
-	// matched the scanline digit for digit. UV sprites stay on the varying: they
-	// take no lag, and their accepted sub-1/16 residue is already scored.
+	// matched the scanline digit for digit.
+	//
+	// ⚠️ UV SPRITES RIDE IT TOO, and the reasoning that once excluded them was half
+	// right: they take no lag, but "their accepted sub-1/16 residue is already
+	// scored" was never true. It was scored only where the residue lands on a
+	// TEXEL boundary — under nearest sampling, where a sixteenth of a texel almost
+	// never changes the texel that is read. Give the same coordinate a BILINEAR
+	// filter and the bottom four bits stop being residue and become the blend
+	// weight: every sixteenth is a visible sixteenth of the way between two texels,
+	// so the nudge's bias lands in the output on every pixel it touches rather than
+	// on the rare boundary crossing. Nothing in the corpus could show it — there
+	// was no native bilinear palettised sprite anywhere in it (measured on MGS3:
+	// 244 such draws, every one floored) — so the class went untested until M4c's
+	// read rung made four of them native and they came back 125 pixels wrong.
 	const bool want_stq = PRIM->TME &&
-		(m_vt.m_primclass == GS_TRIANGLE_CLASS ||
-			(!PRIM->FST && m_vt.m_primclass == GS_SPRITE_CLASS));
+		(m_vt.m_primclass == GS_TRIANGLE_CLASS || m_vt.m_primclass == GS_SPRITE_CLASS);
 	if (!BuildTilePayload(want_zwalk, want_stq, reason))
 		return false;
 
@@ -1068,10 +1079,14 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloo
 			const float x1 = static_cast<float>(static_cast<int>(rb.XYZ.X) - ofx) * (1.0f / 16.0f);
 			const float y1 = static_cast<float>(static_cast<int>(rb.XYZ.Y) - ofy) * (1.0f / 16.0f);
 
-			const float s0 = lt.ST.S * num_sx;
-			const float t0 = lt.ST.T * num_sy;
-			const float s1 = rb.ST.S * num_sx;
-			const float t1 = rb.ST.T * num_sy;
+			// A UV vertex already carries its 12.4 coordinate in the sixteenth units
+			// the plane is read in, and a u16 is exact in float — so the transport is
+			// the identity, not a rescale. Q still travels: it is inert for the
+			// coordinate under FST but the mip level is computed from it either way.
+			const float s0 = PRIM->FST ? static_cast<float>(lt.U) : lt.ST.S * num_sx;
+			const float t0 = PRIM->FST ? static_cast<float>(lt.V) : lt.ST.T * num_sy;
+			const float s1 = PRIM->FST ? static_cast<float>(rb.U) : rb.ST.S * num_sx;
+			const float t1 = PRIM->FST ? static_cast<float>(rb.V) : rb.ST.T * num_sy;
 
 			// A zero-extent sprite covers no fragment under either renderer, so this
 			// gradient is never evaluated; keep it finite rather than letting a
