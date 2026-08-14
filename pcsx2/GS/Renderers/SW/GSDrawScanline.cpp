@@ -330,6 +330,31 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 
 	if (has_t)
 	{
+		// The coordinate a triangle samples at trails the exact plane, by less than
+		// a sixteenth of a texel, in the direction the walk is going. Console-
+		// measured (gs-shade, SCPH-30001): where the exact coordinate lands ON a
+		// sixteenth and the walk is forward, silicon reports the sixteenth BELOW it
+		// -- 3,840 of 3,840 readings on a gradient of four sixteenths per pixel,
+		// and never the other way. Where the walk is backward the same lag puts
+		// silicon just above the boundary, which floors where we already do, and
+		// that section is identical to the console on every reading. A still
+		// coordinate is exact in both, which is what makes the lag attributable to
+		// the step rather than the seed.
+		//
+		// A sprite's coordinate is exact on silicon (gs-interp, 3,072 of 3,072,
+		// negative gradients included) and exact in ours, so sprites take nothing.
+		// Lines and points were not measured; they ride the triangle rule because
+		// it is the same walk, and a point has no gradient to lag anyway.
+		//
+		// Where the lag comes from in the hardware's walk is unfitted; one unit of
+		// our own 16.16 coordinate is the smallest bias that reproduces every
+		// reading, and it can only move a pixel that lands exactly on a boundary.
+		if (sel.prim != GS_SPRITE_CLASS)
+		{
+			local.tclag.u = VectorI(dscan.t.x > 0.0f ? 1 : 0);
+			local.tclag.v = VectorI(dscan.t.y > 0.0f ? 1 : 0);
+		}
+
 		if (sel.fst)
 		{
 			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(tstep));
@@ -809,6 +834,13 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 						v = VectorI::cast(t);
 					}
 
+					// The DDA's lag, taken before the level shift divides it away.
+					if (sel.prim != GS_SPRITE_CLASS)
+					{
+						u -= local.tclag.u;
+						v -= local.tclag.v;
+					}
+
 					if (!sel.lcm)
 					{
 						VectorF tmp = q.log2(3) * global.l + global.k; // (-log2(Q) * (1 << L) + K) * 0x10000
@@ -1190,6 +1222,15 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 					{
 						u = VectorI::cast(s);
 						v = VectorI::cast(t);
+					}
+
+					// The DDA's lag. Zero on any axis that is not walking forward,
+					// so this only moves a coordinate that lands exactly on a
+					// sixteenth.
+					if (sel.prim != GS_SPRITE_CLASS)
+					{
+						u -= local.tclag.u;
+						v -= local.tclag.v;
 					}
 
 					if (sel.ltf)

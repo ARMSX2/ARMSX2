@@ -748,6 +748,21 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 		}
 	}
 
+	// The coordinate DDA's lag: one 16.16 unit on an axis that walks forward, zero
+	// on one that is still or walks back, so only a coordinate landing exactly on a
+	// sixteenth moves. See GSDrawScanline.cpp. On the FST side ureg is the live
+	// accumulator, so the biased copy goes to the scratch pair the packing below
+	// consumes anyway.
+	if (m_sel.prim != GS_SPRITE_CLASS)
+	{
+		armAsm->Ldr(v0, _local(tclag.u));
+		armAsm->Sub(v2.V4S(), ureg.V4S(), v0.V4S());
+		armAsm->Ldr(v0, _local(tclag.v));
+		armAsm->Sub(v3.V4S(), vreg.V4S(), v0.V4S());
+		ureg = v2;
+		vreg = v3;
+	}
+
 	if (m_sel.ltf)
 	{
 		// GSVector4i uf = u.xxzzlh().srl16(12);
@@ -1069,6 +1084,18 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		armAsm->Fcvtzs(local0.V4S(), local0.V4S());
 		armAsm->Fcvtzs(local1.V4S(), local1.V4S());
 
+		uv0 = local0;
+		uv1 = local1;
+	}
+
+	// The coordinate DDA's lag, taken before the level shift divides it away. See
+	// SampleTexture above, and GSDrawScanline.cpp for the measurement.
+	if (m_sel.prim != GS_SPRITE_CLASS)
+	{
+		armAsm->Ldr(local2, _local(tclag.u));
+		armAsm->Sub(local0.V4S(), uv0.V4S(), local2.V4S());
+		armAsm->Ldr(local2, _local(tclag.v));
+		armAsm->Sub(local1.V4S(), uv1.V4S(), local2.V4S());
 		uv0 = local0;
 		uv1 = local1;
 	}
