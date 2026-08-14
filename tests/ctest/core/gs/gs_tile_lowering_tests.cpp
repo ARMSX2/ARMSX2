@@ -28,6 +28,14 @@ GSTileDrawInput BaseInput()
 	in.alpha_min = 0;
 	in.alpha_max = 255;
 	in.colclamp = true; // clamp mode — the common case; wrap is the M4a guardrail
+	// The corpus's dominant blend, the alpha lerp (Cs−Cd)·As + Cd, with the full
+	// 0..255 alpha range above making it genuinely dynamic. Inert while abe is
+	// false; tests that flip abe on get a real blend, not the zeroed register's
+	// (Cs−Cs)·As + Cs, which the M4b collapse rungs correctly eliminate.
+	in.ALPHA.A = 0;
+	in.ALPHA.B = 1;
+	in.ALPHA.C = 0;
+	in.ALPHA.D = 1;
 	in.vs_expand = true;
 	return in;
 }
@@ -825,4 +833,98 @@ TEST(GSTileLowering, BlendFieldsAreInertUntilTheLatticePopulatesThem)
 		EXPECT_EQ(p.pass[i].blend_d, 0) << "pass " << i;
 		EXPECT_EQ(p.pass[i].afix, 0) << "pass " << i;
 	}
+}
+
+// M4b rung 1: the exact whole-draw blend collapses. Cv = (((A−B)*C)>>7)+D, and
+// three identities eliminate it per-pixel in the GS's integer arithmetic: A==B → D;
+// C provably 0 → D; C provably 128 with B==D → A. A collapse to Cs writes the
+// shaded source (blend gone); a collapse to Cd drops the RGB writes while alpha
+// (never blended) writes through; a collapse to zero would need a fragment-output
+// change, so it keeps flooring until rung 3 emits real blend state.
+TEST(GSTileLowering, BlendCollapsesThatEliminateTheBlend)
+{
+	// The alpha lerp (Cs−Cd)·As + Cd with As provably 128 collapses to Cs.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.ALPHA.A = 0;
+	in.ALPHA.B = 1;
+	in.ALPHA.C = 0;
+	in.ALPHA.D = 1;
+	in.alpha_min = 128;
+	in.alpha_max = 128;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	EXPECT_TRUE(p.native);
+	EXPECT_EQ(p.colormask, 0xF);
+	EXPECT_FALSE(p.pass[0].abe);
+
+	// The same lerp with a genuinely variable alpha stays floored on Blend.
+	in.alpha_min = 0;
+	in.alpha_max = 255;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// The reverse lerp (Cd−Cs)·As + Cs with As 128 collapses to Cd: RGB writes
+	// nothing, alpha writes through, and the claims follow the narrowed mask.
+	in.ALPHA.A = 1;
+	in.ALPHA.B = 0;
+	in.ALPHA.D = 0;
+	in.alpha_min = 128;
+	in.alpha_max = 128;
+	p = gsTileLowerDraw(in);
+	EXPECT_TRUE(p.native);
+	EXPECT_EQ(p.colormask, 0x8);
+	EXPECT_EQ(p.pass[0].colormask, 0x8);
+
+	// A==B collapses to D whatever C is: D=Cs is a full write...
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.A = 1;
+	in.ALPHA.B = 1;
+	in.ALPHA.C = 0; // As, range still 0..255 — irrelevant under A==B
+	in.ALPHA.D = 0;
+	p = gsTileLowerDraw(in);
+	EXPECT_TRUE(p.native);
+	EXPECT_EQ(p.colormask, 0xF);
+
+	// ...and D=zero writes black, which no collapse can realize — floors.
+	in.ALPHA.D = 2;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// C=FIX 0 collapses to D even with A != B.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.A = 0;
+	in.ALPHA.B = 2;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 0;
+	in.ALPHA.D = 0;
+	EXPECT_TRUE(gsTileLowerDraw(in).native);
+
+	// C=FIX 128 with B==D collapses to A: Cs·1 + Cd·0 shapes write the source.
+	in.ALPHA.FIX = 128;
+	in.ALPHA.B = 1;
+	in.ALPHA.D = 1;
+	EXPECT_TRUE(gsTileLowerDraw(in).native);
+
+	// FIX between the identities does not collapse.
+	in.ALPHA.FIX = 64;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+}
+
+// The M4a guardrails outrank every collapse: a wrap draw floors ColClip and a
+// PABE draw floors Blend even when the algebra would eliminate the blend — the
+// collapse rungs are gated on clamp mode and no-PABE until M4c widens them.
+TEST(GSTileLowering, CollapsesDeferToWrapAndPabeGuardrails)
+{
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.ALPHA.A = 1;
+	in.ALPHA.B = 1; // A==B — collapsible on its own terms
+	in.ALPHA.D = 0;
+
+	in.colclamp = false;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::ColClip);
+
+	in.colclamp = true;
+	in.pabe = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
 }

@@ -147,9 +147,12 @@ struct GSTileDrawInput
 	bool colclamp;
 	bool pabe;
 	u8 scanmsk; ///< SCANMSK.MSK
-	// Source alpha range of the draw (the vertex-trace fact; exact for untextured
-	// draws, which are the only ones that reach the alpha-test logic — tme floors
-	// first). Callers without the fact pass the full 0..255 range.
+	// The POST-TEXTURE-FUNCTION alpha range of the draw (GetAlphaMinMax: the vertex
+	// trace with TFX/TEXA/CLUT folded in — Classic's alpha_c0 classification). This
+	// is the alpha the alpha test compares, and the alpha the blend's As factor and
+	// PABE read (pre-FBA, console-measured, gs-alpha2), so one fact serves all
+	// three. Callers without the fact pass the full 0..255 range, which only costs
+	// coverage.
 	u8 alpha_min;
 	u8 alpha_max;
 	bool tme;
@@ -281,6 +284,51 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	{
 		cm = 0;
 		p.z_write = false;
+	}
+
+	// Blend resolution, rung 1 of the M4 lattice (m4-blending.md §4): the exact
+	// whole-draw collapses that make the blend disappear. Cv = (((A−B)*C)>>7)+D,
+	// and three algebraic identities eliminate it, each exact per-pixel in the
+	// GS's integer arithmetic:
+	//   A==B          → Cv = D   (the difference is zero whatever C is)
+	//   C provably 0  → Cv = D
+	//   C provably 128, B==D → Cv = A   (×128>>7 is the identity on the signed
+	//                                    difference, so Cv = A − B + D = A)
+	// C is provable when it is FIX, or when it is As and the post-texture-function
+	// alpha classification is degenerate. A result of Cs means the blend is simply
+	// gone — the draw writes the shaded source it was going to write. A result of
+	// Cd means the RGB writes are no-ops (alpha is never blended and still
+	// writes): Classic's BLEND_CD, realized as a colormask edit rather than blend
+	// state, which is why this sits before the alpha-test split builds its pass
+	// masks. A result of zero still needs a fragment-output change, so it stays
+	// with the emitting rungs (M4b rung 3).
+	//
+	// Ordering, per the M4a guardrail: wrap draws are NOT collapsed in M4b even
+	// where the algebra is clamp-independent — ColClip floors them all until the
+	// wrap realization lands (M4c). PABE draws keep flooring too (zero corpus
+	// draws; the trace-range skips arrive with the general PABE work).
+	bool blend_active = in.abe;
+	if (in.abe && in.colclamp && !in.pabe)
+	{
+		int c_value = -1; // the C factor's value when provable, else -1
+		if (in.ALPHA.C == 2)
+			c_value = static_cast<int>(in.ALPHA.FIX);
+		else if (in.ALPHA.C == 0 && in.alpha_min == in.alpha_max)
+			c_value = in.alpha_min;
+
+		u32 result = 4; // a selector 0..2, or 4 = no collapse
+		if (in.ALPHA.A == in.ALPHA.B || c_value == 0)
+			result = in.ALPHA.D;
+		else if (c_value == 128 && in.ALPHA.B == in.ALPHA.D)
+			result = in.ALPHA.A;
+
+		if (result == 0) // Cs — the blend is gone
+			blend_active = false;
+		else if (result == 1) // Cd — RGB writes nothing; alpha writes through
+		{
+			cm &= 0x8;
+			blend_active = false;
+		}
 	}
 
 	// An alpha test with a PROVABLE outcome is not a test. Provably passing, it
@@ -620,7 +668,7 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		if (!in.tex_fst && in.tex_stq_guard != GSTileStqGuardNone)
 			return floored(GSTileFloorReason::TextureStqOverflow);
 	}
-	if (in.abe)
+	if (blend_active)
 	{
 		// The wrap guardrail, ahead of everything else the blend decides: COLCLAMP=0
 		// makes the blend output wrap at 8 bits, which fixed-function blending
