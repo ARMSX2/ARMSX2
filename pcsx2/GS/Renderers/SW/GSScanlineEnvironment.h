@@ -206,6 +206,9 @@ struct alignas(32) GSScanlineLocalData // per prim variables, each thread has it
 	struct step { GSVector4 stq; struct { u32 rb, ga; } c; struct { u64 z; u32 f; } p; } d8;
 	struct { u32 z, f; } p;
 	struct { GSVector8i rb, ga; } c;
+	// One unit of the 16.16 texture coordinate on each axis that walks forward,
+	// zero on an axis that is still or walking back. See GSDrawScanline.cpp.
+	struct { GSVector8i u, v; } tclag;
 
 	// these should be stored on stack as normal local variables (no free regs to use, esp cannot be saved to anywhere, and we need an aligned stack)
 
@@ -234,6 +237,9 @@ struct alignas(32) GSScanlineLocalData // per prim variables, each thread has it
 	struct step { GSVector4 z, stq; GSVector4i c, f; } d4;
 	struct { GSVector4i rb, ga; } c;
 	struct { GSVector4i z, f; } p;
+	// One unit of the 16.16 texture coordinate on each axis that walks forward,
+	// zero on an axis that is still or walking back. See GSDrawScanline.cpp.
+	struct { GSVector4i u, v; } tclag;
 
 	// these should be stored on stack as normal local variables (no free regs to use, esp cannot be saved to anywhere, and we need an aligned stack)
 

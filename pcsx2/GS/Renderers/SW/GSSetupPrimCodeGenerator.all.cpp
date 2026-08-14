@@ -331,6 +331,31 @@ void GSSetupPrimCodeGenerator::Texture()
 
 	THREEARG(mulps, xmm1, xmm0, xmm3);
 
+	// The coordinate a triangle samples at trails the exact plane in the direction
+	// the walk is going, by less than a sixteenth of a texel. Console-measured; the
+	// reasoning is on CSetupPrim in GSDrawScanline.cpp. Sprites take nothing.
+	//
+	// A positive float has the integer order of its bits, so an integer compare
+	// against zero names the axes that walk forward without touching the FPU;
+	// subtracting the resulting all-ones from zero leaves the one unit the scanline
+	// takes off, and zero on the still and backward axes.
+	if (m_sel.prim != GS_SPRITE_CLASS)
+	{
+		for (int j = 0; j < 2; j++)
+		{
+			THREEARG(shufps, xym1, xym0, xym0, _MM_SHUFFLE(j, j, j, j));
+
+			pxor(xym2, xym2);
+			pcmpgtd(xym1, xym2);
+			psubd(xym2, xym1);
+
+			if (j == 0)
+				movdqa(_rip_local(tclag.u), xym2);
+			else
+				movdqa(_rip_local(tclag.v), xym2);
+		}
+	}
+
 	if (m_sel.fst)
 	{
 		// m_local.d4.stq = GSVector4i(t * 4.0f);

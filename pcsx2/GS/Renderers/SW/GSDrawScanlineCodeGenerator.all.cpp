@@ -1244,6 +1244,15 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 		movdqa(xym3, _t);
 	}
 
+	// The coordinate DDA's lag: one 16.16 unit on an axis that walks forward, zero
+	// on one that is still or walks back, so only a coordinate landing exactly on a
+	// sixteenth moves. See GSDrawScanline.cpp for the measurement.
+	if (m_sel.prim != GS_SPRITE_CLASS)
+	{
+		psubd(xym2, _rip_local(tclag.u));
+		psubd(xym3, _rip_local(tclag.v));
+	}
+
 	if (m_sel.ltf)
 	{
 		const XYm& vf = xym7;
@@ -1647,6 +1656,14 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 	{
 		movdqa(xym2, _s);
 		movdqa(xym3, _t);
+	}
+
+	// The coordinate DDA's lag, taken before the level shift divides it away. See
+	// SampleTexture above, and GSDrawScanline.cpp for the measurement.
+	if (m_sel.prim != GS_SPRITE_CLASS)
+	{
+		psubd(xym2, _rip_local(tclag.u));
+		psubd(xym3, _rip_local(tclag.v));
 	}
 
 	// xym2 = u
