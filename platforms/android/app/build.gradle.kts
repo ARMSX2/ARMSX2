@@ -11,6 +11,21 @@ val armsx2NativeLibName = providers.gradleProperty("armsx2.nativeLibName").orEls
 val armsx2Pgo = providers.gradleProperty("armsx2.pgo").orElse("none") // none | generate | optimize
 val armsx2PgoProfile = providers.gradleProperty("armsx2.pgoProfile").orElse("") // abs path to merged .profdata (optimize)
 val armsx2HostPageSize = providers.gradleProperty("armsx2.hostPageSize").orElse("0x1000")
+// --- build target (baseline vs v8.2) -------------------------------------------------------
+// Two artifacts ship per release. The defaults here ARE the baseline build, so an unqualified
+// gradle invocation keeps producing exactly what it always did; the v8.2 target sets all three.
+//
+// armsx2.march is appended to CMAKE_C/CXX_FLAGS rather than set in CMake, because
+// BuildParameters.cmake only applies its own -march=armv8.1-a default when CMAKE_CXX_FLAGS does
+// not already carry one — that escape hatch (added after a casal SIGILL on a real Cortex-A53) is
+// exactly the seam this needs, and add_compile_options would land after these flags and win.
+val armsx2MinSdk = providers.gradleProperty("armsx2.minSdk").orElse("26")
+// Pinned, not left to AGP's default: the two targets must differ ONLY where we say they do, and
+// an NDK that drifts under one of them makes an A/B meaningless. 28.2 is what shipped 2.6.6.6.
+val armsx2NdkVersion = providers.gradleProperty("armsx2.ndkVersion").orElse("28.2.13676358")
+// Empty = let BuildParameters.cmake choose (armv8.1-a). The v8.2 target passes an explicit
+// -march; FEAT_FP16 and FEAT_DotProd are OPTIONAL at v8.2, so they must be named, not implied.
+val armsx2March = providers.gradleProperty("armsx2.march").orElse("")
 // DIAGNOSTIC ONLY (-Parmsx2.recTestHooks=true): compiles the EERecFallback opcode-group
 // interpreter bisect into the EE recompiler. Never set for a shipped build.
 val armsx2RecTestHooks = providers.gradleProperty("armsx2.recTestHooks").orElse("false")
@@ -69,10 +84,11 @@ val armsx2DiscordSdkDir: String? =
 android {
     namespace = "com.armsx2"
     compileSdk = 37
+    ndkVersion = armsx2NdkVersion.get()
 
     defaultConfig {
         applicationId = armsx2ApplicationId.get()
-        minSdk = 26
+        minSdk = armsx2MinSdk.get().toInt()
         targetSdk = 37
         versionCode = providers.gradleProperty("armsx2.versionCode").orNull?.toInt() ?: 1088
         versionName = providers.gradleProperty("armsx2.versionName").orNull ?: "2.6.1"
@@ -145,8 +161,9 @@ android {
                     arguments += if (pgo == "generate") "-DLTO_PCSX2_CORE=OFF" else "-DLTO_PCSX2_CORE=ON"
                     arguments += "-DARMSX2_EMUCORE_LIBRARY_NAME=${armsx2NativeLibName.get()}"
                     arguments += "-DARMSX2_ANDROID_HOST_PAGE_SIZE=${armsx2HostPageSize.get()}"
-                    arguments += "-DCMAKE_C_FLAGS=-O3 -g"
-                    arguments += "-DCMAKE_CXX_FLAGS=-O3 -g"
+                    val march = armsx2March.get().let { if (it.isBlank()) "" else " -march=$it" }
+                    arguments += "-DCMAKE_C_FLAGS=-O3 -g$march"
+                    arguments += "-DCMAKE_CXX_FLAGS=-O3 -g$march"
                     if (pgo == "generate") arguments += "-DUSE_PGO_GENERATE=ON"
                     if (pgo == "optimize") {
                         arguments += "-DUSE_PGO_OPTIMIZE=ON"
@@ -179,8 +196,9 @@ android {
                     arguments += "-DCMAKE_BUILD_TYPE=Debug"
                     arguments += "-DARMSX2_EMUCORE_LIBRARY_NAME=${armsx2NativeLibName.get()}"
                     arguments += "-DARMSX2_ANDROID_HOST_PAGE_SIZE=${armsx2HostPageSize.get()}"
-                    arguments += "-DCMAKE_C_FLAGS=-O3 -g"
-                    arguments += "-DCMAKE_CXX_FLAGS=-O3 -g"
+                    val march = armsx2March.get().let { if (it.isBlank()) "" else " -march=$it" }
+                    arguments += "-DCMAKE_C_FLAGS=-O3 -g$march"
+                    arguments += "-DCMAKE_CXX_FLAGS=-O3 -g$march"
                 }
             }
         }

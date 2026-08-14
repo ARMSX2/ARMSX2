@@ -80,7 +80,13 @@ build_core() { # pagesize libname outapk
 	# collection turns up empty.
 	echo "=== building core $ln (page=$ps, pgo=${PGO_MODE:-optimize}) ==="
 	rm -f "$BUILT"
+	# GRADLE_EXTRA_ARGS carries the per-target properties (minSdk / ndkVersion / march)
+	# from build-release-targets.sh. Deliberately UNQUOTED: it is a list of -P flags, and
+	# quoting would hand gradle one argument containing spaces. Empty when unset, which is
+	# every direct invocation of this script.
+	# shellcheck disable=SC2086
 	"$GRADLE" -p "$ROOT_DIR" :app:assembleGithubRelease \
+		${GRADLE_EXTRA_ARGS:-} \
 		-Parmsx2.hostPageSize="$ps" \
 		-Parmsx2.nativeLibName="$ln" \
 		-Parmsx2.pgo="${PGO_MODE:-optimize}" \
