@@ -787,19 +787,29 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	}
 
 	// The admitted blend realization, on every pass — after the fills above so a
-	// single-pass rebuild cannot reset it. The selectors are the register's own
-	// (rung 1 either eliminated the blend entirely or left them untouched), and a
-	// pass that writes no colour carries them inertly.
+	// single-pass rebuild cannot reset it. A/B/D are the register's own (rung 1
+	// either eliminated the blend entirely or left them untouched), and a pass
+	// that writes no colour carries them inertly. C is re-encoded: every admitted
+	// row is C-degenerate — C provably one (the 128 proof), C cancelled (A==B),
+	// or a result provably zero at every C — so a register that named a variable
+	// carrier (As, Ad) lands on the passes as the constant it proves, C=FIX at
+	// 128. The value never needed a carrier, and the As encoding must not reach
+	// the renderer: the blend map realizes it through dual-source (SRC1) factors,
+	// which the Mali blobs do not support (r44p1 reports no dual-source blending),
+	// and an encoding-only SRC1 dependency would floor these rows there — a
+	// readback event — for no arithmetic reason. The constant twin rows are
+	// factor-for-factor identical at the proven value on every device.
 	if (blend_pass)
 	{
+		const bool variable_carrier = in.ALPHA.C != 2;
 		for (u32 i = 0; i < p.pass_count; i++)
 		{
 			p.pass[i].abe = true;
 			p.pass[i].blend_a = static_cast<u8>(in.ALPHA.A);
 			p.pass[i].blend_b = static_cast<u8>(in.ALPHA.B);
-			p.pass[i].blend_c = static_cast<u8>(in.ALPHA.C);
+			p.pass[i].blend_c = variable_carrier ? 2 : static_cast<u8>(in.ALPHA.C);
 			p.pass[i].blend_d = static_cast<u8>(in.ALPHA.D);
-			p.pass[i].afix = static_cast<u8>(in.ALPHA.FIX);
+			p.pass[i].afix = variable_carrier ? 128 : static_cast<u8>(in.ALPHA.FIX);
 		}
 	}
 

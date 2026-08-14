@@ -723,11 +723,14 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		return false;
 	}
 
-	// A rung-3 blend whose C is As rides the second fragment output — the device's
-	// dual-source unit is the realization, and without it the read-free encoding
-	// does not exist yet (the Mali r44p1 class). Floor rather than approximate; the
-	// lowering cannot see device features, so the gate lives here with the other
-	// feature-shaped envelopes.
+	// A blend pass naming the As carrier rides the second fragment output — the
+	// device's dual-source unit is the realization, and without it the read-free
+	// encoding does not exist (the Mali r44p1 class). Floor rather than
+	// approximate; the lowering cannot see device features, so the gate lives
+	// here with the other feature-shaped envelopes. Rung 3 no longer reaches it —
+	// its admitted rows are all C-degenerate and the lowering encodes them as
+	// constant rows — so today this is a backstop for the rungs that will carry a
+	// genuinely variable As (the mix rung's SRC1 arm).
 	if (plan.pass[0].abe && plan.pass[0].blend_c == 0 &&
 		plan.pass[0].blend_a != plan.pass[0].blend_b && !g_gs_device->Features().dual_source_blend)
 	{

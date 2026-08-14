@@ -888,10 +888,13 @@ TEST(GSTileLowering, BlendCollapsesThatEliminateTheBlend)
 	// ...and D=zero writes black, which no collapse can realize — rung 3 emits it
 	// as the zero/zero factor pair instead (the difference is zero whatever C, so
 	// the carrier bound does not apply and the wide alpha range is irrelevant).
+	// C cancels, so the pass carries the canonical constant encoding.
 	in.ALPHA.D = 2;
 	p = gsTileLowerDraw(in);
 	EXPECT_TRUE(p.native);
 	EXPECT_TRUE(p.pass[0].abe);
+	EXPECT_EQ(p.pass[0].blend_c, 2);
+	EXPECT_EQ(p.pass[0].afix, 128);
 
 	// C=FIX 0 collapses to D even with A != B.
 	in = BaseInput();
@@ -944,7 +947,14 @@ TEST(GSTileLowering, RungThreeExactFixedFunctionRows)
 	EXPECT_FALSE(p.pass[0].colclip_wrap);
 	EXPECT_EQ(p.pass[0].blend_a, 0);
 	EXPECT_EQ(p.pass[0].blend_b, 2);
-	EXPECT_EQ(p.pass[0].blend_c, 0);
+	// The register named As, but the admission proved it constant — the pass
+	// carries the canonical constant encoding (C=FIX at 128) so the realization
+	// never rides the blend map's dual-source factors. The value never needed
+	// the second fragment output; the encoding must not either (the Mali blobs
+	// report no dual-source blending — r44p1 measured — and an As encoding
+	// would floor these rows there for no arithmetic reason).
+	EXPECT_EQ(p.pass[0].blend_c, 2);
+	EXPECT_EQ(p.pass[0].afix, 128);
 	EXPECT_EQ(p.pass[0].blend_d, 1);
 
 	// The same row through FIX at exactly 128 — the census's 61.9% class.
@@ -995,7 +1005,9 @@ TEST(GSTileLowering, RungThreeExactFixedFunctionRows)
 	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
 
 	// The always-zero results clamp to black in both arithmetics whatever C does:
-	// (0−Cs)·As + 0, alpha range fully variable.
+	// (0−Cs)·As + 0, alpha range fully variable. Zero at every C also means the
+	// carrier is free to choose — and the As encoding of this row is dual-source
+	// (the map's negated-source shape), so the pass takes the constant form.
 	in = BaseInput();
 	in.abe = true;
 	in.ALPHA.A = 2;
@@ -1004,6 +1016,8 @@ TEST(GSTileLowering, RungThreeExactFixedFunctionRows)
 	p = gsTileLowerDraw(in);
 	ASSERT_TRUE(p.native);
 	EXPECT_TRUE(p.pass[0].abe);
+	EXPECT_EQ(p.pass[0].blend_c, 2);
+	EXPECT_EQ(p.pass[0].afix, 128);
 
 	// A split draw carries the realization on both passes — the channel split's
 	// second pass writes colour too, and the two must agree. The blend rides the
