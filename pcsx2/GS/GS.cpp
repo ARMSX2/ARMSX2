@@ -24,6 +24,7 @@
 #include "GS/Renderers/HW/GSRendererHW.h"
 #include "GS/Renderers/HW/GSHwHack.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
+#include "GS/Renderers/Tile/GSTileOracle.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "VMManager.h"
 
@@ -1211,6 +1212,21 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 			GSDrawLog::Stop();
 			if (GSDrawLog::GetRecordCount() > 0)
 				GSDrawLog::WriteCSV(Path::Combine(EmuFolders::Logs, "gs_drawlog.csv"));
+		}
+	}
+
+	// Per-draw lockstep oracle. Same true->false-edge shape as the ledger above, so a
+	// live capture is "turn it on over the bad draw, turn it off".
+	if (GSConfig.TileDrawOracle != old_config.TileDrawOracle)
+	{
+		if (GSConfig.TileDrawOracle)
+		{
+			GSTileOracle::Reset();
+			Console.WriteLn("GSTileOracle: per-draw lockstep comparison started.");
+		}
+		else if (GSTileOracle::GetRowCount() > 0)
+		{
+			GSTileOracle::WriteCSV(Path::Combine(EmuFolders::Logs, "gs_tile_oracle.csv"));
 		}
 	}
 

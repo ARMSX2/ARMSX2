@@ -1039,6 +1039,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(UseDebugDevice);
 	SettingsWrapBitBool(DebugLabels);
 	SettingsWrapBitBool(DumpDrawLog);
+	SettingsWrapBitBool(TileDrawOracle);
 	SettingsWrapBitBool(UseBlitSwapChain);
 	SettingsWrapBitBool(DisableShaderCache);
 	SettingsWrapBitBool(DisableFramebufferFetch);

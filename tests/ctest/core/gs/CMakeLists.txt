@@ -20,6 +20,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_vram_model_tests.cpp
 	gs_tile_target_pool_tests.cpp
 	gs_tile_lowering_tests.cpp
+	gs_tile_oracle_tests.cpp
 	gs_sw_scanline_date_tests.cpp
 	gs_sw_scanline_dither_tests.cpp
 	gs_sw_scanline_texfunc_tests.cpp

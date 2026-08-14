@@ -61,6 +61,50 @@ private:
 	void SpillForFloorDraw(const GSTileDrawPlan& plan, const GSVector4i& r);
 	void ObserveFloorDraw(const GSTileDrawPlan& plan, const GSVector4i& r);
 
+	// -- The per-draw lockstep oracle (GSTileOracle) ---------------------------------
+	// Dev instrument, inert unless EmuCore/GS/TileDrawOracle is set. Runs BOTH arms
+	// over every native draw from byte-identical inputs and records what they disagree
+	// about. See GSTileOracle.h for why the comparison is three-way.
+
+	/// A copy of some pages of CPU local memory. The page set travels with the bytes so
+	/// a restore can never be paired with a footprint it was not taken from.
+	struct OracleSnapshot
+	{
+		GSPageBitmap pages;
+		std::vector<u8> bytes;
+
+		void Capture(const u8* vm8, const GSPageBitmap& pgs);
+		void Restore(u8* vm8) const;
+	};
+
+	struct OracleState
+	{
+		bool armed = false;
+		GSPageBitmap fp; ///< the compared write footprint (FRAME pages | ZBUF pages)
+		GSTileSurfaceLayout fb_l{};
+		GSTileSurfaceLayout z_l{};
+		u32 sync_pages = 0; ///< pages the input sync pulled; 0 == perturbation-free row
+		OracleSnapshot pre, gpu, sw;
+
+		// The native route rewrites the vertex buffer in place (de-indexing, flat-colour
+		// flattening), so the SW arm cannot be handed what is left of it.
+		std::vector<GSVertex> verts;
+		std::vector<u16> indices;
+		u32 v_head = 0, v_tail = 0, v_next = 0, i_tail = 0;
+
+		// Scratch for the three-state pixel reads, kept across draws.
+		std::vector<u32> c_pre, c_sw, c_gpu;
+		std::vector<u32> z_pre, z_sw, z_gpu;
+	};
+
+	bool OracleBeginDraw(const GSTileDrawPlan& plan, const GSVector4i& r);
+	void OracleCompareDraw(const GSTileDrawPlan& plan, const GSVector4i& r);
+	void OracleAbandonDraw();
+	void OracleSaveVertices();
+	void OracleRestoreVertices();
+	void OracleReadPixels(const GSVector4i& r, u32 bp, u32 bw, u32 psm, std::vector<u32>& out) const;
+	void OracleInvalidateFootprint();
+
 	GSVramModel m_vram_model;
 	GSTileTargetPool m_target_pool;
 	GSTileTextureSource m_tex_source;
@@ -74,6 +118,7 @@ private:
 	u32 m_zwalk_at = NoWalk;
 	u32 m_stq_at = NoWalk;
 	GSVramModel::RectFootprint m_rect_fp; // scratch for transfer/move footprints
+	OracleState m_oracle;
 };
 
 MULTI_ISA_UNSHARED_END

@@ -907,6 +907,12 @@ struct Pcsx2Config
 					// Record the per-draw ledger (GSDrawLog). Attribution only -- it is
 					// not free, so never leave it on for one arm of an A/B.
 					DumpDrawLog : 1,
+					// Run the software rasterizer in lockstep against the Tile
+					// renderer's native route and record every per-draw divergence
+					// (GSTileOracle). Orders of magnitude slower than a plain run --
+					// two extra readback drains and a full SW rasterization per native
+					// draw -- and meaningless under any renderer but Tile.
+					TileDrawOracle : 1,
 					UseBlitSwapChain : 1,
 					DisableShaderCache : 1,
 					DisableFramebufferFetch : 1,

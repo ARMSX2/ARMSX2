@@ -8,6 +8,7 @@
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/Renderers/SW/GSRasterizer.h"
+#include "GS/Renderers/Tile/GSTileOracle.h"
 
 #include "common/Timer.h"
 
@@ -651,6 +652,289 @@ void GSRendererTile::ObserveFloorDraw(const GSTileDrawPlan& plan, const GSVector
 			static_cast<u8>(ctx->ZBUF.PSM), GSTileSurfaceKind::Depth};
 		m_vram_model.OnCpuWrite(PagesForTargetRect(z_l, r), gsTilePlanesInvalidatedByWrite(ctx->ZBUF.PSM));
 	}
+}
+
+// -- The per-draw lockstep oracle ------------------------------------------------------
+//
+// The instrument #76 was missing. Frame scoring says how much of a frame is wrong; it
+// cannot say WHICH DRAW made it wrong, and inferring that from percentages is how the
+// campaign twice wrote a mechanism onto a class that measurement later excluded.
+//
+// Per native draw, with the oracle armed:
+//
+//   1. sync the draw's inputs to CPU truth and snapshot the write footprint
+//   2. run the native draw exactly as the real path would
+//   3. read its result back and keep it
+//   4. put the footprint back the way it was, and run GSRendererSW over it
+//   5. compare the two results AGAINST THE SNAPSHOT, not just against each other
+//
+// Step 4 is what makes the ledger readable all the way down instead of only at its
+// first row: every draw is judged from the state it actually started in, so a
+// divergence is authored by that draw and never inherited. Step 5's three-way split
+// separates "the two arms computed different values" from "one arm did not write here
+// at all" -- a shading bug and a coverage-or-claim bug, which one percentage cannot
+// tell apart.
+//
+// ⚠️ Step 1 is the one place the instrument touches the run it is measuring. It only
+// ever moves bytes GPU->CPU, so it can cost time and cannot corrupt -- but the honest
+// treatment is to record it rather than argue it: every row carries how many pages the
+// sync had to pull, and a row that pulled ZERO is perturbation-free by construction.
+// (Ablations that forced synchronisation have already produced one confounded number in
+// this campaign; the fix is to make the perturbation visible per row.)
+
+void GSRendererTile::OracleSnapshot::Capture(const u8* vm8, const GSPageBitmap& pgs)
+{
+	pages = pgs;
+	bytes.resize(static_cast<size_t>(pgs.count()) * GS_PAGE_SIZE);
+	size_t at = 0;
+	pgs.forEachSetPage([&](u32 page) {
+		std::memcpy(bytes.data() + at, vm8 + static_cast<size_t>(page) * GS_PAGE_SIZE, GS_PAGE_SIZE);
+		at += GS_PAGE_SIZE;
+	});
+}
+
+void GSRendererTile::OracleSnapshot::Restore(u8* vm8) const
+{
+	size_t at = 0;
+	pages.forEachSetPage([&](u32 page) {
+		std::memcpy(vm8 + static_cast<size_t>(page) * GS_PAGE_SIZE, bytes.data() + at, GS_PAGE_SIZE);
+		at += GS_PAGE_SIZE;
+	});
+}
+
+// SubmitNativeDraw de-indexes and flattens in place, so the buffer the SW arm would see
+// afterwards is not the draw the game issued.
+void GSRendererTile::OracleSaveVertices()
+{
+	const u32 vcount = std::max(m_vertex->tail, m_vertex->next);
+	m_oracle.verts.assign(m_vertex->buff, m_vertex->buff + vcount);
+	m_oracle.indices.assign(m_index->buff, m_index->buff + m_index->tail);
+	m_oracle.v_head = m_vertex->head;
+	m_oracle.v_tail = m_vertex->tail;
+	m_oracle.v_next = m_vertex->next;
+	m_oracle.i_tail = m_index->tail;
+}
+
+void GSRendererTile::OracleRestoreVertices()
+{
+	// De-indexing swaps buff with buff_copy and can grow both; write through whichever
+	// pointer is live now, which is always at least as large as what was saved.
+	std::memcpy(m_vertex->buff, m_oracle.verts.data(), m_oracle.verts.size() * sizeof(GSVertex));
+	std::memcpy(m_index->buff, m_oracle.indices.data(), m_oracle.indices.size() * sizeof(u16));
+	m_vertex->head = m_oracle.v_head;
+	m_vertex->tail = m_oracle.v_tail;
+	m_vertex->next = m_oracle.v_next;
+	m_index->tail = m_oracle.i_tail;
+}
+
+void GSRendererTile::OracleReadPixels(const GSVector4i& r, u32 bp, u32 bw, u32 psm, std::vector<u32>& out) const
+{
+	const GSLocalMemory::psm_t& p = GSLocalMemory::m_psm[psm];
+	const int w = r.width();
+	const int h = r.height();
+	out.resize(static_cast<size_t>(std::max(w, 0)) * static_cast<size_t>(std::max(h, 0)));
+	size_t at = 0;
+	for (int y = r.y; y < r.w; y++)
+	{
+		for (int x = r.x; x < r.z; x++)
+			out[at++] = (m_mem.*p.rp)(x, y, bp, bw);
+	}
+}
+
+// A raw restore writes local memory behind the SW rasterizer's texture cache, which
+// keys deswizzled copies on these very pages. ReadbackModelPages does this for itself;
+// the oracle's restores have to as well or a later floor draw samples a stale copy.
+void GSRendererTile::OracleInvalidateFootprint()
+{
+	InvalidateSwTexCache(m_oracle.fb_l, m_oracle.fp);
+	if (m_oracle.z_l.psm != m_oracle.fb_l.psm || m_oracle.z_l.bp != m_oracle.fb_l.bp)
+		InvalidateSwTexCache(m_oracle.z_l, m_oracle.fp);
+}
+
+bool GSRendererTile::OracleBeginDraw(const GSTileDrawPlan& plan, const GSVector4i& r)
+{
+	const GSDrawingContext* ctx = m_context;
+
+	m_oracle.fb_l = GSTileSurfaceLayout{ctx->FRAME.Block(), static_cast<u8>(ctx->FRAME.FBW),
+		static_cast<u8>(ctx->FRAME.PSM), GSTileSurfaceKind::Color};
+	m_oracle.z_l = GSTileSurfaceLayout{ctx->ZBUF.Block(), static_cast<u8>(ctx->FRAME.FBW),
+		static_cast<u8>(ctx->ZBUF.PSM), GSTileSurfaceKind::Depth};
+
+	// The compared footprint is every page either arm could write. Over-including only
+	// costs a memcpy of pages that then compare equal; under-including hides a defect.
+	m_oracle.fp = PagesForTargetRect(m_oracle.fb_l, r);
+	if (plan.z_write || plan.z_test)
+		m_oracle.fp |= PagesForTargetRect(m_oracle.z_l, r);
+
+	// A pathological layout (zero stride) claims all 512 pages; 4 MB x 3 snapshots per
+	// draw is not a microscope, and such a draw floors on the native route anyway.
+	if (m_oracle.fp.count() > 128)
+		return false;
+
+	// Inputs to CPU truth, so the SW arm reads exactly what the native arm will sample
+	// and blend against. Counted, because this is the instrument's only footprint on
+	// the run it measures.
+	GSPageBitmap before;
+	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+		before |= m_vram_model.Truth(pi).andnot(m_vram_model.SyncedPages(pi));
+	SpillForFloorDraw(plan, r);
+	GSPageBitmap after;
+	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+		after |= m_vram_model.Truth(pi).andnot(m_vram_model.SyncedPages(pi));
+	m_oracle.sync_pages = before.andnot(after).count();
+
+	m_oracle.pre.Capture(m_mem.vm8(), m_oracle.fp);
+	OracleSaveVertices();
+	m_oracle.armed = true;
+	return true;
+}
+
+void GSRendererTile::OracleAbandonDraw()
+{
+	// The native route bailed. It never reached SubmitNativeDraw, so the vertex buffer
+	// is untouched -- restoring it anyway keeps that a property of this function rather
+	// than of a call ordering somewhere else.
+	if (!m_oracle.armed)
+		return;
+	OracleRestoreVertices();
+	m_oracle.armed = false;
+}
+
+void GSRendererTile::OracleCompareDraw(const GSTileDrawPlan& plan, const GSVector4i& r)
+{
+	if (!m_oracle.armed)
+		return;
+	m_oracle.armed = false;
+
+	const GSDrawingContext* ctx = m_context;
+	u8* const vm8 = m_mem.vm8();
+
+	// The native arm's result, in CPU local memory. Bytes the draw did not claim keep
+	// their pre values, which is exactly what makes an unclaimed write show up below as
+	// sw_only rather than silently as agreement.
+	ReadbackModelPages(m_vram_model.ReadbackNeeded(m_oracle.fp, kGSTilePlanesAll));
+	m_oracle.gpu.Capture(vm8, m_oracle.fp);
+
+	// The SW arm, over the same inputs.
+	m_oracle.pre.Restore(vm8);
+	OracleInvalidateFootprint();
+	OracleRestoreVertices();
+	GSRendererSW::Draw();
+	Sync(9);
+	m_oracle.sw.Capture(vm8, m_oracle.fp);
+
+	// Three passes over the rect, one per memory state. vm8 holds the SW result now.
+	const bool want_c = plan.colormask != 0 || ctx->FRAME.FBMSK != 0xFFFFFFFFu;
+	const bool want_z = plan.z_write;
+	const u32 fb_bp = ctx->FRAME.Block();
+	const u32 fbw = ctx->FRAME.FBW;
+	const u32 fb_psm = ctx->FRAME.PSM;
+	const u32 z_bp = ctx->ZBUF.Block();
+	const u32 z_psm = ctx->ZBUF.PSM;
+
+	if (want_c)
+		OracleReadPixels(r, fb_bp, fbw, fb_psm, m_oracle.c_sw);
+	if (want_z)
+		OracleReadPixels(r, z_bp, fbw, z_psm, m_oracle.z_sw);
+
+	m_oracle.pre.Restore(vm8);
+	if (want_c)
+		OracleReadPixels(r, fb_bp, fbw, fb_psm, m_oracle.c_pre);
+	if (want_z)
+		OracleReadPixels(r, z_bp, fbw, z_psm, m_oracle.z_pre);
+
+	m_oracle.gpu.Restore(vm8);
+	OracleInvalidateFootprint();
+	if (want_c)
+		OracleReadPixels(r, fb_bp, fbw, fb_psm, m_oracle.c_gpu);
+	if (want_z)
+		OracleReadPixels(r, z_bp, fbw, z_psm, m_oracle.z_gpu);
+
+	GSTileOracle::Row row = {};
+	row.frame = static_cast<u32>(g_perfmon.GetFrame());
+	row.draw = static_cast<u32>(s_n);
+	row.prim_type = static_cast<u8>(PRIM->PRIM);
+	row.prim_count = static_cast<u16>(std::min<u32>(m_oracle.i_tail, 0xFFFFu));
+	row.rect_x = static_cast<s16>(r.x);
+	row.rect_y = static_cast<s16>(r.y);
+	row.rect_z = static_cast<s16>(r.z);
+	row.rect_w = static_cast<s16>(r.w);
+	row.fb_bp = fb_bp;
+	row.fb_bw = static_cast<u8>(fbw);
+	row.fb_psm = static_cast<u8>(fb_psm);
+	row.fbmsk = ctx->FRAME.FBMSK;
+	row.colormask = plan.colormask;
+	row.z_bp = z_bp;
+	row.z_psm = static_cast<u8>(z_psm);
+	row.z_write = plan.z_write ? 1 : 0;
+	row.ztst = plan.ztst;
+	row.shape = static_cast<u8>((PRIM->TME ? 1 : 0) | (PRIM->IIP ? 2 : 0) | (PRIM->ABE ? 4 : 0) |
+								(PRIM->FGE ? 8 : 0) | ((PRIM->TME && IsMipMapActive()) ? 16 : 0) |
+								(PRIM->FST ? 32 : 0) | (ctx->TEST.ATE ? 64 : 0) | (ctx->TEST.DATE ? 128 : 0));
+	row.tex_psm = static_cast<u8>(ctx->TEX0.PSM);
+	row.sync_pages = static_cast<u16>(std::min<u32>(m_oracle.sync_pages, 0xFFFFu));
+	row.fp_pages = static_cast<u16>(m_oracle.fp.count());
+
+	// Whole-footprint byte residual, alongside the rect comparison. If the rect agrees
+	// and this does not, an arm wrote OUTSIDE the rect it declared -- a different bug
+	// from anything the pixel tallies can express, and one nothing else would notice.
+	{
+		size_t at = 0;
+		m_oracle.fp.forEachSetPage([&](u32) {
+			const u8* a = m_oracle.sw.bytes.data() + at;
+			const u8* b = m_oracle.gpu.bytes.data() + at;
+			u32 n = 0;
+			for (u32 i = 0; i < GS_PAGE_SIZE; i++)
+				n += (a[i] != b[i]) ? 1u : 0u;
+			if (n != 0)
+			{
+				row.diff_pages++;
+				row.diff_bytes += n;
+			}
+			at += GS_PAGE_SIZE;
+		});
+	}
+
+	if (want_c)
+	{
+		row.colour = GSTileOracle::Compare(m_oracle.c_pre.data(), m_oracle.c_sw.data(), m_oracle.c_gpu.data(),
+			r.width(), r.height(), r.x, r.y, GSTileOracle::MetricForPsm(fb_psm));
+	}
+	if (want_z)
+	{
+		row.depth = GSTileOracle::Compare(m_oracle.z_pre.data(), m_oracle.z_sw.data(), m_oracle.z_gpu.data(),
+			r.width(), r.height(), r.x, r.y, GSTileOracle::Metric::Raw);
+	}
+
+	GSTileOracle::AddRow(row);
+
+	if (!row.diverged())
+		return;
+
+	// Per-pixel detail for the first few divergent draws. Row order is causal order
+	// here, so the first few are the ones attribution actually reads.
+	u32 budget = GSTileOracle::OpenPixelDetail();
+	if (budget == 0)
+		return;
+
+	const auto dump = [&](bool depth, const std::vector<u32>& pre, const std::vector<u32>& sw,
+						  const std::vector<u32>& gpu) {
+		if (pre.empty())
+			return;
+		size_t at = 0;
+		for (int y = r.y; y < r.w && budget != 0; y++)
+		{
+			for (int x = r.x; x < r.z && budget != 0; x++, at++)
+			{
+				if (sw[at] == gpu[at])
+					continue;
+				GSTileOracle::AddPixel(row.frame, row.draw, depth, x, y, pre[at], sw[at], gpu[at]);
+				budget--;
+			}
+		}
+	};
+	dump(false, m_oracle.c_pre, m_oracle.c_sw, m_oracle.c_gpu);
+	dump(true, m_oracle.z_pre, m_oracle.z_sw, m_oracle.z_gpu);
 }
 
 // -- The native route ----------------------------------------------------------------
@@ -1822,6 +2106,17 @@ void GSRendererTile::Draw()
 	const GSTileDrawPlan plan = LowerCurrentDraw();
 	GSTileFloorReason reason = plan.reason;
 
+	// The lockstep oracle arms only for a draw heading to the native route: a floored
+	// draw IS the software arm, so there is nothing to compare it against. Arming syncs
+	// the draw's inputs to CPU truth and snapshots its write footprint.
+	const bool oracle = GSTileOracle::IsActive() && plan.native && !r.rempty() && OracleBeginDraw(plan, r);
+	if (oracle) [[unlikely]]
+	{
+		// Re-base the ledger's clock: the instrument is not the renderer's cost. (The
+		// comparison itself runs after record_ns is taken, so it never lands in it.)
+		record_start = Common::Timer::GetCurrentValue();
+	}
+
 	bool native = false;
 	if (plan.native)
 	{
@@ -1843,6 +2138,16 @@ void GSRendererTile::Draw()
 	if (log) [[unlikely]]
 		record_ns = static_cast<u32>(
 			Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - record_start));
+
+	if (oracle) [[unlikely]]
+	{
+		// The native arm ran; now run the software arm over the same inputs and score
+		// them against each other and against the state both started from.
+		if (native)
+			OracleCompareDraw(plan, r);
+		else
+			OracleAbandonDraw();
+	}
 
 	if (!native)
 		GSRendererSW::Draw();

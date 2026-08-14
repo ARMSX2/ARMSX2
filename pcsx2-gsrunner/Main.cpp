@@ -37,6 +37,7 @@
 #include "pcsx2/GS/Renderers/Common/GSDevice.h"
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
+#include "pcsx2/GS/Renderers/Tile/GSTileOracle.h"
 #include "pcsx2/GSDumpReplayer.h"
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
@@ -185,6 +186,7 @@ static std::deque<std::function<void()>> s_cpu_thread_tasks;
 
 static std::string s_stats_json_path;
 static std::string s_drawlog_path;
+static std::string s_tile_oracle_path;
 static std::vector<FrameSample> s_frame_samples;
 static std::string s_device_name;
 static std::string s_driver_info;
@@ -691,6 +693,9 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -noshadercache: Disables the shader cache (useful for parallel runs).\n");
 	std::fprintf(stderr, "  -perf: Enable frame timing performance stats.\n");
 	std::fprintf(stderr, "  -drawlog <path.csv>: Record a per-draw ledger (PS2 register state + backend draw config).\n");
+	std::fprintf(stderr, "  -tileoracle <path.csv>: Run the software rasterizer in lockstep against the Tile renderer's "
+						 "native route and record every per-draw divergence. Tile only, and orders of magnitude "
+						 "slower than a plain run.\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -1036,6 +1041,13 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_drawlog_path = argv[++i];
 				s_settings_interface.SetBoolValue("EmuCore/GS", "DumpDrawLog", true);
 				Console.WriteLn(fmt::format("Recording per-draw ledger to {}", s_drawlog_path));
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-tileoracle"))
+			{
+				s_tile_oracle_path = argv[++i];
+				s_settings_interface.SetBoolValue("EmuCore/GS", "TileDrawOracle", true);
+				Console.WriteLn(fmt::format("Recording per-draw lockstep divergences to {}", s_tile_oracle_path));
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-stats-json"))
@@ -1472,6 +1484,13 @@ void GSRunner::DumpStats()
 
 	if (!s_drawlog_path.empty())
 		GSDrawLog::WriteCSV(s_drawlog_path);
+
+	if (!s_tile_oracle_path.empty())
+	{
+		Console.WriteLn(fmt::format("GSTileOracle: {} draws compared, {} divergent{}", GSTileOracle::GetRowCount(),
+			GSTileOracle::GetDivergentCount(), GSTileOracle::WasTruncated() ? " (TRUNCATED)" : ""));
+		GSTileOracle::WriteCSV(s_tile_oracle_path);
+	}
 }
 
 #ifdef _WIN32
