@@ -153,7 +153,7 @@ void recMFC1()
 	}
 	else
 	{
-		armLoadEERegPtr(RWSCRATCH, &fpuRegs.fpr[_Fs_].UL);
+		armLoadEERegPtr(RWSCRATCH, &fpuRegs.fpr[_Fs_]);
 	}
 	armAsm->Sxtw(RXSCRATCH, RWSCRATCH);
 	// Deposit last, after the FPR-slot probe above (see recCFC1).
@@ -193,7 +193,7 @@ void recMTC1()
 	}
 	else
 	{
-		armStoreEERegPtr(rt, &fpuRegs.fpr[_Fs_].UL);
+		armStoreEERegPtr(rt, &fpuRegs.fpr[_Fs_]);
 	}
 }
 
@@ -796,12 +796,12 @@ static void recCompareFPRs(a64::Condition cond)
 	if (fsreg >= 0)
 		armAsm->Fmov(RSSCRATCH, armSRegister(fsreg));
 	else
-		armLoadEERegPtr(RSSCRATCH, &fpuRegs.fpr[_Fs_].f);
+		armLoadEERegPtr(RSSCRATCH, &fpuRegs.fpr[_Fs_]);
 	const int ftreg = (_Ft_ == _Fs_) ? fsreg : _checkNEONreg(NEONTYPE_FPREG, _Ft_, 0);
 	if (ftreg >= 0)
 		armAsm->Fmov(RSSCRATCH2, armSRegister(ftreg));
 	else
-		armLoadEERegPtr(RSSCRATCH2, &fpuRegs.fpr[_Ft_].f);
+		armLoadEERegPtr(RSSCRATCH2, &fpuRegs.fpr[_Ft_]);
 	fpuClampCompareOperand(RSSCRATCH);
 	fpuClampCompareOperand(RSSCRATCH2);
 	armAsm->Fcmp(RSSCRATCH, RSSCRATCH2);

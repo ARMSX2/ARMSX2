@@ -1057,7 +1057,7 @@ void recLWC1()
 		// (if any) is now stale and must not flush back over the write.
 		_deleteFPtoNEONreg(_Rt_, DELETE_REG_FREE_NO_WRITEBACK);
 		// Store to fpuRegs.fpr[ft]
-		armStoreEERegPtr(a64::w0, &fpuRegs.fpr[_Rt_].UL);
+		armStoreEERegPtr(a64::w0, &fpuRegs.fpr[_Rt_]);
 	}
 }
 
@@ -1074,7 +1074,7 @@ void recSWC1()
 	if (fslot >= 0)
 		armAsm->Fmov(a64::w10, armSRegister(fslot));
 	else
-		armLoadEERegPtr(a64::w10, &fpuRegs.fpr[_Rt_].UL);
+		armLoadEERegPtr(a64::w10, &fpuRegs.fpr[_Rt_]);
 
 	// Inline STR off RFASTMEMBASE + backpatch on the fast path, softmem
 	// fallback otherwise.

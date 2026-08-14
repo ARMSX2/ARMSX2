@@ -149,16 +149,17 @@ union GPR_reg64 {
 	s8  SC[8];
 };
 
-/*	One EE FPR. The architectural register is 32 bits and is the slot's low
-	half; a write through f/UL/SL leaves the upper half alone.
+/*	One EE FPR. The architectural register is 32 bits and the slot is 64, so the
+	word is not the slot and there is no u32 view of it: it is read through
+	Word() and written through SetWord(), and how a slot encodes it is those two
+	functions' business. Today it is the low half.
 */
 union FPRreg {
 	double d;
 	u64 UD;
 
-	float f;
-	u32 UL;
-	s32 SL;				// signed 32bit used for sign extension in interpreters.
+	u32 Word() const { return static_cast<u32>(UD); }
+	void SetWord(u32 word) { UD = word; }
 };
 
 struct fpuRegisters {
@@ -337,10 +338,10 @@ static __fi void fpuRegsToWire(fpuRegistersWire& wire)
 {
 	for (int i = 0; i < 32; i++)
 	{
-		wire.fpr[i] = fpuRegs.fpr[i].UL;
+		wire.fpr[i] = fpuRegs.fpr[i].Word();
 		wire.fprc[i] = fpuRegs.fprc[i];
 	}
-	wire.ACC = fpuRegs.ACC.UL;
+	wire.ACC = fpuRegs.ACC.Word();
 	wire.ACCflag = fpuRegs.ACCflag;
 }
 
@@ -349,10 +350,10 @@ static __fi void fpuRegsFromWire(const fpuRegistersWire& wire)
 	for (int i = 0; i < 32; i++)
 	{
 		// Whole slot, so no upper half survives from the previous state.
-		fpuRegs.fpr[i].UD = wire.fpr[i];
+		fpuRegs.fpr[i].SetWord(wire.fpr[i]);
 		fpuRegs.fprc[i] = wire.fprc[i];
 	}
-	fpuRegs.ACC.UD = wire.ACC;
+	fpuRegs.ACC.SetWord(wire.ACC);
 	fpuRegs.ACCflag = wire.ACCflag;
 }
 

@@ -34,8 +34,10 @@ TEST(EeFpuRegFile, TheWireBlockIsTheSavestateLayout)
 	EXPECT_EQ(offsetof(fpuRegistersWire, ACCflag), 260u);
 }
 
-// The stride the emitters compute from &fpuRegs.fpr[n] is the slot's size.
-TEST(EeFpuRegFile, TheWordIsTheSlotsLowHalf)
+// The stride the emitters compute from &fpuRegs.fpr[n] is the slot's size, so
+// it has to be 8 bytes. SetWord writes all of it and Word reads back what went
+// in.
+TEST(EeFpuRegFile, TheAccessorOwnsTheWholeSlot)
 {
 	EXPECT_EQ(sizeof(FPRreg), 8u);
 
@@ -43,9 +45,13 @@ TEST(EeFpuRegFile, TheWordIsTheSlotsLowHalf)
 	{
 		FPRreg slot;
 		slot.UD = UINT64_C(0xA5A5A5A5) << 32 | 0x5A5A5A5A;
-		slot.UL = word;
-		EXPECT_EQ(slot.UD & 0xFFFFFFFFu, word) << std::hex << word;
-		EXPECT_EQ(slot.UD >> 32, 0xA5A5A5A5u) << std::hex << word;
+		slot.SetWord(word);
+		EXPECT_EQ(slot.Word(), word) << std::hex << word;
+
+		FPRreg fresh;
+		fresh.UD = 0;
+		fresh.SetWord(word);
+		EXPECT_EQ(slot.UD, fresh.UD) << std::hex << word;
 	}
 }
 
@@ -56,10 +62,10 @@ TEST(EeFpuRegFile, TheWireRoundTripIsExact)
 
 	for (int i = 0; i < 32; i++)
 	{
-		fpuRegs.fpr[i].UL = kWords[i % std::size(kWords)] ^ static_cast<u32>(i);
+		fpuRegs.fpr[i].SetWord(kWords[i % std::size(kWords)] ^ static_cast<u32>(i));
 		fpuRegs.fprc[i] = 0xC0DE0000u | static_cast<u32>(i);
 	}
-	fpuRegs.ACC.UL = 0x7FFFFFFF;
+	fpuRegs.ACC.SetWord(0x7FFFFFFF);
 	fpuRegs.ACCflag = 1;
 
 	fpuRegistersWire wire;
@@ -67,23 +73,29 @@ TEST(EeFpuRegFile, TheWireRoundTripIsExact)
 
 	for (int i = 0; i < 32; i++)
 	{
-		EXPECT_EQ(wire.fpr[i], fpuRegs.fpr[i].UL) << "fpr" << i;
+		EXPECT_EQ(wire.fpr[i], fpuRegs.fpr[i].Word()) << "fpr" << i;
 		EXPECT_EQ(wire.fprc[i], fpuRegs.fprc[i]) << "fprc" << i;
 	}
 	EXPECT_EQ(wire.ACC, 0x7FFFFFFFu);
 	EXPECT_EQ(wire.ACCflag, 1u);
 
-	// 0xA5 everywhere, so a load that writes only the word leaves the upper
-	// half set.
+	// 0xA5 everywhere, so a load that writes only part of a slot leaves the
+	// rest of it set and the whole-slot comparison below catches it.
 	std::memset(&fpuRegs, 0xA5, sizeof(fpuRegisters));
 	fpuRegsFromWire(wire);
 
 	for (int i = 0; i < 32; i++)
 	{
-		EXPECT_EQ(fpuRegs.fpr[i].UD, static_cast<u64>(wire.fpr[i])) << "fpr" << i;
+		FPRreg fresh;
+		fresh.UD = 0;
+		fresh.SetWord(wire.fpr[i]);
+		EXPECT_EQ(fpuRegs.fpr[i].UD, fresh.UD) << "fpr" << i;
 		EXPECT_EQ(fpuRegs.fprc[i], wire.fprc[i]) << "fprc" << i;
 	}
-	EXPECT_EQ(fpuRegs.ACC.UD, UINT64_C(0x7FFFFFFF));
+	FPRreg fresh_acc;
+	fresh_acc.UD = 0;
+	fresh_acc.SetWord(0x7FFFFFFF);
+	EXPECT_EQ(fpuRegs.ACC.UD, fresh_acc.UD);
 	EXPECT_EQ(fpuRegs.ACCflag, 1u);
 
 	std::memcpy(&fpuRegs, &saved, sizeof(fpuRegisters));

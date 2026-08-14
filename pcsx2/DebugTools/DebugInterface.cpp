@@ -18,6 +18,8 @@
 
 #include "common/StringUtil.h"
 
+#include <cstring>
+
 R5900DebugInterface r5900Debug;
 R3000DebugInterface r3000Debug;
 
@@ -464,7 +466,7 @@ u128 R5900DebugInterface::getRegister(int cat, int num)
 			result = u128::From32(cpuRegs.CP0.r[num]);
 			break;
 		case EECAT_FPR:
-			result = u128::From32(fpuRegs.fpr[num].UL);
+			result = u128::From32(fpuRegs.fpr[num].Word());
 			break;
 		case EECAT_FCR:
 			result = u128::From32(fpuRegs.fprc[num]);
@@ -504,7 +506,12 @@ std::string R5900DebugInterface::getRegisterString(int cat, int num)
 		case EECAT_VU0F:
 			return StringUtil::U128ToString(getRegister(cat, num));
 		case EECAT_FPR:
-			return StringUtil::StdStringFromFormat("%f", fpuRegs.fpr[num].f);
+		{
+			const u32 word = fpuRegs.fpr[num].Word();
+			float f;
+			std::memcpy(&f, &word, sizeof(f));
+			return StringUtil::StdStringFromFormat("%f", f);
+		}
 		default:
 			return {};
 	}
@@ -562,7 +569,7 @@ void R5900DebugInterface::setRegister(int cat, int num, u128 newValue)
 			cpuRegs.CP0.r[num] = newValue._u32[0];
 			break;
 		case EECAT_FPR:
-			fpuRegs.fpr[num].UL = newValue._u32[0];
+			fpuRegs.fpr[num].SetWord(newValue._u32[0]);
 			break;
 		case EECAT_FCR:
 			fpuRegs.fprc[num] = newValue._u32[0];

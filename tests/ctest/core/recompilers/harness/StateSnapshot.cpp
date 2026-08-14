@@ -228,13 +228,13 @@ std::vector<std::string> DiffEe(const EeSnapshot& a, const EeSnapshot& b)
 	for (int i = 0; i < 32; ++i)
 	{
 		std::string name = "fpr[" + std::to_string(i) + "]";
-		emit32(name.c_str(), a.fprs.fpr[i].UL, b.fprs.fpr[i].UL);
+		emit32(name.c_str(), a.fprs.fpr[i].Word(), b.fprs.fpr[i].Word());
 	}
 
 	// PS2 FPU accumulator — written by ADDA/SUBA/MULA/MADDA/MSUBA and read
 	// by MADD/MSUB. Diverging ACC corrupts geometry/lighting silently if
 	// not included in the diff.
-	emit32("ACC", a.fprs.ACC.UL, b.fprs.ACC.UL);
+	emit32("ACC", a.fprs.ACC.Word(), b.fprs.ACC.Word());
 
 	emit32("pc", a.regs.pc, b.regs.pc);
 	emit32("sa", a.regs.sa, b.regs.sa);

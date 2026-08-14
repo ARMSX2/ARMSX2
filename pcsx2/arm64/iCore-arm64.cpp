@@ -906,7 +906,7 @@ int _allocFPtoNEONreg(int fpreg, int mode)
 
 	if (mode & MODE_READ)
 	{
-		armLoadEERegPtrRaw(armSRegister(neonreg), &fpuRegs.fpr[fpreg].f);
+		armLoadEERegPtrRaw(armSRegister(neonreg), &fpuRegs.fpr[fpreg]);
 	}
 
 	return neonreg;
@@ -1062,7 +1062,7 @@ int _allocFPACCtoNEONreg(int mode)
 
 	if (mode & MODE_READ)
 	{
-		armLoadEERegPtrRaw(armSRegister(neonreg), &fpuRegs.ACC.f);
+		armLoadEERegPtrRaw(armSRegister(neonreg), &fpuRegs.ACC);
 	}
 
 	return neonreg;
@@ -1123,13 +1123,13 @@ void _writebackNEONreg(int neonreg)
 
 		case NEONTYPE_FPREG:
 		{
-			armStoreEERegPtrRaw(armSRegister(neonreg), &fpuRegs.fpr[arm64neon[neonreg].reg].f);
+			armStoreEERegPtrRaw(armSRegister(neonreg), &fpuRegs.fpr[arm64neon[neonreg].reg]);
 		}
 		break;
 
 		case NEONTYPE_FPACC:
 		{
-			armStoreEERegPtrRaw(armSRegister(neonreg), &fpuRegs.ACC.f);
+			armStoreEERegPtrRaw(armSRegister(neonreg), &fpuRegs.ACC);
 		}
 		break;
 

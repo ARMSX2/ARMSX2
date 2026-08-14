@@ -143,10 +143,10 @@ void EeRecTestHarness::SetHiPair(u64 lo_qw, u64 hi_qw) { cpuRegs.HI.UD[0] = lo_q
 
 void EeRecTestHarness::SetCp0(u32 reg_idx, u32 value) { cpuRegs.CP0.r[reg_idx] = value; }
 
-void EeRecTestHarness::SetFpr(u32 reg_idx, float value)    { fpuRegs.fpr[reg_idx].f = value; }
-void EeRecTestHarness::SetFprBits(u32 reg_idx, u32 bits)   { fpuRegs.fpr[reg_idx].UL = bits; }
-void EeRecTestHarness::SetAcc(float value)                 { fpuRegs.ACC.f = value; }
-void EeRecTestHarness::SetAccBits(u32 bits)                { fpuRegs.ACC.UL = bits; }
+void EeRecTestHarness::SetFpr(u32 reg_idx, float value)    { u32 b; std::memcpy(&b, &value, 4); fpuRegs.fpr[reg_idx].SetWord(b); }
+void EeRecTestHarness::SetFprBits(u32 reg_idx, u32 bits)   { fpuRegs.fpr[reg_idx].SetWord(bits); }
+void EeRecTestHarness::SetAcc(float value)                 { u32 b; std::memcpy(&b, &value, 4); fpuRegs.ACC.SetWord(b); }
+void EeRecTestHarness::SetAccBits(u32 bits)                { fpuRegs.ACC.SetWord(bits); }
 void EeRecTestHarness::SetFcr31(u32 value)                 { fpuRegs.fprc[31] = value; }
 
 void EeRecTestHarness::EnableCop0()      { cpuRegs.CP0.n.Status.val |= (1u << 28); /* CU0 */ }
@@ -546,10 +546,10 @@ u64 EeRecTestHarness::GetHiUpper64Jit   () const  { return jit_snapshot_.regs.HI
 u64 EeRecTestHarness::GetLoUpper64Jit   () const  { return jit_snapshot_.regs.LO.UD[1]; }
 u64 EeRecTestHarness::GetGprUpper64Interp(u32 r) const { return interp_snapshot_.regs.GPR.r[r].UD[1]; }
 u64 EeRecTestHarness::GetGprUpper64Jit   (u32 r) const { return jit_snapshot_.regs.GPR.r[r].UD[1]; }
-u32 EeRecTestHarness::GetFprBitsInterp(u32 r) const { return interp_snapshot_.fprs.fpr[r].UL; }
-u32 EeRecTestHarness::GetFprBitsJit   (u32 r) const { return jit_snapshot_.fprs.fpr[r].UL; }
-u32 EeRecTestHarness::GetAccBitsInterp() const      { return interp_snapshot_.fprs.ACC.UL; }
-u32 EeRecTestHarness::GetAccBitsJit   () const      { return jit_snapshot_.fprs.ACC.UL; }
+u32 EeRecTestHarness::GetFprBitsInterp(u32 r) const { return interp_snapshot_.fprs.fpr[r].Word(); }
+u32 EeRecTestHarness::GetFprBitsJit   (u32 r) const { return jit_snapshot_.fprs.fpr[r].Word(); }
+u32 EeRecTestHarness::GetAccBitsInterp() const      { return interp_snapshot_.fprs.ACC.Word(); }
+u32 EeRecTestHarness::GetAccBitsJit   () const      { return jit_snapshot_.fprs.ACC.Word(); }
 u32 EeRecTestHarness::GetCp0Interp(u32 r) const     { return interp_snapshot_.regs.CP0.r[r]; }
 u32 EeRecTestHarness::GetCp0Jit   (u32 r) const     { return jit_snapshot_.regs.CP0.r[r]; }
 
@@ -571,14 +571,14 @@ void EeRecTestHarness::ExpectGpr128(u32 reg_idx, u64 lo, u64 hi) const
 
 void EeRecTestHarness::ExpectFpr(u32 reg_idx, u32 bits) const
 {
-	EXPECT_EQ(interp_snapshot_.fprs.fpr[reg_idx].UL, bits) << "fpr" << reg_idx << " (interp)";
-	EXPECT_EQ(jit_snapshot_.fprs.fpr[reg_idx].UL, bits)    << "fpr" << reg_idx << " (jit)";
+	EXPECT_EQ(interp_snapshot_.fprs.fpr[reg_idx].Word(), bits) << "fpr" << reg_idx << " (interp)";
+	EXPECT_EQ(jit_snapshot_.fprs.fpr[reg_idx].Word(), bits)    << "fpr" << reg_idx << " (jit)";
 }
 
 void EeRecTestHarness::ExpectAcc(u32 bits) const
 {
-	EXPECT_EQ(interp_snapshot_.fprs.ACC.UL, bits) << "ACC (interp)";
-	EXPECT_EQ(jit_snapshot_.fprs.ACC.UL, bits)    << "ACC (jit)";
+	EXPECT_EQ(interp_snapshot_.fprs.ACC.Word(), bits) << "ACC (interp)";
+	EXPECT_EQ(jit_snapshot_.fprs.ACC.Word(), bits)    << "ACC (jit)";
 }
 
 // ---- VU0 cross-tree handoff helpers ----
