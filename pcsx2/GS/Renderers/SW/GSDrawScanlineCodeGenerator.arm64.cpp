@@ -1458,9 +1458,9 @@ void GSDrawScanlineCodeGenerator::AlphaTFX()
 
 			// GSVector4i ga = iip ? gaf : m_local.c.ga;
 
-			// gat = gat.modulate16<1>(ga).clamp8();
-			// modulate16(v6, v4, 1);
-			modulate16(v6, _temp_ga, 1);
+			// gat = gat.modulate16<1>(ga.srl16<7>().sll16<7>()).clamp8();
+			storedVertexColor(_vscratch, _temp_ga);
+			modulate16(v6, _vscratch, 1);
 			clamp16(v6, v3);
 
 			// if (!tcc) gat = gat.mix16(ga.srl16(7));
@@ -1662,9 +1662,10 @@ void GSDrawScanlineCodeGenerator::ColorTFX()
 
 			// GSVector4i rb = iip ? rbf : m_local.c.rb;
 
-			// rbt = rbt.modulate16<1>(rb).clamp8();
+			// rbt = rbt.modulate16<1>(rb.srl16<7>().sll16<7>()).clamp8();
 
-			modulate16(v5, _temp_rb, 1);
+			storedVertexColor(_vscratch, _temp_rb);
+			modulate16(v5, _vscratch, 1);
 			clamp16(v5, v1);
 
 			break;
@@ -1680,7 +1681,8 @@ void GSDrawScanlineCodeGenerator::ColorTFX()
 			// gat = gat.modulate16<1>(ga).add16(af).clamp8().mix16(gat);
 
 			armAsm->Mov(v1, v6);
-			modulate16(v6, _temp_ga, 1);
+			storedVertexColor(_vscratch, _temp_ga);
+			modulate16(v6, _vscratch, 1);
 
 			armAsm->Trn2(v2.V8H(), _temp_ga.V8H(), _temp_ga.V8H());
 			armAsm->Ushr(v2.V8H(), v2.V8H(), 7);
@@ -1694,7 +1696,8 @@ void GSDrawScanlineCodeGenerator::ColorTFX()
 
 			// rbt = rbt.modulate16<1>(rb).add16(af).clamp8();
 
-			modulate16(v5, _temp_rb, 1);
+			storedVertexColor(_vscratch, _temp_rb);
+			modulate16(v5, _vscratch, 1);
 			armAsm->Add(v5.V8H(), v5.V8H(), v2.V8H());
 
 			clamp16(v5, v0);
@@ -2433,6 +2436,16 @@ void GSDrawScanlineCodeGenerator::modulate16(const VRegister& d, const VRegister
 	{
 		armAsm->Sqdmulh(a.V8H(), d.V8H(), f.V8H());
 	}
+}
+
+// The eight-bit colour the GS stores, put back on the seven-fraction grid the
+// modulate expects. The texture function multiplies the stored byte, never the
+// wider value the DDA carries -- console-measured, and the same rule
+// GSStoredVertexColor implements in GSDrawScanline.cpp.
+void GSDrawScanlineCodeGenerator::storedVertexColor(const VRegister& d, const VRegister& c)
+{
+	armAsm->Ushr(d.V8H(), c.V8H(), 7);
+	armAsm->Shl(d.V8H(), d.V8H(), 7);
 }
 
 void GSDrawScanlineCodeGenerator::lerp16(const VRegister& a, const VRegister& b, const VRegister& f, u8 shift)

@@ -230,6 +230,25 @@ __forceinline static VectorF GSPerspectiveRecip(const VectorF& q)
 	return VectorF::cast(VectorI::cast(VectorF(1.0f) / q) & VectorI(0xfffffc00));
 }
 
+// The texture function multiplies the eight-bit vertex colour the GS STORES, not
+// the wider value its interpolator carries. Ours is fixed point with seven
+// fractional bits, and feeding all fifteen to the multiply is wrong by up to one
+// unit wherever the colour has a fraction -- which is everywhere on a gouraud
+// gradient, and invisible to a flat-shaded corpus.
+//
+// Measured on an SCPH-30001 with no model of either interpolator: the same colour
+// read back through four different multipliers brackets the value the hardware
+// holds, and that bracket excludes the product of the stored byte on 0 of 24,576
+// readings, where our own arms exclude it on about one reading in five.
+//
+// Drop the fraction for the multiply only. The DDA keeps it, or the gradient
+// stops stepping; the byte goes back on the seven-bit grid so modulate16<1> still
+// lines up.
+__forceinline static VectorI GSStoredVertexColor(const VectorI& c)
+{
+	return c.srl16<7>().sll16<7>();
+}
+
 void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, GSScanlineLocalData& local)
 {
 	const GSScanlineGlobalData& global = GlobalFromLocal(local);
@@ -1295,7 +1314,7 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				switch (sel.tfx)
 				{
 					case TFX_MODULATE:
-						ga = ga.modulate16<1>(gaf).clamp8();
+						ga = ga.modulate16<1>(GSStoredVertexColor(gaf)).clamp8();
 						if (!sel.tcc)
 							ga = ga.mix16(gaf.srl16<7>());
 						break;
@@ -1358,15 +1377,15 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				switch (sel.tfx)
 				{
 					case TFX_MODULATE:
-						rb = rb.modulate16<1>(rbf).clamp8();
+						rb = rb.modulate16<1>(GSStoredVertexColor(rbf)).clamp8();
 						break;
 					case TFX_DECAL:
 						break;
 					case TFX_HIGHLIGHT:
 					case TFX_HIGHLIGHT2:
 						af = gaf.yywwlh().srl16<7>();
-						rb = rb.modulate16<1>(rbf).add16(af).clamp8();
-						ga = ga.modulate16<1>(gaf).add16(af).clamp8().mix16(ga);
+						rb = rb.modulate16<1>(GSStoredVertexColor(rbf)).add16(af).clamp8();
+						ga = ga.modulate16<1>(GSStoredVertexColor(gaf)).add16(af).clamp8().mix16(ga);
 						break;
 					case TFX_NONE:
 						rb = sel.iip ? rbf.srl16<7>() : rbf;
