@@ -311,17 +311,23 @@ private suspend fun checkForUpdate(includeNightly: Boolean, checkFailedPrefix: S
     }
 }
 
-// Release tier markers. A release carries three APKs and these names are the only thing
-// distinguishing them, so they are a contract with build-release-targets.sh:
-//   (no marker)   legacy   — minSdk 26, armv8.1-a. The build every device can run.
-//   -v82          standard — minSdk 33, armv8.2-a+fp16+dotprod.
-//   -v82-sdk35    modern   — minSdk 35, same codegen, newest NDK.
-// MODERN is tested FIRST and its marker CONTAINS the standard one, so order matters here.
-private const val V82_ASSET_MARKER = "-v82"
-private const val MODERN_ASSET_MARKER = "-v82-sdk35"
+// Release tier markers. A release carries four APKs and their names are the only thing
+// distinguishing them, so these are a contract with build-release-targets.sh:
+//   -sdk26   legacy — armv8.1-a.               The build every device can run.
+//   -sdk30   a11    — armv8.2-a+fp16+dotprod.
+//   -sdk33   a13    — same codegen.
+//   -sdk35   a15    — same codegen, newest NDK.
+// Keyed off the minSdk suffix alone because those four strings are mutually exclusive.
+// The previous scheme keyed off "-v82" and "-v82-sdk35", where one marker was a substring
+// of the other and only a carefully ordered `when` kept Android 15 devices off the wrong
+// build — a hazard that grows with every tier added. Nothing here can overlap.
+private const val LEGACY_MARKER = "-sdk26"
+private const val A11_MARKER = "-sdk30"
+private const val A13_MARKER = "-sdk33"
+private const val A15_MARKER = "-sdk35"
 
 /**
- * Does this CPU implement the ARMv8.2 extensions the `-v82` build is compiled against?
+ * Does this CPU implement the ARMv8.2 extensions the a11/a13/a15 builds are compiled against?
  *
  * Read off `/proc/cpuinfo`'s Features line, which exposes the kernel's HWCAP names:
  * `asimdhp` = FEAT_FP16, `asimddp` = FEAT_DotProd. Both are OPTIONAL at ARMv8.2 — a core can
@@ -346,26 +352,31 @@ private fun supportsV82Build(): Boolean = runCatching {
 /**
  * Download URL of the `.apk` asset this device should install, or null if the release has none.
  *
- * A release now carries more than one APK — a baseline build and a `-v82` build — so taking
- * the first asset GitHub happened to list would hand out an arbitrary one. Prefer the v8.2
- * asset only when the CPU actually implements what it was compiled against; otherwise take a
- * non-v82 asset. If the only APK present is the v8.2 one and this CPU cannot run it, offer
- * nothing rather than an update that bricks the install.
+ * A release carries four APKs — one baseline and three ARMv8.2 tiers — so taking the first
+ * asset GitHub happened to list would hand out an arbitrary one. Prefer the highest tier this
+ * device satisfies on BOTH gates, and fall back down the list from there. If the only APKs
+ * present are ones this device cannot run, offer nothing rather than an update that bricks
+ * the install.
+ *
+ * An APK whose name carries no recognised marker counts as legacy. That is what makes older
+ * releases — published before tiering, as a single `ARMSX2-<version>.apk` — still resolve.
  */
 private fun apkAssetForThisDevice(release: JSONObject): String? {
     val assets = release.optJSONArray("assets") ?: return null
     var legacy: String? = null
-    var standard: String? = null
-    var modern: String? = null
+    var a11: String? = null
+    var a13: String? = null
+    var a15: String? = null
     for (i in 0 until assets.length()) {
         val a = assets.getJSONObject(i)
         val name = a.getString("name")
         if (!name.endsWith(".apk", ignoreCase = true)) continue
         val url = a.getString("browser_download_url")
         when {
-            // Most specific first: "-v82-sdk35" also contains "-v82".
-            name.contains(MODERN_ASSET_MARKER, ignoreCase = true) -> if (modern == null) modern = url
-            name.contains(V82_ASSET_MARKER, ignoreCase = true) -> if (standard == null) standard = url
+            name.contains(A15_MARKER, ignoreCase = true) -> if (a15 == null) a15 = url
+            name.contains(A13_MARKER, ignoreCase = true) -> if (a13 == null) a13 = url
+            name.contains(A11_MARKER, ignoreCase = true) -> if (a11 == null) a11 = url
+            // -sdk26 and "no marker at all" are the same tier; see the KDoc above.
             else -> if (legacy == null) legacy = url
         }
     }
@@ -378,8 +389,9 @@ private fun apkAssetForThisDevice(release: JSONObject): String? {
     val cpuOk = supportsV82Build()
     val sdk = Build.VERSION.SDK_INT
     return when {
-        cpuOk && sdk >= 35 -> modern ?: standard ?: legacy
-        cpuOk && sdk >= 33 -> standard ?: legacy
+        cpuOk && sdk >= 35 -> a15 ?: a13 ?: a11 ?: legacy
+        cpuOk && sdk >= 33 -> a13 ?: a11 ?: legacy
+        cpuOk && sdk >= 30 -> a11 ?: legacy
         else -> legacy
     }
 }
