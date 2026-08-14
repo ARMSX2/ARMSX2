@@ -308,6 +308,7 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	// wrap realization lands (M4c). PABE draws keep flooring too (zero corpus
 	// draws; the trace-range skips arrive with the general PABE work).
 	bool blend_active = in.abe;
+	bool blend_pass = false; ///< rung 3 admitted — the passes carry the realization
 	if (in.abe && in.colclamp && !in.pabe)
 	{
 		int c_value = -1; // the C factor's value when provable, else -1
@@ -682,7 +683,48 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		// clamp is console-measured, gs-shade), so plain COLCLAMP=0 stays native.
 		if (!in.colclamp)
 			return floored(GSTileFloorReason::ColClip);
-		return floored(GSTileFloorReason::Blend);
+		// PABE floors before any rung opens: its per-pixel gate rides inside the
+		// blend equation and no fixed-function realization carries it (zero corpus
+		// draws; the trace-range skips arrive with the general PABE work).
+		if (in.pabe)
+			return floored(GSTileFloorReason::Blend);
+
+		// Rung 3 — the provably EXACT fixed-function rows (M4b). Write the console
+		// equation Cv = (((A−B)·C)>>7)+D as Cv = Cs·s + Cd·d: s = C·([A=0]−[B=0])
+		// + [D=0], d = C·([A=1]−[B=1]) + [D=1]. A row is fixed-function iff both
+		// coefficients lie in {0, ±C, 1−C, 1} with one blend op carrying the signs
+		// — which fails exactly where D==A stacks the +1 onto the operand already
+		// carrying +C (coefficient C+1: the accumulation rungs' territory), plus
+		// the one Cd·C row whose donor encoding is a shader trick rather than a
+		// plain factor pair (A=1,B=2,D=2 — rung 5's Cd·Alpha shortcut).
+		//
+		// ⚠️ Fixed-function admits only a C the ROP cannot ROUND: the GS TRUNCATES
+		// the blend product where the ROP rounds to nearest, a +1/2-level mean
+		// bias per blend that single-blend instruments cannot see — the gs-blend
+		// grid scored the naked encoding 99.64% worst-1, and the corpus then
+		// measured the same encoding compounding under MGS3/SotC's deep alpha
+		// overdraw into 24–36% of a frame beyond two levels, visible banding.
+		// Classic never ships that shape either: its realization for the
+		// fractional-C rows is blend-mix with the ∓124/256 round-to-floor offsets,
+		// and those rows wait here for that rung. What remains exact: A==B (the
+		// difference is zero whatever C — the zero/zero factor pair); a C provably
+		// 128, where every factor is exactly one or zero and the sum of integers
+		// clamps identically on both sides (As via the trace's degenerate range,
+		// FIX by value — the census: 61.9% of FIX draws sit exactly at 128); and
+		// the always-zero results (A=2, D=2), which clamp to black in both
+		// arithmetics regardless of C. Ad stays out: DST_ALPHA is 0..255 where
+		// the GS divides by 128 (the §7 scale mismatch).
+		const u8 ba = in.ALPHA.A, bb = in.ALPHA.B, bc = in.ALPHA.C, bd = in.ALPHA.D;
+		const bool c_128 = (bc == 2 && in.ALPHA.FIX == 128) ||
+		                   (bc == 0 && in.alpha_min == 128 && in.alpha_max == 128);
+		const bool zero_result = (ba == 2 && bd == 2 && bc != 1);
+		const bool c_ok = (ba == bb) || c_128 || zero_result;
+		const bool row_ok = (bd != ba || ba == 2 || ba == bb) && !(ba == 1 && bb == 2 && bd == 2);
+		if (!c_ok || !row_ok)
+			return floored(GSTileFloorReason::Blend);
+		// Admission only — the fields land on the passes at the end of the
+		// function, after the single-pass fill that would otherwise reset them.
+		blend_pass = true;
 	}
 	if (in.aa1 && in.prim_class == GS_TRIANGLE_CLASS)
 		return floored(GSTileFloorReason::CoverageAA1);
@@ -742,6 +784,23 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	{
 		p.pass_count = 1;
 		p.pass[0] = {p.colormask, p.z_write, ATST_ALWAYS, 0};
+	}
+
+	// The admitted blend realization, on every pass — after the fills above so a
+	// single-pass rebuild cannot reset it. The selectors are the register's own
+	// (rung 1 either eliminated the blend entirely or left them untouched), and a
+	// pass that writes no colour carries them inertly.
+	if (blend_pass)
+	{
+		for (u32 i = 0; i < p.pass_count; i++)
+		{
+			p.pass[i].abe = true;
+			p.pass[i].blend_a = static_cast<u8>(in.ALPHA.A);
+			p.pass[i].blend_b = static_cast<u8>(in.ALPHA.B);
+			p.pass[i].blend_c = static_cast<u8>(in.ALPHA.C);
+			p.pass[i].blend_d = static_cast<u8>(in.ALPHA.D);
+			p.pass[i].afix = static_cast<u8>(in.ALPHA.FIX);
+		}
 	}
 
 	p.native = true;

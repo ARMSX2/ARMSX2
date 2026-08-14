@@ -723,6 +723,18 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		return false;
 	}
 
+	// A rung-3 blend whose C is As rides the second fragment output — the device's
+	// dual-source unit is the realization, and without it the read-free encoding
+	// does not exist yet (the Mali r44p1 class). Floor rather than approximate; the
+	// lowering cannot see device features, so the gate lives here with the other
+	// feature-shaped envelopes.
+	if (plan.pass[0].abe && plan.pass[0].blend_c == 0 &&
+		plan.pass[0].blend_a != plan.pass[0].blend_b && !g_gs_device->Features().dual_source_blend)
+	{
+		reason = GSTileFloorReason::Blend;
+		return false;
+	}
+
 	// Depth transcription: a triangle draw with a live Z gradient must store and
 	// compare the SW scanline's WALK, not the GPU interpolator's plane — gs-zgrad
 	// measured the difference on 40 of its 47 cases (a +1 rung everywhere the plane
@@ -1235,6 +1247,27 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	conf.colormask = GSHWDrawConfig::ColorMaskSelector(plan.pass[0].colormask);
 	if (!rt)
 		conf.ps.DisableColorOutput();
+
+	// The blend realization (M4b rung 3): the lowering admitted these selectors as
+	// pure fixed-function, and the donor's static map supplies the op/factor
+	// encoding. C=As rides the second fragment output — the shader's existing
+	// alpha_blend, which is the texture function's alpha BEFORE the FBA
+	// correction, exactly the operand the console blends with (gs-alpha2) — and
+	// C=FIX rides the blend constant, which the backend scales by 128. Alpha is
+	// never blended on the GS, so the alpha channel passes the source through.
+	// This runs before the second pass copies conf.ps, so a split draw's passes
+	// agree about the second colour output.
+	if (rt && plan.pass[0].abe)
+	{
+		const GSTileDrawPass& bp = plan.pass[0];
+		const u32 blend_index =
+			((static_cast<u32>(bp.blend_a) * 3 + bp.blend_b) * 3 + bp.blend_c) * 3 + bp.blend_d;
+		const HWBlend blend = GSDevice::GetBlend(blend_index);
+		conf.blend = {true, blend.src, blend.dst, blend.op,
+			GSDevice::CONST_ONE, GSDevice::CONST_ZERO, bp.blend_c == 2, bp.afix};
+		conf.ps.no_color1 = !GSDevice::IsDualSourceBlendFactor(blend.src) &&
+		                    !GSDevice::IsDualSourceBlendFactor(blend.dst);
+	}
 
 	if (tex)
 	{

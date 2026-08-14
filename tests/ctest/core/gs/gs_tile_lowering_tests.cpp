@@ -806,12 +806,11 @@ TEST(GSTileLowering, ColClipOutranksBlendAndRequiresBlending)
 	EXPECT_EQ(p.reason, GSTileFloorReason::None);
 }
 
-// M4 contract rewrite #1: the pass carries its blend realization. Until M4b's
-// lattice populates it, every blended draw floors before a plan reaches the route,
-// so on every native plan the blend fields must be inert — a pass that claims to
-// blend, wrap or read without the machinery behind it would corrupt the memo key
-// and the route's read gating silently. Both passes of a split are pinned.
-TEST(GSTileLowering, BlendFieldsAreInertUntilTheLatticePopulatesThem)
+// M4 contract rewrite #1: the pass carries its blend realization. On a native
+// plan whose draw does not blend, every blend field must be inert — a pass that
+// claims to blend, wrap or read without the machinery behind it would corrupt the
+// memo key and the route's read gating silently. Both passes of a split are pinned.
+TEST(GSTileLowering, BlendFieldsAreInertOnUnblendedPlans)
 {
 	GSTileDrawInput in = BaseInput();
 	in.TEST.ATE = 1;
@@ -884,10 +883,15 @@ TEST(GSTileLowering, BlendCollapsesThatEliminateTheBlend)
 	p = gsTileLowerDraw(in);
 	EXPECT_TRUE(p.native);
 	EXPECT_EQ(p.colormask, 0xF);
+	EXPECT_FALSE(p.pass[0].abe); // eliminated, not realized
 
-	// ...and D=zero writes black, which no collapse can realize — floors.
+	// ...and D=zero writes black, which no collapse can realize — rung 3 emits it
+	// as the zero/zero factor pair instead (the difference is zero whatever C, so
+	// the carrier bound does not apply and the wide alpha range is irrelevant).
 	in.ALPHA.D = 2;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	p = gsTileLowerDraw(in);
+	EXPECT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].abe);
 
 	// C=FIX 0 collapses to D even with A != B.
 	in = BaseInput();
@@ -904,10 +908,129 @@ TEST(GSTileLowering, BlendCollapsesThatEliminateTheBlend)
 	in.ALPHA.B = 1;
 	in.ALPHA.D = 1;
 	EXPECT_TRUE(gsTileLowerDraw(in).native);
+	EXPECT_FALSE(gsTileLowerDraw(in).pass[0].abe); // eliminated, not realized
 
-	// FIX between the identities does not collapse.
+	// FIX between the identities does not collapse, and a fractional factor is
+	// not exact under the ROP's round-to-nearest — it waits for the mix rung's
+	// round-to-floor offsets.
 	in.ALPHA.FIX = 64;
 	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+}
+
+// M4b rung 3: the provably EXACT fixed-function rows. Written as Cv = Cs·s + Cd·d,
+// a row is fixed-function iff both coefficients lie in {0, ±C, 1−C, 1} — and it is
+// admitted only when the ROP has nothing to round: the GS truncates the blend
+// product where fixed-function rounds to nearest, a half-level mean bias per blend
+// that the corpus measured compounding under deep alpha overdraw into visible
+// banding (MGS3 35.8% of a frame beyond two levels; SotC 23.6% with a clustered
+// blob) while the single-blend gs-blend grid sat at 99.64% worst-1. Exactness
+// means: C provably 128 (every factor exactly one or zero), A==B (difference
+// zero), or a result provably zero. Fractional C waits for the mix rung's
+// round-to-floor offsets — the donor's own realization for those rows.
+TEST(GSTileLowering, RungThreeExactFixedFunctionRows)
+{
+	// The additive glow at full strength: Cs·As + Cd with the trace proving
+	// As == 128 everywhere — every factor exactly one, the clamped integer sum on
+	// both sides. Native, carried on the pass, and read-free.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 128;
+	in.alpha_max = 128;
+	in.ALPHA.B = 2; // (Cs−0)·As + Cd
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].abe);
+	EXPECT_FALSE(p.pass[0].rt_read);
+	EXPECT_FALSE(p.pass[0].colclip_wrap);
+	EXPECT_EQ(p.pass[0].blend_a, 0);
+	EXPECT_EQ(p.pass[0].blend_b, 2);
+	EXPECT_EQ(p.pass[0].blend_c, 0);
+	EXPECT_EQ(p.pass[0].blend_d, 1);
+
+	// The same row through FIX at exactly 128 — the census's 61.9% class.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.B = 2;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 128;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].abe);
+	EXPECT_EQ(p.pass[0].blend_c, 2);
+	EXPECT_EQ(p.pass[0].afix, 128);
+
+	// A fractional factor is the biased class — floors until the mix rung, from
+	// either carrier.
+	in.ALPHA.FIX = 100;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	in.ALPHA.C = 0;
+	in.alpha_min = 0;
+	in.alpha_max = 128;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// The alpha lerp with As constant 128 collapses to Cs before rung 3 ever sees
+	// it (rung 1, C==128 with B==D) — the realization stays eliminated.
+	in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 128;
+	in.alpha_max = 128;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_FALSE(p.pass[0].abe);
+
+	// Ad has no exact carrier: DST_ALPHA is 0..255 where the GS divides by 128.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.B = 2;
+	in.ALPHA.C = 1;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// D==A at C==128 is Cs·2 — a coefficient past one, accumulation territory.
+	in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 128;
+	in.alpha_max = 128;
+	in.ALPHA.B = 2;
+	in.ALPHA.D = 0;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// The always-zero results clamp to black in both arithmetics whatever C does:
+	// (0−Cs)·As + 0, alpha range fully variable.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.A = 2;
+	in.ALPHA.B = 0;
+	in.ALPHA.D = 2;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].abe);
+
+	// A split draw carries the realization on both passes — the channel split's
+	// second pass writes colour too, and the two must agree. The blend rides the
+	// FIX carrier so the alpha range can stay wide enough to keep the test
+	// genuinely dynamic (a constant alpha would prove the test's outcome and
+	// dissolve the split).
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.B = 2;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 128;
+	in.TEST.ATE = 1;
+	in.TEST.ATST = ATST_GEQUAL;
+	in.TEST.AREF = 64;
+	in.TEST.AFAIL = AFAIL_RGB_ONLY;
+	in.prim_overlap_none = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	ASSERT_EQ(p.pass_count, 2);
+	for (u32 i = 0; i < p.pass_count; i++)
+	{
+		EXPECT_TRUE(p.pass[i].abe) << "pass " << i;
+		EXPECT_EQ(p.pass[i].blend_a, 0) << "pass " << i;
+		EXPECT_EQ(p.pass[i].blend_b, 2) << "pass " << i;
+		EXPECT_EQ(p.pass[i].blend_d, 1) << "pass " << i;
+		EXPECT_FALSE(p.pass[i].rt_read) << "pass " << i;
+	}
 }
 
 // The M4a guardrails outrank every collapse: a wrap draw floors ColClip and a
