@@ -233,6 +233,92 @@ __fi static void armEmitPackSignZeroBits(const vixl::aarch64::Register& dst,
 	armAsm->Fmov(dst, vixl::aarch64::VRegister(vZero.GetCode(), 32));
 }
 
+// The EE FPR word <-> stored double relocation of EeFpuFormat.h, emitted.
+//
+// Sign-extending the word puts its sign bit at 63 but also fills 62..60; this
+// clears those three. 61 contiguous ones under rotation, so a logical immediate.
+static constexpr u64 kEeFprWidenMask = 0x8FFFFFFFFFFFFFFFULL;
+
+// dst = widen(word). `tmp` is an X scratch and may be `word`'s X form. Only
+// the low 32 bits of `word` are read.
+__fi static void armEmitEeFprWiden(const vixl::aarch64::VRegister& dst,
+	const vixl::aarch64::Register& word, const vixl::aarch64::Register& tmp)
+{
+	armAsm->Sbfiz(tmp.X(), word.X(), 29, 32);
+	armAsm->And(tmp.X(), tmp.X(), static_cast<int64_t>(kEeFprWidenMask));
+	armAsm->Fmov(dst.D(), tmp.X());
+}
+
+// dst = widen(*src). Ldrsw does the sign extension the widen needs anyway.
+__fi static void armEmitEeFprWidenFromMem(const vixl::aarch64::VRegister& dst,
+	const vixl::aarch64::MemOperand& src, const vixl::aarch64::Register& tmp)
+{
+	armAsm->Ldrsw(tmp.X(), src);
+	armAsm->Lsl(tmp.X(), tmp.X(), 29);
+	armAsm->And(tmp.X(), tmp.X(), static_cast<int64_t>(kEeFprWidenMask));
+	armAsm->Fmov(dst.D(), tmp.X());
+}
+
+// dst = narrow(src), zero-extended: dst.W() is the word and dst.X() is that
+// word with the top half clear. `tmp` is an X scratch and must not be `dst`.
+__fi static void armEmitEeFprNarrow(const vixl::aarch64::Register& dst,
+	const vixl::aarch64::VRegister& src, const vixl::aarch64::Register& tmp)
+{
+	armAsm->Fmov(tmp.X(), src.D());
+	armAsm->Lsr(dst.X(), tmp.X(), 32);
+	armAsm->Bfxil(dst.X(), tmp.X(), 29, 31);
+}
+
+// *dst = narrow(src). `word` receives the narrowed word; neither scratch may
+// be the other.
+__fi static void armEmitEeFprNarrowToMem(const vixl::aarch64::MemOperand& dst,
+	const vixl::aarch64::VRegister& src, const vixl::aarch64::Register& word,
+	const vixl::aarch64::Register& tmp)
+{
+	armEmitEeFprNarrow(word, src, tmp);
+	armAsm->Str(word.W(), dst);
+}
+
+// The same relocation against an fpuRegs slot: memory holds the stored double
+// and a register holds the architectural word.
+
+// dst = the word in *slot, zero-extended. `tmp` is an X scratch, not `dst`.
+__fi static void armEmitEeFprLoadSlotWord(const vixl::aarch64::Register& dst,
+	const vixl::aarch64::MemOperand& slot, const vixl::aarch64::Register& tmp)
+{
+	armAsm->Ldr(tmp.X(), slot);
+	armAsm->Lsr(dst.X(), tmp.X(), 32);
+	armAsm->Bfxil(dst.X(), tmp.X(), 29, 31);
+}
+
+// *slot = `word`. `tmp` is an X scratch and may be `word`'s X form.
+__fi static void armEmitEeFprStoreSlotWord(const vixl::aarch64::MemOperand& slot,
+	const vixl::aarch64::Register& word, const vixl::aarch64::Register& tmp)
+{
+	armAsm->Sbfiz(tmp.X(), word.X(), 29, 32);
+	armAsm->And(tmp.X(), tmp.X(), static_cast<int64_t>(kEeFprWidenMask));
+	armAsm->Str(tmp.X(), slot);
+}
+
+// Bridges for emitters working from the architectural word in an S register
+// while the slot they read and write holds the stored double: the mode-3 bodies
+// (iFPUd-arm64.cpp), the fast path's SQRT, and LWC1's fastmem load. Both
+// scratches are clobbered and the narrow's two must differ.
+__fi static void armEmitEeFprToS(const vixl::aarch64::VRegister& dst,
+	const vixl::aarch64::VRegister& slot, const vixl::aarch64::Register& word,
+	const vixl::aarch64::Register& tmp)
+{
+	armEmitEeFprNarrow(word, slot, tmp);
+	armAsm->Fmov(dst.S(), word.W());
+}
+
+__fi static void armEmitEeFprFromS(const vixl::aarch64::VRegister& slot,
+	const vixl::aarch64::VRegister& src, const vixl::aarch64::Register& tmp)
+{
+	armAsm->Fmov(tmp.W(), src.S());
+	armEmitEeFprWiden(slot, tmp, tmp);
+}
+
 // may clobber RSCRATCH/RSCRATCH2. they shouldn't be inputs.
 void armEmitVTBL(const vixl::aarch64::VRegister& dst, const vixl::aarch64::VRegister& src1,
 	const vixl::aarch64::VRegister& src2, const vixl::aarch64::VRegister& tbl);
