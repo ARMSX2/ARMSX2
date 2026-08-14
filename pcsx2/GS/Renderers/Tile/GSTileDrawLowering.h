@@ -532,27 +532,51 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	//      geometric, not arithmetic.
 	//
 	//   3. A native/floor HANDOFF defect, which is what actually explains the corpus.
-	//      Dirge lifted: 27.35% of pixels differ, 22.78% by more than two levels, and
-	//      91.3% of those live in horizontal runs of eight pixels or more (median error
-	//      25 levels, whole 597-pixel rows). A boundary flip scatters as salt and
-	//      pepper and only 0.4% of these pixels are isolated, so the damage is
-	//      draw-level, not sampling. Flooring the mip STQ triangles alone takes it from
-	//      22.78% to 6.46% across FIFTY-TWO draws of 1,943 natives — and since their
+	//      Dirge lifted, before the plane: 27.35% of pixels differ, 22.79% by more than
+	//      two levels, and 91.3% of those live in horizontal runs of eight pixels or
+	//      more (median error 25 levels, whole 597-pixel rows). A boundary flip
+	//      scatters as salt and pepper and only 0.4% of these pixels are isolated, so
+	//      the damage is draw-level, not sampling. Flooring the mip STQ triangles alone
+	//      takes it to 6.45%, across FIFTY-TWO draws of 1,943 natives — and since their
 	//      sampling is exact, what those draws do differently is claim PAGES: a mip
 	//      draw sources a whole level chain. Two sites walk those levels and must
 	//      agree — the readback path over levels 1..MXL off the MIPTBP registers, and
-	//      the source claim over 0..MXL through the layer accessor. The 6.46% remainder
-	//      is 1,883 palettised gouraud character triangles of 1x1 to 3x3 recorded area,
+	//      the source claim over 0..MXL through the layer accessor. The remainder is
+	//      1,883 palettised gouraud character triangles of 1x1 to 3x3 recorded area,
 	//      plus full-width rows they are far too small to have drawn, which is the same
 	//      signature. ⚠️ No capture can see this class: probe textures are uploaded once
 	//      and never aliased against a render target, which is what a real game does
 	//      constantly.
 	//
+	//      ⚠️ Dirge is the one dump the coordinate plane made WORSE, and the 2x2 that
+	//      owns it says the plane is not the cause. Percent of pixels differing by more
+	//      than two levels, worst frame (all four agree within 0.02, so the readings are
+	//      stable), this floor scratch-lifted throughout:
+	//
+	//                          mip STQ native   mip STQ floored   difference
+	//          plane off           22.79             6.45           16.34
+	//          plane on            34.15             7.60           26.55
+	//
+	//      The plane costs 11.36 points, and 10.21 of them — ninety percent — are
+	//      inside those same 52 draws, which are 2.7% of the natives. Everything else
+	//      moves 1.15. So the plane does not introduce a defect here; it makes the
+	//      page-claim defect above manifest harder, on exactly the draws that already
+	//      had it. Reason 2's other five dumps improve by factors of three to thirty
+	//      under the same lever, and shipped Dirge (this floor in place) is
+	//      byte-identical, so nothing here is live today.
+	//
+	//      The obvious mechanism is REFUTED and should not be re-proposed: a mip level
+	//      is a step function of Q and the plane changes Q, so level selection looks
+	//      like the amplifier. Keeping the level on the interpolated Q while the
+	//      coordinate stays on the plane moves 34.15 to 33.65 — half a point of the
+	//      11.36. The amplification travels through the coordinate reaching different
+	//      texels of an already-wrong page, not through which level it picks.
+	//
 	// Lifting this floor re-sorts the census to BLEND: on GT4, 48.1% native becomes
 	// 81.7% with the entire remaining floor blending at 17.9%, and frame format, the
 	// z-walk envelope and prim class at a tenth of a percent each. Palette and TEXA
 	// expansion are applied CPU-side by the source builder, so every rtx-served format
-	// qualifies. Corpus cost of lifting as it stands: 13/16 to 8/16.
+	// qualifies. Corpus cost of lifting as it stands: 13/16 to 9/16.
 	//
 	// TexturePerspective outranks TextureMip: a mip STQ triangle waits on the same
 	// depth parity as every other STQ triangle, and ordering it the other way would
