@@ -149,18 +149,35 @@ union GPR_reg64 {
 	s8  SC[8];
 };
 
+/*	One EE FPR. The architectural register is 32 bits and is the slot's low
+	half; a write through f/UL/SL leaves the upper half alone.
+*/
 union FPRreg {
+	double d;
+	u64 UD;
+
 	float f;
 	u32 UL;
 	s32 SL;				// signed 32bit used for sign extension in interpreters.
 };
 
 struct fpuRegisters {
-	FPRreg fpr[32];		// 32bit floating point registers
+	FPRreg fpr[32];		// 32 floating point registers
 	u32 fprc[32];		// 32bit floating point control registers
-	FPRreg ACC;			// 32 bit accumulator
+	FPRreg ACC;			// accumulator
 	u32 ACCflag;        // an internal accumulator overflow flag
 };
+
+/*	The FPU block as savestates carry it. The format is shared with upstream
+	and does not move.
+*/
+struct fpuRegistersWire {
+	u32 fpr[32];
+	u32 fprc[32];
+	u32 ACC;
+	u32 ACCflag;
+};
+static_assert(sizeof(fpuRegistersWire) == 264, "the savestate FPU block is 264 bytes");
 
 union PageMask_t
 {
@@ -315,6 +332,29 @@ extern cachedTlbs_t cachedTlbs;
 
 static cpuRegisters& cpuRegs = _cpuRegistersPack.cpuRegs;
 static fpuRegisters& fpuRegs = _cpuRegistersPack.fpuRegs;
+
+static __fi void fpuRegsToWire(fpuRegistersWire& wire)
+{
+	for (int i = 0; i < 32; i++)
+	{
+		wire.fpr[i] = fpuRegs.fpr[i].UL;
+		wire.fprc[i] = fpuRegs.fprc[i];
+	}
+	wire.ACC = fpuRegs.ACC.UL;
+	wire.ACCflag = fpuRegs.ACCflag;
+}
+
+static __fi void fpuRegsFromWire(const fpuRegistersWire& wire)
+{
+	for (int i = 0; i < 32; i++)
+	{
+		// Whole slot, so no upper half survives from the previous state.
+		fpuRegs.fpr[i].UD = wire.fpr[i];
+		fpuRegs.fprc[i] = wire.fprc[i];
+	}
+	fpuRegs.ACC.UD = wire.ACC;
+	fpuRegs.ACCflag = wire.ACCflag;
+}
 
 extern bool eeEventTestIsActive;
 

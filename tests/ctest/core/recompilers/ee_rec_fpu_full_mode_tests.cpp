@@ -1137,8 +1137,8 @@ TEST(EeRecFpuFull, MulDefectNeverDecrementsAZeroProduct)
 
 
 // ---------------------------------------------------------------------------
-// The one thing this emitter knowingly does not model, held on its own so that
-// closing it trips a test that says why.
+// The boundary term, the one line of this emitter the two clamp modes do not
+// share.
 //
 // The measured predicate has two terms: the Booth term `mant & 0x2AA` (bits
 // 1,3,5,7,9 -- the sign bits of the five lowest radix-4 Booth digits) and a
