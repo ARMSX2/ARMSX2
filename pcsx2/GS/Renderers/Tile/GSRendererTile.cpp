@@ -262,18 +262,27 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 	in.FRAME = m_context->FRAME;
 	in.ZBUF = m_context->ZBUF;
 	in.scanmsk = static_cast<u8>(m_draw_env->SCANMSK.MSK);
-	if (!PRIM->TME)
+	// The post-texture-function alpha classification, textured draws included:
+	// CalcAlphaMinMax folds TFX, TEXA and the CLUT into the trace range — the same
+	// shared machinery Classic's alpha_c0 vector rides. Both consumers want exactly
+	// this alpha: the alpha test reads the texture function's output, and so do the
+	// blend's As factor and PABE (pre-FBA, console-measured, gs-alpha2). The
+	// coverage-alpha 128-fudge inside it never fires here — the SW-derived override
+	// reports coverage alpha supported.
 	{
-		// Exact for untextured draws: the vertex trace's alpha range. The lowering
-		// only consults it after the textured gate, so the textured default is moot.
+		// ⚠️ The palettised leg scans the CLUT's DECODED read buffer, which is only
+		// current after Read32 — Classic refreshes it at this exact point for the
+		// same reason ("required to compute TryAlphaTest"). Without this, the scan
+		// reads the PREVIOUS palettised draw's palette and the classification is
+		// unsound: first light was provable-alpha-test verdicts firing off the wrong
+		// palette, 6.5% of a Katamari frame at max 224. Cheap when clean — Read32
+		// early-outs on an unchanged palette, and the floor's own later call
+		// becomes a no-op.
+		if (PRIM->TME && GSLocalMemory::m_psm[m_context->TEX0.PSM].pal > 0)
+			m_mem.m_clut.Read32(m_context->TEX0, m_draw_env->TEXA);
 		const GSVertexTrace::VertexAlpha& alpha = GetAlphaMinMax();
 		in.alpha_min = static_cast<u8>(std::clamp(alpha.min, 0, 255));
 		in.alpha_max = static_cast<u8>(std::clamp(alpha.max, 0, 255));
-	}
-	else
-	{
-		in.alpha_min = 0;
-		in.alpha_max = 255;
 	}
 	// What the alpha-test pass split needs to know about fragment ordering. Both are
 	// only consulted when the split would otherwise reorder depth writes, and
