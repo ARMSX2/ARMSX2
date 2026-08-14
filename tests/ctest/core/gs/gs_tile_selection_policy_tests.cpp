@@ -113,3 +113,36 @@ TEST(GSTileSelectionPolicy, ReasonAgreesWithDecisionEverywhere)
 		}
 	}
 }
+
+// M4a: the blend-accuracy setting has exactly two non-consumers — the SW renderer,
+// and the Tile variant where it actually runs (Vulkan). Everything that nags, clamps
+// or cycles AccurateBlendingUnit gates on this predicate, so these pins are the
+// whole user-visible contract: an explicit Tile choice off Vulkan runs Classic and
+// keeps the setting live, and Auto keeps it live until the GameDB promotion input
+// exists (M8 revisits the Auto arm alongside that wiring).
+TEST(GSTileSelectionPolicy, BlendAccuracyConsultedOnlyWhereSomethingReadsIt)
+{
+	// The dead pairs.
+	EXPECT_FALSE(GSAccurateBlendingUnitConsulted(GSRendererType::SW, GSHWRendererVariant::Auto));
+	EXPECT_FALSE(GSAccurateBlendingUnitConsulted(GSRendererType::SW, GSHWRendererVariant::Classic));
+	EXPECT_FALSE(GSAccurateBlendingUnitConsulted(GSRendererType::SW, GSHWRendererVariant::Tile));
+	EXPECT_FALSE(GSAccurateBlendingUnitConsulted(GSRendererType::Null, GSHWRendererVariant::Auto));
+	EXPECT_FALSE(GSAccurateBlendingUnitConsulted(GSRendererType::VK, GSHWRendererVariant::Tile));
+
+	// Classic runs and reads it: every other renderer/variant pairing.
+	EXPECT_TRUE(GSAccurateBlendingUnitConsulted(GSRendererType::VK, GSHWRendererVariant::Auto));
+	EXPECT_TRUE(GSAccurateBlendingUnitConsulted(GSRendererType::VK, GSHWRendererVariant::Classic));
+	EXPECT_TRUE(GSAccurateBlendingUnitConsulted(GSRendererType::OGL, GSHWRendererVariant::Tile));
+	EXPECT_TRUE(GSAccurateBlendingUnitConsulted(GSRendererType::Metal, GSHWRendererVariant::Tile));
+	EXPECT_TRUE(GSAccurateBlendingUnitConsulted(GSRendererType::DX12, GSHWRendererVariant::Tile));
+
+	// The Tile-off-Vulkan pairing must agree with the selection decision itself:
+	// wherever the variant decision runs Classic, the setting is consulted.
+	for (const bool tiler : {false, true})
+	{
+		const GSTileSelectionDecision d =
+			DecideHWRendererVariant(GSHWRendererVariant::Tile, /*is_vulkan=*/false, false, tiler);
+		EXPECT_FALSE(d.use_tile);
+		EXPECT_TRUE(GSAccurateBlendingUnitConsulted(GSRendererType::OGL, GSHWRendererVariant::Tile));
+	}
+}

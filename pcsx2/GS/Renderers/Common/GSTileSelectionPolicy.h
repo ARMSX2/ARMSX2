@@ -80,6 +80,31 @@ constexpr const char* GSHWRendererVariantName(GSHWRendererVariant variant)
 	return "unknown";
 }
 
+/// Whether the effective configuration consults Classic's blend-accuracy setting
+/// (AccurateBlendingUnit) at all. The SW renderer never reads it, and the Tile
+/// variant reads it nowhere BY CHARTER (M4): one shipped blending behavior, decided
+/// per-draw by the lowering, with accuracy a CI-gated property of the implementation
+/// rather than a runtime mode. Everything that nags, clamps or cycles the setting
+/// gates on this so the whole interaction is inert when the setting has no consumer:
+/// the GameDB recommendation OSD, the min/max clamps, the unsafe-settings line, and
+/// the cycle hotkey.
+///
+/// `renderer` must be the RESOLVED renderer (Auto put through
+/// GSUtil::GetPreferredRenderer()), because the Tile arm requires Vulkan by the
+/// selection rule above — an explicit Tile choice on a non-Vulkan device runs
+/// Classic, and the setting matters again. Auto variant keeps the setting live: it
+/// resolves Classic until the GameDB promotion input exists (M8), and this predicate
+/// must be revisited alongside that wiring (a promoted title on Auto will run Tile
+/// with the setting dead, and this function is where that decision lives).
+constexpr bool GSAccurateBlendingUnitConsulted(GSRendererType renderer, GSHWRendererVariant variant)
+{
+	if (renderer == GSRendererType::SW || renderer == GSRendererType::Null)
+		return false;
+	if (variant == GSHWRendererVariant::Tile && renderer == GSRendererType::VK)
+		return false;
+	return true;
+}
+
 constexpr const char* GSTileSelectionReasonName(GSTileSelectionReason reason)
 {
 	switch (reason)

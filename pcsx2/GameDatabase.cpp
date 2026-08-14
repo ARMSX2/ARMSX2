@@ -3,6 +3,8 @@
 
 #include "GameDatabase.h"
 #include "GS/GS.h"
+#include "GS/GSUtil.h"
+#include "GS/Renderers/Common/GSTileSelectionPolicy.h"
 #include "Host.h"
 #include "IconsFontAwesome.h"
 #include "vtlb.h"
@@ -810,6 +812,16 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 	// Only apply GS HW fixes if the user hasn't manually enabled HW fixes.
 	const bool apply_auto_fixes = !config.ManualUserHacks;
 	const bool is_sw_renderer = EmuConfig.GS.Renderer == GSRendererType::SW;
+	// The blend-accuracy setting only drives Classic's blend unit — the Tile variant
+	// reads it nowhere by charter, so its GameDB recommendation OSD and min/max clamps
+	// are inert when Tile will run (and under SW, which never read it either). The
+	// predicate needs the resolved renderer: an explicit Tile choice off Vulkan runs
+	// Classic and the setting matters again.
+	const GSRendererType resolved_renderer = (EmuConfig.GS.Renderer == GSRendererType::Auto) ?
+												 GSUtil::GetPreferredRenderer() :
+												 EmuConfig.GS.Renderer;
+	const bool blend_setting_consulted =
+		GSAccurateBlendingUnitConsulted(resolved_renderer, config.HWRendererVariant);
 	if (!apply_auto_fixes)
 		Console.Warning("GameDB: Manual GS hardware renderer fixes are enabled, not using automatic hardware renderer fixes from GameDB.");
 
@@ -1028,21 +1040,21 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 
 			case GSHWFixId::MinimumBlendingLevel:
 			{
-				if (value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum))
+				if (blend_setting_consulted && value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum))
 					config.AccurateBlendingUnit = std::max(config.AccurateBlendingUnit, static_cast<AccBlendLevel>(value));
 			}
 			break;
 
 			case GSHWFixId::MaximumBlendingLevel:
 			{
-				if (value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum))
+				if (blend_setting_consulted && value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum))
 					config.AccurateBlendingUnit = std::min(config.AccurateBlendingUnit, static_cast<AccBlendLevel>(value));
 			}
 			break;
 
 			case GSHWFixId::RecommendedBlendingLevel:
 			{
-				if (!is_sw_renderer && value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum) && static_cast<int>(EmuConfig.GS.AccurateBlendingUnit) < value)
+				if (blend_setting_consulted && value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum) && static_cast<int>(EmuConfig.GS.AccurateBlendingUnit) < value)
 				{
 					static constexpr std::array<const char*, static_cast<u8>(AccBlendLevel::MaxCount)> s_blending_option_names = {{
 						TRANSLATE_NOOP("GameDatabase", "Minimum"),

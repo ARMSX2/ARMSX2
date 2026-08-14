@@ -12,6 +12,8 @@
 #include "Elfheader.h"
 #include "FW.h"
 #include "GS.h"
+#include "GS/GSUtil.h"
+#include "GS/Renderers/Common/GSTileSelectionPolicy.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "GSDumpReplayer.h"
 #include "GameDatabase.h"
@@ -3601,7 +3603,14 @@ void VMManager::WarnAboutUnsafeSettings()
 			append(ICON_FA_PAGER,
 				TRANSLATE_SV("VMManager", "Trilinear filtering is not set to automatic. This may break rendering in some games."));
 		}
-		if (EmuConfig.GS.AccurateBlendingUnit <= AccBlendLevel::Minimum)
+		// Only when something reads the setting: the Tile variant runs one shipped
+		// blending behavior and consults AccurateBlendingUnit nowhere, so under Tile a
+		// low level breaks nothing and the warning would be pure nag.
+		const GSRendererType resolved_renderer = (EmuConfig.GS.Renderer == GSRendererType::Auto) ?
+													 GSUtil::GetPreferredRenderer() :
+													 EmuConfig.GS.Renderer;
+		if (GSAccurateBlendingUnitConsulted(resolved_renderer, EmuConfig.GS.HWRendererVariant) &&
+			EmuConfig.GS.AccurateBlendingUnit <= AccBlendLevel::Minimum)
 		{
 			append(ICON_FA_PAINTBRUSH,
 				TRANSLATE_SV("VMManager", "Blending Accuracy is below Basic, this may break effects in some games."));

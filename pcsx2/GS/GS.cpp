@@ -1689,6 +1689,21 @@ BEGIN_HOTKEY_LIST(g_gs_hotkeys){"Screenshot", TRANSLATE_NOOP("Hotkeys", "Graphic
 				if (pressed)
 					return;
 
+				// Cycling a setting nothing reads is worse than refusing: the Tile
+				// variant runs one shipped blending behavior by charter (and SW never
+				// read the setting), so say so instead of announcing a level change
+				// that changes nothing.
+				const GSRendererType resolved_renderer = (EmuConfig.GS.Renderer == GSRendererType::Auto) ?
+															 GSUtil::GetPreferredRenderer() :
+															 EmuConfig.GS.Renderer;
+				if (!GSAccurateBlendingUnitConsulted(resolved_renderer, EmuConfig.GS.HWRendererVariant))
+				{
+					Host::AddKeyedOSDMessage("CycleBlendingAccuracy",
+						TRANSLATE_STR("Hotkeys", "Blending Accuracy is not used by the current renderer."),
+						Host::OSD_QUICK_DURATION);
+					return;
+				}
+
 				static constexpr std::array<const char*, static_cast<u8>(AccBlendLevel::MaxCount)> s_blending_option_names = {{
 					TRANSLATE_NOOP("Hotkeys_BlendAcc", "Minimum"),
 					TRANSLATE_NOOP("Hotkeys_BlendAcc", "Basic"),
