@@ -835,14 +835,60 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 				// while no two of the draw's own primitives touch the same pixel. An
 				// overlapping draw would blend its second primitive against the
 				// pre-draw value instead of against the first primitive's result,
-				// which is silent, plausible, and wrong. Those draws keep flooring
-				// under their own reason, so the census can size the class that an
-				// ordered in-tile read (or a per-primitive split) would buy — the
-				// mechanism question the M4c follow-on decides on measured numbers.
+				// which is silent, plausible, and wrong.
 				//
 				// The overlap fact is conservative in the same direction: the trace
 				// proves NO only for sprites it has walked and for single primitives,
 				// and answers UNKNOWN for multi-primitive triangle draws, which floor.
+				//
+				// ⚠️ THE FOLLOW-ON WAS RUN AND THE FLOOR STAYS. 2026-08-14, whole-corpus,
+				// against the 1,599 draws this reason held (1,434 of them triangle-class).
+				// Recorded because every step of it refuted something, and the last one
+				// says where the class actually unblocks:
+				//
+				// 1. The cheap answer is not there. PrimitiveOverlap answers UNKNOWN for
+				//    a multi-primitive triangle draw WITHOUT LOOKING, so the suspicion
+				//    was that most of those floors were unchecked rather than
+				//    overlapping. Running the real grouping walk over them moved the
+				//    floor 1599 → 1461 and native by 60 draws of 63,951. ~90% of them
+				//    genuinely overlap, and an O(n) vertex walk per blended triangle
+				//    draw is not worth 0.09% of the corpus.
+				// 2. The mechanism EXISTS and WORKS. GSDeviceVK::SendHWDraw's full-barrier
+				//    leg walks the overlap grouping and issues a feedback barrier before
+				//    each provably-disjoint group, which is what Classic feeds its own
+				//    software-blend draws. Admitting overlap on it retires this reason
+				//    completely — 1599 → 0.
+				// 3. But the corpus went red on four dumps, and ORDERING IS NOT THE CAUSE.
+				//    Three ablations, all byte-identical to each other: the real grouping,
+				//    one primitive per group, and one barrier with no split at all. A
+				//    mechanism that cannot be distinguished from its own absence is not
+				//    the mechanism.
+				// 4. The per-draw oracle named what is. TWO pre-existing native-path
+				//    residues that this floor had been MASKING, both invisible while the
+				//    draws never went native:
+				//      * self-overdraw AMPLIFIES per-layer shading error. The read rung is
+				//        exact per layer, but SotC's 396-primitive gouraud strip blends
+				//        into its own pixels hundreds of times, and the ledger decays
+				//        exactly as compounding predicts — 86 pixels off by one, 60 by
+				//        two, 27 by three-to-fifteen, 3 above, exemplar off by ±1 on two
+				//        channels. Narrowing the admission to draws that are exact per
+				//        layer (flat, untextured, unfogged — a constant byte colour, so
+				//        any number of layers composes exactly) removed three of the four
+				//        regressions, which is the test of that reading.
+				//      * the fourth is COVERAGE, not arithmetic: GT4's 12-primitive strips
+				//        put 50 of 138 differing pixels in "the native path wrote and the
+				//        software path did not", identical with and without any split.
+				//        Same family as the standing knife-edge shared-edge finding.
+				//    So the entry condition for this class is not a blend fact at all —
+				//    it is the per-layer shading residue and the coverage tie reaching
+				//    zero, neither of which is M4's to fix.
+				//
+				// ⚠️ And a trap for whoever lands it: the alpha-test split's missing
+				// independent_rgb clause is argued away just above ON THIS FLOOR. RGB_ONLY
+				// is the one split that writes RGB and alpha in different passes, so its
+				// colour pass writes no alpha, and a C=Ad blend over overlapping
+				// primitives would read the pre-draw alpha where the console reads the
+				// previous primitive's. That guard must go in with the admission.
 				if (!in.prim_overlap_none)
 					return floored(GSTileFloorReason::BlendOverlap);
 				// ⚠️ Floors a class this rung REACHES but does not break. A textured
