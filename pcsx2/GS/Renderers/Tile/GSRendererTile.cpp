@@ -738,8 +738,16 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// rasterizer realizes. Both planes come out of the same setup and travel in one
 	// payload.
 	const bool want_zwalk = want_ds && m_vt.m_primclass == GS_TRIANGLE_CLASS && !m_vt.m_eq.z;
-	const bool want_stq = PRIM->TME && !PRIM->FST &&
-		(m_vt.m_primclass == GS_TRIANGLE_CLASS || m_vt.m_primclass == GS_SPRITE_CLASS);
+	// Every textured triangle rides the coordinate plane, UV included: the lag rule
+	// (gs-shade) fires exactly where the exact coordinate lands ON a sixteenth, and
+	// through the nudged interpolator an on-grid landing never reads as on-grid —
+	// measured on the capture, where the affine legs left every forward-walk
+	// boundary reading one sixteenth high while the plane-fed perspective legs
+	// matched the scanline digit for digit. UV sprites stay on the varying: they
+	// take no lag, and their accepted sub-1/16 residue is already scored.
+	const bool want_stq = PRIM->TME &&
+		(m_vt.m_primclass == GS_TRIANGLE_CLASS ||
+			(!PRIM->FST && m_vt.m_primclass == GS_SPRITE_CLASS));
 	if (!BuildTilePayload(want_zwalk, want_stq, reason))
 		return false;
 
@@ -1110,8 +1118,15 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloo
 			// pre-division, because the fragment path divides per pixel and the two
 			// agree wherever q_div applies (it only fires where Q is constant over the
 			// primitive, and a constant divisor commutes with the interpolation).
-			sw[k].t = want_stq ? GSVector4(v.ST.S * num_sx, v.ST.T * num_sy, v.RGBAQ.Q, 0.0f)
-			                   : GSVector4::zero();
+			//
+			// A UV vertex transports its 12.4 coordinate as sixteenths, exactly (a
+			// u16 is exact in float); the fragment side reads the plane in the same
+			// sixteenth units the varying carried and never divides, so Q is inert.
+			sw[k].t = want_stq
+				? (PRIM->FST
+						? GSVector4(static_cast<float>(v.U), static_cast<float>(v.V), 1.0f, 0.0f)
+						: GSVector4(v.ST.S * num_sx, v.ST.T * num_sy, v.RGBAQ.Q, 0.0f))
+				: GSVector4::zero();
 			sw[k].c = GSVector4::zero();
 		}
 
@@ -1207,13 +1222,14 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	conf.ps.iip = iip;
 	conf.ps.tfx = 4;
 	conf.ps.no_color1 = 1;
-	// The vertex colour reaches the texture function on the SW scanline's own grid:
-	// fixed point with seven fractional bits, truncated. Without this the GPU keeps
-	// the interpolator's full precision and the UNORM8 store ROUNDS, which is half a
-	// level of systematic bias on every Gouraud gradient — measured against the
-	// gs-interp console capture, where the tile arm fitted `exact/round` on 99.5% of
-	// readings while the scanline fitted a truncating ten-bit DDA. Flat draws are
-	// unaffected: their colour is already an integer, so the truncation is identity.
+	// The vertex colour is TRUNCATED to the eight bits the GS stores before any
+	// observable use — the texture-function multiply included (gs-shade console
+	// capture; GSStoredVertexColor in GSDrawScanline.cpp is the SW half). Without
+	// this the GPU keeps the interpolator's full precision and the UNORM8 store
+	// ROUNDS, which is half a level of systematic bias on every Gouraud gradient —
+	// first measured against gs-interp, then sharpened by gs-shade to the stored
+	// byte. Flat draws are unaffected: their colour is already an integer, so the
+	// truncation is identity.
 	conf.ps.tile_vcolor = 1;
 	conf.ps.dst_fmt = GSLocalMemory::m_psm[ctx->FRAME.PSM].fmt;
 	conf.colormask = GSHWDrawConfig::ColorMaskSelector(plan.pass[0].colormask);
@@ -1254,16 +1270,29 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 		const u8 wms = static_cast<u8>(ctx->CLAMP.WMS);
 		const u8 wmt = static_cast<u8>(ctx->CLAMP.WMT);
 		// The in-shader coordinate walk serves every bilinear draw, every
-		// perspective STQ triangle (either filter), and every mip draw: the GPU
-		// interpolator's own divide measurably flips texels against the
-		// scanline's, so the fragment path recomputes trunc(s/q) at the
-		// scanline's rounding — and mip adds per-pixel level selection and
-		// bound shifts no sampler state expresses. Affine nearest without mip
-		// stays on the GPU sampler, which the gs-texture capture proved exact.
+		// perspective STQ triangle (either filter), every mip draw — and every
+		// draw whose coordinate can LAG: the GPU interpolator's own divide
+		// measurably flips texels against the scanline's, so the fragment path
+		// recomputes trunc(s/q) at the scanline's rounding — and mip adds
+		// per-pixel level selection and bound shifts no sampler state expresses.
+		//
+		// The lag (gs-shade, SCPH-30001): a non-sprite primitive's coordinate
+		// trails the exact plane in the direction the walk is going, one 16.16
+		// unit per forward axis, spent before the snap to a sixteenth. The GPU
+		// sampler cannot take that unit off the coordinate it floors, so a
+		// nearest draw that can lag leaves the sampler for the walk — under
+		// nearest the lag moves a whole texel, which is exactly where the
+		// capture measured 2,048 of 2,048 readings moving. Sprites are exact on
+		// silicon and take nothing; a point has no gradient to lag. Affine
+		// nearest without mip on those two classes stays on the GPU sampler,
+		// which the gs-texture capture proved exact.
 		const bool mip_draw = IsMipMapActive();
 		const bool stq_walk = !PRIM->FST && m_vt.m_primclass == GS_TRIANGLE_CLASS;
-		if (mip_draw || m_vt.IsLinear() || stq_walk)
+		const bool tclag_draw =
+			m_vt.m_primclass != GS_SPRITE_CLASS && m_vt.m_primclass != GS_POINT_CLASS;
+		if (mip_draw || m_vt.IsLinear() || stq_walk || tclag_draw)
 		{
+			conf.ps.tile_tclag = tclag_draw;
 			// texelFetch bypasses the sampler, so every wrap mode runs in the
 			// shader on integer texel indices, one filter corner at a time. Region
 			// bounds travel bit-cast as ints, pre-cooked exactly as the SW

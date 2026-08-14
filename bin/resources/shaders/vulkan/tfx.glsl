@@ -747,12 +747,19 @@ layout(std430, set = 0, binding = 2) readonly buffer TilePlanes
 // and is tracked on its own; do not read this path as claiming walk parity.
 vec3 g_tile_stq;
 
+// The numerator's gradient along screen x, straight off the plane payload —
+// what decides, per axis and once per primitive, whether the coordinate walk
+// runs forward (the tclag rule below reads its sign).
+vec2 g_tile_stq_dx;
+
 vec3 tile_stq_plane(void)
 {
 	uint b = floatBitsToUint(TileSTQBase) + vsIn_prim * 3u;
 	uvec4 A = plane[b];
 	uvec4 X = plane[b + 1u];
 	uvec4 Y = plane[b + 2u];
+
+	g_tile_stq_dx = uintBitsToFloat(X.xy);
 
 	// gl_FragCoord sits at the pixel centre; its integer part is the pixel index,
 	// which is the coordinate the scanline steps in.
@@ -1512,6 +1519,47 @@ ivec2 wrap_tile(ivec2 xy)
 	return xy;
 }
 
+#if PS_TILE_TCLAG
+// A non-sprite primitive's sampled coordinate trails the exact plane by less
+// than a sixteenth of a texel, in the direction the walk is going — measured on
+// an SCPH-30001 (gs-shade): where the exact coordinate lands ON a sixteenth and
+// the walk is forward, silicon samples the sixteenth BELOW it, 3,840 of 3,840
+// readings, and never the other way. Per axis, decided once per primitive by
+// the numerator's gradient along screen x; a still or backward axis takes
+// nothing, and sprites are exact on silicon so this selector is never set for
+// them. The SW scanline spends it as one unit of its 16.16 coordinate before
+// the snap to a sixteenth (tclag in GSDrawScanline.cpp, which carries the
+// measurement), so only a coordinate landing exactly on a boundary moves.
+//
+// The gradient comes off the plane payload where the draw carries one; the
+// affine legs read the varying's own screen-x derivative, which for a plane
+// interpolant is the same per-primitive constant.
+ivec2 tile_tclag(void)
+{
+	#if PS_TILE_STQ
+		return ivec2(greaterThan(g_tile_stq_dx, vec2(0.0f)));
+	#else
+		return ivec2(greaterThan(vec2(dFdx(STQ_NUM.x), dFdx(STQ_NUM.y)), vec2(0.0f)));
+	#endif
+}
+#endif
+
+// The affine legs' coordinate in whole sixteenths. The 12.4 varying holds the
+// GS's own fixed-point space, so the floor IS the scanline's snap — and under
+// the tclag rule a forward-walking axis whose coordinate lands exactly on a
+// sixteenth floors one lower, which is the rule at this leg's precision (the
+// sub-sixteenth residue of interpolating the varying is the already-accepted
+// class here).
+ivec2 tile_fst_uv16(vec2 st_int)
+{
+	vec2 fl = floor(st_int);
+	ivec2 k = ivec2(fl);
+	#if PS_TILE_TCLAG
+		k -= tile_tclag() * ivec2(equal(fl, st_int));
+	#endif
+	return k;
+}
+
 #if PS_FST == 0
 // SW-scanline parity for a perspective coordinate (GSDrawScanline's !fst leg):
 // the quotient truncates into the GS's 16.16 texel space, and everything
@@ -1566,7 +1614,14 @@ ivec2 tile_stq_uv(void)
 
 	// ti.zw carries 1/16-texel units; a power-of-two scale is exact in float,
 	// so this truncation is the scanline's own truncation on its 16.16 value.
-	return ivec2(quot * 4096.0f);
+	ivec2 uv = ivec2(quot * 4096.0f);
+	#if PS_TILE_TCLAG
+		// The walk's lag, spent exactly where the scanline spends it: one 16.16
+		// unit off each forward axis, before the snap to a sixteenth — and before
+		// the mip path's level shift divides it away.
+		uv -= tile_tclag();
+	#endif
+	return uv;
 }
 
 #if PS_TILE_LTFX
@@ -1698,8 +1753,9 @@ vec4 sample_color_tile_mip(vec2 st_int)
 #else
 	// The 12.4 varying's integer bits into 16.16 — the affine convention the
 	// non-mip FST paths already run (sub-1/16 interpolation residue accepted
-	// there, and no fst mip draw exists in corpus or probe to sharpen it).
-	ivec2 uv = ivec2(floor(st_int)) << 12;
+	// there, and no fst mip draw exists in corpus or probe to sharpen it; the
+	// tclag rule rides the same sixteenths grid for the same reason).
+	ivec2 uv = tile_fst_uv16(st_int) << 12;
 #endif
 
 	int lodi;
@@ -1776,7 +1832,7 @@ vec4 sample_color_tile_ltf(vec2 st_int)
 	// st_int is the coordinate in 1/16-texel units — the GS's 12.4 fixed-point
 	// space, exact for UV. Half a texel back, then the texel index and 4-bit
 	// weight fall out of the fixed-point value.
-	ivec2 uv16 = ivec2(floor(st_int)) - 8;
+	ivec2 uv16 = tile_fst_uv16(st_int) - 8;
 	ivec2 f = uv16 & 15;
 	ivec2 t0 = uv16 >> 4;
 #endif
@@ -1803,7 +1859,7 @@ vec4 sample_color_tile_nn(vec2 st_int)
 #if PS_FST == 0
 	ivec2 t0 = tile_stq_uv() >> 16;
 #else
-	ivec2 t0 = ivec2(floor(st_int)) >> 4;
+	ivec2 t0 = tile_fst_uv16(st_int) >> 4;
 #endif
 	return vec4(fetch_texel_tile(wrap_tile(t0)));
 }
@@ -1816,20 +1872,23 @@ vec4 sample_color_tile_nn(vec2 st_int)
 vec4 tfx(vec4 T, vec4 C)
 {
 #if PS_TILE_VCOLOR
-	// The SW scanline carries the interpolated vertex colour as a fixed-point value
-	// with SEVEN fractional bits, and truncates it to eight bits only where the
-	// colour is used AS a colour; the texture-function multiplies consume all
-	// fifteen (GSDrawScanline: modulate16<1> against the fixed value, srl16<7>
-	// everywhere else). Reproduce both, or a native draw rounds where the scanline
-	// truncates — a systematic half-level bias on every Gouraud gradient.
-	C = trunc(C * 128.0f) / 128.0f;
+	// The texture function multiplies the eight-bit vertex colour the GS STORES,
+	// not the wider value its interpolator carries — console-measured (gs-shade,
+	// SCPH-30001): reading one colour back through four different multipliers
+	// brackets the value the hardware holds, and that bracket excludes the stored
+	// byte's product on 0 of 24,576 readings where it excluded the wide product on
+	// 17.99%. The SW scanline's DDA keeps seven fractional bits so the gradient
+	// still steps, but every observable use — the modulate, the highlight add, and
+	// the colour used AS a colour — consumes the truncation, so the shader
+	// truncates once (GSStoredVertexColor in GSDrawScanline.cpp is the SW half).
+	// Flat draws are unaffected: their colour is already an integer.
 	vec4 Cc = trunc(C);
 #else
 	vec4 Cc = C;
 #endif
 
 	vec4 C_out;
-	vec4 FxT = trunc((C * T) / 128.0f);
+	vec4 FxT = trunc((Cc * T) / 128.0f);
 
 #if (PS_TFX == 0)
 	C_out = FxT;
@@ -1912,7 +1971,16 @@ vec4 ps_color()
 	vec2 st_int = vsIn.ti.zw / vsIn.t.w;
 #else
 	vec2 st = vsIn.ti.xy;
-	vec2 st_int = vsIn.ti.zw;
+	#if PS_TILE_STQ
+		// A UV triangle's coordinate comes off its own plane at the pixel index,
+		// like the perspective one: the vertex shader's coverage nudge rides the
+		// interpolated varying, so an on-grid landing never reads as on-grid there
+		// and the tclag rule below it can never fire. The plane carries the same
+		// sixteenth units the varying did; there is no divide.
+		vec2 st_int = g_tile_stq.xy;
+	#else
+		vec2 st_int = vsIn.ti.zw;
+	#endif
 #endif
 
 #if !NEEDS_TEX
