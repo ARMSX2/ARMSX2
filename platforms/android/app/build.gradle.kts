@@ -220,11 +220,20 @@ android {
             // so the real updater + REQUEST_INSTALL_PACKAGES live in src/github and this stays
             // false for play (which uses the src/play no-op stub).
             buildConfigField("boolean", "IN_APP_UPDATER", "true")
+            // LSFG frame generation. Github flavor only, for two independent reasons: the
+            // upstream project's consumer app is licensed "No Play Store", and the feature
+            // only works when the user supplies their own Lossless.dll, which is not a shape
+            // Play distribution should carry. The NATIVE side is gated here rather than in
+            // Kotlin so a play build never even fetches the library.
+            buildConfigField("boolean", "LSFG", "true")
+            externalNativeBuild { cmake { arguments += "-DARMSX2_ENABLE_LSFG=ON" } }
         }
         create("play") {
             dimension = "store"
             buildConfigField("boolean", "STORAGE_ALL_FILES", "false")
             buildConfigField("boolean", "IN_APP_UPDATER", "false")
+            buildConfigField("boolean", "LSFG", "false")
+            externalNativeBuild { cmake { arguments += "-DARMSX2_ENABLE_LSFG=OFF" } }
         }
     }
     // Merge the generated bin/resources tree in as a second assets root. Passing

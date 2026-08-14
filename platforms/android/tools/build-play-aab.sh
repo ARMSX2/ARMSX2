@@ -88,6 +88,10 @@ echo "-- REQUEST_INSTALL_PACKAGES must be ABSENT (self-updating violates Play po
 if unzip -p "$OUTPUT_AAB" base/manifest/AndroidManifest.xml | strings | grep -q "REQUEST_INSTALL_PACKAGES"; then
 	echo "  !! FATAL: REQUEST_INSTALL_PACKAGES present in play AAB (in-app updater leaked into the Play build)" >&2; exit 1
 else echo "  absent OK"; fi
+echo "-- libarmsx2_lsfg.so must be ABSENT (frame generation is github-flavour only) --"
+if unzip -l "$OUTPUT_AAB" | grep -q "libarmsx2_lsfg.so"; then
+	echo "  !! FATAL: libarmsx2_lsfg.so present in play AAB (LSFG leaked into the Play build)" >&2; exit 1
+else echo "  absent OK"; fi
 echo "-- versionName --"
 unzip -p "$OUTPUT_AAB" base/manifest/AndroidManifest.xml | strings | grep -oE "$VN" | head -1
 echo "-- jar signature --"

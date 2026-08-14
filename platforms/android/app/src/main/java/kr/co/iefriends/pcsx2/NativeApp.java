@@ -727,6 +727,16 @@ public class NativeApp {
 	 *  on its own). Called from MainActivityRuntime.onPause so backgrounding the app saves
 	 *  the cache before Android can reap the process. Safe to call when no
 	 *  Vulkan device is active (becomes a no-op). */
+	/** Why LSFG frame generation can or cannot run, as the ordinal of the native
+	 *  GSLsfg::Unavailable enum — see LsfgSection.kt's LsfgReason for the mapping.
+	 *  A reason rather than a bool, because "needs an Adreno 7xx GPU" and "no
+	 *  Lossless.dll picked yet" are the same greyed-out row otherwise and only one
+	 *  of them is actionable. Pass the candidate DLL path; it is also what the query
+	 *  evaluates against, so the settings screen can check a pick before saving it.
+	 *  Safe to call with no game running and on any build (the Play build always
+	 *  answers NOT_COMPILED_IN). */
+	public static native int lsfgAvailability(String dllPath);
+
 	public static native void flushShaderCache();
 
 	/**

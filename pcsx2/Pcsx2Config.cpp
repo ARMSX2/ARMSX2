@@ -919,6 +919,10 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(ShaderChainEnabled) &&
 		OpEqu(ShaderChainPreset) &&
 
+		OpEqu(LsfgEnabled) &&
+		OpEqu(LsfgMultiplier) &&
+		OpEqu(LsfgDllPath) &&
+
 		OpEqu(CaptureContainer) &&
 		OpEqu(VideoCaptureCodec) &&
 		OpEqu(VideoCaptureFormat) &&
@@ -1187,6 +1191,12 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 
 	SettingsWrapEntryEx(ShaderChainEnabled, "ShaderChainEnabled");
 	SettingsWrapEntryEx(ShaderChainPreset, "ShaderChainPreset");
+
+	SettingsWrapEntryEx(LsfgEnabled, "LsfgEnabled");
+	// Bitfield, not Entry: LsfgMultiplier is a u8, and the plain entry wrapper has no
+	// overload for one — the same reason CAS_Sharpness above uses it.
+	SettingsWrapBitfieldEx(LsfgMultiplier, "LsfgMultiplier");
+	SettingsWrapEntryEx(LsfgDllPath, "LsfgDllPath");
 
 	SettingsWrapEntryEx(CaptureContainer, "CaptureContainer");
 	SettingsWrapEntryEx(VideoCaptureCodec, "VideoCaptureCodec");

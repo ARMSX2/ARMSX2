@@ -680,6 +680,7 @@ endif()
 if(USE_VULKAN)
 	list(APPEND pcsx2GSSources
 		GS/Renderers/Vulkan/GSDeviceVK.cpp
+		GS/Renderers/Vulkan/GSLsfg.cpp
 		GS/Renderers/Vulkan/GSTextureVK.cpp
 		GS/Renderers/Vulkan/vk_mem_alloc.cpp
 		GS/Renderers/Vulkan/VKBuilders.cpp
@@ -689,12 +690,29 @@ if(USE_VULKAN)
 		GS/Renderers/Vulkan/VKStreamBuffer.cpp
 		GS/Renderers/Vulkan/VKSwapChain.cpp
 	)
+	# GSLsfg.cpp is the ONE translation unit in PCSX2 built with exceptions.
+	#
+	# The rest of the emulator is -fno-exceptions, and stays that way. But LSFG's entire error
+	# protocol is throwing — initialize(), createContextFromAHB() and presentContext() all raise
+	# LSFG::vulkan_error, and the DXBC translator raises on a malformed shader — so without this
+	# there is no way to survive a bad Lossless.dll or an unsupported driver. The alternative,
+	# letting those propagate into -fno-exceptions frames, is std::terminate: a hard crash on the
+	# exact paths this feature is most likely to take on someone else's device.
+	#
+	# The boundary is airtight by construction: GSLsfg.cpp catches (...) at every call into the
+	# library and returns a bool, so nothing ever unwinds into GSDeviceVK. Skipping the PCH is
+	# required, not incidental — clang rejects a -fno-exceptions PCH from a -fexceptions TU.
+	set_source_files_properties(GS/Renderers/Vulkan/GSLsfg.cpp PROPERTIES
+		COMPILE_OPTIONS "-fexceptions"
+		SKIP_PRECOMPILE_HEADERS ON)
+
 	# VKLibretro.cpp needs the libretro Vulkan HW-render interface header.
 	# Link it PRIVATE to PCSX2 (not the shared PCSX2_FLAGS) so the header path
 	# doesn't leak onto every target that consumes PCSX2_FLAGS.
 	target_link_libraries(PCSX2 PRIVATE libretro-headers)
 	list(APPEND pcsx2GSHeaders
 		GS/Renderers/Vulkan/GSDeviceVK.h
+		GS/Renderers/Vulkan/GSLsfg.h
 		GS/Renderers/Vulkan/GSTextureVK.h
 		GS/Renderers/Vulkan/VKLibretro.h
 		GS/Renderers/Vulkan/VKBuilders.h

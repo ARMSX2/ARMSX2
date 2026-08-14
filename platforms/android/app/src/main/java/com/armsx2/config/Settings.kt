@@ -569,6 +569,15 @@ data class Settings(
      *  off regardless of the flag, and it's a no-op if this build has no librashader. */
     val shaderChainEnabled: Boolean = false,
     val shaderChainPreset: String = "",
+    /** EmuCore/GS/LsfgEnabled + /LsfgMultiplier + /LsfgDllPath — LSFG frame generation,
+     *  inserted into the Vulkan present path. Off unless the user both enables it AND
+     *  supplies their own Lossless.dll: the interpolation shaders are read out of that
+     *  file at runtime and nothing about them ships with ARMSX2. Vulkan + Adreno 7xx and
+     *  newer only, and absent entirely from the Play build. [lsfgMultiplier] is frames
+     *  DISPLAYED per frame rendered, so 2 means one interpolated frame between each pair. */
+    val lsfgEnabled: Boolean = false,
+    val lsfgMultiplier: Int = 2,
+    val lsfgDllPath: String = "",
     /** Tweaked shader parameters, as `preset path -> (parameter name -> value)`.
      *
      *  Sparse: a parameter the user hasn't touched is simply absent, and the author's own
@@ -1156,6 +1165,9 @@ data class Settings(
             fxaa = boolAt("EmuCore/GS/fxaa") ?: this.fxaa,
             shaderChainEnabled = boolAt("EmuCore/GS/ShaderChainEnabled") ?: this.shaderChainEnabled,
             shaderChainPreset = strAt("EmuCore/GS/ShaderChainPreset") ?: this.shaderChainPreset,
+            lsfgEnabled = boolAt("EmuCore/GS/LsfgEnabled") ?: this.lsfgEnabled,
+            lsfgMultiplier = intAt("EmuCore/GS/LsfgMultiplier") ?: this.lsfgMultiplier,
+            lsfgDllPath = strAt("EmuCore/GS/LsfgDllPath") ?: this.lsfgDllPath,
             shaderChainParams = strAt("EmuCore/GS/ShaderChainParams")?.let { raw ->
                 // Hand-editable file, so a malformed blob is a real possibility: keep the
                 // rest of the recovered settings rather than throwing the lot away.
@@ -1353,6 +1365,9 @@ data class Settings(
         put("EmuCore/GS", "fxaa", "bool", fxaa.toString())
         put("EmuCore/GS", "ShaderChainEnabled", "bool", shaderChainEnabled.toString())
         put("EmuCore/GS", "ShaderChainPreset", "string", shaderChainPreset)
+        put("EmuCore/GS", "LsfgEnabled", "bool", lsfgEnabled.toString())
+        put("EmuCore/GS", "LsfgMultiplier", "int", lsfgMultiplier.toString())
+        put("EmuCore/GS", "LsfgDllPath", "string", lsfgDllPath)
         // Parameter overrides, as one opaque JSON blob. Nothing in emucore reads this key —
         // there is no GSConfig field behind it, and the live values reach the renderer via
         // the push below, not through here. It is written so the map survives the same

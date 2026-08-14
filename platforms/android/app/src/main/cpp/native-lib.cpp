@@ -28,6 +28,7 @@
 #include "GS/GSUtil.h" // GSUtil::AndroidAutoPrefersVulkan (Auto renderer steering)
 #include "GS/Renderers/Common/GSDevice.h" // GSDevice::SetShaderChainParams (shader chain params)
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
+#include "GS/Renderers/Vulkan/GSLsfg.h" // LSFG availability query (JNI)
 #include "GSDumpReplayer.h"
 #include "ImGui/ImGuiManager.h"
 #include "ImGui/ImGuiOverlays.h"
@@ -2845,6 +2846,24 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setOutputPauseSuppressed(JNIEnv *env, jclas
     // the brief menu pause means resume is a cheap no-op with no rebuild. Only the
     // overlay pause sets this; background/quit pause normally, and resume() clears it.
     SPU2::SetOutputPauseSuppressed(suppressed == JNI_TRUE);
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_lsfgAvailability(JNIEnv *env, jclass clazz, jstring dll_path) {
+    // Why frame generation can or cannot run, as the ordinal of GSLsfg::Unavailable. The UI
+    // needs the REASON, not a bool: "requires an Adreno 7xx GPU" and "you haven't picked a
+    // Lossless.dll yet" are the same greyed-out row otherwise, and only one of them is
+    // something the user can do anything about.
+    //
+    // The path is passed in rather than read from GSConfig because this is asked from the
+    // settings screen, where the pick may not have been committed yet — and on a device with
+    // no game running, where GSConfig holds whatever the last boot left behind.
+    const char *path = dll_path ? env->GetStringUTFChars(dll_path, nullptr) : nullptr;
+    GSLsfg::SetDllPath(path ? std::string(path) : std::string());
+    if (path)
+        env->ReleaseStringUTFChars(dll_path, path);
+    return static_cast<jint>(GSLsfg::GetUnavailableReason());
 }
 
 extern "C"

@@ -72,6 +72,10 @@ public:
 	__fi VkPresentModeKHR GetPresentMode() const { return m_present_mode; }
 	__fi const GSTextureVK* GetCurrentTexture() const { return m_images[m_current_image].get(); }
 	__fi GSTextureVK* GetCurrentTexture() { return m_images[m_current_image].get(); }
+	/// Image by index rather than "the current one". Frame generation acquires extra images to
+	/// present the interpolated frames through, so it needs the one vkAcquireNextImageKHR handed
+	/// back rather than whatever m_current_image happens to be.
+	__fi VkImage GetImage(u32 index) const { return m_images[index]->GetImage(); }
 	__fi VkSemaphore GetImageAvailableSemaphore() const
 	{
 		return m_semaphores[m_current_semaphore].available_semaphore;

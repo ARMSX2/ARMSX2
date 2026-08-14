@@ -1052,6 +1052,15 @@ struct Pcsx2Config
 		bool ShaderChainEnabled = false;
 		std::string ShaderChainPreset;
 
+		// LSFG — Lossless Scaling frame generation, inserted into the Vulkan present path.
+		// Off unless the user both enables it AND supplies their own Lossless.dll: the
+		// interpolation shaders are read out of that file at runtime and nothing about them
+		// ships with ARMSX2. Vulkan + Adreno 7xx and newer only, and compiled out entirely
+		// in the play flavour, so every one of these is inert in a build without it.
+		bool LsfgEnabled = false;
+		u8 LsfgMultiplier = 2; // frames displayed per rendered frame: 2 = one interpolated
+		std::string LsfgDllPath;
+
 		u8 CAS_Sharpness = 50;
 		u8 ShadeBoost_Brightness = DEFAULT_SHADEBOOST_BRIGHTNESS;
 		u8 ShadeBoost_Contrast = DEFAULT_SHADEBOOST_CONTRAST;

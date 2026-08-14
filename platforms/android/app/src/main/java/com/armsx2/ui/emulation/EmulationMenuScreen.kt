@@ -1071,6 +1071,20 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
     MenuSwitchRow(str("perf.hack.waitLoop"), settings.waitLoop) {
         viewModel.updateSettings { current -> current.copy(waitLoop = it) }
     }
+    // Frame generation, in its own card: it changes what is PRESENTED rather than what is
+    // emulated, so it does not belong among the speedhacks above. Github flavour only — the
+    // section returns immediately when BuildConfig.LSFG is false, taking the card with it.
+    if (com.armsx2.BuildConfig.LSFG) {
+        SectionCard(str("perf.lsfg.label")) {
+            com.armsx2.ui.common.LsfgSection(
+                enabled = settings.lsfgEnabled,
+                multiplier = settings.lsfgMultiplier,
+                dllPath = settings.lsfgDllPath,
+            ) { on, mult, dll ->
+                viewModel.updateSettings { it.copy(lsfgEnabled = on, lsfgMultiplier = mult, lsfgDllPath = dll) }
+            }
+        }
+    }
     SectionCard(str("tab.recompiler")) {
         MenuSwitchRow("EE (R5900)", settings.recEE) { value -> viewModel.updateSettings { it.copy(recEE = value) } }
         Spacer(Modifier.height(6.dp))

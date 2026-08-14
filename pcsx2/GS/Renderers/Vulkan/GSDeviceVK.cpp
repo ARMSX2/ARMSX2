@@ -6,6 +6,7 @@
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
+#include "GS/Renderers/Vulkan/GSLsfg.h"
 #include "GS/Renderers/Vulkan/VKBuilders.h"
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GS/Renderers/Vulkan/VKSwapChain.h"
@@ -1679,6 +1680,18 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 
 	if (present_swap_chain)
 	{
+		// Frame generation replaces this present entirely: it consumes the rendering-finished
+		// semaphore for its own copy, then presents the interpolated frames and the real one in
+		// order. It returns false without consuming anything if it cannot run this frame, which
+		// is the ordinary path on every build and device without it.
+		if (GSLsfg::IsActive() &&
+			GSLsfg::PresentWithGeneration(m_present_queue, present_swap_chain,
+				present_swap_chain->GetRenderingFinishedSemaphore()))
+		{
+			present_swap_chain->AcquireNextImage();
+			return;
+		}
+
 		const VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1,
 			present_swap_chain->GetRenderingFinishedSemaphorePtr(), 1, present_swap_chain->GetSwapChainPtr(),
 			present_swap_chain->GetCurrentImageIndexPtr(), nullptr};
@@ -2643,6 +2656,10 @@ void GSDeviceVK::Destroy()
 	// against m_device, so tearing the device down first would leak/UB them.
 	DestroyShaderChain();
 
+	// Same reasoning for frame generation, which additionally holds AHardwareBuffers shared
+	// with a second VkDevice it owns; its Shutdown idles both before releasing anything.
+	GSLsfg::Shutdown();
+
 	EndRenderPass();
 	if (GetCurrentCommandBuffer() != VK_NULL_HANDLE)
 	{
@@ -3038,6 +3055,16 @@ void GSDeviceVK::EndPresent()
 	m_swap_chain->GetCurrentTexture()->TransitionToLayout(cmdbuffer, GSTextureVK::Layout::PresentSrc);
 	g_perfmon.Put(GSPerfMon::RenderPasses, 1);
 
+	// Bring frame generation up or down to match the settings, once per frame and immediately
+	// before the present it hooks. Both calls are cheap no-ops in the steady state; the work
+	// happens only when the toggle, the multiplier, or the swapchain geometry actually changed.
+	// The path goes in first because availability is partly a question about that file.
+	GSLsfg::SetDllPath(GSConfig.LsfgDllPath);
+	if (GSConfig.LsfgEnabled && GSLsfg::IsAvailable())
+		GSLsfg::Initialize(m_swap_chain.get(), GSConfig.LsfgMultiplier);
+	else if (GSLsfg::IsActive())
+		GSLsfg::Shutdown();
+
 	SubmitCommandBuffer(m_swap_chain.get());
 	MoveToNextCommandBuffer();
 
@@ -3396,6 +3423,22 @@ bool GSDeviceVK::CheckFeatures()
 	// This is what constrains texture/target caching on weaker Mali (e.g. G615). From EmuCoreX.
 	SetMobileGPUIdentity(mobile_profile.gpu);
 	SetMobileGSTuning(mobile_profile.gs_tuning);
+
+	// Hand the resolved architecture to frame generation, which needs Adreno 7xx or newer. Done
+	// here rather than asked for on demand so the settings screen can still say WHY the row is
+	// unavailable after the game stops and the device is gone.
+	{
+		u32 adreno_generation = 0;
+		switch (mobile_profile.gpu.architecture)
+		{
+			case MobileGpuArchitecture::Adreno7xx: adreno_generation = 7; break;
+			case MobileGpuArchitecture::Adreno8xx: adreno_generation = 8; break;
+			// Adreno X (X1-85 and up) postdates 7xx and carries the same feature set.
+			case MobileGpuArchitecture::AdrenoX: adreno_generation = 9; break;
+			default: break;
+		}
+		GSLsfg::NoteRendererCapability(true, adreno_generation);
+	}
 #endif
 	Console.WriteLn("VK: GPU profile override='%s' resolved='%s' driver='%s' version=%u.%u.%u "
 					"raw=%08x rules=%u bugs=%016llx workarounds=%016llx.",

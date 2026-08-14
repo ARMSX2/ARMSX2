@@ -76,6 +76,12 @@ add_subdirectory(3rdparty/adrenotools)
 # compiles out, so a missing Rust toolchain can never break the build.
 add_subdirectory(3rdparty/librashader)
 
+# LSFG: Lossless Scaling frame generation (github flavour only — see the subdir CMakeLists
+# for the licence split and why we take only the MIT framegen library). OPTIONAL in exactly
+# the same way: ARMSX2_ENABLE_LSFG defaults OFF, and only the github flavour turns it on, so
+# a play build never fetches it and the feature compiles out.
+add_subdirectory(3rdparty/lsfg)
+
 # Discord Social SDK (rich presence + friends). Staged by hand rather than consumed as the
 # vendor .aar: that .aar's manifest declares RECORD_AUDIO and four foreground-service
 # permissions for its voice features, and the manifest merger would fold all of them into
@@ -186,4 +192,20 @@ if(ARMSX2_HAVE_LIBRASHADER)
 	target_link_libraries(PCSX2_FLAGS INTERFACE librashader)
 	target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_HAS_LIBRASHADER=1)
 	target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE librashader)
+endif()
+
+# Same PCSX2_FLAGS reasoning as librashader directly above, and for the same reason: the
+# frame-generation hook lives in GS/Renderers/Vulkan/GSDeviceVK.cpp, which release builds
+# compile into the separate PCSX2_LTO target. A define placed on PCSX2 would never reach it,
+# the code behind #ifdef ARMSX2_HAS_LSFG would vanish, and the build would succeed anyway —
+# shipping the toggle with nothing behind it. Verify with `strings` on the core, not the log.
+if(ARMSX2_HAVE_LSFG)
+	target_link_libraries(PCSX2_FLAGS INTERFACE ${ARMSX2_LSFG_LIBRARIES})
+	target_include_directories(PCSX2_FLAGS INTERFACE ${ARMSX2_LSFG_INCLUDE})
+	target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_HAS_LSFG=1)
+	target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE ${ARMSX2_LSFG_LIBRARIES})
+	# libarmsx2_lsfg.so is dlopen'd, not linked, so nothing here would otherwise make the
+	# build produce it — and a missing .so is invisible until frame generation is switched on
+	# at runtime. State the dependency so it is built and packaged with every core.
+	add_dependencies(${ARMSX2_EMUCORE_LIBRARY_NAME} armsx2_lsfg)
 endif()
