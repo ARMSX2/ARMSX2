@@ -761,15 +761,34 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 			// light):
 			//
 			// 1. The carrier must be a PROVEN CONSTANT ≤ 128 — FIX by value, or
-			//    As by degenerate trace range, landed as FIX. A variable As
-			//    reaches the ROP only through an 8-bit colour channel (the SRC1
-			//    output, or the primary output's alpha), which quantizes the
-			//    factor from the GS's /128 grid onto the attachment's /255 grid:
-			//    an up-to-half-level error scaled by Cd, one-sided per operand
-			//    class — OutRun's banding, and Dirge's max-108 speckle through
-			//    the known palette-index amplification. The blend constant
-			//    carries the same number as full-precision floats. The
-			//    variable-As arm waits for an exact carrier.
+			//    As by degenerate trace range, landed as FIX.
+			//
+			//    ⚠️ CORRECTED 2026-08-14, and the correction matters because it
+			//    reopens the widening this clause refuses. The mechanism first
+			//    written here — that an 8-bit carrier requantizes the factor off
+			//    the /128 grid onto /255 — is now EXCLUDED as the cause of the
+			//    measured damage: an exhaustive walk of the factor grid against
+			//    every 8-bit destination at accumulation depths to 32 bounds a
+			//    requantisation fault at ONE LEVEL, and the damage was 15 to 108.
+			//    Two candidates survive, and neither is proven:
+			//      * SATURATION. A blend factor above one is CLAMPED — measured
+			//        on silicon, at 8- and 16-bit targets alike, and dual source
+			//        is not exempt because the clamp belongs to the attachment
+			//        rather than the carrier. Above the /128 grid's midpoint the
+			//        error reaches 254 levels. This is why the ≤ 128 bound below
+			//        is load-bearing, and it is independent of carrier width.
+			//      * THE SAMPLING CLASS. M4c measured a textured-sprite sampling
+			//        divergence that the BLEND floor had been hiding, in the
+			//        same population — palettised bilinear sprites — and Dirge's
+			//        speckle was attributed to "palette-index amplification",
+			//        which is that class described from the other side.
+			//    The ablation behind this clause proved the variable-As CLASS,
+			//    never a mechanism; a class is not a cause. Consequence: if the
+			//    sampling class is the cause, a variable As with a trace-proven
+			//    max ≤ 128 costs at most one level and this clause can widen —
+			//    which is the 57.7% alpha lerp. Do not widen it on the strength
+			//    of this comment; widen it on a measurement that separates the
+			//    two survivors.
 			//
 			// 2. The shader-side term must provably CLEAR THE OFFSET at every
 			//    pixel: the blender clamps its colour inputs to [0,1], so a term
