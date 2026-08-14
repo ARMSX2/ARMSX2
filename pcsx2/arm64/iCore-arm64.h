@@ -148,6 +148,11 @@ static constexpr u32 NEON_CALLEE_SAVED_END = 16; // exclusive
 // including the first multiply in a block, where a compile-time liveness flag
 // in a caller-saved register would still have paid the full 6.
 //
+// _allocGPRtoNEONreg draws from that range alone, and _getFreeArm64NEON
+// pxFailRels when it is empty. The floor is three, what a 3-operand MMI op
+// needs at once; the fourth keeps an FPU multiply-accumulate's Fd, Fs, Ft and
+// ACC all in call-surviving homes. EeFuzz.CalleeSavedNeonBudget holds both.
+//
 // Two reasons it needs no microVU pool gate (unlike SL-13's q25/q26, and for
 // the same reasons q8/q9 need none): micro-mode mVU runs under mVUdispatcherAB,
 // whose prologue Stp/Ldp-saves d8-d15; and COP2 macro-mode mVU emits inline in

@@ -1214,8 +1214,54 @@ void _addNeededGPRtoNEONreg(int gprreg)
 	}
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+// High-water marks of the needed set, sampled per op at the clear below, where
+// an op's allocations are all made and none released. The GPRREG count is the
+// demand on the callee-saved range, which _allocGPRtoNEONreg draws from alone.
+// Read by EeFuzz.CalleeSavedNeonBudget.
+static u32 s_neonGprNeededPeak = 0;
+static u32 s_neonRangeNeededPeak = 0;
+
+static void _sampleNeonNeededPeak()
+{
+	u32 gpr = 0, range = 0;
+	for (u32 i = 0; i < static_cast<u32>(NUM_ARM_NEON_REGS); i++)
+	{
+		if (!arm64neon[i].inuse || !arm64neon[i].needed)
+			continue;
+		if (arm64neon[i].type == NEONTYPE_GPRREG)
+			gpr++;
+		if (i >= NEON_CALLEE_SAVED_START && i < NEON_CALLEE_SAVED_END && !_isReservedNEONreg(i))
+			range++;
+	}
+	if (gpr > s_neonGprNeededPeak)
+		s_neonGprNeededPeak = gpr;
+	if (range > s_neonRangeNeededPeak)
+		s_neonRangeNeededPeak = range;
+}
+
+void eeTestResetNeonNeededPeak()
+{
+	s_neonGprNeededPeak = 0;
+	s_neonRangeNeededPeak = 0;
+}
+u32 eeTestNeonGprNeededPeak() { return s_neonGprNeededPeak; }
+u32 eeTestNeonRangeNeededPeak() { return s_neonRangeNeededPeak; }
+
+u32 eeTestNeonCalleeSavedSlots()
+{
+	u32 n = 0;
+	for (u32 i = NEON_CALLEE_SAVED_START; i < NEON_CALLEE_SAVED_END; i++)
+		n += _isReservedNEONreg(i) ? 0 : 1;
+	return n;
+}
+#endif
+
 void _clearNeededNEONregs()
 {
+#ifdef PCSX2_RECOMPILER_TESTS
+	_sampleNeonNeededPeak();
+#endif
 	for (int i = 0; i < NUM_ARM_NEON_REGS; i++)
 	{
 		if (arm64neon[i].needed && arm64neon[i].type == NEONTYPE_TEMP)

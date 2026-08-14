@@ -565,3 +565,64 @@ TEST(EeFuzz, DelaySlotTargetLoopMix)
 		}
 	}
 }
+
+// ── The callee-saved NEON budget ─────────────────────────────────────────────
+// What is left of [NEON_CALLEE_SAVED_START, NEON_CALLEE_SAVED_END) after the
+// parked constants is the whole supply for guest quads: _allocGPRtoNEONreg
+// searches that range alone, and _getFreeArm64NEON pxFailRels instead of
+// widening the search once every slot in it is needed. Three slots still carry
+// the whole recompiler suite; two abort in that pxFailRel. So parking a
+// constant in the fourth costs an FPU multiply-accumulate its fourth
+// call-surviving FPR home, and parking one in the third costs correctness.
+//
+// The probes carry high-water marks of the per-op needed set.
+u32 eeTestNeonCalleeSavedSlots();   // iCore-arm64.cpp
+void eeTestResetNeonNeededPeak();   //
+u32 eeTestNeonGprNeededPeak();      //
+u32 eeTestNeonRangeNeededPeak();    //
+
+TEST(EeFuzz, CalleeSavedNeonBudget)
+{
+	ASSERT_EQ(eeTestNeonCalleeSavedSlots(), 5u);
+
+	// Three by construction: rd, rs and rt distinct, none of them $zero.
+	{
+		Lcg r{1};
+		EeRecTestHarness h;
+		SeedState(h, r);
+		eeTestResetNeonNeededPeak();
+		h.LoadProgram({e::PADDW(8, 9, 10), e::PSUBW(11, 12, 13)});
+		h.Run();
+		EXPECT_EQ(eeTestNeonGprNeededPeak(), 3u);
+	}
+
+	// Three by generation: 48000 ops of the straight-line mix, whose MMI forms
+	// share an 8-register focus set with LQ/SQ and the scalar traffic.
+	eeTestResetNeonNeededPeak();
+	const u32 start = seedStart(), count = seedCount(400);
+	for (u32 seed = start; seed < start + count; ++seed)
+	{
+		Lcg r{seed * 0x9E3779B97F4A7C15ull + 0xDEADBEEFull};
+		const Focus f = makeFocus(r);
+		EeRecTestHarness h;
+		SeedState(h, r);
+		std::vector<u32> prog;
+		for (u32 i = 0; i < 120; ++i)
+			prog.push_back(genOp(r, f));
+		h.LoadProgram(prog);
+		h.Run();
+	}
+	EXPECT_EQ(eeTestNeonGprNeededPeak(), 3u);
+
+	// The fourth slot is not headroom either. FPR homes prefer the same range
+	// (_allocFPtoNEONreg), and a multiply-accumulate's Fd, Fs, Ft and ACC take
+	// four of them at once.
+	{
+		EeRecTestHarness h;
+		h.EnableCop1();
+		eeTestResetNeonNeededPeak();
+		h.LoadProgram({e::MADD_S(1, 2, 3), e::MUL_S(4, 5, 6), e::MADD_S(7, 8, 9)});
+		h.Run();
+		EXPECT_EQ(eeTestNeonRangeNeededPeak(), 4u);
+	}
+}
