@@ -295,8 +295,8 @@ namespace GSDrawLog
 				return "COLCLIP";
 			case TileFallbackBlendOverlap:
 				return "BLEND_OVERLAP";
-			case TileFallbackBlendTexAlpha:
-				return "BLEND_TEX_ALPHA";
+			case TileFallbackBlendTexSample:
+				return "BLEND_TEX_SAMPLE";
 			default:
 				return "";
 		}

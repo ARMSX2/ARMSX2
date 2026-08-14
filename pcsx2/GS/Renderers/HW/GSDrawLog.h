@@ -243,9 +243,10 @@ namespace GSDrawLog
 		// primitives may overlap, and one snapshot of the destination cannot serve a
 		// pixel that is blended into twice.
 		TileFallbackBlendOverlap,
-		// M4c read rung, OPEN DEFECT: textured draw whose blend factor is the source
-		// alpha. Bracketed by ablation to the texture function's alpha, not the blend.
-		TileFallbackBlendTexAlpha,
+		// M4c read rung: textured draw with a per-pixel factor. The draw floors on a
+		// pre-existing SAMPLING divergence that the blend floor used to hide, not on
+		// anything the blend does — see the lowering comment for the forensics.
+		TileFallbackBlendTexSample,
 	};
 
 	enum Flags : u8

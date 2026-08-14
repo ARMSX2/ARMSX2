@@ -143,8 +143,8 @@ GSDrawLog::TileFallback MapFallbackReason(GSTileFloorReason reason)
 			return GSDrawLog::TileFallbackColClip;
 		case GSTileFloorReason::BlendOverlap:
 			return GSDrawLog::TileFallbackBlendOverlap;
-		case GSTileFloorReason::BlendTexAlpha:
-			return GSDrawLog::TileFallbackBlendTexAlpha;
+		case GSTileFloorReason::BlendTexSample:
+			return GSDrawLog::TileFallbackBlendTexSample;
 		default:
 			return GSDrawLog::TileFallbackFloor;
 	}

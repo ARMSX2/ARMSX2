@@ -87,7 +87,7 @@ enum class GSTileFloorReason : u8
 	// Blend gates (M4a):
 	ColClip, ///< COLCLAMP=0 on a blended draw — wrap semantics need the in-shader blend (M4c)
 	BlendOverlap, ///< the read rung's equation is admissible but the draw's own primitives may overlap — one snapshot of the destination cannot serve them (M4c)
-	BlendTexAlpha, ///< read rung, textured draw whose blend factor is the source alpha — OPEN DEFECT, ablation-bracketed to the texture function's alpha (M4c)
+	BlendTexSample, ///< read rung, textured draw with a per-pixel factor — floors on a PRE-EXISTING SAMPLING divergence the blend floor had been hiding, not on anything the blend does (M4c)
 	Count
 };
 
@@ -826,11 +826,27 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 				// and answers UNKNOWN for multi-primitive triangle draws, which floor.
 				if (!in.prim_overlap_none)
 					return floored(GSTileFloorReason::BlendOverlap);
-				// ⚠️ OPEN DEFECT, measured 2026-08-14 at this rung's first light: a
-				// TEXTURED draw whose blend factor varies PER PIXEL renders wrong,
-				// and it does so for both variable carriers — the source alpha and
-				// the destination alpha alike. Four corpus runs bracket it, and the
-				// blend is in none of the brackets:
+				// ⚠️ Floors a class this rung REACHES but does not break. A textured
+				// draw whose factor varies per pixel renders wrong, for both variable
+				// carriers — and the cause is a pre-existing SAMPLING divergence that
+				// the blend floor had been hiding, not anything the blend does.
+				//
+				// Attribution (MGS3, the 4-draw minimal repro, 2026-08-14). The
+				// differing pixels sit inside exactly the two admitted draws, and:
+				//   * the ALPHA channel is byte-identical, so the factor the shader
+				//     feeds the blend is the same value the software arm uses;
+				//   * only 3.5% of covered pixels differ, and 124 of those 125 have a
+				//     differing neighbour — connected runs, not a scattered residue;
+				//   * they sit where the image has TWICE the local gradient of the
+				//     pixels that match (median 33 against 16), i.e. at texture
+				//     detail, which is where a texel-boundary decision is decided.
+				// An arithmetic fault in the blend is independent of local image
+				// gradient and would move the flat 96.5% too. A sampling fault looks
+				// exactly like this. These are bilinear FST sprites on a palettised
+				// texture — the shape of the open tc-sprite half-texel finding.
+				//
+				// Four corpus runs bracket it, and the blend is in none of the
+				// brackets:
 				//   * whole rung off       → corpus exactly at the pinned baseline
 				//   * FIX carrier only     → exactly the baseline, textured included
 				//   * untextured only      → exactly the baseline, every carrier
@@ -848,7 +864,7 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 				// that gates blending cannot gate this rung; the class needs an
 				// instrument of its own before the admission widens.
 				if (in.tme && bc != 2)
-					return floored(GSTileFloorReason::BlendTexAlpha);
+					return floored(GSTileFloorReason::BlendTexSample);
 				blend_read = true;
 			}
 			else

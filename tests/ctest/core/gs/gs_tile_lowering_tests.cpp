@@ -1369,7 +1369,7 @@ TEST(GSTileLowering, ReadRungTakesWhatTheReadFreeRungsRefuse)
 		in.tex_fst = true;
 		in.tex_psm = PSMCT32;
 		in.prim_overlap_none = true;
-		EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendTexAlpha)
+		EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendTexSample)
 			<< "carrier " << carrier;
 		// The same draw with a constant carrier is admitted — the discriminator is
 		// the per-pixel factor, not the texture.
