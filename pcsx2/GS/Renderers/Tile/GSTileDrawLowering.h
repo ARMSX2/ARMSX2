@@ -155,6 +155,14 @@ struct GSTileDrawInput
 	// coverage.
 	u8 alpha_min;
 	u8 alpha_max;
+	// The vertex trace's colour floor: min over the draw's vertices of
+	// min(R, G, B), meaningful for untextured draws (a texture function makes the
+	// shaded colour unbounded below). The mix rung's saturation guard consumes it;
+	// callers without the fact leave 0, which only costs coverage. fge is
+	// PRIM.FGE — fog edits the colour after the texture function, below any
+	// vertex bound, so the guard refuses fogged draws.
+	u8 color_min_rgb;
+	bool fge;
 	bool tme;
 	bool abe;
 	bool aa1;
@@ -220,6 +228,12 @@ struct GSTileDrawPass
 	u8 blend_c = 0; ///< C selector, post-collapse (0 As, 1 Ad, 2 FIX)
 	u8 blend_d = 0; ///< D selector, post-collapse
 	u8 afix = 0; ///< ALPHA.FIX byte, meaningful when blend_c == 2
+	/// M4 contract rewrite #2 of the budgeted two: the realization is the donor's
+	/// blend-mix — the shader computes the Cs-side term with the ∓124/256
+	/// round-to-floor offsets and the ROP carries the Cd term. The selectors above
+	/// stay RAW; the renderer owns the donor's selector rewrite and the per-device
+	/// As carrier (SRC1, or factor-in-alpha where the alpha channel is free).
+	bool blend_mix = false;
 };
 
 struct GSTileDrawPlan
@@ -308,7 +322,8 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	// wrap realization lands (M4c). PABE draws keep flooring too (zero corpus
 	// draws; the trace-range skips arrive with the general PABE work).
 	bool blend_active = in.abe;
-	bool blend_pass = false; ///< rung 3 admitted — the passes carry the realization
+	bool blend_pass = false; ///< rung 3 or the mix rung admitted — the passes carry the realization
+	bool blend_mix = false; ///< the mix rung's realization (rung 6), not rung 3's exact rows
 	if (in.abe && in.colclamp && !in.pabe)
 	{
 		int c_value = -1; // the C factor's value when provable, else -1
@@ -721,7 +736,62 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		const bool c_ok = (ba == bb) || c_128 || zero_result;
 		const bool row_ok = (bd != ba || ba == 2 || ba == bb) && !(ba == 1 && bb == 2 && bd == 2);
 		if (!c_ok || !row_ok)
-			return floored(GSTileFloorReason::Blend);
+		{
+			// Rung 6, queue-jumped (the overdraw banding finding): blend-mix, the
+			// donor's realization for the fractional-C rows — the shader computes
+			// the Cs-side term biased by the round-to-floor offset so the ROP's
+			// round-to-nearest lands on the GS's truncation, and the ROP carries
+			// the Cd term through the map's factor. Admission is the four plain
+			// mix shapes — (A,B) ∈ {(0,1),(1,0)} with D != A, because D==A stacks
+			// the +1 onto the C-carrying operand (coefficient C+1, the donor's
+			// A_MAX compensation class, adopted only against a census row) — and
+			// it is NARROWER than the donor's, because the corpus measured both of
+			// the donor's residual classes integrating into visible banding under
+			// particle overdraw (2026-08-14, FlatOut 2 / Dirge / OutRun first
+			// light):
+			//
+			// 1. The carrier must be a PROVEN CONSTANT ≤ 128 — FIX by value, or
+			//    As by degenerate trace range, landed as FIX. A variable As
+			//    reaches the ROP only through an 8-bit colour channel (the SRC1
+			//    output, or the primary output's alpha), which quantizes the
+			//    factor from the GS's /128 grid onto the attachment's /255 grid:
+			//    an up-to-half-level error scaled by Cd, one-sided per operand
+			//    class — OutRun's banding, and Dirge's max-108 speckle through
+			//    the known palette-index amplification. The blend constant
+			//    carries the same number as full-precision floats. The
+			//    variable-As arm waits for an exact carrier.
+			//
+			// 2. The shader-side term must provably CLEAR THE OFFSET at every
+			//    pixel: the blender clamps its colour inputs to [0,1], so a term
+			//    below the offset saturates at zero, the offset is destroyed,
+			//    and a half-integer destination product rounds up — once per
+			//    layer (FlatOut's near-black smoke, +1 per overdraw). The term
+			//    is Cs·C/128 (or Cs·(128−C)/128 for the reverse lerp), so the
+			//    guard is trace-min-RGB · effective-C ≥ 64 — provable only for
+			//    untextured, unfogged draws (a texture function or the fog blend
+			//    makes the shaded colour unbounded below).
+			//
+			// Under both proofs the realization is EXACT on a full-precision
+			// blend unit, not ±1: the operands sit on the 1/128 grid, the offset
+			// (127/256) converts the single round to a floor, and the gs-blend
+			// probe under tile is the per-device instrument (this box: every
+			// admitted grid case byte-identical). Ad stays out (the §7 scale
+			// mismatch); PABE and wrap floored above.
+			const bool mix_row = ((ba == 0 && bb == 1) || (ba == 1 && bb == 0)) && bd != ba;
+			const bool degenerate_as = bc == 0 && in.alpha_min == in.alpha_max;
+			u32 cval = 0;
+			if (bc == 2 && in.ALPHA.FIX <= 128)
+				cval = in.ALPHA.FIX;
+			else if (degenerate_as && in.alpha_min <= 128)
+				cval = in.alpha_min;
+			const bool reverse_lerp = ba == 1 && bd == 0; // the MIX3 shape: term Cs·(1−C)
+			const u32 eff_c = reverse_lerp ? (128u - cval) : cval;
+			const bool term_clears = !in.tme && !in.fge &&
+			                         static_cast<u32>(in.color_min_rgb) * eff_c >= 64;
+			if (!mix_row || cval == 0 || !term_clears)
+				return floored(GSTileFloorReason::Blend);
+			blend_mix = true;
+		}
 		// Admission only — the fields land on the passes at the end of the
 		// function, after the single-pass fill that would otherwise reset them.
 		blend_pass = true;
@@ -801,15 +871,35 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	// factor-for-factor identical at the proven value on every device.
 	if (blend_pass)
 	{
+		// Rung 3's rows are C-degenerate and land as C=FIX at 128 (the #90 rule).
+		// A mix row keeps its RAW selectors — the renderer owns the donor's
+		// selector rewrite — except that a degenerate As still lands as the
+		// constant it proves, extending #90's device-uniformity to this rung:
+		// the FIX twin rows are factor-for-factor identical at the proven value,
+		// and a constant never needs the dual-source carrier.
 		const bool variable_carrier = in.ALPHA.C != 2;
+		const bool degenerate_as = in.ALPHA.C == 0 && in.alpha_min == in.alpha_max;
 		for (u32 i = 0; i < p.pass_count; i++)
 		{
 			p.pass[i].abe = true;
+			p.pass[i].blend_mix = blend_mix;
 			p.pass[i].blend_a = static_cast<u8>(in.ALPHA.A);
 			p.pass[i].blend_b = static_cast<u8>(in.ALPHA.B);
-			p.pass[i].blend_c = variable_carrier ? 2 : static_cast<u8>(in.ALPHA.C);
 			p.pass[i].blend_d = static_cast<u8>(in.ALPHA.D);
-			p.pass[i].afix = variable_carrier ? 128 : static_cast<u8>(in.ALPHA.FIX);
+			if (!blend_mix)
+			{
+				p.pass[i].blend_c = variable_carrier ? 2 : static_cast<u8>(in.ALPHA.C);
+				p.pass[i].afix = variable_carrier ? 128 : static_cast<u8>(in.ALPHA.FIX);
+			}
+			else
+			{
+				// The mix carrier is a proven constant (admission) and lands as
+				// FIX: the renderer feeds the blend constant, which carries the
+				// number in full float precision — never the 8-bit transit a
+				// second fragment output would impose.
+				p.pass[i].blend_c = 2;
+				p.pass[i].afix = static_cast<u8>(degenerate_as ? in.alpha_min : in.ALPHA.FIX);
+			}
 		}
 	}
 

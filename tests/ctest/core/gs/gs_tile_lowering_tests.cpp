@@ -36,6 +36,9 @@ GSTileDrawInput BaseInput()
 	in.ALPHA.B = 1;
 	in.ALPHA.C = 0;
 	in.ALPHA.D = 1;
+	// A benign colour floor so mix-rung admissions in tests clear the saturation
+	// guard; the guard's own tests zero it explicitly.
+	in.color_min_rgb = 32;
 	in.vs_expand = true;
 	return in;
 }
@@ -914,10 +917,14 @@ TEST(GSTileLowering, BlendCollapsesThatEliminateTheBlend)
 	EXPECT_FALSE(gsTileLowerDraw(in).pass[0].abe); // eliminated, not realized
 
 	// FIX between the identities does not collapse, and a fractional factor is
-	// not exact under the ROP's round-to-nearest — it waits for the mix rung's
-	// round-to-floor offsets.
+	// not exact under the ROP's round-to-nearest — it lands on the mix rung,
+	// whose round-to-floor offsets are what make the fraction shippable.
 	in.ALPHA.FIX = 64;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].abe);
+	EXPECT_TRUE(p.pass[0].blend_mix);
+	EXPECT_EQ(p.pass[0].afix, 64);
 }
 
 // M4b rung 3: the provably EXACT fixed-function rows. Written as Cv = Cs·s + Cd·d,
@@ -956,6 +963,8 @@ TEST(GSTileLowering, RungThreeExactFixedFunctionRows)
 	EXPECT_EQ(p.pass[0].blend_c, 2);
 	EXPECT_EQ(p.pass[0].afix, 128);
 	EXPECT_EQ(p.pass[0].blend_d, 1);
+	// Exact rows are exact: no mix arithmetic, no offsets.
+	EXPECT_FALSE(p.pass[0].blend_mix);
 
 	// The same row through FIX at exactly 128 — the census's 61.9% class.
 	in = BaseInput();
@@ -969,8 +978,9 @@ TEST(GSTileLowering, RungThreeExactFixedFunctionRows)
 	EXPECT_EQ(p.pass[0].blend_c, 2);
 	EXPECT_EQ(p.pass[0].afix, 128);
 
-	// A fractional factor is the biased class — floors until the mix rung, from
-	// either carrier.
+	// A fractional factor on this row is the biased class, and the row's ROP
+	// half is C-free (Cs·C + Cd) — the accumulation rung's territory, not the
+	// mix rung's. Floors from either carrier until accu lands.
 	in.ALPHA.FIX = 100;
 	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
 	in.ALPHA.C = 0;
@@ -1044,6 +1054,184 @@ TEST(GSTileLowering, RungThreeExactFixedFunctionRows)
 		EXPECT_EQ(p.pass[i].blend_b, 2) << "pass " << i;
 		EXPECT_EQ(p.pass[i].blend_d, 1) << "pass " << i;
 		EXPECT_FALSE(p.pass[i].rt_read) << "pass " << i;
+	}
+}
+
+// The mix rung (M4b, queue-jumped ahead of accu by the overdraw banding
+// finding): the fractional-C rows the donor realizes as blend-mix — the shader
+// computes the Cs-side term carrying the round-to-floor offset, the ROP adds
+// the Cd term through the blend map's factor. Admission is the plain mix
+// shapes only ((A,B) ∈ {(0,1),(1,0)} with D != A — D==A stacks the +1 into a
+// C+1 coefficient, the donor's A_MAX class), and NARROWER than the donor on
+// two corpus-measured grounds (FlatOut 2 / Dirge / OutRun first light): the
+// carrier must be a PROVEN CONSTANT ≤ 128 (a variable As transits an 8-bit
+// colour channel, quantizing the factor off the /128 grid — banding and
+// palette-amplified speckle), and the shader term must provably clear the
+// offset at every pixel (a term below it saturates at the blender's [0,1]
+// input clamp, the offset dies, and half-integer destination products round
+// up — the near-black particle drift). Under both proofs the realization is
+// exact, not ±1. The pass lands the constant as FIX; the renderer owns the
+// donor's selector rewrite.
+TEST(GSTileLowering, MixRungFractionalRows)
+{
+	// The corpus's dominant blend shape through FIX below 128: the constant
+	// rides the blend constant at full float precision.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 64;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].abe);
+	EXPECT_TRUE(p.pass[0].blend_mix);
+	EXPECT_FALSE(p.pass[0].rt_read);
+	EXPECT_FALSE(p.pass[0].colclip_wrap);
+	EXPECT_EQ(p.pass[0].blend_a, 0);
+	EXPECT_EQ(p.pass[0].blend_b, 1);
+	EXPECT_EQ(p.pass[0].blend_c, 2);
+	EXPECT_EQ(p.pass[0].blend_d, 1);
+	EXPECT_EQ(p.pass[0].afix, 64);
+
+	// A degenerate As below 128 is a proven constant: it lands as FIX at the
+	// proven value — the #90 rule extended to this rung.
+	in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 64;
+	in.alpha_max = 64;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].blend_mix);
+	EXPECT_EQ(p.pass[0].blend_c, 2);
+	EXPECT_EQ(p.pass[0].afix, 64);
+
+	// A genuinely VARIABLE As floors even when bounded: its only read-free
+	// carriers are 8-bit colour channels (the SRC1 output, or the primary
+	// output's alpha), and the /128→/255 requantization is an up-to-half-level
+	// error scaled by Cd — measured integrating into OutRun's banding and
+	// Dirge's palette-amplified max-108 speckle. It waits for an exact carrier.
+	in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 0;
+	in.alpha_max = 128;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// The other plain mix shapes, on the degenerate-constant carrier: (0,1,2)
+	// and (1,0,2) hand the ROP a ±C·Cd term through the map's subtract ops;
+	// (1,0,0) is the reverse lerp, the donor's MIX3.
+	const u8 shapes[3][3] = {{0, 1, 2}, {1, 0, 2}, {1, 0, 0}};
+	for (const u8* s : shapes)
+	{
+		in = BaseInput();
+		in.abe = true;
+		in.alpha_min = 64;
+		in.alpha_max = 64;
+		in.ALPHA.A = s[0];
+		in.ALPHA.B = s[1];
+		in.ALPHA.D = s[2];
+		p = gsTileLowerDraw(in);
+		ASSERT_TRUE(p.native) << "shape " << int(s[0]) << int(s[1]) << int(s[2]);
+		EXPECT_TRUE(p.pass[0].blend_mix);
+		EXPECT_EQ(p.pass[0].blend_a, s[0]);
+		EXPECT_EQ(p.pass[0].blend_b, s[1]);
+		EXPECT_EQ(p.pass[0].blend_d, s[2]);
+		EXPECT_EQ(p.pass[0].blend_c, 2);
+		EXPECT_EQ(p.pass[0].afix, 64);
+	}
+
+	// The saturation guard: a colour floor that cannot prove the shader term
+	// clears the offset floors the draw — the near-black particle class whose
+	// zero-saturated term turns half-integer destination products into a +1
+	// per layer (FlatOut's measured drift).
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 64;
+	in.color_min_rgb = 0;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	// color_min·C must reach 64 (the offset on the /128 product grid): 32·1 < 64.
+	in.color_min_rgb = 32;
+	in.ALPHA.FIX = 1;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	// The reverse lerp's term is Cs·(1−C): a large C is the hazard there.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.A = 1;
+	in.ALPHA.B = 0;
+	in.ALPHA.D = 0;
+	in.alpha_min = 127;
+	in.alpha_max = 127;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	// Fog edits the colour below any vertex bound; a texture function is
+	// unbounded below. Both refuse the proof.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 64;
+	in.fge = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	in.fge = false;
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_psm = PSMCT32;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// FIX above 128 floors (24 corpus draws; no rung is built FOR it).
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 200;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// D==A stacks the +1 onto the C-carrying operand — the A_MAX class floors.
+	in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 64;
+	in.alpha_max = 64;
+	in.ALPHA.D = 0; // (0,1,0): Cs·(As+1) − Cd·As
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+	in.ALPHA.A = 1;
+	in.ALPHA.B = 0;
+	in.ALPHA.D = 1; // (1,0,1): Cd·(As+1) − Cs·As
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// Ad has no exact carrier here either — the scale mismatch does not care
+	// which rung asks.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 1;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// Wrap and PABE outrank the rung, as they outrank every other.
+	in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 64;
+	in.alpha_max = 64;
+	in.colclamp = false;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::ColClip);
+	in.colclamp = true;
+	in.pabe = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	// A split draw carries the mix realization on both passes, like rung 3's
+	// constant rows. FIX carrier so the alpha range keeps the test dynamic.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 64;
+	in.TEST.ATE = 1;
+	in.TEST.ATST = ATST_GEQUAL;
+	in.TEST.AREF = 64;
+	in.TEST.AFAIL = AFAIL_RGB_ONLY;
+	in.prim_overlap_none = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	ASSERT_EQ(p.pass_count, 2);
+	for (u32 i = 0; i < p.pass_count; i++)
+	{
+		EXPECT_TRUE(p.pass[i].abe) << "pass " << i;
+		EXPECT_TRUE(p.pass[i].blend_mix) << "pass " << i;
+		EXPECT_EQ(p.pass[i].blend_c, 2) << "pass " << i;
+		EXPECT_EQ(p.pass[i].afix, 64) << "pass " << i;
 	}
 }
 

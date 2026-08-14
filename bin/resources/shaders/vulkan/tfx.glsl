@@ -2206,8 +2206,6 @@ void ps_blend(inout vec4 Color, inout vec4 As_rgba)
 			C_clamped = min(C_clamped, 1.0f);
 		#endif
 
-		#if PS_BLEND_A == PS_BLEND_B
-			Color.rgb = D;
 		// In blend_mix, HW adds on some alpha factor * dst.
 		// Truncating here wouldn't quite get the right result because it prevents the <1 bit here from combining with a <1 bit in dst to form a ≥1 amount that pushes over the truncation.
 		// Instead, apply an offset to convert HW's round to a floor.
@@ -2215,10 +2213,24 @@ void ps_blend(inout vec4 Color, inout vec4 As_rgba)
 		// But they don't.  Details here: https://github.com/PCSX2/pcsx2/pull/6809#issuecomment-1211473399
 		// Based on the scripts at the above link, the ideal choice for Intel GPUs is 126/256, AMD 120/256.  Nvidia is a lost cause.
 		// 124/256 seems like a reasonable compromise, providing the correct answer 99.3% of the time on Intel (vs 99.6% for 126/256), and 97% of the time on AMD (vs 97.4% for 120/256).
+		//
+		// The Tile renderer uses the full-precision constant: its blend contract is SW parity, not
+		// per-blend closeness, and a compromise offset leaves a one-sided +1 class that integrates
+		// into visible banding under particle overdraw (26 one-sided grid cases became a 15-level
+		// FlatOut 2 drift). Whether a device's blend unit honours it at full precision is measured
+		// per device by the gs-blend probe under the tile arm, never assumed.
+		#if PS_TILE_BLEND_MIX
+			#define BLEND_MIX_OFFSET (127.0f/256.0f)
+		#else
+			#define BLEND_MIX_OFFSET (124.0f/256.0f)
+		#endif
+
+		#if PS_BLEND_A == PS_BLEND_B
+			Color.rgb = D;
 		#elif PS_BLEND_MIX == 2
-			Color.rgb = ((A - B) * C_clamped + D) + (124.0f/256.0f);
+			Color.rgb = ((A - B) * C_clamped + D) + BLEND_MIX_OFFSET;
 		#elif PS_BLEND_MIX == 1
-			Color.rgb = ((A - B) * C_clamped + D) - (124.0f/256.0f);
+			Color.rgb = ((A - B) * C_clamped + D) - BLEND_MIX_OFFSET;
 		#else
 			Color.rgb = trunc((A - B) * C + D);
 		#endif

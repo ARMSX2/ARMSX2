@@ -749,6 +749,7 @@ struct alignas(16) GSHWDrawConfig
 				u32 tile_zwalk : 1; // Tile renderer: gl_FragDepth from the SW scanline's float64 depth walk, replayed in soft-float from the per-primitive plane payload
 				u32 tile_stq : 1; // Tile renderer: the perspective texture coordinate from the per-primitive plane at the integer pixel index, not from the interpolator
 				u32 tile_tclag : 1; // Tile renderer: a non-sprite coordinate trails the exact plane by one 16.16 unit on each axis walking forward (gs-shade console rule)
+				u32 tile_blend_mix : 1; // Tile renderer: blend-mix offsets at the exact-floor constant (127/256) instead of Classic's reduced-precision-ROP compromise (124/256)
 
 				// Shuffle and fbmask effect
 				u32 shuffle  : 1;

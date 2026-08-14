@@ -304,6 +304,12 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 	in.aa1 = PRIM->AA1;
 	in.fba = m_context->FBA.FBA;
 	in.dthe = m_draw_env->DTHE.DTHE;
+	in.fge = PRIM->FGE;
+	// The vertex trace's colour floor (min over vertices of min(R,G,B)) — the mix
+	// rung's saturation guard. Interpolation cannot go below the vertex minimum,
+	// and the shader's stored-byte truncation cannot either.
+	in.color_min_rgb = static_cast<u8>(std::min({m_vt.m_min.c.I32[0] & 0xFF,
+		m_vt.m_min.c.I32[1] & 0xFF, m_vt.m_min.c.I32[2] & 0xFF}));
 	in.vs_expand = g_gs_device->Features().vs_expand;
 	if (PRIM->TME)
 	{
@@ -725,12 +731,15 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 
 	// A blend pass naming the As carrier rides the second fragment output — the
 	// device's dual-source unit is the realization, and without it the read-free
-	// encoding does not exist (the Mali r44p1 class). Floor rather than
-	// approximate; the lowering cannot see device features, so the gate lives
-	// here with the other feature-shaped envelopes. Rung 3 no longer reaches it —
-	// its admitted rows are all C-degenerate and the lowering encodes them as
-	// constant rows — so today this is a backstop for the rungs that will carry a
-	// genuinely variable As (the mix rung's SRC1 arm).
+	// encoding does not exist (the Mali r44p1 class: dualSrcBlend is a constant
+	// zero in the blob's .rodata, decomp-measured). No admitted rung reaches it
+	// today: rung 3's rows are C-degenerate and the mix rung admits only proven
+	// constants, both landed as FIX — deliberately, because any variable As
+	// reaches the ROP through an 8-bit colour channel (SRC1, or the primary
+	// output's alpha), quantizing the factor off the GS's /128 grid: measured
+	// integrating into banding and palette-amplified speckle the day it went
+	// live. This stays as the backstop for any future arm that carries a
+	// genuinely variable As.
 	if (plan.pass[0].abe && plan.pass[0].blend_c == 0 &&
 		plan.pass[0].blend_a != plan.pass[0].blend_b && !g_gs_device->Features().dual_source_blend)
 	{
@@ -1266,10 +1275,40 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 		const u32 blend_index =
 			((static_cast<u32>(bp.blend_a) * 3 + bp.blend_b) * 3 + bp.blend_c) * 3 + bp.blend_d;
 		const HWBlend blend = GSDevice::GetBlend(blend_index);
-		conf.blend = {true, blend.src, blend.dst, blend.op,
-			GSDevice::CONST_ONE, GSDevice::CONST_ZERO, bp.blend_c == 2, bp.afix};
-		conf.ps.no_color1 = !GSDevice::IsDualSourceBlendFactor(blend.src) &&
-		                    !GSDevice::IsDualSourceBlendFactor(blend.dst);
+		if (bp.blend_mix)
+		{
+			// The mix realization, transcribed from the donor: the shader computes
+			// the Cs-side term — (A−B)·C + D with the selectors rewritten so only
+			// the source operand survives, biased by the round-to-floor offset
+			// (ps.blend_mix 1 for the add/subtract ops, 2 for reverse subtract,
+			// tfx.glsl) — and the ROP adds the Cd term through the map's dst
+			// factor at src ONE. MIX3 is the reverse lerp: the shader term is
+			// Cs·(1−C). The lowering admitted only proven-constant carriers, so C
+			// is always FIX here: the shader reads it from Af and the ROP from the
+			// blend constant, both at full float precision, and with the
+			// admission's saturation guard the whole composition is EXACT on a
+			// full-precision blend unit (tile_blend_mix selects the exact-floor
+			// 127/256 offset over Classic's reduced-precision-ROP compromise; the
+			// gs-blend probe under tile is the per-device instrument).
+			const bool mix3 = (blend.flags & BLEND_MIX3) != 0;
+			conf.ps.blend_a = mix3 ? 2 : 0;
+			conf.ps.blend_b = mix3 ? 0 : 2;
+			conf.ps.blend_c = bp.blend_c;
+			conf.ps.blend_d = mix3 ? 0 : 2;
+			conf.ps.blend_mix = (blend.op == GSDevice::OP_REV_SUBTRACT) ? 2 : 1;
+			conf.ps.tile_blend_mix = 1;
+			conf.cb_ps.TA_MaxDepth_Af.a = static_cast<float>(bp.afix) / 128.0f;
+			conf.blend = {true, GSDevice::CONST_ONE, blend.dst, blend.op,
+				GSDevice::CONST_ONE, GSDevice::CONST_ZERO, true, bp.afix};
+			conf.ps.no_color1 = !GSDevice::IsDualSourceBlendFactor(blend.dst);
+		}
+		else
+		{
+			conf.blend = {true, blend.src, blend.dst, blend.op,
+				GSDevice::CONST_ONE, GSDevice::CONST_ZERO, bp.blend_c == 2, bp.afix};
+			conf.ps.no_color1 = !GSDevice::IsDualSourceBlendFactor(blend.src) &&
+			                    !GSDevice::IsDualSourceBlendFactor(blend.dst);
+		}
 	}
 
 	if (tex)
