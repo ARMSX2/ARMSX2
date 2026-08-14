@@ -84,6 +84,8 @@ enum class GSTileFloorReason : u8
 	TextureStqOverflow, ///< STQ coordinates outside the scanline's 16.16 envelope, or Q not provably positive — the floor's host arithmetic stays the authority
 	// Depth transcription reason (decided by the route, which builds the payload):
 	DepthWalkEnvelope, ///< Z-gradient triangle outside the soft-float walk's envelope (z hull, gradient magnitude, seed shape, or no VS expand)
+	// Blend gates (M4a):
+	ColClip, ///< COLCLAMP=0 on a blended draw — wrap semantics need the in-shader blend (M4c)
 	Count
 };
 
@@ -137,6 +139,13 @@ struct GSTileDrawInput
 	GIFRegTEST TEST;
 	GIFRegFRAME FRAME;
 	GIFRegZBUF ZBUF;
+	// The blend equation's registers (M4). ALPHA carries the A/B/C/D selectors and the
+	// FIX byte; consulted only when abe. colclamp is COLCLAMP.CLAMP — clamp (1) versus
+	// 8-bit wrap (0) on the blend output; pabe is PABE.PABE, the per-pixel gate on the
+	// source alpha's MSB. M4a only guards on colclamp; the selector algebra is M4b.
+	GIFRegALPHA ALPHA;
+	bool colclamp;
+	bool pabe;
 	u8 scanmsk; ///< SCANMSK.MSK
 	// Source alpha range of the draw (the vertex-trace fact; exact for untextured
 	// draws, which are the only ones that reach the alpha-test logic — tme floors
@@ -595,7 +604,21 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 			return floored(GSTileFloorReason::TextureStqOverflow);
 	}
 	if (in.abe)
+	{
+		// The wrap guardrail, ahead of everything else the blend decides: COLCLAMP=0
+		// makes the blend output wrap at 8 bits, which fixed-function blending
+		// structurally cannot express (gs-blend: the wrap sections are Classic's
+		// entire residual, and the failure signature is a 255-level boundary flip no
+		// tolerance absorbs). ColClip must outrank Blend so that as M4b lifts the
+		// read-free rungs, wrap draws keep flooring until the in-shader wrap
+		// realization lands (M4c) — without this ordering they would go silently
+		// wrong the moment the blend gate opened. Wrap without blending has nothing
+		// to wrap: every pre-blend producer clamps to 8 bits (the texture function's
+		// clamp is console-measured, gs-shade), so plain COLCLAMP=0 stays native.
+		if (!in.colclamp)
+			return floored(GSTileFloorReason::ColClip);
 		return floored(GSTileFloorReason::Blend);
+	}
 	if (in.aa1 && in.prim_class == GS_TRIANGLE_CLASS)
 		return floored(GSTileFloorReason::CoverageAA1);
 	// Fog goes native (M3d): the fragment path blends at the console's own rule,

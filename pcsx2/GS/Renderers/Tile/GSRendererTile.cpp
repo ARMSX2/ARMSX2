@@ -139,6 +139,8 @@ GSDrawLog::TileFallback MapFallbackReason(GSTileFloorReason reason)
 			return GSDrawLog::TileFallbackTextureStqOverflow;
 		case GSTileFloorReason::DepthWalkEnvelope:
 			return GSDrawLog::TileFallbackDepthWalkEnvelope;
+		case GSTileFloorReason::ColClip:
+			return GSDrawLog::TileFallbackColClip;
 		default:
 			return GSDrawLog::TileFallbackFloor;
 	}
@@ -284,6 +286,12 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 	}
 	in.tme = PRIM->TME;
 	in.abe = PRIM->ABE;
+	// The blend equation's registers (M4). ALPHA and PABE are only consulted under
+	// abe; COLCLAMP is the M4a wrap guardrail. Environment registers come from
+	// m_draw_env for the same reason SCANMSK's does.
+	in.ALPHA = m_context->ALPHA;
+	in.colclamp = m_draw_env->COLCLAMP.CLAMP;
+	in.pabe = m_draw_env->PABE.PABE;
 	in.aa1 = PRIM->AA1;
 	in.fba = m_context->FBA.FBA;
 	in.dthe = m_draw_env->DTHE.DTHE;

@@ -27,6 +27,7 @@ GSTileDrawInput BaseInput()
 	in.TEST.ZTST = ZTST_GEQUAL;
 	in.alpha_min = 0;
 	in.alpha_max = 255;
+	in.colclamp = true; // clamp mode — the common case; wrap is the M4a guardrail
 	in.vs_expand = true;
 	return in;
 }
@@ -78,6 +79,12 @@ TEST(GSTileLowering, EachDisqualifierFloorsWithItsReason)
 			},
 			GSTileFloorReason::TexturePsm},
 		{"blend", [](GSTileDrawInput& in) { in.abe = true; }, GSTileFloorReason::Blend},
+		{"blend wrap",
+			[](GSTileDrawInput& in) {
+				in.abe = true;
+				in.colclamp = false;
+			},
+			GSTileFloorReason::ColClip},
 		{"aa1 triangle", [](GSTileDrawInput& in) { in.aa1 = true; }, GSTileFloorReason::CoverageAA1},
 		{"fba on ct32", [](GSTileDrawInput& in) { in.fba = true; }, GSTileFloorReason::Fba},
 		{"scanmsk", [](GSTileDrawInput& in) { in.scanmsk = 2; }, GSTileFloorReason::ScanMask},
@@ -764,4 +771,29 @@ TEST(GSTileLowering, ZClaimsFollowByteCoverage)
 	const GSTileDrawPlan pf = gsTileLowerDraw(in);
 	EXPECT_FALSE(pf.native);
 	EXPECT_EQ(pf.z_claims, kGSTilePlanesAll);
+}
+
+// The colclip trap (M4a): COLCLAMP=0 makes the blend output wrap at 8 bits, which
+// fixed-function blending structurally cannot express (gs-blend: the wrap sections
+// are Classic's entire residual, a 255-level boundary-flip signature no tolerance
+// absorbs). The reason must outrank Blend so that when M4b lifts the read-free
+// rungs, wrap draws keep flooring until the in-shader wrap realization lands (M4c).
+// Wrap without blending has nothing to wrap: every pre-blend producer clamps to
+// 8 bits (the texture function's clamp is console-measured, gs-shade), so an
+// unblended COLCLAMP=0 draw stays native.
+TEST(GSTileLowering, ColClipOutranksBlendAndRequiresBlending)
+{
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.colclamp = false;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::ColClip);
+
+	in.colclamp = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+
+	in.abe = false;
+	in.colclamp = false;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	EXPECT_TRUE(p.native);
+	EXPECT_EQ(p.reason, GSTileFloorReason::None);
 }

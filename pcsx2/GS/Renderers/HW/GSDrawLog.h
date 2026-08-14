@@ -208,6 +208,9 @@ namespace GSDrawLog
 		// Depth transcription gate: a Z-gradient triangle draw outside the soft-float
 		// walk's envelope (z hull, gradient magnitude, or no VS expand support).
 		TileFallbackDepthWalkEnvelope,
+		// M4a blend guardrail: COLCLAMP=0 on a blended draw — wrap semantics need the
+		// in-shader blend over a read (M4c); fixed-function cannot express them.
+		TileFallbackColClip,
 	};
 
 	enum Flags : u8

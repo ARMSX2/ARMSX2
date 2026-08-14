@@ -252,6 +252,8 @@ namespace GSDrawLog
 				return "TEX_STQ_OVERFLOW";
 			case TileFallbackDepthWalkEnvelope:
 				return "ZWALK_ENVELOPE";
+			case TileFallbackColClip:
+				return "COLCLIP";
 			default:
 				return "";
 		}
