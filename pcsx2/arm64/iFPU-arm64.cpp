@@ -149,11 +149,11 @@ void recMFC1()
 	const int fsreg = _checkNEONreg(NEONTYPE_FPREG, _Fs_, MODE_READ);
 	if (fsreg >= 0)
 	{
-		armAsm->Fmov(RWSCRATCH, armSRegister(fsreg));
+		armEmitEeFprWordFromSlot(RWSCRATCH, armDRegister(fsreg), a64::x9);
 	}
 	else
 	{
-		armLoadEERegPtr(RWSCRATCH, &fpuRegs.fpr[_Fs_]);
+		armEmitEeFprWordFromSlotMem(RWSCRATCH, armCpuRegMem(&fpuRegs.fpr[_Fs_]), a64::x9);
 	}
 	armAsm->Sxtw(RXSCRATCH, RWSCRATCH);
 	// Deposit last, after the FPR-slot probe above (see recCFC1).
@@ -176,9 +176,9 @@ void recMTC1()
 
 	// If fpr[fs] is already resident in NEON, write the new bits straight into
 	// the host reg and mark it dirty (MODE_WRITE), keeping it hot for a
-	// following FPU op; the block epilogue flushes the S-reg to fpr[fs].f.
+	// following FPU op; the block epilogue flushes the host reg to fpr[fs].
 	// MTC1 overwrites fpr[fs] wholesale, so any prior MODE_WRITE-only value
-	// in the slot is dead and correctly discarded by overwriting lane 0.
+	// in the slot is dead and correctly discarded by overwriting it.
 	// GE-11: when fs is NOT resident but the backprop analysis says it is
 	// used later in the block, ALLOCATE the destination slot (write-only, no
 	// memory load) — this is the previously-dead _allocIfUsedFPUtoNEON, the
@@ -189,11 +189,11 @@ void recMTC1()
 		fsreg = _allocIfUsedFPUtoNEON(_Fs_, MODE_WRITE);
 	if (fsreg >= 0)
 	{
-		armAsm->Fmov(armSRegister(fsreg), rt);
+		armEmitEeFprSlotFromWord(armDRegister(fsreg), rt, RXSCRATCH);
 	}
 	else
 	{
-		armStoreEERegPtr(rt, &fpuRegs.fpr[_Fs_]);
+		armEmitEeFprSlotMemFromWord(armCpuRegMem(&fpuRegs.fpr[_Fs_]), rt, RXSCRATCH);
 	}
 }
 
@@ -703,7 +703,7 @@ static void recMOV_S_xmm(int info)
 	// fs==fd): the allocator hands back EEREC_D==EEREC_S and the Fmov would be
 	// an identity self-move.
 	if (EEREC_D != EEREC_S)
-		armAsm->Fmov(armSRegister(EEREC_D), armSRegister(EEREC_S));
+		armAsm->Fmov(armEeFprSlotReg(EEREC_D), armEeFprSlotReg(EEREC_S));
 }
 
 void recMOV_S()
@@ -1495,9 +1495,17 @@ void recMSUBA_S()
 // CVT.S: fd = (float)int_bits_of(fpr[fs])
 // Single NEON-scalar SCVTF Sd,Sn — the int32 bits are already in the V file;
 // the old Fmov-to-GPR bounce cost an extra insn + cross-file hazard (GE-02).
+// A relocated slot puts them back out of reach, so mode 3 pays the bounce.
 static void recCVT_S_xmm(int info)
 {
-	armAsm->Scvtf(armSRegister(EEREC_D), armSRegister(EEREC_S));
+	if (!CHECK_FPU_FULL)
+	{
+		armAsm->Scvtf(armSRegister(EEREC_D), armSRegister(EEREC_S));
+		return;
+	}
+	armEmitEeFprNarrow(RWSCRATCH, armDRegister(EEREC_S), a64::x9);
+	armAsm->Scvtf(RSSCRATCH, RWSCRATCH);
+	armEmitEeFprFromS(armDRegister(EEREC_D), RSSCRATCH, RXSCRATCH);
 }
 
 void recCVT_S()
@@ -1512,8 +1520,20 @@ void recCVT_S()
 // is NaN: ARM Fcvtzs yields 0, but the PS2 (interp CVT_W, FPU.cpp) saturates
 // NaN by sign — positive NaN → 0x7fffffff, negative NaN → 0x80000000. Fix up
 // the NaN case only (cold branch over the source-sign select).
+//
+// A relocated slot holds no NaN, so mode 3 unscales into the value and converts,
+// and Fcvtzs's own saturation covers it.
 static void recCVT_W_xmm(int info)
 {
+	if (CHECK_FPU_FULL)
+	{
+		armAsm->Fmul(RDSCRATCH, armDRegister(EEREC_S),
+			a64::VRegister(NEON_RESERVED_EEFPU_UNSCALE, 64));
+		armAsm->Fcvtzs(RWSCRATCH, RDSCRATCH);
+		armEmitEeFprWiden(armDRegister(EEREC_D), RWSCRATCH, RXSCRATCH);
+		return;
+	}
+
 	const a64::VRegister fs = armSRegister(EEREC_S);
 	armAsm->Fcvtzs(RWSCRATCH, fs);
 	a64::Label done;

@@ -5,6 +5,8 @@
 // savestate block are 32. This pins that boundary.
 
 #include "R5900.h"
+#include "Config.h"
+#include "EeFpuFormat.h"
 
 #include "common/Pcsx2Defs.h"
 
@@ -98,5 +100,50 @@ TEST(EeFpuRegFile, TheWireRoundTripIsExact)
 	EXPECT_EQ(fpuRegs.ACC.UD, fresh_acc.UD);
 	EXPECT_EQ(fpuRegs.ACCflag, 1u);
 
+	std::memcpy(&fpuRegs, &saved, sizeof(fpuRegisters));
+}
+
+// The format follows eeClampMode, and the file is converted when the mode
+// moves. Both directions: a sync that only ever widened would hand mode 0 a
+// relocated file.
+TEST(EeFpuRegFile, TheFormatFollowsTheClampModeInBothDirections)
+{
+	fpuRegisters saved;
+	std::memcpy(&saved, &fpuRegs, sizeof(fpuRegisters));
+	const bool saved_mode = EmuConfig.Cpu.Recompiler.fpuFullMode;
+
+	EmuConfig.Cpu.Recompiler.fpuFullMode = false;
+	eeFprSyncSlotFormat();
+	ASSERT_FALSE(g_eeFprSlotsRelocated);
+
+	for (int i = 0; i < 32; i++)
+		fpuRegs.fpr[i].SetWord(kWords[i % std::size(kWords)]);
+	fpuRegs.ACC.SetWord(0x7FFFFFFF);
+	EXPECT_EQ(fpuRegs.fpr[6].UD, UINT64_C(0x3F800000)) << "mode 0 keeps the word in the low half";
+
+	EmuConfig.Cpu.Recompiler.fpuFullMode = true;
+	eeFprSyncSlotFormat();
+	EXPECT_TRUE(g_eeFprSlotsRelocated);
+	for (int i = 0; i < 32; i++)
+	{
+		const u32 word = kWords[i % std::size(kWords)];
+		EXPECT_EQ(fpuRegs.fpr[i].Word(), word) << "fpr" << i;
+		EXPECT_EQ(fpuRegs.fpr[i].UD, eeFprWidenBits(word)) << "fpr" << i << " slot";
+	}
+	EXPECT_EQ(fpuRegs.ACC.UD, eeFprWidenBits(0x7FFFFFFF));
+
+	EmuConfig.Cpu.Recompiler.fpuFullMode = false;
+	eeFprSyncSlotFormat();
+	EXPECT_FALSE(g_eeFprSlotsRelocated);
+	for (int i = 0; i < 32; i++)
+	{
+		const u32 word = kWords[i % std::size(kWords)];
+		EXPECT_EQ(fpuRegs.fpr[i].Word(), word) << "fpr" << i;
+		EXPECT_EQ(fpuRegs.fpr[i].UD, static_cast<u64>(word)) << "fpr" << i << " slot";
+	}
+	EXPECT_EQ(fpuRegs.ACC.UD, UINT64_C(0x7FFFFFFF));
+
+	EmuConfig.Cpu.Recompiler.fpuFullMode = saved_mode;
+	eeFprSyncSlotFormat();
 	std::memcpy(&fpuRegs, &saved, sizeof(fpuRegisters));
 }

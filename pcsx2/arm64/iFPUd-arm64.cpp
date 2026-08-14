@@ -41,6 +41,30 @@ namespace DOUBLE {
 #define FPUflagSI 0x00000040
 #define FPUflagSD 0x00000020
 
+// ---- The guest FPR file -----------------------------------------------------
+//
+// The file holds each word relocated into double position and scaled by
+// 2^-kEeFprScaleExp (EeFpuFormat.h); this file works in words and bridges at
+// the edges. Widening is one exact multiply against the pinned scale, and
+// FPCR.FZ takes an EE denormal to a zero of the same sign there. `dstidx` may
+// be `srcidx`.
+static void SlotToDouble(int dstidx, int srcidx)
+{
+	armAsm->Fmul(armDRegister(dstidx), armDRegister(srcidx),
+		a64::VRegister(NEON_RESERVED_EEFPU_UNSCALE, 64));
+}
+
+// The narrowing pair: a slot as the architectural single in an S lane, and back.
+static void SlotToSingle(int dstidx, int srcidx)
+{
+	armEmitEeFprToS(armSRegister(dstidx), armDRegister(srcidx), RWSCRATCH, a64::x9);
+}
+
+static void SingleToSlot(int dstidx, int srcidx)
+{
+	armEmitEeFprFromS(armDRegister(dstidx), armSRegister(srcidx), RXSCRATCH);
+}
+
 // ---- PS2 single -> IEEE double --------------------------------------------
 //
 // A PS2 single with exponent field 0xff is a *normal* large number (1.m * 2^128),
@@ -51,12 +75,6 @@ namespace DOUBLE {
 //
 // Reads `srcidx`'s S lane, writes `dstidx`'s D lane, and never writes the
 // source. The two may be the same register (that is ToDouble below).
-//
-// The source is allowed to be an allocator-resident guest FPR or the ACC, which
-// is the point: the complex arm needs somewhere to put the exponent-lowered
-// single before Fcvt, and it uses the destination's S lane — a temp the caller
-// owns — instead of scribbling on the source. Every widening site used to pay a
-// `copySrc` Fmov purely to make that scribble legal.
 static void ToDoubleFrom(int dstidx, int srcidx)
 {
 	const a64::VRegister ss = armSRegister(srcidx);
@@ -448,24 +466,24 @@ static void FPU_ADD_SUB_D(int idxd, int idxt)
 
 // ---- Op cores --------------------------------------------------------------
 
-// Copy an allocator-resident FP source (EEREC_S/EEREC_T) into a fresh temp so
-// the emitter can mutate it without corrupting the guest fpr slot.
+// Read a guest slot (EEREC_S/EEREC_T) into a fresh temp as the architectural
+// single, which the emitter can then mutate without touching the slot.
 //
-// Only the paths that mutate the operand in the single domain still need this:
-// recFPUOp's FPU_ADD_SUB guard mask, and the Fabs in SQRT/RSQRT. A site that
-// only widens uses ToDoubleFrom(temp, EEREC_x) instead and pays no copy.
-static int copySrc(int eerec)
+// The paths that need the single are the ones that mutate or test the word:
+// recFPUOp's FPU_ADD_SUB guard mask, the Fabs and sign tests in SQRT/RSQRT, and
+// recDIVhelper1's zero test. A site that only widens uses SlotToDouble.
+static int narrowSrc(int eerec)
 {
 	const int idx = _allocTempNEONreg();
-	armAsm->Fmov(armSRegister(idx), armSRegister(eerec));
+	SlotToSingle(idx, eerec);
 	return idx;
 }
 
 // ADD/SUB/ADDA/SUBA: FPU_ADD_SUB guard mask -> widen -> op in double -> narrow.
 static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 {
-	const int sreg = copySrc(EEREC_S);
-	const int treg = copySrc(EEREC_T);
+	const int sreg = narrowSrc(EEREC_S);
+	const int treg = narrowSrc(EEREC_T);
 
 	FPU_ADD_SUB(sreg, treg);
 	ToDouble(sreg);
@@ -477,7 +495,7 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 		armAsm->Fsub(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
 
 	ToPS2FPU_Full(sreg, true, treg, acc, true);
-	armAsm->Fmov(armSRegister(eeRecDst), armSRegister(sreg));
+	SingleToSlot(eeRecDst, sreg);
 
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
@@ -571,10 +589,9 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // The resulting interpreter divergence is pinned by
 // EeRecFpuFull.MulDefectDropsTheBoundaryTermTheInterpreterModels.
 //
-// ft is read narrow, out of the allocator-resident guest register: Cmtst on the
-// 64-bit lane only looks at bits 0..9 -- the single's mantissa bits 0..9,
-// whatever the register's upper half happens to hold -- so the mask is the
-// single-domain 0x2AA and not the double-domain 0x2AA << 29.
+// ft is read out of the allocator-resident guest register, which holds the word
+// relocated into double position: the single's mantissa bits 0..9 are bits
+// 29..38 there, so the parked mask is 0x2AA << 29.
 //
 // The mask is not materialized here: it is parked in d10 for the whole JIT
 // session by _DynGen_EnterRecompiledCode, next to the s8/s9 clamp constants and
@@ -591,24 +608,24 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // contract, including why microVU needs no pool gate for it, is on
 // NEON_RESERVED_FPU_MULMASK in iCore-arm64.h.
 //
-// `dstidx` holds ToDouble(fs) on entry and the product on exit, `tidx` holds
-// ToDouble(ft), `ftnarrowidx` is the untouched guest ft. RQSCRATCH/RQSCRATCH2
+// `dstidx` holds the widened fs on entry and the product on exit, `tidx` holds
+// the widened ft, `ftslotidx` is the untouched guest ft. RQSCRATCH/RQSCRATCH2
 // (q30/q31) are outside the allocator pool, so no temp aliases them.
 //
 // What comes out, decoded from the code buffer (the Fmul was already there, so
 // four of these five are the cost):
 //
-//     cmtst d30, d11, d10            ; d11 == EEREC_T (narrow guest ft), d10 == the parked mask
+//     cmtst d30, d14, d10            ; d14 == EEREC_T (the guest ft slot), d10 == the parked mask
 //     fmul  d0, d0, d1
 //     fcmeq d31, d0, #0.0
 //     bic   v30.8b, v30.8b, v31.8b
 //     add   d0, d0, d30
-static void emitDefectiveFmul(int dstidx, int tidx, int ftnarrowidx)
+static void emitDefectiveFmul(int dstidx, int tidx, int ftslotidx)
 {
 	const a64::VRegister prod = armDRegister(dstidx);
 
 	// Hoisted above the Fmul: the predicate is not on its dependency chain.
-	armAsm->Cmtst(RDSCRATCH, armDRegister(ftnarrowidx), a64::VRegister(NEON_RESERVED_FPU_MULMASK, 64));
+	armAsm->Cmtst(RDSCRATCH, armDRegister(ftslotidx), a64::VRegister(NEON_RESERVED_FPU_MULMASK, 64));
 
 	armAsm->Fmul(prod, prod, armDRegister(tidx));
 
@@ -625,12 +642,12 @@ static void recMULop(int info, int eeRecDst, bool acc)
 	const int sreg = _allocTempNEONreg();
 	const int treg = _allocTempNEONreg();
 
-	ToDoubleFrom(sreg, EEREC_S);
-	ToDoubleFrom(treg, EEREC_T);
+	SlotToDouble(sreg, EEREC_S);
+	SlotToDouble(treg, EEREC_T);
 	emitDefectiveFmul(sreg, treg, EEREC_T);
 
 	ToPS2FPU_Full(sreg, true, treg, acc, false);
-	armAsm->Fmov(armSRegister(eeRecDst), armSRegister(sreg));
+	SingleToSlot(eeRecDst, sreg);
 
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
@@ -669,14 +686,14 @@ static void recMaddsub(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 	// emitter -- the guard mask, the SUB sign flip, the accumulate -- wants the
 	// wide form back, and narrowing here only to re-widen 13 instructions later
 	// was the round trip this shape exists to remove.
-	ToDoubleFrom(sreg, EEREC_S);
-	ToDoubleFrom(treg, EEREC_T);
+	SlotToDouble(sreg, EEREC_S);
+	SlotToDouble(treg, EEREC_T);
 	emitDefectiveFmul(sreg, treg, EEREC_T);
 	ToPS2FPU_Wide(sreg);
 
-	// --- widen the (allocator-resident, still narrow) ACC straight into treg,
-	//     then guard-mask it against the product in the wide domain. ---
-	ToDoubleFrom(treg, EEREC_ACC);
+	// --- widen the (allocator-resident) ACC slot straight into treg, then
+	//     guard-mask it against the product in the wide domain. ---
+	SlotToDouble(treg, EEREC_ACC);
 	FPU_ADD_SUB_D(treg, sreg);
 
 	a64::Label mulovf, accovf, operation, skipall;
@@ -734,7 +751,7 @@ static void recMaddsub(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 	ToPS2FPU_Full(treg, true, sreg, acc, true);
 
 	armAsm->Bind(&skipall);
-	armAsm->Fmov(armSRegister(eeRecDst), armSRegister(treg));
+	SingleToSlot(eeRecDst, treg);
 
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
@@ -773,13 +790,13 @@ static void ClearOUFlags()
 void recABS_S_xmm(int info)
 {
 	ClearOUFlags();
-	armAsm->Fabs(armSRegister(EEREC_D), armSRegister(EEREC_S));
+	armAsm->Fabs(armDRegister(EEREC_D), armDRegister(EEREC_S));
 }
 
 void recNEG_S_xmm(int info)
 {
 	ClearOUFlags();
-	armAsm->Fneg(armSRegister(EEREC_D), armSRegister(EEREC_S));
+	armAsm->Fneg(armDRegister(EEREC_D), armDRegister(EEREC_S));
 }
 
 // MAX/MIN: PS2 semantics on ALL values (incl. denormals — no FTZ, no clamp).
@@ -799,12 +816,12 @@ static void recMINMAX(int info, bool ismin)
 
 	ClearOUFlags();
 
-	armAsm->Fmov(RWSCRATCH, armSRegister(EEREC_S)); // x8 = zext(s bits)
+	armEmitEeFprNarrow(RWSCRATCH, armDRegister(EEREC_S), a64::x9); // x8 = zext(s bits)
 	armAsm->And(RWARG1, RWSCRATCH, 0x80000000);
 	armAsm->Orr(RWARG1, RWARG1, 0x40000000);
 	armAsm->Orr(RXSCRATCH, RXSCRATCH, a64::Operand(RXARG1, a64::LSL, 32));
 
-	armAsm->Fmov(RWARG2, armSRegister(EEREC_T)); // x1 = zext(t bits)
+	armEmitEeFprNarrow(RWARG2, armDRegister(EEREC_T), a64::x9); // x1 = zext(t bits)
 	// GE-M2: exp/sign pattern temp in reserved scratch x9 (was RWARG3/w2, an
 	// EE-allocatable pool host — see FPU_ADD_SUB). No load/store or C-call spans it.
 	armAsm->And(a64::w9, RWARG2, 0x80000000);
@@ -818,7 +835,7 @@ static void recMINMAX(int info, bool ismin)
 	else
 		armAsm->Fmax(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
 	armAsm->Fmov(RXSCRATCH, armDRegister(sreg));
-	armAsm->Fmov(armSRegister(EEREC_D), RWSCRATCH); // lower 32 = winner's raw bits
+	armEmitEeFprWiden(armDRegister(EEREC_D), RWSCRATCH, RXSCRATCH); // lower 32 = winner's raw bits
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
 }
@@ -834,8 +851,8 @@ static void recCMP(int info)
 {
 	const int sreg = _allocTempNEONreg();
 	const int treg = _allocTempNEONreg();
-	ToDoubleFrom(sreg, EEREC_S);
-	ToDoubleFrom(treg, EEREC_T);
+	SlotToDouble(sreg, EEREC_S);
+	SlotToDouble(treg, EEREC_T);
 	armAsm->Fcmp(armDRegister(sreg), armDRegister(treg));
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
@@ -960,10 +977,14 @@ void recDIV_S_xmm(int info)
 
 	const int sreg = _allocTempNEONreg();
 	const int treg = _allocTempNEONreg();
-	recDIVhelper1(sreg, treg, EEREC_S, EEREC_T);
-	armAsm->Fmov(armSRegister(EEREC_D), armSRegister(sreg));
+	const int nsreg = narrowSrc(EEREC_S);
+	const int ntreg = narrowSrc(EEREC_T);
+	recDIVhelper1(sreg, treg, nsreg, ntreg);
+	SingleToSlot(EEREC_D, sreg);
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
+	_freeNEONreg(nsreg);
+	_freeNEONreg(ntreg);
 
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUFPCR.bitmask);
@@ -977,7 +998,7 @@ void recSQRT_S_xmm(int info)
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUDivFPCR.bitmask);
 
-	const int treg = copySrc(EEREC_T); // SQRT.S reads FT
+	const int treg = narrowSrc(EEREC_T); // SQRT.S reads FT
 
 	ClearIDFlags();
 	// x86 DOUBLE tests the raw SIGN BIT (unlike the fast body's exp-field
@@ -993,7 +1014,7 @@ void recSQRT_S_xmm(int info)
 	ToDouble(treg);
 	armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
 	ToPS2FPU_Full(treg, false, treg, false, false);
-	armAsm->Fmov(armSRegister(EEREC_D), armSRegister(treg));
+	SingleToSlot(EEREC_D, treg);
 	_freeNEONreg(treg);
 
 	if (swapFpcr)
@@ -1010,8 +1031,8 @@ void recRSQRT_S_xmm(int info)
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUDivFPCR.bitmask);
 
-	const int sreg = copySrc(EEREC_S);
-	const int treg = copySrc(EEREC_T);
+	const int sreg = narrowSrc(EEREC_S);
+	const int treg = narrowSrc(EEREC_T);
 
 	ClearIDFlags();
 
@@ -1044,7 +1065,7 @@ void recRSQRT_S_xmm(int info)
 	ToPS2FPU_Full(sreg, false, treg, false, false);
 
 	armAsm->Bind(&done);
-	armAsm->Fmov(armSRegister(EEREC_D), armSRegister(sreg));
+	SingleToSlot(EEREC_D, sreg);
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
 

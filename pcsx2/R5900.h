@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "EeFpuFormat.h"
+
 #include "common/Pcsx2Defs.h"
 
 #include <array>
@@ -152,14 +154,15 @@ union GPR_reg64 {
 /*	One EE FPR. The architectural register is 32 bits and the slot is 64, so the
 	word is not the slot and there is no u32 view of it: it is read through
 	Word() and written through SetWord(), and how a slot encodes it is those two
-	functions' business. Today it is the low half.
+	functions' business. In eeClampMode 3 it is the relocation of EeFpuFormat.h,
+	and otherwise the low half.
 */
 union FPRreg {
 	double d;
 	u64 UD;
 
-	u32 Word() const { return static_cast<u32>(UD); }
-	void SetWord(u32 word) { UD = word; }
+	u32 Word() const { return g_eeFprSlotsRelocated ? eeFprNarrowBits(UD) : static_cast<u32>(UD); }
+	void SetWord(u32 word) { UD = g_eeFprSlotsRelocated ? eeFprWidenBits(word) : word; }
 };
 
 struct fpuRegisters {

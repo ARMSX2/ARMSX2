@@ -124,8 +124,8 @@ struct _arm64gprregs
 
 // Callee-saved NEON range available to the allocator: q10-q15 (q8/q9 hold
 // the pinned FPU clamp constants and are excluded from the pool entirely;
-// q10 likewise holds the pinned multiplier-defect mask, below, so the range
-// yields q11-q15 in practice).
+// q10 and q11 likewise hold the pinned multiplier-defect mask and the EE FPU's
+// unscale constant, below, so the range yields q12-q15 in practice).
 // AAPCS64 preserves only the LOWER 64 bits of v8-v15 across C calls, so
 // full-128-bit classes (NEONTYPE_GPRREG quads, VFREG) can never be retained
 // across a seam — but 32-bit FPR-class slots (FPREG/FPACC, lane 0 only) can
@@ -133,8 +133,9 @@ struct _arm64gprregs
 static constexpr u32 NEON_CALLEE_SAVED_START = 10;
 static constexpr u32 NEON_CALLEE_SAVED_END = 16; // exclusive
 
-// d10 = 0x2AA, the EE multiplier's Booth-digit predicate mask, parked for the
-// whole JIT session by _DynGen_EnterRecompiledCode alongside s8/s9 and read by
+// d10 = 0x2AA << 29, the EE multiplier's Booth-digit predicate mask in the
+// relocated slot layout, parked for the whole JIT session by
+// _DynGen_EnterRecompiledCode alongside s8/s9 and read by
 // emitDefectiveFmul (iFPUd-arm64.cpp) on every mode-3 multiply. Same contract
 // as NEON_RESERVED_FPU_MAX/MIN and for the same reason: the lower 64 bits of
 // d8-d15 are callee-saved, so a parked constant needs no compile-time liveness
@@ -159,6 +160,12 @@ static constexpr u32 NEON_CALLEE_SAVED_END = 16; // exclusive
 // EE blocks but is structurally bounded to NEON slots 0-3 by
 // kMacroVFEvictHighWater, which mVUmacroEmitEpilogue asserts on every macro op.
 static constexpr u32 NEON_RESERVED_FPU_MULMASK = 10;
+
+// d11 = 2^kEeFprScaleExp (kEeFprUnscaleBits, EeFpuFormat.h), parked under the
+// same contract as d10 and read by iFPUd-arm64.cpp wherever a slot becomes the
+// value it denotes. Emitted in every clamp mode: the dispatcher outlives a
+// clamp-mode change.
+static constexpr u32 NEON_RESERVED_EEFPU_UNSCALE = 11;
 
 // SL-13: q25/q26 are dedicated to the COP2 macro clamp-constant broadcasts
 // (q25 = maxFloat.4S = +FLT_MAX, q26 = minFloat.4S = -FLT_MAX) and excluded

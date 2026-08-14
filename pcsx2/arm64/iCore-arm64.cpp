@@ -711,13 +711,15 @@ static constexpr u32 NEON_RESERVED_FPU_MIN = 9;
 // (The callee-saved allocator range q10-q15 is declared in iCore-arm64.h —
 // NEON_CALLEE_SAVED_START/END; indices 8/9 reserved above. SL-13 reserves
 // q25/q26 the same way for the COP2 clamp-constant broadcasts —
-// NEON_RESERVED_COP2_CLAMPMAX/MIN in iCore-arm64.h. q10 is reserved the same
-// way again for the mode-3 multiplier-defect mask —
-// NEON_RESERVED_FPU_MULMASK, also iCore-arm64.h, which carries the contract.)
+// NEON_RESERVED_COP2_CLAMPMAX/MIN in iCore-arm64.h. q10 and q11 are reserved
+// the same way again for the mode-3 multiplier-defect mask and the EE FPU's
+// unscale constant — NEON_RESERVED_FPU_MULMASK and
+// NEON_RESERVED_EEFPU_UNSCALE, also iCore-arm64.h, which carries both
+// contracts.)
 static bool _isReservedNEONreg(u32 i)
 {
 	return i == NEON_RESERVED_FPU_MAX || i == NEON_RESERVED_FPU_MIN ||
-	       i == NEON_RESERVED_FPU_MULMASK ||
+	       i == NEON_RESERVED_FPU_MULMASK || i == NEON_RESERVED_EEFPU_UNSCALE ||
 	       i == NEON_RESERVED_COP2_CLAMPMAX || i == NEON_RESERVED_COP2_CLAMPMIN;
 }
 
@@ -906,7 +908,7 @@ int _allocFPtoNEONreg(int fpreg, int mode)
 
 	if (mode & MODE_READ)
 	{
-		armLoadEERegPtrRaw(armSRegister(neonreg), &fpuRegs.fpr[fpreg]);
+		armAsm->Ldr(armEeFprSlotReg(neonreg), armCpuRegMem(&fpuRegs.fpr[fpreg]));
 	}
 
 	return neonreg;
@@ -1062,7 +1064,7 @@ int _allocFPACCtoNEONreg(int mode)
 
 	if (mode & MODE_READ)
 	{
-		armLoadEERegPtrRaw(armSRegister(neonreg), &fpuRegs.ACC);
+		armAsm->Ldr(armEeFprSlotReg(neonreg), armCpuRegMem(&fpuRegs.ACC));
 	}
 
 	return neonreg;
@@ -1123,13 +1125,13 @@ void _writebackNEONreg(int neonreg)
 
 		case NEONTYPE_FPREG:
 		{
-			armStoreEERegPtrRaw(armSRegister(neonreg), &fpuRegs.fpr[arm64neon[neonreg].reg]);
+			armAsm->Str(armEeFprSlotReg(neonreg), armCpuRegMem(&fpuRegs.fpr[arm64neon[neonreg].reg]));
 		}
 		break;
 
 		case NEONTYPE_FPACC:
 		{
-			armStoreEERegPtrRaw(armSRegister(neonreg), &fpuRegs.ACC);
+			armAsm->Str(armEeFprSlotReg(neonreg), armCpuRegMem(&fpuRegs.ACC));
 		}
 		break;
 

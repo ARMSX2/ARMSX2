@@ -118,6 +118,10 @@ EeRecTestHarness::~EeRecTestHarness()
 
 	if (fpu_overflow_changed_)
 		EmuConfig.Cpu.Recompiler.fpuOverflow = prev_fpu_overflow_;
+
+	// Hand the file back in the format the restored mode calls for, so the next
+	// harness -- and anything that reads fpuRegs between them -- starts square.
+	eeFprSyncSlotFormat();
 }
 
 void EeRecTestHarness::SetGpr64(u32 reg_idx, u64 value)
@@ -368,6 +372,11 @@ void EeRecTestHarness::Run(RunMode mode)
 	ASSERT_FALSE(program_words_.empty())
 		<< "LoadProgram() must be called before Run()";
 
+	// The clamp mode may have been set either side of the SetFpr* calls and it
+	// decides what a slot holds. Production reaches this through the code-cache
+	// reset a mode change forces; here the mode is poked into EmuConfig.
+	eeFprSyncSlotFormat();
+
 	SeedEntryState();
 	pre_snapshot_ = EeSnapshot::Capture(mem_windows_);
 
@@ -489,6 +498,8 @@ void EeRecTestHarness::RunJitNoDiff(RunMode mode)
 {
 	ASSERT_FALSE(program_words_.empty())
 		<< "LoadProgram() must be called before RunJitNoDiff()";
+
+	eeFprSyncSlotFormat(); // see Run()
 
 	SeedEntryState();
 	pre_snapshot_ = EeSnapshot::Capture(mem_windows_);

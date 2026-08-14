@@ -265,9 +265,9 @@ TEST(EeVu0Cop2ClampResidency, SyncStubsReDupClampConsts)
 // residency to do it).
 TEST(EeVu0Cop2ClampResidency, EeAllocatorReservesClampRegs)
 {
-	for (int reserved : {8, 9, 10, 25, 26})
+	for (int reserved : {8, 9, 10, 11, 25, 26})
 		EXPECT_TRUE(eeTestNeonRegIsReserved(reserved)) << "q" << reserved;
-	for (int usable : {0, 7, 11, 15, 16, 24, 27, 28})
+	for (int usable : {0, 7, 12, 15, 16, 24, 27, 28})
 		EXPECT_FALSE(eeTestNeonRegIsReserved(usable)) << "q" << usable;
 }
 

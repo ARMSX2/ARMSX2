@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <iterator>
 
 // Helper Macros
 //****************************************************************
@@ -63,6 +64,28 @@
 #define FPUflagSU	0X00000008
 
 //****************************************************************
+
+bool g_eeFprSlotsRelocated = false;
+
+void eeFprSyncSlotFormat()
+{
+	const bool want = CHECK_FPU_FULL;
+	if (want == g_eeFprSlotsRelocated)
+		return;
+
+	// Read every word in the outgoing format before changing it, since the
+	// accessors are what the format means.
+	u32 words[std::size(fpuRegs.fpr)];
+	for (size_t i = 0; i < std::size(words); i++)
+		words[i] = fpuRegs.fpr[i].Word();
+	const u32 acc = fpuRegs.ACC.Word();
+
+	g_eeFprSlotsRelocated = want;
+
+	for (size_t i = 0; i < std::size(words); i++)
+		fpuRegs.fpr[i].SetWord(words[i]);
+	fpuRegs.ACC.SetWord(acc);
+}
 
 static u32 floatToBits(float f)
 {

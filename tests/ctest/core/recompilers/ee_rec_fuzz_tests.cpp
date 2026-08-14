@@ -574,6 +574,7 @@ TEST(EeFuzz, DelaySlotTargetLoopMix)
 // the whole recompiler suite; two abort in that pxFailRel. So parking a
 // constant in the fourth costs an FPU multiply-accumulate its fourth
 // call-surviving FPR home, and parking one in the third costs correctness.
+// q10 and q11 are parked, so four is what is left.
 //
 // The probes carry high-water marks of the per-op needed set.
 u32 eeTestNeonCalleeSavedSlots();   // iCore-arm64.cpp
@@ -583,7 +584,7 @@ u32 eeTestNeonRangeNeededPeak();    //
 
 TEST(EeFuzz, CalleeSavedNeonBudget)
 {
-	ASSERT_EQ(eeTestNeonCalleeSavedSlots(), 5u);
+	ASSERT_EQ(eeTestNeonCalleeSavedSlots(), 4u);
 
 	// Three by construction: rd, rs and rt distinct, none of them $zero.
 	{

@@ -56,3 +56,16 @@ __fi static u32 eeFprNarrow(double stored)
 	std::memcpy(&bits, &stored, sizeof(bits));
 	return eeFprNarrowBits(bits);
 }
+
+/*	Whether the FPR file is in this domain right now. It follows the EE FPU's
+	clamp mode: only the mode-3 recompiler computes here, and modes 0-2 leave the
+	architectural word in the slot's low half. Read it through
+	FPRreg::Word()/SetWord().
+*/
+extern bool g_eeFprSlotsRelocated;
+
+/*	Put the file in the format the current clamp mode calls for. Emitted code
+	assumes one format, so call this with the code-cache reset a mode change
+	already forces.
+*/
+void eeFprSyncSlotFormat();

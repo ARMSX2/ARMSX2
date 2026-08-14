@@ -322,20 +322,24 @@ static const void* _DynGen_EnterRecompiledCode()
 	armAsm->Ldr(a64::s8, FLT_MAX);
 	armAsm->Ldr(a64::s9, -FLT_MAX);
 
-	// Same convention, one register along: d10 = 0x2AA, the Booth-digit mask
-	// of the EE multiplier's one-ULP deficit (NEON_RESERVED_FPU_MULMASK; the
-	// contract is on the constant, the consumer is emitDefectiveFmul in
-	// iFPUd-arm64.cpp). Parking it here is what makes the mode-3 multiply
-	// sequence 4 instructions instead of 6 — every consumer reads it, none
-	// materializes it, and because the low 64 bits of d8-d15 are callee-saved
-	// there is no C-call seam, branch fork, superblock side exit or
-	// backpatched fastmem thunk that can invalidate it.
+	// Same convention, two registers along: d10 = 0x2AA << 29, the Booth-digit
+	// mask of the EE multiplier's one-ULP deficit in the relocated slot layout,
+	// and d11 = 2^kEeFprScaleExp, which turns a slot into the value it denotes
+	// (NEON_RESERVED_FPU_MULMASK and NEON_RESERVED_EEFPU_UNSCALE; the contracts
+	// are on the constants, the consumers are in iFPUd-arm64.cpp). Parking them
+	// here is what makes the mode-3 multiply sequence 4 instructions instead of
+	// 6 and its widening one instead of eleven — every consumer reads them,
+	// none materializes them, and because the low 64 bits of d8-d15 are
+	// callee-saved there is no C-call seam, branch fork, superblock side exit
+	// or backpatched fastmem thunk that can invalidate them.
 	//
-	// Emitted unconditionally rather than under CHECK_FPU_FULL: two
+	// Emitted unconditionally rather than under CHECK_FPU_FULL: four
 	// instructions once per JIT entry are not worth a dispatcher that goes
 	// stale if the clamp mode changes without a recompiler reset.
-	armAsm->Mov(RXSCRATCH, UINT64_C(0x2AA));
+	armAsm->Mov(RXSCRATCH, UINT64_C(0x2AA) << 29);
 	armAsm->Fmov(a64::VRegister(NEON_RESERVED_FPU_MULMASK, 64), RXSCRATCH);
+	armAsm->Mov(RXSCRATCH, kEeFprUnscaleBits);
+	armAsm->Fmov(a64::VRegister(NEON_RESERVED_EEFPU_UNSCALE, 64), RXSCRATCH);
 
 	// Load fastmem base into x19 if enabled
 	if (CHECK_FASTMEM)
@@ -530,11 +534,13 @@ void iFlushCall(int flushtype)
 		}
 	}
 
-	// GE-15: 32-bit FPR-class slots (NEONTYPE_FPREG/FPACC) in the
-	// callee-saved q10-q15 range survive plain C-helper seams — AAPCS64
-	// preserves the LOWER 64 bits of v8-v15, and this class only ever
-	// reads/writes lane 0 (S register; _writebackNEONreg stores S-width, so
-	// post-call garbage in the upper lanes is never observed). Writeback if
+	// GE-15: FPR-class slots (NEONTYPE_FPREG/FPACC) in the callee-saved
+	// q10-q15 range survive plain C-helper seams — AAPCS64 preserves the
+	// LOWER 64 bits of v8-v15, and this class only ever reads/writes lane 0,
+	// at S width or (eeClampMode 3, where the slot is a relocated double) D
+	// width. Both fit inside the preserved half, and _writebackNEONreg stores
+	// the same width it filled, so post-call garbage above it is never
+	// observed. Writeback if
 	// dirty but KEEP mapped — 4248's writeback-dirty-but-keep passes, whose
 	// type-mask 0x482 likewise excludes the 128-bit classes: GPRREG quads /
 	// VFREG upper lanes are caller-saved and must still flush
