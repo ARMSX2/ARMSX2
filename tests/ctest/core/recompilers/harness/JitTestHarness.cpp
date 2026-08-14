@@ -49,7 +49,7 @@ JitTestHarness::JitTestHarness(Mode mode)
 	// which is the real SMC path. Flip psxCpu to &psxRec for the harness
 	// lifetime in DiffJitVsInterp mode; restore on destruction.
 	saved_psxCpu_ = psxCpu;
-	if (mode_ == Mode::DiffJitVsInterp)
+	if (mode_ == Mode::DiffJitVsInterp || mode_ == Mode::JitOnly)
 		psxCpu = &psxRec;
 }
 
@@ -234,18 +234,28 @@ void JitTestHarness::ExecuteAndDiff()
 	// for the interpreter side's restore matches what the JIT saw at entry.
 	pre_snapshot_ = IopSnapshot::Capture(mem_windows_);
 
-	if (mode_ == Mode::DiffJitVsInterp)
+	if (mode_ == Mode::DiffJitVsInterp || mode_ == Mode::JitOnly)
 	{
 		psxRec.ExecuteBlock(kCycleBudget);
 		jit_snapshot_ = IopSnapshot::Capture(mem_windows_);
 
 		// Restore pre-state, then run interpreter from the same initial
 		// conditions.
-		pre_snapshot_.Restore();
+		if (mode_ == Mode::DiffJitVsInterp)
+			pre_snapshot_.Restore();
 	}
 
-	psxInt.ExecuteBlock(kCycleBudget);
-	interp_snapshot_ = IopSnapshot::Capture(mem_windows_);
+	// JitOnly runs no interpreter arm — see the header: the divergence is the
+	// specification there, so there is nothing to restore and nothing to diff.
+	if (mode_ != Mode::JitOnly)
+	{
+		psxInt.ExecuteBlock(kCycleBudget);
+		interp_snapshot_ = IopSnapshot::Capture(mem_windows_);
+	}
+	else
+	{
+		interp_snapshot_ = jit_snapshot_;
+	}
 
 	// In InterpOnly mode, lock the interpreter output as the "spec" for
 	// GetGprJit() / JitSnapshot() accessors. That way tests that compare

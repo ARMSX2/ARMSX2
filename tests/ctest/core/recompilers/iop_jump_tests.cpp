@@ -68,3 +68,31 @@ TEST(IopJump, JExactTarget)
 	h.Run();
 	EXPECT_EQ(h.InterpSnapshot().regs.pc, kPark);
 }
+
+// An immediate jump to address zero is a legal encoding — a call to an
+// unresolved weak symbol links as one — and the IOP already has a policy for
+// arriving at zero: AX-11 (17c7dd1f95) raises an Address Error on the fetch at
+// PC=0 and lets the BIOS handler take over, rather than hard-asserting, because
+// PS1 mode drives the IOP into that state through a register jump often enough
+// to matter. The immediate form must reach the same policy instead of aborting
+// the build while compiling the jump.
+//
+// JitOnly: the interpreter has no PC=0 model at all — it fetches address zero
+// and executes what it finds — so the two arms are meant to disagree here.
+TEST(IopJump, ImmediateJumpToZeroTakesTheAddressErrorVector)
+{
+	JitTestHarness h(JitTestHarness::Mode::JitOnly);
+	// Park the exception vector so the handler path terminates like any other
+	// test program instead of sledding through low RAM.
+	h.LoadProgramAt(0x80000080, {J(kPark), NOP});
+	h.LoadProgramNoTerm({J(0), NOP});
+	h.Run();
+
+	// ExcCode 4 (AdEL) in Cause, EPC at the faulting fetch, and control landed
+	// on the vector — the handler ran rather than the emitter giving up.
+	// The vector runs in kseg0, and a J keeps the region it jumps from, so the
+	// park is reached through its kseg0 mirror — the same RAM either way.
+	EXPECT_EQ((h.JitSnapshot().regs.CP0.n.Cause >> 2) & 0x1Fu, 4u);
+	EXPECT_EQ(h.JitSnapshot().regs.CP0.n.EPC, 0u);
+	EXPECT_EQ(h.JitSnapshot().regs.pc, 0x80000000u | kPark);
+}
