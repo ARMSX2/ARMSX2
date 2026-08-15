@@ -854,44 +854,33 @@ void recNEG_S_xmm(int info)
 }
 
 // MAX/MIN: PS2 semantics on ALL values (incl. denormals — no FTZ, no clamp).
-// Port of x86 recMINMAX's integer-ordering trick: for each operand build the
-// 64-bit double pattern {lo32 = raw float bits, hi32 = sign | 0x40000000} and
-// compare as doubles. The fixed 0x400-exponent upper word makes IEEE-double
-// ordering equal PS2 total (sign, magnitude) ordering over the raw bits, and
-// no constructed input can be NaN/Inf (the double exponent field is constant),
-// so Fmin/Fmax's NaN propagation can never trigger. Result = lower 32 bits of
-// the selected pattern.
+// Order the two words by (sign, magnitude) and write the winner's word through
+// unchanged (iFPU-arm64.cpp recMINMAX derives the ordering key).
+//
+// The relocation is order-preserving — sign to 63, magnitude to 59..29, 62..60
+// left clear — so the key is the same expression a register width up and Csel
+// picks between untouched slots.
+//
+// Same GPR scratch contract as FPU_ADD_SUB: x0/x1/x8 and the non-allocatable x9
+// only. ClearOUFlags() runs first, so any allocator eviction it emits lands
+// before the raw scratch goes live.
 static void recMINMAX(int info, bool ismin)
 {
-	// Temps FIRST: the alloc's eviction stores must not land between the GPR
-	// pattern builds and their consuming Fmovs (alloc-before-emit rule).
-	const int sreg = _allocTempNEONreg();
-	const int treg = _allocTempNEONreg();
-
 	ClearOUFlags();
 
-	armEmitEeFprNarrow(RWSCRATCH, armDRegister(EEREC_S), a64::x9); // x8 = zext(s bits)
-	armAsm->And(RWARG1, RWSCRATCH, 0x80000000);
-	armAsm->Orr(RWARG1, RWARG1, 0x40000000);
-	armAsm->Orr(RXSCRATCH, RXSCRATCH, a64::Operand(RXARG1, a64::LSL, 32));
+	const a64::Register sbits = RXARG1, tbits = RXARG2;
+	const a64::Register skey = RXSCRATCH, tkey = a64::x9;
 
-	armEmitEeFprNarrow(RWARG2, armDRegister(EEREC_T), a64::x9); // x1 = zext(t bits)
-	// GE-M2: exp/sign pattern temp in reserved scratch x9 (was RWARG3/w2, an
-	// EE-allocatable pool host — see FPU_ADD_SUB). No load/store or C-call spans it.
-	armAsm->And(a64::w9, RWARG2, 0x80000000);
-	armAsm->Orr(a64::w9, a64::w9, 0x40000000);
-	armAsm->Orr(RXARG2, RXARG2, a64::Operand(a64::x9, a64::LSL, 32));
-
-	armAsm->Fmov(armDRegister(sreg), RXSCRATCH);
-	armAsm->Fmov(armDRegister(treg), RXARG2);
-	if (ismin)
-		armAsm->Fmin(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
-	else
-		armAsm->Fmax(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
-	armAsm->Fmov(RXSCRATCH, armDRegister(sreg));
-	armEmitEeFprWiden(armDRegister(EEREC_D), RWSCRATCH, RXSCRATCH); // lower 32 = winner's raw bits
-	_freeNEONreg(sreg);
-	_freeNEONreg(treg);
+	armAsm->Fmov(sbits, armDRegister(EEREC_S));
+	armAsm->Fmov(tbits, armDRegister(EEREC_T));
+	armAsm->Asr(skey, sbits, 63);
+	armAsm->Eor(skey, sbits, a64::Operand(skey, a64::LSR, 1));
+	armAsm->Asr(tkey, tbits, 63);
+	armAsm->Eor(tkey, tbits, a64::Operand(tkey, a64::LSR, 1));
+	armAsm->Cmp(skey, tkey);
+	// Equal keys mean identical slots, so either arm is correct there.
+	armAsm->Csel(sbits, sbits, tbits, ismin ? a64::le : a64::ge);
+	armAsm->Fmov(armDRegister(EEREC_D), sbits);
 }
 
 void recMAX_S_xmm(int info) { recMINMAX(info, false); }
