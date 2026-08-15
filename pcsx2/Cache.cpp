@@ -482,13 +482,22 @@ namespace R5900
 						// an MMIO handler page, or a physical address that does not exist --
 						// is marked unbacked; the line still caches and reports its flags,
 						// and loses its data on eviction (see the comment on CacheTag).
+						//
+						// The lookup goes through the physical map, not through the KSEG0
+						// alias of the page: KSEG0 is only 512 MB wide, so routing a
+						// physical page through it meant masking the tag to 29 bits, and
+						// every page at or above 0x20000000 then folded into the low half
+						// of the map and resolved to whatever lives there. A page past the
+						// end of the map folded onto ordinary RAM and the write-back went
+						// into it. vtlb_GetPhyPtr covers the whole 1 GB physical map and
+						// answers null both for a handler page and for an address off the
+						// end of it.
 						const u32 pageTag = cpuRegs.CP0.n.TagLo & ~static_cast<u32>(CacheTag::ALL_BITS);
-						const u32 alias = 0x80000000u | (pageTag & 0x1FFFFFFFu);
-						const VTLBVirtual vmv = vtlbdata.vmap[alias >> VTLB_PAGE_BITS];
-						const bool backed = !vmv.isHandler(alias);
+						void* const host = vtlb_GetPhyPtr(pageTag);
+						const bool backed = host != nullptr;
 
 						line.tag.setValidPFN(backed);
-						line.tag.setAddr(backed ? vmv.assumePtr(alias) : static_cast<uptr>(pageTag));
+						line.tag.setAddr(backed ? reinterpret_cast<uptr>(host) : static_cast<uptr>(pageTag));
 						line.tag.rawValue &= ~CacheTag::ALL_FLAGS;
 						line.tag.rawValue |= (cpuRegs.CP0.n.TagLo & CacheTag::ALL_FLAGS);
 
