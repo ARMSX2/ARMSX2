@@ -689,8 +689,10 @@ public class NativeApp {
 	public static native void renderOpenGL();
 	public static native void renderVulkan();
 	public static native void renderAuto();
-	// When true, the Auto renderer resolves to Vulkan HW instead of OpenGL (set for Adreno devices).
-	public static native void setPreferVulkan(boolean enabled);
+	/** Pushes the probed GL strings so the core can decide whether Auto resolves to Vulkan HW
+	 *  instead of OpenGL. The decision needs the driver-bug database (keyed on a parsed driver
+	 *  revision), which lives natively, so the app supplies the strings rather than the verdict. */
+	public static native void setAutoRendererGpuStrings(String vendor, String renderer, String version);
 	/** Affinity Control Mode: 0 off (scheduler decides), 1-6 EE/VU/GS priority orders,
 	 *  7 Performance Cores. Read when the VM boots — set it before runVMThread. */
 	public static native void setAffinityMode(int mode);

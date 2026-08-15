@@ -38,6 +38,16 @@
 #include <immintrin.h>
 
 #elif defined(ARCH_ARM64)
+
+// AArch64 has no aligned/unaligned load distinction to begin with: LDR Q and LD1
+// take any address, and GSVector4i::load<aligned> ignores its own parameter and
+// emits the same instruction either way. Leaving this undefined made the callers
+// pay for a distinction that does not exist — a runtime address-and-pitch test
+// per texture upload, dispatching into three template instantiations that
+// compile to identical code, and for 32/16-bit columns a worse load strategy
+// (eight combining 64-bit loads instead of four 128-bit loads and a swizzle).
+#define FAST_UNALIGNED 1
+
 #include <arm_neon.h>
 #endif
 

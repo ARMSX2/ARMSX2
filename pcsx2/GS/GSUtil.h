@@ -42,6 +42,14 @@ public:
 
 	static GSRendererType GetPreferredRenderer();
 
+#if defined(__ANDROID__)
+	/// Whether Auto should resolve to Vulkan on this device, decided from the GL strings the app
+	/// probes at startup. Pure apart from the driver database it consults; the app pushes the
+	/// answer into g_gs_android_prefer_vk before the GS starts.
+	static bool AndroidAutoPrefersVulkan(
+		std::string_view gl_vendor, std::string_view gl_renderer, std::string_view gl_version);
+#endif
+
 	static constexpr GS_PRIM_CLASS GetPrimClass(u32 prim)
 	{
 		switch (prim)

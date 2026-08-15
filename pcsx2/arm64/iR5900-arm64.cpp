@@ -1410,8 +1410,16 @@ void SetBranchImm(u32 imm)
 
 	const Cop2VfCacheScope vfCacheScope; // fork tail: preserve compile-time cache state
 	g_branch = 1;
-	pxAssert(imm);
 
+	// Zero is an ordinary target here, not a sign that a caller forgot to
+	// compute one. A call to an unresolved weak symbol links as `jal 0` behind
+	// a null test that always skips it — PS2SDK's libc glue ships four such
+	// sites, so any homebrew built against it carries the shape — and SL-03
+	// continuation compiles that skipped path, so the emitter meets the zero
+	// target even though nothing ever jumps to it. Should something jump there
+	// anyway, address 0 resolves like any other: a block in RAM page 0, or the
+	// unmapped-page handler. (x86's iR5900.cpp asserts here and would abort on
+	// the same ELF.)
 	armAsm->Mov(RWSCRATCH, imm);
 	armAsm->Str(RWSCRATCH, armCpuRegMem(&cpuRegs.pc));
 
@@ -1464,7 +1472,8 @@ void SetBranchImmCall(u32 imm, u32 return_pc)
 
 	const Cop2VfCacheScope vfCacheScope; // fork tail: preserve compile-time cache state
 	g_branch = 1;
-	pxAssert(imm);
+	// A zero target is legal and reachable here — see SetBranchImm. This is the
+	// site the PS2SDK `jal 0` lands on.
 
 	armAsm->Mov(RWSCRATCH, imm);
 	armAsm->Str(RWSCRATCH, armCpuRegMem(&cpuRegs.pc));
@@ -1657,7 +1666,7 @@ static void recEmitSideExitTail(u32 imm)
 
 	const Cop2VfCacheScope vfCacheScope; // fork tail: preserve compile-time cache state
 	g_branch = 1;
-	pxAssert(imm);
+	// A zero target is legal and reachable here — see SetBranchImm.
 
 	iFlushCall(FLUSH_EVERYTHING);
 

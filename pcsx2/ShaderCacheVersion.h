@@ -11,4 +11,9 @@
 // driver workaround is active, so unaffected drivers get the same SPIR-V they had at 108. 109 wrapped
 // them in real functions on EVERY driver, and Qualcomm's SPIR-V compiler segfaults compiling a TFX
 // pipeline containing those calls.
-static constexpr u32 SHADER_CACHE_VERSION = 110; // 108 was upstream PR 14688
+// 111: the 2026-08 upstream sync drops the unused SW_DEPTH term from the Vulkan TFX ZWRITE
+// condition, changing that shader's source text. ⚠️ Upstream numbered the same change 109, which
+// is BELOW our 110 — taking their value would hand every user a stale blob for a source they no
+// longer have. Our counter has been ahead of theirs since 109 and cannot be resynced by adopting
+// their numbers; always bump past our own last value.
+static constexpr u32 SHADER_CACHE_VERSION = 111; // 108 was upstream PR 14688; their 109 = our 111

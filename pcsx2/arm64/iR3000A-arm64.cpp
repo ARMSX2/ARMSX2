@@ -541,7 +541,14 @@ void psxSetBranchReg()
 void psxSetBranchImm(u32 imm)
 {
 	psxbranch = 1;
-	pxAssert(imm);
+
+	// A zero target is an address, not a contradiction — and the IOP already
+	// has a policy for arriving at one. psxRecompile turns a fetch at PC=0
+	// into an Address Error and hands it to the BIOS handler (AX-11), which is
+	// how a register jump through a null pointer already behaves. Emitting the
+	// zero target normally routes the immediate form into that same handler,
+	// instead of asserting here and aborting a Devel build over an event the
+	// recompiler models one instruction later.
 
 	armAsm->Mov(RWSCRATCH, imm);
 	armAsm->Str(RWSCRATCH, armPsxRegMem(&psxRegs.pc));

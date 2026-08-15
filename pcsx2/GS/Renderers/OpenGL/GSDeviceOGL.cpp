@@ -1056,10 +1056,14 @@ bool GSDeviceOGL::CheckFeatures()
 	// m_features.framebuffer_fetch -- read `fbfetch` instead if you need to know what was decided.
 	//
 	// Which drivers cannot survive the in-tile read is a fact about the DRIVER, so it lives in the
-	// driver-bug database with the rest of them (rule gl-arm-r44p1-attachment-self-read) rather than
-	// in a substring test here. UseRenderTargetCopyForFeedback is the same workaround the Vulkan
-	// backend keys its RT-copy fallback on -- fetch and the texture barrier are two spellings of one
-	// in-tile read, so a driver that fails the read fails both, and one bit answers for both APIs.
+	// driver-bug database with the rest of them rather than in a substring test here.
+	// UseRenderTargetCopyForFeedback is the same workaround the Vulkan backend keys its RT-copy
+	// fallback on -- fetch and the texture barrier are two spellings of one in-tile read, so a
+	// driver that fails the read fails both, and one bit answers for both APIs. Note that no GL
+	// rule sets it today: the r44p1 GL rule was deliberately lifted (2.6.6.4 field evidence beat
+	// the MGS3 corruption report -- the full account sits above the GL rules in
+	// GSGPUDriverProfile.cpp), while r44p1's Vulkan rule remains because there the read is a
+	// device loss, and on Vulkan the RT copy is an ordinary image copy rather than a tile flush.
 	//
 	// This replaced a hand-rolled search for "r44p1" in GL_VERSION. The database matches a PARSED
 	// driver revision instead, which is what lets a rule say "exactly r44p1" rather than "contains
@@ -1072,11 +1076,11 @@ bool GSDeviceOGL::CheckFeatures()
 		GLAD_GL_EXT_shader_framebuffer_fetch, GLAD_GL_EXT_shader_pixel_local_storage, fbfetch_driver_blocklisted,
 		GSConfig.DisableFramebufferFetch, use_mali_profile);
 	m_features.framebuffer_fetch = fbfetch.enabled;
-	// GL fetch replaces the destination read but does NOT order overlapping primitives within one
-	// draw, so an overlapping draw keeps its full barrier (see FbFetchDropsDrawBarriers). Stated
-	// explicitly rather than left to the FeatureSupport memset: Vulkan and Metal both assign this
-	// bit, and a backend that stays silent reads as an oversight rather than as the answer.
-	m_features.framebuffer_fetch_orders_overlap = false;
+	// Whether fetch also orders overlapping primitives within one draw is a property of the
+	// extension, not of the API: ARM's guarantees it by spec and EXT's does not (see
+	// FbFetchOrdersOverlappingPrims). Blanket-false here is what put every Mali device on a
+	// per-primitive split draw for overlapping blends in 2.6.6.5.
+	m_features.framebuffer_fetch_orders_overlap = FbFetchOrdersOverlappingPrims(fbfetch.backend);
 
 	switch (fbfetch.veto)
 	{
@@ -1767,7 +1771,7 @@ bool GSDeviceOGL::SetGPUPipelineStatisticsEnabled(bool enabled)
 	else
 		DestroyPipelineStatisticsQueries();
 
-	return true;
+	return (enabled == m_gpu_pipeline_statistics_enabled);
 }
 
 void GSDeviceOGL::DrawPrimitive()

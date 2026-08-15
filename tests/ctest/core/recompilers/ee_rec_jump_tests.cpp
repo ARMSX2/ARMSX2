@@ -285,3 +285,50 @@ TEST(EeRecJump, JalrTargetSurvivesDelaySlotCSeam)
 	h.ExpectGpr64(reg::v0, kLandingMarker);
 	h.ExpectGpr64(reg::ra, static_cast<u64>(kProgramPc + 8));
 }
+
+// A jump whose target address is zero is a legal encoding, and toolchains emit
+// it: a call to an unresolved weak symbol links as `jal 0`, guarded by a null
+// test on the symbol's address that always skips it. PS2SDK's libc glue ships
+// three such sites (plus one `j 0`), so any homebrew built against it carries
+// the shape. The jump never runs — but SL-03 continuation compiles the skipped
+// path anyway, so the emitter meets a zero target at compile time and must
+// treat it as an ordinary address.
+//
+// The guard register is set at runtime here on purpose. When its value is a
+// compile-time constant instead, the branch resolves at emit time and the
+// continuation refuses it (recTrySuperblockContinueEQ), so the dead jump is
+// never emitted and the shape hides — which is why an ELF carrying it can run
+// clean until one block boundary lands between the address materialization and
+// the test.
+TEST(EeRecJump, ZeroTargetJalOnASkippedPathCompiles)
+{
+	EeRecTestHarness h;
+	h.SetGpr64(reg::v0, 0); // the weak symbol's address: null, so the guard skips
+	h.LoadProgramNoTerm({
+		BEQ(reg::v0, reg::zero, 2),   // idx0 → idx3, always taken
+		NOP,                          // idx1 ds
+		JAL(0),                       // idx2 never executed, still compiled
+		NOP,                          // idx3 ds -- also the branch target
+		ADDIU(reg::t1, reg::zero, 5), // idx4
+		J(kPark), NOP,                // idx5/6
+	});
+	h.Run();
+	h.ExpectGpr64(reg::t1, 5ull);
+}
+
+TEST(EeRecJump, ZeroTargetJOnASkippedPathCompiles)
+{
+	// The plain-jump half of the shape above — PS2SDK's `_libcglue_rtc_update`.
+	EeRecTestHarness h;
+	h.SetGpr64(reg::v0, 0);
+	h.LoadProgramNoTerm({
+		BEQ(reg::v0, reg::zero, 2),   // idx0 → idx3, always taken
+		NOP,                          // idx1 ds
+		J(0),                         // idx2 never executed, still compiled
+		NOP,                          // idx3 ds -- also the branch target
+		ADDIU(reg::t1, reg::zero, 5), // idx4
+		J(kPark), NOP,                // idx5/6
+	});
+	h.Run();
+	h.ExpectGpr64(reg::t1, 5ull);
+}

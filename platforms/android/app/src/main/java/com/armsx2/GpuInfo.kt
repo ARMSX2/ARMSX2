@@ -14,21 +14,29 @@ import android.opengl.GLES20
  * which is exactly what we want to key the recommendation on. Result is cached.
  */
 object GpuInfo {
-    @Volatile private var cached: String? = null
+    /** The three GL identity strings, as one probe. GL_VERSION carries the driver revision
+     *  (e.g. "OpenGL ES 3.2 v1.r44p1-01eac0..."), which is what the native driver-bug database
+     *  matches on — the GPU model alone cannot distinguish a healthy blob from a broken one. */
+    data class GlStrings(val vendor: String?, val renderer: String?, val version: String?)
+
+    @Volatile private var cached: GlStrings? = null
     @Volatile private var probed = false
 
-    /** GL_RENDERER of the system GPU, or null if it couldn't be read. Cached. */
-    fun rendererName(): String? {
-        if (probed) return cached
+    /** All three GL identity strings, or null entries where they couldn't be read. Cached. */
+    fun glStrings(): GlStrings {
+        if (probed) return cached ?: GlStrings(null, null, null)
         synchronized(this) {
-            if (probed) return cached
-            cached = runCatching { probe() }.getOrNull()?.takeIf { it.isNotBlank() }
+            if (probed) return cached ?: GlStrings(null, null, null)
+            cached = runCatching { probe() }.getOrNull()
             probed = true
-            return cached
+            return cached ?: GlStrings(null, null, null)
         }
     }
 
-    private fun probe(): String? {
+    /** GL_RENDERER of the system GPU, or null if it couldn't be read. Cached. */
+    fun rendererName(): String? = glStrings().renderer?.takeIf { it.isNotBlank() }
+
+    private fun probe(): GlStrings? {
         val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         if (display == EGL14.EGL_NO_DISPLAY) return null
         val ver = IntArray(2)
@@ -49,7 +57,11 @@ object GpuInfo {
             val surf = EGL14.eglCreatePbufferSurface(display, cfgs[0], pbAttrs, 0)
             try {
                 if (!EGL14.eglMakeCurrent(display, surf, surf, ctx)) return null
-                return GLES20.glGetString(GLES20.GL_RENDERER)
+                return GlStrings(
+                    vendor = GLES20.glGetString(GLES20.GL_VENDOR),
+                    renderer = GLES20.glGetString(GLES20.GL_RENDERER),
+                    version = GLES20.glGetString(GLES20.GL_VERSION),
+                )
             } finally {
                 EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
                 if (surf != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, surf)

@@ -39,6 +39,13 @@ namespace recompiler_tests {
 // When the IOP recompiler is not available on the host, set `mode` to
 // HarnessMode::InterpOnly — the JIT path is skipped and the interpreter
 // output is locked as the spec.
+//
+// HarnessMode::JitOnly drops the interpreter arm and the diff with it. It is
+// for the narrow class of behavior the recompiler models and the interpreter
+// does not — today that means the AX-11 Address Error on a fetch from PC=0,
+// where the two arms are *meant* to disagree. Reach for it only when the
+// divergence is the specification; anywhere else, the diff is the point of
+// this harness.
 class JitTestHarness
 {
 public:
@@ -46,6 +53,7 @@ public:
 	{
 		DiffJitVsInterp,   // run both JIT + interp, gtest-diff
 		InterpOnly,        // skip JIT; only captures interpreter post-state
+		JitOnly,           // skip interp + diff; the JIT models something interp does not
 	};
 
 	explicit JitTestHarness(Mode mode = Mode::DiffJitVsInterp);

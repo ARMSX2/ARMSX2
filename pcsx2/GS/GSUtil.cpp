@@ -9,6 +9,11 @@
 
 #include <array>
 
+#if defined(__ANDROID__)
+#include "GS/Renderers/Common/GSGPUProfile.h"
+#include "common/Console.h"
+#endif
+
 #ifdef ENABLE_VULKAN
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
 #endif
@@ -283,9 +288,52 @@ u32 GSUtil::GetChannelMask(u32 spsm, u32 fbmsk)
 }
 
 #if defined(__ANDROID__)
-// Set by the Android app from the GL_RENDERER string (NativeApp.setPreferVulkan): true steers the
-// Auto renderer resolution to Vulkan HW on Adreno; false keeps OpenGL HW (Mali/Xclipse/others).
+// Set by the Android app from the GL strings (NativeApp.setAutoRendererGpuStrings): true steers the
+// Auto renderer resolution to Vulkan HW; false keeps OpenGL HW. See AndroidAutoPrefersVulkan.
 bool g_gs_android_prefer_vk = false;
+
+// Kept for the log line in GetPreferredRenderer. The steering decision is made at app startup,
+// before the log file is open, so logging it at the point of decision prints into nothing -- which
+// is how a silent renderer choice ends up in a bug report as "it just picked OpenGL".
+static std::string s_android_gl_renderer;
+static std::string s_android_gl_version;
+
+bool GSUtil::AndroidAutoPrefersVulkan(
+	std::string_view gl_vendor, std::string_view gl_renderer, std::string_view gl_version)
+{
+	s_android_gl_renderer = gl_renderer;
+	s_android_gl_version = gl_version;
+
+	// Both questions are asked of the driver database rather than of substrings, so the set of
+	// affected devices lives in the one table that already models them and a future bad blob is a
+	// table row rather than another rule here.
+	//
+	// "auto" rather than GSConfig.AndroidGpuProfileOverride deliberately: this runs at app startup,
+	// before the settings are loaded, so reading config here would sample a default-constructed
+	// value and look like it worked.
+	MobileDriverContext driver_context;
+	driver_context.api = MobileGpuApi::OpenGL;
+	driver_context.driver_name = gl_renderer;
+	driver_context.api_version_string = gl_version;
+	const GpuProfileSelection selection =
+		GpuProfileDetector::Resolve("auto", gl_vendor, gl_renderer, driver_context);
+
+	// Adreno: Vulkan is the tile-memory framebuffer-fetch fast path, and the GL blob is the weaker
+	// of the two. This is the original rule, now keyed on the resolved profile instead of a
+	// case-sensitive search for "Adreno" in GL_RENDERER.
+	if (selection.runtime_profile == RuntimeGpuProfile::Adreno)
+		return true;
+
+	// Any driver whose GL cannot do an in-tile attachment self-read. On a tiler that is not a mild
+	// fallback: framebuffer fetch and the texture barrier are one capability there (GLES has no
+	// ARB/NV barrier), so losing fetch loses both, and every self-referential draw -- not just
+	// accurate blending -- round-trips the tile to main memory. Vulkan reaches the same copy-based
+	// concept with an ordinary image copy and no tile flush. Measured on a Mali-G615 r44p1
+	// (Anbernic RG 477V) with Shadow of the Colossus: 7 fps on GL against ~30 on Vulkan, same
+	// device, same settings. Sending those devices to GL by default is what made 2.6.6.5 unplayable
+	// on them.
+	return selection.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback);
+}
 #endif
 
 GSRendererType GSUtil::GetPreferredRenderer()
@@ -305,11 +353,18 @@ GSRendererType GSUtil::GetPreferredRenderer()
 		preferred_renderer = D3D::GetPreferredRenderer();
 #elif defined(__ANDROID__)
 		// Android: Auto resolves to Vulkan HW on Adreno (the tile-memory framebuffer-fetch fast
-		// path), OpenGL HW elsewhere (Mali runs GL_ARM_shader_framebuffer_fetch; Xclipse has no
-		// working VK fbfetch). The app sets g_gs_android_prefer_vk from the GL_RENDERER string
-		// before the GS starts. This only steers Auto — an explicit Vulkan/OpenGL/SW pick still wins.
+		// path) and on any device whose GL driver cannot read the render target in-tile, OpenGL HW
+		// elsewhere (a healthy Mali runs GL_ARM_shader_framebuffer_fetch, which is the fast path
+		// there; Xclipse has no working VK fbfetch). The app sets g_gs_android_prefer_vk from
+		// AndroidAutoPrefersVulkan before the GS starts. This only steers Auto — an explicit
+		// Vulkan/OpenGL/SW pick still wins.
 #if defined(ENABLE_VULKAN) && defined(ENABLE_OPENGL)
 		preferred_renderer = g_gs_android_prefer_vk ? GSRendererType::VK : GSRendererType::OGL;
+		// Logged here rather than where it was decided: the decision happens at app startup, before
+		// the log file exists. A renderer chosen silently is one nobody can diagnose from a report.
+		Console.WriteLn("Android: Auto renderer -> %s (GL_RENDERER='%s' GL_VERSION='%s').",
+			g_gs_android_prefer_vk ? "Vulkan" : "OpenGL", s_android_gl_renderer.c_str(),
+			s_android_gl_version.c_str());
 #elif defined(ENABLE_OPENGL)
 		preferred_renderer = GSRendererType::OGL;
 #elif defined(ENABLE_VULKAN)

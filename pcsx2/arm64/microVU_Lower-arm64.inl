@@ -303,24 +303,30 @@ static __fi void mVU_sumXYZ_arm(const a64::VRegister& dst, const a64::VRegister&
 // The odd-power atan series, x*c1 + x^3*c3 + ... + x^15*c15 + pi/4.
 //
 // mVU_Globals (microVU_Misc.h) stores the eight coefficients in ascending
-// power order but under permuted NAMES -- T1, T5, T2, T3, T4, T6, T7, T8 are
-// c1, c3, c5, c7, c9, c11, c13, c15 respectively. Calling the helpers in
-// name order therefore pairs four of them with the wrong power of x: c5 lands
-// on x^3, c7 on x^5, c9 on x^7 and c3 on x^9. Upstream x86 does exactly that
-// (microVU_Lower.inl) and is measurably wrong for it -- up to 919642 ULP
-// against the ps2autotests EFU capture, worst on the largest reduced
-// arguments. Order by POWER, not by name; the interpreter's eatanconst[]
-// (_vuCalculateEATAN in VUops.cpp) is the same nine values in this order.
+// power order, and since upstream's rename they are NAMED in that order too --
+// T1..T8 are c1, c3, c5, c7, c9, c11, c13, c15. Name order and power order now
+// agree, so the helpers are called in plain ascending order.
+//
+// They did not always agree. Four names used to sit on the wrong slot (T5 held
+// c3, T2 held c5, and so on), so calling in name order paired c5 with x^3, c7
+// with x^5, c9 with x^7 and c3 with x^9 -- worth up to 919642 ULP against the
+// ps2autotests EFU capture, worst on the largest reduced arguments. We fixed it
+// here by ordering the calls by POWER; upstream later fixed the same defect by
+// relabelling the struct. The values never moved, so this function emits the
+// identical instruction sequence either way -- but the two fixes CANCEL if both
+// are applied naively, which is why the call order below changed when upstream's
+// rename was merged. The interpreter's eatanconst[] (_vuCalculateEATAN in
+// VUops.cpp) is the same nine values in this order.
 static __fi void mVU_EATAN_arm(mV, const a64::VRegister& pq, const a64::VRegister& Fs,
 	const a64::VRegister& t1, const a64::VRegister& t2)
 {
 	armAsm->Ins(pq.V4S(), 0, Fs.V4S(), 0);
 	mVUmulSSConst(pq, &mVUglob.T1[0]); // x   * c1
 	mVUmovAPSReg(t2, Fs);
-	EATANhelper_arm(&mVUglob.T5[0]);   // x^3 * c3
-	EATANhelper_arm(&mVUglob.T2[0]);   // x^5 * c5
-	EATANhelper_arm(&mVUglob.T3[0]);   // x^7 * c7
-	EATANhelper_arm(&mVUglob.T4[0]);   // x^9 * c9
+	EATANhelper_arm(&mVUglob.T2[0]);   // x^3 * c3
+	EATANhelper_arm(&mVUglob.T3[0]);   // x^5 * c5
+	EATANhelper_arm(&mVUglob.T4[0]);   // x^7 * c7
+	EATANhelper_arm(&mVUglob.T5[0]);   // x^9 * c9
 	EATANhelper_arm(&mVUglob.T6[0]);   // x^11 * c11
 	EATANhelper_arm(&mVUglob.T7[0]);   // x^13 * c13
 	EATANhelper_arm(&mVUglob.T8[0]);   // x^15 * c15

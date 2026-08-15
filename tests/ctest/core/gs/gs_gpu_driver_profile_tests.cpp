@@ -20,7 +20,8 @@
 namespace
 {
 // Anbernic RG 477V -- Mali-G615 MC6, MediaTek MT6897, Arm proprietary blob r44p1. This is the
-// device behind the r44p1 render-target self-read gates on both GL and Vulkan.
+// device behind the r44p1 self-read rules: the Vulkan copy-path gate that remains, and the GL
+// gate that was deliberately lifted (both tests below pin their respective directions).
 constexpr const char* kMaliR44p1GlVendor = "ARM";
 constexpr const char* kMaliR44p1GlRenderer = "Mali-G615 MC6";
 constexpr const char* kMaliR44p1GlVersion = "OpenGL ES 3.2 v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688";
@@ -76,16 +77,21 @@ TEST(GSGpuDriverProfile, MaliOpenGLVersionComesFromTheArmRevisionNotTheGlesVersi
 	EXPECT_EQ(sel.driver.version.minor, 1);
 }
 
-// The gate this replaced was a substring search for "r44p1" in GL_VERSION, and it worked. The whole
-// risk of moving it into the table is that a parsed-version rule matches nothing while looking
-// perfectly healthy -- no log line, no assertion, the device just quietly runs the path that kills
-// it. So assert the outcome from the real string, not merely that the version parsed.
-TEST(GSGpuDriverProfile, MaliR44p1TakesTheRenderTargetCopyPathOnOpenGL)
+// r44p1 on GL keeps the ARM framebuffer-fetch path DELIBERATELY -- the 2.6.6.5 rule that put it
+// on the copy path collapsed SotC 30 -> 7 fps on the RG 477V and users downgraded en masse to
+// 2.6.6.4, whose gate was inert; the full account sits above the GL rules in the database. This
+// test pins the restoration: a rule quietly re-matching this device would re-ship the collapse,
+// and (via GSUtil::AndroidAutoPrefersVulkan) silently reroute Auto to Vulkan too.
+TEST(GSGpuDriverProfile, MaliR44p1KeepsTheInTileReadOnOpenGL)
 {
-	EXPECT_TRUE(TakesTheRenderTargetCopyPath(
+	EXPECT_FALSE(TakesTheRenderTargetCopyPath(
 		ResolveGL(kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion)));
 }
 
+// On Vulkan the same read is a device loss, not a corruption trade, so the copy path stays. The
+// risk this asserts against is a parsed-version rule matching nothing while looking healthy -- no
+// log line, no assertion, the device just quietly runs the path that kills it. So assert the
+// outcome from the real device's packed version, not merely that the version parsed.
 TEST(GSGpuDriverProfile, MaliR44p1TakesTheRenderTargetCopyPathOnVulkan)
 {
 	EXPECT_TRUE(TakesTheRenderTargetCopyPath(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0))));
