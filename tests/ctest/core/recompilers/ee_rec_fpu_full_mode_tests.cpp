@@ -588,6 +588,35 @@ TEST(EeRecFpuFull, SqrtNegativeSetsIFlagAndUsesAbs)
 	EXPECT_EQ(h.GetGpr64Jit(reg::v0) & 0x00020040u, 0x00020040u) << "I|SI not set";
 }
 
+// recSQRT_S_xmm narrows with a plain Fcvt because a root cannot leave the band
+// ToPS2FPU_Full's saturating and flushing arms exist for. These are the four
+// operands nearest the ends of that band.
+TEST(EeRecFpuFull, SqrtStaysInsideTheNarrowingBand)
+{
+	struct Case
+	{
+		u32 ft, want;
+		const char* what;
+	};
+	static constexpr Case kCases[] = {
+		{0x7FFFFFFFu, 0x5FB504F3u, "EEMAX: the largest root there is, 2^64.5"},
+		{0x00800000u, 0x20000000u, "2^-126: the smallest operand FZ keeps, root 2^-63"},
+		{0x007FFFFFu, 0x00000000u, "the largest denormal, flushed ahead of the root"},
+		{0x80000000u, 0x00000000u, "-0.0"},
+	};
+	for (const Case& c : kCases)
+	{
+		SCOPED_TRACE(c.what);
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.EnableFpuFullMode();
+		h.SetFprBits(1, c.ft);
+		h.LoadProgram({SQRT_S(2, 1)});
+		h.RunJitNoDiff();
+		EXPECT_EQ(h.GetFprBitsJit(2), c.want) << std::hex << "ft=" << c.ft;
+	}
+}
+
 TEST(EeRecFpuFull, RsqrtPseudoInfExact)
 {
 	// 1.0 / sqrt(2^128) = 2^-64 = 0x1f800000 exactly. The current interp

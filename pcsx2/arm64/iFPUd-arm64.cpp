@@ -1034,8 +1034,8 @@ void recDIV_S_xmm(int info)
 
 void recSQRT_S_xmm(int info)
 {
-	// Round-to-nearest for the double Fsqrt + the ToPS2FPU narrowing, like
-	// x86's roundmode_nearest swap (FPUDivFPCR is the nearest-mode FPCR).
+	// Round-to-nearest for the double Fsqrt and the narrowing Fcvt, like x86's
+	// roundmode_nearest swap (FPUDivFPCR is the nearest-mode FPCR).
 	const bool swapFpcr = EmuConfig.Cpu.FPUFPCR.bitmask != EmuConfig.Cpu.FPUDivFPCR.bitmask;
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUDivFPCR.bitmask);
@@ -1056,7 +1056,13 @@ void recSQRT_S_xmm(int info)
 	armAsm->Bind(&tPositive);
 
 	armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
-	ToPS2FPU_Full(treg, false, treg, false, false);
+	// A root cannot leave the in-range band, so the narrowing is the plain
+	// Fcvt with none of ToPS2FPU_Full's arms around it. The largest operand is
+	// a shade under 2^129 and roots to under 2^65; the smallest one FZ does
+	// not flush is 2^-126 and roots to 2^-63. Both sit inside [2^-126, 2^128),
+	// and the only result outside it is the zero the underflow arm would have
+	// flushed to the same zero, |t| having already made its sign positive.
+	armAsm->Fcvt(armSRegister(treg), armDRegister(treg));
 	SingleToSlot(EEREC_D, treg);
 	_freeNEONreg(treg);
 
