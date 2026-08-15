@@ -557,10 +557,10 @@ u64 EeRecTestHarness::GetHiUpper64Jit   () const  { return jit_snapshot_.regs.HI
 u64 EeRecTestHarness::GetLoUpper64Jit   () const  { return jit_snapshot_.regs.LO.UD[1]; }
 u64 EeRecTestHarness::GetGprUpper64Interp(u32 r) const { return interp_snapshot_.regs.GPR.r[r].UD[1]; }
 u64 EeRecTestHarness::GetGprUpper64Jit   (u32 r) const { return jit_snapshot_.regs.GPR.r[r].UD[1]; }
-u32 EeRecTestHarness::GetFprBitsInterp(u32 r) const { return interp_snapshot_.fprs.fpr[r].Word(); }
-u32 EeRecTestHarness::GetFprBitsJit   (u32 r) const { return jit_snapshot_.fprs.fpr[r].Word(); }
-u32 EeRecTestHarness::GetAccBitsInterp() const      { return interp_snapshot_.fprs.ACC.Word(); }
-u32 EeRecTestHarness::GetAccBitsJit   () const      { return jit_snapshot_.fprs.ACC.Word(); }
+u32 EeRecTestHarness::GetFprBitsInterp(u32 r) const { return interp_snapshot_.FprWord(r); }
+u32 EeRecTestHarness::GetFprBitsJit   (u32 r) const { return jit_snapshot_.FprWord(r); }
+u32 EeRecTestHarness::GetAccBitsInterp() const      { return interp_snapshot_.AccWord(); }
+u32 EeRecTestHarness::GetAccBitsJit   () const      { return jit_snapshot_.AccWord(); }
 u32 EeRecTestHarness::GetCp0Interp(u32 r) const     { return interp_snapshot_.regs.CP0.r[r]; }
 u32 EeRecTestHarness::GetCp0Jit   (u32 r) const     { return jit_snapshot_.regs.CP0.r[r]; }
 
@@ -582,14 +582,14 @@ void EeRecTestHarness::ExpectGpr128(u32 reg_idx, u64 lo, u64 hi) const
 
 void EeRecTestHarness::ExpectFpr(u32 reg_idx, u32 bits) const
 {
-	EXPECT_EQ(interp_snapshot_.fprs.fpr[reg_idx].Word(), bits) << "fpr" << reg_idx << " (interp)";
-	EXPECT_EQ(jit_snapshot_.fprs.fpr[reg_idx].Word(), bits)    << "fpr" << reg_idx << " (jit)";
+	EXPECT_EQ(interp_snapshot_.FprWord(reg_idx), bits) << "fpr" << reg_idx << " (interp)";
+	EXPECT_EQ(jit_snapshot_.FprWord(reg_idx), bits)    << "fpr" << reg_idx << " (jit)";
 }
 
 void EeRecTestHarness::ExpectAcc(u32 bits) const
 {
-	EXPECT_EQ(interp_snapshot_.fprs.ACC.Word(), bits) << "ACC (interp)";
-	EXPECT_EQ(jit_snapshot_.fprs.ACC.Word(), bits)    << "ACC (jit)";
+	EXPECT_EQ(interp_snapshot_.AccWord(), bits) << "ACC (interp)";
+	EXPECT_EQ(jit_snapshot_.AccWord(), bits)    << "ACC (jit)";
 }
 
 // ---- VU0 cross-tree handoff helpers ----
