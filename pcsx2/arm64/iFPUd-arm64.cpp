@@ -472,7 +472,7 @@ static void FPU_ADD_SUB_D(int idxd, int idxt)
 // single, which the emitter can then mutate without touching the slot.
 //
 // The paths that need the single are the ones that mutate or test the word:
-// recFPUOp's FPU_ADD_SUB guard mask, the Fabs and sign tests in SQRT/RSQRT, and
+// recFPUOp's FPU_ADD_SUB guard mask, the Fabs and sign test in RSQRT, and
 // recDIVhelper1's zero test. A site that only widens uses SlotToDouble.
 static int narrowSrc(int eerec)
 {
@@ -1041,20 +1041,21 @@ void recSQRT_S_xmm(int info)
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUDivFPCR.bitmask);
 
-	const int treg = narrowSrc(EEREC_T); // SQRT.S reads FT
+	const int treg = _allocTempNEONreg(); // SQRT.S reads FT
+	SlotToDouble(treg, EEREC_T);
 
 	ClearIDFlags();
-	// x86 DOUBLE tests the raw SIGN BIT (unlike the fast body's exp-field
+	// x86 DOUBLE tests the raw sign bit (unlike the fast body's exp-field
 	// gate): sqrt(-0) sets I|SI too, then |t| makes the operand positive.
-	// x86-JIT is the FULL-mode oracle for this corner.
-	armAsm->Fmov(RWARG1, armSRegister(treg));
+	// x86-JIT is the FULL-mode oracle for this corner. The slot carries that
+	// bit at 63, so the test needs no word.
+	armAsm->Fmov(RXARG1, armDRegister(EEREC_T));
 	a64::Label tPositive;
-	armAsm->Tbz(RWARG1, 31, &tPositive);
+	armAsm->Tbz(RXARG1, 63, &tPositive);
 	SetFprcOr(FPUflagI | FPUflagSI);
-	armAsm->Fabs(armSRegister(treg), armSRegister(treg));
+	armAsm->Fabs(armDRegister(treg), armDRegister(treg));
 	armAsm->Bind(&tPositive);
 
-	ToDouble(treg);
 	armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
 	ToPS2FPU_Full(treg, false, treg, false, false);
 	SingleToSlot(EEREC_D, treg);
