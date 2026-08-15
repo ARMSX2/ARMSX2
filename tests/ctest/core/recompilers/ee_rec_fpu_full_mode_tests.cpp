@@ -29,6 +29,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <gtest/gtest.h>
 #include <vector>
 
@@ -1217,7 +1218,147 @@ TEST(EeRecFpuFull, MulDefectBoundaryTermSeparatesTheClampModes)
 }
 
 // ---------------------------------------------------------------------------
-// Randomised differential: mode 3 against the interpreter, which reaches the
+// The two classes that separate the clamp modes, against silicon.
+//
+// Rows from the fpmul3 capture (SCPH-90000, eight fs significands crossed with
+// every one of the 2^23 ft significands). `console` is what the console
+// returned; `rounded` is the correctly-rounded product the probe computed on
+// the EE beside it. Nothing else came back across all 8 x 2^23 rows, so a row
+// is described by which of the two it is.
+//
+// The 8137-case hardware corpus scores the two modes identically: none of its
+// 328 zero-tail multiplies reaches the boundary term, their ft mantissas being
+// 0x000000, 0x400000 or 0x000001 where the term reads bits 11..15, and of its
+// 31 rows inside the array's band 30 saturate past the EE maximum and the last
+// is exact.
+//
+// Neither class can fire mode 3's predicate -- class A has the Booth term off,
+// class B has a non-zero tail -- so on every row here mode 3 owes `rounded` and
+// mode 4 owes `console`. Half of each table has the two equal.
+namespace {
+struct MulTierRow
+{
+	u32 fs, ft, console, rounded;
+};
+
+// Class A: the exact product has a zero tail and ft's Booth bits are clear, so
+// the boundary term at the truncation column is the only thing that can move
+// the row.
+constexpr MulTierRow kBoundaryTermRows[] = {
+	{0x3f900000u, 0x3f8fa000u, 0x3fa193ffu, 0x3fa19400u},
+	{0x3f900000u, 0x3f8fa800u, 0x3fa19d00u, 0x3fa19d00u},
+	{0x3f900000u, 0x3ff33000u, 0x4008cb00u, 0x4008cb00u},
+	{0x3f900000u, 0x3ff33800u, 0x4008cf7fu, 0x4008cf80u},
+	{0x3fa00000u, 0x3f87d000u, 0x3fa9c3ffu, 0x3fa9c400u},
+	{0x3fa00000u, 0x3f87d800u, 0x3fa9ce00u, 0x3fa9ce00u},
+	{0x3fa00000u, 0x3fdc6500u, 0x4009bf20u, 0x4009bf20u},
+	{0x3fa00000u, 0x3fdc7800u, 0x4009caffu, 0x4009cb00u},
+	{0x3fc00000u, 0x3f87d000u, 0x3fcbb7ffu, 0x3fcbb800u},
+	{0x3fc00000u, 0x3f87d800u, 0x3fcbc400u, 0x3fcbc400u},
+	{0x3fc00000u, 0x3fb27400u, 0x4005d700u, 0x4005d700u},
+	{0x3fc00000u, 0x3fb28000u, 0x4005dfffu, 0x4005e000u},
+	{0x3fe00000u, 0x3f87d000u, 0x3fedabffu, 0x3fedac00u},
+	{0x3fe00000u, 0x3f87d800u, 0x3fedba00u, 0x3fedba00u},
+	{0x3fe00000u, 0x3fa1e940u, 0x400dac17u, 0x400dac18u},
+	{0x3fe00000u, 0x3fa1f000u, 0x400db200u, 0x400db200u},
+	{0x3ff00000u, 0x3f982100u, 0x400e9ef0u, 0x400e9ef0u},
+	{0x3ff00000u, 0x3f983800u, 0x400eb47fu, 0x400eb480u},
+	{0x3fff0000u, 0x3fbf0000u, 0x403e4100u, 0x403e4100u},
+	{0x3fff0000u, 0x3fbf0900u, 0x403e49f6u, 0x403e49f7u},
+};
+
+// Class B: the tail is non-zero but below the array's 2^15 borrow, so no
+// function of ft can decide the row and only reconstructing the array's
+// truncated columns does.
+constexpr MulTierRow kArrayBandRows[] = {
+	{0x3fbfffffu, 0x3fbf8961u, 0x400fa708u, 0x400fa708u},
+	{0x3fbfffffu, 0x3fbf92d1u, 0x400fae1cu, 0x400fae1cu},
+	{0x3fbfffffu, 0x3fbfb47du, 0x400fc75cu, 0x400fc75du},
+	{0x3fbfffffu, 0x3fbfbf69u, 0x400fcf8du, 0x400fcf8eu},
+	{0x3fd2b4c1u, 0x3f83fa5cu, 0x3fd9411eu, 0x3fd9411eu},
+	{0x3fd2b4c1u, 0x3f85cb9cu, 0x3fdc3efbu, 0x3fdc3efcu},
+	{0x3fd2b4c1u, 0x3f87f17cu, 0x3fdfc828u, 0x3fdfc828u},
+	{0x3fd2b4c1u, 0x3f8bb3c4u, 0x3fe5f834u, 0x3fe5f835u},
+	{0x3fd2b4c1u, 0x3fa398c7u, 0x4006a6d6u, 0x4006a6d6u},
+	{0x3fd2b4c1u, 0x3fa6df9cu, 0x40095940u, 0x40095941u},
+	{0x3fd2b4c1u, 0x3fab9889u, 0x400d3c49u, 0x400d3c49u},
+	{0x3fd2b4c1u, 0x3fb23f42u, 0x4012b5beu, 0x4012b5bfu},
+};
+
+// One leg per scope: a harness restores the clamp mode in its destructor, so
+// one still alive carries its mode into the next leg.
+u32 RunMulTierRow(const MulTierRow& r, int mode, bool interp, bool madd)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	if (mode >= 4)
+		h.EnableFpuExactMode();
+	else if (mode >= 3)
+		h.EnableFpuFullMode();
+	h.SetAccBits(0x00000000u); // +0, so MADD lands on the product alone
+	h.SetFprBits(0, r.fs);
+	h.SetFprBits(1, r.ft);
+	h.LoadProgram({madd ? MADD_S(2, 0, 1) : MUL_S(2, 0, 1)});
+	if (interp)
+	{
+		h.RunInterpOnly();
+		return h.GetFprBitsInterp(2);
+	}
+	h.RunJitNoDiff();
+	return h.GetFprBitsJit(2);
+}
+
+// Both emit sites, since recMULop and recMaddsub's multiply stage narrow
+// through different code.
+void ExpectMulTier(const MulTierRow& r)
+{
+	for (bool madd : {false, true})
+	{
+		SCOPED_TRACE(madd ? "MADD.S" : "MUL.S");
+		EXPECT_EQ(RunMulTierRow(r, 1, true, madd), r.console) << "interp";
+		EXPECT_EQ(RunMulTierRow(r, 4, false, madd), r.console) << "eeClampMode 4";
+		EXPECT_EQ(RunMulTierRow(r, 3, false, madd), r.rounded) << "eeClampMode 3";
+	}
+}
+
+int SeparatingRows(const MulTierRow* rows, size_t n)
+{
+	int k = 0;
+	for (size_t i = 0; i < n; i++)
+		k += (rows[i].console != rows[i].rounded);
+	return k;
+}
+} // namespace
+
+TEST(EeRecFpuFull, MulDeficitBoundaryTermAgainstTheConsole)
+{
+	for (const MulTierRow& r : kBoundaryTermRows)
+	{
+		SCOPED_TRACE(::testing::Message() << std::hex << "fs=" << r.fs << " ft=" << r.ft);
+		ExpectMulTier(r);
+	}
+	// Liveness, both ways: rows the term moves, and rows it must not.
+	const int sep = SeparatingRows(kBoundaryTermRows, std::size(kBoundaryTermRows));
+	EXPECT_GT(sep, 0) << "no row left where the boundary term decides";
+	EXPECT_LT(sep, static_cast<int>(std::size(kBoundaryTermRows)))
+		<< "every row decides, so an emitter that always decremented would pass";
+}
+
+TEST(EeRecFpuFull, MulDeficitArrayBandAgainstTheConsole)
+{
+	for (const MulTierRow& r : kArrayBandRows)
+	{
+		SCOPED_TRACE(::testing::Message() << std::hex << "fs=" << r.fs << " ft=" << r.ft);
+		ExpectMulTier(r);
+	}
+	const int sep = SeparatingRows(kArrayBandRows, std::size(kArrayBandRows));
+	EXPECT_GT(sep, 0) << "no row left inside the band that the array moves";
+	EXPECT_LT(sep, static_cast<int>(std::size(kArrayBandRows)))
+		<< "every row moves, so an emitter that always decremented would pass";
+}
+
+// ---------------------------------------------------------------------------
+// Randomised differential: mode 4 against the interpreter, which reaches the
 // same answers in completely different code (FPU.cpp eeMulArray reconstructs
 // the array's truncated low columns in integers; iFPUd reads the predicate off
 // ft's slot bits and the tail off the double product).
