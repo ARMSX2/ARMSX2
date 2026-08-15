@@ -471,9 +471,9 @@ static void FPU_ADD_SUB_D(int idxd, int idxt)
 // Read a guest slot (EEREC_S/EEREC_T) into a fresh temp as the architectural
 // single, which the emitter can then mutate without touching the slot.
 //
-// The paths that need the single are the ones that mutate or test the word:
-// recFPUOp's FPU_ADD_SUB guard mask, and the Fabs and sign test in RSQRT. A
-// site that only widens uses SlotToDouble.
+// The one path that needs the single is the one that rewrites the word:
+// recFPUOp's FPU_ADD_SUB guard mask. Everything else either only widens, or
+// tests a bit the slot carries too, and uses SlotToDouble.
 static int narrowSrc(int eerec)
 {
 	const int idx = _allocTempNEONreg();
@@ -957,13 +957,14 @@ static void ClearIDFlags()
 // otherwise consistent. The result carries exponent field 0xff — on the EE
 // that is an ordinary large finite float (the EE has no NaN/Inf), but guest
 // softfloat routines do classify exp==0xff separately, so the one-ULP-band
-// difference from +FLT_MAX is game-visible.
-static void SetMaxValueS(int idx)
+// difference from +FLT_MAX is game-visible. kEeFprMaxBits is that word's slot,
+// so this is the same two masks a register width up.
+static void SetMaxValueSlot(int dstidx, int srcidx)
 {
-	armAsm->Fmov(RWSCRATCH, armSRegister(idx));
-	armAsm->And(RWSCRATCH, RWSCRATCH, 0x80000000);
-	armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x7fffffff);
-	armAsm->Fmov(armSRegister(idx), RWSCRATCH);
+	armAsm->Fmov(RXSCRATCH, armDRegister(srcidx));
+	armAsm->And(RXSCRATCH, RXSCRATCH, kEeFprSignBit);
+	armAsm->Orr(RXSCRATCH, RXSCRATCH, kEeFprMaxBits);
+	armAsm->Fmov(armDRegister(dstidx), RXSCRATCH);
 }
 
 // x86 recDIVhelper1 (FPU_FLAGS_ID == 1 unconditionally): divide-by-zero
@@ -1073,41 +1074,45 @@ void recRSQRT_S_xmm(int info)
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUDivFPCR.bitmask);
 
-	const int sreg = narrowSrc(EEREC_S);
-	const int treg = narrowSrc(EEREC_T);
+	// As in recDIV_S_xmm, the result is built in a temp.
+	const int sreg = _allocTempNEONreg();
+	const int treg = _allocTempNEONreg();
 
 	ClearIDFlags();
 
-	armAsm->Fmov(RWARG1, armSRegister(treg));
+	armAsm->Fmov(RXARG1, armDRegister(EEREC_T));
 	a64::Label tPositive;
-	armAsm->Tbz(RWARG1, 31, &tPositive);
+	armAsm->Tbz(RXARG1, 63, &tPositive);
 	SetFprcOr(FPUflagI | FPUflagSI);
-	armAsm->Fabs(armSRegister(treg), armSRegister(treg));
 	armAsm->Bind(&tPositive);
+	// Unconditional: |t| is a no-op on the positive arm, and it doubles as the
+	// copy that keeps ft's slot intact.
+	armAsm->Fabs(armDRegister(treg), armDRegister(EEREC_T));
 
 	a64::Label normal, zeroOverZero, setDone, done;
-	armAsm->Fcmp(armSRegister(treg), 0.0);
+	armAsm->Fcmp(armDRegister(treg), 0.0);
 	armAsm->B(&normal, a64::ne);
 
-	armAsm->Fcmp(armSRegister(sreg), 0.0);
+	armAsm->Fcmp(armDRegister(EEREC_S), 0.0);
 	armAsm->B(&zeroOverZero, a64::eq);
 	SetFprcOr(FPUflagD | FPUflagSD); // x/0
 	armAsm->B(&setDone);
 	armAsm->Bind(&zeroOverZero);
 	SetFprcOr(FPUflagI | FPUflagSI); // 0/0
 	armAsm->Bind(&setDone);
-	SetMaxValueS(sreg);
+	SetMaxValueSlot(sreg, EEREC_S);
 	armAsm->B(&done);
 
 	armAsm->Bind(&normal);
-	ToDouble(treg);
-	ToDouble(sreg);
+	SlotToDouble(treg, treg);
+	SlotToDouble(sreg, EEREC_S);
 	armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
 	armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
 	ToPS2FPU_Full(sreg, false, treg, false, false);
+	SingleToSlot(sreg, sreg);
 
 	armAsm->Bind(&done);
-	SingleToSlot(EEREC_D, sreg);
+	armAsm->Fmov(armDRegister(EEREC_D), armDRegister(sreg));
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
 
