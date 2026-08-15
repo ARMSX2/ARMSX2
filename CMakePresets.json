@@ -40,10 +40,11 @@
         {
             "name": "clang-devel",
             "displayName": "Clang Devel",
-            "description": "Developer build using ninja & clang.",
+            "description": "Developer build using ninja & clang. ENABLE_RIG is on, so a plain `cmake --build build` also refreshes the headless runners and the test binaries -- they are what measurements run, and leaving them out of the default target is what makes a stale one possible.",
             "inherits": "clang-base",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Devel"
+                "CMAKE_BUILD_TYPE": "Devel",
+                "ENABLE_RIG": "ON"
             }
         },
         {
