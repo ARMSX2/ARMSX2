@@ -176,7 +176,17 @@ endif()
 # Populate `rig`. The unit-test executables add themselves from add_pcsx2_test();
 # these are the frontends and headless runners, each guarded because which of
 # them exist depends on the configuration.
-foreach(_rig_target pcsx2-qt pcsx2-sdl pcsx2-gsrunner pcsx2-eerunner pcsx2-vurunner)
+#
+# ⚠️ `rig` must claim exactly the binaries this configuration actually builds. A
+# target that exists but sits outside `all` -- pcsx2-sdl without
+# ENABLE_SDL_FRONTEND -- would make the doctor demand freshness for something no
+# build produces, so a green build reads red forever. Enable the frontend if you
+# want it measured; then it is in both.
+set(_rig_candidates pcsx2-qt pcsx2-gsrunner pcsx2-eerunner pcsx2-vurunner)
+if(ENABLE_SDL_FRONTEND)
+	list(APPEND _rig_candidates pcsx2-sdl)
+endif()
+foreach(_rig_target IN LISTS _rig_candidates)
 	if(TARGET ${_rig_target})
 		add_dependencies(rig ${_rig_target})
 		set_property(GLOBAL APPEND PROPERTY ARMSX2_RIG_TARGETS ${_rig_target})

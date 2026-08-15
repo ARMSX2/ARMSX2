@@ -2,8 +2,22 @@ enable_testing()
 add_custom_target(unittests)
 add_custom_command(TARGET unittests POST_BUILD COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure)
 
+# Upstream excludes every gate binary from the default target, so a plain build
+# leaves the gates at whatever revision they were last asked for BY NAME -- which
+# is the same structural fault ENABLE_RIG exists to remove for the runners. Under
+# ENABLE_RIG they are ordinary members of `all`; without it, nothing changes.
+#
+# ⚠️ Being reachable through `--target rig` is NOT the same thing and does not
+# substitute: the rig doctor demands these be current with the source, so leaving
+# them out of `all` makes a correct-looking build fail its own freshness check.
+if(ENABLE_RIG)
+	set(_pcsx2_test_exclude "")
+else()
+	set(_pcsx2_test_exclude EXCLUDE_FROM_ALL)
+endif()
+
 macro(add_pcsx2_test target)
-	add_executable(${target} EXCLUDE_FROM_ALL ${ARGN})
+	add_executable(${target} ${_pcsx2_test_exclude} ${ARGN})
 	target_link_libraries(${target} PRIVATE gtest)
 	if(APPLE)
 		# For some reason this doesn't get pulled in implicitly...
