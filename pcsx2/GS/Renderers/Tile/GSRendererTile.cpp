@@ -161,6 +161,7 @@ GSRendererTile::GSRendererTile(int threads)
 void GSRendererTile::Destroy()
 {
 	ReportReadbackCensus();
+	ReportMemoCensus();
 	m_tex_source.Clear();
 	m_target_pool.ReleaseAll();
 	GSRendererSW::Destroy();
@@ -322,9 +323,17 @@ GSVector4i GSRendererTile::ComputeDrawRect() const
 	return bbox.rintersect(m_context->scissor.in);
 }
 
-GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
+// Everything the pure lowering reads, gathered off the current draw. Split from the
+// lowering itself because the two halves have very different costs and only one of
+// them is memoizable: this half consults the vertex trace and the CLUT and must run
+// on every draw, while gsTileLowerDraw is a pure function of what it returns.
+//
+// The struct is memset rather than aggregate-initialized so its PADDING is defined
+// too — the memo compares inputs as bytes, and `= {}` says nothing about the gaps.
+GSTileDrawInput GSRendererTile::BuildLoweringInput()
 {
-	GSTileDrawInput in = {};
+	GSTileDrawInput in;
+	std::memset(&in, 0, sizeof(in));
 	in.prim_class = m_vt.m_primclass;
 	in.TEST = m_context->TEST;
 	in.FRAME = m_context->FRAME;
@@ -428,7 +437,7 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 				m_context->TEX0.TW, m_context->TEX0.TH);
 		}
 	}
-	return gsTileLowerDraw(in);
+	return in;
 }
 
 // -- Spill machinery -----------------------------------------------------------------
@@ -2322,7 +2331,20 @@ void GSRendererTile::Draw()
 	}
 
 	const GSVector4i r = ComputeDrawRect();
-	const GSTileDrawPlan plan = LowerCurrentDraw();
+	// The build half is not repeatable — the CLUT decode, the trace's alpha range and
+	// the overlap verdict all warm on first call — so it is timed once and summed,
+	// with the timer pair's own cost measured beside it and subtracted at report time.
+	const u64 b0 = log ? Common::Timer::GetCurrentValue() : 0;
+	const GSTileDrawInput in = BuildLoweringInput();
+	if (log) [[unlikely]]
+	{
+		const u64 b1 = Common::Timer::GetCurrentValue();
+		const u64 b2 = Common::Timer::GetCurrentValue();
+		m_memo.build_ns += Common::Timer::ConvertValueToNanoseconds(b1 - b0);
+		m_memo.timer_ns += Common::Timer::ConvertValueToNanoseconds(b2 - b1);
+		m_memo.build_calls++;
+	}
+	const GSTileDrawPlan plan = gsTileLowerDraw(in);
 	GSTileFloorReason reason = plan.reason;
 
 	// The lockstep oracle arms only for a draw heading to the native route: a floored
@@ -2373,8 +2395,138 @@ void GSRendererTile::Draw()
 
 	if (log) [[unlikely]]
 	{
-		GSDrawLog::NoteTileDraw(/*memo_hit=*/false, record_ns, /*pass_id=*/0, MapFallbackReason(reason), r,
+		// After record_ns is taken: the census times the lowering on its own clock and
+		// must not land in the renderer's per-draw cost.
+		const bool memo_hit = MeasureMemo(in);
+		GSDrawLog::NoteTileDraw(memo_hit, record_ns, /*pass_id=*/0, MapFallbackReason(reason), r,
 			plan.stq_guard);
 		GSDrawLog::FinishDraw();
+	}
+}
+
+// -- M3f premise census ---------------------------------------------------------------
+//
+// What a draw-key memo could save is exactly gsTileLowerDraw: it is a pure function of
+// BuildLoweringInput's result, so equal inputs give equal plans, and nothing upstream of
+// it is skippable (the alpha range and the overlap verdict are read off THIS draw's
+// vertices, and a key cheap enough to skip them cannot distinguish them). So the value
+// of the memo is one hit rate times one function's cost, and this measures both.
+//
+// The cost is timed over kMemoReps repetitions because a single call sits under the
+// clock's own resolution — a per-call figure read off one sample would be quantisation,
+// not measurement. Timing runs on one draw in kMemoSample so the instrument itself stays
+// small; the hit rate is counted on every draw. Nothing here reaches record_ns.
+bool GSRendererTile::MeasureMemo(const GSTileDrawInput& in)
+{
+	static constexpr u32 kMemoReps = 256;
+	static constexpr u32 kMemoSample = 32;
+
+	// Stored and compared as bytes throughout, memcpy rather than assignment: a copy
+	// that leaves padding behind would make two equal draws compare unequal, and the
+	// only symptom would be a hit rate quietly reading low.
+	const bool time_this_draw = (m_memo.draws % kMemoSample) == 0;
+	m_memo.draws++;
+	if (m_memo.have_prev && std::memcmp(&in, &m_memo.prev, sizeof(in)) == 0)
+		m_memo.prev_hit++;
+	std::memcpy(&m_memo.prev, &in, sizeof(in));
+	m_memo.have_prev = true;
+
+	// A move-to-front LRU over recent inputs: what a small direct cache would catch,
+	// and the only structure that sees a draw stream alternating between a handful of
+	// states (which is what the offline pass found on Ace Combat).
+	bool hit = false;
+	u32 at = m_memo.lru_count;
+	for (u32 i = 0; i < m_memo.lru_count; i++)
+	{
+		if (std::memcmp(&in, &m_memo.lru[i], sizeof(in)) == 0)
+		{
+			at = i;
+			hit = true;
+			m_memo.lru_hit++;
+			break;
+		}
+	}
+	if (!hit && m_memo.lru_count < m_memo.lru.size())
+		at = m_memo.lru_count++;
+	for (u32 i = std::min<u32>(at, static_cast<u32>(m_memo.lru.size()) - 1); i > 0; i--)
+		std::memcpy(&m_memo.lru[i], &m_memo.lru[i - 1], sizeof(in));
+	std::memcpy(&m_memo.lru[0], &in, sizeof(in));
+
+	if (!time_this_draw)
+		return hit;
+
+	// ⚠️ gsTileLowerDraw is pure and the input is loop-invariant, so consuming the
+	// result is NOT enough to keep the repetitions: the compiler may legally evaluate
+	// it once and reuse it, and the loop would then time 256 additions. Making the
+	// input's address opaque at every iteration is what forces a real call. (Measured
+	// both ways when this was written: the figure was the same, so nothing had been
+	// folded — but the barrier is what makes that a fact rather than a hope.)
+	GSTileDrawInput probe = in;
+	GSTileDrawInput* p_in = &probe;
+	const u64 t0 = Common::Timer::GetCurrentValue();
+	for (u32 i = 0; i < kMemoReps; i++)
+	{
+		asm volatile("" : "+r"(p_in) : : "memory");
+		const GSTileDrawPlan p = gsTileLowerDraw(*p_in);
+		m_memo.sink += p.colormask + p.pass_count + static_cast<u8>(p.reason);
+	}
+	m_memo.lower_ns += Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - t0);
+	m_memo.lower_calls += kMemoReps;
+
+	// The other half of the trade. A memo does not make the lowering free — it swaps
+	// the lowering for a key probe, and the probe is paid on misses too, so the probe's
+	// cost is what the saving has to beat.
+	//
+	// This probes the input that was just moved to the front, so it measures a hit at
+	// position zero: the CHEAPEST probe there is. That biases the comparison in the
+	// memo's favour, deliberately — a verdict against the memo taken under its best
+	// case is a verdict that does not need re-litigating under a fairer one.
+	GSTileDrawInput* p_key = &probe;
+	const u64 t1 = Common::Timer::GetCurrentValue();
+	for (u32 i = 0; i < kMemoReps; i++)
+	{
+		asm volatile("" : "+r"(p_key) : : "memory");
+		for (u32 j = 0; j < m_memo.lru_count; j++)
+		{
+			if (std::memcmp(p_key, &m_memo.lru[j], sizeof(*p_key)) == 0)
+			{
+				m_memo.sink += j + 1;
+				break;
+			}
+		}
+	}
+	m_memo.probe_ns += Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - t1);
+	m_memo.probe_calls += kMemoReps;
+
+	return hit;
+}
+
+void GSRendererTile::ReportMemoCensus() const
+{
+	if (!GSDrawLog::IsActive() || m_memo.draws == 0)
+		return;
+
+	const double draws = static_cast<double>(m_memo.draws);
+	Console.WriteLn("Tile memo census over %u draws (LRU depth %zu):", m_memo.draws, m_memo.lru.size());
+	Console.WriteLn("  prev-key hit %6.2f%%   LRU hit %6.2f%%", 100.0 * m_memo.prev_hit / draws,
+		100.0 * m_memo.lru_hit / draws);
+	const double lower = static_cast<double>(m_memo.lower_ns) / static_cast<double>(m_memo.lower_calls);
+	const double probe = static_cast<double>(m_memo.probe_ns) / static_cast<double>(m_memo.probe_calls);
+	Console.WriteLn("  gsTileLowerDraw %6.2f ns/call   key probe %6.2f ns/call   (%llu samples each)", lower,
+		probe, static_cast<unsigned long long>(m_memo.lower_calls));
+	// What a memo would net per draw: it skips the lowering on a hit and pays the
+	// probe always. Negative means the machinery costs more than the work it removes.
+	const double net = (m_memo.lru_hit / draws) * lower - probe;
+	Console.WriteLn("  memo net %+7.2f ns/draw  (saves %.2f, pays %.2f)", net,
+		(m_memo.lru_hit / draws) * lower, probe);
+	if (m_memo.build_calls)
+	{
+		// The half no memo can skip: it reads THIS draw's vertices and CLUT, so a key
+		// cheap enough to avoid it cannot tell two draws apart. Its size is what says
+		// whether the memoizable half was ever the place to look.
+		const double build = static_cast<double>(m_memo.build_ns - m_memo.timer_ns) /
+							 static_cast<double>(m_memo.build_calls);
+		Console.WriteLn("  BuildLoweringInput %.1f ns/draw (unmemoizable) -- memo is %.2f%% of the pair",
+			build, 100.0 * net / (build + lower));
 	}
 }

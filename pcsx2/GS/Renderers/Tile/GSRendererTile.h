@@ -9,6 +9,8 @@
 #include "GS/Renderers/Tile/GSTileTextureSource.h"
 #include "GS/Renderers/Tile/GSVramModel.h"
 
+#include <array>
+
 MULTI_ISA_UNSHARED_START
 
 // The tiler-native hardware renderer. Vulkan-only and opt-in; the selection decision is
@@ -42,7 +44,32 @@ public:
 private:
 	void RecordDrawLogEntry() const;
 	GSVector4i ComputeDrawRect() const;
-	GSTileDrawPlan LowerCurrentDraw();
+	GSTileDrawInput BuildLoweringInput();
+
+	// -- M3f premise census (dev instrument; runs only under GSDrawLog) --------------
+	// Whether a draw-key memo is worth building is one hit rate times one function's
+	// cost, because gsTileLowerDraw is the only skippable half (see MeasureMemo).
+	struct MemoCensus
+	{
+		std::array<GSTileDrawInput, 16> lru{};
+		GSTileDrawInput prev{};
+		u32 lru_count = 0;
+		bool have_prev = false;
+		u32 draws = 0;
+		u32 prev_hit = 0; ///< input identical to the immediately preceding draw's
+		u32 lru_hit = 0; ///< input found among the recent ones
+		u64 lower_ns = 0;
+		u64 lower_calls = 0;
+		u64 probe_ns = 0;
+		u64 probe_calls = 0;
+		u64 build_ns = 0;
+		u64 timer_ns = 0; ///< the clock pair's own cost, subtracted from build_ns
+		u64 build_calls = 0;
+		u32 sink = 0; ///< keeps the timing repetitions from folding away
+	};
+
+	bool MeasureMemo(const GSTileDrawInput& in);
+	void ReportMemoCensus() const;
 
 	// The native route.
 	bool TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTileFloorReason& reason);
@@ -191,6 +218,7 @@ private:
 	u32 m_stq_at = NoWalk;
 	GSVramModel::RectFootprint m_rect_fp; // scratch for transfer/move footprints
 	OracleState m_oracle;
+	MemoCensus m_memo;
 
 	std::array<ReadbackCounters, static_cast<u32>(ReadbackSite::Count)> m_readback{};
 	NativeSyncReasons m_native_sync{};

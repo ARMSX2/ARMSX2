@@ -179,7 +179,14 @@ namespace GSDrawLog
 		// against console captures needs the pixels and the per-draw state to come out
 		// of the same run, not out of a second arm assumed to enumerate draws the same way.
 		u8 sw;
-		u8 memo_hit; // draw-key memoization hit
+		// Whether this draw's lowering input matched a recent one, i.e. whether a memo
+		// COULD have served it. There is no memo behind this column and the M3f census
+		// says there should not be: the memoizable half of the lowering measured 8-11 ns
+		// against 27-62 ns of unmemoizable input-building, itself a few percent of a
+		// draw's Tile bookkeeping. The column stays because the number that would
+		// reopen the question is the lowering's cost, and M4's blend lattice is about
+		// to grow it -- so this is the reusability half of that verdict, kept live.
+		u8 memo_hit;
 		u8 fallback_reason; // TileFallback enum
 		// GSTileStqGuard mask, on non-FST textured Tile rows only. Recorded whatever
 		// reason actually floored the draw, because TEX_PERSPECTIVE outranks the STQ
