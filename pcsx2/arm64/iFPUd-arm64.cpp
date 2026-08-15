@@ -399,6 +399,79 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 	_freeNEONreg(treg);
 }
 
+// ---- Out-of-line calls into the interpreter's models -----------------------
+//
+// The multiply array's one-ULP deficit and the divide/square-root digit
+// recurrence are not host arithmetic under any rounding mode, so mode 4 calls
+// the models FPU.cpp states. The callees are plain AAPCS: every caller-saved
+// home the allocator is using is spilled across the call, and the EE pin
+// mirrors go through their flush/reload pair. They are pure arithmetic on their
+// arguments, so unlike the vtlb slow paths they need no pc/code flush and no
+// cycle spill. x8 carries the result back out, being neither allocatable nor a
+// pin.
+struct IslandFrame
+{
+	u8 gprs[8];
+	u8 fprs[NUM_ARM_NEON_REGS];
+	u32 ngpr, nfpr, frame, spare;
+};
+
+// `spare` bytes above the saved registers, addressed through IslandSpare, for
+// an island that has to carry a value across a call of its own.
+static void emitIslandEnter(IslandFrame& f, u32 spare = 0)
+{
+	f.ngpr = 0;
+	f.nfpr = 0;
+	for (int i = 0; i < NUM_ARM_GPR_REGS; i++)
+	{
+		// Leaves x4-x7 and x14/x15, the caller-saved half of the EE pool. x0-x3
+		// and x8-x10 are scratch, x11-x13 are pins flushed below, x16+ are
+		// reserved or callee-saved.
+		if (i >= 16 || (i >= 8 && i <= 13) || i <= 3)
+			continue;
+		if (arm64gprs[i].inuse)
+			f.gprs[f.ngpr++] = static_cast<u8>(i);
+	}
+	for (int i = 0; i < NUM_ARM_NEON_REGS; i++)
+	{
+		// AAPCS64 preserves only the low 64 bits of q8-q15, and the allocator
+		// keeps 128-bit classes there, so every live one is saved in full.
+		if (arm64neon[i].inuse)
+			f.fprs[f.nfpr++] = static_cast<u8>(i);
+	}
+
+	f.spare = spare;
+	f.frame = (f.ngpr * 8 + f.nfpr * 16 + spare + 15u) & ~15u;
+	if (f.frame)
+		armAsm->Sub(a64::sp, a64::sp, f.frame);
+	u32 off = 0;
+	for (u32 i = 0; i < f.ngpr; i++, off += 8)
+		armAsm->Str(a64::XRegister(f.gprs[i]), a64::MemOperand(a64::sp, off));
+	for (u32 i = 0; i < f.nfpr; i++, off += 16)
+		armAsm->Str(a64::QRegister(f.fprs[i]), a64::MemOperand(a64::sp, off));
+	// Flush before, reload after: the pin mirrors are lazily dirty, so a reload
+	// on its own would lose the writes the block has made to them. Both halves
+	// address RSTATE, so neither disturbs the argument or result registers.
+	armFlushEEClobberedPins();
+}
+
+static a64::MemOperand IslandSpare(const IslandFrame& f)
+{
+	return a64::MemOperand(a64::sp, f.ngpr * 8 + f.nfpr * 16);
+}
+
+static void emitIslandLeave(const IslandFrame& f)
+{
+	u32 off = 0;
+	for (u32 i = 0; i < f.ngpr; i++, off += 8)
+		armAsm->Ldr(a64::XRegister(f.gprs[i]), a64::MemOperand(a64::sp, off));
+	for (u32 i = 0; i < f.nfpr; i++, off += 16)
+		armAsm->Ldr(a64::QRegister(f.fprs[i]), a64::MemOperand(a64::sp, off));
+	if (f.frame)
+		armAsm->Add(a64::sp, a64::sp, f.frame);
+	armReloadEEClobberedPins();
+}
+
 // ---- The EE multiplier's one-ULP deficit -----------------------------------
 //
 // The console's multiply array does not round correctly: it comes back exactly
@@ -464,64 +537,20 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // entry costs a call and returns false. A tighter mask spelled on the tail
 // alone would miss rows.
 //
-// Registers around the call: the stub is plain AAPCS, so every caller-saved
-// home the allocator is using is spilled across it and the EE pin mirrors go
-// through their flush/reload pair. It is pure arithmetic on its two arguments
-// -- it cannot raise, take an exception or read cpuRegs -- so unlike the vtlb
-// slow paths it needs no pc/code flush and no cycle spill. x8 carries the
-// verdict back because it is neither allocatable nor a pin, so no restore
-// touches it.
 static void emitMulArrayIsland(const a64::VRegister& prod, int fsslotidx, int ftslotidx)
 {
-	u8 gprs[8], fprs[NUM_ARM_NEON_REGS];
-	u32 ngpr = 0, nfpr = 0;
-	for (int i = 0; i < NUM_ARM_GPR_REGS; i++)
-	{
-		// Leaves x4-x7 and x14/x15, the caller-saved half of the EE pool. x0-x3
-		// and x8-x10 are scratch, x11-x13 are pins flushed below, x16+ are
-		// reserved or callee-saved.
-		if (i >= 16 || (i >= 8 && i <= 13) || i <= 3)
-			continue;
-		if (arm64gprs[i].inuse)
-			gprs[ngpr++] = static_cast<u8>(i);
-	}
-	for (int i = 0; i < NUM_ARM_NEON_REGS; i++)
-	{
-		// AAPCS64 preserves only the low 64 bits of q8-q15, and the allocator
-		// keeps 128-bit classes there, so every live one is saved in full.
-		if (arm64neon[i].inuse)
-			fprs[nfpr++] = static_cast<u8>(i);
-	}
-
-	const u32 frame = (ngpr * 8 + nfpr * 16 + 15u) & ~15u;
-	if (frame)
-		armAsm->Sub(a64::sp, a64::sp, frame);
-	u32 off = 0;
-	for (u32 i = 0; i < ngpr; i++, off += 8)
-		armAsm->Str(a64::XRegister(gprs[i]), a64::MemOperand(a64::sp, off));
-	for (u32 i = 0; i < nfpr; i++, off += 16)
-		armAsm->Str(a64::QRegister(fprs[i]), a64::MemOperand(a64::sp, off));
+	IslandFrame f;
+	emitIslandEnter(f);
 
 	// The stub takes the architectural words; the slots hold them relocated.
 	armEmitEeFprNarrow(RXARG1, armDRegister(fsslotidx), RXSCRATCH);
 	armEmitEeFprNarrow(RXARG2, armDRegister(ftslotidx), RXSCRATCH);
-	// Flush before, reload after: under the lazy-dirty pin policy the mirrors
-	// are newer than canonical memory, so reloading on its own would lose the
-	// writes the block has made to them.
-	armFlushEEClobberedPins();
 	armEmitCall(reinterpret_cast<const void*>(
 		&R5900::Interpreter::OpcodeImpl::COP1::eeMulOneUlpLow));
 	// AAPCS64 leaves everything above a bool return's one byte unspecified.
 	armAsm->And(RXSCRATCH, RXARG1, 1);
 
-	off = 0;
-	for (u32 i = 0; i < ngpr; i++, off += 8)
-		armAsm->Ldr(a64::XRegister(gprs[i]), a64::MemOperand(a64::sp, off));
-	for (u32 i = 0; i < nfpr; i++, off += 16)
-		armAsm->Ldr(a64::QRegister(fprs[i]), a64::MemOperand(a64::sp, off));
-	if (frame)
-		armAsm->Add(a64::sp, a64::sp, frame);
-	armReloadEEClobberedPins();
+	emitIslandLeave(f);
 
 	armAsm->Fmov(RXARG2, prod);
 	armAsm->Sub(RXARG2, RXARG2, a64::Operand(RXSCRATCH, a64::LSL, 29));
