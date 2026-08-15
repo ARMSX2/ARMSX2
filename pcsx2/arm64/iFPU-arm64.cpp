@@ -635,10 +635,12 @@ static void fpuEmitGuardedAddSub(const a64::VRegister& dst,
 // has no tail below the single ULP — here fs = 2^-2, so the product is exact and
 // the deficit reaches the result. The general model reproduces this pair (and
 // leaves the swapped operand order alone, exactly as the check below does).
-// It is NOT generalized here: in this fast path it costs ~9 instructions on every
-// multiply in every game, against 1 today. Its home is iFPUd-arm64.cpp, where the
-// double product already exists and it costs 4 — extending it to this path needs
-// its own measured case.
+// It is NOT generalized here: this path has no exact product to test a tail
+// against, so it would need one built out of single-precision pieces on every
+// multiply in every game, against 1 instruction today. Its home is
+// emitDefectiveFmul (iFPUd-arm64.cpp), where the double product is already
+// there and the tail is 29 bits of it — extending it to this path needs its own
+// measured case.
 static void emitFpuMul(const a64::VRegister& dst, const a64::VRegister& s, const a64::VRegister& t)
 {
 	if (!CHECK_FPUMULHACK)

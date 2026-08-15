@@ -518,42 +518,37 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // The interpreter models a superset (FPU.cpp eeMulRound / eeMulOneUlpLow /
 // eeMulArray): it reconstructs the array's truncated low half, so it also
 // catches the rows where the tail is non-zero but smaller than the borrow.
-// This is the mode-3 codegen for the zero-tail law. FpuMulHack is a one-point
-// sample of the same rule and this subsumes it, including the asymmetry -- it
-// is not folded in here because iFPUd never had it.
+// This is the mode-3 codegen for the zero-tail law, which is exact on that
+// class. FpuMulHack is a one-point sample of the same rule and this subsumes
+// it, including the asymmetry -- it is not folded in here because iFPUd never
+// had it.
 //
 // The product is computed in double, where a 24x24 significand multiply is
-// exact, so condition 1 needs no integer multiply and no tail extraction:
-// one integer ULP of the double is strictly below one ULP of the single, so
-// decrementing the double's raw bit pattern drops an exactly-representable
-// product one single-step and leaves everything else inside the same single
-// bucket. The rounding downstream performs the tail test -- and it is the same
-// test under either of the two narrowings this file uses: ToPS2FPU_Wide's
-// mask-off-the-low-29 is truncation by construction, and ToPS2FPU_Full's Fcvt
-// runs under FPUFPCR, whose mode is round-toward-zero (the argument is spelled
-// out at ToPS2FPU_Wide). That equivalence is structural. The FPCR is the
-// dependency that actually matters: under round-to-nearest the decremented
-// double would round straight back up to the product it came from and this
-// would emit nothing at all.
+// exact, so neither condition needs an integer multiply: the tail is the 29
+// bits below the single's ULP, and the predicate is a function of ft alone.
 //
-// A NEON compare result is all-ones, which as a 64-bit lane is -1, so `Add` of
-// the mask is the conditional decrement. Two traps, both already paid for once:
+// ft is read out of the allocator-resident guest register, which holds the word
+// relocated into double position: the single's mantissa bit k is bit k+29
+// there. The predicate has two terms:
 //
-//   * the Add is a 64-bit lane, so the mask must be all-ones across the full 64
-//     bits. A 32-bit compare adds +0xFFFFFFFF instead of -1; that scores 98.28%
-//     and reads like a predicate bug when it is a mask bug.
-//   * the Bic is `.8b` because there is no scalar BIC. AdvSIMD BIC has only the
-//     .8B/.16B register forms and the .4H/.8H/.2S/.4S immediate form; `bic
-//     d30, d30, d31` is rejected outright by an assembler. vixl guards it with
-//     a VIXL_ASSERT, which this tree compiles out so it emits 0x5eff1fde, an
-//     undefined encoding, and the JIT takes SIGILL the first time the block
-//     runs.
-//   * a zero product must be excluded, which is the Fcmeq/Bic pair. Under FZ a
-//     zero or denormal operand widens to +/-0 and the product is exactly +/-0,
-//     whose pattern decrements to 0xFFFFFFFFFFFFFFFF -- a NaN. Testing the
-//     product covers both of the interpreter's guards at once: a product is
-//     exactly +/-0 only when an operand was zero or denormal, because the
-//     smallest product of two EE normals is ~2^-252, an ordinary double.
+//   * `mant & 0x2AA` -- bits 1,3,5,7,9, the sign bits of the five lowest
+//     radix-4 Booth digits, at slot bits 30-38. 0x2AA << 29 is not an aarch64
+//     logical immediate and neither is the pair of masks' intersection, but
+//     0x5555555555555555 and 0x7fc0000000 both are, so two Ands do it.
+//   * a boundary term at the truncation column,
+//     `bit11 != (8 <= (mant >> 12 & 0xF) <= 13)`. The right-hand side is
+//     `b15 & ~(b14 & b13)`, so the term is three shifted-register ops landing
+//     on slot bit 44 and a mask to isolate it.
+//
+// The decrement is a whole EE ULP: a zero-tail product has its low 29 bits
+// clear, so subtracting 1 << 29 lands on another exactly-representable single
+// that no narrowing can round back.
+//
+// A zero product is excluded by its exponent field. Under FZ a zero or denormal
+// operand widens to +/-0 and the product is exactly +/-0, whose pattern would
+// decrement to a NaN. That covers both of the interpreter's guards, since a
+// product is exactly +/-0 only when an operand was zero or denormal -- the
+// smallest product of two EE normals is ~2^-252, an ordinary double.
 //
 // The interpreter's two remaining guards need no codegen. A saturating result
 // is unreachable-by-one-ULP: products are multiples of 2^81 at that exponent
@@ -563,75 +558,38 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // (w == 0x00800000) needs ma*mb == 2^46 with both in [2^23, 2^24), forcing
 // ma == mb == 2^23 -- ft mantissa 0, predicate off.
 //
-// The predicate is the cheap half of the measured one. `mant & 0x2AA` -- bits
-// 1,3,5,7,9, the sign bits of the five lowest radix-4 Booth digits -- is the
-// whole rule except for a boundary term at the truncation column,
-// `bit11 != (8 <= (mant >> 12 & 0xF) <= 13)`, which is dropped. It fires on
-// exactly 1/64 of significands, and only a zero tail lets it change anything:
-// counted over all 2^46 significand pairs, 76,236,820 have a zero tail
-// -- 1 pair in 923,028 -- so the term decides 1 pair in 59,073,813. When fs is
-//  a power of two the tail is always zero, and that class scores 98.4375%
-// instead of 100%. Tested against hardware, this predicate gives
-// 98.4375 / 99.8421 / 99.8482 / 99.8091 per fs significand against the full
-// one's 100 / 99.8421 / 99.8482 / 99.8091.
-// The other three rows are not evidence that the term buys nothing elsewhere:
-// their fs values have a zero tail on 1 or 2 rows out of 2^23, so the term
-// cannot show in them at all. The fpmul3 sweeps, whose fs values have trailing
-// zeros, do populate that cell: at fs = 1.5 there are 2,796,203 zero-tail rows
-// and the term decides 65,536 of them (2.34%). Pooled over fpmul3's 7,196,506
-// zero-tail rows the full predicate is exactly hardware -- 0 missed, 0 wrong --
-// while this one misses 229,142 and is likewise never wrong. So the gap is a
-// real 3.3% of the reachable class; what makes it acceptable is that it is
-// one-directional (it can only miss a deficit, never invent one) and rare in
-// general operand space, per the count above. The term needs a bitfield extract
-// NEON has no equivalent for, so it has to go through GPRs and come back --
-// sketched at ten instructions against this predicate's one.
-// The resulting interpreter divergence is pinned by
-// EeRecFpuFull.MulDefectDropsTheBoundaryTermTheInterpreterModels.
-//
-// ft is read out of the allocator-resident guest register, which holds the word
-// relocated into double position: the single's mantissa bits 0..9 are bits
-// 29..38 there, so the parked mask is 0x2AA << 29.
-//
-// The mask is not materialized here: it is parked in d10 for the whole JIT
-// session by _DynGen_EnterRecompiledCode, next to the s8/s9 clamp constants and
-// under the same AAPCS64 argument: the low 64 bits of d8-d15 are callee-saved,
-// so the constant survives every C call without compile-time liveness tracking.
-// That is what took this from six instructions to four, and it applies to the
-// first multiply in a block as much as the tenth -- a liveness flag in a
-// caller-saved register would still have paid mov+fmov to open every span, and
-// would have had to be invalidated at C-call seams, branch forks, superblock
-// side-exit bodies (recEmitColdSideExits emits several per emission session,
-// each reachable only through its own island) and backpatched fastmem thunks,
-// where a single missed seam is a silent one-ULP error the corpus cannot see.
-// The register costs one slot out of the callee-saved allocator range; the full
-// contract, including why microVU needs no pool gate for it, is on
-// NEON_RESERVED_FPU_MULMASK in iCore-arm64.h.
-//
 // `dstidx` holds the widened fs on entry and the product on exit, `tidx` holds
-// the widened ft, `ftslotidx` is the untouched guest ft. RQSCRATCH/RQSCRATCH2
-// (q30/q31) are outside the allocator pool, so no temp aliases them.
-//
-// What comes out, decoded from the code buffer (the Fmul was already there, so
-// four of these five are the cost):
-//
-//     cmtst d30, d14, d10            ; d14 == EEREC_T (the guest ft slot), d10 == the parked mask
-//     fmul  d0, d0, d1
-//     fcmeq d31, d0, #0.0
-//     bic   v30.8b, v30.8b, v31.8b
-//     add   d0, d0, d30
+// the widened ft, `ftslotidx` is the untouched guest ft. x0/x1/x8 are the
+// scratch this file uses everywhere, ToPS2FPU_Wide included.
 static void emitDefectiveFmul(int dstidx, int tidx, int ftslotidx)
 {
 	const a64::VRegister prod = armDRegister(dstidx);
 
 	// Hoisted above the Fmul: the predicate is not on its dependency chain.
-	armAsm->Cmtst(RDSCRATCH, armDRegister(ftslotidx), a64::VRegister(NEON_RESERVED_FPU_MULMASK, 64));
+	armAsm->Fmov(RXSCRATCH, armDRegister(ftslotidx));
+	armAsm->And(RXARG1, RXSCRATCH, a64::Operand(RXSCRATCH, a64::LSL, 1)); // bit43 = b14 & b13
+	armAsm->Bic(RXARG1, RXSCRATCH, a64::Operand(RXARG1, a64::LSL, 1));    // bit44 = b15 & ~(b14 & b13)
+	armAsm->Eor(RXARG1, RXARG1, a64::Operand(RXSCRATCH, a64::LSL, 4));    // bit44 ^= b11
+	armAsm->And(RXARG1, RXARG1, UINT64_C(0x100000000000));
+	armAsm->And(RXSCRATCH, RXSCRATCH, UINT64_C(0x5555555555555555));
+	armAsm->And(RXSCRATCH, RXSCRATCH, UINT64_C(0x7fc0000000));
+	armAsm->Orr(RXARG1, RXARG1, RXSCRATCH);
 
 	armAsm->Fmul(prod, prod, armDRegister(tidx));
 
-	armAsm->Fcmeq(RDSCRATCH2, prod, 0.0);
-	armAsm->Bic(RQSCRATCH.V8B(), RQSCRATCH.V8B(), RQSCRATCH2.V8B());
-	armAsm->Add(prod, prod, RDSCRATCH);
+	// One flag chain: the predicate fired, the tail is empty, the product is not
+	// zero. Each stage's false arm sets the flags so the next condition cannot
+	// hold, leaving the final ne false.
+	armAsm->Fmov(RXARG2, prod);
+	armAsm->And(RXSCRATCH, RXARG2, UINT64_C(0x1fffffff));
+	armAsm->Cmp(RXARG1, 0);
+	armAsm->Ccmp(RXSCRATCH, 0, a64::NoFlag, a64::ne);
+	armAsm->And(RXSCRATCH, RXARG2, UINT64_C(0x7ff0000000000000));
+	armAsm->Ccmp(RXSCRATCH, 0, a64::ZFlag, a64::eq);
+	armAsm->Mov(RXARG1, UINT64_C(1) << 29);
+	armAsm->Csel(RXARG1, RXARG1, a64::xzr, a64::ne);
+	armAsm->Sub(RXARG2, RXARG2, RXARG1);
+	armAsm->Fmov(prod, RXARG2);
 }
 
 // MUL/MULA: widen -> multiply in double (with the multiplier deficit) -> narrow.

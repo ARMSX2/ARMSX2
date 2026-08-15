@@ -569,12 +569,10 @@ TEST(EeFuzz, DelaySlotTargetLoopMix)
 // ── The callee-saved NEON budget ─────────────────────────────────────────────
 // What is left of [NEON_CALLEE_SAVED_START, NEON_CALLEE_SAVED_END) after the
 // parked constants is the whole supply for guest quads: _allocGPRtoNEONreg
-// searches that range alone, and _getFreeArm64NEON pxFailRels instead of
-// widening the search once every slot in it is needed. Three slots still carry
-// the whole recompiler suite; two abort in that pxFailRel. So parking a
-// constant in the fourth costs an FPU multiply-accumulate its fourth
-// call-surviving FPR home, and parking one in the third costs correctness.
-// q10 and q11 are parked, so four is what is left.
+// searches that range alone and _getFreeArm64NEON pxFailRels once it is empty.
+// Three slots still carry the whole recompiler suite, two abort in that
+// pxFailRel, and a fourth costs an FPU multiply-accumulate its fourth
+// call-surviving FPR home. q11 is parked, so five are left.
 //
 // The probes carry high-water marks of the per-op needed set.
 u32 eeTestNeonCalleeSavedSlots();   // iCore-arm64.cpp
@@ -584,7 +582,7 @@ u32 eeTestNeonRangeNeededPeak();    //
 
 TEST(EeFuzz, CalleeSavedNeonBudget)
 {
-	ASSERT_EQ(eeTestNeonCalleeSavedSlots(), 4u);
+	ASSERT_EQ(eeTestNeonCalleeSavedSlots(), 5u);
 
 	// Three by construction: rd, rs and rt distinct, none of them $zero.
 	{

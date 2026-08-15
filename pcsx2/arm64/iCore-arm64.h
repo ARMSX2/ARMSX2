@@ -124,8 +124,8 @@ struct _arm64gprregs
 
 // Callee-saved NEON range available to the allocator: q10-q15 (q8/q9 hold
 // the pinned FPU clamp constants and are excluded from the pool entirely;
-// q10 and q11 likewise hold the pinned multiplier-defect mask and the EE FPU's
-// unscale constant, below, so the range yields q12-q15 in practice).
+// q11 likewise holds the EE FPU's unscale constant, below, so the range yields
+// q10 and q12-q15 in practice).
 // AAPCS64 preserves only the LOWER 64 bits of v8-v15 across C calls, so
 // full-128-bit classes (NEONTYPE_GPRREG quads, VFREG) can never be retained
 // across a seam — but 32-bit FPR-class slots (FPREG/FPACC, lane 0 only) can
@@ -133,25 +133,18 @@ struct _arm64gprregs
 static constexpr u32 NEON_CALLEE_SAVED_START = 10;
 static constexpr u32 NEON_CALLEE_SAVED_END = 16; // exclusive
 
-// d10 = 0x2AA << 29, the EE multiplier's Booth-digit predicate mask in the
-// relocated slot layout, parked for the whole JIT session by
-// _DynGen_EnterRecompiledCode alongside s8/s9 and read by
-// emitDefectiveFmul (iFPUd-arm64.cpp) on every mode-3 multiply. Same contract
-// as NEON_RESERVED_FPU_MAX/MIN and for the same reason: the lower 64 bits of
-// d8-d15 are callee-saved, so a parked constant needs no compile-time liveness
-// tracking, no invalidation at C-call seams, and no re-materialization on any
-// path — which is exactly what a predicate must not get wrong (a stale mask is
-// a silent one-ULP error on a fraction of multiplies, and the 1147-case
-// hardware corpus cannot see the class it decides).
+// d11 = 2^kEeFprScaleExp (kEeFprUnscaleBits, EeFpuFormat.h), parked for the
+// whole JIT session by _DynGen_EnterRecompiledCode alongside s8/s9 and read by
+// iFPUd-arm64.cpp wherever a slot becomes the value it denotes. Emitted in
+// every clamp mode: the dispatcher outlives a clamp-mode change.
 //
-// It costs one slot out of the callee-saved allocator range above. That is the
-// whole price: the multiply sequence drops 6 instructions -> 4 unconditionally,
-// including the first multiply in a block, where a compile-time liveness flag
-// in a caller-saved register would still have paid the full 6.
+// Same contract as NEON_RESERVED_FPU_MAX/MIN: the lower 64 bits of d8-d15 are
+// callee-saved, so a parked constant needs no compile-time liveness tracking,
+// no invalidation at C-call seams and no re-materialization.
 //
-// _allocGPRtoNEONreg draws from that range alone, and _getFreeArm64NEON
-// pxFailRels when it is empty. The floor is three, what a 3-operand MMI op
-// needs at once; the fourth keeps an FPU multiply-accumulate's Fd, Fs, Ft and
+// It costs one slot out of the callee-saved allocator range above, which
+// _allocGPRtoNEONreg draws from alone. Three is the floor, what a 3-operand MMI
+// op needs at once; the fourth keeps an FPU multiply-accumulate's Fd, Fs, Ft and
 // ACC all in call-surviving homes. EeFuzz.CalleeSavedNeonBudget holds both.
 //
 // Two reasons it needs no microVU pool gate (unlike SL-13's q25/q26, and for
@@ -159,12 +152,6 @@ static constexpr u32 NEON_CALLEE_SAVED_END = 16; // exclusive
 // whose prologue Stp/Ldp-saves d8-d15; and COP2 macro-mode mVU emits inline in
 // EE blocks but is structurally bounded to NEON slots 0-3 by
 // kMacroVFEvictHighWater, which mVUmacroEmitEpilogue asserts on every macro op.
-static constexpr u32 NEON_RESERVED_FPU_MULMASK = 10;
-
-// d11 = 2^kEeFprScaleExp (kEeFprUnscaleBits, EeFpuFormat.h), parked under the
-// same contract as d10 and read by iFPUd-arm64.cpp wherever a slot becomes the
-// value it denotes. Emitted in every clamp mode: the dispatcher outlives a
-// clamp-mode change.
 static constexpr u32 NEON_RESERVED_EEFPU_UNSCALE = 11;
 
 // SL-13: q25/q26 are dedicated to the COP2 macro clamp-constant broadcasts

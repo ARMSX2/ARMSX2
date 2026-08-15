@@ -322,22 +322,18 @@ static const void* _DynGen_EnterRecompiledCode()
 	armAsm->Ldr(a64::s8, FLT_MAX);
 	armAsm->Ldr(a64::s9, -FLT_MAX);
 
-	// Same convention, two registers along: d10 = 0x2AA << 29, the Booth-digit
-	// mask of the EE multiplier's one-ULP deficit in the relocated slot layout,
-	// and d11 = 2^kEeFprScaleExp, which turns a slot into the value it denotes
-	// (NEON_RESERVED_FPU_MULMASK and NEON_RESERVED_EEFPU_UNSCALE; the contracts
-	// are on the constants, the consumers are in iFPUd-arm64.cpp). Parking them
-	// here is what makes the mode-3 multiply sequence 4 instructions instead of
-	// 6 and its widening one instead of eleven — every consumer reads them,
-	// none materializes them, and because the low 64 bits of d8-d15 are
-	// callee-saved there is no C-call seam, branch fork, superblock side exit
-	// or backpatched fastmem thunk that can invalidate them.
+	// Same convention, three registers along: d11 = 2^kEeFprScaleExp, which
+	// turns a slot into the value it denotes (NEON_RESERVED_EEFPU_UNSCALE; the
+	// contract is on the constant, the consumers are in iFPUd-arm64.cpp).
+	// Parking it here is what makes a mode-3 widening one instruction instead
+	// of eleven — every consumer reads it, none materializes it, and because
+	// the low 64 bits of d8-d15 are callee-saved there is no C-call seam,
+	// branch fork, superblock side exit or backpatched fastmem thunk that can
+	// invalidate it.
 	//
-	// Emitted unconditionally rather than under CHECK_FPU_FULL: four
+	// Emitted unconditionally rather than under CHECK_FPU_FULL: two
 	// instructions once per JIT entry are not worth a dispatcher that goes
 	// stale if the clamp mode changes without a recompiler reset.
-	armAsm->Mov(RXSCRATCH, UINT64_C(0x2AA) << 29);
-	armAsm->Fmov(a64::VRegister(NEON_RESERVED_FPU_MULMASK, 64), RXSCRATCH);
 	armAsm->Mov(RXSCRATCH, kEeFprUnscaleBits);
 	armAsm->Fmov(a64::VRegister(NEON_RESERVED_EEFPU_UNSCALE, 64), RXSCRATCH);
 

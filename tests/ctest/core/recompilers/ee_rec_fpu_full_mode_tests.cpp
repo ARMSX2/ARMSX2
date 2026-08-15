@@ -812,15 +812,11 @@ void RunMaddRow(const MaddRow& r, u32* out_val, u32* out_fcr31)
 // deficit reaches all 72 of them; when it landed in iFPUd, 35 rows moved one ULP
 // toward zero. Re-pinning them against the emitter that moved them would assert
 // nothing, so each value below was re-derived by running the same row through
-// FPU.cpp, which models the deficit independently (eeMulRound) -- 71 of 72 agree
-// exactly.
+// FPU.cpp, which models the deficit independently (eeMulRound).
 //
-// The 72nd is row 53 (ft = 0x48b65815), and it is the documented cost of the
-// cheap Booth predicate: its mantissa 0x365815 has no bit of 0x2AA set, so only
-// the dropped boundary term fires. The interpreter returns 0xc8b65805, this
-// emitter 0xc8b65806. MulDefectDropsTheBoundaryTermTheInterpreterModels holds
-// that pair on its own, so closing the gap in iFPUd trips a test that names the
-// reason rather than silently re-pinning a number here.
+// Row 53 (ft = 0x48b65815) is the one the Booth term alone cannot reach: its
+// mantissa 0x365815 has no bit of 0x2AA set, so the boundary term is what
+// decides it.
 constexpr MaddRow kGuardMaskWitnesses[] = {
 	{0x3fb38acau, 0x3f800000u, 0xbacc0111u, 0, 0x3fb357cau, 0u},
 	{0x3ab20dd7u, 0x3f800000u, 0xc4195bd9u, 0, 0xc4195bc2u, 0u},
@@ -873,7 +869,7 @@ constexpr MaddRow kGuardMaskWitnesses[] = {
 	{0x418eac80u, 0x3f800000u, 0x4a25b350u, 1, 0xca25b308u, 0u},
 	{0x35935179u, 0x3f800000u, 0xb3508e2fu, 0, 0x358ccd08u, 0u},
 	{0x452ecb68u, 0x3f800000u, 0xc914f502u, 0, 0xc9144636u, 0u},
-	{0x3ef73c56u, 0x3f800000u, 0x48b65815u, 1, 0xc8b65806u, 0u},  // boundary term: interp says c8b65805
+	{0x3ef73c56u, 0x3f800000u, 0x48b65815u, 1, 0xc8b65805u, 0u},  // the boundary term decides this one
 	{0x3ec3ca47u, 0x3f800000u, 0x33267262u, 1, 0x3ec3ca46u, 0u},
 	{0x332a2e5bu, 0x3f800000u, 0xaa055622u, 0, 0x332a2e3au, 0u},
 	{0x45855769u, 0x3f800000u, 0xc6cac295u, 0, 0xc6a96cbau, 0u},
@@ -1140,61 +1136,70 @@ TEST(EeRecFpuFull, MulDefectNeverDecrementsAZeroProduct)
 // The boundary term, the one line of this emitter the two clamp modes do not
 // share.
 //
-// The measured predicate has two terms: the Booth term `mant & 0x2AA` (bits
-// 1,3,5,7,9 -- the sign bits of the five lowest radix-4 Booth digits) and a
-// boundary term at the truncation column,
-// `bit11 != (8 <= (mant >> 12 & 0xF) <= 13)`. iFPUd emits only the first: the
-// second needs a bitfield extract NEON does not have, about eight more
-// instructions on every multiply, and it can only change the answer where the
-// product's tail is already zero.
+// The predicate has two terms: the Booth term `mant & 0x2AA` (bits 1,3,5,7,9,
+// the sign bits of the five lowest radix-4 Booth digits) and a boundary term at
+// the truncation column, `bit11 != (8 <= (mant >> 12 & 0xF) <= 13)`. They are
+// Or'd into one register, so only the operands tell them apart.
 //
-// ft = 0x48b65815 is a witness. Its mantissa 0x365815 has no bit of 0x2AA set,
-// bit 11 is 1, and (0x365815 >> 12) & 0xF is 5, so the boundary term is the
-// only one that fires. The interpreter (FPU.cpp eeMulArray) models both and
-// returns the decremented product; iFPUd returns the IEEE one.
+// Three ft values with the same exponent and the same top mantissa nibble
+// (5, so `8 <= nib <= 13` is false throughout and the boundary term reduces to
+// bit 11), fs = 1.0 so the product is ft and the tail is zero on all of them:
 //
-// If iFPUd ever grows the boundary term, this test fails and the fix is to
-// delete it -- along with the carve-out in kGuardMaskWitnesses row 53.
-TEST(EeRecFpuFull, MulDefectDropsTheBoundaryTermTheInterpreterModels)
+//   0x365015  Booth off, bit11 0 -> neither term    -> exact
+//   0x365815  Booth off, bit11 1 -> boundary only   -> one ULP low
+//   0x365215  Booth on,  bit11 0 -> Booth only      -> one ULP low
+//
+// The first two are one bit of ft apart, so together they say the boundary
+// term is computed and not always on; the third pins the Booth term on its own.
+// The middle row is the only one where the modes answer differently, and both
+// answers are asserted.
+//
+// The interpreter (FPU.cpp eeMulArray) reaches all three independently, and is
+// asserted alongside the emitter so a mis-derived row fails rather than
+// agreeing with itself.
+TEST(EeRecFpuFull, MulDefectBoundaryTermIsPredicatedNotAlwaysOn)
 {
 	constexpr u32 kFs = 0x3f800000u; // 1.0: the product is ft, tail always zero
-	constexpr u32 kFt = 0x48b65815u;
+	struct Row
+	{
+		u32 ft;
+		u32 want;
+		const char* what;
+	};
+	constexpr Row kRows[] = {
+		{0x48b65015u, 0x48b65015u, "neither term: exact"},
+		{0x48b65815u, 0x48b65814u, "boundary term alone: one ULP low"},
+		{0x48b65215u, 0x48b65214u, "Booth term alone: one ULP low"},
+	};
 
-	EeRecTestHarness hi;
-	hi.EnableCop1();
-	hi.SetFprBits(0, kFs);
-	hi.SetFprBits(1, kFt);
-	hi.LoadProgram({MUL_S(2, 0, 1)});
-	hi.RunInterpOnly();
-	EXPECT_EQ(hi.GetFprBitsInterp(2), 0x48b65814u) << "interp models the boundary term";
+	for (const Row& r : kRows)
+	{
+		SCOPED_TRACE(r.what);
 
-	EeRecTestHarness h;
-	h.EnableCop1();
-	h.EnableFpuFullMode();
-	h.SetFprBits(0, kFs);
-	h.SetFprBits(1, kFt);
-	h.LoadProgram({MUL_S(2, 0, 1)});
-	h.RunJitNoDiff();
-	EXPECT_EQ(h.GetFprBitsJit(2), 0x48b65815u) << "iFPUd drops it: one ULP high";
+		EeRecTestHarness hi;
+		hi.EnableCop1();
+		hi.SetFprBits(0, kFs);
+		hi.SetFprBits(1, r.ft);
+		hi.LoadProgram({MUL_S(2, 0, 1)});
+		hi.RunInterpOnly();
+		EXPECT_EQ(hi.GetFprBitsInterp(2), r.want) << "interp";
 
-	// The Booth term alone, for contrast: same shape, and here they agree.
-	EeRecTestHarness hb;
-	hb.EnableCop1();
-	hb.EnableFpuFullMode();
-	hb.SetFprBits(0, kFs);
-	hb.SetFprBits(1, 0x48b65a15u); // mantissa 0x365a15: 0x2AA hits bit 9
-	hb.LoadProgram({MUL_S(2, 0, 1)});
-	hb.RunJitNoDiff();
-	EXPECT_EQ(hb.GetFprBitsJit(2), 0x48b65a14u);
+		EeRecTestHarness h;
+		h.EnableCop1();
+		h.EnableFpuFullMode();
+		h.SetFprBits(0, kFs);
+		h.SetFprBits(1, r.ft);
+		h.LoadProgram({MUL_S(2, 0, 1)});
+		h.RunJitNoDiff();
+		EXPECT_EQ(h.GetFprBitsJit(2), r.want) << "iFPUd";
+	}
 }
 
 // ---------------------------------------------------------------------------
 // Randomised differential: mode 3 against the interpreter, which reaches the
-// same answers independently and in completely different code (FPU.cpp
-// eeMulArray reconstructs the array's truncated low columns in integers; iFPUd
-// tests ft's Booth digits and lets the narrowing decide whether the decrement
-// survives). Agreement across a wide operand space is what says the emitter
-// implements the law rather than the handful of rows above.
+// same answers in completely different code (FPU.cpp eeMulArray reconstructs
+// the array's truncated low columns in integers; iFPUd reads the predicate off
+// ft's slot bits and the tail off the double product).
 //
 // Dimensions varied and crossed: six operand classes on each side (arbitrary
 // words, random normals, powers of two -- which force a zero tail and so make
@@ -1205,14 +1210,10 @@ TEST(EeRecFpuFull, MulDefectDropsTheBoundaryTermTheInterpreterModels)
 // recMaddsub's multiply stage, reached with ACC = +0 so the accumulate is a
 // no-op on the product's bits).
 //
-// Two divergences are licensed, both with the interpreter one ULP nearer zero:
-//
-//   1. the dropped boundary term, on rows whose product is exactly
-//      representable; and
-//   2. rows whose tail is non-zero but smaller than the array's 2^15 borrow.
-//      The interpreter reconstructs the array and so sees these; iFPUd decides
-//      on a double, where one integer ULP is 2^-29 of a single ULP, so its
-//      decrement is absorbed by the narrowing and the row comes back IEEE.
+// One divergence is licensed, with the interpreter one ULP nearer zero: rows
+// whose tail is non-zero but smaller than the array's 2^15 borrow. The
+// interpreter reconstructs the array and so sees these; iFPUd's predicate is a
+// function of ft and its tail test is exact, so it leaves them alone.
 //
 // Rows are classified by the tail below the single ULP, taken from the exact
 // 48-bit significand product, so a bug in eeMulArray cannot license itself.
@@ -1263,7 +1264,7 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 	};
 
 	u64 state = 0x1234567890ABCDEFull;
-	int rows = 0, boundary_gap[4] = {0, 0, 0, 0}, subulp_gap = 0;
+	int rows = 0, boundary_rows[4] = {0, 0, 0, 0}, subulp_gap = 0;
 	for (int i = 0; i < 40000; i++)
 	{
 		const int cs = static_cast<int>(splitmix(state) % 6);
@@ -1301,66 +1302,62 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 		const u32 interp = hi.GetFprBitsInterp(dst);
 
 		rows++;
+		const u64 tail = tailBelowUlp(fs, ft);
+		// The class only the boundary term can reach, counted whether it agreed
+		// or not: agreement over it means nothing until the sweep is shown to
+		// get there.
+		if (tail == 0 && !booth(ft) && full(ft))
+			boundary_rows[form]++;
+
 		if (jit == interp)
 			continue;
 
-		const u64 tail = tailBelowUlp(fs, ft);
-		const bool boundary_only = tail == 0 && !booth(ft) && full(ft);
 		const bool sub_ulp_tail = tail != 0 && tail < 0x8000u;
-		ASSERT_TRUE((boundary_only || sub_ulp_tail) && jit == interp + 1u)
+		ASSERT_TRUE(sub_ulp_tail && jit == interp + 1u)
 			<< "unlicensed divergence: form=" << form << " cs=" << cs << " ct=" << ct
 			<< std::hex << " fs=" << fs << " ft=" << ft << " tail=" << tail
 			<< " jit=" << jit << " interp=" << interp;
-		if (boundary_only)
-			boundary_gap[form]++;
-		else
-			subulp_gap++;
+		subulp_gap++;
 	}
 
 	EXPECT_EQ(rows, 40000);
 	// Liveness. "No unlicensed divergence" is also what a harness that never
-	// reached the emitter would report, so each licensed one must actually be
+	// reached the emitter would report, so both classes must actually be
 	// observed -- the boundary term at both emit sites, since they narrow
 	// through different code.
-	EXPECT_GT(boundary_gap[0] + boundary_gap[1] + boundary_gap[2], 0)
+	EXPECT_GT(boundary_rows[0] + boundary_rows[1] + boundary_rows[2], 0)
 		<< "recMULop never reached the boundary-term class: the sweep is vacuous";
-	EXPECT_GT(boundary_gap[3], 0)
+	EXPECT_GT(boundary_rows[3], 0)
 		<< "recMaddsub never reached the boundary-term class: the sweep is vacuous";
 	EXPECT_GT(subulp_gap, 0)
 		<< "the sweep never reached a non-zero tail below the borrow: the "
-		   "second carve-out is vacuous and would hide a regression";
+		   "carve-out is vacuous and would hide a regression";
 }
 
 
 // ---------------------------------------------------------------------------
-// Residency of the predicate mask (d10, NEON_RESERVED_FPU_MULMASK).
+// The predicate's operand: the allocator-resident guest ft.
 //
-// The mask is not materialized per multiply. It is parked once per JIT entry by
-// _DynGen_EnterRecompiledCode, which is what makes emitDefectiveFmul four
-// instructions instead of six -- see the comment on the constant in
-// iCore-arm64.h for the contract. These tests pin the two things that contract
-// rests on: that no C-call seam, VU dispatch or inline macro-mode emit destroys
-// the parked value, and that the allocator never hands q10 out.
+// emitDefectiveFmul indexes bits 30..44 of ft's slot, read straight out of
+// whatever NEON register the allocator has it in. That is a 64-bit read of a
+// register the emitter does not own, so it is only correct while the full slot
+// is there -- through a C-call seam (iFlushCall retains FPR-class slots in the
+// callee-saved range, where AAPCS64 preserves the low 64 bits and nothing
+// above), through inline macro-mode emit, and through a spill and reload.
 //
-// Both failures are silent -- no crash, no corrupt value, just a wrong rounding
-// decision on a fraction of multiplies -- and they fail in opposite directions,
-// which is why every test below checks both polarities:
+// A 32-bit fill, a retention that kept only the single, or an allocator that
+// let something else into the register leaves those bits wrong with no crash
+// and no corrupt value -- just a wrong rounding decision on a fraction of
+// multiplies. Every test below checks both polarities:
 //
-//   mask zeroed        -> Cmtst never fires -> every product correctly rounded
-//                         (one ULP high wherever silicon is short)
-//   mask overwritten    -> Cmtst fires on operands it must not -> products one
-//     with a live value    ULP low where silicon is exact
+//   bits 30..44 read as zero  -> the predicate never fires -> every product
+//                                correctly rounded, one ULP high wherever
+//                                silicon is short
+//   bits 30..44 read garbage  -> it fires on operands it must not -> products
+//                                one ULP low where silicon is exact
 //
-// A test using only predicate-on operands sees the first and is blind to the
-// second, because a garbage mask with any of bits 0..9 set gives the same
-// answer as the correct mask on exactly those rows. That is not hypothetical:
-// removing q10 from _isReservedNEONreg makes the allocator home a guest FPR
-// there, and the observed break is the second kind, on the rows where ft's
-// mantissa is 0.
-//
-// The 1147-case hardware corpus cannot see any of this: its cases are single
-// ops, so every multiply in it is the first multiply after the entry that
-// parked the mask.
+// The 1147-case hardware corpus is single ops, so no multiply in it is far
+// enough into a block to have been moved.
 namespace {
 // Two rows from kSiliconMulRows above, chosen as a matched pair on one pair of
 // registers -- f0 = 1.0, f1 = +FLT_MAX -- so a single block can ask the
@@ -1370,35 +1367,34 @@ namespace {
 //   MUL_S(d, 1, 0)   ft = f0, mantissa 0         -> predicate off, 0x7f7fffff
 //
 // Both measured on an SCPH-90000; this is the non-commutativity of mul.s, which
-// is the sharpest available probe of the mask because the two answers differ by
-// exactly the decrement the mask controls.
-constexpr u32 kMaskFprOne    = 0x3f800000u; // f0 = 1.0
-constexpr u32 kMaskFprMax    = 0x7f7fffffu; // f1 = +FLT_MAX
-constexpr u32 kMaskOnWant    = 0x7f7ffffeu; // 1.0 * FLT_MAX: silicon is one ULP low
-constexpr u32 kMaskOffWant   = 0x7f7fffffu; // FLT_MAX * 1.0: silicon is exact
+// is the sharpest available probe because the two answers differ by exactly the
+// decrement the predicate controls.
+constexpr u32 kPredFprOne  = 0x3f800000u; // f0 = 1.0
+constexpr u32 kPredFprMax  = 0x7f7fffffu; // f1 = +FLT_MAX
+constexpr u32 kPredOnWant  = 0x7f7ffffeu; // 1.0 * FLT_MAX: silicon is one ULP low
+constexpr u32 kPredOffWant = 0x7f7fffffu; // FLT_MAX * 1.0: silicon is exact
 
-// Seed f0/f1 and assert the matched pair in fd_on / fd_off, at both emit sites.
-void ExpectMaskLive(EeRecTestHarness& h, u32 fd_on, u32 fd_off, const char* where)
+// Assert the matched pair in fd_on / fd_off.
+void ExpectPredicateLive(EeRecTestHarness& h, u32 fd_on, u32 fd_off, const char* where)
 {
-	EXPECT_EQ(h.GetFprBitsJit(fd_on), kMaskOnWant)
-		<< where << ": predicate did not fire -- the parked mask read as zero";
-	EXPECT_EQ(h.GetFprBitsJit(fd_off), kMaskOffWant)
-		<< where << ": predicate fired on ft mantissa 0 -- the parked mask holds garbage";
+	EXPECT_EQ(h.GetFprBitsJit(fd_on), kPredOnWant)
+		<< where << ": predicate did not fire -- ft's slot bits read as zero";
+	EXPECT_EQ(h.GetFprBitsJit(fd_off), kPredOffWant)
+		<< where << ": predicate fired on ft mantissa 0 -- ft's slot bits hold garbage";
 }
 } // namespace
 
 // A VCALLMS in the middle of the block is both runtime hazards at once: it is a
 // real in-block C-call seam (the callee may clobber any caller-saved register),
 // and it dispatches a VU0 microprogram, whose blocks allocate NEON slots q0-q27
-// freely. d10 survives the first because AAPCS64 preserves the low 64 bits of
-// d8-d15, and the second because mVUdispatcherAB's prologue Stp/Ldp-saves
-// d8-d15 around the dispatch -- the same protection the s8/s9 clamp scalars get
-// (see the VE-04 note in microVU-arm64.cpp).
+// freely. A retained ft survives the first because AAPCS64 preserves the low 64
+// bits of v8-v15, the whole slot, and the second because mVUdispatcherAB's
+// prologue Stp/Ldp-saves d8-d15 around the dispatch (see the VE-04 note in
+// microVU-arm64.cpp).
 //
-// A compile-time liveness flag in a caller-saved register would have had to
-// invalidate at this seam and re-materialize after it; this is the assertion
-// that the parked register needs no seam handling at all, at both emit sites.
-TEST(EeRecFpuFull, MulDefectMaskSurvivesAnInBlockCallSeam)
+// Both emit sites, since recMULop and recMaddsub reach the seam with different
+// registers live.
+TEST(EeRecFpuFull, MulDefectPredicateSurvivesAnInBlockCallSeam)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
@@ -1408,8 +1404,8 @@ TEST(EeRecFpuFull, MulDefectMaskSurvivesAnInBlockCallSeam)
 	// Trivial immediate-E micro: the VCALLMS is here purely as the seam.
 	h.SeedVu0Microprogram(0, {vu::EBitNopPair(), vu::NopPair()});
 	h.SetAccBits(0x00000000u);
-	h.SetFprBits(0, kMaskFprOne);
-	h.SetFprBits(1, kMaskFprMax);
+	h.SetFprBits(0, kPredFprOne);
+	h.SetFprBits(1, kPredFprMax);
 	h.LoadProgram({
 		MUL_S(2, 0, 1),
 		MUL_S(3, 1, 0),
@@ -1422,23 +1418,22 @@ TEST(EeRecFpuFull, MulDefectMaskSurvivesAnInBlockCallSeam)
 	});
 	h.RunJitNoDiff();
 
-	ExpectMaskLive(h, 2, 3, "pre-seam MUL.S");
-	ExpectMaskLive(h, 4, 5, "post-seam MUL.S");
-	ExpectMaskLive(h, 6, 7, "post-seam MADD.S");
+	ExpectPredicateLive(h, 2, 3, "pre-seam MUL.S");
+	ExpectPredicateLive(h, 4, 5, "post-seam MUL.S");
+	ExpectPredicateLive(h, 6, 7, "post-seam MADD.S");
 	// Liveness: the two expectations above discriminate only because the two
 	// answers differ. If this ever fires the rows stopped being a matched pair
 	// and the test is vacuous whatever it reports.
-	ASSERT_NE(kMaskOnWant, kMaskOffWant);
+	ASSERT_NE(kPredOnWant, kPredOffWant);
 }
 
 // COP2 macro mode is the one context that emits mVU code inline in an EE block,
-// with no dispatcher save around it. It is safe for d10 for a structural reason
-// rather than an ABI one: macro emit is bounded to NEON slots 0-3 by
-// kMacroVFEvictHighWater, which mVUmacroEmitEpilogue asserts on every macro op.
-// That is why d10 needs no microVU pool gate, unlike SL-13's q25/q26 -- and
-// this is the end-to-end check on it, with two macro FMACs between the
-// multiplies to give the mVU allocator something to spend registers on.
-TEST(EeRecFpuFull, MulDefectMaskSurvivesInlineCop2MacroMode)
+// with no dispatcher save around it, so an EE FPR left resident across it is
+// protected by nothing but the mVU allocator's own bound: macro emit is limited
+// to NEON slots 0-3 by kMacroVFEvictHighWater, which mVUmacroEmitEpilogue
+// asserts on every macro op. Two macro FMACs between the multiplies give that
+// allocator something to spend registers on.
+TEST(EeRecFpuFull, MulDefectPredicateSurvivesInlineCop2MacroMode)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
@@ -1447,8 +1442,8 @@ TEST(EeRecFpuFull, MulDefectMaskSurvivesInlineCop2MacroMode)
 	h.SeedVu0Vi(REG_VPU_STAT, 0);
 	h.SeedVu0Vf(1, 1.0f, 2.0f, 3.0f, 4.0f);
 	h.SeedVu0Vf(2, 5.0f, 6.0f, 7.0f, 8.0f);
-	h.SetFprBits(0, kMaskFprOne);
-	h.SetFprBits(1, kMaskFprMax);
+	h.SetFprBits(0, kPredFprOne);
+	h.SetFprBits(1, kPredFprMax);
 	h.LoadProgram({
 		MUL_S(2, 0, 1),
 		MUL_S(3, 1, 0),
@@ -1459,25 +1454,21 @@ TEST(EeRecFpuFull, MulDefectMaskSurvivesInlineCop2MacroMode)
 	});
 	h.RunJitNoDiff();
 
-	ExpectMaskLive(h, 2, 3, "pre-macro MUL.S");
-	ExpectMaskLive(h, 4, 5, "MUL.S after inline COP2 macro emit");
-	ASSERT_NE(kMaskOnWant, kMaskOffWant);
+	ExpectPredicateLive(h, 2, 3, "pre-macro MUL.S");
+	ExpectPredicateLive(h, 4, 5, "MUL.S after inline COP2 macro emit");
+	ASSERT_NE(kPredOnWant, kPredOffWant);
 }
 
-// The other half of the contract: nothing in EE codegen may be handed q10.
-// EeVu0Cop2ClampResidency.EeAllocatorReservesClampRegs pins the reservation at
-// the predicate; this pins it through the allocator, with enough simultaneously
-// live FP values to drive allocation into the callee-saved range where the mask
-// sits. That range is not a last resort -- the FPR class prefers it (GE-15,
-// _getFreeArm64NEONInRangeNoEvict(NEON_CALLEE_SAVED_START, ...)), so q10 is one
-// of the first homes an unreserved pool would reach for, not one of the last.
-TEST(EeRecFpuFull, MulDefectMaskSurvivesHeavyFprPressure)
+// Sixteen simultaneously live FPRs is more than the pool has, so ft goes out to
+// its slot in fpuRegs and comes back. A 32-bit fill and spill would round-trip
+// the word and lose the domain, leaving bits 30..44 clear on the reload.
+TEST(EeRecFpuFull, MulDefectPredicateSurvivesHeavyFprPressure)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
 	h.EnableFpuFullMode();
-	h.SetFprBits(0, kMaskFprOne);
-	h.SetFprBits(1, kMaskFprMax);
+	h.SetFprBits(0, kPredFprOne);
+	h.SetFprBits(1, kPredFprMax);
 
 	std::vector<u32> prog;
 	for (u32 r = 6; r < 22; r++)
@@ -1494,9 +1485,9 @@ TEST(EeRecFpuFull, MulDefectMaskSurvivesHeavyFprPressure)
 	h.LoadProgram(prog);
 	h.RunJitNoDiff();
 
-	ExpectMaskLive(h, 2, 3, "MUL.S under FPR pressure");
-	ExpectMaskLive(h, 4, 5, "MUL.S after 16 live FPRs");
-	ASSERT_NE(kMaskOnWant, kMaskOffWant);
+	ExpectPredicateLive(h, 2, 3, "MUL.S under FPR pressure");
+	ExpectPredicateLive(h, 4, 5, "MUL.S after 16 live FPRs");
+	ASSERT_NE(kPredOnWant, kPredOffWant);
 }
 
 // ---------------------------------------------------------------------------
@@ -1555,10 +1546,9 @@ constexpr BinadeRow kTopBinadeSilent[] = {
 	{0x3fff0000u, 0x3f808800u, 0x40000778u},
 };
 
-// Upper binade, T == 0, only the dropped boundary term fires -> silicon is one
-// ULP low and this emitter is one ULP high. `want` is the silicon value, so
-// the emitter is asserted at want + 1: the licensed divergence, in the binade
-// where it had never been measured.
+// Upper binade, T == 0, only the boundary term fires -> silicon is one ULP low.
+// The truncation column moves one bit between the binades, so a term keyed to
+// fixed bit positions of ft need not survive the shift.
 constexpr BinadeRow kTopBinadeBoundary[] = {
 	{0x3fc00000u, 0x3faab000u, 0x400003ffu},
 	{0x3fe00000u, 0x3f924940u, 0x40000017u},
@@ -1612,14 +1602,13 @@ TEST(EeRecFpuFull, MulDefectStaysSilentInTheUpperBinadeWhereSiliconIsExact)
 		ExpectBothSites(r, r.want, "upper-binade exact");
 }
 
-// The dropped boundary term reaches the upper binade too, at the same 1/64 of
-// significands. Asserting emitter == silicon + 1 keeps the gap measured rather
-// than latent: closing it in iFPUd trips this and names the reason.
-TEST(EeRecFpuFull, MulDefectBoundaryTermGapAlsoExistsInTheUpperBinade)
+// The boundary term reaches the upper binade too: rows the Booth term cannot
+// see, so they pin it where exp == 0xff is an ordinary EE number.
+TEST(EeRecFpuFull, MulDefectBoundaryTermAlsoFiresInTheUpperBinade)
 {
 	for (const BinadeRow& r : kTopBinadeBoundary)
 	{
-		ExpectBothSites(r, r.want + 1u, "upper-binade boundary term");
+		ExpectBothSites(r, r.want, "upper-binade boundary term");
 
 		EeRecTestHarness hi;
 		hi.EnableCop1();
