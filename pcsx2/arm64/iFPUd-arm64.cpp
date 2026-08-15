@@ -7,7 +7,7 @@
 // widens each single to IEEE double, performs the op in double, then narrows
 // back to a PS2 single with the hardware's overflow/underflow/clamp semantics.
 // It is selected when CHECK_FPU_FULL (EmuConfig.Cpu.Recompiler.fpuFullMode, the
-// GameDB `eeClampMode:3` path — FFX, Max Payne, Dark Cloud 2, Klonoa 2 …).
+// GameDB eeClampMode 3 and up — FFX, Max Payne, Dark Cloud 2, Klonoa 2 …).
 // Default config runs the single-precision fast path in iFPU-arm64.cpp.
 //
 // It serves eeClampMode 3 and 4, which differ at emitDefectiveFmul and at

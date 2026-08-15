@@ -323,13 +323,8 @@ static const void* _DynGen_EnterRecompiledCode()
 	armAsm->Ldr(a64::s9, -FLT_MAX);
 
 	// Same convention, three registers along: d11 = 2^kEeFprScaleExp, which
-	// turns a slot into the value it denotes (NEON_RESERVED_EEFPU_UNSCALE; the
-	// contract is on the constant, the consumers are in iFPUd-arm64.cpp).
-	// Parking it here is what makes a mode-3 widening one instruction instead
-	// of eleven — every consumer reads it, none materializes it, and because
-	// the low 64 bits of d8-d15 are callee-saved there is no C-call seam,
-	// branch fork, superblock side exit or backpatched fastmem thunk that can
-	// invalidate it.
+	// turns a slot into the value it denotes. The contract is on
+	// NEON_RESERVED_EEFPU_UNSCALE; iFPUd-arm64.cpp is the consumer.
 	//
 	// Emitted unconditionally rather than under CHECK_FPU_FULL: two
 	// instructions once per JIT entry are not worth a dispatcher that goes
@@ -533,8 +528,8 @@ void iFlushCall(int flushtype)
 	// GE-15: FPR-class slots (NEONTYPE_FPREG/FPACC) in the callee-saved
 	// q10-q15 range survive plain C-helper seams — AAPCS64 preserves the
 	// LOWER 64 bits of v8-v15, and this class only ever reads/writes lane 0,
-	// at S width or (eeClampMode 3, where the slot is a relocated double) D
-	// width. Both fit inside the preserved half, and _writebackNEONreg stores
+	// at S width, or at D width where eeClampMode 3 and up put a relocated
+	// double in the slot. Both fit the preserved half, and _writebackNEONreg stores
 	// the same width it filled, so post-call garbage above it is never
 	// observed. Writeback if
 	// dirty but KEEP mapped — 4248's writeback-dirty-but-keep passes, whose

@@ -151,11 +151,10 @@ union GPR_reg64 {
 	s8  SC[8];
 };
 
-/*	One EE FPR. The architectural register is 32 bits and the slot is 64, so the
-	word is not the slot and there is no u32 view of it: it is read through
-	Word() and written through SetWord(), and how a slot encodes it is those two
-	functions' business. In eeClampMode 3 it is the relocation of EeFpuFormat.h,
-	and otherwise the low half.
+/*	One EE FPR. The architectural register is 32 bits and the slot is 64: read
+	the word through Word(), write it through SetWord(). From eeClampMode 3 up a
+	slot holds the relocation of EeFpuFormat.h, below that the word in its low
+	half.
 */
 union FPRreg {
 	double d;

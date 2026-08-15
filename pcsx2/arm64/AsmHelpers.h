@@ -301,7 +301,7 @@ __fi static void armEmitEeFprStoreSlotWord(const vixl::aarch64::MemOperand& slot
 }
 
 // Bridge for emitters holding a result as the architectural single in an S
-// register while the slot they store it to holds the stored double: the mode-3
+// register while the slot they store it to holds the stored double: iFPUd's
 // bodies, the fast path's SQRT, and LWC1's fastmem load. Clobbers `tmp`.
 __fi static void armEmitEeFprFromS(const vixl::aarch64::VRegister& slot,
 	const vixl::aarch64::VRegister& src, const vixl::aarch64::Register& tmp)

@@ -58,7 +58,7 @@ __fi static u32 eeFprNarrow(double stored)
 }
 
 /*	Whether the FPR file is in this domain right now. It follows the EE FPU's
-	clamp mode: only the mode-3 recompiler computes here, and modes 0-2 leave the
+	clamp mode: only iFPUd computes here, and modes 0 to 2 leave the
 	architectural word in the slot's low half. Read it through
 	FPRreg::Word()/SetWord().
 */

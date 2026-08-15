@@ -1049,10 +1049,10 @@ void recLWC1()
 		vtlbFastmemReadFPR32(9, ftreg);
 		if (CHECK_FPU_FULL)
 		{
-			// The load lands the architectural word; in mode 3 the slot holds
-			// it relocated. Emitted after the backpatch site, so it runs on the
-			// thunk's return path too (the slow path ends in the same
-			// Fmov S<n>, w0).
+			// The load lands the architectural word; on the double tier the
+			// slot holds it relocated. Emitted after the backpatch site so it
+			// runs on the thunk's return path too (the slow path ends in the
+			// same Fmov S<n>, w0).
 			armEmitEeFprFromS(armDRegister(ftreg), armSRegister(ftreg), RXSCRATCH);
 		}
 	}

@@ -633,7 +633,8 @@ static void emitFpuMul(const a64::VRegister& dst, const a64::VRegister& s, const
 //------------------------------------------------------------------
 
 // "Full" / DOUBLE-precision emitters (iFPUd-arm64.cpp), selected per-op when
-// CHECK_FPU_FULL (GameDB eeClampMode:3). Default config uses the fast paths.
+// CHECK_FPU_FULL (GameDB eeClampMode 3 and up). Default config uses the fast
+// paths.
 // MOV.S is a raw bit-copy in BOTH modes (x86 DOUBLE::recMOV_S_xmm == the fast
 // body), so it has no DOUBLE selection.
 namespace DOUBLE {
@@ -1459,7 +1460,8 @@ void recMSUBA_S()
 // CVT.S: fd = (float)int_bits_of(fpr[fs])
 // Single NEON-scalar SCVTF Sd,Sn — the int32 bits are already in the V file;
 // the old Fmov-to-GPR bounce cost an extra insn + cross-file hazard (GE-02).
-// A relocated slot puts them back out of reach, so mode 3 pays the bounce.
+// A relocated slot puts them back out of reach, so the double tier pays the
+// bounce.
 static void recCVT_S_xmm(int info)
 {
 	if (!CHECK_FPU_FULL)
@@ -1485,8 +1487,8 @@ void recCVT_S()
 // NaN by sign — positive NaN → 0x7fffffff, negative NaN → 0x80000000. Fix up
 // the NaN case only (cold branch over the source-sign select).
 //
-// A relocated slot holds no NaN, so mode 3 unscales into the value and converts,
-// and Fcvtzs's own saturation covers it.
+// A relocated slot holds no NaN, so the double tier unscales into the value and
+// converts, and Fcvtzs's own saturation covers it.
 static void recCVT_W_xmm(int info)
 {
 	if (CHECK_FPU_FULL)
