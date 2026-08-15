@@ -558,10 +558,81 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // (w == 0x00800000) needs ma*mb == 2^46 with both in [2^23, 2^24), forcing
 // ma == mb == 2^23 -- ft mantissa 0, predicate off.
 //
+// A tail below the array's 2^15 borrow goes out of line to eeMulOneUlpLow,
+// which reconstructs the truncated columns. The guard is one-directional: bits
+// 28..21 of the product pattern are clear on every row in the band and on some
+// rows outside it, and eeMulOneUlpLow re-tests the tail itself, so a false
+// entry costs a call and returns false. A tighter mask spelled on the tail
+// alone would miss rows.
+//
+// Registers around the call: the stub is plain AAPCS, so every caller-saved
+// home the allocator is using is spilled across it and the EE pin mirrors go
+// through their flush/reload pair. It is pure arithmetic on its two arguments
+// -- it cannot raise, take an exception or read cpuRegs -- so unlike the vtlb
+// slow paths it needs no pc/code flush and no cycle spill. x8 carries the
+// verdict back because it is neither allocatable nor a pin, so no restore
+// touches it.
+static void emitMulArrayIsland(const a64::VRegister& prod, int fsslotidx, int ftslotidx)
+{
+	u8 gprs[8], fprs[NUM_ARM_NEON_REGS];
+	u32 ngpr = 0, nfpr = 0;
+	for (int i = 0; i < NUM_ARM_GPR_REGS; i++)
+	{
+		// Leaves x4-x7 and x14/x15, the caller-saved half of the EE pool. x0-x3
+		// and x8-x10 are scratch, x11-x13 are pins flushed below, x16+ are
+		// reserved or callee-saved.
+		if (i >= 16 || (i >= 8 && i <= 13) || i <= 3)
+			continue;
+		if (arm64gprs[i].inuse)
+			gprs[ngpr++] = static_cast<u8>(i);
+	}
+	for (int i = 0; i < NUM_ARM_NEON_REGS; i++)
+	{
+		// AAPCS64 preserves only the low 64 bits of q8-q15, and the allocator
+		// keeps 128-bit classes there, so every live one is saved in full.
+		if (arm64neon[i].inuse)
+			fprs[nfpr++] = static_cast<u8>(i);
+	}
+
+	const u32 frame = (ngpr * 8 + nfpr * 16 + 15u) & ~15u;
+	if (frame)
+		armAsm->Sub(a64::sp, a64::sp, frame);
+	u32 off = 0;
+	for (u32 i = 0; i < ngpr; i++, off += 8)
+		armAsm->Str(a64::XRegister(gprs[i]), a64::MemOperand(a64::sp, off));
+	for (u32 i = 0; i < nfpr; i++, off += 16)
+		armAsm->Str(a64::QRegister(fprs[i]), a64::MemOperand(a64::sp, off));
+
+	// The stub takes the architectural words; the slots hold them relocated.
+	armEmitEeFprNarrow(RXARG1, armDRegister(fsslotidx), RXSCRATCH);
+	armEmitEeFprNarrow(RXARG2, armDRegister(ftslotidx), RXSCRATCH);
+	// Flush before, reload after: under the lazy-dirty pin policy the mirrors
+	// are newer than canonical memory, so reloading on its own would lose the
+	// writes the block has made to them.
+	armFlushEEClobberedPins();
+	armEmitCall(reinterpret_cast<const void*>(
+		&R5900::Interpreter::OpcodeImpl::COP1::eeMulOneUlpLow));
+	// AAPCS64 leaves everything above a bool return's one byte unspecified.
+	armAsm->And(RXSCRATCH, RXARG1, 1);
+
+	off = 0;
+	for (u32 i = 0; i < ngpr; i++, off += 8)
+		armAsm->Ldr(a64::XRegister(gprs[i]), a64::MemOperand(a64::sp, off));
+	for (u32 i = 0; i < nfpr; i++, off += 16)
+		armAsm->Ldr(a64::QRegister(fprs[i]), a64::MemOperand(a64::sp, off));
+	if (frame)
+		armAsm->Add(a64::sp, a64::sp, frame);
+	armReloadEEClobberedPins();
+
+	armAsm->Fmov(RXARG2, prod);
+	armAsm->Sub(RXARG2, RXARG2, a64::Operand(RXSCRATCH, a64::LSL, 29));
+	armAsm->Fmov(prod, RXARG2);
+}
+
 // `dstidx` holds the widened fs on entry and the product on exit, `tidx` holds
-// the widened ft, `ftslotidx` is the untouched guest ft. x0/x1/x8 are the
-// scratch this file uses everywhere, ToPS2FPU_Wide included.
-static void emitDefectiveFmul(int dstidx, int tidx, int ftslotidx)
+// the widened ft, `fsslotidx` and `ftslotidx` are the untouched guest operands.
+// x0/x1/x8 are the scratch this file uses everywhere, ToPS2FPU_Wide included.
+static void emitDefectiveFmul(int dstidx, int tidx, int fsslotidx, int ftslotidx)
 {
 	const a64::VRegister prod = armDRegister(dstidx);
 
@@ -590,6 +661,17 @@ static void emitDefectiveFmul(int dstidx, int tidx, int ftslotidx)
 	armAsm->Csel(RXARG1, RXARG1, a64::xzr, a64::ne);
 	armAsm->Sub(RXARG2, RXARG2, RXARG1);
 	armAsm->Fmov(prod, RXARG2);
+
+	// The rest of the law is the array's. The decrement above cannot have
+	// changed the tail read here: it only fires on a zero tail, and 1 << 29
+	// leaves the low 29 bits alone.
+	a64::Label done;
+	armAsm->And(RXSCRATCH, RXARG2, UINT64_C(0x1fffffff));
+	armAsm->Cbz(RXSCRATCH, &done);
+	armAsm->Tst(RXSCRATCH, UINT64_C(0x1fe00000));
+	armAsm->B(&done, a64::ne);
+	emitMulArrayIsland(prod, fsslotidx, ftslotidx);
+	armAsm->Bind(&done);
 }
 
 // MUL/MULA: widen -> multiply in double (with the multiplier deficit) -> narrow.
@@ -602,7 +684,7 @@ static void recMULop(int info, int eeRecDst, bool acc)
 
 	SlotToDouble(sreg, EEREC_S);
 	SlotToDouble(treg, EEREC_T);
-	emitDefectiveFmul(sreg, treg, EEREC_T);
+	emitDefectiveFmul(sreg, treg, EEREC_S, EEREC_T);
 
 	ToPS2FPU_Full(sreg, true, treg, acc, false);
 	SingleToSlot(eeRecDst, sreg);
@@ -646,7 +728,7 @@ static void recMaddsub(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 	// was the round trip this shape exists to remove.
 	SlotToDouble(sreg, EEREC_S);
 	SlotToDouble(treg, EEREC_T);
-	emitDefectiveFmul(sreg, treg, EEREC_T);
+	emitDefectiveFmul(sreg, treg, EEREC_S, EEREC_T);
 	ToPS2FPU_Wide(sreg);
 
 	// --- widen the (allocator-resident) ACC slot straight into treg, then

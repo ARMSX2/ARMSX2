@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <vector>
 
 using namespace recompiler_tests;
 using namespace mips;
@@ -1210,16 +1211,16 @@ TEST(EeRecFpuFull, MulDefectBoundaryTermIsPredicatedNotAlwaysOn)
 // recMaddsub's multiply stage, reached with ACC = +0 so the accumulate is a
 // no-op on the product's bits).
 //
-// One divergence is licensed, with the interpreter one ULP nearer zero: rows
-// whose tail is non-zero but smaller than the array's 2^15 borrow. The
-// interpreter reconstructs the array and so sees these; iFPUd's predicate is a
-// function of ft and its tail test is exact, so it leaves them alone.
+// No divergence is licensed: mode 3 answers every row the interpreter's way,
+// the inline predicate deciding the zero-tail rows and the island's call to
+// eeMulOneUlpLow deciding the band below the array's borrow.
 //
-// Rows are classified by the tail below the single ULP, taken from the exact
-// 48-bit significand product, so a bug in eeMulArray cannot license itself.
-// Anything else -- a wrong predicate, a decrement escaping into a tail large
-// enough to absorb it, a zero product turned into a NaN, a saturation or
-// top-binade case the decrement walked across -- fails here.
+// What that costs is a liveness problem instead. "The two engines agree" is
+// also what a sweep that never left the easy rows would report, so the two
+// classes that need the parts under test -- the boundary term, and the band
+// that has to call out -- are counted and asserted non-empty. They are
+// classified from the exact 48-bit significand product rather than from
+// anything the emitter or eeMulArray computes, so neither can license itself.
 TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 {
 	auto splitmix = [](u64& state) {
@@ -1264,7 +1265,7 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 	};
 
 	u64 state = 0x1234567890ABCDEFull;
-	int rows = 0, boundary_rows[4] = {0, 0, 0, 0}, subulp_gap = 0;
+	int rows = 0, boundary_rows[4] = {0, 0, 0, 0}, subulp_rows = 0;
 	for (int i = 0; i < 40000; i++)
 	{
 		const int cs = static_cast<int>(splitmix(state) % 6);
@@ -1303,35 +1304,93 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 
 		rows++;
 		const u64 tail = tailBelowUlp(fs, ft);
-		// The class only the boundary term can reach, counted whether it agreed
-		// or not: agreement over it means nothing until the sweep is shown to
-		// get there.
+		// The class the Booth term cannot see, and the class no function of ft
+		// can see at all. Both are counted whether they agreed or not.
 		if (tail == 0 && !booth(ft) && full(ft))
 			boundary_rows[form]++;
+		if (tail != 0 && tail < 0x8000u)
+			subulp_rows++;
 
-		if (jit == interp)
-			continue;
-
-		const bool sub_ulp_tail = tail != 0 && tail < 0x8000u;
-		ASSERT_TRUE(sub_ulp_tail && jit == interp + 1u)
-			<< "unlicensed divergence: form=" << form << " cs=" << cs << " ct=" << ct
-			<< std::hex << " fs=" << fs << " ft=" << ft << " tail=" << tail
-			<< " jit=" << jit << " interp=" << interp;
-		subulp_gap++;
+		ASSERT_EQ(jit, interp)
+			<< "form=" << form << " cs=" << cs << " ct=" << ct
+			<< std::hex << " fs=" << fs << " ft=" << ft << " tail=" << tail;
 	}
 
 	EXPECT_EQ(rows, 40000);
-	// Liveness. "No unlicensed divergence" is also what a harness that never
-	// reached the emitter would report, so both classes must actually be
-	// observed -- the boundary term at both emit sites, since they narrow
-	// through different code.
+	// Liveness, per class. The boundary term is asserted at both emit sites
+	// because they narrow through different code.
 	EXPECT_GT(boundary_rows[0] + boundary_rows[1] + boundary_rows[2], 0)
 		<< "recMULop never reached the boundary-term class: the sweep is vacuous";
 	EXPECT_GT(boundary_rows[3], 0)
 		<< "recMaddsub never reached the boundary-term class: the sweep is vacuous";
-	EXPECT_GT(subulp_gap, 0)
-		<< "the sweep never reached a non-zero tail below the borrow: the "
-		   "carve-out is vacuous and would hide a regression";
+	EXPECT_GT(subulp_rows, 0)
+		<< "the sweep never reached a non-zero tail below the borrow, so it "
+		   "never entered the island and says nothing about the call";
+}
+
+// ---------------------------------------------------------------------------
+// The island's call, with the allocator holding as much as it can. The tests
+// above reach it from one-instruction programs, where almost nothing is
+// resident. The call is plain AAPCS -- it clobbers x0-x18 and every vector
+// register bar the low halves of q8-q15 -- so a block's live values are
+// protected by the spill emitted around it and the pin reload after it.
+//
+// Each register below is used once before the multiply and once after, so the
+// allocator has a reason to hold it across. FPRs and GPRs both, saved by
+// different loops.
+//
+// $at, $s0 and $k0 are the caller-saved EE pin mirrors rather than allocator
+// state: the island flushes them before the call and reloads them after, and a
+// reload without the flush loses the block's writes to them.
+TEST(EeRecFpuFull, MulArrayIslandPreservesTheAllocatorsLiveRegisters)
+{
+	// tail 0x2: below the array's borrow, so this is a row that calls out.
+	constexpr u32 kFs = 0x3F800001u, kFt = 0x3F800002u;
+	static const u32 kPinned[] = {1, 16, 26}; // $at, $s0, $k0
+
+	std::vector<u32> prog;
+	auto body = [&prog]() {
+		for (u32 f = 4; f < 16; f += 2)
+			prog.push_back(ADD_S(f, f, f + 1));
+		for (u32 r = 8; r < 14; r += 2)
+			prog.push_back(DADDU(r, r, r + 1));
+		for (u32 r : kPinned)
+			prog.push_back(DADDU(r, r, 8));
+	};
+	body();
+	prog.push_back(MUL_S(2, 0, 1));
+	body();
+
+	auto seed = [&](EeRecTestHarness& h) {
+		h.EnableCop1();
+		h.SetFprBits(0, kFs);
+		h.SetFprBits(1, kFt);
+		for (u32 f = 4; f < 16; f++)
+			h.SetFprBits(f, 0x3F800000u + (f << 16)); // distinct, exactly representable
+		for (u32 r = 8; r < 14; r++)
+			h.SetGpr64(r, 0x0123456789ABCDEFull * (r + 1));
+		for (u32 r : kPinned)
+			h.SetGpr64(r, 0xFEDCBA9876543210ull * (r + 1));
+	};
+
+	EeRecTestHarness hi;
+	seed(hi);
+	hi.LoadProgram(prog);
+	hi.RunInterpOnly();
+
+	EeRecTestHarness h;
+	h.EnableFpuFullMode();
+	seed(h);
+	h.LoadProgram(prog);
+	h.RunJitNoDiff();
+
+	EXPECT_EQ(h.GetFprBitsJit(2), 0x3F800002u) << "the island's own result";
+	for (u32 f = 4; f < 16; f++)
+		EXPECT_EQ(h.GetFprBitsJit(f), hi.GetFprBitsInterp(f)) << "f" << f;
+	for (u32 r = 8; r < 14; r++)
+		EXPECT_EQ(h.GetGpr64Jit(r), hi.GetGpr64Interp(r)) << "r" << r;
+	for (u32 r : kPinned)
+		EXPECT_EQ(h.GetGpr64Jit(r), hi.GetGpr64Interp(r)) << "pinned r" << r;
 }
 
 

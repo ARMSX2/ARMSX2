@@ -980,7 +980,7 @@ static u64 eeMulArray(u32 a, u32 b)
 	return full - (((lo + hi) ^ full) & 0x8000);
 }
 
-static bool eeMulOneUlpLow(u32 fs, u32 ft)
+bool eeMulOneUlpLow(u32 fs, u32 ft)
 {
 	if ((fs & 0x7F800000) == 0 || (ft & 0x7F800000) == 0)
 		return false; // a zero operand (denormals are zero): the product is zero

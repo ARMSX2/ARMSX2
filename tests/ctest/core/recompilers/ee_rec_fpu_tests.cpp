@@ -1519,6 +1519,11 @@ TEST(EeRecFpu, MulSMultiplierDeficitReachesResultsWithANonZeroTail)
 	// 2^15 and kept reading ft passes the first group and fails the next two;
 	// the old zero-tail form fails the first two and passes the last two. The
 	// corpus contains no row in any of them.
+	//
+	// Mode 3 is asserted alongside the interpreter: it guards for this band and
+	// calls the same eeMulOneUlpLow, so the two answer it alike. The fast path
+	// has no model of the deficit at all and is silent on every row here, which
+	// is why it takes no leg.
 	struct Row { u32 fs, ft, want; };
 	static const Row rows[] = {
 		// One ULP low with a non-zero tail: the old ft-only form said "exact"
@@ -1551,6 +1556,16 @@ TEST(EeRecFpu, MulSMultiplierDeficitReachesResultsWithANonZeroTail)
 		h.RunInterpOnly();
 		EXPECT_EQ(h.GetFprBitsInterp(2), r.want)
 			<< "mul.s fs=" << std::hex << r.fs << " ft=" << r.ft;
+
+		EeRecTestHarness hf;
+		hf.EnableCop1();
+		hf.EnableFpuFullMode();
+		hf.SetFprBits(0, r.fs);
+		hf.SetFprBits(1, r.ft);
+		hf.LoadProgram({ee::MUL_S(2, 0, 1)});
+		hf.RunJitNoDiff();
+		EXPECT_EQ(hf.GetFprBitsJit(2), r.want)
+			<< "full mode, mul.s fs=" << std::hex << r.fs << " ft=" << r.ft;
 	}
 }
 
