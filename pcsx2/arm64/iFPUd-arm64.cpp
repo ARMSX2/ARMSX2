@@ -472,8 +472,8 @@ static void FPU_ADD_SUB_D(int idxd, int idxt)
 // single, which the emitter can then mutate without touching the slot.
 //
 // The paths that need the single are the ones that mutate or test the word:
-// recFPUOp's FPU_ADD_SUB guard mask, the Fabs and sign test in RSQRT, and
-// recDIVhelper1's zero test. A site that only widens uses SlotToDouble.
+// recFPUOp's FPU_ADD_SUB guard mask, and the Fabs and sign test in RSQRT. A
+// site that only widens uses SlotToDouble.
 static int narrowSrc(int eerec)
 {
 	const int idx = _allocTempNEONreg();
@@ -967,10 +967,9 @@ static void SetMaxValueS(int idx)
 }
 
 // x86 recDIVhelper1 (FPU_FLAGS_ID == 1 unconditionally): divide-by-zero
-// flag/result shape in the single domain, otherwise divide in double.
-// sreg/treg are write-only temps and srcS/srcT the allocator-resident operands,
-// which are only ever read; the result lands in sreg (S lane on the zero-divisor
-// arm, S lane after ToPS2FPU_Full on the normal one).
+// flag/result shape, otherwise divide in double. sreg/treg are write-only temps
+// and srcS/srcT the allocator-resident guest slots, which are only ever read;
+// the result lands in sreg as a slot on both arms.
 // The Fcmp-with-zero runs under the EE FPCR whose FZ bit flushes denormal
 // inputs — same divisor-is-zero net as x86's DAZ'd CMPEQ.SS. The double
 // quotient of two in-range PS2 values is always finite (max magnitude
@@ -980,13 +979,13 @@ static void recDIVhelper1(int sreg, int treg, int srcS, int srcT)
 	ClearIDFlags();
 
 	a64::Label normal, xOverZero, setDone, done;
-	armAsm->Fcmp(armSRegister(srcT), 0.0);
+	armAsm->Fcmp(armDRegister(srcT), 0.0);
 	armAsm->B(&normal, a64::ne);
 
 	// Divisor is ±0: pick the flag pair, then result = (fs ^ ft) | 0x7fffffff
 	// (x86 SetMaxValue under FPU_RESULT — see SetMaxValueS above; masking the
 	// XOR down to its sign bit first is equivalent, the OR sets bits 0..30).
-	armAsm->Fcmp(armSRegister(srcS), 0.0);
+	armAsm->Fcmp(armDRegister(srcS), 0.0);
 	armAsm->B(&xOverZero, a64::ne);
 	SetFprcOr(FPUflagI | FPUflagSI); // 0/0
 	armAsm->B(&setDone);
@@ -994,19 +993,20 @@ static void recDIVhelper1(int sreg, int treg, int srcS, int srcT)
 	SetFprcOr(FPUflagD | FPUflagSD); // x/0
 	armAsm->Bind(&setDone);
 
-	armAsm->Fmov(RWSCRATCH, armSRegister(srcS));
-	armAsm->Fmov(RWARG1, armSRegister(srcT));
-	armAsm->Eor(RWSCRATCH, RWSCRATCH, RWARG1);
-	armAsm->And(RWSCRATCH, RWSCRATCH, 0x80000000);
-	armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x7fffffff);
-	armAsm->Fmov(armSRegister(sreg), RWSCRATCH);
+	armAsm->Fmov(RXSCRATCH, armDRegister(srcS));
+	armAsm->Fmov(RXARG1, armDRegister(srcT));
+	armAsm->Eor(RXSCRATCH, RXSCRATCH, RXARG1);
+	armAsm->And(RXSCRATCH, RXSCRATCH, kEeFprSignBit);
+	armAsm->Orr(RXSCRATCH, RXSCRATCH, kEeFprMaxBits);
+	armAsm->Fmov(armDRegister(sreg), RXSCRATCH);
 	armAsm->B(&done);
 
 	armAsm->Bind(&normal);
-	ToDoubleFrom(sreg, srcS);
-	ToDoubleFrom(treg, srcT);
+	SlotToDouble(sreg, srcS);
+	SlotToDouble(treg, srcT);
 	armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
 	ToPS2FPU_Full(sreg, false, treg, false, false);
+	SingleToSlot(sreg, sreg);
 
 	armAsm->Bind(&done);
 }
@@ -1018,16 +1018,14 @@ void recDIV_S_xmm(int info)
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUDivFPCR.bitmask);
 
+	// EEREC_D may be either operand and the normal arm writes before it has read
+	// both, so the result is built in a temp.
 	const int sreg = _allocTempNEONreg();
 	const int treg = _allocTempNEONreg();
-	const int nsreg = narrowSrc(EEREC_S);
-	const int ntreg = narrowSrc(EEREC_T);
-	recDIVhelper1(sreg, treg, nsreg, ntreg);
-	SingleToSlot(EEREC_D, sreg);
+	recDIVhelper1(sreg, treg, EEREC_S, EEREC_T);
+	armAsm->Fmov(armDRegister(EEREC_D), armDRegister(sreg));
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
-	_freeNEONreg(nsreg);
-	_freeNEONreg(ntreg);
 
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUFPCR.bitmask);
