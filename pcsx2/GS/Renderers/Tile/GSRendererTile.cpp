@@ -162,6 +162,19 @@ void GSRendererTile::Destroy()
 {
 	ReportReadbackCensus();
 	ReportMemoCensus();
+	if (m_oracle.native_draws != 0)
+	{
+		// States coverage and nothing more. "Complete" does NOT mean the run's frames are
+		// the software renderer's: measured, an oracle run lands within 4 px (SotC), 13 px
+		// (Dirge) and 30 px (GT4 OPB) of a software run, and the residues are known
+		// findings on pages outside any compared footprint. Claiming the stronger thing
+		// here is how the next reader inherits a control that was never proven.
+		Console.WriteLn("Tile oracle coverage: %u of %u native draws compared%s", m_oracle.compared_draws,
+			m_oracle.native_draws,
+			m_oracle.compared_draws == m_oracle.native_draws
+				? ""
+				: " ⚠️ INCOMPLETE — the uncompared draws kept their native result");
+	}
 	m_tex_source.Clear();
 	m_target_pool.ReleaseAll();
 	GSRendererSW::Destroy();
@@ -844,10 +857,24 @@ bool GSRendererTile::OracleBeginDraw(const GSTileDrawPlan& plan, const GSVector4
 	if (plan.z_write || plan.z_test)
 		m_oracle.fp |= PagesForTargetRect(m_oracle.z_l, r);
 
-	// A pathological layout (zero stride) claims all 512 pages; 4 MB x 3 snapshots per
-	// draw is not a microscope, and such a draw floors on the native route anyway.
-	if (m_oracle.fp.count() > 128)
-		return false;
+	// ⚠️ There was a refusal here for footprints over 128 pages, justified as "a
+	// pathological layout (zero stride) claims all 512 pages, and such a draw floors on
+	// the native route anyway". BOTH halves were wrong, and it cost a day.
+	//
+	// A zero-stride draw floors as StrideZero before the route is reached, so the
+	// pathological case the guard named cannot arrive. What DID arrive is every ordinary
+	// full-screen draw: a 640x448 32-bit target is 1.14 MB, which is 140 pages. So the
+	// guard silently excluded the largest draws in the frame -- the ones most worth
+	// comparing -- and because a refusal leaves the draw to run natively with nothing
+	// restored afterwards, an oracle run stopped being a software-equivalent run.
+	// Measured on Dirge: 8 of 72 native draws uncompared, which is why the run's frames
+	// were not the software frames (task #118).
+	//
+	// The footprint is bounded by the 512-page address space, so the worst case is 4 MB
+	// per snapshot. An instrument that already reads back every draw can afford that.
+	// The coverage counters below exist so this class of hole can never be silent again:
+	// natives submitted and natives compared are reported side by side, and a gap is a
+	// defect in the instrument rather than a quiet omission from its ledger.
 
 	// Drain the floor queue FIRST. The software rasterizer is asynchronous whenever it
 	// has worker threads -- a floored draw returns long before its pixels exist -- and
@@ -929,6 +956,19 @@ void GSRendererTile::OracleCompareDraw(const GSTileDrawPlan& plan, const GSVecto
 	GSRendererSW::Draw();
 	Sync(9);
 	m_oracle.sw.Capture(vm8, m_oracle.fp);
+
+	// Handing the footprint back to the CPU here -- OnCpuWrite over `fp`, so the model
+	// stops recording the surface as its owner and the next native draw must re-upload
+	// from the corrected bytes -- was tried and is NOT here, because it moved no pixels.
+	//
+	// The reasoning was sound and the measurement still said no: two CPU writes happen
+	// above behind the model's back (the restore and the software arm), a readback marks
+	// pages `synced` without clearing truth or ownership, and PagesNeedingUpload consults
+	// ownership -- so in principle the next draw skips its upload and renders onto a
+	// texture still holding the native result. Measured on Dirge and GT4 OPB, an oracle
+	// run's frames are pixel-identical with and without it. Recorded rather than kept:
+	// an instrument that carries machinery no measurement justifies is a future
+	// misattribution, and the next reader would take it for load-bearing.
 
 	// Three passes over the rect, one per memory state. vm8 holds the SW result now.
 	const bool want_c = plan.colormask != 0 || ctx->FRAME.FBMSK != 0xFFFFFFFFu;
@@ -2380,12 +2420,18 @@ void GSRendererTile::Draw()
 		record_ns = static_cast<u32>(
 			Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - record_start));
 
+	if (GSTileOracle::IsActive() && native && !r.rempty()) [[unlikely]]
+		m_oracle.native_draws++;
+
 	if (oracle) [[unlikely]]
 	{
 		// The native arm ran; now run the software arm over the same inputs and score
 		// them against each other and against the state both started from.
 		if (native)
+		{
 			OracleCompareDraw(plan, r);
+			m_oracle.compared_draws++;
+		}
 		else
 			OracleAbandonDraw();
 	}

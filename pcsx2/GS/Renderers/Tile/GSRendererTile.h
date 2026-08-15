@@ -175,6 +175,13 @@ private:
 	struct OracleState
 	{
 		bool armed = false;
+		/// Coverage of the instrument over the thing it instruments. A native draw the
+		/// oracle does not compare is also a native draw whose result is never restored,
+		/// so a gap here does not merely thin the ledger — it means an oracle run stops
+		/// composing into the software frame, and every whole-run control built on that
+		/// equivalence quietly stops being valid. Reported at teardown beside the census.
+		u32 native_draws = 0;
+		u32 compared_draws = 0;
 		GSPageBitmap fp; ///< the compared write footprint (FRAME pages | ZBUF pages)
 		GSTileSurfaceLayout fb_l{};
 		GSTileSurfaceLayout z_l{};
