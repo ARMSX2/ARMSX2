@@ -496,7 +496,6 @@ set(pcsx2GSSourcesUnshared
 	GS/Renderers/SW/GSRasterizer.cpp
 	GS/Renderers/SW/GSRendererSW.cpp
 	GS/Renderers/Tile/GSRendererTile.cpp
-	GS/Renderers/Tile/GSVramModel.cpp
 )
 
 if(ARCH_X86)
@@ -557,6 +556,14 @@ set(pcsx2GSSources
 	GS/Renderers/Tile/GSTileOracle.cpp
 	GS/Renderers/Tile/GSTileTargetPool.cpp
 	GS/Renderers/Tile/GSTileTextureSource.cpp
+	# ⚠️ GSVramModel belongs HERE and not in the unshared list above. Two of the shared
+	# translation units in this list use the class directly, and a header included by a
+	# shared TU cannot carry MULTI_ISA_UNSHARED_START -- so the class is shared by
+	# construction, and compiling its definitions once per ISA gave three copies of every
+	# symbol and a link failure in the x86 multi-ISA configuration (DISABLE_ADVANCE_SIMD,
+	# which is what upstream and the distros build). ARM never multiplies this list, which
+	# is why nothing here catches it.
+	GS/Renderers/Tile/GSVramModel.cpp
 	)
 
 # GS headers

@@ -369,6 +369,10 @@
     <ClCompile Include="GS\Renderers\Null\GSRendererNull.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSRendererSW.cpp" />
     <ClCompile Include="GS\Renderers\Tile\GSRendererTile.cpp" />
+    <ClCompile Include="GS\Renderers\Tile\GSTileOracle.cpp" />
+    <ClCompile Include="GS\Renderers\Tile\GSTileTargetPool.cpp" />
+    <ClCompile Include="GS\Renderers\Tile\GSTileTextureSource.cpp" />
+    <ClCompile Include="GS\Renderers\Tile\GSVramModel.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>
     </ClCompile>
@@ -812,7 +816,14 @@
     <ClInclude Include="GS\Renderers\HW\GSRendererHW.h" />
     <ClInclude Include="GS\Renderers\Null\GSRendererNull.h" />
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSPageBitmap.h" />
     <ClInclude Include="GS\Renderers\Tile\GSRendererTile.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTileDrawLowering.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTileOracle.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTileTargetPool.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTileTextureSource.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTileTypes.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSVramModel.h" />
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h" />
     <ClInclude Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.h">
       <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>

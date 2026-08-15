@@ -1058,6 +1058,18 @@
     <ClCompile Include="GS\Renderers\Tile\GSRendererTile.cpp">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClCompile>
+    <ClCompile Include="GS\Renderers\Tile\GSTileOracle.cpp">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\Renderers\Tile\GSTileTargetPool.cpp">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\Renderers\Tile\GSTileTextureSource.cpp">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\Renderers\Tile\GSVramModel.cpp">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClCompile>
     <ClCompile Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.cpp">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClCompile>
@@ -2021,7 +2033,28 @@
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSPageBitmap.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Tile\GSRendererTile.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileDrawLowering.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileOracle.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileTargetPool.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileTextureSource.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileTypes.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSVramModel.h">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h">
