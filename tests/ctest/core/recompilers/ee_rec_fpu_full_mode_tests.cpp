@@ -1357,6 +1357,51 @@ TEST(EeRecFpuFull, MulDeficitArrayBandAgainstTheConsole)
 		<< "every row moves, so an emitter that always decremented would pass";
 }
 
+// Both tables above are exponent 127 with both operands positive, because that
+// is what the fpmul3 sweep covered. Every model of the deficit in the tree
+// reads the significands and nothing else, so these rows put the other two
+// fields on the console: captures/fpmulsign, four sign combinations across five
+// exponent placements for eight separating operand pairs. All 160 came back one
+// ULP low, and the extremes are kept here.
+//
+// The operands are the ones above with their exponent fields moved, so the
+// significands are unchanged; a row that fails here and passes there is an
+// emitter reading the exponent or the sign.
+constexpr MulTierRow kExponentAndSignRows[] = {
+	{0x12C00000u, 0x30F5A104u, 0x043838C2u, 0x043838C3u},
+	{0x92C00000u, 0x30F5A104u, 0x843838C2u, 0x843838C3u},
+	{0x12C00000u, 0xB0F5A104u, 0x843838C2u, 0x843838C3u},
+	{0x92C00000u, 0xB0F5A104u, 0x043838C2u, 0x043838C3u},
+	{0x00C00000u, 0x7EF5A104u, 0x403838C2u, 0x403838C3u},
+	{0x80C00000u, 0x7EF5A104u, 0xC03838C2u, 0xC03838C3u},
+	{0x00C00000u, 0xFEF5A104u, 0xC03838C2u, 0xC03838C3u},
+	{0x80C00000u, 0xFEF5A104u, 0x403838C2u, 0x403838C3u},
+	{0x00E00000u, 0x7EA2EC50u, 0x400E8EC5u, 0x400E8EC6u},
+	{0x80E00000u, 0x7EA2EC50u, 0xC00E8EC5u, 0xC00E8EC6u},
+	{0x00E00000u, 0xFEA2EC50u, 0xC00E8EC5u, 0xC00E8EC6u},
+	{0x80E00000u, 0xFEA2EC50u, 0x400E8EC5u, 0x400E8EC6u},
+	{0x00A00000u, 0x7ED47C40u, 0x4004CDA7u, 0x4004CDA8u},
+	{0x80A00000u, 0x7ED47C40u, 0xC004CDA7u, 0xC004CDA8u},
+	{0x00A00000u, 0xFED47C40u, 0xC004CDA7u, 0xC004CDA8u},
+	{0x80A00000u, 0xFED47C40u, 0x4004CDA7u, 0x4004CDA8u},
+};
+
+TEST(EeRecFpuFull, MulDeficitIgnoresTheExponentAndTheSigns)
+{
+	int signs = 0;
+	for (const MulTierRow& r : kExponentAndSignRows)
+	{
+		SCOPED_TRACE(::testing::Message() << std::hex << "fs=" << r.fs << " ft=" << r.ft);
+		ExpectMulTier(r);
+		signs |= 1 << (((r.fs >> 31) << 1) | (r.ft >> 31));
+	}
+	EXPECT_EQ(signs, 0xF) << "not all four sign combinations are still here";
+	// Every row here separates the two modes; the control against an emitter
+	// that decrements unconditionally is ExpectMulTier()'s mode 3 leg.
+	EXPECT_EQ(SeparatingRows(kExponentAndSignRows, std::size(kExponentAndSignRows)),
+		static_cast<int>(std::size(kExponentAndSignRows)));
+}
+
 // ---------------------------------------------------------------------------
 // Randomised differential: mode 4 against the interpreter, which reaches the
 // same answers in completely different code (FPU.cpp eeMulArray reconstructs
