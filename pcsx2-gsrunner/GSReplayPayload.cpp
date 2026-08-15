@@ -508,6 +508,7 @@ namespace GSReplayPayload
 		bool path_open = false;
 		u32 image_carry = 0; // qwords of IMAGE payload owed by the previous packet
 		u64 transfer_left = 0; // bytes of image data the live transfer still expects
+		bool readback_pending = false; // a local-to-host kick the stream has not drained yet
 		u32 trxreg_w = 0, trxreg_h = 0, bitbltbuf_psm = 0;
 		u32 rungs_moved = 0;
 		u32 frames_on_open_path = 0;
@@ -594,10 +595,27 @@ namespace GSReplayPayload
 										const u32 bits = TransferBits(bitbltbuf_psm);
 										transfer_left = bits ? (static_cast<u64>(trxreg_w) * trxreg_h * bits + 7) / 8
 															 : ~0ull; // unknown size: never quiescent
+										readback_pending = false;
+									}
+									else if (dir == 1) // local-to-host
+									{
+										// The GS now holds data for the EE, and nothing in
+										// the GIF stream collects it -- the dump records
+										// the collection separately, as ReadFIFO2, many
+										// packets later. Every boundary in between has the
+										// GS already in local-to-host mode, so our own
+										// readback does not start a new transfer there: it
+										// finishes the game's. That is what starves it a
+										// few quadwords short of what we asked for, and it
+										// is the acute form of the same collision that
+										// once deadlocked this replayer outright.
+										readback_pending = true;
+										transfer_left = 0;
 									}
 									else
 									{
 										transfer_left = 0;
+										readback_pending = false;
 									}
 									break;
 								}
@@ -683,6 +701,9 @@ namespace GSReplayPayload
 						std::memcpy(&qwc, packet.data, sizeof(u32));
 					PushRecord(stream, REC_FIFO, 0, qwc, 0);
 					records++;
+					// The collection the local-to-host kick was waiting for. The GS is
+					// free again from here.
+					readback_pending = false;
 					break;
 				}
 
@@ -706,7 +727,7 @@ namespace GSReplayPayload
 					// point of it -- so an open path here is reported instead. It has
 					// the same consequence as it does for a rung, and a frame capture
 					// taken across one is not an oracle.
-					if (path_open || transfer_left != 0)
+					if (path_open || transfer_left != 0 || readback_pending)
 						frames_on_open_path++;
 
 					Checkpoint ck = rb;
@@ -741,7 +762,7 @@ namespace GSReplayPayload
 			// two arms join on a real index instead of an intended one.
 			const bool rung_due = (opts.ladder_every != 0 && packet.id != GSDumpTypes::GSType::VSync &&
 								   ((this_packet + 1) % opts.ladder_every) == 0);
-			const bool quiescent = !path_open && transfer_left == 0;
+			const bool quiescent = !path_open && transfer_left == 0 && !readback_pending;
 			if (rung_due && !quiescent)
 			{
 				ladder_deferred = true;
