@@ -27,7 +27,6 @@ SERIAL-12345: # !required! Serial number for the game, this is how games are loo
   gameFixes:
     - VuAddSubHack
     - FpuMulHack
-    - FpuNegDivHack
     - XGKickHack
     - EETimingHack
     - SkipMPEGHack
