@@ -565,7 +565,6 @@
   "perf.fix.eeTiming": "EE Таймінг",
   "perf.fix.extraXgkick": "Додатковий XGKICK",
   "perf.fix.fmvSoftware": "Програмне забезпечення FMV",
-  "perf.fix.fpuMultiply": "Множення FPU",
   "perf.fix.fullVu0Sync": "Повна синхронізація VU0",
   "perf.fix.gamedbFixes": "Виправлення GameDB",
   "perf.fix.gifFifo": "GIF FIFO",

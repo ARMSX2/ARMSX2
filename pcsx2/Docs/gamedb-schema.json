@@ -101,7 +101,6 @@
               "BlitInternalFPSHack",
               "DMABusyHack",
               "EETimingHack",
-              "FpuMulHack",
               "GIFFIFOHack",
               "GoemonTlbHack",
               "IbitHack",

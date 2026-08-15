@@ -110,9 +110,6 @@ EeRecTestHarness::~EeRecTestHarness()
 	if (fpu_full_mode_changed_)
 		EmuConfig.Cpu.Recompiler.fpuFullMode = prev_fpu_full_mode_;
 
-	if (fpu_mul_hack_changed_)
-		EmuConfig.Gamefixes.FpuMulHack = prev_fpu_mul_hack_;
-
 	if (fpu_guarded_changed_)
 		EmuConfig.Cpu.Recompiler.fpuGuardedAddSub = prev_fpu_guarded_;
 
@@ -182,16 +179,6 @@ void EeRecTestHarness::EnableFpuExactMode()
 		fpu_exact_mode_changed_ = true;
 	}
 	EmuConfig.Cpu.Recompiler.fpuExactMode = true;
-}
-
-void EeRecTestHarness::EnableFpuMulHack()
-{
-	if (!fpu_mul_hack_changed_)
-	{
-		prev_fpu_mul_hack_ = EmuConfig.Gamefixes.FpuMulHack;
-		fpu_mul_hack_changed_ = true;
-	}
-	EmuConfig.Gamefixes.FpuMulHack = true;
 }
 
 void EeRecTestHarness::DisableFpuGuarded()

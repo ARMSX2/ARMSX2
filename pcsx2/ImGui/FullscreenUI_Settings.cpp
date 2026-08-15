@@ -5884,7 +5884,6 @@ void FullscreenUI::DrawGameFixesSettingsPage()
 		FSUI_CSTR("Game fixes should not be modified unless you are aware of what each option does and the implications of doing so."),
 		false, false, ImGuiFullscreen::LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
 
-	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_WRENCH, "FPU Multiply Hack"), FSUI_CSTR("For Tales of Destiny."), "EmuCore/Gamefixes", "FpuMulHack", false);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_MICROCHIP, "Use Software Renderer For FMVs"),
 		FSUI_CSTR("Needed for some games with complex FMV rendering."), "EmuCore/Gamefixes", "SoftwareRendererFMVHack", false);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_FORWARD_FAST, "Skip MPEG Hack"), FSUI_CSTR("Skips videos/FMVs in games to avoid game hanging/freezes."),
@@ -6338,7 +6337,6 @@ TRANSLATE_NOOP("FullscreenUI", "Activating game patches can cause unpredictable 
 TRANSLATE_NOOP("FullscreenUI", "Use patches at your own risk, the ARMSX2 team will provide no support for users who have enabled game patches.");
 TRANSLATE_NOOP("FullscreenUI", "Game Fixes");
 TRANSLATE_NOOP("FullscreenUI", "Game fixes should not be modified unless you are aware of what each option does and the implications of doing so.");
-TRANSLATE_NOOP("FullscreenUI", "For Tales of Destiny.");
 TRANSLATE_NOOP("FullscreenUI", "Needed for some games with complex FMV rendering.");
 TRANSLATE_NOOP("FullscreenUI", "Skips videos/FMVs in games to avoid game hanging/freezes.");
 TRANSLATE_NOOP("FullscreenUI", "To avoid TLB miss on Goemon.");

@@ -619,51 +619,13 @@ static void fpuEmitGuardedAddSub(const a64::VRegister& dst,
 	_freeNEONreg(tmp);
 }
 
-// FpuMulHack (Tales of Destiny Remake gamefix, EmuConfig.Gamefixes.FpuMulHack).
-// x86 routes every FPU multiply (MUL/MULA/MADD/MSUB) through FPU_MUL, which —
-// when the gamefix is on — patches the single specific product 0.25 * π
-// (0x3e800000 * 0x40490fdb) from the correctly-rounded 0x3f490fdb to 0x3f490fda
-// so the game stops hanging in one late-game room. Emit
-// `dst = (hit) ? 0x3f490fda : s*t`; callers clamp/accumulate dst as they normally
-// would (the magic value is an ordinary small float, so a following
-// fpuClampResult is a no-op). In the default config (gamefix off) this is a bare
-// Fmul — zero added cost.
-//
-// The patched value is not arbitrary: 0x3f490fda is π/4 one ULP low, which is
-// what the EE's multiplier actually returns. Its Booth recoding drops one ULP
-// when ft's significand has an odd digit pair (ft & 0x2AA) and the exact product
-// has no tail below the single ULP — here fs = 2^-2, so the product is exact and
-// the deficit reaches the result. The general model reproduces this pair (and
-// leaves the swapped operand order alone, exactly as the check below does).
-// It is NOT generalized here: this path has no exact product to test a tail
-// against, so it would need one built out of single-precision pieces on every
-// multiply in every game, against 1 instruction today. Its home is
-// emitDefectiveFmul (iFPUd-arm64.cpp), where the double product is already
-// there and the tail is 29 bits of it — extending it to this path needs its own
-// measured case.
+// The EE multiplier's one-ULP deficit is not modelled here: it needs the exact
+// product's tail below the single's ULP, which a single-precision multiply has
+// already discarded. It lives at emitDefectiveFmul (iFPUd-arm64.cpp), where the
+// product is a double and the tail is 29 bits of it.
 static void emitFpuMul(const a64::VRegister& dst, const a64::VRegister& s, const a64::VRegister& t)
 {
-	if (!CHECK_FPUMULHACK)
-	{
-		armAsm->Fmul(dst, s, t);
-		return;
-	}
-
-	a64::Label noHack, done;
-	armAsm->Fmov(RWARG1, s);
-	armAsm->Fmov(RWARG2, t);
-	armAsm->Mov(RWSCRATCH, 0x3e800000);
-	armAsm->Cmp(RWARG1, RWSCRATCH);
-	armAsm->B(&noHack, a64::ne);
-	armAsm->Mov(RWSCRATCH, 0x40490fdb);
-	armAsm->Cmp(RWARG2, RWSCRATCH);
-	armAsm->B(&noHack, a64::ne);
-	armAsm->Mov(RWSCRATCH, 0x3f490fda);
-	armAsm->Fmov(dst, RWSCRATCH);
-	armAsm->B(&done);
-	armAsm->Bind(&noHack);
 	armAsm->Fmul(dst, s, t);
-	armAsm->Bind(&done);
 }
 
 //------------------------------------------------------------------

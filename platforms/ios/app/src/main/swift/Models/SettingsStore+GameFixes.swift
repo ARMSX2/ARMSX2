@@ -7,7 +7,6 @@ extension SettingsStore {
     /// Manual EmuCore/Gamefixes toggles, in display order.
     static let gameFixOptions: [GameFixOption] = [
         .init(key: "VuAddSubHack", label: "VU Add-Sub Hack"),
-        .init(key: "FpuMulHack", label: "FPU Multiply Hack"),
         .init(key: "XgKickHack", label: "Extra XGKICK Hack"),
         .init(key: "EETimingHack", label: "EE Timing Hack"),
         .init(key: "InstantDMAHack", label: "Instant DMA Hack"),

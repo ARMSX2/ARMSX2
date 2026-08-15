@@ -26,7 +26,6 @@ SERIAL-12345: # !required! Serial number for the game, this is how games are loo
    # If you'd like to temporarily disable it, either comment out the line, or remove it!
   gameFixes:
     - VuAddSubHack
-    - FpuMulHack
     - XGKickHack
     - EETimingHack
     - SkipMPEGHack
@@ -206,9 +205,6 @@ The clamp modes are also numerically based.
 These values are case-sensitive, so take care.  If you incorrectly specify a GameFix, you will get a validation error on startup.  Any invalid game-fixes will be dropped from the game's list of fixes.
 
 ### Game Fixes Options
-
-* `FpuMulHack`
-  * For Tales of Destiny: This fix addresses hanging issues.
 
 * `SoftwareRendererFMVHack`
   * Used for complex FMV rendering in certain games.
