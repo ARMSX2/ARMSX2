@@ -165,16 +165,32 @@ NINJA_CLEAN="${NINJA_CLEAN:-0}"
 # ---------------------------------------------------------------------------
 # 2. SHADERS -- the runtime tree must be a link, not a copy.
 # ---------------------------------------------------------------------------
-SHADER_LINK="$BUILD_DIR/bin/resources/shaders"
-SHADER_SRC="$SOURCE_DIR/bin/resources/shaders"
-if [ ! -e "$SHADER_LINK" ]; then
-	fail "shaders: $SHADER_LINK does not exist -- reconfigure"
-elif [ ! -L "$SHADER_LINK" ]; then
-	fail "shaders: $SHADER_LINK is a COPY, not a link to the source tree -- a .glsl edit will not reach the binary (reconfigure)"
-elif [ "$(cd "$SHADER_LINK" && pwd -P)" != "$(cd "$SHADER_SRC" && pwd -P)" ]; then
-	fail "shaders: $SHADER_LINK resolves to $(cd "$SHADER_LINK" && pwd -P), not $SHADER_SRC"
+LINKS_FILE="$BUILD_DIR/rig-links.txt"
+if [ ! -f "$LINKS_FILE" ]; then
+	fail "no rig-links.txt in $BUILD_DIR -- reconfigure (this build predates the resource links)"
 else
-	pass "shaders: runtime tree is linked to the source, so an edit cannot be stale"
+	LINK_OK=0
+	LINK_N=0
+	while IFS= read -r rel; do
+		[ -n "$rel" ] || continue
+		LINK_N=$((LINK_N + 1))
+		dest="$BUILD_DIR/bin/$rel"
+		# The source path is the same relative path under bin/, except for
+		# entries staged flat from elsewhere -- those are not listed here.
+		src="$SOURCE_DIR/bin/$rel"
+		if [ ! -e "$dest" ]; then
+			fail "resources: $dest does not exist -- reconfigure"
+		elif [ ! -L "$dest" ]; then
+			fail "resources: $dest is a COPY, not a link -- an edit to it will not reach the binary until the frontend relinks (reconfigure)"
+		elif [ "$(readlink -f "$dest")" != "$(readlink -f "$src")" ]; then
+			fail "resources: $dest resolves to $(readlink -f "$dest"), not $src"
+		else
+			LINK_OK=$((LINK_OK + 1))
+		fi
+	done < "$LINKS_FILE"
+	if [ "$LINK_OK" -eq "$LINK_N" ] && [ "$LINK_N" -gt 0 ]; then
+		pass "resources: $LINK_N edited trees are linked to the source, so an edit cannot be stale"
+	fi
 fi
 
 # ---------------------------------------------------------------------------

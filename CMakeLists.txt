@@ -42,32 +42,58 @@ include(SearchForStuff)
 get_git_version_info()
 write_svnrev_h()
 
-# The shader tree is SYMLINKED into the runtime resources directory rather than
-# copied into it.
+# The resources a developer EDITS are symlinked into the runtime directory
+# rather than copied into it.
 #
 # pcsx2_copy_runtime_resources() stages bin/resources/ next to a built frontend
-# with a POST_BUILD copy_if_different over a configure-time glob. That is fine
-# for data nobody edits, and wrong for shaders, which are edited constantly and
-# on their own: editing a .glsl compiles nothing, so the frontend does not
-# relink, so the POST_BUILD step never runs, so the binary keeps executing the
-# previously staged copy. It builds, links and runs clean the whole time -- the
-# failure mode is a plausible wrong image, not an error -- and a shader that
-# fails to compile does not fail the run either, so the output is not evidence
-# the edit arrived. A symlink cannot hold a previous revision.
+# with a POST_BUILD copy_if_different over a configure-time glob. Two faults
+# compose there, and both are invisible:
 #
-# Only the shader subtree. The staged resources directory also carries files
-# that are deliberately NOT the source tree's (the mobile GameDB overlay lands
-# flat there, and docs/ comes from bin/docs/), so linking the whole directory
-# would break them.
+#   - POST_BUILD only fires when the target RELINKS. Editing a .glsl or the
+#     GameDB compiles nothing, so the frontend does not relink, so the copy step
+#     never runs and the binary keeps executing the previously staged file. It
+#     builds, links and runs clean the whole time; the failure mode is a
+#     plausible wrong image, not an error. (And a shader that fails to compile
+#     does not fail the run either, so the output is no evidence the edit
+#     arrived.)
+#   - the glob is evaluated at CONFIGURE time, so a newly added file is not
+#     staged at all until somebody reconfigures.
+#
+# A symlink has neither fault: it cannot hold a previous revision and it cannot
+# miss a file. Only the files that get edited, though -- the staged directory
+# also carries things that are deliberately not the source tree's (docs/ comes
+# from bin/docs/), so linking the whole directory would break them.
 if(UNIX AND NOT APPLE)
-	set(_rig_shader_link "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resources/shaders")
-	file(MAKE_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resources")
-	if(IS_DIRECTORY "${_rig_shader_link}" AND NOT IS_SYMLINK "${_rig_shader_link}")
-		file(REMOVE_RECURSE "${_rig_shader_link}")
+	set(_rig_links
+		"bin/resources/shaders"          "resources/shaders"
+		"bin/resources/GameIndex.yaml"   "resources/GameIndex.yaml")
+	# The mobile GameDB overlay lands FLAT under resources/ from a different
+	# source directory, and only when enabled -- linking it unconditionally
+	# would hand the loader an overlay on a desktop GPU, which is a behaviour
+	# change, not a staleness fix.
+	if(ENABLE_MOBILE_GAMEDB_OVERLAY)
+		list(APPEND _rig_links
+			"bin/resources-overlay/armsx2_overrides.yaml" "resources/armsx2_overrides.yaml")
 	endif()
-	file(CREATE_LINK "${CMAKE_SOURCE_DIR}/bin/resources/shaders" "${_rig_shader_link}"
-		SYMBOLIC)
-	unset(_rig_shader_link)
+
+	file(MAKE_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resources")
+	while(_rig_links)
+		list(POP_FRONT _rig_links _rig_from _rig_to)
+		set(_rig_dest "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${_rig_to}")
+		if(EXISTS "${_rig_dest}" AND NOT IS_SYMLINK "${_rig_dest}")
+			file(REMOVE_RECURSE "${_rig_dest}")
+		endif()
+		file(CREATE_LINK "${CMAKE_SOURCE_DIR}/${_rig_from}" "${_rig_dest}" SYMBOLIC)
+	endwhile()
+	unset(_rig_from)
+	unset(_rig_to)
+	unset(_rig_dest)
+
+	# Recorded for tools/rig/doctor.sh, which checks each one is still a link
+	# into the source tree -- a build that predates this rule, or a stray copy,
+	# otherwise looks exactly like a working one.
+	file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/rig-links.txt"
+		CONTENT "resources/shaders\nresources/GameIndex.yaml\n")
 endif()
 
 # `rig` -- everything a measurement can run, as one target.

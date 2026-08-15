@@ -105,9 +105,27 @@ function(get_git_version_info)
 	set(PCSX2_GIT_DATE "${PCSX2_GIT_DATE}" PARENT_SCOPE)
 endfunction()
 
+# Write svnrev.h only when its contents actually change.
+#
+# file(WRITE) rewrites unconditionally, which touches the header on every
+# configure and forces BuildVersion.cpp to recompile and every binary that links
+# the core to relink -- for a file whose contents are usually identical. That
+# was tolerable when a reconfigure was rare; it is not now that a stale rig is
+# something we check for, because "the build has work outstanding" has to mean
+# something. Same output, written through a compare.
+# Variadic on purpose: the callers pass the header a line at a time, exactly as
+# file(WRITE) takes it, so this stays a drop-in for the call sites below.
+function(write_svnrev_if_changed)
+	set(header "${CMAKE_BINARY_DIR}/common/include/svnrev.h")
+	set(staging "${header}.in")
+	file(WRITE "${staging}" ${ARGV})
+	execute_process(COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${staging}" "${header}")
+	file(REMOVE "${staging}")
+endfunction()
+
 function(write_svnrev_h)
 	if ("${PCSX2_GIT_TAG}" MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
-		file(WRITE ${CMAKE_BINARY_DIR}/common/include/svnrev.h
+		write_svnrev_if_changed(
 			"#define GIT_TAG \"${PCSX2_GIT_TAG}\"\n"
 			"#define GIT_TAGGED_COMMIT 1\n"
 			"#define GIT_TAG_HI  ${CMAKE_MATCH_1}\n"
@@ -118,7 +136,7 @@ function(write_svnrev_h)
 			"#define GIT_DATE \"${PCSX2_GIT_DATE}\"\n"
 		)
 	elseif ("${PCSX2_GIT_REV}" MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)")
-		file(WRITE ${CMAKE_BINARY_DIR}/common/include/svnrev.h
+		write_svnrev_if_changed(
 			"#define GIT_TAG \"${PCSX2_GIT_TAG}\"\n"
 			"#define GIT_TAGGED_COMMIT 0\n"
 			"#define GIT_TAG_HI  ${CMAKE_MATCH_1}\n"
@@ -129,7 +147,7 @@ function(write_svnrev_h)
 			"#define GIT_DATE \"${PCSX2_GIT_DATE}\"\n"
 		)
 	else()
-		file(WRITE ${CMAKE_BINARY_DIR}/common/include/svnrev.h
+		write_svnrev_if_changed(
 			"#define GIT_TAG \"${PCSX2_GIT_TAG}\"\n"
 			"#define GIT_TAGGED_COMMIT 0\n"
 			"#define GIT_TAG_HI 0\n"
