@@ -158,9 +158,36 @@ static void clampToEeRange(u32& xReg)
 		xReg &= 0x80000000;
 }
 
+/*	Whether a result saturates, decided after the rounding and not on the exact
+	value. The unit normalises and rounds to 24 bits before anything looks at
+	the exponent field, so a result can exceed kEeFpuMax and still come back on
+	it: 0x7FFFFFFF + 2^104 is 2^129 - 2^104, which needs 25 significant bits and
+	chops to 0x7FFFFFFF. One exponent higher the sum is 2^129, which does not
+	fit however it is rounded.
+
+	Above 2^129 no rounding brings a value back, which also keeps the scaled
+	cast below in float range.
+
+	The rounding is the (float) cast's, so the ambient FPCR decides it here as
+	it does everywhere else in this file -- under round-to-nearest the same
+	2^129 - 2^104 is a tie that goes to 2^129 and does saturate.
+*/
+static bool eeRoundsOutOfRange(double exact)
+{
+	const double mag = std::fabs(exact);
+	if (mag <= kEeFpuMax)
+		return false;
+	if (mag >= 0x1p129)
+		return true;
+	const u32 w = floatToBits(static_cast<float>(exact * 0x1p-4));
+	return ((w >> 23) & 0xFFu) + 4u > 255u;
+}
+
 /*	One rounding step's worth of FCR31 O/U maintenance, from the magnitude of
-	the exact result. `exact` is the step's result recomputed through
-	eeToDouble(), where nothing was clamped, rounded away or flushed.
+	the value the step produced -- the sum or product as a double, before the
+	narrowing to an EE single but after everything the unit itself did to the
+	operands. For the adder that means after the guard mask (eeGuardedSum): the
+	flags report what was added, not what was asked for.
 
 	checkOverflow()/checkUnderflow() used to ask instead whether xReg had come
 	back as a host infinity or a host denormal. Neither ever appears in the FP
@@ -179,21 +206,22 @@ static void clampToEeRange(u32& xReg)
 static void raiseOrClearOU(double exact)
 {
 	_ContVal_ &= ~(FPUflagO | FPUflagU);
-	if (std::fabs(exact) > kEeFpuMax)
+	if (eeRoundsOutOfRange(exact))
 		_ContVal_ |= FPUflagO | FPUflagSO;
 	else if (exact != 0.0 && std::fabs(exact) < kEeMinNormal)
 		_ContVal_ |= FPUflagU | FPUflagSU;
 }
 
 /*	The multiply-accumulates round twice, so they raise twice: once on the
-	intermediate product, once on the accumulate. These two predicates are what
-	the product hands on to the second step.
+	intermediate product, once on the accumulate. This predicate is what the
+	product hands on to the second step.
 
 	An underflowing product is flushed to signed zero before the accumulate, so
 	the accumulate sees ACC and clears the cause U again, leaving the sticky SU
 	up. 68 cases in the capture come back with SU set and U clear; all are
 	multiply-accumulates and no plain MUL/MULA ever does, which is what says two
-	steps rather than one.
+	steps rather than one. The flush needs no helper: the product reaches the
+	adder through eeMulRound(), which returns a signed zero for it.
 
 	An overflowing product ends the instruction. Silicon saturates there and the
 	accumulate cannot bring it back: MADD of 2^128 by 2.0 onto an ACC of -2^128
@@ -205,13 +233,6 @@ static void raiseOrClearOU(double exact)
 static bool madAccumulandOverflowed(double product)
 {
 	return std::fabs(product) > kEeFpuMax;
-}
-
-static double madFlushedProduct(double product)
-{
-	if (product != 0.0 && std::fabs(product) < kEeMinNormal)
-		return std::copysign(0.0, product);
-	return product;
 }
 
 __fi u32 fp_max(u32 a, u32 b)
@@ -362,7 +383,7 @@ static u32 eeRoundToSingle(double exact, bool addsub = false)
 {
 	const double mag = std::fabs(exact);
 
-	if (mag > kEeFpuMax)
+	if (eeRoundsOutOfRange(exact))
 		return (std::signbit(exact) ? 0x80000000u : 0u) | 0x7FFFFFFFu;
 
 	if (mag < kEeMinNormal)
@@ -441,13 +462,20 @@ static void fpuGuardMask(u32& a, u32& b)
 	on the hardware.
 
 	Subtraction is addition of the negated operand, as IEEE defines it: that gets
-	the zero signs right, including for a masked +-0. */
-static u32 eeGuardedAddSub(u32 a, u32 b, bool issub)
+	the zero signs right, including for a masked +-0.
+
+	This returns the sum rather than the rounded word because the flags come off
+	it too: what the adder produced is what FCR31 reports, so its callers round
+	it for the destination and hand this same value to raiseOrClearOU() instead
+	of recomputing a second sum from the unmasked operands. Where the mask
+	erases an operand the two differ, and the console follows this one -- see
+	ee_fpu_ou_rounding_console_tests.cpp. */
+static double eeGuardedSum(u32 a, u32 b, bool issub)
 {
 	fpuGuardMask(a, b);
 	if (issub)
 		b ^= 0x80000000;
-	return eeRoundToSingle(eeToDouble(a) + eeToDouble(b), true);
+	return eeToDouble(a) + eeToDouble(b);
 }
 
 /*	The EE's divide/square-root unit, digit by digit.
@@ -757,19 +785,20 @@ void ABS_S() {
 	clearFPUFlags( FPUflagO | FPUflagU );
 }
 
-/*	Every op below computes `exact` before writing its destination: fd may alias
-	fs or ft, and the accumulator forms read the ACC they are about to write.
+/*	Every op below computes its result before writing its destination: fd may
+	alias fs or ft, and the accumulator forms read the ACC they are about to
+	write.
 */
 void ADD_S() {
-	const double exact = eeToDouble( _FsValUl_ ) + eeToDouble( _FtValUl_ );
-	_SetFdVal_( eeGuardedAddSub( _FsValUl_, _FtValUl_, false ) );
-	raiseOrClearOU( exact );
+	const double sum = eeGuardedSum( _FsValUl_, _FtValUl_, false );
+	_SetFdVal_( eeRoundToSingle( sum, true ) );
+	raiseOrClearOU( sum );
 }
 
 void ADDA_S() {
-	const double exact = eeToDouble( _FsValUl_ ) + eeToDouble( _FtValUl_ );
-	_SetFAVal_( eeGuardedAddSub( _FsValUl_, _FtValUl_, false ) );
-	raiseOrClearOU( exact );
+	const double sum = eeGuardedSum( _FsValUl_, _FtValUl_, false );
+	_SetFAVal_( eeRoundToSingle( sum, true ) );
+	raiseOrClearOU( sum );
 }
 
 void BC1F() {
@@ -1016,7 +1045,7 @@ static u32 eeMulRound(u32 fs, u32 ft, double exact)
 */
 /*	The product is its own named double, so -ffp-contract cannot fuse away the
 	two roundings the PS2 ISA mandates -- and so the two flag steps below have
-	something separate to look at. See raiseOrClearOU/madFlushedProduct.
+	something separate to look at. See raiseOrClearOU/madAccumulandOverflowed.
 
 	The A-forms name their single-precision product too, because the guarded adder
 	needs its bits, and that takes the accumulate out of the compiler's reach as
@@ -1035,31 +1064,32 @@ static u32 eeMulRound(u32 fs, u32 ft, double exact)
 	madAccumulandOverflowed() has always made for the flag; the value follows it
 	now too.
 */
-static u32 eeMulAccumulate(u32 fs, u32 ft, u32 accbits, bool issub)
+static u32 eeMulAccumulate(u32 fs, u32 ft, u32 accbits, bool issub, double* sum)
 {
 	const double product = eeToDouble( fs ) * eeToDouble( ft );
 	const u32 rounded = eeMulRound( fs, ft, product ) ^ (issub ? 0x80000000u : 0u);
 	if (madAccumulandOverflowed( product ))
 		return rounded;
-	return eeGuardedAddSub( accbits, rounded, false );
+	*sum = eeGuardedSum( accbits, rounded, false );
+	return eeRoundToSingle( *sum, true );
 }
 
 void MADD_S() {
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
-	const double acc = eeToDouble( _FAValUl_ );
-	_SetFdVal_( eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, false ) );
+	double sum = 0.0;
+	_SetFdVal_( eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, false, &sum ) );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
-	raiseOrClearOU( acc + madFlushedProduct( product ) );
+	raiseOrClearOU( sum );
 }
 
 void MADDA_S() {
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
-	const double acc = eeToDouble( _FAValUl_ );
-	_SetFAVal_( eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, false ) );
+	double sum = 0.0;
+	_SetFAVal_( eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, false, &sum ) );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
-	raiseOrClearOU( acc + madFlushedProduct( product ) );
+	raiseOrClearOU( sum );
 }
 
 void MAX_S() {
@@ -1083,20 +1113,20 @@ void MOV_S() {
 
 void MSUB_S() {
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
-	const double acc = eeToDouble( _FAValUl_ );
-	_SetFdVal_( eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, true ) );
+	double sum = 0.0;
+	_SetFdVal_( eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, true, &sum ) );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
-	raiseOrClearOU( acc - madFlushedProduct( product ) );
+	raiseOrClearOU( sum );
 }
 
 void MSUBA_S() {
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
-	const double acc = eeToDouble( _FAValUl_ );
-	_SetFAVal_( eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, true ) );
+	double sum = 0.0;
+	_SetFAVal_( eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, true, &sum ) );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
-	raiseOrClearOU( acc - madFlushedProduct( product ) );
+	raiseOrClearOU( sum );
 }
 
 void MTC1() {
@@ -1189,15 +1219,15 @@ void SQRT_S() {
 }
 
 void SUB_S() {
-	const double exact = eeToDouble( _FsValUl_ ) - eeToDouble( _FtValUl_ );
-	_SetFdVal_( eeGuardedAddSub( _FsValUl_, _FtValUl_, true ) );
-	raiseOrClearOU( exact );
+	const double sum = eeGuardedSum( _FsValUl_, _FtValUl_, true );
+	_SetFdVal_( eeRoundToSingle( sum, true ) );
+	raiseOrClearOU( sum );
 }
 
 void SUBA_S() {
-	const double exact = eeToDouble( _FsValUl_ ) - eeToDouble( _FtValUl_ );
-	_SetFAVal_( eeGuardedAddSub( _FsValUl_, _FtValUl_, true ) );
-	raiseOrClearOU( exact );
+	const double sum = eeGuardedSum( _FsValUl_, _FtValUl_, true );
+	_SetFAVal_( eeRoundToSingle( sum, true ) );
+	raiseOrClearOU( sum );
 }
 
 }	// End Namespace COP1
