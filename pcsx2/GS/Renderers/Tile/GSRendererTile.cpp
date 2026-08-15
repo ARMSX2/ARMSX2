@@ -1031,14 +1031,18 @@ void GSRendererTile::OracleCompareDraw(const GSTileDrawPlan& plan, const GSVecto
 			const u8* a = m_oracle.sw.bytes.data() + at;
 			const u8* b = m_oracle.gpu.bytes.data() + at;
 			const u8* c = m_oracle.raw.bytes.data() + at;
+			const u8* p = m_oracle.pre.bytes.data() + at;
 			u32 n = 0;
 			for (u32 i = 0; i < GS_PAGE_SIZE; i++)
 			{
 				const bool differs = a[i] != b[i];
 				const bool moved_by_readback = b[i] != c[i];
+				const bool moved_by_sync = c[i] != p[i];
 				n += differs ? 1u : 0u;
 				row.rb_bytes += moved_by_readback ? 1u : 0u;
 				row.rb_diff_bytes += (differs && moved_by_readback) ? 1u : 0u;
+				row.sync_bytes += moved_by_sync ? 1u : 0u;
+				row.sync_diff_bytes += (differs && moved_by_sync) ? 1u : 0u;
 			}
 			if (n != 0)
 			{

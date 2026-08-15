@@ -274,7 +274,7 @@ namespace GSTileOracle
 			"fb_addr,fb_psm,fb_bw,fbmsk,colormask,"
 			"z_addr,z_psm,z_write,z_test,"
 			"tme,iip,abe,fge,mip,fst,ate,date,tex_psm,"
-			"sync_pages,fp_pages,diff_pages,diff_bytes,rb_bytes,rb_diff_bytes,"
+			"sync_pages,fp_pages,diff_pages,diff_bytes,rb_bytes,rb_diff_bytes,sync_bytes,sync_diff_bytes,"
 			"c_compared,c_sw_only,c_gpu_only,c_both,c_max_level,c_d1,c_d2,c_d3_15,c_d16_127,c_d128p,"
 			"c_x,c_y,c_pre,c_sw,c_gpu,"
 			"z_compared,z_sw_only,z_gpu_only,z_both,z_max_delta,z_d1,z_d2,z_d3_15,z_d16_127,z_d128p,"
@@ -294,8 +294,8 @@ namespace GSTileOracle
 				std::fprintf(fp.get(), "%u,", (r.shape >> bit) & 1u);
 			std::fprintf(fp.get(), "%s,", (r.shape & 1u) ? GSUtil::GetPSMName(r.tex_psm) : "");
 
-			std::fprintf(fp.get(), "%u,%u,%u,%u,%u,%u,", r.sync_pages, r.fp_pages, r.diff_pages, r.diff_bytes,
-				r.rb_bytes, r.rb_diff_bytes);
+			std::fprintf(fp.get(), "%u,%u,%u,%u,%u,%u,%u,%u,", r.sync_pages, r.fp_pages, r.diff_pages, r.diff_bytes,
+				r.rb_bytes, r.rb_diff_bytes, r.sync_bytes, r.sync_diff_bytes);
 
 			WriteTally(fp.get(), r.colour);
 			std::fprintf(fp.get(), ",");

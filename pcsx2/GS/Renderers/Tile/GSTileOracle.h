@@ -140,8 +140,35 @@ namespace GSTileOracle
 		/// was stale where the model knew the GPU was newer. In every other column that
 		/// reads as a loud rasterization bug (thousands of pixels, gpu_only, maximum
 		/// delta) on a draw whose shader wrote no such channel.
+		///
+		/// ⚠️ That reading was HALF the story and it cost task #80 a wrong mechanism. Two
+		/// readbacks are not a partition of the differing bytes: a byte can also be moved
+		/// by NEITHER, which happens when the native arm never wrote it in CPU memory at
+		/// all and the software arm did -- ordinary coverage, wearing the same zero in
+		/// this column that a coherence defect wears. `sync_bytes` closes the partition by
+		/// measuring the input sync directly (`raw` against `pre`) instead of leaving it
+		/// as the residue of the other two, so the three causes are now separable:
+		///
+		///   moved by the result pull  -> the draw rendered it; arithmetic
+		///   moved by the input sync   -> the model published it; coherence
+		///   moved by neither          -> the native arm never wrote it; coverage
+		///
+		/// One residual ambiguity, small but real: a byte the native arm wrote to the
+		/// value it already held is indistinguishable from one it never wrote, so the
+		/// third class carries a few one-level arithmetic rows whose native value
+		/// happened to coincide with `pre`. They are recognisable — the tallies show no
+		/// sw_only pixels and a maximum of one level — and the coverage rows they sit
+		/// beside lose whole pixels in colour AND depth at once.
 		u32 rb_bytes;
 		u32 rb_diff_bytes;
+
+		/// Bytes the draw's own INPUT synchronisation moved, measured rather than
+		/// inferred: `raw` (after the draw, before the result pull) against `pre`. A
+		/// native draw renders into a GPU texture, so anything that moved here was
+		/// published into CPU memory by a readback the native route itself asked for --
+		/// and the software arm, restored from `pre`, never saw it.
+		u32 sync_bytes;
+		u32 sync_diff_bytes;
 
 		Tally colour;
 		Tally depth;
