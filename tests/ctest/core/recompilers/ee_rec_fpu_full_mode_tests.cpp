@@ -945,6 +945,52 @@ TEST(EeRecFpuFull, MaddGuardMaskAcrossExponentDifferences)
 	}
 }
 
+// The same mask reached from the other side. recMaddsub aligns a product against
+// the ACC; recFPUOp aligns the two guest operands against each other, and it is
+// the only caller that reaches the arm masking ft -- the console corpus sampled
+// the sign-only arms and the one masking fs, never that one.
+//
+// The masked bits sit below the chop boundary on almost every pair, so each row
+// was searched for by requiring that masking change the truncated sum, and each
+// is a witness through the form named in its comment. Only the result word is
+// asserted: FCR31's overflow bit is decided before the mask, by the unrounded
+// sum.
+TEST(EeRecFpuFull, AddSubGuardMaskAcrossExponentDifferences)
+{
+	struct Row { u32 fs, ft, add, sub; };
+	static constexpr Row kRows[] = {
+		{0x447A1D40u, 0xC19B43AAu, 0x44754323u, 0x447EF75Du},  // diff  +5, add
+		{0x840BC9A8u, 0x00F9ABAAu, 0x8409D651u, 0x840DBCFFu},  // diff  +7, add
+		{0x5536E019u, 0xCD175B0Cu, 0x5536DF82u, 0x5536E0B0u},  // diff +16, add
+		{0x18BF028Du, 0x8AEAF6A2u, 0x18BF028Du, 0x18BF028Du},  // diff +28, add
+		{0xA0DD6754u, 0x1051F24Bu, 0xA0DD6754u, 0xA0DD6754u},  // diff +33, add
+		{0x1813816Au, 0x86F08FE9u, 0x1813816Au, 0x1813816Au},  // diff +35, add
+		{0x6A3A7CF3u, 0x6BA7B498u, 0x6BBF0436u, 0xEB9064FAu},  // diff  -3, sub
+		{0x33BB818Au, 0xB8C52D09u, 0xB8C4FE29u, 0x38C55BE9u},  // diff -10, add
+		{0xB62FABAAu, 0xBC848575u, 0xBC848AF2u, 0x3C847FF8u},  // diff -13, sub
+		{0x0A82A5A9u, 0x1778F6B6u, 0x1778F6B6u, 0x9778F6B6u},  // diff -25, sub
+		{0xEF997E6Fu, 0xFC11CD21u, 0xFC11CD21u, 0x7C11CD21u},  // diff -25, sub
+		{0xA309BD95u, 0xB652AB0Cu, 0xB652AB0Cu, 0x3652AB0Cu},  // diff -38, sub
+	};
+
+	for (const Row& r : kRows)
+	{
+		SCOPED_TRACE(testing::Message() << std::hex << "fs=" << r.fs << " ft=" << r.ft);
+		for (int issub = 0; issub <= 1; issub++)
+		{
+			EeRecTestHarness h;
+			h.EnableCop1();
+			h.EnableFpuFullMode();
+			h.SetFcr31(0);
+			h.SetFprBits(0, r.fs);
+			h.SetFprBits(1, r.ft);
+			h.LoadProgram({issub ? SUB_S(2, 0, 1) : ADD_S(2, 0, 1)});
+			h.RunJitNoDiff();
+			EXPECT_EQ(h.GetFprBitsJit(2), issub ? r.sub : r.add) << (issub ? "sub.s" : "add.s");
+		}
+	}
+}
+
 // ToPS2FPU_Wide's arms: saturation at the PS2 maximum, the exponent-0xff band
 // (whose halve/narrow/re-raise arm the wide form deletes outright -- up there a
 // PS2 single is just an ordinary double, so it is a plain chop), the underflow

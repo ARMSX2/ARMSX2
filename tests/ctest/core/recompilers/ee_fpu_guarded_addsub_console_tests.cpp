@@ -87,11 +87,15 @@ const char* FormName(Form f)
 }
 
 // One instruction, one engine. `acc` seeds the accumulator for the mad forms;
-// the result is read from wherever the form writes.
-u32 RunOne(Form f, u32 fs, u32 ft, u32 acc, bool jit)
+// the result is read from wherever the form writes. `full` selects the DOUBLE
+// path (eeClampMode 3), a different emitter from the fast one the rest of this
+// file exercises.
+u32 RunOne(Form f, u32 fs, u32 ft, u32 acc, bool jit, bool full = false)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
+	if (full)
+		h.EnableFpuFullMode();
 	h.SetAccBits(acc);
 	h.SetFprBits(kFs, fs);
 	h.SetFprBits(kFt, ft);
@@ -232,6 +236,24 @@ TEST(EeFpuGuardedAddSubConsole, JitMatchesConsoleOnEveryGuardBitRow)
 		SCOPED_TRACE(testing::Message() << "[fpm] case " << c.ordinal << " "
 			<< FormName(c.form));
 		EXPECT_EQ(RunOne(c.form, c.fs, c.ft, c.acc, true), c.want);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The DOUBLE path masks in the wide domain instead of on the word, so it is a
+// second emitter of the same rule and needs its own console pin. The rows below
+// reach the sign-only arm in both directions and the mask-fs arm; the mask-ft
+// arm the console never sampled is covered against the interpreter by
+// EeRecFpuFull.AddSubGuardMaskAcrossExponentDifferences.
+// ---------------------------------------------------------------------------
+TEST(EeFpuGuardedAddSubConsole, FullModeJitMatchesConsoleOnEveryGuardBitRow)
+{
+	for (int i = 0; i < kConsoleCount; ++i)
+	{
+		const ConsoleCase& c = kConsole[i];
+		SCOPED_TRACE(testing::Message() << "[fpm] case " << c.ordinal << " "
+			<< FormName(c.form));
+		EXPECT_EQ(RunOne(c.form, c.fs, c.ft, c.acc, true, true), c.want);
 	}
 }
 

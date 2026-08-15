@@ -469,9 +469,9 @@ static a64::VRegister fpuClampInput(const a64::VRegister& src, const a64::VRegis
 // FPU_SUB, iFPU.cpp) — ON by default (games like True Crime NYC and Jak 3
 // misrender without it, and per-game flagging proved impractical) but opt-out
 // globally for EE-heavy titles that don't need it; see the early-out below. It
-// reproduces the masking already present in the DOUBLE path's FPU_ADD_SUB
-// (iFPUd-arm64.cpp:200); the CHECK_FPU_FULL (double) config dispatches to that
-// path instead and never reaches here (Full mode guards unconditionally).
+// reproduces the masking already present in the DOUBLE path's FPU_ADD_SUB_D
+// (iFPUd-arm64.cpp:200); eeClampMode 3 and up dispatch to that path instead and
+// never reach here, and it guards unconditionally.
 //
 // When |expd - expt| <= 1 the mask clears zero bits, so that (common) case skips
 // straight to the plain op. Only |diff| >= 2 masks the smaller-exponent operand;

@@ -300,18 +300,9 @@ __fi static void armEmitEeFprStoreSlotWord(const vixl::aarch64::MemOperand& slot
 	armAsm->Str(tmp.X(), slot);
 }
 
-// Bridges for emitters working from the architectural word in an S register
-// while the slot they read and write holds the stored double: the mode-3 bodies
-// (iFPUd-arm64.cpp), the fast path's SQRT, and LWC1's fastmem load. Both
-// scratches are clobbered and the narrow's two must differ.
-__fi static void armEmitEeFprToS(const vixl::aarch64::VRegister& dst,
-	const vixl::aarch64::VRegister& slot, const vixl::aarch64::Register& word,
-	const vixl::aarch64::Register& tmp)
-{
-	armEmitEeFprNarrow(word, slot, tmp);
-	armAsm->Fmov(dst.S(), word.W());
-}
-
+// Bridge for emitters holding a result as the architectural single in an S
+// register while the slot they store it to holds the stored double: the mode-3
+// bodies, the fast path's SQRT, and LWC1's fastmem load. Clobbers `tmp`.
 __fi static void armEmitEeFprFromS(const vixl::aarch64::VRegister& slot,
 	const vixl::aarch64::VRegister& src, const vixl::aarch64::Register& tmp)
 {

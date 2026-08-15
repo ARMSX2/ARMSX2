@@ -406,7 +406,7 @@ static u32 eeRoundToSingle(double exact, bool addsub = false)
 	nothing left but its sign. |diff| <= 1 masks nothing.
 
 	Ported from x86 FPU_ADD_SUB (x86/iFPU.cpp) and, on arm64, fpuEmitGuardedAddSub
-	(iFPU-arm64.cpp, the single-precision fast path) and FPU_ADD_SUB
+	(iFPU-arm64.cpp, the single-precision fast path) and FPU_ADD_SUB_D
 	(iFPUd-arm64.cpp, the Full-clamp DOUBLE path).
 
 	Both recompilers gate the masking on CHECK_FPU_GUARDED, the fpuGuardedAddSub
