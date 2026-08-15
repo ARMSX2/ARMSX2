@@ -121,8 +121,19 @@ static void ToPS2FPU_Full(int idx, bool flags, int /*absidx*/, bool acc, bool ad
 	//
 	// `hi`, not `hs`: kEeFpuMax itself is representable and belongs to the
 	// halving arm, which handles it exactly (halved it is +FLT_MAX, and
-	// 0x7f7fffff + 0x00800000 == 0x7fffffff). This is the same bound the
-	// interpreter's eeRoundToSingle saturates at (FPU.cpp).
+	// 0x7f7fffff + 0x00800000 == 0x7fffffff).
+	//
+	// The test is on the rounded magnitude: the adder normalises and truncates
+	// before anything looks at the exponent field, so a sum above kEeFpuMax can
+	// chop back onto it and did not saturate. kEeFpuMax + 2^104 is 2^129 - 2^104,
+	// which needs 25 significant bits and chops to kEeFpuMax; one exponent
+	// higher the sum is 2^129 and no rounding brings it back.
+	//
+	// Chopping the low 29 bits is the rounding only under round-toward-zero,
+	// the arithmetic FPCR. The divide unit's callers run under round-to-nearest
+	// and pass flags=false, which is the same split.
+	if (flags)
+		armAsm->And(RXARG1, RXARG1, UINT64_C(0xFFFFFFFFE0000000));
 	armAsm->Mov(RXARG2, UINT64_C(0x47FFFFFFE0000000)); // (2 - 2^-23) * 2^128
 	armAsm->Cmp(RXARG1, RXARG2);
 	armAsm->B(&toOverflow, a64::hi);
@@ -247,6 +258,9 @@ static void ToPS2FPU_Wide(int idx)
 	armAsm->B(&end);
 
 	armAsm->Bind(&toComplex);
+	// Rounded magnitude, as in ToPS2FPU_Full: a product that chops back onto
+	// kEeFpuMax did not saturate and must not raise O.
+	armAsm->And(RXARG1, RXARG1, UINT64_C(0xFFFFFFFFE0000000));
 	armAsm->Mov(RXARG2, UINT64_C(0x47FFFFFFE0000000)); // (2 - 2^-23) * 2^128
 	armAsm->Cmp(RXARG1, RXARG2);
 	armAsm->B(&chop, a64::ls);   // in [2^128, kEeFpuMax]: an ordinary chop
