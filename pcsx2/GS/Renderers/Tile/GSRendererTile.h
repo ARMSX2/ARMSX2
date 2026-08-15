@@ -102,6 +102,22 @@ private:
 		/// a census that only reports what still stalls cannot distinguish "this reason was
 		/// served" from "this reason never arose".
 		u32 tex_served = 0;
+
+		/// Why a draw that WOULD have drained for its texture did not get served off the
+		/// device. Only draws facing a real drain are counted, so this is a partition of
+		/// the render-to-texture bill and not a tally of predicate evaluations.
+		///
+		/// The order matters and is not the cheap order: sole-ownership is resolved BEFORE
+		/// format, so a refusal on format still records whether one target held the whole
+		/// window. That is the difference between "these bytes are somewhere else" and
+		/// "these bytes are right there in a texture we own but in the wrong arrangement",
+		/// and only the second is worth building a conversion for.
+		u32 refuse_mip = 0; ///< a mip pyramid; each level would need its own donor
+		u32 refuse_no_owner = 0; ///< no single surface holds the whole window
+		u32 refuse_format = 0; ///< sole owner found, but its bytes are not this format's
+		u32 refuse_format_same_base = 0; ///< ... of those, how many start at the owner's own base
+		u32 refuse_layout = 0; ///< sole owner found, but its pixel space is not the window's
+		u32 refuse_geometry = 0; ///< sole owner found, but it does not materialize the window
 	};
 
 	void ReportReadbackCensus();

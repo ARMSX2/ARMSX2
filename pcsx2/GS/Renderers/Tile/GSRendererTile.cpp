@@ -236,6 +236,14 @@ void GSRendererTile::ReportReadbackCensus()
 		// served title is indistinguishable from one that never renders to texture.
 		Console.WriteLn("    tex-served    %8.2f draws   %8.2f device builds",
 			n.tex_served / frames, static_cast<double>(m_tex_source.DonorBuilds()) / frames);
+		// The partition of the render-to-texture bill. refuse_format with a sole owner
+		// already found is the interesting row: those bytes ARE on the GPU, in a texture
+		// we own, in the wrong arrangement -- a conversion, not a fetch.
+		Console.WriteLn("      refused: mip %.2f  no-owner %.2f  format %.2f  layout %.2f  geometry %.2f",
+			n.refuse_mip / frames, n.refuse_no_owner / frames, n.refuse_format / frames,
+			n.refuse_layout / frames, n.refuse_geometry / frames);
+		Console.WriteLn("      of the format refusals, %.2f start at the owner's own base",
+			n.refuse_format_same_base / frames);
 	}
 }
 
@@ -1267,12 +1275,22 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// whose RGBA8 target bytes already are what the swizzle reader would have produced;
 	// and a window that fits inside what the donor actually materializes. Anything else
 	// takes the CPU route and pays. Feedback cannot reach here -- it floored above.
+	GSPageBitmap sync_tex;
+	if (textured)
+		sync_tex = m_vram_model.ReadbackNeeded(tex_pages, kGSTilePlanesAll);
+
 	GSTileTextureSource::Donor donor = {};
 	const GSTileTextureSource::Donor* donor_p = nullptr;
-	if (textured && mip_levels == 1 && fixed_tex0.PSM == PSMCT32)
+	if (!sync_tex.empty())
 	{
-		const GSTileSurfaceId owner = m_vram_model.SoleGpuOwner(tex_pages, kGSTilePlanesAll);
-		if (owner != kGSTileNoSurface)
+		NativeSyncReasons& n = m_native_sync;
+		const GSTileSurfaceId owner =
+			mip_levels == 1 ? m_vram_model.SoleGpuOwner(tex_pages, kGSTilePlanesAll) : kGSTileNoSurface;
+		if (mip_levels != 1)
+			n.refuse_mip++;
+		else if (owner == kGSTileNoSurface)
+			n.refuse_no_owner++;
+		else
 		{
 			const GSVramModel::Surface& s = m_vram_model.Get(owner);
 			const GSTileSurfaceLayout want{fixed_tex0.TBP0, static_cast<u8>(fixed_tex0.TBW),
@@ -1282,20 +1300,33 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 			const int dh = dtex ? dtex->GetHeight() : 0;
 			const int tw = 1 << std::min<u32>(fixed_tex0.TW, 10);
 			const int th = 1 << std::min<u32>(fixed_tex0.TH, 10);
-			if (dtex && s.layout == want && s.residency.contains(tex_pages) && tw <= dw && th <= dh)
+			if (fixed_tex0.PSM != PSMCT32)
+			{
+				n.refuse_format++;
+				// Does the window at least START where the owner does? A reinterpretation
+				// anchored at the owner's own base is a change of arrangement over bytes
+				// already in hand; one at an arbitrary offset into it is a different and
+				// much harder problem. Measured because the refusal order above means the
+				// layout column cannot answer it -- format short-circuits first, so
+				// "layout 0" says nothing whatever about the palettised population.
+				if (s.layout.bp == fixed_tex0.TBP0)
+					n.refuse_format_same_base++;
+			}
+			else if (s.layout != want)
+				n.refuse_layout++;
+			else if (!dtex || !s.residency.contains(tex_pages) || tw > dw || th > dh)
+				n.refuse_geometry++;
+			else
 			{
 				donor.tex = dtex;
 				donor.width = dw;
 				donor.height = dh;
 				donor_p = &donor;
-				m_native_sync.tex_served++;
+				n.tex_served++;
+				sync_tex = GSPageBitmap();
 			}
 		}
 	}
-
-	GSPageBitmap sync_tex;
-	if (textured && !donor_p)
-		sync_tex = m_vram_model.ReadbackNeeded(tex_pages, kGSTilePlanesAll);
 
 	// Attribute each page to exactly one reason so the columns sum to the total instead
 	// of triple-counting a page that all three want. The SOLE column is the decisive
@@ -1320,7 +1351,28 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 
 	const GSPageBitmap sync_set = sync_upload | sync_steal | sync_tex;
 
-	if (!ReadbackModelPages(sync_set, ReadbackSite::NativeDraw) ||
+	// Per-draw attribution into the ledger, alongside the teardown census. The census
+	// totals the bill; these columns say WHICH draw paid it and for which reason, which
+	// is what turns "this title stalls a lot" into a list of draw numbers.
+	//
+	// Counted off the pool's own drain counter rather than off this call, because a
+	// readback whose pages collect to no runs returns without touching the device: a
+	// call is not a stall. Pages ride on the first stall only, so a draw that somehow
+	// drains twice reports two stalls and its pages once instead of twice.
+	const u32 drains_before = m_readback[static_cast<u32>(ReadbackSite::NativeDraw)].drains;
+	const bool readback_ok = ReadbackModelPages(sync_set, ReadbackSite::NativeDraw);
+	if (GSDrawLog::IsActive())
+	{
+		const u32 drains = m_readback[static_cast<u32>(ReadbackSite::NativeDraw)].drains - drains_before;
+		const auto reasons = static_cast<GSDrawLog::TileSyncReason>(
+			(sync_upload.empty() ? 0 : GSDrawLog::TileSyncUploadSource) |
+			(sync_steal.empty() ? 0 : GSDrawLog::TileSyncStealSurface) |
+			(sync_tex.empty() ? 0 : GSDrawLog::TileSyncTextureOnTarget));
+		for (u32 i = 0; i < drains; i++)
+			GSDrawLog::NoteTileSync(i == 0 ? static_cast<u32>(sync_set.count()) : 0, reasons);
+	}
+
+	if (!readback_ok ||
 		(want_rt && !m_target_pool.UploadPages(m_mem, fb_handle, fb_l, up_fb)) ||
 		(want_ds && !m_target_pool.UploadPages(m_mem, z_handle, z_l, up_z)))
 	{
