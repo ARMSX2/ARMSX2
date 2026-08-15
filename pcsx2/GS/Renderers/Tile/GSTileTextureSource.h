@@ -37,6 +37,23 @@ public:
 	GSTileTextureSource();
 	~GSTileTextureSource();
 
+	/// A GPU-side substitute for the CPU deswizzle: a surface texture whose pixel space
+	/// IS this window's, so the source is built by a region copy on the device instead of
+	/// a drain-and-deswizzle through CPU memory. The render-to-texture case — a game
+	/// renders a target and then samples it — and the one the readback census named as
+	/// the largest single source of GPU stalls on the native route.
+	///
+	/// The equivalence is the CALLER's to prove, and it is exact rather than approximate:
+	/// the window's layout matches the surface's exactly, the whole window is GPU-owned by
+	/// that one surface, and the format is one whose texture bytes already are what the
+	/// swizzle reader would have produced. This class performs the copy and nothing else.
+	struct Donor
+	{
+		GSTexture* tex = nullptr;
+		int width = 0; ///< donor pixels available; the window must fit inside them
+		int height = 0;
+	};
+
 	/// The content stamp of `pages` right now (sum of per-page write generations).
 	static u64 GenStamp(const GSVramModel& model, const GSPageBitmap& pages);
 
@@ -51,9 +68,17 @@ public:
 	/// GPU chain, so the geometries agree by construction (the route floors the rare
 	/// pyramid deeper than the base). `pages` must already union every level's
 	/// footprint, and the palette applies to all levels alike.
+	///
+	/// `donor`, when given, builds the source by copying on the device instead of reading
+	/// CPU memory — see Donor. It is consulted only on a BUILD; a cache hit is a hit
+	/// either way, because the content stamp is a property of the bytes and not of the
+	/// route that last fetched them.
 	GSTexture* Lookup(GSLocalMemory& mem, const GSVramModel& model, const GIFRegTEX0& TEX0,
 		const GIFRegTEXA& TEXA, const GSPageBitmap& pages, u32 pal_gen,
-		const GIFRegTEX0* level_tex0 = nullptr, u32 levels = 1);
+		const GIFRegTEX0* level_tex0 = nullptr, u32 levels = 1, const Donor* donor = nullptr);
+
+	/// Builds served off the device rather than out of CPU memory.
+	u64 DonorBuilds() const { return m_donor_builds; }
 
 	/// Recycles every cached texture (reset / teardown / hot-switch).
 	void Clear();
@@ -76,7 +101,8 @@ private:
 		bool alive = false;
 	};
 
-	bool BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTEX0* level_tex0, u32 levels, const GIFRegTEXA& TEXA);
+	bool BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTEX0* level_tex0, u32 levels, const GIFRegTEXA& TEXA,
+		const Donor* donor);
 	u8* GetScratch(u32 size);
 
 	std::array<Entry, kMaxEntries> m_entries;
@@ -85,4 +111,5 @@ private:
 	u64 m_use_counter = 0;
 	u64 m_hits = 0;
 	u64 m_builds = 0;
+	u64 m_donor_builds = 0;
 };

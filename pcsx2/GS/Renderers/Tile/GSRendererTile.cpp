@@ -226,12 +226,16 @@ void GSRendererTile::ReportReadbackCensus()
 		total_drains / frames, total_pages / frames);
 
 	const NativeSyncReasons& n = m_native_sync;
-	if (n.upload_pages | n.steal_pages | n.tex_pages)
+	if (n.upload_pages | n.steal_pages | n.tex_pages | n.tex_served)
 	{
 		Console.WriteLn("  native-draw reasons (one stall serves their union; sole = the only reason present):");
 		Console.WriteLn("    upload-source %8.2f pages  %8.2f sole", n.upload_pages / frames, n.upload_sole / frames);
 		Console.WriteLn("    steal-alias   %8.2f pages  %8.2f sole", n.steal_pages / frames, n.steal_sole / frames);
 		Console.WriteLn("    tex-source-rt %8.2f pages  %8.2f sole", n.tex_pages / frames, n.tex_sole / frames);
+		// Served draws never reach the reason columns, so without this line a fully
+		// served title is indistinguishable from one that never renders to texture.
+		Console.WriteLn("    tex-served    %8.2f draws   %8.2f device builds",
+			n.tex_served / frames, static_cast<double>(m_tex_source.DonorBuilds()) / frames);
 	}
 }
 
@@ -1249,8 +1253,48 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		sync_steal |= m_vram_model.SpillBeforeNativeDraw(fb_id, fb_pages, plan.fb_claims);
 	if (plan.z_write)
 		sync_steal |= m_vram_model.SpillBeforeNativeDraw(z_id, z_pages, plan.z_claims);
+	// Render-to-texture, served on the device. When ONE surface holds GPU-newest truth
+	// for the entire texture window under the window's own layout, that surface's texture
+	// already IS the source and the bytes never need to visit CPU memory. The readback
+	// census named this the largest single source of native-route stalls -- 142 of GT4's
+	// 143, with no other reason present -- and a stall is a full GPU drain whatever it
+	// carries, so removing the reason removes the whole cost, not a fraction of it.
+	//
+	// Every predicate is exact rather than approximate, because a wrong donor is silent
+	// wrong output: one owner for every plane of every page at whole-page granularity;
+	// the surface's layout equal to the window's, which by the target pool's
+	// linear-from-base-page rule makes the two pixel spaces the SAME pixel space; a format
+	// whose RGBA8 target bytes already are what the swizzle reader would have produced;
+	// and a window that fits inside what the donor actually materializes. Anything else
+	// takes the CPU route and pays. Feedback cannot reach here -- it floored above.
+	GSTileTextureSource::Donor donor = {};
+	const GSTileTextureSource::Donor* donor_p = nullptr;
+	if (textured && mip_levels == 1 && fixed_tex0.PSM == PSMCT32)
+	{
+		const GSTileSurfaceId owner = m_vram_model.SoleGpuOwner(tex_pages, kGSTilePlanesAll);
+		if (owner != kGSTileNoSurface)
+		{
+			const GSVramModel::Surface& s = m_vram_model.Get(owner);
+			const GSTileSurfaceLayout want{fixed_tex0.TBP0, static_cast<u8>(fixed_tex0.TBW),
+				static_cast<u8>(fixed_tex0.PSM), KindForPsm(fixed_tex0.PSM)};
+			GSTexture* dtex = s.pool_handle ? m_target_pool.GetTexture(s.pool_handle) : nullptr;
+			const int dw = dtex ? dtex->GetWidth() : 0;
+			const int dh = dtex ? dtex->GetHeight() : 0;
+			const int tw = 1 << std::min<u32>(fixed_tex0.TW, 10);
+			const int th = 1 << std::min<u32>(fixed_tex0.TH, 10);
+			if (dtex && s.layout == want && s.residency.contains(tex_pages) && tw <= dw && th <= dh)
+			{
+				donor.tex = dtex;
+				donor.width = dw;
+				donor.height = dh;
+				donor_p = &donor;
+				m_native_sync.tex_served++;
+			}
+		}
+	}
+
 	GSPageBitmap sync_tex;
-	if (textured)
+	if (textured && !donor_p)
 		sync_tex = m_vram_model.ReadbackNeeded(tex_pages, kGSTilePlanesAll);
 
 	// Attribute each page to exactly one reason so the columns sum to the total instead
@@ -1301,7 +1345,7 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 			pal_gen = m_mem.m_clut.GetWriteGeneration();
 		}
 		tex = m_tex_source.Lookup(m_mem, m_vram_model, fixed_tex0, m_draw_env->TEXA, tex_pages, pal_gen,
-			level_tex0, mip_levels);
+			level_tex0, mip_levels, donor_p);
 		if (!tex)
 		{
 			reason = GSTileFloorReason::ResourceFailure;

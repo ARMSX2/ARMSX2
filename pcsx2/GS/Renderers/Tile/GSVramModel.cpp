@@ -353,6 +353,38 @@ GSPageBitmap GSVramModel::ReadbackNeeded(const GSPageBitmap& pages, u8 planes) c
 	return need;
 }
 
+GSTileSurfaceId GSVramModel::SoleGpuOwner(const GSPageBitmap& pages, u8 planes) const
+{
+	GSTileSurfaceId sole = kGSTileNoSurface;
+	bool split = false;
+	pages.forEachSetPage([&](u32 page) {
+		if (split)
+			return;
+		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+		{
+			if (!(planes & (1u << pi)))
+				continue;
+			// No owner means the CPU holds this plane's newest bytes, so no GPU texture
+			// carries them; a shrunk mask means only part of the page is GPU-newest.
+			// Either way there is no single authoritative texture for the window.
+			const GSTileSurfaceId owner = m_planes[pi].owner[page];
+			if (owner == kGSTileNoSurface || TruthMask(page, pi) != kFullBlockMask)
+			{
+				split = true;
+				return;
+			}
+			if (sole == kGSTileNoSurface)
+				sole = owner;
+			else if (owner != sole)
+			{
+				split = true;
+				return;
+			}
+		}
+	});
+	return split ? kGSTileNoSurface : sole;
+}
+
 void GSVramModel::OnReadback(const GSPageBitmap& pages)
 {
 	for (PlaneState& ps : m_planes)

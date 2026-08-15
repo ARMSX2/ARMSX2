@@ -88,7 +88,8 @@ u8* GSTileTextureSource::GetScratch(u32 size)
 	return reinterpret_cast<u8*>((reinterpret_cast<uintptr_t>(p) + 63) & ~static_cast<uintptr_t>(63));
 }
 
-bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTEX0* level_tex0, u32 levels, const GIFRegTEXA& TEXA)
+bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTEX0* level_tex0, u32 levels,
+	const GIFRegTEXA& TEXA, const Donor* donor)
 {
 	const int tw = 1 << std::min<u32>(level_tex0[0].TW, 10);
 	const int th = 1 << std::min<u32>(level_tex0[0].TH, 10);
@@ -101,6 +102,19 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 		e.tex = g_gs_device->CreateTexture(tw, th, static_cast<int>(levels), GSTexture::Format::Color, true);
 		if (!e.tex)
 			return false;
+	}
+
+	// The device route. The caller proved the donor's pixel space IS this window's, so
+	// the whole build is one image copy and the CPU never sees the bytes — which is the
+	// entire point: the alternative is not a slower copy, it is a full GPU drain to get
+	// the bytes into local memory before deswizzling them straight back out again.
+	if (donor)
+	{
+		pxAssert(levels == 1 && tw <= donor->width && th <= donor->height);
+		g_gs_device->CopyRect(donor->tex, e.tex, GSVector4i(0, 0, tw, th), 0, 0);
+		m_builds++;
+		m_donor_builds++;
+		return true;
 	}
 
 	for (u32 i = 0; i < levels; i++)
@@ -130,7 +144,7 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 
 GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& model, const GIFRegTEX0& TEX0,
 	const GIFRegTEXA& TEXA, const GSPageBitmap& pages, u32 pal_gen,
-	const GIFRegTEX0* level_tex0, u32 levels)
+	const GIFRegTEX0* level_tex0, u32 levels, const Donor* donor)
 {
 	// Single-level callers pass no array; view the base register as a one-entry one.
 	if (!level_tex0)
@@ -164,7 +178,7 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 				return e.tex;
 			}
 			// Same window, moved bytes: rebuild in place.
-			if (!BuildInto(e, mem, level_tex0, levels, TEXA))
+			if (!BuildInto(e, mem, level_tex0, levels, TEXA, donor))
 			{
 				e.alive = false;
 				if (e.tex)
@@ -195,7 +209,7 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 	e.mip_key[1] = mip_key[1];
 	e.pages = pages;
 	e.last_use = ++m_use_counter;
-	if (!BuildInto(e, mem, level_tex0, levels, TEXA))
+	if (!BuildInto(e, mem, level_tex0, levels, TEXA, donor))
 	{
 		e.alive = false;
 		if (e.tex)

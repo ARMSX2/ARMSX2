@@ -95,6 +95,13 @@ private:
 		u32 upload_sole = 0; ///< draws where an upload source was the ONLY reason
 		u32 steal_sole = 0; ///< ... a steal from another surface (the M3e aliasing tiers)
 		u32 tex_sole = 0; ///< ... a texture source on target-owned pages (render-to-texture)
+
+		/// Draws whose texture source was copied off the owning target on the device, so
+		/// the render-to-texture reason cost nothing. Counted separately from the reasons
+		/// because it is the ABSENCE of a stall: it can never appear in a sole column, and
+		/// a census that only reports what still stalls cannot distinguish "this reason was
+		/// served" from "this reason never arose".
+		u32 tex_served = 0;
 	};
 
 	void ReportReadbackCensus();

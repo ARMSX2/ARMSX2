@@ -155,6 +155,19 @@ public:
 	/// other owners — which must be synced (Devel-asserted).
 	void OnNativeDraw(GSTileSurfaceId id, const GSPageBitmap& pages, u8 planes);
 
+	/// The ONE live surface holding GPU-newest truth for every page of `pages` on every
+	/// plane in `planes`, at whole-page block granularity — or kGSTileNoSurface when the
+	/// window is split across owners, when any plane of any page is CPU-newest, or when
+	/// any page's truth has been shrunk to a block subset.
+	///
+	/// Deliberately all-or-nothing. The caller is asking "can I read these bytes off the
+	/// GPU instead of draining them to the CPU", and that needs a single texture which is
+	/// authoritative for the WHOLE window: a window half of which is CPU-newest is not
+	/// one, and neither is a window spanning two targets. Answering "mostly" would mean
+	/// stitching sources, and a stitch that gets one page wrong is exactly the silent
+	/// wrong-output this model exists to make impossible.
+	GSTileSurfaceId SoleGpuOwner(const GSPageBitmap& pages, u8 planes) const;
+
 	// -- Queries -------------------------------------------------------------------
 
 	static constexpr u32 PlaneIndex(GSTilePlane plane) { return std::countr_zero(static_cast<u32>(plane)); }

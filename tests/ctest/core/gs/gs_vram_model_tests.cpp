@@ -376,6 +376,143 @@ TEST(GSVramModel, NativeDrawReadbackFloorRoundTrip)
 	EXPECT_TRUE(m.CheckInvariants());
 }
 
+// SoleGpuOwner decides whether a texture read can be served off the owning target's
+// GPU texture instead of draining the device to fetch the bytes through CPU memory.
+// Every case below is a REFUSAL branch except the first: each one, if it answered
+// "yes" wrongly, would hand the sampler a texture that is stale or only partly the
+// window, which is silent wrong output rather than a crash. So they are pinned
+// individually rather than through the randomized sweep.
+TEST(GSVramModel, SoleGpuOwnerServesOneWholeOwner)
+{
+	GSVramModel m;
+	const auto l = Layout(0, 8, PSMCT32);
+	const GSVector4i rect(0, 0, 512, 448);
+	const GSTileSurfaceId id = m.Create(l, rect, 1);
+	const GSPageBitmap pages = GSVramModel::PagesForRect(l, rect);
+
+	// Nothing drawn yet: the CPU holds every page, so no GPU texture is authoritative.
+	EXPECT_EQ(m.SoleGpuOwner(pages, kGSTilePlanesAll), kGSTileNoSurface);
+
+	m.OnNativeDraw(id, pages, kGSTilePlanesAll);
+	EXPECT_EQ(m.SoleGpuOwner(pages, kGSTilePlanesAll), id);
+
+	// A pull does not change the answer. Both copies now agree, so reading from the
+	// device is still correct — and still free, which is the whole point.
+	m.OnReadback(pages);
+	EXPECT_EQ(m.SoleGpuOwner(pages, kGSTilePlanesAll), id);
+
+	// An empty window has no owner; the caller must not read this as "yes".
+	EXPECT_EQ(m.SoleGpuOwner(GSPageBitmap(), kGSTilePlanesAll), kGSTileNoSurface);
+	EXPECT_TRUE(m.CheckInvariants());
+}
+
+TEST(GSVramModel, SoleGpuOwnerRefusesSplitWindow)
+{
+	GSVramModel m;
+	// Two disjoint color surfaces; a window spanning both has no single texture.
+	const auto la = Layout(0, 8, PSMCT32);
+	const auto lb = Layout(56 * 32, 8, PSMCT32);
+	const GSVector4i rect(0, 0, 512, 224);
+	const GSTileSurfaceId a = m.Create(la, rect, 1);
+	const GSTileSurfaceId b = m.Create(lb, rect, 2);
+	const GSPageBitmap pa = GSVramModel::PagesForRect(la, rect);
+	const GSPageBitmap pb = GSVramModel::PagesForRect(lb, rect);
+	ASSERT_FALSE(pa.intersects(pb));
+
+	m.OnNativeDraw(a, pa, kGSTilePlanesAll);
+	m.OnNativeDraw(b, pb, kGSTilePlanesAll);
+
+	EXPECT_EQ(m.SoleGpuOwner(pa, kGSTilePlanesAll), a);
+	EXPECT_EQ(m.SoleGpuOwner(pb, kGSTilePlanesAll), b);
+	EXPECT_EQ(m.SoleGpuOwner(pa | pb, kGSTilePlanesAll), kGSTileNoSurface);
+	EXPECT_TRUE(m.CheckInvariants());
+}
+
+TEST(GSVramModel, SoleGpuOwnerRefusesPlaneTheSurfaceDoesNotOwn)
+{
+	GSVramModel m;
+	const auto l = Layout(0, 8, PSMCT32);
+	const GSVector4i rect(0, 0, 512, 448);
+	const GSTileSurfaceId id = m.Create(l, rect, 1);
+	const GSPageBitmap pages = GSVramModel::PagesForRect(l, rect);
+
+	// Color claimed, Z not. The surface's texture holds the newest color bytes and
+	// says nothing about a depth reading of the same cells, so the answer has to
+	// depend on which planes the caller is actually asking about.
+	m.OnNativeDraw(id, pages, kGSTilePlanesColor);
+	EXPECT_EQ(m.SoleGpuOwner(pages, kGSTilePlanesColor), id);
+	EXPECT_EQ(m.SoleGpuOwner(pages, kGSTilePlanesAll), kGSTileNoSurface);
+	EXPECT_EQ(m.SoleGpuOwner(pages, GSTilePlaneZ), kGSTileNoSurface);
+	EXPECT_TRUE(m.CheckInvariants());
+}
+
+TEST(GSVramModel, SoleGpuOwnerRefusesWindowOnlyPartlyOnTheGpu)
+{
+	// A surface that has rendered only part of its own residency. The rest of the
+	// window is still CPU-newest, so its texture is not authoritative for the whole
+	// thing and serving from it would sample undefined pixels.
+	//
+	// Tested from BOTH ends of the page order, and that is not redundant: the scan is
+	// ascending, so a guard that SKIPS an unowned page rather than refusing outright
+	// still answers correctly whenever the unowned pages happen to come last. It only
+	// betrays itself when they come first — which is a property of where the game put
+	// its buffer, not of the bug.
+	const auto l = Layout(0, 8, PSMCT32);
+	const GSVector4i rect(0, 0, 512, 448);
+	const GSPageBitmap all = GSVramModel::PagesForRect(l, rect);
+	const GSPageBitmap top = GSVramModel::PagesForRect(l, GSVector4i(0, 0, 512, 224));
+	const GSPageBitmap bottom = GSVramModel::PagesForRect(l, GSVector4i(0, 224, 512, 448));
+	ASSERT_FALSE(top.intersects(bottom));
+	ASSERT_EQ(top.count() + bottom.count(), all.count());
+
+	{
+		GSVramModel m;
+		const GSTileSurfaceId id = m.Create(l, rect, 1);
+		m.OnNativeDraw(id, top, kGSTilePlanesAll); // unowned pages come LAST
+		EXPECT_EQ(m.SoleGpuOwner(top, kGSTilePlanesAll), id);
+		EXPECT_EQ(m.SoleGpuOwner(all, kGSTilePlanesAll), kGSTileNoSurface);
+		EXPECT_TRUE(m.CheckInvariants());
+	}
+	{
+		GSVramModel m;
+		const GSTileSurfaceId id = m.Create(l, rect, 1);
+		m.OnNativeDraw(id, bottom, kGSTilePlanesAll); // unowned pages come FIRST
+		EXPECT_EQ(m.SoleGpuOwner(bottom, kGSTilePlanesAll), id);
+		EXPECT_EQ(m.SoleGpuOwner(all, kGSTilePlanesAll), kGSTileNoSurface);
+		EXPECT_TRUE(m.CheckInvariants());
+	}
+}
+
+TEST(GSVramModel, SoleGpuOwnerRefusesPartiallyShrunkPage)
+{
+	GSVramModel m;
+	const auto l = Layout(0, 8, PSMCT32);
+	const GSVector4i rect(0, 0, 512, 448);
+	const GSTileSurfaceId id = m.Create(l, rect, 1);
+	const GSPageBitmap pages = GSVramModel::PagesForRect(l, rect);
+
+	m.OnNativeDraw(id, pages, kGSTilePlanesAll);
+	m.OnReadback(pages); // synced, so the CPU write below is lossless
+	EXPECT_EQ(m.SoleGpuOwner(pages, kGSTilePlanesAll), id);
+
+	// A CPU transfer over one block of one page: that page is now GPU-newest for
+	// SOME of its blocks only. A whole-page copy off the device would republish the
+	// blocks the CPU just wrote, so the window stops being servable.
+	GSVramModel::RectFootprint fp;
+	GSVramModel::FootprintForRect(l, GSVector4i(0, 0, 8, 8), fp);
+	ASSERT_FALSE(fp.overflowed);
+	m.OnCpuWrite(fp, kGSTilePlanesAll);
+
+	EXPECT_NE(m.TruthMask(0, 0), GSVramModel::kFullBlockMask);
+	EXPECT_EQ(m.SoleGpuOwner(pages, kGSTilePlanesAll), kGSTileNoSurface);
+
+	// The pages away from the shrunk one are still wholly owned.
+	GSPageBitmap rest = pages;
+	rest.unset(0);
+	EXPECT_EQ(m.SoleGpuOwner(rest, kGSTilePlanesAll), id);
+	EXPECT_TRUE(m.CheckInvariants());
+}
+
 TEST(GSVramModel, StealBetweenAliasedSurfaces)
 {
 	GSVramModel m;
