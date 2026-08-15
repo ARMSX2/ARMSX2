@@ -23,9 +23,21 @@ private:
 	void Texture();
 	void Color();
 
+	/// Emit the four alternating block steps for one packed attribute -- the two
+	/// phases at each of the two halves a span can start in. dx/dy are the pair
+	/// of channels sharing the packed vector (pass the same register twice for
+	/// fog), qx/qy their whole-block steps, field the byte offset of the target
+	/// member inside GSScanlineLocalData::blockstep.
+	void BlockWalkStore(int i, const vixl::aarch64::VRegister& dx, const vixl::aarch64::VRegister& dy,
+		const vixl::aarch64::VRegister& qx, const vixl::aarch64::VRegister& qy, size_t field);
+
 	vixl::aarch64::MacroAssembler m_emitter;
 
 	GSScanlineSelector m_sel;
+
+	/// The draw's block is wider than our vector, so the per-vector step is a
+	/// two-entry cycle instead of a constant.
+	bool m_block_split;
 
 	struct
 	{

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0
 
 #include "GS/Renderers/SW/GSDrawScanlineCodeGenerator.arm64.h"
+#include "GS/Renderers/SW/GSBlockWalk.h"
 #include "GS/Renderers/SW/GSDrawScanline.h"
 #include "GS/Renderers/SW/GSVertexSW.h"
 #include "GS/GSState.h"
@@ -62,6 +63,12 @@ static const auto& _global_l = w23;
 static const auto& _global_k = w24;
 static const auto& _global_mxl = w25;
 
+// The alternating block step's cursor. Callee-saved on purpose: x5-x9 all carry
+// live values inside the loop body, which is why the first attempt at this --
+// x5/x6, which look free from Init -- came apart in ReadFrame.
+static const auto& _block_ptr = x26;
+static const auto& _block_hop = x27;
+
 static const auto& _vscratch = v31;
 static const auto& _vscratch2 = v30;
 static const auto& _vscratch3 = v29;
@@ -103,6 +110,8 @@ GSDrawScanlineCodeGenerator::GSDrawScanlineCodeGenerator(u64 key, void* code, si
 	// hopefully no constants which need to be moved to register first..
 	m_emitter.GetScratchRegisterList()->Remove(_xscratch.GetCode());
 	m_emitter.GetScratchRegisterList()->Remove(_xscratch2.GetCode());
+
+	m_block_split = GSBlockWalkIsSplit(m_sel, 4);
 }
 
 void GSDrawScanlineCodeGenerator::Generate()
@@ -120,7 +129,7 @@ void GSDrawScanlineCodeGenerator::Generate()
 		return;
 	}
 
-	armAsm->Sub(sp, sp, 128);
+	armAsm->Sub(sp, sp, 144);
 	armAsm->Stp(x19, x20, MemOperand(sp, 0));
 	armAsm->Stp(x21, x22, MemOperand(sp, 16));
 	armAsm->Stp(x23, x24, MemOperand(sp, 32));
@@ -129,6 +138,7 @@ void GSDrawScanlineCodeGenerator::Generate()
 	armAsm->Stp(d10, d11, MemOperand(sp, 80));
 	armAsm->Stp(d12, d13, MemOperand(sp, 96));
 	armAsm->Stp(d14, d15, MemOperand(sp, 112));
+	armAsm->Stp(x27, x28, MemOperand(sp, 128));
 
 	armAsm->Ldr(_globals, _local(gd));
 	armAsm->Ldr(_vm, _global(vm));
@@ -187,6 +197,7 @@ void GSDrawScanlineCodeGenerator::Generate()
 
 	armAsm->Bind(&exit);
 
+	armAsm->Ldp(x27, x28, MemOperand(sp, 128));
 	armAsm->Ldp(d14, d15, MemOperand(sp, 112));
 	armAsm->Ldp(d12, d13, MemOperand(sp, 96));
 	armAsm->Ldp(d10, d11, MemOperand(sp, 80));
@@ -195,7 +206,7 @@ void GSDrawScanlineCodeGenerator::Generate()
 	armAsm->Ldp(x23, x24, MemOperand(sp, 32));
 	armAsm->Ldp(x21, x22, MemOperand(sp, 16));
 	armAsm->Ldp(x19, x20, MemOperand(sp, 0));
-	armAsm->Add(sp, sp, 128);
+	armAsm->Add(sp, sp, 144);
 
 	armAsm->Ret();
 
@@ -206,6 +217,14 @@ void GSDrawScanlineCodeGenerator::Generate()
 
 void GSDrawScanlineCodeGenerator::Init()
 {
+	if (m_block_split)
+	{
+		// Which half of its eight-pixel block this span starts in decides which
+		// of the two alternating steps it begins on, so it is read off the true
+		// left edge before the vector alignment rounds that down.
+		armAsm->And(w9, _left, 7);
+	}
+
 	if (!m_sel.notest)
 	{
 		// int skip = left & 3;
@@ -254,6 +273,16 @@ void GSDrawScanlineCodeGenerator::Init()
 	armAsm->Ldr(_scratchaddr, _global(fzbc));
 	armAsm->Lsl(w8, w6, 1); // *2
 	armAsm->Add(x8, _scratchaddr, x8);
+
+	if (m_block_split)
+	{
+		// x26 = &m_local.dw[left & 7][0], x27 = the signed hop to the other phase.
+		// Stepping is then one add and one negate, which needs no assumption
+		// about how the local data happens to be aligned.
+		armAsm->Add(_block_ptr, _locals, Operand(x9, LSL, 7));
+		armAsm->Add(_block_ptr, _block_ptr, OFFSETOF(GSScanlineLocalData, dw));
+		armAsm->Mov(_block_hop, sizeof(GSScanlineLocalData::blockstep));
+	}
 
 	if ((m_sel.prim != GS_SPRITE_CLASS && ((m_sel.fwrite && m_sel.fge) || m_sel.zb)) || (m_sel.fb && (m_sel.edge || m_sel.tfx != TFX_NONE || m_sel.iip)))
 	{
@@ -489,7 +518,15 @@ void GSDrawScanlineCodeGenerator::Step()
 
 		if (m_sel.fwrite && m_sel.fge)
 		{
-			armAsm->Add(_temp_f.V8H(), _temp_f.V8H(), _d4_f.V8H());
+			if (m_block_split)
+			{
+				armAsm->Ldr(_vscratch, MemOperand(_block_ptr, offsetof(GSScanlineLocalData::blockstep, f)));
+				armAsm->Add(_temp_f.V8H(), _temp_f.V8H(), _vscratch.V8H());
+			}
+			else
+			{
+				armAsm->Add(_temp_f.V8H(), _temp_f.V8H(), _d4_f.V8H());
+			}
 		}
 	}
 
@@ -540,8 +577,16 @@ void GSDrawScanlineCodeGenerator::Step()
 				// rb = rb.add16(c.xxxx());
 				// ga = ga.add16(c.yyyy());
 
-				armAsm->Dup(_vscratch.V4S(), _d4_c.V4S(), 0);
-				armAsm->Dup(_vscratch2.V4S(), _d4_c.V4S(), 1);
+				if (m_block_split)
+				{
+					armAsm->Ldr(_vscratch, MemOperand(_block_ptr, offsetof(GSScanlineLocalData::blockstep, rb)));
+					armAsm->Ldr(_vscratch2, MemOperand(_block_ptr, offsetof(GSScanlineLocalData::blockstep, ga)));
+				}
+				else
+				{
+					armAsm->Dup(_vscratch.V4S(), _d4_c.V4S(), 0);
+					armAsm->Dup(_vscratch2.V4S(), _d4_c.V4S(), 1);
+				}
 				armAsm->Movi(v1.V8H(), 0);
 
 				armAsm->Add(_temp_rb.V8H(), _temp_rb.V8H(), _vscratch.V8H());
@@ -553,6 +598,13 @@ void GSDrawScanlineCodeGenerator::Step()
 				armAsm->Smax(_temp_ga.V8H(), _temp_ga.V8H(), v1.V8H());
 			}
 		}
+	}
+
+	if (m_block_split)
+	{
+		// Hop to the other phase of the pair.
+		armAsm->Add(_block_ptr, _block_ptr, _block_hop);
+		armAsm->Neg(_block_hop, _block_hop);
 	}
 
 	if (!m_sel.notest)

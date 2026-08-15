@@ -834,6 +834,7 @@
     <ClInclude Include="GS\Renderers\Tile\GSTileTextureSource.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileTypes.h" />
     <ClInclude Include="GS\Renderers\Tile\GSVramModel.h" />
+    <ClInclude Include="GS\Renderers\SW\GSBlockWalk.h" />
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h" />
     <ClInclude Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.h">
       <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>

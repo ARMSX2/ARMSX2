@@ -2057,6 +2057,9 @@
     <ClInclude Include="GS\Renderers\Tile\GSVramModel.h">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSBlockWalk.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>

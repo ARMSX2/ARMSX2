@@ -235,6 +235,12 @@ struct alignas(32) GSScanlineLocalData // per prim variables, each thread has it
 
 	struct skip { GSVector4 z, s, t, q; GSVector4i rb, ga, f, _pad; } d[4];
 	struct step { GSVector4 z, stq; GSVector4i c, f; } d4;
+	// An untextured draw walks an eight-pixel block, which is two vectors here,
+	// so its per-vector step alternates -- see GSBlockWalk.h. Indexed by the
+	// span's position inside its block (x0 & 7) and then by phase; the two
+	// phases of a pair sum to the whole block step, and the walk starts at
+	// phase 0 and toggles.
+	struct blockstep { GSVector4i rb, ga, f, _pad; } dw[8][2];
 	struct { GSVector4i rb, ga; } c;
 	struct { GSVector4i z, f; } p;
 	// One unit of the 16.16 texture coordinate on each axis that walks forward,
@@ -294,6 +300,16 @@ struct alignas(64) GSScanlineConstantData256B
 		8.0f, -7.0f, -6.0f, -5.0f, -4.0f, -3.0f, -2.0f, -1.0f,
 		0.0f,  1.0f,  2.0f,  3.0f,  4.0f,  5.0f,  6.0f,  7.0f,
 	};
+	// A textured draw walks a FOUR-pixel block (GSBlockWalk.h), so on eight
+	// lanes one vector spans two blocks: the lane offset restarts at the halfway
+	// point and the upper half carries one extra block step.
+	alignas(32) float m_shift_half[4][8] = {
+		{ 0.0f, 1.0f, 2.0f, 3.0f,  0.0f, 1.0f, 2.0f, 3.0f},
+		{-1.0f, 0.0f, 1.0f, 2.0f, -1.0f, 0.0f, 1.0f, 2.0f},
+		{-2.0f,-1.0f, 0.0f, 1.0f, -2.0f,-1.0f, 0.0f, 1.0f},
+		{-3.0f,-2.0f,-1.0f, 0.0f, -3.0f,-2.0f,-1.0f, 0.0f},
+	};
+	alignas(32) float m_block4[8] = {4.0f, 4.0f, 4.0f, 4.0f, 4.0f, 4.0f, 4.0f, 4.0f};
 
 	constexpr GSScanlineConstantData256B()
 	{
@@ -323,6 +339,23 @@ struct alignas(64) GSScanlineConstantData128B
 		{ -1.0f , 0.0f  , 1.0f  , 2.0f},
 		{ -2.0f , -1.0f , 0.0f  , 1.0f},
 		{ -3.0f , -2.0f , -1.0f , 0.0f},
+	};
+	// An untextured draw walks an EIGHT-pixel block (GSBlockWalk.h), which is two
+	// vectors here. Building the alternating step needs the lane offsets of the
+	// half after this one and of the half before it, as well as m_shift's own,
+	// plus the whole block step.
+	alignas(16) float m_block8[4] = {8.0f, 8.0f, 8.0f, 8.0f};
+	alignas(16) float m_shift_next[4][4] = { // 4 + lane - skip
+		{ 4.0f  , 5.0f  , 6.0f  , 7.0f},
+		{ 3.0f  , 4.0f  , 5.0f  , 6.0f},
+		{ 2.0f  , 3.0f  , 4.0f  , 5.0f},
+		{ 1.0f  , 2.0f  , 3.0f  , 4.0f},
+	};
+	alignas(16) float m_shift_prev[4][4] = { // lane - 4 - skip
+		{ -4.0f , -3.0f , -2.0f , -1.0f},
+		{ -5.0f , -4.0f , -3.0f , -2.0f},
+		{ -6.0f , -5.0f , -4.0f , -3.0f},
+		{ -7.0f , -6.0f , -5.0f , -4.0f},
 	};
 	alignas(16) float m_log2_coef[4][4] = {};
 
