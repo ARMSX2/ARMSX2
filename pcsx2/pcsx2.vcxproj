@@ -824,6 +824,18 @@
     <ClInclude Include="GS\Renderers\Null\GSRendererNull.h" />
     <ClInclude Include="GS\Renderers\Null\GSDeviceNone.h" />
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h" />
+<<<<<<< HEAD
+=======
+    <ClInclude Include="GS\Renderers\Tile\GSPageBitmap.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSRendererTile.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTileDrawLowering.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTileOracle.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTileTargetPool.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTileTextureSource.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTileTypes.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSVramModel.h" />
+    <ClInclude Include="GS\Renderers\SW\GSBlockWalk.h" />
+>>>>>>> 66fe427665 (GS/SW: the gouraud walk's block is the hardware's eight, not the host's four)
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h" />
     <ClInclude Include="GS\Renderers\SW\GSSetupPrimCodeGenerator.all.h">
       <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>

@@ -80,6 +80,10 @@ private:
 
 	GSScanlineSelector m_sel;
 
+	/// The draw's block is wider than our vector, so the per-vector step is a
+	/// two-entry cycle in m_local.dw instead of a constant. See GSBlockWalk.h.
+	bool m_block_split;
+
 	vixl::aarch64::Label m_step_label;
 
 	// RX entry pointer; GetCode() must return RX even when the emitter writes through the RW alias.

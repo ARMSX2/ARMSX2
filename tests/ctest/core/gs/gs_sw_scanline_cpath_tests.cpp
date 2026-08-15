@@ -45,6 +45,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
+
 #ifndef _WIN32
 #include <sys/mman.h>
 #else
@@ -67,14 +69,18 @@ struct Span
 	float dr, dg, db, da;
 };
 
+// One row of PSMCT32 at FBW=1.
+constexpr int kRowPixels = 64;
+
 // Everything a run produces that the two paths have to agree on: what reached the
 // framebuffer, and the setup state the scanline spent to get there.
 struct Reading
 {
-	u32 px[4];
+	u32 px[kRowPixels];
 	GSVector4i d_rb[4];
 	GSVector4i d_ga[4];
 	GSVector4i d4c;
+	GSScanlineLocalData::blockstep dw[8][2];
 
 	// How many of the four per-lane offset vectors the scanline can reach. A span
 	// that is known to start on a group boundary reads only the first, and the
@@ -229,7 +235,7 @@ protected:
 		const Span& span, int left, int pixels, Reading& out)
 	{
 		u32* vm32 = s_mem->vm32();
-		for (int x = 0; x < 4; x++)
+		for (int x = 0; x < kRowPixels; x++)
 			vm32[PixelAddr(x, 0)] = 0u;
 
 		alignas(32) GSScanlineGlobalData global{};
@@ -262,12 +268,14 @@ protected:
 		out.d4c = local.d4.c;
 		out.live_offsets = sel.notest ? 1 : 4;
 
+		std::memcpy(out.dw, local.dw, sizeof(out.dw));
+
 		GSVertexSW scan = GSVertexSW::zero();
 		scan.c = GSVector4(span.r0, span.g0, span.b0, span.a0) * kColorScale;
 
 		draw(pixels, left, 0, scan, local);
 
-		for (int x = 0; x < 4; x++)
+		for (int x = 0; x < kRowPixels; x++)
 			out.px[x] = vm32[PixelAddr(x, 0)];
 	}
 
@@ -315,7 +323,31 @@ protected:
 		for (int lane = 0; lane < 4; lane++)
 			EXPECT_EQ(c.d4c.U32[lane], jit.d4c.U32[lane]) << what << ": step d4.c lane " << lane;
 
-		for (int x = 0; x < 4; x++)
+		// An untextured draw walks an eight-pixel block, so its per-vector step is
+		// the alternating pair in dw rather than d4.c. Both are compared: whichever
+		// one this selector actually reads, a drift in it shows up here and not only
+		// as a wrong pixel somewhere downstream.
+		for (int s = 0; s < 8; s++)
+		{
+			// A span known to start on a group boundary can only ever begin at one
+			// of the two halves, so the generator declines to build the six
+			// unreachable pairs where the C++ writes them anyway.
+			if (c.live_offsets == 1 && (s & 3) != 0)
+				continue;
+
+			for (int ph = 0; ph < 2; ph++)
+			{
+				for (int lane = 0; lane < 4; lane++)
+				{
+					EXPECT_EQ(c.dw[s][ph].rb.U32[lane], jit.dw[s][ph].rb.U32[lane])
+						<< what << ": block step dw[" << s << "][" << ph << "].rb lane " << lane;
+					EXPECT_EQ(c.dw[s][ph].ga.U32[lane], jit.dw[s][ph].ga.U32[lane])
+						<< what << ": block step dw[" << s << "][" << ph << "].ga lane " << lane;
+				}
+			}
+		}
+
+		for (int x = 0; x < kRowPixels; x++)
 			EXPECT_EQ(c.px[x], jit.px[x]) << what << ": pixel " << x;
 	}
 
@@ -440,6 +472,107 @@ TEST_F(SwScanlineCPathTest, TheTwoPathsAgreeAcrossAGradientSweep)
 			RunCpp(true, span, 0, 4, cpp);
 
 			ExpectSame(cpp, jit, "sweep");
+		}
+	}
+}
+
+// The two paths only ever met on one vector's worth of pixels, which is the one
+// length at which the per-vector step is never taken. An untextured draw's step is
+// an alternating pair, so a span has to run several vectors before the two halves
+// of that pair are both exercised -- and it has to start at all eight positions
+// inside the block, because that is what chooses which half it begins on.
+TEST_F(SwScanlineCPathTest, EveryBlockStartMatchesAcrossManyVectors)
+{
+	const Span span = {240.0f, 12.0f, 200.0f, 255.0f, -3.0f, 7.0f, -1.0f, -2.0f};
+
+	for (int left = 0; left < 8; left++)
+	{
+		Reading jit, cpp;
+		ASSERT_TRUE(RunJit(false, span, left, 32, jit));
+		RunCpp(false, span, left, 32, cpp);
+
+		ExpectSame(cpp, jit, "block start");
+	}
+}
+
+// The rule itself, and not merely that two transcriptions of it agree -- which is
+// the failure this project keeps meeting, both arms wrong together.
+//
+// An untextured draw interpolates an eight-pixel block at a time. The value at a
+// pixel is the truncated seed, plus one truncated whole-block step for every block
+// boundary between it and the seed's block, plus the truncated gradient at its own
+// column inside the block measured from the seed's column. Nothing in it mentions
+// the host's vector, which is the whole point.
+static int BlockWalkModel(float c0, float dc, int x0, int x)
+{
+	constexpr int W = 8;
+
+	const int xb0 = x0 & ~(W - 1);
+	const int s = x0 - xb0;
+	const int m = (x - xb0) % W;
+	const int b = (x - xb0) / W;
+
+	const int seed = static_cast<int>(c0 * kColorScale);
+	const int block = static_cast<int>(dc * kColorScale * W);
+	const int lane = static_cast<int>(dc * kColorScale * static_cast<float>(m - s));
+
+	return (seed + b * block + lane) >> 7;
+}
+
+TEST_F(SwScanlineCPathTest, TheGouraudWalkStepsInEightPixelBlocks)
+{
+	// Gradients deliberately off any binade, so a block step is not accidentally
+	// eight lane steps and the truncation actually has something to lose.
+	const Span span = {40.0f, 90.0f, 60.0f, 120.0f, 1.3f, -0.7f, 2.1f, 0.55f};
+
+	for (int left = 0; left < 8; left++)
+	{
+		Reading jit;
+		ASSERT_TRUE(RunJit(false, span, left, 40 - left, jit));
+
+		for (int x = left; x < 40; x++)
+		{
+			SCOPED_TRACE(testing::Message() << "left " << left << " pixel " << x);
+
+			EXPECT_EQ(static_cast<int>(jit.px[x] & 0xff), BlockWalkModel(span.r0, span.dr, left, x)) << "red";
+			EXPECT_EQ(static_cast<int>((jit.px[x] >> 8) & 0xff), BlockWalkModel(span.g0, span.dg, left, x)) << "green";
+			EXPECT_EQ(static_cast<int>((jit.px[x] >> 16) & 0xff), BlockWalkModel(span.b0, span.db, left, x)) << "blue";
+			EXPECT_EQ(static_cast<int>((jit.px[x] >> 24) & 0xff), BlockWalkModel(span.a0, span.da, left, x)) << "alpha";
+		}
+	}
+}
+
+// The invariant behind the alternating pair: however a block is split across two
+// vectors, the two halves together advance by exactly one whole block step. If this
+// fails the walk drifts by a little every block, which is the shape of error that
+// only shows up hundreds of pixels along a span.
+TEST_F(SwScanlineCPathTest, TheTwoPhasesOfAStepSumToTheBlockStep)
+{
+	static const float kSteps[] = {-85.0f, -17.0f, -1.3f, 0.0f, 0.55f, 17.0f, 85.0f};
+
+	for (float dr : kSteps)
+	{
+		const Span span = {128.0f, 128.0f, 128.0f, 128.0f, dr, -dr, dr * 0.5f, -dr * 0.25f};
+
+		Reading jit;
+		ASSERT_TRUE(RunJit(false, span, 0, 32, jit));
+
+		for (int s = 0; s < 8; s++)
+		{
+			for (int lane = 0; lane < 4; lane++)
+			{
+				// Two 16-bit channels share each word, so each is summed on its own
+				// rather than letting one carry into its neighbour.
+				const u32 rb0 = jit.dw[s][0].rb.U32[lane], rb1 = jit.dw[s][1].rb.U32[lane];
+				const u32 ga0 = jit.dw[s][0].ga.U32[lane], ga1 = jit.dw[s][1].ga.U32[lane];
+
+				SCOPED_TRACE(testing::Message() << "dr " << dr << " s " << s << " lane " << lane);
+
+				EXPECT_EQ((rb0 + rb1) & 0xffff, jit.d4c.U32[0] & 0xffff) << "red";
+				EXPECT_EQ(((rb0 >> 16) + (rb1 >> 16)) & 0xffff, (jit.d4c.U32[0] >> 16) & 0xffff) << "blue";
+				EXPECT_EQ((ga0 + ga1) & 0xffff, jit.d4c.U32[1] & 0xffff) << "green";
+				EXPECT_EQ(((ga0 >> 16) + (ga1 >> 16)) & 0xffff, (jit.d4c.U32[1] >> 16) & 0xffff) << "alpha";
+			}
 		}
 	}
 }

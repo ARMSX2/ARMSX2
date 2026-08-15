@@ -4,6 +4,7 @@
 #include "GS/Renderers/SW/GSDrawScanline.h"
 #include "GS/Renderers/SW/GSTextureCacheSW.h"
 #include "GS/Renderers/SW/GSScanlineEnvironment.h"
+#include "GS/Renderers/SW/GSBlockWalk.h"
 #include "GS/Renderers/SW/GSRasterizer.h"
 #include "Memory.h"
 
@@ -249,6 +250,34 @@ __forceinline static VectorI GSStoredVertexColor(const VectorI& c)
 	return c.srl16<7>().sll16<7>();
 }
 
+#if _M_SSE < 0x501
+/// One attribute channel's alternating per-vector step for a split block walk,
+/// as the four entries local.dw wants for a span starting `i` lanes into its
+/// vector: (s=i, phase 0), (s=i, phase 1), (s=4+i, phase 0), (s=4+i, phase 1).
+///
+/// Writing L, H and M for the truncated gradient at this vector's lanes, at the
+/// half after it and at the half before it, and Q for the whole block step, the
+/// walk visits L, H, Q+L, Q+H ... from the low half and L, Q+M, Q+L, 2Q+M ...
+/// from the high half. Both alternate, and each pair sums to Q -- which is the
+/// invariant to check if these ever look wrong.
+static __ri void GSBlockWalkSteps(const GSVector4& d, int i, GSVector4i out[4])
+{
+	static const GSVector4* shift = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift);
+	static const GSVector4* next = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift_next);
+	static const GSVector4* prev = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift_prev);
+
+	const GSVector4i q = GSVector4i(d * *reinterpret_cast<const GSVector4*>(g_const_128b.m_block8));
+	const GSVector4i l = GSVector4i(d * shift[1 + i]);
+	const GSVector4i h = GSVector4i(d * next[i]);
+	const GSVector4i m = GSVector4i(d * prev[i]);
+
+	out[0] = h - l;
+	out[1] = q - h + l;
+	out[2] = q + m - l;
+	out[3] = l - m;
+}
+#endif
+
 void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, const GSVertexSW& dscan, GSScanlineLocalData& local)
 {
 	const GSScanlineGlobalData& global = GlobalFromLocal(local);
@@ -261,13 +290,21 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 
 	constexpr int vlen = sizeof(VectorF) / sizeof(float);
 
+	// Truncated attributes step one hardware BLOCK at a time, not one host
+	// vector -- see GSBlockWalk.h. Here that only widens the step: the block is
+	// eight pixels wide without texture mapping, which is two vectors, and the
+	// scanline walks the alternating pair in local.dw.
+	[[maybe_unused]] const bool block_split = GSBlockWalkIsSplit(sel, vlen);
+
 #if _M_SSE >= 0x501
 	auto load_shift = [](int i) { return GSVector8::load<false>(&g_const_256b.m_shift[8 - i]); };
 	const GSVector4 step_shift = GSVector4::broadcast32(&g_const_256b.m_shift[0]);
 #else
 	static const GSVector4* shift = reinterpret_cast<const GSVector4*>(g_const_128b.m_shift);
 	auto load_shift = [](int i) { return shift[1 + i]; };
-	const GSVector4 step_shift = shift[0];
+	const GSVector4 step_shift = block_split
+		? *reinterpret_cast<const GSVector4*>(g_const_128b.m_block8)
+		: shift[0];
 #endif
 
 	GSVector4 tstep = dscan.t * step_shift;
@@ -292,6 +329,20 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 				{
 					local.d[i].f = VectorI(df * load_shift(i)).xxzzlh();
 				}
+
+#if _M_SSE < 0x501
+				if (block_split)
+				{
+					for (int i = 0; i < vlen; i++)
+					{
+						GSVector4i st[4];
+						GSBlockWalkSteps(df, i, st);
+
+						for (int p = 0; p < 4; p++)
+							local.dw[(p & 2) * 2 + i][p & 1].f = st[p].xxzzlh();
+					}
+				}
+#endif
 			}
 
 			if (has_z && !sel.zequal)
@@ -441,6 +492,29 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 
 				local.d[i].ga = g.upl16(a);
 			}
+
+#if _M_SSE < 0x501
+			if (block_split)
+			{
+				for (int i = 0; i < vlen; i++)
+				{
+					GSVector4i sr[4], sb[4], sg[4], sa[4];
+
+					GSBlockWalkSteps(dr, i, sr);
+					GSBlockWalkSteps(db, i, sb);
+					GSBlockWalkSteps(dg, i, sg);
+					GSBlockWalkSteps(da, i, sa);
+
+					for (int p = 0; p < 4; p++)
+					{
+						GSScanlineLocalData::blockstep& w = local.dw[(p & 2) * 2 + i][p & 1];
+
+						w.rb = (sr[p] & mask16).pu32().upl16((sb[p] & mask16).pu32());
+						w.ga = (sg[p] & mask16).pu32().upl16((sa[p] & mask16).pu32());
+					}
+				}
+			}
+#endif
 		}
 		else
 		{
@@ -599,6 +673,15 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 	// Init
 
 	int skip, steps;
+
+#if _M_SSE < 0x501
+	// Where this span starts inside its eight-pixel block decides which of the
+	// two alternating steps it begins on, so it has to be read off the true left
+	// edge before the vector alignment rounds it down.
+	const bool block_split = GSBlockWalkIsSplit(sel, vlen);
+	const GSScanlineLocalData::blockstep* const dw = local.dw[left & 7];
+	int dwphase = 0;
+#endif
 
 	if (!sel.notest)
 	{
@@ -1869,7 +1952,7 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 #if _M_SSE >= 0x501
 				f = f.add16(GSVector8i::broadcast16(&local.d8.p.f));
 #else
-				f = f.add16(local.d4.f);
+				f = f.add16(block_split ? dw[dwphase].f : local.d4.f);
 #endif
 			}
 		}
@@ -1906,13 +1989,27 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 			{
 #if _M_SSE >= 0x501
 				GSVector8i c = GSVector8i::broadcast64(&local.d8.c);
-#else
-				GSVector4i c = local.d4.c;
-#endif
 				rbf = rbf.add16(c.xxxx()).max_i16(VectorI::zero());
 				gaf = gaf.add16(c.yyyy()).max_i16(VectorI::zero());
+#else
+				if (block_split)
+				{
+					rbf = rbf.add16(dw[dwphase].rb).max_i16(VectorI::zero());
+					gaf = gaf.add16(dw[dwphase].ga).max_i16(VectorI::zero());
+				}
+				else
+				{
+					GSVector4i c = local.d4.c;
+					rbf = rbf.add16(c.xxxx()).max_i16(VectorI::zero());
+					gaf = gaf.add16(c.yyyy()).max_i16(VectorI::zero());
+				}
+#endif
 			}
 		}
+
+#if _M_SSE < 0x501
+		dwphase ^= 1;
+#endif
 
 		if (!sel.notest)
 		{

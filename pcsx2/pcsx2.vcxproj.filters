@@ -2027,6 +2027,36 @@
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
+<<<<<<< HEAD
+=======
+    <ClInclude Include="GS\Renderers\Tile\GSPageBitmap.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSRendererTile.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileDrawLowering.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileOracle.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileTargetPool.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileTextureSource.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileTypes.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSVramModel.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSBlockWalk.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
+>>>>>>> 66fe427665 (GS/SW: the gouraud walk's block is the hardware's eight, not the host's four)
     <ClInclude Include="GS\Renderers\SW\GSScanlineEnvironment.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
