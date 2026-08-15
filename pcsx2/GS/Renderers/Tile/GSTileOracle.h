@@ -123,6 +123,26 @@ namespace GSTileOracle
 		u16 diff_pages; ///< footprint pages differing between the arms, anywhere
 		u32 diff_bytes; ///< bytes differing between the arms across the whole footprint
 
+		/// WHICH OF THE NATIVE ARM'S TWO READBACKS AUTHORED THE DIFFERENCE. A native draw
+		/// never writes CPU memory -- it renders into a GPU texture -- so every byte that
+		/// moves on this side moves through a readback, and there are two of them: the
+		/// draw's own input synchronisation before it renders, and the oracle's pull of
+		/// the result afterwards. They are different defects and they need different
+		/// fixes. `rb_bytes` counts footprint bytes the POST-draw readback moved;
+		/// `rb_diff_bytes` counts how many of the DIFFERING bytes it moved.
+		///
+		/// rb_diff_bytes == diff_bytes is the ordinary case: the result reached CPU memory
+		/// through the post-draw pull, so the disagreement is about what the draw
+		/// rendered.
+		///
+		/// rb_diff_bytes == 0 is the one that misleads. The bytes already disagreed before
+		/// the result was pulled, so the draw's own input sync published them -- CPU truth
+		/// was stale where the model knew the GPU was newer. In every other column that
+		/// reads as a loud rasterization bug (thousands of pixels, gpu_only, maximum
+		/// delta) on a draw whose shader wrote no such channel.
+		u32 rb_bytes;
+		u32 rb_diff_bytes;
+
 		Tally colour;
 		Tally depth;
 

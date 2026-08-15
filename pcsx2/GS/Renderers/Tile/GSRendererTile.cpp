@@ -840,9 +840,30 @@ bool GSRendererTile::OracleBeginDraw(const GSTileDrawPlan& plan, const GSVector4
 	if (m_oracle.fp.count() > 128)
 		return false;
 
+	// Drain the floor queue FIRST. The software rasterizer is asynchronous whenever it
+	// has worker threads -- a floored draw returns long before its pixels exist -- and
+	// the native route drains it (Sync(8)) after this function has already snapshotted
+	// `pre`. Those pixels then land in CPU memory on the native side of the comparison
+	// and nowhere on the software side, so the previous draw's output is charged to this
+	// draw as thousands of pixels the native path "wrote" and software "did not".
+	//
+	// Measured on GT4 OPB: fourteen of twenty-seven divergent draws were this, up to 7128
+	// pixels at the maximum delta, every one of them immediately preceded by a floored
+	// draw over the same rectangle. The ledger was nondeterministic run to run while the
+	// frames it was scoring were byte-identical across three runs -- which is the tell,
+	// and the reason a lockstep instrument has to own its own quiescence rather than
+	// inherit whatever the renderer happened to have flushed.
+	Sync(10);
+
 	// Inputs to CPU truth, so the SW arm reads exactly what the native arm will sample
 	// and blend against. Counted, because this is the instrument's only footprint on
 	// the run it measures.
+	//
+	// Syncing the whole COMPARED footprint here as well was tried -- on the theory that
+	// the native route's own input sync, which runs after this point over a different
+	// page set, could publish a page `pre` had missed. It pulled nothing on GT4 OPB and
+	// left the ledger byte-identical, so it is not here: the drain above was the entire
+	// mechanism, and an inert readback in an instrument is a future misattribution.
 	GSPageBitmap before;
 	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 		before |= m_vram_model.Truth(pi).andnot(m_vram_model.SyncedPages(pi));
@@ -881,6 +902,14 @@ void GSRendererTile::OracleCompareDraw(const GSTileDrawPlan& plan, const GSVecto
 	// The native arm's result, in CPU local memory. Bytes the draw did not claim keep
 	// their pre values, which is exactly what makes an unclaimed write show up below as
 	// sw_only rather than silently as agreement.
+	//
+	// Captured twice, on either side of the readback. The native arm is two steps and
+	// they fail differently: the draw can render the wrong thing, and the readback can
+	// publish bytes CPU memory never held. Both land in `gpu` as one number, and a
+	// readback-authored difference wears the costume of a loud rasterization bug --
+	// thousands of pixels, gpu_only, maximum delta -- on a draw whose shader wrote no
+	// such channel. Differencing the two snapshots below tells them apart per byte.
+	m_oracle.raw.Capture(vm8, m_oracle.fp);
 	ReadbackModelPages(m_vram_model.ReadbackNeeded(m_oracle.fp, kGSTilePlanesAll), ReadbackSite::Oracle);
 	m_oracle.gpu.Capture(vm8, m_oracle.fp);
 
@@ -952,9 +981,16 @@ void GSRendererTile::OracleCompareDraw(const GSTileDrawPlan& plan, const GSVecto
 		m_oracle.fp.forEachSetPage([&](u32) {
 			const u8* a = m_oracle.sw.bytes.data() + at;
 			const u8* b = m_oracle.gpu.bytes.data() + at;
+			const u8* c = m_oracle.raw.bytes.data() + at;
 			u32 n = 0;
 			for (u32 i = 0; i < GS_PAGE_SIZE; i++)
-				n += (a[i] != b[i]) ? 1u : 0u;
+			{
+				const bool differs = a[i] != b[i];
+				const bool moved_by_readback = b[i] != c[i];
+				n += differs ? 1u : 0u;
+				row.rb_bytes += moved_by_readback ? 1u : 0u;
+				row.rb_diff_bytes += (differs && moved_by_readback) ? 1u : 0u;
+			}
 			if (n != 0)
 			{
 				row.diff_pages++;

@@ -152,7 +152,11 @@ private:
 		GSTileSurfaceLayout fb_l{};
 		GSTileSurfaceLayout z_l{};
 		u32 sync_pages = 0; ///< pages the input sync pulled; 0 == perturbation-free row
-		OracleSnapshot pre, gpu, sw;
+		/// `raw` is the native arm BEFORE its result is pulled out of the GPU: the same
+		/// footprint, captured between the draw and the readback. Differences the readback
+		/// introduced are exactly gpu-minus-raw, which is what separates a draw that wrote
+		/// the wrong bytes from a readback that published bytes CPU memory never held.
+		OracleSnapshot pre, raw, gpu, sw;
 
 		// The native route rewrites the vertex buffer in place (de-indexing, flat-colour
 		// flattening), so the SW arm cannot be handed what is left of it.
