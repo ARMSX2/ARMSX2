@@ -187,6 +187,33 @@ namespace GSDrawLog
 		// invisible until the perspective floor lifts, which is exactly when the
 		// numbers are needed.
 		u8 stq_guard;
+
+		// Sync attribution (NoteTileSync). Accumulated across the draw, because one draw
+		// can pay more than one sync.
+		//
+		// ⚠️ THIS COLUMN DOES NOT SUM TO THE FRAME'S SYNC BILL, and it cannot be made to.
+		// A stall is not a per-draw quantity: measured over two scenes, only about three
+		// quarters of a frame's stalls are attributable to a draw at all (233 of 307, and
+		// 460 of 603). The rest are CPU reads of local memory, transfers, and the frame
+		// boundary, which have no row to hang on. The teardown census remains the
+		// authority on the total; this column apportions the attributable part.
+		//
+		// ⚠️ The COUNT is instrument-invariant, any TIME would not be. Enabling the ledger
+		// costs CPU work but does not change which draws happen or which pages sync, so
+		// stall counts are comparable between an arm carrying the ledger and one without.
+		// A duration measured the same way is not, and that is why no duration lives here:
+		// the safe half and the unsafe half of one instrument look identical in the CSV,
+		// so the unsafe half is simply absent. Note this is a narrower claim than the
+		// ledger's standing "attribution tool, never a comparison tool" rule -- that rule
+		// still holds for record_ns, which is a time.
+		u16 stalls; ///< GPU drains this draw's own sync paid
+		// Pages that sync moved. The ratio against stalls is the batching headroom: one
+		// page per stall means nothing was amortised.
+		u32 sync_pages;
+		// TileSyncReason bitfield. A row with exactly one bit set is a "sole" row, which
+		// is what decides whether fixing a reason retires a stall or merely shrinks one --
+		// so that question falls out of the bitfield and needs no separate counters.
+		u8 sync_reason;
 	};
 
 	/// How a draw whose texture aliased the render target or depth buffer was resolved.
@@ -263,6 +290,19 @@ namespace GSDrawLog
 		TileFallbackBlendTexSample,
 	};
 
+	/// Why a Tile draw had to sync, as a bitfield rather than an enum: one draw can be
+	/// forced to sync for more than one reason at once, and collapsing that to a single
+	/// "primary" reason is what makes a census unable to answer the only question worth
+	/// asking of it -- whether fixing a reason RETIRES a stall or merely shrinks one.
+	/// A row with exactly one bit set is a sole-reason row and its stall is retirable.
+	enum TileSyncReason : u8
+	{
+		TileSyncNone = 0,
+		TileSyncUploadSource = 1 << 0, ///< the draw's source pages had CPU-side writes to push
+		TileSyncStealSurface = 1 << 1, ///< pages were owned by another surface and had to be taken
+		TileSyncTextureOnTarget = 1 << 2, ///< sampled a texture living on pages a target owns
+	};
+
 	enum Flags : u8
 	{
 		FlagTextured = 1 << 0,
@@ -333,6 +373,15 @@ namespace GSDrawLog
 	/// until the pass graph exists. No-op if BeginDraw did not record a row.
 	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback, const GSVector4i& rect,
 		u8 stq_guard);
+
+	/// Attributes one sync to the row currently open. ACCUMULATES rather than assigns --
+	/// a draw can be forced to sync several times, and the reason bits OR together --
+	/// so call it once per sync rather than once per draw. Safe to call before or after
+	/// NoteTileDraw. No-op if BeginDraw did not record a row.
+	///
+	/// Records no duration, deliberately: see the Record::stalls comment for why a count
+	/// survives arm-versus-arm comparison and a time does not.
+	void NoteTileSync(u32 pages, TileSyncReason reason);
 
 	/// Completes the row opened by BeginDraw with the software rasterizer's view: the
 	/// draw rect it will rasterize into (bbox ∩ scissor). No backend view exists for

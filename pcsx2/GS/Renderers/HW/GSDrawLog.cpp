@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 
@@ -198,6 +199,20 @@ namespace GSDrawLog
 		rec.area_w = static_cast<s16>(std::clamp(rect.w, -32768, 32767));
 	}
 
+	void NoteTileSync(u32 pages, TileSyncReason reason)
+	{
+		if (s_open_record == SIZE_MAX)
+			return;
+
+		Record& rec = s_records[s_open_record];
+		// Saturating: a draw that syncs more than 65535 times has a problem the exact
+		// count will not help with, and wrapping would report it as a healthy draw.
+		if (rec.stalls != std::numeric_limits<u16>::max())
+			rec.stalls++;
+		rec.sync_pages += pages;
+		rec.sync_reason |= static_cast<u8>(reason);
+	}
+
 	void NoteSWDraw(const GSVector4i& rect)
 	{
 		if (s_open_record == SIZE_MAX)
@@ -380,7 +395,7 @@ namespace GSDrawLog
 			"atst,afail,aref,date,datm,self_read,"
 			"topology,expand,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
 			"area_x,area_y,area_w,area_h,"
-			"memo_hit,record_ns,pass_id,fallback,stq_guard,"
+			"memo_hit,record_ns,pass_id,fallback,stq_guard,stalls,sync_pages,sync_reason,"
 			"mmag,mmin,mxl,tcc,tfx,fge,fst,aa1,colclamp,pabe,fba,dthe,iip\n");
 
 		for (const Record& r : s_records)
@@ -480,12 +495,15 @@ namespace GSDrawLog
 
 			if (r.tile)
 			{
-				std::fprintf(fp.get(), "%u,%u,%u,%s,%u,", r.memo_hit, r.record_ns, r.pass_id,
-					GetTileFallbackName(r.fallback_reason), r.stq_guard);
+				// sync_reason in hex, like expand: it is a bitfield, and naming one of
+				// several set bits would throw away exactly the distinction it exists to
+				// draw. A sole-reason row is a power of two, which reads at a glance.
+				std::fprintf(fp.get(), "%u,%u,%u,%s,%u,%u,%u,%x,", r.memo_hit, r.record_ns, r.pass_id,
+					GetTileFallbackName(r.fallback_reason), r.stq_guard, r.stalls, r.sync_pages, r.sync_reason);
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,");
+				std::fprintf(fp.get(), ",,,,,,,,");
 			}
 
 			if (textured)
