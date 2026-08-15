@@ -418,3 +418,47 @@ TEST_F(LocalMemoryMoveTest, CrossFormat32To24KeepsDestinationTopByte)
 	}
 }
 } // namespace
+
+// A draw and a transfer are ordered against each other by the set of pages each
+// one claims, so a claim that is short of what the operation actually writes is
+// a race -- and gs-clip measured the software renderer producing at least four
+// different outputs, run to run, on the one stage whose draws reach past the
+// frame buffer's own stride. The catalogue's suspected mechanism was exactly
+// that: a footprint clamped at the buffer width, under-claiming the pages a wide
+// rectangle reaches into.
+//
+// It is not that. This walks every pixel of rectangles up to sixteen times their
+// buffer's stride and checks the claimed set against the written set directly,
+// and the claim covers the writes everywhere. Kept as a pin rather than deleted:
+// the refutation is the useful part, and a future clamp added for tidiness would
+// silently reintroduce the mechanism this rules out.
+//
+// What it does NOT cover, and where the defect therefore still lives: the
+// ordering DECISIONS taken over those page sets, the texture-page side, and
+// anything above GS_MAX_PAGES where the looper switches to its de-duplicating
+// slow path.
+TEST(PageClaim, CoversWhatAWideRectangleWrites)
+{
+	for (int bw : {1, 2, 4, 10})
+	{
+		for (int right : {64, 200, 640, 1024, 2047})
+		{
+			const GSOffset off = GSOffset::fromKnownPSM(0, bw, PSMCT32);
+			const GSVector4i r(0, 0, right, 40);
+
+			std::vector<bool> claimed(GS_MAX_PAGES, false);
+			off.pageLooperForRect(r).loopPages([&](u32 p) { claimed[p] = true; });
+
+			std::vector<bool> written(GS_MAX_PAGES, false);
+			for (int y = r.top; y < r.bottom; y++)
+				for (int x = r.left; x < r.right; x++)
+					written[((off.pa(x, y) * sizeof(u32)) / GS_PAGE_SIZE) % GS_MAX_PAGES] = true;
+
+			int missing = 0;
+			for (u32 p = 0; p < GS_MAX_PAGES; p++)
+				missing += (written[p] && !claimed[p]);
+
+			EXPECT_EQ(missing, 0) << "buffer width " << (bw * 64) << " px, rectangle " << right << " px wide";
+		}
+	}
+}
