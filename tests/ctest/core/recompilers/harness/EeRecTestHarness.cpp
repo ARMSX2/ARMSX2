@@ -104,6 +104,9 @@ EeRecTestHarness::~EeRecTestHarness()
 		EmuConfig.Speedhacks.vu1Instant = false;
 	}
 
+	if (fpu_exact_mode_changed_)
+		EmuConfig.Cpu.Recompiler.fpuExactMode = prev_fpu_exact_mode_;
+
 	if (fpu_full_mode_changed_)
 		EmuConfig.Cpu.Recompiler.fpuFullMode = prev_fpu_full_mode_;
 
@@ -156,14 +159,29 @@ void EeRecTestHarness::SetFcr31(u32 value)                 { fpuRegs.fprc[31] = 
 void EeRecTestHarness::EnableCop0()      { cpuRegs.CP0.n.Status.val |= (1u << 28); /* CU0 */ }
 void EeRecTestHarness::EnableCop1()      { cpuRegs.CP0.n.Status.val |= (1u << 29); /* CU1 */ }
 
+// GameDatabase sets the four bits from a single eeClampMode and ApplySanityCheck
+// rejects a higher one without the lower, so each helper below sets a whole
+// mode.
 void EeRecTestHarness::EnableFpuFullMode()
 {
+	EnableFpuExtraOverflow();
 	if (!fpu_full_mode_changed_)
 	{
 		prev_fpu_full_mode_ = EmuConfig.Cpu.Recompiler.fpuFullMode;
 		fpu_full_mode_changed_ = true;
 	}
 	EmuConfig.Cpu.Recompiler.fpuFullMode = true;
+}
+
+void EeRecTestHarness::EnableFpuExactMode()
+{
+	EnableFpuFullMode();
+	if (!fpu_exact_mode_changed_)
+	{
+		prev_fpu_exact_mode_ = EmuConfig.Cpu.Recompiler.fpuExactMode;
+		fpu_exact_mode_changed_ = true;
+	}
+	EmuConfig.Cpu.Recompiler.fpuExactMode = true;
 }
 
 void EeRecTestHarness::EnableFpuMulHack()
@@ -188,6 +206,12 @@ void EeRecTestHarness::DisableFpuGuarded()
 
 void EeRecTestHarness::EnableFpuExtraOverflow()
 {
+	if (!fpu_overflow_changed_)
+	{
+		prev_fpu_overflow_ = EmuConfig.Cpu.Recompiler.fpuOverflow;
+		fpu_overflow_changed_ = true;
+	}
+	EmuConfig.Cpu.Recompiler.fpuOverflow = true;
 	if (!fpu_extra_overflow_changed_)
 	{
 		prev_fpu_extra_overflow_ = EmuConfig.Cpu.Recompiler.fpuExtraOverflow;

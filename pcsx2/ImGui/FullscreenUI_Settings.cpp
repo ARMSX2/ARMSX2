@@ -2743,6 +2743,14 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 						(vunum >= 0 ? ((vunum == 0) ? "vu0ExtraOverflow" : "vu1ExtraOverflow") : "fpuExtraOverflow"), second);
 					bsi->SetOptionalBoolValue(
 						"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0Overflow" : "vu1Overflow") : "fpuOverflow"), first);
+					// Same write as AdvancedSettingsWidget::setClampingMode.
+					if (vunum < 0)
+					{
+						std::optional<bool> fourth;
+						if (first.has_value())
+							fourth = false;
+						bsi->SetOptionalBoolValue("EmuCore/CPU/Recompiler", "fpuExactMode", fourth);
+					}
 					SetSettingsChanged(bsi);
 				}
 

@@ -6,9 +6,11 @@
 // This is the arm64 port of pcsx2/x86/iFPUd.cpp: the PS2-accurate FPU that
 // widens each single to IEEE double, performs the op in double, then narrows
 // back to a PS2 single with the hardware's overflow/underflow/clamp semantics.
-// It is selected only when CHECK_FPU_FULL (EmuConfig.Cpu.Recompiler.fpuFullMode,
-// the GameDB `eeClampMode:3` path — FFX, Max Payne, Dark Cloud 2, Klonoa 2 …).
+// It is selected when CHECK_FPU_FULL (EmuConfig.Cpu.Recompiler.fpuFullMode, the
+// GameDB `eeClampMode:3` path — FFX, Max Payne, Dark Cloud 2, Klonoa 2 …).
 // Default config runs the single-precision fast path in iFPU-arm64.cpp.
+//
+// It serves eeClampMode 3 and 4, which differ only at emitDefectiveFmul below.
 //
 // The algorithm is translated from the x86 semantics; the codegen follows the
 // iFPU-arm64.cpp idioms (scalar Fcvt, GPR bit-twiddle via Fmov, the
@@ -518,14 +520,15 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // The interpreter models a superset (FPU.cpp eeMulRound / eeMulOneUlpLow /
 // eeMulArray): it reconstructs the array's truncated low half, so it also
 // catches the rows where the tail is non-zero but smaller than the borrow.
-// This is the mode-3 codegen for the zero-tail law, which is exact on that
-// class. FpuMulHack is a one-point sample of the same rule and this subsumes
-// it, including the asymmetry -- it is not folded in here because iFPUd never
-// had it.
+// This is the double tier's codegen for the zero-tail law. FpuMulHack is a
+// one-point sample of the same rule and this subsumes it, asymmetry included.
 //
 // The product is computed in double, where a 24x24 significand multiply is
 // exact, so neither condition needs an integer multiply: the tail is the 29
 // bits below the single's ULP, and the predicate is a function of ft alone.
+//
+// eeClampMode 3 emits the Booth term alone; 4 adds the boundary term and the
+// array call below.
 //
 // ft is read out of the allocator-resident guest register, which holds the word
 // relocated into double position: the single's mantissa bit k is bit k+29
@@ -638,13 +641,21 @@ static void emitDefectiveFmul(int dstidx, int tidx, int fsslotidx, int ftslotidx
 
 	// Hoisted above the Fmul: the predicate is not on its dependency chain.
 	armAsm->Fmov(RXSCRATCH, armDRegister(ftslotidx));
-	armAsm->And(RXARG1, RXSCRATCH, a64::Operand(RXSCRATCH, a64::LSL, 1)); // bit43 = b14 & b13
-	armAsm->Bic(RXARG1, RXSCRATCH, a64::Operand(RXARG1, a64::LSL, 1));    // bit44 = b15 & ~(b14 & b13)
-	armAsm->Eor(RXARG1, RXARG1, a64::Operand(RXSCRATCH, a64::LSL, 4));    // bit44 ^= b11
-	armAsm->And(RXARG1, RXARG1, UINT64_C(0x100000000000));
-	armAsm->And(RXSCRATCH, RXSCRATCH, UINT64_C(0x5555555555555555));
-	armAsm->And(RXSCRATCH, RXSCRATCH, UINT64_C(0x7fc0000000));
-	armAsm->Orr(RXARG1, RXARG1, RXSCRATCH);
+	if (CHECK_FPU_EXACT)
+	{
+		armAsm->And(RXARG1, RXSCRATCH, a64::Operand(RXSCRATCH, a64::LSL, 1)); // bit43 = b14 & b13
+		armAsm->Bic(RXARG1, RXSCRATCH, a64::Operand(RXARG1, a64::LSL, 1));    // bit44 = b15 & ~(b14 & b13)
+		armAsm->Eor(RXARG1, RXARG1, a64::Operand(RXSCRATCH, a64::LSL, 4));    // bit44 ^= b11
+		armAsm->And(RXARG1, RXARG1, UINT64_C(0x100000000000));
+		armAsm->And(RXSCRATCH, RXSCRATCH, UINT64_C(0x5555555555555555));
+		armAsm->And(RXSCRATCH, RXSCRATCH, UINT64_C(0x7fc0000000));
+		armAsm->Orr(RXARG1, RXARG1, RXSCRATCH);
+	}
+	else
+	{
+		armAsm->And(RXARG1, RXSCRATCH, UINT64_C(0x5555555555555555));
+		armAsm->And(RXARG1, RXARG1, UINT64_C(0x7fc0000000));
+	}
 
 	armAsm->Fmul(prod, prod, armDRegister(tidx));
 
@@ -661,6 +672,9 @@ static void emitDefectiveFmul(int dstidx, int tidx, int fsslotidx, int ftslotidx
 	armAsm->Csel(RXARG1, RXARG1, a64::xzr, a64::ne);
 	armAsm->Sub(RXARG2, RXARG2, RXARG1);
 	armAsm->Fmov(prod, RXARG2);
+
+	if (!CHECK_FPU_EXACT)
+		return;
 
 	// The rest of the law is the array's. The decrement above cannot have
 	// changed the tail read here: it only fires on a zero tail, and 1 << 29

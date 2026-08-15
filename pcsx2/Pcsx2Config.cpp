@@ -473,6 +473,7 @@ Pcsx2Config::RecompilerOptions::RecompilerOptions()
 	fpuOverflow = true;
 	//fpuExtraOverflow = false;
 	//fpuFullMode = false;
+	//fpuExactMode = false;
 	fpuGuardedAddSub = true; // PS2-accurate add/sub guard-bit emulation; opt-out for perf on titles verified not to need it.
 }
 
@@ -486,12 +487,16 @@ void Pcsx2Config::RecompilerOptions::ApplySanityCheck()
 	if (fpuFullMode)
 		fpuIsRight = fpuOverflow && fpuExtraOverflow;
 
+	if (fpuExactMode)
+		fpuIsRight = fpuOverflow && fpuExtraOverflow && fpuFullMode;
+
 	if (!fpuIsRight)
 	{
 		// Values are wonky; assume the defaults.
 		fpuOverflow = RecompilerOptions().fpuOverflow;
 		fpuExtraOverflow = RecompilerOptions().fpuExtraOverflow;
 		fpuFullMode = RecompilerOptions().fpuFullMode;
+		fpuExactMode = RecompilerOptions().fpuExactMode;
 	}
 
 	bool vuIsOk = true;
@@ -552,12 +557,13 @@ void Pcsx2Config::RecompilerOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(fpuOverflow);
 	SettingsWrapBitBool(fpuExtraOverflow);
 	SettingsWrapBitBool(fpuFullMode);
+	SettingsWrapBitBool(fpuExactMode);
 	SettingsWrapBitBool(fpuGuardedAddSub);
 }
 
 u32 Pcsx2Config::RecompilerOptions::GetEEClampMode() const
 {
-	return fpuFullMode ? 3 : (fpuExtraOverflow ? 2 : (fpuOverflow ? 1 : 0));
+	return fpuExactMode ? 4 : (fpuFullMode ? 3 : (fpuExtraOverflow ? 2 : (fpuOverflow ? 1 : 0)));
 }
 
 void Pcsx2Config::RecompilerOptions::SetEEClampMode(u32 value)
@@ -565,6 +571,7 @@ void Pcsx2Config::RecompilerOptions::SetEEClampMode(u32 value)
 	fpuOverflow = (value >= 1);
 	fpuExtraOverflow = (value >= 2);
 	fpuFullMode = (value >= 3);
+	fpuExactMode = (value >= 4);
 }
 
 u32 Pcsx2Config::RecompilerOptions::GetVUClampMode() const

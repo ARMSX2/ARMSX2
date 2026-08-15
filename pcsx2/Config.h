@@ -766,6 +766,7 @@ struct Pcsx2Config
 			fpuOverflow : 1,
 			fpuExtraOverflow : 1,
 			fpuFullMode : 1,
+			fpuExactMode : 1,
 			fpuGuardedAddSub : 1; // EE FPU add/sub guard-bit emulation (single-precision fast path). ON by default — the PS2-accurate behavior. Opt-OUT globally via INI for EE-FPU-heavy titles verified to render fine without it (each ADD.S/SUB.S then costs one op instead of the guard sequence). Independent of the clamp tiers: Full mode runs the DOUBLE path, which guards unconditionally regardless of this bit.
 
 		bool
@@ -1718,7 +1719,8 @@ namespace EmuFolders
 #define CHECK_FPU_OVERFLOW (EmuConfig.Cpu.Recompiler.fpuOverflow)
 #define CHECK_FPU_EXTRA_OVERFLOW (EmuConfig.Cpu.Recompiler.fpuExtraOverflow) // If enabled, Operands are checked for infinities before being used in the FPU recs
 #define CHECK_FPU_EXTRA_FLAGS 1 // Always enabled now // Sets D/I flags on FPU instructions
-#define CHECK_FPU_FULL (EmuConfig.Cpu.Recompiler.fpuFullMode)
+#define CHECK_FPU_FULL (EmuConfig.Cpu.Recompiler.fpuFullMode) // GameDB eeClampMode >= 3: the EE FPU's arithmetic is iFPUd's, computed in double over a relocated FPR file. Below it the single-precision fast path in iFPU-arm64.cpp runs.
+#define CHECK_FPU_EXACT (EmuConfig.Cpu.Recompiler.fpuExactMode) // GameDB eeClampMode 4: mode 3 plus the rest of the EE multiplier's one-ULP deficit, at emitDefectiveFmul (iFPUd-arm64.cpp).
 #define CHECK_FPU_GUARDED (EmuConfig.Cpu.Recompiler.fpuGuardedAddSub) // If enabled (default), add/sub emulate the PS2 FPU's missing mantissa guard bits on the single-precision fast path. Disable only for EE-heavy titles confirmed not to need it.
 
 //------------ EE Recompiler defines - Comment to disable a recompiler ---------------

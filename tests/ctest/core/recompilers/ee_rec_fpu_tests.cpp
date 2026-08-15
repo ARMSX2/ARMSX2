@@ -1520,10 +1520,11 @@ TEST(EeRecFpu, MulSMultiplierDeficitReachesResultsWithANonZeroTail)
 	// the old zero-tail form fails the first two and passes the last two. The
 	// corpus contains no row in any of them.
 	//
-	// Mode 3 is asserted alongside the interpreter: it guards for this band and
-	// calls the same eeMulOneUlpLow, so the two answer it alike. The fast path
-	// has no model of the deficit at all and is silent on every row here, which
-	// is why it takes no leg.
+	// Mode 4 guards for this band and calls the same eeMulOneUlpLow as the
+	// interpreter, so the two answer it alike. Mode 3's predicate is the Booth
+	// term on a zero tail and every row here has a non-zero one, so it returns
+	// the correctly-rounded product, read off mode 1 rather than hand-derived.
+	// This band is what the array call buys over mode 3.
 	struct Row { u32 fs, ft, want; };
 	static const Row rows[] = {
 		// One ULP low with a non-zero tail: the old ft-only form said "exact"
@@ -1546,27 +1547,45 @@ TEST(EeRecFpu, MulSMultiplierDeficitReachesResultsWithANonZeroTail)
 		{0x3F800001u, 0x3F808000u, 0x3F808001u}, // tail 0x8000
 		{0x3F800002u, 0x3F804002u, 0x3F804004u}, // tail 0x8004
 	};
-	for (const Row& r : rows)
-	{
+	// One leg per scope: a harness restores the clamp mode in its destructor,
+	// so a mode-4 harness still alive carries mode 4 into the next leg.
+	auto run = [](const Row& r, int mode, bool interp) {
 		EeRecTestHarness h;
 		h.EnableCop1();
+		if (mode >= 4)
+			h.EnableFpuExactMode();
+		else if (mode >= 3)
+			h.EnableFpuFullMode();
 		h.SetFprBits(0, r.fs);
 		h.SetFprBits(1, r.ft);
 		h.LoadProgram({ee::MUL_S(2, 0, 1)});
-		h.RunInterpOnly();
-		EXPECT_EQ(h.GetFprBitsInterp(2), r.want)
-			<< "mul.s fs=" << std::hex << r.fs << " ft=" << r.ft;
+		if (interp)
+		{
+			h.RunInterpOnly();
+			return h.GetFprBitsInterp(2);
+		}
+		h.RunJitNoDiff();
+		return h.GetFprBitsJit(2);
+	};
 
-		EeRecTestHarness hf;
-		hf.EnableCop1();
-		hf.EnableFpuFullMode();
-		hf.SetFprBits(0, r.fs);
-		hf.SetFprBits(1, r.ft);
-		hf.LoadProgram({ee::MUL_S(2, 0, 1)});
-		hf.RunJitNoDiff();
-		EXPECT_EQ(hf.GetFprBitsJit(2), r.want)
-			<< "full mode, mul.s fs=" << std::hex << r.fs << " ft=" << r.ft;
+	int band_rows = 0;
+	for (const Row& r : rows)
+	{
+		SCOPED_TRACE(::testing::Message() << "mul.s fs=" << std::hex << r.fs
+										  << " ft=" << r.ft);
+		EXPECT_EQ(run(r, 1, true), r.want) << "interp";
+		EXPECT_EQ(run(r, 4, false), r.want) << "eeClampMode 4";
+		const u32 rounded = run(r, 1, false);
+		EXPECT_EQ(run(r, 3, false), rounded)
+			<< "eeClampMode 3 cannot reach this band";
+		if (r.want != rounded)
+			++band_rows;
 	}
+	// Liveness: six rows the array call moves, the first two groups. The third
+	// group is inside the gate and the array calls it exact; the fourth has a
+	// tail that absorbs the borrow.
+	EXPECT_EQ(band_rows, 6)
+		<< "the table stopped covering the band the array call exists for";
 }
 
 TEST(EeRecFpu, MaddSFpuMulHackAppliesToProduct)

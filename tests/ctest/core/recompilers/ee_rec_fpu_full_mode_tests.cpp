@@ -781,12 +781,17 @@ struct MaddRow
 };
 
 // Runs one row and returns the destination register's bits (Fd for MADD/MSUB,
-// ACC for MADDA/MSUBA) plus FCR31.
-void RunMaddRow(const MaddRow& r, u32* out_val, u32* out_fcr31)
+// ACC for MADDA/MSUBA) plus FCR31. `mode` is the clamp mode: 3 and 4 share
+// every line of this emitter bar emitDefectiveFmul, so a row needs 4 only when
+// its product is one the boundary term decides.
+void RunMaddRow(const MaddRow& r, u32* out_val, u32* out_fcr31, int mode = 3)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
-	h.EnableFpuFullMode();
+	if (mode >= 4)
+		h.EnableFpuExactMode();
+	else
+		h.EnableFpuFullMode();
 	h.SetFcr31(0);
 	h.SetAccBits(r.acc);
 	h.SetFprBits(0, r.fs);
@@ -895,12 +900,15 @@ constexpr MaddRow kGuardMaskWitnesses[] = {
 
 } // namespace
 
+// Run at eeClampMode 4: the expected values are the interpreter's, and one
+// witness's product is decided by the boundary term that mode 3 does not emit.
+// The mask itself is not mode-dependent.
 TEST(EeRecFpuFull, MaddGuardMaskAcrossExponentDifferences)
 {
 	for (const MaddRow& r : kGuardMaskWitnesses)
 	{
 		u32 val = 0, fcr31 = 0;
-		RunMaddRow(r, &val, &fcr31);
+		RunMaddRow(r, &val, &fcr31, 4);
 		EXPECT_EQ(val, r.expected)
 			<< "acc=" << std::hex << r.acc << " fs=" << r.fs << " ft=" << r.ft
 			<< " op=" << std::dec << r.op;
@@ -1155,45 +1163,57 @@ TEST(EeRecFpuFull, MulDefectNeverDecrementsAZeroProduct)
 // The middle row is the only one where the modes answer differently, and both
 // answers are asserted.
 //
-// The interpreter (FPU.cpp eeMulArray) reaches all three independently, and is
-// asserted alongside the emitter so a mis-derived row fails rather than
-// agreeing with itself.
-TEST(EeRecFpuFull, MulDefectBoundaryTermIsPredicatedNotAlwaysOn)
+// The interpreter (FPU.cpp eeMulArray) reaches all three independently and is
+// asserted alongside the emitters.
+TEST(EeRecFpuFull, MulDefectBoundaryTermSeparatesTheClampModes)
 {
 	constexpr u32 kFs = 0x3f800000u; // 1.0: the product is ft, tail always zero
 	struct Row
 	{
 		u32 ft;
-		u32 want;
+		u32 want;    // interpreter and eeClampMode 4
+		u32 want3;   // eeClampMode 3: the Booth term alone
 		const char* what;
 	};
 	constexpr Row kRows[] = {
-		{0x48b65015u, 0x48b65015u, "neither term: exact"},
-		{0x48b65815u, 0x48b65814u, "boundary term alone: one ULP low"},
-		{0x48b65215u, 0x48b65214u, "Booth term alone: one ULP low"},
+		{0x48b65015u, 0x48b65015u, 0x48b65015u, "neither term: exact"},
+		{0x48b65815u, 0x48b65814u, 0x48b65815u, "boundary term alone: mode 4 only"},
+		{0x48b65215u, 0x48b65214u, 0x48b65214u, "Booth term alone: both modes"},
+	};
+
+	// One leg per scope: a harness restores the clamp mode in its destructor,
+	// so a mode-4 harness still alive carries mode 4 into the next leg.
+	auto run = [](u32 ft, int mode, bool interp) {
+		EeRecTestHarness h;
+		h.EnableCop1();
+		if (mode >= 4)
+			h.EnableFpuExactMode();
+		else if (mode >= 3)
+			h.EnableFpuFullMode();
+		h.SetFprBits(0, kFs);
+		h.SetFprBits(1, ft);
+		h.LoadProgram({MUL_S(2, 0, 1)});
+		if (interp)
+		{
+			h.RunInterpOnly();
+			return h.GetFprBitsInterp(2);
+		}
+		h.RunJitNoDiff();
+		return h.GetFprBitsJit(2);
 	};
 
 	for (const Row& r : kRows)
 	{
 		SCOPED_TRACE(r.what);
-
-		EeRecTestHarness hi;
-		hi.EnableCop1();
-		hi.SetFprBits(0, kFs);
-		hi.SetFprBits(1, r.ft);
-		hi.LoadProgram({MUL_S(2, 0, 1)});
-		hi.RunInterpOnly();
-		EXPECT_EQ(hi.GetFprBitsInterp(2), r.want) << "interp";
-
-		EeRecTestHarness h;
-		h.EnableCop1();
-		h.EnableFpuFullMode();
-		h.SetFprBits(0, kFs);
-		h.SetFprBits(1, r.ft);
-		h.LoadProgram({MUL_S(2, 0, 1)});
-		h.RunJitNoDiff();
-		EXPECT_EQ(h.GetFprBitsJit(2), r.want) << "iFPUd";
+		EXPECT_EQ(run(r.ft, 1, true), r.want) << "interp";
+		EXPECT_EQ(run(r.ft, 4, false), r.want) << "eeClampMode 4";
+		EXPECT_EQ(run(r.ft, 3, false), r.want3) << "eeClampMode 3";
 	}
+	// Liveness: exactly one of the three rows separates the modes.
+	int split = 0;
+	for (const Row& r : kRows)
+		split += (r.want != r.want3);
+	ASSERT_EQ(split, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1211,16 +1231,11 @@ TEST(EeRecFpuFull, MulDefectBoundaryTermIsPredicatedNotAlwaysOn)
 // recMaddsub's multiply stage, reached with ACC = +0 so the accumulate is a
 // no-op on the product's bits).
 //
-// No divergence is licensed: mode 3 answers every row the interpreter's way,
-// the inline predicate deciding the zero-tail rows and the island's call to
-// eeMulOneUlpLow deciding the band below the array's borrow.
-//
-// What that costs is a liveness problem instead. "The two engines agree" is
-// also what a sweep that never left the easy rows would report, so the two
-// classes that need the parts under test -- the boundary term, and the band
-// that has to call out -- are counted and asserted non-empty. They are
-// classified from the exact 48-bit significand product rather than from
-// anything the emitter or eeMulArray computes, so neither can license itself.
+// Mode 4 answers every row the interpreter's way, the inline predicate
+// deciding the zero-tail rows and the island's call to eeMulOneUlpLow deciding
+// the band below the array's borrow. The two classes that need those parts are
+// counted and asserted non-empty, classified from the exact 48-bit significand
+// product so that neither engine can license itself.
 TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 {
 	auto splitmix = [](u64& state) {
@@ -1285,7 +1300,7 @@ TEST(EeRecFpuFull, MulDefectRandomisedDifferentialAgainstTheInterpreter)
 
 		EeRecTestHarness h;
 		h.EnableCop1();
-		h.EnableFpuFullMode();
+		h.EnableFpuExactMode();
 		h.SetAccBits(0);
 		h.SetFprBits(0, fs);
 		h.SetFprBits(1, ft);
@@ -1379,7 +1394,7 @@ TEST(EeRecFpuFull, MulArrayIslandPreservesTheAllocatorsLiveRegisters)
 	hi.RunInterpOnly();
 
 	EeRecTestHarness h;
-	h.EnableFpuFullMode();
+	h.EnableFpuExactMode();
 	seed(h);
 	h.LoadProgram(prog);
 	h.RunJitNoDiff();
@@ -1621,11 +1636,21 @@ constexpr BinadeRow kTopBinadeBoundary[] = {
 // multiply stage with ToPS2FPU_Wide's mask-off-the-low-29. Those two land on
 // different sides of the mantissa boundary that the binade shifts, so the
 // upper binade has to be checked through both.
-void ExpectBothSites(const BinadeRow& r, u32 want, const char* what)
+//
+// `mode` is the clamp mode the rows need: the Booth term is on 3 and 4, the
+// boundary term only on 4.
+void ExpectBothSites(const BinadeRow& r, u32 want, const char* what, int mode = 3)
 {
+	auto tier = [mode](EeRecTestHarness& h) {
+		if (mode >= 4)
+			h.EnableFpuExactMode();
+		else
+			h.EnableFpuFullMode();
+	};
+
 	EeRecTestHarness h;
 	h.EnableCop1();
-	h.EnableFpuFullMode();
+	tier(h);
 	h.SetFprBits(0, r.fs);
 	h.SetFprBits(1, r.ft);
 	h.LoadProgram({MUL_S(2, 0, 1)});
@@ -1635,7 +1660,7 @@ void ExpectBothSites(const BinadeRow& r, u32 want, const char* what)
 
 	EeRecTestHarness hm;
 	hm.EnableCop1();
-	hm.EnableFpuFullMode();
+	tier(hm);
 	hm.SetAccBits(0x00000000u); // ACC = +0 -> fd is the rounded product alone
 	hm.SetFprBits(0, r.fs);
 	hm.SetFprBits(1, r.ft);
@@ -1667,7 +1692,7 @@ TEST(EeRecFpuFull, MulDefectBoundaryTermAlsoFiresInTheUpperBinade)
 {
 	for (const BinadeRow& r : kTopBinadeBoundary)
 	{
-		ExpectBothSites(r, r.want, "upper-binade boundary term");
+		ExpectBothSites(r, r.want, "upper-binade boundary term", 4);
 
 		EeRecTestHarness hi;
 		hi.EnableCop1();

@@ -67,6 +67,11 @@ public:
 	// a hand-computed double-mode value rather than the auto-diffing Run(). Restored
 	// to its previous value in the dtor.
 	void EnableFpuFullMode();
+
+	// Enables "Exact" (CHECK_FPU_EXACT / GameDB eeClampMode:4): mode 3 plus the
+	// rest of the EE multiplier's one-ULP deficit. Implies EnableFpuFullMode();
+	// restored in the dtor.
+	void EnableFpuExactMode();
 	void EnableFpuMulHack();
 
 	// Turns ON the (default-OFF) fpuExtraOverflow Recompiler option — GameDB
@@ -381,6 +386,8 @@ private:
 
 	bool fpu_full_mode_changed_ = false;
 	bool prev_fpu_full_mode_ = false;
+	bool fpu_exact_mode_changed_ = false;
+	bool prev_fpu_exact_mode_ = false;
 	bool fpu_mul_hack_changed_ = false;
 	bool prev_fpu_mul_hack_ = false;
 	bool fpu_guarded_changed_ = false;

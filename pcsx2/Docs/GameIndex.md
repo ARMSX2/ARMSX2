@@ -122,6 +122,9 @@ The clamp modes are also numerically based.
 * `1` = Clamp **Normally** (only clamp results)
 * `2` = Clamp **Extra+Preserve Sign** (clamp results as well as operands)
 * `3` = **Full Clamping** for FPU
+* `4` = **Exact**: mode 3 plus the rest of the EE multiplier's one-ULP deficit.
+  Multiplies it cannot decide from ft's mantissa call out of line. GameDB and
+  INI only — there is no picker entry.
 
 ### vuClampMode
 
