@@ -69,8 +69,14 @@ public:
 	/// 32-bit cell to write (16-bit formats write whole cells and ignore it);
 	/// block_mask selects which of each page's 32 physical blocks are pulled, so a
 	/// page whose truth a CPU transfer has already shrunk keeps its CPU-newest blocks.
+	///
+	/// out_drains, when given, is incremented once per GPU stall this call actually
+	/// pays. That is the unit the readback bill is denominated in — a stall is a full
+	/// GPU drain (~0.28 ms on M2, ~0.24 ms on SD865) whether it carries one page or a
+	/// hundred — and it is NOT derivable from the call count, because a call whose
+	/// pages collect to no runs returns without touching the device at all.
 	bool ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout, const GSPageBitmap& pages,
-		u32 write_mask, u32 block_mask = GSVramModel::kFullBlockMask);
+		u32 write_mask, u32 block_mask = GSVramModel::kFullBlockMask, u32* out_drains = nullptr);
 
 	/// Pixel rects covering the set pages, refined to `block_mask`'s blocks within
 	/// each page (kFullBlockMask takes the whole-page run path). Pure: derived from

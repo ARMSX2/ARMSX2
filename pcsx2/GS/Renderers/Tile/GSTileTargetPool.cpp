@@ -343,7 +343,7 @@ bool GSTileTargetPool::UploadPages(GSLocalMemory& mem, u32 handle, const GSTileS
 }
 
 bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout,
-	const GSPageBitmap& pages, u32 write_mask, u32 block_mask)
+	const GSPageBitmap& pages, u32 write_mask, u32 block_mask, u32* out_drains)
 {
 	if (pages.empty() || write_mask == 0 || block_mask == 0)
 		return true;
@@ -387,6 +387,11 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 		g_gs_device->Recycle(tmp);
 	}
 
+	// The stall. The copy was recorded into the CURRENT command buffer moments ago, so
+	// the download texture's "already complete, do nothing" early-out can never fire
+	// here and this is unconditionally a submit-and-wait — one full GPU drain per call.
+	if (out_drains)
+		(*out_drains)++;
 	dltex->get()->Flush();
 	if (!dltex->get()->Map(drc))
 		return false;

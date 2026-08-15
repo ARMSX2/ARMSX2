@@ -54,8 +54,53 @@ private:
 	GSTileSurfaceId EnsureSurface(const GSTileSurfaceLayout& layout, const GSVector4i& rect, const GSPageBitmap& pages, bool& ok);
 	GSPageBitmap PagesNeedingUpload(GSTileSurfaceId id, const GSPageBitmap& pages, u8 relevant_planes) const;
 
+	// -- Readback attribution (dev instrument; reported only under GSDrawLog) ---------
+	//
+	// The readback bill is denominated in DRAINS, not pages: a synchronous readback
+	// submits the current command buffer and waits on it, which costs a full GPU drain
+	// (measured ~0.28 ms on M2, ~0.24 ms on SD865) whether it carries one page or a
+	// hundred. Pages and calls are recorded alongside because the ratio between them is
+	// the lever — a seam paying many drains for few pages is asking to be batched, and
+	// a seam paying one drain for many pages is already as cheap as this design allows.
+	//
+	// Split by the seam that asked, because the seams have unrelated fixes: the frame
+	// boundary is a policy question (it syncs the whole of GPU truth when the presenter
+	// only reads the display footprints), the floor handoff is a coverage question, and
+	// the native route's own sync is an ordering question.
+	enum class ReadbackSite : u8
+	{
+		Transfer, ///< a GIF transfer wrote pages the GPU still owned
+		LocalRead, ///< the CPU read local memory back out
+		Move, ///< local->local copy, both sides
+		VSyncAll, ///< the unconditional whole-of-truth frame-boundary sync
+		FloorDraw, ///< native -> SW floor handoff
+		NativeDraw, ///< the native route's own upload/steal sync
+		Oracle, ///< the per-draw oracle's syncs; an instrument, never a real cost
+		Count
+	};
+
+	struct ReadbackCounters
+	{
+		u32 calls = 0; ///< seams that asked with a non-empty page set
+		u32 pages = 0; ///< pages moved
+		u32 drains = 0; ///< submit-and-wait stalls actually paid
+	};
+
+	/// Why the NATIVE route pulled, broken out. The three reasons share one stall (the
+	/// route syncs their union once), so drains are not divisible between them — but the
+	/// SOLE counts are, and those are what say whether fixing a reason removes a stall.
+	struct NativeSyncReasons
+	{
+		u32 upload_pages = 0, steal_pages = 0, tex_pages = 0;
+		u32 upload_sole = 0; ///< draws where an upload source was the ONLY reason
+		u32 steal_sole = 0; ///< ... a steal from another surface (the M3e aliasing tiers)
+		u32 tex_sole = 0; ///< ... a texture source on target-owned pages (render-to-texture)
+	};
+
+	void ReportReadbackCensus();
+
 	// Spill machinery shared by every CPU-side seam.
-	bool ReadbackModelPages(const GSPageBitmap& pages);
+	bool ReadbackModelPages(const GSPageBitmap& pages, ReadbackSite site);
 	void InvalidateSwTexCache(const GSTileSurfaceLayout& layout, const GSPageBitmap& pages);
 	void SyncAllTruthToCpu();
 	void SpillForFloorDraw(const GSTileDrawPlan& plan, const GSVector4i& r);
@@ -119,6 +164,10 @@ private:
 	u32 m_stq_at = NoWalk;
 	GSVramModel::RectFootprint m_rect_fp; // scratch for transfer/move footprints
 	OracleState m_oracle;
+
+	std::array<ReadbackCounters, static_cast<u32>(ReadbackSite::Count)> m_readback{};
+	NativeSyncReasons m_native_sync{};
+	u32 m_readback_frames = 0;
 };
 
 MULTI_ISA_UNSHARED_END

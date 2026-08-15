@@ -10,6 +10,7 @@
 #include "GS/Renderers/SW/GSRasterizer.h"
 #include "GS/Renderers/Tile/GSTileOracle.h"
 
+#include "common/Console.h"
 #include "common/Timer.h"
 
 #include <cmath>
@@ -159,6 +160,7 @@ GSRendererTile::GSRendererTile(int threads)
 
 void GSRendererTile::Destroy()
 {
+	ReportReadbackCensus();
 	m_tex_source.Clear();
 	m_target_pool.ReleaseAll();
 	GSRendererSW::Destroy();
@@ -181,7 +183,56 @@ void GSRendererTile::VSync(u32 field, bool registers_written, bool idle_frame)
 	SyncAllTruthToCpu();
 	// The model's invariants are cheap enough to police once a frame in Devel.
 	pxAssert(m_vram_model.CheckInvariants());
+	m_readback_frames++;
 	GSRendererSW::VSync(field, registers_written, idle_frame);
+}
+
+// Where the readback bill goes, per seam, averaged over the run. Reported once at
+// teardown rather than per frame: the interesting quantity is the steady-state rate,
+// and a per-frame line would itself be I/O on the thread under investigation.
+//
+// Gated on the draw ledger because this is an attribution instrument and shares its
+// discipline — the perf protocol already treats a ledger-enabled arm as unmeasurable,
+// so nothing here can leak into an A/B.
+void GSRendererTile::ReportReadbackCensus()
+{
+	if (!GSDrawLog::IsActive() || m_readback_frames == 0)
+		return;
+
+	static constexpr const char* kSiteNames[] = {
+		"transfer-write", "cpu-read", "move", "vsync-all", "floor-draw", "native-draw", "oracle"};
+	static_assert(std::size(kSiteNames) == static_cast<u32>(ReadbackSite::Count));
+
+	const double frames = static_cast<double>(m_readback_frames);
+	u32 total_drains = 0, total_pages = 0;
+
+	Console.WriteLn("Tile readback census over %u frames (per frame):", m_readback_frames);
+	for (u32 i = 0; i < static_cast<u32>(ReadbackSite::Count); i++)
+	{
+		const ReadbackCounters& c = m_readback[i];
+		if (c.calls == 0)
+			continue;
+		// pages/drain is the batching headroom: 1.0 means every page cost its own stall.
+		Console.WriteLn("  %-14s %8.2f drains  %8.2f pages  %8.2f calls  (%.2f pages/drain)",
+			kSiteNames[i], c.drains / frames, c.pages / frames, c.calls / frames,
+			c.drains ? static_cast<double>(c.pages) / static_cast<double>(c.drains) : 0.0);
+		if (static_cast<ReadbackSite>(i) != ReadbackSite::Oracle)
+		{
+			total_drains += c.drains;
+			total_pages += c.pages;
+		}
+	}
+	Console.WriteLn("  %-14s %8.2f drains  %8.2f pages   (oracle excluded)", "TOTAL",
+		total_drains / frames, total_pages / frames);
+
+	const NativeSyncReasons& n = m_native_sync;
+	if (n.upload_pages | n.steal_pages | n.tex_pages)
+	{
+		Console.WriteLn("  native-draw reasons (one stall serves their union; sole = the only reason present):");
+		Console.WriteLn("    upload-source %8.2f pages  %8.2f sole", n.upload_pages / frames, n.upload_sole / frames);
+		Console.WriteLn("    steal-alias   %8.2f pages  %8.2f sole", n.steal_pages / frames, n.steal_sole / frames);
+		Console.WriteLn("    tex-source-rt %8.2f pages  %8.2f sole", n.tex_pages / frames, n.tex_sole / frames);
+	}
 }
 
 // A transfer wrote CPU local memory: shrink or clear GPU truth under it. The planes
@@ -197,7 +248,7 @@ void GSRendererTile::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const 
 	GSVramModel::FootprintForRect(layout, r, m_rect_fp);
 	const u8 planes = gsTilePlanesInvalidatedByWrite(BITBLTBUF.DPSM);
 
-	ReadbackModelPages(m_vram_model.SpillBeforeCpuWrite(m_rect_fp, planes));
+	ReadbackModelPages(m_vram_model.SpillBeforeCpuWrite(m_rect_fp, planes), ReadbackSite::Transfer);
 	m_vram_model.OnCpuWrite(m_rect_fp, planes);
 }
 
@@ -209,7 +260,7 @@ void GSRendererTile::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const 
 		static_cast<u8>(BITBLTBUF.SPSM), KindForPsm(BITBLTBUF.SPSM)};
 	GSVramModel::FootprintForRect(layout, r, m_rect_fp);
 
-	ReadbackModelPages(m_vram_model.ReadbackNeeded(m_rect_fp, kGSTilePlanesAll));
+	ReadbackModelPages(m_vram_model.ReadbackNeeded(m_rect_fp, kGSTilePlanesAll), ReadbackSite::LocalRead);
 
 	GSRendererSW::InvalidateLocalMem(BITBLTBUF, r, clut);
 }
@@ -235,7 +286,7 @@ void GSRendererTile::Move()
 	const u8 planes = gsTilePlanesInvalidatedByWrite(m_env.BITBLTBUF.DPSM);
 	need |= m_vram_model.SpillBeforeCpuWrite(m_rect_fp, planes);
 
-	ReadbackModelPages(need);
+	ReadbackModelPages(need, ReadbackSite::Move);
 
 	GSRendererSW::Move();
 
@@ -383,10 +434,15 @@ GSTileDrawPlan GSRendererTile::LowerCurrentDraw()
 // came back 0 of 2048 fresh under Tile), and it bit both directions of travel — the
 // native draw path makes a partial page CPU-current through this same call before it
 // re-uploads the whole page.
-bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages)
+bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages, ReadbackSite site)
 {
 	if (pages.empty())
 		return true;
+
+	ReadbackCounters& rc = m_readback[static_cast<u32>(site)];
+	rc.calls++;
+	rc.pages += static_cast<u32>(pages.count());
+	u32* const drains = &rc.drains;
 
 	// Split off the pages some plane holds only block-partially; the whole-page
 	// bucketing below stays the hot path for everything else.
@@ -413,7 +469,7 @@ bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages)
 			pxAssert(owner != kGSTileNoSurface);
 			const GSVramModel::Surface& surf = m_vram_model.Get(owner);
 			partial_ok &= m_target_pool.ReadbackPages(m_mem, surf.pool_handle, surf.layout, one,
-				PlaneByteMask(pi, surf.layout), m_vram_model.TruthMask(page, pi));
+				PlaneByteMask(pi, surf.layout), m_vram_model.TruthMask(page, pi), drains);
 			InvalidateSwTexCache(surf.layout, one);
 		}
 	});
@@ -504,7 +560,7 @@ bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages)
 				const GSTileSurfaceId owner = m_vram_model.OwnerOf(page, pi);
 				const GSVramModel::Surface& surf = m_vram_model.Get(owner);
 				ok &= m_target_pool.ReadbackPages(m_mem, surf.pool_handle, surf.layout, one,
-					PlaneByteMask(pi, surf.layout));
+					PlaneByteMask(pi, surf.layout), GSVramModel::kFullBlockMask, drains);
 				InvalidateSwTexCache(surf.layout, one);
 			}
 		});
@@ -516,7 +572,8 @@ bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages)
 	for (u32 b = 0; b < num_buckets; b++)
 	{
 		const GSVramModel::Surface& surf = m_vram_model.Get(buckets[b].id);
-		ok &= m_target_pool.ReadbackPages(m_mem, surf.pool_handle, surf.layout, buckets[b].pages, buckets[b].mask);
+		ok &= m_target_pool.ReadbackPages(m_mem, surf.pool_handle, surf.layout, buckets[b].pages, buckets[b].mask,
+			GSVramModel::kFullBlockMask, drains);
 		InvalidateSwTexCache(surf.layout, buckets[b].pages);
 	}
 	m_vram_model.OnReadback(pages);
@@ -549,7 +606,7 @@ void GSRendererTile::SyncAllTruthToCpu()
 	GSPageBitmap need;
 	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 		need |= m_vram_model.Truth(pi).andnot(m_vram_model.SyncedPages(pi));
-	ReadbackModelPages(need);
+	ReadbackModelPages(need, ReadbackSite::VSyncAll);
 }
 
 // The floor reads AND writes its fb/z footprints (read-modify-write rasterization)
@@ -608,7 +665,7 @@ void GSRendererTile::SpillForFloorDraw(const GSTileDrawPlan& plan, const GSVecto
 		}
 	}
 
-	ReadbackModelPages(need);
+	ReadbackModelPages(need, ReadbackSite::FloorDraw);
 }
 
 // The floor draw's write footprint, observed into the memory model. Claims are
@@ -812,7 +869,7 @@ void GSRendererTile::OracleCompareDraw(const GSTileDrawPlan& plan, const GSVecto
 	// The native arm's result, in CPU local memory. Bytes the draw did not claim keep
 	// their pre values, which is exactly what makes an unclaimed write show up below as
 	// sw_only rather than silently as agreement.
-	ReadbackModelPages(m_vram_model.ReadbackNeeded(m_oracle.fp, kGSTilePlanesAll));
+	ReadbackModelPages(m_vram_model.ReadbackNeeded(m_oracle.fp, kGSTilePlanesAll), ReadbackSite::Oracle);
 	m_oracle.gpu.Capture(vm8, m_oracle.fp);
 
 	// The SW arm, over the same inputs.
@@ -1181,15 +1238,45 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	if (want_ds)
 		up_z = PagesNeedingUpload(z_id, z_pages, GSTilePlaneZ);
 
-	GSPageBitmap sync_set = m_vram_model.ReadbackNeeded(up_fb | up_z, kGSTilePlanesAll);
+	// Three unrelated reasons the native route pulls from the GPU, kept apart because
+	// they have three different fixes: an upload whose source pages the GPU still owns,
+	// a steal of destination pages from another surface (the aliasing tiers, M3e), and a
+	// texture source sitting on pages some target owns (render-to-texture). The census
+	// attributes each separately or the total says nothing about what to build.
+	GSPageBitmap sync_upload = m_vram_model.ReadbackNeeded(up_fb | up_z, kGSTilePlanesAll);
+	GSPageBitmap sync_steal;
 	if (want_rt)
-		sync_set |= m_vram_model.SpillBeforeNativeDraw(fb_id, fb_pages, plan.fb_claims);
+		sync_steal |= m_vram_model.SpillBeforeNativeDraw(fb_id, fb_pages, plan.fb_claims);
 	if (plan.z_write)
-		sync_set |= m_vram_model.SpillBeforeNativeDraw(z_id, z_pages, plan.z_claims);
+		sync_steal |= m_vram_model.SpillBeforeNativeDraw(z_id, z_pages, plan.z_claims);
+	GSPageBitmap sync_tex;
 	if (textured)
-		sync_set |= m_vram_model.ReadbackNeeded(tex_pages, kGSTilePlanesAll);
+		sync_tex = m_vram_model.ReadbackNeeded(tex_pages, kGSTilePlanesAll);
 
-	if (!ReadbackModelPages(sync_set) ||
+	// Attribute each page to exactly one reason so the columns sum to the total instead
+	// of triple-counting a page that all three want. The SOLE column is the decisive
+	// one: a reason that is never the only one present cannot remove a single stall by
+	// being fixed, however many pages it names -- the same logic the floor-reason census
+	// uses, and the reason M3c's alpha test measured zero coverage.
+	sync_steal = sync_steal.andnot(sync_upload);
+	sync_tex = sync_tex.andnot(sync_upload | sync_steal);
+	{
+		NativeSyncReasons& n = m_native_sync;
+		n.upload_pages += static_cast<u32>(sync_upload.count());
+		n.steal_pages += static_cast<u32>(sync_steal.count());
+		n.tex_pages += static_cast<u32>(sync_tex.count());
+		const bool u = !sync_upload.empty(), s = !sync_steal.empty(), t = !sync_tex.empty();
+		if (u && !s && !t)
+			n.upload_sole++;
+		if (s && !u && !t)
+			n.steal_sole++;
+		if (t && !u && !s)
+			n.tex_sole++;
+	}
+
+	const GSPageBitmap sync_set = sync_upload | sync_steal | sync_tex;
+
+	if (!ReadbackModelPages(sync_set, ReadbackSite::NativeDraw) ||
 		(want_rt && !m_target_pool.UploadPages(m_mem, fb_handle, fb_l, up_fb)) ||
 		(want_ds && !m_target_pool.UploadPages(m_mem, z_handle, z_l, up_z)))
 	{
