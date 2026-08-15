@@ -937,7 +937,12 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				}
 				
 				Console.WriteLn(fmt::format("Setting number of software threads to {}", swthreads));
-				s_settings_interface.SetIntValue("EmuCore/GS", "SWExtraThreads", swthreads);
+				// The INI key is "extrathreads"; SWExtraThreads is the C++ member it loads
+				// into (Pcsx2Config.cpp, SettingsWrapBitfieldEx). Writing the member name
+				// wrote a key nothing reads, so this flag silently did nothing -- and it
+				// is a flag used to CONTROL for software-rasterizer threading, so it
+				// reported success while leaving the variable it claimed to pin unchanged.
+				s_settings_interface.SetIntValue("EmuCore/GS", "extrathreads", swthreads);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-renderhacks"))
