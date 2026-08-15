@@ -10,7 +10,8 @@
 // GameDB `eeClampMode:3` path — FFX, Max Payne, Dark Cloud 2, Klonoa 2 …).
 // Default config runs the single-precision fast path in iFPU-arm64.cpp.
 //
-// It serves eeClampMode 3 and 4, which differ only at emitDefectiveFmul below.
+// It serves eeClampMode 3 and 4, which differ at emitDefectiveFmul and at
+// emitDivideUnitIsland below.
 //
 // The algorithm is translated from the x86 semantics; the codegen follows the
 // iFPU-arm64.cpp idioms (scalar Fcvt, GPR bit-twiddle via Fmov, the
@@ -890,10 +891,71 @@ static void SetMaxValueSlot(int dstidx, int srcidx)
 	armAsm->Fmov(armDRegister(dstidx), RXSCRATCH);
 }
 
+// ---- The EE's divide/square-root unit ---------------------------------------
+//
+// It is a radix-2 SRT digit recurrence with no rounding step in it, so an Fdiv
+// or an Fsqrt does not reproduce it under any rounding mode. FPU.cpp states the
+// model above eeSrtDigit; this is the call into it.
+//
+// Only mode 4 pays for it. Modes 1 to 3 keep the host instruction and the
+// FPUDivFPCR swap, which is right on most operands and one ULP out on the rest.
+//
+// Silicon composes RSQRT.S out of the other two with an ordinary single in
+// between, so this does as well; the intermediate crosses the sqrt's call
+// through the island's own scratch, x0 being the only register it could
+// otherwise live in.
+enum class DivUnitOp
+{
+	Divide,    // eeDivide(fs, ft)
+	Sqrt,      // eeSqrtBits(ft)
+	RecipSqrt, // eeDivide(fs, eeSqrtBits(ft))
+};
+
+static void emitDivideUnitIsland(DivUnitOp op, int dstidx, int fsslotidx, int ftslotidx)
+{
+	namespace Interp = R5900::Interpreter::OpcodeImpl::COP1;
+
+	IslandFrame f;
+	emitIslandEnter(f, op == DivUnitOp::RecipSqrt ? 16 : 0);
+
+	// The models take the architectural words; the slots hold them relocated.
+	// eeSqrtBits drops the operand's sign itself, so the host path's |Ft| has no
+	// counterpart here.
+	if (op == DivUnitOp::Sqrt)
+	{
+		armEmitEeFprNarrow(RXARG1, armDRegister(ftslotidx), RXSCRATCH);
+	}
+	else
+	{
+		armEmitEeFprNarrow(RXARG1, armDRegister(fsslotidx), RXSCRATCH);
+		armEmitEeFprNarrow(RXARG2, armDRegister(ftslotidx), RXSCRATCH);
+	}
+
+	if (op == DivUnitOp::RecipSqrt)
+	{
+		armAsm->Str(RXARG1.W(), IslandSpare(f));
+		armAsm->Mov(RXARG1.W(), RXARG2.W());
+	}
+	if (op != DivUnitOp::Divide)
+		armEmitCall(reinterpret_cast<const void*>(&Interp::eeSqrtBits));
+	if (op == DivUnitOp::RecipSqrt)
+	{
+		armAsm->Mov(RXARG2.W(), RXARG1.W());
+		armAsm->Ldr(RXARG1.W(), IslandSpare(f));
+	}
+	if (op != DivUnitOp::Sqrt)
+		armEmitCall(reinterpret_cast<const void*>(&Interp::eeDivide));
+
+	armAsm->Mov(RWSCRATCH, RXARG1.W());
+	emitIslandLeave(f);
+	armEmitEeFprWiden(armDRegister(dstidx), RWSCRATCH, RXSCRATCH);
+}
+
 // x86 recDIVhelper1 (FPU_FLAGS_ID == 1 unconditionally): divide-by-zero
-// flag/result shape, otherwise divide in double. sreg/treg are write-only temps
-// and srcS/srcT the allocator-resident guest slots, which are only ever read;
-// the result lands in sreg as a slot on both arms.
+// flag/result shape, otherwise the quotient -- from the recurrence under mode 4
+// and in double below it. sreg/treg are write-only temps, srcS/srcT the guest
+// slots; the result lands in sreg as a slot on both arms. treg is -1 under
+// mode 4, which has no double to hold.
 // The Fcmp-with-zero runs under the EE FPCR whose FZ bit flushes denormal
 // inputs — same divisor-is-zero net as x86's DAZ'd CMPEQ.SS. The double
 // quotient of two in-range PS2 values is always finite (max magnitude
@@ -926,11 +988,18 @@ static void recDIVhelper1(int sreg, int treg, int srcS, int srcT)
 	armAsm->B(&done);
 
 	armAsm->Bind(&normal);
-	SlotToDouble(sreg, srcS);
-	SlotToDouble(treg, srcT);
-	armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
-	ToPS2FPU_Full(sreg, false, treg, false, false);
-	SingleToSlot(sreg, sreg);
+	if (CHECK_FPU_EXACT)
+	{
+		emitDivideUnitIsland(DivUnitOp::Divide, sreg, srcS, srcT);
+	}
+	else
+	{
+		SlotToDouble(sreg, srcS);
+		SlotToDouble(treg, srcT);
+		armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
+		ToPS2FPU_Full(sreg, false, treg, false, false);
+		SingleToSlot(sreg, sreg);
+	}
 
 	armAsm->Bind(&done);
 }
@@ -945,11 +1014,12 @@ void recDIV_S_xmm(int info)
 	// EEREC_D may be either operand and the normal arm writes before it has read
 	// both, so the result is built in a temp.
 	const int sreg = _allocTempNEONreg();
-	const int treg = _allocTempNEONreg();
+	const int treg = CHECK_FPU_EXACT ? -1 : _allocTempNEONreg();
 	recDIVhelper1(sreg, treg, EEREC_S, EEREC_T);
 	armAsm->Fmov(armDRegister(EEREC_D), armDRegister(sreg));
 	_freeNEONreg(sreg);
-	_freeNEONreg(treg);
+	if (!CHECK_FPU_EXACT)
+		_freeNEONreg(treg);
 
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUFPCR.bitmask);
@@ -963,8 +1033,11 @@ void recSQRT_S_xmm(int info)
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUDivFPCR.bitmask);
 
-	const int treg = _allocTempNEONreg(); // SQRT.S reads FT
-	SlotToDouble(treg, EEREC_T);
+	// SQRT.S reads FT. The recurrence takes it as a word, so only the host arm
+	// needs it widened.
+	const int treg = CHECK_FPU_EXACT ? -1 : _allocTempNEONreg();
+	if (!CHECK_FPU_EXACT)
+		SlotToDouble(treg, EEREC_T);
 
 	ClearIDFlags();
 	// x86 DOUBLE tests the raw sign bit (unlike the fast body's exp-field
@@ -975,28 +1048,37 @@ void recSQRT_S_xmm(int info)
 	a64::Label tPositive;
 	armAsm->Tbz(RXARG1, 63, &tPositive);
 	SetFprcOr(FPUflagI | FPUflagSI);
-	armAsm->Fabs(armDRegister(treg), armDRegister(treg));
+	if (!CHECK_FPU_EXACT)
+		armAsm->Fabs(armDRegister(treg), armDRegister(treg));
 	armAsm->Bind(&tPositive);
 
-	armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
-	// A root cannot leave the in-range band, so the narrowing is the plain
-	// Fcvt with none of ToPS2FPU_Full's arms around it. The largest operand is
-	// a shade under 2^129 and roots to under 2^65; the smallest one FZ does
-	// not flush is 2^-126 and roots to 2^-63. Both sit inside [2^-126, 2^128),
-	// and the only result outside it is the zero the underflow arm would have
-	// flushed to the same zero, |t| having already made its sign positive.
-	armAsm->Fcvt(armSRegister(treg), armDRegister(treg));
-	SingleToSlot(EEREC_D, treg);
-	_freeNEONreg(treg);
+	if (CHECK_FPU_EXACT)
+	{
+		emitDivideUnitIsland(DivUnitOp::Sqrt, EEREC_D, EEREC_T, EEREC_T);
+	}
+	else
+	{
+		armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
+		// A root cannot leave the in-range band, so the narrowing is the plain
+		// Fcvt with none of ToPS2FPU_Full's arms around it: the largest operand
+		// is a shade under 2^129 and roots to under 2^65, the smallest one FZ
+		// does not flush is 2^-126 and roots to 2^-63, and both sit inside
+		// [2^-126, 2^128). The one result outside it is a zero, which the
+		// underflow arm would have flushed to the same zero.
+		armAsm->Fcvt(armSRegister(treg), armDRegister(treg));
+		SingleToSlot(EEREC_D, treg);
+		_freeNEONreg(treg);
+	}
 
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUFPCR.bitmask);
 }
 
 // x86 recRSQRThelper1: negative-divisor I|SI + |t|, zero-divisor flag pair
-// with SetMaxValue keyed off the DIVIDEND's sign, else fs / sqrt(ft) in
-// double. (The interp keys the zero-divisor sign off the DIVISOR — x86-JIT
-// wins that disagreement under FULL.)
+// with SetMaxValue keyed off the DIVIDEND's sign, else fs / sqrt(ft) — through
+// the recurrence under mode 4 and in double below it. (The interp keys the
+// zero-divisor sign off the DIVISOR — x86-JIT wins that disagreement under
+// FULL.)
 void recRSQRT_S_xmm(int info)
 {
 	const bool swapFpcr = EmuConfig.Cpu.FPUFPCR.bitmask != EmuConfig.Cpu.FPUDivFPCR.bitmask;
@@ -1005,7 +1087,7 @@ void recRSQRT_S_xmm(int info)
 
 	// As in recDIV_S_xmm, the result is built in a temp.
 	const int sreg = _allocTempNEONreg();
-	const int treg = _allocTempNEONreg();
+	const int treg = CHECK_FPU_EXACT ? -1 : _allocTempNEONreg();
 
 	ClearIDFlags();
 
@@ -1014,12 +1096,14 @@ void recRSQRT_S_xmm(int info)
 	armAsm->Tbz(RXARG1, 63, &tPositive);
 	SetFprcOr(FPUflagI | FPUflagSI);
 	armAsm->Bind(&tPositive);
-	// Unconditional: |t| is a no-op on the positive arm, and it doubles as the
-	// copy that keeps ft's slot intact.
-	armAsm->Fabs(armDRegister(treg), armDRegister(EEREC_T));
+	// Unconditional: |t| is a no-op on the positive arm and doubles as the copy
+	// that keeps ft's slot intact. eeSqrtBits drops the sign itself, so mode 4
+	// tests ft where it lies -- Fcmp puts -0 equal to 0 either way.
+	if (!CHECK_FPU_EXACT)
+		armAsm->Fabs(armDRegister(treg), armDRegister(EEREC_T));
 
 	a64::Label normal, zeroOverZero, setDone, done;
-	armAsm->Fcmp(armDRegister(treg), 0.0);
+	armAsm->Fcmp(armDRegister(CHECK_FPU_EXACT ? EEREC_T : treg), 0.0);
 	armAsm->B(&normal, a64::ne);
 
 	armAsm->Fcmp(armDRegister(EEREC_S), 0.0);
@@ -1033,17 +1117,25 @@ void recRSQRT_S_xmm(int info)
 	armAsm->B(&done);
 
 	armAsm->Bind(&normal);
-	SlotToDouble(treg, treg);
-	SlotToDouble(sreg, EEREC_S);
-	armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
-	armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
-	ToPS2FPU_Full(sreg, false, treg, false, false);
-	SingleToSlot(sreg, sreg);
+	if (CHECK_FPU_EXACT)
+	{
+		emitDivideUnitIsland(DivUnitOp::RecipSqrt, sreg, EEREC_S, EEREC_T);
+	}
+	else
+	{
+		SlotToDouble(treg, treg);
+		SlotToDouble(sreg, EEREC_S);
+		armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
+		armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
+		ToPS2FPU_Full(sreg, false, treg, false, false);
+		SingleToSlot(sreg, sreg);
+	}
 
 	armAsm->Bind(&done);
 	armAsm->Fmov(armDRegister(EEREC_D), armDRegister(sreg));
 	_freeNEONreg(sreg);
-	_freeNEONreg(treg);
+	if (!CHECK_FPU_EXACT)
+		_freeNEONreg(treg);
 
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUFPCR.bitmask);

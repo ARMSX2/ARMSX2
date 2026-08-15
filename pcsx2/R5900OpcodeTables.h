@@ -794,6 +794,15 @@ namespace R5900
 			this out of line; the interpreter reaches the same code inline.
 			FPU.cpp, next to the array it consults. */
 		bool eeMulOneUlpLow(u32 fs, u32 ft);
+
+		/*	The EE's divide/square-root unit: a digit recurrence that no
+			rounding mode makes an Fdiv or an Fsqrt agree with. Mode 4's DIV.S,
+			SQRT.S and RSQRT.S call these out of line; the interpreter reaches
+			the same code inline. RSQRT.S is the composition of the two, with an
+			ordinary single in between. FPU.cpp, under the block that states the
+			model. */
+		u32 eeDivide(u32 fs, u32 ft);
+		u32 eeSqrtBits(u32 ft);
 		}
 	} }
 }	// End namespace R5900

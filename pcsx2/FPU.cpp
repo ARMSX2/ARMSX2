@@ -660,7 +660,7 @@ static u32 eeDivideSignificand(u32 sma, u32 smb)
 	return (quotient << 1) + eeSrtDigitValue(digit);
 }
 
-static u32 eeDivide(u32 a, u32 b)
+u32 eeDivide(u32 a, u32 b)
 {
 	const s32 ea = (s32)((a >> 23) & 0xFF);
 	const s32 eb = (s32)((b >> 23) & 0xFF);
@@ -756,7 +756,7 @@ static u32 eeSqrtSignificand(u32 m)
 	return (root >> 2) & 0xFFFFFFu;
 }
 
-static u32 eeSqrtBits(u32 t)
+u32 eeSqrtBits(u32 t)
 {
 	const u32 E = (t >> 23) & 0xFFu;
 	if (E == 0)
@@ -772,12 +772,16 @@ static u32 eeSqrtBits(u32 t)
 	any more: DIV.S, SQRT.S and RSQRT.S are integer arithmetic now, and no
 	rounding mode reaches a digit recurrence. That register is PCSX2's surrogate
 	for the divide unit rounding to nearest while the rest of the FPU chops, and
-	both recompilers still swap it in, because they run these ops on host singles
-	(arm64 recDIV_S_xmm / recSQRT_S_xmm / recRSQRT_S_xmm in iFPU-arm64.cpp and
-	the DOUBLE:: twins in iFPUd-arm64.cpp; x86 iFPU.cpp / iFPUd.cpp with
-	xLDMXCSR): 1.0 rsqrt 1.5 is 0x3F5105EB on the console and 0x3F5105EC without
-	the swap. So the two engines part company on every operand silicon is not
+	the recompiler tiers that still run these ops on host floats swap it in:
+	arm64's fast path (recDIV_S_xmm / recSQRT_S_xmm / recRSQRT_S_xmm in
+	iFPU-arm64.cpp) and every x86 tier (iFPU.cpp / iFPUd.cpp with xLDMXCSR).
+	1.0 rsqrt 1.5 is 0x3F5105EB on the console and 0x3F5105EC without the swap,
+	so those tiers part company with this one on every operand silicon is not
 	correctly rounded on, which EeRecFpuDivUnitRounding and EeRecFpuRsqrt pin.
+
+	arm64's eeClampMode 4 calls eeDivide and eeSqrtBits out of line instead --
+	emitDivideUnitIsland in iFPUd-arm64.cpp -- so it has no rounding mode to
+	swap and nothing to diverge over.
 */
 
 void ABS_S() {
