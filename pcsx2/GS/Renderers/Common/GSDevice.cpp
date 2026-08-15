@@ -1628,7 +1628,7 @@ const char* GSGetTopologyName(GSHWDrawConfig::Topology topology)
 	return "Unknown";
 }
 
-static const char* GetVSExpandName(GSHWDrawConfig::VSExpand vsexpand)
+const char* GSGetVSExpandName(GSHWDrawConfig::VSExpand vsexpand)
 {
 	switch (vsexpand)
 	{
@@ -1983,7 +1983,7 @@ static void DumpVSSelector(DrawConfigWriter& out, const GSHWDrawConfig::VSSelect
 	out.WriteLn("tme: {}", vs.tme);
 	out.WriteLn("iip: {}", vs.iip);
 	out.WriteLn("point_size: {}", vs.point_size);
-	out.WriteLn("expand: {} ({})", GetVSExpandName(vs.expand), static_cast<u32>(vs.expand));
+	out.WriteLn("expand: {} ({})", GSGetVSExpandName(vs.expand), static_cast<u32>(vs.expand));
 }
 
 static void DumpBlendEquation(DrawConfigWriter& out, const char* name, u32 op, u32 src_factor, u32 dst_factor)

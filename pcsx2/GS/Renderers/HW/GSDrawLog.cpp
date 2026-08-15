@@ -165,6 +165,8 @@ namespace GSDrawLog
 		if (config.IsFeedbackLoopRT(config.ps) || config.IsFeedbackLoopRT(config.alpha_second_pass.ps))
 			rec.flags |= FlagFeedbackLoopRT;
 		rec.topology = static_cast<u8>(config.topology);
+		rec.expand = static_cast<u8>(static_cast<u32>(config.vs.expand) | (config.vs.point_size ? (1u << 3) : 0u) |
+									(config.line_expand ? (1u << 4) : 0u));
 		rec.tex_hazard = static_cast<u8>(config.tex_hazard);
 		rec.destination_alpha = static_cast<u8>(config.destination_alpha);
 		rec.colormask = static_cast<u8>(config.colormask.wrgba);
@@ -315,6 +317,19 @@ namespace GSDrawLog
 		}
 	}
 
+	// Record::expand, named. The hardware routes are reported in preference to the
+	// vertex-shader class because they are mutually exclusive with it at the point the
+	// draw config is built: a device that expands points in hardware never sets
+	// VSExpand::Point.
+	static const char* GetExpandName(u8 expand)
+	{
+		if (expand & (1u << 3))
+			return "HW_POINT";
+		if (expand & (1u << 4))
+			return "HW_LINE";
+		return GSGetVSExpandName(static_cast<GSHWDrawConfig::VSExpand>(expand & 7));
+	}
+
 	// Every distinct palette the capture sampled through, one row of hex words per
 	// palette, keyed by the hash its draws carry. Written beside the CSV rather than
 	// into it because a palette is 16 or 256 words and would swamp a row.
@@ -363,7 +378,7 @@ namespace GSDrawLog
 			"clut,clut_addr,clut_psm,clut_csm,clut_csa,clut_cld,"
 			"blend,alpha_a,alpha_b,alpha_c,alpha_d,alpha_fix,vertex_rgba,vertex_rgba_eq,"
 			"atst,afail,aref,date,datm,self_read,"
-			"topology,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
+			"topology,expand,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
 			"area_x,area_y,area_w,area_h,"
 			"memo_hit,record_ns,pass_id,fallback,stq_guard,"
 			"mmag,mmin,mxl,tcc,tfx,fge,fst,aa1,colclamp,pabe,fba,dthe,iip\n");
@@ -444,16 +459,16 @@ namespace GSDrawLog
 
 			if (submitted)
 			{
-				std::fprintf(fp.get(), "%s,%u,%d,%s,%s,%s,%x,",
-					GSGetTopologyName(static_cast<GSHWDrawConfig::Topology>(r.topology)), r.barrier,
-					(r.flags & FlagFeedbackLoopRT) ? 1 : 0,
+				std::fprintf(fp.get(), "%s,%s,%u,%d,%s,%s,%s,%x,",
+					GSGetTopologyName(static_cast<GSHWDrawConfig::Topology>(r.topology)), GetExpandName(r.expand),
+					r.barrier, (r.flags & FlagFeedbackLoopRT) ? 1 : 0,
 					GetPrimOverlapName(r.prim_overlap), GSGetTexHazardName(r.tex_hazard),
 					GSGetDestinationAlphaModeName(static_cast<GSHWDrawConfig::DestinationAlphaMode>(r.destination_alpha)),
 					r.colormask);
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,,");
+				std::fprintf(fp.get(), ",,,,,,,,");
 			}
 
 			// Tile and software rows carry the draw rect (bbox ∩ scissor) here; Classic

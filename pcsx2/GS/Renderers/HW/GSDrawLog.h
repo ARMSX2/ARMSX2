@@ -137,6 +137,20 @@ namespace GSDrawLog
 
 		// Backend view, filled at submit. Zeroed if the draw returned early.
 		u8 topology;
+
+		/// How the draw's primitives were turned into triangles: VSSelector::expand in
+		/// bits 0-2, hardware point expansion in bit 3, hardware line expansion in bit 4.
+		///
+		/// Topology alone cannot answer this. A sprite arrives as Triangle whether the
+		/// vertex shader expanded it or the CPU wrote four vertices, so a ledger without
+		/// this column cannot say whether the expansion shaders ran at all -- and the
+		/// expansion classes are not interchangeable: only TriangleAA1 reads the index
+		/// buffer, only Point and Sprite use the fixed expand index buffer, and Point and
+		/// Line are reached only when the target is upscaled. A change to any of them
+		/// reads as byte-identical on a corpus that never submits it, which is
+		/// indistinguishable from a change that does nothing.
+		u8 expand;
+
 		u8 tex_hazard;
 		u8 destination_alpha;
 		u8 colormask;
