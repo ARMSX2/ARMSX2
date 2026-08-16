@@ -70,6 +70,7 @@ void cpuReset()
 	cpuRegs.CP0.n.PRid		= 0x00002e20; // PRevID = Revision ID, same as R5900
 	fpuRegs.fprc[0]			= 0x00002e30; // fpu Revision..
 	fpuRegs.fprc[31]		= 0x01000001; // fpu Status/Control
+	eeFprSyncSlotFormat();
 
 	cpuRegs.nextEventCycle = cpuRegs.cycle + 4;
 	EEsCycle = 0;

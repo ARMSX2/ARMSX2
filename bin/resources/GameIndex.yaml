@@ -2470,8 +2470,8 @@ SCAJ-20181:
 SCAJ-20182:
   name: "Tales of Destiny"
   region: "NTSC-Unk"
-  gameFixes:
-    - FpuMulHack
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
 SCAJ-20183:
   name: "ワイルドアームズ ザ フィフスヴァンガード"
   name-sort: "わいるどあーむず ざ ふぃふすゔぁんがーど"
@@ -2517,8 +2517,8 @@ SCAJ-20192:
 SCAJ-20193:
   name: "Tales of Destiny [Director's Cut] [Premium Box]"
   region: "NTSC-C-J"
-  gameFixes:
-    - FpuMulHack
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
 SCAJ-20194:
   name: "Minna no Golf 4 [PlayStation2 the Best]"
   region: "NTSC-Unk"
@@ -7967,8 +7967,8 @@ SCKA-20100:
   name: "테일즈 오브 데스티니" # Undumped on ReDump as of 2025-08-28
   name-en: "Tales of Destiny"
   region: "NTSC-K"
-  gameFixes:
-    - FpuMulHack
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
 SCKA-20101:
   name: "성검전설 4"
   name-en: "Seiken Densetsu 4"
@@ -8069,8 +8069,8 @@ SCKA-20119:
   name: "테일즈 오브 데스티니 디렉터즈컷 [Premium Box]" # Undumped on ReDump as of 2025-08-28
   name-en: "Tales of Destiny - Director's Cut [Premium Box]"
   region: "NTSC-K"
-  gameFixes:
-    - FpuMulHack
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
 SCKA-20120:
   name: "라쳇 & 클랭크 - 공구들고 바캉스" # Undumped on ReDump as of 2025-08-28
   name-en: "Ratchet & Clank - Vacation with Tools" # Ratchet & Clank - Size Matters
@@ -61773,8 +61773,8 @@ SLPS-25715:
   name-sort: "ているず おぶ ですてぃにー"
   name-en: "Tales of Destiny"
   region: "NTSC-J"
-  gameFixes:
-    - FpuMulHack
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
 SLPS-25716:
   name: "デジモンセイバーズ アナザーミッション"
   name-sort: "でじもんせいばーず あなざーみっしょん"
@@ -62560,8 +62560,8 @@ SLPS-25841:
   name-sort: "ているず おぶ ですてぃにー でぃれくたーずかっと [ぷれみあむBOX]"
   name-en: "Tales of Destiny [Director's Cut] [Premium Box]"
   region: "NTSC-J"
-  gameFixes:
-    - FpuMulHack
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
   memcardFilters: # Allows import of non-DC Tales of Destiny data.
     - "SLPS-25841"
     - "SLPS-25842"
@@ -62571,9 +62571,9 @@ SLPS-25842:
   name-sort: "ているず おぶ ですてぃにー でぃれくたーずかっと"
   name-en: "Tales of Destiny [Director's Cut]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Hangs otherwise: it needs the EE multiplier's one-ULP deficit, which the single-precision tier does not model.
   compat: 5
-  gameFixes:
-    - FpuMulHack
   memcardFilters:
     - "SLPS-25841"
     - "SLPS-25842"

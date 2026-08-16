@@ -1945,7 +1945,7 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
     {
         NSMutableDictionary<NSString*, NSNumber*>* perGameFixes = [NSMutableDictionary dictionary];
         static constexpr const char* kARMSX2GameFixKeys[] = {
-            "VuAddSubHack", "FpuMulHack", "XgKickHack", "EETimingHack", "InstantDMAHack",
+            "VuAddSubHack", "XgKickHack", "EETimingHack", "InstantDMAHack",
             "SoftwareRendererFMVHack", "SkipMPEGHack", "OPHFlagHack", "DMABusyHack",
             "VIF1StallHack", "GIFFIFOHack", "GoemonTlbHack", "IbitHack", "VUSyncHack",
             "VUOverflowHack", "BlitInternalFPSHack", "FullVU0SyncHack"

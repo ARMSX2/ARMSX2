@@ -69,9 +69,9 @@
           "properties": {
             "eeClampMode": {
               "type": "integer",
-              "description": "0 (Disables), 1 (Normally), 2 (Extra+Preserve Sign), 3 (Full Clamping)",
+              "description": "0 (Disables), 1 (Normally), 2 (Extra+Preserve Sign), 3 (Full Clamping), 4 (Exact)",
               "minimum": 0,
-              "maximum": 3
+              "maximum": 4
             },
             "vuClampMode": {
               "type": "integer",
@@ -101,7 +101,6 @@
               "BlitInternalFPSHack",
               "DMABusyHack",
               "EETimingHack",
-              "FpuMulHack",
               "GIFFIFOHack",
               "GoemonTlbHack",
               "IbitHack",

@@ -9,6 +9,7 @@
 #include "R5900.h"
 
 #include <cstring>
+#include <iterator>
 #include <sstream>
 
 namespace recompiler_tests {
@@ -142,11 +143,23 @@ void CopyToEeMem(u32 addr, size_t count, const u8* src)
 
 } // namespace
 
+u32 EeSnapshot::FprWord(u32 reg_idx) const
+{
+	const u64 slot = fprs.fpr[reg_idx].UD;
+	return fprs_relocated ? eeFprNarrowBits(slot) : static_cast<u32>(slot);
+}
+
+u32 EeSnapshot::AccWord() const
+{
+	return fprs_relocated ? eeFprNarrowBits(fprs.ACC.UD) : static_cast<u32>(fprs.ACC.UD);
+}
+
 EeSnapshot EeSnapshot::Capture(const std::vector<MemWindow>& windows_to_capture)
 {
 	EeSnapshot s;
 	std::memcpy(&s.regs, &cpuRegs, sizeof(cpuRegisters));
 	std::memcpy(&s.fprs, &fpuRegs, sizeof(fpuRegisters));
+	s.fprs_relocated = g_eeFprSlotsRelocated;
 	s.mem_windows.reserve(windows_to_capture.size());
 	for (const auto& w : windows_to_capture)
 	{
@@ -161,6 +174,14 @@ void EeSnapshot::Restore() const
 {
 	std::memcpy(&cpuRegs, &regs, sizeof(cpuRegisters));
 	std::memcpy(&fpuRegs, &fprs, sizeof(fpuRegisters));
+	// The memcpy put back the slots as they were written. If the file has since
+	// changed format, what the snapshot means is its words, so re-encode them.
+	if (fprs_relocated != g_eeFprSlotsRelocated)
+	{
+		for (u32 i = 0; i < std::size(fpuRegs.fpr); i++)
+			fpuRegs.fpr[i].SetWord(FprWord(i));
+		fpuRegs.ACC.SetWord(AccWord());
+	}
 	for (const auto& w : mem_windows)
 		CopyToEeMem(w.addr, w.bytes.size(), w.bytes.data());
 }
@@ -228,13 +249,13 @@ std::vector<std::string> DiffEe(const EeSnapshot& a, const EeSnapshot& b)
 	for (int i = 0; i < 32; ++i)
 	{
 		std::string name = "fpr[" + std::to_string(i) + "]";
-		emit32(name.c_str(), a.fprs.fpr[i].UL, b.fprs.fpr[i].UL);
+		emit32(name.c_str(), a.FprWord(static_cast<u32>(i)), b.FprWord(static_cast<u32>(i)));
 	}
 
 	// PS2 FPU accumulator — written by ADDA/SUBA/MULA/MADDA/MSUBA and read
 	// by MADD/MSUB. Diverging ACC corrupts geometry/lighting silently if
 	// not included in the diff.
-	emit32("ACC", a.fprs.ACC.UL, b.fprs.ACC.UL);
+	emit32("ACC", a.AccWord(), b.AccWord());
 
 	emit32("pc", a.regs.pc, b.regs.pc);
 	emit32("sa", a.regs.sa, b.regs.sa);

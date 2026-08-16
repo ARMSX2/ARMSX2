@@ -6,10 +6,11 @@
 //
 // The interpreter runs the unit's own radix-2 SRT digit recurrence (FPU.cpp,
 // eeSrtDigit and below), which reproduces silicon bit for bit on every capture
-// this project has taken. Both recompilers take the host's fdiv/fsqrt under
+// this project has taken, and arm64's eeClampMode 4 calls the same code out of
+// line. The fast path this file exercises takes the host's fdiv/fsqrt under
 // EmuConfig.Cpu.FPUDivFPCR -- FPUFPCR with round-to-nearest, swapped in around
-// the three ops the unit owns; FPU.cpp names the emitters -- which makes them
-// the correctly rounded engine.
+// the three ops the unit owns; FPU.cpp names the emitters -- which makes it the
+// correctly rounded engine.
 //
 // So this file is the class-level regression test for the shape of that
 // divergence. Differing is not enough: the engines must differ by exactly one
@@ -100,7 +101,7 @@ struct ScopedAmbientRoundMode
 // The twin of the above for the DIVIDE unit's register, used by
 // TheDivideUnitIgnoresItsRoundingModeKnob at the bottom -- which needs to move
 // the knob for both engines: the interpreter must not respond to it and the
-// recompilers must.
+// fast path must.
 struct ScopedDivideRoundMode
 {
 	FPControlRegister saved_cfg, saved_host;

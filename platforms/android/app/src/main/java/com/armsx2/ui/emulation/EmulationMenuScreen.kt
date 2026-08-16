@@ -1060,7 +1060,7 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
     )
     HorizontalOptions(
         title = str("perf.eeFpuClamping.label"),
-        options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.full"))
+        options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.full"), str("perf.clamp.exact"))
             .mapIndexed { index, label -> index to label },
         selected = settings.eeClampMode,
         onSelect = { value -> viewModel.updateSettings { it.copy(eeClampMode = value) } },

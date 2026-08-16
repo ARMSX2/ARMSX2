@@ -73,6 +73,7 @@ AdvancedSettingsWidget::AdvancedSettingsWidget(SettingsWindow* settings_dialog, 
 
 	dialog()->registerWidgetHelp(m_ui.eeClampMode, tr("Clamping Mode"), tr("Normal (Default)"),
 		tr("Changes how ARMSX2 handles keeping floats in a standard x86 range. "
+		   "Exact is Full plus the rest of the EE multiplier's one-ULP deficit, and is slower than Full. "
 		   "The default value handles the vast majority of games; <b>modifying this setting when a game is not having a visible problem can cause instability.</b>"));
 
 	dialog()->registerWidgetHelp(m_ui.eeRecompiler, tr("Enable Recompiler"), tr("Checked"),
@@ -103,7 +104,7 @@ AdvancedSettingsWidget::AdvancedSettingsWidget(SettingsWindow* settings_dialog, 
 	dialog()->registerWidgetHelp(m_ui.eeFpuGuardedAddSub, tr("FPU Add/Sub Guard Bits"), tr("Checked"),
 		//: "Guard bits" = extra low mantissa bits a standards-compliant FPU keeps during add/sub; the PS2's EE FPU does not, so the recompiler masks them to match.
 		tr("Emulates the EE FPU's missing add/sub mantissa guard bits for hardware-accurate results. Leave checked; a few games (e.g. True Crime, Jak 3) misrender without it. "
-		   "Unchecking is a minor speedup for EE-FPU-heavy games verified to render correctly without it. Has no effect when the EE Clamping Mode is set to Full."));
+		   "Unchecking is a minor speedup for EE-FPU-heavy games verified to render correctly without it. Has no effect when the EE Clamping Mode is set to Full or Exact."));
 
 	dialog()->registerWidgetHelp(m_ui.vu0RoundingMode, tr("VU0 Rounding Mode"), tr("Chop/Zero (Default)"), tr("Changes how ARMSX2 handles rounding while emulating the Emotion Engine's Vector Unit 0 (EE VU0). "
 																											  "The default value handles the vast majority of games; <b>modifying this setting when a game is not having a visible problem will cause stability issues and/or crashes.</b>"));
@@ -160,6 +161,10 @@ AdvancedSettingsWidget::~AdvancedSettingsWidget() = default;
 
 int AdvancedSettingsWidget::getGlobalClampingModeIndex(int vunum) const
 {
+	// eeClampMode 4 has no VU counterpart.
+	if (vunum < 0 && Host::GetBaseBoolSettingValue("EmuCore/CPU/Recompiler", "fpuExactMode", false))
+		return 4;
+
 	if (Host::GetBaseBoolSettingValue(
 			"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0SignOverflow" : "vu1SignOverflow") : "fpuFullMode"), false))
 		return 3;
@@ -182,6 +187,9 @@ int AdvancedSettingsWidget::getClampingModeIndex(int vunum) const
 	std::optional<bool> default_false = dialog()->isPerGameSettings() ? std::nullopt : std::optional<bool>(false);
 	std::optional<bool> default_true = dialog()->isPerGameSettings() ? std::nullopt : std::optional<bool>(true);
 
+	std::optional<bool> fourth;
+	if (vunum < 0)
+		fourth = dialog()->getBoolValue("EmuCore/CPU/Recompiler", "fpuExactMode", default_false);
 	std::optional<bool> third = dialog()->getBoolValue(
 		"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0SignOverflow" : "vu1SignOverflow") : "fpuFullMode"), default_false);
 	std::optional<bool> second = dialog()->getBoolValue("EmuCore/CPU/Recompiler",
@@ -189,6 +197,8 @@ int AdvancedSettingsWidget::getClampingModeIndex(int vunum) const
 	std::optional<bool> first = dialog()->getBoolValue(
 		"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0Overflow" : "vu1Overflow") : "fpuOverflow"), default_true);
 
+	if (fourth.has_value() && fourth.value())
+		return base + 4;
 	if (third.has_value() && third.value())
 		return base + 3;
 	if (second.has_value() && second.value())
@@ -203,11 +213,12 @@ int AdvancedSettingsWidget::getClampingModeIndex(int vunum) const
 
 void AdvancedSettingsWidget::setClampingMode(int vunum, int index)
 {
-	std::optional<bool> first, second, third;
+	std::optional<bool> first, second, third, fourth;
 
 	if (!dialog()->isPerGameSettings() || index > 0)
 	{
 		const bool base = dialog()->isPerGameSettings() ? 1 : 0;
+		fourth = (index >= (base + 4));
 		third = (index >= (base + 3));
 		second = (index >= (base + 2));
 		first = (index >= (base + 1));
@@ -219,6 +230,12 @@ void AdvancedSettingsWidget::setClampingMode(int vunum, int index)
 		"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0ExtraOverflow" : "vu1ExtraOverflow") : "fpuExtraOverflow"), second);
 	dialog()->setBoolSettingValue(
 		"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0Overflow" : "vu1Overflow") : "fpuOverflow"), first);
+
+	// fpuExactMode is eeClampMode 4's bit, and the VUs have none. It is written
+	// with the other three because ApplySanityCheck drops a config whose bits
+	// are not a whole mode to the default, not to the mode that was picked.
+	if (vunum < 0)
+		dialog()->setBoolSettingValue("EmuCore/CPU/Recompiler", "fpuExactMode", fourth);
 }
 
 void AdvancedSettingsWidget::onSavestateCompressionTypeChanged()

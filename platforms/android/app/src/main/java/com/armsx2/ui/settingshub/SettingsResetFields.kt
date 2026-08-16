@@ -73,7 +73,7 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
     // from Performance and from the retired Recompiler tab.
     SettingsCategory.Advanced to listOf(
         "enableFastBoot", "enableGameFixes", "pineEnabled", "pineSlot",
-        "gamefixBlitInternalFps", "gamefixDmaBusy", "gamefixEETiming", "gamefixFpuMul",
+        "gamefixBlitInternalFps", "gamefixDmaBusy", "gamefixEETiming",
         "gamefixFullVu0Sync", "gamefixGifFifo", "gamefixGoemonTlb", "gamefixIbit",
         "gamefixInstantDma", "gamefixOphFlag", "gamefixSkipMpeg",
         "gamefixSoftwareRendererFmv", "gamefixVif1Stall", "gamefixVuAddSub",

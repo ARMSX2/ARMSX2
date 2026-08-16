@@ -244,8 +244,8 @@ fun PerformanceTab(state: MutableState<Settings>) {
             // at a speed cost. Needs a recompiler reset, so restart the game.
             SegmentedRow(
                 label = str("perf.eeFpuClamping.label"),
-                options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.full")),
-                selectedIndex = s.eeClampMode.coerceIn(0, 3),
+                options = listOf(str("perf.clamp.none"), str("perf.clamp.normal"), str("perf.clamp.extra"), str("perf.clamp.full"), str("perf.clamp.exact")),
+                selectedIndex = s.eeClampMode.coerceIn(0, 4),
                 description = str("perf.eeFpuClamping.description"),
                 onChange = { apply(s.copy(eeClampMode = it)) },
             )

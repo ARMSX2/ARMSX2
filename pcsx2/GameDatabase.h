@@ -38,6 +38,7 @@ namespace GameDatabaseSchema
 		Normal,
 		Extra,
 		Full,
+		Exact, // eeClampMode only; the VUs stop at Extra+Preserve Sign.
 		Count
 	};
 

@@ -834,12 +834,14 @@ std::vector<u32> Program(const Row& r)
 	}
 }
 
-// leg 0 interpreter, 1 the shipping fast path, 2 fpuFullMode.
+// leg 0 interpreter, 1 the shipping fast path, 2 fpuFullMode, 3 fpuExactMode.
 void RunRow(const Row& r, int leg, u32* result, u32* fcr31)
 {
 	EeRecTestHarness h;
 	h.EnableCop1();
-	if (leg == 2)
+	if (leg == 3)
+		h.EnableFpuExactMode();
+	else if (leg == 2)
 		h.EnableFpuFullMode();
 	h.SetFcr31(r.seed);
 	h.SetFprBits(5, r.fs);
@@ -860,7 +862,7 @@ void RunRow(const Row& r, int leg, u32* result, u32* fcr31)
 	}
 }
 
-const char* kLegName[] = {"[interp]", "[jit fast]", "[jit full]"};
+const char* kLegName[] = {"[interp]", "[jit fast]", "[jit full]", "[jit exact]"};
 
 // The fast path computes in host singles, where an exponent-255 operand is an
 // infinity or a NaN, so it saturates on the way in. That class belongs to
@@ -883,14 +885,14 @@ bool DivUnitApproximation(const Row& r)
 
 } // namespace
 
-// All three tiers owe the flag axis: FCR31 costs the fast path none of the
+// Every tier owes the flag axis: FCR31 costs the fast path none of the
 // precision the accuracy tiers buy, so no tier has a tradeoff to make here.
 TEST(EeFpuRsqrtSignConsole, CauseBitsMatchConsoleOnEveryTier)
 {
 	for (int i = 0; i < kRowCount; ++i)
 	{
 		const Row& r = kRows[i];
-		for (int leg = 0; leg < 3; ++leg)
+		for (int leg = 0; leg < 4; ++leg)
 		{
 			SCOPED_TRACE(::testing::Message() << r.what << " " << kLegName[leg]);
 			u32 res = 0, fcr = 0;
@@ -914,8 +916,9 @@ TEST(EeFpuRsqrtSignConsole, InterpMatchesConsoleOnEveryRow)
 	}
 }
 
-// fpuFullMode, with its one divergence asserted as itself rather than skipped,
-// so that neither closing it nor widening it can happen quietly.
+// fpuFullMode divides in host doubles and rounds correctly, so it owes every
+// row but the divide unit's, and that one divergence is asserted as itself
+// rather than skipped. eeClampMode 4 closes it, just below.
 TEST(EeFpuRsqrtSignConsole, FullModeMatchesConsoleOutsideTheDivideUnitApproximation)
 {
 	int approximated = 0;
@@ -938,6 +941,22 @@ TEST(EeFpuRsqrtSignConsole, FullModeMatchesConsoleOutsideTheDivideUnitApproximat
 		}
 	}
 	EXPECT_EQ(approximated, 20);
+}
+
+// fpuExactMode owes every row for the same two reasons: it holds the top binade
+// and it runs the divide unit's recurrence, out of line. The 20 rows above are
+// what it buys, so this failing on exactly those is the island not being
+// emitted rather than a new defect.
+TEST(EeFpuRsqrtSignConsole, ExactModeMatchesConsoleOnEveryRow)
+{
+	for (int i = 0; i < kRowCount; ++i)
+	{
+		const Row& r = kRows[i];
+		SCOPED_TRACE(::testing::Message() << r.what << " " << kLegName[3]);
+		u32 res = 0, fcr = 0;
+		RunRow(r, 3, &res, &fcr);
+		EXPECT_EQ(res, r.console);
+	}
 }
 
 // The fast path saturates in host singles, one binade below the EE's largest

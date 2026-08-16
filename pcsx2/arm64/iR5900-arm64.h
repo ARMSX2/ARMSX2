@@ -186,6 +186,56 @@ static __fi vixl::aarch64::MemOperand armCpuRegMem(const void* field)
 	return vixl::aarch64::MemOperand(RSTATE, static_cast<int64_t>(off));
 }
 
+/*	An FPR slot as seen from outside the FPU's own arithmetic: MFC1/MTC1,
+	LWC1/SWC1, MOV.S and the allocator's fill and spill. What a slot holds
+	follows the clamp mode (EeFpuFormat.h), which a code-cache reset pins for
+	the life of a block, so these branch at emit time.
+*/
+static __fi const vixl::aarch64::VRegister& armEeFprSlotReg(int neonreg)
+{
+	return CHECK_FPU_FULL ? armDRegister(neonreg) : armSRegister(neonreg);
+}
+
+// `slot` = the word in `word`. `tmp` is an X scratch and may be `word`'s X form.
+static __fi void armEmitEeFprSlotFromWord(const vixl::aarch64::VRegister& slot,
+	const vixl::aarch64::Register& word, const vixl::aarch64::Register& tmp)
+{
+	if (CHECK_FPU_FULL)
+		armEmitEeFprWiden(slot, word, tmp);
+	else
+		armAsm->Fmov(slot.S(), word.W());
+}
+
+// `word` = the word in `slot`, zero-extended. `tmp` is an X scratch, not `word`.
+static __fi void armEmitEeFprWordFromSlot(const vixl::aarch64::Register& word,
+	const vixl::aarch64::VRegister& slot, const vixl::aarch64::Register& tmp)
+{
+	if (CHECK_FPU_FULL)
+		armEmitEeFprNarrow(word, slot, tmp);
+	else
+		armAsm->Fmov(word.W(), slot.S());
+}
+
+// *mem = the word in `word`. `tmp` is an X scratch and may be `word`'s X form.
+static __fi void armEmitEeFprSlotMemFromWord(const vixl::aarch64::MemOperand& mem,
+	const vixl::aarch64::Register& word, const vixl::aarch64::Register& tmp)
+{
+	if (CHECK_FPU_FULL)
+		armEmitEeFprStoreSlotWord(mem, word, tmp);
+	else
+		armAsm->Str(word.W(), mem);
+}
+
+// `word` = the word in *mem, zero-extended. `tmp` is an X scratch, not `word`.
+static __fi void armEmitEeFprWordFromSlotMem(const vixl::aarch64::Register& word,
+	const vixl::aarch64::MemOperand& mem, const vixl::aarch64::Register& tmp)
+{
+	if (CHECK_FPU_FULL)
+		armEmitEeFprLoadSlotWord(word, mem, tmp);
+	else
+		armAsm->Ldr(word.W(), mem);
+}
+
 // Publish the ABSOLUTE cycle to cpuRegs.cycle before a C call that reads it:
 // abs = delta + nextEventCycle. RECCYCLE itself is preserved (still the
 // delta); `scratch` is clobbered. Pair with armReloadCycleDelta after any

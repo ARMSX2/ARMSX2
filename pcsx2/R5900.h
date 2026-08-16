@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "EeFpuFormat.h"
+
 #include "common/Pcsx2Defs.h"
 
 #include <array>
@@ -149,18 +151,36 @@ union GPR_reg64 {
 	s8  SC[8];
 };
 
+/*	One EE FPR. The architectural register is 32 bits and the slot is 64: read
+	the word through Word(), write it through SetWord(). From eeClampMode 3 up a
+	slot holds the relocation of EeFpuFormat.h, below that the word in its low
+	half.
+*/
 union FPRreg {
-	float f;
-	u32 UL;
-	s32 SL;				// signed 32bit used for sign extension in interpreters.
+	double d;
+	u64 UD;
+
+	u32 Word() const { return g_eeFprSlotsRelocated ? eeFprNarrowBits(UD) : static_cast<u32>(UD); }
+	void SetWord(u32 word) { UD = g_eeFprSlotsRelocated ? eeFprWidenBits(word) : word; }
 };
 
 struct fpuRegisters {
-	FPRreg fpr[32];		// 32bit floating point registers
+	FPRreg fpr[32];		// 32 floating point registers
 	u32 fprc[32];		// 32bit floating point control registers
-	FPRreg ACC;			// 32 bit accumulator
+	FPRreg ACC;			// accumulator
 	u32 ACCflag;        // an internal accumulator overflow flag
 };
+
+/*	The FPU block as savestates carry it. The format is shared with upstream
+	and does not move.
+*/
+struct fpuRegistersWire {
+	u32 fpr[32];
+	u32 fprc[32];
+	u32 ACC;
+	u32 ACCflag;
+};
+static_assert(sizeof(fpuRegistersWire) == 264, "the savestate FPU block is 264 bytes");
 
 union PageMask_t
 {
@@ -315,6 +335,29 @@ extern cachedTlbs_t cachedTlbs;
 
 static cpuRegisters& cpuRegs = _cpuRegistersPack.cpuRegs;
 static fpuRegisters& fpuRegs = _cpuRegistersPack.fpuRegs;
+
+static __fi void fpuRegsToWire(fpuRegistersWire& wire)
+{
+	for (int i = 0; i < 32; i++)
+	{
+		wire.fpr[i] = fpuRegs.fpr[i].Word();
+		wire.fprc[i] = fpuRegs.fprc[i];
+	}
+	wire.ACC = fpuRegs.ACC.Word();
+	wire.ACCflag = fpuRegs.ACCflag;
+}
+
+static __fi void fpuRegsFromWire(const fpuRegistersWire& wire)
+{
+	for (int i = 0; i < 32; i++)
+	{
+		// Whole slot, so no upper half survives from the previous state.
+		fpuRegs.fpr[i].SetWord(wire.fpr[i]);
+		fpuRegs.fprc[i] = wire.fprc[i];
+	}
+	fpuRegs.ACC.SetWord(wire.ACC);
+	fpuRegs.ACCflag = wire.ACCflag;
+}
 
 extern bool eeEventTestIsActive;
 

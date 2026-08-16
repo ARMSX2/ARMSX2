@@ -158,6 +158,7 @@ set(pcsx2Headers
 	COP0.h
 	Counters.h
 	Dmac.h
+	EeFpuFormat.h
 	GameDatabase.h
 	Elfheader.h
 	FW.h

@@ -1911,6 +1911,7 @@ void recCOP2_VMADD()
 	endMacroOp_arm64(0x110);
 }
 
+// mVU_MSUB's clamp set is cFs when isCOP2.
 void recCOP2_VMSUB()
 {
 	if (_Fd_cop2 == 0 && _XYZW_cop2 == 0) return;
@@ -1918,8 +1919,9 @@ void recCOP2_VMSUB()
 
 	const a64::VRegister fs = cop2GetVF(_Fs_cop2);
 	const a64::VRegister ft = cop2GetVF(_Ft_cop2);
+	cop2ClampInto(RQSCRATCH2, fs);
 	const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2);
-	armAsm->Fmul(rd.V4S(), fs.V4S(), ft.V4S());
+	armAsm->Fmul(rd.V4S(), RQSCRATCH2.V4S(), ft.V4S());
 	const a64::VRegister acc = cop2GetACC();
 	armAsm->Fsub(rd.V4S(), acc.V4S(), rd.V4S());
 	cop2ClampResultReg(rd);
@@ -1936,8 +1938,8 @@ void recCOP2_VMSUB()
 // a zero broadcast Ft must become FLT_MAX*0 = 0 rather than Inf*0 = NaN folded
 // to +/-FLT_MAX by the result clamp. MSUBx/y/z/w use mVU_FMACd (clampType=0,
 // no cFs) — that Fs divergence is shared/by-design, so MSUB keeps clampFs=false.
-// The MADDw extras (cACC|cFt) are a separate concern.
-#define COP2_MADD_BC(name, addOp, bc, clampFs) \
+// MADDw's set is cACC|cFt|cFs when isCOP2; the extra two ride the scratch pair.
+#define COP2_MADD_BC(name, addOp, bc, clampFs, clampFtAcc) \
 	void recCOP2_V##name() \
 	{ \
 		if (_Fd_cop2 == 0 && _XYZW_cop2 == 0) return; \
@@ -1950,25 +1952,33 @@ void recCOP2_VMSUB()
 			mulA = RQSCRATCH; \
 		} \
 		cop2LoadBroadcast(RQSCRATCH2, _Ft_cop2, bc); \
+		if (clampFtAcc) \
+			cop2ClampResultReg(RQSCRATCH2); /* in-place operand clamp */ \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
 		armAsm->Fmul(rd.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \
 		const a64::VRegister acc = cop2GetACC(); \
-		armAsm->addOp(rd.V4S(), acc.V4S(), rd.V4S()); \
+		if (clampFtAcc) \
+		{ \
+			cop2ClampInto(RQSCRATCH2, acc); \
+			armAsm->addOp(rd.V4S(), RQSCRATCH2.V4S(), rd.V4S()); \
+		} \
+		else \
+			armAsm->addOp(rd.V4S(), acc.V4S(), rd.V4S()); \
 		cop2ClampResultReg(rd); \
 		cop2EmitFlagUpdate(_XYZW_cop2, rd); \
 		cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd); \
 		endMacroOp_arm64(0x110); \
 	}
 
-COP2_MADD_BC(MADDx, Fadd, 0, true)
-COP2_MADD_BC(MADDy, Fadd, 1, true)
-COP2_MADD_BC(MADDz, Fadd, 2, true)
-COP2_MADD_BC(MADDw, Fadd, 3, true)
+COP2_MADD_BC(MADDx, Fadd, 0, true, false)
+COP2_MADD_BC(MADDy, Fadd, 1, true, false)
+COP2_MADD_BC(MADDz, Fadd, 2, true, false)
+COP2_MADD_BC(MADDw, Fadd, 3, true, true)
 
-COP2_MADD_BC(MSUBx, Fsub, 0, false)
-COP2_MADD_BC(MSUBy, Fsub, 1, false)
-COP2_MADD_BC(MSUBz, Fsub, 2, false)
-COP2_MADD_BC(MSUBw, Fsub, 3, false)
+COP2_MADD_BC(MSUBx, Fsub, 0, false, false)
+COP2_MADD_BC(MSUBy, Fsub, 1, false, false)
+COP2_MADD_BC(MSUBz, Fsub, 2, false, false)
+COP2_MADD_BC(MSUBw, Fsub, 3, false, false)
 
 // MADDq/MSUBq — broadcast Q
 #define COP2_MADD_Q(name, addOp) \

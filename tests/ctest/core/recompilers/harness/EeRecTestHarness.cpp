@@ -104,11 +104,11 @@ EeRecTestHarness::~EeRecTestHarness()
 		EmuConfig.Speedhacks.vu1Instant = false;
 	}
 
+	if (fpu_exact_mode_changed_)
+		EmuConfig.Cpu.Recompiler.fpuExactMode = prev_fpu_exact_mode_;
+
 	if (fpu_full_mode_changed_)
 		EmuConfig.Cpu.Recompiler.fpuFullMode = prev_fpu_full_mode_;
-
-	if (fpu_mul_hack_changed_)
-		EmuConfig.Gamefixes.FpuMulHack = prev_fpu_mul_hack_;
 
 	if (fpu_guarded_changed_)
 		EmuConfig.Cpu.Recompiler.fpuGuardedAddSub = prev_fpu_guarded_;
@@ -118,6 +118,10 @@ EeRecTestHarness::~EeRecTestHarness()
 
 	if (fpu_overflow_changed_)
 		EmuConfig.Cpu.Recompiler.fpuOverflow = prev_fpu_overflow_;
+
+	// Hand the file back in the format the restored mode calls for, so the next
+	// harness -- and anything that reads fpuRegs between them -- starts square.
+	eeFprSyncSlotFormat();
 }
 
 void EeRecTestHarness::SetGpr64(u32 reg_idx, u64 value)
@@ -143,17 +147,21 @@ void EeRecTestHarness::SetHiPair(u64 lo_qw, u64 hi_qw) { cpuRegs.HI.UD[0] = lo_q
 
 void EeRecTestHarness::SetCp0(u32 reg_idx, u32 value) { cpuRegs.CP0.r[reg_idx] = value; }
 
-void EeRecTestHarness::SetFpr(u32 reg_idx, float value)    { fpuRegs.fpr[reg_idx].f = value; }
-void EeRecTestHarness::SetFprBits(u32 reg_idx, u32 bits)   { fpuRegs.fpr[reg_idx].UL = bits; }
-void EeRecTestHarness::SetAcc(float value)                 { fpuRegs.ACC.f = value; }
-void EeRecTestHarness::SetAccBits(u32 bits)                { fpuRegs.ACC.UL = bits; }
+void EeRecTestHarness::SetFpr(u32 reg_idx, float value)    { u32 b; std::memcpy(&b, &value, 4); fpuRegs.fpr[reg_idx].SetWord(b); }
+void EeRecTestHarness::SetFprBits(u32 reg_idx, u32 bits)   { fpuRegs.fpr[reg_idx].SetWord(bits); }
+void EeRecTestHarness::SetAcc(float value)                 { u32 b; std::memcpy(&b, &value, 4); fpuRegs.ACC.SetWord(b); }
+void EeRecTestHarness::SetAccBits(u32 bits)                { fpuRegs.ACC.SetWord(bits); }
 void EeRecTestHarness::SetFcr31(u32 value)                 { fpuRegs.fprc[31] = value; }
 
 void EeRecTestHarness::EnableCop0()      { cpuRegs.CP0.n.Status.val |= (1u << 28); /* CU0 */ }
 void EeRecTestHarness::EnableCop1()      { cpuRegs.CP0.n.Status.val |= (1u << 29); /* CU1 */ }
 
+// GameDatabase sets the four bits from a single eeClampMode and ApplySanityCheck
+// rejects a higher one without the lower, so each helper below sets a whole
+// mode.
 void EeRecTestHarness::EnableFpuFullMode()
 {
+	EnableFpuExtraOverflow();
 	if (!fpu_full_mode_changed_)
 	{
 		prev_fpu_full_mode_ = EmuConfig.Cpu.Recompiler.fpuFullMode;
@@ -162,14 +170,15 @@ void EeRecTestHarness::EnableFpuFullMode()
 	EmuConfig.Cpu.Recompiler.fpuFullMode = true;
 }
 
-void EeRecTestHarness::EnableFpuMulHack()
+void EeRecTestHarness::EnableFpuExactMode()
 {
-	if (!fpu_mul_hack_changed_)
+	EnableFpuFullMode();
+	if (!fpu_exact_mode_changed_)
 	{
-		prev_fpu_mul_hack_ = EmuConfig.Gamefixes.FpuMulHack;
-		fpu_mul_hack_changed_ = true;
+		prev_fpu_exact_mode_ = EmuConfig.Cpu.Recompiler.fpuExactMode;
+		fpu_exact_mode_changed_ = true;
 	}
-	EmuConfig.Gamefixes.FpuMulHack = true;
+	EmuConfig.Cpu.Recompiler.fpuExactMode = true;
 }
 
 void EeRecTestHarness::DisableFpuGuarded()
@@ -184,6 +193,12 @@ void EeRecTestHarness::DisableFpuGuarded()
 
 void EeRecTestHarness::EnableFpuExtraOverflow()
 {
+	if (!fpu_overflow_changed_)
+	{
+		prev_fpu_overflow_ = EmuConfig.Cpu.Recompiler.fpuOverflow;
+		fpu_overflow_changed_ = true;
+	}
+	EmuConfig.Cpu.Recompiler.fpuOverflow = true;
 	if (!fpu_extra_overflow_changed_)
 	{
 		prev_fpu_extra_overflow_ = EmuConfig.Cpu.Recompiler.fpuExtraOverflow;
@@ -368,6 +383,11 @@ void EeRecTestHarness::Run(RunMode mode)
 	ASSERT_FALSE(program_words_.empty())
 		<< "LoadProgram() must be called before Run()";
 
+	// The clamp mode may have been set either side of the SetFpr* calls and it
+	// decides what a slot holds. Production reaches this through the code-cache
+	// reset a mode change forces; here the mode is poked into EmuConfig.
+	eeFprSyncSlotFormat();
+
 	SeedEntryState();
 	pre_snapshot_ = EeSnapshot::Capture(mem_windows_);
 
@@ -490,6 +510,8 @@ void EeRecTestHarness::RunJitNoDiff(RunMode mode)
 	ASSERT_FALSE(program_words_.empty())
 		<< "LoadProgram() must be called before RunJitNoDiff()";
 
+	eeFprSyncSlotFormat(); // see Run()
+
 	SeedEntryState();
 	pre_snapshot_ = EeSnapshot::Capture(mem_windows_);
 
@@ -546,10 +568,10 @@ u64 EeRecTestHarness::GetHiUpper64Jit   () const  { return jit_snapshot_.regs.HI
 u64 EeRecTestHarness::GetLoUpper64Jit   () const  { return jit_snapshot_.regs.LO.UD[1]; }
 u64 EeRecTestHarness::GetGprUpper64Interp(u32 r) const { return interp_snapshot_.regs.GPR.r[r].UD[1]; }
 u64 EeRecTestHarness::GetGprUpper64Jit   (u32 r) const { return jit_snapshot_.regs.GPR.r[r].UD[1]; }
-u32 EeRecTestHarness::GetFprBitsInterp(u32 r) const { return interp_snapshot_.fprs.fpr[r].UL; }
-u32 EeRecTestHarness::GetFprBitsJit   (u32 r) const { return jit_snapshot_.fprs.fpr[r].UL; }
-u32 EeRecTestHarness::GetAccBitsInterp() const      { return interp_snapshot_.fprs.ACC.UL; }
-u32 EeRecTestHarness::GetAccBitsJit   () const      { return jit_snapshot_.fprs.ACC.UL; }
+u32 EeRecTestHarness::GetFprBitsInterp(u32 r) const { return interp_snapshot_.FprWord(r); }
+u32 EeRecTestHarness::GetFprBitsJit   (u32 r) const { return jit_snapshot_.FprWord(r); }
+u32 EeRecTestHarness::GetAccBitsInterp() const      { return interp_snapshot_.AccWord(); }
+u32 EeRecTestHarness::GetAccBitsJit   () const      { return jit_snapshot_.AccWord(); }
 u32 EeRecTestHarness::GetCp0Interp(u32 r) const     { return interp_snapshot_.regs.CP0.r[r]; }
 u32 EeRecTestHarness::GetCp0Jit   (u32 r) const     { return jit_snapshot_.regs.CP0.r[r]; }
 
@@ -571,14 +593,14 @@ void EeRecTestHarness::ExpectGpr128(u32 reg_idx, u64 lo, u64 hi) const
 
 void EeRecTestHarness::ExpectFpr(u32 reg_idx, u32 bits) const
 {
-	EXPECT_EQ(interp_snapshot_.fprs.fpr[reg_idx].UL, bits) << "fpr" << reg_idx << " (interp)";
-	EXPECT_EQ(jit_snapshot_.fprs.fpr[reg_idx].UL, bits)    << "fpr" << reg_idx << " (jit)";
+	EXPECT_EQ(interp_snapshot_.FprWord(reg_idx), bits) << "fpr" << reg_idx << " (interp)";
+	EXPECT_EQ(jit_snapshot_.FprWord(reg_idx), bits)    << "fpr" << reg_idx << " (jit)";
 }
 
 void EeRecTestHarness::ExpectAcc(u32 bits) const
 {
-	EXPECT_EQ(interp_snapshot_.fprs.ACC.UL, bits) << "ACC (interp)";
-	EXPECT_EQ(jit_snapshot_.fprs.ACC.UL, bits)    << "ACC (jit)";
+	EXPECT_EQ(interp_snapshot_.AccWord(), bits) << "ACC (interp)";
+	EXPECT_EQ(jit_snapshot_.AccWord(), bits)    << "ACC (jit)";
 }
 
 // ---- VU0 cross-tree handoff helpers ----

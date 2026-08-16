@@ -1,0 +1,149 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
+// SPDX-License-Identifier: GPL-3.0+
+//
+// The FPR slot is 64 bits (R5900.h); the architectural register and the
+// savestate block are 32. This pins that boundary.
+
+#include "R5900.h"
+#include "Config.h"
+#include "EeFpuFormat.h"
+
+#include "common/Pcsx2Defs.h"
+
+#include <gtest/gtest.h>
+
+#include <cstddef>
+#include <cstring>
+
+namespace
+{
+	// Zero and negative zero, the denormal boundary, an ordinary value, the top
+	// binade, the EE maximum, and a raw CVT.W.S integer payload.
+	constexpr u32 kWords[] = {
+		0x00000000, 0x80000000, 0x00000001, 0x807FFFFF, 0x00800000, 0x80800000,
+		0x3F800000, 0x7F7FFFFF, 0x7F800000, 0xFF800000, 0x7FC00000, 0x7FFFFFFF,
+		0xFFFFFFFF, 0x0000000A, 0x80000001, 0x4E800000,
+	};
+} // namespace
+
+// The 264-byte block every savestate carries, field for field.
+TEST(EeFpuRegFile, TheWireBlockIsTheSavestateLayout)
+{
+	EXPECT_EQ(sizeof(fpuRegistersWire), 264u);
+	EXPECT_EQ(offsetof(fpuRegistersWire, fpr), 0u);
+	EXPECT_EQ(offsetof(fpuRegistersWire, fprc), 128u);
+	EXPECT_EQ(offsetof(fpuRegistersWire, ACC), 256u);
+	EXPECT_EQ(offsetof(fpuRegistersWire, ACCflag), 260u);
+}
+
+// The stride the emitters compute from &fpuRegs.fpr[n] is the slot's size, so
+// it has to be 8 bytes. SetWord writes all of it and Word reads back what went
+// in.
+TEST(EeFpuRegFile, TheAccessorOwnsTheWholeSlot)
+{
+	EXPECT_EQ(sizeof(FPRreg), 8u);
+
+	for (u32 word : kWords)
+	{
+		FPRreg slot;
+		slot.UD = UINT64_C(0xA5A5A5A5) << 32 | 0x5A5A5A5A;
+		slot.SetWord(word);
+		EXPECT_EQ(slot.Word(), word) << std::hex << word;
+
+		FPRreg fresh;
+		fresh.UD = 0;
+		fresh.SetWord(word);
+		EXPECT_EQ(slot.UD, fresh.UD) << std::hex << word;
+	}
+}
+
+TEST(EeFpuRegFile, TheWireRoundTripIsExact)
+{
+	fpuRegisters saved;
+	std::memcpy(&saved, &fpuRegs, sizeof(fpuRegisters));
+
+	for (int i = 0; i < 32; i++)
+	{
+		fpuRegs.fpr[i].SetWord(kWords[i % std::size(kWords)] ^ static_cast<u32>(i));
+		fpuRegs.fprc[i] = 0xC0DE0000u | static_cast<u32>(i);
+	}
+	fpuRegs.ACC.SetWord(0x7FFFFFFF);
+	fpuRegs.ACCflag = 1;
+
+	fpuRegistersWire wire;
+	fpuRegsToWire(wire);
+
+	for (int i = 0; i < 32; i++)
+	{
+		EXPECT_EQ(wire.fpr[i], fpuRegs.fpr[i].Word()) << "fpr" << i;
+		EXPECT_EQ(wire.fprc[i], fpuRegs.fprc[i]) << "fprc" << i;
+	}
+	EXPECT_EQ(wire.ACC, 0x7FFFFFFFu);
+	EXPECT_EQ(wire.ACCflag, 1u);
+
+	// 0xA5 everywhere, so a load that writes only part of a slot leaves the
+	// rest of it set and the whole-slot comparison below catches it.
+	std::memset(&fpuRegs, 0xA5, sizeof(fpuRegisters));
+	fpuRegsFromWire(wire);
+
+	for (int i = 0; i < 32; i++)
+	{
+		FPRreg fresh;
+		fresh.UD = 0;
+		fresh.SetWord(wire.fpr[i]);
+		EXPECT_EQ(fpuRegs.fpr[i].UD, fresh.UD) << "fpr" << i;
+		EXPECT_EQ(fpuRegs.fprc[i], wire.fprc[i]) << "fprc" << i;
+	}
+	FPRreg fresh_acc;
+	fresh_acc.UD = 0;
+	fresh_acc.SetWord(0x7FFFFFFF);
+	EXPECT_EQ(fpuRegs.ACC.UD, fresh_acc.UD);
+	EXPECT_EQ(fpuRegs.ACCflag, 1u);
+
+	std::memcpy(&fpuRegs, &saved, sizeof(fpuRegisters));
+}
+
+// The format follows eeClampMode, and the file is converted when the mode
+// moves. Both directions: a sync that only ever widened would hand mode 0 a
+// relocated file.
+TEST(EeFpuRegFile, TheFormatFollowsTheClampModeInBothDirections)
+{
+	fpuRegisters saved;
+	std::memcpy(&saved, &fpuRegs, sizeof(fpuRegisters));
+	const bool saved_mode = EmuConfig.Cpu.Recompiler.fpuFullMode;
+
+	EmuConfig.Cpu.Recompiler.fpuFullMode = false;
+	eeFprSyncSlotFormat();
+	ASSERT_FALSE(g_eeFprSlotsRelocated);
+
+	for (int i = 0; i < 32; i++)
+		fpuRegs.fpr[i].SetWord(kWords[i % std::size(kWords)]);
+	fpuRegs.ACC.SetWord(0x7FFFFFFF);
+	EXPECT_EQ(fpuRegs.fpr[6].UD, UINT64_C(0x3F800000)) << "mode 0 keeps the word in the low half";
+
+	EmuConfig.Cpu.Recompiler.fpuFullMode = true;
+	eeFprSyncSlotFormat();
+	EXPECT_TRUE(g_eeFprSlotsRelocated);
+	for (int i = 0; i < 32; i++)
+	{
+		const u32 word = kWords[i % std::size(kWords)];
+		EXPECT_EQ(fpuRegs.fpr[i].Word(), word) << "fpr" << i;
+		EXPECT_EQ(fpuRegs.fpr[i].UD, eeFprWidenBits(word)) << "fpr" << i << " slot";
+	}
+	EXPECT_EQ(fpuRegs.ACC.UD, eeFprWidenBits(0x7FFFFFFF));
+
+	EmuConfig.Cpu.Recompiler.fpuFullMode = false;
+	eeFprSyncSlotFormat();
+	EXPECT_FALSE(g_eeFprSlotsRelocated);
+	for (int i = 0; i < 32; i++)
+	{
+		const u32 word = kWords[i % std::size(kWords)];
+		EXPECT_EQ(fpuRegs.fpr[i].Word(), word) << "fpr" << i;
+		EXPECT_EQ(fpuRegs.fpr[i].UD, static_cast<u64>(word)) << "fpr" << i << " slot";
+	}
+	EXPECT_EQ(fpuRegs.ACC.UD, UINT64_C(0x7FFFFFFF));
+
+	EmuConfig.Cpu.Recompiler.fpuFullMode = saved_mode;
+	eeFprSyncSlotFormat();
+	std::memcpy(&fpuRegs, &saved, sizeof(fpuRegisters));
+}

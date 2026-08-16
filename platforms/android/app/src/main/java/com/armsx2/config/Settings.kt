@@ -69,8 +69,15 @@ data class Settings(
     val eeCycleRate: Int = 0,
     /** EmuCore/Speedhacks/EECycleSkip — 0..3. 0 = no skip. */
     val eeCycleSkip: Int = 0,
-    /** EE/FPU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Full (PCSX2 default Normal).
-     *  Unpacks to EmuCore/CPU/Recompiler fpuOverflow/fpuExtraOverflow/fpuFullMode. */
+    /** EE/FPU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Full / 4 Exact
+     *  (PCSX2 default Normal). Unpacks to EmuCore/CPU/Recompiler
+     *  fpuOverflow/fpuExtraOverflow/fpuFullMode/fpuExactMode.
+     *  4 is Full plus the rest of the EE multiplier's one-ULP deficit and a
+     *  divide/sqrt/rsqrt that runs the unit's own recurrence out of line, so it
+     *  costs a call per divide. ⚠️ The GameDB overwrites this whole tier for any
+     *  title carrying an eeClampMode entry, and an entry below 4 CLEARS the
+     *  exact bit — so on those titles the choice is inert unless game fixes are
+     *  off. Keep any bound in the pickers in sync with this list. */
     val eeClampMode: Int = 1,
     /** VU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Extra+Sign (PCSX2 default Normal).
      *  Unpacks to vu0/vu1 Overflow/ExtraOverflow/SignOverflow. */
@@ -207,8 +214,6 @@ data class Settings(
     val gamefixInstantDma: Boolean = false,
     /** EmuCore/Gamefixes/BlitInternalFPSHack. */
     val gamefixBlitInternalFps: Boolean = false,
-    /** EmuCore/Gamefixes/FpuMulHack — Tales of Destiny. */
-    val gamefixFpuMul: Boolean = false,
     /** EmuCore/Gamefixes/OPHFlagHack — Bleach Blade Battlers. */
     val gamefixOphFlag: Boolean = false,
     /** EmuCore/Gamefixes/GIFFIFOHack — emulate the GIF FIFO (Test Drive Unlimited). */
@@ -756,6 +761,10 @@ data class Settings(
         put("EmuCore/CPU/Recompiler", "fpuOverflow", "bool", (eeClampMode >= 1).toString())
         put("EmuCore/CPU/Recompiler", "fpuExtraOverflow", "bool", (eeClampMode >= 2).toString())
         put("EmuCore/CPU/Recompiler", "fpuFullMode", "bool", (eeClampMode >= 3).toString())
+        // The four are cumulative and emucore validates them as such: an
+        // inconsistent set is silently reset to defaults on load rather than
+        // rejected, so all four go out together or none of them mean anything.
+        put("EmuCore/CPU/Recompiler", "fpuExactMode", "bool", (eeClampMode >= 4).toString())
         for (vu in arrayOf("vu0", "vu1")) {
             put("EmuCore/CPU/Recompiler", "${vu}Overflow", "bool", (vuClampMode >= 1).toString())
             put("EmuCore/CPU/Recompiler", "${vu}ExtraOverflow", "bool", (vuClampMode >= 2).toString())
@@ -846,7 +855,6 @@ data class Settings(
         put("EmuCore/Gamefixes", "EETimingHack", "bool", gamefixEETiming.toString())
         put("EmuCore/Gamefixes", "InstantDMAHack", "bool", gamefixInstantDma.toString())
         put("EmuCore/Gamefixes", "BlitInternalFPSHack", "bool", gamefixBlitInternalFps.toString())
-        put("EmuCore/Gamefixes", "FpuMulHack", "bool", gamefixFpuMul.toString())
         put("EmuCore/Gamefixes", "OPHFlagHack", "bool", gamefixOphFlag.toString())
         put("EmuCore/Gamefixes", "GIFFIFOHack", "bool", gamefixGifFifo.toString())
         put("EmuCore/Gamefixes", "DMABusyHack", "bool", gamefixDmaBusy.toString())
@@ -988,14 +996,18 @@ data class Settings(
         fun floatAt(key: String): Float? = ini[key]?.toFloatOrNull()
         fun strAt(key: String): String? = ini[key]
 
-        // EE/FPU clamp (0 None / 1 Normal / 2 Extra / 3 Full) is packed by applyTo into
-        // three cumulative bool keys (fpuOverflow>=1, fpuExtraOverflow>=2, fpuFullMode>=3).
+        // EE/FPU clamp (0 None / 1 Normal / 2 Extra / 3 Full / 4 Exact) is packed by
+        // applyTo into four cumulative bool keys (fpuOverflow>=1, fpuExtraOverflow>=2,
+        // fpuFullMode>=3, fpuExactMode>=4). Read them back highest-first, and treat the
+        // exact key's absence as an older core rather than as mode 3 — a build without it
+        // never wrote the key, and inferring 3 there would silently demote the setting.
         val eeClamp = run {
             val fo = boolAt("EmuCore/CPU/Recompiler/fpuOverflow")
             val fe = boolAt("EmuCore/CPU/Recompiler/fpuExtraOverflow")
             val ff = boolAt("EmuCore/CPU/Recompiler/fpuFullMode")
-            if (fo == null && fe == null && ff == null) this.eeClampMode
-            else if (ff == true) 3 else if (fe == true) 2 else if (fo == true) 1 else 0
+            val fx = boolAt("EmuCore/CPU/Recompiler/fpuExactMode")
+            if (fo == null && fe == null && ff == null && fx == null) this.eeClampMode
+            else if (fx == true) 4 else if (ff == true) 3 else if (fe == true) 2 else if (fo == true) 1 else 0
         }
         // VU clamp (0 None / 1 Normal / 2 Extra / 3 Extra+Sign) — same packing on vu0*
         // (applyTo writes vu0 and vu1 identically, so reading vu0 recovers the mode).
@@ -1064,7 +1076,6 @@ data class Settings(
             gamefixEETiming = boolAt("EmuCore/Gamefixes/EETimingHack") ?: this.gamefixEETiming,
             gamefixInstantDma = boolAt("EmuCore/Gamefixes/InstantDMAHack") ?: this.gamefixInstantDma,
             gamefixBlitInternalFps = boolAt("EmuCore/Gamefixes/BlitInternalFPSHack") ?: this.gamefixBlitInternalFps,
-            gamefixFpuMul = boolAt("EmuCore/Gamefixes/FpuMulHack") ?: this.gamefixFpuMul,
             gamefixOphFlag = boolAt("EmuCore/Gamefixes/OPHFlagHack") ?: this.gamefixOphFlag,
             gamefixGifFifo = boolAt("EmuCore/Gamefixes/GIFFIFOHack") ?: this.gamefixGifFifo,
             gamefixDmaBusy = boolAt("EmuCore/Gamefixes/DMABusyHack") ?: this.gamefixDmaBusy,
@@ -1681,7 +1692,6 @@ data class Settings(
         put("gamefixEETiming", gamefixEETiming)
         put("gamefixInstantDma", gamefixInstantDma)
         put("gamefixBlitInternalFps", gamefixBlitInternalFps)
-        put("gamefixFpuMul", gamefixFpuMul)
         put("gamefixOphFlag", gamefixOphFlag)
         put("gamefixGifFifo", gamefixGifFifo)
         put("gamefixDmaBusy", gamefixDmaBusy)
@@ -1960,7 +1970,6 @@ data class Settings(
                 gamefixEETiming = json.optBoolean("gamefixEETiming", def.gamefixEETiming),
                 gamefixInstantDma = json.optBoolean("gamefixInstantDma", def.gamefixInstantDma),
                 gamefixBlitInternalFps = json.optBoolean("gamefixBlitInternalFps", def.gamefixBlitInternalFps),
-                gamefixFpuMul = json.optBoolean("gamefixFpuMul", def.gamefixFpuMul),
                 gamefixOphFlag = json.optBoolean("gamefixOphFlag", def.gamefixOphFlag),
                 gamefixGifFifo = json.optBoolean("gamefixGifFifo", def.gamefixGifFifo),
                 gamefixDmaBusy = json.optBoolean("gamefixDmaBusy", def.gamefixDmaBusy),
@@ -2214,7 +2223,6 @@ data class Settings(
             if (current.gamefixEETiming != base.gamefixEETiming) j.put("gamefixEETiming", current.gamefixEETiming)
             if (current.gamefixInstantDma != base.gamefixInstantDma) j.put("gamefixInstantDma", current.gamefixInstantDma)
             if (current.gamefixBlitInternalFps != base.gamefixBlitInternalFps) j.put("gamefixBlitInternalFps", current.gamefixBlitInternalFps)
-            if (current.gamefixFpuMul        != base.gamefixFpuMul)        j.put("gamefixFpuMul", current.gamefixFpuMul)
             if (current.gamefixOphFlag       != base.gamefixOphFlag)       j.put("gamefixOphFlag", current.gamefixOphFlag)
             if (current.gamefixGifFifo       != base.gamefixGifFifo)       j.put("gamefixGifFifo", current.gamefixGifFifo)
             if (current.gamefixDmaBusy       != base.gamefixDmaBusy)       j.put("gamefixDmaBusy", current.gamefixDmaBusy)
@@ -2456,7 +2464,6 @@ data class Settings(
             gamefixEETiming = if (overrides.has("gamefixEETiming")) overrides.getBoolean("gamefixEETiming") else base.gamefixEETiming,
             gamefixInstantDma = if (overrides.has("gamefixInstantDma")) overrides.getBoolean("gamefixInstantDma") else base.gamefixInstantDma,
             gamefixBlitInternalFps = if (overrides.has("gamefixBlitInternalFps")) overrides.getBoolean("gamefixBlitInternalFps") else base.gamefixBlitInternalFps,
-            gamefixFpuMul = if (overrides.has("gamefixFpuMul")) overrides.getBoolean("gamefixFpuMul") else base.gamefixFpuMul,
             gamefixOphFlag = if (overrides.has("gamefixOphFlag")) overrides.getBoolean("gamefixOphFlag") else base.gamefixOphFlag,
             gamefixGifFifo = if (overrides.has("gamefixGifFifo")) overrides.getBoolean("gamefixGifFifo") else base.gamefixGifFifo,
             gamefixDmaBusy = if (overrides.has("gamefixDmaBusy")) overrides.getBoolean("gamefixDmaBusy") else base.gamefixDmaBusy,

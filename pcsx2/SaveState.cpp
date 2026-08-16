@@ -187,7 +187,14 @@ bool SaveStateBase::FreezeInternals(Error* error)
 
 	Freeze(cpuRegs);		// cpu regs + COP0
 	Freeze(psxRegs);		// iop regs
-	Freeze(fpuRegs);
+
+	fpuRegistersWire fpu_wire;
+	if (IsSaving())
+		fpuRegsToWire(fpu_wire);
+	Freeze(fpu_wire);
+	if (IsLoading())
+		fpuRegsFromWire(fpu_wire);
+
 	Freeze(tlb);			// tlbs
 	Freeze(cachedTlbs);		// cached tlbs
 	Freeze(AllowParams1);	//OSDConfig written (Fast Boot)

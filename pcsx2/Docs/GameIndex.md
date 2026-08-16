@@ -26,8 +26,6 @@ SERIAL-12345: # !required! Serial number for the game, this is how games are loo
    # If you'd like to temporarily disable it, either comment out the line, or remove it!
   gameFixes:
     - VuAddSubHack
-    - FpuMulHack
-    - FpuNegDivHack
     - XGKickHack
     - EETimingHack
     - SkipMPEGHack
@@ -123,6 +121,8 @@ The clamp modes are also numerically based.
 * `1` = Clamp **Normally** (only clamp results)
 * `2` = Clamp **Extra+Preserve Sign** (clamp results as well as operands)
 * `3` = **Full Clamping** for FPU
+* `4` = **Exact**: mode 3 plus the rest of the EE multiplier's one-ULP deficit.
+  Multiplies it cannot decide from ft's mantissa call out of line.
 
 ### vuClampMode
 
@@ -204,9 +204,6 @@ The clamp modes are also numerically based.
 These values are case-sensitive, so take care.  If you incorrectly specify a GameFix, you will get a validation error on startup.  Any invalid game-fixes will be dropped from the game's list of fixes.
 
 ### Game Fixes Options
-
-* `FpuMulHack`
-  * For Tales of Destiny: This fix addresses hanging issues.
 
 * `SoftwareRendererFMVHack`
   * Used for complex FMV rendering in certain games.
