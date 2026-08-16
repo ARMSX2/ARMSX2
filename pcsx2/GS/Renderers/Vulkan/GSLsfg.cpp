@@ -1208,8 +1208,22 @@ namespace GSLsfg
 				// serialised on a vblank per generated frame and ate the very time the feature
 				// exists to spend. VK_NOT_READY/VK_TIMEOUT leave the semaphore unsignalled, so
 				// s_acquire_sems[i] stays clean for the next frame.
-				const VkResult acq = vkAcquireNextImageKHR(s_device, swap_chain->GetSwapChain(), 0,
-					s_acquire_sems[i], VK_NULL_HANDLE, &image_index);
+				// ★ Bounded, but NOT zero. A zero timeout looks right — an interpolated frame is
+				// a bonus, so why stall for one — and it silently disables the entire feature:
+				// under FIFO the presentation engine hands an image back at a vblank, so at
+				// steady state nothing is EVER free instantly, every acquire returns
+				// VK_NOT_READY, and every generated frame is dropped. Observed exactly that on
+				// an Adreno 740: LSFG active, FIFO confirmed, display rate still equal to the
+				// real rate. Waiting for a display slot IS the mechanism here — presenting two
+				// frames per rendered frame means waiting for the second slot.
+				//
+				// The bound is what keeps a lost surface from wedging the GS thread the way an
+				// infinite wait would (see VKSwapChain::AcquireNextImage's own timeout, and the
+				// background/rotate/fold case it documents). Generous next to a refresh interval
+				// — 6 vblanks at 120Hz — so it only expires when something is actually wrong.
+				static constexpr u64 kGeneratedAcquireTimeoutNs = 50ull * 1000 * 1000;
+				const VkResult acq = vkAcquireNextImageKHR(s_device, swap_chain->GetSwapChain(),
+					kGeneratedAcquireTimeoutNs, s_acquire_sems[i], VK_NULL_HANDLE, &image_index);
 				if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR)
 					break; // nothing free, out of date, or lost — still present the real frame
 

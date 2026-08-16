@@ -823,7 +823,10 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // is: the two rows above choose how big the frame is RENDERED, and this chooses how it
     // gets to the screen. In full settings it lives under Display Effects next to CAS, which
     // is the wrong shelf for finding it while you are looking at the framerate.
-    if (settings.renderer == "vulkan") {
+    // "auto" is the DEFAULT and resolves to Vulkan on Android, so gating on the literal string
+    // "vulkan" hid this row from almost everyone — which is exactly what happened. Only OpenGL
+    // and software genuinely cannot run it.
+    if (settings.renderer != "opengl" && settings.renderer != "software") {
         val fsr1On = settings.upscaler == com.armsx2.config.Settings.UPSCALER_FSR1
         MenuSwitchRow(
             str("renderer.fsr1.label"),
