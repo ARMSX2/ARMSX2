@@ -160,6 +160,16 @@ struct FrameSample
 	bool idle;
 	float frame_ms;
 	float gpu_ms;
+
+	/// CPU time the GS thread itself burned producing this frame, in milliseconds.
+	///
+	/// This is the numerator of the ladder's absolute per-draw CPU budget, and it is
+	/// deliberately not frame_ms: frame_ms is wall clock, so it carries the frame
+	/// limiter, the GPU's pace and every other thread's contention, none of which the
+	/// renderer's per-draw cost can be held responsible for. Thread CPU time carries
+	/// only what this thread executed.
+	float gs_cpu_ms;
+
 	u64 prims;
 	u64 draws; // PS2-level (GSPerfMon::Draw)
 	u64 draw_calls;
@@ -191,6 +201,8 @@ static std::vector<FrameSample> s_frame_samples;
 static std::string s_device_name;
 static std::string s_driver_info;
 static u64 s_frame_timer_last = 0;
+static u64 s_gs_cpu_time_last = 0;
+static bool s_saw_gs_back_thread_in_stats = false;
 static double s_last_prims = 0;
 static double s_last_tc_source_hit = 0;
 static double s_last_tc_source_miss = 0;
@@ -410,7 +422,6 @@ void Host::BeginPresentFrame()
 		}
 
 		const u32 last_draws = s_total_internal_draws;
-		const u32 last_uploads = s_total_uploads;
 
 		// Returns this frame's delta as well as accumulating it, so the per-frame
 		// series and the run totals stay derived from one source.
@@ -444,7 +455,13 @@ void Host::BeginPresentFrame()
 		sample.hash_cache_miss = update_stat(GSPerfMon::HashCacheMiss, s_total_hash_cache_miss, s_last_hash_cache_miss);
 		sample.pipeline_switches = update_stat(GSPerfMon::PipelineSwitches, s_total_pipeline_switches, s_last_pipeline_switches);
 
-		const bool idle_frame = s_total_frames && (last_draws == s_total_internal_draws && last_uploads == s_total_uploads);
+		// A frame is drawn if it carried PS2 draws. The upstream heuristic also counted a
+		// frame with only texture uploads as drawn; under Tile every present-only frame
+		// carries one upload (the floor's framebuffer reaching the display texture), so
+		// that definition made half of a Tile run's frames "drawn" and put ~1 ms
+		// present-only frames into the same percentile as 18 ms drawn ones -- Tile's p50
+		// read as 1.0 ms while its drawn frames were 18. Draws are the honest test.
+		const bool idle_frame = s_total_frames && (last_draws == s_total_internal_draws);
 
 		if (!idle_frame)
 			s_total_drawn_frames++;
@@ -461,6 +478,19 @@ void Host::BeginPresentFrame()
 			                      0.0f;
 			s_frame_timer_last = now;
 			sample.gpu_ms = PerformanceMetrics::GetLastGPUTime();
+
+			// Thread CPU time, sampled here on the GS thread itself, so the frame's
+			// delta is what this thread executed between two presents. Under a
+			// GSBackThreadMode above Off the back thread carries part of the work and
+			// is not sampled here; the run summary says so, because a per-draw figure
+			// taken from half the work would read as a win.
+			const u64 gs_cpu_now = MTGS::GetThreadHandle().GetCPUTime();
+			sample.gs_cpu_ms = (s_gs_cpu_time_last && gs_cpu_now > s_gs_cpu_time_last) ?
+			                       static_cast<float>(static_cast<double>(gs_cpu_now - s_gs_cpu_time_last) * 1000.0 /
+			                                          static_cast<double>(Threading::GetThreadTicksPerSecond())) :
+			                       0.0f;
+			s_gs_cpu_time_last = gs_cpu_now;
+			s_saw_gs_back_thread_in_stats |= PerformanceMetrics::HasGSBackThread();
 			s_frame_samples.push_back(sample);
 		}
 
@@ -1344,6 +1374,30 @@ static void WriteStatsJson(const std::string& path)
 	}
 	std::sort(frame_times.begin(), frame_times.end());
 
+	// The absolute per-draw CPU budget: GS-thread CPU per PS2 draw, over drawn frames.
+	// Summed before dividing rather than averaged per frame, so a frame with three
+	// draws does not weigh the same as one with a thousand. Two denominators because
+	// they answer different questions -- per PS2 draw is the number a renderer is held
+	// to (both variants see the same draws), per draw call is what the backend was
+	// actually asked to submit. The first frame's sample is zero by construction and
+	// is skipped with the idle ones.
+	double gs_cpu_ms_total = 0.0;
+	u64 gs_cpu_draws = 0, gs_cpu_draw_calls = 0;
+	std::vector<float> gs_cpu_per_draw_us;
+	gs_cpu_per_draw_us.reserve(s_frame_samples.size());
+	for (const FrameSample& s : s_frame_samples)
+	{
+		if (s.idle || s.gs_cpu_ms <= 0.0f || s.draws == 0)
+			continue;
+		gs_cpu_ms_total += s.gs_cpu_ms;
+		gs_cpu_draws += s.draws;
+		gs_cpu_draw_calls += s.draw_calls;
+		gs_cpu_per_draw_us.push_back(static_cast<float>(s.gs_cpu_ms * 1000.0 / static_cast<double>(s.draws)));
+	}
+	std::sort(gs_cpu_per_draw_us.begin(), gs_cpu_per_draw_us.end());
+	const double gs_cpu_us_per_draw = gs_cpu_draws ? (gs_cpu_ms_total * 1000.0 / static_cast<double>(gs_cpu_draws)) : 0.0;
+	const double gs_cpu_us_per_draw_call = gs_cpu_draw_calls ? (gs_cpu_ms_total * 1000.0 / static_cast<double>(gs_cpu_draw_calls)) : 0.0;
+
 	u32 worst_frame = 0;
 	float worst_ms = 0.0f;
 	for (const FrameSample& s : s_frame_samples)
@@ -1389,6 +1443,11 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"hash_cache_hit\": %" PRIu64 ",\n    \"hash_cache_miss\": %" PRIu64 ",\n",
 		s_total_hash_cache_hit, s_total_hash_cache_miss);
 	std::fprintf(fp.get(), "    \"pipeline_switches\": %" PRIu64 ",\n", s_total_pipeline_switches);
+	std::fprintf(fp.get(), "    \"gs_cpu_ms\": %.3f,\n    \"gs_cpu_us_per_draw\": %.3f,\n    \"gs_cpu_us_per_draw_call\": %.3f,\n",
+		gs_cpu_ms_total, gs_cpu_us_per_draw, gs_cpu_us_per_draw_call);
+	std::fprintf(fp.get(), "    \"gs_cpu_us_per_draw_p50\": %.3f,\n    \"gs_cpu_us_per_draw_p95\": %.3f,\n",
+		Percentile(gs_cpu_per_draw_us, 0.50), Percentile(gs_cpu_per_draw_us, 0.95));
+	std::fprintf(fp.get(), "    \"gs_cpu_partial\": %s,\n", s_saw_gs_back_thread_in_stats ? "true" : "false");
 	std::fprintf(fp.get(), "    \"frame_ms_p50\": %.3f,\n    \"frame_ms_p95\": %.3f,\n    \"frame_ms_p99\": %.3f,\n",
 		Percentile(frame_times, 0.50), Percentile(frame_times, 0.95), Percentile(frame_times, 0.99));
 	std::fprintf(fp.get(), "    \"frame_ms_worst\": %.3f,\n    \"frame_worst_index\": %u\n  },\n", worst_ms, worst_frame);
@@ -1398,7 +1457,7 @@ static void WriteStatsJson(const std::string& path)
 	{
 		const FrameSample& s = s_frame_samples[i];
 		std::fprintf(fp.get(),
-			"    {\"frame\":%u,\"idle\":%s,\"frame_ms\":%.3f,\"gpu_ms\":%.3f,"
+			"    {\"frame\":%u,\"idle\":%s,\"frame_ms\":%.3f,\"gpu_ms\":%.3f,\"gs_cpu_ms\":%.3f,"
 			"\"prims\":%" PRIu64 ",\"draws\":%" PRIu64 ",\"draw_calls\":%" PRIu64 ","
 			"\"render_passes\":%" PRIu64 ",\"barriers\":%" PRIu64 ",\"copies\":%" PRIu64 ","
 			"\"uploads\":%" PRIu64 ",\"readbacks\":%" PRIu64 ","
@@ -1407,7 +1466,7 @@ static void WriteStatsJson(const std::string& path)
 			"\"tc_target_hit\":%" PRIu64 ",\"tc_target_miss\":%" PRIu64 ","
 			"\"hash_cache_hit\":%" PRIu64 ",\"hash_cache_miss\":%" PRIu64 ","
 			"\"pipeline_switches\":%" PRIu64 "}%s\n",
-			s.frame, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms,
+			s.frame, s.idle ? "true" : "false", s.frame_ms, s.gpu_ms, s.gs_cpu_ms,
 			s.prims, s.draws, s.draw_calls,
 			s.render_passes, s.barriers, s.copies,
 			s.uploads, s.readbacks,
@@ -1479,6 +1538,24 @@ void GSRunner::DumpStats()
 
 		Console.WriteLn(fmt::format("@HWSTAT@ Frame Time p50/p95/p99: {:.3f} / {:.3f} / {:.3f} ms",
 			Percentile(frame_times, 0.50), Percentile(frame_times, 0.95), Percentile(frame_times, 0.99)));
+
+		// The absolute per-draw CPU line (same arithmetic as the JSON summary). A ratio
+		// to Classic can only say "not worse"; this says how much a draw costs.
+		double gs_cpu_ms_total = 0.0;
+		u64 gs_cpu_draws = 0;
+		for (const FrameSample& s : s_frame_samples)
+		{
+			if (s.idle || s.gs_cpu_ms <= 0.0f || s.draws == 0)
+				continue;
+			gs_cpu_ms_total += s.gs_cpu_ms;
+			gs_cpu_draws += s.draws;
+		}
+		if (gs_cpu_draws)
+		{
+			Console.WriteLn(fmt::format("@HWSTAT@ GS Thread CPU per draw: {:.3f} us ({:.3f} ms over {} draws{})",
+				gs_cpu_ms_total * 1000.0 / static_cast<double>(gs_cpu_draws), gs_cpu_ms_total, gs_cpu_draws,
+				s_saw_gs_back_thread_in_stats ? ", front thread only" : ""));
+		}
 	}
 	for (const std::string& line : s_extended_stats_snapshot)
 		Console.WriteLn(fmt::format("@HWSTAT@ {}", line));
