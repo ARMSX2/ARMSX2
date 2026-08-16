@@ -486,6 +486,13 @@ TEST(PageClaim, CoversWhatAWideRectangleWrites)
 // the renderer uses to detect the class against an exhaustive check, in the
 // direction that matters -- every real collision must be predicted, over-
 // prediction is merely slow.
+//
+// Measured on gs-clip at three workers, with the fix made inert on the same tree
+// as the control: the control's own two runs differ by 16,512 bytes, all of them
+// in the past-the-stride stage, and score the console 99.49% and 99.72% -- two
+// different answers from one binary. With the draws serialized the two runs are
+// byte-identical, byte-identical to the single-threaded arm, and score 100.00%.
+// 152 of 63,908 corpus software draws qualify, seven of seventeen dumps.
 namespace
 {
 constexpr int kBandShift = 4; // GSRasterizer::m_thread_height, the shipped default
