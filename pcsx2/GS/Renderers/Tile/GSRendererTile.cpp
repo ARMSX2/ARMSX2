@@ -269,9 +269,9 @@ void GSRendererTile::ReportReadbackCensus()
 		Console.WriteLn("    tex-source-rt %8.2f pages  %8.2f sole", n.tex_pages / frames, n.tex_sole / frames);
 		// Served draws never reach the reason columns, so without this line a fully
 		// served title is indistinguishable from one that never renders to texture.
-		Console.WriteLn("    tex-served    %8.2f draws   %8.2f device builds  (%8.2f reinterpreted draws, %8.2f builds)",
+		Console.WriteLn("    tex-served    %8.2f draws   %8.2f device builds  (%8.2f reinterpreted draws, %8.2f builds; %8.2f direct draws)",
 			n.tex_served / frames, static_cast<double>(m_tex_source.DonorBuilds()) / frames,
-			n.tex_reinterpreted / frames, static_cast<double>(m_tex_source.ReinterpretBuilds()) / frames);
+			n.tex_reinterpreted / frames, static_cast<double>(m_tex_source.ReinterpretBuilds()) / frames, n.tex_direct / frames);
 		// The partition of the render-to-texture bill. refuse_format with a sole owner
 		// already found is the interesting row: those bytes ARE on the GPU, in a texture
 		// we own, in the wrong arrangement -- a conversion, not a fetch.
@@ -285,8 +285,9 @@ void GSRendererTile::ReportReadbackCensus()
 		const ClutCensus& c = m_clut_census;
 		Console.WriteLn("  palette loads %8.2f  deferred %8.2f  gathered on device %8.2f  refused: shape %.2f mixed %.2f",
 			c.loads / frames, c.deferred / frames, c.gathered / frames, c.refused_shape / frames, c.refused_mixed / frames);
-		Console.WriteLn("  device-palette draws %8.2f  mixed-provenance syncs %.2f  palettes synced back %.2f (%.2f drained)",
-			c.gpu_palette_draws / frames, c.mixed_syncs / frames, c.sync_backs / frames, c.sync_back_drains / frames);
+		Console.WriteLn("  device-palette draws %8.2f (%8.2f direct)  palettes gathered %8.2f  mixed-provenance syncs %.2f  synced back %.2f (%.2f drained)",
+			c.gpu_palette_draws / frames, c.direct_palette_draws / frames, c.materialized / frames, c.mixed_syncs / frames,
+			c.sync_backs / frames, c.sync_back_drains / frames);
 	}
 }
 
@@ -431,42 +432,111 @@ void GSRendererTile::PostClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& T
 		return;
 	}
 
-	// The gather: the palette's source words, in the loaders' own order, out of the
-	// owner texture into an N×1 palette texture — the same texels the CPU palette cache
-	// would have uploaded from Read32, had the bytes been on the CPU.
+	// The palette lives on the device from here. Its record names the owner surface,
+	// the source pages and their content stamp, and the load's registers; the texture
+	// is gathered LAZILY — a draw whose palette source cannot have moved samples the
+	// owner directly through the CLUT's word order (PS_TILE_DIRECT_PAL, no pass of its
+	// own), and only a source about to be overwritten, or a draw that would read its
+	// own target, or a CPU consumer, makes the gather happen (MaterializePalette).
+	// Where the device cannot address a target in the fragment shader at all, the
+	// gather happens now.
 	const DeferredClutBlocks deferred = m_clut_deferred;
 	m_clut_deferred = {};
 	const GSVramModel::Surface& owner = m_vram_model.Get(deferred.owner);
-	GSTexture* owner_tex = owner.pool_handle ? m_target_pool.GetTexture(owner.pool_handle) : nullptr;
-	const u32 entries = GSLocalMemory::m_psm[TEX0.PSM].pal;
-	GSTexture* pal = owner_tex ? g_gs_device->CreateRenderTarget(static_cast<int>(entries), 1, GSTexture::Format::Color, false, true) : nullptr;
-	GSDevice::TileClutGatherParams params = {};
-	params.cbp = TEX0.CBP;
-	params.dst_bp = owner.layout.bp;
-	params.dst_bwpg = owner.layout.bw;
-	params.entries = entries;
-	if (pal && g_gs_device->TileClutFromTarget(owner_tex, pal, params))
+	GpuPalette gp = {};
+	gp.handle = m_gpu_palette_next++;
+	gp.tex = nullptr;
+	gp.entries = GSLocalMemory::m_psm[TEX0.PSM].pal;
+	gp.owner = deferred.owner;
+	gp.pages = deferred.pages;
+	gp.stamp = GSTileTextureSource::GenStamp(m_vram_model, deferred.pages);
+	gp.cbp = TEX0.CBP;
+	gp.owner_bp = owner.layout.bp;
+	gp.owner_bwpg = owner.layout.bw;
+	m_gpu_palettes.push_back(gp);
+	m_clut_census.gathered++;
+	if (!DirectPaletteServes() && !MaterializePalette(m_gpu_palettes.back()))
 	{
-		const u32 handle = m_gpu_palette_next++;
-		m_gpu_palettes.push_back({handle, pal, entries});
-		m_clut_mirror.OnGpuLoad(first, count, handle);
-		m_clut_census.gathered++;
-	}
-	else
-	{
-		// The device does not serve the gather (no pipeline): read the blocks back and
-		// load again from current bytes; from here on the route is never offered.
-		if (pal)
-			g_gs_device->Recycle(pal);
+		// The device serves neither the direct leg nor the gather: read the blocks back
+		// and load again from current bytes; from here on the route is never offered.
+		m_gpu_palettes.pop_back();
 		m_clut_gather_serves = false;
 		ReadbackModelPages(deferred.pages, ReadbackSite::LocalRead);
 		m_mem.m_clut.WriteLoad(TEX0, TEXCLUT);
 		m_clut_mirror.OnCpuLoad(first, count);
+		PruneGpuPalettes();
+		return;
 	}
+	m_clut_mirror.OnGpuLoad(first, count, gp.handle);
 	PruneGpuPalettes();
 }
 
-GSRendererTile::PaletteChoice GSRendererTile::ResolvePalette(const GIFRegTEX0& TEX0, bool allow_sync)
+bool GSRendererTile::DirectSamplingServes()
+{
+	if (m_direct_probed)
+		return m_direct_serves;
+	m_direct_probed = true;
+	bool clut_ok = false;
+	m_direct_serves = g_gs_device->TileSwizzleFormsFit(clut_ok);
+	m_direct_clut_serves = m_direct_serves && clut_ok;
+	return m_direct_serves;
+}
+
+bool GSRendererTile::DirectPaletteServes()
+{
+	DirectSamplingServes();
+	return m_direct_clut_serves;
+}
+
+// The gather, on demand: the palette's source words, in the loaders' own order, out
+// of the owner texture into an N×1 palette texture — the same texels the CPU palette
+// cache would have uploaded from Read32, had the bytes been on the CPU. Only valid
+// while the source pages hold the bytes the load read, which is why it is called
+// before anything overwrites them.
+bool GSRendererTile::MaterializePalette(GpuPalette& gp)
+{
+	if (gp.tex)
+		return true;
+	const GSVramModel::Surface& owner = m_vram_model.Get(gp.owner);
+	GSTexture* owner_tex = (owner.alive && owner.pool_handle) ? m_target_pool.GetTexture(owner.pool_handle) : nullptr;
+	if (!owner_tex)
+		return false;
+	// (The pages' content stamp may have moved without the owner TEXTURE moving —
+	// another surface writing the same page numbers — which is why the stamp gates
+	// only the direct leg, and this gather keys on the owner's texture alone.)
+	GSTexture* pal = g_gs_device->CreateRenderTarget(static_cast<int>(gp.entries), 1, GSTexture::Format::Color, false, true);
+	if (!pal)
+		return false;
+	GSDevice::TileClutGatherParams params = {};
+	params.cbp = gp.cbp;
+	params.dst_bp = gp.owner_bp;
+	params.dst_bwpg = gp.owner_bwpg;
+	params.entries = gp.entries;
+	if (!g_gs_device->TileClutFromTarget(owner_tex, pal, params))
+	{
+		g_gs_device->Recycle(pal);
+		return false;
+	}
+	gp.tex = pal;
+	m_clut_census.materialized++;
+	return true;
+}
+
+// Every ungathered device palette whose source lies under `pages` is gathered NOW —
+// called before a native draw renders into, or uploads over, those pages, because
+// they are the only two writers of a pool texture and the palette's bytes are about
+// to stop existing there.
+void GSRendererTile::MaterializePalettesOn(const GSPageBitmap& pages)
+{
+	for (GpuPalette& gp : m_gpu_palettes)
+	{
+		if (!gp.tex && gp.pages.intersects(pages))
+			MaterializePalette(gp);
+	}
+}
+
+GSRendererTile::PaletteChoice GSRendererTile::ResolvePalette(const GIFRegTEX0& TEX0, bool allow_sync,
+	GSTileSurfaceId draw_fb, GSTileSurfaceId draw_z)
 {
 	PaletteChoice choice;
 	const u32 pal = GSLocalMemory::m_psm[TEX0.PSM].pal;
@@ -498,10 +568,36 @@ GSRendererTile::PaletteChoice GSRendererTile::ResolvePalette(const GIFRegTEX0& T
 	const GSTileClutMirror::Resolution r = m_clut_mirror.Resolve(first, count);
 	if (r.verdict == GSTileClutMirror::Verdict::Gpu)
 	{
-		GSTexture* tex = GpuPaletteTexture(r.handle);
-		if (tex && tex->GetWidth() != static_cast<int>(pal))
-			tex = GpuPaletteViewFor(r.handle, r.first_texel);
-		choice.gpu = tex;
+		GpuPalette* gp = FindGpuPalette(r.handle);
+		if (gp && !gp->tex && allow_sync)
+		{
+			// Direct: the draw samples the owner texture through the CLUT's word order,
+			// no gather — when the source still holds the load's bytes and the draw does
+			// not write that surface (a read of its own target is a feedback loop).
+			const GSVramModel::Surface& owner = m_vram_model.Get(gp->owner);
+			GSTexture* owner_tex = (owner.alive && owner.pool_handle) ? m_target_pool.GetTexture(owner.pool_handle) : nullptr;
+			const bool source_intact = owner_tex && GSTileTextureSource::GenStamp(m_vram_model, gp->pages) == gp->stamp;
+			const bool not_own_target = gp->owner != draw_fb && gp->owner != draw_z;
+			if (source_intact && not_own_target && DirectPaletteServes())
+			{
+				choice.gpu = owner_tex;
+				choice.direct = true;
+				choice.direct_params = GSVector4i(static_cast<int>(gp->cbp), static_cast<int>(gp->owner_bp),
+					static_cast<int>(gp->owner_bwpg),
+					static_cast<int>(((gp->entries == 256) ? 0x100u : 0u) | r.first_texel));
+			}
+			else
+			{
+				MaterializePalette(*gp);
+			}
+		}
+		if (!choice.direct && gp && gp->tex)
+		{
+			GSTexture* tex = gp->tex;
+			if (tex->GetWidth() != static_cast<int>(pal))
+				tex = GpuPaletteViewFor(r.handle, r.first_texel);
+			choice.gpu = tex;
+		}
 	}
 	else if (r.verdict == GSTileClutMirror::Verdict::Mixed && allow_sync)
 	{
@@ -529,11 +625,13 @@ void GSRendererTile::SyncClutToCpu()
 	if (!m_clut_download)
 		return;
 
-	for (const GpuPalette& gp : m_gpu_palettes)
+	for (GpuPalette& gp : m_gpu_palettes)
 	{
 		bool wanted = false;
 		m_clut_mirror.ForEachUnsyncedSlot([&](u32, u32 handle, u32) { wanted |= (handle == gp.handle); });
 		if (!wanted)
+			continue;
+		if (!MaterializePalette(gp))
 			continue;
 
 		const GSVector4i rc(0, 0, static_cast<int>(gp.entries), 1);
@@ -563,11 +661,11 @@ void GSRendererTile::SyncClutToCpu()
 	}
 }
 
-GSTexture* GSRendererTile::GpuPaletteTexture(u32 handle) const
+GSRendererTile::GpuPalette* GSRendererTile::FindGpuPalette(u32 handle)
 {
-	for (const GpuPalette& gp : m_gpu_palettes)
+	for (GpuPalette& gp : m_gpu_palettes)
 		if (gp.handle == handle)
-			return gp.tex;
+			return &gp;
 	return nullptr;
 }
 
@@ -576,9 +674,10 @@ GSTexture* GSRendererTile::GpuPaletteViewFor(u32 handle, u32 first_texel)
 	for (const GpuPaletteView& v : m_gpu_palette_views)
 		if (v.handle == handle && v.first_texel == first_texel)
 			return v.tex;
-	GSTexture* src = GpuPaletteTexture(handle);
-	if (!src)
+	GpuPalette* gp = FindGpuPalette(handle);
+	if (!gp || !MaterializePalette(*gp))
 		return nullptr;
+	GSTexture* src = gp->tex;
 	GSTexture* tex = g_gs_device->CreateTexture(16, 1, 1, GSTexture::Format::Color, true);
 	if (!tex)
 		return nullptr;
@@ -597,7 +696,8 @@ void GSRendererTile::PruneGpuPalettes()
 			continue;
 		}
 		const u32 handle = m_gpu_palettes[i].handle;
-		g_gs_device->Recycle(m_gpu_palettes[i].tex);
+		if (m_gpu_palettes[i].tex)
+			g_gs_device->Recycle(m_gpu_palettes[i].tex);
 		m_gpu_palettes.erase(m_gpu_palettes.begin() + static_cast<std::ptrdiff_t>(i));
 		for (size_t v = 0; v < m_gpu_palette_views.size();)
 		{
@@ -615,7 +715,8 @@ void GSRendererTile::PruneGpuPalettes()
 void GSRendererTile::ReleaseGpuPalettes()
 {
 	for (const GpuPalette& gp : m_gpu_palettes)
-		g_gs_device->Recycle(gp.tex);
+		if (gp.tex)
+			g_gs_device->Recycle(gp.tex);
 	m_gpu_palettes.clear();
 	for (const GpuPaletteView& v : m_gpu_palette_views)
 		g_gs_device->Recycle(v.tex);
@@ -712,7 +813,7 @@ GSTileDrawInput GSRendererTile::BuildLoweringInput()
 		// and PABE/blend rungs see the full range) rather than paying a readback for a
 		// verdict. The floor, if this draw floors, syncs before it samples.
 		const bool palettised = PRIM->TME && GSLocalMemory::m_psm[m_context->TEX0.PSM].pal > 0;
-		if (palettised && !ResolvePalette(m_context->TEX0, false).cpu_current)
+		if (palettised && !ResolvePalette(m_context->TEX0, false, kGSTileNoSurface, kGSTileNoSurface).cpu_current)
 		{
 			in.alpha_min = 0;
 			in.alpha_max = 255;
@@ -1754,6 +1855,9 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 
 	GSTileTextureSource::Donor donor = {};
 	const GSTileTextureSource::Donor* donor_p = nullptr;
+	GSTexture* direct_tex = nullptr;
+	int direct_fmt = -1;
+	GSVector4i direct_params = GSVector4i::zero();
 	if (!sync_tex.empty())
 	{
 		NativeSyncReasons& n = m_native_sync;
@@ -1804,19 +1908,37 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 				n.refuse_geometry++;
 			else if (fixed_tex0.PSM != PSMCT32)
 			{
+				// Two ways to serve it, both exact. DIRECT: the draw samples the owner
+				// texture itself and does the address arithmetic per fetch in its fragment
+				// shader — no build, no pass of its own — whenever the owner is not the
+				// draw's own colour or depth target (that would be a feedback loop, and
+				// the pool texture is what the pass is writing). Otherwise the device
+				// re-arranges the window into an index texture in a pass of its own.
 				const GSOffset src_off = m_mem.GetOffset(fixed_tex0.TBP0, fixed_tex0.TBW, fixed_tex0.PSM);
-				donor.tex = dtex;
-				donor.width = dw;
-				donor.height = dh;
-				donor.reinterpret = true;
-				donor.params.src_bp = fixed_tex0.TBP0;
-				donor.params.src_bwpg = static_cast<u32>(src_off.pageRowWidth() >> src_off.pageShiftX());
-				donor.params.dst_bp = s.layout.bp;
-				donor.params.dst_bwpg = s.layout.bw;
-				donor.params.fmt = static_cast<u32>(reinterpret_fmt);
-				donor_p = &donor;
+				const u32 src_bwpg = static_cast<u32>(src_off.pageRowWidth() >> src_off.pageShiftX());
+				if (owner != fb_id && owner != z_id && DirectSamplingServes())
+				{
+					direct_tex = dtex;
+					direct_fmt = reinterpret_fmt;
+					direct_params = GSVector4i(static_cast<int>(fixed_tex0.TBP0), static_cast<int>(src_bwpg),
+						static_cast<int>(s.layout.bp), static_cast<int>(s.layout.bw));
+					n.tex_direct++;
+				}
+				else
+				{
+					donor.tex = dtex;
+					donor.width = dw;
+					donor.height = dh;
+					donor.reinterpret = true;
+					donor.params.src_bp = fixed_tex0.TBP0;
+					donor.params.src_bwpg = src_bwpg;
+					donor.params.dst_bp = s.layout.bp;
+					donor.params.dst_bwpg = s.layout.bw;
+					donor.params.fmt = static_cast<u32>(reinterpret_fmt);
+					donor_p = &donor;
+					n.tex_reinterpreted++;
+				}
 				n.tex_served++;
-				n.tex_reinterpreted++;
 				sync_tex = GSPageBitmap();
 			}
 			else
@@ -1875,6 +1997,11 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 			GSDrawLog::NoteTileSync(i == 0 ? static_cast<u32>(sync_set.count()) : 0, reasons);
 	}
 
+	// A device palette still living only in an owner texture must be gathered before
+	// anything overwrites its source: the uploads below and this draw's own rendering
+	// are the only two writers of a pool texture.
+	MaterializePalettesOn(up_fb | up_z | fb_pages | (plan.z_write ? z_pages : GSPageBitmap()));
+
 	if (!readback_ok ||
 		(want_rt && !m_target_pool.UploadPages(m_mem, fb_handle, fb_l, up_fb)) ||
 		(want_ds && !m_target_pool.UploadPages(m_mem, z_handle, z_l, up_z)))
@@ -1897,19 +2024,29 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// detector.)
 	GSTexture* tex = nullptr;
 	GSTexture* pal = nullptr;
+	bool pal_direct = false;
+	GSVector4i pal_direct_params = GSVector4i::zero();
 	if (textured)
 	{
 		const u32 pal_entries = GSLocalMemory::m_psm[ctx->TEX0.PSM].pal;
 		if (pal_entries > 0)
 		{
-			// A palette the device loaded off a rendered page is bound as it is; the
-			// ledger's palette column stays empty for those (the words never visit the
-			// CPU). Otherwise the CPU CLUT — synced first where its slots straddled loads.
-			const PaletteChoice choice = ResolvePalette(ctx->TEX0, true);
+			// A palette the device loaded off a rendered page is bound as it is — the
+			// owner texture itself, sampled through the CLUT's word order, where its
+			// source is intact and is not this draw's target; the gathered texture
+			// otherwise. The ledger's palette column stays empty for those (the words
+			// never visit the CPU). Else the CPU CLUT — synced first where its slots
+			// straddled loads.
+			const PaletteChoice choice = ResolvePalette(ctx->TEX0, true, want_rt ? fb_id : kGSTileNoSurface,
+				want_ds ? z_id : kGSTileNoSurface);
 			if (choice.gpu)
 			{
 				pal = choice.gpu;
+				pal_direct = choice.direct;
+				pal_direct_params = choice.direct_params;
 				m_clut_census.gpu_palette_draws++;
+				if (pal_direct)
+					m_clut_census.direct_palette_draws++;
 			}
 			else
 			{
@@ -1927,24 +2064,31 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 					GSDrawLog::NoteClut(clut, pal_entries);
 			}
 		}
-		tex = m_tex_source.Lookup(m_mem, m_vram_model, fixed_tex0, m_draw_env->TEXA, tex_pages,
-			level_tex0, mip_levels, donor_p);
-		if (!tex)
+		if (direct_tex)
 		{
-			// A device that cannot reinterpret (no pipeline, or not Vulkan) says so once;
-			// from here on the window takes the CPU route like any other refused format,
-			// and only this draw floors.
-			if (donor_p && donor.reinterpret)
-				m_reinterpret_serves = false;
-			reason = GSTileFloorReason::ResourceFailure;
-			return false;
+			tex = direct_tex;
+		}
+		else
+		{
+			tex = m_tex_source.Lookup(m_mem, m_vram_model, fixed_tex0, m_draw_env->TEXA, tex_pages,
+				level_tex0, mip_levels, donor_p);
+			if (!tex)
+			{
+				// A device that cannot reinterpret (no pipeline, or not Vulkan) says so once;
+				// from here on the window takes the CPU route like any other refused format,
+				// and only this draw floors.
+				if (donor_p && donor.reinterpret)
+					m_reinterpret_serves = false;
+				reason = GSTileFloorReason::ResourceFailure;
+				return false;
+			}
 		}
 	}
 
 	SubmitNativeDraw(plan, r, fixed_tex0,
 		want_rt ? m_target_pool.GetTexture(fb_handle) : nullptr,
 		want_ds ? m_target_pool.GetTexture(z_handle) : nullptr,
-		tex, pal);
+		tex, pal, direct_fmt, direct_params, pal_direct, pal_direct_params);
 
 	if (want_rt)
 		m_vram_model.OnNativeDraw(fb_id, fb_pages, plan.fb_claims);
@@ -2278,7 +2422,8 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloo
 }
 
 void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, const GIFRegTEX0& fixed_tex0,
-	GSTexture* rt, GSTexture* ds, GSTexture* tex, GSTexture* pal)
+	GSTexture* rt, GSTexture* ds, GSTexture* tex, GSTexture* pal, int direct_idx, const GSVector4i& direct_idx_params,
+	bool pal_direct, const GSVector4i& pal_direct_params)
 {
 	const GSDrawingContext* ctx = m_context;
 	GSHWDrawConfig conf = {};
@@ -2399,6 +2544,20 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 		{
 			conf.pal = pal;
 			conf.ps.pal_fmt = 3;
+			if (pal_direct)
+			{
+				conf.ps.tile_direct_pal = 1;
+				conf.cb_ps.TileDirectPal = pal_direct_params;
+			}
+		}
+		// The direct index leg: `tex` is the owner target and every fetch goes through
+		// the swizzle (fetch_texel_tile), so the draw runs the texelFetch legs whatever
+		// its filter — the sampler cannot do address arithmetic.
+		const bool direct_leg = direct_idx >= 0;
+		if (direct_leg)
+		{
+			conf.ps.tile_direct_idx = static_cast<u32>(direct_idx) + 1;
+			conf.cb_ps.TileDirectIdx = direct_idx_params;
 		}
 		conf.vs.tme = 1;
 		conf.vs.fst = PRIM->FST;
@@ -2445,7 +2604,7 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 		const bool stq_walk = !PRIM->FST && m_vt.m_primclass == GS_TRIANGLE_CLASS;
 		const bool tclag_draw =
 			m_vt.m_primclass != GS_SPRITE_CLASS && m_vt.m_primclass != GS_POINT_CLASS;
-		if (mip_draw || m_vt.IsLinear() || stq_walk || tclag_draw)
+		if (mip_draw || m_vt.IsLinear() || stq_walk || tclag_draw || direct_leg)
 		{
 			conf.ps.tile_tclag = tclag_draw;
 			// texelFetch bypasses the sampler, so every wrap mode runs in the

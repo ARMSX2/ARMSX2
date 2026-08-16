@@ -83,8 +83,13 @@ private:
 	bool TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTileFloorReason& reason);
 	bool BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloorReason& reason);
 	void DeindexVertices();
+	/// direct_idx: -1 = tex is an ordinary source; else GSTileSwizzleForms::IndexFormat and
+	/// tex is the OWNER texture addressed through the swizzle (direct_idx_params →
+	/// cb_ps.TileDirectIdx). pal_direct: pal is the owner texture holding the CLUT's
+	/// source words (pal_direct_params → cb_ps.TileDirectPal).
 	void SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, const GIFRegTEX0& fixed_tex0,
-		GSTexture* rt, GSTexture* ds, GSTexture* tex, GSTexture* pal);
+		GSTexture* rt, GSTexture* ds, GSTexture* tex, GSTexture* pal, int direct_idx, const GSVector4i& direct_idx_params,
+		bool pal_direct, const GSVector4i& pal_direct_params);
 	void FlattenProvokingColor();
 	GSTileSurfaceId EnsureSurface(const GSTileSurfaceLayout& layout, const GSVector4i& rect, const GSPageBitmap& pages, bool& ok);
 	GSPageBitmap PagesNeedingUpload(GSTileSurfaceId id, const GSPageBitmap& pages, u8 relevant_planes) const;
@@ -155,6 +160,9 @@ private:
 		/// target through the GS swizzle on the device (a palettised view of CT32/CT24
 		/// bytes) rather than copied — the format refusal this replaces.
 		u32 tex_reinterpreted = 0;
+		/// ... and those served with no build at all: the draw addresses the owner
+		/// texture through the swizzle in its own fragment shader (PS_TILE_DIRECT_IDX).
+		u32 tex_direct = 0;
 
 		/// Why a draw that WOULD have drained for its texture did not get served off the
 		/// device. Only draws facing a real drain are counted, so this is a partition of
@@ -203,8 +211,14 @@ private:
 	struct GpuPalette
 	{
 		u32 handle;
-		GSTexture* tex;
+		GSTexture* tex; ///< the gathered N×1 palette, or null while it lives only in the owner
 		u32 entries; ///< 16 or 256
+		GSTileSurfaceId owner; ///< the surface whose texture holds the source words
+		GSPageBitmap pages; ///< the source pages
+		u64 stamp; ///< their content stamp at load time (GSTileTextureSource::GenStamp)
+		u32 cbp; ///< the load's CBP
+		u32 owner_bp; ///< the owner's layout, for the address arithmetic
+		u32 owner_bwpg;
 	};
 
 	/// A sixteen-entry window into a 256-entry device palette, for a four-bit draw
@@ -220,20 +234,30 @@ private:
 	{
 		GSTexture* gpu = nullptr; ///< bind this palette; null = the CPU CLUT is the palette
 		bool cpu_current = true; ///< the CPU CLUT holds the right entries for this draw
+		bool direct = false; ///< `gpu` is the OWNER texture: sample it through the CLUT's word order (PS_TILE_DIRECT_PAL)
+		GSVector4i direct_params = GSVector4i::zero(); ///< cb_ps.TileDirectPal when direct
 	};
 
 	/// The palette a palettised draw under TEX0 should use. With `allow_sync`, a mixed
-	/// provenance is resolved by syncing the device slots down first (a readback); without
-	/// it the answer only says whether the CPU CLUT can be trusted (the lowering's alpha
-	/// range must go conservative when it cannot).
-	PaletteChoice ResolvePalette(const GIFRegTEX0& TEX0, bool allow_sync);
+	/// provenance is resolved by syncing the device slots down first (a readback), and
+	/// an ungathered device palette is either sampled directly (when its source is
+	/// intact and is not the draw's own target, given as draw_fb/draw_z) or gathered;
+	/// without it the answer only says whether the CPU CLUT can be trusted (the
+	/// lowering's alpha range must go conservative when it cannot).
+	PaletteChoice ResolvePalette(const GIFRegTEX0& TEX0, bool allow_sync, GSTileSurfaceId draw_fb, GSTileSurfaceId draw_z);
 	/// Copies every device-authoritative slot's entries the CPU does not yet hold into
-	/// GSClut (a readback per device palette involved).
+	/// GSClut (a readback per device palette involved, gathering first where needed).
 	void SyncClutToCpu();
-	GSTexture* GpuPaletteTexture(u32 handle) const;
+	GpuPalette* FindGpuPalette(u32 handle);
 	GSTexture* GpuPaletteViewFor(u32 handle, u32 first_texel);
+	bool MaterializePalette(GpuPalette& gp);
+	void MaterializePalettesOn(const GSPageBitmap& pages);
 	void PruneGpuPalettes();
 	void ReleaseGpuPalettes();
+	/// Whether the device can address a colour target through the GS swizzle in the
+	/// fragment shader (the direct legs); probed once.
+	bool DirectSamplingServes();
+	bool DirectPaletteServes();
 
 	struct ClutCensus
 	{
@@ -243,6 +267,8 @@ private:
 		u32 refused_shape = 0; ///< deferred, but the load's shape is not served: read back after all
 		u32 refused_mixed = 0; ///< deferred blocks beside undeferrable ones: read back after all
 		u32 gpu_palette_draws = 0; ///< native draws that bound a device palette
+		u32 direct_palette_draws = 0; ///< ... of which sampled the owner directly (no gather)
+		u32 materialized = 0; ///< device palettes actually gathered (a pass of their own)
 		u32 mixed_syncs = 0; ///< draws whose slots straddled loads and synced first
 		u32 sync_backs = 0; ///< device palettes copied down to the CPU CLUT
 		u32 sync_back_drains = 0; ///< ... of which drained the frame's buffer
@@ -314,6 +340,9 @@ private:
 	std::unique_ptr<GSDownloadTexture> m_clut_download;
 	u32 m_gpu_palette_next = 1;
 	bool m_clut_gather_serves = true; ///< cleared when the device refuses a gather
+	bool m_direct_probed = false;
+	bool m_direct_serves = false;
+	bool m_direct_clut_serves = false;
 	ClutCensus m_clut_census{};
 
 	// Per-primitive plane payload for the current draw: the depth walk's blocks

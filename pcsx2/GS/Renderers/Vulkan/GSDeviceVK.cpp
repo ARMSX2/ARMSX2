@@ -5835,16 +5835,36 @@ bool GSDeviceVK::CompileConvertPipelines()
 // runtime — the swizzle forms are FITTED from GSTables.cpp and prepended as
 // defines, so a table that stopped fitting disables the route here instead of
 // addressing the wrong bytes.
+const std::string& GSDeviceVK::TileFormDefines()
+{
+	if (!m_tile_forms_fitted)
+	{
+		m_tile_forms = GSTileSwizzleForms::Fit();
+		m_tile_forms_fitted = true;
+		m_tile_form_defines = GSTileSwizzleForms::ShaderDefines(m_tile_forms);
+		if (!m_tile_forms.valid)
+			Console.Error("GS/Tile: the page swizzle tables no longer fit closed forms; device-side reinterpretation is off.");
+		if (!m_tile_forms.clut_valid)
+			Console.Error("GS/Tile: the CLUT loaders' word order no longer fits a closed form; device-side CLUT gather is off.");
+	}
+	return m_tile_form_defines;
+}
+
+bool GSDeviceVK::TileSwizzleFormsFit(bool& clut_ok)
+{
+	TileFormDefines();
+	clut_ok = m_tile_forms.clut_valid;
+	return m_tile_forms.valid;
+}
+
 bool GSDeviceVK::CompileTileReinterpretPipelines()
 {
 	m_tile_reinterpret_tried = true;
 
-	const GSTileSwizzleForms::FormSet forms = GSTileSwizzleForms::Fit();
+	const std::string& defines = TileFormDefines();
+	const GSTileSwizzleForms::FormSet& forms = m_tile_forms;
 	if (!forms.valid)
-	{
-		Console.Error("GS/Tile: the page swizzle tables no longer fit closed forms; device-side index reinterpretation is off.");
 		return false;
-	}
 
 	const std::optional<std::string> vsource = ReadShaderSource("shaders/vulkan/convert.glsl");
 	const std::optional<std::string> fsource = ReadShaderSource("shaders/vulkan/tile_convert.glsl");
@@ -5876,17 +5896,13 @@ bool GSDeviceVK::CompileTileReinterpretPipelines()
 	gpb.SetNoStencilState();
 	gpb.SetColorWriteMask(0, VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
 
-	const std::string defines = GSTileSwizzleForms::ShaderDefines(forms);
 	for (u32 i = 0; i < m_tile_reinterpret.size(); i++)
 	{
 		// 0..4: the index formats; 5 and 6: the CLUT gather at 16 and 256 entries. The
 		// gather needs the CLUT loaders' word order to have fitted as well.
 		const bool clut = i >= 5;
 		if (clut && !forms.clut_valid)
-		{
-			Console.Error("GS/Tile: the CLUT loaders' word order no longer fits a closed form; device-side CLUT gather is off.");
 			continue;
-		}
 		const u32 fmt = clut ? 0 : i;
 		const u32 entries = (i == 5) ? 16 : 256;
 		const std::string source = defines +
@@ -6758,6 +6774,12 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_TILE_TCLAG", sel.tile_tclag);
 	AddMacro(ss, "PS_TILE_BLEND_MIX", sel.tile_blend_mix);
 	AddMacro(ss, "PS_TILE_BLEND", sel.tile_blend);
+	AddMacro(ss, "PS_TILE_DIRECT_IDX", sel.tile_direct_idx);
+	AddMacro(ss, "PS_TILE_DIRECT_PAL", sel.tile_direct_pal);
+	// The direct legs address a colour target through the GS swizzle: the forms
+	// fitted from the tree's tables ride along as defines (GSTileSwizzleForms).
+	if (sel.tile_direct_idx || sel.tile_direct_pal)
+		ss << TileFormDefines();
 	AddMacro(ss, "PS_AUTOMATIC_LOD", sel.automatic_lod);
 	AddMacro(ss, "PS_MANUAL_LOD", sel.manual_lod);
 	AddMacro(ss, "PS_COLCLIP", sel.colclip);

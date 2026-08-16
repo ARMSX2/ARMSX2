@@ -8,6 +8,7 @@
 #include "GS/Renderers/Vulkan/GSTextureVK.h"
 #include "GS/Renderers/Vulkan/VKLoader.h"
 #include "GS/Renderers/Vulkan/VKStreamBuffer.h"
+#include "GS/Renderers/Tile/GSTileSwizzleForms.h"
 
 #include "common/HashCombine.h"
 #include "common/ReadbackSpinManager.h"
@@ -176,6 +177,7 @@ public:
 	u64 GetSubmitEpoch() const override { return GetCurrentFenceCounter(); }
 	bool TileReinterpretIndex(GSTexture* owner, GSTexture* dst, const TileReinterpretParams& p) override;
 	bool TileClutFromTarget(GSTexture* owner, GSTexture* dst, const TileClutGatherParams& p) override;
+	bool TileSwizzleFormsFit(bool& clut_ok) override;
 	u64 GetCompletedSubmitEpoch() override
 	{
 		ScanForCommandBufferCompletion();
@@ -535,6 +537,10 @@ private:
 	/// defines (see tile_convert.glsl).
 	std::array<VkPipeline, 7> m_tile_reinterpret{};
 	bool m_tile_reinterpret_tried = false;
+	GSTileSwizzleForms::FormSet m_tile_forms{};
+	bool m_tile_forms_fitted = false;
+	std::string m_tile_form_defines;
+	const std::string& TileFormDefines();
 	std::array<VkPipeline, static_cast<int>(PresentShader::Count)> m_present{};
 	std::array<VkPipeline, 2> m_merge{};
 	std::array<VkPipeline, NUM_INTERLACE_SHADERS> m_interlace{};

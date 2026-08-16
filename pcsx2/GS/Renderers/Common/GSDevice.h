@@ -751,6 +751,8 @@ struct alignas(16) GSHWDrawConfig
 				u32 tile_tclag : 1; // Tile renderer: a non-sprite coordinate trails the exact plane by one 16.16 unit on each axis walking forward (gs-shade console rule)
 				u32 tile_blend_mix : 1; // Tile renderer: blend-mix offsets at the exact-floor constant (127/256) instead of Classic's reduced-precision-ROP compromise (124/256)
 				u32 tile_blend : 1; // Tile renderer: the whole blend equation in the console's integer arithmetic over a read destination — (((A−B)·C)>>7)+D, the shift ARITHMETIC
+				u32 tile_direct_idx : 3; // Tile renderer: the index texture IS a colour target, addressed through the GS swizzle per fetch — 0 off, else GSTileSwizzleForms::IndexFormat + 1
+				u32 tile_direct_pal : 1; // Tile renderer: the palette IS a colour target holding the CLUT's source words, gathered per fetch through the loaders' word order
 
 				// Shuffle and fbmask effect
 				u32 shuffle  : 1;
@@ -1159,6 +1161,12 @@ struct alignas(16) GSHWDrawConfig
 		float TileZBase;
 		float TileSTQBase;
 		float _pad_tile[3];
+		// Tile renderer, direct sampling of a colour target through the GS swizzle
+		// (PS_TILE_DIRECT_IDX / PS_TILE_DIRECT_PAL): the index window's TBP0 and
+		// pages-per-row and the owner's base and pages-per-row; the palette's CBP,
+		// its owner's base and pages-per-row, and (entry-kind << 8) | first entry.
+		GSVector4i TileDirectIdx;
+		GSVector4i TileDirectPal;
 
 		__fi PSConstantBuffer()
 		{
@@ -1905,6 +1913,16 @@ public:
 		u32 entries; ///< 16 or 256
 	};
 	virtual bool TileClutFromTarget(GSTexture* owner, GSTexture* dst, const TileClutGatherParams& p) { return false; }
+
+	/// Tile renderer: whether this device can address a colour target through the GS
+	/// swizzle in a fragment shader at all (the closed forms fitted, the shader legs
+	/// exist) — the precondition for PS_TILE_DIRECT_IDX / PS_TILE_DIRECT_PAL. `clut_ok`
+	/// says the same for the palette's word order. False on every backend but Vulkan.
+	virtual bool TileSwizzleFormsFit(bool& clut_ok)
+	{
+		clut_ok = false;
+		return false;
+	}
 
 	/// Enables/disables GPU frame timing.
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;

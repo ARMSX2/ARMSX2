@@ -687,6 +687,15 @@ layout(std140, set = 0, binding = 1) uniform cb1
 	float TileLtfxQ;
 	float TileZBase;
 	float TileSTQBase;
+	float _pad2_cb1;
+	float _pad3_cb1;
+	float _pad4_cb1;
+	// Tile renderer, direct sampling of a colour target through the GS swizzle:
+	// the index window's TBP0, pages-per-row, its owner's base and pages-per-row;
+	// the palette's CBP, its owner's base and pages-per-row, and
+	// (entry-kind << 8) | first entry.
+	uvec4 TileDirectIdx;
+	uvec4 TileDirectPal;
 };
 
 layout(location = 0) in VSOutput
@@ -1038,9 +1047,80 @@ vec4 sample_c(vec2 uv)
 #endif
 }
 
+#if PS_TILE_DIRECT_IDX || PS_TILE_DIRECT_PAL
+// The GS page swizzle as closed forms (GSTileSwizzleForms; TILE_SWZ_* injected by
+// the backend from the runtime fit of GSTables.cpp). Same functions as
+// tile_convert.glsl.
+#define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
+uint tile_b48(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_B48_X0) ^ XB(x, 1u, TILE_SWZ_B48_X1) ^ XB(x, 2u, TILE_SWZ_B48_X2)
+	     ^ XB(y, 0u, TILE_SWZ_B48_Y0) ^ XB(y, 1u, TILE_SWZ_B48_Y1);
+}
+uint tile_b84(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_B84_X0) ^ XB(x, 1u, TILE_SWZ_B84_X1)
+	     ^ XB(y, 0u, TILE_SWZ_B84_Y0) ^ XB(y, 1u, TILE_SWZ_B84_Y1) ^ XB(y, 2u, TILE_SWZ_B84_Y2);
+}
+uint tile_c32(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_C32_X0) ^ XB(x, 1u, TILE_SWZ_C32_X1) ^ XB(x, 2u, TILE_SWZ_C32_X2)
+	     ^ XB(y, 0u, TILE_SWZ_C32_Y0) ^ XB(y, 1u, TILE_SWZ_C32_Y1) ^ XB(y, 2u, TILE_SWZ_C32_Y2);
+}
+uint tile_c8(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_C8_X0) ^ XB(x, 1u, TILE_SWZ_C8_X1) ^ XB(x, 2u, TILE_SWZ_C8_X2) ^ XB(x, 3u, TILE_SWZ_C8_X3)
+	     ^ XB(y, 0u, TILE_SWZ_C8_Y0) ^ XB(y, 1u, TILE_SWZ_C8_Y1) ^ XB(y, 2u, TILE_SWZ_C8_Y2) ^ XB(y, 3u, TILE_SWZ_C8_Y3);
+}
+uint tile_c4(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_C4_X0) ^ XB(x, 1u, TILE_SWZ_C4_X1) ^ XB(x, 2u, TILE_SWZ_C4_X2) ^ XB(x, 3u, TILE_SWZ_C4_X3) ^ XB(x, 4u, TILE_SWZ_C4_X4)
+	     ^ XB(y, 0u, TILE_SWZ_C4_Y0) ^ XB(y, 1u, TILE_SWZ_C4_Y1) ^ XB(y, 2u, TILE_SWZ_C4_Y2) ^ XB(y, 3u, TILE_SWZ_C4_Y3);
+}
+uint tile_ib48(uint v)
+{
+	return XB(v, 0u, TILE_SWZ_IB48_0) ^ XB(v, 1u, TILE_SWZ_IB48_1) ^ XB(v, 2u, TILE_SWZ_IB48_2)
+	     ^ XB(v, 3u, TILE_SWZ_IB48_3) ^ XB(v, 4u, TILE_SWZ_IB48_4);
+}
+uint tile_ic32(uint v)
+{
+	return XB(v, 0u, TILE_SWZ_IC32_0) ^ XB(v, 1u, TILE_SWZ_IC32_1) ^ XB(v, 2u, TILE_SWZ_IC32_2)
+	     ^ XB(v, 3u, TILE_SWZ_IC32_3) ^ XB(v, 4u, TILE_SWZ_IC32_4) ^ XB(v, 5u, TILE_SWZ_IC32_5);
+}
+uint tile_clut8_word(uint e)
+{
+	return XB(e, 0u, TILE_SWZ_CLUT8_0) ^ XB(e, 1u, TILE_SWZ_CLUT8_1) ^ XB(e, 2u, TILE_SWZ_CLUT8_2) ^ XB(e, 3u, TILE_SWZ_CLUT8_3)
+	     ^ XB(e, 4u, TILE_SWZ_CLUT8_4) ^ XB(e, 5u, TILE_SWZ_CLUT8_5) ^ XB(e, 6u, TILE_SWZ_CLUT8_6) ^ XB(e, 7u, TILE_SWZ_CLUT8_7);
+}
+uint tile_clut4_word(uint e)
+{
+	return XB(e, 0u, TILE_SWZ_CLUT4_0) ^ XB(e, 1u, TILE_SWZ_CLUT4_1) ^ XB(e, 2u, TILE_SWZ_CLUT4_2) ^ XB(e, 3u, TILE_SWZ_CLUT4_3);
+}
+#endif
+
 vec4 sample_p(uint idx)
 {
+#if PS_TILE_DIRECT_PAL
+	// The palette IS a colour target holding the CLUT's source words: entry →
+	// source word is the CSM1 32-bit loaders' own order (an eight-bit palette's
+	// form over the entry within all 256, a four-bit one's over its sixteen), word
+	// → owner texel is the inverse swizzle. TileDirectPal = (CBP, owner base,
+	// owner pages-per-row, (kind << 8) | first entry) — kind 1 = eight-bit.
+	uint e = idx + (TileDirectPal.w & 0xFFu);
+	uint w = ((TileDirectPal.w >> 8u) != 0u) ? tile_clut8_word(e) : tile_clut4_word(e);
+	uint blk = TileDirectPal.x + (w >> 6u);
+	uint rel = blk - TileDirectPal.y;
+	uint pg = rel >> 5u;
+	uint bpk = tile_ib48(rel & 31u);
+	uint cpk = tile_ic32(w & 63u);
+	uint bwpg = max(TileDirectPal.z, 1u);
+	ivec2 xy = ivec2(int((pg % bwpg) * 64u + (bpk & 7u) * 8u + (cpk & 7u)),
+	                 int((pg / bwpg) * 32u + (bpk >> 3u) * 8u + (cpk >> 3u)));
+	xy = clamp(xy, ivec2(0), textureSize(Palette, 0) - 1);
+	return texelFetch(Palette, xy, 0);
+#else
 	return texelFetch(Palette, ivec2(int(idx), 0), 0);
+#endif
 }
 
 vec4 sample_p_norm(float u)
@@ -1491,6 +1571,68 @@ vec4 sample_color(vec2 st)
 // silicon expands every filter corner through the CLUT and then blends the
 // colours (194 of 194 twin pairs), never the other order.
 
+#if PS_TILE_DIRECT_IDX
+// The index texture IS a colour target: the game samples a CT32/CT24 render
+// target through a palettised format, i.e. reads the target's BYTES as indices.
+// Rather than draining the target or converting it in a pass of its own, the
+// fetch addresses the owner texture through the GS swizzle — the index texel's
+// absolute block and unit within the block (the format's block and column
+// forms), then the same block relative to the page-aligned owner through the
+// inverse forms. The forms are GF(2)-linear maps fitted at runtime from
+// GSTables.cpp (TILE_SWZ_* defines, GSTileSwizzleForms); the arithmetic is
+// Locate() there, pinned against GSOffset::pa. TileDirectIdx = (window TBP0,
+// window pages-per-row, owner base, owner pages-per-row).
+uint tile_direct_index(ivec2 xy)
+{
+	uint u = uint(xy.x);
+	uint v = uint(xy.y);
+	uint blk;
+	uint byte_in_block;
+	uint nibble;
+#if PS_TILE_DIRECT_IDX == 1
+	// PSMT8: 128x64 pages, 16x16 blocks, one byte per texel.
+	uint page = (v >> 6u) * TileDirectIdx.y + (u >> 7u);
+	blk = TileDirectIdx.x + page * 32u + tile_b48((u >> 4u) & 7u, (v >> 4u) & 3u);
+	byte_in_block = tile_c8(u & 15u, v & 15u);
+	nibble = 0u;
+#elif PS_TILE_DIRECT_IDX == 2
+	// PSMT4: 128x128 pages, 32x16 blocks, one nibble per texel (even = low).
+	uint page = (v >> 7u) * TileDirectIdx.y + (u >> 7u);
+	blk = TileDirectIdx.x + page * 32u + tile_b84((u >> 5u) & 3u, (v >> 4u) & 7u);
+	uint nib = tile_c4(u & 31u, v & 15u);
+	byte_in_block = nib >> 1u;
+	nibble = nib & 1u;
+#else
+	// The alpha-byte views over the CT32 layout: 64x32 pages, 8x8 blocks, one
+	// word per texel, the index in byte 3.
+	uint page = (v >> 5u) * TileDirectIdx.y + (u >> 6u);
+	blk = TileDirectIdx.x + page * 32u + tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u);
+	byte_in_block = tile_c32(u & 7u, v & 7u) * 4u + 3u;
+	nibble = (PS_TILE_DIRECT_IDX == 5) ? 1u : 0u;
+#endif
+	uint rel = blk - TileDirectIdx.z;
+	uint pg = rel >> 5u;
+	uint bip = rel & 31u;
+	uint bpk = tile_ib48(bip);
+	uint word = byte_in_block >> 2u;
+	uint ch = byte_in_block & 3u;
+	uint cpk = tile_ic32(word);
+	uint bwpg = max(TileDirectIdx.w, 1u);
+	ivec2 oxy = ivec2(int((pg % bwpg) * 64u + (bpk & 7u) * 8u + (cpk & 7u)),
+	                  int((pg / bwpg) * 32u + (bpk >> 3u) * 8u + (cpk >> 3u)));
+	oxy = clamp(oxy, ivec2(0), textureSize(Texture, 0) - 1);
+	uvec4 bytes = uvec4(texelFetch(Texture, oxy, 0) * 255.0f + 0.5f);
+	uint b = (ch == 0u) ? bytes.r : (ch == 1u) ? bytes.g : (ch == 2u) ? bytes.b : bytes.a;
+#if PS_TILE_DIRECT_IDX == 1 || PS_TILE_DIRECT_IDX == 3
+	return b;
+#else
+	// bitfieldExtract, not shift-and-mask: the latter is shape-dependently
+	// miscompiled by honeykrisp (M2/Asahi) on sub-word extracts.
+	return bitfieldExtract(b, int(nibble * 4u), 4);
+#endif
+}
+#endif
+
 ivec4 tile_texel_color(vec4 t)
 {
 #if PS_PAL_FMT != 0
@@ -1509,7 +1651,11 @@ ivec4 fetch_texel_tile(ivec2 xy)
 	// here a coordinate escaping the texture reads the edge texel instead. No
 	// corpus draw does this; the probe gate would surface one that mattered.
 	xy = clamp(xy, ivec2(0), ivec2(WH.xy) - 1);
+#if PS_TILE_DIRECT_IDX
+	return ivec4(sample_p(tile_direct_index(xy)) * 255.0f + 0.5f);
+#else
 	return tile_texel_color(texelFetch(Texture, xy, 0));
+#endif
 }
 
 ivec2 wrap_tile(ivec2 xy)
