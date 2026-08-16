@@ -47,6 +47,37 @@ __forceinline static void TruncateDepthGradient(GSVector4& p)
 	p.F64[1] = std::trunc(p.F64[1] * 1024.0) / 1024.0;
 }
 
+// The depth gradients are formed from the PLANE, in double, not from the float32
+// barycentric coefficients the colour and texture lanes use.
+//
+// The vector setup below computes every attribute gradient as delta x (float32
+// coefficient), and for depth that coefficient carried a relative error of ~1e-8
+// whose SIGN depended on the triangle -- on how 1/dx happened to round -- so the
+// same plane, carried by triangles of different width, came out with a gradient
+// that the 2^-10 truncation then landed either a step BELOW the true value
+// (deficit: the walk runs short, integer landings store N-1, which is what silicon
+// does) or a step ABOVE it (surplus: the walk overtakes the plane and integer
+// landings store N). gs-block (SCPH-30001, 2026-08-15) swept one plane across
+// eight left edges: silicon read every integer landing one below on all eight, our
+// arm read the plane's own integer on two of them (widths 90 and 75, whose float32
+// reciprocals round up) and one below on the other six -- 46 of 136 readings
+// separated by where the span began, on a walk that is otherwise exact.
+//
+// In double the numerators are exact (a 32-bit z difference times a 12.4 position
+// difference fits a 53-bit mantissa) and the single division is correctly rounded,
+// so the truncated step is a function of the plane alone -- which is what makes a
+// pixel's depth a function of the pixel and the plane, and what a fragment shader
+// can reproduce.
+__forceinline static void FormDepthGradients(const GSVector4& dv0p, double dv0z, const GSVector4& dv1p, double dv1z, double& dscan_z, double& dedge_z)
+{
+	const double d0x = dv0p.x, d0y = dv0p.y, d1x = dv1p.x, d1y = dv1p.y;
+	// The setup's "cross" is the negated cross product; keep its sign so the two
+	// gradients keep theirs.
+	const double cross = d0y * d1x - d0x * d1y;
+	dscan_z = (dv1z * d0y - dv0z * d1y) / cross;
+	dedge_z = (dv0z * d1x - dv1z * d0x) / cross;
+}
+
 int GSRasterizerData::s_counter = 0;
 
 static int compute_best_thread_height(int threads)
@@ -798,6 +829,9 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 	dscan = dv1 * dxy01c.yyyy() - dv0 * dxy01c.wwww();
 	dedge = dv0 * dxy01c.zzzz() - dv1 * dxy01c.xxxx();
 
+	// ⚠️ Not compiled on this tree's ARM64 host (this is the AVX2 twin) -- mirrors
+	// the scalar path above so an x86 software renderer walks the same depth.
+	FormDepthGradients(dv0.p, dv0.p.F64[1], dv1.p, dv1.p.F64[1], dscan.p.F64[1], dedge.p.F64[1]);
 	TruncateDepthGradient(dscan.p);
 
 	if (m1 & 1)
@@ -1034,6 +1068,7 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 	out.dscan = dv1 * dxy01c.yyyy() - dv0 * dxy01c.wwww();
 	GSVertexSW dedge = dv0 * dxy01c.zzzz() - dv1 * dxy01c.xxxx();
 
+	FormDepthGradients(dv0.p, dv0.p.F64[1], dv1.p, dv1.p.F64[1], out.dscan.p.F64[1], dedge.p.F64[1]);
 	TruncateDepthGradient(out.dscan.p);
 
 	out.nsections = 0;
