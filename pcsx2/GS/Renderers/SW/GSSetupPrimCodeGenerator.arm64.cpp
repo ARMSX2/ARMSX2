@@ -281,9 +281,22 @@ void GSSetupPrimCodeGenerator::Texture()
 		armAsm->Str(_vscratch, _local(tclag.v));
 	}
 
+	// The multiply above is by m_shift[0], four pixels, and for a TEXTURED draw
+	// four is also the hardware's block width -- so this path steps exactly one
+	// block and wants none of the m_block8 machinery the colour step carries.
+	// The two fours coincide on a four-lane host and would not on a wider one,
+	// which is why the width has to stay a property of the block; GSBlockWalk.h
+	// records the same gap against the x86 generators.
+	pxAssert(!m_block_split && GSBlockWalkWidth(m_sel) == 4);
+
 	if (m_sel.fst)
 	{
 		// m_local.d4.stq = GSVector4i(t * 4.0f);
+		//
+		// Truncating the block step and accumulating it is the hardware's shape
+		// rather than a lossy stand-in for an exact plane -- a block contributes
+		// B*trunc(g*W). It is identity on a gradient that is a power of two per
+		// pixel, which is every sprite gradient any capture we own draws.
 		armAsm->Fcvtzs(v1.V4S(), v1.V4S());
 		armAsm->Str(v1, MemOperand(_locals, offsetof(GSScanlineLocalData, d4.stq)));
 	}
