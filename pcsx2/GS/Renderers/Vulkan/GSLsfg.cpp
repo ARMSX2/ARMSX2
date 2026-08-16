@@ -44,6 +44,13 @@ namespace GSLsfg
 		// Sticky: a device that failed to initialise once will fail the same way every frame,
 		// and retrying inside the present path would turn one bad init into a per-frame stall.
 		std::atomic<bool> s_init_failed{false};
+
+		// The structural PE check reads the file, and GetUnavailableReason() runs once per frame
+		// from EndPresent while the feature is on — so without this the GS thread did an
+		// fopen/fread/fseek/fread/fclose on the present path every single frame. The verdict can
+		// only change when the path does, which is exactly when SetDllPath() clears it.
+		std::atomic<bool> s_dll_checked{false};
+		std::atomic<bool> s_dll_ok{false};
 	} // namespace
 
 	void NoteRendererCapability(bool is_vulkan, u32 adreno_generation)
@@ -60,6 +67,7 @@ namespace GSLsfg
 		s_dll_path = std::move(path);
 		// A new DLL deserves a fresh attempt; the previous failure may have been this file.
 		s_init_failed.store(false, std::memory_order_relaxed);
+		s_dll_checked.store(false, std::memory_order_relaxed);
 	}
 
 	const std::string& GetDllPath() { return s_dll_path; }
@@ -117,7 +125,12 @@ namespace GSLsfg
 
 		if (s_dll_path.empty())
 			return Unavailable::NoDll;
-		if (!LooksLikeLosslessDll(s_dll_path))
+		if (!s_dll_checked.load(std::memory_order_acquire))
+		{
+			s_dll_ok.store(LooksLikeLosslessDll(s_dll_path), std::memory_order_relaxed);
+			s_dll_checked.store(true, std::memory_order_release);
+		}
+		if (!s_dll_ok.load(std::memory_order_relaxed))
 			return Unavailable::DllUnreadable;
 		if (s_init_failed.load(std::memory_order_relaxed))
 			return Unavailable::InitFailed;
@@ -789,17 +802,40 @@ namespace GSLsfg
 			s_backend.wait_idle();
 
 		// 3. Present each interpolated frame, then the real one last — the generated frames sit
-		//    between the previous real frame and this one, so they display first.
-		VkSemaphore wait_for_real = s_pre_copy_sem;
+		//    between the previous real frame and this one, so they display first. Presents issued
+		//    on one queue are processed in call order, which is what puts them on screen in that
+		//    order without any semaphore between them.
+		//
+		// ★ EVERY binary semaphore below is signalled exactly once and waited exactly once, and
+		// that is a correctness requirement, not tidiness. This loop used to reassign the real
+		// present's wait to the last post-copy semaphore, which left s_pre_copy_sem signalled and
+		// never waited — so the next frame signalled an already-signalled binary semaphore — while
+		// the last post-copy semaphore was waited twice, by its own present and by the real one.
+		//
+		// The real present waits on s_pre_copy_sem and nothing else, for a concrete reason: the
+		// pre-copy READS the real image as TRANSFER_SRC and puts it back in PRESENT_SRC, so
+		// presenting it before that lands would present an image still being read. The generated
+		// presents are independent — different swapchain images, each gated by its own post-copy.
 		if (generated)
 		{
 			for (u32 i = 0; i < s_multiplier - 1; i++)
 			{
 				u32 image_index = 0;
-				const VkResult acq = vkAcquireNextImageKHR(s_device, swap_chain->GetSwapChain(), UINT64_MAX,
+				// Zero timeout, deliberately. An interpolated frame is a bonus, so if the
+				// presentation engine has nothing free right now the right move is to drop it and
+				// get the real frame out — waiting costs more than the frame is worth. The old
+				// UINT64_MAX was actively dangerous here on two counts: it bypassed the bounded
+				// ACQUIRE_TIMEOUT_NS that VKSwapChain::AcquireNextImage adopted so a surface
+				// destroyed under the GS thread (background/rotate/fold) does not wedge every
+				// thread at 0% CPU with no log; and with a 2- or 3-image swapchain this loop
+				// holds the real image while asking for multiplier-1 more, so at x3/x4 it
+				// serialised on a vblank per generated frame and ate the very time the feature
+				// exists to spend. VK_NOT_READY/VK_TIMEOUT leave the semaphore unsignalled, so
+				// s_acquire_sems[i] stays clean for the next frame.
+				const VkResult acq = vkAcquireNextImageKHR(s_device, swap_chain->GetSwapChain(), 0,
 					s_acquire_sems[i], VK_NULL_HANDLE, &image_index);
 				if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR)
-					break; // out of date or lost — drop the generated frames, still present the real one
+					break; // nothing free, out of date, or lost — still present the real frame
 
 				vkResetCommandBuffer(s_post_copy_cmds[i], 0);
 				if (vkBeginCommandBuffer(s_post_copy_cmds[i], &begin) != VK_SUCCESS)
@@ -816,12 +852,11 @@ namespace GSLsfg
 					&s_post_copy_sems[i], 1, swap_chain->GetSwapChainPtr(), &image_index, nullptr};
 				if (vkQueuePresentKHR(present_queue, &present) != VK_SUCCESS)
 					break;
-				wait_for_real = s_post_copy_sems[i];
 			}
 		}
 
 		// 4. The real frame goes out last, after whatever generated frames made it.
-		const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1, &wait_for_real, 1,
+		const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1, &s_pre_copy_sem, 1,
 			swap_chain->GetSwapChainPtr(), &real_index, nullptr};
 		swap_chain->ResetImageAcquireResult();
 		vkQueuePresentKHR(present_queue, &present);

@@ -40,15 +40,26 @@ if(NOT ANDROID)
 	return()
 endif()
 
-# Pinned. Upstream's `release` branch is a moving target and this library reaches into Vulkan
-# device internals; an unpinned fetch would let a remote push change what our core links.
-set(LSFG_PIN "release" CACHE STRING "lsfg-vk-android git ref to build against")
+# Pinned to a COMMIT, which is what the paragraph below actually asks for.
+#
+# This said `release` — a branch — while the comment claimed it was pinned, so every configure
+# re-resolved it and a remote push could silently change what the core links. That is the exact
+# failure the comment was written to prevent, and it went unnoticed because a branch name reads
+# like a tag at a glance. This library reaches into Vulkan device internals and ships inside our
+# APK; it does not get to move on its own.
+#
+# 3e89e54 "feat: enable shaderFloat16 support in logical device creation" is the tip of `release`
+# that ARMSX2 has actually been built and verified against. Bump it deliberately, and re-verify.
+set(LSFG_PIN "3e89e5439a98f55d5acb003d20039426ab24e69c"
+	CACHE STRING "lsfg-vk-android commit to build against")
 
 include(FetchContent)
 FetchContent_Declare(lsfg_src
 	GIT_REPOSITORY https://github.com/FrankBarretta/lsfg-vk-android.git
 	GIT_TAG        ${LSFG_PIN}
-	GIT_SHALLOW    TRUE
+	# GIT_SHALLOW cannot fetch an arbitrary commit — a shallow clone only carries branch tips,
+	# so it works for a ref name and fails for the SHA above.
+	GIT_SHALLOW    FALSE
 	GIT_SUBMODULES_RECURSE TRUE
 	# Populate only; its top-level CMakeLists builds the layer .so we do not want, and adding
 	# it wholesale would drag the Rust UI target in with it.
