@@ -198,6 +198,16 @@ TEST(GSTileLowering, PerspectiveTrianglesFloorOnZCoverageParity)
 	const GSTileDrawPlan sprite = gsTileLowerDraw(in);
 	EXPECT_TRUE(sprite.native);
 	EXPECT_EQ(sprite.reason, GSTileFloorReason::None);
+
+	// The unlock lever (EmuCore/GS/TilePerspectiveNative): with it the triangle
+	// goes through to the STQ guard like a sprite does; the guard still floors.
+	in.prim_class = GS_TRIANGLE_CLASS;
+	in.tex_stq_tri_native = true;
+	const GSTileDrawPlan lifted = gsTileLowerDraw(in);
+	EXPECT_TRUE(lifted.native);
+	EXPECT_EQ(lifted.reason, GSTileFloorReason::None);
+	in.tex_stq_guard = GSTileStqGuardHullU;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureStqOverflow);
 }
 
 TEST(GSTileLowering, StqGuardReadsTheTraceInTexels)

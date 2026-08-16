@@ -630,8 +630,11 @@ def score_one_dump(args, dump, waivers):
 
     work_dir = os.path.join(args.workdir, gsname) if args.workdir else \
         tempfile.mkdtemp(prefix=f"gs_oracle_{args.arm}_")
+    extra = []
+    for kv in (args.set or []):
+        extra += ["-set", kv]
     runs, stability = run_arm(args.runner, dump, args.arm, work_dir, args.runs,
-                              manifest["loop"], manifest["upscale"], [],
+                              manifest["loop"], manifest["upscale"], extra,
                               args.timeout)
 
     hard_fail = None
@@ -656,6 +659,7 @@ def score_one_dump(args, dump, waivers):
                                     ppd=args.ppd)
 
     card["arm"] = args.arm
+    card["arm_settings"] = list(args.set or [])
     card["runs"] = args.runs
     card["identity"] = runs[0]["identity"]
     card["device"] = runs[0]["device"]
@@ -755,6 +759,7 @@ def cmd_corpus(args):
     result = {
         "schema": 1,
         "arm": args.arm,
+        "arm_settings": list(args.set or []),
         "gate": {"threshold": args.gate_threshold, "max_pct": args.gate_pct,
                  "min_stable_fraction": args.min_stable_fraction,
                  "hash_only": args.hash_only},
@@ -889,6 +894,11 @@ def add_common_run_args(p):
 
 def add_score_args(p):
     p.add_argument("--arm", choices=sorted(ARMS.keys()), default="tile")
+    p.add_argument("--set", action="append", metavar="KEY=VALUE",
+                   help="extra `-set KEY=VALUE` for the arm under test (repeatable): "
+                        "the ablation and unlock levers, e.g. "
+                        "EmuCore/GS/TilePerspectiveNative=true. Recorded in the "
+                        "scorecard so a lifted card cannot pass for a shipped one")
     p.add_argument("--runs", type=int, default=2,
                    help="runs per dump for test-side stability (default 2)")
     p.add_argument("--gate-threshold", type=int, default=0, choices=THRESHOLDS,

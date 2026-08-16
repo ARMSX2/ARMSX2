@@ -81,7 +81,7 @@ private:
 
 	// The native route.
 	bool TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTileFloorReason& reason);
-	bool BuildTilePayload(bool want_zwalk, bool want_stq, bool want_cwalk, GSTileFloorReason& reason);
+	bool BuildTilePayload(bool want_zwalk, bool want_twalk, bool want_cwalk, GSTileFloorReason& reason);
 	void DeindexVertices();
 	/// direct_idx: -1 = tex is an ordinary source; else GSTileSwizzleForms::IndexFormat and
 	/// tex is the OWNER texture addressed through the swizzle (direct_idx_params →
@@ -346,14 +346,23 @@ private:
 	ClutCensus m_clut_census{};
 
 	// Per-primitive plane payload for the current draw: the depth walk's blocks,
-	// the coordinate plane's blocks and the colour/fog walk's blocks concatenated
-	// into one upload, built per draw and consumed synchronously by RenderHW.
-	// Empty = no walk. The offsets are uvec4 element indices into it, or NoWalk.
+	// the texture-coordinate walk's blocks and the colour/fog walk's blocks
+	// concatenated into one upload, built per draw and consumed synchronously by
+	// RenderHW. Empty = no walk. The offsets are uvec4 element indices into it, or
+	// NoWalk. m_twalk_fst is the software renderer's effective sel.fst for the draw
+	// (the walk is a truncating integer DDA under it, a float one otherwise).
 	static constexpr u32 NoWalk = 0xFFFFFFFFu;
 	std::vector<u32> m_tile_payload;
 	u32 m_zwalk_at = NoWalk;
-	u32 m_stq_at = NoWalk;
+	u32 m_twalk_at = NoWalk;
 	u32 m_cwalk_at = NoWalk;
+	bool m_twalk_fst = false;
+	u32 m_native_budget_used = 0; ///< TileNativeDrawLimit's counter
+	// The draw's vertices as GSRendererSW converts them (GSVertexSW::s_cvb), which is
+	// what every walk payload seeds from; grown on demand, vector-aligned.
+	GSVertexSW* m_sw_verts = nullptr;
+	u32 m_sw_verts_cap = 0;
+	GSVertexSW* SwVerts(u32 count);
 	GSVramModel::RectFootprint m_rect_fp; // scratch for transfer/move footprints
 	OracleState m_oracle;
 	MemoCensus m_memo;

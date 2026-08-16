@@ -77,7 +77,7 @@ enum class GSTileFloorReason : u8
 	TextureFiltered, ///< unused — bilinear is the in-shader integer filter; retained so old ledgers decode
 	TextureMip, ///< mip levels the GPU chain cannot express (deeper than the base pyramid, or an oversized claim)
 	TexturePsm, ///< texture format the source builder does not serve (PSGPU24)
-	TexturePerspective, ///< STQ triangle — the coordinate walk is implemented and probe-proven; this waits on depth parity (see the lowering comment)
+	TexturePerspective, ///< STQ triangle — the coordinate walk is exact (PS_TILE_TWALK); the unlock lever (TilePerspectiveNative) is gated on the handoff defect and the lifted-Dirge GPU hang (see the lowering comment)
 	// Texture geometry reason:
 	TextureFeedback, ///< texture pages intersect the draw's own write footprint (M4)
 	// STQ range reason:
@@ -88,6 +88,10 @@ enum class GSTileFloorReason : u8
 	ColClip, ///< COLCLAMP=0 on a blended draw — wrap semantics need the in-shader blend (M4c)
 	BlendOverlap, ///< the read rung's equation is admissible but the draw's own primitives may overlap — one snapshot of the destination cannot serve them (M4c)
 	BlendTexSample, ///< read rung, textured draw with a per-pixel factor — floors on a PRE-EXISTING SAMPLING divergence the blend floor had been hiding, not on anything the blend does (M4c)
+	// Dev lever (decided by the route): the session's native-draw budget
+	// (EmuCore/GS/TileNativeDrawLimit) is spent — a bisect instrument, never a
+	// property of the draw.
+	DevLimit,
 	Count
 };
 
@@ -184,6 +188,12 @@ struct GSTileDrawInput
 	// cook wraps at ONE texel — modelling that buys nothing). The route computes it.
 	bool tex_mip_fit;
 	bool tex_fst;
+	// The route's permission for STQ TRIANGLES to go native (EmuCore/GS/
+	// TilePerspectiveNative). A config fact rather than a register one, carried in
+	// the input so the lowering stays a pure function: off floors them as
+	// TexturePerspective, on lets them through to the STQ guard. Callers without the
+	// fact leave false, which is today's shipped behaviour.
+	bool tex_stq_tri_native;
 	u8 tex_psm;
 	// STQ safety (meaningful when tme && !tex_fst): the route's vertex-trace
 	// verdict that the quotient can leave the scanline's 16.16 envelope, that a
@@ -630,18 +640,45 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	//      The sprite half is byte-exact on its own instrument: gs-mip-sprites goes from
 	//      13,478 pixels across 29 of 85 cases to identical on all 85.
 	//
-	//      What is left of it IS the accumulating step, and that part of the old argument
-	//      stands: the ARM64 scanline walks q += d4.q per four-pixel block, no fragment
-	//      shader reproduces a sequential accumulation in closed form, and it is
-	//      console-neutral — against silicon the lifted arm differs on 19,273 words of
-	//      88,064 where software differs on 19,260, and on tc-persp the lifted arm is the
-	//      CLOSER of the two (7,504 vs 7,512). Silicon's own divide moves a
-	//      mathematically-constant coordinate on 78% of readings; software misses by
-	//      holding still. Byte-identity to a sequential software DDA is not a bar a GPU
-	//      can meet, and the plan's within-one-level tolerance is the honest gate there.
-	//      Generalise: a residual attributed to the mechanism you can name is not
-	//      thereby attributed — this one had two populations and the loud one was
-	//      geometric, not arithmetic.
+	//      What was left of it was the accumulating step, and the sentence that stood
+	//      here — "no fragment shader reproduces a sequential accumulation in closed
+	//      form" — was true and beside the point: a sequential accumulation is a LOOP,
+	//      and a fragment can run one. ✅ CLOSED 2026-08-16 (PS_TILE_TWALK): the
+	//      coordinate now comes off the scanline's WALK, replayed per fragment from
+	//      the primitive's own edge in the payload — the software renderer's own
+	//      vertex conversion (GSVertexSW::s_cvb, its q_div), its half-texel pre-shift,
+	//      per-section seeds and shared gradients out of the compiled setup, the row
+	//      seed as the two fused multiply-adds, then the truncating integer walk under
+	//      its effective FST and the float walk with the sequential block adds and the
+	//      truncated reciprocal under perspective; sprites seed each row by
+	//      DrawSprite's one fused multiply-add and its per-row float add. The C++
+	//      mirror (gs_tile_twalk_tests) is anchored pixel for pixel against the real
+	//      GSRasterizer over the setup and scanline JITs, mutation-checked. Measured:
+	//      gs-interp tile vs same-build software 0 of 104,604 colour and 0 of 29,164
+	//      depth readings (tc-tri, tc-sprite and tc-persp all zero); gs-block every
+	//      section 100.00% (sprtri 97.37% → 100%); gs-texture, gs-grad, gs-shade,
+	//      gs-idxfilt byte-identical; corpus SHIPPED 9/17 → 12/17 (R&C (a), Katamari
+	//      (b), FlatOut recovered — the R&C blit was a 416-row texture stretched over
+	//      448 rows, whose per-row float add the plane could not reproduce), the five
+	//      left being coverage-tie singles. Lifted, the perspective triangles are
+	//      texel-exact per draw (Dirge 288 divergent of 3,942, the largest 21 pixels,
+	//      every one a tie); GT4 OPB lifted 0.043%, R&C 0.26/0.30%, GT4 0.14%.
+	//
+	//      ⚠️ Lifted Dirge HANGS THE GPU (2026-08-16, dev box, honeykrisp): the lifted
+	//      corpus run and every lifted Dirge run since produce "GPU timeout" recoveries
+	//      in the kernel log — none in the three days before, none in any shipped run,
+	//      none on any other lifted dump — and the recovered batch's draws are lost, so
+	//      the next readback publishes the surface's PRE-batch bytes into local memory
+	//      (measured: the whole page rows a floor pull brought back after the hung batch
+	//      matched neither the CPU state before it nor after it) and the frame ends 99%
+	//      wrong. Ablated at the shader: with the walk's row seeds and span left forced
+	//      constant the hangs stop; with only the gradient forced to zero they do not;
+	//      replacing the float loop with the closed form does not stop them either, so
+	//      it is not the loop count. Native-draw-limit bisect: hangs begin between the
+	//      300th and 1,200th native of the run. Dirge is the one dump whose lifted natives
+	//      include MIP STQ triangles. Unresolved (#130); the lever stays default-off and
+	//      the floor stays until it is. Do NOT investigate by repeated hang runs on the
+	//      dev box without care — each recovery is a GPU reset.
 	//
 	//   3. A native/floor HANDOFF defect, which is what actually explains the corpus.
 	//      Dirge lifted, before the plane: 27.35% of pixels differ, 22.79% by more than
@@ -699,7 +736,7 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	{
 		if (in.tex_psm == PSGPU24)
 			return floored(GSTileFloorReason::TexturePsm);
-		if (!in.tex_fst && in.prim_class == GS_TRIANGLE_CLASS)
+		if (!in.tex_fst && in.prim_class == GS_TRIANGLE_CLASS && !in.tex_stq_tri_native)
 			return floored(GSTileFloorReason::TexturePerspective);
 		if (in.tex_mip && !in.tex_mip_fit)
 			return floored(GSTileFloorReason::TextureMip);

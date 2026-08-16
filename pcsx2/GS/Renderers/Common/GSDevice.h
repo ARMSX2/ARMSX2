@@ -747,7 +747,8 @@ struct alignas(16) GSHWDrawConfig
 				u32 tile_vcolor : 1; // Tile renderer: the SW scanline's vertex-colour arithmetic (seven fractional bits, truncating)
 				u32 tile_fog : 1; // Tile renderer: integer fog blend at the console rule
 				u32 tile_zwalk : 1; // Tile renderer: gl_FragDepth from the SW scanline's float64 depth walk, replayed in soft-float from the per-primitive plane payload
-				u32 tile_stq : 1; // Tile renderer: the perspective texture coordinate from the per-primitive plane at the integer pixel index, not from the interpolator
+				u32 tile_twalk : 2; // Tile renderer: the texture coordinate from the SW scanline's walk, replayed per fragment off the per-primitive payload — 0 off, 1 triangle blocks, 2 sprite blocks
+				u32 tile_twalk_fst : 1; // Tile renderer: that walk is the truncating integer DDA (the software renderer's effective sel.fst), else the accumulating float one with the truncated per-pixel reciprocal
 				u32 tile_cwalk : 1; // Tile renderer: gouraud colour and fog from the SW scanline's blocked walk, replayed per fragment off the per-primitive edge payload — not from the interpolator
 				u32 tile_tclag : 1; // Tile renderer: a non-sprite coordinate trails the exact plane by one 16.16 unit on each axis walking forward (gs-shade console rule)
 				u32 tile_blend_mix : 1; // Tile renderer: blend-mix offsets at the exact-floor constant (127/256) instead of Classic's reduced-precision-ROP compromise (124/256)
@@ -1146,23 +1147,18 @@ struct alignas(16) GSHWDrawConfig
 
 		GSVector4 ScaleFactor;
 		float LineCovScale;
-		// Tile renderer, both bit-cast into the float slot the way MinMax already
-		// carries its region bounds. TileSTQRecip is the AND mask applied to the
-		// reciprocal of Q before the perspective multiply: ~0x3ff reproduces the
-		// console's ~13-bit truncated reciprocal, 0 asks for the exact quotient
-		// instead (the classes where the software renderer divides once per vertex
-		// rather than once per pixel). TileLtfxQ is the Q at which the level of
-		// detail crosses zero, for the per-pixel MMAG/MMIN choice; it is read only
-		// when tile_ltfx is set. TileZBase, TileSTQBase and TileCBase are the uvec4
-		// element indices of this draw's depth-walk, coordinate-plane and colour-walk
-		// blocks in the vertex-stream storage buffer, stamped by the device at upload
-		// time; each is read only when its own selector bit is set.
-		float TileSTQRecip;
+		// Tile renderer. TileLtfxQ is the Q at which the level of detail crosses
+		// zero, for the per-pixel MMAG/MMIN choice; it is read only when tile_ltfx
+		// is set. TileZBase, TileTWBase and TileCBase are the uvec4 element indices
+		// of this draw's depth-walk, texture-coordinate-walk and colour-walk blocks
+		// in the vertex-stream storage buffer (bit-cast into the float slot the way
+		// MinMax carries its region bounds), stamped by the device at upload time;
+		// each is read only when its own selector bit is set.
 		float TileLtfxQ;
 		float TileZBase;
-		float TileSTQBase;
-		float TileCBase; // uvec4 element index of the colour/fog walk's blocks, stamped like the other two
-		float _pad_tile[2];
+		float TileTWBase;
+		float TileCBase;
+		float _pad_tile[3];
 		// Tile renderer, direct sampling of a colour target through the GS swizzle
 		// (PS_TILE_DIRECT_IDX / PS_TILE_DIRECT_PAL): the index window's TBP0 and
 		// pages-per-row and the owner's base and pages-per-row; the palette's CBP,
@@ -1289,8 +1285,8 @@ struct alignas(16) GSHWDrawConfig
 	u32 nverts;            ///< Number of vertices
 	u32 nindices;          ///< Number of indices
 	u32 indices_per_prim;  ///< Number of indices that make up one primitive
-	/// Tile per-primitive plane payload: the depth walk's blocks and the coordinate
-	/// plane's blocks and the colour walk's blocks concatenated into ONE upload, because
+	/// Tile per-primitive plane payload: the depth walk's blocks and the texture
+	/// coordinate walk's blocks and the colour walk's blocks concatenated into ONE upload, because
 	/// two reservations against the streaming buffer can hit a mid-draw flush between
 	/// them and strand the first one's offset. The `*_at` fields are uvec4 element offsets INTO the payload;
 	/// the device adds the upload's own base and stamps the results into the PS
@@ -1298,7 +1294,7 @@ struct alignas(16) GSHWDrawConfig
 	const u32* tile_payload;
 	u32 tile_payload_size; ///< Size of the whole payload in uvec4 elements (0 = none)
 	u32 tile_zwalk_at;
-	u32 tile_stq_at;
+	u32 tile_twalk_at;
 	u32 tile_cwalk_at;
 	const std::vector<size_t>* drawlist;          ///< For reducing barriers on sprites
 	const std::vector<GSVector4i>* drawlist_bbox; ///< For RT copy when barriers not available.

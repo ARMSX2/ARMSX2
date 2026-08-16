@@ -6770,7 +6770,8 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_TILE_VCOLOR", sel.tile_vcolor);
 	AddMacro(ss, "PS_TILE_FOG", sel.tile_fog);
 	AddMacro(ss, "PS_TILE_ZWALK", sel.tile_zwalk);
-	AddMacro(ss, "PS_TILE_STQ", sel.tile_stq);
+	AddMacro(ss, "PS_TILE_TWALK", sel.tile_twalk);
+	AddMacro(ss, "PS_TILE_TWALK_FST", sel.tile_twalk_fst);
 	AddMacro(ss, "PS_TILE_CWALK", sel.tile_cwalk);
 	AddMacro(ss, "PS_TILE_TCLAG", sel.tile_tclag);
 	AddMacro(ss, "PS_TILE_BLEND_MIX", sel.tile_blend_mix);
@@ -8620,10 +8621,10 @@ void GSDeviceVK::UploadHWDrawVerticesAndIndices(GSHWDrawConfig& config)
 			const u32 zbase = base + config.tile_zwalk_at;
 			std::memcpy(&config.cb_ps.TileZBase, &zbase, sizeof(zbase));
 		}
-		if (config.tile_stq_at != 0xFFFFFFFFu)
+		if (config.tile_twalk_at != 0xFFFFFFFFu)
 		{
-			const u32 sbase = base + config.tile_stq_at;
-			std::memcpy(&config.cb_ps.TileSTQBase, &sbase, sizeof(sbase));
+			const u32 sbase = base + config.tile_twalk_at;
+			std::memcpy(&config.cb_ps.TileTWBase, &sbase, sizeof(sbase));
 		}
 		if (config.tile_cwalk_at != 0xFFFFFFFFu)
 		{

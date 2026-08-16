@@ -679,17 +679,17 @@ layout(std140, set = 0, binding = 1) uniform cb1
 	float _pad0_cb1;
 	float _pad1_cb1;
 	float LineCovScale;
-	// Tile renderer, all bit-cast into their float slot the way MinMax carries
-	// its region bounds: the AND mask for the reciprocal of Q, the Q at which
-	// the level of detail crosses zero, and the uvec4 element index of this
-	// draw's depth-walk payload in the vertex-stream storage buffer.
-	float TileSTQRecip;
+	// Tile renderer: the Q at which the level of detail crosses zero, and the
+	// uvec4 element indices of this draw's depth-walk, texture-coordinate-walk and
+	// colour-walk payload blocks in the vertex-stream storage buffer (bit-cast into
+	// their float slot the way MinMax carries its region bounds).
 	float TileLtfxQ;
 	float TileZBase;
-	float TileSTQBase;
+	float TileTWBase;
 	float TileCBase;
 	float _pad3_cb1;
 	float _pad4_cb1;
+	float _pad5_cb1;
 	// Tile renderer, direct sampling of a colour target through the GS swizzle:
 	// the index window's TBP0, pages-per-row, its owner's base and pages-per-row;
 	// the palette's CBP, its owner's base and pages-per-row, and
@@ -711,7 +711,7 @@ layout(location = 0) in VSOutput
 	flat uint interior; // 1 for triangle interior; 0 for edge;
 } vsIn;
 
-#if PS_TILE_ZWALK || PS_TILE_STQ || PS_TILE_CWALK
+#if PS_TILE_ZWALK || PS_TILE_TWALK || PS_TILE_CWALK
 // The Tile renderer's per-primitive plane payload, and the flat ordinal that
 // indexes it. ONE declaration for all the walks: two blocks over one binding is
 // not expressible in a single module, and the vertex stage's own view of this
@@ -723,6 +723,19 @@ layout(std430, set = 0, binding = 2) readonly buffer TilePlanes
 {
 	uvec4 plane[];
 };
+
+// fcvtzs: truncate toward zero, saturating. int() is undefined out of range.
+// Shared by every walk that transliterates the scanline's float-to-int.
+int cw_fcvtzs(float v)
+{
+	if (!(v == v))
+		return 0;
+	if (v >= 2147483648.0f)
+		return 0x7FFFFFFF;
+	if (v <= -2147483648.0f)
+		return int(0x80000000u);
+	return int(v);
+}
 #endif
 
 #if PS_TILE_CWALK
@@ -777,18 +790,6 @@ layout(std430, set = 0, binding = 2) readonly buffer TilePlanes
 #else
 #define CW_LOG2W 2
 #endif
-
-// fcvtzs: truncate toward zero, saturating. int() is undefined out of range.
-int cw_fcvtzs(float v)
-{
-	if (!(v == v))
-		return 0;
-	if (v >= 2147483648.0f)
-		return 0x7FFFFFFF;
-	if (v <= -2147483648.0f)
-		return int(0x80000000u);
-	return int(v);
-}
 
 // The lanes are sixteen bits wide and every add wraps there.
 int cw_wrap16(int v)
@@ -878,74 +879,164 @@ void tile_cwalk(void)
 
 #endif // PS_TILE_CWALK
 
-#if PS_TILE_STQ
-// ======================= Tile perspective coordinate =========================
-// The texture coordinate evaluated per fragment from the primitive's own plane
-// at the INTEGER pixel index, instead of read off the interpolator.
+#if PS_TILE_TWALK
+// ======================= Tile texture-coordinate walk ========================
+// The texture coordinate replayed per fragment as the SW scanline WALKS it, off
+// the per-primitive payload -- the colour walk's channel, extended to the s, t
+// and q lanes.
 //
-// Why not the interpolator. The shared vertex shader shifts every vertex by
-// 1/320 of a pixel so a vertex landing exactly on a boundary is not rounded up
-// a row; the rasterizer then snaps that shift onto its sub-pixel grid, and an
-// interpolated attribute rides its own gradient by the realized step. Measured
-// on GT4 with the perspective floor lifted, that single shift is 87% of the
-// coordinate damage — bilinear weights off by a sixteenth across whole
-// primitives.
+// What the scanline does (GSRasterizer::DrawTriangleSection / DrawSprite and
+// the GSDrawScanline JIT): a triangle row is seeded at its span's first pixel
+// by two fused multiply-adds off the section's own vertex, and a sprite row by
+// one fused multiply-add at (left, top) then one float add per row after it;
+// then the pixels of the row are walked from the span's first pixel in blocks
+// of four -- under FST as truncating integers,
 //
-// Why not cancel it downstream, which is cheaper and was measured to work: the
-// amount to cancel is the rasterizer's GRID STEP, not the 1/320 the shader
-// wrote, and Vulkan guarantees only four bits of sub-pixel precision. A
-// coefficient fitted to the eight bits this dev box and both target GPUs happen
-// to carry would be four times too small on a conforming device with fewer, and
-// nothing in the oracle would say so — every arm would simply be wrong
-// together. Reading the plane at the pixel index has no such dependence. The
-// perturbed geometry still decides coverage, which is the only thing it exists
-// for, and never reaches the coordinate.
+//     value(x) = trunc(seed) + B*trunc(g*4) + trunc(g*(m - s))
 //
-// Payload block, three uvec4 per primitive (GSRendererTile::BuildTilePayload):
-//   [+0] {s, t, q at the reference vertex, p0x}
-//   [+1] {ds/dx, dt/dx, dq/dx, p0y}
-//   [+2] {ds/dy, dt/dy, dq/dy, unused}
-// s and t are the software renderer's own numerator scaled by 2^-12, which is
-// exact and lands them in the 1/16-texel space the varying carried, so every
-// consumer below this is unchanged.
+// (every truncation an fcvtzs of one fp32 product, the lanes 32 bits wide, the
+// closed form exact because integer adds are), and under perspective as
+// accumulating floats,
 //
-// ⚠️ This is a PLANE, and the scanline is a WALK — a row seed plus an
-// accumulating four-pixel step, which no closed form reproduces. That residue
-// is a separate and much smaller population (few pixels, whole-texel amplitude)
-// and is tracked on its own; do not read this path as claiming walk parity.
-vec3 g_tile_stq;
+//     value(x) = seed + g*(m - s), then += g*4 once per block after the first
+//
+// which has NO closed form -- the rounding of each add depends on the sum
+// before it -- and is replayed here as the loop it is (bounded by the span's
+// blocks; a sprite's row seed likewise by its rows, unless the CPU proved every
+// add exact). B = (x - xb0) div 4, m = (x - xb0) mod 4, xb0 = x0 & ~3, s = x0 & 3.
+//
+// The units are the scanline's own: 16.16 texels held in float, already divided
+// by Q where the software renderer divides per vertex (its q_div), and already
+// half a texel back where it takes the bilinear shift at the vertices; a
+// perspective lane still carries the numerator and Q, and the per-pixel divide
+// below is the scanline's truncated reciprocal. Nothing downstream is scaled:
+// the FST legs read a 16.16 integer, the perspective leg reads (s, t, q).
+//
+// ⚠️ This is a MECHANICAL TRANSLITERATION of the C++ mirror in
+// tests/ctest/core/gs/gs_tile_twalk_tests.cpp, which is anchored pixel for pixel
+// against the ARM64 software rasterizer (DrawSprite and DrawTriangle through
+// the setup and scanline JITs). Change them TOGETHER.
+//
+// Payload layout (see GSRendererTile::BuildTilePayload). Triangles (PS_TILE_TWALK 1):
+//   [TileTWBase]        header: {scissor_left f32, 0, 0, 0}
+//   [.. + 1 + p*6+0]    section 0: {edge_x, dedge_x, p0x, p0y} f32 bits
+//   [.. + 1 + p*6+1]    section 1: same
+//   [.. + 1 + p*6+2]    section 0 seed {s, t, q, second section's first row (0xFFFF when single)}
+//   [.. + 1 + p*6+3]    section 1 seed {s, t, q, 0}
+//   [.. + 1 + p*6+4]    step per row at constant x {s, t, q, 0}
+//   [.. + 1 + p*6+5]    step per pixel {s, t, q, 0}
+// Sprites (PS_TILE_TWALK 2), no header:
+//   [TileTWBase + p*2+0] {s at (left, top), t at (left, top), q, flags: bit 0 = rows exact}
+//   [TileTWBase + p*2+1] {ds per pixel, dt per row, left, top}
 
-// The numerator's gradient along screen x, straight off the plane payload —
-// what decides, per axis and once per primitive, whether the coordinate walk
-// runs forward (the tclag rule below reads its sign).
-vec2 g_tile_stq_dx;
-
-vec3 tile_stq_plane(void)
+int tw_iwalk(int seed_i, float g, int left, int x)
 {
-	uint b = floatBitsToUint(TileSTQBase) + vsIn_prim * 3u;
-	uvec4 A = plane[b];
-	uvec4 X = plane[b + 1u];
-	uvec4 Y = plane[b + 2u];
+	int s = left & 3;
+	int d = x - (left - s);
+	int B = d >> 2;
+	int m = d & 3;
+	precise float qf = g * 4.0f;
+	precise float of = g * float(m - s);
+	return seed_i + B * cw_fcvtzs(qf) + cw_fcvtzs(of);
+}
 
-	g_tile_stq_dx = uintBitsToFloat(X.xy);
-
-	// gl_FragCoord sits at the pixel centre; its integer part is the pixel index,
-	// which is the coordinate the scanline steps in.
-	precise float fx = floor(gl_FragCoord.x) - uintBitsToFloat(A.w);
-	precise float fy = floor(gl_FragCoord.y) - uintBitsToFloat(X.w);
-
-	precise vec3 v = fma(uintBitsToFloat(X.xyz), vec3(fx), uintBitsToFloat(A.xyz));
-	v = fma(uintBitsToFloat(Y.xyz), vec3(fy), v);
+float tw_fwalk(float seed, float g, int left, int x)
+{
+	int s = left & 3;
+	int d = x - (left - s);
+	int B = d >> 2;
+	int m = d & 3;
+	precise float of = g * float(m - s);
+	precise float v = seed + of;
+	precise float g4 = g * 4.0f;
+	for (int i = 0; i < B; i++)
+		v += g4;
 	return v;
 }
+
+#if PS_TILE_TWALK_FST
+ivec2 g_tile_tw_uv;   // the walked 16.16 coordinate, the lag already spent
+#else
+vec3 g_tile_tw_stq;   // the walked numerators and Q
+#endif
+// The per-pixel step's sign per axis, which decides the lag (a sprite's is never
+// positive on t; its s lane still walks).
+vec2 g_tile_tw_dx;
+
+void tile_twalk(void)
+{
+	int px = int(gl_FragCoord.x);
+	int py = int(gl_FragCoord.y);
+	uint base = floatBitsToUint(TileTWBase);
+	int left;
+	vec3 row;
+	vec3 dscan;
+
+#if PS_TILE_TWALK == 1
+	uvec4 hdr = plane[base];
+	uint pbase = base + 1u + vsIn_prim * 6u;
+	uvec4 S0 = plane[pbase + 2u];
+	bool s1 = py >= int(S0.w & 0xFFFFu);
+	uvec4 XS = plane[pbase + (s1 ? 1u : 0u)];
+
+	// The span's first pixel and the prestep to it -- tile_cwalk's own arithmetic.
+	precise float dy = float(py) - uintBitsToFloat(XS.w);
+	precise float lraw = fma(uintBitsToFloat(XS.y), dy, uintBitsToFloat(XS.x));
+	precise float lx = max(ceil(lraw), uintBitsToFloat(hdr.x));
+	left = int(lx);
+	precise float prestep = lx - uintBitsToFloat(XS.z);
+
+	// The row seed: edge + dedge*dy + dscan*prestep as two fused multiply-adds
+	// in that order (objdump of the shipped DrawTriangleSection).
+	vec3 seed = uintBitsToFloat(s1 ? plane[pbase + 3u].xyz : S0.xyz);
+	vec3 dedge = uintBitsToFloat(plane[pbase + 4u].xyz);
+	dscan = uintBitsToFloat(plane[pbase + 5u].xyz);
+	precise vec3 r0 = fma(dedge, vec3(dy), seed);
+	row = fma(dscan, vec3(prestep), r0);
+#else
+	uvec4 A = plane[base + vsIn_prim * 2u];
+	uvec4 D = plane[base + vsIn_prim * 2u + 1u];
+	left = int(D.z);
+	int rows = py - int(D.w);
+	float dty = uintBitsToFloat(D.y);
+	// The row seed: DrawSprite adds the row step once per row after the first, and
+	// the fragment replays those adds -- unless the CPU proved every one exact,
+	// where the fused closed form lands on the same value.
+	precise float t = uintBitsToFloat(A.y);
+	if ((A.w & 1u) != 0u)
+	{
+		t = fma(dty, float(rows), t);
+	}
+	else
+	{
+		for (int i = 0; i < rows; i++)
+			t += dty;
+	}
+	row = vec3(uintBitsToFloat(A.x), t, uintBitsToFloat(A.z));
+	dscan = vec3(uintBitsToFloat(D.x), 0.0f, 0.0f);
 #endif
 
-// The perspective coordinate's two halves, from the plane where the Tile
-// renderer transports one and from the interpolator otherwise. Everything that
-// reads a perspective S/T numerator or a Q goes through these.
-#if PS_TILE_STQ
-	#define STQ_NUM (g_tile_stq.xy)
-	#define STQ_Q   (g_tile_stq.z)
+	g_tile_tw_dx = dscan.xy;
+#if PS_TILE_TWALK_FST
+	ivec2 uv = ivec2(tw_iwalk(cw_fcvtzs(row.x), dscan.x, left, px), tw_iwalk(cw_fcvtzs(row.y), dscan.y, left, px));
+	#if PS_TILE_TCLAG
+		// The walk's lag: one 16.16 unit off each axis walking forward, before the
+		// snap to a sixteenth (the JIT's Sub of tclag on the accumulator).
+		uv -= ivec2(greaterThan(dscan.xy, vec2(0.0f)));
+	#endif
+	g_tile_tw_uv = uv;
+#else
+	g_tile_tw_stq = vec3(tw_fwalk(row.x, dscan.x, left, px), tw_fwalk(row.y, dscan.y, left, px), tw_fwalk(row.z, dscan.z, left, px));
+#endif
+}
+#endif // PS_TILE_TWALK
+
+// The perspective coordinate's two halves: from the walk where the Tile renderer
+// transports one, from the interpolator otherwise. Everything that reads a
+// perspective S/T numerator or a Q goes through these.
+#if PS_TILE_TWALK && !PS_TILE_TWALK_FST
+	#define STQ_NUM (g_tile_tw_stq.xy)
+	#define STQ_Q   (g_tile_tw_stq.z)
 #else
 	#define STQ_NUM (vsIn.ti.zw)
 	#define STQ_Q   (vsIn.t.w)
@@ -1839,48 +1930,15 @@ ivec2 wrap_tile(ivec2 xy)
 	return xy;
 }
 
-#if PS_TILE_TCLAG
-// A non-sprite primitive's sampled coordinate trails the exact plane by less
-// than a sixteenth of a texel, in the direction the walk is going — measured on
-// an SCPH-30001 (gs-shade): where the exact coordinate lands ON a sixteenth and
-// the walk is forward, silicon samples the sixteenth BELOW it, 3,840 of 3,840
-// readings, and never the other way. Per axis, decided once per primitive by
-// the numerator's gradient along screen x; a still or backward axis takes
-// nothing, and sprites are exact on silicon so this selector is never set for
-// them. The SW scanline spends it as one unit of its 16.16 coordinate before
-// the snap to a sixteenth (tclag in GSDrawScanline.cpp, which carries the
-// measurement), so only a coordinate landing exactly on a boundary moves.
-//
-// The gradient comes off the plane payload where the draw carries one; the
-// affine legs read the varying's own screen-x derivative, which for a plane
-// interpolant is the same per-primitive constant.
-ivec2 tile_tclag(void)
-{
-	#if PS_TILE_STQ
-		return ivec2(greaterThan(g_tile_stq_dx, vec2(0.0f)));
-	#else
-		return ivec2(greaterThan(vec2(dFdx(STQ_NUM.x), dFdx(STQ_NUM.y)), vec2(0.0f)));
-	#endif
-}
+// The Tile texture legs read the coordinate the walk produced (tile_twalk above):
+// a 16.16 integer under the software renderer's effective FST, the numerators
+// and Q otherwise. There is no varying-fed leg left: every textured native draw
+// carries the walk payload.
+#if (PS_TILE_LTF || PS_TILE_NN) && !PS_TILE_TWALK
+#error Tile texture legs need the coordinate walk payload
 #endif
 
-// The affine legs' coordinate in whole sixteenths. The 12.4 varying holds the
-// GS's own fixed-point space, so the floor IS the scanline's snap — and under
-// the tclag rule a forward-walking axis whose coordinate lands exactly on a
-// sixteenth floors one lower, which is the rule at this leg's precision (the
-// sub-sixteenth residue of interpolating the varying is the already-accepted
-// class here).
-ivec2 tile_fst_uv16(vec2 st_int)
-{
-	vec2 fl = floor(st_int);
-	ivec2 k = ivec2(fl);
-	#if PS_TILE_TCLAG
-		k -= tile_tclag() * ivec2(equal(fl, st_int));
-	#endif
-	return k;
-}
-
-#if PS_FST == 0
+#if PS_TILE_TWALK && !PS_TILE_TWALK_FST
 // SW-scanline parity for a perspective coordinate (GSDrawScanline's !fst leg):
 // the quotient truncates into the GS's 16.16 texel space, and everything
 // downstream reads integer bits of that value.
@@ -1894,52 +1952,33 @@ ivec2 tile_fst_uv16(vec2 st_int)
 // Clearing the low ten mantissa bits of 1/Q is that grid; masking rather than
 // shifting so a negative Q keeps its sign.
 //
-// TileSTQRecip carries the mask because the two arms are NOT the same rule with
-// a different constant, and which one applies is a property of the draw rather
-// than of the pixel: the scanline only divides per pixel where Q varies across
-// the primitive. For a sprite, or any primitive whose Q is constant, the
-// software renderer divides once per vertex on the CPU and interpolates the
-// result, and that divide is exact. A truncated reciprocal is up to 2^-13
-// short, which at a 1024-texel coordinate is a whole sixteenth of a texel —
-// enough to land on a different texel — so applying it to those classes would
-// buy console accuracy at the cost of the parity bar we are actually held to.
-// A zero mask asks for the exact quotient and keeps them where they were.
-//
-// The Newton step stays either way, and under the mask it is load-bearing for a
-// new reason: the scanline's reciprocal is a correctly-rounded IEEE divide
-// before it is truncated, while a GLSL divide need only be within 2.5 ULP. Two
-// values that agree to 2.5 ULP straddle a mask boundary about one time in four
-// hundred, so refining first is what makes the truncation reproducible.
+// The scanline's reciprocal is a correctly-rounded IEEE divide before it is
+// truncated, while a GLSL divide need only be within 2.5 ULP. Two values that
+// agree to 2.5 ULP straddle a mask boundary about one time in four hundred, so
+// the Newton step is what makes the truncation reproducible. Every draw that
+// reaches this leg divides per pixel: the software renderer's per-vertex divide
+// (sprites, constant Q, outside mipmapping) makes a draw FST to it, and those
+// take the integer walk instead.
 ivec2 tile_stq_uv(void)
 {
 	precise float q = STQ_Q;
 	precise vec2 num = STQ_NUM;
 	precise float y = 1.0f / q;
 	y = fma(fma(-q, y, 1.0f), y, y);
+	precise vec2 quot = num * intBitsToFloat(floatBitsToInt(y) & int(0xfffffc00u));
 
-	const int mask = floatBitsToInt(TileSTQRecip);
-	precise vec2 quot;
-
-	if (mask != 0)
-	{
-		quot = num * intBitsToFloat(floatBitsToInt(y) & mask);
-	}
-	else
-	{
-		// A fused residual correction on the quotient, which lands on the
-		// correctly-rounded s / q the CPU-side divide produced.
-		precise vec2 q0 = num * y;
-		quot = fma(fma(vec2(-q), q0, num), vec2(y), q0);
-	}
-
-	// ti.zw carries 1/16-texel units; a power-of-two scale is exact in float,
-	// so this truncation is the scanline's own truncation on its 16.16 value.
-	ivec2 uv = ivec2(quot * 4096.0f);
+	// The numerators are already the scanline's 16.16 texels, so this truncation
+	// is its own truncation on that value.
+	ivec2 uv = ivec2(quot);
 	#if PS_TILE_TCLAG
-		// The walk's lag, spent exactly where the scanline spends it: one 16.16
-		// unit off each forward axis, before the snap to a sixteenth — and before
-		// the mip path's level shift divides it away.
-		uv -= tile_tclag();
+		// The walk's lag (gs-shade, SCPH-30001: where the exact coordinate lands ON
+		// a sixteenth and the walk is forward, silicon samples the sixteenth BELOW
+		// it, 3,840 of 3,840 readings), spent exactly where the scanline spends
+		// it: one 16.16 unit off each forward axis, before the snap to a sixteenth
+		// — and before the mip path's level shift divides it away. Per axis, from
+		// the per-pixel step's sign; sprites are exact on silicon and never carry
+		// the selector.
+		uv -= ivec2(greaterThan(g_tile_tw_dx, vec2(0.0f)));
 	#endif
 	return uv;
 }
@@ -2067,16 +2106,17 @@ ivec4 tile_mip_level(ivec2 uv, int lod)
 #endif
 }
 
-vec4 sample_color_tile_mip(vec2 st_int)
+vec4 sample_color_tile_mip(void)
 {
-#if PS_FST == 0
-	ivec2 uv = tile_stq_uv();
+	// The 16.16 coordinate at level 0, exactly as the scanline's SampleTextureLOD
+	// receives it from the walk (the lag already spent): the truncated quotient
+	// under perspective, the walked integer under FST. Under mipmapping the
+	// software renderer takes the bilinear half-texel per level, below, never at
+	// the vertices.
+#if PS_TILE_TWALK_FST
+	ivec2 uv = g_tile_tw_uv;
 #else
-	// The 12.4 varying's integer bits into 16.16 — the affine convention the
-	// non-mip FST paths already run (sub-1/16 interpolation residue accepted
-	// there, and no fst mip draw exists in corpus or probe to sharpen it; the
-	// tclag rule rides the same sixteenths grid for the same reason).
-	ivec2 uv = tile_fst_uv16(st_int) << 12;
+	ivec2 uv = tile_stq_uv();
 #endif
 
 	int lodi;
@@ -2129,11 +2169,20 @@ vec4 sample_color_tile_mip(vec2 st_int)
 #endif // PS_TILE_MIP
 
 #if PS_TILE_LTF
-vec4 sample_color_tile_ltf(vec2 st_int)
+vec4 sample_color_tile_ltf(void)
 {
-#if PS_FST == 0
+#if PS_TILE_TWALK_FST
+	// The walked 16.16 integer already carries the half-texel shift: an affine
+	// bilinear draw takes it at the VERTICES in the software renderer, before
+	// setup, so the walk's seed and every step are on the shifted value. The
+	// weight is bits 12..15 and the texel index the top half.
+	ivec2 uv = g_tile_tw_uv;
+	ivec2 f = (uv >> 12) & 15;
+	ivec2 t0 = uv >> 16;
+#else
 	// The scanline's bilinear shift is half a texel on the 16.16 integer
-	// (u -= 0x8000); the weight is bits 12..15 and the texel index the top half.
+	// (u -= 0x8000) after the divide; the weight is bits 12..15 and the texel
+	// index the top half.
 	ivec2 uv = tile_stq_uv();
 	#if PS_TILE_LTFX
 		// Per-pixel MMAG/MMIN. The two filters do not sample the same point —
@@ -2149,13 +2198,6 @@ vec4 sample_color_tile_ltf(vec2 st_int)
 		ivec2 f = (uv >> 12) & 15;
 	#endif
 	ivec2 t0 = uv >> 16;
-#else
-	// st_int is the coordinate in 1/16-texel units — the GS's 12.4 fixed-point
-	// space, exact for UV. Half a texel back, then the texel index and 4-bit
-	// weight fall out of the fixed-point value.
-	ivec2 uv16 = tile_fst_uv16(st_int) - 8;
-	ivec2 f = uv16 & 15;
-	ivec2 t0 = uv16 >> 4;
 #endif
 
 	ivec2 lo = wrap_tile(t0);
@@ -2175,12 +2217,12 @@ vec4 sample_color_tile_ltf(vec2 st_int)
 // The nearest leg of the same coordinate walk (perspective triangles whose
 // filter is nearest): no half-texel shift and no weight — the texel index is
 // the quotient's top half, wrapped once.
-vec4 sample_color_tile_nn(vec2 st_int)
+vec4 sample_color_tile_nn(void)
 {
-#if PS_FST == 0
-	ivec2 t0 = tile_stq_uv() >> 16;
+#if PS_TILE_TWALK_FST
+	ivec2 t0 = g_tile_tw_uv >> 16;
 #else
-	ivec2 t0 = tile_fst_uv16(st_int) >> 4;
+	ivec2 t0 = tile_stq_uv() >> 16;
 #endif
 	return vec4(fetch_texel_tile(wrap_tile(t0)));
 }
@@ -2298,16 +2340,7 @@ vec4 ps_color()
 	vec2 st_int = vsIn.ti.zw / vsIn.t.w;
 #else
 	vec2 st = vsIn.ti.xy;
-	#if PS_TILE_STQ
-		// A UV triangle's coordinate comes off its own plane at the pixel index,
-		// like the perspective one: the vertex shader's coverage nudge rides the
-		// interpolated varying, so an on-grid landing never reads as on-grid there
-		// and the tclag rule below it can never fire. The plane carries the same
-		// sixteenth units the varying did; there is no divide.
-		vec2 st_int = g_tile_stq.xy;
-	#else
-		vec2 st_int = vsIn.ti.zw;
-	#endif
+	vec2 st_int = vsIn.ti.zw;
 #endif
 
 #if !NEEDS_TEX
@@ -2327,11 +2360,11 @@ vec4 ps_color()
 #elif PS_DEPTH_FMT > 0
 	vec4 T = sample_depth(st_int, ivec2(gl_FragCoord.xy));
 #elif PS_TILE_MIP
-	vec4 T = sample_color_tile_mip(st_int);
+	vec4 T = sample_color_tile_mip();
 #elif PS_TILE_LTF
-	vec4 T = sample_color_tile_ltf(st_int);
+	vec4 T = sample_color_tile_ltf();
 #elif PS_TILE_NN
-	vec4 T = sample_color_tile_nn(st_int);
+	vec4 T = sample_color_tile_nn();
 #else
 	vec4 T = sample_color(st);
 #endif
@@ -3223,11 +3256,11 @@ float tile_zwalk_depth()
 
 void main()
 {
-#if PS_TILE_STQ
-	// Once per fragment, before anything samples: the plane read is three loads
-	// off a flat index, and the coordinate is wanted by the quotient, the level
-	// of detail and the filter choice alike.
-	g_tile_stq = tile_stq_plane();
+#if PS_TILE_TWALK
+	// Once per fragment, before anything samples: the coordinate walk, wanted by
+	// the texel indices, the filter weight, the level of detail and the filter
+	// choice alike.
+	tile_twalk();
 #endif
 
 #if PS_TILE_ZWALK

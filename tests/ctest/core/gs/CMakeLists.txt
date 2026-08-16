@@ -32,6 +32,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_clut_tests.cpp
 	gs_tile_zwalk_tests.cpp
 	gs_tile_cwalk_tests.cpp
+	gs_tile_twalk_tests.cpp
 	gs_tile_swizzle_forms_tests.cpp
 	gs_tile_clut_mirror_tests.cpp
 )

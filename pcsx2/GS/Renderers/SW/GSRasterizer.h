@@ -38,6 +38,10 @@ struct GSTileZPlaneSection
 	// from the other section's vertex through the plane would round differently.
 	GSVector4 cseed;
 	float fseed;
+	// The texture lanes (s, t, q; w is the fog seed above) AT this section's
+	// reference vertex, in whatever units the caller loaded — the same per-section
+	// rule as the colour: the two sections seed from different vertices.
+	GSVector4 tseed;
 };
 
 struct GSTileZPlane
@@ -51,12 +55,11 @@ struct GSTileZPlane
 	              // never on a covered row — a scissor rejects pixels, it does not reseed an
 	              // interpolator (gs-ledger 4d7ebb194a).
 
-	// The same plane for whatever the caller loaded into the vertices' t lanes. The
-	// setup derives it from the identical barycentric division the z gradient comes
-	// out of, so a transported texture coordinate inherits the scanline's own
-	// gradient rather than a second, independently-rounded one. Section 0's
-	// reference vertex (sec[0].p0x/p0y) is the origin both terms step from.
-	GSVector4 tseed;   // the t lanes AT that reference vertex — an exact vertex value
+	// The texture-coordinate gradients for whatever the caller loaded into the
+	// vertices' t lanes. The setup derives them from the identical barycentric
+	// division the z gradient comes out of, so a transported coordinate inherits the
+	// scanline's own gradient rather than a second, independently-rounded one; the
+	// per-section seeds they step from are in sec[n].tseed.
 	GSVector4 dedge_t; // t step per row, at constant x
 	GSVector4 dscan_t; // t step per pixel
 

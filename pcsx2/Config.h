@@ -925,6 +925,13 @@ struct Pcsx2Config
 					// the off position is a bisect lever (both roads must be
 					// byte-identical), never a user setting.
 					TileGpuClut : 1,
+					// Let the Tile renderer draw perspective-textured (STQ) TRIANGLES
+					// natively instead of flooring them (GSTileFloorReason::
+					// TexturePerspective). Default off: the unlock is measured lifted
+					// on the corpus and gated on the handoff defect it exposes; the on
+					// position is the attribution lever until it ships, and the bisect
+					// lever afterwards. Never a user setting.
+					TilePerspectiveNative : 1,
 					UseBlitSwapChain : 1,
 					DisableShaderCache : 1,
 					DisableFramebufferFetch : 1,
@@ -1100,6 +1107,13 @@ struct Pcsx2Config
 		int SaveFrameStart = 0;
 		int SaveFrameCount = -1;
 		int SaveFrameBy = 1;
+
+		// Tile renderer bisect lever: after this many native draws in the session, every
+		// draw floors (0 = no limit). A frame that changes when the Nth native draw is
+		// allowed names the interaction the per-draw oracle cannot see -- the oracle
+		// syncs every draw's inputs, so a stale-input or handoff defect is invisible to
+		// it and only shows in a plain run. Never a user setting.
+		int TileNativeDrawLimit = 0;
 
 		s8 ExclusiveFullscreenControl = -1;
 		GSScreenshotSize ScreenshotSize = GSScreenshotSize::WindowResolution;

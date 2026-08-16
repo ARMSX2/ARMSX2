@@ -10,6 +10,7 @@
 #include "GS/Renderers/SW/GSRasterizer.h"
 #include "GS/Renderers/Tile/GSTileOracle.h"
 #include "GS/Renderers/Tile/GSTileSwizzleForms.h"
+#include "GS/Renderers/Tile/GSTileTexWalk.h"
 
 #include "common/Console.h"
 #include "common/Timer.h"
@@ -148,6 +149,8 @@ GSDrawLog::TileFallback MapFallbackReason(GSTileFloorReason reason)
 			return GSDrawLog::TileFallbackBlendOverlap;
 		case GSTileFloorReason::BlendTexSample:
 			return GSDrawLog::TileFallbackBlendTexSample;
+		case GSTileFloorReason::DevLimit:
+			return GSDrawLog::TileFallbackFloor;
 		default:
 			return GSDrawLog::TileFallbackFloor;
 	}
@@ -159,7 +162,25 @@ GSRendererTile::GSRendererTile(int threads)
 {
 }
 
-GSRendererTile::~GSRendererTile() = default;
+GSRendererTile::~GSRendererTile()
+{
+	if (m_sw_verts)
+		_aligned_free(m_sw_verts);
+}
+
+GSVertexSW* GSRendererTile::SwVerts(u32 count)
+{
+	if (count > m_sw_verts_cap)
+	{
+		if (m_sw_verts)
+			_aligned_free(m_sw_verts);
+		m_sw_verts_cap = std::max<u32>(count, 1024);
+		m_sw_verts = static_cast<GSVertexSW*>(_aligned_malloc(sizeof(GSVertexSW) * m_sw_verts_cap, VECTOR_ALIGNMENT));
+		if (!m_sw_verts)
+			m_sw_verts_cap = 0;
+	}
+	return m_sw_verts;
+}
 
 void GSRendererTile::Destroy()
 {
@@ -869,6 +890,7 @@ GSTileDrawInput GSRendererTile::BuildLoweringInput()
 		in.tex_linear = m_vt.IsLinear();
 		in.tex_mip = IsMipMapActive();
 		in.tex_fst = PRIM->FST;
+		in.tex_stq_tri_native = GSConfig.TilePerspectiveNative;
 		in.tex_psm = static_cast<u8>(m_context->TEX0.PSM);
 		if (in.tex_mip)
 		{
@@ -1699,33 +1721,21 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// rather than approximate. Flat-Z draws stay exact without it: their constant is
 	// an integer, which survives the float pipeline untouched.
 	//
-	// Coordinate transcription: a perspective texture coordinate must come off the
-	// primitive's own plane at the pixel index rather than off the interpolator,
-	// because the vertex shader's 1/320-pixel coverage nudge translates the whole
-	// primitive and an interpolated attribute rides its own gradient by the shift the
-	// rasterizer realizes. Both planes come out of the same setup and travel in one
-	// payload.
+	// Coordinate transcription: every textured triangle and sprite takes its texture
+	// coordinate off the SW scanline's WALK, replayed per fragment from the
+	// primitive's own edge (PS_TILE_TWALK) — the same channel as the colour walk
+	// below. Not the interpolator (the vertex shader's 1/320-pixel coverage nudge
+	// translates the whole primitive and an interpolated attribute rides its own
+	// gradient by the shift the rasterizer realizes), and not a plane at the pixel
+	// index either: the scanline seeds each row at its span's first pixel and steps
+	// in blocks of four — a truncating integer step under FST, an accumulating
+	// float one under perspective — and a sprite seeds each row by adding the row
+	// step once per row, so the value at a pixel depends on where its span and its
+	// primitive began, which no plane evaluation reproduces. Measured before this
+	// existed: a scaled bilinear blit (R&C, 416 rows into 448) came out 3,900 pixels
+	// a sixteenth of a weight off per frame from the row accumulation alone.
 	const bool want_zwalk = want_ds && m_vt.m_primclass == GS_TRIANGLE_CLASS && !m_vt.m_eq.z;
-	// Every textured triangle rides the coordinate plane, UV included: the lag rule
-	// (gs-shade) fires exactly where the exact coordinate lands ON a sixteenth, and
-	// through the nudged interpolator an on-grid landing never reads as on-grid —
-	// measured on the capture, where the affine legs left every forward-walk
-	// boundary reading one sixteenth high while the plane-fed perspective legs
-	// matched the scanline digit for digit.
-	//
-	// ⚠️ UV SPRITES RIDE IT TOO, and the reasoning that once excluded them was half
-	// right: they take no lag, but "their accepted sub-1/16 residue is already
-	// scored" was never true. It was scored only where the residue lands on a
-	// TEXEL boundary — under nearest sampling, where a sixteenth of a texel almost
-	// never changes the texel that is read. Give the same coordinate a BILINEAR
-	// filter and the bottom four bits stop being residue and become the blend
-	// weight: every sixteenth is a visible sixteenth of the way between two texels,
-	// so the nudge's bias lands in the output on every pixel it touches rather than
-	// on the rare boundary crossing. Nothing in the corpus could show it — there
-	// was no native bilinear palettised sprite anywhere in it (measured on MGS3:
-	// 244 such draws, every one floored) — so the class went untested until M4c's
-	// read rung made four of them native and they came back 125 pixels wrong.
-	const bool want_stq = PRIM->TME &&
+	const bool want_twalk = PRIM->TME &&
 		(m_vt.m_primclass == GS_TRIANGLE_CLASS || m_vt.m_primclass == GS_SPRITE_CLASS);
 	// Colour and fog transcription: a gouraud or fogged triangle takes its colour
 	// and fog factor off the SW scanline's blocked walk, replayed per fragment
@@ -1734,7 +1744,7 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// know and gs-block measured silicon doing the same. Sprites are flat in
 	// both (the second vertex's) and need nothing.
 	const bool want_cwalk = m_vt.m_primclass == GS_TRIANGLE_CLASS && (!IsFlatShaded() || PRIM->FGE);
-	if (!BuildTilePayload(want_zwalk, want_stq, want_cwalk, reason))
+	if (!BuildTilePayload(want_zwalk, want_twalk, want_cwalk, reason))
 		return false;
 
 	// The texture window's footprint. A window overlapping the draw's own write
@@ -2170,28 +2180,33 @@ void GSRendererTile::FlattenProvokingColor()
 }
 
 // Build the per-primitive plane payload the fragment walks read: the depth walk's
-// blocks (PS_TILE_ZWALK), the perspective coordinate's blocks (PS_TILE_STQ) and the
-// colour/fog walk's blocks (PS_TILE_CWALK), concatenated into ONE upload — two
+// blocks (PS_TILE_ZWALK), the texture-coordinate walk's blocks (PS_TILE_TWALK) and
+// the colour/fog walk's blocks (PS_TILE_CWALK), concatenated into ONE upload — two
 // reservations against the streaming buffer can hit a mid-draw flush between them and
 // strand the first one's offset.
 //
-// Every triangle value comes out of GSRasterizer's own compiled setup
-// (GSComputeTriangleZPlane), so it carries the software renderer's exact roundings: the
-// fp32 barycentric division, the compiler's fused multiply-adds, the 2^-10 truncation
-// of the scan gradient, and the fp32 narrowing the scanline's setup applies to the
-// lane-offset gradient. Loading the texture numerators, the colour and the fog into the
-// same setup takes their gradients off that one division rather than a second,
-// independently-rounded one; it cannot disturb the depth values, which are computed
-// from other lanes.
+// Every value comes out of the software renderer's own machinery: the vertices are
+// converted by GSVertexSW::s_cvb (the converter GSRendererSW::Draw calls, with its
+// q_div), the bilinear half-texel comes off the vertices where GetScanlineGlobalData
+// takes it off, and every triangle value comes out of GSRasterizer's own compiled
+// setup (GSComputeTriangleZPlane), so it carries the software renderer's exact
+// roundings: the fp32 barycentric division, the compiler's fused multiply-adds, the
+// 2^-10 truncation of the scan gradient, and the fp32 narrowing the scanline's setup
+// applies to the lane-offset gradient. Loading the texture numerators, the colour and
+// the fog into the same setup takes their gradients off that one division rather than
+// a second, independently-rounded one; it cannot disturb the depth values, which are
+// computed from other lanes. Sprites go through GSTileTexWalk.h's transcription of
+// GSRasterizer::DrawSprite.
 //
 // Returns false with `reason` set for draws outside an envelope; those floor.
-bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, bool want_cwalk, GSTileFloorReason& reason)
+bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_twalk, bool want_cwalk, GSTileFloorReason& reason)
 {
 	m_tile_payload.clear();
 	m_zwalk_at = NoWalk;
-	m_stq_at = NoWalk;
+	m_twalk_at = NoWalk;
 	m_cwalk_at = NoWalk;
-	if (!want_zwalk && !want_stq && !want_cwalk)
+	m_twalk_fst = false;
+	if (!want_zwalk && !want_twalk && !want_cwalk)
 		return true;
 
 	const auto envelope = [this, &reason](bool ok) {
@@ -2210,64 +2225,55 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, bool want_
 		return false;
 
 	const GSDrawingContext* ctx = m_context;
-	const int ofx = static_cast<int>(ctx->XYOFFSET.OFX);
-	const int ofy = static_cast<int>(ctx->XYOFFSET.OFY);
+	const u32 primclass = m_vt.m_primclass;
+	const bool mip = IsMipMapActive();
 
-	// The coordinate numerator, in the 1/16-texel space the varying carried: the
-	// software renderer's own numerator scale (ConvertVertexBuffer's tsize, off the
-	// REGISTER claim) divided by 2^12. Both factors are powers of two, so the
-	// transported value is the scanline's numerator rescaled rather than a second
-	// rounding of the same product, and everything downstream in the shader is
-	// unchanged.
-	const float num_sx = static_cast<float>(0x10000u << ctx->TEX0.TW) * 0x1p-12f;
-	const float num_sy = static_cast<float>(0x10000u << ctx->TEX0.TH) * 0x1p-12f;
+	// The draw's vertices exactly as GSRendererSW::Draw converts them — same
+	// converter, same q_div — and then the half-texel pre-shift GetScanlineGlobalData
+	// applies to an affine bilinear draw. Everything below seeds from these.
+	const u32 q_div = gsTileTexWalkQDiv(primclass, mip, m_vt.m_eq.q, m_vt.m_min.t.z);
+	GSVertexSW* sw = SwVerts(m_vertex->next);
+	if (!envelope(sw != nullptr))
+		return false;
+	GSVertexSW::s_cvb[primclass][PRIM->TME][PRIM->FST][q_div](ctx, sw, m_vertex->buff, m_vertex->next);
+	const bool fst_eff = gsTileTexWalkFst(primclass, PRIM->FST, mip, m_vt.m_eq.q);
+	if (want_twalk && gsTileTexWalkPreshift(fst_eff, mip, m_vt.IsLinear()))
+	{
+		for (u32 i = 0; i < m_vertex->next; i++)
+			gsTileTexWalkApplyPreshift(sw[i]);
+	}
+	m_twalk_fst = fst_eff;
 
-	if (m_vt.m_primclass == GS_SPRITE_CLASS)
+	if (primclass == GS_SPRITE_CLASS)
 	{
 		// A sprite carries no depth gradient and no colour or fog gradient (both are
-		// flat, from its second vertex), so the coordinate plane is the only block
-		// here — and it is built from the raw vertices rather than through the
-		// rasterizer's sprite setup, because what this path removes is the vertex
-		// shader's coverage nudge and NOTHING else about which value the fragment
-		// sees. The expansion reads the vertex PAIR directly (not through the index
-		// buffer), gives all four corners the SECOND vertex's Q, and swaps only each
-		// axis' own position and numerator — so S is affine in x alone, T in y alone,
-		// and Q is constant, which is the same shape the scanline runs.
+		// flat, from its second vertex), so the coordinate walk is the only block
+		// here: DrawSprite's seed at the span's first pixel and first row, its per-pixel
+		// and per-row steps, and the scissored left/top the walk counts from.
 		pxAssert(!want_cwalk);
-		if (!want_stq)
+		if (!want_twalk)
 			return true;
 		const u32 nprims = m_index->tail / 2;
-		m_tile_payload.assign(static_cast<size_t>(nprims) * 12, 0u);
-		m_stq_at = 0;
+		m_tile_payload.assign(static_cast<size_t>(nprims) * 8, 0u);
+		m_twalk_at = 0;
 
 		u32* out = m_tile_payload.data();
 		for (u32 p = 0; p < nprims; p++)
 		{
-			const GSVertex& lt = m_vertex->buff[p * 2 + 0];
-			const GSVertex& rb = m_vertex->buff[p * 2 + 1];
-
-			const float x0 = static_cast<float>(static_cast<int>(lt.XYZ.X) - ofx) * (1.0f / 16.0f);
-			const float y0 = static_cast<float>(static_cast<int>(lt.XYZ.Y) - ofy) * (1.0f / 16.0f);
-			const float x1 = static_cast<float>(static_cast<int>(rb.XYZ.X) - ofx) * (1.0f / 16.0f);
-			const float y1 = static_cast<float>(static_cast<int>(rb.XYZ.Y) - ofy) * (1.0f / 16.0f);
-
-			// A UV vertex already carries its 12.4 coordinate in the sixteenth units
-			// the plane is read in, and a u16 is exact in float — so the transport is
-			// the identity, not a rescale. Q still travels: it is inert for the
-			// coordinate under FST but the mip level is computed from it either way.
-			const float s0 = PRIM->FST ? static_cast<float>(lt.U) : lt.ST.S * num_sx;
-			const float t0 = PRIM->FST ? static_cast<float>(lt.V) : lt.ST.T * num_sy;
-			const float s1 = PRIM->FST ? static_cast<float>(rb.U) : rb.ST.S * num_sx;
-			const float t1 = PRIM->FST ? static_cast<float>(rb.V) : rb.ST.T * num_sy;
-
-			// A zero-extent sprite covers no fragment under either renderer, so this
-			// gradient is never evaluated; keep it finite rather than letting a
-			// divide by zero into the payload.
-			const float dsdx = (x1 != x0) ? ((s1 - s0) / (x1 - x0)) : 0.0f;
-			const float dtdy = (y1 != y0) ? ((t1 - t0) / (y1 - y0)) : 0.0f;
-
-			const float blk[12] = {s0, t0, rb.RGBAQ.Q, x0, dsdx, 0.0f, 0.0f, y0, 0.0f, dtdy, 0.0f, 0.0f};
-			std::memcpy(out + static_cast<size_t>(p) * 12, blk, sizeof(blk));
+			const GSVertexSW& v0 = sw[m_index->buff[p * 2 + 0]];
+			const GSVertexSW& v1 = sw[m_index->buff[p * 2 + 1]];
+			GSTileTexWalkSprite spr;
+			// A sprite the rasterizer would not draw covers no fragment on the GPU
+			// either (the coverage capture certified the conversion), so a zeroed
+			// block is never read.
+			if (!gsTileTexWalkSprite(v0, v1, ctx->scissor.in, spr))
+				continue;
+			const float blk[8] = {spr.s0, spr.t0, spr.q, 0.0f, spr.dtx, spr.dty, 0.0f, 0.0f};
+			std::memcpy(out + static_cast<size_t>(p) * 8, blk, sizeof(blk));
+			const u32 flags = spr.rows_exact ? 1u : 0u;
+			out[p * 8 + 3] = flags;
+			out[p * 8 + 6] = static_cast<u32>(spr.left);
+			out[p * 8 + 7] = static_cast<u32>(spr.top);
 		}
 		return true;
 	}
@@ -2294,19 +2300,19 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, bool want_
 
 	const u32 nprims = m_index->tail / 3;
 	const size_t zwords = want_zwalk ? (4 + static_cast<size_t>(nprims) * 20) : 0;
-	const size_t swords = want_stq ? (static_cast<size_t>(nprims) * 12) : 0;
+	const size_t twords = want_twalk ? (4 + static_cast<size_t>(nprims) * 24) : 0;
 	const size_t cwords = want_cwalk ? (4 + static_cast<size_t>(nprims) * 32) : 0;
-	m_tile_payload.assign(zwords + swords + cwords, 0u);
+	m_tile_payload.assign(zwords + twords + cwords, 0u);
 	if (want_zwalk)
 		m_zwalk_at = 0;
-	if (want_stq)
-		m_stq_at = static_cast<u32>(zwords / 4);
+	if (want_twalk)
+		m_twalk_at = static_cast<u32>(zwords / 4);
 	if (want_cwalk)
-		m_cwalk_at = static_cast<u32>((zwords + swords) / 4);
+		m_cwalk_at = static_cast<u32>((zwords + twords) / 4);
 
 	u32* zout = m_tile_payload.data();
-	u32* sout = m_tile_payload.data() + zwords;
-	u32* cout = m_tile_payload.data() + zwords + swords;
+	u32* tout = m_tile_payload.data() + zwords;
+	u32* cout = m_tile_payload.data() + zwords + twords;
 	size_t zc = 0;
 
 	const auto push_u32 = [&](u32 v) { zout[zc++] = v; };
@@ -2330,72 +2336,61 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, bool want_
 		push_u32(fmt_max);
 		push_u32(0u);
 	}
+	// The texture and colour walks' headers: the scissor's left, which bounds the
+	// span's first pixel.
+	if (want_twalk)
+	{
+		std::memcpy(tout, &fscissor.x, 4);
+		tout += 4;
+	}
 	if (want_cwalk)
 	{
-		// Header: the scissor's left, which bounds the span's first pixel.
-		float sl = fscissor.x;
-		std::memcpy(cout, &sl, 4);
+		std::memcpy(cout, &fscissor.x, 4);
 		cout += 4;
 	}
 
 	for (u32 p = 0; p < nprims; p++)
 	{
-		GSVertexSW sw[3];
-		for (int k = 0; k < 3; k++)
-		{
-			const GSVertex& v = m_vertex->buff[m_index->buff[p * 3 + k]];
-			// ConvertVertexBuffer's triangle position, scalar and exact: integer
-			// subpixels minus the offset, to float (exact under 2^16 magnitude),
-			// times the exact 1/16; z widened to double untouched.
-			const int x = static_cast<int>(v.XYZ.X) - ofx;
-			const int y = static_cast<int>(v.XYZ.Y) - ofy;
-			sw[k].p = GSVector4(static_cast<float>(x) * (1.0f / 16.0f),
-				static_cast<float>(y) * (1.0f / 16.0f), 0.0f, 0.0f);
-			sw[k].p.F64[1] = static_cast<double>(v.XYZ.Z);
-			// The coordinate lanes ride the same setup. Raw S/T/Q, matching what the
-			// vertex shader put in the varying — NOT the software renderer's q_div
-			// pre-division, because the fragment path divides per pixel and the two
-			// agree wherever q_div applies (it only fires where Q is constant over the
-			// primitive, and a constant divisor commutes with the interpolation).
-			//
-			// A UV vertex transports its 12.4 coordinate as sixteenths, exactly (a
-			// u16 is exact in float); the fragment side reads the plane in the same
-			// sixteenth units the varying carried and never divides, so Q is inert.
-			sw[k].t = want_stq
-				? (PRIM->FST
-						? GSVector4(static_cast<float>(v.U), static_cast<float>(v.V), 1.0f, 0.0f)
-						: GSVector4(v.ST.S * num_sx, v.ST.T * num_sy, v.RGBAQ.Q, 0.0f))
-				: GSVector4::zero();
-			// The colour and the fog lanes as ConvertVertexBuffer places them: the
-			// bytes times 128 (seven fraction bits under the stored byte), the fog
-			// in t.w. Exact in float. Loaded whether or not the walk is wanted —
-			// they cost nothing and cannot disturb the other lanes.
-			sw[k].c = GSVector4(GSVector4i::load(static_cast<int>(v.RGBAQ.U32[0])).u8to32() << 7);
-			sw[k].t.w = static_cast<float>(static_cast<int>(v.FOG << 7));
-		}
+		const GSVertexSW tri[3] = {sw[m_index->buff[p * 3 + 0]], sw[m_index->buff[p * 3 + 1]], sw[m_index->buff[p * 3 + 2]]};
 
 		// A primitive the rasterizer would not draw (degenerate y-order or zero
 		// cross product) covers no fragments on the GPU either — the coverage
 		// capture certified the conversion — so a zeroed block is never read.
 		GSTileZPlane zp;
-		if (!GSComputeTriangleZPlane(sw, fscissor_y, zp) || zp.nsections == 0)
+		if (!GSComputeTriangleZPlane(tri, fscissor_y, zp) || zp.nsections == 0)
 		{
 			zc += want_zwalk ? 20 : 0;
+			tout += want_twalk ? 24 : 0;
 			cout += want_cwalk ? 32 : 0;
 			continue;
 		}
 
+		// Per section: the edge (the span's first pixel on a row is a fused
+		// multiply-add and a ceiling away, exactly as the depth walk finds it) and
+		// the seeds, which are the section's own vertex values; the gradients once,
+		// shared by both sections as SetupTriangle hands them out. A single-section
+		// primitive repeats section 0 into the second slot and marks the boundary
+		// unreachable, as the depth walk's payload does.
+		const GSTileZPlaneSection& c0 = zp.sec[0];
+		const GSTileZPlaneSection& c1 = zp.sec[(zp.nsections == 2) ? 1 : 0];
+		const u32 boundary = (zp.nsections == 2) ? static_cast<u32>(c1.top) & 0xFFFFu : 0xFFFFu;
+
+		if (want_twalk)
+		{
+			const float blk[24] = {
+				c0.edge_x, c0.dedge_x, c0.p0x, c0.p0y,
+				c1.edge_x, c1.dedge_x, c1.p0x, c1.p0y,
+				c0.tseed.x, c0.tseed.y, c0.tseed.z, 0.0f,
+				c1.tseed.x, c1.tseed.y, c1.tseed.z, 0.0f,
+				zp.dedge_t.x, zp.dedge_t.y, zp.dedge_t.z, 0.0f,
+				zp.dscan_t.x, zp.dscan_t.y, zp.dscan_t.z, 0.0f};
+			std::memcpy(tout, blk, sizeof(blk));
+			std::memcpy(tout + 11, &boundary, 4);
+			tout += 24;
+		}
+
 		if (want_cwalk)
 		{
-			// Per section: the edge (the span's first pixel on a row is a fused
-			// multiply-add and a ceiling away, exactly as the depth walk finds it)
-			// and the seeds, which are the section's own vertex values; the
-			// gradients once, shared by both sections as SetupTriangle hands them out.
-			// A single-section primitive repeats section 0 into the second slot and
-			// marks the boundary unreachable, as the depth walk's payload does.
-			const GSTileZPlaneSection& c0 = zp.sec[0];
-			const GSTileZPlaneSection& c1 = zp.sec[(zp.nsections == 2) ? 1 : 0];
-			const u32 boundary = (zp.nsections == 2) ? static_cast<u32>(c1.top) & 0xFFFFu : 0xFFFFu;
 			const float blk[32] = {
 				c0.edge_x, c0.dedge_x, c0.p0x, c0.p0y,
 				c1.edge_x, c1.dedge_x, c1.p0x, c1.p0y,
@@ -2408,19 +2403,6 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, bool want_
 			std::memcpy(cout, blk, sizeof(blk));
 			std::memcpy(cout + 28, &boundary, 4);
 			cout += 32;
-		}
-
-		if (want_stq)
-		{
-			// Section 0's reference vertex is the origin both terms step from. The
-			// plane is the same across sections by construction, so one is enough —
-			// this path is not attempting the scanline's row-seed-plus-accumulation
-			// walk, only taking the coordinate off the perturbed interpolator.
-			const float blk[12] = {
-				zp.tseed.x, zp.tseed.y, zp.tseed.z, zp.sec[0].p0x,
-				zp.dscan_t.x, zp.dscan_t.y, zp.dscan_t.z, zp.sec[0].p0y,
-				zp.dedge_t.x, zp.dedge_t.y, zp.dedge_t.z, 0.0f};
-			std::memcpy(sout + static_cast<size_t>(p) * 12, blk, sizeof(blk));
 		}
 
 		if (!want_zwalk)
@@ -2451,7 +2433,6 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, bool want_
 		// 4d7ebb194a): its Y half gates on the primitive's first scanline — the
 		// pre-scissor one, because a scissor rejects pixels, it does not reseed an
 		// interpolator.
-		const u32 boundary = (zp.nsections == 2) ? static_cast<u32>(s1.top) & 0xFFFFu : 0xFFFFu;
 		const s32 top_clamped = std::clamp(zp.top_prim, -32768, 32767);
 		const u32 rows_word = boundary | (static_cast<u32>(static_cast<u16>(top_clamped)) << 16);
 
@@ -2639,28 +2620,23 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 
 		const u8 wms = static_cast<u8>(ctx->CLAMP.WMS);
 		const u8 wmt = static_cast<u8>(ctx->CLAMP.WMT);
-		// The in-shader coordinate walk serves every bilinear draw, every
-		// perspective STQ triangle (either filter), every mip draw — and every
-		// draw whose coordinate can LAG: the GPU interpolator's own divide
-		// measurably flips texels against the scanline's, so the fragment path
-		// recomputes trunc(s/q) at the scanline's rounding — and mip adds
-		// per-pixel level selection and bound shifts no sampler state expresses.
+		// Every textured native draw takes the in-shader legs: its coordinate comes
+		// off the SW scanline's walk (PS_TILE_TWALK — payload built above; points
+		// floor before reaching here), and the walk's value is what the scanline
+		// hands its own sampler, so the texel indices, the 4-bit filter weight, the
+		// per-pixel level selection and the bound shifts all run in the shader on it.
+		// The GPU sampler leg below is therefore unreached by a native textured draw
+		// today; it stays as the sampler-side reference (gs-texture proved nearest
+		// through it exact) in case a class is ever handed back for speed.
 		//
 		// The lag (gs-shade, SCPH-30001): a non-sprite primitive's coordinate
 		// trails the exact plane in the direction the walk is going, one 16.16
-		// unit per forward axis, spent before the snap to a sixteenth. The GPU
-		// sampler cannot take that unit off the coordinate it floors, so a
-		// nearest draw that can lag leaves the sampler for the walk — under
-		// nearest the lag moves a whole texel, which is exactly where the
-		// capture measured 2,048 of 2,048 readings moving. Sprites are exact on
-		// silicon and take nothing; a point has no gradient to lag. Affine
-		// nearest without mip on those two classes stays on the GPU sampler,
-		// which the gs-texture capture proved exact.
+		// unit per forward axis, spent before the snap to a sixteenth. Sprites are
+		// exact on silicon and take nothing; a point has no gradient to lag.
 		const bool mip_draw = IsMipMapActive();
-		const bool stq_walk = !PRIM->FST && m_vt.m_primclass == GS_TRIANGLE_CLASS;
 		const bool tclag_draw =
 			m_vt.m_primclass != GS_SPRITE_CLASS && m_vt.m_primclass != GS_POINT_CLASS;
-		if (mip_draw || m_vt.IsLinear() || stq_walk || tclag_draw || direct_leg)
+		if (m_twalk_at != NoWalk || direct_leg)
 		{
 			conf.ps.tile_tclag = tclag_draw;
 			// texelFetch bypasses the sampler, so every wrap mode runs in the
@@ -2718,25 +2694,17 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 			conf.ps.wmt = wmt;
 			if (!PRIM->FST)
 			{
-				// ti.zw feeds the in-shader quotient: SW's numerator space is the
-				// register claim × 65536, so the varying carries S·16·reg_tw.
+				// ti.zw feeds the sampler leg's quotient: SW's numerator space is the
+				// register claim × 65536, so the varying carries S·16·reg_tw. The walk
+				// legs never read it — their numerator comes off the payload.
 				conf.cb_vs.texture_scale = GSVector2((1.0f / 16.0f) / reg_tw, (1.0f / 16.0f) / reg_th);
-
-				// The console's truncated reciprocal belongs to the draws where the
-				// scanline actually divides per pixel. Outside a mipmapping draw the
-				// scanline treats a sprite — and any primitive whose Q is constant —
-				// as affine and divides once per vertex on the CPU, exactly
-				// (GetScanlineGlobalData's sel.fst |= m_eq.q || sprite). Truncating
-				// there would be console-accurate against a software renderer that
-				// is not, which costs the parity bar and buys nothing measurable.
-				const bool per_pixel_divide =
-					mip_draw || (!m_vt.m_eq.q && m_vt.m_primclass != GS_SPRITE_CLASS);
-				const u32 recip_mask = per_pixel_divide ? 0xfffffc00u : 0u;
-				std::memcpy(&conf.cb_ps.TileSTQRecip, &recip_mask, sizeof(recip_mask));
 
 				// Per-pixel MMAG/MMIN across the level-of-detail crossing, by the
 				// scanline's rule and on the scanline's draws (sel.ltfx): lod is
-				// -log2(Q)·2^L + K, so lod > 0 is exactly Q below one constant.
+				// -log2(Q)·2^L + K, so lod > 0 is exactly Q below one constant. Only
+				// where the scanline divides per pixel — outside mipmapping, a sprite
+				// or a constant-Q primitive is affine to it (sel.fst) and takes one
+				// filter for the whole primitive.
 				//
 				// Not inside a mipmapping draw. The scanline still resolves that
 				// crossing per primitive and carries a TODO saying so, and matching
@@ -2748,7 +2716,7 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 				// emits the per-pixel choice, so on any other host the software
 				// renderer decides per primitive and Tile has to agree with it.
 #ifdef ARCH_ARM64
-				if (!mip_draw && per_pixel_divide && m_vt.IsFilterCrossover())
+				if (!mip_draw && !m_twalk_fst && m_vt.IsFilterCrossover())
 				{
 					const float K = static_cast<float>(ctx->TEX1.K) / 16.0f;
 
@@ -2844,17 +2812,22 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	// an integer where one z unit is finer than a float32 ULP.
 	const bool zwalk = ds && m_zwalk_at != NoWalk;
 	conf.tile_zwalk_at = NoWalk;
-	conf.tile_stq_at = NoWalk;
+	conf.tile_twalk_at = NoWalk;
 	conf.tile_cwalk_at = NoWalk;
 	if (!m_tile_payload.empty())
 	{
 		conf.tile_payload = m_tile_payload.data();
 		conf.tile_payload_size = static_cast<u32>(m_tile_payload.size() / 4);
 		conf.vs.tile_prim_ord = 1;
-		if (m_stq_at != NoWalk)
+		if (m_twalk_at != NoWalk)
 		{
-			conf.ps.tile_stq = 1;
-			conf.tile_stq_at = m_stq_at;
+			// The texture coordinate off the scanline's walk: 1 = triangle blocks, 2 =
+			// sprite blocks; the FST bit says whether the walk is the truncating
+			// integer DDA (the software renderer's effective sel.fst) or the float one
+			// with the per-pixel truncated reciprocal.
+			conf.ps.tile_twalk = (m_vt.m_primclass == GS_SPRITE_CLASS) ? 2 : 1;
+			conf.ps.tile_twalk_fst = m_twalk_fst;
+			conf.tile_twalk_at = m_twalk_at;
 		}
 		if (m_cwalk_at != NoWalk)
 		{
@@ -3080,7 +3053,20 @@ void GSRendererTile::Draw()
 		m_memo.timer_ns += Common::Timer::ConvertValueToNanoseconds(b2 - b1);
 		m_memo.build_calls++;
 	}
-	const GSTileDrawPlan plan = gsTileLowerDraw(in);
+	GSTileDrawPlan plan = gsTileLowerDraw(in);
+	// The bisect lever: past the session's native-draw budget every draw floors. It
+	// counts draws that WOULD go native, so a run with limit N and a run with limit
+	// N+1 differ in exactly one draw's route.
+	if (plan.native && !r.rempty() && GSConfig.TileNativeDrawLimit > 0)
+	{
+		if (m_native_budget_used >= static_cast<u32>(GSConfig.TileNativeDrawLimit))
+		{
+			plan.native = false;
+			plan.reason = GSTileFloorReason::DevLimit;
+		}
+		else
+			m_native_budget_used++;
+	}
 	GSTileFloorReason reason = plan.reason;
 
 	// The lockstep oracle arms only for a draw heading to the native route: a floored

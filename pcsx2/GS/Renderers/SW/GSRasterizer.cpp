@@ -1136,7 +1136,6 @@ bool CURRENT_ISA::GSComputeTriangleZPlane(const GSVertexSW* vertex, const GSVect
 		return false;
 
 	out.dscan_z = s.dscan.p.F64[1];
-	out.tseed = s.edge[0].t;
 	out.dedge_t = s.dedge[0].t;
 	out.dscan_t = s.dscan.t;
 	// The fp32 narrowing GSSetupPrimCodeGenerator performs once per primitive when it
@@ -1161,6 +1160,7 @@ bool CURRENT_ISA::GSComputeTriangleZPlane(const GSVertexSW* vertex, const GSVect
 		out.sec[n].bottom = s.bottom[n];
 		out.sec[n].cseed = s.edge[n].c;
 		out.sec[n].fseed = s.edge[n].t.w;
+		out.sec[n].tseed = s.edge[n].t;
 	}
 	return true;
 }
