@@ -175,6 +175,7 @@ public:
 	// finished since the last wait, not just since the last submit.
 	u64 GetSubmitEpoch() const override { return GetCurrentFenceCounter(); }
 	bool TileReinterpretIndex(GSTexture* owner, GSTexture* dst, const TileReinterpretParams& p) override;
+	bool TileClutFromTarget(GSTexture* owner, GSTexture* dst, const TileClutGatherParams& p) override;
 	u64 GetCompletedSubmitEpoch() override
 	{
 		ScanForCommandBufferCompletion();
@@ -528,9 +529,11 @@ private:
 
 	std::vector<VkPipeline> m_convert;
 	/// Tile renderer: a render target read as an indexed texture, one pipeline per
-	/// GSTileSwizzleForms::IndexFormat, compiled on first use with the swizzle forms
-	/// fitted from the tree's tables injected as defines (see tile_convert.glsl).
-	std::array<VkPipeline, 5> m_tile_reinterpret{};
+	/// GSTileSwizzleForms::IndexFormat (0..4), and a palette gathered off a render
+	/// target (5: sixteen entries, 6: two hundred and fifty-six) — compiled together on
+	/// first use with the swizzle forms fitted from the tree's tables injected as
+	/// defines (see tile_convert.glsl).
+	std::array<VkPipeline, 7> m_tile_reinterpret{};
 	bool m_tile_reinterpret_tried = false;
 	std::array<VkPipeline, static_cast<int>(PresentShader::Count)> m_present{};
 	std::array<VkPipeline, 2> m_merge{};

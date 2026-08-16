@@ -3,6 +3,7 @@
 
 #include "GS/Renderers/Tile/GSTileSwizzleForms.h"
 
+#include "GS/GSClut.h"
 #include "GS/GSRegs.h"
 #include "GS/GSTables.h"
 
@@ -63,6 +64,13 @@ namespace GSTileSwizzleForms
 		ok &= Invert2(f.col32, f.inv_col32);
 
 		f.valid = ok;
+
+		u16 i8[256];
+		u16 i4[16];
+		GSClut::EntryToWordCSM1_32(i8, i4);
+		bool clut_ok = Fit1([&](u32 e) { return static_cast<u32>(i8[e]); }, 8, f.clut_i8_word);
+		clut_ok &= Fit1([&](u32 e) { return static_cast<u32>(i4[e]); }, 4, f.clut_i4_word);
+		f.clut_valid = clut_ok;
 		return f;
 	}
 
@@ -86,6 +94,8 @@ namespace GSTileSwizzleForms
 		form2("C4", forms.col4);
 		form1("IB48", forms.inv_block48);
 		form1("IC32", forms.inv_col32);
+		form1("CLUT8", forms.clut_i8_word);
+		form1("CLUT4", forms.clut_i4_word);
 		return s;
 	}
 

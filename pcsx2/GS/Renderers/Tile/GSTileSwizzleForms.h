@@ -88,6 +88,24 @@ namespace GSTileSwizzleForms
 		return true;
 	}
 
+	/// Fit f over [0, 2^in_bits) as a linear form on one input. Same contract as Fit2.
+	template <typename F>
+	bool Fit1(F&& f, u32 in_bits, XorForm1& out)
+	{
+		if (in_bits > 10 || f(0u) != 0u)
+			return false;
+		out = {};
+		out.in_bits = in_bits;
+		for (u32 b = 0; b < in_bits; b++)
+			out.basis[b] = f(1u << b);
+		for (u32 v = 0; v < (1u << in_bits); v++)
+		{
+			if (out.Eval(v) != f(v))
+				return false;
+		}
+		return true;
+	}
+
 	/// The inverse of a bijective form on (x, y) → v, as a form on v's (x_bits + y_bits)
 	/// bits producing the packed coordinate x | (y << x_bits). False if fwd is not a
 	/// bijection onto [0, 2^(x_bits+y_bits)) or its inverse is not linear.
@@ -104,10 +122,19 @@ namespace GSTileSwizzleForms
 		XorForm2 col4; ///< columnTable4: (x 0..31, y 0..15) → nibble in block 0..511
 		XorForm1 inv_block48; ///< in-page block 0..31 → bx | (by << 3)
 		XorForm1 inv_col32; ///< word in block 0..63 → cx | (cy << 3)
+
+		/// The CSM1 32-bit CLUT loaders' word order (GSClut::EntryToWordCSM1_32): entry
+		/// e of an eight-bit palette at CSA 0 → source word 0..255; entry e of a
+		/// four-bit palette → source word 0..15. Fitted separately (`clut_valid`) so a
+		/// loader change turns off only the device-side CLUT gather.
+		bool clut_valid = false;
+		XorForm1 clut_i8_word;
+		XorForm1 clut_i4_word;
 	};
 
-	/// Fits every form from the tree's tables. `valid` is false if any table fails to
-	/// fit or blockTable8 is no longer blockTable32 (the shader shares one form).
+	/// Fits every form from the tree's tables. `valid` is false if any swizzle table
+	/// fails to fit or blockTable8 is no longer blockTable32 (the shader shares one
+	/// form); `clut_valid` is false if the CLUT loaders' word order does not fit.
 	FormSet Fit();
 
 	/// The fitted constants as GLSL `#define`s (one per basis entry, zero entries

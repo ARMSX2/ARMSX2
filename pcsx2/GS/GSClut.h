@@ -128,6 +128,19 @@ public:
 	/// registers (CPSM/CSA/TEXA) this identifies the expanded palette content, which
 	/// is what consumers caching depalettised textures key on.
 	__fi u32 GetWriteGeneration() const { return m_write_generation; }
+
+	/// The word order the CSM1 32-bit loaders read a palette in: entry e of an eight-bit
+	/// palette loaded at CSA 0 comes from source word out_i8[e] of the 256 words at CBP;
+	/// entry e of a sixteen-entry four-bit palette from out_i4[e] of the 16 words at
+	/// CBP. Derived by running the loaders themselves over a self-naming source, so it
+	/// cannot drift from them. The Tile renderer's device-side CLUT gather consumes it.
+	static void EntryToWordCSM1_32(u16 out_i8[256], u16 out_i4[16]);
+
+	/// Overwrite entries [first, first + count) of the CLUT RAM with 32-bit words in
+	/// entry order — the Tile renderer syncing a palette the device loaded back into the
+	/// CPU's CLUT. The read buffer is marked dirty; the write-decision state is untouched.
+	void SetEntries32(u32 first, u32 count, const u32* words);
+
 	//void Read(const GIFRegTEX0& TEX0);
 	void Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA);
 	void GetAlphaMinMax32(int& amin, int& amax);

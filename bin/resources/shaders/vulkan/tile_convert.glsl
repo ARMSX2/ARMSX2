@@ -153,3 +153,54 @@ void ps_tile_reinterpret_index()
 #endif
 	o_col0 = vec4(float(idx) / 255.0f);
 }
+
+// ps_tile_clut_from_target: a palette loaded off a render target.
+//
+// The GS loads its palette from local memory at TEX0-write time — a CSM1 32-bit
+// load reads 256 words (four blocks) or 16 words (one block) at CBP, in memory
+// order, and the loader's shuffle decides which word becomes which entry. When
+// those blocks were rendered by a native draw, the words are in the owner
+// surface's texture and nowhere on the CPU; this shader gathers them into an
+// N×1 palette texture — texel e is entry e as Read32 would expand it (a 32-bit
+// palette expands to itself), so the draw binds it exactly like a CPU-built one.
+// Entry → source word is the loaders' own order, fitted as a GF(2)-linear form
+// from GSClut::EntryToWordCSM1_32 (TILE_SWZ_CLUT8_*/CLUT4_*); word → owner texel
+// is the same inverse arithmetic the reinterpretation above uses.
+//
+// TILE_CLUT_ENTRIES (injected with the pipeline): 256 for an eight-bit palette
+// (CSA 0, all sixteen slots), 16 for a four-bit one (one slot).
+
+uint tile_clut8_word(uint e)
+{
+	return XB(e, 0u, TILE_SWZ_CLUT8_0) ^ XB(e, 1u, TILE_SWZ_CLUT8_1) ^ XB(e, 2u, TILE_SWZ_CLUT8_2) ^ XB(e, 3u, TILE_SWZ_CLUT8_3)
+	     ^ XB(e, 4u, TILE_SWZ_CLUT8_4) ^ XB(e, 5u, TILE_SWZ_CLUT8_5) ^ XB(e, 6u, TILE_SWZ_CLUT8_6) ^ XB(e, 7u, TILE_SWZ_CLUT8_7);
+}
+
+uint tile_clut4_word(uint e)
+{
+	return XB(e, 0u, TILE_SWZ_CLUT4_0) ^ XB(e, 1u, TILE_SWZ_CLUT4_1) ^ XB(e, 2u, TILE_SWZ_CLUT4_2) ^ XB(e, 3u, TILE_SWZ_CLUT4_3);
+}
+
+void ps_tile_clut_from_target()
+{
+	uint e = uint(gl_FragCoord.x);
+#if TILE_CLUT_ENTRIES == 256
+	uint w = tile_clut8_word(e);
+#else
+	uint w = tile_clut4_word(e);
+#endif
+	// src_bp is CBP (blocks); a block is 64 words, contiguous in memory.
+	uint blk = src_bp + (w >> 6u);
+	uint word_in_block = w & 63u;
+
+	uint rel = blk - dst_bp;
+	uint pg = rel >> 5u;
+	uint bip = rel & 31u;
+	uint bpk = tile_ib48(bip);
+	uint cpk = tile_ic32(word_in_block);
+	uint bwpg = max(dst_bwpg, 1u);
+	ivec2 xy = ivec2(int((pg % bwpg) * 64u + (bpk & 7u) * 8u + (cpk & 7u)),
+	                 int((pg / bwpg) * 32u + (bpk >> 3u) * 8u + (cpk >> 3u)));
+	xy = clamp(xy, ivec2(0), textureSize(samp0, 0) - 1);
+	o_col0 = texelFetch(samp0, xy, 0);
+}

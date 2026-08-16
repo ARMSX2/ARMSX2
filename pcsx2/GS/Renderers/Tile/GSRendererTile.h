@@ -4,6 +4,7 @@
 #pragma once
 
 #include "GS/Renderers/SW/GSRendererSW.h"
+#include "GS/Renderers/Tile/GSTileClutMirror.h"
 #include "GS/Renderers/Tile/GSTileDrawLowering.h"
 #include "GS/Renderers/Tile/GSTilePaletteCache.h"
 #include "GS/Renderers/Tile/GSTileTargetPool.h"
@@ -11,6 +12,8 @@
 #include "GS/Renderers/Tile/GSVramModel.h"
 
 #include <array>
+#include <memory>
+#include <vector>
 
 MULTI_ISA_UNSHARED_START
 
@@ -33,6 +36,7 @@ class GSRendererTile final : public GSRendererSW
 {
 public:
 	GSRendererTile(int threads);
+	~GSRendererTile() override;
 
 	void Destroy() override;
 	void Reset(bool hardware_reset) override;
@@ -41,6 +45,9 @@ public:
 	void InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) override;
 	void InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut = false) override;
 	void Move() override;
+	void PreClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT) override;
+	void PostClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT) override;
+	void ReadbackTextureCache() override;
 
 private:
 	void RecordDrawLogEntry() const;
@@ -171,9 +178,75 @@ private:
 	// Spill machinery shared by every CPU-side seam.
 	bool ReadbackModelPages(const GSPageBitmap& pages, ReadbackSite site);
 	void InvalidateSwTexCache(const GSTileSurfaceLayout& layout, const GSPageBitmap& pages);
-	void SyncAllTruthToCpu();
+	void SyncAllTruthToCpu(bool palettes);
 	void SpillForFloorDraw(const GSTileDrawPlan& plan, const GSVector4i& r);
 	void ObserveFloorDraw(const GSTileDrawPlan& plan, const GSVector4i& r);
+
+	// -- The palette on the device (GSTileClutMirror) ---------------------------------
+	// A CLUT loaded off pages a native draw rendered is gathered out of the owner's
+	// texture into a device palette instead of draining the page to CPU memory; the
+	// mirror records which sixteen-entry slots the CPU's GSClut then holds stale, and
+	// every CPU consumer of the palette syncs through SyncClutToCpu first.
+
+	/// The blocks of the CLUT load in progress whose readback InvalidateLocalMem skipped
+	/// because one colour surface owns them: PostClutLoad turns them into a device
+	/// gather, or PreClutLoad reads them back after all if the load's shape is not one
+	/// the gather serves.
+	struct DeferredClutBlocks
+	{
+		GSPageBitmap pages;
+		u32 blocks = 0;
+		GSTileSurfaceId owner = kGSTileNoSurface;
+		bool mixed = false; ///< some blocks deferred, some not — the CPU route for all
+	};
+
+	struct GpuPalette
+	{
+		u32 handle;
+		GSTexture* tex;
+		u32 entries; ///< 16 or 256
+	};
+
+	/// A sixteen-entry window into a 256-entry device palette, for a four-bit draw
+	/// reading one slot of an eight-bit device load.
+	struct GpuPaletteView
+	{
+		u32 handle;
+		u32 first_texel;
+		GSTexture* tex;
+	};
+
+	struct PaletteChoice
+	{
+		GSTexture* gpu = nullptr; ///< bind this palette; null = the CPU CLUT is the palette
+		bool cpu_current = true; ///< the CPU CLUT holds the right entries for this draw
+	};
+
+	/// The palette a palettised draw under TEX0 should use. With `allow_sync`, a mixed
+	/// provenance is resolved by syncing the device slots down first (a readback); without
+	/// it the answer only says whether the CPU CLUT can be trusted (the lowering's alpha
+	/// range must go conservative when it cannot).
+	PaletteChoice ResolvePalette(const GIFRegTEX0& TEX0, bool allow_sync);
+	/// Copies every device-authoritative slot's entries the CPU does not yet hold into
+	/// GSClut (a readback per device palette involved).
+	void SyncClutToCpu();
+	GSTexture* GpuPaletteTexture(u32 handle) const;
+	GSTexture* GpuPaletteViewFor(u32 handle, u32 first_texel);
+	void PruneGpuPalettes();
+	void ReleaseGpuPalettes();
+
+	struct ClutCensus
+	{
+		u32 loads = 0; ///< palette loads executed
+		u32 deferred = 0; ///< ... whose source blocks were all on one colour surface
+		u32 gathered = 0; ///< ... gathered on the device (no readback)
+		u32 refused_shape = 0; ///< deferred, but the load's shape is not served: read back after all
+		u32 refused_mixed = 0; ///< deferred blocks beside undeferrable ones: read back after all
+		u32 gpu_palette_draws = 0; ///< native draws that bound a device palette
+		u32 mixed_syncs = 0; ///< draws whose slots straddled loads and synced first
+		u32 sync_backs = 0; ///< device palettes copied down to the CPU CLUT
+		u32 sync_back_drains = 0; ///< ... of which drained the frame's buffer
+	};
 
 	// -- The per-draw lockstep oracle (GSTileOracle) ---------------------------------
 	// Dev instrument, inert unless EmuCore/GS/TileDrawOracle is set. Runs BOTH arms
@@ -234,6 +307,14 @@ private:
 	GSTileTargetPool m_target_pool;
 	GSTileTextureSource m_tex_source;
 	GSTilePaletteCache m_palette_cache;
+	GSTileClutMirror m_clut_mirror;
+	DeferredClutBlocks m_clut_deferred;
+	std::vector<GpuPalette> m_gpu_palettes;
+	std::vector<GpuPaletteView> m_gpu_palette_views;
+	std::unique_ptr<GSDownloadTexture> m_clut_download;
+	u32 m_gpu_palette_next = 1;
+	bool m_clut_gather_serves = true; ///< cleared when the device refuses a gather
+	ClutCensus m_clut_census{};
 
 	// Per-primitive plane payload for the current draw: the depth walk's blocks
 	// and the coordinate plane's blocks concatenated into one upload, built per

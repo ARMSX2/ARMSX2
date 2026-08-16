@@ -5877,10 +5877,22 @@ bool GSDeviceVK::CompileTileReinterpretPipelines()
 	gpb.SetColorWriteMask(0, VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
 
 	const std::string defines = GSTileSwizzleForms::ShaderDefines(forms);
-	for (u32 fmt = 0; fmt < m_tile_reinterpret.size(); fmt++)
+	for (u32 i = 0; i < m_tile_reinterpret.size(); i++)
 	{
-		const std::string source = defines + fmt::format("#define TILE_IDX_FMT {}\n", fmt) + *fsource;
-		VkShaderModule ps = GetUtilityFragmentShader(source, "ps_tile_reinterpret_index");
+		// 0..4: the index formats; 5 and 6: the CLUT gather at 16 and 256 entries. The
+		// gather needs the CLUT loaders' word order to have fitted as well.
+		const bool clut = i >= 5;
+		if (clut && !forms.clut_valid)
+		{
+			Console.Error("GS/Tile: the CLUT loaders' word order no longer fits a closed form; device-side CLUT gather is off.");
+			continue;
+		}
+		const u32 fmt = clut ? 0 : i;
+		const u32 entries = (i == 5) ? 16 : 256;
+		const std::string source = defines +
+								   fmt::format("#define TILE_IDX_FMT {}\n#define TILE_CLUT_ENTRIES {}\n", fmt, entries) +
+								   *fsource;
+		VkShaderModule ps = GetUtilityFragmentShader(source, clut ? "ps_tile_clut_from_target" : "ps_tile_reinterpret_index");
 		if (ps == VK_NULL_HANDLE)
 			return false;
 		ScopedGuard ps_guard([this, &ps]() { vkDestroyShaderModule(m_device, ps, nullptr); });
@@ -5889,9 +5901,43 @@ bool GSDeviceVK::CompileTileReinterpretPipelines()
 		VkPipeline pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
 		if (!pipe)
 			return false;
-		m_tile_reinterpret[fmt] = pipe;
-		Vulkan::SetObjectName(m_device, pipe, "Tile reinterpret-index pipeline (fmt=%u)", fmt);
+		m_tile_reinterpret[i] = pipe;
+		if (clut)
+			Vulkan::SetObjectName(m_device, pipe, "Tile CLUT-gather pipeline (entries=%u)", entries);
+		else
+			Vulkan::SetObjectName(m_device, pipe, "Tile reinterpret-index pipeline (fmt=%u)", fmt);
 	}
+	return true;
+}
+
+bool GSDeviceVK::TileClutFromTarget(GSTexture* owner, GSTexture* dst, const TileClutGatherParams& p)
+{
+	if (!m_tile_reinterpret_tried && !CompileTileReinterpretPipelines())
+	{
+		for (VkPipeline& pipe : m_tile_reinterpret)
+		{
+			if (pipe != VK_NULL_HANDLE)
+				vkDestroyPipeline(m_device, pipe, nullptr);
+			pipe = VK_NULL_HANDLE;
+		}
+	}
+	const u32 which = (p.entries == 16) ? 5 : (p.entries == 256) ? 6 : 0xFFFFFFFFu;
+	if (which == 0xFFFFFFFFu || m_tile_reinterpret[which] == VK_NULL_HANDLE)
+		return false;
+
+	struct alignas(16) Uniforms
+	{
+		u32 src_bp;
+		u32 src_bwpg;
+		u32 dst_bp;
+		u32 dst_bwpg;
+	};
+	const Uniforms uniforms = {p.cbp, 0, p.dst_bp, p.dst_bwpg};
+	SetUtilityPushConstants(&uniforms, sizeof(uniforms));
+
+	const GSVector4 dRect(0, 0, static_cast<int>(p.entries), 1);
+	DoStretchRect(static_cast<GSTextureVK*>(owner), GSVector4::zero(), static_cast<GSTextureVK*>(dst), dRect,
+		m_tile_reinterpret[which], Nearest, true);
 	return true;
 }
 
@@ -5908,7 +5954,7 @@ bool GSDeviceVK::TileReinterpretIndex(GSTexture* owner, GSTexture* dst, const Ti
 			pipe = VK_NULL_HANDLE;
 		}
 	}
-	if (p.fmt >= m_tile_reinterpret.size() || m_tile_reinterpret[p.fmt] == VK_NULL_HANDLE)
+	if (p.fmt >= 5 || m_tile_reinterpret[p.fmt] == VK_NULL_HANDLE)
 		return false;
 
 	struct alignas(16) Uniforms

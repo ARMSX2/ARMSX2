@@ -1892,6 +1892,20 @@ public:
 	};
 	virtual bool TileReinterpretIndex(GSTexture* owner, GSTexture* dst, const TileReinterpretParams& p) { return false; }
 
+	/// Tile renderer: a palette loaded off a render target. Writes `dst` — an RGBA8
+	/// render target of `entries` × 1 — with the CSM1 32-bit palette whose source words
+	/// begin at block `cbp` of `owner`, a page-aligned CT32/CT24 surface texture, in
+	/// entry order (256 for an eight-bit palette at CSA 0, 16 for a four-bit one).
+	/// False when the device does not serve it.
+	struct TileClutGatherParams
+	{
+		u32 cbp; ///< the palette's CBP (blocks)
+		u32 dst_bp; ///< the owner's base (page-aligned blocks)
+		u32 dst_bwpg; ///< the owner's width in pages
+		u32 entries; ///< 16 or 256
+	};
+	virtual bool TileClutFromTarget(GSTexture* owner, GSTexture* dst, const TileClutGatherParams& p) { return false; }
+
 	/// Enables/disables GPU frame timing.
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;
 

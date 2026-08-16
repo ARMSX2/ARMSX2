@@ -159,6 +159,8 @@ GSRendererTile::GSRendererTile(int threads)
 {
 }
 
+GSRendererTile::~GSRendererTile() = default;
+
 void GSRendererTile::Destroy()
 {
 	ReportReadbackCensus();
@@ -178,6 +180,8 @@ void GSRendererTile::Destroy()
 	}
 	m_tex_source.Clear();
 	m_palette_cache.Clear();
+	ReleaseGpuPalettes();
+	m_clut_download.reset();
 	m_target_pool.ReleaseAll();
 	GSRendererSW::Destroy();
 }
@@ -185,9 +189,12 @@ void GSRendererTile::Destroy()
 void GSRendererTile::Reset(bool hardware_reset)
 {
 	GSRendererSW::Reset(hardware_reset);
-	// Everything falls back to CPU-newest; surface textures die with the reset.
+	// Everything falls back to CPU-newest; surface textures die with the reset. The
+	// CLUT RAM the base reset cleared is CPU-authoritative again by definition.
 	m_tex_source.Clear();
 	m_palette_cache.Clear();
+	ReleaseGpuPalettes();
+	m_clut_deferred = {};
 	m_target_pool.ReleaseAll();
 	m_vram_model.Reset();
 }
@@ -197,7 +204,7 @@ void GSRendererTile::VSync(u32 field, bool registers_written, bool idle_frame)
 	// Present reads local memory, and syncing everything at the frame boundary keeps
 	// stable targets synced (no truth is dropped, so nothing re-uploads next frame).
 	// TODO(M3): spill only the DISPFB footprints via a GetOutput-precise hook.
-	SyncAllTruthToCpu();
+	SyncAllTruthToCpu(false);
 	// The model's invariants are cheap enough to police once a frame in Devel.
 	pxAssert(m_vram_model.CheckInvariants());
 	m_readback_frames++;
@@ -274,6 +281,13 @@ void GSRendererTile::ReportReadbackCensus()
 		Console.WriteLn("      of the format refusals, %.2f start at the owner's own base",
 			n.refuse_format_same_base / frames);
 	}
+	{
+		const ClutCensus& c = m_clut_census;
+		Console.WriteLn("  palette loads %8.2f  deferred %8.2f  gathered on device %8.2f  refused: shape %.2f mixed %.2f",
+			c.loads / frames, c.deferred / frames, c.gathered / frames, c.refused_shape / frames, c.refused_mixed / frames);
+		Console.WriteLn("  device-palette draws %8.2f  mixed-provenance syncs %.2f  palettes synced back %.2f (%.2f drained)",
+			c.gpu_palette_draws / frames, c.mixed_syncs / frames, c.sync_backs / frames, c.sync_back_drains / frames);
+	}
 }
 
 // A transfer wrote CPU local memory: shrink or clear GPU truth under it. The planes
@@ -294,16 +308,326 @@ void GSRendererTile::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const 
 }
 
 // The CPU is about to read this region out of local memory: any page whose newest
-// bytes live on the GPU comes back first.
+// bytes live on the GPU comes back first — except the blocks of a CLUT load that
+// sit on ONE colour surface, whose readback is deferred so PostClutLoad can gather
+// the palette out of that surface's texture on the device instead (a game that
+// renders its palette and then loads it: GT4, seventy times a frame). PreClutLoad
+// reads them back after all if the load's shape is not one the gather serves.
 void GSRendererTile::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut)
 {
 	const GSTileSurfaceLayout layout{BITBLTBUF.SBP, static_cast<u8>(BITBLTBUF.SBW),
 		static_cast<u8>(BITBLTBUF.SPSM), KindForPsm(BITBLTBUF.SPSM)};
 	GSVramModel::FootprintForRect(layout, r, m_rect_fp);
 
-	ReadbackModelPages(m_vram_model.ReadbackNeeded(m_rect_fp, kGSTilePlanesAll), ReadbackSite::LocalRead);
+	GSPageBitmap need = m_vram_model.ReadbackNeeded(m_rect_fp, kGSTilePlanesAll);
+	if (clut && !need.empty() && m_clut_gather_serves && GSConfig.TileGpuClut)
+	{
+		const GSTileSurfaceId owner = m_vram_model.SoleGpuOwner(need, kGSTilePlanesAll);
+		bool deferrable = owner != kGSTileNoSurface;
+		if (deferrable)
+		{
+			const GSVramModel::Surface& s = m_vram_model.Get(owner);
+			deferrable = s.layout.kind == GSTileSurfaceKind::Color &&
+						 (s.layout.psm == PSMCT32 || s.layout.psm == PSMCT24) && s.pool_handle != 0 &&
+						 s.residency.contains(need);
+		}
+		if (deferrable && (m_clut_deferred.blocks == 0 || m_clut_deferred.owner == owner))
+		{
+			m_clut_deferred.pages |= need;
+			m_clut_deferred.owner = owner;
+			m_clut_deferred.blocks++;
+			need = GSPageBitmap();
+		}
+		else if (m_clut_deferred.blocks != 0)
+		{
+			// Part of this load is deferrable and part is not: the whole load takes the
+			// CPU route (PreClutLoad reads the deferred blocks back).
+			m_clut_deferred.mixed = true;
+		}
+	}
+	ReadbackModelPages(need, ReadbackSite::LocalRead);
 
 	GSRendererSW::InvalidateLocalMem(BITBLTBUF, r, clut);
+}
+
+// -- The palette on the device -----------------------------------------------------
+
+namespace
+{
+	// The slots a CSM1 32-bit load writes: an eight-bit palette fills slots CSA..15
+	// (WriteCLUT_T32_I8_CSM1's loop), a four-bit one fills slot CSA.
+	void ClutLoadSlots(const GIFRegTEX0& TEX0, u32& first, u32& count)
+	{
+		const u32 csa = TEX0.CSA & 15;
+		if (GSLocalMemory::m_psm[TEX0.PSM].pal == 256)
+		{
+			first = csa;
+			count = 16 - csa;
+		}
+		else
+		{
+			first = csa;
+			count = 1;
+		}
+	}
+
+	// The load shapes the device gather serves: CSM1, a 32-bit palette, and either a
+	// four-bit index (one slot) or an eight-bit one at CSA 0 (all sixteen).
+	bool GatherServesLoad(const GIFRegTEX0& TEX0)
+	{
+		const u32 pal = GSLocalMemory::m_psm[TEX0.PSM].pal;
+		if (TEX0.CSM != 0 || (TEX0.CPSM & 0x2) != 0 || pal == 0)
+			return false;
+		return pal == 16 || TEX0.CSA == 0;
+	}
+} // namespace
+
+void GSRendererTile::PreClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT)
+{
+	m_clut_census.loads++;
+	const bool csm1_32 = TEX0.CSM == 0 && (TEX0.CPSM & 0x2) == 0;
+
+	// A load of any other shape writes the CLUT RAM in units the sixteen-slot mirror
+	// does not model (16-bit halves, CSM2 strips): make the CPU RAM whole first, so
+	// what the load leaves behind is CPU-authoritative everywhere.
+	if (!csm1_32 && m_clut_mirror.AnyUnsynced())
+		SyncClutToCpu();
+
+	if (m_clut_deferred.blocks == 0)
+		return;
+	m_clut_census.deferred++;
+
+	// The deferred blocks become a device gather in PostClutLoad only if the whole
+	// load is one the gather serves; otherwise the CPU load that follows needs the
+	// bytes, so they come back now.
+	if (m_clut_deferred.mixed || !GatherServesLoad(TEX0) || !m_clut_gather_serves)
+	{
+		if (m_clut_deferred.mixed)
+			m_clut_census.refused_mixed++;
+		else
+			m_clut_census.refused_shape++;
+		ReadbackModelPages(m_clut_deferred.pages, ReadbackSite::LocalRead);
+		m_clut_deferred = {};
+	}
+}
+
+void GSRendererTile::PostClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT)
+{
+	u32 first, count;
+	const bool csm1_32 = TEX0.CSM == 0 && (TEX0.CPSM & 0x2) == 0;
+	if (!csm1_32)
+	{
+		// PreClutLoad made the RAM whole; the load then rewrote it from CPU bytes.
+		m_clut_mirror.OnCpuLoad(0, GSTileClutMirror::kSlots);
+		PruneGpuPalettes();
+		return;
+	}
+	ClutLoadSlots(TEX0, first, count);
+
+	if (m_clut_deferred.blocks == 0)
+	{
+		m_clut_mirror.OnCpuLoad(first, count);
+		PruneGpuPalettes();
+		return;
+	}
+
+	// The gather: the palette's source words, in the loaders' own order, out of the
+	// owner texture into an N×1 palette texture — the same texels the CPU palette cache
+	// would have uploaded from Read32, had the bytes been on the CPU.
+	const DeferredClutBlocks deferred = m_clut_deferred;
+	m_clut_deferred = {};
+	const GSVramModel::Surface& owner = m_vram_model.Get(deferred.owner);
+	GSTexture* owner_tex = owner.pool_handle ? m_target_pool.GetTexture(owner.pool_handle) : nullptr;
+	const u32 entries = GSLocalMemory::m_psm[TEX0.PSM].pal;
+	GSTexture* pal = owner_tex ? g_gs_device->CreateRenderTarget(static_cast<int>(entries), 1, GSTexture::Format::Color, false, true) : nullptr;
+	GSDevice::TileClutGatherParams params = {};
+	params.cbp = TEX0.CBP;
+	params.dst_bp = owner.layout.bp;
+	params.dst_bwpg = owner.layout.bw;
+	params.entries = entries;
+	if (pal && g_gs_device->TileClutFromTarget(owner_tex, pal, params))
+	{
+		const u32 handle = m_gpu_palette_next++;
+		m_gpu_palettes.push_back({handle, pal, entries});
+		m_clut_mirror.OnGpuLoad(first, count, handle);
+		m_clut_census.gathered++;
+	}
+	else
+	{
+		// The device does not serve the gather (no pipeline): read the blocks back and
+		// load again from current bytes; from here on the route is never offered.
+		if (pal)
+			g_gs_device->Recycle(pal);
+		m_clut_gather_serves = false;
+		ReadbackModelPages(deferred.pages, ReadbackSite::LocalRead);
+		m_mem.m_clut.WriteLoad(TEX0, TEXCLUT);
+		m_clut_mirror.OnCpuLoad(first, count);
+	}
+	PruneGpuPalettes();
+}
+
+GSRendererTile::PaletteChoice GSRendererTile::ResolvePalette(const GIFRegTEX0& TEX0, bool allow_sync)
+{
+	PaletteChoice choice;
+	const u32 pal = GSLocalMemory::m_psm[TEX0.PSM].pal;
+	if (pal == 0 || !m_clut_mirror.AnyGpu())
+		return choice;
+
+	// The slots the draw reads: a four-bit index reads slot CSA; an eight-bit one reads
+	// group (idx >> 4) | CSA — all sixteen at CSA 0, a scattered subset otherwise, which
+	// the CPU route handles once the RAM is whole.
+	u32 first, count;
+	if (pal == 16)
+	{
+		first = TEX0.CSA & 15;
+		count = 1;
+	}
+	else if (TEX0.CSA == 0)
+	{
+		first = 0;
+		count = 16;
+	}
+	else
+	{
+		if (allow_sync)
+			SyncClutToCpu();
+		choice.cpu_current = m_clut_mirror.CpuCurrent(0, GSTileClutMirror::kSlots);
+		return choice;
+	}
+
+	const GSTileClutMirror::Resolution r = m_clut_mirror.Resolve(first, count);
+	if (r.verdict == GSTileClutMirror::Verdict::Gpu)
+	{
+		GSTexture* tex = GpuPaletteTexture(r.handle);
+		if (tex && tex->GetWidth() != static_cast<int>(pal))
+			tex = GpuPaletteViewFor(r.handle, r.first_texel);
+		choice.gpu = tex;
+	}
+	else if (r.verdict == GSTileClutMirror::Verdict::Mixed && allow_sync)
+	{
+		SyncClutToCpu();
+		m_clut_census.mixed_syncs++;
+	}
+	choice.cpu_current = m_clut_mirror.CpuCurrent(first, count);
+	if (!choice.gpu && !choice.cpu_current && allow_sync)
+	{
+		// A device slot with no palette texture behind it (a lost view): sync and fall
+		// to the CPU route rather than bind nothing.
+		SyncClutToCpu();
+		choice.cpu_current = m_clut_mirror.CpuCurrent(first, count);
+	}
+	return choice;
+}
+
+void GSRendererTile::SyncClutToCpu()
+{
+	if (!m_clut_mirror.AnyUnsynced())
+		return;
+
+	if (!m_clut_download || m_clut_download->GetWidth() < 256)
+		m_clut_download = g_gs_device->CreateDownloadTexture(256, 1, GSTexture::Format::Color);
+	if (!m_clut_download)
+		return;
+
+	for (const GpuPalette& gp : m_gpu_palettes)
+	{
+		bool wanted = false;
+		m_clut_mirror.ForEachUnsyncedSlot([&](u32, u32 handle, u32) { wanted |= (handle == gp.handle); });
+		if (!wanted)
+			continue;
+
+		const GSVector4i rc(0, 0, static_cast<int>(gp.entries), 1);
+		g_gs_device->HintReadbackSource(gp.tex);
+		bool ok;
+		if (GSConfig.TileOutOfBandReadback && m_clut_download->CopyFromCompletedTexture(rc, gp.tex, rc, 0, true))
+		{
+			ok = true;
+		}
+		else
+		{
+			m_clut_download->CopyFromTexture(rc, gp.tex, rc, 0, true);
+			m_clut_download->Flush();
+			m_clut_census.sync_back_drains++;
+			ok = true;
+		}
+		if (!ok || !m_clut_download->Map(rc))
+			continue;
+		const u32* words = reinterpret_cast<const u32*>(m_clut_download->GetMapPointer());
+		m_clut_mirror.ForEachUnsyncedSlot([&](u32 slot, u32 handle, u32 texel) {
+			if (handle == gp.handle)
+				m_mem.m_clut.SetEntries32(slot * GSTileClutMirror::kEntriesPerSlot, GSTileClutMirror::kEntriesPerSlot, words + texel);
+		});
+		m_clut_download->Unmap();
+		m_clut_mirror.MarkSynced(gp.handle);
+		m_clut_census.sync_backs++;
+	}
+}
+
+GSTexture* GSRendererTile::GpuPaletteTexture(u32 handle) const
+{
+	for (const GpuPalette& gp : m_gpu_palettes)
+		if (gp.handle == handle)
+			return gp.tex;
+	return nullptr;
+}
+
+GSTexture* GSRendererTile::GpuPaletteViewFor(u32 handle, u32 first_texel)
+{
+	for (const GpuPaletteView& v : m_gpu_palette_views)
+		if (v.handle == handle && v.first_texel == first_texel)
+			return v.tex;
+	GSTexture* src = GpuPaletteTexture(handle);
+	if (!src)
+		return nullptr;
+	GSTexture* tex = g_gs_device->CreateTexture(16, 1, 1, GSTexture::Format::Color, true);
+	if (!tex)
+		return nullptr;
+	g_gs_device->CopyRect(src, tex, GSVector4i(static_cast<int>(first_texel), 0, static_cast<int>(first_texel) + 16, 1), 0, 0);
+	m_gpu_palette_views.push_back({handle, first_texel, tex});
+	return tex;
+}
+
+void GSRendererTile::PruneGpuPalettes()
+{
+	for (size_t i = 0; i < m_gpu_palettes.size();)
+	{
+		if (m_clut_mirror.References(m_gpu_palettes[i].handle))
+		{
+			i++;
+			continue;
+		}
+		const u32 handle = m_gpu_palettes[i].handle;
+		g_gs_device->Recycle(m_gpu_palettes[i].tex);
+		m_gpu_palettes.erase(m_gpu_palettes.begin() + static_cast<std::ptrdiff_t>(i));
+		for (size_t v = 0; v < m_gpu_palette_views.size();)
+		{
+			if (m_gpu_palette_views[v].handle == handle)
+			{
+				g_gs_device->Recycle(m_gpu_palette_views[v].tex);
+				m_gpu_palette_views.erase(m_gpu_palette_views.begin() + static_cast<std::ptrdiff_t>(v));
+			}
+			else
+				v++;
+		}
+	}
+}
+
+void GSRendererTile::ReleaseGpuPalettes()
+{
+	for (const GpuPalette& gp : m_gpu_palettes)
+		g_gs_device->Recycle(gp.tex);
+	m_gpu_palettes.clear();
+	for (const GpuPaletteView& v : m_gpu_palette_views)
+		g_gs_device->Recycle(v.tex);
+	m_gpu_palette_views.clear();
+	m_clut_mirror.Reset();
+}
+
+// The close/switch seam Classic reads its texture cache back on: everything the GPU
+// holds newest comes down, palettes included.
+void GSRendererTile::ReadbackTextureCache()
+{
+	SyncAllTruthToCpu(true);
 }
 
 // A local->local copy is a CPU read of the source and a CPU write of the destination
@@ -383,11 +707,24 @@ GSTileDrawInput GSRendererTile::BuildLoweringInput()
 		// palette, 6.5% of a Katamari frame at max 224. Cheap when clean — Read32
 		// early-outs on an unchanged palette, and the floor's own later call
 		// becomes a no-op.
-		if (PRIM->TME && GSLocalMemory::m_psm[m_context->TEX0.PSM].pal > 0)
-			m_mem.m_clut.Read32(m_context->TEX0, m_draw_env->TEXA);
-		const GSVertexTrace::VertexAlpha& alpha = GetAlphaMinMax();
-		in.alpha_min = static_cast<u8>(std::clamp(alpha.min, 0, 255));
-		in.alpha_max = static_cast<u8>(std::clamp(alpha.max, 0, 255));
+		// A palette the device loaded and the CPU has not synced cannot be scanned:
+		// the classification goes conservative (the alpha test then lowers dynamically
+		// and PABE/blend rungs see the full range) rather than paying a readback for a
+		// verdict. The floor, if this draw floors, syncs before it samples.
+		const bool palettised = PRIM->TME && GSLocalMemory::m_psm[m_context->TEX0.PSM].pal > 0;
+		if (palettised && !ResolvePalette(m_context->TEX0, false).cpu_current)
+		{
+			in.alpha_min = 0;
+			in.alpha_max = 255;
+		}
+		else
+		{
+			if (palettised)
+				m_mem.m_clut.Read32(m_context->TEX0, m_draw_env->TEXA);
+			const GSVertexTrace::VertexAlpha& alpha = GetAlphaMinMax();
+			in.alpha_min = static_cast<u8>(std::clamp(alpha.min, 0, 255));
+			in.alpha_max = static_cast<u8>(std::clamp(alpha.max, 0, 255));
+		}
 	}
 	// What the lowering needs to know about fragment ordering. PrimitiveOverlap
 	// walks the vertex list, so ask only where an admission actually turns on the
@@ -672,12 +1009,17 @@ void GSRendererTile::InvalidateSwTexCache(const GSTileSurfaceLayout& layout, con
 	m_tc->InvalidatePages(off.pageLooperForRect(rect), layout.psm);
 }
 
-void GSRendererTile::SyncAllTruthToCpu()
+void GSRendererTile::SyncAllTruthToCpu(bool palettes)
 {
 	GSPageBitmap need;
 	for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
 		need |= m_vram_model.Truth(pi).andnot(m_vram_model.SyncedPages(pi));
 	ReadbackModelPages(need, ReadbackSite::VSyncAll);
+	// The CLUT RAM is not part of a savestate (Defrost resets it and the next TEX0 write
+	// reloads it from memory) and the presenter never reads it, so the frame boundary
+	// leaves device palettes where they are; the close/switch seam pulls them too.
+	if (palettes)
+		SyncClutToCpu();
 }
 
 // The floor reads AND writes its fb/z footprints (read-modify-write rasterization)
@@ -685,6 +1027,11 @@ void GSRendererTile::SyncAllTruthToCpu()
 // Over-pulling costs a readback; under-pulling costs bytes.
 void GSRendererTile::SpillForFloorDraw(const GSTileDrawPlan& plan, const GSVector4i& r)
 {
+	// The floor samples through the CPU's CLUT: a palette the device loaded comes down
+	// first (a readback of its texels, not of any page).
+	if (PRIM->TME && GSLocalMemory::m_psm[m_context->TEX0.PSM].pal > 0 && m_clut_mirror.AnyUnsynced())
+		SyncClutToCpu();
+
 	if (m_vram_model.TruthAny().empty())
 		return;
 
@@ -1555,18 +1902,30 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		const u32 pal_entries = GSLocalMemory::m_psm[ctx->TEX0.PSM].pal;
 		if (pal_entries > 0)
 		{
-			m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
-			const u32* clut = m_mem.m_clut;
-			pal = m_palette_cache.Lookup(clut, pal_entries);
-			if (!pal)
+			// A palette the device loaded off a rendered page is bound as it is; the
+			// ledger's palette column stays empty for those (the words never visit the
+			// CPU). Otherwise the CPU CLUT — synced first where its slots straddled loads.
+			const PaletteChoice choice = ResolvePalette(ctx->TEX0, true);
+			if (choice.gpu)
 			{
-				reason = GSTileFloorReason::ResourceFailure;
-				return false;
+				pal = choice.gpu;
+				m_clut_census.gpu_palette_draws++;
 			}
-			// The ledger's palette column, which only the floor's SW arm had been
-			// filling — a native palettised draw read as "no palette" until now.
-			if (GSDrawLog::IsActive()) [[unlikely]]
-				GSDrawLog::NoteClut(clut, pal_entries);
+			else
+			{
+				m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
+				const u32* clut = m_mem.m_clut;
+				pal = m_palette_cache.Lookup(clut, pal_entries);
+				if (!pal)
+				{
+					reason = GSTileFloorReason::ResourceFailure;
+					return false;
+				}
+				// The ledger's palette column, which only the floor's SW arm had been
+				// filling — a native palettised draw read as "no palette" until now.
+				if (GSDrawLog::IsActive()) [[unlikely]]
+					GSDrawLog::NoteClut(clut, pal_entries);
+			}
 		}
 		tex = m_tex_source.Lookup(m_mem, m_vram_model, fixed_tex0, m_draw_env->TEXA, tex_pages,
 			level_tex0, mip_levels, donor_p);

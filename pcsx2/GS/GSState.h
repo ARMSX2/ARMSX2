@@ -613,6 +613,12 @@ public:
 	virtual void ReadbackTextureCache();
 	virtual void InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) {}
 	virtual void InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut = false) {}
+	/// Around the palette load from local memory (GSClut::WriteLoad), on the object
+	/// that owns local memory. A renderer keeping palette bytes on the GPU (Tile) uses
+	/// the pre-hook to make the CPU's CLUT RAM current where the load's shape needs it,
+	/// and the post-hook to record where the loaded entries now live. Both empty here.
+	virtual void PreClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT) {}
+	virtual void PostClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT) {}
 
 	virtual void Move();
 

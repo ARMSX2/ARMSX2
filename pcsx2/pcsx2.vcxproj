@@ -830,6 +830,7 @@
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h" />
     <ClInclude Include="GS\Renderers\Tile\GSPageBitmap.h" />
     <ClInclude Include="GS\Renderers\Tile\GSRendererTile.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTileClutMirror.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileDrawLowering.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileOracle.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTilePaletteCache.h" />

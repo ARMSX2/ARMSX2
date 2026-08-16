@@ -3835,7 +3835,9 @@ void GSState::SubmitClutLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLU
 
 void GSState::ExecClutLoadRecord(const GSBackQueue::ClutLoadRecord& rec)
 {
+	PreClutLoad(rec.TEX0, rec.TEXCLUT);
 	m_mem.m_clut.WriteLoad(rec.TEX0, rec.TEXCLUT);
+	PostClutLoad(rec.TEX0, rec.TEXCLUT);
 }
 
 void GSState::SubmitPcrtcSync()

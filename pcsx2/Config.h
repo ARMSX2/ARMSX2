@@ -919,6 +919,12 @@ struct Pcsx2Config
 					// the off position is a bisect lever (both roads must be
 					// byte-identical), never a user setting.
 					TileOutOfBandReadback : 1,
+					// Let the Tile renderer gather a palette the game loads off pages a
+					// native draw rendered out of the owner's texture on the device,
+					// instead of draining the page to load it on the CPU. Default on;
+					// the off position is a bisect lever (both roads must be
+					// byte-identical), never a user setting.
+					TileGpuClut : 1,
 					UseBlitSwapChain : 1,
 					DisableShaderCache : 1,
 					DisableFramebufferFetch : 1,

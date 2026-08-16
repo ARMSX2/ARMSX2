@@ -90,11 +90,14 @@ TEST(GSTileSwizzleForms, ShaderDefinesCarryEveryConstant)
 	const FormSet f = Fit();
 	ASSERT_TRUE(f.valid);
 	const std::string s = ShaderDefines(f);
-	// One line per basis entry: five 2-input forms × 12 entries + two 1-input forms × 10.
+	// One line per basis entry: five 2-input forms × 12 entries + four 1-input forms × 10
+	// (the two inverse forms and the two CLUT word-order forms).
 	size_t lines = 0;
 	for (char c : s)
 		lines += (c == '\n');
-	EXPECT_EQ(lines, 5u * 12u + 2u * 10u);
+	EXPECT_EQ(lines, 5u * 12u + 4u * 10u);
+	EXPECT_TRUE(f.clut_valid);
+	EXPECT_NE(s.find("#define TILE_SWZ_CLUT8_7 "), std::string::npos);
 	EXPECT_NE(s.find("#define TILE_SWZ_B48_X0 "), std::string::npos);
 	EXPECT_NE(s.find("#define TILE_SWZ_IC32_5 "), std::string::npos);
 }

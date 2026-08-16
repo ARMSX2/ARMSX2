@@ -11,6 +11,8 @@
 #include "common/AlignedMalloc.h"
 #include "common/Console.h"
 
+#include <cstring>
+
 GSClut::GSClut(GSLocalMemory* mem)
 	: m_mem(mem)
 {
@@ -199,6 +201,41 @@ void GSClut::WriteDecision(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT)
 	m_write.TEX0 = TEX0;
 	m_write.TEXCLUT = TEXCLUT;
 	m_write.dirty = 0;
+}
+
+void GSClut::EntryToWordCSM1_32(u16 out_i8[256], u16 out_i4[16])
+{
+	// A self-naming source: word w holds the value w. Load it through the real
+	// loaders, read it back through the real reader, and each entry names its word.
+	alignas(32) u32 src[256];
+	for (u32 w = 0; w < 256; w++)
+		src[w] = w;
+	alignas(32) u16 clut[512] = {};
+	alignas(32) u32 dst[256];
+
+	WriteCLUT_T32_I8_CSM1(src, clut, 0);
+	ReadCLUT_T32_I8(clut, dst, 0);
+	for (u32 e = 0; e < 256; e++)
+		out_i8[e] = static_cast<u16>(dst[e]);
+
+	std::memset(clut, 0, sizeof(clut));
+	WriteCLUT_T32_I4_CSM1(src, clut);
+	ReadCLUT_T32_I4(clut, dst);
+	for (u32 e = 0; e < 16; e++)
+		out_i4[e] = static_cast<u16>(dst[e]);
+}
+
+void GSClut::SetEntries32(u32 first, u32 count, const u32* words)
+{
+	pxAssert(first + count <= 256);
+	// The 32-bit RAM layout the CSM1 loaders and Read32 agree on: low halves at
+	// [e], high halves at [e + 256].
+	for (u32 i = 0; i < count; i++)
+	{
+		m_clut[first + i] = static_cast<u16>(words[i] & 0xFFFFu);
+		m_clut[first + i + 256] = static_cast<u16>(words[i] >> 16);
+	}
+	m_read.dirty = true;
 }
 
 void GSClut::WriteLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT)

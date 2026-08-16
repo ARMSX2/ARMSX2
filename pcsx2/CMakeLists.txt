@@ -632,6 +632,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/SW/GSVertexSW.h
 	GS/Renderers/Tile/GSPageBitmap.h
 	GS/Renderers/Tile/GSRendererTile.h
+	GS/Renderers/Tile/GSTileClutMirror.h
 	GS/Renderers/Tile/GSTileDrawLowering.h
 	GS/Renderers/Tile/GSTileOracle.h
 	GS/Renderers/Tile/GSTilePaletteCache.h

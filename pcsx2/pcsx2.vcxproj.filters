@@ -2045,6 +2045,9 @@
     <ClInclude Include="GS\Renderers\Tile\GSRendererTile.h">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileClutMirror.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Tile\GSTileDrawLowering.h">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClInclude>
