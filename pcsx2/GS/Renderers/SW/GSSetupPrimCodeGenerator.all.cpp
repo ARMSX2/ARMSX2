@@ -331,6 +331,17 @@ void GSSetupPrimCodeGenerator::Texture()
 
 	THREEARG(mulps, xmm1, xmm0, xmm3);
 
+	// ⚠️ KNOWN WRONG, DELIBERATELY LEFT. The step lands in xmm1 here, and the lag
+	// block below then takes xym1 as a shufps destination twice, so by the time it
+	// is stored as d4.stq / d8.stq it holds the second axis' compare mask -- a
+	// different quantity entirely, on every textured non-sprite draw. Introduced by
+	// 5aa78e8c69. The fix is to compute the step after the lag rather than before
+	// it, and it is proven: restore this ordering with the setup tests in place and
+	// four of four textured cases fail at both vector widths. It is not applied
+	// because x86 is not a target platform and nobody has measured what it does to
+	// a frame. The working version is at tag gs-blockwalk-x86-attempt. ARM64 does
+	// not compile this file and was never able to carry the defect.
+
 	// The coordinate a triangle samples at trails the exact plane in the direction
 	// the walk is going, by less than a sixteenth of a texel. Console-measured; the
 	// reasoning is on CSetupPrim in GSDrawScanline.cpp. Sprites take nothing.

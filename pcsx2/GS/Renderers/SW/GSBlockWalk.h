@@ -47,12 +47,35 @@
 // case is unchanged on a four-lane host, so this makes x86 agree with ARM rather
 // than moving the reference.
 
-// ⚠️ HALF DONE. The ARM64 generators and the C++ reference take the width from
-// here; the x86 generators still take it from the register file, so an SSE4
-// build's reference path and its generated path now disagree on an untextured
-// gouraud draw, and an AVX2 build still walks eights through a textured one.
-// Neither is measurable on this box. Until they are converted, x86 output is not
-// the ARM output and the goldens are ARM goldens.
+// ⚠️ HALF DONE, AND STAYING THAT WAY. The ARM64 generators and the C++ reference
+// take the width from here; the x86 generators still take it from the register
+// file, so an SSE4 build's reference path and its generated path disagree on an
+// untextured gouraud draw, and an AVX2 build still walks eights through a
+// textured one. x86 output is therefore not the ARM output, and the goldens are
+// ARM goldens.
+//
+// This was attempted and shelved on 2026-08-15, at tag gs-blockwalk-x86-attempt;
+// that commit's message carries the numbers. x86 is not a target platform, so
+// the conversion was not worth finishing, but the reason it was not finished is
+// worth knowing before anyone starts it again:
+//
+//   The four-lane half (SSE4, 128-bit AVX; untextured, so the block is wider
+//   than the vector and the per-vector step alternates) came out right, and was
+//   checked three ways -- generator against C++ reference, generator against a
+//   model written from the console curve rather than from the code, and a
+//   128-bit AVX build byte-identical to an SSE4 one on two games.
+//
+//   The eight-lane half (AVX2; textured, so one vector spans two blocks) came
+//   out WRONG, and it was the four-lane half that said so. One multi-ISA binary,
+//   the width chosen at runtime: folding on, AVX2 differed from SSE4 on 53% of
+//   GT4's pixels and 70% of Dirge's; folding off, 6%. The diverging draws were
+//   exactly the flat-shaded UV sprites, and inside one of them the divergence
+//   began at the block boundary in the upper half of the vector. The algebra
+//   below says the folded form collapses to the four-lane answer, and the unit
+//   test agreed -- but that test's model was written from this same derivation,
+//   so it compared a transcription with itself and could never have caught it.
+//   The mechanism was never found. Whoever picks this up starts there, and
+//   builds the eight-lane oracle out of something that is not this comment.
 
 /// Horizontal span of one DDA step, in pixels.
 __forceinline static constexpr int GSBlockWalkWidth(GSScanlineSelector sel)
