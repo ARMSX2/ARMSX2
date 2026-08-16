@@ -1064,6 +1064,9 @@
     <ClCompile Include="GS\Renderers\Tile\GSTilePaletteCache.cpp">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClCompile>
+    <ClCompile Include="GS\Renderers\Tile\GSTileSwizzleForms.cpp">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClCompile>
     <ClCompile Include="GS\Renderers\Tile\GSTileTargetPool.cpp">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClCompile>
@@ -2049,6 +2052,9 @@
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Tile\GSTilePaletteCache.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileSwizzleForms.h">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Tile\GSTileTargetPool.h">

@@ -1,0 +1,154 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
+// SPDX-License-Identifier: GPL-3.0+
+
+#pragma once
+
+#include "common/Pcsx2Types.h"
+
+#include <string>
+
+// The GS page swizzle as closed forms a shader can evaluate.
+//
+// Every intra-page swizzle table in GSTables.cpp — blockTable32/8/4 and
+// columnTable32/8/4 — is a GF(2)-LINEAR map of the coordinate bits: each output bit
+// is the XOR of a fixed subset of the input bits, with no constant term (measured
+// across the whole of every table by the vkswz probe, umbrella gpu-drivers, and
+// re-fitted here at runtime). So a fragment shader that must address GS memory —
+// the Tile renderer's device-side reinterpretation of one format's window over
+// another format's target — needs no table on the GPU: an address is a page term (a
+// multiply-add, the one non-linear part) plus a handful of mask-and-XOR terms, and
+// the inverse of a bijective linear map is linear too, so the owner side (word in
+// page → pixel) is the same shape.
+//
+// The forms are FITTED from the tree's own tables at runtime rather than transcribed:
+// the basis of a linear map is the image of the unit vectors, and linearity is then
+// checked over the entire domain. A table that ever stops fitting (an upstream table
+// change, a new format) makes the set invalid, which turns the device route off
+// rather than letting it address the wrong bytes. The fit is handed to the shader as
+// a block of #defines prepended to its source, so the GPU and the CPU readers can
+// only ever disagree about arithmetic the unit suite pins — never about a constant.
+namespace GSTileSwizzleForms
+{
+	/// out(x, y) = XOR over set bits b of x of x_basis[b], XOR over set bits b of y of y_basis[b].
+	struct XorForm2
+	{
+		u32 x_basis[6] = {};
+		u32 y_basis[6] = {};
+		u32 x_bits = 0;
+		u32 y_bits = 0;
+
+		constexpr u32 Eval(u32 x, u32 y) const
+		{
+			u32 v = 0;
+			for (u32 b = 0; b < x_bits; b++)
+				v ^= ((x >> b) & 1u) ? x_basis[b] : 0u;
+			for (u32 b = 0; b < y_bits; b++)
+				v ^= ((y >> b) & 1u) ? y_basis[b] : 0u;
+			return v;
+		}
+	};
+
+	/// out(v) = XOR over set bits b of v of basis[b].
+	struct XorForm1
+	{
+		u32 basis[10] = {};
+		u32 in_bits = 0;
+
+		constexpr u32 Eval(u32 v) const
+		{
+			u32 r = 0;
+			for (u32 b = 0; b < in_bits; b++)
+				r ^= ((v >> b) & 1u) ? basis[b] : 0u;
+			return r;
+		}
+	};
+
+	/// Fit f over [0, 2^x_bits) × [0, 2^y_bits) as a linear form. False if f(0,0) != 0 or
+	/// f is not linear anywhere on the domain — the whole domain is checked, not sampled.
+	template <typename F>
+	bool Fit2(F&& f, u32 x_bits, u32 y_bits, XorForm2& out)
+	{
+		if (x_bits > 6 || y_bits > 6 || f(0u, 0u) != 0u)
+			return false;
+		out = {};
+		out.x_bits = x_bits;
+		out.y_bits = y_bits;
+		for (u32 b = 0; b < x_bits; b++)
+			out.x_basis[b] = f(1u << b, 0u);
+		for (u32 b = 0; b < y_bits; b++)
+			out.y_basis[b] = f(0u, 1u << b);
+		for (u32 y = 0; y < (1u << y_bits); y++)
+		{
+			for (u32 x = 0; x < (1u << x_bits); x++)
+			{
+				if (out.Eval(x, y) != f(x, y))
+					return false;
+			}
+		}
+		return true;
+	}
+
+	/// The inverse of a bijective form on (x, y) → v, as a form on v's (x_bits + y_bits)
+	/// bits producing the packed coordinate x | (y << x_bits). False if fwd is not a
+	/// bijection onto [0, 2^(x_bits+y_bits)) or its inverse is not linear.
+	bool Invert2(const XorForm2& fwd, XorForm1& out);
+
+	/// The complete set the reinterpretation shader needs.
+	struct FormSet
+	{
+		bool valid = false;
+		XorForm2 block48; ///< blockTable32 (== blockTable8): (bx 0..7, by 0..3) → in-page block 0..31
+		XorForm2 block84; ///< blockTable4: (bx 0..3, by 0..7) → in-page block 0..31
+		XorForm2 col32; ///< columnTable32: (x 0..7, y 0..7) → word in block 0..63
+		XorForm2 col8; ///< columnTable8: (x 0..15, y 0..15) → byte in block 0..255
+		XorForm2 col4; ///< columnTable4: (x 0..31, y 0..15) → nibble in block 0..511
+		XorForm1 inv_block48; ///< in-page block 0..31 → bx | (by << 3)
+		XorForm1 inv_col32; ///< word in block 0..63 → cx | (cy << 3)
+	};
+
+	/// Fits every form from the tree's tables. `valid` is false if any table fails to
+	/// fit or blockTable8 is no longer blockTable32 (the shader shares one form).
+	FormSet Fit();
+
+	/// The fitted constants as GLSL `#define`s (one per basis entry, zero entries
+	/// included so the shader's expression is total), for prepending to shader source.
+	std::string ShaderDefines(const FormSet& forms);
+
+	// -- The reinterpretation arithmetic, on the CPU -----------------------------------
+	// The exact computation the shader performs per output texel, so the unit suite can
+	// pin it against GSOffset's own address functions. Kept here rather than in a test
+	// because it is the specification the GLSL transcribes.
+
+	/// Source-side texel formats the shader distinguishes.
+	enum class IndexFormat : u8
+	{
+		P8 = 0, ///< PSMT8: 128×64 pages, byte per texel
+		P4 = 1, ///< PSMT4: 128×128 pages, nibble per texel
+		P8H = 2, ///< PSMT8H: CT32 layout, the alpha byte
+		P4HL = 3, ///< PSMT4HL: CT32 layout, low nibble of the alpha byte
+		P4HH = 4, ///< PSMT4HH: CT32 layout, high nibble of the alpha byte
+	};
+
+	/// Maps a GS PSM to the shader's format, or -1 for one it does not serve.
+	int IndexFormatFor(u32 psm);
+
+	struct Reinterpretation
+	{
+		u32 src_bp; ///< block-granular base of the index window
+		u32 src_bwpg; ///< the window's width in PAGES, exactly as GSOffset computes it (bw >> (pageShiftX - 6))
+		u32 dst_bp; ///< the owner surface's base (page-aligned)
+		u32 dst_bwpg; ///< the owner's width in pages
+	};
+
+	struct OwnerTexel
+	{
+		u32 x, y; ///< owner-texture texel (linear-from-base-page pixel space)
+		u32 byte; ///< which byte of the RGBA cell (0 = R … 3 = A)
+		u32 nibble; ///< which nibble of that byte (P4/P4HL/P4HH), 0 = low
+		bool in_range; ///< the block resolved to a non-negative owner offset
+	};
+
+	/// The shader's per-texel arithmetic: index texel (u, v) → the owner texel and byte
+	/// that hold it. Depends only on the forms and the two layouts.
+	OwnerTexel Locate(const FormSet& forms, IndexFormat fmt, const Reinterpretation& r, u32 u, u32 v);
+} // namespace GSTileSwizzleForms

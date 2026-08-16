@@ -555,6 +555,7 @@ set(pcsx2GSSources
 	GS/Renderers/SW/GSTextureCacheSW.cpp
 	GS/Renderers/Tile/GSTileOracle.cpp
 	GS/Renderers/Tile/GSTilePaletteCache.cpp
+	GS/Renderers/Tile/GSTileSwizzleForms.cpp
 	GS/Renderers/Tile/GSTileTargetPool.cpp
 	GS/Renderers/Tile/GSTileTextureSource.cpp
 	# ⚠️ GSVramModel belongs HERE and not in the unshared list above. Two of the shared
@@ -634,6 +635,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Tile/GSTileDrawLowering.h
 	GS/Renderers/Tile/GSTileOracle.h
 	GS/Renderers/Tile/GSTilePaletteCache.h
+	GS/Renderers/Tile/GSTileSwizzleForms.h
 	GS/Renderers/Tile/GSTileTargetPool.h
 	GS/Renderers/Tile/GSTileTextureSource.h
 	GS/Renderers/Tile/GSTileTypes.h
