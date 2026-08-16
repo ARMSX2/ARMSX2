@@ -86,8 +86,8 @@ enum class GSTileFloorReason : u8
 	DepthWalkEnvelope, ///< Z-gradient triangle outside the soft-float walk's envelope (z hull, gradient magnitude, seed shape, or no VS expand)
 	// Blend gates (M4a):
 	ColClip, ///< COLCLAMP=0 on a blended draw — wrap semantics need the in-shader blend (M4c)
-	BlendOverlap, ///< the read rung's equation is admissible but the draw's own primitives may overlap — one snapshot of the destination cannot serve them (M4c)
-	BlendTexSample, ///< read rung, textured draw with a per-pixel factor — floors on a PRE-EXISTING SAMPLING divergence the blend floor had been hiding, not on anything the blend does (M4c)
+	BlendOverlap, ///< the read rung's equation is admissible but the draw's own primitives may overlap — one snapshot of the destination cannot serve them (M4c). Re-measured 2026-08-16: the two residues it masked have narrowed to ONE — the shared-edge coverage tie (#30); the colour walk cleared the per-layer shading residue (#43). Entry condition is #30 alone, not M4's.
+	BlendTexSample, ///< read rung, textured draw with a per-pixel factor. Re-measured 2026-08-16: its named SAMPLING divergence is FIXED by the texture walk (byte-identical on 16/17 dumps incl. MGS3, oracle 0/128 on Dirge); the sole remaining regression is a Dirge CROSS-FRAME handoff (item-3 / #118-#129), not the blend and not sampling. Floor stays for that; name is now stale.
 	// Dev lever (decided by the route): the session's native-draw budget
 	// (EmuCore/GS/TileNativeDrawLimit) is spent — a bisect instrument, never a
 	// property of the draw.
@@ -932,6 +932,20 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 				//    it is the per-layer shading residue and the coverage tie reaching
 				//    zero, neither of which is M4's to fix.
 				//
+				// ⚠️ RE-MEASURED 2026-08-16 at HEAD (post the colour walk c8179a5d09 and
+				// the texture walk 6f01c2aaa5), scratch-lifting this floor against the
+				// same-build golden: ONE of the two residues is gone. The colour walk
+				// carries gouraud colour and fog off the scanline's own walk, so the
+				// per-layer shading residue (#43) it named is cleared — the per-draw
+				// oracle on SotC's 396-primitive strip now shows ZERO one/two-level
+				// pixels, only 2–3 gpu_only coverage pixels per strip (sw==pre, the
+				// native arm covers a pixel SW does not). GT4 OPB is the same picture:
+				// its differing draws are shared-edge ties (±1 "both" pixels where one
+				// arm carries an extra overlap layer, plus a few max-255 knife-edge
+				// gpu_only/sw_only). So the entry condition narrowed from two causes to
+				// ONE — the shared-edge coverage tie (#30) alone — which is exactly the
+				// class that also gates the perspective unlock, and still not M4's.
+				//
 				// ⚠️ And a trap for whoever lands it: the alpha-test split's missing
 				// independent_rgb clause is argued away just above ON THIS FLOOR. RGB_ONLY
 				// is the one split that writes RGB and alpha in different passes, so its
@@ -977,6 +991,27 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 				// with the rung wide open and damaging nine corpus dumps. The capture
 				// that gates blending cannot gate this rung; the class needs an
 				// instrument of its own before the admission widens.
+				//
+				// ⚠️ RE-MEASURED 2026-08-16 — THE SAMPLING IS FIXED, AND THIS FLOOR NOW
+				// NAMES THE WRONG SUBSYSTEM. The M4c attribution was a sampling
+				// divergence in bilinear FST palettised sprites (the varying-fed sprite
+				// coordinate drifting along its gradient); the texture walk 6f01c2aaa5
+				// then moved EVERY textured sprite onto the scanline's own coordinate
+				// walk, which is that fix. Scratch-lifting this floor at HEAD against
+				// the same-build golden: byte-identical on 16 of 17 dumps — INCLUDING
+				// MGS3, the four-draw repro that named the class — and the per-draw
+				// oracle on Dirge's newly-native tex-sample draws is 0 divergent of
+				// 128. The one dump that regresses is Dirge, and it is NOT sampling and
+				// NOT the blend: TileNativeDrawLimit bisects the whole regression to a
+				// SINGLE bilinear P_8 blended sprite at (90,402) whose native output
+				// persists in the model's local memory into the NEXT frame, where it
+				// re-composites an 88-px strip +150 too bright (the per-draw oracle is
+				// clean because it restores CPU truth between draws and cannot see
+				// cross-frame persistence). That is the item-3 handoff / #118-#129
+				// class — the same memory-model residue that gates the perspective
+				// unlock, not a blend fact and not M4's to fix. The floor stays to keep
+				// Dirge byte-identical in the shipped path; its real blocker is the
+				// handoff, so the investigation that lifts it is the handoff work.
 				if (in.tme && bc != 2)
 					return floored(GSTileFloorReason::BlendTexSample);
 				blend_read = true;
