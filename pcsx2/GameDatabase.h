@@ -5,6 +5,7 @@
 
 #include "Config.h"
 #include "Patch.h"
+#include "PerGameOverrides.h"
 
 #include "common/FPControl.h"
 
@@ -119,11 +120,13 @@ namespace GameDatabaseSchema
 		const std::string* findPatch(u32 crc) const;
 		const char* compatAsString() const;
 
-		/// Applies Core game fixes to an existing config.
-		void applyGameFixes(Pcsx2Config& config, bool applyAuto) const;
+		/// Applies Core game fixes to an existing config. Anything the player set for
+		/// this game specifically is left alone — `overrides` says which, and defaults
+		/// to nothing claimed, which is the old behaviour.
+		void applyGameFixes(Pcsx2Config& config, bool applyAuto, const PerGameOverrides& overrides = {}) const;
 
-		/// Applies GS hardware fixes to an existing config.
-		void applyGSHardwareFixes(Pcsx2Config::GSOptions& config) const;
+		/// Applies GS hardware fixes to an existing config, on the same terms.
+		void applyGSHardwareFixes(Pcsx2Config::GSOptions& config, const PerGameOverrides& overrides = {}) const;
 
 		/// Returns true if the current config value for the specified hw fix id matches the value.
 		static bool configMatchesHWFix(const Pcsx2Config::GSOptions& config, GSHWFixId id, int value);

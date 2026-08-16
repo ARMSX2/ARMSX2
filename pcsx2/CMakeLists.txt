@@ -100,6 +100,7 @@ set(pcsx2Sources
 	Patch.cpp
 	Pcsx2Config.cpp
 	PerformanceMetrics.cpp
+	PerGameOverrides.cpp
 	PrecompiledHeader.cpp
 	R3000A.cpp
 	R3000AInterpreter.cpp
@@ -187,6 +188,7 @@ set(pcsx2Headers
 	no-jit-improvements.h
 	Patch.h
 	PerformanceMetrics.h
+	PerGameOverrides.h
 	PrecompiledHeader.h
 	R3000A.h
 	R5900.h

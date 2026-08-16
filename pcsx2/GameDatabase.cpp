@@ -539,68 +539,73 @@ static std::optional<GSUserHackOverride> UserHackOverrideForHWFix(GameDatabaseSc
 	}
 }
 
-void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool applyAuto) const
+void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool applyAuto, const PerGameOverrides& overrides) const
 {
+	std::string suppressed_fixes;
+
 	// Only apply core game fixes if the user has enabled them.
 	if (!applyAuto)
 		Console.Warning("GameDB: Game Fixes are disabled");
 
-	if (eeRoundMode < FPRoundMode::MaxCount)
+	// Decides whether one database value lands, and says why when it does not. Two
+	// reasons are possible and they are not the same thing: the global switch is off,
+	// or the player set this particular knob for this particular game. Only the second
+	// is worth putting on screen — the first they already know, they threw it.
+	//
+	// Names are the database's own YAML spelling so a log line and a GameIndex entry
+	// read together.
+	const auto wanted = [&](bool claimed, const char* name, std::optional<int> value = std::nullopt) {
+		const std::string label = value.has_value() ? fmt::format("{} = {}", name, value.value()) : std::string(name);
+
+		if (claimed)
+		{
+			Console.Warning("GameDB: Skipping %s, the per-game setting wins", label.c_str());
+			fmt::format_to(std::back_inserter(suppressed_fixes), "{}{}", suppressed_fixes.empty() ? "  " : "\n  ", label);
+			return false;
+		}
+
+		if (!applyAuto)
+		{
+			Console.Warning("GameDB: Skipping %s", label.c_str());
+			return false;
+		}
+
+		return true;
+	};
+
+	if (eeRoundMode < FPRoundMode::MaxCount &&
+		wanted(overrides.Has(CoreGameDBKnob::EERoundMode), "eeRoundMode", static_cast<int>(eeRoundMode)))
 	{
-		if (applyAuto)
-		{
-			Console.WriteLn("GameDB: Changing EE/FPU roundmode to %d [%s]", eeRoundMode, s_round_modes[static_cast<u8>(eeRoundMode)]);
-			config.Cpu.FPUFPCR.SetRoundMode(eeRoundMode);
-		}
-		else
-		{
-			Console.Warning("GameDB: Skipping changing EE/FPU roundmode to %d [%s]", eeRoundMode, s_round_modes[static_cast<u8>(eeRoundMode)]);
-		}
+		Console.WriteLn("GameDB: Changing EE/FPU roundmode to %d [%s]", eeRoundMode, s_round_modes[static_cast<u8>(eeRoundMode)]);
+		config.Cpu.FPUFPCR.SetRoundMode(eeRoundMode);
 	}
 
-	if (eeDivRoundMode < FPRoundMode::MaxCount)
+	if (eeDivRoundMode < FPRoundMode::MaxCount &&
+		wanted(overrides.Has(CoreGameDBKnob::EEDivRoundMode), "eeDivRoundMode", static_cast<int>(eeDivRoundMode)))
 	{
-		if (applyAuto)
-		{
-			Console.WriteLn("GameDB: Changing EE/FPU divison roundmode to %d [%s]", eeRoundMode, s_round_modes[static_cast<u8>(eeDivRoundMode)]);
-			config.Cpu.FPUDivFPCR.SetRoundMode(eeDivRoundMode);
-		}
-		else
-		{
-			Console.Warning("GameDB: Skipping changing EE/FPU roundmode to %d [%s]", eeRoundMode, s_round_modes[static_cast<u8>(eeRoundMode)]);
-		}
+		Console.WriteLn("GameDB: Changing EE/FPU divison roundmode to %d [%s]", eeDivRoundMode,
+			s_round_modes[static_cast<u8>(eeDivRoundMode)]);
+		config.Cpu.FPUDivFPCR.SetRoundMode(eeDivRoundMode);
 	}
 
-	if (vu0RoundMode < FPRoundMode::MaxCount)
+	if (vu0RoundMode < FPRoundMode::MaxCount &&
+		wanted(overrides.Has(CoreGameDBKnob::VU0RoundMode), "vu0RoundMode", static_cast<int>(vu0RoundMode)))
 	{
-		if (applyAuto)
-		{
-			Console.WriteLn("GameDB: Changing VU0 roundmode to %d [%s]", vu0RoundMode, s_round_modes[static_cast<u8>(vu0RoundMode)]);
-			config.Cpu.VU0FPCR.SetRoundMode(vu0RoundMode);
-		}
-		else
-		{
-			Console.Warning("GameDB: Skipping changing VU0 roundmode to %d [%s]", vu0RoundMode, s_round_modes[static_cast<u8>(vu0RoundMode)]);
-		}
+		Console.WriteLn("GameDB: Changing VU0 roundmode to %d [%s]", vu0RoundMode, s_round_modes[static_cast<u8>(vu0RoundMode)]);
+		config.Cpu.VU0FPCR.SetRoundMode(vu0RoundMode);
 	}
 
-	if (vu1RoundMode < FPRoundMode::MaxCount)
+	if (vu1RoundMode < FPRoundMode::MaxCount &&
+		wanted(overrides.Has(CoreGameDBKnob::VU1RoundMode), "vu1RoundMode", static_cast<int>(vu1RoundMode)))
 	{
-		if (applyAuto)
-		{
-			Console.WriteLn("GameDB: Changing VU1 roundmode to %d [%s]", vu1RoundMode, s_round_modes[static_cast<u8>(vu1RoundMode)]);
-			config.Cpu.VU1FPCR.SetRoundMode(vu1RoundMode);
-		}
-		else
-		{
-			Console.Warning("GameDB: Skipping changing VU1 roundmode to %d [%s]", vu1RoundMode, s_round_modes[static_cast<u8>(vu1RoundMode)]);
-		}
+		Console.WriteLn("GameDB: Changing VU1 roundmode to %d [%s]", vu1RoundMode, s_round_modes[static_cast<u8>(vu1RoundMode)]);
+		config.Cpu.VU1FPCR.SetRoundMode(vu1RoundMode);
 	}
 
 	if (eeClampMode != GameDatabaseSchema::ClampMode::Undefined)
 	{
 		const int clampMode = enum_cast(eeClampMode);
-		if (applyAuto)
+		if (wanted(overrides.Has(CoreGameDBKnob::EEClampMode), "eeClampMode", clampMode))
 		{
 			Console.WriteLn("GameDB: Changing EE/FPU clamp mode [mode=%d]", clampMode);
 			config.Cpu.Recompiler.fpuOverflow = (clampMode >= 1);
@@ -608,47 +613,38 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool app
 			config.Cpu.Recompiler.fpuFullMode = (clampMode >= 3);
 			config.Cpu.Recompiler.fpuExactMode = (clampMode >= 4);
 		}
-		else
-			Console.Warning("GameDB: Skipping changing EE/FPU clamp mode [mode=%d]", clampMode);
 	}
 
 	if (vu0ClampMode != GameDatabaseSchema::ClampMode::Undefined)
 	{
 		const int clampMode = enum_cast(vu0ClampMode);
-		if (applyAuto)
+		if (wanted(overrides.Has(CoreGameDBKnob::VU0ClampMode), "vu0ClampMode", clampMode))
 		{
 			Console.WriteLn("GameDB: Changing VU0 clamp mode [mode=%d]", clampMode);
 			config.Cpu.Recompiler.vu0Overflow = (clampMode >= 1);
 			config.Cpu.Recompiler.vu0ExtraOverflow = (clampMode >= 2);
 			config.Cpu.Recompiler.vu0SignOverflow = (clampMode >= 3);
 		}
-		else
-			Console.Warning("GameDB: Skipping changing VU0 clamp mode [mode=%d]", clampMode);
 	}
 
 	if (vu1ClampMode != GameDatabaseSchema::ClampMode::Undefined)
 	{
 		const int clampMode = enum_cast(vu1ClampMode);
-		if (applyAuto)
+		if (wanted(overrides.Has(CoreGameDBKnob::VU1ClampMode), "vu1ClampMode", clampMode))
 		{
 			Console.WriteLn("GameDB: Changing VU1 clamp mode [mode=%d]", clampMode);
 			config.Cpu.Recompiler.vu1Overflow = (clampMode >= 1);
 			config.Cpu.Recompiler.vu1ExtraOverflow = (clampMode >= 2);
 			config.Cpu.Recompiler.vu1SignOverflow = (clampMode >= 3);
 		}
-		else
-			Console.Warning("GameDB: Skipping changing VU1 clamp mode [mode=%d]", clampMode);
 	}
 
 	// TODO - config - this could be simplified with maps instead of bitfields and enums
 	for (const auto& it : speedHacks)
 	{
-		if (!applyAuto)
-		{
-			Console.Warning("GameDB: Skipping setting Speedhack '%s' to [mode=%d]",
-				Pcsx2Config::SpeedhackOptions::GetSpeedHackName(it.first), it.second);
+		if (!wanted(overrides.Has(it.first), Pcsx2Config::SpeedhackOptions::GetSpeedHackName(it.first), it.second))
 			continue;
-		}
+
 		// Legacy note - speedhacks are setup in the GameDB as integer values, but
 		// are effectively booleans like the gamefixes
 		config.Speedhacks.Set(it.first, it.second);
@@ -659,11 +655,12 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool app
 	// TODO - config - this could be simplified with maps instead of bitfields and enums
 	for (const GamefixId id : gameFixes)
 	{
-		if (!applyAuto)
-		{
-			Console.Warning("GameDB: Skipping Gamefix: %s", Pcsx2Config::GamefixOptions::GetGameFixName(id));
+		// A database gamefix is only ever switched on, so a player who turned one on
+		// per-game already got their way. The claim matters for the other direction:
+		// turning one off, which until now the database silently undid.
+		if (!wanted(overrides.Has(id), Pcsx2Config::GamefixOptions::GetGameFixName(id)))
 			continue;
-		}
+
 		// if the fix is present, it is said to be enabled
 		config.Gamefixes.Set(id, true);
 		Console.WriteLn("GameDB: Enabled Gamefix: %s", Pcsx2Config::GamefixOptions::GetGameFixName(id));
@@ -671,6 +668,21 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool app
 		// The LUT is only used for 1 game so we allocate it only when the gamefix is enabled (save 4MB)
 		if (id == Fix_GoemonTlbMiss && true)
 			vtlb_Alloc_Ppmap();
+	}
+
+	// Keyed so the next settings reload replaces or clears it, matching how the
+	// graphics half reports the same thing.
+	if (!suppressed_fixes.empty())
+	{
+		Host::AddKeyedOSDMessage("CoreFixesWarning",
+			fmt::format(ICON_FA_WAND_MAGIC_SPARKLES " {}\n{}",
+				TRANSLATE_SV("GameDatabase", "Your own choice was kept for these settings, so the automatic ones were not applied:"),
+				suppressed_fixes),
+			Host::OSD_ERROR_DURATION);
+	}
+	else
+	{
+		Host::RemoveKeyedOSDMessage("CoreFixesWarning");
 	}
 }
 
@@ -804,7 +816,7 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 	}
 }
 
-void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& config) const
+void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& config, const PerGameOverrides& overrides) const
 {
 	std::string disabled_fixes;
 
@@ -818,10 +830,20 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 	{
 		// A pin is manual mode for one fix instead of all of them, so it takes the same
 		// road out: the player's value stays and this one gets named in the warning.
+		//
+		// Two vocabularies reach the same conclusion here. The stored UserHackOverrides
+		// mask only names the classic user hacks, and is what MaskUserHacks() and an
+		// already-written INI speak. The per-game overrides name every fix a settings
+		// key exists for, which is a wider set, and is how a setting like the mipmap or
+		// deinterlace picker gets claimed at all.
 		const std::optional<GSUserHackOverride> pin = UserHackOverrideForHWFix(id);
-		const bool pinned = pin.has_value() && config.IsUserHackPinned(pin.value());
+		const bool pinned = (pin.has_value() && config.IsUserHackPinned(pin.value())) || overrides.Has(id);
 
-		if (isUserHackHWFix(id) && (!apply_auto_fixes || pinned))
+		// The pin is tested first and on its own. Nesting it under isUserHackHWFix()
+		// would leave the settings that were never user hacks — mipmapping, trilinear,
+		// deinterlacing, texture preloading, blend level, download mode — with no way
+		// to be claimed, which is most of what a player actually changes.
+		if (pinned || (isUserHackHWFix(id) && !apply_auto_fixes))
 		{
 			if (configMatchesHWFix(config, id, value))
 				continue;
