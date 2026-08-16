@@ -81,15 +81,23 @@ fun PerformanceTab(state: MutableState<Settings>) {
             val lowEnd = Settings.lowEndPreset(
                 s.copy(eeCycleRate = 0, mtvu = true, vu1Instant = true,
                     vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true),
+                mtvu = com.armsx2.DeviceTier.mtvuDefault()
+            )
+            // Ultra-Low-End = every cheap GPU/CPU lever, MTVU gated on core count. Built
+            // from the shared Settings.lowEndPreset so it matches the setup wizard.
+            // Recommanded For Weak / Low-End Device
+            val ultraLowEnd = Settings.ultraLowEndPreset(
+                s.copy(eeCycleRate = -6, eeCycleSkip = 1 mtvu = true, vu1Instant = true,
+                    vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true, gamefixInstantDma = true, gamefixBlitInternalFps = true, upscaleFloat = 0.5f, accurateBlendingUnit = 1),
                 mtvu = com.armsx2.DeviceTier.mtvuDefault(),
             )
             // -1 = no preset matches (custom): no segment highlighted.
-            val idx = when (s) { safe -> 0; fast -> 1; lowEnd -> 2; else -> -1 }
+            val idx = when (s) { safe -> 0; fast -> 1; lowEnd -> 2; ultraLowEnd -> 3; else -> -6 }
             SegmentedRow(
                 label = str("perf.speedhackProfile.label"),
-                options = listOf(str("perf.speedhackProfile.optimal"), str("perf.speedhackProfile.fast"), str("perf.speedhackProfile.lowEnd")),
+                options = listOf(str("perf.speedhackProfile.optimal"), str("perf.speedhackProfile.fast"), str("perf.speedhackProfile.lowEnd"), str("perf.speedhackProfile.ultraLowEnd")),
                 selectedIndex = idx,
-                onChange = { when (it) { 0 -> apply(safe); 1 -> apply(fast); 2 -> apply(lowEnd) } },
+                onChange = { when (it) { 0 -> apply(safe); 1 -> apply(fast); 2 -> apply(lowEnd); 3 -> apply(ultraLowEnd) } },
             )
         }
         HelpText(str("perf.speedhackProfile.help"))
