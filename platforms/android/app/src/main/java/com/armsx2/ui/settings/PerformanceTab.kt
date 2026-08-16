@@ -212,11 +212,14 @@ fun PerformanceTab(state: MutableState<Settings>) {
             IntSliderRow(
                 label = str("perf.eeCycleRate.label"),
                 value = s.eeCycleRate,
-                min = -3,
-                max = 3,
+                min = -6,
+                max = 6,
                 description = str("perf.eeCycleRate.description"),
                 valueFormatter = { rate ->
                     when (rate) {
+                        -6 -> "5%"
+                        -5 -> "15%"
+                        -4 -> "30%"
                         -3 -> "50%"
                         -2 -> "60%"
                         -1 -> "75%"
@@ -224,6 +227,9 @@ fun PerformanceTab(state: MutableState<Settings>) {
                         1 -> "130%"
                         2 -> "180%"
                         3 -> "300%"
+                        4 -> "400%"
+                        5 -> "450%"
+                        6 -> "500%"
                         else -> "$rate"
                     }
                 },
@@ -286,8 +292,8 @@ fun PerformanceTab(state: MutableState<Settings>) {
             // Arbitrary value; default stays 100. Affects audio pitch / timing / RA.
             IntSliderRow(
                 label = str("perf.speedLimit.label"),
-                value = s.nominalSpeedPercent.coerceIn(10, 1000),
-                min = 10,
+                value = s.nominalSpeedPercent.coerceIn(5, 1000),
+                min = 5,
                 max = 1000,
                 description = str("perf.speedLimit.description"),
                 valueFormatter = { "$it%" },
@@ -299,9 +305,9 @@ fun PerformanceTab(state: MutableState<Settings>) {
             // emulation runs full speed (no slowdown). Arbitrary value; 0 = off.
             IntSliderRow(
                 label = str("perf.displayFpsCap.label"),
-                value = s.fpsLimit.coerceIn(0, 60),
+                value = s.fpsLimit.coerceIn(0, 120),
                 min = 0,
-                max = 60,
+                max = 120,
                 description = str("perf.displayFpsCap.description"),
                 valueFormatter = { if (it == 0) com.armsx2.i18n.I18n.get("common.off") else "$it fps" },
                 onChange = { apply(s.copy(fpsLimit = it)) },
@@ -312,9 +318,9 @@ fun PerformanceTab(state: MutableState<Settings>) {
             // Speed Limit % is relative to this; this is the rate, not a display cap.
             IntSliderRow(
                 label = str("perf.ntscFramerate.label"),
-                value = s.framerateNtsc.roundToInt().coerceIn(20, 75),
-                min = 20,
-                max = 75,
+                value = s.framerateNtsc.roundToInt().coerceIn(5, 120),
+                min = 5,
+                max = 120,
                 description = str("perf.ntscFramerate.description"),
                 // The true PS2 NTSC rate is 59.94 Hz, which rounds to the "60" stop.
                 // Label that stop honestly and snap it to the exact default, so the
@@ -325,9 +331,9 @@ fun PerformanceTab(state: MutableState<Settings>) {
             SettingsDivider()
             IntSliderRow(
                 label = str("perf.palFramerate.label"),
-                value = s.frameratePal.roundToInt().coerceIn(20, 75),
-                min = 20,
-                max = 75,
+                value = s.frameratePal.roundToInt().coerceIn(5, 120),
+                min = 5,
+                max = 120,
                 description = str("perf.palFramerate.description"),
                 valueFormatter = { "$it Hz" },
                 onChange = { apply(s.copy(frameratePal = it.toFloat())) },
