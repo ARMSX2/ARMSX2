@@ -69,8 +69,15 @@ data class Settings(
     val eeCycleRate: Int = 0,
     /** EmuCore/Speedhacks/EECycleSkip — 0..3. 0 = no skip. */
     val eeCycleSkip: Int = 0,
-    /** EE/FPU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Full (PCSX2 default Normal).
-     *  Unpacks to EmuCore/CPU/Recompiler fpuOverflow/fpuExtraOverflow/fpuFullMode. */
+    /** EE/FPU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Full / 4 Ludicrous
+     *  (PCSX2 default Normal). Unpacks to EmuCore/CPU/Recompiler
+     *  fpuOverflow/fpuExtraOverflow/fpuFullMode/fpuExactMode.
+     *  4 is Full plus the rest of the EE multiplier's one-ULP deficit and a
+     *  divide/sqrt/rsqrt that runs the unit's own recurrence out of line, so it
+     *  costs a call per divide. ⚠️ The GameDB overwrites this whole tier for any
+     *  title carrying an eeClampMode entry, and an entry below 4 CLEARS the
+     *  exact bit — so on those titles the choice is inert unless game fixes are
+     *  off. Keep any bound in the pickers in sync with this list. */
     val eeClampMode: Int = 1,
     /** VU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Extra+Sign (PCSX2 default Normal).
      *  Unpacks to vu0/vu1 Overflow/ExtraOverflow/SignOverflow. */
@@ -729,6 +736,10 @@ data class Settings(
         put("EmuCore/CPU/Recompiler", "fpuOverflow", "bool", (eeClampMode >= 1).toString())
         put("EmuCore/CPU/Recompiler", "fpuExtraOverflow", "bool", (eeClampMode >= 2).toString())
         put("EmuCore/CPU/Recompiler", "fpuFullMode", "bool", (eeClampMode >= 3).toString())
+        // The four are cumulative and emucore validates them as such: an
+        // inconsistent set is silently reset to defaults on load rather than
+        // rejected, so all four go out together or none of them mean anything.
+        put("EmuCore/CPU/Recompiler", "fpuExactMode", "bool", (eeClampMode >= 4).toString())
         for (vu in arrayOf("vu0", "vu1")) {
             put("EmuCore/CPU/Recompiler", "${vu}Overflow", "bool", (vuClampMode >= 1).toString())
             put("EmuCore/CPU/Recompiler", "${vu}ExtraOverflow", "bool", (vuClampMode >= 2).toString())
@@ -960,14 +971,18 @@ data class Settings(
         fun floatAt(key: String): Float? = ini[key]?.toFloatOrNull()
         fun strAt(key: String): String? = ini[key]
 
-        // EE/FPU clamp (0 None / 1 Normal / 2 Extra / 3 Full) is packed by applyTo into
-        // three cumulative bool keys (fpuOverflow>=1, fpuExtraOverflow>=2, fpuFullMode>=3).
+        // EE/FPU clamp (0 None / 1 Normal / 2 Extra / 3 Full / 4 Ludicrous) is packed by
+        // applyTo into four cumulative bool keys (fpuOverflow>=1, fpuExtraOverflow>=2,
+        // fpuFullMode>=3, fpuExactMode>=4). Read them back highest-first, and treat the
+        // exact key's absence as an older core rather than as mode 3 — a build without it
+        // never wrote the key, and inferring 3 there would silently demote the setting.
         val eeClamp = run {
             val fo = boolAt("EmuCore/CPU/Recompiler/fpuOverflow")
             val fe = boolAt("EmuCore/CPU/Recompiler/fpuExtraOverflow")
             val ff = boolAt("EmuCore/CPU/Recompiler/fpuFullMode")
-            if (fo == null && fe == null && ff == null) this.eeClampMode
-            else if (ff == true) 3 else if (fe == true) 2 else if (fo == true) 1 else 0
+            val fx = boolAt("EmuCore/CPU/Recompiler/fpuExactMode")
+            if (fo == null && fe == null && ff == null && fx == null) this.eeClampMode
+            else if (fx == true) 4 else if (ff == true) 3 else if (fe == true) 2 else if (fo == true) 1 else 0
         }
         // VU clamp (0 None / 1 Normal / 2 Extra / 3 Extra+Sign) — same packing on vu0*
         // (applyTo writes vu0 and vu1 identically, so reading vu0 recovers the mode).
