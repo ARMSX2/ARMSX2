@@ -129,6 +129,7 @@ CPCS-01020:
   region: "NTSC-J"
   compat: 5
   clampModes:
+    eeClampMode: 3 # Fixes hit bounce calculation.
     vuClampMode: 3 # Fixes lighting on character models as caves and other locations don't turn mobs into glow-in-the-dark creatures by themselves.
   gsHWFixes:
     maximumBlendingLevel: 0 # Fixes unnecessary load on the GPU.
@@ -292,6 +293,8 @@ PAPX-90222:
   name-sort: "じゃっくんだくすたー きゅうせかいのいさん [たいけんばん]"
   name-en: "Jak x Daxter - Kyuu Sekai no Isan [Demo]" # NOT Jak X Combat Racing
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -301,6 +304,8 @@ PAPX-90223:
   name-sort: "じゃっくんだくすたー きゅうせかいのいさん [たいけんばん]"
   name-en: "Jak x Daxter - Kyuu Sekai no Isan [Demo]" # NOT Jak X Combat Racing
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -464,6 +469,8 @@ PAPX-90512:
   name-sort: "ぐらんつーりすも 4 - とよた ぷりうす [たいけんばん]"
   name-en: "Gran Turismo 4 - TOYOTA Prius [Trial]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes license tests and demonstration sequences.
   gsHWFixes: &gran-turismo-4-prologue-gs-fixes
     <<: *gran-turismo-3-gs-fixes
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
@@ -482,6 +489,8 @@ PAPX-90516:
   name-sort: "じゃっくんだくすたー2 [たいけんばん]"
   name-en: "Jak and Daxter II [Trial]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes camera drift on inclines.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -520,6 +529,7 @@ PAPX-90523:
   name-en: "Gran Turismo 4 - Online Test Version"
   region: "NTSC-J"
   clampModes: &gran-turismo-4-clamp-modes
+    eeClampMode: 3 # Fixes license tests and demonstration sequences.
     vuClampMode: 2 # In GT4, text in GT mode works. In TT, fixes SPS in TT Mode menu caused by the moving tooltips.
   gsHWFixes: &gran-turismo-4-gs-fixes
     <<: *gran-turismo-4-prologue-gs-fixes
@@ -1550,6 +1560,8 @@ SCAJ-20048:
   name-sort: "Rれーしんぐえぼりゅーしょん"
   name-en: "R:Racing Evolution"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes flickering opponent cars in bumper cam.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns bloom and shadows.
     alignSprite: 1 # Fixes vertical lines.
@@ -1563,6 +1575,8 @@ SCAJ-20052:
   region: "NTSC-J"
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     autoFlush: 2
     halfPixelOffset: 4 # Aligns post bloom.
@@ -1676,6 +1690,8 @@ SCAJ-20072:
 SCAJ-20073:
   name: "Jak and Daxter II"
   region: "NTSC-Unk"
+  clampModes:
+    eeClampMode: 3 # Fixes camera drift on inclines.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -2070,6 +2086,8 @@ SCAJ-20129:
   region: "NTSC-Unk"
   roundModes:
     eeRoundMode: 0 # Fixes broken load triggers.
+  clampModes:
+    eeClampMode: 3 # Fixes broken load triggers.
   gsHWFixes:
     getSkipCount: "GSC_IRem"
     halfPixelOffset: 2 # Aligns effects.
@@ -2327,6 +2345,8 @@ SCAJ-20162:
 SCAJ-20163:
   name: "Tales of the Abyss"
   region: "NTSC-Unk"
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 5 # Fixes post positioning.
     nativeScaling: 2 # Fixes post effects.
@@ -2445,6 +2465,8 @@ SCAJ-20178:
 SCAJ-20179:
   name: "Xenosaga Episode III - Also Sprach Zarathustra [Disc 1 of 2]"
   region: "NTSC-Unk"
+  clampModes:
+    eeClampMode: 3 # Fixes black screen behind the chest.
   gsHWFixes:
     autoFlush: 1 # Fixes shadows.
     halfPixelOffset: 4 # Fixes lighting misalignment.
@@ -2454,6 +2476,8 @@ SCAJ-20179:
 SCAJ-20180:
   name: "Xenosaga Episode III - Also Sprach Zarathustra [Disc 2 of 2]"
   region: "NTSC-Unk"
+  clampModes:
+    eeClampMode: 3 # Fixes black screen behind the chest.
   gsHWFixes:
     autoFlush: 1 # Fixes shadows.
     halfPixelOffset: 4 # Fixes lighting misalignment.
@@ -2999,6 +3023,8 @@ SCED-50610:
 SCED-50614:
   name: "Jak and Daxter - The Precursor Legacy [Demo]"
   region: "PAL-M6"
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -3529,6 +3555,8 @@ SCED-51692:
 SCED-51700:
   name: "Jak II - Renegade [Demo]"
   region: "PAL-M5"
+  clampModes:
+    eeClampMode: 3 # Fixes camera drift on inclines.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -4046,6 +4074,8 @@ SCED-52952:
   region: "PAL-M5"
   gameFixes:
     - InstantDMAHack # Fixes holes in face geometry.
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves metal reflections and shadow quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -4392,6 +4422,8 @@ SCED-53962:
   region: "PAL-M5"
   roundModes:
     eeRoundMode: 3 # Prevents Wander from moving when charging the floor.
+  clampModes:
+    eeClampMode: 3 # Fixes drift while charging an attack.
   gsHWFixes:
     recommendedBlendingLevel: 4 # Fixes water color.
     halfPixelOffset: 5 # Fixes misalignments and borders on side.
@@ -4402,6 +4434,8 @@ SCED-53978:
 SCED-53990:
   name: "Shadow of the Colossus + Ico"
   region: "PAL-M5"
+  clampModes:
+    eeClampMode: 3 # Fixes drift while charging an attack.
 SCED-54001:
   name: "Official PlayStation 2 Magazine Demo 69"
   region: "PAL-M5"
@@ -4836,6 +4870,8 @@ SCES-50361:
   name: "Jak and Daxter - The Precursor Legacy"
   region: "PAL-M6"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves reflection quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -5031,6 +5067,8 @@ SCES-50612:
 SCES-50614:
   name: "Jak and Daxter - The Precursor Legacy"
   region: "PAL-Unk"
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves reflection quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -5040,6 +5078,8 @@ SCES-50759:
   name: "Virtua Fighter 4"
   region: "PAL-M5"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes flickering on the Pai stage.
 SCES-50760:
   name: "Ico"
   region: "PAL-M5"
@@ -5392,6 +5432,8 @@ SCES-51607:
   compat: 5
   gameFixes:
     - EETimingHack # Fixes DMA errors.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     autoFlush: 2
     halfPixelOffset: 4 # Aligns post bloom.
@@ -5411,6 +5453,8 @@ SCES-51608:
   name: "Jak II - Renegade"
   region: "PAL-M7"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes camera drift on inclines.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -5787,6 +5831,8 @@ SCES-52460:
   compat: 5
   gameFixes:
     - InstantDMAHack # Fixes holes in face geometry.
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves metal reflections and shadow quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -6085,6 +6131,8 @@ SCES-53326:
   compat: 5
   roundModes:
     eeRoundMode: 3 # Prevents Wander from moving when charging the floor.
+  clampModes:
+    eeClampMode: 3 # Fixes drift while charging an attack.
   gsHWFixes:
     recommendedBlendingLevel: 4 # Fixes water color.
     halfPixelOffset: 5 # Fixes misalignments and borders on side.
@@ -7206,6 +7254,8 @@ SCKA-20010:
   name: "잭　ＩＩ"
   name-en: "Jak II"
   region: "NTSC-K"
+  clampModes:
+    eeClampMode: 3 # Fixes camera drift on inclines.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -7219,6 +7269,8 @@ SCKA-20011:
   region: "NTSC-K"
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     autoFlush: 2
     halfPixelOffset: 4 # Aligns post bloom.
@@ -7446,6 +7498,8 @@ SCKA-20040:
   region: "NTSC-K"
   gameFixes:
     - InstantDMAHack # Fixes holes in face geometry.
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves metal reflections and shadow quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -7495,6 +7549,8 @@ SCKA-20046:
   region: "NTSC-K"
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     autoFlush: 2
     halfPixelOffset: 4 # Aligns post bloom.
@@ -7613,6 +7669,8 @@ SCKA-20058:
   region: "NTSC-K"
   roundModes:
     eeRoundMode: 0 # Fixes broken load triggers.
+  clampModes:
+    eeClampMode: 3 # Fixes broken load triggers.
   gsHWFixes:
     getSkipCount: "GSC_IRem"
     halfPixelOffset: 2 # Aligns effects.
@@ -8107,6 +8165,8 @@ SCKA-20127:
   name: "제로 [PlayStation 2 BigHit Series]" # Undumped on ReDump as of 2025-08-28
   name-en: "Zero [PlayStation 2 BigHit Series]" # Project Zero
   region: "NTSC-K"
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
 SCKA-20128:
   name: "제로 - 붉은 나비 [PlayStation 2 BigHit Series]" # Undumped on ReDump as of 2025-08-28
   name-en: "Zero - Akai Chou [PlayStation 2 BigHit Series]" # Project Zero 2 Crimson Butterfly
@@ -8368,6 +8428,8 @@ SCPM-85304:
   name-sort: "ぐらんつーりすも 4 ふぁーすとぷれびゅー"
   name-en: "Gran Turismo 4 - First Preview -"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes license tests and demonstration sequences.
   gsHWFixes: *gran-turismo-4-gs-fixes
 SCPN-60101:
   name: "PlayStation BB Navigator - Version 0.10 [Prerelease] [Disc 1]"
@@ -8772,6 +8834,8 @@ SCPS-15021:
   name-sort: "じゃっくんだくすたー きゅうせかいのいさん"
   name-en: "Jak x Daxter - Kyuu Sekai no Isan"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves reflection quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -9048,6 +9112,8 @@ SCPS-15056:
   region: "NTSC-J"
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     autoFlush: 2
     halfPixelOffset: 4 # Aligns post bloom.
@@ -9060,6 +9126,8 @@ SCPS-15057:
   name-sort: "じゃっくんだくすたー2"
   name-en: "Jak and Daxter II"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes camera drift on inclines.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -9226,6 +9294,8 @@ SCPS-15075:
   name-sort: "DJbox [ぷれみあむきっと]"
   name-en: "DJ Box [Premium Kit]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes black screen at boot.
   gsHWFixes:
     gpuPaletteConversion: 1 # Fixes awful performance.
 SCPS-15076:
@@ -9263,6 +9333,8 @@ SCPS-15082:
   name-sort: "DJbox [そふと単体]"
   name-en: "DJbox [Soft Only]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes black screen at boot.
   gsHWFixes:
     gpuPaletteConversion: 1 # Fixes awful performance.
 SCPS-15083:
@@ -9873,6 +9945,8 @@ SCPS-19210:
   name-sort: "じゃっくんだくすたー [PlayStation2 the Best]"
   name-en: "Jak x Daxter - Kyuu Sekai no Isan [PlayStation2 the Best]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves reflection quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -9979,6 +10053,8 @@ SCPS-19302:
   region: "NTSC-J"
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     autoFlush: 2
     halfPixelOffset: 4 # Aligns post bloom.
@@ -10134,6 +10210,8 @@ SCPS-19317:
   region: "NTSC-J"
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     autoFlush: 2
     halfPixelOffset: 4 # Aligns post bloom.
@@ -10434,6 +10512,8 @@ SCPS-55002:
   name-sort: "ぜろ"
   name-en: "Fatal Frame"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 2 # Reduces blurriness.
     alignSprite: 1 # Fixes vertical lines on hidden ghosts.
@@ -10447,6 +10527,8 @@ SCPS-55004:
   name-sort: "じゃっくんだくすたー きゅうせかいのいさん"
   name-en: "Jak x Daxter - Kyuu Sekai no Isan"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves reflection quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -10706,6 +10788,8 @@ SCPS-55043:
   name-sort: "ぜろ"
   name-en: "Fatal Frame"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 2 # Reduces blurriness.
     alignSprite: 1 # Fixes vertical lines on hidden ghosts.
@@ -10832,6 +10916,8 @@ SCPS-56003:
   name: "Jak & Daxter - 구세계의 유산"
   name-en: "Jak and Daxter - The Precursor Legacy"
   region: "NTSC-K"
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves reflection quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -10861,6 +10947,8 @@ SCPS-56008:
   name-en: "Zero" # Project Zero
   region: "NTSC-K"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 2 # Reduces blurriness.
     alignSprite: 1 # Fixes vertical lines on hidden ghosts.
@@ -11075,6 +11163,8 @@ SCUS-97124:
   name: "Jak and Daxter - The Precursor Legacy"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves reflection quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -11265,6 +11355,8 @@ SCUS-97169:
 SCUS-97170:
   name: "Jak and Daxter - The Precursor Legacy [Cingular Wireless Demo]"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves reflection quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -11273,6 +11365,8 @@ SCUS-97170:
 SCUS-97171:
   name: "Jak and Daxter - The Precursor Legacy [PS Underground Demo]"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves reflection quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -11680,6 +11774,8 @@ SCUS-97265:
   name: "Jak II"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes camera drift on inclines.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -11696,6 +11792,8 @@ SCUS-97268:
   compat: 5
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     autoFlush: 2
     halfPixelOffset: 4 # Aligns post bloom.
@@ -11719,6 +11817,8 @@ SCUS-97272:
 SCUS-97273:
   name: "Jak II [Demo]"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes camera drift on inclines.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -11728,6 +11828,8 @@ SCUS-97273:
 SCUS-97274:
   name: "Jak II [Video Demo]"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes camera drift on inclines.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -11806,6 +11908,8 @@ SCUS-97322:
   region: "NTSC-U"
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     autoFlush: 2
     halfPixelOffset: 4 # Aligns post bloom.
@@ -11815,6 +11919,8 @@ SCUS-97323:
   region: "NTSC-U"
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     autoFlush: 2
     halfPixelOffset: 4 # Aligns post bloom.
@@ -11859,6 +11965,8 @@ SCUS-97330:
   compat: 5
   gameFixes:
     - InstantDMAHack # Fixes holes in face geometry.
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves metal reflections and shadow quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -12000,6 +12108,8 @@ SCUS-97374:
   region: "NTSC-U"
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -12028,6 +12138,8 @@ SCUS-97381:
   region: "NTSC-U"
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     autoFlush: 2
     halfPixelOffset: 4 # Aligns post bloom.
@@ -12160,6 +12272,8 @@ SCUS-97412:
   region: "NTSC-U"
   gameFixes:
     - InstantDMAHack # Fixes holes in face geometry.
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves metal reflections and shadow quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -12291,6 +12405,8 @@ SCUS-97438:
 SCUS-97440:
   name: "Jak and Daxter Trilogy [Demo]"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -12416,6 +12532,8 @@ SCUS-97472:
   compat: 5
   roundModes:
     eeRoundMode: 3 # Prevents Wander from moving when charging the floor.
+  clampModes:
+    eeClampMode: 3 # Fixes drift while charging an attack.
   gsHWFixes:
     recommendedBlendingLevel: 4 # Fixes water color.
     halfPixelOffset: 5 # Fixes misalignments and borders on side.
@@ -12633,6 +12751,8 @@ SCUS-97505:
   region: "NTSC-U"
   roundModes:
     eeRoundMode: 3 # Prevents Wander from moving when charging the floor.
+  clampModes:
+    eeClampMode: 3 # Fixes drift while charging an attack.
   gsHWFixes:
     recommendedBlendingLevel: 4 # Fixes water color.
     halfPixelOffset: 5 # Fixes misalignments and borders on side.
@@ -12646,6 +12766,8 @@ SCUS-97507:
 SCUS-97509:
   name: "Jak II [Greatest Hits]"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes camera drift on inclines.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post-processing.
     nativeScaling: 2 # Fixes post effects.
@@ -12677,6 +12799,8 @@ SCUS-97513:
   region: "NTSC-U"
   gameFixes:
     - EETimingHack # Fixes SPR errors while going in-game.
+  clampModes:
+    eeClampMode: 3 # Fixes Megaturret projectiles.
   gsHWFixes:
     autoFlush: 2
     halfPixelOffset: 4 # Aligns post bloom.
@@ -12697,6 +12821,8 @@ SCUS-97516:
   region: "NTSC-U"
   gameFixes:
     - InstantDMAHack # Fixes holes in face geometry.
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves metal reflections and shadow quality.
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
@@ -12839,6 +12965,8 @@ SCUS-97554:
 SCUS-97555:
   name: "Jak and Daxter Complete Trilogy [Demo]"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes character drift on sloped ground.
   gsHWFixes:
     cpuSpriteRenderBW: 4 # Fixes character and water textures.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -13588,6 +13716,8 @@ SLED-50489:
   region: "PAL-E"
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  clampModes:
+    eeClampMode: 3 # Fixes AI pathing.
   gsHWFixes:
     cpuSpriteRenderBW: 4 # Fixes textures.
     halfPixelOffset: 4 # Fixes misaligned post-processing.
@@ -13625,6 +13755,8 @@ SLED-51012:
   region: "PAL-E"
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  clampModes:
+    eeClampMode: 3 # Fixes AI pathing.
   gsHWFixes:
     cpuSpriteRenderBW: 4 # Fixes textures.
     halfPixelOffset: 4 # Fixes misaligned post-processing.
@@ -13991,6 +14123,7 @@ SLED-53083:
   name: "Monster Hunter [Demo]"
   region: "PAL-M5"
   clampModes:
+    eeClampMode: 3 # Fixes hit bounce calculation.
     vuClampMode: 3 # Fixes lighting on character models as caves and other locations don't turn mobs into glow-in-the-dark creatures by themselves.
   gsHWFixes:
     maximumBlendingLevel: 0 # Fixes unnecessary load on the GPU.
@@ -15048,6 +15181,8 @@ SLES-50264:
   name: "Playmobil - Hype - The Time Quest"
   region: "PAL-F"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU multiply.
   patches:
     B911D61B:
       content: |-
@@ -15072,6 +15207,8 @@ SLES-50265:
   name: "Playmobil - Hype - The Time Quest"
   region: "PAL-G"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU multiply.
   patches:
     3D2A2448:
       content: |-
@@ -15096,6 +15233,8 @@ SLES-50266:
   name: "Playmobil - Hype - The Time Quest"
   region: "PAL-M4"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU multiply.
   patches:
     F668693E:
       content: |-
@@ -15190,6 +15329,8 @@ SLES-50288:
   compat: 5
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  clampModes:
+    eeClampMode: 3 # Fixes AI pathing.
   gsHWFixes:
     cpuSpriteRenderBW: 4 # Fixes textures.
     halfPixelOffset: 4 # Fixes misaligned post-processing.
@@ -16322,6 +16463,8 @@ SLES-50821:
   name: "Project Zero"
   region: "PAL-M5"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 2 # Fixes blurriness.
     alignSprite: 1 # Fixes vertical lines on hidden ghosts.
@@ -16549,6 +16692,8 @@ SLES-50876:
   compat: 4
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  clampModes:
+    eeClampMode: 3 # Fixes AI pathing in Lead On Baccus.
   gsHWFixes:
     minimumBlendingLevel: 2 # Fixes intense sun color banding.
     autoFlush: 1 # Aligns and corrects shadows.
@@ -17070,6 +17215,8 @@ SLES-51114:
 SLES-51117:
   name: "Colin McRae Rally 3"
   region: "PAL-M5"
+  clampModes:
+    eeClampMode: 3 # Fixes AI on super special stages.
   gsHWFixes:
     alignSprite: 1 # Fixes vertical lines.
     autoFlush: 2 # Fixes the sun flare.
@@ -17789,6 +17936,8 @@ SLES-51365:
 SLES-51371:
   name: "Pride FC"
   region: "PAL-E"
+  clampModes:
+    eeClampMode: 3 # Fixes missing text and textures on the character select screen.
 SLES-51372:
   name: "Wallace & Gromit in Project Zoo"
   region: "PAL-E"
@@ -18188,7 +18337,7 @@ SLES-51579:
   roundModes:
     eeRoundMode: 2 # Partially fixes battle animation.
   clampModes:
-    eeClampMode: 2 # Partially fixes battle animation.
+    eeClampMode: 3 # Partially fixes battle animation.
   gsHWFixes:
     recommendedBlendingLevel: 2 # Provides text shadow definition.
     roundSprite: 1 # Corrects some font artifacts.
@@ -19684,6 +19833,8 @@ SLES-52153:
   region: "PAL-E-S"
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  clampModes:
+    eeClampMode: 3 # Fixes AI pathing in Lead On Baccus.
   gsHWFixes:
     minimumBlendingLevel: 2 # Fixes intense sun color banding.
     autoFlush: 1 # Aligns and corrects shadows.
@@ -20027,6 +20178,8 @@ SLES-52309:
   name: "R - Racing"
   region: "PAL-M5"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes flickering opponent cars in bumper cam.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns bloom and shadows.
     alignSprite: 1 # Fixes vertical lines.
@@ -20445,7 +20598,7 @@ SLES-52480:
   roundModes:
     eeRoundMode: 2 # Partially fixes battle animation.
   clampModes:
-    eeClampMode: 2 # Partially fixes battle animation.
+    eeClampMode: 3 # Partially fixes battle animation.
   gsHWFixes:
     recommendedBlendingLevel: 2 # Provides text shadow definition.
     roundSprite: 1 # Corrects some font artifacts.
@@ -21235,6 +21388,7 @@ SLES-52707:
   region: "PAL-M5"
   compat: 5
   clampModes:
+    eeClampMode: 3 # Fixes hit bounce calculation.
     vuClampMode: 3 # Fixes lighting on character models as caves and other locations don't turn mobs into glow-in-the-dark creatures by themselves.
   gsHWFixes:
     maximumBlendingLevel: 0 # Fixes unnecessary load on the GPU.
@@ -21719,6 +21873,8 @@ SLES-52872:
   region: "PAL-M5"
   roundModes:
     eeRoundMode: 2 # Resolves dumpster not being able to be climbed from front in level 2.
+  clampModes:
+    eeClampMode: 3 # Fixes the climbable dumpster in level 2.
 SLES-52874:
   name: "Dark Wind [with Gametrak]"
   region: "PAL-M5"
@@ -21984,6 +22140,8 @@ SLES-52955:
   region: "PAL-E"
   roundModes:
     eeDivRoundMode: 3 # Fixes grid like pattern.
+  clampModes:
+    eeClampMode: 3 # Fixes overlapping tiles that hide character models.
 SLES-52956:
   name: "Action Girlz Racing"
   region: "PAL-E"
@@ -25669,6 +25827,8 @@ SLES-54138:
   region: "PAL-E"
   roundModes:
     eeRoundMode: 0 # Fixes broken load triggers.
+  clampModes:
+    eeClampMode: 3 # Fixes broken load triggers.
   gsHWFixes:
     getSkipCount: "GSC_IRem"
     halfPixelOffset: 2 # Aligns effects.
@@ -25907,6 +26067,8 @@ SLES-54186:
   region: "PAL-M5"
   roundModes:
     eeRoundMode: 0 # Fixes inability to enter door in Mission 18.
+  clampModes:
+    eeClampMode: 3 # Fixes missing hitbox in the Nevan fight.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post effects.
     nativeScaling: 2 # Fixes post-processing and lighting smoothness and position.
@@ -26325,6 +26487,8 @@ SLES-54335:
   region: "PAL-F"
   roundModes:
     eeRoundMode: 0 # Fixes broken load triggers.
+  clampModes:
+    eeClampMode: 3 # Fixes broken load triggers.
   gsHWFixes:
     getSkipCount: "GSC_IRem"
     halfPixelOffset: 2 # Aligns effects.
@@ -29709,6 +29873,8 @@ SLES-55348:
 SLES-55349:
   name: "Need for Speed - Undercover"
   region: "PAL-E"
+  clampModes:
+    eeClampMode: 3 # Fixes loading of saves written on hardware.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves car reflections.
     textureInsideRT: 1 # Fixes sun glare.
@@ -29732,6 +29898,8 @@ SLES-55349:
 SLES-55350:
   name: "Need for Speed - Undercover"
   region: "PAL-F-G"
+  clampModes:
+    eeClampMode: 3 # Fixes loading of saves written on hardware.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves car reflections.
     textureInsideRT: 1 # Fixes sun glare.
@@ -29755,6 +29923,8 @@ SLES-55350:
 SLES-55351:
   name: "Need for Speed - Undercover"
   region: "PAL-I-S"
+  clampModes:
+    eeClampMode: 3 # Fixes loading of saves written on hardware.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves car reflections.
     textureInsideRT: 1 # Fixes sun glare.
@@ -29779,6 +29949,8 @@ SLES-55352:
   name: "Need for Speed - Undercover"
   region: "PAL-SC"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes loading of saves written on hardware.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves car reflections.
     textureInsideRT: 1 # Fixes sun glare.
@@ -29802,6 +29974,8 @@ SLES-55352:
 SLES-55353:
   name: "Need for Speed - Undercover"
   region: "PAL-M6"
+  clampModes:
+    eeClampMode: 3 # Fixes loading of saves written on hardware.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves car reflections.
     textureInsideRT: 1 # Fixes sun glare.
@@ -30233,12 +30407,18 @@ SLES-55520:
 SLES-55522:
   name: "Disney/Pixar Up"
   region: "PAL-E"
+  clampModes:
+    eeClampMode: 3 # Fixes TLB miss in the cave.
 SLES-55523:
   name: "Disney/Pixar Up"
   region: "PAL-S"
+  clampModes:
+    eeClampMode: 3 # Fixes TLB miss in the cave.
 SLES-55524:
   name: "Disney/Pixar Up"
   region: "PAL-F-DU"
+  clampModes:
+    eeClampMode: 3 # Fixes TLB miss in the cave.
 SLES-55525:
   name: "Disney/Pixar Oben"
   region: "PAL-G"
@@ -30256,6 +30436,8 @@ SLES-55529:
 SLES-55531:
   name: "Disney/Pixar Up"
   region: "PAL-I"
+  clampModes:
+    eeClampMode: 3 # Fixes TLB miss in the cave.
 SLES-55532:
   name: "Aliens in the Attic"
   region: "PAL-M5"
@@ -31434,6 +31616,8 @@ SLKA-25059:
   name: "프라이드 FC"
   name-en: "Pride FC - Fighting Championships"
   region: "NTSC-K"
+  clampModes:
+    eeClampMode: 3 # Fixes missing text and textures on the character select screen.
 SLKA-25060:
   name: "I.Q Remix+ - Intelligent Qube"
   region: "NTSC-K"
@@ -32066,6 +32250,8 @@ SLKA-25196:
   region: "NTSC-K"
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  clampModes:
+    eeClampMode: 3 # Fixes AI pathing in Lead On Baccus.
   gsHWFixes:
     minimumBlendingLevel: 2 # Fixes intense sun color banding.
     autoFlush: 1 # Aligns and corrects shadows.
@@ -32247,6 +32433,7 @@ SLKA-25219:
   region: "NTSC-K"
   compat: 5
   clampModes:
+    eeClampMode: 3 # Fixes hit bounce calculation.
     vuClampMode: 3 # Fixes lighting on character models as caves and other locations don't turn mobs into glow-in-the-dark creatures by themselves.
   gsHWFixes:
     maximumBlendingLevel: 0 # Fixes unnecessary load on the GPU.
@@ -33489,6 +33676,8 @@ SLKA-25446:
   name: "니드 포 스피드 - 언더커버"
   name-en: "Need for Speed - Undercover"
   region: "NTSC-K"
+  clampModes:
+    eeClampMode: 3 # Fixes loading of saves written on hardware.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves car reflections.
     textureInsideRT: 1 # Fixes sun glare.
@@ -34462,6 +34651,8 @@ SLPM-55127:
   name-sort: "にーど・ふぉー・すぴーど あんだーかばー"
   name-en: "Need for Speed - Undercover"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes loading of saves written on hardware.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves car reflections.
     textureInsideRT: 1 # Fixes sun glare.
@@ -35067,6 +35258,8 @@ SLPM-55244:
   name-sort: "にーど・ふぉー・すぴーど あんだーかばー [EA:SY! 1980]"
   name-en: "Need for Speed - Undercover [EA:SY! 1980]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes loading of saves written on hardware.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves car reflections.
     textureInsideRT: 1 # Fixes sun glare.
@@ -35467,6 +35660,8 @@ SLPM-60132:
   name-sort: "しゅとこうばとる0 [たいけんばん]"
   name-en: "Shutokou Battle 0 [Trial]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU multiply and divide.
 SLPM-60133:
   name: "ZEONIC FRONT 機動戦士ガンダム0079 [体験版]"
   name-sort: "じおにっく ふろんと きどうせんしがんだむ0079 [たいけんばん]"
@@ -35627,6 +35822,8 @@ SLPM-60167:
   name-sort: "ぜろ [たいけんばん]"
   name-en: "Fatal Frame [Trial]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 2 # Reduces blurriness.
     alignSprite: 1 # Fixes vertical lines on hidden ghosts.
@@ -35855,6 +36052,8 @@ SLPM-60216:
   name-sort: "Rれーしんぐえぼりゅーしょん [たいけんばん]"
   name-en: "R:Racing Evolution [Trial]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes flickering opponent cars in bumper cam.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns bloom and shadows.
     alignSprite: 1 # Fixes vertical lines.
@@ -36039,6 +36238,8 @@ SLPM-60255:
   region: "NTSC-J"
   roundModes:
     eeRoundMode: 0 # Fixes broken load triggers.
+  clampModes:
+    eeClampMode: 3 # Fixes broken load triggers.
   gsHWFixes:
     getSkipCount: "GSC_IRem"
     halfPixelOffset: 2 # Aligns effects.
@@ -36112,6 +36313,8 @@ SLPM-60266:
   region: "NTSC-J"
   roundModes:
     eeRoundMode: 0 # Fixes broken load triggers.
+  clampModes:
+    eeClampMode: 3 # Fixes broken load triggers.
   gsHWFixes:
     getSkipCount: "GSC_IRem"
     halfPixelOffset: 2 # Aligns effects.
@@ -36635,6 +36838,8 @@ SLPM-61092:
   region: "NTSC-J"
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  clampModes:
+    eeClampMode: 3 # Fixes AI pathing in Lead On Baccus.
   gsHWFixes:
     minimumBlendingLevel: 2 # Fixes intense sun color banding.
     autoFlush: 1 # Aligns and corrects shadows.
@@ -37010,6 +37215,8 @@ SLPM-61147:
   name-sort: "ぜのさーが えぴそーど3 [つぁらとぅすとらはかくかたりき] [たいけんばん]"
   name-en: "Xenosaga Episode III - Also Sprach Zarathustra [Trial]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes black screen behind the chest.
   gsHWFixes:
     autoFlush: 1 # Fixes shadows.
     halfPixelOffset: 4 # Fixes lighting misalignment.
@@ -37759,6 +37966,8 @@ SLPM-62130:
   name-en: "Virtua Fighter 4"
   region: "NTSC-J"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes flickering on the Pai stage.
 SLPM-62131:
   name: "三國志Ⅷ"
   name-sort: "さんごくし 8"
@@ -37895,6 +38104,8 @@ SLPM-62158:
   name-sort: "ばーちゃ ふぁいたー4 [Asiaばん]"
   name-en: "Virtua Fighter 4 [Asia Version]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes flickering on the Pai stage.
 SLPM-62159:
   name: "ワールドサッカーウイニングイレブン6"
   name-sort: "わーるどさっかーういにんぐいれぶん 6"
@@ -40977,7 +41188,7 @@ SLPM-62767:
   name-en: "Sega Ages 2500 Vol.31 - Dennou Senki Virtual On"
   region: "NTSC-J"
   clampModes:
-    eeClampMode: 2 # Fixes white shadows.
+    eeClampMode: 3 # Fixes white shadows.
   gsHWFixes:
     cpuSpriteRenderBW: 1 # Fixes CLUT colours.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -44121,6 +44332,7 @@ SLPM-65495:
   name-en: "Monster Hunter"
   region: "NTSC-J"
   clampModes:
+    eeClampMode: 3 # Fixes hit bounce calculation.
     vuClampMode: 3 # Fixes lighting on character models as caves and other locations don't turn mobs into glow-in-the-dark creatures by themselves.
   gsHWFixes:
     maximumBlendingLevel: 0 # Fixes unnecessary load on the GPU.
@@ -45530,6 +45742,8 @@ SLPM-65741:
   region: "NTSC-J"
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  clampModes:
+    eeClampMode: 3 # Fixes AI pathing in Lead On Baccus.
   gsHWFixes:
     minimumBlendingLevel: 2 # Fixes intense sun color banding.
     autoFlush: 1 # Aligns and corrects shadows.
@@ -46286,6 +46500,7 @@ SLPM-65869:
   region: "NTSC-J"
   compat: 5
   clampModes:
+    eeClampMode: 3 # Fixes hit bounce calculation.
     vuClampMode: 3 # Fixes lighting on character models as caves and other locations don't turn mobs into glow-in-the-dark creatures by themselves.
   gsHWFixes:
     maximumBlendingLevel: 0 # Fixes unnecessary load on the GPU.
@@ -46890,6 +47105,8 @@ SLPM-65972:
   region: "NTSC-J"
   roundModes:
     eeRoundMode: 2 # Resolves dumpster not being able to be climbed from front in level 2.
+  clampModes:
+    eeClampMode: 3 # Fixes the climbable dumpster in level 2.
 SLPM-65973:
   name: "未来少年コナン"
   name-sort: "みらいしょうねんこなん"
@@ -47187,6 +47404,8 @@ SLPM-66019:
   region: "NTSC-J"
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  clampModes:
+    eeClampMode: 3 # Fixes AI pathing.
   gsHWFixes:
     cpuSpriteRenderBW: 4 # Fixes textures.
     halfPixelOffset: 4 # Fixes misaligned post-processing.
@@ -48100,6 +48319,8 @@ SLPM-66160:
   compat: 5
   roundModes:
     eeRoundMode: 0 # Fixes inability to enter door in Mission 18.
+  clampModes:
+    eeClampMode: 3 # Fixes missing hitbox in the Nevan fight.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post effects.
     nativeScaling: 2 # Fixes post-processing and lighting smoothness and position.
@@ -48920,6 +49141,7 @@ SLPM-66280:
   region: "NTSC-J"
   compat: 5
   clampModes:
+    eeClampMode: 3 # Fixes hit bounce calculation.
     vuClampMode: 3 # Fixes lighting on character models as caves and other locations don't turn mobs into glow-in-the-dark creatures by themselves.
   gsHWFixes:
     maximumBlendingLevel: 0 # Fixes unnecessary load on the GPU.
@@ -54039,6 +54261,8 @@ SLPM-74211:
   name-en: "Shutokou Battle 0 [PlayStation2 the Best]"
   region: "NTSC-J"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU multiply and divide.
 SLPM-74212:
   name: "戦国無双 猛将伝 [PlayStation2 the Best]"
   name-sort: "せんごくむそう もうしょうでん [PlayStation2 the Best]"
@@ -54253,6 +54477,8 @@ SLPM-74242:
   region: "NTSC-J"
   roundModes:
     eeRoundMode: 0 # Fixes inability to enter door in Mission 18.
+  clampModes:
+    eeClampMode: 3 # Fixes missing hitbox in the Nevan fight.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post effects.
     nativeScaling: 2 # Fixes post-processing and lighting smoothness and position.
@@ -54287,6 +54513,7 @@ SLPM-74245:
   name-en: "Monster Hunter 2 [PlayStation2 the Best]"
   region: "NTSC-J"
   clampModes:
+    eeClampMode: 3 # Fixes hit bounce calculation.
     vuClampMode: 3 # Fixes lighting on character models as caves and other locations don't turn mobs into glow-in-the-dark creatures by themselves.
   gsHWFixes:
     maximumBlendingLevel: 0 # Fixes unnecessary load on the GPU.
@@ -54320,6 +54547,7 @@ SLPM-74248:
   name-en: "Monster Hunter G [PlayStation2 the Best]"
   region: "NTSC-J"
   clampModes:
+    eeClampMode: 3 # Fixes hit bounce calculation.
     vuClampMode: 3 # Fixes lighting on character models as caves and other locations don't turn mobs into glow-in-the-dark creatures by themselves.
   gsHWFixes:
     maximumBlendingLevel: 0 # Fixes unnecessary load on the GPU.
@@ -54477,6 +54705,8 @@ SLPM-74268:
   name-sort: "でびる めい くらい 3 Special Edition [PlayStation2 the Best]"
   name-en: "Devil May Cry 3 Special Edition [PlayStation2 the Best]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes missing hitbox in the Nevan fight.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post effects.
     nativeScaling: 2 # Fixes post-processing and lighting smoothness and position.
@@ -57142,6 +57372,8 @@ SLPS-20478:
   name-sort: "しんぷる2000しりーず Vol.109 THEたくしー2 ～うんてんしゅはやっぱりきみだ！～"
   name-en: "Simple 2000 Series Vol. 109 - The Taxi 2 - Untenshu ha Yappari Kimi da!"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes desynced opening demo.
 SLPS-20479:
   name: "速読マスター"
   name-sort: "そくどくますたー"
@@ -57512,6 +57744,8 @@ SLPS-25028:
   name-en: "Shutokou Battle 0"
   region: "NTSC-J"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU multiply and divide.
 SLPS-25029:
   name: "レイマン レボリューション！"
   name-sort: "れいまん れぼりゅーしょん！"
@@ -57822,6 +58056,8 @@ SLPS-25074:
   name-en: "Fatal Frame"
   region: "NTSC-J"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 2 # Fixes blurriness.
     alignSprite: 1 # Fixes vertical lines on hidden ghosts.
@@ -59124,6 +59360,8 @@ SLPS-25300:
   name-sort: "Rれーしんぐえぼりゅーしょん"
   name-en: "R:Racing Evolution"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Fixes flickering opponent cars in bumper cam.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns bloom and shadows.
     alignSprite: 1 # Fixes vertical lines.
@@ -60145,6 +60383,8 @@ SLPS-25457:
   region: "NTSC-J"
   roundModes:
     eeRoundMode: 0 # Fixes broken load triggers.
+  clampModes:
+    eeClampMode: 3 # Fixes broken load triggers.
   gsHWFixes:
     getSkipCount: "GSC_IRem"
     halfPixelOffset: 2 # Aligns effects.
@@ -60923,6 +61163,8 @@ SLPS-25586:
   name-en: "Tales of the Abyss"
   region: "NTSC-J"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 5 # Fixes post positioning.
     nativeScaling: 2 # Fixes post effects.
@@ -61253,6 +61495,8 @@ SLPS-25640:
   name-en: "Xenosaga Episode III - Also Sprach Zarathustra [Disc 1 of 2]"
   region: "NTSC-J"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes black screen behind the chest.
   gsHWFixes:
     autoFlush: 1 # Fixes shadows.
     halfPixelOffset: 4 # Fixes lighting misalignment.
@@ -61268,6 +61512,8 @@ SLPS-25641:
   name-en: "Xenosaga Episode III - Also Sprach Zarathustra [Disc 2 of 2]"
   region: "NTSC-J"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes black screen behind the chest.
   gsHWFixes:
     autoFlush: 1 # Fixes shadows.
     halfPixelOffset: 4 # Fixes lighting misalignment.
@@ -61572,6 +61818,8 @@ SLPS-25683:
   region: "NTSC-J"
   roundModes:
     eeRoundMode: 0 # Fixes broken load triggers.
+  clampModes:
+    eeClampMode: 3 # Fixes broken load triggers.
   gsHWFixes:
     getSkipCount: "GSC_IRem"
     halfPixelOffset: 2 # Aligns effects.
@@ -64119,6 +64367,8 @@ SLPS-73252:
   name-sort: "ているず おぶ じ あびす [PlayStation2 the Best]"
   name-en: "Tales of the Abyss [PlayStation2 the Best]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 5 # Fixes post positioning.
     nativeScaling: 2 # Fixes post effects.
@@ -64141,6 +64391,8 @@ SLPS-73255:
   name-sort: "ぜろ [PlayStation2 the Best]"
   name-en: "Fatal Frame [PlayStation 2 the Best - Reprint]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 2 # Reduces blurriness.
     alignSprite: 1 # Fixes vertical lines on hidden ghosts.
@@ -64226,6 +64478,8 @@ SLPS-73402:
   name-en: "Shutokou Battle 0 [PlayStation2 the Best]"
   region: "NTSC-J"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU multiply and divide.
 SLPS-73403:
   name: "アーマード・コア 2 [PlayStation2 the Best]"
   name-sort: "あーまーどこあ 2 [PlayStation2 the Best]"
@@ -64254,6 +64508,8 @@ SLPS-73405:
   name-sort: "ぜろ [PlayStation2 the Best]"
   name-en: "Fatal Frame [PlayStation2 the Best]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 2 # Reduces blurriness.
     alignSprite: 1 # Fixes vertical lines on hidden ghosts.
@@ -65179,6 +65435,8 @@ SLUS-20189:
   name: "Tokyo Xtreme Racer Zero"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU multiply and divide.
 SLUS-20190:
   name: "Monster Rancher 3"
   region: "NTSC-U"
@@ -65495,6 +65753,8 @@ SLUS-20250:
   compat: 5
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  clampModes:
+    eeClampMode: 3 # Fixes AI pathing.
   gsHWFixes:
     cpuSpriteRenderBW: 4 # Fixes textures.
     halfPixelOffset: 4 # Fixes misaligned post-processing.
@@ -65836,6 +66096,8 @@ SLUS-20323:
   name: "Virtua Fighter 4"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes flickering on the Pai stage.
 SLUS-20324:
   name: "Paris Dakar Rally"
   region: "NTSC-U"
@@ -66175,6 +66437,8 @@ SLUS-20388:
   name: "Fatal Frame"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 2 # Reduces blurriness.
     alignSprite: 1 # Fixes vertical lines on hidden ghosts.
@@ -66270,6 +66534,8 @@ SLUS-20406:
   name: "Pride FC - Fighting Championships"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes missing text and textures on the character select screen.
 SLUS-20407:
   name: "Way of the Samurai"
   region: "NTSC-U"
@@ -66794,6 +67060,8 @@ SLUS-20502:
   name: "Colin McRae Rally 3"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes AI on super special stages.
   gsHWFixes:
     alignSprite: 1 # Fixes vertical lines.
     autoFlush: 2 # Fixes the sun flare.
@@ -66856,7 +67124,7 @@ SLUS-20515:
   roundModes:
     eeRoundMode: 2 # Partially fixes battle animation.
   clampModes:
-    eeClampMode: 2 # Partially fixes battle animation.
+    eeClampMode: 3 # Partially fixes battle animation.
   gsHWFixes:
     recommendedBlendingLevel: 2 # Provides text shadow definition.
     roundSprite: 1 # Corrects some font artifacts.
@@ -67262,6 +67530,8 @@ SLUS-20587:
   compat: 5
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
+  clampModes:
+    eeClampMode: 3 # Fixes AI pathing in Lead On Baccus.
   gsHWFixes:
     minimumBlendingLevel: 2 # Fixes intense sun color banding.
     autoFlush: 1 # Aligns and corrects shadows.
@@ -67973,6 +68243,8 @@ SLUS-20721:
   name: "R - Racing Evolution"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes flickering opponent cars in bumper cam.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns bloom and shadows.
     alignSprite: 1 # Fixes vertical lines.
@@ -68950,6 +69222,7 @@ SLUS-20896:
   region: "NTSC-U"
   compat: 5
   clampModes:
+    eeClampMode: 3 # Fixes hit bounce calculation.
     vuClampMode: 3 # Fixes lighting on character models as caves and other locations don't turn mobs into glow-in-the-dark creatures by themselves.
   gsHWFixes:
     maximumBlendingLevel: 0 # Fixes unnecessary load on the GPU.
@@ -70479,6 +70752,8 @@ SLUS-21142:
   compat: 5
   roundModes:
     eeRoundMode: 2 # Resolves dumpster not being able to be climbed from front in level 2.
+  clampModes:
+    eeClampMode: 3 # Fixes the climbable dumpster in level 2.
 SLUS-21143:
   name: "Star Wars - Episode III - Revenge of the Sith"
   region: "NTSC-U"
@@ -71863,6 +72138,8 @@ SLUS-21344:
   compat: 5
   roundModes:
     eeRoundMode: 0 # Fixes broken load triggers.
+  clampModes:
+    eeClampMode: 3 # Fixes broken load triggers.
   gsHWFixes:
     getSkipCount: "GSC_IRem"
     halfPixelOffset: 2 # Aligns effects.
@@ -72025,6 +72302,8 @@ SLUS-21361:
   compat: 5
   roundModes:
     eeRoundMode: 0 # Fixes inability to enter door in Mission 18.
+  clampModes:
+    eeClampMode: 3 # Fixes missing hitbox in the Nevan fight.
   gsHWFixes:
     halfPixelOffset: 4 # Aligns post effects.
     nativeScaling: 2 # Fixes post-processing and lighting smoothness and position.
@@ -72204,6 +72483,8 @@ SLUS-21386:
   name: "Tales of the Abyss"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Requires accurate FPU arithmetic.
   gsHWFixes:
     halfPixelOffset: 5 # Fixes post positioning.
     nativeScaling: 2 # Fixes post effects.
@@ -72226,6 +72507,8 @@ SLUS-21389:
   name: "Xenosaga Episode III - Also Sprach Zarathustra [Disc 1 of 2]"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes black screen behind the chest.
   gsHWFixes:
     autoFlush: 1 # Fixes shadows.
     halfPixelOffset: 4 # Fixes lighting misalignment.
@@ -72395,6 +72678,8 @@ SLUS-21417:
   name: "Xenosaga Episode III - Also Sprach Zarathustra [Disc 2 of 2]"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes black screen behind the chest.
   gsHWFixes:
     autoFlush: 1 # Fixes shadows.
     halfPixelOffset: 4 # Fixes lighting misalignment.
@@ -74512,6 +74797,8 @@ SLUS-21801:
   name: "Need for Speed - Undercover"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes loading of saves written on hardware.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves car reflections.
     textureInsideRT: 1 # Fixes sun glare.
@@ -74799,6 +75086,8 @@ SLUS-21864:
   name: "Disney/Pixar Up"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 3 # Fixes TLB miss in the cave.
 SLUS-21865:
   name: "Guitar Hero 5"
   region: "NTSC-U"
@@ -75425,6 +75714,8 @@ SLUS-28061:
   region: "NTSC-U"
   roundModes:
     eeRoundMode: 0 # Fixes broken load triggers.
+  clampModes:
+    eeClampMode: 3 # Fixes broken load triggers.
   gsHWFixes:
     getSkipCount: "GSC_IRem"
     halfPixelOffset: 2 # Aligns effects.
@@ -75605,6 +75896,8 @@ SLUS-29042:
 SLUS-29044:
   name: "Pride FC - Fighting Championships [Demo]"
   region: "NTSC-U"
+  clampModes:
+    eeClampMode: 3 # Fixes missing text and textures on the character select screen.
 SLUS-29045:
   name: "Black & Bruised [Regular Demo]"
   region: "NTSC-U"
@@ -75834,6 +76127,7 @@ SLUS-29110:
   name: "Monster Hunter [Public Beta Vol.1 - Ver.1.01]"
   region: "NTSC-U"
   clampModes:
+    eeClampMode: 3 # Fixes hit bounce calculation.
     vuClampMode: 3 # Fixes lighting on character models as caves and other locations don't turn mobs into glow-in-the-dark creatures by themselves.
   gsHWFixes:
     maximumBlendingLevel: 0 # Fixes unnecessary load on the GPU.
@@ -76211,6 +76505,8 @@ SLUS-29188:
   region: "NTSC-U"
   roundModes:
     eeRoundMode: 0 # Fixes broken load triggers.
+  clampModes:
+    eeClampMode: 3 # Fixes broken load triggers.
   gsHWFixes:
     getSkipCount: "GSC_IRem"
     halfPixelOffset: 2 # Aligns effects.
@@ -76724,6 +77020,7 @@ TLES-52707:
   name: "Monster Hunter Beta Trial Code"
   region: "PAL-E"
   clampModes:
+    eeClampMode: 3 # Fixes hit bounce calculation.
     vuClampMode: 3 # Fixes lighting on character models as caves and other locations don't turn mobs into glow-in-the-dark creatures by themselves.
   gsHWFixes:
     maximumBlendingLevel: 0 # Fixes unnecessary load on the GPU.
