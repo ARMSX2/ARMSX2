@@ -69,7 +69,7 @@ data class Settings(
     val eeCycleRate: Int = 0,
     /** EmuCore/Speedhacks/EECycleSkip — 0..3. 0 = no skip. */
     val eeCycleSkip: Int = 0,
-    /** EE/FPU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Full / 4 Ludicrous
+    /** EE/FPU clamp mode — 0 None / 1 Normal / 2 Extra / 3 Full / 4 Exact
      *  (PCSX2 default Normal). Unpacks to EmuCore/CPU/Recompiler
      *  fpuOverflow/fpuExtraOverflow/fpuFullMode/fpuExactMode.
      *  4 is Full plus the rest of the EE multiplier's one-ULP deficit and a
@@ -971,7 +971,7 @@ data class Settings(
         fun floatAt(key: String): Float? = ini[key]?.toFloatOrNull()
         fun strAt(key: String): String? = ini[key]
 
-        // EE/FPU clamp (0 None / 1 Normal / 2 Extra / 3 Full / 4 Ludicrous) is packed by
+        // EE/FPU clamp (0 None / 1 Normal / 2 Extra / 3 Full / 4 Exact) is packed by
         // applyTo into four cumulative bool keys (fpuOverflow>=1, fpuExtraOverflow>=2,
         // fpuFullMode>=3, fpuExactMode>=4). Read them back highest-first, and treat the
         // exact key's absence as an older core rather than as mode 3 — a build without it
