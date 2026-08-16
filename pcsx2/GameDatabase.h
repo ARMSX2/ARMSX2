@@ -94,6 +94,16 @@ namespace GameDatabaseSchema
 		Count
 	};
 
+	/// Whether the database's values are actually being adopted, or only being worked
+	/// out so something can be compared against them. A hypothetical apply says nothing
+	/// to the log or the screen and allocates nothing, because nothing is going to run
+	/// with the result.
+	enum class ApplyMode : u8
+	{
+		Live,
+		Hypothetical,
+	};
+
 	struct GameEntry
 	{
 		std::string name;
@@ -123,10 +133,12 @@ namespace GameDatabaseSchema
 		/// Applies Core game fixes to an existing config. Anything the player set for
 		/// this game specifically is left alone — `overrides` says which, and defaults
 		/// to nothing claimed, which is the old behaviour.
-		void applyGameFixes(Pcsx2Config& config, bool applyAuto, const PerGameOverrides& overrides = {}) const;
+		void applyGameFixes(Pcsx2Config& config, bool applyAuto, const PerGameOverrides& overrides = {},
+			ApplyMode mode = ApplyMode::Live) const;
 
 		/// Applies GS hardware fixes to an existing config, on the same terms.
-		void applyGSHardwareFixes(Pcsx2Config::GSOptions& config, const PerGameOverrides& overrides = {}) const;
+		void applyGSHardwareFixes(Pcsx2Config::GSOptions& config, const PerGameOverrides& overrides = {},
+			ApplyMode mode = ApplyMode::Live) const;
 
 		/// Returns true if the current config value for the specified hw fix id matches the value.
 		static bool configMatchesHWFix(const Pcsx2Config::GSOptions& config, GSHWFixId id, int value);

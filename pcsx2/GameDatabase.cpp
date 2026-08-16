@@ -539,12 +539,14 @@ static std::optional<GSUserHackOverride> UserHackOverrideForHWFix(GameDatabaseSc
 	}
 }
 
-void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool applyAuto, const PerGameOverrides& overrides) const
+void GameDatabaseSchema::GameEntry::applyGameFixes(
+	Pcsx2Config& config, bool applyAuto, const PerGameOverrides& overrides, ApplyMode mode) const
 {
 	std::string suppressed_fixes;
+	const bool quiet = (mode == ApplyMode::Hypothetical);
 
 	// Only apply core game fixes if the user has enabled them.
-	if (!applyAuto)
+	if (!applyAuto && !quiet)
 		Console.Warning("GameDB: Game Fixes are disabled");
 
 	// Decides whether one database value lands, and says why when it does not. Two
@@ -555,6 +557,9 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool app
 	// Names are the database's own YAML spelling so a log line and a GameIndex entry
 	// read together.
 	const auto wanted = [&](bool claimed, const char* name, std::optional<int> value = std::nullopt) {
+		if (quiet)
+			return applyAuto && !claimed;
+
 		const std::string label = value.has_value() ? fmt::format("{} = {}", name, value.value()) : std::string(name);
 
 		if (claimed)
@@ -576,29 +581,35 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool app
 	if (eeRoundMode < FPRoundMode::MaxCount &&
 		wanted(overrides.Has(CoreGameDBKnob::EERoundMode), "eeRoundMode", static_cast<int>(eeRoundMode)))
 	{
-		Console.WriteLn("GameDB: Changing EE/FPU roundmode to %d [%s]", eeRoundMode, s_round_modes[static_cast<u8>(eeRoundMode)]);
+		if (!quiet)
+			Console.WriteLn("GameDB: Changing EE/FPU roundmode to %d [%s]", eeRoundMode, s_round_modes[static_cast<u8>(eeRoundMode)]);
 		config.Cpu.FPUFPCR.SetRoundMode(eeRoundMode);
 	}
 
 	if (eeDivRoundMode < FPRoundMode::MaxCount &&
 		wanted(overrides.Has(CoreGameDBKnob::EEDivRoundMode), "eeDivRoundMode", static_cast<int>(eeDivRoundMode)))
 	{
-		Console.WriteLn("GameDB: Changing EE/FPU divison roundmode to %d [%s]", eeDivRoundMode,
-			s_round_modes[static_cast<u8>(eeDivRoundMode)]);
+		if (!quiet)
+		{
+			Console.WriteLn("GameDB: Changing EE/FPU divison roundmode to %d [%s]", eeDivRoundMode,
+				s_round_modes[static_cast<u8>(eeDivRoundMode)]);
+		}
 		config.Cpu.FPUDivFPCR.SetRoundMode(eeDivRoundMode);
 	}
 
 	if (vu0RoundMode < FPRoundMode::MaxCount &&
 		wanted(overrides.Has(CoreGameDBKnob::VU0RoundMode), "vu0RoundMode", static_cast<int>(vu0RoundMode)))
 	{
-		Console.WriteLn("GameDB: Changing VU0 roundmode to %d [%s]", vu0RoundMode, s_round_modes[static_cast<u8>(vu0RoundMode)]);
+		if (!quiet)
+			Console.WriteLn("GameDB: Changing VU0 roundmode to %d [%s]", vu0RoundMode, s_round_modes[static_cast<u8>(vu0RoundMode)]);
 		config.Cpu.VU0FPCR.SetRoundMode(vu0RoundMode);
 	}
 
 	if (vu1RoundMode < FPRoundMode::MaxCount &&
 		wanted(overrides.Has(CoreGameDBKnob::VU1RoundMode), "vu1RoundMode", static_cast<int>(vu1RoundMode)))
 	{
-		Console.WriteLn("GameDB: Changing VU1 roundmode to %d [%s]", vu1RoundMode, s_round_modes[static_cast<u8>(vu1RoundMode)]);
+		if (!quiet)
+			Console.WriteLn("GameDB: Changing VU1 roundmode to %d [%s]", vu1RoundMode, s_round_modes[static_cast<u8>(vu1RoundMode)]);
 		config.Cpu.VU1FPCR.SetRoundMode(vu1RoundMode);
 	}
 
@@ -607,7 +618,8 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool app
 		const int clampMode = enum_cast(eeClampMode);
 		if (wanted(overrides.Has(CoreGameDBKnob::EEClampMode), "eeClampMode", clampMode))
 		{
-			Console.WriteLn("GameDB: Changing EE/FPU clamp mode [mode=%d]", clampMode);
+			if (!quiet)
+				Console.WriteLn("GameDB: Changing EE/FPU clamp mode [mode=%d]", clampMode);
 			config.Cpu.Recompiler.fpuOverflow = (clampMode >= 1);
 			config.Cpu.Recompiler.fpuExtraOverflow = (clampMode >= 2);
 			config.Cpu.Recompiler.fpuFullMode = (clampMode >= 3);
@@ -620,7 +632,8 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool app
 		const int clampMode = enum_cast(vu0ClampMode);
 		if (wanted(overrides.Has(CoreGameDBKnob::VU0ClampMode), "vu0ClampMode", clampMode))
 		{
-			Console.WriteLn("GameDB: Changing VU0 clamp mode [mode=%d]", clampMode);
+			if (!quiet)
+				Console.WriteLn("GameDB: Changing VU0 clamp mode [mode=%d]", clampMode);
 			config.Cpu.Recompiler.vu0Overflow = (clampMode >= 1);
 			config.Cpu.Recompiler.vu0ExtraOverflow = (clampMode >= 2);
 			config.Cpu.Recompiler.vu0SignOverflow = (clampMode >= 3);
@@ -632,7 +645,8 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool app
 		const int clampMode = enum_cast(vu1ClampMode);
 		if (wanted(overrides.Has(CoreGameDBKnob::VU1ClampMode), "vu1ClampMode", clampMode))
 		{
-			Console.WriteLn("GameDB: Changing VU1 clamp mode [mode=%d]", clampMode);
+			if (!quiet)
+				Console.WriteLn("GameDB: Changing VU1 clamp mode [mode=%d]", clampMode);
 			config.Cpu.Recompiler.vu1Overflow = (clampMode >= 1);
 			config.Cpu.Recompiler.vu1ExtraOverflow = (clampMode >= 2);
 			config.Cpu.Recompiler.vu1SignOverflow = (clampMode >= 3);
@@ -648,8 +662,11 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool app
 		// Legacy note - speedhacks are setup in the GameDB as integer values, but
 		// are effectively booleans like the gamefixes
 		config.Speedhacks.Set(it.first, it.second);
-		Console.WriteLn("GameDB: Setting Speedhack '%s' to [mode=%d]",
-			Pcsx2Config::SpeedhackOptions::GetSpeedHackName(it.first), it.second);
+		if (!quiet)
+		{
+			Console.WriteLn("GameDB: Setting Speedhack '%s' to [mode=%d]",
+				Pcsx2Config::SpeedhackOptions::GetSpeedHackName(it.first), it.second);
+		}
 	}
 
 	// TODO - config - this could be simplified with maps instead of bitfields and enums
@@ -663,15 +680,20 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool app
 
 		// if the fix is present, it is said to be enabled
 		config.Gamefixes.Set(id, true);
-		Console.WriteLn("GameDB: Enabled Gamefix: %s", Pcsx2Config::GamefixOptions::GetGameFixName(id));
+		if (!quiet)
+			Console.WriteLn("GameDB: Enabled Gamefix: %s", Pcsx2Config::GamefixOptions::GetGameFixName(id));
 
-		// The LUT is only used for 1 game so we allocate it only when the gamefix is enabled (save 4MB)
-		if (id == Fix_GoemonTlbMiss && true)
+		// The LUT is only used for 1 game so we allocate it only when the gamefix is enabled (save 4MB).
+		// A hypothetical apply is not going to run anything, so it does not get the 4MB.
+		if (id == Fix_GoemonTlbMiss && !quiet)
 			vtlb_Alloc_Ppmap();
 	}
 
 	// Keyed so the next settings reload replaces or clears it, matching how the
 	// graphics half reports the same thing.
+	if (quiet)
+		return;
+
 	if (!suppressed_fixes.empty())
 	{
 		Host::AddKeyedOSDMessage("CoreFixesWarning",
@@ -816,14 +838,16 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 	}
 }
 
-void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& config, const PerGameOverrides& overrides) const
+void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
+	Pcsx2Config::GSOptions& config, const PerGameOverrides& overrides, ApplyMode mode) const
 {
 	std::string disabled_fixes;
+	const bool quiet = (mode == ApplyMode::Hypothetical);
 
 	// Only apply GS HW fixes if the user hasn't manually enabled HW fixes.
 	const bool apply_auto_fixes = !config.ManualUserHacks;
 	const bool is_sw_renderer = EmuConfig.GS.Renderer == GSRendererType::SW;
-	if (!apply_auto_fixes)
+	if (!apply_auto_fixes && !quiet)
 		Console.Warning("GameDB: Manual GS hardware renderer fixes are enabled, not using automatic hardware renderer fixes from GameDB.");
 
 	for (const auto& [id, value] : gsHWFixes)
@@ -845,7 +869,7 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 		// to be claimed, which is most of what a player actually changes.
 		if (pinned || (isUserHackHWFix(id) && !apply_auto_fixes))
 		{
-			if (configMatchesHWFix(config, id, value))
+			if (configMatchesHWFix(config, id, value) || quiet)
 				continue;
 
 			Console.Warning("GameDB: Skipping GS Hardware Fix: %s to [mode=%d]", getHWFixName(id), value);
@@ -973,6 +997,7 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 					if (config.TriFilter == TriFiltering::Automatic)
 						config.TriFilter = static_cast<TriFiltering>(value);
 					else if (config.TriFilter > TriFiltering::Off)
+						if (!quiet)
 						Console.Warning("GameDB: Game requires trilinear filtering to be disabled.");
 				}
 			}
@@ -1015,6 +1040,7 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 					if (config.InterlaceMode == GSInterlaceMode::Automatic)
 						config.InterlaceMode = static_cast<GSInterlaceMode>(value);
 					else
+						if (!quiet)
 						Console.Warning("GameDB: Game requires different deinterlace mode but it has been overridden by user setting.");
 				}
 			}
@@ -1065,6 +1091,9 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 
 			case GSHWFixId::RecommendedBlendingLevel:
 			{
+				if (quiet)
+					break;
+
 				if (!is_sw_renderer && value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum) && static_cast<int>(EmuConfig.GS.AccurateBlendingUnit) < value)
 				{
 					static constexpr std::array<const char*, static_cast<u8>(AccBlendLevel::MaxCount)> s_blending_option_names = {{
@@ -1096,6 +1125,9 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 
 			case GSHWFixId::RecommendedAccurateAlphaTest:
 			{
+				if (quiet)
+					break;
+
 				if (!is_sw_renderer && value >= 0 && value <= 1 &&
 					static_cast<int>(config.HWAccurateAlphaTest) < value)
 				{
@@ -1117,6 +1149,9 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 
 			case GSHWFixId::RecommendedHWAA1:
 			{
+				if (quiet)
+					break;
+
 				if (!is_sw_renderer && value >= 0 && value <= 1 &&
 					static_cast<int>(config.HWAA1) < value)
 				{
@@ -1152,11 +1187,15 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions&
 				break;
 		}
 
-		Console.WriteLn("GameDB: Enabled GS Hardware Fix: %s to [mode=%d]", getHWFixName(id), value);
+		if (!quiet)
+			Console.WriteLn("GameDB: Enabled GS Hardware Fix: %s to [mode=%d]", getHWFixName(id), value);
 	}
 
 	// fixup skipdraw range just in case the db has a bad range (but the linter should catch this)
 	config.SkipDrawEnd = std::max(config.SkipDrawStart, config.SkipDrawEnd);
+
+	if (quiet)
+		return;
 
 	if (!is_sw_renderer && !disabled_fixes.empty())
 	{
