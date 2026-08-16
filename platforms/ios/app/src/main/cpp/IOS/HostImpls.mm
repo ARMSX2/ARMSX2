@@ -159,10 +159,7 @@ namespace Host
             
             SDL_DisplayID display = SDL_GetDisplayForWindow(g_sdl_window);
             const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display);
-            if (mode)
-                wi.surface_refresh_rate = mode->refresh_rate;
-            else
-                wi.surface_refresh_rate = 60.0f;
+            wi.surface_refresh_rate = mode ? mode->refresh_rate : 60.0f;
         });
 
         Console.WriteLn("Host::AcquireRenderWindow: Returning WindowInfo (Type=%d, View=%p, Size=%ux%u, Scale=%.2f)",

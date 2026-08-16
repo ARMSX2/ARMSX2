@@ -27,3 +27,35 @@ struct MetalGameView: UIViewRepresentable {
         }
     }
 }
+
+struct PhoneGameSurface: View {
+    @State private var appState = AppState.shared
+
+    var body: some View {
+        if appState.externalDisplayConnected {
+            Color.black
+        } else {
+            MetalGameView()
+        }
+    }
+}
+
+/// The noninteractive AirPlay/external-display scene
+struct ExternalGameDisplayView: View {
+    @State private var appState = AppState.shared
+
+    var body: some View {
+        ZStack {
+            Color.black
+            if case .playing = appState.currentScreen {
+                MetalGameView()
+            } else {
+                Text("Please select a game")
+                    .font(.title2)
+                    .foregroundStyle(.white.opacity(0.75))
+            }
+        }
+        .ignoresSafeArea()
+        .persistentSystemOverlays(.hidden)
+    }
+}

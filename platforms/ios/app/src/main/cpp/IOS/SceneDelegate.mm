@@ -1321,3 +1321,29 @@ static void ARMSX2StartJITKeepalive()
 }
 
 @end
+
+
+@implementation ARMSX2ExternalDisplaySceneDelegate
+
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
+    if (![scene isKindOfClass:[UIWindowScene class]]) return;
+
+#if ARMSX2_HAS_SWIFTUI
+    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    self.window.backgroundColor = UIColor.blackColor;
+    self.window.rootViewController = [SwiftUIHost createExternalDisplayController];
+    [self.window makeKeyAndVisible];
+    [SwiftUIHost setExternalDisplayConnected:YES];
+    Console.WriteLn("[AirPlay] External display connected");
+#endif
+}
+
+- (void)sceneDidDisconnect:(UIScene *)scene {
+#if ARMSX2_HAS_SWIFTUI
+    [SwiftUIHost setExternalDisplayConnected:NO];
+    Console.WriteLn("[AirPlay] External display disconnected");
+#endif
+    self.window = nil;
+}
+
+@end
