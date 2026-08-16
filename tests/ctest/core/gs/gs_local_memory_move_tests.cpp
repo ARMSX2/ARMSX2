@@ -433,10 +433,10 @@ TEST_F(LocalMemoryMoveTest, CrossFormat32To24KeepsDestinationTopByte)
 // the refutation is the useful part, and a future clamp added for tidiness would
 // silently reintroduce the mechanism this rules out.
 //
-// What it does NOT cover, and where the defect therefore still lives: the
-// ordering DECISIONS taken over those page sets, the texture-page side, and
-// anything above GS_MAX_PAGES where the looper switches to its de-duplicating
-// slow path.
+// What it does NOT cover: the ordering DECISIONS taken over those page sets, the
+// texture-page side, and anything above GS_MAX_PAGES where the looper switches to
+// its de-duplicating slow path. The mechanism that DOES explain the defect is
+// pinned by ScanlineBands below -- it is not a bookkeeping shortfall at all.
 TEST(PageClaim, CoversWhatAWideRectangleWrites)
 {
 	for (int bw : {1, 2, 4, 10})
@@ -459,6 +459,113 @@ TEST(PageClaim, CoversWhatAWideRectangleWrites)
 				missing += (written[p] && !claimed[p]);
 
 			EXPECT_EQ(missing, 0) << "buffer width " << (bw * 64) << " px, rectangle " << right << " px wide";
+		}
+	}
+}
+
+// The software rasterizer's whole thread-safety argument is that a draw split by
+// SCANLINE is a split of MEMORY: worker t takes the rows whose 16-row band is its
+// own, and two workers therefore never touch the same byte. Nothing enforces
+// that -- it is inherited from the addressing, and it is only true while the draw
+// stays inside its buffer's stride.
+//
+// Past the stride the GS does not clamp and does not wrap within the row (gs-mem
+// measured that, and PageClaim above re-measured it here): a pixel one page to the
+// right of the last page column is the pixel one PAGE ROW down at column zero.
+// For a 32-bit buffer that is exactly 32 rows down -- two bands -- so the pixel
+// belongs to one worker and the byte belongs to another. They write it at the same
+// time, in whatever order the machine feels like, and the loser's pixel is gone.
+//
+// That is the entire defect behind gs-clip's four different outputs of one probe:
+// not a page set that is short, but a row set that was never a partition. The
+// single-threaded arm has no second writer, which is why it alone is reproducible
+// and why it alone scores the console 100.00%.
+//
+// The two tests below are the deterministic form of a race. The first shows the
+// collision exists and where it comes from; the second holds the cheap predicate
+// the renderer uses to detect the class against an exhaustive check, in the
+// direction that matters -- every real collision must be predicted, over-
+// prediction is merely slow.
+namespace
+{
+constexpr int kBandShift = 4; // GSRasterizer::m_thread_height, the shipped default
+
+// Worker that owns row y, under the rasterizer's own interleave.
+int BandOwner(int y, int threads)
+{
+	return (y >> kBandShift) % threads;
+}
+
+// Does any pair of rows owned by DIFFERENT workers write the same word?
+bool RowsCollideAcrossWorkers(const GSOffset& off, const GSVector4i& r, int threads)
+{
+	std::vector<int> owner(1024 * 1024, -1);
+
+	for (int y = r.top; y < r.bottom; y++)
+	{
+		const int me = BandOwner(y, threads);
+		for (int x = r.left; x < r.right; x++)
+		{
+			int& o = owner[off.pa(x, y) & (1024 * 1024 - 1)];
+			if (o >= 0 && o != me)
+				return true;
+			o = me;
+		}
+	}
+
+	return false;
+}
+} // namespace
+
+TEST(ScanlineBands, StopBeingAPartitionOfMemoryPastTheStride)
+{
+	const GSOffset off = GSOffset::fromKnownPSM(0, 10, PSMCT32); // 640 px wide
+
+	// 64 rows spans four bands, so all four workers of the shipped configuration
+	// take part. Inside the stride they share nothing.
+	EXPECT_FALSE(RowsCollideAcrossWorkers(off, GSVector4i(0, 0, 640, 64), 4));
+
+	// One pixel past it, and the pixel at (640, 0) -- worker 0's row -- is the
+	// byte under (0, 32), which is worker 2's.
+	EXPECT_TRUE(RowsCollideAcrossWorkers(off, GSVector4i(0, 0, 641, 64), 4));
+
+	EXPECT_EQ(off.pa(640, 0), off.pa(0, 32));
+	EXPECT_NE(BandOwner(0, 4), BandOwner(32, 4));
+
+	// Whether it bites depends on the worker count, which is why this defect is
+	// not universally visible. The fold is one page row -- 32 rows on a 32-bit
+	// buffer, exactly two bands -- so it lands on the SAME worker whenever the
+	// worker count divides two, and on a different one otherwise.
+	EXPECT_FALSE(RowsCollideAcrossWorkers(off, GSVector4i(0, 0, 641, 64), 2));
+	EXPECT_TRUE(RowsCollideAcrossWorkers(off, GSVector4i(0, 0, 641, 64), 3));
+
+	// A 16-bit page is 64 rows, four bands, so it inverts: safe on two and four
+	// workers, unsafe on three. Nothing about the shipped configuration is
+	// protective -- it is an accident of arithmetic per format.
+	const GSOffset off16 = GSOffset::fromKnownPSM(0, 10, PSMCT16);
+	EXPECT_EQ(off16.pa(640, 0), off16.pa(0, 64));
+	EXPECT_FALSE(RowsCollideAcrossWorkers(off16, GSVector4i(0, 0, 641, 128), 4));
+	EXPECT_TRUE(RowsCollideAcrossWorkers(off16, GSVector4i(0, 0, 641, 128), 3));
+}
+
+TEST(ScanlineBands, ThePredicateCoversEveryCollisionItIsAskedAbout)
+{
+	for (const GS_PSM psm : {PSMCT32, PSMCT16, PSMT8})
+	{
+		for (const int bw : {2, 4, 10})
+		{
+			for (const int right : {63, 64, 128, 640, 641, 700, 1280})
+			{
+				const GSOffset off = GSOffset::fromKnownPSM(0, bw, psm);
+				const GSVector4i r(0, 0, right, 96);
+
+				const bool collides = RowsCollideAcrossWorkers(off, r, 4);
+				const bool predicted = (r.right > off.pageRowWidth());
+
+				EXPECT_TRUE(predicted || !collides)
+					<< "psm " << static_cast<int>(psm) << " bw " << bw
+					<< " right " << right << " page row " << off.pageRowWidth();
+			}
 		}
 	}
 }

@@ -634,6 +634,19 @@ void GSRendererSW::Draw()
 		zb_pages = &_zb_pages;
 	}
 
+	// The rasterizer hands each worker a set of scanlines, and that is a safe
+	// division of the work only because distinct rows normally mean distinct
+	// bytes. Past the buffer's own page row the GS folds the address onto the row
+	// one page below instead of clamping or wrapping (gs-mem), so those two rows
+	// hold the same bytes while belonging to two workers, and whichever finishes
+	// second wins. Silicon has no such race, and neither does the single-threaded
+	// arm -- which is the one that scores gs-clip 100.00%. Run the draw there.
+	sd->serial =
+		(sd->global.sel.fb && r.right > m_context->offset.fb.pageRowWidth() &&
+			m_rl->RowsFoldAcrossWorkers(GSLocalMemory::m_psm[m_context->offset.fb.psm()].pgs.y)) ||
+		(sd->global.sel.zb && r.right > m_context->offset.zb.pageRowWidth() &&
+			m_rl->RowsFoldAcrossWorkers(GSLocalMemory::m_psm[m_context->offset.zb.psm()].pgs.y));
+
 	// check if there is an overlap between this and previous targets
 
 	if (CheckTargetPages(fb_pages, zb_pages, r))
