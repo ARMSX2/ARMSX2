@@ -406,8 +406,24 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 			local.tclag.v = VectorI(dscan.t.y > 0.0f ? 1 : 0);
 		}
 
+		// A TEXTURED draw's block is four pixels wide, so on a four-lane host the
+		// group step below already IS one hardware block and this path needs none
+		// of the splitting the untextured case does above. That equality is
+		// arithmetic, not design: an eight-lane host walks one vector across two
+		// blocks and steps by eight where the hardware steps by four, which is the
+		// gap GSBlockWalk.h records against the x86 generators. So the width has to
+		// keep coming from the block -- never from sizeof(VectorF), which is what
+		// makes it right here for a reason that survives a change of host.
+		pxAssert(!block_split && GSBlockWalkWidth(sel) == 4);
+
 		if (sel.fst)
 		{
+			// Truncating the block step and accumulating it is the hardware's own
+			// shape, not an approximation of an exact plane -- see GSBlockWalk.h,
+			// where a block contributes B*trunc(g*W). On a gradient that is a power
+			// of two per pixel the truncation is identity and this walk is exact,
+			// which is every sprite gradient in every capture we own; what silicon
+			// does on a sprite at a NON-binary gradient has never been measured.
 			LOCAL_STEP.stq = GSVector4::cast(GSVector4i(tstep));
 		}
 		else
