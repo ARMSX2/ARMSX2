@@ -1668,6 +1668,8 @@ GSRasterizerList::GSRasterizerList(int threads)
 		m_scanline[i] = static_cast<u8>(i % threads);
 	}
 
+	m_serial = std::unique_ptr<GSRasterizer>(new GSRasterizer(&m_ds, 0, 1));
+
 	PerformanceMetrics::SetGSSWThreadCount(threads);
 }
 
@@ -1716,6 +1718,19 @@ void GSRasterizerList::Queue(const GSRingHeap::SharedPtr<GSRasterizerData>& data
 
 	pxAssert(r.top >= 0 && r.top <= 2048 && r.bottom >= 0 && r.bottom <= 2048);
 
+	if (data->serial) [[unlikely]]
+	{
+		// This draw's own scanlines alias each other's memory, so no split of it is
+		// a split of memory. Drain the workers, run every row here, and return with
+		// nothing in flight -- alone before and after, which is what makes it the
+		// same computation the single-threaded rasterizer performs.
+		Sync();
+
+		m_serial->Draw(*data.get());
+
+		return;
+	}
+
 	int top = r.top >> m_thread_height;
 	int bottom = std::min<int>((r.bottom + (1 << m_thread_height) - 1) >> m_thread_height, top + (int)m_workers.size());
 
@@ -1760,7 +1775,18 @@ int GSRasterizerList::GetPixels(bool reset)
 		pixels += m_r[i]->GetPixels(reset);
 	}
 
+	pixels += m_serial->GetPixels(reset);
+
 	return pixels;
+}
+
+bool GSRasterizerList::RowsFoldAcrossWorkers(int page_height) const
+{
+	// Rows fold by exactly one page height, bands are 1 << m_thread_height rows,
+	// and worker ownership is the band index modulo the worker count. So the fold
+	// returns to the same worker precisely when the worker count divides the page
+	// in bands -- true of every format at two workers, and of none at three.
+	return ((page_height >> m_thread_height) % static_cast<int>(m_workers.size())) != 0;
 }
 
 std::unique_ptr<IRasterizer> GSRasterizerList::Create(int threads)
