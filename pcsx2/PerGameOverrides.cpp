@@ -206,8 +206,10 @@ bool PerGameOverrideKeys::ClaimsAGameDBSetting(const char* section, const char* 
 
 	for (u32 i = 0; i < static_cast<u32>(CoreGameDBKnob::MaxCount); i++)
 	{
+		// A knob added to the enum but not to the table lands here with no section.
+		// The drift tests are what catch that; this only keeps it from being a crash.
 		const CoreKnobKeys keys = ForCoreKnob(static_cast<CoreGameDBKnob>(i));
-		if (std::strcmp(section, keys.section) != 0)
+		if (!keys.section || std::strcmp(section, keys.section) != 0)
 			continue;
 
 		for (u32 k = 0; k < keys.count; k++)
@@ -238,6 +240,9 @@ PerGameOverrides ComputePerGameOverrides(const SettingsInterface& game_layer)
 	for (u32 i = 0; i < static_cast<u32>(CoreGameDBKnob::MaxCount); i++)
 	{
 		const PerGameOverrideKeys::CoreKnobKeys keys = PerGameOverrideKeys::ForCoreKnob(static_cast<CoreGameDBKnob>(i));
+		if (!keys.section)
+			continue;
+
 		for (u32 k = 0; k < keys.count; k++)
 		{
 			if (!game_layer.ContainsValue(keys.section, keys.keys[k]))
