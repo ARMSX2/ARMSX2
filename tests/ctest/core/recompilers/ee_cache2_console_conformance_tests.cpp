@@ -145,10 +145,14 @@ u32 Obs(int id, const char* name)
 // process. Elsewhere the two callers skip.
 //
 // The candidates are 4K-aligned but none is 16K-aligned, so on a 16K-page
-// kernel — Asahi, Apple Silicon, some Android — every one is rejected outright
-// and the two callers always skip. Re-picking them 16K-aligned would need the
-// tag/index constraints re-derived against the console capture, so it is left
-// to whoever holds that data.
+// kernel — Asahi, Apple Silicon, some Android — every one is rejected outright.
+// Re-picking them 16K-aligned would need the tag/index constraints re-derived
+// against the console capture, so it is left to whoever holds that data.
+//
+// A null return is therefore routine, not exceptional, and callers should treat
+// the mapping as an optional negative control rather than a precondition. Only
+// DxstgDirtyStaysInsideGuestMemory is wholly about the host page and has to
+// skip; the write-back check keeps its guest-side half running everywhere.
 void* MapAt(u32* chosen)
 {
 #if defined(MAP_FIXED_NOREPLACE)
@@ -439,14 +443,22 @@ TEST(EeCache2Console, DxstgWriteBackTargetsTheTaggedGuestPage)
 	constexpr u32 kTargetPage = 0x00129000;
 	constexpr u32 kTarget = kTargetPage + kSetIndex * 64;
 
+	// The host mapping is only the negative control: proof that the write-back
+	// did not ALSO reach the host page that happens to carry the same number.
+	// Everything else here is guest-side and needs nothing from the host, so it
+	// runs unconditionally. On a 16K-page kernel -- Asahi, Apple Silicon, some
+	// Android -- MapAt cannot honour a 4K-aligned request and returns null;
+	// only the control is skipped then, not the whole test.
 	u32 page = 0;
 	void* p = MapAt(&page);
-	if (!p)
-		GTEST_SKIP() << "could not map a page at any candidate host address";
-	ASSERT_EQ(page, kTargetPage) << "the control page moved; re-point kTargetPage";
-	std::memset(p, 0xEE, 0x1000);
-	const u32* host = reinterpret_cast<const u32*>(
-		static_cast<uptr>(page) + kSetIndex * 64);
+	const u32* host = nullptr;
+	if (p)
+	{
+		ASSERT_EQ(page, kTargetPage) << "the control page moved; re-point kTargetPage";
+		std::memset(p, 0xEE, 0x1000);
+		host = reinterpret_cast<const u32*>(
+			static_cast<uptr>(page) + kSetIndex * 64);
+	}
 
 	{
 		EeRecTestHarness h;
@@ -463,7 +475,8 @@ TEST(EeCache2Console, DxstgWriteBackTargetsTheTaggedGuestPage)
 		// 64 bytes of guest cache line, at the guest physical page the tag names.
 		EXPECT_EQ(memRead32(kTarget), 0x5A5A0009u);
 		EXPECT_EQ(memRead32(kTarget + 4), 0xDEADBEEFu);
-		EXPECT_EQ(host[0], 0xEEEEEEEEu) << "the write-back still reaches a host address";
+		if (host)
+			EXPECT_EQ(host[0], 0xEEEEEEEEu) << "the write-back still reaches a host address";
 	}
 
 	// Never filled, and filled-then-invalidated. Both used to be declined
@@ -471,7 +484,8 @@ TEST(EeCache2Console, DxstgWriteBackTargetsTheTaggedGuestPage)
 	for (const bool invalidate_first : {false, true})
 	{
 		SCOPED_TRACE(invalidate_first ? "filled then invalidated" : "never filled");
-		std::memset(p, 0xEE, 0x1000);
+		if (p)
+			std::memset(p, 0xEE, 0x1000);
 		EeRecTestHarness h;
 		resetCache();
 		memWrite32(kTarget, 0xA5A5A5A5u);
@@ -489,26 +503,51 @@ TEST(EeCache2Console, DxstgWriteBackTargetsTheTaggedGuestPage)
 		RunCacheOp(0x12, kProbeLine);
 		RunCacheOp(0x14, kProbeLine);
 		EXPECT_EQ(memRead32(kTarget), 0u) << "the cleared line did not write back";
-		EXPECT_EQ(host[0], 0xEEEEEEEEu) << "the write-back still reaches a host address";
+		if (host)
+			EXPECT_EQ(host[0], 0xEEEEEEEEu) << "the write-back still reaches a host address";
 	}
 
-	munmap(p, 0x1000);
+	if (p)
+		munmap(p, 0x1000);
 }
 
 // A DXSTG naming a page that does not resolve to plain guest memory leaves the
 // line unbacked, so the write-back declines rather than dereferencing anything.
-// 0x1FC00000-and-up is BIOS/unmapped territory at the top of the physical map.
+//
+// 0x60129000 is past the end of the physical map, and it is the page with
+// teeth: the lookup used to keep only the low 29 bits of the tag, so this page
+// folded onto 0x00129000 -- ordinary main RAM -- and wrote sixty-four bytes
+// there. The witness turns "we did not fault" into "we did not write somewhere
+// the guest never named". An SCPH-30001 agrees on that much: an eviction
+// steered above the end of RAM puts nothing into RAM.
+//
+// This check used to name 0x1FFFF000, calling it unmapped. That is the last
+// page of the 4 MB BIOS ROM at 0x1FC00000, so it is real backing memory and the
+// declining branch never ran at all.
 TEST(EeCache2Console, DxstgOnAnUnresolvablePageDeclinesTheWriteBack)
 {
+	constexpr u32 kUnresolvablePage = 0x60129000u;
+	constexpr u32 kWitness = 0x00129000u + kSetIndex * 64;
+
 	EeRecTestHarness h;
 	resetCache();
+	memWrite32(kWitness, 0xA5A5A5A5u);
 	writeCache32(kProbeLine, 0x5A5A0009u);
-	cpuRegs.CP0.n.TagLo = 0x1FFFF000u | kFlagDirty | kFlagValid;
+	cpuRegs.CP0.n.TagLo = kUnresolvablePage | kFlagDirty | kFlagValid;
 	RunCacheOp(0x12, kProbeLine); // DXSTG
 	RunCacheOp(0x14, kProbeLine); // DXWBIN -- must be a no-op, not a store
-	// Reaching here without a fault is the assertion; the flags still round-trip.
+
+	EXPECT_EQ(memRead32(kWitness), 0xA5A5A5A5u)
+		<< "the write-back reached guest memory the tag never named";
 	EXPECT_EQ(ReadTag(kProbeLine) & (kFlagValid | kFlagDirty), 0u);
 }
+
+// Deliberately unpinned: where an eviction goes when the tag names one of the
+// emulator's main-RAM mirrors at 0x20000000 or 0x30000000. Those are our
+// physical map's mirrors, not the console's -- a console has no RAM at those
+// physical addresses, and an eviction aimed there reached nothing on the
+// SCPH-30001. Any assertion here would freeze an emulator-specific answer to a
+// question no game asks, so leave it undefined.
 
 // ---------------------------------------------------------------------------
 // Tripwires. DxstgDirtyStaysInsideGuestMemory has graduated and holds; the rest

@@ -144,6 +144,11 @@ alignas(16) extern tIPU_BP g_BP;
 MULTI_ISA_DEF(
 	extern void ipu_dither(const macroblock_rgb32& rgb32, macroblock_rgb16& rgb16, int dte);
 
+	// The scalar oracle ipu_dither()'s vector paths are written against. Exposed
+	// so the tests can hold whichever path this host selected to it; the emulator
+	// only ever reaches it through ipu_dither()'s own fallback arm.
+	extern void ipu_dither_reference(const macroblock_rgb32& rgb32, macroblock_rgb16& rgb16, int dte);
+
 	void IPUWorker();
 )
 

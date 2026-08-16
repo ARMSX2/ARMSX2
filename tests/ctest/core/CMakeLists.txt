@@ -20,6 +20,9 @@ endif()
 # GS vertex front-end kernel oracle (arch-neutral).
 add_subdirectory(gs)
 
+# IPU colour-conversion oracle (arch-neutral: each host tests its own path).
+add_subdirectory(ipu)
+
 
 set(multi_isa_sources
 	GS/swizzle_test_main.cpp

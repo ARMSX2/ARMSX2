@@ -289,6 +289,20 @@ object ConfigStore {
     fun save(scope: SettingsScope, serial: String?, updated: Settings, previous: Settings? = null) {
         if (scope == SettingsScope.Game && serial != null) {
             val global = loadGlobal()
+            // Process-wide fields have to go to global even from a Game-scope save, because the
+            // per-game file structurally cannot hold them. PINE is one server for the whole
+            // process, so Settings.merge pins it to the global value and Settings.diff never
+            // emits the key -- both deliberate. The consequence was that toggling PINE from the
+            // in-game menu, which saves in Game scope, wrote it NOWHERE: the override file
+            // refuses the key and global was not being written. The switch stayed on only
+            // because saveSettings had already updated the in-memory Settings, so it read as
+            // "enabled" until the process restarted and the store answered false again.
+            //
+            // Promote just those fields, by copying them onto global rather than saving
+            // `updated` wholesale -- `updated` is the game's resolved settings, and writing all
+            // of it to global would leak every per-game value into the global layer.
+            if (updated.pineEnabled != global.pineEnabled || updated.pineSlot != global.pineSlot)
+                saveGlobal(global.copy(pineEnabled = updated.pineEnabled, pineSlot = updated.pineSlot))
             val overrides = Settings.diff(global, updated)
             // Every field, so a pinned key can be given its CURRENT value even when that
             // value equals global's (the diff above necessarily omits it).
