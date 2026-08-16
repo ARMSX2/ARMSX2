@@ -74,6 +74,7 @@ add_pcsx2_test(recompiler_tests
 	vtlb_get_guest_address_tests.cpp
 	vif_unpack_dynarec_tests.cpp
 	ee_vu0_cop2_maxmini_conv_tests.cpp
+	ee_vu0_cop2_madd_clamp_tests.cpp
 	ee_vu0_cop2_madda_bc_tests.cpp
 	vu0_harness_validation_tests.cpp
 	vu0_alu_upper_tests.cpp
@@ -134,6 +135,7 @@ add_pcsx2_test(recompiler_tests
 	ee_fpu_divunit_console_tests.cpp
 	ee_fpu_divunit_exhaustive_tests.cpp
 	ee_fpu_guarded_addsub_console_tests.cpp
+	ee_fpu_ou_rounding_console_tests.cpp
 	ee_fpu_underflow_console_tests.cpp
 	ee_fpu_top_binade_console_tests.cpp
 	ee_fpu_zero_divisor_console_tests.cpp

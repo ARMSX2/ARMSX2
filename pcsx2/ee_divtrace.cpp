@@ -82,8 +82,8 @@ namespace ee_divtrace
 		if (!g_fp_exclude)
 		{
 			for (int i = 0; i < 32; ++i)
-				h = hash_mix(h, fpuRegs.fpr[i].UL);
-			h = hash_mix(h, fpuRegs.ACC.UL);
+				h = hash_mix(h, fpuRegs.fpr[i].Word());
+			h = hash_mix(h, fpuRegs.ACC.Word());
 		}
 		// VU0 macro-visible state — opt-in (EERUNNER_VU0FP): catches COP2 macro
 		// divergence at the producing block instead of downstream in GPRs/memory.

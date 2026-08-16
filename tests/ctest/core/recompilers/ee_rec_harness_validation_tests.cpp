@@ -14,6 +14,8 @@
 
 #include "harness/EeRecTestHarness.h"
 
+#include "Config.h"
+#include "EeFpuFormat.h"
 #include "R5900.h"
 
 #include <gtest/gtest.h>
@@ -122,4 +124,64 @@ TEST(EeRecHarnessValidation, RecLutMapsRom2AndMirrors)
 
 	// Guard: the page just past ROM2 stays unmapped.
 	EXPECT_FALSE(recEeIsPcMapped(0x1e800000u));
+}
+
+// An FPR slot does not say which format it is in (R5900.h, EeFpuFormat.h) and
+// the global that does moves with eeClampMode, so a snapshot carries its own.
+// Two harnesses alive at once separate them: the interpreter runs with raw
+// words in the low half of each slot, the mode-3 harness relocates the file,
+// and the interpreter's results are read after that.
+TEST(EeRecHarnessValidation, ASnapshotKeepsTheFprFormatItWasCapturedIn)
+{
+	constexpr u32 kA = 0x40490FDBu, kB = 0x3FB504F3u;
+	constexpr u32 kSum = 0x4091C92Au; // pi + sqrt(2)
+
+	EeRecTestHarness hi;
+	hi.EnableCop1();
+	hi.SetFprBits(0, kA);
+	hi.SetFprBits(1, kB);
+	hi.LoadProgram({ee::ADD_S(2, 0, 1)});
+	hi.RunInterpOnly();
+	ASSERT_EQ(hi.GetFprBitsInterp(2), kSum);
+
+	// Deliberately outlives the reads below: the destructor puts the clamp mode
+	// and the file's format back, which would hide exactly what this pins.
+	EeRecTestHarness h;
+	h.EnableCop1();
+	h.EnableFpuFullMode();
+	h.SetFprBits(0, kA);
+	h.SetFprBits(1, kB);
+	h.LoadProgram({ee::ADD_S(2, 0, 1)});
+	h.RunJitNoDiff();
+
+	EXPECT_EQ(h.GetFprBitsJit(2), kSum) << "mode 3, read under mode 3";
+	EXPECT_EQ(hi.GetFprBitsInterp(2), kSum) << "mode 0 snapshot, read under mode 3";
+}
+
+// Restoring means putting the snapshot's words back, so when the file has
+// changed format since the capture the slots are re-encoded on the way in.
+// A plain memcpy would write mode-0 words into a relocated file and every one
+// of them would read as a different number.
+TEST(EeRecHarnessValidation, RestoringASnapshotConvertsToTheFilesFormat)
+{
+	constexpr u32 kWord = 0x40490FDBu;
+
+	EeRecTestHarness h;
+	h.EnableCop1();
+	h.SetFprBits(3, kWord);
+	h.LoadProgram({ee::ADD_S(2, 3, 3)});
+	h.RunInterpOnly();
+	ASSERT_FALSE(h.InterpSnapshot().fprs_relocated);
+
+	const bool saved = EmuConfig.Cpu.Recompiler.fpuFullMode;
+	EmuConfig.Cpu.Recompiler.fpuFullMode = true;
+	eeFprSyncSlotFormat();
+	ASSERT_TRUE(g_eeFprSlotsRelocated);
+
+	h.InterpSnapshot().Restore();
+	EXPECT_EQ(fpuRegs.fpr[3].Word(), kWord);
+	EXPECT_EQ(fpuRegs.fpr[3].UD, eeFprWidenBits(kWord));
+
+	EmuConfig.Cpu.Recompiler.fpuFullMode = saved;
+	eeFprSyncSlotFormat();
 }

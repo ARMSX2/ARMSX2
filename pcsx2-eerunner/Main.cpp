@@ -1577,9 +1577,9 @@ static bool NonGprDiffers(const ee_divtrace::FullSnap& jit, const ee_divtrace::F
 	if (!ee_divtrace::g_fp_exclude)
 	{
 		for (int i = 0; i < 32; ++i)
-			if (jit.fpu.fpr[i].UL != interp.fpu.fpr[i].UL)
+			if (jit.fpu.fpr[i].Word() != interp.fpu.fpr[i].Word())
 				return true;
-		if (jit.fpu.ACC.UL != interp.fpu.ACC.UL)
+		if (jit.fpu.ACC.Word() != interp.fpu.ACC.Word())
 			return true;
 	}
 	if (jit.cpu.sa != interp.cpu.sa)
@@ -1624,8 +1624,8 @@ static std::vector<std::string> DiffFullSnaps(const ee_divtrace::FullSnap& jit,
 	if (!ee_divtrace::g_fp_exclude)
 	{
 		for (int i = 0; i < 32; ++i)
-			d32(fmt::format("fpr[{}]", i), jit.fpu.fpr[i].UL, interp.fpu.fpr[i].UL);
-		d32("ACC", jit.fpu.ACC.UL, interp.fpu.ACC.UL);
+			d32(fmt::format("fpr[{}]", i), jit.fpu.fpr[i].Word(), interp.fpu.fpr[i].Word());
+		d32("ACC", jit.fpu.ACC.Word(), interp.fpu.ACC.Word());
 	}
 	// VU0 macro state — reported only when it participates in alignment
 	// (EERUNNER_VU0FP), so the default report set stays what the benign-class
@@ -2440,8 +2440,8 @@ static bool ZoomFromCheckpoint(const std::string& ckpt)
 				Console.WriteLn("STEPDIFF zoom: offending-block ENTRY FPRs (interp | jit; f0-f3,f12 + diffs):");
 				for (int f = 0; f < 32; ++f)
 				{
-					const u32 iv = ientry.fpu.fpr[f].UL;
-					const u32 jv = jentry.fpu.fpr[f].UL;
+					const u32 iv = ientry.fpu.fpr[f].Word();
+					const u32 jv = jentry.fpu.fpr[f].Word();
 					if (iv != jv || f <= 3 || f == 12)
 						Console.WriteLn(fmt::format("    f{:<2} {:#010x} | {:#010x}{}", f, iv, jv,
 							iv != jv ? "   <-- DIFFERS" : ""));

@@ -6,9 +6,12 @@
 // This is the arm64 port of pcsx2/x86/iFPUd.cpp: the PS2-accurate FPU that
 // widens each single to IEEE double, performs the op in double, then narrows
 // back to a PS2 single with the hardware's overflow/underflow/clamp semantics.
-// It is selected only when CHECK_FPU_FULL (EmuConfig.Cpu.Recompiler.fpuFullMode,
-// the GameDB `eeClampMode:3` path — FFX, Max Payne, Dark Cloud 2, Klonoa 2 …).
+// It is selected when CHECK_FPU_FULL (EmuConfig.Cpu.Recompiler.fpuFullMode, the
+// GameDB eeClampMode 3 and up — FFX, Max Payne, Dark Cloud 2, Klonoa 2 …).
 // Default config runs the single-precision fast path in iFPU-arm64.cpp.
+//
+// It serves eeClampMode 3 and 4, which differ at emitDefectiveFmul and at
+// emitDivideUnitIsland below.
 //
 // The algorithm is translated from the x86 semantics; the codegen follows the
 // iFPU-arm64.cpp idioms (scalar Fcvt, GPR bit-twiddle via Fmov, the
@@ -41,54 +44,23 @@ namespace DOUBLE {
 #define FPUflagSI 0x00000040
 #define FPUflagSD 0x00000020
 
-// ---- PS2 single -> IEEE double --------------------------------------------
+// ---- The guest FPR file -----------------------------------------------------
 //
-// A PS2 single with exponent field 0xff is a *normal* large number (1.m * 2^128),
-// but IEEE reads exp 0xff as Inf/NaN — so a plain cvtss2sd would corrupt it.
-// For those (and only those) lower the exponent by one in the single domain,
-// widen exactly, then raise the exponent by one in the double domain. Mirrors
-// x86 ToDouble (xPSUB.D one_exp / xCVTSS2SD / xPADD.Q dbl_one_exp).
-//
-// Reads `srcidx`'s S lane, writes `dstidx`'s D lane, and never writes the
-// source. The two may be the same register (that is ToDouble below).
-//
-// The source is allowed to be an allocator-resident guest FPR or the ACC, which
-// is the point: the complex arm needs somewhere to put the exponent-lowered
-// single before Fcvt, and it uses the destination's S lane — a temp the caller
-// owns — instead of scribbling on the source. Every widening site used to pay a
-// `copySrc` Fmov purely to make that scribble legal.
-static void ToDoubleFrom(int dstidx, int srcidx)
+// The file holds each word relocated into double position and scaled by
+// 2^-kEeFprScaleExp (EeFpuFormat.h); this file works in words and bridges at
+// the edges. Widening is one exact multiply against the pinned scale, and
+// FPCR.FZ takes an EE denormal to a zero of the same sign there. `dstidx` may
+// be `srcidx`.
+static void SlotToDouble(int dstidx, int srcidx)
 {
-	const a64::VRegister ss = armSRegister(srcidx);
-	const a64::VRegister sd = armSRegister(dstidx);
-	const a64::VRegister dd = armDRegister(dstidx);
-
-	a64::Label simple, done;
-	armAsm->Fmov(RWSCRATCH, ss);
-	armAsm->And(RWARG1, RWSCRATCH, 0x7f800000);
-	armAsm->Cmp(RWARG1, 0x7f800000);
-	armAsm->B(&simple, a64::ne);
-
-	// Complex: exp field == 0xff (Inf/NaN to IEEE, finite to PS2).
-	armAsm->Sub(RWSCRATCH, RWSCRATCH, 0x00800000);   // lower exponent by one (single)
-	armAsm->Fmov(sd, RWSCRATCH);
-	armAsm->Fcvt(dd, sd);                            // cvtss2sd (now finite)
-	armAsm->Fmov(RXSCRATCH, dd);
-	armAsm->Mov(RXARG1, static_cast<u64>(1) << 52);  // dbl_one_exp
-	armAsm->Add(RXSCRATCH, RXSCRATCH, RXARG1);       // raise exponent by one (double)
-	armAsm->Fmov(dd, RXSCRATCH);
-	armAsm->B(&done);
-
-	armAsm->Bind(&simple);
-	armAsm->Fcvt(dd, ss);
-
-	armAsm->Bind(&done);
+	armAsm->Fmul(armDRegister(dstidx), armDRegister(srcidx),
+		a64::VRegister(NEON_RESERVED_EEFPU_UNSCALE, 64));
 }
 
-// In-place form: widen temp NEON reg `idx` from its own S lane.
-static void ToDouble(int idx)
+// The other half of the bridge: an architectural single in an S lane as a slot.
+static void SingleToSlot(int dstidx, int srcidx)
 {
-	ToDoubleFrom(idx, idx);
+	armEmitEeFprFromS(armDRegister(dstidx), armSRegister(srcidx), RXSCRATCH);
 }
 
 // ---- IEEE double -> PS2 single (full overflow/underflow/flag handling) -----
@@ -150,14 +122,25 @@ static void ToPS2FPU_Full(int idx, bool flags, int /*absidx*/, bool acc, bool ad
 	//
 	// `hi`, not `hs`: kEeFpuMax itself is representable and belongs to the
 	// halving arm, which handles it exactly (halved it is +FLT_MAX, and
-	// 0x7f7fffff + 0x00800000 == 0x7fffffff). This is the same bound the
-	// interpreter's eeRoundToSingle saturates at (FPU.cpp).
+	// 0x7f7fffff + 0x00800000 == 0x7fffffff).
+	//
+	// The test is on the rounded magnitude: the adder normalises and truncates
+	// before anything looks at the exponent field, so a sum above kEeFpuMax can
+	// chop back onto it and did not saturate. kEeFpuMax + 2^104 is 2^129 - 2^104,
+	// which needs 25 significant bits and chops to kEeFpuMax; one exponent
+	// higher the sum is 2^129 and no rounding brings it back.
+	//
+	// Chopping the low 29 bits is the rounding only under round-toward-zero,
+	// the arithmetic FPCR. The divide unit's callers run under round-to-nearest
+	// and pass flags=false, which is the same split.
+	if (flags)
+		armAsm->And(RXARG1, RXARG1, UINT64_C(0xFFFFFFFFE0000000));
 	armAsm->Mov(RXARG2, UINT64_C(0x47FFFFFFE0000000)); // (2 - 2^-23) * 2^128
 	armAsm->Cmp(RXARG1, RXARG2);
 	armAsm->B(&toOverflow, a64::hi);
 
 	// Large but PS2-representable (exp-0xff range): lower double exp, narrow,
-	// raise single exp — the inverse of ToDouble's complex path.
+	// raise single exp — the inverse of the widening, in the single domain.
 	armAsm->Mov(RXARG2, static_cast<u64>(1) << 52);
 	armAsm->Sub(RXSCRATCH, RXSCRATCH, RXARG2);
 	armAsm->Fmov(d, RXSCRATCH);
@@ -276,6 +259,9 @@ static void ToPS2FPU_Wide(int idx)
 	armAsm->B(&end);
 
 	armAsm->Bind(&toComplex);
+	// Rounded magnitude, as in ToPS2FPU_Full: a product that chops back onto
+	// kEeFpuMax did not saturate and must not raise O.
+	armAsm->And(RXARG1, RXARG1, UINT64_C(0xFFFFFFFFE0000000));
 	armAsm->Mov(RXARG2, UINT64_C(0x47FFFFFFE0000000)); // (2 - 2^-23) * 2^128
 	armAsm->Cmp(RXARG1, RXARG2);
 	armAsm->B(&chop, a64::ls);   // in [2^128, kEeFpuMax]: an ordinary chop
@@ -308,73 +294,13 @@ static void ToPS2FPU_Wide(int idx)
 // The EE FPU has no guard bits to the right of the mantissa; subtraction (and
 // add of mixed signs) can shift the mantissa left and expose what would have
 // been guard bits. This masks the low mantissa bits of the smaller operand by
-// the exponent difference so they read as zero. Port of x86 FPU_ADD_SUB; both
-// operands (single, in temp NEON regs `idxd`/`idxt`) are mutated in place.
-static void FPU_ADD_SUB(int idxd, int idxt)
-{
-	const a64::VRegister sd = armSRegister(idxd);
-	const a64::VRegister st = armSRegister(idxt);
-
-	armAsm->Fmov(RWARG1, sd);  // d bits
-	armAsm->Fmov(RWARG2, st);  // t bits
-	// GE-M2: the exponent-diff and mask temps use the reserved load/store scratch
-	// x9/x10, not the RWARG3/RWARG4 (w2/w3) pool hosts they replaced — w2/w3 are
-	// EE-allocatable, so under the residency flip they can hold a live guest GPR,
-	// and this hand-emitted path never flushes the allocator. This span has no
-	// load/store or C-call, so x9/x10 are free scratch here. (x86 uses GPR temps
-	// too: pcsx2/x86/iFPU.cpp FPU_ADD_SUB; only the register choice is our
-	// scratch-discipline constraint.)
-	armAsm->Ubfx(a64::w9, RWARG1, 23, 8);    // expd
-	armAsm->Ubfx(RWSCRATCH, RWARG2, 23, 8); // expt
-	armAsm->Sub(a64::w9, a64::w9, RWSCRATCH); // diff = expd - expt (signed)
-
-	a64::Label caseD25, casePos, caseEq, caseDn25, done;
-	armAsm->Cmp(a64::w9, 25);
-	armAsm->B(&caseD25, a64::ge);
-	armAsm->Cmp(a64::w9, 0);
-	armAsm->B(&casePos, a64::gt);
-	armAsm->B(&caseEq, a64::eq);
-	armAsm->Cmn(a64::w9, 25);                 // cmp diff, -25
-	armAsm->B(&caseDn25, a64::le);
-
-	// diff in -24..-1 (expd < expt): mask tempd's low (-diff-1) bits.
-	armAsm->Neg(RWSCRATCH, a64::w9);
-	armAsm->Sub(RWSCRATCH, RWSCRATCH, 1);
-	armAsm->Mov(a64::w10, 0xffffffff);
-	armAsm->Lsl(a64::w10, a64::w10, RWSCRATCH);
-	armAsm->And(RWARG1, RWARG1, a64::w10);
-	armAsm->Fmov(sd, RWARG1);
-	armAsm->B(&done);
-
-	armAsm->Bind(&caseD25);
-	// diff >= 25 (expt much smaller): tempt keeps only its sign.
-	armAsm->And(RWARG2, RWARG2, 0x80000000);
-	armAsm->Fmov(st, RWARG2);
-	armAsm->B(&done);
-
-	armAsm->Bind(&casePos);
-	// diff in 1..24 (expt smaller): mask tempt's low (diff-1) bits.
-	armAsm->Sub(RWSCRATCH, a64::w9, 1);
-	armAsm->Mov(a64::w10, 0xffffffff);
-	armAsm->Lsl(a64::w10, a64::w10, RWSCRATCH);
-	armAsm->And(RWARG2, RWARG2, a64::w10);
-	armAsm->Fmov(st, RWARG2);
-	armAsm->B(&done);
-
-	armAsm->Bind(&caseDn25);
-	// diff <= -25 (expd much smaller): tempd keeps only its sign.
-	armAsm->And(RWARG1, RWARG1, 0x80000000);
-	armAsm->Fmov(sd, RWARG1);
-
-	armAsm->Bind(&caseEq);  // diff == 0: nothing
-	armAsm->Bind(&done);
-}
-
-// ---- PS2 add/sub guard-bit emulation, wide form ---------------------------
+// the exponent difference so they read as zero. Port of x86 FPU_ADD_SUB
+// (pcsx2/x86/iFPUd.cpp), which states the law over the architectural single and
+// runs before the widening.
 //
-// Same law as FPU_ADD_SUB, for operands that are already doubles holding EE
-// singles exactly (low 29 mantissa bits zero, |x| <= kEeFpuMax). Two changes,
-// neither of which costs an instruction:
+// Here both operands are already doubles holding EE singles exactly (low 29
+// mantissa bits zero, |x| <= kEeFpuMax) in temp NEON regs `idxd`/`idxt`, and
+// are mutated in place. Two changes from the single-domain form:
 //
 //  * The exponent field is bits 52..62 instead of 23..30, and the bias is 896
 //    higher. The bias cancels in the difference, so the case split is unchanged
@@ -386,8 +312,8 @@ static void FPU_ADD_SUB(int idxd, int idxt)
 //    domains still agree. Verified: 0 disagreements over 1,572,864 pairs
 //    covering every (expd, expt) combination, 12,240 of them in exactly that
 //    class, against an off-by-one liveness control that moves 5,588 of 65,025.
-//    (A PS2 denormal cannot reach here: ToDouble runs under FZ, which flushes
-//    it to a zero of the same sign -- measured on this host, not assumed.)
+//    (A PS2 denormal cannot reach here: SlotToDouble runs under FZ, which
+//    flushes it to a zero of the same sign.)
 //  * A single's mantissa bit k is double bit k+29, so masking the single's low
 //    (diff-1) bits is masking the double's low (diff-1)+29. The extra 29 are
 //    already zero, so only the shift amount changes: `diff - 1` -> `diff + 28`.
@@ -398,8 +324,12 @@ static void FPU_ADD_SUB_D(int idxd, int idxt)
 
 	armAsm->Fmov(RXARG1, dd);  // d bits
 	armAsm->Fmov(RXARG2, dt);  // t bits
-	// GE-M2: x9/x10 for the diff and mask temps, not the w2/w3 pool hosts -- see
-	// the note in FPU_ADD_SUB. This span has no load/store or C-call either.
+	// GE-M2: the exponent-diff and mask temps use the reserved load/store scratch
+	// x9/x10, not the RWARG3/RWARG4 (w2/w3) pool hosts they replaced — w2/w3 are
+	// EE-allocatable, so under the residency flip they can hold a live guest GPR,
+	// and this hand-emitted path never flushes the allocator. This span has no
+	// load/store or C-call, so x9/x10 are free scratch here. (x86 uses GPR temps
+	// too; only the register choice is our scratch-discipline constraint.)
 	armAsm->Ubfx(a64::x9, RXARG1, 52, 11);    // expd
 	armAsm->Ubfx(RXSCRATCH, RXARG2, 52, 11);  // expt
 	armAsm->Sub(a64::w9, a64::w9, RWSCRATCH); // diff = expd - expt (signed)
@@ -448,28 +378,15 @@ static void FPU_ADD_SUB_D(int idxd, int idxt)
 
 // ---- Op cores --------------------------------------------------------------
 
-// Copy an allocator-resident FP source (EEREC_S/EEREC_T) into a fresh temp so
-// the emitter can mutate it without corrupting the guest fpr slot.
-//
-// Only the paths that mutate the operand in the single domain still need this:
-// recFPUOp's FPU_ADD_SUB guard mask, and the Fabs in SQRT/RSQRT. A site that
-// only widens uses ToDoubleFrom(temp, EEREC_x) instead and pays no copy.
-static int copySrc(int eerec)
-{
-	const int idx = _allocTempNEONreg();
-	armAsm->Fmov(armSRegister(idx), armSRegister(eerec));
-	return idx;
-}
-
-// ADD/SUB/ADDA/SUBA: FPU_ADD_SUB guard mask -> widen -> op in double -> narrow.
+// ADD/SUB/ADDA/SUBA: widen both slots -> guard mask -> op in double -> narrow.
 static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 {
-	const int sreg = copySrc(EEREC_S);
-	const int treg = copySrc(EEREC_T);
+	const int sreg = _allocTempNEONreg();
+	const int treg = _allocTempNEONreg();
 
-	FPU_ADD_SUB(sreg, treg);
-	ToDouble(sreg);
-	ToDouble(treg);
+	SlotToDouble(sreg, EEREC_S);
+	SlotToDouble(treg, EEREC_T);
+	FPU_ADD_SUB_D(sreg, treg);
 
 	if (op == 0)
 		armAsm->Fadd(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
@@ -477,10 +394,83 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 		armAsm->Fsub(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
 
 	ToPS2FPU_Full(sreg, true, treg, acc, true);
-	armAsm->Fmov(armSRegister(eeRecDst), armSRegister(sreg));
+	SingleToSlot(eeRecDst, sreg);
 
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
+}
+
+// ---- Out-of-line calls into the interpreter's models -----------------------
+//
+// The multiply array's one-ULP deficit and the divide/square-root digit
+// recurrence are not host arithmetic under any rounding mode, so mode 4 calls
+// the models FPU.cpp states. The callees are plain AAPCS: every caller-saved
+// home the allocator is using is spilled across the call, and the EE pin
+// mirrors go through their flush/reload pair. They are pure arithmetic on their
+// arguments, so unlike the vtlb slow paths they need no pc/code flush and no
+// cycle spill. x8 carries the result back out, being neither allocatable nor a
+// pin.
+struct IslandFrame
+{
+	u8 gprs[8];
+	u8 fprs[NUM_ARM_NEON_REGS];
+	u32 ngpr, nfpr, frame, spare;
+};
+
+// `spare` bytes above the saved registers, addressed through IslandSpare, for
+// an island that has to carry a value across a call of its own.
+static void emitIslandEnter(IslandFrame& f, u32 spare = 0)
+{
+	f.ngpr = 0;
+	f.nfpr = 0;
+	for (int i = 0; i < NUM_ARM_GPR_REGS; i++)
+	{
+		// Leaves x4-x7 and x14/x15, the caller-saved half of the EE pool. x0-x3
+		// and x8-x10 are scratch, x11-x13 are pins flushed below, x16+ are
+		// reserved or callee-saved.
+		if (i >= 16 || (i >= 8 && i <= 13) || i <= 3)
+			continue;
+		if (arm64gprs[i].inuse)
+			f.gprs[f.ngpr++] = static_cast<u8>(i);
+	}
+	for (int i = 0; i < NUM_ARM_NEON_REGS; i++)
+	{
+		// AAPCS64 preserves only the low 64 bits of q8-q15, and the allocator
+		// keeps 128-bit classes there, so every live one is saved in full.
+		if (arm64neon[i].inuse)
+			f.fprs[f.nfpr++] = static_cast<u8>(i);
+	}
+
+	f.spare = spare;
+	f.frame = (f.ngpr * 8 + f.nfpr * 16 + spare + 15u) & ~15u;
+	if (f.frame)
+		armAsm->Sub(a64::sp, a64::sp, f.frame);
+	u32 off = 0;
+	for (u32 i = 0; i < f.ngpr; i++, off += 8)
+		armAsm->Str(a64::XRegister(f.gprs[i]), a64::MemOperand(a64::sp, off));
+	for (u32 i = 0; i < f.nfpr; i++, off += 16)
+		armAsm->Str(a64::QRegister(f.fprs[i]), a64::MemOperand(a64::sp, off));
+	// Flush before, reload after: the pin mirrors are lazily dirty, so a reload
+	// on its own would lose the writes the block has made to them. Both halves
+	// address RSTATE, so neither disturbs the argument or result registers.
+	armFlushEEClobberedPins();
+}
+
+static a64::MemOperand IslandSpare(const IslandFrame& f)
+{
+	return a64::MemOperand(a64::sp, f.ngpr * 8 + f.nfpr * 16);
+}
+
+static void emitIslandLeave(const IslandFrame& f)
+{
+	u32 off = 0;
+	for (u32 i = 0; i < f.ngpr; i++, off += 8)
+		armAsm->Ldr(a64::XRegister(f.gprs[i]), a64::MemOperand(a64::sp, off));
+	for (u32 i = 0; i < f.nfpr; i++, off += 16)
+		armAsm->Ldr(a64::QRegister(f.fprs[i]), a64::MemOperand(a64::sp, off));
+	if (f.frame)
+		armAsm->Add(a64::sp, a64::sp, f.frame);
+	armReloadEEClobberedPins();
 }
 
 // ---- The EE multiplier's one-ULP deficit -----------------------------------
@@ -500,42 +490,38 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // The interpreter models a superset (FPU.cpp eeMulRound / eeMulOneUlpLow /
 // eeMulArray): it reconstructs the array's truncated low half, so it also
 // catches the rows where the tail is non-zero but smaller than the borrow.
-// This is the mode-3 codegen for the zero-tail law. FpuMulHack is a one-point
-// sample of the same rule and this subsumes it, including the asymmetry -- it
-// is not folded in here because iFPUd never had it.
+// This is the double tier's codegen for the zero-tail law. FpuMulHack is a
+// one-point sample of the same rule and this subsumes it, asymmetry included.
 //
 // The product is computed in double, where a 24x24 significand multiply is
-// exact, so condition 1 needs no integer multiply and no tail extraction:
-// one integer ULP of the double is strictly below one ULP of the single, so
-// decrementing the double's raw bit pattern drops an exactly-representable
-// product one single-step and leaves everything else inside the same single
-// bucket. The rounding downstream performs the tail test -- and it is the same
-// test under either of the two narrowings this file uses: ToPS2FPU_Wide's
-// mask-off-the-low-29 is truncation by construction, and ToPS2FPU_Full's Fcvt
-// runs under FPUFPCR, whose mode is round-toward-zero (the argument is spelled
-// out at ToPS2FPU_Wide). That equivalence is structural. The FPCR is the
-// dependency that actually matters: under round-to-nearest the decremented
-// double would round straight back up to the product it came from and this
-// would emit nothing at all.
+// exact, so neither condition needs an integer multiply: the tail is the 29
+// bits below the single's ULP, and the predicate is a function of ft alone.
 //
-// A NEON compare result is all-ones, which as a 64-bit lane is -1, so `Add` of
-// the mask is the conditional decrement. Two traps, both already paid for once:
+// eeClampMode 3 emits the Booth term alone; 4 adds the boundary term and the
+// array call below.
 //
-//   * the Add is a 64-bit lane, so the mask must be all-ones across the full 64
-//     bits. A 32-bit compare adds +0xFFFFFFFF instead of -1; that scores 98.28%
-//     and reads like a predicate bug when it is a mask bug.
-//   * the Bic is `.8b` because there is no scalar BIC. AdvSIMD BIC has only the
-//     .8B/.16B register forms and the .4H/.8H/.2S/.4S immediate form; `bic
-//     d30, d30, d31` is rejected outright by an assembler. vixl guards it with
-//     a VIXL_ASSERT, which this tree compiles out so it emits 0x5eff1fde, an
-//     undefined encoding, and the JIT takes SIGILL the first time the block
-//     runs.
-//   * a zero product must be excluded, which is the Fcmeq/Bic pair. Under FZ a
-//     zero or denormal operand widens to +/-0 and the product is exactly +/-0,
-//     whose pattern decrements to 0xFFFFFFFFFFFFFFFF -- a NaN. Testing the
-//     product covers both of the interpreter's guards at once: a product is
-//     exactly +/-0 only when an operand was zero or denormal, because the
-//     smallest product of two EE normals is ~2^-252, an ordinary double.
+// ft is read out of the allocator-resident guest register, which holds the word
+// relocated into double position: the single's mantissa bit k is bit k+29
+// there. The predicate has two terms:
+//
+//   * `mant & 0x2AA` -- bits 1,3,5,7,9, the sign bits of the five lowest
+//     radix-4 Booth digits, at slot bits 30-38. 0x2AA << 29 is not an aarch64
+//     logical immediate and neither is the pair of masks' intersection, but
+//     0x5555555555555555 and 0x7fc0000000 both are, so two Ands do it.
+//   * a boundary term at the truncation column,
+//     `bit11 != (8 <= (mant >> 12 & 0xF) <= 13)`. The right-hand side is
+//     `b15 & ~(b14 & b13)`, so the term is three shifted-register ops landing
+//     on slot bit 44 and a mask to isolate it.
+//
+// The decrement is a whole EE ULP: a zero-tail product has its low 29 bits
+// clear, so subtracting 1 << 29 lands on another exactly-representable single
+// that no narrowing can round back.
+//
+// A zero product is excluded by its exponent field. Under FZ a zero or denormal
+// operand widens to +/-0 and the product is exactly +/-0, whose pattern would
+// decrement to a NaN. That covers both of the interpreter's guards, since a
+// product is exactly +/-0 only when an operand was zero or denormal -- the
+// smallest product of two EE normals is ~2^-252, an ordinary double.
 //
 // The interpreter's two remaining guards need no codegen. A saturating result
 // is unreachable-by-one-ULP: products are multiples of 2^81 at that exponent
@@ -545,76 +531,87 @@ static void recFPUOp(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 // (w == 0x00800000) needs ma*mb == 2^46 with both in [2^23, 2^24), forcing
 // ma == mb == 2^23 -- ft mantissa 0, predicate off.
 //
-// The predicate is the cheap half of the measured one. `mant & 0x2AA` -- bits
-// 1,3,5,7,9, the sign bits of the five lowest radix-4 Booth digits -- is the
-// whole rule except for a boundary term at the truncation column,
-// `bit11 != (8 <= (mant >> 12 & 0xF) <= 13)`, which is dropped. It fires on
-// exactly 1/64 of significands, and only a zero tail lets it change anything:
-// counted over all 2^46 significand pairs, 76,236,820 have a zero tail
-// -- 1 pair in 923,028 -- so the term decides 1 pair in 59,073,813. When fs is
-//  a power of two the tail is always zero, and that class scores 98.4375%
-// instead of 100%. Tested against hardware, this predicate gives
-// 98.4375 / 99.8421 / 99.8482 / 99.8091 per fs significand against the full
-// one's 100 / 99.8421 / 99.8482 / 99.8091.
-// The other three rows are not evidence that the term buys nothing elsewhere:
-// their fs values have a zero tail on 1 or 2 rows out of 2^23, so the term
-// cannot show in them at all. The fpmul3 sweeps, whose fs values have trailing
-// zeros, do populate that cell: at fs = 1.5 there are 2,796,203 zero-tail rows
-// and the term decides 65,536 of them (2.34%). Pooled over fpmul3's 7,196,506
-// zero-tail rows the full predicate is exactly hardware -- 0 missed, 0 wrong --
-// while this one misses 229,142 and is likewise never wrong. So the gap is a
-// real 3.3% of the reachable class; what makes it acceptable is that it is
-// one-directional (it can only miss a deficit, never invent one) and rare in
-// general operand space, per the count above. The term needs a bitfield extract
-// NEON has no equivalent for, so it has to go through GPRs and come back --
-// sketched at ten instructions against this predicate's one.
-// The resulting interpreter divergence is pinned by
-// EeRecFpuFull.MulDefectDropsTheBoundaryTermTheInterpreterModels.
+// A tail below the array's 2^15 borrow goes out of line to eeMulOneUlpLow,
+// which reconstructs the truncated columns. The guard is one-directional: bits
+// 28..21 of the product pattern are clear on every row in the band and on some
+// rows outside it, and eeMulOneUlpLow re-tests the tail itself, so a false
+// entry costs a call and returns false. A tighter mask spelled on the tail
+// alone would miss rows.
 //
-// ft is read narrow, out of the allocator-resident guest register: Cmtst on the
-// 64-bit lane only looks at bits 0..9 -- the single's mantissa bits 0..9,
-// whatever the register's upper half happens to hold -- so the mask is the
-// single-domain 0x2AA and not the double-domain 0x2AA << 29.
-//
-// The mask is not materialized here: it is parked in d10 for the whole JIT
-// session by _DynGen_EnterRecompiledCode, next to the s8/s9 clamp constants and
-// under the same AAPCS64 argument: the low 64 bits of d8-d15 are callee-saved,
-// so the constant survives every C call without compile-time liveness tracking.
-// That is what took this from six instructions to four, and it applies to the
-// first multiply in a block as much as the tenth -- a liveness flag in a
-// caller-saved register would still have paid mov+fmov to open every span, and
-// would have had to be invalidated at C-call seams, branch forks, superblock
-// side-exit bodies (recEmitColdSideExits emits several per emission session,
-// each reachable only through its own island) and backpatched fastmem thunks,
-// where a single missed seam is a silent one-ULP error the corpus cannot see.
-// The register costs one slot out of the callee-saved allocator range; the full
-// contract, including why microVU needs no pool gate for it, is on
-// NEON_RESERVED_FPU_MULMASK in iCore-arm64.h.
-//
-// `dstidx` holds ToDouble(fs) on entry and the product on exit, `tidx` holds
-// ToDouble(ft), `ftnarrowidx` is the untouched guest ft. RQSCRATCH/RQSCRATCH2
-// (q30/q31) are outside the allocator pool, so no temp aliases them.
-//
-// What comes out, decoded from the code buffer (the Fmul was already there, so
-// four of these five are the cost):
-//
-//     cmtst d30, d11, d10            ; d11 == EEREC_T (narrow guest ft), d10 == the parked mask
-//     fmul  d0, d0, d1
-//     fcmeq d31, d0, #0.0
-//     bic   v30.8b, v30.8b, v31.8b
-//     add   d0, d0, d30
-static void emitDefectiveFmul(int dstidx, int tidx, int ftnarrowidx)
+static void emitMulArrayIsland(const a64::VRegister& prod, int fsslotidx, int ftslotidx)
+{
+	IslandFrame f;
+	emitIslandEnter(f);
+
+	// The stub takes the architectural words; the slots hold them relocated.
+	armEmitEeFprNarrow(RXARG1, armDRegister(fsslotidx), RXSCRATCH);
+	armEmitEeFprNarrow(RXARG2, armDRegister(ftslotidx), RXSCRATCH);
+	armEmitCall(reinterpret_cast<const void*>(
+		&R5900::Interpreter::OpcodeImpl::COP1::eeMulOneUlpLow));
+	// AAPCS64 leaves everything above a bool return's one byte unspecified.
+	armAsm->And(RXSCRATCH, RXARG1, 1);
+
+	emitIslandLeave(f);
+
+	armAsm->Fmov(RXARG2, prod);
+	armAsm->Sub(RXARG2, RXARG2, a64::Operand(RXSCRATCH, a64::LSL, 29));
+	armAsm->Fmov(prod, RXARG2);
+}
+
+// `dstidx` holds the widened fs on entry and the product on exit, `tidx` holds
+// the widened ft, `fsslotidx` and `ftslotidx` are the untouched guest operands.
+// x0/x1/x8 are the scratch this file uses everywhere, ToPS2FPU_Wide included.
+static void emitDefectiveFmul(int dstidx, int tidx, int fsslotidx, int ftslotidx)
 {
 	const a64::VRegister prod = armDRegister(dstidx);
 
 	// Hoisted above the Fmul: the predicate is not on its dependency chain.
-	armAsm->Cmtst(RDSCRATCH, armDRegister(ftnarrowidx), a64::VRegister(NEON_RESERVED_FPU_MULMASK, 64));
+	armAsm->Fmov(RXSCRATCH, armDRegister(ftslotidx));
+	if (CHECK_FPU_EXACT)
+	{
+		armAsm->And(RXARG1, RXSCRATCH, a64::Operand(RXSCRATCH, a64::LSL, 1)); // bit43 = b14 & b13
+		armAsm->Bic(RXARG1, RXSCRATCH, a64::Operand(RXARG1, a64::LSL, 1));    // bit44 = b15 & ~(b14 & b13)
+		armAsm->Eor(RXARG1, RXARG1, a64::Operand(RXSCRATCH, a64::LSL, 4));    // bit44 ^= b11
+		armAsm->And(RXARG1, RXARG1, UINT64_C(0x100000000000));
+		armAsm->And(RXSCRATCH, RXSCRATCH, UINT64_C(0x5555555555555555));
+		armAsm->And(RXSCRATCH, RXSCRATCH, UINT64_C(0x7fc0000000));
+		armAsm->Orr(RXARG1, RXARG1, RXSCRATCH);
+	}
+	else
+	{
+		armAsm->And(RXARG1, RXSCRATCH, UINT64_C(0x5555555555555555));
+		armAsm->And(RXARG1, RXARG1, UINT64_C(0x7fc0000000));
+	}
 
 	armAsm->Fmul(prod, prod, armDRegister(tidx));
 
-	armAsm->Fcmeq(RDSCRATCH2, prod, 0.0);
-	armAsm->Bic(RQSCRATCH.V8B(), RQSCRATCH.V8B(), RQSCRATCH2.V8B());
-	armAsm->Add(prod, prod, RDSCRATCH);
+	// One flag chain: the predicate fired, the tail is empty, the product is not
+	// zero. Each stage's false arm sets the flags so the next condition cannot
+	// hold, leaving the final ne false.
+	armAsm->Fmov(RXARG2, prod);
+	armAsm->And(RXSCRATCH, RXARG2, UINT64_C(0x1fffffff));
+	armAsm->Cmp(RXARG1, 0);
+	armAsm->Ccmp(RXSCRATCH, 0, a64::NoFlag, a64::ne);
+	armAsm->And(RXSCRATCH, RXARG2, UINT64_C(0x7ff0000000000000));
+	armAsm->Ccmp(RXSCRATCH, 0, a64::ZFlag, a64::eq);
+	armAsm->Mov(RXARG1, UINT64_C(1) << 29);
+	armAsm->Csel(RXARG1, RXARG1, a64::xzr, a64::ne);
+	armAsm->Sub(RXARG2, RXARG2, RXARG1);
+	armAsm->Fmov(prod, RXARG2);
+
+	if (!CHECK_FPU_EXACT)
+		return;
+
+	// The rest of the law is the array's. The decrement above cannot have
+	// changed the tail read here: it only fires on a zero tail, and 1 << 29
+	// leaves the low 29 bits alone.
+	a64::Label done;
+	armAsm->And(RXSCRATCH, RXARG2, UINT64_C(0x1fffffff));
+	armAsm->Cbz(RXSCRATCH, &done);
+	armAsm->Tst(RXSCRATCH, UINT64_C(0x1fe00000));
+	armAsm->B(&done, a64::ne);
+	emitMulArrayIsland(prod, fsslotidx, ftslotidx);
+	armAsm->Bind(&done);
 }
 
 // MUL/MULA: widen -> multiply in double (with the multiplier deficit) -> narrow.
@@ -625,12 +622,12 @@ static void recMULop(int info, int eeRecDst, bool acc)
 	const int sreg = _allocTempNEONreg();
 	const int treg = _allocTempNEONreg();
 
-	ToDoubleFrom(sreg, EEREC_S);
-	ToDoubleFrom(treg, EEREC_T);
-	emitDefectiveFmul(sreg, treg, EEREC_T);
+	SlotToDouble(sreg, EEREC_S);
+	SlotToDouble(treg, EEREC_T);
+	emitDefectiveFmul(sreg, treg, EEREC_S, EEREC_T);
 
 	ToPS2FPU_Full(sreg, true, treg, acc, false);
-	armAsm->Fmov(armSRegister(eeRecDst), armSRegister(sreg));
+	SingleToSlot(eeRecDst, sreg);
 
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
@@ -647,21 +644,19 @@ static void recMULop(int info, int eeRecDst, bool acc)
 // result is just +/-max with the dominant sign — skip the double add entirely.
 // Only when both are finite is the accumulation performed in double.
 //
-// Representation: unlike the x86 port and unlike recFPUOp/recMULop, everything
-// between the two roundings stays wide. The invariant from the multiply stage
-// to the final ToPS2FPU_Full is "this double is exactly a PS2 single" — low 29
-// mantissa bits zero, |x| <= kEeFpuMax, no denormals — which the guard mask
-// preserves (it only clears low bits or reduces an operand to its sign) and
-// which is what makes the accumulate exact: two 24-bit significands at an
-// exponent distance of at most 24 sum in 48 bits, well inside a double's 53.
-// The one arm that leaves the wide domain early is accovf, because kEeFpuMax
-// has no single a narrowing could reach.
+// Everything between the two roundings stays wide. The invariant from the
+// multiply stage to the final ToPS2FPU_Full is that the double is exactly a PS2
+// single — low 29 mantissa bits zero, |x| <= kEeFpuMax, no denormals — which
+// the guard mask preserves and which makes the accumulate exact: two 24-bit
+// significands at an exponent distance of at most 24 sum in 48 bits, inside a
+// double's 53. The accovf arm leaves the wide domain early, kEeFpuMax having no
+// single a narrowing could reach.
 static void recMaddsub(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 {
 	const int sreg = _allocTempNEONreg();
 	const int treg = _allocTempNEONreg();
 
-	// --- multiply stage: sreg = ToPS2FPU(ToDouble(s) * ToDouble(t)). Sets O on
+	// --- multiply stage: sreg = ToPS2FPU(widen(s) * widen(t)). Sets O on
 	//     product overflow; never touches ACCflag here. ---
 	//
 	// The product is rounded but not narrowed: ToPS2FPU_Wide leaves it as a
@@ -669,14 +664,14 @@ static void recMaddsub(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 	// emitter -- the guard mask, the SUB sign flip, the accumulate -- wants the
 	// wide form back, and narrowing here only to re-widen 13 instructions later
 	// was the round trip this shape exists to remove.
-	ToDoubleFrom(sreg, EEREC_S);
-	ToDoubleFrom(treg, EEREC_T);
-	emitDefectiveFmul(sreg, treg, EEREC_T);
+	SlotToDouble(sreg, EEREC_S);
+	SlotToDouble(treg, EEREC_T);
+	emitDefectiveFmul(sreg, treg, EEREC_S, EEREC_T);
 	ToPS2FPU_Wide(sreg);
 
-	// --- widen the (allocator-resident, still narrow) ACC straight into treg,
-	//     then guard-mask it against the product in the wide domain. ---
-	ToDoubleFrom(treg, EEREC_ACC);
+	// --- widen the (allocator-resident) ACC slot straight into treg, then
+	//     guard-mask it against the product in the wide domain. ---
+	SlotToDouble(treg, EEREC_ACC);
 	FPU_ADD_SUB_D(treg, sreg);
 
 	a64::Label mulovf, accovf, operation, skipall;
@@ -734,7 +729,7 @@ static void recMaddsub(int info, int eeRecDst, int op /*0=add,1=sub*/, bool acc)
 	ToPS2FPU_Full(treg, true, sreg, acc, true);
 
 	armAsm->Bind(&skipall);
-	armAsm->Fmov(armSRegister(eeRecDst), armSRegister(treg));
+	SingleToSlot(eeRecDst, treg);
 
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
@@ -773,69 +768,58 @@ static void ClearOUFlags()
 void recABS_S_xmm(int info)
 {
 	ClearOUFlags();
-	armAsm->Fabs(armSRegister(EEREC_D), armSRegister(EEREC_S));
+	armAsm->Fabs(armDRegister(EEREC_D), armDRegister(EEREC_S));
 }
 
 void recNEG_S_xmm(int info)
 {
 	ClearOUFlags();
-	armAsm->Fneg(armSRegister(EEREC_D), armSRegister(EEREC_S));
+	armAsm->Fneg(armDRegister(EEREC_D), armDRegister(EEREC_S));
 }
 
 // MAX/MIN: PS2 semantics on ALL values (incl. denormals — no FTZ, no clamp).
-// Port of x86 recMINMAX's integer-ordering trick: for each operand build the
-// 64-bit double pattern {lo32 = raw float bits, hi32 = sign | 0x40000000} and
-// compare as doubles. The fixed 0x400-exponent upper word makes IEEE-double
-// ordering equal PS2 total (sign, magnitude) ordering over the raw bits, and
-// no constructed input can be NaN/Inf (the double exponent field is constant),
-// so Fmin/Fmax's NaN propagation can never trigger. Result = lower 32 bits of
-// the selected pattern.
+// Order the two words by (sign, magnitude) and write the winner's word through
+// unchanged (iFPU-arm64.cpp recMINMAX derives the ordering key).
+//
+// The relocation is order-preserving — sign to 63, magnitude to 59..29, 62..60
+// left clear — so the key is the same expression a register width up and Csel
+// picks between untouched slots.
+//
+// Same GPR scratch contract as FPU_ADD_SUB_D: x0/x1/x8 and the non-allocatable
+// x9. ClearOUFlags() runs first, so any eviction it emits lands before the raw
+// scratch goes live.
 static void recMINMAX(int info, bool ismin)
 {
-	// Temps FIRST: the alloc's eviction stores must not land between the GPR
-	// pattern builds and their consuming Fmovs (alloc-before-emit rule).
-	const int sreg = _allocTempNEONreg();
-	const int treg = _allocTempNEONreg();
-
 	ClearOUFlags();
 
-	armAsm->Fmov(RWSCRATCH, armSRegister(EEREC_S)); // x8 = zext(s bits)
-	armAsm->And(RWARG1, RWSCRATCH, 0x80000000);
-	armAsm->Orr(RWARG1, RWARG1, 0x40000000);
-	armAsm->Orr(RXSCRATCH, RXSCRATCH, a64::Operand(RXARG1, a64::LSL, 32));
+	const a64::Register sbits = RXARG1, tbits = RXARG2;
+	const a64::Register skey = RXSCRATCH, tkey = a64::x9;
 
-	armAsm->Fmov(RWARG2, armSRegister(EEREC_T)); // x1 = zext(t bits)
-	// GE-M2: exp/sign pattern temp in reserved scratch x9 (was RWARG3/w2, an
-	// EE-allocatable pool host — see FPU_ADD_SUB). No load/store or C-call spans it.
-	armAsm->And(a64::w9, RWARG2, 0x80000000);
-	armAsm->Orr(a64::w9, a64::w9, 0x40000000);
-	armAsm->Orr(RXARG2, RXARG2, a64::Operand(a64::x9, a64::LSL, 32));
-
-	armAsm->Fmov(armDRegister(sreg), RXSCRATCH);
-	armAsm->Fmov(armDRegister(treg), RXARG2);
-	if (ismin)
-		armAsm->Fmin(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
-	else
-		armAsm->Fmax(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
-	armAsm->Fmov(RXSCRATCH, armDRegister(sreg));
-	armAsm->Fmov(armSRegister(EEREC_D), RWSCRATCH); // lower 32 = winner's raw bits
-	_freeNEONreg(sreg);
-	_freeNEONreg(treg);
+	armAsm->Fmov(sbits, armDRegister(EEREC_S));
+	armAsm->Fmov(tbits, armDRegister(EEREC_T));
+	armAsm->Asr(skey, sbits, 63);
+	armAsm->Eor(skey, sbits, a64::Operand(skey, a64::LSR, 1));
+	armAsm->Asr(tkey, tbits, 63);
+	armAsm->Eor(tkey, tbits, a64::Operand(tkey, a64::LSR, 1));
+	armAsm->Cmp(skey, tkey);
+	// Equal keys mean identical slots, so either arm is correct there.
+	armAsm->Csel(sbits, sbits, tbits, ismin ? a64::le : a64::ge);
+	armAsm->Fmov(armDRegister(EEREC_D), sbits);
 }
 
 void recMAX_S_xmm(int info) { recMINMAX(info, false); }
 void recMIN_S_xmm(int info) { recMINMAX(info, true); }
 
-// C.cond: widen both operands with ToDouble and compare as doubles — a PS2
+// C.cond: widen both operands with SlotToDouble and compare as doubles — a PS2
 // pseudo-inf compares as the finite 2^128-scale number it is, with no operand
-// clamping (x86 recCMP + recC_*_xmm). ToDouble never yields NaN, so the
+// clamping (x86 recCMP + recC_*_xmm). The widening never yields NaN, so the
 // compare is always ordered and the lt/le/eq condition reads are exact.
 static void recCMP(int info)
 {
 	const int sreg = _allocTempNEONreg();
 	const int treg = _allocTempNEONreg();
-	ToDoubleFrom(sreg, EEREC_S);
-	ToDoubleFrom(treg, EEREC_T);
+	SlotToDouble(sreg, EEREC_S);
+	SlotToDouble(treg, EEREC_T);
 	armAsm->Fcmp(armDRegister(sreg), armDRegister(treg));
 	_freeNEONreg(sreg);
 	_freeNEONreg(treg);
@@ -897,20 +881,81 @@ static void ClearIDFlags()
 // otherwise consistent. The result carries exponent field 0xff — on the EE
 // that is an ordinary large finite float (the EE has no NaN/Inf), but guest
 // softfloat routines do classify exp==0xff separately, so the one-ULP-band
-// difference from +FLT_MAX is game-visible.
-static void SetMaxValueS(int idx)
+// difference from +FLT_MAX is game-visible. kEeFprMaxBits is that word's slot,
+// so this is the same two masks a register width up.
+static void SetMaxValueSlot(int dstidx, int srcidx)
 {
-	armAsm->Fmov(RWSCRATCH, armSRegister(idx));
-	armAsm->And(RWSCRATCH, RWSCRATCH, 0x80000000);
-	armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x7fffffff);
-	armAsm->Fmov(armSRegister(idx), RWSCRATCH);
+	armAsm->Fmov(RXSCRATCH, armDRegister(srcidx));
+	armAsm->And(RXSCRATCH, RXSCRATCH, kEeFprSignBit);
+	armAsm->Orr(RXSCRATCH, RXSCRATCH, kEeFprMaxBits);
+	armAsm->Fmov(armDRegister(dstidx), RXSCRATCH);
+}
+
+// ---- The EE's divide/square-root unit ---------------------------------------
+//
+// It is a radix-2 SRT digit recurrence with no rounding step in it, so an Fdiv
+// or an Fsqrt does not reproduce it under any rounding mode. FPU.cpp states the
+// model above eeSrtDigit; this is the call into it.
+//
+// Only mode 4 pays for it. Modes 1 to 3 keep the host instruction and the
+// FPUDivFPCR swap, which is right on most operands and one ULP out on the rest.
+//
+// Silicon composes RSQRT.S out of the other two with an ordinary single in
+// between, so this does as well; the intermediate crosses the sqrt's call
+// through the island's own scratch, x0 being the only register it could
+// otherwise live in.
+enum class DivUnitOp
+{
+	Divide,    // eeDivide(fs, ft)
+	Sqrt,      // eeSqrtBits(ft)
+	RecipSqrt, // eeDivide(fs, eeSqrtBits(ft))
+};
+
+static void emitDivideUnitIsland(DivUnitOp op, int dstidx, int fsslotidx, int ftslotidx)
+{
+	namespace Interp = R5900::Interpreter::OpcodeImpl::COP1;
+
+	IslandFrame f;
+	emitIslandEnter(f, op == DivUnitOp::RecipSqrt ? 16 : 0);
+
+	// The models take the architectural words; the slots hold them relocated.
+	// eeSqrtBits drops the operand's sign itself, so the host path's |Ft| has no
+	// counterpart here.
+	if (op == DivUnitOp::Sqrt)
+	{
+		armEmitEeFprNarrow(RXARG1, armDRegister(ftslotidx), RXSCRATCH);
+	}
+	else
+	{
+		armEmitEeFprNarrow(RXARG1, armDRegister(fsslotidx), RXSCRATCH);
+		armEmitEeFprNarrow(RXARG2, armDRegister(ftslotidx), RXSCRATCH);
+	}
+
+	if (op == DivUnitOp::RecipSqrt)
+	{
+		armAsm->Str(RXARG1.W(), IslandSpare(f));
+		armAsm->Mov(RXARG1.W(), RXARG2.W());
+	}
+	if (op != DivUnitOp::Divide)
+		armEmitCall(reinterpret_cast<const void*>(&Interp::eeSqrtBits));
+	if (op == DivUnitOp::RecipSqrt)
+	{
+		armAsm->Mov(RXARG2.W(), RXARG1.W());
+		armAsm->Ldr(RXARG1.W(), IslandSpare(f));
+	}
+	if (op != DivUnitOp::Sqrt)
+		armEmitCall(reinterpret_cast<const void*>(&Interp::eeDivide));
+
+	armAsm->Mov(RWSCRATCH, RXARG1.W());
+	emitIslandLeave(f);
+	armEmitEeFprWiden(armDRegister(dstidx), RWSCRATCH, RXSCRATCH);
 }
 
 // x86 recDIVhelper1 (FPU_FLAGS_ID == 1 unconditionally): divide-by-zero
-// flag/result shape in the single domain, otherwise divide in double.
-// sreg/treg are write-only temps and srcS/srcT the allocator-resident operands,
-// which are only ever read; the result lands in sreg (S lane on the zero-divisor
-// arm, S lane after ToPS2FPU_Full on the normal one).
+// flag/result shape, otherwise the quotient -- from the recurrence under mode 4
+// and in double below it. sreg/treg are write-only temps, srcS/srcT the guest
+// slots; the result lands in sreg as a slot on both arms. treg is -1 under
+// mode 4, which has no double to hold.
 // The Fcmp-with-zero runs under the EE FPCR whose FZ bit flushes denormal
 // inputs — same divisor-is-zero net as x86's DAZ'd CMPEQ.SS. The double
 // quotient of two in-range PS2 values is always finite (max magnitude
@@ -920,13 +965,13 @@ static void recDIVhelper1(int sreg, int treg, int srcS, int srcT)
 	ClearIDFlags();
 
 	a64::Label normal, xOverZero, setDone, done;
-	armAsm->Fcmp(armSRegister(srcT), 0.0);
+	armAsm->Fcmp(armDRegister(srcT), 0.0);
 	armAsm->B(&normal, a64::ne);
 
 	// Divisor is ±0: pick the flag pair, then result = (fs ^ ft) | 0x7fffffff
 	// (x86 SetMaxValue under FPU_RESULT — see SetMaxValueS above; masking the
 	// XOR down to its sign bit first is equivalent, the OR sets bits 0..30).
-	armAsm->Fcmp(armSRegister(srcS), 0.0);
+	armAsm->Fcmp(armDRegister(srcS), 0.0);
 	armAsm->B(&xOverZero, a64::ne);
 	SetFprcOr(FPUflagI | FPUflagSI); // 0/0
 	armAsm->B(&setDone);
@@ -934,19 +979,27 @@ static void recDIVhelper1(int sreg, int treg, int srcS, int srcT)
 	SetFprcOr(FPUflagD | FPUflagSD); // x/0
 	armAsm->Bind(&setDone);
 
-	armAsm->Fmov(RWSCRATCH, armSRegister(srcS));
-	armAsm->Fmov(RWARG1, armSRegister(srcT));
-	armAsm->Eor(RWSCRATCH, RWSCRATCH, RWARG1);
-	armAsm->And(RWSCRATCH, RWSCRATCH, 0x80000000);
-	armAsm->Orr(RWSCRATCH, RWSCRATCH, 0x7fffffff);
-	armAsm->Fmov(armSRegister(sreg), RWSCRATCH);
+	armAsm->Fmov(RXSCRATCH, armDRegister(srcS));
+	armAsm->Fmov(RXARG1, armDRegister(srcT));
+	armAsm->Eor(RXSCRATCH, RXSCRATCH, RXARG1);
+	armAsm->And(RXSCRATCH, RXSCRATCH, kEeFprSignBit);
+	armAsm->Orr(RXSCRATCH, RXSCRATCH, kEeFprMaxBits);
+	armAsm->Fmov(armDRegister(sreg), RXSCRATCH);
 	armAsm->B(&done);
 
 	armAsm->Bind(&normal);
-	ToDoubleFrom(sreg, srcS);
-	ToDoubleFrom(treg, srcT);
-	armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
-	ToPS2FPU_Full(sreg, false, treg, false, false);
+	if (CHECK_FPU_EXACT)
+	{
+		emitDivideUnitIsland(DivUnitOp::Divide, sreg, srcS, srcT);
+	}
+	else
+	{
+		SlotToDouble(sreg, srcS);
+		SlotToDouble(treg, srcT);
+		armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
+		ToPS2FPU_Full(sreg, false, treg, false, false);
+		SingleToSlot(sreg, sreg);
+	}
 
 	armAsm->Bind(&done);
 }
@@ -958,12 +1011,15 @@ void recDIV_S_xmm(int info)
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUDivFPCR.bitmask);
 
+	// EEREC_D may be either operand and the normal arm writes before it has read
+	// both, so the result is built in a temp.
 	const int sreg = _allocTempNEONreg();
-	const int treg = _allocTempNEONreg();
+	const int treg = CHECK_FPU_EXACT ? -1 : _allocTempNEONreg();
 	recDIVhelper1(sreg, treg, EEREC_S, EEREC_T);
-	armAsm->Fmov(armSRegister(EEREC_D), armSRegister(sreg));
+	armAsm->Fmov(armDRegister(EEREC_D), armDRegister(sreg));
 	_freeNEONreg(sreg);
-	_freeNEONreg(treg);
+	if (!CHECK_FPU_EXACT)
+		_freeNEONreg(treg);
 
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUFPCR.bitmask);
@@ -971,82 +1027,115 @@ void recDIV_S_xmm(int info)
 
 void recSQRT_S_xmm(int info)
 {
-	// Round-to-nearest for the double Fsqrt + the ToPS2FPU narrowing, like
-	// x86's roundmode_nearest swap (FPUDivFPCR is the nearest-mode FPCR).
+	// Round-to-nearest for the double Fsqrt and the narrowing Fcvt, like x86's
+	// roundmode_nearest swap (FPUDivFPCR is the nearest-mode FPCR).
 	const bool swapFpcr = EmuConfig.Cpu.FPUFPCR.bitmask != EmuConfig.Cpu.FPUDivFPCR.bitmask;
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUDivFPCR.bitmask);
 
-	const int treg = copySrc(EEREC_T); // SQRT.S reads FT
+	// SQRT.S reads FT. The recurrence takes it as a word, so only the host arm
+	// needs it widened.
+	const int treg = CHECK_FPU_EXACT ? -1 : _allocTempNEONreg();
+	if (!CHECK_FPU_EXACT)
+		SlotToDouble(treg, EEREC_T);
 
 	ClearIDFlags();
-	// x86 DOUBLE tests the raw SIGN BIT (unlike the fast body's exp-field
+	// x86 DOUBLE tests the raw sign bit (unlike the fast body's exp-field
 	// gate): sqrt(-0) sets I|SI too, then |t| makes the operand positive.
-	// x86-JIT is the FULL-mode oracle for this corner.
-	armAsm->Fmov(RWARG1, armSRegister(treg));
+	// x86-JIT is the FULL-mode oracle for this corner. The slot carries that
+	// bit at 63, so the test needs no word.
+	armAsm->Fmov(RXARG1, armDRegister(EEREC_T));
 	a64::Label tPositive;
-	armAsm->Tbz(RWARG1, 31, &tPositive);
+	armAsm->Tbz(RXARG1, 63, &tPositive);
 	SetFprcOr(FPUflagI | FPUflagSI);
-	armAsm->Fabs(armSRegister(treg), armSRegister(treg));
+	if (!CHECK_FPU_EXACT)
+		armAsm->Fabs(armDRegister(treg), armDRegister(treg));
 	armAsm->Bind(&tPositive);
 
-	ToDouble(treg);
-	armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
-	ToPS2FPU_Full(treg, false, treg, false, false);
-	armAsm->Fmov(armSRegister(EEREC_D), armSRegister(treg));
-	_freeNEONreg(treg);
+	if (CHECK_FPU_EXACT)
+	{
+		emitDivideUnitIsland(DivUnitOp::Sqrt, EEREC_D, EEREC_T, EEREC_T);
+	}
+	else
+	{
+		armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
+		// A root cannot leave the in-range band, so the narrowing is the plain
+		// Fcvt with none of ToPS2FPU_Full's arms around it: the largest operand
+		// is a shade under 2^129 and roots to under 2^65, the smallest one FZ
+		// does not flush is 2^-126 and roots to 2^-63, and both sit inside
+		// [2^-126, 2^128). The one result outside it is a zero, which the
+		// underflow arm would have flushed to the same zero.
+		armAsm->Fcvt(armSRegister(treg), armDRegister(treg));
+		SingleToSlot(EEREC_D, treg);
+		_freeNEONreg(treg);
+	}
 
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUFPCR.bitmask);
 }
 
 // x86 recRSQRThelper1: negative-divisor I|SI + |t|, zero-divisor flag pair
-// with SetMaxValue keyed off the DIVIDEND's sign, else fs / sqrt(ft) in
-// double. (The interp keys the zero-divisor sign off the DIVISOR — x86-JIT
-// wins that disagreement under FULL.)
+// with SetMaxValue keyed off the DIVIDEND's sign, else fs / sqrt(ft) — through
+// the recurrence under mode 4 and in double below it. (The interp keys the
+// zero-divisor sign off the DIVISOR — x86-JIT wins that disagreement under
+// FULL.)
 void recRSQRT_S_xmm(int info)
 {
 	const bool swapFpcr = EmuConfig.Cpu.FPUFPCR.bitmask != EmuConfig.Cpu.FPUDivFPCR.bitmask;
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUDivFPCR.bitmask);
 
-	const int sreg = copySrc(EEREC_S);
-	const int treg = copySrc(EEREC_T);
+	// As in recDIV_S_xmm, the result is built in a temp.
+	const int sreg = _allocTempNEONreg();
+	const int treg = CHECK_FPU_EXACT ? -1 : _allocTempNEONreg();
 
 	ClearIDFlags();
 
-	armAsm->Fmov(RWARG1, armSRegister(treg));
+	armAsm->Fmov(RXARG1, armDRegister(EEREC_T));
 	a64::Label tPositive;
-	armAsm->Tbz(RWARG1, 31, &tPositive);
+	armAsm->Tbz(RXARG1, 63, &tPositive);
 	SetFprcOr(FPUflagI | FPUflagSI);
-	armAsm->Fabs(armSRegister(treg), armSRegister(treg));
 	armAsm->Bind(&tPositive);
+	// Unconditional: |t| is a no-op on the positive arm and doubles as the copy
+	// that keeps ft's slot intact. eeSqrtBits drops the sign itself, so mode 4
+	// tests ft where it lies -- Fcmp puts -0 equal to 0 either way.
+	if (!CHECK_FPU_EXACT)
+		armAsm->Fabs(armDRegister(treg), armDRegister(EEREC_T));
 
 	a64::Label normal, zeroOverZero, setDone, done;
-	armAsm->Fcmp(armSRegister(treg), 0.0);
+	armAsm->Fcmp(armDRegister(CHECK_FPU_EXACT ? EEREC_T : treg), 0.0);
 	armAsm->B(&normal, a64::ne);
 
-	armAsm->Fcmp(armSRegister(sreg), 0.0);
+	armAsm->Fcmp(armDRegister(EEREC_S), 0.0);
 	armAsm->B(&zeroOverZero, a64::eq);
 	SetFprcOr(FPUflagD | FPUflagSD); // x/0
 	armAsm->B(&setDone);
 	armAsm->Bind(&zeroOverZero);
 	SetFprcOr(FPUflagI | FPUflagSI); // 0/0
 	armAsm->Bind(&setDone);
-	SetMaxValueS(sreg);
+	SetMaxValueSlot(sreg, EEREC_S);
 	armAsm->B(&done);
 
 	armAsm->Bind(&normal);
-	ToDouble(treg);
-	ToDouble(sreg);
-	armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
-	armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
-	ToPS2FPU_Full(sreg, false, treg, false, false);
+	if (CHECK_FPU_EXACT)
+	{
+		emitDivideUnitIsland(DivUnitOp::RecipSqrt, sreg, EEREC_S, EEREC_T);
+	}
+	else
+	{
+		SlotToDouble(treg, treg);
+		SlotToDouble(sreg, EEREC_S);
+		armAsm->Fsqrt(armDRegister(treg), armDRegister(treg));
+		armAsm->Fdiv(armDRegister(sreg), armDRegister(sreg), armDRegister(treg));
+		ToPS2FPU_Full(sreg, false, treg, false, false);
+		SingleToSlot(sreg, sreg);
+	}
 
 	armAsm->Bind(&done);
-	armAsm->Fmov(armSRegister(EEREC_D), armSRegister(sreg));
+	armAsm->Fmov(armDRegister(EEREC_D), armDRegister(sreg));
 	_freeNEONreg(sreg);
-	_freeNEONreg(treg);
+	if (!CHECK_FPU_EXACT)
+		_freeNEONreg(treg);
 
 	if (swapFpcr)
 		emitLoadFPCRImm(EmuConfig.Cpu.FPUFPCR.bitmask);

@@ -1047,6 +1047,14 @@ void recLWC1()
 		// is-load-dest skip excludes it from the save set).
 		const int ftreg = _allocFPtoNEONreg(_Rt_, MODE_WRITE);
 		vtlbFastmemReadFPR32(9, ftreg);
+		if (CHECK_FPU_FULL)
+		{
+			// The load lands the architectural word; on the double tier the
+			// slot holds it relocated. Emitted after the backpatch site so it
+			// runs on the thunk's return path too (the slow path ends in the
+			// same Fmov S<n>, w0).
+			armEmitEeFprFromS(armDRegister(ftreg), armSRegister(ftreg), RXSCRATCH);
+		}
 	}
 	else
 	{
@@ -1057,7 +1065,7 @@ void recLWC1()
 		// (if any) is now stale and must not flush back over the write.
 		_deleteFPtoNEONreg(_Rt_, DELETE_REG_FREE_NO_WRITEBACK);
 		// Store to fpuRegs.fpr[ft]
-		armStoreEERegPtr(a64::w0, &fpuRegs.fpr[_Rt_].UL);
+		armEmitEeFprSlotMemFromWord(armCpuRegMem(&fpuRegs.fpr[_Rt_]), a64::w0, RXSCRATCH);
 	}
 }
 
@@ -1072,9 +1080,9 @@ void recSWC1()
 	// after w10 already holds the value).
 	const int fslot = _checkNEONreg(NEONTYPE_FPREG, _Rt_, 0);
 	if (fslot >= 0)
-		armAsm->Fmov(a64::w10, armSRegister(fslot));
+		armEmitEeFprWordFromSlot(a64::w10, armDRegister(fslot), RXSCRATCH);
 	else
-		armLoadEERegPtr(a64::w10, &fpuRegs.fpr[_Rt_].UL);
+		armEmitEeFprWordFromSlotMem(a64::w10, armCpuRegMem(&fpuRegs.fpr[_Rt_]), RXSCRATCH);
 
 	// Inline STR off RFASTMEMBASE + backpatch on the fast path, softmem
 	// fallback otherwise.

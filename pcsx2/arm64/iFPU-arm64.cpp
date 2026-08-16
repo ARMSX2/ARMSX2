@@ -149,11 +149,11 @@ void recMFC1()
 	const int fsreg = _checkNEONreg(NEONTYPE_FPREG, _Fs_, MODE_READ);
 	if (fsreg >= 0)
 	{
-		armAsm->Fmov(RWSCRATCH, armSRegister(fsreg));
+		armEmitEeFprWordFromSlot(RWSCRATCH, armDRegister(fsreg), a64::x9);
 	}
 	else
 	{
-		armLoadEERegPtr(RWSCRATCH, &fpuRegs.fpr[_Fs_].UL);
+		armEmitEeFprWordFromSlotMem(RWSCRATCH, armCpuRegMem(&fpuRegs.fpr[_Fs_]), a64::x9);
 	}
 	armAsm->Sxtw(RXSCRATCH, RWSCRATCH);
 	// Deposit last, after the FPR-slot probe above (see recCFC1).
@@ -176,9 +176,9 @@ void recMTC1()
 
 	// If fpr[fs] is already resident in NEON, write the new bits straight into
 	// the host reg and mark it dirty (MODE_WRITE), keeping it hot for a
-	// following FPU op; the block epilogue flushes the S-reg to fpr[fs].f.
+	// following FPU op; the block epilogue flushes the host reg to fpr[fs].
 	// MTC1 overwrites fpr[fs] wholesale, so any prior MODE_WRITE-only value
-	// in the slot is dead and correctly discarded by overwriting lane 0.
+	// in the slot is dead and correctly discarded by overwriting it.
 	// GE-11: when fs is NOT resident but the backprop analysis says it is
 	// used later in the block, ALLOCATE the destination slot (write-only, no
 	// memory load) — this is the previously-dead _allocIfUsedFPUtoNEON, the
@@ -189,11 +189,11 @@ void recMTC1()
 		fsreg = _allocIfUsedFPUtoNEON(_Fs_, MODE_WRITE);
 	if (fsreg >= 0)
 	{
-		armAsm->Fmov(armSRegister(fsreg), rt);
+		armEmitEeFprSlotFromWord(armDRegister(fsreg), rt, RXSCRATCH);
 	}
 	else
 	{
-		armStoreEERegPtr(rt, &fpuRegs.fpr[_Fs_].UL);
+		armEmitEeFprSlotMemFromWord(armCpuRegMem(&fpuRegs.fpr[_Fs_]), rt, RXSCRATCH);
 	}
 }
 
@@ -469,9 +469,9 @@ static a64::VRegister fpuClampInput(const a64::VRegister& src, const a64::VRegis
 // FPU_SUB, iFPU.cpp) — ON by default (games like True Crime NYC and Jak 3
 // misrender without it, and per-game flagging proved impractical) but opt-out
 // globally for EE-heavy titles that don't need it; see the early-out below. It
-// reproduces the masking already present in the DOUBLE path's FPU_ADD_SUB
-// (iFPUd-arm64.cpp:200); the CHECK_FPU_FULL (double) config dispatches to that
-// path instead and never reaches here (Full mode guards unconditionally).
+// reproduces the masking already present in the DOUBLE path's FPU_ADD_SUB_D
+// (iFPUd-arm64.cpp:200); eeClampMode 3 and up dispatch to that path instead and
+// never reach here, and it guards unconditionally.
 //
 // When |expd - expt| <= 1 the mask clears zero bits, so that (common) case skips
 // straight to the plain op. Only |diff| >= 2 masks the smaller-exponent operand;
@@ -619,49 +619,13 @@ static void fpuEmitGuardedAddSub(const a64::VRegister& dst,
 	_freeNEONreg(tmp);
 }
 
-// FpuMulHack (Tales of Destiny Remake gamefix, EmuConfig.Gamefixes.FpuMulHack).
-// x86 routes every FPU multiply (MUL/MULA/MADD/MSUB) through FPU_MUL, which —
-// when the gamefix is on — patches the single specific product 0.25 * π
-// (0x3e800000 * 0x40490fdb) from the correctly-rounded 0x3f490fdb to 0x3f490fda
-// so the game stops hanging in one late-game room. Emit
-// `dst = (hit) ? 0x3f490fda : s*t`; callers clamp/accumulate dst as they normally
-// would (the magic value is an ordinary small float, so a following
-// fpuClampResult is a no-op). In the default config (gamefix off) this is a bare
-// Fmul — zero added cost.
-//
-// The patched value is not arbitrary: 0x3f490fda is π/4 one ULP low, which is
-// what the EE's multiplier actually returns. Its Booth recoding drops one ULP
-// when ft's significand has an odd digit pair (ft & 0x2AA) and the exact product
-// has no tail below the single ULP — here fs = 2^-2, so the product is exact and
-// the deficit reaches the result. The general model reproduces this pair (and
-// leaves the swapped operand order alone, exactly as the check below does).
-// It is NOT generalized here: in this fast path it costs ~9 instructions on every
-// multiply in every game, against 1 today. Its home is iFPUd-arm64.cpp, where the
-// double product already exists and it costs 4 — extending it to this path needs
-// its own measured case.
+// The EE multiplier's one-ULP deficit is not modelled here: it needs the exact
+// product's tail below the single's ULP, which a single-precision multiply has
+// already discarded. It lives at emitDefectiveFmul (iFPUd-arm64.cpp), where the
+// product is a double and the tail is 29 bits of it.
 static void emitFpuMul(const a64::VRegister& dst, const a64::VRegister& s, const a64::VRegister& t)
 {
-	if (!CHECK_FPUMULHACK)
-	{
-		armAsm->Fmul(dst, s, t);
-		return;
-	}
-
-	a64::Label noHack, done;
-	armAsm->Fmov(RWARG1, s);
-	armAsm->Fmov(RWARG2, t);
-	armAsm->Mov(RWSCRATCH, 0x3e800000);
-	armAsm->Cmp(RWARG1, RWSCRATCH);
-	armAsm->B(&noHack, a64::ne);
-	armAsm->Mov(RWSCRATCH, 0x40490fdb);
-	armAsm->Cmp(RWARG2, RWSCRATCH);
-	armAsm->B(&noHack, a64::ne);
-	armAsm->Mov(RWSCRATCH, 0x3f490fda);
-	armAsm->Fmov(dst, RWSCRATCH);
-	armAsm->B(&done);
-	armAsm->Bind(&noHack);
 	armAsm->Fmul(dst, s, t);
-	armAsm->Bind(&done);
 }
 
 //------------------------------------------------------------------
@@ -669,7 +633,8 @@ static void emitFpuMul(const a64::VRegister& dst, const a64::VRegister& s, const
 //------------------------------------------------------------------
 
 // "Full" / DOUBLE-precision emitters (iFPUd-arm64.cpp), selected per-op when
-// CHECK_FPU_FULL (GameDB eeClampMode:3). Default config uses the fast paths.
+// CHECK_FPU_FULL (GameDB eeClampMode 3 and up). Default config uses the fast
+// paths.
 // MOV.S is a raw bit-copy in BOTH modes (x86 DOUBLE::recMOV_S_xmm == the fast
 // body), so it has no DOUBLE selection.
 namespace DOUBLE {
@@ -703,7 +668,7 @@ static void recMOV_S_xmm(int info)
 	// fs==fd): the allocator hands back EEREC_D==EEREC_S and the Fmov would be
 	// an identity self-move.
 	if (EEREC_D != EEREC_S)
-		armAsm->Fmov(armSRegister(EEREC_D), armSRegister(EEREC_S));
+		armAsm->Fmov(armEeFprSlotReg(EEREC_D), armEeFprSlotReg(EEREC_S));
 }
 
 void recMOV_S()
@@ -796,12 +761,12 @@ static void recCompareFPRs(a64::Condition cond)
 	if (fsreg >= 0)
 		armAsm->Fmov(RSSCRATCH, armSRegister(fsreg));
 	else
-		armLoadEERegPtr(RSSCRATCH, &fpuRegs.fpr[_Fs_].f);
+		armLoadEERegPtr(RSSCRATCH, &fpuRegs.fpr[_Fs_]);
 	const int ftreg = (_Ft_ == _Fs_) ? fsreg : _checkNEONreg(NEONTYPE_FPREG, _Ft_, 0);
 	if (ftreg >= 0)
 		armAsm->Fmov(RSSCRATCH2, armSRegister(ftreg));
 	else
-		armLoadEERegPtr(RSSCRATCH2, &fpuRegs.fpr[_Ft_].f);
+		armLoadEERegPtr(RSSCRATCH2, &fpuRegs.fpr[_Ft_]);
 	fpuClampCompareOperand(RSSCRATCH);
 	fpuClampCompareOperand(RSSCRATCH2);
 	armAsm->Fcmp(RSSCRATCH, RSSCRATCH2);
@@ -1495,9 +1460,18 @@ void recMSUBA_S()
 // CVT.S: fd = (float)int_bits_of(fpr[fs])
 // Single NEON-scalar SCVTF Sd,Sn — the int32 bits are already in the V file;
 // the old Fmov-to-GPR bounce cost an extra insn + cross-file hazard (GE-02).
+// A relocated slot puts them back out of reach, so the double tier pays the
+// bounce.
 static void recCVT_S_xmm(int info)
 {
-	armAsm->Scvtf(armSRegister(EEREC_D), armSRegister(EEREC_S));
+	if (!CHECK_FPU_FULL)
+	{
+		armAsm->Scvtf(armSRegister(EEREC_D), armSRegister(EEREC_S));
+		return;
+	}
+	armEmitEeFprNarrow(RWSCRATCH, armDRegister(EEREC_S), a64::x9);
+	armAsm->Scvtf(RSSCRATCH, RWSCRATCH);
+	armEmitEeFprFromS(armDRegister(EEREC_D), RSSCRATCH, RXSCRATCH);
 }
 
 void recCVT_S()
@@ -1512,8 +1486,20 @@ void recCVT_S()
 // is NaN: ARM Fcvtzs yields 0, but the PS2 (interp CVT_W, FPU.cpp) saturates
 // NaN by sign — positive NaN → 0x7fffffff, negative NaN → 0x80000000. Fix up
 // the NaN case only (cold branch over the source-sign select).
+//
+// A relocated slot holds no NaN, so the double tier unscales into the value and
+// converts, and Fcvtzs's own saturation covers it.
 static void recCVT_W_xmm(int info)
 {
+	if (CHECK_FPU_FULL)
+	{
+		armAsm->Fmul(RDSCRATCH, armDRegister(EEREC_S),
+			a64::VRegister(NEON_RESERVED_EEFPU_UNSCALE, 64));
+		armAsm->Fcvtzs(RWSCRATCH, RDSCRATCH);
+		armEmitEeFprWiden(armDRegister(EEREC_D), RWSCRATCH, RXSCRATCH);
+		return;
+	}
+
 	const a64::VRegister fs = armSRegister(EEREC_S);
 	armAsm->Fcvtzs(RWSCRATCH, fs);
 	a64::Label done;

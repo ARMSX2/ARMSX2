@@ -34,7 +34,6 @@ internal val SETTINGS_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("perf.fix.eeTiming", true, SettingsCategory.Advanced),
     SettingsSearchEntry("perf.fix.instantDma", true, SettingsCategory.Advanced),
     SettingsSearchEntry("perf.fix.blitFps", true, SettingsCategory.Advanced),
-    SettingsSearchEntry("perf.fix.fpuMultiply", true, SettingsCategory.Advanced),
     SettingsSearchEntry("perf.fix.ophFlag", true, SettingsCategory.Advanced),
     SettingsSearchEntry("perf.fix.gifFifo", true, SettingsCategory.Advanced),
     SettingsSearchEntry("perf.fix.dmaBusy", true, SettingsCategory.Advanced),

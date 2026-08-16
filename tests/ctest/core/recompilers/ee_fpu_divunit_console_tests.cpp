@@ -61,11 +61,12 @@
 // two rsqrt rows it lost on -- 3895AEC3/4938608B and 43CD0CEB/365AF7C1, right
 // by cancellation under the old code and then not -- match again.
 //
-// The `ieee_*` column stays as the other engine's column: both recompilers
-// still take the host's correctly-rounded fdiv/fsqrt, so the divergence between
-// the two engines is exactly the 68 cells where the console and correct
-// rounding differ. TheFastPathStaysCorrectlyRoundedAndSaysSoHere asserts both
-// halves of that.
+// The `ieee_*` column is still the arm64 fast path's, which takes the host's
+// correctly-rounded fdiv/fsqrt: its divergence from the model is the 68 cells
+// where the console and correct rounding differ.
+// TheFastPathStaysCorrectlyRoundedAndSaysSoHere asserts both halves of that,
+// and ExactModeMatchesTheConsoleOnEveryRow asserts eeClampMode 4 against the
+// console column.
 //
 // Evidence archive: captures/fpmatrix/rsqprobe.c, hw-rsq-run{1,2,3}.bin and
 // PROBE-divsqrt-rounding.md in the notes tree; the recurrence and the
@@ -235,6 +236,20 @@ u32 RunInterp(const ConsoleRow& r, Op op)
 	return h.GetFprBitsInterp(kFd);
 }
 
+// eeClampMode 4 reaches the same two models through emitDivideUnitIsland, and
+// holds the top binade as well, so it owes the table what the interpreter does.
+u32 RunJitExact(const ConsoleRow& r, Op op)
+{
+	EeRecTestHarness h;
+	h.EnableCop1();
+	h.EnableFpuExactMode();
+	h.SetFprBits(kFs, r.fs);
+	h.SetFprBits(kFt, r.ft);
+	h.LoadProgram({ Encode(op) });
+	h.RunJitNoDiff();
+	return h.GetFprBitsJit(kFd);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -342,11 +357,9 @@ TEST(EeFpuDivUnitConsole, SiliconIsOneUlpOffInTheseExactWays)
 // ---------------------------------------------------------------------------
 // 4. The fast path does not get the model.
 //
-//    Both recompilers inherit the host's correctly-rounded fdiv/fsqrt, so off
-//    the top binade the JIT must still produce the `ieee_*` column exactly.
-//    Whether it should take the model too is a separate call with its own
-//    measurement, as it was for the multiplier's deficit (eeMulRound is
-//    interpreter-only as well).
+//    It inherits the host's correctly-rounded fdiv/fsqrt, so off the top binade
+//    it must still produce the `ieee_*` column exactly. Only eeClampMode 4 gets
+//    the model, at the price section 5 charges.
 // ---------------------------------------------------------------------------
 TEST(EeFpuDivUnitConsole, TheFastPathStaysCorrectlyRoundedAndSaysSoHere)
 {
@@ -380,4 +393,41 @@ TEST(EeFpuDivUnitConsole, TheFastPathStaysCorrectlyRoundedAndSaysSoHere)
 	EXPECT_EQ(diverged, 67)
 		<< "the interpreter is supposed to leave the fast path behind on exactly "
 		   "the rows where the console is not correctly rounded";
+}
+
+// ---------------------------------------------------------------------------
+// 5. eeClampMode 4 does get the model.
+//
+//    Same table, same counts as section 2, because it is the same recurrence
+//    reached from the recompiler rather than from the interpreter. The
+//    followed_silicon count is what keeps this from passing on the 193 cells a
+//    correctly rounded divider would also get right.
+// ---------------------------------------------------------------------------
+TEST(EeFpuDivUnitConsole, ExactModeMatchesTheConsoleOnEveryRow)
+{
+	int match[3] = {}, total[3] = {}, followed_silicon = 0;
+
+	for (const ConsoleRow& r : kRows)
+	{
+		for (Op op : { OP_SQRT, OP_DIV, OP_RSQRT })
+		{
+			const u32 got = RunJitExact(r, op), con = Con(r, op), ieee = Ieee(r, op);
+			++total[op];
+			match[op] += (got == con);
+			followed_silicon += (got == con && con != ieee);
+			EXPECT_EQ(got, con)
+				<< OpName(op) << " fs=" << std::hex << r.fs << " ft=" << r.ft
+				<< " (" << r.what << "), correctly rounded would be " << ieee;
+		}
+	}
+
+	EXPECT_EQ(match[OP_SQRT], 87) << "sqrt.s";
+	EXPECT_EQ(match[OP_DIV], 87) << "div.s";
+	EXPECT_EQ(match[OP_RSQRT], 87) << "rsqrt.s";
+	EXPECT_EQ(total[OP_SQRT] + total[OP_DIV] + total[OP_RSQRT], 261);
+
+	EXPECT_EQ(followed_silicon, 68)
+		<< "cells where silicon and correct rounding differ AND mode 4 took "
+		   "silicon's side -- 0 means the island stopped being emitted and this "
+		   "test is passing on the rows that cannot tell the two apart";
 }

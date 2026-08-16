@@ -606,6 +606,7 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool app
 			config.Cpu.Recompiler.fpuOverflow = (clampMode >= 1);
 			config.Cpu.Recompiler.fpuExtraOverflow = (clampMode >= 2);
 			config.Cpu.Recompiler.fpuFullMode = (clampMode >= 3);
+			config.Cpu.Recompiler.fpuExactMode = (clampMode >= 4);
 		}
 		else
 			Console.Warning("GameDB: Skipping changing EE/FPU clamp mode [mode=%d]", clampMode);

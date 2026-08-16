@@ -711,13 +711,13 @@ static constexpr u32 NEON_RESERVED_FPU_MIN = 9;
 // (The callee-saved allocator range q10-q15 is declared in iCore-arm64.h —
 // NEON_CALLEE_SAVED_START/END; indices 8/9 reserved above. SL-13 reserves
 // q25/q26 the same way for the COP2 clamp-constant broadcasts —
-// NEON_RESERVED_COP2_CLAMPMAX/MIN in iCore-arm64.h. q10 is reserved the same
-// way again for the mode-3 multiplier-defect mask —
-// NEON_RESERVED_FPU_MULMASK, also iCore-arm64.h, which carries the contract.)
+// NEON_RESERVED_COP2_CLAMPMAX/MIN in iCore-arm64.h. q11 is reserved the same
+// way again for the EE FPU's unscale constant — NEON_RESERVED_EEFPU_UNSCALE,
+// also iCore-arm64.h, which carries the contract.)
 static bool _isReservedNEONreg(u32 i)
 {
 	return i == NEON_RESERVED_FPU_MAX || i == NEON_RESERVED_FPU_MIN ||
-	       i == NEON_RESERVED_FPU_MULMASK ||
+	       i == NEON_RESERVED_EEFPU_UNSCALE ||
 	       i == NEON_RESERVED_COP2_CLAMPMAX || i == NEON_RESERVED_COP2_CLAMPMIN;
 }
 
@@ -906,7 +906,7 @@ int _allocFPtoNEONreg(int fpreg, int mode)
 
 	if (mode & MODE_READ)
 	{
-		armLoadEERegPtrRaw(armSRegister(neonreg), &fpuRegs.fpr[fpreg].f);
+		armAsm->Ldr(armEeFprSlotReg(neonreg), armCpuRegMem(&fpuRegs.fpr[fpreg]));
 	}
 
 	return neonreg;
@@ -1062,7 +1062,7 @@ int _allocFPACCtoNEONreg(int mode)
 
 	if (mode & MODE_READ)
 	{
-		armLoadEERegPtrRaw(armSRegister(neonreg), &fpuRegs.ACC.f);
+		armAsm->Ldr(armEeFprSlotReg(neonreg), armCpuRegMem(&fpuRegs.ACC));
 	}
 
 	return neonreg;
@@ -1123,13 +1123,13 @@ void _writebackNEONreg(int neonreg)
 
 		case NEONTYPE_FPREG:
 		{
-			armStoreEERegPtrRaw(armSRegister(neonreg), &fpuRegs.fpr[arm64neon[neonreg].reg].f);
+			armAsm->Str(armEeFprSlotReg(neonreg), armCpuRegMem(&fpuRegs.fpr[arm64neon[neonreg].reg]));
 		}
 		break;
 
 		case NEONTYPE_FPACC:
 		{
-			armStoreEERegPtrRaw(armSRegister(neonreg), &fpuRegs.ACC.f);
+			armAsm->Str(armEeFprSlotReg(neonreg), armCpuRegMem(&fpuRegs.ACC));
 		}
 		break;
 
@@ -1214,8 +1214,54 @@ void _addNeededGPRtoNEONreg(int gprreg)
 	}
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+// High-water marks of the needed set, sampled per op at the clear below, where
+// an op's allocations are all made and none released. The GPRREG count is the
+// demand on the callee-saved range, which _allocGPRtoNEONreg draws from alone.
+// Read by EeFuzz.CalleeSavedNeonBudget.
+static u32 s_neonGprNeededPeak = 0;
+static u32 s_neonRangeNeededPeak = 0;
+
+static void _sampleNeonNeededPeak()
+{
+	u32 gpr = 0, range = 0;
+	for (u32 i = 0; i < static_cast<u32>(NUM_ARM_NEON_REGS); i++)
+	{
+		if (!arm64neon[i].inuse || !arm64neon[i].needed)
+			continue;
+		if (arm64neon[i].type == NEONTYPE_GPRREG)
+			gpr++;
+		if (i >= NEON_CALLEE_SAVED_START && i < NEON_CALLEE_SAVED_END && !_isReservedNEONreg(i))
+			range++;
+	}
+	if (gpr > s_neonGprNeededPeak)
+		s_neonGprNeededPeak = gpr;
+	if (range > s_neonRangeNeededPeak)
+		s_neonRangeNeededPeak = range;
+}
+
+void eeTestResetNeonNeededPeak()
+{
+	s_neonGprNeededPeak = 0;
+	s_neonRangeNeededPeak = 0;
+}
+u32 eeTestNeonGprNeededPeak() { return s_neonGprNeededPeak; }
+u32 eeTestNeonRangeNeededPeak() { return s_neonRangeNeededPeak; }
+
+u32 eeTestNeonCalleeSavedSlots()
+{
+	u32 n = 0;
+	for (u32 i = NEON_CALLEE_SAVED_START; i < NEON_CALLEE_SAVED_END; i++)
+		n += _isReservedNEONreg(i) ? 0 : 1;
+	return n;
+}
+#endif
+
 void _clearNeededNEONregs()
 {
+#ifdef PCSX2_RECOMPILER_TESTS
+	_sampleNeonNeededPeak();
+#endif
 	for (int i = 0; i < NUM_ARM_NEON_REGS; i++)
 	{
 		if (arm64neon[i].needed && arm64neon[i].type == NEONTYPE_TEMP)

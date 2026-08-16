@@ -207,8 +207,6 @@ data class Settings(
     val gamefixInstantDma: Boolean = false,
     /** EmuCore/Gamefixes/BlitInternalFPSHack. */
     val gamefixBlitInternalFps: Boolean = false,
-    /** EmuCore/Gamefixes/FpuMulHack — Tales of Destiny. */
-    val gamefixFpuMul: Boolean = false,
     /** EmuCore/Gamefixes/OPHFlagHack — Bleach Blade Battlers. */
     val gamefixOphFlag: Boolean = false,
     /** EmuCore/Gamefixes/GIFFIFOHack — emulate the GIF FIFO (Test Drive Unlimited). */
@@ -821,7 +819,6 @@ data class Settings(
         put("EmuCore/Gamefixes", "EETimingHack", "bool", gamefixEETiming.toString())
         put("EmuCore/Gamefixes", "InstantDMAHack", "bool", gamefixInstantDma.toString())
         put("EmuCore/Gamefixes", "BlitInternalFPSHack", "bool", gamefixBlitInternalFps.toString())
-        put("EmuCore/Gamefixes", "FpuMulHack", "bool", gamefixFpuMul.toString())
         put("EmuCore/Gamefixes", "OPHFlagHack", "bool", gamefixOphFlag.toString())
         put("EmuCore/Gamefixes", "GIFFIFOHack", "bool", gamefixGifFifo.toString())
         put("EmuCore/Gamefixes", "DMABusyHack", "bool", gamefixDmaBusy.toString())
@@ -1039,7 +1036,6 @@ data class Settings(
             gamefixEETiming = boolAt("EmuCore/Gamefixes/EETimingHack") ?: this.gamefixEETiming,
             gamefixInstantDma = boolAt("EmuCore/Gamefixes/InstantDMAHack") ?: this.gamefixInstantDma,
             gamefixBlitInternalFps = boolAt("EmuCore/Gamefixes/BlitInternalFPSHack") ?: this.gamefixBlitInternalFps,
-            gamefixFpuMul = boolAt("EmuCore/Gamefixes/FpuMulHack") ?: this.gamefixFpuMul,
             gamefixOphFlag = boolAt("EmuCore/Gamefixes/OPHFlagHack") ?: this.gamefixOphFlag,
             gamefixGifFifo = boolAt("EmuCore/Gamefixes/GIFFIFOHack") ?: this.gamefixGifFifo,
             gamefixDmaBusy = boolAt("EmuCore/Gamefixes/DMABusyHack") ?: this.gamefixDmaBusy,
@@ -1631,7 +1627,6 @@ data class Settings(
         put("gamefixEETiming", gamefixEETiming)
         put("gamefixInstantDma", gamefixInstantDma)
         put("gamefixBlitInternalFps", gamefixBlitInternalFps)
-        put("gamefixFpuMul", gamefixFpuMul)
         put("gamefixOphFlag", gamefixOphFlag)
         put("gamefixGifFifo", gamefixGifFifo)
         put("gamefixDmaBusy", gamefixDmaBusy)
@@ -1894,7 +1889,6 @@ data class Settings(
                 gamefixEETiming = json.optBoolean("gamefixEETiming", def.gamefixEETiming),
                 gamefixInstantDma = json.optBoolean("gamefixInstantDma", def.gamefixInstantDma),
                 gamefixBlitInternalFps = json.optBoolean("gamefixBlitInternalFps", def.gamefixBlitInternalFps),
-                gamefixFpuMul = json.optBoolean("gamefixFpuMul", def.gamefixFpuMul),
                 gamefixOphFlag = json.optBoolean("gamefixOphFlag", def.gamefixOphFlag),
                 gamefixGifFifo = json.optBoolean("gamefixGifFifo", def.gamefixGifFifo),
                 gamefixDmaBusy = json.optBoolean("gamefixDmaBusy", def.gamefixDmaBusy),
@@ -2141,7 +2135,6 @@ data class Settings(
             if (current.gamefixEETiming != base.gamefixEETiming) j.put("gamefixEETiming", current.gamefixEETiming)
             if (current.gamefixInstantDma != base.gamefixInstantDma) j.put("gamefixInstantDma", current.gamefixInstantDma)
             if (current.gamefixBlitInternalFps != base.gamefixBlitInternalFps) j.put("gamefixBlitInternalFps", current.gamefixBlitInternalFps)
-            if (current.gamefixFpuMul        != base.gamefixFpuMul)        j.put("gamefixFpuMul", current.gamefixFpuMul)
             if (current.gamefixOphFlag       != base.gamefixOphFlag)       j.put("gamefixOphFlag", current.gamefixOphFlag)
             if (current.gamefixGifFifo       != base.gamefixGifFifo)       j.put("gamefixGifFifo", current.gamefixGifFifo)
             if (current.gamefixDmaBusy       != base.gamefixDmaBusy)       j.put("gamefixDmaBusy", current.gamefixDmaBusy)
@@ -2376,7 +2369,6 @@ data class Settings(
             gamefixEETiming = if (overrides.has("gamefixEETiming")) overrides.getBoolean("gamefixEETiming") else base.gamefixEETiming,
             gamefixInstantDma = if (overrides.has("gamefixInstantDma")) overrides.getBoolean("gamefixInstantDma") else base.gamefixInstantDma,
             gamefixBlitInternalFps = if (overrides.has("gamefixBlitInternalFps")) overrides.getBoolean("gamefixBlitInternalFps") else base.gamefixBlitInternalFps,
-            gamefixFpuMul = if (overrides.has("gamefixFpuMul")) overrides.getBoolean("gamefixFpuMul") else base.gamefixFpuMul,
             gamefixOphFlag = if (overrides.has("gamefixOphFlag")) overrides.getBoolean("gamefixOphFlag") else base.gamefixOphFlag,
             gamefixGifFifo = if (overrides.has("gamefixGifFifo")) overrides.getBoolean("gamefixGifFifo") else base.gamefixGifFifo,
             gamefixDmaBusy = if (overrides.has("gamefixDmaBusy")) overrides.getBoolean("gamefixDmaBusy") else base.gamefixDmaBusy,

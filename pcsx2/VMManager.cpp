@@ -3200,6 +3200,10 @@ void VMManager::CheckForCPUConfigChanges(const Pcsx2Config& old_config)
 	Console.WriteLn("Updating CPU configuration...");
 	FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUFPCR);
 
+	// Before the code cache is thrown away below, so no emitted code and the
+	// file it works on can disagree about what a slot holds.
+	eeFprSyncSlotFormat();
+
 	// The VU program cache toggle (EnableVUProgramCache) is picked up by the
 	// mVUreset that ClearCPUExecutionCaches triggers below — recording and the
 	// disk cache are re-synced there from the live config, so no explicit sync

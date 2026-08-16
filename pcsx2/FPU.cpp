@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <iterator>
 
 // Helper Macros
 //****************************************************************
@@ -30,23 +31,23 @@
 #define _Fs_         ( ( cpuRegs.code >> 11 ) & 0x1F )
 #define _Fd_         ( ( cpuRegs.code >>  6 ) & 0x1F )
 
-// Floats
-#define _FtValf_     fpuRegs.fpr[ _Ft_ ].f
-#define _FsValf_     fpuRegs.fpr[ _Fs_ ].f
-#define _FdValf_     fpuRegs.fpr[ _Fd_ ].f
-#define _FAValf_     fpuRegs.ACC.f
+/*	The word is never an lvalue here: a slot is wider than the word it holds
+	(R5900.h), so reads go through the accessor and writes through a setter.
+*/
 
 // U32's
-#define _FtValUl_    fpuRegs.fpr[ _Ft_ ].UL
-#define _FsValUl_    fpuRegs.fpr[ _Fs_ ].UL
-#define _FdValUl_    fpuRegs.fpr[ _Fd_ ].UL
-#define _FAValUl_    fpuRegs.ACC.UL
+#define _FtValUl_    fpuRegs.fpr[ _Ft_ ].Word()
+#define _FsValUl_    fpuRegs.fpr[ _Fs_ ].Word()
+#define _FdValUl_    fpuRegs.fpr[ _Fd_ ].Word()
+#define _FAValUl_    fpuRegs.ACC.Word()
 
-// S32's - useful for ensuring sign extension when needed.
-#define _FtValSl_    fpuRegs.fpr[ _Ft_ ].SL
-#define _FsValSl_    fpuRegs.fpr[ _Fs_ ].SL
-#define _FdValSl_    fpuRegs.fpr[ _Fd_ ].SL
-#define _FAValSl_    fpuRegs.ACC.SL
+// S32 - useful for ensuring sign extension when needed.
+#define _FsValSl_    static_cast<s32>( _FsValUl_ )
+
+// Destination writes
+#define _SetFsVal_( w )  fpuRegs.fpr[ _Fs_ ].SetWord( w )
+#define _SetFdVal_( w )  fpuRegs.fpr[ _Fd_ ].SetWord( w )
+#define _SetFAVal_( w )  fpuRegs.ACC.SetWord( w )
 
 // FPU Control Reg (FCR31)
 #define _ContVal_    fpuRegs.fprc[ 31 ]
@@ -63,6 +64,42 @@
 #define FPUflagSU	0X00000008
 
 //****************************************************************
+
+bool g_eeFprSlotsRelocated = false;
+
+void eeFprSyncSlotFormat()
+{
+	const bool want = CHECK_FPU_FULL;
+	if (want == g_eeFprSlotsRelocated)
+		return;
+
+	// Read every word in the outgoing format before changing it, since the
+	// accessors are what the format means.
+	u32 words[std::size(fpuRegs.fpr)];
+	for (size_t i = 0; i < std::size(words); i++)
+		words[i] = fpuRegs.fpr[i].Word();
+	const u32 acc = fpuRegs.ACC.Word();
+
+	g_eeFprSlotsRelocated = want;
+
+	for (size_t i = 0; i < std::size(words); i++)
+		fpuRegs.fpr[i].SetWord(words[i]);
+	fpuRegs.ACC.SetWord(acc);
+}
+
+static u32 floatToBits(float f)
+{
+	u32 bits;
+	std::memcpy(&bits, &f, sizeof(bits));
+	return bits;
+}
+
+static float bitsToFloat(u32 bits)
+{
+	float f;
+	std::memcpy(&f, &bits, sizeof(f));
+	return f;
+}
 
 /*	The EE value of a raw FPR word, exactly, as a double.
 
@@ -121,9 +158,36 @@ static void clampToEeRange(u32& xReg)
 		xReg &= 0x80000000;
 }
 
+/*	Whether a result saturates, decided after the rounding and not on the exact
+	value. The unit normalises and rounds to 24 bits before anything looks at
+	the exponent field, so a result can exceed kEeFpuMax and still come back on
+	it: 0x7FFFFFFF + 2^104 is 2^129 - 2^104, which needs 25 significant bits and
+	chops to 0x7FFFFFFF. One exponent higher the sum is 2^129, which does not
+	fit however it is rounded.
+
+	Above 2^129 no rounding brings a value back, which also keeps the scaled
+	cast below in float range.
+
+	The rounding is the (float) cast's, so the ambient FPCR decides it here as
+	it does everywhere else in this file -- under round-to-nearest the same
+	2^129 - 2^104 is a tie that goes to 2^129 and does saturate.
+*/
+static bool eeRoundsOutOfRange(double exact)
+{
+	const double mag = std::fabs(exact);
+	if (mag <= kEeFpuMax)
+		return false;
+	if (mag >= 0x1p129)
+		return true;
+	const u32 w = floatToBits(static_cast<float>(exact * 0x1p-4));
+	return ((w >> 23) & 0xFFu) + 4u > 255u;
+}
+
 /*	One rounding step's worth of FCR31 O/U maintenance, from the magnitude of
-	the exact result. `exact` is the step's result recomputed through
-	eeToDouble(), where nothing was clamped, rounded away or flushed.
+	the value the step produced -- the sum or product as a double, before the
+	narrowing to an EE single but after everything the unit itself did to the
+	operands. For the adder that means after the guard mask (eeGuardedSum): the
+	flags report what was added, not what was asked for.
 
 	checkOverflow()/checkUnderflow() used to ask instead whether xReg had come
 	back as a host infinity or a host denormal. Neither ever appears in the FP
@@ -142,21 +206,22 @@ static void clampToEeRange(u32& xReg)
 static void raiseOrClearOU(double exact)
 {
 	_ContVal_ &= ~(FPUflagO | FPUflagU);
-	if (std::fabs(exact) > kEeFpuMax)
+	if (eeRoundsOutOfRange(exact))
 		_ContVal_ |= FPUflagO | FPUflagSO;
 	else if (exact != 0.0 && std::fabs(exact) < kEeMinNormal)
 		_ContVal_ |= FPUflagU | FPUflagSU;
 }
 
 /*	The multiply-accumulates round twice, so they raise twice: once on the
-	intermediate product, once on the accumulate. These two predicates are what
-	the product hands on to the second step.
+	intermediate product, once on the accumulate. This predicate is what the
+	product hands on to the second step.
 
 	An underflowing product is flushed to signed zero before the accumulate, so
 	the accumulate sees ACC and clears the cause U again, leaving the sticky SU
 	up. 68 cases in the capture come back with SU set and U clear; all are
 	multiply-accumulates and no plain MUL/MULA ever does, which is what says two
-	steps rather than one.
+	steps rather than one. The flush needs no helper: the product reaches the
+	adder through eeMulRound(), which returns a signed zero for it.
 
 	An overflowing product ends the instruction. Silicon saturates there and the
 	accumulate cannot bring it back: MADD of 2^128 by 2.0 onto an ACC of -2^128
@@ -168,13 +233,6 @@ static void raiseOrClearOU(double exact)
 static bool madAccumulandOverflowed(double product)
 {
 	return std::fabs(product) > kEeFpuMax;
-}
-
-static double madFlushedProduct(double product)
-{
-	if (product != 0.0 && std::fabs(product) < kEeMinNormal)
-		return std::copysign(0.0, product);
-	return product;
 }
 
 __fi u32 fp_max(u32 a, u32 b)
@@ -219,10 +277,9 @@ bool checkDivideByZero(u32& xReg, u32 yDivisorReg, u32 zDividendReg, u32 cFlagsT
 #ifdef comparePrecision
 // This compare discards the least-significant bit(s) in order to solve some rounding issues.
 	#define C_cond_S(cond) {  \
-		FPRreg tempA, tempB;  \
-		tempA.UL = _FsValUl_ & comparePrecision;  \
-		tempB.UL = _FtValUl_ & comparePrecision;  \
-		_ContVal_ = ( ( tempA.f ) cond ( tempB.f ) ) ?  \
+		const float tempA = bitsToFloat( _FsValUl_ & comparePrecision );  \
+		const float tempB = bitsToFloat( _FtValUl_ & comparePrecision );  \
+		_ContVal_ = ( ( tempA ) cond ( tempB ) ) ?  \
 					( _ContVal_ | FPUflagC ) :  \
 					( _ContVal_ & ~FPUflagC );  \
 	}
@@ -326,7 +383,7 @@ static u32 eeRoundToSingle(double exact, bool addsub = false)
 {
 	const double mag = std::fabs(exact);
 
-	if (mag > kEeFpuMax)
+	if (eeRoundsOutOfRange(exact))
 		return (std::signbit(exact) ? 0x80000000u : 0u) | 0x7FFFFFFFu;
 
 	if (mag < kEeMinNormal)
@@ -344,20 +401,16 @@ static u32 eeRoundToSingle(double exact, bool addsub = false)
 		return sign | static_cast<u32>((bits >> 29) & 0x7FFFFFu);
 	}
 
-	FPRreg r;
 	if (mag >= 0x1p126)
 	{
 		/*	Scale down by 2^4, round there, then add the 4 exponents back. The
 			scaled exponent field is at most 251, so the +4 cannot carry into
 			the sign, and the >= 2^126 floor keeps the scaled value normal, so
 			nothing is flushed on the way through. */
-		r.f = static_cast<float>(exact * 0x1p-4);
-		r.UL += 4u << 23;
-		return r.UL;
+		return floatToBits(static_cast<float>(exact * 0x1p-4)) + (4u << 23);
 	}
 
-	r.f = static_cast<float>(exact);
-	return r.UL;
+	return floatToBits(static_cast<float>(exact));
 }
 
 /*	The EE FPU's adder carries no guard bits to the right of the mantissa. A
@@ -374,7 +427,7 @@ static u32 eeRoundToSingle(double exact, bool addsub = false)
 	nothing left but its sign. |diff| <= 1 masks nothing.
 
 	Ported from x86 FPU_ADD_SUB (x86/iFPU.cpp) and, on arm64, fpuEmitGuardedAddSub
-	(iFPU-arm64.cpp, the single-precision fast path) and FPU_ADD_SUB
+	(iFPU-arm64.cpp, the single-precision fast path) and FPU_ADD_SUB_D
 	(iFPUd-arm64.cpp, the Full-clamp DOUBLE path).
 
 	Both recompilers gate the masking on CHECK_FPU_GUARDED, the fpuGuardedAddSub
@@ -409,13 +462,20 @@ static void fpuGuardMask(u32& a, u32& b)
 	on the hardware.
 
 	Subtraction is addition of the negated operand, as IEEE defines it: that gets
-	the zero signs right, including for a masked +-0. */
-static u32 eeGuardedAddSub(u32 a, u32 b, bool issub)
+	the zero signs right, including for a masked +-0.
+
+	This returns the sum rather than the rounded word because the flags come off
+	it too: what the adder produced is what FCR31 reports, so its callers round
+	it for the destination and hand this same value to raiseOrClearOU() instead
+	of recomputing a second sum from the unmasked operands. Where the mask
+	erases an operand the two differ, and the console follows this one -- see
+	ee_fpu_ou_rounding_console_tests.cpp. */
+static double eeGuardedSum(u32 a, u32 b, bool issub)
 {
 	fpuGuardMask(a, b);
 	if (issub)
 		b ^= 0x80000000;
-	return eeRoundToSingle(eeToDouble(a) + eeToDouble(b), true);
+	return eeToDouble(a) + eeToDouble(b);
 }
 
 /*	The EE's divide/square-root unit, digit by digit.
@@ -600,7 +660,7 @@ static u32 eeDivideSignificand(u32 sma, u32 smb)
 	return (quotient << 1) + eeSrtDigitValue(digit);
 }
 
-static u32 eeDivide(u32 a, u32 b)
+u32 eeDivide(u32 a, u32 b)
 {
 	const s32 ea = (s32)((a >> 23) & 0xFF);
 	const s32 eb = (s32)((b >> 23) & 0xFF);
@@ -696,7 +756,7 @@ static u32 eeSqrtSignificand(u32 m)
 	return (root >> 2) & 0xFFFFFFu;
 }
 
-static u32 eeSqrtBits(u32 t)
+u32 eeSqrtBits(u32 t)
 {
 	const u32 E = (t >> 23) & 0xFFu;
 	if (E == 0)
@@ -712,32 +772,37 @@ static u32 eeSqrtBits(u32 t)
 	any more: DIV.S, SQRT.S and RSQRT.S are integer arithmetic now, and no
 	rounding mode reaches a digit recurrence. That register is PCSX2's surrogate
 	for the divide unit rounding to nearest while the rest of the FPU chops, and
-	both recompilers still swap it in, because they run these ops on host singles
-	(arm64 recDIV_S_xmm / recSQRT_S_xmm / recRSQRT_S_xmm in iFPU-arm64.cpp and
-	the DOUBLE:: twins in iFPUd-arm64.cpp; x86 iFPU.cpp / iFPUd.cpp with
-	xLDMXCSR): 1.0 rsqrt 1.5 is 0x3F5105EB on the console and 0x3F5105EC without
-	the swap. So the two engines part company on every operand silicon is not
+	the recompiler tiers that still run these ops on host floats swap it in:
+	arm64's fast path (recDIV_S_xmm / recSQRT_S_xmm / recRSQRT_S_xmm in
+	iFPU-arm64.cpp) and every x86 tier (iFPU.cpp / iFPUd.cpp with xLDMXCSR).
+	1.0 rsqrt 1.5 is 0x3F5105EB on the console and 0x3F5105EC without the swap,
+	so those tiers part company with this one on every operand silicon is not
 	correctly rounded on, which EeRecFpuDivUnitRounding and EeRecFpuRsqrt pin.
+
+	arm64's eeClampMode 4 calls eeDivide and eeSqrtBits out of line instead --
+	emitDivideUnitIsland in iFPUd-arm64.cpp -- so it has no rounding mode to
+	swap and nothing to diverge over.
 */
 
 void ABS_S() {
-	_FdValUl_ = _FsValUl_ & 0x7fffffff;
+	_SetFdVal_( _FsValUl_ & 0x7fffffff );
 	clearFPUFlags( FPUflagO | FPUflagU );
 }
 
-/*	Every op below computes `exact` before writing its destination: fd may alias
-	fs or ft, and the accumulator forms read the ACC they are about to write.
+/*	Every op below computes its result before writing its destination: fd may
+	alias fs or ft, and the accumulator forms read the ACC they are about to
+	write.
 */
 void ADD_S() {
-	const double exact = eeToDouble( _FsValUl_ ) + eeToDouble( _FtValUl_ );
-	_FdValUl_ = eeGuardedAddSub( _FsValUl_, _FtValUl_, false );
-	raiseOrClearOU( exact );
+	const double sum = eeGuardedSum( _FsValUl_, _FtValUl_, false );
+	_SetFdVal_( eeRoundToSingle( sum, true ) );
+	raiseOrClearOU( sum );
 }
 
 void ADDA_S() {
-	const double exact = eeToDouble( _FsValUl_ ) + eeToDouble( _FtValUl_ );
-	_FAValUl_ = eeGuardedAddSub( _FsValUl_, _FtValUl_, false );
-	raiseOrClearOU( exact );
+	const double sum = eeGuardedSum( _FsValUl_, _FtValUl_, false );
+	_SetFAVal_( eeRoundToSingle( sum, true ) );
+	raiseOrClearOU( sum );
 }
 
 void BC1F() {
@@ -790,13 +855,13 @@ void CTC1() {
 }
 
 void CVT_S() {
-	_FdValf_ = (float)_FsValSl_;
+	_SetFdVal_( floatToBits( (float)_FsValSl_ ) );
 }
 
 void CVT_W() {
-	if ( ( _FsValUl_ & 0x7F800000 ) <= 0x4E800000 ) { _FdValSl_ = (s32)_FsValf_; }
-	else if ( ( _FsValUl_ & 0x80000000 ) == 0 ) { _FdValUl_ = 0x7fffffff; }
-	else { _FdValUl_ = 0x80000000; }
+	if ( ( _FsValUl_ & 0x7F800000 ) <= 0x4E800000 ) { _SetFdVal_( (u32)(s32)bitsToFloat( _FsValUl_ ) ); }
+	else if ( ( _FsValUl_ & 0x80000000 ) == 0 ) { _SetFdVal_( 0x7fffffff ); }
+	else { _SetFdVal_( 0x80000000 ); }
 }
 
 void DIV_S() {
@@ -804,8 +869,13 @@ void DIV_S() {
 	// and RSQRT.S.
 	clearFPUFlags(FPUflagI | FPUflagD);
 
-	if (checkDivideByZero( _FdValUl_, _FtValUl_, _FsValUl_, FPUflagD | FPUflagSD, FPUflagI | FPUflagSI)) return;
-	_FdValUl_ = eeDivide( _FsValUl_, _FtValUl_ );
+	u32 saturated;
+	if (checkDivideByZero( saturated, _FtValUl_, _FsValUl_, FPUflagD | FPUflagSD, FPUflagI | FPUflagSI))
+	{
+		_SetFdVal_( saturated );
+		return;
+	}
+	_SetFdVal_( eeDivide( _FsValUl_, _FtValUl_ ) );
 }
 
 /*	The EE multiplier's one-ULP deficit.
@@ -943,7 +1013,7 @@ static u64 eeMulArray(u32 a, u32 b)
 	return full - (((lo + hi) ^ full) & 0x8000);
 }
 
-static bool eeMulOneUlpLow(u32 fs, u32 ft)
+bool eeMulOneUlpLow(u32 fs, u32 ft)
 {
 	if ((fs & 0x7F800000) == 0 || (ft & 0x7F800000) == 0)
 		return false; // a zero operand (denormals are zero): the product is zero
@@ -979,11 +1049,11 @@ static u32 eeMulRound(u32 fs, u32 ft, double exact)
 */
 /*	The product is its own named double, so -ffp-contract cannot fuse away the
 	two roundings the PS2 ISA mandates -- and so the two flag steps below have
-	something separate to look at. See raiseOrClearOU/madFlushedProduct.
+	something separate to look at. See raiseOrClearOU/madAccumulandOverflowed.
 
 	The A-forms name their single-precision product too, because the guarded adder
 	needs its bits, and that takes the accumulate out of the compiler's reach as
-	well: `_FAValf_ += fs * ft` is one expression a contracting compiler can turn
+	well: `acc += fs * ft` is one expression a contracting compiler can turn
 	into a single-rounded FMA, with only the -ffp-contract=off line in
 	pcsx2/CMakeLists.txt between it and that. On corpus cases 567 and 1130 the
 	fused value is the console's, so a contracting build hid the guard-bit defect
@@ -998,35 +1068,36 @@ static u32 eeMulRound(u32 fs, u32 ft, double exact)
 	madAccumulandOverflowed() has always made for the flag; the value follows it
 	now too.
 */
-static u32 eeMulAccumulate(u32 fs, u32 ft, u32 accbits, bool issub)
+static u32 eeMulAccumulate(u32 fs, u32 ft, u32 accbits, bool issub, double* sum)
 {
 	const double product = eeToDouble( fs ) * eeToDouble( ft );
 	const u32 rounded = eeMulRound( fs, ft, product ) ^ (issub ? 0x80000000u : 0u);
 	if (madAccumulandOverflowed( product ))
 		return rounded;
-	return eeGuardedAddSub( accbits, rounded, false );
+	*sum = eeGuardedSum( accbits, rounded, false );
+	return eeRoundToSingle( *sum, true );
 }
 
 void MADD_S() {
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
-	const double acc = eeToDouble( _FAValUl_ );
-	_FdValUl_ = eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, false );
+	double sum = 0.0;
+	_SetFdVal_( eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, false, &sum ) );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
-	raiseOrClearOU( acc + madFlushedProduct( product ) );
+	raiseOrClearOU( sum );
 }
 
 void MADDA_S() {
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
-	const double acc = eeToDouble( _FAValUl_ );
-	_FAValUl_ = eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, false );
+	double sum = 0.0;
+	_SetFAVal_( eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, false, &sum ) );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
-	raiseOrClearOU( acc + madFlushedProduct( product ) );
+	raiseOrClearOU( sum );
 }
 
 void MAX_S() {
-	_FdValUl_  = fp_max( _FsValUl_, _FtValUl_ );
+	_SetFdVal_( fp_max( _FsValUl_, _FtValUl_ ) );
 	clearFPUFlags( FPUflagO | FPUflagU );
 }
 
@@ -1036,34 +1107,34 @@ void MFC1() {
 }
 
 void MIN_S() {
-	_FdValUl_ = fp_min(_FsValUl_, _FtValUl_);
+	_SetFdVal_( fp_min( _FsValUl_, _FtValUl_ ) );
 	clearFPUFlags( FPUflagO | FPUflagU );
 }
 
 void MOV_S() {
-	_FdValUl_ = _FsValUl_;
+	_SetFdVal_( _FsValUl_ );
 }
 
 void MSUB_S() {
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
-	const double acc = eeToDouble( _FAValUl_ );
-	_FdValUl_ = eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, true );
+	double sum = 0.0;
+	_SetFdVal_( eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, true, &sum ) );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
-	raiseOrClearOU( acc - madFlushedProduct( product ) );
+	raiseOrClearOU( sum );
 }
 
 void MSUBA_S() {
 	const double product = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
-	const double acc = eeToDouble( _FAValUl_ );
-	_FAValUl_ = eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, true );
+	double sum = 0.0;
+	_SetFAVal_( eeMulAccumulate( _FsValUl_, _FtValUl_, _FAValUl_, true, &sum ) );
 	raiseOrClearOU( product );
 	if (madAccumulandOverflowed( product )) return;
-	raiseOrClearOU( acc - madFlushedProduct( product ) );
+	raiseOrClearOU( sum );
 }
 
 void MTC1() {
-	_FsValUl_ = cpuRegs.GPR.r[_Rt_].UL[0];
+	_SetFsVal_( cpuRegs.GPR.r[_Rt_].UL[0] );
 }
 
 /*	The product of two EE singles is 48 significand bits, so a double holds it
@@ -1076,18 +1147,18 @@ void MTC1() {
 */
 void MUL_S() {
 	const double exact = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
-	_FdValUl_ = eeMulRound( _FsValUl_, _FtValUl_, exact );
+	_SetFdVal_( eeMulRound( _FsValUl_, _FtValUl_, exact ) );
 	raiseOrClearOU( exact );
 }
 
 void MULA_S() {
 	const double exact = eeToDouble( _FsValUl_ ) * eeToDouble( _FtValUl_ );
-	_FAValUl_ = eeMulRound( _FsValUl_, _FtValUl_, exact );
+	_SetFAVal_( eeMulRound( _FsValUl_, _FtValUl_, exact ) );
 	raiseOrClearOU( exact );
 }
 
 void NEG_S() {
-	_FdValUl_  = (_FsValUl_ ^ 0x80000000);
+	_SetFdVal_( _FsValUl_ ^ 0x80000000 );
 	clearFPUFlags( FPUflagO | FPUflagU );
 }
 
@@ -1110,7 +1181,7 @@ void RSQRT_S() {
 		// time the division happens. Console rows 59 and 63: rsqrt(+0, -0) is
 		// +0x7FFFFFFF and rsqrt(-0, -0) is -0x7FFFFFFF, and an xor rule flips
 		// both.
-		_FdValUl_ = ( _FsValUl_ & 0x80000000 ) | 0x7FFFFFFF;
+		_SetFdVal_( ( _FsValUl_ & 0x80000000 ) | 0x7FFFFFFF );
 		return;
 	}
 
@@ -1131,7 +1202,7 @@ void RSQRT_S() {
 	// operand pairs over two probes, each pair run as sqrt.s, rsqrt.s and
 	// div.s, and rsqrt.s equals div.s(Fs, sqrt.s(Ft)) on every row, with a
 	// plain 24-bit single in between. See ee_fpu_divunit_console_tests.cpp.
-	_FdValUl_ = eeDivide( _FsValUl_, eeSqrtBits( _FtValUl_ ) );
+	_SetFdVal_( eeDivide( _FsValUl_, eeSqrtBits( _FtValUl_ ) ) );
 }
 
 void SQRT_S() {
@@ -1148,19 +1219,19 @@ void SQRT_S() {
 	if ( _FtValUl_ & 0x80000000 )
 		_ContVal_ |= FPUflagI | FPUflagSI;
 
-	_FdValUl_ = eeSqrtBits( _FtValUl_ );
+	_SetFdVal_( eeSqrtBits( _FtValUl_ ) );
 }
 
 void SUB_S() {
-	const double exact = eeToDouble( _FsValUl_ ) - eeToDouble( _FtValUl_ );
-	_FdValUl_ = eeGuardedAddSub( _FsValUl_, _FtValUl_, true );
-	raiseOrClearOU( exact );
+	const double sum = eeGuardedSum( _FsValUl_, _FtValUl_, true );
+	_SetFdVal_( eeRoundToSingle( sum, true ) );
+	raiseOrClearOU( sum );
 }
 
 void SUBA_S() {
-	const double exact = eeToDouble( _FsValUl_ ) - eeToDouble( _FtValUl_ );
-	_FAValUl_ = eeGuardedAddSub( _FsValUl_, _FtValUl_, true );
-	raiseOrClearOU( exact );
+	const double sum = eeGuardedSum( _FsValUl_, _FtValUl_, true );
+	_SetFAVal_( eeRoundToSingle( sum, true ) );
+	raiseOrClearOU( sum );
 }
 
 }	// End Namespace COP1
@@ -1175,14 +1246,14 @@ void LWC1() {
 	u32 addr;
 	addr = cpuRegs.GPR.r[_Rs_].UL[0] + (s16)(cpuRegs.code & 0xffff);	// force sign extension to 32bit
 	if (addr & 0x00000003) { Console.Error( "FPU (LWC1 Opcode): Invalid Unaligned Memory Address" ); return; }  // Should signal an exception?
-	fpuRegs.fpr[_Rt_].UL = memRead32(addr);
+	fpuRegs.fpr[_Rt_].SetWord( memRead32(addr) );
 }
 
 void SWC1() {
 	u32 addr;
 	addr = cpuRegs.GPR.r[_Rs_].UL[0] + (s16)(cpuRegs.code & 0xffff);	// force sign extension to 32bit
 	if (addr & 0x00000003) { Console.Error( "FPU (SWC1 Opcode): Invalid Unaligned Memory Address" ); return; }  // Should signal an exception?
-	memWrite32(addr, fpuRegs.fpr[_Rt_].UL);
+	memWrite32(addr, fpuRegs.fpr[_Rt_].Word());
 }
 
 } } }

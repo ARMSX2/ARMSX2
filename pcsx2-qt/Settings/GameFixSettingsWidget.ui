@@ -18,13 +18,6 @@
      </property>
      <layout class="QVBoxLayout" name="verticalLayout_2">
       <item>
-       <widget class="QCheckBox" name="FpuMulHack">
-        <property name="text">
-         <string extracomment="FPU = Floating Point Unit. A part of the PS2's CPU. Do not translate.\nMultiply: mathematical term.\nTales of Destiny: a game's name. Leave as-is or use an official translation.">FPU Multiply Hack</string>
-        </property>
-       </widget>
-      </item>
-      <item>
        <widget class="QCheckBox" name="SoftwareRendererFMVHack">
         <property name="text">
          <string extracomment="FMV: Full Motion Video. Find the common used term in your language.">Use Software Renderer For FMVs</string>
@@ -162,7 +155,6 @@
   </layout>
  </widget>
  <tabstops>
-  <tabstop>FpuMulHack</tabstop>
   <tabstop>SoftwareRendererFMVHack</tabstop>
   <tabstop>SkipMPEGHack</tabstop>
   <tabstop>GoemonTlbHack</tabstop>
