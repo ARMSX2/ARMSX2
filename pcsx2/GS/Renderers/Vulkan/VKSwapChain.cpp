@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "GS/GS.h" // GSConfig, for the frame-generation FIFO override below
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
 #include "GS/Renderers/Vulkan/VKBuilders.h"
 #include "GS/Renderers/Vulkan/VKSwapChain.h"
@@ -512,6 +513,26 @@ bool VKSwapChain::SelectPresentMode(VkSurfaceKHR surface, GSVSyncMode* vsync_mod
 			[check_mode](VkPresentModeKHR mode) { return check_mode == mode; });
 		return it != present_modes.end();
 	};
+
+	// ★ Frame generation requires FIFO, and silently produces nothing without it.
+	//
+	// MAILBOX keeps only the most recent image queued for a given refresh: presenting an
+	// interpolated frame and then the real frame replaces the interpolated one, so it is
+	// generated, costs its full GPU time, and is never displayed. IMMEDIATE is no better — it
+	// tears the newest image in, discarding the same way. The failure is completely silent,
+	// because nothing errors: the interpolator succeeds, the present succeeds, and the display
+	// rate simply equals the real frame rate. Observed exactly that on an Adreno 740 with vsync
+	// off, which resolves to MAILBOX here — LSFG reported "active" and both counters read 59.
+	//
+	// Gated on the setting rather than GSLsfg::IsAvailable(), which cannot answer yet: the DLL
+	// path only reaches GSLsfg from EndPresent, which has not run when the swapchain is built.
+	// The user asking for frame generation is the intent worth honouring here.
+	if (GSConfig.LsfgEnabled && *vsync_mode != GSVSyncMode::FIFO)
+	{
+		WARNING_LOG("Frame generation is enabled; forcing FIFO presentation so interpolated "
+					"frames are actually displayed.");
+		*vsync_mode = GSVSyncMode::FIFO;
+	}
 
 	switch (*vsync_mode)
 	{

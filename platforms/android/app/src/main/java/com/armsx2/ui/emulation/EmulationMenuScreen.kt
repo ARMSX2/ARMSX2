@@ -819,6 +819,32 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         onReset = { viewModel.setUpscale(1.0f) },
         onChange = { pct -> viewModel.setUpscale(pct / 100f) },
     )
+    // FSR sits with the resolution controls rather than the effects, because that is what it
+    // is: the two rows above choose how big the frame is RENDERED, and this chooses how it
+    // gets to the screen. In full settings it lives under Display Effects next to CAS, which
+    // is the wrong shelf for finding it while you are looking at the framerate.
+    if (settings.renderer == "vulkan") {
+        val fsr1On = settings.upscaler == com.armsx2.config.Settings.UPSCALER_FSR1
+        MenuSwitchRow(
+            str("renderer.fsr1.label"),
+            fsr1On,
+            description = str("renderer.fsr1.description"),
+        ) { on ->
+            viewModel.updateSettings {
+                it.copy(upscaler = if (on) com.armsx2.config.Settings.UPSCALER_FSR1 else com.armsx2.config.Settings.UPSCALER_OFF)
+            }
+        }
+        if (fsr1On) {
+            com.armsx2.ui.settings.IntSliderRow(
+                label = str("renderer.fsr1.sharpness.label"),
+                value = settings.fsrSharpness.coerceIn(0, 100),
+                min = 0,
+                max = 100,
+                valueFormatter = { "$it%" },
+                onChange = { pct -> viewModel.updateSettings { it.copy(fsrSharpness = pct) } },
+            )
+        }
+    }
     HorizontalOptions(
         title = str("renderer.displayMode.label"),
         options = listOf(
