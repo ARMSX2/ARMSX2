@@ -144,6 +144,10 @@ private:
 		/// a census that only reports what still stalls cannot distinguish "this reason was
 		/// served" from "this reason never arose".
 		u32 tex_served = 0;
+		/// Of the served draws, those whose source was REINTERPRETED out of a colour
+		/// target through the GS swizzle on the device (a palettised view of CT32/CT24
+		/// bytes) rather than copied — the format refusal this replaces.
+		u32 tex_reinterpreted = 0;
 
 		/// Why a draw that WOULD have drained for its texture did not get served off the
 		/// device. Only draws facing a real drain are counted, so this is a partition of
@@ -246,6 +250,10 @@ private:
 	std::array<ReadbackCounters, static_cast<u32>(ReadbackSite::Count)> m_readback{};
 	NativeSyncReasons m_native_sync{};
 	u32 m_readback_frames = 0;
+	/// Cleared the first time the device refuses to reinterpret a target as an index
+	/// texture (no pipeline: a backend without the route, or a shader that failed to
+	/// build); the route is then never offered again this session.
+	bool m_reinterpret_serves = true;
 };
 
 MULTI_ISA_UNSHARED_END

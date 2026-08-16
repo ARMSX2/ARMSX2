@@ -9,6 +9,7 @@
 #include "GS/Renderers/HW/GSDrawLog.h"
 #include "GS/Renderers/SW/GSRasterizer.h"
 #include "GS/Renderers/Tile/GSTileOracle.h"
+#include "GS/Renderers/Tile/GSTileSwizzleForms.h"
 
 #include "common/Console.h"
 #include "common/Timer.h"
@@ -261,8 +262,9 @@ void GSRendererTile::ReportReadbackCensus()
 		Console.WriteLn("    tex-source-rt %8.2f pages  %8.2f sole", n.tex_pages / frames, n.tex_sole / frames);
 		// Served draws never reach the reason columns, so without this line a fully
 		// served title is indistinguishable from one that never renders to texture.
-		Console.WriteLn("    tex-served    %8.2f draws   %8.2f device builds",
-			n.tex_served / frames, static_cast<double>(m_tex_source.DonorBuilds()) / frames);
+		Console.WriteLn("    tex-served    %8.2f draws   %8.2f device builds  (%8.2f reinterpreted draws, %8.2f builds)",
+			n.tex_served / frames, static_cast<double>(m_tex_source.DonorBuilds()) / frames,
+			n.tex_reinterpreted / frames, static_cast<double>(m_tex_source.ReinterpretBuilds()) / frames);
 		// The partition of the render-to-texture bill. refuse_format with a sole owner
 		// already found is the interesting row: those bytes ARE on the GPU, in a texture
 		// we own, in the wrong arrangement -- a conversion, not a fetch.
@@ -1424,7 +1426,21 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 			const int dh = dtex ? dtex->GetHeight() : 0;
 			const int tw = 1 << std::min<u32>(fixed_tex0.TW, 10);
 			const int th = 1 << std::min<u32>(fixed_tex0.TH, 10);
-			if (fixed_tex0.PSM != PSMCT32)
+			// A palettised window over a colour target: the game is reading the target's
+			// BYTES as indices (GT4 tone-maps its frame this way, seventy pages a frame).
+			// The bytes are in the owner's texture in the CT32 arrangement; the device
+			// re-arranges them into an index texture through the GS swizzle
+			// (GSTileSwizzleForms, tile_convert.glsl) — an offset into the owner and a
+			// different pitch are just address arithmetic there. Exactness rests on the
+			// owner holding EVERY plane of every page of the window (SoleGpuOwner over all
+			// planes, so the alpha byte is the owner's too), whole-page truth, and the
+			// window's own layout being expressible: pages-per-row as GSOffset computes it.
+			const int reinterpret_fmt = GSTileSwizzleForms::IndexFormatFor(fixed_tex0.PSM);
+			const bool owner_is_ct32 = s.layout.kind == GSTileSurfaceKind::Color &&
+									   (s.layout.psm == PSMCT32 || s.layout.psm == PSMCT24);
+			if (fixed_tex0.PSM == PSMCT32 && s.layout != want)
+				n.refuse_layout++;
+			else if (fixed_tex0.PSM != PSMCT32 && (reinterpret_fmt < 0 || !owner_is_ct32 || !m_reinterpret_serves))
 			{
 				n.refuse_format++;
 				// Does the window at least START where the owner does? A reinterpretation
@@ -1436,10 +1452,26 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 				if (s.layout.bp == fixed_tex0.TBP0)
 					n.refuse_format_same_base++;
 			}
-			else if (s.layout != want)
-				n.refuse_layout++;
-			else if (!dtex || !s.residency.contains(tex_pages) || tw > dw || th > dh)
+			else if (!dtex || !s.residency.contains(tex_pages) ||
+					 (fixed_tex0.PSM == PSMCT32 && (tw > dw || th > dh)))
 				n.refuse_geometry++;
+			else if (fixed_tex0.PSM != PSMCT32)
+			{
+				const GSOffset src_off = m_mem.GetOffset(fixed_tex0.TBP0, fixed_tex0.TBW, fixed_tex0.PSM);
+				donor.tex = dtex;
+				donor.width = dw;
+				donor.height = dh;
+				donor.reinterpret = true;
+				donor.params.src_bp = fixed_tex0.TBP0;
+				donor.params.src_bwpg = static_cast<u32>(src_off.pageRowWidth() >> src_off.pageShiftX());
+				donor.params.dst_bp = s.layout.bp;
+				donor.params.dst_bwpg = s.layout.bw;
+				donor.params.fmt = static_cast<u32>(reinterpret_fmt);
+				donor_p = &donor;
+				n.tex_served++;
+				n.tex_reinterpreted++;
+				sync_tex = GSPageBitmap();
+			}
 			else
 			{
 				donor.tex = dtex;
@@ -1540,6 +1572,11 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 			level_tex0, mip_levels, donor_p);
 		if (!tex)
 		{
+			// A device that cannot reinterpret (no pipeline, or not Vulkan) says so once;
+			// from here on the window takes the CPU route like any other refused format,
+			// and only this draw floors.
+			if (donor_p && donor.reinterpret)
+				m_reinterpret_serves = false;
 			reason = GSTileFloorReason::ResourceFailure;
 			return false;
 		}

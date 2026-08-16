@@ -4,6 +4,7 @@
 #pragma once
 
 #include "GS/GSRegs.h"
+#include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSTexture.h"
 #include "GS/Renderers/Tile/GSPageBitmap.h"
 
@@ -46,14 +47,20 @@ public:
 	/// the largest single source of GPU stalls on the native route.
 	///
 	/// The equivalence is the CALLER's to prove, and it is exact rather than approximate:
-	/// the window's layout matches the surface's exactly, the whole window is GPU-owned by
-	/// that one surface, and the format is one whose texture bytes already are what the
-	/// swizzle reader would have produced. This class performs the copy and nothing else.
+	/// the whole window is GPU-owned by that one surface at whole-page granularity, and
+	/// either the window's layout matches the surface's exactly and the format is one
+	/// whose texture bytes already are what the swizzle reader would have produced (a
+	/// straight copy), or the window is a palettised view of the surface's CT32/CT24
+	/// bytes and the device reinterprets them through the GS swizzle into an index
+	/// texture (`reinterpret`, GSDevice::TileReinterpretIndex — the arithmetic is
+	/// GSTileSwizzleForms). This class performs the copy or the conversion and nothing else.
 	struct Donor
 	{
 		GSTexture* tex = nullptr;
-		int width = 0; ///< donor pixels available; the window must fit inside them
+		int width = 0; ///< donor pixels available; a copied window must fit inside them
 		int height = 0;
+		bool reinterpret = false; ///< build by TileReinterpretIndex instead of a copy
+		GSDevice::TileReinterpretParams params = {}; ///< both layouts, when reinterpreting
 	};
 
 	/// The content stamp of `pages` right now (sum of per-page write generations).
@@ -79,8 +86,11 @@ public:
 		const GIFRegTEXA& TEXA, const GSPageBitmap& pages,
 		const GIFRegTEX0* level_tex0 = nullptr, u32 levels = 1, const Donor* donor = nullptr);
 
-	/// Builds served off the device rather than out of CPU memory.
+	/// Builds served off the device rather than out of CPU memory (copies and
+	/// reinterpretations both; the latter counted again below).
 	u64 DonorBuilds() const { return m_donor_builds; }
+	/// Of those, index textures the device reinterpreted out of a colour target.
+	u64 ReinterpretBuilds() const { return m_reinterpret_builds; }
 
 	/// Recycles every cached texture (reset / teardown / hot-switch).
 	void Clear();
@@ -114,4 +124,5 @@ private:
 	u64 m_hits = 0;
 	u64 m_builds = 0;
 	u64 m_donor_builds = 0;
+	u64 m_reinterpret_builds = 0;
 };

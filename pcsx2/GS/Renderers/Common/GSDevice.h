@@ -1876,6 +1876,22 @@ public:
 	virtual u64 GetSubmitEpoch() const { return 0; }
 	virtual u64 GetCompletedSubmitEpoch() { return 0; }
 
+	/// Tile renderer: a render target read as an indexed texture. Writes `dst` — an
+	/// RGBA8 render target of the index window's size — with the indices of that window
+	/// read out of `owner`, a page-aligned CT32/CT24 surface texture, through the GS
+	/// swizzle in a fragment shader (GSTileSwizzleForms carries the arithmetic and the
+	/// meaning of the parameters). Returns false when the device does not serve it — every
+	/// backend but Vulkan — and the caller takes the CPU route.
+	struct TileReinterpretParams
+	{
+		u32 src_bp; ///< the index window's TBP0 (blocks)
+		u32 src_bwpg; ///< the window's width in pages, as GSOffset computes it
+		u32 dst_bp; ///< the owner's base (page-aligned blocks)
+		u32 dst_bwpg; ///< the owner's width in pages
+		u32 fmt; ///< GSTileSwizzleForms::IndexFormat
+	};
+	virtual bool TileReinterpretIndex(GSTexture* owner, GSTexture* dst, const TileReinterpretParams& p) { return false; }
+
 	/// Enables/disables GPU frame timing.
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;
 

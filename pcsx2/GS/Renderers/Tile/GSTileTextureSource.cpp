@@ -91,28 +91,46 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 	// A palettised window becomes an INDEX texture — one byte per texel holding the
 	// index the swizzle would have handed the CLUT (four-bit indices widened to a
 	// byte, 0..15) — and the palette rides beside it as its own texture. Every other
-	// format is deswizzled to RGBA8 with TEXA applied, as before.
+	// format is deswizzled to RGBA8 with TEXA applied, as before. A CPU-built index
+	// texture is R8 (the backend views it with the index in every channel); a
+	// device-REINTERPRETED one is an RGBA8 render target with the index replicated,
+	// because the conversion is a draw — the shader reads .a either way.
 	const bool indexed = GSLocalMemory::m_psm[level_tex0[0].PSM].pal > 0;
-	const GSTexture::Format format = indexed ? GSTexture::Format::UNorm8 : GSTexture::Format::Color;
+	const bool reinterpret = donor && donor->reinterpret;
+	const GSTexture::Format format =
+		(indexed && !reinterpret) ? GSTexture::Format::UNorm8 : GSTexture::Format::Color;
 
 	if (!e.tex || e.tex->GetWidth() != tw || e.tex->GetHeight() != th ||
-		e.tex->GetMipmapLevels() != static_cast<int>(levels) || e.tex->GetFormat() != format)
+		e.tex->GetMipmapLevels() != static_cast<int>(levels) || e.tex->GetFormat() != format ||
+		e.tex->IsRenderTarget() != reinterpret)
 	{
 		if (e.tex)
 			g_gs_device->Recycle(e.tex);
-		e.tex = g_gs_device->CreateTexture(tw, th, static_cast<int>(levels), format, true);
+		e.tex = reinterpret ? g_gs_device->CreateRenderTarget(tw, th, format, false, true)
+							: g_gs_device->CreateTexture(tw, th, static_cast<int>(levels), format, true);
 		if (!e.tex)
 			return false;
 	}
 
-	// The device route. The caller proved the donor's pixel space IS this window's, so
-	// the whole build is one image copy and the CPU never sees the bytes — which is the
-	// entire point: the alternative is not a slower copy, it is a full GPU drain to get
-	// the bytes into local memory before deswizzling them straight back out again.
+	// The device routes. The caller proved the donor holds the window's bytes, so the
+	// whole build is one image copy or one conversion draw and the CPU never sees the
+	// bytes — which is the entire point: the alternative is not a slower copy, it is a
+	// full GPU drain to get the bytes into local memory before deswizzling them straight
+	// back out again.
 	if (donor)
 	{
-		pxAssert(levels == 1 && tw <= donor->width && th <= donor->height);
-		g_gs_device->CopyRect(donor->tex, e.tex, GSVector4i(0, 0, tw, th), 0, 0);
+		pxAssert(levels == 1);
+		if (reinterpret)
+		{
+			if (!g_gs_device->TileReinterpretIndex(donor->tex, e.tex, donor->params))
+				return false;
+			m_reinterpret_builds++;
+		}
+		else
+		{
+			pxAssert(tw <= donor->width && th <= donor->height);
+			g_gs_device->CopyRect(donor->tex, e.tex, GSVector4i(0, 0, tw, th), 0, 0);
+		}
 		m_builds++;
 		m_donor_builds++;
 		return true;

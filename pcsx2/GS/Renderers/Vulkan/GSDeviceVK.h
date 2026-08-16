@@ -174,6 +174,7 @@ public:
 	// (non-blocking fence status scan) so a caller between submits sees work that has
 	// finished since the last wait, not just since the last submit.
 	u64 GetSubmitEpoch() const override { return GetCurrentFenceCounter(); }
+	bool TileReinterpretIndex(GSTexture* owner, GSTexture* dst, const TileReinterpretParams& p) override;
 	u64 GetCompletedSubmitEpoch() override
 	{
 		ScanForCommandBufferCompletion();
@@ -526,6 +527,11 @@ private:
 	std::unordered_map<u32, VkSampler> m_samplers;
 
 	std::vector<VkPipeline> m_convert;
+	/// Tile renderer: a render target read as an indexed texture, one pipeline per
+	/// GSTileSwizzleForms::IndexFormat, compiled on first use with the swizzle forms
+	/// fitted from the tree's tables injected as defines (see tile_convert.glsl).
+	std::array<VkPipeline, 5> m_tile_reinterpret{};
+	bool m_tile_reinterpret_tried = false;
 	std::array<VkPipeline, static_cast<int>(PresentShader::Count)> m_present{};
 	std::array<VkPipeline, 2> m_merge{};
 	std::array<VkPipeline, NUM_INTERLACE_SHADERS> m_interlace{};
@@ -622,6 +628,7 @@ private:
 	bool CreateRenderPasses();
 
 	bool CompileConvertPipelines();
+	bool CompileTileReinterpretPipelines();
 	bool CompilePresentPipelines();
 	bool CompileInterlacePipelines();
 	bool CompileMergePipelines();

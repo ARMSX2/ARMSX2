@@ -10,6 +10,7 @@
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GS/Renderers/Vulkan/VKSwapChain.h"
 #include "GS/Renderers/Vulkan/VKLibretro.h"
+#include "GS/Renderers/Tile/GSTileSwizzleForms.h"
 
 // Libretro presentation backbuffers: the frontend samples the published
 // VkImageView asynchronously (including cached-frame replays long after the
@@ -4602,6 +4603,7 @@ void GSDeviceVK::DoConvertToIndexedTexture(
 		GetConvertPipeline(shader), Nearest, true);
 }
 
+
 void GSDeviceVK::DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect)
 {
 	struct alignas(16) Uniforms
@@ -5827,6 +5829,104 @@ bool GSDeviceVK::CompileConvertPipelines()
 	return true;
 }
 
+// The Tile renderer's reinterpretation of a render target as an indexed texture
+// (tile_convert.glsl). Compiled on first use rather than with the convert
+// pipelines: only the Tile renderer asks, and the fragment source is assembled at
+// runtime — the swizzle forms are FITTED from GSTables.cpp and prepended as
+// defines, so a table that stopped fitting disables the route here instead of
+// addressing the wrong bytes.
+bool GSDeviceVK::CompileTileReinterpretPipelines()
+{
+	m_tile_reinterpret_tried = true;
+
+	const GSTileSwizzleForms::FormSet forms = GSTileSwizzleForms::Fit();
+	if (!forms.valid)
+	{
+		Console.Error("GS/Tile: the page swizzle tables no longer fit closed forms; device-side index reinterpretation is off.");
+		return false;
+	}
+
+	const std::optional<std::string> vsource = ReadShaderSource("shaders/vulkan/convert.glsl");
+	const std::optional<std::string> fsource = ReadShaderSource("shaders/vulkan/tile_convert.glsl");
+	if (!vsource || !fsource)
+	{
+		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tile_convert.glsl.");
+		return false;
+	}
+
+	VkShaderModule vs = GetUtilityVertexShader(*vsource);
+	if (vs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard vs_guard([this, &vs]() { vkDestroyShaderModule(m_device, vs, nullptr); });
+
+	Vulkan::GraphicsPipelineBuilder gpb;
+	SetPipelineProvokingVertex(m_features, gpb);
+	AddUtilityVertexAttributes(gpb);
+	gpb.SetPipelineLayout(m_utility_pipeline_layout);
+	gpb.SetDynamicViewportAndScissorState();
+	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
+	gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+	gpb.SetNoCullRasterizationState();
+	gpb.SetNoBlendingState();
+	gpb.SetVertexShader(vs);
+	gpb.SetRenderPass(GetRenderPass(LookupNativeFormat(GSTexture::Format::Color),
+						  LookupNativeFormat(GSTexture::Format::Invalid), VK_ATTACHMENT_LOAD_OP_DONT_CARE),
+		0);
+	gpb.SetDepthState(false, false, VK_COMPARE_OP_ALWAYS);
+	gpb.SetNoStencilState();
+	gpb.SetColorWriteMask(0, VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+
+	const std::string defines = GSTileSwizzleForms::ShaderDefines(forms);
+	for (u32 fmt = 0; fmt < m_tile_reinterpret.size(); fmt++)
+	{
+		const std::string source = defines + fmt::format("#define TILE_IDX_FMT {}\n", fmt) + *fsource;
+		VkShaderModule ps = GetUtilityFragmentShader(source, "ps_tile_reinterpret_index");
+		if (ps == VK_NULL_HANDLE)
+			return false;
+		ScopedGuard ps_guard([this, &ps]() { vkDestroyShaderModule(m_device, ps, nullptr); });
+		gpb.SetFragmentShader(ps);
+
+		VkPipeline pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+		if (!pipe)
+			return false;
+		m_tile_reinterpret[fmt] = pipe;
+		Vulkan::SetObjectName(m_device, pipe, "Tile reinterpret-index pipeline (fmt=%u)", fmt);
+	}
+	return true;
+}
+
+bool GSDeviceVK::TileReinterpretIndex(GSTexture* owner, GSTexture* dst, const TileReinterpretParams& p)
+{
+	if (!m_tile_reinterpret_tried && !CompileTileReinterpretPipelines())
+	{
+		// One failed compile is permanent for the session; anything half-built stays
+		// null and the route below refuses.
+		for (VkPipeline& pipe : m_tile_reinterpret)
+		{
+			if (pipe != VK_NULL_HANDLE)
+				vkDestroyPipeline(m_device, pipe, nullptr);
+			pipe = VK_NULL_HANDLE;
+		}
+	}
+	if (p.fmt >= m_tile_reinterpret.size() || m_tile_reinterpret[p.fmt] == VK_NULL_HANDLE)
+		return false;
+
+	struct alignas(16) Uniforms
+	{
+		u32 src_bp;
+		u32 src_bwpg;
+		u32 dst_bp;
+		u32 dst_bwpg;
+	};
+	const Uniforms uniforms = {p.src_bp, p.src_bwpg, p.dst_bp, p.dst_bwpg};
+	SetUtilityPushConstants(&uniforms, sizeof(uniforms));
+
+	const GSVector4 dRect(0, 0, dst->GetWidth(), dst->GetHeight());
+	DoStretchRect(static_cast<GSTextureVK*>(owner), GSVector4::zero(), static_cast<GSTextureVK*>(dst), dRect,
+		m_tile_reinterpret[p.fmt], Nearest, true);
+	return true;
+}
+
 bool GSDeviceVK::CompilePresentPipelines()
 {
 	// we may not have a swap chain if running in headless mode.
@@ -6419,6 +6519,13 @@ void GSDeviceVK::DestroyResources()
 		if (pipe != VK_NULL_HANDLE)
 			vkDestroyPipeline(m_device, pipe, nullptr);
 	}
+	for (VkPipeline& pipe : m_tile_reinterpret)
+	{
+		if (pipe != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, pipe, nullptr);
+		pipe = VK_NULL_HANDLE;
+	}
+	m_tile_reinterpret_tried = false;
 	for (u32 ds = 0; ds < 2; ds++)
 	{
 		for (u32 fbl = 0; fbl < 2; fbl++)
