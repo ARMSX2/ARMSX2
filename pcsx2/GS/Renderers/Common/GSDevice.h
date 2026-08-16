@@ -1416,6 +1416,7 @@ public:
 		bool aa1                  : 1; ///< Supports the GS AA1 feature.
 		bool rov                  : 1; ///< Supports rasterizer ordered views for both depth and color.
 		bool metalfx_spatial      : 1; ///< Supports Apple MetalFX spatial upscaling (Metal backend, macOS 13+).
+		bool fsr1                 : 1; ///< Supports AMD FidelityFX Super Resolution 1 (two compute passes).
 		bool dual_source_blend    : 1; ///< Supports a second fragment output (SRC1) as a hardware blend factor.
 		bool broken_mad_deinterlace : 1; ///< Driver can't reliably preserve/read the two-bank FastMAD history target.
 		FeatureSupport()
@@ -1513,6 +1514,10 @@ protected:
 	static constexpr u32 MAX_POOLED_TEXTURES = 300;
 	static constexpr u32 MAX_TEXTURE_AGE = 10;
 	static constexpr u32 NUM_CAS_CONSTANTS = 12; // 8 plus src offset x/y, 16 byte alignment
+	// Five uvec4s: EASU's con0..con3 plus FSR's "Sample" vector. RCAS only reads con0 and
+	// Sample, but Sample still decorates to byte offset 64, so both passes push all 80 bytes
+	// - a short push leaves Sample undefined and the shader squares the whole image.
+	static constexpr u32 NUM_FSR1_CONSTANTS = 20;
 	static constexpr u32 EXPAND_BUFFER_SIZE = sizeof(u16) * 16383 * 6;
 
 	WindowInfo m_window_info;
@@ -1529,6 +1534,8 @@ protected:
 	GSTexture* m_current = nullptr;
 	GSTexture* m_cas = nullptr;
 	GSTexture* m_mfx_output = nullptr; ///< MetalFX spatial upscale destination (Metal backend).
+	GSTexture* m_fsr1_easu = nullptr; ///< FSR1 EASU output, at display size; RCAS reads it back.
+	GSTexture* m_fsr1_output = nullptr; ///< FSR1 RCAS output, the texture actually presented.
 	GSTexture* m_colclip_rt = nullptr; ///< Temp hw colclip texture
 	GSTexture* m_ds_as_rt = nullptr; ///< Depth as color
 
@@ -1581,6 +1588,17 @@ protected:
 	/// Upscales sTex into dTex using a backend-specific spatial upscaler (MetalFX on Metal).
 	/// Base implementation is a no-op; only the Metal backend overrides it.
 	virtual bool DoMetalFXSpatial(GSTexture* sTex, GSTexture* dTex) { return false; }
+
+	/// Resolves FSR1 shader includes for the specified source, and prepends the #version line
+	/// plus the FSR_PASS_EASU gate. The pass cannot be a specialization constant: it decides
+	/// which function bodies ffx_fsr1.h emits at all, which is a preprocessor-time question.
+	static bool GetFSR1ShaderSource(std::string* source, bool easu_pass);
+
+	/// FSR1 pass 1 (EASU): edge-adaptive spatial upsample from sTex to dTex's size.
+	/// FSR1 pass 2 (RCAS): robust contrast-adaptive sharpen, same size in and out.
+	/// Both no-op in the base class so only the backends that gate Features().fsr1 on need them.
+	virtual bool DoFSR1EASU(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_FSR1_CONSTANTS>& constants) { return false; }
+	virtual bool DoFSR1RCAS(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_FSR1_CONSTANTS>& constants) { return false; }
 
 	/// Perform texture operations for ImGui
 	void UpdateImGuiTextures();
@@ -2003,6 +2021,9 @@ public:
 	/// Spatially upscales the merged display texture (MetalFX) to the draw-rect size, rewriting
 	/// tex/src_rect/src_uv to point at the upscaled result, mirroring CAS().
 	void MetalFXUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect);
+
+	/// Same contract as MetalFXUpscale(), via FSR1's two compute passes.
+	void FSR1Upscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect);
 
 	bool ResizeRenderTarget(GSTexture** t, int w, int h, bool preserve_contents, bool recycle);
 

@@ -449,6 +449,7 @@ public:
 		CONVERT_PUSH_CONSTANTS_SIZE = 96,
 
 		NUM_CAS_PIPELINES = 2,
+		NUM_FSR1_PIPELINES = 2, // [0] RCAS, [1] EASU
 	};
 	enum TFX_DESCRIPTOR_SET : u32
 	{
@@ -541,6 +542,9 @@ private:
 	VkDescriptorSetLayout m_cas_ds_layout = VK_NULL_HANDLE;
 	VkPipelineLayout m_cas_pipeline_layout = VK_NULL_HANDLE;
 	std::array<VkPipeline, NUM_CAS_PIPELINES> m_cas_pipelines = {};
+	VkDescriptorSetLayout m_fsr1_ds_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_fsr1_pipeline_layout = VK_NULL_HANDLE;
+	std::array<VkPipeline, NUM_FSR1_PIPELINES> m_fsr1_pipelines = {};
 	VkPipeline m_imgui_pipeline = VK_NULL_HANDLE;
 
 	GSHWDrawConfig::VSConstantBuffer m_vs_cb_cache;
@@ -578,6 +582,13 @@ private:
 	bool DoCAS(
 		GSTexture* sTex, GSTexture* dTex, bool sharpen_only, const std::array<u32, NUM_CAS_CONSTANTS>& constants) final;
 
+	bool DoFSR1EASU(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_FSR1_CONSTANTS>& constants) final;
+	bool DoFSR1RCAS(GSTexture* sTex, GSTexture* dTex, const std::array<u32, NUM_FSR1_CONSTANTS>& constants) final;
+	/// Shared body of the two above: same layout, same push range, different pipeline and
+	/// different input-side synchronisation.
+	bool DoFSR1Pass(
+		GSTexture* sTex, GSTexture* dTex, bool easu_pass, const std::array<u32, NUM_FSR1_CONSTANTS>& constants);
+
 	VkSampler GetSampler(GSHWDrawConfig::SamplerSelector ss);
 	void ClearSamplerCache() final;
 
@@ -602,6 +613,7 @@ private:
 	bool CompileMergePipelines();
 	bool CompilePostProcessingPipelines();
 	bool CompileCASPipelines();
+	bool CompileFSR1Pipelines();
 
 	bool CompileImGuiPipeline();
 	void RenderImGui();

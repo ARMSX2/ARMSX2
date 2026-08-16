@@ -602,6 +602,13 @@ data class Settings(
     val casMode: Int = 0,
     /** EmuCore/GS/CASSharpness — sharpening strength 0..100 (%). */
     val casSharpness: Int = 50,
+    /** EmuCore/GS/Upscaler — GSUpscaler: 0 Off / 1 MetalFX (Apple only) / 2 FSR1.
+     *  1 is unreachable from this UI; the values are the core enum's, and it is persisted
+     *  as an integer, so they must not be renumbered to close the gap. */
+    val upscaler: Int = 0,
+    /** EmuCore/GS/FSRSharpness — FSR1 RCAS strength 0..100 (%). Separate from casSharpness:
+     *  RCAS runs on a different curve, so the two sliders are not interchangeable. */
+    val fsrSharpness: Int = 50,
     /** EmuCore/GS/LoadTextureReplacements. */
     val loadTextureReplacements: Boolean = false,
     /** EmuCore/GS/LoadTextureReplacementsAsync. */
@@ -1186,6 +1193,8 @@ data class Settings(
             } ?: this.shaderChainParams,
             casMode = intAt("EmuCore/GS/CASMode") ?: this.casMode,
             casSharpness = intAt("EmuCore/GS/CASSharpness") ?: this.casSharpness,
+            upscaler = intAt("EmuCore/GS/Upscaler") ?: this.upscaler,
+            fsrSharpness = intAt("EmuCore/GS/FSRSharpness") ?: this.fsrSharpness,
             loadTextureReplacements = boolAt("EmuCore/GS/LoadTextureReplacements") ?: this.loadTextureReplacements,
             loadTextureReplacementsAsync = boolAt("EmuCore/GS/LoadTextureReplacementsAsync") ?: this.loadTextureReplacementsAsync,
             precacheTextureReplacements = boolAt("EmuCore/GS/PrecacheTextureReplacements") ?: this.precacheTextureReplacements,
@@ -1399,6 +1408,10 @@ data class Settings(
             ShaderParams.push(shaderChainPreset, shaderChainParams[shaderChainPreset].orEmpty())
         put("EmuCore/GS", "CASMode", "int", casMode.coerceIn(0, 2).toString())
         put("EmuCore/GS", "CASSharpness", "int", casSharpness.coerceIn(0, 100).toString())
+        // Upper bound is UPSCALER_FSR1, not the count of options this UI shows — clamping to
+        // the visible choices would silently rewrite FSR1 back to Off.
+        put("EmuCore/GS", "Upscaler", "int", upscaler.coerceIn(UPSCALER_OFF, UPSCALER_FSR1).toString())
+        put("EmuCore/GS", "FSRSharpness", "int", fsrSharpness.coerceIn(0, 100).toString())
         put("EmuCore/GS", "LoadTextureReplacements", "bool", loadTextureReplacements.toString())
         put("EmuCore/GS", "LoadTextureReplacementsAsync", "bool", loadTextureReplacementsAsync.toString())
         put("EmuCore/GS", "PrecacheTextureReplacements", "bool", precacheTextureReplacements.toString())
@@ -1570,6 +1583,8 @@ data class Settings(
             lsfgFlowScale != other.lsfgFlowScale ||
             casMode != other.casMode ||
             casSharpness != other.casSharpness ||
+            upscaler != other.upscaler ||
+            fsrSharpness != other.fsrSharpness ||
             accurateBlendingUnit != other.accurateBlendingUnit ||
             hwMipmap != other.hwMipmap ||
             triFilter != other.triFilter ||
@@ -1794,6 +1809,8 @@ data class Settings(
         put("lsfgFlowScale", lsfgFlowScale)
         put("casMode", casMode)
         put("casSharpness", casSharpness)
+        put("upscaler", upscaler)
+        put("fsrSharpness", fsrSharpness)
         put("loadTextureReplacements", loadTextureReplacements)
         put("loadTextureReplacementsAsync", loadTextureReplacementsAsync)
         put("precacheTextureReplacements", precacheTextureReplacements)
@@ -1856,6 +1873,12 @@ data class Settings(
          *  touching the base layer or re-poking the running VM. */
         @JvmStatic
         internal var emitSink: ((String, String, String, String) -> Unit)? = null
+
+        /** [upscaler] values, straight from the core's GSUpscaler. Named because 1 is Apple's
+         *  MetalFX and never appears in this UI, so FSR1's value (2) does NOT line up with its
+         *  position in any Android picker — writing the picker index would select MetalFX. */
+        const val UPSCALER_OFF = 0
+        const val UPSCALER_FSR1 = 2
 
         /** One-tap "Low-End" performance snapshot applied on top of [base].
          *  Only cheap, safe-for-most levers that already exist as fields:
@@ -2073,6 +2096,8 @@ data class Settings(
                 lsfgFlowScale = json.optInt("lsfgFlowScale", def.lsfgFlowScale),
                 casMode = json.optInt("casMode", def.casMode),
                 casSharpness = json.optInt("casSharpness", def.casSharpness),
+                upscaler = json.optInt("upscaler", def.upscaler),
+                fsrSharpness = json.optInt("fsrSharpness", def.fsrSharpness),
                 loadTextureReplacements = json.optBoolean("loadTextureReplacements", def.loadTextureReplacements),
                 loadTextureReplacementsAsync = json.optBoolean("loadTextureReplacementsAsync", def.loadTextureReplacementsAsync),
                 precacheTextureReplacements = json.optBoolean("precacheTextureReplacements", def.precacheTextureReplacements),
@@ -2316,6 +2341,8 @@ data class Settings(
             if (current.lsfgFlowScale       != base.lsfgFlowScale)       j.put("lsfgFlowScale", current.lsfgFlowScale)
             if (current.casMode             != base.casMode)             j.put("casMode", current.casMode)
             if (current.casSharpness        != base.casSharpness)        j.put("casSharpness", current.casSharpness)
+            if (current.upscaler            != base.upscaler)            j.put("upscaler", current.upscaler)
+            if (current.fsrSharpness        != base.fsrSharpness)        j.put("fsrSharpness", current.fsrSharpness)
             if (current.loadTextureReplacements != base.loadTextureReplacements) j.put("loadTextureReplacements", current.loadTextureReplacements)
             if (current.loadTextureReplacementsAsync != base.loadTextureReplacementsAsync) j.put("loadTextureReplacementsAsync", current.loadTextureReplacementsAsync)
             if (current.precacheTextureReplacements != base.precacheTextureReplacements) j.put("precacheTextureReplacements", current.precacheTextureReplacements)
@@ -2576,6 +2603,8 @@ data class Settings(
             lsfgFlowScale = if (overrides.has("lsfgFlowScale")) overrides.getInt("lsfgFlowScale") else base.lsfgFlowScale,
             casMode = if (overrides.has("casMode")) overrides.getInt("casMode") else base.casMode,
             casSharpness = if (overrides.has("casSharpness")) overrides.getInt("casSharpness") else base.casSharpness,
+            upscaler = if (overrides.has("upscaler")) overrides.getInt("upscaler") else base.upscaler,
+            fsrSharpness = if (overrides.has("fsrSharpness")) overrides.getInt("fsrSharpness") else base.fsrSharpness,
             loadTextureReplacements = if (overrides.has("loadTextureReplacements")) overrides.getBoolean("loadTextureReplacements") else base.loadTextureReplacements,
             loadTextureReplacementsAsync = if (overrides.has("loadTextureReplacementsAsync")) overrides.getBoolean("loadTextureReplacementsAsync") else base.loadTextureReplacementsAsync,
             precacheTextureReplacements = if (overrides.has("precacheTextureReplacements")) overrides.getBoolean("precacheTextureReplacements") else base.precacheTextureReplacements,

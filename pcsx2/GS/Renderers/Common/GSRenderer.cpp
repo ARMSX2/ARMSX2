@@ -1073,7 +1073,29 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				}
 			}
 
-			if (GSConfig.CASMode != GSCASMode::Disabled)
+			// FSR1 runs here for the same reason MetalFX does - its passes are compute, and the
+			// present render pass is already open by the time DoBeginPresent runs.
+			// It is CAS's `if`, not a second branch beside it: FSR's second pass *is* RCAS, a
+			// contrast-adaptive sharpener, so letting CAS run afterward sharpens twice.
+			if (GSConfig.Upscaler == GSUpscaler::FSR1)
+			{
+				static bool fsr1_log_once = false;
+				if (g_gs_device->Features().fsr1)
+				{
+					const int draw_w = static_cast<int>(std::ceil(draw_rect.z - draw_rect.x));
+					const int draw_h = static_cast<int>(std::ceil(draw_rect.w - draw_rect.y));
+					if (current->GetWidth() < draw_w && current->GetHeight() < draw_h)
+						g_gs_device->FSR1Upscale(current, src_rect, src_uv, draw_rect);
+				}
+				else if (!fsr1_log_once)
+				{
+					Host::AddIconOSDMessage("FSR1Unsupported", ICON_FA_TRIANGLE_EXCLAMATION,
+						TRANSLATE_SV("GS", "FSR1 upscaling is not available, your graphics driver does not support the required functionality."),
+						10.0f);
+					fsr1_log_once = true;
+				}
+			}
+			else if (GSConfig.CASMode != GSCASMode::Disabled)
 			{
 				static bool cas_log_once = false;
 				if (g_gs_device->Features().cas_sharpening)

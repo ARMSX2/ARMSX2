@@ -479,6 +479,9 @@ enum class GSUpscaler : u8
 {
 	Off,           ///< Plain bilinear present-time stretch (default).
 	MetalFXSpatial, ///< Apple MetalFX spatial upscaler (Metal backend, macOS 13+).
+	// Appended rather than inserted: this enum is persisted as an integer, so renumbering
+	// MetalFXSpatial would silently re-point every existing config at a different upscaler.
+	FSR1,          ///< AMD FidelityFX Super Resolution 1 (EASU + RCAS compute passes, Vulkan).
 };
 
 enum class GSHWAutoFlushLevel : u8
@@ -1069,6 +1072,9 @@ struct Pcsx2Config
 		u8 LsfgFlowScale = 100;
 
 		u8 CAS_Sharpness = 50;
+		// FSR1's RCAS pass, 0..100. Mapped to AMD's "stops" scale in GSDevice::FSR1Upscale,
+		// where 0 stops is maximum sharpening - it is not the same curve as CAS_Sharpness.
+		u8 FSR_Sharpness = 50;
 		u8 ShadeBoost_Brightness = DEFAULT_SHADEBOOST_BRIGHTNESS;
 		u8 ShadeBoost_Contrast = DEFAULT_SHADEBOOST_CONTRAST;
 		u8 ShadeBoost_Saturation = DEFAULT_SHADEBOOST_SATURATION;

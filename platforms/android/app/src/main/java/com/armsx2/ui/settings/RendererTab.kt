@@ -399,23 +399,48 @@ fun RendererTab(state: MutableState<Settings>) {
                 apply(s.copy(fxaa = it))
             }
             SettingsDivider()
-            SegmentedRow(
-                label = str("renderer.cas.label"),
-                options = listOf(str("fixes.opt.off"), str("renderer.cas.sharpen"), str("renderer.cas.sharpenResize")),
-                selectedIndex = s.casMode.coerceIn(0, 2),
-                description = str("renderer.cas.description"),
-                onChange = { apply(s.copy(casMode = it)) },
-            )
-            if (s.casMode != 0) {
+            val fsr1On = s.upscaler == Settings.UPSCALER_FSR1
+            ToggleRow(
+                str("renderer.fsr1.label"),
+                fsr1On,
+                description = str("renderer.fsr1.description"),
+            ) {
+                apply(s.copy(upscaler = if (it) Settings.UPSCALER_FSR1 else Settings.UPSCALER_OFF))
+            }
+            if (fsr1On) {
                 SettingsDivider()
                 IntSliderRow(
-                    label = str("renderer.cas.sharpness.label"),
-                    value = s.casSharpness.coerceIn(0, 100),
+                    label = str("renderer.fsr1.sharpness.label"),
+                    value = s.fsrSharpness.coerceIn(0, 100),
                     min = 0,
                     max = 100,
                     valueFormatter = { "$it%" },
-                    onChange = { apply(s.copy(casSharpness = it)) },
+                    onChange = { apply(s.copy(fsrSharpness = it)) },
                 )
+            }
+            // FSR's second pass IS RCAS, a contrast-adaptive sharpener, so the core runs one or
+            // the other and never both. Showing CAS while FSR is on would offer a slider that
+            // does nothing.
+            if (!fsr1On) {
+                SettingsDivider()
+                SegmentedRow(
+                    label = str("renderer.cas.label"),
+                    options = listOf(str("fixes.opt.off"), str("renderer.cas.sharpen"), str("renderer.cas.sharpenResize")),
+                    selectedIndex = s.casMode.coerceIn(0, 2),
+                    description = str("renderer.cas.description"),
+                    onChange = { apply(s.copy(casMode = it)) },
+                )
+                if (s.casMode != 0) {
+                    SettingsDivider()
+                    IntSliderRow(
+                        label = str("renderer.cas.sharpness.label"),
+                        value = s.casSharpness.coerceIn(0, 100),
+                        min = 0,
+                        max = 100,
+                        valueFormatter = { "$it%" },
+                        onChange = { apply(s.copy(casSharpness = it)) },
+                    )
+                }
             }
             SettingsDivider()
             // RetroArch (.slangp) chains run last in the post-process order (after
