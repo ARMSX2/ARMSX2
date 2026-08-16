@@ -2678,6 +2678,10 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 	std::optional<bool> default_false = IsEditingGameSettings(bsi) ? std::nullopt : std::optional<bool>(false);
 	std::optional<bool> default_true = IsEditingGameSettings(bsi) ? std::nullopt : std::optional<bool>(true);
 
+	// eeClampMode 4 has no VU counterpart.
+	std::optional<bool> fourth;
+	if (vunum < 0)
+		fourth = bsi->GetOptionalBoolValue("EmuCore/CPU/Recompiler", "fpuExactMode", default_false);
 	std::optional<bool> third = bsi->GetOptionalBoolValue(
 		"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0SignOverflow" : "vu1SignOverflow") : "fpuFullMode"), default_false);
 	std::optional<bool> second = bsi->GetOptionalBoolValue("EmuCore/CPU/Recompiler",
@@ -2686,7 +2690,9 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 		"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0Overflow" : "vu1Overflow") : "fpuOverflow"), default_true);
 
 	int index;
-	if (third.has_value() && third.value())
+	if (fourth.has_value() && fourth.value())
+		index = base + 4;
+	else if (third.has_value() && third.value())
 		index = base + 3;
 	else if (second.has_value() && second.value())
 		index = base + 2;
@@ -2703,6 +2709,7 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 		FSUI_NSTR("Normal (Default)"),
 		FSUI_NSTR("Extra + Preserve Sign"),
 		FSUI_NSTR("Full"),
+		FSUI_NSTR("Exact"),
 	};
 	static constexpr const char* vu_clamping_mode_settings[] = {
 		FSUI_NSTR("Use Global Setting"),
@@ -2712,13 +2719,14 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 		FSUI_NSTR("Extra + Preserve Sign"),
 	};
 	const char* const* options = (vunum >= 0) ? vu_clamping_mode_settings : ee_clamping_mode_settings;
+	const int option_count = static_cast<int>((vunum >= 0) ? std::size(vu_clamping_mode_settings) : std::size(ee_clamping_mode_settings));
 	const int setting_offset = IsEditingGameSettings(bsi) ? 0 : 1;
 
 	if (MenuButtonWithValue(title, summary, Host::TranslateToCString(TR_CONTEXT, options[index + setting_offset])))
 	{
 		ImGuiFullscreen::ChoiceDialogOptions cd_options;
-		cd_options.reserve(std::size(ee_clamping_mode_settings));
-		for (int i = setting_offset; i < static_cast<int>(std::size(ee_clamping_mode_settings)); i++)
+		cd_options.reserve(option_count);
+		for (int i = setting_offset; i < option_count; i++)
 			cd_options.emplace_back(Host::TranslateToString(TR_CONTEXT, options[i]), (i == (index + setting_offset)));
 		OpenChoiceDialog(title, false, std::move(cd_options),
 			[game_settings = IsEditingGameSettings(bsi), vunum](s32 index, const std::string& title, bool checked) {
@@ -2726,11 +2734,12 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 				{
 					auto lock = Host::GetSettingsLock();
 
-					std::optional<bool> first, second, third;
+					std::optional<bool> first, second, third, fourth;
 
 					if (!game_settings || index > 0)
 					{
 						const bool base = game_settings ? 1 : 0;
+						fourth = (index >= (base + 4));
 						third = (index >= (base + 3));
 						second = (index >= (base + 2));
 						first = (index >= (base + 1));
@@ -2745,12 +2754,7 @@ void FullscreenUI::DrawClampingModeSetting(SettingsInterface* bsi, const char* t
 						"EmuCore/CPU/Recompiler", (vunum >= 0 ? ((vunum == 0) ? "vu0Overflow" : "vu1Overflow") : "fpuOverflow"), first);
 					// Same write as AdvancedSettingsWidget::setClampingMode.
 					if (vunum < 0)
-					{
-						std::optional<bool> fourth;
-						if (first.has_value())
-							fourth = false;
 						bsi->SetOptionalBoolValue("EmuCore/CPU/Recompiler", "fpuExactMode", fourth);
-					}
 					SetSettingsChanged(bsi);
 				}
 
@@ -6459,6 +6463,7 @@ TRANSLATE_NOOP("FullscreenUI", "2 Frames");
 TRANSLATE_NOOP("FullscreenUI", "3 Frames");
 TRANSLATE_NOOP("FullscreenUI", "Extra + Preserve Sign");
 TRANSLATE_NOOP("FullscreenUI", "Full");
+TRANSLATE_NOOP("FullscreenUI", "Exact");
 TRANSLATE_NOOP("FullscreenUI", "Extra");
 TRANSLATE_NOOP("FullscreenUI", "Automatic (Default)");
 TRANSLATE_NOOP("FullscreenUI", "Direct3D 11 (Legacy)");
@@ -6951,7 +6956,6 @@ TRANSLATE_NOOP("FullscreenUI", "Enable PINE");
 TRANSLATE_NOOP("FullscreenUI", "PINE Slot");
 TRANSLATE_NOOP("FullscreenUI", "Show Cheats For All CRCs");
 TRANSLATE_NOOP("FullscreenUI", "Show Patches For All CRCs");
-TRANSLATE_NOOP("FullscreenUI", "FPU Multiply Hack");
 TRANSLATE_NOOP("FullscreenUI", "Use Software Renderer For FMVs");
 TRANSLATE_NOOP("FullscreenUI", "Skip MPEG Hack");
 TRANSLATE_NOOP("FullscreenUI", "Preload TLB Hack");
