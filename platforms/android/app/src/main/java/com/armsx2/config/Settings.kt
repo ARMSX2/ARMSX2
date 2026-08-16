@@ -1838,6 +1838,37 @@ data class Settings(
             mtvu = mtvu,
         )
 
+        /** One-tap "Ultra-Low-End" performance snapshot applied on top of [base].
+         *  Only cheap, safe-for-most levers that already exist as fields:
+         *    - accurate_blending_unit = Minimum (0)   — cheapest blend path
+         *    - internal resolution   = 1x (native)     — biggest GPU win
+         *    - hw mipmap off, GPU palette conversion off — drop optional GPU work
+         *    - texture preloading    = Partial (1)      — lower upload stalls
+         *    - HW ROV off                                — never a win on tilers
+         *    - instantDma On                             — tweak performance but break some game ( example : God Hand )
+         *    - BlitInternalFPS On                        — boost FPS some game
+         *    - EE Cycle Rate         = -6                 — tweak performance some game
+         *    - EE cycle skip         = 1                 — mild CPU headroom
+         *    - MTVU                   = device-aware      — only when >= 6 cores
+         *  [mtvu] is passed in (from [com.armsx2.DeviceTier.mtvuDefault]) rather
+         *  than read here so config/ stays free of Android context deps.
+         *  NOTE: intentionally does NOT touch CAS — there is no CAS Settings
+         *  field wired in this build. 
+         * Recommanded For Weak / Low End Device. */
+        fun ultraLowEndPreset(base: Settings, mtvu: Boolean): Settings = base.copy(
+            accurateBlendingUnit = 0,   // Minimum
+            upscaleFloat = 0.5f,        // native resolution
+            hwMipmap = false,           // mipmap off
+            gpuPaletteConversion = false,
+            texturePreloading = 1,      // Partial
+            hwRov = false,              // ROV off
+            gamefixInstantDma = true,
+            gamefixBlitInternalFps = true,
+            eeCycleRate = -6,
+            eeCycleSkip = 1,
+            mtvu = mtvu,
+        )
+
         /** Lenient parse — missing keys fall back to defaults so old saved
          *  blobs survive when new fields are added. */
         fun fromJson(json: JSONObject): Settings {
