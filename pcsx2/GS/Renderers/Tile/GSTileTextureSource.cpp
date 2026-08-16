@@ -20,22 +20,16 @@ u64 RegKey(const GIFRegTEX0& TEX0)
 		   (static_cast<u64>(std::min<u32>(TEX0.TH, 10)) << 30);
 }
 
-// The identity of everything OUTSIDE local memory that shaped the RGBA8 bytes: the
-// TEXA expansion for the direct 16/24-bit formats (the mask Classic's hash-cache
-// uses), and the expanded-palette identity for the palettised ones — the CLUT write
-// generation plus the read-side registers Read32 expands through (CPSM, CSA, and
-// TEXA again, this time via the palette entries).
-u64 AuxKey(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, u32 pal_gen)
+// The identity of everything OUTSIDE local memory that shaped the bytes: the TEXA
+// expansion for the direct 16/24-bit formats (the mask Classic's hash-cache uses).
+// A palettised window has none — its texture holds the raw indices, and the palette
+// is a separate texture the shader indexes with them, so the same index texture
+// serves every palette the game cycles through it (GSTilePaletteCache).
+u64 AuxKey(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 {
 	const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[TEX0.PSM];
 	if (psm.pal > 0)
-	{
-		const u64 texa_bits = TEXA.U64 & 0x000000FF000080FFULL;
-		// texa_bits occupy bits {0-7, 15, 32-39}; fold them below CPSM/CSA/gen.
-		const u64 folded_texa = (texa_bits & 0xFFFFu) | ((texa_bits >> 16) & 0xFF0000u);
-		return folded_texa | (static_cast<u64>(TEX0.CPSM) << 24) | (static_cast<u64>(TEX0.CSA) << 28) |
-			   (static_cast<u64>(pal_gen & 0x3FFFFFFFu) << 33) | (1ULL << 63);
-	}
+		return 0;
 	if (psm.fmt > 0)
 		return TEXA.U64 & 0x000000FF000080FFULL;
 	return 0;
@@ -94,12 +88,19 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 	const int tw = 1 << std::min<u32>(level_tex0[0].TW, 10);
 	const int th = 1 << std::min<u32>(level_tex0[0].TH, 10);
 
+	// A palettised window becomes an INDEX texture — one byte per texel holding the
+	// index the swizzle would have handed the CLUT (four-bit indices widened to a
+	// byte, 0..15) — and the palette rides beside it as its own texture. Every other
+	// format is deswizzled to RGBA8 with TEXA applied, as before.
+	const bool indexed = GSLocalMemory::m_psm[level_tex0[0].PSM].pal > 0;
+	const GSTexture::Format format = indexed ? GSTexture::Format::UNorm8 : GSTexture::Format::Color;
+
 	if (!e.tex || e.tex->GetWidth() != tw || e.tex->GetHeight() != th ||
-		e.tex->GetMipmapLevels() != static_cast<int>(levels))
+		e.tex->GetMipmapLevels() != static_cast<int>(levels) || e.tex->GetFormat() != format)
 	{
 		if (e.tex)
 			g_gs_device->Recycle(e.tex);
-		e.tex = g_gs_device->CreateTexture(tw, th, static_cast<int>(levels), GSTexture::Format::Color, true);
+		e.tex = g_gs_device->CreateTexture(tw, th, static_cast<int>(levels), format, true);
 		if (!e.tex)
 			return false;
 	}
@@ -126,16 +127,19 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 
 		// Readers work in whole blocks; deswizzle the block-aligned window and upload
 		// the texture-sized top-left corner (windows smaller than a block land inside).
+		// The palette-less readers (rtxP) write one byte per texel; the expanding ones
+		// write four.
 		const GSVector4i rect(0, 0, lw, lh);
 		const GSVector4i block_rect(rect.ralign<Align_Outside>(psm.bs));
-		const u32 pitch = Common::AlignUpPow2(static_cast<u32>(block_rect.width()) * 4, 32);
+		const u32 bytes_per_texel = indexed ? 1 : 4;
+		const u32 pitch = Common::AlignUpPow2(static_cast<u32>(block_rect.width()) * bytes_per_texel, 32);
 
 		u8* buff = GetScratch(pitch * static_cast<u32>(block_rect.height()));
 		if (!buff)
 			return false;
 
 		const GSOffset off = mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM);
-		psm.rtx(mem, off, block_rect, buff, pitch, TEXA);
+		(indexed ? psm.rtxP : psm.rtx)(mem, off, block_rect, buff, pitch, TEXA);
 		e.tex->Update(rect, buff, pitch, static_cast<int>(i));
 	}
 	m_builds++;
@@ -143,7 +147,7 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 }
 
 GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& model, const GIFRegTEX0& TEX0,
-	const GIFRegTEXA& TEXA, const GSPageBitmap& pages, u32 pal_gen,
+	const GIFRegTEXA& TEXA, const GSPageBitmap& pages,
 	const GIFRegTEX0* level_tex0, u32 levels, const Donor* donor)
 {
 	// Single-level callers pass no array; view the base register as a one-entry one.
@@ -154,7 +158,7 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 	}
 
 	const u64 reg_key = RegKey(TEX0);
-	const u64 aux_key = AuxKey(TEX0, TEXA, pal_gen);
+	const u64 aux_key = AuxKey(TEX0, TEXA);
 	u64 mip_key[2];
 	MipKey(level_tex0, levels, mip_key);
 	const u64 stamp = GenStamp(model, pages);

@@ -13,24 +13,26 @@
 class GSLocalMemory;
 class GSVramModel;
 
-// The Tile renderer's texture sources: RGBA8 GPU copies of texture windows built
-// straight from CPU local memory, with the palette and TEXA expansion applied by the
-// swizzle readers on the CPU. There is deliberately no GPU-side palette, no format
-// variants, and no target aliasing here — a source whose pages carry GPU truth is
-// spilled to CPU memory by the caller before it ever reaches this class, and a
-// source overlapping the draw's own write footprint floors (that is M4 feedback
-// territory). The shader therefore always sees a plain color texture, which is the
-// "index and AEM expansion already done by the CPU" leg of the backend — the one
-// the gs-texture capture certified exact in every arm for nearest sampling.
+// The Tile renderer's texture sources: GPU copies of texture windows built straight
+// from CPU local memory. A direct-colour window (16/24/32-bit) is deswizzled to RGBA8
+// with the TEXA expansion applied by the swizzle readers on the CPU — the "AEM
+// expansion already done by the CPU" leg of the backend, the one the gs-texture
+// capture certified exact in every arm for nearest sampling. A PALETTISED window is
+// an INDEX texture (one byte per texel, the palette-less readers) and the palette is
+// a separate device texture the shader indexes with it (GSTilePaletteCache) — so the
+// index texture is independent of the palette, and one build serves every palette
+// the game cycles through it. There is no target aliasing here: a source whose pages
+// carry GPU truth is spilled to CPU memory by the caller before it ever reaches this
+// class unless the caller can prove a device-side substitute (see Donor), and a
+// source overlapping the draw's own write footprint floors (M4 feedback territory).
 //
 // Caching, not correctness, is the point of the class: re-deswizzling every draw
 // would put a CPU cost on exactly the titles the GS-thread tripwire watches. An
-// entry is identified by the register view of the window (TBP0/TBW/PSM/TW/TH), the
-// TEXA bits when the format expands through them, and the palette identity (CLUT
-// write generation + the read-side CPSM/CSA/TEXA) for palettised formats; it is
-// invalidated by content through the interval model's per-page write generations —
-// the sum of cpu+gpu generations over the window's pages is monotone under every
-// mutation of those bytes, so stamp inequality is exactly "some byte moved".
+// entry is identified by the register view of the window (TBP0/TBW/PSM/TW/TH) and
+// the TEXA bits when the format expands through them; it is invalidated by content
+// through the interval model's per-page write generations — the sum of cpu+gpu
+// generations over the window's pages is monotone under every mutation of those
+// bytes, so stamp inequality is exactly "some byte moved".
 class GSTileTextureSource
 {
 public:
@@ -57,24 +59,24 @@ public:
 	/// The content stamp of `pages` right now (sum of per-page write generations).
 	static u64 GenStamp(const GSVramModel& model, const GSPageBitmap& pages);
 
-	/// Returns the RGBA8 source for this texture window, building or rebuilding it
-	/// if absent or stale, or null on allocation failure. The caller has already
-	/// spilled GPU truth under the window and, for palettised formats, refreshed the
-	/// CLUT read buffer (GSClut::Read32) — pal_gen is the CLUT write generation.
+	/// Returns the source for this texture window — RGBA8 for a direct-colour format,
+	/// an 8-bit index texture for a palettised one — building or rebuilding it if
+	/// absent or stale, or null on allocation failure. The caller has already spilled
+	/// GPU truth under the window.
 	///
 	/// For mip draws, level_tex0 carries min(MXL,6)+1 register views (level 0 first,
 	/// then GetTex0Layer's MIPTBP-derived views) and the built texture holds one GPU
 	/// mip level per entry — the GS floors level sizes at one texel exactly like a
 	/// GPU chain, so the geometries agree by construction (the route floors the rare
 	/// pyramid deeper than the base). `pages` must already union every level's
-	/// footprint, and the palette applies to all levels alike.
+	/// footprint.
 	///
 	/// `donor`, when given, builds the source by copying on the device instead of reading
 	/// CPU memory — see Donor. It is consulted only on a BUILD; a cache hit is a hit
 	/// either way, because the content stamp is a property of the bytes and not of the
 	/// route that last fetched them.
 	GSTexture* Lookup(GSLocalMemory& mem, const GSVramModel& model, const GIFRegTEX0& TEX0,
-		const GIFRegTEXA& TEXA, const GSPageBitmap& pages, u32 pal_gen,
+		const GIFRegTEXA& TEXA, const GSPageBitmap& pages,
 		const GIFRegTEX0* level_tex0 = nullptr, u32 levels = 1, const Donor* donor = nullptr);
 
 	/// Builds served off the device rather than out of CPU memory.

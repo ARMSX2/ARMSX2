@@ -1483,9 +1483,24 @@ vec4 sample_color(vec2 st)
 // and the two axes are nested truncating lerps a + (((b-a)*f)>>4) on the
 // post-palette 8-bit channels — never a float blend, and no sampler state can
 // express it (Classic's sampler path scores 67.45% on the capture grid with
-// every miss a filtering miss). Texels are fetched raw — the source texture is
-// plain RGBA8, palette and TEXA already applied CPU-side — and filtered in
-// integer arithmetic, mirroring the SW scanline (GSDrawScanline sel.ltf).
+// every miss a filtering miss). Texels are fetched raw and filtered in integer
+// arithmetic, mirroring the SW scanline (GSDrawScanline sel.ltf). A direct-colour
+// source is plain RGBA8 with TEXA already applied CPU-side; a palettised source
+// is an index texture, and each fetched index is expanded through the palette
+// texture HERE, before any lerp — the gs-idxfilt console capture measured that
+// silicon expands every filter corner through the CLUT and then blends the
+// colours (194 of 194 twin pairs), never the other order.
+
+ivec4 tile_texel_color(vec4 t)
+{
+#if PS_PAL_FMT != 0
+	// The index texture's texel is the index (four-bit indices arrive widened to
+	// a byte); the palette texel is the colour Read32 expanded.
+	return ivec4(sample_p(uint(t.a * 255.5f)) * 255.0f + 0.5f);
+#else
+	return ivec4(t * 255.0f + 0.5f);
+#endif
+}
 
 ivec4 fetch_texel_tile(ivec2 xy)
 {
@@ -1494,7 +1509,7 @@ ivec4 fetch_texel_tile(ivec2 xy)
 	// here a coordinate escaping the texture reads the edge texel instead. No
 	// corpus draw does this; the probe gate would surface one that mattered.
 	xy = clamp(xy, ivec2(0), ivec2(WH.xy) - 1);
-	return ivec4(texelFetch(Texture, xy, 0) * 255.0f + 0.5f);
+	return tile_texel_color(texelFetch(Texture, xy, 0));
 }
 
 ivec2 wrap_tile(ivec2 xy)
@@ -1723,9 +1738,10 @@ ivec2 wrap_tile_mip(ivec2 xy, ivec4 b)
 
 ivec4 fetch_texel_tile_lod(ivec2 xy, int lod)
 {
-	// Same escape clamp as fetch_texel_tile, at the level's own dimensions.
+	// Same escape clamp as fetch_texel_tile, at the level's own dimensions. Every
+	// level of an index texture is indices, and the one palette serves them all.
 	xy = clamp(xy, ivec2(0), max(ivec2(WH.xy) >> lod, ivec2(1)) - 1);
-	return ivec4(texelFetch(Texture, xy, lod) * 255.0f + 0.5f);
+	return tile_texel_color(texelFetch(Texture, xy, lod));
 }
 
 ivec4 tile_mip_level(ivec2 uv, int lod)

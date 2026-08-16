@@ -5,6 +5,7 @@
 
 #include "GS/Renderers/SW/GSRendererSW.h"
 #include "GS/Renderers/Tile/GSTileDrawLowering.h"
+#include "GS/Renderers/Tile/GSTilePaletteCache.h"
 #include "GS/Renderers/Tile/GSTileTargetPool.h"
 #include "GS/Renderers/Tile/GSTileTextureSource.h"
 #include "GS/Renderers/Tile/GSVramModel.h"
@@ -76,7 +77,7 @@ private:
 	bool BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloorReason& reason);
 	void DeindexVertices();
 	void SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, const GIFRegTEX0& fixed_tex0,
-		GSTexture* rt, GSTexture* ds, GSTexture* tex);
+		GSTexture* rt, GSTexture* ds, GSTexture* tex, GSTexture* pal);
 	void FlattenProvokingColor();
 	GSTileSurfaceId EnsureSurface(const GSTileSurfaceLayout& layout, const GSVector4i& rect, const GSPageBitmap& pages, bool& ok);
 	GSPageBitmap PagesNeedingUpload(GSTileSurfaceId id, const GSPageBitmap& pages, u8 relevant_planes) const;
@@ -228,6 +229,7 @@ private:
 	GSVramModel m_vram_model;
 	GSTileTargetPool m_target_pool;
 	GSTileTextureSource m_tex_source;
+	GSTilePaletteCache m_palette_cache;
 
 	// Per-primitive plane payload for the current draw: the depth walk's blocks
 	// and the coordinate plane's blocks concatenated into one upload, built per

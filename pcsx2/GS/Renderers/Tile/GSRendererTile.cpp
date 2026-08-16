@@ -176,6 +176,7 @@ void GSRendererTile::Destroy()
 				: " ⚠️ INCOMPLETE — the uncompared draws kept their native result");
 	}
 	m_tex_source.Clear();
+	m_palette_cache.Clear();
 	m_target_pool.ReleaseAll();
 	GSRendererSW::Destroy();
 }
@@ -185,6 +186,7 @@ void GSRendererTile::Reset(bool hardware_reset)
 	GSRendererSW::Reset(hardware_reset);
 	// Everything falls back to CPU-newest; surface textures die with the reset.
 	m_tex_source.Clear();
+	m_palette_cache.Clear();
 	m_target_pool.ReleaseAll();
 	m_vram_model.Reset();
 }
@@ -1504,21 +1506,37 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		return false;
 	}
 
-	// The texture source, built from (now-current) CPU local memory with palette and
-	// TEXA expansion applied by the readers. The CLUT read buffer refreshes the same
-	// way the SW rasterizer's would have. (Standing M2 gap: the palette itself was
-	// loaded from CPU bytes at TEX0-write time, before any draw-side seam ran — a
-	// GPU-rendered palette would be read stale; the oracle gate is the detector.)
+	// The texture source, built from (now-current) CPU local memory: RGBA8 with the
+	// TEXA expansion applied by the readers for a direct-colour window, an index
+	// texture for a palettised one. The palette then rides beside it as its own
+	// device texture, expanded from the CLUT read buffer exactly as the SW
+	// rasterizer's would be — Read32 refreshes it, GSTilePaletteCache keys it on the
+	// words. The shader expands each fetched index through it before any filtering,
+	// the order the gs-idxfilt console capture measured. (Standing M2 gap: the palette
+	// itself was loaded from CPU bytes at TEX0-write time, before any draw-side seam
+	// ran — a GPU-rendered palette would be read stale; the oracle gate is the
+	// detector.)
 	GSTexture* tex = nullptr;
+	GSTexture* pal = nullptr;
 	if (textured)
 	{
-		u32 pal_gen = 0;
-		if (GSLocalMemory::m_psm[ctx->TEX0.PSM].pal > 0)
+		const u32 pal_entries = GSLocalMemory::m_psm[ctx->TEX0.PSM].pal;
+		if (pal_entries > 0)
 		{
 			m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
-			pal_gen = m_mem.m_clut.GetWriteGeneration();
+			const u32* clut = m_mem.m_clut;
+			pal = m_palette_cache.Lookup(clut, pal_entries);
+			if (!pal)
+			{
+				reason = GSTileFloorReason::ResourceFailure;
+				return false;
+			}
+			// The ledger's palette column, which only the floor's SW arm had been
+			// filling — a native palettised draw read as "no palette" until now.
+			if (GSDrawLog::IsActive()) [[unlikely]]
+				GSDrawLog::NoteClut(clut, pal_entries);
 		}
-		tex = m_tex_source.Lookup(m_mem, m_vram_model, fixed_tex0, m_draw_env->TEXA, tex_pages, pal_gen,
+		tex = m_tex_source.Lookup(m_mem, m_vram_model, fixed_tex0, m_draw_env->TEXA, tex_pages,
 			level_tex0, mip_levels, donor_p);
 		if (!tex)
 		{
@@ -1530,7 +1548,7 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	SubmitNativeDraw(plan, r, fixed_tex0,
 		want_rt ? m_target_pool.GetTexture(fb_handle) : nullptr,
 		want_ds ? m_target_pool.GetTexture(z_handle) : nullptr,
-		tex);
+		tex, pal);
 
 	if (want_rt)
 		m_vram_model.OnNativeDraw(fb_id, fb_pages, plan.fb_claims);
@@ -1864,7 +1882,7 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloo
 }
 
 void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, const GIFRegTEX0& fixed_tex0,
-	GSTexture* rt, GSTexture* ds, GSTexture* tex)
+	GSTexture* rt, GSTexture* ds, GSTexture* tex, GSTexture* pal)
 {
 	const GSDrawingContext* ctx = m_context;
 	GSHWDrawConfig conf = {};
@@ -1968,13 +1986,24 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 
 	if (tex)
 	{
-		// The plain-color source: the backend's "index and AEM expansion already
-		// done by the CPU" leg. Nearest draws sample it through the GPU sampler —
-		// the exact configuration the gs-texture capture scored 128/128 on nearest
-		// cells in every arm. Bilinear draws filter in-shader (PS_TILE_LTF): the
-		// same capture measured the console's filter as a 1/16-texel truncating
-		// snap with 4-bit nested truncating lerps, which no sampler expresses.
+		// A direct-colour source is the backend's "AEM expansion already done by the
+		// CPU" leg; a palettised one is its "8-bit index texture + palette" leg
+		// (pal_fmt 3 — four-bit indices arrive already widened to a byte, the same
+		// convention Classic's CPU-built sources use, so no nibble masking in the
+		// shader). Nearest draws sample through the GPU sampler — the exact
+		// configuration the gs-texture capture scored 128/128 on nearest cells in
+		// every arm; with a palette the sampler fetches the index and the shader
+		// expands it. Bilinear draws filter in-shader (PS_TILE_LTF): the same capture
+		// measured the console's filter as a 1/16-texel truncating snap with 4-bit
+		// nested truncating lerps, which no sampler expresses, and gs-idxfilt measured
+		// that a palettised fetch expands every corner through the CLUT BEFORE those
+		// lerps — which is what the palette leg of fetch_texel_tile does.
 		conf.tex = tex;
+		if (pal)
+		{
+			conf.pal = pal;
+			conf.ps.pal_fmt = 3;
+		}
 		conf.vs.tme = 1;
 		conf.vs.fst = PRIM->FST;
 		conf.ps.fst = PRIM->FST;
