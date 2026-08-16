@@ -236,6 +236,14 @@ public:
 	// DiffVu's ignored_vi parameter.
 	void IgnoreVu0Vi(u32 reg_idx) { vu0_ignored_vi_.push_back(static_cast<int>(reg_idx)); }
 
+	// Drop Run()'s VU0 JIT-vs-interp auto-diff entirely. Only for tests that
+	// score each engine against an EXTERNAL reference -- a hardware capture --
+	// where the two engines being wrong in different ways is the subject
+	// rather than the failure. A test that calls this and then compares the
+	// two engines to each other has disabled its own assertion; compare each
+	// one to the reference instead.
+	void ExpectVu0Divergence() { vu0_expect_divergence_ = true; }
+
 	void SeedVu0Vf(u32 reg_idx, float x, float y, float z, float w);
 	void SeedVu0VfBits(u32 reg_idx, u32 x, u32 y, u32 z, u32 w);
 	void SeedVu0Acc(float x, float y, float z, float w);
@@ -342,6 +350,7 @@ private:
 	EeSnapshot interp_snapshot_;
 
 	bool capture_vu0_ = false;
+	bool vu0_expect_divergence_ = false;
 	std::vector<int> vu0_ignored_vi_;
 	VuSnapshot vu0_pre_snapshot_;
 	VuSnapshot vu0_jit_snapshot_;

@@ -571,6 +571,11 @@ constexpr u32 VMADDAx_C2(u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_
 constexpr u32 VMADDAy_C2(u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x02, fs, ft, 0x3D); }
 constexpr u32 VMULAz_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x06, fs, ft, 0x3E); }
 
+// VADDA — non-broadcast accumulate (ACC = fs + ft). SPEC2 sub-op 0x0A,
+// funct 0x3C. Do not reach for the assembler to check this one: ps2dev's
+// binutils transposes FS and FT for the vadda mnemonic.
+constexpr u32 VADDA_C2  (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x0A, fs, ft, 0x3C); }
+
 // COP2-CO SPECIAL2 (LowerOP2 trampolines via SPEC1 funct 0x3C..0x3F).
 // The SPEC2 dispatch index inside recCOP2SPECIAL2t is
 //   (code & 0x3) | ((code >> 4) & 0x7c)
