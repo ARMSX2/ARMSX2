@@ -76,6 +76,15 @@
 //   so it compared a transcription with itself and could never have caught it.
 //   The mechanism was never found. Whoever picks this up starts there, and
 //   builds the eight-lane oracle out of something that is not this comment.
+//
+// ⚠️ And do not land the four-lane half on the strength of it being correct. It
+// is correct, and it is still shelved rather than merged, for a reason that has
+// nothing to do with its quality: nobody runs it. x86 exists here only because
+// PCSX2 is our upstream, so a converted x86 generator would be code that is
+// never executed and never measured, sitting in a file we take upstream changes
+// into. That is a merge cost on every fold, forever, paid for output no one
+// looks at. "Correct but unrun" is a reason to keep it off to the side, not a
+// reason to carry it.
 
 /// Horizontal span of one DDA step, in pixels.
 __forceinline static constexpr int GSBlockWalkWidth(GSScanlineSelector sel)
