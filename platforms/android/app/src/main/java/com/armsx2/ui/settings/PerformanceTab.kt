@@ -88,7 +88,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
             // Recommanded For Weak / Low-End Device
             val ultraLowEnd = Settings.ultraLowEndPreset(
                 s.copy(eeCycleRate = -6, eeCycleSkip = 1 mtvu = true, vu1Instant = true,
-                    vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true, gamefixInstantDma = true, gamefixBlitInternalFps = true, upscaleFloat = 0.5f, accurateBlendingUnit = 1),
+                    vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true, gamefixInstantDma = true, gamefixBlitInternalFps = true, upscaleFloat = 0.5f, accurateBlendingUnit = 0),
                 mtvu = com.armsx2.DeviceTier.mtvuDefault(),
             )
             // -1 = no preset matches (custom): no segment highlighted.
