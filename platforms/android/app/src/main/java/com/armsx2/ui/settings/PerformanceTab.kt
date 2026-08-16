@@ -81,13 +81,13 @@ fun PerformanceTab(state: MutableState<Settings>) {
             val lowEnd = Settings.lowEndPreset(
                 s.copy(eeCycleRate = 0, mtvu = true, vu1Instant = true,
                     vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true),
-                mtvu = com.armsx2.DeviceTier.mtvuDefault()
+                mtvu = com.armsx2.DeviceTier.mtvuDefault(),
             )
             // Ultra-Low-End = every cheap GPU/CPU lever, MTVU gated on core count. Built
             // from the shared Settings.lowEndPreset so it matches the setup wizard.
             // Recommanded For Weak / Low-End Device
             val ultraLowEnd = Settings.ultraLowEndPreset(
-                s.copy(eeCycleRate = -6, eeCycleSkip = 1 mtvu = true, vu1Instant = true,
+                s.copy(eeCycleRate = -6, eeCycleSkip = 1, mtvu = true, vu1Instant = true,
                     vuFlagHack = true, intcStat = true, waitLoop = true, fastCDVD = true, gamefixInstantDma = true, gamefixBlitInternalFps = true, upscaleFloat = 0.5f, accurateBlendingUnit = 0),
                 mtvu = com.armsx2.DeviceTier.mtvuDefault(),
             )
