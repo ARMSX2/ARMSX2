@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.BuildConfig
 import com.armsx2.i18n.str
+import com.armsx2.ui.settings.IntSliderRow
 import com.armsx2.ui.settings.SegmentedRow
 import com.armsx2.ui.settings.SettingsDivider
 import com.armsx2.ui.settings.ToggleRow
@@ -37,7 +38,8 @@ import kr.co.iefriends.pcsx2.NativeApp
 import java.io.File
 
 /**
- * LSFG frame-generation rows: a master toggle, a multiplier, and the Lossless.dll picker.
+ * LSFG frame-generation rows: a master toggle, a multiplier, the shader family, the motion-detail
+ * slider, and the Lossless.dll picker.
  *
  * Presentation only — the caller wires [onChange] to its OWN settings tier, exactly like
  * [ShaderChainSection]. That is what lets one definition serve both the All Settings
@@ -100,7 +102,9 @@ fun LsfgSection(
     enabled: Boolean,
     multiplier: Int,
     dllPath: String,
-    onChange: (enabled: Boolean, multiplier: Int, dllPath: String) -> Unit,
+    performance: Boolean,
+    flowScale: Int,
+    onChange: (enabled: Boolean, multiplier: Int, dllPath: String, performance: Boolean, flowScale: Int) -> Unit,
 ) {
     if (!BuildConfig.LSFG) return
 
@@ -139,7 +143,7 @@ fun LsfgSection(
         } else {
             importError = null
             path = target.absolutePath
-            onChange(enabled, multiplier, path)
+            onChange(enabled, multiplier, path, performance, flowScale)
         }
     }
 
@@ -151,7 +155,7 @@ fun LsfgSection(
         // The requirements dialog fires on the way ON only, and BEFORE the toggle commits.
         // Turning something on and then being told it cannot work is the shape of this that
         // wastes the user's time; being told what it needs first is the shape that does not.
-        if (on) showRequirements = true else onChange(false, multiplier, path)
+        if (on) showRequirements = true else onChange(false, multiplier, path, performance, flowScale)
     }
 
     if (enabled) {
@@ -161,7 +165,27 @@ fun LsfgSection(
             options = listOf("x2", "x3", "x4"),
             selectedIndex = (multiplier - 2).coerceIn(0, 2),
             description = str("perf.lsfg.multiplier.description"),
-        ) { index -> onChange(enabled, index + 2, path) }
+        ) { index -> onChange(enabled, index + 2, path, performance, flowScale) }
+
+        SettingsDivider()
+        ToggleRow(
+            label = str("perf.lsfg.performance.label"),
+            value = performance,
+            description = str("perf.lsfg.performance.description"),
+        ) { on -> onChange(enabled, multiplier, path, on, flowScale) }
+
+        SettingsDivider()
+        // A percentage, not the divisor the library takes — the native side inverts it. Presented
+        // this way round because "less detail" has to mean "cheaper" on the slider, and passing
+        // the raw divisor through would put the cheap end at the top.
+        IntSliderRow(
+            label = str("perf.lsfg.flowScale.label"),
+            value = flowScale.coerceIn(25, 100),
+            min = 25,
+            max = 100,
+            description = str("perf.lsfg.flowScale.description"),
+            valueFormatter = { "$it%" },
+        ) { value -> onChange(enabled, multiplier, path, performance, value) }
 
         SettingsDivider()
         LsfgDllRow(path, importError) { picker.launch(arrayOf("*/*")) }
@@ -185,7 +209,7 @@ fun LsfgSection(
             onDismiss = { showRequirements = false },
             onAccept = {
                 showRequirements = false
-                onChange(true, multiplier, path)
+                onChange(true, multiplier, path, performance, flowScale)
                 // Straight into the picker when there is nothing to run against — the first
                 // thing the dialog just asked for is the file, so asking for it is the next
                 // step rather than a second row to go and find.

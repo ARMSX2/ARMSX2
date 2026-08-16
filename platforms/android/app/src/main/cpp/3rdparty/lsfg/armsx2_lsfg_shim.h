@@ -35,7 +35,7 @@ extern "C" {
 
 struct AHardwareBuffer;
 
-#define ARMSX2_LSFG_ABI_VERSION 1
+#define ARMSX2_LSFG_ABI_VERSION 2
 
 /// Fill `out_data`/`out_size` with SPIR-V for the shader framegen asked for by `name`.
 /// The buffer must stay valid until the next call to this callback or until initialise
@@ -49,8 +49,17 @@ typedef uint32_t (*pfn_armsx2_lsfg_abi_version)(void);
 
 /// Bring the library up. `generation_count` is the number of frames to interpolate between
 /// each pair of real ones (multiplier - 1). Returns 0 on success.
-typedef int (*pfn_armsx2_lsfg_initialize)(
-	uint64_t device_uuid, uint32_t generation_count, armsx2_lsfg_shader_fn loader, void* user);
+///
+/// `flow_scale` is a DIVISOR applied to the input extent to size the optical-flow pyramid:
+/// framegen computes `flowExtent = inputExtent / flow_scale`, so 1.0 is full resolution and
+/// larger values are cheaper. Upstream's own layer reaches this by passing `1.0 / conf.flowScale`
+/// from a [0.25, 1.0] fraction, which is why the number arriving here is >= 1.0.
+///
+/// `performance` selects LSFG 3.1p, a lighter shader family, in place of 3.1. It is fixed for
+/// the lifetime of the library: the two keep entirely separate device state and context tables,
+/// so a context created by one cannot be presented or destroyed through the other.
+typedef int (*pfn_armsx2_lsfg_initialize)(uint64_t device_uuid, int is_hdr, float flow_scale,
+	uint32_t generation_count, int performance, armsx2_lsfg_shader_fn loader, void* user);
 
 /// Create the interpolation context over caller-owned AHardwareBuffers. `format` is a
 /// VkFormat. Returns the context id, or -1 on failure.

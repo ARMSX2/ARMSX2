@@ -1060,6 +1060,13 @@ struct Pcsx2Config
 		bool LsfgEnabled = false;
 		u8 LsfgMultiplier = 2; // frames displayed per rendered frame: 2 = one interpolated
 		std::string LsfgDllPath;
+		// LSFG 3.1p, a lighter shader family than 3.1. Default on: this runs on a phone GPU
+		// that is already presenting the game, and the cheaper pipeline is what makes the
+		// feature pay for itself there. Falls back to 3.1 when the user's DLL predates 3.1p.
+		bool LsfgPerformance = true;
+		// Optical-flow resolution, as a percentage of the presented image (25..100). Lower is
+		// cheaper and blurrier. Handed to the library as a DIVISOR — see GSLsfg.cpp.
+		u8 LsfgFlowScale = 100;
 
 		u8 CAS_Sharpness = 50;
 		u8 ShadeBoost_Brightness = DEFAULT_SHADEBOOST_BRIGHTNESS;

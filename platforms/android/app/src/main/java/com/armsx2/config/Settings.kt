@@ -578,6 +578,15 @@ data class Settings(
     val lsfgEnabled: Boolean = false,
     val lsfgMultiplier: Int = 2,
     val lsfgDllPath: String = "",
+    /** EmuCore/GS/LsfgPerformance — LSFG 3.1p, a lighter shader family than 3.1. On by default:
+     *  this runs on a phone GPU that is already busy presenting the game, and the cheaper
+     *  pipeline is what makes frame generation pay for itself there. Falls back to 3.1 by itself
+     *  when the user's Lossless.dll predates 3.1p. */
+    val lsfgPerformance: Boolean = true,
+    /** EmuCore/GS/LsfgFlowScale — optical-flow resolution, as a PERCENTAGE of the presented
+     *  image (25..100). Lower is cheaper and blurrier. The native side inverts it: the library
+     *  takes a divisor, so 25% becomes 4.0. See GSLsfg.cpp. */
+    val lsfgFlowScale: Int = 100,
     /** Tweaked shader parameters, as `preset path -> (parameter name -> value)`.
      *
      *  Sparse: a parameter the user hasn't touched is simply absent, and the author's own
@@ -1168,6 +1177,8 @@ data class Settings(
             lsfgEnabled = boolAt("EmuCore/GS/LsfgEnabled") ?: this.lsfgEnabled,
             lsfgMultiplier = intAt("EmuCore/GS/LsfgMultiplier") ?: this.lsfgMultiplier,
             lsfgDllPath = strAt("EmuCore/GS/LsfgDllPath") ?: this.lsfgDllPath,
+            lsfgPerformance = boolAt("EmuCore/GS/LsfgPerformance") ?: this.lsfgPerformance,
+            lsfgFlowScale = intAt("EmuCore/GS/LsfgFlowScale") ?: this.lsfgFlowScale,
             shaderChainParams = strAt("EmuCore/GS/ShaderChainParams")?.let { raw ->
                 // Hand-editable file, so a malformed blob is a real possibility: keep the
                 // rest of the recovered settings rather than throwing the lot away.
@@ -1368,6 +1379,10 @@ data class Settings(
         put("EmuCore/GS", "LsfgEnabled", "bool", lsfgEnabled.toString())
         put("EmuCore/GS", "LsfgMultiplier", "int", lsfgMultiplier.toString())
         put("EmuCore/GS", "LsfgDllPath", "string", lsfgDllPath)
+        put("EmuCore/GS", "LsfgPerformance", "bool", lsfgPerformance.toString())
+        // Clamped to the same 25..100 the native side enforces. A value outside it would be
+        // coerced there anyway, and the two disagreeing is how a slider ends up looking stuck.
+        put("EmuCore/GS", "LsfgFlowScale", "int", lsfgFlowScale.coerceIn(25, 100).toString())
         // Parameter overrides, as one opaque JSON blob. Nothing in emucore reads this key —
         // there is no GSConfig field behind it, and the live values reach the renderer via
         // the push below, not through here. It is written so the map survives the same
@@ -1548,6 +1563,11 @@ data class Settings(
             shadeBoostSaturation != other.shadeBoostSaturation ||
             shadeBoostGamma != other.shadeBoostGamma ||
             fxaa != other.fxaa ||
+            lsfgEnabled != other.lsfgEnabled ||
+            lsfgMultiplier != other.lsfgMultiplier ||
+            lsfgDllPath != other.lsfgDllPath ||
+            lsfgPerformance != other.lsfgPerformance ||
+            lsfgFlowScale != other.lsfgFlowScale ||
             casMode != other.casMode ||
             casSharpness != other.casSharpness ||
             accurateBlendingUnit != other.accurateBlendingUnit ||
@@ -1764,6 +1784,14 @@ data class Settings(
         put("shaderChainEnabled", shaderChainEnabled)
         put("shaderChainPreset", shaderChainPreset)
         put("shaderChainParams", shaderChainParamsToJson(shaderChainParams))
+        // These five were missing from the JSON round-trip entirely, which IS the persistence
+        // format — so every LSFG choice, the imported DLL path included, was thrown away the
+        // moment the app was restarted.
+        put("lsfgEnabled", lsfgEnabled)
+        put("lsfgMultiplier", lsfgMultiplier)
+        put("lsfgDllPath", lsfgDllPath)
+        put("lsfgPerformance", lsfgPerformance)
+        put("lsfgFlowScale", lsfgFlowScale)
         put("casMode", casMode)
         put("casSharpness", casSharpness)
         put("loadTextureReplacements", loadTextureReplacements)
@@ -2038,6 +2066,11 @@ data class Settings(
                 shaderChainPreset = json.optString("shaderChainPreset", def.shaderChainPreset),
                 shaderChainParams = json.optJSONObject("shaderChainParams")
                     ?.let { shaderChainParamsFromJson(it) } ?: def.shaderChainParams,
+                lsfgEnabled = json.optBoolean("lsfgEnabled", def.lsfgEnabled),
+                lsfgMultiplier = json.optInt("lsfgMultiplier", def.lsfgMultiplier),
+                lsfgDllPath = json.optString("lsfgDllPath", def.lsfgDllPath),
+                lsfgPerformance = json.optBoolean("lsfgPerformance", def.lsfgPerformance),
+                lsfgFlowScale = json.optInt("lsfgFlowScale", def.lsfgFlowScale),
                 casMode = json.optInt("casMode", def.casMode),
                 casSharpness = json.optInt("casSharpness", def.casSharpness),
                 loadTextureReplacements = json.optBoolean("loadTextureReplacements", def.loadTextureReplacements),
@@ -2276,6 +2309,11 @@ data class Settings(
             if (current.shaderChainEnabled  != base.shaderChainEnabled)  j.put("shaderChainEnabled", current.shaderChainEnabled)
             if (current.shaderChainPreset   != base.shaderChainPreset)   j.put("shaderChainPreset", current.shaderChainPreset)
             if (current.shaderChainParams   != base.shaderChainParams)   j.put("shaderChainParams", shaderChainParamsToJson(current.shaderChainParams))
+            if (current.lsfgEnabled         != base.lsfgEnabled)         j.put("lsfgEnabled", current.lsfgEnabled)
+            if (current.lsfgMultiplier      != base.lsfgMultiplier)      j.put("lsfgMultiplier", current.lsfgMultiplier)
+            if (current.lsfgDllPath         != base.lsfgDllPath)         j.put("lsfgDllPath", current.lsfgDllPath)
+            if (current.lsfgPerformance     != base.lsfgPerformance)     j.put("lsfgPerformance", current.lsfgPerformance)
+            if (current.lsfgFlowScale       != base.lsfgFlowScale)       j.put("lsfgFlowScale", current.lsfgFlowScale)
             if (current.casMode             != base.casMode)             j.put("casMode", current.casMode)
             if (current.casSharpness        != base.casSharpness)        j.put("casSharpness", current.casSharpness)
             if (current.loadTextureReplacements != base.loadTextureReplacements) j.put("loadTextureReplacements", current.loadTextureReplacements)
@@ -2531,6 +2569,11 @@ data class Settings(
             shaderChainParams = if (overrides.has("shaderChainParams")) {
                 shaderChainParamsFromJson(overrides.optJSONObject("shaderChainParams"))
             } else base.shaderChainParams,
+            lsfgEnabled = if (overrides.has("lsfgEnabled")) overrides.getBoolean("lsfgEnabled") else base.lsfgEnabled,
+            lsfgMultiplier = if (overrides.has("lsfgMultiplier")) overrides.getInt("lsfgMultiplier") else base.lsfgMultiplier,
+            lsfgDllPath = if (overrides.has("lsfgDllPath")) overrides.getString("lsfgDllPath") else base.lsfgDllPath,
+            lsfgPerformance = if (overrides.has("lsfgPerformance")) overrides.getBoolean("lsfgPerformance") else base.lsfgPerformance,
+            lsfgFlowScale = if (overrides.has("lsfgFlowScale")) overrides.getInt("lsfgFlowScale") else base.lsfgFlowScale,
             casMode = if (overrides.has("casMode")) overrides.getInt("casMode") else base.casMode,
             casSharpness = if (overrides.has("casSharpness")) overrides.getInt("casSharpness") else base.casSharpness,
             loadTextureReplacements = if (overrides.has("loadTextureReplacements")) overrides.getBoolean("loadTextureReplacements") else base.loadTextureReplacements,

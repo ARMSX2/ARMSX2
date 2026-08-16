@@ -1518,6 +1518,7 @@ protected:
 	WindowInfo m_window_info;
 	GSVSyncMode m_vsync_mode = GSVSyncMode::Disabled;
 	bool m_allow_present_throttle = false;
+	bool m_present_has_new_frame = false;
 	u64 m_last_frame_displayed_time = 0;
 
 	GSTexture* m_merge = nullptr;
@@ -1762,8 +1763,21 @@ public:
 	PresentResult BeginPresent(bool frame_skip)
 	{
 		FlushDeferredDraws();
+		// Assume nothing until the frame is actually composited. Several presents legitimately
+		// carry no new game output — see NotePresentHasNewFrame.
+		m_present_has_new_frame = false;
 		return DoBeginPresent(frame_skip);
 	}
+
+	/// Record that the present being built carries a game frame the GS has just produced. Called
+	/// from the one place that knows — GSRenderer::VSync, where "there is something to draw" is
+	/// already decided as `current && !blank_frame`. Read by the Vulkan backend, which must not
+	/// hand frame generation a frame the game never drew.
+	///
+	/// A pause-menu repaint re-presents the PREVIOUS frame and deliberately does NOT set this: it
+	/// goes through PresentCurrentFrame, which draws the same image again. Neither does a blank,
+	/// a skipped duplicate, or a boot screen with no GS output yet.
+	void NotePresentHasNewFrame() { m_present_has_new_frame = true; }
 
 	/// Presents the frame to the display.
 	virtual void EndPresent() = 0;

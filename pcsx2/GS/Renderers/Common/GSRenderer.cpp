@@ -1103,6 +1103,10 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 
 				g_gs_device->PresentRect(current, src_uv, nullptr, draw_rect,
 					s_tv_shader_indices[GSConfig.TVShader], shader_time, BilnIf(GSConfig.LinearPresent != GSPostBilinearMode::Off));
+				// This condition IS "the GS produced a frame this vsync" — every other present
+				// path either has no output to draw or redraws the previous one. Frame generation
+				// reads it so it does not interpolate motion into frames the game never drew.
+				g_gs_device->NotePresentHasNewFrame();
 			}
 
 			EndPresentFrame();

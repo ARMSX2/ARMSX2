@@ -64,6 +64,7 @@ namespace
 #include <limits>
 #include <mutex>
 #include <sstream>
+#include <utility>
 
 // Tweakables
 enum : u32
@@ -1680,13 +1681,18 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 
 	if (present_swap_chain)
 	{
+		// Consumed here rather than only reset in BeginPresent: RenderBlankFrame() presents
+		// without going through BeginPresent at all, so a flag left set by the last real frame
+		// would tell frame generation that a cleared image was fresh game output.
+		const bool has_new_frame = std::exchange(m_present_has_new_frame, false);
+
 		// Frame generation replaces this present entirely: it consumes the rendering-finished
 		// semaphore for its own copy, then presents the interpolated frames and the real one in
 		// order. It returns false without consuming anything if it cannot run this frame, which
 		// is the ordinary path on every build and device without it.
 		if (GSLsfg::IsActive() &&
 			GSLsfg::PresentWithGeneration(m_present_queue, present_swap_chain,
-				present_swap_chain->GetRenderingFinishedSemaphore()))
+				present_swap_chain->GetRenderingFinishedSemaphore(), has_new_frame))
 		{
 			present_swap_chain->AcquireNextImage();
 			return;

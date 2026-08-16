@@ -1080,8 +1080,18 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
                 enabled = settings.lsfgEnabled,
                 multiplier = settings.lsfgMultiplier,
                 dllPath = settings.lsfgDllPath,
-            ) { on, mult, dll ->
-                viewModel.updateSettings { it.copy(lsfgEnabled = on, lsfgMultiplier = mult, lsfgDllPath = dll) }
+                performance = settings.lsfgPerformance,
+                flowScale = settings.lsfgFlowScale,
+            ) { on, mult, dll, perf, flow ->
+                viewModel.updateSettings {
+                    it.copy(
+                        lsfgEnabled = on,
+                        lsfgMultiplier = mult,
+                        lsfgDllPath = dll,
+                        lsfgPerformance = perf,
+                        lsfgFlowScale = flow,
+                    )
+                }
             }
         }
     }

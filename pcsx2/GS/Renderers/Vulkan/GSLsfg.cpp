@@ -3,8 +3,15 @@
 
 #include "GS/Renderers/Vulkan/GSLsfg.h"
 
+#include "Config.h"
+#include "GS/GS.h"
+
 #include "common/Console.h"
 #include "common/FileSystem.h"
+#include "common/Path.h"
+#include "common/Timer.h"
+
+#include "fmt/format.h"
 
 #include <atomic>
 #include <cstdio>
@@ -23,6 +30,8 @@
 #include <dlfcn.h>
 
 #include <algorithm>
+#include <map>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -51,6 +60,16 @@ namespace GSLsfg
 		// only change when the path does, which is exactly when SetDllPath() clears it.
 		std::atomic<bool> s_dll_checked{false};
 		std::atomic<bool> s_dll_ok{false};
+
+		// What the overlay reports. Written from the GS thread in the present path, read from
+		// whichever thread draws the OSD, so both are atomic rather than mutex'd — a recent
+		// value is all a status line needs.
+		//
+		// s_no_shaders separates "your DLL has no usable shader family" from every other way
+		// initialisation can fail. Both are InitFailed to the settings screen, but they are
+		// different problems: one is fixed by updating Lossless Scaling, the other is not.
+		std::atomic<float> s_display_fps{0.0f};
+		std::atomic<bool> s_no_shaders{false};
 	} // namespace
 
 	void NoteRendererCapability(bool is_vulkan, u32 adreno_generation)
@@ -68,6 +87,7 @@ namespace GSLsfg
 		// A new DLL deserves a fresh attempt; the previous failure may have been this file.
 		s_init_failed.store(false, std::memory_order_relaxed);
 		s_dll_checked.store(false, std::memory_order_relaxed);
+		s_no_shaders.store(false, std::memory_order_relaxed);
 	}
 
 	const std::string& GetDllPath() { return s_dll_path; }
@@ -154,6 +174,36 @@ namespace GSLsfg
 			default: return "unavailable";
 		}
 	}
+
+	float GetDisplayFPS() { return s_display_fps.load(std::memory_order_relaxed); }
+
+	std::string GetStatusText()
+	{
+		// Nothing at all when the user has not asked for frame generation — an overlay line for a
+		// feature nobody switched on is just clutter. Every OTHER state says something, including
+		// the ones where nothing is wrong yet, because "on but silent" is indistinguishable from
+		// "on and broken" and that is precisely the failure this exists to prevent.
+		if (!GSConfig.LsfgEnabled)
+			return {};
+
+		switch (GetUnavailableReason())
+		{
+			case Unavailable::Available:
+				break;
+			case Unavailable::InitFailed:
+				// Split out because the two have different fixes: "no shaders" means update
+				// Lossless Scaling, "failed" means this device or driver refused.
+				return s_no_shaders.load(std::memory_order_relaxed) ? "LSFG: no shaders" : "LSFG: failed";
+			default:
+				return "LSFG: unavailable";
+		}
+
+		// Available but no window has closed yet: bring-up, or the first second of a session.
+		const float fps = s_display_fps.load(std::memory_order_relaxed);
+		if (fps <= 0.0f)
+			return "LSFG: starting";
+		return fmt::format("LSFG: {:.2f}", fps);
+	}
 } // namespace GSLsfg
 
 #ifndef ARMSX2_HAS_LSFG
@@ -166,7 +216,7 @@ namespace GSLsfg
 	void Shutdown() {}
 	bool IsActive() { return false; }
 	u32 GetMultiplier() { return 1; }
-	bool PresentWithGeneration(VkQueue, VKSwapChain*, VkSemaphore) { return false; }
+	bool PresentWithGeneration(VkQueue, VKSwapChain*, VkSemaphore, bool) { return false; }
 } // namespace GSLsfg
 
 #else
@@ -188,6 +238,8 @@ namespace GSLsfg
 		{
 			void* handle = nullptr;
 			pfn_armsx2_lsfg_abi_version abi_version = nullptr;
+			// v2 signature: is_hdr / flow_scale / performance joined the argument list, which is
+			// exactly why the ABI check below exists — the old layout would misread every one.
 			pfn_armsx2_lsfg_initialize initialize = nullptr;
 			pfn_armsx2_lsfg_create_context create_context = nullptr;
 			pfn_armsx2_lsfg_present present = nullptr;
@@ -263,10 +315,21 @@ namespace GSLsfg
 		// So the resource walk is reimplemented and only the DXBC->SPIR-V translation is taken
 		// from upstream, where their binding-rewrite fixes live.
 
+		// name -> SPIR-V, translated once and then held. The DXBC below is scratch: it exists
+		// only while a DLL is being read and is dropped the moment every shader is translated.
+		//
+		// This used to hold DXBC instead, with the translation done inside ShaderCallback — so
+		// all 26 (now 52) DXBC->SPIR-V compiles ran on the GS thread, inside EndPresent, on the
+		// first frame after every enable, resolution change and multiplier change.
+		std::map<std::string, std::vector<u8>> s_shader_spirv;
 		std::unordered_map<u32, std::vector<u8>> s_shader_blobs;
-		// Holds the SPIR-V handed back through the C callback. Valid until the next callback,
-		// which is all the contract promises — framegen copies it into a VkShaderModule at once.
-		std::vector<u8> s_shader_scratch;
+		// Which DLL s_shader_spirv was built from. Without it, picking a different Lossless.dll
+		// kept serving the previous file's shaders for the rest of the session.
+		std::string s_shader_source;
+		// Which families that DLL turned out to carry. A given Lossless Scaling version ships
+		// one or the other, so this is what lets the 3.1p request fall back instead of failing.
+		bool s_have_standard = false;
+		bool s_have_performance = false;
 
 		int OnResource(void*, const peparse::resource& res)
 		{
@@ -278,12 +341,20 @@ namespace GSLsfg
 			return 0;
 		}
 
+		/// True for the LSFG 3.1p (performance) family. The p_ prefix is upstream's own naming.
+		bool IsPerformanceShader(const std::string& name) { return name.compare(0, 2, "p_") == 0; }
+
 		// Resource IDs, from upstream's extract.cpp — they track Lossless Scaling's own resource
 		// layout. Only the names framegen asks for are listed; anything else fails the load
 		// cleanly rather than feeding it a wrong shader.
-		const std::unordered_map<std::string, u32>& ShaderNameTable()
+		//
+		// Two families: the plain names are LSFG 3.1 and the p_ prefixed ones are 3.1p, the
+		// lighter pipeline. p_mipmaps and p_generate deliberately share 255/256 with 3.1 — those
+		// two resources are common to both, so they are extracted twice under the two names
+		// framegen asks for rather than special-cased.
+		const std::map<std::string, u32>& ShaderNameTable()
 		{
-			static const std::unordered_map<std::string, u32> table = {
+			static const std::map<std::string, u32> table = {
 				{"mipmaps", 255},
 				{"alpha[0]", 267}, {"alpha[1]", 268}, {"alpha[2]", 269}, {"alpha[3]", 270},
 				{"beta[0]", 275}, {"beta[1]", 276}, {"beta[2]", 277}, {"beta[3]", 278},
@@ -294,57 +365,265 @@ namespace GSLsfg
 				{"delta[4]", 266}, {"delta[5]", 258}, {"delta[6]", 271}, {"delta[7]", 272},
 				{"delta[8]", 273}, {"delta[9]", 274},
 				{"generate", 256},
+				{"p_mipmaps", 255},
+				{"p_alpha[0]", 290}, {"p_alpha[1]", 291}, {"p_alpha[2]", 292}, {"p_alpha[3]", 293},
+				{"p_beta[0]", 298}, {"p_beta[1]", 299}, {"p_beta[2]", 300}, {"p_beta[3]", 301},
+				{"p_beta[4]", 302},
+				{"p_gamma[0]", 280}, {"p_gamma[1]", 282}, {"p_gamma[2]", 283}, {"p_gamma[3]", 284},
+				{"p_gamma[4]", 285},
+				{"p_delta[0]", 280}, {"p_delta[1]", 286}, {"p_delta[2]", 287}, {"p_delta[3]", 288},
+				{"p_delta[4]", 289}, {"p_delta[5]", 281}, {"p_delta[6]", 294}, {"p_delta[7]", 295},
+				{"p_delta[8]", 296}, {"p_delta[9]", 297},
+				{"p_generate", 256},
 			};
 			return table;
 		}
 
-		/// Pull every RCDATA resource out of the user's DLL and confirm the ones we need are
-		/// there. Throws with a message the settings screen can show verbatim.
-		void ExtractShaders()
+		// --- the SPIR-V cache ------------------------------------------------------------------
+		//
+		// Translated SPIR-V only, never the DLL — that file is the user's own property and stays
+		// where they put it. Reading it back skips both the PE walk and 52 DXBC compiles.
+
+		constexpr u32 k_cache_magic = 0x4746534Cu; // "LSFG"
+		constexpr u32 k_cache_version = 1;
+		// Bounds on what the file may claim, so a truncated or garbage cache stops cleanly at the
+		// first bad field instead of trying to allocate whatever the bytes happened to say.
+		constexpr u32 k_max_name_len = 64;
+		constexpr u32 k_max_shader_size = 4u * 1024u * 1024u;
+		constexpr u32 k_max_shader_count = 256;
+
+		std::string ShaderCachePath() { return Path::Combine(EmuFolders::Cache, "lsfg_shaders.bin"); }
+
+		void AppendU32(std::vector<u8>& out, u32 value)
 		{
-			if (!s_shader_blobs.empty())
+			out.insert(out.end(), reinterpret_cast<const u8*>(&value), reinterpret_cast<const u8*>(&value) + 4);
+		}
+
+		void AppendU64(std::vector<u8>& out, u64 value)
+		{
+			out.insert(out.end(), reinterpret_cast<const u8*>(&value), reinterpret_cast<const u8*>(&value) + 8);
+		}
+
+		/// Size and mtime of the file the cache was built from. Upstream's own equivalent has no
+		/// invalidation at all: update Lossless Scaling and the stale shaders are used forever,
+		/// silently. We keep the DLL, so we can just ask.
+		bool StatSourceDll(u64* size, u64* mtime)
+		{
+			FILESYSTEM_STAT_DATA sd = {};
+			if (!FileSystem::StatFile(s_dll_path.c_str(), &sd))
+				return false;
+			*size = static_cast<u64>(sd.Size);
+			*mtime = static_cast<u64>(sd.ModificationTime);
+			return true;
+		}
+
+		void SaveShaderCache()
+		{
+			u64 dll_size = 0, dll_mtime = 0;
+			if (!StatSourceDll(&dll_size, &dll_mtime))
+				return; // no way to invalidate it later, so do not write one
+
+			std::vector<u8> out;
+			AppendU32(out, k_cache_magic);
+			AppendU32(out, k_cache_version);
+			AppendU64(out, dll_size);
+			AppendU64(out, dll_mtime);
+			AppendU32(out, static_cast<u32>(s_shader_spirv.size()));
+			for (const auto& [name, spirv] : s_shader_spirv)
+			{
+				AppendU32(out, static_cast<u32>(name.size()));
+				out.insert(out.end(), name.begin(), name.end());
+				AppendU32(out, static_cast<u32>(spirv.size()));
+				out.insert(out.end(), spirv.begin(), spirv.end());
+			}
+
+			const std::string path = ShaderCachePath();
+			if (!FileSystem::WriteBinaryFile(path.c_str(), out.data(), out.size()))
+			{
+				Console.WarningFmt("@@ANDROID_LSFG@@ could not write {} — shaders will be translated again next time", path);
 				return;
+			}
+			Console.WriteLnFmt("@@ANDROID_LSFG@@ cached {} translated shaders", s_shader_spirv.size());
+		}
 
-			peparse::parsed_pe* dll = peparse::ParsePEFromFile(s_dll_path.c_str());
-			if (!dll)
-				throw std::runtime_error("could not read Lossless.dll");
-			peparse::IterRsrc(dll, OnResource, nullptr);
-			peparse::DestructParsedPE(dll);
+		/// Fills s_shader_spirv from disk. False for every ordinary reason a cache is not usable
+		/// — absent, from another build, or from a DLL the user has since replaced — none of
+		/// which is an error, they just mean "extract".
+		bool LoadShaderCache()
+		{
+			u64 dll_size = 0, dll_mtime = 0;
+			if (!StatSourceDll(&dll_size, &dll_mtime))
+				return false;
 
+			const std::optional<std::vector<u8>> data = FileSystem::ReadBinaryFile(ShaderCachePath().c_str());
+			if (!data.has_value())
+				return false;
+
+			const u8* p = data->data();
+			size_t left = data->size();
+			const auto read_u32 = [&p, &left](u32* value) {
+				if (left < 4)
+					return false;
+				std::memcpy(value, p, 4);
+				p += 4;
+				left -= 4;
+				return true;
+			};
+			const auto read_u64 = [&p, &left](u64* value) {
+				if (left < 8)
+					return false;
+				std::memcpy(value, p, 8);
+				p += 8;
+				left -= 8;
+				return true;
+			};
+
+			u32 magic = 0, version = 0, count = 0;
+			u64 cached_size = 0, cached_mtime = 0;
+			if (!read_u32(&magic) || !read_u32(&version) || !read_u64(&cached_size) ||
+				!read_u64(&cached_mtime) || !read_u32(&count))
+				return false;
+			if (magic != k_cache_magic || version != k_cache_version)
+				return false;
+			if (cached_size != dll_size || cached_mtime != dll_mtime)
+			{
+				Console.WriteLn("@@ANDROID_LSFG@@ Lossless.dll changed since the shader cache was written");
+				return false;
+			}
+			if (count == 0 || count > k_max_shader_count)
+				return false;
+
+			std::map<std::string, std::vector<u8>> loaded;
+			for (u32 i = 0; i < count; i++)
+			{
+				u32 name_len = 0, size = 0;
+				if (!read_u32(&name_len) || name_len == 0 || name_len > k_max_name_len || left < name_len)
+					break;
+				std::string name(reinterpret_cast<const char*>(p), name_len);
+				p += name_len;
+				left -= name_len;
+
+				if (!read_u32(&size) || size == 0 || size > k_max_shader_size || left < size)
+					break;
+				loaded[std::move(name)].assign(p, p + size);
+				p += size;
+				left -= size;
+			}
+
+			if (loaded.size() != count)
+			{
+				Console.Warning("@@ANDROID_LSFG@@ shader cache is truncated — translating again");
+				return false;
+			}
+
+			s_shader_spirv = std::move(loaded);
+			Console.WriteLnFmt("@@ANDROID_LSFG@@ restored {} shaders from the cache", s_shader_spirv.size());
+			return true;
+		}
+
+		/// Note which families the loaded SPIR-V actually covers, and reject a set that covers
+		/// neither. "Every listed name present" was right when only 3.1 existed and is wrong now:
+		/// a DLL legitimately ships one family, so requiring both would reject every one of them.
+		/// A HALF-present family must still fail here, though, rather than inside framegen's
+		/// initialise where the only message is "Shader hash not found".
+		void ClassifyShaderFamilies()
+		{
+			s_have_standard = true;
+			s_have_performance = true;
 			for (const auto& [name, idx] : ShaderNameTable())
 			{
-				if (s_shader_blobs.find(idx) == s_shader_blobs.end())
-				{
-					s_shader_blobs.clear();
-					throw std::runtime_error(
-						"Lossless.dll is missing shader '" + name + "' — is Lossless Scaling up to date?");
-				}
+				if (s_shader_spirv.find(name) != s_shader_spirv.end())
+					continue;
+				if (IsPerformanceShader(name))
+					s_have_performance = false;
+				else
+					s_have_standard = false;
 			}
 		}
 
-		/// The C callback framegen drives during initialise. Everything it can throw is caught
-		/// here: an exception must not unwind through the shim's shared object.
+		/// Pull every RCDATA resource out of the user's DLL, translate the ones framegen asks for,
+		/// and keep only the SPIR-V. Throws with a message the settings screen can show verbatim.
+		void ExtractShaders()
+		{
+			// A different pick invalidates what is held, and holding it anyway is how the old
+			// code served the previous DLL's shaders after the user replaced the file.
+			if (s_shader_source != s_dll_path)
+				s_shader_spirv.clear();
+			if (!s_shader_spirv.empty())
+				return;
+
+			s_shader_source = s_dll_path;
+			const bool from_cache = LoadShaderCache();
+			if (!from_cache)
+			{
+				// A previous attempt that threw before the clear at the bottom would otherwise
+				// leave its resources here to be merged with this DLL's.
+				s_shader_blobs.clear();
+				peparse::parsed_pe* dll = peparse::ParsePEFromFile(s_dll_path.c_str());
+				if (!dll)
+					throw std::runtime_error("could not read Lossless.dll");
+				peparse::IterRsrc(dll, OnResource, nullptr);
+				peparse::DestructParsedPE(dll);
+
+				// Eagerly, and here rather than in the callback: this is the one point in the
+				// feature's life where a multi-hundred-millisecond stall is acceptable, and the
+				// callback runs inside a present.
+				for (const auto& [name, idx] : ShaderNameTable())
+				{
+					const auto blob = s_shader_blobs.find(idx);
+					if (blob == s_shader_blobs.end())
+						continue; // the other family; ClassifyShaderFamilies decides if that matters
+					// Individually guarded because a resource id shared between the families can
+					// be present while its sibling shaders are not, and one bad translation must
+					// not lose the family that did translate.
+					try
+					{
+						std::vector<u8> spirv = Extract::translateShader(blob->second);
+						if (!spirv.empty())
+							s_shader_spirv[name] = std::move(spirv);
+					}
+					catch (const std::exception& ex)
+					{
+						Console.ErrorFmt("@@ANDROID_LSFG@@ shader '{}' failed to translate: {}", name, ex.what());
+					}
+				}
+				// The DXBC has done its job. It is several megabytes and nothing reads it again.
+				s_shader_blobs.clear();
+			}
+
+			ClassifyShaderFamilies();
+			if (!s_have_standard && !s_have_performance)
+			{
+				s_shader_spirv.clear();
+				s_shader_source.clear();
+				s_no_shaders.store(true, std::memory_order_relaxed);
+				throw std::runtime_error(
+					"Lossless.dll has no complete shader set — is Lossless Scaling up to date?");
+			}
+			s_no_shaders.store(false, std::memory_order_relaxed);
+			if (!from_cache)
+				SaveShaderCache();
+		}
+
+		/// The C callback framegen drives during initialise. A lookup and nothing else — the
+		/// translation happened in ExtractShaders. The returned pointer is into s_shader_spirv,
+		/// which outlives the whole initialise, so it comfortably satisfies the shim's
+		/// valid-until-the-next-call contract. Still guarded: an exception must not unwind
+		/// through the shim's shared object, whatever the reason for it.
 		int ShaderCallback(void*, const char* name, const uint8_t** out_data, uint32_t* out_size)
 		{
 			try
 			{
-				const auto hit = ShaderNameTable().find(name);
-				if (hit == ShaderNameTable().end())
+				const auto hit = s_shader_spirv.find(name);
+				if (hit == s_shader_spirv.end() || hit->second.empty())
+				{
+					Console.ErrorFmt(
+						"@@ANDROID_LSFG@@ framegen asked for shader '{}', which this DLL does not have", name);
 					return -1;
-				const auto blob = s_shader_blobs.find(hit->second);
-				if (blob == s_shader_blobs.end())
-					return -1;
-				s_shader_scratch = Extract::translateShader(blob->second);
-				if (s_shader_scratch.empty())
-					return -1;
-				*out_data = s_shader_scratch.data();
-				*out_size = static_cast<uint32_t>(s_shader_scratch.size());
+				}
+				*out_data = hit->second.data();
+				*out_size = static_cast<uint32_t>(hit->second.size());
 				return 0;
-			}
-			catch (const std::exception& ex)
-			{
-				Console.ErrorFmt("@@ANDROID_LSFG@@ shader '{}' failed to translate: {}", name, ex.what());
-				return -1;
 			}
 			catch (...)
 			{
@@ -376,9 +655,45 @@ namespace GSLsfg
 		s32 s_context_id = -1;
 		bool s_active = false;
 		u32 s_multiplier = 1;
+		// What the SETTING said at the last successful bring-up, not the family that ended up
+		// running — the two differ when a DLL ships only one, and comparing the resolved value
+		// against the setting would tear the whole thing down and rebuild it every frame.
+		bool s_performance_requested = false;
+		u8 s_flow_scale_percent = 100;
 		VkExtent2D s_extent = {};
 		VkFormat s_format = VK_FORMAT_UNDEFINED;
 		u64 s_frame_index = 0;
+
+		// The one-second display-rate window. Reset with everything else in Shutdown so a stale
+		// number cannot outlive the session it came from.
+		u64 s_fps_window_start = 0;
+		u32 s_fps_real = 0;
+		u32 s_fps_generated = 0;
+
+		/// Book frames as they reach the presentation engine and republish the rate once a
+		/// second. Called on the declined paths too, with nothing generated: a real frame still
+		/// went out, and a counter that stops updating whenever generation is skipped would sit
+		/// on its last value through an entire pause menu.
+		void NoteFramesDisplayed(u32 real, u32 generated)
+		{
+			s_fps_real += real;
+			s_fps_generated += generated;
+
+			const u64 now = Common::Timer::GetCurrentValue();
+			if (s_fps_window_start == 0)
+			{
+				s_fps_window_start = now;
+				return;
+			}
+			const double secs = Common::Timer::ConvertValueToSeconds(now - s_fps_window_start);
+			if (secs < 1.0)
+				return;
+
+			s_display_fps.store(static_cast<float>((s_fps_real + s_fps_generated) / secs), std::memory_order_relaxed);
+			s_fps_window_start = now;
+			s_fps_real = 0;
+			s_fps_generated = 0;
+		}
 
 		// One command buffer + one semaphore per generated frame, plus one of each for the
 		// pre-copy. Recycled across frames rather than pooled: the Android path is fully
@@ -622,12 +937,19 @@ namespace GSLsfg
 
 		s_active = false;
 		s_multiplier = 1;
+		s_performance_requested = false;
+		s_flow_scale_percent = 100;
 		s_extent = {};
 		s_format = VK_FORMAT_UNDEFINED;
 		s_frame_index = 0;
 		s_device = VK_NULL_HANDLE;
 		s_physical_device = VK_NULL_HANDLE;
 		s_queue = VK_NULL_HANDLE;
+
+		s_display_fps.store(0.0f, std::memory_order_relaxed);
+		s_fps_window_start = 0;
+		s_fps_real = 0;
+		s_fps_generated = 0;
 	}
 
 	bool Initialize(VKSwapChain* swap_chain, u32 multiplier)
@@ -641,11 +963,13 @@ namespace GSLsfg
 		}
 
 		multiplier = std::clamp<u32>(multiplier, 2, 4);
+		const u8 flow_scale_percent = std::clamp<u8>(GSConfig.LsfgFlowScale, 25, 100);
 		const VkExtent2D extent = {swap_chain->GetWidth(), swap_chain->GetHeight()};
 		const VkFormat format = swap_chain->GetTextureFormat();
 
 		if (s_active && extent.width == s_extent.width && extent.height == s_extent.height &&
-			format == s_format && multiplier == s_multiplier)
+			format == s_format && multiplier == s_multiplier &&
+			GSConfig.LsfgPerformance == s_performance_requested && flow_scale_percent == s_flow_scale_percent)
 		{
 			return true; // idempotent; nothing changed
 		}
@@ -715,9 +1039,36 @@ namespace GSLsfg
 			return FailInitialize("Lossless.dll could not be read");
 		}
 
+		// 3.1p when the user asked for it AND their DLL carries it. A version that predates the
+		// performance family would otherwise fail initialise with "Shader hash not found", which
+		// reads like a corrupt file and is not — it just means this Lossless Scaling is older.
+		bool use_performance = GSConfig.LsfgPerformance;
+		if (use_performance && !s_have_performance)
+		{
+			Console.WriteLn("@@ANDROID_LSFG@@ this Lossless.dll has no 3.1p shaders — using 3.1");
+			use_performance = false;
+		}
+		else if (!use_performance && !s_have_standard)
+		{
+			Console.WriteLn("@@ANDROID_LSFG@@ this Lossless.dll has only 3.1p shaders — using 3.1p");
+			use_performance = true;
+		}
+
+		// ★ flowScale is a DIVISOR, not a multiplier: framegen sizes the optical-flow pyramid as
+		// `inputExtent / flowScale`, and upstream's own layer reaches it by passing
+		// `1.0 / conf.flowScale` from a [0.25, 1.0] fraction. So the percentage the UI shows has
+		// to be INVERTED here. Handing it 0.25 for "25%" would make the pyramid four times larger
+		// per axis — sixteen times the pixels — which is the exact opposite of what a user
+		// dragging that slider down is asking for.
+		const float flow_scale = std::clamp(100.0f / static_cast<float>(flow_scale_percent), 1.0f, 4.0f);
+
 		const VkPhysicalDeviceProperties& props = dev->GetDeviceProperties();
 		const u64 device_uuid = (static_cast<u64>(props.vendorID) << 32) | props.deviceID;
-		if (s_backend.initialize(device_uuid, multiplier - 1, ShaderCallback, nullptr) != 0)
+		// is_hdr is false and stays false: it tells framegen its images carry HDR primaries, and
+		// there is no HDR output path in ARMSX2 for that to be true against — the swapchain is
+		// the 8-bit UNORM or 16-bit float surface CreateAhbImage already restricts us to.
+		if (s_backend.initialize(device_uuid, /*is_hdr*/ 0, flow_scale, multiplier - 1,
+				use_performance ? 1 : 0, ShaderCallback, nullptr) != 0)
 			return FailInitialize(BackendError());
 
 		std::vector<AHardwareBuffer*> outputs;
@@ -733,22 +1084,41 @@ namespace GSLsfg
 		s_extent = extent;
 		s_format = format;
 		s_multiplier = multiplier;
+		s_performance_requested = GSConfig.LsfgPerformance;
+		s_flow_scale_percent = flow_scale_percent;
 		s_frame_index = 0;
 		s_active = true;
-		Console.WriteLnFmt("@@ANDROID_LSFG@@ active: {}x{} x{} frames", extent.width, extent.height, multiplier);
+		Console.WriteLnFmt("@@ANDROID_LSFG@@ active: {}x{} x{} frames, {}, flow {}%", extent.width, extent.height,
+			multiplier, use_performance ? "3.1p" : "3.1", flow_scale_percent);
 		return true;
 	}
 
-	bool PresentWithGeneration(VkQueue present_queue, VKSwapChain* swap_chain, VkSemaphore render_finished)
+	bool PresentWithGeneration(
+		VkQueue present_queue, VKSwapChain* swap_chain, VkSemaphore render_finished, bool frame_has_new_content)
 	{
 		if (!s_active || !swap_chain)
 			return false;
+
+		// Nothing new to interpolate between. Pause menus, boot screens before the GS has any
+		// output, and the blank frames a fade produces all land here — inventing motion across
+		// them is wrong AND costs a full generation pass per frame to do it. The history goes
+		// with them: keeping it would stitch the frame before the gap to the frame after it and
+		// produce one bogus in-between frame on the way back.
+		if (!frame_has_new_content)
+		{
+			s_frame_index = 0;
+			NoteFramesDisplayed(1, 0);
+			return false;
+		}
 
 		// A resize between Initialize and here would have us copying between mismatched extents.
 		// Decline the frame; the caller presents normally and the next Initialize picks up the
 		// new size.
 		if (swap_chain->GetWidth() != s_extent.width || swap_chain->GetHeight() != s_extent.height)
+		{
+			NoteFramesDisplayed(1, 0);
 			return false;
+		}
 
 		const u32 real_index = swap_chain->GetCurrentImageIndex();
 		VkImage real_image = swap_chain->GetCurrentTexture()->GetImage();
@@ -786,6 +1156,7 @@ namespace GSLsfg
 				swap_chain->GetSwapChainPtr(), &real_index, nullptr};
 			swap_chain->ResetImageAcquireResult();
 			vkQueuePresentKHR(present_queue, &present);
+			NoteFramesDisplayed(1, 0);
 			return true;
 		}
 
@@ -816,6 +1187,11 @@ namespace GSLsfg
 		// pre-copy READS the real image as TRANSFER_SRC and puts it back in PRESENT_SRC, so
 		// presenting it before that lands would present an image still being read. The generated
 		// presents are independent — different swapchain images, each gated by its own post-copy.
+		//
+		// Counted rather than assumed to be s_multiplier - 1: every break below drops a frame that
+		// was generated but never displayed, and the overlay is supposed to report what reached the
+		// screen, not what we hoped would.
+		u32 presented_generated = 0;
 		if (generated)
 		{
 			for (u32 i = 0; i < s_multiplier - 1; i++)
@@ -852,6 +1228,7 @@ namespace GSLsfg
 					&s_post_copy_sems[i], 1, swap_chain->GetSwapChainPtr(), &image_index, nullptr};
 				if (vkQueuePresentKHR(present_queue, &present) != VK_SUCCESS)
 					break;
+				presented_generated++;
 			}
 		}
 
@@ -860,6 +1237,7 @@ namespace GSLsfg
 			swap_chain->GetSwapChainPtr(), &real_index, nullptr};
 		swap_chain->ResetImageAcquireResult();
 		vkQueuePresentKHR(present_queue, &present);
+		NoteFramesDisplayed(1, presented_generated);
 		return true;
 	}
 } // namespace GSLsfg

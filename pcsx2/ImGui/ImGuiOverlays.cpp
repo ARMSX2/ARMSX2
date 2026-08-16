@@ -50,6 +50,7 @@
 #include <cmath>
 #include <limits>
 #include <span>
+#include <string>
 #include <tuple>
 
 InputRecordingUI::InputRecordingData g_InputRecordingData;
@@ -79,6 +80,7 @@ SmallString s_capture_line;
 SmallString s_gpu_usage_line;
 SmallString s_gpu_debug_info_line;
 SmallString s_gpu_stats_line;
+SmallString s_lsfg_line;
 SmallString s_speed_icon;
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 SmallString s_ios_device_stats_line;
@@ -110,6 +112,28 @@ extern "C" bool ARMSX2_iOSShouldShowDeviceStatsOverlay();
 extern "C" int ARMSX2_iOSGetDeviceStatsOverlaySeverity();
 extern "C" const char* ARMSX2_iOSGetDeviceStatsOverlayLine();
 #endif
+
+#ifdef ENABLE_VULKAN
+// Declared here rather than reached through GSLsfg.h, which includes VKLoader.h: that drags the
+// Vulkan headers — and under X11, all of Xlib's macros, which is why VKLoader has to #undef None
+// and Status — into a cross-platform translation unit that wants one string out of it.
+namespace GSLsfg
+{
+	std::string GetStatusText();
+}
+#endif
+
+/// Frame generation's own status line, or empty when the user has not switched it on. Behind a
+/// function so the draw code below carries no #ifdef: LSFG lives in the Vulkan backend and there
+/// is nothing to ask in a build without one.
+static std::string LsfgStatusText()
+{
+#ifdef ENABLE_VULKAN
+	return GSLsfg::GetStatusText();
+#else
+	return {};
+#endif
+}
 
 /// The OSD's normal text colour. GSConfig.OsdColor is 0xRRGGBB, and 0 means "unset" — every
 /// frontend but Android leaves it there, so the overlay keeps its classic white by default.
@@ -275,8 +299,19 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 	// A Custom preset with nothing but Device Stats ticked is reachable, and it lands here.
 	enabled_lines |= static_cast<u32>(ARMSX2_iOSShouldShowDeviceStatsOverlay()) << 11;
 #endif
+	// Frame generation gets its OWN bit rather than riding on one of the toggles above, for two
+	// reasons: it is driven by the LSFG setting and not by any OsdShow* flag, and the shrink-to-fit
+	// below keys off this word changing — sharing a bit would leave the block sized for the wrong
+	// set of lines the moment the LSFG line appeared or went away.
+	const std::string lsfg_status = LsfgStatusText();
+	enabled_lines |= static_cast<u32>(!lsfg_status.empty()) << 12;
 	if (enabled_lines == 0)
 		return;
+
+	// Not cached behind the 100ms refresh like the lines below it. It is already built once per
+	// frame for the bit above, and caching it would leave the line on screen for up to a refresh
+	// after frame generation was switched off.
+	s_lsfg_line.assign(lsfg_status);
 
 	const float shadow_offset = std::ceil(scale);
 
@@ -540,6 +575,11 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 				DRAW_LINE(osd_font, font_size, s_speed_line.c_str(), s_speed_line_color);
 			}
 
+			// Straight after the speed line because it is the same kind of number, and because a
+			// user comparing "the game runs at 30" with "the screen gets 60" wants them adjacent.
+			if (!s_lsfg_line.empty())
+				DRAW_LINE(osd_font, font_size, s_lsfg_line.c_str(), OsdTextColor());
+
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 			if (ARMSX2_iOSShouldShowDeviceStatsOverlay())
 			{
@@ -723,6 +763,9 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 		{
 			if (GSConfig.OsdShowFPS || GSConfig.OsdShowVPS || GSConfig.OsdShowSpeed || GSConfig.OsdShowVersion)
 				DRAW_LINE(osd_font, font_size, s_speed_line.c_str(), s_speed_line_color);
+
+			if (!s_lsfg_line.empty())
+				DRAW_LINE(osd_font, font_size, s_lsfg_line.c_str(), OsdTextColor());
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 			if (ARMSX2_iOSShouldShowDeviceStatsOverlay() && !s_ios_device_stats_line.empty())

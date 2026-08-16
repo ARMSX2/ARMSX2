@@ -49,6 +49,20 @@ namespace GSLsfg
 	/// One-line explanation of the current reason, for the log and the settings row.
 	const char* GetUnavailableReasonString();
 
+	/// One line for the performance overlay, and the only place frame generation ever admits it
+	/// is not running. EMPTY ONLY when the user has not enabled it — every other state says
+	/// something, because the alternative is the setting being on, no line appearing, and no way
+	/// to tell whether it is working, broken, or unsupported on this device.
+	///
+	/// "LSFG: unavailable" / "failed" / "no shaders" / "starting" / "LSFG: 118.80".
+	std::string GetStatusText();
+
+	/// Frames reaching the DISPLAY per second — real plus generated — over the last one-second
+	/// window. Deliberately not the emulator's FPS, which frame generation does not change: what
+	/// changes is how many frames get presented, and that is only visible if something counts it.
+	/// 0 before the first window closes and after Shutdown.
+	float GetDisplayFPS();
+
 	/// Record what the renderer that just came up can do. Called once from GSDeviceVK::Create so
 	/// the frontend can answer "is this supported" without a device, and so the verdict survives
 	/// into the settings screen after the game stops. `adreno_generation` is 7 for Adreno 7xx, 8
@@ -90,7 +104,15 @@ namespace GSLsfg
 	/// and used for the final, real present — the extra images this acquires move the swapchain's
 	/// notion of "current", which is harmless because the caller re-acquires straight afterwards.
 	///
+	/// `frame_has_new_content` must be false when this present carries no freshly rendered game
+	/// frame — a pause-menu repaint of the previous one, a blank the GS produced nothing for, a
+	/// boot screen before any output exists. Interpolating those invents motion between two
+	/// frames the game never drew, and it costs the same GPU time as a real one. The frame
+	/// history is dropped when it is false, so the pair either side of the gap is never stitched
+	/// together into one bogus in-between frame.
+	///
 	/// Returns false if generation could not run this frame, in which case NOTHING was presented
 	/// or consumed and the caller must fall through to its ordinary present path.
-	bool PresentWithGeneration(VkQueue present_queue, VKSwapChain* swap_chain, VkSemaphore render_finished);
+	bool PresentWithGeneration(VkQueue present_queue, VKSwapChain* swap_chain, VkSemaphore render_finished,
+		bool frame_has_new_content);
 } // namespace GSLsfg

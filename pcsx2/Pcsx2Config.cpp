@@ -922,6 +922,8 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(LsfgEnabled) &&
 		OpEqu(LsfgMultiplier) &&
 		OpEqu(LsfgDllPath) &&
+		OpEqu(LsfgPerformance) &&
+		OpEqu(LsfgFlowScale) &&
 
 		OpEqu(CaptureContainer) &&
 		OpEqu(VideoCaptureCodec) &&
@@ -1197,6 +1199,8 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	// overload for one — the same reason CAS_Sharpness above uses it.
 	SettingsWrapBitfieldEx(LsfgMultiplier, "LsfgMultiplier");
 	SettingsWrapEntryEx(LsfgDllPath, "LsfgDllPath");
+	SettingsWrapEntryEx(LsfgPerformance, "LsfgPerformance");
+	SettingsWrapBitfieldEx(LsfgFlowScale, "LsfgFlowScale");
 
 	SettingsWrapEntryEx(CaptureContainer, "CaptureContainer");
 	SettingsWrapEntryEx(VideoCaptureCodec, "VideoCaptureCodec");
