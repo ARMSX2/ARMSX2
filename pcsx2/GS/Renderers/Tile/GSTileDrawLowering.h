@@ -603,6 +603,18 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	//      2,584. This floor is the only reason the corpus has ever claimed
 	//      byte-identity on shading, so lifting it surfaces a worst-one haze everywhere
 	//      at once — GT4's 18.27% of pixels differing at 1.99% above two levels.
+	//      ✅ CLOSED 2026-08-16 (PS_TILE_CWALK): the gouraud colour and the fog
+	//      factor now come off the SW scanline's blocked walk, replayed per fragment
+	//      from the primitive's own edge in the plane payload — the mirror is anchored
+	//      pixel for pixel against the ARM64 scanline JIT (gs_tile_cwalk_tests), and
+	//      gs-interp under tile is byte-identical to software on every colour-gradient
+	//      and fog reading (was 41,450 differing, then 14,348), gs-block on every
+	//      colour section (anchor 52,096/52,096). What the residual had been was the
+	//      interpolator: it evaluates the plane at the pixel where the scanline walks
+	//      from the span's first pixel in truncated blocks, and the two differ by up
+	//      to a unit or two on the seven-fraction grid, which the stored byte shows
+	//      wherever it crosses a boundary. Not a haze to accept, then — a value the
+	//      fragment could compute once it knew where its span began.
 	//
 	//   2. The perspective coordinate. ⚠️ MOSTLY CLOSED — the paragraph that stood here
 	//      argued it could not be, and the argument was wrong about which mechanism

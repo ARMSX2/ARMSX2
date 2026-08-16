@@ -1143,6 +1143,10 @@ bool CURRENT_ISA::GSComputeTriangleZPlane(const GSVertexSW* vertex, const GSVect
 	// builds the per-lane offset table (Fcvtn of the double gradient); the lane offsets
 	// the scanline adds are fp32 products of THIS value, not of the double.
 	out.dscan_z32 = static_cast<float>(out.dscan_z);
+	out.dedge_c = s.dedge[0].c;
+	out.dscan_c = s.dscan.c;
+	out.dedge_f = s.dedge[0].t.w;
+	out.dscan_f = s.dscan.t.w;
 	out.nsections = s.nsections;
 	out.top_prim = s.top_prim;
 	for (int n = 0; n < s.nsections; n++)
@@ -1155,6 +1159,8 @@ bool CURRENT_ISA::GSComputeTriangleZPlane(const GSVertexSW* vertex, const GSVect
 		out.sec[n].dedge_z = s.dedge[n].p.F64[1];
 		out.sec[n].top = s.top[n];
 		out.sec[n].bottom = s.bottom[n];
+		out.sec[n].cseed = s.edge[n].c;
+		out.sec[n].fseed = s.edge[n].t.w;
 	}
 	return true;
 }

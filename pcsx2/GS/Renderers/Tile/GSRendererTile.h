@@ -81,7 +81,7 @@ private:
 
 	// The native route.
 	bool TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i& r, GSTileFloorReason& reason);
-	bool BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloorReason& reason);
+	bool BuildTilePayload(bool want_zwalk, bool want_stq, bool want_cwalk, GSTileFloorReason& reason);
 	void DeindexVertices();
 	/// direct_idx: -1 = tex is an ordinary source; else GSTileSwizzleForms::IndexFormat and
 	/// tex is the OWNER texture addressed through the swizzle (direct_idx_params →
@@ -345,14 +345,15 @@ private:
 	bool m_direct_clut_serves = false;
 	ClutCensus m_clut_census{};
 
-	// Per-primitive plane payload for the current draw: the depth walk's blocks
-	// and the coordinate plane's blocks concatenated into one upload, built per
-	// draw and consumed synchronously by RenderHW. Empty = neither walk. The two
-	// offsets are uvec4 element indices into it, or NoWalk.
+	// Per-primitive plane payload for the current draw: the depth walk's blocks,
+	// the coordinate plane's blocks and the colour/fog walk's blocks concatenated
+	// into one upload, built per draw and consumed synchronously by RenderHW.
+	// Empty = no walk. The offsets are uvec4 element indices into it, or NoWalk.
 	static constexpr u32 NoWalk = 0xFFFFFFFFu;
 	std::vector<u32> m_tile_payload;
 	u32 m_zwalk_at = NoWalk;
 	u32 m_stq_at = NoWalk;
+	u32 m_cwalk_at = NoWalk;
 	GSVramModel::RectFootprint m_rect_fp; // scratch for transfer/move footprints
 	OracleState m_oracle;
 	MemoCensus m_memo;

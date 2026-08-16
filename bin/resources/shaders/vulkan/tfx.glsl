@@ -687,7 +687,7 @@ layout(std140, set = 0, binding = 1) uniform cb1
 	float TileLtfxQ;
 	float TileZBase;
 	float TileSTQBase;
-	float _pad2_cb1;
+	float TileCBase;
 	float _pad3_cb1;
 	float _pad4_cb1;
 	// Tile renderer, direct sampling of a colour target through the GS swizzle:
@@ -711,9 +711,9 @@ layout(location = 0) in VSOutput
 	flat uint interior; // 1 for triangle interior; 0 for edge;
 } vsIn;
 
-#if PS_TILE_ZWALK || PS_TILE_STQ
+#if PS_TILE_ZWALK || PS_TILE_STQ || PS_TILE_CWALK
 // The Tile renderer's per-primitive plane payload, and the flat ordinal that
-// indexes it. ONE declaration for both walks: two blocks over one binding is
+// indexes it. ONE declaration for all the walks: two blocks over one binding is
 // not expressible in a single module, and the vertex stage's own view of this
 // binding (the expansion path's vertex array) is a separate module, so it does
 // not collide. Each walk's block base rides its own constant.
@@ -724,6 +724,159 @@ layout(std430, set = 0, binding = 2) readonly buffer TilePlanes
 	uvec4 plane[];
 };
 #endif
+
+#if PS_TILE_CWALK
+
+// ====================== Tile colour and fog walk ============================
+// The SW scanline does not evaluate a gouraud colour at a pixel: it WALKS it.
+// It seeds at the span's first pixel, adds a truncated per-lane offset inside a
+// block and one truncated step per block, with the blocks aligned to absolute
+// screen x -- a blocked truncating DDA on the colour's seven-fraction grid
+// (GSBlockWalk.h), eight pixels wide untextured and four textured, which is
+// the shape the hardware documents and gs-block measured: the same gradient
+// from eight different left edges gives eight different values at one
+// absolute pixel. So a pixel's value depends on where its span STARTED, and the
+// interpolator, which knows only the pixel, cannot reproduce it -- the corpus
+// showed the miss on every gouraud draw the moment the software block went to
+// its true width. What the fragment CAN know is its primitive's left edge,
+// from the same per-primitive payload the depth walk reads: the span's first
+// pixel on this row is one fused multiply-add and a ceiling away, exactly as
+// GSRasterizer::DrawTriangleSection computes it (the arithmetic below is the
+// depth walk's, gs-zgrad-arbitrated), and from there the walk is closed-form:
+//
+//     value(x) = trunc(seed) + B*trunc(g*W) + trunc(g*(m - s))
+//     B = (x - xb0) div W,  m = (x - xb0) mod W,  xb0 = x0 & ~(W-1),  s = x0 & (W-1)
+//
+// every truncation an fcvtzs of one fp32 product, the lanes sixteen bits wide.
+// Fog rides the same walk (its own lane, no clamp) and reaches the blend at
+// the full sixteen bits, which is where an interpolated fog factor differed
+// most: the colour hides its low seven bits under the stored byte, the fog
+// multiplies by all of them.
+//
+// ⚠️ This is a MECHANICAL TRANSLITERATION of the C++ mirror in
+// tests/ctest/core/gs/gs_tile_cwalk_tests.cpp, which is anchored pixel for pixel
+// against the ARM64 scanline JIT (both block widths, the clamp regime, fog).
+// Change them TOGETHER.
+//
+// Payload layout (see GSRendererTile::BuildTilePayload):
+//   [TileCBase]        header: {scissor_left f32, 0, 0, 0}
+//   [.. + 1 + p*8+0]   section 0: {edge_x, dedge_x, p0x, p0y} f32 bits
+//   [.. + 1 + p*8+1]   section 1: same
+//   [.. + 1 + p*8+2]   section 0 colour seed {r, g, b, a} f32 bits, colour * 128
+//   [.. + 1 + p*8+3]   section 1 colour seed
+//   [.. + 1 + p*8+4]   colour step per row at constant x {r, g, b, a}
+//   [.. + 1 + p*8+5]   colour step per pixel {r, g, b, a}
+//   [.. + 1 + p*8+6]   {fog seed section 0, fog seed section 1, fog step per row, fog step per pixel}
+//   [.. + 1 + p*8+7]   {second section's first row (0xFFFF when single), 0, 0, 0}
+
+// The block: eight pixels when the draw is untextured, four when it is
+// textured. The SW selector's tfx is TFX_NONE exactly when the draw is
+// untextured, which here is PS_TFX == 4.
+#if PS_TFX == 4
+#define CW_LOG2W 3
+#else
+#define CW_LOG2W 2
+#endif
+
+// fcvtzs: truncate toward zero, saturating. int() is undefined out of range.
+int cw_fcvtzs(float v)
+{
+	if (!(v == v))
+		return 0;
+	if (v >= 2147483648.0f)
+		return 0x7FFFFFFF;
+	if (v <= -2147483648.0f)
+		return int(0x80000000u);
+	return int(v);
+}
+
+// The lanes are sixteen bits wide and every add wraps there.
+int cw_wrap16(int v)
+{
+	return (v << 16) >> 16;
+}
+
+int cw_walk_value(int seed_i, float g, int left, int x)
+{
+	const int wm = (1 << CW_LOG2W) - 1;
+	int s = left & wm;
+	int d = x - (left - s);
+	int B = d >> CW_LOG2W;
+	int m = d & wm;
+	precise float qf = g * float(1 << CW_LOG2W);
+	precise float of = g * float(m - s);
+	return cw_wrap16(seed_i + B * cw_fcvtzs(qf) + cw_fcvtzs(of));
+}
+
+// Colour: the scanline clamps a lane at zero after every four-pixel STEP (not
+// at the seed), so a lane that dipped below zero walks on from zero. That is
+// v(k) minus the most negative value seen from the second vector on, and the
+// walk being monotone per lane puts that minimum at v(1) or v(k).
+int cw_walk_colour(int seed_i, float g, int left, int x)
+{
+	int v = cw_walk_value(seed_i, g, left, x);
+	int k = (x >> 2) - (left >> 2);
+	if (k >= 1)
+	{
+		int x1 = (left & ~3) + 4 + (x & 3);
+		int v1 = cw_walk_value(seed_i, g, left, x1);
+		v = v - min(0, min(v1, v));
+	}
+	return v;
+}
+
+// The stored byte per channel, as the scanline's srl16<7> leaves it: nine bits
+// where the walk left the grid, which the store saturates the way the
+// scanline's pack does. And the fog lane, sixteen bits signed, F * 128.
+vec4 g_tile_cw_color;
+int g_tile_cw_fog;
+
+void tile_cwalk(void)
+{
+	int px = int(gl_FragCoord.x);
+	int py = int(gl_FragCoord.y);
+	uint base = floatBitsToUint(TileCBase);
+	uvec4 hdr = plane[base];
+	uint pbase = base + 1u + vsIn_prim * 8u;
+	uvec4 R = plane[pbase + 7u];
+	bool s1 = py >= int(R.x);
+	uvec4 XS = plane[pbase + (s1 ? 1u : 0u)];
+
+	// The span's first pixel and the prestep to it: dy and the edge walk in
+	// fp32 with a fused multiply-add (the compiled rasterizer's fmla), ceil,
+	// the scissor's left, prestep as one subtract -- tile_zwalk_depth's own.
+	precise float dy = float(py) - uintBitsToFloat(XS.w);
+	precise float lraw = fma(uintBitsToFloat(XS.y), dy, uintBitsToFloat(XS.x));
+	precise float lx = max(ceil(lraw), uintBitsToFloat(hdr.x));
+	int left = int(lx);
+	precise float prestep = lx - uintBitsToFloat(XS.z);
+
+#if PS_IIP
+	// The row seed: edge + dedge*dy + dscan*prestep as two fused multiply-adds
+	// in that order (objdump of the shipped DrawTriangleSection), truncated onto
+	// the grid, then the walk from the span's first pixel.
+	vec4 cseed = uintBitsToFloat(plane[pbase + (s1 ? 3u : 2u)]);
+	vec4 dedge_c = uintBitsToFloat(plane[pbase + 4u]);
+	vec4 dscan_c = uintBitsToFloat(plane[pbase + 5u]);
+	precise vec4 row = fma(dedge_c, vec4(dy), cseed);
+	row = fma(dscan_c, vec4(prestep), row);
+	ivec4 v = ivec4(
+		cw_walk_colour(cw_fcvtzs(row.x), dscan_c.x, left, px),
+		cw_walk_colour(cw_fcvtzs(row.y), dscan_c.y, left, px),
+		cw_walk_colour(cw_fcvtzs(row.z), dscan_c.z, left, px),
+		cw_walk_colour(cw_fcvtzs(row.w), dscan_c.w, left, px));
+	g_tile_cw_color = vec4((v & 0xFFFF) >> 7);
+#endif
+
+#if PS_TILE_FOG
+	uvec4 F = plane[pbase + 6u];
+	precise float frow = fma(uintBitsToFloat(F.z), dy, uintBitsToFloat(s1 ? F.y : F.x));
+	frow = fma(uintBitsToFloat(F.w), prestep, frow);
+	g_tile_cw_fog = cw_walk_value(cw_fcvtzs(frow), uintBitsToFloat(F.w), left, px);
+#endif
+}
+
+#endif // PS_TILE_CWALK
 
 #if PS_TILE_STQ
 // ======================= Tile perspective coordinate =========================
@@ -2123,7 +2276,13 @@ vec4 fog(vec4 c, float f)
 		// f arrives normalised (F/255); the multiply back is exact for all 256 fog
 		// bytes in single precision, and the 128 is free.
 		ivec3 cf = ivec3(FogColor);
-		int f15 = int(f * (255.0f * 128.0f));
+		#if PS_TILE_CWALK
+			// The fog lane off the scanline's walk: the whole sixteen bits reach
+			// the multiply, so an interpolated factor is not a stand-in here.
+			int f15 = g_tile_cw_fog;
+		#else
+			int f15 = int(f * (255.0f * 128.0f));
+		#endif
 		c.rgb = vec3(cf + (((ivec3(c.rgb) - cf) * f15) >> 15));
 	#elif PS_FOG
 		c.rgb = trunc(mix(FogColor, c.rgb, (f * 255.0f) / 256.0f));
@@ -2194,7 +2353,12 @@ vec4 ps_color()
 		T.a = ((T.a >= 127.5f) ? TA.y : ((PS_AEM == 0 || any(bvec3(gpu_bitwise_and(ivec3(T.rgb), ivec3(0xF8))))) ? TA.x : 0.0f)) * 255.0f;
 	#endif
 
+#if PS_TILE_CWALK && PS_IIP
+	// The gouraud colour off the scanline's walk, not the interpolator.
+	vec4 C = tfx(T, g_tile_cw_color);
+#else
 	vec4 C = tfx(T, vsIn.c);
+#endif
 
 	C = fog(C, vsIn.t.z);
 
@@ -3056,6 +3220,7 @@ float tile_zwalk_depth()
 
 #endif // PS_TILE_ZWALK
 
+
 void main()
 {
 #if PS_TILE_STQ
@@ -3146,6 +3311,11 @@ void main()
 	if (gl_PrimitiveID > stencil_ceil) {
 		DISCARD;
 	}
+#endif
+
+#if PS_TILE_CWALK
+	// Once per fragment, before anything reads the colour or the fog factor.
+	tile_cwalk();
 #endif
 
 	vec4 C = ps_color();

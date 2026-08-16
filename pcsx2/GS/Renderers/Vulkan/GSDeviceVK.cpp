@@ -6771,6 +6771,7 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_TILE_FOG", sel.tile_fog);
 	AddMacro(ss, "PS_TILE_ZWALK", sel.tile_zwalk);
 	AddMacro(ss, "PS_TILE_STQ", sel.tile_stq);
+	AddMacro(ss, "PS_TILE_CWALK", sel.tile_cwalk);
 	AddMacro(ss, "PS_TILE_TCLAG", sel.tile_tclag);
 	AddMacro(ss, "PS_TILE_BLEND_MIX", sel.tile_blend_mix);
 	AddMacro(ss, "PS_TILE_BLEND", sel.tile_blend);
@@ -8623,6 +8624,11 @@ void GSDeviceVK::UploadHWDrawVerticesAndIndices(GSHWDrawConfig& config)
 		{
 			const u32 sbase = base + config.tile_stq_at;
 			std::memcpy(&config.cb_ps.TileSTQBase, &sbase, sizeof(sbase));
+		}
+		if (config.tile_cwalk_at != 0xFFFFFFFFu)
+		{
+			const u32 cbase = base + config.tile_cwalk_at;
+			std::memcpy(&config.cb_ps.TileCBase, &cbase, sizeof(cbase));
 		}
 		SetPSConstantBuffer(config.cb_ps);
 		SetVSPushConstants(static_cast<u32>(m_vertex.start));

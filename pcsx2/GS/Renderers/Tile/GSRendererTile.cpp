@@ -1727,7 +1727,14 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// read rung made four of them native and they came back 125 pixels wrong.
 	const bool want_stq = PRIM->TME &&
 		(m_vt.m_primclass == GS_TRIANGLE_CLASS || m_vt.m_primclass == GS_SPRITE_CLASS);
-	if (!BuildTilePayload(want_zwalk, want_stq, reason))
+	// Colour and fog transcription: a gouraud or fogged triangle takes its colour
+	// and fog factor off the SW scanline's blocked walk, replayed per fragment
+	// from the primitive's own edge (PS_TILE_CWALK), because the walk's value at a
+	// pixel depends on where its span started — which the interpolator cannot
+	// know and gs-block measured silicon doing the same. Sprites are flat in
+	// both (the second vertex's) and need nothing.
+	const bool want_cwalk = m_vt.m_primclass == GS_TRIANGLE_CLASS && (!IsFlatShaded() || PRIM->FGE);
+	if (!BuildTilePayload(want_zwalk, want_stq, want_cwalk, reason))
 		return false;
 
 	// The texture window's footprint. A window overlapping the draw's own write
@@ -2163,25 +2170,28 @@ void GSRendererTile::FlattenProvokingColor()
 }
 
 // Build the per-primitive plane payload the fragment walks read: the depth walk's
-// blocks (PS_TILE_ZWALK) and the perspective coordinate's blocks (PS_TILE_STQ),
-// concatenated into ONE upload — two reservations against the streaming buffer can hit
-// a mid-draw flush between them and strand the first one's offset.
+// blocks (PS_TILE_ZWALK), the perspective coordinate's blocks (PS_TILE_STQ) and the
+// colour/fog walk's blocks (PS_TILE_CWALK), concatenated into ONE upload — two
+// reservations against the streaming buffer can hit a mid-draw flush between them and
+// strand the first one's offset.
 //
 // Every triangle value comes out of GSRasterizer's own compiled setup
 // (GSComputeTriangleZPlane), so it carries the software renderer's exact roundings: the
 // fp32 barycentric division, the compiler's fused multiply-adds, the 2^-10 truncation
 // of the scan gradient, and the fp32 narrowing the scanline's setup applies to the
-// lane-offset gradient. Loading the texture numerators into the same setup takes the
-// coordinate gradient off that one division rather than a second, independently-rounded
-// one; it cannot disturb the depth values, which are computed from other lanes.
+// lane-offset gradient. Loading the texture numerators, the colour and the fog into the
+// same setup takes their gradients off that one division rather than a second,
+// independently-rounded one; it cannot disturb the depth values, which are computed
+// from other lanes.
 //
 // Returns false with `reason` set for draws outside an envelope; those floor.
-bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloorReason& reason)
+bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, bool want_cwalk, GSTileFloorReason& reason)
 {
 	m_tile_payload.clear();
 	m_zwalk_at = NoWalk;
 	m_stq_at = NoWalk;
-	if (!want_zwalk && !want_stq)
+	m_cwalk_at = NoWalk;
+	if (!want_zwalk && !want_stq && !want_cwalk)
 		return true;
 
 	const auto envelope = [this, &reason](bool ok) {
@@ -2214,14 +2224,18 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloo
 
 	if (m_vt.m_primclass == GS_SPRITE_CLASS)
 	{
-		// A sprite carries no depth gradient, so the coordinate plane is the only
-		// block here — and it is built from the raw vertices rather than through the
+		// A sprite carries no depth gradient and no colour or fog gradient (both are
+		// flat, from its second vertex), so the coordinate plane is the only block
+		// here — and it is built from the raw vertices rather than through the
 		// rasterizer's sprite setup, because what this path removes is the vertex
 		// shader's coverage nudge and NOTHING else about which value the fragment
 		// sees. The expansion reads the vertex PAIR directly (not through the index
 		// buffer), gives all four corners the SECOND vertex's Q, and swaps only each
 		// axis' own position and numerator — so S is affine in x alone, T in y alone,
 		// and Q is constant, which is the same shape the scanline runs.
+		pxAssert(!want_cwalk);
+		if (!want_stq)
+			return true;
 		const u32 nprims = m_index->tail / 2;
 		m_tile_payload.assign(static_cast<size_t>(nprims) * 12, 0u);
 		m_stq_at = 0;
@@ -2281,14 +2295,18 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloo
 	const u32 nprims = m_index->tail / 3;
 	const size_t zwords = want_zwalk ? (4 + static_cast<size_t>(nprims) * 20) : 0;
 	const size_t swords = want_stq ? (static_cast<size_t>(nprims) * 12) : 0;
-	m_tile_payload.assign(zwords + swords, 0u);
+	const size_t cwords = want_cwalk ? (4 + static_cast<size_t>(nprims) * 32) : 0;
+	m_tile_payload.assign(zwords + swords + cwords, 0u);
 	if (want_zwalk)
 		m_zwalk_at = 0;
 	if (want_stq)
 		m_stq_at = static_cast<u32>(zwords / 4);
+	if (want_cwalk)
+		m_cwalk_at = static_cast<u32>((zwords + swords) / 4);
 
 	u32* zout = m_tile_payload.data();
 	u32* sout = m_tile_payload.data() + zwords;
+	u32* cout = m_tile_payload.data() + zwords + swords;
 	size_t zc = 0;
 
 	const auto push_u32 = [&](u32 v) { zout[zc++] = v; };
@@ -2311,6 +2329,13 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloo
 		push_u32((zmax > fmt_max) ? 1u : 0u); // sel.zclamp, the scanline's own gate
 		push_u32(fmt_max);
 		push_u32(0u);
+	}
+	if (want_cwalk)
+	{
+		// Header: the scissor's left, which bounds the span's first pixel.
+		float sl = fscissor.x;
+		std::memcpy(cout, &sl, 4);
+		cout += 4;
 	}
 
 	for (u32 p = 0; p < nprims; p++)
@@ -2341,7 +2366,12 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloo
 						? GSVector4(static_cast<float>(v.U), static_cast<float>(v.V), 1.0f, 0.0f)
 						: GSVector4(v.ST.S * num_sx, v.ST.T * num_sy, v.RGBAQ.Q, 0.0f))
 				: GSVector4::zero();
-			sw[k].c = GSVector4::zero();
+			// The colour and the fog lanes as ConvertVertexBuffer places them: the
+			// bytes times 128 (seven fraction bits under the stored byte), the fog
+			// in t.w. Exact in float. Loaded whether or not the walk is wanted —
+			// they cost nothing and cannot disturb the other lanes.
+			sw[k].c = GSVector4(GSVector4i::load(static_cast<int>(v.RGBAQ.U32[0])).u8to32() << 7);
+			sw[k].t.w = static_cast<float>(static_cast<int>(v.FOG << 7));
 		}
 
 		// A primitive the rasterizer would not draw (degenerate y-order or zero
@@ -2351,7 +2381,33 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_stq, GSTileFloo
 		if (!GSComputeTriangleZPlane(sw, fscissor_y, zp) || zp.nsections == 0)
 		{
 			zc += want_zwalk ? 20 : 0;
+			cout += want_cwalk ? 32 : 0;
 			continue;
+		}
+
+		if (want_cwalk)
+		{
+			// Per section: the edge (the span's first pixel on a row is a fused
+			// multiply-add and a ceiling away, exactly as the depth walk finds it)
+			// and the seeds, which are the section's own vertex values; the
+			// gradients once, shared by both sections as SetupTriangle hands them out.
+			// A single-section primitive repeats section 0 into the second slot and
+			// marks the boundary unreachable, as the depth walk's payload does.
+			const GSTileZPlaneSection& c0 = zp.sec[0];
+			const GSTileZPlaneSection& c1 = zp.sec[(zp.nsections == 2) ? 1 : 0];
+			const u32 boundary = (zp.nsections == 2) ? static_cast<u32>(c1.top) & 0xFFFFu : 0xFFFFu;
+			const float blk[32] = {
+				c0.edge_x, c0.dedge_x, c0.p0x, c0.p0y,
+				c1.edge_x, c1.dedge_x, c1.p0x, c1.p0y,
+				c0.cseed.x, c0.cseed.y, c0.cseed.z, c0.cseed.w,
+				c1.cseed.x, c1.cseed.y, c1.cseed.z, c1.cseed.w,
+				zp.dedge_c.x, zp.dedge_c.y, zp.dedge_c.z, zp.dedge_c.w,
+				zp.dscan_c.x, zp.dscan_c.y, zp.dscan_c.z, zp.dscan_c.w,
+				c0.fseed, c1.fseed, zp.dedge_f, zp.dscan_f,
+				0.0f, 0.0f, 0.0f, 0.0f};
+			std::memcpy(cout, blk, sizeof(blk));
+			std::memcpy(cout + 28, &boundary, 4);
+			cout += 32;
 		}
 
 		if (want_stq)
@@ -2789,6 +2845,7 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	const bool zwalk = ds && m_zwalk_at != NoWalk;
 	conf.tile_zwalk_at = NoWalk;
 	conf.tile_stq_at = NoWalk;
+	conf.tile_cwalk_at = NoWalk;
 	if (!m_tile_payload.empty())
 	{
 		conf.tile_payload = m_tile_payload.data();
@@ -2798,6 +2855,13 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 		{
 			conf.ps.tile_stq = 1;
 			conf.tile_stq_at = m_stq_at;
+		}
+		if (m_cwalk_at != NoWalk)
+		{
+			// The gouraud colour and the fog factor off the scanline's walk (the
+			// shader reads whichever of the two this draw's selector enables).
+			conf.ps.tile_cwalk = 1;
+			conf.tile_cwalk_at = m_cwalk_at;
 		}
 	}
 	conf.depth.ztst = ds ? plan.ztst : static_cast<u8>(ZTST_ALWAYS);

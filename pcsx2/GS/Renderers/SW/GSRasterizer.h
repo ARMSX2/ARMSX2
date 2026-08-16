@@ -30,6 +30,14 @@ struct GSTileZPlaneSection
 	double zseed;   // z at the reference vertex (always an exact vertex value)
 	double dedge_z; // z step per row along the edge (full precision, not quantised)
 	int top, bottom; // scissor-clamped row range [top, bottom)
+
+	// The colour and fog lanes AT this section's reference vertex — exact vertex
+	// values (the colour times 128, the fog byte times 128), because the section is
+	// seeded from the vertex itself and walks from there. Per section, unlike the
+	// gradients: the two sections seed from different vertices, and a seed formed
+	// from the other section's vertex through the plane would round differently.
+	GSVector4 cseed;
+	float fseed;
 };
 
 struct GSTileZPlane
@@ -51,6 +59,16 @@ struct GSTileZPlane
 	GSVector4 tseed;   // the t lanes AT that reference vertex — an exact vertex value
 	GSVector4 dedge_t; // t step per row, at constant x
 	GSVector4 dscan_t; // t step per pixel
+
+	// The colour and fog gradients, off the same division. Both sections share
+	// them (SetupTriangle hands one dedge to both), so they ride once; the seeds
+	// they step from are per section above. The fog byte travels in the vertices'
+	// t.w lane the way ConvertVertexBuffer places it, so its gradients are dedge_t.w
+	// and dscan_t.w — named here so a reader of the payload need not know that.
+	GSVector4 dedge_c; // colour step per row, at constant x
+	GSVector4 dscan_c; // colour step per pixel
+	float dedge_f;     // fog step per row, at constant x
+	float dscan_f;     // fog step per pixel
 };
 
 /// Computes the depth plane for one triangle (three GSVertexSW, in kick order) through
