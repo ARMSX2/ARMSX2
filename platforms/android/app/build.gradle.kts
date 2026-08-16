@@ -23,9 +23,19 @@ val armsx2MinSdk = providers.gradleProperty("armsx2.minSdk").orElse("26")
 // Pinned, not left to AGP's default: the two targets must differ ONLY where we say they do, and
 // an NDK that drifts under one of them makes an A/B meaningless. 28.2 is what shipped 2.6.6.6.
 val armsx2NdkVersion = providers.gradleProperty("armsx2.ndkVersion").orElse("28.2.13676358")
-// Empty = let BuildParameters.cmake choose (armv8.1-a). The v8.2 target passes an explicit
+// Empty = let BuildParameters.cmake choose (armv8.1-a). The v8.2 targets pass an explicit
 // -march; FEAT_FP16 and FEAT_DotProd are OPTIONAL at v8.2, so they must be named, not implied.
 val armsx2March = providers.gradleProperty("armsx2.march").orElse("")
+// Extra CPU flags that must ride alongside -march, verbatim.
+//
+// This exists for exactly one case that -march alone cannot express: the legacy target builds
+// -march=armv8-a so Cortex-A53/A72/A73 can run it, and at that baseline clang emits LL/SC
+// (ldxr/stxr) atomics for everything — correct everywhere, but slower on every modern core.
+// -moutline-atomics restores LSE on cores that have it via a runtime HWCAP dispatch, so one
+// binary is safe on an A53 and still fast on an A78. Passing it through -march would be wrong:
+// BuildParameters.cmake's escape hatch tests CMAKE_CXX_FLAGS for "-march=", and the flag has to
+// be a separate token on the command line regardless.
+val armsx2MarchExtra = providers.gradleProperty("armsx2.marchExtra").orElse("")
 // DIAGNOSTIC ONLY (-Parmsx2.recTestHooks=true): compiles the EERecFallback opcode-group
 // interpreter bisect into the EE recompiler. Never set for a shipped build.
 val armsx2RecTestHooks = providers.gradleProperty("armsx2.recTestHooks").orElse("false")
@@ -161,7 +171,8 @@ android {
                     arguments += if (pgo == "generate") "-DLTO_PCSX2_CORE=OFF" else "-DLTO_PCSX2_CORE=ON"
                     arguments += "-DARMSX2_EMUCORE_LIBRARY_NAME=${armsx2NativeLibName.get()}"
                     arguments += "-DARMSX2_ANDROID_HOST_PAGE_SIZE=${armsx2HostPageSize.get()}"
-                    val march = armsx2March.get().let { if (it.isBlank()) "" else " -march=$it" }
+                    val march = armsx2March.get().let { if (it.isBlank()) "" else " -march=$it" } +
+                        armsx2MarchExtra.get().let { if (it.isBlank()) "" else " $it" }
                     arguments += "-DCMAKE_C_FLAGS=-O3 -g$march"
                     arguments += "-DCMAKE_CXX_FLAGS=-O3 -g$march"
                     if (pgo == "generate") arguments += "-DUSE_PGO_GENERATE=ON"
@@ -196,7 +207,8 @@ android {
                     arguments += "-DCMAKE_BUILD_TYPE=Debug"
                     arguments += "-DARMSX2_EMUCORE_LIBRARY_NAME=${armsx2NativeLibName.get()}"
                     arguments += "-DARMSX2_ANDROID_HOST_PAGE_SIZE=${armsx2HostPageSize.get()}"
-                    val march = armsx2March.get().let { if (it.isBlank()) "" else " -march=$it" }
+                    val march = armsx2March.get().let { if (it.isBlank()) "" else " -march=$it" } +
+                        armsx2MarchExtra.get().let { if (it.isBlank()) "" else " $it" }
                     arguments += "-DCMAKE_C_FLAGS=-O3 -g$march"
                     arguments += "-DCMAKE_CXX_FLAGS=-O3 -g$march"
                 }
