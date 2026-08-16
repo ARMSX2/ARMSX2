@@ -1168,7 +1168,9 @@ namespace GSLsfg
 		vkQueueWaitIdle(s_queue); // our pre-copy must land before framegen reads that image
 		const bool generated = (s_backend.present(s_context_id) == 0);
 		if (!generated)
+		{
 			Console.ErrorFmt("@@ANDROID_LSFG@@ generation failed: {}", BackendError());
+		}
 		else
 			s_backend.wait_idle();
 
@@ -1197,17 +1199,6 @@ namespace GSLsfg
 			for (u32 i = 0; i < s_multiplier - 1; i++)
 			{
 				u32 image_index = 0;
-				// Zero timeout, deliberately. An interpolated frame is a bonus, so if the
-				// presentation engine has nothing free right now the right move is to drop it and
-				// get the real frame out — waiting costs more than the frame is worth. The old
-				// UINT64_MAX was actively dangerous here on two counts: it bypassed the bounded
-				// ACQUIRE_TIMEOUT_NS that VKSwapChain::AcquireNextImage adopted so a surface
-				// destroyed under the GS thread (background/rotate/fold) does not wedge every
-				// thread at 0% CPU with no log; and with a 2- or 3-image swapchain this loop
-				// holds the real image while asking for multiplier-1 more, so at x3/x4 it
-				// serialised on a vblank per generated frame and ate the very time the feature
-				// exists to spend. VK_NOT_READY/VK_TIMEOUT leave the semaphore unsignalled, so
-				// s_acquire_sems[i] stays clean for the next frame.
 				// ★ Bounded, but NOT zero. A zero timeout looks right — an interpolated frame is
 				// a bonus, so why stall for one — and it silently disables the entire feature:
 				// under FIFO the presentation engine hands an image back at a vblank, so at
@@ -1225,7 +1216,9 @@ namespace GSLsfg
 				const VkResult acq = vkAcquireNextImageKHR(s_device, swap_chain->GetSwapChain(),
 					kGeneratedAcquireTimeoutNs, s_acquire_sems[i], VK_NULL_HANDLE, &image_index);
 				if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR)
+				{
 					break; // nothing free, out of date, or lost — still present the real frame
+				}
 
 				vkResetCommandBuffer(s_post_copy_cmds[i], 0);
 				if (vkBeginCommandBuffer(s_post_copy_cmds[i], &begin) != VK_SUCCESS)
@@ -1240,7 +1233,14 @@ namespace GSLsfg
 
 				const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1,
 					&s_post_copy_sems[i], 1, swap_chain->GetSwapChainPtr(), &image_index, nullptr};
-				if (vkQueuePresentKHR(present_queue, &present) != VK_SUCCESS)
+				// ★ VK_SUBOPTIMAL_KHR IS A SUCCESS CODE — the frame was presented. Treating it as
+				// failure here broke nothing visible and made the overlay lie: the generated
+				// frame reached the screen, we broke out before counting it, and the display rate
+				// read exactly the real rate forever. Suboptimal is routine on Android (rotation,
+				// insets, a driver preferring a different transform), so this fired every frame.
+				// The acquire above already gets this right; this did not.
+				const VkResult pres = vkQueuePresentKHR(present_queue, &present);
+				if (pres != VK_SUCCESS && pres != VK_SUBOPTIMAL_KHR)
 					break;
 				presented_generated++;
 			}

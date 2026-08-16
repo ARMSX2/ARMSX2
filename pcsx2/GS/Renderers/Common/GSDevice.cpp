@@ -1601,6 +1601,18 @@ void GSDevice::FSR1Upscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src
 	if (dst_width <= 0 || dst_height <= 0)
 		return;
 
+	// Anchored inside FSR1Upscale explicitly: the first attempt at this matched an identical
+	// "GSTexture* src_tex = tex;" line in GSDevice::CAS, which FSR REPLACES, so the log could
+	// never fire and made a working pass look dead.
+	static int s_logged_w = 0, s_logged_h = 0;
+	if (s_logged_w != dst_width || s_logged_h != dst_height)
+	{
+		s_logged_w = dst_width;
+		s_logged_h = dst_height;
+		Console.WriteLnFmt("@@ANDROID_FSR1@@ upscaling {}x{} -> {}x{} (sharpness {})",
+			tex->GetWidth(), tex->GetHeight(), dst_width, dst_height, GSConfig.FSR_Sharpness);
+	}
+
 	GSTexture* src_tex = tex;
 
 	// Two targets, not one: RCAS is a separate dispatch that reads EASU's whole output, so it
