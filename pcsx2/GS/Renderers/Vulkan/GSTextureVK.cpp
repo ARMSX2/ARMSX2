@@ -323,6 +323,9 @@ void GSTextureVK::UpdateFromBuffer(VkCommandBuffer cmdbuf, int level, u32 x, u32
 		{VK_IMAGE_ASPECT_COLOR_BIT, static_cast<u32>(level), 0u, 1u}, {static_cast<s32>(x), static_cast<s32>(y), 0},
 		{width, height, 1u}};
 
+	// An upload into an image already sitting in TransferDst records no transition, so
+	// stamp the touch here as well: the bytes are not on the GPU until this submits.
+	StampGpuTouch(GSDeviceVK::GetInstance()->GetCurrentFenceCounter());
 	vkCmdCopyBufferToImage(cmdbuf, buffer, m_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
 
 	if (old_layout != Layout::TransferDst && old_layout != Layout::Undefined)
@@ -549,6 +552,9 @@ void GSTextureVK::CommitClear()
 
 void GSTextureVK::CommitClear(VkCommandBuffer cmdbuf)
 {
+	// The transition below early-outs when the image is already ClearDst; the clear
+	// itself is still a recorded touch.
+	StampGpuTouch(GSDeviceVK::GetInstance()->GetCurrentFenceCounter());
 	TransitionToLayout(cmdbuf, Layout::ClearDst);
 
 	if (IsDepthStencil())
@@ -603,6 +609,12 @@ void GSTextureVK::TransitionToLayout(VkCommandBuffer command_buffer, Layout new_
 void GSTextureVK::TransitionSubresourcesToLayout(
 	VkCommandBuffer command_buffer, int start_level, int num_levels, Layout old_layout, Layout new_layout)
 {
+	// Every layout change is a recorded touch of the image, whichever command buffer it
+	// lands in (the init buffer submits with the same fence counter as the draw buffer).
+	// The out-of-band readback path keys on this stamp; a transition it did not see is a
+	// wrong oldLayout on the GPU.
+	StampGpuTouch(GSDeviceVK::GetInstance()->GetCurrentFenceCounter());
+
 	// Windows RDNA2 drivers don't always correctly transition the layout(?) when ROV is involved.
 	// ReadWriteImage -> Feedback transitions are broken.
 	// ReadWriteImage -> Read only layout  -> Feedback transitions are broken.
@@ -954,6 +966,81 @@ void GSDownloadTextureVK::DoCopyFromTexture(
 	m_copy_fence_counter = GSDeviceVK::GetInstance()->GetCurrentFenceCounter();
 	m_needs_cache_invalidate = true;
 	m_needs_flush = true;
+}
+
+bool GSDownloadTextureVK::CopyFromCompletedTexture(
+	const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch)
+{
+	GSTextureVK* const vkTex = static_cast<GSTextureVK*>(stex);
+	GSDeviceVK* const dev = GSDeviceVK::GetInstance();
+
+	// The contract, checked rather than trusted: nothing recorded since the last submit
+	// touches this image (so its tracked layout IS its GPU layout and its bytes are
+	// final once the last submit retires), and it holds real bytes rather than a
+	// deferred clear or nothing at all.
+	if (vkTex->GetGpuTouchCounter() >= dev->GetCurrentFenceCounter())
+		return false;
+	if (vkTex->GetState() != GSTexture::State::Dirty || vkTex->GetLayout() == GSTextureVK::Layout::Undefined)
+		return false;
+	// A copy into this buffer still sitting in the recording buffer would race the one
+	// below when it eventually executes; the callers here flush every copy before the
+	// next, so this is a contract check, not a case.
+	if (m_needs_flush)
+		return false;
+
+	pxAssert(vkTex->IsDepthStencil() ? (m_format == GSTexture::Format::UInt32) : (vkTex->GetFormat() == m_format));
+	pxAssert(drc.width() == src.width() && drc.height() == src.height());
+	pxAssert(src.z <= vkTex->GetWidth() && src.w <= vkTex->GetHeight());
+	pxAssert(static_cast<u32>(drc.z) <= m_width && static_cast<u32>(drc.w) <= m_height);
+	pxAssert(src_level < static_cast<u32>(vkTex->GetMipmapLevels()));
+	pxAssert((drc.left == 0 && drc.top == 0) || !use_transfer_pitch);
+
+	const VkCommandBuffer cmdbuf = dev->BeginOutOfBandCommandBuffer();
+	if (cmdbuf == VK_NULL_HANDLE)
+		return false;
+
+	u32 copy_offset, copy_size, copy_rows;
+	m_current_pitch = GetTransferPitch(use_transfer_pitch ? static_cast<u32>(drc.width()) : m_width,
+		dev->GetBufferCopyRowPitchAlignment());
+	GetTransferSize(drc, &copy_offset, &copy_size, &copy_rows);
+
+	g_perfmon.Put(GSPerfMon::Readbacks, 1);
+	GL_INS("GSDownloadTextureVK::CopyFromCompletedTexture: {%d,%d} %ux%u", src.left, src.top, src.width(), src.height());
+
+	// The transitions below record into the out-of-band buffer, which is submitted and
+	// complete before we return; they must not read as a touch by the frame's buffer.
+	const u64 saved_touch = vkTex->GetGpuTouchCounter();
+	const GSTextureVK::Layout old_layout = vkTex->GetLayout();
+	if (old_layout != GSTextureVK::Layout::TransferSrc)
+		vkTex->TransitionSubresourcesToLayout(cmdbuf, src_level, 1, old_layout, GSTextureVK::Layout::TransferSrc);
+
+	VkBufferImageCopy image_copy = {};
+	const VkImageAspectFlags aspect = vkTex->IsDepthStencil() ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+	image_copy.bufferOffset = copy_offset;
+	image_copy.bufferRowLength = GSTexture::CalcUploadRowLengthFromPitch(m_format, m_current_pitch);
+	image_copy.bufferImageHeight = 0;
+	image_copy.imageSubresource = {aspect, src_level, 0u, 1u};
+	image_copy.imageOffset = {src.left, src.top, 0};
+	image_copy.imageExtent = {static_cast<u32>(src.width()), static_cast<u32>(src.height()), 1u};
+	vkCmdCopyImageToBuffer(cmdbuf, vkTex->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_buffer, 1, &image_copy);
+
+	const VkBufferMemoryBarrier buffer_info = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr,
+		VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+		m_buffer, 0, copy_size};
+	vkCmdPipelineBarrier(
+		cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &buffer_info, 0, nullptr);
+
+	if (old_layout != GSTextureVK::Layout::TransferSrc)
+		vkTex->TransitionSubresourcesToLayout(cmdbuf, src_level, 1, GSTextureVK::Layout::TransferSrc, old_layout);
+	vkTex->RestoreGpuTouchCounter(saved_touch);
+
+	if (!dev->SubmitOutOfBandAndWait())
+		return false;
+
+	// Complete: nothing to flush, but the host cache still needs invalidating before Map.
+	m_needs_flush = false;
+	m_needs_cache_invalidate = true;
+	return true;
 }
 
 bool GSDownloadTextureVK::Map(const GSVector4i& read_rc)

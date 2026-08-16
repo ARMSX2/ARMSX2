@@ -913,6 +913,12 @@ struct Pcsx2Config
 					// two extra readback drains and a full SW rasterization per native
 					// draw -- and meaningless under any renderer but Tile.
 					TileDrawOracle : 1,
+					// Let the Tile renderer read pages back through an out-of-band
+					// copy when the GPU has already finished with them, instead of
+					// draining the frame's command buffer for every pull. Default on;
+					// the off position is a bisect lever (both roads must be
+					// byte-identical), never a user setting.
+					TileOutOfBandReadback : 1,
 					UseBlitSwapChain : 1,
 					DisableShaderCache : 1,
 					DisableFramebufferFetch : 1,

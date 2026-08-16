@@ -7,6 +7,8 @@
 
 #include "common/Assertions.h"
 
+#include <algorithm>
+
 GSVramModel::GSVramModel()
 {
 	Reset();
@@ -23,6 +25,7 @@ void GSVramModel::Reset()
 		ps.owner.fill(kGSTileNoSurface);
 	}
 	m_gen.fill(PageGen{});
+	m_gpu_epoch.fill(0);
 	m_surfaces.clear();
 	m_free_ids.clear();
 	m_by_layout.clear();
@@ -435,6 +438,18 @@ void GSVramModel::OnNativeDraw(GSTileSurfaceId id, const GSPageBitmap& pages, u8
 		ps.synced = ps.synced.andnot(pages);
 	}
 	pages.forEachSetPage([this](u32 page) { m_gen[page].gpu_write++; });
+}
+
+void GSVramModel::StampGpuWrite(const GSPageBitmap& pages, u64 epoch)
+{
+	pages.forEachSetPage([this, epoch](u32 page) { m_gpu_epoch[page] = std::max(m_gpu_epoch[page], epoch); });
+}
+
+u64 GSVramModel::GpuEpochOf(const GSPageBitmap& pages) const
+{
+	u64 e = 0;
+	pages.forEachSetPage([this, &e](u32 page) { e = std::max(e, m_gpu_epoch[page]); });
+	return e;
 }
 
 // -- Queries -----------------------------------------------------------------------

@@ -7,6 +7,7 @@
 #include "GS/GS.h"
 #include "GS/Renderers/Vulkan/VKLoader.h"
 
+#include <algorithm>
 #include <limits>
 
 class GSTextureVK final : public GSTexture
@@ -82,6 +83,22 @@ public:
 	// Call when the texture is bound to the pipeline, or read from in a copy.
 	__fi void SetUseFenceCounter(u64 counter) { m_use_fence_counter = counter; }
 
+	// The fence counter of the newest command buffer that RECORDED anything touching this
+	// image -- a layout transition, a render pass with it attached, an upload, a clear, a
+	// copy. Distinct from m_use_fence_counter (which the upload path reads for its own
+	// question and which not every touch sets). What this answers is: is the CPU-side
+	// tracked layout equal to the image's actual GPU-side layout right now? It is exactly
+	// when the counter is below the current one, i.e. every recorded touch has been
+	// SUBMITTED -- and only then can work be recorded into an out-of-band command buffer
+	// (which the GPU runs BEFORE the buffer being recorded) against this image with a
+	// correct oldLayout. See GSDownloadTextureVK::CopyFromCompletedTexture.
+	__fi void StampGpuTouch(u64 counter) { m_gpu_touch_counter = std::max(m_gpu_touch_counter, counter); }
+	__fi u64 GetGpuTouchCounter() const { return m_gpu_touch_counter; }
+	// For the out-of-band path only: its transitions record into a buffer that is
+	// submitted and complete before it returns, so they must not count as a touch by the
+	// buffer being recorded.
+	__fi void RestoreGpuTouchCounter(u64 counter) { m_gpu_touch_counter = counter; }
+
 private:
 	GSTextureVK(Usage usage, Format format, int width, int height, int levels, VkImage image, VmaAllocation allocation,
 		VkImageView view, VkFormat vk_format);
@@ -101,6 +118,7 @@ private:
 	// Contains the fence counter when the texture was last used.
 	// When this matches the current fence counter, the texture was used this command buffer.
 	u64 m_use_fence_counter = 0;
+	u64 m_gpu_touch_counter = 0; // see StampGpuTouch
 
 	int m_map_level = std::numeric_limits<int>::max();
 	GSVector4i m_map_area = GSVector4i::zero();
@@ -118,6 +136,8 @@ public:
 	static std::unique_ptr<GSDownloadTextureVK> Create(u32 width, u32 height, GSTexture::Format format);
 
 	void DoCopyFromTexture(
+		const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch) override;
+	bool CopyFromCompletedTexture(
 		const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch) override;
 
 	bool Map(const GSVector4i& read_rc) override;

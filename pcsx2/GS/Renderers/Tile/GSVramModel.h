@@ -155,6 +155,20 @@ public:
 	/// other owners — which must be synced (Devel-asserted).
 	void OnNativeDraw(GSTileSurfaceId id, const GSPageBitmap& pages, u8 planes);
 
+	/// The GPU work that last wrote these pages belongs to submission `epoch` — an
+	/// opaque, monotonic value the caller takes from the device (the fence counter of
+	/// the command buffer the draw was recorded into). Kept beside truth rather than
+	/// folded into it, because "is the newest data on the GPU" and "has the GPU
+	/// FINISHED producing it" are different questions with different prices: a page
+	/// whose epoch the device has already retired can be pulled without draining
+	/// whatever is being recorded now, and a page whose epoch IS the recording buffer
+	/// cannot. Stamped by the renderer right after OnNativeDraw; the model never reads
+	/// it, it only carries it. 0 = never written natively (or a device with no epochs).
+	void StampGpuWrite(const GSPageBitmap& pages, u64 epoch);
+	/// Highest epoch over the set — the submission every one of these pages waits on.
+	u64 GpuEpochOf(const GSPageBitmap& pages) const;
+	u64 GpuEpoch(u32 page) const { return m_gpu_epoch[page]; }
+
 	/// The ONE live surface holding GPU-newest truth for every page of `pages` on every
 	/// plane in `planes`, at whole-page block granularity — or kGSTileNoSurface when the
 	/// window is split across owners, when any plane of any page is CPU-newest, or when
@@ -206,6 +220,7 @@ private:
 
 	std::array<PlaneState, kGSTilePlaneCount> m_planes;
 	std::array<PageGen, GS_MAX_PAGES> m_gen;
+	std::array<u64, GS_MAX_PAGES> m_gpu_epoch{};
 	std::vector<Surface> m_surfaces;
 	std::vector<GSTileSurfaceId> m_free_ids;
 	std::unordered_map<u32, GSTileSurfaceId> m_by_layout; // layout.pack() -> id

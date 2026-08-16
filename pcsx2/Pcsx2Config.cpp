@@ -741,6 +741,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	IntegerScaling = false;
 	LinearPresent = GSPostBilinearMode::BilinearSmooth;
 	UseDebugDevice = false;
+	TileOutOfBandReadback = true;
 	UseBlitSwapChain = false;
 	DisableShaderCache = false;
 	DisableFramebufferFetch = false;
@@ -1040,6 +1041,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(DebugLabels);
 	SettingsWrapBitBool(DumpDrawLog);
 	SettingsWrapBitBool(TileDrawOracle);
+	SettingsWrapBitBool(TileOutOfBandReadback);
 	SettingsWrapBitBool(UseBlitSwapChain);
 	SettingsWrapBitBool(DisableShaderCache);
 	SettingsWrapBitBool(DisableFramebufferFetch);

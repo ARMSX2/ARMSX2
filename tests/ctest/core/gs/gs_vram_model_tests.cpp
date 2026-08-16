@@ -743,3 +743,38 @@ TEST(GSVramModel, RandomizedFlowsVsNaiveModel)
 			return;
 	}
 }
+
+// ---- the per-page GPU-write epoch --------------------------------------------------
+//
+// The model carries, beside truth, the submission epoch of the GPU work that last wrote
+// each page -- an opaque monotonic value from the device. It never reads it; the
+// renderer classifies readbacks against the device's completed epoch with it, and the
+// out-of-band readback road is the reason. Pinned: a stamp is a MAX (an older
+// submission's write never regresses a page), the set query is the max over the set,
+// and Reset clears it with everything else.
+
+TEST(GSVramModel, GpuEpochIsMaxOverStampsAndOverTheSet)
+{
+	GSVramModel m;
+	GSPageBitmap a, b, ab;
+	a.set(10);
+	b.set(11);
+	ab.set(10);
+	ab.set(11);
+
+	EXPECT_EQ(m.GpuEpoch(10), 0u);
+	EXPECT_EQ(m.GpuEpochOf(ab), 0u);
+
+	m.StampGpuWrite(a, 5);
+	m.StampGpuWrite(b, 3);
+	EXPECT_EQ(m.GpuEpoch(10), 5u);
+	EXPECT_EQ(m.GpuEpoch(11), 3u);
+	EXPECT_EQ(m.GpuEpochOf(ab), 5u) << "the set waits on its newest page";
+
+	m.StampGpuWrite(a, 2);
+	EXPECT_EQ(m.GpuEpoch(10), 5u) << "an older epoch never regresses a page";
+
+	m.Reset();
+	EXPECT_EQ(m.GpuEpoch(10), 0u);
+	EXPECT_EQ(m.GpuEpoch(11), 0u);
+}

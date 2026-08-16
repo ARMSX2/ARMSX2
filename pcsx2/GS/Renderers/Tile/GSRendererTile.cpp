@@ -219,25 +219,36 @@ void GSRendererTile::ReportReadbackCensus()
 
 	const double frames = static_cast<double>(m_readback_frames);
 	u32 total_drains = 0, total_pages = 0;
+	u32 total_pending = 0, total_inflight = 0, total_quiescent = 0;
 
 	Console.WriteLn("Tile readback census over %u frames (per frame):", m_readback_frames);
+	Console.WriteLn("  (drains split by what the pulled pages waited on: pending = work still in the buffer");
+	Console.WriteLn("   being recorded, the drain is structural; in-flight = a submitted buffer, a wait on it");
+	Console.WriteLn("   alone would do; quiescent = already retired, a copy waiting only on itself would do)");
 	for (u32 i = 0; i < static_cast<u32>(ReadbackSite::Count); i++)
 	{
 		const ReadbackCounters& c = m_readback[i];
 		if (c.calls == 0)
 			continue;
 		// pages/drain is the batching headroom: 1.0 means every page cost its own stall.
-		Console.WriteLn("  %-14s %8.2f drains  %8.2f pages  %8.2f calls  (%.2f pages/drain)",
+		Console.WriteLn("  %-14s %8.2f drains  %8.2f pages  %8.2f calls  (%.2f pages/drain)   pending %6.2f  in-flight %6.2f  quiescent %6.2f",
 			kSiteNames[i], c.drains / frames, c.pages / frames, c.calls / frames,
-			c.drains ? static_cast<double>(c.pages) / static_cast<double>(c.drains) : 0.0);
+			c.drains ? static_cast<double>(c.pages) / static_cast<double>(c.drains) : 0.0,
+			c.drains_pending / frames, c.drains_inflight / frames, c.drains_quiescent / frames);
 		if (static_cast<ReadbackSite>(i) != ReadbackSite::Oracle)
 		{
 			total_drains += c.drains;
 			total_pages += c.pages;
+			total_pending += c.drains_pending;
+			total_inflight += c.drains_inflight;
+			total_quiescent += c.drains_quiescent;
 		}
 	}
-	Console.WriteLn("  %-14s %8.2f drains  %8.2f pages   (oracle excluded)", "TOTAL",
-		total_drains / frames, total_pages / frames);
+	Console.WriteLn("  %-14s %8.2f drains  %8.2f pages   (oracle excluded)                    pending %6.2f  in-flight %6.2f  quiescent %6.2f",
+		"TOTAL", total_drains / frames, total_pages / frames,
+		total_pending / frames, total_inflight / frames, total_quiescent / frames);
+	Console.WriteLn("  out-of-band copies (readbacks served without draining the frame's buffer): %.2f per frame",
+		static_cast<double>(m_target_pool.OutOfBandCopies()) / frames);
 
 	const NativeSyncReasons& n = m_native_sync;
 	if (n.upload_pages | n.steal_pages | n.tex_pages | n.tex_served)
@@ -478,6 +489,25 @@ bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages, ReadbackSite 
 	rc.pages += static_cast<u32>(pages.count());
 	u32* const drains = &rc.drains;
 
+	// Classify BEFORE pulling: the pull itself advances the device's completed epoch,
+	// so read afterwards every drain would look quiescent. The class is per call — the
+	// pages of one call are pulled together, so they wait on the newest epoch among
+	// them.
+	const u32 drains_before = rc.drains;
+	const u64 page_epoch = m_vram_model.GpuEpochOf(pages);
+	const u64 submit_epoch = g_gs_device->GetSubmitEpoch();
+	const u64 done_epoch = g_gs_device->GetCompletedSubmitEpoch();
+	const int epoch_class = (page_epoch <= done_epoch) ? 2 : (page_epoch < submit_epoch ? 1 : 0);
+	const auto attribute_drains = [&]() {
+		const u32 n = rc.drains - drains_before;
+		if (epoch_class == 0)
+			rc.drains_pending += n;
+		else if (epoch_class == 1)
+			rc.drains_inflight += n;
+		else
+			rc.drains_quiescent += n;
+	};
+
 	// Split off the pages some plane holds only block-partially; the whole-page
 	// bucketing below stays the hot path for everything else.
 	GSPageBitmap partial_pages;
@@ -512,6 +542,7 @@ bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages, ReadbackSite 
 	if (full_pages.empty())
 	{
 		m_vram_model.OnReadback(pages);
+		attribute_drains();
 		return partial_ok;
 	}
 
@@ -599,6 +630,7 @@ bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages, ReadbackSite 
 			}
 		});
 		m_vram_model.OnReadback(pages);
+		attribute_drains();
 		return ok;
 	}
 
@@ -611,6 +643,7 @@ bool GSRendererTile::ReadbackModelPages(const GSPageBitmap& pages, ReadbackSite 
 		InvalidateSwTexCache(surf.layout, buckets[b].pages);
 	}
 	m_vram_model.OnReadback(pages);
+	attribute_drains();
 	return ok;
 }
 
@@ -1503,6 +1536,17 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		m_vram_model.OnNativeDraw(fb_id, fb_pages, plan.fb_claims);
 	if (plan.z_write)
 		m_vram_model.OnNativeDraw(z_id, z_pages, plan.z_claims);
+
+	// The draw was just recorded into the device's current submission; the pages it
+	// wrote wait on that epoch. Read after SubmitNativeDraw, which may have rotated the
+	// command buffer (a mid-draw execute), so the epoch is the buffer the draw is IN.
+	{
+		const u64 epoch = g_gs_device->GetSubmitEpoch();
+		if (want_rt)
+			m_vram_model.StampGpuWrite(fb_pages, epoch);
+		if (plan.z_write)
+			m_vram_model.StampGpuWrite(z_pages, epoch);
+	}
 
 	return true;
 }

@@ -1244,7 +1244,108 @@ bool GSDeviceVK::CreateCommandBuffers()
 		++frame_index;
 	}
 
+	// The out-of-band buffer: its own pool (reset per use, so the buffer is re-recorded
+	// rather than re-allocated) and its own fence, created signalled like the frame ones.
+	{
+		VkCommandPoolCreateInfo pool_info = {
+			VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr, 0, m_graphics_queue_family_index};
+		res = vkCreateCommandPool(m_device, &pool_info, nullptr, &m_oob.command_pool);
+		if (res != VK_SUCCESS)
+		{
+			LOG_VULKAN_ERROR(res, "vkCreateCommandPool (out-of-band) failed: ");
+			return false;
+		}
+		Vulkan::SetObjectName(m_device, m_oob.command_pool, "Out-of-band Command Pool");
+
+		VkCommandBufferAllocateInfo buffer_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr,
+			m_oob.command_pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1u};
+		res = vkAllocateCommandBuffers(m_device, &buffer_info, &m_oob.command_buffer);
+		if (res != VK_SUCCESS)
+		{
+			LOG_VULKAN_ERROR(res, "vkAllocateCommandBuffers (out-of-band) failed: ");
+			return false;
+		}
+		Vulkan::SetObjectName(m_device, m_oob.command_buffer, "Out-of-band Command Buffer");
+
+		VkFenceCreateInfo fence_info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT};
+		res = vkCreateFence(m_device, &fence_info, nullptr, &m_oob.fence);
+		if (res != VK_SUCCESS)
+		{
+			LOG_VULKAN_ERROR(res, "vkCreateFence (out-of-band) failed: ");
+			return false;
+		}
+		Vulkan::SetObjectName(m_device, m_oob.fence, "Out-of-band Fence");
+	}
+
 	ActivateCommandBuffer(0);
+	return true;
+}
+
+VkCommandBuffer GSDeviceVK::BeginOutOfBandCommandBuffer()
+{
+	if (m_oob.command_buffer == VK_NULL_HANDLE || m_oob.recording || m_last_submit_failed)
+		return VK_NULL_HANDLE;
+
+	// The previous out-of-band submission was waited for before it returned, so the pool
+	// is free to reset.
+	VkResult res = vkResetCommandPool(m_device, m_oob.command_pool, 0);
+	if (res != VK_SUCCESS)
+	{
+		LOG_VULKAN_ERROR(res, "vkResetCommandPool (out-of-band) failed: ");
+		return VK_NULL_HANDLE;
+	}
+
+	const VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
+		VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
+	res = vkBeginCommandBuffer(m_oob.command_buffer, &begin_info);
+	if (res != VK_SUCCESS)
+	{
+		LOG_VULKAN_ERROR(res, "vkBeginCommandBuffer (out-of-band) failed: ");
+		return VK_NULL_HANDLE;
+	}
+
+	m_oob.recording = true;
+	return m_oob.command_buffer;
+}
+
+bool GSDeviceVK::SubmitOutOfBandAndWait()
+{
+	pxAssert(m_oob.recording);
+	m_oob.recording = false;
+
+	VkResult res = vkEndCommandBuffer(m_oob.command_buffer);
+	if (res != VK_SUCCESS)
+	{
+		LOG_VULKAN_ERROR(res, "vkEndCommandBuffer (out-of-band) failed: ");
+		return false;
+	}
+
+	res = vkResetFences(m_device, 1, &m_oob.fence);
+	if (res != VK_SUCCESS)
+	{
+		LOG_VULKAN_ERROR(res, "vkResetFences (out-of-band) failed: ");
+		return false;
+	}
+
+	// No semaphores: this work depends on nothing unsubmitted (the caller's contract) and
+	// nothing waits on it but the host, right here.
+	const VkSubmitInfo submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0u, nullptr, nullptr, 1u,
+		&m_oob.command_buffer, 0u, nullptr};
+	res = vkQueueSubmit(m_graphics_queue, 1, &submit_info, m_oob.fence);
+	if (res != VK_SUCCESS)
+	{
+		LOG_VULKAN_ERROR(res, "vkQueueSubmit (out-of-band) failed: ");
+		m_last_submit_failed = true;
+		return false;
+	}
+
+	res = vkWaitForFences(m_device, 1, &m_oob.fence, VK_TRUE, UINT64_MAX);
+	if (res != VK_SUCCESS)
+	{
+		LOG_VULKAN_ERROR(res, "vkWaitForFences (out-of-band) failed: ");
+		m_last_submit_failed = true;
+		return false;
+	}
 	return true;
 }
 
@@ -6391,6 +6492,14 @@ void GSDeviceVK::DestroyResources()
 		m_null_texture.reset();
 	}
 
+	if (m_oob.fence != VK_NULL_HANDLE)
+		vkDestroyFence(m_device, m_oob.fence, nullptr);
+	if (m_oob.command_buffer != VK_NULL_HANDLE)
+		vkFreeCommandBuffers(m_device, m_oob.command_pool, 1, &m_oob.command_buffer);
+	if (m_oob.command_pool != VK_NULL_HANDLE)
+		vkDestroyCommandPool(m_device, m_oob.command_pool, nullptr);
+	m_oob = {};
+
 	for (FrameResources& resources : m_frame_resources)
 	{
 		for (auto& it : resources.cleanup_resources)
@@ -7202,6 +7311,7 @@ void GSDeviceVK::BeginRenderPass(VkRenderPass rp, const GSVector4i& rect)
 
 	m_current_render_pass = rp;
 	m_current_render_pass_area = rect;
+	StampRenderTargetTouch();
 
 	const VkRenderPassBeginInfo begin_info = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr, m_current_render_pass,
 		m_current_framebuffer, {{rect.x, rect.y}, {static_cast<u32>(rect.width()), static_cast<u32>(rect.height())}}, 0,
@@ -7211,6 +7321,18 @@ void GSDeviceVK::BeginRenderPass(VkRenderPass rp, const GSVector4i& rect)
 	vkCmdBeginRenderPass(GetCurrentCommandBuffer(), &begin_info, VK_SUBPASS_CONTENTS_INLINE);
 }
 
+void GSDeviceVK::StampRenderTargetTouch()
+{
+	// A pass on an attachment already in its attachment layout records no transition,
+	// and its draws are what change the image's bytes; the out-of-band readback path
+	// must see the pass as a touch.
+	const u64 counter = GetCurrentFenceCounter();
+	if (m_current_render_target)
+		m_current_render_target->StampGpuTouch(counter);
+	if (m_current_depth_target)
+		m_current_depth_target->StampGpuTouch(counter);
+}
+
 void GSDeviceVK::BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, const VkClearValue* cv, u32 cv_count)
 {
 	if (m_current_render_pass != VK_NULL_HANDLE)
@@ -7218,6 +7340,7 @@ void GSDeviceVK::BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, c
 
 	m_current_render_pass = rp;
 	m_current_render_pass_area = rect;
+	StampRenderTargetTouch();
 
 	const VkRenderPassBeginInfo begin_info = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr, m_current_render_pass,
 		m_current_framebuffer, {{rect.x, rect.y}, {static_cast<u32>(rect.width()), static_cast<u32>(rect.height())}},

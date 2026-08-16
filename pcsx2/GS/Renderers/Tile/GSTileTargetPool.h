@@ -96,6 +96,18 @@ public:
 	};
 	static BlockGrid BlockGridFor(const GSTileSurfaceLayout& layout);
 
+	/// The convert shader's depth_to_uint(), on the CPU: uint(d * 2^32), truncating and
+	/// saturating. The two roads of ReadbackPages must agree byte for byte, so this is
+	/// the one definition both are held to (unit-pinned).
+	static u32 DepthToUint(float d)
+	{
+		const double v = static_cast<double>(d) * 4294967296.0;
+		return v <= 0.0 ? 0u : (v >= 4294967295.0 ? 0xFFFFFFFFu : static_cast<u32>(v));
+	}
+
+	/// Readbacks served by the out-of-band copy (no drain of the frame's buffer).
+	u32 OutOfBandCopies() const { return m_oob_copies; }
+
 private:
 	struct Slot
 	{
@@ -118,4 +130,5 @@ private:
 	std::unique_ptr<GSDownloadTexture> m_uint16_download;
 	std::unique_ptr<u8[]> m_scratch;
 	u32 m_scratch_size = 0;
+	u32 m_oob_copies = 0;
 };

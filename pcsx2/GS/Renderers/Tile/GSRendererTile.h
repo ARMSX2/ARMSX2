@@ -111,6 +111,20 @@ private:
 		u32 calls = 0; ///< seams that asked with a non-empty page set
 		u32 pages = 0; ///< pages moved
 		u32 drains = 0; ///< submit-and-wait stalls actually paid
+
+		/// The same drains split by WHAT the pulled pages were waiting on at the moment
+		/// of the pull, read off the model's per-page GPU-write epoch against the
+		/// device's submission timeline. This is the measurement behind the three-state
+		/// host-sync design (plan D3): a drain over pages whose producing submission the
+		/// GPU has already retired ("quiescent") drains the recording buffer for
+		/// nothing — its bytes were final before the pull was asked for, and a copy that
+		/// waited only on itself would have served it. In-flight pages need a wait on
+		/// their own submission, not on everything since. Pending pages — written by
+		/// work still in the buffer being recorded — are the only class where the drain
+		/// is the price of the architecture rather than of the bookkeeping.
+		u32 drains_pending = 0;
+		u32 drains_inflight = 0;
+		u32 drains_quiescent = 0;
 	};
 
 	/// Why the NATIVE route pulled, broken out. The three reasons share one stall (the

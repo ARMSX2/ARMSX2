@@ -359,9 +359,72 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 
 	const bool depth16 = (s.kind == GSTileSurfaceKind::Depth) && (layout.psm == PSMZ16 || layout.psm == PSMZ16S);
 	const GSVector4i drc(0, 0, bb.width(), bb.height());
+	const GSOffset off = mem.GetOffset(layout.bp, layout.bw, layout.psm);
 
-	std::unique_ptr<GSDownloadTexture>* dltex;
 	g_gs_device->HintReadbackSource(s.tex);
+
+	// -- The cheap road: the image is COMPLETE on the GPU (nothing recorded since the
+	// last submit touches it), so its bytes come back through an out-of-band copy that
+	// waits only on itself and never drains the frame's buffer. Depth comes back RAW —
+	// its D32F texels — and is converted here exactly as the convert shader's
+	// depth_to_uint() does: uint(d * 2^32), truncating, then narrowed for 16-bit. The
+	// float-to-integer edge is identical because d * 2^32 is exact in float32 (a power
+	// of two scale) and both sides truncate.
+	{
+		std::unique_ptr<GSDownloadTexture>* raw = (s.kind == GSTileSurfaceKind::Color) ? &m_color_download : &m_uint32_download;
+		const GSTexture::Format fmt = (s.kind == GSTileSurfaceKind::Color) ? GSTexture::Format::Color : GSTexture::Format::UInt32;
+		if (GSConfig.TileOutOfBandReadback && PrepareDownload(drc.z, drc.w, fmt, raw) && raw->get() &&
+			raw->get()->CopyFromCompletedTexture(drc, s.tex, bb, 0, true))
+		{
+			m_oob_copies++;
+			if (!raw->get()->Map(drc))
+				return false;
+			const u8* bits = raw->get()->GetMapPointer();
+			const u32 pitch = raw->get()->GetMapPitch();
+			if (s.kind == GSTileSurfaceKind::Color)
+			{
+				for (const GSVector4i& r : m_runs)
+					mem.WritePixel32(const_cast<u8*>(bits) + (r.y - bb.y) * pitch + (r.x - bb.x) * sizeof(u32), pitch, off, r, write_mask);
+			}
+			else
+			{
+				// Convert run by run into scratch, then store through the same writers the
+				// shader road uses, so the two roads share every byte of the swizzled store.
+				for (const GSVector4i& r : m_runs)
+				{
+					const int w = r.width(), h = r.height();
+					const u32 spitch = static_cast<u32>(w) * (depth16 ? sizeof(u16) : sizeof(u32));
+					u8* conv = GetScratch(spitch * h);
+					for (int y = 0; y < h; y++)
+					{
+						const float* srow = reinterpret_cast<const float*>(bits + (r.y - bb.y + y) * pitch + (r.x - bb.x) * sizeof(u32));
+						if (depth16)
+						{
+							u16* drow = reinterpret_cast<u16*>(conv + y * spitch);
+							for (int x = 0; x < w; x++)
+								drow[x] = static_cast<u16>(GSTileTargetPool::DepthToUint(srow[x]));
+						}
+						else
+						{
+							u32* drow = reinterpret_cast<u32*>(conv + y * spitch);
+							for (int x = 0; x < w; x++)
+								drow[x] = GSTileTargetPool::DepthToUint(srow[x]);
+						}
+					}
+					if (depth16)
+						mem.WritePixel16(conv, spitch, off, r);
+					else
+						mem.WritePixel32(conv, spitch, off, r, write_mask);
+				}
+			}
+			raw->get()->Unmap();
+			return true;
+		}
+	}
+
+	// -- The drain road: something recorded since the last submit touches the image, so
+	// the copy has to go behind it, in the frame's buffer, and wait for all of it.
+	std::unique_ptr<GSDownloadTexture>* dltex;
 	if (s.kind == GSTileSurfaceKind::Color)
 	{
 		// Native scale, raw cells: a straight copy, no convert pass.
@@ -398,7 +461,6 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 
 	u8* bits = const_cast<u8*>(dltex->get()->GetMapPointer());
 	const u32 pitch = dltex->get()->GetMapPitch();
-	const GSOffset off = mem.GetOffset(layout.bp, layout.bw, layout.psm);
 
 	for (const GSVector4i& r : m_runs)
 	{

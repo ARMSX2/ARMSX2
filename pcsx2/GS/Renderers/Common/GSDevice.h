@@ -1864,6 +1864,18 @@ public:
 	/// Returns a string of information about the graphics driver being used.
 	virtual std::string GetDriverInfo() const = 0;
 
+	/// Submission epochs, for callers that track which GPU work a resource waits on.
+	/// GetSubmitEpoch() names the command buffer being recorded now — work recorded
+	/// after this call lands in it (or later); GetCompletedSubmitEpoch() is the newest
+	/// epoch the GPU is known to have finished, polled non-blockingly. A resource whose
+	/// epoch is <= completed can be read back without submitting or waiting on anything
+	/// recorded since; one whose epoch == the current epoch cannot be read back without
+	/// submitting the buffer being recorded. Backends without a submission timeline
+	/// return 0 for both, which reads as "everything is pending" — the conservative
+	/// answer, never a wrong one.
+	virtual u64 GetSubmitEpoch() const { return 0; }
+	virtual u64 GetCompletedSubmitEpoch() { return 0; }
+
 	/// Enables/disables GPU frame timing.
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;
 

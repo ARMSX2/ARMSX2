@@ -232,3 +232,36 @@ TEST(GSTileTargetPoolRuns, BaseOffsetDoesNotMoveTheBlocks)
 	for (const GSVector4i& r : runs)
 		EXPECT_EQ(r.y, 0) << "the top block row must sit at surface-relative y 0";
 }
+
+// ---- the CPU twin of the convert shader's depth_to_uint() ------------------------------
+//
+// ReadbackPages has two roads for depth: the convert-shader road (uint(d * 2^32) on
+// the GPU, into a UINT target) and the out-of-band road (raw D32F texels converted
+// here). They must agree byte for byte, so the CPU form is pinned to the shader's
+// semantics: truncation, exact power-of-two scaling, saturation at the top.
+TEST(GSTileTargetPoolDepth, DepthToUintMatchesTheShader)
+{
+	EXPECT_EQ(GSTileTargetPool::DepthToUint(0.0f), 0u);
+	// 0x12345678 / 2^32 round-trips: the value a Z24/Z32 target stores as a float.
+	{
+		const u32 z = 0x00345678u; // Z24-range, exact in float32
+		const float d = static_cast<float>(z) * (1.0f / 4294967296.0f);
+		EXPECT_EQ(GSTileTargetPool::DepthToUint(d), z);
+	}
+	{
+		const u32 z = 0x00FFFFFFu; // the top of Z24, exact in float32
+		const float d = static_cast<float>(z) * (1.0f / 4294967296.0f);
+		EXPECT_EQ(GSTileTargetPool::DepthToUint(d), z);
+	}
+	// A value between two integers truncates, never rounds.
+	{
+		const float d = (1000.5f) * (1.0f / 4294967296.0f);
+		EXPECT_EQ(GSTileTargetPool::DepthToUint(d), 1000u);
+	}
+	// The top of the range saturates instead of wrapping.
+	EXPECT_EQ(GSTileTargetPool::DepthToUint(1.0f), 0xFFFFFFFFu);
+	EXPECT_EQ(GSTileTargetPool::DepthToUint(2.0f), 0xFFFFFFFFu);
+	// Below zero clamps to zero (a depth attachment cannot hold it, but the twin must
+	// not produce a wrapped garbage value if one ever arrives).
+	EXPECT_EQ(GSTileTargetPool::DepthToUint(-0.5f), 0u);
+}

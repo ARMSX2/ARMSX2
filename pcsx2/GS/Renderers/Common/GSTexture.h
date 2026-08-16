@@ -337,6 +337,24 @@ public:
 	void CopyFromTexture(
 		const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch = true);
 
+	/// Copies from a texture whose GPU-side contents are already COMPLETE -- every command
+	/// that touched it has been submitted -- without recording into, submitting, or waiting
+	/// on the command buffer being recorded. The copy runs out of band, on its own
+	/// submission, and waits only for itself, so on return the buffer is ready to Map()
+	/// with no Flush() needed. Returns false when the backend has no such path or the
+	/// texture is NOT complete (something touching it is still in the recording buffer),
+	/// in which case nothing was done and the caller takes CopyFromTexture() + Flush().
+	///
+	/// This is the price difference the three-state page model is built on: a readback of
+	/// pages the GPU finished with long ago costs a copy, not a drain of every draw
+	/// recorded since. Depth sources are copied RAW (their D32F texels) -- the caller
+	/// converts, matching the convert shader's depth_to_uint().
+	virtual bool CopyFromCompletedTexture(
+		const GSVector4i& drc, GSTexture* stex, const GSVector4i& src, u32 src_level, bool use_transfer_pitch)
+	{
+		return false;
+	}
+
 	/// Maps the texture into the CPU address space, enabling it to read the contents.
 	/// The Map call may not perform synchronization. If the contents of the staging texture
 	/// has been updated by a CopyFromTexture() call, you must call Flush() first.

@@ -170,6 +170,16 @@ public:
 	// queued and executed. Do not wait for this fence before the buffer is executed.
 	u64 GetCurrentFenceCounter() const { return m_frame_resources[m_current_frame].fence_counter; }
 
+	// The GSDevice submission-epoch view of the same counters. Completed is polled
+	// (non-blocking fence status scan) so a caller between submits sees work that has
+	// finished since the last wait, not just since the last submit.
+	u64 GetSubmitEpoch() const override { return GetCurrentFenceCounter(); }
+	u64 GetCompletedSubmitEpoch() override
+	{
+		ScanForCommandBufferCompletion();
+		return m_completed_fence_counter;
+	}
+
 	// Schedule a vulkan resource for destruction later on. This will occur when the command buffer
 	// is next re-used, and the GPU has finished working with the specified resource.
 	void DeferBufferDestruction(VkBuffer object, VmaAllocation allocation);
@@ -326,6 +336,21 @@ private:
 	VmaAllocation m_spin_buffer_allocation = VK_NULL_HANDLE;
 	VkDescriptorSet m_spin_descriptor_set = VK_NULL_HANDLE;
 	std::array<SpinResources, NUM_COMMAND_BUFFERS> m_spin_resources;
+
+	// The out-of-band command buffer: one-shot work submitted on its own fence while the
+	// frame's buffer goes on being recorded. Because queue submissions execute in order,
+	// what it records runs after everything already submitted and BEFORE the buffer being
+	// recorded, so it may only touch images none of the recording buffers touch (see
+	// GSTextureVK::StampGpuTouch). Used by the readback path for images the GPU has
+	// finished with: a copy that waits on itself instead of on the whole frame.
+	struct OutOfBandResources
+	{
+		VkCommandPool command_pool = VK_NULL_HANDLE;
+		VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+		VkFence fence = VK_NULL_HANDLE;
+		bool recording = false;
+	};
+	OutOfBandResources m_oob;
 #ifdef _WIN32
 	double m_queryperfcounter_to_ns = 0;
 #endif
@@ -770,7 +795,16 @@ public:
 	// When Bind() is next called, the pass will be restarted.
 	// Calling this function is allowed even if a pass has not begun.
 	bool InRenderPass();
+	void StampRenderTargetTouch();
 	void BeginRenderPass(VkRenderPass rp, const GSVector4i& rect);
+
+	/// Begin recording out-of-band work (see OutOfBandResources). Returns VK_NULL_HANDLE
+	/// if the facility is unavailable. Must be paired with SubmitOutOfBandAndWait().
+	VkCommandBuffer BeginOutOfBandCommandBuffer();
+	/// End, submit on its own fence, and wait for it. Returns false on a submit failure
+	/// (the device is then in the usual last-submit-failed state).
+	bool SubmitOutOfBandAndWait();
+
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, const VkClearValue* cv, u32 cv_count);
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, u32 clear_color);
 	void BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, float depth, u8 stencil);
