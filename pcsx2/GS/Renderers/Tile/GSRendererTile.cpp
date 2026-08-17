@@ -1496,8 +1496,58 @@ void GSRendererTile::PassSimObserveDraw(const GSTileDrawPlan& plan, const GSVect
 		}
 	}
 
+	// -- the in-pass reader classifier (the crossover's per-tier policy fork) ----------
+	// Which draws need the raster-order read of their own pixel, beyond pixel-identity
+	// feedback (classified in the sim): blend equations and tests fixed-function cannot
+	// express. Alpha range comes from the vertex trace; when it is not valid the
+	// classifier assumes the full range (a census leans conservative). AA1 coverage
+	// blending is not counted — line-class AA1 is rare and its blend is the plain lerp.
+	// Reasons are non-exclusive. The dual-source class is kept apart because Adreno has
+	// dual-source blending and Mali-G615 does not: that flag is where the two tiers'
+	// reader populations diverge. DATE on 24-bit targets is skipped — destination alpha
+	// reads back as a constant there, so no read is needed.
+	u32 reader_flags = 0;
+	if (!fb_written.empty())
+	{
+		if (ctx->TEST.DATE && GSLocalMemory::m_psm[ctx->FRAME.PSM].trbpp != 24)
+			reader_flags |= GSTilePassSim::ReaderDate;
+		if (PRIM->ABE)
+		{
+			const GIFRegALPHA& al = ctx->ALPHA;
+			const bool uses_cd = (al.A == 1) || (al.B == 1) || (al.D == 1) || (al.C == 1);
+			if (uses_cd && al.A != al.B)
+			{
+				// Cv = (A - B) * C >> 7 + D with the destination involved. A == B
+				// degenerates to Cv = D (source-only or destination passthrough),
+				// which fixed-function always expresses — hence the gate above.
+				if (m_draw_env->COLCLAMP.CLAMP == 0)
+					reader_flags |= GSTilePassSim::ReaderWrap;
+				if (m_draw_env->PABE.PABE)
+					reader_flags |= GSTilePassSim::ReaderPabe;
+				if (al.D == al.A)
+					reader_flags |= GSTilePassSim::ReaderCoeffGt1; // accumulation: a coefficient is 1 + C
+				if (al.C == 1)
+					reader_flags |= GSTilePassSim::ReaderAdFactor;
+				else if (al.C == 2)
+				{
+					if (al.FIX > 0x80)
+						reader_flags |= GSTilePassSim::ReaderFacGt1;
+					// FIX <= 0x80 maps onto the constant blend factor: expressible.
+				}
+				else if (al.C == 0)
+				{
+					const int amax = m_vt.m_alpha.valid ? m_vt.m_alpha.max : 255;
+					if (amax > 0x80)
+						reader_flags |= GSTilePassSim::ReaderFacGt1;
+					else
+						reader_flags |= GSTilePassSim::ReaderAsDualSource;
+				}
+			}
+		}
+	}
+
 	m_pass_sim.OnDraw(fb_written, z_written, fb_pages | z_pages, tex_pages, core_pages, has_core,
-		identity_feedback, PRIM->TME && PRIM->FST, ctx->FRAME.Block(), ctx->FRAME.PSM,
+		identity_feedback, PRIM->TME && PRIM->FST, reader_flags, ctx->FRAME.Block(), ctx->FRAME.PSM,
 		ctx->ZBUF.Block(), ctx->ZBUF.PSM, z_used,
 		static_cast<u32>(std::max(m_vertex->tail, m_vertex->next)));
 }
@@ -1575,6 +1625,44 @@ void GSRendererTile::ReportPassSim()
 	Console.WriteLn("  offset-feedback residue: %.2f / %u runs (stale-snapshot policy's break count); "
 					"draw shape %.2f fst / %.2f stq",
 		fruns.mean, fruns.p50, ffst.mean, fstq.mean);
+
+	// The per-tier pass-policy fork the device crossover priced: tier A has
+	// dual-source blending (Adreno — declaring is near-free there, so this block is
+	// informational); tier B has none (Mali-G615 — declaring costs a ~+46% floor paid
+	// by every draw in the declared pass, so the tax base and the segregation price
+	// below are the decision numbers).
+	const auto tier = [&stat](auto get, u32 t) {
+		return stat([get, t](const FS& f) { return get(f, t); });
+	};
+	const auto rdrs = [](const FS& f, u32 t) { return f.readers[t]; };
+	const auto dpasses = [](const FS& f, u32 t) { return f.declared_passes[t]; };
+	const auto ddraws = [](const FS& f, u32 t) { return f.declared_draws[t]; };
+	const auto dverts = [](const FS& f, u32 t) { return f.declared_verts[t]; };
+	const auto rruns = [](const FS& f, u32 t) { return f.reader_runs[t]; };
+	const auto sbreaks = [](const FS& f, u32 t) { return f.segregate_breaks[t]; };
+	const auto flagmean = [&stat](u32 i) {
+		return stat([i](const FS& f) { return f.reader_flag_draws[i]; }).mean;
+	};
+	Console.WriteLn("  in-pass readers/frame (pixel-identity + inexpressible blend/test): "
+					"tierA(dual-src) %.2f / %u   tierB(Mali) %.2f / %u",
+		tier(rdrs, 0).mean, tier(rdrs, 0).p50, tier(rdrs, 1).mean, tier(rdrs, 1).p50);
+	Console.WriteLn("    reasons (draws, non-exclusive): wrap %.2f  pabe %.2f  coeff>1 %.2f  Ad %.2f  "
+					"factor>1 %.2f  date %.2f  As-needs-dual-src %.2f",
+		flagmean(0), flagmean(1), flagmean(2), flagmean(3), flagmean(4), flagmean(5), flagmean(6));
+	for (u32 t = 0; t < GSTilePassSim::kPolicyTiers; t++)
+	{
+		const auto dp = tier(dpasses, t);
+		const auto dd = tier(ddraws, t);
+		const auto dv = tier(dverts, t);
+		const auto rr = tier(rruns, t);
+		const auto sb = tier(sbreaks, t);
+		const double dshare = (draws.mean > 0.0) ? (100.0 * dd.mean / draws.mean) : 0.0;
+		const double vshare = (verts.mean > 0.0) ? (100.0 * dv.mean / verts.mean) : 0.0;
+		Console.WriteLn("    tier%c unified-declare: %.2f / %u declared passes holding %.2f / %u draws "
+						"(%.1f%%), %.2f verts (%.1f%%)   segregate: %.2f / %u reader runs, +%.2f / %u breaks",
+			'A' + t, dp.mean, dp.p50, dd.mean, dd.p50, dshare, dv.mean, vshare, rr.mean, rr.p50, sb.mean,
+			sb.p50);
+	}
 
 	const GifStreamStats& s = m_gif_stream_stats;
 	Console.WriteLn("  GIF stream per frame (decode sizing; qwords are 16 B): path0 %.0f  path1 %.0f  "

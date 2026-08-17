@@ -38,6 +38,29 @@ class GSTilePassSim
 public:
 	static constexpr u32 kMaxTargetPairs = 8;
 
+	// Why a draw needs the raster-order read of its own pixel, beyond pixel-identity
+	// feedback (which the sim classifies itself). Non-exclusive; classified at the
+	// observer hook where the draw context lives. The dual-source class stays apart
+	// from the strict set because Adreno has dual-source blending and Mali-G615 does
+	// not — it is exactly where the two tiers' reader populations diverge.
+	enum ReaderFlag : u32
+	{
+		ReaderWrap = 1 << 0,     // COLCLAMP=0: blend result wraps mod 256; fixed-function clamps
+		ReaderPabe = 1 << 1,     // PABE: per-pixel blend gate on the source alpha MSB
+		ReaderCoeffGt1 = 1 << 2, // D==A accumulation shapes: a blend coefficient lands above 1
+		ReaderAdFactor = 1 << 3, // C=Ad: GS scales dest alpha by /128, fixed-function by /255
+		ReaderFacGt1 = 1 << 4,   // C=As or FIX able to exceed 1.0: fixed-function factors clamp
+		ReaderDate = 1 << 5,     // TEST.DATE: destination-alpha test (a stencil realization exists)
+		ReaderAsDualSource = 1 << 6, // C=As, otherwise expressible: needs dual-source blending
+	};
+	static constexpr u32 kReaderFlagCount = 7;
+	static constexpr u32 kReaderStrict =
+		ReaderWrap | ReaderPabe | ReaderCoeffGt1 | ReaderAdFactor | ReaderFacGt1 | ReaderDate;
+	// The two reader definitions the pass policies are scored under. Tier 0 counts
+	// draws that read on EVERY device; tier 1 adds the dual-source-dependent class
+	// for devices without dual-source blending (Mali-G615).
+	static constexpr u32 kPolicyTiers = 2;
+
 	enum class BreakReason : u32
 	{
 		Feedback,     // sampled pages the open pass wrote, core proof failed -> snapshot
@@ -75,6 +98,22 @@ public:
 		u32 feedback_fst = 0;  // offset-feedback draws with FST coordinates (the residue's
 		u32 feedback_stq = 0;  // shape: fixed-coordinate vs perspective sampling)
 		u32 draws_in_biggest_pass = 0;
+
+		// -- per-tier pass-policy accounting (the crossover's fork) -------------------
+		// The device crossover said declaring a pass self-reading is near-free on
+		// Adreno and carries a ~+46% floor on Mali paid by EVERY draw in the declared
+		// pass. Two policies price that: UNIFIED keeps readers in the big pass and
+		// declares it (declared_* is Mali's tax base — bystander draws pay too);
+		// SEGREGATED splits readers into their own declared passes at reader/
+		// non-reader transitions (segregate_breaks is what that costs in extra pass
+		// breaks). Both are computed per reader-definition tier in the same run.
+		u32 readers[kPolicyTiers] = {};      // reader draws under each tier definition
+		u32 reader_flag_draws[kReaderFlagCount] = {}; // draws carrying each ReaderFlag (non-exclusive)
+		u32 declared_passes[kPolicyTiers] = {}; // unified: passes holding >=1 reader
+		u32 declared_draws[kPolicyTiers] = {};  //   draws inside them (readers + bystanders)
+		u32 declared_verts[kPolicyTiers] = {};  //   verts inside them (fragment-work proxy)
+		u32 reader_runs[kPolicyTiers] = {};     // maximal runs of consecutive readers
+		u32 segregate_breaks[kPolicyTiers] = {}; // segregated: breaks ADDED at run edges
 	};
 
 	bool IsActive() const { return m_active; }
@@ -83,13 +122,15 @@ public:
 	// --- per-draw ------------------------------------------------------------
 	// fb/z: the draw's write footprints (empty when not written). tex: the sampled
 	// window, all mip levels. core: the proven sampled core (empty when no proof
-	// holds). Returns true if the draw broke the open pass.
+	// holds). reader_flags: ReaderFlag bits from the hook's blend/test classifier.
+	// Returns true if the draw broke the open pass.
 	bool OnDraw(const GSPageBitmap& fb_written, const GSPageBitmap& z_written, const GSPageBitmap& read_deps,
 		const GSPageBitmap& tex, const GSPageBitmap& core, bool has_core, bool identity_feedback, bool fst,
-		u32 fb_bp, u32 fb_psm, u32 z_bp, u32 z_psm, bool z_used, u32 verts)
+		u32 reader_flags, u32 fb_bp, u32 fb_psm, u32 z_bp, u32 z_psm, bool z_used, u32 verts)
 	{
 		bool broke = false;
 		bool hazard_draw = false;
+		bool identity_served = false;
 		m_frame.draws++;
 		m_frame.verts += verts;
 
@@ -105,6 +146,7 @@ public:
 			else if (identity_feedback)
 			{
 				m_frame.feedback_identity++;
+				identity_served = true; // served by the raster-order read: a reader draw
 			}
 			else
 			{
@@ -136,10 +178,36 @@ public:
 				AddTarget(z_bp, z_psm, true);
 		}
 
-		if (m_draws_in_pass == 0)
+		const bool fresh = (m_draws_in_pass == 0);
+		if (fresh)
 			m_frame.passes++;
 		m_draws_in_pass++;
 		m_frame.draws_in_biggest_pass = std::max(m_frame.draws_in_biggest_pass, m_draws_in_pass);
+
+		// Pass-policy accounting, at the point the draw joins its pass (after any
+		// break above, so a reader opening a fresh pass costs no transition).
+		for (u32 i = 0; i < kReaderFlagCount; i++)
+		{
+			if (reader_flags & (1u << i))
+				m_frame.reader_flag_draws[i]++;
+		}
+		const bool reads[kPolicyTiers] = {
+			identity_served || (reader_flags & kReaderStrict) != 0,
+			identity_served || (reader_flags & (kReaderStrict | ReaderAsDualSource)) != 0};
+		for (u32 t = 0; t < kPolicyTiers; t++)
+		{
+			if (reads[t])
+			{
+				m_frame.readers[t]++;
+				m_pass_has_reader[t] = true;
+				if (fresh || !m_prev_reader[t])
+					m_frame.reader_runs[t]++;
+			}
+			if (!fresh && reads[t] != m_prev_reader[t])
+				m_frame.segregate_breaks[t]++;
+			m_prev_reader[t] = reads[t];
+		}
+		m_pass_verts += verts;
 
 		m_pass_draw_written |= fb_written;
 		m_pass_draw_written |= z_written;
@@ -240,6 +308,18 @@ private:
 		if (m_draws_in_pass == 0 && reason != BreakReason::FrameEnd)
 			return; // an empty pass cannot break
 		m_frame.breaks[static_cast<u32>(reason)]++;
+		for (u32 t = 0; t < kPolicyTiers; t++)
+		{
+			if (m_pass_has_reader[t])
+			{
+				m_frame.declared_passes[t]++;
+				m_frame.declared_draws[t] += m_draws_in_pass;
+				m_frame.declared_verts[t] += m_pass_verts;
+			}
+			m_pass_has_reader[t] = false;
+			m_prev_reader[t] = false;
+		}
+		m_pass_verts = 0;
 		m_pass_draw_written = {};
 		m_pass_upload_written = {};
 		m_pass_read = {};
@@ -266,6 +346,9 @@ private:
 	GSPageBitmap m_pass_upload_written; // written by in-pass uploads: staging holds the bytes
 	GSPageBitmap m_pass_read;
 	bool m_last_draw_was_hazard = false;
+	bool m_pass_has_reader[kPolicyTiers] = {};
+	bool m_prev_reader[kPolicyTiers] = {};
+	u32 m_pass_verts = 0;
 	TargetPair m_targets[kMaxTargetPairs] = {};
 	u32 m_target_count = 0;
 	u32 m_draws_in_pass = 0;
