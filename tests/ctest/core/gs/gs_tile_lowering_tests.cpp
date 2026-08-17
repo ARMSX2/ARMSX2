@@ -1427,6 +1427,57 @@ TEST(GSTileLowering, ReadRungTakesWhatTheReadFreeRungsRefuse)
 	EXPECT_EQ(p.pass[1].colormask, 0x8);
 }
 
+// The two blend floors' lift levers (EmuCore/GS/TileBlendOverlapNative /
+// TileBlendTexSampleNative): dev attribution/perf levers for full-native-coverage
+// runs, never a user setting. Both floors' NAMED causes are fixed (re-measured
+// 2026-08-16); what keeps them shipped-on is the shared coverage-tie (#30) and
+// cross-frame-handoff residues. The lever reproduces the scratch-lift the
+// re-measure scored: admission to the read rung's one-barrier realization
+// (ordering measured immaterial, #111).
+TEST(GSTileLowering, BlendFloorLiftLevers)
+{
+	// The variable-As lerp with UNPROVEN overlap floors shipped; the overlap
+	// lever admits it to the read rung.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 0;
+	in.alpha_max = 255;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
+	in.blend_overlap_native = true;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].rt_read);
+
+	// The textured per-pixel-factor cell floors shipped even with overlap proven,
+	// and the OVERLAP lever must not admit it — the floors are separate, with
+	// separate residues, and the levers must bisect them separately.
+	in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 0;
+	in.alpha_max = 255;
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_psm = PSMCT32;
+	in.prim_overlap_none = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendTexSample);
+	in.blend_overlap_native = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendTexSample);
+	in.blend_tex_sample_native = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].rt_read);
+
+	// The cell needing both facts lifted: textured per-pixel factor, unproven
+	// overlap. Both levers on admits it; dropping the overlap lever floors it on
+	// the overlap again (first-reason order).
+	in.prim_overlap_none = false;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].rt_read);
+	in.blend_overlap_native = false;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
+}
+
 // The M4a guardrails outrank every collapse: a wrap draw floors ColClip and a
 // PABE draw floors Blend even when the algebra would eliminate the blend — the
 // collapse rungs are gated on clamp mode and no-PABE until M4c widens them.

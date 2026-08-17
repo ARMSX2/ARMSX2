@@ -209,6 +209,17 @@ struct GSTileDrawInput
 	// Callers without the facts leave both false, which only costs coverage.
 	bool z_constant;
 	bool prim_overlap_none;
+	// The route's permission to lift the read rung's two residual floors (EmuCore/GS/
+	// TileBlendOverlapNative / TileBlendTexSampleNative). Config facts like
+	// tex_stq_tri_native, carried in the input so the lowering stays pure. Both
+	// floors' NAMED causes are fixed (re-measured 2026-08-16, see the floor sites);
+	// what keeps them is the shared coverage-tie and cross-frame-handoff residues,
+	// so these are the attribution/perf levers for full-native-coverage runs, not a
+	// shipping admission. In particular blend_overlap_native accepts the known
+	// RGB_ONLY-split C=Ad ordering hazard documented at its site. Callers without
+	// the facts leave false, which is today's shipped behaviour.
+	bool blend_overlap_native;
+	bool blend_tex_sample_native;
 };
 
 /// One realized pass of a native draw, in submission order.
@@ -952,7 +963,7 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 				// colour pass writes no alpha, and a C=Ad blend over overlapping
 				// primitives would read the pre-draw alpha where the console reads the
 				// previous primitive's. That guard must go in with the admission.
-				if (!in.prim_overlap_none)
+				if (!in.prim_overlap_none && !in.blend_overlap_native)
 					return floored(GSTileFloorReason::BlendOverlap);
 				// ⚠️ Floors a class this rung REACHES but does not break. A textured
 				// draw whose factor varies per pixel renders wrong, for both variable
@@ -1012,7 +1023,7 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 				// unlock, not a blend fact and not M4's to fix. The floor stays to keep
 				// Dirge byte-identical in the shipped path; its real blocker is the
 				// handoff, so the investigation that lifts it is the handoff work.
-				if (in.tme && bc != 2)
+				if (in.tme && bc != 2 && !in.blend_tex_sample_native)
 					return floored(GSTileFloorReason::BlendTexSample);
 				blend_read = true;
 			}

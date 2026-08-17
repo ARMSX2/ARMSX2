@@ -932,6 +932,14 @@ struct Pcsx2Config
 					// position is the attribution lever until it ships, and the bisect
 					// lever afterwards. Never a user setting.
 					TilePerspectiveNative : 1,
+					// Lift the read rung's two residual floors (GSTileFloorReason::
+					// BlendOverlap / BlendTexSample). Both floors' named causes are fixed
+					// (re-measured 2026-08-16); what keeps them is the shared coverage-tie
+					// and cross-frame-handoff residues, so the on position is the
+					// attribution/perf lever for measuring at full native coverage.
+					// Default off. Never a user setting.
+					TileBlendOverlapNative : 1,
+					TileBlendTexSampleNative : 1,
 					UseBlitSwapChain : 1,
 					DisableShaderCache : 1,
 					DisableFramebufferFetch : 1,

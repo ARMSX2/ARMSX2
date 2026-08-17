@@ -744,6 +744,8 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileOutOfBandReadback = true;
 	TileGpuClut = true;
 	TilePerspectiveNative = false;
+	TileBlendOverlapNative = false;
+	TileBlendTexSampleNative = false;
 	UseBlitSwapChain = false;
 	DisableShaderCache = false;
 	DisableFramebufferFetch = false;
@@ -1047,6 +1049,8 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileOutOfBandReadback);
 	SettingsWrapBitBool(TileGpuClut);
 	SettingsWrapBitBool(TilePerspectiveNative);
+	SettingsWrapBitBool(TileBlendOverlapNative);
+	SettingsWrapBitBool(TileBlendTexSampleNative);
 	SettingsWrapBitBool(UseBlitSwapChain);
 	SettingsWrapBitBool(DisableShaderCache);
 	SettingsWrapBitBool(DisableFramebufferFetch);
