@@ -669,12 +669,26 @@ void doIbit(mV)
 	if (mVUup.iBit)
 	{
 		incPC(-1);
-		u32 tempI = curI;
-		if (CHECK_VU_OVERFLOW(mVU.index) && ((curI & 0x7fffffff) >= 0x7f800000))
-			tempI = (0x80000000 & curI) | 0x7f7fffff;
+		if (EmuConfig.Gamefixes.IbitHack)
+		{
+			// mVUsetupRange leaves this word out of the range the program
+			// compare covers, and mVUclear is range-aware, so a game that
+			// rewrites the I immediate in place keeps running the block already
+			// compiled for the old one. Read the constant from micro memory at
+			// run time instead of baking it in. Left unclamped, like x86 — the
+			// operand clamp at the use site covers it.
+			armLoadPtr(gprT1, &curI);
+			armAsm->Str(gprT1, mVUstateMem(offsetof(VURegs, VI) + REG_I * sizeof(REG_VI)));
+		}
+		else
+		{
+			u32 tempI = curI;
+			if (CHECK_VU_OVERFLOW(mVU.index) && ((curI & 0x7fffffff) >= 0x7f800000))
+				tempI = (0x80000000 & curI) | 0x7f7fffff;
 
-		armAsm->Mov(a64::w9, tempI);
-		armAsm->Str(a64::w9, mVUstateMem(offsetof(VURegs, VI) + REG_I * sizeof(REG_VI)));
+			armAsm->Mov(gprT1, tempI);
+			armAsm->Str(gprT1, mVUstateMem(offsetof(VURegs, VI) + REG_I * sizeof(REG_VI)));
+		}
 		incPC(1);
 	}
 }
