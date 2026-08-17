@@ -50,6 +50,7 @@ public:
 		bool vk_khr_shader_non_semantic_info : 1;
 		bool vk_ext_attachment_feedback_loop_layout : 1;
 		bool vk_ext_fragment_shader_interlock : 1;
+		bool vk_ext_device_fault : 1;
 	};
 
 	// Global state accessors
@@ -264,6 +265,9 @@ private:
 	void ActivateCommandBuffer(u32 index);
 	void ScanForCommandBufferCompletion();
 	void WaitForCommandBufferCompletion(u32 index);
+	/// VK_EXT_device_fault post-mortem: on VK_ERROR_DEVICE_LOST, logs the driver's
+	/// structured fault records (addresses, kinds, vendor codes) before the exit.
+	void ReportDeviceFault();
 
 	bool InitSpinResources();
 	void DestroySpinResources();

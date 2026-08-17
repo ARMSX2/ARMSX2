@@ -248,4 +248,7 @@ VULKAN_DEVICE_ENTRY_POINT(vkReleaseSwapchainImagesEXT, false)
 // VK_KHR_swapchain_maintenance1
 VULKAN_DEVICE_ENTRY_POINT(vkReleaseSwapchainImagesKHR, false)
 
+// VK_EXT_device_fault
+VULKAN_DEVICE_ENTRY_POINT(vkGetDeviceFaultInfoEXT, false)
+
 #endif // VULKAN_DEVICE_ENTRY_POINT

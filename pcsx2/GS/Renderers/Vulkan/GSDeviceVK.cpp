@@ -505,6 +505,12 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 		SupportsExtension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME, false);
 	m_optional_extensions.vk_ext_line_rasterization = SupportsExtension(VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME, false);
 	m_optional_extensions.vk_khr_driver_properties = SupportsExtension(VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME, false);
+	// VK_EXT_device_fault: post-mortem for VK_ERROR_DEVICE_LOST. The ~1-in-60 SD865
+	// device loss in the opening frames exits carrying nothing but the error code
+	// today; where the driver offers this (Turnip does), the loss is followed by
+	// vkGetDeviceFaultInfoEXT and the fault's addresses and reasons go to the log,
+	// so the next occurrence arrives with its own diagnosis instead of a rate.
+	m_optional_extensions.vk_ext_device_fault = SupportsExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, false);
 
 	if (m_optional_extensions.vk_swapchain_maintenance1)
 	{
@@ -722,6 +728,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR};
 	VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT fragment_shader_interlock_ext_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
+	VkPhysicalDeviceFaultFeaturesEXT device_fault_feature = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
 
 	// An advertised EXTENSION does not guarantee its FEATURE bit, and asking for a feature the
 	// driver does not have fails vkCreateDevice outright with VK_ERROR_FEATURE_NOT_PRESENT —
@@ -747,6 +755,7 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR};
 		VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT probe_fsi = {
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
+		VkPhysicalDeviceFaultFeaturesEXT probe_fault = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
 
 		// Only chain what we would actually enable: querying a struct whose extension is absent is
 		// not something the spec promises anything about.
@@ -763,6 +772,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			Vulkan::AddPointerToChain(&probe, &probe_sm1);
 		if (m_optional_extensions.vk_ext_fragment_shader_interlock)
 			Vulkan::AddPointerToChain(&probe, &probe_fsi);
+		if (m_optional_extensions.vk_ext_device_fault)
+			Vulkan::AddPointerToChain(&probe, &probe_fault);
 		vkGetPhysicalDeviceFeatures2(m_physical_device, &probe);
 
 		// Returns the flag rather than taking it by reference: m_optional_extensions members are
@@ -796,6 +807,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		m_optional_extensions.vk_ext_fragment_shader_interlock = keep("VK_EXT_fragment_shader_interlock",
 			m_optional_extensions.vk_ext_fragment_shader_interlock,
 			probe_fsi.fragmentShaderPixelInterlock == VK_TRUE);
+		m_optional_extensions.vk_ext_device_fault = keep("VK_EXT_device_fault",
+			m_optional_extensions.vk_ext_device_fault, probe_fault.deviceFault == VK_TRUE);
 
 		// Depth ROAA is an optional sub-feature: a driver can offer the extension and colour
 		// access yet not depth.
@@ -835,6 +848,11 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	{
 		fragment_shader_interlock_ext_feature.fragmentShaderPixelInterlock = VK_TRUE;
 		Vulkan::AddPointerToChain(&device_info, &fragment_shader_interlock_ext_feature);
+	}
+	if (m_optional_extensions.vk_ext_device_fault)
+	{
+		device_fault_feature.deviceFault = VK_TRUE;
+		Vulkan::AddPointerToChain(&device_info, &device_fault_feature);
 	}
 
 	VkResult res = vkCreateDevice(m_physical_device, &device_info, nullptr, &m_device);
@@ -1336,6 +1354,8 @@ bool GSDeviceVK::SubmitOutOfBandAndWait()
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkQueueSubmit (out-of-band) failed: ");
+		if (res == VK_ERROR_DEVICE_LOST)
+			ReportDeviceFault();
 		m_last_submit_failed = true;
 		return false;
 	}
@@ -1344,6 +1364,8 @@ bool GSDeviceVK::SubmitOutOfBandAndWait()
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkWaitForFences (out-of-band) failed: ");
+		if (res == VK_ERROR_DEVICE_LOST)
+			ReportDeviceFault();
 		m_last_submit_failed = true;
 		return false;
 	}
@@ -1640,6 +1662,56 @@ void GSDeviceVK::ScanForCommandBufferCompletion()
 	}
 }
 
+// VK_EXT_device_fault post-mortem, called on VK_ERROR_DEVICE_LOST before the
+// deliberate exit: the structured fault records — page fault addresses, their
+// kind, vendor fault codes — are the difference between "the driver died,
+// ~1-in-60" and a diagnosis. The vendor binary blob is deliberately not pulled
+// (it can be megabytes and needs vendor tooling to read); the structured
+// records are what a human acts on.
+void GSDeviceVK::ReportDeviceFault()
+{
+	if (!m_optional_extensions.vk_ext_device_fault || !vkGetDeviceFaultInfoEXT)
+		return;
+
+	VkDeviceFaultCountsEXT counts = {VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+	if (vkGetDeviceFaultInfoEXT(m_device, &counts, nullptr) != VK_SUCCESS)
+	{
+		Console.Error("VK: device fault info counts query failed.");
+		return;
+	}
+
+	std::vector<VkDeviceFaultAddressInfoEXT> addresses(counts.addressInfoCount);
+	std::vector<VkDeviceFaultVendorInfoEXT> vendors(counts.vendorInfoCount);
+	counts.vendorBinarySize = 0;
+	VkDeviceFaultInfoEXT info = {VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT};
+	info.pAddressInfos = addresses.empty() ? nullptr : addresses.data();
+	info.pVendorInfos = vendors.empty() ? nullptr : vendors.data();
+	if (vkGetDeviceFaultInfoEXT(m_device, &counts, &info) < VK_SUCCESS)
+	{
+		Console.Error("VK: device fault info query failed.");
+		return;
+	}
+
+	Console.Error("VK: DEVICE LOST — driver fault report: \"%s\" (%u address record(s), %u vendor record(s))",
+		info.description, counts.addressInfoCount, counts.vendorInfoCount);
+	static constexpr const char* kAddressTypes[] = {"none", "read-invalid", "write-invalid", "execute-invalid",
+		"instruction-pointer-unknown", "instruction-pointer-invalid", "instruction-pointer-fault"};
+	for (u32 i = 0; i < counts.addressInfoCount; i++)
+	{
+		const VkDeviceFaultAddressInfoEXT& a = addresses[i];
+		const u32 type = static_cast<u32>(a.addressType);
+		Console.Error("VK:   address fault %u: %s at 0x%016llx (precision 0x%llx)", i,
+			(type < std::size(kAddressTypes)) ? kAddressTypes[type] : "unknown-type",
+			static_cast<unsigned long long>(a.reportedAddress), static_cast<unsigned long long>(a.addressPrecision));
+	}
+	for (u32 i = 0; i < counts.vendorInfoCount; i++)
+	{
+		const VkDeviceFaultVendorInfoEXT& v = vendors[i];
+		Console.Error("VK:   vendor fault %u: \"%s\" code 0x%llx data 0x%llx", i, v.description,
+			static_cast<unsigned long long>(v.vendorFaultCode), static_cast<unsigned long long>(v.vendorFaultData));
+	}
+}
+
 void GSDeviceVK::WaitForCommandBufferCompletion(u32 index)
 {
 	// Wait for this command buffer to be completed.
@@ -1647,6 +1719,8 @@ void GSDeviceVK::WaitForCommandBufferCompletion(u32 index)
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkWaitForFences failed: ");
+		if (res == VK_ERROR_DEVICE_LOST)
+			ReportDeviceFault();
 		m_last_submit_failed = true;
 		return;
 	}
@@ -1786,6 +1860,8 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkQueueSubmit failed: ");
+		if (res == VK_ERROR_DEVICE_LOST)
+			ReportDeviceFault();
 		m_last_submit_failed = true;
 		return;
 	}
@@ -2409,6 +2485,8 @@ void GSDeviceVK::WaitForSpinCompletion(u32 index)
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkWaitForFences failed: ");
+		if (res == VK_ERROR_DEVICE_LOST)
+			ReportDeviceFault();
 		m_last_submit_failed = true;
 		return;
 	}
