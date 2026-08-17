@@ -746,6 +746,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	TilePerspectiveNative = false;
 	TileBlendOverlapNative = false;
 	TileBlendTexSampleNative = false;
+	TileSkipFloorDraws = false;
 	UseBlitSwapChain = false;
 	DisableShaderCache = false;
 	DisableFramebufferFetch = false;
@@ -1051,6 +1052,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TilePerspectiveNative);
 	SettingsWrapBitBool(TileBlendOverlapNative);
 	SettingsWrapBitBool(TileBlendTexSampleNative);
+	SettingsWrapBitBool(TileSkipFloorDraws);
 	SettingsWrapBitBool(UseBlitSwapChain);
 	SettingsWrapBitBool(DisableShaderCache);
 	SettingsWrapBitBool(DisableFramebufferFetch);

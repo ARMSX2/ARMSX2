@@ -3089,7 +3089,17 @@ void GSRendererTile::Draw()
 		native = r.rempty() || TryNativeDraw(plan, r, reason);
 	}
 
-	if (!native)
+	// Perf-ceiling instrument (EmuCore/GS/TileSkipFloorDraws): drop a floored draw
+	// entirely — no input spill, no model bookkeeping, no SW rasterization below.
+	// Rendering is WRONG under this lever; its one legitimate output is the frame
+	// TIME of a hypothetical 100%-native run (no handoff drains, no re-uploads),
+	// which brackets the native path's cost while floor classes remain
+	// unimplemented. The 2026-08-16 SD865 A/B motivated it: at 94-98% native the
+	// frame is dominated by handoff churn (64-495 readbacks/frame), so a measured
+	// frame time says nothing about the native path itself. Never a user setting;
+	// never a correctness arm.
+	const bool skip_floor = !native && GSConfig.TileSkipFloorDraws;
+	if (!native && !skip_floor)
 	{
 		if (!r.rempty())
 			SpillForFloorDraw(plan, r);
@@ -3120,7 +3130,7 @@ void GSRendererTile::Draw()
 			OracleAbandonDraw();
 	}
 
-	if (!native)
+	if (!native && !skip_floor)
 		GSRendererSW::Draw();
 
 	if (log) [[unlikely]]

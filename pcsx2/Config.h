@@ -940,6 +940,10 @@ struct Pcsx2Config
 					// Default off. Never a user setting.
 					TileBlendOverlapNative : 1,
 					TileBlendTexSampleNative : 1,
+					// Perf-ceiling instrument: DROP floored draws (no spill, no SW
+					// rasterization). Rendering is wrong by construction; the frame
+					// time approximates a 100%-native run. Dev only, default off.
+					TileSkipFloorDraws : 1,
 					UseBlitSwapChain : 1,
 					DisableShaderCache : 1,
 					DisableFramebufferFetch : 1,
