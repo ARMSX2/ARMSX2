@@ -1,34 +1,32 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-// A TLB miss on an inline load or store, outside a branch delay slot.
+// A TLB miss on an inline load or store under the EE recompiler.
 //
-// Every test here is DISABLED: the arm64 EE rec does not divert to the
-// exception vector, and the work to make it is staged. Force-enable with
+// Every test here is DISABLED: the rec does not divert to the exception
+// vector, and the work to make it is staged. Force-enable with
 // --gtest_also_run_disabled_tests; each one that starts passing drops its
 // prefix.
 //
-// vtlb_Miss (vtlb.cpp) raises on arm64 and returns. cpuTlbMissR/W has latched
-// Status.EXL, EPC and Cause and pointed cpuRegs.pc at the vector, but the only
-// divert the rec emits is recEmitInterpTlbMissCheck, after an interpreter
-// call. The inline fastmem/softmem paths have no poll, so the block runs on
-// and its tail stores its own branch target over the vector PC. The delay-slot
-// case is the exception: the divert rides the cpuRegs.branch bracket epilogue,
-// and EeRecTraps.LoadTlbMissInDelaySlotSetsCauseBdAndBranchEpc covers it.
+// vtlb_Miss (vtlb.cpp) reports the miss and returns without raising, so the
+// guest's handler never runs, the load reads zero, the store is dropped and
+// the block continues. EeRecTraps.LoadTlbMissDoesNotRaiseOnTheRecompiler pins
+// that; EeRecTraps.LoadTlbMissInDelaySlotSetsCauseBdAndBranchEpcOnTheInterpreter
+// is the interpreter behaviour the tests below ask the rec to match.
 //
-// The latched EXL is what does the damage rather than the continued execution.
-// cpuException leaves EPC alone whenever EXL is already set, so from the first
-// swallowed miss onward every exception keeps its predecessor's EPC, and the
-// next syscall's kernel epilogue erets to an address belonging to the fault.
+// Raising and then walking past the raise was worse: cpuException leaves EPC
+// alone whenever Status.EXL is already set, so every exception after the first
+// swallowed miss keeps its predecessor's EPC, and the next syscall's kernel
+// epilogue erets to an address belonging to the fault.
 // DISABLED_MissLeavesExlLatchedSoTheNextSyscallLosesItsEpc is that chain in
-// four instructions.
+// four instructions; it fails here because nothing raises at all.
 //
 // Softmem, not fastmem: the test binary installs no host SIGSEGV handler, so a
 // fastmem probe of the unmapped page kills the process instead of backpatching
-// (same constraint as EeRecTraps.LoadTlbMissInDelaySlotSetsCauseBdAndBranchEpc
-// and CallerSavedPinsSurviveVtlbSlowPath). Nothing here reaches the fastmem
-// backpatch thunk, which is generated at fault time and cannot name the live
-// guest values of the block around it, so it has nothing to divert with.
+// (same constraint as CallerSavedPinsSurviveVtlbSlowPath). Nothing here reaches
+// the fastmem backpatch thunk, which is generated at fault time and cannot name
+// the live guest values of the block around it, so it has nothing to divert
+// with.
 
 #include "harness/EeRecTestHarness.h"
 
@@ -291,4 +289,31 @@ TEST(EeRecTlbDivert, DISABLED_WritesBeforeTheMissSurviveTheDivert)
 	h.ExpectGpr64(reg::v0, 0ull);
 	EXPECT_EQ(h.GetCp0Jit(14), RecompilerTestEnvironment::kProgramPc + 0x10)
 		<< "JIT EPC = the faulting load";
+}
+
+// The delay-slot case is its own emitter seam: the divert rides the
+// cpuRegs.branch bracket epilogue rather than the load-store path, and EPC and
+// Cause.BD name the branch instead of the slot.
+TEST(EeRecTlbDivert, DISABLED_DelaySlotMissDivertsToTheBranchVector)
+{
+	SoftmemScope softmem;
+	EeRecTestHarness h;
+	h.LoadProgram({
+		LUI(reg::a0, kUnmapped >> 16),   // +0x0
+		BEQ(reg::zero, reg::zero, 2),    // +0x4  taken, to +0x10
+		LW(reg::v1, 0, reg::a0),         // +0x8  delay slot — TLB refill miss
+		ADDIU(reg::v0, reg::zero, 99),   // +0xC  skipped by the branch
+		ADDIU(reg::a1, reg::zero, 77),   // +0x10 target — the vector preempts it
+	});
+	h.Run();
+
+	h.ExpectGpr64(reg::v0, 0ull);
+	h.ExpectGpr64(reg::v1, 0ull);
+	h.ExpectGpr64(reg::a1, 0ull);
+
+	EXPECT_EQ(h.GetCp0Jit(13) & 0xFFu, kCauseTlbL);
+	EXPECT_NE(h.GetCp0Jit(13) & 0x80000000u, 0u) << "JIT CAUSE.BD";
+	EXPECT_EQ(h.GetCp0Jit(14), RecompilerTestEnvironment::kProgramPc + 4)
+		<< "JIT EPC = the branch, not the delay slot";
+	EXPECT_EQ(h.GetCp0Jit(8), kUnmapped);
 }

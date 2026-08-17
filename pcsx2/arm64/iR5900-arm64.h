@@ -732,10 +732,6 @@ void SetBranchImmCall(u32 imm, u32 return_pc);
 void iFlushCall(int flushtype);
 void recBranchCall(void (*func)());
 void recCall(void (*func)());
-// Emit the post-interpreter-call TLB-miss exception dispatch (defined in
-// iR5900-arm64.cpp). DispatcherReg/s_recTlbMissOccurred are file-local there,
-// so cross-TU interpreter-call sites (recVTLB-arm64.cpp) route through this.
-void recEmitInterpTlbMissCheck();
 u32 scaleblockcycles_clear();
 
 // COP2 / VU0 sync emit helper (defined in iCOP2-arm64.cpp).
