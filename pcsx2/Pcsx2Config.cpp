@@ -761,7 +761,16 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileExactTexCoord = false;
 	TileExactTexFilter = false;
 	TileExactAlphaTest = false;
-	TileExactFeedback = false;
+	// Default TRUE for now: the feedback-core admission is image-free (16-dump
+	// corpus byte-identical either way) but net-NEGATIVE on frame time until its
+	// donor exists — the admitted windows split across two owners, the sole-owner
+	// donor refuses, and the CPU route's mid-frame pull of a target rendered
+	// moments earlier stalls the pipe (M2: SotC +16-21% frame, +28 readbacks and
+	// +23 render passes/frame; two thirds of the regression is stall, not
+	// compute). The fix criterion is REFUSALS per frame, not copy bytes: a
+	// sampled-subrect donor that serves the core's sole owner deletes the pull
+	// outright. Flip this default off in the commit that lands it.
+	TileExactFeedback = true;
 	TileFastDepthPlane = true;
 	TileFastDepthClassic = false;
 	UseBlitSwapChain = false;
