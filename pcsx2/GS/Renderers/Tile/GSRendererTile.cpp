@@ -2596,9 +2596,16 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_twalk, bool wan
 		// territory — where the scanline's store semantics (saturating i32 conversion,
 		// unsigned clamp) are not worth transcribing. The high bound keeps every value
 		// clear of the zoverflow path (>= 2^31) with margin for overshoot.
+		// The plane leg detects and clamps the wrap in the shader (its true values
+		// are bounded by the vertex hull, so only the truncated gradients' few-unit
+		// underrun can dip below zero — the scanline's store saturates the same
+		// fragments to zero), so under the plane contract the low bound admits the
+		// z=0 hull. The soft-float walk keeps the guard: transcribing the store's
+		// saturation semantics into it is exactly what the bound exists to avoid.
 		const u32 zmin = static_cast<u32>(GSVector4i(m_vt.m_min.p).z);
 		zmax = static_cast<u32>(GSVector4i(m_vt.m_max.p).z);
-		if (!envelope(zmin >= 8 && zmax < 0x40000000u))
+		const bool zplane_leg = GSConfig.TileFastDepthPlane;
+		if (!envelope((zplane_leg || zmin >= 8) && zmax < 0x40000000u))
 			return false;
 	}
 

@@ -16,4 +16,4 @@
 // is BELOW our 110 — taking their value would hand every user a stale blob for a source they no
 // longer have. Our counter has been ahead of theirs since 109 and cannot be resynced by adopting
 // their numbers; always bump past our own last value.
-static constexpr u32 SHADER_CACHE_VERSION = 113; // 112 + the Tile snapped hardware-filter stage (PS_TILE_SNAP in sample_color)
+static constexpr u32 SHADER_CACHE_VERSION = 114; // 113 + the Tile depth plane's low-hull wrap clamp

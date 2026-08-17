@@ -3325,6 +3325,14 @@ float tile_zwalk_depth()
 	zf += (bias == 1) ? -0.75f : ((bias == 2) ? -0.8125f : ((bias == -1) ? 0.75f : 0.0f));
 
 	zi += uint(int(floor(zf)));
+	// The low hull. A draw admitted with vertices at z=0 can under-run the exact
+	// plane by a few units through the truncated gradients; the scanline's store
+	// saturates those fragments to zero, and in the ring they wrap to the top of
+	// the range instead. The payload's hull guard bounds every true value below
+	// 2^30 with overshoot margin under 2^31, so the top half is reachable only
+	// by wrap: read it as zero.
+	if (zi >= 0x80000000u)
+		zi = 0u;
 	if ((hdr.y & 1u) != 0u)
 		zi = min(zi, hdr.z);
 	return float(zi) * exp2(-32.0f);
