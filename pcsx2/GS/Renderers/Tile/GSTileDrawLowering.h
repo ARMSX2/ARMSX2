@@ -301,6 +301,7 @@ struct GSTileDrawPass
 	bool colclip_wrap = false; ///< COLCLAMP=0 — the blend output wraps at 8 bits (M4c)
 	GSTileBlendLeg blend_leg = GSTileBlendLeg::FixedFunction; ///< how the pass realizes the blend (meaningless unless abe)
 	bool blend_src1 = false; ///< the realization carries a factor through the second fragment output — needs the device's dual-source unit
+	bool blend_factor_alpha = false; ///< no dual-source unit: the factor rides the FIRST output's alpha instead (the draw provably writes no alpha, so the byte is free)
 	u8 blend_hw = 0; ///< HWBlendType for the HwRewrite/Mix shader-output rewrites, zero otherwise
 	bool rt_read = false; ///< realization reads the destination (rung 9 — the paid path). Mirror of blend_leg == Read
 	u8 blend_a = 0; ///< A selector, post-collapse (0 Cs, 1 Cd, 2 zero)
@@ -413,6 +414,7 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	bool blend_carrier = false;
 	GSTileBlendLeg blend_carrier_leg = GSTileBlendLeg::FixedFunction;
 	bool blend_carrier_src1 = false;
+	bool blend_carrier_factor_alpha = false;
 	bool blend_carrier_const = false;
 	u8 blend_carrier_hw = 0;
 	if (in.abe && in.colclamp && !in.pabe)
@@ -1042,6 +1044,36 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 					// factor-for-factor identical at the proven value on every device.
 					const bool const_carrier = bc == 2 || degenerate_as;
 					const bool src1_ok = const_carrier || in.dual_source_blend;
+					// The alpha-borne factor: without a dual-source unit, a
+					// variable-As MIX row still reaches the ROP — the factor rides
+					// the FIRST output's alpha (Classic's blend_factor_in_alpha
+					// fallback), the same As/128 value the SRC1 output carries.
+					// The byte it rides is the draw's alpha WRITE, and the factor
+					// is NOT the alpha (As/128 against As/255), so either the draw
+					// writes no alpha — the byte is discarded on the way to the
+					// target and may as well carry the factor — or a companion
+					// pass repairs it (built at the landing below): pass[0] keeps
+					// RGB and depth with the alpha write masked, pass[1] rewrites
+					// the true alpha alone. Measured necessity for the repair:
+					// only 12 of SotC's 1,713 mix rows have the alpha write
+					// masked, so the mask-only rule reaches 0.7% of the very
+					// population this exists for. The repair is exact under the
+					// depth rules admitted here — a re-rasterized fragment at its
+					// own depth re-passes GEQUAL (and any test when nothing wrote
+					// depth), so exactly pass[0]'s depth winners write alpha, in
+					// primitive order, which is the single pass's outcome; a
+					// z-writing GREATER draw would lose its own alpha and is
+					// refused. A draw already split by the alpha test keeps the
+					// read rung (three passes serve nobody). This is the Mali
+					// carrier: the dominant corpus row (0/1/0/1 variable As —
+					// 94–99% of blended draws on the benchmark titles) is
+					// otherwise carrier-ineligible on the no-dualsrc blobs, and
+					// each such draw keeps its own read-rung pass — the measured
+					// 8.2× pass explosion on R&C against 1.6× the draw calls.
+					const bool factor_alpha_repairable =
+						p.pass_count == 1 && !(p.z_write && p.ztst == ZTST_GREATER);
+					const bool factor_alpha_ok = !const_carrier && !in.dual_source_blend &&
+						bc == 0 && ((p.colormask & 0x8) == 0 || factor_alpha_repairable);
 					const bool no_rec = ba != 1 && bb != 1 && bd != 1;
 					const bool accu_row = ((ba == 0 && bb == 2) || (ba == 2 && bb == 0)) && bd == 1;
 					const bool hw2_row = ba == 1 && bb == 2 && bd == 2;
@@ -1055,10 +1087,13 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 						blend_carrier = true;
 						blend_carrier_leg = GSTileBlendLeg::Accumulation;
 					}
-					else if (mix_row && src1_ok && (!may_exceed || !in.prim_overlap_none))
+					else if (mix_row && (src1_ok || factor_alpha_ok) && (!may_exceed || !in.prim_overlap_none))
 					{
 						blend_carrier = true;
 						blend_carrier_leg = GSTileBlendLeg::Mix;
+						// SRC1 wins where it exists — the second output touches
+						// nothing; the alpha ride is the fallback realization.
+						blend_carrier_factor_alpha = !src1_ok;
 					}
 					else if (hw2_row && src1_ok)
 					{
@@ -1066,7 +1101,7 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 						blend_carrier_leg = GSTileBlendLeg::HwRewrite;
 						blend_carrier_hw = 2; // HWBlendType::SRC_ALPHA_DST_FACTOR
 					}
-					blend_carrier_src1 = blend_carrier && !const_carrier &&
+					blend_carrier_src1 = blend_carrier && !const_carrier && !blend_carrier_factor_alpha &&
 					                     (blend_carrier_leg == GSTileBlendLeg::Mix ||
 					                         blend_carrier_leg == GSTileBlendLeg::HwRewrite);
 					blend_carrier_const = blend_carrier && const_carrier;
@@ -1333,6 +1368,7 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 			p.pass[i].blend_mix = leg == GSTileBlendLeg::Mix;
 			p.pass[i].rt_read = blend_read;
 			p.pass[i].blend_src1 = blend_carrier_src1;
+			p.pass[i].blend_factor_alpha = blend_carrier_factor_alpha;
 			p.pass[i].blend_hw = blend_carrier_hw;
 			p.pass[i].blend_a = static_cast<u8>(in.ALPHA.A);
 			p.pass[i].blend_b = static_cast<u8>(in.ALPHA.B);
@@ -1370,6 +1406,28 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 				p.pass[i].blend_c = 2;
 				p.pass[i].afix = static_cast<u8>(degenerate_as ? in.alpha_min : in.ALPHA.FIX);
 			}
+		}
+
+		// The factor-alpha ride's companion pass (see the admission): the factor
+		// occupies the byte the draw's alpha write needs, so RGB and depth go out
+		// with the alpha write masked and a second pass rewrites the true alpha
+		// alone — no blend (the GS never blends alpha; the ROP's alpha factors are
+		// ONE/ZERO on every carrier row), no depth write, the same alpha test.
+		// Both passes live in the same render pass with no read between them,
+		// which is the entire point on a no-dualsrc tiler: the draws stay merged.
+		if (blend_carrier_factor_alpha && (p.colormask & 0x8) != 0)
+		{
+			pxAssert(p.pass_count == 1); // the admission refused already-split draws
+			p.pass_count = 2;
+			p.pass[1] = p.pass[0];
+			p.pass[0].colormask &= 0x7;
+			p.pass[1].colormask = 0x8;
+			p.pass[1].z_write = false;
+			p.pass[1].abe = false;
+			p.pass[1].blend_mix = false;
+			p.pass[1].blend_src1 = false;
+			p.pass[1].blend_factor_alpha = false;
+			p.pass[1].rt_read = false;
 		}
 	}
 

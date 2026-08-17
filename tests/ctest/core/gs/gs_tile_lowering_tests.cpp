@@ -1582,12 +1582,98 @@ TEST(GSTileLowering, ClassicCarrierServesTheVariableAsLerpReadFree)
 	EXPECT_EQ(p.pass[0].blend_c, 0);
 	EXPECT_EQ(p.pass[0].blend_d, 1);
 
-	// Without the device's dual-source unit the SRC1 transit does not exist, and
-	// the row keeps the read rung's path — flooring here on the unproven overlap.
-	// (Classic software-blends the same rows on those devices: parity holds in
-	// both directions.)
+	// Without the device's dual-source unit the SRC1 transit does not exist; the
+	// row rides the factor through the FIRST output's alpha instead. This draw
+	// writes alpha, so the ride brings its companion repair pass — the dedicated
+	// test below pins that shape.
 	in.dual_source_blend = false;
-	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
+	const GSTileDrawPlan pf = gsTileLowerDraw(in);
+	ASSERT_TRUE(pf.native);
+	EXPECT_TRUE(pf.pass[0].blend_factor_alpha);
+	EXPECT_FALSE(pf.pass[0].blend_src1);
+	EXPECT_EQ(pf.pass_count, 2);
+}
+
+TEST(GSTileLowering, ClassicCarrierRidesTheFactorInAlphaWithoutDualSource)
+{
+	// The same dominant row on a no-dualsrc device (Mali), with the alpha write
+	// masked: the factor rides the FIRST output's alpha — Classic's
+	// blend_factor_in_alpha fallback, same value on the same /255 grid — and the
+	// carrier reaches the row after all. 99.0% of R&C's blended draws are this
+	// row; without the ride each kept its own read-rung pass (the measured 8.2×
+	// Mali pass explosion against 1.6× the draw calls).
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_psm = PSMCT32;
+	in.FRAME.FBMSK = 0xFF000000u; // no alpha write — the byte is free to carry the factor
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = false;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Mix);
+	EXPECT_TRUE(p.pass[0].blend_factor_alpha);
+	EXPECT_FALSE(p.pass[0].blend_src1);
+	EXPECT_FALSE(p.pass[0].rt_read);
+
+	// With the unit present SRC1 wins — the second output touches nothing the
+	// target keeps, so it needs no eligibility at all.
+	in.dual_source_blend = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_TRUE(p.pass[0].blend_src1);
+	EXPECT_FALSE(p.pass[0].blend_factor_alpha);
+
+	// A constant carrier needs neither transit on any device.
+	in.dual_source_blend = false;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 100;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_FALSE(p.pass[0].blend_factor_alpha);
+	EXPECT_FALSE(p.pass[0].blend_src1);
+}
+
+TEST(GSTileLowering, FactorInAlphaRepairsAWrittenAlphaWithACompanionPass)
+{
+	// The measured common case — only 12 of SotC's 1,713 mix rows mask their
+	// alpha write, so the ride is nearly worthless without this: the draw DOES
+	// write alpha, the factor takes the byte in pass one (RGB + depth, alpha
+	// masked), and a second alpha-only pass rewrites the true value — no blend,
+	// no depth write, same render pass, so a tiler keeps the draws merged.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_psm = PSMCT32;
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = false;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	ASSERT_EQ(p.pass_count, 2);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Mix);
+	EXPECT_TRUE(p.pass[0].blend_factor_alpha);
+	EXPECT_EQ(p.pass[0].colormask, 0x7); // RGB out, the factor rides the masked byte
+	EXPECT_TRUE(p.pass[0].z_write);
+	EXPECT_EQ(p.pass[1].colormask, 0x8); // the true alpha, alone
+	EXPECT_FALSE(p.pass[1].abe);
+	EXPECT_FALSE(p.pass[1].z_write);
+	EXPECT_FALSE(p.pass[1].blend_factor_alpha);
+
+	// A z-writing GREATER draw would fail its own repair pass at its own depth
+	// and lose its alpha — refused, back to the shipped floor.
+	GSTileDrawInput greater = in;
+	greater.TEST.ZTE = true;
+	greater.TEST.ZTST = ZTST_GREATER;
+	EXPECT_FALSE(gsTileLowerDraw(greater).native);
+
+	// Without depth writes the repair re-tests the unchanged buffer and every
+	// verdict repeats, so GREATER is fine again.
+	greater.ZBUF.ZMSK = 1;
+	const GSTileDrawPlan pz = gsTileLowerDraw(greater);
+	ASSERT_TRUE(pz.native);
+	EXPECT_EQ(pz.pass_count, 2);
 }
 
 TEST(GSTileLowering, ClassicCarrierAccumulationRowsNeedNoDualSource)

@@ -902,7 +902,7 @@ GSTileDrawInput GSRendererTile::BuildLoweringInput()
 	in.blend_overlap_native = GSConfig.TileBlendOverlapNative;
 	in.blend_tex_sample_native = GSConfig.TileBlendTexSampleNative;
 	in.blend_classic_carrier = GSConfig.TileBlendClassicCarrier;
-	in.dual_source_blend = g_gs_device->Features().dual_source_blend;
+	in.dual_source_blend = g_gs_device->Features().dual_source_blend && !GSConfig.TileBlendNoDualSource;
 	in.tme = PRIM->TME;
 	in.abe = PRIM->ABE;
 	// The blend equation's registers (M4). ALPHA and PABE are only consulted under
@@ -2766,9 +2766,29 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 			conf.ps.blend_mix = (blend.op == GSDevice::OP_REV_SUBTRACT) ? 2 : 1;
 			conf.ps.tile_blend_mix = 1;
 			conf.cb_ps.TA_MaxDepth_Af.a = static_cast<float>(bp.afix) / 128.0f;
-			conf.blend = {true, GSDevice::CONST_ONE, blend.dst, blend.op,
+			u8 dst_factor = blend.dst;
+			if (bp.blend_factor_alpha && GSDevice::IsDualSourceBlendFactor(blend.dst))
+			{
+				// No dual-source unit on this device: the ROP's variable factor
+				// arrives through the FIRST output's alpha (Classic's
+				// blend_factor_in_alpha fallback, tfx.glsl writes alpha_blend.a to
+				// o_col0.a under the bit) instead of the second output. The
+				// lowering proved eligibility — the draw writes no alpha anywhere,
+				// so the byte the factor rides is discarded on the way to the
+				// target. Same value on the same /255 grid as the SRC1 shape, so
+				// the realization is byte-identical to it; what it buys is the
+				// carrier reaching the dominant variable-As row on the no-dualsrc
+				// Mali blobs, where that row otherwise pays a read-rung pass per
+				// draw (the measured 8.2× R&C pass explosion).
+				conf.ps.blend_factor_in_alpha = 1;
+				dst_factor =
+					(blend.dst == GSDevice::INV_SRC1_COLOR || blend.dst == GSDevice::INV_SRC1_ALPHA) ?
+						static_cast<u8>(GSDevice::INV_SRC_ALPHA) :
+						static_cast<u8>(GSDevice::SRC_ALPHA);
+			}
+			conf.blend = {true, GSDevice::CONST_ONE, dst_factor, blend.op,
 				GSDevice::CONST_ONE, GSDevice::CONST_ZERO, bp.blend_c == 2, bp.afix};
-			conf.ps.no_color1 = !GSDevice::IsDualSourceBlendFactor(blend.dst);
+			conf.ps.no_color1 = !GSDevice::IsDualSourceBlendFactor(dst_factor);
 		}
 		else
 		{
@@ -3172,6 +3192,11 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	if (plan.pass_count > 1)
 	{
 		conf.alpha_second_pass.ps = conf.ps;
+		// The factor-alpha repair pass writes the draw's TRUE alpha, so the
+		// factor must not ride its output (Classic clears the same bit on its
+		// second pass for the same reason). The ROP's alpha factors are ONE/ZERO
+		// on every carrier row, so the byte lands unblended.
+		conf.alpha_second_pass.ps.blend_factor_in_alpha = 0;
 		conf.alpha_second_pass.colormask = GSHWDrawConfig::ColorMaskSelector(plan.pass[1].colormask);
 		conf.alpha_second_pass.depth = conf.depth;
 		conf.alpha_second_pass.depth.zwe = plan.pass[1].z_write;

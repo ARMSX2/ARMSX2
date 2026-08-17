@@ -747,6 +747,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileBlendOverlapNative = false;
 	TileBlendTexSampleNative = false;
 	TileBlendClassicCarrier = false;
+	TileBlendNoDualSource = false;
 	TileSkipFloorDraws = false;
 	TileFastShading = false;
 	TileExactColour = false;
@@ -1061,6 +1062,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileBlendOverlapNative);
 	SettingsWrapBitBool(TileBlendTexSampleNative);
 	SettingsWrapBitBool(TileBlendClassicCarrier);
+	SettingsWrapBitBool(TileBlendNoDualSource);
 	SettingsWrapBitBool(TileSkipFloorDraws);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);

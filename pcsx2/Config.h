@@ -952,6 +952,13 @@ struct Pcsx2Config
 					// the on position is the perf/attribution lever, in the ceiling
 					// profile with the levers above. Never a user setting.
 					TileBlendClassicCarrier : 1,
+					// Attribution pin for the carrier's no-dual-source realization:
+					// the lowering treats the device as having no SRC1 unit, so a
+					// variable-As mix row rides its factor through the first
+					// output's alpha (Classic's blend_factor_in_alpha fallback)
+					// wherever the draw writes no alpha — the Mali shape, made
+					// A/B-able on any device. Dev only, default off.
+					TileBlendNoDualSource : 1,
 					// Perf-ceiling instrument: DROP floored draws (no spill, no SW
 					// rasterization). Rendering is wrong by construction; the frame
 					// time approximates a 100%-native run. Dev only, default off.
