@@ -31,9 +31,22 @@ GSTilePaletteCache::~GSTilePaletteCache()
 	Clear();
 }
 
-GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries)
+GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen)
 {
 	pxAssert(entries == 16 || entries == 256);
+
+	if (m_memo_valid && read_gen == m_memo_read_gen && entries == m_memo_entries)
+	{
+		Entry& me = m_entries[m_memo_slot];
+		if (me.alive && me.last_use == m_memo_last_use)
+		{
+			me.last_use = ++m_use_counter;
+			m_memo_last_use = me.last_use;
+			m_hits++;
+			return me.tex;
+		}
+	}
+
 	const u64 hash = HashWords(clut, entries);
 
 	Entry* lru = nullptr;
@@ -50,6 +63,11 @@ GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries)
 		{
 			e.last_use = ++m_use_counter;
 			m_hits++;
+			m_memo_valid = true;
+			m_memo_read_gen = read_gen;
+			m_memo_entries = entries;
+			m_memo_slot = static_cast<u32>(&e - m_entries.data());
+			m_memo_last_use = e.last_use;
 			return e.tex;
 		}
 		if (!lru || e.last_use < lru->last_use)
@@ -80,6 +98,11 @@ GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries)
 	e.last_use = ++m_use_counter;
 	std::memcpy(e.words.data(), clut, entries * sizeof(u32));
 	m_builds++;
+	m_memo_valid = true;
+	m_memo_read_gen = read_gen;
+	m_memo_entries = entries;
+	m_memo_slot = static_cast<u32>(&e - m_entries.data());
+	m_memo_last_use = e.last_use;
 	return tex;
 }
 
@@ -95,4 +118,5 @@ void GSTilePaletteCache::Clear()
 		e.alive = false;
 	}
 	m_use_counter = 0;
+	m_memo_valid = false;
 }

@@ -75,10 +75,8 @@ void GSVramModel::Destroy(GSTileSurfaceId id)
 		PlaneState& ps = m_planes[pi];
 		// Dropping the GPU copy is lossless only when the CPU bytes are equal.
 		pxAssert(ps.synced.contains(s.valid[pi]));
-		s.valid[pi].forEachSetPage([&ps](u32 page) {
-			ps.owner[page] = kGSTileNoSurface;
-			ps.masks.erase(static_cast<u16>(page));
-		});
+		s.valid[pi].forEachSetPage([&ps](u32 page) { ps.owner[page] = kGSTileNoSurface; });
+		(s.valid[pi] & ps.partial).forEachSetPage([&ps](u32 page) { ps.masks.erase(static_cast<u16>(page)); });
 		ps.truth = ps.truth.andnot(s.valid[pi]);
 		ps.synced = ps.synced.andnot(s.valid[pi]);
 		ps.partial = ps.partial.andnot(s.valid[pi]);
@@ -428,10 +426,11 @@ void GSVramModel::OnNativeDraw(GSTileSurfaceId id, const GSPageBitmap& pages, u8
 			m_surfaces[prev].valid[pi].unset(page);
 		});
 
-		pages.forEachSetPage([&](u32 page) {
-			ps.owner[page] = id;
-			ps.masks.erase(static_cast<u16>(page));
-		});
+		pages.forEachSetPage([&](u32 page) { ps.owner[page] = id; });
+		// A mask exists only for pages in `partial` (the invariant CheckInvariants
+		// enforces), so erase only where one can exist — the unguarded form was up
+		// to ~8 x footprint no-op hash erases per draw.
+		(pages & ps.partial).forEachSetPage([&](u32 page) { ps.masks.erase(static_cast<u16>(page)); });
 		ps.partial = ps.partial.andnot(pages);
 		s.valid[pi] |= pages;
 		ps.truth |= pages;

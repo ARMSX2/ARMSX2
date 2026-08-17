@@ -1974,9 +1974,13 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// one: a reason that is never the only one present cannot remove a single stall by
 	// being fixed, however many pages it names -- the same logic the floor-reason census
 	// uses, and the reason M3c's alpha test measured zero coverage.
-	sync_steal = sync_steal.andnot(sync_upload);
-	sync_tex = sync_tex.andnot(sync_upload | sync_steal);
+	// Ledger-only work: the draw itself consumes the UNION below, which the andnot
+	// attribution cannot change, and the per-reason ledger flags further down sit
+	// behind the same gate, so they see the attributed bitmaps whenever they look.
+	if (GSDrawLog::IsActive()) [[unlikely]]
 	{
+		sync_steal = sync_steal.andnot(sync_upload);
+		sync_tex = sync_tex.andnot(sync_upload | sync_steal);
 		NativeSyncReasons& n = m_native_sync;
 		n.upload_pages += static_cast<u32>(sync_upload.count());
 		n.steal_pages += static_cast<u32>(sync_steal.count());
@@ -2068,7 +2072,7 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 			{
 				m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
 				const u32* clut = m_mem.m_clut;
-				pal = m_palette_cache.Lookup(clut, pal_entries);
+				pal = m_palette_cache.Lookup(clut, pal_entries, m_mem.m_clut.GetReadGeneration());
 				if (!pal)
 				{
 					reason = GSTileFloorReason::ResourceFailure;

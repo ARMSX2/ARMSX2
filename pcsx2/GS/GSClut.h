@@ -54,6 +54,7 @@ class alignas(32) GSClut final : public GSAlignedClass<32>
 	u64 m_gpu_clut_draw = 0;
 	bool m_gpu_clut_dirty = true;
 	u32 m_write_generation = 0;
+	u32 m_read_generation = 0;
 
 	typedef void (GSClut::*writeCLUT)(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 
@@ -128,6 +129,13 @@ public:
 	/// registers (CPSM/CSA/TEXA) this identifies the expanded palette content, which
 	/// is what consumers caching depalettised textures key on.
 	__fi u32 GetWriteGeneration() const { return m_write_generation; }
+
+	/// Bumped exactly when Read32 recomputes the expanded read buffer. Between two
+	/// calls returning the same value, the buffer's bytes are bit-identical — the
+	/// witness a consumer memoising the buffer's expansion keys on. (The write
+	/// generation is NOT that witness: SetEntries32 dirties the read side without
+	/// bumping it, and TEX0/TEXA changes redirect the read without any write.)
+	__fi u32 GetReadGeneration() const { return m_read_generation; }
 
 	/// The word order the CSM1 32-bit loaders read a palette in: entry e of an eight-bit
 	/// palette loaded at CSA 0 comes from source word out_i8[e] of the 256 words at CBP;

@@ -32,7 +32,11 @@ public:
 
 	/// The palette texture for these words, built if absent, or null on allocation
 	/// failure. `entries` is 16 or 256; the words are the CLUT read buffer.
-	GSTexture* Lookup(const u32* clut, u32 entries);
+	/// `read_gen` is GSClut::GetReadGeneration() — while it holds still the buffer's
+	/// bytes are bit-identical, so a repeat call skips the hash and the entry scan
+	/// entirely and returns the last texture. Content keying is unchanged: the memo
+	/// is only ever a shortcut to the same answer the full path would give.
+	GSTexture* Lookup(const u32* clut, u32 entries, u32 read_gen);
 
 	/// Recycles every cached texture (reset / teardown / hot-switch).
 	void Clear();
@@ -57,4 +61,14 @@ private:
 	u64 m_use_counter = 0;
 	u64 m_hits = 0;
 	u64 m_builds = 0;
+
+	// Last-answer memo: valid while the CLUT read buffer provably has not changed
+	// (same read generation + entry count) and the slot provably still holds the
+	// same palette (its last_use is the one this memo stamped — a slot can only be
+	// rebuilt after becoming LRU, which changes last_use first).
+	bool m_memo_valid = false;
+	u32 m_memo_read_gen = 0;
+	u32 m_memo_entries = 0;
+	u32 m_memo_slot = 0;
+	u64 m_memo_last_use = 0;
 };
