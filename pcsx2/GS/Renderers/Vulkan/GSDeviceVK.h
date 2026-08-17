@@ -178,6 +178,7 @@ public:
 	bool TileReinterpretIndex(GSTexture* owner, GSTexture* dst, const TileReinterpretParams& p) override;
 	bool TileClutFromTarget(GSTexture* owner, GSTexture* dst, const TileClutGatherParams& p) override;
 	bool TileSwizzleFormsFit(bool& clut_ok) override;
+	bool TileExpandPalette(GSTexture* index, GSTexture* palette, GSTexture* dst, u32 src_level, u32 dst_level) override;
 	u64 GetCompletedSubmitEpoch() override
 	{
 		ScanForCommandBufferCompletion();
@@ -541,6 +542,16 @@ private:
 	bool m_tile_forms_fitted = false;
 	std::string m_tile_form_defines;
 	const std::string& TileFormDefines();
+	/// Tile renderer: an index texture expanded through its palette
+	/// (ps_tile_expand_palette). Two combined image samplers — index and palette —
+	/// so it carries its own descriptor and pipeline layouts (the utility layout has
+	/// one); compiled with them on first use, like the reinterpret pipelines.
+	VkDescriptorSetLayout m_tile_expand_ds_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_tile_expand_pipeline_layout = VK_NULL_HANDLE;
+	VkPipeline m_tile_expand_pipeline = VK_NULL_HANDLE;
+	bool m_tile_expand_tried = false;
+	std::array<GSTextureVK*, 2> m_tile_expand_textures{};
+	bool ApplyTileExpandState(bool already_execed = false);
 	std::array<VkPipeline, static_cast<int>(PresentShader::Count)> m_present{};
 	std::array<VkPipeline, 2> m_merge{};
 	std::array<VkPipeline, NUM_INTERLACE_SHADERS> m_interlace{};
@@ -638,6 +649,7 @@ private:
 
 	bool CompileConvertPipelines();
 	bool CompileTileReinterpretPipelines();
+	bool CompileTileExpandPipeline();
 	bool CompilePresentPipelines();
 	bool CompileInterlacePipelines();
 	bool CompileMergePipelines();
@@ -871,7 +883,8 @@ private:
 	{
 		Undefined,
 		TFX,
-		Utility
+		Utility,
+		TileExpand
 	};
 
 	void InitializeState();

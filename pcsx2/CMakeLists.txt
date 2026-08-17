@@ -553,6 +553,7 @@ set(pcsx2GSSources
 	GS/Renderers/HW/GSTextureReplacementLoaders.cpp
 	GS/Renderers/HW/GSTextureReplacements.cpp
 	GS/Renderers/SW/GSTextureCacheSW.cpp
+	GS/Renderers/Tile/GSTileExpandedCache.cpp
 	GS/Renderers/Tile/GSTileOracle.cpp
 	GS/Renderers/Tile/GSTilePaletteCache.cpp
 	GS/Renderers/Tile/GSTileSwizzleForms.cpp
@@ -634,6 +635,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Tile/GSRendererTile.h
 	GS/Renderers/Tile/GSTileClutMirror.h
 	GS/Renderers/Tile/GSTileDrawLowering.h
+	GS/Renderers/Tile/GSTileExpandedCache.h
 	GS/Renderers/Tile/GSTileOracle.h
 	GS/Renderers/Tile/GSTilePaletteCache.h
 	GS/Renderers/Tile/GSTileSwizzleForms.h

@@ -5989,6 +5989,211 @@ bool GSDeviceVK::TileReinterpretIndex(GSTexture* owner, GSTexture* dst, const Ti
 	return true;
 }
 
+// The Tile renderer's palette expansion (ps_tile_expand_palette): two source
+// textures where the utility layout binds one, so the pass carries its own
+// descriptor and pipeline layouts. The push-constant range is the utility one's
+// exactly — ranges identical means push constants recorded through either layout
+// satisfy both, so SetUtilityPushConstants and its command-buffer-restart replay
+// serve this pipeline unchanged.
+bool GSDeviceVK::CompileTileExpandPipeline()
+{
+	m_tile_expand_tried = true;
+
+	{
+		Vulkan::DescriptorSetLayoutBuilder dslb;
+		if (m_use_push_descriptors)
+			dslb.SetPushFlag();
+		dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		if ((m_tile_expand_ds_layout = dslb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tile_expand_ds_layout, "Tile expand descriptor layout");
+
+		Vulkan::PipelineLayoutBuilder plb;
+		plb.AddPushConstants(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, CONVERT_PUSH_CONSTANTS_SIZE);
+		plb.AddDescriptorSet(m_tile_expand_ds_layout);
+		if ((m_tile_expand_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tile_expand_pipeline_layout, "Tile expand pipeline layout");
+	}
+
+	const std::optional<std::string> vsource = ReadShaderSource("shaders/vulkan/convert.glsl");
+	const std::optional<std::string> fsource = ReadShaderSource("shaders/vulkan/tile_convert.glsl");
+	if (!vsource || !fsource)
+	{
+		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tile_convert.glsl.");
+		return false;
+	}
+
+	VkShaderModule vs = GetUtilityVertexShader(*vsource);
+	if (vs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard vs_guard([this, &vs]() { vkDestroyShaderModule(m_device, vs, nullptr); });
+
+	// No swizzle-form defines: the entry-point macro alone selects the expand pass,
+	// which compiles without the forms (see tile_convert.glsl) — expansion has no
+	// address arithmetic and must not be hostage to the forms fitting.
+	VkShaderModule ps = GetUtilityFragmentShader(*fsource, "ps_tile_expand_palette");
+	if (ps == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard ps_guard([this, &ps]() { vkDestroyShaderModule(m_device, ps, nullptr); });
+
+	Vulkan::GraphicsPipelineBuilder gpb;
+	SetPipelineProvokingVertex(m_features, gpb);
+	AddUtilityVertexAttributes(gpb);
+	gpb.SetPipelineLayout(m_tile_expand_pipeline_layout);
+	gpb.SetDynamicViewportAndScissorState();
+	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
+	gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+	gpb.SetNoCullRasterizationState();
+	gpb.SetNoBlendingState();
+	gpb.SetVertexShader(vs);
+	gpb.SetFragmentShader(ps);
+	gpb.SetRenderPass(GetRenderPass(LookupNativeFormat(GSTexture::Format::Color),
+						  LookupNativeFormat(GSTexture::Format::Invalid), VK_ATTACHMENT_LOAD_OP_DONT_CARE),
+		0);
+	gpb.SetDepthState(false, false, VK_COMPARE_OP_ALWAYS);
+	gpb.SetNoStencilState();
+	gpb.SetColorWriteMask(0, VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+
+	m_tile_expand_pipeline = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+	if (m_tile_expand_pipeline == VK_NULL_HANDLE)
+		return false;
+	Vulkan::SetObjectName(m_device, m_tile_expand_pipeline, "Tile palette-expand pipeline");
+	return true;
+}
+
+// Descriptor binding for the expansion draw. Rebound on every call: the pass runs
+// a handful of times per frame with different sources each time, so there is
+// nothing to cache — and m_tile_expand_textures is only ever dereferenced here,
+// inside TileExpandPalette's call window, which is why InvalidateCachedState
+// leaves it alone (nulling it there would make the descriptor-exhaustion retry
+// below bind the null texture, not the caller's).
+bool GSDeviceVK::ApplyTileExpandState(bool already_execed)
+{
+	const VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
+	const u32 flags = m_dirty_flags;
+	m_dirty_flags &= ~DIRTY_BASE_STATE;
+
+	m_current_pipeline_layout = PipelineLayout::TileExpand;
+
+	Vulkan::DescriptorSetUpdateBuilder dsub;
+	if (m_use_push_descriptors)
+	{
+		dsub.AddCombinedImageSamplerDescriptorWrite(VK_NULL_HANDLE, 0, m_tile_expand_textures[0]->GetView(),
+			m_point_sampler, m_tile_expand_textures[0]->GetVkLayout());
+		dsub.AddCombinedImageSamplerDescriptorWrite(VK_NULL_HANDLE, 1, m_tile_expand_textures[1]->GetView(),
+			m_point_sampler, m_tile_expand_textures[1]->GetVkLayout());
+		dsub.PushUpdate(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tile_expand_pipeline_layout, 0, false);
+	}
+	else
+	{
+		VkDescriptorSet ds = AllocateDescriptorSetFromFramePool(m_tile_expand_ds_layout);
+		if (ds == VK_NULL_HANDLE) [[unlikely]]
+		{
+			if (already_execed)
+			{
+				Console.Error("VK: Failed to allocate tile-expand descriptor set");
+				return false;
+			}
+
+			ExecuteCommandBufferAndRestartRenderPass(false, "Out of tile-expand descriptors");
+			return ApplyTileExpandState(true);
+		}
+		dsub.AddCombinedImageSamplerDescriptorWrite(ds, 0, m_tile_expand_textures[0]->GetView(), m_point_sampler,
+			m_tile_expand_textures[0]->GetVkLayout());
+		dsub.AddCombinedImageSamplerDescriptorWrite(ds, 1, m_tile_expand_textures[1]->GetView(), m_point_sampler,
+			m_tile_expand_textures[1]->GetVkLayout());
+		dsub.Update(m_device);
+		vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tile_expand_pipeline_layout, 0, 1, &ds, 0, nullptr);
+	}
+
+	ApplyBaseState(flags, cmdbuf);
+	return true;
+}
+
+bool GSDeviceVK::TileExpandPalette(GSTexture* index, GSTexture* palette, GSTexture* dst, u32 src_level, u32 dst_level)
+{
+	// One failed compile is permanent for the session: the tried flag stays set, the
+	// pipeline stays null, and every later call refuses here (half-created layouts
+	// are destroyed with the device).
+	if (!m_tile_expand_tried)
+		CompileTileExpandPipeline();
+	if (m_tile_expand_pipeline == VK_NULL_HANDLE)
+		return false;
+
+	GSTextureVK* idxVK = static_cast<GSTextureVK*>(index);
+	GSTextureVK* palVK = static_cast<GSTextureVK*>(palette);
+
+	// A render-target dst at level 0 takes the expansion draw directly; a plain
+	// mipmapped texture (or any level above 0) is not renderable, so the draw goes
+	// to a scratch target and a 1:1 blit carries it into the level.
+	const bool direct = dst->IsRenderTarget() && dst_level == 0;
+	const int lw = std::max(dst->GetWidth() >> dst_level, 1);
+	const int lh = std::max(dst->GetHeight() >> dst_level, 1);
+
+	GSTexture* scratch = nullptr;
+	GSTextureVK* rtVK = static_cast<GSTextureVK*>(dst);
+	if (!direct)
+	{
+		scratch = CreateRenderTarget(lw, lh, GSTexture::Format::Color, false, true);
+		if (!scratch)
+			return false;
+		rtVK = static_cast<GSTextureVK*>(scratch);
+	}
+
+	if (idxVK->GetLayout() != GSTextureVK::Layout::ShaderReadOnly ||
+		palVK->GetLayout() != GSTextureVK::Layout::ShaderReadOnly)
+	{
+		// can't transition in a render pass
+		EndRenderPass();
+		idxVK->TransitionToLayout(GSTextureVK::Layout::ShaderReadOnly);
+		palVK->TransitionToLayout(GSTextureVK::Layout::ShaderReadOnly);
+	}
+
+	SetPipeline(m_tile_expand_pipeline);
+	m_tile_expand_textures[0] = idxVK;
+	m_tile_expand_textures[1] = palVK;
+
+	struct alignas(16) Uniforms
+	{
+		u32 src_level;
+	};
+	const Uniforms uniforms = {src_level};
+	SetUtilityPushConstants(&uniforms, sizeof(uniforms));
+
+	const GSVector4i dst_rc(0, 0, lw, lh);
+	OMSetRenderTargets(rtVK, nullptr, dst_rc);
+	if (InRenderPass() && rtVK->GetState() == GSTexture::State::Cleared)
+		EndRenderPass();
+	if (!InRenderPass())
+		BeginRenderPassForStretchRect(rtVK, dst_rc, dst_rc, true);
+
+	// DrawStretchRect's full-rect quad (v_tex is unread — the pass fetches by
+	// fragment coordinate), drawn through the tile-expand state apply instead of
+	// the utility one.
+	g_perfmon.Put(GSPerfMon::TextureCopies, 1);
+	const GSVertexPT1 vertices[] = {
+		{GSVector4(-1.0f, 1.0f, 0.5f, 1.0f), GSVector2(0.0f, 0.0f)},
+		{GSVector4(1.0f, 1.0f, 0.5f, 1.0f), GSVector2(1.0f, 0.0f)},
+		{GSVector4(-1.0f, -1.0f, 0.5f, 1.0f), GSVector2(0.0f, 1.0f)},
+		{GSVector4(1.0f, -1.0f, 0.5f, 1.0f), GSVector2(1.0f, 1.0f)},
+	};
+	IASetVertexBuffer(vertices, sizeof(vertices[0]), std::size(vertices));
+	const bool drawn = ApplyTileExpandState();
+	if (drawn)
+		DrawPrimitive();
+
+	if (!direct)
+	{
+		// Never blit an unwritten scratch over the caller's texture.
+		if (drawn)
+			BlitRect(scratch, dst_rc, 0, dst, dst_rc, dst_level, Nearest);
+		Recycle(scratch);
+	}
+	return drawn;
+}
+
 bool GSDeviceVK::CompilePresentPipelines()
 {
 	// we may not have a swap chain if running in headless mode.
@@ -6588,6 +6793,22 @@ void GSDeviceVK::DestroyResources()
 		pipe = VK_NULL_HANDLE;
 	}
 	m_tile_reinterpret_tried = false;
+	if (m_tile_expand_pipeline != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(m_device, m_tile_expand_pipeline, nullptr);
+		m_tile_expand_pipeline = VK_NULL_HANDLE;
+	}
+	if (m_tile_expand_pipeline_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineLayout(m_device, m_tile_expand_pipeline_layout, nullptr);
+		m_tile_expand_pipeline_layout = VK_NULL_HANDLE;
+	}
+	if (m_tile_expand_ds_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(m_device, m_tile_expand_ds_layout, nullptr);
+		m_tile_expand_ds_layout = VK_NULL_HANDLE;
+	}
+	m_tile_expand_tried = false;
 	for (u32 ds = 0; ds < 2; ds++)
 	{
 		for (u32 fbl = 0; fbl < 2; fbl++)

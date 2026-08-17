@@ -201,6 +201,7 @@ void GSRendererTile::Destroy()
 	}
 	m_tex_source.Clear();
 	m_palette_cache.Clear();
+	m_expand_cache.Clear();
 	ReleaseGpuPalettes();
 	m_clut_download.reset();
 	m_target_pool.ReleaseAll();
@@ -214,6 +215,7 @@ void GSRendererTile::Reset(bool hardware_reset)
 	// CLUT RAM the base reset cleared is CPU-authoritative again by definition.
 	m_tex_source.Clear();
 	m_palette_cache.Clear();
+	m_expand_cache.Clear();
 	ReleaseGpuPalettes();
 	m_clut_deferred = {};
 	m_target_pool.ReleaseAll();
@@ -229,6 +231,7 @@ void GSRendererTile::VSync(u32 field, bool registers_written, bool idle_frame)
 	// The model's invariants are cheap enough to police once a frame in Devel.
 	pxAssert(m_vram_model.CheckInvariants());
 	m_readback_frames++;
+	m_expand_cache.NextFrame();
 	GSRendererSW::VSync(field, registers_written, idle_frame);
 }
 
@@ -301,6 +304,36 @@ void GSRendererTile::ReportReadbackCensus()
 			n.refuse_layout / frames, n.refuse_geometry / frames);
 		Console.WriteLn("      of the format refusals, %.2f start at the owner's own base",
 			n.refuse_format_same_base / frames);
+	}
+	if (m_expand_cache.Builds() | m_expand_cache.Hits() | m_expand_cache.Deferrals())
+	{
+		// The palette-expanded source cache (fast profile only). passes/frame is the
+		// CLUT-thrash column: a title cycling palettes faster than the cache holds
+		// shows up here before it shows up anywhere else. The parent caches print
+		// beside it because an expansion build has two possible drivers — a fresh
+		// (source, palette) PAIR over stable parents (capacity or cycling), or a
+		// parent that itself rebuilt (source volatility) — and only the ratio of
+		// these columns says which.
+		Console.WriteLn("  palette-expanded sources: %8.2f hits  %8.2f builds  %8.2f passes  %8.2f deferrals per frame%s",
+			static_cast<double>(m_expand_cache.Hits()) / frames,
+			static_cast<double>(m_expand_cache.Builds()) / frames,
+			static_cast<double>(m_expand_cache.Passes()) / frames,
+			static_cast<double>(m_expand_cache.Deferrals()) / frames,
+			m_expand_cache.Serves() ? "" : "  (device refused; in-shader fallback)");
+		Console.WriteLn("    parents: index %8.2f hits  %8.2f builds   palette %8.2f hits  %8.2f builds per frame",
+			static_cast<double>(m_tex_source.Hits()) / frames,
+			static_cast<double>(m_tex_source.Builds()) / frames,
+			static_cast<double>(m_palette_cache.Hits()) / frames,
+			static_cast<double>(m_palette_cache.Builds()) / frames);
+		if (m_tex_source.RebuildsSameBytes() | m_tex_source.RebuildsNewBytes())
+		{
+			// Same-bytes rebuilds are stamp churn — the pages moved, the window's
+			// texels did not. Each one still pays its deswizzle (the bytes must
+			// exist to be verified) but skips its upload and keeps its identity.
+			Console.WriteLn("    index rebuilds: %8.2f same-bytes (upload skipped)  %8.2f new-bytes per frame",
+				static_cast<double>(m_tex_source.RebuildsSameBytes()) / frames,
+				static_cast<double>(m_tex_source.RebuildsNewBytes()) / frames);
+		}
 	}
 	{
 		const ClutCensus& c = m_clut_census;
@@ -2071,6 +2104,8 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	GSTexture* pal = nullptr;
 	bool pal_direct = false;
 	GSVector4i pal_direct_params = GSVector4i::zero();
+	u64 tex_build_id = 0;
+	u64 pal_content_id = 0;
 	if (textured)
 	{
 		const u32 pal_entries = GSLocalMemory::m_psm[ctx->TEX0.PSM].pal;
@@ -2097,7 +2132,7 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 			{
 				m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
 				const u32* clut = m_mem.m_clut;
-				pal = m_palette_cache.Lookup(clut, pal_entries, m_mem.m_clut.GetReadGeneration());
+				pal = m_palette_cache.Lookup(clut, pal_entries, m_mem.m_clut.GetReadGeneration(), &pal_content_id);
 				if (!pal)
 				{
 					reason = GSTileFloorReason::ResourceFailure;
@@ -2116,7 +2151,7 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		else
 		{
 			tex = m_tex_source.Lookup(m_mem, m_vram_model, fixed_tex0, m_draw_env->TEXA, tex_pages,
-				level_tex0, mip_levels, donor_p);
+				level_tex0, mip_levels, donor_p, &tex_build_id);
 			if (!tex)
 			{
 				// A device that cannot reinterpret (no pipeline, or not Vulkan) says so once;
@@ -2126,6 +2161,27 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 					m_reinterpret_serves = false;
 				reason = GSTileFloorReason::ResourceFailure;
 				return false;
+			}
+		}
+
+		// The fast profile's palettised draws on the GPU sampler leg swap the
+		// (index, palette) pair for the device-expanded RGBA texture
+		// (GSTileExpandedCache): value-preserving — an expanded texel is exactly
+		// the palette texel the in-shader expansion fetches — so the trade is
+		// fetch count (four taps instead of four index taps plus four palette
+		// fetches), never values. The walk and DIRECT legs keep the pair (their
+		// integer filter expands corners itself, in the console's own order), and
+		// GPU/direct palettes stay in-shader everywhere: their words never
+		// transit the CPU cache, so they carry no content id to key an expansion
+		// on. Mip pyramids wait on the manual-LOD stage. A failed or refused
+		// expansion keeps the pair bound — the in-shader path is always correct.
+		if (pal && tex && fast_tex && m_twalk_at == NoWalk && pal_content_id != 0 && tex_build_id != 0 &&
+			mip_levels == 1 && m_expand_cache.Serves())
+		{
+			if (GSTexture* expanded = m_expand_cache.Lookup(tex, tex_build_id, pal, pal_content_id, mip_levels))
+			{
+				tex = expanded;
+				pal = nullptr;
 			}
 		}
 	}

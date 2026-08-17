@@ -371,6 +371,7 @@
     <ClCompile Include="GS\Renderers\Null\GSDeviceNone.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSRendererSW.cpp" />
     <ClCompile Include="GS\Renderers\Tile\GSRendererTile.cpp" />
+    <ClCompile Include="GS\Renderers\Tile\GSTileExpandedCache.cpp" />
     <ClCompile Include="GS\Renderers\Tile\GSTileOracle.cpp" />
     <ClCompile Include="GS\Renderers\Tile\GSTilePaletteCache.cpp" />
     <ClCompile Include="GS\Renderers\Tile\GSTileSwizzleForms.cpp" />
@@ -832,6 +833,7 @@
     <ClInclude Include="GS\Renderers\Tile\GSRendererTile.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileClutMirror.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileDrawLowering.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTileExpandedCache.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileOracle.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTilePaletteCache.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileSwizzleForms.h" />

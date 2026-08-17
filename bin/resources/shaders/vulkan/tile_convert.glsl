@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // The Tile renderer's device-side conversions. Fragment stage only; the vertex
-// stage is convert.glsl's, and the pipeline layout is the utility one (one
-// combined image sampler at set 0 binding 0, 96 bytes of push constants).
+// stage is convert.glsl's. The swizzle-form passes use the utility pipeline
+// layout (one combined image sampler at set 0 binding 0, 96 bytes of push
+// constants); ps_tile_expand_palette uses the tile-expand layout (two combined
+// image samplers, same push-constant range).
 //
 // ps_tile_reinterpret_index: a render target read as an indexed texture.
 //
@@ -34,6 +36,41 @@ layout(location = 0) in vec2 v_tex;
 layout(location = 0) out vec4 o_col0;
 
 layout(set = 0, binding = 0) uniform sampler2D samp0;
+
+#ifdef ps_tile_expand_palette
+
+// ps_tile_expand_palette: an index texture expanded through its palette, once,
+// instead of per filter corner in every draw that samples it.
+//
+// The fast profile's palettised draws run the GPU sampler leg; in-shader
+// expansion there costs four index fetches plus four palette fetches per
+// fragment. This pass writes palette[index] for every texel of one level of the
+// index texture into an RGBA8 target, so the draw fetches colours directly (and
+// the sampler can filter them in hardware). The index decode is the draw
+// shader's own, bit for bit: the UNORM byte back to an integer by
+// uint(a * 255.5) — .a because an R8 source's view replicates the byte into
+// every channel and a reinterpreted RGBA source carries it there — and the
+// palette texel fetched unfiltered, so an expanded texel equals what
+// sample_p(sample_4_index(...)) would have produced and the substitution is
+// value-preserving. Compiled without the swizzle-form defines: expansion has no
+// address arithmetic, so it must not be hostage to the forms fitting.
+
+layout(set = 0, binding = 1) uniform sampler2D samp1; // the palette, N x 1
+
+layout(push_constant) uniform cb10
+{
+	uint src_level; // which level of samp0 this pass expands
+};
+
+void ps_tile_expand_palette()
+{
+	ivec2 xy = ivec2(gl_FragCoord.xy);
+	uint idx = uint(texelFetch(samp0, xy, int(src_level)).a * 255.5f);
+	ivec2 pxy = clamp(ivec2(int(idx), 0), ivec2(0), textureSize(samp1, 0) - 1);
+	o_col0 = texelFetch(samp1, pxy, 0);
+}
+
+#else // the swizzle-form passes (TILE_SWZ_* defines injected by the device)
 
 layout(push_constant) uniform cb10
 {
@@ -204,3 +241,5 @@ void ps_tile_clut_from_target()
 	xy = clamp(xy, ivec2(0), textureSize(samp0, 0) - 1);
 	o_col0 = texelFetch(samp0, xy, 0);
 }
+
+#endif // !ps_tile_expand_palette

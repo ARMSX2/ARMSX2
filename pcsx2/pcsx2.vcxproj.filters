@@ -1061,6 +1061,9 @@
     <ClCompile Include="GS\Renderers\Tile\GSTileOracle.cpp">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClCompile>
+    <ClCompile Include="GS\Renderers\Tile\GSTileExpandedCache.cpp">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClCompile>
     <ClCompile Include="GS\Renderers\Tile\GSTilePaletteCache.cpp">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClCompile>
@@ -2052,6 +2055,9 @@
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Tile\GSTileOracle.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileExpandedCache.h">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Tile\GSTilePaletteCache.h">

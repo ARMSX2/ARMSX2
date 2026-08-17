@@ -6,6 +6,7 @@
 #include "GS/Renderers/SW/GSRendererSW.h"
 #include "GS/Renderers/Tile/GSTileClutMirror.h"
 #include "GS/Renderers/Tile/GSTileDrawLowering.h"
+#include "GS/Renderers/Tile/GSTileExpandedCache.h"
 #include "GS/Renderers/Tile/GSTilePaletteCache.h"
 #include "GS/Renderers/Tile/GSTileTargetPool.h"
 #include "GS/Renderers/Tile/GSTileTextureSource.h"
@@ -337,6 +338,7 @@ private:
 	GSTileTargetPool m_target_pool;
 	GSTileTextureSource m_tex_source;
 	GSTilePaletteCache m_palette_cache;
+	GSTileExpandedCache m_expand_cache;
 	GSTileClutMirror m_clut_mirror;
 	DeferredClutBlocks m_clut_deferred;
 	std::vector<GpuPalette> m_gpu_palettes;

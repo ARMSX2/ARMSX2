@@ -1923,6 +1923,21 @@ public:
 		return false;
 	}
 
+	/// Tile renderer: expand an index texture through its palette on the device.
+	/// Writes level `dst_level` of `dst` (RGBA8, same texel geometry as `index` level
+	/// `src_level`) with palette[index] at every texel — index read from the alpha
+	/// channel exactly as the draw shader would read it (an R8 source's view replicates
+	/// the byte into every channel; a reinterpreted RGBA source carries it in .a), so
+	/// the expanded texel is bit-identical to what the in-shader expansion produces.
+	/// A render-target `dst` at dst_level 0 is written by the expansion draw directly;
+	/// any other dst (a plain mipmapped texture, or a level above 0) is filled through
+	/// a device scratch surface. False when the device does not serve it — every
+	/// backend but Vulkan — and the caller keeps the in-shader palette path.
+	virtual bool TileExpandPalette(GSTexture* index, GSTexture* palette, GSTexture* dst, u32 src_level, u32 dst_level)
+	{
+		return false;
+	}
+
 	/// Enables/disables GPU frame timing.
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;
 
