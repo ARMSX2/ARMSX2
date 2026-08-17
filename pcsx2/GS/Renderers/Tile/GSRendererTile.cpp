@@ -960,8 +960,16 @@ GSTileDrawInput GSRendererTile::BuildLoweringInput()
 		in.prim_overlap_none = m_prim_overlap == PRIM_OVERLAP_NO;
 	}
 	in.fast_atst = GSConfig.TileFastShading && !GSConfig.TileExactAlphaTest;
-	in.blend_overlap_native = GSConfig.TileBlendOverlapNative;
-	in.blend_tex_sample_native = GSConfig.TileBlendTexSampleNative;
+	// The carrier implies both blend admissions. A carrier without them leaves a
+	// residue of blend draws flooring BETWEEN carrier-collapsed native draws, and
+	// under the plane depth leg that mixes walk-form z (the floor's) with
+	// plane-form z (the natives') inside one coplanar stack — the ±1 the plane
+	// contract allows cancels within a realization, not across the seam, so whole
+	// layers flip (OutRun-0812: FLIP 0.376 vs 0.044 with the admissions on).
+	// The pins remain independent so the ceiling brackets can still measure the
+	// read rung without the carrier; only the reverse combination is closed off.
+	in.blend_overlap_native = GSConfig.TileBlendOverlapNative || GSConfig.TileBlendClassicCarrier;
+	in.blend_tex_sample_native = GSConfig.TileBlendTexSampleNative || GSConfig.TileBlendClassicCarrier;
 	in.blend_classic_carrier = GSConfig.TileBlendClassicCarrier;
 	in.dual_source_blend = g_gs_device->Features().dual_source_blend && !GSConfig.TileBlendNoDualSource;
 	in.tme = PRIM->TME;
