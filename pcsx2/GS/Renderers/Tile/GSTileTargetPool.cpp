@@ -3,6 +3,8 @@
 
 #include "GS/Renderers/Tile/GSTileTargetPool.h"
 
+#include "common/Timer.h"
+
 #include "GS/GSExtra.h"
 #include "GS/GSLocalMemory.h"
 #include "GS/Renderers/Common/GSDevice.h"
@@ -472,9 +474,14 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 	// here and this is unconditionally a submit-and-wait — one full GPU drain per call.
 	if (out_drains)
 		(*out_drains)++;
+	// Timed as well as counted: a drain's PRICE varies with the GPU backlog it
+	// waits behind, so the count alone under-informs any A/B where the arms
+	// queue different amounts of GPU work between drains.
+	const u64 drain_t0 = Common::Timer::GetCurrentValue();
 	dltex->get()->Flush();
 	if (!dltex->get()->Map(drc))
 		return false;
+	m_drain_wall_ns += Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - drain_t0);
 
 	const u32 pitch = dltex->get()->GetMapPitch();
 	u8* bits = const_cast<u8*>(StageUncachedMap(dltex->get(), dltex->get()->GetMapPointer(), pitch, drc.w));

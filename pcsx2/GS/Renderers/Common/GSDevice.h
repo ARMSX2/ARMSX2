@@ -1900,6 +1900,12 @@ public:
 	};
 	virtual bool TileReinterpretIndex(GSTexture* owner, GSTexture* dst, const TileReinterpretParams& p) { return false; }
 
+	/// Wall time and count of out-of-band readback fence waits — the wait class
+	/// that sits OUTSIDE the drain accounting by design, and therefore needs its
+	/// own row in any census that wants the whole wait bill.
+	virtual u64 GetOobWaitNs() const { return 0; }
+	virtual u64 GetOobWaitCalls() const { return 0; }
+
 	/// Tile renderer: a palette loaded off a render target. Writes `dst` — an RGBA8
 	/// render target of `entries` × 1 — with the CSM1 32-bit palette whose source words
 	/// begin at block `cbp` of `owner`, a page-aligned CT32/CT24 surface texture, in

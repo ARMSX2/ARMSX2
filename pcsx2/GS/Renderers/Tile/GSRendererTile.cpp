@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstring>
 
+
 MULTI_ISA_UNSHARED_IMPL;
 
 GSRenderer* CURRENT_ISA::makeGSRendererTile(int threads)
@@ -404,7 +405,16 @@ void GSRendererTile::ReportReadbackCensus()
 	}
 	{
 		const ClutCensus& c = m_clut_census;
-		Console.WriteLn("  palette loads %8.2f  deferred %8.2f  gathered on device %8.2f  refused: shape %.2f mixed %.2f",
+		// The wait bill the drain table cannot see: out-of-band readbacks wait on
+	// their own fence, deliberately outside the drain counters — and that wall
+	// time carried an entire regression invisibly once (the feedback admission's
+	// native/floor ping-pong: +45 OOB waits/frame at ~0.23 ms each on the F4
+	// SotC scene, while drains and command-buffer waits both FELL).
+	Console.WriteLn("  oob-readback waits %8.2f /frame, %8.2f ms/frame   drain wall %8.2f ms/frame",
+		static_cast<double>(g_gs_device->GetOobWaitCalls()) / frames,
+		static_cast<double>(g_gs_device->GetOobWaitNs()) / frames / 1e6,
+		static_cast<double>(m_target_pool.DrainWallNs()) / frames / 1e6);
+	Console.WriteLn("  palette loads %8.2f  deferred %8.2f  gathered on device %8.2f  refused: shape %.2f mixed %.2f",
 			c.loads / frames, c.deferred / frames, c.gathered / frames, c.refused_shape / frames, c.refused_mixed / frames);
 		Console.WriteLn("  device-palette draws %8.2f (%8.2f direct)  palettes gathered %8.2f  mixed-provenance syncs %.2f  synced back %.2f (%.2f drained)",
 			c.gpu_palette_draws / frames, c.direct_palette_draws / frames, c.materialized / frames, c.mixed_syncs / frames,

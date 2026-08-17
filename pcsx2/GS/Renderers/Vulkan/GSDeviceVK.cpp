@@ -1360,7 +1360,14 @@ bool GSDeviceVK::SubmitOutOfBandAndWait()
 		return false;
 	}
 
+	// Timed: this wait is deliberately OUTSIDE the drain accounting (the whole
+	// point of the out-of-band road is not draining the frame's buffer), which
+	// once made it a census blind spot — a regression built entirely of these
+	// waits showed falling drains and falling command-buffer waits.
+	const u64 oob_t0 = Common::Timer::GetCurrentValue();
 	res = vkWaitForFences(m_device, 1, &m_oob.fence, VK_TRUE, UINT64_MAX);
+	m_oob_wait_ns += Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue() - oob_t0);
+	m_oob_wait_calls++;
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkWaitForFences (out-of-band) failed: ");

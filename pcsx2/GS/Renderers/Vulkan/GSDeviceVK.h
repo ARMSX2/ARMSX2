@@ -29,6 +29,8 @@ class VKSwapChain;
 class GSDeviceVK final : public GSDevice
 {
 public:
+	u64 GetOobWaitNs() const override { return m_oob_wait_ns; }
+	u64 GetOobWaitCalls() const override { return m_oob_wait_calls; }
 	enum : u32
 	{
 		NUM_COMMAND_BUFFERS = 3,
@@ -360,6 +362,8 @@ private:
 		bool recording = false;
 	};
 	OutOfBandResources m_oob;
+	u64 m_oob_wait_ns = 0;
+	u64 m_oob_wait_calls = 0;
 #ifdef _WIN32
 	double m_queryperfcounter_to_ns = 0;
 #endif
