@@ -121,6 +121,16 @@ private:
 
 	bool PrepareDownload(u32 width, u32 height, GSTexture::Format format, std::unique_ptr<GSDownloadTexture>* tex);
 	u8* GetScratch(u32 size);
+	/// The readback consumers below read the mapped download buffer with scalar,
+	/// swizzle-ordered loops. Over UNCACHED download memory (the Mali
+	/// coherent-readback workaround) every such read is a full memory round trip —
+	/// measured at 84% of the GS thread on Mali-G615, 11.8× Classic on SotC — so
+	/// when the map reports uncached this bulk-copies the rectangle into cached
+	/// staging (one streaming pass, the pattern uncached memory serves well) and
+	/// the consumers run out of the staging. Cached maps pass through untouched.
+	/// Separate from GetScratch: the depth road uses that per run while this holds
+	/// the whole rectangle.
+	const u8* StageUncachedMap(const GSDownloadTexture* dl, const u8* bits, u32 pitch, int rows);
 
 	std::vector<Slot> m_slots; // handle - 1 indexed
 	std::vector<u32> m_free_handles;
@@ -130,5 +140,7 @@ private:
 	std::unique_ptr<GSDownloadTexture> m_uint16_download;
 	std::unique_ptr<u8[]> m_scratch;
 	u32 m_scratch_size = 0;
+	std::unique_ptr<u8[]> m_map_stage;
+	u32 m_map_stage_size = 0;
 	u32 m_oob_copies = 0;
 };

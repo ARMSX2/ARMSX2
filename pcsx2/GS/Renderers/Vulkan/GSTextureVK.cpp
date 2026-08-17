@@ -900,6 +900,12 @@ std::unique_ptr<GSDownloadTextureVK> GSDownloadTextureVK::Create(u32 width, u32 
 	tex->m_buffer = buffer;
 	tex->m_buffer_size = buffer_size;
 	tex->m_map_pointer = static_cast<const u8*>(ai.pMappedData);
+	// What the allocator actually granted, not what was preferred: consumers that
+	// read the map non-sequentially stage through cached scratch when this is
+	// uncached (the Mali coherent preference above, or a pool with no cached type).
+	VkMemoryPropertyFlags mem_flags = 0;
+	vmaGetAllocationMemoryProperties(GSDeviceVK::GetInstance()->GetAllocator(), allocation, &mem_flags);
+	tex->m_map_uncached = (mem_flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) == 0;
 	return tex;
 }
 

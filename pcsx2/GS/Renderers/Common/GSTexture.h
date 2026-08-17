@@ -322,6 +322,17 @@ public:
 	__fi const u8* GetMapPointer() const { return m_map_pointer; }
 	__fi u32 GetMapPitch() const { return m_current_pitch; }
 
+	/// True when the mapped memory is NOT host-cached — the Mali coherent-readback
+	/// workaround prefers coherent (uncached) download memory, and some pools have
+	/// no cached type at all. Scalar reads of such a map are each a full memory
+	/// round trip (measured 84% of the GS thread inside the Tile readback's
+	/// swizzle loops on Mali-G615); a consumer that reads the map any way other
+	/// than one streaming pass should bulk-copy the rectangle into cached scratch
+	/// first, because a streaming copy is the one access pattern uncached memory
+	/// serves well. Backends that cannot know report false (cached), which keeps
+	/// consumers on the direct path.
+	__fi bool IsMapUncached() const { return m_map_uncached; }
+
 	/// Calculates the pitch of a transfer.
 	u32 GetTransferPitch(u32 width, u32 pitch_align) const;
 
@@ -397,4 +408,5 @@ protected:
 	u32 m_current_pitch = 0;
 
 	bool m_needs_flush = false;
+	bool m_map_uncached = false; ///< see IsMapUncached(); set by backends that know their allocation
 };

@@ -9,6 +9,8 @@
 
 #include "common/Assertions.h"
 
+#include <cstring>
+
 GSTileTargetPool::GSTileTargetPool() = default;
 
 GSTileTargetPool::~GSTileTargetPool()
@@ -259,6 +261,21 @@ u8* GSTileTargetPool::GetScratch(u32 size)
 	return m_scratch.get();
 }
 
+const u8* GSTileTargetPool::StageUncachedMap(const GSDownloadTexture* dl, const u8* bits, u32 pitch, int rows)
+{
+	if (!dl->IsMapUncached()) [[likely]]
+		return bits;
+
+	const u32 size = pitch * static_cast<u32>(rows);
+	if (m_map_stage_size < size)
+	{
+		m_map_stage = std::make_unique<u8[]>(size);
+		m_map_stage_size = size;
+	}
+	std::memcpy(m_map_stage.get(), bits, size);
+	return m_map_stage.get();
+}
+
 bool GSTileTargetPool::UploadPages(GSLocalMemory& mem, u32 handle, const GSTileSurfaceLayout& layout, const GSPageBitmap& pages)
 {
 	if (pages.empty())
@@ -379,8 +396,8 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 			m_oob_copies++;
 			if (!raw->get()->Map(drc))
 				return false;
-			const u8* bits = raw->get()->GetMapPointer();
 			const u32 pitch = raw->get()->GetMapPitch();
+			const u8* bits = StageUncachedMap(raw->get(), raw->get()->GetMapPointer(), pitch, drc.w);
 			if (s.kind == GSTileSurfaceKind::Color)
 			{
 				for (const GSVector4i& r : m_runs)
@@ -459,8 +476,8 @@ bool GSTileTargetPool::ReadbackPages(GSLocalMemory& mem, u32 handle, const GSTil
 	if (!dltex->get()->Map(drc))
 		return false;
 
-	u8* bits = const_cast<u8*>(dltex->get()->GetMapPointer());
 	const u32 pitch = dltex->get()->GetMapPitch();
+	u8* bits = const_cast<u8*>(StageUncachedMap(dltex->get(), dltex->get()->GetMapPointer(), pitch, drc.w));
 
 	for (const GSVector4i& r : m_runs)
 	{
