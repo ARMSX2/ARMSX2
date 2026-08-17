@@ -69,6 +69,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_smc_manual_tests.cpp
 	ee_rec_smc_tests.cpp
 	ee_rec_timeout_loop_tests.cpp
+	ee_rec_tlb_divert_tests.cpp
 	ee_rec_traps_tests.cpp
 	ee_timer_count_read_race_tests.cpp
 	vtlb_get_guest_address_tests.cpp
