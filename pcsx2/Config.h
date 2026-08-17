@@ -940,6 +940,18 @@ struct Pcsx2Config
 					// Default off. Never a user setting.
 					TileBlendOverlapNative : 1,
 					TileBlendTexSampleNative : 1,
+					// The Classic-parity blend carrier (M4e / #135): serve the
+					// variable-carrier clamp-mode blend rows READ-FREE at Classic's
+					// own realization and accuracy class (mix/accumulation/HW-rewrite
+					// through the ROP, SRC1 where the device has dual-source), instead
+					// of routing them to the read rung — whose Adreno realization is a
+					// copy plus a pass break PER DRAW, measured carrying 76% of the
+					// corpus's blended draws. Bypasses the two blend floors above for
+					// the rows it admits (the ROP composites overlap in primitive
+					// order). Default off: the shipped path keeps byte-identity to SW;
+					// the on position is the perf/attribution lever, in the ceiling
+					// profile with the levers above. Never a user setting.
+					TileBlendClassicCarrier : 1,
 					// Perf-ceiling instrument: DROP floored draws (no spill, no SW
 					// rasterization). Rendering is wrong by construction; the frame
 					// time approximates a 100%-native run. Dev only, default off.

@@ -220,6 +220,42 @@ struct GSTileDrawInput
 	// the facts leave false, which is today's shipped behaviour.
 	bool blend_overlap_native;
 	bool blend_tex_sample_native;
+	// The Classic-parity blend carrier (M4e / #135, EmuCore/GS/TileBlendClassicCarrier):
+	// permission to serve the variable-carrier clamp-mode rows READ-FREE at Classic's
+	// own realization and accuracy class, instead of routing them to the read rung for
+	// an exactness Classic never pays for. On Adreno the read rung realizes as a region
+	// copy plus a render-pass break PER DRAW, and the first SD865 A/B measured that
+	// carrying the corpus's dominant blend row (the variable-As lerp, 76% of blended
+	// draws) — a charter violation by the admission policy ("match Classic, exceed only
+	// where FREE"; the read rung's exactness is not free there). dual_source_blend is
+	// the device fact the SRC1-carried factors lean on; rows that need SRC1 keep the
+	// read rung without it (Classic software-blends the same rows on those devices, so
+	// parity holds in both directions). Both are config/device facts like the levers
+	// above; callers without them leave false, which is today's shipped behaviour.
+	bool blend_classic_carrier;
+	bool dual_source_blend;
+};
+
+/// How an admitted blend is realized. Every leg above Read is read-free: the ROP (or
+/// the shader alone) composites each fragment against the live destination in
+/// primitive order, so none of them needs the read rung's no-overlap proof — that
+/// proof exists only because a READ takes one snapshot of the destination.
+///
+/// Accuracy classes (the M4 contract table): FixedFunction, Mix, Accumulation and
+/// HwRewrite are the Classic-parity within-one-level class — the ROP rounds where the
+/// GS truncates, the SRC1/constant factor transits the /255 grid where the GS divides
+/// by 128 (both bounded at one level; the gs-blend clamp grid is the instrument, and
+/// Classic ships the identical shapes at 99.93%) — except that rung 3's admissions and
+/// the exact-mix admissions are byte-exact by their own proofs. InShaderNoRec and Read
+/// are byte-exact by construction: the whole equation runs in integer arithmetic.
+enum class GSTileBlendLeg : u8
+{
+	FixedFunction = 0, ///< plain ROP factors from the donor map (rung 3's exact rows)
+	Mix, ///< shader computes the Cs-side term with the round-to-floor offsets; the ROP carries the Cd term
+	Accumulation, ///< shader computes the whole (A−B)·C term and truncates; the ROP adds/subtracts Cd at factor ONE
+	HwRewrite, ///< shader rewrites its outputs (blend_hw) so plain factors compose a row the map alone cannot
+	InShaderNoRec, ///< no Cd anywhere in the equation — whole thing in-shader, blend unit off, no read
+	Read, ///< rung 9: destination read, whole equation in integer arithmetic over it
 };
 
 /// One realized pass of a native draw, in submission order.
@@ -245,7 +281,10 @@ struct GSTileDrawPass
 	// Blend realization (M4). Cv = (((A − B) * C) >> 7) + D, console rule.
 	bool abe = false; ///< pass blends
 	bool colclip_wrap = false; ///< COLCLAMP=0 — the blend output wraps at 8 bits (M4c)
-	bool rt_read = false; ///< realization reads the destination (rung 9 — the paid path)
+	GSTileBlendLeg blend_leg = GSTileBlendLeg::FixedFunction; ///< how the pass realizes the blend (meaningless unless abe)
+	bool blend_src1 = false; ///< the realization carries a factor through the second fragment output — needs the device's dual-source unit
+	u8 blend_hw = 0; ///< HWBlendType for the HwRewrite/Mix shader-output rewrites, zero otherwise
+	bool rt_read = false; ///< realization reads the destination (rung 9 — the paid path). Mirror of blend_leg == Read
 	u8 blend_a = 0; ///< A selector, post-collapse (0 Cs, 1 Cd, 2 zero)
 	u8 blend_b = 0; ///< B selector, post-collapse
 	u8 blend_c = 0; ///< C selector, post-collapse (0 As, 1 Ad, 2 FIX)
@@ -256,6 +295,8 @@ struct GSTileDrawPass
 	/// round-to-floor offsets and the ROP carries the Cd term. The selectors above
 	/// stay RAW; the renderer owns the donor's selector rewrite and the per-device
 	/// As carrier (SRC1, or factor-in-alpha where the alpha channel is free).
+	/// Mirror of blend_leg == Mix (both the exact rung's constant landing and the
+	/// carrier's variable one).
 	bool blend_mix = false;
 };
 
@@ -346,8 +387,16 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 	// draws; the trace-range skips arrive with the general PABE work).
 	bool blend_active = in.abe;
 	bool blend_pass = false; ///< rung 3 or the mix rung admitted — the passes carry the realization
-	bool blend_mix = false; ///< the mix rung's realization (rung 6), not rung 3's exact rows
+	bool blend_mix = false; ///< the EXACT mix rung's realization (rung 6, proven constants), not rung 3's exact rows
 	bool blend_read = false; ///< the read rung's realization (rung 9) — the whole equation in-shader
+	// The Classic-parity carrier's admission (M4e / #135), between the exact rungs and
+	// the read rung: read-free at Classic's own accuracy class, on rows the exact
+	// rungs refuse. blend_carrier_const marks a degenerate As re-encoded to FIX (#90).
+	bool blend_carrier = false;
+	GSTileBlendLeg blend_carrier_leg = GSTileBlendLeg::FixedFunction;
+	bool blend_carrier_src1 = false;
+	bool blend_carrier_const = false;
+	u8 blend_carrier_hw = 0;
 	if (in.abe && in.colclamp && !in.pabe)
 	{
 		int c_value = -1; // the C factor's value when provable, else -1
@@ -879,6 +928,120 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 			                         static_cast<u32>(in.color_min_rgb) * eff_c >= 64;
 			if (!mix_row || cval == 0 || !term_clears)
 			{
+				// ================= The Classic-parity carrier (M4e / #135) =================
+				//
+				// Everything the exact rungs refused used to fall to the read rung, which on
+				// Adreno realizes as a region copy plus a render-pass break PER DRAW — and
+				// the first SD865 A/B (2026-08-16) measured that fragmentation carrying the
+				// corpus's dominant blend row (the variable-As lerp, 76% of blended draws)
+				// while Classic serves the identical row fixed-function at 99.93% exactness
+				// on our own gs-blend capture. The charter bar is "match Classic, exceed
+				// only where FREE"; the read rung's exactness is not free there, so the
+				// admission policy was the defect. This rung serves those rows read-free at
+				// Classic's own realization and accuracy class:
+				//
+				//   * InShaderNoRec — no Cd anywhere in the equation, so the whole thing
+				//     runs in the shader's integer arithmetic with the blend unit off.
+				//     Byte-exact, needs nothing from the device, and overlap-immune (each
+				//     fragment is independent). Classic serves the class the same way
+				//     ("free sw blending", enabled at every accuracy level).
+				//   * Accumulation — the BLEND_ACCU shapes (Cs·C ± Cd): the shader computes
+				//     and truncates the whole (A−B)·C term, the ROP adds or reverse-
+				//     subtracts Cd at factor ONE. Integer-plus-integer at the ROP, no SRC1.
+				//   * Mix — the donor's blend-mix, generalized past the exact rung's
+				//     proven-constant admission to the variable carriers: the shader
+				//     computes the Cs-side term with the round-to-floor offsets and the ROP
+				//     carries the Cd term through the map's factor, As reaching it through
+				//     the second fragment output (SRC1). Classic's Basic-level high-alpha
+				//     rule carries over: a carrier that can exceed 128 is mixed only where
+				//     the draw's primitives may overlap (saturating, Classic's own shipped
+				//     shape there) and takes the read rung's exact arithmetic where overlap
+				//     is proven absent (Classic's exact-software-blend disposition for the
+				//     same cell) — see the admission comment below for the measured reason.
+				//   * HwRewrite — the BLEND_HW2 Cd·Alpha shapes: the shader splits the 0..2
+				//     factor across its two outputs (the ≤1 part in SRC1, the overflow in
+				//     the primary as an integer colour) and DST_COLOR factors compose the
+				//     product. Exact in float composition, ±ROP rounding.
+				//
+				// None of these needs the read rung's no-overlap proof: the ROP composites
+				// every fragment against the live destination in primitive order, which is
+				// exactly what a read's one snapshot cannot do. That is why this rung
+				// bypasses the BlendOverlap and BlendTexSample floors — their residues (the
+				// shared-edge coverage tie #30, the Dirge cross-frame handoff) are
+				// native-path facts, not blend facts, and the lever that opens this rung is
+				// the same class of attribution/perf instrument as the two lift levers.
+				//
+				// Accuracy contract (the M4 table's read-free row): within one level on the
+				// gs-blend clamp grid per blend, Classic-parity residues accepted where
+				// Classic ships them — the ROP rounds where the GS truncates (#131 measured
+				// the Adreno ROP doing so even under the exact-floor offsets), the SRC1
+				// factor transits the /255 grid where the GS divides by 128 (bounded at one
+				// level by the 2026-08-14 exhaustive walk), factors saturate at [0,1] where
+				// the GS arithmetic keeps going (Classic's identical clamp), and the mix
+				// offset is destroyed on terms below it (once per overdraw layer — the
+				// FlatOut near-black class, which Classic's own offsets share). Ad stays
+				// out entirely: DST_ALPHA is /255 where the GS divides by 128 — a factor-of-
+				// two class, not a rounding one — so the Ad rows keep the read rung's
+				// integer arithmetic (the M4 §7 no-RTA-rescale decision).
+				if (in.blend_classic_carrier && bc != 1)
+				{
+					// A carrier that can exceed 128 makes the mix realization saturate
+					// on BOTH sides (the shader clamps C to one, the ROP clamps the
+					// factor), and the error reaches the whole scaled difference — the
+					// gs-blend probe measured 40–70 levels on the F>128 rows the first
+					// admission let through. Classic's Basic-level rule, matched here:
+					// a may-exceed row is mixed ONLY where its primitives may overlap
+					// (no exact option exists there — one read cannot serve overlap,
+					// and saturating mix is what Classic ships for it); where overlap
+					// is proven absent, the row goes to the read rung's exact integer
+					// arithmetic, which is Classic's own exact-software-blend
+					// disposition for the same cell. The accumulation and HW2 legs are
+					// exempt: their compositions absorb the 0..2 range (the clamp
+					// commutes through their arithmetic; Classic exempts BLEND_HW2 the
+					// same way).
+					const bool may_exceed = (bc == 2 && in.ALPHA.FIX > 128) ||
+					                        (bc == 0 && in.alpha_max > 128);
+					// A degenerate As is a constant and never needs the SRC1 carrier —
+					// the #90 rule, extended to this rung: the FIX twin rows are
+					// factor-for-factor identical at the proven value on every device.
+					const bool const_carrier = bc == 2 || degenerate_as;
+					const bool src1_ok = const_carrier || in.dual_source_blend;
+					const bool no_rec = ba != 1 && bb != 1 && bd != 1;
+					const bool accu_row = ((ba == 0 && bb == 2) || (ba == 2 && bb == 0)) && bd == 1;
+					const bool hw2_row = ba == 1 && bb == 2 && bd == 2;
+					if (no_rec)
+					{
+						blend_carrier = true;
+						blend_carrier_leg = GSTileBlendLeg::InShaderNoRec;
+					}
+					else if (accu_row)
+					{
+						blend_carrier = true;
+						blend_carrier_leg = GSTileBlendLeg::Accumulation;
+					}
+					else if (mix_row && src1_ok && (!may_exceed || !in.prim_overlap_none))
+					{
+						blend_carrier = true;
+						blend_carrier_leg = GSTileBlendLeg::Mix;
+					}
+					else if (hw2_row && src1_ok)
+					{
+						blend_carrier = true;
+						blend_carrier_leg = GSTileBlendLeg::HwRewrite;
+						blend_carrier_hw = 2; // HWBlendType::SRC_ALPHA_DST_FACTOR
+					}
+					blend_carrier_src1 = blend_carrier && !const_carrier &&
+					                     (blend_carrier_leg == GSTileBlendLeg::Mix ||
+					                         blend_carrier_leg == GSTileBlendLeg::HwRewrite);
+					blend_carrier_const = blend_carrier && const_carrier;
+				}
+			}
+			if (blend_carrier)
+			{
+				// Admitted read-free — no floor to consult, no read to order.
+			}
+			else if (!mix_row || cval == 0 || !term_clears)
+			{
 				// Rung 9 — the read rung, the one rung that pays and the reason the
 				// lattice is total. The fragment shader evaluates the register's own
 				// equation in the console's integer arithmetic over a destination the
@@ -1120,15 +1283,34 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		// and a constant never needs the dual-source carrier.
 		const bool variable_carrier = in.ALPHA.C != 2;
 		const bool degenerate_as = in.ALPHA.C == 0 && in.alpha_min == in.alpha_max;
+		GSTileBlendLeg leg = GSTileBlendLeg::FixedFunction;
+		if (blend_read)
+			leg = GSTileBlendLeg::Read;
+		else if (blend_mix)
+			leg = GSTileBlendLeg::Mix;
+		else if (blend_carrier)
+			leg = blend_carrier_leg;
 		for (u32 i = 0; i < p.pass_count; i++)
 		{
 			p.pass[i].abe = true;
-			p.pass[i].blend_mix = blend_mix;
+			p.pass[i].blend_leg = leg;
+			p.pass[i].blend_mix = leg == GSTileBlendLeg::Mix;
 			p.pass[i].rt_read = blend_read;
+			p.pass[i].blend_src1 = blend_carrier_src1;
+			p.pass[i].blend_hw = blend_carrier_hw;
 			p.pass[i].blend_a = static_cast<u8>(in.ALPHA.A);
 			p.pass[i].blend_b = static_cast<u8>(in.ALPHA.B);
 			p.pass[i].blend_d = static_cast<u8>(in.ALPHA.D);
-			if (blend_read)
+			if (blend_carrier)
+			{
+				// The carrier legs keep their raw selectors — the renderer owns the
+				// donor's per-leg rewrites — with one exception: a degenerate As lands
+				// as the constant it proves (#90 again; a constant never needs the
+				// SRC1 carrier, so the row works on every device).
+				p.pass[i].blend_c = blend_carrier_const ? static_cast<u8>(2) : static_cast<u8>(in.ALPHA.C);
+				p.pass[i].afix = static_cast<u8>((blend_carrier_const && degenerate_as) ? in.alpha_min : in.ALPHA.FIX);
+			}
+			else if (blend_read)
 			{
 				// Nothing is re-encoded on the read rung: the shader evaluates the
 				// register's own carrier in integer arithmetic, where As, Ad and FIX

@@ -1478,6 +1478,328 @@ TEST(GSTileLowering, BlendFloorLiftLevers)
 	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
 }
 
+// The Classic-parity blend carrier (EmuCore/GS/TileBlendClassicCarrier, M4e/#135):
+// serve the variable-carrier clamp-mode rows READ-FREE at Classic's own realization
+// and accuracy class, instead of routing them to the read rung — whose Adreno
+// realization is a copy plus a pass break PER DRAW, measured carrying the corpus's
+// dominant blend row (the variable-As lerp, 76% of blended draws). The read-free
+// legs need no overlap proof (the ROP composites fragments in primitive order), so
+// the carrier bypasses the BlendOverlap/BlendTexSample floors for the rows it
+// admits. Default off; the shipped path is unchanged.
+TEST(GSTileLowering, ClassicCarrierServesTheVariableAsLerpReadFree)
+{
+	// The dominant row itself: 0101, genuinely variable As, textured, overlap
+	// UNPROVEN — everything that floors it shipped. The carrier takes it to the
+	// donor's blend-mix with the As factor through SRC1.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_psm = PSMCT32;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = true;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Mix);
+	EXPECT_TRUE(p.pass[0].blend_mix);
+	EXPECT_FALSE(p.pass[0].rt_read);
+	EXPECT_TRUE(p.pass[0].blend_src1);
+	// Raw selectors — the renderer owns the donor's rewrite, and the As carrier
+	// stays As (no constant substitution exists to make).
+	EXPECT_EQ(p.pass[0].blend_a, 0);
+	EXPECT_EQ(p.pass[0].blend_b, 1);
+	EXPECT_EQ(p.pass[0].blend_c, 0);
+	EXPECT_EQ(p.pass[0].blend_d, 1);
+
+	// Without the device's dual-source unit the SRC1 transit does not exist, and
+	// the row keeps the read rung's path — flooring here on the unproven overlap.
+	// (Classic software-blends the same rows on those devices: parity holds in
+	// both directions.)
+	in.dual_source_blend = false;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
+}
+
+TEST(GSTileLowering, ClassicCarrierAccumulationRowsNeedNoDualSource)
+{
+	// Cs·As + Cd (0201): the shader computes and truncates the whole term, the
+	// ROP adds Cd at factor ONE — no SRC1 anywhere, so no dual-source gate.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.ALPHA.B = 2; // (Cs − 0)·As + Cd
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_psm = PSMCT32;
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = false;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Accumulation);
+	EXPECT_FALSE(p.pass[0].blend_src1);
+	EXPECT_FALSE(p.pass[0].rt_read);
+	EXPECT_EQ(p.pass[0].blend_c, 0);
+
+	// The FIX twin (0221) with a value the exact rungs refuse (not 128, and the
+	// textured term defeats the mix rung's saturation proof) — previously the
+	// read rung, now the same accumulation leg.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.B = 2;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 64;
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_psm = PSMCT32;
+	in.prim_overlap_none = true;
+	{
+		GSTileDrawInput off = in;
+		off.blend_classic_carrier = false;
+		GSTileDrawPlan q = gsTileLowerDraw(off);
+		ASSERT_TRUE(q.native);
+		EXPECT_TRUE(q.pass[0].rt_read); // the shipped disposition this replaces
+	}
+	in.blend_classic_carrier = true;
+	in.prim_overlap_none = false; // and overlap no longer matters
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Accumulation);
+	EXPECT_EQ(p.pass[0].blend_c, 2);
+	EXPECT_EQ(p.pass[0].afix, 64);
+
+	// The reversed shapes (Cd − Cs·C, 2001/2021) ride the same leg: the renderer
+	// computes the term positive and the ROP reverse-subtracts.
+	in.ALPHA.A = 2;
+	in.ALPHA.B = 0;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Accumulation);
+}
+
+TEST(GSTileLowering, ClassicCarrierNoRecRowsAreExactAndDeviceFree)
+{
+	// Cs·As standalone (0202): no Cd anywhere in the equation, so the whole thing
+	// runs in the shader's integer arithmetic with the blend unit off — byte-exact,
+	// overlap-immune, and admitted on any device. Shipped, this row paid the read
+	// rung's ordering for an equation that reads nothing.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.ALPHA.B = 2;
+	in.ALPHA.D = 2; // (Cs − 0)·As + 0
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = false;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::InShaderNoRec);
+	EXPECT_FALSE(p.pass[0].blend_src1);
+	EXPECT_FALSE(p.pass[0].rt_read);
+	EXPECT_EQ(p.pass[0].blend_c, 0);
+}
+
+TEST(GSTileLowering, ClassicCarrierHw2RowsSplitTheFactorAcrossOutputs)
+{
+	// Cd·As (1202): the donor's BLEND_HW2 — the shader splits the 0..2 factor
+	// across its two outputs and DST_COLOR factors compose the product. Needs
+	// SRC1 for the variable carrier.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.ALPHA.A = 1;
+	in.ALPHA.B = 2;
+	in.ALPHA.D = 2; // (Cd − 0)·As + 0
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = true;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::HwRewrite);
+	EXPECT_EQ(p.pass[0].blend_hw, 2); // HWBlendType::SRC_ALPHA_DST_FACTOR
+	EXPECT_TRUE(p.pass[0].blend_src1);
+
+	// Without dual source the variable-As shape keeps the read rung's path.
+	in.dual_source_blend = false;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
+
+	// The FIX twin (1222) rides the blend constant instead and needs nothing.
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 100;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::HwRewrite);
+	EXPECT_FALSE(p.pass[0].blend_src1);
+	EXPECT_EQ(p.pass[0].afix, 100);
+}
+
+TEST(GSTileLowering, ClassicCarrierRefusalsKeepTheReadRung)
+{
+	// Ad rows stay out entirely: DST_ALPHA divides by 255 where the GS divides by
+	// 128 — a factor-of-two class, not a rounding one (the M4 §7 decision). The
+	// read rung keeps them exact, and its floors still apply.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 1;
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::BlendOverlap);
+	in.prim_overlap_none = true;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Read);
+	EXPECT_TRUE(p.pass[0].rt_read);
+
+	// Classic's Basic-level high-alpha rule carries over: a carrier that CAN
+	// exceed 128 makes the mix saturate on both sides (measured 40-70 levels on
+	// the gs-blend F>128 rows before this clause existed), so it is mixed only
+	// where the draw's primitives may overlap — Classic's own saturating shipped
+	// shape there, because one read cannot serve overlap — and takes the read
+	// rung's exact arithmetic where overlap is proven absent, which is Classic's
+	// exact-software-blend disposition for the same cell.
+	in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 0;
+	in.alpha_max = 255; // 0101, As may exceed 128
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = true;
+	in.prim_overlap_none = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Read);
+	in.prim_overlap_none = false;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Mix);
+
+	// The FIX twin of the same rule: F above 128 reads where overlap is proven
+	// absent, mixes (saturating, as Classic ships it) where it is not. A proven
+	// bound at or below 128 mixes everywhere.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 192;
+	in.ALPHA.D = 2; // 0122: (Cs − Cd)·F — the row the probe measured at 70 levels
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_psm = PSMCT32;
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = true;
+	in.prim_overlap_none = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Read);
+	in.prim_overlap_none = false;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Mix);
+	in.ALPHA.FIX = 90;
+	in.prim_overlap_none = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Mix);
+
+	// The A_MAX mix shapes (D==A stacks the +1 onto the C-carrying operand:
+	// 0100/1001) are not transcribed — census-zero — and keep the read rung.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.A = 0;
+	in.ALPHA.B = 1;
+	in.ALPHA.D = 0; // Cs·(As+1) − Cd·As
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = true;
+	in.prim_overlap_none = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Read);
+
+	// Wrap and PABE outrank the carrier exactly as they outrank every rung.
+	in = BaseInput();
+	in.abe = true;
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = true;
+	in.colclamp = false;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::ColClip);
+	in.colclamp = true;
+	in.pabe = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::Blend);
+}
+
+TEST(GSTileLowering, ClassicCarrierLeavesTheExactRungsAlone)
+{
+	// A proven-128 carrier is rung 3's row and stays fixed-function — the carrier
+	// sits below the exact rungs, never above them.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.ALPHA.B = 2;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 128;
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = true;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::FixedFunction);
+	EXPECT_FALSE(p.pass[0].blend_src1);
+
+	// The exact-mix rung's admission (proven constant, term clears) still lands
+	// first, re-encoded to FIX exactly as before.
+	in = BaseInput();
+	in.abe = true;
+	in.ALPHA.C = 2;
+	in.ALPHA.FIX = 64;
+	in.blend_classic_carrier = true;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Mix);
+	EXPECT_TRUE(p.pass[0].blend_mix);
+	EXPECT_EQ(p.pass[0].blend_c, 2);
+	EXPECT_FALSE(p.pass[0].blend_src1);
+
+	// A degenerate As through the carrier lands as the constant it proves (#90):
+	// the FIX twin rows are factor-for-factor identical at the proven value, and
+	// a constant never needs the SRC1 carrier — so it works without dual source.
+	in = BaseInput();
+	in.abe = true;
+	in.alpha_min = 64;
+	in.alpha_max = 64;
+	in.tme = true; // defeats the exact-mix saturation proof, so the carrier serves it
+	in.tex_fst = true;
+	in.tex_psm = PSMCT32;
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = false;
+	p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Mix);
+	EXPECT_EQ(p.pass[0].blend_c, 2);
+	EXPECT_EQ(p.pass[0].afix, 64);
+	EXPECT_FALSE(p.pass[0].blend_src1);
+}
+
+TEST(GSTileLowering, ClassicCarrierRidesBothPassesOfASplit)
+{
+	// A split draw carries the carrier realization on both passes, like the read
+	// rung does. Only one pass writes RGB; the carrier's C is As, not Ad, so the
+	// RGB_ONLY stale-alpha hazard documented at the overlap floor cannot arise.
+	GSTileDrawInput in = BaseInput();
+	in.abe = true;
+	in.TEST.ATE = 1;
+	in.TEST.ATST = ATST_GEQUAL;
+	in.TEST.AREF = 64;
+	in.TEST.AFAIL = AFAIL_RGB_ONLY;
+	// The SPLIT still needs the depth outcome to be order-independent — that is
+	// the split's own condition, not the blend's. The carrier itself needs no
+	// overlap fact. Alpha proven ≤ 128 so the mix leg admits under the
+	// no-overlap fact (a may-exceed carrier would take the read rung there).
+	in.prim_overlap_none = true;
+	in.alpha_max = 128;
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = true;
+	GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	ASSERT_EQ(p.pass_count, 2);
+	for (u32 i = 0; i < p.pass_count; i++)
+	{
+		EXPECT_TRUE(p.pass[i].abe) << "pass " << i;
+		EXPECT_EQ(p.pass[i].blend_leg, GSTileBlendLeg::Mix) << "pass " << i;
+		EXPECT_FALSE(p.pass[i].rt_read) << "pass " << i;
+	}
+}
+
 // The M4a guardrails outrank every collapse: a wrap draw floors ColClip and a
 // PABE draw floors Blend even when the algebra would eliminate the blend — the
 // collapse rungs are gated on clamp mode and no-PABE until M4c widens them.

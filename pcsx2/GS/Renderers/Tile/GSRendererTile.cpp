@@ -867,6 +867,8 @@ GSTileDrawInput GSRendererTile::BuildLoweringInput()
 	}
 	in.blend_overlap_native = GSConfig.TileBlendOverlapNative;
 	in.blend_tex_sample_native = GSConfig.TileBlendTexSampleNative;
+	in.blend_classic_carrier = GSConfig.TileBlendClassicCarrier;
+	in.dual_source_blend = g_gs_device->Features().dual_source_blend;
 	in.tme = PRIM->TME;
 	in.abe = PRIM->ABE;
 	// The blend equation's registers (M4). ALPHA and PABE are only consulted under
@@ -1692,24 +1694,19 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		return false;
 	}
 
-	// A blend pass naming the As carrier rides the second fragment output — the
-	// device's dual-source unit is the realization, and without it the read-free
-	// encoding does not exist (the Mali r44p1 class: dualSrcBlend is a constant
-	// zero in the blob's .rodata, decomp-measured). No admitted rung reaches it
-	// today: rung 3's rows are C-degenerate and the mix rung admits only proven
-	// constants, both landed as FIX — deliberately, because any variable As
-	// reaches the ROP through an 8-bit colour channel (SRC1, or the primary
-	// output's alpha), quantizing the factor off the GS's /128 grid: measured
-	// integrating into banding and palette-amplified speckle the day it went
-	// live. This stays as the backstop for any future arm that carries a
-	// genuinely variable As.
-	//
-	// The read rung is exempt and must be: it engages no blend unit, so its carrier
-	// never transits a colour channel and dual source is irrelevant to it. Letting
-	// this gate see it would floor the whole variable-As population on Mali for a
-	// mechanism that path does not use.
-	if (plan.pass[0].abe && !plan.pass[0].rt_read && plan.pass[0].blend_c == 0 &&
-		plan.pass[0].blend_a != plan.pass[0].blend_b && !g_gs_device->Features().dual_source_blend)
+	// A blend pass whose realization carries the As factor through the second
+	// fragment output needs the device's dual-source unit (the Mali r44p1 class:
+	// dualSrcBlend is a constant zero in the blob's .rodata, decomp-measured).
+	// The lowering already refuses those legs when its dual_source_blend input is
+	// false — the same Features() bit this checks — so this is a backstop against
+	// the two ever disagreeing, not a live gate. The Classic-parity carrier
+	// (TileBlendClassicCarrier) is the one admission that sets blend_src1: its
+	// SRC1 transit quantizes the factor onto the /255 grid, bounded at one level
+	// (the 2026-08-14 exhaustive walk) — the Classic-parity class, and exactly
+	// what Classic ships through the same unit. The read rung and the no-Cd/
+	// accumulation legs never set it: their carriers stay in shader arithmetic
+	// and dual source is irrelevant to them.
+	if (plan.pass[0].abe && plan.pass[0].blend_src1 && !g_gs_device->Features().dual_source_blend)
 	{
 		reason = GSTileFloorReason::Blend;
 		return false;
@@ -2505,17 +2502,22 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 		const u32 blend_index =
 			((static_cast<u32>(bp.blend_a) * 3 + bp.blend_b) * 3 + bp.blend_c) * 3 + bp.blend_d;
 		const HWBlend blend = GSDevice::GetBlend(blend_index);
-		if (bp.rt_read)
+		if (bp.blend_leg == GSTileBlendLeg::Read || bp.blend_leg == GSTileBlendLeg::InShaderNoRec)
 		{
-			// Rung 9 — the read rung. No blend unit is engaged at all: the fragment
-			// shader is handed the register's own selectors and evaluates the console
-			// equation in integer arithmetic over a destination it reads, then writes
-			// the finished pixel. The backend supplies the destination from the
-			// selectors themselves (its feedback-loop predicate reads the same
-			// blend_a/b/c/d), as a texture barrier where the device has honest ones
-			// and a copy of the draw area where it does not — one of each per draw,
-			// which is why the lowering admits only draws whose own primitives cannot
-			// overlap.
+			// Rung 9 — the read rung — and its free twin. No blend unit is engaged
+			// at all: the fragment shader is handed the register's own selectors and
+			// evaluates the console equation in integer arithmetic, then writes the
+			// finished pixel. On the read rung the destination comes from the
+			// backend (its feedback-loop predicate reads the same blend_a/b/c/d), as
+			// a texture barrier where the device has honest ones and a copy of the
+			// draw area where it does not — one of each per draw, which is why the
+			// lowering admits only draws whose own primitives cannot overlap.
+			//
+			// InShaderNoRec is the same integer evaluation for equations that
+			// reference no Cd anywhere: the shader's destination predicate is
+			// selector-derived (PS_FEEDBACK_LOOP_IS_NEEDED_RT), so nothing is read,
+			// no barrier or copy is ordered, and overlap is immaterial — each
+			// fragment stands alone. Byte-exact on any device, like the read rung.
 			//
 			// Every carrier rides raw, Ad included: the shader multiplies by the alpha
 			// BYTE and shifts by seven, so the /128 scale is exact where the blend
@@ -2526,7 +2528,46 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 			conf.ps.blend_d = bp.blend_d;
 			conf.ps.tile_blend = 1;
 			conf.cb_ps.TA_MaxDepth_Af.a = static_cast<float>(bp.afix) / 128.0f;
-			conf.require_one_barrier = true;
+			conf.require_one_barrier = bp.blend_leg == GSTileBlendLeg::Read;
+		}
+		else if (bp.blend_leg == GSTileBlendLeg::Accumulation)
+		{
+			// The accumulation realization, transcribed from the donor (BLEND_ACCU):
+			// the shader computes the whole (A−B)·C term — the admitted shapes are
+			// Cs·C ± Cd, so after removing Cd the term is always (Cs−0)·C, computed
+			// positive and truncated in the shader (ps.blend_mix stays 0, which is
+			// the trunc leg of tfx.glsl) — and the ROP adds it to Cd, or reverse-
+			// subtracts it from Cd, at factor ONE on both sides. Integer plus
+			// integer at the ROP, so the composition is exact up to the ROP's own
+			// UNORM rounding (the #131 Adreno class), and no SRC1 output is
+			// involved on any device.
+			conf.ps.blend_a = 0;
+			conf.ps.blend_b = 2;
+			conf.ps.blend_c = bp.blend_c;
+			conf.ps.blend_d = 2;
+			conf.cb_ps.TA_MaxDepth_Af.a = static_cast<float>(bp.afix) / 128.0f;
+			conf.blend = {true, GSDevice::CONST_ONE, GSDevice::CONST_ONE, blend.op,
+				GSDevice::CONST_ONE, GSDevice::CONST_ZERO, bp.blend_c == 2, bp.afix};
+		}
+		else if (bp.blend_leg == GSTileBlendLeg::HwRewrite)
+		{
+			// The donor's BLEND_HW2 shape, Cd·Alpha: the shader splits the 0..2
+			// factor across its two outputs — the overflow part max(0, Alpha−1)
+			// rides the primary colour (tfx.glsl's PS_BLEND_HW == 2 leg) and the
+			// ≤1 part rides SRC1 (or the blend constant for FIX) — and the map's
+			// DST_COLOR/SRC1_COLOR factors compose the product at the ROP. The
+			// shader's own blend selectors stay zero: this is not a shader blend,
+			// just an output rewrite.
+			conf.ps.blend_a = 0;
+			conf.ps.blend_b = 0;
+			conf.ps.blend_c = bp.blend_c;
+			conf.ps.blend_d = 0;
+			conf.ps.blend_hw = bp.blend_hw;
+			conf.cb_ps.TA_MaxDepth_Af.a = static_cast<float>(bp.afix) / 128.0f;
+			conf.blend = {true, blend.src, blend.dst, blend.op,
+				GSDevice::CONST_ONE, GSDevice::CONST_ZERO, bp.blend_c == 2, bp.afix};
+			conf.ps.no_color1 = !GSDevice::IsDualSourceBlendFactor(blend.src) &&
+			                    !GSDevice::IsDualSourceBlendFactor(blend.dst);
 		}
 		else if (bp.blend_mix)
 		{
@@ -2536,13 +2577,20 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 			// (ps.blend_mix 1 for the add/subtract ops, 2 for reverse subtract,
 			// tfx.glsl) — and the ROP adds the Cd term through the map's dst
 			// factor at src ONE. MIX3 is the reverse lerp: the shader term is
-			// Cs·(1−C). The lowering admitted only proven-constant carriers, so C
-			// is always FIX here: the shader reads it from Af and the ROP from the
-			// blend constant, both at full float precision, and with the
-			// admission's saturation guard the whole composition is EXACT on a
-			// full-precision blend unit (tile_blend_mix selects the exact-floor
-			// 127/256 offset over Classic's reduced-precision-ROP compromise; the
-			// gs-blend probe under tile is the per-device instrument).
+			// Cs·(1−C).
+			//
+			// The carrier decides what C is. The exact-mix rung lands a proven
+			// constant as FIX: the shader reads it from Af and the ROP from the
+			// blend constant, both at full float precision, and with that rung's
+			// saturation guard the whole composition is EXACT on a full-precision
+			// blend unit. The Classic-parity carrier lands a genuinely variable As
+			// raw (blend_c == 0): the shader term uses its own fragment's alpha and
+			// the ROP's factor arrives through the second output (SRC1), which
+			// transits the /255 grid — the within-one-level Classic-parity class,
+			// identical to what Classic ships through the same unit. Either way
+			// tile_blend_mix selects the exact-floor 127/256 offset over Classic's
+			// reduced-precision-ROP compromise; the gs-blend probe under tile is
+			// the per-device instrument.
 			const bool mix3 = (blend.flags & BLEND_MIX3) != 0;
 			conf.ps.blend_a = mix3 ? 2 : 0;
 			conf.ps.blend_b = mix3 ? 0 : 2;
@@ -2552,7 +2600,7 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 			conf.ps.tile_blend_mix = 1;
 			conf.cb_ps.TA_MaxDepth_Af.a = static_cast<float>(bp.afix) / 128.0f;
 			conf.blend = {true, GSDevice::CONST_ONE, blend.dst, blend.op,
-				GSDevice::CONST_ONE, GSDevice::CONST_ZERO, true, bp.afix};
+				GSDevice::CONST_ONE, GSDevice::CONST_ZERO, bp.blend_c == 2, bp.afix};
 			conf.ps.no_color1 = !GSDevice::IsDualSourceBlendFactor(blend.dst);
 		}
 		else
@@ -2562,6 +2610,12 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 			conf.ps.no_color1 = !GSDevice::IsDualSourceBlendFactor(blend.src) &&
 			                    !GSDevice::IsDualSourceBlendFactor(blend.dst);
 		}
+		// The donor's global: a reverse-subtract ROP inverts the direction the
+		// store's rounding should lean (GSRendererHW does this after every
+		// realization; inert on the 32/24-bit native frames today, kept for parity
+		// and for any future 16-bit envelope).
+		if (conf.blend.op == GSDevice::OP_REV_SUBTRACT)
+			conf.ps.round_inv = 1;
 	}
 
 	if (tex)
