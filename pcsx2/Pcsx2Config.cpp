@@ -756,6 +756,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileBlendClassicCarrier = true;
 	TileBlendNoDualSource = false;
 	TileSkipFloorDraws = false;
+	TilePassSim = false;
 	TileFastShading = true;
 	TileExactColour = false;
 	TileExactTexCoord = false;
@@ -1087,6 +1088,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileBlendClassicCarrier);
 	SettingsWrapBitBool(TileBlendNoDualSource);
 	SettingsWrapBitBool(TileSkipFloorDraws);
+	SettingsWrapBitBool(TilePassSim);
 	SettingsWrapBitBool(TileFastShading);
 	SettingsWrapBitBool(TileExactColour);
 	SettingsWrapBitBool(TileExactTexCoord);

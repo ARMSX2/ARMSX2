@@ -4114,6 +4114,9 @@ void GSState::Transfer(const u8* mem, u32 size)
 
 	GIFPath& path = m_path[index];
 
+	if (m_gif_stream_stats_active) [[unlikely]]
+		m_gif_stream_stats.qwords[index] += size;
+
 	while (size > 0)
 	{
 		if (path.nloop == 0)
@@ -4127,6 +4130,22 @@ void GSState::Transfer(const u8* mem, u32 size)
 			// "... when NLOOP is 0, the GIF does not output anything, and values other than the EOP field are disregarded."
 			if (path.nloop > 0)
 			{
+				if (m_gif_stream_stats_active) [[unlikely]]
+				{
+					m_gif_stream_stats.tags[index]++;
+					switch (path.tag.FLG)
+					{
+						case GIF_FLG_PACKED:
+							m_gif_stream_stats.packed_qw += path.nloop * path.nreg;
+							break;
+						case GIF_FLG_REGLIST:
+							m_gif_stream_stats.reglist_qw += (path.nloop * path.nreg + 1) / 2;
+							break;
+						default: // IMAGE / IMAGE2
+							m_gif_stream_stats.image_qw += path.nloop;
+							break;
+					}
+				}
 				m_q = 1.0f;
 
 				// ASSERT(!(path.tag.PRE && path.tag.FLG == GIF_FLG_REGLIST)); // kingdom hearts

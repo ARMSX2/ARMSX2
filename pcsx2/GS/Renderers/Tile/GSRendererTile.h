@@ -8,6 +8,7 @@
 #include "GS/Renderers/Tile/GSTileDrawLowering.h"
 #include "GS/Renderers/Tile/GSTileExpandedCache.h"
 #include "GS/Renderers/Tile/GSTilePaletteCache.h"
+#include "GS/Renderers/Tile/GSTilePassSim.h"
 #include "GS/Renderers/Tile/GSTileTargetPool.h"
 #include "GS/Renderers/Tile/GSTileTextureSource.h"
 #include "GS/Renderers/Tile/GSVramModel.h"
@@ -191,6 +192,14 @@ private:
 	};
 
 	void ReportReadbackCensus();
+
+	// -- Pass-structure simulator (EmuCore/GS/TilePassSim; gsrunner -tilepasssim) ------
+	// Offline design instrument: scores the GS-semantic minimum pass structure of a run
+	// (GSTilePassSim.h) without changing anything it observes. Shares the ledger's
+	// discipline: an arm with the pin on is an attribution run, never a timed one.
+	GSTilePassSim m_pass_sim;
+	void PassSimObserveDraw(const GSTileDrawPlan& plan, const GSVector4i& r);
+	void ReportPassSim();
 
 	// Spill machinery shared by every CPU-side seam.
 	bool ReadbackModelPages(const GSPageBitmap& pages, ReadbackSite site);

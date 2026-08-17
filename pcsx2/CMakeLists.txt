@@ -635,6 +635,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Tile/GSRendererTile.h
 	GS/Renderers/Tile/GSTileClutMirror.h
 	GS/Renderers/Tile/GSTileDrawLowering.h
+	GS/Renderers/Tile/GSTilePassSim.h
 	GS/Renderers/Tile/GSTileExpandedCache.h
 	GS/Renderers/Tile/GSTileOracle.h
 	GS/Renderers/Tile/GSTilePaletteCache.h

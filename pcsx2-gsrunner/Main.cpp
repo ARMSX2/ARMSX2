@@ -730,6 +730,9 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -tileoracle <path.csv>: Run the software rasterizer in lockstep against the Tile renderer's "
 						 "native route and record every per-draw divergence. Tile only, and orders of magnitude "
 						 "slower than a plain run.\n");
+	std::fprintf(stderr, "  -tilepasssim: Score the GS-semantic minimum pass structure of the run (pass breaks, "
+						 "snapshots, syncs a fully-GPU-timeline backend would be forced to take) plus GIF stream "
+						 "volume; report at teardown. Tile only; an attribution arm, never a timed one.\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -1087,6 +1090,12 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_tile_oracle_path = argv[++i];
 				s_settings_interface.SetBoolValue("EmuCore/GS", "TileDrawOracle", true);
 				Console.WriteLn(fmt::format("Recording per-draw lockstep divergences to {}", s_tile_oracle_path));
+				continue;
+			}
+			else if (CHECK_ARG("-tilepasssim"))
+			{
+				s_settings_interface.SetBoolValue("EmuCore/GS", "TilePassSim", true);
+				Console.WriteLn("Scoring GS-semantic minimum pass structure (report at teardown)");
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-stats-json"))

@@ -161,6 +161,10 @@ GSDrawLog::TileFallback MapFallbackReason(GSTileFloorReason reason)
 GSRendererTile::GSRendererTile(int threads)
 	: GSRendererSW(threads)
 {
+	// The pass-structure sim arms for the renderer's whole life or not at all: a
+	// mid-run flip would score a partial run under a full-run divisor.
+	m_pass_sim.SetActive(GSConfig.TilePassSim);
+	m_gif_stream_stats_active = GSConfig.TilePassSim;
 }
 
 GSRendererTile::~GSRendererTile()
@@ -187,6 +191,7 @@ void GSRendererTile::Destroy()
 {
 	ReportReadbackCensus();
 	ReportMemoCensus();
+	ReportPassSim();
 	if (m_oracle.native_draws != 0)
 	{
 		// States coverage and nothing more. "Complete" does NOT mean the run's frames are
@@ -236,6 +241,8 @@ void GSRendererTile::VSync(u32 field, bool registers_written, bool idle_frame)
 	// The model's invariants are cheap enough to police once a frame in Devel.
 	pxAssert(m_vram_model.CheckInvariants());
 	m_readback_frames++;
+	if (m_pass_sim.IsActive()) [[unlikely]]
+		m_pass_sim.OnVSync();
 	m_expand_cache.NextFrame();
 	GSRendererSW::VSync(field, registers_written, idle_frame);
 }
@@ -435,6 +442,9 @@ void GSRendererTile::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const 
 	GSVramModel::FootprintForRect(layout, r, m_rect_fp);
 	const u8 planes = gsTilePlanesInvalidatedByWrite(BITBLTBUF.DPSM);
 
+	if (m_pass_sim.IsActive()) [[unlikely]]
+		m_pass_sim.OnUpload(PagesForTargetRect(layout, r));
+
 	ReadbackModelPages(m_vram_model.SpillBeforeCpuWrite(m_rect_fp, planes), ReadbackSite::Transfer);
 	m_vram_model.OnCpuWrite(m_rect_fp, planes);
 }
@@ -450,6 +460,9 @@ void GSRendererTile::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const 
 	const GSTileSurfaceLayout layout{BITBLTBUF.SBP, static_cast<u8>(BITBLTBUF.SBW),
 		static_cast<u8>(BITBLTBUF.SPSM), KindForPsm(BITBLTBUF.SPSM)};
 	GSVramModel::FootprintForRect(layout, r, m_rect_fp);
+
+	if (m_pass_sim.IsActive()) [[unlikely]]
+		m_pass_sim.OnCpuRead(PagesForTargetRect(layout, r));
 
 	GSPageBitmap need = m_vram_model.ReadbackNeeded(m_rect_fp, kGSTilePlanesAll);
 	if (clut && !need.empty() && m_clut_gather_serves && GSConfig.TileGpuClut)
@@ -882,6 +895,9 @@ void GSRendererTile::Move()
 	GSVramModel::FootprintForRect(dst_l, dst_r, m_rect_fp);
 	const u8 planes = gsTilePlanesInvalidatedByWrite(m_env.BITBLTBUF.DPSM);
 	need |= m_vram_model.SpillBeforeCpuWrite(m_rect_fp, planes);
+
+	if (m_pass_sim.IsActive()) [[unlikely]]
+		m_pass_sim.OnMove(PagesForTargetRect(src_l, src_r), PagesForTargetRect(dst_l, dst_r));
 
 	ReadbackModelPages(need, ReadbackSite::Move);
 
@@ -1386,6 +1402,156 @@ void GSRendererTile::ObserveFloorDraw(const GSTileDrawPlan& plan, const GSVector
 			static_cast<u8>(ctx->ZBUF.PSM), GSTileSurfaceKind::Depth};
 		m_vram_model.OnCpuWrite(PagesForTargetRect(z_l, r), gsTilePlanesInvalidatedByWrite(ctx->ZBUF.PSM));
 	}
+}
+
+// -- The pass-structure simulator's draw observer --------------------------------------
+//
+// Footprints mirrored from the spill/admission sites, but never gated on the profile:
+// the instrument scores the DESIGN's pass model (GSTilePassSim.h), not the current
+// renderer's routing. The core proof is the feedback admission's own (vertex UV bbox
+// shrunk one texel, CLAMP folds allowed, REPEAT overhang disqualifies) — the sim only
+// changes what it is tested AGAINST: everything the open pass wrote, not just this
+// draw's own targets.
+void GSRendererTile::PassSimObserveDraw(const GSTileDrawPlan& plan, const GSVector4i& r)
+{
+	if (r.rempty())
+		return;
+
+	const GSDrawingContext* ctx = m_context;
+
+	const GSTileSurfaceLayout fb_l{ctx->FRAME.Block(), static_cast<u8>(ctx->FRAME.FBW),
+		static_cast<u8>(ctx->FRAME.PSM), GSTileSurfaceKind::Color};
+	const GSPageBitmap fb_pages = PagesForTargetRect(fb_l, r);
+	GSPageBitmap fb_written;
+	if (ctx->FRAME.FBMSK != 0xFFFFFFFFu)
+		fb_written = fb_pages;
+
+	GSPageBitmap z_pages;
+	GSPageBitmap z_written;
+	const bool z_used = plan.z_write || plan.z_test;
+	if (z_used)
+	{
+		const GSTileSurfaceLayout z_l{ctx->ZBUF.Block(), static_cast<u8>(ctx->FRAME.FBW),
+			static_cast<u8>(ctx->ZBUF.PSM), GSTileSurfaceKind::Depth};
+		z_pages = PagesForTargetRect(z_l, r);
+		if (plan.z_write)
+			z_written = z_pages;
+	}
+
+	GSPageBitmap tex_pages;
+	GSPageBitmap core_pages;
+	bool has_core = false;
+	if (PRIM->TME)
+	{
+		const bool mip = IsMipMapActive();
+		const GIFRegTEX0 fixed_tex0 =
+			ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mip);
+		const u32 mip_levels = mip ? (std::min<u32>(ctx->TEX1.MXL, 6) + 1) : 1u;
+		for (u32 i = 0; i < mip_levels; i++)
+		{
+			const GIFRegTEX0 lvl = (i == 0) ? fixed_tex0 : GetTex0Layer(i);
+			const GSTileSurfaceLayout tex_l{
+				lvl.TBP0, static_cast<u8>(lvl.TBW), static_cast<u8>(lvl.PSM), KindForPsm(lvl.PSM)};
+			const int tw = 1 << std::min<u32>(lvl.TW, 10);
+			const int th = 1 << std::min<u32>(lvl.TH, 10);
+			tex_pages |= PagesForTargetRect(tex_l, GSVector4i(0, 0, tw, th));
+		}
+		if (mip_levels == 1 && ctx->CLAMP.WMS <= CLAMP_CLAMP && ctx->CLAMP.WMT <= CLAMP_CLAMP)
+		{
+			const int tw = 1 << std::min<u32>(fixed_tex0.TW, 10);
+			const int th = 1 << std::min<u32>(fixed_tex0.TH, 10);
+			int cx0 = static_cast<int>(std::floor(m_vt.m_min.t.x)) + 1;
+			int cy0 = static_cast<int>(std::floor(m_vt.m_min.t.y)) + 1;
+			int cx1 = static_cast<int>(std::floor(m_vt.m_max.t.x));
+			int cy1 = static_cast<int>(std::floor(m_vt.m_max.t.y));
+			const bool u_ok = (ctx->CLAMP.WMS == CLAMP_CLAMP) || (cx0 >= 0 && cx1 <= tw);
+			const bool v_ok = (ctx->CLAMP.WMT == CLAMP_CLAMP) || (cy0 >= 0 && cy1 <= th);
+			cx0 = std::max(cx0, 0);
+			cy0 = std::max(cy0, 0);
+			cx1 = std::min(cx1, tw);
+			cy1 = std::min(cy1, th);
+			if (u_ok && v_ok && cx0 < cx1 && cy0 < cy1)
+			{
+				const GSTileSurfaceLayout tex_l{fixed_tex0.TBP0, static_cast<u8>(fixed_tex0.TBW),
+					static_cast<u8>(fixed_tex0.PSM), KindForPsm(fixed_tex0.PSM)};
+				core_pages = PagesForTargetRect(tex_l, GSVector4i(cx0, cy0, cx1, cy1));
+				has_core = true;
+			}
+		}
+	}
+
+	m_pass_sim.OnDraw(fb_written, z_written, fb_pages | z_pages, tex_pages, core_pages, has_core,
+		ctx->FRAME.Block(), ctx->FRAME.PSM, ctx->ZBUF.Block(), ctx->ZBUF.PSM, z_used,
+		static_cast<u32>(std::max(m_vertex->tail, m_vertex->next)));
+}
+
+// Reported at teardown beside the readback census: per-frame mean and median of the
+// model's minimum pass structure, then the GIF stream volume the front end decoded to
+// produce it (the decode-sizing half of the design brief).
+void GSRendererTile::ReportPassSim()
+{
+	const std::vector<GSTilePassSim::FrameStats>& frames = m_pass_sim.Frames();
+	if (frames.empty())
+		return;
+
+	const double n = static_cast<double>(frames.size());
+	const auto stat = [&frames, n](auto get) {
+		std::vector<u32> v(frames.size());
+		double sum = 0.0;
+		for (size_t i = 0; i < frames.size(); i++)
+		{
+			v[i] = get(frames[i]);
+			sum += v[i];
+		}
+		std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+		struct
+		{
+			double mean;
+			u32 p50;
+		} r{sum / n, v[v.size() / 2]};
+		return r;
+	};
+	using FS = GSTilePassSim::FrameStats;
+	const auto brk = [&stat](GSTilePassSim::BreakReason why) {
+		return stat([why](const FS& f) { return f.breaks[static_cast<u32>(why)]; });
+	};
+
+	const auto draws = stat([](const FS& f) { return f.draws; });
+	const auto verts = stat([](const FS& f) { return f.verts; });
+	const auto passes = stat([](const FS& f) { return f.passes; });
+	const auto snaps = stat([](const FS& f) { return f.snapshots; });
+	const auto snap_pages = stat([](const FS& f) { return f.snapshot_pages; });
+	const auto inpass = stat([](const FS& f) { return f.feedback_inpass; });
+	const auto upfree = stat([](const FS& f) { return f.uploads_free; });
+	const auto biggest = stat([](const FS& f) { return f.draws_in_biggest_pass; });
+	const auto b_feedback = brk(GSTilePassSim::BreakReason::Feedback);
+	const auto b_cap = brk(GSTilePassSim::BreakReason::TargetCap);
+	const auto b_upload = brk(GSTilePassSim::BreakReason::Upload);
+	const auto b_move = brk(GSTilePassSim::BreakReason::MoveHazard);
+	const auto b_cpu = brk(GSTilePassSim::BreakReason::CpuRead);
+
+	Console.WriteLn("Tile pass-structure sim over %u frames (GS-semantic MINIMUM under the "
+					"in-pass-read model, %u target pairs per pass; mean / p50 per frame):",
+		static_cast<u32>(frames.size()), GSTilePassSim::kMaxTargetPairs);
+	Console.WriteLn("  draws %10.2f / %-6u  verts %10.2f / %-8u  biggest pass %7.2f / %u draws",
+		draws.mean, draws.p50, verts.mean, verts.p50, biggest.mean, biggest.p50);
+	Console.WriteLn("  passes %9.2f / %-6u  snapshots %6.2f / %-4u (%.2f / %u pages)", passes.mean,
+		passes.p50, snaps.mean, snaps.p50, snap_pages.mean, snap_pages.p50);
+	Console.WriteLn("  breaks: feedback %.2f/%u  target-cap %.2f/%u  upload %.2f/%u  move %.2f/%u  "
+					"cpu-read %.2f/%u",
+		b_feedback.mean, b_feedback.p50, b_cap.mean, b_cap.p50, b_upload.mean, b_upload.p50,
+		b_move.mean, b_move.p50, b_cpu.mean, b_cpu.p50);
+	Console.WriteLn("  feedback served in-pass (core proof): %.2f / %u   uploads outside the open "
+					"pass (free): %.2f / %u",
+		inpass.mean, inpass.p50, upfree.mean, upfree.p50);
+
+	const GifStreamStats& s = m_gif_stream_stats;
+	Console.WriteLn("  GIF stream per frame (decode sizing; qwords are 16 B): path0 %.0f  path1 %.0f  "
+					"path2 %.0f  path3 %.0f qw   tags %.0f",
+		s.qwords[0] / n, s.qwords[1] / n, s.qwords[2] / n, s.qwords[3] / n,
+		(s.tags[0] + s.tags[1] + s.tags[2] + s.tags[3]) / n);
+	Console.WriteLn("    payload: packed %.0f qw  reglist %.0f qw  image %.0f qw", s.packed_qw / n,
+		s.reglist_qw / n, s.image_qw / n);
 }
 
 // -- The per-draw lockstep oracle ------------------------------------------------------
@@ -3605,6 +3771,10 @@ void GSRendererTile::Draw()
 		m_memo.build_calls++;
 	}
 	GSTileDrawPlan plan = gsTileLowerDraw(in);
+	// The design instrument sees every draw before routing: it scores a hypothetical
+	// backend's pass structure, so the native/floor decision below is not its business.
+	if (m_pass_sim.IsActive()) [[unlikely]]
+		PassSimObserveDraw(plan, r);
 	// The bisect lever: past the session's native-draw budget every draw floors. It
 	// counts draws that WOULD go native, so a run with limit N and a run with limit
 	// N+1 differ in exactly one draw's route.

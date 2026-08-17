@@ -963,6 +963,14 @@ struct Pcsx2Config
 					// rasterization). Rendering is wrong by construction; the frame
 					// time approximates a 100%-native run. Dev only, default off.
 					TileSkipFloorDraws : 1,
+					// Design instrument (gsrunner -tilepasssim): score the
+					// GS-semantic minimum pass structure of a run — how many pass
+					// breaks, snapshots and syncs a backend that keeps every draw
+					// on the GPU timeline would be FORCED to take — plus the GIF
+					// stream volume the front end decoded. Renders normally;
+					// reports at teardown. Attribution arm, never timed. Dev
+					// only, default off.
+					TilePassSim : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

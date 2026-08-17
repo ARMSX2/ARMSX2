@@ -444,6 +444,20 @@ public:
 	};
 
 	GIFPath m_path[4] = {};
+	// GIF stream volume counters for the Tile pass-structure sim (TilePassSim): qwords
+	// delivered and tags parsed per path, payload qwords split by tag mode. Sized at the
+	// tag, so a chunk that spans Transfer calls is counted once. Off (and unpaid) unless
+	// the sim pin arms them; they are decode-SIZING data, not a per-draw instrument.
+	struct GifStreamStats
+	{
+		u64 qwords[4] = {};
+		u64 tags[4] = {};
+		u64 packed_qw = 0;
+		u64 reglist_qw = 0;
+		u64 image_qw = 0;
+	};
+	GifStreamStats m_gif_stream_stats;
+	bool m_gif_stream_stats_active = false;
 	const GIFRegPRIM* PRIM = nullptr;
 	GSPrivRegSet* m_regs = nullptr;
 	GSLocalMemory m_mem;
