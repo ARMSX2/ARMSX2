@@ -57,9 +57,23 @@ public:
 		u32 snapshots = 0;
 		u32 snapshot_pages = 0;
 		u32 breaks[static_cast<u32>(BreakReason::Count)] = {};
-		u32 feedback_inpass = 0; // sampled its own pass, served by the core proof
-		u32 uploads_free = 0;    // transfers landing outside the open pass
-		u32 cpu_read_pages = 0;
+		u32 feedback_inpass = 0;  // sampled its own pass, served by the core proof
+		u32 feedback_identity = 0; // sampled its own pass pixel-to-pixel: the raster-order
+		                           // in-pass read serves it (the fbfetch shape) — no break
+		u32 uploads_free = 0;        // transfers landing outside the open pass
+		u32 uploads_versionable = 0; // transfers into pages the pass only READ: a fresh
+		                             // texture version serves them without a break
+		u32 uploads_drawable = 0;    // transfers over pages the pass WROTE: realized as
+		                             // an in-pass draw from fresh staging — no break
+		u32 palette_gathers = 0; // CLUT loads of pass-written pages: on-GPU gathers in the
+		                         // design (a break, never a CPU sync) — split from CpuRead
+		u32 cpu_read_pages = 0;  // non-CLUT CPU consumers: genuine readbacks in any design
+		u32 feedback_runs = 0; // consecutive-hazard runs: the break count under the
+		                       // go-for-broke stale-snapshot policy (offset reads within a
+		                       // run served from the run's first snapshot — Classic-grade
+		                       // staleness, one break per run instead of one per draw)
+		u32 feedback_fst = 0;  // offset-feedback draws with FST coordinates (the residue's
+		u32 feedback_stq = 0;  // shape: fixed-coordinate vs perspective sampling)
 		u32 draws_in_biggest_pass = 0;
 	};
 
@@ -71,31 +85,46 @@ public:
 	// window, all mip levels. core: the proven sampled core (empty when no proof
 	// holds). Returns true if the draw broke the open pass.
 	bool OnDraw(const GSPageBitmap& fb_written, const GSPageBitmap& z_written, const GSPageBitmap& read_deps,
-		const GSPageBitmap& tex, const GSPageBitmap& core, bool has_core, u32 fb_bp, u32 fb_psm, u32 z_bp,
-		u32 z_psm, bool z_used, u32 verts)
+		const GSPageBitmap& tex, const GSPageBitmap& core, bool has_core, bool identity_feedback, bool fst,
+		u32 fb_bp, u32 fb_psm, u32 z_bp, u32 z_psm, bool z_used, u32 verts)
 	{
 		bool broke = false;
+		bool hazard_draw = false;
 		m_frame.draws++;
 		m_frame.verts += verts;
 
-		// Texture-feedback hazard against everything the open pass wrote so far.
-		if (!tex.empty() && tex.intersects(m_pass_written))
+		// Texture-feedback hazard: only pages DRAWS wrote count. Pages an in-pass
+		// upload wrote are always servable from the upload's own staging (a fresh
+		// texture version — the bytes never existed only in tile memory).
+		if (!tex.empty() && tex.intersects(m_pass_draw_written))
 		{
-			if (has_core && !core.intersects(m_pass_written))
+			if (has_core && !core.intersects(m_pass_draw_written))
 			{
 				m_frame.feedback_inpass++;
 			}
+			else if (identity_feedback)
+			{
+				m_frame.feedback_identity++;
+			}
 			else
 			{
-				// Snapshot the hazard: the pages this window needs that the pass wrote.
+				// Snapshot the hazard: the pages this window needs that draws wrote.
 				GSPageBitmap hazard = tex;
-				hazard &= m_pass_written;
+				hazard &= m_pass_draw_written;
 				m_frame.snapshots++;
 				m_frame.snapshot_pages += hazard.count();
+				if (fst)
+					m_frame.feedback_fst++;
+				else
+					m_frame.feedback_stq++;
+				if (!m_last_draw_was_hazard)
+					m_frame.feedback_runs++;
+				hazard_draw = true;
 				EndPass(BreakReason::Feedback);
 				broke = true;
 			}
 		}
+		m_last_draw_was_hazard = hazard_draw;
 
 		// Target-pair budget.
 		if (!AddTarget(fb_bp, fb_psm, false) || (z_used && !AddTarget(z_bp, z_psm, true)))
@@ -112,8 +141,8 @@ public:
 		m_draws_in_pass++;
 		m_frame.draws_in_biggest_pass = std::max(m_frame.draws_in_biggest_pass, m_draws_in_pass);
 
-		m_pass_written |= fb_written;
-		m_pass_written |= z_written;
+		m_pass_draw_written |= fb_written;
+		m_pass_draw_written |= z_written;
 		m_pass_read |= read_deps;
 		m_pass_read |= tex;
 		return broke;
@@ -122,26 +151,69 @@ public:
 	// --- non-draw stream events ----------------------------------------------
 	void OnUpload(const GSPageBitmap& pages)
 	{
-		if (pages.intersects(m_pass_written) || pages.intersects(m_pass_read))
-			EndPass(BreakReason::Upload);
+		// An upload never has to break the pass: into untouched pages it hoists ahead
+		// of the pass outright; into read-only pages a fresh texture version serves
+		// later samplers; over pass-WRITTEN pages it is realized as an in-pass draw
+		// from fresh staging (the bytes never existed on the GPU, so nothing needs
+		// flushing first). The three counters price the three mechanisms.
+		if (pages.intersects(m_pass_draw_written))
+		{
+			m_frame.uploads_drawable++;
+			m_pass_upload_written |= pages; // bytes stay CPU/staging-visible by construction
+		}
+		else if (pages.intersects(m_pass_read))
+			m_frame.uploads_versionable++;
 		else
+		{
 			m_frame.uploads_free++;
+			m_pass_upload_written |= pages;
+		}
 	}
 
 	void OnMove(const GSPageBitmap& src, const GSPageBitmap& dst)
 	{
-		if (src.intersects(m_pass_written) || dst.intersects(m_pass_written) || dst.intersects(m_pass_read))
+		// The design realizes a move as a textured draw targeting dst. Its source read
+		// is an OFFSET read by construction (a move that copies nowhere is a no-op), so
+		// a source the pass wrote is the snapshot shape; the destination side follows
+		// the upload rules above.
+		if (src.intersects(m_pass_draw_written))
+		{
+			GSPageBitmap hazard = src;
+			hazard &= m_pass_draw_written;
+			m_frame.snapshots++;
+			m_frame.snapshot_pages += hazard.count();
 			EndPass(BreakReason::MoveHazard);
+			m_pass_draw_written |= dst; // the move-draw's output exists only on the GPU
+			return;
+		}
+		if (dst.intersects(m_pass_draw_written))
+			m_frame.uploads_drawable++;
+		else if (dst.intersects(m_pass_read))
+			m_frame.uploads_versionable++;
 		else
 			m_frame.uploads_free++;
+		m_pass_draw_written |= dst;
 	}
 
-	void OnCpuRead(const GSPageBitmap& pages)
+	void OnCpuRead(const GSPageBitmap& pages, bool clut)
 	{
-		if (pages.intersects(m_pass_written))
+		// Only draw-written pages force anything: an upload's bytes are CPU truth
+		// already, so a CPU read of upload-written-only pages is free.
+		if (pages.intersects(m_pass_draw_written))
 		{
-			m_frame.cpu_read_pages += pages.count();
-			EndPass(BreakReason::CpuRead);
+			if (clut)
+			{
+				// The design gathers a rendered palette on-GPU: a pass break at most,
+				// never a CPU sync. Split out so GT4's seventy-per-frame class reads
+				// as what it is.
+				m_frame.palette_gathers++;
+				EndPass(BreakReason::CpuRead);
+			}
+			else
+			{
+				m_frame.cpu_read_pages += pages.count();
+				EndPass(BreakReason::CpuRead);
+			}
 		}
 	}
 
@@ -168,7 +240,8 @@ private:
 		if (m_draws_in_pass == 0 && reason != BreakReason::FrameEnd)
 			return; // an empty pass cannot break
 		m_frame.breaks[static_cast<u32>(reason)]++;
-		m_pass_written = {};
+		m_pass_draw_written = {};
+		m_pass_upload_written = {};
 		m_pass_read = {};
 		m_target_count = 0;
 		m_draws_in_pass = 0;
@@ -189,8 +262,10 @@ private:
 	}
 
 	bool m_active = false;
-	GSPageBitmap m_pass_written;
+	GSPageBitmap m_pass_draw_written;   // written by draws: exists only in tile memory/GPU
+	GSPageBitmap m_pass_upload_written; // written by in-pass uploads: staging holds the bytes
 	GSPageBitmap m_pass_read;
+	bool m_last_draw_was_hazard = false;
 	TargetPair m_targets[kMaxTargetPairs] = {};
 	u32 m_target_count = 0;
 	u32 m_draws_in_pass = 0;

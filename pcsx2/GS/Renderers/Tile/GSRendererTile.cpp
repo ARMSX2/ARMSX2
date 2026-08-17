@@ -462,7 +462,7 @@ void GSRendererTile::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const 
 	GSVramModel::FootprintForRect(layout, r, m_rect_fp);
 
 	if (m_pass_sim.IsActive()) [[unlikely]]
-		m_pass_sim.OnCpuRead(PagesForTargetRect(layout, r));
+		m_pass_sim.OnCpuRead(PagesForTargetRect(layout, r), clut);
 
 	GSPageBitmap need = m_vram_model.ReadbackNeeded(m_rect_fp, kGSTilePlanesAll);
 	if (clut && !need.empty() && m_clut_gather_serves && GSConfig.TileGpuClut)
@@ -1441,11 +1441,27 @@ void GSRendererTile::PassSimObserveDraw(const GSTileDrawPlan& plan, const GSVect
 	GSPageBitmap tex_pages;
 	GSPageBitmap core_pages;
 	bool has_core = false;
+	bool identity_feedback = false;
 	if (PRIM->TME)
 	{
 		const bool mip = IsMipMapActive();
 		const GIFRegTEX0 fixed_tex0 =
 			ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mip);
+		// The in-pass-read shape: the sampling maps pixel-to-pixel — the UV bbox lands
+		// within one texel of the draw rect. An input-attachment read serves same-pixel
+		// reads of ANY attachment bound to the pass (it has no coordinate argument), so
+		// the sampled window's base does NOT have to be this draw's own target: the
+		// ping-pong post chain (write A, draw into B sampling A at 1:1) is exactly this
+		// shape. The design brief prices how much of the feedback bill it covers.
+		if (!mip && PRIM->FST)
+		{
+			const int u0 = static_cast<int>(std::floor(m_vt.m_min.t.x));
+			const int v0 = static_cast<int>(std::floor(m_vt.m_min.t.y));
+			const int u1 = static_cast<int>(std::ceil(m_vt.m_max.t.x));
+			const int v1 = static_cast<int>(std::ceil(m_vt.m_max.t.y));
+			identity_feedback = std::abs(u0 - r.x) <= 1 && std::abs(v0 - r.y) <= 1 &&
+								std::abs(u1 - r.z) <= 1 && std::abs(v1 - r.w) <= 1;
+		}
 		const u32 mip_levels = mip ? (std::min<u32>(ctx->TEX1.MXL, 6) + 1) : 1u;
 		for (u32 i = 0; i < mip_levels; i++)
 		{
@@ -1481,7 +1497,8 @@ void GSRendererTile::PassSimObserveDraw(const GSTileDrawPlan& plan, const GSVect
 	}
 
 	m_pass_sim.OnDraw(fb_written, z_written, fb_pages | z_pages, tex_pages, core_pages, has_core,
-		ctx->FRAME.Block(), ctx->FRAME.PSM, ctx->ZBUF.Block(), ctx->ZBUF.PSM, z_used,
+		identity_feedback, PRIM->TME && PRIM->FST, ctx->FRAME.Block(), ctx->FRAME.PSM,
+		ctx->ZBUF.Block(), ctx->ZBUF.PSM, z_used,
 		static_cast<u32>(std::max(m_vertex->tail, m_vertex->next)));
 }
 
@@ -1522,7 +1539,14 @@ void GSRendererTile::ReportPassSim()
 	const auto snaps = stat([](const FS& f) { return f.snapshots; });
 	const auto snap_pages = stat([](const FS& f) { return f.snapshot_pages; });
 	const auto inpass = stat([](const FS& f) { return f.feedback_inpass; });
+	const auto identity = stat([](const FS& f) { return f.feedback_identity; });
 	const auto upfree = stat([](const FS& f) { return f.uploads_free; });
+	const auto upver = stat([](const FS& f) { return f.uploads_versionable; });
+	const auto updraw = stat([](const FS& f) { return f.uploads_drawable; });
+	const auto palgather = stat([](const FS& f) { return f.palette_gathers; });
+	const auto fruns = stat([](const FS& f) { return f.feedback_runs; });
+	const auto ffst = stat([](const FS& f) { return f.feedback_fst; });
+	const auto fstq = stat([](const FS& f) { return f.feedback_stq; });
 	const auto biggest = stat([](const FS& f) { return f.draws_in_biggest_pass; });
 	const auto b_feedback = brk(GSTilePassSim::BreakReason::Feedback);
 	const auto b_cap = brk(GSTilePassSim::BreakReason::TargetCap);
@@ -1541,9 +1565,16 @@ void GSRendererTile::ReportPassSim()
 					"cpu-read %.2f/%u",
 		b_feedback.mean, b_feedback.p50, b_cap.mean, b_cap.p50, b_upload.mean, b_upload.p50,
 		b_move.mean, b_move.p50, b_cpu.mean, b_cpu.p50);
-	Console.WriteLn("  feedback served in-pass (core proof): %.2f / %u   uploads outside the open "
-					"pass (free): %.2f / %u",
-		inpass.mean, inpass.p50, upfree.mean, upfree.p50);
+	Console.WriteLn("  feedback served in-pass: core proof %.2f / %u   pixel-identity (raster-order "
+					"read) %.2f / %u",
+		inpass.mean, inpass.p50, identity.mean, identity.p50);
+	Console.WriteLn("  uploads: outside the open pass (free) %.2f / %u   into read-only pages "
+					"(versionable) %.2f / %u   over pass writes (draw-realized) %.2f / %u",
+		upfree.mean, upfree.p50, upver.mean, upver.p50, updraw.mean, updraw.p50);
+	Console.WriteLn("  palette gathers (on-GPU in design): %.2f / %u", palgather.mean, palgather.p50);
+	Console.WriteLn("  offset-feedback residue: %.2f / %u runs (stale-snapshot policy's break count); "
+					"draw shape %.2f fst / %.2f stq",
+		fruns.mean, fruns.p50, ffst.mean, fstq.mean);
 
 	const GifStreamStats& s = m_gif_stream_stats;
 	Console.WriteLn("  GIF stream per frame (decode sizing; qwords are 16 B): path0 %.0f  path1 %.0f  "
