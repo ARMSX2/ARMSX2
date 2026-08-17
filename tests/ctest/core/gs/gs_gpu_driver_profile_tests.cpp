@@ -97,6 +97,24 @@ TEST(GSGpuDriverProfile, MaliR44p1TakesTheRenderTargetCopyPathOnVulkan)
 	EXPECT_TRUE(TakesTheRenderTargetCopyPath(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0))));
 }
 
+// The coherent-readback preference (Dolphin's slow-cached-readback story) was measured
+// BACKWARDS on r44p1/G615 (2026-08-17, crossing-cost probe: cached wins ~12x per readback,
+// explicit invalidate included), so exactly the measured revision drops the workaround and
+// every other revision — unknown versions included, which resolve as "old" — keeps it. This
+// pins both directions: a rule drifting wide re-ships a 12x readback tax on the one Mali we
+// measure; a rule drifting narrow silently changes memory types on hardware nobody measured.
+TEST(GSGpuDriverProfile, MaliCoherentReadbackPreferenceIsVersionGatedAroundR44p1)
+{
+	const auto prefers_coherent = [](const GpuProfileSelection& sel) {
+		return sel.driver.UsesWorkaround(DriverWorkaround::PreferCoherentReadback);
+	};
+	EXPECT_FALSE(prefers_coherent(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0))));
+	EXPECT_TRUE(prefers_coherent(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 0, 0))));
+	EXPECT_TRUE(prefers_coherent(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(43, 0, 0))));
+	EXPECT_TRUE(prefers_coherent(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 2, 0))));
+	EXPECT_TRUE(prefers_coherent(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(46, 0, 0))));
+}
+
 // The other half of the claim, and the one a too-broad rule breaks silently: the copy path costs
 // real performance, so every Arm blob that is NOT r44p1 must keep the in-tile read. r44p0 and r44p2
 // bracket the window; r38 and r52 are the neighbouring revisions other rules already key on.

@@ -339,7 +339,7 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 // Sources and exact upstream revisions are mirrored in docs/gpu-driver-database.json. A known
 // driver bug is not automatically an active workaround: expensive renderer fallbacks stay disabled
 // until their PCSX2 integration has a bounded, tested condition.
-static constexpr std::array<DriverRule, 27> s_driver_rules = {{
+static constexpr std::array<DriverRule, 29> s_driver_rules = {{
 	{"gl-arm-buffer-stream", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenUnsynchronizedMapping) |
@@ -398,12 +398,29 @@ static constexpr std::array<DriverRule, 27> s_driver_rules = {{
 	{"vk-arm-proprietary", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenPrimitiveRestart) | Bug(DriverBug::BrokenPushDescriptors) |
-			Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout) |
-			Bug(DriverBug::SlowCachedReadbackMemory) | Bug(DriverBug::BrokenVectorBitwiseAnd),
+			Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout) | Bug(DriverBug::BrokenVectorBitwiseAnd),
 		Workaround(DriverWorkaround::UseDescriptorSets) |
 			Workaround(DriverWorkaround::DisableAttachmentFeedbackLoopLayout) |
-			Workaround(DriverWorkaround::PreferCoherentReadback) |
 			Workaround(DriverWorkaround::ScalarizeVectorBitwiseAnd)},
+	// The slow-cached-readback story (Dolphin's BUG_SLOW_CACHED_READBACK_MEMORY, ported as a
+	// blanket Mali rule) was MEASURED BACKWARDS on r44p1 / Mali-G615 / MT6897 2026-08-17: a
+	// crossing-cost probe (umbrella gpu-drivers CROSSING-COST-RESULT.md) allocating a genuinely
+	// non-coherent cached type and paying the explicit invalidate per slot — the exact kernel
+	// cost the workaround is about — still beats the coherent map ~12× per 512×448 readback
+	// (4,021 → 329 µs), because a sequential CPU pass over the uncached map runs at ~244 MB/s.
+	// That measurement does not prove Dolphin wrong on older parts, so the preference is
+	// NARROWED by driver version rather than deleted: exactly the [44.1, 44.2) revision the
+	// probe ran keeps cached readbacks; every other revision keeps the coherent preference it
+	// always had. Same version bounds as the r44p1 self-read rule above, same reasoning: change
+	// nothing on hardware nobody measured.
+	{"vk-arm-slow-cached-readback-before-r44p1", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
+		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {44, 1, 0},
+		0, 0, true, Bug(DriverBug::SlowCachedReadbackMemory),
+		Workaround(DriverWorkaround::PreferCoherentReadback)},
+	{"vk-arm-slow-cached-readback-after-r44p1", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
+		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {44, 2, 0}, {},
+		0, 0, false, Bug(DriverBug::SlowCachedReadbackMemory),
+		Workaround(DriverWorkaround::PreferCoherentReadback)},
 	{"vk-arm-empty-renderpass", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0xaa9c4b29u, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenEmptyRenderPass), 0},

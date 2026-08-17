@@ -876,13 +876,22 @@ std::unique_ptr<GSDownloadTextureVK> GSDownloadTextureVK::Create(u32 width, u32 
 	aci.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
 	aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
 	// Cached host memory is normally the fastest to read back from on the CPU. On the ARM Mali
-	// Vulkan driver, however, cached readbacks are much slower than coherent memory: mapping a
-	// cached readback buffer spends most of its time inside the kernel cache-invalidation routine
-	// (__pi___inval_cache_range), pegging a CPU core. Prefer coherent memory on Mali so texture
-	// readbacks (GT4, Tales, any hardware-download game) skip that invalidation cost. Every other
-	// vendor keeps the cached preference. (Ports Dolphin BUG_SLOW_CACHED_READBACK_MEMORY.)
-	aci.preferredFlags = GSDeviceVK::GetInstance()->IsDeviceMali() ? VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-															   : VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+	// Vulkan driver, cached readbacks were reported much slower than coherent memory (the kernel
+	// cache-invalidation routine pegging a core — Dolphin's BUG_SLOW_CACHED_READBACK_MEMORY),
+	// so Mali preferred coherent. Measured backwards on r44p1 / Mali-G615 2026-08-17: the CPU's
+	// sequential pass over a coherent (uncached) map runs at ~244 MB/s and is ~75% of every
+	// readback crossing, while the cached type — explicit invalidate included — wins ~12×. The
+	// preference is therefore version-gated through the driver profile
+	// (vk-arm-slow-cached-readback-*, GSGPUDriverProfile.cpp): exactly the measured revision
+	// takes cached, every other Mali keeps coherent, and non-Mali vendors are untouched here
+	// even where their profile declares the workaround (the Qualcomm PROPRIETARY blob declares
+	// it and this site never consulted it; consuming it there is a behavior change on hardware
+	// nobody here runs, deliberately not taken in the same commit as a Mali fix).
+	const bool prefer_coherent = GSDeviceVK::GetInstance()->IsDeviceMali() &&
+								 GSDeviceVK::GetInstance()->GetMobileDriverProfile().UsesWorkaround(
+									 DriverWorkaround::PreferCoherentReadback);
+	aci.preferredFlags = prefer_coherent ? VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+										 : VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 
 	VmaAllocationInfo ai = {};
 	VmaAllocation allocation;
