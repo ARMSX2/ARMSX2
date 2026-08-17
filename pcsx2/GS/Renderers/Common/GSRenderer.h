@@ -21,6 +21,7 @@ private:
 	bool Merge(int field);
 	bool BeginPresentFrame(bool frame_skip);
 	void EndPresentFrame();
+	void SampleGPUTiming();
 
 	u64 m_shader_time_start = 0;
 

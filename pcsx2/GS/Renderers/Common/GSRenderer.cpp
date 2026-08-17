@@ -786,6 +786,20 @@ void GSRenderer::EndPresentFrame()
 	ImGuiManager::NewFrame();
 }
 
+// The device accumulates GPU timing when a command buffer RETIRES, which has nothing to do with
+// whether the frame was presented -- the timestamps are written at command-buffer begin and at
+// submit. So the accumulator has to be drained once per VSync on every path, or the time it holds
+// is silently carried into whichever later frame happens to drain it, and never drained at all in
+// a configuration that never presents. That was the state of things: surfaceless gsrunner runs
+// computed a GPU time on-device every frame and threw it away, which read as "the GPU is not
+// measured here" and left the renderer A/Bs with no GPU term at all.
+void GSRenderer::SampleGPUTiming()
+{
+	const float gpu_time = g_gs_device->GetAndResetAccumulatedGPUTime();
+	const GPUPipelineStatistics gpu_stats = g_gs_device->GetAndResetAccumulatedGPUPipelineStatistics();
+	PerformanceMetrics::OnGPUTimingSampled(gpu_time, gpu_stats.vs_invocations, gpu_stats.ps_invocations);
+}
+
 void GSRenderer::SubmitVsync(u32 field, bool registers_written)
 {
 	GSBackQueue::VsyncRecord rec;
@@ -996,8 +1010,12 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 	if (skip_frame || skip_blank || g_gs_device->ShouldSkipPresentingFrame())
 	{
 		if (BeginPresentFrame(true))
+		{
 			EndPresentFrame();
+			PerformanceMetrics::OnPresent();
+		}
 
+		SampleGPUTiming();
 		PerformanceMetrics::Update(registers_written, fb_sprite_frame, skip_frame);
 	}
 	else
@@ -1106,12 +1124,10 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 			}
 
 			EndPresentFrame();
-
-			const float gpu_time = g_gs_device->GetAndResetAccumulatedGPUTime();
-			GPUPipelineStatistics gpu_stats = g_gs_device->GetAndResetAccumulatedGPUPipelineStatistics();
-			PerformanceMetrics::OnGPUPresent(gpu_time, gpu_stats.vs_invocations, gpu_stats.ps_invocations);
+			PerformanceMetrics::OnPresent();
 		}
 
+		SampleGPUTiming();
 		PerformanceMetrics::Update(registers_written, fb_sprite_frame, false);
 	}
 

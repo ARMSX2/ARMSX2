@@ -419,12 +419,16 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 	Host::OnPerformanceMetricsUpdated();
 }
 
-void PerformanceMetrics::OnGPUPresent(float gpu_time, u64 vs_invocations, u64 ps_invocations)
+void PerformanceMetrics::OnGPUTimingSampled(float gpu_time, u64 vs_invocations, u64 ps_invocations)
 {
 	s_last_gpu_time = gpu_time;
 	s_accumulated_gpu_time += gpu_time;
 	s_accumulated_gpu_vs_invocations += vs_invocations;
 	s_accumulated_gpu_ps_invocations += ps_invocations;
+}
+
+void PerformanceMetrics::OnPresent()
+{
 	s_presents_since_last_update++;
 }
 

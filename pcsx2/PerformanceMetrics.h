@@ -21,7 +21,16 @@ namespace PerformanceMetrics
 	void Clear();
 	void Reset();
 	void Update(bool gs_register_write, bool fb_blit, bool is_skipping_present);
-	void OnGPUPresent(float gpu_time, u64 vs_invocations, u64 ps_invocations);
+
+	/// Takes the GPU timing the device accumulated since the last call. The accumulator fills on
+	/// command-buffer completion, not on present, so this must be called once per frame on every
+	/// path -- including the ones that never present. Draining it only where a present succeeded
+	/// left surfaceless runs (gsrunner) reporting a GPU time of zero forever.
+	void OnGPUTimingSampled(float gpu_time, u64 vs_invocations, u64 ps_invocations);
+
+	/// A frame actually reached the screen. Separate from the timing sample above, which happens
+	/// whether or not it did.
+	void OnPresent();
 
 	/// Logs the whole-session average framerate (frames since Clear() over
 	/// wall time). Called at VM shutdown so every -logfile run records it.
