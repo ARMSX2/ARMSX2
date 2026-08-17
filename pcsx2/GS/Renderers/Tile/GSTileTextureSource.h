@@ -82,15 +82,31 @@ public:
 	/// CPU memory — see Donor. It is consulted only on a BUILD; a cache hit is a hit
 	/// either way, because the content stamp is a property of the bytes and not of the
 	/// route that last fetched them.
+	///
+	/// `build_id`, when given, receives the returned texture's content identity:
+	/// equal ids mean the same texel bytes. A rebuild whose deswizzled bytes hash
+	/// identical to the previous build KEEPS the id (and skips its upload); a
+	/// changed build, an evicted slot reused, or a device-built source gets a new
+	/// one. Derived caches (the palette-expanded RGBA cache) key on it.
 	GSTexture* Lookup(GSLocalMemory& mem, const GSVramModel& model, const GIFRegTEX0& TEX0,
 		const GIFRegTEXA& TEXA, const GSPageBitmap& pages,
-		const GIFRegTEX0* level_tex0 = nullptr, u32 levels = 1, const Donor* donor = nullptr);
+		const GIFRegTEX0* level_tex0 = nullptr, u32 levels = 1, const Donor* donor = nullptr,
+		u64* build_id = nullptr);
 
 	/// Builds served off the device rather than out of CPU memory (copies and
 	/// reinterpretations both; the latter counted again below).
 	u64 DonorBuilds() const { return m_donor_builds; }
 	/// Of those, index textures the device reinterpreted out of a colour target.
 	u64 ReinterpretBuilds() const { return m_reinterpret_builds; }
+
+	/// Of the CPU rebuilds forced by a moved gen_stamp, how many deswizzled to
+	/// EXACTLY the bytes already on the device. Measured 97.7% on GT4-fast (148 of
+	/// 152 rebuilds per frame): a moved stamp says some byte on the window's PAGES
+	/// moved — games re-upload identical texture data every frame — not that the
+	/// window's texels did. A same-bytes rebuild skips its device upload and keeps
+	/// its build id, which is what lets derived caches ride out the churn.
+	u64 RebuildsSameBytes() const { return m_rebuilds_same_bytes; }
+	u64 RebuildsNewBytes() const { return m_rebuilds_new_bytes; }
 
 	/// Recycles every cached texture (reset / teardown / hot-switch).
 	void Clear();
@@ -99,7 +115,14 @@ public:
 	u64 Builds() const { return m_builds; }
 
 private:
-	static constexpr u32 kMaxEntries = 64;
+	// 64 capacity-thrashed on GT4: 418 window lookups per frame over a working set
+	// past 64 meant 208 fresh builds PER FRAME — each a full deswizzle plus an
+	// upload — with rebuild-in-place (a genuinely moved stamp) measured at 2/frame.
+	// The deswizzle bill this created is visible in the SD865 GS-thread profile
+	// (ReadTexture32/24). Capacity is CPU-cheap (the scan compares four words); the
+	// device memory is bounded by the working set either way, because a thrashing
+	// cache allocates the same textures every frame instead of holding them.
+	static constexpr u32 kMaxEntries = 512;
 
 	struct Entry
 	{
@@ -108,6 +131,8 @@ private:
 		u64 mip_key[2] = {0, 0}; ///< exact pack of the level TBP0/TBW words + level count ({0,0} = single level)
 		u64 gen_stamp = 0;
 		u64 last_use = 0;
+		u64 build_id = 0; ///< stamped when a build CHANGES content; equal ids = same texel bytes
+		u64 content_hash = 0; ///< XXH3 of the last CPU build's texel rows (0 = none / device-built)
 		GSPageBitmap pages;
 		GSTexture* tex = nullptr;
 		bool alive = false;
@@ -121,8 +146,11 @@ private:
 	std::unique_ptr<u8[]> m_scratch;
 	u32 m_scratch_size = 0;
 	u64 m_use_counter = 0;
+	u64 m_build_counter = 0;
 	u64 m_hits = 0;
 	u64 m_builds = 0;
 	u64 m_donor_builds = 0;
 	u64 m_reinterpret_builds = 0;
+	u64 m_rebuilds_same_bytes = 0;
+	u64 m_rebuilds_new_bytes = 0;
 };

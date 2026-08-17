@@ -36,7 +36,17 @@ public:
 	/// bytes are bit-identical, so a repeat call skips the hash and the entry scan
 	/// entirely and returns the last texture. Content keying is unchanged: the memo
 	/// is only ever a shortcut to the same answer the full path would give.
-	GSTexture* Lookup(const u32* clut, u32 entries, u32 read_gen);
+	///
+	/// `content_id`, when given, receives the palette's content identity: the FNV-64
+	/// of its words. CONTENT-derived rather than build-instance-derived on purpose —
+	/// GT4 rotates more palettes per frame than the cache holds, so the same words
+	/// rebuild into recycled slots every frame, and an instance id would make every
+	/// rebuild look like a new palette to derived caches. The id is hash-only (no
+	/// byte verify behind it): a derived cache keyed on it accepts the same 64-bit
+	/// collision stance as Classic's hash cache, which has keyed palettes this way
+	/// for years. Within a pair the entry count adds nothing (the index texture's
+	/// format fixes it). This cache's OWN lookups still verify words exactly.
+	GSTexture* Lookup(const u32* clut, u32 entries, u32 read_gen, u64* content_id = nullptr);
 
 	/// Recycles every cached texture (reset / teardown / hot-switch).
 	void Clear();
@@ -45,7 +55,10 @@ public:
 	u64 Builds() const { return m_builds; }
 
 private:
-	static constexpr u32 kMaxEntries = 128;
+	// 128 capacity-thrashed on GT4 (198 rebuilds per frame, each a texture create
+	// plus a 1 KB upload, for palettes the title rotates through every frame). A
+	// palette texture is N×1 texels, so capacity here is nearly free on both sides.
+	static constexpr u32 kMaxEntries = 1024;
 
 	struct Entry
 	{

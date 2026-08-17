@@ -4,6 +4,7 @@
 #include "GS/Renderers/Tile/GSTileTextureSource.h"
 
 #include "GS/GSLocalMemory.h"
+#include "GS/GSXXH.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Tile/GSVramModel.h"
 
@@ -100,6 +101,7 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 	const GSTexture::Format format =
 		(indexed && !reinterpret) ? GSTexture::Format::UNorm8 : GSTexture::Format::Color;
 
+	bool fresh_tex = false;
 	if (!e.tex || e.tex->GetWidth() != tw || e.tex->GetHeight() != th ||
 		e.tex->GetMipmapLevels() != static_cast<int>(levels) || e.tex->GetFormat() != format ||
 		e.tex->IsRenderTarget() != reinterpret)
@@ -110,6 +112,9 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 							: g_gs_device->CreateTexture(tw, th, static_cast<int>(levels), format, true);
 		if (!e.tex)
 			return false;
+		// A recycled allocation holds arbitrary bytes: a content-hash match can
+		// keep the build id, but never the upload.
+		fresh_tex = true;
 	}
 
 	// The device routes. The caller proved the donor holds the window's bytes, so the
@@ -131,10 +136,30 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 			pxAssert(tw <= donor->width && th <= donor->height);
 			g_gs_device->CopyRect(donor->tex, e.tex, GSVector4i(0, 0, tw, th), 0, 0);
 		}
+		// The bytes now on the device never transited the CPU, so the content
+		// verify below has nothing to compare a later CPU build against; and
+		// unknown bytes are changed bytes as far as derived caches go.
+		e.content_hash = 0;
+		e.build_id = ++m_build_counter;
 		m_builds++;
 		m_donor_builds++;
 		return true;
 	}
+
+	// Content verify: hash exactly the rows Update() would upload and compare
+	// against this entry's previous CPU build. A rebuild is forced by a moved
+	// gen_stamp, which says "some byte on the window's PAGES moved" — not that
+	// the window's texels did — and on GT4 97.7% of rebuilds deswizzle to
+	// identical bytes (games re-upload the same texture data every frame). A
+	// same-bytes single-level rebuild skips its device upload entirely — the
+	// bytes make one pass through the hasher instead of one through staging plus
+	// a device copy — and keeps its build id, so derived caches (the
+	// palette-expanded RGBA cache) see stable identity through the churn.
+	XXH3_state_t hash_state;
+	XXH3_64bits_reset(&hash_state);
+	const u8* level0_buff = nullptr;
+	u32 level0_pitch = 0;
+	GSVector4i level0_rect = GSVector4i::zero();
 
 	for (u32 i = 0; i < levels; i++)
 	{
@@ -158,15 +183,42 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 
 		const GSOffset off = mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM);
 		(indexed ? psm.rtxP : psm.rtx)(mem, off, block_rect, buff, pitch, TEXA);
-		e.tex->Update(rect, buff, pitch, static_cast<int>(i));
+		for (int y = 0; y < lh; y++)
+			GSXXH3_64bits_update(&hash_state, buff + static_cast<u32>(y) * pitch,
+				static_cast<u32>(lw) * bytes_per_texel);
+		if (levels > 1)
+		{
+			// A pyramid's verdict is only known after the last level, so its
+			// uploads go out as the levels deswizzle; a full match still keeps
+			// the build id below (the redundant uploads carried identical bytes).
+			e.tex->Update(rect, buff, pitch, static_cast<int>(i));
+		}
+		else
+		{
+			// Single level: defer the upload until the verdict. The scratch is
+			// not reused before then.
+			level0_buff = buff;
+			level0_pitch = pitch;
+			level0_rect = rect;
+		}
 	}
+
+	const u64 h = GSXXH3_64bits_digest(&hash_state) | 1; // never the "no previous build" zero
+	const bool same = (h == e.content_hash);
+	if (e.content_hash)
+		((same ? m_rebuilds_same_bytes : m_rebuilds_new_bytes))++;
+	if (levels == 1 && (!same || fresh_tex))
+		e.tex->Update(level0_rect, level0_buff, level0_pitch, 0);
+	e.content_hash = h;
+	if (!same || e.build_id == 0)
+		e.build_id = ++m_build_counter;
 	m_builds++;
 	return true;
 }
 
 GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& model, const GIFRegTEX0& TEX0,
 	const GIFRegTEXA& TEXA, const GSPageBitmap& pages,
-	const GIFRegTEX0* level_tex0, u32 levels, const Donor* donor)
+	const GIFRegTEX0* level_tex0, u32 levels, const Donor* donor, u64* build_id)
 {
 	// Single-level callers pass no array; view the base register as a one-entry one.
 	if (!level_tex0)
@@ -197,6 +249,8 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 			if (e.gen_stamp == stamp)
 			{
 				m_hits++;
+				if (build_id)
+					*build_id = e.build_id;
 				return e.tex;
 			}
 			// Same window, moved bytes: rebuild in place.
@@ -212,6 +266,9 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 			}
 			e.gen_stamp = stamp;
 			e.pages = pages;
+			// BuildInto stamped the id — a NEW one only if the bytes moved.
+			if (build_id)
+				*build_id = e.build_id;
 			return e.tex;
 		}
 		if (!lru || e.last_use < lru->last_use)
@@ -231,6 +288,8 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 	e.mip_key[1] = mip_key[1];
 	e.pages = pages;
 	e.last_use = ++m_use_counter;
+	e.content_hash = 0; // a fresh window never compares against the slot's previous occupant
+	e.build_id = 0;
 	if (!BuildInto(e, mem, level_tex0, levels, TEXA, donor))
 	{
 		e.alive = false;
@@ -242,6 +301,8 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 		return nullptr;
 	}
 	e.gen_stamp = stamp;
+	if (build_id)
+		*build_id = e.build_id;
 	return e.tex;
 }
 

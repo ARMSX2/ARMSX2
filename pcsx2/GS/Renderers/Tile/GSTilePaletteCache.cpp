@@ -31,7 +31,7 @@ GSTilePaletteCache::~GSTilePaletteCache()
 	Clear();
 }
 
-GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen)
+GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen, u64* content_id)
 {
 	pxAssert(entries == 16 || entries == 256);
 
@@ -43,6 +43,8 @@ GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen
 			me.last_use = ++m_use_counter;
 			m_memo_last_use = me.last_use;
 			m_hits++;
+			if (content_id)
+				*content_id = me.hash;
 			return me.tex;
 		}
 	}
@@ -68,6 +70,8 @@ GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen
 			m_memo_entries = entries;
 			m_memo_slot = static_cast<u32>(&e - m_entries.data());
 			m_memo_last_use = e.last_use;
+			if (content_id)
+				*content_id = e.hash;
 			return e.tex;
 		}
 		if (!lru || e.last_use < lru->last_use)
@@ -103,6 +107,8 @@ GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen
 	m_memo_entries = entries;
 	m_memo_slot = static_cast<u32>(&e - m_entries.data());
 	m_memo_last_use = e.last_use;
+	if (content_id)
+		*content_id = hash;
 	return tex;
 }
 
