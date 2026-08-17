@@ -172,6 +172,15 @@ namespace GSDrawLog
 		// GSHWDrawConfig), so they serialise as submitted=0 with the tile cells filled.
 		u32 pass_id; // pass-graph instance the draw landed in; 0 until the graph exists
 		u32 record_ns; // Tile bookkeeping cost for this draw (key hash, probes, page sets) -- never draw execution
+		// Which blend realization the native plan's blending pass took, encoded as
+		// GSTileBlendLeg + 1 (0 = floored, or no pass blends). The column exists
+		// because the carrier's variable-factor legs need the device's dual-source
+		// unit, so the leg DISTRIBUTION is device-dependent — on a no-dualsrc
+		// driver (Mali) the Mix leg collapses and every such draw keeps its own
+		// read-rung pass, which is the measured Mali pass explosion. src1 says
+		// whether the realization actually carries a SRC1 factor.
+		u8 tile_blend_leg;
+		u8 tile_blend_src1;
 		u8 tile; // row came from the Tile renderer
 		// Row came from the software rasterizer. Like Tile rows these carry no backend
 		// view, so they serialise as submitted=0 with the draw rect filled. The column
@@ -378,8 +387,11 @@ namespace GSDrawLog
 	/// Completes the row opened by BeginDraw with the Tile-renderer view instead of the
 	/// backend view. record_ns is the draw's Tile bookkeeping cost only; pass_id is 0
 	/// until the pass graph exists. No-op if BeginDraw did not record a row.
+	/// blend_leg is GSTileBlendLeg + 1, 0 when the draw floored or no pass blends;
+	/// blend_src1 is whether the realization carries a factor through the second
+	/// fragment output (needs the device's dual-source unit).
 	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback, const GSVector4i& rect,
-		u8 stq_guard);
+		u8 stq_guard, u8 blend_leg, u8 blend_src1);
 
 	/// Attributes one sync to the row currently open. ACCUMULATES rather than assigns --
 	/// a draw can be forced to sync several times, and the reason bits OR together --

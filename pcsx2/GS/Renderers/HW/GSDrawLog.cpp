@@ -179,7 +179,7 @@ namespace GSDrawLog
 	}
 
 	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback, const GSVector4i& rect,
-		u8 stq_guard)
+		u8 stq_guard, u8 blend_leg, u8 blend_src1)
 	{
 		if (s_open_record == SIZE_MAX)
 			return;
@@ -191,6 +191,8 @@ namespace GSDrawLog
 		rec.pass_id = pass_id;
 		rec.fallback_reason = static_cast<u8>(fallback);
 		rec.stq_guard = stq_guard;
+		rec.tile_blend_leg = blend_leg;
+		rec.tile_blend_src1 = blend_src1;
 		// The draw rect (bbox ∩ scissor) — the tile rows' equivalent of the backend
 		// drawarea, and the column that localizes a wrong pixel to its draw.
 		rec.area_x = static_cast<s16>(std::clamp(rect.x, -32768, 32767));
@@ -395,7 +397,7 @@ namespace GSDrawLog
 			"atst,afail,aref,date,datm,self_read,"
 			"topology,expand,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
 			"area_x,area_y,area_w,area_h,"
-			"memo_hit,record_ns,pass_id,fallback,stq_guard,stalls,sync_pages,sync_reason,"
+			"memo_hit,record_ns,pass_id,fallback,stq_guard,blend_leg,blend_src1,stalls,sync_pages,sync_reason,"
 			"mmag,mmin,mxl,tcc,tfx,fge,fst,aa1,colclamp,pabe,fba,dthe,iip\n");
 
 		for (const Record& r : s_records)
@@ -498,12 +500,20 @@ namespace GSDrawLog
 				// sync_reason in hex, like expand: it is a bitfield, and naming one of
 				// several set bits would throw away exactly the distinction it exists to
 				// draw. A sole-reason row is a power of two, which reads at a glance.
-				std::fprintf(fp.get(), "%u,%u,%u,%s,%u,%u,%u,%x,", r.memo_hit, r.record_ns, r.pass_id,
-					GetTileFallbackName(r.fallback_reason), r.stq_guard, r.stalls, r.sync_pages, r.sync_reason);
+				// blend_leg named, not numbered: the analyses over this column are
+				// per-device leg distributions, read by people.
+				static constexpr const char* kTileBlendLegNames[] = {
+					"", "FF", "MIX", "ACCU", "HWRW", "NOREC", "READ"};
+				const char* leg = (r.tile_blend_leg < std::size(kTileBlendLegNames)) ?
+				                      kTileBlendLegNames[r.tile_blend_leg] :
+				                      "?";
+				std::fprintf(fp.get(), "%u,%u,%u,%s,%u,%s,%u,%u,%u,%x,", r.memo_hit, r.record_ns, r.pass_id,
+					GetTileFallbackName(r.fallback_reason), r.stq_guard, leg, r.tile_blend_src1, r.stalls,
+					r.sync_pages, r.sync_reason);
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,,,");
+				std::fprintf(fp.get(), ",,,,,,,,,,");
 			}
 
 			if (textured)

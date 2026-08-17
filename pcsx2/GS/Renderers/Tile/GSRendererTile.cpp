@@ -3425,8 +3425,25 @@ void GSRendererTile::Draw()
 		// After record_ns is taken: the census times the lowering on its own clock and
 		// must not land in the renderer's per-draw cost.
 		const bool memo_hit = MeasureMemo(in);
+		// The blending pass's realization, for the per-device leg distribution
+		// (the carrier's variable-factor legs need dual-source blend, so which
+		// leg a draw takes is a device property as much as a draw property).
+		u8 blend_leg = 0;
+		u8 blend_src1 = 0;
+		if (native)
+		{
+			for (u32 i = 0; i < plan.pass_count; i++)
+			{
+				if (plan.pass[i].abe)
+				{
+					blend_leg = static_cast<u8>(plan.pass[i].blend_leg) + 1;
+					blend_src1 = plan.pass[i].blend_src1 ? 1 : 0;
+					break;
+				}
+			}
+		}
 		GSDrawLog::NoteTileDraw(memo_hit, record_ns, /*pass_id=*/0, MapFallbackReason(reason), r,
-			plan.stq_guard);
+			plan.stq_guard, blend_leg, blend_src1);
 		GSDrawLog::FinishDraw();
 	}
 }
