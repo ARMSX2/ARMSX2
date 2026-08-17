@@ -976,6 +976,11 @@ struct Pcsx2Config
 					// Pin the exact texture-coordinate walks under the umbrella
 					// (perspective draws floor again, sprite rows replay again).
 					TileExactTexCoord : 1,
+					// Pin the exact alpha-test order under the umbrella: a dynamic
+					// test whose fail mask differs on order-dependent depth floors
+					// again instead of taking the two-pass split (the reorder
+					// Classic ships unconditionally).
+					TileExactAlphaTest : 1,
 					// Depth from the closed plane form instead of the soft-float64
 					// walk: the scanline's own gradients (double-formed), integer
 					// wraparound plus an f32 fraction carry per fragment, within

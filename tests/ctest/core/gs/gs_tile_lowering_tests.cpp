@@ -800,6 +800,36 @@ TEST(GSTileLowering, ASplitNeedsTheDepthOutcomeToBeOrderIndependent)
 	EXPECT_EQ(pg.reason, GSTileFloorReason::AlphaTest);
 }
 
+TEST(GSTileLowering, FastProfileAdmitsTheOrderDependentSplit)
+{
+	// The fast profile takes the two-pass split without the order proof — the
+	// reorder Classic ships unconditionally — so the largest single floor class
+	// (R&C's foliage: dynamic test, differing fail mask, GEQUAL depth, varying z,
+	// overlapping primitives) goes native with the same pass shapes the provably
+	// safe split builds.
+	GSTileDrawInput in = DynamicAlphaInput(AFAIL_FB_ONLY);
+	ASSERT_FALSE(gsTileLowerDraw(in).native); // exact floors it (pinned above)
+
+	in.fast_atst = true;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	ASSERT_EQ(p.pass_count, 2);
+	// FB_ONLY: colour for every fragment, depth only for the passing ones.
+	EXPECT_EQ(p.pass[0].atst, ATST_ALWAYS);
+	EXPECT_FALSE(p.pass[0].z_write);
+	EXPECT_EQ(p.pass[1].atst, ATST_GEQUAL);
+	EXPECT_TRUE(p.pass[1].z_write);
+
+	// The admission changes nothing the guard was not holding: a provable or
+	// nothing-on-fail test keeps its cheaper realization under the flag too.
+	GSTileDrawInput keep = DynamicAlphaInput(AFAIL_FB_ONLY);
+	keep.FRAME.FBMSK = 0xFFFFFFFFu; // no colour write -> fail writes nothing
+	keep.fast_atst = true;
+	const GSTileDrawPlan pk = gsTileLowerDraw(keep);
+	ASSERT_TRUE(pk.native);
+	EXPECT_EQ(pk.pass_count, 1);
+}
+
 TEST(GSTileLowering, RgbOnlyWithoutAnAlphaWriteIsFbOnly)
 {
 	// FBMSK masks the alpha byte, so RGB_ONLY's "withhold alpha" edit is not an edit

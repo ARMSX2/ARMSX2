@@ -217,6 +217,12 @@ struct GSTileDrawInput
 	// Callers without the facts leave both false, which only costs coverage.
 	bool z_constant;
 	bool prim_overlap_none;
+	// The fast profile's alpha-test admission (EmuCore/GS/TileFastShading without
+	// TileExactAlphaTest): take the two-pass split even when the depth outcome is
+	// order-dependent — the reorder Classic ships unconditionally for this class —
+	// traded under the perceptual gate rather than byte-identity. Callers without
+	// the fact leave false, which is the exact profile's floor.
+	bool fast_atst;
 	// The route's permission to lift the read rung's two residual floors (EmuCore/GS/
 	// TileBlendOverlapNative / TileBlendTexSampleNative). Config facts like
 	// tex_stq_tri_native, carried in the input so the lowering stays pure. Both
@@ -551,7 +557,14 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 				// each pixel is touched once.
 				const bool independent_z = !p.z_write || p.ztst == ZTST_ALWAYS ||
 					(p.ztst == ZTST_GEQUAL && in.z_constant) || in.prim_overlap_none;
-				if (independent_z)
+				// The fast profile admits the split without the order proof: the
+				// reorder is confined to the draw's OWN overlapping alpha-tested
+				// fragments, it is exactly the realization Classic ships for this
+				// class with no guard at all, and the class is measured as the
+				// single largest floor population (3,102 of R&C's 3,117; 1,592 of
+				// SotC's 2,888). The depth VALUES stay plane-exact; what the trade
+				// gives up is which same-draw fragment wins a contested pixel.
+				if (independent_z || in.fast_atst)
 				{
 					atst_split = true;
 					p.pass_count = 2;

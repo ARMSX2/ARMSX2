@@ -898,6 +898,7 @@ GSTileDrawInput GSRendererTile::BuildLoweringInput()
 		m_prim_overlap = PrimitiveOverlap();
 		in.prim_overlap_none = m_prim_overlap == PRIM_OVERLAP_NO;
 	}
+	in.fast_atst = GSConfig.TileFastShading && !GSConfig.TileExactAlphaTest;
 	in.blend_overlap_native = GSConfig.TileBlendOverlapNative;
 	in.blend_tex_sample_native = GSConfig.TileBlendTexSampleNative;
 	in.blend_classic_carrier = GSConfig.TileBlendClassicCarrier;
