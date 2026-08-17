@@ -244,7 +244,11 @@ private:
 	/// intact and is not the draw's own target, given as draw_fb/draw_z) or gathered;
 	/// without it the answer only says whether the CPU CLUT can be trusted (the
 	/// lowering's alpha range must go conservative when it cannot).
-	PaletteChoice ResolvePalette(const GIFRegTEX0& TEX0, bool allow_sync, GSTileSurfaceId draw_fb, GSTileSurfaceId draw_z);
+	/// `allow_direct` says the draw can sample a device palette through the tile
+	/// legs' word-order arithmetic (it carries the coordinate walk); without it a
+	/// device-resident palette is gathered into an ordinary palette texture first.
+	PaletteChoice ResolvePalette(const GIFRegTEX0& TEX0, bool allow_sync, GSTileSurfaceId draw_fb, GSTileSurfaceId draw_z,
+		bool allow_direct = true);
 	/// Copies every device-authoritative slot's entries the CPU does not yet hold into
 	/// GSClut (a readback per device palette involved, gathering first where needed).
 	void SyncClutToCpu();

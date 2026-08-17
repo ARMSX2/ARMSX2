@@ -557,7 +557,7 @@ void GSRendererTile::MaterializePalettesOn(const GSPageBitmap& pages)
 }
 
 GSRendererTile::PaletteChoice GSRendererTile::ResolvePalette(const GIFRegTEX0& TEX0, bool allow_sync,
-	GSTileSurfaceId draw_fb, GSTileSurfaceId draw_z)
+	GSTileSurfaceId draw_fb, GSTileSurfaceId draw_z, bool allow_direct)
 {
 	PaletteChoice choice;
 	const u32 pal = GSLocalMemory::m_psm[TEX0.PSM].pal;
@@ -599,7 +599,7 @@ GSRendererTile::PaletteChoice GSRendererTile::ResolvePalette(const GIFRegTEX0& T
 			GSTexture* owner_tex = (owner.alive && owner.pool_handle) ? m_target_pool.GetTexture(owner.pool_handle) : nullptr;
 			const bool source_intact = owner_tex && GSTileTextureSource::GenStamp(m_vram_model, gp->pages) == gp->stamp;
 			const bool not_own_target = gp->owner != draw_fb && gp->owner != draw_z;
-			if (source_intact && not_own_target && DirectPaletteServes())
+			if (allow_direct && source_intact && not_own_target && DirectPaletteServes())
 			{
 				choice.gpu = owner_tex;
 				choice.direct = true;
@@ -895,6 +895,7 @@ GSTileDrawInput GSRendererTile::BuildLoweringInput()
 		in.tex_mip = IsMipMapActive();
 		in.tex_fst = PRIM->FST;
 		in.tex_stq_tri_native = GSConfig.TilePerspectiveNative;
+		in.tex_fast_sample = GSConfig.TileFastShading && !GSConfig.TileExactTexCoord;
 		in.tex_psm = static_cast<u8>(m_context->TEX0.PSM);
 		if (in.tex_mip)
 		{
@@ -1741,10 +1742,21 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// is the attribution control (Classic's float realization); the shipping fast
 	// depth is the plane-exact integer leg, which lands as its own selector.
 	const bool fast_colour = GSConfig.TileFastShading && !GSConfig.TileExactColour;
+	const bool fast_tex = GSConfig.TileFastShading && !GSConfig.TileExactTexCoord;
 	const bool want_zwalk = want_ds && m_vt.m_primclass == GS_TRIANGLE_CLASS && !m_vt.m_eq.z &&
 		!GSConfig.TileFastDepthClassic;
+	// Under the fast profile the walk stays only where it is closed-form (the
+	// effective-FST integer DDA). What demotes is exactly the unbounded loop: the
+	// perspective float walk, whose trip count is the fragment's distance from the
+	// span's left edge. The mip clause serves the walk-era unlock alone
+	// (TilePerspectiveNative admits mip STQ triangles onto the walk; the fast
+	// admission floors them instead — the lowering's TextureMip clause).
+	const bool twalk_mip = PRIM->TME && IsMipMapActive();
+	const bool twalk_fst_eff = gsTileTexWalkFst(m_vt.m_primclass, PRIM->FST != 0,
+		twalk_mip, m_vt.m_eq.q != 0);
 	const bool want_twalk = PRIM->TME &&
-		(m_vt.m_primclass == GS_TRIANGLE_CLASS || m_vt.m_primclass == GS_SPRITE_CLASS);
+		(m_vt.m_primclass == GS_TRIANGLE_CLASS || m_vt.m_primclass == GS_SPRITE_CLASS) &&
+		(twalk_fst_eff || twalk_mip || !fast_tex);
 	// Colour and fog transcription: a gouraud or fogged triangle takes its colour
 	// and fog factor off the SW scanline's blocked walk, replayed per fragment
 	// from the primitive's own edge (PS_TILE_CWALK), because the walk's value at a
@@ -1942,7 +1954,10 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 				// re-arranges the window into an index texture in a pass of its own.
 				const GSOffset src_off = m_mem.GetOffset(fixed_tex0.TBP0, fixed_tex0.TBW, fixed_tex0.PSM);
 				const u32 src_bwpg = static_cast<u32>(src_off.pageRowWidth() >> src_off.pageShiftX());
-				if (owner != fb_id && owner != z_id && DirectSamplingServes())
+				// The direct leg is fetch-by-address in the tile texture legs, which
+				// only exist on a draw carrying the coordinate walk — a fast-profile
+				// draw demoted to the sampler takes the reinterpretation pass instead.
+				if (owner != fb_id && owner != z_id && DirectSamplingServes() && m_twalk_at != NoWalk)
 				{
 					direct_tex = dtex;
 					direct_fmt = reinterpret_fmt;
@@ -2068,7 +2083,7 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 			// never visit the CPU). Else the CPU CLUT — synced first where its slots
 			// straddled loads.
 			const PaletteChoice choice = ResolvePalette(ctx->TEX0, true, want_rt ? fb_id : kGSTileNoSurface,
-				want_ds ? z_id : kGSTileNoSurface);
+				want_ds ? z_id : kGSTileNoSurface, m_twalk_at != NoWalk);
 			if (choice.gpu)
 			{
 				pal = choice.gpu;
@@ -2283,7 +2298,15 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_twalk, bool wan
 				continue;
 			const float blk[8] = {spr.s0, spr.t0, spr.q, 0.0f, spr.dtx, spr.dty, 0.0f, 0.0f};
 			std::memcpy(out + static_cast<size_t>(p) * 8, blk, sizeof(blk));
-			const u32 flags = spr.rows_exact ? 1u : 0u;
+			// The fast profile takes the fused closed form on every sprite row: the
+			// row-replay loop's trip count is the fragment's row distance from the
+			// sprite's top (a 448-row scaled blit replays 448 float adds per
+			// fragment), and the closed form differs from it only by the measured
+			// sixteenth-of-a-weight accumulation class — the perceptual gate's to
+			// judge, not byte-identity's.
+			const bool rows_closed = spr.rows_exact ||
+				(GSConfig.TileFastShading && !GSConfig.TileExactTexCoord);
+			const u32 flags = rows_closed ? 1u : 0u;
 			out[p * 8 + 3] = flags;
 			out[p * 8 + 6] = static_cast<u32>(spr.left);
 			out[p * 8 + 7] = static_cast<u32>(spr.top);
@@ -2824,6 +2847,12 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 		}
 		else
 		{
+			// A linear draw handed to this leg filters as Classic's shader-emulated
+			// 4-tap (PS_LTF): four nearest taps through the sampler's own addressing,
+			// float weights — the realization Classic runs for every palettised or
+			// region-wrapped source, and the fast profile's stage-1 filter for the
+			// demoted perspective classes. The sampler itself stays nearest.
+			conf.ps.ltf = m_vt.IsLinear();
 			conf.ps.wms = (wms & 2) ? wms : 0;
 			conf.ps.wmt = (wmt & 2) ? wmt : 0;
 			conf.sampler.tau = (wms == CLAMP_REPEAT);

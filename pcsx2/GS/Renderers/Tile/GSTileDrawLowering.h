@@ -194,6 +194,14 @@ struct GSTileDrawInput
 	// TexturePerspective, on lets them through to the STQ guard. Callers without the
 	// fact leave false, which is today's shipped behaviour.
 	bool tex_stq_tri_native;
+	// The fast profile's texture admission (EmuCore/GS/TileFastShading without
+	// TileExactTexCoord): perspective triangles go native onto the SAMPLER leg —
+	// the coordinate off the interpolator, not the scanline walk — traded under
+	// the perceptual gate rather than byte-identity. Differs from
+	// tex_stq_tri_native only in which realization the route hands the draw to;
+	// to this pure function they are the same permission. Callers without the
+	// fact leave false.
+	bool tex_fast_sample;
 	u8 tex_psm;
 	// STQ safety (meaningful when tme && !tex_fst): the route's vertex-trace
 	// verdict that the quotient can leave the scanline's 16.16 envelope, that a
@@ -797,7 +805,18 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		if (in.tex_psm == PSGPU24)
 			return floored(GSTileFloorReason::TexturePsm);
 		if (!in.tex_fst && in.prim_class == GS_TRIANGLE_CLASS && !in.tex_stq_tri_native)
-			return floored(GSTileFloorReason::TexturePerspective);
+		{
+			if (!in.tex_fast_sample)
+				return floored(GSTileFloorReason::TexturePerspective);
+			// The sampler leg has no mip realization (the LOD machinery lives with
+			// the walk branch), so under the fast admission a mipmapping STQ
+			// triangle keeps flooring exactly as it did before — it drains with the
+			// palettised stage's manual-LOD work. This also keeps the fast profile
+			// free of the unbounded float walk everywhere: the walk-era unlock is
+			// the only road that puts a mip triangle on it.
+			if (in.tex_mip)
+				return floored(GSTileFloorReason::TextureMip);
+		}
 		if (in.tex_mip && !in.tex_mip_fit)
 			return floored(GSTileFloorReason::TextureMip);
 		if (!in.tex_fst && in.tex_stq_guard != GSTileStqGuardNone)

@@ -966,10 +966,16 @@ struct Pcsx2Config
 					// behavior, byte-identical. Never user settings. A class wires
 					// in when its fast leg lands, so every declared key has a
 					// consumer: today the umbrella demotes the colour/fog walk to
-					// the interpolator's varyings.
+					// the interpolator's varyings, kills the texture walk's two
+					// unbounded per-fragment loops (the perspective float walk and
+					// the scaled-sprite row replay), and admits perspective
+					// triangles onto the sampler leg.
 					TileFastShading : 1,
 					// Pin the exact colour/fog walk under the umbrella.
 					TileExactColour : 1,
+					// Pin the exact texture-coordinate walks under the umbrella
+					// (perspective draws floor again, sprite rows replay again).
+					TileExactTexCoord : 1,
 					// Depth through the GPU interpolator and the zfloor/zclamp
 					// recipe — Classic's realization. Attribution control ONLY: its
 					// float depth pipeline is the precision class the depth

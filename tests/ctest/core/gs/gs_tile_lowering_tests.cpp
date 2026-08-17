@@ -210,6 +210,38 @@ TEST(GSTileLowering, PerspectiveTrianglesFloorOnZCoverageParity)
 	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureStqOverflow);
 }
 
+// The fast profile's admission (EmuCore/GS/TileFastShading): perspective
+// triangles go native onto the SAMPLER leg — the same permission as the walk-era
+// unlock to this pure function, differing only in which realization the route
+// hands the draw to. The STQ guard still outranks it: an overflowing quotient is
+// the software renderer's to rewrite whichever leg would sample it.
+TEST(GSTileLowering, FastSampleAdmitsPerspectiveTriangles)
+{
+	GSTileDrawInput in = BaseInput();
+	in.tme = true;
+	in.tex_fst = false;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TexturePerspective);
+
+	in.tex_fast_sample = true;
+	const GSTileDrawPlan fast = gsTileLowerDraw(in);
+	EXPECT_TRUE(fast.native);
+	EXPECT_EQ(fast.reason, GSTileFloorReason::None);
+
+	// The sampler leg has no mip realization: a mipmapping STQ triangle keeps
+	// flooring under the fast admission (as TextureMip now — the class it waits
+	// on), where the walk-era unlock would put it on the float walk.
+	in.tex_mip = true;
+	in.tex_mip_fit = true;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureMip);
+	in.tex_stq_tri_native = true;
+	EXPECT_TRUE(gsTileLowerDraw(in).native);
+	in.tex_stq_tri_native = false;
+	in.tex_mip = false;
+
+	in.tex_stq_guard = GSTileStqGuardHullU;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureStqOverflow);
+}
+
 TEST(GSTileLowering, StqGuardReadsTheTraceInTexels)
 {
 	// The regression this test exists for: GSVertexTrace finalises a !FST draw's
