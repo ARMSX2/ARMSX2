@@ -366,8 +366,8 @@ void GSRendererTile::ReportReadbackCensus()
 		Console.WriteLn("      of the format refusals, %.2f start at the owner's own base",
 			n.refuse_format_same_base / frames);
 		if (n.feedback_admitted)
-			Console.WriteLn("      feedback admitted (sampled core disjoint from write): %.2f draws per frame",
-				n.feedback_admitted / frames);
+			Console.WriteLn("      feedback admitted (sampled core disjoint from write): %.2f draws per frame, %.2f core-served off the owner",
+				n.feedback_admitted / frames, n.tex_core_served / frames);
 	}
 	if (m_expand_cache.Builds() | m_expand_cache.Hits() | m_expand_cache.Deferrals())
 	{
@@ -1915,6 +1915,9 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	GIFRegTEX0 level_tex0[7] = {};
 	u32 mip_levels = 1;
 	GSPageBitmap tex_pages;
+	GSVector4i feedback_core = GSVector4i::zero(); ///< admitted feedback draw's sampled core (empty otherwise)
+	GSPageBitmap feedback_core_pages;
+	bool feedback_subrect = false; ///< the core's sole owner serves as a subrect donor
 	if (textured)
 	{
 		// Under mip the size fix is a no-op (GetSizeFixedTEX0 returns the register
@@ -1976,6 +1979,11 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 					const GSPageBitmap core =
 						PagesForTargetRect(tex_l, GSVector4i(cx0, cy0, cx1, cy1));
 					admit = !core.intersects(fb_pages) && !core.intersects(z_pages);
+					if (admit)
+					{
+						feedback_core = GSVector4i(cx0, cy0, cx1, cy1);
+						feedback_core_pages = core;
+					}
 				}
 			}
 			if (!admit)
@@ -2079,7 +2087,51 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		if (mip_levels != 1)
 			n.refuse_mip++;
 		else if (owner == kGSTileNoSurface)
-			n.refuse_no_owner++;
+		{
+			// The whole window has no single GPU owner. For an ADMITTED feedback
+			// draw that is true by construction — the window spans the surface it
+			// samples AND the target it writes — but the sampled CORE usually has
+			// exactly one owner (SotC's bloom: the scene RT). Serving THAT as a
+			// subrect donor deletes the CPU route's mid-frame pull of a target
+			// rendered moments earlier, which the M2 re-price showed was the whole
+			// cost of the admission (+16-21% frame, two thirds of it stall). A
+			// CT24 window over the CT32 owner copies RGB and bakes TA0 into alpha
+			// (AEM off, proven here) — the same bytes the CPU deswizzle produces.
+			bool served = false;
+			if (!feedback_core.rempty())
+			{
+				const GSTileSurfaceId co = m_vram_model.SoleGpuOwner(feedback_core_pages, kGSTilePlanesAll);
+				if (co != kGSTileNoSurface && co != fb_id && co != z_id)
+				{
+					const GSVramModel::Surface& cs = m_vram_model.Get(co);
+					GSTexture* ctex = cs.pool_handle ? m_target_pool.GetTexture(cs.pool_handle) : nullptr;
+					const bool psm_ok =
+						(fixed_tex0.PSM == PSMCT32 && cs.layout.psm == PSMCT32) ||
+						(fixed_tex0.PSM == PSMCT24 && (cs.layout.psm == PSMCT32 || cs.layout.psm == PSMCT24));
+					const bool base_ok = cs.layout.bp == fixed_tex0.TBP0 &&
+										 cs.layout.bw == static_cast<u8>(fixed_tex0.TBW) &&
+										 cs.layout.kind == GSTileSurfaceKind::Color;
+					const bool aem_ok = fixed_tex0.PSM != PSMCT24 || m_draw_env->TEXA.AEM == 0;
+					if (ctex && psm_ok && base_ok && aem_ok && cs.residency.contains(feedback_core_pages) &&
+						feedback_core.z <= ctex->GetWidth() && feedback_core.w <= ctex->GetHeight())
+					{
+						donor.tex = ctex;
+						donor.width = ctex->GetWidth();
+						donor.height = ctex->GetHeight();
+						donor.copy_rect = feedback_core;
+						donor.fill_alpha =
+							(fixed_tex0.PSM == PSMCT24) ? static_cast<int>(m_draw_env->TEXA.TA0) : -1;
+						donor_p = &donor;
+						feedback_subrect = true;
+						n.tex_core_served++;
+						sync_tex = GSPageBitmap();
+						served = true;
+					}
+				}
+			}
+			if (!served)
+				n.refuse_no_owner++;
+		}
 		else if (owner == fb_id || owner == z_id)
 		{
 			// Only reachable for an ADMITTED feedback draw (core-disjoint window
@@ -2300,8 +2352,9 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		}
 		else
 		{
-			tex = m_tex_source.Lookup(m_mem, m_vram_model, fixed_tex0, m_draw_env->TEXA, tex_pages,
-				level_tex0, mip_levels, donor_p, &tex_build_id);
+			tex = m_tex_source.Lookup(m_mem, m_vram_model, fixed_tex0, m_draw_env->TEXA,
+				feedback_subrect ? feedback_core_pages : tex_pages, level_tex0, mip_levels, donor_p, &tex_build_id,
+				feedback_core.rempty() ? nullptr : &feedback_core);
 			if (!tex)
 			{
 				// A device that cannot reinterpret (no pipeline, or not Vulkan) says so once;

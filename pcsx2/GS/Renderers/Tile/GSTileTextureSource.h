@@ -61,6 +61,20 @@ public:
 		int height = 0;
 		bool reinterpret = false; ///< build by TileReinterpretIndex instead of a copy
 		GSDevice::TileReinterpretParams params = {}; ///< both layouts, when reinterpreting
+		/// Non-empty: the donor holds only THIS sub-rectangle of the window (the
+		/// admitted feedback draw's sampled core, whose sole owner the caller
+		/// proved). The build copies the rect exactly and backfills the rest with
+		/// a scaled stretch of it — defined, plausible bytes for the margin taps
+		/// the admission already prices — and the entry records the rect as its
+		/// validity, so a draw needing more rebuilds instead of reading filler.
+		GSVector4i copy_rect = GSVector4i::zero();
+		/// >= 0: the window reads a CT24 view of the owner's CT32 bytes, so the
+		/// copied alpha would be the target's raw byte where every consumer (walk
+		/// legs and sampler alike) expects the TEXA expansion baked in, exactly
+		/// as the CPU deswizzle bakes it. The build clears alpha to this value
+		/// and copies RGB only. The caller guarantees AEM is off — with AEM the
+		/// expansion is per-texel and no constant bake exists.
+		int fill_alpha = -1;
 	};
 
 	/// The content stamp of `pages` right now (sum of per-page write generations).
@@ -88,10 +102,15 @@ public:
 	/// identical to the previous build KEEPS the id (and skips its upload); a
 	/// changed build, an evicted slot reused, or a device-built source gets a new
 	/// one. Derived caches (the palette-expanded RGBA cache) key on it.
+	/// `sample_core`, when given, is the rectangle of the window this draw's
+	/// samples are proven to stay inside (plus the accepted one-texel margin): a
+	/// hit additionally requires the cached entry's valid region to contain it,
+	/// so a texture built from a subrect donor never serves a draw that samples
+	/// beyond what was copied.
 	GSTexture* Lookup(GSLocalMemory& mem, const GSVramModel& model, const GIFRegTEX0& TEX0,
 		const GIFRegTEXA& TEXA, const GSPageBitmap& pages,
 		const GIFRegTEX0* level_tex0 = nullptr, u32 levels = 1, const Donor* donor = nullptr,
-		u64* build_id = nullptr);
+		u64* build_id = nullptr, const GSVector4i* sample_core = nullptr);
 
 	/// Builds served off the device rather than out of CPU memory (copies and
 	/// reinterpretations both; the latter counted again below).
@@ -145,6 +164,7 @@ private:
 		u64 build_id = 0; ///< stamped when a build CHANGES content; equal ids = same texel bytes
 		u64 content_hash = 0; ///< XXH3 of the last CPU build's texel rows (0 = none / device-built)
 		u64 page_content = 0; ///< fingerprint of the pages' RAW bytes at the last CPU build (0 = none / device-built)
+		GSVector4i valid_rect = GSVector4i::zero(); ///< region holding real window bytes (subrect donors copy less than the window)
 		GSPageBitmap pages;
 		GSTexture* tex = nullptr;
 		bool alive = false;

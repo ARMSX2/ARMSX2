@@ -130,18 +130,21 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 	// because the conversion is a draw — the shader reads .a either way.
 	const bool indexed = GSLocalMemory::m_psm[level_tex0[0].PSM].pal > 0;
 	const bool reinterpret = donor && donor->reinterpret;
+	const bool subrect = donor && !reinterpret && !donor->copy_rect.rempty();
+	// The subrect route backfills by a stretch DRAW, so its texture is a target.
+	const bool needs_rt = reinterpret || subrect;
 	const GSTexture::Format format =
 		(indexed && !reinterpret) ? GSTexture::Format::UNorm8 : GSTexture::Format::Color;
 
 	bool fresh_tex = false;
 	if (!e.tex || e.tex->GetWidth() != tw || e.tex->GetHeight() != th ||
 		e.tex->GetMipmapLevels() != static_cast<int>(levels) || e.tex->GetFormat() != format ||
-		e.tex->IsRenderTarget() != reinterpret)
+		e.tex->IsRenderTarget() != needs_rt)
 	{
 		if (e.tex)
 			g_gs_device->Recycle(e.tex);
-		e.tex = reinterpret ? g_gs_device->CreateRenderTarget(tw, th, format, false, true)
-							: g_gs_device->CreateTexture(tw, th, static_cast<int>(levels), format, true);
+		e.tex = needs_rt ? g_gs_device->CreateRenderTarget(tw, th, format, false, true)
+						 : g_gs_device->CreateTexture(tw, th, static_cast<int>(levels), format, true);
 		if (!e.tex)
 			return false;
 		// A recycled allocation holds arbitrary bytes: a content-hash match can
@@ -162,11 +165,41 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 			if (!g_gs_device->TileReinterpretIndex(donor->tex, e.tex, donor->params))
 				return false;
 			m_reinterpret_builds++;
+			e.valid_rect = GSVector4i(0, 0, tw, th);
+		}
+		else if (subrect)
+		{
+			// The donor holds only the sampled core. First a scaled stretch of the
+			// core over the WHOLE texture — every byte defined and plausible for
+			// the margin taps the admission prices — then the core itself, exact
+			// and in place. The donor's pixel space is the window's (the caller
+			// proved base and stride equal), so source and destination rects match.
+			const GSVector4i& cr = donor->copy_rect;
+			pxAssert(cr.z <= donor->width && cr.w <= donor->height && cr.z <= tw && cr.w <= th);
+			const GSVector4 src_norm = GSVector4(cr) / GSVector4(GSVector4i(donor->width, donor->height).xyxy());
+			ShaderConvertSelector sel(ShaderConvert::COPY);
+			if (donor->fill_alpha >= 0)
+			{
+				// A CT24 window: every consumer expects the TEXA expansion baked
+				// into alpha, as the CPU deswizzle bakes it. Clear alpha to TA0
+				// and copy RGB only — the 1:1 nearest stretch of the core is an
+				// exact copy, and the masked path needs a draw rather than an
+				// image copy anyway.
+				g_gs_device->ClearRenderTarget(e.tex, static_cast<u32>(donor->fill_alpha) << 24);
+				sel = sel.SetMask(0x7);
+			}
+			g_gs_device->StretchRect(donor->tex, src_norm, e.tex, GSVector4(0, 0, tw, th), sel, Nearest);
+			if (donor->fill_alpha >= 0)
+				g_gs_device->StretchRect(donor->tex, src_norm, e.tex, GSVector4(cr), sel, Nearest);
+			else
+				g_gs_device->CopyRect(donor->tex, e.tex, cr, static_cast<u32>(cr.x), static_cast<u32>(cr.y));
+			e.valid_rect = cr;
 		}
 		else
 		{
 			pxAssert(tw <= donor->width && th <= donor->height);
 			g_gs_device->CopyRect(donor->tex, e.tex, GSVector4i(0, 0, tw, th), 0, 0);
+			e.valid_rect = GSVector4i(0, 0, tw, th);
 		}
 		// The bytes now on the device never transited the CPU, so the content
 		// verify below has nothing to compare a later CPU build against; and
@@ -177,6 +210,7 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 		m_donor_builds++;
 		return true;
 	}
+	e.valid_rect = GSVector4i(0, 0, tw, th);
 
 	// Content verify: hash exactly the rows Update() would upload and compare
 	// against this entry's previous CPU build. A rebuild is forced by a moved
@@ -250,7 +284,7 @@ bool GSTileTextureSource::BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTE
 
 GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& model, const GIFRegTEX0& TEX0,
 	const GIFRegTEXA& TEXA, const GSPageBitmap& pages,
-	const GIFRegTEX0* level_tex0, u32 levels, const Donor* donor, u64* build_id)
+	const GIFRegTEX0* level_tex0, u32 levels, const Donor* donor, u64* build_id, const GSVector4i* sample_core)
 {
 	// Single-level callers pass no array; view the base register as a one-entry one.
 	if (!level_tex0)
@@ -278,7 +312,14 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 		if (e.reg_key == reg_key && e.aux_key == aux_key && e.mip_key[0] == mip_key[0] && e.mip_key[1] == mip_key[1])
 		{
 			e.last_use = ++m_use_counter;
-			if (e.gen_stamp == stamp)
+			// A subrect-donor entry is valid only inside what it copied: it serves
+			// a draw whose proven sample core it contains, and nobody else — in
+			// particular a draw that arrives with NO core (whole-window semantics)
+			// must rebuild rather than read the backfill.
+			const GSVector4i full(0, 0, 1 << std::min<u32>(TEX0.TW, 10), 1 << std::min<u32>(TEX0.TH, 10));
+			const bool rect_ok = e.valid_rect.eq(full) ||
+								 (sample_core && e.valid_rect.rintersect(*sample_core).eq(*sample_core));
+			if (e.gen_stamp == stamp && rect_ok)
 			{
 				m_hits++;
 				if (build_id)
