@@ -751,6 +751,7 @@ struct alignas(16) GSHWDrawConfig
 				u32 tile_twalk_fst : 1; // Tile renderer: that walk is the truncating integer DDA (the software renderer's effective sel.fst), else the accumulating float one with the truncated per-pixel reciprocal
 				u32 tile_cwalk : 1; // Tile renderer: gouraud colour and fog from the SW scanline's blocked walk, replayed per fragment off the per-primitive edge payload — not from the interpolator
 				u32 tile_tclag : 1; // Tile renderer: a non-sprite coordinate trails the exact plane by one 16.16 unit on each axis walking forward (gs-shade console rule)
+				u32 tile_snap : 1; // Tile renderer: floor the texel-space coordinate to 1/16 before sampling — the console's coordinate quantisation kept when the filter's weights move to the hardware sampler (fast profile)
 				u32 tile_blend_mix : 1; // Tile renderer: blend-mix offsets at the exact-floor constant (127/256) instead of Classic's reduced-precision-ROP compromise (124/256)
 				u32 tile_blend : 1; // Tile renderer: the whole blend equation in the console's integer arithmetic over a read destination — (((A−B)·C)>>7)+D, the shift ARITHMETIC
 				u32 tile_direct_idx : 3; // Tile renderer: the index texture IS a colour target, addressed through the GS swizzle per fetch — 0 off, else GSTileSwizzleForms::IndexFormat + 1

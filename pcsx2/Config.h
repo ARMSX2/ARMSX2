@@ -976,6 +976,11 @@ struct Pcsx2Config
 					// Pin the exact texture-coordinate walks under the umbrella
 					// (perspective draws floor again, sprite rows replay again).
 					TileExactTexCoord : 1,
+					// Pin the in-shader filter weights under the umbrella: the
+					// sampler leg's linear draws go back to the 4-tap float-weight
+					// shader filter instead of one hardware tap at the snapped
+					// coordinate.
+					TileExactTexFilter : 1,
 					// Pin the exact alpha-test order under the umbrella: a dynamic
 					// test whose fail mask differs on order-dependent depth floors
 					// again instead of taking the two-pass split (the reorder

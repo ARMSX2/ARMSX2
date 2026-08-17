@@ -1736,6 +1736,16 @@ vec4 sample_color(vec2 st)
 	st += TC_OffsetHack.xy;
 	#endif
 
+	#if PS_TILE_SNAP
+	// The console's coordinate quantisation, kept when the filter's weights move
+	// to the hardware sampler (the Tile fast profile): the GS floors the
+	// coordinate to 1/16 texel BEFORE filtering — the largest measured error
+	// class of Classic's sampler path is skipping exactly this — and the
+	// hardware's own -0.5/fract arithmetic then runs on the floored coordinate.
+	// Texel space is st × WH.zw (the size-fixed storage dimensions).
+	st = floor(st * WH.zw * 16.0f) / (WH.zw * 16.0f);
+	#endif
+
 	vec4 t;
 	mat4 c;
 	vec2 dd;

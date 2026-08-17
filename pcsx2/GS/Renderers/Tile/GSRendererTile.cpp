@@ -2824,7 +2824,7 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 		conf.ps.fst = PRIM->FST;
 		conf.ps.tfx = ctx->TEX0.TFX;
 		conf.ps.tcc = ctx->TEX0.TCC;
-		conf.sampler.biln = 0; // the GPU sampler stays nearest-only in every mode
+		conf.sampler.biln = 0; // nearest by default; only the fast profile's snapped hardware-filter stage below unlocks it
 
 		// Storage and wrap live at the SIZE-FIXED dimensions (what the source
 		// builder deswizzled and what the SW scanline wraps at); the STQ
@@ -3021,6 +3021,27 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 				conf.sampler.triln = static_cast<u8>(tri_mip ? GS_MIN_FILTER::Nearest_Mipmap_Linear :
 				                                               GS_MIN_FILTER::Nearest_Mipmap_Nearest);
 				conf.sampler.lodclamp = 0;
+			}
+			// Hardware filter weights (the fast profile's last filter stage): one
+			// linear tap at the 1/16-floored coordinate (PS_TILE_SNAP) replaces
+			// the 4-tap shader filter — the snap keeps the console's coordinate
+			// quantisation, the largest measured error class of Classic's sampler
+			// path, and the hardware supplies the weights. Eligible when the
+			// source is RGBA (a bound palette still expands indices in-shader;
+			// filtering an index texture is meaningless) and both wrap modes are
+			// plain (region modes clamp each corner in the shader, the same
+			// reason Classic's own sampler path refuses them). Under mip the
+			// sampler's min filter follows: the Nearest_ mip modes gain their
+			// Linear_ prefix, so the level blend and the intra-level filter both
+			// run in hardware off the one manual-LOD textureLod tap.
+			const bool fast_filter = GSConfig.TileFastShading && !GSConfig.TileExactTexFilter;
+			if (fast_filter && !pal && ((wms | wmt) & 2) == 0 && conf.ps.ltf)
+			{
+				conf.ps.ltf = 0;
+				conf.ps.tile_snap = 1;
+				conf.sampler.biln = 1;
+				if (mip_draw)
+					conf.sampler.triln = conf.sampler.triln + 2; // Nearest_Mipmap_* -> Linear_Mipmap_*
 			}
 			conf.ps.wms = (wms & 2) ? wms : 0;
 			conf.ps.wmt = (wmt & 2) ? wmt : 0;

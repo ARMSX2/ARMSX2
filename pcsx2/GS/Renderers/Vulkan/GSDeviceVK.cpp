@@ -6983,6 +6983,7 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_A_MASKED", sel.a_masked);
 	AddMacro(ss, "PS_FBA", sel.fba);
 	AddMacro(ss, "PS_LTF", sel.ltf);
+	AddMacro(ss, "PS_TILE_SNAP", sel.tile_snap);
 	AddMacro(ss, "PS_TILE_LTF", sel.tile_ltf);
 	AddMacro(ss, "PS_TILE_NN", sel.tile_nn);
 	AddMacro(ss, "PS_TILE_MIP", sel.tile_mip);
