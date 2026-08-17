@@ -342,6 +342,25 @@ struct GSTileDrawPlan
 	// carried out even when an earlier reason floored the draw. Zero on FST and
 	// untextured draws.
 	u8 stq_guard = GSTileStqGuardNone;
+
+	// Census only: why the Classic-parity carrier refused a row it was asked to
+	// serve (GSTileCarrierRefusal), None when it served or was never in question.
+	// Exists because the refusal population is a device conversation — the same
+	// row serves through SRC1 on one device and needs the alpha ride on another —
+	// and the ledger's blend_leg column can say WHAT a draw took but not WHY it
+	// did not take the cheaper thing.
+	u8 carrier_refusal = 0;
+};
+
+/// Why the carrier refused (GSTileDrawPlan::carrier_refusal; census only).
+enum GSTileCarrierRefusal : u8
+{
+	GSTileCarrierNone = 0, ///< served, or never in question
+	GSTileCarrierAlphaBusy, ///< the ride's byte is spoken for: the blending pass writes alpha and no repair fits (FB/ZB-shaped splits)
+	GSTileCarrierDepthRule, ///< the repair would fail its own fragments (z-writing GREATER)
+	GSTileCarrierSaturation, ///< may-exceed factor with overlap proven absent — the read rung is exact there (Classic's own rule)
+	GSTileCarrierNeedsSrc1, ///< a variable factor with no dual-source unit and no alpha ride for this shape (non-As carriers, the HW2 rewrite)
+	GSTileCarrierRowShape, ///< no carrier leg matches the row at all
 };
 
 inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
@@ -1070,10 +1089,23 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 					// otherwise carrier-ineligible on the no-dualsrc blobs, and
 					// each such draw keeps its own read-rung pass — the measured
 					// 8.2× pass explosion on R&C against 1.6× the draw calls.
-					const bool factor_alpha_repairable =
-						p.pass_count == 1 && !(p.z_write && p.ztst == ZTST_GREATER);
+					// Eligibility is the BLENDING pass's alpha byte, not the draw's:
+					// an RGB_ONLY alpha-test split already ships the exact shape
+					// this ride needs — pass[0] writes RGB with the alpha byte
+					// masked (free for the factor) and pass[1] writes the true
+					// alpha under the test's own gate, which is conditionality no
+					// companion pass could rebuild. Measured need: R&C's whole
+					// blended population is that split (every row afail=RGB_ONLY),
+					// and a draw-level mask check refused all of it — the Mali
+					// acceptance run served 130 of 3,534 rows and moved nothing.
+					// (An unsplit draw's pass[0] is assembled AFTER this lattice, so
+					// its mask is read from the plan; a split draw's passes exist.)
+					const bool pass0_alpha_free = atst_split ? ((p.pass[0].colormask & 0x8) == 0) :
+					                                           ((p.colormask & 0x8) == 0);
+					const bool repair_fits = !atst_split;
+					const bool repair_depth_ok = !(p.z_write && p.ztst == ZTST_GREATER);
 					const bool factor_alpha_ok = !const_carrier && !in.dual_source_blend &&
-						bc == 0 && ((p.colormask & 0x8) == 0 || factor_alpha_repairable);
+						bc == 0 && (pass0_alpha_free || (repair_fits && repair_depth_ok));
 					const bool no_rec = ba != 1 && bb != 1 && bd != 1;
 					const bool accu_row = ((ba == 0 && bb == 2) || (ba == 2 && bb == 0)) && bd == 1;
 					const bool hw2_row = ba == 1 && bb == 2 && bd == 2;
@@ -1087,20 +1119,37 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 						blend_carrier = true;
 						blend_carrier_leg = GSTileBlendLeg::Accumulation;
 					}
-					else if (mix_row && (src1_ok || factor_alpha_ok) && (!may_exceed || !in.prim_overlap_none))
+					else if (mix_row)
 					{
-						blend_carrier = true;
-						blend_carrier_leg = GSTileBlendLeg::Mix;
-						// SRC1 wins where it exists — the second output touches
-						// nothing; the alpha ride is the fallback realization.
-						blend_carrier_factor_alpha = !src1_ok;
+						const bool exceed_refuses = may_exceed && in.prim_overlap_none;
+						if ((src1_ok || factor_alpha_ok) && !exceed_refuses)
+						{
+							blend_carrier = true;
+							blend_carrier_leg = GSTileBlendLeg::Mix;
+							// SRC1 wins where it exists — the second output touches
+							// nothing; the alpha ride is the fallback realization.
+							blend_carrier_factor_alpha = !src1_ok;
+						}
+						else if (exceed_refuses)
+							p.carrier_refusal = GSTileCarrierSaturation;
+						else if (repair_fits && !repair_depth_ok)
+							p.carrier_refusal = GSTileCarrierDepthRule;
+						else
+							p.carrier_refusal = GSTileCarrierAlphaBusy;
 					}
-					else if (hw2_row && src1_ok)
+					else if (hw2_row)
 					{
-						blend_carrier = true;
-						blend_carrier_leg = GSTileBlendLeg::HwRewrite;
-						blend_carrier_hw = 2; // HWBlendType::SRC_ALPHA_DST_FACTOR
+						if (src1_ok)
+						{
+							blend_carrier = true;
+							blend_carrier_leg = GSTileBlendLeg::HwRewrite;
+							blend_carrier_hw = 2; // HWBlendType::SRC_ALPHA_DST_FACTOR
+						}
+						else
+							p.carrier_refusal = GSTileCarrierNeedsSrc1;
 					}
+					else
+						p.carrier_refusal = GSTileCarrierRowShape;
 					blend_carrier_src1 = blend_carrier && !const_carrier && !blend_carrier_factor_alpha &&
 					                     (blend_carrier_leg == GSTileBlendLeg::Mix ||
 					                         blend_carrier_leg == GSTileBlendLeg::HwRewrite);
@@ -1415,9 +1464,11 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		// ONE/ZERO on every carrier row), no depth write, the same alpha test.
 		// Both passes live in the same render pass with no read between them,
 		// which is the entire point on a no-dualsrc tiler: the draws stay merged.
-		if (blend_carrier_factor_alpha && (p.colormask & 0x8) != 0)
+		if (blend_carrier_factor_alpha && p.pass_count == 1 && (p.pass[0].colormask & 0x8) != 0)
 		{
-			pxAssert(p.pass_count == 1); // the admission refused already-split draws
+			// (A two-pass ride never lands here: it is admitted only when the
+			// split's own pass[0] already has the byte free and pass[1] already
+			// owns the true alpha.)
 			p.pass_count = 2;
 			p.pass[1] = p.pass[0];
 			p.pass[0].colormask &= 0x7;

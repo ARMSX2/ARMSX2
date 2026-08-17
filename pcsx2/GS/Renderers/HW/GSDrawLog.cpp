@@ -179,7 +179,7 @@ namespace GSDrawLog
 	}
 
 	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback, const GSVector4i& rect,
-		u8 stq_guard, u8 blend_leg, u8 blend_src1)
+		u8 stq_guard, u8 blend_leg, u8 blend_src1, u8 carrier_refusal)
 	{
 		if (s_open_record == SIZE_MAX)
 			return;
@@ -193,6 +193,7 @@ namespace GSDrawLog
 		rec.stq_guard = stq_guard;
 		rec.tile_blend_leg = blend_leg;
 		rec.tile_blend_src1 = blend_src1;
+		rec.tile_carrier_refusal = carrier_refusal;
 		// The draw rect (bbox ∩ scissor) — the tile rows' equivalent of the backend
 		// drawarea, and the column that localizes a wrong pixel to its draw.
 		rec.area_x = static_cast<s16>(std::clamp(rect.x, -32768, 32767));
@@ -397,7 +398,7 @@ namespace GSDrawLog
 			"atst,afail,aref,date,datm,self_read,"
 			"topology,expand,barrier,fb_loop_rt,prim_overlap,tex_hazard,destination_alpha,colormask,"
 			"area_x,area_y,area_w,area_h,"
-			"memo_hit,record_ns,pass_id,fallback,stq_guard,blend_leg,blend_src1,stalls,sync_pages,sync_reason,"
+			"memo_hit,record_ns,pass_id,fallback,stq_guard,blend_leg,blend_src1,carrier_refusal,stalls,sync_pages,sync_reason,"
 			"mmag,mmin,mxl,tcc,tfx,fge,fst,aa1,colclamp,pabe,fba,dthe,iip\n");
 
 		for (const Record& r : s_records)
@@ -507,13 +508,18 @@ namespace GSDrawLog
 				const char* leg = (r.tile_blend_leg < std::size(kTileBlendLegNames)) ?
 				                      kTileBlendLegNames[r.tile_blend_leg] :
 				                      "?";
-				std::fprintf(fp.get(), "%u,%u,%u,%s,%u,%s,%u,%u,%u,%x,", r.memo_hit, r.record_ns, r.pass_id,
-					GetTileFallbackName(r.fallback_reason), r.stq_guard, leg, r.tile_blend_src1, r.stalls,
-					r.sync_pages, r.sync_reason);
+				static constexpr const char* kCarrierRefusalNames[] = {
+					"", "ABUSY", "ZGT", "SAT", "SRC1", "SHAPE"};
+				const char* refusal = (r.tile_carrier_refusal < std::size(kCarrierRefusalNames)) ?
+				                          kCarrierRefusalNames[r.tile_carrier_refusal] :
+				                          "?";
+				std::fprintf(fp.get(), "%u,%u,%u,%s,%u,%s,%u,%s,%u,%u,%x,", r.memo_hit, r.record_ns, r.pass_id,
+					GetTileFallbackName(r.fallback_reason), r.stq_guard, leg, r.tile_blend_src1, refusal,
+					r.stalls, r.sync_pages, r.sync_reason);
 			}
 			else
 			{
-				std::fprintf(fp.get(), ",,,,,,,,,,");
+				std::fprintf(fp.get(), ",,,,,,,,,,,");
 			}
 
 			if (textured)

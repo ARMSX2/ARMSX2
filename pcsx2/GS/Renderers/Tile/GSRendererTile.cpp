@@ -3468,7 +3468,7 @@ void GSRendererTile::Draw()
 			}
 		}
 		GSDrawLog::NoteTileDraw(memo_hit, record_ns, /*pass_id=*/0, MapFallbackReason(reason), r,
-			plan.stq_guard, blend_leg, blend_src1);
+			plan.stq_guard, blend_leg, blend_src1, plan.carrier_refusal);
 		GSDrawLog::FinishDraw();
 	}
 }

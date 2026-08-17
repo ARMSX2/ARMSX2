@@ -1666,7 +1666,9 @@ TEST(GSTileLowering, FactorInAlphaRepairsAWrittenAlphaWithACompanionPass)
 	GSTileDrawInput greater = in;
 	greater.TEST.ZTE = true;
 	greater.TEST.ZTST = ZTST_GREATER;
-	EXPECT_FALSE(gsTileLowerDraw(greater).native);
+	const GSTileDrawPlan pg = gsTileLowerDraw(greater);
+	EXPECT_FALSE(pg.native);
+	EXPECT_EQ(pg.carrier_refusal, GSTileCarrierDepthRule);
 
 	// Without depth writes the repair re-tests the unchanged buffer and every
 	// verdict repeats, so GREATER is fine again.
@@ -1674,6 +1676,51 @@ TEST(GSTileLowering, FactorInAlphaRepairsAWrittenAlphaWithACompanionPass)
 	const GSTileDrawPlan pz = gsTileLowerDraw(greater);
 	ASSERT_TRUE(pz.native);
 	EXPECT_EQ(pz.pass_count, 2);
+}
+
+TEST(GSTileLowering, TheRgbOnlySplitAlreadyIsTheFactorInAlphaShape)
+{
+	// R&C's whole blended population on Mali: a dynamic alpha test with
+	// AFAIL=RGB_ONLY, blended on the dominant 0/1/0/1 row, on a no-dualsrc
+	// device. The split's own passes are exactly what the ride needs — pass[0]
+	// writes RGB with the alpha byte masked (free for the factor) and pass[1]
+	// writes the true alpha under the test's own gate, conditionality no
+	// companion pass could rebuild. A draw-level mask check refused all of it
+	// (the acceptance run served 130 of 3,534 rows); the eligibility is the
+	// BLENDING pass's byte.
+	GSTileDrawInput in = DynamicAlphaInput(AFAIL_RGB_ONLY);
+	in.abe = true;
+	in.tme = true;
+	in.tex_fst = true;
+	in.tex_psm = PSMCT32;
+	in.fast_atst = true; // the admission that created the population
+	in.blend_classic_carrier = true;
+	in.dual_source_blend = false;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	ASSERT_TRUE(p.native);
+	ASSERT_EQ(p.pass_count, 2);
+	EXPECT_EQ(p.pass[0].blend_leg, GSTileBlendLeg::Mix);
+	EXPECT_TRUE(p.pass[0].blend_factor_alpha);
+	EXPECT_FALSE(p.pass[0].blend_src1);
+	EXPECT_EQ(p.pass[0].colormask & 0x8, 0); // the byte is free — the split moved alpha out
+	EXPECT_EQ(p.pass[0].atst, ATST_ALWAYS); // RGB for everyone, blended
+	EXPECT_EQ(p.pass[1].colormask, 0x8); // the true alpha, under the test's own gate
+	EXPECT_EQ(p.pass[1].atst, ATST_GEQUAL);
+
+	// The FB_ONLY split's pass[0] writes alpha unconditionally and both pass
+	// slots are taken — the byte is busy and no repair fits. Refused, and the
+	// ledger says why.
+	GSTileDrawInput fb = DynamicAlphaInput(AFAIL_FB_ONLY);
+	fb.abe = true;
+	fb.tme = true;
+	fb.tex_fst = true;
+	fb.tex_psm = PSMCT32;
+	fb.fast_atst = true;
+	fb.blend_classic_carrier = true;
+	fb.dual_source_blend = false;
+	const GSTileDrawPlan pf = gsTileLowerDraw(fb);
+	EXPECT_FALSE(pf.native && pf.pass[0].blend_factor_alpha);
+	EXPECT_EQ(pf.carrier_refusal, GSTileCarrierAlphaBusy);
 }
 
 TEST(GSTileLowering, ClassicCarrierAccumulationRowsNeedNoDualSource)

@@ -181,6 +181,7 @@ namespace GSDrawLog
 		// whether the realization actually carries a SRC1 factor.
 		u8 tile_blend_leg;
 		u8 tile_blend_src1;
+		u8 tile_carrier_refusal; // GSTileCarrierRefusal: why the carrier refused a row (census)
 		u8 tile; // row came from the Tile renderer
 		// Row came from the software rasterizer. Like Tile rows these carry no backend
 		// view, so they serialise as submitted=0 with the draw rect filled. The column
@@ -391,7 +392,7 @@ namespace GSDrawLog
 	/// blend_src1 is whether the realization carries a factor through the second
 	/// fragment output (needs the device's dual-source unit).
 	void NoteTileDraw(bool memo_hit, u32 record_ns, u32 pass_id, TileFallback fallback, const GSVector4i& rect,
-		u8 stq_guard, u8 blend_leg, u8 blend_src1);
+		u8 stq_guard, u8 blend_leg, u8 blend_src1, u8 carrier_refusal);
 
 	/// Attributes one sync to the row currently open. ACCUMULATES rather than assigns --
 	/// a draw can be forced to sync several times, and the reason bits OR together --

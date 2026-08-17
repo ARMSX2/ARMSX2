@@ -126,7 +126,7 @@ namespace
 		GSDrawLog::BeginDraw(MakeState());
 		add_sync();
 		GSDrawLog::NoteTileDraw(false, 0, 0, GSDrawLog::TileFallbackNone, GSVector4i(0, 0, 16, 16), 0,
-			/*blend_leg=*/0, /*blend_src1=*/0);
+			/*blend_leg=*/0, /*blend_src1=*/0, /*carrier_refusal=*/0);
 		GSDrawLog::FinishDraw();
 	}
 } // namespace
