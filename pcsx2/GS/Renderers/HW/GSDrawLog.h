@@ -224,8 +224,11 @@ namespace GSDrawLog
 		// ledger's standing "attribution tool, never a comparison tool" rule -- that rule
 		// still holds for record_ns, which is a time.
 		u16 stalls; ///< GPU drains this draw's own sync paid
-		// Pages that sync moved. The ratio against stalls is the batching headroom: one
-		// page per stall means nothing was amortised.
+		// Pages this draw's sync pulled off the GPU, drained or not: a quiescent pull
+		// (its producing submission already retired) still pays the copy and the
+		// deswizzle-side CPU work, so pages are counted unconditionally and stalls
+		// separately. The ratio against stalls is the batching headroom where stalls
+		// are nonzero; pages with zero stalls are the pure-copy spill bill.
 		u32 sync_pages;
 		// TileSyncReason bitfield. A row with exactly one bit set is a "sole" row, which
 		// is what decides whether fixing a reason retires a stall or merely shrinks one --
@@ -318,6 +321,7 @@ namespace GSDrawLog
 		TileSyncUploadSource = 1 << 0, ///< the draw's source pages had CPU-side writes to push
 		TileSyncStealSurface = 1 << 1, ///< pages were owned by another surface and had to be taken
 		TileSyncTextureOnTarget = 1 << 2, ///< sampled a texture living on pages a target owns
+		TileSyncFloorSpill = 1 << 3, ///< a floored draw pulled its whole footprint before SW rasterizing
 	};
 
 	enum Flags : u8
@@ -401,7 +405,7 @@ namespace GSDrawLog
 	///
 	/// Records no duration, deliberately: see the Record::stalls comment for why a count
 	/// survives arm-versus-arm comparison and a time does not.
-	void NoteTileSync(u32 pages, TileSyncReason reason);
+	void NoteTileSync(u32 pages, u32 drains, TileSyncReason reason);
 
 	/// Completes the row opened by BeginDraw with the software rasterizer's view: the
 	/// draw rect it will rasterize into (bbox ∩ scissor). No backend view exists for

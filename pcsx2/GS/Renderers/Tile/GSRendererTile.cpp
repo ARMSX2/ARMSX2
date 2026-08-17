@@ -1318,7 +1318,17 @@ void GSRendererTile::SpillForFloorDraw(const GSTileDrawPlan& plan, const GSVecto
 		}
 	}
 
+	// The floor's spill, attributed to its row like the native path's: pages
+	// whether or not anything drained (the copy is paid either way), drains off
+	// the counter. This is what makes the floor's arrangement cost separable in
+	// the ledger instead of only visible in the teardown census totals.
+	const u32 drains_before = m_readback[static_cast<u32>(ReadbackSite::FloorDraw)].drains;
 	ReadbackModelPages(need, ReadbackSite::FloorDraw);
+	if (GSDrawLog::IsActive())
+	{
+		const u32 drains = m_readback[static_cast<u32>(ReadbackSite::FloorDraw)].drains - drains_before;
+		GSDrawLog::NoteTileSync(static_cast<u32>(need.count()), drains, GSDrawLog::TileSyncFloorSpill);
+	}
 }
 
 // The floor draw's write footprint, observed into the memory model. Claims are
@@ -2141,10 +2151,11 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// totals the bill; these columns say WHICH draw paid it and for which reason, which
 	// is what turns "this title stalls a lot" into a list of draw numbers.
 	//
-	// Counted off the pool's own drain counter rather than off this call, because a
-	// readback whose pages collect to no runs returns without touching the device: a
-	// call is not a stall. Pages ride on the first stall only, so a draw that somehow
-	// drains twice reports two stalls and its pages once instead of twice.
+	// Stalls counted off the pool's own drain counter rather than off this call,
+	// because a readback whose pages collect to no runs returns without touching the
+	// device: a call is not a stall. Pages are noted whether or not anything drained —
+	// a quiescent pull still pays its copy, and an all-zero column on a spilling title
+	// once read as a dead hook when it was really this gate.
 	const u32 drains_before = m_readback[static_cast<u32>(ReadbackSite::NativeDraw)].drains;
 	const bool readback_ok = ReadbackModelPages(sync_set, ReadbackSite::NativeDraw);
 	if (GSDrawLog::IsActive())
@@ -2154,8 +2165,7 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 			(sync_upload.empty() ? 0 : GSDrawLog::TileSyncUploadSource) |
 			(sync_steal.empty() ? 0 : GSDrawLog::TileSyncStealSurface) |
 			(sync_tex.empty() ? 0 : GSDrawLog::TileSyncTextureOnTarget));
-		for (u32 i = 0; i < drains; i++)
-			GSDrawLog::NoteTileSync(i == 0 ? static_cast<u32>(sync_set.count()) : 0, reasons);
+		GSDrawLog::NoteTileSync(static_cast<u32>(sync_set.count()), drains, reasons);
 	}
 
 	// A device palette still living only in an owner texture must be gathered before

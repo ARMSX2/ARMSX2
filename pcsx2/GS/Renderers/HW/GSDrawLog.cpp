@@ -202,16 +202,16 @@ namespace GSDrawLog
 		rec.area_w = static_cast<s16>(std::clamp(rect.w, -32768, 32767));
 	}
 
-	void NoteTileSync(u32 pages, TileSyncReason reason)
+	void NoteTileSync(u32 pages, u32 drains, TileSyncReason reason)
 	{
-		if (s_open_record == SIZE_MAX)
+		if (s_open_record == SIZE_MAX || (pages == 0 && drains == 0))
 			return;
 
 		Record& rec = s_records[s_open_record];
-		// Saturating: a draw that syncs more than 65535 times has a problem the exact
+		// Saturating: a draw that stalls more than 65535 times has a problem the exact
 		// count will not help with, and wrapping would report it as a healthy draw.
-		if (rec.stalls != std::numeric_limits<u16>::max())
-			rec.stalls++;
+		rec.stalls = static_cast<u16>(
+			std::min<u32>(static_cast<u32>(rec.stalls) + drains, std::numeric_limits<u16>::max()));
 		rec.sync_pages += pages;
 		rec.sync_reason |= static_cast<u8>(reason);
 	}

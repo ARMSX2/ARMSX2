@@ -138,7 +138,7 @@ namespace
 TEST(GSDrawLog, EveryRowHasExactlyAsManyFieldsAsTheHeader)
 {
 	const Csv csv = Record([] {
-		TileRow([] { GSDrawLog::NoteTileSync(4, GSDrawLog::TileSyncUploadSource); });
+		TileRow([] { GSDrawLog::NoteTileSync(4, 1, GSDrawLog::TileSyncUploadSource); });
 
 		// A draw that returned before submit: opened, never completed.
 		GSDrawLog::BeginDraw(MakeState());
@@ -160,7 +160,7 @@ TEST(GSDrawLog, EveryRowHasExactlyAsManyFieldsAsTheHeader)
 TEST(GSDrawLog, ASingleSyncIsASoleReasonRow)
 {
 	const Csv csv = Record([] {
-		TileRow([] { GSDrawLog::NoteTileSync(3, GSDrawLog::TileSyncTextureOnTarget); });
+		TileRow([] { GSDrawLog::NoteTileSync(3, 1, GSDrawLog::TileSyncTextureOnTarget); });
 	});
 
 	ASSERT_EQ(csv.rows.size(), 1u);
@@ -172,6 +172,23 @@ TEST(GSDrawLog, ASingleSyncIsASoleReasonRow)
 	EXPECT_EQ(reason & (reason - 1), 0u) << "a single sync must set exactly one reason bit";
 }
 
+// A quiescent pull — pages copied off the GPU whose producing submission had already
+// retired — records its pages with ZERO stalls. The two costs are different (a copy is
+// paid either way; a drain only sometimes), and folding them was how a spilling title
+// once produced an all-zero column that read as a dead hook.
+TEST(GSDrawLog, AQuiescentPullRecordsPagesWithoutAStall)
+{
+	const Csv csv = Record([] {
+		TileRow([] { GSDrawLog::NoteTileSync(6, 0, GSDrawLog::TileSyncFloorSpill); });
+	});
+
+	ASSERT_EQ(csv.rows.size(), 1u);
+	EXPECT_EQ(csv.At(0, "stalls"), "0");
+	EXPECT_EQ(csv.At(0, "sync_pages"), "6");
+	EXPECT_EQ(std::stoul(csv.At(0, "sync_reason"), nullptr, 16),
+		static_cast<unsigned>(GSDrawLog::TileSyncFloorSpill));
+}
+
 // Several syncs on one draw accumulate rather than overwrite. This is the property that
 // makes the column a count of stalls instead of a count of draws-that-stalled, and the
 // two answer different questions: only the former can be divided into sync_pages to get
@@ -180,9 +197,9 @@ TEST(GSDrawLog, RepeatedSyncsAccumulateAndReasonsOr)
 {
 	const Csv csv = Record([] {
 		TileRow([] {
-			GSDrawLog::NoteTileSync(2, GSDrawLog::TileSyncUploadSource);
-			GSDrawLog::NoteTileSync(5, GSDrawLog::TileSyncStealSurface);
-			GSDrawLog::NoteTileSync(1, GSDrawLog::TileSyncUploadSource);
+			GSDrawLog::NoteTileSync(2, 1, GSDrawLog::TileSyncUploadSource);
+			GSDrawLog::NoteTileSync(5, 1, GSDrawLog::TileSyncStealSurface);
+			GSDrawLog::NoteTileSync(1, 1, GSDrawLog::TileSyncUploadSource);
 		});
 	});
 
@@ -218,7 +235,7 @@ TEST(GSDrawLog, TheStallCounterSaturatesInsteadOfWrapping)
 	const Csv csv = Record([] {
 		TileRow([] {
 			for (int i = 0; i < 70000; i++)
-				GSDrawLog::NoteTileSync(0, GSDrawLog::TileSyncUploadSource);
+				GSDrawLog::NoteTileSync(0, 1, GSDrawLog::TileSyncUploadSource);
 		});
 	});
 
