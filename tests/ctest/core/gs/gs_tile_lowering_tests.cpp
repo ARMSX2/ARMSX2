@@ -450,6 +450,33 @@ TEST(GSTileLowering, DateOn24BitFrameFailsEverything)
 	EXPECT_EQ(p.z_claims, 0);
 }
 
+TEST(GSTileLowering, DateAdmissionServesNativelyWithADepthSurface)
+{
+	// The fast profile's DATE admission: the draw renders through the device's
+	// destination-alpha machinery, gated on a depth surface being present —
+	// the stencil realization rides the depth attachment.
+	GSTileDrawInput in = BaseInput();
+	in.TEST.DATE = 1;
+	in.date_native = true;
+	const GSTileDrawPlan p = gsTileLowerDraw(in);
+	EXPECT_TRUE(p.native);
+	EXPECT_TRUE(p.date_native);
+
+	// Without the admission the floor is exactly as shipped.
+	in.date_native = false;
+	const GSTileDrawPlan q = gsTileLowerDraw(in);
+	EXPECT_FALSE(q.native);
+	EXPECT_EQ(q.reason, GSTileFloorReason::DateTest);
+	EXPECT_FALSE(q.date_native);
+
+	// No depth surface, no stencil to ride: the admission defers to the floor.
+	in.date_native = true;
+	in.TEST.ZTE = 0;
+	const GSTileDrawPlan r = gsTileLowerDraw(in);
+	EXPECT_FALSE(r.native);
+	EXPECT_EQ(r.reason, GSTileFloorReason::DateTest);
+}
+
 TEST(GSTileLowering, ZteZeroDisablesWriteAndTest)
 {
 	// The SW scanline derivation: zm = ZMSK || !ZTE. With ZTE=0 the depth buffer is

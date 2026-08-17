@@ -999,6 +999,11 @@ struct Pcsx2Config
 					// instead of rendering natively with the edge taps reading
 					// pre-draw bytes (SotC's bloom downsample chain).
 					TileExactFeedback : 1,
+					// Pin the exact DATE floor under the umbrella: destination-
+					// alpha-test draws keep the SW floor instead of the device's
+					// stencil / one-barrier realization (which tests the target
+					// as of draw start, Classic's own default-accuracy trade).
+					TileExactDate : 1,
 					// Depth from the closed plane form instead of the soft-float64
 					// walk: the scanline's own gradients (double-formed), integer
 					// wraparound plus an f32 fraction carry per fragment, within

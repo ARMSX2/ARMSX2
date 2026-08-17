@@ -251,6 +251,16 @@ struct GSTileDrawInput
 	// parity holds in both directions). Both are config/device facts like the levers
 	// above; callers without them leave false, which is today's shipped behaviour.
 	bool blend_classic_carrier;
+	// The fast profile's DATE admission (EmuCore/GS/TileExactDate pins the floor):
+	// serve destination-alpha-test draws natively at Classic's own realization —
+	// read-only stencil where the device has one, the one-barrier shader test
+	// where it does not (Adreno depth carries no stencil). Both test the target
+	// as it stood BEFORE the draw, where the SW floor tests live per pixel; the
+	// divergence needs a draw that writes alpha a LATER primitive of the same
+	// draw then tests, and it is the approximation Classic ships unconditionally
+	// at default accuracy. Floors keep serving draws with no depth surface (the
+	// stencil rides the depth attachment).
+	bool date_native;
 	bool dual_source_blend;
 };
 
@@ -333,6 +343,7 @@ struct GSTileDrawPlan
 	u8 z_claims = 0; ///< planes claimed on ZBUF pages when z_write
 	bool z_write = false;
 	bool z_test = false; ///< fixed-function test does something (ZTST > ALWAYS)
+	bool date_native = false; ///< DATE served natively (stencil or one-barrier, per device)
 	u8 ztst = ZTST_ALWAYS;
 
 	GSTileDrawPass pass[2];
@@ -1344,11 +1355,18 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		return floored(GSTileFloorReason::Dither);
 	if (atst_dynamic)
 		return floored(GSTileFloorReason::AlphaTest);
-	// DATE with real destination alpha is a genuinely dynamic test — M4 work. The
-	// 24-bit case never reaches here: it zeroed every write above and falls to
-	// NothingWritten.
+	// DATE with real destination alpha is a genuinely dynamic test. The 24-bit
+	// case never reaches here: it zeroed every write above and falls to
+	// NothingWritten. Under the fast profile's admission the draw renders
+	// natively through the device's destination-alpha machinery instead —
+	// gated on a depth surface being present, because the stencil realization
+	// rides the depth attachment (a DATE draw without one keeps the floor).
 	if (in.TEST.DATE && (in.FRAME.PSM & 0xF) != PSMCT24)
-		return floored(GSTileFloorReason::DateTest);
+	{
+		if (!(in.date_native && (p.z_test || p.z_write)))
+			return floored(GSTileFloorReason::DateTest);
+		p.date_native = true;
+	}
 	if (in.TEST.ZTE && in.TEST.ZTST == ZTST_NEVER)
 		return floored(GSTileFloorReason::ZTestNever);
 	if (partial_byte)

@@ -771,6 +771,12 @@ Pcsx2Config::GSOptions::GSOptions()
 	// sampled-subrect donor that serves the core's sole owner deletes the pull
 	// outright. Flip this default off in the commit that lands it.
 	TileExactFeedback = true;
+	// Default TRUE alongside TileExactFeedback, and the two flip TOGETHER: each
+	// admission alone shears an interleaved pipeline in half (SotC composites
+	// bloom via DATE sprites between the downsample draws) and the native/floor
+	// alternation pays an out-of-band readback wait per crossing — the measured
+	// +11 ms F4-scene regression. The pair is re-priced as one arm.
+	TileExactDate = true;
 	TileFastDepthPlane = true;
 	TileFastDepthClassic = false;
 	UseBlitSwapChain = false;
@@ -1087,6 +1093,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileExactTexFilter);
 	SettingsWrapBitBool(TileExactAlphaTest);
 	SettingsWrapBitBool(TileExactFeedback);
+	SettingsWrapBitBool(TileExactDate);
 	SettingsWrapBitBool(TileFastDepthPlane);
 	SettingsWrapBitBool(TileFastDepthClassic);
 	SettingsWrapBitBool(UseBlitSwapChain);

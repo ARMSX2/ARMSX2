@@ -987,6 +987,7 @@ GSTileDrawInput GSRendererTile::BuildLoweringInput()
 	in.blend_overlap_native = GSConfig.TileBlendOverlapNative || GSConfig.TileBlendClassicCarrier;
 	in.blend_tex_sample_native = GSConfig.TileBlendTexSampleNative || GSConfig.TileBlendClassicCarrier;
 	in.blend_classic_carrier = GSConfig.TileBlendClassicCarrier;
+	in.date_native = GSConfig.TileFastShading && !GSConfig.TileExactDate;
 	in.dual_source_blend = g_gs_device->Features().dual_source_blend && !GSConfig.TileBlendNoDualSource;
 	in.tme = PRIM->TME;
 	in.abe = PRIM->ABE;
@@ -3350,6 +3351,33 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	}
 	conf.depth.ztst = ds ? plan.ztst : static_cast<u8>(ZTST_ALWAYS);
 	conf.depth.zwe = plan.pass[0].z_write;
+
+	// The DATE admission: Classic's own realizations, chosen by the same device
+	// fact Classic keys on. With a stencil buffer, the device runs the read-only
+	// stencil pre-pass itself (SetupDATE inside RenderHW) and the draw stencil-
+	// tests; without one (Adreno depth carries no stencil), the shader tests the
+	// destination's alpha through a one-barrier snapshot. Both see the target as
+	// of draw start; the SW floor sees it live per pixel — Classic's shipped
+	// default-accuracy trade, priced by the perceptual gate. The lowering only
+	// admits with a depth surface present, so conf.ds is real on this path; the
+	// second-pass block below copies conf.depth AFTER this, so the repair pass
+	// inherits the stencil test.
+	if (plan.date_native)
+	{
+		pxAssert(ds);
+		conf.datm = static_cast<SetDATM>(ctx->TEST.DATM);
+		if (g_gs_device->Features().stencil_buffer)
+		{
+			conf.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Stencil;
+			conf.depth.date = 1;
+		}
+		else
+		{
+			conf.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Full;
+			conf.require_one_barrier = true;
+			conf.ps.date = 5 + ctx->TEST.DATM;
+		}
+	}
 	conf.cb_vs.max_depth = 0xFFFFFFFFu;
 	if (zwalk)
 	{
