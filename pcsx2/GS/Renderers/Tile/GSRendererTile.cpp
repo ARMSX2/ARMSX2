@@ -930,6 +930,7 @@ GSTileDrawInput GSRendererTile::BuildLoweringInput()
 		in.tex_fst = PRIM->FST;
 		in.tex_stq_tri_native = GSConfig.TilePerspectiveNative;
 		in.tex_fast_sample = GSConfig.TileFastShading && !GSConfig.TileExactTexCoord;
+		in.tex_fast_mip = in.tex_fast_sample;
 		in.tex_psm = static_cast<u8>(m_context->TEX0.PSM);
 		if (in.tex_mip)
 		{
@@ -1782,13 +1783,22 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// Under the fast profile the walk stays only where it is closed-form (the
 	// effective-FST integer DDA). What demotes is exactly the unbounded loop: the
 	// perspective float walk, whose trip count is the fragment's distance from the
-	// span's left edge. The mip clause serves the walk-era unlock alone
-	// (TilePerspectiveNative admits mip STQ triangles onto the walk; the fast
-	// admission floors them instead — the lowering's TextureMip clause).
+	// span's left edge. Mip STQ TRIANGLES also leave the walk under fast, for the
+	// sampler leg's manual-LOD realization (Classic's own mip machinery) — which
+	// deletes the walk legs' per-level in-shader filter AND the draw's payload.
+	// True-FST mip draws and mip sprites keep the walk: their walk is the cheap
+	// closed form, and the manual-LOD shader reads the Q varying, which an FST
+	// draw carries as whatever the game last left in RGBAQ (log2 of a zero Q is
+	// the NaN the STQ guard exists to floor — STQ draws reach the leg with Q
+	// proven finite and positive, FST draws prove nothing). The twalk_mip clause
+	// otherwise serves the walk-era unlock (TilePerspectiveNative admits mip STQ
+	// triangles onto the walk under the exact profile).
 	const bool twalk_mip = PRIM->TME && IsMipMapActive();
+	const bool mip_fast =
+		fast_tex && twalk_mip && m_vt.m_primclass == GS_TRIANGLE_CLASS && !PRIM->FST;
 	const bool twalk_fst_eff = gsTileTexWalkFst(m_vt.m_primclass, PRIM->FST != 0,
 		twalk_mip, m_vt.m_eq.q != 0);
-	const bool want_twalk = PRIM->TME &&
+	const bool want_twalk = PRIM->TME && !mip_fast &&
 		(m_vt.m_primclass == GS_TRIANGLE_CLASS || m_vt.m_primclass == GS_SPRITE_CLASS) &&
 		(twalk_fst_eff || twalk_mip || !fast_tex);
 	// Colour and fog transcription: a gouraud or fogged triangle takes its colour
@@ -2174,10 +2184,12 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		// integer filter expands corners itself, in the console's own order), and
 		// GPU/direct palettes stay in-shader everywhere: their words never
 		// transit the CPU cache, so they carry no content id to key an expansion
-		// on. Mip pyramids wait on the manual-LOD stage. A failed or refused
+		// on. A mip pyramid expands every level through the same palette (the
+		// device op fills levels above zero through its scratch), so the
+		// manual-LOD draw samples an ordinary RGBA chain. A failed or refused
 		// expansion keeps the pair bound — the in-shader path is always correct.
 		if (pal && tex && fast_tex && m_twalk_at == NoWalk && pal_content_id != 0 && tex_build_id != 0 &&
-			mip_levels == 1 && m_expand_cache.Serves())
+			m_expand_cache.Serves())
 		{
 			if (GSTexture* expanded = m_expand_cache.Lookup(tex, tex_build_id, pal, pal_content_id, mip_levels))
 			{
@@ -2971,6 +2983,45 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 			// region-wrapped source, and the fast profile's stage-1 filter for the
 			// demoted perspective classes. The sampler itself stays nearest.
 			conf.ps.ltf = m_vt.IsLinear();
+			if (mip_draw)
+			{
+				// The fast profile's mip demotion: Classic's own manual-LOD
+				// machinery, exactly as its shader-emulated-sampler branch runs it —
+				// the 4-tap filter stays in-shader per level, the LEVEL comes from
+				// textureLod on the shader's lod (PS_MANUAL_LOD), and the sampler's
+				// mipmap mode realizes the round (nearest) or blend (trilinear)
+				// between levels. The lod constants encode the scanline's selector:
+				// LCM (and FST, whose coordinates have no Q) pin lod = K by zeroing
+				// the L factor; a draw already past MXL collapses to the constant
+				// max level; hardware clamps the tail of the chain on its own.
+				if (m_vt.m_lod.x > 0)
+					conf.ps.ltf = (ctx->TEX1.MMIN >> 2) & 1;
+				bool tri_mip = (ctx->TEX1.MMIN & 1) != 0;
+				u32 lcm = ctx->TEX1.LCM;
+				const int mxl = std::min<int>(static_cast<int>(ctx->TEX1.MXL), 6);
+				float k = static_cast<float>(ctx->TEX1.K) / 16.0f;
+				float l = static_cast<float>(1 << ctx->TEX1.L);
+				if (static_cast<int>(m_vt.m_lod.x) >= static_cast<int>(ctx->TEX1.MXL))
+				{
+					k = static_cast<float>(mxl);
+					lcm = 1;
+					tri_mip = false;
+				}
+				// L = 0 pins lod = K − log2(Q)·0 = K. Safe here and only here:
+				// every draw on this block is STQ (true-FST mip stays on the
+				// walk), so Q is guard-proven finite and positive and the log2
+				// term is a real zero, never NaN·0.
+				if (lcm)
+					l = 0.0f;
+				conf.ps.manual_lod = 1;
+				conf.cb_ps.LODParams.x = k;
+				conf.cb_ps.LODParams.y = l;
+				conf.cb_ps.LODParams.z = 0.0f; // the source holds every level from the base
+				conf.cb_ps.LODParams.w = static_cast<float>(mxl);
+				conf.sampler.triln = static_cast<u8>(tri_mip ? GS_MIN_FILTER::Nearest_Mipmap_Linear :
+				                                               GS_MIN_FILTER::Nearest_Mipmap_Nearest);
+				conf.sampler.lodclamp = 0;
+			}
 			conf.ps.wms = (wms & 2) ? wms : 0;
 			conf.ps.wmt = (wmt & 2) ? wmt : 0;
 			conf.sampler.tau = (wms == CLAMP_REPEAT);

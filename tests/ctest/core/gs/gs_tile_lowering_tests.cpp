@@ -227,12 +227,20 @@ TEST(GSTileLowering, FastSampleAdmitsPerspectiveTriangles)
 	EXPECT_TRUE(fast.native);
 	EXPECT_EQ(fast.reason, GSTileFloorReason::None);
 
-	// The sampler leg has no mip realization: a mipmapping STQ triangle keeps
-	// flooring under the fast admission (as TextureMip now — the class it waits
-	// on), where the walk-era unlock would put it on the float walk.
+	// A mipmapping STQ triangle floors under the sample admission alone and goes
+	// native under the mip admission (the sampler leg's manual-LOD realization);
+	// the walk-era unlock is the exact profile's separate road to the same draw.
 	in.tex_mip = true;
 	in.tex_mip_fit = true;
 	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureMip);
+	in.tex_fast_mip = true;
+	EXPECT_TRUE(gsTileLowerDraw(in).native);
+	// A pyramid deeper than its base floors whatever the profile: no GPU chain
+	// expresses it.
+	in.tex_mip_fit = false;
+	EXPECT_EQ(gsTileLowerDraw(in).reason, GSTileFloorReason::TextureMip);
+	in.tex_mip_fit = true;
+	in.tex_fast_mip = false;
 	in.tex_stq_tri_native = true;
 	EXPECT_TRUE(gsTileLowerDraw(in).native);
 	in.tex_stq_tri_native = false;

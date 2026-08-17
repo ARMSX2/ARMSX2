@@ -202,6 +202,10 @@ struct GSTileDrawInput
 	// to this pure function they are the same permission. Callers without the
 	// fact leave false.
 	bool tex_fast_sample;
+	// The fast profile's mip admission (same gate as tex_fast_sample): mip STQ
+	// triangles go native onto the sampler leg with Classic's manual-LOD
+	// machinery instead of flooring. Callers without the fact leave false.
+	bool tex_fast_mip;
 	u8 tex_psm;
 	// STQ safety (meaningful when tme && !tex_fst): the route's vertex-trace
 	// verdict that the quotient can leave the scanline's 16.16 envelope, that a
@@ -821,13 +825,13 @@ inline GSTileDrawPlan gsTileLowerDraw(const GSTileDrawInput& in)
 		{
 			if (!in.tex_fast_sample)
 				return floored(GSTileFloorReason::TexturePerspective);
-			// The sampler leg has no mip realization (the LOD machinery lives with
-			// the walk branch), so under the fast admission a mipmapping STQ
-			// triangle keeps flooring exactly as it did before — it drains with the
-			// palettised stage's manual-LOD work. This also keeps the fast profile
-			// free of the unbounded float walk everywhere: the walk-era unlock is
-			// the only road that puts a mip triangle on it.
-			if (in.tex_mip)
+			// The fast profile's mip admission (tex_fast_mip): the draw runs
+			// Classic's own manual-LOD machinery on the sampler leg — in-shader
+			// filtering per level, hardware level selection through textureLod —
+			// so a mipmapping STQ triangle no longer waits on the walk-era
+			// unlock. Without the fact it floors exactly as it always did, which
+			// keeps the fast profile free of the unbounded float walk everywhere.
+			if (in.tex_mip && !in.tex_fast_mip)
 				return floored(GSTileFloorReason::TextureMip);
 		}
 		if (in.tex_mip && !in.tex_mip_fit)
