@@ -42,6 +42,7 @@ public:
 	void Destroy() override;
 	void Reset(bool hardware_reset) override;
 	void VSync(u32 field, bool registers_written, bool idle_frame) override;
+	GSTexture* GetOutput(int i, float& scale, int& y_offset) override;
 	void Draw() override;
 	void InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) override;
 	void InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut = false) override;
@@ -104,16 +105,20 @@ private:
 	// the lever — a seam paying many drains for few pages is asking to be batched, and
 	// a seam paying one drain for many pages is already as cheap as this design allows.
 	//
-	// Split by the seam that asked, because the seams have unrelated fixes: the frame
-	// boundary is a policy question (it syncs the whole of GPU truth when the presenter
-	// only reads the display footprints), the floor handoff is a coverage question, and
-	// the native route's own sync is an ordering question.
+	// Split by the seam that asked, because the seams have unrelated fixes: the
+	// presenter's pull is a footprint question, the floor handoff is a coverage
+	// question, and the native route's own sync is an ordering question. (The old
+	// frame-boundary policy question — whole-of-truth sync every vsync when the
+	// presenter only reads the display — was answered by moving the pull to
+	// GetOutput at its exact footprint; VSyncAll remains only where a complete CPU
+	// image IS the contract.)
 	enum class ReadbackSite : u8
 	{
 		Transfer, ///< a GIF transfer wrote pages the GPU still owned
 		LocalRead, ///< the CPU read local memory back out
 		Move, ///< local->local copy, both sides
-		VSyncAll, ///< the unconditional whole-of-truth frame-boundary sync
+		VSyncAll, ///< whole-of-truth sync: savestate/switch/teardown (ReadbackTextureCache)
+		VSyncDisplay, ///< the presenter's read, pulled at its exact display footprint
 		FloorDraw, ///< native -> SW floor handoff
 		NativeDraw, ///< the native route's own upload/steal sync
 		Oracle, ///< the per-draw oracle's syncs; an instrument, never a real cost

@@ -224,15 +224,76 @@ void GSRendererTile::Reset(bool hardware_reset)
 
 void GSRendererTile::VSync(u32 field, bool registers_written, bool idle_frame)
 {
-	// Present reads local memory, and syncing everything at the frame boundary keeps
-	// stable targets synced (no truth is dropped, so nothing re-uploads next frame).
-	// TODO(M3): spill only the DISPFB footprints via a GetOutput-precise hook.
-	SyncAllTruthToCpu(false);
+	// The frame boundary itself syncs nothing. Present pulls its own footprint
+	// (GetOutput below), every other CPU reader comes through a demand seam
+	// (Transfer/LocalRead/Move/floor/native), and the whole-of-truth sync survives
+	// only where a complete CPU image IS the contract (ReadbackTextureCache:
+	// savestate, renderer switch, teardown). Truth a frame wrote and nothing reads
+	// stays GPU-resident indefinitely — that unread set was the vsync-all bill; how
+	// much of it re-surfaces at the demand seams is the census's question, per
+	// title.
 	// The model's invariants are cheap enough to police once a frame in Devel.
 	pxAssert(m_vram_model.CheckInvariants());
 	m_readback_frames++;
 	m_expand_cache.NextFrame();
 	GSRendererSW::VSync(field, registers_written, idle_frame);
+}
+
+GSTexture* GSRendererTile::GetOutput(int i, float& scale, int& y_offset)
+{
+	// The presenter deswizzles the display circuit straight out of local memory
+	// (GSRendererSW::GetOutput), so exactly its footprint must be CPU-current before
+	// the base runs. The rects mirror the base's derivation, including the 2048
+	// address wrap that splits the read into up to four pieces. Page granularity
+	// makes the base's outward block alignment a no-op here — a block never spans
+	// pages — so the pieces cover exactly what rtx reads. Ordering: the base
+	// flushed the rasterizer (Sync in GSRendererSW::VSync) before Merge calls this,
+	// so no SW draw is in flight over these pages.
+	const int index = i >= 0 ? i : 1;
+	const GSPCRTCRegs::PCRTCDisplay& fb = PCRTCDisplays.PCRTCDisplays[index];
+	const GSVector2i fb_size = PCRTCDisplays.GetFramebufferSize(i);
+	const GSVector4i fb_rect = PCRTCDisplays.GetFramebufferRect(i);
+	if (!fb_rect.rempty() && fb.FBW != 0 && fb_size.x >= 0 && fb_size.y >= 0)
+	{
+		const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[fb.PSM];
+		const int w = fb.FBW * 64;
+		const int h = fb_size.y;
+		const int off_x = (fb_rect.x & 0x7ff) & ~(psm.bs.x - 1);
+		const int off_x_end = ((fb_rect.x & 0x7ff) + (psm.bs.x - 1)) & ~(psm.bs.x - 1);
+		const int off_y = (fb_rect.y & 0x7ff) & ~(psm.bs.y - 1);
+		const int off_y_end = ((fb_rect.y & 0x7ff) + (psm.bs.y - 1)) & ~(psm.bs.y - 1);
+		GSVector4i r(off_x, off_y, w + off_x_end, h + off_y_end);
+		GSVector4i rh(off_x, off_y, w + off_x_end, (h + off_y_end) & 0x7FF);
+		GSVector4i rw(off_x, off_y, (w + off_x_end) & 0x7FF, h + off_y_end);
+		const bool h_wrap = (r.bottom >= 2048);
+		const bool w_wrap = (r.right >= 2048);
+		if (h_wrap)
+		{
+			r.bottom = 2048;
+			rw.bottom = 2048;
+			rh.top = 0;
+		}
+		if (w_wrap)
+		{
+			r.right = 2048;
+			rh.right = 2048;
+			rw.left = 0;
+		}
+
+		const GSTileSurfaceLayout layout{static_cast<u32>(fb.Block()), static_cast<u8>(fb.FBW),
+			static_cast<u8>(fb.PSM), KindForPsm(fb.PSM)};
+		GSPageBitmap pages = GSVramModel::PagesForRect(layout, r);
+		if (w_wrap)
+			pages |= GSVramModel::PagesForRect(layout, rw);
+		if (h_wrap)
+			pages |= GSVramModel::PagesForRect(layout, rh);
+		if (h_wrap && w_wrap)
+			pages |= GSVramModel::PagesForRect(layout, GSVector4i(rw.left, rh.top, rw.right, rh.bottom));
+		// All planes: the read is of raw bytes, so newer GPU truth on these
+		// addresses is what the screen shows regardless of which plane wrote it.
+		ReadbackModelPages(m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll), ReadbackSite::VSyncDisplay);
+	}
+	return GSRendererSW::GetOutput(i, scale, y_offset);
 }
 
 // Where the readback bill goes, per seam, averaged over the run. Reported once at
@@ -248,7 +309,7 @@ void GSRendererTile::ReportReadbackCensus()
 		return;
 
 	static constexpr const char* kSiteNames[] = {
-		"transfer-write", "cpu-read", "move", "vsync-all", "floor-draw", "native-draw", "oracle"};
+		"transfer-write", "cpu-read", "move", "vsync-all", "vsync-display", "floor-draw", "native-draw", "oracle"};
 	static_assert(std::size(kSiteNames) == static_cast<u32>(ReadbackSite::Count));
 
 	const double frames = static_cast<double>(m_readback_frames);
