@@ -386,12 +386,15 @@ void GSRendererTile::ReportReadbackCensus()
 			static_cast<double>(m_tex_source.Builds()) / frames,
 			static_cast<double>(m_palette_cache.Hits()) / frames,
 			static_cast<double>(m_palette_cache.Builds()) / frames);
-		if (m_tex_source.RebuildsSameBytes() | m_tex_source.RebuildsNewBytes())
+		if (m_tex_source.RebuildsSameBytes() | m_tex_source.RebuildsNewBytes() | m_tex_source.RebuildsSamePages())
 		{
-			// Same-bytes rebuilds are stamp churn — the pages moved, the window's
-			// texels did not. Each one still pays its deswizzle (the bytes must
-			// exist to be verified) but skips its upload and keeps its identity.
-			Console.WriteLn("    index rebuilds: %8.2f same-bytes (upload skipped)  %8.2f new-bytes per frame",
+			// Stamp churn tiers, cheapest refusal first: same-pages rebuilds are
+			// refused by the raw page hashes before the deswizzle runs at all;
+			// same-bytes rebuilds paid their deswizzle (a page changed outside
+			// the window's texels) but skipped the upload; new-bytes rebuilds
+			// paid everything because the texels really moved.
+			Console.WriteLn("    index rebuilds: %8.2f same-pages (deswizzle skipped)  %8.2f same-bytes (upload skipped)  %8.2f new-bytes per frame",
+				static_cast<double>(m_tex_source.RebuildsSamePages()) / frames,
 				static_cast<double>(m_tex_source.RebuildsSameBytes()) / frames,
 				static_cast<double>(m_tex_source.RebuildsNewBytes()) / frames);
 		}

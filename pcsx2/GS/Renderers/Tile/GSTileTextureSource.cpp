@@ -71,6 +71,38 @@ u64 GSTileTextureSource::GenStamp(const GSVramModel& model, const GSPageBitmap& 
 	return stamp;
 }
 
+u64 GSTileTextureSource::PageContentStamp(const GSLocalMemory& mem, const GSVramModel& model, const GSPageBitmap& pages)
+{
+	// Positional fold of the per-page content hashes: the pair includes the page
+	// index so two pages exchanging contents cannot cancel. forEachSetPage walks
+	// ascending, so equal page sets fold in equal order by construction.
+	XXH3_state_t st;
+	XXH3_64bits_reset(&st);
+	pages.forEachSetPage([&](u32 page) {
+		PageContent& pc = m_page_content[page];
+		const GSVramModel::PageGen& g = model.Gen(page);
+#ifdef PCSX2_DEVBUILD
+		// The honesty contract: a page is hashed only when its CPU bytes are the
+		// post-spill bytes for its current generations. GPU-newest-unsynced truth
+		// here means the caller skipped the spill — the donor-route poison.
+		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+			pxAssert(!model.Truth(pi).test(page) || model.SyncedPages(pi).test(page));
+#endif
+		if (pc.hash == 0 || pc.seen_cpu != g.cpu_write || pc.seen_gpu != g.gpu_write)
+		{
+			// 8 KB linear — the page's raw swizzled bytes, NOT a deswizzle. This
+			// runs once per written page per frame; the deswizzle it stands in
+			// for ran once per window reading the page.
+			pc.hash = GSXXH3_64bits(mem.vm8() + page * GS_PAGE_SIZE, GS_PAGE_SIZE) | 1;
+			pc.seen_cpu = g.cpu_write;
+			pc.seen_gpu = g.gpu_write;
+		}
+		const u64 pair[2] = {page, pc.hash};
+		GSXXH3_64bits_update(&st, pair, sizeof(pair));
+	});
+	return GSXXH3_64bits_digest(&st) | 1; // never the "no previous build" zero
+}
+
 u8* GSTileTextureSource::GetScratch(u32 size)
 {
 	if (m_scratch_size < size)
@@ -253,7 +285,32 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 					*build_id = e.build_id;
 				return e.tex;
 			}
-			// Same window, moved bytes: rebuild in place.
+			// Same window, moved stamp. Before paying the deswizzle, ask the
+			// cheaper question: did the pages' CONTENT move, or were they only
+			// rewritten with the bytes they already held? (Same population the
+			// row-hash tier measured at 97.7% — this refuses those one tier
+			// earlier, before the gather-read of the swizzled window.) Only a
+			// CPU-built entry can answer — a device-built one never recorded
+			// what the CPU bytes were — and only a donor-LESS lookup may ask:
+			// the donor route deliberately skips the caller's spill, so hashing
+			// its pages would file PRE-spill bytes under the current write
+			// generations and poison every later post-spill consumer of the
+			// same pages. The SotC bloom chain caught exactly this — its window
+			// alternates donor/CPU routes within a frame, and the stale hash
+			// matched a fingerprint whose bytes had since been pulled.
+			u64 page_content = 0;
+			if (!donor && e.content_hash != 0 && e.page_content != 0)
+			{
+				page_content = PageContentStamp(mem, model, pages);
+				if (page_content == e.page_content)
+				{
+					e.gen_stamp = stamp;
+					m_rebuilds_same_pages++;
+					if (build_id)
+						*build_id = e.build_id;
+					return e.tex;
+				}
+			}
 			if (!BuildInto(e, mem, level_tex0, levels, TEXA, donor))
 			{
 				e.alive = false;
@@ -266,6 +323,11 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 			}
 			e.gen_stamp = stamp;
 			e.pages = pages;
+			// A CPU build records the page fingerprint it was built under (already
+			// computed if the serve above was attempted); a device build records
+			// nothing — its bytes never transited the CPU.
+			e.page_content =
+				(e.content_hash != 0) ? (page_content != 0 ? page_content : PageContentStamp(mem, model, pages)) : 0;
 			// BuildInto stamped the id — a NEW one only if the bytes moved.
 			if (build_id)
 				*build_id = e.build_id;
@@ -289,6 +351,7 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 	e.pages = pages;
 	e.last_use = ++m_use_counter;
 	e.content_hash = 0; // a fresh window never compares against the slot's previous occupant
+	e.page_content = 0;
 	e.build_id = 0;
 	if (!BuildInto(e, mem, level_tex0, levels, TEXA, donor))
 	{
@@ -301,6 +364,8 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 		return nullptr;
 	}
 	e.gen_stamp = stamp;
+	if (e.content_hash != 0)
+		e.page_content = PageContentStamp(mem, model, pages);
 	if (build_id)
 		*build_id = e.build_id;
 	return e.tex;
@@ -317,5 +382,10 @@ void GSTileTextureSource::Clear()
 		}
 		e.alive = false;
 	}
+	// The page hashes key on the model's write generations, and the one caller
+	// that resets those (GSRendererTile::Reset) clears this class in the same
+	// act — so the hashes must die here, or a replay reaching the same counts
+	// with different bytes would serve a stale texture.
+	m_page_content.fill({});
 	m_use_counter = 0;
 }

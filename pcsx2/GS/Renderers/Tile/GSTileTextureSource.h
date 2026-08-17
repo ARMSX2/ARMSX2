@@ -108,6 +108,17 @@ public:
 	u64 RebuildsSameBytes() const { return m_rebuilds_same_bytes; }
 	u64 RebuildsNewBytes() const { return m_rebuilds_new_bytes; }
 
+	/// Rebuilds refused one tier earlier still: the stamp moved but the raw bytes
+	/// of the window's pages hashed identical to the last CPU build, so the
+	/// deswizzle itself was skipped, not just the upload. Page hashes live in one
+	/// per-page array revalidated lazily off the model's write generations, so a
+	/// page rewritten with identical bytes is hashed once per frame however many
+	/// windows read it — where the deswizzle it replaces ran once per WINDOW,
+	/// gather-reading the swizzled layout. Same-bytes-rebuild counts above only
+	/// see the residue this tier lets through (a page that changed outside the
+	/// window's texels).
+	u64 RebuildsSamePages() const { return m_rebuilds_same_pages; }
+
 	/// Recycles every cached texture (reset / teardown / hot-switch).
 	void Clear();
 
@@ -133,16 +144,33 @@ private:
 		u64 last_use = 0;
 		u64 build_id = 0; ///< stamped when a build CHANGES content; equal ids = same texel bytes
 		u64 content_hash = 0; ///< XXH3 of the last CPU build's texel rows (0 = none / device-built)
+		u64 page_content = 0; ///< fingerprint of the pages' RAW bytes at the last CPU build (0 = none / device-built)
 		GSPageBitmap pages;
 		GSTexture* tex = nullptr;
 		bool alive = false;
 	};
 
+	// One cached content hash per GS page, revalidated lazily: the hash is current
+	// exactly while the page's write generations match the ones it was taken under.
+	// The generations key the bytes from this class's viewpoint because Lookup's
+	// contract has the caller spill GPU truth under the window first — so at every
+	// hashing site the page's CPU bytes are the post-spill bytes for those
+	// generations, and a readback that installs bytes without bumping a generation
+	// can only install the same bytes a previous spill at those generations did.
+	struct PageContent
+	{
+		u64 hash = 0; ///< XXH3 of the page's 8 KB (|1 — 0 means never hashed)
+		u32 seen_cpu = 0;
+		u32 seen_gpu = 0;
+	};
+
+	u64 PageContentStamp(const GSLocalMemory& mem, const GSVramModel& model, const GSPageBitmap& pages);
 	bool BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTEX0* level_tex0, u32 levels, const GIFRegTEXA& TEXA,
 		const Donor* donor);
 	u8* GetScratch(u32 size);
 
 	std::array<Entry, kMaxEntries> m_entries;
+	std::array<PageContent, GS_MAX_PAGES> m_page_content;
 	std::unique_ptr<u8[]> m_scratch;
 	u32 m_scratch_size = 0;
 	u64 m_use_counter = 0;
@@ -153,4 +181,5 @@ private:
 	u64 m_reinterpret_builds = 0;
 	u64 m_rebuilds_same_bytes = 0;
 	u64 m_rebuilds_new_bytes = 0;
+	u64 m_rebuilds_same_pages = 0;
 };
