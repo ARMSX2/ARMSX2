@@ -360,11 +360,14 @@ void GSRendererTile::ReportReadbackCensus()
 		// The partition of the render-to-texture bill. refuse_format with a sole owner
 		// already found is the interesting row: those bytes ARE on the GPU, in a texture
 		// we own, in the wrong arrangement -- a conversion, not a fetch.
-		Console.WriteLn("      refused: mip %.2f  no-owner %.2f  format %.2f  layout %.2f  geometry %.2f",
+		Console.WriteLn("      refused: mip %.2f  no-owner %.2f  format %.2f  layout %.2f  geometry %.2f  self-target %.2f",
 			n.refuse_mip / frames, n.refuse_no_owner / frames, n.refuse_format / frames,
-			n.refuse_layout / frames, n.refuse_geometry / frames);
+			n.refuse_layout / frames, n.refuse_geometry / frames, n.refuse_self_target / frames);
 		Console.WriteLn("      of the format refusals, %.2f start at the owner's own base",
 			n.refuse_format_same_base / frames);
+		if (n.feedback_admitted)
+			Console.WriteLn("      feedback admitted (sampled core disjoint from write): %.2f draws per frame",
+				n.feedback_admitted / frames);
 	}
 	if (m_expand_cache.Builds() | m_expand_cache.Hits() | m_expand_cache.Deferrals())
 	{
@@ -1933,8 +1936,54 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 		}
 		if (tex_pages.intersects(fb_pages) || tex_pages.intersects(z_pages))
 		{
-			reason = GSTileFloorReason::TextureFeedback;
-			return false;
+			// The whole-WINDOW test above is the conservative one: the window is the
+			// register claim, and a draw can share pages with its own target while
+			// SAMPLING none of them — SotC's bloom downsample chain writes into the
+			// tail rows of its own 512-page source window and samples everything
+			// ABOVE them. The refined question is the sampled CORE: the vertex UV
+			// bbox (which bounds every sample coordinate — s/q along an edge is
+			// monotone, so vertex extrema bound the triangle) shrunk one texel per
+			// side. Core pages disjoint from the write footprint means every tap
+			// that could touch written bytes belongs to a sample within one texel
+			// of the bbox boundary — the linear filter's second tap, a clamp fold,
+			// or a one-texel repeat fold — an area-bounded band whose misread the
+			// perceptual gate prices. That is a severity bound, not exactness, so
+			// the admission is the fast profile's; exact keeps the floor.
+			bool admit = false;
+			if (GSConfig.TileFastShading && !GSConfig.TileExactFeedback && mip_levels == 1 &&
+				ctx->CLAMP.WMS <= CLAMP_CLAMP && ctx->CLAMP.WMT <= CLAMP_CLAMP)
+			{
+				const int tw = 1 << std::min<u32>(fixed_tex0.TW, 10);
+				const int th = 1 << std::min<u32>(fixed_tex0.TH, 10);
+				// Inclusive core [floor(min)+1, floor(max)-1]; exclusive rect form.
+				int cx0 = static_cast<int>(std::floor(m_vt.m_min.t.x)) + 1;
+				int cy0 = static_cast<int>(std::floor(m_vt.m_min.t.y)) + 1;
+				int cx1 = static_cast<int>(std::floor(m_vt.m_max.t.x));
+				int cy1 = static_cast<int>(std::floor(m_vt.m_max.t.y));
+				// CLAMP folds an overhanging core onto the edge texel (in-window, and
+				// already margin territory); REPEAT folds it onto arbitrary interior
+				// bytes the core test would not see, so any core overhang floors.
+				const bool u_ok = (ctx->CLAMP.WMS == CLAMP_CLAMP) || (cx0 >= 0 && cx1 <= tw);
+				const bool v_ok = (ctx->CLAMP.WMT == CLAMP_CLAMP) || (cy0 >= 0 && cy1 <= th);
+				cx0 = std::max(cx0, 0);
+				cy0 = std::max(cy0, 0);
+				cx1 = std::min(cx1, tw);
+				cy1 = std::min(cy1, th);
+				if (u_ok && v_ok && cx0 < cx1 && cy0 < cy1)
+				{
+					const GSTileSurfaceLayout tex_l{fixed_tex0.TBP0, static_cast<u8>(fixed_tex0.TBW),
+						static_cast<u8>(fixed_tex0.PSM), KindForPsm(fixed_tex0.PSM)};
+					const GSPageBitmap core =
+						PagesForTargetRect(tex_l, GSVector4i(cx0, cy0, cx1, cy1));
+					admit = !core.intersects(fb_pages) && !core.intersects(z_pages);
+				}
+			}
+			if (!admit)
+			{
+				reason = GSTileFloorReason::TextureFeedback;
+				return false;
+			}
+			m_native_sync.feedback_admitted++;
 		}
 	}
 
@@ -2031,6 +2080,14 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 			n.refuse_mip++;
 		else if (owner == kGSTileNoSurface)
 			n.refuse_no_owner++;
+		else if (owner == fb_id || owner == z_id)
+		{
+			// Only reachable for an ADMITTED feedback draw (core-disjoint window
+			// containing its own target): serving the target as its own source
+			// while rendering into it is a same-image sample/render hazard. The
+			// CPU route below spills and rebuilds instead — correct, just paid.
+			n.refuse_self_target++;
+		}
 		else
 		{
 			const GSVramModel::Surface& s = m_vram_model.Get(owner);

@@ -993,6 +993,12 @@ struct Pcsx2Config
 					// again instead of taking the two-pass split (the reorder
 					// Classic ships unconditionally).
 					TileExactAlphaTest : 1,
+					// Pin the exact feedback floor under the umbrella: a textured
+					// draw whose sampled CORE (vertex UV bbox shrunk one texel)
+					// is page-disjoint from its own write footprint floors again
+					// instead of rendering natively with the edge taps reading
+					// pre-draw bytes (SotC's bloom downsample chain).
+					TileExactFeedback : 1,
 					// Depth from the closed plane form instead of the soft-float64
 					// walk: the scanline's own gradients (double-formed), integer
 					// wraparound plus an f32 fraction carry per fragment, within

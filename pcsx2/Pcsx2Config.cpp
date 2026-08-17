@@ -761,6 +761,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	TileExactTexCoord = false;
 	TileExactTexFilter = false;
 	TileExactAlphaTest = false;
+	TileExactFeedback = false;
 	TileFastDepthPlane = true;
 	TileFastDepthClassic = false;
 	UseBlitSwapChain = false;
@@ -1076,6 +1077,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(TileExactTexCoord);
 	SettingsWrapBitBool(TileExactTexFilter);
 	SettingsWrapBitBool(TileExactAlphaTest);
+	SettingsWrapBitBool(TileExactFeedback);
 	SettingsWrapBitBool(TileFastDepthPlane);
 	SettingsWrapBitBool(TileFastDepthClassic);
 	SettingsWrapBitBool(UseBlitSwapChain);

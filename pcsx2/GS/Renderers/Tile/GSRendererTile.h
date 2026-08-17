@@ -181,6 +181,8 @@ private:
 		/// and only the second is worth building a conversion for.
 		u32 refuse_mip = 0; ///< a mip pyramid; each level would need its own donor
 		u32 refuse_no_owner = 0; ///< no single surface holds the whole window
+		u32 refuse_self_target = 0; ///< the owner IS this draw's target (admitted feedback) — sampling it while rendering into it is a device hazard
+		u32 feedback_admitted = 0; ///< window-overlap draws served natively because the sampled core is page-disjoint from the write
 		u32 refuse_format = 0; ///< sole owner found, but its bytes are not this format's
 		u32 refuse_format_same_base = 0; ///< ... of those, how many start at the owner's own base
 		u32 refuse_layout = 0; ///< sole owner found, but its pixel space is not the window's
