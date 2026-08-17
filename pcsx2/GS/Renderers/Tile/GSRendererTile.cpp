@@ -2373,6 +2373,8 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_twalk, bool wan
 		zout[zc++] = static_cast<u32>(b >> 32);
 	};
 
+	g_perfmon.Put(GSPerfMon::TilePayloadBytes, static_cast<double>(m_tile_payload.size() * 4));
+
 	if (want_zwalk)
 	{
 		// Header.

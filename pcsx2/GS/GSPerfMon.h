@@ -41,6 +41,13 @@ public:
 		// per-draw CPU proxy the mobile renderer work steers by.
 		PipelineSwitches,
 
+		// Bytes of Tile walk payload built and streamed to the device per frame
+		// (BuildTilePayload's output — depth/texture/colour blocks together). The
+		// operation counters cannot see a payload shrinking, so this is the column
+		// that attributes a fast-profile CPU move to the payload machinery or
+		// exonerates it.
+		TilePayloadBytes,
+
 		CounterLast,
 
 		// Reused counters for HW.
