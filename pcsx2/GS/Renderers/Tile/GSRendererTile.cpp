@@ -1733,7 +1733,16 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// primitive began, which no plane evaluation reproduces. Measured before this
 	// existed: a scaled bilinear blit (R&C, 416 rows into 448) came out 3,900 pixels
 	// a sixteenth of a weight off per frame from the row accumulation alone.
-	const bool want_zwalk = want_ds && m_vt.m_primclass == GS_TRIANGLE_CLASS && !m_vt.m_eq.z;
+	// The fast profile sheds a walk class for its GPU-native realization — the
+	// interpolator's varyings and the fallback legs below, all live code — traded
+	// under the perceptual gate rather than byte-identity. A want turned off here
+	// also skips that class's payload construction, which is most of the walks'
+	// CPU bill. Depth's lever is separate from the umbrella: TileFastDepthClassic
+	// is the attribution control (Classic's float realization); the shipping fast
+	// depth is the plane-exact integer leg, which lands as its own selector.
+	const bool fast_colour = GSConfig.TileFastShading && !GSConfig.TileExactColour;
+	const bool want_zwalk = want_ds && m_vt.m_primclass == GS_TRIANGLE_CLASS && !m_vt.m_eq.z &&
+		!GSConfig.TileFastDepthClassic;
 	const bool want_twalk = PRIM->TME &&
 		(m_vt.m_primclass == GS_TRIANGLE_CLASS || m_vt.m_primclass == GS_SPRITE_CLASS);
 	// Colour and fog transcription: a gouraud or fogged triangle takes its colour
@@ -1742,7 +1751,8 @@ bool GSRendererTile::TryNativeDraw(const GSTileDrawPlan& plan, const GSVector4i&
 	// pixel depends on where its span started — which the interpolator cannot
 	// know and gs-block measured silicon doing the same. Sprites are flat in
 	// both (the second vertex's) and need nothing.
-	const bool want_cwalk = m_vt.m_primclass == GS_TRIANGLE_CLASS && (!IsFlatShaded() || PRIM->FGE);
+	const bool want_cwalk = m_vt.m_primclass == GS_TRIANGLE_CLASS && (!IsFlatShaded() || PRIM->FGE) &&
+		!fast_colour;
 	if (!BuildTilePayload(want_zwalk, want_twalk, want_cwalk, reason))
 		return false;
 

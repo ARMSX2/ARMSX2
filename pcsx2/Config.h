@@ -956,6 +956,25 @@ struct Pcsx2Config
 					// rasterization). Rendering is wrong by construction; the frame
 					// time approximates a 100%-native run. Dev only, default off.
 					TileSkipFloorDraws : 1,
+					// The fast profile: shed an exactness class for its GPU-native
+					// realization, gated per title by the perceptual comparator (as
+					// good or better than Classic against the SW goldens). Umbrella
+					// key; a TileExact* pin below holds one class exact underneath
+					// it. Depth sits OUTSIDE the umbrella — its contract is
+					// plane-exact integer and its keys pick the realization
+					// explicitly. All default off: the exact profile is today's
+					// behavior, byte-identical. Never user settings. A class wires
+					// in when its fast leg lands, so every declared key has a
+					// consumer: today the umbrella demotes the colour/fog walk to
+					// the interpolator's varyings.
+					TileFastShading : 1,
+					// Pin the exact colour/fog walk under the umbrella.
+					TileExactColour : 1,
+					// Depth through the GPU interpolator and the zfloor/zclamp
+					// recipe — Classic's realization. Attribution control ONLY: its
+					// float depth pipeline is the precision class the depth
+					// contract forbids shipping.
+					TileFastDepthClassic : 1,
 					UseBlitSwapChain : 1,
 					DisableShaderCache : 1,
 					DisableFramebufferFetch : 1,
