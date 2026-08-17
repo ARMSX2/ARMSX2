@@ -358,6 +358,10 @@ private:
 	static constexpr u32 NoWalk = 0xFFFFFFFFu;
 	std::vector<u32> m_tile_payload;
 	u32 m_zwalk_at = NoWalk;
+	// The depth payload's form: false = the soft-float64 walk block (20 words per
+	// primitive, byte-exact), true = the closed plane block (12 words, the fast
+	// profile's plane-exact contract). Selects PS_TILE_ZWALK 1 vs 2.
+	bool m_zwalk_plane = false;
 	u32 m_twalk_at = NoWalk;
 	u32 m_cwalk_at = NoWalk;
 	bool m_twalk_fst = false;

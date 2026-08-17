@@ -976,10 +976,16 @@ struct Pcsx2Config
 					// Pin the exact texture-coordinate walks under the umbrella
 					// (perspective draws floor again, sprite rows replay again).
 					TileExactTexCoord : 1,
+					// Depth from the closed plane form instead of the soft-float64
+					// walk: the scanline's own gradients (double-formed), integer
+					// wraparound plus an f32 fraction carry per fragment, within
+					// one unit of the walk at comparator ties — the depth
+					// contract's shipping realization (~15 ALU vs ~1,500×4).
+					TileFastDepthPlane : 1,
 					// Depth through the GPU interpolator and the zfloor/zclamp
-					// recipe — Classic's realization. Attribution control ONLY: its
-					// float depth pipeline is the precision class the depth
-					// contract forbids shipping.
+					// recipe — Classic's realization. Attribution control ONLY:
+					// measured mis-sorting surfaces by up to 162k of 2^24 on
+					// OutRun's laddered strips, the class the contract forbids.
 					TileFastDepthClassic : 1,
 					UseBlitSwapChain : 1,
 					DisableShaderCache : 1,

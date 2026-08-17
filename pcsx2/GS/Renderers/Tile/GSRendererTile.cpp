@@ -2231,6 +2231,7 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_twalk, bool wan
 {
 	m_tile_payload.clear();
 	m_zwalk_at = NoWalk;
+	m_zwalk_plane = false;
 	m_twalk_at = NoWalk;
 	m_cwalk_at = NoWalk;
 	m_twalk_fst = false;
@@ -2335,12 +2336,20 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_twalk, bool wan
 	const GSVector4 fscissor_y = fscissor.ywyw();
 
 	const u32 nprims = m_index->tail / 3;
-	const size_t zwords = want_zwalk ? (4 + static_cast<size_t>(nprims) * 20) : 0;
+	// The fast profile's depth contract is the closed plane form: 12 words per
+	// primitive against the walk's 20, and ~15 fragment ALU against the
+	// soft-float kernel's thousands, within one unit at comparator ties.
+	const bool zplane = want_zwalk && GSConfig.TileFastDepthPlane;
+	const size_t z_prim_words = zplane ? 12 : 20;
+	const size_t zwords = want_zwalk ? (4 + static_cast<size_t>(nprims) * z_prim_words) : 0;
 	const size_t twords = want_twalk ? (4 + static_cast<size_t>(nprims) * 24) : 0;
 	const size_t cwords = want_cwalk ? (4 + static_cast<size_t>(nprims) * 32) : 0;
 	m_tile_payload.assign(zwords + twords + cwords, 0u);
 	if (want_zwalk)
+	{
 		m_zwalk_at = 0;
+		m_zwalk_plane = zplane;
+	}
 	if (want_twalk)
 		m_twalk_at = static_cast<u32>(zwords / 4);
 	if (want_cwalk)
@@ -2395,7 +2404,7 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_twalk, bool wan
 		GSTileZPlane zp;
 		if (!GSComputeTriangleZPlane(tri, fscissor_y, zp) || zp.nsections == 0)
 		{
-			zc += want_zwalk ? 20 : 0;
+			zc += want_zwalk ? z_prim_words : 0;
 			tout += want_twalk ? 24 : 0;
 			cout += want_cwalk ? 32 : 0;
 			continue;
@@ -2471,6 +2480,56 @@ bool GSRendererTile::BuildTilePayload(bool want_zwalk, bool want_twalk, bool wan
 		// interpolator.
 		const s32 top_clamped = std::clamp(zp.top_prim, -32768, 32767);
 		const u32 rows_word = boundary | (static_cast<u32>(static_cast<u16>(top_clamped)) << 16);
+
+		if (zplane)
+		{
+			// The walk collapsed to one plane per section (the shader block's
+			// derivation): Zc anchored at the section's own top row in double, each
+			// quantity split floor-wise into a mod-2^32 integer part and a
+			// nonnegative fp32 fraction. The row gradient at constant x is dedge_z
+			// ITSELF — the walk re-measures its prestep from the reference vertex
+			// every row, so the edge's slope cancels out of z entirely (the mirror
+			// suite's walk-comparison test is what pinned this). Anchoring per
+			// section keeps the ≤2-unit inter-section residue the truncated
+			// gradients leave, exactly as the scanline carries it.
+			const double S = zp.dscan_z;
+			const double si_d = std::floor(S);
+			u32 zci[2], gyi[2], tops[2];
+			float zcf[2], gyf[2];
+			u32 biasbits = 0;
+			const GSTileZPlaneSection* secs[2] = {&s0, &s1};
+			for (int n = 0; n < 2; n++)
+			{
+				const GSTileZPlaneSection& s = *secs[n];
+				const double gy = s.dedge_z;
+				const int top = std::clamp(s.top, 0, 4095);
+				const double zc_d = s.zseed +
+					(static_cast<double>(top) - static_cast<double>(s.p0y)) * gy -
+					static_cast<double>(s.p0x) * S;
+				const double gyi_d = std::floor(gy);
+				const double zci_d = std::floor(zc_d);
+				gyi[n] = static_cast<u32>(static_cast<s64>(gyi_d));
+				zci[n] = static_cast<u32>(static_cast<s64>(zci_d));
+				gyf[n] = static_cast<float>(gy - gyi_d);
+				zcf[n] = static_cast<float>(zc_d - zci_d);
+				tops[n] = static_cast<u32>(top);
+				if (s.dedge_z != 0.0)
+					biasbits |= (1u | ((s.dedge_z < 0.0) ? 2u : 0u)) << (n * 2);
+			}
+			push_u32(zci[0]);
+			push_f32(zcf[0]);
+			push_u32(zci[1]);
+			push_f32(zcf[1]);
+			push_u32(gyi[0]);
+			push_f32(gyf[0]);
+			push_u32(gyi[1]);
+			push_f32(gyf[1]);
+			push_u32(static_cast<u32>(static_cast<s64>(si_d)));
+			push_f32(static_cast<float>(S - si_d));
+			push_u32(rows_word);
+			push_u32(tops[0] | (tops[1] << 12) | (biasbits << 24));
+			continue;
+		}
 
 		push_f32(s0.edge_x);
 		push_f32(s0.dedge_x);
@@ -2941,7 +3000,7 @@ void GSRendererTile::SubmitNativeDraw(const GSTileDrawPlan& plan, const GSVector
 	conf.cb_vs.max_depth = 0xFFFFFFFFu;
 	if (zwalk)
 	{
-		conf.ps.tile_zwalk = 1;
+		conf.ps.tile_zwalk = m_zwalk_plane ? 2 : 1;
 		conf.tile_zwalk_at = m_zwalk_at;
 	}
 	else if (ds)

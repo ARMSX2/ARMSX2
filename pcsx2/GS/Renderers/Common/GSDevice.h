@@ -746,7 +746,7 @@ struct alignas(16) GSHWDrawConfig
 				u32 tile_ltfx : 2; // Tile renderer: per-pixel MMAG/MMIN across the LOD crossing — 0 off, 1 linear where minifying, 2 linear where magnifying
 				u32 tile_vcolor : 1; // Tile renderer: the SW scanline's vertex-colour arithmetic (seven fractional bits, truncating)
 				u32 tile_fog : 1; // Tile renderer: integer fog blend at the console rule
-				u32 tile_zwalk : 1; // Tile renderer: gl_FragDepth from the SW scanline's float64 depth walk, replayed in soft-float from the per-primitive plane payload
+				u32 tile_zwalk : 2; // Tile renderer depth realization — 0 off; 1 the SW scanline's float64 depth walk replayed in soft-float (byte-exact, ~1.5k ops); 2 the closed plane form (integer wraparound + f32 fraction carry, within one unit of the walk at comparator ties — the fast profile's plane-exact contract)
 				u32 tile_twalk : 2; // Tile renderer: the texture coordinate from the SW scanline's walk, replayed per fragment off the per-primitive payload — 0 off, 1 triangle blocks, 2 sprite blocks
 				u32 tile_twalk_fst : 1; // Tile renderer: that walk is the truncating integer DDA (the software renderer's effective sel.fst), else the accumulating float one with the truncated per-pixel reciprocal
 				u32 tile_cwalk : 1; // Tile renderer: gouraud colour and fog from the SW scanline's blocked walk, replayed per fragment off the per-primitive edge payload — not from the interpolator

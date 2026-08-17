@@ -16,4 +16,4 @@
 // is BELOW our 110 — taking their value would hand every user a stale blob for a source they no
 // longer have. Our counter has been ahead of theirs since 109 and cannot be resynced by adopting
 // their numbers; always bump past our own last value.
-static constexpr u32 SHADER_CACHE_VERSION = 111; // 108 was upstream PR 14688; their 109 = our 111
+static constexpr u32 SHADER_CACHE_VERSION = 112; // 111 + the Tile depth plane leg (tile_zwalk widened to 2 bits)

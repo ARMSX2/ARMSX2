@@ -792,3 +792,199 @@ TEST(GSTileZWalkSoftFloat, ComposedWalk)
 		                     << " lane=" << lane << " q=" << q << " zfin=" << zfin;
 	}
 }
+
+// ============================ The plane form (PS_TILE_ZWALK == 2) ==================
+// The fast profile's depth leg: the walk collapsed to one plane per section,
+// integer parts in the mod-2^32 ring, fractions accumulated in fp32 with a floor
+// carry. This mirror is op-for-op the GLSL (tile_zwalk_depth, the ==2 block) fed by
+// a transcription of BuildTilePayload's splits, and it is scored against the same
+// hardware-double closed form the walk kernel is scored against. The contract is
+// within-one at comparator ties, not byte-identity — silicon's own truncated-step
+// class — so the assertion is |got - want| <= 1 across the envelope, with the
+// fp32-narrowed-gradient crumb widening it only at gradients no game reaches.
+namespace plane_mirror
+{
+	struct Packed
+	{
+		u32 zci, gyi, si;
+		float zcf, gyf, sf;
+		int top;
+		bool ygrad_nz, ygrad_neg;
+	};
+
+	// BuildTilePayload's split, verbatim semantics.
+	static Packed pack_section(double zseed, double dedge_z, double S,
+		float p0x, float p0y, int top)
+	{
+		Packed p;
+		// The row gradient at constant x is dedge_z itself: the walk re-measures
+		// its prestep from the reference vertex every row, so the edge's slope
+		// cancels out of z (the walk-comparison test below pinned this).
+		const double gy = dedge_z;
+		const double zc_d = zseed + (static_cast<double>(top) - static_cast<double>(p0y)) * gy -
+		                    static_cast<double>(p0x) * S;
+		const double gyi_d = std::floor(gy);
+		const double zci_d = std::floor(zc_d);
+		const double si_d = std::floor(S);
+		p.gyi = static_cast<u32>(static_cast<s64>(gyi_d));
+		p.zci = static_cast<u32>(static_cast<s64>(zci_d));
+		p.si = static_cast<u32>(static_cast<s64>(si_d));
+		p.gyf = static_cast<float>(gy - gyi_d);
+		p.zcf = static_cast<float>(zc_d - zci_d);
+		p.sf = static_cast<float>(S - si_d);
+		p.top = top;
+		p.ygrad_nz = dedge_z != 0.0;
+		p.ygrad_neg = dedge_z < 0.0;
+		return p;
+	}
+
+	// The GLSL fragment path, one section, bias rule included.
+	static u32 eval(const Packed& p, int px, int py, int prim_top, bool zclamp, u32 zmax)
+	{
+		const int dyr = py - p.top;
+		u32 zi = p.zci + p.gyi * static_cast<u32>(dyr) + p.si * static_cast<u32>(px);
+		float zf = std::fmaf(p.gyf, static_cast<float>(dyr), p.zcf);
+		zf = std::fmaf(p.sf, static_cast<float>(px), zf);
+		const bool xgrad = (p.si != 0u) || (p.sf != 0.0f);
+		int bias = xgrad ? 1 : 0;
+		if (p.ygrad_nz && py != prim_top)
+			bias += p.ygrad_neg ? -1 : 1;
+		zf += (bias == 1) ? -0.75f : ((bias == 2) ? -0.8125f : ((bias == -1) ? 0.75f : 0.0f));
+		zi += static_cast<u32>(static_cast<s32>(std::floor(zf)));
+		if (zclamp)
+			zi = std::min(zi, zmax);
+		return zi;
+	}
+} // namespace plane_mirror
+
+TEST(GSTileZPlaneFast, WithinOneOfTheDoubleClosedForm)
+{
+	std::mt19937_64 rng(0x5eed0007);
+	int tested = 0;
+	for (int i = 0; i < 500000; i++)
+	{
+		const u32 zseed = static_cast<u32>(rng()) & 0xFFFFFF;
+		const double dedge_z = (i % 5 == 0) ? 0.0 : rand_double(rng, -20, 10);
+		// The scanline's per-pixel step lives on the 2^-10 grid; games' gradients sit
+		// far under the |M| <= 2^34 envelope cap, so the fuzz covers |M| < 2^24 where
+		// the fp32 fraction split is comfortably exact.
+		const s64 m1024 = static_cast<s64>(rng() % (1ll << 24)) - (1ll << 23);
+		const double S = static_cast<double>(m1024) * 0x1p-10;
+		const double dedge_x = rand_double(rng, -6, 4);
+		const float p0x = static_cast<float>(static_cast<int>(rng() % 2048)) +
+		                  static_cast<float>(static_cast<int>(rng() % 16)) / 16.0f;
+		const float p0y = static_cast<float>(static_cast<int>(rng() % 2000)) +
+		                  static_cast<float>(static_cast<int>(rng() % 16)) / 16.0f;
+		const int top = static_cast<int>(std::ceil(p0y));
+		const int prim_top = top - static_cast<int>(rng() % 2);
+		const int py = top + static_cast<int>(rng() % 48);
+		const int px = static_cast<int>(rng() % 2048);
+
+		// Hardware-double reference: the plane with the same bias rule.
+		const double gy = dedge_z;
+		double ref = zseed + (static_cast<double>(py) - static_cast<double>(p0y)) * gy +
+		             (static_cast<double>(px) - static_cast<double>(p0x)) * S;
+		const bool xgrad = S != 0.0;
+		int bias = xgrad ? 1 : 0;
+		if (dedge_z != 0.0 && py != prim_top)
+			bias += (dedge_z < 0.0) ? -1 : 1;
+		ref += (bias == 1) ? -0.75 : ((bias == 2) ? -0.8125 : ((bias == -1) ? 0.75 : 0.0));
+		if (ref < 8.0 || ref >= 0x1p30)
+			continue;
+		const u32 want = static_cast<u32>(ref);
+
+		const plane_mirror::Packed p =
+			plane_mirror::pack_section(zseed, dedge_z, S, p0x, p0y, top);
+		const u32 got = plane_mirror::eval(p, px, py, prim_top, false, 0);
+
+		const s64 diff = static_cast<s64>(got) - static_cast<s64>(want);
+		ASSERT_LE(std::abs(diff), 1) << "i=" << i << " zseed=" << zseed << " dedge_z=" << dedge_z
+		                             << " dedge_x=" << dedge_x << " S=" << S << " px=" << px
+		                             << " py=" << py << " ref=" << ref;
+		tested++;
+	}
+	ASSERT_GT(tested, 100000);
+}
+
+TEST(GSTileZPlaneFast, WithinOneOfTheWalkKernel)
+{
+	// The two realizations of the same primitive must agree to one unit: the walk
+	// (soft-float64 replay, PS_TILE_ZWALK == 1) evaluated exactly as the shader
+	// composes it, against the plane form at the same pixel. Moderate gradients —
+	// at the envelope's extreme the walk's own fp32-narrowed lane offsets drift
+	// from the exact plane by more than the fraction split does, which is the
+	// walk's property, not the plane's.
+	std::mt19937_64 rng(0x5eed0008);
+	int tested = 0;
+	for (int i = 0; i < 200000; i++)
+	{
+		const u32 zseed = static_cast<u32>(rng()) & 0xFFFFFF;
+		const double dedge_z = (i % 5 == 0) ? 0.0 : rand_double(rng, -16, 8);
+		const s64 m1024 = static_cast<s64>(rng() % (1ll << 22)) - (1ll << 21);
+		const double S = static_cast<double>(m1024) * 0x1p-10;
+		const float dz32 = static_cast<float>(S);
+		const double dedge_x = rand_double(rng, -4, 2);
+		const float p0x = static_cast<float>(static_cast<int>(rng() % 1024)) +
+		                  static_cast<float>(static_cast<int>(rng() % 16)) / 16.0f;
+		const float p0y = static_cast<float>(static_cast<int>(rng() % 1000)) +
+		                  static_cast<float>(static_cast<int>(rng() % 16)) / 16.0f;
+		const float edge_x = p0x; // the edge starts at the section's reference vertex
+		const int top = static_cast<int>(std::ceil(p0y));
+		const int prim_top = top;
+		const int py = top + static_cast<int>(rng() % 32);
+		// The walk's row: fp32 fused edge step, ceil, scissor left at zero.
+		const float dy = static_cast<float>(py) - p0y;
+		const float lraw = std::fmaf(static_cast<float>(dedge_x), dy, edge_x);
+		const float lx = std::max(std::ceil(lraw), 0.0f);
+		const int left = static_cast<int>(lx);
+		if (left < 0 || left > 2040)
+			continue;
+		const int px = left + static_cast<int>(rng() % std::min(2048 - left, 256));
+		const float prestep = lx - p0x;
+
+		// Walk path, composed as the shader composes it (ComposedWalk's recipe plus
+		// the bias, which both forms share).
+		using glsl_mirror::uvec2;
+		uvec2 z = glsl_mirror::zw_fma(bits_of(dedge_z), dy, bits_of(static_cast<double>(zseed)));
+		z = glsl_mirror::zw_fma(bits_of(S), prestep, z);
+		{
+			const bool xgrad = S != 0.0;
+			int bias = xgrad ? 1 : 0;
+			if (dedge_z != 0.0 && py != prim_top)
+				bias += (dedge_z < 0.0) ? -1 : 1;
+			const u32 nb = (bias == 1) ? 0xBF400000u :
+			               ((bias == 2) ? 0xBF500000u : ((bias == -1) ? 0x3F400000u : 0u));
+			if (nb)
+				z = glsl_mirror::zw_fma(uvec2{0u, nb}, 1.0f, z);
+		}
+		const int skip = left & 3;
+		const int j = px & 3;
+		const int q = (px >> 2) - (left >> 2);
+		const float offf = dz32 * static_cast<float>(j - skip);
+		u32 oneg, olo, ohi;
+		glsl_mirror::zw_i64_units10_from_f32(offf, oneg, olo, ohi);
+		const u64 m4 = static_cast<u64>(m1024 < 0 ? -m1024 : m1024) * 4;
+		u32 slo, shi;
+		glsl_mirror::zw_u64_mul_u32(static_cast<u32>(m4), static_cast<u32>(m4 >> 32),
+			static_cast<u32>(q < 0 ? -q : q), slo, shi);
+		const u32 sneg = ((m1024 < 0) ? 1u : 0u) ^ ((q < 0) ? 1u : 0u);
+		u32 wneg, wlo, whi;
+		glsl_mirror::zw_i64_signed_add(oneg, olo, ohi, sneg, slo, shi, wneg, wlo, whi);
+		z = glsl_mirror::zw_fma(glsl_mirror::zw_f64_from_i64(wneg, wlo, whi, -10), 1.0f, z);
+		// Range gate on the walk's own value before truncation.
+		const u32 walk = glsl_mirror::zw_trunc_u32(z);
+		if (walk < 8u || walk >= (1u << 30))
+			continue;
+
+		const plane_mirror::Packed p =
+			plane_mirror::pack_section(zseed, dedge_z, S, p0x, p0y, top);
+		const u32 plane = plane_mirror::eval(p, px, py, prim_top, false, 0);
+
+		const s64 diff = static_cast<s64>(plane) - static_cast<s64>(walk);
+		ASSERT_LE(std::abs(diff), 1) << "i=" << i << " zseed=" << zseed << " dedge_z=" << dedge_z
+		                             << " dedge_x=" << dedge_x << " S=" << S << " px=" << px
+		                             << " py=" << py << " left=" << left << " walk=" << walk;
+		tested++;
+	}
+	ASSERT_GT(tested, 50000);
+}

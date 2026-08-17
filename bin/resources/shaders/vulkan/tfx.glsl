@@ -2768,7 +2768,7 @@ layout(early_fragment_tests) in;
 	#define DISCARD_DEPTH input_z = sample_from_depth()
 #endif
 
-#if PS_TILE_ZWALK
+#if PS_TILE_ZWALK == 1
 
 // ============================ Tile depth walk ================================
 // The SW scanline interpolates depth in float64: a closed-form row seed
@@ -3246,6 +3246,75 @@ float tile_zwalk_depth()
 	z = zw_fma(zw_f64_from_i64(wneg, wlo, whi, -10), 1.0f, z);
 
 	uint zi = zw_trunc_u32(z);
+	if ((hdr.y & 1u) != 0u)
+		zi = min(zi, hdr.z);
+	return float(zi) * exp2(-32.0f);
+}
+
+#elif PS_TILE_ZWALK == 2
+
+// ======================== Tile depth plane (fast profile) ====================
+// The walk above, algebraically expanded: per section the scanline's z is
+//   z(px,py) = zseed + (py - p0y)·dedge_z + (lx - p0x)·dscan_z + (px - lx)·dscan_z
+// and the edge position lx cancels — the walk re-measures its prestep from the
+// reference vertex every row — leaving one plane per section,
+//   z(px,py) = Zc + (py - top)·dedge_z + px·S,
+// with Zc formed on the CPU in double at the section's own top row (anchoring
+// per section keeps the ≤2-unit residue the truncated gradients leave between
+// the sections' seeds, exactly as the scanline carries it). Each of Zc, gy, S
+// travels split into an integer part (mod 2^32 — ring arithmetic makes the
+// wraparound exact) and a nonnegative fraction; the fragment sums integers in
+// u32, fractions in fp32 (bounded ~4100, error ~1e-4), and carries by floor.
+// Within one unit of the walk at comparator ties — the plane-exact contract —
+// in ~15 ALU where the walk runs the soft-float kernel ~6,000.
+//
+// Payload layout (see GSRendererTile::BuildTilePayload):
+//   [TileZBase]       header: {scissor_left f32 (unused here), flags (bit0 zclamp), zmax, 0}
+//   [.. + 1 + p*3+0]  {Zc0i u32, Zc0f f32, Zc1i u32, Zc1f f32}
+//   [.. + 1 + p*3+1]  {Gy0i u32, Gy0f f32, Gy1i u32, Gy1f f32}
+//   [.. + 1 + p*3+2]  {Si u32, Sf f32, boundary u16 | prim_top s16 << 16,
+//                      top0 12b | top1 12b << 12 | bias bits << 24
+//                      (b0 ygrad0!=0, b1 ygrad0<0, b2 ygrad1!=0, b3 ygrad1<0)}
+float tile_zwalk_depth()
+{
+	int px = int(gl_FragCoord.x);
+	int py = int(gl_FragCoord.y);
+	uint base = floatBitsToUint(TileZBase);
+	uvec4 hdr = plane[base];
+	uint pbase = base + 1u + vsIn_prim * 3u;
+	uvec4 X0 = plane[pbase];
+	uvec4 X1 = plane[pbase + 1u];
+	uvec4 X2 = plane[pbase + 2u];
+	bool s1 = py >= int(X2.z & 0xFFFFu);
+
+	uint zci = s1 ? X0.z : X0.x;
+	precise float zf = uintBitsToFloat(s1 ? X0.w : X0.y);
+	uint gyi = s1 ? X1.z : X1.x;
+	precise float gyf = uintBitsToFloat(s1 ? X1.w : X1.y);
+	int top = int(s1 ? ((X2.w >> 12) & 0xFFFu) : (X2.w & 0xFFFu));
+	int dyr = py - top;
+
+	// Integer part in the mod-2^32 ring: exact for any sign of dyr or the
+	// gradients, because the true z is known to sit in [0, 2^31).
+	uint zi = zci + gyi * uint(dyr) + X2.x * uint(px);
+	zf = fma(gyf, float(dyr), zf);
+	zf = fma(uintBitsToFloat(X2.y), float(px), zf);
+
+	// The measured half-step shortfall, same rule and constants as the walk
+	// (gs-block, SCPH-30001): the X half rides any nonzero per-pixel gradient
+	// and ignores its sign; the Y half follows the section's edge-step sign and
+	// is absent on the primitive's own (unclipped) first scanline.
+	bool xgrad = (X2.x != 0u) || (uintBitsToFloat(X2.y) != 0.0f);
+	uint bb = X2.w >> 24;
+	bool ygrad = ((s1 ? (bb & 4u) : (bb & 1u))) != 0u;
+	bool yneg = ((s1 ? (bb & 8u) : (bb & 2u))) != 0u;
+	int prim_top = int(X2.z) >> 16;
+	int bias = xgrad ? 1 : 0;
+	if (ygrad && py != prim_top)
+		bias += yneg ? -1 : 1;
+	zf += (bias == 1) ? -0.75f : ((bias == 2) ? -0.8125f : ((bias == -1) ? 0.75f : 0.0f));
+
+	zi += uint(int(floor(zf)));
 	if ((hdr.y & 1u) != 0u)
 		zi = min(zi, hdr.z);
 	return float(zi) * exp2(-32.0f);
