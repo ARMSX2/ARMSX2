@@ -33,15 +33,23 @@ protected:
 	// games (e.g. Shadow of the Colossus). Revisited when the delivery structure draws.
 	bool IsCoverageAlphaSupported() override;
 
+	// The stream's non-draw memory events, observed into the pass model so the pass
+	// structure is complete on titles that upload, read back, or move (draws-only misses
+	// their breaks). The invalidate hooks are empty on the base — the actual transfer
+	// already happened in GSState's transfer path — so these only observe. Move performs
+	// the real guest copy through the base, which itself drives the two invalidate hooks.
+	void InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) override;
+	void InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut = false) override;
+	void Move() override;
+
 private:
 	// The pass-structure observer: the round-2 GSTilePassSim model fed by the live GSState
-	// decode, ported from the Tile renderer's PassSimObserveDraw feeder. Stage 1.3a observes
-	// DRAWS only — the dominant break source on the gate title (SotC: uploads never break,
-	// the 8-pair budget never binds; hazards dominate) — so the pass structure it reports is
-	// a lower bound where transfer events would add breaks. The transfer hooks (upload/move/
-	// cpu-read) and the plan this becomes (emitted to the executor once it can record) land
-	// in following commits. Always on for this variant: it is the renderer's understanding of
-	// the frame, not an optional arm, so it takes no config lever.
+	// decode, ported from the Tile renderer's PassSimObserveDraw feeder. Draws feed it from
+	// Draw(); the stream's memory events (upload/cpu-read/move) feed it from the transfer
+	// hooks below, so the pass structure is complete on every title, not just the gate one.
+	// The plan this becomes (emitted to the executor once it can record) lands in a following
+	// commit. Always on for this variant: it is the renderer's understanding of the frame,
+	// not an optional arm, so it takes no config lever.
 	GSTilePassSim m_pass_sim;
 
 	// The screen-space bbox of the current draw, scissor-clipped — the Tile renderer's

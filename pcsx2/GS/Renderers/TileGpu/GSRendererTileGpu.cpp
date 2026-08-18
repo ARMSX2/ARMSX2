@@ -89,6 +89,47 @@ bool GSRendererTileGpu::IsCoverageAlphaSupported()
 	return false;
 }
 
+// A host->local transfer's destination: an upload into the pass model. The base hook is
+// empty (the transfer's bytes already landed in GSState's transfer path), so this only
+// observes — an upload never has to break the pass in the model.
+void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r)
+{
+	const GSTileSurfaceLayout layout{BITBLTBUF.DBP, static_cast<u8>(BITBLTBUF.DBW),
+		static_cast<u8>(BITBLTBUF.DPSM), KindForPsm(BITBLTBUF.DPSM)};
+	m_pass_sim.OnUpload(PagesForTargetRect(layout, r));
+}
+
+// A local->host readback's source: a CPU consumer of GPU-written pages. The clut flag
+// splits the on-GPU palette-gather road from a genuine readback in the model.
+void GSRendererTileGpu::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut)
+{
+	const GSTileSurfaceLayout layout{BITBLTBUF.SBP, static_cast<u8>(BITBLTBUF.SBW),
+		static_cast<u8>(BITBLTBUF.SPSM), KindForPsm(BITBLTBUF.SPSM)};
+	m_pass_sim.OnCpuRead(PagesForTargetRect(layout, r), clut);
+}
+
+// A local->local move. Observed as OnMove first — matching the Tile renderer's order, where
+// OnMove sees the pass state before the move's own read/write halves touch it — then the
+// base performs the real guest-memory copy. The base Move calls InvalidateLocalMem and
+// InvalidateVideoMem in turn, so the sim also sees the move's source read and destination
+// write through the two hooks above, exactly the event sequence it gets under Tile.
+void GSRendererTileGpu::Move()
+{
+	const int w = m_env.TRXREG.RRW;
+	const int h = m_env.TRXREG.RRH;
+	const GSVector4i src_r(m_env.TRXPOS.SSAX, m_env.TRXPOS.SSAY, m_env.TRXPOS.SSAX + w, m_env.TRXPOS.SSAY + h);
+	const GSVector4i dst_r(m_env.TRXPOS.DSAX, m_env.TRXPOS.DSAY, m_env.TRXPOS.DSAX + w, m_env.TRXPOS.DSAY + h);
+
+	const GSTileSurfaceLayout src_l{m_env.BITBLTBUF.SBP, static_cast<u8>(m_env.BITBLTBUF.SBW),
+		static_cast<u8>(m_env.BITBLTBUF.SPSM), KindForPsm(m_env.BITBLTBUF.SPSM)};
+	const GSTileSurfaceLayout dst_l{m_env.BITBLTBUF.DBP, static_cast<u8>(m_env.BITBLTBUF.DBW),
+		static_cast<u8>(m_env.BITBLTBUF.DPSM), KindForPsm(m_env.BITBLTBUF.DPSM)};
+
+	m_pass_sim.OnMove(PagesForTargetRect(src_l, src_r), PagesForTargetRect(dst_l, dst_r));
+
+	GSRenderer::Move();
+}
+
 GSVector4i GSRendererTileGpu::ComputeDrawRect() const
 {
 	GSVector4i bbox;
@@ -270,8 +311,8 @@ void GSRendererTileGpu::ObserveDraw()
 
 // The accumulated per-frame pass structure, mean / p50 at teardown. This is the offline
 // -tilepasssim arm's aggregate (minus the Tile-only GIF-stream tail): the structural counters
-// the stage-1 gate reads against the design values. Draws-only for now, so the transfer-driven
-// break reasons (upload/move/cpu-read) read zero by construction, not by measurement.
+// the stage-1 gate reads against the design values, now over draws AND the stream's memory
+// events, so every break reason is measured rather than zero by construction.
 void GSRendererTileGpu::ReportPassStructure()
 {
 	const std::vector<GSTilePassSim::FrameStats>& frames = m_pass_sim.Frames();
@@ -312,6 +353,11 @@ void GSRendererTileGpu::ReportPassStructure()
 	const auto inpass = stat([](const FS& f) { return f.feedback_inpass; });
 	const auto identity = stat([](const FS& f) { return f.feedback_identity; });
 	const auto fruns = stat([](const FS& f) { return f.feedback_runs; });
+	const auto upfree = stat([](const FS& f) { return f.uploads_free; });
+	const auto upver = stat([](const FS& f) { return f.uploads_versionable; });
+	const auto updraw = stat([](const FS& f) { return f.uploads_drawable; });
+	const auto palgather = stat([](const FS& f) { return f.palette_gathers; });
+	const auto cpupages = stat([](const FS& f) { return f.cpu_read_pages; });
 	const auto b_feedback = brk(GSTilePassSim::BreakReason::Feedback);
 	const auto b_cap = brk(GSTilePassSim::BreakReason::TargetCap);
 	const auto b_upload = brk(GSTilePassSim::BreakReason::Upload);
@@ -327,7 +373,7 @@ void GSRendererTileGpu::ReportPassStructure()
 	const double eligible = tas.mean - tlive.mean + tresc.mean;
 
 	Console.WriteLn("TileGpu pass structure over %u frames (GS-semantic MINIMUM, %u pairs/pass; "
-					"DRAWS-ONLY — transfer breaks not yet hooked; mean / p50 per frame):",
+					"draws + stream memory events; mean / p50 per frame):",
 		static_cast<u32>(frames.size()), GSTilePassSim::kMaxTargetPairs);
 	Console.WriteLn("  draws %9.2f / %-6u  verts %9.2f / %-8u  biggest pass %6.2f / %u draws", draws.mean,
 		draws.p50, verts.mean, verts.p50, biggest.mean, biggest.p50);
@@ -340,6 +386,10 @@ void GSRendererTileGpu::ReportPassStructure()
 	Console.WriteLn("  feedback served in-pass: core proof %.2f / %u   pixel-identity %.2f / %u   "
 					"offset residue %.2f runs",
 		inpass.mean, inpass.p50, identity.mean, identity.p50, fruns.mean);
+	Console.WriteLn("  uploads (never break): free %.2f / %u   versionable %.2f / %u   draw-realized "
+					"%.2f / %u   palette gathers %.2f / %u   cpu-read pages %.2f / %u",
+		upfree.mean, upfree.p50, upver.mean, upver.p50, updraw.mean, updraw.p50, palgather.mean,
+		palgather.p50, cpupages.mean, cpupages.p50);
 	Console.WriteLn("  in-pass readers/frame: tierA(dual-src) %.2f / %u   tierB(Mali) %.2f / %u   "
 					"tierB declared %.2f verts, reader %.2f verts",
 		rdrsA.mean, rdrsA.p50, rdrsB.mean, rdrsB.p50, dvertsB.mean, rvertsB.mean);
