@@ -3053,8 +3053,14 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
         }
 
         NSURL *destinationURL = [parentURL URLByAppendingPathComponent:relativeComponents.lastObject isDirectory:NO];
-        NSData *bytes = [NSData dataWithBytes:data->data() length:data->size()];
-        if (![bytes writeToURL:destinationURL atomically:YES]) {
+        // Per entry, because the bytes are autoreleased and a hand-imported RetroArch pack is
+        // thousands of entries: without this the whole extract stays resident up to the cap.
+        bool written = false;
+        @autoreleasepool {
+            NSData *bytes = [NSData dataWithBytes:data->data() length:data->size()];
+            written = [bytes writeToURL:destinationURL atomically:YES];
+        }
+        if (!written) {
             ARMSX2RollBackShaderPack(extracted, createdDirectories);
             return ARMSX2FailShaderPackExtraction(error, ARMSX2ShaderPackWriteFailed,
                 [NSString stringWithFormat:@"Could not write %@", destinationURL.path]);

@@ -26,36 +26,49 @@ final class ShaderPackImporter: ObservableObject {
 
     var isBusy: Bool { !installing.isEmpty }
 
-    func install(archiveAt source: URL) async {
-        await install(source, writing: Self.extract)
+    /// `named` overrides the archive's own name, for a caller whose staging file is a UUID.
+    ///
+    /// The name is returned as well as published. `installedName` is one property on a shared
+    /// importer, so two installs running at once overwrite each other's answer and a caller can
+    /// act on the wrong folder. The published copy stays for the settings row that reports the
+    /// last install; anything acting on a specific call reads the return value.
+    @discardableResult
+    func install(archiveAt source: URL, named: String? = nil) async -> String? {
+        await install(source, named: named, writing: Self.extract)
     }
 
-    func install(folderAt source: URL) async {
-        await install(source, writing: Self.copyTree)
+    @discardableResult
+    func install(folderAt source: URL) async -> String? {
+        await install(source, named: nil, writing: Self.copyTree)
     }
 
     private func install(
         _ source: URL,
+        named: String?,
         writing: @escaping @Sendable (URL, URL) throws -> Void
-    ) async {
+    ) async -> String? {
         let key = source.lastPathComponent
         installing.insert(key)
         errors[key] = nil
         installedName = nil
+        var landed: String?
         do {
             // A full RetroArch pack is thousands of files, so this blocks for long enough
             // to stall the settings screen if it runs on the main actor.
-            installedName = try await Task.detached(priority: .userInitiated) {
-                try Self.perform(source, writing)
+            landed = try await Task.detached(priority: .userInitiated) {
+                try Self.perform(source, named, writing)
             }.value
+            installedName = landed
         } catch {
             errors[key] = error.localizedDescription
         }
         installing.remove(key)
+        return landed
     }
 
     private nonisolated static func perform(
         _ source: URL,
+        _ named: String?,
         _ writing: @Sendable (URL, URL) throws -> Void
     ) throws -> String {
         guard let root = ShaderPresetLibrary.prepareUserRoots() else {
@@ -64,7 +77,7 @@ final class ShaderPackImporter: ObservableObject {
         let accessing = source.startAccessingSecurityScopedResource()
         defer { if accessing { source.stopAccessingSecurityScopedResource() } }
 
-        let name = freeName(for: source, under: root)
+        let name = freeName(named.map(sanitised) ?? readableName(source), under: root)
         let destination = root.appendingPathComponent(name, isDirectory: true)
         do {
             try writing(source, destination)
@@ -102,8 +115,7 @@ final class ShaderPackImporter: ObservableObject {
         try FileManager.default.copyItem(at: source, to: destination)
     }
 
-    private nonisolated static func freeName(for source: URL, under root: URL) -> String {
-        let base = readableName(source)
+    private nonisolated static func freeName(_ base: String, under root: URL) -> String {
         var candidate = base
         var suffix = 2
         while FileManager.default.fileExists(
@@ -119,6 +131,10 @@ final class ShaderPackImporter: ObservableObject {
         if name.lowercased().hasSuffix(".zip") {
             name = String(name.dropLast(4))
         }
+        return sanitised(name)
+    }
+
+    private nonisolated static func sanitised(_ name: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " _.-"))
         let scalars = name.unicodeScalars.map { allowed.contains($0) ? $0 : Unicode.Scalar("_") }
         let cleaned = String(String.UnicodeScalarView(scalars))

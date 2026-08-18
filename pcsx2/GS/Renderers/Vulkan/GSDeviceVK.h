@@ -577,6 +577,7 @@ private:
 	/// has to be re-fed regardless of whether the store changed.
 	u64 m_shader_param_generation = 0;
 	void DestroyShaderChain();
+	void ReleaseShaderChain() override { DestroyShaderChain(); }
 	void ApplyShaderChainParams();
 
 	bool DoCAS(

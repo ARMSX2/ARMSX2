@@ -1532,6 +1532,9 @@ protected:
 	GSTexture* m_mad = nullptr;
 	GSTexture* m_target_tmp = nullptr;
 	GSTexture* m_current = nullptr;
+	/// Whether a chain is loaded in the backend, so ApplyShaderChain can free it on the
+	/// frame the player turns shaders off rather than polling for it.
+	bool m_shader_chain_loaded = false;
 	GSTexture* m_cas = nullptr;
 	GSTexture* m_mfx_output = nullptr; ///< MetalFX spatial upscale destination (Metal backend).
 	GSTexture* m_fsr1_easu = nullptr; ///< FSR1 EASU output, at display size; RCAS reads it back.
@@ -1567,6 +1570,12 @@ protected:
 	/// a bad preset degrades to "no shader" instead of a black screen. NOT pure: only
 	/// the Vulkan/OpenGL devices override it, everything else keeps the no-op.
 	virtual bool DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex) { return false; }
+
+	/// Free whatever the chain is holding. A loaded chain owns a render target and a
+	/// pipeline per pass and the collection runs to forty of them, so leaving it resident
+	/// after the player turns shaders off is the memory that matters on a handheld. Same
+	/// override rule as above: only the librashader-capable backends implement it.
+	virtual void ReleaseShaderChain() {}
 
 	/// Generation of the parameter-override store, bumped on every SetShaderChainParams.
 	/// A backend compares this against its own last-applied generation to decide whether

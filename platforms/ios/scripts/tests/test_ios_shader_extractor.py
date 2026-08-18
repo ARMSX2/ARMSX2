@@ -65,6 +65,31 @@ class ShaderPackExtractorPolicy(unittest.TestCase):
             "impossible, so every entry's destination must be canonically resolved and "
             "checked against the destination. Comparing raw strings is a zip-slip hole.")
 
+    def test_the_escape_check_gates_the_write_rather_than_merely_existing(self):
+        """Finding a realpath call is not the same as finding its answer used.
+
+        The sibling test asserts a canonical resolve appears somewhere in the body, which
+        passes for a resolve whose result is thrown away. This one holds the ordering claim,
+        and it anchors on `resolvedParent` rather than on the error constant: the body has
+        several refusal sites that all name the same constants, so anything looser is
+        satisfied by a neighbouring refusal that has nothing to do with containment.
+        """
+        resolve = self.code.find("realpath(parentURL.path")
+        compare = self.code.find("![resolvedParent isEqualToString:resolvedRoot]")
+        prefix = self.code.find("![resolvedParent hasPrefix:guardPrefix]")
+        write = self.code.find("writeToURL:")
+        self.assertGreater(resolve, 0, "the entry's parent is never canonically resolved")
+        self.assertGreater(compare, 0, "nothing compares the resolved parent to the root")
+        self.assertGreater(prefix, 0,
+                           "the root comparison has no prefix arm, so a sibling directory "
+                           "whose name merely starts with the destination's passes")
+        self.assertGreater(write, 0, "the extractor does not write anything")
+        self.assertLess(resolve, compare,
+                        "the comparison runs before the resolve, so it compares unresolved "
+                        "strings and a symlink walks through it")
+        self.assertLess(compare, write,
+                        "an entry is written before its parent is checked for escaping")
+
     def test_the_declaration_is_exposed_to_swift(self):
         self.assertIn(
             SHADER_EXTRACTOR, self.header,
