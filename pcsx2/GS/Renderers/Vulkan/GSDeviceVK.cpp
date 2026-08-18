@@ -6069,6 +6069,75 @@ bool GSDeviceVK::TileGpuExecutorAvailable()
 	return m_optional_extensions.tilegpu_device_capable;
 }
 
+bool GSDeviceVK::CompileTileGpuPipeline()
+{
+	m_tilegpu_tried = true;
+
+	{
+		Vulkan::PipelineLayoutBuilder plb;
+		plb.AddPushConstants(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 4); // VertexScale + VertexOffset
+		if ((m_tilegpu_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_pipeline_layout, "TileGpu pipeline layout");
+	}
+
+	const std::optional<std::string> source = ReadShaderSource("shaders/vulkan/tilegpu.glsl");
+	if (!source)
+	{
+		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tilegpu.glsl.");
+		return false;
+	}
+
+	VkShaderModule vs = GetUtilityVertexShader(*source);
+	if (vs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard vs_guard([this, &vs]() { vkDestroyShaderModule(m_device, vs, nullptr); });
+
+	VkShaderModule fs = GetUtilityFragmentShader(*source);
+	if (fs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
+
+	const VkFormat color_fmt = LookupNativeFormat(GSTexture::Format::Color);
+	const VkFormat depth_fmt = LookupNativeFormat(GSTexture::Format::DepthStencil);
+
+	for (u32 i = 0; i < 2; i++)
+	{
+		const bool depth = (i == 1);
+		Vulkan::GraphicsPipelineBuilder gpb;
+		SetPipelineProvokingVertex(m_features, gpb);
+		gpb.AddVertexBuffer(0, sizeof(GSVertex));
+		gpb.AddVertexAttribute(0, 0, VK_FORMAT_R16G16_UINT, 16);   // XY (raw 12.4 fixed)
+		gpb.AddVertexAttribute(1, 0, VK_FORMAT_R32_UINT, 20);      // Z
+		gpb.AddVertexAttribute(2, 0, VK_FORMAT_R8G8B8A8_UNORM, 8); // colour
+		gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+		gpb.SetPipelineLayout(m_tilegpu_pipeline_layout);
+		gpb.SetDynamicViewportAndScissorState();
+		gpb.SetNoCullRasterizationState();
+		gpb.SetNoBlendingState();
+		gpb.SetVertexShader(vs);
+		gpb.SetFragmentShader(fs);
+		gpb.SetRenderPass(
+			GetRenderPass(color_fmt, depth ? depth_fmt : LookupNativeFormat(GSTexture::Format::Invalid),
+				VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+				depth ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+				depth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE),
+			0);
+		// PS2 depth: larger Z is nearer, the common ZTST is GEQUAL -> GREATER_OR_EQUAL + write.
+		gpb.SetDepthState(depth, depth, depth ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_ALWAYS);
+		gpb.SetNoStencilState();
+		gpb.SetColorWriteMask(0,
+			VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+
+		m_tilegpu_pipeline[i] = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+		if (m_tilegpu_pipeline[i] == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(
+			m_device, m_tilegpu_pipeline[i], depth ? "TileGpu geometry pipeline (depth)" : "TileGpu geometry pipeline");
+	}
+	return true;
+}
+
 bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 {
 	if (!m_optional_extensions.tilegpu_device_capable)
@@ -6078,15 +6147,33 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	if (plan.passes.empty())
 		return true;
 
-	// Stage 1.3c-i: run the frame's pass STRUCTURE as clears. One render pass per plan pass,
-	// bound to its FRAME/ZBUF target pair, cleared and closed with no draws recorded yet.
-	// This proves the whole output road end to end — target binding, render-pass open/close,
-	// present, and the renderer's GetOutput — before the per-draw recording and the
-	// vertex/index/state staging land in 1.3c-ii (which grows the body between Begin and End
-	// into vkCmdDrawIndexed over [first_draw, draw_count), then vkCmdDrawIndexedIndirect). The
-	// distinctive clear colour is a temporary marker so a black present reads as a broken road
-	// rather than an empty one.
+	// Stage 1.3c-ii: record the frame's triangle geometry. Per pass, bind the FRAME/ZBUF pair,
+	// open a render pass (clearing on a target's first bind, loading after), and draw each of
+	// its draws with vkCmdDrawIndexed -- the per-draw screen->NDC transform pushed from the
+	// state row's leading bytes, the vertex/index offsets rebasing into the frame's streams.
+	// Wrong-fast: one triangle pipeline, no texturing/blending, and per-draw draws rather than
+	// the constant-cost vkCmdDrawIndexedIndirect (that, with the indexed state table over
+	// firstInstance, is the following commit -- it is the perf claim, not the "renders" gate).
+	if (!m_tilegpu_tried)
+		CompileTileGpuPipeline();
+	const bool can_draw = m_tilegpu_pipeline[0] != VK_NULL_HANDLE && !plan.draws.empty() &&
+						  plan.vertex_stride == sizeof(GSVertex) && !plan.vertices.empty() &&
+						  plan.state_table != nullptr && plan.state_stride >= sizeof(float) * 4;
+
 	EndRenderPass();
+
+	// Stage the whole frame's geometry before opening any pass: a ring wrap here can flush the
+	// command buffer, which must not happen mid-render-pass. Per-draw offsets rebase onto these.
+	u32 vbase = 0, ibase = 0;
+	if (can_draw)
+	{
+		IASetVertexBuffer(plan.vertices.data(), sizeof(GSVertex), plan.vertices.size() / sizeof(GSVertex), 1);
+		IASetIndexBuffer(plan.indices.data(), plan.indices.size());
+		vbase = m_vertex.start;
+		ibase = m_index.start;
+	}
+
+	const VkCommandBuffer cmd = GetCurrentCommandBuffer();
 
 	for (const GSTileGpuPass& pass : plan.passes)
 	{
@@ -6105,36 +6192,69 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		const GSVector4i area = GSVector4i::loadh(size);
 		OMSetRenderTargets(rt, ds, area);
 
+		// A target's first bind this frame clears (fresh allocation, State::Cleared); once marked
+		// Dirty below, later passes to it load and accumulate.
+		const VkAttachmentLoadOp rt_op =
+			rt ? GetLoadOpForTexture(static_cast<GSTextureVK*>(rt)) : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		const VkAttachmentLoadOp ds_op =
+			ds ? GetLoadOpForTexture(static_cast<GSTextureVK*>(ds)) : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		const VkFormat color_fmt = rt ? LookupNativeFormat(rt->GetFormat()) : VK_FORMAT_UNDEFINED;
 		const VkFormat depth_fmt = ds ? LookupNativeFormat(ds->GetFormat()) : VK_FORMAT_UNDEFINED;
-		const VkRenderPass rp = GetRenderPass(color_fmt, depth_fmt,
-			rt ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			rt ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			ds ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			ds ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE);
+		const VkRenderPass rp = GetRenderPass(color_fmt, depth_fmt, rt_op, VK_ATTACHMENT_STORE_OP_STORE, ds_op,
+			VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE);
 		if (rp == VK_NULL_HANDLE)
 			return false;
 
-		VkClearValue cv[2] = {};
-		u32 cv_count = 0;
-		if (rt)
-			cv[cv_count++].color = {{0.06f, 0.10f, 0.22f, 1.0f}};
-		if (ds)
-			cv[cv_count++].depthStencil = {1.0f, 0};
+		if (rt_op == VK_ATTACHMENT_LOAD_OP_CLEAR || ds_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
+		{
+			VkClearValue cv[2] = {};
+			u32 n = 0;
+			if (rt)
+				cv[n++].color = {{0.0f, 0.0f, 0.0f, 1.0f}}; // an empty framebuffer background
+			if (ds)
+				cv[n++].depthStencil = {0.0f, 0}; // farthest under GEQUAL
+			BeginClearRenderPass(rp, area, cv, n);
+		}
+		else
+		{
+			BeginRenderPass(rp, area);
+		}
 
-		BeginClearRenderPass(rp, area, cv, cv_count);
+		if (can_draw)
+		{
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ds ? m_tilegpu_pipeline[1] : m_tilegpu_pipeline[0]);
+			const VkViewport vp{0.0f, 0.0f, static_cast<float>(size.x), static_cast<float>(size.y), 0.0f, 1.0f};
+			vkCmdSetViewport(cmd, 0, 1, &vp);
+			const VkRect2D sc{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}};
+			vkCmdSetScissor(cmd, 0, 1, &sc);
+			const VkDeviceSize voff = 0;
+			vkCmdBindVertexBuffers(cmd, 0, 1, m_vertex_stream_buffer.GetBufferPtr(), &voff);
+			vkCmdBindIndexBuffer(cmd, m_index_stream_buffer.GetBuffer(), 0, VK_INDEX_TYPE_UINT16);
+
+			const u32 end = pass.first_draw + pass.draw_count;
+			for (u32 d = pass.first_draw; d < end; d++)
+			{
+				const GSTileGpuIndirectDraw& draw = plan.draws[d];
+				// The state row's leading 16 bytes are the VS transform (VertexScale, VertexOffset).
+				const u8* row =
+					static_cast<const u8*>(plan.state_table) + static_cast<size_t>(draw.state_index) * plan.state_stride;
+				vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 4, row);
+				vkCmdDrawIndexed(cmd, draw.index_count, 1, ibase + draw.first_index,
+					static_cast<s32>(vbase) + draw.vertex_offset, 0);
+			}
+		}
+
 		EndRenderPass();
 
-		// The render pass materialized the clear (and, in 1.3c-ii, the draws); the targets now
-		// hold real contents. Mark them Dirty so the lazy clear the allocation queued (a
-		// pending State::Cleared) does not re-fire and overwrite them at present/sample time.
 		if (rt)
 			rt->SetState(GSTexture::State::Dirty);
 		if (ds)
 			ds->SetState(GSTexture::State::Dirty);
 	}
 
+	// These passes recorded raw, bypassing the device's state cache; force the present path and
+	// the next frame to re-apply everything.
+	InvalidateCachedState();
 	return true;
 }
 

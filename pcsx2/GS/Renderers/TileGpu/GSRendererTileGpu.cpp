@@ -108,6 +108,28 @@ GSTexture* GSRendererTileGpu::GetOutput(int i, float& scale, int& y_offset)
 			return dt.texture;
 		}
 	}
+
+	// Wrong-fast fallback: the PS2 display buffer's content is composited from work buffers by
+	// the sprites and moves this stage does not render yet, so it has no target of its own.
+	// Present the largest colour target instead — the frame's main render buffer — so the 3D
+	// geometry is visible rather than a blank display. Removed once compositing is handled.
+	GSTexture* best = nullptr;
+	int best_area = 0;
+	for (const DisplayTarget& dt : m_display_targets)
+	{
+		const int area = dt.texture->GetSize().x * dt.texture->GetSize().y;
+		if (area > best_area)
+		{
+			best_area = area;
+			best = dt.texture;
+		}
+	}
+	if (best)
+	{
+		scale = 1.0f;
+		y_offset = 0;
+		return best;
+	}
 	return nullptr;
 }
 
@@ -442,6 +464,14 @@ void GSRendererTileGpu::AccumulateDraw()
 {
 	const GSVector4i r = ComputeDrawRect();
 	if (r.rempty())
+		return;
+
+	// Wrong-fast ii draws triangles only: the executor's one pipeline is TRIANGLE_LIST, and the
+	// triangle-class index buffer is already triangle-list (strips and fans expanded at decode).
+	// Sprites need corner synthesis (2 verts -> a quad) and points/lines their own topology; both
+	// are a following commit. The pass model still sees every draw through ObserveDraw, so the
+	// accounting is unaffected — only the submitted geometry is narrowed.
+	if (m_vt.m_primclass != GS_TRIANGLE_CLASS)
 		return;
 
 	const u32 vcount = m_vertex->tail;

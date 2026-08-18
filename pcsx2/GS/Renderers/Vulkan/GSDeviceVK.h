@@ -565,6 +565,16 @@ private:
 	bool m_tile_expand_tried = false;
 	std::array<GSTextureVK*, 2> m_tile_expand_textures{};
 	bool ApplyTileExpandState(bool already_execed = false);
+
+	/// The TileGpu executor's minimal geometry pipeline: a raw-GSVertex position+colour draw
+	/// whose per-draw screen->NDC transform (the tfx VertexScale/VertexOffset) arrives as a
+	/// push constant. No descriptors — wrong-fast pushes the transform per draw; the indexed
+	/// state table over firstInstance lands with true indirect submission. [0] no depth, [1]
+	/// depth (GEQUAL + write, the PS2 larger-Z-is-nearer convention). Compiled on first use.
+	VkPipelineLayout m_tilegpu_pipeline_layout = VK_NULL_HANDLE;
+	std::array<VkPipeline, 2> m_tilegpu_pipeline{};
+	bool m_tilegpu_tried = false;
+	bool CompileTileGpuPipeline();
 	std::array<VkPipeline, static_cast<int>(PresentShader::Count)> m_present{};
 	std::array<VkPipeline, 2> m_merge{};
 	std::array<VkPipeline, NUM_INTERLACE_SHADERS> m_interlace{};
