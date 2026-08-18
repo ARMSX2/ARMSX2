@@ -8,6 +8,7 @@
 #include "MTVU.h"
 
 #include <cmath>
+#include <cfloat>
 u32 laststall = 0;
 //Lower/Upper instructions can use that..
 #define _Ft_ ((VU->code >> 16) & 0x1F)  // The rt part of the instruction register
@@ -462,6 +463,28 @@ static __fi float vuDouble(u32 f)
 }
 #endif
 
+// A result below the smallest normal is flushed to a signed zero on the VU, and
+// U is raised with Z when that happens. The host FPCR flushes it first, so by
+// the time VU_MAC_UPDATE sees the value it is an unremarkable zero and the
+// underflow is gone -- which is why U never fired here at all. Recover it by
+// redoing only the FINAL operation in double, over the very same float
+// intermediates the single-precision path used, so the classification cannot
+// disagree with the value it describes. Nothing below feeds a returned value.
+struct VuMacValue
+{
+	float v;
+	bool underflow;
+};
+
+// The double cannot underflow out from under this test: vuDouble() flushes
+// denormal operands, so every operand is zero or at least 2^-126, and the
+// smallest nonzero result any of these ops can build from those is far above
+// the double's own subnormal range.
+static __fi bool vuUnderflowedToZero(double exact)
+{
+	return exact != 0.0 && exact < FLT_MIN && exact > -FLT_MIN;
+}
+
 static __fi float vuADD_TriAceHack(u32 a, u32 b)
 {
 	// On VU0 TriAce Games use ADDi and expects these bit-perfect results:
@@ -490,6 +513,12 @@ static __fi float vuADD_TriAceHack(u32 a, u32 b)
 	//DevCon.WriteLn("0x%08x + 0x%08x = 0x%08x", a, b, (u32&)ret);
 	//DevCon.WriteLn("%f + %f = %f", vuDouble(a), vuDouble(b), ret);
 	return ret;
+}
+
+static __fi VuMacValue vuADD_TriAceHackMac(u32 a, u32 b)
+{
+	const float r = vuADD_TriAceHack(a, b);
+	return {r, vuUnderflowedToZero(static_cast<double>(vuDouble(a)) + static_cast<double>(vuDouble(b)))};
 }
 
 template <u32(*Fn)(u32)>
@@ -527,31 +556,32 @@ static __fi VECTOR* _getDst(VURegs* VU)
 		return &VU->VF[_Fd_];
 }
 
-template <float(*Fn)(u32, u32), MACOpDst Dst>
+template <VuMacValue(*Fn)(u32, u32), MACOpDst Dst>
 static __fi void applyBinaryMACOp(VURegs* VU)
 {
 	VECTOR* dst = _getDst<Dst>(VU);
-	if (_X) { dst->i.x = VU_MACx_UPDATE(VU, Fn(VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.x)); } else VU_MACx_CLEAR(VU);
-	if (_Y) { dst->i.y = VU_MACy_UPDATE(VU, Fn(VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.y)); } else VU_MACy_CLEAR(VU);
-	if (_Z) { dst->i.z = VU_MACz_UPDATE(VU, Fn(VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.z)); } else VU_MACz_CLEAR(VU);
-	if (_W) { dst->i.w = VU_MACw_UPDATE(VU, Fn(VU->VF[_Fs_].i.w, VU->VF[_Ft_].i.w)); } else VU_MACw_CLEAR(VU);
+	if (_X) { const VuMacValue rx = Fn(VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.x); dst->i.x = VU_MACx_UPDATE(VU, rx.v, rx.underflow); } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = Fn(VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.y); dst->i.y = VU_MACy_UPDATE(VU, ry.v, ry.underflow); } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = Fn(VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.z); dst->i.z = VU_MACz_UPDATE(VU, rz.v, rz.underflow); } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = Fn(VU->VF[_Fs_].i.w, VU->VF[_Ft_].i.w); dst->i.w = VU_MACw_UPDATE(VU, rw.v, rw.underflow); } else VU_MACw_CLEAR(VU);
 	VU_STAT_UPDATE(VU);
 }
 
-template <float(*Fn)(u32, u32), MACOpDst Dst>
+template <VuMacValue(*Fn)(u32, u32), MACOpDst Dst>
 static __fi void applyBinaryMACOpBroadcast(VURegs* VU, u32 bc)
 {
 	VECTOR* dst = _getDst<Dst>(VU);
-	if (_X) { dst->i.x = VU_MACx_UPDATE(VU, Fn(VU->VF[_Fs_].i.x, bc)); } else VU_MACx_CLEAR(VU);
-	if (_Y) { dst->i.y = VU_MACy_UPDATE(VU, Fn(VU->VF[_Fs_].i.y, bc)); } else VU_MACy_CLEAR(VU);
-	if (_Z) { dst->i.z = VU_MACz_UPDATE(VU, Fn(VU->VF[_Fs_].i.z, bc)); } else VU_MACz_CLEAR(VU);
-	if (_W) { dst->i.w = VU_MACw_UPDATE(VU, Fn(VU->VF[_Fs_].i.w, bc)); } else VU_MACw_CLEAR(VU);
+	if (_X) { const VuMacValue rx = Fn(VU->VF[_Fs_].i.x, bc); dst->i.x = VU_MACx_UPDATE(VU, rx.v, rx.underflow); } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = Fn(VU->VF[_Fs_].i.y, bc); dst->i.y = VU_MACy_UPDATE(VU, ry.v, ry.underflow); } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = Fn(VU->VF[_Fs_].i.z, bc); dst->i.z = VU_MACz_UPDATE(VU, rz.v, rz.underflow); } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = Fn(VU->VF[_Fs_].i.w, bc); dst->i.w = VU_MACw_UPDATE(VU, rw.v, rw.underflow); } else VU_MACw_CLEAR(VU);
 	VU_STAT_UPDATE(VU);
 }
 
-static __fi float _vuOpADD(u32 fs, u32 ft)
+static __fi VuMacValue _vuOpADD(u32 fs, u32 ft)
 {
-	return vuDouble(fs) + vuDouble(ft);
+	const float a = vuDouble(fs), b = vuDouble(ft);
+	return {a + b, vuUnderflowedToZero(static_cast<double>(a) + static_cast<double>(b))};
 }
 
 static __fi void _vuADD(VURegs* VU)
@@ -567,7 +597,7 @@ static __fi void vuADDbc(VURegs* VU, u32 bc)
 static __fi void vuADDbc_addsubhack(VURegs* VU, u32 bc)
 {
 	if (CHECK_VUADDSUBHACK)
-		applyBinaryMACOpBroadcast<vuADD_TriAceHack, MACOpDst::Fd>(VU, bc);
+		applyBinaryMACOpBroadcast<vuADD_TriAceHackMac, MACOpDst::Fd>(VU, bc);
 	else
 		applyBinaryMACOpBroadcast<_vuOpADD, MACOpDst::Fd>(VU, bc);
 }
@@ -600,9 +630,10 @@ static __fi void _vuADDAy(VURegs* VU) { vuADDAbc(VU, VU->VF[_Ft_].i.y); }
 static __fi void _vuADDAz(VURegs* VU) { vuADDAbc(VU, VU->VF[_Ft_].i.z); }
 static __fi void _vuADDAw(VURegs* VU) { vuADDAbc(VU, VU->VF[_Ft_].i.w); }
 
-static __fi float _vuOpSUB(u32 fs, u32 ft)
+static __fi VuMacValue _vuOpSUB(u32 fs, u32 ft)
 {
-	return vuDouble(fs) - vuDouble(ft);
+	const float a = vuDouble(fs), b = vuDouble(ft);
+	return {a - b, vuUnderflowedToZero(static_cast<double>(a) - static_cast<double>(b))};
 }
 
 static __fi void _vuSUB(VURegs* VU)
@@ -639,9 +670,10 @@ static __fi void _vuSUBAy(VURegs* VU) { vuSUBAbc(VU, VU->VF[_Ft_].i.y); }
 static __fi void _vuSUBAz(VURegs* VU) { vuSUBAbc(VU, VU->VF[_Ft_].i.z); }
 static __fi void _vuSUBAw(VURegs* VU) { vuSUBAbc(VU, VU->VF[_Ft_].i.w); }
 
-static __fi float _vuOpMUL(u32 fs, u32 ft)
+static __fi VuMacValue _vuOpMUL(u32 fs, u32 ft)
 {
-	return vuDouble(fs) * vuDouble(ft);
+	const float a = vuDouble(fs), b = vuDouble(ft);
+	return {a * b, vuUnderflowedToZero(static_cast<double>(a) * static_cast<double>(b))};
 }
 
 static __fi void _vuMUL(VURegs* VU)
@@ -679,31 +711,33 @@ static __fi void _vuMULAy(VURegs* VU) { vuMULAbc(VU, VU->VF[_Ft_].i.y); }
 static __fi void _vuMULAz(VURegs* VU) { vuMULAbc(VU, VU->VF[_Ft_].i.z); }
 static __fi void _vuMULAw(VURegs* VU) { vuMULAbc(VU, VU->VF[_Ft_].i.w); }
 
-template <float(*Fn)(u32, u32, u32), MACOpDst Dst>
+template <VuMacValue(*Fn)(u32, u32, u32), MACOpDst Dst>
 static __fi void applyTernaryMACOp(VURegs* VU)
 {
 	VECTOR* dst = _getDst<Dst>(VU);
-	if (_X) { dst->i.x = VU_MACx_UPDATE(VU, Fn(VU->ACC.i.x, VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.x)); } else VU_MACx_CLEAR(VU);
-	if (_Y) { dst->i.y = VU_MACy_UPDATE(VU, Fn(VU->ACC.i.y, VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.y)); } else VU_MACy_CLEAR(VU);
-	if (_Z) { dst->i.z = VU_MACz_UPDATE(VU, Fn(VU->ACC.i.z, VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.z)); } else VU_MACz_CLEAR(VU);
-	if (_W) { dst->i.w = VU_MACw_UPDATE(VU, Fn(VU->ACC.i.w, VU->VF[_Fs_].i.w, VU->VF[_Ft_].i.w)); } else VU_MACw_CLEAR(VU);
+	if (_X) { const VuMacValue rx = Fn(VU->ACC.i.x, VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.x); dst->i.x = VU_MACx_UPDATE(VU, rx.v, rx.underflow); } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = Fn(VU->ACC.i.y, VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.y); dst->i.y = VU_MACy_UPDATE(VU, ry.v, ry.underflow); } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = Fn(VU->ACC.i.z, VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.z); dst->i.z = VU_MACz_UPDATE(VU, rz.v, rz.underflow); } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = Fn(VU->ACC.i.w, VU->VF[_Fs_].i.w, VU->VF[_Ft_].i.w); dst->i.w = VU_MACw_UPDATE(VU, rw.v, rw.underflow); } else VU_MACw_CLEAR(VU);
 	VU_STAT_UPDATE(VU);
 }
 
-template <float(*Fn)(u32, u32, u32), MACOpDst Dst>
+template <VuMacValue(*Fn)(u32, u32, u32), MACOpDst Dst>
 static __fi void applyTernaryMACOpBroadcast(VURegs* VU, u32 bc)
 {
 	VECTOR* dst = _getDst<Dst>(VU);
-	if (_X) { dst->i.x = VU_MACx_UPDATE(VU, Fn(VU->ACC.i.x, VU->VF[_Fs_].i.x, bc)); } else VU_MACx_CLEAR(VU);
-	if (_Y) { dst->i.y = VU_MACy_UPDATE(VU, Fn(VU->ACC.i.y, VU->VF[_Fs_].i.y, bc)); } else VU_MACy_CLEAR(VU);
-	if (_Z) { dst->i.z = VU_MACz_UPDATE(VU, Fn(VU->ACC.i.z, VU->VF[_Fs_].i.z, bc)); } else VU_MACz_CLEAR(VU);
-	if (_W) { dst->i.w = VU_MACw_UPDATE(VU, Fn(VU->ACC.i.w, VU->VF[_Fs_].i.w, bc)); } else VU_MACw_CLEAR(VU);
+	if (_X) { const VuMacValue rx = Fn(VU->ACC.i.x, VU->VF[_Fs_].i.x, bc); dst->i.x = VU_MACx_UPDATE(VU, rx.v, rx.underflow); } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = Fn(VU->ACC.i.y, VU->VF[_Fs_].i.y, bc); dst->i.y = VU_MACy_UPDATE(VU, ry.v, ry.underflow); } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = Fn(VU->ACC.i.z, VU->VF[_Fs_].i.z, bc); dst->i.z = VU_MACz_UPDATE(VU, rz.v, rz.underflow); } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = Fn(VU->ACC.i.w, VU->VF[_Fs_].i.w, bc); dst->i.w = VU_MACw_UPDATE(VU, rw.v, rw.underflow); } else VU_MACw_CLEAR(VU);
 	VU_STAT_UPDATE(VU);
 }
 
-static __fi float _vuOpMADD(u32 acc, u32 fs, u32 ft)
+static __fi VuMacValue _vuOpMADD(u32 acc, u32 fs, u32 ft)
 {
-	return vuDouble(acc) + vuDouble(fs) * vuDouble(ft);
+	const float a = vuDouble(acc);
+	const float p = vuDouble(fs) * vuDouble(ft);
+	return {a + p, vuUnderflowedToZero(static_cast<double>(a) + static_cast<double>(p))};
 }
 
 static __fi void _vuMADD(VURegs* VU)
@@ -740,9 +774,11 @@ static __fi void _vuMADDAy(VURegs* VU) { vuMADDAbc(VU, VU->VF[_Ft_].i.y); }
 static __fi void _vuMADDAz(VURegs* VU) { vuMADDAbc(VU, VU->VF[_Ft_].i.z); }
 static __fi void _vuMADDAw(VURegs* VU) { vuMADDAbc(VU, VU->VF[_Ft_].i.w); }
 
-static __fi float _vuOpMSUB(u32 acc, u32 fs, u32 ft)
+static __fi VuMacValue _vuOpMSUB(u32 acc, u32 fs, u32 ft)
 {
-	return vuDouble(acc) - vuDouble(fs) * vuDouble(ft);
+	const float a = vuDouble(acc);
+	const float p = vuDouble(fs) * vuDouble(ft);
+	return {a - p, vuUnderflowedToZero(static_cast<double>(a) - static_cast<double>(p))};
 }
 
 static __fi void _vuMSUB(VURegs* VU)
@@ -840,32 +876,32 @@ static __fi void _vuMINIw(VURegs* VU) { applyMinMaxBroadcast<fp_min>(VU, VU->VF[
 
 static __fi void _vuOPMULA(VURegs* VU)
 {
-	VU->ACC.i.x = VU_MACx_UPDATE(VU, vuDouble(VU->VF[_Fs_].i.y) * vuDouble(VU->VF[_Ft_].i.z));
-	VU->ACC.i.y = VU_MACy_UPDATE(VU, vuDouble(VU->VF[_Fs_].i.z) * vuDouble(VU->VF[_Ft_].i.x));
-	VU->ACC.i.z = VU_MACz_UPDATE(VU, vuDouble(VU->VF[_Fs_].i.x) * vuDouble(VU->VF[_Ft_].i.y));
+	const VuMacValue x = _vuOpMUL(VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.z);
+	const VuMacValue y = _vuOpMUL(VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.x);
+	const VuMacValue z = _vuOpMUL(VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.y);
+	VU->ACC.i.x = VU_MACx_UPDATE(VU, x.v, x.underflow);
+	VU->ACC.i.y = VU_MACy_UPDATE(VU, y.v, y.underflow);
+	VU->ACC.i.z = VU_MACz_UPDATE(VU, z.v, z.underflow);
 	VU_STAT_UPDATE(VU);
 }
 
 static __fi void _vuOPMSUB(VURegs* VU)
 {
 	VECTOR* dst;
-	float ftx, fty, ftz;
-	float fsx, fsy, fsz;
 	if (_Fd_ == 0)
 		dst = &RDzero;
 	else
 		dst = &VU->VF[_Fd_];
 
-	ftx = vuDouble(VU->VF[_Ft_].i.x);
-	fty = vuDouble(VU->VF[_Ft_].i.y);
-	ftz = vuDouble(VU->VF[_Ft_].i.z);
-	fsx = vuDouble(VU->VF[_Fs_].i.x);
-	fsy = vuDouble(VU->VF[_Fs_].i.y);
-	fsz = vuDouble(VU->VF[_Fs_].i.z);
-
-	dst->i.x = VU_MACx_UPDATE(VU, vuDouble(VU->ACC.i.x) - fsy * ftz);
-	dst->i.y = VU_MACy_UPDATE(VU, vuDouble(VU->ACC.i.y) - fsz * ftx);
-	dst->i.z = VU_MACz_UPDATE(VU, vuDouble(VU->ACC.i.z) - fsx * fty);
+	// The cross-product lanes pair Fs and Ft off-diagonally; the arithmetic and
+	// the underflow test are _vuOpMSUB's, so they go through it rather than
+	// being spelled out a second time.
+	const VuMacValue x = _vuOpMSUB(VU->ACC.i.x, VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.z);
+	const VuMacValue y = _vuOpMSUB(VU->ACC.i.y, VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.x);
+	const VuMacValue z = _vuOpMSUB(VU->ACC.i.z, VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.y);
+	dst->i.x = VU_MACx_UPDATE(VU, x.v, x.underflow);
+	dst->i.y = VU_MACy_UPDATE(VU, y.v, y.underflow);
+	dst->i.z = VU_MACz_UPDATE(VU, z.v, z.underflow);
 	VU_STAT_UPDATE(VU);
 }
 

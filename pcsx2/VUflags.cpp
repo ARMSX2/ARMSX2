@@ -12,7 +12,7 @@
 /*          NEW FLAGS                    */ //By asadr. Thnkx F|RES :p
 /*****************************************/
 
-static __ri u32 VU_MAC_UPDATE( int shift, VURegs * VU, float f )
+static __ri u32 VU_MAC_UPDATE( int shift, VURegs * VU, float f, bool underflow )
 {
 	u32 v = *(u32*)&f;
 	int exp = (v >> 23) & 0xff;
@@ -23,7 +23,11 @@ static __ri u32 VU_MAC_UPDATE( int shift, VURegs * VU, float f )
 	else
 		VU->macflag &= ~(0x0010<<shift);
 
-	if( f == 0 )
+	// A result the host flushed to zero still took the underflow path on the VU:
+	// U and Z together, and the sign kept. Only a genuinely exact zero lands
+	// here, which is why `underflow` has to come in from the caller -- `f` alone
+	// cannot tell the two apart once FTZ has run.
+	if (f == 0 && !underflow)
 	{
 		VU->macflag = (VU->macflag & ~(0x1100<<shift)) | (0x0001<<shift);
 		return v;
@@ -46,24 +50,24 @@ static __ri u32 VU_MAC_UPDATE( int shift, VURegs * VU, float f )
 	}
 }
 
-__fi u32 VU_MACx_UPDATE(VURegs * VU, float x)
+__fi u32 VU_MACx_UPDATE(VURegs * VU, float x, bool underflow)
 {
-	return VU_MAC_UPDATE(3, VU, x);
+	return VU_MAC_UPDATE(3, VU, x, underflow);
 }
 
-__fi u32 VU_MACy_UPDATE(VURegs * VU, float y)
+__fi u32 VU_MACy_UPDATE(VURegs * VU, float y, bool underflow)
 {
-	return VU_MAC_UPDATE(2, VU, y);
+	return VU_MAC_UPDATE(2, VU, y, underflow);
 }
 
-__fi u32 VU_MACz_UPDATE(VURegs * VU, float z)
+__fi u32 VU_MACz_UPDATE(VURegs * VU, float z, bool underflow)
 {
-	return VU_MAC_UPDATE(1, VU, z);
+	return VU_MAC_UPDATE(1, VU, z, underflow);
 }
 
-__fi u32 VU_MACw_UPDATE(VURegs * VU, float w)
+__fi u32 VU_MACw_UPDATE(VURegs * VU, float w, bool underflow)
 {
-	return VU_MAC_UPDATE(0, VU, w);
+	return VU_MAC_UPDATE(0, VU, w, underflow);
 }
 
 __fi void VU_MACx_CLEAR(VURegs * VU)

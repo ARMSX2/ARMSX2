@@ -296,8 +296,9 @@ constexpr Divergence kMicroDivergences[] = {
 	{"VUSTICKY_MICRO_FMAC_ZSUO_ACCUMULATE", 3, true, true,
 	 "micro FMAC loses U (VU_MAC_UPDATE's ~0x1100 clears U on a flush-to-zero) "
 	 "and O (the configured clamp mode saturates below exp 255)"},
-	{"VUSTICKY_MICRO_SURVIVES_SILENT_FMAC", 3, true, true,
-	 "micro FMAC loses U on the flush-to-zero underflow, as above"},
+	{"VUSTICKY_MICRO_SURVIVES_SILENT_FMAC", 3, false, true,
+	 "the recompiler loses U on the flush-to-zero underflow; the interpreter "
+	 "classifies it from the operands and matches"},
 };
 
 const Divergence* FindDivergence(const Divergence* table, size_t n, const char* tag, int slot)
@@ -555,29 +556,38 @@ TEST(VuStickyConsoleConformance, Arm64Cop2MacroEmptyDestMaskRetiresTheMacFlag)
 
 // The default FP environment, pinned. Everything above that carries a
 // ScopedFpEnv is describing the DAZ-off configuration; this describes the one a
-// game actually gets, and it is deliberately an EQUALITY between the engines
-// rather than a comparison against the console.
+// game actually gets.
 //
-// Both statements matter. "The engines agree" is the property the project
-// actually defends. "They agree on a value the console contradicts" is the cost
-// of the default FP environment, recorded here so that nobody re-derives the
-// U/O work from a green suite and concludes it is reachable in a game.
-TEST(VuStickyConsoleConformance, ProductionFpEnvironmentErasesUnderflowAndOverflow)
+// It used to be an equality between the engines, on the grounds that they agreed
+// on a value the console contradicts and that the agreement was worth recording.
+// The underflow half of that is no longer true: the interpreter classifies the
+// underflow from its operands rather than from the flushed result, so it raises
+// U and matches the console. The recompilers do not, and this is where that is
+// written down -- not as a parity gap, because x86's mVUupdateFlags computes
+// only S and Z as well, and says in its own comment that the host's range is
+// why. Closing it means paying for the flag on the hottest emitter in the
+// project, which is a measurement nobody has taken.
+//
+// The overflow half is unchanged and still agrees: the clamp saturates below
+// exp 255 on both engines, so O is not merely missed, it is unreachable.
+TEST(VuStickyConsoleConformance, ProductionFpEnvironmentErasesOverflowAndTheJitsUnderflow)
 {
 	struct Witness
 	{
 		const char* what;
 		u32 fs, ft;
-		u32 want_mac;   // what BOTH engines produce under FPUFPCR
+		u32 want_interp;
+		u32 want_jit;
 		u32 console_mac;
 	};
 	static const Witness kWitnesses[] = {
-		// FZ flushes the denormal before the flag update sees a mantissa, so U
-		// is gone and only Z survives.
-		{"underflow 2^-126 * 0.5", 0x00800000u, 0x3F000000u, 0x0008u, 0x0808u},
+		// FZ flushes the denormal before the recompiler's flag update sees a
+		// mantissa, so U is gone there and only Z survives. The interpreter
+		// re-derives it and lands on the console's answer.
+		{"underflow 2^-126 * 0.5", 0x00800000u, 0x3F000000u, 0x0808u, 0x0008u, 0x0808u},
 		// ChopZero saturates the overflow to +FLT_MAX (exp 254). Nothing is
-		// ever exp 255, so O is not merely missed -- it is unreachable.
-		{"overflow 2^127 * 2^127", 0x7F000000u, 0x7F000000u, 0x0000u, 0x8000u},
+		// ever exp 255, so O is unreachable on either engine.
+		{"overflow 2^127 * 2^127", 0x7F000000u, 0x7F000000u, 0x0000u, 0x0000u, 0x8000u},
 	};
 	for (const Witness& w : kWitnesses)
 	{
@@ -597,12 +607,13 @@ TEST(VuStickyConsoleConformance, ProductionFpEnvironmentErasesUnderflowAndOverfl
 		                CFC2(kRMac[0], REG_MAC_FLAG)});
 		hj.RunJitNoDiff();
 
-		EXPECT_EQ(hi.GetGprInterp(kRMac[0]), hj.GetGprJit(kRMac[0]))
-			<< "the two engines must agree in the environment a game runs in";
-		EXPECT_EQ(hj.GetGprJit(kRMac[0]), w.want_mac);
-		EXPECT_NE(w.want_mac, w.console_mac)
-			<< "if this ever matches the console, the default environment changed "
-			   "and the ScopedFpEnv tags above are stale";
+		EXPECT_EQ(hi.GetGprInterp(kRMac[0]), w.want_interp) << "[interp]";
+		EXPECT_EQ(hj.GetGprJit(kRMac[0]), w.want_jit) << "[jit]";
+		EXPECT_NE(w.want_jit, w.console_mac)
+			<< "the recompiler now matches the console here. If the emitters "
+			   "learned U/O, fold this witness back into an engine equality; if "
+			   "the default environment changed, the ScopedFpEnv tags above are "
+			   "stale.";
 	}
 }
 

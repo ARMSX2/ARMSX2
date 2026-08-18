@@ -51,10 +51,10 @@ inline constexpr VuSatCase kVuSatCases[] = {
 	{VS_MUL,  0x7F000000u, 0x3F800001u, 0x00000000u, 0x7F000001u, 0x0000u, 0x0040u, 0, 0, "B 2^127*(1+2^-23) exp FE, in range under every reading"},
 	{VS_MUL,  0x7F800000u, 0x3F800001u, 0x00000000u, 0x7F800001u, 0x0000u, 0x0040u, 1, 1, "B 2^128*(1+2^-23) exp FF and representable: does exp FF alone raise O?"},
 	{VS_ADD,  0x7F800000u, 0x74000000u, 0x00000000u, 0x7F800001u, 0x0000u, 0x0040u, 1, 1, "B 2^128 + 1ulp exp FF and representable, via the adder"},
-	{VS_MUL,  0x00800000u, 0x3F000000u, 0x00000000u, 0x00000000u, 0x0F0Fu, 0x0145u, 6, 6, "C 2^-126*0.5 first value below the bottom"},
-	{VS_MUL,  0x80800000u, 0x3F000000u, 0x00000000u, 0x80000000u, 0x0FFFu, 0x01C7u, 6, 6, "C -2^-126*0.5 sign of a flushed result"},
-	{VS_MUL,  0x00800000u, 0x00800000u, 0x00000000u, 0x00000000u, 0x0F0Fu, 0x0145u, 6, 6, "C 2^-126*2^-126 far below the bottom"},
-	{VS_ADD,  0x00800000u, 0x80800001u, 0x00000000u, 0x80000000u, 0x0FFFu, 0x01C7u, 6, 6, "C 2^-126 + -(2^-126+1ulp) tiny negative from the adder"},
+	{VS_MUL,  0x00800000u, 0x3F000000u, 0x00000000u, 0x00000000u, 0x0F0Fu, 0x0145u, 0, 6, "C 2^-126*0.5 first value below the bottom"},
+	{VS_MUL,  0x80800000u, 0x3F000000u, 0x00000000u, 0x80000000u, 0x0FFFu, 0x01C7u, 0, 6, "C -2^-126*0.5 sign of a flushed result"},
+	{VS_MUL,  0x00800000u, 0x00800000u, 0x00000000u, 0x00000000u, 0x0F0Fu, 0x0145u, 0, 6, "C 2^-126*2^-126 far below the bottom"},
+	{VS_ADD,  0x00800000u, 0x80800001u, 0x00000000u, 0x80000000u, 0x0FFFu, 0x01C7u, 0, 6, "C 2^-126 + -(2^-126+1ulp) tiny negative from the adder"},
 	{VS_MUL,  0x00400000u, 0x40000000u, 0x00000000u, 0x00000000u, 0x000Fu, 0x0041u, 0, 0, "C denormal operand *2 flushed 00000000 | kept 00800000"},
 	{VS_ADD,  0x00400000u, 0x00400000u, 0x00000000u, 0x00000000u, 0x000Fu, 0x0041u, 0, 0, "C denormal operand + itself flushed 00000000 | kept 00800000"},
 	{VS_MUL,  0x00000000u, 0x7F800000u, 0x00000000u, 0x00000000u, 0x000Fu, 0x0041u, 0, 0, "D 0*2^128"},
@@ -100,12 +100,12 @@ inline constexpr VuSatCase kVuSatCases[] = {
 	{VS_ADD,  0xFF800000u, 0xFF800000u, 0x00000000u, 0xFFFFFFFFu, 0xF0F0u, 0x02CAu, 7, 7, "L -2^128 + -2^128"},
 	{VS_SUB,  0x7FFFFFFFu, 0xFF800000u, 0x00000000u, 0x7FFFFFFFu, 0xF000u, 0x0248u, 7, 7, "L max - -2^128"},
 	{VS_MSUB, 0x00800000u, 0x3F800000u, 0x00800000u, 0x00000000u, 0x000Fu, 0x0041u, 0, 0, "L 2^-126 - 2^-126 exact zero, Z without U"},
-	{VS_MUL,  0x00800000u, 0xBF000000u, 0x00000000u, 0x80000000u, 0x0FFFu, 0x01C7u, 6, 6, "L 2^-126 * -0.5 sign of a flushed product"},
+	{VS_MUL,  0x00800000u, 0xBF000000u, 0x00000000u, 0x80000000u, 0x0FFFu, 0x01C7u, 0, 6, "L 2^-126 * -0.5 sign of a flushed product"},
 };
 
 inline constexpr int kVuSatCaseCount = 68;
 // Column-misses, not case-misses: a case wrong in two columns counts twice.
-inline constexpr int kVuSatBadInterp = 76;
+inline constexpr int kVuSatBadInterp = 66;
 inline constexpr int kVuSatBadJit = 76;
 
 } // namespace console_vusat

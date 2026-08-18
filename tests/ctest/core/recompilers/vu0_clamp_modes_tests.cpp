@@ -103,6 +103,14 @@ TEST(Vu0ClampModes, UnderflowOnTinyProductFlushesToZero)
 
 	VuTestHarness h(0);
 	h.SetVfBits(vf::vf2, kPosTinyBits, kPosTinyBits, kPosTinyBits, kPosTinyBits);
+	// The subject here is the underflow VALUE, and the two engines part company
+	// on the flag: the interpreter classifies the underflow from its operands and
+	// raises U, the recompiler only ever sees the flushed zero. That divergence
+	// has a home of its own in
+	// VuStickyConsoleConformance.ProductionFpEnvironmentErasesOverflowAndTheJitsUnderflow,
+	// so it is kept out of this diff rather than asserted twice.
+	h.IgnoreViInDiff(REG_MAC_FLAG);
+	h.IgnoreViInDiff(REG_STATUS_FLAG);
 	h.LoadProgram({
 		VMulxyzw(vf::vf1, vf::vf2, vf::vf2),
 		EBitNopPair(),
@@ -117,6 +125,14 @@ TEST(Vu0ClampModes, UnderflowOffTinyProductYieldsDenormal)
 
 	VuTestHarness h(0);
 	h.SetVfBits(vf::vf2, kPosTinyBits, kPosTinyBits, kPosTinyBits, kPosTinyBits);
+	// The subject here is the underflow VALUE, and the two engines part company
+	// on the flag: the interpreter classifies the underflow from its operands and
+	// raises U, the recompiler only ever sees the flushed zero. That divergence
+	// has a home of its own in
+	// VuStickyConsoleConformance.ProductionFpEnvironmentErasesOverflowAndTheJitsUnderflow,
+	// so it is kept out of this diff rather than asserted twice.
+	h.IgnoreViInDiff(REG_MAC_FLAG);
+	h.IgnoreViInDiff(REG_STATUS_FLAG);
 	h.LoadProgram({
 		VMulxyzw(vf::vf1, vf::vf2, vf::vf2),
 		EBitNopPair(),
