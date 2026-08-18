@@ -466,12 +466,15 @@ void GSRendererTileGpu::AccumulateDraw()
 	if (r.rempty())
 		return;
 
-	// Wrong-fast ii draws triangles only: the executor's one pipeline is TRIANGLE_LIST, and the
-	// triangle-class index buffer is already triangle-list (strips and fans expanded at decode).
-	// Sprites need corner synthesis (2 verts -> a quad) and points/lines their own topology; both
-	// are a following commit. The pass model still sees every draw through ObserveDraw, so the
-	// accounting is unaffected — only the submitted geometry is narrowed.
-	if (m_vt.m_primclass != GS_TRIANGLE_CLASS)
+	// Wrong-fast: the executor's one pipeline is TRIANGLE_LIST. Triangles arrive already as a
+	// triangle-list index buffer (strips and fans expanded at decode) and copy straight in;
+	// sprites are two opposite corners we synthesise into a quad (four corners, two triangles).
+	// Points and lines need their own topology and are a following commit. The pass model still
+	// sees every draw through ObserveDraw, so the accounting is unaffected — only the submitted
+	// geometry is narrowed.
+	const bool is_triangle = (m_vt.m_primclass == GS_TRIANGLE_CLASS);
+	const bool is_sprite = (m_vt.m_primclass == GS_SPRITE_CLASS);
+	if (!is_triangle && !is_sprite)
 		return;
 
 	const u32 vcount = m_vertex->tail;
@@ -482,14 +485,54 @@ void GSRendererTileGpu::AccumulateDraw()
 	const GSDrawingContext* ctx = m_context;
 
 	GSDevice::GSTileGpuIndirectDraw draw = {};
-	draw.index_count = icount;
 	draw.instance_count = 1;
 	draw.first_index = static_cast<u32>(m_plan_indices.size());
 	draw.vertex_offset = static_cast<s32>(m_plan_vertices.size());
 	draw.state_index = static_cast<u32>(m_plan_draws.size());
 
-	m_plan_vertices.insert(m_plan_vertices.end(), m_vertex->buff, m_vertex->buff + vcount);
-	m_plan_indices.insert(m_plan_indices.end(), m_index->buff, m_index->buff + icount);
+	if (is_triangle)
+	{
+		draw.index_count = icount;
+		m_plan_vertices.insert(m_plan_vertices.end(), m_vertex->buff, m_vertex->buff + vcount);
+		m_plan_indices.insert(m_plan_indices.end(), m_index->buff, m_index->buff + icount);
+	}
+	else
+	{
+		// Sprite corner synthesis. Each sprite is a pair of opposite corners (index[0], index[1]);
+		// the GS draws it flat, taking colour, Q, Z and fog from the second vertex. Build four
+		// corners off that second vertex — only their XY differs — and emit two triangles. Indices
+		// are batch-local (corner s*4..s*4+3); the draw's vertex_offset rebases them into the
+		// frame stream. No culling in the executor pipeline, so corner winding is free.
+		const u16* RESTRICT index = m_index->buff;
+		const GSVertex* RESTRICT verts = m_vertex->buff;
+		const u32 sprite_count = icount / 2;
+		draw.index_count = sprite_count * 6;
+		m_plan_vertices.reserve(m_plan_vertices.size() + sprite_count * 4);
+		m_plan_indices.reserve(m_plan_indices.size() + sprite_count * 6);
+		for (u32 s = 0; s < sprite_count; s++)
+		{
+			const GSVertex& v0 = verts[index[s * 2 + 0]];
+			const GSVertex& v1 = verts[index[s * 2 + 1]];
+
+			GSVertex c[4] = {v1, v1, v1, v1};
+			c[0].XYZ.X = v0.XYZ.X; c[0].XYZ.Y = v0.XYZ.Y; // top-left
+			c[1].XYZ.X = v1.XYZ.X; c[1].XYZ.Y = v0.XYZ.Y; // top-right
+			c[2].XYZ.X = v0.XYZ.X; c[2].XYZ.Y = v1.XYZ.Y; // bottom-left
+			c[3].XYZ.X = v1.XYZ.X; c[3].XYZ.Y = v1.XYZ.Y; // bottom-right
+			m_plan_vertices.push_back(c[0]);
+			m_plan_vertices.push_back(c[1]);
+			m_plan_vertices.push_back(c[2]);
+			m_plan_vertices.push_back(c[3]);
+
+			const u16 b = static_cast<u16>(s * 4);
+			m_plan_indices.push_back(b + 0);
+			m_plan_indices.push_back(b + 1);
+			m_plan_indices.push_back(b + 2);
+			m_plan_indices.push_back(b + 2);
+			m_plan_indices.push_back(b + 1);
+			m_plan_indices.push_back(b + 3);
+		}
+	}
 	m_plan_draws.push_back(draw);
 
 	PendingDraw pd = {};
