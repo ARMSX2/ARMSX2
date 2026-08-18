@@ -87,6 +87,13 @@ public:
 	// EeRecTestHarness::RunJitNoDiff.
 	void RunNoDiff();
 
+	// Run() with the diff inverted: it still runs, but the test fails when it
+	// comes back EMPTY. Records a gap the recompiler still has -- `why` names
+	// what it lacks -- so the test trips on the day it catches up instead of
+	// passing quietly through the change that closed it. Unlike RunNoDiff
+	// above, nothing is left unchecked.
+	void RunRequiringDivergence(const char* why);
+
 	// One-sided execution against the interpreter only. Both `JitSnapshot()`
 	// and `InterpSnapshot()` reflect the interpreter result. Use when
 	// authoring a new test before the JIT path is ready.
@@ -98,6 +105,11 @@ public:
 	// Used by the persisted-JIT round-trip tests, where the whole point is
 	// asserting the pre-seeded block graph runs without a recompile.
 	void RunJitPreserveBlockCache();
+
+private:
+	void RunDiffing(const char* require_why);
+
+public:
 
 	// ---- Post-run accessors ----
 	u32 GetVfBitsInterp(u32 reg_idx, char lane) const;
