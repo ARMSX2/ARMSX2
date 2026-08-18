@@ -107,6 +107,13 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
                                                     toDirectory:(nonnull NSURL *)destinationDirectory
     NS_SWIFT_NAME(extractSkinPackageArchive(at:to:));
 
+// Preserves the archive tree, so each .slangp still resolves its stages by relative path.
+// Empty with `error` set on failure; count the returned .slangp URLs to tell a real pack.
++ (nonnull NSArray<NSURL *> *)extractShaderPackArchiveAtURL:(nonnull NSURL *)archiveURL
+                                                toDirectory:(nonnull NSURL *)destinationDirectory
+                                                      error:(NSError * _Nullable * _Nullable)error
+    NS_SWIFT_NAME(extractShaderPackArchive(at:to:error:));
+
 // Extracts the first .ps2 file from a ZIP into the memory-card directory.
 + (nullable NSString *)extractMemoryCardArchiveAtURL:(nonnull NSURL *)archiveURL
     NS_SWIFT_NAME(extractMemoryCardArchive(at:));

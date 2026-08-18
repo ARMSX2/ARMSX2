@@ -73,6 +73,12 @@ static void SetupIOSDirectories(const std::string& dataRoot)
     EmuFolders::AppRoot = [resourcePath UTF8String];
     EmuFolders::Resources = [resourcePath UTF8String];
 
+    // platform-dirs gates Library/Caches on macOS alone, so iOS takes its XDG branch and drops a relative value (platform-dirs-0.3.0/src/lib.rs:37,88).
+    NSArray *cachePaths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+    NSString *cachesDirectory = [cachePaths firstObject];
+    if (cachesDirectory.length > 0)
+        setenv("XDG_CACHE_HOME", [cachesDirectory UTF8String], 1);
+
     // --- Unified Logging Redirection ---
     // Force stderr and stdout to pcsx2_log.txt
     std::string logPath = dataRoot + "/pcsx2_log.txt";
@@ -138,7 +144,16 @@ static void SetupIOSDirectories(const std::string& dataRoot)
     Log::SetConsoleOutputLevel(LOGLEVEL::LOGLEVEL_INFO);
     
     Console.WriteLn("PCSX2 iOS: AppDelegate didFinishLaunching.");
-    
+    Console.WriteLn("PCSX2 iOS: resource root %s", EmuFolders::Resources.c_str());
+
+    const char* cacheHome = getenv("XDG_CACHE_HOME");
+    const char* homeRoot = getenv("HOME");
+    const std::string legacyCache = Path::Combine(homeRoot ? homeRoot : "", ".cache/librashader");
+    const std::string intendedCache = Path::Combine(cacheHome ? cacheHome : "", "librashader");
+    Console.WriteLn("PCSX2 iOS: shader cache home=%s legacy=%s intended=%s", cacheHome ? cacheHome : "(unset)",
+        access(legacyCache.c_str(), F_OK) == 0 ? "present" : "absent",
+        access(intendedCache.c_str(), F_OK) == 0 ? "present" : "absent");
+
     return YES;
 }
 

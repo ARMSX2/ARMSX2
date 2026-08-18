@@ -303,6 +303,39 @@ final class SettingsStore {
         requestGraphicsApply()
     }
 
+    /// Keeps core's absolute ShaderChainPreset in step with the token. A token that no longer
+    /// names a file clears the selection instead of leaving core pointed at a missing preset.
+    private func applyShaderChainSelection() {
+        guard !shaderChainPresetRef.isEmpty else {
+            ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: "")
+            return
+        }
+        guard let url = ShaderPresetLibrary.resolve(shaderChainPresetRef) else {
+            shaderChainEnabled = false
+            shaderChainPresetRef = ""
+            return
+        }
+        ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: url.path)
+    }
+
+    /// Re-roots the selection against the container this launch got, before the GS device
+    /// first reads the config. A value an older build left is a bare absolute path, which is
+    /// turned into a token here or dropped if it names nothing under either root any more.
+    private static func migrateShaderChainSelectionV1() {
+        let stored = ARMSX2Bridge.getINIString("EmuCore/GS", key: "ShaderChainPreset", defaultValue: "")
+        var token = ARMSX2Bridge.getINIString("EmuCore/GS", key: "ShaderChainPresetRef", defaultValue: "")
+        guard !token.isEmpty || !stored.isEmpty else { return }
+        if token.isEmpty { token = ShaderPresetLibrary.token(forLegacyPath: stored) ?? "" }
+        guard let url = ShaderPresetLibrary.resolve(token) else {
+            ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPresetRef", value: "")
+            ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: "")
+            ARMSX2Bridge.setINIBool("EmuCore/GS", key: "ShaderChainEnabled", value: false)
+            return
+        }
+        ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPresetRef", value: token)
+        ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: url.path)
+    }
+
     // ── Emulator / CPU ──
     // writes CoreType + UseArm64Dynarec
     var eeCoreType: Int {
@@ -696,6 +729,22 @@ final class SettingsStore {
         suppressible: false,
         codec: .int(in: SettingsStore.casSharpnessRange))
     var casSharpness: Int = 50 { didSet { commit(_casSharpnessConfig, casSharpness) } }
+    let _shaderChainEnabledConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "ShaderChainEnabled", default: false,
+        suppressible: false,
+        codec: .bool)
+    var shaderChainEnabled: Bool = false { didSet { commit(_shaderChainEnabledConfig, shaderChainEnabled) } }
+    // The selection is kept as a ShaderPresetLibrary token rather than a path, because both
+    // iOS roots sit under a container UUID that changes on every install. Core still reads
+    // ShaderChainPreset as an absolute path, so applyShaderChainSelection writes that through.
+    let _shaderChainPresetRefConfig = Setting<String>(
+        section: "EmuCore/GS", key: "ShaderChainPresetRef", default: "",
+        suppressible: false,
+        codec: .string)
+    var shaderChainPresetRef: String = "" { didSet {
+        commit(_shaderChainPresetRefConfig, shaderChainPresetRef)
+        applyShaderChainSelection()
+    }}
     let _interlaceModeConfig = Setting<Int>(
         section: "EmuCore/GS", key: "deinterlace_mode", default: 0,
         suppressible: false,
@@ -1605,6 +1654,8 @@ final class SettingsStore {
         Self.migrateFramePacingOptimalDefaultV1()
         // Same deal: the phone rumble slider changed meaning without changing key.
         Self.migratePhoneRumbleStrengthRescaleV1()
+        // Same deal again, and this one runs every launch: the container moved.
+        Self.migrateShaderChainSelectionV1()
 
         // CPU
         eeCoreType = Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "CoreType", defaultValue: 2))
@@ -1686,6 +1737,8 @@ final class SettingsStore {
         fxaa = _fxaaConfig.load()
         casMode = _casModeConfig.load()
         casSharpness = _casSharpnessConfig.load()
+        shaderChainEnabled = _shaderChainEnabledConfig.load()
+        shaderChainPresetRef = _shaderChainPresetRefConfig.load()
         interlaceMode = _interlaceModeConfig.load()
         aspectRatio = _aspectRatioConfig.load()
         blendingAccuracy = _blendingAccuracyConfig.load()
@@ -2238,6 +2291,8 @@ final class SettingsStore {
         fxaa = false
         casMode = 0             // Disabled
         casSharpness = 50
+        shaderChainEnabled = false
+        shaderChainPresetRef = ""
         interlaceMode = 0       // GSInterlaceMode::Automatic
         aspectRatio = 1         // Auto 4:3/3:2
         blendingAccuracy = 1    // Basic
