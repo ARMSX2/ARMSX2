@@ -69,8 +69,6 @@ extern void vtlb_ReassignHandler( vtlbHandler rv,
 // vtlb_Miss. Recompilers use this to decide whether a compile-time resolved
 // handler call needs cpuRegs.pc flushed first: vtlb_Miss reads it, and under
 // the interpreter derives EPC from it, while a hardware handler never does.
-// Not a can-this-raise test — the tlb_fallback_* handlers (Memory.cpp) call
-// cpuTlbMissR/W too.
 extern bool vtlb_IsUnmappedHandlerID(vtlbHandler id);
 
 
