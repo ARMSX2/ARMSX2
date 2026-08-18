@@ -26,12 +26,11 @@
 //   quotient takes the xor of the operand signs, VRSQRT's takes the dividend's
 //   alone, because its divisor is a square root and never negative.
 //
-//   Q. Not settled, and not asserted row by row. PCSX2 saturates a binade low
-//   of the console (0x7F7FFFFF against 0x7FFFFFFF -- the VU clamp mode), and
-//   its DIV/SQRT/RSQRT go through a host divide rather than through the EE's
-//   divide-unit model in FPU.cpp. Both gaps are pinned here as exact tallies
-//   per engine so that neither can move unnoticed, and so that whoever ports
-//   eeDivide/eeSqrtBits to these call sites has a number to move.
+//   Q. Settled on the interpreters, which read the EE's divide-unit model and
+//   match every row. The recompilers still run a host divide under a clamp a
+//   binade low of the console's (0x7F7FFFFF against 0x7FFFFFFF), so their two
+//   gaps -- the ceiling and the arithmetic -- are pinned as exact tallies
+//   instead, for whoever emits the model there to move.
 
 #include <gtest/gtest.h>
 
@@ -175,13 +174,41 @@ TEST(VuDivUnitConsole, MicroCauseAndStickyMatchConsole)
 	EXPECT_EQ(checked, 422);
 }
 
-// The console's saturated quotient is the EE maximum 0x7FFFFFFF; PCSX2's is
-// FLT_MAX, one binade lower. The sign is not part of that difference, so the
-// class is defined with the sign carried over -- which is what makes it a
-// statement about the clamp and not a place for a sign bug to hide.
-TEST(VuDivUnitConsole, QSaturatesABinadeLowOfTheConsole)
+TEST(VuDivUnitConsole, InterpreterQMatchesConsoleOnEveryRow)
 {
-	QTally mj, mi, uj, ui;
+	int macro = 0, micro = 0;
+	for (const VursCase& c : kVursCases)
+	{
+		SCOPED_TRACE(c.tag);
+
+		EeRecTestHarness hi;
+		BuildMacro(hi, c);
+		hi.RunInterpOnly();
+		EXPECT_EQ(hi.GetGprInterp(kRQ), c.q) << "[macro interp] Q";
+		++macro;
+
+		if (c.seed != 0)
+			continue;
+		VuTestHarness m(0);
+		m.IgnoreViInDiff(REG_STATUS_FLAG);
+		m.IgnoreViInDiff(REG_Q); // the JIT column diverges by class, scored below
+		BuildMicro(m, c);
+		m.Run();
+		EXPECT_EQ(m.GetViInterp(REG_Q), c.q) << "[micro interp] Q";
+		++micro;
+	}
+	EXPECT_EQ(macro, static_cast<int>(std::size(kVursCases)));
+	EXPECT_EQ(micro, 422);
+}
+
+// The console's saturated quotient is the EE maximum 0x7FFFFFFF; the
+// recompilers' is FLT_MAX, one binade lower. The sign is not part of that
+// difference, so the class is defined with the sign carried over -- which is
+// what makes it a statement about the clamp and not a place for a sign bug to
+// hide. What is left over is the host divide itself.
+TEST(VuDivUnitConsole, RecompilerQSaturatesABinadeLowOfTheConsole)
+{
+	QTally mj, uj;
 	int consoleSaturated = 0;
 	for (const VursCase& c : kVursCases)
 	{
@@ -193,11 +220,6 @@ TEST(VuDivUnitConsole, QSaturatesABinadeLowOfTheConsole)
 		hj.RunJitNoDiff();
 		ScoreQ(mj, c, hj.GetGprJit(kRQ));
 
-		EeRecTestHarness hi;
-		BuildMacro(hi, c);
-		hi.RunInterpOnly();
-		ScoreQ(mi, c, hi.GetGprInterp(kRQ));
-
 		if (c.seed != 0)
 			continue;
 		VuTestHarness m(0);
@@ -206,30 +228,22 @@ TEST(VuDivUnitConsole, QSaturatesABinadeLowOfTheConsole)
 		BuildMicro(m, c);
 		m.Run();
 		ScoreQ(uj, c, m.GetViJit(REG_Q));
-		ScoreQ(ui, c, m.GetViInterp(REG_Q));
 	}
 
 	EXPECT_EQ(consoleSaturated, 226);
 
-	// Two rows saturate on the console and come back from the emulator as
+	// Two rows saturate on the console and come back from the recompiler as
 	// something other than the sign-matched FLT_MAX; they fall in `unit`
 	// below rather than being counted as clamp-mode misses.
 	EXPECT_EQ(mj.sat, 224);
-	EXPECT_EQ(mi.sat, 226);
 	EXPECT_EQ(uj.sat, 176);
-	EXPECT_EQ(ui.sat, 178);
 
-	// The arithmetic gap. The JIT is worse than the interpreter by 30 rows in
-	// each mode -- its clamp runs before anything else can look at the result.
+	// The arithmetic gap left once the ceiling is accounted for.
 	EXPECT_EQ(mj.unit, 86);
-	EXPECT_EQ(mi.unit, 56);
 	EXPECT_EQ(uj.unit, 82);
-	EXPECT_EQ(ui.unit, 52);
 
 	EXPECT_EQ(mj.ok, 192);
-	EXPECT_EQ(mi.ok, 220);
 	EXPECT_EQ(uj.ok, 164);
-	EXPECT_EQ(ui.ok, 192);
 
 	EXPECT_EQ(mj.ok + mj.sat + mj.unit, static_cast<int>(std::size(kVursCases)));
 	EXPECT_EQ(uj.ok + uj.sat + uj.unit, 422);

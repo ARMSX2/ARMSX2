@@ -951,30 +951,30 @@ static __fi void VU_STICKY_DI(VURegs* VU)
 	VU->statusflag |= (VU->statusflag & 0x30) << 6;
 }
 
+/*	The div unit is the EE FPU's, so all three ops read EeFpuModel rather than
+	a host divide: a digit recurrence with no rounding step, over a range that
+	runs to 0x7FFFFFFF. Operands go in as words -- vuDouble would cost the top
+	binade -- and the model flushes denormal operands and underflowing
+	quotients to a signed zero itself.
+
+	Each op answers a zero divisor before calling: DIV and RSQRT disagree about
+	the sign it saturates with. */
 static __fi void _vuDIV(VURegs* VU)
 {
-	float ft = vuDouble(VU->VF[_Ft_].UL[_Ftf_]);
-	float fs = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
+	const u32 fs = VU->VF[_Fs_].UL[_Fsf_];
+	const u32 ft = VU->VF[_Ft_].UL[_Ftf_];
 
 	VU->statusflag &= ~0x30;
 
-	if (ft == 0.0)
+	if ((ft & 0x7F800000) == 0)
 	{
-		if (fs == 0.0)
-			VU->statusflag |= 0x10;
-		else
-			VU->statusflag |= 0x20;
-
-		if ((VU->VF[_Ft_].UL[_Ftf_] & 0x80000000) ^
-			(VU->VF[_Fs_].UL[_Fsf_] & 0x80000000))
-			VU->q.UL = 0xFF7FFFFF;
-		else
-			VU->q.UL = 0x7F7FFFFF;
+		// Exclusive: 0/0 is invalid, x/0 is a divide by zero.
+		VU->statusflag |= ((fs & 0x7F800000) == 0) ? 0x10 : 0x20;
+		VU->q.UL = ((fs ^ ft) & 0x80000000) | 0x7FFFFFFF;
 	}
 	else
 	{
-		VU->q.F = fs / ft;
-		VU->q.F = vuDouble(VU->q.UL);
+		VU->q.UL = EeFpuModel::Divide(fs, ft);
 	}
 
 	VU_STICKY_DI(VU);
@@ -982,47 +982,46 @@ static __fi void _vuDIV(VURegs* VU)
 
 static __fi void _vuSQRT(VURegs* VU)
 {
-	float ft = vuDouble(VU->VF[_Ft_].UL[_Ftf_]);
+	const u32 ft = VU->VF[_Ft_].UL[_Ftf_];
 
 	VU->statusflag &= ~0x30;
 
-	// Sign bit, not `ft < 0.0`: -0 raises I, and so do the denormals vuDouble
-	// has already flushed to it.
-	if (VU->VF[_Ft_].UL[_Ftf_] & 0x80000000)
+	// Sign bit, not `ft < 0.0`: -0 raises I, and so do the negative denormals,
+	// which come back as an ordinary +0.
+	if (ft & 0x80000000)
 		VU->statusflag |= 0x10;
-	VU->q.F = sqrt(fabs(ft));
-	VU->q.F = vuDouble(VU->q.UL);
+
+	VU->q.UL = EeFpuModel::SqrtBits(ft);
 
 	VU_STICKY_DI(VU);
 }
 
 static __fi void _vuRSQRT(VURegs* VU)
 {
-	float ft = vuDouble(VU->VF[_Ft_].UL[_Ftf_]);
-	float fs = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
-	float temp;
+	const u32 fs = VU->VF[_Fs_].UL[_Fsf_];
+	const u32 ft = VU->VF[_Ft_].UL[_Ftf_];
 
 	VU->statusflag &= ~0x30;
 
 	// RSQRT is a square root then a divide, so I comes from the divisor's sign
 	// bit before the zero test and independently of it: -0 raises I for the
 	// root and D below for the division.
-	if (VU->VF[_Ft_].UL[_Ftf_] & 0x80000000)
+	if (ft & 0x80000000)
 		VU->statusflag |= 0x10;
 
-	if (ft == 0.0)
+	if ((ft & 0x7F800000) == 0)
 	{
 		// Exclusive, as in DIV: 0/0 is invalid, x/0 is a divide by zero.
-		VU->statusflag |= (fs == 0.0) ? 0x10 : 0x20;
+		VU->statusflag |= ((fs & 0x7F800000) == 0) ? 0x10 : 0x20;
 
 		// Sign of the dividend alone -- the divisor is a root, never negative.
-		VU->q.UL = (VU->VF[_Fs_].UL[_Fsf_] & 0x80000000) | 0x7F7FFFFF;
+		VU->q.UL = (fs & 0x80000000) | 0x7FFFFFFF;
 	}
 	else
 	{
-		temp = sqrt(fabs(ft));
-		VU->q.F = fs / temp;
-		VU->q.F = vuDouble(VU->q.UL);
+		// An ordinary single in between, which is where the recompilers' own
+		// fsqrt+fdiv parts company with this by a ULP.
+		VU->q.UL = EeFpuModel::Divide(fs, EeFpuModel::SqrtBits(ft));
 	}
 
 	VU_STICKY_DI(VU);

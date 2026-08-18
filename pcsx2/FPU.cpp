@@ -1300,4 +1300,14 @@ Accumulate MulAccumulate(u32 acc, u32 fs, u32 ft, bool issub)
 	}
 	return {product, AddSub(acc, product.bits, issub)};
 }
+
+u32 Divide(u32 a, u32 b)
+{
+	return COP1::eeDivide(a, b);
+}
+
+u32 SqrtBits(u32 t)
+{
+	return COP1::eeSqrtBits(t);
+}
 } // namespace EeFpuModel
