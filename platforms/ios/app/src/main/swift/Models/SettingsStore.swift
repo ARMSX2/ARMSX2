@@ -303,8 +303,9 @@ final class SettingsStore {
         requestGraphicsApply()
     }
 
-    /// Keeps core's absolute ShaderChainPreset in step with the token. A token that no longer
-    /// names a file clears the selection instead of leaving core pointed at a missing preset.
+    /// Keeps core's absolute ShaderChainPreset in step with the token, and sends the saved
+    /// parameter values for it. A token that no longer names a file clears the selection
+    /// instead of leaving core pointed at a missing preset.
     private func applyShaderChainSelection() {
         guard !shaderChainPresetRef.isEmpty else {
             ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: "")
@@ -316,6 +317,7 @@ final class SettingsStore {
             return
         }
         ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: url.path)
+        ShaderParams.pushStored(token: shaderChainPresetRef)
     }
 
     /// Re-roots the selection against the container this launch got, before the GS device
@@ -334,6 +336,10 @@ final class SettingsStore {
         }
         ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPresetRef", value: token)
         ARMSX2Bridge.setINIString("EmuCore/GS", key: "ShaderChainPreset", value: url.path)
+        // The only other push is a selection changing, which a launch does not do, so without
+        // this one the chain reaches its first frame on the preset's own numbers. Static and
+        // bridge-only, like the rest of this function: init must not touch SettingsStore.shared.
+        ShaderParams.pushStored(token: token)
     }
 
     // ── Emulator / CPU ──

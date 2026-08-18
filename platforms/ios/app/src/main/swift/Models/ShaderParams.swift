@@ -31,8 +31,7 @@ struct ShaderParam: Identifiable, Hashable, Sendable {
 
     /// Whether the author left any room to move, and the only thing inferred about a
     /// parameter's role. Do not "improve" this by reading the name or the description: stock
-    /// packs name real sliders like headings, so any such rule hides working controls. A
-    /// miscaptioned row is cosmetic, a hidden control is a bug.
+    /// packs name real sliders like headings, so any such rule hides a working control.
     var isAdjustable: Bool { maximum > minimum }
 
     /// What a control actually moves by. A zero, negative or wider-than-the-range step is
@@ -43,41 +42,18 @@ struct ShaderParam: Identifiable, Hashable, Sendable {
         return (step > 0 && step <= span) ? step : span / 100
     }
 
-    var stepCount: Int {
-        guard isAdjustable, increment > 0 else { return 0 }
-        let stops = ((maximum - minimum) / increment).rounded()
-        guard stops.isFinite else { return 100 }
-        return Int(min(max(stops, 1), 10_000))
-    }
-
-    func index(of value: Float) -> Int {
-        guard isAdjustable else { return 0 }
-        let fraction = (value - minimum) / (maximum - minimum)
-        guard fraction.isFinite else { return 0 }
-        let stops = Float(stepCount)
-        return Int(min(max((fraction * stops).rounded(), 0), stops))
-    }
-
-    func value(at index: Int) -> Float {
-        guard isAdjustable, index > 0 else { return minimum }
-        guard index < stepCount else { return maximum }
-        return minimum + (maximum - minimum) * (Float(index) / Float(stepCount))
+    var decimals: Int {
+        switch increment {
+        case 1...: return 0
+        case 0.1...: return 1
+        case 0.01...: return 2
+        default: return 3
+        }
     }
 
     func clamped(_ value: Float) -> Float {
         guard isAdjustable, !value.isNaN else { return initial }
         return min(max(value, minimum), maximum)
-    }
-
-    func format(_ value: Float) -> String {
-        let decimals: Int
-        switch increment {
-        case 1...: decimals = 0
-        case 0.1...: decimals = 1
-        case 0.01...: decimals = 2
-        default: decimals = 3
-        }
-        return String(format: "%.\(decimals)f", locale: ShaderParams.invariant, value)
     }
 
     func isInitial(_ value: Float) -> Bool {
@@ -194,6 +170,21 @@ final class ShaderParams: ObservableObject {
             effective[param.name] = NSNumber(value: value(for: param))
         }
         ARMSX2Bridge.setShaderChainParameters(effective, forPreset: url.path)
+    }
+
+    /// The saved overrides for a preset, pushed without a `ShaderParams` to push them: every
+    /// other push happens because a shader screen is open, and a cold launch opens none. Only
+    /// the overrides go down, because a chain built from the preset file already holds that
+    /// preset's number for every name it is not told about, and reading the file here to say
+    /// so again would put a librashader parse on the launch path.
+    static func pushStored(token: String) {
+        guard let url = ShaderPresetLibrary.resolve(token) else { return }
+        var values: [String: NSNumber] = [:]
+        for (name, value) in stored()[token] ?? [:] where value.isFinite {
+            values[name] = NSNumber(value: value)
+        }
+        guard !values.isEmpty else { return }
+        ARMSX2Bridge.setShaderChainParameters(values, forPreset: url.path)
     }
 
     private func persist() {
