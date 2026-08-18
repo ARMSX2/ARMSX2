@@ -1,4 +1,9 @@
 #version 450
+// Changed by ARMSX2 on 2026-08-18. A derived integer prescale in this file is clamped
+// to at least 1: PCSX2 renders internally at up to 8x, and once the source is taller
+// than the screen the unclamped value floors to zero and the frame turns black.
+// The change is one clamp and nothing else. See platforms/ios/patches/ in the ARMSX2
+// tree for the reversible patch and the upstream hash this file came from.
 
 /*
     CRT Shader by EasyMode
