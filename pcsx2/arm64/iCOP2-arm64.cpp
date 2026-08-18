@@ -1663,6 +1663,12 @@ void recCOP2_VSUB()
 	// hands back garbage instead of the operand (OutRun 2006 cars-through-
 	// floor, 2026-07-20). VADD/VMUL already load operands first; keep VSUB
 	// in the same order, per-branch.
+	// mVU_SUB's row is (_XYZW_PS) ? (cFs | cFt) : 0, deliberately not carried
+	// here: clamping an exp-0xFF operand moves it a whole binade, which costs
+	// more than the NaN it avoids. For max - 2^128 the console returns
+	// 0x7F7FFFFE, unclamped operands give 0x7F7FFFFF and clamped ones give
+	// zero. This stays at x86's answer's expense until the operands can be held
+	// at their real magnitude.
 	a64::VRegister rd;
 	if (_Fs_cop2 == _Ft_cop2)
 	{
@@ -1696,8 +1702,17 @@ void recCOP2_VMUL()
 
 	const a64::VRegister fs = cop2GetVF(_Fs_cop2);
 	const a64::VRegister ft = cop2GetVF(_Ft_cop2);
+	// Both multiplicands, at every dest field. Either one at exponent 255 is a
+	// NaN to the host multiply, and the result clamp folds that to +FLT_MAX
+	// where the VU returns the product of two numbers -- for a zero against it,
+	// zero. mVU_MUL's table row is (_XYZW_PS) ? (cFs | cFt) : cFs, and a partial
+	// dest field leaving Ft alone is where Jak and Daxter walks off a wild jalr
+	// from `0 * q` with a Q of 0x7FFFFFFF at dest 0xE.
+	cop2ClampInto(RQSCRATCH, fs);
+	cop2ClampInto(RQSCRATCH2, ft);
+	const a64::VRegister mulB = RQSCRATCH2;
 	const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2);
-	armAsm->Fmul(rd.V4S(), fs.V4S(), ft.V4S());
+	armAsm->Fmul(rd.V4S(), RQSCRATCH.V4S(), mulB.V4S());
 	cop2ClampResultReg(rd);
 	cop2EmitFlagUpdate(_XYZW_cop2, rd);
 	cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd);
@@ -1743,8 +1758,9 @@ static void cop2LoadBroadcast(const a64::VRegister& qreg, int vfReg, int bc)
 // ========================================================================
 
 // Helper macro for broadcast binary ops (with input/output clamping + flags).
-// mulClamp=true pre-clamps the FMAC operands per mVU_MULx cFs/cFt (MUL family);
-// ADD/SUB pass false (ADD clampType=0; SUB's input clamp is a separate concern).
+// mulClamp=true bounds both FMAC operands (MUL family), for the reason
+// recCOP2_VMUL gives. ADD passes false because mVU_ADDx's clampType is 0; SUB
+// passes false against its table row, for the reason recCOP2_VSUB gives.
 #define COP2_BC_OP(name, neonOp, bc, mulClamp) \
 	void recCOP2_V##name() \
 	{ \
@@ -1757,8 +1773,7 @@ static void cop2LoadBroadcast(const a64::VRegister& qreg, int vfReg, int bc)
 		{ \
 			cop2ClampInto(RQSCRATCH, fs); \
 			mulA = RQSCRATCH; \
-			if (_XYZW_cop2 == 0xf) \
-				cop2ClampResultReg(RQSCRATCH2); /* in-place operand clamp */ \
+			cop2ClampResultReg(RQSCRATCH2); /* in-place operand clamp */ \
 		} \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
 		armAsm->neonOp(rd.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \
@@ -1847,44 +1862,58 @@ void recCOP2_VMINIi()
 //  ADDq/SUBq/MULq — broadcast Q register
 // ========================================================================
 
-#define COP2_Q_OP(name, neonOp) \
+#define COP2_Q_OP(name, neonOp, mulClamp) \
 	void recCOP2_V##name() \
 	{ \
 		if (_Fd_cop2 == 0 && _XYZW_cop2 == 0) return; \
 		setupMacroOp_arm64(0x111); \
 		const a64::VRegister fs = cop2GetVF(_Fs_cop2); \
 		armLd1rVU0(RQSCRATCH2.V4S(), &VU0.VI[REG_Q]); \
+		a64::VRegister mulA = fs; \
+		if (mulClamp) \
+		{ \
+			cop2ClampInto(RQSCRATCH, fs); \
+			mulA = RQSCRATCH; \
+			cop2ClampResultReg(RQSCRATCH2); /* in-place operand clamp */ \
+		} \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
-		armAsm->neonOp(rd.V4S(), fs.V4S(), RQSCRATCH2.V4S()); \
+		armAsm->neonOp(rd.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \
 		cop2ClampResultReg(rd); \
 		cop2EmitFlagUpdate(_XYZW_cop2, rd); \
 		cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd); \
 		endMacroOp_arm64(0x111); \
 	}
 
-COP2_Q_OP(ADDq, Fadd)
-COP2_Q_OP(SUBq, Fsub)
-COP2_Q_OP(MULq, Fmul)
+COP2_Q_OP(ADDq, Fadd, false)
+COP2_Q_OP(SUBq, Fsub, false)
+COP2_Q_OP(MULq, Fmul, true)
 
 // ADDi/SUBi/MULi — broadcast I register
-#define COP2_I_OP(name, neonOp) \
+#define COP2_I_OP(name, neonOp, mulClamp) \
 	void recCOP2_V##name() \
 	{ \
 		if (_Fd_cop2 == 0 && _XYZW_cop2 == 0) return; \
 		setupMacroOp_arm64(0x110); \
 		const a64::VRegister fs = cop2GetVF(_Fs_cop2); \
 		armLd1rVU0(RQSCRATCH2.V4S(), &VU0.VI[REG_I]); \
+		a64::VRegister mulA = fs; \
+		if (mulClamp) \
+		{ \
+			cop2ClampInto(RQSCRATCH, fs); \
+			mulA = RQSCRATCH; \
+			cop2ClampResultReg(RQSCRATCH2); /* in-place operand clamp */ \
+		} \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
-		armAsm->neonOp(rd.V4S(), fs.V4S(), RQSCRATCH2.V4S()); \
+		armAsm->neonOp(rd.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \
 		cop2ClampResultReg(rd); \
 		cop2EmitFlagUpdate(_XYZW_cop2, rd); \
 		cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd); \
 		endMacroOp_arm64(0x110); \
 	}
 
-COP2_I_OP(ADDi, Fadd)
-COP2_I_OP(SUBi, Fsub)
-COP2_I_OP(MULi, Fmul)
+COP2_I_OP(ADDi, Fadd, false)
+COP2_I_OP(SUBi, Fsub, false)
+COP2_I_OP(MULi, Fmul, true)
 
 // ========================================================================
 //  MADD/MSUB variants: VF[fd] = ACC ± VF[fs] * VF[ft]
@@ -2081,8 +2110,8 @@ COP2_ACCUM_OP(SUBA, Fsub)
 COP2_ACCUM_OP(MULA, Fmul)
 
 // Broadcast accumulator variants: ACC = VF[fs] OP VF[ft].bc
-// mulClamp=true pre-clamps the FMAC operands (cFs every mask + cFt on the full
-// mask) per mVU_MULAx cFs/cFt; ADD/SUB pass false (clampType=0).
+// mulClamp=true bounds both FMAC operands, for the reason recCOP2_VMUL gives;
+// ADD/SUB pass false (clampType=0).
 #define COP2_ACCUM_BC(name, neonOp, bc, mulClamp) \
 	void recCOP2_V##name() \
 	{ \
@@ -2094,8 +2123,7 @@ COP2_ACCUM_OP(MULA, Fmul)
 		{ \
 			cop2ClampInto(RQSCRATCH, fs); \
 			mulA = RQSCRATCH; \
-			if (_XYZW_cop2 == 0xf) \
-				cop2ClampResultReg(RQSCRATCH2); /* in-place operand clamp */ \
+			cop2ClampResultReg(RQSCRATCH2); /* in-place operand clamp */ \
 		} \
 		const a64::VRegister rdA = cop2ResultRegACC(_XYZW_cop2); \
 		armAsm->neonOp(rdA.V4S(), mulA.V4S(), RQSCRATCH2.V4S()); \

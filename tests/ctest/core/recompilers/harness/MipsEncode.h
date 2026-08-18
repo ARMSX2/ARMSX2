@@ -520,6 +520,16 @@ constexpr u32 VMULy_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FM
 constexpr u32 VMULz_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x1A); }
 constexpr u32 VMULw_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x1B); }
 constexpr u32 VMUL_C2   (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x2A); }
+// VSUBx/y/z/w — broadcast SUB. COP2 SPECIAL1 funct 0x04-0x07.
+constexpr u32 VSUBx_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x04); }
+constexpr u32 VSUBy_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x05); }
+constexpr u32 VSUBz_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x06); }
+constexpr u32 VSUBw_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x07); }
+// Q/I-broadcast forms. Ft is the Q or I register, so the ft field is unused.
+constexpr u32 VMULq_C2  (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x1C); }
+constexpr u32 VMULi_C2  (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x1E); }
+constexpr u32 VSUBq_C2  (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x24); }
+constexpr u32 VSUBi_C2  (u32 mask_xyzw, u32 fd, u32 fs)          { return COP2_FMAC(mask_xyzw, fd, fs, 0, 0x26); }
 constexpr u32 VMAX_C2   (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x2B); }
 constexpr u32 VSUB_C2   (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x2C); }
 constexpr u32 VMSUB_C2  (u32 mask_xyzw, u32 fd, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, fd, fs, ft, 0x2D); }
