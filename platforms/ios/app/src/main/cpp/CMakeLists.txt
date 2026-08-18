@@ -144,6 +144,10 @@ add_subdirectory(${ARMSX2_ROOT}/common ${CMAKE_BINARY_DIR}/common)
 add_subdirectory(${ARMSX2_ROOT}/pcsx2 ${CMAKE_BINARY_DIR}/pcsx2)
 #add_subdirectory(pcsx2-qt)
 
+# Fetched and cargo-built, never vendored. Must follow pcsx2 so PCSX2_FLAGS exists by the
+# time the link block below runs.
+add_subdirectory(3rdparty/librashader)
+
 # Updater is Windows only for now.
 if (WIN32)
 	add_subdirectory(updater)
@@ -315,6 +319,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 				MACOSX_PACKAGE_LOCATION "Resources/${IOS_CONTROLLER_SKIN_RELATIVE_DIR}")
 		endforeach()
 
+		# A .slangp names its stages by relative path, so the tree has to survive the copy;
+		# a flattened bundle breaks every preset. Staged under "Resources/..." like the
+		# controller skins above, which iOS then flattens to the .app root — the shipped
+		# path is <app>/shaders/..., with no Resources/ component.
+		file(GLOB_RECURSE IOS_SHADER_PRESET_FILES CONFIGURE_DEPENDS
+			"${CMAKE_SOURCE_DIR}/../assets/shaders/*")
+		foreach(IOS_SHADER_PRESET_FILE IN LISTS IOS_SHADER_PRESET_FILES)
+			file(RELATIVE_PATH IOS_SHADER_PRESET_RELATIVE_FILE
+				"${CMAKE_SOURCE_DIR}/../assets"
+				"${IOS_SHADER_PRESET_FILE}")
+			get_filename_component(IOS_SHADER_PRESET_RELATIVE_DIR
+				"${IOS_SHADER_PRESET_RELATIVE_FILE}" DIRECTORY)
+			target_sources(ARMSX2iOS PRIVATE "${IOS_SHADER_PRESET_FILE}")
+			set_source_files_properties("${IOS_SHADER_PRESET_FILE}" PROPERTIES
+				MACOSX_PACKAGE_LOCATION "Resources/${IOS_SHADER_PRESET_RELATIVE_DIR}")
+		endforeach()
+
 	set(ARMSX2_APPLE_FRAMEWORKS
 		"-framework UIKit"
 		"-framework AVFoundation"
@@ -336,6 +357,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		SDL3::SDL3
 		${ARMSX2_APPLE_FRAMEWORKS}
 	)
+
+	# The define MUST go on PCSX2_FLAGS, not PCSX2: generate-ios-xcode.sh always passes
+	# -DLTO_PCSX2_CORE=ON, which compiles GS/Renderers/Metal/GSDeviceMTL.mm into a separate
+	# PCSX2_LTO target that never sees PCSX2's PRIVATE properties. PCSX2_FLAGS is the
+	# INTERFACE target both link. Getting it wrong compiles clean, links clean, and silently
+	# ships the chain stubbed out — verify with nm on the built binary, never the build log.
+	if(ARMSX2_HAVE_LIBRASHADER)
+		target_link_libraries(PCSX2_FLAGS INTERFACE librashader)
+		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_HAS_LIBRASHADER=1)
+		target_link_libraries(ARMSX2iOS PRIVATE librashader)
+	endif()
 
 	target_compile_options(ARMSX2iOS PRIVATE $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-pipe>)
 

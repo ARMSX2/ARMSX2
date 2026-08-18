@@ -30,6 +30,7 @@ MIGRATION_READS = {
     ("SPU2/Output", "OutputLatencyMS"),
     ("SPU2/Output", "BufferMS"),
     ("ARMSX2iOS/UI", "PhoneRumbleStrength"),
+    ("EmuCore/GS", "ShaderChainPresetRef"),
 }
 
 
