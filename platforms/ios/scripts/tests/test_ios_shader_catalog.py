@@ -139,5 +139,49 @@ class Downloader(unittest.TestCase):
         self.assertIn("setBool(keys.enabled, resolved != nil", body)
 
 
+class BrowserReachability(unittest.TestCase):
+    """Where the download row sits, and whether both hosts can actually push it.
+
+    It first shipped as its own Section on the settings page, which put it below every
+    parameter slider -- about 39 swipes with crt-aperture selected, on the one control a
+    tester had asked to be reachable. It now sits in the shared section directly under
+    Preset, which also puts it in the in-game panel, and that only works because the panel
+    wraps the section in a NavigationStack.
+    """
+
+    SECTION = SWIFT / "Views/Settings/ShaderChainSection.swift"
+    PAGE = SWIFT / "Views/Settings/ShaderSettingsView.swift"
+    IN_GAME = SWIFT / "Views/GameScreenView.swift"
+
+    def test_the_download_row_sits_between_preset_and_install(self):
+        text = source(self.SECTION)
+        preset = at(text, 'Text(localized("Preset"))', "the Preset row")
+        download = at(text, 'localized("Download Shaders")', "the Download row")
+        install = at(text, 'localized("Install Shader Pack")', "the Install row")
+        self.assertLess(preset, download,
+                        "the download row is above Preset; it belongs directly under it")
+        self.assertLess(download, install,
+                        "the download row sits below Install Shader Pack, which buries the "
+                        "catalogue under the manual import it is meant to replace")
+
+    def test_the_settings_page_does_not_carry_a_second_copy(self):
+        self.assertNotIn(
+            "ShaderCatalogBrowserView", source(self.PAGE),
+            "the settings page builds its own route to the browser as well as the one in "
+            "the shared section, so the row appears twice")
+
+    def test_the_in_game_host_can_push_a_destination(self):
+        """The row is a NavigationLink and the pause panel has no stack of its own."""
+        text = source(self.IN_GAME)
+        mount = at(text, "ShaderChainSection(", "the in-game mount")
+        # A window, not a whole-file search: GameScreenView carries several NavigationStacks
+        # and any one of them would satisfy a backwards search from here.
+        window = text[max(0, mount - 200):mount]
+        self.assertIn(
+            "NavigationStack", window,
+            "the in-game panel mounts the shared section outside a NavigationStack, so every "
+            "NavigationLink in it -- Preset and Download Shaders both -- is dead on tap")
+
+
 if __name__ == "__main__":
     unittest.main()
