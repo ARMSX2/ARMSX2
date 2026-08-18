@@ -897,6 +897,10 @@ bool GSDeviceMTL::DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex)
 	{
 		ReportShaderChainError("frame", err);
 		m_shader_chain_failed = true;
+		// A chain that failed partway has already encoded passes into this command buffer, and
+		// the ring it recycles per-frame objects over is shallower than our deferred-submit
+		// window. The success path flushes for exactly that reason; so must this one.
+		FlushEncoders();
 		return false;
 	}
 	m_shader_frame_count++;

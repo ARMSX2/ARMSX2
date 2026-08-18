@@ -435,6 +435,7 @@ public:
 	size_t m_shader_frame_count = 0;
 	u64 m_shader_param_generation = 0;
 	void DestroyShaderChain();
+	void ReleaseShaderChain() override { DestroyShaderChain(); }
 	void ApplyShaderChainParams();
 
 	bool DoCAS(GSTexture* sTex, GSTexture* dTex, bool sharpen_only, const std::array<u32, NUM_CAS_CONSTANTS>& constants) override;
