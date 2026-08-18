@@ -8,6 +8,7 @@
 #include "GS/GSLocalMemory.h"
 
 #include "common/Console.h"
+#include "common/Assertions.h"
 
 #include <algorithm>
 #include <cmath>
@@ -716,6 +717,33 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			m_plan_target_pairs.push_back(tp);
 			m_plan_passes.push_back(pass);
 			i = j;
+		}
+
+		// 4b. Backstop for the framebuffer-fits-its-attachments clamp. The executor renders each
+		//     pass into min(colour, depth) of the pair (a framebuffer may not be bigger than the
+		//     attachment it carries), so a draw whose bottom falls below that minimum height would
+		//     be silently clipped. It cannot: every z-using draw in the pass grew BOTH slots'
+		//     height from its own rect.w in step 1, so min(colour,depth) height >= every draw's
+		//     bottom by construction, and this loop never fires. It is a latent guard against a
+		//     future grouping change breaking that invariant -- verified silent on the SotC dump,
+		//     but the invariant is what is asserted, not the dump. (Width is fbw-derived and shared
+		//     across the pair, so the clamp's only lossy axis is height.)
+		for (const GSDevice::GSTileGpuPass& pass : m_plan_passes)
+		{
+			const GSDevice::GSTileGpuTargetPair& tp = m_plan_target_pairs[pass.first_target_pair];
+			if (tp.zbuf_target == GSDevice::GSTileGpuPassPlan::kNoTarget)
+				continue; // no depth attachment, no clamp
+			const int lim_h = std::min(m_plan_targets[tp.frame_target]->GetSize().y,
+				m_plan_targets[tp.zbuf_target]->GetSize().y);
+			for (u32 d = pass.first_draw; d < pass.first_draw + pass.draw_count; d++)
+			{
+				if (m_plan_pending[d].rect.w > lim_h)
+				{
+					Console.Error("TileGpu: draw %u bottom %d exceeds pass target height %d -- clamp would clip it",
+						d, m_plan_pending[d].rect.w, lim_h);
+					pxAssertMsg(false, "TileGpu pass draw exceeds min(colour,depth) target height");
+				}
+			}
 		}
 
 		// 5. Assemble the plan over the frame's streams and submit. The spans are CPU-side

@@ -6343,6 +6343,27 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 		if (rt_op == VK_ATTACHMENT_LOAD_OP_CLEAR || ds_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
 		{
+			// Backstop: the clear only covers `area` = min(colour, depth). An attachment cleared on
+			// its first bind whose own size exceeds `area` keeps the region outside `area`
+			// uninitialized, and any later pass that LOADs it there reads garbage. The SotC dump
+			// never hits this -- the oversized target of a mismatched pair gets its full-size clear
+			// from an earlier full-extent pass, so the clamped pass LOADs it -- but a draw order that
+			// first-binds the big target through a clamped pass would break silently, so guard it.
+			if (rt_op == VK_ATTACHMENT_LOAD_OP_CLEAR && rt &&
+				(rt->GetSize().x > size.x || rt->GetSize().y > size.y))
+			{
+				Console.Error("TileGpu: colour %dx%d first-cleared over only %dx%d -- outside stays uninitialized",
+					rt->GetSize().x, rt->GetSize().y, size.x, size.y);
+				pxAssertMsg(false, "TileGpu clear area smaller than first-bind colour attachment");
+			}
+			if (ds_op == VK_ATTACHMENT_LOAD_OP_CLEAR && ds &&
+				(ds->GetSize().x > size.x || ds->GetSize().y > size.y))
+			{
+				Console.Error("TileGpu: depth %dx%d first-cleared over only %dx%d -- outside stays uninitialized",
+					ds->GetSize().x, ds->GetSize().y, size.x, size.y);
+				pxAssertMsg(false, "TileGpu clear area smaller than first-bind depth attachment");
+			}
+
 			VkClearValue cv[2] = {};
 			u32 n = 0;
 			if (rt)
