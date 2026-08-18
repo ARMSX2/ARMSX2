@@ -75,7 +75,10 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include <string_view>
 #include <vector>
 #include <ifaddrs.h>
+#include <limits.h>
 #include <net/if.h>
+#include <stdlib.h>
+#include <sys/stat.h>
 
 // Access the global settings interface from ios_main.mm
 extern INISettingsInterface* g_p44_settings_interface;
@@ -2580,6 +2583,82 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     });
 }
 
+enum ARMSX2ShaderPackFailure {
+    ARMSX2ShaderPackBadArgument = 1,
+    ARMSX2ShaderPackUnreadable,
+    ARMSX2ShaderPackTooLarge,
+    ARMSX2ShaderPackEscapingEntry,
+    ARMSX2ShaderPackWriteFailed,
+};
+
+static NSArray<NSURL*>* ARMSX2FailShaderPackExtraction(NSError** error, NSInteger code, NSString* message)
+{
+    if (error) {
+        *error = [NSError errorWithDomain:@"ARMSX2ShaderPackExtraction"
+                                     code:code
+                                 userInfo:@{NSLocalizedDescriptionKey: message}];
+    }
+    NSLog(@"[ARMSX2 iOS Shaders] %@", message);
+    return @[];
+}
+
+static BOOL ARMSX2IsArchiveJunkName(NSString* name)
+{
+    if ([name.pathComponents containsObject:@"__MACOSX"])
+        return YES;
+
+    NSString* last = name.lastPathComponent;
+    return [last isEqualToString:@".DS_Store"] || [last hasPrefix:@"._"];
+}
+
+static BOOL ARMSX2IsShaderPackImportName(NSString* name)
+{
+    static NSSet<NSString*>* allowed;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        allowed = [NSSet setWithArray:@[@"slangp", @"slang", @"glslp", @"glsl", @"cgp", @"cg",
+                                        @"inc", @"h", @"params", @"png", @"jpg", @"jpeg",
+                                        @"tga", @"bmp", @"txt", @"md"]];
+    });
+    return [allowed containsObject:name.pathExtension.lowercaseString];
+}
+
+static NSString* ARMSX2ContainedRelativePath(NSArray<NSString*>* components)
+{
+    NSMutableArray<NSString*>* kept = [NSMutableArray arrayWithCapacity:components.count];
+    for (NSString* component in components) {
+        if (component.length == 0 || [component isEqualToString:@"."])
+            continue;
+        if ([component isEqualToString:@".."] || [component isEqualToString:@"/"])
+            return nil;
+        [kept addObject:component];
+    }
+    return kept.count > 0 ? [NSString pathWithComponents:kept] : nil;
+}
+
+static NSString* ARMSX2CommonArchiveRoot(NSArray<NSString*>* names)
+{
+    NSString* root = names.firstObject.pathComponents.firstObject;
+    if (names.firstObject.pathComponents.count < 2 || root.length == 0)
+        return nil;
+
+    for (NSString* name in names) {
+        NSArray<NSString*>* components = name.pathComponents;
+        if (components.count < 2 || ![components.firstObject isEqualToString:root])
+            return nil;
+    }
+    return root;
+}
+
+static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* directories)
+{
+    NSFileManager* manager = [NSFileManager defaultManager];
+    for (NSURL* url in files)
+        [manager removeItemAtURL:url error:nil];
+    for (NSURL* url in directories.reverseObjectEnumerator)
+        [manager removeItemAtURL:url error:nil];
+}
+
 @implementation ARMSX2Bridge
 
 + (UIView *)gameRenderView {
@@ -2817,6 +2896,165 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     }
 
     NSLog(@"[ARMSX2 iOS Skins] Extracted %lu skin file(s) from %@",
+          static_cast<unsigned long>(extracted.count), archiveURL.lastPathComponent);
+    return extracted;
+}
+
++ (nonnull NSArray<NSURL *> *)extractShaderPackArchiveAtURL:(nonnull NSURL *)archiveURL toDirectory:(nonnull NSURL *)destinationDirectory error:(NSError * _Nullable * _Nullable)error
+{
+    // Sized for the stock RetroArch pack, which is thousands of text stages and a few
+    // lookup images; the controller-skin caps of 64 and 512 would truncate it in silence.
+    static const zip_uint64_t kMaxShaderPackEntryBytes = 8 * 1024 * 1024;
+    static const zip_uint64_t kMaxShaderPackTotalBytes = 512 * 1024 * 1024;
+    static const zip_int64_t kMaxShaderPackEntries = 32768;
+
+    if (error)
+        *error = nil;
+
+    if (!archiveURL.isFileURL || !destinationDirectory.isFileURL)
+        return ARMSX2FailShaderPackExtraction(error, ARMSX2ShaderPackBadArgument, @"Shader pack extraction needs file URLs.");
+
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSError *directoryError = nil;
+    if (![manager createDirectoryAtURL:destinationDirectory
+           withIntermediateDirectories:YES
+                            attributes:nil
+                                 error:&directoryError]) {
+        return ARMSX2FailShaderPackExtraction(error, ARMSX2ShaderPackWriteFailed,
+            [NSString stringWithFormat:@"Could not create %@: %@", destinationDirectory.path, directoryError.localizedDescription]);
+    }
+
+    char rootBuffer[PATH_MAX] = {};
+    if (!realpath(destinationDirectory.path.fileSystemRepresentation, rootBuffer))
+        return ARMSX2FailShaderPackExtraction(error, ARMSX2ShaderPackWriteFailed, @"Could not resolve the shader pack destination.");
+
+    NSString *resolvedRoot = [manager stringWithFileSystemRepresentation:rootBuffer length:strlen(rootBuffer)];
+    NSString *guardPrefix = [resolvedRoot stringByAppendingString:@"/"];
+
+    zip_error_t ze = {};
+    auto zf = zip_open_managed(archiveURL.path.UTF8String, ZIP_RDONLY, &ze);
+    if (!zf) {
+        return ARMSX2FailShaderPackExtraction(error, ARMSX2ShaderPackUnreadable,
+            [NSString stringWithFormat:@"Could not open %@: %s", archiveURL.lastPathComponent, zip_error_strerror(&ze)]);
+    }
+
+    const zip_int64_t count = zip_get_num_entries(zf.get(), 0);
+    if (count > kMaxShaderPackEntries) {
+        return ARMSX2FailShaderPackExtraction(error, ARMSX2ShaderPackTooLarge,
+            [NSString stringWithFormat:@"%@ has %lld entries, more than a shader pack should.", archiveURL.lastPathComponent, static_cast<long long>(count)]);
+    }
+
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *indices = [NSMutableArray array];
+    for (zip_uint64_t i = 0; i < static_cast<zip_uint64_t>(std::max<zip_int64_t>(count, 0)); i++) {
+        zip_stat_t stat = {};
+        if (zip_stat_index(zf.get(), i, ZIP_FL_ENC_GUESS, &stat) != 0 || !stat.name)
+            continue;
+
+        NSString *entryName = [NSString stringWithUTF8String:stat.name];
+        if (entryName.length == 0 || [entryName hasSuffix:@"/"])
+            continue;
+        // Junk is dropped here rather than during extraction because the common-root test
+        // below asks whether EVERY entry shares a root: one surviving __MACOSX/ makes the
+        // answer no, the strip is skipped, and the pack lands one directory too deep.
+        if (ARMSX2IsArchiveJunkName(entryName))
+            continue;
+
+        [names addObject:entryName];
+        [indices addObject:@(i)];
+    }
+
+    NSString *commonRoot = ARMSX2CommonArchiveRoot(names);
+    NSMutableArray<NSURL *> *extracted = [NSMutableArray array];
+    NSMutableArray<NSURL *> *createdDirectories = [NSMutableArray array];
+    zip_uint64_t totalBytes = 0;
+
+    for (NSUInteger n = 0; n < names.count; n++) {
+        NSString *entryName = names[n];
+        NSArray<NSString *> *components = entryName.pathComponents;
+        if (commonRoot && [components.firstObject isEqualToString:commonRoot])
+            components = [components subarrayWithRange:NSMakeRange(1, components.count - 1)];
+
+        NSString *relative = ARMSX2ContainedRelativePath(components);
+        if (!relative) {
+            ARMSX2RollBackShaderPack(extracted, createdDirectories);
+            return ARMSX2FailShaderPackExtraction(error, ARMSX2ShaderPackEscapingEntry,
+                [NSString stringWithFormat:@"%@ contains an entry that escapes its directory: %@", archiveURL.lastPathComponent, entryName]);
+        }
+        if (!ARMSX2IsShaderPackImportName(relative))
+            continue;
+
+        const zip_uint64_t index = indices[n].unsignedLongLongValue;
+        zip_uint8_t opsys = 0;
+        zip_uint32_t attributes = 0;
+        if (zip_file_get_external_attributes(zf.get(), index, 0, &opsys, &attributes) == 0 &&
+            opsys == ZIP_OPSYS_UNIX && ((attributes >> 16) & S_IFMT) == S_IFLNK) {
+            ARMSX2RollBackShaderPack(extracted, createdDirectories);
+            return ARMSX2FailShaderPackExtraction(error, ARMSX2ShaderPackEscapingEntry,
+                [NSString stringWithFormat:@"%@ contains a symlink entry: %@", archiveURL.lastPathComponent, entryName]);
+        }
+
+        zip_stat_t stat = {};
+        if (zip_stat_index(zf.get(), index, ZIP_FL_ENC_GUESS, &stat) != 0)
+            continue;
+        if ((stat.valid & ZIP_STAT_SIZE) && stat.size > kMaxShaderPackEntryBytes)
+            continue;
+
+        NSArray<NSString *> *relativeComponents = relative.pathComponents;
+        NSURL *parentURL = destinationDirectory;
+        for (NSUInteger c = 0; c + 1 < relativeComponents.count; c++) {
+            parentURL = [parentURL URLByAppendingPathComponent:relativeComponents[c] isDirectory:YES];
+            if ([manager fileExistsAtPath:parentURL.path])
+                continue;
+            if (![manager createDirectoryAtURL:parentURL
+                   withIntermediateDirectories:NO
+                                    attributes:nil
+                                         error:&directoryError]) {
+                ARMSX2RollBackShaderPack(extracted, createdDirectories);
+                return ARMSX2FailShaderPackExtraction(error, ARMSX2ShaderPackWriteFailed,
+                    [NSString stringWithFormat:@"Could not create %@: %@", parentURL.path, directoryError.localizedDescription]);
+            }
+            [createdDirectories addObject:parentURL];
+        }
+
+        // Flattening is what makes the skin extractor safe by construction, and preserving
+        // the tree gives that up, so containment is proven canonically and on a component
+        // boundary: <dest>-evil shares a string prefix with <dest> and is not inside it.
+        char parentBuffer[PATH_MAX] = {};
+        NSString *resolvedParent = realpath(parentURL.path.fileSystemRepresentation, parentBuffer) ?
+            [manager stringWithFileSystemRepresentation:parentBuffer length:strlen(parentBuffer)] : nil;
+        if (![resolvedParent isEqualToString:resolvedRoot] && ![resolvedParent hasPrefix:guardPrefix]) {
+            ARMSX2RollBackShaderPack(extracted, createdDirectories);
+            return ARMSX2FailShaderPackExtraction(error, ARMSX2ShaderPackEscapingEntry,
+                [NSString stringWithFormat:@"%@ contains an entry that escapes its directory: %@", archiveURL.lastPathComponent, entryName]);
+        }
+
+        auto file = zip_fopen_index_managed(zf.get(), index, ZIP_FL_ENC_GUESS);
+        if (!file)
+            continue;
+
+        std::optional<std::vector<u8>> data = ReadBinaryFileInZip(file.get());
+        if (!data.has_value() || data->size() > kMaxShaderPackEntryBytes)
+            continue;
+
+        totalBytes += data->size();
+        if (totalBytes > kMaxShaderPackTotalBytes) {
+            ARMSX2RollBackShaderPack(extracted, createdDirectories);
+            return ARMSX2FailShaderPackExtraction(error, ARMSX2ShaderPackTooLarge,
+                [NSString stringWithFormat:@"%@ unpacks to more than a shader pack should.", archiveURL.lastPathComponent]);
+        }
+
+        NSURL *destinationURL = [parentURL URLByAppendingPathComponent:relativeComponents.lastObject isDirectory:NO];
+        NSData *bytes = [NSData dataWithBytes:data->data() length:data->size()];
+        if (![bytes writeToURL:destinationURL atomically:YES]) {
+            ARMSX2RollBackShaderPack(extracted, createdDirectories);
+            return ARMSX2FailShaderPackExtraction(error, ARMSX2ShaderPackWriteFailed,
+                [NSString stringWithFormat:@"Could not write %@", destinationURL.path]);
+        }
+        [extracted addObject:destinationURL];
+    }
+
+    NSLog(@"[ARMSX2 iOS Shaders] Extracted %lu file(s) from %@",
           static_cast<unsigned long>(extracted.count), archiveURL.lastPathComponent);
     return extracted;
 }

@@ -1,0 +1,4 @@
+# Upstream slang-shaders files, copied byte for byte from a pinned commit so the
+# bundle stays comparable against it. The root .gitattributes sets `* text=auto`,
+# which would rewrite the CRLF endings three of these ship with.
+* -text
