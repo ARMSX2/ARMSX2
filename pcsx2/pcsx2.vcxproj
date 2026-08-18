@@ -371,6 +371,7 @@
     <ClCompile Include="GS\Renderers\Null\GSDeviceNone.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSRendererSW.cpp" />
     <ClCompile Include="GS\Renderers\Tile\GSRendererTile.cpp" />
+    <ClCompile Include="GS\Renderers\TileGpu\GSRendererTileGpu.cpp" />
     <ClCompile Include="GS\Renderers\Tile\GSTileExpandedCache.cpp" />
     <ClCompile Include="GS\Renderers\Tile\GSTileOracle.cpp" />
     <ClCompile Include="GS\Renderers\Tile\GSTilePaletteCache.cpp" />
@@ -831,6 +832,7 @@
     <ClInclude Include="GS\Renderers\SW\GSRendererSW.h" />
     <ClInclude Include="GS\Renderers\Tile\GSPageBitmap.h" />
     <ClInclude Include="GS\Renderers\Tile\GSRendererTile.h" />
+    <ClInclude Include="GS\Renderers\TileGpu\GSRendererTileGpu.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileClutMirror.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileDrawLowering.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileExpandedCache.h" />

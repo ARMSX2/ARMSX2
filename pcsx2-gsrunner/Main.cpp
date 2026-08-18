@@ -35,6 +35,7 @@
 #include "pcsx2/CDVD/CDVD.h"
 #include "pcsx2/GS.h"
 #include "pcsx2/GS/Renderers/Common/GSDevice.h"
+#include "pcsx2/GS/Renderers/Common/GSTileSelectionPolicy.h"
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
 #include "pcsx2/GS/Renderers/Tile/GSTileOracle.h"
@@ -719,6 +720,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -renderdoc-frame N[,C]: Capture dump frame N (base 0, minimum 1) and the C-1 frames after it, "
 						 "one .rdc each. Defaults to 1,1. Only used if -renderdoc is used.\n");
 	std::fprintf(stderr, "  -renderer <renderer>: Sets the graphics renderer. Defaults to Auto.\n");
+	std::fprintf(stderr, "  -variant <auto|classic|tile|tilegpu>: Sets the HW renderer variant (Vulkan only for "
+						 "tile/tilegpu). Defaults to Auto.\n");
 	std::fprintf(stderr, "  -swthreads <threads>: Sets the number of threads for the software renderer.\n");
 	std::fprintf(stderr, "  -backthread <mode>: GS back-thread mode (0=off, 1=inline-records, 2=lockstep, 3=pipelined). Defaults to 0.\n");
 	std::fprintf(stderr, "  -window: Forces a window to be displayed.\n");
@@ -949,6 +952,31 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 				Console.WriteLn("Using %s renderer.", Pcsx2Config::GSOptions::GetRendererName(type));
 				s_settings_interface.SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(type));
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-variant"))
+			{
+				// Which hardware-renderer implementation runs on the (Vulkan) device —
+				// GSTileSelectionPolicy.h owns the decision, this only sets the input.
+				const char* vname = argv[++i];
+
+				GSHWRendererVariant variant = GSHWRendererVariant::Auto;
+				if (StringUtil::Strcasecmp(vname, "auto") == 0)
+					variant = GSHWRendererVariant::Auto;
+				else if (StringUtil::Strcasecmp(vname, "classic") == 0)
+					variant = GSHWRendererVariant::Classic;
+				else if (StringUtil::Strcasecmp(vname, "tile") == 0)
+					variant = GSHWRendererVariant::Tile;
+				else if (StringUtil::Strcasecmp(vname, "tilegpu") == 0)
+					variant = GSHWRendererVariant::TileGpu;
+				else
+				{
+					Console.Error("Unknown HW renderer variant '%s' (auto, classic, tile, tilegpu)", vname);
+					return false;
+				}
+
+				Console.WriteLn("Using %s HW renderer variant.", GSHWRendererVariantName(variant));
+				s_settings_interface.SetIntValue("EmuCore/GS", "HWRendererVariant", static_cast<int>(variant));
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-backthread"))

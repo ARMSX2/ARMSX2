@@ -19,6 +19,7 @@
 #include "pcsx2/GS.h"
 #include "GS/Renderers/Null/GSDeviceNone.h"
 #include "GS/Renderers/Null/GSRendererNull.h"
+#include "GS/Renderers/TileGpu/GSRendererTileGpu.h"
 #include "GS/Renderers/Common/GSGPUProfile.h"
 #include "GS/Renderers/Common/GSTileSelectionPolicy.h"
 #include "GS/Renderers/HW/GSRendererHW.h"
@@ -296,7 +297,7 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 		const GSTileSelectionDecision tile_decision = DecideHWRendererVariant(GSConfig.HWRendererVariant,
 			renderer == GSRendererType::VK, /*gamedb_recommends_tile=*/false, mobile_tiler_profile);
 
-		if (tile_decision.use_tile)
+		if (tile_decision.variant == GSHWRendererVariant::Tile)
 		{
 			// The oracle harness verifies-by-effect against this line; keep the format stable.
 			Console.WriteLn("GS: Tile renderer active (variant=%s, reason=%s, profile=%s)",
@@ -308,6 +309,20 @@ static bool OpenGSRenderer(GSRendererType renderer, u8* basemem)
 			GSCurrentPresenterOffsetsRead = true;
 			g_gs_renderer = std::unique_ptr<GSRenderer>(
 				MULTI_ISA_SELECT(makeGSRendererTile)(GSConfig.SWExtraThreads));
+		}
+		else if (tile_decision.variant == GSHWRendererVariant::TileGpu)
+		{
+			// Same shape as the Tile line, distinct prefix, so the oracle harness's Tile
+			// parse cannot match it.
+			Console.WriteLn("GS: TileGpu renderer active (variant=%s, reason=%s, profile=%s)",
+				GSHWRendererVariantName(GSConfig.HWRendererVariant),
+				GSTileSelectionReasonName(tile_decision.reason),
+				GpuProfileDetector::RuntimeProfileToString(gpu_profile));
+			// Plain GSRenderer subclass: no SW output path, so GSCurrentPresenterOffsetsRead
+			// keeps the hardware default from above. Revisit when its presenter road lands.
+			if (GSConfig.BackThreadMode != GSBackThreadMode::Off)
+				Console.WriteLn("GS: TileGpu pins the back-thread mode off (its front end owns threading).");
+			g_gs_renderer = std::make_unique<GSRendererTileGpu>();
 		}
 		else
 		{

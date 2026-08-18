@@ -329,6 +329,10 @@ enum class GSHWRendererVariant : u8
 	Auto = 0,
 	Classic = 1,
 	Tile = 2,
+	// The GS-on-GPU backend: pass-planned indirect submission with VRAM truth on the GPU.
+	// Shares Tile's page/hazard models as libraries but is a separate renderer class (plain
+	// GSRenderer subclass, no software floor). Vulkan-only, opt-in, never resolved by Auto.
+	TileGpu = 3,
 };
 
 enum class GSVSyncMode : u8

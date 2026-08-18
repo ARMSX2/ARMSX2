@@ -46,7 +46,12 @@ public:
 	/// object of the pipelined split reaches the back's shadow through m_mem_target, so its
 	/// own copy would be written once and never read. It cannot be inferred here — the
 	/// derived constructor only repoints m_mem_target after this one returns.
-	GSState(GSBackQueue::Channel* shared_chan = nullptr, bool is_front_parser = false);
+	/// `allow_back_records` lets a renderer opt out of the record/back-thread machinery
+	/// entirely, whatever GSBackThreadMode is configured: the TileGpu variant pins it off in
+	/// stage 1 because its own front end is the threading story. A ctor parameter because the
+	/// engagement decision runs right here, before any derived constructor body.
+	GSState(GSBackQueue::Channel* shared_chan = nullptr, bool is_front_parser = false,
+		bool allow_back_records = true);
 	virtual ~GSState();
 
 	// GV7-1d-ii: channel/back-thread visibility for the front-object lifecycle

@@ -81,8 +81,9 @@ static GSVector4i CalculateDrawSrcRect(const GSTexture* src, const GSVector2i re
 static GSVector4 CalculateDrawDstRect(s32 window_width, s32 window_height, const GSVector4i& src_rect,
 	const GSVector2i& src_size, GSDisplayAlignment alignment, bool flip_y, bool is_progressive);
 
-GSRenderer::GSRenderer()
-	: m_shader_time_start(Common::Timer::GetCurrentValue())
+GSRenderer::GSRenderer(bool allow_back_records)
+	: GSState(nullptr, false, allow_back_records)
+	, m_shader_time_start(Common::Timer::GetCurrentValue())
 {
 	s_last_draw_rect = GSVector4::zero();
 }

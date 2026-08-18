@@ -559,6 +559,7 @@ set(pcsx2GSSources
 	GS/Renderers/Tile/GSTileSwizzleForms.cpp
 	GS/Renderers/Tile/GSTileTargetPool.cpp
 	GS/Renderers/Tile/GSTileTextureSource.cpp
+	GS/Renderers/TileGpu/GSRendererTileGpu.cpp
 	# ⚠️ GSVramModel belongs HERE and not in the unshared list above. Two of the shared
 	# translation units in this list use the class directly, and a header included by a
 	# shared TU cannot carry MULTI_ISA_UNSHARED_START -- so the class is shared by
@@ -644,6 +645,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Tile/GSTileTextureSource.h
 	GS/Renderers/Tile/GSTileTypes.h
 	GS/Renderers/Tile/GSVramModel.h
+	GS/Renderers/TileGpu/GSRendererTileGpu.h
 	)
 
 if(ARCH_X86)

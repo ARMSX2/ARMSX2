@@ -54,7 +54,9 @@ protected:
 	virtual GSTexture* GetFeedbackOutput(float& scale) { return nullptr; }
 
 public:
-	GSRenderer();
+	// `allow_back_records` forwards to GSState — see the note there. Defaulted so every
+	// existing renderer keeps the configured behaviour; TileGpu passes false (stage-1 pin).
+	GSRenderer(bool allow_back_records = true);
 	virtual ~GSRenderer();
 
 	virtual void Reset(bool hardware_reset) override;

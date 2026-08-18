@@ -98,14 +98,14 @@ constexpr int GSState::GetSaveStateSize(int version)
 	return size;
 }
 
-GSState::GSState(GSBackQueue::Channel* shared_chan, bool is_front_parser)
+GSState::GSState(GSBackQueue::Channel* shared_chan, bool is_front_parser, bool allow_back_records)
 	: m_vt(this)
 {
 	// m_nativeres seems to be a hack. Unfortunately it impacts draw call number which make debug painful in the replayer.
 	// Let's keep it disabled to ease debug.
 	m_nativeres = GSConfig.UpscaleMultiplier == 1.0f;
 	m_mipmap = GSConfig.Mipmap;
-	m_back_records = GSConfig.BackThreadMode != GSBackThreadMode::Off;
+	m_back_records = allow_back_records && GSConfig.BackThreadMode != GSBackThreadMode::Off;
 	if (shared_chan)
 	{
 		// Front parser object of the two-object split: records go to the back

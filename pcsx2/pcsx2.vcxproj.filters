@@ -190,6 +190,9 @@
     <Filter Include="System\Ps2\GS\Renderers\Tile">
       <UniqueIdentifier>{fd628b32-7750-4af8-93b0-02d27f427c76}</UniqueIdentifier>
     </Filter>
+    <Filter Include="System\Ps2\GS\Renderers\TileGpu">
+      <UniqueIdentifier>{c4344d71-b26c-4e5c-a128-cf14279cf741}</UniqueIdentifier>
+    </Filter>
     <Filter Include="System\Ps2\GS\Renderers\OpenGL">
       <UniqueIdentifier>{c140280a-87c6-4433-b877-f0bf8cca9345}</UniqueIdentifier>
     </Filter>
@@ -1057,6 +1060,9 @@
     </ClCompile>
     <ClCompile Include="GS\Renderers\Tile\GSRendererTile.cpp">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClCompile>
+    <ClCompile Include="GS\Renderers\TileGpu\GSRendererTileGpu.cpp">
+      <Filter>System\Ps2\GS\Renderers\TileGpu</Filter>
     </ClCompile>
     <ClCompile Include="GS\Renderers\Tile\GSTileOracle.cpp">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
@@ -2047,6 +2053,9 @@
     </ClInclude>
     <ClInclude Include="GS\Renderers\Tile\GSRendererTile.h">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\TileGpu\GSRendererTileGpu.h">
+      <Filter>System\Ps2\GS\Renderers\TileGpu</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Tile\GSTileClutMirror.h">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
