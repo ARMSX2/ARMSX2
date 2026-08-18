@@ -293,9 +293,9 @@ constexpr Divergence kMacroMacDivergences[] = {
 // produced, instead of leaving them to be re-derived from a stale cause nibble
 // at flush time -- which was what resurrected a bit FSSET had just cleared).
 constexpr Divergence kMicroDivergences[] = {
-	{"VUSTICKY_MICRO_FMAC_ZSUO_ACCUMULATE", 3, true, true,
-	 "micro FMAC loses U (VU_MAC_UPDATE's ~0x1100 clears U on a flush-to-zero) "
-	 "and O (the configured clamp mode saturates below exp 255)"},
+	{"VUSTICKY_MICRO_FMAC_ZSUO_ACCUMULATE", 3, false, true,
+	 "the recompiler loses U on a flush-to-zero and O to the clamp, which "
+	 "saturates below exp 255; the interpreter reads both off the exact result"},
 	{"VUSTICKY_MICRO_SURVIVES_SILENT_FMAC", 3, false, true,
 	 "the recompiler loses U on the flush-to-zero underflow; the interpreter "
 	 "classifies it from the operands and matches"},
@@ -560,16 +560,16 @@ TEST(VuStickyConsoleConformance, Arm64Cop2MacroEmptyDestMaskRetiresTheMacFlag)
 //
 // It used to be an equality between the engines, on the grounds that they agreed
 // on a value the console contradicts and that the agreement was worth recording.
-// The underflow half of that is no longer true: the interpreter classifies the
-// underflow from its operands rather than from the flushed result, so it raises
-// U and matches the console. The recompilers do not, and this is where that is
-// written down -- not as a parity gap, because x86's mVUupdateFlags computes
-// only S and Z as well, and says in its own comment that the host's range is
-// why. Closing it means paying for the flag on the hottest emitter in the
-// project, which is a measurement nobody has taken.
+// Neither half is an equality now. The interpreter classifies the underflow from
+// its operands rather than from the flushed result, and reads the overflow off
+// the exact magnitude rather than off an exponent field the clamp never lets
+// reach 255, so it raises U and O and matches the console on both rows.
 //
-// The overflow half is unchanged and still agrees: the clamp saturates below
-// exp 255 on both engines, so O is not merely missed, it is unreachable.
+// The recompilers do neither, and this is where that is written down -- not as a
+// parity gap, because x86's mVUupdateFlags computes only S and Z as well, and
+// says in its own comment that the host's range is why. Closing it means paying
+// for the flags on the hottest emitter in the project, which is a measurement
+// nobody has taken.
 TEST(VuStickyConsoleConformance, ProductionFpEnvironmentErasesOverflowAndTheJitsUnderflow)
 {
 	struct Witness
@@ -585,9 +585,10 @@ TEST(VuStickyConsoleConformance, ProductionFpEnvironmentErasesOverflowAndTheJits
 		// mantissa, so U is gone there and only Z survives. The interpreter
 		// re-derives it and lands on the console's answer.
 		{"underflow 2^-126 * 0.5", 0x00800000u, 0x3F000000u, 0x0808u, 0x0008u, 0x0808u},
-		// ChopZero saturates the overflow to +FLT_MAX (exp 254). Nothing is
-		// ever exp 255, so O is unreachable on either engine.
-		{"overflow 2^127 * 2^127", 0x7F000000u, 0x7F000000u, 0x0000u, 0x0000u, 0x8000u},
+		// ChopZero saturates the overflow to +FLT_MAX (exp 254), so an engine
+		// that asks the exponent field never sees one. The interpreter asks the
+		// magnitude of the exact product instead.
+		{"overflow 2^127 * 2^127", 0x7F000000u, 0x7F000000u, 0x8000u, 0x0000u, 0x8000u},
 	};
 	for (const Witness& w : kWitnesses)
 	{

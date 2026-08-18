@@ -3,6 +3,7 @@
 
 #include "Common.h"
 #include "Config.h"
+#include "EeFpuModel.h"
 
 #include "common/FPControl.h"
 
@@ -1257,3 +1258,46 @@ void SWC1() {
 }
 
 } } }
+
+// The same unit, addressed by bits instead of by FCR31.
+namespace EeFpuModel
+{
+namespace COP1 = R5900::Interpreter::OpcodeImpl::COP1;
+
+// O and U as raiseOrClearOU() reads them for FCR31: O after the rounding, so a
+// value past 0x7FFFFFFF that chops back onto it does not raise it, and U off
+// the exact value, the only place a flushed result is still distinguishable
+// from a zero.
+static Result MakeResult(double exact, u32 bits)
+{
+	Result s;
+	s.bits = bits;
+	s.overflow = eeRoundsOutOfRange(exact);
+	s.underflow = !s.overflow && exact != 0.0 && std::fabs(exact) < kEeMinNormal;
+	return s;
+}
+
+Result AddSub(u32 a, u32 b, bool issub)
+{
+	const double sum = COP1::eeGuardedSum(a, b, issub);
+	return MakeResult(sum, COP1::eeRoundToSingle(sum, true));
+}
+
+Result Mul(u32 fs, u32 ft)
+{
+	const double product = eeToDouble(fs) * eeToDouble(ft);
+	return MakeResult(product, COP1::eeMulRound(fs, ft, product));
+}
+
+Accumulate MulAccumulate(u32 acc, u32 fs, u32 ft, bool issub)
+{
+	const Result product = Mul(fs, ft);
+	if (product.overflow)
+	{
+		Result result = product;
+		result.bits ^= issub ? 0x80000000u : 0u;
+		return {product, result};
+	}
+	return {product, AddSub(acc, product.bits, issub)};
+}
+} // namespace EeFpuModel

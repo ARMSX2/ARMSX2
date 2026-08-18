@@ -47,7 +47,19 @@ struct Case
 	u32 fs[4];
 	u32 ft[4];
 	u32 acc[4];
+	// Whether the clamp changes this row's answer. Where it does, the
+	// interpreter no longer agrees -- it reads an exp-FF operand at full value
+	// and saturates at 0x7FFFFFFF, which is what the console returns -- so the
+	// row records the gap instead. The rows the clamp cannot reach are what
+	// says the diff is still comparing anything.
+	bool rangeDiffers;
 };
+
+constexpr const char* kWhyRangeDiffers =
+	"the emitters clamp an exp-FF operand to FLT_MAX and the result with it; "
+	"the interpreter reads it at full value and saturates at 0x7FFFFFFF. "
+	"Pinning the clamp row against microVU again needs a recorded expectation "
+	"rather than the interpreter";
 
 // A zero Fs lane against an exp-0xFF broadcast: 0 * Inf = NaN on the host,
 // 0 * 2^128 = 0 on the VU. It is the shape a homogeneous transform produces.
@@ -78,7 +90,7 @@ const Case kCases[] = {
 	{"exp-FF ACC cancelling an overflowed product",
 		{0xFF000000u, 0xFF000000u, 0xFF000000u, 0xFF000000u},
 		{kOne, kOne, kOne, 0x7F000000u},
-		{kPosInf, kPosInf, kPosInf, kPosInf}},
+		{kPosInf, kPosInf, kPosInf, kPosInf}, true},
 };
 
 void CheckVfCase(const char* opName, u32 code, u32 fdReg, u32 mask, const Case& c)
@@ -90,8 +102,20 @@ void CheckVfCase(const char* opName, u32 code, u32 fdReg, u32 mask, const Case& 
 	h.SeedVu0VfBits(2, c.ft[0], c.ft[1], c.ft[2], c.ft[3]);
 	h.SeedVu0VfBits(fdReg, kZero, kZero, kZero, kZero);
 	h.SeedVu0AccBits(c.acc[0], c.acc[1], c.acc[2], c.acc[3]);
+	// A multiply-accumulate's product stage raises flags of its own, and the
+	// interpreter now carries them into the sticky field where the emitters do
+	// not. That is pinned against the console in vu_sticky_console_conformance
+	// and vu0_macro_fmac_range_console; these tests pin the operand clamp's
+	// VALUE.
+	h.IgnoreVu0Vi(REG_STATUS_FLAG);
+	h.IgnoreVu0Vi(REG_MAC_FLAG);
 	h.LoadProgram({code});
+	if (c.rangeDiffers)
+		h.RequireVu0Divergence(kWhyRangeDiffers);
 	h.Run();
+
+	if (c.rangeDiffers)
+		return;
 
 	for (char l : {'x', 'y', 'z', 'w'})
 	{
@@ -153,7 +177,7 @@ TEST(EeVu0Cop2MaddClamp, MsubClampsFsLikeInterp)
 		{"exp-FF Fs against a one Ft",
 			{kPosInf, kNegInf, kPosNan, kMaxExpFf},
 			{kOne, kOne, kOne, kOne},
-			{kZero, kZero, kZero, kZero}},
+			{kZero, kZero, kZero, kZero}, true},
 	};
 	for (const Case& c : fsCases)
 	{

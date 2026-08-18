@@ -86,6 +86,11 @@ Both RunBoth(const VuMaddCase& c)
 {
 	EeRecTestHarness h;
 	Build(h, c);
+	// Each engine is scored against the console below, which is what a
+	// JIT-versus-interp diff would have to be replaced by anyway now that the
+	// two disagree: the interpreter carries a multiply stage's flags into the
+	// sticky field and the emitters do not.
+	h.ExpectVu0Divergence();
 	h.Run();
 	return {h.GetVu0AccBitsJit('x'), h.GetVu0AccBitsInterp('x')};
 }

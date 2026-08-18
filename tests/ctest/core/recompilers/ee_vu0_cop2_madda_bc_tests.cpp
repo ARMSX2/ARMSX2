@@ -183,6 +183,12 @@ TEST(EeVu0Cop2MaddaBc, ExpFfFsAgainstZeroBroadcastMatchesInterp)
 			// Ft is zero in every lane, so any broadcast lane multiplies by 0.
 			h.SeedVu0Vf(2, 0.0f, 0.0f, 0.0f, 0.0f);
 			h.SeedVu0Acc(1.0f, 2.0f, 3.0f, 4.0f);
+			// The product is zero in every lane, and the interpreter now
+			// carries a zero product's Z into the sticky field where the
+			// emitters do not (vu0_macro_fmac_range_console_tests case 27).
+			// This test pins the ACC value.
+			h.IgnoreVu0Vi(REG_STATUS_FLAG);
+			h.IgnoreVu0Vi(REG_MAC_FLAG);
 
 			h.LoadProgram({op.encode(/*mask*/0xF, /*fs*/1, /*ft*/2)});
 			h.Run();
