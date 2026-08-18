@@ -4686,6 +4686,57 @@ static void ARMSX2RequestPerGameSettingsReload()
     ARMSX2RequestPerGameSettingsReload();
 }
 
+// The per-game family had no string type until a shader preset needed one: a selection is a
+// root token such as "bundle:presets/crt/crt-geom.slangp", not a number.
++ (nonnull NSString *)getPerGameINIString:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(nonnull NSString *)def forISO:(nonnull NSString *)isoName {
+    std::string serial;
+    u32 crc = 0;
+    if (!ARMSX2PerGameIdentityForISO(isoName, &serial, &crc))
+        return def;
+    INISettingsInterface si(ARMSX2PerGameSettingsPath(serial, crc));
+    if (!si.Load())
+        return def;
+    return ARMSX2NSStringFromStdString(si.GetStringValue(section.UTF8String, key.UTF8String, def.UTF8String));
+}
+
++ (void)setPerGameINIString:(nonnull NSString *)section key:(nonnull NSString *)key value:(nonnull NSString *)value forISO:(nonnull NSString *)isoName {
+    std::string serial;
+    u32 crc = 0;
+    if (!ARMSX2PerGameIdentityForISO(isoName, &serial, &crc))
+        return;
+    INISettingsInterface si(ARMSX2PerGameSettingsPath(serial, crc));
+    si.Load();
+    si.SetStringValue(section.UTF8String, key.UTF8String, value.UTF8String);
+    ARMSX2SyncClaimsIfPinnedHackKey(si, section, key);
+    Error error;
+    si.Save(&error);
+}
+
++ (nonnull NSString *)getPerGameINIStringForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(nonnull NSString *)def {
+    std::string serial;
+    u32 crc = 0;
+    if (!ARMSX2PerGameIdentityForCurrentGame(&serial, &crc))
+        return def;
+    INISettingsInterface si(ARMSX2PerGameSettingsPath(serial, crc));
+    if (!si.Load())
+        return def;
+    return ARMSX2NSStringFromStdString(si.GetStringValue(section.UTF8String, key.UTF8String, def.UTF8String));
+}
+
++ (void)setPerGameINIStringForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key value:(nonnull NSString *)value {
+    std::string serial;
+    u32 crc = 0;
+    if (!ARMSX2PerGameIdentityForCurrentGame(&serial, &crc))
+        return;
+    INISettingsInterface si(ARMSX2PerGameSettingsPath(serial, crc));
+    si.Load();
+    si.SetStringValue(section.UTF8String, key.UTF8String, value.UTF8String);
+    ARMSX2SyncClaimsIfPinnedHackKey(si, section, key);
+    Error error;
+    si.Save(&error);
+    ARMSX2RequestPerGameSettingsReload();
+}
+
 + (void)deletePerGameINIValueForCurrentGame:(nonnull NSString *)section key:(nonnull NSString *)key {
     std::string serial;
     u32 crc = 0;

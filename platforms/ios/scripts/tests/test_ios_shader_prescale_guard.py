@@ -30,7 +30,18 @@ PRESCALE = re.compile(
 
 
 def shaders():
-    return sorted(PRESETS.rglob("*.slang"))
+    """Every file a preset can pull in, not only the stages.
+
+    A `.slangp` names its stages, but a stage `#include`s whatever it likes, so the
+    bug can sit in an .inc or a .h and never appear in a .slang. Scanning stages only
+    was a real gap: the whole-tree catalogue run found this bug class in an upstream
+    header, in a file the stage-only glob would have walked straight past.
+    """
+    return sorted(
+        path
+        for suffix in ("*.slang", "*.inc", "*.h")
+        for path in PRESETS.rglob(suffix)
+    )
 
 
 class PrescaleGuard(unittest.TestCase):
