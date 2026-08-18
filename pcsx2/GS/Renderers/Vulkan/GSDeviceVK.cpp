@@ -6168,11 +6168,30 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	};
 	static constexpr const char* kTopologyName[3] = {"triangle", "line", "point"};
 
+	// PS2 depth grows towards the viewer, so a real ZTST test maps to GREATER_OR_EQUAL and a
+	// write-only (ZTST ALWAYS) draw to ALWAYS. Depth WRITE follows the GS ZMSK independently of
+	// the test, so a draw that tests but masks its write (ZMSK set) reads depth without touching
+	// it. The mode index is GSTileGpuPass::depth_mode.
+	struct DepthVariant
+	{
+		bool has_depth;
+		bool test_enable;
+		bool write_enable;
+		VkCompareOp compare;
+		const char* name;
+	};
+	static constexpr DepthVariant kDepthVariant[GSDevice::kGSTileGpuDepthModes] = {
+		{false, false, false, VK_COMPARE_OP_ALWAYS, ""},                          // None
+		{true, true, true, VK_COMPARE_OP_GREATER_OR_EQUAL, " (depth test+write)"}, // TestWrite
+		{true, true, false, VK_COMPARE_OP_GREATER_OR_EQUAL, " (depth test)"},      // TestNoWrite
+		{true, true, true, VK_COMPARE_OP_ALWAYS, " (depth write)"},                // WriteAlways
+	};
+
 	for (u32 t = 0; t < 3; t++)
 	{
-		for (u32 i = 0; i < 2; i++)
+		for (u32 i = 0; i < GSDevice::kGSTileGpuDepthModes; i++)
 		{
-			const bool depth = (i == 1);
+			const DepthVariant& dv = kDepthVariant[i];
 			Vulkan::GraphicsPipelineBuilder gpb;
 			SetPipelineProvokingVertex(m_features, gpb);
 			gpb.AddVertexBuffer(0, sizeof(GSVertex));
@@ -6190,13 +6209,12 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 			gpb.SetVertexShader(vs);
 			gpb.SetFragmentShader(fs);
 			gpb.SetRenderPass(
-				GetRenderPass(color_fmt, depth ? depth_fmt : LookupNativeFormat(GSTexture::Format::Invalid),
+				GetRenderPass(color_fmt, dv.has_depth ? depth_fmt : LookupNativeFormat(GSTexture::Format::Invalid),
 					VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
-					depth ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-					depth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE),
+					dv.has_depth ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+					dv.has_depth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE),
 				0);
-			// PS2 depth: larger Z is nearer, the common ZTST is GEQUAL -> GREATER_OR_EQUAL + write.
-			gpb.SetDepthState(depth, depth, depth ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_ALWAYS);
+			gpb.SetDepthState(dv.test_enable, dv.write_enable, dv.compare);
 			gpb.SetNoStencilState();
 			gpb.SetColorWriteMask(0,
 				VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
@@ -6205,8 +6223,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 			pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
 			if (pipe == VK_NULL_HANDLE)
 				return false;
-			Vulkan::SetObjectName(
-				m_device, pipe, "TileGpu %s pipeline%s", kTopologyName[t], depth ? " (depth)" : "");
+			Vulkan::SetObjectName(m_device, pipe, "TileGpu %s pipeline%s", kTopologyName[t], dv.name);
 		}
 	}
 	return true;
@@ -6379,9 +6396,12 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 		if (can_draw)
 		{
-			// The depth variant is fixed for the whole pass -- the target pair decides whether a
-			// depth buffer is bound, and every draw in the pass shares it.
-			const u32 depth_idx = ds ? 1u : 0u;
+			// The depth variant is fixed for the whole pass: the planner breaks a pass whenever the
+			// GS z-write/z-test changes, so every draw here shares one depth pipeline. depth_mode is
+			// None exactly when no depth attachment is bound.
+			pxAssertMsg((pass.depth_mode == GSTileGpuDepthMode::None) == (ds == nullptr),
+				"TileGpu pass depth_mode disagrees with its depth attachment");
+			const u32 depth_idx = static_cast<u32>(pass.depth_mode);
 			const VkViewport vp{0.0f, 0.0f, static_cast<float>(size.x), static_cast<float>(size.y), 0.0f, 1.0f};
 			vkCmdSetViewport(cmd, 0, 1, &vp);
 			const VkRect2D sc{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}};

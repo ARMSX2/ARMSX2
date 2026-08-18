@@ -575,7 +575,8 @@ private:
 	VkPipelineLayout m_tilegpu_pipeline_layout = VK_NULL_HANDLE;
 	VkDescriptorSetLayout m_tilegpu_ds_layout = VK_NULL_HANDLE;
 	VkDescriptorSet m_tilegpu_state_descriptor_set = VK_NULL_HANDLE;
-	std::array<std::array<VkPipeline, 2>, 3> m_tilegpu_pipeline{};
+	// [topology][depth mode]; the depth index is GSTileGpuPass::depth_mode (GSTileGpuDepthMode).
+	std::array<std::array<VkPipeline, GSDevice::kGSTileGpuDepthModes>, 3> m_tilegpu_pipeline{};
 	// Indirect-submission streams (created on first executor use, alongside the pipelines): the
 	// draw commands (VkDrawIndexedIndirectCommand array), the per-draw state table the VS reads by
 	// first_instance, and a per-frame snapshot of guest VRAM the FS samples textures from (guest

@@ -698,9 +698,17 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			const u32 cs = m_plan_pending[i].color_slot;
 			const bool zu = m_plan_pending[i].z_used;
 			const u32 zs = m_plan_pending[i].z_slot;
+			// The depth pipeline is per-pass fixed function, so z-write and z-test must be uniform
+			// across the pass. A ZTST=ALWAYS write sprite and a ZTST=GEQUAL 3D draw share this depth
+			// buffer in SotC; grouping them into one pass would force one test on both, so the sprite
+			// either wrongly depth-rejects (GEQUAL) or the 3D wrongly always-passes (ALWAYS). Break on
+			// z_write and z_test alongside the target pair so each pass gets its own depth pipeline.
+			const bool zw = m_plan_pending[i].z_write;
+			const bool zt = m_plan_pending[i].z_test;
 			u32 j = i + 1;
 			while (j < m_plan_draws.size() && m_plan_pending[j].color_slot == cs &&
-				   m_plan_pending[j].z_used == zu && m_plan_pending[j].z_slot == zs)
+				   m_plan_pending[j].z_used == zu && m_plan_pending[j].z_slot == zs &&
+				   m_plan_pending[j].z_write == zw && m_plan_pending[j].z_test == zt)
 				j++;
 
 			GSDevice::GSTileGpuTargetPair tp = {};
@@ -713,6 +721,12 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			pass.first_target_pair = static_cast<u32>(m_plan_target_pairs.size());
 			pass.target_pair_count = 1;
 			pass.declares_self_read = false;
+			// GS depth grows towards the viewer: a real test is GEQUAL, a write-only draw is ALWAYS,
+			// and the write follows ZMSK independently of the test. z_used == (z_write || z_test).
+			pass.depth_mode = !zu ? GSDevice::GSTileGpuDepthMode::None
+				: (zt ? (zw ? GSDevice::GSTileGpuDepthMode::TestWrite
+							: GSDevice::GSTileGpuDepthMode::TestNoWrite)
+					  : GSDevice::GSTileGpuDepthMode::WriteAlways);
 
 			m_plan_target_pairs.push_back(tp);
 			m_plan_passes.push_back(pass);

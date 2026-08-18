@@ -2000,6 +2000,20 @@ public:
 		GSVector4i src_rect;
 	};
 
+	/// The pass's uniform depth configuration, which selects the depth pipeline variant. Every
+	/// draw in a pass shares it — the planner breaks a pass whenever the GS z-write/z-test
+	/// changes, so a ZTST=ALWAYS write and a ZTST=GEQUAL test are never forced onto one pipeline.
+	/// GS depth grows towards the viewer, so the test is GREATER_OR_EQUAL when the draw tests and
+	/// ALWAYS when it only writes; the write follows ZMSK independently of the test.
+	enum class GSTileGpuDepthMode : u8
+	{
+		None = 0,        ///< no depth attachment (ZTE off, or neither test nor write)
+		TestWrite = 1,   ///< GEQUAL, depth write on  (ZTST tests, ZMSK clear)
+		TestNoWrite = 2, ///< GEQUAL, depth write off (ZTST tests, ZMSK set)
+		WriteAlways = 3, ///< ALWAYS, depth write on  (ZTST ALWAYS, ZMSK clear)
+	};
+	static constexpr u32 kGSTileGpuDepthModes = 4;
+
 	/// One GS-semantic minimum pass: a contiguous run of draws sharing a set of FRAME/ZBUF
 	/// target pairs (up to the pass model's per-pass budget, GSTilePassSim::kMaxTargetPairs),
 	/// optionally declaring the raster-order self-read the blend and same-pixel feedback
@@ -2013,6 +2027,7 @@ public:
 		u32 first_snapshot; ///< snapshot copies taken before this pass opens
 		u32 snapshot_count;
 		bool declares_self_read; ///< ROAA: the pass reads its own colour target in raster order
+		GSTileGpuDepthMode depth_mode; ///< uniform across the pass; None iff zbuf_target is kNoTarget
 	};
 
 	/// One frame, structured. The streams are CPU-side views the executor stages into its own
