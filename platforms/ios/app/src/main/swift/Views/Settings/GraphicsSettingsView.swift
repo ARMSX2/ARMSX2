@@ -6,6 +6,7 @@ import SwiftUI
 struct GraphicsSettingsView: View {
     @State private var settings = SettingsStore.shared
     @State private var appState = AppState.shared
+    @State private var showingShaderSettings = false
     @State private var showShaderCacheClearConfirm = false
     @State private var shaderCacheResult: String?
     @State private var showShaderCacheResult = false
@@ -291,11 +292,16 @@ struct GraphicsSettingsView: View {
             }
 
             if ARMSX2Bridge.isShaderChainSupported() {
-                ShaderChainSection(
-                    enabled: $settings.shaderChainEnabled,
-                    presetRef: $settings.shaderChainPresetRef,
-                    localized: settings.localized
-                )
+                Section {
+                    // A flag the Form reads, not a link: feat/controller-navigation asserts no
+                    // file under Views/ carries that token, and this row has no shared pane row
+                    // to convert with.
+                    Button {
+                        showingShaderSettings = true
+                    } label: {
+                        Label(settings.localized("Shaders"), systemImage: "camera.filters")
+                    }
+                }
             }
 
             Section(settings.localized("Advanced Upscaling Hacks")) {
@@ -482,6 +488,9 @@ struct GraphicsSettingsView: View {
         }
         .navigationTitle(settings.localized("Graphics"))
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(isPresented: $showingShaderSettings) {
+            ShaderSettingsView()
+        }
         .onAppear { settings.refreshGraphicsHackStatus() }
         // The core re-snapshots after every apply and on a game change, since that is
         // when the masks and the database have finished arguing.
