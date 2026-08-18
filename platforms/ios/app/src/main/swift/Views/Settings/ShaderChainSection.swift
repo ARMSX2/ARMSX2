@@ -22,6 +22,8 @@ struct ShaderChainSection: View {
     @State private var pickerSource: ShaderPackPickerSource?
     @State private var saveRequest: ShaderPresetSaveRequest?
 
+    private var settings: SettingsStore { SettingsStore.shared }
+
     var body: some View {
         Group {
             chainSection
@@ -165,39 +167,32 @@ struct ShaderChainSection: View {
     private func parameterRow(_ param: ShaderParam) -> some View {
         if param.isAdjustable {
             VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(param.name)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer()
-                    if params.overrides[param.name] != nil {
-                        Button {
-                            params.reset(param)
-                        } label: {
-                            Image(systemName: "arrow.uturn.backward")
-                        }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel(localized("Reset"))
-                    }
-                    Text(param.format(params.value(for: param)))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
+                // setValue is the clamp that reaches the store: NaN lands on the author's initial.
+                NumberRow(
+                    param.name,
+                    value: Binding(
+                        get: { params.value(for: param) },
+                        set: { params.setValue($0, for: param) }
+                    ),
+                    in: param.minimum...param.maximum,
+                    format: NumberFormat.plain.decimals(param.decimals),
+                    step: Double(param.increment),
+                    detents: NumberRow.stops(in: Double(param.minimum)...Double(param.maximum),
+                                             step: Double(param.increment)),
+                    accessory: NumberRowAccessory(
+                        systemImage: "arrow.counterclockwise",
+                        label: "Reset %@",
+                        isVisible: params.overrides[param.name] != nil,
+                        action: { params.reset(param) }
+                    ),
+                    settings: settings
+                )
 
                 if !param.description.isEmpty, param.description != param.name {
                     Text(param.description)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-
-                Slider(
-                    value: Binding(
-                        get: { Double(param.index(of: params.value(for: param))) },
-                        set: { params.setValue(param.value(at: Int($0.rounded())), for: param) }
-                    ),
-                    in: 0...Double(param.stepCount),
-                    step: 1
-                )
             }
         } else {
             Text(param.name)
