@@ -573,7 +573,14 @@ private:
 	/// [GSTileGpuTopology][depth]: outer is triangle/line/point, inner [0] no depth, [1] depth
 	/// (GEQUAL + write, the PS2 larger-Z-is-nearer convention). Compiled on first use.
 	VkPipelineLayout m_tilegpu_pipeline_layout = VK_NULL_HANDLE;
+	VkDescriptorSetLayout m_tilegpu_ds_layout = VK_NULL_HANDLE;
+	VkDescriptorSet m_tilegpu_state_descriptor_set = VK_NULL_HANDLE;
 	std::array<std::array<VkPipeline, 2>, 3> m_tilegpu_pipeline{};
+	// Indirect-submission streams (created on first executor use, alongside the pipelines): the
+	// draw commands (VkDrawIndexedIndirectCommand array) and the per-draw state table the VS reads
+	// by first_instance. Only allocated when the TileGpu executor actually runs.
+	VKStreamBuffer m_tilegpu_indirect_stream_buffer;
+	VKStreamBuffer m_tilegpu_state_stream_buffer;
 	bool m_tilegpu_tried = false;
 	bool CompileTileGpuPipeline();
 	std::array<VkPipeline, static_cast<int>(PresentShader::Count)> m_present{};

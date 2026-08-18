@@ -1436,7 +1436,7 @@ bool GSDeviceVK::CreateGlobalDescriptorPool()
 {
 	static constexpr const VkDescriptorPoolSize pool_sizes[] = {
 		{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 2},
-		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
+		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4}, // TFX vs_expand(2) + spin(1) + TileGpu state table(1)
 	};
 
 	VkDescriptorPoolCreateInfo pool_create_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr,
@@ -6073,13 +6073,47 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 {
 	m_tilegpu_tried = true;
 
+	// Per-draw state table (SSBO) + its layout: the VS reads its transform row by the indirect
+	// draw's first_instance, so state lives in a storage buffer, not per-draw push constants. The
+	// one push constant left is base_row, this frame's first state row in the ring.
 	{
+		Vulkan::DescriptorSetLayoutBuilder dslb;
+		dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT);
+		if ((m_tilegpu_ds_layout = dslb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_ds_layout, "TileGpu state DS layout");
+
 		Vulkan::PipelineLayoutBuilder plb;
-		plb.AddPushConstants(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 4); // VertexScale + VertexOffset
+		plb.AddDescriptorSet(m_tilegpu_ds_layout);
+		plb.AddPushConstants(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(u32)); // base_row
 		if ((m_tilegpu_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
 			return false;
 		Vulkan::SetObjectName(m_device, m_tilegpu_pipeline_layout, "TileGpu pipeline layout");
 	}
+
+	// Indirect + state streams, allocated only now (first executor use), so a non-TileGpu session
+	// pays nothing. Sized for the corpus's largest frames with ring headroom for frames in flight;
+	// ReserveMemory waits on a fence rather than overrunning.
+	static constexpr u32 TILEGPU_INDIRECT_BUFFER_SIZE = 4 * 1024 * 1024;
+	static constexpr u32 TILEGPU_STATE_BUFFER_SIZE = 4 * 1024 * 1024;
+	if (!m_tilegpu_indirect_stream_buffer.Create(VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, TILEGPU_INDIRECT_BUFFER_SIZE) ||
+		!m_tilegpu_state_stream_buffer.Create(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, TILEGPU_STATE_BUFFER_SIZE))
+	{
+		return false;
+	}
+
+	// One persistent descriptor set over the whole state buffer; the shader indexes rows within it
+	// (base_row + first_instance), so it never needs rewriting frame to frame.
+	m_tilegpu_state_descriptor_set = AllocatePersistentDescriptorSet(m_tilegpu_ds_layout);
+	if (m_tilegpu_state_descriptor_set == VK_NULL_HANDLE)
+		return false;
+	{
+		Vulkan::DescriptorSetUpdateBuilder dsub;
+		dsub.AddBufferDescriptorWrite(m_tilegpu_state_descriptor_set, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			m_tilegpu_state_stream_buffer.GetBuffer(), 0, TILEGPU_STATE_BUFFER_SIZE);
+		dsub.Update(m_device);
+	}
+	Vulkan::SetObjectName(m_device, m_tilegpu_state_descriptor_set, "TileGpu state set");
 
 	const std::optional<std::string> source = ReadShaderSource("shaders/vulkan/tilegpu.glsl");
 	if (!source)
@@ -6163,32 +6197,61 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	if (plan.passes.empty())
 		return true;
 
-	// Stage 1.3c-ii: record the frame's triangle geometry. Per pass, bind the FRAME/ZBUF pair,
-	// open a render pass (clearing on a target's first bind, loading after), and draw each of
-	// its draws with vkCmdDrawIndexed -- the per-draw screen->NDC transform pushed from the
-	// state row's leading bytes, the vertex/index offsets rebasing into the frame's streams.
-	// Wrong-fast: one triangle pipeline, no texturing/blending, and per-draw draws rather than
-	// the constant-cost vkCmdDrawIndexedIndirect (that, with the indexed state table over
-	// firstInstance, is the following commit -- it is the perf claim, not the "renders" gate).
+	// Record the frame's geometry as constant-cost indirect draws. The draw commands go into an
+	// indirect buffer (GSTileGpuIndirectDraw is byte-identical to VkDrawIndexedIndirectCommand, so
+	// this is a straight copy), the per-draw transform into a state SSBO the VS reads by
+	// first_instance, and each pass issues one vkCmdDrawIndexedIndirect per maximal same-topology
+	// run rather than one vkCmdDrawIndexed per draw. Wrong-fast still: no texturing/blending, and
+	// the state row is only the screen->NDC transform (it grows with the fixed-function state in 1.4).
+	// The shader's StateRow is a fixed 32-byte layout, so state_stride must match it exactly.
 	if (!m_tilegpu_tried)
 		CompileTileGpuPipeline();
-	const bool can_draw = m_tilegpu_pipeline[0][0] != VK_NULL_HANDLE && !plan.draws.empty() &&
+	const bool can_draw = m_tilegpu_pipeline[0][0] != VK_NULL_HANDLE &&
+						  m_tilegpu_state_descriptor_set != VK_NULL_HANDLE && !plan.draws.empty() &&
 						  plan.topologies.size() == plan.draws.size() &&
 						  plan.vertex_stride == sizeof(GSVertex) && !plan.vertices.empty() &&
-						  plan.state_table != nullptr && plan.state_stride >= sizeof(float) * 4;
+						  plan.state_table != nullptr && plan.state_stride == sizeof(float) * 8 &&
+						  plan.state_count > 0;
 
 	EndRenderPass();
 
-	// Stage the whole frame's geometry before opening any pass: a ring wrap here can flush the
-	// command buffer, which must not happen mid-render-pass. Per-draw offsets rebase onto these.
-	u32 vbase = 0, ibase = 0;
+	// Stage the whole frame's streams before opening any pass: a ring wrap here can flush the
+	// command buffer, which must not happen mid-render-pass. The indirect commands' vertex/index
+	// offsets are frame-relative, so the streams get bound at their base (below) rather than rebased
+	// per draw; base_row rebases first_instance into this frame's slice of the state ring.
+	u32 vbase = 0, ibase = 0, state_base_rows = 0, indirect_base_bytes = 0;
 	if (can_draw)
 	{
 		IASetVertexBuffer(plan.vertices.data(), sizeof(GSVertex), plan.vertices.size() / sizeof(GSVertex), 1);
 		IASetIndexBuffer(plan.indices.data(), plan.indices.size());
 		vbase = m_vertex.start;
 		ibase = m_index.start;
+
+		const u32 state_bytes = plan.state_count * plan.state_stride;
+		if (!m_tilegpu_state_stream_buffer.ReserveMemory(state_bytes, plan.state_stride))
+		{
+			ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu state table");
+			if (!m_tilegpu_state_stream_buffer.ReserveMemory(state_bytes, plan.state_stride))
+				pxFailRel("Failed to reserve TileGpu state table");
+		}
+		std::memcpy(m_tilegpu_state_stream_buffer.GetCurrentHostPointer(), plan.state_table, state_bytes);
+		state_base_rows = m_tilegpu_state_stream_buffer.GetCurrentOffset() / plan.state_stride;
+		m_tilegpu_state_stream_buffer.CommitMemory(state_bytes);
+
+		const u32 indirect_bytes = static_cast<u32>(plan.draws.size() * sizeof(GSTileGpuIndirectDraw));
+		if (!m_tilegpu_indirect_stream_buffer.ReserveMemory(indirect_bytes, sizeof(u32)))
+		{
+			ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu draw commands");
+			if (!m_tilegpu_indirect_stream_buffer.ReserveMemory(indirect_bytes, sizeof(u32)))
+				pxFailRel("Failed to reserve TileGpu draw commands");
+		}
+		std::memcpy(m_tilegpu_indirect_stream_buffer.GetCurrentHostPointer(), plan.draws.data(), indirect_bytes);
+		indirect_base_bytes = m_tilegpu_indirect_stream_buffer.GetCurrentOffset();
+		m_tilegpu_indirect_stream_buffer.CommitMemory(indirect_bytes);
 	}
+
+	// A multi-draw indirect covers at most this many commands; a longer topology run is split.
+	const u32 max_indirect = std::max<u32>(1u, GetDeviceProperties().limits.maxDrawIndirectCount);
 
 	const VkCommandBuffer cmd = GetCurrentCommandBuffer();
 
@@ -6246,36 +6309,49 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			vkCmdSetViewport(cmd, 0, 1, &vp);
 			const VkRect2D sc{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}};
 			vkCmdSetScissor(cmd, 0, 1, &sc);
-			const VkDeviceSize voff = 0;
-			vkCmdBindVertexBuffers(cmd, 0, 1, m_vertex_stream_buffer.GetBufferPtr(), &voff);
-			vkCmdBindIndexBuffer(cmd, m_index_stream_buffer.GetBuffer(), 0, VK_INDEX_TYPE_UINT16);
 
-			// Bind the draw's topology pipeline, rebinding only when it changes. A pass is mostly
-			// one topology, so this is near-free; the indirect-submission commit instead groups a
-			// pass's draws by topology and issues one vkCmdDrawIndexedIndirect per group.
-			VkPipeline bound = VK_NULL_HANDLE;
+			// Bind the vertex/index streams at this frame's base, so the indirect commands'
+			// frame-relative offsets are correct without any per-draw rebase; the state SSBO the VS
+			// reads by first_instance; and this frame's base row into the state ring.
+			const VkDeviceSize voff = static_cast<VkDeviceSize>(vbase) * sizeof(GSVertex);
+			vkCmdBindVertexBuffers(cmd, 0, 1, m_vertex_stream_buffer.GetBufferPtr(), &voff);
+			vkCmdBindIndexBuffer(cmd, m_index_stream_buffer.GetBuffer(),
+				static_cast<VkDeviceSize>(ibase) * sizeof(u16), VK_INDEX_TYPE_UINT16);
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 0, 1,
+				&m_tilegpu_state_descriptor_set, 0, nullptr);
+			vkCmdPushConstants(
+				cmd, m_tilegpu_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(u32), &state_base_rows);
+
+			// One vkCmdDrawIndexedIndirect per maximal same-topology run, in draw order. Draw order
+			// is preserved exactly: commands are laid out in draw order, each run is a contiguous
+			// slice, and runs issue in order -- so overdraw is identical to the per-draw path, at one
+			// submission per run (a pass is mostly one topology) instead of one per draw. A pipeline
+			// change is the only per-run cost. This is the constant-cost submission the design bets on.
 			const u32 end = pass.first_draw + pass.draw_count;
-			for (u32 d = pass.first_draw; d < end; d++)
+			u32 d = pass.first_draw;
+			while (d < end)
 			{
-				const GSTileGpuIndirectDraw& draw = plan.draws[d];
 				const u32 topo = static_cast<u32>(plan.topologies[d]);
-				const VkPipeline want = m_tilegpu_pipeline[topo][depth_idx];
-				if (want != bound)
+				u32 run_end = d + 1;
+				while (run_end < end && static_cast<u32>(plan.topologies[run_end]) == topo)
+					run_end++;
+
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline[topo][depth_idx]);
+
+				for (u32 first = d; first < run_end;)
 				{
-					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, want);
-					bound = want;
+					const u32 count = std::min(run_end - first, max_indirect);
+					const VkDeviceSize offset = static_cast<VkDeviceSize>(indirect_base_bytes) +
+												static_cast<VkDeviceSize>(first) * sizeof(GSTileGpuIndirectDraw);
+					vkCmdDrawIndexedIndirect(cmd, m_tilegpu_indirect_stream_buffer.GetBuffer(), offset, count,
+						sizeof(GSTileGpuIndirectDraw));
+					// One submission per indirect call, not per draw: the DrawCalls metric now reads
+					// the collapsed count (≈ topology runs per frame), which is the A/B against the
+					// per-draw baseline the design is measured on.
+					g_perfmon.Put(GSPerfMon::DrawCalls, 1);
+					first += count;
 				}
-				// The state row's leading 16 bytes are the VS transform (VertexScale, VertexOffset).
-				const u8* row =
-					static_cast<const u8*>(plan.state_table) + static_cast<size_t>(draw.state_index) * plan.state_stride;
-				vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 4, row);
-				vkCmdDrawIndexed(cmd, draw.index_count, 1, ibase + draw.first_index,
-					static_cast<s32>(vbase) + draw.vertex_offset, 0);
-				// Count the submission like every other draw site, so the per-draw regime reports
-				// its true draw-call count -- the baseline the constant-cost indirect submission
-				// (one call per pass, not per draw) will be measured against. Without it both
-				// regimes read ~1/frame and the A/B shows nothing.
-				g_perfmon.Put(GSPerfMon::DrawCalls, 1);
+				d = run_end;
 			}
 		}
 
@@ -7176,6 +7252,37 @@ void GSDeviceVK::DestroyResources()
 		m_tile_expand_ds_layout = VK_NULL_HANDLE;
 	}
 	m_tile_expand_tried = false;
+
+	if (m_tilegpu_state_descriptor_set != VK_NULL_HANDLE)
+	{
+		FreePersistentDescriptorSet(m_tilegpu_state_descriptor_set);
+		m_tilegpu_state_descriptor_set = VK_NULL_HANDLE;
+	}
+	for (auto& row : m_tilegpu_pipeline)
+	{
+		for (VkPipeline& pipe : row)
+		{
+			if (pipe != VK_NULL_HANDLE)
+				vkDestroyPipeline(m_device, pipe, nullptr);
+			pipe = VK_NULL_HANDLE;
+		}
+	}
+	if (m_tilegpu_pipeline_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineLayout(m_device, m_tilegpu_pipeline_layout, nullptr);
+		m_tilegpu_pipeline_layout = VK_NULL_HANDLE;
+	}
+	if (m_tilegpu_ds_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_ds_layout, nullptr);
+		m_tilegpu_ds_layout = VK_NULL_HANDLE;
+	}
+	if (m_tilegpu_indirect_stream_buffer.IsValid())
+		m_tilegpu_indirect_stream_buffer.Destroy(false);
+	if (m_tilegpu_state_stream_buffer.IsValid())
+		m_tilegpu_state_stream_buffer.Destroy(false);
+	m_tilegpu_tried = false;
+
 	for (u32 ds = 0; ds < 2; ds++)
 	{
 		for (u32 fbl = 0; fbl < 2; fbl++)
