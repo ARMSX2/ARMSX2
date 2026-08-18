@@ -137,6 +137,7 @@ private:
 	std::vector<u16> m_plan_indices;
 	std::vector<StateRow> m_plan_states;
 	std::vector<GSDevice::GSTileGpuIndirectDraw> m_plan_draws;
+	std::vector<GSDevice::GSTileGpuTopology> m_plan_topologies; // one per m_plan_draws entry
 	std::vector<PendingDraw> m_plan_pending;
 	std::vector<GSDevice::GSTileGpuPass> m_plan_passes;
 	std::vector<GSDevice::GSTileGpuTargetPair> m_plan_target_pairs;

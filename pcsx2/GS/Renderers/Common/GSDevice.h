@@ -1954,6 +1954,20 @@ public:
 	/// decide. Served only by a device whose TileGpuExecutorAvailable() is true — Vulkan
 	/// with the descriptor-indexing + indirect-draw contract negotiated at device creation.
 
+	/// Which primitive a draw's indices describe. A topology is pipeline state, not a per-draw
+	/// field, so it cannot ride in GSTileGpuIndirectDraw (that struct is byte-identical to
+	/// VkDrawIndexedIndirectCommand). It travels in the plan's parallel `topologies` array
+	/// instead: the executor picks a pipeline per draw by it, and the constant-cost indirect
+	/// submission groups draws by it (one indirect range per topology, since one
+	/// vkCmdDrawIndexedIndirect covers a single pipeline). Values index the executor's
+	/// per-topology pipeline table; keep them contiguous from zero.
+	enum class GSTileGpuTopology : u8
+	{
+		Triangle = 0, ///< triangle list — triangles copied straight, sprites synthesised to quads
+		Line = 1,     ///< line list — two indices per line, copied straight
+		Point = 2,    ///< point list — one index per point, copied straight
+	};
+
 	/// One indexed indirect draw. Field order and size match VkDrawIndexedIndirectCommand,
 	/// so the executor uploads the array straight into an indirect buffer; the draw's row in
 	/// the state table rides in first_instance (which is why drawIndirectFirstInstance sits
@@ -2011,6 +2025,7 @@ public:
 
 		std::span<const GSTileGpuPass> passes;
 		std::span<const GSTileGpuIndirectDraw> draws;
+		std::span<const GSTileGpuTopology> topologies; ///< one per draw, parallel to `draws`
 		std::span<const GSTileGpuTargetPair> target_pairs;
 		std::span<const GSTileGpuSnapshotCopy> snapshots;
 

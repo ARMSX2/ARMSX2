@@ -31,6 +31,8 @@ void main()
 	if (gl_Position.z == gl_Position.w)
 		gl_Position.z *= 0.999999f;
 	v_color = a_color;
+	// Point topology reads gl_PointSize; a GS point covers one pixel. Ignored for line/triangle.
+	gl_PointSize = 1.0f;
 }
 
 #endif

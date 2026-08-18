@@ -466,16 +466,29 @@ void GSRendererTileGpu::AccumulateDraw()
 	if (r.rempty())
 		return;
 
-	// Wrong-fast: the executor's one pipeline is TRIANGLE_LIST. Triangles arrive already as a
-	// triangle-list index buffer (strips and fans expanded at decode) and copy straight in;
-	// sprites are two opposite corners we synthesise into a quad (four corners, two triangles).
-	// Points and lines need their own topology and are a following commit. The pass model still
-	// sees every draw through ObserveDraw, so the accounting is unaffected — only the submitted
-	// geometry is narrowed.
-	const bool is_triangle = (m_vt.m_primclass == GS_TRIANGLE_CLASS);
+	// Wrong-fast geometry. Triangles, lines and points are drawn at their native footprint: the
+	// index buffer is already a topology list (strips and fans expanded at decode), so it copies
+	// straight in and selects the matching executor pipeline. Sprites are two opposite corners we
+	// synthesise into a quad (four corners, two triangles), so they ride the triangle pipeline.
+	// The pass model still sees every draw through ObserveDraw, so accounting is unaffected --
+	// only the submitted geometry is shaped here.
+	GSDevice::GSTileGpuTopology topology;
+	switch (m_vt.m_primclass)
+	{
+		case GS_TRIANGLE_CLASS:
+		case GS_SPRITE_CLASS:
+			topology = GSDevice::GSTileGpuTopology::Triangle;
+			break;
+		case GS_LINE_CLASS:
+			topology = GSDevice::GSTileGpuTopology::Line;
+			break;
+		case GS_POINT_CLASS:
+			topology = GSDevice::GSTileGpuTopology::Point;
+			break;
+		default:
+			return;
+	}
 	const bool is_sprite = (m_vt.m_primclass == GS_SPRITE_CLASS);
-	if (!is_triangle && !is_sprite)
-		return;
 
 	const u32 vcount = m_vertex->tail;
 	const u32 icount = m_index->tail;
@@ -490,8 +503,10 @@ void GSRendererTileGpu::AccumulateDraw()
 	draw.vertex_offset = static_cast<s32>(m_plan_vertices.size());
 	draw.state_index = static_cast<u32>(m_plan_draws.size());
 
-	if (is_triangle)
+	if (!is_sprite)
 	{
+		// Triangle, line or point: the index list is already the topology the pipeline consumes
+		// (3 indices per triangle, 2 per line, 1 per point). Copy vertices and indices straight.
 		draw.index_count = icount;
 		m_plan_vertices.insert(m_plan_vertices.end(), m_vertex->buff, m_vertex->buff + vcount);
 		m_plan_indices.insert(m_plan_indices.end(), m_index->buff, m_index->buff + icount);
@@ -534,6 +549,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		}
 	}
 	m_plan_draws.push_back(draw);
+	m_plan_topologies.push_back(topology);
 
 	PendingDraw pd = {};
 	pd.fb_bp = ctx->FRAME.Block();
@@ -674,6 +690,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		GSDevice::GSTileGpuPassPlan plan;
 		plan.passes = m_plan_passes;
 		plan.draws = m_plan_draws;
+		plan.topologies = m_plan_topologies;
 		plan.target_pairs = m_plan_target_pairs;
 		plan.state_table = m_plan_states.data();
 		plan.state_stride = sizeof(StateRow);
@@ -696,6 +713,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_indices.clear();
 	m_plan_states.clear();
 	m_plan_draws.clear();
+	m_plan_topologies.clear();
 	m_plan_pending.clear();
 	m_plan_passes.clear();
 	m_plan_target_pairs.clear();

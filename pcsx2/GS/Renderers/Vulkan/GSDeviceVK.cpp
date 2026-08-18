@@ -6101,39 +6101,55 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	const VkFormat color_fmt = LookupNativeFormat(GSTexture::Format::Color);
 	const VkFormat depth_fmt = LookupNativeFormat(GSTexture::Format::DepthStencil);
 
-	for (u32 i = 0; i < 2; i++)
-	{
-		const bool depth = (i == 1);
-		Vulkan::GraphicsPipelineBuilder gpb;
-		SetPipelineProvokingVertex(m_features, gpb);
-		gpb.AddVertexBuffer(0, sizeof(GSVertex));
-		gpb.AddVertexAttribute(0, 0, VK_FORMAT_R16G16_UINT, 16);   // XY (raw 12.4 fixed)
-		gpb.AddVertexAttribute(1, 0, VK_FORMAT_R32_UINT, 20);      // Z
-		gpb.AddVertexAttribute(2, 0, VK_FORMAT_R8G8B8A8_UNORM, 8); // colour
-		gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-		gpb.SetPipelineLayout(m_tilegpu_pipeline_layout);
-		gpb.SetDynamicViewportAndScissorState();
-		gpb.SetNoCullRasterizationState();
-		gpb.SetNoBlendingState();
-		gpb.SetVertexShader(vs);
-		gpb.SetFragmentShader(fs);
-		gpb.SetRenderPass(
-			GetRenderPass(color_fmt, depth ? depth_fmt : LookupNativeFormat(GSTexture::Format::Invalid),
-				VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
-				depth ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-				depth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE),
-			0);
-		// PS2 depth: larger Z is nearer, the common ZTST is GEQUAL -> GREATER_OR_EQUAL + write.
-		gpb.SetDepthState(depth, depth, depth ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_ALWAYS);
-		gpb.SetNoStencilState();
-		gpb.SetColorWriteMask(0,
-			VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+	// One pipeline per GSTileGpuTopology (triangle/line/point) times depth off/on. Only the
+	// primitive topology differs across the row: a GS point is one vertex, a line is two, and
+	// both render at their native footprint rather than being synthesised into triangles. The
+	// vertex format, transform, and depth convention are identical — a line's colour still
+	// gouraud-interpolates and a point takes its single vertex's colour.
+	static constexpr VkPrimitiveTopology kTopology[3] = {
+		VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, // GSTileGpuTopology::Triangle
+		VK_PRIMITIVE_TOPOLOGY_LINE_LIST,     // GSTileGpuTopology::Line
+		VK_PRIMITIVE_TOPOLOGY_POINT_LIST,    // GSTileGpuTopology::Point
+	};
+	static constexpr const char* kTopologyName[3] = {"triangle", "line", "point"};
 
-		m_tilegpu_pipeline[i] = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
-		if (m_tilegpu_pipeline[i] == VK_NULL_HANDLE)
-			return false;
-		Vulkan::SetObjectName(
-			m_device, m_tilegpu_pipeline[i], depth ? "TileGpu geometry pipeline (depth)" : "TileGpu geometry pipeline");
+	for (u32 t = 0; t < 3; t++)
+	{
+		for (u32 i = 0; i < 2; i++)
+		{
+			const bool depth = (i == 1);
+			Vulkan::GraphicsPipelineBuilder gpb;
+			SetPipelineProvokingVertex(m_features, gpb);
+			gpb.AddVertexBuffer(0, sizeof(GSVertex));
+			gpb.AddVertexAttribute(0, 0, VK_FORMAT_R16G16_UINT, 16);   // XY (raw 12.4 fixed)
+			gpb.AddVertexAttribute(1, 0, VK_FORMAT_R32_UINT, 20);      // Z
+			gpb.AddVertexAttribute(2, 0, VK_FORMAT_R8G8B8A8_UNORM, 8); // colour
+			gpb.SetPrimitiveTopology(kTopology[t]);
+			gpb.SetPipelineLayout(m_tilegpu_pipeline_layout);
+			gpb.SetDynamicViewportAndScissorState();
+			gpb.SetNoCullRasterizationState();
+			gpb.SetNoBlendingState();
+			gpb.SetVertexShader(vs);
+			gpb.SetFragmentShader(fs);
+			gpb.SetRenderPass(
+				GetRenderPass(color_fmt, depth ? depth_fmt : LookupNativeFormat(GSTexture::Format::Invalid),
+					VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+					depth ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+					depth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE),
+				0);
+			// PS2 depth: larger Z is nearer, the common ZTST is GEQUAL -> GREATER_OR_EQUAL + write.
+			gpb.SetDepthState(depth, depth, depth ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_ALWAYS);
+			gpb.SetNoStencilState();
+			gpb.SetColorWriteMask(0,
+				VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+
+			VkPipeline& pipe = m_tilegpu_pipeline[t][i];
+			pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+			if (pipe == VK_NULL_HANDLE)
+				return false;
+			Vulkan::SetObjectName(
+				m_device, pipe, "TileGpu %s pipeline%s", kTopologyName[t], depth ? " (depth)" : "");
+		}
 	}
 	return true;
 }
@@ -6156,7 +6172,8 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// firstInstance, is the following commit -- it is the perf claim, not the "renders" gate).
 	if (!m_tilegpu_tried)
 		CompileTileGpuPipeline();
-	const bool can_draw = m_tilegpu_pipeline[0] != VK_NULL_HANDLE && !plan.draws.empty() &&
+	const bool can_draw = m_tilegpu_pipeline[0][0] != VK_NULL_HANDLE && !plan.draws.empty() &&
+						  plan.topologies.size() == plan.draws.size() &&
 						  plan.vertex_stride == sizeof(GSVertex) && !plan.vertices.empty() &&
 						  plan.state_table != nullptr && plan.state_stride >= sizeof(float) * 4;
 
@@ -6222,7 +6239,9 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 		if (can_draw)
 		{
-			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ds ? m_tilegpu_pipeline[1] : m_tilegpu_pipeline[0]);
+			// The depth variant is fixed for the whole pass -- the target pair decides whether a
+			// depth buffer is bound, and every draw in the pass shares it.
+			const u32 depth_idx = ds ? 1u : 0u;
 			const VkViewport vp{0.0f, 0.0f, static_cast<float>(size.x), static_cast<float>(size.y), 0.0f, 1.0f};
 			vkCmdSetViewport(cmd, 0, 1, &vp);
 			const VkRect2D sc{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}};
@@ -6231,10 +6250,21 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			vkCmdBindVertexBuffers(cmd, 0, 1, m_vertex_stream_buffer.GetBufferPtr(), &voff);
 			vkCmdBindIndexBuffer(cmd, m_index_stream_buffer.GetBuffer(), 0, VK_INDEX_TYPE_UINT16);
 
+			// Bind the draw's topology pipeline, rebinding only when it changes. A pass is mostly
+			// one topology, so this is near-free; the indirect-submission commit instead groups a
+			// pass's draws by topology and issues one vkCmdDrawIndexedIndirect per group.
+			VkPipeline bound = VK_NULL_HANDLE;
 			const u32 end = pass.first_draw + pass.draw_count;
 			for (u32 d = pass.first_draw; d < end; d++)
 			{
 				const GSTileGpuIndirectDraw& draw = plan.draws[d];
+				const u32 topo = static_cast<u32>(plan.topologies[d]);
+				const VkPipeline want = m_tilegpu_pipeline[topo][depth_idx];
+				if (want != bound)
+				{
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, want);
+					bound = want;
+				}
 				// The state row's leading 16 bytes are the VS transform (VertexScale, VertexOffset).
 				const u8* row =
 					static_cast<const u8*>(plan.state_table) + static_cast<size_t>(draw.state_index) * plan.state_stride;
