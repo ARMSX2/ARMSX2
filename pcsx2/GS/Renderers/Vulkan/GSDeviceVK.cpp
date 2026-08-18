@@ -6064,6 +6064,26 @@ bool GSDeviceVK::CompileTileReinterpretPipelines()
 	return true;
 }
 
+bool GSDeviceVK::TileGpuExecutorAvailable()
+{
+	return m_optional_extensions.tilegpu_device_capable;
+}
+
+bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
+{
+	if (!m_optional_extensions.tilegpu_device_capable)
+		return false;
+
+	// An empty plan is a valid frame the executor completes with nothing to record — the
+	// honest steady state of this skeleton until the pass planner (stage 1.3) and the
+	// TFX-on-storage-buffer recording (1.4) land. The indirect submission belongs here:
+	// stage vertices/indices/state into device buffers, then per pass record its snapshot
+	// copies, open the declared raster-order-read render pass, and vkCmdDrawIndexedIndirect
+	// over [first_draw, draw_count). A non-empty plan is not serviceable yet, so refuse it
+	// rather than silently drop the frame.
+	return plan.passes.empty() && plan.draws.empty();
+}
+
 bool GSDeviceVK::TileClutFromTarget(GSTexture* owner, GSTexture* dst, const TileClutGatherParams& p)
 {
 	if (!m_tile_reinterpret_tried && !CompileTileReinterpretPipelines())

@@ -1945,6 +1945,95 @@ public:
 		return false;
 	}
 
+	/// TileGpu executor (GSHWRendererVariant::TileGpu) — the parallel device road to
+	/// RenderHW. Where RenderHW submits one draw at a time behind the render-pass
+	/// scheduler's coalescing, the executor takes a whole frame's pass plan the renderer
+	/// has already structured and submits it as indirect draws whose per-draw state is
+	/// pulled from an indexed table in a storage buffer. It does not touch the deferred-draw
+	/// machinery: the pass planner already owns the pass structure the scheduler used to
+	/// decide. Served only by a device whose TileGpuExecutorAvailable() is true — Vulkan
+	/// with the descriptor-indexing + indirect-draw contract negotiated at device creation.
+
+	/// One indexed indirect draw. Field order and size match VkDrawIndexedIndirectCommand,
+	/// so the executor uploads the array straight into an indirect buffer; the draw's row in
+	/// the state table rides in first_instance (which is why drawIndirectFirstInstance sits
+	/// in the executor's capability gate), selecting state with no descriptor rebind.
+	struct GSTileGpuIndirectDraw
+	{
+		u32 index_count;
+		u32 instance_count; ///< 1 for a plain draw
+		u32 first_index;
+		s32 vertex_offset;
+		u32 state_index; ///< -> first_instance; row into GSTileGpuPassPlan::state_table
+	};
+
+	/// A FRAME/ZBUF surface pair a pass renders into, named as indices into the plan's
+	/// target list (resolved to GSTextures by the executor). kNoTarget marks an absent
+	/// slot — a colour-only or depth-only pass.
+	struct GSTileGpuTargetPair
+	{
+		u32 frame_target;
+		u32 zbuf_target;
+	};
+
+	/// A snapshot copy for proven offset feedback: clone src_rect of a colour target into a
+	/// scratch surface the next pass samples, so that pass reads a pre-write version of pages
+	/// it also writes without a raster-order hazard. One per hazard run, taken before the
+	/// pass it feeds opens.
+	struct GSTileGpuSnapshotCopy
+	{
+		u32 src_target;
+		GSVector4i src_rect;
+	};
+
+	/// One GS-semantic minimum pass: a contiguous run of draws sharing a set of FRAME/ZBUF
+	/// target pairs (up to the pass model's per-pass budget, GSTilePassSim::kMaxTargetPairs),
+	/// optionally declaring the raster-order self-read the blend and same-pixel feedback
+	/// design needs. The ranges index the like-named plan arrays.
+	struct GSTileGpuPass
+	{
+		u32 first_draw;
+		u32 draw_count;
+		u32 first_target_pair;
+		u32 target_pair_count;
+		u32 first_snapshot; ///< snapshot copies taken before this pass opens
+		u32 snapshot_count;
+		bool declares_self_read; ///< ROAA: the pass reads its own colour target in raster order
+	};
+
+	/// One frame, structured. The streams are CPU-side views the executor stages into its own
+	/// device buffers (the shared-SSBO idiom: one whole-buffer descriptor plus a per-frame
+	/// base offset). state_stride is the byte size of one state row and is opaque here — its
+	/// layout is the TFX-on-storage-buffer backend's, not this contract's.
+	struct GSTileGpuPassPlan
+	{
+		static constexpr u32 kNoTarget = 0xFFFFFFFFu;
+
+		std::span<const GSTileGpuPass> passes;
+		std::span<const GSTileGpuIndirectDraw> draws;
+		std::span<const GSTileGpuTargetPair> target_pairs;
+		std::span<const GSTileGpuSnapshotCopy> snapshots;
+
+		const void* state_table = nullptr; ///< state_count rows of state_stride bytes
+		u32 state_stride = 0;
+		u32 state_count = 0;
+
+		std::span<const u8> vertices; ///< raw vertex bytes; vertex_stride is the row size
+		u32 vertex_stride = 0;
+		std::span<const u16> indices;
+
+		std::span<GSTexture* const> targets; ///< the *_target fields index this list
+	};
+
+	/// Whether this device serves the TileGpu executor road. False on every backend but
+	/// Vulkan, and on a Vulkan device that failed the descriptor-indexing + indirect-draw
+	/// capability probe at device creation. The renderer consults this before constructing.
+	virtual bool TileGpuExecutorAvailable() { return false; }
+
+	/// Submit one frame's pass plan through the executor. Returns false when the device does
+	/// not serve it, so the renderer can refuse to construct rather than drop frames silently.
+	virtual bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) { return false; }
+
 	/// Enables/disables GPU frame timing.
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;
 

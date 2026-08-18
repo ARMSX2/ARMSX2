@@ -185,6 +185,8 @@ public:
 	bool TileClutFromTarget(GSTexture* owner, GSTexture* dst, const TileClutGatherParams& p) override;
 	bool TileSwizzleFormsFit(bool& clut_ok) override;
 	bool TileExpandPalette(GSTexture* index, GSTexture* palette, GSTexture* dst, u32 src_level, u32 dst_level) override;
+	bool TileGpuExecutorAvailable() override;
+	bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) override;
 	u64 GetCompletedSubmitEpoch() override
 	{
 		ScanForCommandBufferCompletion();
