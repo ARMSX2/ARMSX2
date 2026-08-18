@@ -45,7 +45,7 @@ ever say so.
 
 | # | Owed by | What | Fails |
 |---|---|---|---|
-| A1 | `ShaderSettingsView` | The row is a `NavigationLink` inside a `Section`. `test_a_row_has_one_push_path` asserts `LINKS_ALLOWED == {}`, so it converts to `paneRow(...)` or an equivalent push site on merge | Loud |
+| A1 | `ShaderChainSection` | The Download row is a second `NavigationLink` in that section, beside the Preset one it already carries. `test_a_row_has_one_push_path` asserts `LINKS_ALLOWED == {}`, so both convert together, and the in-game panel needs whatever replaces them to still push from inside its own `NavigationStack` | Loud |
 | A2 | `ShaderCatalogBrowserView` | Add to `EXTRA_SCREENS`, then a `ControllerHint(… .back)` and a declared focus order | **Silent** for the hint and the order; loud for the roster name |
 | A3 | `ShaderCatalogBrowserView` | The Get button and the search field are the only focusable controls, and the list is 867 rows over 27 sections. Whoever adopts this has to decide whether the pad moves by row or by section before writing either | **Silent** |
 | A4 | Both | The pinned counters take another `.focusableControls(` for the browser, on top of the deltas the two sibling documents already claim | Loud |
