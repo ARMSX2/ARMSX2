@@ -38,3 +38,18 @@ presented as a sheet from the panel. Recorded here because the merge is where so
 Three of the five above are silent and one is loud. They fire in the same merge. Bumping A4 until
 the suite goes green is not evidence that A1, A2 or A5 were done, and nothing in either tree will
 ever say so.
+
+## Addendum, 2026-08-18: the shader catalogue browser
+
+`04.3-15` added `ShaderCatalogBrowserView` and a row that opens it from `ShaderSettingsView`.
+
+| # | Owed by | What | Fails |
+|---|---|---|---|
+| A1 | `ShaderSettingsView` | The row is a `NavigationLink` inside a `Section`. `test_a_row_has_one_push_path` asserts `LINKS_ALLOWED == {}`, so it converts to `paneRow(...)` or an equivalent push site on merge | Loud |
+| A2 | `ShaderCatalogBrowserView` | Add to `EXTRA_SCREENS`, then a `ControllerHint(… .back)` and a declared focus order | **Silent** for the hint and the order; loud for the roster name |
+| A3 | `ShaderCatalogBrowserView` | The Get button and the search field are the only focusable controls, and the list is 867 rows over 27 sections. Whoever adopts this has to decide whether the pad moves by row or by section before writing either | **Silent** |
+| A4 | Both | The pinned counters take another `.focusableControls(` for the browser, on top of the deltas the two sibling documents already claim | Loud |
+
+A3 is the one worth reading twice. The other screens in this phase have between two and twenty
+rows. This one has 867, and a D-pad that steps one row at a time crosses a category in about
+thirty presses.

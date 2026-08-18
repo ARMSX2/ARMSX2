@@ -138,6 +138,7 @@ struct RootView: View {
         .statusBarHidden(showBootSplash)
         .onAppear {
             StikDebugLauncher.autoOpenIfNeeded(reason: "app launch")
+            ShaderCatalogInstaller.sweepStagedDownloads()
         }
         .onReceive(
             NotificationCenter.default.publisher(
