@@ -8,8 +8,17 @@ licence, and where it came from.
 **Pinned commit:** `80372284ea8c00ae5e25e5a6e4f9f49415f85896` (2026-08-15)
 
 Every file below is copied byte for byte from that commit, licence headers intact. Nothing
-was renamed, reformatted or edited. To verify any file, clone the upstream repository at the
-pinned commit and compare it against the copy in this bundle at the upstream path given.
+was renamed or reformatted. To verify any file, clone the upstream repository at the pinned
+commit and compare it against the copy in this bundle at the upstream path given.
+
+**Two files carry a one line change**, recorded in
+`platforms/ios/patches/slang-shaders-prescale-zero-guard.patch` and reversible with
+`git apply -R`. `crt/shaders/crt-aperture.slang` and
+`pixel-art-scaling/shaders/sharp-bilinear.slang` each clamp a derived integer prescale to a
+minimum of one. Upstream divides by that prescale without checking it, which is safe in
+RetroArch but not here: PCSX2 renders internally at up to 8x, and once the source is taller
+than the screen the prescale floors to zero and the frame turns black. Both files remain
+under their original licences and authorship.
 
 The upstream collection is mixed licence and has no repository-wide licence file, so each
 file here was cleared on its own header rather than on a blanket grant. Files whose headers
