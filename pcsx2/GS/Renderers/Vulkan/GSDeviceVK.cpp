@@ -6241,6 +6241,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 4, row);
 				vkCmdDrawIndexed(cmd, draw.index_count, 1, ibase + draw.first_index,
 					static_cast<s32>(vbase) + draw.vertex_offset, 0);
+				// Count the submission like every other draw site, so the per-draw regime reports
+				// its true draw-call count -- the baseline the constant-cost indirect submission
+				// (one call per pass, not per draw) will be measured against. Without it both
+				// regimes read ~1/frame and the A/B shows nothing.
+				g_perfmon.Put(GSPerfMon::DrawCalls, 1);
 			}
 		}
 
