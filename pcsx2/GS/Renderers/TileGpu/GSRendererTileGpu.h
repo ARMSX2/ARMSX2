@@ -83,17 +83,26 @@ private:
 	// --- the pass plan the executor consumes --------------------------------------------
 	// One row of the executor's indexed state table: the per-draw state a shader reads via
 	// gl_InstanceIndex (the indirect draw's first_instance). Its layout is this backend's
-	// contract with its own shader, opaque to the executor (which stages it by state_stride).
-	// Wrong-fast holds only the screen->NDC transform — the HW tfx VertexScale/VertexOffset,
-	// reused verbatim — plus z enables; it grows with the fixed-function state in 1.4.
+	// contract with its own shader (tilegpu.glsl's StateRow, std430, 64 bytes), opaque to the
+	// executor (which stages it by state_stride). The transform is the HW tfx VertexScale/
+	// VertexOffset reused verbatim; the texture block is wrong-fast — direct 32-bit (CT32/CT24)
+	// only, MODULATE/DECAL, nearest — and grows to the rest of the fixed-function state.
 	struct alignas(16) StateRow
 	{
 		float vertex_scale[2];  // maps raw 12.4 screen XY to clip, per the tfx VS
 		float vertex_offset[2];
 		u32 z_write;
 		u32 z_test;
-		u32 pad0;
-		u32 pad1;
+		u32 tex_enable;         // 1 = sample the VRAM texture, 0 = vertex-colour only
+		u32 fst;                // 1 = FST/UV coords, 0 = STQ coords
+		u32 tbp0;               // TEX0.TBP0, texture base in blocks
+		u32 tbw;                // texture buffer width in pages (max(TBW, 1))
+		u32 tw;                 // texture width  in texels (1 << TW)
+		u32 th;                 // texture height in texels (1 << TH)
+		u32 tfx;                // TEX0.TFX texture function
+		u32 tcc;                // TEX0.TCC: 1 = texture carries alpha, 0 = alpha from vertex
+		u32 wms;                // CLAMP.WMS horizontal wrap mode
+		u32 wmt;                // CLAMP.WMT vertical wrap mode
 	};
 
 	// One draw's inputs that cannot be resolved until the frame's targets are sized: the
@@ -111,6 +120,13 @@ private:
 		u32 draw_index;
 		u32 color_slot;       // -> resolved color target
 		u32 z_slot;           // -> resolved depth target (valid only if z_used)
+
+		// Texture inputs, resolved here (they do not depend on target sizing). tex_enable is set
+		// only for the direct 32-bit (CT32/CT24) formats this stage samples; every other textured
+		// draw falls back to the vertex-colour path. See AccumulateDraw.
+		bool tex_enable;
+		bool fst;
+		u32 tbp0, tbw, tw, th, tfx, tcc, wms, wmt;
 	};
 
 	// A resolved render-target identity for the frame: distinct FRAME (color) or ZBUF

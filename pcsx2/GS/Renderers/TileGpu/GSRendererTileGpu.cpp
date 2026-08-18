@@ -564,6 +564,32 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.ofy = static_cast<s32>(ctx->XYOFFSET.OFY);
 	pd.rect = r;
 	pd.draw_index = draw.state_index;
+
+	// Texture inputs. Only the direct 32-bit families (PSMCT32, PSMCT24) are sampled at this stage:
+	// they share one page/block/column geometry and need no CLUT, so one address path serves both.
+	// Every other textured draw (16-bit, paletted, the alpha-byte views) keeps the vertex-colour
+	// path until its format is added. The fixed TEX0 folds TW/TH to the used ST range, exactly as
+	// ObserveDraw derives its footprint, so the dimensions the shader scales by match the draw.
+	pd.tex_enable = false;
+	if (PRIM->TME)
+	{
+		const bool mip = IsMipMapActive();
+		const GIFRegTEX0 tex0 = ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mip);
+		if (tex0.PSM == PSMCT32 || tex0.PSM == PSMCT24)
+		{
+			pd.tex_enable = true;
+			pd.fst = PRIM->FST;
+			pd.tbp0 = tex0.TBP0;
+			pd.tbw = std::max<u32>(tex0.TBW, 1);
+			pd.tw = 1u << std::min<u32>(tex0.TW, 10);
+			pd.th = 1u << std::min<u32>(tex0.TH, 10);
+			pd.tfx = tex0.TFX;
+			pd.tcc = tex0.TCC;
+			pd.wms = ctx->CLAMP.WMS;
+			pd.wmt = ctx->CLAMP.WMT;
+		}
+	}
+
 	m_plan_pending.push_back(pd);
 }
 
@@ -649,8 +675,16 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.vertex_offset[1] = static_cast<float>(pd.ofy) * sy + oy2 + 1.0f;
 			sr.z_write = pd.z_write ? 1u : 0u;
 			sr.z_test = pd.z_test ? 1u : 0u;
-			sr.pad0 = 0;
-			sr.pad1 = 0;
+			sr.tex_enable = pd.tex_enable ? 1u : 0u;
+			sr.fst = pd.fst ? 1u : 0u;
+			sr.tbp0 = pd.tbp0;
+			sr.tbw = pd.tbw;
+			sr.tw = pd.tw;
+			sr.th = pd.th;
+			sr.tfx = pd.tfx;
+			sr.tcc = pd.tcc;
+			sr.wms = pd.wms;
+			sr.wmt = pd.wmt;
 		}
 
 		// 4. Group contiguous draws sharing a colour+depth target into one pass, one target
@@ -700,6 +734,13 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.vertex_stride = sizeof(GSVertex);
 		plan.indices = m_plan_indices;
 		plan.targets = m_plan_targets;
+
+		// The frame's texture source: the current guest VRAM. Uploads have already landed in it
+		// through the base transfer path, so it is the CPU-current truth this stage samples (a draw
+		// sampling a target another draw rendered this frame is the feedback road, not handled here).
+		plan.vram = m_mem.vm8();
+		plan.vram_size = static_cast<u32>(GSLocalMemory::m_vmsize);
+
 		g_gs_device->ExecuteTileGpuPassPlan(plan);
 
 		// 6. Keep the colour targets addressable by FRAME base for GetOutput.

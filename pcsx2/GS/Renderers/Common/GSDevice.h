@@ -2038,6 +2038,12 @@ public:
 		std::span<const u16> indices;
 
 		std::span<GSTexture* const> targets; ///< the *_target fields index this list
+
+		/// A snapshot of GS local memory the fragment shader samples textures from — guest VRAM as
+		/// a flat byte array the executor stages into a storage buffer once per frame. The shader
+		/// addresses it with the GS swizzle; nullptr leaves every draw on the vertex-colour path.
+		const void* vram = nullptr;
+		u32 vram_size = 0;
 	};
 
 	/// Whether this device serves the TileGpu executor road. False on every backend but

@@ -1436,7 +1436,7 @@ bool GSDeviceVK::CreateGlobalDescriptorPool()
 {
 	static constexpr const VkDescriptorPoolSize pool_sizes[] = {
 		{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 2},
-		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4}, // TFX vs_expand(2) + spin(1) + TileGpu state table(1)
+		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5}, // TFX vs_expand(2) + spin(1) + TileGpu state table(1) + VRAM(1)
 	};
 
 	VkDescriptorPoolCreateInfo pool_create_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr,
@@ -6073,37 +6073,44 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 {
 	m_tilegpu_tried = true;
 
-	// Per-draw state table (SSBO) + its layout: the VS reads its transform row by the indirect
-	// draw's first_instance, so state lives in a storage buffer, not per-draw push constants. The
-	// one push constant left is base_row, this frame's first state row in the ring.
+	// Per-draw state table (SSBO, binding 0) + the VRAM snapshot (SSBO, binding 1) + their layout.
+	// The VS reads its transform row from the state table by the indirect draw's first_instance and
+	// forwards the row index, so both stages see binding 0; the FS reads texels from the VRAM
+	// snapshot, so it alone sees binding 1. Two push constants remain: base_row (this frame's first
+	// state row) and vram_base (this frame's first VRAM word), both this frame's ring offsets.
 	{
 		Vulkan::DescriptorSetLayoutBuilder dslb;
-		dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT);
+		dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+		dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 		if ((m_tilegpu_ds_layout = dslb.Create(m_device)) == VK_NULL_HANDLE)
 			return false;
 		Vulkan::SetObjectName(m_device, m_tilegpu_ds_layout, "TileGpu state DS layout");
 
 		Vulkan::PipelineLayoutBuilder plb;
 		plb.AddDescriptorSet(m_tilegpu_ds_layout);
-		plb.AddPushConstants(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(u32)); // base_row
+		plb.AddPushConstants(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(u32) * 2);
 		if ((m_tilegpu_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
 			return false;
 		Vulkan::SetObjectName(m_device, m_tilegpu_pipeline_layout, "TileGpu pipeline layout");
 	}
 
-	// Indirect + state streams, allocated only now (first executor use), so a non-TileGpu session
-	// pays nothing. Sized for the corpus's largest frames with ring headroom for frames in flight;
-	// ReserveMemory waits on a fence rather than overrunning.
+	// Indirect + state + VRAM streams, allocated only now (first executor use), so a non-TileGpu
+	// session pays nothing. Sized for the corpus's largest frames with ring headroom for frames in
+	// flight; ReserveMemory waits on a fence rather than overrunning. The VRAM ring holds several
+	// whole-VRAM (4 MiB) snapshots so a frame in flight does not stall on the next frame's upload.
 	static constexpr u32 TILEGPU_INDIRECT_BUFFER_SIZE = 4 * 1024 * 1024;
 	static constexpr u32 TILEGPU_STATE_BUFFER_SIZE = 4 * 1024 * 1024;
+	static constexpr u32 TILEGPU_VRAM_BUFFER_SIZE = 16 * 1024 * 1024;
 	if (!m_tilegpu_indirect_stream_buffer.Create(VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, TILEGPU_INDIRECT_BUFFER_SIZE) ||
-		!m_tilegpu_state_stream_buffer.Create(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, TILEGPU_STATE_BUFFER_SIZE))
+		!m_tilegpu_state_stream_buffer.Create(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, TILEGPU_STATE_BUFFER_SIZE) ||
+		!m_tilegpu_vram_stream_buffer.Create(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, TILEGPU_VRAM_BUFFER_SIZE))
 	{
 		return false;
 	}
 
-	// One persistent descriptor set over the whole state buffer; the shader indexes rows within it
-	// (base_row + first_instance), so it never needs rewriting frame to frame.
+	// One persistent descriptor set over the whole state and VRAM buffers; the shader indexes rows
+	// and words within them (base_row + first_instance; vram_base + address), so it never needs
+	// rewriting frame to frame.
 	m_tilegpu_state_descriptor_set = AllocatePersistentDescriptorSet(m_tilegpu_ds_layout);
 	if (m_tilegpu_state_descriptor_set == VK_NULL_HANDLE)
 		return false;
@@ -6111,6 +6118,8 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		Vulkan::DescriptorSetUpdateBuilder dsub;
 		dsub.AddBufferDescriptorWrite(m_tilegpu_state_descriptor_set, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			m_tilegpu_state_stream_buffer.GetBuffer(), 0, TILEGPU_STATE_BUFFER_SIZE);
+		dsub.AddBufferDescriptorWrite(m_tilegpu_state_descriptor_set, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			m_tilegpu_vram_stream_buffer.GetBuffer(), 0, TILEGPU_VRAM_BUFFER_SIZE);
 		dsub.Update(m_device);
 	}
 	Vulkan::SetObjectName(m_device, m_tilegpu_state_descriptor_set, "TileGpu state set");
@@ -6122,12 +6131,24 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		return false;
 	}
 
-	VkShaderModule vs = GetUtilityVertexShader(*source);
+	// The VRAM sampling path compiles in only if the page-swizzle forms fitted closed forms — the
+	// shader addresses guest memory with them, so an unfit table disables texturing rather than
+	// sampling the wrong bytes (the state rows still set tex_enable, but TILEGPU_TEX 0 #ifdefs the
+	// sampling out and every draw falls back to the vertex-colour path). The forms are prepended as
+	// TILE_SWZ_* defines exactly as the Tile reinterpretation pipelines take them; TileFormDefines()
+	// fits them as a side effect, so m_tile_forms.valid is read after the call.
+	const std::string& form_defines = TileFormDefines();
+	m_tilegpu_tex = m_tile_forms.valid;
+	const std::string defines = (m_tilegpu_tex ? form_defines : std::string()) +
+								fmt::format("#define TILEGPU_TEX {}\n", m_tilegpu_tex ? 1 : 0);
+	const std::string full_source = defines + *source;
+
+	VkShaderModule vs = GetUtilityVertexShader(full_source);
 	if (vs == VK_NULL_HANDLE)
 		return false;
 	ScopedGuard vs_guard([this, &vs]() { vkDestroyShaderModule(m_device, vs, nullptr); });
 
-	VkShaderModule fs = GetUtilityFragmentShader(*source);
+	VkShaderModule fs = GetUtilityFragmentShader(full_source);
 	if (fs == VK_NULL_HANDLE)
 		return false;
 	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
@@ -6155,9 +6176,12 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 			Vulkan::GraphicsPipelineBuilder gpb;
 			SetPipelineProvokingVertex(m_features, gpb);
 			gpb.AddVertexBuffer(0, sizeof(GSVertex));
-			gpb.AddVertexAttribute(0, 0, VK_FORMAT_R16G16_UINT, 16);   // XY (raw 12.4 fixed)
-			gpb.AddVertexAttribute(1, 0, VK_FORMAT_R32_UINT, 20);      // Z
-			gpb.AddVertexAttribute(2, 0, VK_FORMAT_R8G8B8A8_UNORM, 8); // colour
+			gpb.AddVertexAttribute(0, 0, VK_FORMAT_R16G16_UINT, 16);    // XY (raw 12.4 fixed)
+			gpb.AddVertexAttribute(1, 0, VK_FORMAT_R32_UINT, 20);       // Z
+			gpb.AddVertexAttribute(2, 0, VK_FORMAT_R8G8B8A8_UNORM, 8);  // colour (RGBAQ.RGBA)
+			gpb.AddVertexAttribute(3, 0, VK_FORMAT_R32G32_SFLOAT, 0);   // ST texture coords
+			gpb.AddVertexAttribute(4, 0, VK_FORMAT_R32_SFLOAT, 12);     // Q (RGBAQ.Q, the STQ divisor)
+			gpb.AddVertexAttribute(5, 0, VK_FORMAT_R16G16_UINT, 24);    // UV texture coords (12.4 fixed)
 			gpb.SetPrimitiveTopology(kTopology[t]);
 			gpb.SetPipelineLayout(m_tilegpu_pipeline_layout);
 			gpb.SetDynamicViewportAndScissorState();
@@ -6199,19 +6223,25 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 	// Record the frame's geometry as constant-cost indirect draws. The draw commands go into an
 	// indirect buffer (GSTileGpuIndirectDraw is byte-identical to VkDrawIndexedIndirectCommand, so
-	// this is a straight copy), the per-draw transform into a state SSBO the VS reads by
-	// first_instance, and each pass issues one vkCmdDrawIndexedIndirect per maximal same-topology
-	// run rather than one vkCmdDrawIndexed per draw. Wrong-fast still: no texturing/blending, and
-	// the state row is only the screen->NDC transform (it grows with the fixed-function state in 1.4).
-	// The shader's StateRow is a fixed 32-byte layout, so state_stride must match it exactly.
+	// this is a straight copy), the per-draw state into a state SSBO the VS/FS read by first_instance,
+	// and each pass issues one vkCmdDrawIndexedIndirect per maximal same-topology run rather than one
+	// vkCmdDrawIndexed per draw. Wrong-fast still: direct 32-bit (CT32/CT24) texture sampling only,
+	// no blending, and the state row carries the transform plus that texture block. The shader's
+	// StateRow is a fixed 64-byte layout, so state_stride must match it exactly.
 	if (!m_tilegpu_tried)
 		CompileTileGpuPipeline();
 	const bool can_draw = m_tilegpu_pipeline[0][0] != VK_NULL_HANDLE &&
 						  m_tilegpu_state_descriptor_set != VK_NULL_HANDLE && !plan.draws.empty() &&
 						  plan.topologies.size() == plan.draws.size() &&
 						  plan.vertex_stride == sizeof(GSVertex) && !plan.vertices.empty() &&
-						  plan.state_table != nullptr && plan.state_stride == sizeof(float) * 8 &&
+						  plan.state_table != nullptr && plan.state_stride == sizeof(float) * 16 &&
 						  plan.state_count > 0;
+
+	// Texturing rides along only when the frame carries a VRAM snapshot AND the sampling path
+	// compiled in (the swizzle forms fitted). Without it the state rows' tex_enable is still set but
+	// the shader #ifdef'd the sampling out, so vram_base is inert; a snapshot too large for the ring
+	// slice would be a plan bug, so it is asserted, not silently dropped.
+	const bool can_texture = can_draw && m_tilegpu_tex && plan.vram != nullptr && plan.vram_size > 0;
 
 	EndRenderPass();
 
@@ -6219,7 +6249,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// command buffer, which must not happen mid-render-pass. The indirect commands' vertex/index
 	// offsets are frame-relative, so the streams get bound at their base (below) rather than rebased
 	// per draw; base_row rebases first_instance into this frame's slice of the state ring.
-	u32 vbase = 0, ibase = 0, state_base_rows = 0, indirect_base_bytes = 0;
+	u32 vbase = 0, ibase = 0, state_base_rows = 0, indirect_base_bytes = 0, vram_base_words = 0;
 	if (can_draw)
 	{
 		IASetVertexBuffer(plan.vertices.data(), sizeof(GSVertex), plan.vertices.size() / sizeof(GSVertex), 1);
@@ -6248,6 +6278,23 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		std::memcpy(m_tilegpu_indirect_stream_buffer.GetCurrentHostPointer(), plan.draws.data(), indirect_bytes);
 		indirect_base_bytes = m_tilegpu_indirect_stream_buffer.GetCurrentOffset();
 		m_tilegpu_indirect_stream_buffer.CommitMemory(indirect_bytes);
+
+		// The frame's VRAM snapshot: guest local memory copied whole into the ring, its base word
+		// pushed to the FS. Word-aligned (4) so vram_base is a word index. Only staged when the
+		// sampling path is live; otherwise the shader never reads it.
+		if (can_texture)
+		{
+			const u32 vram_bytes = plan.vram_size;
+			if (!m_tilegpu_vram_stream_buffer.ReserveMemory(vram_bytes, sizeof(u32)))
+			{
+				ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu VRAM snapshot");
+				if (!m_tilegpu_vram_stream_buffer.ReserveMemory(vram_bytes, sizeof(u32)))
+					pxFailRel("Failed to reserve TileGpu VRAM snapshot");
+			}
+			std::memcpy(m_tilegpu_vram_stream_buffer.GetCurrentHostPointer(), plan.vram, vram_bytes);
+			vram_base_words = m_tilegpu_vram_stream_buffer.GetCurrentOffset() / sizeof(u32);
+			m_tilegpu_vram_stream_buffer.CommitMemory(vram_bytes);
+		}
 	}
 
 	// A multi-draw indirect covers at most this many commands; a longer topology run is split.
@@ -6319,8 +6366,9 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				static_cast<VkDeviceSize>(ibase) * sizeof(u16), VK_INDEX_TYPE_UINT16);
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 0, 1,
 				&m_tilegpu_state_descriptor_set, 0, nullptr);
-			vkCmdPushConstants(
-				cmd, m_tilegpu_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(u32), &state_base_rows);
+			const u32 push[2] = {state_base_rows, vram_base_words}; // base_row (VS), vram_base (FS)
+			vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout,
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
 
 			// One vkCmdDrawIndexedIndirect per maximal same-topology run, in draw order. Draw order
 			// is preserved exactly: commands are laid out in draw order, each run is a contiguous
@@ -7281,7 +7329,10 @@ void GSDeviceVK::DestroyResources()
 		m_tilegpu_indirect_stream_buffer.Destroy(false);
 	if (m_tilegpu_state_stream_buffer.IsValid())
 		m_tilegpu_state_stream_buffer.Destroy(false);
+	if (m_tilegpu_vram_stream_buffer.IsValid())
+		m_tilegpu_vram_stream_buffer.Destroy(false);
 	m_tilegpu_tried = false;
+	m_tilegpu_tex = false;
 
 	for (u32 ds = 0; ds < 2; ds++)
 	{

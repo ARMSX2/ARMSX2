@@ -577,11 +577,15 @@ private:
 	VkDescriptorSet m_tilegpu_state_descriptor_set = VK_NULL_HANDLE;
 	std::array<std::array<VkPipeline, 2>, 3> m_tilegpu_pipeline{};
 	// Indirect-submission streams (created on first executor use, alongside the pipelines): the
-	// draw commands (VkDrawIndexedIndirectCommand array) and the per-draw state table the VS reads
-	// by first_instance. Only allocated when the TileGpu executor actually runs.
+	// draw commands (VkDrawIndexedIndirectCommand array), the per-draw state table the VS reads by
+	// first_instance, and a per-frame snapshot of guest VRAM the FS samples textures from (guest
+	// local memory as a flat word array, addressed by the GS swizzle). Only allocated when the
+	// TileGpu executor actually runs.
 	VKStreamBuffer m_tilegpu_indirect_stream_buffer;
 	VKStreamBuffer m_tilegpu_state_stream_buffer;
+	VKStreamBuffer m_tilegpu_vram_stream_buffer;
 	bool m_tilegpu_tried = false;
+	bool m_tilegpu_tex = false; // the page-swizzle forms fitted, so the VRAM sampling path compiled in
 	bool CompileTileGpuPipeline();
 	std::array<VkPipeline, static_cast<int>(PresentShader::Count)> m_present{};
 	std::array<VkPipeline, 2> m_merge{};
