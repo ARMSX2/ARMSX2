@@ -198,6 +198,12 @@ private:
 	// (GSTilePassSim.h) without changing anything it observes. Shares the ledger's
 	// discipline: an arm with the pin on is an attribution run, never a timed one.
 	GSTilePassSim m_pass_sim;
+	// Move() reports itself to the sim, then runs the base GSState::Move, which fires
+	// both invalidate hooks over the same regions. Those hooks feed the sim too, so
+	// without this the copy arrives three times and the follow-up upload lands on pages
+	// OnMove has already marked written. Set for the base call only; the hooks' real
+	// work (readback, vram model) still runs.
+	bool m_pass_sim_in_move = false;
 	void PassSimObserveDraw(const GSTileDrawPlan& plan, const GSVector4i& r);
 	void ReportPassSim();
 

@@ -442,7 +442,7 @@ void GSRendererTile::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const 
 	GSVramModel::FootprintForRect(layout, r, m_rect_fp);
 	const u8 planes = gsTilePlanesInvalidatedByWrite(BITBLTBUF.DPSM);
 
-	if (m_pass_sim.IsActive()) [[unlikely]]
+	if (m_pass_sim.IsActive() && !m_pass_sim_in_move) [[unlikely]]
 		m_pass_sim.OnUpload(PagesForTargetRect(layout, r));
 
 	ReadbackModelPages(m_vram_model.SpillBeforeCpuWrite(m_rect_fp, planes), ReadbackSite::Transfer);
@@ -461,7 +461,7 @@ void GSRendererTile::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const 
 		static_cast<u8>(BITBLTBUF.SPSM), KindForPsm(BITBLTBUF.SPSM)};
 	GSVramModel::FootprintForRect(layout, r, m_rect_fp);
 
-	if (m_pass_sim.IsActive()) [[unlikely]]
+	if (m_pass_sim.IsActive() && !m_pass_sim_in_move) [[unlikely]]
 		m_pass_sim.OnCpuRead(PagesForTargetRect(layout, r), clut);
 
 	GSPageBitmap need = m_vram_model.ReadbackNeeded(m_rect_fp, kGSTilePlanesAll);
@@ -901,7 +901,9 @@ void GSRendererTile::Move()
 
 	ReadbackModelPages(need, ReadbackSite::Move);
 
+	m_pass_sim_in_move = true;
 	GSRendererSW::Move();
+	m_pass_sim_in_move = false;
 
 	m_vram_model.OnCpuWrite(m_rect_fp, planes);
 }

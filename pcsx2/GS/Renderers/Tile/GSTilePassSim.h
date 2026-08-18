@@ -88,12 +88,15 @@ public:
 		                             // texture version serves them without a break
 		u32 uploads_drawable = 0;    // transfers over pages the pass WROTE: realized as
 		                             // an in-pass draw from fresh staging — no break
-		u32 moves = 0;               // GS->GS copies seen. Diagnostic: the base renderer's
-		                             // Move fires the two invalidate hooks underneath us, so
-		                             // each move reaches this sim as three events and the
-		                             // follow-up upload lands on pages OnMove just marked
-		                             // written. This counts the exposure so a nonzero
-		                             // uploads_drawable can be attributed rather than trusted.
+		u32 moves = 0;               // GS->GS copies seen. The base renderer's Move fires
+		                             // the two invalidate hooks underneath, and those feed
+		                             // this sim as well -- so a move would arrive three
+		                             // times, with the follow-up upload landing on pages
+		                             // OnMove has already marked written and therefore
+		                             // always scoring drawable. Each renderer's Move now
+		                             // guards its base call; this counts how much traffic
+		                             // that guard is carrying, and it must stay nonzero-able
+		                             // because a corpus of zeroes is why the bug survived.
 		u32 alpha_range_unknown = 0; // draws whose vertex-alpha range was not computed, so the
 		                             // As-blend classifier assumed the widest alpha and sorted
 		                             // them by that assumption instead of by their real range
