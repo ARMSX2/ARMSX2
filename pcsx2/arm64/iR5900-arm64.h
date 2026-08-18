@@ -1030,6 +1030,16 @@ namespace EERecFallback
 
 	// Human-readable rendering of a mask, for run banners.
 	std::string DescribeGroups(u32 groups);
+
+	// One-shot env-var entry point, for hunts under the full frontend rather
+	// than pcsx2-eerunner's --rec-fallback: ARMSX2_REC_FALLBACK takes the same
+	// group list, ARMSX2_REC_FALLBACK_CENSUS=1 dumps the COP2 macro-op census.
+	// Unset means untouched globals and no output.
+	void InitFromEnvOnce();
+	// Census line for the console, when the env var asked for it. `end_of_run`
+	// is the shutdown dump and prints whatever it has, including nothing at
+	// all; the per-reset calls stay quiet until the counts have moved.
+	void MaybeLogCop2VuCensus(bool end_of_run);
 } // namespace EERecFallback
 
 #endif // PCSX2_RECOMPILER_TESTS

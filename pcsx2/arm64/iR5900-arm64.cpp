@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -1808,12 +1810,17 @@ namespace EERecFallback
 	}
 
 	static u32 s_cop2VuCensus[kCop2VuIdCount];
+	static u32 s_cop2VuCensusTotal;
+	static u32 s_cop2VuCensusLogged;
 
 	void NoteCop2VuCompiled(u32 code)
 	{
 		const int id = Cop2VuOpId(code);
 		if (id >= 0)
+		{
 			s_cop2VuCensus[id]++;
+			s_cop2VuCensusTotal++;
+		}
 	}
 
 	std::string DescribeCop2VuCensus()
@@ -1833,6 +1840,48 @@ namespace EERecFallback
 		if (s.empty())
 			return "no VU macro ops compiled";
 		return fmt::format("{} (total {})", s, total);
+	}
+
+	void InitFromEnvOnce()
+	{
+		static bool s_done = false;
+		if (s_done)
+			return;
+		s_done = true;
+
+		const char* list = std::getenv("ARMSX2_REC_FALLBACK");
+		if (!list || !*list)
+			return;
+
+		u32 groups = 0;
+		u32 reg_masks[kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u};
+		u64 vu_mask[kCop2VuIdCount / 64] = {~0ull, ~0ull, ~0ull, ~0ull};
+		std::string error;
+		if (!ParseGroups(list, &groups, reg_masks, vu_mask, &error))
+		{
+			Console.Error("ARMSX2_REC_FALLBACK: %s", error.c_str());
+			return;
+		}
+
+		g_groups = groups;
+		std::memcpy(g_cop2RegMask, reg_masks, sizeof(g_cop2RegMask));
+		std::memcpy(g_cop2VuMask, vu_mask, sizeof(g_cop2VuMask));
+		Console.WriteLn(Color_Yellow, "EERecFallback: forcing %s to the interpreter",
+			DescribeGroups(g_groups).c_str());
+	}
+
+	void MaybeLogCop2VuCensus(bool end_of_run)
+	{
+		const char* want = std::getenv("ARMSX2_REC_FALLBACK_CENSUS");
+		if (!want || *want == '0')
+			return;
+		// A reset with nothing new to report is a boot artifact: the first
+		// resets fire before a block has reached the emitter, and an empty
+		// census there reads as "this game compiles no VU macro ops".
+		if (!end_of_run && s_cop2VuCensusTotal == s_cop2VuCensusLogged)
+			return;
+		s_cop2VuCensusLogged = s_cop2VuCensusTotal;
+		Console.WriteLn(Color_Yellow, "COP2VU CENSUS: %s", DescribeCop2VuCensus().c_str());
 	}
 
 	bool Selected(u32 code)
@@ -3003,6 +3052,15 @@ static void recResetRaw()
 	s_curBlockContSites.clear();
 #endif
 
+#ifdef PCSX2_RECOMPILER_TESTS
+	// Before the first block compiles: a group forced to the interpreter here
+	// changes what every later block emits. The census runs to the same beat
+	// but reports the generation being thrown away, so a run long enough to
+	// exhaust the cache leaves a trail even if it never shuts down cleanly.
+	EERecFallback::InitFromEnvOnce();
+	EERecFallback::MaybeLogCop2VuCensus(false);
+#endif
+
 	// COP2 macro-mode emitters read their clamp/mask constants from the pack
 	// ([RSTATE, #imm]) — (re)write them before any block compiles.
 	cop2RecWritePackConstants();
@@ -3121,6 +3179,12 @@ static void recResetRaw()
 
 static void recShutdown()
 {
+#ifdef PCSX2_RECOMPILER_TESTS
+	// The only dump a short run reaches: every reset it saw came before the
+	// first block compiled.
+	EERecFallback::MaybeLogCop2VuCensus(true);
+#endif
+
 	s_eeConstantPool.Destroy();
 	recRAMCopy.deallocate();
 	recLutReserve_RAM.deallocate();
