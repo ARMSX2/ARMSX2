@@ -170,6 +170,8 @@ final class AppState: @unchecked Sendable {
         Task { @MainActor in
             StikDebugLauncher.autoOpenIfNeeded(reason: "game boot")
         }
+        // Before, not after: the boot reads the per-game file, stale absolute and all.
+        PerGameShaderSelection.repair(forISO: isoName)
         ARMSX2Bridge.bootISO(isoName)
         ARMSX2Bridge.prepareGameRenderViewForCurrentRenderer()
         runningGameName = isoName
