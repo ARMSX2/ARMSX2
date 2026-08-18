@@ -128,7 +128,8 @@ static std::string s_iso_path;
 static std::string s_savestate_path;
 static uint32_t s_frames = 300;
 static bool s_no_console = false;
-static bool s_contmem_vu0_interp = false; // --vu0-interp modifier for --contmem
+static bool s_vu0_interp = false; // --vu0-interp: VU0 on its interpreter (every --contmem pass, --liverun)
+static bool s_vu1_interp = false; // --vu1-interp: VU1 on its interpreter (--liverun)
 static GSRendererType s_renderer = GSRendererType::Null; // --renderer (Null default; vk for Intel/headless)
 static bool s_renderer_explicit = false; // user passed --renderer (an explicit null is honored in liverun)
 static std::string s_memdump_prefix; // --memdump <prefix>: write <prefix>.{interp,jit}.bin at the last frame
@@ -571,6 +572,10 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               there. --mkstate prints a COP2VU CENSUS of the macro ops actually compiled;\n");
 	std::fprintf(stderr, "               bisect over that list, since an op never compiled cannot be the bug.\n");
 	std::fprintf(stderr, "               Pairs well with --mkstate --renderer sw for a visual oracle. arm64 only.\n");
+	std::fprintf(stderr, "  --vu0-interp / --vu1-interp: run that VU on its interpreter with everything else\n");
+	std::fprintf(stderr, "               left on the JIT. Under --contmem, --vu0-interp applies to every pass. Under\n");
+	std::fprintf(stderr, "               --liverun, the pair attributes a trajectory move to one VU engine; turn MTVU\n");
+	std::fprintf(stderr, "               off with EERUNNER_MTVU=0 when interpreting VU1.\n");
 	std::fprintf(stderr, "  --gsdump <path>[:<frames>]: with --liverun, record a .gs dump of the GIF stream (default 1\n");
 	std::fprintf(stderr, "               frame) starting after --gsdump-at frames (default 30, so the scene has settled).\n");
 	std::fprintf(stderr, "               Replaying that dump in pcsx2-gsrunner is the only honest way to A/B the GS across\n");
@@ -739,7 +744,12 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG("--vu0-interp"))
 			{
-				s_contmem_vu0_interp = true;
+				s_vu0_interp = true;
+				continue;
+			}
+			else if (CHECK_ARG("--vu1-interp"))
+			{
+				s_vu1_interp = true;
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--memdump"))
@@ -1017,6 +1027,15 @@ void EERunner::SettingsOverride()
 		if (const char* e = std::getenv("EERUNNER_EE"))
 			ee_jit = !(e[0] == 'i' || e[0] == 'I' || e[0] == '0');
 		s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "EnableEE", ee_jit);
+
+		// --vu0-interp / --vu1-interp run that VU on its interpreter with
+		// everything else left on the JIT, so a PCSX2_VU_TRAJ_OUT A/B attributes a
+		// trajectory move to one VU engine. Turn MTVU off with EERUNNER_MTVU=0 when
+		// interpreting VU1.
+		if (s_vu0_interp)
+			s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU0", false);
+		if (s_vu1_interp)
+			s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", false);
 	}
 
 	// EERUNNER_FPUFULL=1 forces CHECK_FPU_FULL (eeClampMode:3) so the EE-FPU JIT uses
@@ -2520,7 +2539,7 @@ static bool ZoomFromCheckpoint(const std::string& ckpt)
 static int RunContinuousMemTrajectory()
 {
 	Error error;
-	const bool force_vu0_interp = s_contmem_vu0_interp;
+	const bool force_vu0_interp = s_vu0_interp;
 	auto runPass = [&](bool jit, std::vector<uint64_t>* cycles = nullptr) -> std::vector<uint64_t> {
 		std::vector<uint64_t> hashes;
 		if (!VMManager::LoadState(s_savestate_path.c_str(), &error))
