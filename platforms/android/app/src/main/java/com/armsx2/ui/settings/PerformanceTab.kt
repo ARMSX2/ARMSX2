@@ -300,7 +300,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
             // Arbitrary value; default stays 100. Affects audio pitch / timing / RA.
             IntSliderRow(
                 label = str("perf.speedLimit.label"),
-                value = s.nominalSpeedPercent.coerceIn(5, 1000),
+                value = s.nominalSpeedPercent.coerceIn(10, 1000),
                 min = 10,
                 max = 1000,
                 description = str("perf.speedLimit.description"),
