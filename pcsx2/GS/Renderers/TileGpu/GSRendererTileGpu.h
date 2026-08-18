@@ -52,6 +52,14 @@ private:
 	// not an optional arm, so it takes no config lever.
 	GSTilePassSim m_pass_sim;
 
+	// Set only for the duration of the base GSRenderer::Move() call. A GS->GS move reaches
+	// the sim once as OnMove, which already accounts both halves; the base copy underneath
+	// then fires InvalidateLocalMem(src) and InvalidateVideoMem(dst), whose sim forwards
+	// would double-count the move (the destination write lands in the drawable branch of a
+	// page OnMove has already marked written). The two hooks gate their sim forward on this
+	// flag; their real work (none here — the bytes already moved) is unaffected.
+	bool m_pass_sim_in_move = false;
+
 	// The screen-space bbox of the current draw, scissor-clipped — the Tile renderer's
 	// ComputeDrawRect, which reads only base state, replicated here (it is not a base method).
 	GSVector4i ComputeDrawRect() const;

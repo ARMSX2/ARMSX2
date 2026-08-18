@@ -94,6 +94,8 @@ bool GSRendererTileGpu::IsCoverageAlphaSupported()
 // observes — an upload never has to break the pass in the model.
 void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r)
 {
+	if (m_pass_sim_in_move)
+		return; // the move's destination write is already modelled by OnMove
 	const GSTileSurfaceLayout layout{BITBLTBUF.DBP, static_cast<u8>(BITBLTBUF.DBW),
 		static_cast<u8>(BITBLTBUF.DPSM), KindForPsm(BITBLTBUF.DPSM)};
 	m_pass_sim.OnUpload(PagesForTargetRect(layout, r));
@@ -103,6 +105,8 @@ void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 // splits the on-GPU palette-gather road from a genuine readback in the model.
 void GSRendererTileGpu::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut)
 {
+	if (m_pass_sim_in_move)
+		return; // the move's source read is already modelled by OnMove
 	const GSTileSurfaceLayout layout{BITBLTBUF.SBP, static_cast<u8>(BITBLTBUF.SBW),
 		static_cast<u8>(BITBLTBUF.SPSM), KindForPsm(BITBLTBUF.SPSM)};
 	m_pass_sim.OnCpuRead(PagesForTargetRect(layout, r), clut);
@@ -110,9 +114,10 @@ void GSRendererTileGpu::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 
 // A local->local move. Observed as OnMove first — matching the Tile renderer's order, where
 // OnMove sees the pass state before the move's own read/write halves touch it — then the
-// base performs the real guest-memory copy. The base Move calls InvalidateLocalMem and
-// InvalidateVideoMem in turn, so the sim also sees the move's source read and destination
-// write through the two hooks above, exactly the event sequence it gets under Tile.
+// base performs the real guest-memory copy. That base Move calls InvalidateLocalMem(src) and
+// InvalidateVideoMem(dst) in turn; OnMove has already accounted both halves, so m_pass_sim_in_move
+// suppresses their sim forwards for the copy's duration (otherwise the destination write
+// double-counts as a draw-realized upload — the latent defect the Tile `moves` counter prices).
 void GSRendererTileGpu::Move()
 {
 	const int w = m_env.TRXREG.RRW;
@@ -127,7 +132,9 @@ void GSRendererTileGpu::Move()
 
 	m_pass_sim.OnMove(PagesForTargetRect(src_l, src_r), PagesForTargetRect(dst_l, dst_r));
 
+	m_pass_sim_in_move = true;
 	GSRenderer::Move();
+	m_pass_sim_in_move = false;
 }
 
 GSVector4i GSRendererTileGpu::ComputeDrawRect() const
