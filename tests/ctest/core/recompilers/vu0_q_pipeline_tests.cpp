@@ -7,8 +7,8 @@
 // is captured at E-bit, so the JIT's mVUendProgram() spill of pending_q
 // → q is what we diff against the interpreter's per-instruction `VU.q`
 // updates. STATUS-flag bits 0x10 (invalid op) and 0x20 (div-by-zero) are
-// exercised — both the architectural REG_STATUS_FLAG and the magic q
-// payload values 0x7F7FFFFF / 0xFF7FFFFF the VU emits on /0 with sign.
+// exercised — both the architectural REG_STATUS_FLAG and the saturated q
+// payload the VU emits on /0 with sign.
 //
 // FDIV flag → STATUS transfer (micro mode): the I (invalid, 0x10) and D
 // (divide-by-zero, 0x20) bits are produced by VDIV/VSQRT/VRSQRT into
@@ -44,8 +44,13 @@ inline VuOp Pair(u32 lower, u32 upper) { return VuOp{lower, upper}; }
 // VWAITQ + upper-NOP — the canonical "drain Q-pipe" pair.
 inline VuOp WaitQPair() { return VuOp{VWAITQ_L(), VNOP_U()}; }
 
-constexpr u32 kQPlusInfMagic  = 0x7F7FFFFFu;  // VU's "infinity" sentinel
-constexpr u32 kQMinusInfMagic = 0xFF7FFFFFu;
+// What the recompilers return for a saturated quotient. The console's is
+// 0x7FFFFFFF, which is what the interpreter now returns; VuDivUnitConsole
+// scores the gap in full.
+constexpr u32 kQPlusJitMax  = 0x7F7FFFFFu;
+constexpr u32 kQMinusJitMax = 0xFF7FFFFFu;
+constexpr const char* kWhyQCeiling =
+	"Q: the recompiler's saturation ceiling is FLT_MAX, the interpreter's is 0x7FFFFFFF";
 
 } // namespace
 
@@ -86,8 +91,8 @@ TEST(Vu0Qpipe, VdivNegativeOverPositiveSignsResult)
 
 TEST(Vu0Qpipe, VdivByZeroSetsBit20AndMaxFloatQ)
 {
-	// Per _vuDIV: ft==0 && fs!=0 → statusflag |= 0x20, q = 0x7F7FFFFF
-	// (or 0xFF7FFFFF if signs differ).
+	// Per _vuDIV: ft==0 && fs!=0 → statusflag |= 0x20, q saturates with the
+	// xor of the two signs.
 	VuTestHarness h(0);
 	h.IgnoreViInDiff(REG_STATUS_FLAG); // see file header — divFlag→STATUS lost on short programs
 	h.SetVf(1, 1.0f, 0, 0, 0);
@@ -97,8 +102,9 @@ TEST(Vu0Qpipe, VdivByZeroSetsBit20AndMaxFloatQ)
 		WaitQPair(),
 		EBitNopPair(),
 	});
-	h.Run();
-	EXPECT_EQ(h.GetViJit(REG_Q), kQPlusInfMagic);
+	h.RunRequiringDivergence(kWhyQCeiling);
+	EXPECT_EQ(h.GetViJit(REG_Q), kQPlusJitMax);
+	EXPECT_EQ(h.GetViInterp(REG_Q), 0x7FFFFFFFu);
 	// Status bit 0x20 = D-flag (div-by-zero). Asserted via interp (the JIT
 	// loses the divFlag on short programs — see file header).
 	EXPECT_NE(h.GetViInterp(REG_STATUS_FLAG) & 0x20, 0u) << "div-by-zero D bit missing in interp status";
@@ -115,14 +121,15 @@ TEST(Vu0Qpipe, VdivByZeroNegativeNumeratorSignsMagicQ)
 		WaitQPair(),
 		EBitNopPair(),
 	});
-	h.Run();
-	EXPECT_EQ(h.GetViJit(REG_Q), kQMinusInfMagic);
+	h.RunRequiringDivergence(kWhyQCeiling);
+	EXPECT_EQ(h.GetViJit(REG_Q), kQMinusJitMax);
+	EXPECT_EQ(h.GetViInterp(REG_Q), 0xFFFFFFFFu);
 }
 
 TEST(Vu0Qpipe, VdivZeroOverZeroSetsBit10InvalidOp)
 {
 	// Per _vuDIV: ft==0 && fs==0 → statusflag |= 0x10 (invalid-op I-flag),
-	// q gets the +max-float magic since signs match (both +0).
+	// q saturates positive since the signs match (both +0).
 	VuTestHarness h(0);
 	h.IgnoreViInDiff(REG_STATUS_FLAG);
 	h.SetVf(1, 0.0f, 0, 0, 0);
@@ -132,8 +139,9 @@ TEST(Vu0Qpipe, VdivZeroOverZeroSetsBit10InvalidOp)
 		WaitQPair(),
 		EBitNopPair(),
 	});
-	h.Run();
-	EXPECT_EQ(h.GetViJit(REG_Q), kQPlusInfMagic);
+	h.RunRequiringDivergence(kWhyQCeiling);
+	EXPECT_EQ(h.GetViJit(REG_Q), kQPlusJitMax);
+	EXPECT_EQ(h.GetViInterp(REG_Q), 0x7FFFFFFFu);
 	EXPECT_NE(h.GetViInterp(REG_STATUS_FLAG) & 0x10, 0u);
 }
 
@@ -161,7 +169,7 @@ TEST(Vu0Qpipe, VdivByZeroSetsDBitInJitStatus)
 		WaitQPair(),
 		EBitNopPair(),
 	});
-	h.Run();
+	h.RunRequiringDivergence(kWhyQCeiling);
 	EXPECT_NE(h.GetViJit(REG_STATUS_FLAG) & 0x20u, 0u)
 		<< "JIT dropped the FDIV divide-by-zero (D) flag — mVUdivSet missing from doUpperOp?";
 	EXPECT_NE(h.GetViInterp(REG_STATUS_FLAG) & 0x20u, 0u); // oracle
@@ -182,7 +190,7 @@ TEST(Vu0Qpipe, VdivZeroOverZeroSetsIBitInJitStatus)
 		WaitQPair(),
 		EBitNopPair(),
 	});
-	h.Run();
+	h.RunRequiringDivergence(kWhyQCeiling);
 	EXPECT_NE(h.GetViJit(REG_STATUS_FLAG) & 0x10u, 0u)
 		<< "JIT dropped the FDIV invalid-op (I) flag (0/0)";
 	EXPECT_NE(h.GetViInterp(REG_STATUS_FLAG) & 0x10u, 0u);
@@ -221,7 +229,7 @@ TEST(Vu0Qpipe, VdivByZeroSetsDBitInJitStatusOnVu1)
 		WaitQPair(),
 		EBitNopPair(),
 	});
-	h.Run();
+	h.RunRequiringDivergence(kWhyQCeiling);
 	EXPECT_NE(h.GetViJit(REG_STATUS_FLAG) & 0x20u, 0u)
 		<< "VU1 JIT dropped the FDIV divide-by-zero (D) flag";
 }
@@ -301,8 +309,9 @@ TEST(Vu0Qpipe, VrsqrtByZeroNonZeroNumeratorMagicQ)
 		WaitQPair(),
 		EBitNopPair(),
 	});
-	h.Run();
-	EXPECT_EQ(h.GetViJit(REG_Q), kQPlusInfMagic);
+	h.RunRequiringDivergence(kWhyQCeiling);
+	EXPECT_EQ(h.GetViJit(REG_Q), kQPlusJitMax);
+	EXPECT_EQ(h.GetViInterp(REG_Q), 0x7FFFFFFFu);
 }
 
 TEST(Vu0Qpipe, VrsqrtByZeroZeroNumeratorSaturatesAndRaisesInvalidOnly)
@@ -320,8 +329,9 @@ TEST(Vu0Qpipe, VrsqrtByZeroZeroNumeratorSaturatesAndRaisesInvalidOnly)
 		WaitQPair(),
 		EBitNopPair(),
 	});
-	h.Run();
-	EXPECT_EQ(h.GetViInterp(REG_Q), kQPlusInfMagic);
+	h.RunRequiringDivergence(kWhyQCeiling);
+	EXPECT_EQ(h.GetViInterp(REG_Q), 0x7FFFFFFFu);
+	EXPECT_EQ(h.GetViJit(REG_Q), kQPlusJitMax);
 	EXPECT_EQ(h.GetViInterp(REG_STATUS_FLAG) & 0x30, 0x10u);
 }
 

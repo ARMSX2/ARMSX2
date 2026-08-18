@@ -42,4 +42,12 @@ namespace EeFpuModel
 	};
 
 	Accumulate MulAccumulate(u32 acc, u32 fs, u32 ft, bool issub);
+
+	/*	The divide unit, in integers and with no rounding step: a quotient and a
+		square root that no host rounding mode reproduces. A zero divisor never
+		reaches Divide -- what it raises and what sign it saturates with differ
+		between the two units and between DIV and RSQRT, so each caller answers
+		it first. */
+	u32 Divide(u32 a, u32 b);
+	u32 SqrtBits(u32 t);
 } // namespace EeFpuModel
