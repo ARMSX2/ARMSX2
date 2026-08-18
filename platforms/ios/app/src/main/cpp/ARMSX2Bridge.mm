@@ -26,6 +26,12 @@
 	#define ARMSX2_HAS_METALFX 0
 #endif
 
+// Only the preset API is used here, to read a preset's parameters. That is runtime-agnostic,
+// so a plain include suffices — no LIBRA_RUNTIME_* opt-in of the kind GSDeviceMTL.mm needs.
+#ifdef ARMSX2_HAS_LIBRASHADER
+#include "librashader.h"
+#endif
+
 #include "common/Darwin/DarwinMisc.h"
 #include <SDL3/SDL.h>
 
@@ -304,7 +310,7 @@ static NSArray<NSString*>* ARMSX2JITBisectFlagKeys()
     static NSArray<NSString*>* keys;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        keys = @[
+        keys = [[NSArray alloc] initWithObjects:
             @"COP1EverythingOnly",
             @"COP1EverythingPlusLoadStore",
             @"COP1EverythingPlusMMI",
@@ -314,7 +320,7 @@ static NSArray<NSString*>* ARMSX2JITBisectFlagKeys()
             @"COP1EverythingPlusMoves",
             @"COP1EverythingPlusIntegerALU",
             @"COP1EverythingPlusBranches",
-        ];
+            nil];
     });
     return keys;
 }
@@ -2616,9 +2622,11 @@ static BOOL ARMSX2IsShaderPackImportName(NSString* name)
     static NSSet<NSString*>* allowed;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        allowed = [NSSet setWithArray:@[@"slangp", @"slang", @"glslp", @"glsl", @"cgp", @"cg",
-                                        @"inc", @"h", @"params", @"png", @"jpg", @"jpeg",
-                                        @"tga", @"bmp", @"txt", @"md"]];
+        // This file is MRC, so a convenience constructor here dies with the pool and every
+        // later call reads freed memory
+        allowed = [[NSSet alloc] initWithArray:@[@"slangp", @"slang", @"glslp", @"glsl", @"cgp",
+                                                 @"cg", @"inc", @"h", @"params", @"png", @"jpg",
+                                                 @"jpeg", @"tga", @"bmp", @"txt", @"md"]];
     });
     return [allowed containsObject:name.pathExtension.lowercaseString];
 }
@@ -3118,7 +3126,8 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        kAllowedPackageExtensions = @[@"png", @"jpg", @"jpeg", @"webp", @"pdf", @"json"];
+        kAllowedPackageExtensions = [[NSArray alloc] initWithObjects:@"png", @"jpg", @"jpeg",
+                                                                    @"webp", @"pdf", @"json", nil];
     });
 
     NSMutableArray<NSURL*>* extracted = [NSMutableArray array];
@@ -4324,6 +4333,123 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 	return NO;
  #endif
  }
+
+// Whether librashader was compiled into this build at all. Read off the define rather
+// than probed: a build can carry the bundled presets and no librashader, so a preset
+// file on disk says nothing, and a failed apply says it far too late. Swift cannot see
+// a C++ define, so this is the only way the settings UI learns to leave the shader
+// section out entirely.
++ (BOOL)isShaderChainSupported {
+#ifdef ARMSX2_HAS_LIBRASHADER
+	return YES;
+#else
+	return NO;
+#endif
+}
+
+#pragma mark - Shader chain parameters
+
+// Loads and frees ITS OWN preset handle, because creating a filter chain consumes the preset
+// outright — reusing the renderer's would leave nothing to enumerate. Reading a preset is pure
+// file parsing, so this needs no Metal device and no running VM.
++ (nullable NSString *)shaderPresetParametersAtPath:(nonnull NSString *)path {
+#ifndef ARMSX2_HAS_LIBRASHADER
+    return nil;
+#else
+    const char* filename = path.UTF8String;
+    if (!filename)
+        return nil;
+
+    libra_shader_preset_t preset = nullptr;
+    libra_error_t err = libra_preset_create(filename, &preset);
+    if (err)
+    {
+        libra_error_free(&err);
+        return nil;
+    }
+
+    libra_preset_param_list_t params = {};
+    err = libra_preset_get_runtime_params(&preset, &params);
+    if (err)
+    {
+        libra_error_free(&err);
+        libra_preset_free(&preset);
+        return nil;
+    }
+
+    const auto escape = [](const char* s) {
+        std::string out;
+        if (!s)
+            return out;
+        for (const char* p = s; *p; ++p)
+        {
+            switch (*p)
+            {
+                case '"':  out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (static_cast<unsigned char>(*p) >= 0x20)
+                        out += *p;
+                    break;
+            }
+        }
+        return out;
+    };
+
+    // A shader author's range can be non-finite, and "%g" would spell that "nan" or "inf",
+    // which is not valid JSON and would cost the whole list rather than the one number.
+    const auto number = [](float value) {
+        if (!std::isfinite(value))
+            return std::string("null");
+        char buffer[32];
+        std::snprintf(buffer, sizeof(buffer), "%g", static_cast<double>(value));
+        return std::string(buffer);
+    };
+
+    std::string json("[");
+    for (uint64_t i = 0; i < params.length; i++)
+    {
+        const libra_preset_param_t& p = params.parameters[i];
+        if (i)
+            json += ',';
+        json += "{\"name\":\"" + escape(p.name);
+        json += "\",\"description\":\"" + escape(p.description);
+        json += "\",\"initial\":" + number(p.initial);
+        json += ",\"minimum\":" + number(p.minimum);
+        json += ",\"maximum\":" + number(p.maximum);
+        json += ",\"step\":" + number(p.step) + "}";
+    }
+    json += ']';
+
+    // free_runtime_params takes the list BY VALUE, and the preset is still ours to free —
+    // unlike chain creation, reading the parameters does not consume it.
+    libra_preset_free_runtime_params(params);
+    libra_preset_free(&preset);
+
+    return [NSString stringWithUTF8String:json.c_str()];
+#endif
+}
+
+// Deliberately NOT behind ARMSX2_HAS_LIBRASHADER: the store is plain values and its consumer
+// is already stubbed out in a build without librashader, so guarding here would only add a
+// second way for the feature to vanish silently.
++ (void)setShaderChainParameters:(nonnull NSDictionary<NSString *, NSNumber *> *)params forPreset:(nonnull NSString *)preset {
+    std::vector<std::pair<std::string, float>> values;
+    values.reserve(params.count);
+    for (NSString* name in params)
+    {
+        const char* utf8 = name.UTF8String;
+        if (!utf8)
+            continue;
+        values.emplace_back(utf8, params[name].floatValue);
+    }
+
+    const char* path = preset.UTF8String;
+    GSDevice::SetShaderChainParams(path ? std::string(path) : std::string(), std::move(values));
+}
 
 #pragma mark - Frame-time history
 

@@ -290,6 +290,14 @@ struct GraphicsSettingsView: View {
                 Text(settings.localized("Adjusts brightness, contrast, saturation, and gamma of the output image. Applies immediately."))
             }
 
+            if ARMSX2Bridge.isShaderChainSupported() {
+                ShaderChainSection(
+                    enabled: $settings.shaderChainEnabled,
+                    presetRef: $settings.shaderChainPresetRef,
+                    localized: settings.localized
+                )
+            }
+
             Section(settings.localized("Advanced Upscaling Hacks")) {
                 Toggle(settings.localized("Manual Advanced Hacks"), isOn: Binding(
                     get: { manualAdvancedHacks },

@@ -31,14 +31,43 @@ if(NOT Git_FOUND)
 endif()
 
 # ---- Platform gate ----------------------------------------------------------------
-# Only the device SDK maps onto a Rust target we build. A simulator or Catalyst configure
-# must keep working, so it disables the feature rather than failing.
-if(ARMSX2_MAC_CATALYST OR NOT CMAKE_OSX_SYSROOT STREQUAL "iphoneos")
-	message(STATUS "librashader: sysroot '${CMAKE_OSX_SYSROOT}' is not iphoneos -> DISABLED.")
+# Device and simulator both map onto a Rust target. Catalyst does not, so it disables the
+# feature rather than failing. The simulator triple exists so the shader chain can be
+# exercised without a phone: Metal renders there, and everything the chain does apart from
+# running a game at speed is reachable.
+if(ARMSX2_MAC_CATALYST)
+	message(STATUS "librashader: Mac Catalyst has no mapped Rust target -> DISABLED.")
+	set(ARMSX2_HAVE_LIBRASHADER OFF PARENT_SCOPE)
+	return()
+elseif(CMAKE_OSX_SYSROOT STREQUAL "iphoneos")
+	set(_lrs_rust_target "aarch64-apple-ios")
+elseif(CMAKE_OSX_SYSROOT STREQUAL "iphonesimulator")
+	# The simulator triple follows the HOST cpu, not the phone's, because the simulator
+	# runs native code on this Mac.
+	if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")
+		set(_lrs_rust_target "x86_64-apple-ios")
+	else()
+		set(_lrs_rust_target "aarch64-apple-ios-sim")
+	endif()
+else()
+	message(STATUS "librashader: sysroot '${CMAKE_OSX_SYSROOT}' has no mapped Rust target -> DISABLED.")
 	set(ARMSX2_HAVE_LIBRASHADER OFF PARENT_SCOPE)
 	return()
 endif()
-set(_lrs_rust_target "aarch64-apple-ios")
+
+# A missing target is the one cargo failure worth catching at configure time: the build
+# error it produces names only the triple, which reads like a toolchain fault rather than
+# one `rustup target add` away. Probe the target's libdir rather than asking cargo, since
+# cargo answers --help before it resolves the target and so accepts one it cannot build.
+find_program(_lrs_rustc rustc HINTS "$ENV{HOME}/.cargo/bin" "$ENV{CARGO_HOME}/bin")
+execute_process(COMMAND ${_lrs_rustc} --print target-libdir --target ${_lrs_rust_target}
+	OUTPUT_VARIABLE _lrs_target_libdir OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT _lrs_target_libdir OR NOT IS_DIRECTORY "${_lrs_target_libdir}")
+	message(STATUS "librashader: rust target ${_lrs_rust_target} is not installed -> DISABLED. "
+	               "Run: rustup target add ${_lrs_rust_target}")
+	set(ARMSX2_HAVE_LIBRASHADER OFF PARENT_SCOPE)
+	return()
+endif()
 
 # ---- Fetch the pinned source (configure time, nothing vendored) --------------------
 # librashader has no root CMakeLists, so point SOURCE_SUBDIR at a path that doesn't
