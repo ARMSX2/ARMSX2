@@ -6,6 +6,7 @@ import Foundation
 enum ShaderParamsError: LocalizedError {
     case noName
     case noSavedRoot
+    case wouldOverwriteBase
 
     var errorDescription: String? {
         switch self {
@@ -13,6 +14,8 @@ enum ShaderParamsError: LocalizedError {
             return "That name has nothing in it that can become a filename."
         case .noSavedRoot:
             return "The Documents shader folder could not be opened."
+        case .wouldOverwriteBase:
+            return "That is the preset this one is built from. Give it a different name."
         }
     }
 }
@@ -151,7 +154,7 @@ final class ShaderParams: ObservableObject {
         let text = Self.presetText(base: base, params: params, overrides: overrides)
         do {
             let url = try await Task.detached(priority: .userInitiated) {
-                try Self.write(text, named: safe)
+                try Self.write(text, named: safe, base: base)
             }.value
             savedName = url.deletingPathExtension().lastPathComponent
         } catch {
@@ -159,9 +162,8 @@ final class ShaderParams: ObservableObject {
         }
     }
 
-    /// Sends the effective value of EVERY parameter, not just the changed ones. librashader
-    /// has no unset call, so a name dropped from the map leaves the chain on whatever was
-    /// pushed last, and a reset would never take.
+    /// Sends EVERY parameter's effective value. librashader has no unset call, so a name
+    /// dropped from the map would leave the chain on whatever was pushed last.
     private func pushEffective() {
         guard !params.isEmpty, let url = ShaderPresetLibrary.resolve(token) else { return }
         var effective: [String: NSNumber] = [:]
@@ -177,7 +179,8 @@ final class ShaderParams: ObservableObject {
     /// the overrides go down, because a chain built from the preset file already holds that
     /// preset's number for every name it is not told about, and reading the file here to say
     /// so again would put a librashader parse on the launch path.
-    static func pushStored(token: String) {
+    /// nonisolated so the per-game boot path can push before bootISO, without hopping actors.
+    nonisolated static func pushStored(token: String) {
         guard let url = ShaderPresetLibrary.resolve(token) else { return }
         var values: [String: NSNumber] = [:]
         for (name, value) in stored()[token] ?? [:] where value.isFinite {
@@ -196,7 +199,7 @@ final class ShaderParams: ObservableObject {
         ARMSX2Bridge.setINIString(Self.section, key: Self.key, value: json)
     }
 
-    private static func stored() -> [String: [String: Float]] {
+    private nonisolated static func stored() -> [String: [String: Float]] {
         let json = ARMSX2Bridge.getINIString(section, key: key, defaultValue: "")
         guard let data = json.data(using: .utf8),
               let decoded = try? JSONDecoder()
@@ -230,8 +233,7 @@ final class ShaderParams: ObservableObject {
     }
 
     /// Relative while the base sits in the same Documents root, so the pair survives the
-    /// container UUID changing. A bundled base has no such route and gets a path that a
-    /// reinstall breaks, which is why the save sheet says the reference is a path.
+    /// container UUID moving. A bundled base gets a path instead, which a reinstall breaks.
     private static func reference(to base: URL) -> String {
         let target = base.standardizedFileURL
         guard let root = ShaderPresetLibrary.userRoot?.standardizedFileURL,
@@ -245,7 +247,8 @@ final class ShaderParams: ObservableObject {
         return (up + to[shared...]).joined(separator: "/")
     }
 
-    private nonisolated static func write(_ text: String, named name: String) throws -> URL {
+    private nonisolated static func write(_ text: String, named name: String,
+                                          base: URL) throws -> URL {
         guard ShaderPresetLibrary.prepareUserRoots() != nil,
               let root = ShaderPresetLibrary.savedPresetRoot?.standardizedFileURL else {
             throw ShaderParamsError.noSavedRoot
@@ -254,6 +257,11 @@ final class ShaderParams: ObservableObject {
             .appendingPathExtension(ShaderPresetLibrary.presetExtension).standardizedFileURL
         guard url.deletingLastPathComponent().path == root.path else {
             throw ShaderParamsError.noName
+        }
+        // Saving onto the base leaves a preset that references itself, and the sheet
+        // pre-fills the base's name, so the default is what walks into it.
+        guard url.path != base.standardizedFileURL.path else {
+            throw ShaderParamsError.wouldOverwriteBase
         }
         try text.write(to: url, atomically: true, encoding: .utf8)
         return url

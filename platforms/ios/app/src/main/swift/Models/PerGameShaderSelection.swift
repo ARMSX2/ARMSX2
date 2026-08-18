@@ -8,15 +8,13 @@ import Foundation
 enum PerGameShaderSelection {
     static let section = "EmuCore/GS"
 
-    /// Written together and cleared together. The token is the durable identity and the absolute
-    /// is a cache of it, because both preset roots sit under a container UUID that moves.
+    /// Written and cleared together: the token is the identity, the absolute is its cache.
     static let keys = (
         enabled: "ShaderChainEnabled",
         presetRef: "ShaderChainPresetRef",
         presetPath: "ShaderChainPreset")
 
-    /// Re-roots a game's token against the container this launch got. Writes nothing for a game
-    /// that chose no shader, and nothing again when the absolute already agrees.
+    /// Re-roots a game's token against this launch's container, and pushes what it resolves to.
     static func repair(forISO isoName: String) {
         let token = string(keys.presetRef, useCurrent: false, iso: isoName)
         guard !token.isEmpty else { return }
@@ -26,11 +24,13 @@ enum PerGameShaderSelection {
             setBool(keys.enabled, false, useCurrent: false, iso: isoName)
             return
         }
+        // Nothing else pushes this one: the settings store never reads the per-game file.
+        ShaderParams.pushStored(token: token)
         guard string(keys.presetPath, useCurrent: false, iso: isoName) != url.path else { return }
         setString(keys.presetPath, url.path, useCurrent: false, iso: isoName)
     }
 
-    /// -1 use global, 0 off, 1 on, on the sentinel every other per-game control already uses.
+    /// -1 use global, 0 off, 1 on -- the sentinel every other per-game control uses.
     static func loadedChain(useCurrent: Bool, iso: String) -> Int {
         guard has(keys.enabled, useCurrent: useCurrent, iso: iso) else { return -1 }
         return bool(keys.enabled, useCurrent: useCurrent, iso: iso) ? 1 : 0
@@ -42,9 +42,12 @@ enum PerGameShaderSelection {
 
     /// Off keeps the enabled key and drops the preset; absence is the answer that inherits.
     static func write(chain: Int, presetRef: String, useCurrent: Bool, iso: String) {
-        setBool(keys.enabled, chain == 1, useCurrent: useCurrent, iso: iso)
-        guard chain == 1, !presetRef.isEmpty,
-              let url = ShaderPresetLibrary.resolve(presetRef) else {
+        // Enabled true with no preset key reads the GLOBAL preset out of the base layer.
+        let resolved = chain == 1 && !presetRef.isEmpty
+            ? ShaderPresetLibrary.resolve(presetRef)
+            : nil
+        setBool(keys.enabled, resolved != nil, useCurrent: useCurrent, iso: iso)
+        guard let url = resolved else {
             delete(keys.presetRef, useCurrent: useCurrent, iso: iso)
             delete(keys.presetPath, useCurrent: useCurrent, iso: iso)
             return
