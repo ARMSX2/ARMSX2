@@ -142,7 +142,7 @@ layout(set = 0, binding = 2) uniform sampler2D Source;
 
 void main()
 {
-    float scale = floor(params.OutputSize.y * params.SourceSize.w);
+    float scale = max(floor(params.OutputSize.y * params.SourceSize.w), 1.0);
     float offset = 1.0 / scale * 0.5;
     
     if (bool(mod(scale, 2.0))) offset = 0.0;

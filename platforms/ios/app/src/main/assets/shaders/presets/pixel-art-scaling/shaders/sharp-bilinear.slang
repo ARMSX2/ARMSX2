@@ -47,7 +47,7 @@ void main()
    vec2 texel = vTexCoord * params.SourceSize.xy;
    vec2 texel_floored = floor(texel);
    vec2 s = fract(texel);
-   float scale = (params.AUTO_PRESCALE > 0.5) ? floor(params.OutputSize.y / params.SourceSize.y + 0.01) : params.SHARP_BILINEAR_PRE_SCALE;
+   float scale = max((params.AUTO_PRESCALE > 0.5) ? floor(params.OutputSize.y / params.SourceSize.y + 0.01) : params.SHARP_BILINEAR_PRE_SCALE, 1.0);
    float region_range = 0.5 - 0.5 / scale;
 
    // Figure out where in the texel to sample to get correct pre-scaled bilinear.
