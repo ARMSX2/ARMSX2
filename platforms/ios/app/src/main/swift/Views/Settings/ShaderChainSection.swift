@@ -62,7 +62,17 @@ struct ShaderChainSection: View {
                             .truncationMode(.middle)
                     }
                 }
+            }
 
+            // Outside the gate on purpose: with the chain off there is nothing to pick yet,
+            // and a first run would otherwise have to guess that the toggle comes first.
+            NavigationLink {
+                ShaderCatalogBrowserView(localized: localized)
+            } label: {
+                Label(localized("Download Shaders"), systemImage: "arrow.down.circle")
+            }
+
+            if enabled {
                 Menu {
                     Button {
                         pickerSource = ShaderPackPickerSource(isFolder: false)
@@ -106,7 +116,9 @@ struct ShaderChainSection: View {
         } header: {
             Text(localized("Shader Chain"))
         } footer: {
-            Text(localized("RetroArch .slangp presets, applied to the finished image after the other post-processing steps. A preset compiles the first time you select it, so that one frame can hitch."))
+            Text(localized("RetroArch .slangp presets, applied to the finished image after the other post-processing steps. A preset compiles the first time you select it, so that one frame can hitch.")
+                + "\n\n"
+                + localized("Presets from the RetroArch collection, one at a time. Each download is checked against the catalogue's own hash before anything is written, and lands beside a pack you installed by hand."))
         }
     }
 
