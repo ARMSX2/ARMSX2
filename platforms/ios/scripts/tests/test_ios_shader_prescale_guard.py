@@ -69,17 +69,27 @@ class PrescaleGuard(unittest.TestCase):
         )
 
     def test_the_two_known_shaders_still_carry_their_guard(self):
-        """Named directly, so a rename or a re-sync cannot quietly drop the fix."""
+        """Named directly, so a rename or a re-sync cannot quietly drop the fix.
+
+        The clamp has to be on the prescale line itself. Looking for max() anywhere in the
+        file passes on a max() that has nothing to do with the prescale -- including the one
+        in the change notice these files now carry, which is how that hole was found.
+        """
         for relative in (
             "crt/shaders/crt-aperture.slang",
             "pixel-art-scaling/shaders/sharp-bilinear.slang",
         ):
             path = PRESETS / relative
             self.assertTrue(path.is_file(), f"missing {relative}")
-            self.assertIn(
-                "max(",
-                path.read_text(),
-                f"{relative} lost its prescale guard; see "
+            guarded = [
+                line
+                for line in path.read_text().splitlines()
+                if PRESCALE.search(line.split("//")[0])
+                and ("max(" in line or "clamp(" in line)
+            ]
+            self.assertTrue(
+                guarded,
+                f"{relative} has no clamped prescale line; see "
                 "patches/slang-shaders-prescale-zero-guard.patch",
             )
 
