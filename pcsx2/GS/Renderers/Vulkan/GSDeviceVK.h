@@ -53,6 +53,9 @@ public:
 		bool vk_ext_attachment_feedback_loop_layout : 1;
 		bool vk_ext_fragment_shader_interlock : 1;
 		bool vk_ext_device_fault : 1;
+		bool vk_ext_descriptor_indexing : 1; ///< Indexed state tables addressed as storage-buffer arrays (TileGpu).
+		bool vk_khr_draw_indirect_count : 1; ///< Count-buffer indirect draws (TileGpu nicety, not part of the capability gate).
+		bool tilegpu_device_capable : 1; ///< The whole TileGpu device contract (descriptor indexing + indirect draw stream) is present.
 	};
 
 	// Global state accessors

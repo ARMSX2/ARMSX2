@@ -539,6 +539,17 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 #endif
 
 	m_optional_extensions.vk_ext_fragment_shader_interlock = SupportsExtension(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME, false);
+	// The TileGpu backend's device contract: indexed state tables addressed as storage-buffer
+	// arrays (descriptor indexing) fed by an indirect draw stream. Detected here and enabled
+	// below only if their feature bits truly hold. The device is created once, before any
+	// renderer variant is chosen and never recreated on a variant switch, so these must be
+	// enabled whenever present rather than gated on the variant; the other renderers never
+	// touch them, so enabling them is inert. draw_indirect_count (count buffers) is a nicety,
+	// not part of the capability gate.
+	m_optional_extensions.vk_ext_descriptor_indexing =
+		SupportsExtension(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME, false);
+	m_optional_extensions.vk_khr_draw_indirect_count =
+		SupportsExtension(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME, false);
 
 	return true;
 }
@@ -557,6 +568,12 @@ bool GSDeviceVK::SelectDeviceFeatures()
 	m_device_features.geometryShader = available_features.geometryShader;
 	m_device_features.fragmentStoresAndAtomics = available_features.fragmentStoresAndAtomics;
 	m_device_features.pipelineStatisticsQuery = available_features.pipelineStatisticsQuery;
+	// TileGpu's indirect draw stream: multiDrawIndirect so one vkCmdDrawIndirect covers many
+	// draws, drawIndirectFirstInstance so each indirect draw carries its own firstInstance (the
+	// index into the state tables). Enabled only where the device has them; unused by the other
+	// renderers. CreateDevice folds these into the TileGpu capability gate.
+	m_device_features.multiDrawIndirect = available_features.multiDrawIndirect;
+	m_device_features.drawIndirectFirstInstance = available_features.drawIndirectFirstInstance;
 
 	return true;
 }
@@ -730,6 +747,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
 	VkPhysicalDeviceFaultFeaturesEXT device_fault_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+	VkPhysicalDeviceDescriptorIndexingFeatures descriptor_indexing_feature = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
 
 	// An advertised EXTENSION does not guarantee its FEATURE bit, and asking for a feature the
 	// driver does not have fails vkCreateDevice outright with VK_ERROR_FEATURE_NOT_PRESENT —
@@ -756,6 +775,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT probe_fsi = {
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
 		VkPhysicalDeviceFaultFeaturesEXT probe_fault = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+		VkPhysicalDeviceDescriptorIndexingFeatures probe_di = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES};
 
 		// Only chain what we would actually enable: querying a struct whose extension is absent is
 		// not something the spec promises anything about.
@@ -774,6 +795,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			Vulkan::AddPointerToChain(&probe, &probe_fsi);
 		if (m_optional_extensions.vk_ext_device_fault)
 			Vulkan::AddPointerToChain(&probe, &probe_fault);
+		if (m_optional_extensions.vk_ext_descriptor_indexing)
+			Vulkan::AddPointerToChain(&probe, &probe_di);
 		vkGetPhysicalDeviceFeatures2(m_physical_device, &probe);
 
 		// Returns the flag rather than taking it by reference: m_optional_extensions members are
@@ -815,6 +838,29 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		m_optional_extensions.vk_ext_roaa_depth =
 			m_optional_extensions.vk_ext_rasterization_order_attachment_access &&
 			probe_roaa.rasterizationOrderDepthAttachmentAccess == VK_TRUE;
+
+		// Descriptor indexing is only useful to TileGpu if the specific sub-features its
+		// bindless storage-buffer tables need are ALL present: non-uniform indexing of storage
+		// buffers, an unbounded array, and partially-bound slots. An extension advertised with
+		// the wrong bits is no extension at all for this purpose, and requesting a missing bit
+		// would fail vkCreateDevice outright.
+		const bool di_bits = probe_di.shaderStorageBufferArrayNonUniformIndexing == VK_TRUE &&
+							 probe_di.runtimeDescriptorArray == VK_TRUE &&
+							 probe_di.descriptorBindingPartiallyBound == VK_TRUE;
+		m_optional_extensions.vk_ext_descriptor_indexing = keep("VK_EXT_descriptor_indexing",
+			m_optional_extensions.vk_ext_descriptor_indexing, di_bits);
+
+		// The TileGpu backend can run on this device only if its whole contract holds: the
+		// descriptor-indexing sub-features above AND an indirect draw stream that carries a
+		// per-draw firstInstance. Recorded once; the renderer refuses to construct without it,
+		// and the selection policy can fall back rather than crash.
+		m_optional_extensions.tilegpu_device_capable = m_optional_extensions.vk_ext_descriptor_indexing &&
+													   m_device_features.multiDrawIndirect == VK_TRUE &&
+													   m_device_features.drawIndirectFirstInstance == VK_TRUE;
+		DevCon.WriteLn("VK: TileGpu device contract %s (descriptor-indexing=%s, indirect=%s).",
+			m_optional_extensions.tilegpu_device_capable ? "present" : "absent",
+			m_optional_extensions.vk_ext_descriptor_indexing ? "yes" : "no",
+			(m_device_features.multiDrawIndirect && m_device_features.drawIndirectFirstInstance) ? "yes" : "no");
 	}
 
 	if (m_optional_extensions.vk_ext_provoking_vertex)
@@ -853,6 +899,13 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	{
 		device_fault_feature.deviceFault = VK_TRUE;
 		Vulkan::AddPointerToChain(&device_info, &device_fault_feature);
+	}
+	if (m_optional_extensions.vk_ext_descriptor_indexing)
+	{
+		descriptor_indexing_feature.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+		descriptor_indexing_feature.runtimeDescriptorArray = VK_TRUE;
+		descriptor_indexing_feature.descriptorBindingPartiallyBound = VK_TRUE;
+		Vulkan::AddPointerToChain(&device_info, &descriptor_indexing_feature);
 	}
 
 	VkResult res = vkCreateDevice(m_physical_device, &device_info, nullptr, &m_device);
