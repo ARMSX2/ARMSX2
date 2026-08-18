@@ -76,6 +76,7 @@ add_pcsx2_test(recompiler_tests
 	vif_unpack_dynarec_tests.cpp
 	ee_vu0_cop2_maxmini_conv_tests.cpp
 	ee_vu0_cop2_madd_clamp_tests.cpp
+	ee_vu0_cop2_sub_mul_clamp_tests.cpp
 	ee_vu0_cop2_madda_bc_tests.cpp
 	vu0_harness_validation_tests.cpp
 	vu0_alu_upper_tests.cpp
