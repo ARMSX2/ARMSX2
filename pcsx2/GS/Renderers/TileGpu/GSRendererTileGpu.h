@@ -96,14 +96,19 @@ private:
 		u32 tex_enable;         // 1 = sample the VRAM texture, 0 = vertex-colour only
 		u32 fst;                // 1 = FST/UV coords, 0 = STQ coords
 		u32 tbp0;               // TEX0.TBP0, texture base in blocks
-		u32 tbw;                // texture buffer width in pages (max(TBW, 1))
+		u32 tbw;                // pages per texture row (TBW, or TBW>>1 for paletted); AccumulateDraw
 		u32 tw;                 // texture width  in texels (1 << TW)
 		u32 th;                 // texture height in texels (1 << TH)
 		u32 tfx;                // TEX0.TFX texture function
 		u32 tcc;                // TEX0.TCC: 1 = texture carries alpha, 0 = alpha from vertex
 		u32 wms;                // CLAMP.WMS horizontal wrap mode
 		u32 wmt;                // CLAMP.WMT vertical wrap mode
+		u32 index_format;       // 0 = direct 32-bit texel, 1 = PSMT8 index, 2 = PSMT4 index
+		u32 pal_offset;         // word offset of this draw's palette in the frame stream
+		u32 pad0_;              // pad to 80B so std430 (align 8) and C++ (alignas 16) agree
+		u32 pad1_;
 	};
+	static_assert(sizeof(StateRow) == 80, "TileGpu StateRow must be 80 bytes to match tilegpu.glsl std430");
 
 	// One draw's inputs that cannot be resolved until the frame's targets are sized: the
 	// FRAME/ZBUF identity (which target it lands in), the coordinate origin, and the draw
@@ -127,6 +132,7 @@ private:
 		bool tex_enable;
 		bool fst;
 		u32 tbp0, tbw, tw, th, tfx, tcc, wms, wmt;
+		u32 index_format, pal_offset;
 	};
 
 	// A resolved render-target identity for the frame: distinct FRAME (color) or ZBUF
@@ -152,6 +158,7 @@ private:
 	std::vector<GSVertex> m_plan_vertices;
 	std::vector<u16> m_plan_indices;
 	std::vector<StateRow> m_plan_states;
+	std::vector<u32> m_plan_palettes; // expanded CLUTs (GSClut::Read32), concatenated per frame
 	std::vector<GSDevice::GSTileGpuIndirectDraw> m_plan_draws;
 	std::vector<GSDevice::GSTileGpuTopology> m_plan_topologies; // one per m_plan_draws entry
 	std::vector<PendingDraw> m_plan_pending;

@@ -2059,6 +2059,13 @@ public:
 		/// addresses it with the GS swizzle; nullptr leaves every draw on the vertex-colour path.
 		const void* vram = nullptr;
 		u32 vram_size = 0;
+
+		/// The frame's expanded CLUTs, concatenated as 32-bit RGBA words: for each paletted draw
+		/// the N-entry palette (N = 16 for PSMT4, 256 for PSMT8) that GSClut::Read32 produced,
+		/// CSA/CPSM/TEXA already applied. The executor stages this into the same storage buffer as
+		/// `vram`, behind its own base; a state row's pal_offset indexes an entry within it. Empty
+		/// leaves every draw on the direct/vertex-colour path.
+		std::span<const u32> palettes;
 	};
 
 	/// Whether this device serves the TileGpu executor road. False on every backend but

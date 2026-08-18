@@ -26,7 +26,7 @@
 #define TILEGPU_TEX 0
 #endif
 
-// Matches the executor's StateRow byte-for-byte (std430, 64 bytes). The transform is read in the
+// Matches the executor's StateRow byte-for-byte (std430, 80 bytes). The transform is read in the
 // vertex stage; the texture fields in the fragment stage. z_write/z_test are pipeline state, carried
 // for layout parity, not consumed by either.
 struct StateRow
@@ -45,6 +45,10 @@ struct StateRow
 	uint tcc;        // TEX0.TCC: 1 = texture carries alpha, 0 = alpha from vertex
 	uint wms;        // CLAMP.WMS horizontal wrap mode
 	uint wmt;        // CLAMP.WMT vertical wrap mode
+	uint index_format; // 0 = direct 32-bit texel, 1 = PSMT8 index, 2 = PSMT4 index
+	uint pal_offset;   // word offset of this draw's palette in the frame palette stream
+	uint pad0_;
+	uint pad1_;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer StateTable
@@ -56,6 +60,7 @@ layout(push_constant) uniform cb
 {
 	uint base_row;  // this frame's first state row in the ring buffer (vertex stage)
 	uint vram_base; // this frame's first VRAM word in the ring buffer (fragment stage)
+	uint pal_base;  // this frame's first palette word in the ring buffer (fragment stage)
 };
 
 #ifdef VERTEX_SHADER
@@ -145,6 +150,57 @@ uint tilegpu_texel32(uint u, uint v, uint tbp0, uint tbw)
 	return vram_words[vram_base + blk * 64u + word_in_block];
 }
 
+// The extra swizzle forms the paletted index reads need, copied from tfx.glsl: the 4-bit block
+// form and the 8-/4-bit column forms (the 32-bit block form tile_b48 is shared with CT32).
+uint tile_b84(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_B84_X0) ^ XB(x, 1u, TILE_SWZ_B84_X1)
+	     ^ XB(y, 0u, TILE_SWZ_B84_Y0) ^ XB(y, 1u, TILE_SWZ_B84_Y1) ^ XB(y, 2u, TILE_SWZ_B84_Y2);
+}
+
+uint tile_c8(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_C8_X0) ^ XB(x, 1u, TILE_SWZ_C8_X1) ^ XB(x, 2u, TILE_SWZ_C8_X2) ^ XB(x, 3u, TILE_SWZ_C8_X3)
+	     ^ XB(y, 0u, TILE_SWZ_C8_Y0) ^ XB(y, 1u, TILE_SWZ_C8_Y1) ^ XB(y, 2u, TILE_SWZ_C8_Y2) ^ XB(y, 3u, TILE_SWZ_C8_Y3);
+}
+
+uint tile_c4(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_C4_X0) ^ XB(x, 1u, TILE_SWZ_C4_X1) ^ XB(x, 2u, TILE_SWZ_C4_X2) ^ XB(x, 3u, TILE_SWZ_C4_X3) ^ XB(x, 4u, TILE_SWZ_C4_X4)
+	     ^ XB(y, 0u, TILE_SWZ_C4_Y0) ^ XB(y, 1u, TILE_SWZ_C4_Y1) ^ XB(y, 2u, TILE_SWZ_C4_Y2) ^ XB(y, 3u, TILE_SWZ_C4_Y3);
+}
+
+// The PSMT8 index byte at texel (u, v): 128x64 page, 16x16-texel columns; block b occupies bytes
+// [b*256, b*256+256) = words [b*64, b*64+64). byte_in_block picks the byte within its word.
+uint tilegpu_index8(uint u, uint v, uint tbp0, uint tbw)
+{
+	uint page = (v >> 6u) * tbw + (u >> 7u);
+	uint blk = tbp0 + page * 32u + tile_b48((u >> 4u) & 7u, (v >> 4u) & 3u);
+	uint byte_in_block = tile_c8(u & 15u, v & 15u);
+	uint word = vram_words[vram_base + blk * 64u + (byte_in_block >> 2u)];
+	return (word >> ((byte_in_block & 3u) * 8u)) & 0xFFu;
+}
+
+// The PSMT4 index nibble at texel (u, v): 128x128 page, 32x16-texel columns. col4 gives the
+// nibble index within the 512-nibble (256-byte) block; the low bit selects the nibble in its byte.
+uint tilegpu_index4(uint u, uint v, uint tbp0, uint tbw)
+{
+	uint page = (v >> 7u) * tbw + (u >> 7u);
+	uint blk = tbp0 + page * 32u + tile_b84((u >> 5u) & 3u, (v >> 4u) & 7u);
+	uint nib = tile_c4(u & 31u, v & 15u);
+	uint byte_in_block = nib >> 1u;
+	uint word = vram_words[vram_base + blk * 64u + (byte_in_block >> 2u)];
+	uint byteval = (word >> ((byte_in_block & 3u) * 8u)) & 0xFFu;
+	return ((nib & 1u) != 0u) ? (byteval >> 4u) : (byteval & 0xFu);
+}
+
+// Unpack a raw RGBA8888 word (a CT32 texel or an expanded CLUT entry) to normalised RGBA.
+vec4 tilegpu_unpack(uint w)
+{
+	return vec4(float(w & 0xFFu), float((w >> 8u) & 0xFFu), float((w >> 16u) & 0xFFu),
+	            float((w >> 24u) & 0xFFu)) * (1.0f / 255.0f);
+}
+
 // Apply the wrap mode to one axis. REPEAT masks (dims are powers of two); everything else clamps --
 // REGION_CLAMP/REGION_REPEAT are approximated by CLAMP until the region bounds are carried (wrong-fast).
 int tilegpu_wrap(int c, uint dim, uint mode)
@@ -171,9 +227,16 @@ void main()
 		int iu = tilegpu_wrap(int(floor(uv.x)), sr.tw, sr.wms);
 		int iv = tilegpu_wrap(int(floor(uv.y)), sr.th, sr.wmt);
 
-		uint w = tilegpu_texel32(uint(iu), uint(iv), sr.tbp0, sr.tbw);
-		vec4 ct = vec4(float(w & 0xFFu), float((w >> 8u) & 0xFFu), float((w >> 16u) & 0xFFu),
-					   float((w >> 24u) & 0xFFu)) * (1.0f / 255.0f);
+		// The texel: direct 32-bit words, or a paletted index (PSMT8/PSMT4) looked up in the frame's
+		// expanded CLUT stream. index_format is dynamically uniform per draw, so this does not diverge.
+		uint w;
+		if (sr.index_format == 0u)
+			w = tilegpu_texel32(uint(iu), uint(iv), sr.tbp0, sr.tbw);
+		else if (sr.index_format == 1u)
+			w = vram_words[pal_base + sr.pal_offset + tilegpu_index8(uint(iu), uint(iv), sr.tbp0, sr.tbw)];
+		else
+			w = vram_words[pal_base + sr.pal_offset + tilegpu_index4(uint(iu), uint(iv), sr.tbp0, sr.tbw)];
+		vec4 ct = tilegpu_unpack(w);
 
 		// Cf is the vertex colour; its 128 == 1.0 modulation reference is the *2 (255/128, rounded).
 		vec3 cf = v_color.rgb;

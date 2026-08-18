@@ -566,28 +566,49 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.rect = r;
 	pd.draw_index = draw.state_index;
 
-	// Texture inputs. Only the direct 32-bit families (PSMCT32, PSMCT24) are sampled at this stage:
-	// they share one page/block/column geometry and need no CLUT, so one address path serves both.
-	// Every other textured draw (16-bit, paletted, the alpha-byte views) keeps the vertex-colour
-	// path until its format is added. The fixed TEX0 folds TW/TH to the used ST range, exactly as
-	// ObserveDraw derives its footprint, so the dimensions the shader scales by match the draw.
+	// Texture inputs. Two address geometries are sampled at this stage: the direct 32-bit families
+	// (PSMCT32/PSMCT24 -- one page/block/column geometry, no CLUT) and the paletted index formats
+	// (PSMT8/PSMT4 -- a swizzled index into an expanded CLUT). Every other textured draw (16-bit,
+	// the alpha-byte views) keeps the vertex-colour path until its format is added. The fixed TEX0
+	// folds TW/TH to the used ST range, exactly as ObserveDraw derives its footprint, so the
+	// dimensions the shader scales by match the draw.
 	pd.tex_enable = false;
+	pd.index_format = 0;
+	pd.pal_offset = 0;
 	if (PRIM->TME)
 	{
 		const bool mip = IsMipMapActive();
 		const GIFRegTEX0 tex0 = ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mip);
-		if (tex0.PSM == PSMCT32 || tex0.PSM == PSMCT24)
+		const u32 psm = tex0.PSM;
+		const bool direct32 = (psm == PSMCT32 || psm == PSMCT24);
+		const bool paletted = (psm == PSMT8 || psm == PSMT4);
+		if (direct32 || paletted)
 		{
 			pd.tex_enable = true;
 			pd.fst = PRIM->FST;
 			pd.tbp0 = tex0.TBP0;
-			pd.tbw = std::max<u32>(tex0.TBW, 1);
+			// Pages per texture row: a CT32 page is 64 texels wide (bwpg = TBW), a paletted page is
+			// 128 (bwpg = TBW>>1) -- GSOffset's bw >> (pageShiftX - 6).
+			pd.tbw = direct32 ? std::max<u32>(tex0.TBW, 1) : (tex0.TBW >> 1);
 			pd.tw = 1u << std::min<u32>(tex0.TW, 10);
 			pd.th = 1u << std::min<u32>(tex0.TH, 10);
 			pd.tfx = tex0.TFX;
 			pd.tcc = tex0.TCC;
 			pd.wms = ctx->CLAMP.WMS;
 			pd.wmt = ctx->CLAMP.WMT;
+			pd.index_format = direct32 ? 0u : (psm == PSMT8 ? 1u : 2u);
+			if (paletted)
+			{
+				// Expand this draw's CLUT to 32-bit RGBA (CSA/CPSM/TEXA applied by Read32) and append
+				// it to the frame's palette stream; pal_offset is the word index of entry 0. No dedup
+				// yet (wrong-fast): a palette is 16 or 256 words, a full SotC frame well under the ring.
+				// The executor stages this stream into the same storage buffer as the VRAM snapshot.
+				m_mem.m_clut.Read32(tex0, m_env.TEXA);
+				const u32* clut = m_mem.m_clut;
+				const u32 pal_entries = GSLocalMemory::m_psm[psm].pal;
+				pd.pal_offset = static_cast<u32>(m_plan_palettes.size());
+				m_plan_palettes.insert(m_plan_palettes.end(), clut, clut + pal_entries);
+			}
 		}
 	}
 
@@ -686,6 +707,10 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.tcc = pd.tcc;
 			sr.wms = pd.wms;
 			sr.wmt = pd.wmt;
+			sr.index_format = pd.index_format;
+			sr.pal_offset = pd.pal_offset;
+			sr.pad0_ = 0;
+			sr.pad1_ = 0;
 		}
 
 		// 4. Group contiguous draws sharing a colour+depth target into one pass, one target
@@ -783,6 +808,10 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.vram = m_mem.vm8();
 		plan.vram_size = static_cast<u32>(GSLocalMemory::m_vmsize);
 
+		// The frame's expanded CLUTs, concatenated (empty when no paletted draw ran); the
+		// executor stages them into the same storage buffer as the VRAM snapshot.
+		plan.palettes = m_plan_palettes;
+
 		g_gs_device->ExecuteTileGpuPassPlan(plan);
 
 		// 6. Keep the colour targets addressable by FRAME base for GetOutput.
@@ -795,6 +824,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_vertices.clear();
 	m_plan_indices.clear();
 	m_plan_states.clear();
+	m_plan_palettes.clear();
 	m_plan_draws.clear();
 	m_plan_topologies.clear();
 	m_plan_pending.clear();
