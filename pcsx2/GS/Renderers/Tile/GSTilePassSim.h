@@ -88,6 +88,15 @@ public:
 		                             // texture version serves them without a break
 		u32 uploads_drawable = 0;    // transfers over pages the pass WROTE: realized as
 		                             // an in-pass draw from fresh staging — no break
+		u32 moves = 0;               // GS->GS copies seen. Diagnostic: the base renderer's
+		                             // Move fires the two invalidate hooks underneath us, so
+		                             // each move reaches this sim as three events and the
+		                             // follow-up upload lands on pages OnMove just marked
+		                             // written. This counts the exposure so a nonzero
+		                             // uploads_drawable can be attributed rather than trusted.
+		u32 alpha_range_unknown = 0; // draws whose vertex-alpha range was not computed, so the
+		                             // As-blend classifier assumed the widest alpha and sorted
+		                             // them by that assumption instead of by their real range
 		u32 palette_gathers = 0; // CLUT loads of pass-written pages: on-GPU gathers in the
 		                         // design (a break, never a CPU sync) — split from CpuRead
 		u32 cpu_read_pages = 0;  // non-CLUT CPU consumers: genuine readbacks in any design
@@ -293,6 +302,7 @@ public:
 
 	void OnMove(const GSPageBitmap& src, const GSPageBitmap& dst)
 	{
+		m_frame.moves++;
 		// The design realizes a move as a textured draw targeting dst. Its source read
 		// is an OFFSET read by construction (a move that copies nowhere is a no-op), so
 		// a source the pass wrote is the snapshot shape; the destination side follows
@@ -315,6 +325,11 @@ public:
 			m_frame.uploads_free++;
 		m_pass_draw_written |= dst;
 	}
+
+	// The As-blend classifier had no vertex-alpha range to sort this draw by. It still
+	// sorts it, on the assumption that alpha reaches 255 -- which decides the tier, so a
+	// run that reports any of these has rows built partly on that assumption.
+	void NoteAlphaRangeUnknown() { m_frame.alpha_range_unknown++; }
 
 	void OnCpuRead(const GSPageBitmap& pages, bool clut)
 	{

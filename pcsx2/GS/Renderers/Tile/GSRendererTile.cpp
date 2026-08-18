@@ -1536,6 +1536,10 @@ void GSRendererTile::PassSimObserveDraw(const GSTileDrawPlan& plan, const GSVect
 				}
 				else if (al.C == 0)
 				{
+					// No computed range means the tier below is chosen on an assumption
+					// rather than on the draw. Count it so a sweep says how much it leaned.
+					if (!m_vt.m_alpha.valid) [[unlikely]]
+						m_pass_sim.NoteAlphaRangeUnknown();
 					const int amax = m_vt.m_alpha.valid ? m_vt.m_alpha.max : 255;
 					if (amax > 0x80)
 						reader_flags |= GSTilePassSim::ReaderFacGt1;
@@ -1602,6 +1606,8 @@ void GSRendererTile::ReportPassSim()
 	const auto upver = stat([](const FS& f) { return f.uploads_versionable; });
 	const auto updraw = stat([](const FS& f) { return f.uploads_drawable; });
 	const auto palgather = stat([](const FS& f) { return f.palette_gathers; });
+	const auto moves = stat([](const FS& f) { return f.moves; });
+	const auto aunk = stat([](const FS& f) { return f.alpha_range_unknown; });
 	const auto fruns = stat([](const FS& f) { return f.feedback_runs; });
 	const auto ffst = stat([](const FS& f) { return f.feedback_fst; });
 	const auto fstq = stat([](const FS& f) { return f.feedback_stq; });
@@ -1630,6 +1636,9 @@ void GSRendererTile::ReportPassSim()
 					"(versionable) %.2f / %u   over pass writes (draw-realized) %.2f / %u",
 		upfree.mean, upfree.p50, upver.mean, upver.p50, updraw.mean, updraw.p50);
 	Console.WriteLn("  palette gathers (on-GPU in design): %.2f / %u", palgather.mean, palgather.p50);
+	Console.WriteLn("  instrument exposure: moves %.2f / %u (each also reaches the sim as an "
+					"upload)   alpha-range unknown %.2f / %u draws",
+		moves.mean, moves.p50, aunk.mean, aunk.p50);
 	Console.WriteLn("  offset-feedback residue: %.2f / %u runs (stale-snapshot policy's break count); "
 					"draw shape %.2f fst / %.2f stq",
 		fruns.mean, fruns.p50, ffst.mean, fstq.mean);
