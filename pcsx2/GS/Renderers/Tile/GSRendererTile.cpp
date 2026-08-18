@@ -1546,8 +1546,16 @@ void GSRendererTile::PassSimObserveDraw(const GSTileDrawPlan& plan, const GSVect
 		}
 	}
 
+	// Does this draw land any alpha in memory? Only the alpha bits the target FORMAT
+	// keeps count — PSMCT24 stores none at all, PSMCT16 keeps one — and FBMSK masks
+	// them off from there. A draw that stores no alpha can take the doubled-alpha trick
+	// whatever else touches the surface, because the doubled value never outlives the
+	// blend.
+	const u32 fmt_alpha = GSLocalMemory::m_psm[ctx->FRAME.PSM].fmsk & 0xFF000000u;
+	const bool stores_alpha = !fb_written.empty() && (fmt_alpha & ~ctx->FRAME.FBMSK) != 0;
+
 	m_pass_sim.OnDraw(fb_written, z_written, fb_pages | z_pages, tex_pages, core_pages, has_core,
-		identity_feedback, PRIM->TME && PRIM->FST, reader_flags, ctx->FRAME.Block(), ctx->FRAME.PSM,
+		identity_feedback, PRIM->TME && PRIM->FST, reader_flags, stores_alpha, ctx->FRAME.Block(), ctx->FRAME.PSM,
 		ctx->ZBUF.Block(), ctx->ZBUF.PSM, z_used,
 		static_cast<u32>(std::max(m_vertex->tail, m_vertex->next)));
 }
@@ -1640,6 +1648,7 @@ void GSRendererTile::ReportPassSim()
 	const auto dverts = [](const FS& f, u32 t) { return f.declared_verts[t]; };
 	const auto rruns = [](const FS& f, u32 t) { return f.reader_runs[t]; };
 	const auto sbreaks = [](const FS& f, u32 t) { return f.segregate_breaks[t]; };
+	const auto rverts = [](const FS& f, u32 t) { return f.reader_verts[t]; };
 	const auto flagmean = [&stat](u32 i) {
 		return stat([i](const FS& f) { return f.reader_flag_draws[i]; }).mean;
 	};
@@ -1658,11 +1667,34 @@ void GSRendererTile::ReportPassSim()
 		const auto sb = tier(sbreaks, t);
 		const double dshare = (draws.mean > 0.0) ? (100.0 * dd.mean / draws.mean) : 0.0;
 		const double vshare = (verts.mean > 0.0) ? (100.0 * dv.mean / verts.mean) : 0.0;
+		const auto rv = tier(rverts, t);
+		const double rvshare = (verts.mean > 0.0) ? (100.0 * rv.mean / verts.mean) : 0.0;
 		Console.WriteLn("    tier%c unified-declare: %.2f / %u declared passes holding %.2f / %u draws "
-						"(%.1f%%), %.2f verts (%.1f%%)   segregate: %.2f / %u reader runs, +%.2f / %u breaks",
+						"(%.1f%%), %.2f verts (%.1f%%)   segregate: %.2f / %u reader runs, +%.2f / %u breaks, "
+						"%.2f verts (%.1f%%)",
 			'A' + t, dp.mean, dp.p50, dd.mean, dd.p50, dshare, dv.mean, vshare, rr.mean, rr.p50, sb.mean,
-			sb.p50);
+			sb.p50, rv.mean, rvshare);
 	}
+
+	// The doubled-alpha trick's reachable population, the tier-B escape hatch the corpus
+	// sized at ~79% of Mali's extra readers. Liveness is only what a draw PROVED by
+	// reading destination alpha (Ad factor, DATE), and it is a property of the SURFACE:
+	// one such draw disqualifies every As draw sharing its target, which is why this
+	// answers a question the per-draw reason census could not.
+	const auto tas = stat([](const FS& f) { return f.trick_as_draws; });
+	const auto tlive = stat([](const FS& f) { return f.trick_as_on_live; });
+	const auto tresc = stat([](const FS& f) { return f.trick_as_mask_rescued; });
+	const auto ttgt = stat([](const FS& f) { return f.trick_targets; });
+	const auto ttlive = stat([](const FS& f) { return f.trick_targets_live; });
+	const double eligible = tas.mean - tlive.mean + tresc.mean;
+	const double eshare = (tas.mean > 0.0) ? (100.0 * eligible / tas.mean) : 0.0;
+	Console.WriteLn("  doubled-alpha trick (tier B only): As-class %.2f draws/frame; on alpha-live targets "
+					"%.2f (disqualified), of those %.2f store no alpha (rescued) -> eligible %.2f (%.1f%%)",
+		tas.mean, tlive.mean, tresc.mean, eligible, eshare);
+	Console.WriteLn("    targets/frame %.2f, alpha-live %.2f — liveness is per SURFACE and DISQUALIFIES "
+					"(proven Ad/DATE reads only): texture-sampled alpha would disqualify more, a sub-frame "
+					"ordering refinement fewer; neither is modelled",
+		ttgt.mean, ttlive.mean);
 
 	const GifStreamStats& s = m_gif_stream_stats;
 	Console.WriteLn("  GIF stream per frame (decode sizing; qwords are 16 B): path0 %.0f  path1 %.0f  "

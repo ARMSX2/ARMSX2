@@ -114,6 +114,39 @@ public:
 		u32 declared_verts[kPolicyTiers] = {};  //   verts inside them (fragment-work proxy)
 		u32 reader_runs[kPolicyTiers] = {};     // maximal runs of consecutive readers
 		u32 segregate_breaks[kPolicyTiers] = {}; // segregated: breaks ADDED at run edges
+		u32 reader_verts[kPolicyTiers] = {};    // verts held by reader draws — the SEGREGATED
+		                                        // policy's tax base, in the same unit as
+		                                        // declared_verts so the two are comparable
+
+		// -- doubled-alpha trick eligibility (tier B's escape hatch) ------------------
+		// The As-dual-source class is ~79% of tier B's reader population, and a plain
+		// As blend can be expressed without a destination read by emitting alpha twice
+		// — provided the doubled alpha never has to survive in memory. Two ways it can
+		// be safe, and they compose: the target's alpha is never consumed as data, or
+		// this particular draw masks every alpha bit its format stores (then the
+		// doubled value only ever feeds the blend factor).
+		//
+		// ⚠️ alpha_live is a DISQUALIFIER, not a verdict. It is set only by draws that
+		// demonstrably READ destination alpha (Ad factor, DATE), so where it is set the
+		// trick is definitely illegal, and where it is clear the question is still open
+		// — alpha sampled later as an ordinary texture is invisible here and belongs to
+		// the corpus alpha-consumption census.
+		//
+		// ⚠️ The eligible count is a BRACKET, not a bound in either direction, and it is
+		// worth knowing which way each unmodelled road pushes:
+		//   - alpha consumed by a later texture sample can only ADD disqualifications
+		//     (lowers eligibility) — that is the corpus census's half of the question;
+		//   - a sub-frame refinement — a doubled alpha overwritten before anything reads
+		//     it, or a read touching a disjoint region — could REMOVE disqualifications
+		//     (raises it), and is deliberately not modelled because in a looping
+		//     steady-state frame the safe assumption is that a live surface gets read.
+		// What IS exact is the mechanism modelled: surface-granular, whole-frame,
+		// liveness proven by a blend or test that actually reads destination alpha.
+		u32 trick_as_draws = 0;        // draws carrying ReaderAsDualSource
+		u32 trick_as_on_live = 0;      //   ... whose target has alpha live (disqualified)
+		u32 trick_as_mask_rescued = 0; //   ... of those, storing no alpha anyway (eligible)
+		u32 trick_targets = 0;         // distinct FRAME bases drawn to this frame
+		u32 trick_targets_live = 0;    //   ... with alpha live
 	};
 
 	bool IsActive() const { return m_active; }
@@ -123,10 +156,12 @@ public:
 	// fb/z: the draw's write footprints (empty when not written). tex: the sampled
 	// window, all mip levels. core: the proven sampled core (empty when no proof
 	// holds). reader_flags: ReaderFlag bits from the hook's blend/test classifier.
+	// stores_alpha: the draw lands at least one alpha bit its target format keeps (a
+	// draw that stores none can take the doubled-alpha trick whatever its target does).
 	// Returns true if the draw broke the open pass.
 	bool OnDraw(const GSPageBitmap& fb_written, const GSPageBitmap& z_written, const GSPageBitmap& read_deps,
 		const GSPageBitmap& tex, const GSPageBitmap& core, bool has_core, bool identity_feedback, bool fst,
-		u32 reader_flags, u32 fb_bp, u32 fb_psm, u32 z_bp, u32 z_psm, bool z_used, u32 verts)
+		u32 reader_flags, bool stores_alpha, u32 fb_bp, u32 fb_psm, u32 z_bp, u32 z_psm, bool z_used, u32 verts)
 	{
 		bool broke = false;
 		bool hazard_draw = false;
@@ -203,11 +238,29 @@ public:
 				if (fresh || !m_prev_reader[t])
 					m_frame.reader_runs[t]++;
 			}
+			if (reads[t])
+				m_frame.reader_verts[t] += verts;
 			if (!fresh && reads[t] != m_prev_reader[t])
 				m_frame.segregate_breaks[t]++;
 			m_prev_reader[t] = reads[t];
 		}
 		m_pass_verts += verts;
+
+		// Trick eligibility, accumulated per TARGET because a draw's legality depends on
+		// what every OTHER draw on that surface does with alpha — including draws that
+		// have not happened yet. Resolved at frame end, not here.
+		if (!fb_written.empty())
+		{
+			AlphaTarget& at = AlphaTargetFor(fb_bp);
+			if (reader_flags & (ReaderAdFactor | ReaderDate))
+				at.alpha_live = true;
+			if (reader_flags & ReaderAsDualSource)
+			{
+				at.as_draws++;
+				if (!stores_alpha)
+					at.as_mask_safe++;
+			}
+		}
 
 		m_pass_draw_written |= fb_written;
 		m_pass_draw_written |= z_written;
@@ -289,8 +342,10 @@ public:
 	{
 		if (m_draws_in_pass != 0)
 			EndPass(BreakReason::FrameEnd);
+		ResolveTrickEligibility();
 		m_frames.push_back(m_frame);
 		m_frame = {};
+		m_alpha_targets.clear();
 	}
 
 	const std::vector<FrameStats>& Frames() const { return m_frames; }
@@ -301,6 +356,16 @@ private:
 		u32 bp;
 		u32 psm;
 		bool depth;
+	};
+
+	// Frame-scoped, NOT pass-scoped: alpha liveness is a property of the surface across
+	// the whole frame, and the draw that proves it may come after the draws it condemns.
+	struct AlphaTarget
+	{
+		u32 bp;
+		bool alpha_live;  // a draw READ this surface's alpha (Ad factor or DATE)
+		u32 as_draws;     // As-dual-source-class draws targeting it
+		u32 as_mask_safe; //   ... of those, storing no alpha at all
 	};
 
 	void EndPass(BreakReason reason)
@@ -325,6 +390,35 @@ private:
 		m_pass_read = {};
 		m_target_count = 0;
 		m_draws_in_pass = 0;
+	}
+
+	// Keyed on the FRAME base alone, deliberately: two PSMs at one base are two views of
+	// the same alpha bytes, so a read through either makes the memory alpha-live. Keying
+	// on base+PSM would let a 32-bit view's Ad read hide from a 24-bit view at the same
+	// address. Over-marking is the safe error for a disqualifier.
+	AlphaTarget& AlphaTargetFor(u32 bp)
+	{
+		for (AlphaTarget& t : m_alpha_targets)
+		{
+			if (t.bp == bp)
+				return t;
+		}
+		m_alpha_targets.push_back({bp, false, 0, 0});
+		return m_alpha_targets.back();
+	}
+
+	void ResolveTrickEligibility()
+	{
+		for (const AlphaTarget& t : m_alpha_targets)
+		{
+			m_frame.trick_targets++;
+			m_frame.trick_as_draws += t.as_draws;
+			if (!t.alpha_live)
+				continue;
+			m_frame.trick_targets_live++;
+			m_frame.trick_as_on_live += t.as_draws;
+			m_frame.trick_as_mask_rescued += t.as_mask_safe;
+		}
 	}
 
 	bool AddTarget(u32 bp, u32 psm, bool depth)
@@ -352,6 +446,7 @@ private:
 	TargetPair m_targets[kMaxTargetPairs] = {};
 	u32 m_target_count = 0;
 	u32 m_draws_in_pass = 0;
+	std::vector<AlphaTarget> m_alpha_targets;
 	FrameStats m_frame;
 	std::vector<FrameStats> m_frames;
 };
