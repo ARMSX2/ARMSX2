@@ -288,6 +288,16 @@ void VuTestHarness::RunNoDiff()
 
 void VuTestHarness::Run()
 {
+	RunDiffing(nullptr);
+}
+
+void VuTestHarness::RunRequiringDivergence(const char* why)
+{
+	RunDiffing(why);
+}
+
+void VuTestHarness::RunDiffing(const char* require_why)
+{
 	RunBothPasses();
 	if (::testing::Test::HasFatalFailure())
 		return;
@@ -301,6 +311,14 @@ void VuTestHarness::Run()
 	// VuDiffMode docstring).
 	const auto diffs = DiffVu(jit_snapshot_, interp_snapshot_,
 		diff_mode_, ignored_vi_);
+	if (require_why)
+	{
+		EXPECT_FALSE(diffs.empty())
+			<< require_why
+			<< "\nThe recorded divergence is gone. Call Run() and let the plain "
+			   "diff stand.";
+		return;
+	}
 	if (!diffs.empty())
 	{
 		std::ostringstream ss;

@@ -453,7 +453,14 @@ void EeRecTestHarness::Run(RunMode mode)
 	has_run_ = true;
 
 	const auto diffs = DiffEe(jit_snapshot_, interp_snapshot_);
-	if (!diffs.empty())
+	if (ee_require_divergence_)
+	{
+		EXPECT_FALSE(diffs.empty())
+			<< "EE: " << ee_require_divergence_
+			<< "\nThe recorded divergence is gone. Drop RequireEeDivergence and "
+			   "let the plain diff stand.";
+	}
+	else if (!diffs.empty())
 	{
 		std::ostringstream ss;
 		ss << "EE JIT vs INTERP divergence (" << diffs.size() << "):\n";
@@ -472,7 +479,14 @@ void EeRecTestHarness::Run(RunMode mode)
 	{
 		const auto vudiffs = DiffVu(vu0_jit_snapshot_, vu0_interp_snapshot_,
 			VuDiffMode::PipelinePermissive, vu0_ignored_vi_);
-		if (!vudiffs.empty())
+		if (vu0_require_divergence_)
+		{
+			EXPECT_FALSE(vudiffs.empty())
+				<< "VU0: " << vu0_require_divergence_
+				<< "\nThe recorded divergence is gone. Drop RequireVu0Divergence "
+				   "and let the plain diff stand.";
+		}
+		else if (!vudiffs.empty())
 		{
 			std::ostringstream ss;
 			ss << "VU0 JIT vs INTERP divergence (" << vudiffs.size() << "):\n";
@@ -490,7 +504,14 @@ void EeRecTestHarness::Run(RunMode mode)
 	{
 		const auto vudiffs = DiffVu(vu1_jit_snapshot_, vu1_interp_snapshot_,
 			VuDiffMode::PipelinePermissive);
-		if (!vudiffs.empty())
+		if (vu1_require_divergence_)
+		{
+			EXPECT_FALSE(vudiffs.empty())
+				<< "VU1: " << vu1_require_divergence_
+				<< "\nThe recorded divergence is gone. Drop RequireVu1Divergence "
+				   "and let the plain diff stand.";
+		}
+		else if (!vudiffs.empty())
 		{
 			std::ostringstream ss;
 			ss << "VU1 JIT vs INTERP divergence (" << vudiffs.size() << "):\n";
