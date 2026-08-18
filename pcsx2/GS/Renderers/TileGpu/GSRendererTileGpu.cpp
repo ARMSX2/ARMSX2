@@ -3,16 +3,71 @@
 
 #include "GSRendererTileGpu.h"
 
+#include "GS/Renderers/Tile/GSTileTypes.h"
+#include "GS/Renderers/Tile/GSVramModel.h"
+#include "GS/GSLocalMemory.h"
+
+#include "common/Console.h"
+
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
+namespace
+{
+// Color/depth kind from the swizzle family. The Tile renderer's KindForPsm is a file-local
+// helper (anonymous namespace) there, not exported — replicated rather than linked.
+GSTileSurfaceKind KindForPsm(u32 psm)
+{
+	switch (gsTileSwizzleFamily(psm))
+	{
+		case GSTileSwizzleFamily::Z32:
+		case GSTileSwizzleFamily::Z16:
+		case GSTileSwizzleFamily::Z16S:
+			return GSTileSurfaceKind::Depth;
+		default:
+			return GSTileSurfaceKind::Color;
+	}
+}
+
+// A zero stride degenerates every row of the page derivation; claim the whole page space
+// rather than under-claim (the same conservative choice the Tile renderer's wrapper makes).
+GSPageBitmap PagesForTargetRect(const GSTileSurfaceLayout& layout, const GSVector4i& r)
+{
+	if (layout.bw == 0)
+	{
+		GSPageBitmap all;
+		for (u32 i = 0; i < GS_MAX_PAGES; i++)
+			all.set(i);
+		return all;
+	}
+	return GSVramModel::PagesForRect(layout, r);
+}
+} // namespace
+
 // Stage-1 pin: the back-record/back-thread machinery stays off for this variant whatever
 // GSBackThreadMode says — its own front end is the threading story (revisited only if a
 // measurement asks).
 GSRendererTileGpu::GSRendererTileGpu()
 	: GSRenderer(/*allow_back_records=*/false)
 {
+	// The planner is intrinsic to this variant, not a toggle: with nothing else drawing yet,
+	// the pass model IS the renderer's output, so it runs unconditionally.
+	m_pass_sim.SetActive(true);
+}
+
+GSRendererTileGpu::~GSRendererTileGpu()
+{
+	ReportPassStructure();
 }
 
 void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame)
 {
+	// Close the frame's open pass and push its stats before the base presents (the order the
+	// Tile renderer's observer uses — the model is independent of presentation, but the frame
+	// boundary is here).
+	m_pass_sim.OnVSync();
+
 	GSRenderer::VSync(field, registers_written, idle_frame);
 
 	// Nothing consumes the transfer log yet; clear it so it cannot grow without bound.
@@ -21,6 +76,7 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 
 void GSRendererTileGpu::Draw()
 {
+	ObserveDraw();
 }
 
 GSTexture* GSRendererTileGpu::GetOutput(int i, float& scale, int& y_offset)
@@ -31,4 +87,263 @@ GSTexture* GSRendererTileGpu::GetOutput(int i, float& scale, int& y_offset)
 bool GSRendererTileGpu::IsCoverageAlphaSupported()
 {
 	return false;
+}
+
+GSVector4i GSRendererTileGpu::ComputeDrawRect() const
+{
+	GSVector4i bbox;
+	if (m_vt.m_primclass == GS_LINE_CLASS || m_vt.m_primclass == GS_POINT_CLASS)
+		bbox = GSVector4i((m_vt.m_min.p + GSVector4(0.5f)).floor().upld((m_vt.m_max.p + GSVector4(0.5f)).floor()));
+	else
+		bbox = GSVector4i(m_vt.m_min.p.ceil().upld(m_vt.m_max.p.floor()));
+	if (PRIM->AA1 && (m_vt.m_primclass == GS_LINE_CLASS || m_vt.m_primclass == GS_TRIANGLE_CLASS))
+		bbox += GSVector4i(-1, -1, 1, 1);
+	bbox += GSVector4i(0, 0, 1, 1);
+
+	return bbox.rintersect(m_context->scissor.in);
+}
+
+// The Tile renderer's PassSimObserveDraw, ported to the plain GSRenderer base. Every input
+// reads from base state; the only substitutions are (a) the draw rect and page/kind helpers,
+// replicated above, and (b) the z-write/z-test booleans, derived here from the registers using
+// the SW-floor semantics (ZTE gates both) rather than pulled from a full draw lowering — the
+// lowering's later z-write refinements are a stage-1.5 concern, when the decode-compare harness
+// makes the whole vertex/state input byte-identical to the shipping decode.
+void GSRendererTileGpu::ObserveDraw()
+{
+	const GSVector4i r = ComputeDrawRect();
+	if (r.rempty())
+		return;
+
+	const GSDrawingContext* ctx = m_context;
+
+	const GSTileSurfaceLayout fb_l{ctx->FRAME.Block(), static_cast<u8>(ctx->FRAME.FBW),
+		static_cast<u8>(ctx->FRAME.PSM), GSTileSurfaceKind::Color};
+	const GSPageBitmap fb_pages = PagesForTargetRect(fb_l, r);
+	GSPageBitmap fb_written;
+	if (ctx->FRAME.FBMSK != 0xFFFFFFFFu)
+		fb_written = fb_pages;
+
+	// SW-floor z semantics: ZTE=0 turns off the test AND the write.
+	const bool z_write = ctx->TEST.ZTE && !ctx->ZBUF.ZMSK;
+	const bool z_test = ctx->TEST.ZTE && ctx->TEST.ZTST > ZTST_ALWAYS;
+
+	GSPageBitmap z_pages;
+	GSPageBitmap z_written;
+	const bool z_used = z_write || z_test;
+	if (z_used)
+	{
+		const GSTileSurfaceLayout z_l{ctx->ZBUF.Block(), static_cast<u8>(ctx->FRAME.FBW),
+			static_cast<u8>(ctx->ZBUF.PSM), GSTileSurfaceKind::Depth};
+		z_pages = PagesForTargetRect(z_l, r);
+		if (z_write)
+			z_written = z_pages;
+	}
+
+	GSPageBitmap tex_pages;
+	GSPageBitmap core_pages;
+	bool has_core = false;
+	bool identity_feedback = false;
+	if (PRIM->TME)
+	{
+		const bool mip = IsMipMapActive();
+		const GIFRegTEX0 fixed_tex0 =
+			ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mip);
+		// The in-pass-read shape: the sampling maps pixel-to-pixel — the UV bbox lands within
+		// one texel of the draw rect. An input-attachment read serves same-pixel reads of ANY
+		// attachment bound to the pass (it has no coordinate argument), so the sampled window's
+		// base does NOT have to be this draw's own target: the ping-pong post chain (write A,
+		// draw into B sampling A at 1:1) is exactly this shape.
+		if (!mip && PRIM->FST)
+		{
+			const int u0 = static_cast<int>(std::floor(m_vt.m_min.t.x));
+			const int v0 = static_cast<int>(std::floor(m_vt.m_min.t.y));
+			const int u1 = static_cast<int>(std::ceil(m_vt.m_max.t.x));
+			const int v1 = static_cast<int>(std::ceil(m_vt.m_max.t.y));
+			identity_feedback = std::abs(u0 - r.x) <= 1 && std::abs(v0 - r.y) <= 1 &&
+								std::abs(u1 - r.z) <= 1 && std::abs(v1 - r.w) <= 1;
+		}
+		const u32 mip_levels = mip ? (std::min<u32>(ctx->TEX1.MXL, 6) + 1) : 1u;
+		for (u32 i = 0; i < mip_levels; i++)
+		{
+			const GIFRegTEX0 lvl = (i == 0) ? fixed_tex0 : GetTex0Layer(i);
+			const GSTileSurfaceLayout tex_l{
+				lvl.TBP0, static_cast<u8>(lvl.TBW), static_cast<u8>(lvl.PSM), KindForPsm(lvl.PSM)};
+			const int tw = 1 << std::min<u32>(lvl.TW, 10);
+			const int th = 1 << std::min<u32>(lvl.TH, 10);
+			tex_pages |= PagesForTargetRect(tex_l, GSVector4i(0, 0, tw, th));
+		}
+		if (mip_levels == 1 && ctx->CLAMP.WMS <= CLAMP_CLAMP && ctx->CLAMP.WMT <= CLAMP_CLAMP)
+		{
+			const int tw = 1 << std::min<u32>(fixed_tex0.TW, 10);
+			const int th = 1 << std::min<u32>(fixed_tex0.TH, 10);
+			int cx0 = static_cast<int>(std::floor(m_vt.m_min.t.x)) + 1;
+			int cy0 = static_cast<int>(std::floor(m_vt.m_min.t.y)) + 1;
+			int cx1 = static_cast<int>(std::floor(m_vt.m_max.t.x));
+			int cy1 = static_cast<int>(std::floor(m_vt.m_max.t.y));
+			const bool u_ok = (ctx->CLAMP.WMS == CLAMP_CLAMP) || (cx0 >= 0 && cx1 <= tw);
+			const bool v_ok = (ctx->CLAMP.WMT == CLAMP_CLAMP) || (cy0 >= 0 && cy1 <= th);
+			cx0 = std::max(cx0, 0);
+			cy0 = std::max(cy0, 0);
+			cx1 = std::min(cx1, tw);
+			cy1 = std::min(cy1, th);
+			if (u_ok && v_ok && cx0 < cx1 && cy0 < cy1)
+			{
+				const GSTileSurfaceLayout tex_l{fixed_tex0.TBP0, static_cast<u8>(fixed_tex0.TBW),
+					static_cast<u8>(fixed_tex0.PSM), KindForPsm(fixed_tex0.PSM)};
+				core_pages = PagesForTargetRect(tex_l, GSVector4i(cx0, cy0, cx1, cy1));
+				has_core = true;
+			}
+		}
+	}
+
+	// -- the in-pass reader classifier (the crossover's per-tier policy fork) ----------
+	// Which draws need the raster-order read of their own pixel, beyond pixel-identity
+	// feedback (classified in the sim): blend equations and tests fixed-function cannot
+	// express. Alpha range comes from the vertex trace; when it is not valid the classifier
+	// assumes the full range (a census leans conservative). The dual-source class is kept
+	// apart because Adreno has dual-source blending and Mali-G615 does not — that flag is
+	// where the two tiers' reader populations diverge. DATE on 24-bit targets is skipped:
+	// destination alpha reads back as a constant there, so no read is needed.
+	u32 reader_flags = 0;
+	if (!fb_written.empty())
+	{
+		if (ctx->TEST.DATE && GSLocalMemory::m_psm[ctx->FRAME.PSM].trbpp != 24)
+			reader_flags |= GSTilePassSim::ReaderDate;
+		if (PRIM->ABE)
+		{
+			const GIFRegALPHA& al = ctx->ALPHA;
+			const bool uses_cd = (al.A == 1) || (al.B == 1) || (al.D == 1) || (al.C == 1);
+			if (uses_cd && al.A != al.B)
+			{
+				// Cv = (A - B) * C >> 7 + D with the destination involved. A == B degenerates
+				// to Cv = D (source-only or destination passthrough), which fixed-function
+				// always expresses — hence the gate above.
+				if (m_draw_env->COLCLAMP.CLAMP == 0)
+					reader_flags |= GSTilePassSim::ReaderWrap;
+				if (m_draw_env->PABE.PABE)
+					reader_flags |= GSTilePassSim::ReaderPabe;
+				if (al.D == al.A)
+					reader_flags |= GSTilePassSim::ReaderCoeffGt1; // accumulation: a coefficient is 1 + C
+				if (al.C == 1)
+					reader_flags |= GSTilePassSim::ReaderAdFactor;
+				else if (al.C == 2)
+				{
+					if (al.FIX > 0x80)
+						reader_flags |= GSTilePassSim::ReaderFacGt1;
+					// FIX <= 0x80 maps onto the constant blend factor: expressible.
+				}
+				else if (al.C == 0)
+				{
+					// C=As: the blend factor is the draw's POST-texture-function source alpha,
+					// so the range must fold TFX/TEXA/CLUT — GetAlphaMinMax does exactly that
+					// (the base trace's Update only zeroes m_alpha.valid; the renderer computes
+					// the range lazily, which the plain-GSRenderer base does not do for us). A
+					// palettised draw needs the CLUT's decoded read buffer current first or the
+					// scan reads the previous draw's palette; there is no GPU-resident palette on
+					// this road yet, so the Tile feeder's conservative not-cpu-current branch does
+					// not apply here.
+					if (PRIM->TME && GSLocalMemory::m_psm[ctx->TEX0.PSM].pal > 0)
+						m_mem.m_clut.Read32(ctx->TEX0, m_draw_env->TEXA);
+					const int amax = GetAlphaMinMax().max;
+					if (amax > 0x80)
+						reader_flags |= GSTilePassSim::ReaderFacGt1;
+					else
+						reader_flags |= GSTilePassSim::ReaderAsDualSource;
+				}
+			}
+		}
+	}
+
+	// Does this draw land any alpha in memory? Only the alpha bits the target FORMAT keeps
+	// count — PSMCT24 stores none at all, PSMCT16 keeps one — and FBMSK masks them off from
+	// there. A draw that stores no alpha can take the doubled-alpha trick whatever else
+	// touches the surface, because the doubled value never outlives the blend.
+	const u32 fmt_alpha = GSLocalMemory::m_psm[ctx->FRAME.PSM].fmsk & 0xFF000000u;
+	const bool stores_alpha = !fb_written.empty() && (fmt_alpha & ~ctx->FRAME.FBMSK) != 0;
+
+	m_pass_sim.OnDraw(fb_written, z_written, fb_pages | z_pages, tex_pages, core_pages, has_core,
+		identity_feedback, PRIM->TME && PRIM->FST, reader_flags, stores_alpha, ctx->FRAME.Block(),
+		ctx->FRAME.PSM, ctx->ZBUF.Block(), ctx->ZBUF.PSM, z_used,
+		static_cast<u32>(std::max(m_vertex->tail, m_vertex->next)));
+}
+
+// The accumulated per-frame pass structure, mean / p50 at teardown. This is the offline
+// -tilepasssim arm's aggregate (minus the Tile-only GIF-stream tail): the structural counters
+// the stage-1 gate reads against the design values. Draws-only for now, so the transfer-driven
+// break reasons (upload/move/cpu-read) read zero by construction, not by measurement.
+void GSRendererTileGpu::ReportPassStructure()
+{
+	const std::vector<GSTilePassSim::FrameStats>& frames = m_pass_sim.Frames();
+	if (frames.empty())
+		return;
+
+	const double n = static_cast<double>(frames.size());
+	const auto stat = [&frames, n](auto get) {
+		std::vector<u32> v(frames.size());
+		double sum = 0.0;
+		for (size_t i = 0; i < frames.size(); i++)
+		{
+			v[i] = get(frames[i]);
+			sum += v[i];
+		}
+		std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+		struct
+		{
+			double mean;
+			u32 p50;
+		} r{sum / n, v[v.size() / 2]};
+		return r;
+	};
+	using FS = GSTilePassSim::FrameStats;
+	const auto brk = [&stat](GSTilePassSim::BreakReason why) {
+		return stat([why](const FS& f) { return f.breaks[static_cast<u32>(why)]; });
+	};
+	const auto tier = [&stat](auto get, u32 t) {
+		return stat([get, t](const FS& f) { return get(f, t); });
+	};
+
+	const auto draws = stat([](const FS& f) { return f.draws; });
+	const auto verts = stat([](const FS& f) { return f.verts; });
+	const auto passes = stat([](const FS& f) { return f.passes; });
+	const auto snaps = stat([](const FS& f) { return f.snapshots; });
+	const auto snap_pages = stat([](const FS& f) { return f.snapshot_pages; });
+	const auto biggest = stat([](const FS& f) { return f.draws_in_biggest_pass; });
+	const auto inpass = stat([](const FS& f) { return f.feedback_inpass; });
+	const auto identity = stat([](const FS& f) { return f.feedback_identity; });
+	const auto fruns = stat([](const FS& f) { return f.feedback_runs; });
+	const auto b_feedback = brk(GSTilePassSim::BreakReason::Feedback);
+	const auto b_cap = brk(GSTilePassSim::BreakReason::TargetCap);
+	const auto b_upload = brk(GSTilePassSim::BreakReason::Upload);
+	const auto b_move = brk(GSTilePassSim::BreakReason::MoveHazard);
+	const auto b_cpu = brk(GSTilePassSim::BreakReason::CpuRead);
+	const auto rdrsA = tier([](const FS& f, u32 t) { return f.readers[t]; }, 0);
+	const auto rdrsB = tier([](const FS& f, u32 t) { return f.readers[t]; }, 1);
+	const auto dvertsB = tier([](const FS& f, u32 t) { return f.declared_verts[t]; }, 1);
+	const auto rvertsB = tier([](const FS& f, u32 t) { return f.reader_verts[t]; }, 1);
+	const auto tas = stat([](const FS& f) { return f.trick_as_draws; });
+	const auto tlive = stat([](const FS& f) { return f.trick_as_on_live; });
+	const auto tresc = stat([](const FS& f) { return f.trick_as_mask_rescued; });
+	const double eligible = tas.mean - tlive.mean + tresc.mean;
+
+	Console.WriteLn("TileGpu pass structure over %u frames (GS-semantic MINIMUM, %u pairs/pass; "
+					"DRAWS-ONLY — transfer breaks not yet hooked; mean / p50 per frame):",
+		static_cast<u32>(frames.size()), GSTilePassSim::kMaxTargetPairs);
+	Console.WriteLn("  draws %9.2f / %-6u  verts %9.2f / %-8u  biggest pass %6.2f / %u draws", draws.mean,
+		draws.p50, verts.mean, verts.p50, biggest.mean, biggest.p50);
+	Console.WriteLn("  passes %8.2f / %-6u  snapshots %5.2f / %-4u (%.2f / %u pages)", passes.mean,
+		passes.p50, snaps.mean, snaps.p50, snap_pages.mean, snap_pages.p50);
+	Console.WriteLn("  breaks: feedback %.2f/%u  target-cap %.2f/%u  upload %.2f/%u  move %.2f/%u  "
+					"cpu-read %.2f/%u",
+		b_feedback.mean, b_feedback.p50, b_cap.mean, b_cap.p50, b_upload.mean, b_upload.p50, b_move.mean,
+		b_move.p50, b_cpu.mean, b_cpu.p50);
+	Console.WriteLn("  feedback served in-pass: core proof %.2f / %u   pixel-identity %.2f / %u   "
+					"offset residue %.2f runs",
+		inpass.mean, inpass.p50, identity.mean, identity.p50, fruns.mean);
+	Console.WriteLn("  in-pass readers/frame: tierA(dual-src) %.2f / %u   tierB(Mali) %.2f / %u   "
+					"tierB declared %.2f verts, reader %.2f verts",
+		rdrsA.mean, rdrsA.p50, rdrsB.mean, rdrsB.p50, dvertsB.mean, rvertsB.mean);
+	Console.WriteLn("  doubled-alpha trick (tierB): As-class %.2f draws/frame; disqualified %.2f, "
+					"rescued %.2f -> eligible %.2f",
+		tas.mean, tlive.mean, tresc.mean, eligible);
 }
