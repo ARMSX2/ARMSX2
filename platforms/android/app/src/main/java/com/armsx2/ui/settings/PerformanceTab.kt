@@ -301,7 +301,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
             IntSliderRow(
                 label = str("perf.speedLimit.label"),
                 value = s.nominalSpeedPercent.coerceIn(5, 1000),
-                min = 5,
+                min = 10,
                 max = 1000,
                 description = str("perf.speedLimit.description"),
                 valueFormatter = { "$it%" },
