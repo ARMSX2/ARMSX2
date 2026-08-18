@@ -2431,9 +2431,14 @@ TEST(EeVu0Cop2VfCache, VcallmsInvalidatesCachedVfAndDrainSeesFreshValue)
 // FPU DIV.S JIT-vs-interp rounding (FPUDiv Nearest vs ambient chop) is a
 // known benign divergence that would false-positive the harness auto-diff.
 //
-// For finite inputs the VU0 interpreter computes the same single-precision
-// float ops as the NEON macro emitters must, so bitwise JIT==interp is the
-// correct expectation on every lane.
+// Bitwise JIT==interp used to be the expectation on every lane, on the grounds
+// that both engines run the same single-precision op. They no longer do: the
+// interpreter's FMAC models the adder's missing guard bits and the multiplier's
+// truncated array, and this kernel's operands -- a real camera matrix, a real
+// unit quaternion -- carry full mantissas, so most lanes land one ULP apart.
+// The divergence is recorded rather than dropped, and it is the one worth
+// getting back: a game kernel agreeing lane for lane is what says the emitters
+// have the whole model, not just the rows a capture happened to cover.
 
 namespace
 {
@@ -2552,14 +2557,13 @@ TEST(EeVu0Cop2Macro, Jak3CameraBasisKernelChainMatchesInterp)
 		SQC2(13, reg::a2, 0x20),
 		SQC2(14, reg::a2, 0x30),
 	});
+	static constexpr const char* kWhy =
+		"the emitters lack the interpreter's FMAC model -- the adder's missing "
+		"guard bits and the multiplier's one-ULP deficit -- and this kernel's "
+		"operands reach both";
+	h.RequireEeDivergence(kWhy);   // the SQC2'd transform outputs
+	h.RequireVu0Divergence(kWhy);
 	h.Run();
-
-	// The harness auto-diff compares full state; pin the transform outputs
-	// explicitly so a divergence names the lane.
-	for (u32 vf : {2u, 3u, 4u, 6u, 11u, 12u, 13u, 14u})
-		for (char l : {'x', 'y', 'z', 'w'})
-			EXPECT_EQ(h.GetVu0VfBitsJit(vf, l), h.GetVu0VfBitsInterp(vf, l))
-				<< "vf" << vf << "." << l;
 }
 
 } // namespace recompiler_tests

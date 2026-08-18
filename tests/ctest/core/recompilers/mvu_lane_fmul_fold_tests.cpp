@@ -44,12 +44,18 @@ inline VuOp UpperOnly(u32 upper) { return IBit(VuOp{VLitZero(), upper}); }
 // Values chosen so every lane of every product/sum is a distinct, exactly-
 // representable float: a wrong broadcast lane or a stale operand register
 // shows up as a bit-level VF/ACC/MAC-flag diff, not a rounding coincidence.
+//
+// -0.001f was not one of them -- it carries a full mantissa, and the y lane
+// then separated the two engines on the arithmetic itself rather than on the
+// fold: the interpreter models the adder's missing guard bits and the
+// multiplier's one-ULP deficit and the emitters do not. -2^-10 keeps the small
+// negative and restores the intent.
 void SeedCommonRegs(VuTestHarness& h)
 {
 	h.SetVf(1, 1.5f, -2.25f, 3.0f, 0.0625f);
 	h.SetVf(2, 4.0f, 0.5f, -1.0f, 8.0f); // broadcast source in most programs
 	h.SetVf(3, -0.75f, 12.5f, 0.125f, -6.0f);
-	h.SetVf(4, 100.0f, -0.001f, 7.5f, 2.0f);
+	h.SetVf(4, 100.0f, -0.0009765625f, 7.5f, 2.0f);
 	h.SetVf(5, 0.5f, 3.25f, -9.0f, 1.0f);
 	h.SetVf(6, -1.5f, 0.25f, 55.0f, -0.5f);
 }

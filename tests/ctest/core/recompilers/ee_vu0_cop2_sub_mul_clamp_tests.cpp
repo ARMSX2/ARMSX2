@@ -55,8 +55,24 @@ struct Operands
 	const char* what;
 	u32 fs[4];
 	u32 ft[4];
+	// Whether the clamp changes this row's answer. Where it does, the
+	// interpreter no longer agrees -- see kWhyRangeDiffers. A zero operand
+	// leaves nothing for the clamp to change, so those rows still diff plainly
+	// and are what says the harness is still comparing anything at all.
+	bool rangeDiffers;
 };
 
+constexpr const char* kWhyRangeDiffers =
+	"the emitters clamp an exp-FF operand to FLT_MAX and the result with it; "
+	"the interpreter reads it at full value and saturates at 0x7FFFFFFF, which "
+	"is what the console returns. Pinning the clamp row against microVU again "
+	"needs a recorded expectation rather than the interpreter";
+
+// The interpreter reads an exp-FF operand at its full value and saturates at
+// 0x7FFFFFFF, so it no longer stands in for microVU's clamp row: on any case
+// whose result depends on the clamp it now answers something else, and the
+// caller says so by passing `whyDiverges`. Where it does not -- a product with
+// a zero operand, say -- the plain diff still holds.
 void CheckVfCase(const char* opName, u32 code, u32 mask, const Operands& c,
 	u32 viReg = 0, u32 viValue = 0)
 {
@@ -70,7 +86,12 @@ void CheckVfCase(const char* opName, u32 code, u32 mask, const Operands& c,
 	if (viReg != 0)
 		h.SeedVu0Vi(viReg, viValue);
 	h.LoadProgram({code});
+	if (c.rangeDiffers)
+		h.RequireVu0Divergence(kWhyRangeDiffers);
 	h.Run();
+
+	if (c.rangeDiffers)
+		return;
 
 	for (char l : {'x', 'y', 'z', 'w'})
 	{
@@ -113,7 +134,7 @@ const Operands kMulFsCases[] = {
 		{kZero, kZero, kZero, kZero}},
 	{"exp-FF Fs, in-range Ft",
 		{kPosInf, kNegInf, kPosNan, kMaxExpFf},
-		{kTwo, kTwo, kTwo, kTwo}},
+		{kTwo, kTwo, kTwo, kTwo}, true},
 };
 
 const Operands kMulFtCases[] = {
@@ -122,7 +143,7 @@ const Operands kMulFtCases[] = {
 		{kPosInf, kNegInf, kPosNan, kMaxExpFf}},
 	{"in-range Fs, exp-FF Ft",
 		{kTwo, kTwo, kTwo, kTwo},
-		{kPosInf, kNegInf, kPosNan, kMaxExpFf}},
+		{kPosInf, kNegInf, kPosNan, kMaxExpFf}, true},
 };
 
 } // namespace

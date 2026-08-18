@@ -6,9 +6,9 @@
 #include "GS.h"
 #include "Gif_Unit.h"
 #include "MTVU.h"
+#include "EeFpuModel.h"
 
 #include <cmath>
-#include <cfloat>
 u32 laststall = 0;
 //Lower/Upper instructions can use that..
 #define _Ft_ ((VU->code >> 16) & 0x1F)  // The rt part of the instruction register
@@ -463,62 +463,37 @@ static __fi float vuDouble(u32 f)
 }
 #endif
 
-// A result below the smallest normal is flushed to a signed zero on the VU, and
-// U is raised with Z when that happens. The host FPCR flushes it first, so by
-// the time VU_MAC_UPDATE sees the value it is an unremarkable zero and the
-// underflow is gone -- which is why U never fired here at all. Recover it by
-// redoing only the FINAL operation in double, over the very same float
-// intermediates the single-precision path used, so the classification cannot
-// disagree with the value it describes. Nothing below feeds a returned value.
+// One lane of an FMAC: the word, plus the two facts the flag registers need
+// that the word cannot carry (VUflags.h). mulSticky is the multiply stage's
+// own cause nibble on a MADD/MSUB, which the cause field does not show.
 struct VuMacValue
 {
-	float v;
+	u32 bits;
+	bool overflow;
 	bool underflow;
+	u32 mulSticky;
 };
 
-// The double cannot underflow out from under this test: vuDouble() flushes
-// denormal operands, so every operand is zero or at least 2^-126, and the
-// smallest nonzero result any of these ops can build from those is far above
-// the double's own subnormal range.
-static __fi bool vuUnderflowedToZero(double exact)
+// What the multiply stage of a MADD/MSUB leaves in the sticky field, in the bit
+// order VU_STAT_UPDATE assembles its nibble in.
+//
+// Z, U and O only. The captured rows show all three crossing from a product
+// into the sticky field with the cause nibble clear -- a product of zero, one
+// that underflows, one that overflows -- but every row whose product is
+// negative has a negative result too, so none of them says whether S crosses
+// with them. Leaving it out is what both engines already did.
+static __fi u32 vuProductSticky(const EeFpuModel::Result& s)
 {
-	return exact != 0.0 && exact < FLT_MIN && exact > -FLT_MIN;
+	if (s.overflow)
+		return 0x8u;
+	if (s.underflow)
+		return 0x5u;
+	return (s.bits & 0x7FFFFFFFu) == 0 ? 0x1u : 0u;
 }
 
-static __fi float vuADD_TriAceHack(u32 a, u32 b)
+static __fi VuMacValue vuMacValue(const EeFpuModel::Result& s, u32 mulSticky = 0)
 {
-	// On VU0 TriAce Games use ADDi and expects these bit-perfect results:
-	//if (a == 0xb3e2a619 && b == 0x42546666) return vuDouble(0x42546666);
-	//if (a == 0x8b5b19e9 && b == 0xc7f079b3) return vuDouble(0xc7f079b3);
-	//if (a == 0x4b1ed4a8 && b == 0x43a02666) return vuDouble(0x4b1ed5e7);
-	//if (a == 0x7d1ca47b && b == 0x42f23333) return vuDouble(0x7d1ca47b);
-
-	// In the 3rd case, some other rounding error is giving us incorrect
-	// operands ('a' is wrong); and therefor an incorrect result.
-	// We're getting:        0x4b1ed4a8 + 0x43a02666 = 0x4b1ed5e8
-	// We should be getting: 0x4b1ed4a7 + 0x43a02666 = 0x4b1ed5e7
-	// microVU gets the correct operands and result. The interps likely
-	// don't get it due to rounding towards nearest in other calculations.
-
-	// microVU uses something like this to get TriAce games working,
-	// but VU interpreters don't seem to need it currently:
-
-	// Update Sept 2021, now the interpreters don't suck, they do - Refraction
-	s32 aExp = (a >> 23) & 0xff;
-	s32 bExp = (b >> 23) & 0xff;
-	if (aExp - bExp >= 25) b &= 0x80000000;
-	if (aExp - bExp <=-25) a &= 0x80000000;
-	float ret = vuDouble(a) + vuDouble(b);
-	//DevCon.WriteLn("aExp = %d, bExp = %d", aExp, bExp);
-	//DevCon.WriteLn("0x%08x + 0x%08x = 0x%08x", a, b, (u32&)ret);
-	//DevCon.WriteLn("%f + %f = %f", vuDouble(a), vuDouble(b), ret);
-	return ret;
-}
-
-static __fi VuMacValue vuADD_TriAceHackMac(u32 a, u32 b)
-{
-	const float r = vuADD_TriAceHack(a, b);
-	return {r, vuUnderflowedToZero(static_cast<double>(vuDouble(a)) + static_cast<double>(vuDouble(b)))};
+	return {s.bits, s.overflow, s.underflow, mulSticky};
 }
 
 template <u32(*Fn)(u32)>
@@ -560,28 +535,29 @@ template <VuMacValue(*Fn)(u32, u32), MACOpDst Dst>
 static __fi void applyBinaryMACOp(VURegs* VU)
 {
 	VECTOR* dst = _getDst<Dst>(VU);
-	if (_X) { const VuMacValue rx = Fn(VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.x); dst->i.x = VU_MACx_UPDATE(VU, rx.v, rx.underflow); } else VU_MACx_CLEAR(VU);
-	if (_Y) { const VuMacValue ry = Fn(VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.y); dst->i.y = VU_MACy_UPDATE(VU, ry.v, ry.underflow); } else VU_MACy_CLEAR(VU);
-	if (_Z) { const VuMacValue rz = Fn(VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.z); dst->i.z = VU_MACz_UPDATE(VU, rz.v, rz.underflow); } else VU_MACz_CLEAR(VU);
-	if (_W) { const VuMacValue rw = Fn(VU->VF[_Fs_].i.w, VU->VF[_Ft_].i.w); dst->i.w = VU_MACw_UPDATE(VU, rw.v, rw.underflow); } else VU_MACw_CLEAR(VU);
-	VU_STAT_UPDATE(VU);
+	u32 sticky = 0;
+	if (_X) { const VuMacValue rx = Fn(VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.x); dst->i.x = VU_MACx_UPDATE(VU, rx.bits, rx.overflow, rx.underflow); sticky |= rx.mulSticky; } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = Fn(VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.y); dst->i.y = VU_MACy_UPDATE(VU, ry.bits, ry.overflow, ry.underflow); sticky |= ry.mulSticky; } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = Fn(VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.z); dst->i.z = VU_MACz_UPDATE(VU, rz.bits, rz.overflow, rz.underflow); sticky |= rz.mulSticky; } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = Fn(VU->VF[_Fs_].i.w, VU->VF[_Ft_].i.w); dst->i.w = VU_MACw_UPDATE(VU, rw.bits, rw.overflow, rw.underflow); sticky |= rw.mulSticky; } else VU_MACw_CLEAR(VU);
+	VU_STAT_UPDATE(VU, sticky);
 }
 
 template <VuMacValue(*Fn)(u32, u32), MACOpDst Dst>
 static __fi void applyBinaryMACOpBroadcast(VURegs* VU, u32 bc)
 {
 	VECTOR* dst = _getDst<Dst>(VU);
-	if (_X) { const VuMacValue rx = Fn(VU->VF[_Fs_].i.x, bc); dst->i.x = VU_MACx_UPDATE(VU, rx.v, rx.underflow); } else VU_MACx_CLEAR(VU);
-	if (_Y) { const VuMacValue ry = Fn(VU->VF[_Fs_].i.y, bc); dst->i.y = VU_MACy_UPDATE(VU, ry.v, ry.underflow); } else VU_MACy_CLEAR(VU);
-	if (_Z) { const VuMacValue rz = Fn(VU->VF[_Fs_].i.z, bc); dst->i.z = VU_MACz_UPDATE(VU, rz.v, rz.underflow); } else VU_MACz_CLEAR(VU);
-	if (_W) { const VuMacValue rw = Fn(VU->VF[_Fs_].i.w, bc); dst->i.w = VU_MACw_UPDATE(VU, rw.v, rw.underflow); } else VU_MACw_CLEAR(VU);
-	VU_STAT_UPDATE(VU);
+	u32 sticky = 0;
+	if (_X) { const VuMacValue rx = Fn(VU->VF[_Fs_].i.x, bc); dst->i.x = VU_MACx_UPDATE(VU, rx.bits, rx.overflow, rx.underflow); sticky |= rx.mulSticky; } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = Fn(VU->VF[_Fs_].i.y, bc); dst->i.y = VU_MACy_UPDATE(VU, ry.bits, ry.overflow, ry.underflow); sticky |= ry.mulSticky; } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = Fn(VU->VF[_Fs_].i.z, bc); dst->i.z = VU_MACz_UPDATE(VU, rz.bits, rz.overflow, rz.underflow); sticky |= rz.mulSticky; } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = Fn(VU->VF[_Fs_].i.w, bc); dst->i.w = VU_MACw_UPDATE(VU, rw.bits, rw.overflow, rw.underflow); sticky |= rw.mulSticky; } else VU_MACw_CLEAR(VU);
+	VU_STAT_UPDATE(VU, sticky);
 }
 
 static __fi VuMacValue _vuOpADD(u32 fs, u32 ft)
 {
-	const float a = vuDouble(fs), b = vuDouble(ft);
-	return {a + b, vuUnderflowedToZero(static_cast<double>(a) + static_cast<double>(b))};
+	return vuMacValue(EeFpuModel::AddSub(fs, ft, false));
 }
 
 static __fi void _vuADD(VURegs* VU)
@@ -594,17 +570,13 @@ static __fi void vuADDbc(VURegs* VU, u32 bc)
 	applyBinaryMACOpBroadcast<_vuOpADD, MACOpDst::Fd>(VU, bc);
 }
 
-static __fi void vuADDbc_addsubhack(VURegs* VU, u32 bc)
-{
-	if (CHECK_VUADDSUBHACK)
-		applyBinaryMACOpBroadcast<vuADD_TriAceHackMac, MACOpDst::Fd>(VU, bc);
-	else
-		applyBinaryMACOpBroadcast<_vuOpADD, MACOpDst::Fd>(VU, bc);
-}
-
+// The tri-ace ADDi gamefix flushed whichever operand sat 25 or more exponents
+// below the other. That is the last row of the adder's own guard mask
+// (fpuGuardMask, FPU.cpp), which is modelled here at every separation, so the
+// gamefix has nothing left to add and ADDi takes one path either way.
 static __fi void _vuADDi(VURegs* VU)
 {
-	vuADDbc_addsubhack(VU, VU->VI[REG_I].UL);
+	vuADDbc(VU, VU->VI[REG_I].UL);
 }
 
 static __fi void _vuADDq(VURegs* VU) { vuADDbc(VU, VU->VI[REG_Q].UL); }
@@ -632,8 +604,7 @@ static __fi void _vuADDAw(VURegs* VU) { vuADDAbc(VU, VU->VF[_Ft_].i.w); }
 
 static __fi VuMacValue _vuOpSUB(u32 fs, u32 ft)
 {
-	const float a = vuDouble(fs), b = vuDouble(ft);
-	return {a - b, vuUnderflowedToZero(static_cast<double>(a) - static_cast<double>(b))};
+	return vuMacValue(EeFpuModel::AddSub(fs, ft, true));
 }
 
 static __fi void _vuSUB(VURegs* VU)
@@ -672,8 +643,7 @@ static __fi void _vuSUBAw(VURegs* VU) { vuSUBAbc(VU, VU->VF[_Ft_].i.w); }
 
 static __fi VuMacValue _vuOpMUL(u32 fs, u32 ft)
 {
-	const float a = vuDouble(fs), b = vuDouble(ft);
-	return {a * b, vuUnderflowedToZero(static_cast<double>(a) * static_cast<double>(b))};
+	return vuMacValue(EeFpuModel::Mul(fs, ft));
 }
 
 static __fi void _vuMUL(VURegs* VU)
@@ -715,29 +685,30 @@ template <VuMacValue(*Fn)(u32, u32, u32), MACOpDst Dst>
 static __fi void applyTernaryMACOp(VURegs* VU)
 {
 	VECTOR* dst = _getDst<Dst>(VU);
-	if (_X) { const VuMacValue rx = Fn(VU->ACC.i.x, VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.x); dst->i.x = VU_MACx_UPDATE(VU, rx.v, rx.underflow); } else VU_MACx_CLEAR(VU);
-	if (_Y) { const VuMacValue ry = Fn(VU->ACC.i.y, VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.y); dst->i.y = VU_MACy_UPDATE(VU, ry.v, ry.underflow); } else VU_MACy_CLEAR(VU);
-	if (_Z) { const VuMacValue rz = Fn(VU->ACC.i.z, VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.z); dst->i.z = VU_MACz_UPDATE(VU, rz.v, rz.underflow); } else VU_MACz_CLEAR(VU);
-	if (_W) { const VuMacValue rw = Fn(VU->ACC.i.w, VU->VF[_Fs_].i.w, VU->VF[_Ft_].i.w); dst->i.w = VU_MACw_UPDATE(VU, rw.v, rw.underflow); } else VU_MACw_CLEAR(VU);
-	VU_STAT_UPDATE(VU);
+	u32 sticky = 0;
+	if (_X) { const VuMacValue rx = Fn(VU->ACC.i.x, VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.x); dst->i.x = VU_MACx_UPDATE(VU, rx.bits, rx.overflow, rx.underflow); sticky |= rx.mulSticky; } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = Fn(VU->ACC.i.y, VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.y); dst->i.y = VU_MACy_UPDATE(VU, ry.bits, ry.overflow, ry.underflow); sticky |= ry.mulSticky; } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = Fn(VU->ACC.i.z, VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.z); dst->i.z = VU_MACz_UPDATE(VU, rz.bits, rz.overflow, rz.underflow); sticky |= rz.mulSticky; } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = Fn(VU->ACC.i.w, VU->VF[_Fs_].i.w, VU->VF[_Ft_].i.w); dst->i.w = VU_MACw_UPDATE(VU, rw.bits, rw.overflow, rw.underflow); sticky |= rw.mulSticky; } else VU_MACw_CLEAR(VU);
+	VU_STAT_UPDATE(VU, sticky);
 }
 
 template <VuMacValue(*Fn)(u32, u32, u32), MACOpDst Dst>
 static __fi void applyTernaryMACOpBroadcast(VURegs* VU, u32 bc)
 {
 	VECTOR* dst = _getDst<Dst>(VU);
-	if (_X) { const VuMacValue rx = Fn(VU->ACC.i.x, VU->VF[_Fs_].i.x, bc); dst->i.x = VU_MACx_UPDATE(VU, rx.v, rx.underflow); } else VU_MACx_CLEAR(VU);
-	if (_Y) { const VuMacValue ry = Fn(VU->ACC.i.y, VU->VF[_Fs_].i.y, bc); dst->i.y = VU_MACy_UPDATE(VU, ry.v, ry.underflow); } else VU_MACy_CLEAR(VU);
-	if (_Z) { const VuMacValue rz = Fn(VU->ACC.i.z, VU->VF[_Fs_].i.z, bc); dst->i.z = VU_MACz_UPDATE(VU, rz.v, rz.underflow); } else VU_MACz_CLEAR(VU);
-	if (_W) { const VuMacValue rw = Fn(VU->ACC.i.w, VU->VF[_Fs_].i.w, bc); dst->i.w = VU_MACw_UPDATE(VU, rw.v, rw.underflow); } else VU_MACw_CLEAR(VU);
-	VU_STAT_UPDATE(VU);
+	u32 sticky = 0;
+	if (_X) { const VuMacValue rx = Fn(VU->ACC.i.x, VU->VF[_Fs_].i.x, bc); dst->i.x = VU_MACx_UPDATE(VU, rx.bits, rx.overflow, rx.underflow); sticky |= rx.mulSticky; } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = Fn(VU->ACC.i.y, VU->VF[_Fs_].i.y, bc); dst->i.y = VU_MACy_UPDATE(VU, ry.bits, ry.overflow, ry.underflow); sticky |= ry.mulSticky; } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = Fn(VU->ACC.i.z, VU->VF[_Fs_].i.z, bc); dst->i.z = VU_MACz_UPDATE(VU, rz.bits, rz.overflow, rz.underflow); sticky |= rz.mulSticky; } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = Fn(VU->ACC.i.w, VU->VF[_Fs_].i.w, bc); dst->i.w = VU_MACw_UPDATE(VU, rw.bits, rw.overflow, rw.underflow); sticky |= rw.mulSticky; } else VU_MACw_CLEAR(VU);
+	VU_STAT_UPDATE(VU, sticky);
 }
 
 static __fi VuMacValue _vuOpMADD(u32 acc, u32 fs, u32 ft)
 {
-	const float a = vuDouble(acc);
-	const float p = vuDouble(fs) * vuDouble(ft);
-	return {a + p, vuUnderflowedToZero(static_cast<double>(a) + static_cast<double>(p))};
+	const EeFpuModel::Accumulate r = EeFpuModel::MulAccumulate(acc, fs, ft, false);
+	return vuMacValue(r.result, vuProductSticky(r.product));
 }
 
 static __fi void _vuMADD(VURegs* VU)
@@ -776,9 +747,8 @@ static __fi void _vuMADDAw(VURegs* VU) { vuMADDAbc(VU, VU->VF[_Ft_].i.w); }
 
 static __fi VuMacValue _vuOpMSUB(u32 acc, u32 fs, u32 ft)
 {
-	const float a = vuDouble(acc);
-	const float p = vuDouble(fs) * vuDouble(ft);
-	return {a - p, vuUnderflowedToZero(static_cast<double>(a) - static_cast<double>(p))};
+	const EeFpuModel::Accumulate r = EeFpuModel::MulAccumulate(acc, fs, ft, true);
+	return vuMacValue(r.result, vuProductSticky(r.product));
 }
 
 static __fi void _vuMSUB(VURegs* VU)
@@ -879,10 +849,10 @@ static __fi void _vuOPMULA(VURegs* VU)
 	const VuMacValue x = _vuOpMUL(VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.z);
 	const VuMacValue y = _vuOpMUL(VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.x);
 	const VuMacValue z = _vuOpMUL(VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.y);
-	VU->ACC.i.x = VU_MACx_UPDATE(VU, x.v, x.underflow);
-	VU->ACC.i.y = VU_MACy_UPDATE(VU, y.v, y.underflow);
-	VU->ACC.i.z = VU_MACz_UPDATE(VU, z.v, z.underflow);
-	VU_STAT_UPDATE(VU);
+	VU->ACC.i.x = VU_MACx_UPDATE(VU, x.bits, x.overflow, x.underflow);
+	VU->ACC.i.y = VU_MACy_UPDATE(VU, y.bits, y.overflow, y.underflow);
+	VU->ACC.i.z = VU_MACz_UPDATE(VU, z.bits, z.overflow, z.underflow);
+	VU_STAT_UPDATE(VU, x.mulSticky | y.mulSticky | z.mulSticky);
 }
 
 static __fi void _vuOPMSUB(VURegs* VU)
@@ -899,10 +869,10 @@ static __fi void _vuOPMSUB(VURegs* VU)
 	const VuMacValue x = _vuOpMSUB(VU->ACC.i.x, VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.z);
 	const VuMacValue y = _vuOpMSUB(VU->ACC.i.y, VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.x);
 	const VuMacValue z = _vuOpMSUB(VU->ACC.i.z, VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.y);
-	dst->i.x = VU_MACx_UPDATE(VU, x.v, x.underflow);
-	dst->i.y = VU_MACy_UPDATE(VU, y.v, y.underflow);
-	dst->i.z = VU_MACz_UPDATE(VU, z.v, z.underflow);
-	VU_STAT_UPDATE(VU);
+	dst->i.x = VU_MACx_UPDATE(VU, x.bits, x.overflow, x.underflow);
+	dst->i.y = VU_MACy_UPDATE(VU, y.bits, y.overflow, y.underflow);
+	dst->i.z = VU_MACz_UPDATE(VU, z.bits, z.overflow, z.underflow);
+	VU_STAT_UPDATE(VU, x.mulSticky | y.mulSticky | z.mulSticky);
 }
 
 static __fi void _vuNOP(VURegs* VU)
@@ -3957,14 +3927,14 @@ _vuRegsTables(VU1, VU1regs, FnPtr_VuRegsN)
 
 // An FMAC owns only the ZSUO cause nibble; it replaces that and ORs the
 // matching stickies in. The D/I cause pair (0x30) belongs to the div unit and
-// survives untouched -- VU_STAT_UPDATE assigns statusflag outright, so the
-// previous values have to come from VI, not from statusflag. Preserving only
-// 0xFC0 here dropped the D/I cause on every macro FMAC, against both the
-// console (VUSTICKY_FMAC_KEEPS_DI) and the arm64 recompiler, which keeps its
-// denormalized bits 18-19 across cop2EmitFlagUpdate for x86 parity.
+// survives untouched, and it lives in VI rather than in statusflag.
+//
+// The sticky field comes from statusflag rather than being re-derived from
+// the cause nibble: a multiply-accumulate's product stage raises flags the
+// cause nibble never shows.
 static __fi void SYNCMSFLAGS()
 {
-	VU0.VI[REG_STATUS_FLAG].UL = (VU0.VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU0.statusflag & 0xF) | ((VU0.statusflag & 0xF) << 6);
+	VU0.VI[REG_STATUS_FLAG].UL = (VU0.VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU0.statusflag & 0xFCF);
 	VU0.VI[REG_MAC_FLAG].UL = VU0.macflag;
 }
 

@@ -80,6 +80,23 @@ constexpr u32 kPosTinyBits  = 0x00800000u; // smallest positive normal float
 
 inline VuOp VMulxyzw(u32 fd, u32 fs, u32 ft) { return UpperOnly(VMUL_U(mask::xyzw, fd, fs, ft)); }
 
+// The clamp knobs are a recompiler setting now: the interpreter saturates an
+// overflow at 0x7FFFFFFF, the VU's largest value and what the console returns,
+// whatever the knobs say. So an overflowing program's value is asserted
+// directly against the word the clamp is supposed to produce -- a stronger
+// statement than the engines agreeing -- and the divergence is recorded rather
+// than dropped.
+constexpr const char* kWhyClampCeiling =
+	"the clamp knobs bind the emitters only; the interpreter saturates at "
+	"0x7FFFFFFF";
+
+void RunAndExpectJitClamps(VuTestHarness& h, u32 dst_vf, u32 want, const char* lanes = "xyzw")
+{
+	h.RunRequiringDivergence(kWhyClampCeiling);
+	for (const char* l = lanes; *l; ++l)
+		EXPECT_EQ(h.GetVfBitsJit(dst_vf, *l), want) << "lane " << *l;
+}
+
 void RunAndExpectAllLanesAgree(VuTestHarness& h, u32 dst_vf)
 {
 	h.Run();
@@ -201,9 +218,8 @@ TEST(Vu0ClampModes, SignOverflowSingleLaneBroadcastClampsOperandLane0)
 		UpperOnly(VMULx_U(mask::x, vf::vf1, vf::vf2, vf::vf3)),
 		EBitNopPair(),
 	});
-	RunAndExpectAllLanesAgree(h, vf::vf1);
 	// Sign-preserved: -NaN operand clamps to -MAX_FLOAT, * 1.0 = -MAX_FLOAT.
-	EXPECT_EQ(h.GetVfBitsJit(vf::vf1, 'x'), 0xFF7FFFFFu);
+	RunAndExpectJitClamps(h, vf::vf1, 0xFF7FFFFFu, "x");
 }
 
 // =========================================================================
@@ -229,7 +245,7 @@ TEST(Vu0ClampModes, ExtraOverflowOnMaddIntermediateClampsBeforeAdd)
 		UpperOnly(VMADD_U(mask::xyzw, vf::vf1, vf::vf2, vf::vf3)), // vf1 = ACC + vf2*vf3
 		EBitNopPair(),
 	});
-	RunAndExpectAllLanesAgree(h, vf::vf1);
+	RunAndExpectJitClamps(h, vf::vf1, 0x7F7FFFFFu);
 }
 
 TEST(Vu0ClampModes, ExtraOverflowOffSameProgramAgreesOnFinalValue)
@@ -246,7 +262,7 @@ TEST(Vu0ClampModes, ExtraOverflowOffSameProgramAgreesOnFinalValue)
 		UpperOnly(VMADD_U(mask::xyzw, vf::vf1, vf::vf2, vf::vf3)),
 		EBitNopPair(),
 	});
-	RunAndExpectAllLanesAgree(h, vf::vf1);
+	RunAndExpectJitClamps(h, vf::vf1, 0x7F7FFFFFu);
 }
 
 // =========================================================================
@@ -267,7 +283,7 @@ TEST(Vu0ClampModes, OverflowOnPositiveVmulClampsToMaxFloat)
 		VMulxyzw(vf::vf1, vf::vf2, vf::vf2),
 		EBitNopPair(),
 	});
-	RunAndExpectAllLanesAgree(h, vf::vf1);
+	RunAndExpectJitClamps(h, vf::vf1, 0x7F7FFFFFu);
 }
 
 TEST(Vu0ClampModes, OverflowOnNegativeVmulClampsToNegMaxFloat)
@@ -283,7 +299,7 @@ TEST(Vu0ClampModes, OverflowOnNegativeVmulClampsToNegMaxFloat)
 		VMulxyzw(vf::vf1, vf::vf2, vf::vf3),
 		EBitNopPair(),
 	});
-	RunAndExpectAllLanesAgree(h, vf::vf1);
+	RunAndExpectJitClamps(h, vf::vf1, 0xFF7FFFFFu);
 }
 
 } // namespace recompiler_tests

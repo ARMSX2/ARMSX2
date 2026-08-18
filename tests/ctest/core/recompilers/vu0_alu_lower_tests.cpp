@@ -540,14 +540,19 @@ TEST(Vu0AluLower, VlqWAfterIBitLiteralDoesNotLeakLiteral)
 	h.SetVfBits(0, 0u, 0u, 0u, 0x3F800000u);  // VF0.w = 1.0f (architectural)
 	h.SetVfBits(14, 0u, 0u, 0u, 0u);
 	h.LoadProgram({
-		IBit(VuOp{VLitI(0xCAFEBABEu), VNOP_U()}),               // I = sentinel
+		// The sentinel's low mantissa bits are clear so that vf0.w * I is exact
+		// on both engines: with bit 1, 3, 5, 7 or 9 set, the interpreter's
+		// multiplier returns one ULP low -- the truncated array's deficit,
+		// which the emitters do not carry -- and this test would be reporting
+		// that instead of whether the LQ leaked the broadcast lane.
+		IBit(VuOp{VLitI(0xCAFE0000u), VNOP_U()}),               // I = sentinel
 		VuOp{0u, VMULi_U(mask::w, vf::vf31, vf::vf0)},          // vf31.w = vf0.w * I
 		LowerOnly(VLQ_L(mask::w, vf::vf14, vi::vi0, 0)),         // vf14.w = mem[0].w
 		EBitNopPair(),
 	});
 	h.Run();
 	EXPECT_EQ(h.GetVfBitsJit(14, 'w'), 0xDEADBEEFu);
-	EXPECT_NE(h.GetVfBitsJit(14, 'w'), 0xCAFEBABEu);
+	EXPECT_NE(h.GetVfBitsJit(14, 'w'), 0xCAFE0000u);
 }
 
 TEST(Vu0AluLower, VsqStoresOnlyWByte)

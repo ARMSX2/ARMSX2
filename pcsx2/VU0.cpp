@@ -262,6 +262,10 @@ void CTC2() {
 			// VI[REG_STATUS_FLAG] into the micro instances at program start.
 			VU0.VI[REG_STATUS_FLAG].UL = (VU0.VI[REG_STATUS_FLAG].UL & 0x3F) |
 			                             (cpuRegs.GPR.r[_Rt_].UL[0] & 0xFC0);
+			// The sticky field also accumulates in statusflag; a write that
+			// clears a sticky bit has to reach it too, or the next FMAC puts
+			// the bit back.
+			VU0.statusflag = (VU0.statusflag & 0x3F) | (cpuRegs.GPR.r[_Rt_].UL[0] & 0xFC0);
 			break;
 		case REG_CLIP_FLAG:
 			VU0.clipflag = cpuRegs.GPR.r[_Rt_].UL[0];
