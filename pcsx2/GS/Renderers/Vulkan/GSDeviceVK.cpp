@@ -6074,14 +6074,68 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	if (!m_optional_extensions.tilegpu_device_capable)
 		return false;
 
-	// An empty plan is a valid frame the executor completes with nothing to record — the
-	// honest steady state of this skeleton until the pass planner (stage 1.3) and the
-	// TFX-on-storage-buffer recording (1.4) land. The indirect submission belongs here:
-	// stage vertices/indices/state into device buffers, then per pass record its snapshot
-	// copies, open the declared raster-order-read render pass, and vkCmdDrawIndexedIndirect
-	// over [first_draw, draw_count). A non-empty plan is not serviceable yet, so refuse it
-	// rather than silently drop the frame.
-	return plan.passes.empty() && plan.draws.empty();
+	// An empty plan is a valid frame the executor completes with nothing to record.
+	if (plan.passes.empty())
+		return true;
+
+	// Stage 1.3c-i: run the frame's pass STRUCTURE as clears. One render pass per plan pass,
+	// bound to its FRAME/ZBUF target pair, cleared and closed with no draws recorded yet.
+	// This proves the whole output road end to end — target binding, render-pass open/close,
+	// present, and the renderer's GetOutput — before the per-draw recording and the
+	// vertex/index/state staging land in 1.3c-ii (which grows the body between Begin and End
+	// into vkCmdDrawIndexed over [first_draw, draw_count), then vkCmdDrawIndexedIndirect). The
+	// distinctive clear colour is a temporary marker so a black present reads as a broken road
+	// rather than an empty one.
+	EndRenderPass();
+
+	for (const GSTileGpuPass& pass : plan.passes)
+	{
+		if (pass.target_pair_count == 0)
+			continue;
+
+		const GSTileGpuTargetPair& tp = plan.target_pairs[pass.first_target_pair];
+		GSTexture* rt =
+			(tp.frame_target != GSTileGpuPassPlan::kNoTarget) ? plan.targets[tp.frame_target] : nullptr;
+		GSTexture* ds =
+			(tp.zbuf_target != GSTileGpuPassPlan::kNoTarget) ? plan.targets[tp.zbuf_target] : nullptr;
+		if (!rt && !ds)
+			continue;
+
+		const GSVector2i size = rt ? rt->GetSize() : ds->GetSize();
+		const GSVector4i area = GSVector4i::loadh(size);
+		OMSetRenderTargets(rt, ds, area);
+
+		const VkFormat color_fmt = rt ? LookupNativeFormat(rt->GetFormat()) : VK_FORMAT_UNDEFINED;
+		const VkFormat depth_fmt = ds ? LookupNativeFormat(ds->GetFormat()) : VK_FORMAT_UNDEFINED;
+		const VkRenderPass rp = GetRenderPass(color_fmt, depth_fmt,
+			rt ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			rt ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			ds ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			ds ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE);
+		if (rp == VK_NULL_HANDLE)
+			return false;
+
+		VkClearValue cv[2] = {};
+		u32 cv_count = 0;
+		if (rt)
+			cv[cv_count++].color = {{0.06f, 0.10f, 0.22f, 1.0f}};
+		if (ds)
+			cv[cv_count++].depthStencil = {1.0f, 0};
+
+		BeginClearRenderPass(rp, area, cv, cv_count);
+		EndRenderPass();
+
+		// The render pass materialized the clear (and, in 1.3c-ii, the draws); the targets now
+		// hold real contents. Mark them Dirty so the lazy clear the allocation queued (a
+		// pending State::Cleared) does not re-fire and overwrite them at present/sample time.
+		if (rt)
+			rt->SetState(GSTexture::State::Dirty);
+		if (ds)
+			ds->SetState(GSTexture::State::Dirty);
+	}
+
+	return true;
 }
 
 bool GSDeviceVK::TileClutFromTarget(GSTexture* owner, GSTexture* dst, const TileClutGatherParams& p)

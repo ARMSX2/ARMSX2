@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <span>
 #include <vector>
 
 namespace
@@ -68,6 +69,11 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	// boundary is here).
 	m_pass_sim.OnVSync();
 
+	// Structure the frame's accumulated draws into a pass plan and render it through the
+	// device executor, before the base presents — so the targets the executor drew into are
+	// ready when the base's present path calls GetOutput.
+	BuildAndExecutePlan();
+
 	GSRenderer::VSync(field, registers_written, idle_frame);
 
 	// Nothing consumes the transfer log yet; clear it so it cannot grow without bound.
@@ -77,10 +83,31 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 void GSRendererTileGpu::Draw()
 {
 	ObserveDraw();
+	AccumulateDraw();
 }
 
 GSTexture* GSRendererTileGpu::GetOutput(int i, float& scale, int& y_offset)
 {
+	// The display buffer, matched to a colour target the executor rendered this frame. The
+	// resolution mirrors the HW renderer's: the PCRTC display register names a FRAME base,
+	// and the executor's targets are keyed by FRAME base. Wrong-fast: scale 1, no y offset
+	// (no upscale, no wrapped display buffer yet). Absent target -> nothing to present.
+	const int index = i >= 0 ? i : 1;
+	const auto& fb = PCRTCDisplays.PCRTCDisplays[index];
+	const GSVector2i size = PCRTCDisplays.GetFramebufferSize(i);
+	if (fb.framebufferRect.rempty() || fb.FBW == 0 || size.x < 0 || size.y < 0)
+		return nullptr;
+
+	const u32 disp_bp = static_cast<u32>(fb.Block());
+	for (const DisplayTarget& dt : m_display_targets)
+	{
+		if (dt.bp == disp_bp)
+		{
+			scale = 1.0f;
+			y_offset = 0;
+			return dt.texture;
+		}
+	}
 	return nullptr;
 }
 
@@ -403,4 +430,200 @@ void GSRendererTileGpu::ReportPassStructure()
 	Console.WriteLn("  doubled-alpha trick (tierB): As-class %.2f draws/frame; disqualified %.2f, "
 					"rescued %.2f -> eligible %.2f",
 		tas.mean, tlive.mean, tresc.mean, eligible);
+}
+
+// The pass plan's geometry, one flushed batch at a time. Copies this draw's vertices and
+// indices into the frame streams and records an indexed indirect draw plus the deferred
+// PendingDraw (its target identity and transform inputs, resolved once the frame's targets
+// are sized). Skips empty-rect draws exactly as ObserveDraw does, so the plan and the pass
+// model count the same draws. Indices are 0-based within the batch; the draw's vertex_offset
+// rebases them into the frame vertex stream.
+void GSRendererTileGpu::AccumulateDraw()
+{
+	const GSVector4i r = ComputeDrawRect();
+	if (r.rempty())
+		return;
+
+	const u32 vcount = m_vertex->tail;
+	const u32 icount = m_index->tail;
+	if (vcount == 0 || icount == 0)
+		return;
+
+	const GSDrawingContext* ctx = m_context;
+
+	GSDevice::GSTileGpuIndirectDraw draw = {};
+	draw.index_count = icount;
+	draw.instance_count = 1;
+	draw.first_index = static_cast<u32>(m_plan_indices.size());
+	draw.vertex_offset = static_cast<s32>(m_plan_vertices.size());
+	draw.state_index = static_cast<u32>(m_plan_draws.size());
+
+	m_plan_vertices.insert(m_plan_vertices.end(), m_vertex->buff, m_vertex->buff + vcount);
+	m_plan_indices.insert(m_plan_indices.end(), m_index->buff, m_index->buff + icount);
+	m_plan_draws.push_back(draw);
+
+	PendingDraw pd = {};
+	pd.fb_bp = ctx->FRAME.Block();
+	pd.fb_psm = ctx->FRAME.PSM;
+	pd.fb_fbw = ctx->FRAME.FBW;
+	pd.z_bp = ctx->ZBUF.Block();
+	pd.z_psm = ctx->ZBUF.PSM;
+	pd.z_write = ctx->TEST.ZTE && !ctx->ZBUF.ZMSK;
+	pd.z_test = ctx->TEST.ZTE && ctx->TEST.ZTST > ZTST_ALWAYS;
+	pd.z_used = pd.z_write || pd.z_test;
+	pd.ofx = static_cast<s32>(ctx->XYOFFSET.OFX);
+	pd.ofy = static_cast<s32>(ctx->XYOFFSET.OFY);
+	pd.rect = r;
+	pd.draw_index = draw.state_index;
+	m_plan_pending.push_back(pd);
+}
+
+// Recycle last frame's targets back to the device pool. Called at the head of a plan build,
+// once last frame's present (which read them through GetOutput) has completed.
+void GSRendererTileGpu::RecycleTargets()
+{
+	for (GSTexture* t : m_plan_targets)
+	{
+		if (t)
+			g_gs_device->Recycle(t);
+	}
+	m_plan_targets.clear();
+	m_display_targets.clear();
+}
+
+// Size the frame's targets, resolve each draw's screen->NDC transform against the target it
+// lands in, group draws into GS-semantic passes, and submit the assembled plan to the device
+// executor. Wrong-fast: one FRAME/ZBUF pair per pass (break on target change only), scale 1.
+void GSRendererTileGpu::BuildAndExecutePlan()
+{
+	// An idle frame accumulated nothing; keep last frame's targets so the display still shows
+	// the last rendered buffer rather than blanking.
+	if (m_plan_pending.empty())
+		return;
+
+	RecycleTargets();
+
+	if (g_gs_device->TileGpuExecutorAvailable())
+	{
+		// 1. Resolve the distinct colour (FRAME base) and depth (ZBUF base) targets this
+		//    frame draws into, each grown to hold every draw that lands in it.
+		std::vector<TargetSlot> color_slots;
+		std::vector<TargetSlot> depth_slots;
+		const auto slot_for = [](std::vector<TargetSlot>& slots, u32 bp, u32 fbw, int bottom) -> u32 {
+			for (u32 k = 0; k < slots.size(); k++)
+			{
+				if (slots[k].bp == bp)
+				{
+					slots[k].height = std::max(slots[k].height, bottom);
+					slots[k].fbw = std::max(slots[k].fbw, fbw);
+					return k;
+				}
+			}
+			slots.push_back(TargetSlot{bp, fbw, bottom, 0});
+			return static_cast<u32>(slots.size() - 1);
+		};
+		for (PendingDraw& pd : m_plan_pending)
+		{
+			pd.color_slot = slot_for(color_slots, pd.fb_bp, pd.fb_fbw, pd.rect.w);
+			pd.z_slot = pd.z_used ? slot_for(depth_slots, pd.z_bp, pd.fb_fbw, pd.rect.w) : 0;
+		}
+
+		// 2. Allocate a GSTexture per slot; the plan's target list is colours then depths.
+		const auto alloc = [this](std::vector<TargetSlot>& slots, bool depth) {
+			for (TargetSlot& s : slots)
+			{
+				const int w = std::max<int>(static_cast<int>(s.fbw), 1) * 64;
+				const int h = std::clamp(s.height, 64, 2048);
+				s.target_index = static_cast<u32>(m_plan_targets.size());
+				m_plan_targets.push_back(depth ? g_gs_device->CreateDepthStencil(w, h, true)
+											   : g_gs_device->CreateRenderTarget(w, h, GSTexture::Format::Color, true));
+			}
+		};
+		alloc(color_slots, false);
+		alloc(depth_slots, true);
+
+		// 3. The per-draw state row: the HW tfx VertexScale/VertexOffset transform against the
+		//    resolved colour target's size (scale 1), plus the z enables. Row i serves draw i.
+		m_plan_states.resize(m_plan_pending.size());
+		for (u32 i = 0; i < m_plan_pending.size(); i++)
+		{
+			const PendingDraw& pd = m_plan_pending[i];
+			const GSVector2i dim = m_plan_targets[color_slots[pd.color_slot].target_index]->GetSize();
+			const float sx = 2.0f / static_cast<float>(dim.x << 4);
+			const float sy = 2.0f / static_cast<float>(dim.y << 4);
+			const float ox2 = -1.0f / static_cast<float>(dim.x);
+			const float oy2 = -1.0f / static_cast<float>(dim.y);
+			StateRow& sr = m_plan_states[i];
+			sr.vertex_scale[0] = sx;
+			sr.vertex_scale[1] = sy;
+			sr.vertex_offset[0] = static_cast<float>(pd.ofx) * sx + ox2 + 1.0f;
+			sr.vertex_offset[1] = static_cast<float>(pd.ofy) * sy + oy2 + 1.0f;
+			sr.z_write = pd.z_write ? 1u : 0u;
+			sr.z_test = pd.z_test ? 1u : 0u;
+			sr.pad0 = 0;
+			sr.pad1 = 0;
+		}
+
+		// 4. Group contiguous draws sharing a colour+depth target into one pass, one target
+		//    pair each. Coarser than the pass model (which also breaks on feedback and the
+		//    8-pair budget); rendering-correct, which is what the submission needs. The model
+		//    stays the authoritative accounting — this is the actual GPU pass structure.
+		u32 i = 0;
+		while (i < m_plan_draws.size())
+		{
+			const u32 cs = m_plan_pending[i].color_slot;
+			const bool zu = m_plan_pending[i].z_used;
+			const u32 zs = m_plan_pending[i].z_slot;
+			u32 j = i + 1;
+			while (j < m_plan_draws.size() && m_plan_pending[j].color_slot == cs &&
+				   m_plan_pending[j].z_used == zu && m_plan_pending[j].z_slot == zs)
+				j++;
+
+			GSDevice::GSTileGpuTargetPair tp = {};
+			tp.frame_target = color_slots[cs].target_index;
+			tp.zbuf_target = zu ? depth_slots[zs].target_index : GSDevice::GSTileGpuPassPlan::kNoTarget;
+
+			GSDevice::GSTileGpuPass pass = {};
+			pass.first_draw = i;
+			pass.draw_count = j - i;
+			pass.first_target_pair = static_cast<u32>(m_plan_target_pairs.size());
+			pass.target_pair_count = 1;
+			pass.declares_self_read = false;
+
+			m_plan_target_pairs.push_back(tp);
+			m_plan_passes.push_back(pass);
+			i = j;
+		}
+
+		// 5. Assemble the plan over the frame's streams and submit. The spans are CPU-side
+		//    views alive until the clear below; the executor stages what it needs during the
+		//    synchronous call.
+		GSDevice::GSTileGpuPassPlan plan;
+		plan.passes = m_plan_passes;
+		plan.draws = m_plan_draws;
+		plan.target_pairs = m_plan_target_pairs;
+		plan.state_table = m_plan_states.data();
+		plan.state_stride = sizeof(StateRow);
+		plan.state_count = static_cast<u32>(m_plan_states.size());
+		plan.vertices = std::span<const u8>(reinterpret_cast<const u8*>(m_plan_vertices.data()),
+			m_plan_vertices.size() * sizeof(GSVertex));
+		plan.vertex_stride = sizeof(GSVertex);
+		plan.indices = m_plan_indices;
+		plan.targets = m_plan_targets;
+		g_gs_device->ExecuteTileGpuPassPlan(plan);
+
+		// 6. Keep the colour targets addressable by FRAME base for GetOutput.
+		for (const TargetSlot& s : color_slots)
+			m_display_targets.push_back(DisplayTarget{s.bp, m_plan_targets[s.target_index]});
+	}
+
+	// The plan is submitted (or the device does not serve it); reset the per-frame streams.
+	// The targets stay live for GetOutput and are recycled at the next build.
+	m_plan_vertices.clear();
+	m_plan_indices.clear();
+	m_plan_states.clear();
+	m_plan_draws.clear();
+	m_plan_pending.clear();
+	m_plan_passes.clear();
+	m_plan_target_pairs.clear();
 }
