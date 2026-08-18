@@ -367,6 +367,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		target_link_libraries(PCSX2_FLAGS INTERFACE librashader)
 		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_HAS_LIBRASHADER=1)
 		target_link_libraries(ARMSX2iOS PRIVATE librashader)
+		# And again for ARMSX2iOS itself, which ARMSX2Bridge.mm compiles into: PCSX2_FLAGS is
+		# linked PRIVATE into PCSX2 at pcsx2/CMakeLists.txt:10, so its INTERFACE define stops
+		# there and the bridge's capability query would report NO in every build.
+		target_compile_definitions(ARMSX2iOS PRIVATE ARMSX2_HAS_LIBRASHADER=1)
 	endif()
 
 	target_compile_options(ARMSX2iOS PRIVATE $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-pipe>)
