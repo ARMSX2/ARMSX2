@@ -266,6 +266,45 @@ TEST(EeRecTraps, LoadTlbMissDoesNotRaiseOnTheRecompiler)
 	EXPECT_EQ(h.GetCp0Jit(8), 0u) << "BadVAddr";
 }
 
+// 0xBF801000 is kseg1, so no TLB entry: it translates to 0x1f801000, IOP
+// hardware, whose 64-bit reader is _ext_memRead64<2> (Memory.cpp).
+namespace {
+std::vector<u32> UnknownMmioLoadProgram()
+{
+	return {
+		LUI(reg::a0, 0xBF80),            // +0x0
+		ee::LD(reg::v1, 0x1000, reg::a0),// +0x4
+		ADDIU(reg::v0, reg::zero, 99),   // +0x8
+	};
+}
+} // namespace
+
+TEST(EeRecTraps, UnknownMmioAccessRaisesOnTheInterpreter)
+{
+	EeRecTestHarness h;
+	h.LoadProgram(UnknownMmioLoadProgram());
+	h.RunInterpOnly();
+	EXPECT_EQ(h.GetGpr64Interp(reg::v1), 0ull);
+	EXPECT_EQ(h.GetGpr64Interp(reg::v0), 0ull) << "vector preempts the next op";
+	EXPECT_EQ(h.GetCp0Interp(13) & 0xFFu, 0x08u) << "TLBL";
+	EXPECT_NE(h.GetCp0Interp(12) & 0x2u, 0u) << "Status.EXL";
+	EXPECT_EQ(h.GetCp0Interp(14), RecompilerTestEnvironment::kProgramPc + 4);
+	EXPECT_EQ(h.GetCp0Interp(8), 0x1f801000u) << "BadVAddr = the paddr";
+}
+
+TEST(EeRecTraps, UnknownMmioAccessDoesNotRaiseOnTheRecompiler)
+{
+	EeRecTestHarness h;
+	h.LoadProgram(UnknownMmioLoadProgram());
+	h.RunJitNoDiff();
+	EXPECT_EQ(h.GetGpr64Jit(reg::v1), 0ull);
+	EXPECT_EQ(h.GetGpr64Jit(reg::v0), 99ull) << "the block must run on";
+	EXPECT_EQ(h.GetCp0Jit(12) & 0x2u, 0u) << "Status.EXL must not latch";
+	EXPECT_EQ(h.GetCp0Jit(13), 0u) << "CAUSE";
+	EXPECT_EQ(h.GetCp0Jit(14), 0u) << "EPC";
+	EXPECT_EQ(h.GetCp0Jit(8), 0u) << "BadVAddr";
+}
+
 TEST(EeRecTraps, AluDelaySlotBranchSemanticsSurviveWithoutBracket)
 {
 	// Non-raising (ALU) delay slots lose the cpuRegs.branch bracket under the
