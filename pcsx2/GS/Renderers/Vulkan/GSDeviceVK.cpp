@@ -6315,7 +6315,16 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		if (!rt && !ds)
 			continue;
 
-		const GSVector2i size = rt ? rt->GetSize() : ds->GetSize();
+		// The render area has to fit inside the smaller of the pair, not just the colour target:
+		// this planner does pair a big colour with a small depth, and the framebuffer built for
+		// that pair is clamped to match.
+		GSVector2i size = rt ? rt->GetSize() : ds->GetSize();
+		if (rt && ds)
+		{
+			const GSVector2i dsz = ds->GetSize();
+			size.x = std::min(size.x, dsz.x);
+			size.y = std::min(size.y, dsz.y);
+		}
 		const GSVector4i area = GSVector4i::loadh(size);
 		OMSetRenderTargets(rt, ds, area);
 

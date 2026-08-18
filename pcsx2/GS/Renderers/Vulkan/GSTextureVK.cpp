@@ -835,11 +835,32 @@ VkFramebuffer GSTextureVK::GetLinkedFramebuffer(GSTextureVK* depth_texture, bool
 	if (!rp)
 		return VK_NULL_HANDLE;
 
+	// A framebuffer may not be larger than any attachment it carries. Sizing it from the colour
+	// target alone is right only while the depth target is at least as big -- which is what
+	// Classic's pairings happen to guarantee, and what the Tile pass planner does not: it pairs a
+	// 512x448 colour with a 256x256 depth. Turnip stores these dimensions verbatim, never compares
+	// them to an attachment, scissors the hardware to the framebuffer, and hands the depth buffer
+	// only a base address and a pitch -- so nothing bounds the writes and they leave the image. It
+	// hangs an Adreno 650 two to five passes later, on whatever the stray write reaches first.
+	u32 fb_width = static_cast<u32>(m_size.x);
+	u32 fb_height = static_cast<u32>(m_size.y);
+	if (depth_texture)
+	{
+		fb_width = std::min(fb_width, static_cast<u32>(depth_texture->m_size.x));
+		fb_height = std::min(fb_height, static_cast<u32>(depth_texture->m_size.y));
+		if (fb_width != static_cast<u32>(m_size.x) || fb_height != static_cast<u32>(m_size.y))
+		{
+			Console.Warning("VK: framebuffer %dx%d clamped to %ux%u by a smaller depth attachment; "
+							"output outside the clamp is dropped.",
+				m_size.x, m_size.y, fb_width, fb_height);
+		}
+	}
+
 	Vulkan::FramebufferBuilder fbb;
 	fbb.AddAttachment(m_view);
 	if (depth_texture)
 		fbb.AddAttachment(depth_texture->m_view);
-	fbb.SetSize(m_size.x, m_size.y, 1);
+	fbb.SetSize(fb_width, fb_height, 1);
 	fbb.SetRenderPass(rp);
 
 	VkFramebuffer fb = fbb.Create(GSDeviceVK::GetInstance()->GetDevice());
