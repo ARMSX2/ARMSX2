@@ -590,7 +590,7 @@ private:
 	VkPipeline GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key);
 	VkShaderModule m_tilegpu_vs = VK_NULL_HANDLE; // kept alive for lazily-built blend variants
 	VkShaderModule m_tilegpu_fs = VK_NULL_HANDLE;
-	VkPipeline CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, bool color_write);
+	VkPipeline CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, bool color_write, bool alpha_write);
 	// Indirect-submission streams (created on first executor use, alongside the pipelines): the
 	// draw commands (VkDrawIndexedIndirectCommand array), the per-draw state table the VS reads by
 	// first_instance, and the frame's ring -- the guest pages the plan reads or reconciles as 8 KB

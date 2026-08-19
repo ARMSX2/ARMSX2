@@ -63,6 +63,9 @@ struct StateRow
 	int sc_x1, sc_y1;
 	uint fge;          // 1 = PRIM.FGE: walk the fragment's RGB toward the fog colour by the vertex F
 	uint fogcol;       // FOGCOL packed 0x00BBGGRR
+	uint atst;         // 0 = no alpha test; else TEST.ATST + 1 (2 = LESS ... 8 = NOTEQUAL)
+	uint aref;         // TEST.AREF
+	uint pad0_, pad1_;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer StateTable
@@ -325,6 +328,29 @@ void main()
 		}
 	}
 #endif
+
+	// The alpha test. The GS compares the fragment's alpha byte -- after the texture function, so
+	// this must sit below it -- against AREF, and AFAIL says what a failing fragment still writes.
+	// Here a failure always discards, which is exact for AFAIL=KEEP and an approximation for the
+	// three modes that keep writing something (the renderer only asks for a test when the mode
+	// changes what lands, and folds the ATST=NEVER cases into the write flags instead).
+	if (sr.atst != 0u)
+	{
+		const uint a = uint(cv.a * 255.0f);
+		bool pass;
+		switch (sr.atst - 1u)
+		{
+			case 2u:  pass = a <  sr.aref; break; // LESS
+			case 3u:  pass = a <= sr.aref; break; // LEQUAL
+			case 4u:  pass = a == sr.aref; break; // EQUAL
+			case 5u:  pass = a >= sr.aref; break; // GEQUAL
+			case 6u:  pass = a >  sr.aref; break; // GREATER
+			case 7u:  pass = a != sr.aref; break; // NOTEQUAL
+			default:  pass = true; break;         // NEVER/ALWAYS never reach the fragment stage
+		}
+		if (!pass)
+			discard;
+	}
 
 	// Fog. The console rule (gs-interp capture, SCPH-30001, and the Tile floor's walk) is
 	// (C*F + Cfog*(256 - F)) >> 8 on RGB with alpha passed through untouched, written here the way

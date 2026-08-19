@@ -2117,6 +2117,9 @@ public:
 		static constexpr u32 kBlendEnable = 0x80000000u;
 		/// Bit 30: the draw writes no colour (a depth-only draw); the pipeline masks every channel.
 		static constexpr u32 kNoColorWrite = 0x40000000u;
+		/// Bit 29: the draw writes RGB but not alpha (the GS AFAIL RGB_ONLY mode); the pipeline
+		/// masks the alpha channel alone.
+		static constexpr u32 kNoAlphaWrite = 0x20000000u;
 		std::span<const GSTileGpuTargetPair> target_pairs;
 		std::span<const GSTileGpuSnapshotCopy> snapshots;
 		std::span<const GSTileGpuPrepOp> prep_ops;

@@ -6183,7 +6183,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		for (u32 i = 0; i < GSDevice::kGSTileGpuDepthModes; i++)
 		{
 			VkPipeline& pipe = m_tilegpu_pipeline[t][i];
-			pipe = CreateTileGpuPipeline(t, i, kTileGpuNoBlend, true);
+			pipe = CreateTileGpuPipeline(t, i, kTileGpuNoBlend, true, true);
 			if (pipe == VK_NULL_HANDLE)
 				return false;
 		}
@@ -6200,7 +6200,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 // GSDevice::m_blendMap -- As arrives as the shader's dual-source output (SRC1), FIX as the
 // blend constant (dynamic state), Ad as DST_ALPHA -- and kTileGpuNoBlend disables blending. The
 // alpha channel is always written unblended (the GS stores the fragment alpha as-is).
-VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, bool color_write)
+VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, bool color_write, bool alpha_write)
 {
 	static constexpr VkPrimitiveTopology kTopology[3] = {
 		VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, // GSTileGpuTopology::Triangle
@@ -6265,7 +6265,8 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 b
 	gpb.SetDepthState(dv.test_enable, dv.write_enable, dv.compare);
 	gpb.SetNoStencilState();
 	const VkColorComponentFlags channels = color_write ?
-		(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT) :
+		(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+			(alpha_write ? VK_COLOR_COMPONENT_A_BIT : 0)) :
 		0;
 	if (blend_index == kTileGpuNoBlend || blend_index >= 3 * 3 * 3 * 3)
 	{
@@ -6282,10 +6283,11 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 b
 	VkPipeline pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
 	if (pipe == VK_NULL_HANDLE)
 		return VK_NULL_HANDLE;
+	const char* mask = !color_write ? " (depth only)" : (alpha_write ? "" : " (rgb only)");
 	if (blend_index == kTileGpuNoBlend)
-		Vulkan::SetObjectName(m_device, pipe, "TileGpu %s pipeline%s%s", kTopologyName[topology], dv.name, color_write ? "" : " (depth only)");
+		Vulkan::SetObjectName(m_device, pipe, "TileGpu %s pipeline%s%s", kTopologyName[topology], dv.name, mask);
 	else
-		Vulkan::SetObjectName(m_device, pipe, "TileGpu %s pipeline%s blend %u", kTopologyName[topology], dv.name, blend_index);
+		Vulkan::SetObjectName(m_device, pipe, "TileGpu %s pipeline%s blend %u%s", kTopologyName[topology], dv.name, blend_index, mask);
 	return pipe;
 }
 
@@ -6295,15 +6297,17 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 b
 VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key)
 {
 	const bool color_write = !(blend_key & GSTileGpuPassPlan::kNoColorWrite);
+	const bool alpha_write = !(blend_key & GSTileGpuPassPlan::kNoAlphaWrite);
 	const bool blend = (blend_key & GSTileGpuPassPlan::kBlendEnable) != 0;
-	if (!blend && color_write)
+	if (!blend && color_write && alpha_write)
 		return m_tilegpu_pipeline[topology][depth_mode];
 	const u32 blend_index = blend ? (blend_key & 0x7Fu) : kTileGpuNoBlend;
-	const u32 key = topology | (depth_mode << 2) | ((blend ? (blend_key & 0x7Fu) : 0x80u) << 8) | (color_write ? 0 : 0x10000u);
+	const u32 key = topology | (depth_mode << 2) | ((blend ? (blend_key & 0x7Fu) : 0x80u) << 8) |
+					(color_write ? 0 : 0x10000u) | (alpha_write ? 0 : 0x20000u);
 	const auto it = m_tilegpu_blend_pipelines.find(key);
 	if (it != m_tilegpu_blend_pipelines.end())
 		return it->second != VK_NULL_HANDLE ? it->second : m_tilegpu_pipeline[topology][depth_mode];
-	VkPipeline pipe = CreateTileGpuPipeline(topology, depth_mode, blend_index, color_write);
+	VkPipeline pipe = CreateTileGpuPipeline(topology, depth_mode, blend_index, color_write, alpha_write);
 	m_tilegpu_blend_pipelines.emplace(key, pipe);
 	return pipe != VK_NULL_HANDLE ? pipe : m_tilegpu_pipeline[topology][depth_mode];
 }
@@ -6440,7 +6444,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						  m_tilegpu_state_descriptor_set != VK_NULL_HANDLE && !plan.draws.empty() &&
 						  plan.topologies.size() == plan.draws.size() &&
 						  plan.vertex_stride == sizeof(GSVertex) && !plan.vertices.empty() &&
-						  plan.state_table != nullptr && plan.state_stride == sizeof(float) * 28 &&
+						  plan.state_table != nullptr && plan.state_stride == sizeof(float) * 32 &&
 						  plan.state_count > 0;
 
 	// The byte road rides along only when the frame carries ring pages AND the sampling path

@@ -1030,6 +1030,38 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.fogcol = static_cast<u32>(m_env.FOGCOL.FCR) | (static_cast<u32>(m_env.FOGCOL.FCG) << 8) |
 				(static_cast<u32>(m_env.FOGCOL.FCB) << 16);
 
+	// The alpha test. ATST=NEVER and ATST=ALWAYS never reach the fragment stage: every fragment
+	// takes the same road, so the write flags above already carry them (NEVER's AFAIL decides what
+	// the draw writes; ALWAYS writes everything). What is left is a genuine per-fragment split, and
+	// it is worth emitting only where the two sides actually land differently -- AFAIL=FB_ONLY
+	// keeps the whole colour and drops only the depth write, so a draw that writes no depth is
+	// unaffected by its own test, which is most of a game's blended geometry.
+	//
+	// ⚠️ Wrong-fast: the fragment stage discards a failing fragment outright. That is exact for
+	// AFAIL=KEEP; for the three modes that still write something on failure it drops that write.
+	// The exact form needs the draw split in two -- one draw per side of the test, each with its
+	// own write masks and depth mode -- which costs an indirect run split per draw, so it waits
+	// until the run structure is measured rather than guessed. Rowed in the deferred-accuracy
+	// ledger.
+	const bool ate_real = ctx->TEST.ATE && ctx->TEST.ATST != ATST_ALWAYS && ctx->TEST.ATST != ATST_NEVER;
+	bool needs_test = false;
+	if (ate_real)
+	{
+		switch (afail)
+		{
+			case AFAIL_FB_ONLY: needs_test = z_write; break;
+			case AFAIL_ZB_ONLY: needs_test = color_written; break;
+			default: needs_test = true; break; // KEEP writes nothing on failure; RGB_ONLY drops alpha
+		}
+	}
+	if (needs_test)
+	{
+		pd.atst = static_cast<u32>(ctx->TEST.ATST) + 1;
+		pd.aref = ctx->TEST.AREF;
+	}
+	// A draw that fails every pixel into RGB_ONLY writes colour without its alpha byte.
+	pd.alpha_written = !(atst_never && afail == AFAIL_RGB_ONLY);
+
 	// Texture inputs. Two address geometries are sampled at this stage: the direct 32-bit families
 	// (PSMCT32/PSMCT24 -- one page/block/column geometry, no CLUT) and the paletted index formats
 	// (PSMT8/PSMT4 -- a swizzled index into an expanded CLUT). Every other textured draw (16-bit,
@@ -1268,9 +1300,12 @@ void GSRendererTileGpu::AccumulateDraw()
 						((al.C == 2) ? (static_cast<u32>(al.FIX) << 8) : 0u);
 	}
 	// A depth-only draw (ATST NEVER + AFAIL ZB_ONLY, or a fully masked FBMSK) rides a pipeline
-	// whose colour write mask is off: it still tests and writes depth in its pass.
+	// whose colour write mask is off: it still tests and writes depth in its pass. A NEVER draw
+	// into AFAIL RGB_ONLY masks the alpha channel alone.
 	if (!color_written)
 		blend_key |= GSDevice::GSTileGpuPassPlan::kNoColorWrite;
+	else if (!pd.alpha_written)
+		blend_key |= GSDevice::GSTileGpuPassPlan::kNoAlphaWrite;
 	m_plan_blend_keys.push_back(blend_key);
 	pd.draw_index = draw.state_index;
 	m_plan_pending.push_back(pd);
@@ -1334,6 +1369,10 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.sc_y1 = pd.scissor.w;
 			sr.fge = pd.fge ? 1u : 0u;
 			sr.fogcol = pd.fogcol;
+			sr.atst = pd.atst;
+			sr.aref = pd.aref;
+			sr.pad0_ = 0;
+			sr.pad1_ = 0;
 		}
 
 		// 3. Group contiguous draws sharing a colour+depth surface pair and depth mode into one

@@ -138,8 +138,11 @@ private:
 		s32 sc_x1, sc_y1;
 		u32 fge;                // 1 = PRIM.FGE, the fragment's colour walks toward the fog colour
 		u32 fogcol;             // FOGCOL packed 0x00BBGGRR
+		u32 atst;               // 0 = no alpha test; else TEST.ATST + 1 (2 = LESS ... 8 = NOTEQUAL)
+		u32 aref;               // TEST.AREF, the value the fragment alpha is compared against
+		u32 pad0_, pad1_;
 	};
-	static_assert(sizeof(StateRow) == 112, "TileGpu StateRow must be 112 bytes to match tilegpu.glsl std430");
+	static_assert(sizeof(StateRow) == 128, "TileGpu StateRow must be 128 bytes to match tilegpu.glsl std430");
 
 	// One draw's inputs the plan build resolves once the frame is complete: which surfaces it
 	// renders into (model ids -> pool textures), the coordinate origin, the draw rect, and the
@@ -170,6 +173,9 @@ private:
 		u32 date;             // 0 off, 1 = DATM 0, 2 = DATM 1; the pass takes a snapshot for it
 		bool fge;             // PRIM.FGE: this draw's fragments are fogged
 		u32 fogcol;           // FOGCOL packed 0x00BBGGRR
+		u32 atst;             // 0 = no per-fragment alpha test; else TEST.ATST + 1
+		u32 aref;
+		bool alpha_written;   // false = the colour write mask keeps alpha (AFAIL RGB_ONLY)
 	};
 
 	// Per-frame accumulation (filled in Draw via AccumulateDraw, consumed + reset in the plan
