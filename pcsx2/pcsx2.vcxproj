@@ -838,6 +838,7 @@
     <ClInclude Include="GS\Renderers\Tile\GSTileExpandedCache.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileOracle.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTilePaletteCache.h" />
+    <ClInclude Include="GS\Renderers\Tile\GSTilePassSim.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileSwizzleForms.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileTargetPool.h" />
     <ClInclude Include="GS\Renderers\Tile\GSTileTextureSource.h" />
