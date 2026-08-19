@@ -676,6 +676,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto wbp = stat([](const MF& f) { return f.writeback_pages; });
 	const auto sdo = stat([](const MF& f) { return f.seed_ops; });
 	const auto sdp = stat([](const MF& f) { return f.seed_pages; });
+	const auto wbrk = stat([](const MF& f) { return f.writeback_breaks; });
 	const auto sbrk = stat([](const MF& f) { return f.seed_breaks; });
 	const auto dbrk = stat([](const MF& f) { return f.date_breaks; });
 	const auto snaps = stat([](const MF& f) { return f.snapshots; });
@@ -699,9 +700,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"version copies %.2f / %u, epochs %.2f / %u)",
 		surf.mean, surf.p50, passes.mean, passes.p50, ring.mean, ring.p50, prefill.mean, prefill.p50, versions.mean,
 		versions.p50, epochs.mean, epochs.p50);
-	Console.WriteLn("  writebacks %6.2f / %-4u ops, %8.2f / %-5u pages   seeds %6.2f / %-4u ops, %8.2f / %-5u pages, "
-					"%.2f / %u pass breaks",
-		wbo.mean, wbo.p50, wbp.mean, wbp.p50, sdo.mean, sdo.p50, sdp.mean, sdp.p50, sbrk.mean, sbrk.p50);
+	Console.WriteLn("  writebacks %6.2f / %-4u ops, %8.2f / %-5u pages, %.2f / %u pass breaks   seeds %6.2f / %-4u ops, "
+					"%8.2f / %-5u pages, %.2f / %u pass breaks",
+		wbo.mean, wbo.p50, wbp.mean, wbp.p50, wbrk.mean, wbrk.p50, sdo.mean, sdo.p50, sdp.mean, sdp.p50, sbrk.mean,
+		sbrk.p50);
 	Console.WriteLn("  self-reads (snapshot semantics) %.2f / %u   DATE: %.2f / %u pass breaks, %.2f / %u snapshots   "
 					"lossy pages (no byte road) %.2f / %u   skipped draws %.2f / %u   mid-frame flushes %.2f / %u",
 		self.mean, self.p50, dbrk.mean, dbrk.p50, snaps.mean, snaps.p50, lossy.mean, lossy.p50, skipped.mean, skipped.p50,
@@ -1224,7 +1226,20 @@ void GSRendererTileGpu::AccumulateDraw()
 			// sampling pages it also renders reads the pre-pass bytes: snapshot semantics).
 			const GSTileSurfaceLayout tex_l{tex0.TBP0, static_cast<u8>(tex0.TBW), static_cast<u8>(psm), KindForPsm(psm)};
 			tex_pages = GSVramModel::PagesForRect(tex_l, GSVector4i(0, 0, static_cast<int>(pd.tw), static_cast<int>(pd.th)));
+			// A writeback this emits has to be ordered against the draws already planned, so it
+			// opens a new pass exactly as a seed does. The executor runs a pass's prep ops before
+			// the pass opens, never between its draws, and a writeback is both a reader and a
+			// writer: it reads the target's finished pixels, which a draw earlier in the pass may
+			// not have written yet, and it rewrites the page's live ring slot in place at the
+			// current epoch, which a draw earlier in the pass may already have sampled. Left
+			// unordered, the hoisted dispatch composes stale bytes and hands them backwards.
+			const u32 ops_before = static_cast<u32>(m_plan_prep_ops.size());
 			ComposeRingPages(tex_pages);
+			if (m_plan_prep_ops.size() != ops_before)
+			{
+				pd.break_before = true;
+				m_frame.writeback_breaks++;
+			}
 			pd.epoch = m_epoch;
 		}
 	}
@@ -1433,7 +1448,7 @@ void GSRendererTileGpu::AccumulateDraw()
 }
 
 // Group the accumulated draws into passes, resolve targets and state rows, build the ring, and
-// submit. One FRAME/ZBUF pair per pass (break on target change, depth mode change, or a seed);
+// submit. One FRAME/ZBUF pair per pass (break on target change, depth mode change, or a prep op);
 // scale 1. Consumes everything: the plan streams, the ring, and the model's synced claims (the
 // ring the claims vouched for is gone once submitted).
 void GSRendererTileGpu::BuildAndExecutePlan()
@@ -1503,10 +1518,12 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		// 3. Group contiguous draws sharing a colour+depth surface pair and depth mode into one
 		//    pass. The depth pipeline is per-pass fixed function, so z-write and z-test must be
 		//    uniform across the pass (a ZTST=ALWAYS write sprite and a ZTST=GEQUAL 3D draw share
-		//    a depth buffer in SotC). A draw whose target had to be seeded opens a pass too: the
-		//    seed is a fragment pass over the target that must land between the draws. Each pass
-		//    carries the prep ops its draws emitted, in order (each draw's ops are contiguous and
-		//    appended in draw order, so the range is [first draw's first, last draw's last]).
+		//    a depth buffer in SotC). A draw that emitted a prep op opens a pass too, because the
+		//    executor runs a pass's prep ops before the pass opens rather than between its draws:
+		//    hoisting one over a draw it should follow is what break_before prevents. So every
+		//    prep op belongs to the FIRST draw of its pass. Each pass carries the ops its draws
+		//    emitted, in order (each draw's ops are contiguous and appended in draw order, so the
+		//    range is [first draw's first, last draw's last]).
 		u32 i = 0;
 		while (i < m_plan_draws.size())
 		{

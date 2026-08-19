@@ -161,7 +161,7 @@ private:
 		GSTileSurfaceId z_surface; // valid only if z_used
 		bool z_used;
 		bool z_write, z_test;
-		bool break_before;    // a seed of this draw's target precedes it: it opens a new pass
+		bool break_before;    // a prep op of this draw's precedes it (seed or writeback): it opens a new pass
 		s32 ofx, ofy;         // XYOFFSET, 12.4 fixed
 		GSVector4i rect;      // scissor-clipped draw bbox
 		GSVector4i scissor;   // the GS scissor (SCISSOR register), exclusive right/bottom
@@ -333,6 +333,7 @@ private:
 		u32 epochs = 0;
 		u32 writeback_ops = 0;
 		u32 writeback_pages = 0;
+		u32 writeback_breaks = 0; // draws that opened a pass because their read needed a writeback
 		u32 seed_ops = 0;
 		u32 seed_pages = 0;
 		u32 seed_breaks = 0;     // draws that opened a pass because their target needed seeding
