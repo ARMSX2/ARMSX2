@@ -4119,8 +4119,11 @@ static int RunLiveRun()
 #endif
 
 	Console.WriteLn(fmt::format(
-		"LIVERUN: EE=jit, MTVU=on, real GS — running up to {} frames (10s no-progress watchdog)...",
-		s_frames));
+		"LIVERUN: EE={}, VU0={}, VU1={}, MTVU={}, real GS — running up to {} frames (10s no-progress watchdog)...",
+		EmuConfig.Cpu.Recompiler.EnableEE ? "jit" : "interp",
+		EmuConfig.Cpu.Recompiler.EnableVU0 ? "jit" : "interp",
+		EmuConfig.Cpu.Recompiler.EnableVU1 ? "jit" : "interp",
+		EmuConfig.Speedhacks.vuThread ? "on" : "off", s_frames));
 
 	std::thread watchdog([]() {
 		uint32_t last = 0;
