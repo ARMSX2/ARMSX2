@@ -7,8 +7,6 @@
 #include "Gif_Unit.h"
 #include "MTVU.h"
 #include "EeFpuModel.h"
-
-#include <cmath>
 u32 laststall = 0;
 //Lower/Upper instructions can use that..
 #define _Ft_ ((VU->code >> 16) & 0x1F)  // The rt part of the instruction register
@@ -1672,13 +1670,18 @@ static __ri void _vuWAITP(VURegs* VU)
 
 	A zero divisor never reaches the recurrence. Only ERCPR can see a negative
 	one: a root and a sum of squares are never below zero. */
-static __fi u32 _vuEfuRecip(u32 d)
+static __fi u32 _vuEfuDiv(u32 a, u32 b)
 {
-	if ((d & 0x7F800000) == 0)
-		return (d & 0x80000000) | 0x7FFFFFFF;
+	if ((b & 0x7F800000) == 0)
+		return ((a ^ b) & 0x80000000) | 0x7FFFFFFF;
 
-	return EeFpuModel::Divide(0x3F800000, d);
+	return EeFpuModel::Divide(a, b);
 }
+
+static __fi u32 _vuEfuRecip(u32 d) { return _vuEfuDiv(0x3F800000, d); }
+static __fi u32 _vuEfuMul(u32 a, u32 b) { return EeFpuModel::Mul(a, b).bits; }
+static __fi u32 _vuEfuAdd(u32 a, u32 b) { return EeFpuModel::AddSub(a, b, false).bits; }
+static __fi u32 _vuEfuSub(u32 a, u32 b) { return EeFpuModel::AddSub(a, b, true).bits; }
 
 // x*x + y*y + z*z, accumulated left to right.
 static __fi u32 _vuEfuSquareSum(VURegs* VU)
@@ -1711,71 +1714,72 @@ static __ri void _vuERLENG(VURegs* VU)
 }
 
 
-// These are the EFU's atan series, the same table microVU keeps in
-// mVU_Globals as T1/T5/T2/T3/T4/T6/T7/T8 + Pi4 (microVU_Misc.h) -- all nine
-// re-encode to those globals bit for bit, so if one ever stops doing so,
-// suspect the transcription rather than the hardware. eatanconst[3] did
-// exactly that: it read -0.13085337519646f (0xBE05FE6D), T3's decimal
-// -0.139085337519646 with the first 9 dropped, and it cost up to 3383 ULP
-// against the ps2autotests EFU capture (worst at CVF_3PI_OVER2, since the
-// error goes as the reduced argument to the seventh power).
-static __ri float _vuCalculateEATAN(float inputvalue) {
-	float eatanconst[9] = { 0.999999344348907f, -0.333298563957214f, 0.199465364217758f, -0.139085337519646f,
-							0.096420042216778f, -0.055909886956215f, 0.021861229091883f, -0.004054057877511f,
-							0.785398185253143f };
+/*	The EFU's three series, in the order the recompilers emit them
+	(mVU_EATAN_arm, mVU_ESIN, mVU_EEXP): a chain of single-precision multiplies
+	and adds through the FMAC model, each power reached by multiplying rather
+	than by a pow() call in double. The coefficients are mVU_Globals' own words
+	(microVU_Misc-arm64.h), so the two engines evaluate the same numbers.
 
-	float result = (eatanconst[0] * inputvalue) + (eatanconst[1] * pow(inputvalue, 3)) + (eatanconst[2] * pow(inputvalue, 5))
-					+ (eatanconst[3] * pow(inputvalue, 7)) + (eatanconst[4] * pow(inputvalue, 9)) + (eatanconst[5] * pow(inputvalue, 11))
-					+ (eatanconst[6] * pow(inputvalue, 13)) + (eatanconst[7] * pow(inputvalue, 15));
+	Which coefficient goes with which power is the trap here. mVU_Globals used
+	to name four of the atan coefficients out of power order, and pairing them
+	by name cost up to 919642 ULP against the capture; upstream has since
+	renamed them, so T1..T8 below are c1, c3, c5 ... c15 in ascending order. */
+static constexpr u32 kEatanC[8] = {
+	0x3F7FFFF5, 0xBEAAA61C, 0x3E4C40A6, 0xBE0E6C63,
+	0x3DC577DF, 0xBD6501C4, 0x3CB31652, 0xBB84D7E7};
+static constexpr u32 kEatanPi4 = 0x3F490FDA;
+static constexpr u32 kEsinC[4] = {0xBE2AAAA4, 0x3C08873E, 0xB94FB21F, 0x362E9C14};
+static constexpr u32 kEexpC[6] = {
+	0x3E7FFFA8, 0x3D0007F4, 0x3B29D3FF, 0x3933E553, 0x36B63510, 0x353961AC};
+static constexpr u32 kEfuOne = 0x3F800000;
 
-	result += eatanconst[8];
+static __ri u32 _vuCalculateEATAN(u32 x)
+{
+	u32 p = _vuEfuMul(x, kEatanC[0]);
+	u32 xn = x;
 
-	result = vuDouble(*(u32*)&result);
+	for (int i = 1; i < 8; ++i)
+	{
+		xn = _vuEfuMul(_vuEfuMul(xn, x), x);
+		p = _vuEfuAdd(p, _vuEfuMul(xn, kEatanC[i]));
+	}
 
-	return result;
+	return _vuEfuAdd(p, kEatanPi4);
 }
 
-// _vuCalculateEATAN evaluates the EFU's atan polynomial and then adds
-// eatanconst[8] = 0.785398185 = pi/4. That constant is only correct as the
-// second half of the range-reduction identity
-//
-//     atan(x) = pi/4 + atan((x - 1) / (x + 1))
-//
-// so the polynomial must be fed the REDUCED argument, not the raw one. Both
-// recompilers do exactly that -- arm64 `mVU_EATAN` computes (Fs-1)/(Fs+1)
-// before calling mVU_EATAN_arm, x86 `mVU_EATAN` the identical SUBSS/ADDSS/
-// DIVSS -- and the interpreter did not, so it was adding a pi/4 offset that
-// nothing had earned. Confirmed by arithmetic rather than by reading: for
-// Fs = 1.0 the unreduced expression evaluates to 0x3FCA1D99, which is
-// bit-for-bit the value the interpreter produced, while the reduced one gives
-// 0x3F490FDB, bit-for-bit the recompilers' (console: 0x3F490FDA).
-//
-// The xy/xz forms reduce the same identity for atan(y/x):
-//     (y/x - 1) / (y/x + 1) == (y - x) / (y + x)
-// which is the form both recompilers emit, and it removes the need for the
-// old `if (x != 0)` guard -- that guard returned +0 where both recompilers
-// and the console return a NaN pattern.
+/*	The pi/4 the series ends on is only correct as the second half of the
+	range-reduction identity
+
+	    atan(x) = pi/4 + atan((x - 1) / (x + 1))
+
+	so the polynomial is fed the REDUCED argument. The xy/xz forms reduce the
+	same identity for atan(y/x), where (y/x - 1) / (y/x + 1) == (y - x) / (y + x).
+	The quotient is the divide unit's, so a zero denominator saturates into the
+	series rather than reaching it as a host infinity. */
 static __ri void _vuEATAN(VURegs* VU)
 {
-	const float fs = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
-	VU->p.F = _vuCalculateEATAN((fs - 1.0f) / (fs + 1.0f));
+	const u32 fs = VU->VF[_Fs_].UL[_Fsf_];
+
+	VU->p.UL = _vuCalculateEATAN(
+		_vuEfuDiv(_vuEfuSub(fs, kEfuOne), _vuEfuAdd(fs, kEfuOne)));
 }
 
 static __ri void _vuEATANxy(VURegs* VU)
 {
-	const float x = vuDouble(VU->VF[_Fs_].i.x);
-	const float y = vuDouble(VU->VF[_Fs_].i.y);
-	VU->p.F = _vuCalculateEATAN((y - x) / (y + x));
+	const u32 x = VU->VF[_Fs_].UL[0];
+	const u32 y = VU->VF[_Fs_].UL[1];
+
+	VU->p.UL = _vuCalculateEATAN(_vuEfuDiv(_vuEfuSub(y, x), _vuEfuAdd(x, y)));
 }
 
 static __ri void _vuEATANxz(VURegs* VU)
 {
-	const float x = vuDouble(VU->VF[_Fs_].i.x);
-	const float z = vuDouble(VU->VF[_Fs_].i.z);
-	VU->p.F = _vuCalculateEATAN((z - x) / (z + x));
+	const u32 x = VU->VF[_Fs_].UL[0];
+	const u32 z = VU->VF[_Fs_].UL[2];
+
+	VU->p.UL = _vuCalculateEATAN(_vuEfuDiv(_vuEfuSub(z, x), _vuEfuAdd(x, z)));
 }
 
-// Left to right, as in _vuEfuSquareSum.
 static __ri void _vuESUM(VURegs* VU)
 {
 	u32 p = EeFpuModel::AddSub(VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1], false).bits;
@@ -1802,27 +1806,45 @@ static __ri void _vuERSQRT(VURegs* VU)
 	VU->p.UL = _vuEfuRecip(EeFpuModel::SqrtBits(VU->VF[_Fs_].UL[_Fsf_] & 0x7FFFFFFF));
 }
 
+// x + s2*x^3 + s3*x^5 + s4*x^7 + s5*x^9, the odd powers reached by squaring
+// once and multiplying up.
 static __ri void _vuESIN(VURegs* VU)
 {
-	float sinconsts[5] = {1.0f, -0.166666567325592f, 0.008333025500178f, -0.000198074136279f, 0.000002601886990f};
-	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
+	const u32 x = VU->VF[_Fs_].UL[_Fsf_];
+	const u32 xx = _vuEfuMul(x, x);
 
-	p = (sinconsts[0] * p) + (sinconsts[1] * pow(p, 3)) + (sinconsts[2] * pow(p, 5)) + (sinconsts[3] * pow(p, 7)) + (sinconsts[4] * pow(p, 9));
-	VU->p.F = vuDouble(*(u32*)&p);
+	u32 xn = _vuEfuMul(xx, x);
+	u32 p = _vuEfuAdd(x, _vuEfuMul(xn, kEsinC[0]));
+
+	for (int i = 1; i < 4; ++i)
+	{
+		xn = _vuEfuMul(xn, xx);
+		p = _vuEfuAdd(p, _vuEfuMul(xn, kEsinC[i]));
+	}
+
+	VU->p.UL = p;
 }
 
+// The reciprocal of a sixth-order series raised to the fourth: 1 + e1*x +
+// e2*x^2 + ... + e6*x^6, squared twice, then divided into one.
 static __ri void _vuEEXP(VURegs* VU)
 {
-	float consts[6] = {0.249998688697815f, 0.031257584691048f, 0.002591371303424f,
-						0.000171562001924f, 0.000005430199963f, 0.000000690600018f};
-	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
+	const u32 x = VU->VF[_Fs_].UL[_Fsf_];
 
-	p = 1.0f + (consts[0] * p) + (consts[1] * pow(p, 2)) + (consts[2] * pow(p, 3)) + (consts[3] * pow(p, 4)) + (consts[4] * pow(p, 5)) + (consts[5] * pow(p, 6));
-	p = pow(p, 4);
-	p = vuDouble(*(u32*)&p);
-	p = 1 / p;
+	u32 p = _vuEfuAdd(_vuEfuMul(x, kEexpC[0]), kEfuOne);
+	u32 xn = _vuEfuMul(x, x);
+	p = _vuEfuAdd(p, _vuEfuMul(xn, kEexpC[1]));
 
-	VU->p.F = p;
+	for (int i = 2; i < 6; ++i)
+	{
+		xn = _vuEfuMul(xn, x);
+		p = _vuEfuAdd(p, _vuEfuMul(xn, kEexpC[i]));
+	}
+
+	p = _vuEfuMul(p, p);
+	p = _vuEfuMul(p, p);
+
+	VU->p.UL = _vuEfuRecip(p);
 }
 
 static __ri void _vuXITOP(VURegs* VU)
