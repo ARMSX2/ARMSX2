@@ -6865,7 +6865,11 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					}
 				}
 			}
-			const u32 push[kTileGpuPushWords] = {state_base_rows, table_base_words, pal_base_words, 0, 0, 0, 0, 0}; // base_row (VS), table_base + pal_base (FS)
+			// base_row (VS), table_base + pal_base + epoch_count (FS). epoch_count is the number of
+			// page tables actually staged above, which is what the fragment stage clamps a state
+			// row's epoch against; zero when the byte road is not live this frame.
+			const u32 push[kTileGpuPushWords] = {
+				state_base_rows, table_base_words, pal_base_words, can_texture ? plan.epoch_count : 0u, 0, 0, 0, 0};
 			vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout,
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
 

@@ -79,9 +79,10 @@ layout(std430, set = 0, binding = 0) readonly buffer StateTable
 
 layout(push_constant) uniform cb
 {
-	uint base_row;   // this frame's first state row in the ring buffer (vertex stage)
-	uint table_base; // this frame's first page-table word in the ring buffer (fragment stage)
-	uint pal_base;   // this frame's first palette word in the ring buffer (fragment stage)
+	uint base_row;    // this frame's first state row in the ring buffer (vertex stage)
+	uint table_base;  // this frame's first page-table word in the ring buffer (fragment stage)
+	uint pal_base;    // this frame's first palette word in the ring buffer (fragment stage)
+	uint epoch_count; // page tables this frame staged; the bound a state row's epoch is clamped to
 };
 
 #ifdef VERTEX_SHADER
@@ -175,7 +176,12 @@ layout(std430, set = 0, binding = 1) readonly buffer Vram
 uint tilegpu_ring_word(uint gs_word, uint epoch)
 {
 	uint page = gs_word >> 11u;
-	uint slot = vram_words[table_base + epoch * 512u + page];
+	// The frame stages exactly `epoch_count` tables, and the CPU builds the state rows from the same
+	// counter, so an out-of-range epoch cannot happen. The clamp is here because of what happens if
+	// it ever does: the read would run off the end of the table into the page entries or the palettes
+	// -- live data in this same buffer -- and hand back a plausible-looking slot instead of failing.
+	uint e = min(epoch, max(epoch_count, 1u) - 1u);
+	uint slot = vram_words[table_base + e * 512u + page];
 	return slot + (gs_word & 2047u);
 }
 
