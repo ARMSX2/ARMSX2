@@ -55,7 +55,9 @@ struct mVU_Globals
 	u32   maxvals [4] = __four(0x7f7fffff);
 	u32   exponent[4] = __four(0x7f800000);
 	u32   one     [4] = __four(0x3f800000);
-	u32   Pi4     [4] = __four(0x3f490fdb);
+	// EATAN's series ends on this. The EFU's pi/4 is 0x3f490fda, a ULP below
+	// the correctly-rounded value that x86/microVU_Misc.h still holds.
+	u32   Pi4     [4] = __four(0x3f490fda);
 	// EATAN's odd-power atan series, c1 c3 c5 ... c15. ⚠️ This table is a COPY of the
 	// one in x86/microVU_Misc.h and the two must stay name-for-name identical: the
 	// arm64 build reads this one, the x86 build reads that one, and mVU_EATAN_arm and

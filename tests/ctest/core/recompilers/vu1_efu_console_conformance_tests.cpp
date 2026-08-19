@@ -133,58 +133,36 @@ TEST(Vu1EfuConsoleConformance, OpsMatchConsole)
 // SEPARATELY and records what it cannot reproduce per engine
 // (`bad_interp` / `bad_jit` in autocases_efu.h). That is deliberate -- the
 // header explains that a pure JIT-vs-interp differential is blind to anything
-// both engines get wrong together. But it left the mirror-image blind spot,
-// and at this stage that is the one that matters: NOTHING asserted that the
-// two engines agree with EACH OTHER. A case where interp and the arm64 JIT
-// return different wrong answers is flagged twice as "known bad" and looks
-// settled, because CaseMatches() reduces each run to a bool and throws the
-// value away.
+// both engines get wrong together. But it leaves the mirror-image blind spot:
+// nothing else asserts that the two engines agree with EACH OTHER, and a case
+// where they return different wrong answers is flagged twice as known-bad and
+// looks settled, because CaseMatches() reduces each run to a bool and throws
+// the value away.
 //
-// Measured when this test was written: 111 of the 208 cases had the two
-// engines disagreeing. The first root cause is fixed in the same commit --
-// the interpreter's EATAN family was missing the range-reduction identity's
-// argument transform (see _vuCalculateEATAN's callers in VUops.cpp) -- which
-// brought 15 cases into agreement and left 96.
+// What is left splits two ways.
 //
-// The remaining EATAN-family divergences are listed below and fall into two
-// further classes, neither of which is this commit's subject:
-//
-//   1. OPERAND CLAMPING. On CVF_MAX / CVF_MIN / CVF_*_EXP / CVF_GARBAGE1 the
-//      recompilers hand raw exponent-255 patterns to the polynomial and get
-//      NaNs back (0x7FC00000, 0x7FFFFFFF, 0x7FC00001), where the interpreter
-//      runs every operand through vuDouble first and gets a finite clamp. The
-//      interpreter is the side nearer the console here.
-//   2. POLYNOMIAL COEFFICIENTS. On ordinary inputs (CVF_INCREASING,
-//      CVF_DECREASING, CVF_PI*) the two engines evaluated the same series with
-//      different numbers in it. This was first written off as double-vs-single
-//      precision drift "a few ULP" wide; measuring it killed that, and it
-//      turned out to be two independent transcription defects, one per engine.
-//      The interpreter's x^7 coefficient was a mistyped T3 (see
-//      _vuCalculateEATAN in VUops.cpp), worth up to 3383 ULP. The recompiler
-//      paired four coefficients with the wrong power of x, because
-//      mVU_Globals names them out of order (see mVU_EATAN_arm in
-//      microVU_Lower-arm64.inl), worth up to 919642 ULP. pow() precision was
-//      not the cause of either half. Both are fixed; what remains on these
-//      rows is the last 1-4 ULP, where the JIT is now the side nearer silicon
-//      -- see DISABLED_DumpEatanFamily below for the per-row numbers.
+//   1. THE RECOMPILERS RUN HOST ARITHMETIC. On CVF_MAX / CVF_MIN / CVF_*_EXP /
+//      CVF_GARBAGE1 they hand a raw exponent-255 pattern to a host divide and
+//      a host multiply and get infinities and NaNs back (0x7FC00000,
+//      0x7FFFFFFF, 0x7FC00001). The interpreter takes the divide unit's
+//      saturation and the FMAC model's range instead, and lands where the
+//      console does.
+//   2. THE LAST ULP. On ordinary inputs the two evaluate the same series, in
+//      the same order, out of the same coefficients, and still part by one:
+//      the interpreter rounds each step through the FMAC model, the
+//      recompiler through NEON. DISABLED_DumpEatanFamily has the per-row
+//      numbers.
 //
 // Listing them rather than skipping the family keeps the property asserted for
-// the 15 that now agree, and makes any movement in either direction -- a fix
-// or a regression -- fail loudly.
+// the 25 that agree, and makes any movement in either direction -- a fix or a
+// regression -- fail loudly.
 constexpr const char* kEatanEngineDivergences[] = {
-	"EATAN CVF_ZERO",
-	"EATAN CVF_NEGZERO",
 	"EATAN CVF_MAX",
 	"EATAN CVF_MIN",
-	"EATAN CVF_MAX_MANTISSA",
 	"EATAN CVF_MAX_EXP",
-	"EATAN CVF_MIN_EXP",
 	"EATAN CVF_NEGONE",
-	"EATAN CVF_GARBAGE1",
-	"EATAN CVF_GARBAGE2",
 	"EATAN CVF_INCREASING",
-	"EATAN CVF_DECREASING",
-	"EATAN CVF_3PI_OVER2",
+	"EATAN CVF_PI_OVER2",
 	"EATANxy CVF_ZERO",
 	"EATANxy CVF_NEGZERO",
 	"EATANxy CVF_MAX",
@@ -192,7 +170,6 @@ constexpr const char* kEatanEngineDivergences[] = {
 	"EATANxy CVF_MAX_EXP",
 	"EATANxy CVF_MIN_EXP",
 	"EATANxy CVF_GARBAGE1",
-	"EATANxy CVF_INCREASING",
 	"EATANxy CVF_DECREASING",
 	"EATANxz CVF_ZERO",
 	"EATANxz CVF_NEGZERO",
@@ -284,9 +261,13 @@ TEST(Vu1EfuConsoleConformance, EatanFamilyEnginesAgreeExceptWhereListed)
 // _vuCalculateEATAN ends by adding pi/4, which is only correct as the second
 // half of  atan(x) = pi/4 + atan((x-1)/(x+1)).  Feeding it the RAW argument
 // adds an unearned pi/4. For Fs = 1.0 the reduced argument is exactly 0, so
-// the polynomial contributes nothing and the result is exactly the pi/4
-// constant, 0x3F490FDB -- while the unreduced form gives 0x3FCA1D99, which is
-// precisely what the interpreter returned before the fix.
+// the polynomial contributes nothing and the result is the constant alone --
+// while the unreduced form gives 0x3FCA1D99, which is precisely what the
+// interpreter returned before the fix.
+//
+// That makes this row a direct read of the constant, which is how the EFU's
+// 0x3F490FDA came to replace the correctly-rounded 0x3F490FDB both engines
+// used to add.
 TEST(Vu1EfuConsoleConformance, EatanAppliesTheRangeReductionBeforeThePolynomial)
 {
 	const EfuCase* one = nullptr;
@@ -301,11 +282,11 @@ TEST(Vu1EfuConsoleConformance, EatanAppliesTheRangeReductionBeforeThePolynomial)
 
 	u32 jit = 0, interp = 0;
 	RunBothEngines(*one, Encode(*one), jit, interp);
-	EXPECT_EQ(interp, 0x3F490FDBu)
-		<< "[interp] EATAN(1.0) must be the bare pi/4 constant; 0x3FCA1D99 is "
-		   "the unreduced form (polynomial evaluated at 1.0 plus pi/4)";
-	EXPECT_EQ(jit, 0x3F490FDBu) << "[jit]";
-	EXPECT_EQ(one->p, 0x3F490FDAu) << "console, one ULP below both engines";
+	EXPECT_EQ(one->p, 0x3F490FDAu) << "the console's own constant";
+	EXPECT_EQ(interp, one->p)
+		<< "[interp] EATAN(1.0) must be the bare constant; 0x3FCA1D99 is the "
+		   "unreduced form (polynomial evaluated at 1.0 plus pi/4)";
+	EXPECT_EQ(jit, one->p) << "[jit]";
 }
 
 // The measurement behind the two lists above. Prints every EATAN-family case
