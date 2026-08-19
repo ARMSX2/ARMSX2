@@ -4,7 +4,6 @@
 #include "GSRendererTileGpu.h"
 
 #include "GS/Renderers/Tile/GSTileTypes.h"
-#include "GS/Renderers/Tile/GSVramModel.h"
 #include "GS/GSLocalMemory.h"
 
 #include "common/Console.h"
@@ -12,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <span>
 #include <vector>
 
@@ -45,6 +45,50 @@ GSPageBitmap PagesForTargetRect(const GSTileSurfaceLayout& layout, const GSVecto
 	}
 	return GSVramModel::PagesForRect(layout, r);
 }
+
+// The bytes of a 32-bit cell one plane's data occupies under one layout — what a readback of
+// that plane may write into CPU local memory (the Tile renderer's PlaneByteMask, replicated).
+u32 PlaneByteMask(u32 plane_idx, const GSTileSurfaceLayout& layout)
+{
+	const u32 fmt_bytes = (layout.psm == PSMCT24 || layout.psm == PSMZ24) ? 0x00FFFFFFu : 0xFFFFFFFFu;
+	u32 plane_bytes = 0;
+	switch (1u << plane_idx)
+	{
+		case GSTilePlaneRGB:
+			plane_bytes = 0x00FFFFFFu;
+			break;
+		case GSTilePlaneAlphaLow:
+			plane_bytes = 0x0F000000u;
+			break;
+		case GSTilePlaneAlphaHigh:
+			plane_bytes = 0xF0000000u;
+			break;
+		case GSTilePlaneZ:
+			plane_bytes = 0xFFFFFFFFu;
+			break;
+		default:
+			ASSUME(0);
+	}
+	return fmt_bytes & plane_bytes;
+}
+
+// Whether the target pool can back a layout: every pool format has 64-pixel-wide pages
+// (the 32/16-bit colour and depth families); the 8/4-bit index formats do not, and a zero
+// stride has no page geometry at all.
+bool PoolSupports(const GSTileSurfaceLayout& layout)
+{
+	return layout.bw != 0 && gsTileStorageBpp(layout.psm) >= 16;
+}
+
+// Whether a surface can travel the byte road (writeback / seed): a colour surface in the CT32
+// swizzle universe with a page-aligned base -- the two shaders address it with the CT32 forms
+// and pool page (row, col) == physical page base + row*bw + col. Depth and 16-bit surfaces
+// exist in the model but have no road yet: truth that moves through them is counted lossy.
+bool HasByteRoad(const GSTileSurfaceLayout& layout)
+{
+	return layout.kind == GSTileSurfaceKind::Color && (layout.psm == PSMCT32 || layout.psm == PSMCT24) &&
+		   (layout.bp & 31) == 0;
+}
 } // namespace
 
 // Stage-1 pin: the back-record/back-thread machinery stays off for this variant whatever
@@ -53,14 +97,51 @@ GSPageBitmap PagesForTargetRect(const GSTileSurfaceLayout& layout, const GSVecto
 GSRendererTileGpu::GSRendererTileGpu()
 	: GSRenderer(/*allow_back_records=*/false)
 {
-	// The planner is intrinsic to this variant, not a toggle: with nothing else drawing yet,
-	// the pass model IS the renderer's output, so it runs unconditionally.
+	// The planner is intrinsic to this variant, not a toggle: the pass model IS the renderer's
+	// understanding of the frame, so it runs unconditionally.
 	m_pass_sim.SetActive(true);
 }
 
 GSRendererTileGpu::~GSRendererTileGpu()
 {
 	ReportPassStructure();
+}
+
+void GSRendererTileGpu::Destroy()
+{
+	// Textures must go back to the device pool while the device is alive; the pool's
+	// destructor only checks that they did.
+	m_target_pool.ReleaseAll();
+	GSRenderer::Destroy();
+}
+
+void GSRendererTileGpu::Reset(bool hardware_reset)
+{
+	GSRenderer::Reset(hardware_reset);
+	// Everything falls back to CPU-newest (the reset rewrote local memory); surface textures
+	// die with it, and so does the frame in progress.
+	m_target_pool.ReleaseAll();
+	m_vram_model.Reset();
+	m_plan_vertices.clear();
+	m_plan_indices.clear();
+	m_plan_states.clear();
+	m_plan_palettes.clear();
+	m_plan_draws.clear();
+	m_plan_topologies.clear();
+	m_plan_blend_keys.clear();
+	m_plan_pending.clear();
+	m_plan_passes.clear();
+	m_plan_target_pairs.clear();
+	m_plan_snapshots.clear();
+	m_plan_prep_ops.clear();
+	m_plan_page_entries.clear();
+	m_plan_targets.clear();
+	m_plan_target_surfaces.clear();
+	m_plan_target_of_surface.clear();
+	m_ring_entries.clear();
+	m_ring_versions.clear();
+	m_ring_live.fill(0);
+	m_epoch = 0;
 }
 
 void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame)
@@ -72,8 +153,14 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 
 	// Structure the frame's accumulated draws into a pass plan and render it through the
 	// device executor, before the base presents — so the targets the executor drew into are
-	// ready when the base's present path calls GetOutput.
+	// ready when the base's present path calls GetOutput. The frame boundary itself syncs
+	// nothing: targets persist, and the ring the plan build consumed is gone (every synced
+	// claim with it -- BuildAndExecutePlan drops them).
 	BuildAndExecutePlan();
+
+	m_frame.surfaces_live = m_vram_model.LiveSurfaces();
+	m_model_frames.push_back(m_frame);
+	m_frame = ModelFrame{};
 
 	GSRenderer::VSync(field, registers_written, idle_frame);
 
@@ -89,49 +176,42 @@ void GSRendererTileGpu::Draw()
 
 GSTexture* GSRendererTileGpu::GetOutput(int i, float& scale, int& y_offset)
 {
-	// The display buffer, matched to a colour target the executor rendered this frame. The
-	// resolution mirrors the HW renderer's: the PCRTC display register names a FRAME base,
-	// and the executor's targets are keyed by FRAME base. Wrong-fast: scale 1, no y offset
-	// (no upscale, no wrapped display buffer yet). Absent target -> nothing to present.
+	// The display buffer is whichever colour surface holds the PCRTC display base's pages: the
+	// exact display layout first (the composite draws it under the same FBW/PSM it is scanned
+	// out with), else any live colour surface at that base (a CT32 render scanned out as CT24
+	// is the same bytes). Wrong-fast: scale 1, no y offset (no upscale, no wrapped display
+	// buffer yet). No surface -> nothing to present: a display buffer written only by the CPU
+	// (uploads, moves) needs the byte-road present, not built yet.
 	const int index = i >= 0 ? i : 1;
 	const auto& fb = PCRTCDisplays.PCRTCDisplays[index];
 	const GSVector2i size = PCRTCDisplays.GetFramebufferSize(i);
 	if (fb.framebufferRect.rempty() || fb.FBW == 0 || size.x < 0 || size.y < 0)
 		return nullptr;
 
-	const u32 disp_bp = static_cast<u32>(fb.Block());
-	for (const DisplayTarget& dt : m_display_targets)
+	const GSTileSurfaceLayout disp_l{static_cast<u32>(fb.Block()), static_cast<u8>(fb.FBW), static_cast<u8>(fb.PSM),
+		GSTileSurfaceKind::Color};
+	GSTileSurfaceId id = m_vram_model.FindExact(disp_l);
+	if (id == kGSTileNoSurface)
 	{
-		if (dt.bp == disp_bp)
+		for (u32 k = 0; k < m_vram_model.SurfaceSlots(); k++)
 		{
-			scale = 1.0f;
-			y_offset = 0;
-			return dt.texture;
+			const GSVramModel::Surface& s = m_vram_model.Get(static_cast<GSTileSurfaceId>(k));
+			if (s.alive && s.layout.kind == GSTileSurfaceKind::Color && s.layout.bp == disp_l.bp)
+			{
+				id = static_cast<GSTileSurfaceId>(k);
+				break;
+			}
 		}
 	}
+	if (id == kGSTileNoSurface)
+		return nullptr;
 
-	// Wrong-fast fallback: the PS2 display buffer's content is composited from work buffers by
-	// the sprites and moves this stage does not render yet, so it has no target of its own.
-	// Present the largest colour target instead — the frame's main render buffer — so the 3D
-	// geometry is visible rather than a blank display. Removed once compositing is handled.
-	GSTexture* best = nullptr;
-	int best_area = 0;
-	for (const DisplayTarget& dt : m_display_targets)
-	{
-		const int area = dt.texture->GetSize().x * dt.texture->GetSize().y;
-		if (area > best_area)
-		{
-			best_area = area;
-			best = dt.texture;
-		}
-	}
-	if (best)
-	{
-		scale = 1.0f;
-		y_offset = 0;
-		return best;
-	}
-	return nullptr;
+	const GSVramModel::Surface& surf = m_vram_model.Get(id);
+	if (!surf.pool_handle)
+		return nullptr;
+	scale = 1.0f;
+	y_offset = 0;
+	return m_target_pool.GetTexture(surf.pool_handle);
 }
 
 bool GSRendererTileGpu::IsCoverageAlphaSupported()
@@ -139,35 +219,49 @@ bool GSRendererTileGpu::IsCoverageAlphaSupported()
 	return false;
 }
 
-// A host->local transfer's destination: an upload into the pass model. The base hook is
-// empty (the transfer's bytes already landed in GSState's transfer path), so this only
-// observes — an upload never has to break the pass in the model.
+// A host->local transfer's destination. Fires BEFORE GSState writes the shadow, so: (1) any
+// live ring slot for the pages captures the page's current bytes as a version copy and closes,
+// keeping every already-planned reader on the bytes it saw (the "version" upload mechanism);
+// (2) blocks only a target holds newest that this write only PARTIALLY overwrites are pulled
+// down first (the one stall road -- the whole-block/whole-page common case shrinks or clears
+// the target's claim for free); (3) the model records the CPU write. Order matters: closing
+// the slots first also drops their synced claims, so the spill question is asked against
+// truth the CPU shadow does NOT hold (a claim the ring vouched for is not one S can shrink
+// against). Footprints are exact through GSOffset, DBW=0 included (the address math folds
+// every row onto one page column, which is what the hardware does with it).
 void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r)
 {
-	if (m_pass_sim_in_move)
-		return; // the move's destination write is already modelled by OnMove
 	const GSTileSurfaceLayout layout{BITBLTBUF.DBP, static_cast<u8>(BITBLTBUF.DBW),
 		static_cast<u8>(BITBLTBUF.DPSM), KindForPsm(BITBLTBUF.DPSM)};
-	m_pass_sim.OnUpload(PagesForTargetRect(layout, r));
+	const u8 planes = gsTilePlanesInvalidatedByWrite(BITBLTBUF.DPSM);
+	GSVramModel::RectFootprint fp;
+	GSVramModel::FootprintForRect(layout, r, fp);
+	SupersedeRingSlots(fp.pages);
+	ReadbackToShadow(m_vram_model.SpillBeforeCpuWrite(fp, planes), StallSite::UploadSubBlock);
+	m_vram_model.OnCpuWrite(fp, planes);
+	if (!m_pass_sim_in_move)
+		m_pass_sim.OnUpload(PagesForTargetRect(layout, r));
 }
 
-// A local->host readback's source: a CPU consumer of GPU-written pages. The clut flag
-// splits the on-GPU palette-gather road from a genuine readback in the model.
+// A local->host readback's source (or a CLUT load's): a CPU consumer of the pages. Anything a
+// target holds newest comes down first -- the genuine crossing, and on this road a stall. The
+// clut flag splits the on-GPU palette-gather road from a genuine readback in the pass model.
 void GSRendererTileGpu::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut)
 {
-	if (m_pass_sim_in_move)
-		return; // the move's source read is already modelled by OnMove
 	const GSTileSurfaceLayout layout{BITBLTBUF.SBP, static_cast<u8>(BITBLTBUF.SBW),
 		static_cast<u8>(BITBLTBUF.SPSM), KindForPsm(BITBLTBUF.SPSM)};
-	m_pass_sim.OnCpuRead(PagesForTargetRect(layout, r), clut);
+	ReadbackToShadow(GSVramModel::PagesForRect(layout, r), clut ? StallSite::Clut : StallSite::LocalRead);
+	if (!m_pass_sim_in_move)
+		m_pass_sim.OnCpuRead(PagesForTargetRect(layout, r), clut);
 }
 
 // A local->local move. Observed as OnMove first — matching the Tile renderer's order, where
 // OnMove sees the pass state before the move's own read/write halves touch it — then the
 // base performs the real guest-memory copy. That base Move calls InvalidateLocalMem(src) and
-// InvalidateVideoMem(dst) in turn; OnMove has already accounted both halves, so m_pass_sim_in_move
-// suppresses their sim forwards for the copy's duration (otherwise the destination write
-// double-counts as a draw-realized upload — the latent defect the Tile `moves` counter prices).
+// InvalidateVideoMem(dst) in turn, which the memory model needs (the source comes down if a
+// target holds it, the destination write shrinks or clears claims); OnMove has already
+// accounted both halves for the pass sim, so m_pass_sim_in_move suppresses only the sim
+// forwards for the copy's duration.
 void GSRendererTileGpu::Move()
 {
 	const int w = m_env.TRXREG.RRW;
@@ -185,6 +279,24 @@ void GSRendererTileGpu::Move()
 	m_pass_sim_in_move = true;
 	GSRenderer::Move();
 	m_pass_sim_in_move = false;
+}
+
+// The close/switch seam Classic reads its texture cache back on: everything a target holds
+// newest comes down. A savestate taken with UserHacks_ReadTCOnClose lands here too.
+void GSRendererTileGpu::ReadbackTextureCache()
+{
+	SyncAllTruthToCpu();
+}
+
+// A purge drops the resident targets (device loss, a config change that rebuilds them). Truth
+// comes down first so nothing is lost; the model then forgets every surface.
+void GSRendererTileGpu::PurgeTextureCache(bool sources, bool targets, bool hash_cache)
+{
+	if (!targets)
+		return;
+	SyncAllTruthToCpu();
+	m_target_pool.ReleaseAll();
+	m_vram_model.Reset();
 }
 
 GSVector4i GSRendererTileGpu::ComputeDrawRect() const
@@ -366,12 +478,14 @@ void GSRendererTileGpu::ObserveDraw()
 		static_cast<u32>(std::max(m_vertex->tail, m_vertex->next)));
 }
 
-// The accumulated per-frame pass structure, mean / p50 at teardown. This is the offline
-// -tilepasssim arm's aggregate (minus the Tile-only GIF-stream tail): the structural counters
-// the stage-1 gate reads against the design values, now over draws AND the stream's memory
-// events, so every break reason is measured rather than zero by construction.
+// The accumulated per-frame pass structure, mean / p50 at teardown -- the offline
+// -tilepasssim arm's aggregate (minus the Tile-only GIF-stream tail), then the memory model's
+// own traffic. These are the structural counters the stage-1 gate reads against the design
+// values, over draws AND the stream's memory events, so every break reason is measured rather
+// than zero by construction.
 void GSRendererTileGpu::ReportPassStructure()
 {
+	ReportModelTraffic();
 	const std::vector<GSTilePassSim::FrameStats>& frames = m_pass_sim.Frames();
 	if (frames.empty())
 		return;
@@ -455,12 +569,353 @@ void GSRendererTileGpu::ReportPassStructure()
 		tas.mean, tlive.mean, tresc.mean, eligible);
 }
 
-// The pass plan's geometry, one flushed batch at a time. Copies this draw's vertices and
-// indices into the frame streams and records an indexed indirect draw plus the deferred
-// PendingDraw (its target identity and transform inputs, resolved once the frame's targets
-// are sized). Skips empty-rect draws exactly as ObserveDraw does, so the plan and the pass
-// model count the same draws. Indices are 0-based within the batch; the draw's vertex_offset
-// rebases them into the frame vertex stream.
+// The memory model's per-frame traffic: what the byte road actually moved, and every crossing
+// the design says should be rare. Mean / p50 over presented frames.
+void GSRendererTileGpu::ReportModelTraffic()
+{
+	if (m_model_frames.empty())
+		return;
+	const double n = static_cast<double>(m_model_frames.size());
+	const auto stat = [this, n](auto get) {
+		std::vector<u32> v(m_model_frames.size());
+		double sum = 0.0;
+		for (size_t i = 0; i < m_model_frames.size(); i++)
+		{
+			v[i] = get(m_model_frames[i]);
+			sum += v[i];
+		}
+		std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+		struct
+		{
+			double mean;
+			u32 p50;
+		} r{sum / n, v[v.size() / 2]};
+		return r;
+	};
+	using MF = ModelFrame;
+	const auto surf = stat([](const MF& f) { return f.surfaces_live; });
+	const auto passes = stat([](const MF& f) { return f.passes; });
+	const auto ring = stat([](const MF& f) { return f.ring_pages; });
+	const auto prefill = stat([](const MF& f) { return f.ring_prefill; });
+	const auto versions = stat([](const MF& f) { return f.ring_versions; });
+	const auto epochs = stat([](const MF& f) { return f.epochs; });
+	const auto wbo = stat([](const MF& f) { return f.writeback_ops; });
+	const auto wbp = stat([](const MF& f) { return f.writeback_pages; });
+	const auto sdo = stat([](const MF& f) { return f.seed_ops; });
+	const auto sdp = stat([](const MF& f) { return f.seed_pages; });
+	const auto sbrk = stat([](const MF& f) { return f.seed_breaks; });
+	const auto dbrk = stat([](const MF& f) { return f.date_breaks; });
+	const auto snaps = stat([](const MF& f) { return f.snapshots; });
+	const auto self = stat([](const MF& f) { return f.self_reads; });
+	const auto lossy = stat([](const MF& f) { return f.lossy_pages; });
+	const auto skipped = stat([](const MF& f) { return f.skipped_draws; });
+	const auto flushes = stat([](const MF& f) { return f.flushes; });
+	const auto st = [&stat](StallSite s) {
+		return stat([s](const MF& f) { return f.stalls[static_cast<u32>(s)]; });
+	};
+	const auto stp = [&stat](StallSite s) {
+		return stat([s](const MF& f) { return f.stall_pages[static_cast<u32>(s)]; });
+	};
+	const auto s_up = st(StallSite::UploadSubBlock), s_rd = st(StallSite::LocalRead), s_cl = st(StallSite::Clut),
+			   s_all = st(StallSite::SyncAll);
+	const auto p_up = stp(StallSite::UploadSubBlock), p_rd = stp(StallSite::LocalRead), p_cl = stp(StallSite::Clut),
+			   p_all = stp(StallSite::SyncAll);
+
+	Console.WriteLn("TileGpu memory model over %u frames (mean / p50 per frame):", static_cast<u32>(m_model_frames.size()));
+	Console.WriteLn("  surfaces live %6.2f / %-4u  passes %7.2f / %-5u  ring pages %7.2f / %-5u (prefilled %.2f / %u, "
+					"version copies %.2f / %u, epochs %.2f / %u)",
+		surf.mean, surf.p50, passes.mean, passes.p50, ring.mean, ring.p50, prefill.mean, prefill.p50, versions.mean,
+		versions.p50, epochs.mean, epochs.p50);
+	Console.WriteLn("  writebacks %6.2f / %-4u ops, %8.2f / %-5u pages   seeds %6.2f / %-4u ops, %8.2f / %-5u pages, "
+					"%.2f / %u pass breaks",
+		wbo.mean, wbo.p50, wbp.mean, wbp.p50, sdo.mean, sdo.p50, sdp.mean, sdp.p50, sbrk.mean, sbrk.p50);
+	Console.WriteLn("  self-reads (snapshot semantics) %.2f / %u   DATE: %.2f / %u pass breaks, %.2f / %u snapshots   "
+					"lossy pages (no byte road) %.2f / %u   skipped draws %.2f / %u   mid-frame flushes %.2f / %u",
+		self.mean, self.p50, dbrk.mean, dbrk.p50, snaps.mean, snaps.p50, lossy.mean, lossy.p50, skipped.mean, skipped.p50,
+		flushes.mean, flushes.p50);
+	Console.WriteLn("  stalls: upload sub-block %.2f/%u (%.2f pages)  local-read %.2f/%u (%.2f)  clut %.2f/%u (%.2f)  "
+					"sync-all %.2f/%u (%.2f)",
+		s_up.mean, s_up.p50, p_up.mean, s_rd.mean, s_rd.p50, p_rd.mean, s_cl.mean, s_cl.p50, p_cl.mean, s_all.mean,
+		s_all.p50, p_all.mean);
+}
+
+
+// -- the memory model's per-draw road ---------------------------------------------------------
+
+GSTileSurfaceId GSRendererTileGpu::EnsureSurface(const GSTileSurfaceLayout& layout, const GSVector4i& rect,
+	const GSPageBitmap& pages)
+{
+	if (!PoolSupports(layout))
+		return kGSTileNoSurface;
+	const int height = GSTileTargetPool::HeightForPages(layout, pages);
+	GSTileSurfaceId id = m_vram_model.FindExact(layout);
+	if (id == kGSTileNoSurface)
+	{
+		const u32 handle = m_target_pool.Allocate(layout, height);
+		if (handle == 0)
+			return kGSTileNoSurface;
+		id = m_vram_model.Create(layout, rect, handle);
+		m_vram_model.GrowResidency(id, pages);
+		return id;
+	}
+	m_vram_model.GrowResidency(id, pages);
+	// Growth copies the texture's content into a taller one on the device now -- before any of
+	// this frame's passes are recorded (the plan is built at VSync), so it moves last frame's
+	// pixels and every draw of this frame lands in the grown texture.
+	if (!m_target_pool.EnsureHeight(m_vram_model.Get(id).pool_handle, height))
+		return kGSTileNoSurface;
+	return id;
+}
+
+// Tile's PagesNeedingUpload: pages whose texture bytes are not already current for every
+// relevant plane -- another owner, no owner (CPU-newest), or a shrunk block mask.
+GSPageBitmap GSRendererTileGpu::PagesNeedingSeed(GSTileSurfaceId id, const GSPageBitmap& pages, u8 planes) const
+{
+	GSPageBitmap need;
+	pages.forEachSetPage([&](u32 page) {
+		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+		{
+			if (!(planes & (1u << pi)))
+				continue;
+			if (m_vram_model.OwnerOf(page, pi) != id || m_vram_model.TruthMask(page, pi) != GSVramModel::kFullBlockMask)
+			{
+				need.set(page);
+				return;
+			}
+		}
+	});
+	return need;
+}
+
+u32 GSRendererTileGpu::PlanTargetIndex(GSTileSurfaceId id)
+{
+	if (m_plan_target_of_surface.size() <= id)
+		m_plan_target_of_surface.resize(id + 1, GSDevice::GSTileGpuPassPlan::kNoTarget);
+	if (m_plan_target_of_surface[id] == GSDevice::GSTileGpuPassPlan::kNoTarget)
+	{
+		m_plan_target_of_surface[id] = static_cast<u32>(m_plan_target_surfaces.size());
+		m_plan_target_surfaces.push_back(id);
+	}
+	return m_plan_target_of_surface[id];
+}
+
+// A ring slot for `page` in the current epoch. Prefill from S unless the page is, in every
+// plane, whole-page unsynced truth of a surface with a byte road -- exactly the case where a
+// writeback this epoch composes every byte (ComposeRingPages emits it right after asking here).
+// A page synced already (either its bytes are in S after a stall readback, or an earlier
+// writeback this epoch composed its live slot) prefills too: over the same live slot the memcpy
+// runs first and the writeback's blocks land over it, so the extra copy is harmless.
+u32 GSRendererTileGpu::EnsureRingSlot(u32 page)
+{
+	bool needs_prefill = false;
+	for (u32 pi = 0; pi < kGSTilePlaneCount && !needs_prefill; pi++)
+	{
+		const GSTileSurfaceId owner = m_vram_model.OwnerOf(page, pi);
+		if (owner == kGSTileNoSurface || m_vram_model.TruthMask(page, pi) != GSVramModel::kFullBlockMask ||
+			m_vram_model.SyncedPages(pi).test(page) || !HasByteRoad(m_vram_model.Get(owner).layout))
+			needs_prefill = true;
+	}
+
+	if (m_ring_live[page] != 0)
+	{
+		RingEntry& e = m_ring_entries[m_ring_live[page] - 1];
+		e.prefill_s |= needs_prefill;
+		return m_ring_live[page] - 1;
+	}
+	RingEntry e = {};
+	e.page = static_cast<u16>(page);
+	e.epoch_first = static_cast<u16>(m_epoch);
+	e.epoch_last = 0xFFFF; // open
+	e.prefill_s = needs_prefill;
+	m_ring_entries.push_back(e);
+	m_ring_live[page] = static_cast<u16>(m_ring_entries.size());
+	m_frame.ring_pages++;
+	return static_cast<u32>(m_ring_entries.size() - 1);
+}
+
+void GSRendererTileGpu::SupersedeRingSlots(const GSPageBitmap& pages)
+{
+	bool cut = false;
+	GSPageBitmap closed;
+	pages.forEachSetPage([&](u32 page) {
+		if (m_ring_live[page] == 0)
+			return;
+		RingEntry& e = m_ring_entries[m_ring_live[page] - 1];
+		e.epoch_last = static_cast<u16>(m_epoch);
+		if (e.prefill_s)
+		{
+			// The bytes an already-planned reader must see are about to be overwritten in S:
+			// keep them. (A slot the GPU composes entirely needs nothing -- its writebacks read
+			// targets, not S.)
+			e.versioned = true;
+			e.version_offset = static_cast<u32>(m_ring_versions.size());
+			m_ring_versions.resize(m_ring_versions.size() + GS_PAGE_SIZE);
+			std::memcpy(m_ring_versions.data() + e.version_offset, m_mem.vm8() + page * GS_PAGE_SIZE, GS_PAGE_SIZE);
+			m_frame.ring_versions++;
+		}
+		m_ring_live[page] = 0;
+		closed.set(page);
+		cut = true;
+	});
+	if (cut)
+	{
+		// The closed slots' synced claims die with them: the next reader of these pages this
+		// frame composes a fresh slot (its writebacks re-run into it).
+		m_vram_model.ClearSynced(closed);
+		m_epoch++;
+	}
+}
+
+void GSRendererTileGpu::EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfaceId id, const GSPageBitmap& pages)
+{
+	if (pages.empty())
+		return;
+	const GSVramModel::Surface& surf = m_vram_model.Get(id);
+	GSDevice::GSTileGpuPrepOp op = {};
+	op.kind = kind;
+	op.target = PlanTargetIndex(id);
+	op.bp = surf.layout.bp;
+	op.bw = surf.layout.bw;
+	op.psm = surf.layout.psm;
+	op.byte_mask = (surf.layout.psm == PSMCT24) ? 0x00FFFFFFu : 0xFFFFFFFFu;
+	op.epoch = m_epoch;
+	op.first_page_entry = static_cast<u32>(m_plan_page_entries.size());
+	pages.forEachSetPage([&](u32 page) {
+		u32 mask = GSVramModel::kFullBlockMask;
+		if (kind == GSDevice::GSTileGpuPrepKind::Writeback)
+		{
+			// The blocks this surface holds newest on the page, over the planes it owns there
+			// (they agree except after a CPU write that shrank one plane's claim differently --
+			// then the union over-writes bytes of the other plane, a bounded imprecision noted
+			// in the design record).
+			mask = 0;
+			for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+			{
+				if (m_vram_model.OwnerOf(page, pi) == id)
+					mask |= m_vram_model.TruthMask(page, pi);
+			}
+			if (mask == 0)
+				return;
+		}
+		m_plan_page_entries.push_back(GSDevice::GSTileGpuPageEntry{static_cast<u16>(page), 0, mask});
+	});
+	op.page_entry_count = static_cast<u32>(m_plan_page_entries.size()) - op.first_page_entry;
+	if (op.page_entry_count == 0)
+		return;
+	m_plan_prep_ops.push_back(op);
+	if (kind == GSDevice::GSTileGpuPrepKind::Writeback)
+	{
+		m_frame.writeback_ops++;
+		m_frame.writeback_pages += op.page_entry_count;
+	}
+	else
+	{
+		m_frame.seed_ops++;
+		m_frame.seed_pages += op.page_entry_count;
+	}
+}
+
+// Every byte of `pages` reachable through the ring for the current epoch: a slot per page,
+// prefilled from S where any byte is CPU-newest, and a writeback of every surface holding
+// unsynced truth on them (in the ring's read-modify-write order, one op per owner). Marks what
+// the ring now holds synced. Owners without a byte road contribute nothing (the slot keeps its
+// prefill: stale where they held newest) -- counted, and warned once, never silent.
+void GSRendererTileGpu::ComposeRingPages(const GSPageBitmap& pages)
+{
+	if (pages.empty())
+		return;
+	pages.forEachSetPage([&](u32 page) { EnsureRingSlot(page); });
+
+	const GSPageBitmap need = m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll);
+	if (need.empty())
+		return;
+
+	// Bucket by owner. Tiny in practice (one or two owners per read window).
+	struct Bucket
+	{
+		GSTileSurfaceId id;
+		GSPageBitmap pages;
+	};
+	Bucket buckets[8];
+	u32 num_buckets = 0;
+	u32 lossy = 0;
+	need.forEachSetPage([&](u32 page) {
+		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+		{
+			if (!m_vram_model.Truth(pi).test(page) || m_vram_model.SyncedPages(pi).test(page))
+				continue;
+			const GSTileSurfaceId owner = m_vram_model.OwnerOf(page, pi);
+			pxAssert(owner != kGSTileNoSurface);
+			if (!HasByteRoad(m_vram_model.Get(owner).layout))
+			{
+				lossy++;
+				continue;
+			}
+			u32 b = 0;
+			for (; b < num_buckets; b++)
+			{
+				if (buckets[b].id == owner)
+					break;
+			}
+			if (b == num_buckets)
+			{
+				if (num_buckets == std::size(buckets))
+				{
+					lossy++; // beyond the table: counted as lost rather than mis-composed
+					continue;
+				}
+				buckets[num_buckets].id = owner;
+				buckets[num_buckets].pages.clear();
+				num_buckets++;
+			}
+			buckets[b].pages.set(page);
+		}
+	});
+
+	for (u32 b = 0; b < num_buckets; b++)
+		EmitPrepOp(GSDevice::GSTileGpuPrepKind::Writeback, buckets[b].id, buckets[b].pages);
+
+	if (lossy)
+	{
+		m_frame.lossy_pages += lossy;
+		if (!m_warned_lossy)
+		{
+			m_warned_lossy = true;
+			Console.Warning("TileGpu: page truth held by a surface without a byte road (depth / 16-bit / unaligned) "
+							"was read or stolen -- the bytes are stale there. Counted per frame as lossy pages.");
+		}
+	}
+
+	// What the ring now holds (or, for the lossy part, what we will treat as held): synced.
+	m_vram_model.OnReadback(need);
+}
+
+// A surface without a byte road is about to take `pages` (or read them without holding
+// them): the model's steal invariant needs the previous owners' truth marked synced, but no
+// bytes actually move -- the previous owners' pixels are lost to the byte store, and the
+// taker's texture keeps whatever it held. Counted (and warned once); the road-less surfaces
+// are depth, 16-bit colour, and unaligned bases, all pending their own writeback/seed shaders.
+void GSRendererTileGpu::LossySteal(const GSPageBitmap& pages)
+{
+	if (pages.empty())
+		return;
+	m_frame.lossy_pages += pages.count();
+	if (!m_warned_lossy)
+	{
+		m_warned_lossy = true;
+		Console.Warning("TileGpu: page truth moved through a surface without a byte road (depth / 16-bit / unaligned) "
+						"-- the bytes are stale there. Counted per frame as lossy pages.");
+	}
+	m_vram_model.OnReadback(m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll));
+}
+
+// The pass plan's geometry and the memory model's traffic, one flushed batch at a time. Copies
+// this draw's vertices and indices into the frame streams, drives the model for its texture
+// read and its target footprints, and records an indexed indirect draw plus the PendingDraw
+// (its surfaces, transform inputs and prep-op range, resolved at the plan build). Skips
+// empty-rect draws exactly as ObserveDraw does, so the plan and the pass model count the same
+// draws. Indices are 0-based within the batch; the draw's vertex_offset rebases them into the
+// frame vertex stream.
 void GSRendererTileGpu::AccumulateDraw()
 {
 	const GSVector4i r = ComputeDrawRect();
@@ -498,73 +953,75 @@ void GSRendererTileGpu::AccumulateDraw()
 
 	const GSDrawingContext* ctx = m_context;
 
-	GSDevice::GSTileGpuIndirectDraw draw = {};
-	draw.instance_count = 1;
-	draw.first_index = static_cast<u32>(m_plan_indices.size());
-	draw.vertex_offset = static_cast<s32>(m_plan_vertices.size());
-	draw.state_index = static_cast<u32>(m_plan_draws.size());
+	// -- the model: where this draw lands and what it reads ---------------------------------
+	const GSTileSurfaceLayout fb_l{ctx->FRAME.Block(), static_cast<u8>(ctx->FRAME.FBW),
+		static_cast<u8>(ctx->FRAME.PSM), GSTileSurfaceKind::Color};
+	const GSTileSurfaceLayout z_l{ctx->ZBUF.Block(), static_cast<u8>(ctx->FRAME.FBW),
+		static_cast<u8>(ctx->ZBUF.PSM), GSTileSurfaceKind::Depth};
 
-	if (!is_sprite)
+	// What this draw actually writes. An alpha test of NEVER fails every pixel, and AFAIL then
+	// says which channels the failing pixel still lands in -- Classic's zm/fm derivation, and the
+	// idiom SotC uses for its full-screen fades and post sprites: ATE=1 ATST=NEVER AFAIL=FB_ONLY
+	// is "colour only, leave depth alone" whatever ZTE/ZMSK say. Missing it deposits those
+	// sprites' Z=max into the persistent depth buffer and the whole 3D pass then fails GEQUAL.
+	const bool atst_never = ctx->TEST.ATE && ctx->TEST.ATST == ATST_NEVER;
+	const u32 afail = ctx->TEST.GetAFAIL(ctx->FRAME.PSM);
+	const bool z_write = ctx->TEST.ZTE && !ctx->ZBUF.ZMSK && !(atst_never && afail != AFAIL_ZB_ONLY);
+	const bool z_test = ctx->TEST.ZTE && ctx->TEST.ZTST > ZTST_ALWAYS;
+	const bool z_used = z_write || z_test;
+	const bool color_written = !(atst_never && (afail == AFAIL_KEEP || afail == AFAIL_ZB_ONLY)) &&
+							   (ctx->FRAME.FBMSK & GSLocalMemory::m_psm[ctx->FRAME.PSM].fmsk) !=
+								   GSLocalMemory::m_psm[ctx->FRAME.PSM].fmsk;
+	if (!color_written && !z_write)
+		return; // nothing lands anywhere: a no-op draw
+
+	if (!PoolSupports(fb_l) || (z_used && !PoolSupports(z_l)))
 	{
-		// Triangle, line or point: the index list is already the topology the pipeline consumes
-		// (3 indices per triangle, 2 per line, 1 per point). Copy vertices and indices straight.
-		draw.index_count = icount;
-		m_plan_vertices.insert(m_plan_vertices.end(), m_vertex->buff, m_vertex->buff + vcount);
-		m_plan_indices.insert(m_plan_indices.end(), m_index->buff, m_index->buff + icount);
+		// An 8/4-bit or zero-stride target: no surface can back it on this road yet. The draw
+		// is dropped (its bytes never land) -- counted, and the pass model still saw it.
+		m_frame.skipped_draws++;
+		return;
 	}
-	else
+
+	// The destination-alpha test. On a 24-bit target there is no alpha to test and the GS passes
+	// nothing (Classic's finding, tested on hardware) -- the draw is a no-op. Otherwise the draw
+	// reads its own target's alpha before writing: served from a pass snapshot, so it must not
+	// read pixels this pass already wrote (see the break below).
+	u32 date = 0;
+	if (ctx->TEST.DATE)
 	{
-		// Sprite corner synthesis. Each sprite is a pair of opposite corners (index[0], index[1]);
-		// the GS draws it flat, taking colour, Q, Z and fog from the second vertex. Build four
-		// corners off that second vertex — only their XY differs — and emit two triangles. Indices
-		// are batch-local (corner s*4..s*4+3); the draw's vertex_offset rebases them into the
-		// frame stream. No culling in the executor pipeline, so corner winding is free.
-		const u16* RESTRICT index = m_index->buff;
-		const GSVertex* RESTRICT verts = m_vertex->buff;
-		const u32 sprite_count = icount / 2;
-		draw.index_count = sprite_count * 6;
-		m_plan_vertices.reserve(m_plan_vertices.size() + sprite_count * 4);
-		m_plan_indices.reserve(m_plan_indices.size() + sprite_count * 6);
-		for (u32 s = 0; s < sprite_count; s++)
+		if (GSLocalMemory::m_psm[ctx->FRAME.PSM].trbpp == 24)
+			return;
+		date = 1u + static_cast<u32>(ctx->TEST.DATM);
+	}
+	const GSPageBitmap fb_pages = GSVramModel::PagesForRect(fb_l, r);
+	GSPageBitmap z_pages;
+	if (z_used)
+		z_pages = GSVramModel::PagesForRect(z_l, r);
+
+	// Targets: the surfaces this draw renders into (created or grown here; nothing moves yet).
+	// Only the 32/16-bit colour and depth families have pool geometry: an 8/4-bit or
+	// zero-stride target has no surface on this road, and the draw is dropped before it can
+	// touch the model -- counted; the pass model still saw it.
+	const GSTileSurfaceId fb_id = EnsureSurface(fb_l, r, fb_pages);
+	if (fb_id == kGSTileNoSurface)
+	{
+		m_frame.skipped_draws++;
+		return;
+	}
+	GSTileSurfaceId z_id = kGSTileNoSurface;
+	if (z_used)
+	{
+		z_id = EnsureSurface(z_l, r, z_pages);
+		if (z_id == kGSTileNoSurface)
 		{
-			const GSVertex& v0 = verts[index[s * 2 + 0]];
-			const GSVertex& v1 = verts[index[s * 2 + 1]];
-
-			GSVertex c[4] = {v1, v1, v1, v1};
-			c[0].XYZ.X = v0.XYZ.X; c[0].XYZ.Y = v0.XYZ.Y; // top-left
-			c[1].XYZ.X = v1.XYZ.X; c[1].XYZ.Y = v0.XYZ.Y; // top-right
-			c[2].XYZ.X = v0.XYZ.X; c[2].XYZ.Y = v1.XYZ.Y; // bottom-left
-			c[3].XYZ.X = v1.XYZ.X; c[3].XYZ.Y = v1.XYZ.Y; // bottom-right
-			m_plan_vertices.push_back(c[0]);
-			m_plan_vertices.push_back(c[1]);
-			m_plan_vertices.push_back(c[2]);
-			m_plan_vertices.push_back(c[3]);
-
-			const u16 b = static_cast<u16>(s * 4);
-			m_plan_indices.push_back(b + 0);
-			m_plan_indices.push_back(b + 1);
-			m_plan_indices.push_back(b + 2);
-			m_plan_indices.push_back(b + 2);
-			m_plan_indices.push_back(b + 1);
-			m_plan_indices.push_back(b + 3);
+			m_frame.skipped_draws++;
+			return;
 		}
 	}
-	m_plan_draws.push_back(draw);
-	m_plan_topologies.push_back(topology);
 
 	PendingDraw pd = {};
-	pd.fb_bp = ctx->FRAME.Block();
-	pd.fb_psm = ctx->FRAME.PSM;
-	pd.fb_fbw = ctx->FRAME.FBW;
-	pd.z_bp = ctx->ZBUF.Block();
-	pd.z_psm = ctx->ZBUF.PSM;
-	pd.z_write = ctx->TEST.ZTE && !ctx->ZBUF.ZMSK;
-	pd.z_test = ctx->TEST.ZTE && ctx->TEST.ZTST > ZTST_ALWAYS;
-	pd.z_used = pd.z_write || pd.z_test;
-	pd.ofx = static_cast<s32>(ctx->XYOFFSET.OFX);
-	pd.ofy = static_cast<s32>(ctx->XYOFFSET.OFY);
-	pd.rect = r;
-	pd.draw_index = draw.state_index;
+	pd.first_prep_op = static_cast<u32>(m_plan_prep_ops.size());
 
 	// Texture inputs. Two address geometries are sampled at this stage: the direct 32-bit families
 	// (PSMCT32/PSMCT24 -- one page/block/column geometry, no CLUT) and the paletted index formats
@@ -575,6 +1032,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	pd.tex_enable = false;
 	pd.index_format = 0;
 	pd.pal_offset = 0;
+	GSPageBitmap tex_pages;
 	if (PRIM->TME)
 	{
 		const bool mip = IsMipMapActive();
@@ -602,90 +1060,240 @@ void GSRendererTileGpu::AccumulateDraw()
 				// Expand this draw's CLUT to 32-bit RGBA (CSA/CPSM/TEXA applied by Read32) and append
 				// it to the frame's palette stream; pal_offset is the word index of entry 0. No dedup
 				// yet (wrong-fast): a palette is 16 or 256 words, a full SotC frame well under the ring.
-				// The executor stages this stream into the same storage buffer as the VRAM snapshot.
 				m_mem.m_clut.Read32(tex0, m_env.TEXA);
 				const u32* clut = m_mem.m_clut;
 				const u32 pal_entries = GSLocalMemory::m_psm[psm].pal;
 				pd.pal_offset = static_cast<u32>(m_plan_palettes.size());
 				m_plan_palettes.insert(m_plan_palettes.end(), clut, clut + pal_entries);
 			}
+
+			// The read window: the whole (size-fixed) texture under its own layout. Composed into
+			// the ring for this epoch -- prefilled from S where CPU-newest, written back from any
+			// target holding it newest -- BEFORE this draw's own claims move anything (a draw
+			// sampling pages it also renders reads the pre-pass bytes: snapshot semantics).
+			const GSTileSurfaceLayout tex_l{tex0.TBP0, static_cast<u8>(tex0.TBW), static_cast<u8>(psm), KindForPsm(psm)};
+			tex_pages = GSVramModel::PagesForRect(tex_l, GSVector4i(0, 0, static_cast<int>(pd.tw), static_cast<int>(pd.th)));
+			ComposeRingPages(tex_pages);
+			pd.epoch = m_epoch;
 		}
 	}
 
+	// Seeds: pages the target textures do not hold newest are filled out of the ring before this
+	// draw's pass, so the draw opens a new pass. Only colour surfaces have a road; a depth
+	// surface's missing pages stay whatever its texture held (lossy, counted).
+	// A colour draw claims every colour plane and the Z plane on its pages (Tile's rule: the
+	// written bytes invalidate any depth reading, and the surface holds the newest bytes of the
+	// whole cell once seeded across the span). The seed gate uses the colour span -- minus the
+	// pages this draw provably overwrites in full: a single sprite that writes every fragment
+	// (no test can reject one, no blend reads the destination, every channel lands) covers each
+	// page inside its rect entirely, so those pages need no bytes brought in first. This is what
+	// keeps SotC's page-column clears (and every game's frame clear) from re-seeding what they
+	// are about to overwrite.
+	const u8 fb_claims = kGSTilePlanesAll;
+	if (color_written)
+	{
+		GSPageBitmap seed = PagesNeedingSeed(fb_id, fb_pages, kGSTilePlanesColor);
+		if (!seed.empty() && m_vt.m_primclass == GS_SPRITE_CLASS && icount == 2 && !PRIM->ABE && date == 0 && !z_test &&
+			(ctx->FRAME.FBMSK & GSLocalMemory::m_psm[ctx->FRAME.PSM].fmsk) == 0 &&
+			(!ctx->TEST.ATE || ctx->TEST.ATST == ATST_ALWAYS ||
+				(atst_never && (afail == AFAIL_FB_ONLY || afail == AFAIL_RGB_ONLY))))
+		{
+			GSVramModel::RectFootprint fp;
+			GSVramModel::FootprintForRect(fb_l, r, fp);
+			if (!fp.overflowed)
+			{
+				GSPageBitmap covered = fp.pages;
+				for (u32 e = 0; e < fp.edge_count; e++)
+				{
+					if (fp.edges[e].full != GSVramModel::kFullBlockMask)
+						covered.unset(fp.edges[e].page);
+				}
+				// Whatever another surface held on a fully covered page is dead bytes: mark it
+				// synced without moving anything, so the claim below can take the page.
+				m_vram_model.OnReadback(m_vram_model.ReadbackNeeded(seed & covered, kGSTilePlanesAll));
+				seed = seed.andnot(covered);
+			}
+		}
+		if (!seed.empty())
+		{
+			if (HasByteRoad(fb_l))
+			{
+				// Whatever holds those pages' bytes now composes into the ring first (other
+				// targets' writebacks, S prefill) and is marked synced -- which is also what lets
+				// the claim below steal them losslessly. Then the seed reads the composed slots
+				// into the target.
+				ComposeRingPages(seed);
+				EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, fb_id, seed);
+				pd.break_before = true;
+				m_frame.seed_breaks++;
+			}
+			else
+			{
+				LossySteal(seed);
+			}
+		}
+	}
+	u8 z_claims = 0;
+	if (z_used)
+	{
+		// The depth texture should hold the pages' newest Z for a test or a write; without a
+		// depth road, pages it does not hold read as whatever the texture has, and truth
+		// another surface holds on them is stolen by the write without moving the bytes.
+		LossySteal(PagesNeedingSeed(z_id, z_pages, GSTilePlaneZ));
+		if (z_write)
+			z_claims = gsTilePlanesInvalidatedByWrite(ctx->ZBUF.PSM);
+	}
+
+	// Self-read accounting: the read window intersects this draw's own colour target's pages.
+	if (pd.tex_enable && !(tex_pages & fb_pages).empty())
+		m_frame.self_reads++;
+
+	// The claims: this draw's target textures now hold the newest bytes of its footprint. A
+	// depth-only draw writes no colour and claims none.
+	if (color_written)
+		m_vram_model.OnNativeDraw(fb_id, fb_pages, fb_claims);
+	if (z_write)
+		m_vram_model.OnNativeDraw(z_id, z_pages, z_claims);
+
+	// A DATE draw reads the pass snapshot; if the run of draws into this surface since the last
+	// break has written pixels under it, the snapshot would be stale for those, so it opens a new
+	// pass. Disjoint column sprites (SotC's depth-of-field composite) share one snapshot.
+	if (m_run_surface != fb_id)
+	{
+		m_run_surface = fb_id;
+		m_run_written = GSVector4i::zero();
+	}
+	if (date != 0 && !m_run_written.rempty() && !m_run_written.rintersect(r).rempty())
+	{
+		pd.break_before = true;
+		m_run_written = GSVector4i::zero();
+		m_frame.date_breaks++;
+	}
+	if (pd.break_before)
+		m_run_written = GSVector4i::zero();
+	m_run_written = m_run_written.rempty() ? r : m_run_written.runion(r);
+	pd.date = date;
+
+	pd.color_surface = fb_id;
+	pd.z_surface = z_id;
+	pd.z_used = z_used;
+	pd.z_write = z_write;
+	pd.z_test = z_test;
+	pd.ofx = static_cast<s32>(ctx->XYOFFSET.OFX);
+	pd.ofy = static_cast<s32>(ctx->XYOFFSET.OFY);
+	pd.rect = r;
+	pd.scissor = ctx->scissor.in;
+	pd.prep_op_count = static_cast<u32>(m_plan_prep_ops.size()) - pd.first_prep_op;
+	// Make sure the surfaces are in the plan's target list even when no prep op named them.
+	PlanTargetIndex(fb_id);
+	if (z_used)
+		PlanTargetIndex(z_id);
+
+	// -- the geometry --------------------------------------------------------------------------
+	GSDevice::GSTileGpuIndirectDraw draw = {};
+	draw.instance_count = 1;
+	draw.first_index = static_cast<u32>(m_plan_indices.size());
+	draw.vertex_offset = static_cast<s32>(m_plan_vertices.size());
+	draw.state_index = static_cast<u32>(m_plan_draws.size());
+
+	if (!is_sprite)
+	{
+		// Triangle, line or point: the index list is already the topology the pipeline consumes
+		// (3 indices per triangle, 2 per line, 1 per point). Copy vertices and indices straight.
+		draw.index_count = icount;
+		m_plan_vertices.insert(m_plan_vertices.end(), m_vertex->buff, m_vertex->buff + vcount);
+		m_plan_indices.insert(m_plan_indices.end(), m_index->buff, m_index->buff + icount);
+	}
+	else
+	{
+		// Sprite corner synthesis. Each sprite is a pair of opposite corners (index[0], index[1]);
+		// the GS draws it flat, taking colour, Q, Z and fog from the second vertex, while the
+		// texture coordinates interpolate between the two corners (Classic's Lines2Sprites). Build
+		// four corners off the second vertex, giving each its own XY and the matching UV / ST
+		// pair — u from the corner's x side, v from its y side — and emit two triangles. Indices
+		// are batch-local (corner s*4..s*4+3); the draw's vertex_offset rebases them into the
+		// frame stream. No culling in the executor pipeline, so corner winding is free.
+		const u16* RESTRICT index = m_index->buff;
+		const GSVertex* RESTRICT verts = m_vertex->buff;
+		const u32 sprite_count = icount / 2;
+		draw.index_count = sprite_count * 6;
+		m_plan_vertices.reserve(m_plan_vertices.size() + sprite_count * 4);
+		m_plan_indices.reserve(m_plan_indices.size() + sprite_count * 6);
+		for (u32 s = 0; s < sprite_count; s++)
+		{
+			const GSVertex& v0 = verts[index[s * 2 + 0]];
+			const GSVertex& v1 = verts[index[s * 2 + 1]];
+
+			GSVertex c[4] = {v1, v1, v1, v1};
+			c[0].XYZ.X = v0.XYZ.X; c[0].XYZ.Y = v0.XYZ.Y; // top-left
+			c[1].XYZ.X = v1.XYZ.X; c[1].XYZ.Y = v0.XYZ.Y; // top-right
+			c[2].XYZ.X = v0.XYZ.X; c[2].XYZ.Y = v1.XYZ.Y; // bottom-left
+			c[3].XYZ.X = v1.XYZ.X; c[3].XYZ.Y = v1.XYZ.Y; // bottom-right
+			c[0].U = v0.U; c[0].V = v0.V; c[0].ST.S = v0.ST.S; c[0].ST.T = v0.ST.T;
+			c[1].U = v1.U; c[1].V = v0.V; c[1].ST.S = v1.ST.S; c[1].ST.T = v0.ST.T;
+			c[2].U = v0.U; c[2].V = v1.V; c[2].ST.S = v0.ST.S; c[2].ST.T = v1.ST.T;
+			m_plan_vertices.push_back(c[0]);
+			m_plan_vertices.push_back(c[1]);
+			m_plan_vertices.push_back(c[2]);
+			m_plan_vertices.push_back(c[3]);
+
+			const u16 b = static_cast<u16>(s * 4);
+			m_plan_indices.push_back(b + 0);
+			m_plan_indices.push_back(b + 1);
+			m_plan_indices.push_back(b + 2);
+			m_plan_indices.push_back(b + 2);
+			m_plan_indices.push_back(b + 1);
+			m_plan_indices.push_back(b + 3);
+		}
+	}
+	m_plan_draws.push_back(draw);
+	m_plan_topologies.push_back(topology);
+	// The blend: the GS ALPHA equation Cv = (A - B) * C + D as a fixed-function key (the executor
+	// maps it through GSDevice::m_blendMap; As is the shader's dual-source alpha, FIX the blend
+	// constant, Ad the target's alpha). ABE off, or A == B with D == Cs, is no blend at all.
+	u32 blend_key = 0;
+	if (PRIM->ABE && color_written)
+	{
+		const GIFRegALPHA& al = ctx->ALPHA;
+		const bool identity = (al.A == al.B) && (al.D == 0); // (X - X)*C + Cs == Cs
+		if (!identity)
+			blend_key = GSDevice::GSTileGpuPassPlan::kBlendEnable | (al.A * 27u + al.B * 9u + al.C * 3u + al.D) |
+						((al.C == 2) ? (static_cast<u32>(al.FIX) << 8) : 0u);
+	}
+	// A depth-only draw (ATST NEVER + AFAIL ZB_ONLY, or a fully masked FBMSK) rides a pipeline
+	// whose colour write mask is off: it still tests and writes depth in its pass.
+	if (!color_written)
+		blend_key |= GSDevice::GSTileGpuPassPlan::kNoColorWrite;
+	m_plan_blend_keys.push_back(blend_key);
+	pd.draw_index = draw.state_index;
 	m_plan_pending.push_back(pd);
 }
 
-// Recycle last frame's targets back to the device pool. Called at the head of a plan build,
-// once last frame's present (which read them through GetOutput) has completed.
-void GSRendererTileGpu::RecycleTargets()
-{
-	for (GSTexture* t : m_plan_targets)
-	{
-		if (t)
-			g_gs_device->Recycle(t);
-	}
-	m_plan_targets.clear();
-	m_display_targets.clear();
-}
-
-// Size the frame's targets, resolve each draw's screen->NDC transform against the target it
-// lands in, group draws into GS-semantic passes, and submit the assembled plan to the device
-// executor. Wrong-fast: one FRAME/ZBUF pair per pass (break on target change only), scale 1.
+// Group the accumulated draws into passes, resolve targets and state rows, build the ring, and
+// submit. One FRAME/ZBUF pair per pass (break on target change, depth mode change, or a seed);
+// scale 1. Consumes everything: the plan streams, the ring, and the model's synced claims (the
+// ring the claims vouched for is gone once submitted).
 void GSRendererTileGpu::BuildAndExecutePlan()
 {
-	// An idle frame accumulated nothing; keep last frame's targets so the display still shows
-	// the last rendered buffer rather than blanking.
 	if (m_plan_pending.empty())
 		return;
 
-	RecycleTargets();
-
 	if (g_gs_device->TileGpuExecutorAvailable())
 	{
-		// 1. Resolve the distinct colour (FRAME base) and depth (ZBUF base) targets this
-		//    frame draws into, each grown to hold every draw that lands in it.
-		std::vector<TargetSlot> color_slots;
-		std::vector<TargetSlot> depth_slots;
-		const auto slot_for = [](std::vector<TargetSlot>& slots, u32 bp, u32 fbw, int bottom) -> u32 {
-			for (u32 k = 0; k < slots.size(); k++)
-			{
-				if (slots[k].bp == bp)
-				{
-					slots[k].height = std::max(slots[k].height, bottom);
-					slots[k].fbw = std::max(slots[k].fbw, fbw);
-					return k;
-				}
-			}
-			slots.push_back(TargetSlot{bp, fbw, bottom, 0});
-			return static_cast<u32>(slots.size() - 1);
-		};
-		for (PendingDraw& pd : m_plan_pending)
-		{
-			pd.color_slot = slot_for(color_slots, pd.fb_bp, pd.fb_fbw, pd.rect.w);
-			pd.z_slot = pd.z_used ? slot_for(depth_slots, pd.z_bp, pd.fb_fbw, pd.rect.w) : 0;
-		}
+		// 1. Resolve the plan's target list: pool textures as they are NOW (any growth this
+		//    frame has already happened, so these are the textures every draw lands in).
+		m_plan_targets.resize(m_plan_target_surfaces.size());
+		for (u32 k = 0; k < m_plan_target_surfaces.size(); k++)
+			m_plan_targets[k] = m_target_pool.GetTexture(m_vram_model.Get(m_plan_target_surfaces[k]).pool_handle);
 
-		// 2. Allocate a GSTexture per slot; the plan's target list is colours then depths.
-		const auto alloc = [this](std::vector<TargetSlot>& slots, bool depth) {
-			for (TargetSlot& s : slots)
-			{
-				const int w = std::max<int>(static_cast<int>(s.fbw), 1) * 64;
-				const int h = std::clamp(s.height, 64, 2048);
-				s.target_index = static_cast<u32>(m_plan_targets.size());
-				m_plan_targets.push_back(depth ? g_gs_device->CreateDepthStencil(w, h, true)
-											   : g_gs_device->CreateRenderTarget(w, h, GSTexture::Format::Color, true));
-			}
-		};
-		alloc(color_slots, false);
-		alloc(depth_slots, true);
-
-		// 3. The per-draw state row: the HW tfx VertexScale/VertexOffset transform against the
-		//    resolved colour target's size (scale 1), plus the z enables. Row i serves draw i.
+		// 2. The per-draw state row: the HW tfx VertexScale/VertexOffset transform against the
+		//    resolved colour target's size (scale 1), plus the z enables and the texture block.
+		//    Row i serves draw i.
 		m_plan_states.resize(m_plan_pending.size());
 		for (u32 i = 0; i < m_plan_pending.size(); i++)
 		{
 			const PendingDraw& pd = m_plan_pending[i];
-			const GSVector2i dim = m_plan_targets[color_slots[pd.color_slot].target_index]->GetSize();
+			const GSVector2i dim = m_plan_targets[m_plan_target_of_surface[pd.color_surface]]->GetSize();
 			const float sx = 2.0f / static_cast<float>(dim.x << 4);
 			const float sy = 2.0f / static_cast<float>(dim.y << 4);
 			const float ox2 = -1.0f / static_cast<float>(dim.x);
@@ -709,64 +1317,87 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.wmt = pd.wmt;
 			sr.index_format = pd.index_format;
 			sr.pal_offset = pd.pal_offset;
+			sr.epoch = pd.epoch;
+			sr.date = pd.date;
+			sr.ofx = pd.ofx;
+			sr.ofy = pd.ofy;
+			sr.sc_x0 = pd.scissor.x;
+			sr.sc_y0 = pd.scissor.y;
+			sr.sc_x1 = pd.scissor.z;
+			sr.sc_y1 = pd.scissor.w;
 			sr.pad0_ = 0;
 			sr.pad1_ = 0;
 		}
 
-		// 4. Group contiguous draws sharing a colour+depth target into one pass, one target
-		//    pair each. Coarser than the pass model (which also breaks on feedback and the
-		//    8-pair budget); rendering-correct, which is what the submission needs. The model
-		//    stays the authoritative accounting — this is the actual GPU pass structure.
+		// 3. Group contiguous draws sharing a colour+depth surface pair and depth mode into one
+		//    pass. The depth pipeline is per-pass fixed function, so z-write and z-test must be
+		//    uniform across the pass (a ZTST=ALWAYS write sprite and a ZTST=GEQUAL 3D draw share
+		//    a depth buffer in SotC). A draw whose target had to be seeded opens a pass too: the
+		//    seed is a fragment pass over the target that must land between the draws. Each pass
+		//    carries the prep ops its draws emitted, in order (each draw's ops are contiguous and
+		//    appended in draw order, so the range is [first draw's first, last draw's last]).
 		u32 i = 0;
 		while (i < m_plan_draws.size())
 		{
-			const u32 cs = m_plan_pending[i].color_slot;
-			const bool zu = m_plan_pending[i].z_used;
-			const u32 zs = m_plan_pending[i].z_slot;
-			// The depth pipeline is per-pass fixed function, so z-write and z-test must be uniform
-			// across the pass. A ZTST=ALWAYS write sprite and a ZTST=GEQUAL 3D draw share this depth
-			// buffer in SotC; grouping them into one pass would force one test on both, so the sprite
-			// either wrongly depth-rejects (GEQUAL) or the 3D wrongly always-passes (ALWAYS). Break on
-			// z_write and z_test alongside the target pair so each pass gets its own depth pipeline.
-			const bool zw = m_plan_pending[i].z_write;
-			const bool zt = m_plan_pending[i].z_test;
+			const PendingDraw& first = m_plan_pending[i];
 			u32 j = i + 1;
-			while (j < m_plan_draws.size() && m_plan_pending[j].color_slot == cs &&
-				   m_plan_pending[j].z_used == zu && m_plan_pending[j].z_slot == zs &&
-				   m_plan_pending[j].z_write == zw && m_plan_pending[j].z_test == zt)
+			while (j < m_plan_draws.size())
+			{
+				const PendingDraw& pd = m_plan_pending[j];
+				if (pd.break_before || pd.color_surface != first.color_surface || pd.z_used != first.z_used ||
+					(pd.z_used && pd.z_surface != first.z_surface) || pd.z_write != first.z_write ||
+					pd.z_test != first.z_test)
+					break;
 				j++;
+			}
+			const PendingDraw& last = m_plan_pending[j - 1];
 
 			GSDevice::GSTileGpuTargetPair tp = {};
-			tp.frame_target = color_slots[cs].target_index;
-			tp.zbuf_target = zu ? depth_slots[zs].target_index : GSDevice::GSTileGpuPassPlan::kNoTarget;
+			tp.frame_target = m_plan_target_of_surface[first.color_surface];
+			tp.zbuf_target = first.z_used ? m_plan_target_of_surface[first.z_surface] : GSDevice::GSTileGpuPassPlan::kNoTarget;
 
 			GSDevice::GSTileGpuPass pass = {};
 			pass.first_draw = i;
 			pass.draw_count = j - i;
 			pass.first_target_pair = static_cast<u32>(m_plan_target_pairs.size());
 			pass.target_pair_count = 1;
+			pass.first_prep_op = first.first_prep_op;
+			pass.prep_op_count = (last.first_prep_op + last.prep_op_count) - first.first_prep_op;
 			pass.declares_self_read = false;
+			// A pass with a DATE draw snapshots its colour target before opening.
+			pass.first_snapshot = static_cast<u32>(m_plan_snapshots.size());
+			pass.snapshot_count = 0;
+			for (u32 d = i; d < j; d++)
+			{
+				if (m_plan_pending[d].date != 0)
+				{
+					const GSVector2i tsz = m_plan_targets[tp.frame_target]->GetSize();
+					m_plan_snapshots.push_back(GSDevice::GSTileGpuSnapshotCopy{tp.frame_target, GSVector4i(0, 0, tsz.x, tsz.y)});
+					pass.snapshot_count = 1;
+					m_frame.snapshots++;
+					break;
+				}
+			}
 			// GS depth grows towards the viewer: a real test is GEQUAL, a write-only draw is ALWAYS,
 			// and the write follows ZMSK independently of the test. z_used == (z_write || z_test).
-			pass.depth_mode = !zu ? GSDevice::GSTileGpuDepthMode::None
-				: (zt ? (zw ? GSDevice::GSTileGpuDepthMode::TestWrite
-							: GSDevice::GSTileGpuDepthMode::TestNoWrite)
-					  : GSDevice::GSTileGpuDepthMode::WriteAlways);
+			pass.depth_mode = !first.z_used ? GSDevice::GSTileGpuDepthMode::None
+				: (first.z_test ? (first.z_write ? GSDevice::GSTileGpuDepthMode::TestWrite
+												 : GSDevice::GSTileGpuDepthMode::TestNoWrite)
+								: GSDevice::GSTileGpuDepthMode::WriteAlways);
 
 			m_plan_target_pairs.push_back(tp);
 			m_plan_passes.push_back(pass);
 			i = j;
 		}
+		m_frame.passes += static_cast<u32>(m_plan_passes.size());
 
-		// 4b. Backstop for the framebuffer-fits-its-attachments clamp. The executor renders each
+		// 3b. Backstop for the framebuffer-fits-its-attachments clamp. The executor renders each
 		//     pass into min(colour, depth) of the pair (a framebuffer may not be bigger than the
 		//     attachment it carries), so a draw whose bottom falls below that minimum height would
-		//     be silently clipped. It cannot: every z-using draw in the pass grew BOTH slots'
-		//     height from its own rect.w in step 1, so min(colour,depth) height >= every draw's
-		//     bottom by construction, and this loop never fires. It is a latent guard against a
-		//     future grouping change breaking that invariant -- verified silent on the SotC dump,
-		//     but the invariant is what is asserted, not the dump. (Width is fbw-derived and shared
-		//     across the pair, so the clamp's only lossy axis is height.)
+		//     be silently clipped. It cannot: both surfaces grew to cover every draw's footprint
+		//     (EnsureSurface), so min(colour,depth) height >= every draw's bottom by construction,
+		//     and this loop never fires. It is a guard against a future grouping change breaking
+		//     that invariant. (Width is the layout's stride, shared across a pair by FBW.)
 		for (const GSDevice::GSTileGpuPass& pass : m_plan_passes)
 		{
 			const GSDevice::GSTileGpuTargetPair& tp = m_plan_target_pairs[pass.first_target_pair];
@@ -785,6 +1416,26 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			}
 		}
 
+		// 4. The ring: one entry per (page, epoch range), its source bytes resolved now -- the
+		//    CPU shadow as it stands at the end of the frame for a live slot, or the version copy
+		//    taken when an upload superseded it. Slots nobody prefills are the GPU's to compose.
+		std::vector<GSDevice::GSTileGpuRingPage> ring;
+		ring.reserve(m_ring_entries.size());
+		for (const RingEntry& e : m_ring_entries)
+		{
+			GSDevice::GSTileGpuRingPage rp = {};
+			rp.page = e.page;
+			rp.epoch_first = e.epoch_first;
+			rp.epoch_last = (e.epoch_last == 0xFFFF) ? static_cast<u16>(m_epoch) : e.epoch_last;
+			rp.src = !e.prefill_s ? nullptr
+					 : e.versioned ? static_cast<const void*>(m_ring_versions.data() + e.version_offset)
+								   : static_cast<const void*>(m_mem.vm8() + static_cast<u32>(e.page) * GS_PAGE_SIZE);
+			if (rp.src)
+				m_frame.ring_prefill++;
+			ring.push_back(rp);
+		}
+		m_frame.epochs = std::max(m_frame.epochs, m_epoch + 1);
+
 		// 5. Assemble the plan over the frame's streams and submit. The spans are CPU-side
 		//    views alive until the clear below; the executor stages what it needs during the
 		//    synchronous call.
@@ -792,7 +1443,11 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.passes = m_plan_passes;
 		plan.draws = m_plan_draws;
 		plan.topologies = m_plan_topologies;
+		plan.blend_keys = m_plan_blend_keys;
 		plan.target_pairs = m_plan_target_pairs;
+		plan.snapshots = m_plan_snapshots;
+		plan.prep_ops = m_plan_prep_ops;
+		plan.page_entries = m_plan_page_entries;
 		plan.state_table = m_plan_states.data();
 		plan.state_stride = sizeof(StateRow);
 		plan.state_count = static_cast<u32>(m_plan_states.size());
@@ -801,33 +1456,90 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.vertex_stride = sizeof(GSVertex);
 		plan.indices = m_plan_indices;
 		plan.targets = m_plan_targets;
-
-		// The frame's texture source: the current guest VRAM. Uploads have already landed in it
-		// through the base transfer path, so it is the CPU-current truth this stage samples (a draw
-		// sampling a target another draw rendered this frame is the feedback road, not handled here).
-		plan.vram = m_mem.vm8();
-		plan.vram_size = static_cast<u32>(GSLocalMemory::m_vmsize);
-
-		// The frame's expanded CLUTs, concatenated (empty when no paletted draw ran); the
-		// executor stages them into the same storage buffer as the VRAM snapshot.
+		plan.ring_pages = ring;
+		plan.epoch_count = m_epoch + 1;
 		plan.palettes = m_plan_palettes;
 
 		g_gs_device->ExecuteTileGpuPassPlan(plan);
-
-		// 6. Keep the colour targets addressable by FRAME base for GetOutput.
-		for (const TargetSlot& s : color_slots)
-			m_display_targets.push_back(DisplayTarget{s.bp, m_plan_targets[s.target_index]});
 	}
 
-	// The plan is submitted (or the device does not serve it); reset the per-frame streams.
-	// The targets stay live for GetOutput and are recycled at the next build.
+	// The plan is submitted (or the device does not serve it); reset the per-frame streams and
+	// the ring. Every synced claim referred to slots that are now spent.
 	m_plan_vertices.clear();
 	m_plan_indices.clear();
 	m_plan_states.clear();
 	m_plan_palettes.clear();
 	m_plan_draws.clear();
 	m_plan_topologies.clear();
+	m_plan_blend_keys.clear();
 	m_plan_pending.clear();
 	m_plan_passes.clear();
 	m_plan_target_pairs.clear();
+	m_plan_snapshots.clear();
+	m_plan_prep_ops.clear();
+	m_plan_page_entries.clear();
+	m_plan_targets.clear();
+	m_plan_target_surfaces.clear();
+	m_plan_target_of_surface.clear();
+	m_ring_entries.clear();
+	m_ring_versions.clear();
+	m_ring_live.fill(0);
+	m_epoch = 0;
+	m_run_surface = kGSTileNoSurface;
+	m_run_written = GSVector4i::zero();
+	m_vram_model.ClearAllSynced();
+}
+
+// -- the stall road ------------------------------------------------------------------------
+
+// Pull whatever of `pages` a target holds newest down into the CPU shadow. The targets must
+// hold every draw so far first, so the pending plan is flushed (a mid-frame submission,
+// counted) -- which also drops every ring-synced claim, so the question "what does S not
+// have" is asked afterwards. Then the pool's synchronous readback per owner surface, masked to
+// the planes and blocks each holds. The one road on which the CPU waits for the GPU.
+void GSRendererTileGpu::ReadbackToShadow(const GSPageBitmap& pages, StallSite site)
+{
+	// Nothing any target holds newest: no crossing (a CLUT load or a local read of plain CPU
+	// memory, the common case). Asked against truth rather than the unsynced subset, because a
+	// ring-synced claim is not one S can serve.
+	if (pages.empty() || (pages & m_vram_model.TruthAny()).empty())
+		return;
+
+	if (!m_plan_pending.empty())
+	{
+		m_frame.flushes++;
+		BuildAndExecutePlan();
+	}
+	const GSPageBitmap need = m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll);
+	if (need.empty())
+		return;
+	m_frame.stalls[static_cast<u32>(site)]++;
+	m_frame.stall_pages[static_cast<u32>(site)] += need.count();
+
+	need.forEachSetPage([&](u32 page) {
+		GSPageBitmap one;
+		one.set(page);
+		for (u32 pi = 0; pi < kGSTilePlaneCount; pi++)
+		{
+			if (!m_vram_model.Truth(pi).test(page) || m_vram_model.SyncedPages(pi).test(page))
+				continue;
+			const GSTileSurfaceId owner = m_vram_model.OwnerOf(page, pi);
+			pxAssert(owner != kGSTileNoSurface);
+			const GSVramModel::Surface& surf = m_vram_model.Get(owner);
+			if (!surf.pool_handle)
+				continue;
+			m_target_pool.ReadbackPages(m_mem, surf.pool_handle, surf.layout, one, PlaneByteMask(pi, surf.layout),
+				m_vram_model.TruthMask(page, pi));
+		}
+	});
+	m_vram_model.OnReadback(need);
+}
+
+// Whole-of-truth: every page any target holds newest comes down. Synced claims are dropped
+// first because on this road "synced" may mean the ring holds the bytes, and the ring is not
+// the CPU shadow.
+void GSRendererTileGpu::SyncAllTruthToCpu()
+{
+	m_vram_model.ClearAllSynced();
+	ReadbackToShadow(m_vram_model.TruthAny(), StallSite::SyncAll);
 }

@@ -112,6 +112,8 @@ public:
 
 	const Surface& Get(GSTileSurfaceId id) const;
 	u32 LiveSurfaces() const { return m_live_surfaces; }
+	/// Ids are dense slots [0, SurfaceSlots()); a slot may be dead (Get(id).alive false).
+	u32 SurfaceSlots() const { return static_cast<u32>(m_surfaces.size()); }
 
 	// -- Pure footprint helpers ---------------------------------------------------
 
@@ -144,6 +146,14 @@ public:
 
 	/// The pull happened: those pages' CPU bytes now equal the GPU bytes.
 	void OnReadback(const GSPageBitmap& pages);
+
+	/// Forget that these pages were synced (truth and ownership untouched): the copy the
+	/// synced bit vouched for no longer exists. The Tile renderer never needs this — its
+	/// synced copy is CPU local memory, which persists — but a renderer whose byte store is
+	/// a per-frame ring (TileGpu) drops every synced claim at the frame boundary and any page's
+	/// claim when its ring slot is superseded mid-frame, so the next reader composes it again.
+	void ClearSynced(const GSPageBitmap& pages);
+	void ClearAllSynced();
 
 	/// Truth pages in the footprint owned by OTHER surfaces and not yet synced: the
 	/// caller must read them back before drawing natively into id (the steal is then

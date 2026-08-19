@@ -392,6 +392,18 @@ void GSVramModel::OnReadback(const GSPageBitmap& pages)
 		ps.synced |= pages & ps.truth;
 }
 
+void GSVramModel::ClearSynced(const GSPageBitmap& pages)
+{
+	for (PlaneState& ps : m_planes)
+		ps.synced = ps.synced.andnot(pages);
+}
+
+void GSVramModel::ClearAllSynced()
+{
+	for (PlaneState& ps : m_planes)
+		ps.synced.clear();
+}
+
 GSPageBitmap GSVramModel::SpillBeforeNativeDraw(GSTileSurfaceId id, const GSPageBitmap& pages, u8 planes) const
 {
 	pxAssert(id < m_surfaces.size() && m_surfaces[id].alive);

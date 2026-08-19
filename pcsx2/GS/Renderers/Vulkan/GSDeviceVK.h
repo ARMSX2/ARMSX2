@@ -14,6 +14,7 @@
 #include "common/ReadbackSpinManager.h"
 
 #include <array>
+#include <unordered_map>
 #include <atomic>
 #include <condition_variable>
 #include <functional>
@@ -566,28 +567,57 @@ private:
 	std::array<GSTextureVK*, 2> m_tile_expand_textures{};
 	bool ApplyTileExpandState(bool already_execed = false);
 
-	/// The TileGpu executor's minimal geometry pipeline: a raw-GSVertex position+colour draw
-	/// whose per-draw screen->NDC transform (the tfx VertexScale/VertexOffset) arrives as a
-	/// push constant. No descriptors — wrong-fast pushes the transform per draw; the indexed
-	/// state table over firstInstance lands with true indirect submission. Indexed
-	/// [GSTileGpuTopology][depth]: outer is triangle/line/point, inner [0] no depth, [1] depth
-	/// (GEQUAL + write, the PS2 larger-Z-is-nearer convention). Compiled on first use.
+	/// The TileGpu executor's geometry pipeline: a raw-GSVertex draw whose per-draw state (the
+	/// screen->NDC transform, the texture block) is a row of an indexed state table in a storage
+	/// buffer, selected by the indirect draw's first_instance. Indexed [GSTileGpuTopology][depth
+	/// mode]: outer is triangle/line/point, inner GSTileGpuDepthMode. Compiled on first use.
+	static constexpr u32 kTileGpuPushWords = 8; ///< push-constant range shared by every TileGpu layout
+	static constexpr u32 kTileGpuNoBlend = 0xFFFFFFFFu; ///< CreateTileGpuPipeline: no blending
 	VkPipelineLayout m_tilegpu_pipeline_layout = VK_NULL_HANDLE;
 	VkDescriptorSetLayout m_tilegpu_ds_layout = VK_NULL_HANDLE;
 	VkDescriptorSet m_tilegpu_state_descriptor_set = VK_NULL_HANDLE;
+	// Set 1: the pass's snapshot of its own colour target (combined sampler), bound per pass --
+	// pushed where the device pushes descriptors, a per-frame set otherwise. The null texture
+	// stands in for passes with nothing to sample.
+	VkDescriptorSetLayout m_tilegpu_snapshot_ds_layout = VK_NULL_HANDLE;
 	// [topology][depth mode]; the depth index is GSTileGpuPass::depth_mode (GSTileGpuDepthMode).
+	// These are the no-blend pipelines; blending variants are created on first use per
+	// (topology, depth mode, GS ALPHA index) and cached below -- the GS blend equation maps onto
+	// fixed-function factors through GSDevice::m_blendMap, with As as the shader's dual-source
+	// output and FIX as the blend constant (dynamic).
 	std::array<std::array<VkPipeline, GSDevice::kGSTileGpuDepthModes>, 3> m_tilegpu_pipeline{};
+	std::unordered_map<u32, VkPipeline> m_tilegpu_blend_pipelines; // key: topology | depth<<2 | blend<<8 | nocolour<<16
+	VkPipeline GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key);
+	VkShaderModule m_tilegpu_vs = VK_NULL_HANDLE; // kept alive for lazily-built blend variants
+	VkShaderModule m_tilegpu_fs = VK_NULL_HANDLE;
+	VkPipeline CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, bool color_write);
 	// Indirect-submission streams (created on first executor use, alongside the pipelines): the
 	// draw commands (VkDrawIndexedIndirectCommand array), the per-draw state table the VS reads by
-	// first_instance, and a per-frame snapshot of guest VRAM the FS samples textures from (guest
-	// local memory as a flat word array, addressed by the GS swizzle). Only allocated when the
-	// TileGpu executor actually runs.
+	// first_instance, and the frame's ring -- the guest pages the plan reads or reconciles as 8 KB
+	// slots, the epoch page tables naming them, prep-op page lists and palettes -- which the FS
+	// samples textures from through the GS swizzle. Only allocated when the TileGpu executor runs.
 	VKStreamBuffer m_tilegpu_indirect_stream_buffer;
 	VKStreamBuffer m_tilegpu_state_stream_buffer;
 	VKStreamBuffer m_tilegpu_vram_stream_buffer;
 	bool m_tilegpu_tried = false;
-	bool m_tilegpu_tex = false; // the page-swizzle forms fitted, so the VRAM sampling path compiled in
+	bool m_tilegpu_tex = false; // the page-swizzle forms fitted, so the byte sampling path compiled in
 	bool CompileTileGpuPipeline();
+	// Target -> bytes: a compute pass that reswizzles a resident colour target's listed pages into
+	// the ring slots the epoch page table names, block- and byte-masked, so a later draw sampling
+	// those pages reads the target's pixels through the unchanged texel path. Binding 0 = the target
+	// (combined sampler), 1 = the ring SSBO (read-modify-write). Compiled on first use, only when
+	// the swizzle forms fitted (m_tilegpu_tex).
+	VkPipelineLayout m_tilegpu_writeback_pipeline_layout = VK_NULL_HANDLE;
+	VkDescriptorSetLayout m_tilegpu_writeback_ds_layout = VK_NULL_HANDLE;
+	VkPipeline m_tilegpu_writeback_pipeline = VK_NULL_HANDLE;
+	bool m_tilegpu_writeback_tried = false;
+	bool CompileTileGpuWritebackPipeline();
+	// Bytes -> target: a fragment pass over a colour target that unswizzles the op's pages out of
+	// the ring into the target's pixel space (fragments outside the page set discard). Shares the
+	// geometry pipeline's layout and descriptor set. Compiled on first use, same gate.
+	VkPipeline m_tilegpu_seed_pipeline = VK_NULL_HANDLE;
+	bool m_tilegpu_seed_tried = false;
+	bool CompileTileGpuSeedPipeline();
 	std::array<VkPipeline, static_cast<int>(PresentShader::Count)> m_present{};
 	std::array<VkPipeline, 2> m_merge{};
 	std::array<VkPipeline, NUM_INTERLACE_SHADERS> m_interlace{};

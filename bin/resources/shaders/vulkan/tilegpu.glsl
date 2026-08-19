@@ -4,11 +4,20 @@
 // The TileGpu executor's wrong-fast geometry + texture shader. The vertex stage transforms a raw
 // GSVertex into clip space using the per-draw screen->NDC transform (the HW tfx VertexScale/
 // VertexOffset) and forwards the vertex colour and the two texture coordinates (UV and ST/Q). The
-// fragment stage, when the draw is textured, samples the guest texture straight out of a snapshot
-// of GS local memory held in a storage buffer -- addressing it with the GS's own page/block/column
-// swizzle (the same GF(2)-linear forms tile_convert.glsl uses, injected as TILE_SWZ_* defines) --
-// and applies the texture function (MODULATE/DECAL). No blending or fog yet; those arrive with the
-// rest of the fixed-function state.
+// fragment stage, when the draw is textured, samples the guest texture straight out of guest bytes
+// held in a storage buffer -- addressing them with the GS's own page/block/column swizzle (the same
+// GF(2)-linear forms tile_convert.glsl uses, injected as TILE_SWZ_* defines) -- and applies the
+// texture function. Blending is the executor's fixed-function state, fed by the dual-source
+// alpha this stage emits; fog and the alpha test arrive with the rest of the fixed-function state.
+//
+// The bytes are not a whole-VRAM snapshot. The frame's ring holds one 8 KB slot per guest page the
+// plan actually reads, and a page table per epoch names them: table[table_base + epoch*512 + page]
+// is the word offset of that page's slot in this same buffer. A slot is either the CPU shadow's
+// bytes for the page (memcpy'd by the executor) or a target's finished pixels reswizzled back by
+// tilegpu_writeback.glsl, or both composed -- the renderer's page model decides, and this shader
+// only ever asks the table. The state row's epoch selects which version of the frame's bytes the
+// draw sees, so an upload landing between two draws that sample the same page gives each its own
+// bytes without any barrier between them.
 //
 // Per-draw state does NOT ride in push constants: the executor submits with
 // vkCmdDrawIndexedIndirect, so there is no per-draw command to push against. Every draw's state row
@@ -26,9 +35,9 @@
 #define TILEGPU_TEX 0
 #endif
 
-// Matches the executor's StateRow byte-for-byte (std430, 80 bytes). The transform is read in the
-// vertex stage; the texture fields in the fragment stage. z_write/z_test are pipeline state, carried
-// for layout parity, not consumed by either.
+// Matches the executor's StateRow byte-for-byte (std430, 112 bytes). The transform and the scissor
+// are read in the vertex stage; the texture fields and the tests in the fragment stage. z_write/z_test
+// are pipeline state, carried for layout parity, not consumed by either.
 struct StateRow
 {
 	vec2 vertex_scale;
@@ -47,8 +56,12 @@ struct StateRow
 	uint wmt;        // CLAMP.WMT vertical wrap mode
 	uint index_format; // 0 = direct 32-bit texel, 1 = PSMT8 index, 2 = PSMT4 index
 	uint pal_offset;   // word offset of this draw's palette in the frame palette stream
-	uint pad0_;
-	uint pad1_;
+	uint epoch;        // page-table epoch this draw's byte reads go through
+	uint date;         // destination-alpha test: 0 off, 1 = pass where alpha bit 7 clear (DATM 0), 2 = set (DATM 1)
+	int ofx, ofy;      // XYOFFSET, 12.4 fixed: the vertex-to-pixel origin the scissor is in
+	int sc_x0, sc_y0;  // the GS scissor in target pixels, [x0, x1) x [y0, y1)
+	int sc_x1, sc_y1;
+	uint pad0_, pad1_;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer StateTable
@@ -58,9 +71,9 @@ layout(std430, set = 0, binding = 0) readonly buffer StateTable
 
 layout(push_constant) uniform cb
 {
-	uint base_row;  // this frame's first state row in the ring buffer (vertex stage)
-	uint vram_base; // this frame's first VRAM word in the ring buffer (fragment stage)
-	uint pal_base;  // this frame's first palette word in the ring buffer (fragment stage)
+	uint base_row;   // this frame's first state row in the ring buffer (vertex stage)
+	uint table_base; // this frame's first page-table word in the ring buffer (fragment stage)
+	uint pal_base;   // this frame's first palette word in the ring buffer (fragment stage)
 };
 
 #ifdef VERTEX_SHADER
@@ -77,6 +90,8 @@ layout(location = 1) out vec2 v_st;      // ST forwarded; the fragment stage div
 layout(location = 2) out float v_q;      // interpolated affinely (gl_Position.w == 1) -> PS2 per-pixel ST/Q
 layout(location = 3) out vec2 v_uv;      // UV in texels (12.4 -> texel), for the FST path
 layout(location = 4) flat out uint v_row; // this vertex's state row, so the fragment stage reads it
+
+out float gl_ClipDistance[4];
 
 void main()
 {
@@ -98,6 +113,16 @@ void main()
 	v_row = row;
 	// Point topology reads gl_PointSize; a GS point covers one pixel. Ignored for line/triangle.
 	gl_PointSize = 1.0f;
+
+	// The GS scissor as four clip planes in target pixel space: a pixel centre c is inside
+	// [x0, x1) exactly when c - x0 > 0 and x1 - c > 0, and the same in y. Per draw from the state
+	// row, so one indirect call carries any number of scissors -- SotC draws its full-screen
+	// post sprites eight times under eight column scissors.
+	vec2 pix = (vec2(a_xy) - vec2(float(sr.ofx), float(sr.ofy))) * (1.0f / 16.0f);
+	gl_ClipDistance[0] = pix.x - float(sr.sc_x0);
+	gl_ClipDistance[1] = float(sr.sc_x1) - pix.x;
+	gl_ClipDistance[2] = pix.y - float(sr.sc_y0);
+	gl_ClipDistance[3] = float(sr.sc_y1) - pix.y;
 }
 
 #endif
@@ -110,16 +135,37 @@ layout(location = 2) in float v_q;
 layout(location = 3) in vec2 v_uv;
 layout(location = 4) flat in uint v_row;
 
-layout(location = 0) out vec4 o_color;
+// Two fragment outputs: the colour that lands in the target (RAW GS values -- 0x80 stays 0x80;
+// the target's bytes are guest bytes, so no display scaling happens here), and the dual-source
+// blend factor: the fragment alpha in the GS's 0x80 = 1.0 convention (As * 255/128, clamped),
+// which the fixed-function blend takes as SRC1 when the ALPHA register selects As. The alpha
+// channel of o_color is written unblended (the GS writes the fragment alpha as-is).
+layout(location = 0, index = 0) out vec4 o_color;
+layout(location = 0, index = 1) out vec4 o_blend;
+
+// The pass's snapshot of its own colour target, taken before the pass opened: the destination
+// alpha the DATE test reads. Bound per pass (set 1); a pass without DATE draws binds a null
+// texture that no fragment reads.
+layout(set = 1, binding = 0) uniform sampler2D u_snapshot;
 
 #if TILEGPU_TEX
 
-// The GS VRAM snapshot the fragment stage samples: guest local memory as a flat array of 32-bit
-// words, uploaded once per frame. vram_base rebases into this frame's slice of the ring.
+// The frame's ring: page slots, the epoch page tables and the palettes, all in one storage buffer
+// of 32-bit words. Reads go through tilegpu_ring_word below; nothing addresses guest memory flat.
 layout(std430, set = 0, binding = 1) readonly buffer Vram
 {
 	uint vram_words[];
 };
+
+// A guest word address (absolute block * 64 + word-in-block) -> the ring word holding it, through
+// this frame's page table for `epoch`. 2048 words per 8 KB page; a page the plan never staged for
+// this epoch points at the executor's zero slot.
+uint tilegpu_ring_word(uint gs_word, uint epoch)
+{
+	uint page = gs_word >> 11u;
+	uint slot = vram_words[table_base + epoch * 512u + page];
+	return slot + (gs_word & 2047u);
+}
 
 // The two swizzle forms a 32-bit (CT32/CT24) texture needs, copied from tile_convert.glsl: the
 // block-in-page form and the word-in-block column form. Both are GF(2)-linear maps of the coordinate
@@ -142,12 +188,12 @@ uint tile_c32(uint x, uint y)
 // The CT32/CT24 texel at integer coords (u, v) of the texture at tbp0/tbw, as a raw RGBA8888 word.
 // A CT32 page is 64x32 texels, 8x8 blocks, 8x8-texel columns; block b of guest memory occupies words
 // [b*64, b*64+64), so the absolute block times 64 plus the word-in-block is the linear word address.
-uint tilegpu_texel32(uint u, uint v, uint tbp0, uint tbw)
+uint tilegpu_texel32(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 {
 	uint page = (v >> 5u) * tbw + (u >> 6u);
 	uint blk = tbp0 + page * 32u + tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u);
 	uint word_in_block = tile_c32(u & 7u, v & 7u);
-	return vram_words[vram_base + blk * 64u + word_in_block];
+	return vram_words[tilegpu_ring_word(blk * 64u + word_in_block, epoch)];
 }
 
 // The extra swizzle forms the paletted index reads need, copied from tfx.glsl: the 4-bit block
@@ -172,24 +218,24 @@ uint tile_c4(uint x, uint y)
 
 // The PSMT8 index byte at texel (u, v): 128x64 page, 16x16-texel columns; block b occupies bytes
 // [b*256, b*256+256) = words [b*64, b*64+64). byte_in_block picks the byte within its word.
-uint tilegpu_index8(uint u, uint v, uint tbp0, uint tbw)
+uint tilegpu_index8(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 {
 	uint page = (v >> 6u) * tbw + (u >> 7u);
 	uint blk = tbp0 + page * 32u + tile_b48((u >> 4u) & 7u, (v >> 4u) & 3u);
 	uint byte_in_block = tile_c8(u & 15u, v & 15u);
-	uint word = vram_words[vram_base + blk * 64u + (byte_in_block >> 2u)];
+	uint word = vram_words[tilegpu_ring_word(blk * 64u + (byte_in_block >> 2u), epoch)];
 	return (word >> ((byte_in_block & 3u) * 8u)) & 0xFFu;
 }
 
 // The PSMT4 index nibble at texel (u, v): 128x128 page, 32x16-texel columns. col4 gives the
 // nibble index within the 512-nibble (256-byte) block; the low bit selects the nibble in its byte.
-uint tilegpu_index4(uint u, uint v, uint tbp0, uint tbw)
+uint tilegpu_index4(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 {
 	uint page = (v >> 7u) * tbw + (u >> 7u);
 	uint blk = tbp0 + page * 32u + tile_b84((u >> 5u) & 3u, (v >> 4u) & 7u);
 	uint nib = tile_c4(u & 31u, v & 15u);
 	uint byte_in_block = nib >> 1u;
-	uint word = vram_words[vram_base + blk * 64u + (byte_in_block >> 2u)];
+	uint word = vram_words[tilegpu_ring_word(blk * 64u + (byte_in_block >> 2u), epoch)];
 	uint byteval = (word >> ((byte_in_block & 3u) * 8u)) & 0xFFu;
 	return ((nib & 1u) != 0u) ? (byteval >> 4u) : (byteval & 0xFu);
 }
@@ -216,6 +262,24 @@ void main()
 {
 	StateRow sr = state_rows[v_row];
 
+	// Destination alpha test: the GS passes a pixel when the destination alpha's bit 7 equals
+	// DATM. The destination is the pass snapshot (pre-pass bytes; the planner keeps that exact).
+	if (sr.date != 0u)
+	{
+		const float da = texelFetch(u_snapshot, ivec2(gl_FragCoord.xy), 0).a;
+		const bool msb = da >= (128.0f / 255.0f);
+		if (msb != (sr.date == 2u))
+			discard;
+	}
+
+	// The fragment colour before blending, in raw GS units (0..255 -> 0..1). Cf is the vertex
+	// colour as the GS holds it (0x80 = 1.0 for modulation); the texture function combines it with
+	// the texel by the GS formulas: MODULATE Cv = Ct*Cf*2 (>>7 in integer), DECAL Cv = Ct,
+	// HIGHLIGHT Cv = Ct*Cf*2 + Af, HIGHLIGHT2 likewise; alpha follows TCC (texture carries alpha
+	// or the fragment keeps Af).
+	vec4 cf = v_color;
+	vec4 cv = cf;
+
 #if TILEGPU_TEX
 	if (sr.tex_enable != 0u)
 	{
@@ -231,36 +295,34 @@ void main()
 		// expanded CLUT stream. index_format is dynamically uniform per draw, so this does not diverge.
 		uint w;
 		if (sr.index_format == 0u)
-			w = tilegpu_texel32(uint(iu), uint(iv), sr.tbp0, sr.tbw);
+			w = tilegpu_texel32(uint(iu), uint(iv), sr.tbp0, sr.tbw, sr.epoch);
 		else if (sr.index_format == 1u)
-			w = vram_words[pal_base + sr.pal_offset + tilegpu_index8(uint(iu), uint(iv), sr.tbp0, sr.tbw)];
+			w = vram_words[pal_base + sr.pal_offset + tilegpu_index8(uint(iu), uint(iv), sr.tbp0, sr.tbw, sr.epoch)];
 		else
-			w = vram_words[pal_base + sr.pal_offset + tilegpu_index4(uint(iu), uint(iv), sr.tbp0, sr.tbw)];
+			w = vram_words[pal_base + sr.pal_offset + tilegpu_index4(uint(iu), uint(iv), sr.tbp0, sr.tbw, sr.epoch)];
 		vec4 ct = tilegpu_unpack(w);
 
-		// Cf is the vertex colour; its 128 == 1.0 modulation reference is the *2 (255/128, rounded).
-		vec3 cf = v_color.rgb;
-		float af = v_color.a;
-		vec3 rgb;
-		float a;
-		if (sr.tfx == 1u) // DECAL: the texel replaces the fragment
+		const float k = 255.0f / 128.0f;
+		if (sr.tfx == 1u) // DECAL
 		{
-			rgb = ct.rgb;
-			a = (sr.tcc != 0u) ? ct.a : af * (255.0f / 128.0f);
+			cv.rgb = ct.rgb;
+			cv.a = (sr.tcc != 0u) ? ct.a : cf.a;
 		}
-		else // MODULATE (and HIGHLIGHT/HIGHLIGHT2 approximated as MODULATE for now)
+		else if (sr.tfx == 0u) // MODULATE
 		{
-			rgb = min(ct.rgb * cf * (255.0f / 128.0f), vec3(1.0f));
-			a = (sr.tcc != 0u) ? min(ct.a * af * (255.0f / 128.0f), 1.0f) : min(af * (255.0f / 128.0f), 1.0f);
+			cv.rgb = min(ct.rgb * cf.rgb * k, vec3(1.0f));
+			cv.a = (sr.tcc != 0u) ? min(ct.a * cf.a * k, 1.0f) : cf.a;
 		}
-		o_color = vec4(rgb, a);
-		return;
+		else // HIGHLIGHT (2) / HIGHLIGHT2 (3)
+		{
+			cv.rgb = min(ct.rgb * cf.rgb * k + vec3(cf.a), vec3(1.0f));
+			cv.a = (sr.tcc != 0u) ? ((sr.tfx == 2u) ? min(ct.a + cf.a, 1.0f) : ct.a) : cf.a;
+		}
 	}
 #endif
 
-	// Untextured: PS2 vertex colour is 8-bit with 128 as the 1.0 reference; scale into display range
-	// and force opaque (no blending yet, so alpha would not be consumed).
-	o_color = vec4(v_color.rgb * 2.0f, 1.0f);
+	o_color = cv;
+	o_blend = vec4(min(cv.a * (255.0f / 128.0f), 1.0f));
 }
 
 #endif

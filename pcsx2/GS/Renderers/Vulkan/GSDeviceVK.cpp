@@ -574,6 +574,9 @@ bool GSDeviceVK::SelectDeviceFeatures()
 	// renderers. CreateDevice folds these into the TileGpu capability gate.
 	m_device_features.multiDrawIndirect = available_features.multiDrawIndirect;
 	m_device_features.drawIndirectFirstInstance = available_features.drawIndirectFirstInstance;
+	// ...and shaderClipDistance: the per-draw GS scissor rides as four vertex-shader clip planes
+	// (there is no per-draw scissor inside one indirect call).
+	m_device_features.shaderClipDistance = available_features.shaderClipDistance;
 
 	return true;
 }
@@ -856,11 +859,13 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		// and the selection policy can fall back rather than crash.
 		m_optional_extensions.tilegpu_device_capable = m_optional_extensions.vk_ext_descriptor_indexing &&
 													   m_device_features.multiDrawIndirect == VK_TRUE &&
-													   m_device_features.drawIndirectFirstInstance == VK_TRUE;
-		DevCon.WriteLn("VK: TileGpu device contract %s (descriptor-indexing=%s, indirect=%s).",
+													   m_device_features.drawIndirectFirstInstance == VK_TRUE &&
+													   m_device_features.shaderClipDistance == VK_TRUE;
+		DevCon.WriteLn("VK: TileGpu device contract %s (descriptor-indexing=%s, indirect=%s, clip-distance=%s).",
 			m_optional_extensions.tilegpu_device_capable ? "present" : "absent",
 			m_optional_extensions.vk_ext_descriptor_indexing ? "yes" : "no",
-			(m_device_features.multiDrawIndirect && m_device_features.drawIndirectFirstInstance) ? "yes" : "no");
+			(m_device_features.multiDrawIndirect && m_device_features.drawIndirectFirstInstance) ? "yes" : "no",
+			m_device_features.shaderClipDistance ? "yes" : "no");
 	}
 
 	if (m_optional_extensions.vk_ext_provoking_vertex)
@@ -6073,11 +6078,12 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 {
 	m_tilegpu_tried = true;
 
-	// Per-draw state table (SSBO, binding 0) + the VRAM snapshot (SSBO, binding 1) + their layout.
+	// Per-draw state table (SSBO, binding 0) + the frame's ring (SSBO, binding 1) + their layout.
 	// The VS reads its transform row from the state table by the indirect draw's first_instance and
-	// forwards the row index, so both stages see binding 0; the FS reads texels from the VRAM
-	// snapshot, so it alone sees binding 1. Three push constants: base_row (this frame's first
-	// state row), vram_base (first VRAM word), and pal_base (first palette word), all ring offsets.
+	// forwards the row index, so both stages see binding 0; the FS reads texels out of the ring, so
+	// it alone sees binding 1. The push range is shared with the seed pipeline (same layout, so one
+	// descriptor bind serves both): the geometry pipeline pushes base_row / table_base / pal_base, the
+	// seed pushes its five words. Eight words covers either.
 	{
 		Vulkan::DescriptorSetLayoutBuilder dslb;
 		dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -6086,21 +6092,32 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 			return false;
 		Vulkan::SetObjectName(m_device, m_tilegpu_ds_layout, "TileGpu state DS layout");
 
+		Vulkan::DescriptorSetLayoutBuilder snap_dslb;
+		if (m_use_push_descriptors)
+			snap_dslb.SetPushFlag();
+		snap_dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		if ((m_tilegpu_snapshot_ds_layout = snap_dslb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_snapshot_ds_layout, "TileGpu snapshot DS layout");
+
 		Vulkan::PipelineLayoutBuilder plb;
 		plb.AddDescriptorSet(m_tilegpu_ds_layout);
-		plb.AddPushConstants(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(u32) * 3);
+		plb.AddDescriptorSet(m_tilegpu_snapshot_ds_layout);
+		plb.AddPushConstants(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(u32) * kTileGpuPushWords);
 		if ((m_tilegpu_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
 			return false;
 		Vulkan::SetObjectName(m_device, m_tilegpu_pipeline_layout, "TileGpu pipeline layout");
 	}
 
-	// Indirect + state + VRAM streams, allocated only now (first executor use), so a non-TileGpu
+	// Indirect + state + ring streams, allocated only now (first executor use), so a non-TileGpu
 	// session pays nothing. Sized for the corpus's largest frames with ring headroom for frames in
-	// flight; ReserveMemory waits on a fence rather than overrunning. The VRAM ring holds several
-	// whole-VRAM (4 MiB) snapshots so a frame in flight does not stall on the next frame's upload.
+	// flight; ReserveMemory waits on a fence rather than overrunning. The ring holds the frame's
+	// page slots (only the pages the plan reads or reconciles -- a few hundred KB to low MB, not the
+	// whole 4 MiB), its epoch page tables, page-entry lists and palettes; several frames' worth so a
+	// frame in flight does not stall the next frame's staging.
 	static constexpr u32 TILEGPU_INDIRECT_BUFFER_SIZE = 4 * 1024 * 1024;
 	static constexpr u32 TILEGPU_STATE_BUFFER_SIZE = 4 * 1024 * 1024;
-	static constexpr u32 TILEGPU_VRAM_BUFFER_SIZE = 16 * 1024 * 1024;
+	static constexpr u32 TILEGPU_VRAM_BUFFER_SIZE = 32 * 1024 * 1024;
 	if (!m_tilegpu_indirect_stream_buffer.Create(VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, TILEGPU_INDIRECT_BUFFER_SIZE) ||
 		!m_tilegpu_state_stream_buffer.Create(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, TILEGPU_STATE_BUFFER_SIZE) ||
 		!m_tilegpu_vram_stream_buffer.Create(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, TILEGPU_VRAM_BUFFER_SIZE))
@@ -6108,8 +6125,8 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		return false;
 	}
 
-	// One persistent descriptor set over the whole state and VRAM buffers; the shader indexes rows
-	// and words within them (base_row + first_instance; vram_base + address), so it never needs
+	// One persistent descriptor set over the whole state and ring buffers; the shader indexes rows
+	// and words within them (base_row + first_instance; the page table + address), so it never needs
 	// rewriting frame to frame.
 	m_tilegpu_state_descriptor_set = AllocatePersistentDescriptorSet(m_tilegpu_ds_layout);
 	if (m_tilegpu_state_descriptor_set == VK_NULL_HANDLE)
@@ -6131,7 +6148,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		return false;
 	}
 
-	// The VRAM sampling path compiles in only if the page-swizzle forms fitted closed forms — the
+	// The byte sampling path compiles in only if the page-swizzle forms fitted closed forms — the
 	// shader addresses guest memory with them, so an unfit table disables texturing rather than
 	// sampling the wrong bytes (the state rows still set tex_enable, but TILEGPU_TEX 0 #ifdefs the
 	// sampling out and every draw falls back to the vertex-colour path). The forms are prepended as
@@ -6153,25 +6170,44 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		return false;
 	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
 
-	const VkFormat color_fmt = LookupNativeFormat(GSTexture::Format::Color);
-	const VkFormat depth_fmt = LookupNativeFormat(GSTexture::Format::DepthStencil);
+	// The modules stay alive: blend variants are built lazily per GS ALPHA equation as draws
+	// first need them (CreateTileGpuPipeline), from the same two stages.
+	m_tilegpu_vs = vs;
+	m_tilegpu_fs = fs;
+	vs_guard.Cancel();
+	fs_guard.Cancel();
 
-	// One pipeline per GSTileGpuTopology (triangle/line/point) times depth off/on. Only the
-	// primitive topology differs across the row: a GS point is one vertex, a line is two, and
-	// both render at their native footprint rather than being synthesised into triangles. The
-	// vertex format, transform, and depth convention are identical — a line's colour still
-	// gouraud-interpolates and a point takes its single vertex's colour.
+	// The no-blend pipelines, one per GSTileGpuTopology (triangle/line/point) times depth mode.
+	for (u32 t = 0; t < 3; t++)
+	{
+		for (u32 i = 0; i < GSDevice::kGSTileGpuDepthModes; i++)
+		{
+			VkPipeline& pipe = m_tilegpu_pipeline[t][i];
+			pipe = CreateTileGpuPipeline(t, i, kTileGpuNoBlend, true);
+			if (pipe == VK_NULL_HANDLE)
+				return false;
+		}
+	}
+	return true;
+}
+
+// One geometry pipeline: topology (triangle/line/point) x depth mode x fixed-function blend.
+// Only the primitive topology differs across the topology row: a GS point is one vertex, a
+// line is two, and both render at their native footprint rather than being synthesised into
+// triangles. PS2 depth grows towards the viewer, so a real ZTST test maps to GREATER_OR_EQUAL
+// and a write-only (ZTST ALWAYS) draw to ALWAYS; depth WRITE follows the GS ZMSK independently
+// of the test. The blend index is the GS ALPHA (A,B,C,D) equation mapped onto Vulkan factors by
+// GSDevice::m_blendMap -- As arrives as the shader's dual-source output (SRC1), FIX as the
+// blend constant (dynamic state), Ad as DST_ALPHA -- and kTileGpuNoBlend disables blending. The
+// alpha channel is always written unblended (the GS stores the fragment alpha as-is).
+VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, bool color_write)
+{
 	static constexpr VkPrimitiveTopology kTopology[3] = {
 		VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, // GSTileGpuTopology::Triangle
 		VK_PRIMITIVE_TOPOLOGY_LINE_LIST,     // GSTileGpuTopology::Line
 		VK_PRIMITIVE_TOPOLOGY_POINT_LIST,    // GSTileGpuTopology::Point
 	};
 	static constexpr const char* kTopologyName[3] = {"triangle", "line", "point"};
-
-	// PS2 depth grows towards the viewer, so a real ZTST test maps to GREATER_OR_EQUAL and a
-	// write-only (ZTST ALWAYS) draw to ALWAYS. Depth WRITE follows the GS ZMSK independently of
-	// the test, so a draw that tests but masks its write (ZMSK set) reads depth without touching
-	// it. The mode index is GSTileGpuPass::depth_mode.
 	struct DepthVariant
 	{
 		bool has_depth;
@@ -6186,46 +6222,198 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 		{true, true, false, VK_COMPARE_OP_GREATER_OR_EQUAL, " (depth test)"},      // TestNoWrite
 		{true, true, true, VK_COMPARE_OP_ALWAYS, " (depth write)"},                // WriteAlways
 	};
+	// clang-format off
+	static constexpr std::array<VkBlendFactor, 16> kBlendFactors = { {
+		VK_BLEND_FACTOR_SRC_COLOR, VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR, VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR,
+		VK_BLEND_FACTOR_SRC1_COLOR, VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+		VK_BLEND_FACTOR_DST_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA, VK_BLEND_FACTOR_SRC1_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA,
+		VK_BLEND_FACTOR_CONSTANT_COLOR, VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO
+	}};
+	static constexpr std::array<VkBlendOp, 3> kBlendOps = {{VK_BLEND_OP_ADD, VK_BLEND_OP_SUBTRACT, VK_BLEND_OP_REVERSE_SUBTRACT}};
+	// clang-format on
 
-	for (u32 t = 0; t < 3; t++)
+	if (topology >= 3 || depth_mode >= GSDevice::kGSTileGpuDepthModes || m_tilegpu_vs == VK_NULL_HANDLE ||
+		m_tilegpu_fs == VK_NULL_HANDLE)
+		return VK_NULL_HANDLE;
+	const DepthVariant& dv = kDepthVariant[depth_mode];
+	const VkFormat color_fmt = LookupNativeFormat(GSTexture::Format::Color);
+	const VkFormat depth_fmt = LookupNativeFormat(GSTexture::Format::DepthStencil);
+
+	Vulkan::GraphicsPipelineBuilder gpb;
+	SetPipelineProvokingVertex(m_features, gpb);
+	gpb.AddVertexBuffer(0, sizeof(GSVertex));
+	gpb.AddVertexAttribute(0, 0, VK_FORMAT_R16G16_UINT, 16);    // XY (raw 12.4 fixed)
+	gpb.AddVertexAttribute(1, 0, VK_FORMAT_R32_UINT, 20);       // Z
+	gpb.AddVertexAttribute(2, 0, VK_FORMAT_R8G8B8A8_UNORM, 8);  // colour (RGBAQ.RGBA)
+	gpb.AddVertexAttribute(3, 0, VK_FORMAT_R32G32_SFLOAT, 0);   // ST texture coords
+	gpb.AddVertexAttribute(4, 0, VK_FORMAT_R32_SFLOAT, 12);     // Q (RGBAQ.Q, the STQ divisor)
+	gpb.AddVertexAttribute(5, 0, VK_FORMAT_R16G16_UINT, 24);    // UV texture coords (12.4 fixed)
+	gpb.SetPrimitiveTopology(kTopology[topology]);
+	gpb.SetPipelineLayout(m_tilegpu_pipeline_layout);
+	gpb.SetDynamicViewportAndScissorState();
+	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
+	gpb.SetNoCullRasterizationState();
+	gpb.SetVertexShader(m_tilegpu_vs);
+	gpb.SetFragmentShader(m_tilegpu_fs);
+	gpb.SetRenderPass(
+		GetRenderPass(color_fmt, dv.has_depth ? depth_fmt : LookupNativeFormat(GSTexture::Format::Invalid),
+			VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+			dv.has_depth ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			dv.has_depth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE),
+		0);
+	gpb.SetDepthState(dv.test_enable, dv.write_enable, dv.compare);
+	gpb.SetNoStencilState();
+	const VkColorComponentFlags channels = color_write ?
+		(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT) :
+		0;
+	if (blend_index == kTileGpuNoBlend || blend_index >= 3 * 3 * 3 * 3)
 	{
-		for (u32 i = 0; i < GSDevice::kGSTileGpuDepthModes; i++)
-		{
-			const DepthVariant& dv = kDepthVariant[i];
-			Vulkan::GraphicsPipelineBuilder gpb;
-			SetPipelineProvokingVertex(m_features, gpb);
-			gpb.AddVertexBuffer(0, sizeof(GSVertex));
-			gpb.AddVertexAttribute(0, 0, VK_FORMAT_R16G16_UINT, 16);    // XY (raw 12.4 fixed)
-			gpb.AddVertexAttribute(1, 0, VK_FORMAT_R32_UINT, 20);       // Z
-			gpb.AddVertexAttribute(2, 0, VK_FORMAT_R8G8B8A8_UNORM, 8);  // colour (RGBAQ.RGBA)
-			gpb.AddVertexAttribute(3, 0, VK_FORMAT_R32G32_SFLOAT, 0);   // ST texture coords
-			gpb.AddVertexAttribute(4, 0, VK_FORMAT_R32_SFLOAT, 12);     // Q (RGBAQ.Q, the STQ divisor)
-			gpb.AddVertexAttribute(5, 0, VK_FORMAT_R16G16_UINT, 24);    // UV texture coords (12.4 fixed)
-			gpb.SetPrimitiveTopology(kTopology[t]);
-			gpb.SetPipelineLayout(m_tilegpu_pipeline_layout);
-			gpb.SetDynamicViewportAndScissorState();
-			gpb.SetNoCullRasterizationState();
-			gpb.SetNoBlendingState();
-			gpb.SetVertexShader(vs);
-			gpb.SetFragmentShader(fs);
-			gpb.SetRenderPass(
-				GetRenderPass(color_fmt, dv.has_depth ? depth_fmt : LookupNativeFormat(GSTexture::Format::Invalid),
-					VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
-					dv.has_depth ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-					dv.has_depth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE),
-				0);
-			gpb.SetDepthState(dv.test_enable, dv.write_enable, dv.compare);
-			gpb.SetNoStencilState();
-			gpb.SetColorWriteMask(0,
-				VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
-
-			VkPipeline& pipe = m_tilegpu_pipeline[t][i];
-			pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
-			if (pipe == VK_NULL_HANDLE)
-				return false;
-			Vulkan::SetObjectName(m_device, pipe, "TileGpu %s pipeline%s", kTopologyName[t], dv.name);
-		}
+		gpb.SetNoBlendingState();
+		gpb.SetColorWriteMask(0, channels);
 	}
+	else
+	{
+		const HWBlend b = GSDevice::GetBlend(blend_index);
+		gpb.SetBlendAttachment(0, true, kBlendFactors[b.src], kBlendFactors[b.dst], kBlendOps[b.op],
+			VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, channels);
+	}
+
+	VkPipeline pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+	if (pipe == VK_NULL_HANDLE)
+		return VK_NULL_HANDLE;
+	if (blend_index == kTileGpuNoBlend)
+		Vulkan::SetObjectName(m_device, pipe, "TileGpu %s pipeline%s%s", kTopologyName[topology], dv.name, color_write ? "" : " (depth only)");
+	else
+		Vulkan::SetObjectName(m_device, pipe, "TileGpu %s pipeline%s blend %u", kTopologyName[topology], dv.name, blend_index);
+	return pipe;
+}
+
+// The pipeline for a (topology, depth mode, blend key) triple; blend variants are cached on
+// first use. A blend the table cannot express (or that failed to build) falls back to the
+// no-blend pipeline of the same topology and depth mode -- wrong-fast, never a dropped draw.
+VkPipeline GSDeviceVK::GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key)
+{
+	const bool color_write = !(blend_key & GSTileGpuPassPlan::kNoColorWrite);
+	const bool blend = (blend_key & GSTileGpuPassPlan::kBlendEnable) != 0;
+	if (!blend && color_write)
+		return m_tilegpu_pipeline[topology][depth_mode];
+	const u32 blend_index = blend ? (blend_key & 0x7Fu) : kTileGpuNoBlend;
+	const u32 key = topology | (depth_mode << 2) | ((blend ? (blend_key & 0x7Fu) : 0x80u) << 8) | (color_write ? 0 : 0x10000u);
+	const auto it = m_tilegpu_blend_pipelines.find(key);
+	if (it != m_tilegpu_blend_pipelines.end())
+		return it->second != VK_NULL_HANDLE ? it->second : m_tilegpu_pipeline[topology][depth_mode];
+	VkPipeline pipe = CreateTileGpuPipeline(topology, depth_mode, blend_index, color_write);
+	m_tilegpu_blend_pipelines.emplace(key, pipe);
+	return pipe != VK_NULL_HANDLE ? pipe : m_tilegpu_pipeline[topology][depth_mode];
+}
+
+// The target -> bytes reconciliation: a compute pass that reswizzles a resident colour target's
+// listed pages into the frame's ring slots (named through the epoch page table), block- and
+// byte-masked, so a later draw sampling those pages through the flat road reads the target's
+// pixels. Binding 0 = the target (combined sampler), 1 = the ring SSBO (read-modify-write). Only
+// meaningful when the swizzle forms fitted (m_tilegpu_tex): the shader shares tilegpu.glsl's
+// TILE_SWZ_* defines, so writer and reader cannot disagree about a constant.
+bool GSDeviceVK::CompileTileGpuWritebackPipeline()
+{
+	m_tilegpu_writeback_tried = true;
+
+	// No texturing means no byte road to reconcile; the forms also must have fitted for the defines
+	// to exist. Leave everything null -- the executor skips the op (the read stays whatever the slot
+	// was prefilled with).
+	if (!m_tilegpu_tex)
+		return false;
+
+	{
+		Vulkan::DescriptorSetLayoutBuilder dslb;
+		if (m_use_push_descriptors)
+			dslb.SetPushFlag();
+		dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+		dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+		if ((m_tilegpu_writeback_ds_layout = dslb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_writeback_ds_layout, "TileGpu writeback DS layout");
+
+		Vulkan::PipelineLayoutBuilder plb;
+		plb.AddDescriptorSet(m_tilegpu_writeback_ds_layout);
+		plb.AddPushConstants(VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u32) * kTileGpuPushWords);
+		if ((m_tilegpu_writeback_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_writeback_pipeline_layout, "TileGpu writeback pipeline layout");
+	}
+
+	const std::optional<std::string> source = ReadShaderSource("shaders/vulkan/tilegpu_writeback.glsl");
+	if (!source)
+	{
+		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tilegpu_writeback.glsl.");
+		return false;
+	}
+
+	// GetComputeShader compiles the source verbatim (no #version injected, unlike the utility path),
+	// so the version line leads and the swizzle-form defines follow it before the body.
+	const std::string full_source = "#version 460 core\n\n" + TileFormDefines() + *source;
+	VkShaderModule cs = g_vulkan_shader_cache->GetComputeShader(full_source);
+	if (cs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard cs_guard([this, &cs]() { vkDestroyShaderModule(m_device, cs, nullptr); });
+
+	Vulkan::ComputePipelineBuilder cpb;
+	cpb.SetPipelineLayout(m_tilegpu_writeback_pipeline_layout);
+	cpb.SetShader(cs, "main");
+	m_tilegpu_writeback_pipeline = cpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+	if (m_tilegpu_writeback_pipeline == VK_NULL_HANDLE)
+		return false;
+	Vulkan::SetObjectName(m_device, m_tilegpu_writeback_pipeline, "TileGpu writeback pipeline");
+	return true;
+}
+
+// The bytes -> target reconciliation: a fragment pass over a colour target that unswizzles the
+// op's pages out of the ring into the target's pixel space, discarding outside the page set. It
+// shares the geometry pipeline's layout and persistent descriptor set (binding 1 is the ring), so
+// running it costs a pipeline bind and a push, no descriptor traffic. Compiled on first use, only
+// when the swizzle forms fitted.
+bool GSDeviceVK::CompileTileGpuSeedPipeline()
+{
+	m_tilegpu_seed_tried = true;
+	if (!m_tilegpu_tex || m_tilegpu_pipeline_layout == VK_NULL_HANDLE)
+		return false;
+
+	const std::optional<std::string> source = ReadShaderSource("shaders/vulkan/tilegpu_seed.glsl");
+	if (!source)
+	{
+		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tilegpu_seed.glsl.");
+		return false;
+	}
+	const std::string full_source = TileFormDefines() + *source;
+
+	VkShaderModule vs = GetUtilityVertexShader(full_source);
+	if (vs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard vs_guard([this, &vs]() { vkDestroyShaderModule(m_device, vs, nullptr); });
+	VkShaderModule fs = GetUtilityFragmentShader(full_source);
+	if (fs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
+
+	Vulkan::GraphicsPipelineBuilder gpb;
+	gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+	gpb.SetPipelineLayout(m_tilegpu_pipeline_layout);
+	gpb.SetDynamicViewportAndScissorState();
+	gpb.SetNoCullRasterizationState();
+	gpb.SetNoBlendingState();
+	gpb.SetNoDepthTestState();
+	gpb.SetNoStencilState();
+	gpb.SetVertexShader(vs);
+	gpb.SetFragmentShader(fs);
+	gpb.SetRenderPass(GetRenderPass(LookupNativeFormat(GSTexture::Format::Color),
+						  LookupNativeFormat(GSTexture::Format::Invalid), VK_ATTACHMENT_LOAD_OP_LOAD,
+						  VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE),
+		0);
+	gpb.SetColorWriteMask(0,
+		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+	m_tilegpu_seed_pipeline = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+	if (m_tilegpu_seed_pipeline == VK_NULL_HANDLE)
+		return false;
+	Vulkan::SetObjectName(m_device, m_tilegpu_seed_pipeline, "TileGpu seed pipeline");
 	return true;
 }
 
@@ -6242,23 +6430,22 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// indirect buffer (GSTileGpuIndirectDraw is byte-identical to VkDrawIndexedIndirectCommand, so
 	// this is a straight copy), the per-draw state into a state SSBO the VS/FS read by first_instance,
 	// and each pass issues one vkCmdDrawIndexedIndirect per maximal same-topology run rather than one
-	// vkCmdDrawIndexed per draw. Wrong-fast still: direct 32-bit (CT32/CT24) texture sampling only,
-	// no blending, and the state row carries the transform plus that texture block. The shader's
-	// StateRow is a fixed 80-byte layout, so state_stride must match it exactly.
+	// vkCmdDrawIndexed per draw. The state row carries the transform, the scissor, the texture
+	// block and the per-draw tests. The shader's StateRow is a fixed 112-byte layout, so
+	// state_stride must match it exactly.
 	if (!m_tilegpu_tried)
 		CompileTileGpuPipeline();
 	const bool can_draw = m_tilegpu_pipeline[0][0] != VK_NULL_HANDLE &&
 						  m_tilegpu_state_descriptor_set != VK_NULL_HANDLE && !plan.draws.empty() &&
 						  plan.topologies.size() == plan.draws.size() &&
 						  plan.vertex_stride == sizeof(GSVertex) && !plan.vertices.empty() &&
-						  plan.state_table != nullptr && plan.state_stride == sizeof(float) * 20 &&
+						  plan.state_table != nullptr && plan.state_stride == sizeof(float) * 28 &&
 						  plan.state_count > 0;
 
-	// Texturing rides along only when the frame carries a VRAM snapshot AND the sampling path
+	// The byte road rides along only when the frame carries ring pages AND the sampling path
 	// compiled in (the swizzle forms fitted). Without it the state rows' tex_enable is still set but
-	// the shader #ifdef'd the sampling out, so vram_base is inert; a snapshot too large for the ring
-	// slice would be a plan bug, so it is asserted, not silently dropped.
-	const bool can_texture = can_draw && m_tilegpu_tex && plan.vram != nullptr && plan.vram_size > 0;
+	// the shader #ifdef'd the sampling out, so the ring is inert; the reconciliation ops are skipped.
+	const bool can_texture = can_draw && m_tilegpu_tex && !plan.ring_pages.empty() && plan.epoch_count > 0;
 
 	EndRenderPass();
 
@@ -6266,7 +6453,8 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// command buffer, which must not happen mid-render-pass. The indirect commands' vertex/index
 	// offsets are frame-relative, so the streams get bound at their base (below) rather than rebased
 	// per draw; base_row rebases first_instance into this frame's slice of the state ring.
-	u32 vbase = 0, ibase = 0, state_base_rows = 0, indirect_base_bytes = 0, vram_base_words = 0, pal_base_words = 0;
+	u32 vbase = 0, ibase = 0, state_base_rows = 0, indirect_base_bytes = 0;
+	u32 table_base_words = 0, pal_base_words = 0, entries_base_words = 0, masks_base_words = 0;
 	if (can_draw)
 	{
 		IASetVertexBuffer(plan.vertices.data(), sizeof(GSVertex), plan.vertices.size() / sizeof(GSVertex), 1);
@@ -6296,37 +6484,76 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		indirect_base_bytes = m_tilegpu_indirect_stream_buffer.GetCurrentOffset();
 		m_tilegpu_indirect_stream_buffer.CommitMemory(indirect_bytes);
 
-		// The frame's VRAM snapshot: guest local memory copied whole into the ring, its base word
-		// pushed to the FS. Word-aligned (4) so vram_base is a word index. Only staged when the
-		// sampling path is live; otherwise the shader never reads it.
+		// The frame's byte road, staged in one reservation so its parts cannot straddle a ring wrap:
+		//   [zero slot 8 KB][one 8 KB slot per ring page][epoch page tables][page entries][palettes]
+		// Slots the renderer named a source for are memcpy'd from it (the CPU shadow's bytes, or a
+		// version copy); the rest are left for the writeback compute to compose. Every table entry
+		// starts at the zero slot and each ring page then claims its epoch range, so a page the plan
+		// never staged for an epoch reads as zeros rather than as another page's bytes.
 		if (can_texture)
 		{
-			const u32 vram_bytes = plan.vram_size;
-			if (!m_tilegpu_vram_stream_buffer.ReserveMemory(vram_bytes, sizeof(u32)))
+			static constexpr u32 kPageBytes = GS_PAGE_SIZE;
+			static constexpr u32 kPageWords = kPageBytes / sizeof(u32);
+			const u32 slot_bytes = (1 + static_cast<u32>(plan.ring_pages.size())) * kPageBytes;
+			const u32 table_bytes = plan.epoch_count * GS_MAX_PAGES * sizeof(u32);
+			const u32 entry_bytes = static_cast<u32>(plan.page_entries.size() * sizeof(GSTileGpuPageEntry));
+			// One 512-bit page mask per seed op, built below; reserve for every op (writebacks skip theirs).
+			const u32 mask_words = static_cast<u32>(plan.prep_ops.size()) * (GS_MAX_PAGES / 32);
+			const u32 mask_bytes = mask_words * sizeof(u32);
+			const u32 pal_bytes = static_cast<u32>(plan.palettes.size() * sizeof(u32));
+			const u32 total = slot_bytes + table_bytes + entry_bytes + mask_bytes + pal_bytes;
+			if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes))
 			{
-				ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu VRAM snapshot");
-				if (!m_tilegpu_vram_stream_buffer.ReserveMemory(vram_bytes, sizeof(u32)))
-					pxFailRel("Failed to reserve TileGpu VRAM snapshot");
+				ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu ring");
+				if (!m_tilegpu_vram_stream_buffer.ReserveMemory(total, kPageBytes))
+					pxFailRel("Failed to reserve TileGpu ring");
 			}
-			std::memcpy(m_tilegpu_vram_stream_buffer.GetCurrentHostPointer(), plan.vram, vram_bytes);
-			vram_base_words = m_tilegpu_vram_stream_buffer.GetCurrentOffset() / sizeof(u32);
-			m_tilegpu_vram_stream_buffer.CommitMemory(vram_bytes);
+			u8* const base = static_cast<u8*>(m_tilegpu_vram_stream_buffer.GetCurrentHostPointer());
+			const u32 base_words = m_tilegpu_vram_stream_buffer.GetCurrentOffset() / sizeof(u32);
 
-			// The frame's expanded CLUTs, staged into the same buffer behind their own base (word-aligned,
-			// so pal_base is a word index). Only paletted draws read it; empty when none ran this frame.
-			if (!plan.palettes.empty())
+			std::memset(base, 0, kPageBytes); // the zero slot
+			u32* const tables = reinterpret_cast<u32*>(base + slot_bytes);
+			for (u32 i = 0; i < plan.epoch_count * GS_MAX_PAGES; i++)
+				tables[i] = base_words; // -> zero slot
+			for (u32 i = 0; i < plan.ring_pages.size(); i++)
 			{
-				const u32 pal_bytes = static_cast<u32>(plan.palettes.size() * sizeof(u32));
-				if (!m_tilegpu_vram_stream_buffer.ReserveMemory(pal_bytes, sizeof(u32)))
-				{
-					ExecuteCommandBufferAndRestartRenderPass(false, "Uploading TileGpu palettes");
-					if (!m_tilegpu_vram_stream_buffer.ReserveMemory(pal_bytes, sizeof(u32)))
-						pxFailRel("Failed to reserve TileGpu palettes");
-				}
-				std::memcpy(m_tilegpu_vram_stream_buffer.GetCurrentHostPointer(), plan.palettes.data(), pal_bytes);
-				pal_base_words = m_tilegpu_vram_stream_buffer.GetCurrentOffset() / sizeof(u32);
-				m_tilegpu_vram_stream_buffer.CommitMemory(pal_bytes);
+				const GSTileGpuRingPage& rp = plan.ring_pages[i];
+				u8* const slot = base + (1 + i) * kPageBytes;
+				if (rp.src)
+					std::memcpy(slot, rp.src, kPageBytes);
+				const u32 slot_words = base_words + (1 + i) * kPageWords;
+				const u32 e1 = std::min<u32>(rp.epoch_last, plan.epoch_count - 1);
+				for (u32 e = rp.epoch_first; e <= e1; e++)
+					tables[e * GS_MAX_PAGES + rp.page] = slot_words;
 			}
+			table_base_words = base_words + slot_bytes / sizeof(u32);
+
+			u8* const entries = base + slot_bytes + table_bytes;
+			if (entry_bytes)
+				std::memcpy(entries, plan.page_entries.data(), entry_bytes);
+			entries_base_words = table_base_words + table_bytes / sizeof(u32);
+
+			u32* const masks = reinterpret_cast<u32*>(entries + entry_bytes);
+			masks_base_words = entries_base_words + entry_bytes / sizeof(u32);
+			for (u32 o = 0; o < plan.prep_ops.size(); o++)
+			{
+				u32* const m = masks + o * (GS_MAX_PAGES / 32);
+				std::memset(m, 0, (GS_MAX_PAGES / 32) * sizeof(u32));
+				const GSTileGpuPrepOp& op = plan.prep_ops[o];
+				if (op.kind != GSTileGpuPrepKind::Seed)
+					continue;
+				for (u32 k = 0; k < op.page_entry_count; k++)
+				{
+					const u32 page = plan.page_entries[op.first_page_entry + k].page;
+					m[page >> 5] |= 1u << (page & 31);
+				}
+			}
+
+			if (pal_bytes)
+				std::memcpy(reinterpret_cast<u8*>(masks) + mask_bytes, plan.palettes.data(), pal_bytes);
+			pal_base_words = masks_base_words + mask_words;
+
+			m_tilegpu_vram_stream_buffer.CommitMemory(total);
 		}
 	}
 
@@ -6334,6 +6561,22 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	const u32 max_indirect = std::max<u32>(1u, GetDeviceProperties().limits.maxDrawIndirectCount);
 
 	const VkCommandBuffer cmd = GetCurrentCommandBuffer();
+
+	// The ring is written by the writeback compute and read by the seed and geometry fragment
+	// stages; every op boundary orders both directions so composed slots are complete before
+	// anything samples them, and a slot is never overwritten under a pass still reading it.
+	const auto ring_barrier = [&](VkPipelineStageFlags src_stage, VkAccessFlags src_access,
+								  VkPipelineStageFlags dst_stage, VkAccessFlags dst_access) {
+		VkBufferMemoryBarrier bmb = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+		bmb.srcAccessMask = src_access;
+		bmb.dstAccessMask = dst_access;
+		bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bmb.buffer = m_tilegpu_vram_stream_buffer.GetBuffer();
+		bmb.offset = 0;
+		bmb.size = VK_WHOLE_SIZE;
+		vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 1, &bmb, 0, nullptr);
+	};
 
 	for (const GSTileGpuPass& pass : plan.passes)
 	{
@@ -6348,6 +6591,159 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		if (!rt && !ds)
 			continue;
 
+		// Reconciliation before the pass, in the renderer's order: writebacks compose ring slots
+		// out of finished targets (compute), seeds fill targets out of ring slots (a fragment pass
+		// each). Both are the byte model's traffic between the resident images and the byte store,
+		// and both are gated on the byte road being live.
+		if (can_texture && pass.prep_op_count > 0)
+		{
+			if (!m_tilegpu_writeback_tried)
+				CompileTileGpuWritebackPipeline();
+			if (!m_tilegpu_seed_tried)
+				CompileTileGpuSeedPipeline();
+
+			const u32 op_end = pass.first_prep_op + pass.prep_op_count;
+			for (u32 o = pass.first_prep_op; o < op_end; o++)
+			{
+				const GSTileGpuPrepOp& op = plan.prep_ops[o];
+				if (op.target >= plan.targets.size() || !plan.targets[op.target] || op.page_entry_count == 0)
+					continue;
+				GSTextureVK* const tex = static_cast<GSTextureVK*>(plan.targets[op.target]);
+
+				if (op.kind == GSTileGpuPrepKind::Writeback)
+				{
+					if (m_tilegpu_writeback_pipeline == VK_NULL_HANDLE)
+						continue;
+					EndRenderPass();
+					// Prior shader reads and compute writes of the ring must finish before this
+					// dispatch writes it (a slot may be re-composed after a pass consumed it, or two
+					// owners of one page write disjoint bytes of the same words).
+					ring_barrier(VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+									 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+					tex->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+
+					Vulkan::DescriptorSetUpdateBuilder dsub;
+					if (m_use_push_descriptors)
+					{
+						dsub.AddCombinedImageSamplerDescriptorWrite(
+							VK_NULL_HANDLE, 0, tex->GetView(), m_point_sampler, tex->GetVkLayout());
+						dsub.AddBufferDescriptorWrite(VK_NULL_HANDLE, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+							m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
+						dsub.PushUpdate(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tilegpu_writeback_pipeline_layout, 0, false);
+					}
+					else
+					{
+						VkDescriptorSet wbset = AllocateDescriptorSetFromFramePool(m_tilegpu_writeback_ds_layout);
+						if (wbset == VK_NULL_HANDLE) [[unlikely]]
+							continue; // a few dozen per frame at most -- exhaustion implausible; skip, read stays as prefilled
+						dsub.AddCombinedImageSamplerDescriptorWrite(
+							wbset, 0, tex->GetView(), m_point_sampler, tex->GetVkLayout());
+						dsub.AddBufferDescriptorWrite(wbset, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+							m_tilegpu_vram_stream_buffer.GetBuffer(), 0, m_tilegpu_vram_stream_buffer.GetCurrentSize());
+						dsub.Update(m_device);
+						vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+							m_tilegpu_writeback_pipeline_layout, 0, 1, &wbset, 0, nullptr);
+					}
+
+					const u32 wpush[kTileGpuPushWords] = {table_base_words, op.epoch, op.bp, op.bw, op.byte_mask,
+						entries_base_words, op.first_page_entry, op.page_entry_count};
+					vkCmdPushConstants(cmd, m_tilegpu_writeback_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+						sizeof(wpush), wpush);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tilegpu_writeback_pipeline);
+					// (8, 4) groups of 8x8 cover one 64x32 CT32 page; one page per z.
+					vkCmdDispatch(cmd, 8, 4, op.page_entry_count);
+					// The composed slots feed the seeds and passes that follow.
+					ring_barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+						VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+							VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+						VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+				}
+				else // Seed
+				{
+					if (m_tilegpu_seed_pipeline == VK_NULL_HANDLE)
+						continue;
+					EndRenderPass();
+
+					// Full-target render area (a first-bind clear must cover the whole attachment);
+					// the scissor trims to the page rows/columns the op touches. Everything else
+					// discards in the shader.
+					const GSVector2i size = tex->GetSize();
+					const u32 base_page = (op.bp >> 5) & (GS_MAX_PAGES - 1);
+					int min_col = INT32_MAX, max_col = -1, min_row = INT32_MAX, max_row = -1;
+					for (u32 k = 0; k < op.page_entry_count; k++)
+					{
+						const u32 rel = (plan.page_entries[op.first_page_entry + k].page + GS_MAX_PAGES - base_page) & (GS_MAX_PAGES - 1);
+						const int col = static_cast<int>(rel % std::max<u32>(op.bw, 1));
+						const int row = static_cast<int>(rel / std::max<u32>(op.bw, 1));
+						min_col = std::min(min_col, col);
+						max_col = std::max(max_col, col);
+						min_row = std::min(min_row, row);
+						max_row = std::max(max_row, row);
+					}
+					const GSVector4i sc_rect = GSVector4i(min_col * 64, min_row * 32, (max_col + 1) * 64, (max_row + 1) * 32)
+												   .rintersect(GSVector4i(0, 0, size.x, size.y));
+					if (sc_rect.rempty())
+						continue;
+
+					const GSVector4i area = GSVector4i::loadh(size);
+					OMSetRenderTargets(tex, nullptr, area);
+					const VkAttachmentLoadOp op_load = GetLoadOpForTexture(tex);
+					const VkRenderPass rp = GetRenderPass(LookupNativeFormat(tex->GetFormat()), VK_FORMAT_UNDEFINED, op_load,
+						VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+						VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE);
+					if (rp == VK_NULL_HANDLE)
+						return false;
+					if (op_load == VK_ATTACHMENT_LOAD_OP_CLEAR)
+					{
+						VkClearValue cv = {};
+						cv.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+						BeginClearRenderPass(rp, area, &cv, 1);
+					}
+					else
+					{
+						BeginRenderPass(rp, area);
+					}
+
+					const VkViewport vp{0.0f, 0.0f, static_cast<float>(size.x), static_cast<float>(size.y), 0.0f, 1.0f};
+					vkCmdSetViewport(cmd, 0, 1, &vp);
+					const VkRect2D sc{{sc_rect.x, sc_rect.y},
+						{static_cast<u32>(sc_rect.width()), static_cast<u32>(sc_rect.height())}};
+					vkCmdSetScissor(cmd, 0, 1, &sc);
+					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 0, 1,
+						&m_tilegpu_state_descriptor_set, 0, nullptr);
+					const u32 spush[kTileGpuPushWords] = {table_base_words, op.epoch, op.bp, op.bw,
+						masks_base_words + o * (GS_MAX_PAGES / 32), 0, 0, 0};
+					vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout,
+						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(spush), spush);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_seed_pipeline);
+					vkCmdDraw(cmd, 3, 1, 0, 0);
+					EndRenderPass();
+					tex->SetState(GSTexture::State::Dirty);
+				}
+			}
+		}
+
+		// The pass snapshot: a copy of the colour target as it stands before the pass opens, for
+		// the draws that read their own destination (DATE today). Taken here, outside any render
+		// pass, into a scratch texture recycled after the pass; the queue orders it behind every
+		// earlier pass on the target.
+		GSTexture* snapshot = nullptr;
+		if (rt && pass.snapshot_count > 0 && pass.first_snapshot < plan.snapshots.size())
+		{
+			const GSTileGpuSnapshotCopy& sc = plan.snapshots[pass.first_snapshot];
+			const GSVector2i ssz = rt->GetSize();
+			snapshot = CreateTexture(ssz.x, ssz.y, 1, GSTexture::Format::Color, true);
+			if (snapshot)
+			{
+				EndRenderPass();
+				const GSVector4i copy_rect = sc.src_rect.rintersect(GSVector4i(0, 0, ssz.x, ssz.y));
+				CopyRect(rt, snapshot, copy_rect, copy_rect.x, copy_rect.y);
+				static_cast<GSTextureVK*>(snapshot)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+			}
+		}
+
 		// The render area has to fit inside the smaller of the pair, not just the colour target:
 		// this planner does pair a big colour with a small depth, and the framebuffer built for
 		// that pair is clamped to match.
@@ -6361,8 +6757,9 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		const GSVector4i area = GSVector4i::loadh(size);
 		OMSetRenderTargets(rt, ds, area);
 
-		// A target's first bind this frame clears (fresh allocation, State::Cleared); once marked
-		// Dirty below, later passes to it load and accumulate.
+		// Targets persist across frames: a texture the pool has just allocated clears on its
+		// first bind (State::Cleared), everything else loads and accumulates -- a seed pass above
+		// has already marked a freshly seeded target Dirty, so its pages load.
 		const VkAttachmentLoadOp rt_op =
 			rt ? GetLoadOpForTexture(static_cast<GSTextureVK*>(rt)) : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		const VkAttachmentLoadOp ds_op =
@@ -6432,25 +6829,60 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				static_cast<VkDeviceSize>(ibase) * sizeof(u16), VK_INDEX_TYPE_UINT16);
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 0, 1,
 				&m_tilegpu_state_descriptor_set, 0, nullptr);
-			const u32 push[3] = {state_base_rows, vram_base_words, pal_base_words}; // base_row (VS), vram_base + pal_base (FS)
+			{
+				// Set 1: the snapshot (or the null texture -- the shader only reads it under a
+				// per-draw flag, but the binding must be valid regardless).
+				GSTextureVK* const snap_tex = snapshot ? static_cast<GSTextureVK*>(snapshot) : m_null_texture.get();
+				Vulkan::DescriptorSetUpdateBuilder dsub;
+				if (m_use_push_descriptors)
+				{
+					dsub.AddCombinedImageSamplerDescriptorWrite(
+						VK_NULL_HANDLE, 0, snap_tex->GetView(), m_point_sampler, snap_tex->GetVkLayout());
+					dsub.PushUpdate(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 1, false);
+				}
+				else
+				{
+					VkDescriptorSet sset = AllocateDescriptorSetFromFramePool(m_tilegpu_snapshot_ds_layout);
+					if (sset != VK_NULL_HANDLE)
+					{
+						dsub.AddCombinedImageSamplerDescriptorWrite(
+							sset, 0, snap_tex->GetView(), m_point_sampler, snap_tex->GetVkLayout());
+						dsub.Update(m_device);
+						vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 1, 1,
+							&sset, 0, nullptr);
+					}
+				}
+			}
+			const u32 push[kTileGpuPushWords] = {state_base_rows, table_base_words, pal_base_words, 0, 0, 0, 0, 0}; // base_row (VS), table_base + pal_base (FS)
 			vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout,
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
 
-			// One vkCmdDrawIndexedIndirect per maximal same-topology run, in draw order. Draw order
-			// is preserved exactly: commands are laid out in draw order, each run is a contiguous
-			// slice, and runs issue in order -- so overdraw is identical to the per-draw path, at one
-			// submission per run (a pass is mostly one topology) instead of one per draw. A pipeline
-			// change is the only per-run cost. This is the constant-cost submission the design bets on.
+			// One vkCmdDrawIndexedIndirect per maximal run of draws sharing pipeline state -- topology
+			// and blend key -- in draw order. Draw order is preserved exactly: commands are laid out in
+			// draw order, each run is a contiguous slice, and runs issue in order -- so overdraw is
+			// identical to the per-draw path, at one submission per run instead of one per draw. A
+			// pipeline change (and, for a FIX-factor blend, a blend-constant set) is the only per-run
+			// cost. This is the constant-cost submission the design bets on.
+			const bool have_blend = plan.blend_keys.size() == plan.draws.size();
 			const u32 end = pass.first_draw + pass.draw_count;
 			u32 d = pass.first_draw;
 			while (d < end)
 			{
 				const u32 topo = static_cast<u32>(plan.topologies[d]);
+				const u32 bkey = have_blend ? plan.blend_keys[d] : 0u;
 				u32 run_end = d + 1;
-				while (run_end < end && static_cast<u32>(plan.topologies[run_end]) == topo)
+				while (run_end < end && static_cast<u32>(plan.topologies[run_end]) == topo &&
+					   (have_blend ? plan.blend_keys[run_end] : 0u) == bkey)
 					run_end++;
 
-				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline[topo][depth_idx]);
+				vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, GetTileGpuPipeline(topo, depth_idx, bkey));
+				if (bkey & GSTileGpuPassPlan::kBlendEnable)
+				{
+					// FIX rides as the blend constant in the GS's 0x80 = 1.0 convention.
+					const float fix = std::min(static_cast<float>((bkey >> 8) & 0xFFu) * (1.0f / 128.0f), 1.0f);
+					const float consts[4] = {fix, fix, fix, fix};
+					vkCmdSetBlendConstants(cmd, consts);
+				}
 
 				for (u32 first = d; first < run_end;)
 				{
@@ -6460,7 +6892,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					vkCmdDrawIndexedIndirect(cmd, m_tilegpu_indirect_stream_buffer.GetBuffer(), offset, count,
 						sizeof(GSTileGpuIndirectDraw));
 					// One submission per indirect call, not per draw: the DrawCalls metric now reads
-					// the collapsed count (≈ topology runs per frame), which is the A/B against the
+					// the collapsed count (≈ pipeline-state runs per frame), which is the A/B against the
 					// per-draw baseline the design is measured on.
 					g_perfmon.Put(GSPerfMon::DrawCalls, 1);
 					first += count;
@@ -6475,10 +6907,22 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			rt->SetState(GSTexture::State::Dirty);
 		if (ds)
 			ds->SetState(GSTexture::State::Dirty);
+		if (snapshot)
+			Recycle(snapshot);
 	}
 
 	// These passes recorded raw, bypassing the device's state cache; force the present path and
-	// the next frame to re-apply everything.
+	// the next frame to re-apply everything. One binding has no dirty flag to force it: the device
+	// binds its vertex stream buffer at offset 0 once per command buffer (SetInitialState) and
+	// every later draw relies on that, while the passes above bound the same buffer at this
+	// frame's offset -- restore it, or the merge and present that follow in this command buffer
+	// read their quads from the wrong place (the presented frame goes dark until a submit happens
+	// to intervene).
+	if (can_draw)
+	{
+		constexpr VkDeviceSize zero_offset = 0;
+		vkCmdBindVertexBuffers(cmd, 0, 1, m_vertex_stream_buffer.GetBufferPtr(), &zero_offset);
+	}
 	InvalidateCachedState();
 	return true;
 }
@@ -7381,6 +7825,22 @@ void GSDeviceVK::DestroyResources()
 			pipe = VK_NULL_HANDLE;
 		}
 	}
+	for (auto& [key, pipe] : m_tilegpu_blend_pipelines)
+	{
+		if (pipe != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, pipe, nullptr);
+	}
+	m_tilegpu_blend_pipelines.clear();
+	if (m_tilegpu_vs != VK_NULL_HANDLE)
+	{
+		vkDestroyShaderModule(m_device, m_tilegpu_vs, nullptr);
+		m_tilegpu_vs = VK_NULL_HANDLE;
+	}
+	if (m_tilegpu_fs != VK_NULL_HANDLE)
+	{
+		vkDestroyShaderModule(m_device, m_tilegpu_fs, nullptr);
+		m_tilegpu_fs = VK_NULL_HANDLE;
+	}
 	if (m_tilegpu_pipeline_layout != VK_NULL_HANDLE)
 	{
 		vkDestroyPipelineLayout(m_device, m_tilegpu_pipeline_layout, nullptr);
@@ -7391,6 +7851,33 @@ void GSDeviceVK::DestroyResources()
 		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_ds_layout, nullptr);
 		m_tilegpu_ds_layout = VK_NULL_HANDLE;
 	}
+	if (m_tilegpu_snapshot_ds_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_snapshot_ds_layout, nullptr);
+		m_tilegpu_snapshot_ds_layout = VK_NULL_HANDLE;
+	}
+	if (m_tilegpu_seed_pipeline != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(m_device, m_tilegpu_seed_pipeline, nullptr);
+		m_tilegpu_seed_pipeline = VK_NULL_HANDLE;
+	}
+	m_tilegpu_seed_tried = false;
+	if (m_tilegpu_writeback_pipeline != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(m_device, m_tilegpu_writeback_pipeline, nullptr);
+		m_tilegpu_writeback_pipeline = VK_NULL_HANDLE;
+	}
+	if (m_tilegpu_writeback_pipeline_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineLayout(m_device, m_tilegpu_writeback_pipeline_layout, nullptr);
+		m_tilegpu_writeback_pipeline_layout = VK_NULL_HANDLE;
+	}
+	if (m_tilegpu_writeback_ds_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_writeback_ds_layout, nullptr);
+		m_tilegpu_writeback_ds_layout = VK_NULL_HANDLE;
+	}
+	m_tilegpu_writeback_tried = false;
 	if (m_tilegpu_indirect_stream_buffer.IsValid())
 		m_tilegpu_indirect_stream_buffer.Destroy(false);
 	if (m_tilegpu_state_stream_buffer.IsValid())

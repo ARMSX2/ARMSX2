@@ -1990,14 +1990,78 @@ public:
 		u32 zbuf_target;
 	};
 
-	/// A snapshot copy for proven offset feedback: clone src_rect of a colour target into a
-	/// scratch surface the next pass samples, so that pass reads a pre-write version of pages
-	/// it also writes without a raster-order hazard. One per hazard run, taken before the
-	/// pass it feeds opens.
+	/// A snapshot copy: clone src_rect of the pass's colour target into a scratch surface the
+	/// pass's draws sample, so a draw reads a pre-pass version of pixels the pass also writes
+	/// without a raster-order hazard. Taken before the pass it feeds opens; one per pass. Today
+	/// it serves the destination-alpha test (DATE: a draw's state row asks the shader to discard
+	/// on the snapshot's alpha bit 7 against DATM) -- the planner opens a new pass whenever a
+	/// DATE draw's rect intersects what the pass already wrote, so the snapshot is exact for it.
+	/// The in-pass declared read (ROAA) replaces this road where the device has it.
 	struct GSTileGpuSnapshotCopy
 	{
 		u32 src_target;
 		GSVector4i src_rect;
+	};
+
+	/// One GS page (8 KB of guest memory) the frame's byte road needs, and where its bytes start
+	/// from. The executor gives every entry an 8 KB slot in its ring buffer, prefilled by memcpy from
+	/// `src` when that is non-null (the CPU shadow's bytes for the page — or a version copy the
+	/// renderer took before an upload overwrote them) and left for the GPU to compose otherwise
+	/// (a page whose every byte comes from a target writeback). The slot is then named by the frame's
+	/// page table at [epoch][page], which the flat-road shader, the writeback and the seed all
+	/// address bytes through: table[epoch * 512 + page] is the word offset of the slot in the ring.
+	/// A page may appear once per epoch range: (page, epoch_first..epoch_last) rows are disjoint.
+	struct GSTileGpuRingPage
+	{
+		u16 page;        ///< 0..GS_MAX_PAGES-1
+		u16 epoch_first; ///< first page-table epoch this slot serves
+		u16 epoch_last;  ///< last (inclusive)
+		u16 pad_;
+		const void* src; ///< 8 KB to prefill the slot with, or nullptr
+	};
+
+	/// One page of a prep op's page list: which page, and which of its 32 physical blocks the op
+	/// touches (a writeback writes only the blocks the surface holds newest; a seed reads whole pages
+	/// and carries kFullBlockMask).
+	struct GSTileGpuPageEntry
+	{
+		u16 page;
+		u16 pad_;
+		u32 block_mask;
+	};
+
+	/// The two reconciliation dispatches between the byte store and a resident target, both keyed
+	/// through the epoch page table.
+	enum class GSTileGpuPrepKind : u8
+	{
+		/// Target -> bytes: reswizzle a colour target's listed pages into the ring slots the table
+		/// names for `epoch`, block-masked, read-modify-write under `byte_mask` (0x00FFFFFF for a
+		/// CT24 surface whose alpha byte belongs to someone else). Compute, run before the pass whose
+		/// draws sample those pages through the flat road.
+		Writeback = 0,
+		/// Bytes -> target: unswizzle the listed pages out of the ring slots into a colour target's
+		/// pixel space (a fragment pass over the target, discarding fragments outside the page set),
+		/// so a draw about to render into pages the surface does not yet hold newest finds them
+		/// current. Run before the pass whose draws render into them.
+		Seed = 1,
+	};
+
+	/// One reconciliation dispatch. `target` indexes the plan's target list; bp/bw/psm is the
+	/// surface layout that texture's pixel space realises (guest layout = pixel space, page-aligned
+	/// base). The page list is `page_entry_count` rows of the plan's page_entries from
+	/// `first_page_entry`. Formats served: PSMCT32/PSMCT24 (Format::Color targets); the renderer
+	/// keeps every other surface off this road.
+	struct GSTileGpuPrepOp
+	{
+		GSTileGpuPrepKind kind;
+		u32 target;
+		u32 bp;
+		u32 bw;
+		u32 psm;
+		u32 byte_mask;
+		u32 epoch;
+		u32 first_page_entry;
+		u32 page_entry_count;
 	};
 
 	/// The pass's uniform depth configuration, which selects the depth pipeline variant. Every
@@ -2026,6 +2090,8 @@ public:
 		u32 target_pair_count;
 		u32 first_snapshot; ///< snapshot copies taken before this pass opens
 		u32 snapshot_count;
+		u32 first_prep_op; ///< reconciliation dispatches (writebacks, seeds) run before this pass opens, in order
+		u32 prep_op_count;
 		bool declares_self_read; ///< ROAA: the pass reads its own colour target in raster order
 		GSTileGpuDepthMode depth_mode; ///< uniform across the pass; None iff zbuf_target is kNoTarget
 	};
@@ -2041,8 +2107,20 @@ public:
 		std::span<const GSTileGpuPass> passes;
 		std::span<const GSTileGpuIndirectDraw> draws;
 		std::span<const GSTileGpuTopology> topologies; ///< one per draw, parallel to `draws`
+		/// One per draw, parallel to `draws`: the fixed-function blend the draw takes, or 0 for
+		/// none. Bit 31 set = blend enabled; bits 0-6 = the GS ALPHA (A,B,C,D) index into
+		/// GSDevice::m_blendMap (A*27 + B*9 + C*3 + D); bits 8-15 = ALPHA.FIX when C selects the
+		/// fixed factor (it rides as the blend constant, dynamic state, not pipeline state). Like
+		/// the topology it is pipeline state, so the constant-cost submission splits its indirect
+		/// runs on it -- a split, never a pass break.
+		std::span<const u32> blend_keys;
+		static constexpr u32 kBlendEnable = 0x80000000u;
+		/// Bit 30: the draw writes no colour (a depth-only draw); the pipeline masks every channel.
+		static constexpr u32 kNoColorWrite = 0x40000000u;
 		std::span<const GSTileGpuTargetPair> target_pairs;
 		std::span<const GSTileGpuSnapshotCopy> snapshots;
+		std::span<const GSTileGpuPrepOp> prep_ops;
+		std::span<const GSTileGpuPageEntry> page_entries;
 
 		const void* state_table = nullptr; ///< state_count rows of state_stride bytes
 		u32 state_stride = 0;
@@ -2054,16 +2132,18 @@ public:
 
 		std::span<GSTexture* const> targets; ///< the *_target fields index this list
 
-		/// A snapshot of GS local memory the fragment shader samples textures from — guest VRAM as
-		/// a flat byte array the executor stages into a storage buffer once per frame. The shader
-		/// addresses it with the GS swizzle; nullptr leaves every draw on the vertex-colour path.
-		const void* vram = nullptr;
-		u32 vram_size = 0;
+		/// The frame's byte road: exactly the guest pages the plan reads through the flat-road
+		/// shader or reconciles between the byte store and a target, each with the epoch range it
+		/// serves (see GSTileGpuRingPage). The executor stages one 8 KB ring slot per entry and
+		/// builds epoch_count page tables of GS_MAX_PAGES words naming them; a page no entry covers
+		/// in some epoch reads as zeros there. Empty leaves every draw on the vertex-colour path.
+		std::span<const GSTileGpuRingPage> ring_pages;
+		u32 epoch_count = 0;
 
 		/// The frame's expanded CLUTs, concatenated as 32-bit RGBA words: for each paletted draw
 		/// the N-entry palette (N = 16 for PSMT4, 256 for PSMT8) that GSClut::Read32 produced,
 		/// CSA/CPSM/TEXA already applied. The executor stages this into the same storage buffer as
-		/// `vram`, behind its own base; a state row's pal_offset indexes an entry within it. Empty
+		/// the ring, behind its own base; a state row's pal_offset indexes an entry within it. Empty
 		/// leaves every draw on the direct/vertex-colour path.
 		std::span<const u32> palettes;
 	};
