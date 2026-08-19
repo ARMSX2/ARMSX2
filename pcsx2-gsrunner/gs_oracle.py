@@ -52,6 +52,7 @@ the emulog rather than trusted from the command line):
   sw       -renderer sw                        expect no variant identity line
   classic  -renderer vulkan                    expect "GS: Classic renderer active"
   tile     -renderer vulkan HWRendererVariant=2  expect "GS: Tile renderer active"
+  tilegpu  -renderer vulkan HWRendererVariant=3  expect "GS: TileGpu renderer active"
 
 The classic arm deliberately leaves HWRendererVariant at its Auto default: that is
 the configuration real users run today, and Auto currently resolves Classic
@@ -89,7 +90,9 @@ THRESHOLDS = [0, 1, 2, 4, 8]
 
 DUMP_EXTENSIONS = (".gs", ".gs.xz", ".gs.zst")
 
-IDENTITY_RE = re.compile(r"GS: (Tile|Classic) renderer active \(([^)]*)\)")
+# TileGpu must precede Tile in the alternation: the TileGpu identity line starts
+# with the same four letters, and "Tile" alone would match it and misreport the arm.
+IDENTITY_RE = re.compile(r"GS: (TileGpu|Tile|Classic) renderer active \(([^)]*)\)")
 
 ARMS = {
     "sw": {"args": ["-renderer", "sw"], "identity": None},
@@ -97,6 +100,10 @@ ARMS = {
     "tile": {
         "args": ["-renderer", "vulkan", "-set", "EmuCore/GS/HWRendererVariant=2"],
         "identity": "Tile",
+    },
+    "tilegpu": {
+        "args": ["-renderer", "vulkan", "-set", "EmuCore/GS/HWRendererVariant=3"],
+        "identity": "TileGpu",
     },
 }
 
