@@ -248,7 +248,13 @@ void CTC2() {
 				vu1ResetRegs();
 			}
 			break;
+		case REG_CMSAR0:
+			// A microprogram start address, so 16 bits wide.
+			VU0.VI[REG_CMSAR0].UL = cpuRegs.GPR.r[_Rt_].UL[0] & 0xFFFF;
+			break;
 		case REG_CMSAR1: // REG_CMSAR1
+			// The kick does not consume the write: a CFC2 reads the address back.
+			VU0.VI[REG_CMSAR1].UL = cpuRegs.GPR.r[_Rt_].UL[0] & 0xFFFF;
 			vu1Finish(true);
 			vu1ExecMicro(cpuRegs.GPR.r[_Rt_].US[0]);	// Execute VU1 Micro SubRoutine
 			break;
@@ -268,13 +274,14 @@ void CTC2() {
 			VU0.statusflag = (VU0.statusflag & 0x3F) | (cpuRegs.GPR.r[_Rt_].UL[0] & 0xFC0);
 			break;
 		case REG_CLIP_FLAG:
-			VU0.clipflag = cpuRegs.GPR.r[_Rt_].UL[0];
-			[[fallthrough]];
+			// Four generations of six clip conditions, so 24 bits wide.
+			VU0.clipflag = cpuRegs.GPR.r[_Rt_].UL[0] & 0xFFFFFF;
+			VU0.VI[REG_CLIP_FLAG].UL = VU0.clipflag;
+			break;
 		default:
 			// VI01-VI15 are 16-bit integer registers, so only the low half is
-			// stored (the recompilers emit a 16-bit store here too). The
-			// control registers that land in this arm — CLIP, I, Q and the
-			// rest — are full 32-bit words.
+			// stored. The control registers that land in this arm — I, Q and
+			// the rest — are full 32-bit words.
 			if (_Fs_ < REG_STATUS_FLAG)
 				VU0.VI[_Fs_].US[0] = cpuRegs.GPR.r[_Rt_].US[0];
 			else
