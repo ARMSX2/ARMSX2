@@ -55,12 +55,13 @@ static __ri bool _vuFMACflush(VURegs* VU)
 		if (VU->fmac[i].flagreg & (1 << REG_CLIP_FLAG))
 			VU->VI[REG_CLIP_FLAG].UL = VU->fmac[i].clipflag;
 
-		// Normal FMAC instructoins only affectx Z/S/I/O, D/I are modified only by FDIV instructions
-		// Sticky flags (Affected by FSSET)
+		// An FMAC owns Z/S/U/O in both halves of STATUS. D/I belong to the
+		// divide unit, which publishes both halves from its own pipe; FSSET is
+		// the exception and writes the whole sticky field.
 		if (VU->fmac[i].flagreg & (1 << REG_STATUS_FLAG))
 			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0x30) | (VU->fmac[i].statusflag & 0xFC0) | (VU->fmac[i].statusflag & 0xF);
 		else
-			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU->fmac[i].statusflag & 0xFC0) | (VU->fmac[i].statusflag & 0xF);
+			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU->fmac[i].statusflag & 0x3C0) | (VU->fmac[i].statusflag & 0xF);
 		VU->VI[REG_MAC_FLAG].UL = VU->fmac[i].macflag;
 
 		VU->fmacreadpos = (VU->fmacreadpos + 1) & 3;
@@ -159,12 +160,13 @@ void _vuFlushAll(VURegs* VU)
 		if (VU->fmac[i].flagreg & (1 << REG_CLIP_FLAG))
 			VU->VI[REG_CLIP_FLAG].UL = VU->fmac[i].clipflag;
 
-		// Normal FMAC instructoins only affectx Z/S/I/O, D/I are modified only by FDIV instructions
-		// Sticky flags (Affected by FSSET)
+		// An FMAC owns Z/S/U/O in both halves of STATUS. D/I belong to the
+		// divide unit, which publishes both halves from its own pipe; FSSET is
+		// the exception and writes the whole sticky field.
 		if (VU->fmac[i].flagreg & (1 << REG_STATUS_FLAG))
 			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0x30) | (VU->fmac[i].statusflag & 0xFC0) | (VU->fmac[i].statusflag & 0xF);
 		else
-			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU->fmac[i].statusflag & 0xFC0) | (VU->fmac[i].statusflag & 0xF);
+			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0xFF0) | (VU->fmac[i].statusflag & 0x3C0) | (VU->fmac[i].statusflag & 0xF);
 		VU->VI[REG_MAC_FLAG].UL = VU->fmac[i].macflag;
 
 		VU->fmacreadpos = (VU->fmacreadpos + 1) & 3;

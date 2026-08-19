@@ -441,12 +441,14 @@ TEST(VuPipelineConsole, DivideUnitFlagsCommitWithTheQuotient)
 
 		VuTestHarness h(0);
 		ASSERT_TRUE(RunConsoleCase(c, h)) << tag;
-		u32 jit[15];
+		u32 jit[15], interp[15];
 		for (u32 k = 0; k < 15; ++k)
+		{
 			jit[k] = h.GetViJit(k + 1);
+			interp[k] = h.GetViInterp(k + 1);
+		}
 		EXPECT_EQ(FirstChange(jit, 15, c.first_dist), 7) << tag << " (arm64 recompiler)";
-		// The interpreter is two pairs early on the sticky half — see
-		// DISABLED_InterpreterPublishesStickyDivideFlagsEarly.
+		EXPECT_EQ(FirstChange(interp, 15, c.first_dist), 7) << tag << " (interpreter)";
 	}
 }
 
@@ -476,7 +478,6 @@ TEST(VuPipelineConsole, FmacFlagsCommitWithTheResult)
 
 TEST(VuPipelineConsole, FlagSamplerValuesMatchConsole)
 {
-	// arm64 only; the interpreter's two divergent rows are pinned below.
 	for (const Case* c : CasesOfKind(vulat::kFlag))
 	{
 		VuTestHarness h(0);
@@ -487,71 +488,8 @@ TEST(VuPipelineConsole, FlagSamplerValuesMatchConsole)
 			EXPECT_EQ(h.GetViJit(k + 1), c->vi[k])
 				<< c->tag << " sampler at distance " << (c->first_dist + k)
 				<< " (arm64 recompiler)";
-		}
-	}
-}
-
-TEST(VuPipelineConsole, InterpreterFlagSamplersThatDoMatchConsole)
-{
-	// The interpreter's complement of the tripwire below: everything except
-	// the two divide-unit set cases is right, and this is what stops a "fix"
-	// for that one from quietly breaking the rest.
-	for (const Case* c : CasesOfKind(vulat::kFlag))
-	{
-		const std::string tag(c->tag);
-		if (tag == "Q2_F_DIVZERO_SET_W1" || tag == "Q2_F_INVALID_SET_W1")
-			continue;
-		VuTestHarness h(0);
-		ASSERT_TRUE(RunConsoleCase(*c, h)) << tag;
-		const u32 nsamp = (tag.rfind("Q2_F_MAC_W", 0) == 0) ? 14u : 15u;
-		for (u32 k = 0; k < nsamp; ++k)
-		{
 			EXPECT_EQ(h.GetViInterp(k + 1), c->vi[k])
-				<< tag << " sampler at distance " << (c->first_dist + k)
-				<< " (interpreter)";
-		}
-	}
-}
-
-TEST(VuPipelineConsole, DISABLED_InterpreterPublishesStickyDivideFlagsEarly)
-{
-	// TRIPWIRE. Console and the arm64 recompiler publish a divide-unit cause
-	// bit and its sticky twin together, at distance 7. The interpreter
-	// publishes the sticky half at distance 5 and the current half at 7:
-	//
-	//   distance   1   2   3   4   5   6   7 ...
-	//   console    000 000 000 000 000 000 820
-	//   arm64      000 000 000 000 000 000 820
-	//   interp     000 000 000 000 800 800 820
-	//
-	// Cause: `_vuRegsFSAND` (VUops.cpp) puts FSAND in the FMAC pipe, and
-	// `_vuFMACflush` republishes the whole sticky field with
-	// `(VU->fmac[i].statusflag & 0xFC0)` -- which includes the sticky copies
-	// of D and I. `_vuDIV` sets those in `VU->statusflag` at issue (via
-	// VU_STICKY_DI), so the sampler issued one pair after the divide snapshots
-	// them and its own FMAC flush, four cycles later, publishes them at
-	// distance 5. The comment directly above that line states the invariant
-	// this breaks: "D/I are modified only by FDIV instructions". The FDIV pipe
-	// then publishes the current bit at 7, correctly.
-	//
-	// Only the two set cases diverge; clearing a cause bit does not, because
-	// the sticky field is never cleared by the clear.
-	//
-	// Not fixed here: the recompiler is already right and the interpreter's
-	// flag pipeline is shared code.
-	for (const char* tag : {"Q2_F_DIVZERO_SET_W1", "Q2_F_INVALID_SET_W1"})
-	{
-		const Case& c = CaseByTag(tag);
-		VuTestHarness h(0);
-		ASSERT_TRUE(RunConsoleCase(c, h)) << tag;
-		u32 interp[15];
-		for (u32 k = 0; k < 15; ++k)
-			interp[k] = h.GetViInterp(k + 1);
-		EXPECT_EQ(FirstChange(interp, 15, c.first_dist), 7) << tag << " (interpreter)";
-		for (u32 k = 0; k < 15; ++k)
-		{
-			EXPECT_EQ(interp[k], c.vi[k])
-				<< tag << " sampler at distance " << (c.first_dist + k)
+				<< c->tag << " sampler at distance " << (c->first_dist + k)
 				<< " (interpreter)";
 		}
 	}
