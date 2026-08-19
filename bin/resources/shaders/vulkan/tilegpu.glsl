@@ -68,7 +68,8 @@ struct StateRow
 	uint texa;         // 24-bit texel alpha: bit 0 = apply, bit 1 = TEXA.AEM, bits 8-15 = TEXA.TA0
 	uint region_u;     // CLAMP.MINU | (CLAMP.MAXU << 16)
 	uint region_v;     // CLAMP.MINV | (CLAMP.MAXV << 16)
-	uint pad0_, pad1_, pad2_; // the row is 144 bytes on both sides; see the C++ StateRow's note
+	uint ltf;          // 1 = bilinear: blend the four texels around the coordinate
+	uint pad0_, pad1_; // the row is 144 bytes on both sides; see the C++ StateRow's note
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer StateTable
@@ -275,6 +276,55 @@ int tilegpu_wrap(int c, uint dim, uint mode, uint region)
 	return clamp(c, 0, int(dim) - 1); // CLAMP
 }
 
+// One texel of the draw's texture at a raw (pre-wrap) coordinate: wrapped per axis, read from the
+// bytes by whichever address geometry the format uses, palette-expanded if it is an index, and given
+// its TEXA alpha if it is a 24-bit texel. This is the whole per-tap road, so a bilinear draw gets the
+// same treatment on each of its four corners -- which is what the GS does: it looks the four texels
+// up individually, expands each through the CLUT, and blends the results, never the indices.
+vec4 tilegpu_tap(StateRow sr, int cu, int cv)
+{
+	const uint iu = uint(tilegpu_wrap(cu, sr.tw, sr.wms, sr.region_u));
+	const uint iv = uint(tilegpu_wrap(cv, sr.th, sr.wmt, sr.region_v));
+
+	// index_format is dynamically uniform per draw, so this does not diverge.
+	uint w;
+	if (sr.index_format == 0u)
+		w = tilegpu_texel32(iu, iv, sr.tbp0, sr.tbw, sr.epoch);
+	else if (sr.index_format == 1u)
+		w = vram_words[pal_base + sr.pal_offset + tilegpu_index8(iu, iv, sr.tbp0, sr.tbw, sr.epoch)];
+	else
+		w = vram_words[pal_base + sr.pal_offset + tilegpu_index4(iu, iv, sr.tbp0, sr.tbw, sr.epoch)];
+
+	vec4 t = tilegpu_unpack(w);
+
+	// TEXA: a 24-bit texel stores no alpha, so the GS gives it TEXA.TA0, and AEM makes a texel whose
+	// RGB is entirely zero transparent instead. (A paletted texture takes TEXA in the CLUT expansion
+	// on the CPU, so only the direct road needs this.)
+	if ((sr.texa & 1u) != 0u)
+	{
+		const bool aem_zero = (sr.texa & 2u) != 0u && (w & 0x00FFFFFFu) == 0u;
+		t.a = aem_zero ? 0.0f : float((sr.texa >> 8u) & 0xFFu) * (1.0f / 255.0f);
+	}
+	return t;
+}
+
+// The draw's texture at a texel coordinate, filtered the way TEX1 asked. NEAREST truncates the
+// coordinate; LINEAR blends the four texels around it, sampling half a texel back so the weights are
+// zero at a texel centre -- the GS subtracts the same half texel from its fixed-point coordinate
+// before splitting it into an index and a fraction.
+vec4 tilegpu_sample(StateRow sr, vec2 uv)
+{
+	if (sr.ltf == 0u)
+		return tilegpu_tap(sr, int(floor(uv.x)), int(floor(uv.y)));
+
+	const vec2 c = uv - 0.5f;
+	const vec2 b = floor(c);
+	const vec2 f = c - b;
+	const int x0 = int(b.x), y0 = int(b.y);
+	return mix(mix(tilegpu_tap(sr, x0, y0), tilegpu_tap(sr, x0 + 1, y0), f.x),
+	           mix(tilegpu_tap(sr, x0, y0 + 1), tilegpu_tap(sr, x0 + 1, y0 + 1), f.x), f.y);
+}
+
 #endif // TILEGPU_TEX
 
 void main()
@@ -306,29 +356,8 @@ void main()
 		// the interpolated S,T by the interpolated Q and scales by the texture dimensions. The affine
 		// interpolation (gl_Position.w == 1) plus this per-pixel divide reproduces the PS2's own
 		// affine-rasteriser-with-per-pixel-divide texturing.
-		vec2 uv = (sr.fst != 0u) ? v_uv : (vec2(v_st.x, v_st.y) / v_q) * vec2(float(sr.tw), float(sr.th));
-		int iu = tilegpu_wrap(int(floor(uv.x)), sr.tw, sr.wms, sr.region_u);
-		int iv = tilegpu_wrap(int(floor(uv.y)), sr.th, sr.wmt, sr.region_v);
-
-		// The texel: direct 32-bit words, or a paletted index (PSMT8/PSMT4) looked up in the frame's
-		// expanded CLUT stream. index_format is dynamically uniform per draw, so this does not diverge.
-		uint w;
-		if (sr.index_format == 0u)
-			w = tilegpu_texel32(uint(iu), uint(iv), sr.tbp0, sr.tbw, sr.epoch);
-		else if (sr.index_format == 1u)
-			w = vram_words[pal_base + sr.pal_offset + tilegpu_index8(uint(iu), uint(iv), sr.tbp0, sr.tbw, sr.epoch)];
-		else
-			w = vram_words[pal_base + sr.pal_offset + tilegpu_index4(uint(iu), uint(iv), sr.tbp0, sr.tbw, sr.epoch)];
-		vec4 ct = tilegpu_unpack(w);
-
-		// TEXA: a 24-bit texel stores no alpha, so the GS gives it TEXA.TA0, and AEM makes a texel
-		// whose RGB is entirely zero transparent instead. (A paletted texture takes TEXA in the CLUT
-		// expansion on the CPU, so only the direct road needs this.)
-		if ((sr.texa & 1u) != 0u)
-		{
-			const bool aem_zero = (sr.texa & 2u) != 0u && (w & 0x00FFFFFFu) == 0u;
-			ct.a = aem_zero ? 0.0f : float((sr.texa >> 8u) & 0xFFu) * (1.0f / 255.0f);
-		}
+		const vec2 uv = (sr.fst != 0u) ? v_uv : (vec2(v_st.x, v_st.y) / v_q) * vec2(float(sr.tw), float(sr.th));
+		const vec4 ct = tilegpu_sample(sr, uv);
 
 		const float k = 255.0f / 128.0f;
 		if (sr.tfx == 1u) // DECAL

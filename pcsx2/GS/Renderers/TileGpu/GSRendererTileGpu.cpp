@@ -1194,6 +1194,12 @@ void GSRendererTileGpu::AccumulateDraw()
 			// already extended TW/TH to cover whatever the region reaches.
 			pd.region_u = static_cast<u32>(ctx->CLAMP.MINU) | (static_cast<u32>(ctx->CLAMP.MAXU) << 16);
 			pd.region_v = static_cast<u32>(ctx->CLAMP.MINV) | (static_cast<u32>(ctx->CLAMP.MAXV) << 16);
+			// LINEAR or NEAREST, from the same per-draw decision the software floor and the HW
+			// renderer take: the vertex trace resolves TEX1's MMAG/MMIN against the LOD range the
+			// primitive actually spans, and applies the user's filtering override. A crossover
+			// primitive (the two filters differ and the LOD crossing falls inside it) takes one
+			// filter for the whole draw here, which is what IsLinear already picked.
+			pd.ltf = m_vt.IsLinear();
 			pd.index_format = direct32 ? 0u : (psm == PSMT8 ? 1u : 2u);
 			// A 24-bit texture's texels carry no alpha byte: TEXA supplies it (and AEM makes an
 			// all-zero RGB texel transparent). A paletted texture takes TEXA in the CLUT expansion.
@@ -1489,9 +1495,9 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.texa = pd.texa;
 			sr.region_u = pd.region_u;
 			sr.region_v = pd.region_v;
+			sr.ltf = pd.ltf ? 1u : 0u;
 			sr.pad0_ = 0;
 			sr.pad1_ = 0;
-			sr.pad2_ = 0;
 		}
 
 		// 3. Group contiguous draws sharing a colour+depth surface pair and depth mode into one

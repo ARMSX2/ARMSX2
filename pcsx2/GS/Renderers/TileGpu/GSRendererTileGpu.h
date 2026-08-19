@@ -143,10 +143,11 @@ private:
 		u32 texa;               // 24-bit texel alpha: bit 0 = apply, bit 1 = TEXA.AEM, bits 8-15 = TEXA.TA0
 		u32 region_u;           // CLAMP.MINU | (CLAMP.MAXU << 16), for the two REGION wrap modes
 		u32 region_v;           // CLAMP.MINV | (CLAMP.MAXV << 16)
+		u32 ltf;                // 1 = bilinear: the fragment blends the four texels around its coordinate
 		// Explicit tail padding, not slack: alignas(16) would pad the C++ side to 144 anyway, while
 		// the shader's std430 array stride is a multiple of 8, so an implicit tail would put the two
 		// sides on different strides and every row but the first would be read from the wrong place.
-		u32 pad0_, pad1_, pad2_;
+		u32 pad0_, pad1_;
 	};
 	static_assert(sizeof(StateRow) == 144, "TileGpu StateRow must be 144 bytes to match tilegpu.glsl std430");
 
@@ -184,6 +185,7 @@ private:
 		bool alpha_written;   // false = the colour write mask keeps alpha (AFAIL RGB_ONLY)
 		u32 texa;             // 24-bit texel alpha: bit 0 apply, bit 1 AEM, bits 8-15 TA0
 		u32 region_u, region_v; // CLAMP MIN | (MAX << 16) per axis, for the REGION wrap modes
+		bool ltf;             // TEX1 asks for LINEAR on the side of the LOD this draw sits on
 	};
 
 	// Per-frame accumulation (filled in Draw via AccumulateDraw, consumed + reset in the plan
