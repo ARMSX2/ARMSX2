@@ -228,6 +228,30 @@ uint tile_c4(uint x, uint y)
 	     ^ XB(y, 0u, TILE_SWZ_C4_Y0) ^ XB(y, 1u, TILE_SWZ_C4_Y1) ^ XB(y, 2u, TILE_SWZ_C4_Y2) ^ XB(y, 3u, TILE_SWZ_C4_Y3);
 }
 
+// Extract byte (sel & 3) of an SSBO-loaded word. TILEGPU_STATIC_BYTE_SEL (injected by the
+// device from the driver id) selects a branchy form with constant shift amounts, because
+// Honeykrisp (Mesa 25.3.6, Apple M2 Max) miscompiles the dynamic form: the load returns
+// the right word, but the byte is selected by the low bits of the word INDEX instead of
+// sel, so every word whose ring index is not a multiple of 4 reads 0 -- a 2x2 texel
+// lattice over every paletted texture. A second, unrelated use of the sel sub-expression
+// also hides it, so it is an optimiser defect, not shader semantics. Every other driver
+// keeps the straight-line shift.
+uint tilegpu_byte_sel(uint word, uint sel)
+{
+#if TILEGPU_STATIC_BYTE_SEL
+	sel &= 3u;
+	if (sel == 0u)
+		return word & 0xFFu;
+	if (sel == 1u)
+		return (word >> 8u) & 0xFFu;
+	if (sel == 2u)
+		return (word >> 16u) & 0xFFu;
+	return (word >> 24u) & 0xFFu;
+#else
+	return (word >> ((sel & 3u) * 8u)) & 0xFFu;
+#endif
+}
+
 // The PSMT8 index byte at texel (u, v): 128x64 page, 16x16-texel columns; block b occupies bytes
 // [b*256, b*256+256) = words [b*64, b*64+64). byte_in_block picks the byte within its word.
 uint tilegpu_index8(uint u, uint v, uint tbp0, uint tbw, uint epoch)
@@ -236,7 +260,7 @@ uint tilegpu_index8(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 	uint blk = tbp0 + page * 32u + tile_b48((u >> 4u) & 7u, (v >> 4u) & 3u);
 	uint byte_in_block = tile_c8(u & 15u, v & 15u);
 	uint word = vram_words[tilegpu_ring_word(blk * 64u + (byte_in_block >> 2u), epoch)];
-	return (word >> ((byte_in_block & 3u) * 8u)) & 0xFFu;
+	return tilegpu_byte_sel(word, byte_in_block);
 }
 
 // The PSMT4 index nibble at texel (u, v): 128x128 page, 32x16-texel columns. col4 gives the
@@ -248,7 +272,7 @@ uint tilegpu_index4(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 	uint nib = tile_c4(u & 31u, v & 15u);
 	uint byte_in_block = nib >> 1u;
 	uint word = vram_words[tilegpu_ring_word(blk * 64u + (byte_in_block >> 2u), epoch)];
-	uint byteval = (word >> ((byte_in_block & 3u) * 8u)) & 0xFFu;
+	uint byteval = tilegpu_byte_sel(word, byte_in_block);
 	return ((nib & 1u) != 0u) ? (byteval >> 4u) : (byteval & 0xFu);
 }
 

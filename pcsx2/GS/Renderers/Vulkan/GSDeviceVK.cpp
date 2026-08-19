@@ -6156,8 +6156,15 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// fits them as a side effect, so m_tile_forms.valid is read after the call.
 	const std::string& form_defines = TileFormDefines();
 	m_tilegpu_tex = m_tile_forms.valid;
+	// Honeykrisp miscompiles the dynamic byte-extract shift on a word loaded from the vram
+	// SSBO (the selector comes out as the word index's low bits, zeroing 3 of 4 paletted
+	// texels in a 2x2 lattice); TILEGPU_STATIC_BYTE_SEL switches tilegpu_byte_sel to
+	// constant shifts there. Gate on driverID, never vendorID, per the device-workaround
+	// rule above -- other Mesa drivers and the proprietary ones keep the straight form.
+	const bool static_byte_sel = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP);
 	const std::string defines = (m_tilegpu_tex ? form_defines : std::string()) +
-								fmt::format("#define TILEGPU_TEX {}\n", m_tilegpu_tex ? 1 : 0);
+								fmt::format("#define TILEGPU_TEX {}\n", m_tilegpu_tex ? 1 : 0) +
+								fmt::format("#define TILEGPU_STATIC_BYTE_SEL {}\n", static_byte_sel ? 1 : 0);
 	const std::string full_source = defines + *source;
 
 	VkShaderModule vs = GetUtilityVertexShader(full_source);
