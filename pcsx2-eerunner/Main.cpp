@@ -145,6 +145,9 @@ static bool s_perf_jitdump = false; // --perf-jitdump: emit Linux perf jitdump f
 static std::string s_gsdump_path;         // --gsdump <path.png>: dump basename (extension replaced)
 static uint32_t s_gsdump_frames = 0;      // number of frames to record
 static uint32_t s_gsdump_at = 30;         // --gsdump-at F: start recording after frame F
+static std::string s_shots_prefix;         // --shots <prefix>: per-frame PNG basename
+static uint32_t s_shots_every = 1;        // --shots-every N: one PNG every N frames
+static uint32_t s_shots_from = 0;         // --shots-from F: first frame to capture
 
 // twindiff (cross-BUILD divergence finder) state — see the big comment above
 // RunTwinDump. The same byte-identical runner is built in two trees (working
@@ -582,6 +585,10 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               builds: it drives the GS with no emulator in front of it, so the MTGS ring and the\n");
 	std::fprintf(stderr, "               SW job queue can't spin-wait a faster EE into a bogus GS instruction-count delta.\n");
 	std::fprintf(stderr, "  --gsdump-at <frame>: frame after which --gsdump starts recording (default 30).\n");
+	std::fprintf(stderr, "  --shots <prefix> [--shots-every N] [--shots-from F]: with --liverun and a real renderer,\n");
+	std::fprintf(stderr, "               write <prefix>fNNNNN.png every N frames from frame F. A visual oracle for a\n");
+	std::fprintf(stderr, "               bug whose only symptom is on screen: the PNG series is what a headless run\n");
+	std::fprintf(stderr, "               can be judged on.\n");
 	std::fprintf(stderr, "  --renderer <null|vk|ogl|sw>: GS renderer (default null). Use vk on Intel GPUs / boxes where\n");
 	std::fprintf(stderr, "               the auto-check declines Vulkan and the surfaceless GL path fails to open GS.\n");
 	std::fprintf(stderr, "  --statereport: load the savestate, print a field-level decode of every serialized timebase\n");
@@ -716,6 +723,35 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				s_gsdump_at = n.value();
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--shots"))
+			{
+				// Written from the GS thread at the point --gsdump arms, so the
+				// frame numbering is the one the run reports.
+				s_shots_prefix = argv[++i];
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--shots-every"))
+			{
+				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
+				if (!n.has_value() || n.value() == 0)
+				{
+					Console.Error("--shots-every expects a frame count above zero.");
+					return false;
+				}
+				s_shots_every = n.value();
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--shots-from"))
+			{
+				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
+				if (!n.has_value())
+				{
+					Console.Error("--shots-from expects a frame number.");
+					return false;
+				}
+				s_shots_from = n.value();
 				continue;
 			}
 			else if (CHECK_ARG("--perf-jitdump"))
@@ -937,6 +973,20 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 		{
 			s_frames = s_gsdump_at + s_gsdump_frames + 1;
 			Console.WarningFmt("--gsdump: raising --frames to {} so the dump can finish.", s_frames);
+		}
+	}
+
+	if (!s_shots_prefix.empty())
+	{
+		if (s_mode != RunMode::LiveRun)
+		{
+			Console.Error("--shots needs --liverun: the diff modes suppress the real GS, so nothing is drawn.");
+			return false;
+		}
+		if (s_renderer_explicit && s_renderer == GSRendererType::Null)
+		{
+			Console.Error("--shots cannot use --renderer null: Null draws nothing.");
+			return false;
 		}
 	}
 
@@ -4194,6 +4244,12 @@ static int RunLiveRun()
 			const std::string path = s_gsdump_path;
 			const u32 nframes = s_gsdump_frames;
 			MTGS::RunOnGSThread([path, nframes]() { GSQueueSnapshot(path, nframes); });
+		}
+
+		if (!s_shots_prefix.empty() && (f + 1) >= s_shots_from && ((f + 1) - s_shots_from) % s_shots_every == 0)
+		{
+			const std::string path = fmt::format("{}f{:05d}.png", s_shots_prefix, f + 1);
+			MTGS::RunOnGSThread([path]() { GSQueueSnapshot(path, 0); });
 		}
 
 		if (watch_addr)
