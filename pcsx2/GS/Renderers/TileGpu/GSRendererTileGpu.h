@@ -249,6 +249,35 @@ private:
 	// in `planes` (Tile's PagesNeedingUpload).
 	GSPageBitmap PagesNeedingSeed(GSTileSurfaceId id, const GSPageBitmap& pages, u8 planes) const;
 
+	// Which pages of a surface's texture actually hold texels. The memory model tracks BYTES, and
+	// by it a page the surface owns no truth for is in perfect order -- its bytes are in the CPU
+	// shadow, and everything reading through the byte road gets them. Nothing reads the texture
+	// itself that way: the present hands the pool texture straight to the display, so a page of
+	// the target that no draw covered and no seed filled reaches the screen as whatever the
+	// allocator left there (on this device, magenta). The texture is a rectangle, so this is not a
+	// rare corner: a target is allocated tall enough for the pages drawn so far and the rest of
+	// its rows are simply never written.
+	//
+	// A page enters `filled` when a seed writes it or a draw covers it in full; `pages` is the
+	// whole page set the texture spans, recomputed when the pool grows it. The first draw into a
+	// surface seeds the difference, so the cost is one full-target seed per surface lifetime.
+	struct SurfaceTexels
+	{
+		GSPageBitmap pages; // every page the texture rectangle spans
+		GSPageBitmap filled;
+		int height = 0; // the texture height `pages` was computed for
+	};
+	std::vector<SurfaceTexels> m_surface_texels;
+	SurfaceTexels& Texels(GSTileSurfaceId id);
+	void NoteTextureGeometry(GSTileSurfaceId id, int height);
+
+	// Bring each enabled display buffer's texture up to date with its bytes, as a draw-less tail
+	// of the frame's plan. The present is the one reader that takes the texture instead of the
+	// bytes, so a page the display surface does not hold -- never written, or written into a
+	// surface that has since taken truth of it -- reaches the screen as stale texels however
+	// correct the byte model is. Fired from VSync, just before the plan is built.
+	void MaterialiseDisplayBuffers();
+
 	// Emit a prep op over `pages` for surface `id` (Writeback or Seed) on the pending draw being
 	// accumulated; block masks per page come from the model for writebacks, full for seeds.
 	void EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfaceId id, const GSPageBitmap& pages);

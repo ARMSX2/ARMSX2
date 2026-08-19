@@ -122,6 +122,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	// die with it, and so does the frame in progress.
 	m_target_pool.ReleaseAll();
 	m_vram_model.Reset();
+	m_surface_texels.clear();
 	m_plan_vertices.clear();
 	m_plan_indices.clear();
 	m_plan_states.clear();
@@ -156,6 +157,7 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	// ready when the base's present path calls GetOutput. The frame boundary itself syncs
 	// nothing: targets persist, and the ring the plan build consumed is gone (every synced
 	// claim with it -- BuildAndExecutePlan drops them).
+	MaterialiseDisplayBuffers();
 	BuildAndExecutePlan();
 
 	m_frame.surfaces_live = m_vram_model.LiveSurfaces();
@@ -172,6 +174,76 @@ void GSRendererTileGpu::Draw()
 {
 	ObserveDraw();
 	AccumulateDraw();
+}
+
+// Every enabled display buffer's texture must hold the display rect before the frontend reads it.
+// Two ways it can fail to: a page nothing has ever drawn into this surface (the texture rectangle
+// is allocated whole, its untouched rows hold whatever the allocator left), and a page some other
+// surface has taken byte truth of since (the texels here are stale even though the bytes are
+// perfectly accounted for). Both are invisible to the memory model, which is about bytes, and the
+// present is the one road that reads texels instead.
+//
+// The repair is an ordinary seed, appended to the frame's plan as a pending draw with no geometry:
+// it carries the prep op and nothing else, so the pass runs the seed and draws zero indices. It
+// also gives a display buffer that only the CPU ever writes -- an FMV, a menu blitted in by
+// transfers -- its first surface, which is why the surface is created here rather than looked up.
+void GSRendererTileGpu::MaterialiseDisplayBuffers()
+{
+	for (int i = 0; i < 2; i++)
+	{
+		const auto& fb = PCRTCDisplays.PCRTCDisplays[i];
+		if (!fb.enabled || fb.FBW == 0)
+			continue;
+		const GSVector2i size = PCRTCDisplays.GetFramebufferSize(i);
+		if (size.x <= 0 || size.y <= 0)
+			continue;
+
+		const GSTileSurfaceLayout disp_l{static_cast<u32>(fb.Block()), static_cast<u8>(fb.FBW),
+			static_cast<u8>(fb.PSM), GSTileSurfaceKind::Color};
+		if (!PoolSupports(disp_l) || !HasByteRoad(disp_l))
+			continue;
+		const GSVector4i rect(0, 0, size.x, size.y);
+		const GSPageBitmap pages = GSVramModel::PagesForRect(disp_l, rect);
+		const GSTileSurfaceId id = EnsureSurface(disp_l, rect, pages);
+		if (id == kGSTileNoSurface)
+			continue;
+
+		// Pages the texture spans but does not hold: never filled, or filled and since superseded.
+		GSPageBitmap need = PagesNeedingSeed(id, pages, kGSTilePlanesColor) | pages.andnot(Texels(id).filled);
+		need &= Texels(id).pages;
+		if (need.empty())
+			continue;
+
+		ComposeRingPages(need);
+
+		PendingDraw pd = {};
+		pd.first_prep_op = static_cast<u32>(m_plan_prep_ops.size());
+		EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, id, need);
+		pd.prep_op_count = static_cast<u32>(m_plan_prep_ops.size()) - pd.first_prep_op;
+		if (pd.prep_op_count == 0)
+			continue;
+		Texels(id).filled |= need;
+		m_frame.seed_breaks++;
+
+		pd.color_surface = id;
+		pd.z_surface = kGSTileNoSurface;
+		pd.break_before = true; // the seed must land after every draw of the frame
+		pd.rect = rect;
+		pd.scissor = rect;
+		pd.epoch = m_epoch;
+
+		GSDevice::GSTileGpuIndirectDraw draw = {};
+		draw.instance_count = 1;
+		draw.index_count = 0; // the pass exists for its prep op
+		draw.first_index = static_cast<u32>(m_plan_indices.size());
+		draw.vertex_offset = static_cast<s32>(m_plan_vertices.size());
+		draw.state_index = static_cast<u32>(m_plan_draws.size());
+		pd.draw_index = draw.state_index;
+		m_plan_draws.push_back(draw);
+		m_plan_topologies.push_back(GSDevice::GSTileGpuTopology::Triangle);
+		m_plan_blend_keys.push_back(0);
+		m_plan_pending.push_back(pd);
+	}
 }
 
 GSTexture* GSRendererTileGpu::GetOutput(int i, float& scale, int& y_offset)
@@ -297,6 +369,7 @@ void GSRendererTileGpu::PurgeTextureCache(bool sources, bool targets, bool hash_
 	SyncAllTruthToCpu();
 	m_target_pool.ReleaseAll();
 	m_vram_model.Reset();
+	m_surface_texels.clear();
 }
 
 GSVector4i GSRendererTileGpu::ComputeDrawRect() const
@@ -656,6 +729,8 @@ GSTileSurfaceId GSRendererTileGpu::EnsureSurface(const GSTileSurfaceLayout& layo
 			return kGSTileNoSurface;
 		id = m_vram_model.Create(layout, rect, handle);
 		m_vram_model.GrowResidency(id, pages);
+		Texels(id) = {}; // a fresh texture holds nothing; see the member's note
+		NoteTextureGeometry(id, height);
 		return id;
 	}
 	m_vram_model.GrowResidency(id, pages);
@@ -664,7 +739,28 @@ GSTileSurfaceId GSRendererTileGpu::EnsureSurface(const GSTileSurfaceLayout& layo
 	// pixels and every draw of this frame lands in the grown texture.
 	if (!m_target_pool.EnsureHeight(m_vram_model.Get(id).pool_handle, height))
 		return kGSTileNoSurface;
+	NoteTextureGeometry(id, height);
 	return id;
+}
+
+// The page set the surface's texture rectangle spans, refreshed when the pool grows it. Growth
+// keeps the pixels it had, so `filled` survives; the new rows are simply not in it yet.
+void GSRendererTileGpu::NoteTextureGeometry(GSTileSurfaceId id, int height)
+{
+	SurfaceTexels& t = Texels(id);
+	if (t.height == height)
+		return;
+	const GSVramModel::Surface& surf = m_vram_model.Get(id);
+	const GSVector2i dim = m_target_pool.GetTexture(surf.pool_handle)->GetSize();
+	t.pages = GSVramModel::PagesForRect(surf.layout, GSVector4i(0, 0, dim.x, dim.y));
+	t.height = height;
+}
+
+GSRendererTileGpu::SurfaceTexels& GSRendererTileGpu::Texels(GSTileSurfaceId id)
+{
+	if (m_surface_texels.size() <= id)
+		m_surface_texels.resize(id + 1);
+	return m_surface_texels[id];
 }
 
 // Tile's PagesNeedingUpload: pages whose texture bytes are not already current for every
@@ -1142,6 +1238,12 @@ void GSRendererTileGpu::AccumulateDraw()
 	if (color_written)
 	{
 		GSPageBitmap seed = PagesNeedingSeed(fb_id, fb_pages, kGSTilePlanesColor);
+		// Plus whatever of this surface's texture has never been filled. The byte model would say
+		// those pages are fine -- their bytes live in the CPU shadow -- but the present reads the
+		// texture, so an unfilled page reaches the screen as allocator leftovers. Paid once per
+		// surface: after this the whole residency is materialised.
+		seed |= Texels(fb_id).pages.andnot(Texels(fb_id).filled);
+		GSPageBitmap covered;
 		if (!seed.empty() && m_vt.m_primclass == GS_SPRITE_CLASS && icount == 2 && !PRIM->ABE && date == 0 && !z_test &&
 			(ctx->FRAME.FBMSK & GSLocalMemory::m_psm[ctx->FRAME.PSM].fmsk) == 0 &&
 			(!ctx->TEST.ATE || ctx->TEST.ATST == ATST_ALWAYS ||
@@ -1151,7 +1253,7 @@ void GSRendererTileGpu::AccumulateDraw()
 			GSVramModel::FootprintForRect(fb_l, r, fp);
 			if (!fp.overflowed)
 			{
-				GSPageBitmap covered = fp.pages;
+				covered = fp.pages;
 				for (u32 e = 0; e < fp.edge_count; e++)
 				{
 					if (fp.edges[e].full != GSVramModel::kFullBlockMask)
@@ -1175,12 +1277,15 @@ void GSRendererTileGpu::AccumulateDraw()
 				EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, fb_id, seed);
 				pd.break_before = true;
 				m_frame.seed_breaks++;
+				Texels(fb_id).filled |= seed;
 			}
 			else
 			{
 				LossySteal(seed);
 			}
 		}
+		// A page this draw covers in full ends up holding texels whether it was seeded or not.
+		Texels(fb_id).filled |= covered;
 	}
 	u8 z_claims = 0;
 	if (z_used)
