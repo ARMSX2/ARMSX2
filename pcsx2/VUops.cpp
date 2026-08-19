@@ -370,7 +370,7 @@ static __ri void _vuEFUAdd(VURegs* VU, int cycles)
 	VU->efu.enable = 1;
 	VU->efu.sCycle = VU->cycle;
 	VU->efu.Cycle = cycles;
-	VU->efu.reg.F = VU->p.F;
+	VU->efu.reg.UL = VU->p.UL;
 }
 
 static __ri void _vuAddIALUStalls(VURegs* VU, _VURegsNum* VUregsn)
@@ -1667,47 +1667,47 @@ static __ri void _vuWAITP(VURegs* VU)
 {
 }
 
+/*	The EFU's divide and square root are the same unit, so the sums the length
+	ops root are built from the FMAC model rather than from host floats.
+
+	A zero divisor never reaches the recurrence. Only ERCPR can see a negative
+	one: a root and a sum of squares are never below zero. */
+static __fi u32 _vuEfuRecip(u32 d)
+{
+	if ((d & 0x7F800000) == 0)
+		return (d & 0x80000000) | 0x7FFFFFFF;
+
+	return EeFpuModel::Divide(0x3F800000, d);
+}
+
+// x*x + y*y + z*z, accumulated left to right.
+static __fi u32 _vuEfuSquareSum(VURegs* VU)
+{
+	const u32 xx = EeFpuModel::Mul(VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[0]).bits;
+	const u32 yy = EeFpuModel::Mul(VU->VF[_Fs_].UL[1], VU->VF[_Fs_].UL[1]).bits;
+	const u32 zz = EeFpuModel::Mul(VU->VF[_Fs_].UL[2], VU->VF[_Fs_].UL[2]).bits;
+
+	return EeFpuModel::AddSub(EeFpuModel::AddSub(xx, yy, false).bits, zz, false).bits;
+}
+
 static __ri void _vuESADD(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].i.x) * vuDouble(VU->VF[_Fs_].i.x) + vuDouble(VU->VF[_Fs_].i.y) * vuDouble(VU->VF[_Fs_].i.y) + vuDouble(VU->VF[_Fs_].i.z) * vuDouble(VU->VF[_Fs_].i.z);
-
-	VU->p.F = p;
+	VU->p.UL = _vuEfuSquareSum(VU);
 }
 
 static __ri void _vuERSADD(VURegs* VU)
 {
-	float p = (vuDouble(VU->VF[_Fs_].i.x) * vuDouble(VU->VF[_Fs_].i.x)) + (vuDouble(VU->VF[_Fs_].i.y) * vuDouble(VU->VF[_Fs_].i.y)) + (vuDouble(VU->VF[_Fs_].i.z) * vuDouble(VU->VF[_Fs_].i.z));
-
-	if (p != 0.0)
-		p = 1.0f / p;
-
-	VU->p.F = p;
+	VU->p.UL = _vuEfuRecip(_vuEfuSquareSum(VU));
 }
 
 static __ri void _vuELENG(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].i.x) * vuDouble(VU->VF[_Fs_].i.x) + vuDouble(VU->VF[_Fs_].i.y) * vuDouble(VU->VF[_Fs_].i.y) + vuDouble(VU->VF[_Fs_].i.z) * vuDouble(VU->VF[_Fs_].i.z);
-
-	if (p >= 0)
-	{
-		p = sqrt(p);
-	}
-	VU->p.F = p;
+	VU->p.UL = EeFpuModel::SqrtBits(_vuEfuSquareSum(VU));
 }
 
 static __ri void _vuERLENG(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].i.x) * vuDouble(VU->VF[_Fs_].i.x) + vuDouble(VU->VF[_Fs_].i.y) * vuDouble(VU->VF[_Fs_].i.y) + vuDouble(VU->VF[_Fs_].i.z) * vuDouble(VU->VF[_Fs_].i.z);
-
-	if (p >= 0)
-	{
-		p = sqrt(p);
-		if (p != 0)
-		{
-			p = 1.0f / p;
-		}
-	}
-	VU->p.F = p;
+	VU->p.UL = _vuEfuRecip(EeFpuModel::SqrtBits(_vuEfuSquareSum(VU)));
 }
 
 
@@ -1775,50 +1775,31 @@ static __ri void _vuEATANxz(VURegs* VU)
 	VU->p.F = _vuCalculateEATAN((z - x) / (z + x));
 }
 
+// Left to right, as in _vuEfuSquareSum.
 static __ri void _vuESUM(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].i.x) + vuDouble(VU->VF[_Fs_].i.y) + vuDouble(VU->VF[_Fs_].i.z) + vuDouble(VU->VF[_Fs_].i.w);
-	VU->p.F = p;
+	u32 p = EeFpuModel::AddSub(VU->VF[_Fs_].UL[0], VU->VF[_Fs_].UL[1], false).bits;
+	p = EeFpuModel::AddSub(p, VU->VF[_Fs_].UL[2], false).bits;
+
+	VU->p.UL = EeFpuModel::AddSub(p, VU->VF[_Fs_].UL[3], false).bits;
 }
 
 static __ri void _vuERCPR(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_]);
-
-	if (p != 0)
-	{
-		p = 1.0 / p;
-	}
-
-	VU->p.F = p;
+	VU->p.UL = _vuEfuRecip(VU->VF[_Fs_].UL[_Fsf_]);
 }
 
 // The EFU square root takes the operand's MAGNITUDE: a negative input is rooted
 // as if positive, it is not passed through unchanged. Both recompilers do this
-// by ANDing the raw bits with absclip before FSQRT (mVU_ESQRT / mVU_ERSQRT);
-// the `p >= 0` guard here returned the operand untouched instead, so ESQRT and
-// ERSQRT of -1.0 gave -1.0 where the console gives 1.0. Masking the sign off the
-// raw bits before vuDouble is the same order the recompilers use.
+// by ANDing the raw bits with absclip before FSQRT (mVU_ESQRT / mVU_ERSQRT).
 static __ri void _vuESQRT(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_] & 0x7FFFFFFF);
-
-	p = sqrt(p);
-
-	VU->p.F = p;
+	VU->p.UL = EeFpuModel::SqrtBits(VU->VF[_Fs_].UL[_Fsf_] & 0x7FFFFFFF);
 }
 
 static __ri void _vuERSQRT(VURegs* VU)
 {
-	float p = vuDouble(VU->VF[_Fs_].UL[_Fsf_] & 0x7FFFFFFF);
-
-	p = sqrt(p);
-	if (p)
-	{
-		p = 1.0f / p;
-	}
-
-	VU->p.F = p;
+	VU->p.UL = _vuEfuRecip(EeFpuModel::SqrtBits(VU->VF[_Fs_].UL[_Fsf_] & 0x7FFFFFFF));
 }
 
 static __ri void _vuESIN(VURegs* VU)
