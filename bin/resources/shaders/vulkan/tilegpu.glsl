@@ -7,8 +7,8 @@
 // fragment stage, when the draw is textured, samples the guest texture straight out of guest bytes
 // held in a storage buffer -- addressing them with the GS's own page/block/column swizzle (the same
 // GF(2)-linear forms tile_convert.glsl uses, injected as TILE_SWZ_* defines) -- and applies the
-// texture function. Blending is the executor's fixed-function state, fed by the dual-source
-// alpha this stage emits; fog and the alpha test arrive with the rest of the fixed-function state.
+// texture function, then the fog walk. Blending is the executor's fixed-function state, fed by the
+// dual-source alpha this stage emits; the alpha test arrives with the rest of the per-fragment tests.
 //
 // The bytes are not a whole-VRAM snapshot. The frame's ring holds one 8 KB slot per guest page the
 // plan actually reads, and a page table per epoch names them: table[table_base + epoch*512 + page]
@@ -61,7 +61,8 @@ struct StateRow
 	int ofx, ofy;      // XYOFFSET, 12.4 fixed: the vertex-to-pixel origin the scissor is in
 	int sc_x0, sc_y0;  // the GS scissor in target pixels, [x0, x1) x [y0, y1)
 	int sc_x1, sc_y1;
-	uint pad0_, pad1_;
+	uint fge;          // 1 = PRIM.FGE: walk the fragment's RGB toward the fog colour by the vertex F
+	uint fogcol;       // FOGCOL packed 0x00BBGGRR
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer StateTable
@@ -84,12 +85,14 @@ layout(location = 2) in vec4 a_color; // RGBA, normalised
 layout(location = 3) in vec2 a_st;    // ST texture coords (float)
 layout(location = 4) in float a_q;    // Q (the STQ divisor)
 layout(location = 5) in uvec2 a_uv;   // UV texture coords, 12.4 fixed
+layout(location = 6) in vec4 a_f;     // FOG dword; the fog factor F is its low byte
 
 layout(location = 0) out vec4 v_color;
 layout(location = 1) out vec2 v_st;      // ST forwarded; the fragment stage divides by Q
 layout(location = 2) out float v_q;      // interpolated affinely (gl_Position.w == 1) -> PS2 per-pixel ST/Q
 layout(location = 3) out vec2 v_uv;      // UV in texels (12.4 -> texel), for the FST path
 layout(location = 4) flat out uint v_row; // this vertex's state row, so the fragment stage reads it
+layout(location = 5) out float v_fog;    // fog factor F/255, interpolated across the primitive
 
 out float gl_ClipDistance[4];
 
@@ -111,6 +114,7 @@ void main()
 	v_q = a_q;
 	v_uv = vec2(a_uv) * (1.0f / 16.0f); // 12.4 fixed -> texel
 	v_row = row;
+	v_fog = a_f.r; // GSVertex::FOG holds F in its low byte, so the unpacked .r is F/255
 	// Point topology reads gl_PointSize; a GS point covers one pixel. Ignored for line/triangle.
 	gl_PointSize = 1.0f;
 
@@ -134,6 +138,7 @@ layout(location = 1) in vec2 v_st;
 layout(location = 2) in float v_q;
 layout(location = 3) in vec2 v_uv;
 layout(location = 4) flat in uint v_row;
+layout(location = 5) in float v_fog;
 
 // Two fragment outputs: the colour that lands in the target (RAW GS values -- 0x80 stays 0x80;
 // the target's bytes are guest bytes, so no display scaling happens here), and the dual-source
@@ -320,6 +325,18 @@ void main()
 		}
 	}
 #endif
+
+	// Fog. The console rule (gs-interp capture, SCPH-30001, and the Tile floor's walk) is
+	// (C*F + Cfog*(256 - F)) >> 8 on RGB with alpha passed through untouched, written here the way
+	// the floor writes it: Cfog plus the difference scaled by F at fifteen fractional bits, all in
+	// integer arithmetic, because a float mix rounds where the hardware truncates. Our colour is in
+	// normalised guest units, so it scales to 0..255 for the walk and back afterwards.
+	if (sr.fge != 0u)
+	{
+		const ivec3 cfog = ivec3(uvec3(sr.fogcol, sr.fogcol >> 8u, sr.fogcol >> 16u) & 0xFFu);
+		const int f15 = int(v_fog * (255.0f * 128.0f));
+		cv.rgb = vec3(cfog + (((ivec3(cv.rgb * 255.0f) - cfog) * f15) >> 15)) * (1.0f / 255.0f);
+	}
 
 	o_color = cv;
 	o_blend = vec4(min(cv.a * (255.0f / 128.0f), 1.0f));

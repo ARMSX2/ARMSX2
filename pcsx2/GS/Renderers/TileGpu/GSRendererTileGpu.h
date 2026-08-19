@@ -136,7 +136,8 @@ private:
 		s32 ofx, ofy;           // XYOFFSET, 12.4 fixed: the vertex-to-pixel origin the scissor is in
 		s32 sc_x0, sc_y0;       // the GS scissor in target pixels, [x0, x1) x [y0, y1) -- four VS clip planes
 		s32 sc_x1, sc_y1;
-		u32 pad0_, pad1_;
+		u32 fge;                // 1 = PRIM.FGE, the fragment's colour walks toward the fog colour
+		u32 fogcol;             // FOGCOL packed 0x00BBGGRR
 	};
 	static_assert(sizeof(StateRow) == 112, "TileGpu StateRow must be 112 bytes to match tilegpu.glsl std430");
 
@@ -167,6 +168,8 @@ private:
 		u32 index_format, pal_offset;
 		u32 epoch;
 		u32 date;             // 0 off, 1 = DATM 0, 2 = DATM 1; the pass takes a snapshot for it
+		bool fge;             // PRIM.FGE: this draw's fragments are fogged
+		u32 fogcol;           // FOGCOL packed 0x00BBGGRR
 	};
 
 	// Per-frame accumulation (filled in Draw via AccumulateDraw, consumed + reset in the plan

@@ -1023,6 +1023,13 @@ void GSRendererTileGpu::AccumulateDraw()
 	PendingDraw pd = {};
 	pd.first_prep_op = static_cast<u32>(m_plan_prep_ops.size());
 
+	// Fog. The GS walks the fragment's RGB toward FOGCOL by the per-vertex fog factor F (RGB only,
+	// alpha untouched); the vertex stream already carries F, so the draw needs only the enable and
+	// the colour. Sprites take F from the second vertex like everything else flat about them.
+	pd.fge = PRIM->FGE;
+	pd.fogcol = static_cast<u32>(m_env.FOGCOL.FCR) | (static_cast<u32>(m_env.FOGCOL.FCG) << 8) |
+				(static_cast<u32>(m_env.FOGCOL.FCB) << 16);
+
 	// Texture inputs. Two address geometries are sampled at this stage: the direct 32-bit families
 	// (PSMCT32/PSMCT24 -- one page/block/column geometry, no CLUT) and the paletted index formats
 	// (PSMT8/PSMT4 -- a swizzled index into an expanded CLUT). Every other textured draw (16-bit,
@@ -1325,8 +1332,8 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.sc_y0 = pd.scissor.y;
 			sr.sc_x1 = pd.scissor.z;
 			sr.sc_y1 = pd.scissor.w;
-			sr.pad0_ = 0;
-			sr.pad1_ = 0;
+			sr.fge = pd.fge ? 1u : 0u;
+			sr.fogcol = pd.fogcol;
 		}
 
 		// 3. Group contiguous draws sharing a colour+depth surface pair and depth mode into one

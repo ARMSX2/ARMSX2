@@ -6248,6 +6248,7 @@ VkPipeline GSDeviceVK::CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 b
 	gpb.AddVertexAttribute(3, 0, VK_FORMAT_R32G32_SFLOAT, 0);   // ST texture coords
 	gpb.AddVertexAttribute(4, 0, VK_FORMAT_R32_SFLOAT, 12);     // Q (RGBAQ.Q, the STQ divisor)
 	gpb.AddVertexAttribute(5, 0, VK_FORMAT_R16G16_UINT, 24);    // UV texture coords (12.4 fixed)
+	gpb.AddVertexAttribute(6, 0, VK_FORMAT_R8G8B8A8_UNORM, 28); // FOG (the factor F is the low byte)
 	gpb.SetPrimitiveTopology(kTopology[topology]);
 	gpb.SetPipelineLayout(m_tilegpu_pipeline_layout);
 	gpb.SetDynamicViewportAndScissorState();
