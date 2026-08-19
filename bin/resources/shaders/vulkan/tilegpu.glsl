@@ -356,7 +356,11 @@ void main()
 	// changes what lands, and folds the ATST=NEVER cases into the write flags instead).
 	if (sr.atst != 0u)
 	{
-		const uint a = uint(cv.a * 255.0f);
+		// The alpha byte the test sees is the one the target would store, so it rounds -- the same
+		// value the UNORM write produces. Truncating instead costs a level wherever the texture
+		// function lands a hair under an integer, which an ATST=EQUAL draw reads as "no pixel at
+		// all": Shadow of the Colossus tests EQUAL against 255 for one of its two sky layers.
+		const uint a = uint(cv.a * 255.0f + 0.5f);
 		bool pass;
 		switch (sr.atst - 1u)
 		{
