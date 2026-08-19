@@ -220,10 +220,8 @@ TEST(Vu0MacroConsoleConformance, WritesToVi00AreDiscarded)
 // read back through CFC2 rather than the VU0 snapshot, because CFC2 is what
 // the console observed through.
 //
-// The engines legitimately disagree here (the macro JIT masks the STATUS write
-// to the 0xFC0 sticky field; the shared interpreter CTC2 does a plain
-// full-width store), so each side runs on its own and is scored separately
-// rather than through Run()'s auto-diff.
+// Each side runs on its own rather than through Run()'s auto-diff, so that a
+// mistake the two engines share is still visible.
 
 namespace
 {
@@ -246,40 +244,12 @@ u32 Ctc2Readback(int reg, bool jit)
 	return jit ? h.GetGprJit(kRdst) : h.GetGprInterp(kRdst);
 }
 
-// Where this emulator does not reproduce the console, recorded from a real
-// run and NOT derived from a rule.
-//
-// vi01 and vi16 used to be listed here as interpreter-only divergences; the
-// shared CTC2 (pcsx2/VU0.cpp) now narrows them the way both recompilers always
-// have — a 16-bit store for the integer VIs, and the 0xFC0 write mask for
-// STATUS that leaves the 0x3F current-flag field alone.
-//
-// What is left is the class where both engines are wrong: CLIP is a 24-bit
-// field and CMSAR0/CMSAR1 are 16-bit, but CTC2's default arm stores all 32
-// bits; and the REG_CMSAR1 case kicks VU1 without ever storing the value, so a
-// read-back returns whatever VI[31] held before.
-struct Ctc2Divergence { int reg; bool bad_interp, bad_jit; };
-constexpr Ctc2Divergence kCtc2Divergences[] = {
-	{18, true, true},   // CLIP is 24-bit on silicon; both store 32
-	{27, true, true},   // CMSAR0 is 16-bit on silicon; both store 32
-	{31, true, true},   // CMSAR1 never stored at all; CTC2 only kicks VU1
-};
-
-bool Ctc2KnownBad(int reg, bool jit)
-{
-	for (const Ctc2Divergence& d : kCtc2Divergences)
-		if (d.reg == reg)
-			return jit ? d.bad_jit : d.bad_interp;
-	return false;
-}
 } // namespace
 
-// Asserts the registers this emulator DOES get right, and asserts that the
-// ones it does not still fail — so both a regression and a fix trip the test
-// rather than quietly shifting the allowance.
+// Every architecturally-named index, on both engines, against the capture.
 TEST(Vu0MacroConsoleConformance, Ctc2WriteMasksMatchConsole)
 {
-	int checked = 0, diverged = 0;
+	int checked = 0;
 	for (int i = 0; i < kCtc2MaskCaseCount; ++i)
 	{
 		const Ctc2MaskCase& c = kCtc2MaskCases[i];
@@ -287,46 +257,14 @@ TEST(Vu0MacroConsoleConformance, Ctc2WriteMasksMatchConsole)
 			continue; // reserved index: recorded in the table, never asserted
 		for (int jit = 0; jit < 2; ++jit)
 		{
-			const bool ok = Ctc2Readback(c.reg, jit != 0) == c.readback;
-			if (!Ctc2KnownBad(c.reg, jit != 0))
-			{
-				SCOPED_TRACE(::testing::Message()
-				             << "vi" << c.reg << " " << c.name
-				             << (jit ? " [jit]" : " [interp]"));
-				EXPECT_TRUE(ok) << "new divergence from silicon";
-			}
-			else
-			{
-				++diverged;
-				EXPECT_FALSE(ok)
-					<< "vi" << c.reg << " " << c.name
-					<< (jit ? " [jit]" : " [interp]")
-					<< " now MATCHES silicon. If CTC2 was fixed, drop this row "
-					   "from kCtc2Divergences.";
-			}
-		}
-		++checked;
-	}
-	EXPECT_EQ(checked, 12);
-	EXPECT_EQ(diverged, 6);
-}
-
-// What passing looks like once CTC2's write masks are right.
-TEST(Vu0MacroConsoleConformance, DISABLED_AllCtc2WriteMasksMatchConsole)
-{
-	for (int i = 0; i < kCtc2MaskCaseCount; ++i)
-	{
-		const Ctc2MaskCase& c = kCtc2MaskCases[i];
-		if (!c.defined)
-			continue;
-		for (int jit = 0; jit < 2; ++jit)
-		{
 			SCOPED_TRACE(::testing::Message()
 			             << "vi" << c.reg << " " << c.name
 			             << (jit ? " [jit]" : " [interp]"));
 			EXPECT_EQ(Ctc2Readback(c.reg, jit != 0), c.readback);
 		}
+		++checked;
 	}
+	EXPECT_EQ(checked, 12);
 }
 
 // CFC2 / QMFC2 / QMTC2 / LQC2 destination semantics.

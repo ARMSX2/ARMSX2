@@ -1445,9 +1445,17 @@ void recCOP2_CTC2()
 	}
 	else if (fs == REG_CLIP_FLAG)
 	{
-		// REG_CLIP_FLAG: write to both clipflag and VI
+		// REG_CLIP_FLAG: 24 bits wide, written to both clipflag and VI.
+		armAsm->And(RWSCRATCH, RWSCRATCH, 0xFFFFFF);
 		armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.clipflag));
 		armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.VI[REG_CLIP_FLAG]));
+	}
+	else if (fs == REG_CMSAR0)
+	{
+		// A microprogram start address, so 16 bits wide. Masked rather than
+		// stored narrow: the upper half reads back as zero whatever it held.
+		armAsm->And(RWSCRATCH, RWSCRATCH, 0xFFFF);
+		armAsm->Str(RWSCRATCH, armVU0Mem(&VU0.VI[REG_CMSAR0]));
 	}
 	else if (fs == REG_STATUS_FLAG)
 	{
@@ -1485,10 +1493,8 @@ void recCOP2_CTC2()
 	{
 		// Integer VIs (1-15) are physically 16-bit; the micro JIT reads/writes
 		// them as 16-bit, so a 32-bit store would leave stale upper bits that a
-		// later CFC2 (.UL) reads back. Store only the low 16 bits, matching x86
-		// recCTC2 (upstream a7af3cd48). NOTE: this is a deliberate, hardware-
-		// correct JIT-vs-interp divergence — the shared interp CTC2 stores the
-		// full 32 bits.
+		// later CFC2 (.UL) reads back. Store only the low 16 bits, as the
+		// shared interpreter CTC2 does.
 		armAsm->Strh(RWSCRATCH, armVU0Mem(&VU0.VI[fs]));
 	}
 	else
