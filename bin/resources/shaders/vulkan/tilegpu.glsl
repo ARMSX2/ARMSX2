@@ -35,7 +35,7 @@
 #define TILEGPU_TEX 0
 #endif
 
-// Matches the executor's StateRow byte-for-byte (std430, 112 bytes). The transform and the scissor
+// Matches the executor's StateRow byte-for-byte (std430, 144 bytes). The transform and the scissor
 // are read in the vertex stage; the texture fields and the tests in the fragment stage. z_write/z_test
 // are pipeline state, carried for layout parity, not consumed by either.
 struct StateRow
@@ -65,7 +65,10 @@ struct StateRow
 	uint fogcol;       // FOGCOL packed 0x00BBGGRR
 	uint atst;         // 0 = no alpha test; else TEST.ATST + 1 (2 = LESS ... 8 = NOTEQUAL)
 	uint aref;         // TEST.AREF
-	uint pad0_, pad1_;
+	uint texa;         // 24-bit texel alpha: bit 0 = apply, bit 1 = TEXA.AEM, bits 8-15 = TEXA.TA0
+	uint region_u;     // CLAMP.MINU | (CLAMP.MAXU << 16)
+	uint region_v;     // CLAMP.MINV | (CLAMP.MAXV << 16)
+	uint pad0_, pad1_, pad2_; // the row is 144 bytes on both sides; see the C++ StateRow's note
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer StateTable
@@ -255,13 +258,21 @@ vec4 tilegpu_unpack(uint w)
 	            float((w >> 24u) & 0xFFu)) * (1.0f / 255.0f);
 }
 
-// Apply the wrap mode to one axis. REPEAT masks (dims are powers of two); everything else clamps --
-// REGION_CLAMP/REGION_REPEAT are approximated by CLAMP until the region bounds are carried (wrong-fast).
-int tilegpu_wrap(int c, uint dim, uint mode)
+// Apply the wrap mode to one axis. REPEAT masks (dims are powers of two); CLAMP clamps to the
+// texture; the two REGION modes work off the CLAMP register's MIN/MAX pair for the axis, which
+// arrives packed as MIN | (MAX << 16) -- REGION_CLAMP clamps between them, REGION_REPEAT reads them
+// as a mask and an or-value, which is how a game addresses a sub-rect of a shared texture page.
+int tilegpu_wrap(int c, uint dim, uint mode, uint region)
 {
+	const int rmin = int(region & 0xFFFFu);
+	const int rmax = int(region >> 16u);
 	if (mode == 0u) // REPEAT
 		return int(uint(c) & (dim - 1u));
-	return clamp(c, 0, int(dim) - 1); // CLAMP and the region modes
+	if (mode == 2u) // REGION_CLAMP
+		return clamp(c, rmin, rmax);
+	if (mode == 3u) // REGION_REPEAT
+		return int((uint(c) & uint(rmin)) | uint(rmax));
+	return clamp(c, 0, int(dim) - 1); // CLAMP
 }
 
 #endif // TILEGPU_TEX
@@ -296,8 +307,8 @@ void main()
 		// interpolation (gl_Position.w == 1) plus this per-pixel divide reproduces the PS2's own
 		// affine-rasteriser-with-per-pixel-divide texturing.
 		vec2 uv = (sr.fst != 0u) ? v_uv : (vec2(v_st.x, v_st.y) / v_q) * vec2(float(sr.tw), float(sr.th));
-		int iu = tilegpu_wrap(int(floor(uv.x)), sr.tw, sr.wms);
-		int iv = tilegpu_wrap(int(floor(uv.y)), sr.th, sr.wmt);
+		int iu = tilegpu_wrap(int(floor(uv.x)), sr.tw, sr.wms, sr.region_u);
+		int iv = tilegpu_wrap(int(floor(uv.y)), sr.th, sr.wmt, sr.region_v);
 
 		// The texel: direct 32-bit words, or a paletted index (PSMT8/PSMT4) looked up in the frame's
 		// expanded CLUT stream. index_format is dynamically uniform per draw, so this does not diverge.
@@ -309,6 +320,15 @@ void main()
 		else
 			w = vram_words[pal_base + sr.pal_offset + tilegpu_index4(uint(iu), uint(iv), sr.tbp0, sr.tbw, sr.epoch)];
 		vec4 ct = tilegpu_unpack(w);
+
+		// TEXA: a 24-bit texel stores no alpha, so the GS gives it TEXA.TA0, and AEM makes a texel
+		// whose RGB is entirely zero transparent instead. (A paletted texture takes TEXA in the CLUT
+		// expansion on the CPU, so only the direct road needs this.)
+		if ((sr.texa & 1u) != 0u)
+		{
+			const bool aem_zero = (sr.texa & 2u) != 0u && (w & 0x00FFFFFFu) == 0u;
+			ct.a = aem_zero ? 0.0f : float((sr.texa >> 8u) & 0xFFu) * (1.0f / 255.0f);
+		}
 
 		const float k = 255.0f / 128.0f;
 		if (sr.tfx == 1u) // DECAL

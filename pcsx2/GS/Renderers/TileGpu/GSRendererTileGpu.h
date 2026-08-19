@@ -140,9 +140,15 @@ private:
 		u32 fogcol;             // FOGCOL packed 0x00BBGGRR
 		u32 atst;               // 0 = no alpha test; else TEST.ATST + 1 (2 = LESS ... 8 = NOTEQUAL)
 		u32 aref;               // TEST.AREF, the value the fragment alpha is compared against
-		u32 pad0_, pad1_;
+		u32 texa;               // 24-bit texel alpha: bit 0 = apply, bit 1 = TEXA.AEM, bits 8-15 = TEXA.TA0
+		u32 region_u;           // CLAMP.MINU | (CLAMP.MAXU << 16), for the two REGION wrap modes
+		u32 region_v;           // CLAMP.MINV | (CLAMP.MAXV << 16)
+		// Explicit tail padding, not slack: alignas(16) would pad the C++ side to 144 anyway, while
+		// the shader's std430 array stride is a multiple of 8, so an implicit tail would put the two
+		// sides on different strides and every row but the first would be read from the wrong place.
+		u32 pad0_, pad1_, pad2_;
 	};
-	static_assert(sizeof(StateRow) == 128, "TileGpu StateRow must be 128 bytes to match tilegpu.glsl std430");
+	static_assert(sizeof(StateRow) == 144, "TileGpu StateRow must be 144 bytes to match tilegpu.glsl std430");
 
 	// One draw's inputs the plan build resolves once the frame is complete: which surfaces it
 	// renders into (model ids -> pool textures), the coordinate origin, the draw rect, and the
@@ -176,6 +182,8 @@ private:
 		u32 atst;             // 0 = no per-fragment alpha test; else TEST.ATST + 1
 		u32 aref;
 		bool alpha_written;   // false = the colour write mask keeps alpha (AFAIL RGB_ONLY)
+		u32 texa;             // 24-bit texel alpha: bit 0 apply, bit 1 AEM, bits 8-15 TA0
+		u32 region_u, region_v; // CLAMP MIN | (MAX << 16) per axis, for the REGION wrap modes
 	};
 
 	// Per-frame accumulation (filled in Draw via AccumulateDraw, consumed + reset in the plan

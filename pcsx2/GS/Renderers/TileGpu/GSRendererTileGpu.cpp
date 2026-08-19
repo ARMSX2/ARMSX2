@@ -1093,7 +1093,17 @@ void GSRendererTileGpu::AccumulateDraw()
 			pd.tcc = tex0.TCC;
 			pd.wms = ctx->CLAMP.WMS;
 			pd.wmt = ctx->CLAMP.WMT;
+			// The REGION wrap modes address a sub-rect of a shared texture page; the pair means
+			// min/max under REGION_CLAMP and mask/or under REGION_REPEAT. GetSizeFixedTEX0 has
+			// already extended TW/TH to cover whatever the region reaches.
+			pd.region_u = static_cast<u32>(ctx->CLAMP.MINU) | (static_cast<u32>(ctx->CLAMP.MAXU) << 16);
+			pd.region_v = static_cast<u32>(ctx->CLAMP.MINV) | (static_cast<u32>(ctx->CLAMP.MAXV) << 16);
 			pd.index_format = direct32 ? 0u : (psm == PSMT8 ? 1u : 2u);
+			// A 24-bit texture's texels carry no alpha byte: TEXA supplies it (and AEM makes an
+			// all-zero RGB texel transparent). A paletted texture takes TEXA in the CLUT expansion.
+			pd.texa = (psm == PSMCT24) ? (1u | (m_env.TEXA.AEM ? 2u : 0u) |
+											 (static_cast<u32>(m_env.TEXA.TA0) << 8)) :
+										 0u;
 			if (paletted)
 			{
 				// Expand this draw's CLUT to 32-bit RGBA (CSA/CPSM/TEXA applied by Read32) and append
@@ -1371,8 +1381,12 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.fogcol = pd.fogcol;
 			sr.atst = pd.atst;
 			sr.aref = pd.aref;
+			sr.texa = pd.texa;
+			sr.region_u = pd.region_u;
+			sr.region_v = pd.region_v;
 			sr.pad0_ = 0;
 			sr.pad1_ = 0;
+			sr.pad2_ = 0;
 		}
 
 		// 3. Group contiguous draws sharing a colour+depth surface pair and depth mode into one

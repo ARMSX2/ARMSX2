@@ -6444,7 +6444,7 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 						  m_tilegpu_state_descriptor_set != VK_NULL_HANDLE && !plan.draws.empty() &&
 						  plan.topologies.size() == plan.draws.size() &&
 						  plan.vertex_stride == sizeof(GSVertex) && !plan.vertices.empty() &&
-						  plan.state_table != nullptr && plan.state_stride == sizeof(float) * 32 &&
+						  plan.state_table != nullptr && plan.state_stride == sizeof(float) * 36 &&
 						  plan.state_count > 0;
 
 	// The byte road rides along only when the frame carries ring pages AND the sampling path
