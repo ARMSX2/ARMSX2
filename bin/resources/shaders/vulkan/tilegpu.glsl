@@ -13,6 +13,13 @@
 // road mask, so a pass pays instruction size only for the roads its own draws take -- which is how
 // this budget is enforced, rather than by everything sharing one program that only grows.
 //
+// ⚠️ THE RULE THAT COMES WITH IT, and it binds every road added here (C4's source road next): a
+// variant only ever REMOVES code, so the float arithmetic that survives must not change when its
+// neighbours go. SPIR-V lets a driver fuse a mul-add and lets it pick a lowering for a built-in
+// like mix(), and both choices move with the surrounding code -- so any mul-add on the texel path
+// is written as an explicit fma() whose result is a `precise` variable, which the spec makes one
+// fused operation nobody may re-lower. Unpinned, dropping an untaken road moved real pixels.
+//
 // The TileGpu executor's wrong-fast geometry + texture shader. The vertex stage transforms a raw
 // GSVertex into clip space using the per-draw screen->NDC transform (the HW tfx VertexScale/
 // VertexOffset) and forwards the vertex colour and the two texture coordinates (UV and ST/Q). The
@@ -455,6 +462,16 @@ vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 // coordinate; LINEAR blends the four texels around it, sampling half a texel back so the weights are
 // zero at a texel centre -- the GS subtracts the same half texel from its fixed-point coordinate
 // before splitting it into an index and a fraction.
+//
+// ⚠️ The three lerps are explicit fma() under `precise`, per the pinning rule in the header, and it
+// is load-bearing rather than stylistic. Written as mix() the blend is a built-in the driver lowers
+// to whichever of `a*(1-t) + b*t` or `a + t*(b-a)` suits the surrounding code -- and the surrounding
+// code is exactly what a variant changes, so the same texel came out one LSB apart depending on
+// which roads the pass compiled. Measured before it was pinned: ten of eighteen corpus dumps moved,
+// worst case a few hundred pixels, and wherever the LSB landed on an alpha test the whole fragment
+// flipped. `precise` on the result makes each fma a single fused rounding that nobody may re-lower,
+// so every variant computes the same texel -- and one rounding per lerp instead of two is not a
+// concession, it is the more accurate form.
 vec4 tilegpu_sample(StateRow sr, vec2 uv)
 {
 	if (sr.ltf == 0u)
@@ -464,8 +481,14 @@ vec4 tilegpu_sample(StateRow sr, vec2 uv)
 	const vec2 b = floor(c);
 	const vec2 f = c - b;
 	const int x0 = int(b.x), y0 = int(b.y);
-	return mix(mix(tilegpu_tap(sr, x0, y0), tilegpu_tap(sr, x0 + 1, y0), f.x),
-	           mix(tilegpu_tap(sr, x0, y0 + 1), tilegpu_tap(sr, x0 + 1, y0 + 1), f.x), f.y);
+	const vec4 t00 = tilegpu_tap(sr, x0, y0);
+	const vec4 t10 = tilegpu_tap(sr, x0 + 1, y0);
+	const vec4 t01 = tilegpu_tap(sr, x0, y0 + 1);
+	const vec4 t11 = tilegpu_tap(sr, x0 + 1, y0 + 1);
+	precise vec4 top = fma(vec4(f.x), t10 - t00, t00);
+	precise vec4 bot = fma(vec4(f.x), t11 - t01, t01);
+	precise vec4 t = fma(vec4(f.y), bot - top, top);
+	return t;
 }
 
 #endif // TILEGPU_TEXTURED
@@ -490,7 +513,10 @@ void main()
 	// HIGHLIGHT Cv = Ct*Cf*2 + Af, HIGHLIGHT2 likewise; alpha follows TCC (texture carries alpha
 	// or the fragment keeps Af).
 	vec4 cf = v_color;
-	vec4 cv = cf;
+	// precise, same rule: HIGHLIGHT's `Ct*Cf*k + Af` is a mul-add the driver is free to fuse or not,
+	// and the alpha test below reads this value -- so a fusion that happens in one variant and not
+	// another moves a fragment across ATST and takes the whole pixel with it.
+	precise vec4 cv = cf;
 
 #if TILEGPU_TEXTURED
 	if (sr.tex_enable != 0u)
@@ -532,7 +558,8 @@ void main()
 		// value the UNORM write produces. Truncating instead costs a level wherever the texture
 		// function lands a hair under an integer, which an ATST=EQUAL draw reads as "no pixel at
 		// all": Shadow of the Colossus tests EQUAL against 255 for one of its two sky layers.
-		const uint a = uint(cv.a * 255.0f + 0.5f);
+		precise float av = fma(cv.a, 255.0f, 0.5f);
+		const uint a = uint(av);
 		bool pass;
 		switch (sr.atst - 1u)
 		{
