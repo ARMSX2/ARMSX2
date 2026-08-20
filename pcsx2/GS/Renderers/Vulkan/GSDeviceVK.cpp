@@ -577,6 +577,14 @@ bool GSDeviceVK::SelectDeviceFeatures()
 	// ...and shaderClipDistance: the per-draw GS scissor rides as four vertex-shader clip planes
 	// (there is no per-draw scissor inside one indirect call).
 	m_device_features.shaderClipDistance = available_features.shaderClipDistance;
+	// ...and shaderSampledImageArrayDynamicIndexing: tilegpu.glsl's rule-2 tap reads ONE
+	// texelFetch out of the per-pass sampled-target array at an index that comes from the draw's
+	// state row. A chain of literal indices needs no feature, but it is eight fetch sites and the
+	// a650 has a hard fragment-program size budget the chain does not fit inside (see the comment
+	// at the top of tilegpu.glsl). Core 1.0, but not one every implementation has to offer, so it
+	// is checked, not assumed; CreateDevice folds it into the rule-2 gate.
+	m_device_features.shaderSampledImageArrayDynamicIndexing =
+		available_features.shaderSampledImageArrayDynamicIndexing;
 
 	return true;
 }
@@ -866,6 +874,20 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			m_optional_extensions.vk_ext_descriptor_indexing ? "yes" : "no",
 			(m_device_features.multiDrawIndirect && m_device_features.drawIndirectFirstInstance) ? "yes" : "no",
 			m_device_features.shaderClipDistance ? "yes" : "no");
+
+		// Rule 2 (the tap reading a resident target instead of the bytes) needs one thing the rest
+		// of the contract does not: indexing the per-pass sampled-target array by the draw's slot.
+		// Without it rule 2 stays off and the shader compiles its array-less tap — a shader that
+		// merely never executes a dynamic index it cannot legally take is still a shader the
+		// driver may reject. NON-uniform indexing is deliberately NOT required: the executor
+		// splits its indirect runs at a slot change, so the index is wave-uniform by construction
+		// (ExecuteTileGpuPassPlan).
+		m_optional_extensions.tilegpu_bindless_targets =
+			m_optional_extensions.tilegpu_device_capable &&
+			m_device_features.shaderSampledImageArrayDynamicIndexing == VK_TRUE;
+		DevCon.WriteLn("VK: TileGpu sampled targets %s (sampled-image array dynamic indexing=%s).",
+			m_optional_extensions.tilegpu_bindless_targets ? "enabled" : "disabled",
+			m_device_features.shaderSampledImageArrayDynamicIndexing ? "yes" : "no");
 	}
 
 	if (m_optional_extensions.vk_ext_provoking_vertex)
@@ -6074,14 +6096,16 @@ bool GSDeviceVK::TileGpuExecutorAvailable()
 	return m_optional_extensions.tilegpu_device_capable;
 }
 
-// The sampled-target array needs nothing the executor's own contract does not already have: it is
-// a fixed-size array of combined samplers indexed by literal (see tilegpu.glsl's
-// tilegpu_target_texel), not a runtime-sized bindless table, so no descriptor-indexing sub-feature
-// beyond what CreateDevice already negotiated is involved. Answered here rather than assumed by the
-// renderer, because this is the seam a device that cannot serve it would refuse at.
+// The sampled-target array is a fixed-size array of combined samplers whose index is the draw's
+// slot (see tilegpu.glsl's tilegpu_target_texel), so it needs one feature beyond the executor's
+// own contract: dynamic indexing of a sampled-image array. NOT the non-uniform sub-feature -- the
+// executor splits its indirect calls at a slot change, which makes the index wave-uniform by
+// construction. CreateDevice decided that; answered here rather than assumed by the renderer,
+// because this is the seam a device that cannot serve it refuses at -- and the shader compiled for
+// such a device has no target array in it at all.
 bool GSDeviceVK::TileGpuBindlessTargets()
 {
-	return m_optional_extensions.tilegpu_device_capable;
+	return m_optional_extensions.tilegpu_bindless_targets;
 }
 
 bool GSDeviceVK::CompileTileGpuPipeline()
@@ -6181,9 +6205,16 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// constant shifts there. Gate on driverID, never vendorID, per the device-workaround
 	// rule above -- other Mesa drivers and the proprietary ones keep the straight form.
 	const bool static_byte_sel = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP);
+	// Rule 2's tap compiles in only where the device can index the sampled-target array by the
+	// draw's slot (TileGpuBindlessTargets, negotiated in CreateDevice). Elsewhere the array is not
+	// declared at all and the tap has no target branch: the renderer already refuses to bind
+	// targets there, but "never taken at runtime" is not the same as "not in the SPIR-V", and a
+	// dynamic image-array index is only legal in a module the device supports it in.
 	const std::string defines = (m_tilegpu_tex ? form_defines : std::string()) +
 								fmt::format("#define TILEGPU_TEX {}\n", m_tilegpu_tex ? 1 : 0) +
 								fmt::format("#define TILEGPU_STATIC_BYTE_SEL {}\n", static_byte_sel ? 1 : 0) +
+								fmt::format("#define TILEGPU_TEX_TARGETS {}\n",
+									m_optional_extensions.tilegpu_bindless_targets ? 1 : 0) +
 								fmt::format("#define TILEGPU_MAX_TEX_SOURCES {}\n",
 									GSTileGpuPassPlan::kMaxTexSourcesPerPass);
 	const std::string full_source = defines + *source;

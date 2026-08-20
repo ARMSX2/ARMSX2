@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
+// ⚠️ SIZE BUDGET, Adreno 650: keep the FRAGMENT program at instrlen <= 123 units (1 unit = 128 B,
+// so 15,744 B / 3936 dwords -- the number the `IR3_SHADER_DEBUG=fs` stats line reports). Crossing
+// to 124 flips the whole GPU's behaviour: measured 2026-08-20, the same frame went 21.8 -> 30.7 ms
+// on SotC with nothing changed but four units of DEAD, never-executed arithmetic. Turnip DMAs the
+// program into a 128-unit on-chip instruction RAM and writes SP_PS_INSTR_SIZE, which the prefetcher
+// reads; the cliff rides on that register, so DEAD CODE COUNTS and only the fragment stage does.
+// Whatever you add here, take the stats line on an a650 before landing it. If a road cannot fit,
+// the answer is a per-pass shader VARIANT that leaves the other roads out, not a bigger shader.
+//
 // The TileGpu executor's wrong-fast geometry + texture shader. The vertex stage transforms a raw
 // GSVertex into clip space using the per-draw screen->NDC transform (the HW tfx VertexScale/
 // VertexOffset) and forwards the vertex colour and the two texture coordinates (UV and ST/Q). The
@@ -31,12 +40,22 @@
 // VRAM sampling path is compiled in, 0 when they did not (the whole draw then falls back to the
 // vertex-colour path whatever a state row's tex_enable says).
 
+// TILEGPU_TEX_TARGETS (injected by the device): 1 when the device can index the per-pass
+// sampled-target array by a value the shader computes (shaderSampledImageArrayDynamicIndexing).
+// 0 leaves the array undeclared and rule 2's whole branch out of the program; the renderer
+// independently refuses to bind targets there, so the tap only ever sees
+// tex_target == 0xFFFFFFFF.
+
 // TILEGPU_MAX_TEX_SOURCES (injected by the device): the size of the per-pass sampled-target array
 // set 2 binds -- GSTileGpuPassPlan::kMaxTexSourcesPerPass. A state row's tex_target is a slot in it,
 // or 0xFFFFFFFF for "decode the bytes".
 
 #ifndef TILEGPU_TEX
 #define TILEGPU_TEX 0
+#endif
+
+#ifndef TILEGPU_TEX_TARGETS
+#define TILEGPU_TEX_TARGETS 0
 #endif
 
 #ifndef TILEGPU_MAX_TEX_SOURCES
@@ -319,29 +338,27 @@ vec4 tilegpu_texa(StateRow sr, vec4 t, bool rgb_zero)
 // and the fetch below returns exactly what tilegpu_texel32 would -- out of the LIVE pixels, instead
 // of out of bytes some earlier writeback had to compose first.
 //
-// Indexed by literal on purpose. The slot is uniform within a draw, but one vkCmdDrawIndexedIndirect
-// covers many draws and a wave may span two of them, which would make this a NON-uniform descriptor
-// index: shaderSampledImageArrayNonUniformIndexing, GL_EXT_nonuniform_qualifier, and an #extension
-// line this shader cannot place before the header's generated code. A chain of constant indices
-// needs none of that, costs one uniform branch, and cannot be miscompiled the way the dynamic
-// byte-extract above was.
+// ONE fetch site, indexed dynamically. This used to be a chain of eight literal compares, which
+// needs no device feature -- and cost 12 instrlen units, carrying the program from 117 to 129 and
+// straight over the a650 cliff the header warns about (measured 2026-08-20: sotc 21.4 -> 32.1 ms
+// GPU). The chain was inlined four times over by bilinear sampling, so it paid for eight fetch
+// sites times four taps whatever a draw actually did.
+//
+// ⚠️ `slot` MUST be dynamically uniform, and what makes it so is on the executor's side: one
+// vkCmdDrawIndexedIndirect covers many draws, so the executor splits its indirect runs wherever
+// the slot changes and every call it issues carries a single slot. Undecorated is deliberate --
+// nonuniformEXT() compiles to the same instruction count but switches ir3 from
+// isam.s2en.uniform (one descriptor per wave) to isam.s2en.nonuniform (one per lane), measured
+// 2026-08-20 at +1.20 ms GPU on SotC, +5.6%, and free on the five dumps that barely use rule 2.
+// If the run splitting is ever dropped, this needs nonuniformEXT and its feature back.
+#if TILEGPU_TEX_TARGETS
 layout(set = 1, binding = 1) uniform sampler2D u_targets[TILEGPU_MAX_TEX_SOURCES];
-
-#if TILEGPU_MAX_TEX_SOURCES != 8
-#error "tilegpu_target_texel enumerates 8 slots; keep it in step with kMaxTexSourcesPerPass"
-#endif
 
 vec4 tilegpu_target_texel(uint slot, ivec2 c)
 {
-	if (slot == 0u) return texelFetch(u_targets[0], c, 0);
-	if (slot == 1u) return texelFetch(u_targets[1], c, 0);
-	if (slot == 2u) return texelFetch(u_targets[2], c, 0);
-	if (slot == 3u) return texelFetch(u_targets[3], c, 0);
-	if (slot == 4u) return texelFetch(u_targets[4], c, 0);
-	if (slot == 5u) return texelFetch(u_targets[5], c, 0);
-	if (slot == 6u) return texelFetch(u_targets[6], c, 0);
-	return texelFetch(u_targets[7], c, 0);
+	return texelFetch(u_targets[slot], c, 0);
 }
+#endif
 
 // Apply the wrap mode to one axis. REPEAT masks (dims are powers of two); CLAMP clamps to the
 // texture; the two REGION modes work off the CLAMP register's MIN/MAX pair for the axis, which
@@ -376,12 +393,14 @@ vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 	// semantic: every wrap mode lands inside tw x th (GetSizeFixedTEX0 grows TW/TH to cover a
 	// REGION window), and the renderer refuses the bind unless tw x th fits the image, so this
 	// only stops a fetch running out of bounds if one of those ever stops holding.
+#if TILEGPU_TEX_TARGETS
 	if (sr.tex_target != 0xFFFFFFFFu)
 	{
 		const vec4 tt = tilegpu_target_texel(sr.tex_target,
 			ivec2(int(min(iu, sr.tw - 1u)), int(min(iv, sr.th - 1u))));
 		return tilegpu_texa(sr, tt, all(equal(tt.rgb, vec3(0.0f))));
 	}
+#endif
 
 	// index_format is dynamically uniform per draw, so this does not diverge.
 	uint w;

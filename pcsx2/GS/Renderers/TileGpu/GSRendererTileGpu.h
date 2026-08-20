@@ -209,7 +209,7 @@ private:
 	std::vector<GSDevice::GSTileGpuIndirectDraw> m_plan_draws;
 	std::vector<GSDevice::GSTileGpuTopology> m_plan_topologies; // one per m_plan_draws entry
 	std::vector<u32> m_plan_blend_keys; // one per m_plan_draws entry (GSTileGpuPassPlan::blend_keys)
-	std::vector<u32> m_plan_tex_slots;  // one per m_plan_draws entry (GSTileGpuPassPlan::tex_slots)
+	std::vector<u32> m_plan_tex_slots; // one per m_plan_draws entry (GSTileGpuPassPlan::tex_slots)
 	std::vector<PendingDraw> m_plan_pending;
 	std::vector<GSDevice::GSTileGpuPass> m_plan_passes;
 	std::vector<GSDevice::GSTileGpuTargetPair> m_plan_target_pairs;
