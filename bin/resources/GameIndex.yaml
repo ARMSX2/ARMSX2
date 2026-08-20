@@ -65495,6 +65495,8 @@ SLUS-20250:
   name: "Stuntman"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    vu0ClampMode: 4 # Fixes VU0 macro adds landing a ULP short of the console's adder.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:

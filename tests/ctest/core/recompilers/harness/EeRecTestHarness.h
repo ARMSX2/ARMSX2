@@ -100,6 +100,12 @@ public:
 	// interpreter (which never masks). Restored to its previous value in the dtor.
 	void DisableFpuGuarded();
 
+	// Sets the VU0 clamp mode (GameDB vu0ClampMode / vuClampMode) for this run:
+	// the three Recompiler bits GameDatabase derives from it. The harness
+	// otherwise runs at the RecompilerOptions() default of 1, and the COP2
+	// macro adder emits its guard mask only from 2 up. Restored in the dtor.
+	void SetVu0ClampMode(int mode);
+
 	// ---- Memory ----
 
 	void WriteU8 (u32 addr, u8  value);
@@ -417,6 +423,11 @@ private:
 	bool prev_fpu_extra_overflow_ = false;
 	bool fpu_overflow_changed_ = false;
 	bool prev_fpu_overflow_ = false;
+	bool vu0_clamp_changed_ = false;
+	bool prev_vu0_overflow_ = false;
+	bool prev_vu0_extra_overflow_ = false;
+	bool prev_vu0_sign_overflow_ = false;
+	bool prev_vu0_exact_mode_ = false;
 };
 
 } // namespace recompiler_tests

@@ -23,6 +23,11 @@
 // like-signed SUB, where clearing them moves the exact sum across an ULP
 // boundary and the chop reports a different word.
 //
+// The recompiler emits the mask at vuClampMode 4 only, so the columns here are
+// scored at 4; UnmaskedRecompilerMissesTheseRows is the same table at every mode
+// below it, where the bare host add puts each row this file collected back on
+// the wrong word.
+//
 // The console says g = 1, over separations 2..24: the inherited rule is the
 // VU's rule. Each row's `sep` column names the readings it tells apart, so a
 // regenerated table that stopped discriminating is caught by
@@ -50,6 +55,10 @@ using namespace mips::ee;
 
 namespace {
 
+// What the recompiler's column comes to below vuClampMode 4, where no mask is
+// emitted: the score autocases_vgmask.h carried before the emitter existed.
+constexpr int kVgMaskUnmaskedBadJit = 455;
+
 // The console probe's register assignment, kept so the emitted op is the one
 // that was measured.
 constexpr u32 kFs = 1, kFt = 2, kFd = 4;
@@ -72,13 +81,14 @@ struct Observed
 	u32 stat;
 };
 
-Observed RunCase(const VgMaskCase& c, u32 word, bool jit)
+Observed RunCase(const VgMaskCase& c, u32 word, bool jit, int clamp_mode)
 {
 	EeRecTestHarness h;
+	h.SetVu0ClampMode(clamp_mode);
 	h.EnableVu0Capture();
-	// Each engine is scored against the console on its own: the recompiler
-	// emits a bare four-lane add with no mask at all, so Run()'s JIT-vs-interp
-	// auto-diff would fail on the rows this file exists to record.
+	// Each engine is scored against the console on its own: below clamp_mode 4
+	// the recompiler emits a bare four-lane add, so Run()'s JIT-vs-interp
+	// auto-diff would fail on every row this file exists to record.
 	h.ExpectVu0Divergence();
 	h.EnableCop1();
 	h.SeedVu0VfBits(kFs, c.fs, c.fs, c.fs, c.fs);
@@ -123,7 +133,7 @@ TEST(Vu0MacroGuardMaskConsole, GuardMaskMatchesConsole)
 		for (int jit = 0; jit < 2; ++jit)
 		{
 			const u8 known = jit ? c.bad_jit : c.bad_interp;
-			const u8 got = Misses(c, RunCase(c, word, jit != 0));
+			const u8 got = Misses(c, RunCase(c, word, jit != 0, 4));
 			(jit ? bad_jit : bad_interp) += PopCount(known);
 
 			for (int col = 0; col < 3; ++col)
@@ -148,6 +158,34 @@ TEST(Vu0MacroGuardMaskConsole, GuardMaskMatchesConsole)
 	EXPECT_EQ(checked, kVgMaskCaseCount);
 	EXPECT_EQ(bad_interp, kVgMaskBadInterp);
 	EXPECT_EQ(bad_jit, kVgMaskBadJit);
+}
+
+// The other side of the gate, and where it sits. Every row here was collected
+// because the mask moves it, so at each mode below 4 the recompiler has to miss
+// all of them -- and miss them on the value alone, since the mask reaches
+// neither flag word. Scoring 1 to 3 rather than only 3 is what says the gate is
+// on the topmost mode rather than somewhere below it.
+TEST(Vu0MacroGuardMaskConsole, UnmaskedRecompilerMissesTheseRows)
+{
+	for (int mode = 1; mode <= 3; ++mode)
+	{
+		SCOPED_TRACE(::testing::Message() << "vuClampMode " << mode);
+		int bad = 0, value = 0, rows_hit = 0;
+		for (int i = 0; i < kVgMaskCaseCount; ++i)
+		{
+			const VgMaskCase& c = kVgMaskCases[i];
+			const u32 word = Encode(c);
+			ASSERT_NE(word, 0u) << "case " << i << ": no encoder for op " << int(c.op);
+			const u8 m = Misses(c, RunCase(c, word, true, mode));
+			bad += PopCount(m);
+			value += (m & VGB_VALUE) != 0;
+			rows_hit += m != 0;
+		}
+		std::printf("vuClampMode %d: %d column misses over %d rows (%d value, %d rows)\n",
+			mode, bad, kVgMaskCaseCount, value, rows_hit);
+		EXPECT_EQ(bad, kVgMaskUnmaskedBadJit);
+		EXPECT_EQ(value, bad);
+	}
 }
 
 // The table asserts values; this asserts that the values are a measurement.
@@ -193,8 +231,8 @@ TEST(Vu0MacroGuardMaskConsole, DISABLED_DumpConsoleComparison)
 	{
 		const VgMaskCase& c = kVgMaskCases[i];
 		const u32 word = Encode(c);
-		const Observed oi = RunCase(c, word, false);
-		const Observed oj = RunCase(c, word, true);
+		const Observed oi = RunCase(c, word, false, 4);
+		const Observed oj = RunCase(c, word, true, 4);
 		const u8 mi = Misses(c, oi), mj = Misses(c, oj);
 		bi += PopCount(mi);
 		bj += PopCount(mj);

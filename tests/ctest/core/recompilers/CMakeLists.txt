@@ -103,6 +103,7 @@ add_pcsx2_test(recompiler_tests
 	ee_vu0_cop2_transfer_residency_tests.cpp
 	ee_vu0_cop2_clamp_residency_tests.cpp
 	ee_vu0_cop2_macro_tests.cpp
+	ee_vu0_cop2_guard_mask_tests.cpp
 	vu1_alu_upper_tests.cpp
 	vu1_alu_lower_tests.cpp
 	vu1_efu_p_pipeline_tests.cpp
