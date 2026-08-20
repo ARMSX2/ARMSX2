@@ -40,6 +40,9 @@ uint FileMcd_ConvertToSlot(uint port, uint slot);
 void FileMcd_SetType();
 void FileMcd_EmuOpen();
 void FileMcd_EmuClose();
+// Write out everything buffered for the open cards without closing them, so a host that is about
+// to lose the process does not lose the writes that have not reached the file system yet.
+void FileMcd_Flush();
 void FileMcd_CancelEject();
 void FileMcd_Reopen(std::string new_serial);
 void FileMcd_Swap();

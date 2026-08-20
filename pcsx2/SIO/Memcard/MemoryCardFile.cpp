@@ -175,6 +175,7 @@ public:
 
 	void Open();
 	void Close();
+	void Flush();
 
 	s32 IsPresent(uint slot);
 	void GetSizeInfo(uint slot, McdSizeInfo& outways);
@@ -343,6 +344,27 @@ void FileMemoryCard::Open()
 	}
 }
 
+// Write everything still buffered for every open card out to the host file system, without
+// closing anything. The console keeps playing afterwards; this exists so a host that is about to
+// lose the process -- Android backgrounding the app, which can then be reclaimed with no further
+// callback -- can bank what has been written so far.
+void FileMemoryCard::Flush()
+{
+	for (int slot = 0; slot < 8; ++slot)
+	{
+		if (!m_file[slot])
+			continue;
+
+		// Deliberately NOT the checksum store Close() does. That value is not an integrity
+		// check on the card; it is a change-detector a savestate load compares to decide
+		// whether the card moved under the console. Stamping it here would write to
+		// m_chkaddr, which is card data rather than a header field we own, on a path
+		// upstream never writes on -- and it would buy nothing, because a stale value only
+		// costs one auto-eject on the next savestate load, which is the safe direction.
+		std::fflush(m_file[slot]);
+	}
+}
+
 void FileMemoryCard::Close()
 {
 	for (int slot = 0; slot < 8; ++slot)
@@ -497,6 +519,14 @@ s32 FileMemoryCard::Save(uint slot, const u8* src, u32 adr, int size)
 
 	if (std::fwrite(m_currentdata.data(), size, 1, mcfp) == 1)
 	{
+		// Get the sector out of the stdio buffer now. Nothing else in this path flushes, so
+		// the last write of a save sequence would otherwise sit in the buffer until the next
+		// card access or fclose. On a host that can kill the process while the VM is paused
+		// -- Android does exactly that -- losing that one sector is a half-written save. This
+		// hands the bytes to the OS; it is not a disk sync, and costs nothing measurable at
+		// memory card write rates.
+		std::fflush(mcfp);
+
 		static auto last = std::chrono::time_point<std::chrono::system_clock>();
 
 		std::chrono::duration<float> elapsed = std::chrono::system_clock::now() - last;
@@ -629,6 +659,14 @@ void FileMcd_EmuClose()
 	FileMcd_Open = false;
 	Mcd::implFolder.Close();
 	Mcd::impl.Close();
+}
+
+void FileMcd_Flush()
+{
+	if (!FileMcd_Open)
+		return;
+	Mcd::implFolder.Flush();
+	Mcd::impl.Flush();
 }
 
 void FileMcd_CancelEject()
