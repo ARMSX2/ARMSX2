@@ -120,6 +120,20 @@ GSTileTextureSource::ProbeResult GSTileTextureSource::Probe(const GSVramModel& m
 	return r;
 }
 
+u64 GSTileTextureSource::ProbePageContent(const GSLocalMemory& mem, const GSVramModel& model,
+	const GSPageBitmap& pages)
+{
+	// The honesty contract PageContentStamp asserts on, checked instead of assumed. Lookup's
+	// caller has spilled GPU truth under the window before asking; a probe asks without
+	// spilling anything, so a page whose newest bytes are still on a target would be hashed
+	// pre-spill and filed under generations the post-spill bytes will share. That poisons every
+	// later reader of the page, not just this window, so the tier declines the whole window
+	// rather than hashing part of it.
+	if (!model.ReadbackNeeded(pages, kGSTilePlanesAll).empty())
+		return 0;
+	return PageContentStamp(mem, model, pages);
+}
+
 u64 GSTileTextureSource::PageContentStamp(const GSLocalMemory& mem, const GSVramModel& model, const GSPageBitmap& pages)
 {
 	// Positional fold of the per-page content hashes: the pair includes the page

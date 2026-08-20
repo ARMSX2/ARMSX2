@@ -817,8 +817,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto sreb = stat([](const MF& f) { return f.src_rebuild; });
 	const auto sfresh = stat([](const MF& f) { return f.src_fresh; });
 	const auto rregion = stat([](const MF& f) { return f.src_ref_region; });
-	const auto rmip = stat([](const MF& f) { return f.src_ref_mip; });
-	const auto rmipl = stat([](const MF& f) { return f.src_ref_mip_live; });
+	const auto smip = stat([](const MF& f) { return f.src_mip_draws; });
+	const auto smipl = stat([](const MF& f) { return f.src_mip_live; });
 	const auto rcap = stat([](const MF& f) { return f.src_ref_capacity; });
 	const auto rpal = stat([](const MF& f) { return f.src_ref_palette; });
 	const auto rpin = stat([](const MF& f) { return f.src_ref_pin; });
@@ -826,6 +826,11 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto scalls = stat([](const MF& f) { return f.src_extra_calls; });
 	const auto skept = stat([](const MF& f) { return f.src_stamp_kept; });
 	const auto smoved = stat([](const MF& f) { return f.src_stamp_moved; });
+	const auto srescued = stat([](const MF& f) { return f.src_stamp_rescued; });
+	const auto sopaque = stat([](const MF& f) { return f.src_stamp_opaque; });
+	// Per frame, not p50-minus-p50: rescued is a subset of moved within one frame, so the
+	// difference is a real per-frame quantity and its median is the one worth printing.
+	const auto sredo = stat([](const MF& f) { return f.src_stamp_moved - f.src_stamp_rescued; });
 	// Served share of textured draws, the checkpoint's headline: rule 2's binds plus rule 3's
 	// eligible draws over the draws in a format either road samples.
 	const double served = (tdraws.mean > 0.0) ? (binds.mean + elig.mean) * 100.0 / tdraws.mean : 0.0;
@@ -837,15 +842,22 @@ void GSRendererTileGpu::ReportModelTraffic()
 		tdraws.mean, tdraws.p50, binds.mean, binds.p50, elig.mean, elig.p50, served);
 	Console.WriteLn("  eligible by cost: hit %.2f / %-5u  rebuild %.2f / %-5u  first build %.2f / %u",
 		shit.mean, shit.p50, sreb.mean, sreb.p50, sfresh.mean, sfresh.p50);
-	Console.WriteLn("  refused: format %.2f/%u  region wrap %.2f/%u  mip %.2f/%u (mipmapping live on %.2f/%u of them)  "
-					"palette first sight %.2f/%u  pin %.2f/%u  capacity %.2f/%u",
-		tunsup.mean, tunsup.p50, rregion.mean, rregion.p50, rmip.mean, rmip.p50, rmipl.mean, rmipl.p50, rpal.mean,
-		rpal.p50, rpin.mean, rpin.p50, rcap.mean, rcap.p50);
+	Console.WriteLn("  refused: format %.2f/%u  region wrap %.2f/%u  palette first sight %.2f/%u  pin %.2f/%u  "
+					"capacity %.2f/%u",
+		tunsup.mean, tunsup.p50, rregion.mean, rregion.p50, rpal.mean, rpal.p50, rpin.mean, rpin.p50, rcap.mean,
+		rcap.p50);
+	Console.WriteLn("  mipmapped draws (eligible, served at level 0 as every road serves them today) %.2f/%u, "
+					"mipmapping live on %.2f/%u of them",
+		smip.mean, smip.p50, smipl.mean, smipl.p50);
 	Console.WriteLn("  distinct sources %.2f / %-4u (array holds %u)   extra indirect calls from the slot split "
 					"%.2f / %u",
 		sdist.mean, sdist.p50, kMaxSourceSlots, scalls.mean, scalls.p50);
-	Console.WriteLn("  gen stamps vs the frame before: held %.2f / %-4u  moved %.2f / %-4u  (%.1f%% held)",
+	Console.WriteLn("  windows vs the frame before: gen stamp held %.2f / %-4u  moved %.2f / %-4u  (%.1f%% held)",
 		skept.mean, skept.p50, smoved.mean, smoved.p50, stamp_total > 0.0 ? skept.mean * 100.0 / stamp_total : 0.0);
+	Console.WriteLn("  of the moved: same bytes after all %.2f / %-4u  rebuilt %.2f / %-4u  (of those, %.2f/%u "
+					"unprovable: GPU-side truth)  => %.1f%% effectively stable",
+		srescued.mean, srescued.p50, sredo.mean, sredo.p50, sopaque.mean, sopaque.p50,
+		stamp_total > 0.0 ? (skept.mean + srescued.mean) * 100.0 / stamp_total : 0.0);
 }
 
 
@@ -982,6 +994,13 @@ GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayou
 // Every refusal lands in its own counter. A silent fallthrough would report the road as unusable
 // without saying why, and "the road is wrong" and "the road is not being taken" are the two
 // answers the checkpoint has to tell apart.
+//
+// The probe models BOTH tiers of the cache's invalidation predicate, because the first tier alone
+// answers the wrong question. A gen stamp says a byte on the window's pages was written; the
+// fingerprint says whether any of them changed. On this corpus those are not the same number
+// anywhere it matters, and a probe that stopped at the stamp reported churn the cache would not
+// have had -- churn that then propagated into every identity derived from it, which is what made
+// the palette-admission column read as a wall rather than as a first frame.
 void GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
 	bool paletted, bool mip_active)
 {
@@ -995,20 +1014,23 @@ void GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0,
 		m_frame.src_ref_region++;
 		return;
 	}
-	// Level 0 only. The hardware sampler makes sampling a chain free but choosing the level is
-	// not free: the GS's LOD (K/L and the MMIN modes) is not the hardware's derivative-based one,
-	// so a mip draw waits for M4 rather than being served at a level it did not ask for.
+	// Level 0, and a draw declaring a pyramid is served at level 0 like every other one. This was
+	// a refusal and is not any more, because it refused a third of the corpus (1595 of
+	// rcuya-gameplay's 1608 textured draws, 582 on the SotC gate scene) to buy nothing: NO TileGpu
+	// road mipmaps today -- the byte road samples level 0 for every draw whatever TEX1 says -- and
+	// rule 3 with maxLod pinned to 0 samples the identical level. Refusing here would have moved
+	// those draws from one level-0 road to another level-0 road.
 	//
-	// Split into two columns because they are two different decisions. A draw whose TEX1 declares
-	// a pyramid while mipmapping is NOT active samples level 0 today on the byte road, and rule 3
-	// with maxLod pinned to 0 would sample exactly the same texels -- so the clause costs those
-	// draws for nothing, and the second column is how many that is.
+	// What is deferred is therefore not mipmapping-versus-not; it is correct GS LOD selection,
+	// which nothing has today and which arrives in M4 as a shader-variant axis (the GS's K/L and
+	// MMIN modes are not the hardware's derivative-based LOD). Counted in its own two columns
+	// because the second one is the population M4 has to serve: a draw whose pyramid is declared
+	// but not active already samples level 0 correctly.
 	if (ctx->TEX1.MXL != 0)
 	{
-		m_frame.src_ref_mip++;
+		m_frame.src_mip_draws++;
 		if (mip_active)
-			m_frame.src_ref_mip_live++;
-		return;
+			m_frame.src_mip_live++;
 	}
 
 	// Ask the cache. It holds nothing until a later chunk builds into it, so today it answers "no
@@ -1023,6 +1045,35 @@ void GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0,
 	const GSTileTextureSource::ProbeResult pr = m_tex_source.Probe(m_vram_model, tex0, m_env.TEXA, tex_pages);
 	const u64 stamp = pr.gen_stamp;
 
+	// The second tier of the same predicate, and on this corpus the load-bearing one. A moved gen
+	// stamp says some byte on the window's PAGES was written, not that any texel changed, and
+	// games re-upload identical texture data every frame: measured on 11 of the 18 dumps, the
+	// stamp holds for exactly nothing, so a road that believed it would rebuild every source every
+	// frame, and every identity derived from it -- the palette pairs the expanded cache admits on
+	// -- would churn with it and never admit. So when the stamp has moved, ask the pages what
+	// their bytes actually are. Lazily, and at most once per draw: only a moved stamp needs the
+	// fingerprint, and the library memoises per page off the write generations, so a page
+	// rewritten with the bytes it already held is hashed once per frame however many windows read
+	// it. This is the tier Lookup runs as RebuildsSamePages (97.7% of GT4's rebuilds), modelled
+	// here rather than assumed away.
+	u64 content = 0;
+	bool content_taken = false;
+	const auto ContentStamp = [&]() -> u64 {
+		if (!content_taken)
+		{
+			content = m_tex_source.ProbePageContent(m_mem, m_vram_model, tex_pages);
+			content_taken = true;
+		}
+		return content;
+	};
+	// Does the window still hold the bytes this record was taken under? A zero on either side is
+	// "cannot say" -- the fingerprint was declined because GPU-side truth sits under the window --
+	// and cannot-say is never same-bytes.
+	const auto SameBytes = [&](const ProbedWindow& p) {
+		const u64 c = ContentStamp();
+		return c != 0 && p.content != 0 && c == p.content;
+	};
+
 	// This frame's record of the window, if some earlier draw already probed it.
 	u32 wi = 0;
 	while (wi < m_probe_windows.size() && !(m_probe_windows[wi].key == key))
@@ -1033,8 +1084,12 @@ void GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0,
 	// texture -- so at VSync that earlier draw would sample bytes it never asked for. The pin
 	// discipline refuses instead: this draw takes the byte road and the rebuild happens next
 	// frame naturally. Fail-closed by construction, and counted rather than assumed rare.
+	//
+	// A stamp that moved without the bytes moving is not a rebuild at all: Lookup serves the entry
+	// it already has and nothing lands in place, so there is nothing for an earlier draw to be
+	// protected from. The pin closes on a window whose bytes really did change under it.
 	if (wi < m_probe_windows.size() && m_probe_windows[wi].slot != kNoSourceSlot &&
-		m_probe_windows[wi].stamp != stamp)
+		m_probe_windows[wi].stamp != stamp && !SameBytes(m_probe_windows[wi]))
 	{
 		m_frame.src_ref_pin++;
 		return;
@@ -1046,41 +1101,86 @@ void GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0,
 
 	if (wi == m_probe_windows.size())
 	{
-		// First sight this frame. Was the window here last frame, and did its content hold
-		// still? That pair of counters is the whole gen-stamp stability question: a title that
-		// re-uploads over its sampled pages every frame rebuilds every source every frame, and
-		// then the expanded cache never admits and rule 3 serves almost nothing.
+		// First sight this frame. Was the window here last frame, and does it still hold the same
+		// bytes? That is the whole stability question: a title that genuinely re-writes its
+		// sampled pages every frame rebuilds every source every frame, and then the expanded cache
+		// never admits and rule 3 serves almost nothing. Answered in two tiers, counted in two
+		// columns, because the gap between them is the entire result on this corpus.
 		ProbedWindow w;
 		w.key = key;
 		w.stamp = stamp;
 		w.build_id = ++m_probe_build_counter;
+		const ProbedWindow* prev = nullptr;
 		for (const ProbedWindow& p : m_probe_prev)
 		{
-			if (!(p.key == key))
-				continue;
+			if (p.key == key)
+			{
+				prev = &p;
+				break;
+			}
+		}
+		if (!prev)
+		{
+			// Nothing to compare against yet. Take the fingerprint anyway: a first CPU build takes
+			// one too (it is what the NEXT frame's rebuild is checked against), so a probe that
+			// skipped it would model a cheaper cache than the one being built.
+			w.content = ContentStamp();
+		}
+		else
+		{
 			w.prev_seen = true;
-			if (p.stamp == stamp)
+			if (prev->stamp == stamp)
 			{
 				m_frame.src_stamp_kept++;
 				w.prev_current = true;
-				w.build_id = p.build_id; // same bytes, same identity, so derived caches keep theirs
+				w.build_id = prev->build_id;
+				// The stamp held, so no byte under the window moved and the fingerprint taken
+				// under it still stands. Carried rather than recomputed -- that is the whole
+				// point of the cheap tier being first.
+				w.content = prev->content;
 			}
 			else
 			{
 				m_frame.src_stamp_moved++;
+				w.content = ContentStamp();
+				if (w.content == 0)
+				{
+					// GPU-side truth under the window: the CPU bytes here are not the bytes
+					// anything would build from, so the move stands as a rebuild -- believed, not
+					// proved, and counted apart so a low rescue rate cannot be read as "the bytes
+					// changed" when it means "we could not look".
+					m_frame.src_stamp_opaque++;
+				}
+				else if (w.content == prev->content)
+				{
+					// The pages were rewritten with the bytes they already held. No rebuild, and
+					// -- the part that matters downstream -- the SAME identity, so the palette
+					// pairs keyed on it survive the frame boundary and the expanded cache admits.
+					m_frame.src_stamp_rescued++;
+					w.prev_current = true;
+					w.build_id = prev->build_id;
+				}
 			}
-			break;
 		}
 		m_probe_windows.push_back(w);
 	}
 	else if (m_probe_windows[wi].stamp != stamp)
 	{
-		// Seen this frame but not yet named by a recorded draw (something refused it), and the
-		// content has moved since. Nothing is pinned, so the entry is simply rebuilt under the
-		// new bytes and takes a new identity with them.
-		m_probe_windows[wi].stamp = stamp;
-		m_probe_windows[wi].build_id = ++m_probe_build_counter;
-		m_probe_windows[wi].prev_current = false;
+		// Seen this frame and the stamp has moved since -- either a window nothing has named yet
+		// (something refused it) or one whose bytes the pin check above just found unchanged.
+		// Same two tiers; not counted in the stamp columns, which ask about the frame before, not
+		// about mid-frame churn.
+		ProbedWindow& pw = m_probe_windows[wi];
+		const bool same = SameBytes(pw);
+		pw.stamp = stamp; // either way this is the stamp the entry now carries
+		if (!same)
+		{
+			// Nothing is pinned on it, so the entry is rebuilt under the new bytes and takes a new
+			// identity with them.
+			pw.content = ContentStamp();
+			pw.build_id = ++m_probe_build_counter;
+			pw.prev_current = false;
+		}
 	}
 	ProbedWindow& w = m_probe_windows[wi];
 

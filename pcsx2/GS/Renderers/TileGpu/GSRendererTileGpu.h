@@ -316,10 +316,11 @@ private:
 	{
 		GSTileTextureSource::WindowKey key;
 		u64 stamp = 0;     ///< GSTileTextureSource::GenStamp of the window's pages at first sight
-		u64 build_id = 0;  ///< content identity: carried over from last frame while the stamp holds
+		u64 content = 0;   ///< GSTileTextureSource::ProbePageContent of the same pages (0 = not asked / declined)
+		u64 build_id = 0;  ///< content identity: carried over while the BYTES hold, stamp or no stamp
 		u32 slot = kNoSourceSlot; ///< its source-array slot, once a draw was admitted on it
 		bool prev_seen = false;    ///< the frame before also probed this window
-		bool prev_current = false; ///< ...and its stamp had not moved since
+		bool prev_current = false; ///< ...and its bytes are the same ones, by stamp or by fingerprint
 	};
 	// This frame's windows and last frame's. Two frames is the whole history the counters need:
 	// the stamp question is "did this window's content hold still since the frame before", and
@@ -495,19 +496,29 @@ private:
 		u32 tex_unsupported = 0;   // TME draws in a format neither road samples: rule 3's format refusal
 		u32 src_eligible = 0;      // rule-2-declined draws rule 3 would serve
 		u32 src_hit = 0;           // ...served with no build at all (window and stamp both already seen)
-		u32 src_rebuild = 0;       // ...served after a rebuild: the window is known, its stamp moved
+		u32 src_rebuild = 0;       // ...served after a rebuild: the window is known and its bytes moved
 		u32 src_fresh = 0;         // ...served after a first build: the window was not seen last frame
 		u32 src_ref_region = 0;    // refused: REGION_CLAMP / REGION_REPEAT on either axis
-		u32 src_ref_mip = 0;       // refused: MXL != 0 (mipmaps are M4)
-		u32 src_ref_mip_live = 0;  // ...of those, draws where mipmapping is actually active; the rest
-		                           // sample level 0 today, so the clause costs them for nothing
+		u32 src_mip_draws = 0;     // NOT a refusal: MXL != 0, eligible, served at level 0 like every
+		                           // other road serves it today (mip LEVEL SELECTION is M4)
+		u32 src_mip_live = 0;      // ...of those, draws where mipmapping is actually active: the ones
+		                           // whose correct level is the one M4 will have to choose
 		u32 src_ref_capacity = 0;  // refused: the frame's distinct sources exceed the source array
 		u32 src_ref_palette = 0;   // refused: first sight of the (index, palette) pair, admitted next frame
 		u32 src_ref_pin = 0;       // refused: rebuilding a window an earlier draw of this frame named
 		u32 src_distinct = 0;      // distinct source windows the frame would hold
 		u32 src_extra_calls = 0;   // extra indirect calls splitting the runs on the source would cost
-		u32 src_stamp_kept = 0;    // windows also probed last frame whose stamp held
-		u32 src_stamp_moved = 0;   // ...and whose stamp moved
+		u32 src_stamp_kept = 0;    // windows also probed last frame whose gen stamp held
+		u32 src_stamp_moved = 0;   // ...and whose gen stamp moved (the raw number, C1's: the two
+		                           // below are subsets of THIS one, not additions to it)
+		u32 src_stamp_rescued = 0; // ...of those, the stamp moved but the pages' bytes hashed
+		                           // identical, so the window is unchanged and keeps its identity
+		u32 src_stamp_opaque = 0;  // ...of those, the fingerprint could not be taken (GPU-side truth
+		                           // under the window), so the move has to be believed. Disjoint
+		                           // from rescued; a rebuild the probe counts but cannot prove.
+		                           // Rebuilds the probe believes = moved - rescued, of which
+		                           // `opaque` are unproven and `moved - rescued - opaque` are
+		                           // bytes that demonstrably changed.
 		u32 alias_steal_pages = 0; // pages one draw claimed through both its surfaces (FRAME/ZBUF packing)
 		u32 lossy_pages = 0;     // truth moved without a byte road (depth / unsupported-format owners)
 		u32 skipped_draws = 0;   // draws no surface could be built for (format / stride)

@@ -107,6 +107,8 @@ public:
 	/// when the window's pages hash to the bytes the last build read (RebuildsSamePages).
 	/// That tier costs an 8 KB hash per written page, so the probe does not run it and
 	/// reports `would_rebuild` — an upper bound on the rebuilds a caller will actually pay.
+	/// A caller that needs the tier's answer rather than the bound asks `ProbePageContent`
+	/// for the fingerprint and compares it against the one it recorded itself.
 	struct ProbeResult
 	{
 		bool hit = false;           ///< an entry matches and its stamp is current: served with no work
@@ -117,6 +119,26 @@ public:
 	ProbeResult Probe(const GSVramModel& model, const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA,
 		const GSPageBitmap& pages, const GIFRegTEX0* level_tex0 = nullptr, u32 levels = 1,
 		const GSVector4i* sample_core = nullptr) const;
+
+	/// The tier `Probe` skips, on its own: the fingerprint of the RAW bytes under a window,
+	/// which is what a moved gen stamp has to be checked against before it is believed. A
+	/// game re-uploading identical texture data every frame moves the stamp without moving a
+	/// texel, and on the corpus that is the common case, not the corner — so a caller that
+	/// derives a build identity from the stamp alone reports churn that the cache itself
+	/// would not have (RebuildsSamePages caught 97.7% of GT4's rebuilds this way).
+	///
+	/// Not const: the per-page hashes memoise, keyed on the page's write generations, so a
+	/// page rewritten with identical bytes is hashed once per frame however many windows
+	/// read it. Cost is one 8 KB hash per page whose generations moved since it was last
+	/// hashed, plus the fold.
+	///
+	/// Returns 0 when the tier cannot answer honestly — some page under the window holds
+	/// truth on a plane that has not been synced back to the CPU shadow, so the bytes here
+	/// are not the bytes anything would build from. Lookup gets that guarantee from its
+	/// caller's spill; a probe spills nothing, so it asks the model and declines rather than
+	/// filing pre-spill bytes under the current generations, which is the poison the donor
+	/// route's refusal exists to avoid. 0 never collides with a real fingerprint.
+	u64 ProbePageContent(const GSLocalMemory& mem, const GSVramModel& model, const GSPageBitmap& pages);
 
 	/// Returns the source for this texture window — RGBA8 for a direct-colour format,
 	/// an 8-bit index texture for a palettised one — building or rebuilding it if
