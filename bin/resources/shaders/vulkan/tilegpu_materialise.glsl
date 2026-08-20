@@ -18,23 +18,36 @@
 // renderer emits this op AFTER the composition ops for the same window, so at the pass head the
 // slot is finished before this reads it.
 //
-// TILEGPU_SRC_FMT (injected by the device) picks the address geometry and the alpha rule:
+// TILEGPU_SRC_FMT (injected by the device) picks the address geometry and the alpha rule. Each
+// value compiles its OWN path and nothing else -- these are #if, not runtime branches, because a
+// build is one pipeline per format and a format's arithmetic has no business in another's program:
 //   0 = PSMCT32 -- the guest word IS the texel, its top byte included.
 //   1 = PSMCT24 -- the top byte of the word belongs to whatever else shares those bytes, so TEXA
 //       supplies alpha and AEM makes an all-zero-RGB texel transparent. Baked in HERE, at build
 //       time, which is what the CPU deswizzlers do and what the source cache's AuxKey keys on:
 //       two draws differing only in TEXA are two entries, so one image never has to serve both.
-// The paletted geometries (index output for PSMT8 / PSMT4) arrive with the paletted road.
+//   2 = PSMT8, 3 = PSMT4 -- the window is a field of palette INDICES, and that is what this writes:
+//       the index replicated into all four channels of the RGBA8 target, exactly the convention
+//       ps_tile_reinterpret_index already writes and ps_tile_expand_palette already reads (it takes
+//       .a). The palette is NOT applied here. It is a second, independent identity -- the source
+//       cache's AuxKey is documented zero for a paletted window precisely so that one index build
+//       serves every palette a game cycles through it -- so the colour arrives in a second pass,
+//       ps_tile_expand_palette, keyed on (index build id x palette content id). TEXA belongs to
+//       the CLUT expansion for these formats (GSClut::Read32 applies it), so `texa` is zero here
+//       and the alpha rule above is not compiled in.
 //
 // ⚠️ Two rules from tilegpu.glsl's header bind here too, for the same reasons:
-//  - TILEGPU_STATIC_BYTE_SEL. Honeykrisp miscompiles the dynamic byte-extract shift on a word
-//    loaded from this SSBO, and the byte extraction below is the identical expression. Today's two
-//    formats select their bytes at constant offsets so both forms fold to the same code; the define
-//    is injected now so the paletted arm cannot land without it.
-//  - Any float mul-add on the texel path is an explicit fma() into a `precise` variable. Nothing
-//    here is one yet (the arithmetic is integer swizzle plus a single normalising multiply), but a
-//    format that needs one must write it that way -- this image's texels are compared byte-for-byte
-//    against the byte road's.
+//  - TILEGPU_STATIC_BYTE_SEL. Honeykrisp miscompiles the dynamic sub-word extract on a word loaded
+//    from this SSBO -- the load returns the right word and the shift amount comes from the wrong
+//    place -- so both extracts below have a constant-shift form behind the driverID gate. The
+//    direct-colour formats select their bytes at constant offsets and fold either way; the PALETTED
+//    formats are the ones that actually need it, which is why the define was injected at C3 before
+//    anything used it.
+//  - Any float mul-add on the texel path is an explicit fma() into a `precise` variable. There is
+//    still none here: every format's arithmetic is integer swizzle plus one normalising multiply by
+//    1/255, whose UNORM8 store round-trips to the byte it came from exactly. This image's texels are
+//    compared byte-for-byte against the byte road's, so a mul-add appearing here later must be
+//    written the pinned way.
 
 #ifdef VERTEX_SHADER
 
@@ -70,17 +83,47 @@ layout(push_constant) uniform cb
 
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
 
+// The swizzle forms, one set per address geometry -- fitted at runtime from GSTables.cpp and
+// injected as TILE_SWZ_* defines, so this shader and the CPU readers cannot disagree about a
+// constant. Only the forms this build's format uses are compiled: the 32-bit block form serves
+// PSMCT32/24 and PSMT8, the 4-bit block form serves PSMT4, and the column form is per format.
+#if TILEGPU_SRC_FMT <= 2
 uint tile_b48(uint x, uint y)
 {
 	return XB(x, 0u, TILE_SWZ_B48_X0) ^ XB(x, 1u, TILE_SWZ_B48_X1) ^ XB(x, 2u, TILE_SWZ_B48_X2)
 	     ^ XB(y, 0u, TILE_SWZ_B48_Y0) ^ XB(y, 1u, TILE_SWZ_B48_Y1);
 }
+#endif
 
+#if TILEGPU_SRC_FMT <= 1
 uint tile_c32(uint x, uint y)
 {
 	return XB(x, 0u, TILE_SWZ_C32_X0) ^ XB(x, 1u, TILE_SWZ_C32_X1) ^ XB(x, 2u, TILE_SWZ_C32_X2)
 	     ^ XB(y, 0u, TILE_SWZ_C32_Y0) ^ XB(y, 1u, TILE_SWZ_C32_Y1) ^ XB(y, 2u, TILE_SWZ_C32_Y2);
 }
+#endif
+
+#if TILEGPU_SRC_FMT == 2
+uint tile_c8(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_C8_X0) ^ XB(x, 1u, TILE_SWZ_C8_X1) ^ XB(x, 2u, TILE_SWZ_C8_X2) ^ XB(x, 3u, TILE_SWZ_C8_X3)
+	     ^ XB(y, 0u, TILE_SWZ_C8_Y0) ^ XB(y, 1u, TILE_SWZ_C8_Y1) ^ XB(y, 2u, TILE_SWZ_C8_Y2) ^ XB(y, 3u, TILE_SWZ_C8_Y3);
+}
+#endif
+
+#if TILEGPU_SRC_FMT == 3
+uint tile_b84(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_B84_X0) ^ XB(x, 1u, TILE_SWZ_B84_X1)
+	     ^ XB(y, 0u, TILE_SWZ_B84_Y0) ^ XB(y, 1u, TILE_SWZ_B84_Y1) ^ XB(y, 2u, TILE_SWZ_B84_Y2);
+}
+
+uint tile_c4(uint x, uint y)
+{
+	return XB(x, 0u, TILE_SWZ_C4_X0) ^ XB(x, 1u, TILE_SWZ_C4_X1) ^ XB(x, 2u, TILE_SWZ_C4_X2) ^ XB(x, 3u, TILE_SWZ_C4_X3) ^ XB(x, 4u, TILE_SWZ_C4_X4)
+	     ^ XB(y, 0u, TILE_SWZ_C4_Y0) ^ XB(y, 1u, TILE_SWZ_C4_Y1) ^ XB(y, 2u, TILE_SWZ_C4_Y2) ^ XB(y, 3u, TILE_SWZ_C4_Y3);
+}
+#endif
 
 // Byte (sel & 3) of an SSBO-loaded word, in the two forms tilegpu.glsl carries and for the reason
 // its comment gives: the dynamic shift is miscompiled on Honeykrisp.
@@ -100,24 +143,64 @@ uint tilegpu_byte_sel(uint word, uint sel)
 #endif
 }
 
+#if TILEGPU_SRC_FMT == 3
+// Nibble (sel & 1) of a byte, under the same gate and for the same reason -- a sub-word extract
+// whose shift amount is computed is the shape Honeykrisp gets wrong. Both arms are pure integer
+// arithmetic and produce the identical value on every input; the gate only chooses whether the
+// shift amount is a constant. The static form is the one tilegpu_index4 uses on the byte road.
+uint tilegpu_nibble_sel(uint byteval, uint sel)
+{
+#if TILEGPU_STATIC_BYTE_SEL
+	return ((sel & 1u) != 0u) ? (byteval >> 4u) : (byteval & 0xFu);
+#else
+	return (byteval >> ((sel & 1u) * 4u)) & 0xFu;
+#endif
+}
+#endif
+
+// The ring indirection, the same one the byte road takes: table[table_base + epoch*512 + page] is
+// the word offset of that page's 8 KB slot in this same buffer.
+uint mat_ring_word(uint gs_word)
+{
+	const uint slot = vram_words[table_base + epoch * 512u + (gs_word >> 11u)];
+	return vram_words[slot + (gs_word & 2047u)];
+}
+
 void main()
 {
 	const uint u = uint(gl_FragCoord.x);
 	const uint v = uint(gl_FragCoord.y);
 
+#if TILEGPU_SRC_FMT <= 1
 	// The CT32/CT24 address, identical to tilegpu_texel32's: a page is 64x32 texels of 8x8 blocks
 	// and 8x8-texel columns, block b occupies words [b*64, b*64+64), so the absolute block times 64
 	// plus the word-in-block is the linear guest word.
 	const uint page = (v >> 5u) * bw + (u >> 6u);
 	const uint blk = bp + page * 32u + tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u);
-	const uint gs_word = blk * 64u + tile_c32(u & 7u, v & 7u);
-
-	// ...and the same ring indirection the byte road takes for it.
-	const uint slot = vram_words[table_base + epoch * 512u + (gs_word >> 11u)];
-	const uint w = vram_words[slot + (gs_word & 2047u)];
+	const uint w = mat_ring_word(blk * 64u + tile_c32(u & 7u, v & 7u));
 
 	vec4 t = vec4(float(tilegpu_byte_sel(w, 0u)), float(tilegpu_byte_sel(w, 1u)),
 		float(tilegpu_byte_sel(w, 2u)), float(tilegpu_byte_sel(w, 3u))) * (1.0f / 255.0f);
+#elif TILEGPU_SRC_FMT == 2
+	// PSMT8, identical to tilegpu_index8's: a page is 128x64 texels of 16x16 blocks and 16x16-texel
+	// columns, so a block is 256 bytes = 64 words and the column form gives the byte within it.
+	const uint page = (v >> 6u) * bw + (u >> 7u);
+	const uint blk = bp + page * 32u + tile_b48((u >> 4u) & 7u, (v >> 4u) & 3u);
+	const uint byte_in_block = tile_c8(u & 15u, v & 15u);
+	const uint idx = tilegpu_byte_sel(mat_ring_word(blk * 64u + (byte_in_block >> 2u)), byte_in_block);
+	// The index, replicated -- ps_tile_expand_palette reads .a, and an R8 view of a one-byte source
+	// would have replicated it anyway, so this target holds what that pass already expects.
+	vec4 t = vec4(float(idx)) * (1.0f / 255.0f);
+#else
+	// PSMT4, identical to tilegpu_index4's: a page is 128x128 texels of 32x16 blocks; the column
+	// form gives the NIBBLE within the block's 512, its low bit choosing the half of its byte.
+	const uint page = (v >> 7u) * bw + (u >> 7u);
+	const uint blk = bp + page * 32u + tile_b84((u >> 5u) & 3u, (v >> 4u) & 7u);
+	const uint nib = tile_c4(u & 31u, v & 15u);
+	const uint byte_in_block = nib >> 1u;
+	const uint byteval = tilegpu_byte_sel(mat_ring_word(blk * 64u + (byte_in_block >> 2u)), byte_in_block);
+	vec4 t = vec4(float(tilegpu_nibble_sel(byteval, nib))) * (1.0f / 255.0f);
+#endif
 
 #if TILEGPU_SRC_FMT == 1
 	// PSMCT24: the alpha byte above is not this texture's, so TEXA replaces it. Written exactly as

@@ -46,6 +46,26 @@ namespace
 		return blk * 64 + f.col32.Eval(u & 7, v & 7);
 	}
 
+	// The PSMT8 arm: the byte address of the index texel, as the shader computes it. `tbw` here is
+	// pages per texture row, which for a paletted window is TBW >> 1 -- what the renderer puts in the
+	// op, and what GSOffset means by bw >> (pageShiftX - 6).
+	u32 MaterialiseByte8(const FormSet& f, u32 u, u32 v, u32 tbp0, u32 tbw)
+	{
+		const u32 page = (v >> 6) * tbw + (u >> 7);
+		const u32 blk = tbp0 + page * 32 + f.block48.Eval((u >> 4) & 7, (v >> 4) & 3);
+		// A block is 256 bytes = 64 words; the shader reaches the byte as word (b >> 2) then byte
+		// (b & 3) of it, which is this address split the same way.
+		return blk * 256 + f.col8.Eval(u & 15, v & 15);
+	}
+
+	// The PSMT4 arm, in NIBBLES -- which is the unit GSLocalMemory::PixelAddress4 also speaks.
+	u32 MaterialiseNibble4(const FormSet& f, u32 u, u32 v, u32 tbp0, u32 tbw)
+	{
+		const u32 page = (v >> 7) * tbw + (u >> 7);
+		const u32 blk = tbp0 + page * 32 + f.block84.Eval((u >> 5) & 3, (v >> 4) & 7);
+		return blk * 512 + f.col4.Eval(u & 31, v & 15);
+	}
+
 	// The fragment's output as it lands in the RGBA8 target. The shader writes float(byte)/255 per
 	// channel, which a UNORM store round-trips to the same byte, so the integer form below is the
 	// exact texel — not an approximation of it.
@@ -117,6 +137,100 @@ TEST_F(TileGpuMaterialiseTest, AddressMatchesPixelAddress32)
 					const u32 want = GSLocalMemory::PixelAddress32(static_cast<int>(u), static_cast<int>(v), tbp0, tbw);
 					ASSERT_EQ(MaterialiseWord(f, u, v, tbp0, tbw), want)
 						<< "u=" << u << " v=" << v << " tbp0=" << tbp0 << " tbw=" << tbw;
+				}
+			}
+		}
+	}
+}
+
+// The paletted geometries against the addresses every CPU reader uses. PixelAddress8 speaks bytes
+// and PixelAddress4 nibbles, which is exactly the unit each arm of the shader lands on.
+TEST_F(TileGpuMaterialiseTest, PalettedAddressesMatchPixelAddress)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+
+	// The TEX0 register value; the op carries TBW >> 1, and a window is at most that many pages wide.
+	for (const u32 tbw : {2u, 4u, 8u})
+	{
+		const u32 op_bw = tbw >> 1;
+		for (const u32 tbp0 : {0u, 32u, 37u, 0x1400u})
+		{
+			for (u32 v = 0; v < 136; v++)
+			{
+				for (u32 u = 0; u < op_bw * 128; u++)
+				{
+					ASSERT_EQ(MaterialiseByte8(f, u, v, tbp0, op_bw),
+						GSLocalMemory::PixelAddress8(static_cast<int>(u), static_cast<int>(v), tbp0, tbw))
+						<< "PSMT8 u=" << u << " v=" << v << " tbp0=" << tbp0 << " tbw=" << tbw;
+					ASSERT_EQ(MaterialiseNibble4(f, u, v, tbp0, op_bw),
+						GSLocalMemory::PixelAddress4(static_cast<int>(u), static_cast<int>(v), tbp0, tbw))
+						<< "PSMT4 u=" << u << " v=" << v << " tbp0=" << tbp0 << " tbw=" << tbw;
+				}
+			}
+		}
+	}
+}
+
+// The paletted pass against the CPU's palette-LESS reader (psm.rtxP), which is what the source
+// cache's other build road calls for an index texture. This is the check an address comparison
+// cannot make: that the byte the shader extracts out of its word -- and, for PSMT4, the nibble it
+// extracts out of that byte -- is the index the rest of the emulator believes in. The shader writes
+// float(index)/255 into all four channels of an RGBA8 target, which round-trips to the index
+// exactly, so the integer compared here IS the texel ps_tile_expand_palette will read back.
+TEST_F(TileGpuMaterialiseTest, PalettedWindowMatchesCpuIndexReader)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+	const u8* const vm8 = reinterpret_cast<const u8*>(s_mem->vm32());
+
+	struct Window
+	{
+		u32 tbp0;
+		u32 tbw; // the TEX0 register value
+		int tw;
+		int th;
+	};
+	// Bases block-into-a-page and page-aligned; widths and heights that span several pages in both
+	// axes at both paletted page geometries (128x64 for PSMT8, 128x128 for PSMT4).
+	static constexpr Window kWindows[] = {
+		{0, 2, 128, 128},
+		{32, 4, 256, 128},
+		{37, 4, 256, 64},
+		{0x1400, 8, 512, 256},
+	};
+
+	std::vector<u8> cpu;
+	GIFRegTEXA TEXA = {}; // an index reader does not consult it
+	for (const u32 psm : {static_cast<u32>(PSMT8), static_cast<u32>(PSMT4)})
+	{
+		const GSLocalMemory::psm_t& p = GSLocalMemory::m_psm[psm];
+		for (const Window& w : kWindows)
+		{
+			const u32 op_bw = w.tbw >> 1;
+			const u32 pitch = static_cast<u32>(w.tw);
+			cpu.assign(pitch * static_cast<u32>(w.th), 0);
+
+			const GSOffset off = s_mem->GetOffset(w.tbp0, w.tbw, psm);
+			p.rtxP(*s_mem, off, GSVector4i(0, 0, w.tw, w.th), cpu.data(), static_cast<int>(pitch), TEXA);
+
+			for (int v = 0; v < w.th; v++)
+			{
+				const u8* const row = cpu.data() + static_cast<u32>(v) * pitch;
+				for (int u = 0; u < w.tw; u++)
+				{
+					u32 got;
+					if (psm == PSMT8)
+					{
+						got = vm8[MaterialiseByte8(f, static_cast<u32>(u), static_cast<u32>(v), w.tbp0, op_bw)];
+					}
+					else
+					{
+						const u32 nib = MaterialiseNibble4(f, static_cast<u32>(u), static_cast<u32>(v), w.tbp0, op_bw);
+						got = (vm8[nib >> 1] >> ((nib & 1) * 4)) & 0xF;
+					}
+					ASSERT_EQ(got, static_cast<u32>(row[u]))
+						<< "psm=" << psm << " tbp0=" << w.tbp0 << " tbw=" << w.tbw << " u=" << u << " v=" << v;
 				}
 			}
 		}

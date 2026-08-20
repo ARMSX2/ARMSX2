@@ -121,6 +121,97 @@ GSTexture* GSTileExpandedCache::Lookup(GSTexture* index, u64 index_id, GSTexture
 	return tex;
 }
 
+// Lookup's scan and admission filter, with the expansion draw replaced by the builder's arrangement
+// of one. Everything the immediate road decides is decided identically here -- the split is only
+// WHEN the texels arrive, which is the caller's problem and not this class's.
+GSTexture* GSTileExpandedCache::LookupBuilt(GSTexture* index, u64 index_id, GSTexture* palette,
+	u64 palette_id, GSTileExpandBuilder& builder, BuiltOutcome* outcome)
+{
+	const auto done = [&](BuiltOutcome o, GSTexture* tex) -> GSTexture* {
+		if (outcome)
+			*outcome = o;
+		return tex;
+	};
+
+	Entry* found = nullptr;
+	Entry* lru = nullptr;
+	Entry* free_slot = nullptr;
+	for (Entry& e : m_entries)
+	{
+		if (!e.alive)
+		{
+			if (!free_slot)
+				free_slot = &e;
+			continue;
+		}
+		if (e.index_id == index_id && e.palette_id == palette_id)
+		{
+			found = &e;
+			break;
+		}
+		if (!Pinned(e) && (!lru || e.last_use < lru->last_use))
+			lru = &e;
+	}
+
+	if (found && found->tex)
+	{
+		found->last_use = ++m_use_counter;
+		found->pinned_frame = m_pin_frame;
+		m_hits++;
+		return done(BuiltOutcome::Hit, found->tex);
+	}
+
+	if (!found)
+	{
+		if (!free_slot && !lru)
+		{
+			m_capacity_refusals++;
+			return done(BuiltOutcome::RefusedCapacity, nullptr);
+		}
+		Entry& e = free_slot ? *free_slot : *lru;
+		if (e.tex)
+		{
+			g_gs_device->Recycle(e.tex);
+			e.tex = nullptr;
+		}
+		e.alive = true;
+		e.index_id = index_id;
+		e.palette_id = palette_id;
+		e.last_use = ++m_use_counter;
+		e.pinned_frame = 0; // a marker names no texture, so nothing is holding it down yet
+		e.seen_frame = m_frame;
+		m_deferrals++;
+		return done(BuiltOutcome::Deferred, nullptr);
+	}
+
+	if (found->seen_frame == m_frame)
+	{
+		found->last_use = ++m_use_counter;
+		m_deferrals++;
+		return done(BuiltOutcome::Deferred, nullptr);
+	}
+
+	// The pair survived a frame boundary, so it earns its expansion. Level 0 only on this road.
+	GSTexture* tex =
+		g_gs_device->CreateRenderTarget(index->GetWidth(), index->GetHeight(), GSTexture::Format::Color, false, true);
+	if (!tex)
+		return done(BuiltOutcome::Failed, nullptr);
+	if (!builder.BuildTileExpansion(index, palette, tex))
+	{
+		// Not a device refusal: a builder that could not take the op says nothing about whether the
+		// device can expand, so Serves() is left alone and the pair keeps its marker for next frame.
+		g_gs_device->Recycle(tex);
+		return done(BuiltOutcome::Failed, nullptr);
+	}
+	m_passes++;
+
+	found->tex = tex;
+	found->last_use = ++m_use_counter;
+	found->pinned_frame = m_pin_frame;
+	m_builds++;
+	return done(BuiltOutcome::Built, tex);
+}
+
 GSTileExpandedCache::Admission GSTileExpandedCache::ProbeAdmit(u64 index_id, u64 palette_id)
 {
 	// The scan Lookup runs, with the build legs removed. A pair already carrying a

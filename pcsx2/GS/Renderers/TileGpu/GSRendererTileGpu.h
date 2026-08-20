@@ -318,8 +318,9 @@ private:
 	// draw that admitted it then SAMPLES it: one hardware fetch in place of the swizzle arithmetic,
 	// and under LINEAR one fetch in place of four. Every refusal (region wrap, pin, capacity, a
 	// palette pair not yet admitted, a failed build) falls back to the byte road, which is always
-	// correct and never asks. Paletted windows are still probe-only; they arrive with the index
-	// build and its palette expansion.
+	// correct and never asks. A paletted window takes the same road in two stages: the index image out
+	// of the ring bytes, and the palette expansion on top of it, admitted on second sight across a
+	// frame boundary so a window drawn once never pays for an expansion.
 	GSTileTextureSource m_tex_source;
 	GSTilePaletteCache m_palette_cache;
 	GSTileExpandedCache m_expand_cache;
@@ -354,12 +355,35 @@ private:
 	// and the composition it depends on is in the same op range ahead of it.
 	bool EmitMaterialiseOp(GSTexture* tex, const GIFRegTEX0& tex0, const GIFRegTEXA& texa, u32 epoch);
 
+	// The same split for the paletted road's second stage. GSTileExpandedCache owns admission,
+	// identity and lifetime; this owns the emission -- which for a renderer that records draws has to
+	// be an op in the stream rather than a pass issued now, and an op that lands AFTER the materialise
+	// whose index image it reads.
+	struct SourceExpander final : public GSTileExpandBuilder
+	{
+		GSRendererTileGpu* r = nullptr;
+		bool BuildTileExpansion(GSTexture* index, GSTexture* palette, GSTexture* dst) override;
+	};
+
+	// Queue the pass that fills `dst` with palette[index] per texel. Emitted from inside the expanded
+	// cache's build, which the road below runs immediately after the index build, so array order puts
+	// it behind the materialise it depends on.
+	bool EmitExpandOp(GSTexture* dst, GSTexture* index, GSTexture* palette);
+
+	// This frame's slot in the plan's prep-texture list for a texture a prep op names (a source image,
+	// an index image, a palette). Deduped: one palette serves many windows and one index image serves
+	// many palettes, and a prep op names each of them by index.
+	u32 PrepTextureIndex(GSTexture* tex);
+
 	// Build (or find) the materialised source for a window the probe admitted, and on success put
 	// this draw ON it: `pd` takes a bind slot and road SOURCE, and its fragment stage samples the
-	// image instead of decoding ring bytes. Direct colour only at this chunk -- a paletted window's
-	// index texture and its palette expansion are a separate pair of passes. `window` indexes
-	// m_probe_windows. Returns false on every refusal, and a refusal is not an error: the caller has
-	// already put the draw on the byte road and that road is correct on its own.
+	// image instead of decoding ring bytes. A direct-colour window is one image and one pass. A
+	// PALETTED one is two of each -- the window materialises to an index image, and that image times
+	// this draw's palette expands into the RGBA8 the draw actually samples -- because the source
+	// cache's key deliberately excludes the palette, so one index build serves every palette a game
+	// cycles through it. `window` indexes m_probe_windows. Returns false on every refusal, and a
+	// refusal is not an error: the caller has already put the draw on the byte road and that road is
+	// correct on its own.
 	bool MaterialiseSourceRoad(PendingDraw& pd, u32 window, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
 		u32 epoch);
 
@@ -593,6 +617,19 @@ private:
 		u32 src_served = 0;        // draws that TOOK road SOURCE: their fragment stage sampled the image
 		u32 src_bind_slots = 0;    // distinct (image, sampler) pairs the frame bound
 		u32 src_ref_bind = 0;      // refused: the frame's bind table is full (kMaxSourceSlots)
+
+		// The paletted road's second stage. A window materialises to an INDEX image (counted in
+		// src_builds beside the direct-colour ones, since it is the same build); the colour comes from
+		// the (index x palette) expansion, and THESE are its columns. High deferrals beside high hits is
+		// the designed shape, not a fault: a pair is admitted on second sight across a frame boundary,
+		// so a window drawn once in its life never pays for an expansion pass at all.
+		u32 src_pal_draws = 0;      // draws admitted on a paletted window (the denominator here)
+		u32 src_pal_missing = 0;    // ...whose palette texture could not be built: refused to the byte road
+		u32 src_expand_hits = 0;    // served by an expansion the cache already held
+		u32 src_expand_builds = 0;  // expansion passes emitted: the pair earned one this frame
+		u32 src_expand_defer = 0;   // the pair was first-sighted at BUILD time: refused for one frame
+		u32 src_expand_cap = 0;     // ...refused because every expansion entry is pinned by this frame
+		u32 src_expand_failed = 0;  // allocation failed, or the op could not be queued
 
 		u32 src_extra_calls = 0;   // extra indirect calls the sampled-binding split actually cost
 		u32 src_stamp_kept = 0;    // windows also probed last frame whose gen stamp held

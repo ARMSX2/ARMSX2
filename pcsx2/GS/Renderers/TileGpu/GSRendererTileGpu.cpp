@@ -853,8 +853,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const double served = (tdraws.mean > 0.0) ? (binds.mean + elig.mean) * 100.0 / tdraws.mean : 0.0;
 	const double stamp_total = skept.mean + smoved.mean;
 
-	// Rule 3 as BUILT. The direct-colour half of the eligible population above now has a real image
-	// in a real cache; the paletted half still only asks the question. Nothing samples either.
+	// Rule 3 as BUILT and SERVED, over the whole eligible population -- direct colour materialises to
+	// the image a draw samples, paletted to an index image the palette expansion turns into one.
 	const auto sbuild = stat([](const MF& f) { return f.src_builds; });
 	const auto schit = stat([](const MF& f) { return f.src_cache_hits; });
 	const auto scresc = stat([](const MF& f) { return f.src_cache_rescued; });
@@ -866,10 +866,18 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto rbind = stat([](const MF& f) { return f.src_ref_bind; });
 	// The share of textured draws whose fragment stage did NOT decode ring bytes: rule 2's binds plus
 	// the rule-3 draws that were actually served. `src_eligible` above is the admission question's
-	// answer and counts paletted windows too, which no draw takes yet -- so this is the honest one.
+	// answer, taken before the build could refuse anything -- so this is the honest one.
 	const double sampled = (tdraws.mean > 0.0) ? (binds.mean + sserved.mean) * 100.0 / tdraws.mean : 0.0;
 
-	Console.WriteLn("TileGpu source road (rule 3: direct colour BUILT and SAMPLED, paletted probed only):");
+	const auto pdraws = stat([](const MF& f) { return f.src_pal_draws; });
+	const auto pmiss = stat([](const MF& f) { return f.src_pal_missing; });
+	const auto ehit = stat([](const MF& f) { return f.src_expand_hits; });
+	const auto ebuild = stat([](const MF& f) { return f.src_expand_builds; });
+	const auto edefer = stat([](const MF& f) { return f.src_expand_defer; });
+	const auto ecap = stat([](const MF& f) { return f.src_expand_cap; });
+	const auto efail = stat([](const MF& f) { return f.src_expand_failed; });
+
+	Console.WriteLn("TileGpu source road (rule 3: direct colour and paletted, BUILT and SAMPLED):");
 	Console.WriteLn("  textured draws %.2f / %-5u  rule 2 served %.2f / %-5u  rule 3 eligible %.2f / %-5u  "
 					"=> %.1f%% of textured draws served",
 		tdraws.mean, tdraws.p50, binds.mean, binds.p50, elig.mean, elig.p50, served);
@@ -892,9 +900,12 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"unprovable: GPU-side truth)  => %.1f%% effectively stable",
 		srescued.mean, srescued.p50, sredo.mean, sredo.p50, sopaque.mean, sopaque.p50,
 		stamp_total > 0.0 ? (skept.mean + srescued.mean) * 100.0 / stamp_total : 0.0);
-	Console.WriteLn("  materialised (direct colour): builds %.2f / %-4u  cache hits %.2f / %-4u  "
-					"same-bytes rescues %.2f / %u",
+	Console.WriteLn("  materialised: builds %.2f / %-4u  cache hits %.2f / %-4u  same-bytes rescues %.2f / %u",
 		sbuild.mean, sbuild.p50, schit.mean, schit.p50, scresc.mean, scresc.p50);
+	Console.WriteLn("  paletted second stage: draws %.2f / %-4u  expansion hits %.2f / %-4u  passes %.2f / %-4u  "
+					"deferred at build %.2f / %-4u  (palette missing %.2f/%u, capacity %.2f/%u, failed %.2f/%u)",
+		pdraws.mean, pdraws.p50, ehit.mean, ehit.p50, ebuild.mean, ebuild.p50, edefer.mean, edefer.p50, pmiss.mean,
+		pmiss.p50, ecap.mean, ecap.p50, efail.mean, efail.p50);
 	Console.WriteLn("  SERVED by rule 3 (the draw sampled the image) %.2f / %-5u  => %.1f%% of textured draws "
 					"sampled an image rather than decoding bytes",
 		sserved.mean, sserved.p50, sampled);
@@ -1341,8 +1352,9 @@ bool GSRendererTileGpu::MaterialiseSourceRoad(PendingDraw& pd, u32 window, const
 	builder.epoch = epoch;
 
 	GSTileTextureSource::BuiltOutcome outcome = GSTileTextureSource::BuiltOutcome::Failed;
-	GSTexture* const tex =
-		m_tex_source.LookupBuilt(m_vram_model, tex0, m_env.TEXA, tex_pages, builder, token, nullptr, &outcome);
+	u64 build_id = 0;
+	GSTexture* tex =
+		m_tex_source.LookupBuilt(m_vram_model, tex0, m_env.TEXA, tex_pages, builder, token, &build_id, &outcome);
 	switch (outcome)
 	{
 		case GSTileTextureSource::BuiltOutcome::Hit: m_frame.src_cache_hits++; break;
@@ -1354,6 +1366,48 @@ bool GSRendererTileGpu::MaterialiseSourceRoad(PendingDraw& pd, u32 window, const
 	}
 	if (!tex)
 		return false;
+
+	// Stage two, for a paletted window. What the cache just handed back is an INDEX image -- the
+	// palette is not in its key, which is the whole reason one build serves every palette the game
+	// cycles through it -- so the colour a draw samples comes from fusing that image with THIS draw's
+	// palette. Both halves are content-keyed: the palette on its CLUT words, the fusion on (index
+	// build id x palette content id), so a palette change re-expands without re-deswizzling and a
+	// window re-uploaded with the bytes it already had keeps both.
+	const u32 pal_entries = GSLocalMemory::m_psm[tex0.PSM].pal;
+	if (pal_entries > 0)
+	{
+		m_frame.src_pal_draws++;
+		// The same words the byte road reads, from the same place: AccumulateDraw already ran Read32
+		// (CSA, CPSM and TEXA applied there) and appended the expansion to the frame's palette stream.
+		// Taking them from there rather than re-reading the CLUT is what makes the two roads' colours
+		// the same bytes by construction rather than by coincidence.
+		const u32* const clut = m_plan_palettes.data() + pd.pal_offset;
+		u64 pal_id = 0;
+		GSTexture* const pal =
+			m_palette_cache.Lookup(clut, pal_entries, m_mem.m_clut.GetReadGeneration(), &pal_id);
+		if (!pal || pal_id == 0 || build_id == 0)
+		{
+			m_frame.src_pal_missing++;
+			return false;
+		}
+
+		SourceExpander expander;
+		expander.r = this;
+		GSTileExpandedCache::BuiltOutcome eo = GSTileExpandedCache::BuiltOutcome::Failed;
+		GSTexture* const expanded = m_expand_cache.LookupBuilt(tex, build_id, pal, pal_id, expander, &eo);
+		switch (eo)
+		{
+			case GSTileExpandedCache::BuiltOutcome::Hit: m_frame.src_expand_hits++; break;
+			case GSTileExpandedCache::BuiltOutcome::Built: break; // counted by EmitExpandOp
+			case GSTileExpandedCache::BuiltOutcome::Deferred: m_frame.src_expand_defer++; break;
+			case GSTileExpandedCache::BuiltOutcome::RefusedCapacity: m_frame.src_expand_cap++; break;
+			case GSTileExpandedCache::BuiltOutcome::Failed: m_frame.src_expand_failed++; break;
+		}
+		if (!expanded)
+			return false;
+		// From here the draw samples an ordinary RGBA8 image and the road knows nothing about palettes.
+		tex = expanded;
+	}
 
 	const u32 slot = SourceSlotFor(tex, SourceSamplerKey(pd.wms, pd.wmt, pd.ltf));
 	if (slot == kNoSourceSlot)
@@ -1374,24 +1428,60 @@ bool GSRendererTileGpu::SourceMaterialiser::BuildTileSource(GSTexture* tex, cons
 	return r->EmitMaterialiseOp(tex, TEX0, TEXA, epoch);
 }
 
+bool GSRendererTileGpu::SourceExpander::BuildTileExpansion(GSTexture* index, GSTexture* palette, GSTexture* dst)
+{
+	return r->EmitExpandOp(dst, index, palette);
+}
+
+// A prep op names its textures by index into the plan's prep-texture list, so every texture one
+// touches has to have a slot in it. Deduped, unlike a materialise destination (which is fresh by
+// construction): one palette serves every window drawn through it this frame, and one index image
+// serves every palette cycled over it.
+u32 GSRendererTileGpu::PrepTextureIndex(GSTexture* tex)
+{
+	for (u32 i = 0; i < m_plan_prep_textures.size(); i++)
+	{
+		if (m_plan_prep_textures[i] == tex)
+			return i;
+	}
+	m_plan_prep_textures.push_back(tex);
+	return static_cast<u32>(m_plan_prep_textures.size() - 1);
+}
+
+// The paletted road's second pass. Queued from inside the expanded cache's build, which
+// MaterialiseSourceRoad runs straight after the index build -- so if that build emitted a
+// materialise, this op sits behind it in the array, and array order IS execution order at the pass
+// head. That is the whole ordering argument: nothing here has to look at what came before.
+bool GSRendererTileGpu::EmitExpandOp(GSTexture* dst, GSTexture* index, GSTexture* palette)
+{
+	GSDevice::GSTileGpuPrepOp op = {};
+	op.kind = GSDevice::GSTileGpuPrepKind::Expand;
+	op.target = PrepTextureIndex(dst);
+	op.index_texture = PrepTextureIndex(index);
+	op.palette_texture = PrepTextureIndex(palette);
+	m_plan_prep_ops.push_back(op);
+	m_frame.src_expand_builds++;
+	return true;
+}
+
 bool GSRendererTileGpu::EmitMaterialiseOp(GSTexture* tex, const GIFRegTEX0& tex0, const GIFRegTEXA& texa, u32 epoch)
 {
 	GSDevice::GSTileGpuPrepOp op = {};
 	op.kind = GSDevice::GSTileGpuPrepKind::Materialise;
 	// A source is not a target: the op names it through the plan's prep_textures list, which is
 	// this vector, and the target list stays exactly what it was.
-	op.target = static_cast<u32>(m_plan_prep_textures.size());
+	op.target = PrepTextureIndex(tex);
 	op.bp = tex0.TBP0;
-	// Pages per texture row, the same value the state row carries for a direct-colour window, so
-	// the materialise addresses the window the way the byte road would have.
-	op.bw = std::max<u32>(tex0.TBW, 1);
+	// Pages per texture row, the same value the state row carries, so the materialise addresses the
+	// window the way the byte road would have: a CT32 page is 64 texels wide (TBW), a paletted page
+	// 128 (TBW >> 1) -- GSOffset's bw >> (pageShiftX - 6).
+	op.bw = (GSLocalMemory::m_psm[tex0.PSM].pal > 0) ? (tex0.TBW >> 1) : std::max<u32>(tex0.TBW, 1);
 	op.psm = tex0.PSM;
 	op.epoch = epoch;
 	// A 24-bit window's alpha byte belongs to whatever else shares those bytes, so TEXA's expansion
 	// is baked into the image here, at build time -- which is what the CPU deswizzlers do and what
 	// the cache's key already accounts for.
 	op.texa = (tex0.PSM == PSMCT24) ? (1u | (texa.AEM ? 2u : 0u) | (static_cast<u32>(texa.TA0) << 8)) : 0u;
-	m_plan_prep_textures.push_back(tex);
 	m_plan_prep_ops.push_back(op);
 	m_frame.src_builds++;
 	return true;
@@ -1996,8 +2086,9 @@ void GSRendererTileGpu::AccumulateDraw()
 				// its writebacks before this line. The compose happens either way -- the materialise
 				// is what reads it -- so this is not yet where rule 2's structural saving lives; what
 				// changes is what the FRAGMENT stage does, which is where the 10x per-sample gap is.
-				// Direct colour only at this chunk; a paletted window still takes the byte road.
-				if (src_window != kNoSourceSlot && !paletted)
+				// A paletted window goes the same way in two stages -- index image, then the palette
+				// expansion on top of it -- and both ops are queued from in there, in that order.
+				if (src_window != kNoSourceSlot)
 					MaterialiseSourceRoad(pd, src_window, tex0, tex_pages, pd.epoch);
 			}
 		}

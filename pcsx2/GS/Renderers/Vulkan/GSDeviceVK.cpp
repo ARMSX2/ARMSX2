@@ -6344,9 +6344,15 @@ u32 GSDeviceVK::TileGpuRoadMask(u32 plan_road_mask) const
 
 // The source set the frame's draws sample through, taken from the ring. A set is reusable once the
 // submission that last read it has completed; anything else would rewrite descriptors under an
-// in-flight pass. The ring is long enough that the wait below cannot fire in practice (one write per
-// plan against NUM_COMMAND_BUFFERS frames in flight), and it is here rather than an assert because
-// the failure it prevents is silent wrong textures.
+// in-flight pass. One write per PLAN, and a plan is usually a frame -- but not always: every stall
+// road flushes a plan mid-frame, and GT4's CLUT churn flushes far more than the ring is long. So the
+// ring can wrap around to a set THIS command buffer has already recorded draws against, which no
+// wait can resolve (the fence it would wait on is the one this thread has not submitted yet, and
+// waiting on it asserts). Submitting is what resolves it, and it is legal here: this runs before any
+// pass opens, outside a render pass, and the caller re-reads the command buffer after.
+//
+// ⚠️ The caller must therefore call this BEFORE it captures the command buffer it records the plan
+// into. Nothing else in the plan may end the command buffer.
 u32 GSDeviceVK::WriteTileGpuSourceSet(std::span<const GSTileGpuPassPlan::SourceBind> sources)
 {
 	if (m_tilegpu_source_pool == VK_NULL_HANDLE)
@@ -6354,6 +6360,12 @@ u32 GSDeviceVK::WriteTileGpuSourceSet(std::span<const GSTileGpuPassPlan::SourceB
 
 	const u32 idx = m_tilegpu_source_next_set;
 	m_tilegpu_source_next_set = (m_tilegpu_source_next_set + 1) % kTileGpuSourceSets;
+	if (m_tilegpu_source_set_epoch[idx] >= GetCurrentFenceCounter())
+	{
+		// The ring came all the way round inside one command buffer: the set's last reader is still
+		// being recorded. Close the buffer so it becomes a submission that can be waited on.
+		ExecuteCommandBuffer(false, "TileGpu source descriptor ring wrapped inside one command buffer");
+	}
 	if (m_tilegpu_source_set_epoch[idx] > GetCompletedSubmitEpoch())
 		WaitForFenceCounter(m_tilegpu_source_set_epoch[idx]);
 
@@ -6677,6 +6689,18 @@ bool GSDeviceVK::TileGpuStaticByteSel() const
 // seed it shares the geometry pipeline's layout and persistent descriptor set (binding 1 is the
 // ring), so it costs a pipeline bind and a push and nothing else. One pipeline per source format,
 // compiled on first use of that format, only when the swizzle forms fitted.
+u32 GSDeviceVK::TileGpuSrcFormatForPsm(u32 psm)
+{
+	switch (psm)
+	{
+		case PSMCT32: return 0;
+		case PSMCT24: return 1;
+		case PSMT8: return 2;
+		case PSMT4: return 3;
+		default: return kTileGpuSrcFormats;
+	}
+}
+
 bool GSDeviceVK::CompileTileGpuMaterialisePipeline(u32 src_fmt)
 {
 	pxAssert(src_fmt < kTileGpuSrcFormats);
@@ -6734,6 +6758,78 @@ bool GSDeviceVK::CompileTileGpuMaterialisePipeline(u32 src_fmt)
 	return true;
 }
 
+// Indices + palette -> colour: rule 3's paletted second stage. Same arithmetic as
+// ps_tile_expand_palette, recorded RAW rather than through TileExpandPalette -- see the header of
+// tilegpu_expand.glsl for why that distinction is load-bearing and not a preference. Its own
+// two-sampler descriptor layout, so it depends on no other road's compile; the shader takes no push
+// constants (level 0 only) and the layout declares none.
+bool GSDeviceVK::CompileTileGpuExpandPipeline()
+{
+	m_tilegpu_expand_tried = true;
+
+	{
+		Vulkan::DescriptorSetLayoutBuilder dslb;
+		if (m_use_push_descriptors)
+			dslb.SetPushFlag();
+		dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		if ((m_tilegpu_expand_ds_layout = dslb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_expand_ds_layout, "TileGpu expand DS layout");
+
+		Vulkan::PipelineLayoutBuilder plb;
+		plb.AddDescriptorSet(m_tilegpu_expand_ds_layout);
+		if ((m_tilegpu_expand_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_expand_pipeline_layout, "TileGpu expand pipeline layout");
+	}
+
+	const std::optional<std::string> source = ReadShaderSource("shaders/vulkan/tilegpu_expand.glsl");
+	if (!source)
+	{
+		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tilegpu_expand.glsl.");
+		return false;
+	}
+
+	VkShaderModule vs = GetUtilityVertexShader(*source);
+	if (vs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard vs_guard([this, &vs]() { vkDestroyShaderModule(m_device, vs, nullptr); });
+	VkShaderModule fs = GetUtilityFragmentShader(*source);
+	if (fs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
+
+	Vulkan::GraphicsPipelineBuilder gpb;
+	gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+	gpb.SetPipelineLayout(m_tilegpu_expand_pipeline_layout);
+	gpb.SetDynamicViewportAndScissorState();
+	gpb.SetNoCullRasterizationState();
+	gpb.SetNoBlendingState();
+	gpb.SetNoDepthTestState();
+	gpb.SetNoStencilState();
+	gpb.SetVertexShader(vs);
+	gpb.SetFragmentShader(fs);
+	gpb.SetRenderPass(GetRenderPass(LookupNativeFormat(GSTexture::Format::Color),
+					  LookupNativeFormat(GSTexture::Format::Invalid), VK_ATTACHMENT_LOAD_OP_LOAD,
+					  VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE),
+		0);
+	gpb.SetColorWriteMask(0,
+		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+	VkPipeline pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+	if (pipe == VK_NULL_HANDLE)
+	{
+		// Say it once: without this a paletted source is allocated and never filled, which reads as a
+		// texture-cache bug at every level above here rather than as a missing pipeline.
+		Console.Error("VK: TileGpu expand pipeline failed to build -- rule 3's paletted sources will not "
+					  "be filled.");
+		return false;
+	}
+	m_tilegpu_expand_pipeline = pipe;
+	Vulkan::SetObjectName(m_device, pipe, "TileGpu expand pipeline");
+	return true;
+}
+
 bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 {
 	if (!m_optional_extensions.tilegpu_device_capable)
@@ -6765,6 +6861,20 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	const bool can_texture = can_draw && m_tilegpu_tex && !plan.ring_pages.empty() && plan.epoch_count > 0;
 
 	EndRenderPass();
+
+	// Rule 3's frame-wide source set, TAKEN first -- ahead of every stream this plan stages, because
+	// taking it can close the command buffer (WriteTileGpuSourceSet: the descriptor ring wraps inside
+	// one buffer on the stall-heavy titles, and only a submission can free a set the buffer is still
+	// recording against). Nothing staged yet means a submit here costs nothing and strands nothing;
+	// after the staging it would strand the stream reservations the plan is about to reference.
+	u32 source_set_index = kTileGpuSourceSets;
+	VkDescriptorSet source_set = VK_NULL_HANDLE;
+	if (can_draw && !plan.sources.empty())
+	{
+		source_set_index = WriteTileGpuSourceSet(plan.sources);
+		if (source_set_index < kTileGpuSourceSets)
+			source_set = m_tilegpu_source_sets[source_set_index];
+	}
 
 	// Stage the whole frame's streams before opening any pass: a ring wrap here can flush the
 	// command buffer, which must not happen mid-render-pass. The indirect commands' vertex/index
@@ -6879,6 +6989,16 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 	const VkCommandBuffer cmd = GetCurrentCommandBuffer();
 
+	// Every source into shader-read layout, which is what the descriptors just written promise.
+	if (source_set != VK_NULL_HANDLE)
+	{
+		for (const GSTileGpuPassPlan::SourceBind& sb : plan.sources)
+		{
+			if (sb.texture)
+				static_cast<GSTextureVK*>(sb.texture)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+		}
+	}
+
 	// Rule 3's frame-wide source array, written ONCE for the whole plan and bound per pass. It is
 	// frame-scoped because a materialised source belongs to a texture window, not to a target pair,
 	// so the same image serves draws in any number of passes and a state row's tex_source is an index
@@ -6897,20 +7017,6 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 	// (the transition after the materialise draw), so outside that window every slot is shader-read.
 	// A first transition out of UNDEFINED discards contents, which is exactly right for an image whose
 	// build is about to write every texel of it.
-	u32 source_set_index = kTileGpuSourceSets;
-	VkDescriptorSet source_set = VK_NULL_HANDLE;
-	if (can_draw && !plan.sources.empty())
-	{
-		EndRenderPass();
-		for (const GSTileGpuPassPlan::SourceBind& sb : plan.sources)
-		{
-			if (sb.texture)
-				static_cast<GSTextureVK*>(sb.texture)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
-		}
-		source_set_index = WriteTileGpuSourceSet(plan.sources);
-		if (source_set_index < kTileGpuSourceSets)
-			source_set = m_tilegpu_source_sets[source_set_index];
-	}
 
 	// The ring is written by the writeback compute and read by the seed and geometry fragment
 	// stages; every op boundary orders both directions so composed slots are complete before
@@ -6957,13 +7063,118 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			{
 				const GSTileGpuPrepOp& op = plan.prep_ops[o];
 
+				// Indices + palette -> the colour image a paletted draw samples. It names three prep
+				// textures and no target, and it MUST follow the materialise that filled its index --
+				// which array order gives, because the renderer queues the pair in that order for the
+				// same draw and this loop walks the range in order. Recorded raw, like the materialise
+				// and the seed: see tilegpu_expand.glsl's header for why the device's own
+				// TileExpandPalette may not be called from inside this recording.
+				if (op.kind == GSTileGpuPrepKind::Expand)
+				{
+					if (op.target >= plan.prep_textures.size() || op.index_texture >= plan.prep_textures.size() ||
+						op.palette_texture >= plan.prep_textures.size())
+						continue;
+					GSTexture* const edst = plan.prep_textures[op.target];
+					GSTexture* const eidx = plan.prep_textures[op.index_texture];
+					GSTexture* const epal = plan.prep_textures[op.palette_texture];
+					if (!edst || !eidx || !epal)
+						continue;
+					if (!m_tilegpu_expand_tried)
+						CompileTileGpuExpandPipeline();
+					if (m_tilegpu_expand_pipeline == VK_NULL_HANDLE)
+						continue;
+
+					GSTextureVK* const dst = static_cast<GSTextureVK*>(edst);
+					EndRenderPass();
+					// The two reads first: a transition cannot happen inside a render pass, and the
+					// index's is also the dependency that orders its materialise ahead of this.
+					static_cast<GSTextureVK*>(eidx)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+					static_cast<GSTextureVK*>(epal)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+
+					// The whole image, one fragment per texel -- an expansion is exactly its index image.
+					const GSVector2i esize = dst->GetSize();
+					const GSVector4i earea = GSVector4i::loadh(esize);
+					OMSetRenderTargets(dst, nullptr, earea);
+					const VkAttachmentLoadOp eload = GetLoadOpForTexture(dst);
+					const VkRenderPass erp = GetRenderPass(LookupNativeFormat(dst->GetFormat()), VK_FORMAT_UNDEFINED,
+						eload, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+						VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+						VK_ATTACHMENT_STORE_OP_DONT_CARE);
+					if (erp == VK_NULL_HANDLE)
+						return false;
+					if (eload == VK_ATTACHMENT_LOAD_OP_CLEAR)
+					{
+						VkClearValue cv = {};
+						cv.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+						BeginClearRenderPass(erp, earea, &cv, 1);
+					}
+					else
+					{
+						BeginRenderPass(erp, earea);
+					}
+
+					const VkViewport evp{
+						0.0f, 0.0f, static_cast<float>(esize.x), static_cast<float>(esize.y), 0.0f, 1.0f};
+					vkCmdSetViewport(cmd, 0, 1, &evp);
+					const VkRect2D esc{{0, 0}, {static_cast<u32>(esize.x), static_cast<u32>(esize.y)}};
+					vkCmdSetScissor(cmd, 0, 1, &esc);
+					{
+						// Bound on THIS road's own layout, and the passes around it re-establish their
+						// own sets before their draws -- which is the whole reason this is recorded here
+						// rather than handed to the device's utility path.
+						Vulkan::DescriptorSetUpdateBuilder dsub;
+						if (m_use_push_descriptors)
+						{
+							dsub.AddCombinedImageSamplerDescriptorWrite(VK_NULL_HANDLE, 0,
+								static_cast<GSTextureVK*>(eidx)->GetView(), m_point_sampler,
+								static_cast<GSTextureVK*>(eidx)->GetVkLayout());
+							dsub.AddCombinedImageSamplerDescriptorWrite(VK_NULL_HANDLE, 1,
+								static_cast<GSTextureVK*>(epal)->GetView(), m_point_sampler,
+								static_cast<GSTextureVK*>(epal)->GetVkLayout());
+							dsub.PushUpdate(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_expand_pipeline_layout, 0,
+								false);
+						}
+						else
+						{
+							VkDescriptorSet eset = AllocateDescriptorSetFromFramePool(m_tilegpu_expand_ds_layout);
+							if (eset == VK_NULL_HANDLE) [[unlikely]]
+							{
+								// A few hundred a frame at most; exhaustion is implausible and the fallback is
+								// a source nobody wrote, so leave it unbuilt rather than draw with no set.
+								EndRenderPass();
+								continue;
+							}
+							dsub.AddCombinedImageSamplerDescriptorWrite(eset, 0,
+								static_cast<GSTextureVK*>(eidx)->GetView(), m_point_sampler,
+								static_cast<GSTextureVK*>(eidx)->GetVkLayout());
+							dsub.AddCombinedImageSamplerDescriptorWrite(eset, 1,
+								static_cast<GSTextureVK*>(epal)->GetView(), m_point_sampler,
+								static_cast<GSTextureVK*>(epal)->GetVkLayout());
+							dsub.Update(m_device);
+							vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+								m_tilegpu_expand_pipeline_layout, 0, 1, &eset, 0, nullptr);
+						}
+					}
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_expand_pipeline);
+					vkCmdDraw(cmd, 3, 1, 0, 0);
+					EndRenderPass();
+					dst->SetState(GSTexture::State::Dirty);
+					// Back to shader-read, which is what set 2's descriptors were written promising
+					// (see the layout note above the set write); the transition is also the execution
+					// dependency ordering this build ahead of every pass that samples it.
+					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+					continue;
+				}
+
 				// A materialise names a source image, not one of the frame's targets, and carries no
 				// page list -- its addresses come from the window's layout and the epoch page table.
 				if (op.kind == GSTileGpuPrepKind::Materialise)
 				{
 					if (op.target >= plan.prep_textures.size() || !plan.prep_textures[op.target])
 						continue;
-					const u32 src_fmt = (op.psm == PSMCT24) ? 1u : 0u;
+					const u32 src_fmt = TileGpuSrcFormatForPsm(op.psm);
+					if (src_fmt >= kTileGpuSrcFormats)
+						continue;
 					if (!m_tilegpu_materialise_tried[src_fmt])
 						CompileTileGpuMaterialisePipeline(src_fmt);
 					if (m_tilegpu_materialise_pipeline[src_fmt] == VK_NULL_HANDLE)
@@ -8388,6 +8599,22 @@ void GSDeviceVK::DestroyResources()
 		m_tilegpu_materialise_pipeline[f] = VK_NULL_HANDLE;
 		m_tilegpu_materialise_tried[f] = false;
 	}
+	if (m_tilegpu_expand_pipeline != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(m_device, m_tilegpu_expand_pipeline, nullptr);
+		m_tilegpu_expand_pipeline = VK_NULL_HANDLE;
+	}
+	if (m_tilegpu_expand_pipeline_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineLayout(m_device, m_tilegpu_expand_pipeline_layout, nullptr);
+		m_tilegpu_expand_pipeline_layout = VK_NULL_HANDLE;
+	}
+	if (m_tilegpu_expand_ds_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_expand_ds_layout, nullptr);
+		m_tilegpu_expand_ds_layout = VK_NULL_HANDLE;
+	}
+	m_tilegpu_expand_tried = false;
 	if (m_tilegpu_writeback_pipeline != VK_NULL_HANDLE)
 	{
 		vkDestroyPipeline(m_device, m_tilegpu_writeback_pipeline, nullptr);

@@ -2053,13 +2053,24 @@ public:
 		/// unused (the window's addresses come from bp/bw and the epoch page table). Always safe to
 		/// hoist to the pass head: the ring is staged whole-frame, and the renderer emits this op
 		/// after the composition ops for the same window, so array order puts it behind them.
+		/// A PALETTED window (PSMT8/PSMT4) materialises to an INDEX image — the index replicated
+		/// into all four channels — and takes an Expand after it, below.
 		Materialise = 2,
+		/// Indices + palette -> colour: one texel per index, `palette[index]`, into an RGBA8 image
+		/// the draws actually sample. The (index, palette) split is the whole point of the two-stage
+		/// paletted road — an index build serves every palette a game cycles through it, because the
+		/// source cache's key deliberately excludes the palette — so this is a second pass rather
+		/// than a bake inside the Materialise. `target`, `index_texture` and `palette_texture` all
+		/// index `prep_textures`; bp/bw/psm/epoch and the page list are unused. It MUST be emitted
+		/// after the Materialise that fills its index (array order is execution order at the pass
+		/// head), which the renderer gets for free by queueing them in that order for the same draw.
+		Expand = 3,
 	};
 
-	/// One prep dispatch. `target` indexes the plan's target list — or, for a Materialise, its
-	/// `prep_textures` list. bp/bw/psm is the layout that pixel space realises (guest layout =
-	/// pixel space, page-aligned base); for a Materialise it is the texture window's TBP0, its
-	/// pages per texture row and its TEX0.PSM. The page list is `page_entry_count` rows of the
+	/// One prep dispatch. `target` indexes the plan's target list — or, for a Materialise or an
+	/// Expand, its `prep_textures` list. bp/bw/psm is the layout that pixel space realises (guest
+	/// layout = pixel space, page-aligned base); for a Materialise it is the texture window's TBP0,
+	/// its pages per texture row and its TEX0.PSM. The page list is `page_entry_count` rows of the
 	/// plan's page_entries from `first_page_entry`. Formats served: PSMCT32/PSMCT24 (Format::Color
 	/// targets); the renderer keeps every other surface off this road.
 	struct GSTileGpuPrepOp
@@ -2076,8 +2087,13 @@ public:
 		/// Materialise only: TEXA as the fragment shader packs it (bit 0 = apply, bit 1 = AEM,
 		/// bits 8-15 = TA0). A 24-bit window's alpha byte is not its own, so the expansion is baked
 		/// into the image at build time — which is what the CPU deswizzlers do, and what the source
-		/// cache's key already accounts for (two TEXA settings are two entries).
+		/// cache's key already accounts for (two TEXA settings are two entries). Zero for a paletted
+		/// window: TEXA rides in the CLUT expansion there, which GSClut::Read32 has already applied
+		/// to the palette words.
 		u32 texa;
+		/// Expand only: the index image and the N x 1 palette, both indices into `prep_textures`.
+		u32 index_texture;
+		u32 palette_texture;
 	};
 
 	/// The pass's uniform depth configuration, which selects the depth pipeline variant. Every
@@ -2208,10 +2224,11 @@ public:
 
 		std::span<GSTexture* const> targets; ///< the *_target fields index this list
 
-		/// The images the frame's Materialise prep ops build into — rule 3's materialised texture
-		/// sources. A separate list from `targets` because a source is not one: no pass renders
-		/// into it, no target pair names it, and the page model does not own it. A Materialise op's
-		/// `target` field indexes here.
+		/// The images the frame's Materialise and Expand prep ops NAME — rule 3's materialised
+		/// texture sources, the index images behind the paletted ones, and the palettes those
+		/// expansions read. A separate list from `targets` because none of them is one: no pass
+		/// renders into them, no target pair names them, and the page model does not own them. The
+		/// `target`, `index_texture` and `palette_texture` fields of a prep op index here.
 		std::span<GSTexture* const> prep_textures;
 
 		/// Rule 3's frame-wide bind table: the materialised sources this frame's draws sample, in the

@@ -9,6 +9,25 @@
 
 class GSTexture;
 
+/// The build road for a caller that cannot let the expansion happen NOW. GSDevice::TileExpandPalette
+/// issues the pass immediately, which is right for a renderer that draws immediately; a renderer
+/// that RECORDS draws and executes them later needs the expansion ordered against the index build it
+/// reads, in the stream it will eventually execute. The cache keeps everything it already owned —
+/// admission, identity, allocation, eviction, the pin — and the builder does exactly one thing:
+/// arrange for `dst` to hold `palette[index]` by the time anything samples it.
+class GSTileExpandBuilder
+{
+public:
+	virtual ~GSTileExpandBuilder() = default;
+
+	/// Fill `dst` — a Format::Color render target the size of `index` — with the palette lookup of
+	/// every index texel. Returning false fails the build: the cache drops the texture and the
+	/// caller gets null, exactly as an allocation failure does. Unlike TileExpandPalette's own
+	/// refusal this does NOT flip Serves() off, because a deferred builder's failure is a property
+	/// of the frame (an op stream that could not take the op), not of the device.
+	virtual bool BuildTileExpansion(GSTexture* index, GSTexture* palette, GSTexture* dst) = 0;
+};
+
 // The fast profile's palette-expanded sources: an index texture pushed through its
 // palette ONCE on the device (GSDevice::TileExpandPalette) into an RGBA8 texture, so
 // a draw on the GPU sampler leg fetches colours directly instead of expanding four
@@ -71,6 +90,27 @@ public:
 		Served,   ///< the pair survived a frame boundary: an expansion is earned
 	};
 	Admission ProbeAdmit(u64 index_id, u64 palette_id);
+
+	/// What LookupBuilt did, so a caller can count the road rather than infer it from a pointer.
+	enum class BuiltOutcome
+	{
+		Hit,             ///< the pair already had its expansion: no work at all
+		Deferred,        ///< first sight of the pair (or re-seen inside its own frame): nothing built
+		Built,           ///< the builder was called and the expansion is this frame's
+		RefusedCapacity, ///< every entry is pinned this frame; nothing may be evicted
+		Failed,          ///< allocation failed, or the builder refused
+	};
+
+	/// The deferred build road: same admission filter, same identity, same cache and same pin as
+	/// Lookup, but the expansion pass is arranged by `builder` instead of being issued here. Level 0
+	/// only — a caller that defers has no mip chain to fill, and the levels argument would have to
+	/// mean "levels the builder will fill later", which is not a thing this class can check.
+	///
+	/// Returns null on a deferral, a refusal and a failure alike; `outcome` says which, and the
+	/// caller counts it. A deferral is the designed shape, not an error: the pair is recorded and
+	/// the caller's other road carries the draw for one frame.
+	GSTexture* LookupBuilt(GSTexture* index, u64 index_id, GSTexture* palette, u64 palette_id,
+		GSTileExpandBuilder& builder, BuiltOutcome* outcome = nullptr);
 
 	/// Frame boundary, for the admission filter's clock. Call once per VSync.
 	void NextFrame() { m_frame++; }

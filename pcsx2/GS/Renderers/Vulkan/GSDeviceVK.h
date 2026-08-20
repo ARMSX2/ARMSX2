@@ -659,12 +659,27 @@ private:
 	bool CompileTileGpuSeedPipeline();
 	// Bytes -> a texture source: a fragment pass that unswizzles a whole texture window out of the
 	// ring into an ordinary RGBA8 image, one fragment per texel, for the hardware sampler to read.
-	// One pipeline per source format (0 = PSMCT32, 1 = PSMCT24), same layout and descriptor set as
-	// the seed. Compiled on first use of that format, same gate.
-	static constexpr u32 kTileGpuSrcFormats = 2;
+	// One pipeline per source format (0 = PSMCT32, 1 = PSMCT24, 2 = PSMT8, 3 = PSMT4), same layout
+	// and descriptor set as the seed. Compiled on first use of that format, same gate. The two
+	// paletted formats write an INDEX image; its colour arrives from the Expand op that follows.
+	static constexpr u32 kTileGpuSrcFormats = 4;
 	std::array<VkPipeline, kTileGpuSrcFormats> m_tilegpu_materialise_pipeline{};
 	std::array<bool, kTileGpuSrcFormats> m_tilegpu_materialise_tried{};
 	bool CompileTileGpuMaterialisePipeline(u32 src_fmt);
+	/// The source format a prep op's TEX0.PSM names, or kTileGpuSrcFormats for one this road does
+	/// not build. One place, because the renderer's refusals and the executor's pipeline choice have
+	/// to agree about which formats exist.
+	static u32 TileGpuSrcFormatForPsm(u32 psm);
+	// Indices + palette -> colour: rule 3's paletted second stage, recorded raw beside the materialise
+	// rather than through GSDevice::TileExpandPalette, whose descriptor binding goes through the
+	// device state cache and disturbs the sets the executor established for the passes around it. Its
+	// own two-sampler set layout for the same reason -- nothing here may depend on another road's
+	// compile having happened.
+	VkDescriptorSetLayout m_tilegpu_expand_ds_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_tilegpu_expand_pipeline_layout = VK_NULL_HANDLE;
+	VkPipeline m_tilegpu_expand_pipeline = VK_NULL_HANDLE;
+	bool m_tilegpu_expand_tried = false;
+	bool CompileTileGpuExpandPipeline();
 	/// Whether tilegpu_byte_sel must take its constant-shift form on this device: Honeykrisp
 	/// miscompiles the dynamic one on a word loaded from the vram SSBO. Asked in one place because
 	/// every shader that extracts a byte from that buffer has to answer it the same way.
