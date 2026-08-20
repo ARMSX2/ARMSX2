@@ -210,7 +210,8 @@ constexpr AbiPin kPins[] = {
 	{18, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x3c5065e7ab8cf631, 0xde92be2516a10fbb, 0x1270eee2b9725c68}},
 };
 
-u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs)
+u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
+	const char* requireVu0Divergence = nullptr)
 {
 	// The ABI digest pins the emitted shape that lands in the on-disk cache in
 	// PRODUCTION, where vuFlagHack defaults on (and the options sentinel keeps
@@ -226,7 +227,10 @@ u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs)
 	h.SetVf(2, 4.0f, 0.5f, -1.0f, 8.0f);
 	h.SetVi(1, 1);
 	h.LoadProgram(pairs);
-	h.Run();
+	if (requireVu0Divergence)
+		h.RunRequiringDivergence(requireVu0Divergence);
+	else
+		h.Run();
 	h.RunJitPreserveBlockCache();
 	u64 digest = 0;
 	EXPECT_TRUE(mVUPersist::TestComputeEmitDigest(0, digest));
@@ -309,7 +313,12 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		UpperOnly(VMADDAy_U(mask::xyzw, vf::vf4, vf::vf2)),
 		UpperOnly(VMSUBAz_U(mask::xyzw, vf::vf5, vf::vf2)),
 		UpperOnly(bits::E | VMADDw_U(mask::xyzw, vf::vf7, vf::vf6, vf::vf2)),
-	});
+	},
+		// vf5 is zero and vf2.z is -1.0, so the VMSUBAz stage multiplies out a
+		// -0. The interpreter carries the multiply stage's sign into the status
+		// flag's sticky S; neither emitter does.
+		"the status sticky field takes S from the result alone, not from the "
+		"multiply stage");
 	// Taken branch with a taken conditional branch in its delay slot. The
 	// E-bit stays OUT of the evil continuation window (one plain op at #1's
 	// target, then #2 lands on a common E-bit tail) — E-bit inside an evil

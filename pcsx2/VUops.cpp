@@ -474,21 +474,18 @@ struct VuMacValue
 	u32 mulSticky;
 };
 
-// What the multiply stage of a MADD/MSUB leaves in the sticky field, in the bit
-// order VU_STAT_UPDATE assembles its nibble in.
-//
-// Z, U and O only. The captured rows show all three crossing from a product
-// into the sticky field with the cause nibble clear -- a product of zero, one
-// that underflows, one that overflows -- but every row whose product is
-// negative has a negative result too, so none of them says whether S crosses
-// with them. Leaving it out is what both engines already did.
+// The multiply stage's contribution to the sticky field, in VU_STAT_UPDATE's
+// bit order. S is the product's sign bit and is independent of the other
+// three: a negative product whose sum comes back positive leaves the MAC flag
+// clear and sticky S set.
 static __fi u32 vuProductSticky(const EeFpuModel::Result& s)
 {
+	const u32 sign = (s.bits >> 30) & 0x2u;
 	if (s.overflow)
-		return 0x8u;
+		return sign | 0x8u;
 	if (s.underflow)
-		return 0x5u;
-	return (s.bits & 0x7FFFFFFFu) == 0 ? 0x1u : 0u;
+		return sign | 0x5u;
+	return sign | ((s.bits & 0x7FFFFFFFu) == 0 ? 0x1u : 0u);
 }
 
 static __fi VuMacValue vuMacValue(const EeFpuModel::Result& s, u32 mulSticky = 0)
