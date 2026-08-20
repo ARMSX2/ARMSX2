@@ -14,6 +14,8 @@
 #include <initializer_list>
 #include <vector>
 
+class BaseVUmicroCPU;
+
 namespace recompiler_tests {
 
 // VU recompiler test harness. Drives one VU instance (0 or 1) through a short
@@ -99,6 +101,19 @@ public:
 	// authoring a new test before the JIT path is ready.
 	void RunInterpOnly();
 
+	// Re-enter the engine until the running bit clears, instead of taking a
+	// single Execute(), for the rest of this harness's life.
+	//
+	// Execute() returns at the first break the engine takes, and an M-bit
+	// pause is one: the microprogram is still running, VPU_STAT bit 0 is
+	// still set, and the next entry carries on from where it stopped.
+	// Production does the re-entry in `_vu0run`, and the console probes did
+	// it too -- vbprobe.c spins on `cfc2 $vi29` until the running bit clears
+	// and only then reads anything back. A test scored against one of those
+	// captures has to wait the same way or it is comparing a mid-program
+	// pause against a terminated program.
+	void ResumeUntilTerminated();
+
 	// JIT-only re-run from the SAME pre-state as the last Run(), WITHOUT
 	// resetting the VU block cache first — compiled (or hydrated) blocks
 	// survive into this execution. Updates JitSnapshot(); performs no diff.
@@ -155,6 +170,7 @@ private:
 	void SeedEntryState(bool reset_block_cache = true);
 	void RunInterpFromSeeded();
 	void RunJitFromSeeded();
+	void ExecuteEngine(BaseVUmicroCPU* cpu);
 	void WriteProgramToMicro();
 	void MergeTrackedWindow(u32 addr, size_t bytes);
 
@@ -167,6 +183,8 @@ private:
 	std::vector<u8> path1_packets_jit_;
 	std::vector<u8> path1_packets_interp_;
 
+	bool resume_until_terminated_ = false;
+
 	VuSnapshot pre_snapshot_;
 	VuSnapshot jit_snapshot_;
 	VuSnapshot interp_snapshot_;
@@ -176,6 +194,10 @@ private:
 	// Real microprograms can run thousands of cycles but the harness's
 	// E-bit terminator caps every test deterministically.
 	static constexpr u32 kCycleBudget = 4096;
+
+	// Bound on ResumeUntilTerminated's re-entries. A program that has not
+	// terminated by then is reported rather than quietly truncated.
+	static constexpr int kMaxResumes = 16;
 };
 
 } // namespace recompiler_tests
