@@ -321,6 +321,13 @@ private:
 	void ReadbackToShadow(const GSPageBitmap& pages, StallSite site);
 	void SyncAllTruthToCpu();
 
+	// Submit whatever the frame has planned so far, so the resident targets hold every draw up to
+	// this point (counted as a mid-frame flush); a no-op when nothing is pending. Separately
+	// callable because the flush RETIRES EVERY SYNCED CLAIM -- the ring slots those claims named
+	// are spent, and their bytes were never in the CPU shadow -- so a caller whose question is
+	// phrased in terms of `synced` has to ask it on the far side of this, never before.
+	void FlushPendingPlan();
+
 	// The rect union a run of draws has written into the current colour surface since the last
 	// forced pass break: a DATE draw whose rect intersects it reads pixels the pass would also
 	// write, so it opens a new pass (a fresh snapshot). Reset on surface change and on break.

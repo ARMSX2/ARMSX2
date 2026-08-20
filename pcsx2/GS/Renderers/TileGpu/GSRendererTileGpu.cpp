@@ -334,7 +334,19 @@ void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 	GSVramModel::RectFootprint fp;
 	GSVramModel::FootprintForRect(layout, r, fp);
 	SupersedeRingSlots(fp.pages);
-	ReadbackToShadow(m_vram_model.SpillBeforeCpuWrite(fp, planes), StallSite::UploadSubBlock);
+	if (!m_vram_model.SpillBeforeCpuWrite(fp, planes).empty())
+	{
+		// This write partially overwrites blocks only a target holds, so it takes the stall road
+		// -- and a stall FLUSHES the pending plan, which retires every synced claim the ring
+		// vouched for (those slots are spent, and their bytes were never in S). Retiring a claim
+		// can only ADD pages to the spill set, so the set that actually has to come down is the
+		// one asked for on the far side of the flush. Answering from this side leaves the pages
+		// whose claim the flush retired unpulled, and OnCpuWrite below then clears truth the CPU
+		// shadow never received -- silent in Release, its synced assert in Devel. So: ask once to
+		// learn a stall is coming, flush, then ask again for the real set.
+		FlushPendingPlan();
+		ReadbackToShadow(m_vram_model.SpillBeforeCpuWrite(fp, planes), StallSite::UploadSubBlock);
+	}
 	m_vram_model.OnCpuWrite(fp, planes);
 	if (m_pass_sim.IsActive() && !m_pass_sim_in_move) [[unlikely]]
 		m_pass_sim.OnUpload(PagesForTargetRect(layout, r));
@@ -1807,6 +1819,14 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 
 // -- the stall road ------------------------------------------------------------------------
 
+void GSRendererTileGpu::FlushPendingPlan()
+{
+	if (m_plan_pending.empty())
+		return;
+	m_frame.flushes++;
+	BuildAndExecutePlan();
+}
+
 // Pull whatever of `pages` a target holds newest down into the CPU shadow. The targets must
 // hold every draw so far first, so the pending plan is flushed (a mid-frame submission,
 // counted) -- which also drops every ring-synced claim, so the question "what does S not
@@ -1820,11 +1840,7 @@ void GSRendererTileGpu::ReadbackToShadow(const GSPageBitmap& pages, StallSite si
 	if (pages.empty() || (pages & m_vram_model.TruthAny()).empty())
 		return;
 
-	if (!m_plan_pending.empty())
-	{
-		m_frame.flushes++;
-		BuildAndExecutePlan();
-	}
+	FlushPendingPlan();
 	const GSPageBitmap need = m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll);
 	if (need.empty())
 		return;
