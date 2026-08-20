@@ -187,6 +187,7 @@ public:
 	bool TileSwizzleFormsFit(bool& clut_ok) override;
 	bool TileExpandPalette(GSTexture* index, GSTexture* palette, GSTexture* dst, u32 src_level, u32 dst_level) override;
 	bool TileGpuExecutorAvailable() override;
+	bool TileGpuBindlessTargets() override;
 	bool ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan) override;
 	u64 GetCompletedSubmitEpoch() override
 	{
@@ -576,9 +577,12 @@ private:
 	VkPipelineLayout m_tilegpu_pipeline_layout = VK_NULL_HANDLE;
 	VkDescriptorSetLayout m_tilegpu_ds_layout = VK_NULL_HANDLE;
 	VkDescriptorSet m_tilegpu_state_descriptor_set = VK_NULL_HANDLE;
-	// Set 1: the pass's snapshot of its own colour target (combined sampler), bound per pass --
-	// pushed where the device pushes descriptors, a per-frame set otherwise. The null texture
-	// stands in for passes with nothing to sample.
+	// Set 1, bound per pass -- pushed where the device pushes descriptors, a per-frame set
+	// otherwise. Binding 0 is the pass's snapshot of its own colour target (combined sampler);
+	// binding 1 is its rule-2 sampled targets, a fixed array of kMaxTexSourcesPerPass combined
+	// samplers the fragment shader indexes by literal. They share one set because a pipeline
+	// layout may carry at most one push-descriptor set. The null texture stands in for slots the
+	// pass does not use.
 	VkDescriptorSetLayout m_tilegpu_snapshot_ds_layout = VK_NULL_HANDLE;
 	// [topology][depth mode]; the depth index is GSTileGpuPass::depth_mode (GSTileGpuDepthMode).
 	// These are the no-blend pipelines; blending variants are created on first use per

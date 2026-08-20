@@ -2092,6 +2092,13 @@ public:
 		u32 snapshot_count;
 		u32 first_prep_op; ///< reconciliation dispatches (writebacks, seeds) run before this pass opens, in order
 		u32 prep_op_count;
+		/// The resident targets this pass's draws sample directly (the VRAM model's rule 2), as a
+		/// range of the plan's tex_sources. The executor binds them as this pass's sampled-target
+		/// array, in this order: a draw's state row names the slot by its position in the range.
+		/// None of them may be this pass's own colour or depth attachment -- a draw sampling what
+		/// its pass writes is the in-pass feedback road, and the planner breaks the pass instead.
+		u32 first_tex_source;
+		u32 tex_source_count;
 		bool declares_self_read; ///< ROAA: the pass reads its own colour target in raster order
 		GSTileGpuDepthMode depth_mode; ///< uniform across the pass; None iff zbuf_target is kNoTarget
 	};
@@ -2103,6 +2110,14 @@ public:
 	struct GSTileGpuPassPlan
 	{
 		static constexpr u32 kNoTarget = 0xFFFFFFFFu;
+		/// A state row's tex_target when the draw takes the byte road (it decodes guest bytes out
+		/// of the ring) rather than sampling a resident target.
+		static constexpr u32 kNoTexSlot = 0xFFFFFFFFu;
+		/// How many distinct resident targets one pass may sample. The executor binds exactly this
+		/// many descriptors per pass and the fragment shader declares an array of this size, so it
+		/// is a contract constant, not a tunable either side can pick alone. A draw whose source
+		/// would be the ninth opens a new pass.
+		static constexpr u32 kMaxTexSourcesPerPass = 8;
 
 		std::span<const GSTileGpuPass> passes;
 		std::span<const GSTileGpuIndirectDraw> draws;
@@ -2135,6 +2150,15 @@ public:
 
 		std::span<GSTexture* const> targets; ///< the *_target fields index this list
 
+		/// The rule-2 sampled targets, as indices into `targets`, grouped by pass
+		/// (GSTileGpuPass::first_tex_source / tex_source_count). A textured draw either names one
+		/// of its pass's entries in its state row -- the fragment stage then fetches the texel out
+		/// of that image instead of decoding ring bytes -- or carries kNoTexSlot and takes the byte
+		/// road. The renderer only puts a target here when the page model proves it is the sole
+		/// owner of the whole read window at a 1:1 matching layout, so the two roads read the same
+		/// texel; the image road just reads the live one.
+		std::span<const u32> tex_sources;
+
 		/// The frame's byte road: exactly the guest pages the plan reads through the flat-road
 		/// shader or reconciles between the byte store and a target, each with the epoch range it
 		/// serves (see GSTileGpuRingPage). The executor stages one 8 KB ring slot per entry and
@@ -2155,6 +2179,13 @@ public:
 	/// Vulkan, and on a Vulkan device that failed the descriptor-indexing + indirect-draw
 	/// capability probe at device creation. The renderer consults this before constructing.
 	virtual bool TileGpuExecutorAvailable() { return false; }
+
+	/// Whether the executor can bind resident targets as sampled images for the VRAM model's
+	/// rule 2. Asked ONCE, before any draw is accumulated, because the renderer answers it by
+	/// *not doing work*: a rule-2 draw's read window is never composed into the byte ring, so a
+	/// device that then failed to bind the target would sample stale bytes. False keeps every
+	/// draw on the byte road.
+	virtual bool TileGpuBindlessTargets() { return false; }
 
 	/// Submit one frame's pass plan through the executor. Returns false when the device does
 	/// not serve it, so the renderer can refuse to construct rather than drop frames silently.

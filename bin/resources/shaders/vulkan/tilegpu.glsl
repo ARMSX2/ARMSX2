@@ -31,8 +31,16 @@
 // VRAM sampling path is compiled in, 0 when they did not (the whole draw then falls back to the
 // vertex-colour path whatever a state row's tex_enable says).
 
+// TILEGPU_MAX_TEX_SOURCES (injected by the device): the size of the per-pass sampled-target array
+// set 2 binds -- GSTileGpuPassPlan::kMaxTexSourcesPerPass. A state row's tex_target is a slot in it,
+// or 0xFFFFFFFF for "decode the bytes".
+
 #ifndef TILEGPU_TEX
 #define TILEGPU_TEX 0
+#endif
+
+#ifndef TILEGPU_MAX_TEX_SOURCES
+#define TILEGPU_MAX_TEX_SOURCES 8
 #endif
 
 // Matches the executor's StateRow byte-for-byte (std430, 144 bytes). The transform and the scissor
@@ -69,7 +77,8 @@ struct StateRow
 	uint region_u;     // CLAMP.MINU | (CLAMP.MAXU << 16)
 	uint region_v;     // CLAMP.MINV | (CLAMP.MAXV << 16)
 	uint ltf;          // 1 = bilinear: blend the four texels around the coordinate
-	uint pad0_, pad1_; // the row is 144 bytes on both sides; see the C++ StateRow's note
+	uint tex_target;   // slot in this pass's sampled-target array, or 0xFFFFFFFF = decode the bytes
+	uint pad0_;        // the row is 144 bytes on both sides; see the C++ StateRow's note
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer StateTable
@@ -289,6 +298,51 @@ vec4 tilegpu_unpack(uint w)
 	            float((w >> 24u) & 0xFFu)) * (1.0f / 255.0f);
 }
 
+// TEXA: a 24-bit texel stores no alpha byte, so the GS gives it TEXA.TA0, and AEM makes a texel
+// whose RGB is entirely zero transparent instead. (A paletted texture takes TEXA in the CLUT
+// expansion on the CPU, so only the direct roads need this.) `rgb_zero` is the AEM test, which the
+// two roads phrase differently -- a word compare on the byte road, a channel compare on the image.
+vec4 tilegpu_texa(StateRow sr, vec4 t, bool rgb_zero)
+{
+	if ((sr.texa & 1u) != 0u)
+	{
+		const bool aem_zero = (sr.texa & 2u) != 0u && rgb_zero;
+		t.a = aem_zero ? 0.0f : float((sr.texa >> 8u) & 0xFFu) * (1.0f / 255.0f);
+	}
+	return t;
+}
+
+// Rule 2 of the VRAM model's texel road: this pass's resident sampled targets. A target's pixel
+// space IS the guest layout it renders (pool page (row, col) = base page + row*bw + col), and the
+// renderer only names one here when the page model proves that target is the sole owner of the whole
+// read window at the same base, stride and format. So target pixel (u, v) holds guest texel (u, v),
+// and the fetch below returns exactly what tilegpu_texel32 would -- out of the LIVE pixels, instead
+// of out of bytes some earlier writeback had to compose first.
+//
+// Indexed by literal on purpose. The slot is uniform within a draw, but one vkCmdDrawIndexedIndirect
+// covers many draws and a wave may span two of them, which would make this a NON-uniform descriptor
+// index: shaderSampledImageArrayNonUniformIndexing, GL_EXT_nonuniform_qualifier, and an #extension
+// line this shader cannot place before the header's generated code. A chain of constant indices
+// needs none of that, costs one uniform branch, and cannot be miscompiled the way the dynamic
+// byte-extract above was.
+layout(set = 1, binding = 1) uniform sampler2D u_targets[TILEGPU_MAX_TEX_SOURCES];
+
+#if TILEGPU_MAX_TEX_SOURCES != 8
+#error "tilegpu_target_texel enumerates 8 slots; keep it in step with kMaxTexSourcesPerPass"
+#endif
+
+vec4 tilegpu_target_texel(uint slot, ivec2 c)
+{
+	if (slot == 0u) return texelFetch(u_targets[0], c, 0);
+	if (slot == 1u) return texelFetch(u_targets[1], c, 0);
+	if (slot == 2u) return texelFetch(u_targets[2], c, 0);
+	if (slot == 3u) return texelFetch(u_targets[3], c, 0);
+	if (slot == 4u) return texelFetch(u_targets[4], c, 0);
+	if (slot == 5u) return texelFetch(u_targets[5], c, 0);
+	if (slot == 6u) return texelFetch(u_targets[6], c, 0);
+	return texelFetch(u_targets[7], c, 0);
+}
+
 // Apply the wrap mode to one axis. REPEAT masks (dims are powers of two); CLAMP clamps to the
 // texture; the two REGION modes work off the CLAMP register's MIN/MAX pair for the axis, which
 // arrives packed as MIN | (MAX << 16) -- REGION_CLAMP clamps between them, REGION_REPEAT reads them
@@ -316,6 +370,19 @@ vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 	const uint iu = uint(tilegpu_wrap(cu, sr.tw, sr.wms, sr.region_u));
 	const uint iv = uint(tilegpu_wrap(cv, sr.th, sr.wmt, sr.region_v));
 
+	// Rule 2: the texel comes out of a resident target instead of the bytes. Same wrap, same
+	// coordinate, same TEXA -- only the fetch differs, so the two roads agree wherever the bytes
+	// are current and the image road wins wherever they are not. The min is a guard, not a
+	// semantic: every wrap mode lands inside tw x th (GetSizeFixedTEX0 grows TW/TH to cover a
+	// REGION window), and the renderer refuses the bind unless tw x th fits the image, so this
+	// only stops a fetch running out of bounds if one of those ever stops holding.
+	if (sr.tex_target != 0xFFFFFFFFu)
+	{
+		const vec4 tt = tilegpu_target_texel(sr.tex_target,
+			ivec2(int(min(iu, sr.tw - 1u)), int(min(iv, sr.th - 1u))));
+		return tilegpu_texa(sr, tt, all(equal(tt.rgb, vec3(0.0f))));
+	}
+
 	// index_format is dynamically uniform per draw, so this does not diverge.
 	uint w;
 	if (sr.index_format == 0u)
@@ -325,17 +392,7 @@ vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 	else
 		w = vram_words[pal_base + sr.pal_offset + tilegpu_index4(iu, iv, sr.tbp0, sr.tbw, sr.epoch)];
 
-	vec4 t = tilegpu_unpack(w);
-
-	// TEXA: a 24-bit texel stores no alpha, so the GS gives it TEXA.TA0, and AEM makes a texel whose
-	// RGB is entirely zero transparent instead. (A paletted texture takes TEXA in the CLUT expansion
-	// on the CPU, so only the direct road needs this.)
-	if ((sr.texa & 1u) != 0u)
-	{
-		const bool aem_zero = (sr.texa & 2u) != 0u && (w & 0x00FFFFFFu) == 0u;
-		t.a = aem_zero ? 0.0f : float((sr.texa >> 8u) & 0xFFu) * (1.0f / 255.0f);
-	}
-	return t;
+	return tilegpu_texa(sr, tilegpu_unpack(w), (w & 0x00FFFFFFu) == 0u);
 }
 
 // The draw's texture at a texel coordinate, filtered the way TEX1 asked. NEAREST truncates the

@@ -149,10 +149,11 @@ private:
 		u32 region_u;           // CLAMP.MINU | (CLAMP.MAXU << 16), for the two REGION wrap modes
 		u32 region_v;           // CLAMP.MINV | (CLAMP.MAXV << 16)
 		u32 ltf;                // 1 = bilinear: the fragment blends the four texels around its coordinate
+		u32 tex_target;         // slot in this pass's sampled-target array, or kNoTexSlot = decode bytes
 		// Explicit tail padding, not slack: alignas(16) would pad the C++ side to 144 anyway, while
 		// the shader's std430 array stride is a multiple of 8, so an implicit tail would put the two
 		// sides on different strides and every row but the first would be read from the wrong place.
-		u32 pad0_, pad1_;
+		u32 pad0_;
 	};
 	static_assert(sizeof(StateRow) == 144, "TileGpu StateRow must be 144 bytes to match tilegpu.glsl std430");
 
@@ -191,6 +192,12 @@ private:
 		u32 texa;             // 24-bit texel alpha: bit 0 apply, bit 1 AEM, bits 8-15 TA0
 		u32 region_u, region_v; // CLAMP MIN | (MAX << 16) per axis, for the REGION wrap modes
 		bool ltf;             // TEX1 asks for LINEAR on the side of the LOD this draw sits on
+
+		// Rule 2 of the VRAM model's texel road: the resident target that holds this draw's whole
+		// read window, or kGSTileNoSurface for the byte road. When set, nothing was composed into
+		// the ring for this read -- the fragment stage samples the target's live pixels.
+		GSTileSurfaceId tex_source;
+		u32 tex_slot;         // its slot in the pass's bind table, resolved once the pass is known
 	};
 
 	// Per-frame accumulation (filled in Draw via AccumulateDraw, consumed + reset in the plan
@@ -208,6 +215,7 @@ private:
 	std::vector<GSDevice::GSTileGpuSnapshotCopy> m_plan_snapshots;
 	std::vector<GSDevice::GSTileGpuPrepOp> m_plan_prep_ops;
 	std::vector<GSDevice::GSTileGpuPageEntry> m_plan_page_entries;
+	std::vector<u32> m_plan_tex_sources; // per pass: the rule-2 targets its draws sample, as target indices
 	std::vector<GSTileSurfaceId> m_plan_target_surfaces; // the plan's target list, as surfaces
 	std::vector<GSTexture*> m_plan_targets; // ...resolved to pool textures at the plan build
 	std::vector<u32> m_plan_target_of_surface; // surface id -> index into the target list (kNoTarget = absent)
@@ -293,8 +301,8 @@ private:
 	// (no writeback shader) and surfaces whose layout has no byte road are the two roads here.
 	void NoteLossyPages(const GSPageBitmap& pages);
 
-	// Truth on `pages` is taken (or read) by a surface with no byte road: mark it synced without
-	// moving bytes, and count it lossy.
+	// Truth on `pages` is taken by a surface with no byte road: mark it synced without moving
+	// bytes, and count it lossy.
 	void LossySteal(const GSPageBitmap& pages);
 
 	// Compose `pages` into the ring for the draw being accumulated, breaking the open pass if the
@@ -368,6 +376,13 @@ private:
 	GSPageBitmap m_open_z_written;
 	GSPageBitmap m_open_read;
 	std::array<u16, GS_MAX_PAGES> m_open_read_slot{}; // meaningful only where m_open_read is set
+
+	// The rule-2 targets the open pass's draws sample, in the order they were first bound -- which
+	// IS the slot numbering the executor and the shader use, so it is rebuilt the same way at plan
+	// build (asserted there). A pass binds at most kMaxTexSourcesPerPass of them; a draw whose
+	// source would be one too many opens a pass of its own.
+	std::array<GSTileSurfaceId, GSDevice::GSTileGpuPassPlan::kMaxTexSourcesPerPass> m_open_tex_src{};
+	u32 m_open_tex_count = 0;
 
 	// The open pass is closed: the next draw accumulated is the first of a new one, so nothing
 	// recorded above constrains it. Idempotent, and the state it leaves matches no draw, so it

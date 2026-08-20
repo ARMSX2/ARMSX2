@@ -138,6 +138,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_plan_prep_ops.clear();
 	m_plan_page_entries.clear();
 	m_plan_targets.clear();
+	m_plan_tex_sources.clear();
 	m_plan_target_surfaces.clear();
 	m_plan_target_of_surface.clear();
 	m_ring_entries.clear();
@@ -235,6 +236,8 @@ void GSRendererTileGpu::MaterialiseDisplayBuffers()
 		// composed. Opening the range first puts the compose and the seed in one range, in the
 		// order they must run.
 		PendingDraw pd = {};
+		pd.tex_source = kGSTileNoSurface;
+		pd.tex_slot = GSDevice::GSTileGpuPassPlan::kNoTexSlot;
 		pd.first_prep_op = static_cast<u32>(m_plan_prep_ops.size());
 		ComposeRingPages(need);
 		EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, id, need);
@@ -1036,9 +1039,9 @@ void GSRendererTileGpu::ComposeRingPages(const GSPageBitmap& pages)
 	m_vram_model.OnReadback(need);
 }
 
-// Truth on `pages` cannot reach the byte store at all: count it and say so once. Two roads reach
-// here -- a surface whose layout has no writeback shader (16-bit colour, an unaligned base), and
-// the depth plane, which has no shader at all.
+// Truth on `pages` is about to become unreachable and no byte road can carry it: count it and say
+// so once. Two roads reach here -- a target whose own layout has no writeback shader, and the depth
+// plane, which has none at all.
 void GSRendererTileGpu::NoteLossyPages(const GSPageBitmap& pages)
 {
 	if (pages.empty())
@@ -1052,11 +1055,9 @@ void GSRendererTileGpu::NoteLossyPages(const GSPageBitmap& pages)
 	}
 }
 
-// A surface without a byte road is about to take `pages` (or read them without holding
-// them): the model's steal invariant needs the previous owners' truth marked synced, but no
-// bytes actually move -- the previous owners' pixels are lost to the byte store, and the
-// taker's texture keeps whatever it held. Counted (and warned once); the road-less surfaces
-// are depth, 16-bit colour, and unaligned bases, all pending their own writeback/seed shaders.
+// A surface without a byte road is about to take `pages`: the model's steal invariant needs the
+// previous owners' truth marked synced, but no bytes actually move -- the previous owners' pixels
+// are lost to the byte store, and the taker's texture keeps whatever it held.
 void GSRendererTileGpu::LossySteal(const GSPageBitmap& pages)
 {
 	if (pages.empty())
@@ -1071,9 +1072,9 @@ void GSRendererTileGpu::LossySteal(const GSPageBitmap& pages)
 // A writeback the plan build leaves inside the open pass runs at that pass's head, ahead of every
 // draw already in it. Where it collides with one of them -- reading a surface they have rendered
 // into, or rewriting a ring slot they have sampled -- the hoist composes stale bytes and hands them
-// backwards, and the draw opens its own pass instead, exactly as a seed does. Where it collides
-// with none of them the hoist is provably invisible, and the pass stays whole: pass count is the
-// currency of this design.
+// backwards, and the draw opens its own pass instead, exactly as a seed does. Where it collides with
+// none of them the hoist is provably invisible and the pass stays whole: pass count is the currency
+// of this design.
 void GSRendererTileGpu::ComposeForPendingDraw(const GSPageBitmap& pages, PendingDraw& pd)
 {
 	const u32 ops_before = static_cast<u32>(m_plan_prep_ops.size());
@@ -1117,6 +1118,7 @@ void GSRendererTileGpu::BreakOpenPass()
 	m_open_color_written.clear();
 	m_open_z_written.clear();
 	m_open_read.clear();
+	m_open_tex_count = 0;
 }
 
 // A writeback the plan build leaves inside the open pass runs at that pass's head, ahead of every
@@ -1283,6 +1285,8 @@ void GSRendererTileGpu::AccumulateDraw()
 	}
 
 	PendingDraw pd = {};
+	pd.tex_source = kGSTileNoSurface;
+	pd.tex_slot = GSDevice::GSTileGpuPassPlan::kNoTexSlot;
 	pd.first_prep_op = static_cast<u32>(m_plan_prep_ops.size());
 
 	// Fog. The GS walks the fragment's RGB toward FOGCOL by the per-vertex fog factor F (RGB only,
@@ -1390,6 +1394,7 @@ void GSRendererTileGpu::AccumulateDraw()
 			// sampling pages it also renders reads the pre-pass bytes: snapshot semantics).
 			const GSTileSurfaceLayout tex_l{tex0.TBP0, static_cast<u8>(tex0.TBW), static_cast<u8>(psm), KindForPsm(psm)};
 			tex_pages = GSVramModel::PagesForRect(tex_l, GSVector4i(0, 0, static_cast<int>(pd.tw), static_cast<int>(pd.th)));
+
 			ComposeForPendingDraw(tex_pages, pd);
 			pd.epoch = m_epoch;
 		}
@@ -1463,19 +1468,18 @@ void GSRendererTileGpu::AccumulateDraw()
 	u8 z_claims = 0;
 	if (z_used)
 	{
-		// Two things share these pages and only ONE of them is lost. The depth texture should hold
-		// their newest Z for a test or a write and there is no depth road to bring it in, so pages
-		// it does not hold read as whatever its texture has: lossy, counted. But the COLOUR truth
-		// other surfaces hold on those same pages is perfectly serviceable, and the depth claim
-		// below is about to take it -- so it gets composed into the ring first, which is the spill
-		// a road-having surface has always owed.
+		// Two different things share these pages and only ONE of them is lost. The depth texture
+		// should hold their newest Z for a test or a write and there is no depth road to bring it
+		// in, so pages it does not hold read as whatever its texture has: lossy, counted. But the
+		// COLOUR truth other surfaces hold on those same pages is perfectly serviceable, and the
+		// depth claim below is about to take it -- so it gets composed into the ring first, the
+		// spill a road-having surface has always owed.
 		//
-		// ⚠️ This used to mark the whole set synced and move nothing. That is a LIE the model then
-		// tells every later reader of those pages -- "the ring holds these bytes" -- and the reader
-		// samples whatever the CPU shadow's prefill left instead. It stayed invisible only while
-		// some other read of the same pages happened to write them back first: FlatOut 2's bloom
-		// chain and Dirge's post chain both read through it, and both come closer to the software
-		// floor once the spill is real (mean |diff| 10.20 -> 10.00 and 3.17 -> 3.05).
+		// ⚠️ This used to mark the whole set synced and move nothing, which is a LIE the model then
+		// tells every later reader of those pages: "the ring has these bytes", and the reader
+		// samples whatever the CPU shadow's prefill left. It stayed invisible only while some other
+		// read of the same pages happened to write them back first; removing one such read (the
+		// resident-target bind) is how FlatOut 2 surfaced it.
 		const GSPageBitmap z_seed = PagesNeedingSeed(z_id, z_pages, GSTilePlaneZ);
 		NoteLossyPages(z_seed);
 		ComposeForPendingDraw(z_seed, pd);
@@ -1723,8 +1727,8 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.region_u = pd.region_u;
 			sr.region_v = pd.region_v;
 			sr.ltf = pd.ltf ? 1u : 0u;
+			sr.tex_target = pd.tex_slot;
 			sr.pad0_ = 0;
-			sr.pad1_ = 0;
 		}
 
 		// 3. Group contiguous draws sharing a colour+depth surface pair and depth mode into one
@@ -1767,6 +1771,30 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			pass.first_prep_op = first.first_prep_op;
 			pass.prep_op_count = (last.first_prep_op + last.prep_op_count) - first.first_prep_op;
 			pass.declares_self_read = false;
+
+			// The pass's rule-2 bind table, rebuilt by walking its draws in order and appending each
+			// source the first time it appears. That is exactly how accumulation numbered the slots
+			// (its m_open_tex_src list resets on the same breaks this grouping does), so the slot a
+			// state row carries has to come out the same -- asserted, because a silent disagreement
+			// here would sample the wrong target rather than fail.
+			pass.first_tex_source = static_cast<u32>(m_plan_tex_sources.size());
+			pass.tex_source_count = 0;
+			for (u32 d = i; d < j; d++)
+			{
+				const PendingDraw& pd = m_plan_pending[d];
+				if (pd.tex_source == kGSTileNoSurface)
+					continue;
+				const u32 ti = m_plan_target_of_surface[pd.tex_source];
+				u32 slot = 0;
+				while (slot < pass.tex_source_count && m_plan_tex_sources[pass.first_tex_source + slot] != ti)
+					slot++;
+				if (slot == pass.tex_source_count)
+				{
+					m_plan_tex_sources.push_back(ti);
+					pass.tex_source_count++;
+				}
+				pxAssertMsg(slot == pd.tex_slot, "TileGpu rule-2 slot disagrees with the pass's bind table");
+			}
 			// A pass with a DATE draw snapshots its colour target before opening.
 			pass.first_snapshot = static_cast<u32>(m_plan_snapshots.size());
 			pass.snapshot_count = 0;
@@ -1859,6 +1887,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.vertex_stride = sizeof(GSVertex);
 		plan.indices = m_plan_indices;
 		plan.targets = m_plan_targets;
+		plan.tex_sources = m_plan_tex_sources;
 		plan.ring_pages = ring;
 		plan.epoch_count = m_epoch + 1;
 		plan.palettes = m_plan_palettes;
@@ -1882,6 +1911,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_prep_ops.clear();
 	m_plan_page_entries.clear();
 	m_plan_targets.clear();
+	m_plan_tex_sources.clear();
 	m_plan_target_surfaces.clear();
 	m_plan_target_of_surface.clear();
 	m_ring_entries.clear();

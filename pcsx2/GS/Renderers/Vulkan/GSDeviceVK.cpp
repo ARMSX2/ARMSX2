@@ -6074,6 +6074,16 @@ bool GSDeviceVK::TileGpuExecutorAvailable()
 	return m_optional_extensions.tilegpu_device_capable;
 }
 
+// The sampled-target array needs nothing the executor's own contract does not already have: it is
+// a fixed-size array of combined samplers indexed by literal (see tilegpu.glsl's
+// tilegpu_target_texel), not a runtime-sized bindless table, so no descriptor-indexing sub-feature
+// beyond what CreateDevice already negotiated is involved. Answered here rather than assumed by the
+// renderer, because this is the seam a device that cannot serve it would refuse at.
+bool GSDeviceVK::TileGpuBindlessTargets()
+{
+	return m_optional_extensions.tilegpu_device_capable;
+}
+
 bool GSDeviceVK::CompileTileGpuPipeline()
 {
 	m_tilegpu_tried = true;
@@ -6092,13 +6102,22 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 			return false;
 		Vulkan::SetObjectName(m_device, m_tilegpu_ds_layout, "TileGpu state DS layout");
 
+		// Set 1, bound per pass: binding 0 is the pass's snapshot, binding 1 the pass's rule-2
+		// sampled targets. They share a set rather than taking one each because a pipeline layout
+		// may carry at most ONE push-descriptor set (VUID-VkPipelineLayoutCreateInfo-pSetLayouts-
+		// 00293), and a second set would have to be non-push -- which means the frame descriptor
+		// pool, which only exists on devices that do NOT push. Per pass either way: a descriptor
+		// carries the image layout it was written with, and these images move between colour
+		// attachment and shader read as the frame's passes go by.
 		Vulkan::DescriptorSetLayoutBuilder snap_dslb;
 		if (m_use_push_descriptors)
 			snap_dslb.SetPushFlag();
 		snap_dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+		snap_dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			GSTileGpuPassPlan::kMaxTexSourcesPerPass, VK_SHADER_STAGE_FRAGMENT_BIT);
 		if ((m_tilegpu_snapshot_ds_layout = snap_dslb.Create(m_device)) == VK_NULL_HANDLE)
 			return false;
-		Vulkan::SetObjectName(m_device, m_tilegpu_snapshot_ds_layout, "TileGpu snapshot DS layout");
+		Vulkan::SetObjectName(m_device, m_tilegpu_snapshot_ds_layout, "TileGpu per-pass DS layout");
 
 		Vulkan::PipelineLayoutBuilder plb;
 		plb.AddDescriptorSet(m_tilegpu_ds_layout);
@@ -6164,7 +6183,9 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	const bool static_byte_sel = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP);
 	const std::string defines = (m_tilegpu_tex ? form_defines : std::string()) +
 								fmt::format("#define TILEGPU_TEX {}\n", m_tilegpu_tex ? 1 : 0) +
-								fmt::format("#define TILEGPU_STATIC_BYTE_SEL {}\n", static_byte_sel ? 1 : 0);
+								fmt::format("#define TILEGPU_STATIC_BYTE_SEL {}\n", static_byte_sel ? 1 : 0) +
+								fmt::format("#define TILEGPU_MAX_TEX_SOURCES {}\n",
+									GSTileGpuPassPlan::kMaxTexSourcesPerPass);
 	const std::string full_source = defines + *source;
 
 	VkShaderModule vs = GetUtilityVertexShader(full_source);
@@ -6756,6 +6777,30 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			}
 		}
 
+		// The pass's rule-2 sampled targets, moved to shader-read before anything binds an
+		// attachment. Their descriptors carry the layout they are transitioned to here, and a
+		// transition may not happen inside a render pass, so this is the last thing done before
+		// the framebuffer is set up. The barrier the transition emits is also the execution
+		// dependency that orders whatever earlier pass rendered into the target ahead of this
+		// pass's reads.
+		u32 tex_source_count = 0;
+		std::array<GSTextureVK*, GSTileGpuPassPlan::kMaxTexSourcesPerPass> tex_sources{};
+		if (pass.tex_source_count > 0 && pass.first_tex_source + pass.tex_source_count <= plan.tex_sources.size())
+		{
+			EndRenderPass();
+			for (u32 s = 0; s < pass.tex_source_count && s < GSTileGpuPassPlan::kMaxTexSourcesPerPass; s++)
+			{
+				const u32 ti = plan.tex_sources[pass.first_tex_source + s];
+				if (ti >= plan.targets.size() || !plan.targets[ti])
+					continue;
+				GSTextureVK* const src = static_cast<GSTextureVK*>(plan.targets[ti]);
+				pxAssertMsg(src != rt && src != ds,
+					"TileGpu pass samples its own attachment -- that is the feedback road, not a target bind");
+				src->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+				tex_sources[tex_source_count++] = src;
+			}
+		}
+
 		// The render area has to fit inside the smaller of the pair, not just the colour target:
 		// this planner does pair a big colour with a small depth, and the framebuffer built for
 		// that pair is clamped to match.
@@ -6842,24 +6887,47 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 0, 1,
 				&m_tilegpu_state_descriptor_set, 0, nullptr);
 			{
-				// Set 1: the snapshot (or the null texture -- the shader only reads it under a
-				// per-draw flag, but the binding must be valid regardless).
+				// Set 1, both bindings at once. Binding 0 is the snapshot (or the null texture -- the
+				// shader only reads it under a per-draw flag, but the binding must be valid
+				// regardless). Binding 1 is the pass's rule-2 sampled targets, EVERY slot written:
+				// the shader statically uses the array, so leaving a slot unwritten would need
+				// descriptorBindingPartiallyBound, which a push-descriptor set may not carry. Unused
+				// slots repeat slot 0; a pass that samples nothing gets the null texture throughout.
+				// Written by hand rather than through DescriptorSetUpdateBuilder, whose image-info
+				// pool is smaller than one full array.
 				GSTextureVK* const snap_tex = snapshot ? static_cast<GSTextureVK*>(snapshot) : m_null_texture.get();
-				Vulkan::DescriptorSetUpdateBuilder dsub;
+				VkDescriptorImageInfo snap_info = {
+					m_point_sampler, snap_tex->GetView(), snap_tex->GetVkLayout()};
+				std::array<VkDescriptorImageInfo, GSTileGpuPassPlan::kMaxTexSourcesPerPass> src_infos{};
+				for (u32 s = 0; s < GSTileGpuPassPlan::kMaxTexSourcesPerPass; s++)
+				{
+					GSTextureVK* const src =
+						(tex_source_count > 0) ? tex_sources[std::min(s, tex_source_count - 1)] : m_null_texture.get();
+					src_infos[s].sampler = m_point_sampler;
+					src_infos[s].imageView = src->GetView();
+					src_infos[s].imageLayout = src->GetVkLayout();
+				}
+				VkWriteDescriptorSet w[2] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
+				w[0].dstBinding = 0;
+				w[0].descriptorCount = 1;
+				w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+				w[0].pImageInfo = &snap_info;
+				w[1].dstBinding = 1;
+				w[1].descriptorCount = GSTileGpuPassPlan::kMaxTexSourcesPerPass;
+				w[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+				w[1].pImageInfo = src_infos.data();
 				if (m_use_push_descriptors)
 				{
-					dsub.AddCombinedImageSamplerDescriptorWrite(
-						VK_NULL_HANDLE, 0, snap_tex->GetView(), m_point_sampler, snap_tex->GetVkLayout());
-					dsub.PushUpdate(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 1, false);
+					vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 1, 2, w);
 				}
 				else
 				{
 					VkDescriptorSet sset = AllocateDescriptorSetFromFramePool(m_tilegpu_snapshot_ds_layout);
 					if (sset != VK_NULL_HANDLE)
 					{
-						dsub.AddCombinedImageSamplerDescriptorWrite(
-							sset, 0, snap_tex->GetView(), m_point_sampler, snap_tex->GetVkLayout());
-						dsub.Update(m_device);
+						w[0].dstSet = sset;
+						w[1].dstSet = sset;
+						vkUpdateDescriptorSets(m_device, 2, w, 0, nullptr);
 						vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 1, 1,
 							&sset, 0, nullptr);
 					}
