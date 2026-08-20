@@ -153,14 +153,22 @@ TEST(Vu1EfuConsoleConformance, OpsMatchConsole)
 //      recompiler through NEON. DISABLED_DumpEatanFamily has the per-row
 //      numbers.
 //
+// The interpreter reproduces all 48, so this list is "wherever the recompiler
+// is wrong" and shrinks as that side catches up.
+//
 // Listing them rather than skipping the family keeps the property asserted for
-// the 25 that agree, and makes any movement in either direction -- a fix or a
+// the 20 that agree, and makes any movement in either direction -- a fix or a
 // regression -- fail loudly.
 constexpr const char* kEatanEngineDivergences[] = {
+	"EATAN CVF_ZERO",
+	"EATAN CVF_NEGZERO",
 	"EATAN CVF_MAX",
 	"EATAN CVF_MIN",
 	"EATAN CVF_MAX_EXP",
+	"EATAN CVF_MIN_EXP",
 	"EATAN CVF_NEGONE",
+	"EATAN CVF_GARBAGE1",
+	"EATAN CVF_GARBAGE2",
 	"EATAN CVF_INCREASING",
 	"EATAN CVF_PI_OVER2",
 	"EATANxy CVF_ZERO",

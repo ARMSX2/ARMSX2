@@ -1723,7 +1723,31 @@ static __ri void _vuERLENG(VURegs* VU)
 	Which coefficient goes with which power is the trap here. mVU_Globals used
 	to name four of the atan coefficients out of power order, and pairing them
 	by name cost up to 919642 ULP against the capture; upstream has since
-	renamed them, so T1..T8 below are c1, c3, c5 ... c15 in ascending order. */
+	renamed them, so T1..T8 below are c1, c3, c5 ... c15 in ascending order.
+
+	Three things about the accumulation cost a ULP each, and none of them is
+	visible in the sixteen constants ps2autotests uses -- they were read off a
+	sweep instead (autocases_efu_sweep.h):
+
+	  - The constant term is not the last addend. It goes one slot earlier,
+	    between the second-to-last power and the last, which is what lets the
+	    running sum cancel down to a small exponent before the final add and so
+	    keep bits an addend at 2^-24 granularity could not.
+	  - Which operand leads each multiply. This multiplier is not commutative --
+	    its deficit is a property of ft's mantissa -- so c * x^n and x^n * c
+	    part wherever it fires. The power leads every term but the first, where
+	    the coefficient does. EEXP's first term leads with the power like the
+	    rest of it, and ESIN has no first-order coefficient to place, so EATAN
+	    is on its own there.
+	  - Each power comes from one multiply by x*x rather than two by x, and the
+	    square leads that multiply the first time round and trails it after,
+	    which is the shape _vuESIN carries. The order is only observable where
+	    the product's tail below the kept ULP is short enough for the array's
+	    borrow to reach the result, so it takes a reduced argument near -1,
+	    where the final add cancels, to see it at all.
+
+	EEXP puts its 1.0 in the same slot, one from the end. ESIN has no constant
+	term: its x is the first-order term and goes first. */
 static constexpr u32 kEatanC[8] = {
 	0x3F7FFFF5, 0xBEAAA61C, 0x3E4C40A6, 0xBE0E6C63,
 	0x3DC577DF, 0xBD6501C4, 0x3CB31652, 0xBB84D7E7};
@@ -1735,24 +1759,28 @@ static constexpr u32 kEfuOne = 0x3F800000;
 
 static __ri u32 _vuCalculateEATAN(u32 x)
 {
-	u32 p = _vuEfuMul(x, kEatanC[0]);
-	u32 xn = x;
+	const u32 xx = _vuEfuMul(x, x);
 
-	for (int i = 1; i < 8; ++i)
+	u32 xn = _vuEfuMul(xx, x);
+	u32 p = _vuEfuAdd(_vuEfuMul(kEatanC[0], x), _vuEfuMul(xn, kEatanC[1]));
+
+	for (int i = 2; i < 8; ++i)
 	{
-		xn = _vuEfuMul(_vuEfuMul(xn, x), x);
+		xn = _vuEfuMul(xn, xx);
+		if (i == 7)
+			p = _vuEfuAdd(p, kEatanPi4);
 		p = _vuEfuAdd(p, _vuEfuMul(xn, kEatanC[i]));
 	}
 
-	return _vuEfuAdd(p, kEatanPi4);
+	return p;
 }
 
-/*	The pi/4 the series ends on is only correct as the second half of the
+/*	The pi/4 the series carries is only correct as the second half of the
 	range-reduction identity
 
 	    atan(x) = pi/4 + atan((x - 1) / (x + 1))
 
-	so the polynomial is fed the REDUCED argument. The xy/xz forms reduce the
+	so the polynomial is fed the reduced argument. The xy/xz forms reduce the
 	same identity for atan(y/x), where (y/x - 1) / (y/x + 1) == (y - x) / (y + x).
 	The quotient is the divide unit's, so a zero denominator saturates into the
 	series rather than reaching it as a host infinity. */
@@ -1831,13 +1859,14 @@ static __ri void _vuEEXP(VURegs* VU)
 {
 	const u32 x = VU->VF[_Fs_].UL[_Fsf_];
 
-	u32 p = _vuEfuAdd(_vuEfuMul(x, kEexpC[0]), kEfuOne);
-	u32 xn = _vuEfuMul(x, x);
-	p = _vuEfuAdd(p, _vuEfuMul(xn, kEexpC[1]));
+	u32 p = _vuEfuMul(x, kEexpC[0]);
+	u32 xn = x;
 
-	for (int i = 2; i < 6; ++i)
+	for (int i = 1; i < 6; ++i)
 	{
 		xn = _vuEfuMul(xn, x);
+		if (i == 5)
+			p = _vuEfuAdd(p, kEfuOne);
 		p = _vuEfuAdd(p, _vuEfuMul(xn, kEexpC[i]));
 	}
 
