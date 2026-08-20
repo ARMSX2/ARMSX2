@@ -1367,7 +1367,7 @@ std::span<const u8> FileSystem::MapBinaryFileForRead(const char* path)
 	return result;
 #else
 	int fd = open(path, O_RDONLY);
-	if (fd <= 0)
+	if (fd < 0)
 		return {};
 	std::span<const u8> result = ::MapBinaryFileForRead(fd);
 	close(fd);
