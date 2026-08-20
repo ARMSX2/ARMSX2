@@ -1642,6 +1642,13 @@ bool GSRendererTileGpu::WritebackHoistCollides(u32 first_op) const
 	for (u32 k = first_op; k < m_plan_prep_ops.size(); k++)
 	{
 		const GSDevice::GSTileGpuPrepOp& op = m_plan_prep_ops[k];
+		// Writebacks only, and stated rather than assumed: this reads `op.target` as an index into
+		// the plan's TARGET list, and a materialise names its destination in prep_textures instead.
+		// The ranges this is asked about today hold nothing else (ComposeRingPages emits writebacks
+		// and the materialise is queued after it returns), so this is the contract in code rather
+		// than a fix -- but the two index spaces are the kind of thing a later road walks into.
+		if (op.kind != GSDevice::GSTileGpuPrepKind::Writeback)
+			continue;
 		GSPageBitmap p;
 		for (u32 e = op.first_page_entry; e < op.first_page_entry + op.page_entry_count; e++)
 			p.set(m_plan_page_entries[e].page);
