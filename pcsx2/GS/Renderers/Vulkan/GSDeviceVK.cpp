@@ -863,8 +863,12 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 
 		// The TileGpu backend can run on this device only if its whole contract holds: the
 		// descriptor-indexing sub-features above AND an indirect draw stream that carries a
-		// per-draw firstInstance. Recorded once; the renderer refuses to construct without it,
-		// and the selection policy can fall back rather than crash.
+		// per-draw firstInstance. Recorded once. The renderer does NOT refuse to construct
+		// without it -- it builds and runs regardless -- so a contract-absent device instead
+		// has every draw discarded downstream: GSRendererTileGpu::BuildAndExecutePlan checks
+		// this flag before handing its plan to the executor, and logs loudly (once) when it
+		// finds a plan with nowhere to go. Falling back to another renderer on contract
+		// failure is a separate, still-pending design decision.
 		m_optional_extensions.tilegpu_device_capable = m_optional_extensions.vk_ext_descriptor_indexing &&
 													   m_device_features.multiDrawIndirect == VK_TRUE &&
 													   m_device_features.drawIndirectFirstInstance == VK_TRUE &&

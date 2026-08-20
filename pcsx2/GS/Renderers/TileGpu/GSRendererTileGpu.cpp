@@ -2012,6 +2012,19 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 
 		g_gs_device->ExecuteTileGpuPassPlan(plan);
 	}
+	else if (!m_warned_no_executor)
+	{
+		// The device failed the TileGpu contract at construction, but the renderer was selected
+		// and built anyway (there is no fallback yet -- a separate pending decision). From here
+		// every frame's plan is silently discarded: without this, that is a black frame and a
+		// clean exit code, indistinguishable at every level above this one from working GS
+		// output. Say it once, loudly, and name the log line that has the actual missing feature
+		// (GSDeviceVK.cpp, device creation).
+		m_warned_no_executor = true;
+		Console.Error("TileGpu: device contract absent -- every draw is being DISCARDED, output "
+					  "will be black. See the \"VK: TileGpu device contract absent (...)\" line "
+					  "logged at device creation for which feature is missing.");
+	}
 
 	// The plan is submitted (or the device does not serve it); reset the per-frame streams and
 	// the ring. Every synced claim referred to slots that are now spent.

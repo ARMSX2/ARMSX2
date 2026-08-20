@@ -445,4 +445,11 @@ private:
 	std::vector<ModelFrame> m_model_frames;
 	bool m_warned_lossy = false;
 	bool m_warned_alias = false;
+
+	// Set the first time BuildAndExecutePlan finds a non-empty plan and no executor to give it
+	// to (the device failed the TileGpu contract at construction -- GSDeviceVK.cpp's
+	// tilegpu_device_capable). Every draw is dropped whether this fires or not; it only gates
+	// the one-time Console.Error that says so, so a contract-absent device cannot render black
+	// with a clean exit code and no explanation.
+	bool m_warned_no_executor = false;
 };
