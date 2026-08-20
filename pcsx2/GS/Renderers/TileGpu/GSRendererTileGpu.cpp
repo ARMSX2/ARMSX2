@@ -190,9 +190,15 @@ void GSRendererTileGpu::Draw()
 // present is the one road that reads texels instead.
 //
 // The repair is an ordinary seed, appended to the frame's plan as a pending draw with no geometry:
-// it carries the prep op and nothing else, so the pass runs the seed and draws zero indices. It
-// also gives a display buffer that only the CPU ever writes -- an FMV, a menu blitted in by
-// transfers -- its first surface, which is why the surface is created here rather than looked up.
+// it carries the prep ops and nothing else -- the writebacks that compose the pages' bytes into the
+// ring, then the seed that reads them into the texture -- so the pass runs those and draws zero
+// indices. It also gives a display buffer that only the CPU ever writes -- an FMV, a menu blitted in
+// by transfers -- its first surface, which is why the surface is created here rather than looked up.
+//
+// Fired from VSync after every draw of the frame has been accumulated and before the plan is built,
+// so the pseudo-draw is always last and always breaks its pass: the writebacks below are hoisted
+// over nothing but the seed they feed, and the collision test the mid-frame road needs
+// (WritebackHoistCollides) has nothing to decide here.
 void GSRendererTileGpu::MaterialiseDisplayBuffers()
 {
 	for (int i = 0; i < 2; i++)
@@ -220,14 +226,21 @@ void GSRendererTileGpu::MaterialiseDisplayBuffers()
 		if (need.empty())
 			continue;
 
-		ComposeRingPages(need);
-
+		// The op range opens BEFORE the compose, not between it and the seed. The executor runs
+		// exactly the ops each pass names -- [first_prep_op, +prep_op_count) of the pass, which
+		// BuildAndExecutePlan takes from its draws -- so an op emitted before this pseudo-draw's
+		// range starts is inside no pass's range at all, and is silently never run. That is what
+		// the writebacks ComposeRingPages emits here were: dropped, leaving the seed below to read
+		// ring slots holding nothing but their S prefill while the model counted the bytes
+		// composed. Opening the range first puts the compose and the seed in one range, in the
+		// order they must run.
 		PendingDraw pd = {};
 		pd.first_prep_op = static_cast<u32>(m_plan_prep_ops.size());
+		ComposeRingPages(need);
 		EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, id, need);
 		pd.prep_op_count = static_cast<u32>(m_plan_prep_ops.size()) - pd.first_prep_op;
 		if (pd.prep_op_count == 0)
-			continue;
+			continue; // nothing was emitted at all, so this bail strands nothing
 		Texels(id).filled |= need;
 		m_frame.seed_breaks++;
 
@@ -240,7 +253,7 @@ void GSRendererTileGpu::MaterialiseDisplayBuffers()
 
 		GSDevice::GSTileGpuIndirectDraw draw = {};
 		draw.instance_count = 1;
-		draw.index_count = 0; // the pass exists for its prep op
+		draw.index_count = 0; // the pass exists for its prep ops
 		draw.first_index = static_cast<u32>(m_plan_indices.size());
 		draw.vertex_offset = static_cast<s32>(m_plan_vertices.size());
 		draw.state_index = static_cast<u32>(m_plan_draws.size());
@@ -249,6 +262,12 @@ void GSRendererTileGpu::MaterialiseDisplayBuffers()
 		m_plan_topologies.push_back(GSDevice::GSTileGpuTopology::Triangle);
 		m_plan_blend_keys.push_back(0);
 		m_plan_pending.push_back(pd);
+
+		// This pseudo-draw broke the pass, so the tracking that answers "what has the open pass
+		// already done" must reset with it, exactly as AccumulateDraw's breaks do. Nothing reads
+		// it between here and BuildAndExecutePlan's own reset, so it cannot be observed today --
+		// it keeps the reset-on-break invariant true for whatever reads it next.
+		BreakOpenPass();
 	}
 }
 
