@@ -33,7 +33,10 @@ public:
 	bool FlushPipelineCache(bool force = false);
 
 	VkShaderModule GetVertexShader(std::string_view shader_code);
-	VkShaderModule GetFragmentShader(std::string_view shader_code);
+	/// out_spv_words, when given, receives the module's SPIR-V size in 32-bit words. It is the only
+	/// host-side handle on how big a shader is, which the TileGpu variants are budgeted on; every
+	/// other caller leaves it null.
+	VkShaderModule GetFragmentShader(std::string_view shader_code, u32* out_spv_words = nullptr);
 	VkShaderModule GetComputeShader(std::string_view shader_code);
 
 private:
@@ -90,7 +93,7 @@ private:
 
 	std::optional<SPIRVCodeVector> GetShaderSPV(u32 type, std::string_view shader_code);
 	std::optional<SPIRVCodeVector> CompileAndAddShaderSPV(const CacheIndexKey& key, std::string_view shader_code);
-	VkShaderModule GetShaderModule(u32 type, std::string_view shader_code);
+	VkShaderModule GetShaderModule(u32 type, std::string_view shader_code, u32* out_spv_words = nullptr);
 
 	std::FILE* m_index_file = nullptr;
 	std::FILE* m_blob_file = nullptr;

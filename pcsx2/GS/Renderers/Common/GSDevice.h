@@ -2078,6 +2078,14 @@ public:
 	};
 	static constexpr u32 kGSTileGpuDepthModes = 4;
 
+	/// The texel roads a textured draw can take, as a bit per road. A pass's road_mask is the OR
+	/// over its draws, and the fragment shader compiles in exactly the roads the mask names — dead
+	/// code costs program size on the tiler targets, so a pass that never samples a resident target
+	/// must not carry that road's instructions. An untextured draw contributes no bit.
+	static constexpr u32 kGSTileGpuRoadByte = 1u << 0;   ///< decode guest bytes out of the frame's ring
+	static constexpr u32 kGSTileGpuRoadTarget = 1u << 1; ///< sample a resident target directly (rule 2)
+	static constexpr u32 kGSTileGpuRoadMaskAll = kGSTileGpuRoadByte | kGSTileGpuRoadTarget;
+
 	/// One GS-semantic minimum pass: a contiguous run of draws sharing a set of FRAME/ZBUF
 	/// target pairs (up to the pass model's per-pass budget, GSTilePassSim::kMaxTargetPairs),
 	/// optionally declaring the raster-order self-read the blend and same-pixel feedback
@@ -2099,6 +2107,12 @@ public:
 		/// its pass writes is the in-pass feedback road, and the planner breaks the pass instead.
 		u32 first_tex_source;
 		u32 tex_source_count;
+		/// The OR of this pass's draws' texel roads (kGSTileGpuRoad*), zero for a pass whose draws
+		/// are all untextured. It selects the fragment shader variant: the module compiles in these
+		/// roads and no others, so a pass never pays program size for a road it does not take. Like
+		/// the depth mode it is uniform across the pass by construction (it is a union, not a
+		/// per-draw choice), so it splits nothing.
+		u32 road_mask;
 		bool declares_self_read; ///< ROAA: the pass reads its own colour target in raster order
 		GSTileGpuDepthMode depth_mode; ///< uniform across the pass; None iff zbuf_target is kNoTarget
 	};

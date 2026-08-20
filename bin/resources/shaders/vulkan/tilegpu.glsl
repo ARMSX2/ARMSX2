@@ -9,6 +9,9 @@
 // reads; the cliff rides on that register, so DEAD CODE COUNTS and only the fragment stage does.
 // Whatever you add here, take the stats line on an a650 before landing it. If a road cannot fit,
 // the answer is a per-pass shader VARIANT that leaves the other roads out, not a bigger shader.
+// That mechanism is TILEGPU_ROAD_* below: the executor compiles one fragment module per per-pass
+// road mask, so a pass pays instruction size only for the roads its own draws take -- which is how
+// this budget is enforced, rather than by everything sharing one program that only grows.
 //
 // The TileGpu executor's wrong-fast geometry + texture shader. The vertex stage transforms a raw
 // GSVertex into clip space using the per-draw screen->NDC transform (the HW tfx VertexScale/
@@ -50,6 +53,13 @@
 // set 2 binds -- GSTileGpuPassPlan::kMaxTexSourcesPerPass. A state row's tex_target is a slot in it,
 // or 0xFFFFFFFF for "decode the bytes".
 
+// TILEGPU_ROAD_BYTE / TILEGPU_ROAD_TARGET (injected by the device, PER PASS): the texel roads this
+// pass's draws actually take -- GSTileGpuPass::road_mask, ORed over the pass's draws by the renderer
+// at grouping. A road nobody takes is left out of the module entirely, because on Adreno an
+// unexecuted instruction still costs program size (see the budget note above). The mask is constant
+// across a pass, so it selects a fragment module and a pipeline exactly the way the depth mode and
+// the blend key already do, and never splits an indirect run. Both default to 1 -- an uninjected
+// compile is the full shader, which is what every road together means.
 #ifndef TILEGPU_TEX
 #define TILEGPU_TEX 0
 #endif
@@ -61,6 +71,21 @@
 #ifndef TILEGPU_MAX_TEX_SOURCES
 #define TILEGPU_MAX_TEX_SOURCES 8
 #endif
+
+#ifndef TILEGPU_ROAD_BYTE
+#define TILEGPU_ROAD_BYTE 1
+#endif
+
+#ifndef TILEGPU_ROAD_TARGET
+#define TILEGPU_ROAD_TARGET 1
+#endif
+
+// The gates the body actually uses. A road compiles in only where the device can serve it at all, so
+// a stray mask bit can never resurrect a path TILEGPU_TEX or TILEGPU_TEX_TARGETS took out; and with
+// no road at all (an untextured pass) the whole texture block goes, which is the smallest variant.
+#define TILEGPU_TAP_BYTE (TILEGPU_TEX && TILEGPU_ROAD_BYTE)
+#define TILEGPU_TAP_TARGET (TILEGPU_TEX && TILEGPU_TEX_TARGETS && TILEGPU_ROAD_TARGET)
+#define TILEGPU_TEXTURED (TILEGPU_TAP_BYTE || TILEGPU_TAP_TARGET)
 
 // Matches the executor's StateRow byte-for-byte (std430, 144 bytes). The transform and the scissor
 // are read in the vertex stage; the texture fields and the tests in the fragment stage. z_write/z_test
@@ -189,10 +214,14 @@ layout(location = 0, index = 1) out vec4 o_blend;
 // texture that no fragment reads.
 layout(set = 1, binding = 0) uniform sampler2D u_snapshot;
 
-#if TILEGPU_TEX
+#if TILEGPU_TEXTURED
+
+#if TILEGPU_TAP_BYTE
 
 // The frame's ring: page slots, the epoch page tables and the palettes, all in one storage buffer
 // of 32-bit words. Reads go through tilegpu_ring_word below; nothing addresses guest memory flat.
+// Only the byte road reads it (the palettes included), so a pass whose draws all sample resident
+// targets does not declare it.
 layout(std430, set = 0, binding = 1) readonly buffer Vram
 {
 	uint vram_words[];
@@ -317,6 +346,8 @@ vec4 tilegpu_unpack(uint w)
 	            float((w >> 24u) & 0xFFu)) * (1.0f / 255.0f);
 }
 
+#endif // TILEGPU_TAP_BYTE
+
 // TEXA: a 24-bit texel stores no alpha byte, so the GS gives it TEXA.TA0, and AEM makes a texel
 // whose RGB is entirely zero transparent instead. (A paletted texture takes TEXA in the CLUT
 // expansion on the CPU, so only the direct roads need this.) `rgb_zero` is the AEM test, which the
@@ -351,7 +382,7 @@ vec4 tilegpu_texa(StateRow sr, vec4 t, bool rgb_zero)
 // isam.s2en.uniform (one descriptor per wave) to isam.s2en.nonuniform (one per lane), measured
 // 2026-08-20 at +1.20 ms GPU on SotC, +5.6%, and free on the five dumps that barely use rule 2.
 // If the run splitting is ever dropped, this needs nonuniformEXT and its feature back.
-#if TILEGPU_TEX_TARGETS
+#if TILEGPU_TAP_TARGET
 layout(set = 1, binding = 1) uniform sampler2D u_targets[TILEGPU_MAX_TEX_SOURCES];
 
 vec4 tilegpu_target_texel(uint slot, ivec2 c)
@@ -393,7 +424,7 @@ vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 	// semantic: every wrap mode lands inside tw x th (GetSizeFixedTEX0 grows TW/TH to cover a
 	// REGION window), and the renderer refuses the bind unless tw x th fits the image, so this
 	// only stops a fetch running out of bounds if one of those ever stops holding.
-#if TILEGPU_TEX_TARGETS
+#if TILEGPU_TAP_TARGET
 	if (sr.tex_target != 0xFFFFFFFFu)
 	{
 		const vec4 tt = tilegpu_target_texel(sr.tex_target,
@@ -402,6 +433,7 @@ vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 	}
 #endif
 
+#if TILEGPU_TAP_BYTE
 	// index_format is dynamically uniform per draw, so this does not diverge.
 	uint w;
 	if (sr.index_format == 0u)
@@ -412,6 +444,11 @@ vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 		w = vram_words[pal_base + sr.pal_offset + tilegpu_index4(iu, iv, sr.tbp0, sr.tbw, sr.epoch)];
 
 	return tilegpu_texa(sr, tilegpu_unpack(w), (w & 0x00FFFFFFu) == 0u);
+#else
+	// Target road only: every textured draw in this pass names a target, so the branch above took
+	// every fragment. GLSL still needs the fall-through to return something.
+	return vec4(0.0f);
+#endif
 }
 
 // The draw's texture at a texel coordinate, filtered the way TEX1 asked. NEAREST truncates the
@@ -431,7 +468,7 @@ vec4 tilegpu_sample(StateRow sr, vec2 uv)
 	           mix(tilegpu_tap(sr, x0, y0 + 1), tilegpu_tap(sr, x0 + 1, y0 + 1), f.x), f.y);
 }
 
-#endif // TILEGPU_TEX
+#endif // TILEGPU_TEXTURED
 
 void main()
 {
@@ -455,7 +492,7 @@ void main()
 	vec4 cf = v_color;
 	vec4 cv = cf;
 
-#if TILEGPU_TEX
+#if TILEGPU_TEXTURED
 	if (sr.tex_enable != 0u)
 	{
 		// The texel coordinate: FST is a direct texel (12.4 already unpacked in the VS); STQ divides

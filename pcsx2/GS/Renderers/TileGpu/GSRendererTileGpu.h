@@ -202,6 +202,11 @@ private:
 		GSTileSurfaceId tex_source;
 		u32 tex_slot;         // its slot in the pass's bind table, resolved once the pass is known
 
+		// Which texel road this draw takes (GSDevice::kGSTileGpuRoad*), zero when it is untextured.
+		// The pass's variant is the OR over its draws, so this is what decides how much shader the
+		// pass compiles -- see GSDevice::GSTileGpuPass::road_mask.
+		u32 road_mask;
+
 		// Rule 3 of the same road, PROBED and not taken (see ProbeSourceRoad): the frame-wide
 		// slot the materialised source of this draw's window would occupy, or kNoSourceSlot
 		// where rule 3 refused. Read by nothing but the counters -- no state row carries it and

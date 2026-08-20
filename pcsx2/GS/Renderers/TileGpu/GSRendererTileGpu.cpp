@@ -1800,9 +1800,13 @@ void GSRendererTileGpu::AccumulateDraw()
 			{
 				PlanTargetIndex(pd.tex_source); // the executor resolves the bind through the target list
 				m_frame.tex_binds++;
+				// The road is decided here, so record it here: the pass's shader variant is the OR of
+				// its draws' roads, and a road no draw takes is never compiled.
+				pd.road_mask = GSDevice::kGSTileGpuRoadTarget;
 			}
 			else
 			{
+				pd.road_mask = GSDevice::kGSTileGpuRoadByte;
 				// Rule 3 is asked here and never taken (this chunk builds the question, not the
 				// road): whether a cache of materialised sources could serve this window, and if
 				// not, which clause refused. Asked before the compose only because that is the
@@ -2239,9 +2243,13 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			// here would sample the wrong target rather than fail.
 			pass.first_tex_source = static_cast<u32>(m_plan_tex_sources.size());
 			pass.tex_source_count = 0;
+			pass.road_mask = 0;
 			for (u32 d = i; d < j; d++)
 			{
 				const PendingDraw& pd = m_plan_pending[d];
+				// The pass's shader variant: the union of the roads its draws take. A pass of nothing
+				// but untextured draws lands at zero and gets the smallest program there is.
+				pass.road_mask |= pd.road_mask;
 				if (pd.tex_source == kGSTileNoSurface)
 					continue;
 				const u32 ti = m_plan_target_of_surface[pd.tex_source];

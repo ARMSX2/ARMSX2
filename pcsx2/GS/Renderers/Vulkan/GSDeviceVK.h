@@ -591,11 +591,25 @@ private:
 	// fixed-function factors through GSDevice::m_blendMap, with As as the shader's dual-source
 	// output and FIX as the blend constant (dynamic).
 	std::array<std::array<VkPipeline, GSDevice::kGSTileGpuDepthModes>, 3> m_tilegpu_pipeline{};
-	std::unordered_map<u32, VkPipeline> m_tilegpu_blend_pipelines; // key: topology | depth<<2 | blend<<8 | nocolour<<16
-	VkPipeline GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key);
+	// key: topology | depth<<2 | blend<<8 | nocolour<<16 | noalpha<<17 | road mask<<18
+	std::unordered_map<u32, VkPipeline> m_tilegpu_blend_pipelines;
+	VkPipeline GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key, u32 road_mask);
 	VkShaderModule m_tilegpu_vs = VK_NULL_HANDLE; // kept alive for lazily-built blend variants
-	VkShaderModule m_tilegpu_fs = VK_NULL_HANDLE;
-	VkPipeline CreateTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_index, bool color_write, bool alpha_write);
+	VkShaderModule m_tilegpu_fs = VK_NULL_HANDLE; // the full-road module: the eager pipelines and the fallback
+	// One fragment module per road mask a pass has actually asked for, compiled on first use from
+	// m_tilegpu_shader_source. The mask names which texel roads the module carries, so most passes
+	// run a program smaller than the full shader; the vertex stage is road-independent and stays a
+	// single module. Keyed by the NORMALISED mask (TileGpuRoadMask), never the plan's raw one.
+	std::unordered_map<u32, VkShaderModule> m_tilegpu_fs_variants;
+	std::string m_tilegpu_shader_source; // the device defines + tilegpu.glsl, kept for those compiles
+	/// The plan's road mask reduced to what this device can actually serve, so a mask bit never asks
+	/// for a road the shader would leave out anyway (and two masks that compile the same program do
+	/// not become two modules).
+	u32 TileGpuRoadMask(u32 plan_road_mask) const;
+	VkShaderModule GetTileGpuFragmentShader(u32 road_mask);
+	VkShaderModule CompileTileGpuFragmentModule(u32 road_mask);
+	VkPipeline CreateTileGpuPipeline(
+		u32 topology, u32 depth_mode, u32 blend_index, bool color_write, bool alpha_write, u32 road_mask);
 	// Indirect-submission streams (created on first executor use, alongside the pipelines): the
 	// draw commands (VkDrawIndexedIndirectCommand array), the per-draw state table the VS reads by
 	// first_instance, and the frame's ring -- the guest pages the plan reads or reconciles as 8 KB
@@ -709,7 +723,7 @@ private:
 	VkPipeline GetTFXPipeline(const PipelineSelector& p);
 
 	VkShaderModule GetUtilityVertexShader(const std::string& source, const char* replace_main);
-	VkShaderModule GetUtilityFragmentShader(const std::string& source, const char* replace_main);
+	VkShaderModule GetUtilityFragmentShader(const std::string& source, const char* replace_main, u32* out_spv_words);
 
 	bool CreateDeviceAndSwapChain();
 	bool CheckFeatures();

@@ -742,11 +742,14 @@ std::optional<VKShaderCache::SPIRVCodeVector> VKShaderCache::GetShaderSPV(u32 ty
 	return spv;
 }
 
-VkShaderModule VKShaderCache::GetShaderModule(u32 type, std::string_view shader_code)
+VkShaderModule VKShaderCache::GetShaderModule(u32 type, std::string_view shader_code, u32* out_spv_words)
 {
 	std::optional<SPIRVCodeVector> spv = GetShaderSPV(type, shader_code);
 	if (!spv.has_value())
 		return VK_NULL_HANDLE;
+
+	if (out_spv_words)
+		*out_spv_words = static_cast<u32>(spv->size());
 
 	const VkShaderModuleCreateInfo ci{
 		VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0, spv->size() * sizeof(SPIRVCodeType), spv->data()};
@@ -767,9 +770,9 @@ VkShaderModule VKShaderCache::GetVertexShader(std::string_view shader_code)
 	return GetShaderModule(shaderc_glsl_vertex_shader, std::move(shader_code));
 }
 
-VkShaderModule VKShaderCache::GetFragmentShader(std::string_view shader_code)
+VkShaderModule VKShaderCache::GetFragmentShader(std::string_view shader_code, u32* out_spv_words)
 {
-	return GetShaderModule(shaderc_glsl_fragment_shader, std::move(shader_code));
+	return GetShaderModule(shaderc_glsl_fragment_shader, std::move(shader_code), out_spv_words);
 }
 
 VkShaderModule VKShaderCache::GetComputeShader(std::string_view shader_code)
