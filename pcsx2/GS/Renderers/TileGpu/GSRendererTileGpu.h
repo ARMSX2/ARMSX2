@@ -264,6 +264,24 @@ private:
 	// in `planes` (Tile's PagesNeedingUpload).
 	GSPageBitmap PagesNeedingSeed(GSTileSurfaceId id, const GSPageBitmap& pages, u8 planes) const;
 
+	// Rule 2 of the VRAM model's texel road: the ONE resident target that can serve this texture
+	// read whole, or kGSTileNoSurface for the byte road. Everything it asks is a proof, not a
+	// guess -- the page model names a sole owner of every page of the window, the owner's pixel
+	// space is the read's own layout (same base, same stride, byte-compatible format,
+	// page-aligned), its texture actually holds texels on those pages, and the window fits inside
+	// it. Anything short of that is the byte road, which is always correct and never asks.
+	//
+	// The draw's own targets are excluded here rather than checked later: a draw sampling what its
+	// pass renders into is the in-pass feedback road, and this stage does not have one.
+	GSTileSurfaceId TargetForTextureRead(const GSTileSurfaceLayout& tex_l, u32 tw, u32 th,
+		const GSPageBitmap& tex_pages, GSTileSurfaceId fb_id, GSTileSurfaceId z_id) const;
+
+	// Whether the device can bind a resident target as a draw's texture. Read once at
+	// construction, because a rule-2 draw is served by work the renderer DOES NOT DO (its read
+	// window is never composed into the ring) -- asking late, or asking a device that then
+	// refuses, would leave the fragment stage decoding bytes nobody wrote.
+	bool m_bindless_targets = false;
+
 	// Which pages of a surface's texture actually hold texels. The memory model tracks BYTES, and
 	// by it a page the surface owns no truth for is in perfect order -- its bytes are in the CPU
 	// shadow, and everything reading through the byte road gets them. Nothing reads the texture
@@ -412,6 +430,8 @@ private:
 		u32 date_breaks = 0;     // draws that opened a pass because their DATE read needed a fresh snapshot
 		u32 snapshots = 0;       // passes that took a snapshot of their target
 		u32 self_reads = 0;      // draws sampling pages their own pass target holds (snapshot semantics)
+		u32 tex_binds = 0;       // draws served by rule 2: the read window came off a resident target
+		u32 tex_bind_breaks = 0; // draws that opened a pass because their bind could not join the open one
 		u32 alias_steal_pages = 0; // pages one draw claimed through both its surfaces (FRAME/ZBUF packing)
 		u32 lossy_pages = 0;     // truth moved without a byte road (depth / unsupported-format owners)
 		u32 skipped_draws = 0;   // draws no surface could be built for (format / stride)

@@ -101,6 +101,10 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// derived from it. So it is a lever, read once here like the Tile renderer reads its own --
 	// a mid-run flip needs a renderer restart.
 	m_pass_sim.SetActive(GSConfig.TileGpuPassSim);
+
+	// Asked once, before any draw: rule 2 is served by work this renderer DOES NOT DO, so a device
+	// that cannot bind targets has to be known before the first read window is (not) composed.
+	m_bindless_targets = g_gs_device && g_gs_device->TileGpuBindlessTargets();
 }
 
 GSRendererTileGpu::~GSRendererTileGpu()
@@ -730,6 +734,8 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto dbrk = stat([](const MF& f) { return f.date_breaks; });
 	const auto snaps = stat([](const MF& f) { return f.snapshots; });
 	const auto self = stat([](const MF& f) { return f.self_reads; });
+	const auto binds = stat([](const MF& f) { return f.tex_binds; });
+	const auto bindbrk = stat([](const MF& f) { return f.tex_bind_breaks; });
 	const auto alias = stat([](const MF& f) { return f.alias_steal_pages; });
 	const auto lossy = stat([](const MF& f) { return f.lossy_pages; });
 	const auto skipped = stat([](const MF& f) { return f.skipped_draws; });
@@ -754,6 +760,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"%8.2f / %-5u pages, %.2f / %u pass breaks",
 		wbo.mean, wbo.p50, wbp.mean, wbp.p50, wbrk.mean, wbrk.p50, sdo.mean, sdo.p50, sdp.mean, sdp.p50, sbrk.mean,
 		sbrk.p50);
+	Console.WriteLn("  target binds (rule 2: the read came off a resident target, no bytes composed) %.2f / %u draws, "
+					"%.2f / %u pass breaks",
+		binds.mean, binds.p50, bindbrk.mean, bindbrk.p50);
 	Console.WriteLn("  self-reads (snapshot semantics) %.2f / %u   DATE: %.2f / %u pass breaks, %.2f / %u snapshots   "
 					"alias-steal pages %.2f / %u   lossy pages (no byte road) %.2f / %u   skipped draws %.2f / %u   "
 					"mid-frame flushes %.2f / %u",
@@ -834,6 +843,59 @@ GSPageBitmap GSRendererTileGpu::PagesNeedingSeed(GSTileSurfaceId id, const GSPag
 		}
 	});
 	return need;
+}
+
+// Rule 2 of the design record's texel road: "sole owner is a live surface, same format, 1:1 -> bind
+// the surface". Every clause below is a proof the two roads would read the same texel, so that the
+// only difference the bind makes is FRESHNESS -- the target's live pixels instead of bytes composed
+// from it earlier. Anything that cannot be proved takes the byte road, which is slower and never
+// wrong; that is the whole reason the image road can be built one case at a time.
+GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayout& tex_l, u32 tw, u32 th,
+	const GSPageBitmap& tex_pages, GSTileSurfaceId fb_id, GSTileSurfaceId z_id) const
+{
+	if (!m_bindless_targets || tex_pages.empty())
+		return kGSTileNoSurface;
+
+	// All-or-nothing by construction: one live surface holds whole-page truth of every colour
+	// plane on every page of the window. A window split across owners, or part CPU-newest, or with
+	// a block mask shrunk by an upload, has no single authoritative texture and is refused here.
+	const GSTileSurfaceId src = m_vram_model.SoleGpuOwner(tex_pages, kGSTilePlanesColor);
+	if (src == kGSTileNoSurface || src == fb_id || src == z_id)
+		return kGSTileNoSurface;
+
+	const GSVramModel::Surface& surf = m_vram_model.Get(src);
+	if (!surf.alive || !surf.pool_handle)
+		return kGSTileNoSurface;
+
+	// The pool's pixel space is the guest layout only for a page-aligned CT32/CT24 colour surface
+	// (HasByteRoad's conditions, for the same reason the writeback and seed shaders need them), and
+	// it is the READ's pixel space only when base and stride agree exactly. Then target pixel
+	// (u, v) is guest texel (u, v) -- no offset, no restride, no region arithmetic.
+	if (!HasByteRoad(surf.layout) || surf.layout.bp != tex_l.bp || surf.layout.bw != tex_l.bw)
+		return kGSTileNoSurface;
+	// Byte-compatible formats. Equal PSM is the whole story except for a CT32 target read as CT24:
+	// same bytes, and the draw's TEXA already supplies the alpha the read must not take from the
+	// target's own alpha channel. A CT24 target read as CT32 is refused -- its alpha bytes belong
+	// to whoever else writes that page, and the target's texture does not hold them.
+	if (!(surf.layout.psm == tex_l.psm || (surf.layout.psm == PSMCT32 && tex_l.psm == PSMCT24)))
+		return kGSTileNoSurface;
+
+	// The model tracks BYTES; the sampler reads TEXELS. A page whose bytes the surface owns but
+	// whose texture rows nothing has written yet would sample allocator leftovers, which is exactly
+	// what SurfaceTexels exists to know about.
+	if (m_surface_texels.size() <= src || !tex_pages.andnot(m_surface_texels[src].filled).empty())
+		return kGSTileNoSurface;
+
+	// ...and the window has to be inside the image. The pool only ever grows a target, so a fit
+	// proved here still holds when the pass runs.
+	const GSTexture* tex = m_target_pool.GetTexture(surf.pool_handle);
+	if (!tex)
+		return kGSTileNoSurface;
+	const GSVector2i dim = tex->GetSize();
+	if (static_cast<int>(tw) > dim.x || static_cast<int>(th) > dim.y)
+		return kGSTileNoSurface;
+
+	return src;
 }
 
 u32 GSRendererTileGpu::PlanTargetIndex(GSTileSurfaceId id)
@@ -1395,8 +1457,23 @@ void GSRendererTileGpu::AccumulateDraw()
 			const GSTileSurfaceLayout tex_l{tex0.TBP0, static_cast<u8>(tex0.TBW), static_cast<u8>(psm), KindForPsm(psm)};
 			tex_pages = GSVramModel::PagesForRect(tex_l, GSVector4i(0, 0, static_cast<int>(pd.tw), static_cast<int>(pd.th)));
 
-			ComposeForPendingDraw(tex_pages, pd);
-			pd.epoch = m_epoch;
+			// Rule 2 first. When one resident target owns the whole window at this exact layout the
+			// fragment stage samples it directly, and the byte road is not asked for anything: no
+			// ring slot, no writeback, no epoch. That is where the structural saving is -- a
+			// composite reading last frame's 3D buffer stops reswizzling a megabyte per frame into
+			// bytes only it will read -- and it is also where the staleness goes, because the
+			// target IS the newest copy while a composed slot is only as new as its writeback.
+			pd.tex_source = TargetForTextureRead(tex_l, pd.tw, pd.th, tex_pages, fb_id, z_id);
+			if (pd.tex_source != kGSTileNoSurface)
+			{
+				PlanTargetIndex(pd.tex_source); // the executor resolves the bind through the target list
+				m_frame.tex_binds++;
+			}
+			else
+			{
+				ComposeForPendingDraw(tex_pages, pd);
+				pd.epoch = m_epoch;
+			}
 		}
 	}
 
@@ -1543,6 +1620,39 @@ void GSRendererTileGpu::AccumulateDraw()
 	m_run_written = m_run_written.rempty() ? r : m_run_written.runion(r);
 	pd.date = date;
 
+	// The rule-2 bind takes its slot HERE, not where the source was chosen, because the slot
+	// numbering belongs to the pass and everything above may still have broken the pass. Two things
+	// can stop the bind joining the open pass, and both are answered by breaking it: the open pass
+	// renders into the very surface this draw wants to sample (a pass cannot have one image as
+	// attachment and texture at once), or its bind table is already full. A break is always legal --
+	// it costs a pass, never correctness -- and after it the table is empty and the attachments are
+	// this draw's own, which the eligibility test already excluded.
+	if (pd.tex_source != kGSTileNoSurface)
+	{
+		bool need_break = m_open_color != kGSTileNoSurface &&
+						  (pd.tex_source == m_open_color || (m_open_z_used && pd.tex_source == m_open_z));
+		if (!need_break)
+		{
+			u32 s = 0;
+			while (s < m_open_tex_count && m_open_tex_src[s] != pd.tex_source)
+				s++;
+			need_break = (s == m_open_tex_count && m_open_tex_count == m_open_tex_src.size());
+		}
+		if (need_break)
+		{
+			pd.break_before = true;
+			m_frame.tex_bind_breaks++;
+			m_run_written = r;
+			BreakOpenPass();
+		}
+		u32 slot = 0;
+		while (slot < m_open_tex_count && m_open_tex_src[slot] != pd.tex_source)
+			slot++;
+		if (slot == m_open_tex_count)
+			m_open_tex_src[m_open_tex_count++] = pd.tex_source;
+		pd.tex_slot = slot;
+	}
+
 	// This draw is now part of the open pass (its own, if anything above broke the previous one):
 	// remember the pages it renders into and the ring pages it samples, so a later draw's
 	// writeback can be tested against it. Last word in the function on pass structure -- nothing
@@ -1556,11 +1666,12 @@ void GSRendererTileGpu::AccumulateDraw()
 		m_open_color_written |= fb_pages;
 	if (z_write)
 		m_open_z_written |= z_pages;
-	if (pd.tex_enable)
+	if (pd.tex_enable && pd.tex_source == kGSTileNoSurface)
 	{
 		// ComposeRingPages gave every page of the read window a live slot, and nothing between
 		// there and here closes one (only an upload does, and uploads do not land mid-draw), so
-		// m_ring_live still names the slot this draw's shader will read.
+		// m_ring_live still names the slot this draw's shader will read. A rule-2 draw reads no
+		// slot at all, so it constrains no later writeback.
 		m_open_read |= tex_pages;
 		tex_pages.forEachSetPage([&](u32 page) { m_open_read_slot[page] = m_ring_live[page]; });
 	}
