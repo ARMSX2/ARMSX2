@@ -1036,12 +1036,10 @@ void GSRendererTileGpu::ComposeRingPages(const GSPageBitmap& pages)
 	m_vram_model.OnReadback(need);
 }
 
-// A surface without a byte road is about to take `pages` (or read them without holding
-// them): the model's steal invariant needs the previous owners' truth marked synced, but no
-// bytes actually move -- the previous owners' pixels are lost to the byte store, and the
-// taker's texture keeps whatever it held. Counted (and warned once); the road-less surfaces
-// are depth, 16-bit colour, and unaligned bases, all pending their own writeback/seed shaders.
-void GSRendererTileGpu::LossySteal(const GSPageBitmap& pages)
+// Truth on `pages` cannot reach the byte store at all: count it and say so once. Two roads reach
+// here -- a surface whose layout has no writeback shader (16-bit colour, an unaligned base), and
+// the depth plane, which has no shader at all.
+void GSRendererTileGpu::NoteLossyPages(const GSPageBitmap& pages)
 {
 	if (pages.empty())
 		return;
@@ -1052,7 +1050,40 @@ void GSRendererTileGpu::LossySteal(const GSPageBitmap& pages)
 		Console.Warning("TileGpu: page truth moved through a surface without a byte road (depth / 16-bit / unaligned) "
 						"-- the bytes are stale there. Counted per frame as lossy pages.");
 	}
+}
+
+// A surface without a byte road is about to take `pages` (or read them without holding
+// them): the model's steal invariant needs the previous owners' truth marked synced, but no
+// bytes actually move -- the previous owners' pixels are lost to the byte store, and the
+// taker's texture keeps whatever it held. Counted (and warned once); the road-less surfaces
+// are depth, 16-bit colour, and unaligned bases, all pending their own writeback/seed shaders.
+void GSRendererTileGpu::LossySteal(const GSPageBitmap& pages)
+{
+	if (pages.empty())
+		return;
+	NoteLossyPages(pages);
 	m_vram_model.OnReadback(m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll));
+}
+
+// Compose `pages` into the ring for the draw being accumulated, and open a new pass if the
+// writebacks that took cannot run at the head of the open one.
+//
+// A writeback the plan build leaves inside the open pass runs at that pass's head, ahead of every
+// draw already in it. Where it collides with one of them -- reading a surface they have rendered
+// into, or rewriting a ring slot they have sampled -- the hoist composes stale bytes and hands them
+// backwards, and the draw opens its own pass instead, exactly as a seed does. Where it collides
+// with none of them the hoist is provably invisible, and the pass stays whole: pass count is the
+// currency of this design.
+void GSRendererTileGpu::ComposeForPendingDraw(const GSPageBitmap& pages, PendingDraw& pd)
+{
+	const u32 ops_before = static_cast<u32>(m_plan_prep_ops.size());
+	ComposeRingPages(pages);
+	if (m_plan_prep_ops.size() != ops_before && WritebackHoistCollides(ops_before))
+	{
+		pd.break_before = true;
+		m_frame.writeback_breaks++;
+		BreakOpenPass();
+	}
 }
 
 // One draw's colour and depth surfaces claim the same pages, so only one of them can be the
@@ -1359,21 +1390,7 @@ void GSRendererTileGpu::AccumulateDraw()
 			// sampling pages it also renders reads the pre-pass bytes: snapshot semantics).
 			const GSTileSurfaceLayout tex_l{tex0.TBP0, static_cast<u8>(tex0.TBW), static_cast<u8>(psm), KindForPsm(psm)};
 			tex_pages = GSVramModel::PagesForRect(tex_l, GSVector4i(0, 0, static_cast<int>(pd.tw), static_cast<int>(pd.th)));
-			// A writeback this emits will run at the head of whatever pass this draw lands in, so
-			// it is hoisted over the draws already in that pass. Where it collides with one of
-			// them -- reading a surface they have rendered into, or rewriting a ring slot they
-			// have sampled -- the hoist composes stale bytes and hands them backwards, and the
-			// draw opens its own pass instead, exactly as a seed does. Where it collides with
-			// none of them the hoist is provably invisible, and the pass stays whole: pass count
-			// is the currency of this design.
-			const u32 ops_before = static_cast<u32>(m_plan_prep_ops.size());
-			ComposeRingPages(tex_pages);
-			if (m_plan_prep_ops.size() != ops_before && WritebackHoistCollides(ops_before))
-			{
-				pd.break_before = true;
-				m_frame.writeback_breaks++;
-				BreakOpenPass();
-			}
+			ComposeForPendingDraw(tex_pages, pd);
 			pd.epoch = m_epoch;
 		}
 	}
@@ -1446,10 +1463,22 @@ void GSRendererTileGpu::AccumulateDraw()
 	u8 z_claims = 0;
 	if (z_used)
 	{
-		// The depth texture should hold the pages' newest Z for a test or a write; without a
-		// depth road, pages it does not hold read as whatever the texture has, and truth
-		// another surface holds on them is stolen by the write without moving the bytes.
-		LossySteal(PagesNeedingSeed(z_id, z_pages, GSTilePlaneZ));
+		// Two things share these pages and only ONE of them is lost. The depth texture should hold
+		// their newest Z for a test or a write and there is no depth road to bring it in, so pages
+		// it does not hold read as whatever its texture has: lossy, counted. But the COLOUR truth
+		// other surfaces hold on those same pages is perfectly serviceable, and the depth claim
+		// below is about to take it -- so it gets composed into the ring first, which is the spill
+		// a road-having surface has always owed.
+		//
+		// ⚠️ This used to mark the whole set synced and move nothing. That is a LIE the model then
+		// tells every later reader of those pages -- "the ring holds these bytes" -- and the reader
+		// samples whatever the CPU shadow's prefill left instead. It stayed invisible only while
+		// some other read of the same pages happened to write them back first: FlatOut 2's bloom
+		// chain and Dirge's post chain both read through it, and both come closer to the software
+		// floor once the spill is real (mean |diff| 10.20 -> 10.00 and 3.17 -> 3.05).
+		const GSPageBitmap z_seed = PagesNeedingSeed(z_id, z_pages, GSTilePlaneZ);
+		NoteLossyPages(z_seed);
+		ComposeForPendingDraw(z_seed, pd);
 		if (z_write)
 			z_claims = gsTilePlanesInvalidatedByWrite(ctx->ZBUF.PSM);
 	}

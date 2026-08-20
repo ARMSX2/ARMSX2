@@ -289,9 +289,18 @@ private:
 	// accumulated; block masks per page come from the model for writebacks, full for seeds.
 	void EmitPrepOp(GSDevice::GSTileGpuPrepKind kind, GSTileSurfaceId id, const GSPageBitmap& pages);
 
+	// Truth on `pages` cannot reach the byte store at all: count it and warn once. The depth plane
+	// (no writeback shader) and surfaces whose layout has no byte road are the two roads here.
+	void NoteLossyPages(const GSPageBitmap& pages);
+
 	// Truth on `pages` is taken (or read) by a surface with no byte road: mark it synced without
 	// moving bytes, and count it lossy.
 	void LossySteal(const GSPageBitmap& pages);
+
+	// Compose `pages` into the ring for the draw being accumulated, breaking the open pass if the
+	// writebacks it emitted cannot be hoisted to that pass's head. The idiom a texture read has
+	// always used, shared with the depth claim's spill.
+	void ComposeForPendingDraw(const GSPageBitmap& pages, PendingDraw& pd);
 
 	// One draw's colour and depth surfaces claim the same pages -- the game packed FRAME and ZBUF
 	// close enough that a single draw's two footprints share them. Only one surface can be the
