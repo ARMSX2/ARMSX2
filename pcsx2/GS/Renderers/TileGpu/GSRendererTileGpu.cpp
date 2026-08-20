@@ -135,6 +135,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_plan_draws.clear();
 	m_plan_topologies.clear();
 	m_plan_blend_keys.clear();
+	m_plan_tex_slots.clear();
 	m_plan_pending.clear();
 	m_plan_passes.clear();
 	m_plan_target_pairs.clear();
@@ -1795,6 +1796,10 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		//    resolved colour target's size (scale 1), plus the z enables and the texture block.
 		//    Row i serves draw i.
 		m_plan_states.resize(m_plan_pending.size());
+		// The same slot, lifted out of the state row for the executor: it splits its indirect runs
+		// on it, and the state table's layout is not part of that contract (GSTileGpuPassPlan::
+		// tex_slots).
+		m_plan_tex_slots.resize(m_plan_pending.size());
 		for (u32 i = 0; i < m_plan_pending.size(); i++)
 		{
 			const PendingDraw& pd = m_plan_pending[i];
@@ -1839,6 +1844,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.region_v = pd.region_v;
 			sr.ltf = pd.ltf ? 1u : 0u;
 			sr.tex_target = pd.tex_slot;
+			m_plan_tex_slots[i] = pd.tex_slot;
 			sr.pad0_ = 0;
 		}
 
@@ -1986,6 +1992,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.draws = m_plan_draws;
 		plan.topologies = m_plan_topologies;
 		plan.blend_keys = m_plan_blend_keys;
+		plan.tex_slots = m_plan_tex_slots;
 		plan.target_pairs = m_plan_target_pairs;
 		plan.snapshots = m_plan_snapshots;
 		plan.prep_ops = m_plan_prep_ops;
@@ -2015,6 +2022,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_draws.clear();
 	m_plan_topologies.clear();
 	m_plan_blend_keys.clear();
+	m_plan_tex_slots.clear();
 	m_plan_pending.clear();
 	m_plan_passes.clear();
 	m_plan_target_pairs.clear();

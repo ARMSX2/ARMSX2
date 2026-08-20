@@ -6942,12 +6942,21 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
 
 			// One vkCmdDrawIndexedIndirect per maximal run of draws sharing pipeline state -- topology
-			// and blend key -- in draw order. Draw order is preserved exactly: commands are laid out in
-			// draw order, each run is a contiguous slice, and runs issue in order -- so overdraw is
-			// identical to the per-draw path, at one submission per run instead of one per draw. A
-			// pipeline change (and, for a FIX-factor blend, a blend-constant set) is the only per-run
-			// cost. This is the constant-cost submission the design bets on.
+			// and blend key -- and, within a run, per stretch sharing a sampled-target slot. In draw
+			// order throughout: commands are laid out in draw order, each run is a contiguous slice,
+			// and runs issue in order -- so overdraw is identical to the per-draw path, at one
+			// submission per run instead of one per draw. A pipeline change (and, for a FIX-factor
+			// blend, a blend-constant set) is the only per-run cost; a slot change costs the call
+			// alone. This is the constant-cost submission the design bets on.
 			const bool have_blend = plan.blend_keys.size() == plan.draws.size();
+			// The sampled-target slot ends an indirect call too, but for a different reason: it is
+			// not pipeline state, it is the index the fragment shader reads the per-pass target
+			// array at, and a descriptor array index has to be dynamically uniform. Two slots in
+			// one indirect call would put fragments of two draws in one wave under one descriptor.
+			// So the run keeps its pipeline and only the CALL is cut -- see GSTileGpuPassPlan::
+			// tex_slots, and tilegpu.glsl's tilegpu_target_texel, which is undecorated on the
+			// strength of this.
+			const bool have_slots = plan.tex_slots.size() == plan.draws.size();
 			const u32 end = pass.first_draw + pass.draw_count;
 			u32 d = pass.first_draw;
 			while (d < end)
@@ -6970,7 +6979,15 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 				for (u32 first = d; first < run_end;)
 				{
-					const u32 count = std::min(run_end - first, max_indirect);
+					u32 count = std::min(run_end - first, max_indirect);
+					if (have_slots)
+					{
+						const u32 slot = plan.tex_slots[first];
+						u32 n = 1;
+						while (n < count && plan.tex_slots[first + n] == slot)
+							n++;
+						count = n;
+					}
 					const VkDeviceSize offset = static_cast<VkDeviceSize>(indirect_base_bytes) +
 												static_cast<VkDeviceSize>(first) * sizeof(GSTileGpuIndirectDraw);
 					vkCmdDrawIndexedIndirect(cmd, m_tilegpu_indirect_stream_buffer.GetBuffer(), offset, count,

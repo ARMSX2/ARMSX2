@@ -2135,6 +2135,16 @@ public:
 		/// Bit 29: the draw writes RGB but not alpha (the GS AFAIL RGB_ONLY mode); the pipeline
 		/// masks the alpha channel alone.
 		static constexpr u32 kNoAlphaWrite = 0x20000000u;
+		/// One per draw, parallel to `draws`: the draw's slot in its pass's sampled-target array,
+		/// or kNoTexSlot. It is the same value the draw's state row carries, repeated here because
+		/// the state table's layout is the backend's business and this one field is not: the
+		/// fragment shader indexes the sampled-target array by it, and a descriptor array index
+		/// must be dynamically uniform, so the executor may not put two different slots inside one
+		/// indirect call. It therefore ENDS an indirect run the way the topology and the blend key
+		/// do -- but unlike them it is not pipeline state, so the split reuses the bound pipeline
+		/// and costs one more vkCmdDrawIndexedIndirect, nothing else. Empty = no draw samples a
+		/// target (the device could not bind them) and nothing splits.
+		std::span<const u32> tex_slots;
 		std::span<const GSTileGpuTargetPair> target_pairs;
 		std::span<const GSTileGpuSnapshotCopy> snapshots;
 		std::span<const GSTileGpuPrepOp> prep_ops;
