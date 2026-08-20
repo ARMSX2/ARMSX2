@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
+import com.armsx2.MemoryCardBackup
 import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.config.ConfigStore
 import com.armsx2.config.SettingsScope
@@ -289,6 +290,66 @@ class MemoryCardViewModel(application: Application) : AndroidViewModel(applicati
         }.isSuccess
         state.value = if (ok) state.value.copy(message = "Exported ${src.name}.")
                       else state.value.copy(error = "Export failed for ${src.name}.")
+    }
+
+    // ---- backups ---------------------------------------------------------------------------
+
+    /** Snapshots of [card], newest first. */
+    fun backups(card: File): List<MemoryCardBackup.Snapshot> =
+        runCatching { MemoryCardBackup.list(getApplication<Application>(), card.name) }.getOrDefault(emptyList())
+
+    /** Take a copy of [card] now. Blocking; callers dispatch it off the UI thread. */
+    fun backupNow(card: File) {
+        if (NativeApp.hasActiveVM()) {
+            state.value = state.value.copy(error = "Stop the game before backing up a memory card.")
+            return
+        }
+        when (MemoryCardBackup.verify(card)) {
+            MemoryCardBackup.Health.MISSING ->
+                state.value = state.value.copy(error = "${card.name} is not there to back up.")
+            MemoryCardBackup.Health.UNREADABLE ->
+                // Refusing is the point: a copy of a broken card is worth nothing and costs a
+                // rotation slot that may hold the last good one.
+                state.value = state.value.copy(
+                    error = "${card.name} cannot be read, so there is nothing worth backing up. " +
+                        "Restore an earlier backup instead.",
+                )
+            MemoryCardBackup.Health.GOOD -> {
+                val snap = MemoryCardBackup.snapshot(
+                    getApplication<Application>(), card, MemoryCardBackup.Reason.MANUAL, game = null,
+                )
+                if (snap != null) MemoryCardBackup.prune(getApplication<Application>(), card.name)
+                state.value = if (snap != null) {
+                    state.value.copy(message = "Backed up ${card.name}.")
+                } else {
+                    state.value.copy(error = "Could not back up ${card.name}.")
+                }
+            }
+        }
+    }
+
+    /**
+     * Put [snap] back over the live card. Blocking; callers dispatch it off the UI thread.
+     *
+     * Refused while a game is running. The console keeps its own cached picture of the card's
+     * directory in guest memory, so swapping the bytes underneath leaves that picture stale and
+     * the next write scribbles over the restore — reopening the card does not fix it.
+     */
+    fun restoreBackup(snap: MemoryCardBackup.Snapshot) {
+        if (NativeApp.hasActiveVM()) {
+            state.value = state.value.copy(
+                error = "Stop the game before restoring a memory card. The console keeps its own " +
+                    "picture of the card while it runs, and would write over the restored copy.",
+            )
+            return
+        }
+        val outcome = MemoryCardBackup.restore(getApplication<Application>(), snap)
+        state.value = if (outcome.ok) {
+            state.value.copy(message = outcome.detail)
+        } else {
+            state.value.copy(error = outcome.detail)
+        }
+        refresh()
     }
 
     fun dismissMessage() {
