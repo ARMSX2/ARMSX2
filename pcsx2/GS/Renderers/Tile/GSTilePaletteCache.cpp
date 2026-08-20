@@ -46,6 +46,7 @@ GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen
 		if (me.alive && me.last_use == m_memo_last_use)
 		{
 			me.last_use = ++m_use_counter;
+			me.pinned_frame = m_frame;
 			m_memo_last_use = me.last_use;
 			m_hits++;
 			if (content_id)
@@ -69,6 +70,7 @@ GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen
 		if (e.hash == hash && e.entries == entries && std::memcmp(e.words.data(), clut, entries * sizeof(u32)) == 0)
 		{
 			e.last_use = ++m_use_counter;
+			e.pinned_frame = m_frame;
 			m_hits++;
 			m_memo_valid = true;
 			m_memo_read_gen = read_gen;
@@ -79,10 +81,17 @@ GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen
 				*content_id = e.hash;
 			return e.tex;
 		}
-		if (!lru || e.last_use < lru->last_use)
+		// A palette a recorded-but-unissued draw names may not be recycled into the pool, where the
+		// next CreateTexture would take it and overwrite it. Inert with the discipline off.
+		if (!Pinned(e) && (!lru || e.last_use < lru->last_use))
 			lru = &e;
 	}
 
+	if (!free_slot && !lru)
+	{
+		m_capacity_refusals++;
+		return nullptr;
+	}
 	Entry& e = free_slot ? *free_slot : *lru;
 	if (e.alive && e.tex)
 	{
@@ -105,6 +114,7 @@ GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen
 	e.entries = entries;
 	e.tex = tex;
 	e.last_use = ++m_use_counter;
+	e.pinned_frame = m_frame;
 	std::memcpy(e.words.data(), clut, entries * sizeof(u32));
 	m_builds++;
 	m_memo_valid = true;
@@ -127,6 +137,7 @@ void GSTilePaletteCache::Clear()
 			e.tex = nullptr;
 		}
 		e.alive = false;
+		e.pinned_frame = 0;
 	}
 	m_use_counter = 0;
 	m_memo_valid = false;

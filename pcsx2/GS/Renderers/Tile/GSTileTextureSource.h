@@ -14,6 +14,23 @@
 class GSLocalMemory;
 class GSVramModel;
 
+/// The build road for a caller that materialises on the DEVICE rather than deswizzling through CPU
+/// memory. The cache keeps everything it already owned — identity, allocation, invalidation,
+/// eviction, lifetime — and the builder does exactly one thing: fill the texture it is handed with
+/// the window's texels. The TileGpu renderer implements it by queueing a materialise pass into the
+/// frame's prep-op stream; nothing in the cache knows or cares that the fill is deferred, because
+/// the pin discipline (SetFrame) is what makes deferral safe, not the build road.
+class GSTileSourceBuilder
+{
+public:
+	virtual ~GSTileSourceBuilder() = default;
+
+	/// Fill `tex` — a Format::Color render target, tw x th texels of the window at TEX0/TEXA — with
+	/// the window's texels. Returning false fails the build: the cache drops the entry and the
+	/// caller gets null, exactly as an allocation failure does.
+	virtual bool BuildTileSource(GSTexture* tex, const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA) = 0;
+};
+
 // The Tile renderer's texture sources: GPU copies of texture windows built straight
 // from CPU local memory. A direct-colour window (16/24/32-bit) is deswizzled to RGBA8
 // with the TEXA expansion applied by the swizzle readers on the CPU — the "AEM
@@ -79,6 +96,33 @@ public:
 
 	/// The content stamp of `pages` right now (sum of per-page write generations).
 	static u64 GenStamp(const GSVramModel& model, const GSPageBitmap& pages);
+
+	/// The identity of a window's CONTENT, as opposed to of its registers. A moved gen stamp says
+	/// some byte on the window's PAGES was written, not that any texel changed, and on the corpus
+	/// those are not the same number: games re-upload identical texture data every frame. So a
+	/// rebuild is checked against this first, and a match serves the entry that already exists.
+	///
+	/// It is a (source, value) pair rather than a bare number because different windows have their
+	/// truth in different places, and the numbering spaces must not meet. A window the CPU shadow
+	/// holds gets a fingerprint of its page bytes. A window whose current truth is a rendered
+	/// target has no honest fingerprint at all — ProbePageContent declines and returns zero — and
+	/// the road that serves those keys on the OWNING TARGET's identity and version instead, which
+	/// the page model already tracks. Tagging the source is what lets both live in one field
+	/// without a target version ever being read as a page hash.
+	struct ContentToken
+	{
+		enum class Source : u8
+		{
+			None = 0,   ///< cannot say: never equal to anything, including another None
+			Pages = 1,  ///< fingerprint of the window's page bytes (ProbePageContent)
+			Target = 2, ///< the owning target's id and version — the donor road's identity
+		};
+		Source source = Source::None;
+		u64 value = 0;
+
+		bool Known() const { return source != Source::None && value != 0; }
+		bool operator==(const ContentToken& o) const { return Known() && source == o.source && value == o.value; }
+	};
 
 	/// The register-side identity of a texture window: everything an entry is keyed on
 	/// except the content stamp. Exposed so a caller can group draws by the source they
@@ -172,6 +216,61 @@ public:
 		const GIFRegTEX0* level_tex0 = nullptr, u32 levels = 1, const Donor* donor = nullptr,
 		u64* build_id = nullptr, const GSVector4i* sample_core = nullptr);
 
+	/// The frame the pin discipline stamps entries with, and the whole of that discipline's
+	/// configuration. Zero — the default, and what the Tile renderer leaves it at — turns the
+	/// discipline OFF: no entry is ever stamped, every pin branch is inert, and the class behaves
+	/// exactly as it did before it existed.
+	///
+	/// It exists for a renderer that RECORDS draws and issues them later. Tile looks a texture up
+	/// and draws with it immediately; TileGpu looks it up during accumulation and issues nothing
+	/// until the plan executes at VSync, so a texture a recorded draw names must still hold the
+	/// right bytes at the END of the frame. Three things would break that — a rebuild landing in
+	/// the same entry and the same texture, an LRU eviction taking the slot, and a Recycle handing
+	/// the texture to the next CreateTexture — and one mechanism stops all three: an entry a
+	/// caller has been given this frame is stamped, and a stamped entry is never rebuilt in place,
+	/// evicted or recycled. A lookup that would have to do any of those REFUSES (counted), the
+	/// caller falls back to whatever road it had, and the rebuild happens next frame naturally.
+	///
+	/// The caller advances the frame when the recorded plan has EXECUTED, not at the video frame
+	/// boundary — from that moment the textures the last plan named are free again.
+	void SetFrame(u64 frame) { m_frame = frame; }
+
+	/// What LookupBuilt did, so a caller can count the road rather than infer it from a pointer.
+	enum class BuiltOutcome
+	{
+		Hit,             ///< an entry matched and its stamp was current: no work at all
+		Rescued,         ///< the stamp had moved but the content token had not: served, nothing rebuilt
+		Built,           ///< the builder was called (a fresh window, or one whose content moved)
+		RefusedPinned,   ///< the entry would have been rebuilt in place under a recorded draw
+		RefusedCapacity, ///< every entry is pinned this frame; nothing may be evicted
+		Failed,          ///< allocation failed, or the builder refused
+	};
+
+	/// The device-side build road: same identity, same invalidation predicate and same cache as
+	/// Lookup, but the texels are produced by `builder` instead of by a CPU deswizzle, so this
+	/// never touches GSLocalMemory. The texture is a Format::Color render target at the window's
+	/// tw x th, which is what a build-on-the-GPU pass renders into.
+	///
+	/// `content` is the window's content identity as the CALLER can prove it (see ContentToken),
+	/// and it is the tier that decides whether a moved gen stamp is a real rebuild. It must be
+	/// taken BEFORE the caller composes or spills anything under the window: after that, a page
+	/// fingerprint is a fingerprint of bytes the composition has already superseded. An unknown
+	/// token is never equal to anything, so it degrades to "rebuild", never to a wrong serve.
+	///
+	/// Returns null on every refusal and on failure; `outcome` says which, and the caller counts
+	/// it. A refusal is not an error — it is the fail-closed leg of the pin discipline, and the
+	/// caller's other road is expected to be correct on its own.
+	GSTexture* LookupBuilt(const GSVramModel& model, const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA,
+		const GSPageBitmap& pages, GSTileSourceBuilder& builder, const ContentToken& content,
+		u64* build_id = nullptr, BuiltOutcome* outcome = nullptr);
+
+	/// Rebuilds refused because the entry is pinned by a recorded draw of this frame.
+	u64 PinRefusals() const { return m_pin_refusals; }
+	/// Lookups refused because every entry in the cache is pinned by this frame.
+	u64 CapacityRefusals() const { return m_capacity_refusals; }
+	/// Entries currently stamped with the live frame — the working set the pin holds down.
+	u32 PinnedEntries() const;
+
 	/// Builds served off the device rather than out of CPU memory (copies and
 	/// reinterpretations both; the latter counted again below).
 	u64 DonorBuilds() const { return m_donor_builds; }
@@ -223,12 +322,18 @@ private:
 		u64 last_use = 0;
 		u64 build_id = 0; ///< stamped when a build CHANGES content; equal ids = same texel bytes
 		u64 content_hash = 0; ///< XXH3 of the last CPU build's texel rows (0 = none / device-built)
-		u64 page_content = 0; ///< fingerprint of the pages' RAW bytes at the last CPU build (0 = none / device-built)
+		ContentToken content;  ///< the content identity this entry was last built under (see ContentToken)
+		u64 pinned_frame = 0; ///< the frame a caller was handed this entry in; 0 = never (and the discipline off)
 		GSVector4i valid_rect = GSVector4i::zero(); ///< region holding real window bytes (subrect donors copy less than the window)
 		GSPageBitmap pages;
 		GSTexture* tex = nullptr;
 		bool alive = false;
 	};
+
+	/// Is this entry held down by a draw the caller has already recorded but not yet issued?
+	/// False for every entry while m_frame is zero, which is what keeps the discipline invisible
+	/// to a renderer that draws immediately.
+	bool Pinned(const Entry& e) const { return m_frame != 0 && e.pinned_frame == m_frame; }
 
 	// One cached content hash per GS page, revalidated lazily: the hash is current
 	// exactly while the page's write generations match the ones it was taken under.
@@ -247,6 +352,8 @@ private:
 	u64 PageContentStamp(const GSLocalMemory& mem, const GSVramModel& model, const GSPageBitmap& pages);
 	bool BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTEX0* level_tex0, u32 levels, const GIFRegTEXA& TEXA,
 		const Donor* donor);
+	bool BuildDeviceSource(Entry& e, const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTileSourceBuilder& builder,
+		int tw, int th);
 	u8* GetScratch(u32 size);
 
 	std::array<Entry, kMaxEntries> m_entries;
@@ -262,4 +369,7 @@ private:
 	u64 m_rebuilds_same_bytes = 0;
 	u64 m_rebuilds_new_bytes = 0;
 	u64 m_rebuilds_same_pages = 0;
+	u64 m_frame = 0; ///< the pin discipline's clock; 0 = off (see SetFrame)
+	u64 m_pin_refusals = 0;
+	u64 m_capacity_refusals = 0;
 };

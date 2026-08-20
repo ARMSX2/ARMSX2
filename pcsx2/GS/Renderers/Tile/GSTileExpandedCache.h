@@ -75,6 +75,17 @@ public:
 	/// Frame boundary, for the admission filter's clock. Call once per VSync.
 	void NextFrame() { m_frame++; }
 
+	/// The PIN discipline's clock, which is a different clock from the admission filter's above:
+	/// this one advances when the caller's recorded plan has EXECUTED, not at the video frame
+	/// boundary. Zero (the default, and what the Tile renderer leaves it at) turns the discipline
+	/// off. An expansion a recorded-but-unissued draw names is never evicted or recycled while it
+	/// is stamped — and note that ProbeAdmit recycles too, since recording a marker can take an
+	/// occupied slot. See GSTileTextureSource::SetFrame for the argument.
+	void SetFrame(u64 frame) { m_pin_frame = frame; }
+
+	/// Lookups and probes that could not take a slot because every entry is pinned by this frame.
+	u64 CapacityRefusals() const { return m_capacity_refusals; }
+
 	/// Recycles every cached texture (reset / teardown / hot-switch).
 	void Clear();
 
@@ -102,13 +113,18 @@ private:
 		u64 palette_id = 0;
 		u64 last_use = 0;
 		u64 seen_frame = 0; ///< frame that recorded the marker
+		u64 pinned_frame = 0; ///< the plan frame a caller was handed this entry in; 0 = never
 		GSTexture* tex = nullptr; ///< null while the entry is a first-sight marker
 		bool alive = false;
 	};
 
+	bool Pinned(const Entry& e) const { return m_pin_frame != 0 && e.pinned_frame == m_pin_frame; }
+
 	std::array<Entry, kMaxEntries> m_entries;
 	u64 m_use_counter = 0;
 	u64 m_frame = 0;
+	u64 m_pin_frame = 0;
+	u64 m_capacity_refusals = 0;
 	u64 m_hits = 0;
 	u64 m_builds = 0;
 	u64 m_passes = 0;

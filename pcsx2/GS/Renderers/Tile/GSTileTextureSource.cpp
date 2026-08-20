@@ -375,6 +375,10 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 		if (e.reg_key == reg_key && e.aux_key == aux_key && e.mip_key[0] == mip_key[0] && e.mip_key[1] == mip_key[1])
 		{
 			e.last_use = ++m_use_counter;
+			// Whether a draw already recorded THIS frame names this entry, asked before the stamp
+			// below makes it true. Always false with the discipline off, which is Tile.
+			const bool pinned = Pinned(e);
+			e.pinned_frame = m_frame;
 			// A subrect-donor entry is valid only inside what it copied: it serves
 			// a draw whose proven sample core it contains, and nobody else — in
 			// particular a draw that arrives with NO core (whole-window semantics)
@@ -403,10 +407,11 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 			// alternates donor/CPU routes within a frame, and the stale hash
 			// matched a fingerprint whose bytes had since been pulled.
 			u64 page_content = 0;
-			if (!donor && e.content_hash != 0 && e.page_content != 0)
+			if (!donor && e.content_hash != 0 && e.content.source == ContentToken::Source::Pages &&
+				e.content.value != 0)
 			{
 				page_content = PageContentStamp(mem, model, pages);
-				if (page_content == e.page_content)
+				if (page_content == e.content.value)
 				{
 					e.gen_stamp = stamp;
 					m_rebuilds_same_pages++;
@@ -414,6 +419,14 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 						*build_id = e.build_id;
 					return e.tex;
 				}
+			}
+			// The bytes really did move. An entry a recorded draw already names may not be rebuilt
+			// under it — that draw would sample bytes it never asked for when the plan finally runs
+			// — so refuse and let the caller take its other road. Inert with the discipline off.
+			if (pinned)
+			{
+				m_pin_refusals++;
+				return nullptr;
 			}
 			if (!BuildInto(e, mem, level_tex0, levels, TEXA, donor))
 			{
@@ -430,17 +443,29 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 			// A CPU build records the page fingerprint it was built under (already
 			// computed if the serve above was attempted); a device build records
 			// nothing — its bytes never transited the CPU.
-			e.page_content =
-				(e.content_hash != 0) ? (page_content != 0 ? page_content : PageContentStamp(mem, model, pages)) : 0;
+			e.content = (e.content_hash != 0) ?
+							ContentToken{ContentToken::Source::Pages,
+								page_content != 0 ? page_content : PageContentStamp(mem, model, pages)} :
+							ContentToken{};
 			// BuildInto stamped the id — a NEW one only if the bytes moved.
 			if (build_id)
 				*build_id = e.build_id;
 			return e.tex;
 		}
-		if (!lru || e.last_use < lru->last_use)
+		// A pinned entry is not a candidate for eviction: its texture is named by a draw that has
+		// been recorded and not yet issued, and recycling it puts that texture back in the pool for
+		// the next CreateTexture to overwrite.
+		if (!Pinned(e) && (!lru || e.last_use < lru->last_use))
 			lru = &e;
 	}
 
+	if (!free_slot && !lru)
+	{
+		// Every entry is held down by this frame. Fail closed rather than evict something a
+		// recorded draw is going to sample.
+		m_capacity_refusals++;
+		return nullptr;
+	}
 	Entry& e = free_slot ? *free_slot : *lru;
 	if (e.alive && e.tex && !free_slot)
 	{
@@ -454,12 +479,14 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 	e.mip_key[1] = mip_key[1];
 	e.pages = pages;
 	e.last_use = ++m_use_counter;
+	e.pinned_frame = m_frame;
 	e.content_hash = 0; // a fresh window never compares against the slot's previous occupant
-	e.page_content = 0;
+	e.content = ContentToken{};
 	e.build_id = 0;
 	if (!BuildInto(e, mem, level_tex0, levels, TEXA, donor))
 	{
 		e.alive = false;
+		e.pinned_frame = 0;
 		if (e.tex)
 		{
 			g_gs_device->Recycle(e.tex);
@@ -469,10 +496,154 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 	}
 	e.gen_stamp = stamp;
 	if (e.content_hash != 0)
-		e.page_content = PageContentStamp(mem, model, pages);
+		e.content = ContentToken{ContentToken::Source::Pages, PageContentStamp(mem, model, pages)};
 	if (build_id)
 		*build_id = e.build_id;
 	return e.tex;
+}
+
+// The device-side build road. Same entries, same keys, same invalidation predicate as Lookup; what
+// differs is where the texels come from (a caller-supplied builder, not a CPU deswizzle) and that
+// every serve stamps the pin, because the caller records the draw now and issues it later.
+GSTexture* GSTileTextureSource::LookupBuilt(const GSVramModel& model, const GIFRegTEX0& TEX0,
+	const GIFRegTEXA& TEXA, const GSPageBitmap& pages, GSTileSourceBuilder& builder,
+	const ContentToken& content, u64* build_id, BuiltOutcome* outcome)
+{
+	const auto done = [&](BuiltOutcome o, GSTexture* tex, u64 id) -> GSTexture* {
+		if (outcome)
+			*outcome = o;
+		if (build_id)
+			*build_id = id;
+		return tex;
+	};
+
+	const u64 reg_key = RegKey(TEX0);
+	const u64 aux_key = AuxKey(TEX0, TEXA);
+	u64 mip_key[2];
+	MipKey(&TEX0, 1, mip_key);
+	const u64 stamp = GenStamp(model, pages);
+	const int tw = 1 << std::min<u32>(TEX0.TW, 10);
+	const int th = 1 << std::min<u32>(TEX0.TH, 10);
+
+	Entry* lru = nullptr;
+	Entry* free_slot = nullptr;
+	for (Entry& e : m_entries)
+	{
+		if (!e.alive)
+		{
+			if (!free_slot)
+				free_slot = &e;
+			continue;
+		}
+		if (e.reg_key == reg_key && e.aux_key == aux_key && e.mip_key[0] == mip_key[0] && e.mip_key[1] == mip_key[1])
+		{
+			e.last_use = ++m_use_counter;
+			const bool pinned = Pinned(e);
+			e.pinned_frame = m_frame;
+			if (e.gen_stamp == stamp)
+			{
+				m_hits++;
+				return done(BuiltOutcome::Hit, e.tex, e.build_id);
+			}
+			// The stamp moved, which says a byte on the window's PAGES was written and not that a
+			// texel changed. Ask the content token before paying a build: on this corpus most of
+			// these are the same bytes re-uploaded, and a rebuild would also hand every identity
+			// derived from this one (the palette pairs) a new id for nothing.
+			if (content == e.content)
+			{
+				e.gen_stamp = stamp;
+				m_rebuilds_same_pages++;
+				return done(BuiltOutcome::Rescued, e.tex, e.build_id);
+			}
+			// A real rebuild, in place, in the entry and the texture a recorded draw already
+			// names. Refuse; the caller's other road is correct and the rebuild happens next
+			// frame, when the plan that named it has run.
+			if (pinned)
+			{
+				m_pin_refusals++;
+				return done(BuiltOutcome::RefusedPinned, nullptr, 0);
+			}
+			if (!BuildDeviceSource(e, TEX0, TEXA, builder, tw, th))
+			{
+				e.alive = false;
+				e.pinned_frame = 0;
+				return done(BuiltOutcome::Failed, nullptr, 0);
+			}
+			e.gen_stamp = stamp;
+			e.pages = pages;
+			e.content = content;
+			return done(BuiltOutcome::Built, e.tex, e.build_id);
+		}
+		if (!Pinned(e) && (!lru || e.last_use < lru->last_use))
+			lru = &e;
+	}
+
+	if (!free_slot && !lru)
+	{
+		m_capacity_refusals++;
+		return done(BuiltOutcome::RefusedCapacity, nullptr, 0);
+	}
+	Entry& e = free_slot ? *free_slot : *lru;
+	if (e.alive && e.tex && !free_slot)
+	{
+		g_gs_device->Recycle(e.tex);
+		e.tex = nullptr;
+	}
+	e.alive = true;
+	e.reg_key = reg_key;
+	e.aux_key = aux_key;
+	e.mip_key[0] = mip_key[0];
+	e.mip_key[1] = mip_key[1];
+	e.pages = pages;
+	e.last_use = ++m_use_counter;
+	e.pinned_frame = m_frame;
+	e.content_hash = 0; // no CPU build ever read this window; the row-hash tier has nothing to say
+	e.content = ContentToken{};
+	e.build_id = 0;
+	if (!BuildDeviceSource(e, TEX0, TEXA, builder, tw, th))
+	{
+		e.alive = false;
+		e.pinned_frame = 0;
+		return done(BuiltOutcome::Failed, nullptr, 0);
+	}
+	e.gen_stamp = stamp;
+	e.content = content;
+	return done(BuiltOutcome::Built, e.tex, e.build_id);
+}
+
+// Allocate (or keep) the entry's image and hand it to the builder. A source built on the device is
+// a render target — the build is a draw — where the CPU road's is a plain sampled texture, so the
+// geometry test below covers the usage as well as the size.
+bool GSTileTextureSource::BuildDeviceSource(Entry& e, const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA,
+	GSTileSourceBuilder& builder, int tw, int th)
+{
+	if (!e.tex || e.tex->GetWidth() != tw || e.tex->GetHeight() != th || e.tex->GetMipmapLevels() != 1 ||
+		e.tex->GetFormat() != GSTexture::Format::Color || !e.tex->IsRenderTarget())
+	{
+		if (e.tex)
+			g_gs_device->Recycle(e.tex);
+		e.tex = g_gs_device->CreateRenderTarget(tw, th, GSTexture::Format::Color, false, true);
+		if (!e.tex)
+			return false;
+	}
+	if (!builder.BuildTileSource(e.tex, TEX0, TEXA))
+	{
+		g_gs_device->Recycle(e.tex);
+		e.tex = nullptr;
+		return false;
+	}
+	e.valid_rect = GSVector4i(0, 0, tw, th);
+	e.build_id = ++m_build_counter;
+	m_builds++;
+	return true;
+}
+
+u32 GSTileTextureSource::PinnedEntries() const
+{
+	u32 n = 0;
+	for (const Entry& e : m_entries)
+		n += (e.alive && Pinned(e)) ? 1 : 0;
+	return n;
 }
 
 void GSTileTextureSource::Clear()
@@ -485,6 +656,9 @@ void GSTileTextureSource::Clear()
 			e.tex = nullptr;
 		}
 		e.alive = false;
+		// Clear runs on reset, teardown and hot-switch: the recorded plan is gone with everything
+		// else, so nothing can still name these textures and the pins die with the entries.
+		e.pinned_frame = 0;
 	}
 	// The page hashes key on the model's write generations, and the one caller
 	// that resets those (GSRendererTile::Reset) clears this class in the same

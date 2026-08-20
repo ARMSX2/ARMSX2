@@ -36,13 +36,17 @@ GSTexture* GSTileExpandedCache::Lookup(GSTexture* index, u64 index_id, GSTexture
 			found = &e;
 			break;
 		}
-		if (!lru || e.last_use < lru->last_use)
+		// An expansion a recorded-but-unissued draw names may not be recycled into the pool,
+		// where the next CreateTexture would take it and overwrite it. Inert with the pin
+		// discipline off, which is Tile.
+		if (!Pinned(e) && (!lru || e.last_use < lru->last_use))
 			lru = &e;
 	}
 
 	if (found && found->tex)
 	{
 		found->last_use = ++m_use_counter;
+		found->pinned_frame = m_pin_frame;
 		m_hits++;
 		return found->tex;
 	}
@@ -52,6 +56,11 @@ GSTexture* GSTileExpandedCache::Lookup(GSTexture* index, u64 index_id, GSTexture
 		// First sight: record the pair and defer. The marker shares the LRU pool
 		// with real entries — it is one-shot by construction when the pair never
 		// repeats, so it ages out first (stable entries are re-touched every frame).
+		if (!free_slot && !lru)
+		{
+			m_capacity_refusals++;
+			return nullptr;
+		}
 		Entry& e = free_slot ? *free_slot : *lru;
 		if (e.tex)
 		{
@@ -62,6 +71,7 @@ GSTexture* GSTileExpandedCache::Lookup(GSTexture* index, u64 index_id, GSTexture
 		e.index_id = index_id;
 		e.palette_id = palette_id;
 		e.last_use = ++m_use_counter;
+		e.pinned_frame = 0; // a marker names no texture, so nothing is holding it down yet
 		e.seen_frame = m_frame;
 		m_deferrals++;
 		return nullptr;
@@ -106,6 +116,7 @@ GSTexture* GSTileExpandedCache::Lookup(GSTexture* index, u64 index_id, GSTexture
 
 	found->tex = tex;
 	found->last_use = ++m_use_counter;
+	found->pinned_frame = m_pin_frame;
 	m_builds++;
 	return tex;
 }
@@ -131,12 +142,20 @@ GSTileExpandedCache::Admission GSTileExpandedCache::ProbeAdmit(u64 index_id, u64
 			found = &e;
 			break;
 		}
-		if (!lru || e.last_use < lru->last_use)
+		if (!Pinned(e) && (!lru || e.last_use < lru->last_use))
 			lru = &e;
 	}
 
 	if (!found)
 	{
+		// Recording a marker takes a slot, and taking a slot can recycle the texture in it — so
+		// this leg is under the pin discipline exactly as Lookup's is, and refuses the same way
+		// when the whole cache is held down.
+		if (!free_slot && !lru)
+		{
+			m_capacity_refusals++;
+			return Admission::Deferred;
+		}
 		Entry& e = free_slot ? *free_slot : *lru;
 		if (e.tex)
 		{
@@ -147,11 +166,14 @@ GSTileExpandedCache::Admission GSTileExpandedCache::ProbeAdmit(u64 index_id, u64
 		e.index_id = index_id;
 		e.palette_id = palette_id;
 		e.last_use = ++m_use_counter;
+		e.pinned_frame = 0;
 		e.seen_frame = m_frame;
 		return Admission::Deferred;
 	}
 
 	found->last_use = ++m_use_counter;
+	if (found->tex)
+		found->pinned_frame = m_pin_frame;
 	return (found->tex == nullptr && found->seen_frame == m_frame) ? Admission::Deferred : Admission::Served;
 }
 
@@ -165,6 +187,7 @@ void GSTileExpandedCache::Clear()
 			e.tex = nullptr;
 		}
 		e.alive = false;
+		e.pinned_frame = 0;
 	}
 	m_use_counter = 0;
 }

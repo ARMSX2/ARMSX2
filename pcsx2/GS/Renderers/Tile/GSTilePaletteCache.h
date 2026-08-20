@@ -54,11 +54,22 @@ public:
 	/// admitted) pays the hash and nothing else.
 	static u64 ContentId(const u32* clut, u32 entries);
 
+	/// The pin discipline's clock; zero (the default, and what the Tile renderer leaves it at)
+	/// turns it off and every branch below is inert. A renderer that RECORDS draws and issues them
+	/// later sets it, and advances it when the recorded plan has executed. A palette an unissued
+	/// draw names is then never evicted or recycled out from under it — the half this cache did not
+	/// already have, since its textures are immutable once built and so can never be rebuilt in
+	/// place. See GSTileTextureSource::SetFrame for the whole argument.
+	void SetFrame(u64 frame) { m_frame = frame; }
+
 	/// Recycles every cached texture (reset / teardown / hot-switch).
 	void Clear();
 
 	u64 Hits() const { return m_hits; }
 	u64 Builds() const { return m_builds; }
+	/// Lookups refused because every entry is pinned by this frame. Zero is the expected number;
+	/// anything else says the frame's palette working set has outgrown the cache.
+	u64 CapacityRefusals() const { return m_capacity_refusals; }
 
 private:
 	// 128 capacity-thrashed on GT4 (198 rebuilds per frame, each a texture create
@@ -70,16 +81,21 @@ private:
 	{
 		u64 hash = 0;
 		u64 last_use = 0;
+		u64 pinned_frame = 0; ///< the frame a caller was handed this entry in; 0 = never
 		u32 entries = 0;
 		bool alive = false;
 		GSTexture* tex = nullptr;
 		std::array<u32, 256> words{};
 	};
 
+	bool Pinned(const Entry& e) const { return m_frame != 0 && e.pinned_frame == m_frame; }
+
 	std::array<Entry, kMaxEntries> m_entries;
 	u64 m_use_counter = 0;
 	u64 m_hits = 0;
 	u64 m_builds = 0;
+	u64 m_frame = 0;
+	u64 m_capacity_refusals = 0;
 
 	// Last-answer memo: valid while the CLUT read buffer provably has not changed
 	// (same read generation + entry count) and the slot provably still holds the
