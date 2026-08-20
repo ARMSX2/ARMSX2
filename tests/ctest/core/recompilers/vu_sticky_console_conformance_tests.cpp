@@ -678,7 +678,14 @@ TEST(VuStickyConsoleConformance, DISABLED_Arm64Cop2MacroFlushesDenormalResultsTo
 		{"VSUB .xyzw   -2^-126 - -1.5*2^-126", SUB, 0xF, 'x', kNegTiny, kNegBig, 0x00000000u},
 		{"VMULx .x     -2^-126 * 0.5", MULBC, 0x8, 'x', kNegTiny, kHalf, 0x80000000u},
 		{"VMULx .xyzw   2^-126 * 0.5", MULBC, 0xF, 'y', kPosTiny, kHalf, 0x00000000u},
-		{"VMADD .y     0 + -2^-126 * 0.5", MADD, 0x4, 'y', kNegTiny, kHalf, 0x80000000u},
+		// The MADD pair asks a narrower question than the rows above it. The
+		// product still has to flush, but its sign cannot reach the result:
+		// the accumulator is +0, and a zero sum whose addends disagree in sign
+		// is +0 on the console however the flushed product is signed. What
+		// these two catch is a denormal left standing, not a sign dropped --
+		// the signed-zero accumulator that does separate the two is measured
+		// in Vu0MacroZeroSignConsole.
+		{"VMADD .y     0 + -2^-126 * 0.5", MADD, 0x4, 'y', kNegTiny, kHalf, 0x00000000u},
 		{"VMADD .xyzw  0 + 2^-126 * 0.5", MADD, 0xF, 'x', kPosTiny, kHalf, 0x00000000u},
 		{"VMULAx .z    -2^-126 * 0.5 -> ACC", MULA, 0x2, 'z', kNegTiny, kHalf, 0x80000000u},
 		{"VMULAx .xyzw  2^-126 * 0.5 -> ACC", MULA, 0xF, 'w', kPosTiny, kHalf, 0x00000000u},
