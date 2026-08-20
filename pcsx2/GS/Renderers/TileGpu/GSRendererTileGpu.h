@@ -153,12 +153,16 @@ private:
 		u32 region_v;           // CLAMP.MINV | (CLAMP.MAXV << 16)
 		u32 ltf;                // 1 = bilinear: the fragment blends the four texels around its coordinate
 		u32 tex_target;         // slot in this pass's sampled-target array, or kNoTexSlot = decode bytes
-		// Explicit tail padding, not slack: alignas(16) would pad the C++ side to 144 anyway, while
-		// the shader's std430 array stride is a multiple of 8, so an implicit tail would put the two
-		// sides on different strides and every row but the first would be read from the wrong place.
-		u32 pad0_;
+		// Rule 3: slot in the FRAME's materialised-source array, or kNoSourceSlot. It took the row's
+		// old explicit tail padding, which was there because alignas(16) pads the C++ side to 144
+		// anyway while the shader's std430 array stride is a multiple of 8 -- an implicit tail would
+		// have put the two sides on different strides and read every row but the first from the wrong
+		// place. Spending it on a real field keeps the row at 144 and the strides in step.
+		u32 tex_source;
 	};
 	static_assert(sizeof(StateRow) == 144, "TileGpu StateRow must be 144 bytes to match tilegpu.glsl std430");
+	static_assert(offsetof(StateRow, tex_source) == 140,
+		"TileGpu StateRow::tex_source must sit exactly where the row's tail padding was");
 
 	// One draw's inputs the plan build resolves once the frame is complete: which surfaces it
 	// renders into (model ids -> pool textures), the coordinate origin, the draw rect, and the
@@ -207,10 +211,10 @@ private:
 		// pass compiles -- see GSDevice::GSTileGpuPass::road_mask.
 		u32 road_mask;
 
-		// Rule 3 of the same road, PROBED and not taken (see ProbeSourceRoad): the frame-wide
-		// slot the materialised source of this draw's window would occupy, or kNoSourceSlot
-		// where rule 3 refused. Read by nothing but the counters -- no state row carries it and
-		// no descriptor is written from it, which is what makes this chunk a no-op on output.
+		// Rule 3 of the same road: this draw's slot in the FRAME's materialised-source bind table
+		// (m_plan_sources), or kNoSourceSlot where rule 3 refused and the draw kept the byte road.
+		// Frame-wide rather than per-pass, because a source belongs to a texture window and serves
+		// draws in any number of passes. Set only after the cache has actually handed over an image.
 		u32 src_slot;
 	};
 
@@ -223,7 +227,12 @@ private:
 	std::vector<GSDevice::GSTileGpuIndirectDraw> m_plan_draws;
 	std::vector<GSDevice::GSTileGpuTopology> m_plan_topologies; // one per m_plan_draws entry
 	std::vector<u32> m_plan_blend_keys; // one per m_plan_draws entry (GSTileGpuPassPlan::blend_keys)
-	std::vector<u32> m_plan_tex_slots; // one per m_plan_draws entry (GSTileGpuPassPlan::tex_slots)
+	std::vector<u32> m_plan_bind_keys; // one per m_plan_draws entry (GSTileGpuPassPlan::bind_keys)
+	// Rule 3's frame-wide bind table: the (image, sampler) pairs this frame's draws sample, in the
+	// slot order a state row's tex_source names. Deduped on the pair -- one window sampled through two
+	// different TEX1/CLAMP settings is two slots, because the filtering and the wrap ride in the
+	// descriptor and not in the shader.
+	std::vector<GSDevice::GSTileGpuPassPlan::SourceBind> m_plan_sources;
 	std::vector<PendingDraw> m_plan_pending;
 	std::vector<GSDevice::GSTileGpuPass> m_plan_passes;
 	std::vector<GSDevice::GSTileGpuTargetPair> m_plan_target_pairs;
@@ -302,15 +311,15 @@ private:
 	// refuses, would leave the fragment stage decoding bytes nobody wrote.
 	bool m_bindless_targets = false;
 
-	// --- rule 3, the source cache: BUILT, not yet SAMPLED -------------------------------------
-	// The three library caches the materialised-source road is built out of. Direct-colour windows
-	// the probe admits are now MATERIALISED -- an ordinary RGBA8 image, built on the device out of
-	// the same ring bytes the flat road reads, cached and invalidated by the same predicate. What
-	// is still absent is the other half: no state row names a source, no descriptor binds one, and
-	// every draw takes exactly the road it took before, so the images are correct-by-construction
-	// and cost nothing but their build. That is deliberate -- it puts the build, the cache
-	// lifetime and the pin discipline under the corpus before the sampled road can hide a defect
-	// in any of them behind moved pixels.
+	// --- rule 3, the source cache: BUILT and SAMPLED ------------------------------------------
+	// The three library caches the materialised-source road is built out of. A direct-colour window
+	// the probe admits is MATERIALISED -- an ordinary RGBA8 image, built on the device out of the
+	// same ring bytes the flat road reads, cached and invalidated by the same predicate -- and the
+	// draw that admitted it then SAMPLES it: one hardware fetch in place of the swizzle arithmetic,
+	// and under LINEAR one fetch in place of four. Every refusal (region wrap, pin, capacity, a
+	// palette pair not yet admitted, a failed build) falls back to the byte road, which is always
+	// correct and never asks. Paletted windows are still probe-only; they arrive with the index
+	// build and its palette expansion.
 	GSTileTextureSource m_tex_source;
 	GSTilePaletteCache m_palette_cache;
 	GSTileExpandedCache m_expand_cache;
@@ -345,16 +354,30 @@ private:
 	// and the composition it depends on is in the same op range ahead of it.
 	bool EmitMaterialiseOp(GSTexture* tex, const GIFRegTEX0& tex0, const GIFRegTEXA& texa, u32 epoch);
 
-	// Build (or find) the materialised source for a window the probe admitted. Direct colour only
-	// at this chunk -- a paletted window's index texture and its palette expansion are a separate
-	// pair of passes. `window` indexes m_probe_windows.
-	void MaterialiseSourceRoad(u32 window, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages, u32 epoch);
+	// Build (or find) the materialised source for a window the probe admitted, and on success put
+	// this draw ON it: `pd` takes a bind slot and road SOURCE, and its fragment stage samples the
+	// image instead of decoding ring bytes. Direct colour only at this chunk -- a paletted window's
+	// index texture and its palette expansion are a separate pair of passes. `window` indexes
+	// m_probe_windows. Returns false on every refusal, and a refusal is not an error: the caller has
+	// already put the draw on the byte road and that road is correct on its own.
+	bool MaterialiseSourceRoad(PendingDraw& pd, u32 window, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
+		u32 epoch);
 
-	static constexpr u32 kNoSourceSlot = 0xFFFFFFFFu;
-	// The descriptor array rule 3 will bind through (design §6). A frame needing more distinct
-	// sources than this refuses the overflow to the byte road -- counted, so the corpus says
-	// whether 64 is the right number before anything is built against it.
-	static constexpr u32 kMaxSourceSlots = 64;
+	// This frame's slot for the (image, sampler) pair, appending it to m_plan_sources on first sight.
+	// kNoSourceSlot once the frame's table is full -- a hard bound, not a hope, and counted.
+	u32 SourceSlotFor(GSTexture* tex, u8 sampler);
+
+	// The sampler a draw's TEX1/CLAMP asks for, as a GSHWDrawConfig::SamplerSelector key: bit 0 =
+	// REPEAT on U, bit 1 = REPEAT on V, bit 2 = bilinear. Only the eight combinations rule 3 admits
+	// exist -- the REGION modes refused before they got here.
+	static u8 SourceSamplerKey(u32 wms, u32 wmt, bool ltf);
+
+	static constexpr u32 kNoSourceSlot = GSDevice::GSTileGpuPassPlan::kNoSourceSlot;
+	// The descriptor array rule 3 binds through (design §6), and a contract constant rather than a
+	// tunable: the shader declares an array of exactly this size. A frame needing more distinct
+	// sources refuses the overflow to the byte road -- counted, and 128 rather than 64 because the
+	// corpus census found GT4 and OutRun pinned at 64 with draws refused behind them.
+	static constexpr u32 kMaxSourceSlots = GSDevice::GSTileGpuPassPlan::kMaxSources;
 
 	// One distinct texture window the frame probed, in first-appearance order.
 	struct ProbedWindow
@@ -363,7 +386,9 @@ private:
 		u64 stamp = 0;     ///< GSTileTextureSource::GenStamp of the window's pages at first sight
 		u64 content = 0;   ///< GSTileTextureSource::ProbePageContent of the same pages (0 = not asked / declined)
 		u64 build_id = 0;  ///< content identity: carried over while the BYTES hold, stamp or no stamp
-		u32 slot = kNoSourceSlot; ///< its source-array slot, once a draw was admitted on it
+		bool admitted = false;     ///< a draw of THIS frame has been admitted on this window. It is the
+		                           ///< pin's marker (a rebuild under it would land in the same texture an
+		                           ///< already-recorded draw names) and the frame's distinct-source census.
 		bool prev_seen = false;    ///< the frame before also probed this window
 		bool prev_current = false; ///< ...and its bytes are the same ones, by stamp or by fingerprint
 	};
@@ -378,11 +403,12 @@ private:
 	u64 m_probe_build_counter = 0;
 
 	// Rule 3's admission question. Computes the window's key and content stamp, asks the palette
-	// pair whether it would be admitted, and either admits the draw (giving its window a source
-	// slot) or counts one named refusal. Called only where rule 2 declined, and it writes nothing
-	// but counters and pd.src_slot -- the BUILD is a separate act, after the window's bytes have
-	// been composed. Returns the admitted window's index in m_probe_windows, or kNoSourceSlot.
-	u32 ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages, bool paletted,
+	// pair whether it would be admitted, and either admits the draw or counts one named refusal.
+	// Called only where rule 2 declined, and it writes nothing but counters and the window record --
+	// the BUILD is a separate act, after the window's bytes have been composed, and it is the build
+	// that puts the draw on the road. Returns the admitted window's index in m_probe_windows, or
+	// kNoSourceSlot.
+	u32 ProbeSourceRoad(const PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages, bool paletted,
 		bool mip_active);
 
 	// Which pages of a surface's texture actually hold texels. The memory model tracks BYTES, and
@@ -536,8 +562,9 @@ private:
 		u32 tex_binds = 0;       // draws served by rule 2: the read window came off a resident target
 		u32 tex_bind_breaks = 0; // draws that opened a pass because their bind could not join the open one
 
-		// Rule 3 as probed (ProbeSourceRoad) -- what the source cache WOULD have done. Nothing
-		// here changes a draw's road; the whole block is measurement.
+		// Rule 3 as probed (ProbeSourceRoad) -- the admission question, asked for every rule-2-declined
+		// draw whatever its format. The direct-colour half of `src_eligible` goes on to be built and
+		// SERVED (src_served below); the paletted half is still measurement only.
 		u32 tex_draws = 0;         // textured draws in a format either road samples (the denominator)
 		u32 tex_unsupported = 0;   // TME draws in a format neither road samples: rule 3's format refusal
 		u32 src_eligible = 0;      // rule-2-declined draws rule 3 would serve
@@ -563,8 +590,11 @@ private:
 		u32 src_pin_refusals = 0;  // the cache refused a rebuild under a draw this frame has recorded
 		u32 src_cap_refusals = 0;  // ...refused because every entry is pinned by this frame
 		u32 src_build_failed = 0;  // allocation failed, or the op could not be queued
+		u32 src_served = 0;        // draws that TOOK road SOURCE: their fragment stage sampled the image
+		u32 src_bind_slots = 0;    // distinct (image, sampler) pairs the frame bound
+		u32 src_ref_bind = 0;      // refused: the frame's bind table is full (kMaxSourceSlots)
 
-		u32 src_extra_calls = 0;   // extra indirect calls splitting the runs on the source would cost
+		u32 src_extra_calls = 0;   // extra indirect calls the sampled-binding split actually cost
 		u32 src_stamp_kept = 0;    // windows also probed last frame whose gen stamp held
 		u32 src_stamp_moved = 0;   // ...and whose gen stamp moved (the raw number, C1's: the two
 		                           // below are subsets of THIS one, not additions to it)

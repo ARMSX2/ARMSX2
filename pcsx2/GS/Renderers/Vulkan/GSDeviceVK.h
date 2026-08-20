@@ -585,13 +585,33 @@ private:
 	// layout may carry at most one push-descriptor set. The null texture stands in for slots the
 	// pass does not use.
 	VkDescriptorSetLayout m_tilegpu_snapshot_ds_layout = VK_NULL_HANDLE;
+	// Set 2, written once per plan: rule 3's frame-wide array of kMaxSources materialised sources,
+	// combined image samplers so the wrap and the filter ride in the descriptor. It cannot be a push
+	// set (a pipeline layout carries at most one and set 1 is it) and it cannot come from the frame
+	// pool either, which only exists on the non-push path -- so it gets a small pool of its own and a
+	// RING of persistent sets, each stamped with the submit epoch it was last written under and taken
+	// again only once that submission has completed. Rewriting a set an in-flight pass still reads
+	// gives intermittently wrong textures, worst on the fastest device; the stamp is what stops it.
+	static constexpr u32 kTileGpuSourceSets = 8;
+	static constexpr u32 kTileGpuSourceSamplers = 8; ///< wrap U x wrap V x filter, the eight rule 3 admits
+	VkDescriptorSetLayout m_tilegpu_source_ds_layout = VK_NULL_HANDLE;
+	VkDescriptorPool m_tilegpu_source_pool = VK_NULL_HANDLE;
+	std::array<VkDescriptorSet, kTileGpuSourceSets> m_tilegpu_source_sets{};
+	std::array<u64, kTileGpuSourceSets> m_tilegpu_source_set_epoch{};
+	std::array<VkSampler, kTileGpuSourceSamplers> m_tilegpu_source_sampler{};
+	u32 m_tilegpu_source_next_set = 0;
+	/// Take the next set of the ring that no in-flight submission is reading, and fill it with
+	/// `sources` (every unused slot the null texture, so the shader's static use of the array never
+	/// needs descriptorBindingPartiallyBound). Returns its index, or kTileGpuSourceSets on failure.
+	u32 WriteTileGpuSourceSet(std::span<const GSTileGpuPassPlan::SourceBind> sources);
 	// [topology][depth mode]; the depth index is GSTileGpuPass::depth_mode (GSTileGpuDepthMode).
 	// These are the no-blend pipelines; blending variants are created on first use per
 	// (topology, depth mode, GS ALPHA index) and cached below -- the GS blend equation maps onto
 	// fixed-function factors through GSDevice::m_blendMap, with As as the shader's dual-source
 	// output and FIX as the blend constant (dynamic).
 	std::array<std::array<VkPipeline, GSDevice::kGSTileGpuDepthModes>, 3> m_tilegpu_pipeline{};
-	// key: topology | depth<<2 | blend<<8 | nocolour<<16 | noalpha<<17 | road mask<<18
+	// key: topology<<0 (2 bits) | depth<<2 (2) | blend<<8 (7, < 81) | nocolour<<16 | noalpha<<17 |
+	// road mask<<18 (3 bits, byte/target/source) -- so bits 4-7, 15 and 21 up are still free.
 	std::unordered_map<u32, VkPipeline> m_tilegpu_blend_pipelines;
 	VkPipeline GetTileGpuPipeline(u32 topology, u32 depth_mode, u32 blend_key, u32 road_mask);
 	VkShaderModule m_tilegpu_vs = VK_NULL_HANDLE; // kept alive for lazily-built blend variants

@@ -6148,13 +6148,64 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 			return false;
 		Vulkan::SetObjectName(m_device, m_tilegpu_snapshot_ds_layout, "TileGpu per-pass DS layout");
 
+		// Set 2, written once per plan: rule 3's frame-wide materialised sources. Never a push set --
+		// set 1 already is the layout's one push set -- so it is always a pooled set, which is why it
+		// gets a pool and a ring of its own below rather than riding the frame pool (that pool only
+		// exists on the non-push path). The layout is created whatever the device can serve: a device
+		// without the array-indexing feature simply compiles no module that names the set, and an
+		// unused set costs nothing.
+		Vulkan::DescriptorSetLayoutBuilder src_dslb;
+		src_dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, GSTileGpuPassPlan::kMaxSources,
+			VK_SHADER_STAGE_FRAGMENT_BIT);
+		if ((m_tilegpu_source_ds_layout = src_dslb.Create(m_device)) == VK_NULL_HANDLE)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_source_ds_layout, "TileGpu source DS layout");
+
 		Vulkan::PipelineLayoutBuilder plb;
 		plb.AddDescriptorSet(m_tilegpu_ds_layout);
 		plb.AddDescriptorSet(m_tilegpu_snapshot_ds_layout);
+		plb.AddDescriptorSet(m_tilegpu_source_ds_layout);
 		plb.AddPushConstants(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(u32) * kTileGpuPushWords);
 		if ((m_tilegpu_pipeline_layout = plb.Create(m_device)) == VK_NULL_HANDLE)
 			return false;
 		Vulkan::SetObjectName(m_device, m_tilegpu_pipeline_layout, "TileGpu pipeline layout");
+	}
+
+	// The source set ring and its pool. Sized for the ring, not for the frame: the array is written
+	// once per plan (twice if a mid-plan flush forces it), so a handful of sets covers every
+	// submission that can be in flight at once. Allocated eagerly with the layout because a failure
+	// here has to fall back to "rule 3 is not available" rather than surface mid-frame.
+	{
+		const VkDescriptorPoolSize src_pool_sizes[] = {
+			{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, GSTileGpuPassPlan::kMaxSources * kTileGpuSourceSets}};
+		const VkDescriptorPoolCreateInfo src_pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0,
+			kTileGpuSourceSets, static_cast<u32>(std::size(src_pool_sizes)), src_pool_sizes};
+		if (vkCreateDescriptorPool(m_device, &src_pool_info, nullptr, &m_tilegpu_source_pool) != VK_SUCCESS)
+			return false;
+		Vulkan::SetObjectName(m_device, m_tilegpu_source_pool, "TileGpu source descriptor pool");
+		for (u32 i = 0; i < kTileGpuSourceSets; i++)
+		{
+			const VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr,
+				m_tilegpu_source_pool, 1, &m_tilegpu_source_ds_layout};
+			if (vkAllocateDescriptorSets(m_device, &ai, &m_tilegpu_source_sets[i]) != VK_SUCCESS)
+				return false;
+			m_tilegpu_source_set_epoch[i] = 0;
+		}
+
+		// The eight samplers rule 3 admits: wrap U x wrap V x filter. REGION_CLAMP and REGION_REPEAT
+		// have no sampler spelling, so the renderer refuses them to the byte road and they need none.
+		// triln stays 0, which is what pins max LOD at level 0 in GetSampler -- rule 3 samples level 0
+		// exactly as every road does today, and choosing a GS level is M4's.
+		for (u32 i = 0; i < kTileGpuSourceSamplers; i++)
+		{
+			GSHWDrawConfig::SamplerSelector ss;
+			ss.tau = (i & 1u) ? 1 : 0; // REPEAT on U
+			ss.tav = (i & 2u) ? 1 : 0; // REPEAT on V
+			ss.biln = (i & 4u) ? 1 : 0;
+			m_tilegpu_source_sampler[i] = GetSampler(ss);
+			if (m_tilegpu_source_sampler[i] == VK_NULL_HANDLE)
+				return false;
+		}
 	}
 
 	// Indirect + state + ring streams, allocated only now (first executor use), so a non-TileGpu
@@ -6221,7 +6272,14 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 								fmt::format("#define TILEGPU_TEX_TARGETS {}\n",
 									m_optional_extensions.tilegpu_bindless_targets ? 1 : 0) +
 								fmt::format("#define TILEGPU_MAX_TEX_SOURCES {}\n",
-									GSTileGpuPassPlan::kMaxTexSourcesPerPass);
+									GSTileGpuPassPlan::kMaxTexSourcesPerPass) +
+								// Rule 3's array rides the same capability as rule 2's, for the same
+								// reason: the index is a value the shader computes. Injected as its own
+								// define so the shader reads as three roads rather than two roads and a
+								// borrowed flag.
+								fmt::format("#define TILEGPU_TEX_SOURCES {}\n",
+									m_optional_extensions.tilegpu_bindless_targets ? 1 : 0) +
+								fmt::format("#define TILEGPU_MAX_SOURCES {}\n", GSTileGpuPassPlan::kMaxSources);
 	// Kept for the session: a pass's fragment module is compiled from this plus its road defines, on
 	// first use of that road mask. Re-reading the file instead would risk compiling two variants from
 	// two different revisions of the shader, since the runtime shader tree is a symlink into the
@@ -6278,8 +6336,53 @@ u32 GSDeviceVK::TileGpuRoadMask(u32 plan_road_mask) const
 		return 0;
 	u32 mask = plan_road_mask & GSDevice::kGSTileGpuRoadMaskAll;
 	if (!m_optional_extensions.tilegpu_bindless_targets)
-		mask &= ~GSDevice::kGSTileGpuRoadTarget;
+		mask &= ~(GSDevice::kGSTileGpuRoadTarget | GSDevice::kGSTileGpuRoadSource);
+	if (m_tilegpu_source_ds_layout == VK_NULL_HANDLE || m_tilegpu_source_pool == VK_NULL_HANDLE)
+		mask &= ~GSDevice::kGSTileGpuRoadSource;
 	return mask;
+}
+
+// The source set the frame's draws sample through, taken from the ring. A set is reusable once the
+// submission that last read it has completed; anything else would rewrite descriptors under an
+// in-flight pass. The ring is long enough that the wait below cannot fire in practice (one write per
+// plan against NUM_COMMAND_BUFFERS frames in flight), and it is here rather than an assert because
+// the failure it prevents is silent wrong textures.
+u32 GSDeviceVK::WriteTileGpuSourceSet(std::span<const GSTileGpuPassPlan::SourceBind> sources)
+{
+	if (m_tilegpu_source_pool == VK_NULL_HANDLE)
+		return kTileGpuSourceSets;
+
+	const u32 idx = m_tilegpu_source_next_set;
+	m_tilegpu_source_next_set = (m_tilegpu_source_next_set + 1) % kTileGpuSourceSets;
+	if (m_tilegpu_source_set_epoch[idx] > GetCompletedSubmitEpoch())
+		WaitForFenceCounter(m_tilegpu_source_set_epoch[idx]);
+
+	// Every slot written, including the ones this frame does not use: the shader uses the array
+	// statically, so an unwritten slot would need descriptorBindingPartiallyBound. The null texture
+	// stands in, exactly as it does for set 1's unused target slots.
+	std::array<VkDescriptorImageInfo, GSTileGpuPassPlan::kMaxSources> infos{};
+	for (u32 s = 0; s < GSTileGpuPassPlan::kMaxSources; s++)
+	{
+		const bool live = s < sources.size() && sources[s].texture != nullptr;
+		GSTextureVK* const tex = live ? static_cast<GSTextureVK*>(sources[s].texture) : m_null_texture.get();
+		infos[s].sampler = m_tilegpu_source_sampler[live ? (sources[s].sampler & (kTileGpuSourceSamplers - 1)) : 0];
+		infos[s].imageView = tex->GetView();
+		// A source's layout is stated, not read: this set is written BEFORE the pass loop, and a
+		// source built this frame is still a colour attachment at that moment. What the descriptor
+		// promises is what every source is in by the time a pass samples it -- a materialise moves its
+		// image to ShaderReadOnly as soon as its pass closes, and a cached source never left that
+		// layout. The null filler is the exception, because it lives in General and stays there.
+		infos[s].imageLayout = live ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : tex->GetVkLayout();
+	}
+	VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+	w.dstSet = m_tilegpu_source_sets[idx];
+	w.dstBinding = 0;
+	w.descriptorCount = GSTileGpuPassPlan::kMaxSources;
+	w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	w.pImageInfo = infos.data();
+	vkUpdateDescriptorSets(m_device, 1, &w, 0, nullptr);
+	m_tilegpu_source_set_epoch[idx] = GetCurrentFenceCounter();
+	return idx;
 }
 
 // One fragment module for one road mask. The mask arrives as #defines, so the roads it does not name
@@ -6287,19 +6390,21 @@ u32 GSDeviceVK::TileGpuRoadMask(u32 plan_road_mask) const
 // never executed still costs program size and can carry the whole frame over a cliff.
 VkShaderModule GSDeviceVK::CompileTileGpuFragmentModule(u32 road_mask)
 {
-	const std::string source = fmt::format("#define TILEGPU_ROAD_BYTE {}\n#define TILEGPU_ROAD_TARGET {}\n",
-									(road_mask & GSDevice::kGSTileGpuRoadByte) ? 1 : 0,
-									(road_mask & GSDevice::kGSTileGpuRoadTarget) ? 1 : 0) +
-								m_tilegpu_shader_source;
+	const std::string source =
+		fmt::format("#define TILEGPU_ROAD_BYTE {}\n#define TILEGPU_ROAD_TARGET {}\n#define TILEGPU_ROAD_SOURCE {}\n",
+			(road_mask & GSDevice::kGSTileGpuRoadByte) ? 1 : 0, (road_mask & GSDevice::kGSTileGpuRoadTarget) ? 1 : 0,
+			(road_mask & GSDevice::kGSTileGpuRoadSource) ? 1 : 0) +
+		m_tilegpu_shader_source;
 	u32 spv_words = 0;
 	VkShaderModule mod = GetUtilityFragmentShader(source, nullptr, &spv_words);
 #ifdef PCSX2_DEVBUILD
 	// The attribution line the instruction-size gate reads: a device stats line says how big a
 	// program is, and this says which variant it was. Word count is the local proxy -- the real
 	// number is the driver's instrlen, which only the device can report.
-	static constexpr const char* kRoadName[4] = {"untextured", "byte", "target", "byte+target"};
+	static constexpr const char* kRoadName[8] = {"untextured", "byte", "target", "byte+target", "source",
+		"byte+source", "target+source", "byte+target+source"};
 	Console.WriteLn("TileGpu fragment variant road_mask=%u (%s): %u SPIR-V words%s", road_mask,
-		kRoadName[road_mask & 3u], spv_words, (mod == VK_NULL_HANDLE) ? " -- FAILED" : "");
+		kRoadName[road_mask & 7u], spv_words, (mod == VK_NULL_HANDLE) ? " -- FAILED" : "");
 #endif
 	return mod;
 }
@@ -6774,6 +6879,39 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 
 	const VkCommandBuffer cmd = GetCurrentCommandBuffer();
 
+	// Rule 3's frame-wide source array, written ONCE for the whole plan and bound per pass. It is
+	// frame-scoped because a materialised source belongs to a texture window, not to a target pair,
+	// so the same image serves draws in any number of passes and a state row's tex_source is an index
+	// into this one list. The set comes from a persistent ring rather than the frame pool: set 2 can
+	// never be a push set (set 1 is the layout's one), and the frame pool only exists on the non-push
+	// path. A mid-plan command-buffer flush loses the BINDING but not the set, and the binding is
+	// re-issued per pass below -- so unlike a frame-pool set this one needs no rewrite after a flush;
+	// it only needs its epoch re-stamped at the end, against the submission that actually read it.
+	//
+	// Every source is put in shader-read layout HERE, before any pass, and the descriptors are written
+	// promising exactly that. It has to be here and not at each build: a source materialised at pass
+	// 40 would otherwise still be in its allocation layout while passes 1..39 record, and a descriptor
+	// must identify the layout its image is in for the whole time the set is bound -- the validation
+	// layer cannot prove which array element a draw indexes, and neither can the driver. A build then
+	// borrows its image back as a colour attachment for the length of its own pass head and returns it
+	// (the transition after the materialise draw), so outside that window every slot is shader-read.
+	// A first transition out of UNDEFINED discards contents, which is exactly right for an image whose
+	// build is about to write every texel of it.
+	u32 source_set_index = kTileGpuSourceSets;
+	VkDescriptorSet source_set = VK_NULL_HANDLE;
+	if (can_draw && !plan.sources.empty())
+	{
+		EndRenderPass();
+		for (const GSTileGpuPassPlan::SourceBind& sb : plan.sources)
+		{
+			if (sb.texture)
+				static_cast<GSTextureVK*>(sb.texture)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+		}
+		source_set_index = WriteTileGpuSourceSet(plan.sources);
+		if (source_set_index < kTileGpuSourceSets)
+			source_set = m_tilegpu_source_sets[source_set_index];
+	}
+
 	// The ring is written by the writeback compute and read by the seed and geometry fragment
 	// stages; every op boundary orders both directions so composed slots are complete before
 	// anything samples them, and a slot is never overwritten under a pass still reading it.
@@ -6870,6 +7008,12 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					vkCmdDraw(cmd, 3, 1, 0, 0);
 					EndRenderPass();
 					dst->SetState(GSTexture::State::Dirty);
+					// Straight to shader-read, and it stays there for the rest of the image's life in
+					// the cache. Set 2's descriptors were written promising this layout before any of
+					// these ops ran (a source is a colour attachment only for the length of its own
+					// build), and this transition is also the execution dependency that orders the
+					// build ahead of every pass that samples it.
+					dst->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
 					continue;
 				}
 
@@ -7120,6 +7264,13 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 				static_cast<VkDeviceSize>(ibase) * sizeof(u16), VK_INDEX_TYPE_UINT16);
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 0, 1,
 				&m_tilegpu_state_descriptor_set, 0, nullptr);
+			// Set 2, the same frame-wide source array for every pass. Bound per pass because a
+			// mid-plan flush drops every binding, and because it costs one command.
+			if (source_set != VK_NULL_HANDLE)
+			{
+				vkCmdBindDescriptorSets(
+					cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 2, 1, &source_set, 0, nullptr);
+			}
 			{
 				// Set 1, both bindings at once. Binding 0 is the snapshot (or the null texture -- the
 				// shader only reads it under a per-draw flag, but the binding must be valid
@@ -7183,14 +7334,14 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			// blend, a blend-constant set) is the only per-run cost; a slot change costs the call
 			// alone. This is the constant-cost submission the design bets on.
 			const bool have_blend = plan.blend_keys.size() == plan.draws.size();
-			// The sampled-target slot ends an indirect call too, but for a different reason: it is
-			// not pipeline state, it is the index the fragment shader reads the per-pass target
-			// array at, and a descriptor array index has to be dynamically uniform. Two slots in
-			// one indirect call would put fragments of two draws in one wave under one descriptor.
-			// So the run keeps its pipeline and only the CALL is cut -- see GSTileGpuPassPlan::
-			// tex_slots, and tilegpu.glsl's tilegpu_target_texel, which is undecorated on the
-			// strength of this.
-			const bool have_slots = plan.tex_slots.size() == plan.draws.size();
+			// The sampled-binding key ends an indirect call too, but for a different reason: it is
+			// not pipeline state, it is the pair of indices the fragment shader reads the per-pass
+			// target array and the frame's source array at, and a descriptor array index has to be
+			// dynamically uniform. Two keys in one indirect call would put fragments of two draws in
+			// one wave under one descriptor. So the run keeps its pipeline and only the CALL is cut --
+			// see GSTileGpuPassPlan::bind_keys, and tilegpu.glsl's tilegpu_target_texel and
+			// tilegpu_source_sample, both undecorated on the strength of this.
+			const bool have_slots = plan.bind_keys.size() == plan.draws.size();
 			const u32 end = pass.first_draw + pass.draw_count;
 			u32 d = pass.first_draw;
 			while (d < end)
@@ -7217,9 +7368,9 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 					u32 count = std::min(run_end - first, max_indirect);
 					if (have_slots)
 					{
-						const u32 slot = plan.tex_slots[first];
+						const u32 slot = plan.bind_keys[first];
 						u32 n = 1;
-						while (n < count && plan.tex_slots[first + n] == slot)
+						while (n < count && plan.bind_keys[first + n] == slot)
 							n++;
 						count = n;
 					}
@@ -7259,6 +7410,14 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 		constexpr VkDeviceSize zero_offset = 0;
 		vkCmdBindVertexBuffers(cmd, 0, 1, m_vertex_stream_buffer.GetBufferPtr(), &zero_offset);
 	}
+
+	// The source set's epoch, re-stamped against the command buffer that ends up carrying the LAST
+	// pass rather than the one that was current when it was written. Those differ whenever a pass
+	// forced a mid-plan flush, and taking the earlier of the two would let the ring recycle the set
+	// while a later submission still reads it.
+	if (source_set_index < kTileGpuSourceSets)
+		m_tilegpu_source_set_epoch[source_set_index] = GetCurrentFenceCounter();
+
 	InvalidateCachedState();
 	return true;
 }
@@ -8199,6 +8358,22 @@ void GSDeviceVK::DestroyResources()
 	{
 		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_snapshot_ds_layout, nullptr);
 		m_tilegpu_snapshot_ds_layout = VK_NULL_HANDLE;
+	}
+	// The source sets come out of their own pool, so destroying it frees all of them at once; the
+	// samplers belong to the device's sampler cache and are not ours to destroy.
+	if (m_tilegpu_source_pool != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorPool(m_device, m_tilegpu_source_pool, nullptr);
+		m_tilegpu_source_pool = VK_NULL_HANDLE;
+	}
+	m_tilegpu_source_sets.fill(VK_NULL_HANDLE);
+	m_tilegpu_source_set_epoch.fill(0);
+	m_tilegpu_source_sampler.fill(VK_NULL_HANDLE);
+	m_tilegpu_source_next_set = 0;
+	if (m_tilegpu_source_ds_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(m_device, m_tilegpu_source_ds_layout, nullptr);
+		m_tilegpu_source_ds_layout = VK_NULL_HANDLE;
 	}
 	if (m_tilegpu_seed_pipeline != VK_NULL_HANDLE)
 	{

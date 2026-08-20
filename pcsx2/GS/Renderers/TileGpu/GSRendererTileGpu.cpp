@@ -162,7 +162,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_plan_draws.clear();
 	m_plan_topologies.clear();
 	m_plan_blend_keys.clear();
-	m_plan_tex_slots.clear();
+	m_plan_bind_keys.clear();
 	m_plan_pending.clear();
 	m_plan_passes.clear();
 	m_plan_target_pairs.clear();
@@ -171,6 +171,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_plan_page_entries.clear();
 	m_plan_targets.clear();
 	m_plan_prep_textures.clear();
+	m_plan_sources.clear();
 	m_plan_tex_sources.clear();
 	m_plan_target_surfaces.clear();
 	m_plan_target_of_surface.clear();
@@ -860,8 +861,15 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto scpin = stat([](const MF& f) { return f.src_pin_refusals; });
 	const auto sccap = stat([](const MF& f) { return f.src_cap_refusals; });
 	const auto scfail = stat([](const MF& f) { return f.src_build_failed; });
+	const auto sserved = stat([](const MF& f) { return f.src_served; });
+	const auto sbind = stat([](const MF& f) { return f.src_bind_slots; });
+	const auto rbind = stat([](const MF& f) { return f.src_ref_bind; });
+	// The share of textured draws whose fragment stage did NOT decode ring bytes: rule 2's binds plus
+	// the rule-3 draws that were actually served. `src_eligible` above is the admission question's
+	// answer and counts paletted windows too, which no draw takes yet -- so this is the honest one.
+	const double sampled = (tdraws.mean > 0.0) ? (binds.mean + sserved.mean) * 100.0 / tdraws.mean : 0.0;
 
-	Console.WriteLn("TileGpu source road (rule 3 PROBED; direct-colour windows BUILT but nothing sampled):");
+	Console.WriteLn("TileGpu source road (rule 3: direct colour BUILT and SAMPLED, paletted probed only):");
 	Console.WriteLn("  textured draws %.2f / %-5u  rule 2 served %.2f / %-5u  rule 3 eligible %.2f / %-5u  "
 					"=> %.1f%% of textured draws served",
 		tdraws.mean, tdraws.p50, binds.mean, binds.p50, elig.mean, elig.p50, served);
@@ -874,9 +882,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("  mipmapped draws (eligible, served at level 0 as every road serves them today) %.2f/%u, "
 					"mipmapping live on %.2f/%u of them",
 		smip.mean, smip.p50, smipl.mean, smipl.p50);
-	Console.WriteLn("  distinct sources %.2f / %-4u (array holds %u)   extra indirect calls from the slot split "
-					"%.2f / %u",
-		sdist.mean, sdist.p50, kMaxSourceSlots, scalls.mean, scalls.p50);
+	Console.WriteLn("  distinct source windows %.2f / %-4u  bound (image x sampler) slots %.2f / %-4u "
+					"(array holds %u, bind-table refusals %.2f/%u)   extra indirect calls from the split %.2f / %u",
+		sdist.mean, sdist.p50, sbind.mean, sbind.p50, kMaxSourceSlots, rbind.mean, rbind.p50, scalls.mean,
+		scalls.p50);
 	Console.WriteLn("  windows vs the frame before: gen stamp held %.2f / %-4u  moved %.2f / %-4u  (%.1f%% held)",
 		skept.mean, skept.p50, smoved.mean, smoved.p50, stamp_total > 0.0 ? skept.mean * 100.0 / stamp_total : 0.0);
 	Console.WriteLn("  of the moved: same bytes after all %.2f / %-4u  rebuilt %.2f / %-4u  (of those, %.2f/%u "
@@ -886,6 +895,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 	Console.WriteLn("  materialised (direct colour): builds %.2f / %-4u  cache hits %.2f / %-4u  "
 					"same-bytes rescues %.2f / %u",
 		sbuild.mean, sbuild.p50, schit.mean, schit.p50, scresc.mean, scresc.p50);
+	Console.WriteLn("  SERVED by rule 3 (the draw sampled the image) %.2f / %-5u  => %.1f%% of textured draws "
+					"sampled an image rather than decoding bytes",
+		sserved.mean, sserved.p50, sampled);
 	Console.WriteLn("  cache refusals: pinned by a recorded draw %.2f / %-4u  every entry pinned %.2f / %-4u  "
 					"build failed %.2f / %u   (cache totals: %llu pin, %llu capacity; palette %llu, expand %llu)",
 		scpin.mean, scpin.p50, sccap.mean, sccap.p50, scfail.mean, scfail.p50,
@@ -1036,7 +1048,7 @@ GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayou
 // anywhere it matters, and a probe that stopped at the stamp reported churn the cache would not
 // have had -- churn that then propagated into every identity derived from it, which is what made
 // the palette-admission column read as a wall rather than as a first frame.
-u32 GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
+u32 GSRendererTileGpu::ProbeSourceRoad(const PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
 	bool paletted, bool mip_active)
 {
 	const GSDrawingContext* ctx = m_context;
@@ -1123,8 +1135,8 @@ u32 GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, 
 	// A stamp that moved without the bytes moving is not a rebuild at all: Lookup serves the entry
 	// it already has and nothing lands in place, so there is nothing for an earlier draw to be
 	// protected from. The pin closes on a window whose bytes really did change under it.
-	if (wi < m_probe_windows.size() && m_probe_windows[wi].slot != kNoSourceSlot &&
-		m_probe_windows[wi].stamp != stamp && !SameBytes(m_probe_windows[wi]))
+	if (wi < m_probe_windows.size() && m_probe_windows[wi].admitted && m_probe_windows[wi].stamp != stamp &&
+		!SameBytes(m_probe_windows[wi]))
 	{
 		m_frame.src_ref_pin++;
 		return kNoSourceSlot;
@@ -1132,7 +1144,7 @@ u32 GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, 
 
 	// Whether an earlier draw of this frame already had a source built for this window -- which
 	// makes this draw a hit whatever the cache's own state was at the top of the frame.
-	const bool built_this_frame = (wi < m_probe_windows.size() && m_probe_windows[wi].slot != kNoSourceSlot);
+	const bool built_this_frame = (wi < m_probe_windows.size() && m_probe_windows[wi].admitted);
 
 	if (wi == m_probe_windows.size())
 	{
@@ -1236,17 +1248,20 @@ u32 GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, 
 		}
 	}
 
-	// A slot in the frame's source array. Capacity is a hard bound rather than a hope: a frame
-	// whose distinct sources outrun the array refuses the overflow to the byte road, and the
-	// counter is what says whether 64 is the right number before anything is bound against it.
-	if (w.slot == kNoSourceSlot)
+	// The frame's working set against the array it has to fit in. Capacity is a hard bound rather
+	// than a hope: a frame whose distinct windows outrun the array refuses the overflow to the byte
+	// road. This is the WINDOW census -- the bind table below counts (image, sampler) pairs, which is
+	// the same population unless one window is sampled through two filters -- and it is checked here
+	// so a refusal costs nothing but the probe.
+	if (!w.admitted)
 	{
 		if (m_frame.src_distinct >= kMaxSourceSlots)
 		{
 			m_frame.src_ref_capacity++;
 			return kNoSourceSlot;
 		}
-		w.slot = m_frame.src_distinct++;
+		w.admitted = true;
+		m_frame.src_distinct++;
 	}
 
 	// Served. What serving it would COST is the second column: a hit needs no work at all, a
@@ -1260,20 +1275,54 @@ u32 GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, 
 		m_frame.src_rebuild++;
 	else
 		m_frame.src_fresh++;
-	pd.src_slot = w.slot;
 	return wi;
 }
 
-// Rule 3's build. The window has been admitted and its bytes composed into the ring, so the source
-// can be materialised out of them: the cache decides whether this window already has an image and
-// whether that image is still current, and on a build it hands the texture to the materialiser,
-// which queues the pass that fills it.
+// The sampler the draw's TEX1/CLAMP asks for. Only the eight combinations rule 3 admits can arrive:
+// the probe refuses REGION_CLAMP and REGION_REPEAT because a sampler cannot express them, and
+// mipmapping is off (triln 0), which is what pins max LOD to level 0 in the device's sampler cache.
+u8 GSRendererTileGpu::SourceSamplerKey(u32 wms, u32 wmt, bool ltf)
+{
+	GSHWDrawConfig::SamplerSelector ss;
+	ss.tau = (wms == CLAMP_REPEAT) ? 1 : 0;
+	ss.tav = (wmt == CLAMP_REPEAT) ? 1 : 0;
+	ss.biln = ltf ? 1 : 0;
+	return ss.key;
+}
+
+// This frame's slot for one (image, sampler) pair. The pair rather than the image alone because the
+// filtering and the wrap ride in the descriptor: the shader has one index and one fetch site, so two
+// draws sampling the same window through different TEX1/CLAMP need two descriptors. Rare and cheap;
+// a linear scan is the right shape at this size, and the frame's table is a hard bound.
+u32 GSRendererTileGpu::SourceSlotFor(GSTexture* tex, u8 sampler)
+{
+	for (u32 i = 0; i < m_plan_sources.size(); i++)
+	{
+		if (m_plan_sources[i].texture == tex && m_plan_sources[i].sampler == sampler)
+			return i;
+	}
+	if (m_plan_sources.size() >= kMaxSourceSlots)
+	{
+		m_frame.src_ref_bind++;
+		return kNoSourceSlot;
+	}
+	m_plan_sources.push_back(GSDevice::GSTileGpuPassPlan::SourceBind{tex, sampler});
+	m_frame.src_bind_slots++;
+	return static_cast<u32>(m_plan_sources.size() - 1);
+}
+
+// Rule 3's build, and the point where the draw changes road. The window has been admitted and its
+// bytes composed into the ring, so the source can be materialised out of them: the cache decides
+// whether this window already has an image and whether that image is still current, and on a build
+// it hands the texture to the materialiser, which queues the pass that fills it. With an image in
+// hand the draw takes a bind slot, its state row names the source, and its fragment stage samples
+// that image instead of decoding ring bytes.
 //
-// Direct colour only at this chunk. The images are real and correct; nothing samples one, so a
-// refusal here costs nothing beyond the counter -- which is exactly why the pin discipline and the
-// cache lifetime get measured against the whole corpus before a draw's pixels depend on them.
-void GSRendererTileGpu::MaterialiseSourceRoad(u32 window, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
-	u32 epoch)
+// Direct colour only at this chunk. Every refusal leaves the draw exactly where the caller put it --
+// on the byte road, with its window already composed into the ring -- so a refusal costs a wasted
+// compose and nothing else. Never a dropped draw.
+bool GSRendererTileGpu::MaterialiseSourceRoad(PendingDraw& pd, u32 window, const GIFRegTEX0& tex0,
+	const GSPageBitmap& tex_pages, u32 epoch)
 {
 	const ProbedWindow& w = m_probe_windows[window];
 
@@ -1292,7 +1341,8 @@ void GSRendererTileGpu::MaterialiseSourceRoad(u32 window, const GIFRegTEX0& tex0
 	builder.epoch = epoch;
 
 	GSTileTextureSource::BuiltOutcome outcome = GSTileTextureSource::BuiltOutcome::Failed;
-	m_tex_source.LookupBuilt(m_vram_model, tex0, m_env.TEXA, tex_pages, builder, token, nullptr, &outcome);
+	GSTexture* const tex =
+		m_tex_source.LookupBuilt(m_vram_model, tex0, m_env.TEXA, tex_pages, builder, token, nullptr, &outcome);
 	switch (outcome)
 	{
 		case GSTileTextureSource::BuiltOutcome::Hit: m_frame.src_cache_hits++; break;
@@ -1302,6 +1352,20 @@ void GSRendererTileGpu::MaterialiseSourceRoad(u32 window, const GIFRegTEX0& tex0
 		case GSTileTextureSource::BuiltOutcome::RefusedCapacity: m_frame.src_cap_refusals++; break;
 		case GSTileTextureSource::BuiltOutcome::Failed: m_frame.src_build_failed++; break;
 	}
+	if (!tex)
+		return false;
+
+	const u32 slot = SourceSlotFor(tex, SourceSamplerKey(pd.wms, pd.wmt, pd.ltf));
+	if (slot == kNoSourceSlot)
+		return false;
+
+	// On the road. The byte road's bit comes off: this draw's fragment stage reads no ring word, so a
+	// pass made only of draws like it compiles no byte road at all -- which is where the instruction
+	// budget the variants bought is actually spent.
+	pd.src_slot = slot;
+	pd.road_mask = GSDevice::kGSTileGpuRoadSource;
+	m_frame.src_served++;
+	return true;
 }
 
 bool GSRendererTileGpu::SourceMaterialiser::BuildTileSource(GSTexture* tex, const GIFRegTEX0& TEX0,
@@ -1922,17 +1986,19 @@ void GSRendererTileGpu::AccumulateDraw()
 				// Rule 3's admission question, asked BEFORE the compose and answered against the
 				// bytes as they stand -- which is the only moment the window's content fingerprint
 				// is honest, since composing supersedes exactly the bytes it would hash.
-				const u32 src_window = ProbeSourceRoad(pd, tex0, tex_pages, paletted, mip);
+				const u32 src_window =
+					m_bindless_targets ? ProbeSourceRoad(pd, tex0, tex_pages, paletted, mip) : kNoSourceSlot;
 				ComposeForPendingDraw(tex_pages, pd);
 				pd.epoch = m_epoch;
-				// ...and the build, after it. The materialise reads the ring at this draw's epoch,
-				// so the window's slots have to exist and any writeback composing them has to be
-				// queued first: prep ops run at the pass head in array order, and the compose above
-				// emitted its writebacks before this line. Direct colour only at this chunk, and
-				// NOTHING SAMPLES THE RESULT -- the images are built, cached and invalidated for
-				// real, and every draw still takes the byte road.
+				// ...and the build, after it. The materialise reads the ring at this draw's epoch, so
+				// the window's slots have to exist and any writeback composing them has to be queued
+				// first: prep ops run at the pass head in array order, and the compose above emitted
+				// its writebacks before this line. The compose happens either way -- the materialise
+				// is what reads it -- so this is not yet where rule 2's structural saving lives; what
+				// changes is what the FRAGMENT stage does, which is where the 10x per-sample gap is.
+				// Direct colour only at this chunk; a paletted window still takes the byte road.
 				if (src_window != kNoSourceSlot && !paletted)
-					MaterialiseSourceRoad(src_window, tex0, tex_pages, pd.epoch);
+					MaterialiseSourceRoad(pd, src_window, tex0, tex_pages, pd.epoch);
 			}
 		}
 		else
@@ -2261,10 +2327,10 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		//    resolved colour target's size (scale 1), plus the z enables and the texture block.
 		//    Row i serves draw i.
 		m_plan_states.resize(m_plan_pending.size());
-		// The same slot, lifted out of the state row for the executor: it splits its indirect runs
-		// on it, and the state table's layout is not part of that contract (GSTileGpuPassPlan::
-		// tex_slots).
-		m_plan_tex_slots.resize(m_plan_pending.size());
+		// The same two slots, lifted out of the state row for the executor: it splits its indirect
+		// runs on the pair, and the state table's layout is not part of that contract
+		// (GSTileGpuPassPlan::bind_keys).
+		m_plan_bind_keys.resize(m_plan_pending.size());
 		for (u32 i = 0; i < m_plan_pending.size(); i++)
 		{
 			const PendingDraw& pd = m_plan_pending[i];
@@ -2309,8 +2375,8 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 			sr.region_v = pd.region_v;
 			sr.ltf = pd.ltf ? 1u : 0u;
 			sr.tex_target = pd.tex_slot;
-			m_plan_tex_slots[i] = pd.tex_slot;
-			sr.pad0_ = 0;
+			sr.tex_source = pd.src_slot;
+			m_plan_bind_keys[i] = GSDevice::GSTileGpuPassPlan::PackBindKey(pd.tex_slot, pd.src_slot);
 		}
 
 		// 3. Group contiguous draws sharing a colour+depth surface pair and depth mode into one
@@ -2381,14 +2447,15 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 				}
 				pxAssertMsg(slot == pd.tex_slot, "TileGpu rule-2 slot disagrees with the pass's bind table");
 			}
-			// What splitting the indirect runs on the rule-3 source WOULD cost, in calls. The
-			// executor already cuts a call at a pipeline change (topology or blend key) and at a
-			// rule-2 slot change, because a descriptor array index has to be dynamically uniform
-			// across the call. Folding the source into that key cuts one more call wherever the
-			// source changes and nothing else does -- so only those boundaries are counted, and
-			// only inside a pass, which is the one place pass membership is known. Priced at the
-			// measured ~237 ns per indirect call, this is what says whether the slot-splitting
-			// shape is affordable before anything is built on it.
+			// What the rule-3 half of the sampled-binding split COSTS, in calls -- the same
+			// arithmetic that priced it before it was taken, now measuring the real thing. The
+			// executor cuts a call at a pipeline change (topology or blend key) and at a bind-key
+			// change, because a descriptor array index has to be dynamically uniform across the
+			// call. Folding the source into that key cuts one more call wherever the source changes
+			// and nothing else does -- so only those boundaries are counted, and only inside a
+			// pass, which is the one place pass membership is known. Priced at the measured ~237 ns
+			// per indirect call, this is what says whether the slot-splitting shape stays
+			// affordable.
 			for (u32 d = i + 1; d < j; d++)
 			{
 				if (m_plan_topologies[d] != m_plan_topologies[d - 1] ||
@@ -2480,7 +2547,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.draws = m_plan_draws;
 		plan.topologies = m_plan_topologies;
 		plan.blend_keys = m_plan_blend_keys;
-		plan.tex_slots = m_plan_tex_slots;
+		plan.bind_keys = m_plan_bind_keys;
 		plan.target_pairs = m_plan_target_pairs;
 		plan.snapshots = m_plan_snapshots;
 		plan.prep_ops = m_plan_prep_ops;
@@ -2494,6 +2561,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.indices = m_plan_indices;
 		plan.targets = m_plan_targets;
 		plan.prep_textures = m_plan_prep_textures;
+		plan.sources = m_plan_sources;
 		plan.tex_sources = m_plan_tex_sources;
 		plan.ring_pages = ring;
 		plan.epoch_count = m_epoch + 1;
@@ -2524,7 +2592,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_draws.clear();
 	m_plan_topologies.clear();
 	m_plan_blend_keys.clear();
-	m_plan_tex_slots.clear();
+	m_plan_bind_keys.clear();
 	m_plan_pending.clear();
 	m_plan_passes.clear();
 	m_plan_target_pairs.clear();
@@ -2533,6 +2601,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_page_entries.clear();
 	m_plan_targets.clear();
 	m_plan_prep_textures.clear();
+	m_plan_sources.clear();
 	m_plan_tex_sources.clear();
 	m_plan_target_surfaces.clear();
 	m_plan_target_of_surface.clear();

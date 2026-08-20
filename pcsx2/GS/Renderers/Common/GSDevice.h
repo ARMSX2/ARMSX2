@@ -2100,7 +2100,9 @@ public:
 	/// must not carry that road's instructions. An untextured draw contributes no bit.
 	static constexpr u32 kGSTileGpuRoadByte = 1u << 0;   ///< decode guest bytes out of the frame's ring
 	static constexpr u32 kGSTileGpuRoadTarget = 1u << 1; ///< sample a resident target directly (rule 2)
-	static constexpr u32 kGSTileGpuRoadMaskAll = kGSTileGpuRoadByte | kGSTileGpuRoadTarget;
+	static constexpr u32 kGSTileGpuRoadSource = 1u << 2; ///< sample a materialised texture source (rule 3)
+	static constexpr u32 kGSTileGpuRoadMaskAll =
+		kGSTileGpuRoadByte | kGSTileGpuRoadTarget | kGSTileGpuRoadSource;
 
 	/// One GS-semantic minimum pass: a contiguous run of draws sharing a set of FRAME/ZBUF
 	/// target pairs (up to the pass model's per-pass budget, GSTilePassSim::kMaxTargetPairs),
@@ -2148,6 +2150,15 @@ public:
 		/// is a contract constant, not a tunable either side can pick alone. A draw whose source
 		/// would be the ninth opens a new pass.
 		static constexpr u32 kMaxTexSourcesPerPass = 8;
+		/// How many distinct MATERIALISED sources (rule 3) one frame may bind. Unlike the per-pass
+		/// target array this one is frame-scoped — a source belongs to a texture window, not to a
+		/// target pair, so the same image serves draws in any number of passes and the executor writes
+		/// the array once per plan. A draw whose source would be the (n+1)th takes the byte road and is
+		/// counted; 128 rather than 64 because the corpus census found GT4 and OutRun pinned at 64
+		/// distinct windows per frame with draws refused behind them.
+		static constexpr u32 kMaxSources = 128;
+		/// A state row's tex_source when the draw does not take rule 3.
+		static constexpr u32 kNoSourceSlot = 0xFFFFFFFFu;
 
 		std::span<const GSTileGpuPass> passes;
 		std::span<const GSTileGpuIndirectDraw> draws;
@@ -2165,16 +2176,23 @@ public:
 		/// Bit 29: the draw writes RGB but not alpha (the GS AFAIL RGB_ONLY mode); the pipeline
 		/// masks the alpha channel alone.
 		static constexpr u32 kNoAlphaWrite = 0x20000000u;
-		/// One per draw, parallel to `draws`: the draw's slot in its pass's sampled-target array,
-		/// or kNoTexSlot. It is the same value the draw's state row carries, repeated here because
-		/// the state table's layout is the backend's business and this one field is not: the
-		/// fragment shader indexes the sampled-target array by it, and a descriptor array index
-		/// must be dynamically uniform, so the executor may not put two different slots inside one
-		/// indirect call. It therefore ENDS an indirect run the way the topology and the blend key
-		/// do -- but unlike them it is not pipeline state, so the split reuses the bound pipeline
-		/// and costs one more vkCmdDrawIndexedIndirect, nothing else. Empty = no draw samples a
-		/// target (the device could not bind them) and nothing splits.
-		std::span<const u32> tex_slots;
+		/// One per draw, parallel to `draws`: the draw's SAMPLED BINDING KEY — its slot in its pass's
+		/// sampled-target array in the low 16 bits and its slot in the frame's materialised-source
+		/// array in the high 16 (kNoTexSlot / kNoSourceSlot truncate to 0xFFFF in their half, so a
+		/// draw taking neither is 0xFFFFFFFF). Both halves are also in the draw's state row; they are
+		/// repeated here because the state table's layout is the backend's business and this is not:
+		/// the fragment shader indexes both arrays by them, and a descriptor array index must be
+		/// dynamically uniform, so the executor may not put two different keys inside one indirect
+		/// call. The key therefore ENDS an indirect run the way the topology and the blend key do --
+		/// but unlike them it is not pipeline state, so the split reuses the bound pipeline and costs
+		/// one more vkCmdDrawIndexedIndirect, nothing else. It is ONE key rather than two because the
+		/// split is on the pair: two draws agreeing on the target and differing on the source still
+		/// have to be separate calls. Empty = no draw samples an image and nothing splits.
+		std::span<const u32> bind_keys;
+		static constexpr u32 PackBindKey(u32 tex_slot, u32 source_slot)
+		{
+			return (tex_slot & 0xFFFFu) | ((source_slot & 0xFFFFu) << 16);
+		}
 		std::span<const GSTileGpuTargetPair> target_pairs;
 		std::span<const GSTileGpuSnapshotCopy> snapshots;
 		std::span<const GSTileGpuPrepOp> prep_ops;
@@ -2195,6 +2213,27 @@ public:
 		/// into it, no target pair names it, and the page model does not own it. A Materialise op's
 		/// `target` field indexes here.
 		std::span<GSTexture* const> prep_textures;
+
+		/// Rule 3's frame-wide bind table: the materialised sources this frame's draws sample, in the
+		/// slot order a state row's tex_source names. A slot is one (image, sampler) PAIR — the
+		/// filtering and the wrap ride in the descriptor, so the shader needs one index and one fetch
+		/// site, and two draws sampling the same image through different TEX1/CLAMP take two slots.
+		/// Frame-scoped rather than per-pass: a source belongs to a window, so the executor writes the
+		/// whole array once per plan, before any pass opens.
+		///
+		/// Every image here is a Format::Color render target the size of its window (tw x th), built
+		/// by a Materialise prep op this frame or by one in an earlier frame that the source cache
+		/// still holds. It is never one of the frame's targets, and never a pass attachment.
+		struct SourceBind
+		{
+			GSTexture* texture;
+			/// The sampler this slot pairs the image with, as a GSHWDrawConfig::SamplerSelector key:
+			/// bit 0 = REPEAT on U (clear = CLAMP), bit 1 = REPEAT on V, bit 2 = bilinear. Rule 3
+			/// admits only those two wrap modes, and mipmapping is off, so eight keys cover it and the
+			/// backend's sampler cache pins max LOD at level 0.
+			u8 sampler;
+		};
+		std::span<const SourceBind> sources;
 
 		/// The rule-2 sampled targets, as indices into `targets`, grouped by pass
 		/// (GSTileGpuPass::first_tex_source / tex_source_count). A textured draw either names one
