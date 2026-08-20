@@ -253,6 +253,28 @@ void VuTestHarness::SeedEntryState(bool reset_block_cache)
 		RecompilerTestEnvironment::ResetVuBlockCache(vu_index_);
 }
 
+void VuTestHarness::ResumeUntilTerminated()
+{
+	resume_until_terminated_ = true;
+}
+
+void VuTestHarness::ExecuteEngine(BaseVUmicroCPU* cpu)
+{
+	cpu->Execute(kCycleBudget);
+	if (!resume_until_terminated_)
+		return;
+
+	int resumes = 0;
+	while (!HasTerminated() && resumes < kMaxResumes)
+	{
+		cpu->Execute(kCycleBudget);
+		++resumes;
+	}
+	EXPECT_TRUE(HasTerminated())
+		<< "VU" << vu_index_ << " was still running after " << kMaxResumes
+		<< " re-entries of " << kCycleBudget << " cycles";
+}
+
 void VuTestHarness::RunInterpFromSeeded()
 {
 	// Match production's REC_VU1 ↔ CpuVU1 invariant (the CpuVU1 = EnableVU1 ?
@@ -268,7 +290,7 @@ void VuTestHarness::RunInterpFromSeeded()
 	// and the loop terminates correctly.
 	const bool saved = EmuConfig.Cpu.Recompiler.EnableVU1;
 	EmuConfig.Cpu.Recompiler.EnableVU1 = false;
-	InterpCpu(vu_index_)->Execute(kCycleBudget);
+	ExecuteEngine(InterpCpu(vu_index_));
 	EmuConfig.Cpu.Recompiler.EnableVU1 = saved;
 }
 
@@ -278,7 +300,7 @@ void VuTestHarness::RunJitFromSeeded()
 	// mVU.cycles is the budget and the per-block cycle test exits to
 	// the dispatcher when it exhausts. No new entry point on the microVU
 	// side is required for E-bit-terminated programs.
-	JitCpu(vu_index_)->Execute(kCycleBudget);
+	ExecuteEngine(JitCpu(vu_index_));
 }
 
 void VuTestHarness::RunNoDiff()

@@ -80,6 +80,11 @@ void RunConsoleCase(const VuBranchCase& c, VuTestHarness& h)
 	h.SetVfBits(vu::vf::vf8, c.vf_seed[8], c.vf_seed[9], c.vf_seed[10], c.vf_seed[11]);
 	h.SetVfBits(vu::vf::vf9, c.vf_seed[12], c.vf_seed[13], c.vf_seed[14], c.vf_seed[15]);
 
+	// vbprobe.c spun on `cfc2 $vi29` until VU0's running bit cleared and only
+	// then read anything back, so every expected value here is a terminated
+	// program's. Without this the M-bit cases would be scored on the pause.
+	h.ResumeUntilTerminated();
+
 	std::vector<vu::VuOp> prog;
 	for (u32 k = 0; k + 1 < c.n_words; k += 2)
 		prog.push_back(vu::VuOp{c.prog[k], c.prog[k + 1]});
@@ -159,6 +164,33 @@ TEST(VuBranchConsole, TBitConditionalBranchNotTakenParksAtFallthrough)
 	EXPECT_EQ(h.GetViInterp(vu::vi::vi2), 0x222u);
 	EXPECT_EQ(h.GetViInterp(vu::vi::vi3), 0u);
 	EXPECT_EQ(h.GetViInterp(vu::vi::vi4), 0u);
+}
+
+// The M bit does not end a microprogram. It breaks the EE out of its VU0 run
+// loop so a COP2 read can be interlocked against a chosen point; VPU_STAT's
+// running bit stays set and the next entry carries on. Both console rows ran
+// through to the E-bit terminator at pair 4, taking the branch or not, and
+// the M pair's own delay slot ran like any other.
+TEST(VuBranchConsole, MBitPausesWithoutEndingTheMicroprogram)
+{
+	for (const char* tag : {"Q1_MCOND_TAKEN", "Q1_MCOND_NOTTAKEN"})
+	{
+		const VuBranchCase& c = CaseByTag(tag);
+		ASSERT_EQ(c.tpc, 6u) << tag << ": capture invariant, it reached the end";
+		ASSERT_EQ(ConsoleVi(c, 2), 0x222u) << tag << ": and ran the delay slot";
+
+		VuTestHarness h(0);
+		RunConsoleCase(c, h);
+		for (u32 n = 1; n <= 8; ++n)
+		{
+			EXPECT_EQ(h.GetViJit(n), c.vi[n - 1])
+				<< tag << " vi" << n << " (arm64 recompiler)";
+			EXPECT_EQ(h.GetViInterp(n), c.vi[n - 1])
+				<< tag << " vi" << n << " (interpreter)";
+		}
+		EXPECT_EQ(h.GetViJit(REG_TPC), c.tpc) << tag << " (arm64 recompiler)";
+		EXPECT_EQ(h.GetViInterp(REG_TPC), c.tpc) << tag << " (interpreter)";
+	}
 }
 
 // The console's T-latch is VPU_STAT bit 2 and the D-latch is bit 1; the
