@@ -97,9 +97,10 @@ bool HasByteRoad(const GSTileSurfaceLayout& layout)
 GSRendererTileGpu::GSRendererTileGpu()
 	: GSRenderer(/*allow_back_records=*/false)
 {
-	// The planner is intrinsic to this variant, not a toggle: the pass model IS the renderer's
-	// understanding of the frame, so it runs unconditionally.
-	m_pass_sim.SetActive(true);
+	// The pass sim is a cross-check, not a planner input: nothing the executor consumes is
+	// derived from it. So it is a lever, read once here like the Tile renderer reads its own --
+	// a mid-run flip needs a renderer restart.
+	m_pass_sim.SetActive(GSConfig.TileGpuPassSim);
 }
 
 GSRendererTileGpu::~GSRendererTileGpu()
@@ -153,7 +154,8 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	// Close the frame's open pass and push its stats before the base presents (the order the
 	// Tile renderer's observer uses — the model is independent of presentation, but the frame
 	// boundary is here).
-	m_pass_sim.OnVSync();
+	if (m_pass_sim.IsActive()) [[unlikely]]
+		m_pass_sim.OnVSync();
 
 	// Structure the frame's accumulated draws into a pass plan and render it through the
 	// device executor, before the base presents — so the targets the executor drew into are
@@ -175,7 +177,8 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 
 void GSRendererTileGpu::Draw()
 {
-	ObserveDraw();
+	if (m_pass_sim.IsActive()) [[unlikely]]
+		ObserveDraw();
 	AccumulateDraw();
 }
 
@@ -314,7 +317,7 @@ void GSRendererTileGpu::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 	SupersedeRingSlots(fp.pages);
 	ReadbackToShadow(m_vram_model.SpillBeforeCpuWrite(fp, planes), StallSite::UploadSubBlock);
 	m_vram_model.OnCpuWrite(fp, planes);
-	if (!m_pass_sim_in_move)
+	if (m_pass_sim.IsActive() && !m_pass_sim_in_move) [[unlikely]]
 		m_pass_sim.OnUpload(PagesForTargetRect(layout, r));
 }
 
@@ -326,7 +329,7 @@ void GSRendererTileGpu::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, con
 	const GSTileSurfaceLayout layout{BITBLTBUF.SBP, static_cast<u8>(BITBLTBUF.SBW),
 		static_cast<u8>(BITBLTBUF.SPSM), KindForPsm(BITBLTBUF.SPSM)};
 	ReadbackToShadow(GSVramModel::PagesForRect(layout, r), clut ? StallSite::Clut : StallSite::LocalRead);
-	if (!m_pass_sim_in_move)
+	if (m_pass_sim.IsActive() && !m_pass_sim_in_move) [[unlikely]]
 		m_pass_sim.OnCpuRead(PagesForTargetRect(layout, r), clut);
 }
 
@@ -349,7 +352,8 @@ void GSRendererTileGpu::Move()
 	const GSTileSurfaceLayout dst_l{m_env.BITBLTBUF.DBP, static_cast<u8>(m_env.BITBLTBUF.DBW),
 		static_cast<u8>(m_env.BITBLTBUF.DPSM), KindForPsm(m_env.BITBLTBUF.DPSM)};
 
-	m_pass_sim.OnMove(PagesForTargetRect(src_l, src_r), PagesForTargetRect(dst_l, dst_r));
+	if (m_pass_sim.IsActive()) [[unlikely]]
+		m_pass_sim.OnMove(PagesForTargetRect(src_l, src_r), PagesForTargetRect(dst_l, dst_r));
 
 	m_pass_sim_in_move = true;
 	GSRenderer::Move();
@@ -562,6 +566,14 @@ void GSRendererTileGpu::ObserveDraw()
 void GSRendererTileGpu::ReportPassStructure()
 {
 	ReportModelTraffic();
+	if (!m_pass_sim.IsActive())
+	{
+		// Say so rather than print nothing: a missing section reads as "the sim found nothing",
+		// and the whole point of the numbers above is that they are compared against these.
+		if (!m_model_frames.empty())
+			Console.WriteLn("  (pass-structure cross-check off -- EmuCore/GS/TileGpuPassSim, gsrunner -tilepasssim)");
+		return;
+	}
 	const std::vector<GSTilePassSim::FrameStats>& frames = m_pass_sim.Frames();
 	if (frames.empty())
 		return;

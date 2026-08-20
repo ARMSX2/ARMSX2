@@ -975,6 +975,14 @@ struct Pcsx2Config
 					// reports at teardown. Attribution arm, never timed. Dev
 					// only, default off.
 					TilePassSim : 1,
+					// The same instrument under the TileGpu variant (gsrunner
+					// -tilepasssim arms both): score the GS-semantic minimum pass
+					// structure its frames COULD have had, beside the pass structure
+					// its planner actually built. Cross-check only -- the planner is
+					// fed by the memory model, never by the sim -- and it costs
+					// roughly 0.4 ms/frame to feed, so it is off unless a validation
+					// run asks for it. Dev only, default off.
+					TileGpuPassSim : 1,
 					// The fast profile: shed an exactness class for its GPU-native
 					// realization, gated per title by the perceptual comparator (as
 					// good or better than Classic against the SW goldens). Umbrella

@@ -77,8 +77,13 @@ private:
 	// The pass-structure observer: the round-2 GSTilePassSim model fed by the live GSState
 	// decode, ported from the Tile renderer's PassSimObserveDraw feeder. It is the reference
 	// accounting for the GS-semantic minimum pass structure; the plan below is the actual one.
-	// Always on for this variant: it is the renderer's understanding of the frame, not an
-	// optional arm, so it takes no config lever.
+	//
+	// A CROSS-CHECK, and nothing downstream of it: the planner's inputs are AccumulateDraw and
+	// the memory model, and no field of this object is ever read back into a plan. So it is a
+	// lever -- EmuCore/GS/TileGpuPassSim, gsrunner -tilepasssim -- off by default, because
+	// feeding it costs roughly 0.4 ms/frame and a timed run must not pay that. Every call site
+	// is guarded by IsActive(), the Tile renderer's own idiom; the flag is read once, at
+	// construction, so flipping it mid-run needs a renderer restart.
 	GSTilePassSim m_pass_sim;
 
 	// Set only for the duration of the base GSRenderer::Move() call. A GS->GS move reaches

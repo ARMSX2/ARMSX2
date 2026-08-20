@@ -735,7 +735,7 @@ static void PrintCommandLineHelp(const char* progname)
 						 "slower than a plain run.\n");
 	std::fprintf(stderr, "  -tilepasssim: Score the GS-semantic minimum pass structure of the run (pass breaks, "
 						 "snapshots, syncs a fully-GPU-timeline backend would be forced to take) plus GIF stream "
-						 "volume; report at teardown. Tile only; an attribution arm, never a timed one.\n");
+						 "volume; report at teardown. Tile and TileGpu; an attribution arm, never a timed one.\n");
 	std::fprintf(stderr, "  -stats-json <path>: Write per-frame and run-summary statistics as JSON. Combine with -perf "
 						 "for frame/GPU timing.\n");
 	std::fprintf(stderr, "  -set <Section/Key>=<value>: Override any setting, e.g. -set EmuCore/GS/AccurateBlendingUnit=3. "
@@ -1122,7 +1122,10 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG("-tilepasssim"))
 			{
+				// One flag, both variants that carry the instrument: only one renderer runs, so
+				// the key the other reads is inert.
 				s_settings_interface.SetBoolValue("EmuCore/GS", "TilePassSim", true);
+				s_settings_interface.SetBoolValue("EmuCore/GS", "TileGpuPassSim", true);
 				Console.WriteLn("Scoring GS-semantic minimum pass structure (report at teardown)");
 				continue;
 			}
