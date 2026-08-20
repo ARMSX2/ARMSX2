@@ -147,7 +147,9 @@ add_pcsx2_test(recompiler_tests
 	vu0_macro_console_conformance_tests.cpp
 	vu0_macro_fmac_range_console_tests.cpp
 	vu_madd_contract_console_tests.cpp
+	vu1_efu_band_console_tests.cpp
 	vu1_efu_console_conformance_tests.cpp
+	vu1_efu_sweep_console_tests.cpp
 	vu_sticky_console_conformance_tests.cpp
 	vu_rsqrt_divisor_sign_tests.cpp
 	vu_divunit_console_conformance_tests.cpp
