@@ -461,9 +461,16 @@ s32 FileMemoryCard::Save(uint slot, const u8* src, u32 adr, int size)
 		if (static_cast<int>(m_currentdata.size()) < size)
 			m_currentdata.resize(size);
 
-		const size_t read_result = std::fread(m_currentdata.data(), size, 1, mcfp);
-		if (read_result == 0)
+		// A failed read-back used to fall through into the merge below. m_currentdata is only
+		// ever grown, never cleared, so that merged the new data into whatever an earlier and
+		// possibly unrelated write had left in the buffer, then wrote the result to the card --
+		// corrupting a sector the console never asked to change. Refusing the write leaves the
+		// sector as it was, which the console can retry.
+		if (std::fread(m_currentdata.data(), size, 1, mcfp) != 1)
+		{
 			Host::ReportErrorAsync("Memory Card Read Failed", "Error reading memory card.");
+			return 0;
+		}
 
 		for (int i = 0; i < size; i++)
 		{
