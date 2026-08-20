@@ -115,7 +115,12 @@ GSRendererTileGpu::~GSRendererTileGpu()
 void GSRendererTileGpu::Destroy()
 {
 	// Textures must go back to the device pool while the device is alive; the pool's
-	// destructor only checks that they did.
+	// destructor only checks that they did. The source caches own device textures on the same
+	// terms (none yet -- nothing builds into them at this chunk -- but the teardown order is
+	// theirs whether they hold anything or not).
+	m_tex_source.Clear();
+	m_palette_cache.Clear();
+	m_expand_cache.Clear();
 	m_target_pool.ReleaseAll();
 	GSRenderer::Destroy();
 }
@@ -128,6 +133,14 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_target_pool.ReleaseAll();
 	m_vram_model.Reset();
 	m_surface_texels.clear();
+	// The source caches key on the model's write generations, which the reset just rewound, and
+	// the probe's window record on the same. Both die with it or a replay reaching equal counts
+	// under different bytes would look current.
+	m_tex_source.Clear();
+	m_palette_cache.Clear();
+	m_expand_cache.Clear();
+	m_probe_windows.clear();
+	m_probe_prev.clear();
 	m_plan_vertices.clear();
 	m_plan_indices.clear();
 	m_plan_states.clear();
@@ -170,6 +183,15 @@ void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame
 	// claim with it -- BuildAndExecutePlan drops them).
 	MaterialiseDisplayBuffers();
 	BuildAndExecutePlan();
+
+	// The source probe's frame boundary. This frame's window record becomes what the next frame
+	// compares its content stamps against, and the expanded cache's admission clock ticks -- a
+	// pair first seen this frame is admitted no earlier than the next one, which is the filter
+	// doing its job rather than a refusal. m_frame.src_distinct already holds the number of
+	// source slots the frame handed out, counted as they were handed out.
+	m_probe_prev.swap(m_probe_windows);
+	m_probe_windows.clear();
+	m_expand_cache.NextFrame();
 
 	m_frame.surfaces_live = m_vram_model.LiveSurfaces();
 	m_model_frames.push_back(m_frame);
@@ -243,6 +265,7 @@ void GSRendererTileGpu::MaterialiseDisplayBuffers()
 		PendingDraw pd = {};
 		pd.tex_source = kGSTileNoSurface;
 		pd.tex_slot = GSDevice::GSTileGpuPassPlan::kNoTexSlot;
+		pd.src_slot = kNoSourceSlot;
 		pd.first_prep_op = static_cast<u32>(m_plan_prep_ops.size());
 		ComposeRingPages(need);
 		EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, id, need);
@@ -410,6 +433,17 @@ void GSRendererTileGpu::ReadbackTextureCache()
 // comes down first so nothing is lost; the model then forgets every surface.
 void GSRendererTileGpu::PurgeTextureCache(bool sources, bool targets, bool hash_cache)
 {
+	if (sources)
+	{
+		// Materialised sources are a cache of guest bytes, so dropping them costs rebuilds and
+		// nothing else. Inert at this chunk (nothing builds into them yet), wired now because a
+		// half-connected lifetime is the kind of thing that surfaces as a stale texture later.
+		m_tex_source.Clear();
+		m_palette_cache.Clear();
+		m_expand_cache.Clear();
+		m_probe_windows.clear();
+		m_probe_prev.clear();
+	}
 	if (!targets)
 		return;
 	SyncAllTruthToCpu();
@@ -773,6 +807,45 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"sync-all %.2f/%u (%.2f)",
 		s_up.mean, s_up.p50, p_up.mean, s_rd.mean, s_rd.p50, p_rd.mean, s_cl.mean, s_cl.p50, p_cl.mean, s_all.mean,
 		s_all.p50, p_all.mean);
+
+	// Rule 3 as probed. Nothing in this block changed a pixel: it says what a cache of
+	// materialised sources WOULD have served, and for the rest, exactly which clause refused.
+	const auto tdraws = stat([](const MF& f) { return f.tex_draws; });
+	const auto tunsup = stat([](const MF& f) { return f.tex_unsupported; });
+	const auto elig = stat([](const MF& f) { return f.src_eligible; });
+	const auto shit = stat([](const MF& f) { return f.src_hit; });
+	const auto sreb = stat([](const MF& f) { return f.src_rebuild; });
+	const auto sfresh = stat([](const MF& f) { return f.src_fresh; });
+	const auto rregion = stat([](const MF& f) { return f.src_ref_region; });
+	const auto rmip = stat([](const MF& f) { return f.src_ref_mip; });
+	const auto rmipl = stat([](const MF& f) { return f.src_ref_mip_live; });
+	const auto rcap = stat([](const MF& f) { return f.src_ref_capacity; });
+	const auto rpal = stat([](const MF& f) { return f.src_ref_palette; });
+	const auto rpin = stat([](const MF& f) { return f.src_ref_pin; });
+	const auto sdist = stat([](const MF& f) { return f.src_distinct; });
+	const auto scalls = stat([](const MF& f) { return f.src_extra_calls; });
+	const auto skept = stat([](const MF& f) { return f.src_stamp_kept; });
+	const auto smoved = stat([](const MF& f) { return f.src_stamp_moved; });
+	// Served share of textured draws, the checkpoint's headline: rule 2's binds plus rule 3's
+	// eligible draws over the draws in a format either road samples.
+	const double served = (tdraws.mean > 0.0) ? (binds.mean + elig.mean) * 100.0 / tdraws.mean : 0.0;
+	const double stamp_total = skept.mean + smoved.mean;
+
+	Console.WriteLn("TileGpu source road (rule 3 PROBED, not taken -- no source is built, bound or sampled):");
+	Console.WriteLn("  textured draws %.2f / %-5u  rule 2 served %.2f / %-5u  rule 3 eligible %.2f / %-5u  "
+					"=> %.1f%% of textured draws served",
+		tdraws.mean, tdraws.p50, binds.mean, binds.p50, elig.mean, elig.p50, served);
+	Console.WriteLn("  eligible by cost: hit %.2f / %-5u  rebuild %.2f / %-5u  first build %.2f / %u",
+		shit.mean, shit.p50, sreb.mean, sreb.p50, sfresh.mean, sfresh.p50);
+	Console.WriteLn("  refused: format %.2f/%u  region wrap %.2f/%u  mip %.2f/%u (mipmapping live on %.2f/%u of them)  "
+					"palette first sight %.2f/%u  pin %.2f/%u  capacity %.2f/%u",
+		tunsup.mean, tunsup.p50, rregion.mean, rregion.p50, rmip.mean, rmip.p50, rmipl.mean, rmipl.p50, rpal.mean,
+		rpal.p50, rpin.mean, rpin.p50, rcap.mean, rcap.p50);
+	Console.WriteLn("  distinct sources %.2f / %-4u (array holds %u)   extra indirect calls from the slot split "
+					"%.2f / %u",
+		sdist.mean, sdist.p50, kMaxSourceSlots, scalls.mean, scalls.p50);
+	Console.WriteLn("  gen stamps vs the frame before: held %.2f / %-4u  moved %.2f / %-4u  (%.1f%% held)",
+		skept.mean, skept.p50, smoved.mean, smoved.p50, stamp_total > 0.0 ? skept.mean * 100.0 / stamp_total : 0.0);
 }
 
 
@@ -897,6 +970,162 @@ GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayou
 		return kGSTileNoSurface;
 
 	return src;
+}
+
+// Rule 3 of the same texel road -- the cache of materialised texture sources -- asked and
+// deliberately not taken. The road itself is not built yet; what is built here is the question it
+// will ask, run against the live stream so the answer is measured instead of assumed: for every
+// textured draw rule 2 declined, would a source cache serve this window, and if not, which clause
+// refused it. Nothing is built, nothing is bound, and the caller goes on to compose the byte road
+// exactly as it did before this existed.
+//
+// Every refusal lands in its own counter. A silent fallthrough would report the road as unusable
+// without saying why, and "the road is wrong" and "the road is not being taken" are the two
+// answers the checkpoint has to tell apart.
+void GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
+	bool paletted, bool mip_active)
+{
+	const GSDrawingContext* ctx = m_context;
+
+	// The wrap modes a sampler expresses exactly at tw x th. The two REGION modes address a
+	// sub-rect of a shared texture page and have no sampler spelling, so they keep the byte road:
+	// a performance trade, not an accuracy one, and it is in the bill either way.
+	if (ctx->CLAMP.WMS >= CLAMP_REGION_CLAMP || ctx->CLAMP.WMT >= CLAMP_REGION_CLAMP)
+	{
+		m_frame.src_ref_region++;
+		return;
+	}
+	// Level 0 only. The hardware sampler makes sampling a chain free but choosing the level is
+	// not free: the GS's LOD (K/L and the MMIN modes) is not the hardware's derivative-based one,
+	// so a mip draw waits for M4 rather than being served at a level it did not ask for.
+	//
+	// Split into two columns because they are two different decisions. A draw whose TEX1 declares
+	// a pyramid while mipmapping is NOT active samples level 0 today on the byte road, and rule 3
+	// with maxLod pinned to 0 would sample exactly the same texels -- so the clause costs those
+	// draws for nothing, and the second column is how many that is.
+	if (ctx->TEX1.MXL != 0)
+	{
+		m_frame.src_ref_mip++;
+		if (mip_active)
+			m_frame.src_ref_mip_live++;
+		return;
+	}
+
+	// Ask the cache. It holds nothing until a later chunk builds into it, so today it answers "no
+	// entry" for every window and the frame-to-frame record below is what classifies the draw;
+	// from the chunk that builds, this is the authority and the record only adds what the cache
+	// cannot know -- which windows a draw already recorded THIS frame has named. The probe hands
+	// back the content stamp it compared against, which is the whole invalidation predicate: the
+	// sum of the per-page write generations over the window, monotone under both a CPU write and
+	// a native draw, so stamp inequality is exactly "some byte under this window moved". Walking
+	// those pages is the bulk of what this probe adds to the GS thread, and it happens once.
+	const GSTileTextureSource::WindowKey key = GSTileTextureSource::KeyFor(tex0, m_env.TEXA);
+	const GSTileTextureSource::ProbeResult pr = m_tex_source.Probe(m_vram_model, tex0, m_env.TEXA, tex_pages);
+	const u64 stamp = pr.gen_stamp;
+
+	// This frame's record of the window, if some earlier draw already probed it.
+	u32 wi = 0;
+	while (wi < m_probe_windows.size() && !(m_probe_windows[wi].key == key))
+		wi++;
+
+	// Deferred execution against an immediate cache. A draw already recorded this frame names
+	// this window's entry, and a rebuild would land IN PLACE, in the same entry and the same
+	// texture -- so at VSync that earlier draw would sample bytes it never asked for. The pin
+	// discipline refuses instead: this draw takes the byte road and the rebuild happens next
+	// frame naturally. Fail-closed by construction, and counted rather than assumed rare.
+	if (wi < m_probe_windows.size() && m_probe_windows[wi].slot != kNoSourceSlot &&
+		m_probe_windows[wi].stamp != stamp)
+	{
+		m_frame.src_ref_pin++;
+		return;
+	}
+
+	// Whether an earlier draw of this frame already had a source built for this window -- which
+	// makes this draw a hit whatever the cache's own state was at the top of the frame.
+	const bool built_this_frame = (wi < m_probe_windows.size() && m_probe_windows[wi].slot != kNoSourceSlot);
+
+	if (wi == m_probe_windows.size())
+	{
+		// First sight this frame. Was the window here last frame, and did its content hold
+		// still? That pair of counters is the whole gen-stamp stability question: a title that
+		// re-uploads over its sampled pages every frame rebuilds every source every frame, and
+		// then the expanded cache never admits and rule 3 serves almost nothing.
+		ProbedWindow w;
+		w.key = key;
+		w.stamp = stamp;
+		w.build_id = ++m_probe_build_counter;
+		for (const ProbedWindow& p : m_probe_prev)
+		{
+			if (!(p.key == key))
+				continue;
+			w.prev_seen = true;
+			if (p.stamp == stamp)
+			{
+				m_frame.src_stamp_kept++;
+				w.prev_current = true;
+				w.build_id = p.build_id; // same bytes, same identity, so derived caches keep theirs
+			}
+			else
+			{
+				m_frame.src_stamp_moved++;
+			}
+			break;
+		}
+		m_probe_windows.push_back(w);
+	}
+	else if (m_probe_windows[wi].stamp != stamp)
+	{
+		// Seen this frame but not yet named by a recorded draw (something refused it), and the
+		// content has moved since. Nothing is pinned, so the entry is simply rebuilt under the
+		// new bytes and takes a new identity with them.
+		m_probe_windows[wi].stamp = stamp;
+		m_probe_windows[wi].build_id = ++m_probe_build_counter;
+		m_probe_windows[wi].prev_current = false;
+	}
+	ProbedWindow& w = m_probe_windows[wi];
+
+	if (paletted)
+	{
+		// The palette is a second, independent identity: a paletted source holds raw indices and
+		// the fused RGBA8 is keyed on (index build id x palette content id), so a palette change
+		// re-expands without re-deswizzling. The pair is admitted on SECOND SIGHT across a frame
+		// boundary -- a fresh pair defers and this draw takes the byte road for one frame, which
+		// is what stops a per-frame-volatile window paying an expansion pass for a draw that runs
+		// once. High deferrals beside high hits is the healthy shape, not a fault.
+		const u32 pal_entries = GSLocalMemory::m_psm[tex0.PSM].pal;
+		const u64 pal_id = GSTilePaletteCache::ContentId(m_plan_palettes.data() + pd.pal_offset, pal_entries);
+		if (m_expand_cache.ProbeAdmit(w.build_id, pal_id) == GSTileExpandedCache::Admission::Deferred)
+		{
+			m_frame.src_ref_palette++;
+			return;
+		}
+	}
+
+	// A slot in the frame's source array. Capacity is a hard bound rather than a hope: a frame
+	// whose distinct sources outrun the array refuses the overflow to the byte road, and the
+	// counter is what says whether 64 is the right number before anything is bound against it.
+	if (w.slot == kNoSourceSlot)
+	{
+		if (m_frame.src_distinct >= kMaxSourceSlots)
+		{
+			m_frame.src_ref_capacity++;
+			return;
+		}
+		w.slot = m_frame.src_distinct++;
+	}
+
+	// Served. What serving it would COST is the second column: a hit needs no work at all, a
+	// rebuild a deswizzle into the entry it already has, a fresh window a first build. Classified
+	// off two frames of record, so the hit column is a lower bound -- a real 512-entry cache also
+	// hits on a window last drawn several frames ago.
+	m_frame.src_eligible++;
+	if (pr.hit || built_this_frame || w.prev_current)
+		m_frame.src_hit++;
+	else if (pr.would_rebuild || w.prev_seen)
+		m_frame.src_rebuild++;
+	else
+		m_frame.src_fresh++;
+	pd.src_slot = w.slot;
 }
 
 u32 GSRendererTileGpu::PlanTargetIndex(GSTileSurfaceId id)
@@ -1350,6 +1579,7 @@ void GSRendererTileGpu::AccumulateDraw()
 	PendingDraw pd = {};
 	pd.tex_source = kGSTileNoSurface;
 	pd.tex_slot = GSDevice::GSTileGpuPassPlan::kNoTexSlot;
+	pd.src_slot = kNoSourceSlot;
 	pd.first_prep_op = static_cast<u32>(m_plan_prep_ops.size());
 
 	// Fog. The GS walks the fragment's RGB toward FOGCOL by the per-vertex fog factor F (RGB only,
@@ -1410,6 +1640,7 @@ void GSRendererTileGpu::AccumulateDraw()
 		const bool paletted = (psm == PSMT8 || psm == PSMT4);
 		if (direct32 || paletted)
 		{
+			m_frame.tex_draws++;
 			pd.tex_enable = true;
 			pd.fst = PRIM->FST;
 			pd.tbp0 = tex0.TBP0;
@@ -1472,9 +1703,21 @@ void GSRendererTileGpu::AccumulateDraw()
 			}
 			else
 			{
+				// Rule 3 is asked here and never taken (this chunk builds the question, not the
+				// road): whether a cache of materialised sources could serve this window, and if
+				// not, which clause refused. Asked before the compose only because that is the
+				// order the roads are tried in -- the byte road below is unaffected either way,
+				// and the answer is a counter.
+				ProbeSourceRoad(pd, tex0, tex_pages, paletted, mip);
 				ComposeForPendingDraw(tex_pages, pd);
 				pd.epoch = m_epoch;
 			}
+		}
+		else
+		{
+			// A format neither road samples (16-bit, the alpha-byte views): the draw renders
+			// with vertex colour alone today, and rule 3 refuses it on format.
+			m_frame.tex_unsupported++;
 		}
 	}
 
@@ -1912,6 +2155,25 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 				}
 				pxAssertMsg(slot == pd.tex_slot, "TileGpu rule-2 slot disagrees with the pass's bind table");
 			}
+			// What splitting the indirect runs on the rule-3 source WOULD cost, in calls. The
+			// executor already cuts a call at a pipeline change (topology or blend key) and at a
+			// rule-2 slot change, because a descriptor array index has to be dynamically uniform
+			// across the call. Folding the source into that key cuts one more call wherever the
+			// source changes and nothing else does -- so only those boundaries are counted, and
+			// only inside a pass, which is the one place pass membership is known. Priced at the
+			// measured ~237 ns per indirect call, this is what says whether the slot-splitting
+			// shape is affordable before anything is built on it.
+			for (u32 d = i + 1; d < j; d++)
+			{
+				if (m_plan_topologies[d] != m_plan_topologies[d - 1] ||
+					m_plan_blend_keys[d] != m_plan_blend_keys[d - 1])
+					continue; // a new pipeline run, so already a new call
+				if (m_plan_pending[d].tex_slot != m_plan_pending[d - 1].tex_slot)
+					continue; // already a new call, for the rule-2 slot
+				if (m_plan_pending[d].src_slot != m_plan_pending[d - 1].src_slot)
+					m_frame.src_extra_calls++;
+			}
+
 			// A pass with a DATE draw snapshots its colour target before opening.
 			pass.first_snapshot = static_cast<u32>(m_plan_snapshots.size());
 			pass.snapshot_count = 0;

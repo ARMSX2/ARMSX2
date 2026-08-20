@@ -48,6 +48,12 @@ public:
 	/// format fixes it). This cache's OWN lookups still verify words exactly.
 	GSTexture* Lookup(const u32* clut, u32 entries, u32 read_gen, u64* content_id = nullptr);
 
+	/// The content id Lookup would hand back for these words, computed without touching
+	/// the cache or the device. Same function, same value: a caller that only needs the
+	/// palette's identity (to key a derived cache, or to ask whether a pair would be
+	/// admitted) pays the hash and nothing else.
+	static u64 ContentId(const u32* clut, u32 entries);
+
 	/// Recycles every cached texture (reset / teardown / hot-switch).
 	void Clear();
 

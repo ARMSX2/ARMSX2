@@ -5,8 +5,11 @@
 
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Tile/GSTileExpandedCache.h"
+#include "GS/Renderers/Tile/GSTilePaletteCache.h"
 #include "GS/Renderers/Tile/GSTilePassSim.h"
 #include "GS/Renderers/Tile/GSTileTargetPool.h"
+#include "GS/Renderers/Tile/GSTileTextureSource.h"
 #include "GS/Renderers/Tile/GSVramModel.h"
 
 #include <array>
@@ -198,6 +201,12 @@ private:
 		// the ring for this read -- the fragment stage samples the target's live pixels.
 		GSTileSurfaceId tex_source;
 		u32 tex_slot;         // its slot in the pass's bind table, resolved once the pass is known
+
+		// Rule 3 of the same road, PROBED and not taken (see ProbeSourceRoad): the frame-wide
+		// slot the materialised source of this draw's window would occupy, or kNoSourceSlot
+		// where rule 3 refused. Read by nothing but the counters -- no state row carries it and
+		// no descriptor is written from it, which is what makes this chunk a no-op on output.
+		u32 src_slot;
 	};
 
 	// Per-frame accumulation (filled in Draw via AccumulateDraw, consumed + reset in the plan
@@ -282,6 +291,52 @@ private:
 	// window is never composed into the ring) -- asking late, or asking a device that then
 	// refuses, would leave the fragment stage decoding bytes nobody wrote.
 	bool m_bindless_targets = false;
+
+	// --- rule 3, the source cache: PROBED ONLY at this chunk ---------------------------------
+	// The three library caches the materialised-source road is built out of, instantiated here
+	// so the road's keying, its invalidation predicate and its palette admission run against
+	// the live stream. Nothing calls Lookup on any of them: at this chunk every textured draw
+	// rule 2 declines asks what rule 3 WOULD do and the answer is a counter, so no texture is
+	// built, none is bound, no shader changes and every draw takes exactly the road it took
+	// before. The numbers are what the rest of the plan is exposed to -- how much of the corpus
+	// rule 3 can serve, how many distinct sources a frame holds, what splitting the indirect
+	// runs on the source would cost, and whether the content stamps hold still frame to frame.
+	GSTileTextureSource m_tex_source;
+	GSTilePaletteCache m_palette_cache;
+	GSTileExpandedCache m_expand_cache;
+
+	static constexpr u32 kNoSourceSlot = 0xFFFFFFFFu;
+	// The descriptor array rule 3 will bind through (design §6). A frame needing more distinct
+	// sources than this refuses the overflow to the byte road -- counted, so the corpus says
+	// whether 64 is the right number before anything is built against it.
+	static constexpr u32 kMaxSourceSlots = 64;
+
+	// One distinct texture window the frame probed, in first-appearance order.
+	struct ProbedWindow
+	{
+		GSTileTextureSource::WindowKey key;
+		u64 stamp = 0;     ///< GSTileTextureSource::GenStamp of the window's pages at first sight
+		u64 build_id = 0;  ///< content identity: carried over from last frame while the stamp holds
+		u32 slot = kNoSourceSlot; ///< its source-array slot, once a draw was admitted on it
+		bool prev_seen = false;    ///< the frame before also probed this window
+		bool prev_current = false; ///< ...and its stamp had not moved since
+	};
+	// This frame's windows and last frame's. Two frames is the whole history the counters need:
+	// the stamp question is "did this window's content hold still since the frame before", and
+	// the build identity a palette pair keys on only has to survive the frame boundary the
+	// expanded cache admits across. A real cache holds 512 entries and would hit on windows
+	// older than this, so the hit column here is a LOWER bound and the rebuild column an upper
+	// one.
+	std::vector<ProbedWindow> m_probe_windows;
+	std::vector<ProbedWindow> m_probe_prev;
+	u64 m_probe_build_counter = 0;
+
+	// Rule 3, asked and never taken. Computes the window's key and content stamp, asks the
+	// palette pair whether it would be admitted, and either counts the draw as eligible (giving
+	// its window a source slot) or counts one named refusal. Called only where rule 2 declined,
+	// and it writes nothing but counters and pd.src_slot.
+	void ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages, bool paletted,
+		bool mip_active);
 
 	// Which pages of a surface's texture actually hold texels. The memory model tracks BYTES, and
 	// by it a page the surface owns no truth for is in perfect order -- its bytes are in the CPU
@@ -433,6 +488,26 @@ private:
 		u32 self_reads = 0;      // draws sampling pages their own pass target holds (snapshot semantics)
 		u32 tex_binds = 0;       // draws served by rule 2: the read window came off a resident target
 		u32 tex_bind_breaks = 0; // draws that opened a pass because their bind could not join the open one
+
+		// Rule 3 as probed (ProbeSourceRoad) -- what the source cache WOULD have done. Nothing
+		// here changes a draw's road; the whole block is measurement.
+		u32 tex_draws = 0;         // textured draws in a format either road samples (the denominator)
+		u32 tex_unsupported = 0;   // TME draws in a format neither road samples: rule 3's format refusal
+		u32 src_eligible = 0;      // rule-2-declined draws rule 3 would serve
+		u32 src_hit = 0;           // ...served with no build at all (window and stamp both already seen)
+		u32 src_rebuild = 0;       // ...served after a rebuild: the window is known, its stamp moved
+		u32 src_fresh = 0;         // ...served after a first build: the window was not seen last frame
+		u32 src_ref_region = 0;    // refused: REGION_CLAMP / REGION_REPEAT on either axis
+		u32 src_ref_mip = 0;       // refused: MXL != 0 (mipmaps are M4)
+		u32 src_ref_mip_live = 0;  // ...of those, draws where mipmapping is actually active; the rest
+		                           // sample level 0 today, so the clause costs them for nothing
+		u32 src_ref_capacity = 0;  // refused: the frame's distinct sources exceed the source array
+		u32 src_ref_palette = 0;   // refused: first sight of the (index, palette) pair, admitted next frame
+		u32 src_ref_pin = 0;       // refused: rebuilding a window an earlier draw of this frame named
+		u32 src_distinct = 0;      // distinct source windows the frame would hold
+		u32 src_extra_calls = 0;   // extra indirect calls splitting the runs on the source would cost
+		u32 src_stamp_kept = 0;    // windows also probed last frame whose stamp held
+		u32 src_stamp_moved = 0;   // ...and whose stamp moved
 		u32 alias_steal_pages = 0; // pages one draw claimed through both its surfaces (FRAME/ZBUF packing)
 		u32 lossy_pages = 0;     // truth moved without a byte road (depth / unsupported-format owners)
 		u32 skipped_draws = 0;   // draws no surface could be built for (format / stride)

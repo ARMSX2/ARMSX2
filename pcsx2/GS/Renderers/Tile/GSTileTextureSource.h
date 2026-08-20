@@ -80,6 +80,44 @@ public:
 	/// The content stamp of `pages` right now (sum of per-page write generations).
 	static u64 GenStamp(const GSVramModel& model, const GSPageBitmap& pages);
 
+	/// The register-side identity of a texture window: everything an entry is keyed on
+	/// except the content stamp. Exposed so a caller can group draws by the source they
+	/// WOULD take without asking for one to be built.
+	struct WindowKey
+	{
+		u64 reg = 0;
+		u64 aux = 0;
+		u64 mip[2] = {0, 0};
+
+		bool operator==(const WindowKey& o) const
+		{
+			return reg == o.reg && aux == o.aux && mip[0] == o.mip[0] && mip[1] == o.mip[1];
+		}
+	};
+	static WindowKey KeyFor(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA,
+		const GIFRegTEX0* level_tex0 = nullptr, u32 levels = 1);
+
+	/// The question Lookup answers internally, asked without the build: as the cache
+	/// stands right now, would this window be served, and if not, is that because the
+	/// entry's stamp has moved (a rebuild) or because there is no entry at all (a first
+	/// build)? Const and free of side effects — no counter moves, no LRU stamp, nothing
+	/// is allocated.
+	///
+	/// One deliberate conservatism: Lookup can serve a MOVED stamp without rebuilding
+	/// when the window's pages hash to the bytes the last build read (RebuildsSamePages).
+	/// That tier costs an 8 KB hash per written page, so the probe does not run it and
+	/// reports `would_rebuild` — an upper bound on the rebuilds a caller will actually pay.
+	struct ProbeResult
+	{
+		bool hit = false;           ///< an entry matches and its stamp is current: served with no work
+		bool would_rebuild = false; ///< an entry matches and its stamp has moved: served after a rebuild
+		u64 build_id = 0;           ///< the entry's content identity (hits only; zero otherwise)
+		u64 gen_stamp = 0;          ///< the window's stamp the probe compared against, so a caller need not walk the pages twice
+	};
+	ProbeResult Probe(const GSVramModel& model, const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA,
+		const GSPageBitmap& pages, const GIFRegTEX0* level_tex0 = nullptr, u32 levels = 1,
+		const GSVector4i* sample_core = nullptr) const;
+
 	/// Returns the source for this texture window — RGBA8 for a direct-colour format,
 	/// an 8-bit index texture for a palettised one — building or rebuilding it if
 	/// absent or stale, or null on allocation failure. The caller has already spilled

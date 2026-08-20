@@ -31,6 +31,11 @@ GSTilePaletteCache::~GSTilePaletteCache()
 	Clear();
 }
 
+u64 GSTilePaletteCache::ContentId(const u32* clut, u32 entries)
+{
+	return HashWords(clut, entries);
+}
+
 GSTexture* GSTilePaletteCache::Lookup(const u32* clut, u32 entries, u32 read_gen, u64* content_id)
 {
 	pxAssert(entries == 16 || entries == 256);

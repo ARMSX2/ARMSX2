@@ -110,6 +110,51 @@ GSTexture* GSTileExpandedCache::Lookup(GSTexture* index, u64 index_id, GSTexture
 	return tex;
 }
 
+GSTileExpandedCache::Admission GSTileExpandedCache::ProbeAdmit(u64 index_id, u64 palette_id)
+{
+	// The scan Lookup runs, with the build legs removed. A pair already carrying a
+	// texture is a hit and therefore served; a pair whose marker predates this frame is
+	// what Lookup would build now, which is also served from the caller's viewpoint.
+	Entry* found = nullptr;
+	Entry* lru = nullptr;
+	Entry* free_slot = nullptr;
+	for (Entry& e : m_entries)
+	{
+		if (!e.alive)
+		{
+			if (!free_slot)
+				free_slot = &e;
+			continue;
+		}
+		if (e.index_id == index_id && e.palette_id == palette_id)
+		{
+			found = &e;
+			break;
+		}
+		if (!lru || e.last_use < lru->last_use)
+			lru = &e;
+	}
+
+	if (!found)
+	{
+		Entry& e = free_slot ? *free_slot : *lru;
+		if (e.tex)
+		{
+			g_gs_device->Recycle(e.tex);
+			e.tex = nullptr;
+		}
+		e.alive = true;
+		e.index_id = index_id;
+		e.palette_id = palette_id;
+		e.last_use = ++m_use_counter;
+		e.seen_frame = m_frame;
+		return Admission::Deferred;
+	}
+
+	found->last_use = ++m_use_counter;
+	return (found->tex == nullptr && found->seen_frame == m_frame) ? Admission::Deferred : Admission::Served;
+}
+
 void GSTileExpandedCache::Clear()
 {
 	for (Entry& e : m_entries)

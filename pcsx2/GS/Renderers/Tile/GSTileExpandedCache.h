@@ -56,6 +56,22 @@ public:
 	/// mip count (each level expands separately through the same palette).
 	GSTexture* Lookup(GSTexture* index, u64 index_id, GSTexture* palette, u64 palette_id, u32 levels);
 
+	/// The admission filter's verdict for a pair, without building anything: would a
+	/// Lookup right now hand back an expanded texture, or would it defer?
+	///
+	/// Not const, and it cannot be: first sight IS the marker, so a probe that recorded
+	/// nothing would report first sight forever. What it does not do is allocate, expand
+	/// or touch the device — the entry it leaves behind is the same marker Lookup would
+	/// have left, and a later Lookup on the pair picks up from it unchanged. Serves()
+	/// is not consulted (nothing is asked of the device) and no counter moves; a caller
+	/// probing rather than building keeps its own.
+	enum class Admission
+	{
+		Deferred, ///< first sight of the pair, in this frame or a marker recorded this frame
+		Served,   ///< the pair survived a frame boundary: an expansion is earned
+	};
+	Admission ProbeAdmit(u64 index_id, u64 palette_id);
+
 	/// Frame boundary, for the admission filter's clock. Call once per VSync.
 	void NextFrame() { m_frame++; }
 

@@ -71,6 +71,55 @@ u64 GSTileTextureSource::GenStamp(const GSVramModel& model, const GSPageBitmap& 
 	return stamp;
 }
 
+GSTileTextureSource::WindowKey GSTileTextureSource::KeyFor(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA,
+	const GIFRegTEX0* level_tex0, u32 levels)
+{
+	// Same view Lookup takes of a single-level caller: the base register IS the level array.
+	if (!level_tex0)
+	{
+		level_tex0 = &TEX0;
+		levels = 1;
+	}
+	WindowKey k;
+	k.reg = RegKey(TEX0);
+	k.aux = AuxKey(TEX0, TEXA);
+	MipKey(level_tex0, levels, k.mip);
+	return k;
+}
+
+GSTileTextureSource::ProbeResult GSTileTextureSource::Probe(const GSVramModel& model, const GIFRegTEX0& TEX0,
+	const GIFRegTEXA& TEXA, const GSPageBitmap& pages, const GIFRegTEX0* level_tex0, u32 levels,
+	const GSVector4i* sample_core) const
+{
+	const WindowKey key = KeyFor(TEX0, TEXA, level_tex0, levels);
+	const u64 stamp = GenStamp(model, pages);
+
+	ProbeResult r;
+	r.gen_stamp = stamp;
+	for (const Entry& e : m_entries)
+	{
+		if (!e.alive || e.reg_key != key.reg || e.aux_key != key.aux || e.mip_key[0] != key.mip[0] ||
+			e.mip_key[1] != key.mip[1])
+			continue;
+		// The window's entry, whatever state it is in. Same validity test as the hit leg of
+		// Lookup, and it stops at the first match for the same reason: one entry per key.
+		const GSVector4i full(0, 0, 1 << std::min<u32>(TEX0.TW, 10), 1 << std::min<u32>(TEX0.TH, 10));
+		const bool rect_ok =
+			e.valid_rect.eq(full) || (sample_core && e.valid_rect.rintersect(*sample_core).eq(*sample_core));
+		if (e.gen_stamp == stamp && rect_ok)
+		{
+			r.hit = true;
+			r.build_id = e.build_id;
+		}
+		else
+		{
+			r.would_rebuild = true;
+		}
+		break;
+	}
+	return r;
+}
+
 u64 GSTileTextureSource::PageContentStamp(const GSLocalMemory& mem, const GSVramModel& model, const GSPageBitmap& pages)
 {
 	// Positional fold of the per-page content hashes: the pair includes the page
