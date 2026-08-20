@@ -143,6 +143,9 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_ring_versions.clear();
 	m_ring_live.fill(0);
 	m_epoch = 0;
+	// The surfaces the open pass named died with the model, so its ids would alias whatever takes
+	// them next.
+	BreakOpenPass();
 }
 
 void GSRendererTileGpu::VSync(u32 field, bool registers_written, bool idle_frame)
@@ -1007,6 +1010,60 @@ void GSRendererTileGpu::LossySteal(const GSPageBitmap& pages)
 	m_vram_model.OnReadback(m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll));
 }
 
+void GSRendererTileGpu::BreakOpenPass()
+{
+	m_open_color = kGSTileNoSurface;
+	m_open_z = kGSTileNoSurface;
+	m_open_z_used = false;
+	m_open_z_write = false;
+	m_open_z_test = false;
+	m_open_color_written.clear();
+	m_open_z_written.clear();
+	m_open_read.clear();
+}
+
+// A writeback the plan build leaves inside the open pass runs at that pass's head, ahead of every
+// draw already in it. Two things make that wrong, and nothing else does:
+//
+//  - the writeback reads the target's pixels, so a draw of the open pass that renders into THAT
+//    surface on a page the writeback takes would have its pixels composed before it drew them;
+//  - the writeback rewrites the page's live ring slot in place, so a draw of the open pass that
+//    samples that page would retroactively read the new bytes.
+//
+// The slot half is compared by SLOT, and it has to be. An epoch comparison proves nothing --
+// OnNativeDraw drops a page's synced bit without advancing the epoch, so the page is re-composed
+// into the same live slot at the same epoch, which is the case the unconditional break was
+// written for. A page comparison is sound but pessimistic the other way: an upload between the
+// earlier read and this writeback closes the page's slot and bumps the epoch, so the writeback
+// composes a NEW slot and the earlier read keeps the bytes it saw. So the read set remembers the
+// slot each page was read through and this compares it against the live one, which is the slot
+// EnsureRingSlot just handed the writeback.
+//
+// One conservatism left: the read set is the whole composed read window (the size-fixed TEX0
+// footprint), not the pages the draw's coordinates actually reach inside it.
+bool GSRendererTileGpu::WritebackHoistCollides(u32 first_op) const
+{
+	for (u32 k = first_op; k < m_plan_prep_ops.size(); k++)
+	{
+		const GSDevice::GSTileGpuPrepOp& op = m_plan_prep_ops[k];
+		GSPageBitmap p;
+		for (u32 e = op.first_page_entry; e < op.first_page_entry + op.page_entry_count; e++)
+			p.set(m_plan_page_entries[e].page);
+
+		bool hit = false;
+		(p & m_open_read).forEachSetPage([&](u32 page) { hit |= (m_open_read_slot[page] == m_ring_live[page]); });
+		if (hit)
+			return true;
+
+		const GSTileSurfaceId src = m_plan_target_surfaces[op.target];
+		if (src == m_open_color && p.intersects(m_open_color_written))
+			return true;
+		if (m_open_z_used && src == m_open_z && p.intersects(m_open_z_written))
+			return true;
+	}
+	return false;
+}
+
 // The pass plan's geometry and the memory model's traffic, one flushed batch at a time. Copies
 // this draw's vertices and indices into the frame streams, drives the model for its texture
 // read and its target footprints, and records an indexed indirect draw plus the PendingDraw
@@ -1118,6 +1175,16 @@ void GSRendererTileGpu::AccumulateDraw()
 		}
 	}
 
+	// Which pass is open for this draw? The plan build groups on the colour+depth surface pair and
+	// the depth mode, so a draw that differs from the pass's first draw in any of them starts a new
+	// pass and nothing the earlier draws did constrains its prep ops. Mirror of the grouping in
+	// BuildAndExecutePlan -- the two must stay in step.
+	if (fb_id != m_open_color || z_used != m_open_z_used || (z_used && z_id != m_open_z) ||
+		z_write != m_open_z_write || z_test != m_open_z_test)
+	{
+		BreakOpenPass();
+	}
+
 	PendingDraw pd = {};
 	pd.first_prep_op = static_cast<u32>(m_plan_prep_ops.size());
 
@@ -1226,19 +1293,20 @@ void GSRendererTileGpu::AccumulateDraw()
 			// sampling pages it also renders reads the pre-pass bytes: snapshot semantics).
 			const GSTileSurfaceLayout tex_l{tex0.TBP0, static_cast<u8>(tex0.TBW), static_cast<u8>(psm), KindForPsm(psm)};
 			tex_pages = GSVramModel::PagesForRect(tex_l, GSVector4i(0, 0, static_cast<int>(pd.tw), static_cast<int>(pd.th)));
-			// A writeback this emits has to be ordered against the draws already planned, so it
-			// opens a new pass exactly as a seed does. The executor runs a pass's prep ops before
-			// the pass opens, never between its draws, and a writeback is both a reader and a
-			// writer: it reads the target's finished pixels, which a draw earlier in the pass may
-			// not have written yet, and it rewrites the page's live ring slot in place at the
-			// current epoch, which a draw earlier in the pass may already have sampled. Left
-			// unordered, the hoisted dispatch composes stale bytes and hands them backwards.
+			// A writeback this emits will run at the head of whatever pass this draw lands in, so
+			// it is hoisted over the draws already in that pass. Where it collides with one of
+			// them -- reading a surface they have rendered into, or rewriting a ring slot they
+			// have sampled -- the hoist composes stale bytes and hands them backwards, and the
+			// draw opens its own pass instead, exactly as a seed does. Where it collides with
+			// none of them the hoist is provably invisible, and the pass stays whole: pass count
+			// is the currency of this design.
 			const u32 ops_before = static_cast<u32>(m_plan_prep_ops.size());
 			ComposeRingPages(tex_pages);
-			if (m_plan_prep_ops.size() != ops_before)
+			if (m_plan_prep_ops.size() != ops_before && WritebackHoistCollides(ops_before))
 			{
 				pd.break_before = true;
 				m_frame.writeback_breaks++;
+				BreakOpenPass();
 			}
 			pd.epoch = m_epoch;
 		}
@@ -1298,6 +1366,7 @@ void GSRendererTileGpu::AccumulateDraw()
 				EmitPrepOp(GSDevice::GSTileGpuPrepKind::Seed, fb_id, seed);
 				pd.break_before = true;
 				m_frame.seed_breaks++;
+				BreakOpenPass();
 				Texels(fb_id).filled |= seed;
 			}
 			else
@@ -1343,11 +1412,34 @@ void GSRendererTileGpu::AccumulateDraw()
 		pd.break_before = true;
 		m_run_written = GSVector4i::zero();
 		m_frame.date_breaks++;
+		BreakOpenPass();
 	}
 	if (pd.break_before)
 		m_run_written = GSVector4i::zero();
 	m_run_written = m_run_written.rempty() ? r : m_run_written.runion(r);
 	pd.date = date;
+
+	// This draw is now part of the open pass (its own, if anything above broke the previous one):
+	// remember the pages it renders into and the ring pages it samples, so a later draw's
+	// writeback can be tested against it. Last word in the function on pass structure -- nothing
+	// below here can still break the pass.
+	m_open_color = fb_id;
+	m_open_z = z_id;
+	m_open_z_used = z_used;
+	m_open_z_write = z_write;
+	m_open_z_test = z_test;
+	if (color_written)
+		m_open_color_written |= fb_pages;
+	if (z_write)
+		m_open_z_written |= z_pages;
+	if (pd.tex_enable)
+	{
+		// ComposeRingPages gave every page of the read window a live slot, and nothing between
+		// there and here closes one (only an upload does, and uploads do not land mid-draw), so
+		// m_ring_live still names the slot this draw's shader will read.
+		m_open_read |= tex_pages;
+		tex_pages.forEachSetPage([&](u32 page) { m_open_read_slot[page] = m_ring_live[page]; });
+	}
 
 	pd.color_surface = fb_id;
 	pd.z_surface = z_id;
@@ -1518,12 +1610,15 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		// 3. Group contiguous draws sharing a colour+depth surface pair and depth mode into one
 		//    pass. The depth pipeline is per-pass fixed function, so z-write and z-test must be
 		//    uniform across the pass (a ZTST=ALWAYS write sprite and a ZTST=GEQUAL 3D draw share
-		//    a depth buffer in SotC). A draw that emitted a prep op opens a pass too, because the
-		//    executor runs a pass's prep ops before the pass opens rather than between its draws:
-		//    hoisting one over a draw it should follow is what break_before prevents. So every
-		//    prep op belongs to the FIRST draw of its pass. Each pass carries the ops its draws
-		//    emitted, in order (each draw's ops are contiguous and appended in draw order, so the
-		//    range is [first draw's first, last draw's last]).
+		//    a depth buffer in SotC). Each pass carries the prep ops its draws emitted, in order
+		//    (each draw's ops are contiguous and appended in draw order, so the range is [first
+		//    draw's first, last draw's last]) and the executor runs the whole range BEFORE the
+		//    pass opens -- so an op belonging to any draw but the first is hoisted over the draws
+		//    ahead of it. Accumulation decides whether that is allowed, per op: a seed always
+		//    breaks (it is a fragment pass over the target that has to land between the draws),
+		//    and a writeback breaks only where it collides with what the open pass has already
+		//    written or sampled (WritebackHoistCollides). A non-breaking writeback therefore
+		//    belongs to a later draw and is hoisted BY DESIGN, having been proved invisible.
 		u32 i = 0;
 		while (i < m_plan_draws.size())
 		{
@@ -1675,6 +1770,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_epoch = 0;
 	m_run_surface = kGSTileNoSurface;
 	m_run_written = GSVector4i::zero();
+	BreakOpenPass();
 	m_vram_model.ClearAllSynced();
 }
 

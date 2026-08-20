@@ -161,7 +161,7 @@ private:
 		GSTileSurfaceId z_surface; // valid only if z_used
 		bool z_used;
 		bool z_write, z_test;
-		bool break_before;    // a prep op of this draw's precedes it (seed or writeback): it opens a new pass
+		bool break_before;    // this draw's prep ops cannot be hoisted over the open pass: it opens a new one
 		s32 ofx, ofy;         // XYOFFSET, 12.4 fixed
 		GSVector4i rect;      // scissor-clipped draw bbox
 		GSVector4i scissor;   // the GS scissor (SCISSOR register), exclusive right/bottom
@@ -321,6 +321,35 @@ private:
 	// write, so it opens a new pass (a fresh snapshot). Reset on surface change and on break.
 	GSTileSurfaceId m_run_surface = kGSTileNoSurface;
 	GSVector4i m_run_written = GSVector4i::zero();
+
+	// --- the open pass, as accumulation sees it ----------------------------------------------
+	// The executor runs a pass's prep ops before the pass opens, so a writeback emitted for the
+	// draw being accumulated is hoisted over every draw of the open pass already planned. That
+	// is what these track: what those draws have done, so the hoist can be tested instead of
+	// assumed unsafe. A pass has exactly one colour and one depth surface (BuildAndExecutePlan
+	// groups on the pair), so two write bitmaps cover every surface its draws can render into.
+	// The read side is per RING SLOT, not per page: m_open_read says which pages the pass's
+	// draws sample and m_open_read_slot which slot each of them read (entry index + 1), because
+	// a page whose slot was superseded since is a different slot and rewriting it is invisible
+	// to the earlier read. The key below mirrors the grouping conditions exactly -- keep the two
+	// in step -- and everything resets whenever a pass breaks.
+	GSTileSurfaceId m_open_color = kGSTileNoSurface;
+	GSTileSurfaceId m_open_z = kGSTileNoSurface;
+	bool m_open_z_used = false, m_open_z_write = false, m_open_z_test = false;
+	GSPageBitmap m_open_color_written;
+	GSPageBitmap m_open_z_written;
+	GSPageBitmap m_open_read;
+	std::array<u16, GS_MAX_PAGES> m_open_read_slot{}; // meaningful only where m_open_read is set
+
+	// The open pass is closed: the next draw accumulated is the first of a new one, so nothing
+	// recorded above constrains it. Idempotent, and the state it leaves matches no draw, so it
+	// also serves as the initial and between-frames state.
+	void BreakOpenPass();
+
+	// Would the writeback ops appended since `first_op` read or write something the open pass's
+	// draws already touched? Then they cannot run at that pass's head and their draw must open
+	// its own.
+	bool WritebackHoistCollides(u32 first_op) const;
 
 	// The model's per-frame traffic, mean/p50 at teardown beside the pass structure. These are
 	// the structural counters the stage-1 gate reads.
