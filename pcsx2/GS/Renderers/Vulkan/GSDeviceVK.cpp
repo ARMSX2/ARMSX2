@@ -6209,7 +6209,7 @@ bool GSDeviceVK::CompileTileGpuPipeline()
 	// texels in a 2x2 lattice); TILEGPU_STATIC_BYTE_SEL switches tilegpu_byte_sel to
 	// constant shifts there. Gate on driverID, never vendorID, per the device-workaround
 	// rule above -- other Mesa drivers and the proprietary ones keep the straight form.
-	const bool static_byte_sel = (m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP);
+	const bool static_byte_sel = TileGpuStaticByteSel();
 	// Rule 2's tap compiles in only where the device can index the sampled-target array by the
 	// draw's slot (TileGpuBindlessTargets, negotiated in CreateDevice). Elsewhere the array is not
 	// declared at all and the tap has no target branch: the renderer already refuses to bind
@@ -6562,6 +6562,73 @@ bool GSDeviceVK::CompileTileGpuSeedPipeline()
 	return true;
 }
 
+bool GSDeviceVK::TileGpuStaticByteSel() const
+{
+	return m_device_driver_properties.driverID == VK_DRIVER_ID_MESA_HONEYKRISP;
+}
+
+// Bytes -> a texture source: a fragment pass over the source image that unswizzles one texel per
+// fragment out of the ring, so rule 3 can sample the window with the hardware sampler. Like the
+// seed it shares the geometry pipeline's layout and persistent descriptor set (binding 1 is the
+// ring), so it costs a pipeline bind and a push and nothing else. One pipeline per source format,
+// compiled on first use of that format, only when the swizzle forms fitted.
+bool GSDeviceVK::CompileTileGpuMaterialisePipeline(u32 src_fmt)
+{
+	pxAssert(src_fmt < kTileGpuSrcFormats);
+	m_tilegpu_materialise_tried[src_fmt] = true;
+	if (!m_tilegpu_tex || m_tilegpu_pipeline_layout == VK_NULL_HANDLE)
+		return false;
+
+	const std::optional<std::string> source = ReadShaderSource("shaders/vulkan/tilegpu_materialise.glsl");
+	if (!source)
+	{
+		Host::ReportErrorAsync("GS", "Failed to read shaders/vulkan/tilegpu_materialise.glsl.");
+		return false;
+	}
+	const std::string full_source = TileFormDefines() +
+									fmt::format("#define TILEGPU_STATIC_BYTE_SEL {}\n", TileGpuStaticByteSel() ? 1 : 0) +
+									fmt::format("#define TILEGPU_SRC_FMT {}\n", src_fmt) + *source;
+
+	VkShaderModule vs = GetUtilityVertexShader(full_source);
+	if (vs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard vs_guard([this, &vs]() { vkDestroyShaderModule(m_device, vs, nullptr); });
+	VkShaderModule fs = GetUtilityFragmentShader(full_source);
+	if (fs == VK_NULL_HANDLE)
+		return false;
+	ScopedGuard fs_guard([this, &fs]() { vkDestroyShaderModule(m_device, fs, nullptr); });
+
+	Vulkan::GraphicsPipelineBuilder gpb;
+	gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+	gpb.SetPipelineLayout(m_tilegpu_pipeline_layout);
+	gpb.SetDynamicViewportAndScissorState();
+	gpb.SetNoCullRasterizationState();
+	gpb.SetNoBlendingState();
+	gpb.SetNoDepthTestState();
+	gpb.SetNoStencilState();
+	gpb.SetVertexShader(vs);
+	gpb.SetFragmentShader(fs);
+	gpb.SetRenderPass(GetRenderPass(LookupNativeFormat(GSTexture::Format::Color),
+						  LookupNativeFormat(GSTexture::Format::Invalid), VK_ATTACHMENT_LOAD_OP_LOAD,
+						  VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE),
+		0);
+	gpb.SetColorWriteMask(0,
+		VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+	VkPipeline pipe = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+	if (pipe == VK_NULL_HANDLE)
+	{
+		// Say it once per format: without this the sources are allocated and never filled, which
+		// looks like a texture-cache bug at every level above here rather than a missing pipeline.
+		Console.Error("VK: TileGpu materialise pipeline (source format %u) failed to build -- rule 3 "
+					  "sources will not be filled.",
+			src_fmt);
+		return false;
+	}
+	m_tilegpu_materialise_pipeline[src_fmt] = pipe;
+	Vulkan::SetObjectName(m_device, pipe, "TileGpu materialise pipeline (fmt %u)", src_fmt);
+	return true;
+}
+
 bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 {
 	if (!m_optional_extensions.tilegpu_device_capable)
@@ -6751,6 +6818,61 @@ bool GSDeviceVK::ExecuteTileGpuPassPlan(const GSTileGpuPassPlan& plan)
 			for (u32 o = pass.first_prep_op; o < op_end; o++)
 			{
 				const GSTileGpuPrepOp& op = plan.prep_ops[o];
+
+				// A materialise names a source image, not one of the frame's targets, and carries no
+				// page list -- its addresses come from the window's layout and the epoch page table.
+				if (op.kind == GSTileGpuPrepKind::Materialise)
+				{
+					if (op.target >= plan.prep_textures.size() || !plan.prep_textures[op.target])
+						continue;
+					const u32 src_fmt = (op.psm == PSMCT24) ? 1u : 0u;
+					if (!m_tilegpu_materialise_tried[src_fmt])
+						CompileTileGpuMaterialisePipeline(src_fmt);
+					if (m_tilegpu_materialise_pipeline[src_fmt] == VK_NULL_HANDLE)
+						continue;
+
+					GSTextureVK* const dst = static_cast<GSTextureVK*>(plan.prep_textures[op.target]);
+					EndRenderPass();
+
+					// The whole image, one fragment per texel: no scissor to trim to, because a
+					// source is exactly its window.
+					const GSVector2i size = dst->GetSize();
+					const GSVector4i area = GSVector4i::loadh(size);
+					OMSetRenderTargets(dst, nullptr, area);
+					const VkAttachmentLoadOp op_load = GetLoadOpForTexture(dst);
+					const VkRenderPass rp = GetRenderPass(LookupNativeFormat(dst->GetFormat()), VK_FORMAT_UNDEFINED,
+						op_load, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+						VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+						VK_ATTACHMENT_STORE_OP_DONT_CARE);
+					if (rp == VK_NULL_HANDLE)
+						return false;
+					if (op_load == VK_ATTACHMENT_LOAD_OP_CLEAR)
+					{
+						VkClearValue cv = {};
+						cv.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+						BeginClearRenderPass(rp, area, &cv, 1);
+					}
+					else
+					{
+						BeginRenderPass(rp, area);
+					}
+
+					const VkViewport vp{0.0f, 0.0f, static_cast<float>(size.x), static_cast<float>(size.y), 0.0f, 1.0f};
+					vkCmdSetViewport(cmd, 0, 1, &vp);
+					const VkRect2D sc{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}};
+					vkCmdSetScissor(cmd, 0, 1, &sc);
+					vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_pipeline_layout, 0, 1,
+						&m_tilegpu_state_descriptor_set, 0, nullptr);
+					const u32 mpush[kTileGpuPushWords] = {table_base_words, op.epoch, op.bp, op.bw, op.texa, 0, 0, 0};
+					vkCmdPushConstants(cmd, m_tilegpu_pipeline_layout,
+						VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(mpush), mpush);
+					vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tilegpu_materialise_pipeline[src_fmt]);
+					vkCmdDraw(cmd, 3, 1, 0, 0);
+					EndRenderPass();
+					dst->SetState(GSTexture::State::Dirty);
+					continue;
+				}
+
 				if (op.target >= plan.targets.size() || !plan.targets[op.target] || op.page_entry_count == 0)
 					continue;
 				GSTextureVK* const tex = static_cast<GSTextureVK*>(plan.targets[op.target]);
@@ -8084,6 +8206,13 @@ void GSDeviceVK::DestroyResources()
 		m_tilegpu_seed_pipeline = VK_NULL_HANDLE;
 	}
 	m_tilegpu_seed_tried = false;
+	for (u32 f = 0; f < kTileGpuSrcFormats; f++)
+	{
+		if (m_tilegpu_materialise_pipeline[f] != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, m_tilegpu_materialise_pipeline[f], nullptr);
+		m_tilegpu_materialise_pipeline[f] = VK_NULL_HANDLE;
+		m_tilegpu_materialise_tried[f] = false;
+	}
 	if (m_tilegpu_writeback_pipeline != VK_NULL_HANDLE)
 	{
 		vkDestroyPipeline(m_device, m_tilegpu_writeback_pipeline, nullptr);

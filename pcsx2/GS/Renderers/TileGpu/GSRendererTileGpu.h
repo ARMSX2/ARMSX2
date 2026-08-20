@@ -231,6 +231,11 @@ private:
 	std::vector<GSDevice::GSTileGpuPrepOp> m_plan_prep_ops;
 	std::vector<GSDevice::GSTileGpuPageEntry> m_plan_page_entries;
 	std::vector<u32> m_plan_tex_sources; // per pass: the rule-2 targets its draws sample, as target indices
+	// The images this frame's Materialise prep ops build into (GSTileGpuPassPlan::prep_textures).
+	// Deliberately NOT the target list: a materialised source is nothing's render target, no target
+	// pair names it, and the page model does not own it -- sharing the index space would put a
+	// non-surface into every place a target index is read as a surface.
+	std::vector<GSTexture*> m_plan_prep_textures;
 	std::vector<GSTileSurfaceId> m_plan_target_surfaces; // the plan's target list, as surfaces
 	std::vector<GSTexture*> m_plan_targets; // ...resolved to pool textures at the plan build
 	std::vector<u32> m_plan_target_of_surface; // surface id -> index into the target list (kNoTarget = absent)
@@ -297,18 +302,53 @@ private:
 	// refuses, would leave the fragment stage decoding bytes nobody wrote.
 	bool m_bindless_targets = false;
 
-	// --- rule 3, the source cache: PROBED ONLY at this chunk ---------------------------------
-	// The three library caches the materialised-source road is built out of, instantiated here
-	// so the road's keying, its invalidation predicate and its palette admission run against
-	// the live stream. Nothing calls Lookup on any of them: at this chunk every textured draw
-	// rule 2 declines asks what rule 3 WOULD do and the answer is a counter, so no texture is
-	// built, none is bound, no shader changes and every draw takes exactly the road it took
-	// before. The numbers are what the rest of the plan is exposed to -- how much of the corpus
-	// rule 3 can serve, how many distinct sources a frame holds, what splitting the indirect
-	// runs on the source would cost, and whether the content stamps hold still frame to frame.
+	// --- rule 3, the source cache: BUILT, not yet SAMPLED -------------------------------------
+	// The three library caches the materialised-source road is built out of. Direct-colour windows
+	// the probe admits are now MATERIALISED -- an ordinary RGBA8 image, built on the device out of
+	// the same ring bytes the flat road reads, cached and invalidated by the same predicate. What
+	// is still absent is the other half: no state row names a source, no descriptor binds one, and
+	// every draw takes exactly the road it took before, so the images are correct-by-construction
+	// and cost nothing but their build. That is deliberate -- it puts the build, the cache
+	// lifetime and the pin discipline under the corpus before the sampled road can hide a defect
+	// in any of them behind moved pixels.
 	GSTileTextureSource m_tex_source;
 	GSTilePaletteCache m_palette_cache;
 	GSTileExpandedCache m_expand_cache;
+
+	// The pin discipline's clock (GSTileTextureSource::SetFrame). It counts PLANS, not video
+	// frames: a cache entry a recorded draw names is held down until the plan carrying that draw
+	// has been handed to the executor, which is BuildAndExecutePlan -- at VSync usually, but also
+	// at any mid-frame flush. Starts at 1 because zero means "discipline off", which is what the
+	// Tile renderer leaves these caches at.
+	u64 m_source_frame = 1;
+
+	// Move the pin clock on: every entry the plan just executed named is released. Called from
+	// exactly one place, the end of BuildAndExecutePlan, and from construction to arm the
+	// discipline in the first place.
+	void AdvanceSourcePinFrame();
+
+	// The emission half of rule 3's build. The cache owns what to build, the identity it is
+	// filed under and when it dies; this owns how the texels get there -- a materialise pass
+	// queued into the frame's prep-op stream, executed at the head of the emitting draw's pass.
+	// The split is the point: the cache is library code that knows nothing about deferred
+	// execution, and the renderer is where deferred execution lives.
+	struct SourceMaterialiser final : public GSTileSourceBuilder
+	{
+		GSRendererTileGpu* r = nullptr;
+		u32 epoch = 0; ///< the page-table epoch the emitting draw reads through
+		bool BuildTileSource(GSTexture* tex, const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA) override;
+	};
+
+	// Queue the pass that fills `tex` with the window at tex0/texa, reading the ring at `epoch`.
+	// Emitted AFTER the window's composition ops so array order puts it behind them at the pass
+	// head; safe to hoist there for the same reason a seed is, since the ring is staged whole-frame
+	// and the composition it depends on is in the same op range ahead of it.
+	bool EmitMaterialiseOp(GSTexture* tex, const GIFRegTEX0& tex0, const GIFRegTEXA& texa, u32 epoch);
+
+	// Build (or find) the materialised source for a window the probe admitted. Direct colour only
+	// at this chunk -- a paletted window's index texture and its palette expansion are a separate
+	// pair of passes. `window` indexes m_probe_windows.
+	void MaterialiseSourceRoad(u32 window, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages, u32 epoch);
 
 	static constexpr u32 kNoSourceSlot = 0xFFFFFFFFu;
 	// The descriptor array rule 3 will bind through (design §6). A frame needing more distinct
@@ -337,11 +377,12 @@ private:
 	std::vector<ProbedWindow> m_probe_prev;
 	u64 m_probe_build_counter = 0;
 
-	// Rule 3, asked and never taken. Computes the window's key and content stamp, asks the
-	// palette pair whether it would be admitted, and either counts the draw as eligible (giving
-	// its window a source slot) or counts one named refusal. Called only where rule 2 declined,
-	// and it writes nothing but counters and pd.src_slot.
-	void ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages, bool paletted,
+	// Rule 3's admission question. Computes the window's key and content stamp, asks the palette
+	// pair whether it would be admitted, and either admits the draw (giving its window a source
+	// slot) or counts one named refusal. Called only where rule 2 declined, and it writes nothing
+	// but counters and pd.src_slot -- the BUILD is a separate act, after the window's bytes have
+	// been composed. Returns the admitted window's index in m_probe_windows, or kNoSourceSlot.
+	u32 ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages, bool paletted,
 		bool mip_active);
 
 	// Which pages of a surface's texture actually hold texels. The memory model tracks BYTES, and
@@ -512,6 +553,17 @@ private:
 		u32 src_ref_palette = 0;   // refused: first sight of the (index, palette) pair, admitted next frame
 		u32 src_ref_pin = 0;       // refused: rebuilding a window an earlier draw of this frame named
 		u32 src_distinct = 0;      // distinct source windows the frame would hold
+
+		// Rule 3 as BUILT (MaterialiseSourceRoad): what the cache actually did for the admitted
+		// direct-colour windows. These are the real cache's numbers, where the columns above are
+		// the probe's model of it -- the two agree or one of them is wrong.
+		u32 src_builds = 0;        // materialise passes emitted: the window was fresh or its bytes moved
+		u32 src_cache_hits = 0;    // served by an entry whose gen stamp was still current
+		u32 src_cache_rescued = 0; // ...whose stamp had moved but whose content token had not
+		u32 src_pin_refusals = 0;  // the cache refused a rebuild under a draw this frame has recorded
+		u32 src_cap_refusals = 0;  // ...refused because every entry is pinned by this frame
+		u32 src_build_failed = 0;  // allocation failed, or the op could not be queued
+
 		u32 src_extra_calls = 0;   // extra indirect calls splitting the runs on the source would cost
 		u32 src_stamp_kept = 0;    // windows also probed last frame whose gen stamp held
 		u32 src_stamp_moved = 0;   // ...and whose gen stamp moved (the raw number, C1's: the two

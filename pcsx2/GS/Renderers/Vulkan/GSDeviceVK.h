@@ -637,6 +637,18 @@ private:
 	VkPipeline m_tilegpu_seed_pipeline = VK_NULL_HANDLE;
 	bool m_tilegpu_seed_tried = false;
 	bool CompileTileGpuSeedPipeline();
+	// Bytes -> a texture source: a fragment pass that unswizzles a whole texture window out of the
+	// ring into an ordinary RGBA8 image, one fragment per texel, for the hardware sampler to read.
+	// One pipeline per source format (0 = PSMCT32, 1 = PSMCT24), same layout and descriptor set as
+	// the seed. Compiled on first use of that format, same gate.
+	static constexpr u32 kTileGpuSrcFormats = 2;
+	std::array<VkPipeline, kTileGpuSrcFormats> m_tilegpu_materialise_pipeline{};
+	std::array<bool, kTileGpuSrcFormats> m_tilegpu_materialise_tried{};
+	bool CompileTileGpuMaterialisePipeline(u32 src_fmt);
+	/// Whether tilegpu_byte_sel must take its constant-shift form on this device: Honeykrisp
+	/// miscompiles the dynamic one on a word loaded from the vram SSBO. Asked in one place because
+	/// every shader that extracts a byte from that buffer has to answer it the same way.
+	bool TileGpuStaticByteSel() const;
 	std::array<VkPipeline, static_cast<int>(PresentShader::Count)> m_present{};
 	std::array<VkPipeline, 2> m_merge{};
 	std::array<VkPipeline, NUM_INTERLACE_SHADERS> m_interlace{};

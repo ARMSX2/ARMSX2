@@ -105,6 +105,20 @@ GSRendererTileGpu::GSRendererTileGpu()
 	// Asked once, before any draw: rule 2 is served by work this renderer DOES NOT DO, so a device
 	// that cannot bind targets has to be known before the first read window is (not) composed.
 	m_bindless_targets = g_gs_device && g_gs_device->TileGpuBindlessTargets();
+
+	// Arm the pin discipline. Until a cache is given a non-zero frame it behaves exactly as it does
+	// for the Tile renderer, which draws immediately and needs none of this; this renderer records
+	// draws and issues them at the plan, so a texture one of them names must survive to the end of
+	// that plan.
+	AdvanceSourcePinFrame();
+}
+
+void GSRendererTileGpu::AdvanceSourcePinFrame()
+{
+	m_source_frame++;
+	m_tex_source.SetFrame(m_source_frame);
+	m_palette_cache.SetFrame(m_source_frame);
+	m_expand_cache.SetFrame(m_source_frame);
 }
 
 GSRendererTileGpu::~GSRendererTileGpu()
@@ -156,6 +170,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_plan_prep_ops.clear();
 	m_plan_page_entries.clear();
 	m_plan_targets.clear();
+	m_plan_prep_textures.clear();
 	m_plan_tex_sources.clear();
 	m_plan_target_surfaces.clear();
 	m_plan_target_of_surface.clear();
@@ -163,6 +178,7 @@ void GSRendererTileGpu::Reset(bool hardware_reset)
 	m_ring_versions.clear();
 	m_ring_live.fill(0);
 	m_epoch = 0;
+	AdvanceSourcePinFrame();
 	// The surfaces the open pass named died with the model, so its ids would alias whatever takes
 	// them next.
 	BreakOpenPass();
@@ -836,7 +852,16 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const double served = (tdraws.mean > 0.0) ? (binds.mean + elig.mean) * 100.0 / tdraws.mean : 0.0;
 	const double stamp_total = skept.mean + smoved.mean;
 
-	Console.WriteLn("TileGpu source road (rule 3 PROBED, not taken -- no source is built, bound or sampled):");
+	// Rule 3 as BUILT. The direct-colour half of the eligible population above now has a real image
+	// in a real cache; the paletted half still only asks the question. Nothing samples either.
+	const auto sbuild = stat([](const MF& f) { return f.src_builds; });
+	const auto schit = stat([](const MF& f) { return f.src_cache_hits; });
+	const auto scresc = stat([](const MF& f) { return f.src_cache_rescued; });
+	const auto scpin = stat([](const MF& f) { return f.src_pin_refusals; });
+	const auto sccap = stat([](const MF& f) { return f.src_cap_refusals; });
+	const auto scfail = stat([](const MF& f) { return f.src_build_failed; });
+
+	Console.WriteLn("TileGpu source road (rule 3 PROBED; direct-colour windows BUILT but nothing sampled):");
 	Console.WriteLn("  textured draws %.2f / %-5u  rule 2 served %.2f / %-5u  rule 3 eligible %.2f / %-5u  "
 					"=> %.1f%% of textured draws served",
 		tdraws.mean, tdraws.p50, binds.mean, binds.p50, elig.mean, elig.p50, served);
@@ -858,6 +883,16 @@ void GSRendererTileGpu::ReportModelTraffic()
 					"unprovable: GPU-side truth)  => %.1f%% effectively stable",
 		srescued.mean, srescued.p50, sredo.mean, sredo.p50, sopaque.mean, sopaque.p50,
 		stamp_total > 0.0 ? (skept.mean + srescued.mean) * 100.0 / stamp_total : 0.0);
+	Console.WriteLn("  materialised (direct colour): builds %.2f / %-4u  cache hits %.2f / %-4u  "
+					"same-bytes rescues %.2f / %u",
+		sbuild.mean, sbuild.p50, schit.mean, schit.p50, scresc.mean, scresc.p50);
+	Console.WriteLn("  cache refusals: pinned by a recorded draw %.2f / %-4u  every entry pinned %.2f / %-4u  "
+					"build failed %.2f / %u   (cache totals: %llu pin, %llu capacity; palette %llu, expand %llu)",
+		scpin.mean, scpin.p50, sccap.mean, sccap.p50, scfail.mean, scfail.p50,
+		static_cast<unsigned long long>(m_tex_source.PinRefusals()),
+		static_cast<unsigned long long>(m_tex_source.CapacityRefusals()),
+		static_cast<unsigned long long>(m_palette_cache.CapacityRefusals()),
+		static_cast<unsigned long long>(m_expand_cache.CapacityRefusals()));
 }
 
 
@@ -1001,7 +1036,7 @@ GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayou
 // anywhere it matters, and a probe that stopped at the stamp reported churn the cache would not
 // have had -- churn that then propagated into every identity derived from it, which is what made
 // the palette-admission column read as a wall rather than as a first frame.
-void GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
+u32 GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
 	bool paletted, bool mip_active)
 {
 	const GSDrawingContext* ctx = m_context;
@@ -1012,7 +1047,7 @@ void GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0,
 	if (ctx->CLAMP.WMS >= CLAMP_REGION_CLAMP || ctx->CLAMP.WMT >= CLAMP_REGION_CLAMP)
 	{
 		m_frame.src_ref_region++;
-		return;
+		return kNoSourceSlot;
 	}
 	// Level 0, and a draw declaring a pyramid is served at level 0 like every other one. This was
 	// a refusal and is not any more, because it refused a third of the corpus (1595 of
@@ -1092,7 +1127,7 @@ void GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0,
 		m_probe_windows[wi].stamp != stamp && !SameBytes(m_probe_windows[wi]))
 	{
 		m_frame.src_ref_pin++;
-		return;
+		return kNoSourceSlot;
 	}
 
 	// Whether an earlier draw of this frame already had a source built for this window -- which
@@ -1197,7 +1232,7 @@ void GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0,
 		if (m_expand_cache.ProbeAdmit(w.build_id, pal_id) == GSTileExpandedCache::Admission::Deferred)
 		{
 			m_frame.src_ref_palette++;
-			return;
+			return kNoSourceSlot;
 		}
 	}
 
@@ -1209,7 +1244,7 @@ void GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0,
 		if (m_frame.src_distinct >= kMaxSourceSlots)
 		{
 			m_frame.src_ref_capacity++;
-			return;
+			return kNoSourceSlot;
 		}
 		w.slot = m_frame.src_distinct++;
 	}
@@ -1226,6 +1261,76 @@ void GSRendererTileGpu::ProbeSourceRoad(PendingDraw& pd, const GIFRegTEX0& tex0,
 	else
 		m_frame.src_fresh++;
 	pd.src_slot = w.slot;
+	return wi;
+}
+
+// Rule 3's build. The window has been admitted and its bytes composed into the ring, so the source
+// can be materialised out of them: the cache decides whether this window already has an image and
+// whether that image is still current, and on a build it hands the texture to the materialiser,
+// which queues the pass that fills it.
+//
+// Direct colour only at this chunk. The images are real and correct; nothing samples one, so a
+// refusal here costs nothing beyond the counter -- which is exactly why the pin discipline and the
+// cache lifetime get measured against the whole corpus before a draw's pixels depend on them.
+void GSRendererTileGpu::MaterialiseSourceRoad(u32 window, const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
+	u32 epoch)
+{
+	const ProbedWindow& w = m_probe_windows[window];
+
+	// The content identity the cache decides rebuilds by, and where it came from. The probe took
+	// this fingerprint BEFORE the window was composed, which is the only moment it is honest: after
+	// the compose, the pages carry bytes a writeback has already superseded. Zero is "cannot say"
+	// (some page under the window holds GPU-side truth) and never matches anything, so an unprovable
+	// window rebuilds rather than serving stale texels.
+	const GSTileTextureSource::ContentToken token{
+		w.content != 0 ? GSTileTextureSource::ContentToken::Source::Pages :
+						 GSTileTextureSource::ContentToken::Source::None,
+		w.content};
+
+	SourceMaterialiser builder;
+	builder.r = this;
+	builder.epoch = epoch;
+
+	GSTileTextureSource::BuiltOutcome outcome = GSTileTextureSource::BuiltOutcome::Failed;
+	m_tex_source.LookupBuilt(m_vram_model, tex0, m_env.TEXA, tex_pages, builder, token, nullptr, &outcome);
+	switch (outcome)
+	{
+		case GSTileTextureSource::BuiltOutcome::Hit: m_frame.src_cache_hits++; break;
+		case GSTileTextureSource::BuiltOutcome::Rescued: m_frame.src_cache_rescued++; break;
+		case GSTileTextureSource::BuiltOutcome::Built: break; // counted by EmitMaterialiseOp
+		case GSTileTextureSource::BuiltOutcome::RefusedPinned: m_frame.src_pin_refusals++; break;
+		case GSTileTextureSource::BuiltOutcome::RefusedCapacity: m_frame.src_cap_refusals++; break;
+		case GSTileTextureSource::BuiltOutcome::Failed: m_frame.src_build_failed++; break;
+	}
+}
+
+bool GSRendererTileGpu::SourceMaterialiser::BuildTileSource(GSTexture* tex, const GIFRegTEX0& TEX0,
+	const GIFRegTEXA& TEXA)
+{
+	return r->EmitMaterialiseOp(tex, TEX0, TEXA, epoch);
+}
+
+bool GSRendererTileGpu::EmitMaterialiseOp(GSTexture* tex, const GIFRegTEX0& tex0, const GIFRegTEXA& texa, u32 epoch)
+{
+	GSDevice::GSTileGpuPrepOp op = {};
+	op.kind = GSDevice::GSTileGpuPrepKind::Materialise;
+	// A source is not a target: the op names it through the plan's prep_textures list, which is
+	// this vector, and the target list stays exactly what it was.
+	op.target = static_cast<u32>(m_plan_prep_textures.size());
+	op.bp = tex0.TBP0;
+	// Pages per texture row, the same value the state row carries for a direct-colour window, so
+	// the materialise addresses the window the way the byte road would have.
+	op.bw = std::max<u32>(tex0.TBW, 1);
+	op.psm = tex0.PSM;
+	op.epoch = epoch;
+	// A 24-bit window's alpha byte belongs to whatever else shares those bytes, so TEXA's expansion
+	// is baked into the image here, at build time -- which is what the CPU deswizzlers do and what
+	// the cache's key already accounts for.
+	op.texa = (tex0.PSM == PSMCT24) ? (1u | (texa.AEM ? 2u : 0u) | (static_cast<u32>(texa.TA0) << 8)) : 0u;
+	m_plan_prep_textures.push_back(tex);
+	m_plan_prep_ops.push_back(op);
+	m_frame.src_builds++;
+	return true;
 }
 
 u32 GSRendererTileGpu::PlanTargetIndex(GSTileSurfaceId id)
@@ -1807,14 +1912,20 @@ void GSRendererTileGpu::AccumulateDraw()
 			else
 			{
 				pd.road_mask = GSDevice::kGSTileGpuRoadByte;
-				// Rule 3 is asked here and never taken (this chunk builds the question, not the
-				// road): whether a cache of materialised sources could serve this window, and if
-				// not, which clause refused. Asked before the compose only because that is the
-				// order the roads are tried in -- the byte road below is unaffected either way,
-				// and the answer is a counter.
-				ProbeSourceRoad(pd, tex0, tex_pages, paletted, mip);
+				// Rule 3's admission question, asked BEFORE the compose and answered against the
+				// bytes as they stand -- which is the only moment the window's content fingerprint
+				// is honest, since composing supersedes exactly the bytes it would hash.
+				const u32 src_window = ProbeSourceRoad(pd, tex0, tex_pages, paletted, mip);
 				ComposeForPendingDraw(tex_pages, pd);
 				pd.epoch = m_epoch;
+				// ...and the build, after it. The materialise reads the ring at this draw's epoch,
+				// so the window's slots have to exist and any writeback composing them has to be
+				// queued first: prep ops run at the pass head in array order, and the compose above
+				// emitted its writebacks before this line. Direct colour only at this chunk, and
+				// NOTHING SAMPLES THE RESULT -- the images are built, cached and invalidated for
+				// real, and every draw still takes the byte road.
+				if (src_window != kNoSourceSlot && !paletted)
+					MaterialiseSourceRoad(src_window, tex0, tex_pages, pd.epoch);
 			}
 		}
 		else
@@ -2375,6 +2486,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 		plan.vertex_stride = sizeof(GSVertex);
 		plan.indices = m_plan_indices;
 		plan.targets = m_plan_targets;
+		plan.prep_textures = m_plan_prep_textures;
 		plan.tex_sources = m_plan_tex_sources;
 		plan.ring_pages = ring;
 		plan.epoch_count = m_epoch + 1;
@@ -2413,6 +2525,7 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_plan_prep_ops.clear();
 	m_plan_page_entries.clear();
 	m_plan_targets.clear();
+	m_plan_prep_textures.clear();
 	m_plan_tex_sources.clear();
 	m_plan_target_surfaces.clear();
 	m_plan_target_of_surface.clear();
@@ -2420,6 +2533,11 @@ void GSRendererTileGpu::BuildAndExecutePlan()
 	m_ring_versions.clear();
 	m_ring_live.fill(0);
 	m_epoch = 0;
+	// The plan has been handed to the executor, so every cache entry its draws named is free
+	// again: advance the pin clock, which is what releases them. This is the only place that may
+	// do it -- a mid-frame flush ends a plan just as VSync does, and the pins have to clear with
+	// the plan and not with the video frame.
+	AdvanceSourcePinFrame();
 	m_run_surface = kGSTileNoSurface;
 	m_run_written = GSVector4i::zero();
 	BreakOpenPass();

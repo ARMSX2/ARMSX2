@@ -2030,8 +2030,9 @@ public:
 		u32 block_mask;
 	};
 
-	/// The two reconciliation dispatches between the byte store and a resident target, both keyed
-	/// through the epoch page table.
+	/// The dispatches run at the head of a pass, before its render pass opens: the two
+	/// reconciliations between the byte store and a resident target, and the build of a
+	/// materialised texture source. All three are keyed through the epoch page table.
 	enum class GSTileGpuPrepKind : u8
 	{
 		/// Target -> bytes: reswizzle a colour target's listed pages into the ring slots the table
@@ -2044,13 +2045,23 @@ public:
 		/// so a draw about to render into pages the surface does not yet hold newest finds them
 		/// current. Run before the pass whose draws render into them.
 		Seed = 1,
+		/// Bytes -> a texture source: unswizzle a whole texture window out of the ring slots into
+		/// an ordinary RGBA8 image, one fragment per texel, so a draw can sample it with the
+		/// hardware sampler instead of decoding four swizzled loads per bilinear tap. A fragment
+		/// pass over the source image; `target` indexes `prep_textures`, NOT the frame's targets —
+		/// a source is nothing's render target and never appears in a target pair. The page list is
+		/// unused (the window's addresses come from bp/bw and the epoch page table). Always safe to
+		/// hoist to the pass head: the ring is staged whole-frame, and the renderer emits this op
+		/// after the composition ops for the same window, so array order puts it behind them.
+		Materialise = 2,
 	};
 
-	/// One reconciliation dispatch. `target` indexes the plan's target list; bp/bw/psm is the
-	/// surface layout that texture's pixel space realises (guest layout = pixel space, page-aligned
-	/// base). The page list is `page_entry_count` rows of the plan's page_entries from
-	/// `first_page_entry`. Formats served: PSMCT32/PSMCT24 (Format::Color targets); the renderer
-	/// keeps every other surface off this road.
+	/// One prep dispatch. `target` indexes the plan's target list — or, for a Materialise, its
+	/// `prep_textures` list. bp/bw/psm is the layout that pixel space realises (guest layout =
+	/// pixel space, page-aligned base); for a Materialise it is the texture window's TBP0, its
+	/// pages per texture row and its TEX0.PSM. The page list is `page_entry_count` rows of the
+	/// plan's page_entries from `first_page_entry`. Formats served: PSMCT32/PSMCT24 (Format::Color
+	/// targets); the renderer keeps every other surface off this road.
 	struct GSTileGpuPrepOp
 	{
 		GSTileGpuPrepKind kind;
@@ -2062,6 +2073,11 @@ public:
 		u32 epoch;
 		u32 first_page_entry;
 		u32 page_entry_count;
+		/// Materialise only: TEXA as the fragment shader packs it (bit 0 = apply, bit 1 = AEM,
+		/// bits 8-15 = TA0). A 24-bit window's alpha byte is not its own, so the expansion is baked
+		/// into the image at build time — which is what the CPU deswizzlers do, and what the source
+		/// cache's key already accounts for (two TEXA settings are two entries).
+		u32 texa;
 	};
 
 	/// The pass's uniform depth configuration, which selects the depth pipeline variant. Every
@@ -2173,6 +2189,12 @@ public:
 		std::span<const u16> indices;
 
 		std::span<GSTexture* const> targets; ///< the *_target fields index this list
+
+		/// The images the frame's Materialise prep ops build into — rule 3's materialised texture
+		/// sources. A separate list from `targets` because a source is not one: no pass renders
+		/// into it, no target pair names it, and the page model does not own it. A Materialise op's
+		/// `target` field indexes here.
+		std::span<GSTexture* const> prep_textures;
 
 		/// The rule-2 sampled targets, as indices into `targets`, grouped by pass
 		/// (GSTileGpuPass::first_tex_source / tex_source_count). A textured draw either names one
