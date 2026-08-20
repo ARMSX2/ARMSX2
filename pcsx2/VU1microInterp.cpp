@@ -38,6 +38,7 @@ static void _vu1Exec(VURegs* VU)
 	_VURegsNum lregs;
 	_VURegsNum uregs;
 	u32* ptr;
+	bool stopbit = false;
 
 	ptr = (u32*)&VU->Micro[VU->VI[REG_TPC].UL];
 	VU->VI[REG_TPC].UL += 8;
@@ -52,7 +53,7 @@ static void _vu1Exec(VURegs* VU)
 		{
 			VU0.VI[REG_VPU_STAT].UL |= 0x200;
 			hwIntcIrq(INTC_VU1);
-			VU->ebit = 1;
+			stopbit = true;
 		}
 	}
 	if (ptr[1] & 0x08000000) // T flag
@@ -61,7 +62,7 @@ static void _vu1Exec(VURegs* VU)
 		{
 			VU0.VI[REG_VPU_STAT].UL |= 0x400;
 			hwIntcIrq(INTC_VU1);
-			VU->ebit = 1;
+			stopbit = true;
 		}
 	}
 
@@ -172,6 +173,12 @@ static void _vu1Exec(VURegs* VU)
 
 	_vuAddUpperStalls(VU, &uregs);
 	_vuAddLowerStalls(VU, &lregs);
+
+	// A D- or T-bit stop cannot land between a branch and its delay slot, so
+	// on a branch the countdown gets the extra pair the E bit gets. One
+	// already running keeps its own schedule.
+	if (stopbit)
+		VU->ebit = (VU->ebit == 0 && lregs.pipe == VUPIPE_BRANCH) ? 2 : 1;
 
 	if (VU->branch > 0)
 	{

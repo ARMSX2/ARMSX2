@@ -8,7 +8,8 @@
 //   bits::D (0x10000000) — Debug interrupt. Conditional on FBRST.D-stop
 //                          bit (bit 2 for VU0, bit 10 for VU1). When the
 //                          stop bit is set, raises INTC, sets VPU_STAT
-//                          bit 1, terminates *without* a delay slot.
+//                          bit 1, terminates on that pair — unless the pair
+//                          is a branch, when its delay slot runs first.
 //   bits::T (0x08000000) — Trace interrupt. Same as D but conditional on
 //                          FBRST bit 3 (VU0) / bit 11 (VU1), latches
 //                          VPU_STAT bit 2, calls INTC.
@@ -212,10 +213,9 @@ TEST(Vu0SpecialBits, TBitOnUnconditionalBranchRaisesVu0Intc)
 //
 //  condBranch's T-bit exit stub picks REG_TPC based on the branch condition:
 //  the resume PC must be the branch TARGET when the branch is taken and the
-//  fall-through side when it is not. The interpreter is the semantic oracle:
-//  _vu0Exec latches ebit=1 on the T-bit pair (terminating on that same pair,
-//  delay slot NOT executed), and InterpVU0::Execute's epilogue then applies
-//  `if (VU0.branch) TPC = branchpc` — so condition TRUE => TPC = target.
+//  fall-through side when it is not. The console capture behind
+//  vu_branch_console_conformance_tests settles both sides: the delay slot
+//  runs and the program parks at the branch's own outcome.
 //
 //  Polarity provenance (why these tests pin the DIRECT condition): x86's
 //  T/D-bit stubs wrap JMPcc in xInvertCond (microVU_Branch.inl:430/:461),
@@ -242,13 +242,10 @@ TEST(Vu0SpecialBits, TBitOnConditionalBranchTakenTpcIsBranchTarget)
 		EBitNopPair(),             // pair 4: terminator (T-bit stops first)
 	});
 
-	// One-sided runs: the T-bit stop makes JIT and interp legitimately diverge
-	// on delay-slot execution (JIT compiles branch+delay-slot as a unit, the
-	// interp's ebit=1 stops before the delay slot), so a full-state diff can't
-	// be used. TPC is asserted per-engine instead.
+	// TPC is asserted per engine rather than through a full-state diff.
 	h.RunInterpOnly();
 	EXPECT_EQ(h.GetViInterp(REG_TPC), 3u)
-		<< "interpreter oracle: taken branch + T-bit stop must resume at the "
+		<< "interpreter: taken branch + T-bit stop must resume at the "
 		   "branch target";
 	EXPECT_EQ((vuRegs[0].VI[REG_VPU_STAT].UL & 0x4u), 0x4u); // T-latch fired
 
@@ -273,16 +270,15 @@ TEST(Vu0SpecialBits, TBitOnConditionalBranchNotTakenTpcIsFallthrough)
 	});
 
 	h.RunInterpOnly();
-	// Interp model: ebit=1 fires on the branch pair itself, so the delay slot
-	// never executes and TPC rests at it (pair 1). The JIT ran the delay slot,
-	// so its resume point is pair 2 — a legitimate structural divergence.
-	EXPECT_EQ(h.GetViInterp(REG_TPC), 1u);
+	EXPECT_EQ(h.GetViInterp(REG_TPC), 2u)
+		<< "interpreter: a NOT-taken branch under a T-bit stop resumes at the "
+		   "fall-through side";
+	EXPECT_EQ(h.GetViInterp(vi::vi2), 0x222u);
 
 	h.RunJitPreserveBlockCache();
 	EXPECT_EQ(h.GetViJit(REG_TPC), 2u)
 		<< "condBranch T-bit stub: NOT-taken branch must set TPC to the "
 		   "fall-through side, never the branch target";
-	// The JIT's delay slot did execute before the stub.
 	EXPECT_EQ(h.GetViJit(vi::vi2), 0x222u);
 }
 

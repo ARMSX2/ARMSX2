@@ -129,10 +129,12 @@ TEST(VuBranchConsole, TBitConditionalBranchTakenParksAtTarget)
 	EXPECT_EQ(h.GetViJit(vu::vi::vi3), 0u) << "fall-through must not run";
 	EXPECT_EQ(h.GetViJit(vu::vi::vi4), 0u) << "the target's body must not run";
 
-	// The interpreter agrees on the resume address here but never runs the
-	// delay slot -- DISABLED_InterpreterRunsDelaySlotBeforeTraceStop.
 	EXPECT_EQ(h.GetViInterp(REG_TPC), c.tpc)
 		<< "interpreter: taken-branch resume address matches the console";
+	EXPECT_EQ(h.GetViInterp(vu::vi::vi2), 0x222u)
+		<< "interpreter: the delay slot runs before the stop";
+	EXPECT_EQ(h.GetViInterp(vu::vi::vi3), 0u);
+	EXPECT_EQ(h.GetViInterp(vu::vi::vi4), 0u);
 }
 
 TEST(VuBranchConsole, TBitConditionalBranchNotTakenParksAtFallthrough)
@@ -150,6 +152,13 @@ TEST(VuBranchConsole, TBitConditionalBranchNotTakenParksAtFallthrough)
 	EXPECT_EQ(h.GetViJit(vu::vi::vi2), 0x222u);
 	EXPECT_EQ(h.GetViJit(vu::vi::vi3), 0u);
 	EXPECT_EQ(h.GetViJit(vu::vi::vi4), 0u);
+
+	EXPECT_EQ(h.GetViInterp(REG_TPC), c.tpc)
+		<< "interpreter: a not-taken branch under a T-bit stop must resume at "
+		   "the fall-through side, as the console does";
+	EXPECT_EQ(h.GetViInterp(vu::vi::vi2), 0x222u);
+	EXPECT_EQ(h.GetViInterp(vu::vi::vi3), 0u);
+	EXPECT_EQ(h.GetViInterp(vu::vi::vi4), 0u);
 }
 
 // The console's T-latch is VPU_STAT bit 2 and the D-latch is bit 1; the
@@ -194,6 +203,8 @@ TEST(VuBranchConsole, TBitOnPlainPairStopsWithoutRunningTheNextPair)
 		   "the following pair";
 	EXPECT_EQ(h.GetViInterp(vu::vi::vi2), 0u)
 		<< "interpreter: same";
+	EXPECT_EQ(h.GetViJit(REG_TPC), c.tpc);
+	EXPECT_EQ(h.GetViInterp(REG_TPC), c.tpc);
 }
 
 TEST(VuBranchConsole, TBitOnUnconditionalBranchAndJumpParkAtTheTarget)
@@ -565,19 +576,18 @@ TEST(VuBranchConsole, DISABLED_DBitStopMatchesConsole)
 	}
 }
 
-// TRIPWIRE -- the interpreter stops one pair early on a trace stop.
-//
-// _vu0Exec (VU0microInterp.cpp) latches ebit=1 on the branch pair itself, so
-// the delay slot never executes (console: vi2 = 0x222, it does) and on a
-// not-taken branch the resume PC rests at the delay slot, pair 1, where the
-// console says pair 2. The taken case agrees by coincidence: the epilogue's
-// `if (branch) TPC = branchpc` lands on the address the console picks.
-TEST(VuBranchConsole, DISABLED_InterpreterRunsDelaySlotBeforeTraceStop)
+// The D bit takes the same deferral as the T bit, over every branch form the
+// capture covers: conditional both ways, unconditional, and JR.  The arm64
+// recompiler compiles a branch and its delay slot as a unit and so gets this
+// for free; only the interpreter had to be told.
+TEST(VuBranchConsole, InterpreterRunsDelaySlotBeforeAStop)
 {
 	for (const char* tag : {"Q1_TCOND_TAKEN_STOP", "Q1_TCOND_NOTTAKEN_STOP",
-	                        "Q1_TUNCOND_STOP", "Q1_TJR_STOP"})
+	                        "Q1_TUNCOND_STOP", "Q1_TJR_STOP",
+	                        "Q1_DCOND_TAKEN_STOP", "Q1_DCOND_NOTTAKEN_STOP"})
 	{
 		const VuBranchCase& c = CaseByTag(tag);
+		ASSERT_EQ(ConsoleVi(c, 2), 0x222u) << tag << ": capture invariant";
 		VuTestHarness h(0);
 		RunConsoleCase(c, h);
 		EXPECT_EQ(h.GetViInterp(vu::vi::vi2), 0x222u)
