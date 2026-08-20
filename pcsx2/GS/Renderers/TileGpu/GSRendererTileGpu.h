@@ -293,6 +293,13 @@ private:
 	// moving bytes, and count it lossy.
 	void LossySteal(const GSPageBitmap& pages);
 
+	// One draw's colour and depth surfaces claim the same pages -- the game packed FRAME and ZBUF
+	// close enough that a single draw's two footprints share them. Only one surface can be the
+	// model's holder of a page, so the other's byte truth there is dropped: same move as a
+	// road-less steal, counted apart because the cause is the game's memory layout rather than a
+	// surface this stage cannot write back yet.
+	void AliasSteal(const GSPageBitmap& pages);
+
 	// Resolve a surface's pool texture into the plan's target list (once per frame per surface).
 	u32 PlanTargetIndex(GSTileSurfaceId id);
 
@@ -381,6 +388,7 @@ private:
 		u32 date_breaks = 0;     // draws that opened a pass because their DATE read needed a fresh snapshot
 		u32 snapshots = 0;       // passes that took a snapshot of their target
 		u32 self_reads = 0;      // draws sampling pages their own pass target holds (snapshot semantics)
+		u32 alias_steal_pages = 0; // pages one draw claimed through both its surfaces (FRAME/ZBUF packing)
 		u32 lossy_pages = 0;     // truth moved without a byte road (depth / unsupported-format owners)
 		u32 skipped_draws = 0;   // draws no surface could be built for (format / stride)
 		u32 stalls[static_cast<u32>(StallSite::Count)] = {};
@@ -391,4 +399,5 @@ private:
 	ModelFrame m_frame = {};
 	std::vector<ModelFrame> m_model_frames;
 	bool m_warned_lossy = false;
+	bool m_warned_alias = false;
 };

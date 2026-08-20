@@ -727,6 +727,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto dbrk = stat([](const MF& f) { return f.date_breaks; });
 	const auto snaps = stat([](const MF& f) { return f.snapshots; });
 	const auto self = stat([](const MF& f) { return f.self_reads; });
+	const auto alias = stat([](const MF& f) { return f.alias_steal_pages; });
 	const auto lossy = stat([](const MF& f) { return f.lossy_pages; });
 	const auto skipped = stat([](const MF& f) { return f.skipped_draws; });
 	const auto flushes = stat([](const MF& f) { return f.flushes; });
@@ -751,9 +752,10 @@ void GSRendererTileGpu::ReportModelTraffic()
 		wbo.mean, wbo.p50, wbp.mean, wbp.p50, wbrk.mean, wbrk.p50, sdo.mean, sdo.p50, sdp.mean, sdp.p50, sbrk.mean,
 		sbrk.p50);
 	Console.WriteLn("  self-reads (snapshot semantics) %.2f / %u   DATE: %.2f / %u pass breaks, %.2f / %u snapshots   "
-					"lossy pages (no byte road) %.2f / %u   skipped draws %.2f / %u   mid-frame flushes %.2f / %u",
-		self.mean, self.p50, dbrk.mean, dbrk.p50, snaps.mean, snaps.p50, lossy.mean, lossy.p50, skipped.mean, skipped.p50,
-		flushes.mean, flushes.p50);
+					"alias-steal pages %.2f / %u   lossy pages (no byte road) %.2f / %u   skipped draws %.2f / %u   "
+					"mid-frame flushes %.2f / %u",
+		self.mean, self.p50, dbrk.mean, dbrk.p50, snaps.mean, snaps.p50, alias.mean, alias.p50, lossy.mean,
+		lossy.p50, skipped.mean, skipped.p50, flushes.mean, flushes.p50);
 	Console.WriteLn("  stalls: upload sub-block %.2f/%u (%.2f pages)  local-read %.2f/%u (%.2f)  clut %.2f/%u (%.2f)  "
 					"sync-all %.2f/%u (%.2f)",
 		s_up.mean, s_up.p50, p_up.mean, s_rd.mean, s_rd.p50, p_rd.mean, s_cl.mean, s_cl.p50, p_cl.mean, s_all.mean,
@@ -1049,6 +1051,27 @@ void GSRendererTileGpu::LossySteal(const GSPageBitmap& pages)
 		m_warned_lossy = true;
 		Console.Warning("TileGpu: page truth moved through a surface without a byte road (depth / 16-bit / unaligned) "
 						"-- the bytes are stale there. Counted per frame as lossy pages.");
+	}
+	m_vram_model.OnReadback(m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll));
+}
+
+// One draw's colour and depth surfaces claim the same pages, so only one of them can be the
+// holder and the other's byte truth on them is dropped. Same model move as a road-less steal --
+// synced without moving bytes -- but a different accuracy story, so a counter and a warning of
+// its own: this one is about GS memory layout (how tightly the game packs FRAME against ZBUF),
+// not about which surfaces this stage can write back yet.
+void GSRendererTileGpu::AliasSteal(const GSPageBitmap& pages)
+{
+	if (pages.empty())
+		return;
+	m_frame.alias_steal_pages += pages.count();
+	if (!m_warned_alias)
+	{
+		m_warned_alias = true;
+		Console.Warning("TileGpu: a draw's colour and depth footprints share pages -- the game packs FRAME and ZBUF "
+						"close enough that one draw writes both through the same pages. Both surfaces claim them and "
+						"only one can hold them, so the colour surface's byte truth there is dropped. Counted per "
+						"frame as alias-steal pages.");
 	}
 	m_vram_model.OnReadback(m_vram_model.ReadbackNeeded(pages, kGSTilePlanesAll));
 }
@@ -1440,7 +1463,32 @@ void GSRendererTileGpu::AccumulateDraw()
 	if (color_written)
 		m_vram_model.OnNativeDraw(fb_id, fb_pages, fb_claims);
 	if (z_write)
+	{
+		// The depth claim is asked what it steals HERE, between the two claims, and not with the
+		// seeds above -- because the colour claim that just ran is what creates the steal. Games
+		// pack FRAME and ZBUF back to back, so the two page footprints of ONE draw routinely share
+		// the boundary page (Dirge of Cerberus: FRAME pages 224-280, ZBUF starting at 280, one page
+		// shared per draw), and a few alias them outright (FlatOut 2 puts a 16-page FRAME and its
+		// ZBUF at the same base; GT4's online beta offsets ZBUF one page into a 126-page FRAME, so
+		// 112 pages are shared). The colour claim has just made itself the holder of those pages,
+		// and the depth claim takes them straight back.
+		//
+		// Nothing that pre-dates the draw is lost -- both claims describe this same draw's own
+		// output -- but the model names one holder per page per plane, so the colour surface's
+		// version of those bytes is. Marked synced without moving any (the depth surface has no
+		// byte road to move them onto in any case) and counted, never silent.
+		//
+		// The colour claim needs no such question of its own, and the depth claim needed none
+		// before the colour claim ran: every claim set that contains a colour plane also contains
+		// Z and vice versa (fb_claims is all four, z_claims is gsTilePlanesInvalidatedByWrite),
+		// and so does every set a CPU write clears, so no surface can come to hold one of a page's
+		// planes while another holds the rest -- which is the only way the seed gates above could
+		// miss a steal. Measured: the pre-claim query is empty on all 18 corpus dumps. If it ever
+		// stops being, the model's synced assert says so, and the answer is a ComposeRingPages of
+		// the pages it names, before the claims.
+		AliasSteal(m_vram_model.SpillBeforeNativeDraw(z_id, z_pages, z_claims));
 		m_vram_model.OnNativeDraw(z_id, z_pages, z_claims);
+	}
 
 	// A DATE draw reads the pass snapshot; if the run of draws into this surface since the last
 	// break has written pixels under it, the snapshot would be stale for those, so it opens a new
