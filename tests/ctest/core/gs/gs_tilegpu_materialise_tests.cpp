@@ -313,3 +313,71 @@ TEST_F(TileGpuMaterialiseTest, WindowMatchesCpuDeswizzle)
 		}
 	}
 }
+
+// -- the alpha-byte views' arms (TILEGPU_SRC_FMT 4/5/6) -----------------------------------------
+//
+// PSMT8H/PSMT4HL/PSMT4HH read the CT32 word the direct arm reads and take their index out of its top
+// bits, so the address arithmetic is shared with fmt 0/1 and the only thing these arms add is the
+// extraction. Pinned against psm.rtxP, the same CPU index reader the PSMT8/PSMT4 arms answer to --
+// address and extraction together, which is what the pass actually performs.
+TEST_F(TileGpuMaterialiseTest, AlphaViewWindowsMatchCpuIndexReader)
+{
+	const FormSet f = Fit();
+	ASSERT_TRUE(f.valid);
+	const u32* const vm = s_mem->vm32();
+
+	// The extraction each arm compiles, by TILEGPU_SRC_FMT.
+	const auto Extract = [](u32 w, u32 src_fmt) -> u32 {
+		if (src_fmt == 4) // PSMT8H
+			return (w >> 24) & 0xFF;
+		if (src_fmt == 5) // PSMT4HL
+			return (w >> 24) & 0xF;
+		return (w >> 28) & 0xF; // PSMT4HH
+	};
+
+	struct Window
+	{
+		u32 tbp0;
+		u32 tbw; // the TEX0 register value
+		int tw;
+		int th;
+	};
+	static constexpr Window kWindows[] = {
+		{0, 1, 64, 64},
+		{32, 2, 128, 96},
+		{37, 2, 128, 64},
+		{0x1400, 4, 256, 128},
+	};
+
+	std::vector<u8> cpu;
+	GIFRegTEXA TEXA = {}; // an index reader does not consult it
+	u32 src_fmt = 4;
+	for (const u32 psm : {static_cast<u32>(PSMT8H), static_cast<u32>(PSMT4HL), static_cast<u32>(PSMT4HH)})
+	{
+		const GSLocalMemory::psm_t& p = GSLocalMemory::m_psm[psm];
+		for (const Window& w : kWindows)
+		{
+			// The op's pages-per-row. These are CT32-geometry formats, so it is TBW itself and NOT
+			// the TBW >> 1 the word "paletted" would suggest.
+			const u32 op_bw = GSTileSwizzleForms::PagesPerRow(psm, w.tbw);
+			ASSERT_EQ(op_bw, w.tbw);
+			const u32 pitch = static_cast<u32>(w.tw);
+			cpu.assign(pitch * static_cast<u32>(w.th), 0);
+
+			const GSOffset off = s_mem->GetOffset(w.tbp0, w.tbw, psm);
+			p.rtxP(*s_mem, off, GSVector4i(0, 0, w.tw, w.th), cpu.data(), static_cast<int>(pitch), TEXA);
+
+			for (int v = 0; v < w.th; v++)
+			{
+				const u8* const row = cpu.data() + static_cast<u32>(v) * pitch;
+				for (int u = 0; u < w.tw; u++)
+				{
+					const u32 addr = MaterialiseWord(f, static_cast<u32>(u), static_cast<u32>(v), w.tbp0, op_bw);
+					ASSERT_EQ(Extract(vm[addr], src_fmt), static_cast<u32>(row[u]))
+						<< "psm=" << psm << " tbp0=" << w.tbp0 << " tbw=" << w.tbw << " u=" << u << " v=" << v;
+				}
+			}
+		}
+		src_fmt++;
+	}
+}

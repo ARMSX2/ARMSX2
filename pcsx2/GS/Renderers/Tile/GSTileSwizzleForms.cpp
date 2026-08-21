@@ -4,6 +4,7 @@
 #include "GS/Renderers/Tile/GSTileSwizzleForms.h"
 
 #include "GS/GSClut.h"
+#include "GS/GSLocalMemory.h"
 #include "GS/GSRegs.h"
 #include "GS/GSTables.h"
 
@@ -116,6 +117,16 @@ namespace GSTileSwizzleForms
 			default:
 				return -1;
 		}
+	}
+
+	u32 PagesPerRow(u32 psm, u32 tbw)
+	{
+		// GSOffset: bw >> (pageShiftX - 6), pageShiftX = ilog2(page width in texels). Read off
+		// the psm table rather than listed per format, so a format whose page geometry the table
+		// already knows cannot be given the wrong term by being left out of a switch -- which is
+		// exactly how the alpha-byte views would have been served TBW >> 1 for sharing the word
+		// "paletted" with PSMT8.
+		return (GSLocalMemory::m_psm[psm].pgs.x >= 128) ? (tbw >> 1) : tbw;
 	}
 
 	OwnerTexel Locate(const FormSet& forms, IndexFormat fmt, const Reinterpretation& r, u32 u, u32 v)

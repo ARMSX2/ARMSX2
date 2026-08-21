@@ -6701,6 +6701,12 @@ u32 GSDeviceVK::TileGpuSrcFormatForPsm(u32 psm)
 		case PSMCT24: return 1;
 		case PSMT8: return 2;
 		case PSMT4: return 3;
+		// The alpha-byte views. Their own pipelines rather than PSMCT32's plus a fixup, because the
+		// materialise is one program per format by design -- the arithmetic differs and a runtime
+		// branch on it would be paid per texel of every window the road ever builds.
+		case PSMT8H: return 4;
+		case PSMT4HL: return 5;
+		case PSMT4HH: return 6;
 		default: return kTileGpuSrcFormats;
 	}
 }

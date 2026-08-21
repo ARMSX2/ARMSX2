@@ -860,6 +860,11 @@ private:
 		// SERVED (src_served below); the paletted half is still measurement only.
 		u32 tex_draws = 0;         // textured draws in a format either road samples (the denominator)
 		u32 tex_unsupported = 0;   // TME draws in a format neither road samples: rule 3's format refusal
+		u32 tex_hi_draws = 0;      // ...of tex_draws, the alpha-byte views (PSMT8H/PSMT4HL/PSMT4HH).
+		                           // Counted apart because they are the one paletted family whose page
+		                           // geometry is CT32's, so a page-term regression shows only here --
+		                           // and because a dump reading zero of them is a dump whose frames a
+		                           // change to this road must leave byte-identical.
 		u32 src_eligible = 0;      // rule-2-declined draws rule 3 would serve
 		u32 src_hit = 0;           // ...served with no build at all (window and stamp both already seen)
 		u32 src_rebuild = 0;       // ...served after a rebuild: the window is known and its bytes moved

@@ -137,7 +137,8 @@ struct StateRow
 	uint tcc;        // TEX0.TCC: 1 = texture carries alpha, 0 = alpha from vertex
 	uint wms;        // CLAMP.WMS horizontal wrap mode
 	uint wmt;        // CLAMP.WMT vertical wrap mode
-	uint index_format; // 0 = direct 32-bit texel, 1 = PSMT8 index, 2 = PSMT4 index
+	uint index_format; // 0 = direct 32-bit texel, else GSTileSwizzleForms::IndexFormatFor + 1:
+	                   // 1 = PSMT8, 2 = PSMT4, 3 = PSMT8H, 4 = PSMT4HL, 5 = PSMT4HH
 	uint pal_offset;   // word offset of this draw's palette in the frame palette stream
 	uint epoch;        // page-table epoch this draw's byte reads go through
 	uint date;         // destination-alpha test: 0 off, 1 = pass where alpha bit 7 clear (DATM 0), 2 = set (DATM 1)
@@ -391,6 +392,34 @@ uint tilegpu_index4(uint u, uint v, uint tbp0, uint tbw, uint epoch)
 	return ((nib & 1u) != 0u) ? (byteval >> 4u) : (byteval & 0xFu);
 }
 
+// The alpha-byte views: PSMT8H, PSMT4HL, PSMT4HH. Their address geometry is PSMCT32's -- 64x32
+// pages, 8x8 blocks, 8x8-texel columns, TBW pages per row, one word per texel -- and the palette
+// index lives in the TOP BITS of that word. So the address is tilegpu_texel32's, unchanged, and the
+// only thing these formats add is which bits come out of it.
+//
+// ⚠️ They carry a palette but they are NOT 128 texels to a page. The state row's tbw is TBW here,
+// not TBW >> 1; the renderer takes both from GSTileSwizzleForms::PagesPerRow, which reads the page
+// width off the psm table rather than asking whether the format is paletted.
+//
+// `fmt` is the state row's index_format: 3 = PSMT8H (bits 24-31), 4 = PSMT4HL (24-27), 5 = PSMT4HH
+// (28-31). Dynamically uniform per draw, so the two compares do not diverge.
+//
+// The extract is bitfieldExtract at a CONSTANT offset and width, then constant shifts for the
+// nibble -- deliberately, not stylistically. A sub-word extract whose shift amount is computed is
+// the shape Honeykrisp miscompiles on a word loaded from this SSBO (tilegpu_byte_sel's comment has
+// the whole story), and these are the forms that survive it there: the same constant-shift nibble
+// pick tilegpu_index4 takes under the gate, and the same bitfieldExtract tilegpu_reinterpret.glsl
+// already relies on. Every other driver gets one instruction either way, so there is nothing to
+// gate.
+uint tilegpu_index_hi(uint u, uint v, uint tbp0, uint tbw, uint epoch, uint fmt)
+{
+	// The alpha byte: the whole index for PSMT8H, and the byte the two 4-bit views take a nibble of.
+	uint b = bitfieldExtract(tilegpu_texel32(u, v, tbp0, tbw, epoch), 24, 8);
+	if (fmt == 3u)
+		return b;
+	return (fmt == 4u) ? (b & 0xFu) : (b >> 4u);
+}
+
 // The CLUT gather's consumer half. A palette whose words were rendered by a native draw is not in
 // the CPU's CLUT RAM at all; the executor copies its BLOCKS out of the owning target into this
 // draw's reserved run of the palette stream, which lands them in texel row-major order rather than
@@ -536,8 +565,10 @@ vec4 tilegpu_tap(StateRow sr, int cu, int cv)
 		w = tilegpu_texel32(iu, iv, sr.tbp0, sr.tbw, sr.epoch);
 	else if (sr.index_format == 1u)
 		w = tilegpu_palette_word(sr, tilegpu_index8(iu, iv, sr.tbp0, sr.tbw, sr.epoch));
-	else
+	else if (sr.index_format == 2u)
 		w = tilegpu_palette_word(sr, tilegpu_index4(iu, iv, sr.tbp0, sr.tbw, sr.epoch));
+	else
+		w = tilegpu_palette_word(sr, tilegpu_index_hi(iu, iv, sr.tbp0, sr.tbw, sr.epoch, sr.index_format));
 
 	return tilegpu_texa(sr, tilegpu_unpack(w), (w & 0x00FFFFFFu) == 0u);
 #else

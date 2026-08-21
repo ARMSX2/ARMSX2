@@ -35,6 +35,12 @@
 //       ps_tile_expand_palette, keyed on (index build id x palette content id). TEXA belongs to
 //       the CLUT expansion for these formats (GSClut::Read32 applies it), so `texa` is zero here
 //       and the alpha rule above is not compiled in.
+//   4 = PSMT8H, 5 = PSMT4HL, 6 = PSMT4HH -- the alpha-byte views. Also fields of palette indices,
+//       and written the same way, but their ADDRESS geometry is PSMCT32's and not PSMT8's: 64x32
+//       pages, 8x8 blocks, one word per texel, TBW pages per row. The index is the top byte of
+//       that word, or a nibble of it. ⚠️ They are paletted AND 64 texels to a page, so `bw` here
+//       is TBW and not TBW >> 1 -- which is why the renderer takes it from
+//       GSTileSwizzleForms::PagesPerRow, off the page width, rather than off psm.pal.
 //
 // ⚠️ Two rules from tilegpu.glsl's header bind here too, for the same reasons:
 //  - TILEGPU_STATIC_BYTE_SEL. Honeykrisp miscompiles the dynamic sub-word extract on a word loaded
@@ -83,11 +89,17 @@ layout(push_constant) uniform cb
 
 #define XB(v, b, m) ((0u - (((v) >> (b)) & 1u)) & (m))
 
+// The CT32 address geometry: pages 64x32 texels, blocks 8x8, columns 8x8, one word per texel. Four
+// of the seven formats use it -- the two direct-colour ones and the three alpha-byte views -- so it
+// gets its own gate rather than a range test, which is what let PSMT8 quietly share the 32-bit
+// BLOCK form while needing its own column form.
+#define TILEGPU_SRC_CT32_ADDR (TILEGPU_SRC_FMT <= 1 || TILEGPU_SRC_FMT >= 4)
+
 // The swizzle forms, one set per address geometry -- fitted at runtime from GSTables.cpp and
 // injected as TILE_SWZ_* defines, so this shader and the CPU readers cannot disagree about a
 // constant. Only the forms this build's format uses are compiled: the 32-bit block form serves
-// PSMCT32/24 and PSMT8, the 4-bit block form serves PSMT4, and the column form is per format.
-#if TILEGPU_SRC_FMT <= 2
+// everything but PSMT4, the 4-bit block form serves PSMT4, and the column form is per geometry.
+#if TILEGPU_SRC_FMT != 3
 uint tile_b48(uint x, uint y)
 {
 	return XB(x, 0u, TILE_SWZ_B48_X0) ^ XB(x, 1u, TILE_SWZ_B48_X1) ^ XB(x, 2u, TILE_SWZ_B48_X2)
@@ -95,7 +107,7 @@ uint tile_b48(uint x, uint y)
 }
 #endif
 
-#if TILEGPU_SRC_FMT <= 1
+#if TILEGPU_SRC_CT32_ADDR
 uint tile_c32(uint x, uint y)
 {
 	return XB(x, 0u, TILE_SWZ_C32_X0) ^ XB(x, 1u, TILE_SWZ_C32_X1) ^ XB(x, 2u, TILE_SWZ_C32_X2)
@@ -171,14 +183,17 @@ void main()
 	const uint u = uint(gl_FragCoord.x);
 	const uint v = uint(gl_FragCoord.y);
 
-#if TILEGPU_SRC_FMT <= 1
+#if TILEGPU_SRC_CT32_ADDR
 	// The CT32/CT24 address, identical to tilegpu_texel32's: a page is 64x32 texels of 8x8 blocks
 	// and 8x8-texel columns, block b occupies words [b*64, b*64+64), so the absolute block times 64
-	// plus the word-in-block is the linear guest word.
+	// plus the word-in-block is the linear guest word. The three alpha-byte views read the same
+	// word; they differ only in which of its bits are the index.
 	const uint page = (v >> 5u) * bw + (u >> 6u);
 	const uint blk = bp + page * 32u + tile_b48((u >> 3u) & 7u, (v >> 3u) & 3u);
 	const uint w = mat_ring_word(blk * 64u + tile_c32(u & 7u, v & 7u));
+#endif
 
+#if TILEGPU_SRC_FMT <= 1
 	vec4 t = vec4(float(tilegpu_byte_sel(w, 0u)), float(tilegpu_byte_sel(w, 1u)),
 		float(tilegpu_byte_sel(w, 2u)), float(tilegpu_byte_sel(w, 3u))) * (1.0f / 255.0f);
 #elif TILEGPU_SRC_FMT == 2
@@ -191,7 +206,7 @@ void main()
 	// The index, replicated -- ps_tile_expand_palette reads .a, and an R8 view of a one-byte source
 	// would have replicated it anyway, so this target holds what that pass already expects.
 	vec4 t = vec4(float(idx)) * (1.0f / 255.0f);
-#else
+#elif TILEGPU_SRC_FMT == 3
 	// PSMT4, identical to tilegpu_index4's: a page is 128x128 texels of 32x16 blocks; the column
 	// form gives the NIBBLE within the block's 512, its low bit choosing the half of its byte.
 	const uint page = (v >> 7u) * bw + (u >> 7u);
@@ -200,6 +215,20 @@ void main()
 	const uint byte_in_block = nib >> 1u;
 	const uint byteval = tilegpu_byte_sel(mat_ring_word(blk * 64u + (byte_in_block >> 2u)), byte_in_block);
 	vec4 t = vec4(float(tilegpu_nibble_sel(byteval, nib))) * (1.0f / 255.0f);
+#else
+	// The alpha-byte views, identical to tilegpu_index_hi's: the index is the top byte of the CT32
+	// word read above, or a nibble of that byte. Constant offsets throughout -- a computed shift
+	// amount on a word out of this SSBO is what Honeykrisp gets wrong.
+	const uint hb = bitfieldExtract(w, 24, 8);
+#if TILEGPU_SRC_FMT == 4 // PSMT8H
+	const uint idx = hb;
+#elif TILEGPU_SRC_FMT == 5 // PSMT4HL
+	const uint idx = hb & 0xFu;
+#else // PSMT4HH
+	const uint idx = hb >> 4u;
+#endif
+	// Replicated, exactly as the PSMT8/PSMT4 arms do it -- ps_tile_expand_palette reads .a.
+	vec4 t = vec4(float(idx)) * (1.0f / 255.0f);
 #endif
 
 #if TILEGPU_SRC_FMT == 1

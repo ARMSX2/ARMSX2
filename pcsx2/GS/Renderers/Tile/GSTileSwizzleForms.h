@@ -159,6 +159,23 @@ namespace GSTileSwizzleForms
 	/// Maps a GS PSM to the shader's format, or -1 for one it does not serve.
 	int IndexFormatFor(u32 psm);
 
+	/// Pages per texture row for a window of `psm` at TEX0.TBW — the page term every
+	/// address form below (and every TileGpu shader) multiplies the row index by. This
+	/// is GSOffset's own `bw >> (pageShiftX - 6)`: a 64-texel-wide page (the CT32 family,
+	/// which the alpha-byte views PSMT8H/PSMT4HL/PSMT4HH share) takes TBW unchanged, a
+	/// 128-wide one (PSMT8/PSMT4) halves it.
+	///
+	/// ⚠️ A format's page WIDTH decides this, not whether it has a palette. The three
+	/// alpha-byte views have a palette and CT32 geometry, so halving their TBW would
+	/// address the wrong page in every row but the first.
+	///
+	/// GSOffset's value exactly, TBW=0 included -- no floor at one page. TileGpu's
+	/// direct-32 road applies a max(TBW, 1) of its own at its call site; that floor is
+	/// older than this helper and is left where it is rather than folded in here, because
+	/// folding it in would silently give every format a page term the CPU readers do not
+	/// have.
+	u32 PagesPerRow(u32 psm, u32 tbw);
+
 	struct Reinterpretation
 	{
 		u32 src_bp; ///< block-granular base of the index window

@@ -663,10 +663,11 @@ private:
 	bool CompileTileGpuSeedPipeline();
 	// Bytes -> a texture source: a fragment pass that unswizzles a whole texture window out of the
 	// ring into an ordinary RGBA8 image, one fragment per texel, for the hardware sampler to read.
-	// One pipeline per source format (0 = PSMCT32, 1 = PSMCT24, 2 = PSMT8, 3 = PSMT4), same layout
-	// and descriptor set as the seed. Compiled on first use of that format, same gate. The two
-	// paletted formats write an INDEX image; its colour arrives from the Expand op that follows.
-	static constexpr u32 kTileGpuSrcFormats = 4;
+	// One pipeline per source format (0 = PSMCT32, 1 = PSMCT24, 2 = PSMT8, 3 = PSMT4, 4 = PSMT8H,
+	// 5 = PSMT4HL, 6 = PSMT4HH), same layout and descriptor set as the seed. Compiled on first use
+	// of that format, same gate. The five paletted formats write an INDEX image; its colour arrives
+	// from the Expand op that follows.
+	static constexpr u32 kTileGpuSrcFormats = 7;
 	std::array<VkPipeline, kTileGpuSrcFormats> m_tilegpu_materialise_pipeline{};
 	std::array<bool, kTileGpuSrcFormats> m_tilegpu_materialise_tried{};
 	bool CompileTileGpuMaterialisePipeline(u32 src_fmt);

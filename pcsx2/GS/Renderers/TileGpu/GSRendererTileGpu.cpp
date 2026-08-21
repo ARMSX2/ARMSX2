@@ -90,6 +90,27 @@ bool HasByteRoad(const GSTileSurfaceLayout& layout)
 	return layout.kind == GSTileSurfaceKind::Color && (layout.psm == PSMCT32 || layout.psm == PSMCT24) &&
 		   (layout.bp & 31) == 0;
 }
+
+// Pages per texture ROW for a sampled window, in the one spelling every road has to share: the
+// state row the fragment stage reads, the materialise op that builds a source out of the same
+// bytes, and the donor op that reinterprets them out of a target. Two roads disagreeing here means
+// one window addressing two different sets of bytes, which looks like plausible texture from the
+// wrong place.
+//
+// GSOffset's own term, bw >> (pageShiftX - 6), which GSTileSwizzleForms::PagesPerRow reads off the
+// format's page WIDTH. ⚠️ Width, never "is it paletted": PSMT8H/PSMT4HL/PSMT4HH have a palette and
+// CT32's 64-texel pages, so the TBW >> 1 that PSMT8 needs would put every row but the first in the
+// wrong page for them.
+//
+// Plus the direct-colour road's floor at one page, which is not GSOffset's. It predates this
+// helper, it only ever applied to PSMCT32/PSMCT24, and a TBW=0 texture is degenerate either way --
+// so it stays exactly where it was rather than being tidied into a byte-moving change.
+u32 TextureWindowBwPg(u32 psm, u32 tbw)
+{
+	if (psm == PSMCT32 || psm == PSMCT24)
+		return std::max<u32>(tbw, 1);
+	return GSTileSwizzleForms::PagesPerRow(psm, tbw);
+}
 } // namespace
 
 // Stage-1 pin: the back-record/back-thread machinery stays off for this variant whatever
@@ -1416,6 +1437,7 @@ void GSRendererTileGpu::ReportModelTraffic()
 	// materialised sources WOULD have served, and for the rest, exactly which clause refused.
 	const auto tdraws = stat([](const MF& f) { return f.tex_draws; });
 	const auto tunsup = stat([](const MF& f) { return f.tex_unsupported; });
+	const auto thi = stat([](const MF& f) { return f.tex_hi_draws; });
 	const auto elig = stat([](const MF& f) { return f.src_eligible; });
 	const auto shit = stat([](const MF& f) { return f.src_hit; });
 	const auto sreb = stat([](const MF& f) { return f.src_rebuild; });
@@ -1477,9 +1499,9 @@ void GSRendererTileGpu::ReportModelTraffic()
 	const auto efail = stat([](const MF& f) { return f.src_expand_failed; });
 
 	Console.WriteLn("TileGpu source road (rule 3: direct colour and paletted, BUILT and SAMPLED):");
-	Console.WriteLn("  textured draws %.2f / %-5u  rule 2 served %.2f / %-5u  rule 3 eligible %.2f / %-5u  "
-					"=> %.1f%% of textured draws served",
-		tdraws.mean, tdraws.p50, binds.mean, binds.p50, elig.mean, elig.p50, served);
+	Console.WriteLn("  textured draws %.2f / %-5u (alpha-byte views %.2f / %u)  rule 2 served %.2f / %-5u  "
+					"rule 3 eligible %.2f / %-5u  => %.1f%% of textured draws served",
+		tdraws.mean, tdraws.p50, thi.mean, thi.p50, binds.mean, binds.p50, elig.mean, elig.p50, served);
 	Console.WriteLn("  eligible by cost: hit %.2f / %-5u  rebuild %.2f / %-5u  first build %.2f / %u",
 		shit.mean, shit.p50, sreb.mean, sreb.p50, sfresh.mean, sfresh.p50);
 	Console.WriteLn("  refused: format %.2f/%u  region wrap %.2f/%u  palette first sight %.2f/%u  pin %.2f/%u  "
@@ -1745,8 +1767,7 @@ GSTileSurfaceId GSRendererTileGpu::TargetForTextureRead(const GSTileSurfaceLayou
 //    model and allocator leftovers to a sampler. Rule 2's own clause, for the same reason.
 //  - the window starting at or after the owner's base. The shader computes `blk - dst_bp` unsigned;
 //    the page proof implies this, and it is asserted here rather than trusted.
-//  - a format the swizzle forms express as an index (PSMT8/PSMT4 here -- the alpha-byte views are in
-//    the table but no TileGpu draw samples them yet).
+//  - a format the swizzle forms express as an index: PSMT8/PSMT4 and the three alpha-byte views.
 bool GSRendererTileGpu::DonorForTextureRead(const GIFRegTEX0& tex0, const GSPageBitmap& tex_pages,
 	GSTileSurfaceId fb_id, GSTileSurfaceId z_id, DonorPlan& out)
 {
@@ -1794,10 +1815,11 @@ bool GSRendererTileGpu::DonorForTextureRead(const GIFRegTEX0& tex0, const GSPage
 
 	out.owner = owner;
 	out.src_bp = tex0.TBP0;
-	// Pages per texture row, spelled exactly as the byte road and the materialise spell it -- a
-	// paletted page is 128 texels wide, so it is TBW >> 1 (GSOffset's bw >> (pageShiftX - 6)). The
-	// two roads have to agree here or the same window addresses two different sets of bytes.
-	out.src_bwpg = tex0.TBW >> 1;
+	// Pages per texture row, through the one spelling the byte road and the materialise also take.
+	// The two roads have to agree here or the same window addresses two different sets of bytes --
+	// and this used to be a bare TBW >> 1, correct for PSMT8/PSMT4 and wrong for the alpha-byte
+	// views, whose pages are 64 texels wide.
+	out.src_bwpg = TextureWindowBwPg(tex0.PSM, tex0.TBW);
 	out.owner_bp = surf.layout.bp;
 	out.owner_bwpg = surf.layout.bw;
 	out.psm = tex0.PSM;
@@ -2330,10 +2352,9 @@ bool GSRendererTileGpu::EmitMaterialiseOp(GSTexture* tex, const GIFRegTEX0& tex0
 	// this vector, and the target list stays exactly what it was.
 	op.target = PrepTextureIndex(tex);
 	op.bp = tex0.TBP0;
-	// Pages per texture row, the same value the state row carries, so the materialise addresses the
-	// window the way the byte road would have: a CT32 page is 64 texels wide (TBW), a paletted page
-	// 128 (TBW >> 1) -- GSOffset's bw >> (pageShiftX - 6).
-	op.bw = (GSLocalMemory::m_psm[tex0.PSM].pal > 0) ? (tex0.TBW >> 1) : std::max<u32>(tex0.TBW, 1);
+	// Pages per texture row, through the one spelling every road shares, so the materialise addresses
+	// the window exactly the way the byte road would have.
+	op.bw = TextureWindowBwPg(tex0.PSM, tex0.TBW);
 	op.psm = tex0.PSM;
 	op.epoch = epoch;
 	// A 24-bit window's alpha byte belongs to whatever else shares those bytes, so TEXA's expansion
@@ -2879,12 +2900,13 @@ void GSRendererTileGpu::AccumulateDraw()
 	// A draw that fails every pixel into RGB_ONLY writes colour without its alpha byte.
 	pd.alpha_written = !(atst_never && afail == AFAIL_RGB_ONLY);
 
-	// Texture inputs. Two address geometries are sampled at this stage: the direct 32-bit families
-	// (PSMCT32/PSMCT24 -- one page/block/column geometry, no CLUT) and the paletted index formats
-	// (PSMT8/PSMT4 -- a swizzled index into an expanded CLUT). Every other textured draw (16-bit,
-	// the alpha-byte views) keeps the vertex-colour path until its format is added. The fixed TEX0
-	// folds TW/TH to the used ST range, exactly as ObserveDraw derives its footprint, so the
-	// dimensions the shader scales by match the draw.
+	// Texture inputs. Two address geometries are sampled at this stage: the CT32 one (PSMCT32 and
+	// PSMCT24 as direct colour, and the alpha-byte views PSMT8H/PSMT4HL/PSMT4HH as indices in the
+	// top bits of the same words) and the PSMT8/PSMT4 one (128-texel pages, a swizzled index into
+	// an expanded CLUT). Every other textured draw -- the 16-bit families -- keeps the
+	// vertex-colour path until its format is added. The fixed TEX0 folds TW/TH to the used ST
+	// range, exactly as ObserveDraw derives its footprint, so the dimensions the shader scales by
+	// match the draw.
 	pd.tex_enable = false;
 	pd.index_format = 0;
 	pd.pal_offset = 0;
@@ -2899,16 +2921,25 @@ void GSRendererTileGpu::AccumulateDraw()
 		const GIFRegTEX0 tex0 = ctx->GetSizeFixedTEX0(m_vt.m_min.t.xyxy(m_vt.m_max.t), m_vt.IsLinear(), mip);
 		const u32 psm = tex0.PSM;
 		const bool direct32 = (psm == PSMCT32 || psm == PSMCT24);
-		const bool paletted = (psm == PSMT8 || psm == PSMT4);
+		// Every format whose texel is a palette index: PSMT8/PSMT4 and the three alpha-byte views.
+		// IndexFormatFor is the one list -- the donor road's reinterpretation already keyed off it,
+		// and a second list here is how the two would come to disagree about what is sampleable.
+		const int idx_fmt = GSTileSwizzleForms::IndexFormatFor(psm);
+		const bool paletted = (idx_fmt >= 0);
 		if (direct32 || paletted)
 		{
 			m_frame.tex_draws++;
+			if (paletted && GSLocalMemory::m_psm[psm].pgs.x == GSLocalMemory::m_psm[PSMCT32].pgs.x)
+				m_frame.tex_hi_draws++;
 			pd.tex_enable = true;
 			pd.fst = PRIM->FST;
 			pd.tbp0 = tex0.TBP0;
-			// Pages per texture row: a CT32 page is 64 texels wide (bwpg = TBW), a paletted page is
-			// 128 (bwpg = TBW>>1) -- GSOffset's bw >> (pageShiftX - 6).
-			pd.tbw = direct32 ? std::max<u32>(tex0.TBW, 1) : (tex0.TBW >> 1);
+			// Pages per texture row, GSOffset's bw >> (pageShiftX - 6): a 64-texel-wide page (the
+			// CT32 family, which the alpha-byte views share) takes TBW, a 128-wide one (PSMT8/PSMT4)
+			// halves it. ⚠️ Decided by page WIDTH, never by "is it paletted" -- PSMT8H is both
+			// paletted and 64 wide, and halving its TBW would address the wrong page in every row
+			// but the first.
+			pd.tbw = TextureWindowBwPg(psm, tex0.TBW);
 			pd.tw = 1u << std::min<u32>(tex0.TW, 10);
 			pd.th = 1u << std::min<u32>(tex0.TH, 10);
 			pd.tfx = tex0.TFX;
@@ -2926,7 +2957,12 @@ void GSRendererTileGpu::AccumulateDraw()
 			// primitive (the two filters differ and the LOD crossing falls inside it) takes one
 			// filter for the whole draw here, which is what IsLinear already picked.
 			pd.ltf = m_vt.IsLinear();
-			pd.index_format = direct32 ? 0u : (psm == PSMT8 ? 1u : 2u);
+			// The state row's index_format: 0 for a direct 32-bit texel, else the shader's format
+			// number plus one (1 = PSMT8, 2 = PSMT4, 3 = PSMT8H, 4 = PSMT4HL, 5 = PSMT4HH). The two
+			// numberings are pinned together in the gs suite -- nothing links this file to the GLSL,
+			// and a renumbering that moved one and not the other would sample PSMT4HL's nibble out of
+			// a PSMT8H texture.
+			pd.index_format = direct32 ? 0u : static_cast<u32>(idx_fmt) + 1u;
 			// A 24-bit texture's texels carry no alpha byte: TEXA supplies it (and AEM makes an
 			// all-zero RGB texel transparent). A paletted texture takes TEXA in the CLUT expansion.
 			pd.texa = (psm == PSMCT24) ? (1u | (m_env.TEXA.AEM ? 2u : 0u) |
@@ -3099,8 +3135,8 @@ void GSRendererTileGpu::AccumulateDraw()
 		}
 		else
 		{
-			// A format neither road samples (16-bit, the alpha-byte views): the draw renders
-			// with vertex colour alone today, and rule 3 refuses it on format.
+			// A format neither road samples -- the 16-bit families, which is all that is left: the
+			// draw renders with vertex colour alone today, and rule 3 refuses it on format.
 			m_frame.tex_unsupported++;
 		}
 	}

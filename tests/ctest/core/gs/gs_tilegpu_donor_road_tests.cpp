@@ -43,22 +43,27 @@ namespace
 
 // -- 1. the parameters -----------------------------------------------------------------------
 
-// The window half. GSRendererTileGpu::DonorForTextureRead spells the window's pages-per-row as
-// `TEX0.TBW >> 1`, which is also what the byte road's state row and the materialise op carry -- the
+// The window half. GSRendererTileGpu::DonorForTextureRead, the byte road's state row and the
+// materialise op all spell the window's pages-per-row through GSTileSwizzleForms::PagesPerRow -- the
 // three have to agree or one window addresses two different sets of bytes. This is that spelling
-// against GSOffset's, over every TBW a texture register can hold.
+// against GSOffset's, over every index format and every TBW a texture register can hold.
+//
+// ⚠️ PSMT8/PSMT4 halve TBW and the three alpha-byte views do NOT, because the term follows the page
+// WIDTH (128 texels vs 64) and not the presence of a palette. Halving an 8H window's TBW puts every
+// row but the first in the wrong page, which looks like plausible texture from the wrong place.
 TEST(TileGpuDonorRoad, WindowPagesPerRowIsGSOffsetsForEveryTBW)
 {
 	for (u32 tbw = 0; tbw < 64; tbw++)
 	{
-		for (const u32 psm : {static_cast<u32>(PSMT8), static_cast<u32>(PSMT4)})
+		for (const u32 psm : {static_cast<u32>(PSMT8), static_cast<u32>(PSMT4), static_cast<u32>(PSMT8H),
+				 static_cast<u32>(PSMT4HL), static_cast<u32>(PSMT4HH)})
 		{
 			// The base does not enter pages-per-row, but vary it anyway so a derivation that
 			// accidentally folded it in would show up here rather than on a device.
 			for (const u32 bp : {0u, 0x20u, 0x1180u, 0x3e04u})
 			{
 				const u32 want = PageRowWidth(bp, tbw, psm);
-				const u32 got = tbw >> 1;
+				const u32 got = GSTileSwizzleForms::PagesPerRow(psm, tbw);
 				EXPECT_EQ(got, want) << "psm " << psm << " bp " << bp << " TBW " << tbw;
 			}
 		}
@@ -89,7 +94,7 @@ TEST(TileGpuDonorRoad, OwnerPagesPerRowIsItsLayoutStrideForColourTargets)
 
 // -- 2. the format gate ----------------------------------------------------------------------
 
-// Exactly the two paletted formats TileGpu samples reach the donor road, and neither direct-colour
+// Exactly the five paletted formats TileGpu samples reach the donor road, and neither direct-colour
 // format does. The direct-colour case is not an oversight: rule 2 already binds a target whose
 // layout IS the read's, and serving one whose layout is not needs a COPY leg the reinterpretation
 // does not have (it only produces index formats). The renderer counts that population instead
@@ -100,8 +105,7 @@ TEST(TileGpuDonorRoad, OnlyThePalettedFormatsReinterpret)
 	EXPECT_GE(GSTileSwizzleForms::IndexFormatFor(PSMT4), 0);
 	EXPECT_LT(GSTileSwizzleForms::IndexFormatFor(PSMCT32), 0);
 	EXPECT_LT(GSTileSwizzleForms::IndexFormatFor(PSMCT24), 0);
-	// The alpha-byte views are in the table and no TileGpu draw samples them yet, so the road can
-	// serve them the day the fragment stage can (they are still refused earlier, on format).
+	// The alpha-byte views, which the fragment stage samples too.
 	EXPECT_GE(GSTileSwizzleForms::IndexFormatFor(PSMT8H), 0);
 	EXPECT_GE(GSTileSwizzleForms::IndexFormatFor(PSMT4HL), 0);
 	EXPECT_GE(GSTileSwizzleForms::IndexFormatFor(PSMT4HH), 0);
