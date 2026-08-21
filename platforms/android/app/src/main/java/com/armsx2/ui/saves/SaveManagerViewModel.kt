@@ -28,6 +28,13 @@ data class SaveManagerUiState(
     val loading: Boolean = true,
     val message: String? = null,
     val error: String? = null,
+    /** True only while a VM is actually running.
+     *
+     * Distinct from [SaveStateItem.canUseWithActiveGame], which means "this state belongs to the
+     * game in context" — that is now true when the screen was opened from the library's
+     * long-press menu, where nothing is booted. Saving needs a running emulator to snapshot; the
+     * two conditions were conflated and Save appeared with nothing behind it. */
+    val hasActiveVm: Boolean = false,
 )
 
 class SaveManagerViewModel(application: Application) : AndroidViewModel(application) {
@@ -39,10 +46,14 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
         state.value = previous.copy(loading = true)
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { readSaves() }
+            val vmRunning = withContext(Dispatchers.IO) {
+                runCatching { NativeApp.hasActiveVM() }.getOrDefault(false)
+            }
             state.value = state.value.copy(
                 gameTitle = result.gameTitle,
                 saves = result.saves,
                 loading = false,
+                hasActiveVm = vmRunning,
             )
         }
     }

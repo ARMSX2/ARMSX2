@@ -94,6 +94,7 @@ fun SaveManagerScreen(onBack: () -> Unit, viewModel: SaveManagerViewModel = view
                 items(state.saves, key = { it.file.absolutePath }) { save ->
                     SaveStateCard(
                         save = save,
+                        canSave = state.hasActiveVm,
                         onSave = { save.slot?.let(viewModel::save) },
                         onLoad = { viewModel.load(save) },
                         onDelete = { viewModel.delete(save) },
@@ -163,6 +164,10 @@ private fun SaveManagerEmptyState() {
 @Composable
 private fun SaveStateCard(
     save: SaveStateItem,
+    /** Only true while a VM is running — see SaveManagerUiState.hasActiveVm. Reached from the
+     *  library's long-press menu nothing is booted, and offering Save there is nonsense: there is
+     *  no running game to snapshot. */
+    canSave: Boolean,
     onSave: () -> Unit,
     onLoad: () -> Unit,
     onDelete: () -> Unit,
@@ -203,7 +208,7 @@ private fun SaveStateCard(
             }
             Spacer(Modifier.height(9.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                if (save.canUseWithActiveGame && save.slot != null) {
+                if (canSave && save.canUseWithActiveGame && save.slot != null) {
                     OutlinedButton(
                         onClick = onSave,
                         contentPadding = PaddingValues(horizontal = 14.dp),
