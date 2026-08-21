@@ -1479,8 +1479,11 @@ open class MainActivityRuntime : ComponentActivity() {
          */
         fun resetAppToDefaults(context: Context) {
             // Files first — clearing prefs drops the data-root pref that locates them.
-            runCatching { com.armsx2.config.ConfigStore.purgeAllSettingsFiles() }
-            runCatching { prefs.edit { clear() } }
+            runCatching { com.armsx2.config.ConfigStore.purgeAllSettingsFiles(context) }
+            // ★ commit, not apply. restartApp calls Runtime.exit(0) immediately below, and
+            // apply() only guarantees the in-memory update — its disk write is asynchronous and
+            // an abrupt exit can beat it. A reset that survives the restart is the entire point.
+            runCatching { prefs.edit().clear().commit() }
             restartApp(context)
         }
 
@@ -3133,6 +3136,14 @@ open class MainActivityRuntime : ComponentActivity() {
             // re-add it for the match (FAST_FORWARD needs to recognise its own
             // release). heldKeys still carries the modifier either way.
             val matchKeys = if (down) heldKeys else heldKeys + kc
+            // A trigger the axis path already acted on this press. Only L2/R2 can be claimed,
+            // and only by sendTrigger — see triggerHotkeyClaimed.
+            if ((kc == KeyEvent.KEYCODE_BUTTON_L2 || kc == KeyEvent.KEYCODE_BUTTON_R2) &&
+                triggerHotkeyClaimed.contains(kc))
+            {
+                if (!down) triggerHotkeyClaimed.remove(kc)
+                return true
+            }
             when (ControllerMappings.matchHotkey(kc, matchKeys)) {
                 // Pressure modifier is a hold, handled (and consumed) earlier in
                 // dispatchKeyEvent; it never reaches this one-shot action switch.
@@ -4731,6 +4742,22 @@ open class MainActivityRuntime : ComponentActivity() {
     // trigger-bound hotkeys, so each press fires once and re-arms on release.
     private val triggerHotkeyHeld = Array(8) { HashSet<Int>() }
 
+    /**
+     * Trigger keycodes whose hotkey edge the AXIS path has already fired for the current press.
+     *
+     * ★ Some pads report a trigger BOTH ways — as an axis and as a key event — so a single pull
+     * reaches the hotkey dispatcher twice, once from sendTrigger and once from the key path. For
+     * a hold that is harmless (both compute the same state). For a TOGGLE it is fatal: the first
+     * flips it on and the second immediately flips it back, which is why Fast Forward (Toggle)
+     * bound to L2/R2 came on for a frame and then reported OFF, worked when bound to a
+     * non-trigger button, and worked once the pad was switched to digital triggers — reported by
+     * SKrazy on an AYN pad and Shmoda12 on a Thor.
+     *
+     * The axis path claims the press; the key path sees the claim and skips its own edge. Scoped
+     * to L2/R2 alone so nothing else changes, and cleared on release so the next pull re-arms.
+     */
+    private val triggerHotkeyClaimed = HashSet<Int>()
+
     private fun sendTrigger(event: MotionEvent, left: Boolean, port: Int) {
         // -1 = no trigger axis on this side; its L2/R2 is a key event, key path owns it.
         val raw = triggerTravel(event, left)
@@ -4746,6 +4773,9 @@ open class MainActivityRuntime : ComponentActivity() {
         if (pressed) heldKeys.add(code)
         if (pressed != held.contains(code)) {
             if (pressed) held.add(code) else { held.remove(code); heldKeys.remove(code) }
+            // Claim this press so the key path does not fire the same hotkey again on a pad
+            // that reports the trigger both ways. See triggerHotkeyClaimed.
+            if (pressed) triggerHotkeyClaimed.add(code) else triggerHotkeyClaimed.remove(code)
             // Triggers now reach the Hotkeys tab's capture like any other button, so they have
             // to be able to fire one here. Hold-type hotkeys act on both edges (a trigger has a
             // real release, unlike a stick edge); the rest fire on the press. Matching on
