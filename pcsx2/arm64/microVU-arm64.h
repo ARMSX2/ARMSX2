@@ -110,7 +110,10 @@
 //       emits its MAC U predicate ahead of the operand clamp and every
 //       flag-writing FMAC its MAC O the same way, mVUglob.macWeights gains a
 //       variant dimension so every weight load's [x25, #imm] moves, and the I
-//       immediate is stored whole rather than pre-clamped.
+//       immediate is stored whole rather than pre-clamped. At 4 as well, ADD,
+//       SUB and the EFU's scalar adds mask their operand pair into the scratch
+//       trio before the host add, and ADDi takes that path instead of the
+//       tri-ace gamefix.
 static constexpr u32 kMvuCompilerAbiVersion = 19;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>

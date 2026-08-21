@@ -233,14 +233,14 @@ constexpr AbiPin kPins[] = {
 	// root. Every FMAC changes shape too: the weight table gains a variant
 	// dimension so every weight load's [x25, #imm] moves, the I immediate is
 	// stored whole, and at vuClampMode:4 a flag-writing FMAC emits its MAC U and
-	// MAC O predicates ahead of the operand clamp. The ten fields above compile
-	// below mode 3
-	// with a full dest field, so only divUnit moves among them; the four new
-	// probes pin the two gated modes from here on. The value flush that rides
+	// MAC O predicates ahead of the operand clamp, where ADD and SUB also mask
+	// their guard bits. The ten fields above compile below mode 3 with a full
+	// dest field, so only divUnit moves among them; the four new probes pin the
+	// two gated modes from here on. The value flush that rides
 	// with the zero tests is in none of these rows: they compile under the
 	// default VU FPCR, which sets FZ, and it is emitted only when that is
 	// clear.
-	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x7cfc9e2b6a3e852d, 0xde92be2516a10fbb, 0x1270eee2b9725c68, 0x3e1c524e13373c98, 0x00410ea5fd07a5f9, 0x47a142f4436e0fb7, 0xa3a7fc4ccbf8d11d}},
+	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x7cfc9e2b6a3e852d, 0xde92be2516a10fbb, 0x1270eee2b9725c68, 0x3e1c524e13373c98, 0x00410ea5fd07a5f9, 0x2f3e89a82bcd3228, 0xad03f981572ad1c4}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
