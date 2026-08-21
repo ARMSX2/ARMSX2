@@ -841,35 +841,46 @@ static __fi void _vuMINIy(VURegs* VU) { applyMinMaxBroadcast<fp_min>(VU, VU->VF[
 static __fi void _vuMINIz(VURegs* VU) { applyMinMaxBroadcast<fp_min>(VU, VU->VF[_Ft_].i.z); }
 static __fi void _vuMINIw(VURegs* VU) { applyMinMaxBroadcast<fp_min>(VU, VU->VF[_Ft_].i.w); }
 
+// The OP ops are ordinary four-lane FMACs whose operands are rotated:
+//
+//     fsRot = (Fs.y, Fs.z, Fs.x, Fs.w)
+//     ftRot = (Ft.z, Ft.x, Ft.y, +0.0)
+//
+// Lane w's second multiplicand is a hard +0, not Ft.w, so the product there is
+// a zero carrying Fs.w's sign and nothing of Ft: a negative Fs.w raises MAC S
+// on w, and a negative Ft.w moves nothing.
+struct VuOpOperands
+{
+	u32 fs[4], ft[4];
+};
+
+static __fi VuOpOperands _vuOpRotate(const VURegs* VU)
+{
+	return {{VU->VF[_Fs_].i.y, VU->VF[_Fs_].i.z, VU->VF[_Fs_].i.x, VU->VF[_Fs_].i.w},
+		{VU->VF[_Ft_].i.z, VU->VF[_Ft_].i.x, VU->VF[_Ft_].i.y, 0}};
+}
+
 static __fi void _vuOPMULA(VURegs* VU)
 {
-	const VuMacValue x = _vuOpMUL(VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.z);
-	const VuMacValue y = _vuOpMUL(VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.x);
-	const VuMacValue z = _vuOpMUL(VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.y);
-	VU->ACC.i.x = VU_MACx_UPDATE(VU, x.bits, x.overflow, x.underflow);
-	VU->ACC.i.y = VU_MACy_UPDATE(VU, y.bits, y.overflow, y.underflow);
-	VU->ACC.i.z = VU_MACz_UPDATE(VU, z.bits, z.overflow, z.underflow);
-	VU_STAT_UPDATE(VU, x.mulSticky | y.mulSticky | z.mulSticky);
+	const VuOpOperands op = _vuOpRotate(VU);
+	u32 sticky = 0;
+	if (_X) { const VuMacValue rx = _vuOpMUL(op.fs[0], op.ft[0]); VU->ACC.i.x = VU_MACx_UPDATE(VU, rx.bits, rx.overflow, rx.underflow); sticky |= rx.mulSticky; } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = _vuOpMUL(op.fs[1], op.ft[1]); VU->ACC.i.y = VU_MACy_UPDATE(VU, ry.bits, ry.overflow, ry.underflow); sticky |= ry.mulSticky; } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = _vuOpMUL(op.fs[2], op.ft[2]); VU->ACC.i.z = VU_MACz_UPDATE(VU, rz.bits, rz.overflow, rz.underflow); sticky |= rz.mulSticky; } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = _vuOpMUL(op.fs[3], op.ft[3]); VU->ACC.i.w = VU_MACw_UPDATE(VU, rw.bits, rw.overflow, rw.underflow); sticky |= rw.mulSticky; } else VU_MACw_CLEAR(VU);
+	VU_STAT_UPDATE(VU, sticky);
 }
 
 static __fi void _vuOPMSUB(VURegs* VU)
 {
-	VECTOR* dst;
-	if (_Fd_ == 0)
-		dst = &RDzero;
-	else
-		dst = &VU->VF[_Fd_];
-
-	// The cross-product lanes pair Fs and Ft off-diagonally; the arithmetic and
-	// the underflow test are _vuOpMSUB's, so they go through it rather than
-	// being spelled out a second time.
-	const VuMacValue x = _vuOpMSUB(VU->ACC.i.x, VU->VF[_Fs_].i.y, VU->VF[_Ft_].i.z);
-	const VuMacValue y = _vuOpMSUB(VU->ACC.i.y, VU->VF[_Fs_].i.z, VU->VF[_Ft_].i.x);
-	const VuMacValue z = _vuOpMSUB(VU->ACC.i.z, VU->VF[_Fs_].i.x, VU->VF[_Ft_].i.y);
-	dst->i.x = VU_MACx_UPDATE(VU, x.bits, x.overflow, x.underflow);
-	dst->i.y = VU_MACy_UPDATE(VU, y.bits, y.overflow, y.underflow);
-	dst->i.z = VU_MACz_UPDATE(VU, z.bits, z.overflow, z.underflow);
-	VU_STAT_UPDATE(VU, x.mulSticky | y.mulSticky | z.mulSticky);
+	VECTOR* dst = _getDst<MACOpDst::Fd>(VU);
+	const VuOpOperands op = _vuOpRotate(VU);
+	u32 sticky = 0;
+	if (_X) { const VuMacValue rx = _vuOpMSUB(VU->ACC.i.x, op.fs[0], op.ft[0]); dst->i.x = VU_MACx_UPDATE(VU, rx.bits, rx.overflow, rx.underflow); sticky |= rx.mulSticky; } else VU_MACx_CLEAR(VU);
+	if (_Y) { const VuMacValue ry = _vuOpMSUB(VU->ACC.i.y, op.fs[1], op.ft[1]); dst->i.y = VU_MACy_UPDATE(VU, ry.bits, ry.overflow, ry.underflow); sticky |= ry.mulSticky; } else VU_MACy_CLEAR(VU);
+	if (_Z) { const VuMacValue rz = _vuOpMSUB(VU->ACC.i.z, op.fs[2], op.ft[2]); dst->i.z = VU_MACz_UPDATE(VU, rz.bits, rz.overflow, rz.underflow); sticky |= rz.mulSticky; } else VU_MACz_CLEAR(VU);
+	if (_W) { const VuMacValue rw = _vuOpMSUB(VU->ACC.i.w, op.fs[3], op.ft[3]); dst->i.w = VU_MACw_UPDATE(VU, rw.bits, rw.overflow, rw.underflow); sticky |= rw.mulSticky; } else VU_MACw_CLEAR(VU);
+	VU_STAT_UPDATE(VU, sticky);
 }
 
 static __fi void _vuNOP(VURegs* VU)
@@ -2331,15 +2342,20 @@ VUREGS_FDFSFTy(MINIy, 0);
 VUREGS_FDFSFTz(MINIz, 0);
 VUREGS_FDFSFTw(MINIw, 0);
 
+// Which source lane feeds each dest lane, following _vuOpRotate. Lane w reads
+// no Ft lane at all.
+static __ri u8 _vuOpFsRead(u8 xyzw) { return ((xyzw & 0xC) >> 1) | ((xyzw & 0x2) << 2) | (xyzw & 0x1); }
+static __ri u8 _vuOpFtRead(u8 xyzw) { return ((xyzw & 0x8) >> 2) | ((xyzw & 0x6) << 1); }
+
 static __ri void _vuRegsOPMULA(const VURegs* VU, _VURegsNum* VUregsn)
 {
 	VUregsn->pipe = VUPIPE_FMAC;
 	VUregsn->VFwrite = 0;
-	VUregsn->VFwxyzw= 0xE;
+	VUregsn->VFwxyzw= _XYZW;
 	VUregsn->VFread0 = _Fs_;
-	VUregsn->VFr0xyzw= 0xE;
+	VUregsn->VFr0xyzw= _vuOpFsRead(_XYZW);
 	VUregsn->VFread1 = _Ft_;
-	VUregsn->VFr1xyzw= 0xE;
+	VUregsn->VFr1xyzw= _vuOpFtRead(_XYZW);
 	VUregsn->VIwrite = 1<<REG_ACC_FLAG;
 	VUregsn->VIread  = GET_VF0_FLAG(_Fs_)|GET_VF0_FLAG(_Ft_)|(1<<REG_ACC_FLAG);
 }
@@ -2348,11 +2364,11 @@ static __ri void _vuRegsOPMSUB(const VURegs* VU, _VURegsNum* VUregsn)
 {
 	VUregsn->pipe = VUPIPE_FMAC;
 	VUregsn->VFwrite = _Fd_;
-	VUregsn->VFwxyzw= 0xE;
+	VUregsn->VFwxyzw= _XYZW;
 	VUregsn->VFread0 = _Fs_;
-	VUregsn->VFr0xyzw= 0xE;
+	VUregsn->VFr0xyzw= _vuOpFsRead(_XYZW);
 	VUregsn->VFread1 = _Ft_;
-	VUregsn->VFr1xyzw= 0xE;
+	VUregsn->VFr1xyzw= _vuOpFtRead(_XYZW);
 	VUregsn->VIwrite = 0;
 	VUregsn->VIread  = GET_VF0_FLAG(_Fs_)|GET_VF0_FLAG(_Ft_)|(1<<REG_ACC_FLAG);
 }
