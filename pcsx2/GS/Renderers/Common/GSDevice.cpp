@@ -1358,8 +1358,7 @@ bool GSDevice::ApplyShaderChain(const GSVector2i& output_size, const GSVector2i&
 	// lines subsampled into the display viewport (a non-integer scanline:pixel ratio that beats
 	// into horizontal moire), and each such pass runs at ~16x the pixel count for no visual gain.
 	// Downscaling to native first is what RetroArch does implicitly by feeding a console's own
-	// output. Bilinear is fine here — the chain resamples anyway, and it matches the presenter's
-	// own filter. Skipped at 1x (source already native) or when the caller passes {0,0}.
+	// output. Skipped at 1x (source already native) or when the caller passes {0,0}.
 	GSTexture* sTex = m_current;
 	if (source_size.x > 0 && source_size.y > 0 &&
 		(sTex->GetWidth() > source_size.x || sTex->GetHeight() > source_size.y))
@@ -1367,7 +1366,27 @@ bool GSDevice::ApplyShaderChain(const GSVector2i& output_size, const GSVector2i&
 		GSTexture*& nTex = (m_current == m_target_tmp) ? m_merge : m_target_tmp;
 		if (ResizeRenderTarget(&nTex, source_size.x, source_size.y, false, false))
 		{
-			StretchRect(sTex, nTex, ShaderConvert::COPY, Filter::Biln);
+			// Turn the discarded upscale detail into supersampling AA rather than throwing it
+			// away: a single bilinear tap reads one 2x2 corner of each NxN footprint and drops
+			// the rest, so a higher internal resolution barely changes the shaded image. The
+			// shipped box filter (ps_downsample_copy) averages the WHOLE NxN footprint, which is
+			// real SSAA — cheap here because the taps run over the small native target, not the
+			// upscaled one. It only takes an INTEGER factor, and the reduction is exact by
+			// construction (the merged frame is native*upscale), so use it whenever the upscale
+			// is a whole multiple (2x/3x/4x/6x/8x) and fall back to bilinear for fractional
+			// multipliers, where no integer box fits the footprint.
+			const int fx = sTex->GetWidth() / source_size.x;
+			const int fy = sTex->GetHeight() / source_size.y;
+			if (fx >= 2 && fx == fy && fx * source_size.x == sTex->GetWidth() &&
+				fy * source_size.y == sTex->GetHeight())
+			{
+				FilteredDownsampleTexture(sTex, nTex, static_cast<u32>(fx), GSVector2i(0, 0),
+					GSVector4(0, 0, source_size.x, source_size.y));
+			}
+			else
+			{
+				StretchRect(sTex, nTex, ShaderConvert::COPY, Filter::Biln);
+			}
 			sTex = nTex;
 		}
 	}

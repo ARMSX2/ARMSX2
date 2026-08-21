@@ -16,6 +16,7 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -98,6 +99,10 @@ private class ShaderDirectoryBuilder(val key: String, val name: String) {
  *  (bezel/koko-aio/Presets-4.1/FXAA-bloom-immersive.slangp), so this is pure headroom for a
  *  future pack; the actual loop guard is the visited set in [resolvePasses]. */
 private const val MAX_REFERENCE_DEPTH = 16
+
+/** How many presets the scan finds between progress ticks. ~2542 in the stock pack, so this
+ *  is ~50 recompositions over the whole walk instead of one per file. */
+private const val SCAN_PROGRESS_STEP = 50
 
 /** Download directory used by ShaderRepo's standard RetroArch pack. It is an installation
  *  wrapper, not a useful category, so [promoteDefaultPackContents] hides this one level
@@ -280,6 +285,10 @@ private fun ShaderPresetPicker(preset: String, onPresetChange: (String) -> Unit)
     val expanded = remember { mutableStateOf(false) }
     val scan = remember { mutableStateOf<ShaderScan?>(null) }
     val scanning = remember { mutableStateOf(false) }
+    // Presets found so far in the in-progress walk. There is no total to divide by without a
+    // second full traversal of the tree — the very cost the lazy scan removed — so this drives
+    // a live count beside an indeterminate bar rather than a percentage.
+    val scanProgress = remember { mutableStateOf(0) }
     val pickerBringIntoView = remember { BringIntoViewRequester() }
     // The path relative to the shader root. An empty key is the root itself. Keeping one
     // current location is what makes this a browser rather than a set of nested accordions.
@@ -302,8 +311,14 @@ private fun ShaderPresetPicker(preset: String, onPresetChange: (String) -> Unit)
     LaunchedEffect(expanded.value) {
         if (!expanded.value) return@LaunchedEffect
         scanning.value = true
+        scanProgress.value = 0
         try {
-            val result = withContext(Dispatchers.IO) { scanShaderPresets(context) }
+            // The count callback fires on the IO thread; a Compose MutableState write from off
+            // the main thread is safe (snapshot state), the same pattern the Shader Packs
+            // download rows use for their byte/entry progress.
+            val result = withContext(Dispatchers.IO) {
+                scanShaderPresets(context) { found -> scanProgress.value = found }
+            }
             scan.value = result
             // Always reopen at the root. This gives both hosts a predictable first screen:
             // top-level shader packs only, regardless of where the last preset lives.
@@ -431,6 +446,12 @@ private fun ShaderPresetPicker(preset: String, onPresetChange: (String) -> Unit)
                 selected = preset.isBlank(),
                 onClick = { onPresetChange("") },
             )
+            // A visible sign the tree walk is running: a slang-shaders pack is thousands of
+            // files, so on device storage the scan is a beat of otherwise-empty list. No
+            // percentage — the total is unknown until the one walk finishes (see [scanProgress]).
+            if (scanning.value) {
+                ShaderScanProgress(scanProgress.value)
+            }
             if (currentFolder?.key?.isNotEmpty() == true) {
                 ShaderFolderRow(
                     controllerId = "shaderChain:folder:up:${currentFolder.key}",
@@ -483,6 +504,26 @@ private fun PresetRow(
         selected = p.path == preset,
         onClick = { onPresetChange(p.path) },
     )
+}
+
+/** Live scan feedback: a count that ticks up as `.slangp` files are found, over an
+ *  indeterminate bar. Deliberately not a percentage — see [scanShaderPresets] for why the
+ *  total is not known until the single walk that produces the count has finished. */
+@Composable
+private fun ShaderScanProgress(found: Int) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            if (found > 0) str("renderer.shaderChain.scanningCount").format(found)
+            else str("renderer.shaderChain.scanning"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 14.sp,
+            lineHeight = 19.sp,
+        )
+        LinearProgressIndicator(Modifier.fillMaxWidth())
+    }
 }
 
 @Composable
@@ -623,15 +664,19 @@ private fun ShaderPresetRow(
  *  visible folder by the picker (see [resolvePasses]), because costing all ~2542 stock
  *  presets up front — a file read plus a canonicalPath stat plus reference-chain resolution
  *  each — took minutes on device storage for a number that is only ever a per-row label. */
-private fun scanShaderPresets(context: Context): ShaderScan {
+private fun scanShaderPresets(context: Context, onProgress: (Int) -> Unit = {}): ShaderScan {
     val root = ShaderRepo.shadersRoot(context)
     if (!root.isDirectory) return ShaderScan(root.absolutePath, emptyShaderDirectory())
+    var count = 0
     val found = try {
         root.walkTopDown()
             .filter { it.isFile && it.extension.equals("slangp", ignoreCase = true) }
             .map { file ->
                 val dir = file.parentFile?.relativeToOrNull(root)?.invariantSeparatorsPath.orEmpty()
                     .let { if (it == ".") "" else it }
+                // Report as presets are discovered, throttled so a big pack drives ~tens of
+                // recompositions rather than thousands. This is the only pass over the tree.
+                if (++count % SCAN_PROGRESS_STEP == 0) onProgress(count)
                 FoundPreset(
                     preset = ShaderPreset(
                         label = file.nameWithoutExtension,
@@ -641,6 +686,7 @@ private fun scanShaderPresets(context: Context): ShaderScan {
                 )
             }
             .toList()
+            .also { onProgress(it.size) }
     } catch (_: Exception) {
         // A pack can be replaced from a file manager while this background walk is active.
         // Treat that one scan as empty; reopening immediately rescans the completed tree.

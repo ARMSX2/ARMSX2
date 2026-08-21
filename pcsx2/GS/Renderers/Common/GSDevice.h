@@ -2027,6 +2027,9 @@ public:
 	/// scanlines (moire) and costs ~upscale^2 the shader fill. Downscaling makes the chain
 	/// behave like RetroArch feeding a console's native output. Pass {0,0} to skip the
 	/// downscale (feed the frame as-is); at 1x it is a no-op since the source is already native.
+	/// The downscale uses a box average (true SSAA) for integer upscale multipliers so the
+	/// higher internal resolution lands as anti-aliasing rather than being discarded, and a
+	/// bilinear tap for fractional multipliers where no integer box fits.
 	///
 	/// Returns true if the chain ran and m_current now points at the shaded target. The chain
 	/// itself lives in DoApplyShaderChain, which only librashader-capable backends override.

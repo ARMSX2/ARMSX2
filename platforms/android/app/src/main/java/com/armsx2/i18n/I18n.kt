@@ -1437,6 +1437,8 @@ val EN: Map<String, String> = mapOf(
     "renderer.shaderChain.passesUnknown" to "cost unknown",
     "renderer.shaderChain.preset.label" to "Shader Preset",
     "renderer.shaderChain.preset.none" to "None",
+    "renderer.shaderChain.scanning" to "Scanning shaders…",
+    "renderer.shaderChain.scanningCount" to "Scanning shaders… %d found",
     "renderer.shaderChain.uncategorised" to "Uncategorised",
     "renderer.shaderPack.cancelled" to "Download cancelled",
     "renderer.shaderPack.companion.description" to "Ready-made presets built on top of the RetroArch pack's shaders. They install into it and need it first — they contain no shaders of their own.",
