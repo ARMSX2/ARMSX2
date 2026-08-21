@@ -49,11 +49,12 @@ mVUop(mVU_DIV)
 		mVUstrField(mVU, gprT1, &mVU.divFlag);
 
 		armAsm->Bind(&afterDivFlag);
-		// Result = +/- fmax: sign(Fs) XOR sign(Ft), magnitude = fmax
+		// Q saturates at the EE's largest single, 0x7FFFFFFF, signed by the xor
+		// of the operands. mVUglob.maxvals is a binade below that and cannot be
+		// retargeted: mVUclamp1 and mVU_SQRT feed it to Fminnm, where 0x7FFFFFFF
+		// is a NaN.
 		armAsm->Eor(Fs.V16B(), Fs.V16B(), Ft.V16B());
-		armAsm->Ldr(t1, mVUglobMem(&mVUglob.signbit[0]));
-		armAsm->And(Fs.V16B(), Fs.V16B(), t1.V16B());
-		armAsm->Ldr(t1, mVUglobMem(&mVUglob.maxvals[0]));
+		armAsm->Mvni(t1.V4S(), 0x80, a64::LSL, 24);
 		armAsm->Orr(Fs.V16B(), Fs.V16B(), t1.V16B());
 		a64::Label skipNormalDiv;
 		armAsm->B(&skipNormalDiv);
@@ -183,10 +184,9 @@ mVUop(mVU_RSQRT)
 		mVUldrField(mVU, gprT1, &mVU.divFlag);
 		armAsm->Orr(gprT1.W(), gprT1.W(), gprT2.W());
 		mVUstrField(mVU, gprT1, &mVU.divFlag);
-		// Result = sign(Fs) | fmax
-		armAsm->Ldr(t1, mVUglobMem(&mVUglob.signbit[0]));
-		armAsm->And(Fs.V16B(), Fs.V16B(), t1.V16B());
-		armAsm->Ldr(t1, mVUglobMem(&mVUglob.maxvals[0]));
+		// Q keeps the dividend's sign and saturates at 0x7FFFFFFF; mVU_DIV's zero
+		// path says why that word is built rather than loaded.
+		armAsm->Mvni(t1.V4S(), 0x80, a64::LSL, 24);
 		armAsm->Orr(Fs.V16B(), Fs.V16B(), t1.V16B());
 		armAsm->B(&rsqrtDone);
 

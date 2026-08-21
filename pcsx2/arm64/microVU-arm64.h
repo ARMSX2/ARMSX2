@@ -100,7 +100,10 @@
 //       of the accumulate; only shapes compiled under vuClampMode:2 change.
 //  18 — RSQRT's zero path ORs its D/I into divFlag instead of assigning over
 //       it, so the sign test's I survives. Only RSQRT changes shape.
-static constexpr u32 kMvuCompilerAbiVersion = 18;
+//  19 — DIV and RSQRT saturate their zero-divisor Q at 0x7FFFFFFF, built with
+//       one MVNI instead of the signbit/maxvals pair of mVUglob loads. Both
+//       zero paths lose two instructions and two [x25, #imm] operands.
+static constexpr u32 kMvuCompilerAbiVersion = 19;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
