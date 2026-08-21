@@ -581,6 +581,12 @@ constexpr u32 VMADDAx_C2(u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_
 constexpr u32 VMADDAy_C2(u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x02, fs, ft, 0x3D); }
 constexpr u32 VMULAz_C2 (u32 mask_xyzw, u32 fs, u32 ft) { return COP2_FMAC(mask_xyzw, 0x06, fs, ft, 0x3E); }
 
+// The rest of the multiply-into-ACC family: Q at SPECIAL2 index 28, I at 30,
+// and the non-broadcast form at 42. The index is (sa << 2) | (funct & 3).
+constexpr u32 VMULAq_C2 (u32 mask_xyzw, u32 fs)          { return COP2_FMAC(mask_xyzw, 0x07, fs, 0, 0x3C); }
+constexpr u32 VMULAi_C2 (u32 mask_xyzw, u32 fs)          { return COP2_FMAC(mask_xyzw, 0x07, fs, 0, 0x3E); }
+constexpr u32 VMULA_C2  (u32 mask_xyzw, u32 fs, u32 ft)  { return COP2_FMAC(mask_xyzw, 0x0A, fs, ft, 0x3E); }
+
 // VADDA — non-broadcast accumulate (ACC = fs + ft). SPEC2 sub-op 0x0A,
 // funct 0x3C. Do not reach for the assembler to check this one: ps2dev's
 // binutils transposes FS and FT for the vadda mnemonic.

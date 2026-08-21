@@ -865,9 +865,9 @@ static void cop2EmitDenormalizeStatusFlag()
 // D/I/O/U on every macro FMAC). x86 JIT is the flag oracle per the standing
 // rule; pinned by EeVu0Cop2MacroLazyStatus.DivCurrentDIBitsSurviveFmac.
 // Current U/O (denorm bits 16-17) ARE cleared by every FMAC RMW, so they
-// normalize back to 0 exactly as the interpreter's 0xFC0 preserve implies —
-// cop2EmitFlagUpdate still never COMPUTES U/O (that gap stays latent, as
-// before: no game in the corpus reads U/O after a COP2 macro FMAC).
+// normalize back to 0 exactly as the interpreter's 0xFC0 preserve implies. A
+// multiply at vuClampMode 4 then puts U back (cop2EmitMulExactZero); O, and U
+// for the adds, are still never computed.
 static void cop2EmitNormalizeStatusFlag()
 {
 	// Load denormalized flag — unless the flag-update RMW just stored it and
@@ -929,8 +929,11 @@ static bool cop2MacFlagLive()
 // xyzw = dest field mask (which lanes were written); `result` is the register
 // holding the op's result (RQSCRATCH, or a VF-cache slot from cop2ResultReg).
 // Either way it is only READ here.
+// `exactZero` is cop2EmitMulExactZero's predicate, or NoVReg where the op has
+// no U model; when given it is clobbered and MAC U comes with it.
 // Uses RQSCRATCH2, RQSCRATCH3 as temporaries.
-static void cop2EmitFlagUpdate(int xyzw, const a64::VRegister& result = RQSCRATCH)
+static void cop2EmitFlagUpdate(int xyzw, const a64::VRegister& result = RQSCRATCH,
+	const a64::VRegister& exactZero = a64::NoVReg)
 {
 	const bool statusLive = cop2StatusFlagLive();
 	const bool macLive = cop2MacFlagLive();
@@ -968,15 +971,17 @@ static void cop2EmitFlagUpdate(int xyzw, const a64::VRegister& result = RQSCRATC
 	// One CMLT + FCMEQ + SLI + AND + ADDV chain (armEmitPackSignZeroBits); the
 	// weight vector carries the PS2 MAC bit order (bit0=W, bit3=X — the reverse
 	// of NEON lane order) and the XYZW dest mask, so neither costs an
-	// instruction. Only q29/q31 are touched, so a result parked in RQSCRATCH
-	// (q30) survives for the caller's cop2ApplyDestMask.
+	// instruction. Only q29/q31 are touched — q27 as well when the caller
+	// brought a U predicate, and it owns that one — so a result parked in
+	// RQSCRATCH (q30) survives for the caller's cop2ApplyDestMask.
+	const bool doUnderflow = exactZero.IsValid();
 	u128 weights;
 	for (int lane = 0; lane < 4; lane++)
-		weights._u32[lane] = armPackLaneWeight(lane, static_cast<u32>(xyzw), /*reverse=*/true, 0);
+		weights._u32[lane] = armPackLaneWeight(lane, static_cast<u32>(xyzw), /*reverse=*/true, 0, doUnderflow);
 
 	const a64::Register macFlag = a64::w3;
 	armEmitPackSignZeroBits(macFlag, result, RQSCRATCH2, RQSCRATCH3, RQSCRATCH2,
-		[&](const a64::VRegister& w) { armLoadConstant128(w, &weights); });
+		[&](const a64::VRegister& w) { armLoadConstant128(w, &weights); }, exactZero);
 
 	// --- Write MAC flag to VU0.VI[REG_MAC_FLAG] ---
 	if (macLive)
@@ -996,11 +1001,33 @@ static void cop2EmitFlagUpdate(int xyzw, const a64::VRegister& result = RQSCRATC
 		// 0xfffc00ff. Encodable as a logical immediate (one circular zero run).
 		armAsm->And(RWSCRATCH, RWSCRATCH, 0xfffc00ff);
 
-		// OR macFlag into sticky bits (0-7) — accumulates over time
-		armAsm->Orr(RWSCRATCH, RWSCRATCH, macFlag);
+		// Z and S take a nibble each in both halves of the denormalized word,
+		// so the MAC value drops straight in twice: sticky at bits 0-7, current
+		// at 8-15. With U in the MAC its nibble has to be kept out of both.
+		a64::Register zs = macFlag;
+		if (doUnderflow)
+		{
+			zs = a64::w1;
+			armAsm->And(zs, macFlag, 0xff);
+		}
 
-		// OR (macFlag << 8) into current bits (8-15) — this instruction's result
-		armAsm->Orr(RWSCRATCH, RWSCRATCH, a64::Operand(macFlag, a64::LSL, 8));
+		// OR into sticky bits (0-7) — accumulates over time
+		armAsm->Orr(RWSCRATCH, RWSCRATCH, zs);
+
+		// OR (<< 8) into current bits (8-15) — this instruction's result
+		armAsm->Orr(RWSCRATCH, RWSCRATCH, a64::Operand(zs, a64::LSL, 8));
+
+		if (doUnderflow)
+		{
+			// STATUS carries one U for the whole FMAC where MAC carries four,
+			// so the nibble is OR-reduced and placed at the two bits
+			// cop2EmitNormalizeStatusFlag reads it from: current U at denorm
+			// 16, sticky US six along at 22.
+			armAsm->Tst(macFlag, 0x0f00);
+			armAsm->Cset(a64::w1, a64::ne);
+			armAsm->Orr(a64::w1, a64::w1, a64::Operand(a64::w1, a64::LSL, 6));
+			armAsm->Orr(RWSCRATCH, RWSCRATCH, a64::Operand(a64::w1, a64::LSL, 16));
+		}
 
 		// Store back. The value stays live in RWSCRATCH — let the matching
 		// normalize in this op's endMacroOp skip its reload (see
@@ -1008,6 +1035,48 @@ static void cop2EmitFlagUpdate(int xyzw, const a64::VRegister& result = RQSCRATC
 		armAsm->Str(RWSCRATCH, armCpuRegMem(&_cpuRegistersPack.cop2Rec.denormStatusFlag));
 		s_cop2DenormInScratch = true;
 	}
+}
+
+// The MAC U bit of a multiply, as the per-lane predicate cop2EmitFlagUpdate
+// takes: all ones where a zero result is an exact zero rather than a flushed
+// underflow.
+//
+// Under FZ a product of two non-zero operands is zero only when it underflowed.
+// The console flushes a product below 2^-126 to a signed zero and so does the
+// host, so the two already agree on the word and differ in the flag alone --
+// which makes "the result is zero and neither operand was" exact rather than an
+// approximation of the exponent test. It is emitted at vuClampMode 4 even so,
+// read through CHECK_VU_EXACT on VU0 since COP2 macro is VU0's -- exactness
+// decides whether a model can be emitted at all, not which rung it lands on.
+//
+// A denormal operand counts as zero, which is what FCMEQ against 0.0 makes of
+// it under FZ and what vuDouble makes of it on the interpreter: the product is
+// then an exact zero, Z alone.
+//
+// Add and sub are not this. The console keeps the mantissa bits of a sum that
+// underflows where the host flushes them, so their U sits behind a value
+// divergence and does not come away on its own.
+//
+// Emitted BEFORE the multiply, where both operands are still live -- a
+// full-mask op computes into fd's cache slot, which may be Fs's, and a masked
+// one writes over the clamped Fs copy in RQSCRATCH. The predicate lands in q27,
+// the scratch cop2EmitGuardedAddSub also draws on; the multiply and the result
+// clamp between here and the flag update touch neither it nor RQSCRATCH3.
+static a64::VRegister cop2EmitMulExactZero(int xyzw, const a64::VRegister& a,
+	const a64::VRegister& b)
+{
+	if (xyzw == 0 || !CHECK_VU_EXACT(0))
+		return a64::NoVReg;
+	if (!cop2StatusFlagLive() && !cop2MacFlagLive())
+		return a64::NoVReg;
+
+	const a64::VRegister dst = a64::VRegister(27, 128);
+	// b is read first because it may BE dst (VOPMULA's rotated Ft).
+	pxAssert(a.GetCode() != RQSCRATCH3.GetCode() && a.GetCode() != dst.GetCode());
+	armAsm->Fcmeq(RQSCRATCH3.V4S(), b.V4S(), 0.0);
+	armAsm->Fcmeq(dst.V4S(), a.V4S(), 0.0);
+	armAsm->Orr(dst.V16B(), dst.V16B(), RQSCRATCH3.V16B());
+	return dst;
 }
 
 // ========================================================================
@@ -1840,10 +1909,11 @@ void recCOP2_VMUL()
 	cop2ClampOperandInto(RQSCRATCH, fs);
 	cop2ClampOperandInto(RQSCRATCH2, ft);
 	const a64::VRegister mulB = RQSCRATCH2;
+	const a64::VRegister uz = cop2EmitMulExactZero(_XYZW_cop2, RQSCRATCH, mulB);
 	const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2);
 	armAsm->Fmul(rd.V4S(), RQSCRATCH.V4S(), mulB.V4S());
 	cop2ClampResultReg(rd);
-	cop2EmitFlagUpdate(_XYZW_cop2, rd);
+	cop2EmitFlagUpdate(_XYZW_cop2, rd, uz);
 	cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd);
 
 	endMacroOp_arm64(0x110);
@@ -1904,10 +1974,12 @@ static void cop2LoadBroadcast(const a64::VRegister& qreg, int vfReg, int bc)
 			mulA = RQSCRATCH; \
 			cop2ClampOperandInto(RQSCRATCH2, RQSCRATCH2); /* in place */ \
 		} \
+		const a64::VRegister uz = mulClamp \
+			? cop2EmitMulExactZero(_XYZW_cop2, mulA, RQSCRATCH2) : a64::NoVReg; \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
 		emitOp(rd, mulA, RQSCRATCH2); \
 		cop2ClampResultReg(rd); \
-		cop2EmitFlagUpdate(_XYZW_cop2, rd); \
+		cop2EmitFlagUpdate(_XYZW_cop2, rd, uz); \
 		cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd); \
 		endMacroOp_arm64(0x110); \
 	}
@@ -2005,10 +2077,12 @@ void recCOP2_VMINIi()
 			mulA = RQSCRATCH; \
 			cop2ClampOperandInto(RQSCRATCH2, RQSCRATCH2); /* in place */ \
 		} \
+		const a64::VRegister uz = mulClamp \
+			? cop2EmitMulExactZero(_XYZW_cop2, mulA, RQSCRATCH2) : a64::NoVReg; \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
 		emitOp(rd, mulA, RQSCRATCH2); \
 		cop2ClampResultReg(rd); \
-		cop2EmitFlagUpdate(_XYZW_cop2, rd); \
+		cop2EmitFlagUpdate(_XYZW_cop2, rd, uz); \
 		cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd); \
 		endMacroOp_arm64(0x111); \
 	}
@@ -2032,10 +2106,12 @@ COP2_Q_OP(MULq, cop2EmitMul, true)
 			mulA = RQSCRATCH; \
 			cop2ClampOperandInto(RQSCRATCH2, RQSCRATCH2); /* in place */ \
 		} \
+		const a64::VRegister uz = mulClamp \
+			? cop2EmitMulExactZero(_XYZW_cop2, mulA, RQSCRATCH2) : a64::NoVReg; \
 		const a64::VRegister rd = cop2ResultReg(_Fd_cop2, _XYZW_cop2); \
 		emitOp(rd, mulA, RQSCRATCH2); \
 		cop2ClampResultReg(rd); \
-		cop2EmitFlagUpdate(_XYZW_cop2, rd); \
+		cop2EmitFlagUpdate(_XYZW_cop2, rd, uz); \
 		cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2, rd); \
 		endMacroOp_arm64(0x110); \
 	}
@@ -2220,23 +2296,25 @@ void recCOP2_VOPMSUB()
 // ========================================================================
 
 // VADDA/VSUBA/VMULA: ACC = VF[fs] OP VF[ft]
-#define COP2_ACCUM_OP(name, emitOp) \
+#define COP2_ACCUM_OP(name, emitOp, isMul) \
 	void recCOP2_V##name() \
 	{ \
 		setupMacroOp_arm64(0x110); \
 		const a64::VRegister fs = cop2GetVF(_Fs_cop2); \
 		const a64::VRegister ft = cop2GetVF(_Ft_cop2); \
+		const a64::VRegister uz = isMul \
+			? cop2EmitMulExactZero(_XYZW_cop2, fs, ft) : a64::NoVReg; \
 		const a64::VRegister rdA = cop2ResultRegACC(_XYZW_cop2); \
 		emitOp(rdA, fs, ft); \
 		cop2ClampResultReg(rdA); \
-		cop2EmitFlagUpdate(_XYZW_cop2, rdA); \
+		cop2EmitFlagUpdate(_XYZW_cop2, rdA, uz); \
 		cop2ApplyDestMaskACC(rdA); \
 		endMacroOp_arm64(0x110); \
 	}
 
-COP2_ACCUM_OP(ADDA, cop2EmitAdd)
-COP2_ACCUM_OP(SUBA, cop2EmitSub)
-COP2_ACCUM_OP(MULA, cop2EmitMul)
+COP2_ACCUM_OP(ADDA, cop2EmitAdd, false)
+COP2_ACCUM_OP(SUBA, cop2EmitSub, false)
+COP2_ACCUM_OP(MULA, cop2EmitMul, true)
 
 // Broadcast accumulator variants: ACC = VF[fs] OP VF[ft].bc
 // mulClamp=true bounds both FMAC operands, for the reason recCOP2_VMUL gives;
@@ -2254,10 +2332,12 @@ COP2_ACCUM_OP(MULA, cop2EmitMul)
 			mulA = RQSCRATCH; \
 			cop2ClampOperandInto(RQSCRATCH2, RQSCRATCH2); /* in place */ \
 		} \
+		const a64::VRegister uz = mulClamp \
+			? cop2EmitMulExactZero(_XYZW_cop2, mulA, RQSCRATCH2) : a64::NoVReg; \
 		const a64::VRegister rdA = cop2ResultRegACC(_XYZW_cop2); \
 		emitOp(rdA, mulA, RQSCRATCH2); \
 		cop2ClampResultReg(rdA); \
-		cop2EmitFlagUpdate(_XYZW_cop2, rdA); \
+		cop2EmitFlagUpdate(_XYZW_cop2, rdA, uz); \
 		cop2ApplyDestMaskACC(rdA); \
 		endMacroOp_arm64(0x110); \
 	}
@@ -2285,42 +2365,46 @@ COP2_ACCUM_BC(MULAz, cop2EmitMul, 2, true)
 COP2_ACCUM_BC(MULAw, cop2EmitMul, 3, true)
 
 // ACCUMq variants
-#define COP2_ACCUM_Q(name, emitOp) \
+#define COP2_ACCUM_Q(name, emitOp, isMul) \
 	void recCOP2_V##name() \
 	{ \
 		setupMacroOp_arm64(0x111); \
 		const a64::VRegister fs = cop2GetVF(_Fs_cop2); \
 		armLd1rVU0(RQSCRATCH2.V4S(), &VU0.VI[REG_Q]); \
+		const a64::VRegister uz = isMul \
+			? cop2EmitMulExactZero(_XYZW_cop2, fs, RQSCRATCH2) : a64::NoVReg; \
 		const a64::VRegister rdA = cop2ResultRegACC(_XYZW_cop2); \
 		emitOp(rdA, fs, RQSCRATCH2); \
 		cop2ClampResultReg(rdA); \
-		cop2EmitFlagUpdate(_XYZW_cop2, rdA); \
+		cop2EmitFlagUpdate(_XYZW_cop2, rdA, uz); \
 		cop2ApplyDestMaskACC(rdA); \
 		endMacroOp_arm64(0x111); \
 	}
 
-COP2_ACCUM_Q(ADDAq, cop2EmitAdd)
-COP2_ACCUM_Q(SUBAq, cop2EmitSub)
-COP2_ACCUM_Q(MULAq, cop2EmitMul)
+COP2_ACCUM_Q(ADDAq, cop2EmitAdd, false)
+COP2_ACCUM_Q(SUBAq, cop2EmitSub, false)
+COP2_ACCUM_Q(MULAq, cop2EmitMul, true)
 
 // ACCUMi variants
-#define COP2_ACCUM_I(name, emitOp) \
+#define COP2_ACCUM_I(name, emitOp, isMul) \
 	void recCOP2_V##name() \
 	{ \
 		setupMacroOp_arm64(0x110); \
 		const a64::VRegister fs = cop2GetVF(_Fs_cop2); \
 		armLd1rVU0(RQSCRATCH2.V4S(), &VU0.VI[REG_I]); \
+		const a64::VRegister uz = isMul \
+			? cop2EmitMulExactZero(_XYZW_cop2, fs, RQSCRATCH2) : a64::NoVReg; \
 		const a64::VRegister rdA = cop2ResultRegACC(_XYZW_cop2); \
 		emitOp(rdA, fs, RQSCRATCH2); \
 		cop2ClampResultReg(rdA); \
-		cop2EmitFlagUpdate(_XYZW_cop2, rdA); \
+		cop2EmitFlagUpdate(_XYZW_cop2, rdA, uz); \
 		cop2ApplyDestMaskACC(rdA); \
 		endMacroOp_arm64(0x110); \
 	}
 
-COP2_ACCUM_I(ADDAi, cop2EmitAdd)
-COP2_ACCUM_I(SUBAi, cop2EmitSub)
-COP2_ACCUM_I(MULAi, cop2EmitMul)
+COP2_ACCUM_I(ADDAi, cop2EmitAdd, false)
+COP2_ACCUM_I(SUBAi, cop2EmitSub, false)
+COP2_ACCUM_I(MULAi, cop2EmitMul, true)
 
 // MADDA/MSUBA variants: ACC = ACC ± VF[fs] * VF[ft]
 // Separate FMUL+FADD/FSUB for PS2 intermediate rounding.
@@ -2443,10 +2527,12 @@ void recCOP2_VOPMULA()
 	armAsm->Ins(ftRot.V4S(), 2, ft.V4S(), 1);            // [z,x,y,y]
 
 	armAsm->Fmul(RQSCRATCH.V4S(), fsRot.V4S(), ftRot.V4S());
+	// After the multiply, not before it: the rotated operands ARE q28 and q27.
+	const a64::VRegister uz = cop2EmitMulExactZero(0xE, fsRot, ftRot);
 	cop2ClampResult();
 	// OPMULA always updates XYZ flags only (0xE), W MAC flag cleared.
 	// PS2 hardware writes ACC.xyz only; ACC.w is preserved regardless of mask.
-	cop2EmitFlagUpdate(0xE);
+	cop2EmitFlagUpdate(0xE, RQSCRATCH, uz);
 
 	cop2ApplyDestMaskACCExplicit(RQSCRATCH, _XYZW_cop2 & 0xE);
 	endMacroOp_arm64(0x110);
