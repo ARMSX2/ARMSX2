@@ -2075,6 +2075,9 @@
     <ClInclude Include="GS\Renderers\Tile\GSTilePassSim.h">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Tile\GSTileSlotIndex.h">
+      <Filter>System\Ps2\GS\Renderers\Tile</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Tile\GSTileSwizzleForms.h">
       <Filter>System\Ps2\GS\Renderers\Tile</Filter>
     </ClInclude>

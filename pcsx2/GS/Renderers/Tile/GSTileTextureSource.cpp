@@ -52,6 +52,12 @@ void MipKey(const GIFRegTEX0* level_tex0, u32 levels, u64 out[2])
 	}
 	out[0] |= static_cast<u64>(levels) << 60;
 }
+
+// The bucket a window files under. Identity stays the exact four words — this only spreads them.
+u64 KeyHash(u64 reg_key, u64 aux_key, const u64 mip_key[2])
+{
+	return GSTileSlotHash(reg_key, aux_key, mip_key[0], mip_key[1]);
+}
 } // namespace
 
 GSTileTextureSource::GSTileTextureSource() = default;
@@ -87,6 +93,17 @@ GSTileTextureSource::WindowKey GSTileTextureSource::KeyFor(const GIFRegTEX0& TEX
 	return k;
 }
 
+// The slot index's exact-key find. One entry per key, so the first match is the only match — the
+// walk this replaced relied on the same invariant to break early.
+u16 GSTileTextureSource::FindEntry(u64 hash, u64 reg_key, u64 aux_key, const u64 mip_key[2]) const
+{
+	return m_index.Find(hash, [&](u16 i) {
+		const Entry& e = m_entries[i];
+		return e.reg_key == reg_key && e.aux_key == aux_key && e.mip_key[0] == mip_key[0] &&
+			   e.mip_key[1] == mip_key[1];
+	});
+}
+
 GSTileTextureSource::ProbeResult GSTileTextureSource::Probe(const GSVramModel& model, const GIFRegTEX0& TEX0,
 	const GIFRegTEXA& TEXA, const GSPageBitmap& pages, const GIFRegTEX0* level_tex0, u32 levels,
 	const GSVector4i* sample_core) const
@@ -96,13 +113,14 @@ GSTileTextureSource::ProbeResult GSTileTextureSource::Probe(const GSVramModel& m
 
 	ProbeResult r;
 	r.gen_stamp = stamp;
-	for (const Entry& e : m_entries)
+	// Const, and the index find is too: a probe files nothing, touches no recency and leaves the
+	// cache exactly as it found it. Absence is proven by an empty bucket rather than by 512
+	// comparisons, which is what this probe running per DRAW was paying for.
+	const u16 slot = FindEntry(KeyHash(key.reg, key.aux, key.mip), key.reg, key.aux, key.mip);
+	if (slot != SlotIndex::kNil)
 	{
-		if (!e.alive || e.reg_key != key.reg || e.aux_key != key.aux || e.mip_key[0] != key.mip[0] ||
-			e.mip_key[1] != key.mip[1])
-			continue;
-		// The window's entry, whatever state it is in. Same validity test as the hit leg of
-		// Lookup, and it stops at the first match for the same reason: one entry per key.
+		// The window's entry, whatever state it is in. Same validity test as the hit leg of Lookup.
+		const Entry& e = m_entries[slot];
 		const GSVector4i full(0, 0, 1 << std::min<u32>(TEX0.TW, 10), 1 << std::min<u32>(TEX0.TH, 10));
 		const bool rect_ok =
 			e.valid_rect.eq(full) || (sample_core && e.valid_rect.rintersect(*sample_core).eq(*sample_core));
@@ -115,7 +133,6 @@ GSTileTextureSource::ProbeResult GSTileTextureSource::Probe(const GSVramModel& m
 		{
 			r.would_rebuild = true;
 		}
-		break;
 	}
 	return r;
 }
@@ -361,116 +378,120 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 	u64 mip_key[2];
 	MipKey(level_tex0, levels, mip_key);
 	const u64 stamp = GenStamp(model, pages);
+	const u64 hash = KeyHash(reg_key, aux_key, mip_key);
 
-	Entry* lru = nullptr;
-	Entry* free_slot = nullptr;
-	for (Entry& e : m_entries)
+	const u16 slot = FindEntry(hash, reg_key, aux_key, mip_key);
+	if (slot != SlotIndex::kNil)
 	{
-		if (!e.alive)
+		Entry& e = m_entries[slot];
+		e.last_use = ++m_use_counter;
+		m_index.Touch(slot);
+		// Whether a draw already recorded THIS frame names this entry, asked before the stamp
+		// below makes it true. Always false with the discipline off, which is Tile.
+		const bool pinned = Pinned(e);
+		e.pinned_frame = m_frame;
+		// A subrect-donor entry is valid only inside what it copied: it serves
+		// a draw whose proven sample core it contains, and nobody else — in
+		// particular a draw that arrives with NO core (whole-window semantics)
+		// must rebuild rather than read the backfill.
+		const GSVector4i full(0, 0, 1 << std::min<u32>(TEX0.TW, 10), 1 << std::min<u32>(TEX0.TH, 10));
+		const bool rect_ok = e.valid_rect.eq(full) ||
+							 (sample_core && e.valid_rect.rintersect(*sample_core).eq(*sample_core));
+		if (e.gen_stamp == stamp && rect_ok)
 		{
-			if (!free_slot)
-				free_slot = &e;
-			continue;
-		}
-		if (e.reg_key == reg_key && e.aux_key == aux_key && e.mip_key[0] == mip_key[0] && e.mip_key[1] == mip_key[1])
-		{
-			e.last_use = ++m_use_counter;
-			// Whether a draw already recorded THIS frame names this entry, asked before the stamp
-			// below makes it true. Always false with the discipline off, which is Tile.
-			const bool pinned = Pinned(e);
-			e.pinned_frame = m_frame;
-			// A subrect-donor entry is valid only inside what it copied: it serves
-			// a draw whose proven sample core it contains, and nobody else — in
-			// particular a draw that arrives with NO core (whole-window semantics)
-			// must rebuild rather than read the backfill.
-			const GSVector4i full(0, 0, 1 << std::min<u32>(TEX0.TW, 10), 1 << std::min<u32>(TEX0.TH, 10));
-			const bool rect_ok = e.valid_rect.eq(full) ||
-								 (sample_core && e.valid_rect.rintersect(*sample_core).eq(*sample_core));
-			if (e.gen_stamp == stamp && rect_ok)
-			{
-				m_hits++;
-				if (build_id)
-					*build_id = e.build_id;
-				return e.tex;
-			}
-			// Same window, moved stamp. Before paying the deswizzle, ask the
-			// cheaper question: did the pages' CONTENT move, or were they only
-			// rewritten with the bytes they already held? (Same population the
-			// row-hash tier measured at 97.7% — this refuses those one tier
-			// earlier, before the gather-read of the swizzled window.) Only a
-			// CPU-built entry can answer — a device-built one never recorded
-			// what the CPU bytes were — and only a donor-LESS lookup may ask:
-			// the donor route deliberately skips the caller's spill, so hashing
-			// its pages would file PRE-spill bytes under the current write
-			// generations and poison every later post-spill consumer of the
-			// same pages. The SotC bloom chain caught exactly this — its window
-			// alternates donor/CPU routes within a frame, and the stale hash
-			// matched a fingerprint whose bytes had since been pulled.
-			u64 page_content = 0;
-			if (!donor && e.content_hash != 0 && e.content.source == ContentToken::Source::Pages &&
-				e.content.value != 0)
-			{
-				page_content = PageContentStamp(mem, model, pages);
-				if (page_content == e.content.value)
-				{
-					e.gen_stamp = stamp;
-					m_rebuilds_same_pages++;
-					if (build_id)
-						*build_id = e.build_id;
-					return e.tex;
-				}
-			}
-			// The bytes really did move. An entry a recorded draw already names may not be rebuilt
-			// under it — that draw would sample bytes it never asked for when the plan finally runs
-			// — so refuse and let the caller take its other road. Inert with the discipline off.
-			if (pinned)
-			{
-				m_pin_refusals++;
-				return nullptr;
-			}
-			if (!BuildInto(e, mem, level_tex0, levels, TEXA, donor))
-			{
-				e.alive = false;
-				if (e.tex)
-				{
-					g_gs_device->Recycle(e.tex);
-					e.tex = nullptr;
-				}
-				return nullptr;
-			}
-			e.gen_stamp = stamp;
-			e.pages = pages;
-			// A CPU build records the page fingerprint it was built under (already
-			// computed if the serve above was attempted); a device build records
-			// nothing — its bytes never transited the CPU.
-			e.content = (e.content_hash != 0) ?
-							ContentToken{ContentToken::Source::Pages,
-								page_content != 0 ? page_content : PageContentStamp(mem, model, pages)} :
-							ContentToken{};
-			// BuildInto stamped the id — a NEW one only if the bytes moved.
+			m_hits++;
 			if (build_id)
 				*build_id = e.build_id;
 			return e.tex;
 		}
-		// A pinned entry is not a candidate for eviction: its texture is named by a draw that has
-		// been recorded and not yet issued, and recycling it puts that texture back in the pool for
-		// the next CreateTexture to overwrite.
-		if (!Pinned(e) && (!lru || e.last_use < lru->last_use))
-			lru = &e;
+		// Same window, moved stamp. Before paying the deswizzle, ask the
+		// cheaper question: did the pages' CONTENT move, or were they only
+		// rewritten with the bytes they already held? (Same population the
+		// row-hash tier measured at 97.7% — this refuses those one tier
+		// earlier, before the gather-read of the swizzled window.) Only a
+		// CPU-built entry can answer — a device-built one never recorded
+		// what the CPU bytes were — and only a donor-LESS lookup may ask:
+		// the donor route deliberately skips the caller's spill, so hashing
+		// its pages would file PRE-spill bytes under the current write
+		// generations and poison every later post-spill consumer of the
+		// same pages. The SotC bloom chain caught exactly this — its window
+		// alternates donor/CPU routes within a frame, and the stale hash
+		// matched a fingerprint whose bytes had since been pulled.
+		u64 page_content = 0;
+		if (!donor && e.content_hash != 0 && e.content.source == ContentToken::Source::Pages &&
+			e.content.value != 0)
+		{
+			page_content = PageContentStamp(mem, model, pages);
+			if (page_content == e.content.value)
+			{
+				e.gen_stamp = stamp;
+				m_rebuilds_same_pages++;
+				if (build_id)
+					*build_id = e.build_id;
+				return e.tex;
+			}
+		}
+		// The bytes really did move. An entry a recorded draw already names may not be rebuilt
+		// under it — that draw would sample bytes it never asked for when the plan finally runs
+		// — so refuse and let the caller take its other road. Inert with the discipline off.
+		if (pinned)
+		{
+			m_pin_refusals++;
+			return nullptr;
+		}
+		if (!BuildInto(e, mem, level_tex0, levels, TEXA, donor))
+		{
+			e.alive = false;
+			if (e.tex)
+			{
+				g_gs_device->Recycle(e.tex);
+				e.tex = nullptr;
+			}
+			m_index.Release(slot);
+			return nullptr;
+		}
+		e.gen_stamp = stamp;
+		e.pages = pages;
+		// A CPU build records the page fingerprint it was built under (already
+		// computed if the serve above was attempted); a device build records
+		// nothing — its bytes never transited the CPU.
+		e.content = (e.content_hash != 0) ?
+						ContentToken{ContentToken::Source::Pages,
+							page_content != 0 ? page_content : PageContentStamp(mem, model, pages)} :
+						ContentToken{};
+		// BuildInto stamped the id — a NEW one only if the bytes moved.
+		if (build_id)
+			*build_id = e.build_id;
+		return e.tex;
 	}
 
-	if (!free_slot && !lru)
+	// No entry for this window. Take a free slot if there is one — the lowest-numbered, which is
+	// the one the walk took — otherwise evict the least recently used entry no recorded draw is
+	// holding down. A pinned entry is not a candidate for eviction: its texture is named by a draw
+	// that has been recorded and not yet issued, and recycling it puts that texture back in the
+	// pool for the next CreateTexture to overwrite.
+	u16 fresh = m_index.FreeSlot();
+	const bool from_free = (fresh != SlotIndex::kNil);
+	if (!from_free)
+		fresh = m_index.Victim([this](u16 i) { return !Pinned(m_entries[i]); });
+	if (fresh == SlotIndex::kNil)
 	{
 		// Every entry is held down by this frame. Fail closed rather than evict something a
 		// recorded draw is going to sample.
 		m_capacity_refusals++;
 		return nullptr;
 	}
-	Entry& e = free_slot ? *free_slot : *lru;
-	if (e.alive && e.tex && !free_slot)
+	Entry& e = m_entries[fresh];
+	if (!from_free)
 	{
-		g_gs_device->Recycle(e.tex);
-		e.tex = nullptr;
+		if (e.tex)
+		{
+			g_gs_device->Recycle(e.tex);
+			e.tex = nullptr;
+		}
+		// The evicted key stops matching before the new one is filed, so the index never carries
+		// two slots for one key.
+		m_index.Release(fresh);
 	}
 	e.alive = true;
 	e.reg_key = reg_key;
@@ -479,6 +500,7 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 	e.mip_key[1] = mip_key[1];
 	e.pages = pages;
 	e.last_use = ++m_use_counter;
+	m_index.Occupy(fresh, hash);
 	e.pinned_frame = m_frame;
 	e.content_hash = 0; // a fresh window never compares against the slot's previous occupant
 	e.content = ContentToken{};
@@ -492,6 +514,7 @@ GSTexture* GSTileTextureSource::Lookup(GSLocalMemory& mem, const GSVramModel& mo
 			g_gs_device->Recycle(e.tex);
 			e.tex = nullptr;
 		}
+		m_index.Release(fresh);
 		return nullptr;
 	}
 	e.gen_stamp = stamp;
@@ -525,69 +548,72 @@ GSTexture* GSTileTextureSource::LookupBuilt(const GSVramModel& model, const GIFR
 	const int tw = 1 << std::min<u32>(TEX0.TW, 10);
 	const int th = 1 << std::min<u32>(TEX0.TH, 10);
 
-	Entry* lru = nullptr;
-	Entry* free_slot = nullptr;
-	for (Entry& e : m_entries)
+	const u64 hash = KeyHash(reg_key, aux_key, mip_key);
+
+	const u16 slot = FindEntry(hash, reg_key, aux_key, mip_key);
+	if (slot != SlotIndex::kNil)
 	{
-		if (!e.alive)
+		Entry& e = m_entries[slot];
+		e.last_use = ++m_use_counter;
+		m_index.Touch(slot);
+		const bool pinned = Pinned(e);
+		e.pinned_frame = m_frame;
+		if (e.gen_stamp == stamp)
 		{
-			if (!free_slot)
-				free_slot = &e;
-			continue;
+			m_hits++;
+			return done(BuiltOutcome::Hit, e.tex, e.build_id);
 		}
-		if (e.reg_key == reg_key && e.aux_key == aux_key && e.mip_key[0] == mip_key[0] && e.mip_key[1] == mip_key[1])
+		// The stamp moved, which says a byte on the window's PAGES was written and not that a
+		// texel changed. Ask the content token before paying a build: on this corpus most of
+		// these are the same bytes re-uploaded, and a rebuild would also hand every identity
+		// derived from this one (the palette pairs) a new id for nothing.
+		if (content == e.content)
 		{
-			e.last_use = ++m_use_counter;
-			const bool pinned = Pinned(e);
-			e.pinned_frame = m_frame;
-			if (e.gen_stamp == stamp)
-			{
-				m_hits++;
-				return done(BuiltOutcome::Hit, e.tex, e.build_id);
-			}
-			// The stamp moved, which says a byte on the window's PAGES was written and not that a
-			// texel changed. Ask the content token before paying a build: on this corpus most of
-			// these are the same bytes re-uploaded, and a rebuild would also hand every identity
-			// derived from this one (the palette pairs) a new id for nothing.
-			if (content == e.content)
-			{
-				e.gen_stamp = stamp;
-				m_rebuilds_same_pages++;
-				return done(BuiltOutcome::Rescued, e.tex, e.build_id);
-			}
-			// A real rebuild, in place, in the entry and the texture a recorded draw already
-			// names. Refuse; the caller's other road is correct and the rebuild happens next
-			// frame, when the plan that named it has run.
-			if (pinned)
-			{
-				m_pin_refusals++;
-				return done(BuiltOutcome::RefusedPinned, nullptr, 0);
-			}
-			if (!BuildDeviceSource(e, TEX0, TEXA, builder, tw, th))
-			{
-				e.alive = false;
-				e.pinned_frame = 0;
-				return done(BuiltOutcome::Failed, nullptr, 0);
-			}
 			e.gen_stamp = stamp;
-			e.pages = pages;
-			e.content = content;
-			return done(BuiltOutcome::Built, e.tex, e.build_id);
+			m_rebuilds_same_pages++;
+			return done(BuiltOutcome::Rescued, e.tex, e.build_id);
 		}
-		if (!Pinned(e) && (!lru || e.last_use < lru->last_use))
-			lru = &e;
+		// A real rebuild, in place, in the entry and the texture a recorded draw already
+		// names. Refuse; the caller's other road is correct and the rebuild happens next
+		// frame, when the plan that named it has run.
+		if (pinned)
+		{
+			m_pin_refusals++;
+			return done(BuiltOutcome::RefusedPinned, nullptr, 0);
+		}
+		if (!BuildDeviceSource(e, TEX0, TEXA, builder, tw, th))
+		{
+			e.alive = false;
+			e.pinned_frame = 0;
+			m_index.Release(slot);
+			return done(BuiltOutcome::Failed, nullptr, 0);
+		}
+		e.gen_stamp = stamp;
+		e.pages = pages;
+		e.content = content;
+		return done(BuiltOutcome::Built, e.tex, e.build_id);
 	}
 
-	if (!free_slot && !lru)
+	// No entry for this window: a free slot, else the least recently used entry no recorded draw
+	// holds down, else the fail-closed refusal.
+	u16 fresh = m_index.FreeSlot();
+	const bool from_free = (fresh != SlotIndex::kNil);
+	if (!from_free)
+		fresh = m_index.Victim([this](u16 i) { return !Pinned(m_entries[i]); });
+	if (fresh == SlotIndex::kNil)
 	{
 		m_capacity_refusals++;
 		return done(BuiltOutcome::RefusedCapacity, nullptr, 0);
 	}
-	Entry& e = free_slot ? *free_slot : *lru;
-	if (e.alive && e.tex && !free_slot)
+	Entry& e = m_entries[fresh];
+	if (!from_free)
 	{
-		g_gs_device->Recycle(e.tex);
-		e.tex = nullptr;
+		if (e.tex)
+		{
+			g_gs_device->Recycle(e.tex);
+			e.tex = nullptr;
+		}
+		m_index.Release(fresh);
 	}
 	e.alive = true;
 	e.reg_key = reg_key;
@@ -596,6 +622,7 @@ GSTexture* GSTileTextureSource::LookupBuilt(const GSVramModel& model, const GIFR
 	e.mip_key[1] = mip_key[1];
 	e.pages = pages;
 	e.last_use = ++m_use_counter;
+	m_index.Occupy(fresh, hash);
 	e.pinned_frame = m_frame;
 	e.content_hash = 0; // no CPU build ever read this window; the row-hash tier has nothing to say
 	e.content = ContentToken{};
@@ -604,6 +631,7 @@ GSTexture* GSTileTextureSource::LookupBuilt(const GSVramModel& model, const GIFR
 	{
 		e.alive = false;
 		e.pinned_frame = 0;
+		m_index.Release(fresh);
 		return done(BuiltOutcome::Failed, nullptr, 0);
 	}
 	e.gen_stamp = stamp;
@@ -666,4 +694,7 @@ void GSTileTextureSource::Clear()
 	// with different bytes would serve a stale texture.
 	m_page_content.fill({});
 	m_use_counter = 0;
+	// Every slot free, no keys filed, empty recency list — the entries above are all dead, and the
+	// index is only ever a mirror of them.
+	m_index.Clear();
 }

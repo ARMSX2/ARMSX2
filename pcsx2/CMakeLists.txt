@@ -640,6 +640,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Tile/GSTileExpandedCache.h
 	GS/Renderers/Tile/GSTileOracle.h
 	GS/Renderers/Tile/GSTilePaletteCache.h
+	GS/Renderers/Tile/GSTileSlotIndex.h
 	GS/Renderers/Tile/GSTileSwizzleForms.h
 	GS/Renderers/Tile/GSTileTargetPool.h
 	GS/Renderers/Tile/GSTileTextureSource.h

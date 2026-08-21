@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "GS/Renderers/Tile/GSTileSlotIndex.h"
+
 #include "common/Pcsx2Types.h"
 
 #include <array>
@@ -146,6 +148,7 @@ public:
 
 private:
 	static constexpr u32 kMaxEntries = 512;
+	using SlotIndex = GSTileSlotIndex<kMaxEntries, 1024>;
 
 	struct Entry
 	{
@@ -160,7 +163,20 @@ private:
 
 	bool Pinned(const Entry& e) const { return m_pin_frame != 0 && e.pinned_frame == m_pin_frame; }
 
+	/// The slot holding this exact pair, or SlotIndex::kNil. The index narrows to a bucket; the
+	/// comparison is the same exact two-id equality the walk it replaced did.
+	u16 FindEntry(u64 hash, u64 index_id, u64 palette_id) const;
+
+	/// Record a first-sight marker for this pair and return its slot, or SlotIndex::kNil when
+	/// every entry is pinned by the plan frame (counted, and the caller's leg refuses). All three
+	/// admission roads record the same marker the same way, so they record it here.
+	u16 AdmitSlot(u64 hash, u64 index_id, u64 palette_id);
+
 	std::array<Entry, kMaxEntries> m_entries;
+	/// Which slot holds which pair, which slots are free, and which occupied slot is oldest. The
+	/// recency list mirrors `last_use` exactly — every stamp below is paired with a Touch — so an
+	/// admission that has to take an occupied slot takes the one the old scan took.
+	SlotIndex m_index;
 	u64 m_use_counter = 0;
 	u64 m_frame = 0;
 	u64 m_pin_frame = 0;

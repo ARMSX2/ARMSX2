@@ -7,6 +7,7 @@
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSTexture.h"
 #include "GS/Renderers/Tile/GSPageBitmap.h"
+#include "GS/Renderers/Tile/GSTileSlotIndex.h"
 
 #include <array>
 #include <memory>
@@ -308,10 +309,12 @@ private:
 	// past 64 meant 208 fresh builds PER FRAME — each a full deswizzle plus an
 	// upload — with rebuild-in-place (a genuinely moved stamp) measured at 2/frame.
 	// The deswizzle bill this created is visible in the SD865 GS-thread profile
-	// (ReadTexture32/24). Capacity is CPU-cheap (the scan compares four words); the
-	// device memory is bounded by the working set either way, because a thrashing
-	// cache allocates the same textures every frame instead of holding them.
+	// (ReadTexture32/24). Capacity is CPU-cheap — it costs an index probe, not a
+	// walk, since the slot index landed — and the device memory is bounded by the
+	// working set either way, because a thrashing cache allocates the same textures
+	// every frame instead of holding them.
 	static constexpr u32 kMaxEntries = 512;
+	using SlotIndex = GSTileSlotIndex<kMaxEntries, 1024>;
 
 	struct Entry
 	{
@@ -349,6 +352,11 @@ private:
 		u32 seen_gpu = 0;
 	};
 
+	/// The slot holding this exact key, or SlotIndex::kNil. The index narrows the candidates to a
+	/// hash bucket; the comparison here is the same exact four-word equality the walk it replaced
+	/// did, so a hash collision costs a compare and never a wrong serve.
+	u16 FindEntry(u64 hash, u64 reg_key, u64 aux_key, const u64 mip_key[2]) const;
+
 	u64 PageContentStamp(const GSLocalMemory& mem, const GSVramModel& model, const GSPageBitmap& pages);
 	bool BuildInto(Entry& e, GSLocalMemory& mem, const GIFRegTEX0* level_tex0, u32 levels, const GIFRegTEXA& TEXA,
 		const Donor* donor);
@@ -357,6 +365,11 @@ private:
 	u8* GetScratch(u32 size);
 
 	std::array<Entry, kMaxEntries> m_entries;
+	/// Which slot holds which key, which slots are free, and which occupied slot is oldest —
+	/// the three questions every lookup used to answer by walking all 512 entries. The recency
+	/// list mirrors `last_use` exactly (every stamp is paired with a Touch), so eviction picks
+	/// the entry the old smallest-last_use scan picked.
+	SlotIndex m_index;
 	std::array<PageContent, GS_MAX_PAGES> m_page_content;
 	std::unique_ptr<u8[]> m_scratch;
 	u32 m_scratch_size = 0;

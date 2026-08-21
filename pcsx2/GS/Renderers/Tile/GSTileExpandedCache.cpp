@@ -15,37 +15,71 @@ GSTileExpandedCache::~GSTileExpandedCache()
 	Clear();
 }
 
+// The slot index's exact-key find. One entry per pair — every insertion below happens only after a
+// miss — so the first match is the only match, which is what the walk it replaced relied on when
+// it broke early.
+u16 GSTileExpandedCache::FindEntry(u64 hash, u64 index_id, u64 palette_id) const
+{
+	return m_index.Find(hash, [&](u16 i) {
+		const Entry& e = m_entries[i];
+		return e.index_id == index_id && e.palette_id == palette_id;
+	});
+}
+
+// First sight: record the pair. The marker shares the LRU pool with real entries — it is one-shot
+// by construction when the pair never repeats, so it ages out first (stable entries are re-touched
+// every frame). Taking a slot can recycle the texture in it, so this is under the pin discipline
+// exactly as a build is, and refuses the same way when the whole cache is held down.
+u16 GSTileExpandedCache::AdmitSlot(u64 hash, u64 index_id, u64 palette_id)
+{
+	u16 fresh = m_index.FreeSlot();
+	const bool from_free = (fresh != SlotIndex::kNil);
+	if (!from_free)
+		fresh = m_index.Victim([this](u16 i) { return !Pinned(m_entries[i]); });
+	if (fresh == SlotIndex::kNil)
+	{
+		m_capacity_refusals++;
+		return SlotIndex::kNil;
+	}
+
+	Entry& e = m_entries[fresh];
+	if (e.tex)
+	{
+		g_gs_device->Recycle(e.tex);
+		e.tex = nullptr;
+	}
+	if (!from_free)
+	{
+		// The evicted pair stops matching before the new one is filed, so the index never carries
+		// two slots for one pair.
+		m_index.Release(fresh);
+	}
+	e.alive = true;
+	e.index_id = index_id;
+	e.palette_id = palette_id;
+	e.last_use = ++m_use_counter;
+	m_index.Occupy(fresh, hash);
+	e.pinned_frame = 0; // a marker names no texture, so nothing is holding it down yet
+	e.seen_frame = m_frame;
+	return fresh;
+}
+
 GSTexture* GSTileExpandedCache::Lookup(GSTexture* index, u64 index_id, GSTexture* palette, u64 palette_id, u32 levels)
 {
 	if (!m_serves)
 		return nullptr;
 
-	Entry* found = nullptr;
-	Entry* lru = nullptr;
-	Entry* free_slot = nullptr;
-	for (Entry& e : m_entries)
-	{
-		if (!e.alive)
-		{
-			if (!free_slot)
-				free_slot = &e;
-			continue;
-		}
-		if (e.index_id == index_id && e.palette_id == palette_id)
-		{
-			found = &e;
-			break;
-		}
-		// An expansion a recorded-but-unissued draw names may not be recycled into the pool,
-		// where the next CreateTexture would take it and overwrite it. Inert with the pin
-		// discipline off, which is Tile.
-		if (!Pinned(e) && (!lru || e.last_use < lru->last_use))
-			lru = &e;
-	}
+	const u64 hash = GSTileSlotHash(index_id, palette_id);
+	const u16 slot = FindEntry(hash, index_id, palette_id);
+	Entry* const found = (slot != SlotIndex::kNil) ? &m_entries[slot] : nullptr;
 
 	if (found && found->tex)
 	{
 		found->last_use = ++m_use_counter;
+		m_index.Touch(slot);
+		// An expansion a recorded-but-unissued draw names may not be recycled into the pool,
+		// where the next CreateTexture would take it and overwrite it. Inert with the pin
+		// discipline off, which is Tile.
 		found->pinned_frame = m_pin_frame;
 		m_hits++;
 		return found->tex;
@@ -53,26 +87,8 @@ GSTexture* GSTileExpandedCache::Lookup(GSTexture* index, u64 index_id, GSTexture
 
 	if (!found)
 	{
-		// First sight: record the pair and defer. The marker shares the LRU pool
-		// with real entries — it is one-shot by construction when the pair never
-		// repeats, so it ages out first (stable entries are re-touched every frame).
-		if (!free_slot && !lru)
-		{
-			m_capacity_refusals++;
+		if (AdmitSlot(hash, index_id, palette_id) == SlotIndex::kNil)
 			return nullptr;
-		}
-		Entry& e = free_slot ? *free_slot : *lru;
-		if (e.tex)
-		{
-			g_gs_device->Recycle(e.tex);
-			e.tex = nullptr;
-		}
-		e.alive = true;
-		e.index_id = index_id;
-		e.palette_id = palette_id;
-		e.last_use = ++m_use_counter;
-		e.pinned_frame = 0; // a marker names no texture, so nothing is holding it down yet
-		e.seen_frame = m_frame;
 		m_deferrals++;
 		return nullptr;
 	}
@@ -83,6 +99,7 @@ GSTexture* GSTileExpandedCache::Lookup(GSTexture* index, u64 index_id, GSTexture
 		// this frame proves nothing about the next one. Keep deferring — building
 		// here is what turned per-frame-volatile windows into a build every frame.
 		found->last_use = ++m_use_counter;
+		m_index.Touch(slot);
 		m_deferrals++;
 		return nullptr;
 	}
@@ -116,14 +133,15 @@ GSTexture* GSTileExpandedCache::Lookup(GSTexture* index, u64 index_id, GSTexture
 
 	found->tex = tex;
 	found->last_use = ++m_use_counter;
+	m_index.Touch(slot);
 	found->pinned_frame = m_pin_frame;
 	m_builds++;
 	return tex;
 }
 
-// Lookup's scan and admission filter, with the expansion draw replaced by the builder's arrangement
-// of one. Everything the immediate road decides is decided identically here -- the split is only
-// WHEN the texels arrive, which is the caller's problem and not this class's.
+// Lookup's admission filter, with the expansion draw replaced by the builder's arrangement of one.
+// Everything the immediate road decides is decided identically here -- the split is only WHEN the
+// texels arrive, which is the caller's problem and not this class's.
 GSTexture* GSTileExpandedCache::LookupBuilt(GSTexture* index, u64 index_id, GSTexture* palette,
 	u64 palette_id, GSTileExpandBuilder& builder, BuiltOutcome* outcome)
 {
@@ -133,29 +151,14 @@ GSTexture* GSTileExpandedCache::LookupBuilt(GSTexture* index, u64 index_id, GSTe
 		return tex;
 	};
 
-	Entry* found = nullptr;
-	Entry* lru = nullptr;
-	Entry* free_slot = nullptr;
-	for (Entry& e : m_entries)
-	{
-		if (!e.alive)
-		{
-			if (!free_slot)
-				free_slot = &e;
-			continue;
-		}
-		if (e.index_id == index_id && e.palette_id == palette_id)
-		{
-			found = &e;
-			break;
-		}
-		if (!Pinned(e) && (!lru || e.last_use < lru->last_use))
-			lru = &e;
-	}
+	const u64 hash = GSTileSlotHash(index_id, palette_id);
+	const u16 slot = FindEntry(hash, index_id, palette_id);
+	Entry* const found = (slot != SlotIndex::kNil) ? &m_entries[slot] : nullptr;
 
 	if (found && found->tex)
 	{
 		found->last_use = ++m_use_counter;
+		m_index.Touch(slot);
 		found->pinned_frame = m_pin_frame;
 		m_hits++;
 		return done(BuiltOutcome::Hit, found->tex);
@@ -163,23 +166,8 @@ GSTexture* GSTileExpandedCache::LookupBuilt(GSTexture* index, u64 index_id, GSTe
 
 	if (!found)
 	{
-		if (!free_slot && !lru)
-		{
-			m_capacity_refusals++;
+		if (AdmitSlot(hash, index_id, palette_id) == SlotIndex::kNil)
 			return done(BuiltOutcome::RefusedCapacity, nullptr);
-		}
-		Entry& e = free_slot ? *free_slot : *lru;
-		if (e.tex)
-		{
-			g_gs_device->Recycle(e.tex);
-			e.tex = nullptr;
-		}
-		e.alive = true;
-		e.index_id = index_id;
-		e.palette_id = palette_id;
-		e.last_use = ++m_use_counter;
-		e.pinned_frame = 0; // a marker names no texture, so nothing is holding it down yet
-		e.seen_frame = m_frame;
 		m_deferrals++;
 		return done(BuiltOutcome::Deferred, nullptr);
 	}
@@ -187,6 +175,7 @@ GSTexture* GSTileExpandedCache::LookupBuilt(GSTexture* index, u64 index_id, GSTe
 	if (found->seen_frame == m_frame)
 	{
 		found->last_use = ++m_use_counter;
+		m_index.Touch(slot);
 		m_deferrals++;
 		return done(BuiltOutcome::Deferred, nullptr);
 	}
@@ -207,6 +196,7 @@ GSTexture* GSTileExpandedCache::LookupBuilt(GSTexture* index, u64 index_id, GSTe
 
 	found->tex = tex;
 	found->last_use = ++m_use_counter;
+	m_index.Touch(slot);
 	found->pinned_frame = m_pin_frame;
 	m_builds++;
 	return done(BuiltOutcome::Built, tex);
@@ -214,58 +204,27 @@ GSTexture* GSTileExpandedCache::LookupBuilt(GSTexture* index, u64 index_id, GSTe
 
 GSTileExpandedCache::Admission GSTileExpandedCache::ProbeAdmit(u64 index_id, u64 palette_id)
 {
-	// The scan Lookup runs, with the build legs removed. A pair already carrying a
-	// texture is a hit and therefore served; a pair whose marker predates this frame is
-	// what Lookup would build now, which is also served from the caller's viewpoint.
-	Entry* found = nullptr;
-	Entry* lru = nullptr;
-	Entry* free_slot = nullptr;
-	for (Entry& e : m_entries)
-	{
-		if (!e.alive)
-		{
-			if (!free_slot)
-				free_slot = &e;
-			continue;
-		}
-		if (e.index_id == index_id && e.palette_id == palette_id)
-		{
-			found = &e;
-			break;
-		}
-		if (!Pinned(e) && (!lru || e.last_use < lru->last_use))
-			lru = &e;
-	}
+	// The lookup Lookup runs, with the build legs removed. A pair already carrying a texture is a
+	// hit and therefore served; a pair whose marker predates this frame is what Lookup would build
+	// now, which is also served from the caller's viewpoint.
+	const u64 hash = GSTileSlotHash(index_id, palette_id);
+	const u16 slot = FindEntry(hash, index_id, palette_id);
 
-	if (!found)
+	if (slot == SlotIndex::kNil)
 	{
 		// Recording a marker takes a slot, and taking a slot can recycle the texture in it — so
 		// this leg is under the pin discipline exactly as Lookup's is, and refuses the same way
-		// when the whole cache is held down.
-		if (!free_slot && !lru)
-		{
-			m_capacity_refusals++;
-			return Admission::Deferred;
-		}
-		Entry& e = free_slot ? *free_slot : *lru;
-		if (e.tex)
-		{
-			g_gs_device->Recycle(e.tex);
-			e.tex = nullptr;
-		}
-		e.alive = true;
-		e.index_id = index_id;
-		e.palette_id = palette_id;
-		e.last_use = ++m_use_counter;
-		e.pinned_frame = 0;
-		e.seen_frame = m_frame;
+		// when the whole cache is held down. Either way the verdict is a deferral.
+		AdmitSlot(hash, index_id, palette_id);
 		return Admission::Deferred;
 	}
 
-	found->last_use = ++m_use_counter;
-	if (found->tex)
-		found->pinned_frame = m_pin_frame;
-	return (found->tex == nullptr && found->seen_frame == m_frame) ? Admission::Deferred : Admission::Served;
+	Entry& found = m_entries[slot];
+	found.last_use = ++m_use_counter;
+	m_index.Touch(slot);
+	if (found.tex)
+		found.pinned_frame = m_pin_frame;
+	return (found.tex == nullptr && found.seen_frame == m_frame) ? Admission::Deferred : Admission::Served;
 }
 
 void GSTileExpandedCache::Clear()
@@ -281,4 +240,7 @@ void GSTileExpandedCache::Clear()
 		e.pinned_frame = 0;
 	}
 	m_use_counter = 0;
+	// Every slot free, no pairs filed, empty recency list — the entries above are all dead, and the
+	// index is only ever a mirror of them.
+	m_index.Clear();
 }
