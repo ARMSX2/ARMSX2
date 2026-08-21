@@ -255,26 +255,20 @@ namespace Vulkan
 
 		m_logical = vk::LogicalDevice(dev->GetDevice());
 
-		// Both features are queried straight from the driver rather than trusted from PCSX2's
-		// own feature struct: the LSFG shaders need them specifically, and PCSX2 does not enable
-		// or track either for its own rendering, so there is nothing cached to read.
-		// Value-init then assign, rather than a braced initialiser: these structs carry more
-		// members than the two being set, and naming only the first leaves the rest to
-		// -Wmissing-field-initializers. Same idiom as the rest of the Vulkan backend.
-		VkPhysicalDeviceRobustness2FeaturesEXT robustness = {};
-		robustness.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
-
-		VkPhysicalDeviceVulkanMemoryModelFeatures memory_model = {};
-		memory_model.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES;
-		memory_model.pNext = &robustness;
-
-		VkPhysicalDeviceFeatures2 features = {};
-		features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-		features.pNext = &memory_model;
-		vkGetPhysicalDeviceFeatures2(dev->GetPhysicalDevice(), &features);
-
-		m_vulkan_memory_model = (memory_model.vulkanMemoryModel == VK_TRUE);
-		m_null_descriptor = (robustness.nullDescriptor == VK_TRUE);
+		// ★ Read what the LOGICAL device actually ENABLED, not what the physical device reports.
+		//
+		// This originally called vkGetPhysicalDeviceFeatures2 and believed the answer, which is
+		// wrong in the direction that hurts: a driver can report both features as supported while
+		// GSDeviceVK never requested either at vkCreateDevice, and then declaring the Vulkan
+		// memory model in a shader module, or relying on a null descriptor, is invalid usage.
+		// On Adreno that surfaces as device-lost mid-frame rather than as a clean failure, so
+		// the check would have looked like it passed right up until it took the renderer down.
+		//
+		// GSDeviceVK already probes both against the driver and clears the flag when a feature is
+		// advertised but absent, so these are true only when the feature was really enabled.
+		const GSDeviceVK::OptionalExtensions& ext = dev->GetOptionalExtensions();
+		m_vulkan_memory_model = ext.vk_khr_vulkan_memory_model;
+		m_null_descriptor = ext.vk_ext_robustness2_null_descriptor;
 	}
 
 	// --- MemoryAllocator -------------------------------------------------------------------

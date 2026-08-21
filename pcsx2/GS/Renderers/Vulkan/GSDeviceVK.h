@@ -49,6 +49,11 @@ public:
 		bool vk_khr_shader_non_semantic_info : 1;
 		bool vk_ext_attachment_feedback_loop_layout : 1;
 		bool vk_ext_fragment_shader_interlock : 1;
+		/// Both are required by the LSFG frame-generation shaders and by NOTHING else in the
+		/// renderer. They are requested anyway whenever the driver really has them, because the
+		/// alternative is recreating the device when frame generation is switched on.
+		bool vk_khr_vulkan_memory_model : 1;   ///< shaders declare the Vulkan memory model
+		bool vk_ext_robustness2_null_descriptor : 1; ///< nullDescriptor only; not the robust-access bits
 	};
 
 	// Global state accessors

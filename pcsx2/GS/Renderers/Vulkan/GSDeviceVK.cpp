@@ -529,6 +529,10 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 #endif
 
 	m_optional_extensions.vk_ext_fragment_shader_interlock = SupportsExtension(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME, false);
+	// LSFG frame generation only. PCSX2 targets Vulkan 1.1, where neither is core — the memory
+	// model is 1.2 and nullDescriptor never became core at all — so both come in as extensions.
+	m_optional_extensions.vk_khr_vulkan_memory_model = SupportsExtension(VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME, false);
+	m_optional_extensions.vk_ext_robustness2_null_descriptor = SupportsExtension(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, false);
 
 	return true;
 }
@@ -718,6 +722,10 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR};
 	VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT fragment_shader_interlock_ext_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
+	VkPhysicalDeviceVulkanMemoryModelFeatures vulkan_memory_model_feature = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES};
+	VkPhysicalDeviceRobustness2FeaturesEXT robustness2_feature = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
 
 	// An advertised EXTENSION does not guarantee its FEATURE bit, and asking for a feature the
 	// driver does not have fails vkCreateDevice outright with VK_ERROR_FEATURE_NOT_PRESENT —
@@ -743,6 +751,10 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR};
 		VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT probe_fsi = {
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
+		VkPhysicalDeviceVulkanMemoryModelFeatures probe_vmm = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES};
+		VkPhysicalDeviceRobustness2FeaturesEXT probe_r2 = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
 
 		// Only chain what we would actually enable: querying a struct whose extension is absent is
 		// not something the spec promises anything about.
@@ -759,6 +771,10 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			Vulkan::AddPointerToChain(&probe, &probe_sm1);
 		if (m_optional_extensions.vk_ext_fragment_shader_interlock)
 			Vulkan::AddPointerToChain(&probe, &probe_fsi);
+		if (m_optional_extensions.vk_khr_vulkan_memory_model)
+			Vulkan::AddPointerToChain(&probe, &probe_vmm);
+		if (m_optional_extensions.vk_ext_robustness2_null_descriptor)
+			Vulkan::AddPointerToChain(&probe, &probe_r2);
 		vkGetPhysicalDeviceFeatures2(m_physical_device, &probe);
 
 		// Returns the flag rather than taking it by reference: m_optional_extensions members are
@@ -792,6 +808,13 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		m_optional_extensions.vk_ext_fragment_shader_interlock = keep("VK_EXT_fragment_shader_interlock",
 			m_optional_extensions.vk_ext_fragment_shader_interlock,
 			probe_fsi.fragmentShaderPixelInterlock == VK_TRUE);
+		m_optional_extensions.vk_khr_vulkan_memory_model = keep("VK_KHR_vulkan_memory_model",
+			m_optional_extensions.vk_khr_vulkan_memory_model, probe_vmm.vulkanMemoryModel == VK_TRUE);
+		// The FEATURE we want is nullDescriptor specifically. VK_EXT_robustness2 also carries
+		// robustBufferAccess2/robustImageAccess2, which cost performance and which nothing here
+		// needs — they are deliberately left VK_FALSE below.
+		m_optional_extensions.vk_ext_robustness2_null_descriptor = keep("VK_EXT_robustness2 (nullDescriptor)",
+			m_optional_extensions.vk_ext_robustness2_null_descriptor, probe_r2.nullDescriptor == VK_TRUE);
 
 		// Depth ROAA is an optional sub-feature: a driver can offer the extension and colour
 		// access yet not depth.
@@ -831,6 +854,17 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	{
 		fragment_shader_interlock_ext_feature.fragmentShaderPixelInterlock = VK_TRUE;
 		Vulkan::AddPointerToChain(&device_info, &fragment_shader_interlock_ext_feature);
+	}
+	if (m_optional_extensions.vk_khr_vulkan_memory_model)
+	{
+		vulkan_memory_model_feature.vulkanMemoryModel = VK_TRUE;
+		Vulkan::AddPointerToChain(&device_info, &vulkan_memory_model_feature);
+	}
+	if (m_optional_extensions.vk_ext_robustness2_null_descriptor)
+	{
+		// nullDescriptor ONLY — see the note by the probe above.
+		robustness2_feature.nullDescriptor = VK_TRUE;
+		Vulkan::AddPointerToChain(&device_info, &robustness2_feature);
 	}
 
 	VkResult res = vkCreateDevice(m_physical_device, &device_info, nullptr, &m_device);

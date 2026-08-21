@@ -63,7 +63,7 @@ import java.io.File
  *
  * [BuildConfig.LSFG] is false in the Play build and the whole section compiles out of it —
  * the native side is not there either (ARMSX2_ENABLE_LSFG is off, so GSLsfg answers
- * NOT_COMPILED_IN), and build-play-aab.sh fails the build if libarmsx2_lsfg.so ever
+ * NOT_COMPILED_IN), and build-play-aab.sh fails the build if the ported frame-generation code ever
  * appears in the bundle.
  */
 

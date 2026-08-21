@@ -88,9 +88,14 @@ echo "-- REQUEST_INSTALL_PACKAGES must be ABSENT (self-updating violates Play po
 if unzip -p "$OUTPUT_AAB" base/manifest/AndroidManifest.xml | strings | grep -q "REQUEST_INSTALL_PACKAGES"; then
 	echo "  !! FATAL: REQUEST_INSTALL_PACKAGES present in play AAB (in-app updater leaked into the Play build)" >&2; exit 1
 else echo "  absent OK"; fi
-echo "-- libarmsx2_lsfg.so must be ABSENT (frame generation is github-flavour only) --"
-if unzip -l "$OUTPUT_AAB" | grep -q "libarmsx2_lsfg.so"; then
-	echo "  !! FATAL: libarmsx2_lsfg.so present in play AAB (LSFG leaked into the Play build)" >&2; exit 1
+echo "-- no frame-generation code in the core (github flavour only) --"
+# There is no separate libarmsx2_lsfg.so any more: frame generation is compiled into the core
+# itself, gated on ARMSX2_ENABLE_LSFG which the play flavour sets to OFF. So the check moved
+# from "is that file packaged" — which can no longer be true either way, and would therefore
+# pass forever without proving anything — to looking inside the core for a symbol only the
+# ported implementation defines.
+if unzip -p "$OUTPUT_AAB" 'base/lib/arm64-v8a/libemucore_*.so' 2>/dev/null | LC_ALL=C grep -aq "LsfgChain"; then
+	echo "  !! FATAL: frame-generation code present in the play core (ARMSX2_ENABLE_LSFG leaked ON)" >&2; exit 1
 else echo "  absent OK"; fi
 echo "-- no frame-generation text at all (the Play build has no LSFG whatsoever) --"
 # The strongest of these checks, and the one someone looking would actually notice. Every

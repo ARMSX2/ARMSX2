@@ -21,19 +21,15 @@
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
 #include "GS/Renderers/Vulkan/VKSwapChain.h"
 
-#include "armsx2_lsfg_shim.h"
-#include "extract/trans.hpp"
+#include "GS/Renderers/Vulkan/FrameGen/FrameGen.h"
+#include "GS/Renderers/Vulkan/FrameGen/LosslessDll.h"
+#include "GS/Renderers/Vulkan/FrameGen/LsfgVkCompat.h"
 
-#include <pe-parse/parse.h>
-
-#include <android/hardware_buffer.h>
-#include <dlfcn.h>
+#include "common/Timer.h"
 
 #include <algorithm>
-#include <map>
+#include <array>
 #include <optional>
-#include <stdexcept>
-#include <unordered_map>
 #include <vector>
 #endif
 
@@ -225,443 +221,41 @@ namespace GSLsfg
 {
 	namespace
 	{
-		// --- the backend, loaded at runtime ---------------------------------------------------
-		//
-		// framegen lives in libarmsx2_lsfg.so and is reached only through the C entry points in
-		// armsx2_lsfg_shim.h. It is NOT linked, because it carries its own volk whose 759
-		// vkCreateImage-style globals would otherwise collide with (or, worse, silently alias)
-		// the identically named ones in PCSX2's VKLoader. See armsx2_lsfg_shim.h for the full
-		// reasoning. dlopen also means a build or a device missing that .so degrades to "frame
-		// generation unavailable" instead of failing to start the emulator.
+		// --- state ----------------------------------------------------------------------------
+		// Frame generation now runs as ordinary compute on the emulator's OWN device (ported from
+		// Eden, PR #4263). The previous implementation drove a separate library on a second
+		// VkDevice and shared images through AHardwareBuffer, which forced a full device idle
+		// twice per frame because Android offers no cross-device semaphore. None of that is here.
+		std::optional<Vulkan::Device> s_device;
+		std::optional<Vulkan::MemoryAllocator> s_allocator;
+		std::optional<Vulkan::FrameGen> s_frame_gen;
 
-		struct Backend
-		{
-			void* handle = nullptr;
-			pfn_armsx2_lsfg_abi_version abi_version = nullptr;
-			// v2 signature: is_hdr / flow_scale / performance joined the argument list, which is
-			// exactly why the ABI check below exists — the old layout would misread every one.
-			pfn_armsx2_lsfg_initialize initialize = nullptr;
-			pfn_armsx2_lsfg_create_context create_context = nullptr;
-			pfn_armsx2_lsfg_present present = nullptr;
-			pfn_armsx2_lsfg_wait_idle wait_idle = nullptr;
-			pfn_armsx2_lsfg_delete_context delete_context = nullptr;
-			pfn_armsx2_lsfg_finalize finalize = nullptr;
-			pfn_armsx2_lsfg_last_error last_error = nullptr;
-		};
-
-		Backend s_backend;
-		bool s_backend_tried = false;
-
-		const char* BackendError()
-		{
-			const char* msg = s_backend.last_error ? s_backend.last_error() : nullptr;
-			return (msg && *msg) ? msg : "no detail";
-		}
-
-		bool LoadBackend()
-		{
-			if (s_backend.handle)
-				return true;
-			if (s_backend_tried)
-				return false; // one attempt; a missing .so will still be missing next frame
-			s_backend_tried = true;
-
-			void* handle = dlopen("libarmsx2_lsfg.so", RTLD_NOW | RTLD_LOCAL);
-			if (!handle)
-			{
-				Console.ErrorFmt("@@ANDROID_LSFG@@ libarmsx2_lsfg.so not loadable: {}", dlerror());
-				return false;
-			}
-
-			Backend b;
-			b.handle = handle;
-			auto sym = [handle](const char* name) { return dlsym(handle, name); };
-			b.abi_version = reinterpret_cast<pfn_armsx2_lsfg_abi_version>(sym("armsx2_lsfg_abi_version"));
-			b.initialize = reinterpret_cast<pfn_armsx2_lsfg_initialize>(sym("armsx2_lsfg_initialize"));
-			b.create_context = reinterpret_cast<pfn_armsx2_lsfg_create_context>(sym("armsx2_lsfg_create_context"));
-			b.present = reinterpret_cast<pfn_armsx2_lsfg_present>(sym("armsx2_lsfg_present"));
-			b.wait_idle = reinterpret_cast<pfn_armsx2_lsfg_wait_idle>(sym("armsx2_lsfg_wait_idle"));
-			b.delete_context = reinterpret_cast<pfn_armsx2_lsfg_delete_context>(sym("armsx2_lsfg_delete_context"));
-			b.finalize = reinterpret_cast<pfn_armsx2_lsfg_finalize>(sym("armsx2_lsfg_finalize"));
-			b.last_error = reinterpret_cast<pfn_armsx2_lsfg_last_error>(sym("armsx2_lsfg_last_error"));
-
-			if (!b.abi_version || !b.initialize || !b.create_context || !b.present || !b.wait_idle ||
-				!b.delete_context || !b.finalize || !b.last_error)
-			{
-				Console.Error("@@ANDROID_LSFG@@ libarmsx2_lsfg.so is missing entry points");
-				dlclose(handle);
-				return false;
-			}
-			// A stale .so left behind by an older install would otherwise be called with the
-			// wrong argument layout, which is a crash with no useful backtrace.
-			if (b.abi_version() != ARMSX2_LSFG_ABI_VERSION)
-			{
-				Console.ErrorFmt("@@ANDROID_LSFG@@ libarmsx2_lsfg.so is ABI v{}, expected v{}",
-					b.abi_version(), ARMSX2_LSFG_ABI_VERSION);
-				dlclose(handle);
-				return false;
-			}
-
-			s_backend = b;
-			return true;
-		}
-
-		// --- shader extraction ---------------------------------------------------------------
-		//
-		// framegen does not read Lossless.dll itself: it asks for shaders by name and wants
-		// SPIR-V back, so the whole chain is ours. Upstream does this in the layer .so we do not
-		// build, and its extract.cpp hunts through Steam install paths and pulls in a TOML config
-		// system — neither of which means anything here, where the path comes from a SAF pick.
-		// So the resource walk is reimplemented and only the DXBC->SPIR-V translation is taken
-		// from upstream, where their binding-rewrite fixes live.
-
-		// name -> SPIR-V, translated once and then held. The DXBC below is scratch: it exists
-		// only while a DLL is being read and is dropped the moment every shader is translated.
-		//
-		// This used to hold DXBC instead, with the translation done inside ShaderCallback — so
-		// all 26 (now 52) DXBC->SPIR-V compiles ran on the GS thread, inside EndPresent, on the
-		// first frame after every enable, resolution change and multiplier change.
-		std::map<std::string, std::vector<u8>> s_shader_spirv;
-		std::unordered_map<u32, std::vector<u8>> s_shader_blobs;
-		// Which DLL s_shader_spirv was built from. Without it, picking a different Lossless.dll
-		// kept serving the previous file's shaders for the rest of the session.
-		std::string s_shader_source;
-		// Which families that DLL turned out to carry. A given Lossless Scaling version ships
-		// one or the other, so this is what lets the 3.1p request fall back instead of failing.
-		bool s_have_standard = false;
-		bool s_have_performance = false;
-
-		int OnResource(void*, const peparse::resource& res)
-		{
-			if (res.type != peparse::RT_RCDATA || res.buf == nullptr || res.buf->bufLen <= 0)
-				return 0;
-			std::vector<u8> data(static_cast<size_t>(res.buf->bufLen));
-			std::copy_n(res.buf->buf, res.buf->bufLen, data.data());
-			s_shader_blobs[res.name] = std::move(data);
-			return 0;
-		}
-
-		/// True for the LSFG 3.1p (performance) family. The p_ prefix is upstream's own naming.
-		bool IsPerformanceShader(const std::string& name) { return name.compare(0, 2, "p_") == 0; }
-
-		// Resource IDs, from upstream's extract.cpp — they track Lossless Scaling's own resource
-		// layout. Only the names framegen asks for are listed; anything else fails the load
-		// cleanly rather than feeding it a wrong shader.
-		//
-		// Two families: the plain names are LSFG 3.1 and the p_ prefixed ones are 3.1p, the
-		// lighter pipeline. p_mipmaps and p_generate deliberately share 255/256 with 3.1 — those
-		// two resources are common to both, so they are extracted twice under the two names
-		// framegen asks for rather than special-cased.
-		const std::map<std::string, u32>& ShaderNameTable()
-		{
-			static const std::map<std::string, u32> table = {
-				{"mipmaps", 255},
-				{"alpha[0]", 267}, {"alpha[1]", 268}, {"alpha[2]", 269}, {"alpha[3]", 270},
-				{"beta[0]", 275}, {"beta[1]", 276}, {"beta[2]", 277}, {"beta[3]", 278},
-				{"beta[4]", 279},
-				{"gamma[0]", 257}, {"gamma[1]", 259}, {"gamma[2]", 260}, {"gamma[3]", 261},
-				{"gamma[4]", 262},
-				{"delta[0]", 257}, {"delta[1]", 263}, {"delta[2]", 264}, {"delta[3]", 265},
-				{"delta[4]", 266}, {"delta[5]", 258}, {"delta[6]", 271}, {"delta[7]", 272},
-				{"delta[8]", 273}, {"delta[9]", 274},
-				{"generate", 256},
-				{"p_mipmaps", 255},
-				{"p_alpha[0]", 290}, {"p_alpha[1]", 291}, {"p_alpha[2]", 292}, {"p_alpha[3]", 293},
-				{"p_beta[0]", 298}, {"p_beta[1]", 299}, {"p_beta[2]", 300}, {"p_beta[3]", 301},
-				{"p_beta[4]", 302},
-				{"p_gamma[0]", 280}, {"p_gamma[1]", 282}, {"p_gamma[2]", 283}, {"p_gamma[3]", 284},
-				{"p_gamma[4]", 285},
-				{"p_delta[0]", 280}, {"p_delta[1]", 286}, {"p_delta[2]", 287}, {"p_delta[3]", 288},
-				{"p_delta[4]", 289}, {"p_delta[5]", 281}, {"p_delta[6]", 294}, {"p_delta[7]", 295},
-				{"p_delta[8]", 296}, {"p_delta[9]", 297},
-				{"p_generate", 256},
-			};
-			return table;
-		}
-
-		// --- the SPIR-V cache ------------------------------------------------------------------
-		//
-		// Translated SPIR-V only, never the DLL — that file is the user's own property and stays
-		// where they put it. Reading it back skips both the PE walk and 52 DXBC compiles.
-
-		constexpr u32 k_cache_magic = 0x4746534Cu; // "LSFG"
-		constexpr u32 k_cache_version = 1;
-		// Bounds on what the file may claim, so a truncated or garbage cache stops cleanly at the
-		// first bad field instead of trying to allocate whatever the bytes happened to say.
-		constexpr u32 k_max_name_len = 64;
-		constexpr u32 k_max_shader_size = 4u * 1024u * 1024u;
-		constexpr u32 k_max_shader_count = 256;
-
-		std::string ShaderCachePath() { return Path::Combine(EmuFolders::Cache, "lsfg_shaders.bin"); }
-
-		void AppendU32(std::vector<u8>& out, u32 value)
-		{
-			out.insert(out.end(), reinterpret_cast<const u8*>(&value), reinterpret_cast<const u8*>(&value) + 4);
-		}
-
-		void AppendU64(std::vector<u8>& out, u64 value)
-		{
-			out.insert(out.end(), reinterpret_cast<const u8*>(&value), reinterpret_cast<const u8*>(&value) + 8);
-		}
-
-		/// Size and mtime of the file the cache was built from. Upstream's own equivalent has no
-		/// invalidation at all: update Lossless Scaling and the stale shaders are used forever,
-		/// silently. We keep the DLL, so we can just ask.
-		bool StatSourceDll(u64* size, u64* mtime)
-		{
-			FILESYSTEM_STAT_DATA sd = {};
-			if (!FileSystem::StatFile(s_dll_path.c_str(), &sd))
-				return false;
-			*size = static_cast<u64>(sd.Size);
-			*mtime = static_cast<u64>(sd.ModificationTime);
-			return true;
-		}
-
-		void SaveShaderCache()
-		{
-			u64 dll_size = 0, dll_mtime = 0;
-			if (!StatSourceDll(&dll_size, &dll_mtime))
-				return; // no way to invalidate it later, so do not write one
-
-			std::vector<u8> out;
-			AppendU32(out, k_cache_magic);
-			AppendU32(out, k_cache_version);
-			AppendU64(out, dll_size);
-			AppendU64(out, dll_mtime);
-			AppendU32(out, static_cast<u32>(s_shader_spirv.size()));
-			for (const auto& [name, spirv] : s_shader_spirv)
-			{
-				AppendU32(out, static_cast<u32>(name.size()));
-				out.insert(out.end(), name.begin(), name.end());
-				AppendU32(out, static_cast<u32>(spirv.size()));
-				out.insert(out.end(), spirv.begin(), spirv.end());
-			}
-
-			const std::string path = ShaderCachePath();
-			if (!FileSystem::WriteBinaryFile(path.c_str(), out.data(), out.size()))
-			{
-				Console.WarningFmt("@@ANDROID_LSFG@@ could not write {} — shaders will be translated again next time", path);
-				return;
-			}
-			Console.WriteLnFmt("@@ANDROID_LSFG@@ cached {} translated shaders", s_shader_spirv.size());
-		}
-
-		/// Fills s_shader_spirv from disk. False for every ordinary reason a cache is not usable
-		/// — absent, from another build, or from a DLL the user has since replaced — none of
-		/// which is an error, they just mean "extract".
-		bool LoadShaderCache()
-		{
-			u64 dll_size = 0, dll_mtime = 0;
-			if (!StatSourceDll(&dll_size, &dll_mtime))
-				return false;
-
-			const std::optional<std::vector<u8>> data = FileSystem::ReadBinaryFile(ShaderCachePath().c_str());
-			if (!data.has_value())
-				return false;
-
-			const u8* p = data->data();
-			size_t left = data->size();
-			const auto read_u32 = [&p, &left](u32* value) {
-				if (left < 4)
-					return false;
-				std::memcpy(value, p, 4);
-				p += 4;
-				left -= 4;
-				return true;
-			};
-			const auto read_u64 = [&p, &left](u64* value) {
-				if (left < 8)
-					return false;
-				std::memcpy(value, p, 8);
-				p += 8;
-				left -= 8;
-				return true;
-			};
-
-			u32 magic = 0, version = 0, count = 0;
-			u64 cached_size = 0, cached_mtime = 0;
-			if (!read_u32(&magic) || !read_u32(&version) || !read_u64(&cached_size) ||
-				!read_u64(&cached_mtime) || !read_u32(&count))
-				return false;
-			if (magic != k_cache_magic || version != k_cache_version)
-				return false;
-			if (cached_size != dll_size || cached_mtime != dll_mtime)
-			{
-				Console.WriteLn("@@ANDROID_LSFG@@ Lossless.dll changed since the shader cache was written");
-				return false;
-			}
-			if (count == 0 || count > k_max_shader_count)
-				return false;
-
-			std::map<std::string, std::vector<u8>> loaded;
-			for (u32 i = 0; i < count; i++)
-			{
-				u32 name_len = 0, size = 0;
-				if (!read_u32(&name_len) || name_len == 0 || name_len > k_max_name_len || left < name_len)
-					break;
-				std::string name(reinterpret_cast<const char*>(p), name_len);
-				p += name_len;
-				left -= name_len;
-
-				if (!read_u32(&size) || size == 0 || size > k_max_shader_size || left < size)
-					break;
-				loaded[std::move(name)].assign(p, p + size);
-				p += size;
-				left -= size;
-			}
-
-			if (loaded.size() != count)
-			{
-				Console.Warning("@@ANDROID_LSFG@@ shader cache is truncated — translating again");
-				return false;
-			}
-
-			s_shader_spirv = std::move(loaded);
-			Console.WriteLnFmt("@@ANDROID_LSFG@@ restored {} shaders from the cache", s_shader_spirv.size());
-			return true;
-		}
-
-		/// Note which families the loaded SPIR-V actually covers, and reject a set that covers
-		/// neither. "Every listed name present" was right when only 3.1 existed and is wrong now:
-		/// a DLL legitimately ships one family, so requiring both would reject every one of them.
-		/// A HALF-present family must still fail here, though, rather than inside framegen's
-		/// initialise where the only message is "Shader hash not found".
-		void ClassifyShaderFamilies()
-		{
-			s_have_standard = true;
-			s_have_performance = true;
-			for (const auto& [name, idx] : ShaderNameTable())
-			{
-				if (s_shader_spirv.find(name) != s_shader_spirv.end())
-					continue;
-				if (IsPerformanceShader(name))
-					s_have_performance = false;
-				else
-					s_have_standard = false;
-			}
-		}
-
-		/// Pull every RCDATA resource out of the user's DLL, translate the ones framegen asks for,
-		/// and keep only the SPIR-V. Throws with a message the settings screen can show verbatim.
-		void ExtractShaders()
-		{
-			// A different pick invalidates what is held, and holding it anyway is how the old
-			// code served the previous DLL's shaders after the user replaced the file.
-			if (s_shader_source != s_dll_path)
-				s_shader_spirv.clear();
-			if (!s_shader_spirv.empty())
-				return;
-
-			s_shader_source = s_dll_path;
-			const bool from_cache = LoadShaderCache();
-			if (!from_cache)
-			{
-				// A previous attempt that threw before the clear at the bottom would otherwise
-				// leave its resources here to be merged with this DLL's.
-				s_shader_blobs.clear();
-				peparse::parsed_pe* dll = peparse::ParsePEFromFile(s_dll_path.c_str());
-				if (!dll)
-					throw std::runtime_error("could not read Lossless.dll");
-				peparse::IterRsrc(dll, OnResource, nullptr);
-				peparse::DestructParsedPE(dll);
-
-				// Eagerly, and here rather than in the callback: this is the one point in the
-				// feature's life where a multi-hundred-millisecond stall is acceptable, and the
-				// callback runs inside a present.
-				for (const auto& [name, idx] : ShaderNameTable())
-				{
-					const auto blob = s_shader_blobs.find(idx);
-					if (blob == s_shader_blobs.end())
-						continue; // the other family; ClassifyShaderFamilies decides if that matters
-					// Individually guarded because a resource id shared between the families can
-					// be present while its sibling shaders are not, and one bad translation must
-					// not lose the family that did translate.
-					try
-					{
-						std::vector<u8> spirv = Extract::translateShader(blob->second);
-						if (!spirv.empty())
-							s_shader_spirv[name] = std::move(spirv);
-					}
-					catch (const std::exception& ex)
-					{
-						Console.ErrorFmt("@@ANDROID_LSFG@@ shader '{}' failed to translate: {}", name, ex.what());
-					}
-				}
-				// The DXBC has done its job. It is several megabytes and nothing reads it again.
-				s_shader_blobs.clear();
-			}
-
-			ClassifyShaderFamilies();
-			if (!s_have_standard && !s_have_performance)
-			{
-				s_shader_spirv.clear();
-				s_shader_source.clear();
-				s_no_shaders.store(true, std::memory_order_relaxed);
-				throw std::runtime_error(
-					"Lossless.dll has no complete shader set — is Lossless Scaling up to date?");
-			}
-			s_no_shaders.store(false, std::memory_order_relaxed);
-			if (!from_cache)
-				SaveShaderCache();
-		}
-
-		/// The C callback framegen drives during initialise. A lookup and nothing else — the
-		/// translation happened in ExtractShaders. The returned pointer is into s_shader_spirv,
-		/// which outlives the whole initialise, so it comfortably satisfies the shim's
-		/// valid-until-the-next-call contract. Still guarded: an exception must not unwind
-		/// through the shim's shared object, whatever the reason for it.
-		int ShaderCallback(void*, const char* name, const uint8_t** out_data, uint32_t* out_size)
-		{
-			try
-			{
-				const auto hit = s_shader_spirv.find(name);
-				if (hit == s_shader_spirv.end() || hit->second.empty())
-				{
-					Console.ErrorFmt(
-						"@@ANDROID_LSFG@@ framegen asked for shader '{}', which this DLL does not have", name);
-					return -1;
-				}
-				*out_data = hit->second.data();
-				*out_size = static_cast<uint32_t>(hit->second.size());
-				return 0;
-			}
-			catch (...)
-			{
-				return -1;
-			}
-		}
-
-		// --- AHardwareBuffer-backed images ----------------------------------------------------
-		//
-		// The interpolator runs on its own VkDevice, so the only images both sides can touch are
-		// ones backed by an AHardwareBuffer: we allocate the AHB, wrap it in a VkImage on OUR
-		// device, and hand the raw AHB across, where it is wrapped again on theirs.
-
-		struct AhbImage
-		{
-			AHardwareBuffer* ahb = nullptr;
-			VkImage image = VK_NULL_HANDLE;
-			VkDeviceMemory memory = VK_NULL_HANDLE;
-		};
-
-		VkDevice s_device = VK_NULL_HANDLE;
-		VkPhysicalDevice s_physical_device = VK_NULL_HANDLE;
-		VkQueue s_queue = VK_NULL_HANDLE;
-		VkCommandPool s_cmd_pool = VK_NULL_HANDLE;
-
-		AhbImage s_frame[2];               // previous and current real frames
-		std::vector<AhbImage> s_generated; // multiplier - 1 interpolated outputs
-
-		s32 s_context_id = -1;
 		bool s_active = false;
 		u32 s_multiplier = 1;
-		// What the SETTING said at the last successful bring-up, not the family that ended up
-		// running — the two differ when a DLL ships only one, and comparing the resolved value
-		// against the setting would tear the whole thing down and rebuild it every frame.
-		bool s_performance_requested = false;
 		u8 s_flow_scale_percent = 100;
+		bool s_performance_requested = false;
 		VkExtent2D s_extent = {};
 		VkFormat s_format = VK_FORMAT_UNDEFINED;
+		VkDevice s_vk_device = VK_NULL_HANDLE;
+
+		/// One storage view per swap chain image. Generated frames are written straight into a
+		/// swap chain image through these, which is why the swap chain has to carry
+		/// VK_IMAGE_USAGE_STORAGE_BIT — see VKSwapChain::IsStorageUsageAvailable.
+		std::vector<VkImageView> s_storage_views;
+
+		/// One command buffer for the whole frame's generation work, and one semaphore per
+		/// present that will be issued from it.
+		///
+		/// ★ Everything is recorded into ONE buffer and submitted ONCE, signalling N+1
+		/// semaphores. The obvious alternative — a submit per generated frame — reintroduces the
+		/// binary-semaphore hazard the old implementation was bitten by, because the real
+		/// present and the first generated present would both want to wait on the semaphore that
+		/// says "the source copy has landed". A binary semaphore may be waited exactly once.
+		VkCommandPool s_cmd_pool = VK_NULL_HANDLE;
+		VkCommandBuffer s_cmd = VK_NULL_HANDLE;
+		std::array<VkSemaphore, VideoCore::FrameGen::MAX_GENERATIONS> s_acquire_sems = {};
+		std::array<VkSemaphore, VideoCore::FrameGen::MAX_GENERATIONS + 1> s_done_sems = {};
+
 		u64 s_frame_index = 0;
 
 		// The one-second display-rate window. Reset with everything else in Shutdown so a stale
@@ -695,219 +289,103 @@ namespace GSLsfg
 			s_fps_generated = 0;
 		}
 
-		// One command buffer + one semaphore per generated frame, plus one of each for the
-		// pre-copy. Recycled across frames rather than pooled: the Android path is fully
-		// synchronous (framegen has no exportable cross-device semaphore, so an idle wait is the
-		// only barrier available), which means last frame's work is provably finished before
-		// this frame records anything.
-		VkCommandBuffer s_pre_copy_cmd = VK_NULL_HANDLE;
-		VkSemaphore s_pre_copy_sem = VK_NULL_HANDLE;
-		std::vector<VkCommandBuffer> s_post_copy_cmds;
-		std::vector<VkSemaphore> s_post_copy_sems;
-		std::vector<VkSemaphore> s_acquire_sems;
-
-		void DestroyAhbImage(AhbImage& img)
+		/// A plain layout transition on a whole colour image.
+		///
+		/// The ported passes handle their own barriers, but they speak Eden's convention where a
+		/// presentable image lives in GENERAL. PCSX2's swap chain images are in PRESENT_SRC_KHR
+		/// when we get them and must be back in it to be presented, so these bracket the calls.
+		void TransitionImage(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to,
+			VkAccessFlags src_access, VkAccessFlags dst_access)
 		{
-			if (img.image != VK_NULL_HANDLE)
-				vkDestroyImage(s_device, img.image, nullptr);
-			if (img.memory != VK_NULL_HANDLE)
-				vkFreeMemory(s_device, img.memory, nullptr);
-			if (img.ahb)
-				AHardwareBuffer_release(img.ahb);
-			img = {};
-		}
-
-		bool CreateAhbImage(AhbImage& out, VkExtent2D extent, VkFormat format)
-		{
-			u32 ahb_format = 0;
-			switch (format)
-			{
-				case VK_FORMAT_R8G8B8A8_UNORM: ahb_format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM; break;
-				case VK_FORMAT_R16G16B16A16_SFLOAT: ahb_format = AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT; break;
-				default:
-					Console.ErrorFmt("@@ANDROID_LSFG@@ unsupported swapchain format {}", static_cast<u32>(format));
-					return false;
-			}
-
-			const AHardwareBuffer_Desc desc = {
-				extent.width, extent.height, 1, ahb_format,
-				AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT,
-				0, 0, 0};
-			if (AHardwareBuffer_allocate(&desc, &out.ahb) != 0 || !out.ahb)
-			{
-				Console.Error("@@ANDROID_LSFG@@ AHardwareBuffer_allocate failed");
-				return false;
-			}
-
-			VkExternalMemoryImageCreateInfo ext_info = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
-				nullptr, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
-			VkImageCreateInfo image_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &ext_info, 0, VK_IMAGE_TYPE_2D,
-				format, {extent.width, extent.height, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
-				VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-					VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-				VK_SHARING_MODE_EXCLUSIVE, 0, nullptr, VK_IMAGE_LAYOUT_UNDEFINED};
-			if (vkCreateImage(s_device, &image_info, nullptr, &out.image) != VK_SUCCESS)
-			{
-				Console.Error("@@ANDROID_LSFG@@ vkCreateImage failed for the shared image");
-				DestroyAhbImage(out);
-				return false;
-			}
-
-			// Upstream deliberately skips vkGetAndroidHardwareBufferPropertiesANDROID here and
-			// takes the requirements off the image instead, because the wrapper ICDs some hosts
-			// use do not forward that entry point. The image's own requirements are correct
-			// either way, so this follows them.
-			VkMemoryRequirements reqs = {};
-			vkGetImageMemoryRequirements(s_device, out.image, &reqs);
-
-			VkPhysicalDeviceMemoryProperties mem_props = {};
-			vkGetPhysicalDeviceMemoryProperties(s_physical_device, &mem_props);
-
-			u32 type_index = UINT32_MAX;
-			for (u32 i = 0; i < mem_props.memoryTypeCount; i++)
-			{
-				if ((reqs.memoryTypeBits & (1u << i)) &&
-					(mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
-				{
-					type_index = i;
-					break;
-				}
-			}
-			if (type_index == UINT32_MAX)
-			{
-				for (u32 i = 0; i < mem_props.memoryTypeCount; i++)
-				{
-					if (reqs.memoryTypeBits & (1u << i))
-					{
-						type_index = i;
-						break;
-					}
-				}
-			}
-			if (type_index == UINT32_MAX)
-			{
-				Console.Error("@@ANDROID_LSFG@@ no memory type accepts the shared image");
-				DestroyAhbImage(out);
-				return false;
-			}
-
-			VkMemoryDedicatedAllocateInfo dedicated = {
-				VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, nullptr, out.image, VK_NULL_HANDLE};
-			VkImportAndroidHardwareBufferInfoANDROID import_info = {
-				VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID, &dedicated, out.ahb};
-			VkMemoryAllocateInfo alloc_info = {
-				VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &import_info, reqs.size, type_index};
-			if (vkAllocateMemory(s_device, &alloc_info, nullptr, &out.memory) != VK_SUCCESS)
-			{
-				Console.Error("@@ANDROID_LSFG@@ could not import the AHardwareBuffer");
-				DestroyAhbImage(out);
-				return false;
-			}
-			if (vkBindImageMemory(s_device, out.image, out.memory, 0) != VK_SUCCESS)
-			{
-				Console.Error("@@ANDROID_LSFG@@ vkBindImageMemory failed for the shared image");
-				DestroyAhbImage(out);
-				return false;
-			}
-			return true;
-		}
-
-		// --- copy helpers ----------------------------------------------------------------------
-
-		void ImageBarrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to,
-			VkAccessFlags src_access, VkAccessFlags dst_access, VkPipelineStageFlags src_stage,
-			VkPipelineStageFlags dst_stage)
-		{
-			const VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr, src_access,
-				dst_access, from, to, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image,
-				{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-			vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-		}
-
-		/// Full-surface copy between two images of identical extent and format. `src_layout` is
-		/// where the source is on entry and must be left; `dst_layout` likewise for the target.
-		void RecordCopy(VkCommandBuffer cmd, VkImage src, VkImageLayout src_layout, VkImage dst,
-			VkImageLayout dst_layout, VkExtent2D extent)
-		{
-			ImageBarrier(cmd, src, src_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0,
-				VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-			// The destination is fully overwritten, so its previous contents are worthless and
-			// UNDEFINED is the cheaper source layout — it lets a tiler skip the load.
-			ImageBarrier(cmd, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-				VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-
-			const VkImageCopy region = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
-				{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {extent.width, extent.height, 1}};
-			vkCmdCopyImage(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst,
-				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-			ImageBarrier(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, src_layout, VK_ACCESS_TRANSFER_READ_BIT,
-				0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-			ImageBarrier(cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, dst_layout, VK_ACCESS_TRANSFER_WRITE_BIT,
-				0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-		}
-
-		bool SubmitOneShot(VkCommandBuffer cmd, VkSemaphore wait, VkSemaphore signal)
-		{
-			const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-			VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-			submit.waitSemaphoreCount = (wait != VK_NULL_HANDLE) ? 1u : 0u;
-			submit.pWaitSemaphores = (wait != VK_NULL_HANDLE) ? &wait : nullptr;
-			submit.pWaitDstStageMask = (wait != VK_NULL_HANDLE) ? &wait_stage : nullptr;
-			submit.commandBufferCount = 1;
-			submit.pCommandBuffers = &cmd;
-			submit.signalSemaphoreCount = (signal != VK_NULL_HANDLE) ? 1u : 0u;
-			submit.pSignalSemaphores = (signal != VK_NULL_HANDLE) ? &signal : nullptr;
-			return vkQueueSubmit(s_queue, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS;
+			VkImageMemoryBarrier barrier = {};
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.srcAccessMask = src_access;
+			barrier.dstAccessMask = dst_access;
+			barrier.oldLayout = from;
+			barrier.newLayout = to;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = image;
+			barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+				0, 0, nullptr, 0, nullptr, 1, &barrier);
 		}
 
 		void DestroyResources()
 		{
-			if (s_device == VK_NULL_HANDLE)
+			if (s_vk_device == VK_NULL_HANDLE)
 				return;
 
-			for (VkSemaphore s : s_post_copy_sems)
-				if (s != VK_NULL_HANDLE)
-					vkDestroySemaphore(s_device, s, nullptr);
-			for (VkSemaphore s : s_acquire_sems)
-				if (s != VK_NULL_HANDLE)
-					vkDestroySemaphore(s_device, s, nullptr);
-			if (s_pre_copy_sem != VK_NULL_HANDLE)
-				vkDestroySemaphore(s_device, s_pre_copy_sem, nullptr);
-			s_post_copy_sems.clear();
-			s_acquire_sems.clear();
-			s_pre_copy_sem = VK_NULL_HANDLE;
+			for (VkImageView view : s_storage_views)
+			{
+				if (view != VK_NULL_HANDLE)
+					vkDestroyImageView(s_vk_device, view, nullptr);
+			}
+			s_storage_views.clear();
 
-			// The pool owns the buffers; freeing it frees them.
+			for (VkSemaphore& sem : s_acquire_sems)
+			{
+				if (sem != VK_NULL_HANDLE)
+					vkDestroySemaphore(s_vk_device, sem, nullptr);
+				sem = VK_NULL_HANDLE;
+			}
+			for (VkSemaphore& sem : s_done_sems)
+			{
+				if (sem != VK_NULL_HANDLE)
+					vkDestroySemaphore(s_vk_device, sem, nullptr);
+				sem = VK_NULL_HANDLE;
+			}
 			if (s_cmd_pool != VK_NULL_HANDLE)
-				vkDestroyCommandPool(s_device, s_cmd_pool, nullptr);
-			s_cmd_pool = VK_NULL_HANDLE;
-			s_pre_copy_cmd = VK_NULL_HANDLE;
-			s_post_copy_cmds.clear();
-
-			for (AhbImage& img : s_generated)
-				DestroyAhbImage(img);
-			s_generated.clear();
-			DestroyAhbImage(s_frame[0]);
-			DestroyAhbImage(s_frame[1]);
+			{
+				// Frees s_cmd with it.
+				vkDestroyCommandPool(s_vk_device, s_cmd_pool, nullptr);
+				s_cmd_pool = VK_NULL_HANDLE;
+				s_cmd = VK_NULL_HANDLE;
+			}
 		}
 
-		/// Everything Initialize() allocates, released in one place so its several failure exits
-		/// cannot each forget a different piece.
-		bool FailInitialize(const char* why)
+		bool CreateResources(GSDeviceVK* dev, VKSwapChain* swap_chain)
 		{
-			Console.ErrorFmt("@@ANDROID_LSFG@@ {} — frame generation off", why);
-			s_init_failed.store(true, std::memory_order_relaxed);
-			if (s_context_id >= 0 && s_backend.delete_context)
-				s_backend.delete_context(s_context_id);
-			s_context_id = -1;
-			if (s_backend.finalize)
-				s_backend.finalize();
-			DestroyResources();
-			s_device = VK_NULL_HANDLE;
-			s_physical_device = VK_NULL_HANDLE;
-			s_queue = VK_NULL_HANDLE;
-			return false;
+			const VkCommandPoolCreateInfo pool_ci = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr,
+				VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, dev->GetGraphicsQueueFamilyIndex()};
+			if (vkCreateCommandPool(s_vk_device, &pool_ci, nullptr, &s_cmd_pool) != VK_SUCCESS)
+				return false;
+
+			const VkCommandBufferAllocateInfo cmd_ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr,
+				s_cmd_pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+			if (vkAllocateCommandBuffers(s_vk_device, &cmd_ai, &s_cmd) != VK_SUCCESS)
+				return false;
+
+			VkSemaphoreCreateInfo sem_ci = {};
+			sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+			for (VkSemaphore& sem : s_acquire_sems)
+			{
+				if (vkCreateSemaphore(s_vk_device, &sem_ci, nullptr, &sem) != VK_SUCCESS)
+					return false;
+			}
+			for (VkSemaphore& sem : s_done_sems)
+			{
+				if (vkCreateSemaphore(s_vk_device, &sem_ci, nullptr, &sem) != VK_SUCCESS)
+					return false;
+			}
+
+			// A storage view per swap chain image. The swap chain's own views are created for the
+			// colour-attachment format, which for an sRGB surface cannot be a storage image at all,
+			// so these are separate rather than borrowed.
+			const u32 count = swap_chain->GetImageCount();
+			s_storage_views.assign(count, VK_NULL_HANDLE);
+			for (u32 i = 0; i < count; i++)
+			{
+				VkImageViewCreateInfo ci = {};
+				ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+				ci.image = swap_chain->GetImage(i);
+				ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+				ci.format = s_format;
+				ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+				if (vkCreateImageView(s_vk_device, &ci, nullptr, &s_storage_views[i]) != VK_SUCCESS)
+					return false;
+			}
+			return true;
 		}
 	} // namespace
 
@@ -917,22 +395,18 @@ namespace GSLsfg
 
 	void Shutdown()
 	{
-		if (!s_active && s_context_id < 0 && s_cmd_pool == VK_NULL_HANDLE)
+		if (!s_active && s_cmd_pool == VK_NULL_HANDLE && !s_frame_gen)
 			return;
 
-		// The backend's own device is idled first: it reads our AHBs and we hold no fence on it,
-		// so on Android this is the only barrier that exists between the two devices. Then our
-		// own, because our copies touch the same storage.
-		if (s_context_id >= 0)
-		{
-			s_backend.wait_idle();
-			s_backend.delete_context(s_context_id);
-		}
-		s_backend.finalize();
-		s_context_id = -1;
+		// Everything below is destroyed immediately rather than through PCSX2's deferred path, so
+		// the device has to be idle first. FrameGen's destructor idles as well; this covers our
+		// own command buffer and semaphores, which it knows nothing about.
+		if (s_vk_device != VK_NULL_HANDLE)
+			vkDeviceWaitIdle(s_vk_device);
 
-		if (s_device != VK_NULL_HANDLE)
-			vkDeviceWaitIdle(s_device);
+		s_frame_gen.reset();
+		s_allocator.reset();
+		s_device.reset();
 		DestroyResources();
 
 		s_active = false;
@@ -942,9 +416,7 @@ namespace GSLsfg
 		s_extent = {};
 		s_format = VK_FORMAT_UNDEFINED;
 		s_frame_index = 0;
-		s_device = VK_NULL_HANDLE;
-		s_physical_device = VK_NULL_HANDLE;
-		s_queue = VK_NULL_HANDLE;
+		s_vk_device = VK_NULL_HANDLE;
 
 		s_display_fps.store(0.0f, std::memory_order_relaxed);
 		s_fps_window_start = 0;
@@ -956,11 +428,10 @@ namespace GSLsfg
 	{
 		if (!swap_chain || !g_gs_device || !IsAvailable())
 			return false;
-		if (!LoadBackend())
-		{
-			s_init_failed.store(true, std::memory_order_relaxed);
+
+		GSDeviceVK* dev = GSDeviceVK::GetInstance();
+		if (!dev)
 			return false;
-		}
 
 		multiplier = std::clamp<u32>(multiplier, 2, 4);
 		const u8 flow_scale_percent = std::clamp<u8>(GSConfig.LsfgFlowScale, 25, 100);
@@ -973,137 +444,73 @@ namespace GSLsfg
 		{
 			return true; // idempotent; nothing changed
 		}
-		if (s_active || s_cmd_pool != VK_NULL_HANDLE)
-			Shutdown();
 
-		if (extent.width == 0 || extent.height == 0)
+		Shutdown();
+
+		// The one hard prerequisite that cannot be recovered from here. The swap chain decides its
+		// image usage at creation, and it only asks for STORAGE when frame generation was already
+		// enabled — so switching the feature on mid-session needs the swap chain to be recreated
+		// before this can succeed. Reported rather than retried, because recreating a swap chain
+		// from inside a present is how you get a black screen.
+		if (!swap_chain->IsStorageUsageAvailable())
+		{
+			Console.Warning("LSFG: swap chain has no STORAGE usage — frame generation needs a "
+							"renderer restart to take effect.");
+			s_init_failed.store(true, std::memory_order_relaxed);
 			return false;
-
-		GSDeviceVK* dev = GSDeviceVK::GetInstance();
-		s_device = dev->GetDevice();
-		s_physical_device = dev->GetPhysicalDevice();
-		s_queue = dev->GetGraphicsQueue();
-
-		if (!CreateAhbImage(s_frame[0], extent, format) || !CreateAhbImage(s_frame[1], extent, format))
-			return FailInitialize("could not allocate the shared frame images");
-		s_generated.resize(multiplier - 1);
-		for (u32 i = 0; i < multiplier - 1; i++)
-		{
-			if (!CreateAhbImage(s_generated[i], extent, format))
-				return FailInitialize("could not allocate the interpolated frame images");
 		}
 
-		const VkCommandPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr,
-			VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, dev->GetGraphicsQueueFamilyIndex()};
-		if (vkCreateCommandPool(s_device, &pool_info, nullptr, &s_cmd_pool) != VK_SUCCESS)
-			return FailInitialize("vkCreateCommandPool failed");
-
-		{
-			// One pre-copy plus one post-copy per interpolated frame.
-			std::vector<VkCommandBuffer> buffers(multiplier);
-			const VkCommandBufferAllocateInfo alloc = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr,
-				s_cmd_pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, multiplier};
-			if (vkAllocateCommandBuffers(s_device, &alloc, buffers.data()) != VK_SUCCESS)
-				return FailInitialize("vkAllocateCommandBuffers failed");
-			s_pre_copy_cmd = buffers[0];
-			s_post_copy_cmds.assign(buffers.begin() + 1, buffers.end());
-		}
-
-		{
-			const VkSemaphoreCreateInfo sem_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-			bool ok = vkCreateSemaphore(s_device, &sem_info, nullptr, &s_pre_copy_sem) == VK_SUCCESS;
-			s_post_copy_sems.assign(multiplier - 1, VK_NULL_HANDLE);
-			s_acquire_sems.assign(multiplier - 1, VK_NULL_HANDLE);
-			for (u32 i = 0; ok && i < multiplier - 1; i++)
-			{
-				ok = vkCreateSemaphore(s_device, &sem_info, nullptr, &s_post_copy_sems[i]) == VK_SUCCESS &&
-					 vkCreateSemaphore(s_device, &sem_info, nullptr, &s_acquire_sems[i]) == VK_SUCCESS;
-			}
-			if (!ok)
-				return FailInitialize("vkCreateSemaphore failed");
-		}
-
-		// The extractor throws — pe-parse failures, a DLL missing shaders, a malformed DXBC. It
-		// is the one part of bring-up that runs user-supplied data, so it is also the part most
-		// likely to fail, and it must degrade to "feature off" rather than take the GS thread.
-		try
-		{
-			ExtractShaders();
-		}
-		catch (const std::exception& ex)
-		{
-			return FailInitialize(ex.what());
-		}
-		catch (...)
-		{
-			return FailInitialize("Lossless.dll could not be read");
-		}
-
-		// 3.1p when the user asked for it AND their DLL carries it. A version that predates the
-		// performance family would otherwise fail initialise with "Shader hash not found", which
-		// reads like a corrupt file and is not — it just means this Lossless Scaling is older.
-		bool use_performance = GSConfig.LsfgPerformance;
-		if (use_performance && !s_have_performance)
-		{
-			Console.WriteLn("@@ANDROID_LSFG@@ this Lossless.dll has no 3.1p shaders — using 3.1");
-			use_performance = false;
-		}
-		else if (!use_performance && !s_have_standard)
-		{
-			Console.WriteLn("@@ANDROID_LSFG@@ this Lossless.dll has only 3.1p shaders — using 3.1p");
-			use_performance = true;
-		}
-
-		// ★ flowScale is a DIVISOR, not a multiplier: framegen sizes the optical-flow pyramid as
-		// `inputExtent / flowScale`, and upstream's own layer reaches it by passing
-		// `1.0 / conf.flowScale` from a [0.25, 1.0] fraction. So the percentage the UI shows has
-		// to be INVERTED here. Handing it 0.25 for "25%" would make the pyramid four times larger
-		// per axis — sixteen times the pixels — which is the exact opposite of what a user
-		// dragging that slider down is asking for.
-		const float flow_scale = std::clamp(100.0f / static_cast<float>(flow_scale_percent), 1.0f, 4.0f);
-
-		const VkPhysicalDeviceProperties& props = dev->GetDeviceProperties();
-		const u64 device_uuid = (static_cast<u64>(props.vendorID) << 32) | props.deviceID;
-		// is_hdr is false and stays false: it tells framegen its images carry HDR primaries, and
-		// there is no HDR output path in ARMSX2 for that to be true against — the swapchain is
-		// the 8-bit UNORM or 16-bit float surface CreateAhbImage already restricts us to.
-		if (s_backend.initialize(device_uuid, /*is_hdr*/ 0, flow_scale, multiplier - 1,
-				use_performance ? 1 : 0, ShaderCallback, nullptr) != 0)
-			return FailInitialize(BackendError());
-
-		std::vector<AHardwareBuffer*> outputs;
-		outputs.reserve(s_generated.size());
-		for (const AhbImage& img : s_generated)
-			outputs.push_back(img.ahb);
-
-		s_context_id = s_backend.create_context(s_frame[0].ahb, s_frame[1].ahb, outputs.data(),
-			static_cast<u32>(outputs.size()), extent.width, extent.height, static_cast<u32>(format));
-		if (s_context_id < 0)
-			return FailInitialize(BackendError());
-
+		s_vk_device = dev->GetDevice();
 		s_extent = extent;
 		s_format = format;
 		s_multiplier = multiplier;
-		s_performance_requested = GSConfig.LsfgPerformance;
 		s_flow_scale_percent = flow_scale_percent;
+		s_performance_requested = GSConfig.LsfgPerformance;
+
+		if (!CreateResources(dev, swap_chain))
+		{
+			Console.Error("LSFG: failed to create frame-generation resources.");
+			DestroyResources();
+			s_init_failed.store(true, std::memory_order_relaxed);
+			s_vk_device = VK_NULL_HANDLE;
+			return false;
+		}
+
+		s_device.emplace(dev);
+		// Both are required by the interpolation shaders and neither is core in Vulkan 1.1, so
+		// GSDeviceVK requests them as extensions. It also clears the flag when a driver advertises
+		// one without really supporting it, which is why these are asked of the DEVICE rather than
+		// of vkGetPhysicalDeviceFeatures2 — see the note in LsfgVkCompat.cpp.
+		if (!s_device->IsVulkanMemoryModelSupported() || !s_device->HasNullDescriptor())
+		{
+			Console.Warning("LSFG: device lacks the Vulkan memory model or nullDescriptor — "
+							"frame generation unavailable.");
+			s_device.reset();
+			DestroyResources();
+			s_init_failed.store(true, std::memory_order_relaxed);
+			s_vk_device = VK_NULL_HANDLE;
+			return false;
+		}
+
+		s_allocator.emplace(dev->GetAllocator());
+		s_frame_gen.emplace(*s_allocator, dev);
+
 		s_frame_index = 0;
 		s_active = true;
-		Console.WriteLnFmt("@@ANDROID_LSFG@@ active: {}x{} x{} frames, {}, flow {}%", extent.width, extent.height,
-			multiplier, use_performance ? "3.1p" : "3.1", flow_scale_percent);
+		s_init_failed.store(false, std::memory_order_relaxed);
+		Console.WriteLn("LSFG: frame generation active (%ux, %ux%u).", multiplier, extent.width, extent.height);
 		return true;
 	}
 
 	bool PresentWithGeneration(
 		VkQueue present_queue, VKSwapChain* swap_chain, VkSemaphore render_finished, bool frame_has_new_content)
 	{
-		if (!s_active || !swap_chain)
+		if (!s_active || !swap_chain || !s_frame_gen)
 			return false;
 
 		// Nothing new to interpolate between. Pause menus, boot screens before the GS has any
 		// output, and the blank frames a fade produces all land here — inventing motion across
-		// them is wrong AND costs a full generation pass per frame to do it. The history goes
-		// with them: keeping it would stitch the frame before the gap to the frame after it and
-		// produce one bogus in-between frame on the way back.
+		// them is wrong AND costs a full generation pass per frame to do it.
 		if (!frame_has_new_content)
 		{
 			s_frame_index = 0;
@@ -1111,9 +518,8 @@ namespace GSLsfg
 			return false;
 		}
 
-		// A resize between Initialize and here would have us copying between mismatched extents.
-		// Decline the frame; the caller presents normally and the next Initialize picks up the
-		// new size.
+		// A resize between Initialize and here would have us reading mismatched extents. Decline
+		// the frame; the caller presents normally and the next Initialize picks up the new size.
 		if (swap_chain->GetWidth() != s_extent.width || swap_chain->GetHeight() != s_extent.height)
 		{
 			NoteFramesDisplayed(1, 0);
@@ -1121,134 +527,127 @@ namespace GSLsfg
 		}
 
 		const u32 real_index = swap_chain->GetCurrentImageIndex();
-		VkImage real_image = swap_chain->GetCurrentTexture()->GetImage();
+		if (real_index >= s_storage_views.size())
+		{
+			NoteFramesDisplayed(1, 0);
+			return false;
+		}
+		const VkImage real_image = swap_chain->GetImage(real_index);
 
-		// The first frame has no predecessor to interpolate from: seed one slot and present it
-		// plainly. Generation starts on the frame after.
-		const bool have_previous = s_frame_index > 0;
-		AhbImage& target = s_frame[s_frame_index % 2];
-
-		// 1. Copy the frame the caller just rendered into our shared storage. It is in
-		//    PRESENT_SRC because EndPresent transitioned it there, and it has to stay that way
-		//    for the final present below.
+		// 1. Record the chain work for this frame, then ask how many frames to interpolate.
+		//    WantedGenerations drives the PACER, which is the whole reason a game bouncing
+		//    between 60 and 30fps does not judder here: the count varies to hold the presented
+		//    rate steady rather than blindly multiplying whatever arrived.
 		const VkCommandBufferBeginInfo begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
 			VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
-		vkResetCommandBuffer(s_pre_copy_cmd, 0);
-		if (vkBeginCommandBuffer(s_pre_copy_cmd, &begin) != VK_SUCCESS)
-			return false;
-		RecordCopy(s_pre_copy_cmd, real_image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, target.image,
-			VK_IMAGE_LAYOUT_GENERAL, s_extent);
-		if (vkEndCommandBuffer(s_pre_copy_cmd) != VK_SUCCESS)
+		vkResetCommandBuffer(s_cmd, 0);
+		if (vkBeginCommandBuffer(s_cmd, &begin) != VK_SUCCESS)
 			return false;
 
-		// Past this point the caller's semaphore is consumed and there is no way back to its own
-		// present path, so every later failure must still present something.
-		if (!SubmitOneShot(s_pre_copy_cmd, render_finished, s_pre_copy_sem))
+		// The ported passes expect a presentable image in GENERAL; PCSX2 hands it over in
+		// PRESENT_SRC_KHR and needs it back that way.
+		TransitionImage(s_cmd, real_image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_GENERAL,
+			VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT);
+
+		const Vulkan::vk::CommandBuffer cmdbuf{s_cmd};
+		s_frame_gen->Process(*s_device, cmdbuf, real_image, s_storage_views[real_index], s_extent, s_format,
+			s_extent);
+
+		const size_t wanted = s_frame_gen->WantedGenerations(
+			std::min<size_t>(s_multiplier - 1u, swap_chain->GetImageCount() - 1u));
+		const size_t available = s_frame_gen->GeneratedFrameCount();
+		const size_t generations = std::min(wanted, available);
+
+		// 2. Acquire a swap chain image per generated frame and record its generation pass. The
+		//    acquires happen BEFORE the single submit below because that submit has to wait on
+		//    every acquire semaphore at once.
+		u32 acquired_index[VideoCore::FrameGen::MAX_GENERATIONS] = {};
+		size_t acquired = 0;
+		for (size_t i = 0; i < generations && i < VideoCore::FrameGen::MAX_GENERATIONS; i++)
+		{
+			// ★ Bounded, but NOT zero. A zero timeout looks right — an interpolated frame is a
+			// bonus, so why stall for one — and it silently disables the entire feature: under
+			// FIFO the presentation engine hands an image back at a vblank, so at steady state
+			// nothing is EVER free instantly, every acquire returns VK_NOT_READY, and every
+			// generated frame is dropped. Observed exactly that on an Adreno 740. Waiting for a
+			// display slot IS the mechanism: presenting two frames per rendered frame means
+			// waiting for the second slot.
+			static constexpr u64 kGeneratedAcquireTimeoutNs = 50ull * 1000 * 1000;
+			u32 image_index = 0;
+			const VkResult acq = vkAcquireNextImageKHR(s_vk_device, swap_chain->GetSwapChain(),
+				kGeneratedAcquireTimeoutNs, s_acquire_sems[i], VK_NULL_HANDLE, &image_index);
+			if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR)
+				break; // nothing free, out of date, or lost — still present the real frame
+			if (image_index >= s_storage_views.size())
+				break;
+
+			s_frame_gen->GenerateInto(*s_device, cmdbuf, swap_chain->GetImage(image_index),
+				s_storage_views[image_index], i);
+			// The generation pass leaves its target in GENERAL.
+			TransitionImage(s_cmd, swap_chain->GetImage(image_index), VK_IMAGE_LAYOUT_GENERAL,
+				VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT);
+
+			acquired_index[acquired++] = image_index;
+		}
+
+		TransitionImage(s_cmd, real_image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+			VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT);
+
+		if (vkEndCommandBuffer(s_cmd) != VK_SUCCESS)
+			return false;
+
+		// 3. ONE submit. It waits on the caller's render-finished semaphore plus every acquire,
+		//    and signals one semaphore per present that follows — see the note by s_cmd_pool for
+		//    why this is not a submit per frame.
+		VkSemaphore wait_sems[1 + VideoCore::FrameGen::MAX_GENERATIONS] = {};
+		VkPipelineStageFlags wait_stages[1 + VideoCore::FrameGen::MAX_GENERATIONS] = {};
+		u32 wait_count = 0;
+		wait_sems[wait_count] = render_finished;
+		wait_stages[wait_count++] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		for (size_t i = 0; i < acquired; i++)
+		{
+			wait_sems[wait_count] = s_acquire_sems[i];
+			wait_stages[wait_count++] = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+		}
+
+		const u32 signal_count = static_cast<u32>(acquired) + 1u;
+		VkSubmitInfo submit = {};
+		submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		submit.waitSemaphoreCount = wait_count;
+		submit.pWaitSemaphores = wait_sems;
+		submit.pWaitDstStageMask = wait_stages;
+		submit.commandBufferCount = 1;
+		submit.pCommandBuffers = &s_cmd;
+		submit.signalSemaphoreCount = signal_count;
+		submit.pSignalSemaphores = s_done_sems.data();
+
+		if (vkQueueSubmit(GSDeviceVK::GetInstance()->GetGraphicsQueue(), 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS)
 			return false;
 
 		s_frame_index++;
 
-		if (!have_previous)
-		{
-			// Nothing to interpolate from yet — present the real frame, waiting on the copy so
-			// the shared image is complete before the next frame reads it.
-			const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1, &s_pre_copy_sem, 1,
-				swap_chain->GetSwapChainPtr(), &real_index, nullptr};
-			swap_chain->ResetImageAcquireResult();
-			vkQueuePresentKHR(present_queue, &present);
-			NoteFramesDisplayed(1, 0);
-			return true;
-		}
-
-		// 2. Hand both frames to the interpolator, then block until it is done. There is no
-		//    cross-device semaphore on Android — framegen runs on its own VkDevice and Turnip
-		//    rejects OPAQUE_FD export on AHB-imported memory — so a device idle is the only
-		//    barrier that exists. This is why frame generation costs latency here rather than
-		//    being free.
-		vkQueueWaitIdle(s_queue); // our pre-copy must land before framegen reads that image
-		const bool generated = (s_backend.present(s_context_id) == 0);
-		if (!generated)
-		{
-			Console.ErrorFmt("@@ANDROID_LSFG@@ generation failed: {}", BackendError());
-		}
-		else
-			s_backend.wait_idle();
-
-		// 3. Present each interpolated frame, then the real one last — the generated frames sit
-		//    between the previous real frame and this one, so they display first. Presents issued
-		//    on one queue are processed in call order, which is what puts them on screen in that
-		//    order without any semaphore between them.
-		//
-		// ★ EVERY binary semaphore below is signalled exactly once and waited exactly once, and
-		// that is a correctness requirement, not tidiness. This loop used to reassign the real
-		// present's wait to the last post-copy semaphore, which left s_pre_copy_sem signalled and
-		// never waited — so the next frame signalled an already-signalled binary semaphore — while
-		// the last post-copy semaphore was waited twice, by its own present and by the real one.
-		//
-		// The real present waits on s_pre_copy_sem and nothing else, for a concrete reason: the
-		// pre-copy READS the real image as TRANSFER_SRC and puts it back in PRESENT_SRC, so
-		// presenting it before that lands would present an image still being read. The generated
-		// presents are independent — different swapchain images, each gated by its own post-copy.
-		//
-		// Counted rather than assumed to be s_multiplier - 1: every break below drops a frame that
-		// was generated but never displayed, and the overlay is supposed to report what reached the
-		// screen, not what we hoped would.
+		// 4. Generated frames first — they sit between the previous real frame and this one, so
+		//    they display first. Presents issued on one queue are processed in call order, which
+		//    is what puts them on screen in that order without a semaphore between them.
 		u32 presented_generated = 0;
-		if (generated)
+		for (size_t i = 0; i < acquired; i++)
 		{
-			for (u32 i = 0; i < s_multiplier - 1; i++)
-			{
-				u32 image_index = 0;
-				// ★ Bounded, but NOT zero. A zero timeout looks right — an interpolated frame is
-				// a bonus, so why stall for one — and it silently disables the entire feature:
-				// under FIFO the presentation engine hands an image back at a vblank, so at
-				// steady state nothing is EVER free instantly, every acquire returns
-				// VK_NOT_READY, and every generated frame is dropped. Observed exactly that on
-				// an Adreno 740: LSFG active, FIFO confirmed, display rate still equal to the
-				// real rate. Waiting for a display slot IS the mechanism here — presenting two
-				// frames per rendered frame means waiting for the second slot.
-				//
-				// The bound is what keeps a lost surface from wedging the GS thread the way an
-				// infinite wait would (see VKSwapChain::AcquireNextImage's own timeout, and the
-				// background/rotate/fold case it documents). Generous next to a refresh interval
-				// — 6 vblanks at 120Hz — so it only expires when something is actually wrong.
-				static constexpr u64 kGeneratedAcquireTimeoutNs = 50ull * 1000 * 1000;
-				const VkResult acq = vkAcquireNextImageKHR(s_device, swap_chain->GetSwapChain(),
-					kGeneratedAcquireTimeoutNs, s_acquire_sems[i], VK_NULL_HANDLE, &image_index);
-				if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR)
-				{
-					break; // nothing free, out of date, or lost — still present the real frame
-				}
-
-				vkResetCommandBuffer(s_post_copy_cmds[i], 0);
-				if (vkBeginCommandBuffer(s_post_copy_cmds[i], &begin) != VK_SUCCESS)
-					break;
-				RecordCopy(s_post_copy_cmds[i], s_generated[i].image, VK_IMAGE_LAYOUT_GENERAL,
-					swap_chain->GetImage(image_index), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, s_extent);
-				if (vkEndCommandBuffer(s_post_copy_cmds[i]) != VK_SUCCESS)
-					break;
-
-				if (!SubmitOneShot(s_post_copy_cmds[i], s_acquire_sems[i], s_post_copy_sems[i]))
-					break;
-
-				const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1,
-					&s_post_copy_sems[i], 1, swap_chain->GetSwapChainPtr(), &image_index, nullptr};
-				// ★ VK_SUBOPTIMAL_KHR IS A SUCCESS CODE — the frame was presented. Treating it as
-				// failure here broke nothing visible and made the overlay lie: the generated
-				// frame reached the screen, we broke out before counting it, and the display rate
-				// read exactly the real rate forever. Suboptimal is routine on Android (rotation,
-				// insets, a driver preferring a different transform), so this fired every frame.
-				// The acquire above already gets this right; this did not.
-				const VkResult pres = vkQueuePresentKHR(present_queue, &present);
-				if (pres != VK_SUCCESS && pres != VK_SUBOPTIMAL_KHR)
-					break;
-				presented_generated++;
-			}
+			const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1, &s_done_sems[i], 1,
+				swap_chain->GetSwapChainPtr(), &acquired_index[i], nullptr};
+			// ★ VK_SUBOPTIMAL_KHR IS A SUCCESS CODE — the frame WAS presented. Treating it as
+			// failure broke nothing visible and made the overlay lie: the generated frame reached
+			// the screen, we stopped counting, and the display rate read exactly the real rate
+			// forever. Suboptimal is routine on Android (rotation, insets, a driver preferring a
+			// different transform), so it fired every frame.
+			const VkResult pres = vkQueuePresentKHR(present_queue, &present);
+			if (pres != VK_SUCCESS && pres != VK_SUBOPTIMAL_KHR)
+				break;
+			presented_generated++;
 		}
 
-		// 4. The real frame goes out last, after whatever generated frames made it.
-		const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1, &s_pre_copy_sem, 1,
-			swap_chain->GetSwapChainPtr(), &real_index, nullptr};
+		// 5. The real frame goes out last, after whatever generated frames made it.
+		const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1,
+			&s_done_sems[acquired], 1, swap_chain->GetSwapChainPtr(), &real_index, nullptr};
 		swap_chain->ResetImageAcquireResult();
 		vkQueuePresentKHR(present_queue, &present);
 		NoteFramesDisplayed(1, presented_generated);

@@ -94,6 +94,12 @@ public:
 	}
 
 	VkFormat GetTextureFormat() const;
+
+	/// True when the swap chain images carry VK_IMAGE_USAGE_STORAGE_BIT, which frame generation
+	/// requires in order to write an interpolated frame directly into one. False whenever frame
+	/// generation was off at creation time, so switching it on needs a swap chain recreate — see
+	/// GSLsfg::Initialize.
+	__fi bool IsStorageUsageAvailable() const { return m_storage_usage_available; }
 	VkResult AcquireNextImage();
 	void ReleaseCurrentImage();
 	void ResetImageAcquireResult();
@@ -128,6 +134,7 @@ private:
 	VkSwapchainKHR m_swap_chain = VK_NULL_HANDLE;
 
 	std::vector<std::unique_ptr<GSTextureVK>> m_images;
+	bool m_storage_usage_available = false;
 	std::array<ImageSemaphores, NUM_SEMAPHORES> m_semaphores = {};
 
 	u32 m_current_image = 0;

@@ -700,6 +700,33 @@ bool VKSwapChain::CreateSwapChain()
 		return false;
 	}
 
+	// Frame generation writes interpolated frames straight into a swap chain image through a
+	// storage view, so those images need STORAGE usage. Requested only when frame generation is
+	// actually on, and only when BOTH the surface and the chosen format allow it — asking
+	// unconditionally would fail swap chain creation outright on drivers that do not, taking the
+	// whole renderer down for a feature that is off.
+	//
+	// The format check is the one that is easy to forget: a surface can report STORAGE in
+	// supportedUsageFlags while the sRGB format selected for it has no STORAGE_IMAGE feature bit,
+	// and the mismatch only shows up as a validation error at image-view creation.
+	m_storage_usage_available = false;
+	if (GSConfig.LsfgEnabled && (surface_capabilities.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT) != 0)
+	{
+		VkFormatProperties fp = {};
+		vkGetPhysicalDeviceFormatProperties(GSDeviceVK::GetInstance()->GetPhysicalDevice(),
+			surface_format->format, &fp);
+		if ((fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0)
+		{
+			image_usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+			m_storage_usage_available = true;
+		}
+		else
+		{
+			Console.Warning("Vulkan: swap chain format has no STORAGE_IMAGE feature; "
+							"frame generation will report itself unavailable.");
+		}
+	}
+
 	// Store the old/current swap chain when recreating for resize
 	// Old swap chain is destroyed regardless of whether the create call succeeds
 	VkSwapchainKHR old_swap_chain;
