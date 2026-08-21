@@ -529,7 +529,7 @@ static u64 s_lookup_hits = 0;
 static u64 s_lookup_misses = 0;
 static u64 s_lookup_clut_only_misses = 0;
 static u64 s_lookup_next_report = 0;
-static u64 s_palette_fallbacks = 0;
+static u64 s_palette_reports = 0;
 
 void GSTextureReplacements::ReloadReplacementMap()
 {
@@ -541,7 +541,7 @@ void GSTextureReplacements::ReloadReplacementMap()
 	s_lookup_misses = 0;
 	s_lookup_clut_only_misses = 0;
 	s_lookup_next_report = 0;
-	s_palette_fallbacks = 0;
+	s_palette_reports = 0;
 
 	// clear out the caches
 	{
@@ -818,68 +818,32 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 	// replacement for this name exists?
 	auto fnit = s_replacement_texture_filenames.find(name);
 
-	// ★ TEST BUILD ONLY -- palette-relaxed fallback.
+	// ★ No substitution. A paletted glyph's palette IS its colour, so when the game asks for a
+	// palette the pack does not carry there is no "close enough" file to stand in: substituting
+	// any other variant paints that glyph the wrong colour. Tried, and it produced multicoloured
+	// text -- eight colour variants of one glyph, different glyphs winning different ones.
 	//
-	// A paletted texture is looked up by TEX0 hash AND palette hash, so a pack only applies while
-	// the game asks for a palette the packer happened to dump. Persona 3 FES mods break exactly
-	// here: the pack carries several palette variants per glyph and the game asks for one that is
-	// not among them, so every glyph misses while the unpaletted art around it replaces fine.
-	//
-	// When the exact palette is absent but the pack holds this same TEX0 under others, take one.
-	// Deterministically the lowest palette hash, so two runs pick the same file and the result is
-	// reproducible rather than dependent on map order.
-	//
-	// This is NOT correct as shipped: the replacement image has the packer's palette baked into it,
-	// so the substituted art can carry the wrong tint. It is here to answer one question -- if the
-	// mods appear, then the palette hash was the only thing standing in the way, and the real fix
-	// is about which palette to prefer, not about loading at all.
-	if (fnit == s_replacement_texture_filenames.end() && name.HasPalette())
+	// What is left is the diagnostic. List what the pack DOES hold for this TEX0, so a log says
+	// whether the pack is missing the texture entirely or merely missing this colour of it.
+	if (fnit == s_replacement_texture_filenames.end() && name.HasPalette() && s_palette_reports < 4)
 	{
-		// ★ NEWEST wins, not lowest hash.
-		//
-		// The first cut picked the lowest palette hash, which is arbitrary, and it showed: with a
-		// mod layered over a base pack both supply the same glyph under DIFFERENT palettes, so
-		// they never collide during indexing and the arbitrary rule silently preferred the base
-		// pack. The player sees the pack they installed first, which is the opposite of what
-		// layering a mod means.
-		//
-		// Modification time is the one signal that distinguishes them, and the scan already
-		// reports it, so this costs no extra I/O. Ties fall back to the lower hash purely so the
-		// result stays reproducible.
-		const TextureName* best = nullptr;
-		const std::string* best_file = nullptr;
-		std::time_t best_mtime = 0;
 		u32 candidates = 0;
 		for (const auto& it : s_replacement_texture_filenames)
 		{
 			if (it.first.TEX0Hash != name.TEX0Hash || it.first.bits != name.bits ||
 				it.first.region_width != name.region_width || it.first.region_height != name.region_height)
 				continue;
-
 			candidates++;
-			const auto mt = s_replacement_texture_mtimes.find(it.first);
-			const std::time_t mtime = (mt != s_replacement_texture_mtimes.end()) ? mt->second : 0;
-			if (s_palette_fallbacks < 4)
-			{
-				Console.WriteLnFmt("Texture replacements:   candidate clut={:016x} mtime={} '{}'",
-					it.first.CLUTHash, static_cast<s64>(mtime), it.second);
-			}
-			if (!best || mtime > best_mtime || (mtime == best_mtime && it.first.CLUTHash < best->CLUTHash))
-			{
-				best = &it.first;
-				best_file = &it.second;
-				best_mtime = mtime;
-			}
+			Console.WriteLnFmt("Texture replacements:   pack variant clut={:016x} mtime={} '{}'",
+				it.first.CLUTHash, static_cast<s64>(
+					s_replacement_texture_mtimes.count(it.first) ? s_replacement_texture_mtimes[it.first] : 0),
+				it.second);
 		}
-		if (best)
+		if (candidates > 0)
 		{
-			if (s_palette_fallbacks < 8)
-			{
-				Console.WriteLnFmt("Texture replacements: PALETTE FALLBACK tex0={:016x} wanted clut={:016x}, chose '{}' of {} candidates (newest)",
-					name.TEX0Hash, name.CLUTHash, Path::GetFileName(*best_file), candidates);
-			}
-			s_palette_fallbacks++;
-			fnit = s_replacement_texture_filenames.find(*best);
+			Console.WriteLnFmt("Texture replacements: wanted clut={:016x} for tex0={:016x}; pack has {} other colour(s) of it, none matching",
+				name.CLUTHash, name.TEX0Hash, candidates);
+			s_palette_reports++;
 		}
 	}
 
