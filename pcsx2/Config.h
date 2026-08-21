@@ -1071,6 +1071,17 @@ struct Pcsx2Config
 		// Optical-flow resolution, as a percentage of the presented image (25..100). Lower is
 		// cheaper and blurrier. Handed to the library as a DIVISOR — see GSLsfg.cpp.
 		u8 LsfgFlowScale = 100;
+		// Target OUTPUT rate in Hz for the adaptive pacer; 0 holds LsfgMultiplier fixed.
+		//
+		// A fixed multiplier is the wrong shape for a game that oscillates between 60 and 30fps
+		// on a 60Hz panel: at x2 it presents 120 then 60, and every transition is visible as
+		// judder. Given a target, the pacer varies the generation count instead — two
+		// interpolated frames while the game runs at 30, one while it runs at 60 — so the
+		// presented rate stays put while the rendered rate moves underneath it.
+		//
+		// u16 because 0..1000 covers every panel; 0 is the default so behaviour is unchanged
+		// until the user opts in.
+		u16 LsfgTargetRate = 0;
 
 		u8 CAS_Sharpness = 50;
 		// FSR1's RCAS pass, 0..100. Mapped to AMD's "stops" scale in GSDevice::FSR1Upscale,
