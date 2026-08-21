@@ -1212,6 +1212,7 @@ set(pcsx2arm64Headers
 	arm64/microVU_ProgCache-arm64.h
 	arm64/microVU_ProgCache-arm64.inl
 	arm64/microVU_Misc-arm64.h
+	arm64/VuFmacFlags-arm64.h
 )
 
 # Mobile (arm64) platform sources, relocated from the former android/iOS core

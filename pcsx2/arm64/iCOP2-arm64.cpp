@@ -7,6 +7,7 @@
 // No VU register allocator — each instruction is self-contained.
 
 #include "arm64/iR5900-arm64.h"
+#include "arm64/VuFmacFlags-arm64.h"
 
 #include "VUmicro.h" // CpuVU0 — VE-08 thin sync helpers
 
@@ -699,13 +700,7 @@ static void cop2EmitGuardedAddSub(const a64::VRegister& dst, const a64::VRegiste
 	armAsm->Orn(sel.V16B(), mask.V16B(), sel.V16B());
 	armAsm->And(sel.V16B(), a.V16B(), sel.V16B());
 
-	// The sign comparison has to be taken here, before the magnitudes overwrite
-	// the masked operands. The mask register is what carries it: its own work is
-	// done, and the O bit leaves in it.
 	const bool wantO = ov && _XYZW_cop2 != 0 && (cop2StatusFlagLive() || cop2MacFlagLive());
-	if (wantO)
-		armAsm->Eor(mask.V16B(), sel.V16B(), tmp.V16B());
-
 	if (issub)
 		armAsm->Fsub(dst.V4S(), sel.V4S(), tmp.V4S());
 	else
@@ -713,35 +708,12 @@ static void cop2EmitGuardedAddSub(const a64::VRegister& dst, const a64::VRegiste
 	if (!wantO)
 		return;
 
-	// The masked operands are dead now, so the O work runs in them.
-	//
-	//     O  <=>  the two addends have the same sign, and (|a| + |b|) / 4 >= 2^127
-	//
-	// A quarter is enough of a scale: the largest pair the VU can hold sums to
-	// twice its maximum, and a quarter of that is FLT_MAX exactly, so the scaled
-	// add cannot saturate and lose the answer. Opposite signs never overflow --
-	// the magnitude of the sum is then below the larger addend -- which is the
-	// half a magnitude test alone gets wrong.
-	//
-	// Adding the scale back turns the >= into the sign bit, so the threshold
-	// costs no second constant: 0x7F000000 + 0x01000000 is exactly the bit.
+	// The add reads the guard-masked addends, so its O does too. They are dead
+	// now and the O work runs in them; the mask register carries the answer
+	// out. RQSCRATCH2 is free for the constant, the destination never being
+	// that register.
 	pxAssert(dst.GetCode() != RQSCRATCH2.GetCode());
-	const a64::VRegister k = RQSCRATCH2;
-	armAsm->Movi(k.V4S(), 0x01, a64::LSL, 24); // two exponents
-	armAsm->Fabs(sel.V4S(), sel.V4S());
-	armAsm->Fabs(tmp.V4S(), tmp.V4S());
-	armAsm->Uqsub(sel.V4S(), sel.V4S(), k.V4S());
-	armAsm->Uqsub(tmp.V4S(), tmp.V4S(), k.V4S());
-	armAsm->Fadd(sel.V4S(), sel.V4S(), tmp.V4S());
-	armAsm->Uqadd(sel.V4S(), sel.V4S(), k.V4S());
-	// Both answers are in bit 31 now -- the sum's is what the Uqadd carried
-	// there, the sign comparison's is the Eor's -- so they are combined before
-	// either is broadcast rather than after, and one Cmlt does for both.
-	if (issub)
-		armAsm->And(mask.V16B(), sel.V16B(), mask.V16B());
-	else
-		armAsm->Bic(mask.V16B(), sel.V16B(), mask.V16B());
-	armAsm->Cmlt(mask.V4S(), mask.V4S(), 0);
+	armEmitVuAddSubOverflow(mask, sel, tmp, issub, sel, tmp, RQSCRATCH2);
 	*ov = mask;
 }
 
@@ -1125,30 +1097,14 @@ static void cop2EmitFlagUpdate(int xyzw, const a64::VRegister& result = RQSCRATC
 }
 
 // The MAC U bit of a multiply, as the per-lane predicate cop2EmitFlagUpdate
-// takes: all ones where a zero result is an exact zero rather than a flushed
-// underflow.
+// takes (armEmitVuMulExactZero). vuClampMode 4, read through CHECK_VU_EXACT on
+// VU0 -- the same mode as MAC O, which is where the flag models end up whether
+// they are three instructions or ten.
 //
-// Under FZ a product of two non-zero operands is zero only when it underflowed.
-// The console flushes a product below 2^-126 to a signed zero and so does the
-// host, so the two already agree on the word and differ in the flag alone --
-// which makes "the result is zero and neither operand was" exact rather than an
-// approximation of the exponent test. It is emitted at vuClampMode 4 even so,
-// read through CHECK_VU_EXACT on VU0 since COP2 macro is VU0's -- exactness
-// decides whether a model can be emitted at all, not which rung it lands on.
-//
-// A denormal operand counts as zero, which is what FCMEQ against 0.0 makes of
-// it under FZ and what vuDouble makes of it on the interpreter: the product is
-// then an exact zero, Z alone.
-//
-// Add and sub are not this. The console keeps the mantissa bits of a sum that
-// underflows where the host flushes them, so their U sits behind a value
-// divergence and does not come away on its own.
-//
-// Emitted BEFORE the multiply, where both operands are still live -- a
-// full-mask op computes into fd's cache slot, which may be Fs's, and a masked
-// one writes over the clamped Fs copy in RQSCRATCH. The predicate lands in q27,
-// the scratch cop2EmitGuardedAddSub also draws on; the multiply and the result
-// clamp between here and the flag update touch neither it nor RQSCRATCH3.
+// It goes before the multiply, where both operands are still live: a full-mask
+// op computes into fd's cache slot, which may be Fs's, and a masked one writes
+// over the clamped Fs copy in RQSCRATCH. The predicate lands in q27, which
+// nothing between here and the flag update touches.
 static a64::VRegister cop2EmitMulExactZero(int xyzw, const a64::VRegister& a,
 	const a64::VRegister& b)
 {
@@ -1158,49 +1114,19 @@ static a64::VRegister cop2EmitMulExactZero(int xyzw, const a64::VRegister& a,
 		return a64::NoVReg;
 
 	const a64::VRegister dst = a64::VRegister(27, 128);
-	// b is read first because it may BE dst (VOPMULA's rotated Ft).
-	pxAssert(a.GetCode() != RQSCRATCH3.GetCode() && a.GetCode() != dst.GetCode());
-	armAsm->Fcmeq(RQSCRATCH3.V4S(), b.V4S(), 0.0);
-	armAsm->Fcmeq(dst.V4S(), a.V4S(), 0.0);
-	armAsm->Orr(dst.V16B(), dst.V16B(), RQSCRATCH3.V16B());
+	armEmitVuMulExactZero(dst, a, b, RQSCRATCH3);
 	return dst;
 }
 
-// The MAC O bit of a multiply, as the per-lane predicate cop2EmitFlagUpdate
-// takes: all ones where the product is past the VU's largest value.
+// The MAC O bit of a multiply (armEmitVuMulOverflow), emitted before the FMAC
+// families' operand clamp -- which moves an exponent-255 operand a whole binade
+// down and leaves the product indistinguishable from an in-range one.
 //
-// The VU's range runs a binade above the host's -- 0x7FFFFFFF is an ordinary
-// number here, not an infinity -- so O means |fs * ft| >= 2^129, and both the
-// operands and the product can sit where single precision has no room. One
-// scale answers both: subtract 96 exponents from each magnitude with an
-// unsigned saturating Uqsub, multiply there, and test the threshold moved down
-// by the same 192.
+// The predicate lands in q28, which the flag pack leaves alone. `k` defaults to
+// q27, free until cop2EmitMulExactZero claims it after the clamp; VOPMULA
+// passes the register its rotated Ft came in, having nowhere else to put it.
 //
-//     |fs| * 2^-96  *  |ft| * 2^-96  >=  2^-63
-//
-// Nothing on that path reaches the host's Inf/NaN range, which is what lets an
-// exponent-255 operand take part as the number it is. The scalings are exact
-// exponent shifts, so the scaled product rounds where the real one would, and
-// under round-toward-zero a chopped result crosses a power of two exactly when
-// the unrounded one does. A magnitude that saturates the Uqsub was below 2^-30
-// and could not have reached 2^129 against anything the VU can hold.
-//
-// The threshold test is the top three bits: a scaled product is at most 2^65,
-// so its word is positive and >= 0x20000000 is the whole of >= 2^-63.
-//
-// Emitted BEFORE the FMAC families' operand clamp, which moves an
-// exponent-255 operand a whole binade down and leaves the product
-// indistinguishable from an in-range one.
-//
-// The predicate lands in q28, which the flag pack leaves alone. Both operands
-// are read before the constant is built, so `k` may be the register `b` came
-// in — VOPMULA's rotated pair needs that, having nowhere else to put it. The
-// default is q27, free until cop2EmitMulExactZero claims it after the clamp.
-//
-// vuClampMode 4 and nowhere below, on CHECK_VU_EXACT(0) -- the gate the adder's
-// guard mask already reads. The multiply's MAC U is a mode lower: it is three
-// instructions and this is ten, on every FMAC rather than the ones that
-// underflow.
+// vuClampMode 4, the same mode as the multiply's MAC U.
 static a64::VRegister cop2EmitMulOverflow(int xyzw, const a64::VRegister& a,
 	const a64::VRegister& b, const a64::VRegister& k = a64::VRegister(27, 128),
 	const a64::VRegister& tmp = RQSCRATCH3)
@@ -1211,16 +1137,7 @@ static a64::VRegister cop2EmitMulOverflow(int xyzw, const a64::VRegister& a,
 		return a64::NoVReg;
 
 	const a64::VRegister dst = a64::VRegister(28, 128);
-	pxAssert(!tmp.Is(dst) && !k.Is(dst) && !k.Is(tmp) && !b.Is(dst));
-
-	armAsm->Fabs(dst.V4S(), a.V4S());
-	armAsm->Fabs(tmp.V4S(), b.V4S());
-	armAsm->Movi(k.V4S(), 0x30, a64::LSL, 24); // 96 exponents
-	armAsm->Uqsub(dst.V4S(), dst.V4S(), k.V4S());
-	armAsm->Uqsub(tmp.V4S(), tmp.V4S(), k.V4S());
-	armAsm->Fmul(dst.V4S(), dst.V4S(), tmp.V4S());
-	armAsm->Ushr(dst.V4S(), dst.V4S(), 29);
-	armAsm->Cmtst(dst.V4S(), dst.V4S(), dst.V4S());
+	armEmitVuMulOverflow(dst, a, b, k, tmp);
 	return dst;
 }
 
