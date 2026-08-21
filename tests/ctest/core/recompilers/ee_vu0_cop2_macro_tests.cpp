@@ -978,6 +978,141 @@ TEST(EeVu0Cop2Macro, VopmulaDestXyzwStillPreservesAccW)
 		EXPECT_EQ(h.GetVu0AccBitsJit(l), h.GetVu0AccBitsInterp(l));
 }
 
+// The OP ops are four-lane FMACs, and every engine here models them as three.
+//
+// Measured on an SCPH-90000 2026-08-21, four runs (captures/vuopw has the probe
+// sources, the outputs and the row-by-row reading). VOPMULA and VOPMSUB honour
+// the dest field for the value AND for the MAC flag, they clear the lanes
+// outside it like every other FMAC, and their fourth lane is real:
+//
+//     fsRot = (fs.y, fs.z, fs.x, fs.w)
+//     ftRot = (ft.z, ft.x, ft.y, +0.0)
+//     VOPMULA:  ACC.<mask> = fsRot * ftRot
+//     VOPMSUB:  fd.<mask>  = ACC - fsRot * ftRot
+//
+// So lane w's product is fs.w * +0 -- a zero carrying fs.w's sign, and fs.w's
+// alone: moving ft.w's sign moves nothing, and both negative is still negative,
+// which is not an xor.
+//
+// What the tree does instead. Both recompilers force the dest field to 0xE and
+// build ftRot's fourth lane out of ft.y, and _vuOPMULA / _vuOPMSUB (VUops.cpp)
+// write x, y and z unconditionally and never clear the MAC lane they skipped.
+// At the field VU assembly emits, xyz, the recompilers are right and only the
+// interpreter's missing clear shows; at any other field all three are wrong in
+// the value as well.
+//
+// The rows below are the console's, and each engine's failures are named in the
+// expectation strings rather than allowed for.
+// TRIPWIRE -- the OP ops ignore the dest field and drop lane w in every engine.
+// The arm64 macro fix is two instructions (fsRot lane 3 is fs.x where it should
+// be fs.w, ftRot lane 3 is ft.y where it should be zero) plus dropping the two
+// forced 0xE; microVU and the interpreter are their own jobs. Enable when they
+// land.
+TEST(EeVu0Cop2Macro, DISABLED_OpOpsAreFourLaneFmacs)
+{
+	// fs = 2,3,5,7  ft = 11,13,17,19  ACC = 100,200,300,400  fd = sentinels.
+	constexpr u32 kFs[4]  = {0x40000000u, 0x40400000u, 0x40A00000u, 0x40E00000u};
+	constexpr u32 kFt[4]  = {0x41300000u, 0x41500000u, 0x41880000u, 0x41980000u};
+	constexpr u32 kAcc[4] = {0x42C80000u, 0x43480000u, 0x43960000u, 0x43C80000u};
+	constexpr u32 kFd[4]  = {0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u};
+	// 51 = 3*17, 55 = 5*11, 26 = 2*13; 49 = 100-51, 145 = 200-55, 274 = 300-26.
+	constexpr u32 k51 = 0x424C0000u, k55 = 0x425C0000u, k26 = 0x41D00000u;
+	constexpr u32 k49 = 0x42440000u, k145 = 0x43110000u, k274 = 0x43890000u;
+
+	struct Row
+	{
+		const char* what;
+		bool sub;      // VOPMSUB rather than VOPMULA
+		u32 mask;
+		u32 acc[4];    // the console's ACC afterwards
+		u32 fd[4];     // and its VF[fd]
+	};
+	static const Row kRows[] = {
+		{"vopmula.xyzw", false, 0xF, {k51, k55, k26, 0}, {kFd[0], kFd[1], kFd[2], kFd[3]}},
+		{"vopmula.xyz",  false, 0xE, {k51, k55, k26, kAcc[3]}, {kFd[0], kFd[1], kFd[2], kFd[3]}},
+		{"vopmula.w",    false, 0x1, {kAcc[0], kAcc[1], kAcc[2], 0}, {kFd[0], kFd[1], kFd[2], kFd[3]}},
+		{"vopmula.none", false, 0x0, {kAcc[0], kAcc[1], kAcc[2], kAcc[3]}, {kFd[0], kFd[1], kFd[2], kFd[3]}},
+		{"vopmsub.xyzw", true,  0xF, {kAcc[0], kAcc[1], kAcc[2], kAcc[3]}, {k49, k145, k274, kAcc[3]}},
+		{"vopmsub.xyz",  true,  0xE, {kAcc[0], kAcc[1], kAcc[2], kAcc[3]}, {k49, k145, k274, kFd[3]}},
+		{"vopmsub.w",    true,  0x1, {kAcc[0], kAcc[1], kAcc[2], kAcc[3]}, {kFd[0], kFd[1], kFd[2], kAcc[3]}},
+		{"vopmsub.none", true,  0x0, {kAcc[0], kAcc[1], kAcc[2], kAcc[3]}, {kFd[0], kFd[1], kFd[2], kFd[3]}},
+	};
+	static const char kLane[4] = {'x', 'y', 'z', 'w'};
+
+	for (const Row& r : kRows)
+	{
+		SCOPED_TRACE(r.what);
+		// Run() rather than RunInterpOnly(), which captures the EE snapshot only
+		// and would read every VF back as zero. Each engine is scored against
+		// the console separately, so the auto-diff is opted out of.
+		EeRecTestHarness h;
+		h.EnableVu0Capture();
+		h.ExpectVu0Divergence();
+		h.SeedVu0VfBits(5, kFs[0], kFs[1], kFs[2], kFs[3]);
+		h.SeedVu0VfBits(6, kFt[0], kFt[1], kFt[2], kFt[3]);
+		h.SeedVu0AccBits(kAcc[0], kAcc[1], kAcc[2], kAcc[3]);
+		h.SeedVu0VfBits(4, kFd[0], kFd[1], kFd[2], kFd[3]);
+		h.LoadProgram({r.sub ? VOPMSUB_C2(r.mask, 4, 5, 6) : VOPMULA_C2(r.mask, 5, 6)});
+		h.Run();
+		for (int l = 0; l < 4; ++l)
+		{
+			EXPECT_EQ(h.GetVu0AccBitsInterp(kLane[l]), r.acc[l]) << "[interp] ACC." << kLane[l];
+			EXPECT_EQ(h.GetVu0AccBitsJit(kLane[l]), r.acc[l]) << "[jit] ACC." << kLane[l];
+			EXPECT_EQ(h.GetVu0VfBitsInterp(4, kLane[l]), r.fd[l]) << "[interp] VF4." << kLane[l];
+			EXPECT_EQ(h.GetVu0VfBitsJit(4, kLane[l]), r.fd[l]) << "[jit] VF4." << kLane[l];
+		}
+	}
+}
+
+// The half of the same measurement that is about the flag register: a masked OP
+// op clears the MAC lanes outside its field, exactly like any other FMAC. The
+// seed puts S in all four lanes so a cleared lane is visible; the console's
+// answers are captures/vuopmask's.
+// TRIPWIRE -- see DISABLED_OpOpsAreFourLaneFmacs above. The recompilers pass the
+// xyz row already; the interpreter leaves the seed's W bit standing on all of
+// them, and neither engine reaches the others.
+TEST(EeVu0Cop2Macro, DISABLED_OpOpsClearTheMacLanesOutsideTheDestField)
+{
+	constexpr u32 kOne = 0x3F800000u, kMinusOne = 0xBF800000u;
+	struct Row { const char* what; bool sub; u32 mask; u32 mac; };
+	static const Row kRows[] = {
+		{"vopmula.xyzw", false, 0xF, 0x0001u}, // w takes the zero product
+		{"vopmula.xyz",  false, 0xE, 0x0000u},
+		{"vopmula.xy",   false, 0xC, 0x0000u},
+		{"vopmula.w",    false, 0x1, 0x0001u},
+		{"vopmsub.xyzw", true,  0xF, 0x000Eu}, // xyz cancel, w is ACC.w - 0
+		{"vopmsub.xyz",  true,  0xE, 0x000Eu},
+		{"vopmsub.xy",   true,  0xC, 0x000Cu},
+		{"vopmsub.w",    true,  0x1, 0x0000u},
+	};
+	for (const Row& r : kRows)
+	{
+		SCOPED_TRACE(r.what);
+		const auto build = [&](EeRecTestHarness& h) {
+			h.EnableVu0Capture();
+			h.SeedVu0VfBits(1, kMinusOne, kMinusOne, kMinusOne, kMinusOne);
+			h.SeedVu0VfBits(2, kOne, kOne, kOne, kOne);
+			h.SeedVu0VfBits(5, kOne, kOne, kOne, kOne);
+			h.SeedVu0VfBits(6, kOne, kOne, kOne, kOne);
+			h.SeedVu0AccBits(kOne, kOne, kOne, kOne);
+			h.LoadProgram({
+				CTC2(0, REG_STATUS_FLAG),
+				VMUL_C2(0xF, 4, 1, 2), // seed: MAC S on all four lanes
+				r.sub ? VOPMSUB_C2(r.mask, 4, 5, 6) : VOPMULA_C2(r.mask, 5, 6),
+				CFC2(8, REG_MAC_FLAG),
+			});
+		};
+		EeRecTestHarness hi;
+		build(hi);
+		hi.RunInterpOnly();
+		EeRecTestHarness hj;
+		build(hj);
+		hj.RunJitNoDiff();
+		EXPECT_EQ(hi.GetGprInterp(8), r.mac) << "[interp] MAC";
+		EXPECT_EQ(hj.GetGprJit(8), r.mac) << "[jit] MAC";
+	}
+}
+
 // =========================================================================
 //  VFTOIx NaN saturation
 // =========================================================================
