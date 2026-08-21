@@ -210,8 +210,14 @@ constexpr AbiPin kPins[] = {
 	{18, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x3c5065e7ab8cf631, 0xde92be2516a10fbb, 0x1270eee2b9725c68}},
 	// v19: DIV's and RSQRT's zero paths build 0x7FFFFFFF with one MVNI instead
 	// of loading the signbit/maxvals pair, so each loses two instructions and
-	// two mVUglob operands. divUnit is again the only field that moves.
-	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x5c45123d74b43010, 0xde92be2516a10fbb, 0x1270eee2b9725c68}},
+	// two mVUglob operands; the three ops' zero tests read the operand's
+	// exponent field instead of comparing it against 0.0, which costs a Umov
+	// apiece, and RSQRT's divisor test is on the radicand rather than the
+	// root. divUnit is the only field that moves. The value flush that rides
+	// with the zero tests is not in this row: these probes compile under the
+	// default VU FPCR, which sets FZ, and it is emitted only when that is
+	// clear.
+	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x7cfc9e2b6a3e852d, 0xde92be2516a10fbb, 0x1270eee2b9725c68}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

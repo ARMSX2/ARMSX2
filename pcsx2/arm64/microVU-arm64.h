@@ -100,9 +100,11 @@
 //       of the accumulate; only shapes compiled under vuClampMode:2 change.
 //  18 — RSQRT's zero path ORs its D/I into divFlag instead of assigning over
 //       it, so the sign test's I survives. Only RSQRT changes shape.
-//  19 — DIV and RSQRT saturate their zero-divisor Q at 0x7FFFFFFF, built with
-//       one MVNI instead of the signbit/maxvals pair of mVUglob loads. Both
-//       zero paths lose two instructions and two [x25, #imm] operands.
+//  19 — every divide-unit block changes shape: DIV and RSQRT saturate their
+//       zero-divisor Q at 0x7FFFFFFF, built with one MVNI instead of the
+//       signbit/maxvals pair of mVUglob loads; all three ops read the
+//       operand's exponent field instead of Fcmp against 0.0; and the
+//       denormal flush is emitted only where the unit's own FPCR clears FZ.
 static constexpr u32 kMvuCompilerAbiVersion = 19;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>

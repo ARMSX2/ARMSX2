@@ -1130,13 +1130,21 @@ TEST(VuStickyConsoleConformance, Arm64Cop2DivUnitHasNoDenormalsWithHardwareFlush
 	}
 }
 
-// TRIPWIRE -- microVU still runs the div unit on host floats: two Fcmps
-// against 0.0 for the zero tests, and FPCR.FZ for the flush. 25 of the rows
-// below fail on it with FZ off, and none with FZ on.
-TEST(VuStickyMicroConsoleConformance, DISABLED_MicroDivUnitHasNoDenormals)
+TEST(VuStickyMicroConsoleConformance, MicroDivUnitHasNoDenormals)
 {
 	const ScopedFpEnv env{ScopedFpEnv::IeeeNearest};
 	ASSERT_NO_FATAL_FAILURE(RequireDenormalsLive(EmuConfig.Cpu.VU0FPCR, "VU0FPCR"));
+
+	for (const DivDenormCase& c : kDivDenormCases)
+	{
+		SCOPED_TRACE(c.what);
+		RunMicroDivCase(c);
+	}
+}
+
+TEST(VuStickyMicroConsoleConformance, MicroDivUnitHasNoDenormalsWithHardwareFlush)
+{
+	ASSERT_NO_FATAL_FAILURE(RequireDenormalsFlushed(EmuConfig.Cpu.VU0FPCR, "VU0FPCR"));
 
 	for (const DivDenormCase& c : kDivDenormCases)
 	{
@@ -1188,6 +1196,39 @@ TEST(VuStickyConsoleConformance, Arm64Cop2DivUnitReadsTheAddressedLane)
 				EXPECT_EQ(h.GetVu0ViJit(REG_Q), h.GetVu0ViInterp(REG_Q)) << "Q";
 				EXPECT_EQ(h.GetVu0ViJit(REG_STATUS_FLAG) & kDivDI,
 					h.GetVu0ViInterp(REG_STATUS_FLAG) & kDivDI) << "D/I";
+			}
+		}
+	}
+}
+
+TEST(VuStickyMicroConsoleConformance, MicroDivUnitReadsTheAddressedLane)
+{
+	const ScopedFpEnv env{ScopedFpEnv::IeeeNearest};
+	ASSERT_NO_FATAL_FAILURE(RequireDenormalsLive(EmuConfig.Cpu.VU0FPCR, "VU0FPCR"));
+
+	for (u32 fsf = 0; fsf < 4; ++fsf)
+	{
+		for (u32 ftf = 0; ftf < 4; ++ftf)
+		{
+			SCOPED_TRACE(::testing::Message() << "fsf " << fsf << " ftf " << ftf);
+			for (int op = 0; op < 3; ++op)
+			{
+				SCOPED_TRACE(op == 0 ? "DIV" : op == 1 ? "SQRT" : "RSQRT");
+				VuTestHarness h(0);
+				h.SetVfBits(1, kLaneFs[0], kLaneFs[1], kLaneFs[2], kLaneFs[3]);
+				h.SetVfBits(2, kLaneFt[0], kLaneFt[1], kLaneFt[2], kLaneFt[3]);
+				h.LoadProgram({
+					vu::VuOp{op == 0 ? vu::VDIV_L(vu::vf::vf1, fsf, vu::vf::vf2, ftf)
+							 : op == 1 ? vu::VSQRT_L(vu::vf::vf2, ftf)
+									   : vu::VRSQRT_L(vu::vf::vf1, fsf, vu::vf::vf2, ftf),
+						vu::VNOP_U()},
+					vu::VuOp{vu::VWAITQ_L(), vu::VNOP_U()},
+					vu::EBitNopPair(),
+				});
+				h.RunNoDiff();
+				EXPECT_EQ(h.GetViJit(REG_Q), h.GetViInterp(REG_Q)) << "Q";
+				EXPECT_EQ(h.GetViJit(REG_STATUS_FLAG) & kDivDI,
+					h.GetViInterp(REG_STATUS_FLAG) & kDivDI) << "D/I";
 			}
 		}
 	}

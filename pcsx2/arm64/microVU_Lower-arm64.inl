@@ -16,6 +16,21 @@
 // DIV/SQRT/RSQRT
 //------------------------------------------------------------------
 
+/*	The div unit has no denormal encoding: an operand whose exponent field is
+	zero is a zero, and a quotient below 2^-126 is a signed zero (eeDivide,
+	FPU.cpp). FPCR.FZ does all of that in hardware, so the tests below read the
+	exponent field rather than comparing against 0.0 -- one Umov dearer, the
+	same answer either way -- and the value flush is emitted only when the
+	unit's own FPCR clears it. mVUsetupOptionsSentinel hashes all three FPCRs,
+	so a change to the setting compiles new programs.
+*/
+static constexpr u32 kEeExpMask = 0x7F800000;
+
+static bool mVUneedsSoftwareFlush(mV)
+{
+	return !(isVU0 ? EmuConfig.Cpu.VU0FPCR : EmuConfig.Cpu.VU1FPCR).GetDenormalsAreZero();
+}
+
 mVUop(mVU_DIV)
 {
 	pass1 { mVUanalyzeFDIV(mVU, _Fs_, _Fsf_, _Ft_, _Ftf_, 7); }
@@ -27,13 +42,18 @@ mVUop(mVU_DIV)
 		const a64::SRegister sFt(Ft.GetCode());
 		const a64::SRegister sFs(Fs.GetCode());
 
-		// Test if Ft is zero (NaN takes the not-zero branch — matches Fcmeq path).
-		armAsm->Fcmp(sFt, 0.0);
+		const bool flush = mVUneedsSoftwareFlush(mVU);
+
+		// Test if Ft is zero (a NaN's exponent is 255, so it takes the not-zero
+		// branch as the Fcmp this replaces did).
+		armAsm->Umov(gprT1.W(), Ft.V4S(), 0);
+		armAsm->Tst(gprT1.W(), kEeExpMask);
 		a64::Label ftNotZero, divDone;
 		armAsm->B(&ftNotZero, a64::ne); // Skip if Ft != 0
 
 		// Ft is zero -- check Fs
-		armAsm->Fcmp(sFs, 0.0);
+		armAsm->Umov(gprT2.W(), Fs.V4S(), 0);
+		armAsm->Tst(gprT2.W(), kEeExpMask);
 		a64::Label fsNotZero;
 		armAsm->B(&fsNotZero, a64::ne); // Skip if Fs != 0
 
@@ -63,8 +83,24 @@ mVUop(mVU_DIV)
 		// Normal division
 		armAsm->Mov(gprT1.W(), 0);
 		mVUstrField(mVU, gprT1, &mVU.divFlag);
+		// A denormal dividend and a quotient below 2^-126 both leave a signed
+		// zero, and the host quotient already carries the sign the model gives
+		// it, so one word serves both selects. Neither implies the other: a
+		// denormal over a near-minimal normal divides out to an ordinary single.
+		if (flush)
+			armAsm->Umov(gprT2.W(), Fs.V4S(), 0); // dividend word, before Fdiv takes it
 		armAsm->Fdiv(sFs, sFs, sFt);
 		mVUclamp1(mVU, Fs, t1, 8, true);
+		if (flush)
+		{
+			armAsm->Umov(gprT1.W(), Fs.V4S(), 0);
+			armAsm->And(gprT3.W(), gprT1.W(), 0x80000000);
+			armAsm->Tst(gprT1.W(), kEeExpMask);
+			armAsm->Csel(gprT1.W(), gprT3.W(), gprT1.W(), a64::eq);
+			armAsm->Tst(gprT2.W(), kEeExpMask);
+			armAsm->Csel(gprT1.W(), gprT3.W(), gprT1.W(), a64::eq);
+			armAsm->Ins(Fs.V4S(), 0, gprT1.W());
+		}
 
 		armAsm->Bind(&skipNormalDiv);
 
@@ -108,6 +144,13 @@ mVUop(mVU_SQRT)
 		armAsm->And(Ft.V16B(), Ft.V16B(), RQSCRATCH.V16B());
 		armAsm->Bind(&notNeg);
 
+		// The radicand's word, before Fsqrt takes it. Only the operand needs
+		// the test: the root of the smallest normal is 2^-63, so no in-range
+		// radicand can land the result in the denormal band.
+		const bool flush = mVUneedsSoftwareFlush(mVU);
+		if (flush)
+			armAsm->Umov(gprT2.W(), Ft.V4S(), 0);
+
 		// Clamp infinity. Fminnm (number-preserving) so positive-NaN inputs
 		// clamp to +maxfloat instead of propagating into Fsqrt — matches
 		// mVUclamp1's semantics (see microVU_Clamp-arm64.inl).
@@ -118,6 +161,15 @@ mVUop(mVU_SQRT)
 		}
 
 		armAsm->Fsqrt(sFt, sFt);
+		if (flush)
+		{
+			// eeSqrtBits returns a bare +0 for a zero exponent field, dropping
+			// the operand's sign with it -- which the |Ft| above already did.
+			armAsm->Umov(gprT1.W(), Ft.V4S(), 0);
+			armAsm->Tst(gprT2.W(), kEeExpMask);
+			armAsm->Csel(gprT1.W(), a64::wzr, gprT1.W(), a64::eq);
+			armAsm->Ins(Ft.V4S(), 0, gprT1.W());
+		}
 		writeQreg(Ft, mVUinfo.writeQ);
 
 		if (mVU.cop2)
@@ -159,15 +211,22 @@ mVUop(mVU_RSQRT)
 		armAsm->And(Ft.V16B(), Ft.V16B(), RQSCRATCH.V16B());
 		armAsm->Bind(&notNeg);
 
+		// The radicand's word, before Fsqrt takes it: the divisor test is on ft
+		// itself, as _vuRSQRT's is. eeSqrtBits maps a zero exponent field to +0,
+		// so a denormal radicand is a zero divisor where a host Fsqrt's is not.
+		const bool flush = mVUneedsSoftwareFlush(mVU);
+		armAsm->Umov(gprT2.W(), Ft.V4S(), 0);
 		armAsm->Fsqrt(sFt, sFt);
 
-		// Test if sqrt(Ft) is zero (NaN takes the not-zero branch — matches Fcmeq path).
-		armAsm->Fcmp(sFt, 0.0);
+		// A NaN's exponent is 255, so it takes the not-zero branch as the Fcmp
+		// this replaces did.
+		armAsm->Tst(gprT2.W(), kEeExpMask);
 		a64::Label sqrtNotZero, rsqrtDone;
 		armAsm->B(&sqrtNotZero, a64::ne);
 
 		// sqrt(Ft) is zero -- check Fs
-		armAsm->Fcmp(sFs, 0.0);
+		armAsm->Umov(gprT1.W(), Fs.V4S(), 0);
+		armAsm->Tst(gprT1.W(), kEeExpMask);
 		a64::Label fsNotZero2;
 		armAsm->B(&fsNotZero2, a64::ne);
 
@@ -191,8 +250,22 @@ mVUop(mVU_RSQRT)
 		armAsm->B(&rsqrtDone);
 
 		armAsm->Bind(&sqrtNotZero);
+		// As mVU_DIV, with the sign taken from the dividend alone: the divisor
+		// is a root, and the model's eeSqrtBits leaves it non-negative.
+		if (flush)
+			armAsm->Umov(gprT2.W(), Fs.V4S(), 0);
 		armAsm->Fdiv(sFs, sFs, sFt);
 		mVUclamp1(mVU, Fs, t1, 8, true);
+		if (flush)
+		{
+			armAsm->Umov(gprT1.W(), Fs.V4S(), 0);
+			armAsm->And(gprT3.W(), gprT1.W(), 0x80000000);
+			armAsm->Tst(gprT1.W(), kEeExpMask);
+			armAsm->Csel(gprT1.W(), gprT3.W(), gprT1.W(), a64::eq);
+			armAsm->Tst(gprT2.W(), kEeExpMask);
+			armAsm->Csel(gprT1.W(), gprT3.W(), gprT1.W(), a64::eq);
+			armAsm->Ins(Fs.V4S(), 0, gprT1.W());
+		}
 
 		armAsm->Bind(&rsqrtDone);
 		writeQreg(Fs, mVUinfo.writeQ);
