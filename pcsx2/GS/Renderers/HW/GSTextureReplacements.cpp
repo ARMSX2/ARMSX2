@@ -583,6 +583,7 @@ void GSTextureReplacements::ReloadReplacementMap()
 		return;
 
 	std::string filename;
+	u32 duplicates = 0;
 	for (FILESYSTEM_FIND_DATA& fd : files)
 	{
 		// file format we can handle?
@@ -596,7 +597,27 @@ void GSTextureReplacements::ReloadReplacementMap()
 			continue;
 
 		DbgCon.WriteLn("Found %ux%u replacement '%.*s'", name->Width(), name->Height(), static_cast<int>(filename.size()), filename.data());
-		s_replacement_texture_filenames.emplace(name.value(), std::move(fd.FileName));
+
+		// ★ emplace does NOT overwrite, and this scan is RECURSIVE. Two files under different
+		// subdirectories that decode to the same texture name are a collision, and the one the
+		// directory walk happens to reach first wins -- silently, with no way to tell from
+		// outside which of them is on screen.
+		//
+		// That is how a mod layered on top of a base pack loses: same texture, two files, and
+		// the base pack wins on traversal order rather than on intent. Count them and name the
+		// first few, because "my mod is not applying" and "my mod is being shadowed by another
+		// pack" look identical to the person reporting it.
+		const std::string losing_path = fd.FileName;
+		auto ins = s_replacement_texture_filenames.emplace(name.value(), std::move(fd.FileName));
+		if (!ins.second)
+		{
+			duplicates++;
+			if (duplicates <= 6)
+			{
+				Console.WriteLnFmt("Texture replacements: DUPLICATE '{}' ignored, '{}' already claimed that texture",
+					losing_path, ins.first->second);
+			}
+		}
 
 		// zero out the CLUT hash, because we need this for checking if there's any replacements with this hash when using paltex
 		name->CLUTHash = 0;
@@ -609,8 +630,8 @@ void GSTextureReplacements::ReloadReplacementMap()
 	// function looks identical from outside (feature off, wrong serial, empty folder,
 	// unparseable names), so print the count AND the exact directory scanned: a zero here
 	// with a path that doesn't match the user's pack folder is the whole diagnosis.
-	Console.WriteLnFmt("Texture replacements: {} indexed for '{}' (scanned {})",
-		s_replacement_texture_filenames.size(), s_current_serial, replacement_dir);
+	Console.WriteLnFmt("Texture replacements: {} indexed from {} files ({} shadowed by an earlier file) for '{}' (scanned {})",
+		s_replacement_texture_filenames.size(), files.size(), duplicates, s_current_serial, replacement_dir);
 
 	// The two settings that decide whether a lookup is ever ATTEMPTED, as opposed to whether it
 	// matches. Replacements ride the hash cache, which needs Full preloading; and paltex decides
