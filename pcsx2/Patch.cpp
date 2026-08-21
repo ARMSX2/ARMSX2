@@ -681,9 +681,65 @@ void Patch::ReloadEnabledLists()
 // [Skip Cutscenes] as a patch, in the same pnach as its [Widescreen 16:9], so location cannot
 // tell them apart. And "no memory writes" cannot either: the widescreen group writes EE memory
 // too. Declared intent is the only thing that separates them.
+/// Does this group's NAME describe a presentation change rather than a gameplay one?
+///
+/// ★ Needed because "declares gsaspectratio or gsinterlacemode" is not the line it looks like.
+///
+/// That rule was chosen to separate a Skip Cutscenes cheat from a Widescreen patch shipping in
+/// the same pnach, and it does. But measured across the whole shipped database the groups it
+/// blocks are overwhelmingly NOT cheats: 305 "50 FPS", 177 "60 FPS", 168 "50/60 FPS", 102
+/// "Remove Blackbars" (a widescreen patch), 100 "NTSC Mode", 31 "480p Mode", and the blur and
+/// ghosting removers. Almost every real presentation patch changes the picture by writing EE
+/// memory and declares nothing, so the declaration test caught the tail and missed the bulk —
+/// reported by EddyOP and Jetup, who found that moving lines under a widescreen heading was
+/// enough to re-enable them.
+///
+/// Names are matched case-insensitively as substrings, against the labels the community patch
+/// database actually uses. This is deliberately a list of PRESENTATION classes rather than a
+/// blocklist of cheats: an unknown name still fails closed, which is the safe direction.
+static bool IsPresentationPatchName(const std::string& name)
+{
+	if (name.empty())
+		return false;
+
+	std::string lower(name);
+	std::transform(lower.begin(), lower.end(), lower.begin(),
+		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+	static constexpr const std::string_view ALLOWED[] = {
+		// Aspect / framing
+		"widescreen", "16:9", "16/9", "blackbar", "black bar", "letterbox",
+		// Scan-out
+		"interlac", "ntsc mode", "pal mode", "480p", "progressive", "scan mode",
+		// Frame rate. Contentious elsewhere, but it is what was reported as broken, it is
+		// allowed by desktop PCSX2, and it changes how the picture is delivered rather than
+		// what the game will let the player do.
+		"fps", "frame rate", "framerate",
+		// Post-processing the game applies to its own output. Matched on the EFFECT rather than
+		// the verb: the database says Remove Blur, Disable Blur and No Blur for the same thing,
+		// and listing verbs meant catching one spelling and blocking the others.
+		"blur", "bloom", "ghosting", "dither", "noise filter", "depth of field", " dof",
+		"color filter", "colour filter", "brown filter", "grain",
+		// HUD repositioning ships alongside widescreen and is meaningless without it.
+		"correct hud", "hud fix", "fix hud",
+	};
+
+	for (const std::string_view a : ALLOWED)
+	{
+		if (lower.find(a) != std::string::npos)
+			return true;
+	}
+	return false;
+}
+
 static bool IsHardcoreSafePatchGroup(const Patch::PatchGroup& p)
 {
 	if (p.override_aspect_ratio.has_value() || p.override_interlace_mode.has_value())
+		return true;
+
+	// Named as a presentation change. See IsPresentationPatchName for why the declaration test
+	// alone is not sufficient.
+	if (IsPresentationPatchName(p.name))
 		return true;
 
 	// Nothing declared and nothing written is inert, so it costs nothing to allow.
