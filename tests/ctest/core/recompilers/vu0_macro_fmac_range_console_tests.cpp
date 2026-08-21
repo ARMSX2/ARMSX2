@@ -35,6 +35,11 @@
 // writing both engines are wrong here in overlapping ways, so a differential
 // between them would report agreement on rows where they are agreeing about
 // the wrong number.
+//
+// The recompiler's column is scored at vuClampMode 4, the mode the exact models
+// live at -- so far the adder's guard mask, which moves nothing here, and the
+// multiply's MAC U, which moves eight columns across four rows.
+// UnderflowFlagsMissedBelowModeFour is the same table at every mode under it.
 
 #include "harness/EeRecTestHarness.h"
 #include "harness/MipsEncode.h"
@@ -86,9 +91,10 @@ struct Observed
 // Runs one row's VADDA/op pair and reads back one engine's answer. The ACC is
 // seeded through VADDA rather than written directly because that is what the
 // capture measured -- the seed's own flags are part of the status column.
-Observed RunCase(const VuSatCase& c, u32 word, bool jit)
+Observed RunCase(const VuSatCase& c, u32 word, bool jit, int clamp_mode)
 {
 	EeRecTestHarness h;
+	h.SetVu0ClampMode(clamp_mode);
 	h.EnableVu0Capture();
 	// Both engines are read here and each is scored against the console on its
 	// own, so Run()'s JIT-vs-interp auto-diff would fail on the very rows this
@@ -125,6 +131,11 @@ constexpr u8 kColBit[] = {VSB_VALUE, VSB_MAC, VSB_STAT};
 
 int PopCount(u8 v) { return (v & 1) + ((v >> 1) & 1) + ((v >> 2) & 1); }
 
+// The mode the tables below are scored at, and what the recompiler's column
+// comes to under it, where no exact model is emitted.
+constexpr int kVuSatScoredMode = 4;
+constexpr int kVuSatUnmodelledBadJit = 76;
+
 } // namespace
 
 // Asserts the columns this emulator DOES reproduce, and asserts that the ones
@@ -143,7 +154,7 @@ TEST(Vu0MacroFmacRangeConsole, FmacRangeMatchesConsole)
 		for (int jit = 0; jit < 2; ++jit)
 		{
 			const u8 known = jit ? c.bad_jit : c.bad_interp;
-			const u8 got = Misses(c, RunCase(c, word, jit != 0));
+			const u8 got = Misses(c, RunCase(c, word, jit != 0, kVuSatScoredMode));
 			(jit ? bad_jit : bad_interp) += PopCount(known);
 
 			for (int col = 0; col < 3; ++col)
@@ -183,8 +194,8 @@ TEST(Vu0MacroFmacRangeConsole, ControlsSeparate)
 	EXPECT_NE(a.mac, b.mac);
 	for (int jit = 0; jit < 2; ++jit)
 	{
-		const Observed oa = RunCase(a, Encode(a), jit != 0);
-		const Observed ob = RunCase(b, Encode(b), jit != 0);
+		const Observed oa = RunCase(a, Encode(a), jit != 0, kVuSatScoredMode);
+		const Observed ob = RunCase(b, Encode(b), jit != 0, kVuSatScoredMode);
 		SCOPED_TRACE(jit ? "jit" : "interp");
 		EXPECT_EQ(oa.out, a.out);
 		EXPECT_EQ(ob.out, b.out);
@@ -192,6 +203,30 @@ TEST(Vu0MacroFmacRangeConsole, ControlsSeparate)
 		EXPECT_EQ(ob.mac, b.mac);
 		EXPECT_NE(oa.out, ob.out);
 		EXPECT_NE(oa.mac, ob.mac);
+	}
+}
+
+// The other side of the gate. Four MUL rows here flush a product to a signed
+// zero, and only the multiply's U bit tells that apart from a product one of
+// whose operands was already zero -- which row 22 is, and which must keep
+// scoring clean at every mode. Below 4 the recompiler cannot raise U at all, so
+// those four rows have to lose both flag columns and nothing else may move.
+TEST(Vu0MacroFmacRangeConsole, UnderflowFlagsMissedBelowModeFour)
+{
+	for (int mode = 1; mode <= 3; ++mode)
+	{
+		SCOPED_TRACE(::testing::Message() << "vuClampMode " << mode);
+		int bad = 0;
+		for (int i = 0; i < kVuSatCaseCount; ++i)
+		{
+			const VuSatCase& c = kVuSatCases[i];
+			const u32 word = Encode(c);
+			ASSERT_NE(word, 0u) << "case " << i << ": no encoder for op " << int(c.op);
+			bad += PopCount(Misses(c, RunCase(c, word, true, mode)));
+		}
+		EXPECT_EQ(bad, kVuSatUnmodelledBadJit);
+		EXPECT_GT(kVuSatUnmodelledBadJit, kVuSatBadJit)
+			<< "the gate has stopped separating the modes";
 	}
 }
 
@@ -208,7 +243,7 @@ TEST(Vu0MacroFmacRangeConsole, DISABLED_DumpConsoleComparison)
 		for (int jit = 0; jit < 2; ++jit)
 		{
 			const char* engine = jit ? "jit" : "interp";
-			const Observed o = RunCase(c, word, jit != 0);
+			const Observed o = RunCase(c, word, jit != 0, kVuSatScoredMode);
 			const u8 got = Misses(c, o);
 			for (int col = 0; col < 3; ++col)
 			{

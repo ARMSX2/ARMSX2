@@ -1968,7 +1968,7 @@ TEST(EeVu0Cop2PendingMicroSync, VwaitqConsumesFinishMarkAndDrainsPendingMicro)
 // Needs the IEEE environment: under the production rounding mode (ChopZero) an
 // overflowing sum saturates to +FLT_MAX, exp 254, and the O bit this test is
 // about is unreachable on BOTH engines. See
-// VuStickyConsoleConformance.ProductionFpEnvironmentErasesUnderflowAndOverflow,
+// VuStickyConsoleConformance.ProductionFpEnvironmentGatesTheJitsUnderflowOnModeThree,
 // which pins that.
 // TRIPWIRE -- the arm64 COP2 macro flag update does not raise STATUS U/O.
 TEST(EeVu0Cop2Macro, DISABLED_VaddOverflowSetsStatusUO)
