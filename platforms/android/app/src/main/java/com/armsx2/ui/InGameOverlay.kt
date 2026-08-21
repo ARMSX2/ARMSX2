@@ -61,6 +61,25 @@ object InGameOverlay {
         }
     }
 
+    /**
+     * Re-assert a non-Custom OSD mode after [com.armsx2.config.Settings.applyTo] has run.
+     *
+     * applyTo pushes the per-stat osdShow* flags unconditionally, and it runs on EVERY settings
+     * change — so changing anything at all, brightness, a speedhack, a controller binding, would
+     * silently replace an active Full / Minimal / Off mode with the Custom flag set. For most
+     * users the Custom set is mostly off, so what that looks like is the OSD vanishing whenever
+     * you touch settings.
+     *
+     * Custom needs nothing done: applyTo just wrote exactly what Custom means. Only the three
+     * modes that OVERRIDE the per-stat flags have to be restored, which is what
+     * [reapplyOsdMode] already does for the second-display case.
+     */
+    fun reassertOsdModeAfterSettingsApply() {
+        ensureOsdLoaded()
+        if (osdMode.value != OsdMode.Custom)
+            runCatching { applyOsdMode(osdMode.value) }
+    }
+
     /** Short label for [mode], shown by the hotkey toast and the menu selector. */
     fun osdModeLabel(mode: OsdMode): String = when (mode) {
         OsdMode.Full -> "Full"

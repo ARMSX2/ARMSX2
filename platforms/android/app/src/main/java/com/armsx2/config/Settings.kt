@@ -969,6 +969,12 @@ data class Settings(
         NativeApp.osdShowVersion(osdShowVersion)
         NativeApp.osdShowSettings(osdShowSettings)
         NativeApp.osdShowInputs(osdShowInputs)
+        // ★ The OSD MODE overrides every flag just written. Full / Minimal / Off are a separate
+        // choice from the per-stat selection above, and this function runs on every settings
+        // change — so without this line, changing any unrelated setting quietly swaps an active
+        // mode for the Custom flags, which reads to the user as "the OSD disappeared when I
+        // changed a setting". Custom is already correct and is left alone.
+        com.armsx2.ui.InGameOverlay.reassertOsdModeAfterSettingsApply()
         // USB keyboard (#254): live attach/detach on the running VM. A plain
         // setSetting("USB1","Type",...) write is persisted but doesn't reattach
         // USB devices, so drive the device (re)creation explicitly. No-op before
