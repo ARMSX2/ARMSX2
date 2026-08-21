@@ -20,11 +20,47 @@ enum
 	preClampFrom = 2,
 };
 
+// The adder's guard bits (armEmitVuGuardMask), between the clamps and the add.
+//
+// The masked pair goes to the scratch trio rather than over the operands: `to`
+// is a live destination and `from` is often a VF cache slot, and both have to
+// come out unchanged bar the result. q29/q30/q31 are free at every call --
+// mVUclamp3 has finished with q29, and the FMAC bodies' own q30/q31 use is the
+// U/O models' scratch, dead before the arithmetic. qmmPQ is q28 and reaches
+// here as `from`, which is why the trio starts at q29.
+//
+// vuClampMode 4 only, on CHECK_VU_EXACT(mVU.index): both VUs, unlike the macro
+// path's VU0-only gate.
+static __fi void mVUemitAddSub(mV, const a64::VRegister& to, const a64::VRegister& from,
+	bool issub, bool scalar)
+{
+	a64::VRegister a = to, b = from;
+	if (CHECK_VU_EXACT(mVU.index))
+	{
+		pxAssert(to.GetCode() < RQSCRATCH3.GetCode() && from.GetCode() < RQSCRATCH3.GetCode());
+		armEmitVuGuardMask(RQSCRATCH, RQSCRATCH2, to, from, RQSCRATCH3);
+		a = RQSCRATCH;
+		b = RQSCRATCH2;
+	}
+
+	if (scalar)
+	{
+		const a64::SRegister sd(to.GetCode()), sa(a.GetCode()), sb(b.GetCode());
+		if (issub) armAsm->Fsub(sd, sa, sb);
+		else       armAsm->Fadd(sd, sa, sb);
+	}
+	else
+	{
+		if (issub) armAsm->Fsub(to.V4S(), a.V4S(), b.V4S());
+		else       armAsm->Fadd(to.V4S(), a.V4S(), b.V4S());
+	}
+}
+
 static void NEON_ADDPS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
 {
 	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, _X_Y_Z_W);
-	armAsm->Fadd(to.V4S(), to.V4S(), from.V4S());
+	mVUemitAddSub(mVU, to, from, false, false);
 	mVUclamp4(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 }
 
@@ -32,7 +68,7 @@ static void NEON_SUBPS(mV, const a64::VRegister& to, const a64::VRegister& from,
 {
 	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, _X_Y_Z_W);
-	armAsm->Fsub(to.V4S(), to.V4S(), from.V4S());
+	mVUemitAddSub(mVU, to, from, true, false);
 	mVUclamp4(mVU, to, RQSCRATCH3, _X_Y_Z_W);
 }
 
@@ -48,7 +84,7 @@ static void NEON_ADDSS(mV, const a64::VRegister& to, const a64::VRegister& from,
 {
 	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
 	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
-	armAsm->Fadd(a64::SRegister(to.GetCode()), a64::SRegister(to.GetCode()), a64::SRegister(from.GetCode()));
+	mVUemitAddSub(mVU, to, from, false, true);
 	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
 }
 
@@ -56,7 +92,7 @@ static void NEON_SUBSS(mV, const a64::VRegister& to, const a64::VRegister& from,
 {
 	if (!(preClamped & preClampTo))   mVUclamp3(mVU, to, RQSCRATCH3, 0x8);
 	if (!(preClamped & preClampFrom)) mVUclamp3(mVU, from, RQSCRATCH3, 0x8);
-	armAsm->Fsub(a64::SRegister(to.GetCode()), a64::SRegister(to.GetCode()), a64::SRegister(from.GetCode()));
+	mVUemitAddSub(mVU, to, from, true, true);
 	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
 }
 
@@ -79,10 +115,13 @@ static void NEON_ADD2PS(mV, const a64::VRegister& to, const a64::VRegister& from
 // bit-accurate: if the two operands' exponents differ by >= 25, the smaller one is
 // flushed to a signed zero (sign bit kept, exponent+mantissa of lane 0 cleared —
 // the x86 PAND against {0x80000000, ~0, ~0, ~0}) before the scalar add. Unclamped,
-// matching x86. Without the gamefix this is a plain scalar add.
+// matching x86. Without it this is NEON_ADDSS.
 static void NEON_ADD2SS(mV, const a64::VRegister& to, const a64::VRegister& from, int /*preClamped*/ = 0)
 {
-	if (!CHECK_VUADDSUBHACK)
+	// The gamefix flushed whichever operand sat 25 or more exponents below the
+	// other, which is the last row of the adder's own guard mask. With the mask
+	// emitted at every separation it has nothing left to add.
+	if (!CHECK_VUADDSUBHACK || CHECK_VU_EXACT(mVU.index))
 	{
 		NEON_ADDSS(mVU, to, from);
 		return;
