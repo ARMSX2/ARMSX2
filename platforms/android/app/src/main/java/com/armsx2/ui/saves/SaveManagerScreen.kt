@@ -208,7 +208,15 @@ private fun SaveStateCard(
             }
             Spacer(Modifier.height(9.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                if (canSave && save.canUseWithActiveGame && save.slot != null) {
+                // Save and Load have DIFFERENT conditions and must not share one guard.
+                //
+                // Load only needs the state to belong to the game in context — with no VM running
+                // it boots the game and loads into it, which is the whole point of reaching this
+                // screen from the library. Save additionally needs a live VM, because there is
+                // nothing to snapshot otherwise. They were one `if`, so gating Save correctly
+                // also hid Load.
+                val usable = save.canUseWithActiveGame && save.slot != null
+                if (usable && canSave) {
                     OutlinedButton(
                         onClick = onSave,
                         contentPadding = PaddingValues(horizontal = 14.dp),
@@ -217,6 +225,8 @@ private fun SaveStateCard(
                         Text(str("action.save"))
                     }
                     Spacer(Modifier.width(7.dp))
+                }
+                if (usable) {
                     OutlinedButton(
                         onClick = onLoad,
                         contentPadding = PaddingValues(horizontal = 14.dp),
