@@ -650,6 +650,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "games.overflow.englishTitles" to "English titles",
     "games.overflow.gridNames" to "Game names in grid",
     "games.overflow.showHidden" to "Show hidden games",
+    "games.loadState" to "Load save state",
     "games.addToHome" to "Add to home screen",
     "games.addToHome.unsupported" to "This launcher doesn't support adding shortcuts to the home screen.",
     "games.hide" to "Hide from library",

@@ -77,6 +77,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -109,6 +110,8 @@ import coil.request.ImageRequest
 import coil.size.Precision
 import com.armsx2.CustomCovers
 import com.armsx2.GameInfo
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.armsx2.i18n.str
 import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.ui.common.ArmsBackdrop
@@ -140,6 +143,7 @@ fun HomeScreen(
     var overflowMenu by remember { mutableStateOf(false) }
     var showExitConfirm by remember { mutableStateOf(false) }
     var menuGame by remember { mutableStateOf<GameInfo?>(null) }
+    var stateGame by remember { mutableStateOf<GameInfo?>(null) }
     var showClearRecentsConfirm by remember { mutableStateOf(false) }
     // #9 custom library background — inert until the user picks an image.
     LaunchedEffect(Unit) { LibraryBackground.ensureLoaded(); CoverArtStyle.load() }
@@ -704,6 +708,48 @@ fun HomeScreen(
         )
     }
 
+    // Slot picker for "Load save state". A second modal rather than a submenu inside the game
+    // menu: PadModal owns focus, and nesting one inside another leaves the inner rows unreachable
+    // by controller — the same trap that made the game menu itself a PadModal instead of a
+    // ModalBottomSheet.
+    stateGame?.let { game ->
+        val slots by androidx.compose.runtime.produceState(initialValue = emptyList<com.armsx2.SaveSlotLookup.Slot>(), game.serial) {
+            value = withContext(Dispatchers.IO) { com.armsx2.SaveSlotLookup.slotsFor(context, game.serial) }
+        }
+        com.armsx2.ui.common.PadModal(
+            key = "game-state-picker",
+            onDismiss = { stateGame = null },
+            alignment = Alignment.BottomCenter,
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 2.dp,
+            ) {
+                Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
+                    Text(
+                        str("games.loadState"),
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(bottom = 10.dp),
+                    )
+                    slots.forEach { slot ->
+                        GameMenuAction(
+                            "${slot.slot}",
+                            java.text.DateFormat.getDateTimeInstance(
+                                java.text.DateFormat.SHORT, java.text.DateFormat.SHORT
+                            ).format(java.util.Date(slot.modified)),
+                            "game-state.${slot.slot}",
+                        ) {
+                            stateGame = null
+                            com.armsx2.runtime.MainActivityRuntime.launchGameFromSaveSlot(game, slot.slot)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     menuGame?.let { game ->
         // Tri-state on purpose: null while identifying, blank when the image cannot be identified.
         // produceState alone cannot tell those apart — both are null — so an unidentifiable game
@@ -764,6 +810,20 @@ fun HomeScreen(
                 GameMenuAction("▶", str("action.play"), "game-menu.play") {
                     menuGame = null
                     viewModel.launch(game)
+                }
+                // Save states for this game, straight from the library. Only offered when some
+                // exist — a "Load state" row that opens onto nothing is worse than no row.
+                val slots by androidx.compose.runtime.produceState(initialValue = emptyList<com.armsx2.SaveSlotLookup.Slot>(), game.serial) {
+                    value = withContext(Dispatchers.IO) {
+                        com.armsx2.SaveSlotLookup.slotsFor(context, game.serial)
+                    }
+                }
+                if (slots.isNotEmpty())
+                {
+                    GameMenuAction("💾", str("games.loadState"), "game-menu.loadstate") {
+                        menuGame = null
+                        stateGame = game
+                    }
                 }
                 GameMenuAction("⚙", str("action.settings"), "game-menu.settings") {
                     menuGame = null
@@ -1109,9 +1169,14 @@ private fun GameListCard(game: GameInfo, selected: Boolean, onClick: () -> Unit,
         modifier = Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onDetails),
         shape = RoundedCornerShape(15.dp),
         color = MaterialTheme.colorScheme.surface.copy(alpha = LibraryChromePreferences.libraryOpacity.value / 100f),
+        // Same contrast problem as coverFrame: primary-on-themed-background disappears when the
+        // two share a hue. A thicker stroke blended toward inverseSurface keeps it readable on
+        // any theme without abandoning the accent colour entirely.
         border = BorderStroke(
-            if (selected) 2.dp else 1.dp,
-            if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f),
+            if (selected) 3.dp else 1.dp,
+            if (selected)
+                lerp(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.inverseSurface, 0.35f)
+            else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f),
         ),
     ) {
         Row(Modifier.padding(7.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1227,10 +1292,25 @@ private fun coverAspectRatio(): Float = if (CoverArtStyle.use3d.value) 0.646f el
  * cover; do the same here, so 3D gets a selection frame and nothing else.
  */
 @Composable
+/**
+ * The selection frame.
+ *
+ * ★ Two rings, not one. A single ring in [selectedColor] is the theme's primary, and the library
+ * background is themed from the same palette — so on a blue theme the highlight was blue on blue
+ * and effectively invisible when navigating by controller, which is the only way it is navigated.
+ *
+ * The outer ring is drawn in a colour derived from the SURFACE rather than the accent, so it
+ * contrasts with the background whatever hue the user picked; the accent ring sits inside it and
+ * keeps the theme's identity. Whichever of the two the background happens to match, the other one
+ * still reads.
+ */
 private fun Modifier.coverFrame(selected: Boolean, selectedWidth: Dp, selectedColor: Color): Modifier {
     val idle = !CoverArtStyle.use3d.value
+    val contrast = MaterialTheme.colorScheme.inverseSurface
     return when {
-        selected -> this.border(selectedWidth, selectedColor, RoundedCornerShape(12.dp))
+        selected -> this
+            .border(selectedWidth + 2.dp, contrast, RoundedCornerShape(13.dp))
+            .border(selectedWidth, selectedColor, RoundedCornerShape(12.dp))
         idle -> this.border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), RoundedCornerShape(12.dp))
         else -> this
     }

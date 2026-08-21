@@ -1274,8 +1274,20 @@ open class MainActivityRuntime : ComponentActivity() {
         // library. GitHub #374 — "exit, press Load → nothing boots" because currentGame was null.
         val contextGame = mutableStateOf<GameInfo?>(null)
 
-        fun launchCurrentGameFromSaveSlot(slot: Int): Boolean {
+        fun launchCurrentGameFromSaveSlot(slot: Int): Boolean
+        {
             val game = currentGame.value ?: contextGame.value ?: return false
+            return launchGameFromSaveSlot(game, slot)
+        }
+
+        /**
+         * Boot [game] and load save slot [slot] once it is running.
+         *
+         * Split out of launchCurrentGameFromSaveSlot so the library's long-press menu can name the
+         * game explicitly: from the library nothing is booted, so currentGame and contextGame are
+         * both null and the original could never fire there.
+         */
+        fun launchGameFromSaveSlot(game: GameInfo, slot: Int): Boolean {
             val launchPath = if (game.uri.scheme == "file") {
                 game.uri.path ?: game.uri.toString()
             } else {
