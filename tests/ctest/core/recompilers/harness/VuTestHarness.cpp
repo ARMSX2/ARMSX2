@@ -79,6 +79,51 @@ VuTestHarness::VuTestHarness(int vu_index)
 VuTestHarness::~VuTestHarness()
 {
 	gif_test_hooks::g_path1_sink = nullptr;
+	if (clamp_mode_changed_)
+	{
+		auto& rec = EmuConfig.Cpu.Recompiler;
+		if (vu_index_ == 0)
+		{
+			rec.vu0Overflow = prev_overflow_;
+			rec.vu0ExtraOverflow = prev_extra_overflow_;
+			rec.vu0SignOverflow = prev_sign_overflow_;
+			rec.vu0ExactMode = prev_exact_mode_;
+		}
+		else
+		{
+			rec.vu1Overflow = prev_overflow_;
+			rec.vu1ExtraOverflow = prev_extra_overflow_;
+			rec.vu1SignOverflow = prev_sign_overflow_;
+			rec.vu1ExactMode = prev_exact_mode_;
+		}
+	}
+}
+
+void VuTestHarness::SetVuClampMode(int mode)
+{
+	auto& rec = EmuConfig.Cpu.Recompiler;
+	if (!clamp_mode_changed_)
+	{
+		prev_overflow_ = (vu_index_ == 0) ? rec.vu0Overflow : rec.vu1Overflow;
+		prev_extra_overflow_ = (vu_index_ == 0) ? rec.vu0ExtraOverflow : rec.vu1ExtraOverflow;
+		prev_sign_overflow_ = (vu_index_ == 0) ? rec.vu0SignOverflow : rec.vu1SignOverflow;
+		prev_exact_mode_ = (vu_index_ == 0) ? rec.vu0ExactMode : rec.vu1ExactMode;
+		clamp_mode_changed_ = true;
+	}
+	if (vu_index_ == 0)
+	{
+		rec.vu0Overflow = (mode >= 1);
+		rec.vu0ExtraOverflow = (mode >= 2);
+		rec.vu0SignOverflow = (mode >= 3);
+		rec.vu0ExactMode = (mode >= 4);
+	}
+	else
+	{
+		rec.vu1Overflow = (mode >= 1);
+		rec.vu1ExtraOverflow = (mode >= 2);
+		rec.vu1SignOverflow = (mode >= 3);
+		rec.vu1ExactMode = (mode >= 4);
+	}
 }
 
 void VuTestHarness::SetVf(u32 reg_idx, float x, float y, float z, float w)

@@ -98,6 +98,23 @@ struct DigestSet
 	u64 maddClampE;
 	// MSUBA/MSUB, the other half of that pair (added at abi 18).
 	u64 msubClampE;
+	// A multiply and an add under vuClampMode:3, the mode where mVUclamp2's
+	// sign-preserving operand clamp emits, which every probe above misses. 0 in
+	// a pin row = probe absent.
+	u64 signClampMulAdd;
+	// The same pair with a single-lane dest field, which is the only shape that
+	// reads mVUglob.macWeights.bySSShift -- a different row of the table from
+	// the one signClampMulAdd loads.
+	u64 signClampSS;
+	// The same two programs at vuClampMode:4, where the FMAC's exact models are
+	// emitted -- all but one. CompileAndDigest forces vuFlagHack on to match
+	// production and these programs leave the multiply's flags dead, so
+	// mVUwantExactU comes back false and MAC U is in no digest in this table;
+	// mVUwantExactO reads the same liveness and is absent for the same reason.
+	// What these two carry is the operand-clamp move the pair share.
+	// 0 in a pin row = probe absent.
+	u64 exactMulAdd;
+	u64 exactSS;
 };
 
 struct AbiPin
@@ -213,11 +230,17 @@ constexpr AbiPin kPins[] = {
 	// two mVUglob operands; the three ops' zero tests read the operand's
 	// exponent field instead of comparing it against 0.0, which costs a Umov
 	// apiece, and RSQRT's divisor test is on the radicand rather than the
-	// root. divUnit is the only field that moves. The value flush that rides
-	// with the zero tests is not in this row: these probes compile under the
+	// root. Every FMAC changes shape too: the weight table gains a variant
+	// dimension so every weight load's [x25, #imm] moves, the I immediate is
+	// stored whole, and at vuClampMode:4 a flag-writing FMAC emits its MAC U and
+	// MAC O predicates ahead of the operand clamp. The ten fields above compile
+	// below mode 3
+	// with a full dest field, so only divUnit moves among them; the four new
+	// probes pin the two gated modes from here on. The value flush that rides
+	// with the zero tests is in none of these rows: they compile under the
 	// default VU FPCR, which sets FZ, and it is emitted only when that is
 	// clear.
-	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x7cfc9e2b6a3e852d, 0xde92be2516a10fbb, 0x1270eee2b9725c68}},
+	{19, {0xea70f53db2854bca, 0x9157dafe405a3a55, 0xb13784e6118693ae, 0xcedb19689232b21c, 0x65186fa7d80a9143, 0x6f61eab8d8b08e06, 0x75d083cba14f4075, 0x7cfc9e2b6a3e852d, 0xde92be2516a10fbb, 0x1270eee2b9725c68, 0x3e1c524e13373c98, 0x00410ea5fd07a5f9, 0x47a142f4436e0fb7, 0xa3a7fc4ccbf8d11d}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -288,6 +311,32 @@ u64 CompileAndDigestClampE(std::initializer_list<vu::VuOp> pairs)
 	EmuConfig.Cpu.Recompiler.vu0Overflow     = savedOverflow;
 	EmuConfig.Cpu.Recompiler.vu0ExtraOverflow = savedExtra;
 	EmuConfig.Cpu.Recompiler.vu0SignOverflow = savedSign;
+	return digest;
+}
+
+u64 CompileAndDigestSignClamp(std::initializer_list<vu::VuOp> pairs)
+{
+	const bool savedOverflow = EmuConfig.Cpu.Recompiler.vu0Overflow;
+	const bool savedExtra    = EmuConfig.Cpu.Recompiler.vu0ExtraOverflow;
+	const bool savedSign     = EmuConfig.Cpu.Recompiler.vu0SignOverflow;
+	EmuConfig.Cpu.Recompiler.vu0Overflow      = true;
+	EmuConfig.Cpu.Recompiler.vu0ExtraOverflow = true;
+	EmuConfig.Cpu.Recompiler.vu0SignOverflow  = true;
+
+	const u64 digest = CompileAndDigest(pairs);
+
+	EmuConfig.Cpu.Recompiler.vu0Overflow      = savedOverflow;
+	EmuConfig.Cpu.Recompiler.vu0ExtraOverflow = savedExtra;
+	EmuConfig.Cpu.Recompiler.vu0SignOverflow  = savedSign;
+	return digest;
+}
+
+u64 CompileAndDigestExact(std::initializer_list<vu::VuOp> pairs)
+{
+	const bool savedExact = EmuConfig.Cpu.Recompiler.vu0ExactMode;
+	EmuConfig.Cpu.Recompiler.vu0ExactMode = true;
+	const u64 digest = CompileAndDigestSignClamp(pairs);
+	EmuConfig.Cpu.Recompiler.vu0ExactMode = savedExact;
 	return digest;
 }
 
@@ -385,6 +434,24 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		UpperOnly(bits::E | VMSUB_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
 	});
 
+	// The two gated modes, which no probe above reaches: vuClampMode:3, where
+	// the sign-preserving operand clamp emits, and 4, where the FMAC's exact
+	// models do. A multiply and an add, and the second pair with a single-lane
+	// dest field, which is the only shape that reads the bySSShift half of the
+	// weight table.
+	const std::initializer_list<vu::VuOp> mulAddProgram = {
+		UpperOnly(VMUL_U(mask::xyzw, vf::vf3, vf::vf1, vf::vf2)),
+		UpperOnly(bits::E | VADD_U(mask::xyzw, vf::vf4, vf::vf1, vf::vf2)),
+	};
+	const std::initializer_list<vu::VuOp> ssProgram = {
+		UpperOnly(VMULy_U(mask::z, vf::vf3, vf::vf1, vf::vf2)),
+		UpperOnly(bits::E | VSUB_U(mask::z, vf::vf4, vf::vf1, vf::vf2)),
+	};
+	actual.signClampMulAdd = CompileAndDigestSignClamp(mulAddProgram);
+	actual.signClampSS = CompileAndDigestSignClamp(ssProgram);
+	actual.exactMulAdd = CompileAndDigestExact(mulAddProgram);
+	actual.exactSS = CompileAndDigestExact(ssProgram);
+
 	// VU1 counterpart of branchBothArms: both arms reach a program end, which is
 	// the shape the ABI-15 E-bit lookahead forcing touches. Every other probe
 	// here is VU0, so without this one a VU1-only emitter change moves no digest.
@@ -407,6 +474,10 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	ASSERT_NE(actual.divUnit, 0u);
 	ASSERT_NE(actual.maddClampE, 0u);
 	ASSERT_NE(actual.msubClampE, 0u);
+	ASSERT_NE(actual.signClampMulAdd, 0u);
+	ASSERT_NE(actual.signClampSS, 0u);
+	ASSERT_NE(actual.exactMulAdd, 0u);
+	ASSERT_NE(actual.exactSS, 0u);
 
 #if !(defined(__linux__) && !defined(__ANDROID__) && defined(__GLIBCXX__))
 	// The pinned values embed guest-state field offsets baked into the emitted
@@ -441,7 +512,11 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 		<< ", 0x" << actual.vu1BranchToEbit
 		<< ", 0x" << actual.divUnit
 		<< ", 0x" << actual.maddClampE
-		<< ", 0x" << actual.msubClampE << "}";
+		<< ", 0x" << actual.msubClampE
+		<< ", 0x" << actual.signClampMulAdd
+		<< ", 0x" << actual.signClampSS
+		<< ", 0x" << actual.exactMulAdd
+		<< ", 0x" << actual.exactSS << "}";
 
 	const auto explain = [&](const char* which, u64 got, u64 want) {
 		char buf[256];
@@ -492,6 +567,17 @@ TEST(MvuAbiDigest, EmittedShapePinnedPerAbiVersion)
 	{
 		EXPECT_EQ(actual.msubClampE, pin->digests.msubClampE)
 			<< explain("msubClampE", actual.msubClampE, pin->digests.msubClampE);
+	}
+	if (pin->digests.signClampMulAdd != 0) // probes added at abi 19; older rows unpinned
+	{
+		EXPECT_EQ(actual.signClampMulAdd, pin->digests.signClampMulAdd)
+			<< explain("signClampMulAdd", actual.signClampMulAdd, pin->digests.signClampMulAdd);
+		EXPECT_EQ(actual.signClampSS, pin->digests.signClampSS)
+			<< explain("signClampSS", actual.signClampSS, pin->digests.signClampSS);
+		EXPECT_EQ(actual.exactMulAdd, pin->digests.exactMulAdd)
+			<< explain("exactMulAdd", actual.exactMulAdd, pin->digests.exactMulAdd);
+		EXPECT_EQ(actual.exactSS, pin->digests.exactSS)
+			<< explain("exactSS", actual.exactSS, pin->digests.exactSS);
 	}
 	ASSERT_NE(actual.spinLoop, 0u);
 }

@@ -572,7 +572,7 @@ TEST(VuBranchConsole, MaxMiniAreFlagTransparentInBothEngines)
 // underflowed out of normal operands regardless of the flush.
 //
 // Same defect class as VuStickyMicroConsoleConformance's
-// DISABLED_AllMicroStatusMatchesConsole, which this gives a minimal witness
+// AllMicroStatusMatchesConsole, which this gives a minimal witness
 // for: one multiply, four lanes, all four underflowing from normal operands.
 // Enable when the FMAC flag path stops folding flush-to-zero into "the result
 // was exactly zero".

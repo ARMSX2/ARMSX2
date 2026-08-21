@@ -398,6 +398,94 @@ static void setupFtReg(microVU& mVU, a64::VRegister& Ft, a64::VRegister& tempFt,
 }
 
 //------------------------------------------------------------------
+// MAC U and MAC O — the exact models
+//------------------------------------------------------------------
+// armEmitVuMulOverflow, armEmitVuMulExactZero and armEmitVuAddSubOverflow
+// (VuFmacFlags-arm64.h) carry the rules and the COP2 macro path emits the same
+// three. Here is where they fit in a microVU upper op.
+//
+// They read the OPERANDS, so they run before mVUclamp2 -- which at this mode
+// moves an exponent-255 operand a binade down, and is exactly what left MAC O
+// unreachable from the result -- and before the arithmetic, which writes into
+// Fs in place. The predicates are allocator temps rather than the fixed
+// scratch, so they survive the clamps and the arithmetic between here and
+// mVUupdateFlags; q29/q31 are the compute scratch, free at that point in every
+// FMAC body, and the add's third goes in q30.
+//
+// Both sit at vuClampMode 4, on both VUs, unlike the macro path's VU0-only
+// gate. They are not the same size -- U is three instructions and only on a
+// multiply, O is ten on every FMAC -- but U also holds an allocator temp across
+// the arithmetic and puts mVUupdateFlags on a wider weight variant.
+struct mVUfmacUO
+{
+	a64::VRegister underflow = a64::NoVReg;
+	a64::VRegister overflow = a64::NoVReg;
+};
+
+static bool mVUwantExactO(mV)
+{
+	return CHECK_VU_EXACT(mVU.index) && _X_Y_Z_W != 0 && (sFLAG.doFlag || mFLAG.doFlag);
+}
+
+static bool mVUwantExactU(mV)
+{
+	return CHECK_VU_EXACT(mVU.index) && _X_Y_Z_W != 0
+	       && (sFLAG.doFlag || mFLAG.doFlag);
+}
+
+// A multiply's pair. Only a multiply gets U: a sum that underflows keeps its
+// mantissa bits on the console and loses them here, behind a value divergence.
+static mVUfmacUO mVUemitMulUO(mV, const a64::VRegister& a, const a64::VRegister& b)
+{
+	mVUfmacUO uo;
+	if (mVUwantExactO(mVU))
+	{
+		uo.overflow = mVU.regAlloc->allocReg();
+		armEmitVuMulOverflow(uo.overflow, a, b, RQSCRATCH2, RQSCRATCH3);
+	}
+	if (mVUwantExactU(mVU))
+	{
+		uo.underflow = mVU.regAlloc->allocReg();
+		armEmitVuMulExactZero(uo.underflow, a, b, RQSCRATCH3);
+	}
+	return uo;
+}
+
+static mVUfmacUO mVUemitAddSubO(mV, const a64::VRegister& a, const a64::VRegister& b, bool issub)
+{
+	mVUfmacUO uo;
+	if (!mVUwantExactO(mVU))
+		return uo;
+	uo.overflow = mVU.regAlloc->allocReg();
+	armEmitVuAddSubOverflow(uo.overflow, a, b, issub, RQSCRATCH3, RQSCRATCH2, RQSCRATCH);
+	return uo;
+}
+
+// Which models an FMAC family gets, by opType: 0 ADD, 1 SUB, 2 MUL, 5 ADDi.
+// MAX and MIN write no flags. MADD, MSUB, their A-forms and OPMSUB take none of
+// this: their accumulate is handed a product the host has already saturated at
+// FLT_MAX where the console accumulates the unsaturated one, and a NaN product
+// arrives as +FLT_MAX too.
+static mVUfmacUO mVUemitFmacUO(mV, int opType, const a64::VRegister& a, const a64::VRegister& b)
+{
+	if (opType == 2)
+		return mVUemitMulUO(mVU, a, b);
+	if (opType == 0 || opType == 5)
+		return mVUemitAddSubO(mVU, a, b, false);
+	if (opType == 1)
+		return mVUemitAddSubO(mVU, a, b, true);
+	return mVUfmacUO{};
+}
+
+static void mVUclearUO(mV, const mVUfmacUO& uo)
+{
+	if (uo.underflow.IsValid())
+		mVU.regAlloc->clearNeeded(uo.underflow);
+	if (uo.overflow.IsValid())
+		mVU.regAlloc->clearNeeded(uo.overflow);
+}
+
+//------------------------------------------------------------------
 // mVU_FMACa — Normal FMAC Opcodes (ADD/SUB/MUL/MAX/MIN and ACC variants)
 //------------------------------------------------------------------
 
@@ -429,6 +517,12 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 			Fs = mVU.regAlloc->allocReg(_Fs_, _Fd_, _X_Y_Z_W);
 		}
 
+		// Before the clamps and before the arithmetic overwrites Fs. The AX-14
+		// fold cannot be live here: it needs !willClamp, which the models' own
+		// mode rules out.
+		const mVUfmacUO uo = mVUemitFmacUO(mVU, opType, Fs, Ft);
+		pxAssert(!uo.overflow.IsValid() || bcLane < 0);
+
 		if ((clampType & cFt) && bcLane < 0) mVUclamp2(mVU, Ft, a64::NoVReg, _X_Y_Z_W);
 		if (clampType & cFs)                 mVUclamp2(mVU, Fs, a64::NoVReg, _X_Y_Z_W);
 
@@ -446,16 +540,17 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 				armAsm->Ins(ACC.V4S(), 0, Fs.V4S(), 0); // MOVSS equivalent
 			else
 				mVUmergeRegs(ACC, Fs, _X_Y_Z_W);
-			mVUupdateFlags(mVU, ACC, Fs, tempFt);
+			mVUupdateFlags(mVU, ACC, Fs, tempFt, true, uo.underflow, uo.overflow);
 			if (_XYZW_SS2)
 				shuffleSSfrom0(ACC, offsetReg); // Rotate lane 0 back to original position
 			mVU.regAlloc->clearNeeded(ACC);
 		}
 		else if (opType < 3 || opType == 5) // Not Min/Max or is ADDi (opType 5)
 		{
-			mVUupdateFlags(mVU, Fs, tempFt);
+			mVUupdateFlags(mVU, Fs, tempFt, a64::NoVReg, true, uo.underflow, uo.overflow);
 		}
 
+		mVUclearUO(mVU, uo);
 		mVU.regAlloc->clearNeeded(Fs); // Always clear written reg first
 		mVU.regAlloc->clearNeeded(Ft);
 		mVU.profiler.EmitOp(opEnum);
@@ -724,10 +819,20 @@ mVUop(mVU_OPMULA)
 		const a64::VRegister& Ft = mVU.regAlloc->allocReg(_Ft_, 0, 0xf);
 		mVUopRotateFt(Ft);
 
+		// An ordinary multiply, so it carries the multiply's U and O, taken from
+		// the rotated multiplicands. The rotation to the dest lane comes after,
+		// so the predicates take it too.
+		const mVUfmacUO uo = mVUemitMulUO(mVU, ACC, Ft);
+
 		NEON_MULPS(mVU, ACC, Ft);
 		mVU.regAlloc->clearNeeded(Ft);
 		mVUopRotateToDestLane(mVU, ACC);
-		mVUupdateFlags(mVU, ACC);
+		if (uo.overflow.IsValid())
+			mVUopRotateToDestLane(mVU, uo.overflow);
+		if (uo.underflow.IsValid())
+			mVUopRotateToDestLane(mVU, uo.underflow);
+		mVUupdateFlags(mVU, ACC, a64::NoVReg, a64::NoVReg, true, uo.underflow, uo.overflow);
+		mVUclearUO(mVU, uo);
 		mVU.regAlloc->clearNeeded(ACC);
 		mVU.profiler.EmitOp(opOPMULA);
 	}

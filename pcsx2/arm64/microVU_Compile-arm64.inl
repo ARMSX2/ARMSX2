@@ -682,8 +682,16 @@ void doIbit(mV)
 		}
 		else
 		{
+			// Baking the immediate in clamped puts an exponent-255 one
+			// permanently out of reach of the exact MAC U and O models, which
+			// read the operand before the clamp. Every FMAC that consumes I
+			// re-clamps it at the use site anyway (setupFtReg's slot is bound to
+			// VF0, which checkVFClamp does not exempt), so at those models' mode
+			// the constant goes in whole. VMAXi and VMINIi compare the raw bits,
+			// as the interpreter does with the unclamped immediate.
 			u32 tempI = curI;
-			if (CHECK_VU_OVERFLOW(mVU.index) && ((curI & 0x7fffffff) >= 0x7f800000))
+			if (CHECK_VU_OVERFLOW(mVU.index) && !CHECK_VU_SIGN_OVERFLOW(mVU.index)
+				&& ((curI & 0x7fffffff) >= 0x7f800000))
 				tempI = (0x80000000 & curI) | 0x7f7fffff;
 
 			armAsm->Mov(gprT1, tempI);

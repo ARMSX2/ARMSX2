@@ -22,6 +22,7 @@
 #include "common/Perf.h"
 
 #include "microVU_Misc-arm64.h"
+#include "VuFmacFlags-arm64.h"
 #include "MvuObservedEntries.h"
 #include "microVU_Persist-arm64.h"
 
@@ -105,6 +106,11 @@
 //       signbit/maxvals pair of mVUglob loads; all three ops read the
 //       operand's exponent field instead of Fcmp against 0.0; and the
 //       denormal flush is emitted only where the unit's own FPCR clears FZ.
+//       Every FMAC changes shape too: at vuClampMode 4 a flag-writing multiply
+//       emits its MAC U predicate ahead of the operand clamp and every
+//       flag-writing FMAC its MAC O the same way, mVUglob.macWeights gains a
+//       variant dimension so every weight load's [x25, #imm] moves, and the I
+//       immediate is stored whole rather than pre-clamped.
 static constexpr u32 kMvuCompilerAbiVersion = 19;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
