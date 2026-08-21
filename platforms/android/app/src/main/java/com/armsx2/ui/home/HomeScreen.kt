@@ -183,7 +183,26 @@ fun HomeScreen(
                 // finally get an animated, recolourable backdrop instead of the old fixed GIF. The
                 // bundled still is the cheap floor shown during GL startup (and, once the wave is up,
                 // sits hidden behind it). Custom backgrounds below override all of this.
-                if (LibraryBackground.animated2D.value) {
+                if (LibraryBackground.flurry.value) {
+                    // Flurry, in the same shell as the XMB wave: if GL cannot come up we fall back
+                    // to the 2D backdrop rather than leaving a hole, exactly as XmbGlView does.
+                    var flurryGl by remember { mutableStateOf<Boolean?>(null) }
+                    if (flurryGl == false) {
+                        LibraryWaveBackground(Modifier.fillMaxSize())
+                    } else {
+                        AndroidView(
+                            factory = {
+                                FlurryGlView(it, LibraryBackground.flurryPreset.value).apply {
+                                    onGlStatus = { ok -> flurryGl = ok }
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                            // Stops the render thread. Without it the EGL thread outlives the
+                            // composition and keeps drawing to a dead surface.
+                            onRelease = { it.stop() },
+                        )
+                    }
+                } else if (LibraryBackground.animated2D.value) {
                     // User opted into the lightweight 2D animated wave everywhere (#Luminz) — the same
                     // backdrop GL-fail devices get; skip the GLES3 XmbGlView entirely.
                     LibraryWaveBackground(Modifier.fillMaxSize())

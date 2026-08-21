@@ -17,6 +17,8 @@ import com.armsx2.runtime.MainActivityRuntime
 object LibraryBackground {
     private const val PREF = "library.background.uri"
     private const val PREF_ANIM = "library.background.animated2d"
+    private const val PREF_FLURRY = "library.background.flurry"
+    private const val PREF_FLURRY_PRESET = "library.background.flurry.preset"
     val uri = mutableStateOf<String?>(null)
 
     /**
@@ -27,6 +29,19 @@ object LibraryBackground {
      * the devices that already fall back to the 2D wave.
      */
     val animated2D = mutableStateOf(false)
+
+    /**
+     * Calum Robinson's 2002 Flurry screensaver as the live backdrop, ported from ARMSX3.
+     *
+     * Off by default, and deliberately so: it is a particle simulation rather than a still, and
+     * this library already shipped a looping video once and lost it in 2.5.9 when the continuous
+     * decode turned out to cost real performance. Opt-in for the same reason.
+     */
+    val flurry = mutableStateOf(false)
+
+    /** Preset for the above. 99 = pick one at random each time the library opens. */
+    val flurryPreset = mutableStateOf(99)
+
     private var loaded = false
 
     fun ensureLoaded() {
@@ -34,6 +49,18 @@ object LibraryBackground {
         loaded = true
         uri.value = runCatching { MainActivityRuntime.prefs.getString(PREF, null) }.getOrNull()
         animated2D.value = runCatching { MainActivityRuntime.prefs.getBoolean(PREF_ANIM, false) }.getOrDefault(false)
+        flurry.value = runCatching { MainActivityRuntime.prefs.getBoolean(PREF_FLURRY, false) }.getOrDefault(false)
+        flurryPreset.value = runCatching { MainActivityRuntime.prefs.getInt(PREF_FLURRY_PRESET, 99) }.getOrDefault(99)
+    }
+
+    fun setFlurry(on: Boolean) {
+        flurry.value = on
+        runCatching { MainActivityRuntime.prefs.edit().putBoolean(PREF_FLURRY, on).apply() }
+    }
+
+    fun setFlurryPreset(preset: Int) {
+        flurryPreset.value = preset
+        runCatching { MainActivityRuntime.prefs.edit().putInt(PREF_FLURRY_PRESET, preset).apply() }
     }
 
     fun setAnimated2D(on: Boolean) {

@@ -216,6 +216,38 @@ fun AppTab() {
                 description = str("app.bg.simple.desc"),
                 onChange = { com.armsx2.ui.home.LibraryBackground.setAnimated2D(it) },
             )
+            // Flurry: Calum Robinson's 2002 screensaver, ported from ARMSX3 and offered as the
+            // backdrop.
+            //
+            // Off by default and said plainly in the description, because it is a live particle
+            // simulation rather than a still: this library shipped a looping video once and lost
+            // it in 2.5.9 when the continuous decode turned out to cost real performance. Opt-in
+            // for the same reason.
+            ToggleRow(
+                label = str("app.bg.flurry"),
+                value = com.armsx2.ui.home.LibraryBackground.flurry.value,
+                description = str("app.bg.flurry.desc"),
+                onChange = { com.armsx2.ui.home.LibraryBackground.setFlurry(it) },
+            )
+            if (com.armsx2.ui.home.LibraryBackground.flurry.value) {
+                // Values are Flurry's own preset enum; -1 is "insane" upstream and 99 is this
+                // port's "pick one each time", so the list is not an index range.
+                val presetValues = listOf(99, 0, 1, 2, 3, 4, 5, -1)
+                SegmentedGridRow(
+                    label = str("app.bg.flurry.preset"),
+                    options = listOf(
+                        str("app.bg.flurry.random"), "Water", "Fire", "Psychedelic",
+                        "RGB", "Binary", "Classic", "Insane",
+                    ),
+                    selectedIndex = presetValues
+                        .indexOf(com.armsx2.ui.home.LibraryBackground.flurryPreset.value)
+                        .coerceAtLeast(0),
+                    columns = 4,
+                    onChange = {
+                        com.armsx2.ui.home.LibraryBackground.setFlurryPreset(presetValues[it])
+                    },
+                )
+            }
             // Colour of the BAR itself (the rounded header pill), as opposed to the animated
             // backdrop the rest of this section controls. Requested because the background picker
             // is labelled "Library Bar Color" but recolours the background — so there was no way to

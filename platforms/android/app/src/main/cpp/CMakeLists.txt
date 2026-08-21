@@ -67,6 +67,41 @@ add_subdirectory("${ARMSX2_ROOT}/pcsx2"    "${CMAKE_BINARY_DIR}/pcsx2")
 # Android-only 3rdparty: libadrenotools (custom Vulkan ICD loading for Adreno).
 # Provides the static `adrenotools` lib linked into emucore plus runtime hook
 # .so's shipped in the apk's lib/<abi>/.
+
+# ---------------------------------------------------------------------------
+# Flurry -> libflurry.so
+#
+# Calum Robinson's Flurry screensaver (2002), offered as a live library background. Its own
+# target rather than folded into the core for two reasons: it is BSD-3-clause next to GPL code
+# and that boundary should be visible, and it is plain C from 2002 that wants none of the C++20
+# the emulator is built with.
+#
+# gl_compat.c answers the GL 1.x calls the sources make — client-side vertex arrays, a
+# fixed-function ortho and GL_QUADS — with a GLES2 shader, so the renderer itself stays
+# unmodified. See its header for what is and is not emulated.
+#
+# Ported from ARMSX3, where it already ships. Unconditional: it is ~100 KB of C with no
+# dependency beyond GLES2, and the feature is off by default at the UI level.
+# ---------------------------------------------------------------------------
+add_library(flurry SHARED
+    flurry/flurry_jni.c
+    flurry/gl_compat.c
+    flurry/flurry.c
+    flurry/flurry-smoke.c
+    flurry/flurry-spark.c
+    flurry/flurry-star.c
+    flurry/flurry-texture.c
+)
+
+target_include_directories(flurry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/flurry)
+set_target_properties(flurry PROPERTIES C_STANDARD 99)
+
+# -ffast-math: a particle simulation judged by eye, running thousands of sqrt per frame.
+# Upstream shipped hand-written frsqrte paths for exactly this reason.
+target_compile_options(flurry PRIVATE -O2 -ffast-math -Wall -Wno-unused-parameter)
+target_link_libraries(flurry log GLESv2 m)
+
+
 add_subdirectory(3rdparty/adrenotools)
 
 # librashader: RetroArch (.slangp) shader chains for the GS post-process path, for BOTH
@@ -168,6 +203,16 @@ target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
 	android
 	log
 )
+
+# ★ AFTER the emucore target exists — add_dependencies needs a target that has already been
+# created, and stating this next to the flurry target itself (which is defined earlier in this
+# file) fails configure outright with "Cannot add target-level dependencies to non-existent
+# target".
+#
+# libflurry.so is loaded by System.loadLibrary from Kotlin and never linked, so nothing else in
+# this build would make it. A missing .so stays invisible until someone switches the background
+# on and the view throws UnsatisfiedLinkError.
+add_dependencies(${ARMSX2_EMUCORE_LIBRARY_NAME} flurry)
 
 target_include_directories(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
 	"${ARMSX2_ROOT}"
