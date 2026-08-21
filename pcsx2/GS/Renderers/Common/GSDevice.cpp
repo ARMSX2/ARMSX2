@@ -1332,7 +1332,7 @@ void GSDevice::FXAA()
 	}
 }
 
-bool GSDevice::ApplyShaderChain(const GSVector2i& output_size)
+bool GSDevice::ApplyShaderChain(const GSVector2i& output_size, const GSVector2i& source_size)
 {
 	FlushDeferredDraws();
 	// Guarded here rather than in the backends so a device that never overrides
@@ -1352,16 +1352,38 @@ bool GSDevice::ApplyShaderChain(const GSVector2i& output_size)
 	if (output_size.x <= 0 || output_size.y <= 0)
 		return false;
 
-	// Same ping-pong as FXAA: the chain reads m_current, so it can't also write it. Unlike FXAA
-	// the target is sized to the caller's on-screen rect rather than to m_current — see the
-	// header for why that has to be the aspect-corrected rect and not the window.
-	GSTexture*& dTex = (m_current == m_target_tmp) ? m_merge : m_target_tmp;
+	// Feed the chain the NATIVE-resolution frame, not the internally-upscaled one. A CRT-type
+	// chain (crt-royale &c.) derives its scanline COUNT and every source-relative intermediate
+	// pass' size from the source texture: at 4x internal res the upscaled frame has native*4
+	// lines subsampled into the display viewport (a non-integer scanline:pixel ratio that beats
+	// into horizontal moire), and each such pass runs at ~16x the pixel count for no visual gain.
+	// Downscaling to native first is what RetroArch does implicitly by feeding a console's own
+	// output. Bilinear is fine here — the chain resamples anyway, and it matches the presenter's
+	// own filter. Skipped at 1x (source already native) or when the caller passes {0,0}.
+	GSTexture* sTex = m_current;
+	if (source_size.x > 0 && source_size.y > 0 &&
+		(sTex->GetWidth() > source_size.x || sTex->GetHeight() > source_size.y))
+	{
+		GSTexture*& nTex = (m_current == m_target_tmp) ? m_merge : m_target_tmp;
+		if (ResizeRenderTarget(&nTex, source_size.x, source_size.y, false, false))
+		{
+			StretchRect(sTex, nTex, ShaderConvert::COPY, Filter::Biln);
+			sTex = nTex;
+		}
+	}
+
+	// Same ping-pong as FXAA: the chain reads its source, so it can't also write it — key the
+	// target off sTex (the possibly-downscaled source) rather than m_current, which also means
+	// m_current is left untouched until the chain actually succeeds. Unlike FXAA the target is
+	// sized to the caller's on-screen rect, not to the source — see the header for why that has
+	// to be the aspect-corrected rect and not the window.
+	GSTexture*& dTex = (sTex == m_target_tmp) ? m_merge : m_target_tmp;
 	if (!ResizeRenderTarget(&dTex, output_size.x, output_size.y, false, false))
 		return false;
 
 	// Only swap on success — a failed chain (bad preset, unsupported backend) must leave
 	// m_current pointing at the unshaded frame rather than at a target nothing rendered to.
-	if (!DoApplyShaderChain(m_current, dTex))
+	if (!DoApplyShaderChain(sTex, dTex))
 		return false;
 
 	m_shader_chain_loaded = true;

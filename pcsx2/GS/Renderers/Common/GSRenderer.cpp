@@ -321,6 +321,12 @@ bool GSRenderer::Merge(int field)
 	// pattern reported on an AYN Thor. RetroArch itself renders the chain into the viewport
 	// for exactly this reason.
 	//
+	// The SOURCE, conversely, must be the NATIVE PS2 resolution, so `resolution` is handed to
+	// ApplyShaderChain to downscale to. A CRT chain reads its scanline count and intermediate
+	// pass sizes off the source: fed the internally-upscaled frame it draws native*upscale
+	// scanlines (horizontal moire) and pays ~upscale^2 the shader fill at 4x+. Native output +
+	// native source is exactly the signal RetroArch feeds these presets.
+	//
 	// The target MUST be the aspect-corrected draw rect, not the raw window. librashader maps
 	// the whole input to the whole viewport, so a 16:9 target for a 4:3 frame stretches the
 	// picture — and CalculateDrawDstRect derives its rect from the aspect-ratio SETTING, not
@@ -341,7 +347,7 @@ bool GSRenderer::Merge(int field)
 			const GSVector2i on_screen(
 				static_cast<int>(std::floor((pre_dst.z - pre_dst.x) + 0.5f)),
 				static_cast<int>(std::floor((pre_dst.w - pre_dst.y) + 0.5f)));
-			g_gs_device->ApplyShaderChain(on_screen);
+			g_gs_device->ApplyShaderChain(on_screen, resolution);
 		}
 	}
 

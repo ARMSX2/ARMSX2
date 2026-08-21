@@ -2020,9 +2020,17 @@ public:
 	/// density instead of being generated at internal res and smeared by the presenter's
 	/// upscale. Pass the aspect-corrected draw rect, NOT the raw window: librashader maps the
 	/// whole input to the whole viewport, so a mismatched aspect stretches the picture.
+	///
+	/// `source_size` is the NATIVE PS2 resolution (pre-upscale). The chain's source texture is
+	/// downscaled to it first: a CRT-type chain keys its scanline COUNT and every intermediate
+	/// pass' size off the source, so feeding the internally-upscaled frame draws native*upscale
+	/// scanlines (moire) and costs ~upscale^2 the shader fill. Downscaling makes the chain
+	/// behave like RetroArch feeding a console's native output. Pass {0,0} to skip the
+	/// downscale (feed the frame as-is); at 1x it is a no-op since the source is already native.
+	///
 	/// Returns true if the chain ran and m_current now points at the shaded target. The chain
 	/// itself lives in DoApplyShaderChain, which only librashader-capable backends override.
-	bool ApplyShaderChain(const GSVector2i& output_size);
+	bool ApplyShaderChain(const GSVector2i& output_size, const GSVector2i& source_size);
 	void Resize(int width, int height);
 
 	void CAS(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect, bool sharpen_only);
