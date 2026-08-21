@@ -871,13 +871,13 @@ TEST(EeVu0Cop2Macro, VlqiAcrossVu0Vu1AccessBoundaryLoadsVu1Vf)
 //  COP2 macro-mode VOPMSUB / VOPMULA — outer-product cross math
 // =========================================================================
 //
-// PS2 OPMSUB:  VF[fd].xyz = ACC.xyz - VF[fs].yzx * VF[ft].zxy   (W untouched)
-// PS2 OPMULA:  ACC.xyz    =           VF[fs].yzx * VF[ft].zxy   (ACC.w untouched)
+// PS2 OPMSUB:  VF[fd].<dest> = ACC - VF[fs].yzxw * VF[ft].zxy0
+// PS2 OPMULA:  ACC.<dest>    =       VF[fs].yzxw * VF[ft].zxy0
 //
-// Hardware always writes XYZ lanes only — the W lane of the destination is
-// preserved regardless of what the instruction's dest mask encodes. The
-// PS2 SDK disassembler hard-codes ".xyz" for these ops; the interpreter
-// (VUops.cpp _vuOPMSUB / _vuOPMULA) only writes XYZ.
+// The two tests here are at the dest field VU assembly emits, xyz, where the W
+// lane of the destination is untouched because the field says so. What the
+// field does at every other setting, and what lane w's product is, are
+// OpOpsAreFourLaneFmacs and OpOpsClearTheMacLanesOutsideTheDestField below.
 
 TEST(EeVu0Cop2Macro, VopmsubXyzCrossProductMatchesInterp)
 {
@@ -903,33 +903,6 @@ TEST(EeVu0Cop2Macro, VopmsubXyzCrossProductMatchesInterp)
 	EXPECT_FLOAT_EQ(h.GetVu0VfJit(3, 'x'), 86.0f);
 	EXPECT_FLOAT_EQ(h.GetVu0VfJit(3, 'y'), 185.0f);
 	EXPECT_FLOAT_EQ(h.GetVu0VfJit(3, 'z'), 294.0f);
-	EXPECT_EQ(h.GetVu0VfBitsJit(3, 'w'), 0xCAFEBABEu);
-	for (char l : {'x','y','z','w'})
-		EXPECT_EQ(h.GetVu0VfBitsJit(3, l), h.GetVu0VfBitsInterp(3, l));
-}
-
-TEST(EeVu0Cop2Macro, VopmsubDestXyzwStillPreservesW)
-{
-	// Some games / hand-written code emit VOPMSUB with dest=XYZW even though
-	// the assembler convention is XYZ. PS2 hardware ignores the W bit of the
-	// dest field for OPMSUB — only XYZ are ever written. The interpreter
-	// matches this (VUops.cpp:866-868 only writes i.x/i.y/i.z, never i.w).
-	// JIT must too.
-	EeRecTestHarness h;
-	h.EnableVu0Capture();
-	h.EnableCop1();
-	h.SeedVu0VfBits(3, 0x11111111u, 0x22222222u, 0x33333333u, 0xCAFEBABEu);
-	h.SeedVu0Vf(1, 1.0f, 2.0f, 3.0f, 4.0f);
-	h.SeedVu0Vf(2, 5.0f, 6.0f, 7.0f, 8.0f);
-	h.SeedVu0Acc(100.0f, 200.0f, 300.0f, 400.0f);
-
-	h.LoadProgram({VOPMSUB_C2(/*mask*/0xF, /*fd*/3, /*fs*/1, /*ft*/2)});
-	h.Run();
-
-	EXPECT_FLOAT_EQ(h.GetVu0VfJit(3, 'x'), 86.0f);
-	EXPECT_FLOAT_EQ(h.GetVu0VfJit(3, 'y'), 185.0f);
-	EXPECT_FLOAT_EQ(h.GetVu0VfJit(3, 'z'), 294.0f);
-	// W must be preserved even though mask said XYZW.
 	EXPECT_EQ(h.GetVu0VfBitsJit(3, 'w'), 0xCAFEBABEu);
 	for (char l : {'x','y','z','w'})
 		EXPECT_EQ(h.GetVu0VfBitsJit(3, l), h.GetVu0VfBitsInterp(3, l));
@@ -961,29 +934,11 @@ TEST(EeVu0Cop2Macro, VopmulaXyzWritesAccLeavesAccWUntouched)
 		EXPECT_EQ(h.GetVu0AccBitsJit(l), h.GetVu0AccBitsInterp(l));
 }
 
-TEST(EeVu0Cop2Macro, VopmulaDestXyzwStillPreservesAccW)
-{
-	EeRecTestHarness h;
-	h.EnableVu0Capture();
-	h.EnableCop1();
-	h.SeedVu0Vf(1, 1.0f, 2.0f, 3.0f, 4.0f);
-	h.SeedVu0Vf(2, 5.0f, 6.0f, 7.0f, 8.0f);
-	h.SeedVu0AccBits(0x10000000u, 0x20000000u, 0x30000000u, 0xCAFEBABEu);
-
-	h.LoadProgram({VOPMULA_C2(/*mask*/0xF, /*fs*/1, /*ft*/2)});
-	h.Run();
-
-	EXPECT_EQ(h.GetVu0AccBitsJit('w'), 0xCAFEBABEu);
-	for (char l : {'x','y','z','w'})
-		EXPECT_EQ(h.GetVu0AccBitsJit(l), h.GetVu0AccBitsInterp(l));
-}
-
-// The OP ops are four-lane FMACs, and every engine here models them as three.
+// The OP ops are four-lane FMACs.
 //
-// Measured on an SCPH-90000 2026-08-21, four runs (captures/vuopw has the probe
-// sources, the outputs and the row-by-row reading). VOPMULA and VOPMSUB honour
-// the dest field for the value AND for the MAC flag, they clear the lanes
-// outside it like every other FMAC, and their fourth lane is real:
+// Measured on an SCPH-90000, four runs. VOPMULA and VOPMSUB honour the dest
+// field for the value and for the MAC flag, they clear the lanes outside it
+// like every other FMAC, and their fourth lane is real:
 //
 //     fsRot = (fs.y, fs.z, fs.x, fs.w)
 //     ftRot = (ft.z, ft.x, ft.y, +0.0)
@@ -994,21 +949,8 @@ TEST(EeVu0Cop2Macro, VopmulaDestXyzwStillPreservesAccW)
 // alone: moving ft.w's sign moves nothing, and both negative is still negative,
 // which is not an xor.
 //
-// What the tree does instead. Both recompilers force the dest field to 0xE and
-// build ftRot's fourth lane out of ft.y, and _vuOPMULA / _vuOPMSUB (VUops.cpp)
-// write x, y and z unconditionally and never clear the MAC lane they skipped.
-// At the field VU assembly emits, xyz, the recompilers are right and only the
-// interpreter's missing clear shows; at any other field all three are wrong in
-// the value as well.
-//
-// The rows below are the console's, and each engine's failures are named in the
-// expectation strings rather than allowed for.
-// TRIPWIRE -- the OP ops ignore the dest field and drop lane w in every engine.
-// The arm64 macro fix is two instructions (fsRot lane 3 is fs.x where it should
-// be fs.w, ftRot lane 3 is ft.y where it should be zero) plus dropping the two
-// forced 0xE; microVU and the interpreter are their own jobs. Enable when they
-// land.
-TEST(EeVu0Cop2Macro, DISABLED_OpOpsAreFourLaneFmacs)
+// The rows below are the console's.
+TEST(EeVu0Cop2Macro, OpOpsAreFourLaneFmacs)
 {
 	// fs = 2,3,5,7  ft = 11,13,17,19  ACC = 100,200,300,400  fd = sentinels.
 	constexpr u32 kFs[4]  = {0x40000000u, 0x40400000u, 0x40A00000u, 0x40E00000u};
@@ -1066,12 +1008,8 @@ TEST(EeVu0Cop2Macro, DISABLED_OpOpsAreFourLaneFmacs)
 
 // The half of the same measurement that is about the flag register: a masked OP
 // op clears the MAC lanes outside its field, exactly like any other FMAC. The
-// seed puts S in all four lanes so a cleared lane is visible; the console's
-// answers are captures/vuopmask's.
-// TRIPWIRE -- see DISABLED_OpOpsAreFourLaneFmacs above. The recompilers pass the
-// xyz row already; the interpreter leaves the seed's W bit standing on all of
-// them, and neither engine reaches the others.
-TEST(EeVu0Cop2Macro, DISABLED_OpOpsClearTheMacLanesOutsideTheDestField)
+// seed puts S in all four lanes so a cleared lane is visible.
+TEST(EeVu0Cop2Macro, OpOpsClearTheMacLanesOutsideTheDestField)
 {
 	constexpr u32 kOne = 0x3F800000u, kMinusOne = 0xBF800000u;
 	struct Row { const char* what; bool sub; u32 mask; u32 mac; };

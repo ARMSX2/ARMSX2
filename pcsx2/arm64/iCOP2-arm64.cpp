@@ -269,8 +269,8 @@ static void cop2LoadVFViaCache(const a64::VRegister& qreg, int vf)
 
 // Apply dest mask: merge 'result' in RQSCRATCH into VU0.VF[fdReg], writing
 // only the lanes selected by `xyzw`. The variants without an explicit `xyzw`
-// read it from the instruction (_XYZW_cop2); VOPMSUB / VOPMULA force xyzw=0xE
-// since PS2 hardware always writes XYZ regardless of the encoded dest field.
+// read it from the instruction (_XYZW_cop2); the explicit ones are for the
+// bodies that compute into a register other than RQSCRATCH.
 // Map a single-bit dest mask to its vector lane / VF.UL index:
 // bit3=x→lane0, bit2=y→lane1, bit1=z→lane2, bit0=w→lane3.
 static __fi int cop2SingleLaneFromMask(int xyzw)
@@ -2256,37 +2256,46 @@ COP2_MADD_Q(MSUBq, cop2EmitSub)
 COP2_MADD_I(MADDi, cop2EmitAdd)
 COP2_MADD_I(MSUBi, cop2EmitSub)
 
-// OPMSUB: VF[fd].xyz = ACC.xyz - VF[fs].yzx * VF[ft].zxy (cross product subtract)
-// PS2 always writes XYZ only, ignoring the instruction's dest field.
+// The OP ops' rotated operands, into the file's q28/q27 scratch pair:
+//
+//     fsRot = (fs.y, fs.z, fs.x, fs.w)
+//     ftRot = (ft.z, ft.x, ft.y, +0.0)
+//
+// Lane w's second multiplicand is a hard +0, not ft.w, so the product there is
+// a zero carrying fs.w's sign and nothing of ft.
+static void cop2EmitOpRotate(const a64::VRegister& fs, const a64::VRegister& ft,
+	const a64::VRegister& fsRot, const a64::VRegister& ftRot)
+{
+	armAsm->Ext(fsRot.V16B(), fs.V16B(), fs.V16B(), 4);  // [y,z,w,x]
+	armAsm->Ins(fsRot.V4S(), 2, fs.V4S(), 0);            // [y,z,x,x]
+	armAsm->Ins(fsRot.V4S(), 3, fs.V4S(), 3);            // [y,z,x,w]
+
+	armAsm->Ext(ftRot.V16B(), ft.V16B(), ft.V16B(), 8);  // [z,w,x,y]
+	armAsm->Ins(ftRot.V4S(), 1, ft.V4S(), 0);            // [z,x,x,y]
+	armAsm->Ins(ftRot.V4S(), 2, ft.V4S(), 1);            // [z,x,y,y]
+	armAsm->Ins(ftRot.V4S(), 3, a64::wzr);               // [z,x,y,0]
+}
+
+// OPMSUB: VF[fd].<dest> = ACC - fs.yzxw * ft.zxy0
 void recCOP2_VOPMSUB()
 {
-	if (_Fd_cop2 == 0) return;
+	if (_Fd_cop2 == 0 && _XYZW_cop2 == 0) return;
 	setupMacroOp_arm64(0x110);
 
 	const a64::VRegister fs = cop2GetVF(_Fs_cop2);
 	const a64::VRegister ft = cop2GetVF(_Ft_cop2);
 	const a64::VRegister acc = cop2GetACC();
 
-	// Build fs.yzx: EXT #4 gives [y,z,w,x], fix lane 2 (w→x)
-	a64::VRegister fsRot = a64::VRegister(28, 128);
-	armAsm->Ext(fsRot.V16B(), fs.V16B(), fs.V16B(), 4);  // [y,z,w,x]
-	armAsm->Ins(fsRot.V4S(), 2, fs.V4S(), 0);            // [y,z,x,x]
+	const a64::VRegister fsRot = a64::VRegister(28, 128);
+	const a64::VRegister ftRot = a64::VRegister(27, 128);
+	cop2EmitOpRotate(fs, ft, fsRot, ftRot);
 
-	// Build ft.zxy
-	a64::VRegister ftRot = a64::VRegister(27, 128);
-	armAsm->Ext(ftRot.V16B(), ft.V16B(), ft.V16B(), 8);  // [z,w,x,y]
-	armAsm->Ins(ftRot.V4S(), 1, ft.V4S(), 0);            // [z,x,x,y]
-	armAsm->Ins(ftRot.V4S(), 2, ft.V4S(), 1);            // [z,x,y,y]
-
-	// ACC - fs.yzx * ft.zxy (separate FMUL+FSUB for PS2 rounding)
+	// Separate FMUL+FSUB for PS2 rounding.
 	armAsm->Fmul(RQSCRATCH.V4S(), fsRot.V4S(), ftRot.V4S());
 	cop2EmitSub(RQSCRATCH, acc, RQSCRATCH);
 	cop2ClampResult();
-	// OPMSUB always updates XYZ flags only (0xE), W MAC flag cleared.
-	// PS2 hardware ignores the W bit of the instruction's dest field —
-	// only XYZ are ever written. Force the mask to XYZ regardless of encoding.
-	cop2EmitFlagUpdate(0xE);
-	cop2ApplyDestMaskExplicit(_Fd_cop2, _XYZW_cop2 & 0xE);
+	cop2EmitFlagUpdate(_XYZW_cop2);
+	cop2ApplyDestMask(_Fd_cop2);
 
 	endMacroOp_arm64(0x110);
 }
@@ -2507,34 +2516,24 @@ COP2_MADDA_Q(MSUBAq, cop2EmitSub)
 COP2_MADDA_I(MADDAi, cop2EmitAdd)
 COP2_MADDA_I(MSUBAi, cop2EmitSub)
 
-// OPMULA: ACC.xyz = VF[fs].yzx * VF[ft].zxy (cross product to accumulator)
-// PS2 always writes XYZ only, ignoring the instruction's dest field.
+// OPMULA: ACC.<dest> = fs.yzxw * ft.zxy0
 void recCOP2_VOPMULA()
 {
 	setupMacroOp_arm64(0x110);
 	const a64::VRegister fs = cop2GetVF(_Fs_cop2);
 	const a64::VRegister ft = cop2GetVF(_Ft_cop2);
 
-	// Build fs.yzx: EXT #4 gives [y,z,w,x], fix lane 2 (w→x)
-	a64::VRegister fsRot = a64::VRegister(28, 128);
-	armAsm->Ext(fsRot.V16B(), fs.V16B(), fs.V16B(), 4);  // [y,z,w,x]
-	armAsm->Ins(fsRot.V4S(), 2, fs.V4S(), 0);            // [y,z,x,x]
-
-	// Build ft.zxy: EXT #8 gives [z,w,x,y], fix lanes 1,2
-	a64::VRegister ftRot = a64::VRegister(27, 128);
-	armAsm->Ext(ftRot.V16B(), ft.V16B(), ft.V16B(), 8);  // [z,w,x,y]
-	armAsm->Ins(ftRot.V4S(), 1, ft.V4S(), 0);            // [z,x,x,y]
-	armAsm->Ins(ftRot.V4S(), 2, ft.V4S(), 1);            // [z,x,y,y]
+	const a64::VRegister fsRot = a64::VRegister(28, 128);
+	const a64::VRegister ftRot = a64::VRegister(27, 128);
+	cop2EmitOpRotate(fs, ft, fsRot, ftRot);
 
 	armAsm->Fmul(RQSCRATCH.V4S(), fsRot.V4S(), ftRot.V4S());
 	// After the multiply, not before it: the rotated operands ARE q28 and q27.
-	const a64::VRegister uz = cop2EmitMulExactZero(0xE, fsRot, ftRot);
+	const a64::VRegister uz = cop2EmitMulExactZero(_XYZW_cop2, fsRot, ftRot);
 	cop2ClampResult();
-	// OPMULA always updates XYZ flags only (0xE), W MAC flag cleared.
-	// PS2 hardware writes ACC.xyz only; ACC.w is preserved regardless of mask.
-	cop2EmitFlagUpdate(0xE, RQSCRATCH, uz);
+	cop2EmitFlagUpdate(_XYZW_cop2, RQSCRATCH, uz);
 
-	cop2ApplyDestMaskACCExplicit(RQSCRATCH, _XYZW_cop2 & 0xE);
+	cop2ApplyDestMaskACC(RQSCRATCH);
 	endMacroOp_arm64(0x110);
 }
 
