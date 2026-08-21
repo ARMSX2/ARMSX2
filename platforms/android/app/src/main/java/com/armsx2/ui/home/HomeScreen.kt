@@ -192,7 +192,10 @@ fun HomeScreen(
                     } else {
                         AndroidView(
                             factory = {
-                                FlurryGlView(it, LibraryBackground.flurryPreset.value).apply {
+                                // currentSpec() resolves which saver AND resolves a "random"
+                                // preset to a concrete one — read once here, at view creation,
+                                // so random means once per library open and not once per frame.
+                                SaverGlView(it, LibraryBackground.currentSpec()).apply {
                                     onGlStatus = { ok -> flurryGl = ok }
                                 }
                             },

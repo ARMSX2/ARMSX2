@@ -21,7 +21,60 @@ import android.view.TextureView
  * Flurry is BSD-3-clause; see app/src/main/cpp/flurry for the notice and for what the GLES2
  * compatibility layer does and does not emulate.
  */
-class FlurryGlView(context: Context, private val preset: Int) :
+/** Which saver a [SaverGlView] should run. Resolved on the GL thread, where the context is. */
+sealed interface SaverSpec {
+    /** Calum Robinson's Flurry (BSD-3-clause), preset 0..7. */
+    data class Flurry(val preset: Int) : SaverSpec
+    /** One of Terry Welsh's Really Slick Screensavers (GPL-2.0-or-later). */
+    data class Rss(val effect: Int, val preset: Int) : SaverSpec
+}
+
+/**
+ * The saver a render thread is driving. The natives differ -- Flurry is handle-based and
+ * re-entrant, the RSS savers keep their state in globals and so allow only one at a time -- so
+ * the difference is absorbed here rather than in the EGL loop.
+ */
+private interface Saver {
+    fun create(): Boolean
+    fun resize(w: Int, h: Int)
+    fun draw()
+    fun destroy()
+}
+
+private class FlurrySaver(private val preset: Int) : Saver {
+    private var handle = 0L
+    override fun create(): Boolean {
+        handle = runCatching { FlurryNative.nativeCreate(preset) }.getOrDefault(0L)
+        return handle != 0L
+    }
+    override fun resize(w: Int, h: Int) { FlurryNative.nativeResize(handle, w, h) }
+    override fun draw() { runCatching { FlurryNative.nativeDraw(handle) } }
+    override fun destroy() {
+        if (handle != 0L) runCatching { FlurryNative.nativeDestroy(handle) }
+        handle = 0L
+    }
+}
+
+private class RssSaver(private val effect: Int, private val preset: Int) : Saver {
+    /* Identifies this view's run to the native side, so a late teardown from an outgoing view
+     * cannot free the saver an incoming one has just started. 0 means "did not start". */
+    private var gen = 0
+
+    override fun create(): Boolean {
+        gen = runCatching { SaverNative.nativeInit(effect, preset) }.getOrDefault(0)
+        return gen != 0
+    }
+    override fun resize(w: Int, h: Int) { SaverNative.nativeResize(gen, w, h) }
+    override fun draw() { runCatching { SaverNative.nativeDraw(gen) } }
+    override fun destroy() { runCatching { SaverNative.nativeFree(gen) }; gen = 0 }
+}
+
+private fun SaverSpec.newSaver(): Saver = when (this) {
+    is SaverSpec.Flurry -> FlurrySaver(preset)
+    is SaverSpec.Rss -> RssSaver(effect, preset)
+}
+
+class SaverGlView(context: Context, private val spec: SaverSpec) :
     TextureView(context), TextureView.SurfaceTextureListener {
 
     private var thread: RenderThread? = null
@@ -44,7 +97,7 @@ class FlurryGlView(context: Context, private val preset: Int) :
     }
 
     override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-        thread = RenderThread(st, w, h, preset) { ok -> post { onGlStatus?.invoke(ok) } }
+        thread = RenderThread(st, w, h, spec) { ok -> post { onGlStatus?.invoke(ok) } }
             .also { it.start() }
     }
 
@@ -77,9 +130,17 @@ class FlurryGlView(context: Context, private val preset: Int) :
         private val surfaceTexture: SurfaceTexture,
         private var width: Int,
         private var height: Int,
-        private val preset: Int,
+        private val spec: SaverSpec,
         private val onStatus: (Boolean) -> Unit,
-    ) : Thread("flurry-gl") {
+        /* These savers were written as Windows screensavers, where the renderer ran on a main
+         * thread with a large stack. Some of them build their textures in local arrays sized
+         * accordingly -- Skyrocket's World constructor alone declares a 1024x1024x3 starmap,
+         * 3MB on the stack, and follows it with a 768KB sunsetmap. A default-sized thread stack
+         * gets a SIGSEGV in memset before the first frame.
+         *
+         * The size is set here rather than by moving those arrays to the heap so the saver
+         * sources stay as close to upstream as possible. */
+    ) : Thread(null, null, "saver-gl", STACK_BYTES) {
 
         @Volatile private var running = true
         @Volatile private var sizeDirty = true
@@ -88,7 +149,7 @@ class FlurryGlView(context: Context, private val preset: Int) :
         private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
         private var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
 
-        private var handle = 0L
+        private var saver: Saver? = null
 
         fun resize(w: Int, h: Int) { width = w; height = h; sizeDirty = true }
         fun finish() { running = false; runCatching { join(500) } }
@@ -96,27 +157,28 @@ class FlurryGlView(context: Context, private val preset: Int) :
         override fun run() {
             if (!initEgl()) { onStatus(false); teardown(); return }
 
-            handle = runCatching { FlurryNative.nativeCreate(preset) }.getOrDefault(0L)
-            if (handle == 0L) {
-                Log.w(TAG, "Flurry failed to start")
+            val s = spec.newSaver()
+            if (!s.create()) {
+                Log.w(TAG, "saver $spec failed to start")
                 onStatus(false); teardown(); return
             }
+            saver = s
 
             var announced = false
             while (running) {
                 val frameStart = System.nanoTime()
 
                 if (sizeDirty) {
-                    FlurryNative.nativeResize(handle, width, height)
+                    s.resize(width, height)
                     sizeDirty = false
                 }
 
-                runCatching { FlurryNative.nativeDraw(handle) }
+                s.draw()
 
                 if (!EGL14.eglSwapBuffers(eglDisplay, eglSurface)) running = false
                 else if (!announced) { announced = true; onStatus(true) }
 
-                // Flurry already refuses to advance faster than 60fps -- above that its additive
+                // The savers already refuse to advance faster than 60fps -- above that its additive
                 // blending saturates into a white smear -- but without a cap here the loop would
                 // still spin at panel rate and do the swap anyway. Same reason XmbGlView caps
                 // itself: on a handheld that difference is audible in the fans.
@@ -124,8 +186,8 @@ class FlurryGlView(context: Context, private val preset: Int) :
                 if (leftMs > 1) runCatching { sleep(leftMs) }
             }
 
-            if (handle != 0L) runCatching { FlurryNative.nativeDestroy(handle) }
-            handle = 0L
+            s.destroy()
+            saver = null
             teardown()
         }
 
@@ -220,11 +282,32 @@ class FlurryGlView(context: Context, private val preset: Int) :
 
     companion object {
         private const val TAG = "FlurryGlView"
+        /** 16MB: Skyrocket needs ~4MB of locals, the rest is headroom for the others. */
+        private const val STACK_BYTES = 16L * 1024 * 1024
+
         private const val FRAME_TARGET_MS = 16L
     }
 }
 
 /** libflurry.so. Every call needs the EGL context current; RenderThread is the only caller. */
+/**
+ * The Really Slick Screensavers native side.
+ *
+ * No handle: these savers keep their state in file-scope globals, exactly as they did as
+ * screensavers, so only one runs at a time. The JNI enforces that by tearing down whichever
+ * was previously active.
+ */
+internal object SaverNative {
+    init { System.loadLibrary("savers") }
+
+    /** effect indexes the table in savers_jni.cpp; preset is that saver's own defaults 1..6. */
+    /** Returns a generation token for the other calls, or 0 if the saver did not start. */
+    external fun nativeInit(effect: Int, preset: Int): Int
+    external fun nativeResize(gen: Int, width: Int, height: Int)
+    external fun nativeDraw(gen: Int)
+    external fun nativeFree(gen: Int)
+}
+
 internal object FlurryNative {
     init { System.loadLibrary("flurry") }
 

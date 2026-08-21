@@ -102,6 +102,103 @@ target_compile_options(flurry PRIVATE -O2 -ffast-math -Wall -Wno-unused-paramete
 target_link_libraries(flurry log GLESv2 m)
 
 
+# ---------------------------------------------------------------------------
+# Really Slick Screensavers -> libsavers.so
+#
+# Terry Welsh's savers (GPL-2.0-or-later), compiled against a GLES2 shim rather than rewritten.
+# The saver sources are BYTE-IDENTICAL to upstream: they are built with RS_XSCREENSAVER, which
+# selects their platform-neutral path, and everything that path expects is answered by
+# compat/. That keeps them re-pullable and keeps them recognisably his code.
+#
+# Separate from the flurry target because these are C++ and Flurry is C99, and because Flurry's
+# shim is a different, smaller one. If a saver ever needs Flurry's, the two can merge.
+
+add_library(savers SHARED
+    savers/savers_jni.cpp
+    savers/savers_platform.cpp
+    savers/gl1.c
+
+    # Each saver is compiled through a *_unit.cpp that wraps it in a namespace: they all
+    # declare the same globals (draw, idleProc, cleanUp, readyToDraw) because each was built
+    # as its own executable, and two in one .so collide at link time.
+    savers/flux/flux_unit.cpp
+    savers/flux/flux_port.cpp
+    savers/plasma/plasma_unit.cpp
+    savers/plasma/plasma_port.cpp
+    savers/solarwinds/solarwinds_unit.cpp
+    savers/solarwinds/solarwinds_port.cpp
+
+    # Hyperspace. extensions.cpp is deliberately NOT built: it is the WIN32/GLX loader for the
+    # ARB shader path, and the port takes the non-shader path instead. The entry points it
+    # would have resolved are declared in compat/arb_shaders.h and defined in savers_platform.
+    savers/hyperspace/unit_causticTextures.cpp
+    savers/hyperspace/unit_flare.cpp
+    savers/hyperspace/unit_goo.cpp
+    savers/hyperspace/unit_hyperspace.cpp
+    savers/hyperspace/unit_splinePath.cpp
+    savers/hyperspace/unit_starBurst.cpp
+    savers/hyperspace/unit_stretchedParticle.cpp
+    savers/hyperspace/unit_tunnel.cpp
+    savers/hyperspace/unit_wavyNormalCubeMaps.cpp
+    savers/hyperspace/hyperspace_port.cpp
+
+    savers/lattice/lattice_unit.cpp
+    savers/lattice/lattice_port.cpp
+
+    # Skyrocket. soundEngine.cpp is NOT built and its ~7MB of samples are not shipped: upstream
+    # drives OpenAL, the port runs with dSound = 0, and soundEngine.h is a stub.
+    savers/skyrocket/unit_flare.cpp
+    savers/skyrocket/unit_particle.cpp
+    savers/skyrocket/unit_shockwave.cpp
+    savers/skyrocket/unit_skyrocket.cpp
+    savers/skyrocket/unit_smoke.cpp
+    savers/skyrocket/unit_world.cpp
+    savers/skyrocket/skyrocket_port.cpp
+
+    savers/rslibs/rsMath/rsVec.cpp
+    savers/rslibs/rsMath/rsVec4.cpp
+    savers/rslibs/rsMath/rsMatrix.cpp
+    savers/rslibs/rsMath/rsQuat.cpp
+    savers/rslibs/Rgbhsl/Rgbhsl.cpp
+
+    # Implicit surfaces: Hyperspace's "goo" is a marching-cubes isosurface.
+    savers/rslibs/Implicit/impSurface.cpp
+    savers/rslibs/Implicit/impCubeVolume.cpp
+    savers/rslibs/Implicit/impCubeTables.cpp
+    savers/rslibs/Implicit/impShape.cpp
+    savers/rslibs/Implicit/impSphere.cpp
+    savers/rslibs/Implicit/impCapsule.cpp
+    savers/rslibs/Implicit/impEllipsoid.cpp
+    savers/rslibs/Implicit/impHexahedron.cpp
+    savers/rslibs/Implicit/impRoundedHexahedron.cpp
+    savers/rslibs/Implicit/impKnot.cpp
+    savers/rslibs/Implicit/impTorus.cpp
+
+)
+
+target_include_directories(savers PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/savers
+    ${CMAKE_CURRENT_SOURCE_DIR}/savers/compat
+    ${CMAKE_CURRENT_SOURCE_DIR}/savers/rslibs
+    ${CMAKE_CURRENT_SOURCE_DIR}/savers/flux
+    ${CMAKE_CURRENT_SOURCE_DIR}/savers/plasma
+    ${CMAKE_CURRENT_SOURCE_DIR}/savers/solarwinds
+    ${CMAKE_CURRENT_SOURCE_DIR}/savers/hyperspace
+    ${CMAKE_CURRENT_SOURCE_DIR}/savers/lattice
+    ${CMAKE_CURRENT_SOURCE_DIR}/savers/skyrocket
+)
+
+# RS_XSCREENSAVER picks the savers' platform-neutral path. Without it they compile their Win32
+# shell and nothing links.
+target_compile_definitions(savers PRIVATE RS_XSCREENSAVER)
+set_target_properties(savers PROPERTIES C_STANDARD 99 CXX_STANDARD 17)
+
+# -ffast-math for the same reason as Flurry: particle simulation judged entirely by eye.
+target_compile_options(savers PRIVATE -O2 -ffast-math -Wall -Wno-unused-parameter)
+target_link_libraries(savers log GLESv2 m)
+
+
+
 add_subdirectory(3rdparty/adrenotools)
 
 # librashader: RetroArch (.slangp) shader chains for the GS post-process path, for BOTH
@@ -213,6 +310,7 @@ target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
 # this build would make it. A missing .so stays invisible until someone switches the background
 # on and the view throws UnsatisfiedLinkError.
 add_dependencies(${ARMSX2_EMUCORE_LIBRARY_NAME} flurry)
+add_dependencies(${ARMSX2_EMUCORE_LIBRARY_NAME} savers)
 
 target_include_directories(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
 	"${ARMSX2_ROOT}"

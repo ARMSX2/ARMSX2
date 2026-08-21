@@ -349,6 +349,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "app.bg.flurry" to "Flurry background",
     "app.bg.flurry.desc" to "Use Calum Robinson\u2019s Flurry (2002) as a live library background. It is a particle simulation, not a still image, so it costs more than the other backdrops \u2014 leave it off if the library feels sluggish.",
     "app.bg.flurry.preset" to "Flurry style",
+    "app.bg.saver" to "Animation",
+    "app.bg.flux.preset" to "Preset",
     "app.bg.flurry.random" to "Random",
     "app.bgColor.rgb" to "RGB Cycle",
     "app.bgColor.rgb.desc" to "Continuously drift the background through the colour spectrum, like RGB peripherals. Overrides the fixed colour below. Same limitation as above: no effect where the fallback background is in use.",

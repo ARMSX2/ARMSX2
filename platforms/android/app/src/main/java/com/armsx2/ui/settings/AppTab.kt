@@ -230,23 +230,60 @@ fun AppTab() {
                 onChange = { com.armsx2.ui.home.LibraryBackground.setFlurry(it) },
             )
             if (com.armsx2.ui.home.LibraryBackground.flurry.value) {
-                // Values are Flurry's own preset enum; -1 is "insane" upstream and 99 is this
-                // port's "pick one each time", so the list is not an index range.
-                val presetValues = listOf(99, 0, 1, 2, 3, 4, 5, -1)
+                // Which saver runs. They share one on/off above because only one background can
+                // draw at a time, and "animated background: on" reads better than seven switches.
+                // Flurry is Calum Robinson's (BSD-3-clause); the rest are Terry Welsh's Really
+                // Slick Screensavers (GPL-2.0-or-later).
+                val kind = com.armsx2.ui.home.LibraryBackground.saverKind.value
                 SegmentedGridRow(
-                    label = str("app.bg.flurry.preset"),
-                    options = listOf(
-                        str("app.bg.flurry.random"), "Water", "Fire", "Psychedelic",
-                        "RGB", "Binary", "Classic", "Insane",
-                    ),
-                    selectedIndex = presetValues
-                        .indexOf(com.armsx2.ui.home.LibraryBackground.flurryPreset.value)
-                        .coerceAtLeast(0),
+                    label = str("app.bg.saver"),
+                    options = listOf("Flurry", "Flux", "Plasma", "SolarWinds", "Hyperspace", "Lattice", "Skyrocket"),
+                    selectedIndex = kind,
                     columns = 4,
-                    onChange = {
-                        com.armsx2.ui.home.LibraryBackground.setFlurryPreset(presetValues[it])
-                    },
+                    onChange = { com.armsx2.ui.home.LibraryBackground.setSaverKind(it) },
                 )
+                if (kind == 0) {
+                    // Values are Flurry's own preset enum; -1 is "insane" upstream and 99 is this
+                    // port's "pick one each time", so the list is not an index range.
+                    val presetValues = listOf(99, 0, 1, 2, 3, 4, 5, -1)
+                    SegmentedGridRow(
+                        label = str("app.bg.flurry.preset"),
+                        options = listOf(
+                            str("app.bg.flurry.random"), "Water", "Fire", "Psychedelic",
+                            "RGB", "Binary", "Classic", "Insane",
+                        ),
+                        selectedIndex = presetValues
+                            .indexOf(com.armsx2.ui.home.LibraryBackground.flurryPreset.value)
+                            .coerceAtLeast(0),
+                        columns = 4,
+                        onChange = {
+                            com.armsx2.ui.home.LibraryBackground.setFlurryPreset(presetValues[it])
+                        },
+                    )
+                } else if (kind != 4 && kind != 6) {
+                    // Hyperspace and Skyrocket ship no presets upstream, so they show no picker.
+                    // Six presets plus this port's 99 for "pick one each time", so not an index
+                    // range. Flux and SolarWinds ship their own named defaults; Plasma had none
+                    // upstream, so those are built from the settings its config dialog exposed.
+                    val rssValues = listOf(99, 1, 2, 3, 4, 5, 6)
+                    val names = when (kind) {
+                        1 -> listOf("Regular", "Hypnotic", "Insane", "Sparklers", "Paradigm", "Galactic")
+                        2 -> listOf("Classic", "Tight", "Wide", "Fast", "Slow drift", "Coarse")
+                        5 -> listOf("Regular", "Chainmail", "Brass Mesh", "Computer", "Slick", "Tasty")
+                        else -> listOf("Regular", "Cosmic Strings", "Cold Pricklies", "Space Fur", "Jiggly", "Undertow")
+                    }
+                    SegmentedGridRow(
+                        label = str("app.bg.flux.preset"),
+                        options = listOf(str("app.bg.flurry.random")) + names,
+                        selectedIndex = rssValues
+                            .indexOf(com.armsx2.ui.home.LibraryBackground.rssPreset.value)
+                            .coerceAtLeast(0),
+                        columns = 4,
+                        onChange = {
+                            com.armsx2.ui.home.LibraryBackground.setRssPreset(rssValues[it])
+                        },
+                    )
+                }
             }
             // Colour of the BAR itself (the rounded header pill), as opposed to the animated
             // backdrop the rest of this section controls. Requested because the background picker
