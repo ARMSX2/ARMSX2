@@ -1,0 +1,114 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
+// SPDX-License-Identifier: GPL-3.0+
+
+#pragma once
+
+#include "arm64/AsmHelpers.h"
+
+#include "common/Assertions.h"
+
+namespace a64 = vixl::aarch64;
+
+// ========================================================================
+//  The VU FMAC's MAC U and MAC O, as four-lane predicates
+// ========================================================================
+// All-ones-or-zero lane masks for armEmitPackSignZeroBits. Both the COP2 macro
+// path (iCOP2-arm64.cpp) and microVU (microVU_Upper-arm64.inl) emit them.
+//
+// The VU's largest value is 0x7FFFFFFF, a binade above single precision, so
+// overflow cannot be read off a host Inf. Every threshold below is tested on a
+// scaled copy instead, the scale an exact exponent shift; under the VU's
+// round-toward-zero FPCR the scaled compare decides the unscaled one.
+//
+// Both predicates read the operands, before any clamp moves an exponent-255 one
+// a binade down and before the arithmetic overwrites them.
+
+// dst = all ones per lane where |a * b| is past the VU's largest value, i.e.
+//
+//     |a| * 2^-96  *  |b| * 2^-96  >=  2^-63
+//
+// Nothing on that path reaches the host's Inf/NaN range, so an exponent-255
+// operand takes part as the number it is. A magnitude the Uqsub saturates was
+// below 2^-30 and could not have overflowed against anything the VU can hold.
+// The scaled product is at most 2^65, so the threshold is its top three bits.
+//
+// Clobbers `k` and `tmp`, reads `a` and `b`. Both operands are read before the
+// constant is built, so `k` may be the register `b` came in -- VOPMULA's
+// rotated pair needs that.
+__fi static void armEmitVuMulOverflow(const a64::VRegister& dst, const a64::VRegister& a,
+	const a64::VRegister& b, const a64::VRegister& k, const a64::VRegister& tmp)
+{
+	pxAssert(!tmp.Is(dst) && !k.Is(dst) && !k.Is(tmp) && !b.Is(dst));
+
+	armAsm->Fabs(dst.V4S(), a.V4S());
+	armAsm->Fabs(tmp.V4S(), b.V4S());
+	armAsm->Movi(k.V4S(), 0x30, a64::LSL, 24); // 96 exponents
+	armAsm->Uqsub(dst.V4S(), dst.V4S(), k.V4S());
+	armAsm->Uqsub(tmp.V4S(), tmp.V4S(), k.V4S());
+	armAsm->Fmul(dst.V4S(), dst.V4S(), tmp.V4S());
+	armAsm->Ushr(dst.V4S(), dst.V4S(), 29);
+	armAsm->Cmtst(dst.V4S(), dst.V4S(), dst.V4S());
+}
+
+// dst = all ones per lane where a zero product is an exact zero rather than a
+// flushed underflow. armEmitPackSignZeroBits takes the complement as U.
+//
+// Under FZ a product of two non-zero operands is zero only when it underflowed,
+// and host and console flush it to the same signed zero -- they differ in the
+// flag alone. A denormal operand counts as zero, as FCMEQ against 0.0 makes it
+// under FZ and as vuDouble makes it on the interpreter.
+//
+// Add and sub are not this: the console keeps the mantissa bits of a sum that
+// underflows where the host flushes them, so their U sits behind a value
+// divergence.
+//
+// `b` is read first because it may be dst (VOPMULA's rotated Ft).
+__fi static void armEmitVuMulExactZero(const a64::VRegister& dst, const a64::VRegister& a,
+	const a64::VRegister& b, const a64::VRegister& tmp)
+{
+	pxAssert(!a.Is(dst) && !a.Is(tmp) && !tmp.Is(dst));
+
+	armAsm->Fcmeq(tmp.V4S(), b.V4S(), 0.0);
+	armAsm->Fcmeq(dst.V4S(), a.V4S(), 0.0);
+	armAsm->Orr(dst.V16B(), dst.V16B(), tmp.V16B());
+}
+
+// dst = all ones per lane where a +/- b is past the VU's largest value:
+//
+//     O  <=>  the two addends have the same sign, and (|a| + |b|) / 4 >= 2^127
+//
+// Opposite signs never overflow, the sum's magnitude being below the larger
+// addend; a magnitude test alone gets that half wrong. A quarter is enough of a
+// scale: the largest pair the VU can hold sums to twice its maximum, and a
+// quarter of that is FLT_MAX exactly, so the scaled add cannot saturate and
+// lose the answer.
+//
+// Adding the scale back turns the >= into the sign bit, so the threshold costs
+// no second constant. Both answers then sit in bit 31 -- the sum's carried
+// there by the Uqadd, the sign comparison's by the Eor -- so one Cmlt does for
+// both.
+//
+// `t1`, `t2` and `k` are scratch; `t1` and `t2` may be `a` and `b` where the
+// caller is done with them, which is why the sign comparison is taken first.
+// `dst` must be none of the five.
+__fi static void armEmitVuAddSubOverflow(const a64::VRegister& dst, const a64::VRegister& a,
+	const a64::VRegister& b, bool issub, const a64::VRegister& t1, const a64::VRegister& t2,
+	const a64::VRegister& k)
+{
+	pxAssert(!dst.Is(a) && !dst.Is(b) && !dst.Is(t1) && !dst.Is(t2) && !dst.Is(k));
+	pxAssert(!t1.Is(t2) && !t1.Is(k) && !t2.Is(k));
+
+	armAsm->Eor(dst.V16B(), a.V16B(), b.V16B());
+	armAsm->Movi(k.V4S(), 0x01, a64::LSL, 24); // two exponents
+	armAsm->Fabs(t1.V4S(), a.V4S());
+	armAsm->Fabs(t2.V4S(), b.V4S());
+	armAsm->Uqsub(t1.V4S(), t1.V4S(), k.V4S());
+	armAsm->Uqsub(t2.V4S(), t2.V4S(), k.V4S());
+	armAsm->Fadd(t1.V4S(), t1.V4S(), t2.V4S());
+	armAsm->Uqadd(t1.V4S(), t1.V4S(), k.V4S());
+	if (issub)
+		armAsm->And(dst.V16B(), t1.V16B(), dst.V16B());
+	else
+		armAsm->Bic(dst.V16B(), t1.V16B(), dst.V16B());
+	armAsm->Cmlt(dst.V4S(), dst.V4S(), 0);
+}
