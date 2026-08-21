@@ -973,11 +973,12 @@ TEST(VuStickyConsoleConformance, AllMacroStatusMatchesConsole)
 	}
 }
 
-TEST(VuStickyMicroConsoleConformance, DISABLED_AllMicroStatusMatchesConsole)
+TEST(VuStickyMicroConsoleConformance, AllMicroStatusMatchesConsole)
 {
 	for (const VuStickyProgram& p : kVuStickyPrograms)
 	{
 		VuTestHarness h(0);
+		h.SetVuClampMode(4);
 		SeedMicro(h, p);
 		h.LoadProgram(ProgramPairs(p));
 		h.RunNoDiff();

@@ -55,6 +55,13 @@ public:
 	u32  ReadMemU32(u32 addr) const;
 	void TrackMemWindow(u32 addr, size_t bytes);
 
+	// Sets this harness's VU clamp mode (GameDB vu0ClampMode / vu1ClampMode)
+	// for the VU it drives: the three Recompiler bits GameDatabase derives from
+	// it. The harness otherwise runs at the RecompilerOptions() default of 1,
+	// and microVU's exact MAC U and MAC O models emit only at 3. Restored in
+	// the dtor.
+	void SetVuClampMode(int mode);
+
 	// Skip a VI register in the JIT-vs-interp auto-diff. Use sparingly: this
 	// is the right tool when JIT and interp legitimately disagree on a
 	// bookkeeping register (e.g. REG_TPC after an M-bit mid-program break)
@@ -184,6 +191,12 @@ private:
 	std::vector<u8> path1_packets_interp_;
 
 	bool resume_until_terminated_ = false;
+
+	bool clamp_mode_changed_ = false;
+	bool prev_overflow_ = false;
+	bool prev_extra_overflow_ = false;
+	bool prev_sign_overflow_ = false;
+	bool prev_exact_mode_ = false;
 
 	VuSnapshot pre_snapshot_;
 	VuSnapshot jit_snapshot_;
