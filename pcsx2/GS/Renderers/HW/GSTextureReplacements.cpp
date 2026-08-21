@@ -614,6 +614,20 @@ void GSTextureReplacements::ReloadReplacementMap()
 	// matches. Replacements ride the hash cache, which needs Full preloading; and paltex decides
 	// whether the CLUT hash forms part of the name being looked up. A pack that indexes
 	// thousands of files and is then never consulted looks the same as one that misses.
+	// Three sample names, so the pack's filename STYLE is on the record whether or not anything
+	// misses later. A pack dumped without palette hashes is a different problem from one dumped
+	// with them, and the names are the only place that distinction is visible.
+	{
+		u32 sampled = 0;
+		for (const auto& it : s_replacement_texture_filenames)
+		{
+			if (sampled >= 3)
+				break;
+			Console.WriteLnFmt("Texture replacements: sample name '{}'", Path::GetFileName(it.second));
+			sampled++;
+		}
+	}
+
 	Console.WriteLnFmt("Texture replacements: preloading={} paltex={} async={} upscale={}",
 		static_cast<u32>(GSConfig.TexturePreloading), GSConfig.GPUPaletteConversion ? 1 : 0,
 		GSConfig.LoadTextureReplacementsAsync ? 1 : 0, GSConfig.UpscaleMultiplier);
@@ -742,6 +756,26 @@ static void ReportMissDetail(const TextureName& wanted)
 	Console.WriteLnFmt("Texture replacements: MISS tex0={:016x} clut={:016x} {}x{} psm={} -- pack has this tex0 under a different CLUT: {}",
 		wanted.TEX0Hash, wanted.CLUTHash, wanted.Width(), wanted.Height(),
 		static_cast<u32>(wanted.TEX0_PSM), clut_only ? "YES" : "no");
+
+	// ★ And WHICH entry, by name. The flag above says the pack holds this TEX0 under some other
+	// palette; the filename says which, and that is the whole diagnosis:
+	//
+	//   <tex0>-<clut>-<w>x<h>-<bits>.ext   a real, different palette hash -> the palette contents
+	//                                      differ at run time from when the pack was dumped
+	//   <tex0>-<w>x<h>-<bits>.ext          no palette field at all, so it indexed with CLUTHash=0
+	//                                      -> it can only ever match while paltex is on
+	//
+	// Printed rather than asked for, because the people who hit this are players, not people who
+	// will run a shell on their own device to list a directory.
+	u32 shown = 0;
+	for (const auto& it : GSTextureReplacements::s_replacement_texture_filenames)
+	{
+		if (it.first.TEX0Hash != wanted.TEX0Hash || shown >= 2)
+			continue;
+		Console.WriteLnFmt("Texture replacements:   pack holds clut={:016x} as '{}'",
+			it.first.CLUTHash, Path::GetFileName(it.second));
+		shown++;
+	}
 }
 
 GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache::HashCacheKey& hash, bool mipmap,
