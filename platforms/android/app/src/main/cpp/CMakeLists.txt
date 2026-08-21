@@ -194,7 +194,12 @@ target_compile_definitions(savers PRIVATE RS_XSCREENSAVER)
 set_target_properties(savers PROPERTIES C_STANDARD 99 CXX_STANDARD 17)
 
 # -ffast-math for the same reason as Flurry: particle simulation judged entirely by eye.
-target_compile_options(savers PRIVATE -O2 -ffast-math -Wall -Wno-unused-parameter)
+# -Wno-missing-braces: Welsh's code initialises nested aggregates without inner braces
+# throughout, which -Wall diagnoses once per site per TU -- ~5 MILLION lines and an 842 MB
+# build log, which is how it was found. These sources are upstream and are not ours to
+# restyle, so the diagnostic has nothing to tell us. Purely a diagnostic flag: no codegen
+# difference.
+target_compile_options(savers PRIVATE -O2 -ffast-math -Wall -Wno-unused-parameter -Wno-missing-braces)
 target_link_libraries(savers log GLESv2 m)
 
 

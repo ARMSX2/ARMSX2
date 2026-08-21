@@ -517,10 +517,23 @@ static bool GetWrongCasePath(std::string* output, const char* dir, std::string_v
 	return false;
 }
 
+// Lookup accounting for the diagnostic line below. Plain counters on the GS thread, which is the
+// only caller of LookupReplacementTexture.
+static u64 s_lookup_hits = 0;
+static u64 s_lookup_misses = 0;
+static u64 s_lookup_clut_only_misses = 0;
+static u64 s_lookup_next_report = 0;
+
 void GSTextureReplacements::ReloadReplacementMap()
 {
 	SyncWorkerThread();
 	ScopedGuard startup_complete_guard([]() { NotifyStartupCompleteForCurrentGame(); });
+
+	// Per game: a carried-over hit count from the previous title would read as a healthy pack.
+	s_lookup_hits = 0;
+	s_lookup_misses = 0;
+	s_lookup_clut_only_misses = 0;
+	s_lookup_next_report = 0;
 
 	// clear out the caches
 	{
@@ -687,6 +700,18 @@ bool GSTextureReplacements::HasReplacementTextureWithOtherPalette(const GSTextur
 	return s_replacement_textures_without_clut_hash.find(name) != s_replacement_textures_without_clut_hash.end();
 }
 
+// One line per 20k lookups. Frequent enough to appear within seconds of entering a scene, rare
+// enough that it cannot become the log spam that itself slows the emulator down.
+static void ReportLookupStatsIfDue()
+{
+	const u64 total = s_lookup_hits + s_lookup_misses;
+	if (total < s_lookup_next_report)
+		return;
+	s_lookup_next_report = total + 20000;
+	Console.WriteLnFmt("Texture replacements: {} hits, {} misses ({} of the misses match a name whose CLUT hash differs)",
+		s_lookup_hits, s_lookup_misses, s_lookup_clut_only_misses);
+}
+
 GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache::HashCacheKey& hash, bool mipmap,
 	bool* pending, std::pair<u8, u8>* alpha_minmax)
 {
@@ -696,7 +721,28 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 	// replacement for this name exists?
 	auto fnit = s_replacement_texture_filenames.find(name);
 	if (fnit == s_replacement_texture_filenames.end())
+	{
+		// ★ The second half of the "my pack does nothing" diagnosis, and the half that was
+		// missing. The indexed count at load time proves the FILES were found; it says nothing
+		// about whether any draw ever asks for one of them. A pack that indexes thousands of
+		// textures and then misses every lookup is a HASH problem (wrong dump settings, paltex
+		// vs CLUT, wrong upscale) and looks identical, from outside, to a pack that never
+		// loaded at all.
+		//
+		// Summarised rather than logged per lookup: this runs per draw, and log volume alone
+		// can stall the emulator. Also counts how many of those misses would have matched with
+		// the CLUT hash zeroed, which separates "the pack does not contain this texture" from
+		// "it does, but the palette hash differs" — the usual cause for paletted UI art.
+		s_lookup_misses++;
+		TextureName clutless(name);
+		clutless.CLUTHash = 0;
+		if (s_replacement_textures_without_clut_hash.find(clutless) != s_replacement_textures_without_clut_hash.end())
+			s_lookup_clut_only_misses++;
+		ReportLookupStatsIfDue();
 		return nullptr;
+	}
+	s_lookup_hits++;
+	ReportLookupStatsIfDue();
 
 	// try the full cache first, to avoid reloading from disk
 	{
